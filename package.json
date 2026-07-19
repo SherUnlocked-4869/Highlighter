@@ -1,0 +1,75 @@
+{
+  "name": "huacizhushou",
+  "version": "1.0.0",
+  "description": "划词助手 - 智能划词翻译与解释工具",
+  "main": "main.js",
+  "author": "划词助手",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win --x64",
+    "build:win:portable": "electron-builder --win portable --x64"
+  },
+  "build": {
+    "appId": "com.huacizhushou.app",
+    "productName": "划词助手",
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "preload-toolbar.js",
+      "deepseek.js",
+      "assets/**/*",
+      "config/**/*",
+      "toolbar/**/*",
+      "action/**/*",
+      "node_modules/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "划词助手"
+    },
+    "portable": {
+      "artifactName": "划词助手-${version}-portable.exe"
+    }
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "openai": "^4.87.3",
+    "selection-hook": "^2.0.2",
+    "showdown": "^2.1.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "electron": "^33.4.11",
+    "electron-builder": "^26.0.12"
+  },
+  "allowScripts": {
+    "electron": true,
+    "selection-hook": true,
+    "@electron/rebuild": true,
+    "electron-builder": true
+  }
+}

@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>划词助手</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 18px;
+    background: #16162b;
+    border-bottom: 1px solid #2a2a4a;
+    flex-shrink: 0;
+  }
+  .header .icon {
+    font-size: 20px;
+  }
+  .header .title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+    flex: 1;
+  }
+  .header .badge {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 10px;
+    background: #6c63ff22;
+    color: #6c63ff;
+    border: 1px solid #6c63ff44;
+  }
+  .header .badge.explain {
+    background: #4fc3f722;
+    color: #4fc3f7;
+    border-color: #4fc3f744;
+  }
+  .pin-btn {
+    background: none; border: 1px solid transparent; color: #666;
+    font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 6px;
+    line-height: 1; transition: all 0.15s; outline: none;
+    -webkit-app-region: no-drag;
+  }
+  .pin-btn:hover { background: rgba(255,255,255,0.05); color: #aaa; }
+  .pin-btn.pinned { color: #6c63ff; border-color: #6c63ff44; background: #6c63ff15; }
+  .content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px;
+    line-height: 1.8;
+    font-size: 14px;
+  }
+  .content .source {
+    background: #16162b;
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: #aaa;
+    border-left: 3px solid #3a3a5c;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .content .result {
+    word-break: break-word;
+    line-height: 1.7;
+  }
+  /* Markdown styles */
+  .result h1, .result h2, .result h3, .result h4 { color: #fff; margin: 16px 0 8px; font-weight: 600; }
+  .result h1 { font-size: 1.4em; border-bottom: 1px solid #2a2a4a; padding-bottom: 6px; }
+  .result h2 { font-size: 1.2em; }
+  .result h3 { font-size: 1.1em; }
+  .result p { margin: 6px 0; }
+  .result ul, .result ol { padding-left: 24px; margin: 6px 0; }
+  .result li { margin: 4px 0; }
+  .result code { background: #16162b; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; color: #6c63ff; }
+  .result pre { background: #0d0d1a; padding: 14px 16px; border-radius: 8px; overflow-x: auto; margin: 10px 0; border: 1px solid #2a2a4a; }
+  .result pre code { background: none; padding: 0; color: #e0e0e0; }
+  .result blockquote { border-left: 3px solid #6c63ff; padding-left: 14px; margin: 10px 0; color: #aaa; }
+  .result strong { color: #fff; }
+  .result a { color: #6c63ff; }
+  .result table { border-collapse: collapse; margin: 10px 0; width: 100%; }
+  .result th, .result td { border: 1px solid #2a2a4a; padding: 8px 12px; text-align: left; }
+  .result th { background: #16162b; }
+  .result hr { border: none; border-top: 1px solid #2a2a4a; margin: 16px 0; }
+  .reasoning-arrow { font-size: 11px; transition: transform 0.2s; }
+  .reasoning-box.open .reasoning-arrow { transform: rotate(0deg); }
+  /* Thin scrollbar */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #3a3a5c; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #5a5a7c; }
+  .reasoning-preview::-webkit-scrollbar { width: 4px; }
+  .reasoning-preview::-webkit-scrollbar-thumb { background: #2a2a4a; }
+  .reasoning-full::-webkit-scrollbar { width: 4px; }
+  .reasoning-full::-webkit-scrollbar-thumb { background: #2a2a4a; }
+  .content .reasoning-box {
+    background: #0d0d1a;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .content .reasoning-box .reasoning-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: #888;
+    cursor: pointer;
+    user-select: none;
+  }
+  .content .reasoning-box .reasoning-header:hover {
+    background: rgba(255,255,255,0.02);
+  }
+  .content .reasoning-box .reasoning-preview {
+    padding: 0 14px 10px;
+    font-size: 12px;
+    color: #666;
+    line-height: 1.5;
+    max-height: 60px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .content .reasoning-box .reasoning-full {
+    padding: 0 14px 14px;
+    font-size: 12px;
+    color: #999;
+    line-height: 1.7;
+    display: none;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .content .reasoning-box.open .reasoning-full {
+    display: block;
+  }
+  .content .reasoning-box.open .reasoning-preview {
+    display: none;
+  }
+  .loading {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding: 20px;
+    color: #888;
+    font-size: 13px;
+  }
+  .loading .spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid #3a3a5c;
+    border-top-color: #6c63ff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .cursor {
+    display: inline-block;
+    width: 2px;
+    height: 15px;
+    background: #6c63ff;
+    margin-left: 2px;
+    animation: blink 0.8s infinite;
+    vertical-align: text-bottom;
+  }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="header">
+  <span class="icon" id="headerIcon">🌐</span>
+  <span class="title" id="headerTitle">翻译中...</span>
+  <span class="badge" id="headerBadge">翻译</span>
+  <span style="flex:1"></span>
+  <div class="header-actions">
+    <button class="pin-btn" id="btnPin" title="置顶">📌</button>
+  </div>
+</div>
+<div class="content" id="content">
+  <div class="source" id="sourceText"></div>
+  <div class="result" id="result"></div>
+  <div id="scrollSentinel" style="height:1px;width:1px;"></div>
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <span id="loadingText">正在请求 DeepSeek...</span>
+  </div>
+</div>
+
+<script src="action.js"></script>
+</body>
+</html>
