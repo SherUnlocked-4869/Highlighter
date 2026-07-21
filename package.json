@@ -1,30 +1,39 @@
 {
-  "name": "huacizhushou",
-  "version": "1.0.0",
-  "description": "划词助手 - 智能划词翻译与解释工具",
+  "name": "highlighter-snowshot",
+  "version": "2.0.0",
+  "description": "Highlighter - 截图、标注、OCR、翻译与 AI 桌面效率工具",
   "main": "main.js",
-  "author": "划词助手",
+  "author": "Highlighter",
   "scripts": {
     "start": "electron .",
     "build:win": "electron-builder --win --x64",
     "build:win:portable": "electron-builder --win portable --x64"
   },
   "build": {
-    "appId": "com.huacizhushou.app",
-    "productName": "划词助手",
+    "appId": "com.highlighter.desktop",
+    "productName": "Highlighter",
     "npmRebuild": false,
     "directories": {
       "output": "dist"
     },
+    "asarUnpack": [
+      "node_modules/screenshot-desktop/lib/win32/**/*"
+    ],
     "files": [
       "main.js",
       "preload.js",
       "preload-toolbar.js",
+      "preload-capture.js",
+      "preload-pin.js",
+      "preload-record.js",
       "deepseek.js",
       "assets/**/*",
       "config/**/*",
       "toolbar/**/*",
       "action/**/*",
+      "capture/**/*",
+      "pin/**/*",
+      "record/**/*",
       "node_modules/**/*"
     ],
     "win": {
@@ -49,17 +58,20 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "划词助手"
+      "shortcutName": "Highlighter"
     },
     "portable": {
-      "artifactName": "划词助手-${version}-portable.exe"
+      "artifactName": "Highlighter-${version}-portable.exe"
     }
   },
   "dependencies": {
     "electron-store": "^8.2.0",
+    "jsqr": "^1.4.0",
     "openai": "^4.87.3",
+    "screenshot-desktop": "^1.15.4",
     "selection-hook": "^2.0.2",
-    "showdown": "^2.1.0"
+    "showdown": "^2.1.0",
+    "tesseract.js": "^6.0.1"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",

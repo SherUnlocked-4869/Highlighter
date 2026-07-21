@@ -26,6 +26,37 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onStartHook: (apiKey) => ipcRenderer.send('config:start-hook', apiKey),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
 
+  // Main app / settings
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  updateSettings: (patch) => ipcRenderer.invoke('settings:update', patch),
+  resetSettings: () => ipcRenderer.invoke('settings:reset'),
+  executeFunction: (name, payload) => ipcRenderer.invoke('app:execute-function', { name, payload }),
+  getHistory: () => ipcRenderer.invoke('history:list'),
+  deleteHistory: (id) => ipcRenderer.invoke('history:delete', id),
+  copyHistory: (id) => ipcRenderer.invoke('history:copy', id),
+  editHistory: (id) => ipcRenderer.invoke('history:edit', id),
+  revealHistory: (id) => ipcRenderer.invoke('history:reveal', id),
+  clearHistory: () => ipcRenderer.invoke('history:clear'),
+  requestAi: (messages, options) => ipcRenderer.invoke('ai:complete', { messages, options }),
+  translateText: (text, sourceLanguage, targetLanguage) => ipcRenderer.invoke('ai:translate', { text, sourceLanguage, targetLanguage }),
+  chooseDirectory: () => ipcRenderer.invoke('dialog:choose-directory'),
+  openDataDirectory: () => ipcRenderer.invoke('app:open-data-directory'),
+  openSaveDirectory: () => ipcRenderer.invoke('app:open-save-directory'),
+  getAppInfo: () => ipcRenderer.invoke('app:get-info'),
+  getDisplayDiagnostics: () => ipcRenderer.invoke('app:get-display-diagnostics'),
+  windowMinimize: () => ipcRenderer.send('window:minimize'),
+  windowClose: () => ipcRenderer.send('window:close'),
+  onNavigate: (callback) => {
+    const handler = (_event, route) => callback(route)
+    ipcRenderer.on('app:navigate', handler)
+    return () => ipcRenderer.removeListener('app:navigate', handler)
+  },
+  onHistoryChanged: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('history:changed', handler)
+    return () => ipcRenderer.removeListener('history:changed', handler)
+  },
+
   // Toolbar
   onSelectionText: (callback) => {
     const handler = (_event, data) => callback(data)

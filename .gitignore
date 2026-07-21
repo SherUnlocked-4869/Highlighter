@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.log
 crash.log
+__pycache__/
+*.py[cod]

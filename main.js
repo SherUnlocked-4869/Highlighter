@@ -1,110 +1,296 @@
-const { app, BrowserWindow, ipcMain, screen, shell, Tray, Menu, nativeImage } = require('electron')
-const path = require('path')
+const {
+  app,
+  BrowserWindow,
+  clipboard,
+  desktopCapturer,
+  dialog,
+  globalShortcut,
+  ipcMain,
+  Menu,
+  nativeImage,
+  screen,
+  shell,
+  Tray
+} = require('electron')
+const { execFile } = require('child_process')
 const fs = require('fs')
+const path = require('path')
+const screenshotDesktop = require('screenshot-desktop')
 const Store = require('electron-store')
 
-// --- Logging ---
-function log(...args) {
-  const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
-  console.log(msg)
-  try { fs.appendFileSync(path.join(app.getPath('userData'), 'app.log'), `[${new Date().toISOString()}] ${msg}\n`) } catch {}
+const DEFAULT_SETTINGS = {
+  apiKey: '',
+  theme: 'system',
+  mainColor: '#1677ff',
+  borderRadius: 8,
+  compact: false,
+  skinPath: '',
+  skinOpacity: 18,
+  customCss: '',
+  plugins: { ocr: true, translation: true, ai: true, video: true },
+  screenshot: {
+    autoSaveOnCopy: false,
+    fastSave: false,
+    saveDirectory: '',
+    saveFormat: 'png',
+    historyEnabled: true,
+    historyLimit: 200,
+    doubleClickCopy: true,
+    selectionMask: 'rgba(0,0,0,.46)',
+    showColorPicker: true,
+    ocrLanguage: 'chi_sim+eng'
+  },
+  fixedContent: {
+    zoomWithMouse: true,
+    autoResize: true,
+    autoOcr: false,
+    opacity: 1
+  },
+  record: {
+    frameRate: 24,
+    includeMicrophone: false,
+    saveDirectory: ''
+  },
+  ai: {
+    model: 'deepseek-v4-flash',
+    maxTokens: 4096,
+    temperature: 0.7,
+    targetLanguage: '中文'
+  },
+  system: {
+    autoStart: true,
+    runLog: true,
+    enableTray: true
+  },
+  shortcuts: {
+    screenshot: 'F1',
+    screenshotDelay: '',
+    screenshotFixed: '',
+    screenshotOcr: '',
+    screenshotOcrTranslate: '',
+    screenshotCopy: '',
+    screenshotFullScreen: '',
+    screenshotFocusedWindow: '',
+    translationSelectText: '',
+    chatSelectText: '',
+    videoRecord: '',
+    fullScreenDraw: '',
+    toggleFixedContentVisibility: '',
+    showOrHideMainWindow: '',
+    openCaptureHistory: ''
+  }
 }
 
-// --- Single instance ---
-const gotTheLock = app.requestSingleInstanceLock()
-if (!gotTheLock) { app.quit(); process.exit(0) }
-app.on('second-instance', () => createConfigWindow())
+const store = new Store({
+  defaults: {
+    settings: DEFAULT_SETTINGS,
+    captureHistory: []
+  }
+})
 
-// --- Store ---
-const store = new Store({ defaults: { apiKey: '' } })
-
-// --- State ---
-let configWindow = null
+let mainWindow = null
 let toolbarWindow = null
 let actionWindow = null
 let selectionHook = null
+let tray = null
+let currentCaptureWindow = null
+let recordWindow = null
 let isProcessing = false
 let currentStreamController = null
-let tray = null
 let lastToolbarPos = null
 let pinnedCount = 0
-let actionWindows = []  // Track action windows for pin management
-const MAX_PINNED = 3
-
+const pinWindows = new Set()
+const actionWindows = []
+const MAX_PINNED = 20
 const TOOLBAR_W = 180
 const TOOLBAR_H = 40
 const isWin = process.platform === 'win32'
+let nativeDisplayListPromise = null
 
-// --- Tray ---
-function createTrayIcon() {
-  var iconPath = path.join(__dirname, 'assets', 'icon.png')
-  var icon
-  try {
-    icon = nativeImage.createFromPath(iconPath)
-    if (!icon || icon.isEmpty()) throw new Error('empty')
-  } catch (e) { icon = nativeImage.createEmpty() }
-  tray = new Tray(icon.resize({ width: 32, height: 32 }))
-  tray.setToolTip('划词助手')
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '打开配置', click: createConfigWindow },
-    { type: 'separator' },
-    { label: '退出', click: () => { if (selectionHook) { selectionHook.cleanup(); selectionHook = null } app.quit() } }
-  ]))
-  tray.on('double-click', createConfigWindow)
+function mergeDeep(target, patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return patch
+  const output = { ...(target || {}) }
+  for (const [key, value] of Object.entries(patch)) {
+    output[key] = value && typeof value === 'object' && !Array.isArray(value)
+      ? mergeDeep(output[key], value)
+      : value
+  }
+  return output
 }
 
-// --- Windows ---
-function createConfigWindow() {
-  if (configWindow && !configWindow.isDestroyed()) { configWindow.focus(); return }
-  configWindow = new BrowserWindow({
-    width: 480, height: 460, resizable: false,
-    title: '划词助手 - 配置', autoHideMenuBar: true,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
+function getSettings() {
+  return mergeDeep(DEFAULT_SETTINGS, store.get('settings', {}))
+}
+
+function log(...args) {
+  const message = args.map((value) => typeof value === 'string' ? value : JSON.stringify(value)).join(' ')
+  console.log(message)
+  if (!getSettings().system.runLog) return
+  try {
+    fs.appendFileSync(path.join(app.getPath('userData'), 'app.log'), `[${new Date().toISOString()}] ${message}\n`)
+  } catch {}
+}
+
+function ensureDirectory(directory) {
+  fs.mkdirSync(directory, { recursive: true })
+  return directory
+}
+
+function historyDirectory() {
+  return ensureDirectory(path.join(app.getPath('userData'), 'capture-history'))
+}
+
+function dataUrlToBuffer(dataUrl) {
+  return Buffer.from(String(dataUrl).replace(/^data:image\/\w+;base64,/, ''), 'base64')
+}
+
+function fileToDataUrl(filePath) {
+  return `data:image/png;base64,${fs.readFileSync(filePath).toString('base64')}`
+}
+
+function makeCaptureName(prefix = 'Highlighter') {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+  return `${prefix}_${stamp}.png`
+}
+
+function persistHistory(dataUrl, meta = {}) {
+  const settings = getSettings()
+  if (!settings.screenshot.historyEnabled) return null
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const filePath = path.join(historyDirectory(), `${id}.png`)
+  fs.writeFileSync(filePath, dataUrlToBuffer(dataUrl))
+  const image = nativeImage.createFromPath(filePath)
+  const size = image.getSize()
+  const item = {
+    id,
+    filePath,
+    createdAt: Date.now(),
+    source: meta.source || 'capture',
+    action: meta.action || 'edit',
+    width: size.width,
+    height: size.height
+  }
+  const history = [item, ...store.get('captureHistory', [])]
+  const limit = Math.max(10, Number(settings.screenshot.historyLimit) || 200)
+  const removed = history.splice(limit)
+  removed.forEach((entry) => {
+    try { fs.unlinkSync(entry.filePath) } catch {}
   })
-  configWindow.loadFile(path.join(__dirname, 'config', 'config.html'))
-  configWindow.on('closed', () => { configWindow = null })
+  store.set('captureHistory', history)
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('history:changed')
+  return item
+}
+
+function createMainWindow(route = 'home') {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show()
+    mainWindow.focus()
+    mainWindow.webContents.send('app:navigate', route)
+    return mainWindow
+  }
+  mainWindow = new BrowserWindow({
+    width: 1120,
+    height: 760,
+    minWidth: 880,
+    minHeight: 620,
+    frame: false,
+    title: 'Highlighter',
+    backgroundColor: '#f5f5f5',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  mainWindow.loadFile(path.join(__dirname, 'config', 'config.html'))
+  mainWindow.once('ready-to-show', () => mainWindow.show())
+  mainWindow.webContents.once('did-finish-load', () => mainWindow.webContents.send('app:navigate', route))
+  mainWindow.on('closed', () => { mainWindow = null })
+  return mainWindow
 }
 
 function createToolbarWindow() {
-  if (toolbarWindow && !toolbarWindow.isDestroyed()) return
-  // Match Cherry Studio: frameless, transparent, focusable:false on Win
+  if (toolbarWindow && !toolbarWindow.isDestroyed()) return toolbarWindow
   toolbarWindow = new BrowserWindow({
-    width: TOOLBAR_W, height: TOOLBAR_H,
-    frame: false, transparent: true,
-    alwaysOnTop: true, skipTaskbar: true,
+    width: TOOLBAR_W,
+    height: TOOLBAR_H,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
     focusable: !isWin,
-    show: false, resizable: false,
-    webPreferences: { preload: path.join(__dirname, 'preload-toolbar.js'), contextIsolation: true, nodeIntegration: false }
+    show: false,
+    resizable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-toolbar.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
   })
   toolbarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   toolbarWindow.setAlwaysOnTop(true, 'screen-saver')
   toolbarWindow.loadFile(path.join(__dirname, 'toolbar', 'toolbar.html'))
+  return toolbarWindow
 }
 
 function createActionWindow() {
-  var win = new BrowserWindow({
-    width: 550, height: 520, minWidth: 380, minHeight: 300,
-    title: '划词助手', autoHideMenuBar: true,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
+  const win = new BrowserWindow({
+    width: 550,
+    height: 520,
+    minWidth: 380,
+    minHeight: 300,
+    title: 'Highlighter',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
   })
   win.loadFile(path.join(__dirname, 'action', 'action.html'))
   win._isPinned = false
+  actionWindows.push(win)
   win.on('closed', () => {
-    if (win._isPinned) { pinnedCount--; win._isPinned = false }
+    const index = actionWindows.indexOf(win)
+    if (index >= 0) actionWindows.splice(index, 1)
+    if (win._isPinned) pinnedCount = Math.max(0, pinnedCount - 1)
     if (isProcessing && actionWindow === win) {
       if (currentStreamController) currentStreamController.cancelled = true
-      isProcessing = false; currentStreamController = null
+      isProcessing = false
+      currentStreamController = null
     }
     if (actionWindow === win) actionWindow = null
   })
   win.on('blur', () => {
-    if (!win._isPinned && win && !win.isDestroyed()) win.close()
+    if (!win._isPinned && !win.isDestroyed()) win.close()
   })
   actionWindow = win
   return win
 }
 
-// --- Selection Hook ---
+function createTrayIcon() {
+  if (tray) tray.destroy()
+  if (!getSettings().system.enableTray) return
+  let icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'))
+  if (!icon || icon.isEmpty()) icon = nativeImage.createEmpty()
+  tray = new Tray(icon.resize({ width: 24, height: 24 }))
+  tray.setToolTip('Highlighter')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '截图', accelerator: getSettings().shortcuts.screenshot || undefined, click: () => executeFunction('screenshot') },
+    { label: '截取全屏', click: () => executeFunction('screenshotFullScreen') },
+    { label: '截取焦点窗口', click: () => executeFunction('screenshotFocusedWindow') },
+    { label: '固定图片到屏幕', click: () => executeFunction('fixedContent') },
+    { label: '视频录制', click: () => executeFunction('videoRecord') },
+    { type: 'separator' },
+    { label: '截图历史', click: () => createMainWindow('history') },
+    { label: '显示主界面', click: () => createMainWindow('home') },
+    { type: 'separator' },
+    { label: '退出', click: () => app.quit() }
+  ]))
+  tray.on('click', () => executeFunction('screenshot'))
+  tray.on('double-click', () => createMainWindow('home'))
+}
+
 function initSelectionHook() {
   try {
     const SelectionHook = require('selection-hook')
@@ -112,43 +298,84 @@ function initSelectionHook() {
     selectionHook = new SelectionHook()
     selectionHook.on('text-selection', handleTextSelection)
     selectionHook.on('mouse-down', (data) => {
-      // Only hide if click is outside toolbar
-      if (toolbarWindow && toolbarWindow.isVisible()) {
-        const bounds = toolbarWindow.getBounds()
-        const mx = data.x, my = data.y
-        // Convert to logical pixels on Windows
-        let checkX = mx, checkY = my
-        if (isWin) {
-          const pt = screen.screenToDipPoint({ x: mx, y: my })
-          checkX = pt.x; checkY = pt.y
-        }
-        const inside = checkX >= bounds.x && checkX <= bounds.x + bounds.width &&
-                        checkY >= bounds.y && checkY <= bounds.y + bounds.height
-        if (!inside) hideToolbar()
-      }
+      if (!toolbarWindow || !toolbarWindow.isVisible()) return
+      const bounds = toolbarWindow.getBounds()
+      let point = { x: data.x, y: data.y }
+      if (isWin) point = screen.screenToDipPoint(point)
+      const inside = point.x >= bounds.x && point.x <= bounds.x + bounds.width && point.y >= bounds.y && point.y <= bounds.y + bounds.height
+      if (!inside) hideToolbar()
     })
-    selectionHook.on('key-down', () => hideToolbar())
-    selectionHook.on('mouse-wheel', () => hideToolbar())
-    selectionHook.on('error', (err) => log('Hook error:', err.message))
+    selectionHook.on('key-down', hideToolbar)
+    selectionHook.on('mouse-wheel', hideToolbar)
+    selectionHook.on('error', (error) => log('Selection hook error:', error.message))
     selectionHook.start({ debug: false, enableClipboard: true })
-    log('Selection hook started')
     return true
-  } catch (err) { log('Hook start failed:', err.message); return false }
+  } catch (error) {
+    log('Selection hook unavailable:', error.message)
+    return false
+  }
 }
 
 function shouldFilterApp(programName) {
-  if (!programName) return false
-  var name = programName.toLowerCase()
-  // Only filter our own windows
-  if (name.includes('划词助手') || name.includes('huacizhushou')) return true
-  return false
+  const value = String(programName || '').toLowerCase()
+  return value.includes('highlighter') || value.includes('划词助手') || value.includes('huacizhushou')
 }
 
-function showToolbar(x, y, text) {
+function validCoord(point) {
+  return point && point.x > -90000 && point.x < 90000 && point.y > -90000 && point.y < 90000
+}
+
+function getRefPointAndOrientation(data) {
+  const cursor = screen.getCursorScreenPoint()
+  let refX = cursor.x
+  let refY = cursor.y
+  let orientation = 'bottomMiddle'
+  const level = data.posLevel || 0
+  if (level === 1) {
+    if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y + 16 }
+  } else if (level === 2) {
+    if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y }
+    if (validCoord(data.startBottom) && validCoord(data.endBottom)) {
+      const delta = data.endBottom.y - data.startBottom.y
+      orientation = delta > 10 ? 'bottomLeft' : delta < -10 ? 'topRight' : 'bottomRight'
+    }
+  } else if (level > 2) {
+    if (validCoord(data.endBottom)) { refX = data.endBottom.x; refY = data.endBottom.y + 4 }
+    else if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y }
+    if (validCoord(data.startBottom) && validCoord(data.endBottom)) {
+      const delta = data.endBottom.y - data.startBottom.y
+      orientation = delta > 0 ? 'bottomLeft' : delta < 0 ? 'topRight' : 'bottomRight'
+    }
+  }
+  if (isWin) {
+    const point = screen.screenToDipPoint({ x: refX, y: refY })
+    refX = point.x
+    refY = point.y
+  }
+  return { refPoint: { x: refX, y: refY }, orientation }
+}
+
+function calculateToolbarPosition(refPoint, orientation) {
+  let x = refPoint.x - TOOLBAR_W / 2
+  let y = refPoint.y
+  if (orientation === 'topRight') { x = refPoint.x; y = refPoint.y - TOOLBAR_H }
+  if (orientation === 'bottomLeft') x = refPoint.x - TOOLBAR_W
+  if (orientation === 'bottomRight') x = refPoint.x
+  const workArea = screen.getDisplayNearestPoint(refPoint).workArea
+  x = Math.round(Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - TOOLBAR_W)))
+  y = Math.round(Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - TOOLBAR_H)))
+  return { x, y }
+}
+
+function handleTextSelection(data) {
+  if (isProcessing || !data?.text || shouldFilterApp(data.programName)) return
+  const text = data.text.trim()
+  if (!text || text.length > 10000) return
+  const result = getRefPointAndOrientation(data)
+  const position = calculateToolbarPosition(result.refPoint, result.orientation)
   if (!toolbarWindow || toolbarWindow.isDestroyed()) createToolbarWindow()
-  lastToolbarPos = { x, y }
-  log('showToolbar at', x, y, 'text:', text.substring(0, 30))
-  toolbarWindow.setPosition(Math.round(x), Math.round(y))
+  lastToolbarPos = position
+  toolbarWindow.setPosition(position.x, position.y)
   toolbarWindow.showInactive()
   toolbarWindow.webContents.send('selection:text', { text })
 }
@@ -157,215 +384,743 @@ function hideToolbar() {
   if (toolbarWindow && !toolbarWindow.isDestroyed()) toolbarWindow.hide()
 }
 
-// === Cherry Studio Positioning (exact match) ===
-
-function handleTextSelection(data) {
-  if (isProcessing) return
-  if (!data || !data.text) return
-  const text = data.text.trim()
-  if (!text || text.length > 5000) return
-  if (shouldFilterApp(data.programName)) return
-
-  const result = getRefPointAndOrientation(data)
-  if (!result) return
-  const pos = calculateToolbarPosition(result.refPoint, result.orientation)
-  showToolbar(pos.x, pos.y, text)
-}
-
-function getRefPointAndOrientation(data) {
-  const cursor = screen.getCursorScreenPoint()
-  let refX = cursor.x, refY = cursor.y
-  let orientation = 'bottomMiddle'
-  const pl = data.posLevel || 0
-
-  if (pl === 0 /* NONE */) {
-    orientation = 'bottomMiddle'
-  } else if (pl === 1 /* MOUSE_SINGLE */) {
-    if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y + 16 }
-    orientation = 'bottomMiddle'
-  } else if (pl === 2 /* MOUSE_DUAL */) {
-    if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y }
-    if (validCoord(data.startBottom) && validCoord(data.endBottom)) {
-      const d = data.endBottom.y - data.startBottom.y
-      if (d > 10) orientation = 'bottomLeft'
-      else if (d < -10) orientation = 'topRight'
-      else orientation = 'bottomRight'
-    }
-  } else /* SEL_FULL/DETAILED */ {
-    if (validCoord(data.endBottom)) { refX = data.endBottom.x; refY = data.endBottom.y + 4 }
-    else if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y }
-    if (validCoord(data.startBottom) && validCoord(data.endBottom)) {
-      const d = data.endBottom.y - data.startBottom.y
-      if (d > 0) orientation = 'bottomLeft'
-      else if (d < 0) orientation = 'topRight'
-      else orientation = 'bottomRight'
-    }
-  }
-
-  // Convert physical to logical pixels on Windows (like Cherry Studio does)
-  if (isWin) {
-    const pt = screen.screenToDipPoint({ x: refX, y: refY })
-    refX = pt.x; refY = pt.y
-  }
-
-  return { refPoint: { x: refX, y: refY }, orientation }
-}
-
-function validCoord(p) { return p && p.x > -90000 && p.x < 90000 && p.y > -90000 && p.y < 90000 }
-
-function calculateToolbarPosition(refPoint, orientation) {
-  const tw = TOOLBAR_W, th = TOOLBAR_H
-  let x, y
-
-  switch (orientation) {
-    case 'topLeft': x = refPoint.x - tw; y = refPoint.y - th; break
-    case 'topRight': x = refPoint.x; y = refPoint.y - th; break
-    case 'topMiddle': x = refPoint.x - tw / 2; y = refPoint.y - th; break
-    case 'bottomLeft': x = refPoint.x - tw; y = refPoint.y; break
-    case 'bottomRight': x = refPoint.x; y = refPoint.y; break
-    case 'bottomMiddle': x = refPoint.x - tw / 2; y = refPoint.y; break
-    default: x = refPoint.x - tw / 2; y = refPoint.y - th / 2
-  }
-
-  const display = screen.getDisplayNearestPoint(refPoint)
-  const { x: sx, y: sy, width: sw, height: sh } = display.workArea
-
-  const exceedsTop = y < sy
-  const exceedsBottom = y > sy + sh - th
-
-  x = Math.round(Math.max(sx, Math.min(x, sx + sw - tw)))
-  y = Math.round(Math.max(sy, Math.min(y, sy + sh - th)))
-
-  if (exceedsTop) y += 32
-  if (exceedsBottom) y -= 32
-
-  return { x, y }
-}
-
-// === Stream ===
 async function streamToWindow(win, action, text) {
-  const { createTranslateStream, createExplainStream } = require('./deepseek')
-  const apiKey = store.get('apiKey', '')
-  const isTranslate = action === 'translate'
-  log('Starting stream:', action, 'text length:', text.length)
-
+  const { createExplainStream, createTranslateStream } = require('./deepseek')
+  const apiKey = getSettings().apiKey
   try {
-    const stream = await (isTranslate ? createTranslateStream(apiKey, text) : createExplainStream(apiKey, text))
+    const stream = await (action === 'translate' ? createTranslateStream(apiKey, text) : createExplainStream(apiKey, text))
     for await (const chunk of stream) {
-      if (currentStreamController?.cancelled) return
-      const d = chunk.choices?.[0]?.delta
-      if (!isTranslate && d?.reasoning_content) win.webContents.send('stream:reasoning', { content: d.reasoning_content })
-      if (d?.content) win.webContents.send('stream:data', { content: d.content })
+      if (currentStreamController?.cancelled || win.isDestroyed()) return
+      const delta = chunk.choices?.[0]?.delta
+      if (delta?.reasoning_content) win.webContents.send('stream:reasoning', { content: delta.reasoning_content })
+      if (delta?.content) win.webContents.send('stream:data', { content: delta.content })
     }
-    win.webContents.send('stream:done')
-    log('Stream done')
-  } catch (err) {
-    log('Stream error:', err.message)
-    win.webContents.send('stream:error', { error: err.message || '请求失败' })
+    if (!win.isDestroyed()) win.webContents.send('stream:done')
+  } catch (error) {
+    if (!win.isDestroyed()) win.webContents.send('stream:error', { error: error.message || '请求失败' })
   }
 }
 
-// === IPC ===
-ipcMain.handle('config:get-api-key', () => store.get('apiKey', ''))
-ipcMain.handle('config:save-api-key', (_e, key) => { store.set('apiKey', key); return true })
-ipcMain.handle('config:test-connection', async (_e, key) => {
-  try { return await require('./deepseek').validateApiKey(key) } catch { return false }
-})
-ipcMain.handle('shell:open-external', (_e, url) => { shell.openExternal(url) })
-
-ipcMain.on('toolbar:action', (_e, { action, text }) => {
-  log('toolbar:action received:', action, 'text:', text ? text.substring(0, 30) : '(none)')
-  try {
-    if (isProcessing) { log('Already processing, ignoring'); return }
-    const apiKey = store.get('apiKey', '')
-    if (!apiKey) { log('No API key'); createConfigWindow(); hideToolbar(); return }
-
-    isProcessing = true
-    currentStreamController = { cancelled: false }
-    hideToolbar()
-
-    const win = createActionWindow()
-
-    // Position near where the toolbar was
-    if (lastToolbarPos) {
-      const display = screen.getDisplayNearestPoint(lastToolbarPos)
-      const { width: sw, height: sh, x: sx, y: sy } = display.workArea
-      const [ww, wh] = win.getSize()
-      let ax = lastToolbarPos.x - ww / 2
-      let ay = lastToolbarPos.y + 48
-      // Clamp to screen
-      if (ay + wh > sy + sh) ay = lastToolbarPos.y - wh - 12
-      ax = Math.max(sx, Math.min(ax, sx + sw - ww))
-      ay = Math.max(sy, Math.min(ay, sy + sh - wh))
-      win.setPosition(Math.round(ax), Math.round(ay))
+async function getDisplayCapture(display) {
+  const scaleFactor = display.scaleFactor || 1
+  if (isWin) {
+    try {
+      if (!nativeDisplayListPromise) nativeDisplayListPromise = screenshotDesktop.listDisplays()
+      const nativeDisplays = await nativeDisplayListPromise
+      const physicalBounds = screen.dipToScreenRect(null, display.bounds)
+      const nativeDisplay = nativeDisplays.find((item) => (
+        item.left === physicalBounds.x && item.top === physicalBounds.y &&
+        item.width === physicalBounds.width && item.height === physicalBounds.height
+      ))
+      if (nativeDisplay) {
+        const buffer = await screenshotDesktop({ format: 'png', screen: nativeDisplay.id })
+        const width = buffer.length >= 24 ? buffer.readUInt32BE(16) : 0
+        const height = buffer.length >= 24 ? buffer.readUInt32BE(20) : 0
+        if (width === physicalBounds.width && height === physicalBounds.height) {
+          return {
+            dataUrl: `data:image/png;base64,${buffer.toString('base64')}`,
+            sourceId: `native:${nativeDisplay.id}`,
+            scaleFactor
+          }
+        }
+        throw new Error(`原生抓屏尺寸异常：${width}x${height}`)
+      }
+    } catch (error) {
+      nativeDisplayListPromise = null
+      log('Native capture fallback:', error.message)
     }
+  }
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: {
+      width: Math.max(1, Math.round(display.bounds.width * scaleFactor)),
+      height: Math.max(1, Math.round(display.bounds.height * scaleFactor))
+    }
+  })
+  const source = sources.find((item) => String(item.display_id) === String(display.id)) || sources[0]
+  if (!source) throw new Error('无法读取屏幕画面')
+  return { dataUrl: source.thumbnail.toDataURL(), sourceId: source.id, scaleFactor }
+}
 
-    win.webContents.send('action:start', { type: action, text })
-    log('action:start sent, window created')
+async function createCaptureWindow(options = {}) {
+  if (currentCaptureWindow && !currentCaptureWindow.isDestroyed()) currentCaptureWindow.close()
+  const requestedBounds = options.windowBounds && {
+    x: Math.round(options.windowBounds.x),
+    y: Math.round(options.windowBounds.y),
+    width: Math.max(1, Math.round(options.windowBounds.width)),
+    height: Math.max(1, Math.round(options.windowBounds.height))
+  }
+  const display = options.display || (requestedBounds
+    ? screen.getDisplayMatching(requestedBounds)
+    : screen.getDisplayNearestPoint(screen.getCursorScreenPoint()))
+  const captureBounds = requestedBounds || display.bounds
+  const capturePromise = options.imageDataUrl || options.mode === 'canvas'
+    ? Promise.resolve({
+        dataUrl: options.imageDataUrl || '',
+        sourceId: '',
+        scaleFactor: Number(options.sourceScaleFactor) || display.scaleFactor || 1
+      })
+    : getDisplayCapture(display)
+  const captureWindow = new BrowserWindow({
+    x: captureBounds.x,
+    y: captureBounds.y,
+    width: Math.min(captureBounds.width, 800),
+    height: Math.min(captureBounds.height, 600),
+    frame: false,
+    transparent: options.mode === 'canvas',
+    backgroundColor: options.mode === 'canvas' ? '#00ffffff' : '#000000',
+    fullscreenable: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    opacity: 0,
+    resizable: false,
+    movable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-capture.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  })
+  currentCaptureWindow = captureWindow
+  captureWindow._editingPinWindow = options.editingPinWindow || null
+  captureWindow._captureVisible = false
+  captureWindow._captureInitSent = false
+  captureWindow.setAlwaysOnTop(true, 'screen-saver')
 
-    streamToWindow(win, action, text)
-    win.show()
+  // Moving the hidden HWND first switches it to the target monitor's DPI.
+  // Keeping opacity at zero prevents Windows from flashing the temporary size.
+  captureWindow.setPosition(display.bounds.x, display.bounds.y, false)
+  captureWindow.setBounds(captureBounds, false)
+  if (!requestedBounds) captureWindow.setFullScreen(true)
+  captureWindow.setResizable(false)
+
+  const loadPromise = captureWindow.loadFile(path.join(__dirname, 'capture', 'capture.html'))
+  captureWindow.on('closed', () => {
+    if (currentCaptureWindow === captureWindow) currentCaptureWindow = null
+    const pinWindow = captureWindow._pendingPinWindow || captureWindow._editingPinWindow
+    setImmediate(() => bringPinToFront(pinWindow))
+  })
+
+  try {
+    const [capture] = await Promise.all([capturePromise, loadPromise])
+    if (captureWindow.isDestroyed()) return null
+    captureWindow._captureInit = {
+      imageDataUrl: capture.dataUrl || '',
+      mode: options.mode || 'region',
+      autoAction: options.autoAction || '',
+      source: options.source || 'region',
+      displayBounds: display.bounds,
+      captureBounds,
+      scaleFactor: capture.scaleFactor,
+      editPin: !!options.editPin,
+      settings: getSettings()
+    }
+    captureWindow._captureInitSent = true
+    captureWindow.webContents.send('capture:init', captureWindow._captureInit)
+    setTimeout(() => revealCaptureWindow(captureWindow), 1200)
+    return captureWindow
+  } catch (error) {
+    if (!captureWindow.isDestroyed()) captureWindow.close()
+    throw error
+  }
+}
+
+function revealCaptureWindow(win) {
+  if (!win || win.isDestroyed() || win._captureVisible) return
+  win._captureVisible = true
+  win.show()
+  setImmediate(() => {
+    if (win.isDestroyed()) return
+    win.setOpacity(1)
     win.focus()
-    log('Window shown')
-  } catch (err) {
-    log('toolbar:action error:', err.message, err.stack)
-    isProcessing = false; currentStreamController = null
+  })
+}
+
+async function captureFocusedWindow() {
+  let title = ''
+  if (isWin) {
+    title = await new Promise((resolve) => {
+      const script = `$sig='[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);'; Add-Type -MemberDefinition $sig -Name Win32 -Namespace Native; $h=[Native.Win32]::GetForegroundWindow(); $b=New-Object System.Text.StringBuilder 1024; [void][Native.Win32]::GetWindowText($h,$b,$b.Capacity); $b.ToString()`
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 4000 }, (_error, stdout) => resolve(String(stdout || '').trim()))
+    })
+  }
+  const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 1920, height: 1080 }, fetchWindowIcons: true })
+  const source = sources.find((item) => title && (item.name === title || title.includes(item.name) || item.name.includes(title))) || sources.find((item) => !shouldFilterApp(item.name))
+  if (!source || source.thumbnail.isEmpty()) throw new Error('无法捕获焦点窗口')
+  return source.thumbnail.toDataURL()
+}
+
+async function saveDataUrl(dataUrl, options = {}) {
+  const settings = getSettings()
+  const preferredDirectory = options.directory || settings.screenshot.saveDirectory
+  let filePath
+  if (options.fast && preferredDirectory) {
+    ensureDirectory(preferredDirectory)
+    filePath = path.join(preferredDirectory, makeCaptureName())
+  } else {
+    const result = await dialog.showSaveDialog({
+      title: '保存截图',
+      defaultPath: path.join(preferredDirectory || app.getPath('pictures'), makeCaptureName()),
+      filters: [{ name: 'PNG 图片', extensions: ['png'] }]
+    })
+    if (result.canceled || !result.filePath) return null
+    filePath = result.filePath
+  }
+  fs.writeFileSync(filePath, dataUrlToBuffer(dataUrl))
+  return filePath
+}
+
+function createPinWindow(dataUrl, meta = {}) {
+  const image = nativeImage.createFromDataURL(dataUrl)
+  const size = image.getSize()
+  const selectionBounds = meta.selectionBounds && {
+    x: Math.round(meta.selectionBounds.x),
+    y: Math.round(meta.selectionBounds.y),
+    width: Math.max(1, Math.round(meta.selectionBounds.width)),
+    height: Math.max(1, Math.round(meta.selectionBounds.height))
+  }
+  const display = selectionBounds
+    ? screen.getDisplayMatching(selectionBounds)
+    : screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const maxWidth = Math.round(display.workArea.width * 0.55)
+  const maxHeight = Math.round(display.workArea.height * 0.55)
+  const sourceScaleFactor = Math.max(0.25, Number(meta.scaleFactor) || display.scaleFactor || 1)
+  const baseWidth = selectionBounds?.width || Math.max(1, size.width / sourceScaleFactor)
+  const baseHeight = selectionBounds?.height || Math.max(1, size.height / sourceScaleFactor)
+  const zoom = selectionBounds ? 1 : Math.min(1, maxWidth / baseWidth, maxHeight / baseHeight)
+  const width = selectionBounds?.width || Math.max(1, Math.round(baseWidth * zoom))
+  const height = selectionBounds?.height || Math.max(1, Math.round(baseHeight * zoom))
+  const cursor = screen.getCursorScreenPoint()
+  const x = selectionBounds?.x ?? Math.round(Math.min(display.workArea.x + display.workArea.width - width, Math.max(display.workArea.x, cursor.x - width / 2)))
+  const y = selectionBounds?.y ?? Math.round(Math.min(display.workArea.y + display.workArea.height - height, Math.max(display.workArea.y, cursor.y - 30)))
+  const win = new BrowserWindow({
+    width: Math.min(width, 200),
+    height: Math.min(height, 160),
+    x: display.bounds.x,
+    y: display.bounds.y,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    opacity: 0,
+    resizable: false,
+    useContentSize: true,
+    hasShadow: true,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-pin.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  win._pinData = {
+    dataUrl,
+    meta,
+    opacity: getSettings().fixedContent.opacity,
+    zoomWithMouse: getSettings().fixedContent.zoomWithMouse !== false,
+    clickThrough: false,
+    baseWidth,
+    baseHeight,
+    zoom
+  }
+  win._pinVisible = false
+  // Switch the HWND to the target monitor before applying the DIP content size.
+  win.setPosition(display.bounds.x, display.bounds.y, false)
+  win.setContentSize(width, height, false)
+  win.setPosition(x, y, false)
+  win.setBounds({ x, y, width, height }, false)
+  pinWindows.add(win)
+  pinnedCount++
+  win.loadFile(path.join(__dirname, 'pin', 'pin.html'))
+  win.on('closed', () => {
+    pinWindows.delete(win)
+    pinnedCount = Math.max(0, pinnedCount - 1)
+  })
+  return win
+}
+
+function updatePinWindow(win, dataUrl, meta = {}) {
+  if (!win || win.isDestroyed()) return null
+  const image = nativeImage.createFromDataURL(dataUrl)
+  const size = image.getSize()
+  const currentBounds = win.getBounds()
+  const targetBounds = meta.selectionBounds
+    ? {
+        x: Math.round(meta.selectionBounds.x),
+        y: Math.round(meta.selectionBounds.y),
+        width: Math.max(1, Math.round(meta.selectionBounds.width)),
+        height: Math.max(1, Math.round(meta.selectionBounds.height))
+      }
+    : currentBounds
+  const scaleFactor = Math.max(0.25, Number(meta.scaleFactor) || size.width / targetBounds.width || 1)
+  win._pinData = {
+    ...win._pinData,
+    dataUrl,
+    meta,
+    baseWidth: Math.max(1, size.width / scaleFactor),
+    baseHeight: Math.max(1, size.height / scaleFactor),
+    zoom: 1
+  }
+  win.setBounds(targetBounds, false)
+  win.setBounds(targetBounds, false)
+  win.webContents.send('pin:update', win._pinData)
+  return win
+}
+
+function revealPinWindow(win) {
+  if (!win || win.isDestroyed() || win._pinVisible) return
+  win._pinVisible = true
+  win.setAlwaysOnTop(true, 'screen-saver')
+  win.show()
+  setImmediate(() => {
+    if (win.isDestroyed()) return
+    win.setOpacity(Number(win._pinData?.opacity) || 1)
+    win.moveTop()
+    win.focus()
+  })
+}
+
+function bringPinToFront(win) {
+  if (!win || win.isDestroyed()) return
+  win.setAlwaysOnTop(true, 'screen-saver')
+  win.setOpacity(Number(win._pinData?.opacity) || 1)
+  win.show()
+  win.moveTop()
+  win.focus()
+}
+
+async function createRecordWindow() {
+  if (recordWindow && !recordWindow.isDestroyed()) {
+    recordWindow.focus()
+    return recordWindow
+  }
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const capture = await getDisplayCapture(display)
+  recordWindow = new BrowserWindow({
+    width: 440,
+    height: 86,
+    x: Math.round(display.workArea.x + (display.workArea.width - 440) / 2),
+    y: Math.round(display.workArea.y + display.workArea.height - 120),
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-record.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  recordWindow._recordInit = { sourceId: capture.sourceId, settings: getSettings().record }
+  recordWindow.setContentProtection(true)
+  recordWindow.loadFile(path.join(__dirname, 'record', 'record.html'))
+  recordWindow.on('closed', () => { recordWindow = null })
+  return recordWindow
+}
+
+function togglePinVisibility() {
+  const shouldShow = [...pinWindows].some((win) => !win.isDestroyed() && !win.isVisible())
+  pinWindows.forEach((win) => {
+    if (win.isDestroyed()) return
+    if (shouldShow) win.showInactive()
+    else win.hide()
+  })
+}
+
+async function executeFunction(name, payload = {}) {
+  switch (name) {
+    case 'screenshot': await createCaptureWindow({ mode: 'region', source: 'region' }); return true
+    case 'screenshotDelay': {
+      const seconds = Math.max(0, Number(payload.seconds ?? 3))
+      setTimeout(() => createCaptureWindow({ mode: 'region', source: 'delay' }).catch((error) => log(error.message)), seconds * 1000)
+      return { scheduled: true, seconds }
+    }
+    case 'screenshotFixed': await createCaptureWindow({ mode: 'region', autoAction: 'pin', source: 'fixed' }); return true
+    case 'screenshotOcr': await createCaptureWindow({ mode: 'region', autoAction: 'ocr', source: 'ocr' }); return true
+    case 'screenshotOcrTranslate': await createCaptureWindow({ mode: 'region', autoAction: 'translate', source: 'ocr-translate' }); return true
+    case 'screenshotCopy': await createCaptureWindow({ mode: 'region', autoAction: 'copy', source: 'copy' }); return true
+    case 'screenshotFullScreen': await createCaptureWindow({ mode: 'fullscreen', autoAction: payload.save ? 'save' : 'copy', source: 'fullscreen' }); return true
+    case 'screenshotFocusedWindow': {
+      const dataUrl = await captureFocusedWindow()
+      clipboard.writeImage(nativeImage.createFromDataURL(dataUrl))
+      persistHistory(dataUrl, { action: 'copy', source: 'focused-window' })
+      return true
+    }
+    case 'fixedContent': {
+      const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }] })
+      if (result.canceled || !result.filePaths[0]) return false
+      const image = nativeImage.createFromPath(result.filePaths[0])
+      createPinWindow(image.toDataURL(), { source: 'file' })
+      return true
+    }
+    case 'videoRecord': await createRecordWindow(); return true
+    case 'fullScreenDraw': await createCaptureWindow({ mode: 'canvas', source: 'canvas' }); return true
+    case 'toggleFixedContentVisibility': togglePinVisibility(); return true
+    case 'showOrHideMainWindow': {
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) mainWindow.hide()
+      else createMainWindow('home')
+      return true
+    }
+    case 'openImageSaveFolder': {
+      const directory = getSettings().screenshot.saveDirectory || app.getPath('pictures')
+      await shell.openPath(directory)
+      return true
+    }
+    case 'openCaptureHistory': createMainWindow('history'); return true
+    case 'translation': createMainWindow('translation'); return true
+    case 'chat': createMainWindow('chat'); return true
+    default: throw new Error(`未知功能：${name}`)
+  }
+}
+
+function registerShortcuts() {
+  globalShortcut.unregisterAll()
+  const shortcuts = getSettings().shortcuts
+  for (const [name, accelerator] of Object.entries(shortcuts)) {
+    if (!accelerator) continue
+    try {
+      const registered = globalShortcut.register(accelerator, () => executeFunction(name).catch((error) => log('Shortcut error:', name, error.message)))
+      if (!registered) log('Shortcut unavailable:', accelerator)
+    } catch (error) {
+      log('Shortcut registration failed:', accelerator, error.message)
+    }
+  }
+}
+
+ipcMain.handle('settings:get', () => getSettings())
+ipcMain.handle('settings:update', (_event, patch) => {
+  const settings = mergeDeep(getSettings(), patch || {})
+  store.set('settings', settings)
+  if (patch?.shortcuts) registerShortcuts()
+  if (patch?.system?.autoStart !== undefined) app.setLoginItemSettings({ openAtLogin: !!settings.system.autoStart })
+  if (patch?.system?.enableTray !== undefined) createTrayIcon()
+  return settings
+})
+ipcMain.handle('settings:reset', () => {
+  store.set('settings', DEFAULT_SETTINGS)
+  registerShortcuts()
+  return getSettings()
+})
+ipcMain.handle('config:get-api-key', () => getSettings().apiKey)
+ipcMain.handle('config:save-api-key', (_event, apiKey) => {
+  store.set('settings', mergeDeep(getSettings(), { apiKey }))
+  return true
+})
+ipcMain.handle('config:test-connection', async (_event, apiKey) => require('./deepseek').validateApiKey(apiKey))
+ipcMain.handle('shell:open-external', (_event, url) => shell.openExternal(url))
+ipcMain.handle('app:execute-function', (_event, { name, payload }) => executeFunction(name, payload))
+ipcMain.handle('app:get-info', () => ({ version: app.getVersion(), platform: process.platform, dataDirectory: app.getPath('userData') }))
+ipcMain.handle('app:get-display-diagnostics', async () => {
+  const displays = screen.getAllDisplays().map((display) => ({
+    id: display.id,
+    label: display.label,
+    bounds: display.bounds,
+    workArea: display.workArea,
+    size: display.size,
+    scaleFactor: display.scaleFactor,
+    rotation: display.rotation,
+    internal: display.internal,
+    physicalBounds: isWin ? screen.dipToScreenRect(null, display.bounds) : display.bounds
+  }))
+  const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 4096, height: 4096 } })
+  return {
+    cursor: screen.getCursorScreenPoint(),
+    displays,
+    sources: sources.map((source) => ({ id: source.id, displayId: source.display_id, name: source.name, thumbnailSize: source.thumbnail.getSize() }))
   }
 })
+ipcMain.handle('dialog:choose-directory', async () => {
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+  return result.canceled ? '' : result.filePaths[0]
+})
+ipcMain.handle('app:open-data-directory', () => shell.openPath(app.getPath('userData')))
+ipcMain.handle('app:open-save-directory', () => shell.openPath(getSettings().screenshot.saveDirectory || app.getPath('pictures')))
+ipcMain.handle('ai:complete', async (_event, { messages, options }) => require('./deepseek').completeChat(getSettings().apiKey, messages, { ...getSettings().ai, ...(options || {}) }))
+ipcMain.handle('ai:translate', async (_event, { text, sourceLanguage, targetLanguage }) => require('./deepseek').translateText(getSettings().apiKey, text, sourceLanguage, targetLanguage || getSettings().ai.targetLanguage))
 
+ipcMain.handle('history:list', () => store.get('captureHistory', []).filter((item) => fs.existsSync(item.filePath)).map((item) => {
+  const image = nativeImage.createFromPath(item.filePath)
+  const size = image.getSize()
+  const width = Math.min(360, size.width || 360)
+  const thumbnail = image.resize({ width, quality: 'good' }).toDataURL()
+  return { ...item, thumbnail }
+}))
+ipcMain.handle('history:delete', (_event, id) => {
+  const history = store.get('captureHistory', [])
+  const item = history.find((entry) => entry.id === id)
+  if (item) { try { fs.unlinkSync(item.filePath) } catch {} }
+  store.set('captureHistory', history.filter((entry) => entry.id !== id))
+  return true
+})
+ipcMain.handle('history:clear', () => {
+  store.get('captureHistory', []).forEach((item) => { try { fs.unlinkSync(item.filePath) } catch {} })
+  store.set('captureHistory', [])
+  return true
+})
+ipcMain.handle('history:copy', (_event, id) => {
+  const item = store.get('captureHistory', []).find((entry) => entry.id === id)
+  if (!item) return false
+  clipboard.writeImage(nativeImage.createFromPath(item.filePath))
+  return true
+})
+ipcMain.handle('history:edit', async (_event, id) => {
+  const item = store.get('captureHistory', []).find((entry) => entry.id === id)
+  if (!item || !fs.existsSync(item.filePath)) return false
+  await createCaptureWindow({ imageDataUrl: fileToDataUrl(item.filePath), mode: 'image', source: 'history' })
+  return true
+})
+ipcMain.handle('history:reveal', (_event, id) => {
+  const item = store.get('captureHistory', []).find((entry) => entry.id === id)
+  if (item) shell.showItemInFolder(item.filePath)
+  return !!item
+})
+
+ipcMain.on('capture:ready', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win?._captureInit && !win._captureInitSent) {
+    win._captureInitSent = true
+    event.sender.send('capture:init', win._captureInit)
+  }
+})
+ipcMain.on('capture:render-ready', (event) => revealCaptureWindow(BrowserWindow.fromWebContents(event.sender)))
+ipcMain.on('capture:close', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  win?.close()
+})
+ipcMain.handle('capture:copy', (_event, { dataUrl, meta }) => {
+  clipboard.writeImage(nativeImage.createFromDataURL(dataUrl))
+  const item = persistHistory(dataUrl, { ...meta, action: 'copy' })
+  if (getSettings().screenshot.autoSaveOnCopy && getSettings().screenshot.saveDirectory) saveDataUrl(dataUrl, { fast: true }).catch((error) => log(error.message))
+  return item
+})
+ipcMain.handle('capture:save', async (_event, { dataUrl, meta, fast }) => {
+  const filePath = await saveDataUrl(dataUrl, { fast: !!fast })
+  if (filePath) persistHistory(dataUrl, { ...meta, action: 'save' })
+  return filePath
+})
+ipcMain.handle('capture:pin', (event, { dataUrl, meta }) => {
+  const captureWindow = BrowserWindow.fromWebContents(event.sender)
+  const editingPinWindow = captureWindow?._editingPinWindow
+  if (!editingPinWindow && pinnedCount >= MAX_PINNED) throw new Error(`最多固定 ${MAX_PINNED} 张图片`)
+  const pinWindow = editingPinWindow
+    ? updatePinWindow(editingPinWindow, dataUrl, meta)
+    : createPinWindow(dataUrl, meta)
+  if (captureWindow) {
+    captureWindow._pendingPinWindow = pinWindow
+    captureWindow._editingPinWindow = null
+  }
+  return persistHistory(dataUrl, { ...meta, action: 'pin' })
+})
+ipcMain.handle('capture:record-history', (_event, { dataUrl, meta }) => persistHistory(dataUrl, meta))
+ipcMain.handle('capture:ocr', async (_event, dataUrl) => {
+  if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
+  const { recognize } = require('tesseract.js')
+  const result = await recognize(dataUrlToBuffer(dataUrl), getSettings().screenshot.ocrLanguage || 'chi_sim+eng', { logger: (message) => log('OCR', message.status, message.progress || '') })
+  return result.data.text.trim()
+})
+ipcMain.handle('capture:translate', async (_event, dataUrl) => {
+  const { recognize } = require('tesseract.js')
+  const result = await recognize(dataUrlToBuffer(dataUrl), getSettings().screenshot.ocrLanguage || 'chi_sim+eng')
+  const text = result.data.text.trim()
+  const translation = await require('./deepseek').translateText(getSettings().apiKey, text, 'auto', getSettings().ai.targetLanguage)
+  return { text, translation }
+})
+
+ipcMain.on('pin:ready', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win?._pinData) event.sender.send('pin:init', win._pinData)
+})
+ipcMain.on('pin:render-ready', (event) => revealPinWindow(BrowserWindow.fromWebContents(event.sender)))
+ipcMain.on('pin:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
+ipcMain.on('pin:copy', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win?._pinData) clipboard.writeImage(nativeImage.createFromDataURL(win._pinData.dataUrl))
+})
+ipcMain.on('pin:save', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win?._pinData) await saveDataUrl(win._pinData.dataUrl)
+})
+ipcMain.on('pin:context-menu', (event, imageBounds = {}) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win?._pinData) return
+  const menu = Menu.buildFromTemplate([
+    {
+      label: '重新标注',
+      click: async () => {
+        if (win.isDestroyed()) return
+        const windowBounds = win.getBounds()
+        const editBounds = {
+          x: Math.round(windowBounds.x + (Number(imageBounds.x) || 0)),
+          y: Math.round(windowBounds.y + (Number(imageBounds.y) || 0)),
+          width: Math.max(1, Math.round(Number(imageBounds.width) || windowBounds.width)),
+          height: Math.max(1, Math.round(Number(imageBounds.height) || windowBounds.height))
+        }
+        const imageSize = nativeImage.createFromDataURL(win._pinData.dataUrl).getSize()
+        const sourceScaleFactor = Math.max(0.25, imageSize.width / editBounds.width)
+        win.hide()
+        try {
+          const captureWindow = await createCaptureWindow({
+            imageDataUrl: win._pinData.dataUrl,
+            mode: 'image',
+            source: 'pin-reannotate',
+            windowBounds: editBounds,
+            sourceScaleFactor,
+            editPin: true,
+            editingPinWindow: win
+          })
+          if (!captureWindow) bringPinToFront(win)
+        } catch (error) {
+          log('Reannotate pin failed:', error.message)
+          bringPinToFront(win)
+        }
+      }
+    },
+    { type: 'separator' },
+    { label: '复制', click: () => clipboard.writeImage(nativeImage.createFromDataURL(win._pinData.dataUrl)) },
+    { label: '保存', click: () => saveDataUrl(win._pinData.dataUrl).catch((error) => log(error.message)) },
+    { type: 'separator' },
+    { label: '关闭', click: () => { if (!win.isDestroyed()) win.close() } }
+  ])
+  menu.popup({ window: win })
+})
+ipcMain.on('pin:set-opacity', (event, opacity) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win) return
+  const nextOpacity = Math.max(0.2, Math.min(1, Number(opacity) || 1))
+  if (win._pinData) win._pinData.opacity = nextOpacity
+  win.setOpacity(nextOpacity)
+})
+ipcMain.on('pin:resize', (event, { factor, anchor }) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win || !win._pinData?.zoomWithMouse) return
+  const bounds = win.getBounds()
+  const data = win._pinData
+  const currentZoom = Number(data.zoom) || 1
+  const nextZoom = Math.max(0.2, Math.min(3, currentZoom * (Number(factor) || 1)))
+  if (Math.abs(nextZoom - currentZoom) < 0.001) return
+  const width = Math.max(1, Math.round(data.baseWidth * nextZoom))
+  const height = Math.max(1, Math.round(data.baseHeight * nextZoom))
+  const anchorX = Math.max(0, Math.min(bounds.width, Number(anchor?.x) || bounds.width / 2))
+  const anchorY = Math.max(0, Math.min(bounds.height, Number(anchor?.y) || bounds.height / 2))
+  const x = Math.round(bounds.x + anchorX - width * (anchorX / Math.max(1, bounds.width)))
+  const y = Math.round(bounds.y + anchorY - height * (anchorY / Math.max(1, bounds.height)))
+  data.zoom = nextZoom
+  win.setBounds({ x, y, width, height }, false)
+  win.webContents.send('pin:zoom-changed', Math.round(nextZoom * 100))
+})
+ipcMain.on('pin:move-start', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win) return
+  win._pinMove = { point: screen.getCursorScreenPoint(), bounds: win.getBounds() }
+})
+ipcMain.on('pin:move', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win?._pinMove) return
+  const { point: start, bounds } = win._pinMove
+  const point = screen.getCursorScreenPoint()
+  win.setBounds({
+    x: Math.round(bounds.x + point.x - start.x),
+    y: Math.round(bounds.y + point.y - start.y),
+    width: bounds.width,
+    height: bounds.height
+  }, false)
+})
+ipcMain.on('pin:move-end', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win) win._pinMove = null
+})
+ipcMain.on('pin:toggle-click-through', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win) return
+  win._pinData.clickThrough = !win._pinData.clickThrough
+  win.setIgnoreMouseEvents(win._pinData.clickThrough, { forward: true })
+})
+
+ipcMain.on('record:ready', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win?._recordInit) event.sender.send('record:init', win._recordInit)
+})
+ipcMain.handle('record:save', async (_event, { arrayBuffer, mimeType }) => {
+  const extension = String(mimeType).includes('webm') ? 'webm' : 'mp4'
+  const settings = getSettings()
+  const directory = settings.record.saveDirectory || app.getPath('videos')
+  const result = await dialog.showSaveDialog({
+    title: '保存录屏',
+    defaultPath: path.join(directory, makeCaptureName('Highlighter_Video').replace('.png', `.${extension}`)),
+    filters: [{ name: '视频', extensions: [extension] }]
+  })
+  if (result.canceled || !result.filePath) return ''
+  fs.writeFileSync(result.filePath, Buffer.from(arrayBuffer))
+  return result.filePath
+})
+ipcMain.on('record:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
+
+ipcMain.on('toolbar:action', (_event, { action, text }) => {
+  if (isProcessing || !text) return
+  if (!getSettings().apiKey) { createMainWindow('settings-function'); hideToolbar(); return }
+  isProcessing = true
+  currentStreamController = { cancelled: false }
+  hideToolbar()
+  const win = createActionWindow()
+  if (lastToolbarPos) {
+    const workArea = screen.getDisplayNearestPoint(lastToolbarPos).workArea
+    const [width, height] = win.getSize()
+    const x = Math.round(Math.max(workArea.x, Math.min(lastToolbarPos.x - width / 2, workArea.x + workArea.width - width)))
+    let y = lastToolbarPos.y + 48
+    if (y + height > workArea.y + workArea.height) y = lastToolbarPos.y - height - 12
+    win.setPosition(x, Math.round(Math.max(workArea.y, y)))
+  }
+  win.webContents.once('did-finish-load', () => {
+    win.webContents.send('action:start', { type: action, text })
+    streamToWindow(win, action, text)
+  })
+  win.show()
+  win.focus()
+})
 ipcMain.on('toolbar:close', hideToolbar)
 ipcMain.on('window:toggle-pin', (event, shouldPin) => {
-  var win = BrowserWindow.fromWebContents(event.sender)
+  const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
-  if (shouldPin) {
-    if (pinnedCount >= MAX_PINNED) {
-      event.sender.send('window:pin-denied', { max: MAX_PINNED })
-      return
-    }
-    if (!win._isPinned) {
-      win._isPinned = true
-      pinnedCount++
-      win.setAlwaysOnTop(true, 'floating')
-    }
-  } else {
-    if (win._isPinned) {
-      win._isPinned = false
-      pinnedCount--
-      win.setAlwaysOnTop(false)
-    }
-  }
-})
-ipcMain.on('debug:text-received', (_e, data) => {
-  log('DEBUG: toolbar received text, length:', data.len)
+  if (shouldPin && pinnedCount >= MAX_PINNED) return event.sender.send('window:pin-denied', { max: MAX_PINNED })
+  if (shouldPin && !win._isPinned) { win._isPinned = true; pinnedCount++; win.setAlwaysOnTop(true, 'floating') }
+  if (!shouldPin && win._isPinned) { win._isPinned = false; pinnedCount = Math.max(0, pinnedCount - 1); win.setAlwaysOnTop(false) }
 })
 ipcMain.on('stream:cancel', () => {
   if (currentStreamController) currentStreamController.cancelled = true
-  isProcessing = false; currentStreamController = null
+  isProcessing = false
+  currentStreamController = null
 })
-ipcMain.on('stream:finish', () => {
-  isProcessing = false; currentStreamController = null
+ipcMain.on('stream:finish', () => { isProcessing = false; currentStreamController = null })
+ipcMain.on('config:start-hook', (_event, apiKey) => {
+  store.set('settings', mergeDeep(getSettings(), { apiKey }))
+  initSelectionHook()
 })
-ipcMain.on('config:start-hook', (_e, key) => {
-  store.set('apiKey', key)
-  if (!selectionHook || !selectionHook.isRunning()) initSelectionHook()
-})
+ipcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
+ipcMain.on('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.hide())
+ipcMain.on('debug:text-received', () => {})
 
-// === App ===
-app.whenReady().then(() => {
-  log('App ready')
-  createTrayIcon()
-  createToolbarWindow()
-  createConfigWindow()
-  const apiKey = store.get('apiKey', '')
-  if (apiKey) {
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) app.quit()
+else {
+  app.on('second-instance', () => createMainWindow('home'))
+  app.whenReady().then(() => {
+    createTrayIcon()
+    createToolbarWindow()
+    createMainWindow('home')
+    registerShortcuts()
     initSelectionHook()
-    if (configWindow && !configWindow.isDestroyed()) configWindow.close()
-  }
-})
-
-app.on('window-all-closed', () => {})
-app.on('activate', createConfigWindow)
-app.on('before-quit', () => {
-  if (tray) { tray.destroy(); tray = null }
-  if (selectionHook) { selectionHook.cleanup(); selectionHook = null }
-})
+    if (isWin) screenshotDesktop.listDisplays().then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) }).catch(() => {})
+    app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
+  })
+  app.on('activate', () => createMainWindow('home'))
+  app.on('window-all-closed', () => {})
+  app.on('will-quit', () => globalShortcut.unregisterAll())
+  app.on('before-quit', () => {
+    if (selectionHook) { try { selectionHook.cleanup() } catch {}; selectionHook = null }
+    if (tray) { tray.destroy(); tray = null }
+  })
+}

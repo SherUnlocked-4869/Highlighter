@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Highlighter 截图</title>
+  <link rel="stylesheet" href="capture.css">
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="tip">拖动选择区域 · 单击窗口区域快速框选 · Esc 退出</div>
+  <div id="sizeBadge"></div>
+  <div id="toolbar" class="toolbar hidden">
+    <div class="tool-group">
+      <button data-tool="select" class="active" title="选择/调整">↖</button>
+      <button data-tool="rect" title="矩形">□</button>
+      <button data-tool="ellipse" title="椭圆">○</button>
+      <button data-tool="arrow" title="箭头">↗</button>
+      <button data-tool="line" title="直线">╱</button>
+      <button data-tool="pen" title="画笔">✎</button>
+      <button data-tool="highlight" title="高亮">▰</button>
+      <button data-tool="blur" title="马赛克">▦</button>
+      <button data-tool="text" title="文字">T</button>
+      <button data-tool="serial" title="序号">①</button>
+    </div>
+    <div class="divider"></div>
+    <label class="color-wrap" title="颜色"><input id="color" type="color" value="#ff3b30"><span></span></label>
+    <select id="lineWidth" title="粗细"><option value="2">细</option><option value="4" selected>中</option><option value="8">粗</option><option value="14">特粗</option></select>
+    <div class="divider"></div>
+    <button id="undo" title="撤销 Ctrl+Z">↶</button>
+    <button id="redo" title="重做 Ctrl+Y">↷</button>
+    <div class="divider"></div>
+    <button id="qr" title="二维码识别">⌗</button>
+    <button id="ocr" title="文本识别">OCR</button>
+    <button id="translate" title="识别并翻译">译</button>
+    <button id="pin" title="固定到屏幕">📌</button>
+    <button id="save" title="保存 Ctrl+S">💾</button>
+    <button id="copy" class="primary" title="复制 Enter">✓</button>
+    <button id="close" title="取消 Esc">×</button>
+  </div>
+  <div id="resultPanel" class="result-panel hidden">
+    <div class="result-head"><strong id="resultTitle">识别结果</strong><button id="resultClose">×</button></div>
+    <div id="resultSource" class="result-source hidden"></div>
+    <textarea id="resultText" readonly></textarea>
+    <div class="result-actions"><button id="resultCopy">复制文本</button><button id="resultDone" class="primary">完成</button></div>
+  </div>
+  <div id="loading" class="loading hidden"><span></span><b>处理中…</b></div>
+  <script src="../node_modules/jsqr/dist/jsQR.js"></script>
+  <script src="capture.js"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<style>
+*{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;user-select:none}body{border-radius:7px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.3),0 6px 28px rgba(0,0,0,.3)}#image{display:block;width:100vw;height:auto;object-fit:contain;border-radius:6px;cursor:grab;touch-action:none}body.dragging #image{cursor:grabbing}.controls{position:fixed;top:7px;right:7px;display:flex;gap:4px;padding:4px;border-radius:7px;background:rgba(20,20,22,.76);opacity:0;transition:.18s;backdrop-filter:blur(10px)}body:hover .controls{opacity:1}.controls button{width:28px;height:25px;border:0;border-radius:5px;color:#fff;background:transparent;cursor:pointer}.controls button:hover{background:rgba(255,255,255,.18)}.opacity{position:fixed;left:8px;bottom:8px;width:110px;padding:5px 8px;border-radius:7px;background:rgba(20,20,22,.72);opacity:0;transition:.18s}body:hover .opacity{opacity:1}.opacity input{width:100%}#zoomBadge{position:fixed;left:50%;top:10px;transform:translateX(-50%);padding:4px 8px;border-radius:5px;color:#fff;background:rgba(20,20,22,.76);font:12px/1.2 Consolas,monospace;opacity:0;pointer-events:none;transition:opacity .15s}#zoomBadge.show{opacity:1}
+</style>
+</head>
+<body>
+<img id="image" draggable="false">
+<div class="controls"><button id="copy" title="复制">⧉</button><button id="save" title="保存">💾</button><button id="close" title="关闭">×</button></div>
+<label class="opacity" title="透明度"><input id="opacity" type="range" min="20" max="100" value="100"></label>
+<div id="zoomBadge">100%</div>
+<script>
+const image=document.getElementById('image');const zoomBadge=document.getElementById('zoomBadge');let settings={};let pressed=false;let moving=false;let pointerId=null;let pressPoint=null;let moveFrame=0;let zoomTimer=0;
+function applyPinData(data,initial=false){settings=data;document.getElementById('opacity').value=Math.round((data.opacity||1)*100);image.onload=initial?()=>window.pinAPI.renderReady():null;image.src=data.dataUrl}
+window.pinAPI.onInit(data=>applyPinData(data,true));window.pinAPI.onUpdate(data=>applyPinData(data))
+document.getElementById('copy').onclick=()=>window.pinAPI.copy();document.getElementById('save').onclick=()=>window.pinAPI.save();document.getElementById('close').onclick=()=>window.pinAPI.close();document.getElementById('opacity').oninput=e=>window.pinAPI.setOpacity(Number(e.target.value)/100)
+addEventListener('contextmenu',e=>{e.preventDefault();const rect=image.getBoundingClientRect();window.pinAPI.contextMenu({x:rect.x,y:rect.y,width:rect.width,height:rect.height})})
+image.addEventListener('pointerdown',e=>{if(e.button!==0)return;pressed=true;moving=false;pointerId=e.pointerId;pressPoint={x:e.clientX,y:e.clientY};image.setPointerCapture(pointerId)})
+image.addEventListener('pointermove',e=>{if(!pressed||e.pointerId!==pointerId)return;if(!moving&&Math.hypot(e.clientX-pressPoint.x,e.clientY-pressPoint.y)>6){moving=true;document.body.classList.add('dragging');window.pinAPI.beginMove()}if(moving&&!moveFrame)moveFrame=requestAnimationFrame(()=>{moveFrame=0;window.pinAPI.move()})})
+function finishMove(e){if(!pressed||e.pointerId!==pointerId)return;pressed=false;if(moving)window.pinAPI.endMove();moving=false;document.body.classList.remove('dragging');try{image.releasePointerCapture(pointerId)}catch{}pointerId=null;pressPoint=null}
+image.addEventListener('pointerup',finishMove);image.addEventListener('pointercancel',finishMove)
+image.addEventListener('dblclick',e=>{e.preventDefault();window.pinAPI.close()})
+addEventListener('wheel',e=>{if(!settings.zoomWithMouse||e.target.closest('.controls,.opacity'))return;e.preventDefault();window.pinAPI.resize(e.deltaY<0?1.1:1/1.1,{x:e.clientX,y:e.clientY})},{passive:false})
+window.pinAPI.onZoomChanged(zoom=>{zoomBadge.textContent=`${zoom}%`;zoomBadge.classList.add('show');clearTimeout(zoomTimer);zoomTimer=setTimeout(()=>zoomBadge.classList.remove('show'),550)})
+addEventListener('keydown',e=>{if(e.key==='Escape')window.pinAPI.close();if(e.ctrlKey&&e.key.toLowerCase()==='c')window.pinAPI.copy()})
+window.pinAPI.ready()
+</script>
+</body>
+</html>
