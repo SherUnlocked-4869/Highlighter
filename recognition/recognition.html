@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>识别结果</title>
+  <link rel="stylesheet" href="recognition.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><h1 id="title">识别结果</h1><p id="summary"></p></div>
+    <button id="close" class="icon-button" title="关闭" aria-label="关闭">×</button>
+  </header>
+
+  <main>
+    <div id="loading" class="loading"><span></span><b id="loadingText">正在处理…</b></div>
+    <div id="error" class="error hidden"><strong>识别失败</strong><p id="errorText"></p></div>
+    <div id="tableView" class="table-view hidden"><table id="table"></table></div>
+    <div id="qrView" class="qr-view hidden"><textarea id="qrText" readonly aria-label="二维码内容"></textarea></div>
+  </main>
+
+  <footer id="actions" class="actions hidden">
+    <select id="format" class="hidden" title="复制格式">
+      <option value="tsv">TSV（粘贴到表格）</option>
+      <option value="csv">CSV</option>
+      <option value="markdown">Markdown</option>
+    </select>
+    <button id="openLink" class="hidden">打开链接</button>
+    <button id="copy" class="primary">复制</button>
+  </footer>
+
+  <script src="../node_modules/jsqr/dist/jsQR.js"></script>
+  <script src="recognition.js"></script>
+</body>
+</html>

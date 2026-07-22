@@ -18,6 +18,7 @@ const path = require('path')
 const screenshotDesktop = require('screenshot-desktop')
 const Store = require('electron-store')
 const { OcrService } = require('./main/services/ocr-service')
+const { buildTableFromOcr } = require('./capture/recognition-utils')
 
 const DEFAULT_SETTINGS = {
   apiKey: '',
@@ -75,6 +76,8 @@ const DEFAULT_SETTINGS = {
     screenshotDelay: '',
     screenshotFixed: '',
     screenshotOcr: '',
+    screenshotTable: '',
+    screenshotQr: '',
     screenshotOcrTranslate: '',
     screenshotCopy: '',
     screenshotFullScreen: '',
@@ -109,6 +112,7 @@ let currentStreamController = null
 let lastToolbarPos = null
 let pinnedCount = 0
 const pinWindows = new Set()
+const recognitionWindows = new Set()
 const actionWindows = []
 const MAX_PINNED = 20
 const TOOLBAR_W = 180
@@ -959,6 +963,38 @@ async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
   }
 }
 
+function createRecognitionWindow(type, dataUrl, options = {}) {
+  if (!['table', 'qr'].includes(type)) throw new Error('不支持的识别类型')
+  if (!dataUrl) throw new Error('识别图片数据为空')
+  const isTable = type === 'table'
+  const settings = getSettings()
+  const win = new BrowserWindow({
+    width: isTable ? 820 : 640,
+    height: isTable ? 620 : 420,
+    minWidth: isTable ? 600 : 480,
+    minHeight: isTable ? 440 : 320,
+    frame: false,
+    show: false,
+    backgroundColor: '#18181b',
+    title: isTable ? 'Highlighter 表格识别' : 'Highlighter 二维码识别',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-recognition.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+  recognitionWindows.add(win)
+  win._recognitionInit = {
+    type,
+    dataUrl,
+    scaleFactor: Number(options.scaleFactor) || 1,
+    mainColor: settings.mainColor || '#1677ff'
+  }
+  win.loadFile(path.join(__dirname, 'recognition', 'recognition.html'))
+  win.on('closed', () => recognitionWindows.delete(win))
+  return win
+}
+
 function pinFromCapture(event, dataUrl, meta) {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
   const editingPinWindow = captureWindow?._editingPinWindow
@@ -1022,6 +1058,8 @@ async function executeFunction(name, payload = {}) {
     }
     case 'screenshotFixed': await createCaptureWindow({ mode: 'region', autoAction: 'pin', source: 'fixed' }); return true
     case 'screenshotOcr': await createCaptureWindow({ mode: 'region', autoAction: 'ocr', source: 'ocr' }); return true
+    case 'screenshotTable': await createCaptureWindow({ mode: 'region', autoAction: 'table', source: 'table' }); return true
+    case 'screenshotQr': await createCaptureWindow({ mode: 'region', autoAction: 'qr', source: 'qr' }); return true
     case 'screenshotOcrTranslate': await createCaptureWindow({ mode: 'region', autoAction: 'translate', source: 'ocr-translate' }); return true
     case 'screenshotCopy': await createCaptureWindow({ mode: 'region', autoAction: 'copy', source: 'copy' }); return true
     case 'screenshotFullScreen': await createCaptureWindow({ mode: 'fullscreen', autoAction: payload.save ? 'save' : 'copy', source: 'fullscreen' }); return true
@@ -1094,7 +1132,11 @@ ipcMain.handle('config:save-api-key', (_event, apiKey) => {
   return true
 })
 ipcMain.handle('config:test-connection', async (_event, apiKey) => require('./deepseek').validateApiKey(apiKey))
-ipcMain.handle('shell:open-external', (_event, url) => shell.openExternal(url))
+ipcMain.handle('shell:open-external', (_event, value) => {
+  const url = new URL(String(value || ''))
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('仅支持打开 HTTP 或 HTTPS 链接')
+  return shell.openExternal(url.toString())
+})
 ipcMain.handle('app:execute-function', (_event, { name, payload }) => executeFunction(name, payload))
 ipcMain.handle('app:get-info', () => ({ version: app.getVersion(), platform: process.platform, dataDirectory: app.getPath('userData') }))
 ipcMain.handle('app:get-display-diagnostics', async () => {
@@ -1218,6 +1260,14 @@ ipcMain.handle('capture:pin-reannotate', (event, { dataUrl, meta, action }) => {
   })
   return persistHistory(dataUrl, { ...meta, action: 'pin' })
 })
+ipcMain.handle('capture:open-recognition', (event, { type, dataUrl, meta }) => {
+  const captureWindow = BrowserWindow.fromWebContents(event.sender)
+  createRecognitionWindow(type, dataUrl, { scaleFactor: meta?.scaleFactor })
+  setImmediate(() => {
+    if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
+  })
+  return persistHistory(dataUrl, { ...meta, action: type })
+})
 ipcMain.handle('capture:record-history', (_event, { dataUrl, meta }) => persistHistory(dataUrl, meta))
 ipcMain.handle('ocr:status', () => getOcrService().getStatus())
 ipcMain.handle('capture:ocr', async (_event, payload) => {
@@ -1245,6 +1295,40 @@ ipcMain.handle('capture:translate', async (_event, payload) => {
   if (!text) throw new Error('未识别到可翻译的文本')
   const translation = await require('./deepseek').translateText(getSettings().apiKey, text, 'auto', getSettings().ai.targetLanguage)
   return { text, translation, ocrResult }
+})
+
+ipcMain.on('recognition:ready', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win || !recognitionWindows.has(win) || !win._recognitionInit) return
+  event.sender.send('recognition:init', win._recognitionInit)
+  win.show()
+  win.focus()
+})
+ipcMain.handle('recognition:table', async (event, payload) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win || !recognitionWindows.has(win)) throw new Error('无效的表格识别窗口')
+  if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
+  const dataUrl = payload?.dataUrl
+  if (!dataUrl) throw new Error('表格图片数据为空')
+  const settings = getSettings()
+  const ocrResult = await getOcrService().recognize(dataUrlToBuffer(dataUrl), {
+    scaleFactor: payload?.scaleFactor,
+    detectAngle: settings.ocr.detectAngle,
+    minConfidence: settings.ocr.minConfidence
+  })
+  const table = buildTableFromOcr(ocrResult, { minConfidence: settings.ocr.minConfidence })
+  if (!table) throw new Error('未识别到稳定的表格结构，请扩大选区并确保至少包含两行两列')
+  return table
+})
+ipcMain.handle('recognition:copy', (event, value) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win || !recognitionWindows.has(win)) throw new Error('无效的识别结果窗口')
+  clipboard.writeText(String(value || ''))
+  return true
+})
+ipcMain.on('recognition:close', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (win && recognitionWindows.has(win) && !win.isDestroyed()) win.close()
 })
 
 ipcMain.on('pin:ready', (event) => {
@@ -1295,6 +1379,27 @@ ipcMain.on('pin:context-menu', (event, imageBounds = {}) => {
           await startPinReannotation(win, imageBounds, 'ocr')
         } catch (error) {
           log('OCR pin failed:', error.message)
+        }
+      }
+    },
+    {
+      label: '表格识别',
+      enabled: !!getSettings().plugins.ocr,
+      click: () => {
+        try {
+          createRecognitionWindow('table', win._pinData.dataUrl, { scaleFactor: win._pinData.scaleFactor })
+        } catch (error) {
+          log('Table recognition failed:', error.message)
+        }
+      }
+    },
+    {
+      label: '二维码识别',
+      click: () => {
+        try {
+          createRecognitionWindow('qr', win._pinData.dataUrl, { scaleFactor: win._pinData.scaleFactor })
+        } catch (error) {
+          log('QR recognition failed:', error.message)
         }
       }
     },

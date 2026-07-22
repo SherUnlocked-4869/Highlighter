@@ -311,13 +311,15 @@ function showOcrOverlay(result) {
 
 async function performAction(action) {
   if(processingAction)return
-  const output=exportSelectionCanvas(!['ocr','translate'].includes(action)); if(!output)return
+  const recognitionActions=['ocr','translate','table','qr']
+  const output=exportSelectionCanvas(!recognitionActions.includes(action)); if(!output)return
   const dataUrl=output.toDataURL('image/png'); const captureBounds=initData.captureBounds||initData.displayBounds||{x:0,y:0}; const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds:{x:Math.round(captureBounds.x+selection.x),y:Math.round(captureBounds.y+selection.y),width:Math.max(1,Math.round(selection.w)),height:Math.max(1,Math.round(selection.h))}}
   try {
     if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(dataUrl,meta);else await window.captureAPI.copy(dataUrl,meta);window.captureAPI.close()}
     if(action==='save'){const saved=await window.captureAPI.save(dataUrl,meta,!!initData.settings.screenshot.fastSave);if(saved)window.captureAPI.close()}
     if(action==='pin'){await window.captureAPI.pin(dataUrl,meta);window.captureAPI.close()}
     if(action==='ocr'&&!initData.editPin){await window.captureAPI.pinAndReannotate(dataUrl,meta,'ocr');return}
+    if(action==='table'||action==='qr'){await window.captureAPI.openRecognition(action,dataUrl,meta);return}
     if(action==='ocr'||action==='translate'){
       clearOcrResult();setProcessingState(action)
       try {
@@ -340,15 +342,8 @@ function showResult(type,result) {
     if(!result.text)resultPanel.classList.remove('hidden')
     return
   }
-  resultPanel.classList.remove('hidden'); resultSource.classList.toggle('hidden',type!=='translate'); resultTitle.textContent=type==='translate'?'截图翻译':'文本识别';
+  resultPanel.classList.remove('hidden'); resultSource.classList.toggle('hidden',type!=='translate'); resultTitle.textContent=type==='translate'?'截图翻译':'文本识别'
   if(type==='translate'){resultSource.textContent=result.text||'';resultText.value=result.translation||''}else{resultSource.textContent='';resultText.value=result||''}
-}
-
-async function scanQr() {
-  const output=exportSelectionCanvas(false); if(!output)return
-  const data=output.getContext('2d').getImageData(0,0,output.width,output.height); const result=window.jsQR?window.jsQR(data.data,data.width,data.height):null
-  if(!result)return alert('未识别到二维码')
-  showResult('ocr',result.data); resultTitle.textContent='二维码识别'
 }
 
 document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListener('click',()=>setTool(button.dataset.tool)))
@@ -359,8 +354,9 @@ document.getElementById('copy').onclick=()=>performAction('copy')
 document.getElementById('save').onclick=()=>performAction('save')
 document.getElementById('pin').onclick=()=>performAction('pin')
 document.getElementById('ocr').onclick=()=>performAction('ocr')
+document.getElementById('table').onclick=()=>performAction('table')
 document.getElementById('translate').onclick=()=>performAction('translate')
-document.getElementById('qr').onclick=scanQr
+document.getElementById('qr').onclick=()=>performAction('qr')
 document.getElementById('close').onclick=()=>window.captureAPI.close()
 document.getElementById('resultClose').onclick=document.getElementById('resultDone').onclick=()=>resultPanel.classList.add('hidden')
 document.getElementById('resultCopy').onclick=async()=>{await navigator.clipboard.writeText(resultText.value);document.getElementById('resultCopy').textContent='已复制';setTimeout(()=>document.getElementById('resultCopy').textContent='复制文本',1000)}

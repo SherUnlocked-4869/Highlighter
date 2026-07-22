@@ -1,0 +1,40 @@
+:root { --primary: #1677ff; --bg: #18181b; --surface: #222226; --border: #39393f; --text: #f4f4f5; --muted: #a1a1aa; }
+* { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { display: grid; grid-template-rows: auto 1fr auto; color: var(--text); background: var(--bg); font-family: -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
+button, select, textarea { font: inherit; }
+.hidden { display: none !important; }
+.topbar { min-height: 68px; display: flex; align-items: center; gap: 16px; padding: 12px 18px; border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
+.topbar > div { min-width: 0; flex: 1; }
+.topbar h1 { margin: 0; font-size: 17px; line-height: 1.5; letter-spacing: 0; }
+.topbar p { min-height: 18px; margin: 2px 0 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.icon-button { width: 34px; height: 34px; border: 0; color: var(--muted); background: transparent; font-size: 23px; cursor: pointer; -webkit-app-region: no-drag; }
+.icon-button:hover { color: var(--text); background: #2d2d32; }
+main { min-height: 0; position: relative; overflow: hidden; }
+.loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); }
+.loading span { width: 20px; height: 20px; border: 2px solid #48484f; border-top-color: var(--primary); border-radius: 50%; animation: spin .75s linear infinite; }
+.loading b { font-size: 13px; font-weight: 500; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.error { height: 100%; display: grid; place-content: center; justify-items: center; padding: 32px; text-align: center; }
+.error strong { font-size: 16px; }
+.error p { max-width: 520px; margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.table-view { height: 100%; overflow: auto; padding: 16px 18px; }
+.table-view table { width: 100%; border-collapse: collapse; color: var(--text); font-size: 13px; user-select: text; }
+.table-view th, .table-view td { min-width: 96px; padding: 10px 12px; border: 1px solid var(--border); text-align: left; vertical-align: top; white-space: pre-wrap; }
+.table-view th { position: sticky; top: 0; z-index: 1; background: #303036; font-weight: 600; }
+.table-view tr:nth-child(even) td { background: #1e1e22; }
+.qr-view { height: 100%; padding: 18px; }
+.qr-view textarea { width: 100%; height: 100%; resize: none; padding: 14px; border: 1px solid var(--border); border-radius: 6px; outline: none; color: var(--text); background: var(--surface); font: 14px/1.7 Consolas,"Microsoft YaHei",sans-serif; user-select: text; }
+.qr-view textarea:focus { border-color: var(--primary); }
+.actions { min-height: 58px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 18px; border-top: 1px solid var(--border); }
+.actions button, .actions select { height: 36px; padding: 0 14px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface); cursor: pointer; }
+.actions select { margin-right: auto; min-width: 190px; outline: none; color-scheme: dark; }
+.actions button:hover { background: #303036; }
+.actions button.primary { border-color: var(--primary); background: var(--primary); }
+.actions button.primary:hover { filter: brightness(1.08); }
+@media (max-width: 520px) {
+  .topbar { padding-inline: 12px; }
+  .table-view, .qr-view { padding: 12px; }
+  .actions { padding-inline: 12px; }
+  .actions select { min-width: 0; max-width: 52%; }
+}

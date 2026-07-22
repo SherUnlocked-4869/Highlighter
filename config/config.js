@@ -20,6 +20,8 @@ const functionGroups = {
     ['screenshotDelay', '延迟截图', '◴', '倒计时后开始区域截图'],
     ['screenshotFixed', '固定到屏幕', '📌', '截图完成后直接贴到桌面'],
     ['screenshotOcr', '文本识别', 'OCR', '截图后提取中文、英文等文字'],
+    ['screenshotTable', '表格识别', '表', '恢复截图中的行列并复制到 Excel'],
+    ['screenshotQr', '二维码识别', '⌗', '扫描二维码内容或打开其中的链接'],
     ['screenshotOcrTranslate', '文本识别翻译', '译', 'OCR 后调用翻译服务'],
     ['screenshotCopy', '复制到剪贴板', '▣', '完成选区后立即复制'],
     ['screenshotFullScreen', '截取全屏', '▤', '捕获鼠标所在显示器'],

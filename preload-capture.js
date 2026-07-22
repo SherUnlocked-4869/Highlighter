@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('captureAPI', {
   save: (dataUrl, meta, fast) => ipcRenderer.invoke('capture:save', { dataUrl, meta, fast }),
   pin: (dataUrl, meta) => ipcRenderer.invoke('capture:pin', { dataUrl, meta }),
   pinAndReannotate: (dataUrl, meta, action) => ipcRenderer.invoke('capture:pin-reannotate', { dataUrl, meta, action }),
+  openRecognition: (type, dataUrl, meta) => ipcRenderer.invoke('capture:open-recognition', { type, dataUrl, meta }),
   ocr: (dataUrl, options) => ipcRenderer.invoke('capture:ocr', { dataUrl, ...options }),
   translate: (dataUrl, options) => ipcRenderer.invoke('capture:translate', { dataUrl, ...options }),
   recordHistory: (dataUrl, meta) => ipcRenderer.invoke('capture:record-history', { dataUrl, meta })
