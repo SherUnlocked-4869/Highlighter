@@ -26,6 +26,13 @@ let serialNumber = 1
 let dpr = window.devicePixelRatio || 1
 let autoActionStarted = false
 let renderReadySent = false
+let renderReadyPending = false
+let selectState = 'manual'
+let pointerDownPoint = null
+let smartCandidates = []
+let smartCandidateLevel = 0
+let smartQueryRunning = false
+let smartQueryPending = null
 
 function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
 function normalizeRect(a, b) { return { x: Math.min(a.x,b.x), y: Math.min(a.y,b.y), w: Math.abs(b.x-a.x), h: Math.abs(b.y-a.y) } }
@@ -47,18 +54,26 @@ function resizeCanvas() {
 }
 
 function reportRenderReady() {
-  if (renderReadySent || !image?.complete || !image.naturalWidth || !initData) return
+  if (renderReadySent || renderReadyPending || !image?.complete || !image.naturalWidth || !initData) return
   const expected = initData.captureBounds || initData.displayBounds
-  if (expected && (innerWidth !== expected.width || innerHeight !== expected.height)) return
-  renderReadySent = true
-  window.captureAPI.renderReady()
+  if (expected && (Math.abs(innerWidth - expected.width) > 2 || Math.abs(innerHeight - expected.height) > 2)) return
+  renderReadyPending = true
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (renderReadySent || !image?.complete || !image.naturalWidth) {
+      renderReadyPending = false
+      return
+    }
+    renderReadySent = true
+    renderReadyPending = false
+    window.captureAPI.renderReady()
+  }))
 }
 
 function maybeRunAutoAction() {
   if (!image || !selection || !initData?.autoAction || autoActionStarted) return
   if (['fullscreen', 'image', 'canvas'].includes(initData.mode)) {
     const expected = initData.captureBounds || initData.displayBounds
-    if (expected && (innerWidth !== expected.width || innerHeight !== expected.height)) return
+    if (expected && (Math.abs(innerWidth - expected.width) > 2 || Math.abs(innerHeight - expected.height) > 2)) return
     autoActionStarted = true
     setTimeout(() => performAction(initData.autoAction), 120)
   }
@@ -118,6 +133,7 @@ function drawHandles() {
 function updateFloatingUi() {
   if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; return }
   sizeBadge.style.display='block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
+  if (selectState==='auto') { toolbar.classList.add('hidden'); return }
   toolbar.classList.remove('hidden')
   const rect=toolbar.getBoundingClientRect(); let left=selection.x+selection.w-rect.width; let top=selection.y+selection.h+10
   if (top+rect.height>innerHeight-6) top=selection.y-rect.height-10
@@ -136,10 +152,39 @@ function commitAnnotation(item) {
   annotations.push(item); redoStack=[]; activeAnnotation=null; render()
 }
 
+function finishSelection() {
+  render()
+  if(selection&&initData?.autoAction&&!autoActionStarted){autoActionStarted=true;setTimeout(()=>performAction(initData.autoAction),80)}
+}
+
+function applySmartCandidates(candidates) {
+  smartCandidates=(Array.isArray(candidates)?candidates:[]).filter((item)=>item&&item.w>=3&&item.h>=3)
+  smartCandidateLevel=0
+  selection=smartCandidates.length?{...smartCandidates[0]}:null
+  render()
+}
+
+async function requestSmartSelection(point) {
+  if(selectState!=='auto'||!initData?.smartSelect)return
+  smartQueryPending={x:point.x,y:point.y}
+  if(smartQueryRunning)return
+  smartQueryRunning=true
+  try{
+    while(smartQueryPending){
+      const current=smartQueryPending;smartQueryPending=null
+      try{
+        const candidates=await window.captureAPI.smartSelectAt(current)
+        if(selectState==='auto'&&!smartQueryPending)applySmartCandidates(candidates)
+      }catch{}
+    }
+  }finally{smartQueryRunning=false}
+}
+
 canvas.addEventListener('pointerdown',(event)=>{
   if (!resultPanel.classList.contains('hidden')) return
   const point=pointFromEvent(event); startPoint=point
-  if (!selection || (currentTool==='select'&&!insideSelection(point))) { selecting=true; selection={x:point.x,y:point.y,w:0,h:0}; annotations=[]; redoStack=[]; tip.style.display='none'; render(); return }
+  if(selectState==='auto'){pointerDownPoint=point;return}
+  if (!selection || (currentTool==='select'&&!insideSelection(point))) { selectState='manual';selecting=true; selection={x:point.x,y:point.y,w:0,h:0}; annotations=[]; redoStack=[]; tip.style.display='none'; render(); return }
   if (currentTool==='select') { dragging=true; return }
   if (!insideSelection(point)) return
   const style=annotationStyle()
@@ -151,16 +196,32 @@ canvas.addEventListener('pointerdown',(event)=>{
 
 canvas.addEventListener('pointermove',(event)=>{
   const point=pointFromEvent(event)
+  if(selectState==='auto'){
+    if(pointerDownPoint){
+      if(Math.hypot(point.x-pointerDownPoint.x,point.y-pointerDownPoint.y)>6){selectState='manual';selecting=true;startPoint=pointerDownPoint;pointerDownPoint=null;selection=normalizeRect(startPoint,point);annotations=[];redoStack=[];smartCandidates=[];tip.style.display='none';render()}
+    }else requestSmartSelection(point)
+    return
+  }
   if (selecting) { selection=normalizeRect(startPoint,point); render(); return }
   if (dragging&&selection) { const dx=point.x-startPoint.x,dy=point.y-startPoint.y; selection.x=Math.max(0,Math.min(innerWidth-selection.w,selection.x+dx)); selection.y=Math.max(0,Math.min(innerHeight-selection.h,selection.y+dy)); startPoint=point; render(); return }
   if (activeAnnotation) { activeAnnotation.x2=point.x; activeAnnotation.y2=point.y; if(activeAnnotation.type==='pen')activeAnnotation.points.push(point); render() }
 })
 
-canvas.addEventListener('pointerup',()=>{
-  if(selecting){selecting=false;if(selection.w<3||selection.h<3)selection=null;render();if(selection&&initData?.autoAction&&!autoActionStarted){autoActionStarted=true;setTimeout(()=>performAction(initData.autoAction),80)}return}
+canvas.addEventListener('pointerup',(event)=>{
+  if(selectState==='auto'&&pointerDownPoint){const point=pointFromEvent(event);const moved=Math.hypot(point.x-pointerDownPoint.x,point.y-pointerDownPoint.y)>6;pointerDownPoint=null;if(moved){selectState='selected';selection=normalizeRect(startPoint,point);if(selection.w<3||selection.h<3)selection=null}else if(selection){selectState='selected'}tip.style.display='none';finishSelection();return}
+  if(selecting){selecting=false;if(selection.w<3||selection.h<3)selection=null;selectState=selection?'selected':'manual';finishSelection();return}
   if(dragging){dragging=false;render();return}
   if(activeAnnotation)commitAnnotation(activeAnnotation)
 })
+
+canvas.addEventListener('wheel',(event)=>{
+  if(selectState!=='auto'||smartCandidates.length<2)return
+  event.preventDefault()
+  const delta=event.deltaY<0?1:-1
+  smartCandidateLevel=Math.max(0,Math.min(smartCandidates.length-1,smartCandidateLevel+delta))
+  selection={...smartCandidates[smartCandidateLevel]}
+  render()
+},{passive:false})
 
 canvas.addEventListener('dblclick',()=>{ if(selection&&initData?.settings?.screenshot?.doubleClickCopy) performAction('copy') })
 
@@ -220,8 +281,8 @@ addEventListener('keydown',(event)=>{
 })
 
 window.captureAPI.onInit((data)=>{
-  initData=data; renderReadySent=false; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#1677ff')
-  image=new Image(); image.onload=()=>{if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();maybeRunAutoAction()}; image.src=data.mode==='canvas'?makeBlankCanvas():data.imageDataUrl
+  initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#1677ff')
+  image=new Image(); image.onload=()=>{if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError('截图图片解码失败'); image.src=data.mode==='canvas'?makeBlankCanvas():data.imageDataUrl
 })
 
 function makeBlankCanvas(){const blank=document.createElement('canvas');blank.width=Math.max(1,innerWidth*dpr);blank.height=Math.max(1,innerHeight*dpr);const c=blank.getContext('2d');c.fillStyle='#fff';c.fillRect(0,0,blank.width,blank.height);return blank.toDataURL()}

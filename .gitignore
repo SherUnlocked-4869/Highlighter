@@ -4,3 +4,4 @@ dist/
 crash.log
 __pycache__/
 *.py[cod]
+native/smart-select/*.exe

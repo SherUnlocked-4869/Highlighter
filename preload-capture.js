@@ -8,7 +8,9 @@ contextBridge.exposeInMainWorld('captureAPI', {
     return () => ipcRenderer.removeListener('capture:init', handler)
   },
   renderReady: () => ipcRenderer.send('capture:render-ready'),
+  renderError: (message) => ipcRenderer.send('capture:render-error', message),
   close: () => ipcRenderer.send('capture:close'),
+  smartSelectAt: (point) => ipcRenderer.invoke('capture:smart-select', point),
   copy: (dataUrl, meta) => ipcRenderer.invoke('capture:copy', { dataUrl, meta }),
   save: (dataUrl, meta, fast) => ipcRenderer.invoke('capture:save', { dataUrl, meta, fast }),
   pin: (dataUrl, meta) => ipcRenderer.invoke('capture:pin', { dataUrl, meta }),

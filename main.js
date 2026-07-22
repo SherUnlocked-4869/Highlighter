@@ -12,7 +12,7 @@ const {
   shell,
   Tray
 } = require('electron')
-const { execFile } = require('child_process')
+const { execFile, spawn } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 const screenshotDesktop = require('screenshot-desktop')
@@ -129,6 +129,174 @@ function log(...args) {
   try {
     fs.appendFileSync(path.join(app.getPath('userData'), 'app.log'), `[${new Date().toISOString()}] ${message}\n`)
   } catch {}
+}
+
+class SmartSelectSession {
+  constructor(executablePath) {
+    this.process = spawn(executablePath, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    this.buffer = ''
+    this.nextRequestId = 1
+    this.pending = new Map()
+    this.windowRects = []
+    this.ready = false
+    this.available = true
+    this.readyPromise = new Promise((resolve, reject) => {
+      this.resolveReady = resolve
+      this.rejectReady = reject
+    })
+    this.process.stdout.setEncoding('utf8')
+    this.process.stdout.on('data', (chunk) => this.handleOutput(chunk))
+    this.process.stderr.setEncoding('utf8')
+    this.process.stderr.on('data', (chunk) => {
+      const message = String(chunk || '').trim()
+      if (message) log('Smart select helper:', message)
+    })
+    this.process.once('error', (error) => this.handleExit(error))
+    this.process.once('exit', (code) => this.handleExit(new Error(`helper exited (${code})`)))
+  }
+
+  handleOutput(chunk) {
+    this.buffer += chunk
+    let newline = this.buffer.indexOf('\n')
+    while (newline >= 0) {
+      const line = this.buffer.slice(0, newline).trim()
+      this.buffer = this.buffer.slice(newline + 1)
+      if (line) {
+        try {
+          const message = JSON.parse(line)
+          if (message.ready) {
+            this.ready = true
+            this.windowRects = Array.isArray(message.windows) ? message.windows : []
+            this.resolveReady(true)
+          } else if (Number.isInteger(message.id)) {
+            const request = this.pending.get(message.id)
+            if (request) {
+              clearTimeout(request.timer)
+              this.pending.delete(message.id)
+              request.resolve(Array.isArray(message.rects) ? message.rects : [])
+            }
+          }
+        } catch (error) {
+          log('Smart select response error:', error.message)
+        }
+      }
+      newline = this.buffer.indexOf('\n')
+    }
+  }
+
+  handleExit(error) {
+    if (!this.available) return
+    this.available = false
+    if (!this.ready) this.rejectReady(error)
+    for (const request of this.pending.values()) {
+      clearTimeout(request.timer)
+      request.resolve([])
+    }
+    this.pending.clear()
+  }
+
+  async waitUntilReady(timeout = 1000) {
+    let timer
+    try {
+      await Promise.race([
+        this.readyPromise,
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('helper startup timeout')), timeout)
+        })
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  query(x, y) {
+    if (!this.available || !this.ready) return Promise.resolve([])
+    const id = this.nextRequestId++
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const requests = [...this.pending.values()]
+        this.pending.clear()
+        this.available = false
+        try { this.process.kill() } catch {}
+        requests.forEach((request) => {
+          clearTimeout(request.timer)
+          request.resolve([])
+        })
+      }, 350)
+      this.pending.set(id, { resolve, timer })
+      try {
+        this.process.stdin.write(`${id} ${Math.round(x)} ${Math.round(y)}\n`)
+      } catch {
+        clearTimeout(timer)
+        this.pending.delete(id)
+        resolve([])
+      }
+    })
+  }
+
+  findWindowAt(x, y) {
+    const rect = this.windowRects.find((item) => (
+      x >= item.left && x <= item.right && y >= item.top && y <= item.bottom
+    ))
+    return rect ? [rect] : []
+  }
+
+  dispose() {
+    if (!this.available && this.process.killed) return
+    this.available = false
+    for (const request of this.pending.values()) {
+      clearTimeout(request.timer)
+      request.resolve([])
+    }
+    this.pending.clear()
+    try { this.process.stdin.end('quit\n') } catch {}
+    try { this.process.kill() } catch {}
+  }
+}
+
+async function createSmartSelectSession() {
+  if (!isWin) return null
+  const executablePath = app.isPackaged
+    ? path.join(process.resourcesPath, 'native', 'smart-select', 'SmartSelect.exe')
+    : path.join(__dirname, 'native', 'smart-select', 'SmartSelect.exe')
+  if (!fs.existsSync(executablePath)) {
+    log('Smart select helper missing:', executablePath)
+    return null
+  }
+  const session = new SmartSelectSession(executablePath)
+  try {
+    await session.waitUntilReady()
+    return session
+  } catch (error) {
+    log('Smart select unavailable:', error.message)
+    session.dispose()
+    return null
+  }
+}
+
+function convertSmartSelectRects(rects, context) {
+  const physical = context.physicalBounds
+  const logical = context.captureBounds
+  if (!physical?.width || !physical?.height) return []
+  const scaleX = logical.width / physical.width
+  const scaleY = logical.height / physical.height
+  const result = []
+  for (const rect of rects) {
+    const left = Math.max(0, Math.min(logical.width, (Number(rect.left) - physical.x) * scaleX))
+    const top = Math.max(0, Math.min(logical.height, (Number(rect.top) - physical.y) * scaleY))
+    const right = Math.max(0, Math.min(logical.width, (Number(rect.right) - physical.x) * scaleX))
+    const bottom = Math.max(0, Math.min(logical.height, (Number(rect.bottom) - physical.y) * scaleY))
+    const candidate = {
+      x: Math.round(Math.min(left, right)),
+      y: Math.round(Math.min(top, bottom)),
+      w: Math.round(Math.abs(right - left)),
+      h: Math.round(Math.abs(bottom - top))
+    }
+    if (candidate.w < 3 || candidate.h < 3) continue
+    if (result.some((item) => item.x === candidate.x && item.y === candidate.y && item.w === candidate.w && item.h === candidate.h)) continue
+    result.push(candidate)
+  }
+  return result
 }
 
 function ensureDirectory(directory) {
@@ -401,6 +569,39 @@ async function streamToWindow(win, action, text) {
   }
 }
 
+function isBlankCapture(image) {
+  if (!image || image.isEmpty()) return true
+  const size = image.getSize()
+  const sample = image.resize({
+    width: Math.max(1, Math.min(32, size.width)),
+    height: Math.max(1, Math.min(32, size.height)),
+    quality: 'good'
+  }).toBitmap()
+  if (!sample.length) return true
+  for (let index = 0; index + 2 < sample.length; index += 4) {
+    if (sample[index] > 2 || sample[index + 1] > 2 || sample[index + 2] > 2) return false
+  }
+  return true
+}
+
+async function getDesktopCapture(display, scaleFactor) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: {
+        width: Math.max(1, Math.round(display.bounds.width * scaleFactor)),
+        height: Math.max(1, Math.round(display.bounds.height * scaleFactor))
+      }
+    })
+    const source = sources.find((item) => String(item.display_id) === String(display.id)) || sources[0]
+    if (source && !source.thumbnail.isEmpty() && !isBlankCapture(source.thumbnail)) {
+      return { dataUrl: source.thumbnail.toDataURL(), sourceId: source.id, scaleFactor }
+    }
+    if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  throw new Error('屏幕捕获连续返回空白画面')
+}
+
 async function getDisplayCapture(display) {
   const scaleFactor = display.scaleFactor || 1
   if (isWin) {
@@ -414,36 +615,29 @@ async function getDisplayCapture(display) {
       ))
       if (nativeDisplay) {
         const buffer = await screenshotDesktop({ format: 'png', screen: nativeDisplay.id })
-        const width = buffer.length >= 24 ? buffer.readUInt32BE(16) : 0
-        const height = buffer.length >= 24 ? buffer.readUInt32BE(20) : 0
-        if (width === physicalBounds.width && height === physicalBounds.height) {
-          return {
-            dataUrl: `data:image/png;base64,${buffer.toString('base64')}`,
-            sourceId: `native:${nativeDisplay.id}`,
-            scaleFactor
-          }
+        const image = nativeImage.createFromBuffer(buffer)
+        const size = image.getSize()
+        if (size.width !== physicalBounds.width || size.height !== physicalBounds.height) {
+          throw new Error(`原生抓屏尺寸异常：${size.width}x${size.height}`)
         }
-        throw new Error(`原生抓屏尺寸异常：${width}x${height}`)
+        if (isBlankCapture(image)) throw new Error('原生抓屏返回空白画面')
+        return {
+          dataUrl: `data:image/png;base64,${buffer.toString('base64')}`,
+          sourceId: `native:${nativeDisplay.id}`,
+          scaleFactor
+        }
       }
     } catch (error) {
       nativeDisplayListPromise = null
       log('Native capture fallback:', error.message)
     }
   }
-  const sources = await desktopCapturer.getSources({
-    types: ['screen'],
-    thumbnailSize: {
-      width: Math.max(1, Math.round(display.bounds.width * scaleFactor)),
-      height: Math.max(1, Math.round(display.bounds.height * scaleFactor))
-    }
-  })
-  const source = sources.find((item) => String(item.display_id) === String(display.id)) || sources[0]
-  if (!source) throw new Error('无法读取屏幕画面')
-  return { dataUrl: source.thumbnail.toDataURL(), sourceId: source.id, scaleFactor }
+  return getDesktopCapture(display, scaleFactor)
 }
 
 async function createCaptureWindow(options = {}) {
   if (currentCaptureWindow && !currentCaptureWindow.isDestroyed()) currentCaptureWindow.close()
+  const mode = options.mode || 'region'
   const requestedBounds = options.windowBounds && {
     x: Math.round(options.windowBounds.x),
     y: Math.round(options.windowBounds.y),
@@ -461,6 +655,8 @@ async function createCaptureWindow(options = {}) {
         scaleFactor: Number(options.sourceScaleFactor) || display.scaleFactor || 1
       })
     : getDisplayCapture(display)
+  const smartSelectPromise = mode === 'region' ? createSmartSelectSession() : Promise.resolve(null)
+  const smartSelectSession = await smartSelectPromise
   const captureWindow = new BrowserWindow({
     x: captureBounds.x,
     y: captureBounds.y,
@@ -487,6 +683,13 @@ async function createCaptureWindow(options = {}) {
   captureWindow._editingPinWindow = options.editingPinWindow || null
   captureWindow._captureVisible = false
   captureWindow._captureInitSent = false
+  captureWindow._smartSelectContext = smartSelectSession
+    ? {
+        session: smartSelectSession,
+        captureBounds,
+        physicalBounds: screen.dipToScreenRect(null, captureBounds)
+      }
+    : null
   captureWindow.setAlwaysOnTop(true, 'screen-saver')
 
   // Moving the hidden HWND first switches it to the target monitor's DPI.
@@ -498,6 +701,9 @@ async function createCaptureWindow(options = {}) {
 
   const loadPromise = captureWindow.loadFile(path.join(__dirname, 'capture', 'capture.html'))
   captureWindow.on('closed', () => {
+    clearTimeout(captureWindow._renderTimeout)
+    captureWindow._smartSelectContext?.session.dispose()
+    captureWindow._smartSelectContext = null
     if (currentCaptureWindow === captureWindow) currentCaptureWindow = null
     const pinWindow = captureWindow._pendingPinWindow || captureWindow._editingPinWindow
     setImmediate(() => bringPinToFront(pinWindow))
@@ -508,18 +714,27 @@ async function createCaptureWindow(options = {}) {
     if (captureWindow.isDestroyed()) return null
     captureWindow._captureInit = {
       imageDataUrl: capture.dataUrl || '',
-      mode: options.mode || 'region',
+      mode,
       autoAction: options.autoAction || '',
       source: options.source || 'region',
       displayBounds: display.bounds,
       captureBounds,
       scaleFactor: capture.scaleFactor,
       editPin: !!options.editPin,
+      smartSelect: !!captureWindow._smartSelectContext,
+      cursorPosition: (() => {
+        const point = screen.getCursorScreenPoint()
+        return { x: point.x - captureBounds.x, y: point.y - captureBounds.y }
+      })(),
       settings: getSettings()
     }
     captureWindow._captureInitSent = true
     captureWindow.webContents.send('capture:init', captureWindow._captureInit)
-    setTimeout(() => revealCaptureWindow(captureWindow), 1200)
+    captureWindow._renderTimeout = setTimeout(() => {
+      if (captureWindow.isDestroyed() || captureWindow._captureVisible) return
+      log('Capture render timeout:', capture.sourceId || options.mode || 'unknown')
+      captureWindow.close()
+    }, 8000)
     return captureWindow
   } catch (error) {
     if (!captureWindow.isDestroyed()) captureWindow.close()
@@ -529,6 +744,7 @@ async function createCaptureWindow(options = {}) {
 
 function revealCaptureWindow(win) {
   if (!win || win.isDestroyed() || win._captureVisible) return
+  clearTimeout(win._renderTimeout)
   win._captureVisible = true
   win.show()
   setImmediate(() => {
@@ -887,9 +1103,30 @@ ipcMain.on('capture:ready', (event) => {
   }
 })
 ipcMain.on('capture:render-ready', (event) => revealCaptureWindow(BrowserWindow.fromWebContents(event.sender)))
+ipcMain.on('capture:render-error', (event, message) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (!win || win.isDestroyed()) return
+  log('Capture render failed:', message || 'image decode failed')
+  win.close()
+})
 ipcMain.on('capture:close', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   win?.close()
+})
+ipcMain.handle('capture:smart-select', async (event, point = {}) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  const context = win?._smartSelectContext
+  if (!context || win.isDestroyed()) return []
+  const localX = Math.max(0, Math.min(context.captureBounds.width, Number(point.x) || 0))
+  const localY = Math.max(0, Math.min(context.captureBounds.height, Number(point.y) || 0))
+  const physicalX = context.physicalBounds.x + localX * context.physicalBounds.width / context.captureBounds.width
+  const physicalY = context.physicalBounds.y + localY * context.physicalBounds.height / context.captureBounds.height
+  let rects = await context.session.query(physicalX, physicalY)
+  if (!rects.length) rects = context.session.findWindowAt(physicalX, physicalY)
+  const candidates = convertSmartSelectRects(rects, context)
+  return candidates.length
+    ? candidates
+    : [{ x: 0, y: 0, w: context.captureBounds.width, h: context.captureBounds.height }]
 })
 ipcMain.handle('capture:copy', (_event, { dataUrl, meta }) => {
   clipboard.writeImage(nativeImage.createFromDataURL(dataUrl))
@@ -994,7 +1231,7 @@ ipcMain.on('pin:set-opacity', (event, opacity) => {
   if (win._pinData) win._pinData.opacity = nextOpacity
   win.setOpacity(nextOpacity)
 })
-ipcMain.on('pin:resize', (event, { factor, anchor }) => {
+ipcMain.on('pin:resize', (event, { factor } = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || !win._pinData?.zoomWithMouse) return
   const bounds = win.getBounds()
@@ -1004,12 +1241,8 @@ ipcMain.on('pin:resize', (event, { factor, anchor }) => {
   if (Math.abs(nextZoom - currentZoom) < 0.001) return
   const width = Math.max(1, Math.round(data.baseWidth * nextZoom))
   const height = Math.max(1, Math.round(data.baseHeight * nextZoom))
-  const anchorX = Math.max(0, Math.min(bounds.width, Number(anchor?.x) || bounds.width / 2))
-  const anchorY = Math.max(0, Math.min(bounds.height, Number(anchor?.y) || bounds.height / 2))
-  const x = Math.round(bounds.x + anchorX - width * (anchorX / Math.max(1, bounds.width)))
-  const y = Math.round(bounds.y + anchorY - height * (anchorY / Math.max(1, bounds.height)))
   data.zoom = nextZoom
-  win.setBounds({ x, y, width, height }, false)
+  win.setBounds({ x: bounds.x, y: bounds.y, width, height }, false)
   win.webContents.send('pin:zoom-changed', Math.round(nextZoom * 100))
 })
 ipcMain.on('pin:move-start', (event) => {

@@ -5,8 +5,12 @@
   "main": "main.js",
   "author": "Highlighter",
   "scripts": {
+    "build:smart-select": "powershell -NoProfile -ExecutionPolicy Bypass -File native/smart-select/build.ps1",
+    "prestart": "npm run build:smart-select",
     "start": "electron .",
+    "prebuild:win": "npm run build:smart-select",
     "build:win": "electron-builder --win --x64",
+    "prebuild:win:portable": "npm run build:smart-select",
     "build:win:portable": "electron-builder --win portable --x64"
   },
   "build": {
@@ -18,6 +22,12 @@
     },
     "asarUnpack": [
       "node_modules/screenshot-desktop/lib/win32/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "native/smart-select/SmartSelect.exe",
+        "to": "native/smart-select/SmartSelect.exe"
+      }
     ],
     "files": [
       "main.js",
