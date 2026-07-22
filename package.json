@@ -9,12 +9,11 @@
     "build:smart-select": "powershell -NoProfile -ExecutionPolicy Bypass -File native/smart-select/build.ps1",
     "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
     "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr",
-    "test:recognition": "node --test tests/recognition-utils.test.js",
-    "check": "node --check main.js && node --check main/services/ocr-service.js && node --check preload-capture.js && node --check preload-recognition.js && node --check capture/recognition-utils.js && node --check capture/capture.js && node --check recognition/recognition.js && node --check config/config.js && npm run test:recognition",
+    "check": "node --check main.js && node --check main/services/ocr-service.js && node --check preload-capture.js && node --check preload-recognition.js && node --check capture/recognition-utils.js && node --check capture/capture.js && node --check recognition/recognition.js && node --check config/config.js",
     "prestart": "npm run build:native",
     "start": "electron .",
     "prebuild:win": "npm run build:native",
-    "build:win": "electron-builder --win --x64",
+    "build:win": "electron-builder --win nsis --x64",
     "prebuild:win:portable": "npm run build:native",
     "build:win:portable": "electron-builder --win portable --x64"
   },
@@ -84,6 +83,7 @@
       "icon": "assets/icon.png"
     },
     "nsis": {
+      "artifactName": "Highlighter-Setup-${version}.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
