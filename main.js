@@ -17,6 +17,7 @@ const fs = require('fs')
 const path = require('path')
 const screenshotDesktop = require('screenshot-desktop')
 const Store = require('electron-store')
+const { OcrService } = require('./main/services/ocr-service')
 
 const DEFAULT_SETTINGS = {
   apiKey: '',
@@ -37,8 +38,15 @@ const DEFAULT_SETTINGS = {
     historyLimit: 200,
     doubleClickCopy: true,
     selectionMask: 'rgba(0,0,0,.46)',
-    showColorPicker: true,
-    ocrLanguage: 'chi_sim+eng'
+    showColorPicker: true
+  },
+  ocr: {
+    modelProfile: 'ppocr-v4-ch',
+    hotStart: true,
+    modelWriteToMemory: false,
+    detectAngle: false,
+    minConfidence: 0.3,
+    afterAction: 'none'
   },
   fixedContent: {
     zoomWithMouse: true,
@@ -95,6 +103,7 @@ let selectionHook = null
 let tray = null
 let currentCaptureWindow = null
 let recordWindow = null
+let ocrService = null
 let isProcessing = false
 let currentStreamController = null
 let lastToolbarPos = null
@@ -106,6 +115,17 @@ const TOOLBAR_W = 180
 const TOOLBAR_H = 40
 const isWin = process.platform === 'win32'
 let nativeDisplayListPromise = null
+
+function getOcrService() {
+  if (ocrService) return ocrService
+  const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
+  ocrService = new OcrService({
+    sidecarPath: path.join(resourceRoot, 'native', 'ocr', 'HighlighterOcrSidecar.exe'),
+    modelDir: path.join(resourceRoot, 'ocr', 'models', 'ppocr-v4-ch'),
+    log
+  })
+  return ocrService
+}
 
 function mergeDeep(target, patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return patch
@@ -908,6 +928,51 @@ function bringPinToFront(win) {
   win.focus()
 }
 
+async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
+  if (!win || win.isDestroyed() || !win._pinData) return null
+  const windowBounds = win.getBounds()
+  const editBounds = {
+    x: Math.round(windowBounds.x + (Number(imageBounds.x) || 0)),
+    y: Math.round(windowBounds.y + (Number(imageBounds.y) || 0)),
+    width: Math.max(1, Math.round(Number(imageBounds.width) || windowBounds.width)),
+    height: Math.max(1, Math.round(Number(imageBounds.height) || windowBounds.height))
+  }
+  const imageSize = nativeImage.createFromDataURL(win._pinData.dataUrl).getSize()
+  const sourceScaleFactor = Math.max(0.25, imageSize.width / editBounds.width)
+  win.hide()
+  try {
+    const captureWindow = await createCaptureWindow({
+      imageDataUrl: win._pinData.dataUrl,
+      mode: 'image',
+      autoAction,
+      source: 'pin-reannotate',
+      windowBounds: editBounds,
+      sourceScaleFactor,
+      editPin: true,
+      editingPinWindow: win
+    })
+    if (!captureWindow) bringPinToFront(win)
+    return captureWindow
+  } catch (error) {
+    bringPinToFront(win)
+    throw error
+  }
+}
+
+function pinFromCapture(event, dataUrl, meta) {
+  const captureWindow = BrowserWindow.fromWebContents(event.sender)
+  const editingPinWindow = captureWindow?._editingPinWindow
+  if (!editingPinWindow && pinnedCount >= MAX_PINNED) throw new Error(`最多固定 ${MAX_PINNED} 张图片`)
+  const pinWindow = editingPinWindow
+    ? updatePinWindow(editingPinWindow, dataUrl, meta)
+    : createPinWindow(dataUrl, meta)
+  if (captureWindow) {
+    captureWindow._pendingPinWindow = pinWindow
+    captureWindow._editingPinWindow = null
+  }
+  return { captureWindow, pinWindow }
+}
+
 async function createRecordWindow() {
   if (recordWindow && !recordWindow.isDestroyed()) {
     recordWindow.focus()
@@ -1014,6 +1079,8 @@ ipcMain.handle('settings:update', (_event, patch) => {
   if (patch?.shortcuts) registerShortcuts()
   if (patch?.system?.autoStart !== undefined) app.setLoginItemSettings({ openAtLogin: !!settings.system.autoStart })
   if (patch?.system?.enableTray !== undefined) createTrayIcon()
+  if (patch?.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
+  if (patch?.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
   return settings
 })
 ipcMain.handle('settings:reset', () => {
@@ -1140,38 +1207,63 @@ ipcMain.handle('capture:save', async (_event, { dataUrl, meta, fast }) => {
   return filePath
 })
 ipcMain.handle('capture:pin', (event, { dataUrl, meta }) => {
-  const captureWindow = BrowserWindow.fromWebContents(event.sender)
-  const editingPinWindow = captureWindow?._editingPinWindow
-  if (!editingPinWindow && pinnedCount >= MAX_PINNED) throw new Error(`最多固定 ${MAX_PINNED} 张图片`)
-  const pinWindow = editingPinWindow
-    ? updatePinWindow(editingPinWindow, dataUrl, meta)
-    : createPinWindow(dataUrl, meta)
-  if (captureWindow) {
-    captureWindow._pendingPinWindow = pinWindow
-    captureWindow._editingPinWindow = null
-  }
+  pinFromCapture(event, dataUrl, meta)
+  return persistHistory(dataUrl, { ...meta, action: 'pin' })
+})
+ipcMain.handle('capture:pin-reannotate', (event, { dataUrl, meta, action }) => {
+  const { captureWindow, pinWindow } = pinFromCapture(event, dataUrl, meta)
+  pinWindow._pendingReannotateAction = action === 'ocr' ? 'ocr' : ''
+  setImmediate(() => {
+    if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
+  })
   return persistHistory(dataUrl, { ...meta, action: 'pin' })
 })
 ipcMain.handle('capture:record-history', (_event, { dataUrl, meta }) => persistHistory(dataUrl, meta))
-ipcMain.handle('capture:ocr', async (_event, dataUrl) => {
+ipcMain.handle('ocr:status', () => getOcrService().getStatus())
+ipcMain.handle('capture:ocr', async (_event, payload) => {
   if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
-  const { recognize } = require('tesseract.js')
-  const result = await recognize(dataUrlToBuffer(dataUrl), getSettings().screenshot.ocrLanguage || 'chi_sim+eng', { logger: (message) => log('OCR', message.status, message.progress || '') })
-  return result.data.text.trim()
+  const dataUrl = typeof payload === 'string' ? payload : payload?.dataUrl
+  if (!dataUrl) throw new Error('OCR 图片数据为空')
+  const settings = getSettings()
+  return getOcrService().recognize(dataUrlToBuffer(dataUrl), {
+    scaleFactor: payload?.scaleFactor,
+    detectAngle: settings.ocr.detectAngle,
+    minConfidence: settings.ocr.minConfidence
+  })
 })
-ipcMain.handle('capture:translate', async (_event, dataUrl) => {
-  const { recognize } = require('tesseract.js')
-  const result = await recognize(dataUrlToBuffer(dataUrl), getSettings().screenshot.ocrLanguage || 'chi_sim+eng')
-  const text = result.data.text.trim()
+ipcMain.handle('capture:translate', async (_event, payload) => {
+  if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
+  const dataUrl = typeof payload === 'string' ? payload : payload?.dataUrl
+  if (!dataUrl) throw new Error('OCR 图片数据为空')
+  const settings = getSettings()
+  const ocrResult = await getOcrService().recognize(dataUrlToBuffer(dataUrl), {
+    scaleFactor: payload?.scaleFactor,
+    detectAngle: settings.ocr.detectAngle,
+    minConfidence: settings.ocr.minConfidence
+  })
+  const text = ocrResult.text.trim()
+  if (!text) throw new Error('未识别到可翻译的文本')
   const translation = await require('./deepseek').translateText(getSettings().apiKey, text, 'auto', getSettings().ai.targetLanguage)
-  return { text, translation }
+  return { text, translation, ocrResult }
 })
 
 ipcMain.on('pin:ready', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win?._pinData) event.sender.send('pin:init', win._pinData)
 })
-ipcMain.on('pin:render-ready', (event) => revealPinWindow(BrowserWindow.fromWebContents(event.sender)))
+ipcMain.on('pin:render-ready', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  revealPinWindow(win)
+  const autoAction = win?._pendingReannotateAction
+  if (!autoAction) return
+  win._pendingReannotateAction = ''
+  setTimeout(() => {
+    startPinReannotation(win, {}, autoAction).catch((error) => {
+      log('Auto reannotate pin failed:', error.message)
+      bringPinToFront(win)
+    })
+  }, 80)
+})
 ipcMain.on('pin:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
 ipcMain.on('pin:copy', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
@@ -1188,31 +1280,21 @@ ipcMain.on('pin:context-menu', (event, imageBounds = {}) => {
     {
       label: '重新标注',
       click: async () => {
-        if (win.isDestroyed()) return
-        const windowBounds = win.getBounds()
-        const editBounds = {
-          x: Math.round(windowBounds.x + (Number(imageBounds.x) || 0)),
-          y: Math.round(windowBounds.y + (Number(imageBounds.y) || 0)),
-          width: Math.max(1, Math.round(Number(imageBounds.width) || windowBounds.width)),
-          height: Math.max(1, Math.round(Number(imageBounds.height) || windowBounds.height))
-        }
-        const imageSize = nativeImage.createFromDataURL(win._pinData.dataUrl).getSize()
-        const sourceScaleFactor = Math.max(0.25, imageSize.width / editBounds.width)
-        win.hide()
         try {
-          const captureWindow = await createCaptureWindow({
-            imageDataUrl: win._pinData.dataUrl,
-            mode: 'image',
-            source: 'pin-reannotate',
-            windowBounds: editBounds,
-            sourceScaleFactor,
-            editPin: true,
-            editingPinWindow: win
-          })
-          if (!captureWindow) bringPinToFront(win)
+          await startPinReannotation(win, imageBounds)
         } catch (error) {
           log('Reannotate pin failed:', error.message)
-          bringPinToFront(win)
+        }
+      }
+    },
+    {
+      label: '文本识别',
+      enabled: !!getSettings().plugins.ocr,
+      click: async () => {
+        try {
+          await startPinReannotation(win, imageBounds, 'ocr')
+        } catch (error) {
+          log('OCR pin failed:', error.message)
         }
       }
     },
@@ -1346,6 +1428,7 @@ else {
     createMainWindow('home')
     registerShortcuts()
     initSelectionHook()
+    if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
     if (isWin) screenshotDesktop.listDisplays().then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) }).catch(() => {})
     app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
   })
@@ -1353,6 +1436,7 @@ else {
   app.on('window-all-closed', () => {})
   app.on('will-quit', () => globalShortcut.unregisterAll())
   app.on('before-quit', () => {
+    if (ocrService) { ocrService.stop(); ocrService = null }
     if (selectionHook) { try { selectionHook.cleanup() } catch {}; selectionHook = null }
     if (tray) { tray.destroy(); tray = null }
   })

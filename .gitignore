@@ -5,3 +5,7 @@ crash.log
 __pycache__/
 *.py[cod]
 native/smart-select/*.exe
+native/ocr/target/
+native/ocr/HighlighterOcrSidecar.exe
+native/ocr/OcrSidecar.exe
+native/ocr/*.dll

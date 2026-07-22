@@ -4,6 +4,7 @@ const toolbar = document.getElementById('toolbar')
 const sizeBadge = document.getElementById('sizeBadge')
 const tip = document.getElementById('tip')
 const loading = document.getElementById('loading')
+const loadingText = loading.querySelector('b')
 const colorInput = document.getElementById('color')
 const colorPreview = document.querySelector('.color-wrap span')
 const lineWidthInput = document.getElementById('lineWidth')
@@ -11,6 +12,9 @@ const resultPanel = document.getElementById('resultPanel')
 const resultTitle = document.getElementById('resultTitle')
 const resultSource = document.getElementById('resultSource')
 const resultText = document.getElementById('resultText')
+const ocrOverlay = document.getElementById('ocrOverlay')
+const ocrResultBar = document.getElementById('ocrResultBar')
+const ocrSummary = document.getElementById('ocrSummary')
 
 let initData = null
 let image = null
@@ -33,6 +37,8 @@ let smartCandidates = []
 let smartCandidateLevel = 0
 let smartQueryRunning = false
 let smartQueryPending = null
+let activeOcrResult = null
+let processingAction = null
 
 function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
 function normalizeRect(a, b) { return { x: Math.min(a.x,b.x), y: Math.min(a.y,b.y), w: Math.abs(b.x-a.x), h: Math.abs(b.y-a.y) } }
@@ -133,7 +139,7 @@ function drawHandles() {
 function updateFloatingUi() {
   if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; return }
   sizeBadge.style.display='block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
-  if (selectState==='auto') { toolbar.classList.add('hidden'); return }
+  if (selectState==='auto'||activeOcrResult) { toolbar.classList.add('hidden'); return }
   toolbar.classList.remove('hidden')
   const rect=toolbar.getBoundingClientRect(); let left=selection.x+selection.w-rect.width; let top=selection.y+selection.h+10
   if (top+rect.height>innerHeight-6) top=selection.y-rect.height-10
@@ -182,6 +188,7 @@ async function requestSmartSelection(point) {
 
 canvas.addEventListener('pointerdown',(event)=>{
   if (!resultPanel.classList.contains('hidden')) return
+  if(activeOcrResult){clearOcrResult();return}
   const point=pointFromEvent(event); startPoint=point
   if(selectState==='auto'){pointerDownPoint=point;return}
   if (!selection || (currentTool==='select'&&!insideSelection(point))) { selectState='manual';selecting=true; selection={x:point.x,y:point.y,w:0,h:0}; annotations=[]; redoStack=[]; tip.style.display='none'; render(); return }
@@ -225,33 +232,120 @@ canvas.addEventListener('wheel',(event)=>{
 
 canvas.addEventListener('dblclick',()=>{ if(selection&&initData?.settings?.screenshot?.doubleClickCopy) performAction('copy') })
 
-function exportSelectionCanvas() {
+function exportSelectionCanvas(includeAnnotations = true) {
   if (!selection) return null
   const scaleX=image.naturalWidth/innerWidth, scaleY=image.naturalHeight/innerHeight
   const output=document.createElement('canvas'); output.width=Math.max(1,Math.round(selection.w*scaleX)); output.height=Math.max(1,Math.round(selection.h*scaleY))
   const out=output.getContext('2d'); out.drawImage(image,selection.x*scaleX,selection.y*scaleY,selection.w*scaleX,selection.h*scaleY,0,0,output.width,output.height)
-  annotations.forEach((item)=>drawAnnotation(out,item,scaleX,scaleY,selection.x,selection.y,image))
+  if(includeAnnotations)annotations.forEach((item)=>drawAnnotation(out,item,scaleX,scaleY,selection.x,selection.y,image))
   return output
 }
 
+function clearOcrResult() {
+  activeOcrResult=null
+  ocrOverlay.replaceChildren()
+  ocrOverlay.classList.add('hidden')
+  ocrResultBar.classList.add('hidden')
+  if(selection&&initData)updateFloatingUi()
+}
+
+function setProcessingState(action) {
+  processingAction=action||null
+  const active=!!processingAction
+  document.body.classList.toggle('processing',active)
+  loadingText.textContent=action==='translate'?'正在识别并翻译…':'正在识别文字…'
+  loading.classList.toggle('hidden',!active)
+  if(active&&selection){
+    toolbar.classList.add('hidden')
+    const rect=loading.getBoundingClientRect()
+    let left=selection.x+(selection.w-rect.width)/2
+    let top=selection.y+selection.h+10
+    if(top+rect.height>innerHeight-8)top=selection.y-rect.height-10
+    loading.style.left=`${Math.max(8,Math.min(left,innerWidth-rect.width-8))}px`
+    loading.style.top=`${Math.max(8,top)}px`
+  }else if(!active&&selection&&initData)updateFloatingUi()
+}
+
+function showOcrOverlay(result) {
+  clearOcrResult()
+  if(!selection||!result||!Array.isArray(result.textBlocks))return
+  activeOcrResult=result
+  ocrOverlay.style.left=`${selection.x}px`
+  ocrOverlay.style.top=`${selection.y}px`
+  ocrOverlay.style.width=`${selection.w}px`
+  ocrOverlay.style.height=`${selection.h}px`
+  const scaleX=selection.w/Math.max(1,result.imageWidth||1)
+  const scaleY=selection.h/Math.max(1,result.imageHeight||1)
+  const configuredConfidence=Number(initData?.settings?.ocr?.minConfidence)
+  const minConfidence=Number.isFinite(configuredConfidence)?configuredConfidence:.3
+  let visibleCount=0
+  result.textBlocks.forEach((block)=>{
+    if(!block?.text||!Array.isArray(block.box_points)||block.box_points.length<4||Number(block.text_score)<minConfidence)return
+    const points=block.box_points.map((point)=>({x:Number(point.x)*scaleX,y:Number(point.y)*scaleY}))
+    const width=Math.hypot(points[1].x-points[0].x,points[1].y-points[0].y)
+    const height=Math.hypot(points[3].x-points[0].x,points[3].y-points[0].y)
+    if(width<2||height<2)return
+    const centerX=points.reduce((sum,point)=>sum+point.x,0)/points.length
+    const centerY=points.reduce((sum,point)=>sum+point.y,0)/points.length
+    const angle=Math.atan2(points[1].y-points[0].y,points[1].x-points[0].x)*180/Math.PI
+    const element=document.createElement('div')
+    element.className=`ocr-text-block${height>width*1.5?' vertical':''}`
+    element.textContent=block.text
+    element.title=`置信度 ${Math.round(Number(block.text_score)*100)}%`
+    element.style.left=`${centerX-width/2}px`
+    element.style.top=`${centerY-height/2}px`
+    element.style.width=`${width}px`
+    element.style.height=`${height}px`
+    element.style.fontSize=`${Math.max(9,Math.min(36,(height>width*1.5?width:height)*.72))}px`
+    element.style.lineHeight=`${Math.max(10,height)}px`
+    element.style.transform=`rotate(${Math.abs(angle)<3?0:angle}deg)`
+    element.addEventListener('pointerdown',(event)=>event.stopPropagation())
+    ocrOverlay.appendChild(element)
+    visibleCount++
+  })
+  ocrSummary.textContent=result.cached?`识别到 ${visibleCount} 处文本 · 已缓存`:`识别到 ${visibleCount} 处文本 · ${result.durationMs||0} ms`
+  ocrOverlay.classList.remove('hidden')
+  ocrResultBar.classList.remove('hidden')
+  toolbar.classList.add('hidden')
+}
+
 async function performAction(action) {
-  const output=exportSelectionCanvas(); if(!output)return
+  if(processingAction)return
+  const output=exportSelectionCanvas(!['ocr','translate'].includes(action)); if(!output)return
   const dataUrl=output.toDataURL('image/png'); const captureBounds=initData.captureBounds||initData.displayBounds||{x:0,y:0}; const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds:{x:Math.round(captureBounds.x+selection.x),y:Math.round(captureBounds.y+selection.y),width:Math.max(1,Math.round(selection.w)),height:Math.max(1,Math.round(selection.h))}}
   try {
     if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(dataUrl,meta);else await window.captureAPI.copy(dataUrl,meta);window.captureAPI.close()}
     if(action==='save'){const saved=await window.captureAPI.save(dataUrl,meta,!!initData.settings.screenshot.fastSave);if(saved)window.captureAPI.close()}
     if(action==='pin'){await window.captureAPI.pin(dataUrl,meta);window.captureAPI.close()}
-    if(action==='ocr'||action==='translate'){loading.classList.remove('hidden'); const result=action==='ocr'?await window.captureAPI.ocr(dataUrl):await window.captureAPI.translate(dataUrl); loading.classList.add('hidden'); showResult(action,result); if(initData.autoAction===action)initData.autoAction=''}
-  } catch(error){loading.classList.add('hidden');alert(error.message||String(error))}
+    if(action==='ocr'&&!initData.editPin){await window.captureAPI.pinAndReannotate(dataUrl,meta,'ocr');return}
+    if(action==='ocr'||action==='translate'){
+      clearOcrResult();setProcessingState(action)
+      try {
+        const options={scaleFactor:Number(initData.scaleFactor)||1}
+        const result=action==='ocr'?await window.captureAPI.ocr(dataUrl,options):await window.captureAPI.translate(dataUrl,options)
+        showResult(action,result)
+        if(initData.autoAction===action)initData.autoAction=''
+      } finally {setProcessingState(null)}
+    }
+  } catch(error){alert(error.message||String(error))}
 }
 
 function showResult(type,result) {
+  if(type==='ocr'&&result&&typeof result==='object'){
+    resultText.value=result.text||''
+    const afterAction=initData?.settings?.ocr?.afterAction||'none'
+    if(result.text&&['copy','copy-and-close'].includes(afterAction))navigator.clipboard.writeText(result.text).catch(()=>{})
+    if(result.text&&afterAction==='copy-and-close'){window.captureAPI.close();return}
+    showOcrOverlay(result)
+    if(!result.text)resultPanel.classList.remove('hidden')
+    return
+  }
   resultPanel.classList.remove('hidden'); resultSource.classList.toggle('hidden',type!=='translate'); resultTitle.textContent=type==='translate'?'截图翻译':'文本识别';
   if(type==='translate'){resultSource.textContent=result.text||'';resultText.value=result.translation||''}else{resultSource.textContent='';resultText.value=result||''}
 }
 
 async function scanQr() {
-  const output=exportSelectionCanvas(); if(!output)return
+  const output=exportSelectionCanvas(false); if(!output)return
   const data=output.getContext('2d').getImageData(0,0,output.width,output.height); const result=window.jsQR?window.jsQR(data.data,data.width,data.height):null
   if(!result)return alert('未识别到二维码')
   showResult('ocr',result.data); resultTitle.textContent='二维码识别'
@@ -270,10 +364,13 @@ document.getElementById('qr').onclick=scanQr
 document.getElementById('close').onclick=()=>window.captureAPI.close()
 document.getElementById('resultClose').onclick=document.getElementById('resultDone').onclick=()=>resultPanel.classList.add('hidden')
 document.getElementById('resultCopy').onclick=async()=>{await navigator.clipboard.writeText(resultText.value);document.getElementById('resultCopy').textContent='已复制';setTimeout(()=>document.getElementById('resultCopy').textContent='复制文本',1000)}
+document.getElementById('ocrPlainText').onclick=()=>{if(!activeOcrResult)return;resultSource.classList.add('hidden');resultTitle.textContent='文本识别';resultText.value=activeOcrResult.text||'';resultPanel.classList.remove('hidden')}
+document.getElementById('ocrCopyAll').onclick=async()=>{if(!activeOcrResult)return;await navigator.clipboard.writeText(activeOcrResult.text||'');const button=document.getElementById('ocrCopyAll');button.textContent='已复制';setTimeout(()=>button.textContent='复制全部',1000)}
+document.getElementById('ocrResultClose').onclick=clearOcrResult
 
 addEventListener('keydown',(event)=>{
-  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else window.captureAPI.close()}
-  if(event.key==='Enter'&&!event.ctrlKey)performAction('copy')
+  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(activeOcrResult)clearOcrResult();else window.captureAPI.close()}
+  if(event.key==='Enter'&&!event.ctrlKey&&!activeOcrResult&&resultPanel.classList.contains('hidden'))performAction('copy')
   if(event.ctrlKey&&event.key.toLowerCase()==='s'){event.preventDefault();performAction('save')}
   if(event.ctrlKey&&event.key.toLowerCase()==='z'){event.preventDefault();document.getElementById('undo').click()}
   if(event.ctrlKey&&event.key.toLowerCase()==='y'){event.preventDefault();document.getElementById('redo').click()}
@@ -281,7 +378,7 @@ addEventListener('keydown',(event)=>{
 })
 
 window.captureAPI.onInit((data)=>{
-  initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#1677ff')
+  clearOcrResult();setProcessingState(null);initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#1677ff')
   image=new Image(); image.onload=()=>{if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError('截图图片解码失败'); image.src=data.mode==='canvas'?makeBlankCanvas():data.imageDataUrl
 })
 

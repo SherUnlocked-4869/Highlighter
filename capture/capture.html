@@ -8,6 +8,7 @@
 </head>
 <body>
   <canvas id="stage"></canvas>
+  <div id="ocrOverlay" class="ocr-overlay hidden"></div>
   <div id="tip">拖动选择区域 · 单击窗口区域快速框选 · Esc 退出</div>
   <div id="sizeBadge"></div>
   <div id="toolbar" class="toolbar hidden">
@@ -43,6 +44,12 @@
     <div id="resultSource" class="result-source hidden"></div>
     <textarea id="resultText" readonly></textarea>
     <div class="result-actions"><button id="resultCopy">复制文本</button><button id="resultDone" class="primary">完成</button></div>
+  </div>
+  <div id="ocrResultBar" class="ocr-result-bar hidden">
+    <span id="ocrSummary">识别完成</span>
+    <button id="ocrPlainText">纯文本</button>
+    <button id="ocrCopyAll" class="primary">复制全部</button>
+    <button id="ocrResultClose" title="关闭识别结果">×</button>
   </div>
   <div id="loading" class="loading hidden"><span></span><b>处理中…</b></div>
   <script src="../node_modules/jsqr/dist/jsQR.js"></script>

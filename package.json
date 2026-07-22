@@ -5,12 +5,16 @@
   "main": "main.js",
   "author": "Highlighter",
   "scripts": {
+    "stop:app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-running.ps1",
     "build:smart-select": "powershell -NoProfile -ExecutionPolicy Bypass -File native/smart-select/build.ps1",
-    "prestart": "npm run build:smart-select",
+    "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
+    "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr",
+    "check": "node --check main.js && node --check main/services/ocr-service.js && node --check preload-capture.js && node --check capture/capture.js && node --check config/config.js",
+    "prestart": "npm run build:native",
     "start": "electron .",
-    "prebuild:win": "npm run build:smart-select",
+    "prebuild:win": "npm run build:native",
     "build:win": "electron-builder --win --x64",
-    "prebuild:win:portable": "npm run build:smart-select",
+    "prebuild:win:portable": "npm run build:native",
     "build:win:portable": "electron-builder --win portable --x64"
   },
   "build": {
@@ -27,6 +31,18 @@
       {
         "from": "native/smart-select/SmartSelect.exe",
         "to": "native/smart-select/SmartSelect.exe"
+      },
+      {
+        "from": "native/ocr",
+        "to": "native/ocr",
+        "filter": [
+          "HighlighterOcrSidecar.exe",
+          "*.dll"
+        ]
+      },
+      {
+        "from": "ocr/models",
+        "to": "ocr/models"
       }
     ],
     "files": [
@@ -37,6 +53,7 @@
       "preload-pin.js",
       "preload-record.js",
       "deepseek.js",
+      "main/**/*",
       "assets/**/*",
       "config/**/*",
       "toolbar/**/*",
@@ -80,13 +97,13 @@
     "openai": "^4.87.3",
     "screenshot-desktop": "^1.15.4",
     "selection-hook": "^2.0.2",
-    "showdown": "^2.1.0",
-    "tesseract.js": "^6.0.1"
+    "showdown": "^2.1.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",
     "electron": "^33.4.11",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "onnxruntime-node": "^1.24.2"
   },
   "allowScripts": {
     "electron": true,

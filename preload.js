@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openSaveDirectory: () => ipcRenderer.invoke('app:open-save-directory'),
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   getDisplayDiagnostics: () => ipcRenderer.invoke('app:get-display-diagnostics'),
+  getOcrStatus: () => ipcRenderer.invoke('ocr:status'),
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowClose: () => ipcRenderer.send('window:close'),
   onNavigate: (callback) => {
