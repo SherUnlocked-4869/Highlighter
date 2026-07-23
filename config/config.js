@@ -11,6 +11,7 @@ const routeTitles = {
   home: '快捷功能', translation: '翻译', chat: 'AI 对话', history: '截图历史',
   appearance: '外观配色', plugins: '插件', 'settings-general': '界面设置',
   'settings-function': '功能设置', 'settings-hotkeys': '热键设置',
+  'selection-toolbar': '划词工具',
   'settings-system': '系统设置', about: '关于'
 }
 
@@ -101,6 +102,7 @@ function renderRoute() {
   else if (currentRoute === 'plugins') renderPlugins()
   else if (currentRoute === 'settings-general') renderGeneralSettings()
   else if (currentRoute === 'settings-function') renderFunctionSettings()
+  else if (currentRoute === 'selection-toolbar') renderSelectionToolbarSettings()
   else if (currentRoute === 'settings-hotkeys') renderHotkeySettings()
   else if (currentRoute === 'settings-system') renderSystemSettings()
   else renderAbout()
@@ -222,6 +224,30 @@ function bindSwitches() {
     element.classList.toggle('on', value)
   })
 }
+function renderSelectionToolbarSettings() {
+  const toolbar = settings.selectionToolbar
+  view.innerHTML = `<div class="page">${pageHeader('划词工具', '管理划词后显示的工具栏及其操作。')}<section class="section"><h2 class="section-title">工具栏</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>启用划词工具栏</b><small>选中文本后显示快捷操作</small></div>${switchMarkup(toolbar.enabled, 'enabled', 'selectionToolbar')}</div><div class="form-row"><div class="form-label"><b>复制</b><small>复制划词内容到系统剪贴板</small></div><div class="switch ${toolbar.buttons.copy ? 'on' : ''}" data-toolbar-button="copy"></div></div><div class="form-row"><div class="form-label"><b>搜索</b><small>使用默认浏览器搜索划词内容</small></div><div class="switch ${toolbar.buttons.search ? 'on' : ''}" data-toolbar-button="search"></div></div><div class="form-row"><div class="form-label"><b>翻译</b><small>调用翻译服务处理划词内容</small></div><div class="switch ${toolbar.buttons.translate ? 'on' : ''}" data-toolbar-button="translate"></div></div><div class="form-row"><div class="form-label"><b>解释</b><small>调用 AI 解释划词内容</small></div><div class="switch ${toolbar.buttons.explain ? 'on' : ''}" data-toolbar-button="explain"></div></div></div></section><section class="section"><h2 class="section-title">搜索</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>搜索引擎</b><small>搜索按钮使用系统默认浏览器打开</small></div><select id="searchEngine"><option value="bing">Bing</option><option value="baidu">百度</option><option value="google">Google</option></select></div></div></section><button class="button primary" id="saveSelectionToolbar">保存</button></div>`
+  document.getElementById('searchEngine').value = toolbar.searchEngine || 'bing'
+  bindSwitches()
+  document.querySelectorAll('[data-toolbar-button]').forEach((element) => {
+    element.onclick = async () => {
+      const key = element.dataset.toolbarButton
+      const value = !element.classList.contains('on')
+      await updateSettings({
+        selectionToolbar: {
+          buttons: { [key]: value }
+        }
+      })
+      element.classList.toggle('on', value)
+    }
+  })
+  document.getElementById('saveSelectionToolbar').onclick = () => updateSettings({
+    selectionToolbar: {
+      searchEngine: document.getElementById('searchEngine').value
+    }
+  })
+}
+
 
 function renderAppearance() {
   view.innerHTML = `<div class="page">${pageHeader('外观配色', '自定义主题、主色、圆角、紧凑布局、皮肤图片与 CSS。')}<section class="section"><h2 class="section-title">主题</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>主题</b><small>跟随系统、浅色或深色</small></div><select id="theme"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></div><div class="form-row"><div class="form-label"><b>主色</b><small>按钮、选中状态和截图框颜色</small></div><input id="mainColor" type="color" value="${settings.mainColor}"></div><div class="form-row"><div class="form-label"><b>圆角</b></div><input id="borderRadius" type="range" min="0" max="20" value="${settings.borderRadius}"></div><div class="form-row"><div class="form-label"><b>紧凑布局</b></div>${switchMarkup(settings.compact, 'compact')}</div></div></section><section class="section"><h2 class="section-title">皮肤</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>皮肤图片路径</b><small>支持 PNG、JPG、WebP 等本地图片</small></div><input id="skinPath" type="text" value="${escapeHtml(settings.skinPath || '')}" placeholder="D:\\Pictures\\skin.jpg"></div><div class="form-row"><div class="form-label"><b>皮肤透明度</b></div><input id="skinOpacity" type="range" min="0" max="100" value="${settings.skinOpacity || 0}"></div><div class="form-row" style="align-items:flex-start;padding:14px 0"><div class="form-label"><b>自定义 CSS</b><small>覆盖主界面样式</small></div><textarea id="customCss" class="textarea" style="min-height:130px">${escapeHtml(settings.customCss || '')}</textarea></div></div></section><button class="button primary" id="saveAppearance">保存外观</button></div>`
