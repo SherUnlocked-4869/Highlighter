@@ -351,6 +351,10 @@ async function rerecord() {
     setState(transitionRecordingState(state, 'rerecord'))
     await runCountdown()
   } catch (error) {
+    if (sessionId) await window.recordAPI.cancelSession(sessionId).catch(() => {})
+    sessionId = null
+    stopSource()
+    await window.recordAPI.setFrameState('idle').catch(() => {})
     setState('idle')
     setBusy(false)
     reportError(error)

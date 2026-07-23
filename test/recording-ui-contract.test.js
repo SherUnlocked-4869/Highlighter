@@ -53,5 +53,6 @@ test('region recording uses supported silent MP4 settings', () => {
   assert.match(recordHtml, /id="saveProgress"/)
   assert.match(recordScript, /无法获取桌面录制画面/)
   assert.match(recordScript, /cancelButton\.disabled/)
+  assert.match(recordScript, /async function rerecord\(\)[\s\S]*catch \(error\) \{[\s\S]*cancelSession\(sessionId\)/)
   assert.match(main, /未找到 MP4 编码组件/)
 })
