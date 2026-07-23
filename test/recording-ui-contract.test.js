@@ -29,6 +29,29 @@ test('main process wires protected region recording windows', () => {
   assert.match(frame, /data-state="idle"/)
 })
 
+test('recording frame exposes a protected annotation canvas contract', () => {
+  const html = fs.readFileSync(path.join(root, 'record', 'frame.html'), 'utf8')
+  const frameScriptPath = path.join(root, 'record', 'frame.js')
+  const frameStylePath = path.join(root, 'record', 'frame.css')
+  const preload = fs.readFileSync(path.join(root, 'preload-record-frame.js'), 'utf8')
+
+  assert.equal(fs.existsSync(frameScriptPath), true)
+  assert.equal(fs.existsSync(frameStylePath), true)
+  const frameScript = fs.readFileSync(frameScriptPath, 'utf8')
+  assert.match(html, /id="annotationStage"/)
+  assert.match(html, /frame\.css/)
+  assert.match(html, /annotation-utils\.js/)
+  assert.match(html, /frame\.js/)
+  assert.match(frameScript, /pointerdown/)
+  assert.match(frameScript, /pointermove/)
+  assert.match(frameScript, /pointerup/)
+  assert.match(frameScript, /requestAnimationFrame/)
+  assert.match(frameScript, /submitSnapshot/)
+  assert.match(preload, /record-frame:command/)
+  assert.match(preload, /record-frame:snapshot/)
+  assert.match(preload, /record-frame:ready/)
+})
+
 test('recording UI contains control and preview states', () => {
   const html = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')
   const script = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')

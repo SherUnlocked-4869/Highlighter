@@ -4,15 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Highlighter 录制区域</title>
-  <style>
-    *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}body{border:2px solid #1687ff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.8)}body[data-state="recording"]{border-color:#ff3b30}body[data-state="paused"]{border-color:#ffc400}
-  </style>
+  <link rel="stylesheet" href="frame.css">
 </head>
 <body data-state="idle">
-  <script>
-    window.recordFrameAPI.onState((state) => {
-      document.body.dataset.state = ['recording', 'paused'].includes(state) ? state : 'idle'
-    })
-  </script>
+  <canvas id="annotationStage" aria-label="录制标注区域"></canvas>
+  <script src="annotation-utils.js"></script>
+  <script src="frame.js"></script>
 </body>
 </html>
