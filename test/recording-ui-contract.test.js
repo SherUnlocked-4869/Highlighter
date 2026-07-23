@@ -52,6 +52,23 @@ test('recording frame exposes a protected annotation canvas contract', () => {
   assert.match(preload, /record-frame:ready/)
 })
 
+test('main process securely routes annotation commands and snapshots', () => {
+  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  const recordPreload = fs.readFileSync(path.join(root, 'preload-record.js'), 'utf8')
+  assert.match(main, /requireRecordFrameSender/)
+  assert.match(main, /record:set-annotation-command/)
+  assert.match(main, /record-frame:snapshot/)
+  assert.match(main, /sanitizeAnnotationSnapshot/)
+  assert.match(main, /record:annotation-snapshot/)
+  assert.match(main, /setIgnoreMouseEvents\([^)]*tool === 'pointer'/)
+  assert.match(main, /record-frame:ready/)
+  assert.match(main, /restoreRecordFramePassthrough/)
+  assert.match(recordPreload, /setAnnotationCommand:/)
+  assert.match(recordPreload, /record:set-annotation-command/)
+  assert.match(recordPreload, /onAnnotationSnapshot:/)
+  assert.match(recordPreload, /record:annotation-snapshot/)
+})
+
 test('recording UI contains control and preview states', () => {
   const html = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')
   const script = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')

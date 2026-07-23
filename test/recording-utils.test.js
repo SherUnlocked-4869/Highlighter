@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const {
   buildFfmpegArgs,
   calculateFrameBounds,
+  calculateRecordControlSize,
   calculateTranscodeProgress,
   calculateCropRect,
   normalizeFrameRate,
@@ -37,6 +38,13 @@ test('places the recording frame entirely outside the captured selection', () =>
     calculateFrameBounds({ x: 100, y: 50, width: 641, height: 361 }, 2),
     { x: 98, y: 48, width: 645, height: 365 }
   )
+})
+
+test('sizes annotation controls responsively inside the display work area', () => {
+  assert.deepEqual(calculateRecordControlSize({ width: 1920 }), { width: 760, height: 86 })
+  assert.deepEqual(calculateRecordControlSize({ width: 760 }), { width: 760, height: 86 })
+  assert.deepEqual(calculateRecordControlSize({ width: 640 }), { width: 640, height: 126 })
+  assert.deepEqual(calculateRecordControlSize({ width: 200 }), { width: 320, height: 126 })
 })
 
 test('converts ffmpeg elapsed microseconds to a bounded percentage', () => {

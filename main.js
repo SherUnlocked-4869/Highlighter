@@ -22,11 +22,16 @@ const { RecordingService } = require('./main/services/recording-service')
 const { buildTableFromOcr } = require('./capture/recognition-utils')
 const {
   calculateFrameBounds,
+  calculateRecordControlSize,
   calculateTranscodeProgress,
   normalizeFrameRate,
   normalizeSelectionBounds,
   pickDesktopSource
 } = require('./record/recording-utils')
+const {
+  sanitizeAnnotationCommand,
+  sanitizeAnnotationSnapshot
+} = require('./record/annotation-utils')
 const {
   DEFAULT_SELECTION_TOOLBAR,
   buildSearchUrl,
@@ -1075,11 +1080,19 @@ async function closeRecordFlow() {
   if (recordWindow === control) recordWindow = null
   if (recordFrameWindow === frame) recordFrameWindow = null
   await cleanupRecordSession(control).catch((error) => log('Recording cleanup failed:', error.message))
+  restoreRecordFramePassthrough(frame)
   if (control && !control.isDestroyed()) control.close()
   if (frame && !frame.isDestroyed()) frame.close()
 }
 
-function getRecordControlBounds(selectionBounds, workArea, width = 440, height = 86) {
+function restoreRecordFramePassthrough(frame = recordFrameWindow) {
+  if (!frame || frame.isDestroyed()) return false
+  frame.setIgnoreMouseEvents(true, { forward: true })
+  return true
+}
+
+function getRecordControlBounds(selectionBounds, workArea) {
+  const { width, height } = calculateRecordControlSize(workArea)
   const minX = workArea.x
   const maxX = workArea.x + workArea.width - width
   const minY = workArea.y
@@ -1145,6 +1158,8 @@ async function createRecordWindow(options = {}) {
   recordWindow = controlWindow
   frameWindow._recordOwner = controlWindow
   controlWindow._recordControlBounds = controlBounds
+  controlWindow._recordFrameState = 'idle'
+  controlWindow._recordAnnotationCommand = sanitizeAnnotationCommand({})
   controlWindow._recordInit = {
     sourceId: source.id,
     displayBounds: display.bounds,
@@ -1156,7 +1171,7 @@ async function createRecordWindow(options = {}) {
     win.setAlwaysOnTop(true, 'screen-saver')
     win.setContentProtection(true)
   }
-  frameWindow.setIgnoreMouseEvents(true)
+  restoreRecordFramePassthrough(frameWindow)
   controlWindow.on('closed', () => {
     cleanupRecordSession(controlWindow).catch((error) => log('Recording cleanup failed:', error.message))
     if (recordWindow === controlWindow) recordWindow = null
@@ -1626,6 +1641,26 @@ function requireRecordSender(event) {
   return win
 }
 
+function requireRecordFrameSender(event) {
+  const frame = BrowserWindow.fromWebContents(event.sender)
+  if (!frame || frame !== recordFrameWindow || frame.isDestroyed() || frame._recordOwner !== recordWindow) {
+    throw new Error('无效的录制标注窗口')
+  }
+  return frame
+}
+
+function sendRecordAnnotationCommand(control, payload = {}) {
+  const frame = recordFrameWindow
+  if (!control || control !== recordWindow || control.isDestroyed() || !frame || frame.isDestroyed() || frame._recordOwner !== control) return false
+  const sanitized = sanitizeAnnotationCommand({ ...control._recordAnnotationCommand, ...payload })
+  const enabled = ['recording', 'paused'].includes(control._recordFrameState)
+  const message = { ...sanitized, enabled, tool: enabled ? sanitized.tool : 'pointer' }
+  control._recordAnnotationCommand = { ...sanitized, action: '' }
+  frame.setIgnoreMouseEvents(message.tool === 'pointer', { forward: true })
+  frame.webContents.send('record-frame:command', message)
+  return message
+}
+
 function requireRecordSession(win, sessionId) {
   if (!sessionId || win._recordSessionId !== sessionId) throw new Error('录制会话不匹配')
   return sessionId
@@ -1634,6 +1669,21 @@ function requireRecordSession(win, sessionId) {
 ipcMain.on('record:ready', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win === recordWindow && win?._recordInit) event.sender.send('record:init', win._recordInit)
+})
+ipcMain.on('record-frame:ready', (event) => {
+  const frame = requireRecordFrameSender(event)
+  sendRecordAnnotationCommand(frame._recordOwner)
+})
+ipcMain.on('record-frame:snapshot', (event, snapshot = {}) => {
+  const frame = requireRecordFrameSender(event)
+  const control = frame._recordOwner
+  const bounds = control._recordInit.selectionBounds
+  const clean = sanitizeAnnotationSnapshot(snapshot, { width: bounds.width, height: bounds.height })
+  control.webContents.send('record:annotation-snapshot', clean)
+})
+ipcMain.handle('record:set-annotation-command', (event, command = {}) => {
+  const control = requireRecordSender(event)
+  return sendRecordAnnotationCommand(control, command)
 })
 ipcMain.handle('record:start-session', async (event) => {
   const win = requireRecordSender(event)
@@ -1689,10 +1739,15 @@ ipcMain.handle('record:cancel-session', async (event, { sessionId } = {}) => {
   return true
 })
 ipcMain.handle('record:set-frame-state', (event, state = 'idle') => {
-  requireRecordSender(event)
+  const control = requireRecordSender(event)
   const frame = recordFrameWindow
   if (!frame || frame.isDestroyed()) return false
-  if (state === 'hidden') frame.hide()
+  control._recordFrameState = ['recording', 'paused'].includes(state) ? state : 'idle'
+  sendRecordAnnotationCommand(control)
+  if (state === 'hidden') {
+    restoreRecordFramePassthrough(frame)
+    frame.hide()
+  }
   else {
     frame.showInactive()
     frame.webContents.send('record-frame:state', ['recording', 'paused'].includes(state) ? state : 'idle')
@@ -1718,6 +1773,10 @@ ipcMain.handle('record:restart', async (event, { sessionId } = {}) => {
   await cleanupRecordSession(win)
   win.setBounds(win._recordControlBounds, false)
   if (recordFrameWindow && !recordFrameWindow.isDestroyed()) {
+    win._recordFrameState = 'idle'
+    const resetVersion = Number(win._recordAnnotationCommand?.resetVersion || 0) + 1
+    sendRecordAnnotationCommand(win, { action: 'reset', resetVersion })
+    restoreRecordFramePassthrough(recordFrameWindow)
     recordFrameWindow.showInactive()
     recordFrameWindow.webContents.send('record-frame:state', 'idle')
   }

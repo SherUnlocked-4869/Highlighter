@@ -50,6 +50,12 @@
     }
   }
 
+  function calculateRecordControlSize(workArea = {}) {
+    const availableWidth = Math.max(320, Math.round(finite(workArea.width, 760)))
+    const width = Math.min(760, availableWidth)
+    return { width, height: width < 700 ? 126 : 86 }
+  }
+
   function calculateCropRect(video = {}, display = {}, selection = {}) {
     const displayWidth = finite(display.width)
     const displayHeight = finite(display.height)
@@ -138,6 +144,7 @@
     buildFfmpegArgs,
     calculateCropRect,
     calculateFrameBounds,
+    calculateRecordControlSize,
     calculateTranscodeProgress,
     normalizeFrameRate,
     normalizeSelectionBounds,
