@@ -73,7 +73,6 @@ const DEFAULT_SETTINGS = {
   },
   record: {
     frameRate: 24,
-    includeMicrophone: false,
     saveDirectory: ''
   },
   ai: {
@@ -150,7 +149,9 @@ function getOcrService() {
 }
 
 function resolveFfmpegPath() {
-  const candidate = require('ffmpeg-static')
+  let candidate = ''
+  try { candidate = require('ffmpeg-static') } catch {}
+  if (!candidate || typeof candidate !== 'string') throw new Error('未找到 MP4 编码组件')
   return app.isPackaged ? candidate.replace('app.asar', 'app.asar.unpacked') : candidate
 }
 
@@ -646,13 +647,17 @@ function isBlankCapture(image) {
 }
 
 async function getDesktopSource(display) {
-  const sources = await desktopCapturer.getSources({
-    types: ['screen'],
-    thumbnailSize: { width: 0, height: 0 }
-  })
-  const source = pickDesktopSource(sources, display.id)
-  if (!source) throw new Error('未找到可录制的屏幕源')
-  return source
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 0, height: 0 }
+    })
+    const source = pickDesktopSource(sources, display.id)
+    if (!source) throw new Error('未找到匹配显示器的桌面源')
+    return source
+  } catch (error) {
+    throw new Error(`无法获取桌面录制源：${error.message || error}`)
+  }
 }
 
 async function getDesktopCapture(display, scaleFactor) {

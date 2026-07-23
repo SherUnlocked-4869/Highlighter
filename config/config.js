@@ -37,7 +37,7 @@ const functionGroups = {
     ['translationSelectText', '翻译选中的文本', '⇄', '划词后快速翻译']
   ],
   video: [
-    ['videoRecord', '视频录制', '●', '录制屏幕为 WebM 视频']
+    ['videoRecord', '视频录制', '●', '录制屏幕并导出 MP4 视频']
   ],
   other: [
     ['fixedContent', '固定本地图片', '📌', '选择图片并固定到桌面'],
@@ -261,7 +261,7 @@ function renderPlugins() {
     ['ocr', 'OCR', '文本识别', '截图文字提取、二维码扫描、图片转文本的基础能力。'],
     ['translation', '译', '翻译', '文本翻译、截图识别翻译和划词翻译。'],
     ['ai', 'AI', 'AI 对话', '多轮对话、AI 翻译以及后续视觉理解扩展。'],
-    ['video', 'REC', '视频录制', '通过桌面采集与 MediaRecorder 录制 WebM。']
+    ['video', 'REC', '视频录制', '区域录制、暂停预览并导出 MP4。']
   ]
   view.innerHTML = `<div class="page">${pageHeader('插件', '按需启用功能模块，保持应用轻量。')}<div class="grid">${plugins.map(([key, icon, title, description]) => `<div class="card plugin-card"><div class="plugin-icon">${icon}</div><div class="plugin-info"><h3>${title}</h3><p>${description}</p></div>${switchMarkup(settings.plugins[key], key, 'plugins')}</div>`).join('')}</div></div>`
   bindSwitches()
@@ -273,10 +273,12 @@ function renderGeneralSettings() {
 }
 
 function renderFunctionSettings() {
+  const supportedFrameRates = [5, 16, 24, 30, 60]
+  const selectedFrameRate = supportedFrameRates.includes(Number(settings.record.frameRate)) ? Number(settings.record.frameRate) : 24
   const outputSettings = `<section class="section"><h2 class="section-title">截图与输出</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>复制后自动保存</b></div>${switchMarkup(settings.screenshot.autoSaveOnCopy, 'autoSaveOnCopy', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>一键快速保存</b></div>${switchMarkup(settings.screenshot.fastSave, 'fastSave', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>保存目录</b></div><input id="saveDirectory" type="text" value="${escapeHtml(settings.screenshot.saveDirectory || '')}"><button class="button" id="chooseSaveDirectory">选择</button></div><div class="form-row"><div class="form-label"><b>记录截图历史</b></div>${switchMarkup(settings.screenshot.historyEnabled, 'historyEnabled', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>历史数量上限</b></div><input id="historyLimit" type="number" min="10" max="1000" value="${settings.screenshot.historyLimit}"></div></div></section>`
   const ocrSettings = `<section class="section"><h2 class="section-title">文本识别</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>识别模型</b><small>本地 PaddleOCR v4，支持简体中文与英文</small></div><select id="ocrModel"><option value="ppocr-v4-ch">PaddleOCR v4 中英移动版</option></select></div><div class="form-row"><div class="form-label"><b>运行状态</b><small id="ocrStatusDetail">正在检查本地组件</small></div><span id="ocrStatus">检查中</span></div><div class="form-row"><div class="form-label"><b>文字方向检测</b><small>旋转文字较多时开启，普通截图关闭更快</small></div>${switchMarkup(settings.ocr.detectAngle, 'detectAngle', 'ocr')}</div><div class="form-row"><div class="form-label"><b>最低置信度</b><small>低于该分值的文本块不显示</small></div><input id="ocrMinConfidence" type="number" min="0" max="1" step="0.05" value="${settings.ocr.minConfidence}"></div><div class="form-row"><div class="form-label"><b>识别后操作</b></div><select id="ocrAfterAction"><option value="none">显示识别结果</option><option value="copy">复制全部文本</option><option value="copy-and-close">复制文本并关闭截图</option></select></div></div></section>`
   const aiSettings = `<section class="section"><h2 class="section-title">AI 与翻译</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>DeepSeek API Key</b><small>仅保存在本机 electron-store</small></div><input id="apiKey" type="password" value="${escapeHtml(settings.apiKey || '')}" placeholder="sk-..."><button class="button" id="testApi">测试</button></div><div class="form-row"><div class="form-label"><b>模型</b></div><input id="aiModel" type="text" value="${escapeHtml(settings.ai.model)}"></div><div class="form-row"><div class="form-label"><b>最大 Token</b></div><input id="maxTokens" type="number" value="${settings.ai.maxTokens}"></div><div class="form-row"><div class="form-label"><b>Temperature</b></div><input id="temperature" type="number" min="0" max="2" step="0.1" value="${settings.ai.temperature}"></div><div class="form-row"><div class="form-label"><b>默认翻译目标语言</b></div><select id="targetLanguage"><option>中文</option><option>英文</option><option>日文</option><option>韩文</option><option>繁体中文</option></select></div></div></section>`
-  const recordSettings = `<section class="section"><h2 class="section-title">视频录制</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>帧率</b></div><select id="frameRate"><option>15</option><option>24</option><option>30</option><option>60</option></select></div><div class="form-row"><div class="form-label"><b>录制麦克风</b></div>${switchMarkup(settings.record.includeMicrophone, 'includeMicrophone', 'record')}</div><div class="form-row"><div class="form-label"><b>视频保存目录</b></div><input id="recordDirectory" type="text" value="${escapeHtml(settings.record.saveDirectory || '')}"><button class="button" id="chooseRecordDirectory">选择</button></div></div></section>`
+  const recordSettings = `<section class="section"><h2 class="section-title">视频录制</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>帧率</b><small>录制仅包含画面，保存为 MP4</small></div><select id="frameRate">${supportedFrameRates.map((value) => `<option value="${value}">${value} FPS</option>`).join('')}</select></div><div class="form-row"><div class="form-label"><b>视频保存目录</b></div><input id="recordDirectory" type="text" value="${escapeHtml(settings.record.saveDirectory || '')}"><button class="button" id="chooseRecordDirectory">选择</button></div></div></section>`
   view.innerHTML = `<div class="page">${pageHeader('功能设置', '配置截图、OCR、固定到屏幕、AI、翻译、录屏与输出。')}${outputSettings}${ocrSettings}${aiSettings}${recordSettings}<button class="button primary" id="saveFunctions">保存功能设置</button></div>`
   document.getElementById('ocrModel').value = settings.ocr.modelProfile
   document.getElementById('ocrAfterAction').value = settings.ocr.afterAction
@@ -291,7 +293,7 @@ function renderFunctionSettings() {
     if (statusLabel) statusLabel.textContent = '检查失败'
   })
   document.getElementById('targetLanguage').value = settings.ai.targetLanguage
-  document.getElementById('frameRate').value = String(settings.record.frameRate)
+  document.getElementById('frameRate').value = String(selectedFrameRate)
   bindSwitches()
   document.getElementById('chooseSaveDirectory').onclick = async () => { const directory = await window.electronAPI.chooseDirectory(); if (directory) document.getElementById('saveDirectory').value = directory }
   document.getElementById('chooseRecordDirectory').onclick = async () => { const directory = await window.electronAPI.chooseDirectory(); if (directory) document.getElementById('recordDirectory').value = directory }

@@ -40,3 +40,18 @@ test('recording UI contains control and preview states', () => {
   assert.match(script, /appendChunk/)
   assert.match(script, /transitionRecordingState/)
 })
+
+test('region recording uses supported silent MP4 settings', () => {
+  const config = fs.readFileSync(path.join(root, 'config', 'config.js'), 'utf8')
+  const recordHtml = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')
+  const recordScript = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')
+  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  assert.match(config, /5.*16.*24.*30.*60/)
+  assert.doesNotMatch(config, /includeMicrophone|录制麦克风/i)
+  assert.doesNotMatch(recordHtml, /microphone|麦克风|系统声音/i)
+  assert.match(recordHtml, /id="recordError"/)
+  assert.match(recordHtml, /id="saveProgress"/)
+  assert.match(recordScript, /无法获取桌面录制画面/)
+  assert.match(recordScript, /cancelButton\.disabled/)
+  assert.match(main, /未找到 MP4 编码组件/)
+})

@@ -63,6 +63,8 @@ function setBusy(value) {
   stopButton.disabled = busy
   saveButton.disabled = busy
   rerecordButton.disabled = busy
+  cancelButton.disabled = busy && state !== 'countdown'
+  closePreviewButton.disabled = busy
 }
 
 function setState(nextState) {
@@ -82,12 +84,14 @@ function setState(nextState) {
     saving: '正在生成 MP4'
   }
   statusLabel.textContent = labels[state] || statusLabel.textContent
+  statusLabel.removeAttribute('title')
 }
 
 function reportError(error) {
   const message = error?.message || String(error || '录制失败')
   errorElement.textContent = message
   statusLabel.textContent = message
+  statusLabel.title = message
 }
 
 function clearFeedback() {
@@ -117,45 +121,54 @@ function waitForMetadata(video) {
 
 async function prepareSource() {
   if (desktopStream && canvasStream) return
-  desktopStream = await navigator.mediaDevices.getUserMedia({
-    audio: false,
-    video: {
-      mandatory: {
-        chromeMediaSource: 'desktop',
-        chromeMediaSourceId: initData.sourceId,
-        minFrameRate: frameRate,
-        maxFrameRate: frameRate
+  try {
+    desktopStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          chromeMediaSourceId: initData.sourceId,
+          minFrameRate: frameRate,
+          maxFrameRate: frameRate
+        }
       }
-    }
-  })
-  sourceVideo = document.createElement('video')
-  sourceVideo.muted = true
-  sourceVideo.playsInline = true
-  sourceVideo.srcObject = desktopStream
-  await waitForMetadata(sourceVideo)
-  await sourceVideo.play()
+    })
+    sourceVideo = document.createElement('video')
+    sourceVideo.muted = true
+    sourceVideo.playsInline = true
+    sourceVideo.srcObject = desktopStream
+    await waitForMetadata(sourceVideo)
+    await sourceVideo.play()
 
-  const crop = calculateCropRect(
-    { width: sourceVideo.videoWidth, height: sourceVideo.videoHeight },
-    initData.displayBounds,
-    initData.selectionBounds
-  )
-  canvas = document.createElement('canvas')
-  canvas.width = crop.width
-  canvas.height = crop.height
-  const context = canvas.getContext('2d', { alpha: false })
-  const draw = () => {
-    context.drawImage(sourceVideo, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.width, crop.height)
-    drawRequest = requestAnimationFrame(draw)
+    const crop = calculateCropRect(
+      { width: sourceVideo.videoWidth, height: sourceVideo.videoHeight },
+      initData.displayBounds,
+      initData.selectionBounds
+    )
+    canvas = document.createElement('canvas')
+    canvas.width = crop.width
+    canvas.height = crop.height
+    const context = canvas.getContext('2d', { alpha: false })
+    const draw = () => {
+      context.drawImage(sourceVideo, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.width, crop.height)
+      drawRequest = requestAnimationFrame(draw)
+    }
+    draw()
+    canvasStream = canvas.captureStream(frameRate)
+  } catch (error) {
+    stopSource()
+    throw new Error(`无法获取桌面录制画面：${error.message || error}`)
   }
-  draw()
-  canvasStream = canvas.captureStream(frameRate)
 }
 
 function createMediaRecorder() {
   const mimeTypes = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
   const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) || ''
-  return new MediaRecorder(canvasStream, mimeType ? { mimeType, videoBitsPerSecond: 8_000_000 } : undefined)
+  try {
+    return new MediaRecorder(canvasStream, mimeType ? { mimeType, videoBitsPerSecond: 8_000_000 } : undefined)
+  } catch (error) {
+    throw new Error(`无法创建无声视频录制器：${error.message || error}`)
+  }
 }
 
 async function startRecorder() {
@@ -169,6 +182,9 @@ async function startRecorder() {
     appendQueue = appendQueue
       .then(async () => window.recordAPI.appendChunk(sessionId, await event.data.arrayBuffer()))
       .catch((error) => { appendError = appendError || error })
+  })
+  recorder.addEventListener('error', (event) => {
+    appendError = appendError || new Error(`视频录制失败：${event.error?.message || 'MediaRecorder 错误'}`)
   })
   recorder.start(1000)
   startedAt = Date.now()
@@ -318,6 +334,13 @@ async function rerecord() {
   clearFeedback()
   try {
     await window.recordAPI.restart(sessionId)
+  } catch (error) {
+    setState('preview')
+    setBusy(false)
+    reportError(error)
+    return
+  }
+  try {
     sessionId = null
     preview.pause()
     preview.removeAttribute('src')
