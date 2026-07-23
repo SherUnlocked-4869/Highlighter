@@ -75,6 +75,7 @@ class RecordingService {
     return new Promise((resolve, reject) => {
       let stderr = ''
       let settled = false
+      let lastProgress = -1
       const child = this.spawnProcess(this.ffmpegPath, args, {
         windowsHide: true,
         stdio: ['ignore', 'ignore', 'pipe']
@@ -92,7 +93,16 @@ class RecordingService {
       child.stderr?.on('data', (chunk) => {
         const text = String(chunk)
         stderr = `${stderr}${text}`.slice(-4000)
-        for (const match of text.matchAll(/out_time_ms=(\d+)/g)) onProgress(Number(match[1]))
+        const values = [...stderr.matchAll(/out_time_ms=(\d+)/g)].map((match) => Number(match[1]))
+        for (const match of stderr.matchAll(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/g)) {
+          const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])
+          values.push(Math.round(seconds * 1_000_000))
+        }
+        for (const value of values) {
+          if (value <= lastProgress) continue
+          lastProgress = value
+          onProgress(value)
+        }
       })
       child.on('error', (error) => fail(new Error(`无法启动 MP4 编码组件：${error.message}`)))
       child.on('close', (code) => {

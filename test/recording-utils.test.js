@@ -2,12 +2,19 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
   buildFfmpegArgs,
+  calculateTranscodeProgress,
   calculateCropRect,
   normalizeFrameRate,
   normalizeSelectionBounds,
   pickDesktopSource,
   transitionRecordingState
 } = require('../record/recording-utils')
+
+test('converts ffmpeg elapsed microseconds to a bounded percentage', () => {
+  assert.equal(calculateTranscodeProgress(5_000_000, 10_000), 50)
+  assert.equal(calculateTranscodeProgress(15_000_000, 10_000), 99)
+  assert.equal(calculateTranscodeProgress(-1, 0), 0)
+})
 
 test('normalizes FPS to the supported recording set', () => {
   for (const fps of [5, 16, 24, 30, 60]) assert.equal(normalizeFrameRate(fps), fps)

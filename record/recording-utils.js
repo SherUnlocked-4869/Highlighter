@@ -54,6 +54,13 @@
     return { sx, sy, sw, sh, width: sw, height: sh }
   }
 
+  function calculateTranscodeProgress(elapsedMicroseconds, durationMs) {
+    const elapsed = finite(elapsedMicroseconds)
+    const duration = finite(durationMs)
+    if (elapsed <= 0 || duration <= 0) return 0
+    return Math.max(0, Math.min(99, Math.round(elapsed * 100 / (duration * 1000))))
+  }
+
   function pickDesktopSource(sources, displayId) {
     const list = Array.isArray(sources) ? sources : []
     return list.find((source) => String(source.display_id) === String(displayId)) || list[0] || null
@@ -92,6 +99,7 @@
   const recordingUtils = {
     buildFfmpegArgs,
     calculateCropRect,
+    calculateTranscodeProgress,
     normalizeFrameRate,
     normalizeSelectionBounds,
     pickDesktopSource,

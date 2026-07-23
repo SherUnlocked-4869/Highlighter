@@ -75,6 +75,29 @@ test('reports ffmpeg progress and returns the completed MP4', async (t) => {
   assert.equal(await fs.readFile(output, 'utf8'), 'mp4')
 })
 
+test('parses progress from standard ffmpeg time output', async (t) => {
+  const root = await createRoot(t)
+  const progress = []
+  const fakeSpawn = (_executable, args) => {
+    const child = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.kill = () => {}
+    queueMicrotask(async () => {
+      child.stderr.emit('data', Buffer.from('frame=15 time=00:00:00.50 bitrate=1000kbits/s'))
+      await fs.writeFile(args.at(-1), 'mp4')
+      child.emit('close', 0)
+    })
+    return child
+  }
+  const service = new RecordingService({ tempRoot: root, ffmpegPath: 'ffmpeg', spawnProcess: fakeSpawn })
+  t.after(() => service.dispose())
+  const session = await service.startSession()
+  await service.appendChunk(session.id, Buffer.from('webm'))
+  await service.finishSession(session.id)
+  await service.transcode(session.id, path.join(root, 'saved.mp4'), (value) => progress.push(value))
+  assert.deepEqual(progress, [500_000])
+})
+
 test('cleanup removes only the selected session directory', async (t) => {
   const root = await createRoot(t)
   const service = new RecordingService({ tempRoot: root, ffmpegPath: 'ffmpeg' })
