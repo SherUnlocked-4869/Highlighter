@@ -19,6 +19,14 @@ const screenshotDesktop = require('screenshot-desktop')
 const Store = require('electron-store')
 const { OcrService } = require('./main/services/ocr-service')
 const { buildTableFromOcr } = require('./capture/recognition-utils')
+const {
+  DEFAULT_SELECTION_TOOLBAR,
+  buildSearchUrl,
+  getToolbarWidth,
+  getVisibleToolbarActions,
+  isAiToolbarAction,
+  isLocalToolbarAction
+} = require('./toolbar/toolbar-utils')
 
 const DEFAULT_SETTINGS = {
   apiKey: '',
@@ -29,6 +37,7 @@ const DEFAULT_SETTINGS = {
   skinPath: '',
   skinOpacity: 18,
   customCss: '',
+  selectionToolbar: DEFAULT_SELECTION_TOOLBAR,
   plugins: { ocr: true, translation: true, ai: true, video: true },
   screenshot: {
     autoSaveOnCopy: false,
@@ -115,7 +124,7 @@ const pinWindows = new Set()
 const recognitionWindows = new Set()
 const actionWindows = []
 const MAX_PINNED = 20
-const TOOLBAR_W = 180
+const TOOLBAR_W = getToolbarWidth(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR))
 const TOOLBAR_H = 40
 const isWin = process.platform === 'win32'
 let nativeDisplayListPromise = null
@@ -547,14 +556,14 @@ function getRefPointAndOrientation(data) {
   return { refPoint: { x: refX, y: refY }, orientation }
 }
 
-function calculateToolbarPosition(refPoint, orientation) {
-  let x = refPoint.x - TOOLBAR_W / 2
+function calculateToolbarPosition(refPoint, orientation, toolbarWidth = TOOLBAR_W) {
+  let x = refPoint.x - toolbarWidth / 2
   let y = refPoint.y
   if (orientation === 'topRight') { x = refPoint.x; y = refPoint.y - TOOLBAR_H }
-  if (orientation === 'bottomLeft') x = refPoint.x - TOOLBAR_W
+  if (orientation === 'bottomLeft') x = refPoint.x - toolbarWidth
   if (orientation === 'bottomRight') x = refPoint.x
   const workArea = screen.getDisplayNearestPoint(refPoint).workArea
-  x = Math.round(Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - TOOLBAR_W)))
+  x = Math.round(Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - toolbarWidth)))
   y = Math.round(Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - TOOLBAR_H)))
   return { x, y }
 }
@@ -563,13 +572,17 @@ function handleTextSelection(data) {
   if (isProcessing || !data?.text || shouldFilterApp(data.programName)) return
   const text = data.text.trim()
   if (!text || text.length > 10000) return
+  const actions = getVisibleToolbarActions(getSettings().selectionToolbar)
+  if (!actions.length) { hideToolbar(); return }
+  const toolbarWidth = getToolbarWidth(actions)
   const result = getRefPointAndOrientation(data)
-  const position = calculateToolbarPosition(result.refPoint, result.orientation)
+  const position = calculateToolbarPosition(result.refPoint, result.orientation, toolbarWidth)
   if (!toolbarWindow || toolbarWindow.isDestroyed()) createToolbarWindow()
+  toolbarWindow.setSize(toolbarWidth, TOOLBAR_H)
   lastToolbarPos = position
   toolbarWindow.setPosition(position.x, position.y)
   toolbarWindow.showInactive()
-  toolbarWindow.webContents.send('selection:text', { text })
+  toolbarWindow.webContents.send('selection:text', { text, actions })
 }
 
 function hideToolbar() {
@@ -1479,8 +1492,18 @@ ipcMain.handle('record:save', async (_event, { arrayBuffer, mimeType }) => {
 })
 ipcMain.on('record:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
 
-ipcMain.on('toolbar:action', (_event, { action, text }) => {
+ipcMain.on('toolbar:action', async (_event, { action, text }) => {
   if (isProcessing || !text) return
+  if (isLocalToolbarAction(action)) {
+    hideToolbar()
+    if (action === 'copy') clipboard.writeText(text)
+    else {
+      const url = buildSearchUrl(getSettings().selectionToolbar.searchEngine, text)
+      try { await shell.openExternal(url) } catch (error) { log('Toolbar search failed:', error.message) }
+    }
+    return
+  }
+  if (!isAiToolbarAction(action)) return
   if (!getSettings().apiKey) { createMainWindow('settings-function'); hideToolbar(); return }
   isProcessing = true
   currentStreamController = { cancelled: false }

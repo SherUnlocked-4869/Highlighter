@@ -1,19 +1,16 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 let currentText = ''
+let selectionListener = null
 
-ipcRenderer.on('selection:text', (_e, data) => {
+ipcRenderer.on('selection:text', (_event, data) => {
   currentText = data.text || ''
-  // Send feedback to main so we know text was received
-  ipcRenderer.send('debug:text-received', { len: currentText.length })
+  selectionListener?.({
+    actions: Array.isArray(data.actions) ? data.actions : []
+  })
 })
 
 contextBridge.exposeInMainWorld('toolbarAPI', {
-  translate: () => {
-    // Always send - let main process handle empty text case
-    ipcRenderer.send('toolbar:action', { action: 'translate', text: currentText || '' })
-  },
-  explain: () => {
-    ipcRenderer.send('toolbar:action', { action: 'explain', text: currentText || '' })
-  }
+  onSelection: (callback) => { selectionListener = callback },
+  action: (action) => ipcRenderer.send('toolbar:action', { action, text: currentText })
 })

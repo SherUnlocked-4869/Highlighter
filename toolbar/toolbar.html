@@ -11,11 +11,12 @@
     border: 1px solid rgba(108, 99, 255, 0.25); border-radius: 10px;
     padding: 4px 8px;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5), 0 0 20px rgba(108, 99, 255, 0.1);
-    height: 38px; white-space: nowrap; width: fit-content; margin: 0 auto;
+    height: 38px; white-space: nowrap; width: 100%;
   }
-  .toolbar .sep { width: 1px; height: 20px; background: rgba(255, 255, 255, 0.1); }
+  .toolbar .sep { flex: 0 0 1px; width: 1px; height: 20px; background: rgba(255, 255, 255, 0.1); }
   .toolbar .btn {
-    display: flex; align-items: center; gap: 5px; padding: 5px 14px;
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    flex: 0 0 62px; width: 62px; height: 28px; padding: 5px 6px;
     border: none; border-radius: 7px; background: transparent; color: #d0d0e0;
     font-size: 13px; cursor: pointer; transition: all 0.15s; white-space: nowrap;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
@@ -23,6 +24,10 @@
   }
   .toolbar .btn:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
   .toolbar .btn:active { background: rgba(255, 255, 255, 0.15); }
+  .toolbar .btn-copy { color: #86efac; }
+  .toolbar .btn-copy:hover { background: rgba(134, 239, 172, 0.14); color: #bbf7d0; }
+  .toolbar .btn-search { color: #facc15; }
+  .toolbar .btn-search:hover { background: rgba(250, 204, 21, 0.14); color: #fde047; }
   .toolbar .btn-translate { color: #6c63ff; }
   .toolbar .btn-translate:hover { background: rgba(108, 99, 255, 0.15); color: #7c73ff; }
   .toolbar .btn-explain { color: #4fc3f7; }
@@ -30,14 +35,34 @@
 </style>
 </head>
 <body>
-<div class="toolbar">
-  <button class="btn btn-translate" id="btnTranslate">🌐 翻译</button>
-  <span class="sep"></span>
-  <button class="btn btn-explain" id="btnExplain">💡 解释</button>
-</div>
+<div class="toolbar" id="toolbar"></div>
 <script>
-document.getElementById('btnTranslate').onclick = function() { window.toolbarAPI.translate() }
-document.getElementById('btnExplain').onclick = function() { window.toolbarAPI.explain() }
+const actionMeta = {
+  copy: ['⧉', '复制'],
+  search: ['⌕', '搜索'],
+  translate: ['译', '翻译'],
+  explain: ['?', '解释']
+}
+
+window.toolbarAPI.onSelection(({ actions }) => {
+  const toolbar = document.getElementById('toolbar')
+  toolbar.replaceChildren()
+  actions.forEach((action, index) => {
+    const meta = actionMeta[action]
+    if (!meta) return
+    if (index) {
+      const separator = document.createElement('span')
+      separator.className = 'sep'
+      toolbar.append(separator)
+    }
+    const button = document.createElement('button')
+    button.className = `btn btn-${action}`
+    button.title = meta[1]
+    button.textContent = `${meta[0]} ${meta[1]}`
+    button.onclick = () => window.toolbarAPI.action(action)
+    toolbar.append(button)
+  })
+})
 </script>
 </body>
 </html>
