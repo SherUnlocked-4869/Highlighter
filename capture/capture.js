@@ -138,6 +138,7 @@ function drawHandles() {
 
 function updateFloatingUi() {
   if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; return }
+  document.getElementById('record').disabled=selection.w<16||selection.h<16
   sizeBadge.style.display='block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
   if (selectState==='auto'||activeOcrResult) { toolbar.classList.add('hidden'); return }
   toolbar.classList.remove('hidden')
@@ -311,9 +312,16 @@ function showOcrOverlay(result) {
 
 async function performAction(action) {
   if(processingAction)return
+  if(!selection)return
+  const captureBounds=initData.captureBounds||initData.displayBounds||{x:0,y:0}
+  const selectionBounds={x:Math.round(captureBounds.x+selection.x),y:Math.round(captureBounds.y+selection.y),width:Math.max(1,Math.round(selection.w)),height:Math.max(1,Math.round(selection.h))}
+  if(action==='record'){
+    try{await window.captureAPI.startRegionRecording(selectionBounds)}catch(error){alert(error.message||String(error))}
+    return
+  }
   const recognitionActions=['ocr','translate','table','qr']
   const output=exportSelectionCanvas(!recognitionActions.includes(action)); if(!output)return
-  const dataUrl=output.toDataURL('image/png'); const captureBounds=initData.captureBounds||initData.displayBounds||{x:0,y:0}; const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds:{x:Math.round(captureBounds.x+selection.x),y:Math.round(captureBounds.y+selection.y),width:Math.max(1,Math.round(selection.w)),height:Math.max(1,Math.round(selection.h))}}
+  const dataUrl=output.toDataURL('image/png'); const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds}
   try {
     if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(dataUrl,meta);else await window.captureAPI.copy(dataUrl,meta);window.captureAPI.close()}
     if(action==='save'){const saved=await window.captureAPI.save(dataUrl,meta,!!initData.settings.screenshot.fastSave);if(saved)window.captureAPI.close()}
@@ -356,6 +364,7 @@ document.getElementById('pin').onclick=()=>performAction('pin')
 document.getElementById('ocr').onclick=()=>performAction('ocr')
 document.getElementById('table').onclick=()=>performAction('table')
 document.getElementById('translate').onclick=()=>performAction('translate')
+document.getElementById('record').onclick=()=>performAction('record')
 document.getElementById('qr').onclick=()=>performAction('qr')
 document.getElementById('close').onclick=()=>window.captureAPI.close()
 document.getElementById('resultClose').onclick=document.getElementById('resultDone').onclick=()=>resultPanel.classList.add('hidden')

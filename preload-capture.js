@@ -18,5 +18,6 @@ contextBridge.exposeInMainWorld('captureAPI', {
   openRecognition: (type, dataUrl, meta) => ipcRenderer.invoke('capture:open-recognition', { type, dataUrl, meta }),
   ocr: (dataUrl, options) => ipcRenderer.invoke('capture:ocr', { dataUrl, ...options }),
   translate: (dataUrl, options) => ipcRenderer.invoke('capture:translate', { dataUrl, ...options }),
+  startRegionRecording: (selectionBounds) => ipcRenderer.invoke('capture:start-region-recording', { selectionBounds }),
   recordHistory: (dataUrl, meta) => ipcRenderer.invoke('capture:record-history', { dataUrl, meta })
 })
