@@ -1,13 +1,49 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<style>
-*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;user-select:none}.bar{height:70px;margin:8px;display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid rgba(255,255,255,.14);border-radius:13px;color:#eee;background:rgba(26,26,29,.93);box-shadow:0 12px 38px rgba(0,0,0,.35);backdrop-filter:blur(18px);-webkit-app-region:drag}.dot{width:10px;height:10px;border-radius:50%;background:#ff453a;box-shadow:0 0 0 5px rgba(255,69,58,.15);animation:pulse 1.2s infinite}.paused .dot{background:#ffcc00;animation:none}.time{min-width:74px;font:600 17px/1 Consolas,monospace}.label{flex:1;color:#999;font-size:12px}.bar button{height:34px;padding:0 12px;border:0;border-radius:7px;color:#eee;background:rgba(255,255,255,.1);cursor:pointer;-webkit-app-region:no-drag}.bar button:hover{background:rgba(255,255,255,.18)}#stop{background:#ff453a;color:#fff}@keyframes pulse{50%{opacity:.45}}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Highlighter 区域录制</title>
+  <link rel="stylesheet" href="record.css">
 </head>
-<body>
-<div class="bar" id="bar"><i class="dot"></i><b class="time" id="time">00:00</b><span class="label" id="label">正在准备录制…</span><button id="pause">暂停</button><button id="stop">停止并保存</button><button id="cancel">取消</button></div>
-<script src="record.js"></script>
+<body data-state="idle">
+  <section id="controlView" class="control-view">
+    <div class="status-cluster">
+      <i class="status-dot" aria-hidden="true"></i>
+      <div class="status-copy">
+        <strong id="time">00:00</strong>
+        <span id="statusLabel">区域已就绪</span>
+      </div>
+    </div>
+    <span id="fps" class="fps">24 FPS</span>
+    <strong id="countdown" class="countdown" hidden></strong>
+    <div class="control-actions">
+      <button id="start" class="primary" type="button">开始</button>
+      <button id="pause" type="button" hidden>暂停</button>
+      <button id="stop" class="danger" type="button" hidden>停止</button>
+      <button id="cancel" class="icon-button" type="button" title="取消录制" aria-label="取消录制">×</button>
+    </div>
+  </section>
+
+  <section id="previewView" class="preview-view" hidden>
+    <header class="preview-head">
+      <div><strong>录制预览</strong><span id="previewDuration">00:00</span></div>
+      <button id="closePreview" class="icon-button" type="button" title="关闭预览" aria-label="关闭预览">×</button>
+    </header>
+    <div class="video-stage">
+      <video id="preview" controls playsinline></video>
+    </div>
+    <div class="preview-feedback" aria-live="polite">
+      <span id="recordError"></span>
+      <span id="saveProgress"></span>
+    </div>
+    <footer class="preview-actions">
+      <button id="rerecord" type="button">重新录制</button>
+      <button id="saveMp4" class="primary" type="button">保存 MP4</button>
+    </footer>
+  </section>
+
+  <script src="recording-utils.js"></script>
+  <script src="record.js"></script>
 </body>
 </html>
