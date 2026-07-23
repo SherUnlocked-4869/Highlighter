@@ -3,6 +3,13 @@ const {
   primeSeekablePreview,
   transitionRecordingState
 } = window.recordingUtils
+const {
+  ANNOTATION_COLORS,
+  ANNOTATION_WIDTHS,
+  clearAnnotationSnapshot,
+  drawAnnotationSnapshot,
+  sanitizeAnnotationSnapshot
+} = window.annotationUtils
 
 const controlView = document.getElementById('controlView')
 const previewView = document.getElementById('previewView')
@@ -21,6 +28,15 @@ const rerecordButton = document.getElementById('rerecord')
 const closePreviewButton = document.getElementById('closePreview')
 const errorElement = document.getElementById('recordError')
 const saveProgressElement = document.getElementById('saveProgress')
+const annotationStyleButton = document.getElementById('annotationStyle')
+const annotationPalette = document.getElementById('annotationPalette')
+const annotationSwatch = document.getElementById('annotationSwatch')
+const annotationWidthMark = document.getElementById('annotationWidthMark')
+const annotationUndoButton = document.getElementById('annotationUndo')
+const annotationClearButton = document.getElementById('annotationClear')
+const annotationToolButtons = [...document.querySelectorAll('[data-annotation-tool]')]
+const annotationColorButtons = [...document.querySelectorAll('[data-annotation-color]')]
+const annotationWidthButtons = [...document.querySelectorAll('[data-annotation-width]')]
 
 let initData = null
 let frameRate = 24
@@ -42,6 +58,11 @@ let clockTimer = 0
 let durationMs = 0
 let countdownVersion = 0
 let disposePreviewProbe = () => {}
+let annotationTool = 'pointer'
+let annotationColor = '#ff3b30'
+let annotationWidth = 4
+let annotationSnapshot = clearAnnotationSnapshot()
+let annotationResetVersion = 0
 
 function formatDuration(milliseconds) {
   const seconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000))
@@ -67,6 +88,45 @@ function setBusy(value) {
   rerecordButton.disabled = busy
   cancelButton.disabled = busy && state !== 'countdown'
   closePreviewButton.disabled = busy
+  renderAnnotationControls()
+}
+
+function annotationEnabled() {
+  return !busy && ['recording', 'paused'].includes(state)
+}
+
+function renderAnnotationControls() {
+  const enabled = annotationEnabled()
+  annotationToolButtons.forEach((button) => {
+    button.disabled = !enabled
+    button.classList.toggle('active', button.dataset.annotationTool === annotationTool)
+  })
+  annotationStyleButton.disabled = !enabled
+  annotationUndoButton.disabled = !enabled || annotationSnapshot.annotations.length === 0
+  annotationClearButton.disabled = !enabled || annotationSnapshot.annotations.length === 0
+  annotationSwatch.style.background = annotationColor
+  annotationWidthMark.textContent = String(annotationWidth)
+  annotationColorButtons.forEach((button) => button.classList.toggle('active', button.dataset.annotationColor === annotationColor))
+  annotationWidthButtons.forEach((button) => button.classList.toggle('active', Number(button.dataset.annotationWidth) === annotationWidth))
+  if (!enabled) annotationPalette.hidden = true
+}
+
+function sendAnnotationCommand(action = '') {
+  return window.recordAPI.setAnnotationCommand({
+    tool: annotationTool,
+    color: annotationColor,
+    width: annotationWidth,
+    action,
+    resetVersion: annotationResetVersion
+  })
+}
+
+async function resetAnnotations() {
+  annotationSnapshot = clearAnnotationSnapshot()
+  annotationTool = 'pointer'
+  annotationResetVersion++
+  renderAnnotationControls()
+  await sendAnnotationCommand('reset')
 }
 
 function setState(nextState) {
@@ -87,6 +147,7 @@ function setState(nextState) {
   }
   statusLabel.textContent = labels[state] || statusLabel.textContent
   statusLabel.removeAttribute('title')
+  renderAnnotationControls()
 }
 
 function reportError(error) {
@@ -153,6 +214,10 @@ async function prepareSource() {
     const context = canvas.getContext('2d', { alpha: false })
     const draw = () => {
       context.drawImage(sourceVideo, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.width, crop.height)
+      drawAnnotationSnapshot(context, annotationSnapshot, {
+        width: initData.selectionBounds.width,
+        height: initData.selectionBounds.height
+      })
       drawRequest = requestAnimationFrame(draw)
     }
     draw()
@@ -212,6 +277,7 @@ async function runCountdown() {
   const version = ++countdownVersion
   setBusy(true)
   clearFeedback()
+  await resetAnnotations()
   await window.recordAPI.setFrameState('idle')
   await prepareSource()
   if (version !== countdownVersion || state !== 'countdown') {
@@ -245,6 +311,7 @@ async function beginRecording() {
 async function finishRecording() {
   if (busy || !['recording', 'paused'].includes(state)) return
   setBusy(true)
+  await window.recordAPI.setFrameState('hidden')
   durationMs = elapsedTime()
   await stopMediaRecorder()
   await appendQueue
@@ -253,7 +320,6 @@ async function finishRecording() {
   clearInterval(clockTimer)
   stopSource()
   setState(transitionRecordingState(state, 'stop'))
-  await window.recordAPI.setFrameState('hidden')
   await window.recordAPI.resizePreview()
   controlView.hidden = true
   previewView.hidden = false
@@ -270,6 +336,7 @@ async function failRecording(error) {
   sessionId = null
   clearInterval(clockTimer)
   stopSource()
+  await window.recordAPI.setFrameState('hidden').catch(() => {})
   setState('idle')
   setBusy(false)
   reportError(error)
@@ -286,6 +353,7 @@ async function cancelRecording() {
   if (['recording', 'paused'].includes(state)) {
     setBusy(true)
     state = transitionRecordingState(state, 'cancel')
+    await window.recordAPI.setFrameState('hidden').catch(() => {})
     await stopMediaRecorder().catch(() => {})
     await appendQueue
     if (sessionId) await window.recordAPI.cancelSession(sessionId).catch(() => {})
@@ -375,8 +443,46 @@ saveButton.addEventListener('click', saveMp4)
 rerecordButton.addEventListener('click', rerecord)
 closePreviewButton.addEventListener('click', () => window.recordAPI.close())
 
+annotationToolButtons.forEach((button) => button.addEventListener('click', () => {
+  if (!annotationEnabled()) return
+  annotationTool = button.dataset.annotationTool
+  renderAnnotationControls()
+  sendAnnotationCommand().catch(reportError)
+}))
+annotationStyleButton.addEventListener('click', (event) => {
+  event.stopPropagation()
+  if (annotationStyleButton.disabled) return
+  annotationPalette.hidden = !annotationPalette.hidden
+})
+annotationColorButtons.forEach((button) => button.addEventListener('click', () => {
+  if (!ANNOTATION_COLORS.includes(button.dataset.annotationColor)) return
+  annotationColor = button.dataset.annotationColor
+  renderAnnotationControls()
+  sendAnnotationCommand().catch(reportError)
+}))
+annotationWidthButtons.forEach((button) => button.addEventListener('click', () => {
+  const width = Number(button.dataset.annotationWidth)
+  if (!ANNOTATION_WIDTHS.includes(width)) return
+  annotationWidth = width
+  renderAnnotationControls()
+  sendAnnotationCommand().catch(reportError)
+}))
+annotationUndoButton.addEventListener('click', () => sendAnnotationCommand('undo').catch(reportError))
+annotationClearButton.addEventListener('click', () => sendAnnotationCommand('clear').catch(reportError))
+document.addEventListener('click', (event) => {
+  if (!annotationPalette.contains(event.target) && event.target !== annotationStyleButton) annotationPalette.hidden = true
+})
+
 window.recordAPI.onSaveProgress((percent) => {
   saveProgressElement.textContent = `正在生成 MP4 · ${Math.max(0, Math.min(100, Number(percent) || 0))}%`
+})
+window.recordAPI.onAnnotationSnapshot((snapshot) => {
+  if (!initData) return
+  annotationSnapshot = sanitizeAnnotationSnapshot(snapshot, {
+    width: initData.selectionBounds.width,
+    height: initData.selectionBounds.height
+  })
+  renderAnnotationControls()
 })
 window.recordAPI.onInit((data) => {
   initData = data

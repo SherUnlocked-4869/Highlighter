@@ -82,6 +82,30 @@ test('recording UI contains control and preview states', () => {
   assert.match(script, /primeSeekablePreview\(preview\)/)
 })
 
+test('recording controls expose and composite basic live annotation tools', () => {
+  const html = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')
+  const style = fs.readFileSync(path.join(root, 'record', 'record.css'), 'utf8')
+  const script = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')
+  for (const tool of ['pointer', 'pen', 'rect', 'ellipse', 'arrow']) {
+    assert.match(html, new RegExp(`data-annotation-tool="${tool}"`))
+  }
+  for (const id of ['annotationStyle', 'annotationPalette', 'annotationUndo', 'annotationClear']) {
+    assert.match(html, new RegExp(`id="${id}"`))
+  }
+  for (const color of ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#1687ff', '#111111', '#ffffff']) {
+    assert.match(html, new RegExp(`data-annotation-color="${color}"`))
+  }
+  for (const width of [2, 4, 7]) assert.match(html, new RegExp(`data-annotation-width="${width}"`))
+  assert.match(html, /annotation-utils\.js[\s\S]*recording-utils\.js[\s\S]*record\.js/)
+  assert.match(style, /@media\s*\(max-width:699px\)/)
+  assert.match(style, /annotation-tool\.active/)
+  assert.match(script, /onAnnotationSnapshot/)
+  assert.match(script, /setAnnotationCommand/)
+  assert.match(script, /drawImage\(sourceVideo[\s\S]*drawAnnotationSnapshot\(context/)
+  assert.match(script, /annotationResetVersion/)
+  assert.match(script, /async function finishRecording\(\)[\s\S]*setFrameState\('hidden'\)[\s\S]*stopMediaRecorder/)
+})
+
 test('region recording uses supported silent MP4 settings', () => {
   const config = fs.readFileSync(path.join(root, 'config', 'config.js'), 'utf8')
   const recordHtml = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')

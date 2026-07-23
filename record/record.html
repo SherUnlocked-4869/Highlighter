@@ -17,6 +17,34 @@
     </div>
     <span id="fps" class="fps">24 FPS</span>
     <strong id="countdown" class="countdown" hidden></strong>
+    <div id="annotationTools" class="annotation-tools" aria-label="录制标注工具">
+      <button class="annotation-tool active" data-annotation-tool="pointer" type="button" title="指针" aria-label="指针" disabled>↖</button>
+      <button class="annotation-tool" data-annotation-tool="pen" type="button" title="画笔" aria-label="画笔" disabled>✎</button>
+      <button class="annotation-tool" data-annotation-tool="rect" type="button" title="矩形" aria-label="矩形" disabled>□</button>
+      <button class="annotation-tool" data-annotation-tool="ellipse" type="button" title="椭圆" aria-label="椭圆" disabled>○</button>
+      <button class="annotation-tool" data-annotation-tool="arrow" type="button" title="箭头" aria-label="箭头" disabled>↗</button>
+      <div class="annotation-style-wrap">
+        <button id="annotationStyle" class="annotation-style" type="button" title="颜色和粗细" aria-label="颜色和粗细" disabled><i id="annotationSwatch"></i><b id="annotationWidthMark">4</b></button>
+        <div id="annotationPalette" class="annotation-palette" hidden>
+          <div class="color-options" aria-label="标注颜色">
+            <button data-annotation-color="#ff3b30" type="button" title="红色" style="--swatch:#ff3b30"></button>
+            <button data-annotation-color="#ff9500" type="button" title="橙色" style="--swatch:#ff9500"></button>
+            <button data-annotation-color="#ffcc00" type="button" title="黄色" style="--swatch:#ffcc00"></button>
+            <button data-annotation-color="#34c759" type="button" title="绿色" style="--swatch:#34c759"></button>
+            <button data-annotation-color="#1687ff" type="button" title="蓝色" style="--swatch:#1687ff"></button>
+            <button data-annotation-color="#111111" type="button" title="黑色" style="--swatch:#111111"></button>
+            <button data-annotation-color="#ffffff" type="button" title="白色" style="--swatch:#ffffff"></button>
+          </div>
+          <div class="width-options" aria-label="标注粗细">
+            <button data-annotation-width="2" type="button">细</button>
+            <button data-annotation-width="4" type="button">中</button>
+            <button data-annotation-width="7" type="button">粗</button>
+          </div>
+        </div>
+      </div>
+      <button id="annotationUndo" class="annotation-tool" type="button" title="撤销标注" aria-label="撤销标注" disabled>↶</button>
+      <button id="annotationClear" class="annotation-tool" type="button" title="清除全部标注" aria-label="清除全部标注" disabled>×</button>
+    </div>
     <div class="control-actions">
       <button id="start" class="primary" type="button">开始</button>
       <button id="pause" type="button" hidden>暂停</button>
@@ -43,6 +71,7 @@
     </footer>
   </section>
 
+  <script src="annotation-utils.js"></script>
   <script src="recording-utils.js"></script>
   <script src="record.js"></script>
 </body>
