@@ -10,7 +10,7 @@
     "build:smart-select": "powershell -NoProfile -ExecutionPolicy Bypass -File native/smart-select/build.ps1",
     "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
     "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr",
-    "check": "node --check main.js && node --check main/services/ocr-service.js && node --check preload-toolbar.js && node --check preload-capture.js && node --check preload-recognition.js && node --check capture/recognition-utils.js && node --check capture/capture.js && node --check recognition/recognition.js && node --check config/config.js && node --check toolbar/toolbar-utils.js && node --check test/toolbar-utils.test.js && node --check test/toolbar-actions.test.js && node --check test/selection-toolbar-settings.test.js",
+    "check": "node --check main.js && node --check main/services/ocr-service.js && node --check preload-toolbar.js && node --check preload-capture.js && node --check preload-recognition.js && node --check capture/recognition-utils.js && node --check capture/capture.js && node --check recognition/recognition.js && node --check config/config.js && node --check toolbar/toolbar-utils.js && node --check record/recording-utils.js && node --check test/toolbar-utils.test.js && node --check test/toolbar-actions.test.js && node --check test/selection-toolbar-settings.test.js && node --check test/recording-ui-contract.test.js && node --check test/recording-utils.test.js",
     "prestart": "npm run build:native",
     "start": "electron .",
     "prebuild:win": "npm run build:native",

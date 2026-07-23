@@ -1,0 +1,71 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const {
+  buildFfmpegArgs,
+  calculateCropRect,
+  normalizeFrameRate,
+  normalizeSelectionBounds,
+  pickDesktopSource,
+  transitionRecordingState
+} = require('../record/recording-utils')
+
+test('normalizes FPS to the supported recording set', () => {
+  for (const fps of [5, 16, 24, 30, 60]) assert.equal(normalizeFrameRate(fps), fps)
+  assert.equal(normalizeFrameRate(25), 24)
+  assert.equal(normalizeFrameRate('60'), 60)
+})
+
+test('clips a negative-coordinate selection to one display', () => {
+  assert.deepEqual(
+    normalizeSelectionBounds(
+      { x: -1900, y: 20, width: 640, height: 361 },
+      { x: -1920, y: 0, width: 1920, height: 1080 }
+    ),
+    { x: -1900, y: 20, width: 640, height: 361 }
+  )
+  assert.deepEqual(
+    normalizeSelectionBounds(
+      { x: -1930, y: -10, width: 100, height: 100 },
+      { x: -1920, y: 0, width: 1920, height: 1080 }
+    ),
+    { x: -1920, y: 0, width: 90, height: 90 }
+  )
+  assert.throws(() => normalizeSelectionBounds(
+    { x: 0, y: 0, width: 15, height: 100 },
+    { x: 0, y: 0, width: 1920, height: 1080 }
+  ), /至少为 16/)
+})
+
+test('maps DIP selection to even video pixels', () => {
+  assert.deepEqual(calculateCropRect(
+    { width: 3840, height: 2160 },
+    { x: 0, y: 0, width: 1920, height: 1080 },
+    { x: 100, y: 50, width: 641, height: 361 }
+  ), { sx: 200, sy: 100, sw: 1282, sh: 722, width: 1282, height: 722 })
+})
+
+test('selects the desktop source matching the display id', () => {
+  const sources = [{ display_id: '1', id: 'screen:1' }, { display_id: '2', id: 'screen:2' }]
+  assert.equal(pickDesktopSource(sources, 2).id, 'screen:2')
+  assert.equal(pickDesktopSource([{ display_id: '', id: 'fallback' }], 9).id, 'fallback')
+  assert.equal(pickDesktopSource([], 9), null)
+})
+
+test('accepts only declared recording state transitions', () => {
+  assert.equal(transitionRecordingState('idle', 'start'), 'countdown')
+  assert.equal(transitionRecordingState('countdown', 'countdown-finished'), 'recording')
+  assert.equal(transitionRecordingState('recording', 'pause'), 'paused')
+  assert.equal(transitionRecordingState('paused', 'resume'), 'recording')
+  assert.equal(transitionRecordingState('recording', 'stop'), 'preview')
+  assert.equal(transitionRecordingState('preview', 'save'), 'saving')
+  assert.equal(transitionRecordingState('saving', 'save-failed'), 'preview')
+  assert.throws(() => transitionRecordingState('idle', 'pause'), /非法录制状态转换/)
+})
+
+test('builds silent H.264 fast-start MP4 arguments', () => {
+  const args = buildFfmpegArgs('input.webm', 'output.mp4')
+  assert.deepEqual(args.slice(0, 2), ['-i', 'input.webm'])
+  for (const token of ['-an', 'libx264', 'yuv420p', '+faststart', 'output.mp4']) {
+    assert.ok(args.includes(token), token)
+  }
+})
