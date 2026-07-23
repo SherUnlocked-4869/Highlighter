@@ -1,0 +1,38 @@
+:root { --primary: #1677ff; --panel: rgba(25,25,28,.97); --text: #f5f5f5; --muted: #9b9ba1; }
+* { box-sizing: border-box; letter-spacing: 0; }
+html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; user-select: none; }
+body { padding: 8px; }
+.panel { width: 100%; height: 100%; display: grid; grid-template-rows: 44px minmax(150px,1fr) auto 38px 42px 42px 54px; overflow: hidden; color: var(--text); background: var(--panel); border: 1px solid rgba(255,255,255,.13); border-radius: 8px; box-shadow: 0 16px 48px rgba(0,0,0,.42); backdrop-filter: blur(20px); }
+.titlebar { display: flex; align-items: center; justify-content: space-between; padding: 0 10px 0 14px; border-bottom: 1px solid rgba(255,255,255,.09); -webkit-app-region: drag; }
+.titlebar div { display: flex; align-items: center; gap: 9px; }
+.titlebar strong { font-size: 14px; font-weight: 600; }
+.titlebar i { width: 9px; height: 9px; border-radius: 50%; background: #8e8e93; }
+body.capturing .titlebar i { background: #34c759; box-shadow: 0 0 0 5px rgba(52,199,89,.13); }
+.titlebar button { width: 30px; height: 30px; border: 0; border-radius: 6px; color: #bbb; background: transparent; font-size: 21px; cursor: pointer; -webkit-app-region: no-drag; }
+.titlebar button:hover { color: #fff; background: rgba(255,255,255,.1); }
+.preview-area { position: relative; min-height: 0; margin: 10px 12px 6px; display: grid; place-items: center; overflow: hidden; border: 1px solid rgba(255,255,255,.09); border-radius: 6px; background: #111; }
+#preview { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; image-rendering: auto; }
+#emptyPreview { position: absolute; color: #707078; font-size: 12px; }
+.status-area { padding: 6px 14px 8px; min-width: 0; }
+#status { min-height: 20px; overflow: hidden; color: #d7d7da; font-size: 12px; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
+.metrics { display: flex; gap: 12px; color: var(--muted); font: 11px/18px Consolas,monospace; }
+.metrics span:first-child { flex: 1; }
+.direction { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3px; margin: 0 12px; padding: 3px; border-radius: 6px; background: rgba(255,255,255,.07); }
+.direction button, .transport button, .actions button { border: 0; border-radius: 5px; color: #ddd; background: transparent; cursor: pointer; }
+.direction button { min-width: 0; font-size: 12px; }
+.direction button.active { color: #fff; background: rgba(255,255,255,.14); }
+.direction button:disabled { opacity: .45; cursor: default; }
+.trim-controls { display: flex; align-items: center; justify-content: center; gap: 9px; margin: 3px 12px 0; color: var(--muted); font-size: 11px; }
+.trim-controls label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.trim-controls input { width: 66px; height: 28px; padding: 0 7px; border: 1px solid rgba(255,255,255,.12); border-radius: 5px; outline: 0; color: #eee; background: rgba(255,255,255,.07); font: 11px Consolas,monospace; }
+.trim-controls input:focus { border-color: var(--primary); }
+.trim-controls input:disabled { opacity: .4; }
+.transport { display: flex; padding: 7px 12px 3px; }
+.transport button { width: 100%; font-weight: 600; }
+button.primary { color: #fff; background: var(--primary); }
+button.primary:hover { filter: brightness(1.08); }
+.actions { display: grid; grid-template-columns: repeat(4,1fr); gap: 3px; padding: 7px 9px 9px; border-top: 1px solid rgba(255,255,255,.09); }
+.actions button { min-width: 0; display: flex; align-items: center; justify-content: center; gap: 4px; font-size: 12px; }
+.actions button:not(.primary):hover { background: rgba(255,255,255,.1); }
+.actions button:disabled { opacity: .35; cursor: default; filter: none; }
+#source { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }

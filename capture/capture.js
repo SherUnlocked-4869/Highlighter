@@ -319,12 +319,17 @@ async function performAction(action) {
     try{await window.captureAPI.startRegionRecording(selectionBounds)}catch(error){alert(error.message||String(error))}
     return
   }
+  if(action==='long'){
+    if(annotations.length&&!confirm('进入长截图将忽略当前标注，是否继续？'))return
+    try{await window.captureAPI.startLongCapture({...selection})}catch(error){alert(error.message||String(error))}
+    return
+  }
   const recognitionActions=['ocr','translate','table','qr']
   const output=exportSelectionCanvas(!recognitionActions.includes(action)); if(!output)return
   const dataUrl=output.toDataURL('image/png'); const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds}
   try {
     if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(dataUrl,meta);else await window.captureAPI.copy(dataUrl,meta);window.captureAPI.close()}
-    if(action==='save'){const saved=await window.captureAPI.save(dataUrl,meta,!!initData.settings.screenshot.fastSave);if(saved)window.captureAPI.close()}
+    if(action==='save'){window.captureAPI.save(dataUrl,meta,!!initData.settings.screenshot.fastSave);return}
     if(action==='pin'){await window.captureAPI.pin(dataUrl,meta);window.captureAPI.close()}
     if(action==='ocr'&&!initData.editPin){await window.captureAPI.pinAndReannotate(dataUrl,meta,'ocr');return}
     if(action==='table'||action==='qr'){await window.captureAPI.openRecognition(action,dataUrl,meta);return}
@@ -358,6 +363,7 @@ document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListen
 colorInput.addEventListener('input',()=>{colorPreview.style.background=colorInput.value})
 document.getElementById('undo').onclick=()=>{const item=annotations.pop();if(item)redoStack.push(item);render()}
 document.getElementById('redo').onclick=()=>{const item=redoStack.pop();if(item)annotations.push(item);render()}
+document.getElementById('longCapture').onclick=()=>performAction('long')
 document.getElementById('copy').onclick=()=>performAction('copy')
 document.getElementById('save').onclick=()=>performAction('save')
 document.getElementById('pin').onclick=()=>performAction('pin')

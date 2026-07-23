@@ -25,6 +25,7 @@ const functionGroups = {
     ['screenshotQr', '二维码识别', '⌗', '扫描二维码内容或打开其中的链接'],
     ['screenshotOcrTranslate', '文本识别翻译', '译', 'OCR 后调用翻译服务'],
     ['screenshotCopy', '复制到剪贴板', '▣', '完成选区后立即复制'],
+    ['screenshotLong', '长截图', '↕', '框选滚动区域并自动拼接'],
     ['screenshotFullScreen', '截取全屏', '▤', '捕获鼠标所在显示器'],
     ['screenshotFocusedWindow', '当前焦点窗口', '▰', '捕获当前活动窗口']
   ],
@@ -201,15 +202,22 @@ async function renderHistory() {
   const history = await window.electronAPI.getHistory()
   const container = document.querySelector('.page')
   container.querySelector('.empty')?.remove()
-  container.insertAdjacentHTML('beforeend', history.length ? `<div class="history-grid">${history.map((item) => `<article class="card history-item"><div class="history-image"><img src="${item.thumbnail}"></div><div class="history-meta">${new Date(item.createdAt).toLocaleString()} · ${escapeHtml(item.source)} · ${item.width}×${item.height}</div><div class="history-actions"><button data-history-action="edit" data-id="${item.id}">编辑</button><button data-history-action="copy" data-id="${item.id}">复制</button><button data-history-action="reveal" data-id="${item.id}">定位</button><button data-history-action="delete" data-id="${item.id}">删除</button></div></article>`).join('')}</div>` : '<div class="empty">暂无截图历史</div>')
+  container.insertAdjacentHTML('beforeend', history.length ? `<div class="history-grid">${history.map((item) => `<article class="card history-item"><div class="history-image"><img src="${item.thumbnail}"></div><div class="history-meta">${new Date(item.createdAt).toLocaleString()} · ${escapeHtml(item.source)} · ${item.width}×${item.height}</div><div class="history-actions">${item.longCapture ? '' : `<button data-history-action="edit" data-id="${item.id}">编辑</button>`}<button data-history-action="copy" data-id="${item.id}">复制</button><button data-history-action="reveal" data-id="${item.id}">定位</button><button data-history-action="delete" data-id="${item.id}">删除</button></div></article>`).join('')}</div>` : '<div class="empty">暂无截图历史</div>')
   document.querySelectorAll('[data-history-action]').forEach((button) => button.onclick = async () => {
     const action = button.dataset.historyAction; const id = button.dataset.id
     if (action === 'edit') await window.electronAPI.editHistory(id)
-    if (action === 'copy') { await window.electronAPI.copyHistory(id); toast('截图已复制') }
+    if (action === 'copy') { const copied = await window.electronAPI.copyHistory(id); toast(copied ? '截图已复制' : '图片过大，请从保存位置使用') }
     if (action === 'reveal') await window.electronAPI.revealHistory(id)
-    if (action === 'delete') { await window.electronAPI.deleteHistory(id); renderHistory() }
+    if (action === 'delete') {
+      try { await window.electronAPI.deleteHistory(id); renderHistory() }
+      catch (error) { toast(error.message || '图片文件删除失败') }
+    }
   })
-  document.getElementById('clearHistory').onclick = async () => { if (confirm('确定清空全部截图历史？')) { await window.electronAPI.clearHistory(); renderHistory() } }
+  document.getElementById('clearHistory').onclick = async () => {
+    if (!confirm('确定清空全部截图历史并删除对应图片文件？')) return
+    try { await window.electronAPI.clearHistory(); renderHistory() }
+    catch (error) { toast(error.message || '部分图片文件删除失败'); renderHistory() }
+  }
 }
 
 function switchMarkup(value, key, group) {
@@ -275,13 +283,14 @@ function renderGeneralSettings() {
 function renderFunctionSettings() {
   const supportedFrameRates = [5, 16, 24, 30, 60]
   const selectedFrameRate = supportedFrameRates.includes(Number(settings.record.frameRate)) ? Number(settings.record.frameRate) : 24
-  const outputSettings = `<section class="section"><h2 class="section-title">截图与输出</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>复制后自动保存</b></div>${switchMarkup(settings.screenshot.autoSaveOnCopy, 'autoSaveOnCopy', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>一键快速保存</b></div>${switchMarkup(settings.screenshot.fastSave, 'fastSave', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>保存目录</b></div><input id="saveDirectory" type="text" value="${escapeHtml(settings.screenshot.saveDirectory || '')}"><button class="button" id="chooseSaveDirectory">选择</button></div><div class="form-row"><div class="form-label"><b>记录截图历史</b></div>${switchMarkup(settings.screenshot.historyEnabled, 'historyEnabled', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>历史数量上限</b></div><input id="historyLimit" type="number" min="10" max="1000" value="${settings.screenshot.historyLimit}"></div></div></section>`
+  const outputSettings = `<section class="section"><h2 class="section-title">截图与输出</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>复制后自动保存</b></div>${switchMarkup(settings.screenshot.autoSaveOnCopy, 'autoSaveOnCopy', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>一键快速保存</b></div>${switchMarkup(settings.screenshot.fastSave, 'fastSave', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>长截图默认方向</b></div><select id="longCaptureDirection"><option value="vertical">纵向</option><option value="horizontal">横向</option></select></div><div class="form-row"><div class="form-label"><b>保存目录</b></div><input id="saveDirectory" type="text" value="${escapeHtml(settings.screenshot.saveDirectory || '')}"><button class="button" id="chooseSaveDirectory">选择</button></div><div class="form-row"><div class="form-label"><b>记录截图历史</b></div>${switchMarkup(settings.screenshot.historyEnabled, 'historyEnabled', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>历史数量上限</b></div><input id="historyLimit" type="number" min="10" max="1000" value="${settings.screenshot.historyLimit}"></div></div></section>`
   const ocrSettings = `<section class="section"><h2 class="section-title">文本识别</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>识别模型</b><small>本地 PaddleOCR v4，支持简体中文与英文</small></div><select id="ocrModel"><option value="ppocr-v4-ch">PaddleOCR v4 中英移动版</option></select></div><div class="form-row"><div class="form-label"><b>运行状态</b><small id="ocrStatusDetail">正在检查本地组件</small></div><span id="ocrStatus">检查中</span></div><div class="form-row"><div class="form-label"><b>文字方向检测</b><small>旋转文字较多时开启，普通截图关闭更快</small></div>${switchMarkup(settings.ocr.detectAngle, 'detectAngle', 'ocr')}</div><div class="form-row"><div class="form-label"><b>最低置信度</b><small>低于该分值的文本块不显示</small></div><input id="ocrMinConfidence" type="number" min="0" max="1" step="0.05" value="${settings.ocr.minConfidence}"></div><div class="form-row"><div class="form-label"><b>识别后操作</b></div><select id="ocrAfterAction"><option value="none">显示识别结果</option><option value="copy">复制全部文本</option><option value="copy-and-close">复制文本并关闭截图</option></select></div></div></section>`
   const aiSettings = `<section class="section"><h2 class="section-title">AI 与翻译</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>DeepSeek API Key</b><small>仅保存在本机 electron-store</small></div><input id="apiKey" type="password" value="${escapeHtml(settings.apiKey || '')}" placeholder="sk-..."><button class="button" id="testApi">测试</button></div><div class="form-row"><div class="form-label"><b>模型</b></div><input id="aiModel" type="text" value="${escapeHtml(settings.ai.model)}"></div><div class="form-row"><div class="form-label"><b>最大 Token</b></div><input id="maxTokens" type="number" value="${settings.ai.maxTokens}"></div><div class="form-row"><div class="form-label"><b>Temperature</b></div><input id="temperature" type="number" min="0" max="2" step="0.1" value="${settings.ai.temperature}"></div><div class="form-row"><div class="form-label"><b>默认翻译目标语言</b></div><select id="targetLanguage"><option>中文</option><option>英文</option><option>日文</option><option>韩文</option><option>繁体中文</option></select></div></div></section>`
   const recordSettings = `<section class="section"><h2 class="section-title">视频录制</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>帧率</b><small>录制仅包含画面，保存为 MP4</small></div><select id="frameRate">${supportedFrameRates.map((value) => `<option value="${value}">${value} FPS</option>`).join('')}</select></div><div class="form-row"><div class="form-label"><b>视频保存目录</b></div><input id="recordDirectory" type="text" value="${escapeHtml(settings.record.saveDirectory || '')}"><button class="button" id="chooseRecordDirectory">选择</button></div></div></section>`
   view.innerHTML = `<div class="page">${pageHeader('功能设置', '配置截图、OCR、固定到屏幕、AI、翻译、录屏与输出。')}${outputSettings}${ocrSettings}${aiSettings}${recordSettings}<button class="button primary" id="saveFunctions">保存功能设置</button></div>`
   document.getElementById('ocrModel').value = settings.ocr.modelProfile
   document.getElementById('ocrAfterAction').value = settings.ocr.afterAction
+  document.getElementById('longCaptureDirection').value = settings.screenshot.longCaptureDirection || 'vertical'
   window.electronAPI.getOcrStatus().then((status) => {
     const statusLabel = document.getElementById('ocrStatus')
     const statusDetail = document.getElementById('ocrStatusDetail')
@@ -298,7 +307,7 @@ function renderFunctionSettings() {
   document.getElementById('chooseSaveDirectory').onclick = async () => { const directory = await window.electronAPI.chooseDirectory(); if (directory) document.getElementById('saveDirectory').value = directory }
   document.getElementById('chooseRecordDirectory').onclick = async () => { const directory = await window.electronAPI.chooseDirectory(); if (directory) document.getElementById('recordDirectory').value = directory }
   document.getElementById('testApi').onclick = async () => { const button = document.getElementById('testApi'); button.disabled = true; button.textContent = '测试中'; try { const ok = await window.electronAPI.testConnection(document.getElementById('apiKey').value.trim()); toast(ok ? '连接成功' : '连接失败') } catch { toast('连接失败') } finally { button.disabled = false; button.textContent = '测试' } }
-  document.getElementById('saveFunctions').onclick = () => updateSettings({ apiKey: document.getElementById('apiKey').value.trim(), screenshot: { saveDirectory: document.getElementById('saveDirectory').value.trim(), historyLimit: Number(document.getElementById('historyLimit').value) }, ocr: { modelProfile: document.getElementById('ocrModel').value, minConfidence: Math.max(0, Math.min(1, Number(document.getElementById('ocrMinConfidence').value))), afterAction: document.getElementById('ocrAfterAction').value }, ai: { model: document.getElementById('aiModel').value.trim(), maxTokens: Number(document.getElementById('maxTokens').value), temperature: Number(document.getElementById('temperature').value), targetLanguage: document.getElementById('targetLanguage').value }, record: { frameRate: Number(document.getElementById('frameRate').value), saveDirectory: document.getElementById('recordDirectory').value.trim() } })
+  document.getElementById('saveFunctions').onclick = () => updateSettings({ apiKey: document.getElementById('apiKey').value.trim(), screenshot: { saveDirectory: document.getElementById('saveDirectory').value.trim(), historyLimit: Number(document.getElementById('historyLimit').value), longCaptureDirection: document.getElementById('longCaptureDirection').value }, ocr: { modelProfile: document.getElementById('ocrModel').value, minConfidence: Math.max(0, Math.min(1, Number(document.getElementById('ocrMinConfidence').value))), afterAction: document.getElementById('ocrAfterAction').value }, ai: { model: document.getElementById('aiModel').value.trim(), maxTokens: Number(document.getElementById('maxTokens').value), temperature: Number(document.getElementById('temperature').value), targetLanguage: document.getElementById('targetLanguage').value }, record: { frameRate: Number(document.getElementById('frameRate').value), saveDirectory: document.getElementById('recordDirectory').value.trim() } })
 }
 
 function renderHotkeySettings() {
@@ -308,8 +317,35 @@ function renderHotkeySettings() {
 }
 
 function renderSystemSettings() {
-  view.innerHTML = `<div class="page">${pageHeader('系统设置', '控制自启动、托盘、日志和数据目录。')}<section class="section"><h2 class="section-title">常用</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>开机自动启动</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div><div class="form-row"><div class="form-label"><b>启用系统托盘</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div><div class="form-row"><div class="form-label"><b>运行日志</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div></div></section><section class="section"><h2 class="section-title">软件数据</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>数据目录</b><small>配置、日志与截图历史</small></div><button class="button" id="openData">打开</button></div><div class="form-row"><div class="form-label"><b>图片保存目录</b></div><button class="button" id="openSave">打开</button></div><div class="form-row"><div class="form-label"><b>清除截图历史</b><small>不会删除手动保存到其它目录的图片</small></div><button class="button danger" id="clearData">清除</button></div></div></section><button class="button danger" id="resetSettings">恢复默认设置</button></div>`
-  bindSwitches(); document.getElementById('openData').onclick = () => window.electronAPI.openDataDirectory(); document.getElementById('openSave').onclick = () => window.electronAPI.openSaveDirectory(); document.getElementById('clearData').onclick = async () => { if (confirm('确定清空截图历史？')) { await window.electronAPI.clearHistory(); toast('截图历史已清空') } }; document.getElementById('resetSettings').onclick = async () => { if (confirm('确定恢复默认设置？')) { settings = await window.electronAPI.resetSettings(); applyAppearance(); renderRoute(); toast('已恢复默认设置') } }
+  const historyDirectory = settings.screenshot.historyDirectory
+  view.innerHTML = `<div class="page">${pageHeader('系统设置', '控制自启动、托盘、日志和数据目录。')}<section class="section"><h2 class="section-title">常用</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>开机自动启动</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div><div class="form-row"><div class="form-label"><b>启用系统托盘</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div><div class="form-row"><div class="form-label"><b>运行日志</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div></div></section><section class="section"><h2 class="section-title">软件数据</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>数据目录</b><small>配置、日志与截图历史</small></div><button class="button" id="openData">打开</button></div><div class="form-row"><div class="form-label"><b>图片保存目录</b></div><button class="button" id="openSave">打开</button></div><div class="form-row"><div class="form-label"><b>截图历史自动保存路径</b><small>自动保存的图片就是截图历史，路径不能为空</small></div><input id="historyDirectory" type="text" required value="${escapeHtml(historyDirectory)}"><button class="button" id="chooseHistoryDirectory">选择</button></div><div class="form-row"><div class="form-label"><b>清除截图历史</b><small>同时删除截图历史自动保存的图片文件</small></div><button class="button danger" id="clearData">清除</button></div></div></section><button class="button danger" id="resetSettings">恢复默认设置</button></div>`
+  bindSwitches()
+  document.getElementById('openData').onclick = () => window.electronAPI.openDataDirectory()
+  document.getElementById('openSave').onclick = () => window.electronAPI.openSaveDirectory()
+  const historyDirectoryInput = document.getElementById('historyDirectory')
+  const saveHistoryDirectory = () => {
+    const directory = historyDirectoryInput.value.trim()
+    if (!directory) {
+      historyDirectoryInput.value = settings.screenshot.historyDirectory
+      toast('截图历史自动保存路径不能为空')
+      return null
+    }
+    return updateSettings({ screenshot: { historyDirectory: directory } }, '截图历史自动保存路径已更新')
+  }
+  historyDirectoryInput.onchange = saveHistoryDirectory
+  historyDirectoryInput.onkeydown = (event) => { if (event.key === 'Enter') historyDirectoryInput.blur() }
+  document.getElementById('chooseHistoryDirectory').onclick = async () => {
+    const directory = await window.electronAPI.chooseDirectory()
+    if (!directory) return
+    historyDirectoryInput.value = directory
+    await saveHistoryDirectory()
+  }
+  document.getElementById('clearData').onclick = async () => {
+    if (!confirm('确定清空截图历史并删除对应图片文件？')) return
+    try { await window.electronAPI.clearHistory(); toast('截图历史和图片文件已清空') }
+    catch (error) { toast(error.message || '部分图片文件删除失败') }
+  }
+  document.getElementById('resetSettings').onclick = async () => { if (confirm('确定恢复默认设置？')) { settings = await window.electronAPI.resetSettings(); applyAppearance(); renderRoute(); toast('已恢复默认设置') } }
 }
 
 async function renderAbout() {

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Highlighter 长截图</title>
+  <link rel="stylesheet" href="long-capture.css">
+</head>
+<body>
+  <main class="panel">
+    <header class="titlebar">
+      <div><i id="stateDot"></i><strong>长截图</strong></div>
+      <button id="close" title="取消长截图">×</button>
+    </header>
+    <section class="preview-area">
+      <canvas id="preview" width="160" height="180"></canvas>
+      <div id="emptyPreview">等待开始</div>
+    </section>
+    <section class="status-area">
+      <div id="status">正在准备屏幕采集</div>
+      <div class="metrics"><span id="size">0 × 0</span><span id="strips">0 段</span><span id="confidence">--</span></div>
+    </section>
+    <section class="direction" aria-label="拼接方向">
+      <button data-axis="vertical" class="active" title="纵向拼接">↕ 纵向</button>
+      <button data-axis="horizontal" title="横向拼接">↔ 横向</button>
+      <button id="adjustSelection" title="调整截图区域">⌖ 选区</button>
+    </section>
+    <section class="trim-controls">
+      <label>裁前 <input id="trimStart" type="number" min="0" value="0"></label>
+      <label>裁后 <input id="trimEnd" type="number" min="0" value="0"></label>
+      <span>px</span>
+    </section>
+    <section class="transport">
+      <button id="toggle" class="primary">开始</button>
+    </section>
+    <footer class="actions">
+      <button id="pin" title="贴图">📌<span>贴图</span></button>
+      <button id="save" title="保存">💾<span>保存</span></button>
+      <button id="fastSave" title="快速保存">⇩<span>快存</span></button>
+      <button id="copy" class="primary" title="复制并关闭">✓<span>复制</span></button>
+    </footer>
+  </main>
+  <video id="source" muted autoplay></video>
+  <script src="long-capture.js"></script>
+</body>
+</html>

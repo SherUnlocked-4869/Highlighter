@@ -10,7 +10,8 @@
     "build:smart-select": "powershell -NoProfile -ExecutionPolicy Bypass -File native/smart-select/build.ps1",
     "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
     "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr",
-    "check": "node --check main.js && node --check main/services/ocr-service.js && node --check main/services/recording-service.js && node --check preload-toolbar.js && node --check preload-capture.js && node --check preload-recognition.js && node --check preload-record.js && node --check preload-record-frame.js && node --check capture/recognition-utils.js && node --check capture/capture.js && node --check recognition/recognition.js && node --check config/config.js && node --check toolbar/toolbar-utils.js && node --check record/annotation-utils.js && node --check record/recording-utils.js && node --check record/frame.js && node --check record/record.js && node --check test/annotation-utils.test.js && node --check test/toolbar-utils.test.js && node --check test/toolbar-actions.test.js && node --check test/selection-toolbar-settings.test.js && node --check test/region-recording-entry.test.js && node --check test/recording-ui-contract.test.js && node --check test/recording-utils.test.js && node --check test/recording-service.test.js",
+    "check": "node --check main.js && node --check main/services/ocr-service.js && node --check main/services/recording-service.js && node --check main/services/long-capture-session.js && node --check preload-toolbar.js && node --check preload-capture.js && node --check preload-long-capture.js && node --check preload-long-overlay.js && node --check preload-recognition.js && node --check preload-record.js && node --check preload-record-frame.js && node --check capture/recognition-utils.js && node --check capture/capture.js && node --check long-capture/matcher.js && node --check long-capture/matcher-worker.js && node --check long-capture/long-capture.js && node --check long-capture/overlay.js && node --check recognition/recognition.js && node --check config/config.js && node --check toolbar/toolbar-utils.js && node --check record/annotation-utils.js && node --check record/recording-utils.js && node --check record/frame.js && node --check record/record.js && node --check test/annotation-utils.test.js && node --check test/toolbar-utils.test.js && node --check test/toolbar-actions.test.js && node --check test/selection-toolbar-settings.test.js && node --check test/region-recording-entry.test.js && node --check test/recording-ui-contract.test.js && node --check test/recording-utils.test.js && node --check test/recording-service.test.js && node --check tests/long-capture.test.js",
+    "test:long-capture": "node tests/long-capture.test.js",
     "prestart": "npm run build:native",
     "start": "electron .",
     "prebuild:win": "npm run build:native",
@@ -52,6 +53,8 @@
       "preload.js",
       "preload-toolbar.js",
       "preload-capture.js",
+      "preload-long-capture.js",
+      "preload-long-overlay.js",
       "preload-pin.js",
       "preload-recognition.js",
       "preload-record.js",
@@ -63,6 +66,7 @@
       "toolbar/**/*",
       "action/**/*",
       "capture/**/*",
+      "long-capture/**/*",
       "pin/**/*",
       "recognition/**/*",
       "record/**/*",
@@ -104,6 +108,7 @@
     "openai": "^4.87.3",
     "screenshot-desktop": "^1.15.4",
     "selection-hook": "^2.0.2",
+    "sharp": "^0.34.5",
     "showdown": "^2.1.0"
   },
   "devDependencies": {
@@ -117,6 +122,7 @@
     "selection-hook": true,
     "@electron/rebuild": true,
     "electron-builder": true,
-    "ffmpeg-static": true
+    "ffmpeg-static": true,
+    "sharp": true
   }
 }

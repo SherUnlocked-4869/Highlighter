@@ -16,9 +16,11 @@ const { execFile, spawn } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 const screenshotDesktop = require('screenshot-desktop')
+const sharp = require('sharp')
 const Store = require('electron-store')
 const { OcrService } = require('./main/services/ocr-service')
 const { RecordingService } = require('./main/services/recording-service')
+const { LongCaptureSession } = require('./main/services/long-capture-session')
 const { buildTableFromOcr } = require('./capture/recognition-utils')
 const {
   calculateFrameBounds,
@@ -56,12 +58,14 @@ const DEFAULT_SETTINGS = {
     autoSaveOnCopy: false,
     fastSave: false,
     saveDirectory: '',
+    historyDirectory: '',
     saveFormat: 'png',
     historyEnabled: true,
     historyLimit: 200,
     doubleClickCopy: true,
     selectionMask: 'rgba(0,0,0,.46)',
-    showColorPicker: true
+    showColorPicker: true,
+    longCaptureDirection: 'vertical'
   },
   ocr: {
     modelProfile: 'ppocr-v4-ch',
@@ -103,6 +107,7 @@ const DEFAULT_SETTINGS = {
     screenshotCopy: '',
     screenshotFullScreen: '',
     screenshotFocusedWindow: '',
+    screenshotLong: '',
     translationSelectText: '',
     chatSelectText: '',
     videoRecord: '',
@@ -126,6 +131,7 @@ let actionWindow = null
 let selectionHook = null
 let tray = null
 let currentCaptureWindow = null
+let currentLongCapture = null
 let recordWindow = null
 let recordFrameWindow = null
 let ocrService = null
@@ -182,8 +188,17 @@ function mergeDeep(target, patch) {
   return output
 }
 
+function normalizeSettings(settings) {
+  const normalized = settings
+  const legacyDirectory = normalized.fixedContent?.autoSaveDirectory
+  normalized.screenshot.historyDirectory = String(normalized.screenshot.historyDirectory || legacyDirectory || path.join(app.getPath('userData'), 'capture-history')).trim()
+  if (!normalized.screenshot.historyDirectory) normalized.screenshot.historyDirectory = path.join(app.getPath('userData'), 'capture-history')
+  if (normalized.fixedContent && Object.hasOwn(normalized.fixedContent, 'autoSaveDirectory')) delete normalized.fixedContent.autoSaveDirectory
+  return normalized
+}
+
 function getSettings() {
-  return mergeDeep(DEFAULT_SETTINGS, store.get('settings', {}))
+  return normalizeSettings(mergeDeep(DEFAULT_SETTINGS, store.get('settings', {})))
 }
 
 function log(...args) {
@@ -368,8 +383,33 @@ function ensureDirectory(directory) {
   return directory
 }
 
-function historyDirectory() {
+function defaultHistoryDirectory() {
   return ensureDirectory(path.join(app.getPath('userData'), 'capture-history'))
+}
+
+function historyImagePath(id, meta = {}) {
+  const directory = ensureDirectory(getSettings().screenshot.historyDirectory)
+  const prefix = meta.longCapture ? 'Highlighter_Long' : 'Highlighter'
+  return path.join(directory, makeCaptureName(prefix))
+}
+
+function deleteHistoryFiles(item) {
+  if (!item) return
+  if (item.thumbnailPath && fs.existsSync(item.thumbnailPath)) fs.unlinkSync(item.thumbnailPath)
+  if (item.filePath && fs.existsSync(item.filePath)) fs.unlinkSync(item.filePath)
+}
+
+function trimHistory(history, limit) {
+  const kept = history.slice(0, limit)
+  history.slice(limit).forEach((entry) => {
+    try {
+      deleteHistoryFiles(entry)
+    } catch (error) {
+      kept.push(entry)
+      log('History limit cleanup failed:', entry.filePath, error.message)
+    }
+  })
+  return kept
 }
 
 function dataUrlToBuffer(dataUrl) {
@@ -389,7 +429,7 @@ function persistHistory(dataUrl, meta = {}) {
   const settings = getSettings()
   if (!settings.screenshot.historyEnabled) return null
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const filePath = path.join(historyDirectory(), `${id}.png`)
+  const filePath = historyImagePath(id, meta)
   fs.writeFileSync(filePath, dataUrlToBuffer(dataUrl))
   const image = nativeImage.createFromPath(filePath)
   const size = image.getSize()
@@ -402,12 +442,38 @@ function persistHistory(dataUrl, meta = {}) {
     width: size.width,
     height: size.height
   }
-  const history = [item, ...store.get('captureHistory', [])]
   const limit = Math.max(10, Number(settings.screenshot.historyLimit) || 200)
-  const removed = history.splice(limit)
-  removed.forEach((entry) => {
-    try { fs.unlinkSync(entry.filePath) } catch {}
-  })
+  const history = trimHistory([item, ...store.get('captureHistory', [])], limit)
+  store.set('captureHistory', history)
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('history:changed')
+  return item
+}
+
+async function persistHistoryFile(sourcePath, meta = {}) {
+  const settings = getSettings()
+  if (!settings.screenshot.historyEnabled || !sourcePath || !fs.existsSync(sourcePath)) return null
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const filePath = historyImagePath(id, meta)
+  const thumbnailPath = path.join(defaultHistoryDirectory(), `${id}-thumb.png`)
+  fs.copyFileSync(sourcePath, filePath)
+  const imageMeta = await sharp(filePath, { limitInputPixels: false }).metadata()
+  await sharp(filePath, { limitInputPixels: false })
+    .resize({ width: Math.min(360, imageMeta.width || 360), height: 240, fit: 'inside', withoutEnlargement: true })
+    .png({ compressionLevel: 7 })
+    .toFile(thumbnailPath)
+  const item = {
+    id,
+    filePath,
+    thumbnailPath,
+    createdAt: Date.now(),
+    source: meta.source || 'long-capture',
+    action: meta.action || 'save',
+    width: Number(meta.width) || imageMeta.width || 0,
+    height: Number(meta.height) || imageMeta.height || 0,
+    longCapture: !!meta.longCapture
+  }
+  const limit = Math.max(10, Number(settings.screenshot.historyLimit) || 200)
+  const history = trimHistory([item, ...store.get('captureHistory', [])], limit)
   store.set('captureHistory', history)
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('history:changed')
   return item
@@ -836,6 +902,219 @@ function revealCaptureWindow(win) {
   })
 }
 
+async function getDesktopSourceForDisplay(display) {
+  const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 16, height: 16 } })
+  const source = sources.find((item) => String(item.display_id) === String(display.id)) || sources[0]
+  if (!source) throw new Error('无法创建长截图屏幕采集源')
+  return source
+}
+
+function placeLongCaptureController(display, selectionBounds, width = 420, height = 570) {
+  const area = display.workArea
+  const gap = 10
+  const candidates = [
+    { x: selectionBounds.x + selectionBounds.width + gap, y: selectionBounds.y },
+    { x: selectionBounds.x - width - gap, y: selectionBounds.y },
+    { x: selectionBounds.x, y: selectionBounds.y + selectionBounds.height + gap },
+    { x: selectionBounds.x, y: selectionBounds.y - height - gap }
+  ]
+  const fits = (bounds) => bounds.x >= area.x && bounds.y >= area.y && bounds.x + width <= area.x + area.width && bounds.y + height <= area.y + area.height
+  const candidate = candidates.find(fits)
+  if (candidate) return { ...candidate, width, height }
+  return {
+    x: Math.max(area.x, area.x + area.width - width - gap),
+    y: Math.max(area.y, area.y + area.height - height - gap),
+    width,
+    height
+  }
+}
+
+function closeLongCapture() {
+  const state = currentLongCapture
+  if (!state || state.closing) return
+  state.closing = true
+  currentLongCapture = null
+  if (state.overlayWindow && !state.overlayWindow.isDestroyed()) state.overlayWindow.close()
+  if (state.controllerWindow && !state.controllerWindow.isDestroyed()) state.controllerWindow.close()
+  state.session.cleanup()
+}
+
+function setLongOverlayEditing(state, enabled, axis, hasContent) {
+  if (!state || state.overlayWindow.isDestroyed() || state.controllerWindow.isDestroyed()) return false
+  state.selectionEditing = !!enabled
+  state.overlayWindow.setFocusable(state.selectionEditing)
+  state.overlayWindow.setIgnoreMouseEvents(!state.selectionEditing, { forward: true })
+  state.overlayWindow.webContents.send('long-overlay:editing', {
+    enabled: state.selectionEditing,
+    lockedAxis: state.selectionEditing && hasContent ? (axis === 'horizontal' ? 'horizontal' : 'vertical') : ''
+  })
+  if (state.selectionEditing) {
+    state.overlayWindow.moveTop()
+    state.overlayWindow.focus()
+    setImmediate(() => {
+      if (!state.controllerWindow.isDestroyed()) state.controllerWindow.moveTop()
+    })
+  } else {
+    state.controllerWindow.focus()
+  }
+  return true
+}
+
+async function createLongCaptureFromSelection(captureWindow, payload = {}) {
+  if (!captureWindow || captureWindow.isDestroyed() || captureWindow !== currentCaptureWindow) throw new Error('截图选区已失效')
+  const selected = payload.selection || {}
+  const captureBounds = captureWindow._captureInit?.captureBounds
+  if (!captureBounds) throw new Error('缺少截图显示器信息')
+  const selectionBounds = {
+    x: Math.round(captureBounds.x + Number(selected.x || 0)),
+    y: Math.round(captureBounds.y + Number(selected.y || 0)),
+    width: Math.max(1, Math.round(Number(selected.w || 0))),
+    height: Math.max(1, Math.round(Number(selected.h || 0)))
+  }
+  if (selectionBounds.width < 80 || selectionBounds.height < 80) throw new Error('长截图选区至少需要 80 × 80 像素')
+
+  closeLongCapture()
+  const display = screen.getDisplayMatching(selectionBounds)
+  const source = await getDesktopSourceForDisplay(display)
+  const settings = getSettings()
+  const session = new LongCaptureSession({
+    tempRoot: app.getPath('temp'),
+    axis: settings.screenshot.longCaptureDirection
+  })
+  const overlayWindow = new BrowserWindow({
+    ...display.bounds,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    focusable: false,
+    resizable: false,
+    movable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-long-overlay.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  })
+  const controllerBounds = placeLongCaptureController(display, selectionBounds)
+  const controllerWindow = new BrowserWindow({
+    ...controllerBounds,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-long-capture.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  })
+  const init = {
+    sourceId: source.id,
+    displayBounds: display.bounds,
+    selectionBounds,
+    scaleFactor: display.scaleFactor || 1,
+    settings
+  }
+  currentLongCapture = { session, overlayWindow, controllerWindow, init, closing: false, finishing: false, selectionEditing: false }
+  overlayWindow._longCaptureRole = 'overlay'
+  controllerWindow._longCaptureRole = 'controller'
+  overlayWindow.setIgnoreMouseEvents(true, { forward: true })
+  controllerWindow.setContentProtection(true)
+  overlayWindow.setAlwaysOnTop(true, 'screen-saver')
+  controllerWindow.setAlwaysOnTop(true, 'screen-saver')
+  overlayWindow.on('closed', () => {
+    if (currentLongCapture?.overlayWindow === overlayWindow) closeLongCapture()
+  })
+  controllerWindow.on('closed', () => {
+    if (currentLongCapture?.controllerWindow === controllerWindow) closeLongCapture()
+  })
+
+  try {
+    await Promise.all([
+      overlayWindow.loadFile(path.join(__dirname, 'long-capture', 'overlay.html')),
+      controllerWindow.loadFile(path.join(__dirname, 'long-capture', 'long-capture.html'))
+    ])
+    if (captureWindow.isDestroyed() || currentLongCapture?.controllerWindow !== controllerWindow) throw new Error('长截图窗口初始化已取消')
+    captureWindow.close()
+    overlayWindow.showInactive()
+    controllerWindow.show()
+    controllerWindow.focus()
+    return true
+  } catch (error) {
+    closeLongCapture()
+    throw error
+  }
+}
+
+async function finishLongCapture(action, fast = false) {
+  const state = currentLongCapture
+  if (!state || state.finishing) throw new Error('长截图会话不可用')
+  state.finishing = true
+  try {
+    const size = state.session.getSize()
+    const outputPath = await state.session.render()
+    const meta = {
+      source: 'long-capture',
+      action,
+      width: size.width,
+      height: size.height,
+      scaleFactor: state.init.scaleFactor,
+      selectionBounds: state.init.selectionBounds,
+      longCapture: true,
+      axis: state.session.axis
+    }
+    if (action === 'save') {
+      const settings = getSettings()
+      const preferredDirectory = settings.screenshot.saveDirectory
+      let filePath = ''
+      if (fast && preferredDirectory) {
+        ensureDirectory(preferredDirectory)
+        filePath = path.join(preferredDirectory, makeCaptureName('Highlighter_Long'))
+      } else {
+        const result = await dialog.showSaveDialog({
+          title: '保存长截图',
+          defaultPath: path.join(preferredDirectory || app.getPath('pictures'), makeCaptureName('Highlighter_Long')),
+          filters: [{ name: 'PNG 图片', extensions: ['png'] }]
+        })
+        if (result.canceled || !result.filePath) {
+          state.finishing = false
+          return { canceled: true }
+        }
+        filePath = result.filePath
+      }
+      fs.copyFileSync(outputPath, filePath)
+      await persistHistoryFile(outputPath, { ...meta, action: 'save' })
+    } else {
+      if (Math.max(size.width, size.height) > 65535 || size.width * size.height > 80000000) {
+        throw new Error('长截图过大，当前仅支持保存为文件')
+      }
+      const image = nativeImage.createFromPath(outputPath)
+      if (image.isEmpty()) throw new Error('长截图图片解码失败')
+      if (action === 'copy') clipboard.writeImage(image)
+      else if (action === 'pin') {
+        if (pinnedCount >= MAX_PINNED) throw new Error(`最多固定 ${MAX_PINNED} 张图片`)
+        createPinWindow(image.toDataURL(), meta)
+      } else throw new Error('不支持的长截图操作')
+      await persistHistoryFile(outputPath, meta)
+    }
+    setImmediate(closeLongCapture)
+    return { ok: true }
+  } catch (error) {
+    state.finishing = false
+    throw error
+  }
+}
+
 async function captureFocusedWindow() {
   let title = ''
   if (isWin) {
@@ -885,11 +1164,16 @@ function createPinWindow(dataUrl, meta = {}) {
   const maxWidth = Math.round(display.workArea.width * 0.55)
   const maxHeight = Math.round(display.workArea.height * 0.55)
   const sourceScaleFactor = Math.max(0.25, Number(meta.scaleFactor) || display.scaleFactor || 1)
-  const baseWidth = selectionBounds?.width || Math.max(1, size.width / sourceScaleFactor)
-  const baseHeight = selectionBounds?.height || Math.max(1, size.height / sourceScaleFactor)
-  const zoom = selectionBounds ? 1 : Math.min(1, maxWidth / baseWidth, maxHeight / baseHeight)
-  const width = selectionBounds?.width || Math.max(1, Math.round(baseWidth * zoom))
-  const height = selectionBounds?.height || Math.max(1, Math.round(baseHeight * zoom))
+  const longCapture = !!meta.longCapture
+  const naturalWidth = Math.max(1, size.width / sourceScaleFactor)
+  const naturalHeight = Math.max(1, size.height / sourceScaleFactor)
+  const baseWidth = longCapture ? naturalWidth : (selectionBounds?.width || naturalWidth)
+  const baseHeight = longCapture ? naturalHeight : (selectionBounds?.height || naturalHeight)
+  const zoom = longCapture
+    ? Math.min(1, maxWidth / baseWidth)
+    : (selectionBounds ? 1 : Math.min(1, maxWidth / baseWidth, maxHeight / baseHeight))
+  const width = longCapture ? Math.max(1, Math.round(baseWidth * zoom)) : (selectionBounds?.width || Math.max(1, Math.round(baseWidth * zoom)))
+  const height = longCapture ? Math.max(1, Math.min(maxHeight, Math.round(baseHeight * zoom))) : (selectionBounds?.height || Math.max(1, Math.round(baseHeight * zoom)))
   const cursor = screen.getCursorScreenPoint()
   const x = selectionBounds?.x ?? Math.round(Math.min(display.workArea.x + display.workArea.width - width, Math.max(display.workArea.x, cursor.x - width / 2)))
   const y = selectionBounds?.y ?? Math.round(Math.min(display.workArea.y + display.workArea.height - height, Math.max(display.workArea.y, cursor.y - 30)))
@@ -920,6 +1204,7 @@ function createPinWindow(dataUrl, meta = {}) {
     opacity: getSettings().fixedContent.opacity,
     zoomWithMouse: getSettings().fixedContent.zoomWithMouse !== false,
     clickThrough: false,
+    longCapture,
     baseWidth,
     baseHeight,
     zoom
@@ -1216,6 +1501,7 @@ async function executeFunction(name, payload = {}) {
     case 'screenshotQr': await createCaptureWindow({ mode: 'region', autoAction: 'qr', source: 'qr' }); return true
     case 'screenshotOcrTranslate': await createCaptureWindow({ mode: 'region', autoAction: 'translate', source: 'ocr-translate' }); return true
     case 'screenshotCopy': await createCaptureWindow({ mode: 'region', autoAction: 'copy', source: 'copy' }); return true
+    case 'screenshotLong': await createCaptureWindow({ mode: 'region', autoAction: 'long', source: 'long-capture' }); return true
     case 'screenshotFullScreen': await createCaptureWindow({ mode: 'fullscreen', autoAction: payload.save ? 'save' : 'copy', source: 'fullscreen' }); return true
     case 'screenshotFocusedWindow': {
       const dataUrl = await captureFocusedWindow()
@@ -1227,7 +1513,9 @@ async function executeFunction(name, payload = {}) {
       const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }] })
       if (result.canceled || !result.filePaths[0]) return false
       const image = nativeImage.createFromPath(result.filePaths[0])
-      createPinWindow(image.toDataURL(), { source: 'file' })
+      const dataUrl = image.toDataURL()
+      createPinWindow(dataUrl, { source: 'file' })
+      persistHistory(dataUrl, { source: 'file', action: 'pin' })
       return true
     }
     case 'videoRecord': {
@@ -1270,7 +1558,7 @@ function registerShortcuts() {
 
 ipcMain.handle('settings:get', () => getSettings())
 ipcMain.handle('settings:update', (_event, patch) => {
-  const settings = mergeDeep(getSettings(), patch || {})
+  const settings = normalizeSettings(mergeDeep(getSettings(), patch || {}))
   store.set('settings', settings)
   if (patch?.shortcuts) registerShortcuts()
   if (patch?.system?.autoStart !== undefined) app.setLoginItemSettings({ openAtLogin: !!settings.system.autoStart })
@@ -1280,7 +1568,7 @@ ipcMain.handle('settings:update', (_event, patch) => {
   return settings
 })
 ipcMain.handle('settings:reset', () => {
-  store.set('settings', DEFAULT_SETTINGS)
+  store.set('settings', normalizeSettings(mergeDeep(DEFAULT_SETTINGS, {})))
   registerShortcuts()
   return getSettings()
 })
@@ -1326,7 +1614,8 @@ ipcMain.handle('ai:complete', async (_event, { messages, options }) => require('
 ipcMain.handle('ai:translate', async (_event, { text, sourceLanguage, targetLanguage }) => require('./deepseek').translateText(getSettings().apiKey, text, sourceLanguage, targetLanguage || getSettings().ai.targetLanguage))
 
 ipcMain.handle('history:list', () => store.get('captureHistory', []).filter((item) => fs.existsSync(item.filePath)).map((item) => {
-  const image = nativeImage.createFromPath(item.filePath)
+  const thumbnailSource = item.thumbnailPath && fs.existsSync(item.thumbnailPath) ? item.thumbnailPath : item.filePath
+  const image = nativeImage.createFromPath(thumbnailSource)
   const size = image.getSize()
   const width = Math.min(360, size.width || 360)
   const thumbnail = image.resize({ width, quality: 'good' }).toDataURL()
@@ -1335,18 +1624,29 @@ ipcMain.handle('history:list', () => store.get('captureHistory', []).filter((ite
 ipcMain.handle('history:delete', (_event, id) => {
   const history = store.get('captureHistory', [])
   const item = history.find((entry) => entry.id === id)
-  if (item) { try { fs.unlinkSync(item.filePath) } catch {} }
+  if (item) deleteHistoryFiles(item)
   store.set('captureHistory', history.filter((entry) => entry.id !== id))
   return true
 })
 ipcMain.handle('history:clear', () => {
-  store.get('captureHistory', []).forEach((item) => { try { fs.unlinkSync(item.filePath) } catch {} })
-  store.set('captureHistory', [])
+  const remaining = []
+  const failures = []
+  store.get('captureHistory', []).forEach((item) => {
+    try {
+      deleteHistoryFiles(item)
+    } catch (error) {
+      remaining.push(item)
+      failures.push(`${path.basename(item.filePath)}: ${error.message}`)
+    }
+  })
+  store.set('captureHistory', remaining)
+  if (failures.length) throw new Error(`有 ${failures.length} 个历史文件删除失败`)
   return true
 })
 ipcMain.handle('history:copy', (_event, id) => {
   const item = store.get('captureHistory', []).find((entry) => entry.id === id)
   if (!item) return false
+  if (Math.max(Number(item.width) || 0, Number(item.height) || 0) > 65535 || (Number(item.width) || 0) * (Number(item.height) || 0) > 80000000) return false
   clipboard.writeImage(nativeImage.createFromPath(item.filePath))
   return true
 })
@@ -1397,6 +1697,7 @@ ipcMain.handle('capture:start-region-recording', async (event, { selectionBounds
   if (!captureWindow.isDestroyed()) captureWindow.close()
   return true
 })
+ipcMain.handle('capture:start-long', (event, payload) => createLongCaptureFromSelection(BrowserWindow.fromWebContents(event.sender), payload))
 ipcMain.handle('capture:smart-select', async (event, point = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   const context = win?._smartSelectContext
@@ -1418,10 +1719,18 @@ ipcMain.handle('capture:copy', (_event, { dataUrl, meta }) => {
   if (getSettings().screenshot.autoSaveOnCopy && getSettings().screenshot.saveDirectory) saveDataUrl(dataUrl, { fast: true }).catch((error) => log(error.message))
   return item
 })
-ipcMain.handle('capture:save', async (_event, { dataUrl, meta, fast }) => {
-  const filePath = await saveDataUrl(dataUrl, { fast: !!fast })
-  if (filePath) persistHistory(dataUrl, { ...meta, action: 'save' })
-  return filePath
+ipcMain.on('capture:save', (event, { dataUrl, meta, fast }) => {
+  const captureWindow = BrowserWindow.fromWebContents(event.sender)
+  if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
+  setImmediate(async () => {
+    try {
+      const filePath = await saveDataUrl(dataUrl, { fast: !!fast })
+      if (filePath) persistHistory(dataUrl, { ...meta, action: 'save' })
+    } catch (error) {
+      log('Capture save failed:', error.message)
+      dialog.showErrorBox('保存截图失败', error.message || String(error))
+    }
+  })
 })
 ipcMain.handle('capture:pin', (event, { dataUrl, meta }) => {
   pinFromCapture(event, dataUrl, meta)
@@ -1444,6 +1753,75 @@ ipcMain.handle('capture:open-recognition', (event, { type, dataUrl, meta }) => {
   return persistHistory(dataUrl, { ...meta, action: type })
 })
 ipcMain.handle('capture:record-history', (_event, { dataUrl, meta }) => persistHistory(dataUrl, meta))
+ipcMain.on('long-capture:ready', (event) => {
+  const state = currentLongCapture
+  if (!state || event.sender !== state.controllerWindow.webContents) return
+  event.sender.send('long-capture:init', state.init)
+})
+ipcMain.on('long-overlay:ready', (event) => {
+  const state = currentLongCapture
+  if (!state || event.sender !== state.overlayWindow.webContents) return
+  event.sender.send('long-overlay:init', {
+    displayBounds: state.init.displayBounds,
+    selectionBounds: state.init.selectionBounds,
+    mainColor: state.init.settings.mainColor
+  })
+})
+ipcMain.on('long-capture:overlay-active', (event, active) => {
+  const state = currentLongCapture
+  if (!state || event.sender !== state.controllerWindow.webContents || state.overlayWindow.isDestroyed()) return
+  state.overlayWindow.webContents.send('long-overlay:active', !!active)
+})
+ipcMain.handle('long-capture:add-strip', (event, { arrayBuffer, metadata } = {}) => {
+  const state = currentLongCapture
+  if (!state || event.sender !== state.controllerWindow.webContents || state.finishing) throw new Error('长截图会话不可用')
+  if (!state.session.strips.length && ['vertical', 'horizontal'].includes(metadata?.axis)) {
+    state.session.axis = metadata.axis
+    store.set('settings', mergeDeep(getSettings(), { screenshot: { longCaptureDirection: metadata.axis } }))
+  }
+  return state.session.addStrip(Buffer.from(arrayBuffer), metadata)
+})
+ipcMain.handle('long-capture:set-trim', (event, { start, end } = {}) => {
+  const state = currentLongCapture
+  if (!state || event.sender !== state.controllerWindow.webContents || state.finishing) throw new Error('长截图会话不可用')
+  return state.session.setTrim(start, end)
+})
+ipcMain.handle('long-capture:set-selection-editing', (event, { enabled, axis, hasContent } = {}) => {
+  const state = currentLongCapture
+  if (!state || event.sender !== state.controllerWindow.webContents || state.finishing) throw new Error('长截图会话不可用')
+  return setLongOverlayEditing(state, enabled, axis, hasContent)
+})
+ipcMain.on('long-overlay:bounds-changed', (event, proposed = {}) => {
+  const state = currentLongCapture
+  if (!state || event.sender !== state.overlayWindow.webContents || !state.selectionEditing || state.finishing) return
+  const display = state.init.displayBounds
+  const previous = state.init.selectionBounds
+  let next = {
+    x: Math.round(Number(proposed.x) || display.x),
+    y: Math.round(Number(proposed.y) || display.y),
+    width: Math.max(80, Math.round(Number(proposed.width) || previous.width)),
+    height: Math.max(80, Math.round(Number(proposed.height) || previous.height))
+  }
+  if (state.session.strips.length) {
+    if (state.session.axis === 'vertical') next = { ...previous, y: next.y }
+    else next = { ...previous, x: next.x }
+  }
+  next.width = Math.min(display.width, next.width)
+  next.height = Math.min(display.height, next.height)
+  next.x = Math.max(display.x, Math.min(display.x + display.width - next.width, next.x))
+  next.y = Math.max(display.y, Math.min(display.y + display.height - next.height, next.y))
+  state.init.selectionBounds = next
+  if (!state.controllerWindow.isDestroyed()) state.controllerWindow.webContents.send('long-capture:selection-updated', next)
+})
+ipcMain.handle('long-capture:finish', (event, { action, fast } = {}) => {
+  const state = currentLongCapture
+  if (!state || event.sender !== state.controllerWindow.webContents) throw new Error('长截图会话不可用')
+  return finishLongCapture(action, fast)
+})
+ipcMain.on('long-capture:close', (event) => {
+  const state = currentLongCapture
+  if (state && event.sender === state.controllerWindow.webContents) closeLongCapture()
+})
 ipcMain.handle('ocr:status', () => getOcrService().getStatus())
 ipcMain.handle('capture:ocr', async (_event, payload) => {
   if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
@@ -1847,6 +2225,7 @@ if (!gotTheLock) app.quit()
 else {
   app.on('second-instance', () => createMainWindow('home'))
   app.whenReady().then(() => {
+    store.set('settings', getSettings())
     createTrayIcon()
     createToolbarWindow()
     createMainWindow('home')
@@ -1864,6 +2243,7 @@ else {
       .then(() => recordingService?.dispose())
       .catch((error) => log('Recording shutdown failed:', error.message))
       .finally(() => { recordingService = null })
+    closeLongCapture()
     if (ocrService) { ocrService.stop(); ocrService = null }
     if (selectionHook) { try { selectionHook.cleanup() } catch {}; selectionHook = null }
     if (tray) { tray.destroy(); tray = null }
