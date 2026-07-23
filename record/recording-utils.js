@@ -40,6 +40,16 @@
     return Math.max(16, Math.floor(finite(value) / 2) * 2)
   }
 
+  function calculateFrameBounds(selection = {}, borderWidth = 2) {
+    const border = Math.max(1, Math.round(finite(borderWidth, 2)))
+    return {
+      x: Math.round(finite(selection.x) - border),
+      y: Math.round(finite(selection.y) - border),
+      width: Math.max(1, Math.round(finite(selection.width) + border * 2)),
+      height: Math.max(1, Math.round(finite(selection.height) + border * 2))
+    }
+  }
+
   function calculateCropRect(video = {}, display = {}, selection = {}) {
     const displayWidth = finite(display.width)
     const displayHeight = finite(display.height)
@@ -59,6 +69,34 @@
     const duration = finite(durationMs)
     if (elapsed <= 0 || duration <= 0) return 0
     return Math.max(0, Math.min(99, Math.round(elapsed * 100 / (duration * 1000))))
+  }
+
+  function primeSeekablePreview(video) {
+    if (!video || typeof video.addEventListener !== 'function') return () => {}
+    let active = true
+    function cleanup() {
+      if (!active) return
+      active = false
+      video.removeEventListener('loadedmetadata', probe)
+      video.removeEventListener('durationchange', reset)
+      video.removeEventListener('timeupdate', reset)
+    }
+    function reset() {
+      if (!Number.isFinite(Number(video.duration)) || Number(video.duration) <= 0) return
+      cleanup()
+      video.currentTime = 0
+    }
+    function probe() {
+      if (Number.isFinite(Number(video.duration)) && Number(video.duration) > 0) {
+        cleanup()
+        return
+      }
+      video.addEventListener('durationchange', reset)
+      video.addEventListener('timeupdate', reset)
+      try { video.currentTime = 1e101 } catch { cleanup() }
+    }
+    video.addEventListener('loadedmetadata', probe, { once: true })
+    return cleanup
   }
 
   function pickDesktopSource(sources, displayId) {
@@ -99,10 +137,12 @@
   const recordingUtils = {
     buildFfmpegArgs,
     calculateCropRect,
+    calculateFrameBounds,
     calculateTranscodeProgress,
     normalizeFrameRate,
     normalizeSelectionBounds,
     pickDesktopSource,
+    primeSeekablePreview,
     transitionRecordingState
   }
 

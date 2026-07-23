@@ -2,13 +2,42 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
   buildFfmpegArgs,
+  calculateFrameBounds,
   calculateTranscodeProgress,
   calculateCropRect,
   normalizeFrameRate,
   normalizeSelectionBounds,
   pickDesktopSource,
+  primeSeekablePreview,
   transitionRecordingState
 } = require('../record/recording-utils')
+
+test('primes unknown WebM duration by seeking to the tail and resetting', () => {
+  const listeners = new Map()
+  const video = {
+    currentTime: 0,
+    duration: Infinity,
+    addEventListener(type, handler) { listeners.set(type, handler) },
+    removeEventListener(type, handler) {
+      if (listeners.get(type) === handler) listeners.delete(type)
+    }
+  }
+  const dispose = primeSeekablePreview(video)
+  listeners.get('loadedmetadata')()
+  assert.equal(video.currentTime, 1e101)
+  video.duration = 12.5
+  listeners.get('durationchange')()
+  assert.equal(video.currentTime, 0)
+  assert.equal(listeners.has('timeupdate'), false)
+  dispose()
+})
+
+test('places the recording frame entirely outside the captured selection', () => {
+  assert.deepEqual(
+    calculateFrameBounds({ x: 100, y: 50, width: 641, height: 361 }, 2),
+    { x: 98, y: 48, width: 645, height: 365 }
+  )
+})
 
 test('converts ffmpeg elapsed microseconds to a bounded percentage', () => {
   assert.equal(calculateTranscodeProgress(5_000_000, 10_000), 50)

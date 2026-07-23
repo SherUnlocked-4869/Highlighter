@@ -21,6 +21,7 @@ const { OcrService } = require('./main/services/ocr-service')
 const { RecordingService } = require('./main/services/recording-service')
 const { buildTableFromOcr } = require('./capture/recognition-utils')
 const {
+  calculateFrameBounds,
   calculateTranscodeProgress,
   normalizeFrameRate,
   normalizeSelectionBounds,
@@ -1103,10 +1104,11 @@ async function createRecordWindow(options = {}) {
   const selectionBounds = normalizeSelectionBounds(requestedBounds || display.bounds, display.bounds)
   const source = await getDesktopSource(display)
   const frameRate = normalizeFrameRate(getSettings().record.frameRate)
+  const frameBounds = calculateFrameBounds(selectionBounds, 2)
   const controlBounds = getRecordControlBounds(selectionBounds, display.workArea)
 
   const frameWindow = new BrowserWindow({
-    ...selectionBounds,
+    ...frameBounds,
     show: false,
     frame: false,
     transparent: true,
@@ -1656,11 +1658,17 @@ ipcMain.handle('record:save-mp4', async (event, { sessionId, durationMs } = {}) 
   requireRecordSession(win, sessionId)
   const settings = getSettings()
   const directory = settings.record.saveDirectory || app.getPath('videos')
-  const result = await dialog.showSaveDialog({
-    title: '保存 MP4 录屏',
-    defaultPath: path.join(directory, makeCaptureName('Highlighter_Video').replace('.png', '.mp4')),
-    filters: [{ name: 'MP4 视频', extensions: ['mp4'] }]
-  })
+  let result
+  win.setAlwaysOnTop(false)
+  try {
+    result = await dialog.showSaveDialog(win, {
+      title: '保存 MP4 录屏',
+      defaultPath: path.join(directory, makeCaptureName('Highlighter_Video').replace('.png', '.mp4')),
+      filters: [{ name: 'MP4 视频', extensions: ['mp4'] }]
+    })
+  } finally {
+    if (!win.isDestroyed()) win.setAlwaysOnTop(true, 'screen-saver')
+  }
   if (result.canceled || !result.filePath) return ''
   const duration = Math.max(1, Number(durationMs) || 1)
   const outputPath = await getRecordingService().transcode(sessionId, result.filePath, (elapsedMicroseconds) => {

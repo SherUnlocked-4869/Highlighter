@@ -39,6 +39,7 @@ test('recording UI contains control and preview states', () => {
   assert.match(script, /video\/webm/)
   assert.match(script, /appendChunk/)
   assert.match(script, /transitionRecordingState/)
+  assert.match(script, /primeSeekablePreview\(preview\)/)
 })
 
 test('region recording uses supported silent MP4 settings', () => {
@@ -55,4 +56,10 @@ test('region recording uses supported silent MP4 settings', () => {
   assert.match(recordScript, /cancelButton\.disabled/)
   assert.match(recordScript, /async function rerecord\(\)[\s\S]*catch \(error\) \{[\s\S]*cancelSession\(sessionId\)/)
   assert.match(main, /未找到 MP4 编码组件/)
+})
+
+test('MP4 save dialog is owned and not covered by the topmost preview', () => {
+  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  assert.match(main, /record:save-mp4[\s\S]*setAlwaysOnTop\(false\)[\s\S]*showSaveDialog\(win,/)
+  assert.match(main, /showSaveDialog\(win,[\s\S]*finally[\s\S]*setAlwaysOnTop\(true, 'screen-saver'\)/)
 })

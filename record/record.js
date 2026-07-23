@@ -1,5 +1,6 @@
 const {
   calculateCropRect,
+  primeSeekablePreview,
   transitionRecordingState
 } = window.recordingUtils
 
@@ -40,6 +41,7 @@ let pausedTotal = 0
 let clockTimer = 0
 let durationMs = 0
 let countdownVersion = 0
+let disposePreviewProbe = () => {}
 
 function formatDuration(milliseconds) {
   const seconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000))
@@ -256,7 +258,9 @@ async function finishRecording() {
   controlView.hidden = true
   previewView.hidden = false
   previewDuration.textContent = formatDuration(durationMs)
+  disposePreviewProbe()
   preview.src = result.previewUrl
+  disposePreviewProbe = primeSeekablePreview(preview)
   preview.load()
   setBusy(false)
 }
@@ -342,6 +346,8 @@ async function rerecord() {
   }
   try {
     sessionId = null
+    disposePreviewProbe()
+    disposePreviewProbe = () => {}
     preview.pause()
     preview.removeAttribute('src')
     preview.load()
@@ -383,6 +389,7 @@ window.recordAPI.onInit((data) => {
 addEventListener('beforeunload', () => {
   countdownVersion++
   clearInterval(clockTimer)
+  disposePreviewProbe()
   stopSource()
 })
 
