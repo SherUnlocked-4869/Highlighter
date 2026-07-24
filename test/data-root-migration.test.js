@@ -814,6 +814,88 @@ test('rollback archive failure preserves locator pending and owned target', asyn
   assert.equal(await exists(fixture.target.configFile), true)
 })
 
+test('rollback restores the previous locator without touching a target whose marker is invalid', async (t) => {
+  const cases = [
+    {
+      name: 'missing marker',
+      async invalidate(markerPath) { await fsp.rm(markerPath) }
+    },
+    {
+      name: 'malformed marker',
+      async invalidate(markerPath) { await fsp.writeFile(markerPath, '{invalid') }
+    },
+    {
+      name: 'mismatched marker',
+      async invalidate(markerPath) {
+        const marker = JSON.parse(await fsp.readFile(markerPath, 'utf8'))
+        await writeJson(markerPath, { ...marker, migrationId: 'different-migration' })
+      }
+    }
+  ]
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const fixture = await migratedFixture(t)
+      const pending = JSON.parse(await fsp.readFile(fixture.pendingPath, 'utf8'))
+      const markerPath = path.join(fixture.targetRoot, '.migration.json')
+      const targetConfig = await fsp.readFile(fixture.target.configFile, 'utf8')
+      const targetLog = await fsp.readFile(fixture.target.logFile, 'utf8')
+      const targetHistory = await fsp.readFile(path.join(fixture.target.history, 'one.png'), 'utf8')
+      await testCase.invalidate(markerPath)
+      const markerAfterInvalidation = await fsp.readFile(markerPath, 'utf8').catch((error) => {
+        if (error.code === 'ENOENT') return null
+        throw error
+      })
+      await assert.rejects(verifyAndFinalizeMigration({
+        pendingPath: fixture.pendingPath,
+        activeRoot: fixture.targetRoot
+      }), /数据目录迁移验证失败/)
+
+      const previousRoot = await rollbackPendingMigration({
+        pendingPath: fixture.pendingPath,
+        locatorPath: fixture.locatorPath
+      })
+
+      assert.equal(previousRoot, path.resolve(fixture.sourceRoot))
+      assert.deepEqual(await readLocator(fixture.locatorPath), { version: 1, dataRoot: path.resolve(fixture.sourceRoot) })
+      assert.equal(await exists(fixture.pendingPath), false)
+      assert.equal(await fsp.readFile(fixture.target.configFile, 'utf8'), targetConfig)
+      assert.equal(await fsp.readFile(fixture.target.logFile, 'utf8'), targetLog)
+      assert.equal(await fsp.readFile(path.join(fixture.target.history, 'one.png'), 'utf8'), targetHistory)
+      assert.equal(await exists(path.join(fixture.targetRoot, `.highlighter-failed-${pending.migrationId}`)), false)
+      assert.equal(await fsp.readFile(markerPath, 'utf8').catch((error) => {
+        if (error.code === 'ENOENT') return null
+        throw error
+      }), markerAfterInvalidation)
+    })
+  }
+})
+
+test('first-run rollback with an invalid marker removes the locator and preserves the target', async (t) => {
+  const parent = await temporaryRoot(t)
+  const locatorPath = path.join(parent, LOCATOR_NAME)
+  const pendingPath = path.join(parent, PENDING_NAME)
+  const targetRoot = path.join(parent, 'managed')
+  const target = createDataPaths(targetRoot)
+  await ensureDataLayout(target)
+  await fsp.writeFile(path.join(target.config, 'config.json'), 'diagnostic')
+  await fsp.writeFile(path.join(targetRoot, '.migration.json'), '{invalid')
+  await writeLocator(locatorPath, targetRoot)
+  await writeJson(pendingPath, {
+    version: 1,
+    migrationId: 'first-run-invalid-marker',
+    previousRoot: '',
+    newRoot: targetRoot,
+    source: createLegacySourcePaths(path.join(parent, 'legacy'))
+  })
+
+  assert.equal(await rollbackPendingMigration({ pendingPath, locatorPath }), '')
+  assert.equal(await exists(locatorPath), false)
+  assert.equal(await exists(pendingPath), false)
+  assert.equal(await fsp.readFile(path.join(target.config, 'config.json'), 'utf8'), 'diagnostic')
+  assert.equal(await fsp.readFile(path.join(targetRoot, '.migration.json'), 'utf8'), '{invalid')
+})
+
 test('first-run rollback removes locator and pending', async (t) => {
   const parent = await temporaryRoot(t)
   const locatorPath = path.join(parent, LOCATOR_NAME)

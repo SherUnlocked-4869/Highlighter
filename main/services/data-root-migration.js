@@ -578,13 +578,33 @@ async function verifyAndFinalizeMigration({
   return { finalized: artifactErrors.length === 0, cleanupErrors: artifactErrors }
 }
 
+async function hasOwnedTargetMarker(newRoot, migrationId) {
+  const root = path.resolve(newRoot)
+  const markerPaths = [
+    path.join(root, MIGRATION_MARKER),
+    path.join(root, `.highlighter-failed-${migrationId}`, MIGRATION_MARKER)
+  ]
+  for (const markerPath of markerPaths) {
+    const marker = await fsp.readFile(markerPath, 'utf8').then(JSON.parse).catch(() => null)
+    try {
+      if (marker) {
+        validateMarkerSchema(marker, root, migrationId)
+        return true
+      }
+    } catch {}
+  }
+  return false
+}
+
 async function rollbackPendingMigration({ pendingPath, locatorPath, archive = archiveOwnedTarget }) {
   const pending = JSON.parse(await fsp.readFile(pendingPath, 'utf8'))
   if (pending.phase === 'quarantine-planned' || pending.phase === 'cleaned') {
     throw new Error('已验证的数据目录迁移不能回滚')
   }
   const previousRoot = pending.previousRoot || ''
-  await archive(pending.newRoot, pending.migrationId)
+  if (await hasOwnedTargetMarker(pending.newRoot, pending.migrationId)) {
+    await archive(pending.newRoot, pending.migrationId)
+  }
   if (previousRoot) await writeLocator(locatorPath, previousRoot)
   else await fsp.rm(locatorPath, { force: true })
   await fsp.rm(pendingPath, { force: true })
