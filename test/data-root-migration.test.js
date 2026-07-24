@@ -53,6 +53,23 @@ async function countFiles(directory) {
   return count
 }
 
+async function migratedFixture(t) {
+  const parent = await temporaryRoot(t)
+  const sourceRoot = path.join(parent, 'legacy')
+  const targetRoot = path.join(parent, 'managed')
+  const portableDirectory = path.join(parent, 'portable')
+  const source = createLegacySourcePaths(sourceRoot)
+  const target = createManagedSourcePaths(targetRoot)
+  await fsp.mkdir(source.history, { recursive: true })
+  await fsp.writeFile(source.configFile, '{}')
+  await fsp.writeFile(path.join(source.history, 'one.png'), 'one')
+  await fsp.mkdir(portableDirectory, { recursive: true })
+  const locatorPath = path.join(portableDirectory, LOCATOR_NAME)
+  await writeLocator(locatorPath, sourceRoot)
+  const migration = await migrateDataRoot({ source, target, portableDirectory, previousRoot: sourceRoot })
+  return { parent, sourceRoot, targetRoot, portableDirectory, source, target, locatorPath, ...migration }
+}
+
 test('exports the data root migration API', () => {
   assert.equal(typeof migrateDataRoot, 'function')
 })
@@ -166,7 +183,7 @@ test('copy failure leaves source, locator, pending, and target clean', async (t)
   assert.deepEqual(await fsp.readdir(targetRoot), [])
 })
 
-test('locator publication failure removes this migration marker and target data', async (t) => {
+test('post-publication failure restores the previous locator before removing target data', async (t) => {
   const parent = await temporaryRoot(t)
   const sourceRoot = path.join(parent, 'legacy')
   const targetRoot = path.join(parent, 'managed')
@@ -183,13 +200,72 @@ test('locator publication failure removes this migration marker and target data'
     source,
     target,
     portableDirectory,
-    writeLocatorFile: async () => { throw new Error('locator failed') }
-  }), /locator failed/)
+    previousRoot: sourceRoot,
+    async writeLocatorFile(filePath, dataRoot) {
+      await writeLocator(filePath, dataRoot)
+      throw new Error('publication callback failed')
+    }
+  }), /publication callback failed/)
 
   assert.equal(await exists(path.join(targetRoot, '.migration.json')), false)
   assert.deepEqual(await fsp.readdir(targetRoot), [])
   assert.equal(await exists(path.join(portableDirectory, PENDING_NAME)), false)
   assert.deepEqual(await readLocator(locatorPath), { version: 1, dataRoot: path.resolve(sourceRoot) })
+})
+
+test('rollback write failure preserves pending and published target data', async (t) => {
+  const parent = await temporaryRoot(t)
+  const sourceRoot = path.join(parent, 'legacy')
+  const targetRoot = path.join(parent, 'managed')
+  const portableDirectory = path.join(parent, 'portable')
+  const source = createLegacySourcePaths(sourceRoot)
+  const target = createDataPaths(targetRoot)
+  await fsp.mkdir(source.history, { recursive: true })
+  await fsp.writeFile(path.join(source.history, 'one.png'), 'one')
+  await fsp.mkdir(portableDirectory, { recursive: true })
+  const locatorPath = path.join(portableDirectory, LOCATOR_NAME)
+  const pendingPath = path.join(portableDirectory, PENDING_NAME)
+  await writeLocator(locatorPath, sourceRoot)
+
+  await assert.rejects(migrateDataRoot({
+    source,
+    target,
+    portableDirectory,
+    previousRoot: sourceRoot,
+    async writeLocatorFile(filePath, dataRoot) {
+      await writeLocator(filePath, dataRoot)
+      throw new Error('publication callback failed')
+    },
+    restoreLocatorFile: async () => { throw new Error('restore denied') }
+  }), /数据目录迁移回滚失败/)
+
+  assert.deepEqual(await readLocator(locatorPath), { version: 1, dataRoot: path.resolve(targetRoot) })
+  assert.equal(await exists(pendingPath), true)
+  assert.equal(await exists(path.join(targetRoot, '.migration.json')), true)
+  assert.equal(await fsp.readFile(path.join(target.history, 'one.png'), 'utf8'), 'one')
+})
+
+test('first-run post-publication failure removes the new locator before target cleanup', async (t) => {
+  const parent = await temporaryRoot(t)
+  const source = createLegacySourcePaths(path.join(parent, 'legacy'))
+  const target = createDataPaths(path.join(parent, 'managed'))
+  const portableDirectory = path.join(parent, 'portable')
+  await fsp.mkdir(source.history, { recursive: true })
+  await fsp.writeFile(path.join(source.history, 'one.png'), 'one')
+
+  await assert.rejects(migrateDataRoot({
+    source,
+    target,
+    portableDirectory,
+    async writeLocatorFile(filePath, dataRoot) {
+      await writeLocator(filePath, dataRoot)
+      throw new Error('publication callback failed')
+    }
+  }), /publication callback failed/)
+
+  assert.equal(await exists(path.join(portableDirectory, LOCATOR_NAME)), false)
+  assert.equal(await exists(path.join(portableDirectory, PENDING_NAME)), false)
+  assert.deepEqual(await fsp.readdir(target.root), [])
 })
 
 test('finalization cleans declared source paths but retains unrelated files', async (t) => {
@@ -225,6 +301,116 @@ test('finalization cleans declared source paths but retains unrelated files', as
   assert.equal(await exists(path.join(portableDirectory, PENDING_NAME)), false)
 })
 
+test('finalization reports no work when pending does not exist', async (t) => {
+  const parent = await temporaryRoot(t)
+  assert.deepEqual(await verifyAndFinalizeMigration({
+    pendingPath: path.join(parent, PENDING_NAME),
+    activeRoot: path.join(parent, 'active')
+  }), { finalized: false, cleanupErrors: [] })
+})
+
+test('invalid migrated config fails verification without cleaning source', async (t) => {
+  const fixture = await migratedFixture(t)
+  let cleanupCalled = false
+  await fsp.writeFile(fixture.target.configFile, '{invalid', 'utf8')
+
+  await assert.rejects(verifyAndFinalizeMigration({
+    pendingPath: fixture.pendingPath,
+    activeRoot: fixture.targetRoot,
+    cleanup: async () => {
+      cleanupCalled = true
+      return []
+    }
+  }), /数据目录迁移验证失败/)
+
+  assert.equal(cleanupCalled, false)
+  assert.equal(await exists(fixture.source.configFile), true)
+  assert.equal(await exists(fixture.pendingPath), true)
+})
+
+test('history count mismatch fails verification without cleaning source', async (t) => {
+  const fixture = await migratedFixture(t)
+  let cleanupCalled = false
+  await fsp.rm(path.join(fixture.target.history, 'one.png'))
+
+  await assert.rejects(verifyAndFinalizeMigration({
+    pendingPath: fixture.pendingPath,
+    activeRoot: fixture.targetRoot,
+    cleanup: async () => {
+      cleanupCalled = true
+      return []
+    }
+  }), /数据目录迁移验证失败/)
+
+  assert.equal(cleanupCalled, false)
+  assert.equal(await exists(path.join(fixture.source.history, 'one.png')), true)
+  assert.equal(await exists(fixture.pendingPath), true)
+})
+
+test('rejects cleanupFiles tampering with an unrelated file inside source root', async (t) => {
+  const fixture = await migratedFixture(t)
+  const keepPath = path.join(fixture.sourceRoot, 'keep.txt')
+  await fsp.writeFile(keepPath, 'keep')
+  const pending = JSON.parse(await fsp.readFile(fixture.pendingPath, 'utf8'))
+  pending.source.cleanupFiles.push(keepPath)
+  await writeJson(fixture.pendingPath, pending)
+
+  await assert.rejects(verifyAndFinalizeMigration({
+    pendingPath: fixture.pendingPath,
+    activeRoot: fixture.targetRoot
+  }), /数据目录迁移验证失败/)
+
+  assert.equal(await fsp.readFile(keepPath, 'utf8'), 'keep')
+  assert.equal(await exists(fixture.source.configFile), true)
+  assert.equal(await exists(fixture.pendingPath), true)
+})
+
+test('rejects cleanupFiles tampering with a file outside source root', async (t) => {
+  const fixture = await migratedFixture(t)
+  const sentinelPath = path.join(fixture.parent, 'sentinel.txt')
+  await fsp.writeFile(sentinelPath, 'sentinel')
+  const pending = JSON.parse(await fsp.readFile(fixture.pendingPath, 'utf8'))
+  pending.source.cleanupFiles.push(sentinelPath)
+  await writeJson(fixture.pendingPath, pending)
+
+  await assert.rejects(verifyAndFinalizeMigration({
+    pendingPath: fixture.pendingPath,
+    activeRoot: fixture.targetRoot
+  }), /数据目录迁移验证失败/)
+
+  assert.equal(await fsp.readFile(sentinelPath, 'utf8'), 'sentinel')
+  assert.equal(await exists(fixture.source.configFile), true)
+})
+
+test('rejects sidecar source layout field tampering before cleanup', async (t) => {
+  const fixture = await migratedFixture(t)
+  const keepPath = path.join(fixture.sourceRoot, 'keep.txt')
+  await fsp.writeFile(keepPath, 'keep')
+  const pending = JSON.parse(await fsp.readFile(fixture.pendingPath, 'utf8'))
+  pending.source.configFile = keepPath
+  await writeJson(fixture.pendingPath, pending)
+
+  await assert.rejects(verifyAndFinalizeMigration({
+    pendingPath: fixture.pendingPath,
+    activeRoot: fixture.targetRoot
+  }), /数据目录迁移验证失败/)
+  assert.equal(await fsp.readFile(keepPath, 'utf8'), 'keep')
+  assert.equal(await exists(fixture.source.configFile), true)
+})
+
+test('rejects a sidecar source root containing the active root', async (t) => {
+  const fixture = await migratedFixture(t)
+  const pending = JSON.parse(await fsp.readFile(fixture.pendingPath, 'utf8'))
+  pending.source = createLegacySourcePaths(fixture.targetRoot)
+  await writeJson(fixture.pendingPath, pending)
+
+  await assert.rejects(verifyAndFinalizeMigration({
+    pendingPath: fixture.pendingPath,
+    activeRoot: fixture.targetRoot
+  }), /数据目录迁移验证失败/)
+  assert.equal(await exists(fixture.source.configFile), true)
+})
+
 test('verification failure does not clean source and rollback restores previous locator', async (t) => {
   const parent = await temporaryRoot(t)
   const sourceRoot = path.join(parent, 'legacy')
@@ -252,6 +438,25 @@ test('verification failure does not clean source and rollback restores previous 
   assert.equal(previousRoot, path.resolve(sourceRoot))
   assert.deepEqual(await readLocator(locatorPath), { version: 1, dataRoot: path.resolve(sourceRoot) })
   assert.equal(await exists(path.join(portableDirectory, PENDING_NAME)), false)
+})
+
+test('first-run rollback removes locator and pending', async (t) => {
+  const parent = await temporaryRoot(t)
+  const locatorPath = path.join(parent, LOCATOR_NAME)
+  const pendingPath = path.join(parent, PENDING_NAME)
+  const targetRoot = path.join(parent, 'managed')
+  await writeLocator(locatorPath, targetRoot)
+  await writeJson(pendingPath, {
+    version: 1,
+    migrationId: 'first-run',
+    previousRoot: '',
+    newRoot: targetRoot,
+    source: createLegacySourcePaths(path.join(parent, 'legacy'))
+  })
+
+  assert.equal(await rollbackPendingMigration({ pendingPath, locatorPath }), '')
+  assert.equal(await exists(locatorPath), false)
+  assert.equal(await exists(pendingPath), false)
 })
 
 test('cleanup retry preserves pending and marker when cleanup reports errors', async (t) => {
@@ -381,6 +586,38 @@ test('rejects migration when source and target contain each other', async (t) =>
   }), /不能互相包含/)
 })
 
+test('rejects a non-file config source', async (t) => {
+  const parent = await temporaryRoot(t)
+  const portableDirectory = path.join(parent, 'portable')
+  const configSource = createLegacySourcePaths(path.join(parent, 'config-source'))
+  await fsp.mkdir(configSource.configFile, { recursive: true })
+  await assert.rejects(migrateDataRoot({
+    source: configSource,
+    target: createDataPaths(path.join(parent, 'config-target')),
+    portableDirectory
+  }), /不是普通文件/)
+})
+
+test('rejects a linked log source', async (t) => {
+  const parent = await temporaryRoot(t)
+  const portableDirectory = path.join(parent, 'portable')
+  const linkSource = createLegacySourcePaths(path.join(parent, 'link-source'))
+  const actualLog = path.join(parent, 'actual-log')
+  await fsp.mkdir(linkSource.root, { recursive: true })
+  await fsp.mkdir(actualLog)
+  try {
+    await fsp.symlink(actualLog, linkSource.logFile, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (process.platform === 'win32' && error.code === 'EPERM') return t.skip('link creation requires unavailable privileges')
+    throw error
+  }
+  await assert.rejects(migrateDataRoot({
+    source: linkSource,
+    target: createDataPaths(path.join(parent, 'link-target')),
+    portableDirectory
+  }), /符号链接或目录联接/)
+})
+
 test('cleanupManagedSource only removes explicit files and directories', async (t) => {
   const parent = await temporaryRoot(t)
   const root = path.join(parent, 'legacy')
@@ -396,4 +633,25 @@ test('cleanupManagedSource only removes explicit files and directories', async (
   assert.equal(await exists(source.history), false)
   assert.equal(await exists(path.join(root, 'keep.txt')), true)
   assert.equal(await exists(root), true)
+})
+
+test('cleanupManagedSource settles every removal and returns rejection messages', async (t) => {
+  const parent = await temporaryRoot(t)
+  const source = createLegacySourcePaths(path.join(parent, 'legacy'))
+  await fsp.mkdir(source.history, { recursive: true })
+  await fsp.writeFile(source.configFile, '{}')
+  await fsp.writeFile(source.logFile, 'log')
+  await fsp.writeFile(path.join(source.history, 'one.png'), 'one')
+
+  const errors = await cleanupManagedSource(source, {
+    async rm(filePath, options) {
+      if (filePath === source.configFile) throw new Error('access denied')
+      return fsp.rm(filePath, options)
+    }
+  })
+
+  assert.deepEqual(errors, ['access denied'])
+  assert.equal(await exists(source.configFile), true)
+  assert.equal(await exists(source.logFile), false)
+  assert.equal(await exists(source.history), false)
 })

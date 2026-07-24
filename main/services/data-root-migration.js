@@ -9,6 +9,7 @@ const {
   createDataPaths,
   ensureDataLayout,
   isNestedPath,
+  readLocator,
   validateDataRoot,
   writeLocator
 } = require('./data-root')
@@ -154,6 +155,31 @@ async function removeMarkerForMigration(root, migrationId) {
   }
 }
 
+function migrationRollbackError(error, migrationError) {
+  const result = new Error(`数据目录迁移回滚失败：${failureMessage(error)}`)
+  result.cause = error
+  result.migrationError = migrationError
+  return result
+}
+
+async function restorePublishedLocator({ locatorPath, targetRoot, previousRoot, restoreLocatorFile, migrationError }) {
+  let locator
+  try {
+    locator = await readLocator(locatorPath)
+  } catch (error) {
+    if (error.code === 'ENOENT') return
+    throw migrationRollbackError(error, migrationError)
+  }
+  if (locator.dataRoot !== path.resolve(targetRoot)) return
+
+  try {
+    if (previousRoot) await restoreLocatorFile(locatorPath, previousRoot)
+    else await fsp.rm(locatorPath, { force: true })
+  } catch (error) {
+    throw migrationRollbackError(error, migrationError)
+  }
+}
+
 async function migrateDataRoot({
   source,
   target,
@@ -161,7 +187,8 @@ async function migrateDataRoot({
   previousRoot = '',
   copyFile = fs.copyFile,
   writePending = atomicWriteJson,
-  writeLocatorFile = writeLocator
+  writeLocatorFile = writeLocator,
+  restoreLocatorFile = writeLocator
 }) {
   await validateDataRoot(target.root, source.root)
   const targetLayout = createDataPaths(target.root)
@@ -173,6 +200,7 @@ async function migrateDataRoot({
   const staging = createManagedSourcePaths(stagingRoot)
   const locatorPath = path.join(portableDirectory, LOCATOR_NAME)
   const pendingPath = path.join(portableDirectory, PENDING_NAME)
+  let locatorWriteStarted = false
 
   try {
     await ensureDataLayout(createDataPaths(staging.root))
@@ -214,10 +242,20 @@ async function migrateDataRoot({
       source
     }
     await writePending(pendingPath, pending)
+    locatorWriteStarted = true
     await writeLocatorFile(locatorPath, target.root)
     return { locatorPath, pendingPath, migrationId }
   } catch (error) {
     await fsp.rm(stagingRoot, { recursive: true, force: true }).catch(() => {})
+    if (locatorWriteStarted) {
+      await restorePublishedLocator({
+        locatorPath,
+        targetRoot: target.root,
+        previousRoot: previousRoot ? path.resolve(previousRoot) : '',
+        restoreLocatorFile,
+        migrationError: error
+      })
+    }
     await removePendingForMigration(pendingPath, migrationId).catch(() => {})
     await removeMarkerForMigration(target.root, migrationId).catch(() => {})
     await removeCreatedTarget(targetLayout)
@@ -242,6 +280,58 @@ function verificationError(error) {
   const result = new Error('数据目录迁移验证失败')
   result.cause = error
   return result
+}
+
+function normalizedPath(value) {
+  if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Error('source path is not absolute')
+  return path.resolve(value)
+}
+
+function comparablePath(value) {
+  const resolved = normalizedPath(value)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+function normalizedPathList(value) {
+  if (!Array.isArray(value)) throw new Error('source cleanup list is invalid')
+  return value.map(normalizedPath).sort((left, right) => comparablePath(left).localeCompare(comparablePath(right)))
+}
+
+function samePathList(actual, expected) {
+  if (actual.length !== expected.length) return false
+  return actual.every((value, index) => comparablePath(value) === comparablePath(expected[index]))
+}
+
+function validatePendingSource(source, activeRoot) {
+  if (!source || typeof source !== 'object') throw new Error('migration source is invalid')
+  const root = normalizedPath(source.root)
+  if (isNestedPath(root, activeRoot) || isNestedPath(activeRoot, root)) throw new Error('source and active root overlap')
+
+  const cleanupFiles = normalizedPathList(source.cleanupFiles)
+  const cleanupDirectories = normalizedPathList(source.cleanupDirectories)
+  for (const target of [...cleanupFiles, ...cleanupDirectories]) {
+    if (comparablePath(target) === comparablePath(root) || !isNestedPath(root, target)) {
+      throw new Error('cleanup path is outside source root')
+    }
+  }
+
+  const normalizedFields = {
+    configFile: normalizedPath(source.configFile),
+    logFile: normalizedPath(source.logFile),
+    history: normalizedPath(source.history)
+  }
+  const candidates = [createLegacySourcePaths(root), createManagedSourcePaths(root)]
+  const match = candidates.find((candidate) => {
+    const expectedFiles = normalizedPathList(candidate.cleanupFiles)
+    const expectedDirectories = normalizedPathList(candidate.cleanupDirectories)
+    return comparablePath(normalizedFields.configFile) === comparablePath(candidate.configFile) &&
+      comparablePath(normalizedFields.logFile) === comparablePath(candidate.logFile) &&
+      comparablePath(normalizedFields.history) === comparablePath(candidate.history) &&
+      samePathList(cleanupFiles, expectedFiles) &&
+      samePathList(cleanupDirectories, expectedDirectories)
+  })
+  if (!match) throw new Error('migration source layout is invalid')
+  return match
 }
 
 async function removeFinalizationArtifacts({ pendingPath, markerPath, removeFile }) {
@@ -269,6 +359,11 @@ async function verifyAndFinalizeMigration({ pendingPath, activeRoot, cleanup = c
 
   const root = path.resolve(activeRoot)
   const markerPath = path.join(root, MIGRATION_MARKER)
+  try {
+    pending = { ...pending, source: validatePendingSource(pending.source, root) }
+  } catch (error) {
+    throw verificationError(error)
+  }
   if (pending.phase === 'cleaned') {
     try {
       if (typeof pending.newRoot !== 'string' || path.resolve(pending.newRoot) !== root) throw new Error('active root mismatch')
