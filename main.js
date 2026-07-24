@@ -14,6 +14,7 @@ const {
 } = require('electron')
 const { prepareDataRoot, removeProvisionalRoot } = require('./main/services/data-root-bootstrap')
 const { createDataPaths, ensureDataLayout, validateDataRoot, writeLocator } = require('./main/services/data-root')
+const { relaunchApplication } = require('./main/services/relaunch-application')
 const {
   createLegacySourcePaths,
   createManagedSourcePaths,
@@ -1719,7 +1720,7 @@ ipcMain.handle('data-root:change', async () => {
         previousRoot: activeRoot
       }),
       relaunch: () => setImmediate(() => {
-        app.relaunch()
+        relaunchApplication({ app, dataRootContext })
         app.exit(0)
       })
     })
@@ -2396,7 +2397,7 @@ async function chooseInitialDataRoot() {
     previousRoot: ''
   })
   if (!removeProvisionalRoot(dataRootContext)) console.warn('Unable to remove provisional data directory')
-  app.relaunch()
+  relaunchApplication({ app, dataRootContext })
   app.exit(0)
 }
 
@@ -2419,7 +2420,7 @@ async function recoverUnavailableDataRoot() {
         const targetRoot = await validateDataRoot(dataRootContext.requestedRoot)
         await ensureDataLayout(createDataPaths(targetRoot))
         if (!removeProvisionalRoot(dataRootContext)) console.warn('Unable to remove provisional data directory')
-        app.relaunch()
+        relaunchApplication({ app, dataRootContext })
         app.exit(0)
         return
       } catch (error) {
@@ -2443,7 +2444,7 @@ async function recoverUnavailableDataRoot() {
         await ensureDataLayout(createDataPaths(targetRoot))
         await writeLocator(dataRootContext.locatorPath, targetRoot)
         if (!removeProvisionalRoot(dataRootContext)) console.warn('Unable to remove provisional data directory')
-        app.relaunch()
+        relaunchApplication({ app, dataRootContext })
         app.exit(0)
         return
       } catch (error) {
@@ -2489,7 +2490,7 @@ async function startApplication() {
         throw rollbackError
       }
       dialog.showErrorBox('Highlighter 启动失败', startupError.message || String(startupError))
-      app.relaunch()
+      relaunchApplication({ app, dataRootContext })
       app.exit(1)
       return
     }
