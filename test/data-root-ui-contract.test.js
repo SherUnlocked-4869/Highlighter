@@ -4,6 +4,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
+const config = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
 
 function section(start, end) {
   const startIndex = main.indexOf(start)
@@ -93,4 +95,54 @@ test('single-instance rejection removes provisional storage and ready failures e
   const lifecycle = section('const gotTheLock')
   assert.match(lifecycle, /if \(!gotTheLock\) \{[\s\S]*removeProvisionalRoot\(dataRootContext\)[\s\S]*app\.quit\(\)/)
   assert.match(lifecycle, /app\.whenReady\(\)\.then\(startApplication\)\.catch\([\s\S]*dialog\.showErrorBox[\s\S]*removeProvisionalRoot\(dataRootContext\)[\s\S]*app\.exit\(1\)/)
+})
+
+test('preload exposes only fixed data-root IPC methods', () => {
+  assert.match(preload, /getDataRoot:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('data-root:get'\)/)
+  assert.match(preload, /changeDataRoot:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('data-root:change'\)/)
+  assert.match(preload, /openDataRoot:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('data-root:open'\)/)
+  assert.doesNotMatch(preload, /changeDataRoot:\s*\([^)]/)
+  assert.doesNotMatch(preload, /openDataRoot:\s*\([^)]/)
+})
+
+test('system settings renders and uses the portable data-root controls', () => {
+  assert.match(config, /async function renderSystemSettings\(\)/)
+  assert.match(config, /await window\.electronAPI\.getDataRoot\(\)/)
+  assert.match(config, /id="dataRoot"/)
+  assert.match(config, /id="openDataRoot"/)
+  assert.match(config, /id="changeDataRoot"/)
+  assert.match(config, /readonly/)
+  assert.match(config, /window\.electronAPI\.openDataRoot\(\)/)
+  assert.match(config, /window\.electronAPI\.changeDataRoot\(\)/)
+  assert.match(config, /void renderSystemSettings\(\)\.catch/)
+})
+
+test('main process keeps data-root migration privileged, serialized, and restart-only on success', () => {
+  const handlers = section("ipcMain.handle('settings:get'", "ipcMain.handle('history:list'")
+  assert.match(handlers, /ipcMain\.handle\('data-root:get', \(\) => \(\{ portable: dataRootContext\.portable, path: dataRootContext\.paths\?\.root \|\| app\.getPath\('userData'\) \}\)\)/)
+  assert.match(handlers, /ipcMain\.handle\('data-root:open', \(\) => shell\.openPath\(dataRootContext\.paths\?\.root \|\| app\.getPath\('userData'\)\)\)/)
+  const change = section("ipcMain.handle('data-root:change'", "ipcMain.handle('app:open-data-directory'")
+  assert.match(change, /if \(!dataRootContext\.portable\) throw new Error/)
+  assert.match(change, /dataRootMigrationInProgress \|\| fs\.existsSync\(dataRootContext\.pendingPath\)/)
+  assert.match(change, /dialog\.showOpenDialog\([\s\S]*openDirectory[\s\S]*createDirectory/)
+  assert.match(change, /if \(result\.canceled \|\| !result\.filePaths\[0]\) return \{ canceled: true \}/)
+  assert.match(change, /validateDataRoot\(result\.filePaths\[0], activeRoot\)/)
+  assert.match(change, /if \(path\.resolve\(targetRoot\) === path\.resolve\(activeRoot\)\) return \{ unchanged: true \}/)
+  assert.match(change, /配置、日志、截图历史[\s\S]*重启/)
+  assert.match(change, /store\.set\('settings', getSettings\(\)\)/)
+  assert.match(change, /await stopManagedDataWriters\(\)/)
+  assert.match(change, /migrateDataRoot\(\{[\s\S]*source: createManagedSourcePaths\(activeRoot\)[\s\S]*target: createDataPaths\(targetRoot\)[\s\S]*portableDirectory: dataRootContext\.portableDirectory[\s\S]*previousRoot: activeRoot/)
+  assert.match(change, /setImmediate\(\(\) => \{[\s\S]*app\.relaunch\(\)[\s\S]*app\.exit\(0\)/)
+  assert.match(change, /return \{ restarting: true \}/)
+})
+
+test('migration quiesces managed writers and blocks late config, log, and history writes', () => {
+  const stopWriters = section('async function stopManagedDataWriters()', 'function restoreManagedDataWriters')
+  assert.match(stopWriters, /activeOcrService\.stop\(\)[\s\S]*await Promise\.allSettled\(inFlight\)/)
+  assert.match(stopWriters, /await closeRecordFlow\(\)[\s\S]*await activeRecordingService\.dispose\(\)/)
+  assert.match(stopWriters, /await longCapture\.finishingPromise[\s\S]*closeLongCapture\(\)/)
+  assert.match(main, /function assertManagedDataWritable\(\)[\s\S]*dataRootMigrationInProgress[\s\S]*throw new Error/)
+  assert.match(section('function log(', 'class SmartSelectSession'), /if \(dataRootMigrationInProgress\) return[\s\S]*appendFileSync\(logFile/)
+  assert.match(section('function persistHistory(', 'function createMainWindow'), /assertManagedDataWritable\(\)/)
+  assert.match(section("ipcMain.handle('settings:get'", "ipcMain.handle('config:get-api-key'"), /settings:update[\s\S]*assertManagedDataWritable\(\)[\s\S]*settings:reset[\s\S]*assertManagedDataWritable\(\)/)
 })

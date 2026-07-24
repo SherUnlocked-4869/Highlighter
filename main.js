@@ -159,6 +159,7 @@ let recordWindow = null
 let recordFrameWindow = null
 let ocrService = null
 let recordingService = null
+let dataRootMigrationInProgress = false
 let isProcessing = false
 let currentStreamController = null
 let lastToolbarPos = null
@@ -173,6 +174,7 @@ const isWin = process.platform === 'win32'
 let nativeDisplayListPromise = null
 
 function getOcrService() {
+  if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
   if (ocrService) return ocrService
   const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
   ocrService = new OcrService({
@@ -192,6 +194,7 @@ function resolveFfmpegPath() {
 }
 
 function getRecordingService() {
+  if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
   if (recordingService) return recordingService
   recordingService = new RecordingService({
     tempRoot: activePaths?.recordingCache || path.join(app.getPath('userData'), 'temp', 'recordings'),
@@ -225,9 +228,14 @@ function getSettings() {
   return normalizeSettings(mergeDeep(DEFAULT_SETTINGS, store.get('settings', {})))
 }
 
+function assertManagedDataWritable() {
+  if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
+}
+
 function log(...args) {
   const message = args.map((value) => typeof value === 'string' ? value : JSON.stringify(value)).join(' ')
   console.log(message)
+  if (dataRootMigrationInProgress) return
   if (!store) return
   if (!getSettings().system.runLog) return
   try {
@@ -451,6 +459,7 @@ function makeCaptureName(prefix = 'Highlighter') {
 }
 
 function persistHistory(dataUrl, meta = {}) {
+  assertManagedDataWritable()
   const settings = getSettings()
   if (!settings.screenshot.historyEnabled) return null
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -475,6 +484,7 @@ function persistHistory(dataUrl, meta = {}) {
 }
 
 async function persistHistoryFile(sourcePath, meta = {}) {
+  assertManagedDataWritable()
   const settings = getSettings()
   if (!settings.screenshot.historyEnabled || !sourcePath || !fs.existsSync(sourcePath)) return null
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -986,6 +996,7 @@ function setLongOverlayEditing(state, enabled, axis, hasContent) {
 }
 
 async function createLongCaptureFromSelection(captureWindow, payload = {}) {
+  if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
   if (!captureWindow || captureWindow.isDestroyed() || captureWindow !== currentCaptureWindow) throw new Error('截图选区已失效')
   const selected = payload.selection || {}
   const captureBounds = captureWindow._captureInit?.captureBounds
@@ -1581,8 +1592,38 @@ function registerShortcuts() {
   }
 }
 
+async function stopManagedDataWriters() {
+  const activeOcrService = ocrService
+  if (activeOcrService) {
+    const inFlight = [...activeOcrService.inFlight.values()]
+    activeOcrService.stop()
+    await Promise.allSettled(inFlight)
+    if (ocrService === activeOcrService) ocrService = null
+  }
+
+  const activeRecordingService = recordingService
+  await closeRecordFlow()
+  try {
+    if (activeRecordingService) await activeRecordingService.dispose()
+  } finally {
+    if (recordingService === activeRecordingService) recordingService = null
+  }
+
+  const longCapture = currentLongCapture
+  if (longCapture?.finishingPromise) {
+    await longCapture.finishingPromise.catch((error) => log('Long capture shutdown failed:', error.message))
+  }
+  closeLongCapture()
+}
+
+function restoreManagedDataWriters(restartOcr) {
+  if (!restartOcr) return
+  getOcrService().ensureStarted().catch((error) => log('OCR restart failed:', error.message))
+}
+
 ipcMain.handle('settings:get', () => getSettings())
 ipcMain.handle('settings:update', (_event, patch) => {
+  assertManagedDataWritable()
   const settings = normalizeSettings(mergeDeep(getSettings(), patch || {}))
   store.set('settings', settings)
   if (patch?.shortcuts) registerShortcuts()
@@ -1593,12 +1634,14 @@ ipcMain.handle('settings:update', (_event, patch) => {
   return settings
 })
 ipcMain.handle('settings:reset', () => {
+  assertManagedDataWritable()
   store.set('settings', normalizeSettings(mergeDeep(DEFAULT_SETTINGS, {})))
   registerShortcuts()
   return getSettings()
 })
 ipcMain.handle('config:get-api-key', () => getSettings().apiKey)
 ipcMain.handle('config:save-api-key', (_event, apiKey) => {
+  assertManagedDataWritable()
   store.set('settings', mergeDeep(getSettings(), { apiKey }))
   return true
 })
@@ -1633,6 +1676,56 @@ ipcMain.handle('dialog:choose-directory', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
   return result.canceled ? '' : result.filePaths[0]
 })
+ipcMain.handle('data-root:get', () => ({ portable: dataRootContext.portable, path: dataRootContext.paths?.root || app.getPath('userData') }))
+ipcMain.handle('data-root:open', () => shell.openPath(dataRootContext.paths?.root || app.getPath('userData')))
+ipcMain.handle('data-root:change', async () => {
+  if (!dataRootContext.portable) throw new Error('只有便携版可以更改软件数据目录')
+  if (dataRootMigrationInProgress || fs.existsSync(dataRootContext.pendingPath)) throw new Error('已有未完成的数据目录迁移，不能开始新的迁移')
+
+  const activeRoot = dataRootContext.paths?.root
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+  if (result.canceled || !result.filePaths[0]) return { canceled: true }
+  if (path.resolve(result.filePaths[0]) === path.resolve(activeRoot)) return { unchanged: true }
+  const targetRoot = await validateDataRoot(result.filePaths[0], activeRoot)
+  if (path.resolve(targetRoot) === path.resolve(activeRoot)) return { unchanged: true }
+
+  const confirmation = await dialog.showMessageBox({
+    type: 'warning',
+    buttons: ['取消', '迁移并重启'],
+    defaultId: 1,
+    cancelId: 0,
+    message: '更改软件数据目录？',
+    detail: 'Highlighter 将迁移配置、日志、截图历史，并在迁移完成后重启。缓存和运行数据不会迁移。'
+  })
+  if (confirmation.response !== 1) return { canceled: true }
+  if (dataRootMigrationInProgress || fs.existsSync(dataRootContext.pendingPath)) throw new Error('已有未完成的数据目录迁移，不能开始新的迁移')
+
+  const restartOcr = !!ocrService && getSettings().plugins.ocr && getSettings().ocr.hotStart
+  let writerShutdownStarted = false
+  dataRootMigrationInProgress = true
+  try {
+    store.set('settings', getSettings())
+    writerShutdownStarted = true
+    await stopManagedDataWriters()
+    await migrateDataRoot({
+      source: createManagedSourcePaths(activeRoot),
+      target: createDataPaths(targetRoot),
+      portableDirectory: dataRootContext.portableDirectory,
+      previousRoot: activeRoot
+    })
+  } catch (error) {
+    dataRootMigrationInProgress = false
+    restoreManagedDataWriters(restartOcr)
+    const recovery = writerShutdownStarted ? '；为保证数据安全，录屏和长截图已停止，可重新启动这些功能' : ''
+    throw new Error(`数据目录迁移失败：${error.message || String(error)}${recovery}`)
+  }
+
+  setImmediate(() => {
+    app.relaunch()
+    app.exit(0)
+  })
+  return { restarting: true }
+})
 ipcMain.handle('app:open-data-directory', () => shell.openPath(activePaths?.root || app.getPath('userData')))
 ipcMain.handle('app:open-save-directory', () => shell.openPath(getSettings().screenshot.saveDirectory || app.getPath('pictures')))
 ipcMain.handle('ai:complete', async (_event, { messages, options }) => require('./deepseek').completeChat(getSettings().apiKey, messages, { ...getSettings().ai, ...(options || {}) }))
@@ -1647,6 +1740,7 @@ ipcMain.handle('history:list', () => store.get('captureHistory', []).filter((ite
   return { ...item, thumbnail }
 }))
 ipcMain.handle('history:delete', (_event, id) => {
+  assertManagedDataWritable()
   const history = store.get('captureHistory', [])
   const item = history.find((entry) => entry.id === id)
   if (item) deleteHistoryFiles(item)
@@ -1654,6 +1748,7 @@ ipcMain.handle('history:delete', (_event, id) => {
   return true
 })
 ipcMain.handle('history:clear', () => {
+  assertManagedDataWritable()
   const remaining = []
   const failures = []
   store.get('captureHistory', []).forEach((item) => {
@@ -1798,6 +1893,7 @@ ipcMain.on('long-capture:overlay-active', (event, active) => {
   state.overlayWindow.webContents.send('long-overlay:active', !!active)
 })
 ipcMain.handle('long-capture:add-strip', (event, { arrayBuffer, metadata } = {}) => {
+  if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
   const state = currentLongCapture
   if (!state || event.sender !== state.controllerWindow.webContents || state.finishing) throw new Error('长截图会话不可用')
   if (!state.session.strips.length && ['vertical', 'horizontal'].includes(metadata?.axis)) {
@@ -1839,9 +1935,14 @@ ipcMain.on('long-overlay:bounds-changed', (event, proposed = {}) => {
   if (!state.controllerWindow.isDestroyed()) state.controllerWindow.webContents.send('long-capture:selection-updated', next)
 })
 ipcMain.handle('long-capture:finish', (event, { action, fast } = {}) => {
+  if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
   const state = currentLongCapture
   if (!state || event.sender !== state.controllerWindow.webContents) throw new Error('长截图会话不可用')
-  return finishLongCapture(action, fast)
+  const finishingPromise = finishLongCapture(action, fast)
+  state.finishingPromise = finishingPromise
+  return finishingPromise.finally(() => {
+    if (state.finishingPromise === finishingPromise) state.finishingPromise = null
+  })
 })
 ipcMain.on('long-capture:close', (event) => {
   const state = currentLongCapture
@@ -2238,6 +2339,7 @@ ipcMain.on('stream:cancel', () => {
 })
 ipcMain.on('stream:finish', () => { isProcessing = false; currentStreamController = null })
 ipcMain.on('config:start-hook', (_event, apiKey) => {
+  if (dataRootMigrationInProgress) return
   store.set('settings', mergeDeep(getSettings(), { apiKey }))
   initSelectionHook()
 })

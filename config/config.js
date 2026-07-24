@@ -105,7 +105,7 @@ function renderRoute() {
   else if (currentRoute === 'settings-function') renderFunctionSettings()
   else if (currentRoute === 'selection-toolbar') renderSelectionToolbarSettings()
   else if (currentRoute === 'settings-hotkeys') renderHotkeySettings()
-  else if (currentRoute === 'settings-system') renderSystemSettings()
+  else if (currentRoute === 'settings-system') void renderSystemSettings().catch((error) => toast(error.message || '无法读取软件数据目录'))
   else renderAbout()
 }
 
@@ -316,11 +316,33 @@ function renderHotkeySettings() {
   bindShortcutRecorders()
 }
 
-function renderSystemSettings() {
+async function renderSystemSettings() {
+  const dataRoot = await window.electronAPI.getDataRoot()
+  if (currentRoute !== 'settings-system') return
   const historyDirectory = settings.screenshot.historyDirectory
-  view.innerHTML = `<div class="page">${pageHeader('系统设置', '控制自启动、托盘、日志和数据目录。')}<section class="section"><h2 class="section-title">常用</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>开机自动启动</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div><div class="form-row"><div class="form-label"><b>启用系统托盘</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div><div class="form-row"><div class="form-label"><b>运行日志</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div></div></section><section class="section"><h2 class="section-title">软件数据</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>数据目录</b><small>配置、日志与截图历史</small></div><button class="button" id="openData">打开</button></div><div class="form-row"><div class="form-label"><b>图片保存目录</b></div><button class="button" id="openSave">打开</button></div><div class="form-row"><div class="form-label"><b>截图历史自动保存路径</b><small>自动保存的图片就是截图历史，路径不能为空</small></div><input id="historyDirectory" type="text" required value="${escapeHtml(historyDirectory)}"><button class="button" id="chooseHistoryDirectory">选择</button></div><div class="form-row"><div class="form-label"><b>清除截图历史</b><small>同时删除截图历史自动保存的图片文件</small></div><button class="button danger" id="clearData">清除</button></div></div></section><button class="button danger" id="resetSettings">恢复默认设置</button></div>`
+  view.innerHTML = `<div class="page">${pageHeader('系统设置', '控制自启动、托盘、日志和数据目录。')}<section class="section"><h2 class="section-title">常用</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>开机自动启动</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div><div class="form-row"><div class="form-label"><b>启用系统托盘</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div><div class="form-row"><div class="form-label"><b>运行日志</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div></div></section><section class="section"><h2 class="section-title">软件数据</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>数据目录</b><small>包含配置、日志、截图历史、缓存和运行数据；更改时迁移配置、日志与截图历史并重启</small></div><input id="dataRoot" type="text" readonly value="${escapeHtml(dataRoot.path)}"><button class="button" id="openDataRoot">打开</button><button class="button" id="changeDataRoot" ${dataRoot.portable ? '' : 'disabled'}>更改</button></div><div class="form-row"><div class="form-label"><b>图片保存目录</b></div><button class="button" id="openSave">打开</button></div><div class="form-row"><div class="form-label"><b>截图历史自动保存路径</b><small>自动保存的图片就是截图历史，路径不能为空</small></div><input id="historyDirectory" type="text" required value="${escapeHtml(historyDirectory)}"><button class="button" id="chooseHistoryDirectory">选择</button></div><div class="form-row"><div class="form-label"><b>清除截图历史</b><small>同时删除截图历史自动保存的图片文件</small></div><button class="button danger" id="clearData">清除</button></div></div></section><button class="button danger" id="resetSettings">恢复默认设置</button></div>`
   bindSwitches()
-  document.getElementById('openData').onclick = () => window.electronAPI.openDataDirectory()
+  document.getElementById('openDataRoot').onclick = () => window.electronAPI.openDataRoot().catch((error) => toast(error.message || '无法打开软件数据目录'))
+  document.getElementById('changeDataRoot').onclick = async () => {
+    const button = document.getElementById('changeDataRoot')
+    button.disabled = true
+    button.textContent = '更改中'
+    let restarting = false
+    try {
+      const result = await window.electronAPI.changeDataRoot()
+      if (result?.restarting) {
+        restarting = true
+        toast('数据目录迁移完成，正在重启')
+      }
+    } catch (error) {
+      toast(error.message || '数据目录迁移失败')
+    } finally {
+      if (!restarting) {
+        button.disabled = !dataRoot.portable
+        button.textContent = '更改'
+      }
+    }
+  }
   document.getElementById('openSave').onclick = () => window.electronAPI.openSaveDirectory()
   const historyDirectoryInput = document.getElementById('historyDirectory')
   const saveHistoryDirectory = () => {
