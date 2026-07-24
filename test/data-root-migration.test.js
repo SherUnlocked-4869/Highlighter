@@ -765,6 +765,51 @@ test('migrate archives a valid orphan target before retrying the same root', asy
   assert.equal(JSON.parse(await fsp.readFile(path.join(target.root, '.migration.json'), 'utf8')).migrationId, second.migrationId)
 })
 
+test('migrate publishes ownership before target moves so a partial orphan can be retried', async (t) => {
+  const parent = await temporaryRoot(t)
+  const portableDirectory = path.join(parent, 'portable')
+  const target = createDataPaths(path.join(parent, 'managed'))
+  const firstSource = createLegacySourcePaths(path.join(parent, 'first-source'))
+  await fsp.mkdir(firstSource.history, { recursive: true })
+  await fsp.writeFile(firstSource.configFile, '{}')
+  await fsp.writeFile(firstSource.logFile, 'first-log')
+  await fsp.writeFile(path.join(firstSource.history, 'first.png'), 'first')
+  const markerPath = path.join(target.root, '.migration.json')
+  let markerPrecededTargetMoves = false
+
+  await assert.rejects(migrateDataRoot({
+    source: firstSource,
+    target,
+    portableDirectory,
+    async renameTarget(from, to) {
+      if (to === target.config) {
+        markerPrecededTargetMoves = await exists(markerPath)
+        assert.equal(markerPrecededTargetMoves, true)
+      }
+      await fsp.rename(from, to)
+      if (to === target.logs) throw new Error('partial target move crashed')
+    },
+    cleanupFailedTarget: async () => ['simulated process termination']
+  }), /partial target move crashed/)
+
+  assert.equal(markerPrecededTargetMoves, true)
+  const orphanMarker = JSON.parse(await fsp.readFile(markerPath, 'utf8'))
+  assert.equal(await exists(target.config), true)
+  assert.equal(await exists(target.logs), true)
+  assert.equal(await exists(target.history), false)
+
+  const secondSource = createLegacySourcePaths(path.join(parent, 'second-source'))
+  await fsp.mkdir(secondSource.history, { recursive: true })
+  await fsp.writeFile(secondSource.configFile, '{}')
+  const second = await migrateDataRoot({ source: secondSource, target, portableDirectory })
+
+  const archiveRoot = path.join(target.root, `.highlighter-failed-${orphanMarker.migrationId}`)
+  assert.equal(await exists(path.join(archiveRoot, 'config', 'config.json')), true)
+  assert.equal(await fsp.readFile(path.join(archiveRoot, 'logs', 'app.log'), 'utf8'), 'first-log')
+  assert.equal(await exists(path.join(archiveRoot, '.migration.json')), true)
+  assert.equal(JSON.parse(await fsp.readFile(markerPath, 'utf8')).migrationId, second.migrationId)
+})
+
 test('owned target archive retains state after a partial rename failure and resumes', async (t) => {
   const fixture = await migratedFixture(t)
   const pending = JSON.parse(await fsp.readFile(fixture.pendingPath, 'utf8'))

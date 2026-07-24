@@ -297,7 +297,8 @@ async function migrateDataRoot({
   writePending = atomicWriteJson,
   writeLocatorFile = writeLocator,
   restoreLocatorFile = writeLocator,
-  cleanupFailedTarget = cleanupPublishedTarget
+  cleanupFailedTarget = cleanupPublishedTarget,
+  renameTarget = fsp.rename
 }) {
   await validateDataRoot(target.root, source.root)
   const targetLayout = createDataPaths(target.root)
@@ -353,10 +354,10 @@ async function migrateDataRoot({
     await atomicWriteJson(stagingMarker, marker)
 
     const stagingLayout = createDataPaths(staging.root)
-    for (const name of ['config', 'logs', 'history']) await fsp.rename(stagingLayout[name], targetLayout[name])
-    await ensureDataLayout(targetLayout)
-    await fsp.rename(stagingMarker, path.join(target.root, MIGRATION_MARKER))
+    await renameTarget(stagingMarker, path.join(target.root, MIGRATION_MARKER))
     markerPublished = true
+    for (const name of ['config', 'logs', 'history']) await renameTarget(stagingLayout[name], targetLayout[name])
+    await ensureDataLayout(targetLayout)
     await fsp.rm(stagingRoot, { recursive: true, force: true })
 
     const pending = {
