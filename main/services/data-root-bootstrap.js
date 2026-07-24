@@ -35,9 +35,11 @@ function verifyElectronPathsSync(paths, fileSystem) {
   verifyWritableDirectorySync(paths.electronCache, fileSystem)
 }
 
-function prepareDataRoot({ app, env = process.env, tempRoot = os.tmpdir(), fileSystem = fs }) {
-  const legacyUserData = app.getPath('userData')
+function prepareDataRoot({ app, applicationName = app.getName(), env = process.env, tempRoot = os.tmpdir(), fileSystem = fs }) {
   const portableDirectory = resolvePortableDirectory(env)
+  const legacyUserData = portableDirectory
+    ? path.join(app.getPath('appData'), applicationName)
+    : app.getPath('userData')
   if (!portableDirectory) return { portable: false, legacyUserData, paths: null, needsSelection: false }
 
   const locatorPath = path.join(portableDirectory, LOCATOR_NAME)

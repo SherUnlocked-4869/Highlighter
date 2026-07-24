@@ -23,8 +23,9 @@ const {
   verifyAndFinalizeMigration
 } = require('./main/services/data-root-migration')
 const { ManagedWriterCoordinator, quiesceAndMigrate } = require('./main/services/managed-writer-coordinator')
+const { name: applicationName } = require('./package.json')
 
-const dataRootContext = prepareDataRoot({ app })
+const dataRootContext = prepareDataRoot({ app, applicationName })
 const activePaths = dataRootContext.paths
 const { execFile, spawn } = require('child_process')
 const fs = require('fs')

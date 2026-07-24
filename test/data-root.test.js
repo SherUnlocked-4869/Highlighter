@@ -30,11 +30,22 @@ async function temporaryRoot(t) {
 }
 
 function fakeApp(legacyUserData) {
-  const values = { userData: legacyUserData, sessionData: path.join(legacyUserData, 'Session Storage') }
+  const values = {
+    userData: legacyUserData,
+    appData: path.dirname(legacyUserData),
+    applicationName: path.basename(legacyUserData),
+    sessionData: path.join(legacyUserData, 'Session Storage')
+  }
+  const pathCalls = []
   return {
-    getPath: (name) => values[name],
+    getPath: (name) => {
+      pathCalls.push(name)
+      return values[name]
+    },
     setPath: (name, value) => { values[name] = value },
-    values
+    getName: () => values.applicationName,
+    values,
+    pathCalls
   }
 }
 
@@ -363,6 +374,25 @@ test('uses OS temp provisionally when no locator exists', async (t) => {
   assert.equal(context.legacyUserData, path.join(portableDirectory, 'legacy'))
   assert.match(app.values.userData, /highlighter-bootstrap-/)
   assert.equal(app.values.userData.startsWith(bootstrapTemp), true)
+})
+
+test('portable bootstrap derives legacy data without touching Electron userData', async (t) => {
+  const portableDirectory = await temporaryRoot(t)
+  const bootstrapTemp = await temporaryRoot(t)
+  const legacyUserData = path.join(portableDirectory, 'legacy')
+  const app = fakeApp(legacyUserData)
+  const { prepareDataRoot, removeProvisionalRoot } = require('../main/services/data-root-bootstrap')
+
+  const context = prepareDataRoot({
+    app,
+    applicationName: app.values.applicationName,
+    env: { PORTABLE_EXECUTABLE_DIR: portableDirectory },
+    tempRoot: bootstrapTemp
+  })
+  t.after(() => removeProvisionalRoot(context))
+
+  assert.equal(context.legacyUserData, legacyUserData)
+  assert.deepEqual(app.pathCalls, ['appData'])
 })
 
 test('falls back when located Electron paths are not writable', async (t) => {
