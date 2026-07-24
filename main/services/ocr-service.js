@@ -25,6 +25,8 @@ class OcrService {
     this.cacheLimit = 12
     this.stopping = false
     this.tempDir = path.join(os.tmpdir(), 'Highlighter', 'ocr')
+    this.idleTimeoutMs = Number.isFinite(Number(options.idleTimeoutMs)) ? Number(options.idleTimeoutMs) : 30000
+    this.idleTimer = null
   }
 
   getStatus() {
@@ -68,6 +70,7 @@ class OcrService {
   }
 
   async ensureStarted() {
+    this.clearIdleTimer()
     if (this.process && !this.process.killed && this.ready) return
     if (this.startPromise) return this.startPromise
     this.startPromise = this.start()
@@ -121,12 +124,12 @@ class OcrService {
       })
       child.on('error', (error) => {
         failStart(new Error(`无法启动 OCR 引擎：${error.message}`))
-        this.handleExit(error)
+        this.handleExit(child, error)
       })
       child.on('exit', (code) => {
         const error = new Error(this.stopping ? 'OCR 引擎已停止' : `OCR 引擎异常退出（${code ?? 'unknown'}）`)
         failStart(error)
-        this.handleExit(error)
+        this.handleExit(child, error)
       })
     })
   }
@@ -160,7 +163,8 @@ class OcrService {
     }
   }
 
-  handleExit(error) {
+  handleExit(child, error) {
+    if (this.process !== child) return
     this.process = null
     this.ready = false
     for (const pending of this.pending.values()) {
@@ -168,6 +172,22 @@ class OcrService {
       pending.reject(error)
     }
     this.pending.clear()
+  }
+
+  clearIdleTimer() {
+    if (!this.idleTimer) return
+    clearTimeout(this.idleTimer)
+    this.idleTimer = null
+  }
+
+  scheduleIdleStop() {
+    this.clearIdleTimer()
+    if (this.idleTimeoutMs <= 0) return
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null
+      if (this.pending.size === 0 && this.inFlight.size === 0) this.stop()
+    }, this.idleTimeoutMs)
+    this.idleTimer.unref?.()
   }
 
   request(payload, timeoutMs = 120000) {
@@ -194,7 +214,7 @@ class OcrService {
     const requestOptions = {
       scaleFactor: Number(options.scaleFactor) || 1,
       detectAngle: !!options.detectAngle,
-      maxSide: Number(options.maxSide) || 4096,
+      maxSide: Number(options.maxSide) || 2048,
       minConfidence: Number.isFinite(Number(options.minConfidence)) ? Number(options.minConfidence) : 0.3
     }
     const cacheKey = crypto.createHash('sha256')
@@ -205,6 +225,7 @@ class OcrService {
     if (cached) {
       this.resultCache.delete(cacheKey)
       this.resultCache.set(cacheKey, cached)
+      this.scheduleIdleStop()
       return { ...cached, cached: true, durationMs: 0 }
     }
     if (this.inFlight.has(cacheKey)) return this.inFlight.get(cacheKey)
@@ -215,7 +236,10 @@ class OcrService {
         this.resultCache.delete(this.resultCache.keys().next().value)
       }
       return result
-    }).finally(() => this.inFlight.delete(cacheKey))
+    }).finally(() => {
+      this.inFlight.delete(cacheKey)
+      this.scheduleIdleStop()
+    })
     this.inFlight.set(cacheKey, task)
     return task
   }
@@ -237,6 +261,7 @@ class OcrService {
   }
 
   stop() {
+    this.clearIdleTimer()
     this.stopping = true
     if (this.process && !this.process.killed) {
       try { this.process.stdin.write(`${JSON.stringify({ action: 'shutdown' })}\n`) } catch {}

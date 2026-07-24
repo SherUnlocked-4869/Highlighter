@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use image::imageops::FilterType;
+use ort::execution_providers::CPUExecutionProvider;
+use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
 use paddle_ocr_rs::ocr_lite::OcrLite;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -11,6 +13,10 @@ use serde_json::{json, Value};
 const DET_MODEL: &str = "ch_PP-OCRv4_det_mobile.onnx";
 const CLS_MODEL: &str = "ch_ppocr_mobile_v2.0_cls_mobile.onnx";
 const REC_MODEL: &str = "ch_PP-OCRv4_rec_mobile.onnx";
+const DEFAULT_MAX_SIDE: u32 = 2048;
+const MAX_MAX_SIDE: u32 = 4096;
+const MIN_OCR_SCALE: f32 = 1.5;
+const MAX_UPSCALED_PIXELS: f32 = 2_000_000.0;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,20 +66,49 @@ fn require_models(model_dir: &Path) -> Result<[PathBuf; 3], String> {
 
 fn create_engine(model_dir: &Path) -> Result<OcrLite, String> {
     let [det, cls, rec] = require_models(model_dir)?;
-    let threads = std::thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(2)
-        .clamp(1, 8);
     let mut engine = OcrLite::new();
     engine
-        .init_models(
+        .init_models_custom(
             &det.to_string_lossy(),
             &cls.to_string_lossy(),
             &rec.to_string_lossy(),
-            threads,
+            configure_session,
         )
         .map_err(|error| format!("Failed to initialize OCR models: {error}"))?;
     Ok(engine)
+}
+
+fn configure_session(builder: SessionBuilder) -> Result<SessionBuilder, ort::Error> {
+    let threads = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(2)
+        .clamp(1, 4);
+    builder
+        .with_execution_providers([CPUExecutionProvider::default()
+            .with_arena_allocator(true)
+            .build()])?
+        .with_optimization_level(GraphOptimizationLevel::Level2)?
+        .with_intra_threads(threads)?
+        .with_inter_threads(1)?
+        .with_memory_pattern(false)
+}
+
+fn calculate_resize_factor(
+    image_width: u32,
+    image_height: u32,
+    requested_scale: f32,
+    max_side: u32,
+) -> f32 {
+    let desired_factor = (MIN_OCR_SCALE / requested_scale.max(0.1)).max(1.0);
+    if desired_factor <= 1.0 {
+        return 1.0;
+    }
+
+    let source_max_side = image_width.max(image_height).max(1) as f32;
+    let source_pixels = (image_width as f32 * image_height as f32).max(1.0);
+    let side_factor = max_side as f32 / source_max_side;
+    let area_factor = (MAX_UPSCALED_PIXELS / source_pixels).sqrt();
+    desired_factor.min(side_factor).min(area_factor).max(1.0)
 }
 
 fn recognize(engine: &mut OcrLite, request: &Request) -> Result<DetectResponse, String> {
@@ -89,12 +124,13 @@ fn recognize(engine: &mut OcrLite, request: &Request) -> Result<DetectResponse, 
         return Err("OCR image is too small".to_string());
     }
 
-    let requested_scale = request.scale_factor.unwrap_or(1.0).max(0.1);
-    let resize_factor = if requested_scale < 1.5 {
-        1.5 / requested_scale
-    } else {
-        1.0
-    };
+    let max_side = request
+        .max_side
+        .unwrap_or(DEFAULT_MAX_SIDE)
+        .clamp(640, MAX_MAX_SIDE);
+    let requested_scale = request.scale_factor.unwrap_or(1.0);
+    let resize_factor =
+        calculate_resize_factor(image_width, image_height, requested_scale, max_side);
     let input = if resize_factor > 1.001 {
         image::imageops::resize(
             &source,
@@ -107,7 +143,6 @@ fn recognize(engine: &mut OcrLite, request: &Request) -> Result<DetectResponse, 
     };
 
     let started = Instant::now();
-    let max_side = request.max_side.unwrap_or(4096).clamp(640, 8192);
     let mut result = engine
         .detect_angle_rollback(
             &input,
@@ -219,5 +254,33 @@ fn main() {
     if let Err(error) = run() {
         emit(&json!({ "type": "fatal", "error": error }));
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upscales_small_low_dpi_images() {
+        assert!((calculate_resize_factor(800, 600, 1.0, 2048) - 1.5).abs() < f32::EPSILON);
+        assert!((calculate_resize_factor(800, 600, 1.25, 2048) - 1.2).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn does_not_upscale_full_hd_images() {
+        assert!((calculate_resize_factor(1920, 1080, 1.0, 2048) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn respects_max_side_for_wide_images() {
+        let factor = calculate_resize_factor(1600, 400, 1.0, 2048);
+        assert!((factor - 1.28).abs() < 0.001);
+    }
+
+    #[test]
+    fn does_not_downscale_in_the_upscale_stage() {
+        assert!((calculate_resize_factor(3840, 2160, 1.0, 2048) - 1.0).abs() < f32::EPSILON);
+        assert!((calculate_resize_factor(800, 600, 2.0, 2048) - 1.0).abs() < f32::EPSILON);
     }
 }
