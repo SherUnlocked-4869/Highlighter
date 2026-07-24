@@ -95,6 +95,92 @@ test('atomic JSON writes create their parent directory', async (t) => {
   assert.deepEqual(JSON.parse(await fsp.readFile(target, 'utf8')), { pending: true })
 })
 
+test('atomic JSON writes use a backup when replacement is blocked by Windows semantics', async (t) => {
+  const parent = await temporaryRoot(t)
+  const target = path.join(parent, LOCATOR_NAME)
+  const calls = []
+  let firstRename = true
+  await fsp.writeFile(target, JSON.stringify({ dataRoot: 'old' }))
+
+  await atomicWriteJson(target, { dataRoot: 'new' }, {
+    ...fsp,
+    async rename(from, to) {
+      calls.push([from, to])
+      if (firstRename) {
+        firstRename = false
+        const error = new Error('target is in use')
+        error.code = 'EPERM'
+        throw error
+      }
+      return fsp.rename(from, to)
+    }
+  })
+
+  assert.equal(calls.length, 3)
+  assert.match(calls[1][1], /\.bak$/)
+  assert.deepEqual(JSON.parse(await fsp.readFile(target, 'utf8')), { dataRoot: 'new' })
+})
+
+test('atomic JSON writes restore the original file when backup replacement fails', async (t) => {
+  const parent = await temporaryRoot(t)
+  const target = path.join(parent, LOCATOR_NAME)
+  let renameCount = 0
+  await fsp.writeFile(target, JSON.stringify({ dataRoot: 'old' }))
+
+  await assert.rejects(
+    atomicWriteJson(target, { dataRoot: 'new' }, {
+      ...fsp,
+      async rename(from, to) {
+        renameCount += 1
+        if (renameCount === 1) {
+          const error = new Error('target is in use')
+          error.code = 'EEXIST'
+          throw error
+        }
+        if (renameCount === 3) throw new Error('replacement failed')
+        return fsp.rename(from, to)
+      }
+    }),
+    /replacement failed/
+  )
+
+  assert.equal(renameCount, 4)
+  assert.deepEqual(JSON.parse(await fsp.readFile(target, 'utf8')), { dataRoot: 'old' })
+})
+
+test('atomic JSON writes retain an undeletable backup after a successful replacement', async (t) => {
+  const parent = await temporaryRoot(t)
+  const target = path.join(parent, LOCATOR_NAME)
+  let firstRename = true
+  let backupRemovalAttempts = 0
+  await fsp.writeFile(target, JSON.stringify({ dataRoot: 'old' }))
+
+  await atomicWriteJson(target, { dataRoot: 'new' }, {
+    ...fsp,
+    async rename(from, to) {
+      if (firstRename) {
+        firstRename = false
+        const error = new Error('target is in use')
+        error.code = 'EPERM'
+        throw error
+      }
+      return fsp.rename(from, to)
+    },
+    async rm(filePath, options) {
+      if (filePath.endsWith('.bak')) {
+        backupRemovalAttempts += 1
+        const error = new Error('backup is locked')
+        error.code = 'EPERM'
+        throw error
+      }
+      return fsp.rm(filePath, options)
+    }
+  })
+
+  assert.equal(backupRemovalAttempts, 1)
+  assert.deepEqual(JSON.parse(await fsp.readFile(target, 'utf8')), { dataRoot: 'new' })
+})
+
 test('rejects malformed locators and relative locator roots', () => {
   assert.throws(() => parseLocator(null), /引导文件无效/)
   assert.throws(() => parseLocator({ version: 2, dataRoot: path.resolve('data') }), /引导文件无效/)
@@ -130,6 +216,16 @@ test('rejects source and destination containment in either direction', async (t)
   await assert.rejects(validateDataRoot(source, source), /不能互相包含/)
 })
 
+test('requires an absolute source data root and permits disjoint absolute roots', async (t) => {
+  const parent = await temporaryRoot(t)
+  const source = path.join(parent, 'source')
+  const target = path.join(parent, 'target')
+  await fsp.mkdir(source)
+
+  await assert.rejects(validateDataRoot(target, 'relative-source'), /旧数据目录必须是绝对路径/)
+  assert.equal(await validateDataRoot(target, source), path.resolve(target))
+})
+
 test('rejects a selected symlink or Windows junction', async (t) => {
   const parent = await temporaryRoot(t)
   const target = path.join(parent, 'target')
@@ -146,6 +242,47 @@ test('rejects a selected symlink or Windows junction', async (t) => {
   }
 
   await assert.rejects(validateDataRoot(link), /符号链接或目录联接/)
+})
+
+test('rejects a child of a symlink or Windows junction before creating it in the target', async (t) => {
+  const parent = await temporaryRoot(t)
+  const target = path.join(parent, 'target')
+  const link = path.join(parent, 'link')
+  const selectedChild = path.join(link, 'created-before-rejection')
+  const physicalChild = path.join(target, 'created-before-rejection')
+  await fsp.mkdir(target)
+  try {
+    await fsp.symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (process.platform === 'win32' && error.code === 'EPERM') {
+      t.skip('creating a junction requires unavailable privileges')
+      return
+    }
+    throw error
+  }
+
+  await assert.rejects(validateDataRoot(selectedChild), /符号链接或目录联接/)
+  assert.equal(fs.existsSync(physicalChild), false)
+})
+
+test('rejects a source symlink or Windows junction that aliases the target parent', async (t) => {
+  const parent = await temporaryRoot(t)
+  const physicalSource = path.join(parent, 'source')
+  const sourceLink = path.join(parent, 'source-link')
+  const target = path.join(physicalSource, 'target')
+  await fsp.mkdir(physicalSource)
+  try {
+    await fsp.symlink(physicalSource, sourceLink, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (process.platform === 'win32' && error.code === 'EPERM') {
+      t.skip('creating a junction requires unavailable privileges')
+      return
+    }
+    throw error
+  }
+
+  await assert.rejects(validateDataRoot(target, sourceLink), /符号链接或目录联接/)
+  assert.equal(fs.existsSync(target), false)
 })
 
 test('validates writable roots and removes its write probe', async (t) => {

@@ -40,33 +40,35 @@ function ensureDataLayoutSync(paths) {
   return paths
 }
 
-async function atomicWriteJson(filePath, value) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true })
+async function atomicWriteJson(filePath, value, operations = fsp) {
+  await operations.mkdir(path.dirname(filePath), { recursive: true })
   const temporaryPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`
   const backupPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.bak`
   let hasBackup = false
 
   try {
-    await fsp.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+    await operations.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
     try {
-      await fsp.rename(temporaryPath, filePath)
+      await operations.rename(temporaryPath, filePath)
     } catch (error) {
       if (!['EEXIST', 'EPERM'].includes(error.code)) throw error
 
-      await fsp.rename(filePath, backupPath)
+      await operations.rename(filePath, backupPath)
       hasBackup = true
       try {
-        await fsp.rename(temporaryPath, filePath)
+        await operations.rename(temporaryPath, filePath)
       } catch (replacementError) {
-        await fsp.rename(backupPath, filePath).catch(() => {})
+        await operations.rename(backupPath, filePath).catch(() => {})
         throw replacementError
       }
-      await fsp.rm(backupPath, { force: true })
-      hasBackup = false
+      try {
+        await operations.rm(backupPath, { force: true })
+        hasBackup = false
+      } catch {}
     }
   } finally {
-    await fsp.rm(temporaryPath, { force: true }).catch(() => {})
-    if (!hasBackup) await fsp.rm(backupPath, { force: true }).catch(() => {})
+    await operations.rm(temporaryPath, { force: true }).catch(() => {})
+    if (!hasBackup) await operations.rm(backupPath, { force: true }).catch(() => {})
   }
 }
 
@@ -113,18 +115,39 @@ async function rejectLinks(directory) {
   }
 }
 
+async function canonicalPath(directory) {
+  const resolved = path.resolve(directory)
+  return fsp.realpath(resolved).catch((error) => {
+    if (error.code === 'ENOENT') return resolved
+    throw error
+  })
+}
+
 async function validateDataRoot(directory, sourceRoot = '') {
   const input = String(directory || '').trim()
   if (!input || !path.isAbsolute(input)) throw new Error('数据目录必须是绝对路径')
 
   const root = path.resolve(input)
-  const source = String(sourceRoot || '').trim()
-  if (source && (isNestedPath(source, root) || isNestedPath(root, source))) {
+  const sourceInput = String(sourceRoot || '').trim()
+  if (sourceInput && !path.isAbsolute(sourceInput)) throw new Error('旧数据目录必须是绝对路径')
+
+  const source = sourceInput && path.resolve(sourceInput)
+  if (source) await rejectLinks(source)
+
+  const canonicalSource = source && await canonicalPath(source)
+  const initialCanonicalRoot = await canonicalPath(root)
+  if (source && (isNestedPath(canonicalSource, initialCanonicalRoot) || isNestedPath(initialCanonicalRoot, canonicalSource))) {
     throw new Error('新旧数据目录不能互相包含')
   }
 
+  await rejectLinks(root)
   await fsp.mkdir(root, { recursive: true })
   await rejectLinks(root)
+
+  const canonicalRoot = await canonicalPath(root)
+  if (source && (isNestedPath(canonicalSource, canonicalRoot) || isNestedPath(canonicalRoot, canonicalSource))) {
+    throw new Error('新旧数据目录不能互相包含')
+  }
 
   const probe = path.join(root, `.highlighter-write-${crypto.randomUUID()}`)
   const renamed = `${probe}.renamed`
