@@ -163,10 +163,6 @@ async function createHistoryManifest(directory) {
 
 async function invokeCopyFile(copyFile, source, target) {
   await fsp.mkdir(path.dirname(target), { recursive: true })
-  if (copyFile.length >= 3) {
-    await new Promise((resolve, reject) => copyFile(source, target, (error) => error ? reject(error) : resolve()))
-    return
-  }
   await copyFile(source, target)
 }
 
@@ -349,7 +345,7 @@ async function migrateDataRoot({
   target,
   portableDirectory,
   previousRoot = '',
-  copyFile = fs.copyFile,
+  copyFile = fsp.copyFile,
   writePending = atomicWriteJson,
   writeLocatorFile = writeLocator,
   restoreLocatorFile = writeLocator,

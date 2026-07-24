@@ -173,6 +173,31 @@ test('migrates legacy config, log, and history transactionally', async (t) => {
   assert.equal(typeof marker.sourceIdentity.ino, 'string')
 })
 
+test('default migration copy uses the promise API without relying on callback arity', async (t) => {
+  const parent = await temporaryRoot(t)
+  const source = createLegacySourcePaths(path.join(parent, 'legacy'))
+  const target = createDataPaths(path.join(parent, 'managed'))
+  const portableDirectory = path.join(parent, 'portable')
+  await fsp.mkdir(source.root, { recursive: true })
+  await fsp.writeFile(source.logFile, 'log')
+  await fsp.mkdir(portableDirectory, { recursive: true })
+
+  const originalCopyFile = fs.copyFile
+  let callbackCopyCalled = false
+  function callbackCopyFile(sourcePath, targetPath, callback) {
+    callbackCopyCalled = true
+    return originalCopyFile(sourcePath, targetPath, callback)
+  }
+  Object.defineProperty(callbackCopyFile, 'length', { value: 0 })
+  fs.copyFile = callbackCopyFile
+  t.after(() => { fs.copyFile = originalCopyFile })
+
+  await migrateDataRoot({ source, target, portableDirectory })
+
+  assert.equal(callbackCopyCalled, false)
+  assert.equal(await fsp.readFile(path.join(target.logs, 'app.log'), 'utf8'), 'log')
+})
+
 test('copy failure leaves source, locator, pending, and target clean', async (t) => {
   const parent = await temporaryRoot(t)
   const sourceRoot = path.join(parent, 'legacy')
