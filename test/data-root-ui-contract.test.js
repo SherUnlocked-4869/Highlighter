@@ -130,7 +130,7 @@ test('main process keeps data-root migration privileged, serialized, and restart
   assert.match(change, /if \(path\.resolve\(targetRoot\) === path\.resolve\(activeRoot\)\) return \{ unchanged: true \}/)
   assert.match(change, /配置、日志、截图历史[\s\S]*重启/)
   assert.match(change, /store\.set\('settings', getSettings\(\)\)/)
-  assert.match(change, /await stopManagedDataWriters\(\)/)
+  assert.match(change, /stopWriters: stopManagedDataWriters/)
   assert.match(change, /migrateDataRoot\(\{[\s\S]*source: createManagedSourcePaths\(activeRoot\)[\s\S]*target: createDataPaths\(targetRoot\)[\s\S]*portableDirectory: dataRootContext\.portableDirectory[\s\S]*previousRoot: activeRoot/)
   assert.match(change, /setImmediate\(\(\) => \{[\s\S]*app\.relaunch\(\)[\s\S]*app\.exit\(0\)/)
   assert.match(change, /return \{ restarting: true \}/)
@@ -139,10 +139,23 @@ test('main process keeps data-root migration privileged, serialized, and restart
 test('migration quiesces managed writers and blocks late config, log, and history writes', () => {
   const stopWriters = section('async function stopManagedDataWriters()', 'function restoreManagedDataWriters')
   assert.match(stopWriters, /activeOcrService\.stop\(\)[\s\S]*await Promise\.allSettled\(inFlight\)/)
-  assert.match(stopWriters, /await closeRecordFlow\(\)[\s\S]*await activeRecordingService\.dispose\(\)/)
+  assert.match(stopWriters, /await closeRecordFlow\(activeRecordingService\)[\s\S]*await activeRecordingService\.dispose\(\)/)
   assert.match(stopWriters, /await longCapture\.finishingPromise[\s\S]*closeLongCapture\(\)/)
   assert.match(main, /function assertManagedDataWritable\(\)[\s\S]*dataRootMigrationInProgress[\s\S]*throw new Error/)
   assert.match(section('function log(', 'class SmartSelectSession'), /if \(dataRootMigrationInProgress\) return[\s\S]*appendFileSync\(logFile/)
   assert.match(section('function persistHistory(', 'function createMainWindow'), /assertManagedDataWritable\(\)/)
   assert.match(section("ipcMain.handle('settings:get'", "ipcMain.handle('config:get-api-key'"), /settings:update[\s\S]*assertManagedDataWritable\(\)[\s\S]*settings:reset[\s\S]*assertManagedDataWritable\(\)/)
+})
+
+test('recording cache operations are tracked until they settle before migration', () => {
+  assert.match(main, /require\('\.\/main\/services\/managed-writer-coordinator'\)/)
+  assert.match(main, /const managedRecordingWriters = new ManagedWriterCoordinator\(\)/)
+  assert.match(main, /function cleanupRecordSession\(win, service = recordingService\)/)
+  const recording = section("ipcMain.handle('record:start-session'", "ipcMain.on('record:close'")
+  for (const operation of ['startSession', 'appendChunk', 'finishSession', 'transcode']) {
+    assert.match(recording, new RegExp(`managedRecordingWriters\\.track\\([^)]*${operation}`))
+  }
+  assert.match(main, /function cleanupRecordSession\(win, service = recordingService\)[\s\S]*managedRecordingWriters\.track\(service\.cleanupSession/)
+  const change = section("ipcMain.handle('data-root:change'", "ipcMain.handle('app:open-data-directory'")
+  assert.match(change, /quiesceAndMigrate\(\{[\s\S]*coordinator: managedRecordingWriters[\s\S]*stopWriters: stopManagedDataWriters[\s\S]*migrate:/)
 })

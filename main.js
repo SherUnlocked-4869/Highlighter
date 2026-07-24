@@ -21,6 +21,7 @@ const {
   rollbackPendingMigration,
   verifyAndFinalizeMigration
 } = require('./main/services/data-root-migration')
+const { ManagedWriterCoordinator, quiesceAndMigrate } = require('./main/services/managed-writer-coordinator')
 
 const dataRootContext = prepareDataRoot({ app })
 const activePaths = dataRootContext.paths
@@ -159,6 +160,7 @@ let recordWindow = null
 let recordFrameWindow = null
 let ocrService = null
 let recordingService = null
+const managedRecordingWriters = new ManagedWriterCoordinator()
 let dataRootMigrationInProgress = false
 let isProcessing = false
 let currentStreamController = null
@@ -1388,19 +1390,19 @@ function pinFromCapture(event, dataUrl, meta) {
   return { captureWindow, pinWindow }
 }
 
-async function cleanupRecordSession(win) {
+async function cleanupRecordSession(win, service = recordingService) {
   const sessionId = win?._recordSessionId
-  if (!sessionId) return false
+  if (!sessionId || !service) return false
   win._recordSessionId = null
-  return getRecordingService().cleanupSession(sessionId)
+  return managedRecordingWriters.track(service.cleanupSession(sessionId))
 }
 
-async function closeRecordFlow() {
+async function closeRecordFlow(service = recordingService) {
   const control = recordWindow
   const frame = recordFrameWindow
   if (recordWindow === control) recordWindow = null
   if (recordFrameWindow === frame) recordFrameWindow = null
-  await cleanupRecordSession(control).catch((error) => log('Recording cleanup failed:', error.message))
+  await cleanupRecordSession(control, service).catch((error) => log('Recording cleanup failed:', error.message))
   restoreRecordFramePassthrough(frame)
   if (control && !control.isDestroyed()) control.close()
   if (frame && !frame.isDestroyed()) frame.close()
@@ -1602,7 +1604,7 @@ async function stopManagedDataWriters() {
   }
 
   const activeRecordingService = recordingService
-  await closeRecordFlow()
+  await closeRecordFlow(activeRecordingService)
   try {
     if (activeRecordingService) await activeRecordingService.dispose()
   } finally {
@@ -1706,12 +1708,19 @@ ipcMain.handle('data-root:change', async () => {
   try {
     store.set('settings', getSettings())
     writerShutdownStarted = true
-    await stopManagedDataWriters()
-    await migrateDataRoot({
-      source: createManagedSourcePaths(activeRoot),
-      target: createDataPaths(targetRoot),
-      portableDirectory: dataRootContext.portableDirectory,
-      previousRoot: activeRoot
+    await quiesceAndMigrate({
+      coordinator: managedRecordingWriters,
+      stopWriters: stopManagedDataWriters,
+      migrate: () => migrateDataRoot({
+        source: createManagedSourcePaths(activeRoot),
+        target: createDataPaths(targetRoot),
+        portableDirectory: dataRootContext.portableDirectory,
+        previousRoot: activeRoot
+      }),
+      relaunch: () => setImmediate(() => {
+        app.relaunch()
+        app.exit(0)
+      })
     })
   } catch (error) {
     dataRootMigrationInProgress = false
@@ -1720,10 +1729,6 @@ ipcMain.handle('data-root:change', async () => {
     throw new Error(`数据目录迁移失败：${error.message || String(error)}${recovery}`)
   }
 
-  setImmediate(() => {
-    app.relaunch()
-    app.exit(0)
-  })
   return { restarting: true }
 })
 ipcMain.handle('app:open-data-directory', () => shell.openPath(activePaths?.root || app.getPath('userData')))
@@ -2190,24 +2195,31 @@ ipcMain.handle('record:set-annotation-command', (event, command = {}) => {
   return sendRecordAnnotationCommand(control, command)
 })
 ipcMain.handle('record:start-session', async (event) => {
+  assertManagedDataWritable()
   const win = requireRecordSender(event)
-  await cleanupRecordSession(win)
-  const session = await getRecordingService().startSession()
+  const service = getRecordingService()
+  await cleanupRecordSession(win, service)
+  const session = await managedRecordingWriters.track(service.startSession())
   win._recordSessionId = session.id
   return { id: session.id }
 })
 ipcMain.handle('record:append-chunk', async (event, { sessionId, arrayBuffer } = {}) => {
+  assertManagedDataWritable()
   const win = requireRecordSender(event)
   requireRecordSession(win, sessionId)
-  await getRecordingService().appendChunk(sessionId, Buffer.from(arrayBuffer || []))
+  const service = getRecordingService()
+  await managedRecordingWriters.track(service.appendChunk(sessionId, Buffer.from(arrayBuffer || [])))
   return true
 })
 ipcMain.handle('record:finish-session', async (event, { sessionId } = {}) => {
+  assertManagedDataWritable()
   const win = requireRecordSender(event)
   requireRecordSession(win, sessionId)
-  return getRecordingService().finishSession(sessionId)
+  const service = getRecordingService()
+  return managedRecordingWriters.track(service.finishSession(sessionId))
 })
 ipcMain.handle('record:save-mp4', async (event, { sessionId, durationMs } = {}) => {
+  assertManagedDataWritable()
   const win = requireRecordSender(event)
   requireRecordSession(win, sessionId)
   const settings = getSettings()
@@ -2224,22 +2236,26 @@ ipcMain.handle('record:save-mp4', async (event, { sessionId, durationMs } = {}) 
     if (!win.isDestroyed()) win.setAlwaysOnTop(true, 'screen-saver')
   }
   if (result.canceled || !result.filePath) return ''
+  assertManagedDataWritable()
   const duration = Math.max(1, Number(durationMs) || 1)
-  const outputPath = await getRecordingService().transcode(sessionId, result.filePath, (elapsedMicroseconds) => {
+  const service = getRecordingService()
+  const outputPath = await managedRecordingWriters.track(service.transcode(sessionId, result.filePath, (elapsedMicroseconds) => {
     if (win.isDestroyed()) return
     const percent = calculateTranscodeProgress(elapsedMicroseconds, duration)
     win.webContents.send('record:save-progress', percent)
-  })
+  }))
   if (!win.isDestroyed()) win.webContents.send('record:save-progress', 100)
   win._recordSessionId = null
-  await getRecordingService().cleanupSession(sessionId)
+  await managedRecordingWriters.track(service.cleanupSession(sessionId))
   return outputPath
 })
 ipcMain.handle('record:cancel-session', async (event, { sessionId } = {}) => {
+  assertManagedDataWritable()
   const win = requireRecordSender(event)
   requireRecordSession(win, sessionId)
   win._recordSessionId = null
-  await getRecordingService().cleanupSession(sessionId)
+  const service = getRecordingService()
+  await managedRecordingWriters.track(service.cleanupSession(sessionId))
   return true
 })
 ipcMain.handle('record:set-frame-state', (event, state = 'idle') => {
@@ -2272,9 +2288,10 @@ ipcMain.handle('record:resize-preview', (event) => {
   return true
 })
 ipcMain.handle('record:restart', async (event, { sessionId } = {}) => {
+  assertManagedDataWritable()
   const win = requireRecordSender(event)
   if (sessionId) requireRecordSession(win, sessionId)
-  await cleanupRecordSession(win)
+  await cleanupRecordSession(win, getRecordingService())
   win.setBounds(win._recordControlBounds, false)
   if (recordFrameWindow && !recordFrameWindow.isDestroyed()) {
     win._recordFrameState = 'idle'
