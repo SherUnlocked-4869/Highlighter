@@ -161,6 +161,13 @@ test('migrates legacy config, log, and history transactionally', async (t) => {
   assert.equal(marker.copiedConfigCount, 1)
   assert.equal(marker.copiedLogCount, 1)
   assert.equal(marker.copiedHistoryCount, 2)
+  assert.match(marker.configSha256, /^[a-f0-9]{64}$/)
+  assert.match(marker.logSha256, /^[a-f0-9]{64}$/)
+  assert.deepEqual(marker.historyManifest.map(({ path: relativePath, size }) => ({ path: relativePath, size })), [
+    { path: 'nested/two.png', size: 3 },
+    { path: 'one.png', size: 3 }
+  ])
+  for (const entry of marker.historyManifest) assert.match(entry.sha256, /^[a-f0-9]{64}$/)
   assert.equal(marker.sourceIdentity.type, 'directory')
   assert.equal(typeof marker.sourceIdentity.dev, 'string')
   assert.equal(typeof marker.sourceIdentity.ino, 'string')
@@ -223,6 +230,38 @@ test('post-publication failure restores the previous locator before removing tar
   assert.deepEqual(await fsp.readdir(targetRoot), [])
   assert.equal(await exists(path.join(portableDirectory, PENDING_NAME)), false)
   assert.deepEqual(await readLocator(locatorPath), { version: 1, dataRoot: path.resolve(sourceRoot) })
+})
+
+test('post-publication failure recreates a missing previous locator', async (t) => {
+  const parent = await temporaryRoot(t)
+  const sourceRoot = path.join(parent, 'legacy')
+  const targetRoot = path.join(parent, 'managed')
+  const portableDirectory = path.join(parent, 'portable')
+  const source = createLegacySourcePaths(sourceRoot)
+  const target = createDataPaths(targetRoot)
+  await fsp.mkdir(source.history, { recursive: true })
+  await fsp.writeFile(source.configFile, '{}')
+  await fsp.writeFile(path.join(source.history, 'one.png'), 'one')
+  await fsp.mkdir(portableDirectory, { recursive: true })
+  const locatorPath = path.join(portableDirectory, LOCATOR_NAME)
+  await writeLocator(locatorPath, sourceRoot)
+
+  await assert.rejects(migrateDataRoot({
+    source,
+    target,
+    portableDirectory,
+    previousRoot: sourceRoot,
+    async writeLocatorFile(filePath) {
+      await fsp.rm(filePath, { force: true })
+      throw new Error('publication removed locator')
+    }
+  }), /publication removed locator/)
+
+  assert.deepEqual(await readLocator(locatorPath), { version: 1, dataRoot: path.resolve(sourceRoot) })
+  assert.equal(await exists(path.join(portableDirectory, PENDING_NAME)), false)
+  assert.deepEqual(await fsp.readdir(targetRoot), [])
+  assert.equal(await fsp.readFile(source.configFile, 'utf8'), '{}')
+  assert.equal(await fsp.readFile(path.join(source.history, 'one.png'), 'utf8'), 'one')
 })
 
 test('rollback write failure preserves pending and published target data', async (t) => {
@@ -502,6 +541,46 @@ test('rejects a missing copied target log without cleaning source', async (t) =>
 
   assert.equal(await exists(fixture.source.configFile), true)
   assert.equal(await exists(fixture.source.logFile), true)
+})
+
+test('rejects migrated content changes without cleaning source', async (t) => {
+  const cases = [
+    {
+      name: 'same-count history replacement',
+      async tamper(fixture) {
+        await fsp.writeFile(path.join(fixture.target.history, 'one.png'), 'two')
+      }
+    },
+    {
+      name: 'truncated log',
+      async tamper(fixture) {
+        await fsp.writeFile(fixture.target.logFile, 'l')
+      }
+    },
+    {
+      name: 'different valid config',
+      async tamper(fixture) {
+        await writeJson(fixture.target.configFile, { changed: true })
+      }
+    }
+  ]
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const fixture = await migratedFixture(t)
+      await testCase.tamper(fixture)
+
+      await assert.rejects(verifyAndFinalizeMigration({
+        pendingPath: fixture.pendingPath,
+        activeRoot: fixture.targetRoot
+      }), /数据目录迁移验证失败/)
+
+      assert.equal(await exists(fixture.source.configFile), true)
+      assert.equal(await exists(fixture.source.logFile), true)
+      assert.equal(await exists(path.join(fixture.source.history, 'one.png')), true)
+      assert.equal(await exists(fixture.pendingPath), true)
+    })
+  }
 })
 
 test('rejects a source root junction that aliases the active root', async (t) => {

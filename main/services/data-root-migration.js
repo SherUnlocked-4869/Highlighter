@@ -26,6 +26,7 @@ const {
 const MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'cache', 'runtime']
 const MIGRATION_MARKER = '.migration.json'
 const MARKER_VERSION = 1
+const SHA256_PATTERN = /^[a-f0-9]{64}$/
 
 function createLegacySourcePaths(value) {
   const root = path.resolve(value)
@@ -128,6 +129,38 @@ async function listFiles(directory) {
   return files
 }
 
+async function sha256File(filePath) {
+  const hash = crypto.createHash('sha256')
+  for await (const chunk of fs.createReadStream(filePath)) hash.update(chunk)
+  return hash.digest('hex')
+}
+
+function compareManifestPaths(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+function isSha256(value) {
+  return typeof value === 'string' && SHA256_PATTERN.test(value)
+}
+
+function canonicalManifestPath(relativePath) {
+  return relativePath.split(path.sep).join('/')
+}
+
+async function createHistoryManifest(directory) {
+  const files = (await listFiles(directory))
+    .map((relativePath) => ({ relativePath, path: canonicalManifestPath(relativePath) }))
+    .sort((left, right) => compareManifestPaths(left.path, right.path))
+  const manifest = []
+  for (const file of files) {
+    const filePath = path.join(directory, file.relativePath)
+    const stat = await regularFileIfPresent(filePath)
+    if (!stat) throw new Error(`截图历史文件缺失：${filePath}`)
+    manifest.push({ path: file.path, size: stat.size, sha256: await sha256File(filePath) })
+  }
+  return manifest
+}
+
 async function invokeCopyFile(copyFile, source, target) {
   await fsp.mkdir(path.dirname(target), { recursive: true })
   if (copyFile.length >= 3) {
@@ -147,8 +180,23 @@ function validateMarkerSchema(marker, newRoot, migrationId = marker?.migrationId
   if (!marker || marker.version !== MARKER_VERSION || marker.migrationId !== migrationId || marker.newRoot !== root) {
     throw new Error('迁移标记无效')
   }
-  if (![0, 1].includes(marker.copiedConfigCount) || ![0, 1].includes(marker.copiedLogCount) || !Number.isInteger(marker.copiedHistoryCount)) {
+  if (![0, 1].includes(marker.copiedConfigCount) || ![0, 1].includes(marker.copiedLogCount) ||
+    !Number.isSafeInteger(marker.copiedHistoryCount) || marker.copiedHistoryCount < 0 ||
+    (marker.copiedConfigCount === 1 ? !isSha256(marker.configSha256) : marker.configSha256 !== null) ||
+    (marker.copiedLogCount === 1 ? !isSha256(marker.logSha256) : marker.logSha256 !== null) ||
+    !Array.isArray(marker.historyManifest) || marker.historyManifest.length !== marker.copiedHistoryCount) {
     throw new Error('迁移标记无效')
+  }
+  let previousPath = null
+  for (const entry of marker.historyManifest) {
+    if (!entry || typeof entry.path !== 'string' || !entry.path || entry.path.includes('\\') || entry.path.includes('\0') ||
+      path.posix.isAbsolute(entry.path) || path.posix.normalize(entry.path) !== entry.path ||
+      entry.path.split('/').some((segment) => !segment || segment === '.' || segment === '..') ||
+      !Number.isSafeInteger(entry.size) || entry.size < 0 || !isSha256(entry.sha256) ||
+      (previousPath !== null && compareManifestPaths(previousPath, entry.path) >= 0)) {
+      throw new Error('迁移标记无效')
+    }
+    previousPath = entry.path
   }
   validatePendingSource(marker.source, root)
   if (marker.sourceIdentity !== null && (
@@ -275,7 +323,15 @@ async function restorePublishedLocator({ locatorPath, targetRoot, previousRoot, 
   try {
     locator = await readLocator(locatorPath)
   } catch (error) {
-    if (error.code === 'ENOENT') return
+    if (error.code === 'ENOENT') {
+      if (!previousRoot) return
+      try {
+        await restoreLocatorFile(locatorPath, previousRoot)
+        return
+      } catch (restoreError) {
+        throw migrationRollbackError(restoreError, migrationError)
+      }
+    }
     throw migrationRollbackError(error, migrationError)
   }
   if (locator.dataRoot !== path.resolve(targetRoot)) return
@@ -340,6 +396,10 @@ async function migrateDataRoot({
       copiedConfigCount = 1
     }
 
+    const configSha256 = copiedConfigCount ? await sha256File(staging.configFile) : null
+    const logSha256 = copiedLogCount ? await sha256File(staging.logFile) : null
+    const historyManifest = await createHistoryManifest(staging.history)
+
     const marker = {
       version: MARKER_VERSION,
       migrationId,
@@ -348,7 +408,10 @@ async function migrateDataRoot({
       sourceIdentity,
       copiedConfigCount,
       copiedLogCount,
-      copiedHistoryCount: historyFiles.length
+      copiedHistoryCount: historyFiles.length,
+      configSha256,
+      logSha256,
+      historyManifest
     }
     const stagingMarker = path.join(staging.root, MIGRATION_MARKER)
     await atomicWriteJson(stagingMarker, marker)
@@ -506,27 +569,21 @@ async function verifyAndFinalizeMigration({
 
   let marker
   try {
-    marker = JSON.parse(await fsp.readFile(markerPath, 'utf8'))
-    if (marker.version !== MARKER_VERSION || marker.newRoot !== root || path.resolve(pending.newRoot) !== root || marker.migrationId !== pending.migrationId) {
-      throw new Error('marker mismatch')
-    }
+    marker = validateMarkerSchema(JSON.parse(await fsp.readFile(markerPath, 'utf8')), root, pending.migrationId)
+    if (path.resolve(pending.newRoot) !== root) throw new Error('marker mismatch')
     const markerSource = validatePendingSource(marker.source, root)
     if (!sourceManifestsEqual(markerSource, pending.source)) throw new Error('source manifest mismatch')
-    if (![0, 1].includes(marker.copiedConfigCount) || ![0, 1].includes(marker.copiedLogCount)) throw new Error('marker count mismatch')
-    if (marker.sourceIdentity !== null && (
-      marker.sourceIdentity?.type !== 'directory' ||
-      typeof marker.sourceIdentity.dev !== 'string' ||
-      typeof marker.sourceIdentity.ino !== 'string' ||
-      typeof marker.sourceIdentity.birthtimeMs !== 'number'
-    )) throw new Error('source identity mismatch')
 
     const active = createManagedSourcePaths(root)
     const configStat = await regularFileIfPresent(active.configFile)
-    if (marker.copiedConfigCount === 1 && !configStat) throw new Error('target config missing')
+    const configSha256 = configStat ? await sha256File(active.configFile) : null
+    if (configSha256 !== marker.configSha256) throw new Error('target config mismatch')
     if (configStat) JSON.parse(await fsp.readFile(active.configFile, 'utf8'))
     const logStat = await regularFileIfPresent(active.logFile)
-    if (marker.copiedLogCount === 1 && !logStat) throw new Error('target log missing')
-    if ((await listFiles(active.history)).length !== marker.copiedHistoryCount) throw new Error('history count mismatch')
+    const logSha256 = logStat ? await sha256File(active.logFile) : null
+    if (logSha256 !== marker.logSha256) throw new Error('target log mismatch')
+    const historyManifest = await createHistoryManifest(active.history)
+    if (JSON.stringify(historyManifest) !== JSON.stringify(marker.historyManifest)) throw new Error('history manifest mismatch')
   } catch (error) {
     if (pending.phase === 'quarantine-planned') return cleanupStateError(`数据目录迁移验证失败：${failureMessage(error)}`)
     throw verificationError(error)
