@@ -59,6 +59,17 @@ test('unavailable portable roots recover by retry, alternate root, or exit only'
   assert.doesNotMatch(recover, /initializeStore\(/)
 })
 
+test('unavailable recovery never replaces the locator while migration is pending', () => {
+  const recover = section('async function recoverUnavailableDataRoot()', 'async function startApplication()')
+  const chooseAnother = recover.slice(recover.indexOf('if (response === 1)'), recover.indexOf('removeProvisionalRoot(dataRootContext)', recover.indexOf('if (response === 1)')))
+  const pendingGuard = chooseAnother.match(/if \(fs\.existsSync\(dataRootContext\.pendingPath\)\) \{[^}]*\}/)?.[0] || ''
+
+  assert.match(pendingGuard, /未完成的数据目录迁移/)
+  assert.match(pendingGuard, /continue/)
+  assert.doesNotMatch(pendingGuard, /writeLocator/)
+  assert.ok(chooseAnother.indexOf('fs.existsSync(dataRootContext.pendingPath)') < chooseAnother.indexOf('dialog.showOpenDialog('))
+})
+
 test('startup guards non-portable finalization and returns before initializing a selection flow', () => {
   const start = section('async function startApplication()', 'const gotTheLock')
   assert.match(start, /if \(dataRootContext\.portable && dataRootContext\.needsSelection\) \{[\s\S]*return[\s\S]*\}[\s\S]*initializeStore\(\)/)

@@ -549,7 +549,6 @@ async function verifyAndFinalizeMigration({
   try {
     pending = { ...pending, source: validatePendingSource(pending.source, root) }
   } catch (error) {
-    if (pending.phase === 'quarantine-planned') return cleanupStateError(`数据目录迁移验证失败：${failureMessage(error)}`)
     throw verificationError(error)
   }
   if (pending.phase === 'cleaned') {
@@ -573,7 +572,29 @@ async function verifyAndFinalizeMigration({
     if (path.resolve(pending.newRoot) !== root) throw new Error('marker mismatch')
     const markerSource = validatePendingSource(marker.source, root)
     if (!sourceManifestsEqual(markerSource, pending.source)) throw new Error('source manifest mismatch')
+  } catch (error) {
+    throw verificationError(error)
+  }
 
+  if (pending.phase === 'quarantine-planned') {
+    const expectedQuarantine = quarantinePathFor(pending.source.root, pending.migrationId)
+    try {
+      if (typeof pending.quarantineRoot !== 'string' || !path.isAbsolute(pending.quarantineRoot) ||
+        comparablePath(pending.quarantineRoot) !== comparablePath(expectedQuarantine) ||
+        isNestedPath(root, expectedQuarantine) || isNestedPath(expectedQuarantine, root)) {
+        throw new Error('隔离目录计划无效')
+      }
+      await validateCleanupTopology(pending.source, root)
+    } catch (error) {
+      throw verificationError(error)
+    }
+    const result = await runQuarantineCleanup({ pendingPath, pending, marker, cleanup, writePending })
+    if (!result.finalized) return result
+    const artifactErrors = await removeFinalizationArtifacts({ pendingPath, markerPath, removeFile })
+    return { finalized: artifactErrors.length === 0, cleanupErrors: artifactErrors }
+  }
+
+  try {
     const active = createManagedSourcePaths(root)
     const configStat = await regularFileIfPresent(active.configFile)
     const configSha256 = configStat ? await sha256File(active.configFile) : null
@@ -585,7 +606,6 @@ async function verifyAndFinalizeMigration({
     const historyManifest = await createHistoryManifest(active.history)
     if (JSON.stringify(historyManifest) !== JSON.stringify(marker.historyManifest)) throw new Error('history manifest mismatch')
   } catch (error) {
-    if (pending.phase === 'quarantine-planned') return cleanupStateError(`数据目录迁移验证失败：${failureMessage(error)}`)
     throw verificationError(error)
   }
 
@@ -595,19 +615,6 @@ async function verifyAndFinalizeMigration({
     } catch (error) {
       throw verificationError(error)
     }
-  }
-
-  if (pending.phase === 'quarantine-planned') {
-    const expectedQuarantine = quarantinePathFor(pending.source.root, pending.migrationId)
-    if (typeof pending.quarantineRoot !== 'string' || !path.isAbsolute(pending.quarantineRoot) ||
-      comparablePath(pending.quarantineRoot) !== comparablePath(expectedQuarantine) ||
-      isNestedPath(root, expectedQuarantine) || isNestedPath(expectedQuarantine, root)) {
-      return cleanupStateError('数据目录迁移验证失败：隔离目录计划无效')
-    }
-    const result = await runQuarantineCleanup({ pendingPath, pending, marker, cleanup, writePending })
-    if (!result.finalized) return result
-    const artifactErrors = await removeFinalizationArtifacts({ pendingPath, markerPath, removeFile })
-    return { finalized: artifactErrors.length === 0, cleanupErrors: artifactErrors }
   }
 
   if (marker.sourceIdentity === null) {

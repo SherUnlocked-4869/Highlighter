@@ -2308,6 +2308,10 @@ async function recoverUnavailableDataRoot() {
     }
 
     if (response === 1) {
+      if (fs.existsSync(dataRootContext.pendingPath)) {
+        recoveryError = new Error('检测到未完成的数据目录迁移，请先恢复原数据目录')
+        continue
+      }
       const result = await dialog.showOpenDialog({
         title: '选择 Highlighter 数据目录',
         properties: ['openDirectory', 'createDirectory']

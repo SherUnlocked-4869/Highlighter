@@ -763,28 +763,55 @@ test('planned cleanup resumes when quarantine already has the recorded identity'
   assert.equal(await fsp.readFile(keepPath, 'utf8'), 'keep')
 })
 
-test('planned phase returns target verification failures as cleanup errors', async (t) => {
+test('planned cleanup tolerates normal active data changes and resumes safely', async (t) => {
   const fixture = await migratedFixture(t)
-  let interrupted = false
-  await verifyAndFinalizeMigration({
+  const keepPath = path.join(fixture.sourceRoot, 'keep.txt')
+  await fsp.writeFile(keepPath, 'keep')
+  const first = await verifyAndFinalizeMigration({
     pendingPath: fixture.pendingPath,
     activeRoot: fixture.targetRoot,
-    async writePending(filePath, value) {
-      await atomicWriteJson(filePath, value)
-      if (value.phase === 'quarantine-planned' && !interrupted) {
-        interrupted = true
-        throw new Error('pause planned cleanup')
-      }
-    }
+    cleanup: async () => ['access denied']
   })
-  await fsp.rm(fixture.target.logFile)
 
-  const result = await verifyAndFinalizeMigration({ pendingPath: fixture.pendingPath, activeRoot: fixture.targetRoot })
+  assert.deepEqual(first, { finalized: false, cleanupErrors: ['access denied'] })
+  assert.equal(JSON.parse(await fsp.readFile(fixture.pendingPath, 'utf8')).phase, 'quarantine-planned')
 
-  assert.equal(result.finalized, false)
-  assert.ok(result.cleanupErrors.some((message) => message.includes('数据目录迁移验证失败')))
+  await fsp.writeFile(fixture.target.configFile, '{"settings":{"theme":"dark"}}')
+  await fsp.appendFile(fixture.target.logFile, '\napplication started')
+  await fsp.writeFile(path.join(fixture.target.history, 'after-start.png'), 'new history')
+
+  assert.deepEqual(await verifyAndFinalizeMigration({ pendingPath: fixture.pendingPath, activeRoot: fixture.targetRoot }), {
+    finalized: true,
+    cleanupErrors: []
+  })
+  assert.equal(await exists(fixture.pendingPath), false)
+  assert.equal(await exists(path.join(fixture.targetRoot, '.migration.json')), false)
+  assert.equal(JSON.parse(await fsp.readFile(fixture.target.configFile, 'utf8')).settings.theme, 'dark')
+  assert.match(await fsp.readFile(fixture.target.logFile, 'utf8'), /application started/)
+  assert.equal(await fsp.readFile(path.join(fixture.target.history, 'after-start.png'), 'utf8'), 'new history')
+  assert.equal(await fsp.readFile(keepPath, 'utf8'), 'keep')
+  assert.equal(await exists(fixture.source.configFile), false)
+  assert.equal(await exists(fixture.source.logFile), false)
+  assert.equal(await exists(fixture.source.history), false)
+})
+
+test('planned cleanup rejects an alternate active root instead of downgrading the mismatch', async (t) => {
+  const fixture = await migratedFixture(t)
+  const first = await verifyAndFinalizeMigration({
+    pendingPath: fixture.pendingPath,
+    activeRoot: fixture.targetRoot,
+    cleanup: async () => ['access denied']
+  })
+  const alternateRoot = path.join(fixture.parent, 'alternate')
+  await ensureDataLayout(createDataPaths(alternateRoot))
+
+  assert.deepEqual(first, { finalized: false, cleanupErrors: ['access denied'] })
+  await assert.rejects(
+    verifyAndFinalizeMigration({ pendingPath: fixture.pendingPath, activeRoot: alternateRoot }),
+    /数据目录迁移验证失败/
+  )
   assert.equal(await exists(fixture.pendingPath), true)
-  assert.equal(await exists(fixture.sourceRoot), true)
+  assert.equal(await exists(path.join(fixture.targetRoot, '.migration.json')), true)
 })
 
 test('verification failure does not clean source and rollback restores previous locator', async (t) => {
