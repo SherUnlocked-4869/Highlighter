@@ -1,0 +1,161 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const fsp = require('node:fs/promises')
+const os = require('node:os')
+const path = require('node:path')
+
+const {
+  LOCATOR_NAME,
+  PENDING_NAME,
+  atomicWriteJson,
+  createDataPaths,
+  ensureDataLayout,
+  ensureDataLayoutSync,
+  isNestedPath,
+  parseLocator,
+  readLocator,
+  readLocatorSync,
+  resolvePortableDirectory,
+  validateDataRoot,
+  writeLocator
+} = require('../main/services/data-root')
+
+async function temporaryRoot(t) {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'highlighter-data-root-test-'))
+  t.after(() => fsp.rm(root, { recursive: true, force: true }))
+  return root
+}
+
+function expectedDataPaths(root) {
+  const absoluteRoot = path.resolve(root)
+  return {
+    root: absoluteRoot,
+    config: path.join(absoluteRoot, 'config'),
+    logs: path.join(absoluteRoot, 'logs'),
+    history: path.join(absoluteRoot, 'history'),
+    cache: path.join(absoluteRoot, 'cache'),
+    electronCache: path.join(absoluteRoot, 'cache', 'electron'),
+    ocrCache: path.join(absoluteRoot, 'cache', 'ocr'),
+    recordingCache: path.join(absoluteRoot, 'cache', 'recordings'),
+    longCaptureCache: path.join(absoluteRoot, 'cache', 'long-capture'),
+    runtime: path.join(absoluteRoot, 'runtime')
+  }
+}
+
+async function assertDirectories(paths) {
+  for (const directory of Object.values(paths)) {
+    assert.equal((await fsp.stat(directory)).isDirectory(), true, directory)
+  }
+}
+
+test('creates the exact documented managed data layout', async (t) => {
+  const parent = await temporaryRoot(t)
+  const root = path.join(parent, 'selected')
+  const paths = createDataPaths(root)
+
+  assert.deepEqual(paths, expectedDataPaths(root))
+  assert.equal(await ensureDataLayout(paths), paths)
+  await assertDirectories(paths)
+})
+
+test('creates the managed data layout synchronously', async (t) => {
+  const parent = await temporaryRoot(t)
+  const paths = createDataPaths(path.join(parent, 'sync-selected'))
+
+  assert.equal(ensureDataLayoutSync(paths), paths)
+  await assertDirectories(paths)
+})
+
+test('writes, replaces, and reads a versioned locator without temporary artifacts', async (t) => {
+  const portableDirectory = await temporaryRoot(t)
+  const locatorPath = path.join(portableDirectory, LOCATOR_NAME)
+  const firstRoot = path.join(portableDirectory, 'first-data')
+  const dataRoot = path.join(portableDirectory, 'data')
+
+  await writeLocator(locatorPath, firstRoot)
+  const locator = await writeLocator(locatorPath, dataRoot)
+
+  assert.deepEqual(locator, { version: 1, dataRoot: path.resolve(dataRoot) })
+  assert.deepEqual(await readLocator(locatorPath), locator)
+  assert.deepEqual(readLocatorSync(locatorPath), locator)
+  assert.deepEqual(JSON.parse(await fsp.readFile(locatorPath, 'utf8')), locator)
+  assert.deepEqual(
+    (await fsp.readdir(portableDirectory)).filter((name) => name.startsWith(`${LOCATOR_NAME}.`)),
+    []
+  )
+})
+
+test('atomic JSON writes create their parent directory', async (t) => {
+  const parent = await temporaryRoot(t)
+  const target = path.join(parent, 'nested', PENDING_NAME)
+
+  await atomicWriteJson(target, { pending: true })
+
+  assert.deepEqual(JSON.parse(await fsp.readFile(target, 'utf8')), { pending: true })
+})
+
+test('rejects malformed locators and relative locator roots', () => {
+  assert.throws(() => parseLocator(null), /引导文件无效/)
+  assert.throws(() => parseLocator({ version: 2, dataRoot: path.resolve('data') }), /引导文件无效/)
+  assert.throws(() => parseLocator({ version: 1, dataRoot: 'relative-data' }), /引导文件无效/)
+})
+
+test('resolves only an electron-builder portable directory', () => {
+  assert.equal(resolvePortableDirectory({}), '')
+  assert.equal(resolvePortableDirectory({ PORTABLE_EXECUTABLE_DIR: 'D:\\Apps' }), path.resolve('D:\\Apps'))
+})
+
+test('detects equal and descendant paths without matching siblings', () => {
+  const root = path.resolve('selected-root')
+
+  assert.equal(isNestedPath(root, root), true)
+  assert.equal(isNestedPath(root, path.join(root, 'child')), true)
+  assert.equal(isNestedPath(root, `${root}-sibling`), false)
+})
+
+test('rejects blank and relative data roots', async () => {
+  await assert.rejects(validateDataRoot(''), /绝对路径/)
+  await assert.rejects(validateDataRoot('relative-data'), /绝对路径/)
+})
+
+test('rejects source and destination containment in either direction', async (t) => {
+  const parent = await temporaryRoot(t)
+  const source = path.join(parent, 'source')
+  const child = path.join(source, 'child')
+  await fsp.mkdir(child, { recursive: true })
+
+  await assert.rejects(validateDataRoot(child, source), /不能互相包含/)
+  await assert.rejects(validateDataRoot(source, child), /不能互相包含/)
+  await assert.rejects(validateDataRoot(source, source), /不能互相包含/)
+})
+
+test('rejects a selected symlink or Windows junction', async (t) => {
+  const parent = await temporaryRoot(t)
+  const target = path.join(parent, 'target')
+  const link = path.join(parent, 'link')
+  await fsp.mkdir(target)
+  try {
+    await fsp.symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (process.platform === 'win32' && error.code === 'EPERM') {
+      t.skip('creating a junction requires unavailable privileges')
+      return
+    }
+    throw error
+  }
+
+  await assert.rejects(validateDataRoot(link), /符号链接或目录联接/)
+})
+
+test('validates writable roots and removes its write probe', async (t) => {
+  const parent = await temporaryRoot(t)
+  const root = path.join(parent, 'selected')
+
+  assert.equal(await validateDataRoot(root), path.resolve(root))
+  assert.equal(fs.existsSync(root), true)
+  assert.deepEqual(
+    (await fsp.readdir(root)).filter((name) => name.startsWith('.highlighter-write-')),
+    []
+  )
+})
