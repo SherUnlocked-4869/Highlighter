@@ -232,7 +232,7 @@ class OcrService {
         ...options
       })
     } finally {
-      fs.promises.unlink(imagePath).catch(() => {})
+      await fs.promises.unlink(imagePath).catch(() => {})
     }
   }
 

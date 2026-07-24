@@ -68,3 +68,49 @@ test('migration failure resumes the gate and never relaunches', async () => {
   assert.equal(relaunched, false)
   assert.doesNotThrow(() => coordinator.assertOpen())
 })
+
+test('blocked coordinator rejects late recording starts without invoking them', async () => {
+  const { ManagedWriterCoordinator } = require(helperPath)
+  const coordinator = new ManagedWriterCoordinator()
+  const cleanup = deferred()
+  let starts = 0
+
+  const startAfterCleanup = (async () => {
+    coordinator.assertOpen()
+    await coordinator.track(cleanup.promise)
+    return coordinator.track(() => {
+      starts += 1
+      return Promise.resolve({ id: 'late' })
+    })
+  })()
+
+  coordinator.block()
+  cleanup.resolve()
+
+  await assert.rejects(startAfterCleanup, /数据目录正在迁移，请稍候/)
+  assert.equal(starts, 0)
+  await coordinator.waitForIdle()
+  coordinator.resume()
+})
+
+test('blocked coordinator tracks explicitly allowed shutdown cleanup', async () => {
+  const { ManagedWriterCoordinator } = require(helperPath)
+  const coordinator = new ManagedWriterCoordinator()
+  const cleanup = deferred()
+  let cleanupStarts = 0
+  let idle = false
+
+  coordinator.block()
+  const cleanupTask = coordinator.track(() => {
+    cleanupStarts += 1
+    return cleanup.promise
+  }, { allowBlocked: true })
+  const idleTask = coordinator.waitForIdle().then(() => { idle = true })
+
+  await nextTurn()
+  assert.equal(cleanupStarts, 1)
+  assert.equal(idle, false)
+  cleanup.resolve()
+  await cleanupTask
+  await idleTask
+})

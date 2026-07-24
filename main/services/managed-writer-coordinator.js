@@ -8,8 +8,13 @@ class ManagedWriterCoordinator {
     if (this.blocked) throw new Error('数据目录正在迁移，请稍候')
   }
 
-  track(task) {
-    const promise = Promise.resolve(task)
+  track(task, { allowBlocked = false } = {}) {
+    if (this.blocked && !allowBlocked) {
+      const rejection = Promise.reject(new Error('数据目录正在迁移，请稍候'))
+      rejection.catch(() => {})
+      return rejection
+    }
+    const promise = Promise.resolve(typeof task === 'function' ? task() : task)
     this.inFlight.add(promise)
     promise.then(
       () => this.inFlight.delete(promise),

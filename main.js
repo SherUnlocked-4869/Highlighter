@@ -1391,19 +1391,19 @@ function pinFromCapture(event, dataUrl, meta) {
   return { captureWindow, pinWindow }
 }
 
-async function cleanupRecordSession(win, service = recordingService) {
+async function cleanupRecordSession(win, service = recordingService, allowBlocked = false) {
   const sessionId = win?._recordSessionId
   if (!sessionId || !service) return false
   win._recordSessionId = null
-  return managedRecordingWriters.track(service.cleanupSession(sessionId))
+  return managedRecordingWriters.track(() => service.cleanupSession(sessionId), { allowBlocked })
 }
 
-async function closeRecordFlow(service = recordingService) {
+async function closeRecordFlow(service = recordingService, allowBlockedCleanup = false) {
   const control = recordWindow
   const frame = recordFrameWindow
   if (recordWindow === control) recordWindow = null
   if (recordFrameWindow === frame) recordFrameWindow = null
-  await cleanupRecordSession(control, service).catch((error) => log('Recording cleanup failed:', error.message))
+  await cleanupRecordSession(control, service, allowBlockedCleanup).catch((error) => log('Recording cleanup failed:', error.message))
   restoreRecordFramePassthrough(frame)
   if (control && !control.isDestroyed()) control.close()
   if (frame && !frame.isDestroyed()) frame.close()
@@ -1605,7 +1605,7 @@ async function stopManagedDataWriters() {
   }
 
   const activeRecordingService = recordingService
-  await closeRecordFlow(activeRecordingService)
+  await closeRecordFlow(activeRecordingService, true)
   try {
     if (activeRecordingService) await activeRecordingService.dispose()
   } finally {
@@ -2200,7 +2200,8 @@ ipcMain.handle('record:start-session', async (event) => {
   const win = requireRecordSender(event)
   const service = getRecordingService()
   await cleanupRecordSession(win, service)
-  const session = await managedRecordingWriters.track(service.startSession())
+  managedRecordingWriters.assertOpen()
+  const session = await managedRecordingWriters.track(() => service.startSession())
   win._recordSessionId = session.id
   return { id: session.id }
 })
