@@ -81,14 +81,15 @@ test('startup guards non-portable finalization and returns before initializing a
   assert.doesNotMatch(start, /verifyAndFinalizeMigration\([\s\S]*pendingPath: (?:undefined|null)/)
   assert.match(start, /if \(!finalization\.finalized && finalization\.cleanupErrors\.length\)[\s\S]*console\.(?:warn|error)/)
   assert.doesNotMatch(start.match(/if \(!finalization\.finalized && finalization\.cleanupErrors\.length\) \{[^}]*\}/)[0], /rollbackPendingMigration/)
-  assert.ok(start.indexOf('initializeStore()') < start.indexOf('verifyAndFinalizeMigration('))
-  assert.ok(start.indexOf('verifyAndFinalizeMigration(') < start.indexOf("store.set('settings'"))
+  assert.ok(start.indexOf('verifyAndFinalizeMigration(') < start.indexOf('initializeStore()'))
+  assert.ok(start.indexOf('initializeStore()') < start.indexOf("store.set('settings'"))
 })
 
 test('a pending startup failure rolls back, reports, and relaunches without starting services', () => {
   const start = section('async function startApplication()', 'const gotTheLock')
   assert.match(start, /const hasPendingMigration = fs\.existsSync\(dataRootContext\.pendingPath\)/)
-  assert.match(start, /catch \(startupError\) \{[\s\S]*if \(!hasPendingMigration\) throw startupError[\s\S]*rollbackPendingMigration\(\{[\s\S]*dialog\.showErrorBox[\s\S]*relaunchApplication\(\{ app, dataRootContext \}\)[\s\S]*app\.exit\(1\)[\s\S]*return/)
+  assert.match(start, /catch \(startupError\) \{[\s\S]*if \(!hasPendingMigration\) throw startupError[\s\S]*app\.releaseSingleInstanceLock\(\)[\s\S]*rollbackPendingMigration\(\{[\s\S]*dialog\.showErrorBox[\s\S]*relaunchApplication\(\{ app, dataRootContext \}\)[\s\S]*app\.exit\(1\)[\s\S]*return/)
+  assert.ok(start.indexOf('app.releaseSingleInstanceLock()') < start.indexOf('rollbackPendingMigration({'))
   const rollbackRecovery = start.slice(start.indexOf('catch (startupError)'), start.indexOf('initializeStore()', start.indexOf('catch (startupError)') + 1))
   assert.doesNotMatch(rollbackRecovery, /createTrayIcon|createToolbarWindow|createMainWindow|registerShortcuts|initSelectionHook|getOcrService/)
 })

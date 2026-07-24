@@ -2470,7 +2470,6 @@ async function startApplication() {
   if (dataRootContext.portable) {
     const hasPendingMigration = fs.existsSync(dataRootContext.pendingPath)
     try {
-      initializeStore()
       finalization = await verifyAndFinalizeMigration({
         pendingPath: dataRootContext.pendingPath,
         activeRoot: activePaths.root
@@ -2480,6 +2479,7 @@ async function startApplication() {
       }
     } catch (startupError) {
       if (!hasPendingMigration) throw startupError
+      app.releaseSingleInstanceLock()
       try {
         await rollbackPendingMigration({
           pendingPath: dataRootContext.pendingPath,
@@ -2494,6 +2494,7 @@ async function startApplication() {
       app.exit(1)
       return
     }
+    initializeStore()
   } else {
     initializeStore()
   }
