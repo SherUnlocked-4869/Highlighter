@@ -1014,6 +1014,7 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
   closeLongCapture()
   const display = screen.getDisplayMatching(selectionBounds)
   const source = await getDesktopSourceForDisplay(display)
+  assertManagedDataWritable()
   const settings = getSettings()
   const session = new LongCaptureSession({
     tempRoot: activePaths?.longCaptureCache || app.getPath('temp'),

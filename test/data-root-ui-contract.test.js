@@ -147,6 +147,14 @@ test('migration quiesces managed writers and blocks late config, log, and histor
   assert.match(section("ipcMain.handle('settings:get'", "ipcMain.handle('config:get-api-key'"), /settings:update[\s\S]*assertManagedDataWritable\(\)[\s\S]*settings:reset[\s\S]*assertManagedDataWritable\(\)/)
 })
 
+test('long capture rechecks the migration gate after desktop source lookup', () => {
+  const createLongCapture = section('async function createLongCaptureFromSelection', 'async function finishLongCapture')
+  assert.match(
+    createLongCapture,
+    /const source = await getDesktopSourceForDisplay\(display\)\s+assertManagedDataWritable\(\)\s+const settings = getSettings\(\)\s+const session = new LongCaptureSession\(/
+  )
+})
+
 test('recording cache operations are tracked until they settle before migration', () => {
   assert.match(main, /require\('\.\/main\/services\/managed-writer-coordinator'\)/)
   assert.match(main, /const managedRecordingWriters = new ManagedWriterCoordinator\(\)/)
