@@ -12,6 +12,18 @@ const {
   shell,
   Tray
 } = require('electron')
+const { prepareDataRoot, removeProvisionalRoot } = require('./main/services/data-root-bootstrap')
+const { createDataPaths, ensureDataLayout, validateDataRoot, writeLocator } = require('./main/services/data-root')
+const {
+  createLegacySourcePaths,
+  createManagedSourcePaths,
+  migrateDataRoot,
+  rollbackPendingMigration,
+  verifyAndFinalizeMigration
+} = require('./main/services/data-root-migration')
+
+const dataRootContext = prepareDataRoot({ app })
+const activePaths = dataRootContext.paths
 const { execFile, spawn } = require('child_process')
 const fs = require('fs')
 const path = require('path')
@@ -42,6 +54,9 @@ const {
   isAiToolbarAction,
   isLocalToolbarAction
 } = require('./toolbar/toolbar-utils')
+
+const defaultHistoryDirectory = activePaths?.history || path.join(app.getPath('userData'), 'capture-history')
+const logFile = activePaths ? path.join(activePaths.logs, 'app.log') : path.join(app.getPath('userData'), 'app.log')
 
 const DEFAULT_SETTINGS = {
   apiKey: '',
@@ -118,12 +133,20 @@ const DEFAULT_SETTINGS = {
   }
 }
 
-const store = new Store({
-  defaults: {
-    settings: DEFAULT_SETTINGS,
-    captureHistory: []
+let store = null
+
+function initializeStore() {
+  if (store) return store
+  const storeOptions = {
+    defaults: {
+      settings: DEFAULT_SETTINGS,
+      captureHistory: []
+    }
   }
-})
+  if (dataRootContext.portable) storeOptions.cwd = dataRootContext.paths.config
+  store = new Store(storeOptions)
+  return store
+}
 
 let mainWindow = null
 let toolbarWindow = null
@@ -155,6 +178,7 @@ function getOcrService() {
   ocrService = new OcrService({
     sidecarPath: path.join(resourceRoot, 'native', 'ocr', 'HighlighterOcrSidecar.exe'),
     modelDir: path.join(resourceRoot, 'ocr', 'models', 'ppocr-v4-ch'),
+    tempDir: activePaths?.ocrCache || path.join(app.getPath('temp'), 'Highlighter', 'ocr'),
     log
   })
   return ocrService
@@ -170,7 +194,7 @@ function resolveFfmpegPath() {
 function getRecordingService() {
   if (recordingService) return recordingService
   recordingService = new RecordingService({
-    tempRoot: path.join(app.getPath('userData'), 'temp', 'recordings'),
+    tempRoot: activePaths?.recordingCache || path.join(app.getPath('userData'), 'temp', 'recordings'),
     ffmpegPath: resolveFfmpegPath(),
     log
   })
@@ -191,8 +215,8 @@ function mergeDeep(target, patch) {
 function normalizeSettings(settings) {
   const normalized = settings
   const legacyDirectory = normalized.fixedContent?.autoSaveDirectory
-  normalized.screenshot.historyDirectory = String(normalized.screenshot.historyDirectory || legacyDirectory || path.join(app.getPath('userData'), 'capture-history')).trim()
-  if (!normalized.screenshot.historyDirectory) normalized.screenshot.historyDirectory = path.join(app.getPath('userData'), 'capture-history')
+  normalized.screenshot.historyDirectory = String(normalized.screenshot.historyDirectory || legacyDirectory || defaultHistoryDirectory).trim()
+  if (!normalized.screenshot.historyDirectory) normalized.screenshot.historyDirectory = defaultHistoryDirectory
   if (normalized.fixedContent && Object.hasOwn(normalized.fixedContent, 'autoSaveDirectory')) delete normalized.fixedContent.autoSaveDirectory
   return normalized
 }
@@ -204,9 +228,10 @@ function getSettings() {
 function log(...args) {
   const message = args.map((value) => typeof value === 'string' ? value : JSON.stringify(value)).join(' ')
   console.log(message)
+  if (!store) return
   if (!getSettings().system.runLog) return
   try {
-    fs.appendFileSync(path.join(app.getPath('userData'), 'app.log'), `[${new Date().toISOString()}] ${message}\n`)
+    fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`)
   } catch {}
 }
 
@@ -383,8 +408,8 @@ function ensureDirectory(directory) {
   return directory
 }
 
-function defaultHistoryDirectory() {
-  return ensureDirectory(path.join(app.getPath('userData'), 'capture-history'))
+function ensureDefaultHistoryDirectory() {
+  return ensureDirectory(defaultHistoryDirectory)
 }
 
 function historyImagePath(id, meta = {}) {
@@ -454,7 +479,7 @@ async function persistHistoryFile(sourcePath, meta = {}) {
   if (!settings.screenshot.historyEnabled || !sourcePath || !fs.existsSync(sourcePath)) return null
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const filePath = historyImagePath(id, meta)
-  const thumbnailPath = path.join(defaultHistoryDirectory(), `${id}-thumb.png`)
+  const thumbnailPath = path.join(ensureDefaultHistoryDirectory(), `${id}-thumb.png`)
   fs.copyFileSync(sourcePath, filePath)
   const imageMeta = await sharp(filePath, { limitInputPixels: false }).metadata()
   await sharp(filePath, { limitInputPixels: false })
@@ -978,7 +1003,7 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
   const source = await getDesktopSourceForDisplay(display)
   const settings = getSettings()
   const session = new LongCaptureSession({
-    tempRoot: app.getPath('temp'),
+    tempRoot: activePaths?.longCaptureCache || app.getPath('temp'),
     axis: settings.screenshot.longCaptureDirection
   })
   const overlayWindow = new BrowserWindow({
@@ -1584,7 +1609,7 @@ ipcMain.handle('shell:open-external', (_event, value) => {
   return shell.openExternal(url.toString())
 })
 ipcMain.handle('app:execute-function', (_event, { name, payload }) => executeFunction(name, payload))
-ipcMain.handle('app:get-info', () => ({ version: app.getVersion(), platform: process.platform, dataDirectory: app.getPath('userData') }))
+ipcMain.handle('app:get-info', () => ({ version: app.getVersion(), platform: process.platform, dataDirectory: activePaths?.root || app.getPath('userData') }))
 ipcMain.handle('app:get-display-diagnostics', async () => {
   const displays = screen.getAllDisplays().map((display) => ({
     id: display.id,
@@ -1608,7 +1633,7 @@ ipcMain.handle('dialog:choose-directory', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
   return result.canceled ? '' : result.filePaths[0]
 })
-ipcMain.handle('app:open-data-directory', () => shell.openPath(app.getPath('userData')))
+ipcMain.handle('app:open-data-directory', () => shell.openPath(activePaths?.root || app.getPath('userData')))
 ipcMain.handle('app:open-save-directory', () => shell.openPath(getSettings().screenshot.saveDirectory || app.getPath('pictures')))
 ipcMain.handle('ai:complete', async (_event, { messages, options }) => require('./deepseek').completeChat(getSettings().apiKey, messages, { ...getSettings().ai, ...(options || {}) }))
 ipcMain.handle('ai:translate', async (_event, { text, sourceLanguage, targetLanguage }) => require('./deepseek').translateText(getSettings().apiKey, text, sourceLanguage, targetLanguage || getSettings().ai.targetLanguage))
@@ -2220,22 +2245,160 @@ ipcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sen
 ipcMain.on('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.hide())
 ipcMain.on('debug:text-received', () => {})
 
-const gotTheLock = app.requestSingleInstanceLock()
-if (!gotTheLock) app.quit()
-else {
-  app.on('second-instance', () => createMainWindow('home'))
-  app.whenReady().then(() => {
-    store.set('settings', getSettings())
-    createTrayIcon()
-    createToolbarWindow()
-    createMainWindow('home')
-    registerShortcuts()
-    initSelectionHook()
-    if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
-    if (isWin) screenshotDesktop.listDisplays().then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) }).catch(() => {})
-    app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
+async function chooseInitialDataRoot() {
+  if (dataRootContext.startupError) {
+    await dialog.showMessageBox({
+      type: 'warning',
+      title: '数据目录启动警告',
+      message: '当前数据目录不可用，请重新选择。',
+      detail: dataRootContext.startupError.message || String(dataRootContext.startupError),
+      buttons: ['确定']
+    })
+  }
+
+  const result = await dialog.showOpenDialog({
+    title: '选择 Highlighter 数据目录',
+    properties: ['openDirectory', 'createDirectory']
   })
-  app.on('activate', () => createMainWindow('home'))
+  if (result.canceled || !result.filePaths[0]) {
+    removeProvisionalRoot(dataRootContext)
+    app.exit(0)
+    return
+  }
+
+  let targetRoot = result.filePaths[0]
+  targetRoot = await validateDataRoot(targetRoot, dataRootContext.legacyUserData)
+  await migrateDataRoot({
+    source: createLegacySourcePaths(dataRootContext.legacyUserData),
+    target: createDataPaths(targetRoot),
+    portableDirectory: dataRootContext.portableDirectory,
+    previousRoot: ''
+  })
+  if (!removeProvisionalRoot(dataRootContext)) console.warn('Unable to remove provisional data directory')
+  app.relaunch()
+  app.exit(0)
+}
+
+async function recoverUnavailableDataRoot() {
+  let recoveryError = dataRootContext.startupError
+  while (true) {
+    const { response } = await dialog.showMessageBox({
+      type: 'error',
+      title: 'Highlighter 数据目录不可用',
+      message: '无法使用已配置的数据目录。',
+      detail: recoveryError?.message || String(recoveryError || ''),
+      buttons: ['重试', '选择其他目录', '退出'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true
+    })
+
+    if (response === 0) {
+      try {
+        const targetRoot = await validateDataRoot(dataRootContext.requestedRoot)
+        await ensureDataLayout(createDataPaths(targetRoot))
+        if (!removeProvisionalRoot(dataRootContext)) console.warn('Unable to remove provisional data directory')
+        app.relaunch()
+        app.exit(0)
+        return
+      } catch (error) {
+        recoveryError = error
+      }
+      continue
+    }
+
+    if (response === 1) {
+      const result = await dialog.showOpenDialog({
+        title: '选择 Highlighter 数据目录',
+        properties: ['openDirectory', 'createDirectory']
+      })
+      if (result.canceled || !result.filePaths[0]) continue
+      try {
+        const targetRoot = await validateDataRoot(result.filePaths[0])
+        await ensureDataLayout(createDataPaths(targetRoot))
+        await writeLocator(dataRootContext.locatorPath, targetRoot)
+        if (!removeProvisionalRoot(dataRootContext)) console.warn('Unable to remove provisional data directory')
+        app.relaunch()
+        app.exit(0)
+        return
+      } catch (error) {
+        recoveryError = error
+      }
+      continue
+    }
+
+    removeProvisionalRoot(dataRootContext)
+    app.exit(1)
+    return
+  }
+}
+
+async function startApplication() {
+  if (dataRootContext.portable && dataRootContext.needsSelection) {
+    if (dataRootContext.startupError) await recoverUnavailableDataRoot()
+    else await chooseInitialDataRoot()
+    return
+  }
+
+  let finalization = null
+  if (dataRootContext.portable) {
+    const hasPendingMigration = fs.existsSync(dataRootContext.pendingPath)
+    try {
+      initializeStore()
+      finalization = await verifyAndFinalizeMigration({
+        pendingPath: dataRootContext.pendingPath,
+        activeRoot: activePaths.root
+      })
+      if (!finalization.finalized && finalization.cleanupErrors.length) {
+        console.warn('Data migration cleanup remains pending:', finalization.cleanupErrors.join('; '))
+      }
+    } catch (startupError) {
+      if (!hasPendingMigration) throw startupError
+      try {
+        await rollbackPendingMigration({
+          pendingPath: dataRootContext.pendingPath,
+          locatorPath: dataRootContext.locatorPath
+        })
+      } catch (rollbackError) {
+        rollbackError.cause = startupError
+        throw rollbackError
+      }
+      dialog.showErrorBox('Highlighter 启动失败', startupError.message || String(startupError))
+      app.relaunch()
+      app.exit(1)
+      return
+    }
+  } else {
+    initializeStore()
+  }
+
+  if (finalization && !finalization.finalized && finalization.cleanupErrors.length) {
+    log('Data migration cleanup remains pending:', finalization.cleanupErrors)
+  }
+  store.set('settings', getSettings())
+  createTrayIcon()
+  createToolbarWindow()
+  createMainWindow('home')
+  registerShortcuts()
+  initSelectionHook()
+  if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
+  if (isWin) screenshotDesktop.listDisplays().then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) }).catch(() => {})
+  app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
+}
+
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  removeProvisionalRoot(dataRootContext)
+  app.quit()
+}
+else {
+  app.on('second-instance', () => { if (store) createMainWindow('home') })
+  app.whenReady().then(startApplication).catch((error) => {
+    dialog.showErrorBox('Highlighter 启动失败', error.message || String(error))
+    removeProvisionalRoot(dataRootContext)
+    app.exit(1)
+  })
+  app.on('activate', () => { if (store) createMainWindow('home') })
   app.on('window-all-closed', () => {})
   app.on('will-quit', () => globalShortcut.unregisterAll())
   app.on('before-quit', () => {
