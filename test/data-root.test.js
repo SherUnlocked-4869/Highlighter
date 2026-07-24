@@ -355,6 +355,7 @@ test('validates writable roots and removes its write probe', async (t) => {
 test('applies located portable paths before Electron readiness', async (t) => {
   const portableDirectory = await temporaryRoot(t)
   const root = path.join(portableDirectory, 'selected')
+  await fsp.mkdir(root)
   await writeLocator(path.join(portableDirectory, LOCATOR_NAME), root)
   const app = fakeApp(path.join(portableDirectory, 'legacy'))
   const { prepareDataRoot } = require('../main/services/data-root-bootstrap')
@@ -362,6 +363,28 @@ test('applies located portable paths before Electron readiness', async (t) => {
   assert.equal(context.needsSelection, false)
   assert.equal(app.values.userData, path.join(root, 'runtime'))
   assert.equal(app.values.sessionData, path.join(root, 'cache', 'electron'))
+})
+
+test('recovers instead of recreating a missing located portable root', async (t) => {
+  const portableDirectory = await temporaryRoot(t)
+  const bootstrapTemp = await temporaryRoot(t)
+  const root = path.join(portableDirectory, 'missing-selected')
+  await writeLocator(path.join(portableDirectory, LOCATOR_NAME), root)
+  const app = fakeApp(path.join(portableDirectory, 'legacy'))
+  const { prepareDataRoot, removeProvisionalRoot } = require('../main/services/data-root-bootstrap')
+
+  const context = prepareDataRoot({
+    app,
+    env: { PORTABLE_EXECUTABLE_DIR: portableDirectory },
+    tempRoot: bootstrapTemp
+  })
+  t.after(() => removeProvisionalRoot(context))
+
+  assert.equal(context.needsSelection, true)
+  assert.equal(context.requestedRoot, root)
+  assert.equal(context.startupError.code, 'ENOENT')
+  assert.equal(fs.existsSync(root), false)
+  assert.equal(app.values.userData.startsWith(bootstrapTemp), true)
 })
 
 test('uses OS temp provisionally when no locator exists', async (t) => {
@@ -402,6 +425,7 @@ test('falls back when located Electron paths are not writable', async (t) => {
   const legacyUserData = path.join(portableDirectory, 'legacy')
   const denied = new Error('access denied')
   denied.code = 'EACCES'
+  await fsp.mkdir(root)
   await writeLocator(path.join(portableDirectory, LOCATOR_NAME), root)
   const app = fakeApp(legacyUserData)
   const { prepareDataRoot, removeProvisionalRoot } = require('../main/services/data-root-bootstrap')
@@ -432,6 +456,7 @@ test('verifies located Electron paths with probes and removes the probe files', 
   const root = path.join(portableDirectory, 'selected')
   const app = fakeApp(path.join(portableDirectory, 'legacy'))
   const probedDirectories = []
+  await fsp.mkdir(root)
   await writeLocator(path.join(portableDirectory, LOCATOR_NAME), root)
   const { prepareDataRoot } = require('../main/services/data-root-bootstrap')
   const fileSystem = {

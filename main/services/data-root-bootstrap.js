@@ -48,6 +48,12 @@ function prepareDataRoot({ app, applicationName = app.getName(), env = process.e
   try {
     const locator = readLocatorSync(locatorPath)
     requestedRoot = locator.dataRoot
+    const rootStat = fileSystem.statSync(locator.dataRoot)
+    if (!rootStat.isDirectory()) {
+      const error = new Error('Highlighter 数据目录不是文件夹')
+      error.code = 'ENOTDIR'
+      throw error
+    }
     const paths = ensureDataLayoutSync(createDataPaths(locator.dataRoot))
     verifyElectronPathsSync(paths, fileSystem)
     applyElectronPaths(app, paths)
