@@ -329,3 +329,145 @@ test('uses OS temp provisionally when no locator exists', async (t) => {
   assert.match(app.values.userData, /highlighter-bootstrap-/)
   assert.equal(app.values.userData.startsWith(bootstrapTemp), true)
 })
+
+test('falls back when located Electron paths are not writable', async (t) => {
+  const portableDirectory = await temporaryRoot(t)
+  const bootstrapTemp = await temporaryRoot(t)
+  const root = path.join(portableDirectory, 'selected')
+  const legacyUserData = path.join(portableDirectory, 'legacy')
+  const denied = new Error('access denied')
+  denied.code = 'EACCES'
+  await writeLocator(path.join(portableDirectory, LOCATOR_NAME), root)
+  const app = fakeApp(legacyUserData)
+  const { prepareDataRoot, removeProvisionalRoot } = require('../main/services/data-root-bootstrap')
+  const fileSystem = {
+    ...fs,
+    writeFileSync(filePath, ...args) {
+      if (filePath.startsWith(path.join(root, 'runtime'))) throw denied
+      return fs.writeFileSync(filePath, ...args)
+    }
+  }
+
+  const context = prepareDataRoot({
+    app,
+    env: { PORTABLE_EXECUTABLE_DIR: portableDirectory },
+    tempRoot: bootstrapTemp,
+    fileSystem
+  })
+  t.after(() => removeProvisionalRoot(context))
+
+  assert.equal(context.needsSelection, true)
+  assert.equal(context.requestedRoot, root)
+  assert.equal(context.startupError, denied)
+  assert.equal(app.values.userData.startsWith(bootstrapTemp), true)
+})
+
+test('verifies located Electron paths with probes and removes the probe files', async (t) => {
+  const portableDirectory = await temporaryRoot(t)
+  const root = path.join(portableDirectory, 'selected')
+  const app = fakeApp(path.join(portableDirectory, 'legacy'))
+  const probedDirectories = []
+  await writeLocator(path.join(portableDirectory, LOCATOR_NAME), root)
+  const { prepareDataRoot } = require('../main/services/data-root-bootstrap')
+  const fileSystem = {
+    ...fs,
+    writeFileSync(filePath, ...args) {
+      probedDirectories.push(path.dirname(filePath))
+      return fs.writeFileSync(filePath, ...args)
+    }
+  }
+
+  const context = prepareDataRoot({ app, env: { PORTABLE_EXECUTABLE_DIR: portableDirectory }, fileSystem })
+
+  assert.deepEqual(probedDirectories, [context.paths.runtime, context.paths.electronCache])
+  assert.deepEqual(await fsp.readdir(context.paths.runtime), [])
+  assert.deepEqual(await fsp.readdir(context.paths.electronCache), [])
+})
+
+test('preserves malformed locator errors for startup handling', async (t) => {
+  const portableDirectory = await temporaryRoot(t)
+  const bootstrapTemp = await temporaryRoot(t)
+  const app = fakeApp(path.join(portableDirectory, 'legacy'))
+  await fsp.writeFile(path.join(portableDirectory, LOCATOR_NAME), JSON.stringify({ version: 2, dataRoot: 'invalid' }))
+  const { prepareDataRoot, removeProvisionalRoot } = require('../main/services/data-root-bootstrap')
+
+  const context = prepareDataRoot({
+    app,
+    env: { PORTABLE_EXECUTABLE_DIR: portableDirectory },
+    tempRoot: bootstrapTemp
+  })
+  t.after(() => removeProvisionalRoot(context))
+
+  assert.equal(context.needsSelection, true)
+  assert.equal(context.requestedRoot, '')
+  assert.match(context.startupError.message, /引导文件无效/)
+})
+
+test('leaves Electron paths unchanged outside portable mode', () => {
+  const legacyUserData = path.resolve('legacy-user-data')
+  const app = fakeApp(legacyUserData)
+  const originalValues = { ...app.values }
+  const { prepareDataRoot } = require('../main/services/data-root-bootstrap')
+
+  assert.deepEqual(prepareDataRoot({ app, env: {} }), {
+    portable: false,
+    legacyUserData,
+    paths: null,
+    needsSelection: false
+  })
+  assert.deepEqual(app.values, originalValues)
+})
+
+test('removes provisional roots idempotently', async (t) => {
+  const parent = await temporaryRoot(t)
+  const provisionalRoot = path.join(parent, 'provisional')
+  await fsp.mkdir(provisionalRoot)
+  const { removeProvisionalRoot } = require('../main/services/data-root-bootstrap')
+
+  assert.equal(removeProvisionalRoot(null), true)
+  assert.equal(removeProvisionalRoot({}), true)
+  assert.equal(removeProvisionalRoot({ provisionalRoot }), true)
+  assert.equal(fs.existsSync(provisionalRoot), false)
+  assert.equal(removeProvisionalRoot({ provisionalRoot }), true)
+})
+
+test('returns false instead of throwing when provisional cleanup is blocked', () => {
+  const cleanupError = new Error('directory is busy')
+  cleanupError.code = 'EBUSY'
+  const { removeProvisionalRoot } = require('../main/services/data-root-bootstrap')
+
+  assert.equal(removeProvisionalRoot({ provisionalRoot: path.resolve('locked-bootstrap') }, {
+    rmSync() { throw cleanupError }
+  }), false)
+})
+
+test('cleans the provisional root before rethrowing initialization errors', async (t) => {
+  const portableDirectory = await temporaryRoot(t)
+  const bootstrapTemp = await temporaryRoot(t)
+  const applyError = new Error('cannot apply Electron paths')
+  const app = fakeApp(path.join(portableDirectory, 'legacy'))
+  app.setPath = () => { throw applyError }
+  let provisionalRoot = ''
+  let cleanupAttempts = 0
+  const fileSystem = {
+    ...fs,
+    mkdtempSync(prefix) {
+      provisionalRoot = fs.mkdtempSync(prefix)
+      return provisionalRoot
+    },
+    rmSync(target, options) {
+      if (target === provisionalRoot) cleanupAttempts += 1
+      return fs.rmSync(target, options)
+    }
+  }
+  const { prepareDataRoot } = require('../main/services/data-root-bootstrap')
+
+  assert.throws(() => prepareDataRoot({
+    app,
+    env: { PORTABLE_EXECUTABLE_DIR: portableDirectory },
+    tempRoot: bootstrapTemp,
+    fileSystem
+  }), (error) => error === applyError)
+  assert.equal(cleanupAttempts, 1)
+  assert.equal(fs.existsSync(provisionalRoot), false)
+})
