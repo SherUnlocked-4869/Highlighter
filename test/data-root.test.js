@@ -27,6 +27,15 @@ async function temporaryRoot(t) {
   return root
 }
 
+function fakeApp(legacyUserData) {
+  const values = { userData: legacyUserData, sessionData: path.join(legacyUserData, 'Session Storage') }
+  return {
+    getPath: (name) => values[name],
+    setPath: (name, value) => { values[name] = value },
+    values
+  }
+}
+
 function expectedDataPaths(root) {
   const absoluteRoot = path.resolve(root)
   return {
@@ -295,4 +304,28 @@ test('validates writable roots and removes its write probe', async (t) => {
     (await fsp.readdir(root)).filter((name) => name.startsWith('.highlighter-write-')),
     []
   )
+})
+
+test('applies located portable paths before Electron readiness', async (t) => {
+  const portableDirectory = await temporaryRoot(t)
+  const root = path.join(portableDirectory, 'selected')
+  await writeLocator(path.join(portableDirectory, LOCATOR_NAME), root)
+  const app = fakeApp(path.join(portableDirectory, 'legacy'))
+  const { prepareDataRoot } = require('../main/services/data-root-bootstrap')
+  const context = prepareDataRoot({ app, env: { PORTABLE_EXECUTABLE_DIR: portableDirectory } })
+  assert.equal(context.needsSelection, false)
+  assert.equal(app.values.userData, path.join(root, 'runtime'))
+  assert.equal(app.values.sessionData, path.join(root, 'cache', 'electron'))
+})
+
+test('uses OS temp provisionally when no locator exists', async (t) => {
+  const portableDirectory = await temporaryRoot(t)
+  const bootstrapTemp = await temporaryRoot(t)
+  const app = fakeApp(path.join(portableDirectory, 'legacy'))
+  const { prepareDataRoot } = require('../main/services/data-root-bootstrap')
+  const context = prepareDataRoot({ app, env: { PORTABLE_EXECUTABLE_DIR: portableDirectory }, tempRoot: bootstrapTemp })
+  assert.equal(context.needsSelection, true)
+  assert.equal(context.legacyUserData, path.join(portableDirectory, 'legacy'))
+  assert.match(app.values.userData, /highlighter-bootstrap-/)
+  assert.equal(app.values.userData.startsWith(bootstrapTemp), true)
 })
