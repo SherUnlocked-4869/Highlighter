@@ -334,6 +334,43 @@ function validatePendingSource(source, activeRoot) {
   return match
 }
 
+async function rejectExistingLinks(filePath) {
+  const resolved = path.resolve(filePath)
+  const parsed = path.parse(resolved)
+  let current = parsed.root
+  const segments = resolved.slice(parsed.root.length).split(path.sep).filter(Boolean)
+
+  for (const segment of segments) {
+    current = path.join(current, segment)
+    const stat = await fsp.lstat(current).catch((error) => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    })
+    if (!stat) break
+    if (stat.isSymbolicLink()) throw linkError(current)
+  }
+}
+
+async function canonicalPathWithoutCreating(directory) {
+  const resolved = path.resolve(directory)
+  return fsp.realpath(resolved).catch((error) => {
+    if (error.code === 'ENOENT') return resolved
+    throw error
+  })
+}
+
+async function validateCleanupTopology(source, activeRoot) {
+  const cleanupTargets = [source.root, ...source.cleanupFiles, ...source.cleanupDirectories]
+  await Promise.all(cleanupTargets.map(rejectExistingLinks))
+  const [canonicalSource, canonicalActive] = await Promise.all([
+    canonicalPathWithoutCreating(source.root),
+    canonicalPathWithoutCreating(activeRoot)
+  ])
+  if (isNestedPath(canonicalSource, canonicalActive) || isNestedPath(canonicalActive, canonicalSource)) {
+    throw new Error('source and active root overlap')
+  }
+}
+
 async function removeFinalizationArtifacts({ pendingPath, markerPath, removeFile }) {
   try {
     await removeFile(markerPath, { force: true })
@@ -387,6 +424,12 @@ async function verifyAndFinalizeMigration({ pendingPath, activeRoot, cleanup = c
     const active = createManagedSourcePaths(root)
     if (await pathExists(active.configFile)) JSON.parse(await fsp.readFile(active.configFile, 'utf8'))
     if ((await listFiles(active.history)).length !== marker.copiedHistoryCount) throw new Error('history count mismatch')
+  } catch (error) {
+    throw verificationError(error)
+  }
+
+  try {
+    await validateCleanupTopology(pending.source, root)
   } catch (error) {
     throw verificationError(error)
   }

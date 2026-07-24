@@ -411,6 +411,70 @@ test('rejects a sidecar source root containing the active root', async (t) => {
   assert.equal(await exists(fixture.source.configFile), true)
 })
 
+test('rejects a source root junction that aliases the active root', async (t) => {
+  const fixture = await migratedFixture(t)
+  const sourceAlias = path.join(fixture.parent, 'source-alias')
+  const activeLayout = createDataPaths(fixture.targetRoot)
+  const sentinelPath = path.join(fixture.targetRoot, 'sentinel.txt')
+  await fsp.writeFile(sentinelPath, 'sentinel')
+  try {
+    await fsp.symlink(fixture.targetRoot, sourceAlias, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (process.platform === 'win32' && error.code === 'EPERM') return t.skip('junction creation requires unavailable privileges')
+    throw error
+  }
+  const pending = JSON.parse(await fsp.readFile(fixture.pendingPath, 'utf8'))
+  pending.source = createManagedSourcePaths(sourceAlias)
+  await writeJson(fixture.pendingPath, pending)
+  let cleanupCalled = false
+
+  await assert.rejects(verifyAndFinalizeMigration({
+    pendingPath: fixture.pendingPath,
+    activeRoot: fixture.targetRoot,
+    cleanup: async () => {
+      cleanupCalled = true
+      return []
+    }
+  }), /数据目录迁移验证失败/)
+
+  assert.equal(cleanupCalled, false)
+  assert.equal(await exists(fixture.target.configFile), true)
+  assert.equal(await exists(path.join(fixture.target.history, 'one.png')), true)
+  assert.equal((await fsp.stat(activeLayout.cache)).isDirectory(), true)
+  assert.equal((await fsp.stat(activeLayout.runtime)).isDirectory(), true)
+  assert.equal(await fsp.readFile(sentinelPath, 'utf8'), 'sentinel')
+})
+
+test('rejects a cleanup directory replaced by a junction', async (t) => {
+  const fixture = await migratedFixture(t)
+  const externalDirectory = path.join(fixture.parent, 'external-history')
+  const sentinelPath = path.join(externalDirectory, 'sentinel.txt')
+  await fsp.mkdir(externalDirectory)
+  await fsp.writeFile(sentinelPath, 'sentinel')
+  await fsp.rm(fixture.source.history, { recursive: true, force: true })
+  try {
+    await fsp.symlink(externalDirectory, fixture.source.history, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch (error) {
+    if (process.platform === 'win32' && error.code === 'EPERM') return t.skip('junction creation requires unavailable privileges')
+    throw error
+  }
+  let cleanupCalled = false
+
+  await assert.rejects(verifyAndFinalizeMigration({
+    pendingPath: fixture.pendingPath,
+    activeRoot: fixture.targetRoot,
+    cleanup: async () => {
+      cleanupCalled = true
+      return []
+    }
+  }), /数据目录迁移验证失败/)
+
+  assert.equal(cleanupCalled, false)
+  assert.equal(await fsp.readFile(sentinelPath, 'utf8'), 'sentinel')
+  assert.equal(await exists(fixture.source.configFile), true)
+  assert.equal(await exists(fixture.target.configFile), true)
+})
+
 test('verification failure does not clean source and rollback restores previous locator', async (t) => {
   const parent = await temporaryRoot(t)
   const sourceRoot = path.join(parent, 'legacy')
@@ -520,6 +584,7 @@ test('final artifact removal failure cannot roll back to a cleaned source and ca
   assert.equal(await exists(source.configFile), false)
   await assert.rejects(rollbackPendingMigration({ pendingPath, locatorPath }), /不能回滚/)
   assert.deepEqual(await readLocator(locatorPath), { version: 1, dataRoot: path.resolve(targetRoot) })
+  await fsp.rm(sourceRoot, { recursive: true, force: true })
 
   assert.deepEqual(await verifyAndFinalizeMigration({ pendingPath, activeRoot: targetRoot }), {
     finalized: true,
