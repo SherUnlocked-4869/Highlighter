@@ -20,6 +20,8 @@ const {
   validateDataRoot,
   writeLocator
 } = require('../main/services/data-root')
+const { LongCaptureSession } = require('../main/services/long-capture-session')
+const { OcrService } = require('../main/services/ocr-service')
 
 async function temporaryRoot(t) {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'highlighter-data-root-test-'))
@@ -57,6 +59,39 @@ async function assertDirectories(paths) {
     assert.equal((await fsp.stat(directory)).isDirectory(), true, directory)
   }
 }
+
+test('injects the managed OCR cache directory', async (t) => {
+  const parent = await temporaryRoot(t)
+  const ocrTemp = path.join(parent, 'managed', 'ocr')
+
+  const service = new OcrService({ sidecarPath: 'sidecar', modelDir: 'models', tempDir: ocrTemp })
+
+  assert.equal(service.tempDir, path.resolve(ocrTemp))
+})
+
+test('requires a managed OCR cache directory', () => {
+  assert.throws(
+    () => new OcrService({ sidecarPath: 'sidecar', modelDir: 'models' }),
+    /OCR 临时目录不能为空/
+  )
+})
+
+test('creates long-capture sessions under the managed cache directory', async (t) => {
+  const parent = await temporaryRoot(t)
+  const longTemp = path.join(parent, 'managed', 'long-capture')
+  let session
+
+  try {
+    session = new LongCaptureSession({ tempRoot: longTemp })
+    assert.equal(session.directory.startsWith(`${path.resolve(longTemp)}${path.sep}`), true)
+  } finally {
+    session?.cleanup()
+  }
+})
+
+test('requires a managed long-capture cache directory', () => {
+  assert.throws(() => new LongCaptureSession(), /长截图临时目录不能为空/)
+})
 
 test('creates the exact documented managed data layout', async (t) => {
   const parent = await temporaryRoot(t)

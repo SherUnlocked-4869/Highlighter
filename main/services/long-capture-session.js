@@ -1,5 +1,4 @@
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
 const sharp = require('sharp')
 
@@ -8,7 +7,9 @@ const MAX_PIXELS = 200000000
 
 class LongCaptureSession {
   constructor(options = {}) {
-    const root = options.tempRoot || os.tmpdir()
+    if (!options.tempRoot) throw new Error('长截图临时目录不能为空')
+    const root = path.resolve(options.tempRoot)
+    fs.mkdirSync(root, { recursive: true })
     this.directory = fs.mkdtempSync(path.join(root, 'highlighter-long-'))
     this.axis = options.axis === 'horizontal' ? 'horizontal' : 'vertical'
     this.strips = []

@@ -1,5 +1,7 @@
 const assert = require('assert')
 const fs = require('fs')
+const os = require('os')
+const path = require('path')
 const sharp = require('sharp')
 const { findBestShift } = require('../long-capture/matcher')
 const { LongCaptureSession } = require('../main/services/long-capture-session')
@@ -49,7 +51,8 @@ async function run() {
   const repeatedShifted = makeFrame(width, height, (_x, y) => ((y + 3) % 8) * 24)
   assert.equal(findBestShift(repeatedBase, repeatedShifted, width, height, 'vertical').status, 'failed')
 
-  const session = new LongCaptureSession({ axis: 'vertical' })
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'highlighter-long-test-'))
+  const session = new LongCaptureSession({ axis: 'vertical', tempRoot })
   try {
     session.addStrip(await png(4, 2, { r: 255, g: 0, b: 0, alpha: 1 }), { width: 4, height: 2 })
     session.addStrip(await png(4, 3, { r: 0, g: 0, b: 255, alpha: 1 }), { width: 4, height: 3 })
@@ -62,6 +65,7 @@ async function run() {
     assert.equal(metadata.height, 3)
   } finally {
     session.cleanup()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 
   console.log('long capture tests passed')

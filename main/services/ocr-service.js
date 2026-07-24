@@ -1,6 +1,5 @@
 const crypto = require('crypto')
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
 const { spawn } = require('child_process')
 
@@ -11,7 +10,8 @@ const MODEL_FILES = [
 ]
 
 class OcrService {
-  constructor(options) {
+  constructor(options = {}) {
+    if (!options.tempDir) throw new Error('OCR 临时目录不能为空')
     this.sidecarPath = options.sidecarPath
     this.modelDir = options.modelDir
     this.log = options.log || (() => {})
@@ -24,7 +24,7 @@ class OcrService {
     this.resultCache = new Map()
     this.cacheLimit = 12
     this.stopping = false
-    this.tempDir = path.join(os.tmpdir(), 'Highlighter', 'ocr')
+    this.tempDir = path.resolve(options.tempDir)
   }
 
   getStatus() {
