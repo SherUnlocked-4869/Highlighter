@@ -13,9 +13,19 @@ const {
   validateDataRoot,
   writeLocator
 } = require('./data-root')
+const {
+  cleanupManagedSource,
+  cleanupStateError,
+  failureMessage,
+  quarantinePathFor,
+  readSourceIdentity,
+  runQuarantineCleanup,
+  validateCleanupTopology
+} = require('./data-root-migration-cleanup')
 
 const MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'cache', 'runtime']
 const MIGRATION_MARKER = '.migration.json'
+const MARKER_VERSION = 1
 
 function createLegacySourcePaths(value) {
   const root = path.resolve(value)
@@ -132,8 +142,102 @@ async function assertTargetAvailable(target) {
   if (conflicts.some(Boolean)) throw new Error('目标目录已包含 Highlighter 数据')
 }
 
+function validateMarkerSchema(marker, newRoot, migrationId = marker?.migrationId) {
+  const root = path.resolve(newRoot)
+  if (!marker || marker.version !== MARKER_VERSION || marker.migrationId !== migrationId || marker.newRoot !== root) {
+    throw new Error('迁移标记无效')
+  }
+  if (![0, 1].includes(marker.copiedConfigCount) || ![0, 1].includes(marker.copiedLogCount) || !Number.isInteger(marker.copiedHistoryCount)) {
+    throw new Error('迁移标记无效')
+  }
+  validatePendingSource(marker.source, root)
+  if (marker.sourceIdentity !== null && (
+    marker.sourceIdentity?.type !== 'directory' ||
+    typeof marker.sourceIdentity.dev !== 'string' ||
+    typeof marker.sourceIdentity.ino !== 'string' ||
+    typeof marker.sourceIdentity.birthtimeMs !== 'number'
+  )) throw new Error('迁移标记无效')
+  return marker
+}
+
+async function operationExists(filePath, operations) {
+  return operations.lstat(filePath).then(() => true, (error) => {
+    if (error.code === 'ENOENT') return false
+    throw error
+  })
+}
+
+async function archiveOwnedTarget(newRoot, migrationId, { operations = fsp } = {}) {
+  const root = path.resolve(newRoot)
+  const archiveRoot = path.join(root, `.highlighter-failed-${migrationId}`)
+  const markerPath = path.join(root, MIGRATION_MARKER)
+  const archivedMarkerPath = path.join(archiveRoot, MIGRATION_MARKER)
+  const [hasMarker, hasArchivedMarker] = await Promise.all([
+    operationExists(markerPath, operations),
+    operationExists(archivedMarkerPath, operations)
+  ])
+  if (hasMarker && hasArchivedMarker) throw new Error('迁移诊断归档状态冲突')
+  if (!hasMarker && !hasArchivedMarker) {
+    const managed = createDataPaths(root)
+    const hasManagedData = (await Promise.all(MANAGED_DIRECTORIES.map((name) => operationExists(managed[name], operations)))).some(Boolean)
+    if (hasManagedData) throw new Error('目标目录缺少有效迁移标记')
+    return null
+  }
+
+  const markerSource = hasMarker ? markerPath : archivedMarkerPath
+  const marker = validateMarkerSchema(JSON.parse(await operations.readFile(markerSource, 'utf8')), root, migrationId)
+  await operations.mkdir(archiveRoot, { recursive: true })
+  const managed = createDataPaths(root)
+  for (const name of MANAGED_DIRECTORIES) {
+    const sourcePath = managed[name]
+    const targetPath = path.join(archiveRoot, name)
+    const [sourceExists, targetExists] = await Promise.all([
+      operationExists(sourcePath, operations),
+      operationExists(targetPath, operations)
+    ])
+    if (sourceExists && targetExists) throw new Error(`迁移诊断归档冲突：${name}`)
+    if (sourceExists) await operations.rename(sourcePath, targetPath)
+  }
+  if (hasMarker) await operations.rename(markerPath, archivedMarkerPath)
+  return { archiveRoot, marker }
+}
+
+async function archiveOrphanTarget(root) {
+  const markerPath = path.join(root, MIGRATION_MARKER)
+  if (!await pathExists(markerPath)) return false
+  let marker
+  try {
+    marker = JSON.parse(await fsp.readFile(markerPath, 'utf8'))
+    validateMarkerSchema(marker, root)
+  } catch {
+    throw new Error('目标目录已包含 Highlighter 数据')
+  }
+  await archiveOwnedTarget(root, marker.migrationId)
+  return true
+}
+
 async function removeCreatedTarget(target) {
-  await Promise.all(MANAGED_DIRECTORIES.map((name) => fsp.rm(target[name], { recursive: true, force: true }).catch(() => {})))
+  const results = await Promise.allSettled(MANAGED_DIRECTORIES.map((name) => fsp.rm(target[name], { recursive: true, force: true })))
+  return results.filter((result) => result.status === 'rejected').map((result) => failureMessage(result.reason))
+}
+
+async function cleanupPublishedTarget(target, root, migrationId) {
+  const errors = await removeCreatedTarget(target)
+  if (errors.length) return errors
+  try {
+    await removeMarkerForMigration(root, migrationId)
+    return []
+  } catch (error) {
+    return [failureMessage(error)]
+  }
+}
+
+function migrationCleanupError(migrationError, cleanupErrors) {
+  const result = new Error(`${migrationError.message}；迁移回滚清理失败：${cleanupErrors.join('; ')}`)
+  result.cause = migrationError
+  result.migrationError = migrationError
+  result.cleanupErrors = cleanupErrors
+  return result
 }
 
 async function removePendingForMigration(pendingPath, migrationId) {
@@ -153,6 +257,10 @@ async function removeMarkerForMigration(root, migrationId) {
   } catch (error) {
     if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
   }
+}
+
+function sourceManifestsEqual(actual, expected) {
+  return JSON.stringify(actual) === JSON.stringify(expected)
 }
 
 function migrationRollbackError(error, migrationError) {
@@ -188,11 +296,15 @@ async function migrateDataRoot({
   copyFile = fs.copyFile,
   writePending = atomicWriteJson,
   writeLocatorFile = writeLocator,
-  restoreLocatorFile = writeLocator
+  restoreLocatorFile = writeLocator,
+  cleanupFailedTarget = cleanupPublishedTarget
 }) {
   await validateDataRoot(target.root, source.root)
   const targetLayout = createDataPaths(target.root)
   const targetSource = createManagedSourcePaths(target.root)
+  const sourceManifest = validatePendingSource(source, target.root)
+  const sourceIdentity = await readSourceIdentity(sourceManifest.root)
+  await archiveOrphanTarget(target.root)
   await assertTargetAvailable(targetLayout)
 
   const migrationId = crypto.randomUUID()
@@ -201,6 +313,7 @@ async function migrateDataRoot({
   const locatorPath = path.join(portableDirectory, LOCATOR_NAME)
   const pendingPath = path.join(portableDirectory, PENDING_NAME)
   let locatorWriteStarted = false
+  let markerPublished = false
 
   try {
     await ensureDataLayout(createDataPaths(staging.root))
@@ -218,13 +331,24 @@ async function migrateDataRoot({
     const copiedHistoryFiles = await listFiles(staging.history)
     if (copiedHistoryFiles.length !== historyFiles.length) throw new Error('截图历史迁移文件计数不一致')
 
+    let copiedConfigCount = 0
     if (await regularFileIfPresent(source.configFile)) {
       const config = JSON.parse(await fsp.readFile(source.configFile, 'utf8'))
       await atomicWriteJson(staging.configFile, rewriteConfig(config, source, targetSource))
       JSON.parse(await fsp.readFile(staging.configFile, 'utf8'))
+      copiedConfigCount = 1
     }
 
-    const marker = { migrationId, copiedLogCount, copiedHistoryCount: historyFiles.length }
+    const marker = {
+      version: MARKER_VERSION,
+      migrationId,
+      newRoot: path.resolve(target.root),
+      source: sourceManifest,
+      sourceIdentity,
+      copiedConfigCount,
+      copiedLogCount,
+      copiedHistoryCount: historyFiles.length
+    }
     const stagingMarker = path.join(staging.root, MIGRATION_MARKER)
     await atomicWriteJson(stagingMarker, marker)
 
@@ -232,6 +356,7 @@ async function migrateDataRoot({
     for (const name of ['config', 'logs', 'history']) await fsp.rename(stagingLayout[name], targetLayout[name])
     await ensureDataLayout(targetLayout)
     await fsp.rename(stagingMarker, path.join(target.root, MIGRATION_MARKER))
+    markerPublished = true
     await fsp.rm(stagingRoot, { recursive: true, force: true })
 
     const pending = {
@@ -239,14 +364,15 @@ async function migrateDataRoot({
       migrationId,
       previousRoot: previousRoot ? path.resolve(previousRoot) : '',
       newRoot: path.resolve(target.root),
-      source
+      source: sourceManifest
     }
     await writePending(pendingPath, pending)
     locatorWriteStarted = true
     await writeLocatorFile(locatorPath, target.root)
     return { locatorPath, pendingPath, migrationId }
   } catch (error) {
-    await fsp.rm(stagingRoot, { recursive: true, force: true }).catch(() => {})
+    const cleanupErrors = []
+    await fsp.rm(stagingRoot, { recursive: true, force: true }).catch((cleanupError) => cleanupErrors.push(failureMessage(cleanupError)))
     if (locatorWriteStarted) {
       await restorePublishedLocator({
         locatorPath,
@@ -256,24 +382,15 @@ async function migrateDataRoot({
         migrationError: error
       })
     }
-    await removePendingForMigration(pendingPath, migrationId).catch(() => {})
-    await removeMarkerForMigration(target.root, migrationId).catch(() => {})
-    await removeCreatedTarget(targetLayout)
+    await removePendingForMigration(pendingPath, migrationId).catch((cleanupError) => cleanupErrors.push(failureMessage(cleanupError)))
+    if (markerPublished) {
+      cleanupErrors.push(...await cleanupFailedTarget(targetLayout, target.root, migrationId))
+    } else {
+      cleanupErrors.push(...await removeCreatedTarget(targetLayout))
+    }
+    if (cleanupErrors.length) throw migrationCleanupError(error, cleanupErrors)
     throw error
   }
-}
-
-function failureMessage(reason) {
-  return reason instanceof Error ? reason.message : String(reason)
-}
-
-async function cleanupManagedSource(source, operations = fsp) {
-  const targets = [
-    ...(Array.isArray(source?.cleanupFiles) ? source.cleanupFiles : []),
-    ...(Array.isArray(source?.cleanupDirectories) ? source.cleanupDirectories : [])
-  ]
-  const results = await Promise.allSettled(targets.map((target) => operations.rm(target, { recursive: true, force: true })))
-  return results.filter((result) => result.status === 'rejected').map((result) => failureMessage(result.reason))
 }
 
 function verificationError(error) {
@@ -334,43 +451,6 @@ function validatePendingSource(source, activeRoot) {
   return match
 }
 
-async function rejectExistingLinks(filePath) {
-  const resolved = path.resolve(filePath)
-  const parsed = path.parse(resolved)
-  let current = parsed.root
-  const segments = resolved.slice(parsed.root.length).split(path.sep).filter(Boolean)
-
-  for (const segment of segments) {
-    current = path.join(current, segment)
-    const stat = await fsp.lstat(current).catch((error) => {
-      if (error.code === 'ENOENT') return null
-      throw error
-    })
-    if (!stat) break
-    if (stat.isSymbolicLink()) throw linkError(current)
-  }
-}
-
-async function canonicalPathWithoutCreating(directory) {
-  const resolved = path.resolve(directory)
-  return fsp.realpath(resolved).catch((error) => {
-    if (error.code === 'ENOENT') return resolved
-    throw error
-  })
-}
-
-async function validateCleanupTopology(source, activeRoot) {
-  const cleanupTargets = [source.root, ...source.cleanupFiles, ...source.cleanupDirectories]
-  await Promise.all(cleanupTargets.map(rejectExistingLinks))
-  const [canonicalSource, canonicalActive] = await Promise.all([
-    canonicalPathWithoutCreating(source.root),
-    canonicalPathWithoutCreating(activeRoot)
-  ])
-  if (isNestedPath(canonicalSource, canonicalActive) || isNestedPath(canonicalActive, canonicalSource)) {
-    throw new Error('source and active root overlap')
-  }
-}
-
 async function removeFinalizationArtifacts({ pendingPath, markerPath, removeFile }) {
   try {
     await removeFile(markerPath, { force: true })
@@ -385,7 +465,13 @@ async function removeFinalizationArtifacts({ pendingPath, markerPath, removeFile
   }
 }
 
-async function verifyAndFinalizeMigration({ pendingPath, activeRoot, cleanup = cleanupManagedSource, removeFile = fsp.rm }) {
+async function verifyAndFinalizeMigration({
+  pendingPath,
+  activeRoot,
+  cleanup = cleanupManagedSource,
+  removeFile = fsp.rm,
+  writePending = atomicWriteJson
+}) {
   let pending
   try {
     pending = JSON.parse(await fsp.readFile(pendingPath, 'utf8'))
@@ -399,6 +485,7 @@ async function verifyAndFinalizeMigration({ pendingPath, activeRoot, cleanup = c
   try {
     pending = { ...pending, source: validatePendingSource(pending.source, root) }
   } catch (error) {
+    if (pending.phase === 'quarantine-planned') return cleanupStateError(`数据目录迁移验证失败：${failureMessage(error)}`)
     throw verificationError(error)
   }
   if (pending.phase === 'cleaned') {
@@ -419,38 +506,85 @@ async function verifyAndFinalizeMigration({ pendingPath, activeRoot, cleanup = c
   let marker
   try {
     marker = JSON.parse(await fsp.readFile(markerPath, 'utf8'))
-    if (path.resolve(pending.newRoot) !== root || marker.migrationId !== pending.migrationId) throw new Error('marker mismatch')
+    if (marker.version !== MARKER_VERSION || marker.newRoot !== root || path.resolve(pending.newRoot) !== root || marker.migrationId !== pending.migrationId) {
+      throw new Error('marker mismatch')
+    }
+    const markerSource = validatePendingSource(marker.source, root)
+    if (!sourceManifestsEqual(markerSource, pending.source)) throw new Error('source manifest mismatch')
+    if (![0, 1].includes(marker.copiedConfigCount) || ![0, 1].includes(marker.copiedLogCount)) throw new Error('marker count mismatch')
+    if (marker.sourceIdentity !== null && (
+      marker.sourceIdentity?.type !== 'directory' ||
+      typeof marker.sourceIdentity.dev !== 'string' ||
+      typeof marker.sourceIdentity.ino !== 'string' ||
+      typeof marker.sourceIdentity.birthtimeMs !== 'number'
+    )) throw new Error('source identity mismatch')
 
     const active = createManagedSourcePaths(root)
-    if (await pathExists(active.configFile)) JSON.parse(await fsp.readFile(active.configFile, 'utf8'))
+    const configStat = await regularFileIfPresent(active.configFile)
+    if (marker.copiedConfigCount === 1 && !configStat) throw new Error('target config missing')
+    if (configStat) JSON.parse(await fsp.readFile(active.configFile, 'utf8'))
+    const logStat = await regularFileIfPresent(active.logFile)
+    if (marker.copiedLogCount === 1 && !logStat) throw new Error('target log missing')
     if ((await listFiles(active.history)).length !== marker.copiedHistoryCount) throw new Error('history count mismatch')
   } catch (error) {
+    if (pending.phase === 'quarantine-planned') return cleanupStateError(`数据目录迁移验证失败：${failureMessage(error)}`)
     throw verificationError(error)
   }
 
-  try {
-    await validateCleanupTopology(pending.source, root)
-  } catch (error) {
-    throw verificationError(error)
+  if (!pending.phase && marker.sourceIdentity !== null) {
+    try {
+      await validateCleanupTopology(pending.source, root)
+    } catch (error) {
+      throw verificationError(error)
+    }
   }
 
-  pending = { ...pending, phase: 'verified' }
-  await atomicWriteJson(pendingPath, pending)
-  const cleanupErrors = await cleanup(pending.source)
-  if (cleanupErrors.length) return { finalized: false, cleanupErrors }
+  if (pending.phase === 'quarantine-planned') {
+    const expectedQuarantine = quarantinePathFor(pending.source.root, pending.migrationId)
+    if (typeof pending.quarantineRoot !== 'string' || !path.isAbsolute(pending.quarantineRoot) ||
+      comparablePath(pending.quarantineRoot) !== comparablePath(expectedQuarantine) ||
+      isNestedPath(root, expectedQuarantine) || isNestedPath(expectedQuarantine, root)) {
+      return cleanupStateError('数据目录迁移验证失败：隔离目录计划无效')
+    }
+    const result = await runQuarantineCleanup({ pendingPath, pending, marker, cleanup, writePending })
+    if (!result.finalized) return result
+    const artifactErrors = await removeFinalizationArtifacts({ pendingPath, markerPath, removeFile })
+    return { finalized: artifactErrors.length === 0, cleanupErrors: artifactErrors }
+  }
 
-  pending = { ...pending, phase: 'cleaned' }
-  await atomicWriteJson(pendingPath, pending)
+  if (marker.sourceIdentity === null) {
+    pending = { ...pending, phase: 'cleaned' }
+    await writePending(pendingPath, pending)
+  } else {
+    const quarantineRoot = quarantinePathFor(pending.source.root, pending.migrationId)
+    if (isNestedPath(root, quarantineRoot) || isNestedPath(quarantineRoot, root)) throw verificationError(new Error('quarantine overlaps active root'))
+    if (await pathExists(quarantineRoot)) throw verificationError(new Error('quarantine already exists'))
+    pending = { ...pending, phase: 'quarantine-planned', quarantineRoot }
+    try {
+      await writePending(pendingPath, pending)
+    } catch (error) {
+      const persisted = await fsp.readFile(pendingPath, 'utf8').then(JSON.parse).catch(() => null)
+      if (persisted?.phase === 'quarantine-planned' && persisted.migrationId === pending.migrationId) {
+        return cleanupStateError(failureMessage(error))
+      }
+      throw error
+    }
+    const result = await runQuarantineCleanup({ pendingPath, pending, marker, cleanup, writePending })
+    if (!result.finalized) return result
+    pending = result.pending
+  }
+
   const artifactErrors = await removeFinalizationArtifacts({ pendingPath, markerPath, removeFile })
   return { finalized: artifactErrors.length === 0, cleanupErrors: artifactErrors }
 }
 
-async function rollbackPendingMigration({ pendingPath, locatorPath }) {
+async function rollbackPendingMigration({ pendingPath, locatorPath, archive = archiveOwnedTarget }) {
   const pending = JSON.parse(await fsp.readFile(pendingPath, 'utf8'))
-  if (pending.phase === 'verified' || pending.phase === 'cleaned') {
+  if (pending.phase === 'quarantine-planned' || pending.phase === 'cleaned') {
     throw new Error('已验证的数据目录迁移不能回滚')
   }
   const previousRoot = pending.previousRoot || ''
+  await archive(pending.newRoot, pending.migrationId)
   if (previousRoot) await writeLocator(locatorPath, previousRoot)
   else await fsp.rm(locatorPath, { force: true })
   await fsp.rm(pendingPath, { force: true })
@@ -458,6 +592,7 @@ async function rollbackPendingMigration({ pendingPath, locatorPath }) {
 }
 
 module.exports = {
+  archiveOwnedTarget,
   cleanupManagedSource,
   createLegacySourcePaths,
   createManagedSourcePaths,
