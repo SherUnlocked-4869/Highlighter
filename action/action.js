@@ -178,8 +178,9 @@ window.electronAPI.onActionStart(function(data) {
     el.headerBadge.textContent = '翻译'; el.headerBadge.className = 'badge'
     el.loadingText.textContent = '正在翻译...'
   } else {
-    el.headerIcon.innerHTML = '💡'; el.headerTitle.textContent = '解释'
-    el.headerBadge.textContent = '解释'; el.headerBadge.className = 'badge explain'
+    const label = data.label || '解释'
+    el.headerIcon.textContent = data.type === 'explain' ? '💡' : (data.icon || '✦'); el.headerTitle.textContent = label
+    el.headerBadge.textContent = label; el.headerBadge.className = 'badge explain'
     el.loadingText.textContent = '正在思考...'
   }
   showLoading(true)

@@ -28,7 +28,7 @@ test('portable bootstrap runs before Electron storage or window consumers', () =
   assert.ok(main.indexOf('prepareDataRoot({ app, applicationName })') < main.indexOf('app.requestSingleInstanceLock()'))
   assert.match(main, /let store = null/)
   assert.match(main, /function initializeStore\(\)/)
-  assert.match(main, /if \(dataRootContext\.portable\) storeOptions\.cwd = dataRootContext\.paths\.config/)
+  assert.match(main, /if \(activePaths\) storeOptions\.cwd = activePaths\.config/)
 })
 
 test('portable named paths own history, logs, and service caches', () => {
@@ -75,10 +75,10 @@ test('unavailable recovery never replaces the locator while migration is pending
   assert.ok(chooseAnother.indexOf('fs.existsSync(dataRootContext.pendingPath)') < chooseAnother.indexOf('dialog.showOpenDialog('))
 })
 
-test('startup guards non-portable finalization and returns before initializing a selection flow', () => {
+test('startup recovers unavailable roots and finalizes every customized root before initialization', () => {
   const start = section('async function startApplication()', 'const gotTheLock')
-  assert.match(start, /if \(dataRootContext\.portable && dataRootContext\.needsSelection\) \{[\s\S]*return[\s\S]*\}[\s\S]*initializeStore\(\)/)
-  assert.match(start, /if \(dataRootContext\.portable\) \{[\s\S]*verifyAndFinalizeMigration\(\{[\s\S]*pendingPath: dataRootContext\.pendingPath[\s\S]*activeRoot: activePaths\.root/)
+  assert.match(start, /if \(dataRootContext\.needsSelection\) \{[\s\S]*recoverUnavailableDataRoot\(\)[\s\S]*return[\s\S]*\}[\s\S]*initializeStore\(\)/)
+  assert.match(start, /if \(activePaths\) \{[\s\S]*verifyAndFinalizeMigration\(\{[\s\S]*pendingPath: dataRootContext\.pendingPath[\s\S]*activeRoot: activePaths\.root/)
   assert.doesNotMatch(start, /verifyAndFinalizeMigration\([\s\S]*pendingPath: (?:undefined|null)/)
   assert.match(start, /if \(!finalization\.finalized && finalization\.cleanupErrors\.length\)[\s\S]*console\.(?:warn|error)/)
   assert.doesNotMatch(start.match(/if \(!finalization\.finalized && finalization\.cleanupErrors\.length\) \{[^}]*\}/)[0], /rollbackPendingMigration/)
@@ -109,12 +109,16 @@ test('preload exposes only fixed data-root IPC methods', () => {
   assert.doesNotMatch(preload, /openDataRoot:\s*\([^)]/)
 })
 
-test('system settings renders and uses the portable data-root controls', () => {
+test('system settings renders and uses data-root controls in every build', () => {
   assert.match(config, /async function renderSystemSettings\(\)/)
   assert.match(config, /await window\.electronAPI\.getDataRoot\(\)/)
   assert.match(config, /id="dataRoot"/)
   assert.match(config, /id="openDataRoot"/)
   assert.match(config, /id="changeDataRoot"/)
+  assert.doesNotMatch(config, /id="changeDataRoot"[^>]*disabled/)
+  assert.match(config, /软件数据目录/)
+  assert.match(config, /截图导出目录/)
+  assert.match(config, /截图历史存储目录/)
   assert.match(config, /readonly/)
   assert.match(config, /window\.electronAPI\.openDataRoot\(\)/)
   assert.match(config, /window\.electronAPI\.changeDataRoot\(\)/)
@@ -123,11 +127,13 @@ test('system settings renders and uses the portable data-root controls', () => {
 
 test('main process keeps data-root migration privileged, serialized, and restart-only on success', () => {
   const handlers = section("ipcMain.handle('settings:get'", "ipcMain.handle('history:list'")
-  assert.match(handlers, /ipcMain\.handle\('data-root:get', \(\) => \(\{ portable: dataRootContext\.portable, path: dataRootContext\.paths\?\.root \|\| app\.getPath\('userData'\) \}\)\)/)
+  assert.match(handlers, /customized: !!dataRootContext\.paths/)
+  assert.match(handlers, /path: dataRootContext\.paths\?\.root \|\| dataRootContext\.legacyUserData/)
   assert.match(handlers, /ipcMain\.handle\('data-root:open', \(\) => shell\.openPath\(dataRootContext\.paths\?\.root \|\| app\.getPath\('userData'\)\)\)/)
   const change = section("ipcMain.handle('data-root:change'", "ipcMain.handle('app:open-data-directory'")
-  assert.match(change, /if \(!dataRootContext\.portable\) throw new Error/)
+  assert.doesNotMatch(change, /只有便携版/)
   assert.match(change, /dataRootMigrationInProgress \|\| fs\.existsSync\(dataRootContext\.pendingPath\)/)
+  assert.match(change, /dataRootContext\.paths[\s\S]*createManagedSourcePaths\(activeRoot\)[\s\S]*createLegacySourcePaths\(activeRoot\)/)
   assert.match(change, /dialog\.showOpenDialog\([\s\S]*openDirectory[\s\S]*createDirectory/)
   assert.match(change, /if \(result\.canceled \|\| !result\.filePaths\[0]\) return \{ canceled: true \}/)
   assert.match(change, /validateDataRoot\(result\.filePaths\[0], activeRoot\)/)
@@ -135,7 +141,7 @@ test('main process keeps data-root migration privileged, serialized, and restart
   assert.match(change, /配置、日志、截图历史[\s\S]*重启/)
   assert.match(change, /store\.set\('settings', getSettings\(\)\)/)
   assert.match(change, /stopWriters: stopManagedDataWriters/)
-  assert.match(change, /migrateDataRoot\(\{[\s\S]*source: createManagedSourcePaths\(activeRoot\)[\s\S]*target: createDataPaths\(targetRoot\)[\s\S]*portableDirectory: dataRootContext\.portableDirectory[\s\S]*previousRoot: activeRoot/)
+  assert.match(change, /migrateDataRoot\(\{[\s\S]*source: sourcePaths[\s\S]*target: createDataPaths\(targetRoot\)[\s\S]*portableDirectory: dataRootContext\.locatorDirectory[\s\S]*previousRoot/)
   assert.match(change, /setImmediate\(\(\) => \{[\s\S]*relaunchApplication\(\{ app, dataRootContext \}\)[\s\S]*app\.exit\(0\)/)
   assert.match(change, /return \{ restarting: true \}/)
 })

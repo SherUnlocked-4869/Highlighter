@@ -6,6 +6,14 @@ let settings = null
 let currentRoute = 'home'
 let homeTab = 'screenshot'
 let chatMessages = []
+let draggedSelectionToolbarAction = ''
+
+const selectionToolbarBuiltinMeta = {
+  copy: { label: '复制', icon: '⧉', description: '复制划词内容到系统剪贴板' },
+  search: { label: '搜索', icon: '⌕', description: '使用默认浏览器搜索划词内容' },
+  translate: { label: '翻译', icon: '译', description: '使用下方自定义提示词翻译划词内容' },
+  explain: { label: '解释', icon: '?', description: '使用下方自定义提示词解释划词内容' }
+}
 
 const routeTitles = {
   home: '快捷功能', translation: '翻译', chat: 'AI 对话', history: '截图历史',
@@ -232,28 +240,183 @@ function bindSwitches() {
     element.classList.toggle('on', value)
   })
 }
+function selectionToolbarCustomKey(id) {
+  return `custom:${id}`
+}
+
+function selectionToolbarActionInfo(toolbar, action) {
+  const builtin = selectionToolbarBuiltinMeta[action]
+  if (builtin) return { ...builtin, enabled: toolbar.buttons[action] !== false, custom: false }
+  const id = action.startsWith('custom:') ? action.slice(7) : ''
+  const custom = toolbar.customActions.find((item) => item.id === id)
+  if (!custom) return null
+  return {
+    label: custom.name,
+    icon: '✦',
+    description: `自定义 AI 功能 · ${custom.prompt}`,
+    enabled: custom.enabled !== false,
+    custom: true,
+    id
+  }
+}
+
+function selectionToolbarOrderMarkup(toolbar) {
+  return toolbar.order.map((action, index) => {
+    const info = selectionToolbarActionInfo(toolbar, action)
+    if (!info) return ''
+    const toggle = info.custom
+      ? `<div class="switch ${info.enabled ? 'on' : ''}" data-custom-toolbar-toggle="${escapeHtml(info.id)}"></div>`
+      : `<div class="switch ${info.enabled ? 'on' : ''}" data-toolbar-button="${action}"></div>`
+    return `<div class="toolbar-order-row" draggable="true" data-toolbar-order="${escapeHtml(action)}"><span class="toolbar-drag" title="拖动排序">⋮⋮</span><span class="toolbar-order-icon">${escapeHtml(info.icon)}</span><div class="form-label"><b>${escapeHtml(info.label)}</b><small>${escapeHtml(info.description)}</small></div>${toggle}<div class="toolbar-order-actions"><button class="button icon-button" data-move-toolbar="${escapeHtml(action)}" data-direction="-1" ${index === 0 ? 'disabled' : ''} title="上移">↑</button><button class="button icon-button" data-move-toolbar="${escapeHtml(action)}" data-direction="1" ${index === toolbar.order.length - 1 ? 'disabled' : ''} title="下移">↓</button></div></div>`
+  }).join('')
+}
+
+function selectionToolbarCustomMarkup(toolbar) {
+  if (!toolbar.customActions.length) return '<div class="empty compact-empty">暂无自定义功能，点击“添加功能”创建。</div>'
+  return toolbar.customActions.map((item) => `<article class="custom-toolbar-card" data-custom-toolbar="${escapeHtml(item.id)}"><div class="custom-toolbar-head"><label>功能名称<input type="text" maxlength="16" data-custom-name value="${escapeHtml(item.name)}" placeholder="例如：优化"></label><button class="button danger" data-delete-custom-toolbar="${escapeHtml(item.id)}">删除</button></div><label>提示词<textarea class="textarea prompt-editor custom-prompt" maxlength="6000" data-custom-prompt placeholder="例如：优化这段话，使表达更清晰自然。">${escapeHtml(item.prompt)}</textarea></label><small>执行时，划词内容会作为用户文本与这条提示词一起发送给 AI。</small></article>`).join('')
+}
+
+function readSelectionToolbarEditor(toolbar) {
+  const translatePrompt = document.getElementById('translatePrompt')?.value.trim() || ''
+  const explainPrompt = document.getElementById('explainPrompt')?.value.trim() || ''
+  if (!translatePrompt || !explainPrompt) {
+    toast('翻译和解释提示词不能为空')
+    return null
+  }
+  const customActions = toolbar.customActions.map((item) => {
+    const card = document.querySelector(`[data-custom-toolbar="${item.id}"]`)
+    return card
+      ? {
+          ...item,
+          name: card.querySelector('[data-custom-name]').value.trim(),
+          prompt: card.querySelector('[data-custom-prompt]').value.trim()
+        }
+      : item
+  })
+  if (customActions.some((item) => !item.name || !item.prompt)) {
+    toast('自定义功能名称和提示词不能为空')
+    return null
+  }
+  return {
+    prompts: { translate: translatePrompt, explain: explainPrompt },
+    customActions,
+    searchEngine: document.getElementById('searchEngine')?.value || toolbar.searchEngine
+  }
+}
+
+async function moveSelectionToolbarAction(action, targetIndex) {
+  const toolbar = settings.selectionToolbar
+  const editor = readSelectionToolbarEditor(toolbar)
+  if (!editor) return
+  const order = [...toolbar.order]
+  const sourceIndex = order.indexOf(action)
+  if (sourceIndex < 0) return
+  const boundedTarget = Math.max(0, Math.min(order.length - 1, targetIndex))
+  if (sourceIndex === boundedTarget) return
+  order.splice(sourceIndex, 1)
+  order.splice(boundedTarget, 0, action)
+  await updateSettings({ selectionToolbar: { ...editor, order } }, '')
+  renderSelectionToolbarSettings()
+}
+
+function createSelectionToolbarActionId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID().replace(/-/g, '')
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+}
+
 function renderSelectionToolbarSettings() {
   const toolbar = settings.selectionToolbar
-  view.innerHTML = `<div class="page">${pageHeader('划词工具', '管理划词后显示的工具栏及其操作。')}<section class="section"><h2 class="section-title">工具栏</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>启用划词工具栏</b><small>选中文本后显示快捷操作</small></div>${switchMarkup(toolbar.enabled, 'enabled', 'selectionToolbar')}</div><div class="form-row"><div class="form-label"><b>复制</b><small>复制划词内容到系统剪贴板</small></div><div class="switch ${toolbar.buttons.copy ? 'on' : ''}" data-toolbar-button="copy"></div></div><div class="form-row"><div class="form-label"><b>搜索</b><small>使用默认浏览器搜索划词内容</small></div><div class="switch ${toolbar.buttons.search ? 'on' : ''}" data-toolbar-button="search"></div></div><div class="form-row"><div class="form-label"><b>翻译</b><small>调用翻译服务处理划词内容</small></div><div class="switch ${toolbar.buttons.translate ? 'on' : ''}" data-toolbar-button="translate"></div></div><div class="form-row"><div class="form-label"><b>解释</b><small>调用 AI 解释划词内容</small></div><div class="switch ${toolbar.buttons.explain ? 'on' : ''}" data-toolbar-button="explain"></div></div></div></section><section class="section"><h2 class="section-title">搜索</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>搜索引擎</b><small>搜索按钮使用系统默认浏览器打开</small></div><select id="searchEngine"><option value="bing">Bing</option><option value="baidu">百度</option><option value="google">Google</option></select></div></div></section><button class="button primary" id="saveSelectionToolbar">保存</button></div>`
+  const customLimitReached = toolbar.customActions.length >= 12
+  view.innerHTML = `<div class="page">${pageHeader('划词工具', '自定义工具栏顺序、内置提示词和你自己的 AI 功能。')}<section class="section"><h2 class="section-title">工具栏</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>启用划词工具栏</b><small>选中文本后显示已启用的快捷操作</small></div>${switchMarkup(toolbar.enabled, 'enabled', 'selectionToolbar')}</div></div></section><section class="section"><h2 class="section-title">功能与顺序 <small>拖动项目或使用箭头调整</small></h2><div class="card toolbar-order-list" id="toolbarOrderList">${selectionToolbarOrderMarkup(toolbar)}</div></section><section class="section"><h2 class="section-title">内置功能设置</h2><div class="card prompt-settings"><div class="prompt-setting"><label for="translatePrompt"><b>翻译提示词</b><small>用于划词工具栏的“翻译”功能</small></label><textarea class="textarea prompt-editor" id="translatePrompt" maxlength="6000">${escapeHtml(toolbar.prompts.translate)}</textarea></div><div class="prompt-setting"><label for="explainPrompt"><b>解释提示词</b><small>用于划词工具栏的“解释”功能</small></label><textarea class="textarea prompt-editor" id="explainPrompt" maxlength="6000">${escapeHtml(toolbar.prompts.explain)}</textarea></div><div class="form-row search-setting"><div class="form-label"><b>搜索引擎</b><small>“搜索”功能使用系统默认浏览器打开</small></div><select id="searchEngine"><option value="bing">Bing</option><option value="baidu">百度</option><option value="google">Google</option></select></div></div></section><section class="section"><h2 class="section-title">自定义 AI 功能 <button class="button" id="addCustomToolbar" ${customLimitReached ? 'disabled' : ''}>＋ 添加功能</button></h2><div class="card custom-toolbar-list">${selectionToolbarCustomMarkup(toolbar)}</div>${customLimitReached ? '<small class="section-note">最多可创建 12 个自定义功能。</small>' : ''}</section><button class="button primary" id="saveSelectionToolbar">保存划词工具设置</button></div>`
   document.getElementById('searchEngine').value = toolbar.searchEngine || 'bing'
   bindSwitches()
+
   document.querySelectorAll('[data-toolbar-button]').forEach((element) => {
     element.onclick = async () => {
       const key = element.dataset.toolbarButton
       const value = !element.classList.contains('on')
-      await updateSettings({
-        selectionToolbar: {
-          buttons: { [key]: value }
-        }
-      })
+      await updateSettings({ selectionToolbar: { buttons: { [key]: value } } }, '')
       element.classList.toggle('on', value)
     }
   })
-  document.getElementById('saveSelectionToolbar').onclick = () => updateSettings({
-    selectionToolbar: {
-      searchEngine: document.getElementById('searchEngine').value
+  document.querySelectorAll('[data-custom-toolbar-toggle]').forEach((element) => {
+    element.onclick = async () => {
+      const id = element.dataset.customToolbarToggle
+      const editor = readSelectionToolbarEditor(toolbar)
+      if (!editor) return
+      const customActions = editor.customActions.map((item) => item.id === id ? { ...item, enabled: !element.classList.contains('on') } : item)
+      toolbar.customActions = customActions
+      await updateSettings({ selectionToolbar: { ...editor, customActions } }, '')
+      element.classList.toggle('on', settings.selectionToolbar.customActions.find((item) => item.id === id)?.enabled !== false)
     }
   })
+  document.querySelectorAll('[data-move-toolbar]').forEach((button) => {
+    button.onclick = () => {
+      const index = settings.selectionToolbar.order.indexOf(button.dataset.moveToolbar)
+      void moveSelectionToolbarAction(button.dataset.moveToolbar, index + Number(button.dataset.direction))
+    }
+  })
+  document.querySelectorAll('[data-toolbar-order]').forEach((row) => {
+    row.ondragstart = () => {
+      draggedSelectionToolbarAction = row.dataset.toolbarOrder
+      row.classList.add('dragging')
+    }
+    row.ondragend = () => {
+      draggedSelectionToolbarAction = ''
+      row.classList.remove('dragging')
+    }
+    row.ondragover = (event) => {
+      event.preventDefault()
+      row.classList.add('drag-over')
+    }
+    row.ondragleave = () => row.classList.remove('drag-over')
+    row.ondrop = (event) => {
+      event.preventDefault()
+      row.classList.remove('drag-over')
+      const targetIndex = settings.selectionToolbar.order.indexOf(row.dataset.toolbarOrder)
+      if (draggedSelectionToolbarAction) void moveSelectionToolbarAction(draggedSelectionToolbarAction, targetIndex)
+    }
+  })
+  document.getElementById('addCustomToolbar').onclick = async () => {
+    const editor = readSelectionToolbarEditor(toolbar)
+    if (!editor) return
+    const id = createSelectionToolbarActionId()
+    const customActions = [...editor.customActions, {
+      id,
+      name: '新功能',
+      prompt: '请根据要求处理这段文字。',
+      enabled: true
+    }]
+    const order = [...toolbar.order, selectionToolbarCustomKey(id)]
+    await updateSettings({ selectionToolbar: { ...editor, customActions, order } }, '')
+    renderSelectionToolbarSettings()
+    document.querySelector(`[data-custom-toolbar="${id}"] [data-custom-name]`)?.focus()
+  }
+  document.querySelectorAll('[data-delete-custom-toolbar]').forEach((button) => {
+    button.onclick = async () => {
+      const id = button.dataset.deleteCustomToolbar
+      const item = toolbar.customActions.find((candidate) => candidate.id === id)
+      if (!item || !confirm(`确定删除自定义功能“${item.name}”？`)) return
+      const editor = readSelectionToolbarEditor(toolbar)
+      if (!editor) return
+      const customActions = editor.customActions.filter((candidate) => candidate.id !== id)
+      const order = toolbar.order.filter((action) => action !== selectionToolbarCustomKey(id))
+      await updateSettings({ selectionToolbar: { ...editor, customActions, order } }, '')
+      renderSelectionToolbarSettings()
+      toast('自定义功能已删除')
+    }
+  })
+  document.getElementById('saveSelectionToolbar').onclick = async () => {
+    const editor = readSelectionToolbarEditor(toolbar)
+    if (!editor) return
+    await updateSettings({
+      selectionToolbar: {
+        ...editor,
+        order: toolbar.order,
+      }
+    }, '划词工具设置已保存')
+    renderSelectionToolbarSettings()
+  }
 }
 
 
@@ -320,7 +483,7 @@ async function renderSystemSettings() {
   const dataRoot = await window.electronAPI.getDataRoot()
   if (currentRoute !== 'settings-system') return
   const historyDirectory = settings.screenshot.historyDirectory
-  view.innerHTML = `<div class="page">${pageHeader('系统设置', '控制自启动、托盘、日志和数据目录。')}<section class="section"><h2 class="section-title">常用</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>开机自动启动</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div><div class="form-row"><div class="form-label"><b>启用系统托盘</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div><div class="form-row"><div class="form-label"><b>运行日志</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div></div></section><section class="section"><h2 class="section-title">软件数据</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>数据目录</b><small>包含配置、日志、截图历史、缓存和运行数据；更改时迁移配置、日志与截图历史并重启</small></div><input id="dataRoot" type="text" readonly value="${escapeHtml(dataRoot.path)}"><button class="button" id="openDataRoot">打开</button><button class="button" id="changeDataRoot" ${dataRoot.portable ? '' : 'disabled'}>更改</button></div><div class="form-row"><div class="form-label"><b>图片保存目录</b></div><button class="button" id="openSave">打开</button></div><div class="form-row"><div class="form-label"><b>截图历史自动保存路径</b><small>自动保存的图片就是截图历史，路径不能为空</small></div><input id="historyDirectory" type="text" required value="${escapeHtml(historyDirectory)}"><button class="button" id="chooseHistoryDirectory">选择</button></div><div class="form-row"><div class="form-label"><b>清除截图历史</b><small>同时删除截图历史自动保存的图片文件</small></div><button class="button danger" id="clearData">清除</button></div></div></section><button class="button danger" id="resetSettings">恢复默认设置</button></div>`
+  view.innerHTML = `<div class="page">${pageHeader('系统设置', '控制自启动、托盘、日志和数据存储位置。')}<section class="section"><h2 class="section-title">常用</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>开机自动启动</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div><div class="form-row"><div class="form-label"><b>启用系统托盘</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div><div class="form-row"><div class="form-label"><b>运行日志</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div></div></section><section class="section"><h2 class="section-title">软件数据</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>软件数据目录</b><small>存放应用配置、运行日志、缓存及默认截图历史；更改时迁移配置、日志和目录内的截图历史，缓存将重新创建</small></div><input id="dataRoot" type="text" readonly value="${escapeHtml(dataRoot.path)}"><button class="button" id="openDataRoot">打开</button><button class="button" id="changeDataRoot">更改</button></div><div class="form-row"><div class="form-label"><b>截图导出目录</b><small>${settings.screenshot.saveDirectory ? '当前使用自定义目录' : '未自定义时使用系统“图片”目录'}</small></div><button class="button" id="openSave">打开</button></div><div class="form-row"><div class="form-label"><b>截图历史存储目录</b><small>用于保存截图历史中的图片，不能为空</small></div><input id="historyDirectory" type="text" required value="${escapeHtml(historyDirectory)}"><button class="button" id="chooseHistoryDirectory">选择</button></div><div class="form-row"><div class="form-label"><b>清除截图历史</b><small>同时删除截图历史目录中的对应图片文件</small></div><button class="button danger" id="clearData">清除</button></div></div></section><button class="button danger" id="resetSettings">恢复默认设置</button></div>`
   bindSwitches()
   document.getElementById('openDataRoot').onclick = () => window.electronAPI.openDataRoot().catch((error) => toast(error.message || '无法打开软件数据目录'))
   document.getElementById('changeDataRoot').onclick = async () => {
@@ -338,7 +501,7 @@ async function renderSystemSettings() {
       toast(error.message || '数据目录迁移失败')
     } finally {
       if (!restarting) {
-        button.disabled = !dataRoot.portable
+        button.disabled = false
         button.textContent = '更改'
       }
     }
@@ -349,10 +512,10 @@ async function renderSystemSettings() {
     const directory = historyDirectoryInput.value.trim()
     if (!directory) {
       historyDirectoryInput.value = settings.screenshot.historyDirectory
-      toast('截图历史自动保存路径不能为空')
+      toast('截图历史存储目录不能为空')
       return null
     }
-    return updateSettings({ screenshot: { historyDirectory: directory } }, '截图历史自动保存路径已更新')
+    return updateSettings({ screenshot: { historyDirectory: directory } }, '截图历史存储目录已更新')
   }
   historyDirectoryInput.onchange = saveHistoryDirectory
   historyDirectoryInput.onkeydown = (event) => { if (event.key === 'Enter') historyDirectoryInput.blur() }

@@ -493,7 +493,7 @@ test('preserves malformed locator errors for startup handling', async (t) => {
   assert.match(context.startupError.message, /引导文件无效/)
 })
 
-test('leaves Electron paths unchanged outside portable mode', () => {
+test('keeps the legacy root active but exposes a stable locator outside portable mode', () => {
   const legacyUserData = path.resolve('legacy-user-data')
   const app = fakeApp(legacyUserData)
   const originalValues = { ...app.values }
@@ -501,11 +501,36 @@ test('leaves Electron paths unchanged outside portable mode', () => {
 
   assert.deepEqual(prepareDataRoot({ app, env: {} }), {
     portable: false,
+    portableDirectory: '',
+    locatorDirectory: legacyUserData,
+    locatorPath: path.join(legacyUserData, LOCATOR_NAME),
+    pendingPath: path.join(legacyUserData, PENDING_NAME),
     legacyUserData,
     paths: null,
     needsSelection: false
   })
   assert.deepEqual(app.values, originalValues)
+})
+
+test('applies a customized data root outside portable mode before readiness', async (t) => {
+  const parent = await temporaryRoot(t)
+  const legacyUserData = path.join(parent, 'legacy')
+  const selectedRoot = path.join(parent, 'selected')
+  await fsp.mkdir(legacyUserData)
+  await fsp.mkdir(selectedRoot)
+  await writeLocator(path.join(legacyUserData, LOCATOR_NAME), selectedRoot)
+  const app = fakeApp(legacyUserData)
+  const { prepareDataRoot } = require('../main/services/data-root-bootstrap')
+
+  const context = prepareDataRoot({ app, env: {} })
+
+  assert.equal(context.portable, false)
+  assert.equal(context.portableDirectory, '')
+  assert.equal(context.locatorDirectory, legacyUserData)
+  assert.equal(context.paths.root, selectedRoot)
+  assert.equal(context.locatorPath, path.join(legacyUserData, LOCATOR_NAME))
+  assert.equal(app.values.userData, path.join(selectedRoot, 'runtime'))
+  assert.equal(app.values.sessionData, path.join(selectedRoot, 'cache', 'electron'))
 })
 
 test('removes provisional roots idempotently', async (t) => {

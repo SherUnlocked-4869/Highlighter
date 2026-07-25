@@ -52,10 +52,13 @@ const {
 const {
   DEFAULT_SELECTION_TOOLBAR,
   buildSearchUrl,
+  getToolbarActionDefinition,
   getToolbarWidth,
+  getVisibleToolbarActionDefinitions,
   getVisibleToolbarActions,
   isAiToolbarAction,
-  isLocalToolbarAction
+  isLocalToolbarAction,
+  normalizeSelectionToolbar
 } = require('./toolbar/toolbar-utils')
 
 const defaultHistoryDirectory = activePaths?.history || path.join(app.getPath('userData'), 'capture-history')
@@ -146,7 +149,7 @@ function initializeStore() {
       captureHistory: []
     }
   }
-  if (dataRootContext.portable) storeOptions.cwd = dataRootContext.paths.config
+  if (activePaths) storeOptions.cwd = activePaths.config
   store = new Store(storeOptions)
   return store
 }
@@ -221,6 +224,7 @@ function mergeDeep(target, patch) {
 
 function normalizeSettings(settings) {
   const normalized = settings
+  normalized.selectionToolbar = normalizeSelectionToolbar(normalized.selectionToolbar)
   const legacyDirectory = normalized.fixedContent?.autoSaveDirectory
   normalized.screenshot.historyDirectory = String(normalized.screenshot.historyDirectory || legacyDirectory || defaultHistoryDirectory).trim()
   if (!normalized.screenshot.historyDirectory) normalized.screenshot.historyDirectory = defaultHistoryDirectory
@@ -708,7 +712,7 @@ function handleTextSelection(data) {
   if (isProcessing || !data?.text || shouldFilterApp(data.programName)) return
   const text = data.text.trim()
   if (!text || text.length > 10000) return
-  const actions = getVisibleToolbarActions(getSettings().selectionToolbar)
+  const actions = getVisibleToolbarActionDefinitions(getSettings().selectionToolbar)
   if (!actions.length) { hideToolbar(); return }
   const toolbarWidth = getToolbarWidth(actions)
   const result = getRefPointAndOrientation(data)
@@ -726,10 +730,13 @@ function hideToolbar() {
 }
 
 async function streamToWindow(win, action, text) {
-  const { createExplainStream, createTranslateStream } = require('./deepseek')
+  const { createCustomStream, createExplainStream, createTranslateStream } = require('./deepseek')
   const apiKey = getSettings().apiKey
   try {
-    const stream = await (action === 'translate' ? createTranslateStream(apiKey, text) : createExplainStream(apiKey, text))
+    let stream
+    if (action.id === 'translate') stream = await createTranslateStream(apiKey, text, action.prompt)
+    else if (action.id === 'explain') stream = await createExplainStream(apiKey, text, action.prompt)
+    else stream = await createCustomStream(apiKey, text, action.prompt)
     for await (const chunk of stream) {
       if (currentStreamController?.cancelled || win.isDestroyed()) return
       const delta = chunk.choices?.[0]?.delta
@@ -1681,13 +1688,20 @@ ipcMain.handle('dialog:choose-directory', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
   return result.canceled ? '' : result.filePaths[0]
 })
-ipcMain.handle('data-root:get', () => ({ portable: dataRootContext.portable, path: dataRootContext.paths?.root || app.getPath('userData') }))
+ipcMain.handle('data-root:get', () => ({
+  portable: dataRootContext.portable,
+  customized: !!dataRootContext.paths,
+  path: dataRootContext.paths?.root || dataRootContext.legacyUserData
+}))
 ipcMain.handle('data-root:open', () => shell.openPath(dataRootContext.paths?.root || app.getPath('userData')))
 ipcMain.handle('data-root:change', async () => {
-  if (!dataRootContext.portable) throw new Error('只有便携版可以更改软件数据目录')
   if (dataRootMigrationInProgress || fs.existsSync(dataRootContext.pendingPath)) throw new Error('已有未完成的数据目录迁移，不能开始新的迁移')
 
-  const activeRoot = dataRootContext.paths?.root
+  const activeRoot = dataRootContext.paths?.root || dataRootContext.legacyUserData
+  const sourcePaths = dataRootContext.paths
+    ? createManagedSourcePaths(activeRoot)
+    : createLegacySourcePaths(activeRoot)
+  const previousRoot = dataRootContext.paths ? activeRoot : ''
   const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
   if (result.canceled || !result.filePaths[0]) return { canceled: true }
   if (path.resolve(result.filePaths[0]) === path.resolve(activeRoot)) return { unchanged: true }
@@ -1715,10 +1729,10 @@ ipcMain.handle('data-root:change', async () => {
       coordinator: managedRecordingWriters,
       stopWriters: stopManagedDataWriters,
       migrate: () => migrateDataRoot({
-        source: createManagedSourcePaths(activeRoot),
+        source: sourcePaths,
         target: createDataPaths(targetRoot),
-        portableDirectory: dataRootContext.portableDirectory,
-        previousRoot: activeRoot
+        portableDirectory: dataRootContext.locatorDirectory,
+        previousRoot
       }),
       relaunch: () => setImmediate(() => {
         relaunchApplication({ app, dataRootContext })
@@ -2315,6 +2329,11 @@ ipcMain.on('record:close', (event) => {
 
 ipcMain.on('toolbar:action', async (_event, { action, text }) => {
   if (isProcessing || !text) return
+  const toolbarConfig = getSettings().selectionToolbar
+  const visibleActions = getVisibleToolbarActions(toolbarConfig)
+  if (!visibleActions.includes(action)) return
+  const actionDefinition = getToolbarActionDefinition(toolbarConfig, action)
+  if (!actionDefinition) return
   if (isLocalToolbarAction(action)) {
     hideToolbar()
     if (action === 'copy') clipboard.writeText(text)
@@ -2324,7 +2343,7 @@ ipcMain.on('toolbar:action', async (_event, { action, text }) => {
     }
     return
   }
-  if (!isAiToolbarAction(action)) return
+  if (!isAiToolbarAction(action, toolbarConfig)) return
   if (!getSettings().apiKey) { createMainWindow('settings-function'); hideToolbar(); return }
   isProcessing = true
   currentStreamController = { cancelled: false }
@@ -2339,8 +2358,13 @@ ipcMain.on('toolbar:action', async (_event, { action, text }) => {
     win.setPosition(x, Math.round(Math.max(workArea.y, y)))
   }
   win.webContents.once('did-finish-load', () => {
-    win.webContents.send('action:start', { type: action, text })
-    streamToWindow(win, action, text)
+    win.webContents.send('action:start', {
+      type: actionDefinition.id,
+      label: actionDefinition.label,
+      icon: actionDefinition.icon,
+      text
+    })
+    streamToWindow(win, actionDefinition, text)
   })
   win.show()
   win.focus()
@@ -2394,7 +2418,7 @@ async function chooseInitialDataRoot() {
   await migrateDataRoot({
     source: createLegacySourcePaths(dataRootContext.legacyUserData),
     target: createDataPaths(targetRoot),
-    portableDirectory: dataRootContext.portableDirectory,
+    portableDirectory: dataRootContext.locatorDirectory,
     previousRoot: ''
   })
   if (!removeProvisionalRoot(dataRootContext)) console.warn('Unable to remove provisional data directory')
@@ -2461,14 +2485,14 @@ async function recoverUnavailableDataRoot() {
 }
 
 async function startApplication() {
-  if (dataRootContext.portable && dataRootContext.needsSelection) {
-    if (dataRootContext.startupError) await recoverUnavailableDataRoot()
+  if (dataRootContext.needsSelection) {
+    if (dataRootContext.startupError || !dataRootContext.portable) await recoverUnavailableDataRoot()
     else await chooseInitialDataRoot()
     return
   }
 
   let finalization = null
-  if (dataRootContext.portable) {
+  if (activePaths) {
     const hasPendingMigration = fs.existsSync(dataRootContext.pendingPath)
     try {
       finalization = await verifyAndFinalizeMigration({

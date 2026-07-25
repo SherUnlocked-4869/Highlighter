@@ -40,10 +40,9 @@ function prepareDataRoot({ app, applicationName = app.getName(), env = process.e
   const legacyUserData = portableDirectory
     ? path.join(app.getPath('appData'), applicationName)
     : app.getPath('userData')
-  if (!portableDirectory) return { portable: false, legacyUserData, paths: null, needsSelection: false }
-
-  const locatorPath = path.join(portableDirectory, LOCATOR_NAME)
-  const pendingPath = path.join(portableDirectory, PENDING_NAME)
+  const locatorDirectory = portableDirectory || legacyUserData
+  const locatorPath = path.join(locatorDirectory, LOCATOR_NAME)
+  const pendingPath = path.join(locatorDirectory, PENDING_NAME)
   let requestedRoot = ''
   try {
     const locator = readLocatorSync(locatorPath)
@@ -57,17 +56,41 @@ function prepareDataRoot({ app, applicationName = app.getName(), env = process.e
     const paths = ensureDataLayoutSync(createDataPaths(locator.dataRoot))
     verifyElectronPathsSync(paths, fileSystem)
     applyElectronPaths(app, paths)
-    return { portable: true, portableDirectory, locatorPath, pendingPath, legacyUserData, locator, paths, needsSelection: false }
+    return {
+      portable: !!portableDirectory,
+      portableDirectory,
+      locatorDirectory,
+      locatorPath,
+      pendingPath,
+      legacyUserData,
+      locator,
+      paths,
+      needsSelection: false
+    }
   } catch (error) {
-    const locatorMissing = error.code === 'ENOENT'
+    const locatorMissing = error.code === 'ENOENT' && !requestedRoot
+    if (!portableDirectory && locatorMissing) {
+      return {
+        portable: false,
+        portableDirectory,
+        locatorDirectory,
+        locatorPath,
+        pendingPath,
+        legacyUserData,
+        paths: null,
+        needsSelection: false
+      }
+    }
+
     const provisionalRoot = fileSystem.mkdtempSync(path.join(tempRoot, 'highlighter-bootstrap-'))
     try {
       const paths = ensureDataLayoutSync(createDataPaths(provisionalRoot))
       verifyElectronPathsSync(paths, fileSystem)
       applyElectronPaths(app, paths)
       return {
-        portable: true,
+        portable: !!portableDirectory,
         portableDirectory,
+        locatorDirectory,
         locatorPath,
         pendingPath,
         legacyUserData,
@@ -75,7 +98,7 @@ function prepareDataRoot({ app, applicationName = app.getName(), env = process.e
         paths,
         needsSelection: true,
         requestedRoot,
-        startupError: locatorMissing && !requestedRoot ? null : error
+        startupError: locatorMissing ? null : error
       }
     } catch (bootstrapError) {
       removeProvisionalRoot({ provisionalRoot }, fileSystem)
