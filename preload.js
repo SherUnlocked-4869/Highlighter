@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (patch) => ipcRenderer.invoke('settings:update', patch),
   resetSettings: () => ipcRenderer.invoke('settings:reset'),
+  getShortcutStatuses: () => ipcRenderer.invoke('shortcuts:status'),
   getDataRoot: () => ipcRenderer.invoke('data-root:get'),
   changeDataRoot: () => ipcRenderer.invoke('data-root:change'),
   openDataRoot: () => ipcRenderer.invoke('data-root:open'),

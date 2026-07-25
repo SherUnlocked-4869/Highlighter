@@ -12,6 +12,7 @@ let historySource = ''
 let historyFavoritesOnly = false
 let historyRenderVersion = 0
 let historySearchTimer = null
+let shortcutStatuses = {}
 
 const selectionToolbarBuiltinMeta = {
   copy: { label: '复制', icon: '⧉', description: '复制划词内容到系统剪贴板' },
@@ -91,9 +92,46 @@ function applyAppearance() {
 
 async function updateSettings(patch, message = '设置已保存') {
   settings = await window.electronAPI.updateSettings(patch)
+  if (patch.shortcuts) await refreshShortcutStatuses()
   applyAppearance()
   if (message) toast(message)
   return settings
+}
+
+async function refreshShortcutStatuses() {
+  shortcutStatuses = await window.electronAPI.getShortcutStatuses()
+}
+
+function shortcutPresentation(name, accelerator) {
+  if (!accelerator) {
+    return { className: '', text: '未设置', title: '点击录入快捷键' }
+  }
+  const status = shortcutStatuses[name]
+  if (!status || status.registered) {
+    return { className: 'set', text: accelerator, title: '快捷键已启用' }
+  }
+  let message = '快捷键未能注册'
+  if (status.reason === 'duplicate') {
+    const conflicts = (status.conflictWith || [])
+      .map((owner) => Object.values(functionGroups).flat().find(([itemName]) => itemName === owner)?.[1] || owner)
+      .join('、')
+    message = conflicts ? `与“${conflicts}”重复` : '与其他应用内快捷键重复'
+  } else if (status.reason === 'unavailable') {
+    message = '已被系统或其他应用占用'
+  } else if (status.reason === 'invalid') {
+    message = '快捷键格式无效'
+  }
+  return {
+    className: 'set unavailable',
+    text: `${accelerator} ⚠`,
+    title: message,
+    message
+  }
+}
+
+function shortcutButton(name, accelerator) {
+  const presentation = shortcutPresentation(name, accelerator)
+  return `<button class="shortcut ${presentation.className}" data-shortcut="${name}" title="${escapeHtml(presentation.title)}">${escapeHtml(presentation.text)}</button>`
 }
 
 function pageHeader(title, description, extra = '') {
@@ -126,7 +164,7 @@ function renderHome() {
   const tabs = [['screenshot', '截图'], ['ai', 'AI 对话'], ['translation', '翻译'], ['video', '视频录制'], ['other', '其它']]
   const rows = functionGroups[homeTab].map(([name, label, icon, description]) => {
     const shortcut = settings.shortcuts[name] || ''
-    return `<div class="function-row" data-function="${name}"><span class="icon">${icon}</span><span class="label">${label}<small class="desc">${description}</small></span><button class="shortcut ${shortcut ? 'set' : ''}" data-shortcut="${name}">${escapeHtml(shortcut || '未设置')}</button></div>`
+    return `<div class="function-row" data-function="${name}"><span class="icon">${icon}</span><span class="label">${label}<small class="desc">${description}</small></span>${shortcutButton(name, shortcut)}</div>`
   }).join('')
   view.innerHTML = `<div class="page">${pageHeader('快捷功能', '参考 Snow Shot 的分组方式，统一管理截图、AI、翻译、录屏和桌面工具。')}<div class="tabs">${tabs.map(([key, label]) => `<button data-home-tab="${key}" class="${homeTab === key ? 'active' : ''}">${label}</button>`).join('')}</div><section class="section"><h2 class="section-title">${tabs.find(([key]) => key === homeTab)[1]}</h2><div class="function-list">${rows}</div></section></div>`
   document.querySelectorAll('[data-home-tab]').forEach((button) => button.onclick = () => { homeTab = button.dataset.homeTab; renderHome() })
@@ -165,9 +203,13 @@ function bindShortcutRecorders() {
         if (key === ' ') key = 'Space'
         parts.push(key)
         const accelerator = parts.join('+')
-        const shortcuts = { ...settings.shortcuts, [button.dataset.shortcut]: accelerator }
+        const shortcutName = button.dataset.shortcut
+        const shortcuts = { ...settings.shortcuts, [shortcutName]: accelerator }
         await updateSettings({ shortcuts }, '')
-        button.textContent = accelerator; button.classList.add('set'); toast('快捷键已更新'); cleanup()
+        const presentation = shortcutPresentation(shortcutName, accelerator)
+        cleanup()
+        renderRoute()
+        toast(presentation.message || '快捷键已更新')
       }
       const cleanup = () => window.removeEventListener('keydown', handler, true)
       window.addEventListener('keydown', handler, true)
@@ -523,7 +565,7 @@ function renderFunctionSettings() {
 
 function renderHotkeySettings() {
   const all = Object.values(functionGroups).flat()
-  view.innerHTML = `<div class="page">${pageHeader('热键设置', '点击右侧按键框后录入组合键；右键可清除。')}<div class="function-list">${all.map(([name, label, icon]) => `<div class="function-row"><span class="icon">${icon}</span><span class="label">${label}</span><button class="shortcut ${settings.shortcuts[name] ? 'set' : ''}" data-shortcut="${name}">${escapeHtml(settings.shortcuts[name] || '未设置')}</button></div>`).join('')}</div></div>`
+  view.innerHTML = `<div class="page">${pageHeader('热键设置', '点击右侧按键框后录入组合键；右键可清除。红色警告表示快捷键冲突或不可用。')}<div class="function-list">${all.map(([name, label, icon]) => `<div class="function-row"><span class="icon">${icon}</span><span class="label">${label}</span>${shortcutButton(name, settings.shortcuts[name] || '')}</div>`).join('')}</div></div>`
   bindShortcutRecorders()
 }
 
@@ -578,7 +620,7 @@ async function renderSystemSettings() {
     try { await window.electronAPI.clearHistory(); toast('截图历史和图片文件已清空') }
     catch (error) { toast(error.message || '部分图片文件删除失败') }
   }
-  document.getElementById('resetSettings').onclick = async () => { if (confirm('确定恢复默认设置？')) { settings = await window.electronAPI.resetSettings(); applyAppearance(); renderRoute(); toast('已恢复默认设置') } }
+  document.getElementById('resetSettings').onclick = async () => { if (confirm('确定恢复默认设置？')) { settings = await window.electronAPI.resetSettings(); await refreshShortcutStatuses(); applyAppearance(); renderRoute(); toast('已恢复默认设置') } }
 }
 
 async function renderAbout() {
@@ -596,6 +638,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyAppea
 
 async function init() {
   settings = await window.electronAPI.getSettings()
+  await refreshShortcutStatuses()
   applyAppearance()
   navigate('home')
 }

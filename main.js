@@ -29,6 +29,8 @@ const { SettingsService } = require('./main/services/settings-service')
 const { registerSettingsIpc } = require('./main/ipc/settings-ipc')
 const { HistoryService } = require('./main/services/history-service')
 const { registerHistoryIpc } = require('./main/ipc/history-ipc')
+const { ShortcutService } = require('./main/services/shortcut-service')
+const { registerShortcutIpc } = require('./main/ipc/shortcut-ipc')
 const { name: applicationName } = require('./package.json')
 
 const dataRootContext = prepareDataRoot({ app, applicationName })
@@ -273,6 +275,12 @@ const writeAppLog = createAppLogger({
 function log(...args) {
   writeAppLog(...args)
 }
+
+const shortcutService = new ShortcutService({
+  globalShortcut,
+  executeFunction: (name) => executeFunction(name),
+  log
+})
 
 class SmartSelectSession {
   constructor(executablePath) {
@@ -1537,17 +1545,7 @@ async function executeFunction(name, payload = {}) {
 }
 
 function registerShortcuts() {
-  globalShortcut.unregisterAll()
-  const shortcuts = getSettings().shortcuts
-  for (const [name, accelerator] of Object.entries(shortcuts)) {
-    if (!accelerator) continue
-    try {
-      const registered = globalShortcut.register(accelerator, () => executeFunction(name).catch((error) => log('Shortcut error:', name, error.message)))
-      if (!registered) log('Shortcut unavailable:', accelerator)
-    } catch (error) {
-      log('Shortcut registration failed:', accelerator, error.message)
-    }
-  }
+  return shortcutService.registerAll(getSettings().shortcuts)
 }
 
 async function stopManagedDataWriters() {
@@ -1600,6 +1598,10 @@ registerSettingsIpc({
   onStartHook: () => initSelectionHook(),
   validateApiKey: (apiKey) => require('./deepseek').validateApiKey(apiKey),
   log
+})
+registerShortcutIpc({
+  ipcMain,
+  shortcutService
 })
 ipcMain.handle('shell:open-external', (_event, value) => {
   const url = new URL(String(value || ''))
@@ -2444,8 +2446,8 @@ async function startApplication() {
   persistSettings(getSettings())
   createTrayIcon()
   createToolbarWindow()
-  createMainWindow('home')
   registerShortcuts()
+  createMainWindow('home')
   initSelectionHook()
   if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
   if (isWin) {
@@ -2486,7 +2488,7 @@ else {
   })
   app.on('activate', () => { if (store) createMainWindow('home') })
   app.on('window-all-closed', () => {})
-  app.on('will-quit', () => globalShortcut.unregisterAll())
+  app.on('will-quit', () => shortcutService.dispose())
   app.on('before-quit', () => {
     closeRecordFlow()
       .then(() => recordingService?.dispose())
