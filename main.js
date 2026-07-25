@@ -25,8 +25,10 @@ const {
 } = require('./main/services/data-root-migration')
 const { ManagedWriterCoordinator, quiesceAndMigrate } = require('./main/services/managed-writer-coordinator')
 const { createAppLogger } = require('./main/services/app-logger')
-const { CredentialStore } = require('./main/services/credential-store')
-const { assertSettingsPatch } = require('./main/services/settings-validation')
+const { SettingsService } = require('./main/services/settings-service')
+const { registerSettingsIpc } = require('./main/ipc/settings-ipc')
+const { HistoryService } = require('./main/services/history-service')
+const { registerHistoryIpc } = require('./main/ipc/history-ipc')
 const { name: applicationName } = require('./package.json')
 
 const dataRootContext = prepareDataRoot({ app, applicationName })
@@ -144,7 +146,8 @@ const DEFAULT_SETTINGS = {
 }
 
 let store = null
-let credentialStore = null
+let settingsService = null
+let historyService = null
 
 function initializeStore() {
   if (store) return store
@@ -156,12 +159,26 @@ function initializeStore() {
   }
   if (activePaths) storeOptions.cwd = activePaths.config
   store = new Store(storeOptions)
-  credentialStore = new CredentialStore({
+  settingsService = new SettingsService({
     store,
     safeStorage,
-    onError: (error) => console.warn('Unable to access encrypted credentials:', error.message || String(error))
+    defaults: DEFAULT_SETTINGS,
+    normalizeSettings,
+    onCredentialError: (error) => console.warn('Unable to access encrypted credentials:', error.message || String(error))
   })
-  credentialStore.migrateLegacyApiKey()
+  historyService = new HistoryService({
+    store,
+    nativeImage,
+    sharp,
+    getSettings,
+    assertWritable: assertManagedDataWritable,
+    defaultHistoryDirectory,
+    makeCaptureName,
+    onChanged: () => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('history:changed')
+    },
+    log
+  })
   return store
 }
 
@@ -226,18 +243,6 @@ function getRecordingService() {
   return recordingService
 }
 
-function mergeDeep(target, patch) {
-  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return patch
-  const output = { ...(target || {}) }
-  for (const [key, value] of Object.entries(patch)) {
-    if (['__proto__', 'constructor', 'prototype'].includes(key)) continue
-    output[key] = value && typeof value === 'object' && !Array.isArray(value)
-      ? mergeDeep(output[key], value)
-      : value
-  }
-  return output
-}
-
 function normalizeSettings(settings) {
   const normalized = settings
   normalized.selectionToolbar = normalizeSelectionToolbar(normalized.selectionToolbar)
@@ -249,29 +254,11 @@ function normalizeSettings(settings) {
 }
 
 function getSettings() {
-  const settings = normalizeSettings(mergeDeep(DEFAULT_SETTINGS, store.get('settings', {})))
-  settings.apiKey = credentialStore ? credentialStore.getApiKey(settings.apiKey) : settings.apiKey
-  return settings
+  return settingsService.getSettings()
 }
 
-function persistSettings(settings, { updateApiKey = false } = {}) {
-  const normalized = normalizeSettings(mergeDeep(DEFAULT_SETTINGS, settings || {}))
-  const storedSettings = { ...normalized }
-  const encryptionAvailable = credentialStore?.isEncryptionAvailable() === true
-  if (encryptionAvailable) {
-    if (updateApiKey) credentialStore.setApiKey(normalized.apiKey)
-    delete storedSettings.apiKey
-  } else if (!updateApiKey) {
-    const existingSettings = store.get('settings', {})
-    if (Object.hasOwn(existingSettings, 'apiKey')) storedSettings.apiKey = existingSettings.apiKey
-    else delete storedSettings.apiKey
-  }
-  store.set('settings', storedSettings)
-  return getSettings()
-}
-
-function normalizeApiKeyInput(value) {
-  return assertSettingsPatch({ apiKey: value }, DEFAULT_SETTINGS).apiKey.trim()
+function persistSettings(settings, options) {
+  return settingsService.persistSettings(settings, options)
 }
 
 function assertManagedDataWritable() {
@@ -460,35 +447,6 @@ function ensureDirectory(directory) {
   return directory
 }
 
-function ensureDefaultHistoryDirectory() {
-  return ensureDirectory(defaultHistoryDirectory)
-}
-
-function historyImagePath(id, meta = {}) {
-  const directory = ensureDirectory(getSettings().screenshot.historyDirectory)
-  const prefix = meta.longCapture ? 'Highlighter_Long' : 'Highlighter'
-  return path.join(directory, makeCaptureName(prefix))
-}
-
-function deleteHistoryFiles(item) {
-  if (!item) return
-  if (item.thumbnailPath && fs.existsSync(item.thumbnailPath)) fs.unlinkSync(item.thumbnailPath)
-  if (item.filePath && fs.existsSync(item.filePath)) fs.unlinkSync(item.filePath)
-}
-
-function trimHistory(history, limit) {
-  const kept = history.slice(0, limit)
-  history.slice(limit).forEach((entry) => {
-    try {
-      deleteHistoryFiles(entry)
-    } catch (error) {
-      kept.push(entry)
-      log('History limit cleanup failed:', entry.filePath, error.message)
-    }
-  })
-  return kept
-}
-
 function dataUrlToBuffer(dataUrl) {
   return Buffer.from(String(dataUrl).replace(/^data:image\/\w+;base64,/, ''), 'base64')
 }
@@ -503,59 +461,11 @@ function makeCaptureName(prefix = 'Highlighter') {
 }
 
 function persistHistory(dataUrl, meta = {}) {
-  assertManagedDataWritable()
-  const settings = getSettings()
-  if (!settings.screenshot.historyEnabled) return null
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const filePath = historyImagePath(id, meta)
-  fs.writeFileSync(filePath, dataUrlToBuffer(dataUrl))
-  const image = nativeImage.createFromPath(filePath)
-  const size = image.getSize()
-  const item = {
-    id,
-    filePath,
-    createdAt: Date.now(),
-    source: meta.source || 'capture',
-    action: meta.action || 'edit',
-    width: size.width,
-    height: size.height
-  }
-  const limit = Math.max(10, Number(settings.screenshot.historyLimit) || 200)
-  const history = trimHistory([item, ...store.get('captureHistory', [])], limit)
-  store.set('captureHistory', history)
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('history:changed')
-  return item
+  return historyService.persistDataUrl(dataUrl, meta)
 }
 
 async function persistHistoryFile(sourcePath, meta = {}) {
-  assertManagedDataWritable()
-  const settings = getSettings()
-  if (!settings.screenshot.historyEnabled || !sourcePath || !fs.existsSync(sourcePath)) return null
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const filePath = historyImagePath(id, meta)
-  const thumbnailPath = path.join(ensureDefaultHistoryDirectory(), `${id}-thumb.png`)
-  fs.copyFileSync(sourcePath, filePath)
-  const imageMeta = await sharp(filePath, { limitInputPixels: false }).metadata()
-  await sharp(filePath, { limitInputPixels: false })
-    .resize({ width: Math.min(360, imageMeta.width || 360), height: 240, fit: 'inside', withoutEnlargement: true })
-    .png({ compressionLevel: 7 })
-    .toFile(thumbnailPath)
-  const item = {
-    id,
-    filePath,
-    thumbnailPath,
-    createdAt: Date.now(),
-    source: meta.source || 'long-capture',
-    action: meta.action || 'save',
-    width: Number(meta.width) || imageMeta.width || 0,
-    height: Number(meta.height) || imageMeta.height || 0,
-    longCapture: !!meta.longCapture
-  }
-  const limit = Math.max(10, Number(settings.screenshot.historyLimit) || 200)
-  const history = trimHistory([item, ...store.get('captureHistory', [])], limit)
-  store.set('captureHistory', history)
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('history:changed')
-  return item
+  return historyService.persistFile(sourcePath, meta)
 }
 
 function createMainWindow(route = 'home') {
@@ -1669,33 +1579,28 @@ function restoreManagedDataWriters(restartOcr) {
   getOcrService().ensureStarted().catch((error) => log('OCR restart failed:', error.message))
 }
 
-ipcMain.handle('settings:get', () => getSettings())
-ipcMain.handle('settings:update', (_event, patch) => {
-  assertManagedDataWritable()
-  const validatedPatch = assertSettingsPatch(patch === undefined ? {} : patch, DEFAULT_SETTINGS)
-  const settings = persistSettings(mergeDeep(getSettings(), validatedPatch), {
-    updateApiKey: Object.hasOwn(validatedPatch, 'apiKey')
-  })
-  if (validatedPatch.shortcuts) registerShortcuts()
-  if (validatedPatch.system?.autoStart !== undefined) app.setLoginItemSettings({ openAtLogin: !!settings.system.autoStart })
-  if (validatedPatch.system?.enableTray !== undefined) createTrayIcon()
-  if (validatedPatch.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
-  if (validatedPatch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
-  return settings
+registerSettingsIpc({
+  ipcMain,
+  settingsService: {
+    getSettings: () => getSettings(),
+    updateSettings: (patch) => settingsService.updateSettings(patch),
+    resetSettings: () => settingsService.resetSettings(),
+    normalizeApiKey: (apiKey) => settingsService.normalizeApiKey(apiKey),
+    setApiKey: (apiKey) => settingsService.setApiKey(apiKey)
+  },
+  assertWritable: assertManagedDataWritable,
+  onSettingsUpdated: (patch, settings) => {
+    if (patch.shortcuts) registerShortcuts()
+    if (patch.system?.autoStart !== undefined) app.setLoginItemSettings({ openAtLogin: !!settings.system.autoStart })
+    if (patch.system?.enableTray !== undefined) createTrayIcon()
+    if (patch.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
+    if (patch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
+  },
+  onSettingsReset: () => registerShortcuts(),
+  onStartHook: () => initSelectionHook(),
+  validateApiKey: (apiKey) => require('./deepseek').validateApiKey(apiKey),
+  log
 })
-ipcMain.handle('settings:reset', () => {
-  assertManagedDataWritable()
-  persistSettings(normalizeSettings(mergeDeep(DEFAULT_SETTINGS, {})), { updateApiKey: true })
-  registerShortcuts()
-  return getSettings()
-})
-ipcMain.handle('config:get-api-key', () => getSettings().apiKey)
-ipcMain.handle('config:save-api-key', (_event, apiKey) => {
-  assertManagedDataWritable()
-  persistSettings(mergeDeep(getSettings(), { apiKey: normalizeApiKeyInput(apiKey) }), { updateApiKey: true })
-  return true
-})
-ipcMain.handle('config:test-connection', async (_event, apiKey) => require('./deepseek').validateApiKey(normalizeApiKeyInput(apiKey)))
 ipcMain.handle('shell:open-external', (_event, value) => {
   const url = new URL(String(value || ''))
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('仅支持打开 HTTP 或 HTTPS 链接')
@@ -1791,55 +1696,31 @@ ipcMain.handle('app:open-save-directory', () => shell.openPath(getSettings().scr
 ipcMain.handle('ai:complete', async (_event, { messages, options }) => require('./deepseek').completeChat(getSettings().apiKey, messages, { ...getSettings().ai, ...(options || {}) }))
 ipcMain.handle('ai:translate', async (_event, { text, sourceLanguage, targetLanguage }) => require('./deepseek').translateText(getSettings().apiKey, text, sourceLanguage, targetLanguage || getSettings().ai.targetLanguage))
 
-ipcMain.handle('history:list', () => store.get('captureHistory', []).filter((item) => fs.existsSync(item.filePath)).map((item) => {
-  const thumbnailSource = item.thumbnailPath && fs.existsSync(item.thumbnailPath) ? item.thumbnailPath : item.filePath
-  const image = nativeImage.createFromPath(thumbnailSource)
-  const size = image.getSize()
-  const width = Math.min(360, size.width || 360)
-  const thumbnail = image.resize({ width, quality: 'good' }).toDataURL()
-  return { ...item, thumbnail }
-}))
-ipcMain.handle('history:delete', (_event, id) => {
-  assertManagedDataWritable()
-  const history = store.get('captureHistory', [])
-  const item = history.find((entry) => entry.id === id)
-  if (item) deleteHistoryFiles(item)
-  store.set('captureHistory', history.filter((entry) => entry.id !== id))
-  return true
-})
-ipcMain.handle('history:clear', () => {
-  assertManagedDataWritable()
-  const remaining = []
-  const failures = []
-  store.get('captureHistory', []).forEach((item) => {
-    try {
-      deleteHistoryFiles(item)
-    } catch (error) {
-      remaining.push(item)
-      failures.push(`${path.basename(item.filePath)}: ${error.message}`)
-    }
-  })
-  store.set('captureHistory', remaining)
-  if (failures.length) throw new Error(`有 ${failures.length} 个历史文件删除失败`)
-  return true
-})
-ipcMain.handle('history:copy', (_event, id) => {
-  const item = store.get('captureHistory', []).find((entry) => entry.id === id)
-  if (!item) return false
-  if (Math.max(Number(item.width) || 0, Number(item.height) || 0) > 65535 || (Number(item.width) || 0) * (Number(item.height) || 0) > 80000000) return false
-  clipboard.writeImage(nativeImage.createFromPath(item.filePath))
-  return true
-})
-ipcMain.handle('history:edit', async (_event, id) => {
-  const item = store.get('captureHistory', []).find((entry) => entry.id === id)
-  if (!item || !fs.existsSync(item.filePath)) return false
-  await createCaptureWindow({ imageDataUrl: fileToDataUrl(item.filePath), mode: 'image', source: 'history' })
-  return true
-})
-ipcMain.handle('history:reveal', (_event, id) => {
-  const item = store.get('captureHistory', []).find((entry) => entry.id === id)
-  if (item) shell.showItemInFolder(item.filePath)
-  return !!item
+registerHistoryIpc({
+  ipcMain,
+  historyService: {
+    list: (filter) => historyService.list(filter),
+    listSources: () => historyService.listSources(),
+    getItem: (id) => historyService.getItem(id),
+    delete: (id) => historyService.delete(id),
+    clear: () => historyService.clear(),
+    setFavorite: (id, favorite) => historyService.setFavorite(id, favorite)
+  },
+  copyItem: (item) => {
+    if (!fs.existsSync(item.filePath)) return false
+    if (Math.max(Number(item.width) || 0, Number(item.height) || 0) > 65535 || (Number(item.width) || 0) * (Number(item.height) || 0) > 80000000) return false
+    clipboard.writeImage(nativeImage.createFromPath(item.filePath))
+    return true
+  },
+  editItem: async (item) => {
+    if (!fs.existsSync(item.filePath)) return false
+    await createCaptureWindow({ imageDataUrl: fileToDataUrl(item.filePath), mode: 'image', source: 'history' })
+    return true
+  },
+  revealItem: (item) => {
+    shell.showItemInFolder(item.filePath)
+    return true
+  }
 })
 
 ipcMain.on('capture:ready', (event) => {
@@ -1958,7 +1839,7 @@ ipcMain.handle('long-capture:add-strip', (event, { arrayBuffer, metadata } = {})
   if (!state || event.sender !== state.controllerWindow.webContents || state.finishing) throw new Error('长截图会话不可用')
   if (!state.session.strips.length && ['vertical', 'horizontal'].includes(metadata?.axis)) {
     state.session.axis = metadata.axis
-    persistSettings(mergeDeep(getSettings(), { screenshot: { longCaptureDirection: metadata.axis } }))
+    settingsService.updateSettings({ screenshot: { longCaptureDirection: metadata.axis } })
   }
   return state.session.addStrip(Buffer.from(arrayBuffer), metadata)
 })
@@ -2421,15 +2302,6 @@ ipcMain.on('stream:cancel', () => {
   currentStreamController = null
 })
 ipcMain.on('stream:finish', () => { isProcessing = false; currentStreamController = null })
-ipcMain.on('config:start-hook', (_event, apiKey) => {
-  if (dataRootMigrationInProgress) return
-  try {
-    persistSettings(mergeDeep(getSettings(), { apiKey: normalizeApiKeyInput(apiKey) }), { updateApiKey: true })
-    initSelectionHook()
-  } catch (error) {
-    log('Rejected selection hook configuration:', error)
-  }
-})
 ipcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
 ipcMain.on('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.hide())
 ipcMain.on('debug:text-received', () => {})

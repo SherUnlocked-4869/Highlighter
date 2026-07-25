@@ -15,12 +15,18 @@ const resultText = document.getElementById('resultText')
 const ocrOverlay = document.getElementById('ocrOverlay')
 const ocrResultBar = document.getElementById('ocrResultBar')
 const ocrSummary = document.getElementById('ocrSummary')
+const {
+  getResizeHandle,
+  resizeSelection,
+  selectionCursor
+} = window.selectionUtils
 
 let initData = null
 let image = null
 let selection = null
 let selecting = false
 let dragging = false
+let resizing = null
 let startPoint = null
 let currentTool = 'select'
 let activeAnnotation = null
@@ -44,6 +50,15 @@ function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
 function normalizeRect(a, b) { return { x: Math.min(a.x,b.x), y: Math.min(a.y,b.y), w: Math.abs(b.x-a.x), h: Math.abs(b.y-a.y) } }
 function insideSelection(point) { return selection && point.x >= selection.x && point.x <= selection.x + selection.w && point.y >= selection.y && point.y <= selection.y + selection.h }
 function annotationStyle() { return { color: colorInput.value, width: Number(lineWidthInput.value) || 4 } }
+
+function updateSelectionCursor(point) {
+  if (currentTool !== 'select') {
+    canvas.style.cursor = 'crosshair'
+    return
+  }
+  const handle = resizing?.handle || getResizeHandle(selection, point)
+  canvas.style.cursor = selectionCursor(handle, insideSelection(point))
+}
 
 function resizeCanvas() {
   dpr = window.devicePixelRatio || 1
@@ -133,14 +148,14 @@ function render() {
 function drawHandles() {
   if (!selection || currentTool !== 'select') return
   const points=[[selection.x,selection.y],[selection.x+selection.w/2,selection.y],[selection.x+selection.w,selection.y],[selection.x,selection.y+selection.h/2],[selection.x+selection.w,selection.y+selection.h/2],[selection.x,selection.y+selection.h],[selection.x+selection.w/2,selection.y+selection.h],[selection.x+selection.w,selection.y+selection.h]]
-  ctx.save(); ctx.fillStyle='#fff'; ctx.strokeStyle='#1677ff'; ctx.lineWidth=1; points.forEach(([x,y])=>{ctx.fillRect(x-3,y-3,6,6);ctx.strokeRect(x-3,y-3,6,6)}); ctx.restore()
+  ctx.save(); ctx.fillStyle='#fff'; ctx.strokeStyle='#1677ff'; ctx.lineWidth=1; points.forEach(([x,y])=>{ctx.fillRect(x-4,y-4,8,8);ctx.strokeRect(x-4,y-4,8,8)}); ctx.restore()
 }
 
 function updateFloatingUi() {
   if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16
   sizeBadge.style.display='block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
-  if (selectState==='auto'||activeOcrResult) { toolbar.classList.add('hidden'); return }
+  if (selectState==='auto'||activeOcrResult||selecting||dragging||resizing) { toolbar.classList.add('hidden'); return }
   toolbar.classList.remove('hidden')
   const rect=toolbar.getBoundingClientRect(); let left=selection.x+selection.w-rect.width; let top=selection.y+selection.h+10
   if (top+rect.height>innerHeight-6) top=selection.y-rect.height-10
@@ -151,7 +166,7 @@ function updateFloatingUi() {
 function setTool(tool) {
   currentTool=tool
   document.querySelectorAll('[data-tool]').forEach((button)=>button.classList.toggle('active',button.dataset.tool===tool))
-  canvas.style.cursor=tool==='select'?'default':'crosshair'
+  canvas.style.cursor=tool==='select'?(selection?'move':'crosshair'):'crosshair'
 }
 
 function commitAnnotation(item) {
@@ -192,7 +207,9 @@ canvas.addEventListener('pointerdown',(event)=>{
   if(activeOcrResult){clearOcrResult();return}
   const point=pointFromEvent(event); startPoint=point
   if(selectState==='auto'){pointerDownPoint=point;return}
-  if (!selection || (currentTool==='select'&&!insideSelection(point))) { selectState='manual';selecting=true; selection={x:point.x,y:point.y,w:0,h:0}; annotations=[]; redoStack=[]; tip.style.display='none'; render(); return }
+  const resizeHandle=currentTool==='select'?getResizeHandle(selection,point):''
+  if (!selection || (currentTool==='select'&&!resizeHandle&&!insideSelection(point))) { selectState='manual';selecting=true; selection={x:point.x,y:point.y,w:0,h:0}; annotations=[]; redoStack=[]; tip.style.display='none'; canvas.style.cursor='crosshair'; render(); return }
+  if (resizeHandle) { resizing={handle:resizeHandle,initial:{...selection}}; updateSelectionCursor(point); try{canvas.setPointerCapture(event.pointerId)}catch{}; render(); return }
   if (currentTool==='select') { dragging=true; return }
   if (!insideSelection(point)) return
   const style=annotationStyle()
@@ -211,15 +228,26 @@ canvas.addEventListener('pointermove',(event)=>{
     return
   }
   if (selecting) { selection=normalizeRect(startPoint,point); render(); return }
+  if (resizing&&selection) { selection=resizeSelection(resizing.initial,resizing.handle,point,{width:innerWidth,height:innerHeight}); updateSelectionCursor(point); render(); return }
   if (dragging&&selection) { const dx=point.x-startPoint.x,dy=point.y-startPoint.y; selection.x=Math.max(0,Math.min(innerWidth-selection.w,selection.x+dx)); selection.y=Math.max(0,Math.min(innerHeight-selection.h,selection.y+dy)); startPoint=point; render(); return }
   if (activeAnnotation) { activeAnnotation.x2=point.x; activeAnnotation.y2=point.y; if(activeAnnotation.type==='pen')activeAnnotation.points.push(point); render() }
+  else updateSelectionCursor(point)
 })
 
 canvas.addEventListener('pointerup',(event)=>{
-  if(selectState==='auto'&&pointerDownPoint){const point=pointFromEvent(event);const moved=Math.hypot(point.x-pointerDownPoint.x,point.y-pointerDownPoint.y)>6;pointerDownPoint=null;if(moved){selectState='selected';selection=normalizeRect(startPoint,point);if(selection.w<3||selection.h<3)selection=null}else if(selection){selectState='selected'}tip.style.display='none';finishSelection();return}
-  if(selecting){selecting=false;if(selection.w<3||selection.h<3)selection=null;selectState=selection?'selected':'manual';finishSelection();return}
-  if(dragging){dragging=false;render();return}
+  if(selectState==='auto'&&pointerDownPoint){const point=pointFromEvent(event);const moved=Math.hypot(point.x-pointerDownPoint.x,point.y-pointerDownPoint.y)>6;pointerDownPoint=null;if(moved){selectState='selected';selection=normalizeRect(startPoint,point);if(selection.w<3||selection.h<3)selection=null}else if(selection){selectState='selected'}tip.style.display='none';finishSelection();updateSelectionCursor(point);return}
+  if(selecting){const point=pointFromEvent(event);selecting=false;if(selection.w<3||selection.h<3)selection=null;selectState=selection?'selected':'manual';finishSelection();updateSelectionCursor(point);return}
+  if(resizing){resizing=null;finishSelection();updateSelectionCursor(pointFromEvent(event));return}
+  if(dragging){dragging=false;render();updateSelectionCursor(pointFromEvent(event));return}
   if(activeAnnotation)commitAnnotation(activeAnnotation)
+})
+
+canvas.addEventListener('pointercancel',()=>{
+  selecting=false
+  dragging=false
+  resizing=null
+  activeAnnotation=null
+  render()
 })
 
 canvas.addEventListener('wheel',(event)=>{

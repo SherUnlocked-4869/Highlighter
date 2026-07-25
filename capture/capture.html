@@ -9,7 +9,7 @@
 <body>
   <canvas id="stage"></canvas>
   <div id="ocrOverlay" class="ocr-overlay hidden"></div>
-  <div id="tip">拖动选择区域 · 单击窗口区域快速框选 · Esc 退出</div>
+  <div id="tip">拖动选择区域 · 拖动边缘或角点调整 · Esc 退出</div>
   <div id="sizeBadge"></div>
   <div id="toolbar" class="toolbar hidden">
     <div class="tool-group">
@@ -55,6 +55,7 @@
     <button id="ocrResultClose" title="关闭识别结果">×</button>
   </div>
   <div id="loading" class="loading hidden"><span></span><b>处理中…</b></div>
+  <script src="selection-utils.js"></script>
   <script src="capture.js"></script>
 </body>
 </html>

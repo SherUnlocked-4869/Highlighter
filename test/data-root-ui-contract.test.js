@@ -6,6 +6,8 @@ const path = require('node:path')
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
 const config = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
+const settingsIpc = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'settings-ipc.js'), 'utf8')
+const historyService = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'history-service.js'), 'utf8')
 
 function section(start, end) {
   const startIndex = main.indexOf(start)
@@ -126,7 +128,7 @@ test('system settings renders and uses data-root controls in every build', () =>
 })
 
 test('main process keeps data-root migration privileged, serialized, and restart-only on success', () => {
-  const handlers = section("ipcMain.handle('settings:get'", "ipcMain.handle('history:list'")
+  const handlers = section('registerSettingsIpc({', 'registerHistoryIpc({')
   assert.match(handlers, /customized: !!dataRootContext\.paths/)
   assert.match(handlers, /path: dataRootContext\.paths\?\.root \|\| dataRootContext\.legacyUserData/)
   assert.match(handlers, /ipcMain\.handle\('data-root:open', \(\) => shell\.openPath\(dataRootContext\.paths\?\.root \|\| app\.getPath\('userData'\)\)\)/)
@@ -153,8 +155,10 @@ test('migration quiesces managed writers and blocks late config, log, and histor
   assert.match(stopWriters, /await longCapture\.finishingPromise[\s\S]*closeLongCapture\(\)/)
   assert.match(main, /function assertManagedDataWritable\(\)[\s\S]*dataRootMigrationInProgress[\s\S]*throw new Error/)
   assert.match(main, /createAppLogger\(\{[\s\S]*isEnabled: \(\) => !dataRootMigrationInProgress/)
-  assert.match(section('function persistHistory(', 'function createMainWindow'), /assertManagedDataWritable\(\)/)
-  assert.match(section("ipcMain.handle('settings:get'", "ipcMain.handle('config:get-api-key'"), /settings:update[\s\S]*assertManagedDataWritable\(\)[\s\S]*settings:reset[\s\S]*assertManagedDataWritable\(\)/)
+  assert.match(historyService, /persistDataUrl\(dataUrl, meta = \{\}\) \{[\s\S]*this\.assertWritable\(\)/)
+  assert.match(historyService, /persistFile\(sourcePath, meta = \{\}\) \{[\s\S]*this\.assertWritable\(\)/)
+  assert.match(settingsIpc, /settings:update[\s\S]*assertWritable\(\)[\s\S]*settings:reset[\s\S]*assertWritable\(\)/)
+  assert.match(main, /assertWritable: assertManagedDataWritable/)
 })
 
 test('long capture rechecks the migration gate after desktop source lookup', () => {

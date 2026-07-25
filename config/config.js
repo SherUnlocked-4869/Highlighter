@@ -7,6 +7,11 @@ let currentRoute = 'home'
 let homeTab = 'screenshot'
 let chatMessages = []
 let draggedSelectionToolbarAction = ''
+let historyQuery = ''
+let historySource = ''
+let historyFavoritesOnly = false
+let historyRenderVersion = 0
+let historySearchTimer = null
 
 const selectionToolbarBuiltinMeta = {
   copy: { label: '复制', icon: '⧉', description: '复制划词内容到系统剪贴板' },
@@ -206,16 +211,59 @@ function renderChat() {
 }
 
 async function renderHistory() {
-  view.innerHTML = `<div class="page">${pageHeader('截图历史', '自动保存截图结果，可继续编辑、复制、定位文件或清理。', '<button class="button danger" id="clearHistory">清空历史</button>')}<div class="empty">正在加载…</div></div>`
-  const history = await window.electronAPI.getHistory()
+  const renderVersion = ++historyRenderVersion
+  view.innerHTML = `<div class="page">${pageHeader('截图历史', '搜索、筛选和收藏截图，可继续编辑、复制、定位或清理。', '<button class="button danger" id="clearHistory">清空全部</button>')}<div class="empty">正在加载…</div></div>`
+  const [history, sources] = await Promise.all([
+    window.electronAPI.getHistory({
+      query: historyQuery,
+      source: historySource,
+      favoriteOnly: historyFavoritesOnly
+    }),
+    window.electronAPI.getHistorySources()
+  ])
+  if (currentRoute !== 'history' || renderVersion !== historyRenderVersion) return
   const container = document.querySelector('.page')
   container.querySelector('.empty')?.remove()
-  container.insertAdjacentHTML('beforeend', history.length ? `<div class="history-grid">${history.map((item) => `<article class="card history-item"><div class="history-image"><img src="${item.thumbnail}"></div><div class="history-meta">${new Date(item.createdAt).toLocaleString()} · ${escapeHtml(item.source)} · ${item.width}×${item.height}</div><div class="history-actions">${item.longCapture ? '' : `<button data-history-action="edit" data-id="${item.id}">编辑</button>`}<button data-history-action="copy" data-id="${item.id}">复制</button><button data-history-action="reveal" data-id="${item.id}">定位</button><button data-history-action="delete" data-id="${item.id}">删除</button></div></article>`).join('')}</div>` : '<div class="empty">暂无截图历史</div>')
+  const sourceLabels = {
+    capture: '区域截图',
+    'long-capture': '长截图',
+    'focused-window': '焦点窗口',
+    file: '本地图片',
+    history: '历史编辑'
+  }
+  const sourceOptions = sources.map((source) => `<option value="${escapeHtml(source)}">${escapeHtml(sourceLabels[source] || source)}</option>`).join('')
+  container.insertAdjacentHTML('beforeend', `<div class="history-filters card"><input class="input" id="historySearch" type="search" value="${escapeHtml(historyQuery)}" placeholder="搜索来源、操作或文件名"><select id="historySource"><option value="">全部来源</option>${sourceOptions}</select><button class="button ${historyFavoritesOnly ? 'active' : ''}" id="historyFavorites">${historyFavoritesOnly ? '★ 仅收藏' : '☆ 仅收藏'}</button><span>${history.length} 项</span></div>${history.length ? `<div class="history-grid">${history.map((item) => `<article class="card history-item ${item.favorite ? 'favorite' : ''}"><div class="history-image"><img src="${item.thumbnail}"></div><div class="history-meta">${new Date(item.createdAt).toLocaleString()} · ${escapeHtml(sourceLabels[item.source] || item.source)} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</div><div class="history-actions"><button class="favorite-button ${item.favorite ? 'active' : ''}" data-history-action="favorite" data-id="${escapeHtml(item.id)}" data-favorite="${item.favorite ? 'false' : 'true'}" title="${item.favorite ? '取消收藏' : '收藏'}">${item.favorite ? '★' : '☆'}</button>${item.longCapture ? '' : `<button data-history-action="edit" data-id="${escapeHtml(item.id)}">编辑</button>`}<button data-history-action="copy" data-id="${escapeHtml(item.id)}">复制</button><button data-history-action="reveal" data-id="${escapeHtml(item.id)}">定位</button><button data-history-action="delete" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('')}</div>` : '<div class="empty">没有符合条件的截图历史</div>'}`)
+  const searchInput = document.getElementById('historySearch')
+  const sourceSelect = document.getElementById('historySource')
+  sourceSelect.value = historySource
+  searchInput.oninput = () => {
+    historyQuery = searchInput.value
+    clearTimeout(historySearchTimer)
+    historySearchTimer = setTimeout(() => renderHistory(), 220)
+  }
+  searchInput.onkeydown = (event) => {
+    if (event.key !== 'Enter') return
+    clearTimeout(historySearchTimer)
+    historyQuery = searchInput.value
+    renderHistory()
+  }
+  sourceSelect.onchange = () => {
+    historySource = sourceSelect.value
+    renderHistory()
+  }
+  document.getElementById('historyFavorites').onclick = () => {
+    historyFavoritesOnly = !historyFavoritesOnly
+    renderHistory()
+  }
   document.querySelectorAll('[data-history-action]').forEach((button) => button.onclick = async () => {
     const action = button.dataset.historyAction; const id = button.dataset.id
     if (action === 'edit') await window.electronAPI.editHistory(id)
     if (action === 'copy') { const copied = await window.electronAPI.copyHistory(id); toast(copied ? '截图已复制' : '图片过大，请从保存位置使用') }
     if (action === 'reveal') await window.electronAPI.revealHistory(id)
+    if (action === 'favorite') {
+      await window.electronAPI.setHistoryFavorite(id, button.dataset.favorite === 'true')
+      renderHistory()
+    }
     if (action === 'delete') {
       try { await window.electronAPI.deleteHistory(id); renderHistory() }
       catch (error) { toast(error.message || '图片文件删除失败') }
