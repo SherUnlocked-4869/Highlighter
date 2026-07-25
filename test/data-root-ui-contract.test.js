@@ -83,7 +83,7 @@ test('startup recovers unavailable roots and finalizes every customized root bef
   assert.match(start, /if \(!finalization\.finalized && finalization\.cleanupErrors\.length\)[\s\S]*console\.(?:warn|error)/)
   assert.doesNotMatch(start.match(/if \(!finalization\.finalized && finalization\.cleanupErrors\.length\) \{[^}]*\}/)[0], /rollbackPendingMigration/)
   assert.ok(start.indexOf('verifyAndFinalizeMigration(') < start.indexOf('initializeStore()'))
-  assert.ok(start.indexOf('initializeStore()') < start.indexOf("store.set('settings'"))
+  assert.ok(start.indexOf('initializeStore()') < start.indexOf('persistSettings(getSettings())'))
 })
 
 test('a pending startup failure rolls back, reports, and relaunches without starting services', () => {
@@ -139,7 +139,7 @@ test('main process keeps data-root migration privileged, serialized, and restart
   assert.match(change, /validateDataRoot\(result\.filePaths\[0], activeRoot\)/)
   assert.match(change, /if \(path\.resolve\(targetRoot\) === path\.resolve\(activeRoot\)\) return \{ unchanged: true \}/)
   assert.match(change, /配置、日志、截图历史[\s\S]*重启/)
-  assert.match(change, /store\.set\('settings', getSettings\(\)\)/)
+  assert.match(change, /persistSettings\(getSettings\(\)\)/)
   assert.match(change, /stopWriters: stopManagedDataWriters/)
   assert.match(change, /migrateDataRoot\(\{[\s\S]*source: sourcePaths[\s\S]*target: createDataPaths\(targetRoot\)[\s\S]*portableDirectory: dataRootContext\.locatorDirectory[\s\S]*previousRoot/)
   assert.match(change, /setImmediate\(\(\) => \{[\s\S]*relaunchApplication\(\{ app, dataRootContext \}\)[\s\S]*app\.exit\(0\)/)
@@ -152,7 +152,7 @@ test('migration quiesces managed writers and blocks late config, log, and histor
   assert.match(stopWriters, /await closeRecordFlow\(activeRecordingService, true\)[\s\S]*await activeRecordingService\.dispose\(\)/)
   assert.match(stopWriters, /await longCapture\.finishingPromise[\s\S]*closeLongCapture\(\)/)
   assert.match(main, /function assertManagedDataWritable\(\)[\s\S]*dataRootMigrationInProgress[\s\S]*throw new Error/)
-  assert.match(section('function log(', 'class SmartSelectSession'), /if \(dataRootMigrationInProgress\) return[\s\S]*appendFileSync\(logFile/)
+  assert.match(main, /createAppLogger\(\{[\s\S]*isEnabled: \(\) => !dataRootMigrationInProgress/)
   assert.match(section('function persistHistory(', 'function createMainWindow'), /assertManagedDataWritable\(\)/)
   assert.match(section("ipcMain.handle('settings:get'", "ipcMain.handle('config:get-api-key'"), /settings:update[\s\S]*assertManagedDataWritable\(\)[\s\S]*settings:reset[\s\S]*assertManagedDataWritable\(\)/)
 })

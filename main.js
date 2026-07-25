@@ -8,6 +8,7 @@ const {
   ipcMain,
   Menu,
   nativeImage,
+  safeStorage,
   screen,
   shell,
   Tray
@@ -23,6 +24,9 @@ const {
   verifyAndFinalizeMigration
 } = require('./main/services/data-root-migration')
 const { ManagedWriterCoordinator, quiesceAndMigrate } = require('./main/services/managed-writer-coordinator')
+const { createAppLogger } = require('./main/services/app-logger')
+const { CredentialStore } = require('./main/services/credential-store')
+const { assertSettingsPatch } = require('./main/services/settings-validation')
 const { name: applicationName } = require('./package.json')
 
 const dataRootContext = prepareDataRoot({ app, applicationName })
@@ -140,6 +144,7 @@ const DEFAULT_SETTINGS = {
 }
 
 let store = null
+let credentialStore = null
 
 function initializeStore() {
   if (store) return store
@@ -151,6 +156,12 @@ function initializeStore() {
   }
   if (activePaths) storeOptions.cwd = activePaths.config
   store = new Store(storeOptions)
+  credentialStore = new CredentialStore({
+    store,
+    safeStorage,
+    onError: (error) => console.warn('Unable to access encrypted credentials:', error.message || String(error))
+  })
+  credentialStore.migrateLegacyApiKey()
   return store
 }
 
@@ -195,7 +206,11 @@ function getOcrService() {
 
 function resolveFfmpegPath() {
   let candidate = ''
-  try { candidate = require('ffmpeg-static') } catch {}
+  try {
+    candidate = require('ffmpeg-static')
+  } catch (error) {
+    log('Unable to resolve FFmpeg:', error)
+  }
   if (!candidate || typeof candidate !== 'string') throw new Error('未找到 MP4 编码组件')
   return app.isPackaged ? candidate.replace('app.asar', 'app.asar.unpacked') : candidate
 }
@@ -215,6 +230,7 @@ function mergeDeep(target, patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return patch
   const output = { ...(target || {}) }
   for (const [key, value] of Object.entries(patch)) {
+    if (['__proto__', 'constructor', 'prototype'].includes(key)) continue
     output[key] = value && typeof value === 'object' && !Array.isArray(value)
       ? mergeDeep(output[key], value)
       : value
@@ -233,22 +249,42 @@ function normalizeSettings(settings) {
 }
 
 function getSettings() {
-  return normalizeSettings(mergeDeep(DEFAULT_SETTINGS, store.get('settings', {})))
+  const settings = normalizeSettings(mergeDeep(DEFAULT_SETTINGS, store.get('settings', {})))
+  settings.apiKey = credentialStore ? credentialStore.getApiKey(settings.apiKey) : settings.apiKey
+  return settings
+}
+
+function persistSettings(settings, { updateApiKey = false } = {}) {
+  const normalized = normalizeSettings(mergeDeep(DEFAULT_SETTINGS, settings || {}))
+  const storedSettings = { ...normalized }
+  const encryptionAvailable = credentialStore?.isEncryptionAvailable() === true
+  if (encryptionAvailable) {
+    if (updateApiKey) credentialStore.setApiKey(normalized.apiKey)
+    delete storedSettings.apiKey
+  } else if (!updateApiKey) {
+    const existingSettings = store.get('settings', {})
+    if (Object.hasOwn(existingSettings, 'apiKey')) storedSettings.apiKey = existingSettings.apiKey
+    else delete storedSettings.apiKey
+  }
+  store.set('settings', storedSettings)
+  return getSettings()
+}
+
+function normalizeApiKeyInput(value) {
+  return assertSettingsPatch({ apiKey: value }, DEFAULT_SETTINGS).apiKey.trim()
 }
 
 function assertManagedDataWritable() {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
 }
 
+const writeAppLog = createAppLogger({
+  filePath: logFile,
+  isEnabled: () => !dataRootMigrationInProgress && !!store && getSettings().system.runLog
+})
+
 function log(...args) {
-  const message = args.map((value) => typeof value === 'string' ? value : JSON.stringify(value)).join(' ')
-  console.log(message)
-  if (dataRootMigrationInProgress) return
-  if (!store) return
-  if (!getSettings().system.runLog) return
-  try {
-    fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${message}\n`)
-  } catch {}
+  writeAppLog(...args)
 }
 
 class SmartSelectSession {
@@ -1636,28 +1672,30 @@ function restoreManagedDataWriters(restartOcr) {
 ipcMain.handle('settings:get', () => getSettings())
 ipcMain.handle('settings:update', (_event, patch) => {
   assertManagedDataWritable()
-  const settings = normalizeSettings(mergeDeep(getSettings(), patch || {}))
-  store.set('settings', settings)
-  if (patch?.shortcuts) registerShortcuts()
-  if (patch?.system?.autoStart !== undefined) app.setLoginItemSettings({ openAtLogin: !!settings.system.autoStart })
-  if (patch?.system?.enableTray !== undefined) createTrayIcon()
-  if (patch?.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
-  if (patch?.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
+  const validatedPatch = assertSettingsPatch(patch === undefined ? {} : patch, DEFAULT_SETTINGS)
+  const settings = persistSettings(mergeDeep(getSettings(), validatedPatch), {
+    updateApiKey: Object.hasOwn(validatedPatch, 'apiKey')
+  })
+  if (validatedPatch.shortcuts) registerShortcuts()
+  if (validatedPatch.system?.autoStart !== undefined) app.setLoginItemSettings({ openAtLogin: !!settings.system.autoStart })
+  if (validatedPatch.system?.enableTray !== undefined) createTrayIcon()
+  if (validatedPatch.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
+  if (validatedPatch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
   return settings
 })
 ipcMain.handle('settings:reset', () => {
   assertManagedDataWritable()
-  store.set('settings', normalizeSettings(mergeDeep(DEFAULT_SETTINGS, {})))
+  persistSettings(normalizeSettings(mergeDeep(DEFAULT_SETTINGS, {})), { updateApiKey: true })
   registerShortcuts()
   return getSettings()
 })
 ipcMain.handle('config:get-api-key', () => getSettings().apiKey)
 ipcMain.handle('config:save-api-key', (_event, apiKey) => {
   assertManagedDataWritable()
-  store.set('settings', mergeDeep(getSettings(), { apiKey }))
+  persistSettings(mergeDeep(getSettings(), { apiKey: normalizeApiKeyInput(apiKey) }), { updateApiKey: true })
   return true
 })
-ipcMain.handle('config:test-connection', async (_event, apiKey) => require('./deepseek').validateApiKey(apiKey))
+ipcMain.handle('config:test-connection', async (_event, apiKey) => require('./deepseek').validateApiKey(normalizeApiKeyInput(apiKey)))
 ipcMain.handle('shell:open-external', (_event, value) => {
   const url = new URL(String(value || ''))
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('仅支持打开 HTTP 或 HTTPS 链接')
@@ -1723,7 +1761,7 @@ ipcMain.handle('data-root:change', async () => {
   let writerShutdownStarted = false
   dataRootMigrationInProgress = true
   try {
-    store.set('settings', getSettings())
+    persistSettings(getSettings())
     writerShutdownStarted = true
     await quiesceAndMigrate({
       coordinator: managedRecordingWriters,
@@ -1920,7 +1958,7 @@ ipcMain.handle('long-capture:add-strip', (event, { arrayBuffer, metadata } = {})
   if (!state || event.sender !== state.controllerWindow.webContents || state.finishing) throw new Error('长截图会话不可用')
   if (!state.session.strips.length && ['vertical', 'horizontal'].includes(metadata?.axis)) {
     state.session.axis = metadata.axis
-    store.set('settings', mergeDeep(getSettings(), { screenshot: { longCaptureDirection: metadata.axis } }))
+    persistSettings(mergeDeep(getSettings(), { screenshot: { longCaptureDirection: metadata.axis } }))
   }
   return state.session.addStrip(Buffer.from(arrayBuffer), metadata)
 })
@@ -2385,8 +2423,12 @@ ipcMain.on('stream:cancel', () => {
 ipcMain.on('stream:finish', () => { isProcessing = false; currentStreamController = null })
 ipcMain.on('config:start-hook', (_event, apiKey) => {
   if (dataRootMigrationInProgress) return
-  store.set('settings', mergeDeep(getSettings(), { apiKey }))
-  initSelectionHook()
+  try {
+    persistSettings(mergeDeep(getSettings(), { apiKey: normalizeApiKeyInput(apiKey) }), { updateApiKey: true })
+    initSelectionHook()
+  } catch (error) {
+    log('Rejected selection hook configuration:', error)
+  }
 })
 ipcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
 ipcMain.on('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.hide())
@@ -2527,14 +2569,18 @@ async function startApplication() {
   if (finalization && !finalization.finalized && finalization.cleanupErrors.length) {
     log('Data migration cleanup remains pending:', finalization.cleanupErrors)
   }
-  store.set('settings', getSettings())
+  persistSettings(getSettings())
   createTrayIcon()
   createToolbarWindow()
   createMainWindow('home')
   registerShortcuts()
   initSelectionHook()
   if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
-  if (isWin) screenshotDesktop.listDisplays().then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) }).catch(() => {})
+  if (isWin) {
+    screenshotDesktop.listDisplays()
+      .then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) })
+      .catch((error) => log('Display discovery warm-up failed:', error))
+  }
   app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
 }
 
@@ -2545,6 +2591,22 @@ if (!gotTheLock) {
 }
 else {
   app.on('second-instance', () => { if (store) createMainWindow('home') })
+  app.on('render-process-gone', (_event, webContents, details) => {
+    log('Renderer process exited:', {
+      reason: details.reason,
+      exitCode: details.exitCode,
+      url: webContents?.getURL?.() || ''
+    })
+  })
+  app.on('child-process-gone', (_event, details) => {
+    log('Child process exited:', {
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      serviceName: details.serviceName || ''
+    })
+  })
+  process.on('unhandledRejection', (reason) => log('Unhandled promise rejection:', reason))
   app.whenReady().then(startApplication).catch((error) => {
     dialog.showErrorBox('Highlighter 启动失败', error.message || String(error))
     removeProvisionalRoot(dataRootContext)
@@ -2560,7 +2622,14 @@ else {
       .finally(() => { recordingService = null })
     closeLongCapture()
     if (ocrService) { ocrService.stop(); ocrService = null }
-    if (selectionHook) { try { selectionHook.cleanup() } catch {}; selectionHook = null }
+    if (selectionHook) {
+      try {
+        selectionHook.cleanup()
+      } catch (error) {
+        log('Selection hook shutdown failed:', error)
+      }
+      selectionHook = null
+    }
     if (tray) { tray.destroy(); tray = null }
   })
 }
