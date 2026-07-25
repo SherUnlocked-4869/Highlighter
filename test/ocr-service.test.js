@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
+const { setTimeout: delay } = require('node:timers/promises')
 
 const { OcrService } = require('../main/services/ocr-service')
 
@@ -46,4 +47,62 @@ test('OCR recognition waits for delayed temporary-file cleanup', async (t) => {
   } finally {
     fs.promises.unlink = originalUnlink
   }
+})
+
+function createService(idleTimeoutMs = 10) {
+  return new OcrService({
+    sidecarPath: 'sidecar.exe',
+    modelDir: 'models',
+    tempDir: path.join(os.tmpdir(), 'highlighter-ocr-idle-tests'),
+    idleTimeoutMs
+  })
+}
+
+test('stops the OCR sidecar after the idle timeout', async () => {
+  const service = createService()
+  let stopCount = 0
+  service.stop = () => { stopCount += 1 }
+
+  service.scheduleIdleStop()
+  await delay(30)
+
+  assert.equal(stopCount, 1)
+})
+
+test('rescheduling idle cleanup replaces the previous timer', async () => {
+  const service = createService(100)
+  let stopCount = 0
+  service.stop = () => { stopCount += 1 }
+
+  service.scheduleIdleStop()
+  service.scheduleIdleStop()
+  await delay(50)
+  assert.equal(stopCount, 0)
+  await delay(75)
+  assert.equal(stopCount, 1)
+})
+
+test('does not stop while an OCR request is active', async () => {
+  const service = createService()
+  let stopCount = 0
+  service.stop = () => { stopCount += 1 }
+  service.inFlight.set('active', Promise.resolve())
+
+  service.scheduleIdleStop()
+  await delay(30)
+
+  assert.equal(stopCount, 0)
+})
+
+test('an old sidecar exit cannot clear a replacement process', () => {
+  const service = createService()
+  const oldProcess = {}
+  const replacementProcess = {}
+  service.process = replacementProcess
+  service.ready = true
+
+  service.handleExit(oldProcess, new Error('old process exited'))
+
+  assert.equal(service.process, replacementProcess)
+  assert.equal(service.ready, true)
 })
