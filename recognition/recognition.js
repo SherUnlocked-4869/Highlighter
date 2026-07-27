@@ -174,6 +174,16 @@ copyButton.onclick = async () => {
   copyButton.textContent = '已复制'
   setTimeout(() => { copyButton.textContent = original }, 1000)
 }
-openLink.onclick = () => { if (activeUrl) window.recognitionAPI.openExternal(activeUrl) }
+openLink.onclick = async () => {
+  if (!activeUrl) return
+  openLink.disabled = true
+  try {
+    await window.recognitionAPI.openExternal(activeUrl)
+    window.recognitionAPI.close()
+  } catch (error) {
+    openLink.disabled = false
+    summary.textContent = `打开链接失败：${error?.message || String(error)}`
+  }
+}
 addEventListener('keydown', (event) => { if (event.key === 'Escape') window.recognitionAPI.close() })
 window.recognitionAPI.ready()

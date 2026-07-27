@@ -13,16 +13,20 @@ test('recording runtime packages ffmpeg', () => {
 
 test('main process wires protected region recording windows', () => {
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  const captureIpc = fs.readFileSync(path.join(root, 'main', 'ipc', 'capture-ipc.js'), 'utf8')
+  const recordingIpc = fs.readFileSync(path.join(root, 'main', 'ipc', 'recording-ipc.js'), 'utf8')
   const recordPreload = fs.readFileSync(path.join(root, 'preload-record.js'), 'utf8')
   const framePreload = fs.readFileSync(path.join(root, 'preload-record-frame.js'), 'utf8')
   const frame = fs.readFileSync(path.join(root, 'record', 'frame.html'), 'utf8')
 
-  assert.match(main, /capture:start-region-recording/)
+  assert.match(captureIpc, /capture:start-region-recording/)
   assert.match(main, /setContentProtection\(true\)/)
-  assert.match(main, /record:start-session/)
-  assert.match(main, /record:append-chunk/)
-  assert.match(main, /record:finish-session/)
-  assert.match(main, /record:save-mp4/)
+  assert.match(recordingIpc, /record:start-session/)
+  assert.match(recordingIpc, /record:append-chunk/)
+  assert.match(recordingIpc, /record:finish-session/)
+  assert.match(recordingIpc, /record:save-mp4/)
+  assert.match(main, /registerCaptureIpc\(\{[\s\S]*controller: captureIpcController/)
+  assert.match(main, /registerRecordingIpc\(\{[\s\S]*controller: recordingIpcController/)
   assert.match(recordPreload, /startSession:/)
   assert.match(recordPreload, /appendChunk:/)
   assert.match(framePreload, /record-frame:state/)
@@ -54,14 +58,15 @@ test('recording frame exposes a protected annotation canvas contract', () => {
 
 test('main process securely routes annotation commands and snapshots', () => {
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  const recordingIpc = fs.readFileSync(path.join(root, 'main', 'ipc', 'recording-ipc.js'), 'utf8')
   const recordPreload = fs.readFileSync(path.join(root, 'preload-record.js'), 'utf8')
   assert.match(main, /requireRecordFrameSender/)
-  assert.match(main, /record:set-annotation-command/)
-  assert.match(main, /record-frame:snapshot/)
+  assert.match(recordingIpc, /record:set-annotation-command/)
+  assert.match(recordingIpc, /record-frame:snapshot/)
   assert.match(main, /sanitizeAnnotationSnapshot/)
   assert.match(main, /record:annotation-snapshot/)
   assert.match(main, /setIgnoreMouseEvents\([^)]*tool === 'pointer'/)
-  assert.match(main, /record-frame:ready/)
+  assert.match(recordingIpc, /record-frame:ready/)
   assert.match(main, /restoreRecordFramePassthrough/)
   assert.match(recordPreload, /setAnnotationCommand:/)
   assert.match(recordPreload, /record:set-annotation-command/)
@@ -124,6 +129,6 @@ test('region recording uses supported silent MP4 settings', () => {
 
 test('MP4 save dialog is owned and not covered by the topmost preview', () => {
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
-  assert.match(main, /record:save-mp4[\s\S]*setAlwaysOnTop\(false\)[\s\S]*showSaveDialog\(win,/)
+  assert.match(main, /saveMp4: async[\s\S]*setAlwaysOnTop\(false\)[\s\S]*showSaveDialog\(win,/)
   assert.match(main, /showSaveDialog\(win,[\s\S]*finally[\s\S]*setAlwaysOnTop\(true, 'screen-saver'\)/)
 })

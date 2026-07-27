@@ -31,6 +31,10 @@ const { HistoryService } = require('./main/services/history-service')
 const { registerHistoryIpc } = require('./main/ipc/history-ipc')
 const { ShortcutService } = require('./main/services/shortcut-service')
 const { registerShortcutIpc } = require('./main/ipc/shortcut-ipc')
+const { registerAppIpc } = require('./main/ipc/app-ipc')
+const { registerDataRootIpc } = require('./main/ipc/data-root-ipc')
+const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
+const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
 const { name: applicationName } = require('./package.json')
 
 const dataRootContext = prepareDataRoot({ app, applicationName })
@@ -1603,14 +1607,14 @@ registerShortcutIpc({
   ipcMain,
   shortcutService
 })
-ipcMain.handle('shell:open-external', (_event, value) => {
+
+function openExternal(value) {
   const url = new URL(String(value || ''))
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('仅支持打开 HTTP 或 HTTPS 链接')
   return shell.openExternal(url.toString())
-})
-ipcMain.handle('app:execute-function', (_event, { name, payload }) => executeFunction(name, payload))
-ipcMain.handle('app:get-info', () => ({ version: app.getVersion(), platform: process.platform, dataDirectory: activePaths?.root || app.getPath('userData') }))
-ipcMain.handle('app:get-display-diagnostics', async () => {
+}
+
+async function getDisplayDiagnostics() {
   const displays = screen.getAllDisplays().map((display) => ({
     id: display.id,
     label: display.label,
@@ -1628,18 +1632,26 @@ ipcMain.handle('app:get-display-diagnostics', async () => {
     displays,
     sources: sources.map((source) => ({ id: source.id, displayId: source.display_id, name: source.name, thumbnailSize: source.thumbnail.getSize() }))
   }
-})
-ipcMain.handle('dialog:choose-directory', async () => {
+}
+
+async function chooseDirectory() {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
   return result.canceled ? '' : result.filePaths[0]
-})
-ipcMain.handle('data-root:get', () => ({
+}
+
+function getDataRootInfo() {
+  return {
   portable: dataRootContext.portable,
   customized: !!dataRootContext.paths,
   path: dataRootContext.paths?.root || dataRootContext.legacyUserData
-}))
-ipcMain.handle('data-root:open', () => shell.openPath(dataRootContext.paths?.root || app.getPath('userData')))
-ipcMain.handle('data-root:change', async () => {
+  }
+}
+
+function openDataRoot() {
+  return shell.openPath(dataRootContext.paths?.root || app.getPath('userData'))
+}
+
+async function changeDataRoot() {
   if (dataRootMigrationInProgress || fs.existsSync(dataRootContext.pendingPath)) throw new Error('已有未完成的数据目录迁移，不能开始新的迁移')
 
   const activeRoot = dataRootContext.paths?.root || dataRootContext.legacyUserData
@@ -1692,19 +1704,56 @@ ipcMain.handle('data-root:change', async () => {
   }
 
   return { restarting: true }
+}
+
+registerAppIpc({
+  ipcMain,
+  controller: {
+    openExternal,
+    executeFunction,
+    getInfo: () => ({
+      version: app.getVersion(),
+      platform: process.platform,
+      dataDirectory: activePaths?.root || app.getPath('userData')
+    }),
+    getDisplayDiagnostics,
+    chooseDirectory,
+    openDataDirectory: () => shell.openPath(activePaths?.root || app.getPath('userData')),
+    openSaveDirectory: () => shell.openPath(getSettings().screenshot.saveDirectory || app.getPath('pictures')),
+    completeAi: (messages, options) => require('./deepseek').completeChat(
+      getSettings().apiKey,
+      messages,
+      { ...getSettings().ai, ...(options || {}) }
+    ),
+    translateText: (text, sourceLanguage, targetLanguage) => require('./deepseek').translateText(
+      getSettings().apiKey,
+      text,
+      sourceLanguage,
+      targetLanguage || getSettings().ai.targetLanguage
+    )
+  }
 })
-ipcMain.handle('app:open-data-directory', () => shell.openPath(activePaths?.root || app.getPath('userData')))
-ipcMain.handle('app:open-save-directory', () => shell.openPath(getSettings().screenshot.saveDirectory || app.getPath('pictures')))
-ipcMain.handle('ai:complete', async (_event, { messages, options }) => require('./deepseek').completeChat(getSettings().apiKey, messages, { ...getSettings().ai, ...(options || {}) }))
-ipcMain.handle('ai:translate', async (_event, { text, sourceLanguage, targetLanguage }) => require('./deepseek').translateText(getSettings().apiKey, text, sourceLanguage, targetLanguage || getSettings().ai.targetLanguage))
+
+registerDataRootIpc({
+  ipcMain,
+  controller: {
+    get: getDataRootInfo,
+    open: openDataRoot,
+    change: changeDataRoot
+  }
+})
 
 registerHistoryIpc({
   ipcMain,
   historyService: {
     list: (filter) => historyService.list(filter),
     listSources: () => historyService.listSources(),
+    stats: () => historyService.stats(),
     getItem: (id) => historyService.getItem(id),
     delete: (id) => historyService.delete(id),
+    deleteMany: (ids) => historyService.deleteMany(ids),
+    exportMany: (ids, directory) => historyService.exportMany(ids, directory),
+    cleanup: () => historyService.cleanup(),
     clear: () => historyService.clear(),
     setFavorite: (id, favorite) => historyService.setFavorite(id, favorite)
   },
@@ -1722,28 +1771,36 @@ registerHistoryIpc({
   revealItem: (item) => {
     shell.showItemInFolder(item.filePath)
     return true
+  },
+  chooseExportDirectory: async () => {
+    const result = await dialog.showOpenDialog({
+      title: '选择截图导出目录',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return result.canceled ? '' : result.filePaths[0]
   }
 })
 
-ipcMain.on('capture:ready', (event) => {
+const captureIpcController = {
+  ready: (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win?._captureInit && !win._captureInitSent) {
     win._captureInitSent = true
     event.sender.send('capture:init', win._captureInit)
   }
-})
-ipcMain.on('capture:render-ready', (event) => revealCaptureWindow(BrowserWindow.fromWebContents(event.sender)))
-ipcMain.on('capture:render-error', (event, message) => {
+  },
+  renderReady: (event) => revealCaptureWindow(BrowserWindow.fromWebContents(event.sender)),
+  renderError: (event, message) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || win.isDestroyed()) return
   log('Capture render failed:', message || 'image decode failed')
   win.close()
-})
-ipcMain.on('capture:close', (event) => {
+  },
+  close: (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   win?.close()
-})
-ipcMain.handle('capture:start-region-recording', async (event, { selectionBounds } = {}) => {
+  },
+  startRegionRecording: async (event, { selectionBounds } = {}) => {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
   if (!captureWindow || captureWindow !== currentCaptureWindow || captureWindow.isDestroyed()) {
     throw new Error('无效的截图窗口')
@@ -1759,9 +1816,9 @@ ipcMain.handle('capture:start-region-recording', async (event, { selectionBounds
   await createRecordWindow({ display, selectionBounds: bounds })
   if (!captureWindow.isDestroyed()) captureWindow.close()
   return true
-})
-ipcMain.handle('capture:start-long', (event, payload) => createLongCaptureFromSelection(BrowserWindow.fromWebContents(event.sender), payload))
-ipcMain.handle('capture:smart-select', async (event, point = {}) => {
+  },
+  startLong: (event, payload) => createLongCaptureFromSelection(BrowserWindow.fromWebContents(event.sender), payload),
+  smartSelect: async (event, point = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   const context = win?._smartSelectContext
   if (!context || win.isDestroyed()) return []
@@ -1775,14 +1832,14 @@ ipcMain.handle('capture:smart-select', async (event, point = {}) => {
   return candidates.length
     ? candidates
     : [{ x: 0, y: 0, w: context.captureBounds.width, h: context.captureBounds.height }]
-})
-ipcMain.handle('capture:copy', (_event, { dataUrl, meta }) => {
+  },
+  copy: (_event, { dataUrl, meta }) => {
   clipboard.writeImage(nativeImage.createFromDataURL(dataUrl))
   const item = persistHistory(dataUrl, { ...meta, action: 'copy' })
   if (getSettings().screenshot.autoSaveOnCopy && getSettings().screenshot.saveDirectory) saveDataUrl(dataUrl, { fast: true }).catch((error) => log(error.message))
   return item
-})
-ipcMain.on('capture:save', (event, { dataUrl, meta, fast }) => {
+  },
+  save: (event, { dataUrl, meta, fast }) => {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
   if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
   setImmediate(async () => {
@@ -1794,34 +1851,34 @@ ipcMain.on('capture:save', (event, { dataUrl, meta, fast }) => {
       dialog.showErrorBox('保存截图失败', error.message || String(error))
     }
   })
-})
-ipcMain.handle('capture:pin', (event, { dataUrl, meta }) => {
+  },
+  pin: (event, { dataUrl, meta }) => {
   pinFromCapture(event, dataUrl, meta)
   return persistHistory(dataUrl, { ...meta, action: 'pin' })
-})
-ipcMain.handle('capture:pin-reannotate', (event, { dataUrl, meta, action }) => {
+  },
+  pinReannotate: (event, { dataUrl, meta, action }) => {
   const { captureWindow, pinWindow } = pinFromCapture(event, dataUrl, meta)
   pinWindow._pendingReannotateAction = action === 'ocr' ? 'ocr' : ''
   setImmediate(() => {
     if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
   })
   return persistHistory(dataUrl, { ...meta, action: 'pin' })
-})
-ipcMain.handle('capture:open-recognition', (event, { type, dataUrl, meta }) => {
+  },
+  openRecognition: (event, { type, dataUrl, meta }) => {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
   createRecognitionWindow(type, dataUrl, { scaleFactor: meta?.scaleFactor })
   setImmediate(() => {
     if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
   })
   return persistHistory(dataUrl, { ...meta, action: type })
-})
-ipcMain.handle('capture:record-history', (_event, { dataUrl, meta }) => persistHistory(dataUrl, meta))
-ipcMain.on('long-capture:ready', (event) => {
+  },
+  recordHistory: (_event, { dataUrl, meta }) => persistHistory(dataUrl, meta),
+  longReady: (event) => {
   const state = currentLongCapture
   if (!state || event.sender !== state.controllerWindow.webContents) return
   event.sender.send('long-capture:init', state.init)
-})
-ipcMain.on('long-overlay:ready', (event) => {
+  },
+  longOverlayReady: (event) => {
   const state = currentLongCapture
   if (!state || event.sender !== state.overlayWindow.webContents) return
   event.sender.send('long-overlay:init', {
@@ -1829,13 +1886,13 @@ ipcMain.on('long-overlay:ready', (event) => {
     selectionBounds: state.init.selectionBounds,
     mainColor: state.init.settings.mainColor
   })
-})
-ipcMain.on('long-capture:overlay-active', (event, active) => {
+  },
+  longOverlayActive: (event, active) => {
   const state = currentLongCapture
   if (!state || event.sender !== state.controllerWindow.webContents || state.overlayWindow.isDestroyed()) return
   state.overlayWindow.webContents.send('long-overlay:active', !!active)
-})
-ipcMain.handle('long-capture:add-strip', (event, { arrayBuffer, metadata } = {}) => {
+  },
+  longAddStrip: (event, { arrayBuffer, metadata } = {}) => {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
   const state = currentLongCapture
   if (!state || event.sender !== state.controllerWindow.webContents || state.finishing) throw new Error('长截图会话不可用')
@@ -1844,18 +1901,18 @@ ipcMain.handle('long-capture:add-strip', (event, { arrayBuffer, metadata } = {})
     settingsService.updateSettings({ screenshot: { longCaptureDirection: metadata.axis } })
   }
   return state.session.addStrip(Buffer.from(arrayBuffer), metadata)
-})
-ipcMain.handle('long-capture:set-trim', (event, { start, end } = {}) => {
+  },
+  longSetTrim: (event, { start, end } = {}) => {
   const state = currentLongCapture
   if (!state || event.sender !== state.controllerWindow.webContents || state.finishing) throw new Error('长截图会话不可用')
   return state.session.setTrim(start, end)
-})
-ipcMain.handle('long-capture:set-selection-editing', (event, { enabled, axis, hasContent } = {}) => {
+  },
+  longSetSelectionEditing: (event, { enabled, axis, hasContent } = {}) => {
   const state = currentLongCapture
   if (!state || event.sender !== state.controllerWindow.webContents || state.finishing) throw new Error('长截图会话不可用')
   return setLongOverlayEditing(state, enabled, axis, hasContent)
-})
-ipcMain.on('long-overlay:bounds-changed', (event, proposed = {}) => {
+  },
+  longOverlayBoundsChanged: (event, proposed = {}) => {
   const state = currentLongCapture
   if (!state || event.sender !== state.overlayWindow.webContents || !state.selectionEditing || state.finishing) return
   const display = state.init.displayBounds
@@ -1876,8 +1933,8 @@ ipcMain.on('long-overlay:bounds-changed', (event, proposed = {}) => {
   next.y = Math.max(display.y, Math.min(display.y + display.height - next.height, next.y))
   state.init.selectionBounds = next
   if (!state.controllerWindow.isDestroyed()) state.controllerWindow.webContents.send('long-capture:selection-updated', next)
-})
-ipcMain.handle('long-capture:finish', (event, { action, fast } = {}) => {
+  },
+  longFinish: (event, { action, fast } = {}) => {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
   const state = currentLongCapture
   if (!state || event.sender !== state.controllerWindow.webContents) throw new Error('长截图会话不可用')
@@ -1886,13 +1943,13 @@ ipcMain.handle('long-capture:finish', (event, { action, fast } = {}) => {
   return finishingPromise.finally(() => {
     if (state.finishingPromise === finishingPromise) state.finishingPromise = null
   })
-})
-ipcMain.on('long-capture:close', (event) => {
+  },
+  longClose: (event) => {
   const state = currentLongCapture
   if (state && event.sender === state.controllerWindow.webContents) closeLongCapture()
-})
-ipcMain.handle('ocr:status', () => getOcrService().getStatus())
-ipcMain.handle('capture:ocr', async (_event, payload) => {
+  },
+  ocrStatus: () => getOcrService().getStatus(),
+  ocr: async (_event, payload) => {
   if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
   const dataUrl = typeof payload === 'string' ? payload : payload?.dataUrl
   if (!dataUrl) throw new Error('OCR 图片数据为空')
@@ -1902,8 +1959,8 @@ ipcMain.handle('capture:ocr', async (_event, payload) => {
     detectAngle: settings.ocr.detectAngle,
     minConfidence: settings.ocr.minConfidence
   })
-})
-ipcMain.handle('capture:translate', async (_event, payload) => {
+  },
+  translate: async (_event, payload) => {
   if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
   const dataUrl = typeof payload === 'string' ? payload : payload?.dataUrl
   if (!dataUrl) throw new Error('OCR 图片数据为空')
@@ -1917,16 +1974,15 @@ ipcMain.handle('capture:translate', async (_event, payload) => {
   if (!text) throw new Error('未识别到可翻译的文本')
   const translation = await require('./deepseek').translateText(getSettings().apiKey, text, 'auto', getSettings().ai.targetLanguage)
   return { text, translation, ocrResult }
-})
-
-ipcMain.on('recognition:ready', (event) => {
+  },
+  recognitionReady: (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || !recognitionWindows.has(win) || !win._recognitionInit) return
   event.sender.send('recognition:init', win._recognitionInit)
   win.show()
   win.focus()
-})
-ipcMain.handle('recognition:table', async (event, payload) => {
+  },
+  recognitionTable: async (event, payload) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || !recognitionWindows.has(win)) throw new Error('无效的表格识别窗口')
   if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
@@ -1941,16 +1997,22 @@ ipcMain.handle('recognition:table', async (event, payload) => {
   const table = buildTableFromOcr(ocrResult, { minConfidence: settings.ocr.minConfidence })
   if (!table) throw new Error('未识别到稳定的表格结构，请扩大选区并确保至少包含两行两列')
   return table
-})
-ipcMain.handle('recognition:copy', (event, value) => {
+  },
+  recognitionCopy: (event, value) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || !recognitionWindows.has(win)) throw new Error('无效的识别结果窗口')
   clipboard.writeText(String(value || ''))
   return true
-})
-ipcMain.on('recognition:close', (event) => {
+  },
+  recognitionClose: (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win && recognitionWindows.has(win) && !win.isDestroyed()) win.close()
+  }
+}
+
+registerCaptureIpc({
+  ipcMain,
+  controller: captureIpcController
 })
 
 ipcMain.on('pin:ready', (event) => {
@@ -2113,26 +2175,27 @@ function requireRecordSession(win, sessionId) {
   return sessionId
 }
 
-ipcMain.on('record:ready', (event) => {
+const recordingIpcController = {
+  ready: (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win === recordWindow && win?._recordInit) event.sender.send('record:init', win._recordInit)
-})
-ipcMain.on('record-frame:ready', (event) => {
+  },
+  frameReady: (event) => {
   const frame = requireRecordFrameSender(event)
   sendRecordAnnotationCommand(frame._recordOwner)
-})
-ipcMain.on('record-frame:snapshot', (event, snapshot = {}) => {
+  },
+  frameSnapshot: (event, snapshot = {}) => {
   const frame = requireRecordFrameSender(event)
   const control = frame._recordOwner
   const bounds = control._recordInit.selectionBounds
   const clean = sanitizeAnnotationSnapshot(snapshot, { width: bounds.width, height: bounds.height })
   control.webContents.send('record:annotation-snapshot', clean)
-})
-ipcMain.handle('record:set-annotation-command', (event, command = {}) => {
+  },
+  setAnnotationCommand: (event, command = {}) => {
   const control = requireRecordSender(event)
   return sendRecordAnnotationCommand(control, command)
-})
-ipcMain.handle('record:start-session', async (event) => {
+  },
+  startSession: async (event) => {
   assertManagedDataWritable()
   const win = requireRecordSender(event)
   const service = getRecordingService()
@@ -2141,23 +2204,23 @@ ipcMain.handle('record:start-session', async (event) => {
   const session = await managedRecordingWriters.track(() => service.startSession())
   win._recordSessionId = session.id
   return { id: session.id }
-})
-ipcMain.handle('record:append-chunk', async (event, { sessionId, arrayBuffer } = {}) => {
+  },
+  appendChunk: async (event, { sessionId, arrayBuffer } = {}) => {
   assertManagedDataWritable()
   const win = requireRecordSender(event)
   requireRecordSession(win, sessionId)
   const service = getRecordingService()
   await managedRecordingWriters.track(service.appendChunk(sessionId, Buffer.from(arrayBuffer || [])))
   return true
-})
-ipcMain.handle('record:finish-session', async (event, { sessionId } = {}) => {
+  },
+  finishSession: async (event, { sessionId } = {}) => {
   assertManagedDataWritable()
   const win = requireRecordSender(event)
   requireRecordSession(win, sessionId)
   const service = getRecordingService()
   return managedRecordingWriters.track(service.finishSession(sessionId))
-})
-ipcMain.handle('record:save-mp4', async (event, { sessionId, durationMs } = {}) => {
+  },
+  saveMp4: async (event, { sessionId, durationMs } = {}) => {
   assertManagedDataWritable()
   const win = requireRecordSender(event)
   requireRecordSession(win, sessionId)
@@ -2187,8 +2250,8 @@ ipcMain.handle('record:save-mp4', async (event, { sessionId, durationMs } = {}) 
   win._recordSessionId = null
   await managedRecordingWriters.track(service.cleanupSession(sessionId))
   return outputPath
-})
-ipcMain.handle('record:cancel-session', async (event, { sessionId } = {}) => {
+  },
+  cancelSession: async (event, { sessionId } = {}) => {
   assertManagedDataWritable()
   const win = requireRecordSender(event)
   requireRecordSession(win, sessionId)
@@ -2196,8 +2259,8 @@ ipcMain.handle('record:cancel-session', async (event, { sessionId } = {}) => {
   const service = getRecordingService()
   await managedRecordingWriters.track(service.cleanupSession(sessionId))
   return true
-})
-ipcMain.handle('record:set-frame-state', (event, state = 'idle') => {
+  },
+  setFrameState: (event, state = 'idle') => {
   const control = requireRecordSender(event)
   const frame = recordFrameWindow
   if (!frame || frame.isDestroyed()) return false
@@ -2212,8 +2275,8 @@ ipcMain.handle('record:set-frame-state', (event, state = 'idle') => {
     frame.webContents.send('record-frame:state', ['recording', 'paused'].includes(state) ? state : 'idle')
   }
   return true
-})
-ipcMain.handle('record:resize-preview', (event) => {
+  },
+  resizePreview: (event) => {
   const win = requireRecordSender(event)
   const display = screen.getDisplayMatching(win._recordInit.selectionBounds)
   const width = Math.min(760, display.workArea.width)
@@ -2225,8 +2288,8 @@ ipcMain.handle('record:resize-preview', (event) => {
     height
   }, false)
   return true
-})
-ipcMain.handle('record:restart', async (event, { sessionId } = {}) => {
+  },
+  restart: async (event, { sessionId } = {}) => {
   assertManagedDataWritable()
   const win = requireRecordSender(event)
   if (sessionId) requireRecordSession(win, sessionId)
@@ -2241,11 +2304,17 @@ ipcMain.handle('record:restart', async (event, { sessionId } = {}) => {
     recordFrameWindow.webContents.send('record-frame:state', 'idle')
   }
   return true
-})
-ipcMain.on('record:close', (event) => {
+  },
+  close: (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win !== recordWindow) return
   closeRecordFlow().catch((error) => log('Recording close failed:', error.message))
+  }
+}
+
+registerRecordingIpc({
+  ipcMain,
+  controller: recordingIpcController
 })
 
 ipcMain.on('toolbar:action', async (_event, { action, text }) => {

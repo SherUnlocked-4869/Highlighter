@@ -2,6 +2,9 @@ const fs = require('fs')
 const path = require('path')
 
 const MAX_HISTORY_QUERY_LENGTH = 200
+const MAX_HISTORY_BATCH_SIZE = 500
+const OWNED_CAPTURE_FILE = /^Highlighter(?:_Long)?_\d{4}-\d{2}-\d{2}_[\d-]+\.png$/i
+const OWNED_THUMBNAIL_FILE = /^\d{10,}-[a-z0-9]+-thumb\.png$/i
 
 function normalizeHistoryFilter(value = {}) {
   const filter = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -24,6 +27,19 @@ function matchesHistoryFilter(item, filter) {
     item.ocrText
   ].filter(Boolean).join(' ').toLocaleLowerCase()
   return searchable.includes(filter.query)
+}
+
+function normalizeHistoryIds(value) {
+  if (!Array.isArray(value)) throw new TypeError('历史记录 ID 必须是数组')
+  if (value.length > MAX_HISTORY_BATCH_SIZE) throw new RangeError(`单次最多处理 ${MAX_HISTORY_BATCH_SIZE} 项历史记录`)
+  return [...new Set(value
+    .map((id) => String(id || '').trim().slice(0, 128))
+    .filter(Boolean))]
+}
+
+function isOwnedHistoryFile(filePath) {
+  const name = path.basename(String(filePath || ''))
+  return OWNED_CAPTURE_FILE.test(name) || OWNED_THUMBNAIL_FILE.test(name)
 }
 
 class HistoryService {
@@ -79,6 +95,89 @@ class HistoryService {
     if (!item) return
     if (item.thumbnailPath && fs.existsSync(item.thumbnailPath)) fs.unlinkSync(item.thumbnailPath)
     if (item.filePath && fs.existsSync(item.filePath)) fs.unlinkSync(item.filePath)
+  }
+
+  historyDirectories() {
+    return [...new Set([
+      this.getSettings().screenshot.historyDirectory,
+      this.defaultHistoryDirectory
+    ]
+      .filter(Boolean)
+      .map((directory) => path.resolve(directory)))]
+  }
+
+  referencedFilePaths(history = this.readHistory()) {
+    const referenced = new Set()
+    for (const item of history) {
+      for (const filePath of [item?.filePath, item?.thumbnailPath]) {
+        if (filePath) referenced.add(path.resolve(filePath).toLocaleLowerCase())
+      }
+    }
+    return referenced
+  }
+
+  orphanFiles(history = this.readHistory()) {
+    const referenced = this.referencedFilePaths(history)
+    const orphans = []
+    for (const directory of this.historyDirectories()) {
+      if (!fs.existsSync(directory)) continue
+      let entries = []
+      try {
+        entries = fs.readdirSync(directory, { withFileTypes: true })
+      } catch (error) {
+        this.log('History directory scan failed:', directory, error.message)
+        continue
+      }
+      for (const entry of entries) {
+        if (!entry.isFile()) continue
+        const filePath = path.join(directory, entry.name)
+        if (!isOwnedHistoryFile(filePath)) continue
+        if (referenced.has(path.resolve(filePath).toLocaleLowerCase())) continue
+        let size = 0
+        try {
+          size = fs.statSync(filePath).size
+        } catch {
+          continue
+        }
+        orphans.push({ filePath, size })
+      }
+    }
+    return orphans
+  }
+
+  stats() {
+    const history = this.readHistory()
+    const referencedFiles = new Set()
+    let availableCount = 0
+    let missingCount = 0
+    let favoriteCount = 0
+    let totalBytes = 0
+    for (const item of history) {
+      if (item?.favorite === true) favoriteCount++
+      if (item?.filePath && fs.existsSync(item.filePath)) availableCount++
+      else missingCount++
+      for (const filePath of [item?.filePath, item?.thumbnailPath]) {
+        if (!filePath || !fs.existsSync(filePath)) continue
+        const normalized = path.resolve(filePath).toLocaleLowerCase()
+        if (referencedFiles.has(normalized)) continue
+        referencedFiles.add(normalized)
+        try {
+          totalBytes += fs.statSync(filePath).size
+        } catch {
+          // File can disappear between existence and size checks.
+        }
+      }
+    }
+    const orphans = this.orphanFiles(history)
+    return {
+      totalCount: history.length,
+      availableCount,
+      missingCount,
+      favoriteCount,
+      totalBytes,
+      orphanCount: orphans.length,
+      orphanBytes: orphans.reduce((total, item) => total + item.size, 0)
+    }
   }
 
   trimHistory(history, limit) {
@@ -201,6 +300,113 @@ class HistoryService {
     return true
   }
 
+  deleteMany(ids) {
+    this.assertWritable()
+    const selected = new Set(normalizeHistoryIds(ids))
+    const remaining = []
+    const failures = []
+    let deletedCount = 0
+    for (const item of this.readHistory()) {
+      if (!selected.has(String(item?.id || ''))) {
+        remaining.push(item)
+        continue
+      }
+      try {
+        this.deleteFiles(item)
+        deletedCount++
+      } catch (error) {
+        remaining.push(item)
+        failures.push({ id: item.id, message: error?.message || String(error) })
+      }
+    }
+    this.writeHistory(remaining)
+    return {
+      deletedCount,
+      missingCount: selected.size - deletedCount - failures.length,
+      failures
+    }
+  }
+
+  exportMany(ids, directory) {
+    this.assertWritable()
+    const selected = new Set(normalizeHistoryIds(ids))
+    const requestedDirectory = String(directory || '').trim()
+    if (!requestedDirectory || !path.isAbsolute(requestedDirectory)) throw new Error('导出目录必须是绝对路径')
+    const exportDirectory = path.resolve(requestedDirectory)
+    fs.mkdirSync(exportDirectory, { recursive: true })
+    const failures = []
+    let exportedCount = 0
+    let missingCount = 0
+    for (const item of this.readHistory()) {
+      if (!selected.has(String(item?.id || ''))) continue
+      if (!item.filePath || !fs.existsSync(item.filePath)) {
+        missingCount++
+        continue
+      }
+      const extension = path.extname(item.filePath)
+      const baseName = path.basename(item.filePath, extension)
+      let destination = path.join(exportDirectory, `${baseName}${extension}`)
+      let suffix = 1
+      while (fs.existsSync(destination)) {
+        destination = path.join(exportDirectory, `${baseName}-${suffix}${extension}`)
+        suffix++
+      }
+      try {
+        fs.copyFileSync(item.filePath, destination)
+        exportedCount++
+      } catch (error) {
+        failures.push({ id: item.id, message: error?.message || String(error) })
+      }
+    }
+    return {
+      exportedCount,
+      missingCount: missingCount + Math.max(0, selected.size - exportedCount - missingCount - failures.length),
+      failures,
+      directory: exportDirectory
+    }
+  }
+
+  cleanup() {
+    this.assertWritable()
+    const history = this.readHistory()
+    const remaining = []
+    const failures = []
+    let removedEntries = 0
+    let removedFiles = 0
+    let reclaimedBytes = 0
+
+    for (const item of history) {
+      if (item?.filePath && fs.existsSync(item.filePath)) {
+        remaining.push(item)
+        continue
+      }
+      removedEntries++
+      if (item?.thumbnailPath && fs.existsSync(item.thumbnailPath)) {
+        try {
+          reclaimedBytes += fs.statSync(item.thumbnailPath).size
+          fs.unlinkSync(item.thumbnailPath)
+          removedFiles++
+        } catch (error) {
+          failures.push({ filePath: item.thumbnailPath, message: error?.message || String(error) })
+        }
+      }
+    }
+
+    for (const orphan of this.orphanFiles(history)) {
+      try {
+        fs.unlinkSync(orphan.filePath)
+        removedFiles++
+        reclaimedBytes += orphan.size
+      } catch (error) {
+        failures.push({ filePath: orphan.filePath, message: error?.message || String(error) })
+      }
+    }
+
+    if (removedEntries) this.writeHistory(remaining)
+    else if (removedFiles) this.onChanged()
+    return { removedEntries, removedFiles, reclaimedBytes, failures }
+  }
+
   clear() {
     this.assertWritable()
     const remaining = []
@@ -231,6 +437,8 @@ class HistoryService {
 
 module.exports = {
   HistoryService,
+  isOwnedHistoryFile,
   matchesHistoryFilter,
+  normalizeHistoryIds,
   normalizeHistoryFilter
 }

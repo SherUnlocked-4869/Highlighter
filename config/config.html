@@ -11,27 +11,27 @@
     <aside class="sidebar">
       <div class="brand"><span>High</span>lighter</div>
       <nav>
-        <button class="nav-item active" data-route="home"><i>▦</i><span>快捷功能</span></button>
+        <button class="nav-item active" data-route="home"><i class="svg-icon nav-icon" style="--icon:url('icons/lightning.svg')" aria-hidden="true"></i><span>快捷功能</span></button>
         <div class="nav-group"><b>工具箱</b></div>
-        <button class="nav-item" data-route="translation"><i>文</i><span>翻译</span></button>
-        <button class="nav-item" data-route="chat"><i>AI</i><span>AI 对话</span></button>
-        <button class="nav-item" data-route="history"><i>◫</i><span>截图历史</span></button>
+        <button class="nav-item" data-route="translation"><i class="svg-icon nav-icon" style="--icon:url('../capture/icons/translate.svg')" aria-hidden="true"></i><span>翻译</span></button>
+        <button class="nav-item" data-route="chat"><i class="svg-icon nav-icon" style="--icon:url('icons/robot.svg')" aria-hidden="true"></i><span>AI 对话</span></button>
+        <button class="nav-item" data-route="history"><i class="svg-icon nav-icon" style="--icon:url('icons/history.svg')" aria-hidden="true"></i><span>截图历史</span></button>
         <div class="nav-group"><b>个性化</b></div>
-        <button class="nav-item" data-route="appearance"><i>◐</i><span>外观配色</span></button>
-        <button class="nav-item" data-route="plugins"><i>♧</i><span>插件</span></button>
+        <button class="nav-item" data-route="appearance"><i class="svg-icon nav-icon" style="--icon:url('icons/palette.svg')" aria-hidden="true"></i><span>外观配色</span></button>
+        <button class="nav-item" data-route="plugins"><i class="svg-icon nav-icon" style="--icon:url('icons/components.svg')" aria-hidden="true"></i><span>插件</span></button>
         <div class="nav-group"><b>设置</b></div>
-        <button class="nav-item" data-route="settings-general"><i>☷</i><span>界面设置</span></button>
-        <button class="nav-item" data-route="settings-function"><i>⚙</i><span>功能设置</span></button>
-        <button class="nav-item" data-route="selection-toolbar"><i>划</i><span>划词工具</span></button>
-        <button class="nav-item" data-route="settings-hotkeys"><i>⌨</i><span>热键设置</span></button>
-        <button class="nav-item" data-route="settings-system"><i>◉</i><span>系统设置</span></button>
-        <button class="nav-item about-item" data-route="about"><i>ⓘ</i><span>关于</span></button>
+        <button class="nav-item" data-route="settings-general"><i class="svg-icon nav-icon" style="--icon:url('icons/layout.svg')" aria-hidden="true"></i><span>界面设置</span></button>
+        <button class="nav-item" data-route="settings-function"><i class="svg-icon nav-icon" style="--icon:url('icons/settings.svg')" aria-hidden="true"></i><span>功能设置</span></button>
+        <button class="nav-item" data-route="selection-toolbar"><i class="svg-icon nav-icon" style="--icon:url('icons/text-style.svg')" aria-hidden="true"></i><span>划词工具</span></button>
+        <button class="nav-item" data-route="settings-hotkeys"><i class="svg-icon nav-icon" style="--icon:url('icons/keyboard.svg')" aria-hidden="true"></i><span>热键设置</span></button>
+        <button class="nav-item" data-route="settings-system"><i class="svg-icon nav-icon" style="--icon:url('icons/system.svg')" aria-hidden="true"></i><span>系统设置</span></button>
+        <button class="nav-item about-item" data-route="about"><i class="svg-icon nav-icon" style="--icon:url('icons/info.svg')" aria-hidden="true"></i><span>关于</span></button>
       </nav>
     </aside>
     <section class="workspace">
       <header class="titlebar">
         <div id="pageTitle">快捷功能</div>
-        <div class="window-actions"><button id="minimize">—</button><button id="close">×</button></div>
+        <div class="window-actions"><button id="minimize" title="最小化" aria-label="最小化"><span class="svg-icon" style="--icon:url('../capture/icons/line.svg')" aria-hidden="true"></span></button><button id="close" title="关闭" aria-label="关闭"><span class="svg-icon" style="--icon:url('../capture/icons/close.svg')" aria-hidden="true"></span></button></div>
       </header>
       <main id="view"></main>
     </section>

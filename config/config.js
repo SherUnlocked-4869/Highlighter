@@ -12,6 +12,7 @@ let historySource = ''
 let historyFavoritesOnly = false
 let historyRenderVersion = 0
 let historySearchTimer = null
+let historySelectedIds = new Set()
 let shortcutStatuses = {}
 
 const selectionToolbarBuiltinMeta = {
@@ -31,40 +32,44 @@ const routeTitles = {
 
 const functionGroups = {
   screenshot: [
-    ['screenshot', '截图', '⌗', '自由框选、智能标注与导出'],
-    ['screenshotDelay', '延迟截图', '◴', '倒计时后开始区域截图'],
-    ['screenshotFixed', '固定到屏幕', '📌', '截图完成后直接贴到桌面'],
-    ['screenshotOcr', '文本识别', 'OCR', '截图后提取中文、英文等文字'],
-    ['screenshotTable', '表格识别', '表', '恢复截图中的行列并复制到 Excel'],
-    ['screenshotQr', '二维码识别', '⌗', '扫描二维码内容或打开其中的链接'],
-    ['screenshotOcrTranslate', '文本识别翻译', '译', 'OCR 后调用翻译服务'],
-    ['screenshotCopy', '复制到剪贴板', '▣', '完成选区后立即复制'],
-    ['screenshotLong', '长截图', '↕', '框选滚动区域并自动拼接'],
-    ['screenshotFullScreen', '截取全屏', '▤', '捕获鼠标所在显示器'],
-    ['screenshotFocusedWindow', '当前焦点窗口', '▰', '捕获当前活动窗口']
+    ['screenshot', '截图', 'icons/screenshot.svg', '自由框选、智能标注与导出'],
+    ['screenshotDelay', '延迟截图', 'icons/timer.svg', '倒计时后开始区域截图'],
+    ['screenshotFixed', '固定到屏幕', '../capture/icons/pin.svg', '截图完成后直接贴到桌面'],
+    ['screenshotOcr', '文本识别', '../capture/icons/ocr.svg', '截图后提取中文、英文等文字'],
+    ['screenshotTable', '表格识别', '../capture/icons/table.svg', '恢复截图中的行列并复制到 Excel'],
+    ['screenshotQr', '二维码识别', '../capture/icons/qr.svg', '扫描二维码内容或打开其中的链接'],
+    ['screenshotOcrTranslate', '文本识别翻译', '../capture/icons/translate.svg', 'OCR 后调用翻译服务'],
+    ['screenshotCopy', '复制到剪贴板', '../capture/icons/copy.svg', '完成选区后立即复制'],
+    ['screenshotLong', '长截图', '../capture/icons/long-capture.svg', '框选滚动区域并自动拼接'],
+    ['screenshotFullScreen', '截取全屏', 'icons/fullscreen.svg', '捕获鼠标所在显示器'],
+    ['screenshotFocusedWindow', '当前焦点窗口', 'icons/focus.svg', '捕获当前活动窗口']
   ],
   ai: [
-    ['chat', '打开 AI 对话', 'AI', '使用 DeepSeek 进行多轮对话'],
-    ['chatSelectText', '对话框填入选中文本', '▧', '保留现有划词助手工作流']
+    ['chat', '打开 AI 对话', 'icons/robot.svg', '使用 DeepSeek 进行多轮对话'],
+    ['chatSelectText', '对话框填入选中文本', 'icons/text-style-one.svg', '保留现有划词助手工作流']
   ],
   translation: [
-    ['translation', '打开翻译工具', '文', '支持自动检测与中英互译'],
-    ['translationSelectText', '翻译选中的文本', '⇄', '划词后快速翻译']
+    ['translation', '打开翻译工具', '../capture/icons/translate.svg', '支持自动检测与中英互译'],
+    ['translationSelectText', '翻译选中的文本', 'icons/translation.svg', '划词后快速翻译']
   ],
   video: [
-    ['videoRecord', '视频录制', '●', '录制屏幕并导出 MP4 视频']
+    ['videoRecord', '视频录制', '../capture/icons/record.svg', '录制屏幕并导出 MP4 视频']
   ],
   other: [
-    ['fixedContent', '固定本地图片', '📌', '选择图片并固定到桌面'],
-    ['fullScreenDraw', '全屏画布', '✎', '在白色全屏画布中绘制'],
-    ['toggleFixedContentVisibility', '显示/隐藏所有贴图', '◉', '批量控制桌面贴图'],
-    ['openImageSaveFolder', '打开图片目录', '▱', '打开默认截图保存位置'],
-    ['openCaptureHistory', '打开截图历史', '◫', '回顾、复制和重新编辑截图']
+    ['fixedContent', '固定本地图片', '../capture/icons/pin.svg', '选择图片并固定到桌面'],
+    ['fullScreenDraw', '全屏画布', 'icons/draw.svg', '在白色全屏画布中绘制'],
+    ['toggleFixedContentVisibility', '显示/隐藏所有贴图', 'icons/preview.svg', '批量控制桌面贴图'],
+    ['openImageSaveFolder', '打开图片目录', 'icons/folder-open.svg', '打开默认截图保存位置'],
+    ['openCaptureHistory', '打开截图历史', 'icons/history.svg', '回顾、复制和重新编辑截图']
   ]
 }
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char])
+}
+
+function iconMarkup(iconPath) {
+  return `<span class="svg-icon" style="--icon:url('${escapeHtml(iconPath)}')" aria-hidden="true"></span>`
 }
 
 function toast(message) {
@@ -164,9 +169,9 @@ function renderHome() {
   const tabs = [['screenshot', '截图'], ['ai', 'AI 对话'], ['translation', '翻译'], ['video', '视频录制'], ['other', '其它']]
   const rows = functionGroups[homeTab].map(([name, label, icon, description]) => {
     const shortcut = settings.shortcuts[name] || ''
-    return `<div class="function-row" data-function="${name}"><span class="icon">${icon}</span><span class="label">${label}<small class="desc">${description}</small></span>${shortcutButton(name, shortcut)}</div>`
+    return `<div class="function-row" data-function="${name}"><span class="icon">${iconMarkup(icon)}</span><span class="label">${label}<small class="desc">${description}</small></span>${shortcutButton(name, shortcut)}</div>`
   }).join('')
-  view.innerHTML = `<div class="page">${pageHeader('快捷功能', '参考 Snow Shot 的分组方式，统一管理截图、AI、翻译、录屏和桌面工具。')}<div class="tabs">${tabs.map(([key, label]) => `<button data-home-tab="${key}" class="${homeTab === key ? 'active' : ''}">${label}</button>`).join('')}</div><section class="section"><h2 class="section-title">${tabs.find(([key]) => key === homeTab)[1]}</h2><div class="function-list">${rows}</div></section></div>`
+  view.innerHTML = `<div class="page">${pageHeader('快捷功能', '统一管理截图、AI、翻译、录屏和桌面工具。')}<div class="tabs">${tabs.map(([key, label]) => `<button data-home-tab="${key}" class="${homeTab === key ? 'active' : ''}">${label}</button>`).join('')}</div><section class="section"><h2 class="section-title">${tabs.find(([key]) => key === homeTab)[1]}</h2><div class="function-list">${rows}</div></section></div>`
   document.querySelectorAll('[data-home-tab]').forEach((button) => button.onclick = () => { homeTab = button.dataset.homeTab; renderHome() })
   document.querySelectorAll('[data-function]').forEach((row) => row.onclick = async (event) => {
     if (event.target.closest('[data-shortcut]')) return
@@ -252,18 +257,35 @@ function renderChat() {
   const box = document.getElementById('chatMessages'); box.scrollTop = box.scrollHeight
 }
 
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value) || 0)
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let size = bytes / 1024
+  let unit = units[0]
+  for (let index = 1; index < units.length && size >= 1024; index++) {
+    size /= 1024
+    unit = units[index]
+  }
+  return `${size >= 10 ? size.toFixed(1) : size.toFixed(2)} ${unit}`
+}
+
 async function renderHistory() {
   const renderVersion = ++historyRenderVersion
-  view.innerHTML = `<div class="page">${pageHeader('截图历史', '搜索、筛选和收藏截图，可继续编辑、复制、定位或清理。', '<button class="button danger" id="clearHistory">清空全部</button>')}<div class="empty">正在加载…</div></div>`
-  const [history, sources] = await Promise.all([
+  const headerActions = '<div class="page-head-actions"><button class="button" id="cleanupHistory">清理失效项</button><button class="button danger" id="clearHistory">清空全部</button></div>'
+  view.innerHTML = `<div class="page">${pageHeader('截图历史', '搜索、筛选、收藏和批量管理截图。', headerActions)}<div class="empty">正在加载…</div></div>`
+  const [history, sources, stats] = await Promise.all([
     window.electronAPI.getHistory({
       query: historyQuery,
       source: historySource,
       favoriteOnly: historyFavoritesOnly
     }),
-    window.electronAPI.getHistorySources()
+    window.electronAPI.getHistorySources(),
+    window.electronAPI.getHistoryStats()
   ])
   if (currentRoute !== 'history' || renderVersion !== historyRenderVersion) return
+  const visibleIds = new Set(history.map((item) => String(item.id)))
+  historySelectedIds = new Set([...historySelectedIds].filter((id) => visibleIds.has(id)))
   const container = document.querySelector('.page')
   container.querySelector('.empty')?.remove()
   const sourceLabels = {
@@ -274,10 +296,33 @@ async function renderHistory() {
     history: '历史编辑'
   }
   const sourceOptions = sources.map((source) => `<option value="${escapeHtml(source)}">${escapeHtml(sourceLabels[source] || source)}</option>`).join('')
-  container.insertAdjacentHTML('beforeend', `<div class="history-filters card"><input class="input" id="historySearch" type="search" value="${escapeHtml(historyQuery)}" placeholder="搜索来源、操作或文件名"><select id="historySource"><option value="">全部来源</option>${sourceOptions}</select><button class="button ${historyFavoritesOnly ? 'active' : ''}" id="historyFavorites">${historyFavoritesOnly ? '★ 仅收藏' : '☆ 仅收藏'}</button><span>${history.length} 项</span></div>${history.length ? `<div class="history-grid">${history.map((item) => `<article class="card history-item ${item.favorite ? 'favorite' : ''}"><div class="history-image"><img src="${item.thumbnail}"></div><div class="history-meta">${new Date(item.createdAt).toLocaleString()} · ${escapeHtml(sourceLabels[item.source] || item.source)} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</div><div class="history-actions"><button class="favorite-button ${item.favorite ? 'active' : ''}" data-history-action="favorite" data-id="${escapeHtml(item.id)}" data-favorite="${item.favorite ? 'false' : 'true'}" title="${item.favorite ? '取消收藏' : '收藏'}">${item.favorite ? '★' : '☆'}</button>${item.longCapture ? '' : `<button data-history-action="edit" data-id="${escapeHtml(item.id)}">编辑</button>`}<button data-history-action="copy" data-id="${escapeHtml(item.id)}">复制</button><button data-history-action="reveal" data-id="${escapeHtml(item.id)}">定位</button><button data-history-action="delete" data-id="${escapeHtml(item.id)}">删除</button></div></article>`).join('')}</div>` : '<div class="empty">没有符合条件的截图历史</div>'}`)
+  const statsMarkup = `<div class="history-stats card"><div><b>${formatBytes(stats.totalBytes)}</b><span>占用空间</span></div><div><b>${stats.availableCount}</b><span>有效记录</span></div><div><b>${stats.favoriteCount}</b><span>收藏</span></div><div class="${stats.missingCount ? 'warning' : ''}"><b>${stats.missingCount}</b><span>失效记录</span></div><div class="${stats.orphanCount ? 'warning' : ''}"><b>${stats.orphanCount}</b><span>孤立文件 · ${formatBytes(stats.orphanBytes)}</span></div></div>`
+  const filtersMarkup = `<div class="history-filters card"><input class="input" id="historySearch" type="search" value="${escapeHtml(historyQuery)}" placeholder="搜索来源、操作或文件名"><select id="historySource"><option value="">全部来源</option>${sourceOptions}</select><button class="button ${historyFavoritesOnly ? 'active' : ''}" id="historyFavorites">${historyFavoritesOnly ? '★ 仅收藏' : '☆ 仅收藏'}</button><span>${history.length} 项</span></div>`
+  const batchMarkup = `<div class="history-batch card"><label><input type="checkbox" id="selectAllHistory"> 全选当前结果</label><span id="historySelectedCount">已选择 0 项</span><button class="button" id="exportSelectedHistory" disabled>导出选中项</button><button class="button danger" id="deleteSelectedHistory" disabled>删除选中项</button></div>`
+  const itemsMarkup = history.length
+    ? `<div class="history-grid">${history.map((item) => {
+        const selected = historySelectedIds.has(String(item.id))
+        return `<article class="card history-item ${item.favorite ? 'favorite' : ''} ${selected ? 'selected' : ''}"><label class="history-select" title="选择此项"><input type="checkbox" data-history-select data-id="${escapeHtml(item.id)}" ${selected ? 'checked' : ''}></label><div class="history-image"><img src="${item.thumbnail}"></div><div class="history-meta">${new Date(item.createdAt).toLocaleString()} · ${escapeHtml(sourceLabels[item.source] || item.source)} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</div><div class="history-actions"><button class="favorite-button ${item.favorite ? 'active' : ''}" data-history-action="favorite" data-id="${escapeHtml(item.id)}" data-favorite="${item.favorite ? 'false' : 'true'}" title="${item.favorite ? '取消收藏' : '收藏'}">${item.favorite ? '★' : '☆'}</button>${item.longCapture ? '' : `<button data-history-action="edit" data-id="${escapeHtml(item.id)}">编辑</button>`}<button data-history-action="copy" data-id="${escapeHtml(item.id)}">复制</button><button data-history-action="reveal" data-id="${escapeHtml(item.id)}">定位</button><button data-history-action="delete" data-id="${escapeHtml(item.id)}">删除</button></div></article>`
+      }).join('')}</div>`
+    : '<div class="empty">没有符合条件的截图历史</div>'
+  container.insertAdjacentHTML('beforeend', `${statsMarkup}${filtersMarkup}${batchMarkup}${itemsMarkup}`)
+
   const searchInput = document.getElementById('historySearch')
   const sourceSelect = document.getElementById('historySource')
+  const selectAll = document.getElementById('selectAllHistory')
+  const selectedCount = document.getElementById('historySelectedCount')
+  const exportSelected = document.getElementById('exportSelectedHistory')
+  const deleteSelected = document.getElementById('deleteSelectedHistory')
+  const updateSelectionControls = () => {
+    const count = historySelectedIds.size
+    selectedCount.textContent = `已选择 ${count} 项`
+    exportSelected.disabled = count === 0
+    deleteSelected.disabled = count === 0
+    selectAll.checked = history.length > 0 && count === history.length
+    selectAll.indeterminate = count > 0 && count < history.length
+  }
   sourceSelect.value = historySource
+  updateSelectionControls()
   searchInput.oninput = () => {
     historyQuery = searchInput.value
     clearTimeout(historySearchTimer)
@@ -297,6 +342,37 @@ async function renderHistory() {
     historyFavoritesOnly = !historyFavoritesOnly
     renderHistory()
   }
+  document.querySelectorAll('[data-history-select]').forEach((checkbox) => {
+    checkbox.onchange = () => {
+      const id = checkbox.dataset.id
+      if (checkbox.checked) historySelectedIds.add(id)
+      else historySelectedIds.delete(id)
+      checkbox.closest('.history-item')?.classList.toggle('selected', checkbox.checked)
+      updateSelectionControls()
+    }
+  })
+  selectAll.onchange = () => {
+    historySelectedIds = selectAll.checked ? new Set(history.map((item) => String(item.id))) : new Set()
+    document.querySelectorAll('[data-history-select]').forEach((checkbox) => {
+      checkbox.checked = selectAll.checked
+      checkbox.closest('.history-item')?.classList.toggle('selected', selectAll.checked)
+    })
+    updateSelectionControls()
+  }
+  exportSelected.onclick = async () => {
+    const result = await window.electronAPI.exportHistory([...historySelectedIds])
+    if (result.canceled) return
+    const suffix = result.failures?.length ? `，${result.failures.length} 项失败` : ''
+    toast(`已导出 ${result.exportedCount} 项${suffix}`)
+  }
+  deleteSelected.onclick = async () => {
+    if (!confirm(`确定删除选中的 ${historySelectedIds.size} 项截图及对应文件？`)) return
+    const result = await window.electronAPI.deleteHistoryMany([...historySelectedIds])
+    historySelectedIds.clear()
+    const suffix = result.failures?.length ? `，${result.failures.length} 项失败` : ''
+    toast(`已删除 ${result.deletedCount} 项${suffix}`)
+    renderHistory()
+  }
   document.querySelectorAll('[data-history-action]').forEach((button) => button.onclick = async () => {
     const action = button.dataset.historyAction; const id = button.dataset.id
     if (action === 'edit') await window.electronAPI.editHistory(id)
@@ -307,13 +383,21 @@ async function renderHistory() {
       renderHistory()
     }
     if (action === 'delete') {
-      try { await window.electronAPI.deleteHistory(id); renderHistory() }
+      try { historySelectedIds.delete(id); await window.electronAPI.deleteHistory(id); renderHistory() }
       catch (error) { toast(error.message || '图片文件删除失败') }
     }
   })
+  document.getElementById('cleanupHistory').onclick = async () => {
+    if (!stats.missingCount && !stats.orphanCount) { toast('没有需要清理的项目'); return }
+    if (!confirm(`将移除 ${stats.missingCount} 条失效记录，并删除 ${stats.orphanCount} 个未被引用的 Highlighter 文件，是否继续？`)) return
+    const result = await window.electronAPI.cleanupHistory()
+    const suffix = result.failures?.length ? `，${result.failures.length} 项失败` : ''
+    toast(`已清理 ${result.removedEntries} 条记录和 ${result.removedFiles} 个文件${suffix}`)
+    renderHistory()
+  }
   document.getElementById('clearHistory').onclick = async () => {
     if (!confirm('确定清空全部截图历史并删除对应图片文件？')) return
-    try { await window.electronAPI.clearHistory(); renderHistory() }
+    try { historySelectedIds.clear(); await window.electronAPI.clearHistory(); renderHistory() }
     catch (error) { toast(error.message || '部分图片文件删除失败'); renderHistory() }
   }
 }
@@ -565,7 +649,7 @@ function renderFunctionSettings() {
 
 function renderHotkeySettings() {
   const all = Object.values(functionGroups).flat()
-  view.innerHTML = `<div class="page">${pageHeader('热键设置', '点击右侧按键框后录入组合键；右键可清除。红色警告表示快捷键冲突或不可用。')}<div class="function-list">${all.map(([name, label, icon]) => `<div class="function-row"><span class="icon">${icon}</span><span class="label">${label}</span>${shortcutButton(name, settings.shortcuts[name] || '')}</div>`).join('')}</div></div>`
+  view.innerHTML = `<div class="page">${pageHeader('热键设置', '点击右侧按键框后录入组合键；右键可清除。红色警告表示快捷键冲突或不可用。')}<div class="function-list">${all.map(([name, label, icon]) => `<div class="function-row"><span class="icon">${iconMarkup(icon)}</span><span class="label">${label}</span>${shortcutButton(name, settings.shortcuts[name] || '')}</div>`).join('')}</div></div>`
   bindShortcutRecorders()
 }
 
@@ -625,8 +709,8 @@ async function renderSystemSettings() {
 
 async function renderAbout() {
   const info = await window.electronAPI.getAppInfo()
-  view.innerHTML = `<div class="page"><div class="card about"><div class="about-logo"><span>High</span>lighter</div><h2>桌面截图与划词效率工具</h2><p>版本 ${escapeHtml(info.version)} · ${escapeHtml(info.platform)}</p><p>本次升级参考 Snow Shot 的功能组织与界面设计，保留原有划词翻译/解释能力，并新增截图标注、OCR、贴图、历史、翻译、AI 对话、录屏、全屏画布、插件开关、热键和个性化设置。</p><button class="button" id="openSnowDocs">Snow Shot 使用文档</button></div></div>`
-  document.getElementById('openSnowDocs').onclick = () => window.electronAPI.openExternal('https://snowshot.top/guide/index.html')
+  view.innerHTML = `<div class="page"><div class="card about"><div class="about-logo"><span>High</span>lighter</div><h2>桌面截图与划词效率工具</h2><p>版本 ${escapeHtml(info.version)} · ${escapeHtml(info.platform)}</p><p>集截图标注、长截图、文字与表格识别、二维码扫描、贴图、历史管理、翻译、AI 对话、录屏、全屏画布、热键和个性化设置于一体。</p><button class="button" id="openProjectHome">项目主页</button></div></div>`
+  document.getElementById('openProjectHome').onclick = () => window.electronAPI.openExternal('https://github.com/SherUnlocked-4869/Highlighter')
 }
 
 document.querySelectorAll('.nav-item').forEach((button) => button.onclick = () => navigate(button.dataset.route))
