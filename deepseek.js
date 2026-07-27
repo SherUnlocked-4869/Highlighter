@@ -39,9 +39,9 @@ function buildToolbarStreamRequest(text, prompt, { thinking = false } = {}) {
   return request
 }
 
-async function createTranslateStream(apiKey, text, prompt = DEFAULT_TRANSLATE_PROMPT) {
+async function createTranslateStream(apiKey, text, prompt = DEFAULT_TRANSLATE_PROMPT, requestOptions = {}) {
   const client = createClient(apiKey)
-  return client.chat.completions.create(buildToolbarStreamRequest(text, prompt))
+  return client.chat.completions.create(buildToolbarStreamRequest(text, prompt), requestOptions)
 }
 
 async function completeChat(apiKey, messages, options = {}) {
@@ -66,13 +66,13 @@ async function translateText(apiKey, text, sourceLanguage = 'auto', targetLangua
   ], { temperature: 0.2 })
 }
 
-async function createExplainStream(apiKey, text, prompt = DEFAULT_EXPLAIN_PROMPT) {
+async function createExplainStream(apiKey, text, prompt = DEFAULT_EXPLAIN_PROMPT, requestOptions = {}) {
   const client = createClient(apiKey)
-  return client.chat.completions.create(buildToolbarStreamRequest(text, prompt, { thinking: true }))
+  return client.chat.completions.create(buildToolbarStreamRequest(text, prompt, { thinking: true }), requestOptions)
 }
 
-async function createCustomStream(apiKey, text, prompt) {
-  return createExplainStream(apiKey, text, prompt)
+async function createCustomStream(apiKey, text, prompt, requestOptions = {}) {
+  return createExplainStream(apiKey, text, prompt, requestOptions)
 }
 
 module.exports = {

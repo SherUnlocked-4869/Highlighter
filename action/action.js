@@ -5,6 +5,7 @@ let hasReasoning = false
 let fullText = ''
 let loadTimer = null
 let userScrolled = false
+const STREAM_IDLE_TIMEOUT_MS = 30000
 const hasMarkdown = !!(window.electronAPI && typeof window.electronAPI.renderMarkdown === 'function')
 
 const el = {
@@ -19,6 +20,8 @@ const el = {
 
 function resetUI() {
   isDone = false; reasoning = ''; hasReasoning = false; fullText = ''; userScrolled = false
+  clearTimeout(loadTimer)
+  loadTimer = null
   const old = document.getElementById('reasoningBox'); if (old) old.remove()
   el.result.innerHTML = ''
   el.loading.style.display = 'none'
@@ -26,6 +29,17 @@ function resetUI() {
 
 function showLoading(s) { if (el.loading) el.loading.style.display = s ? 'flex' : 'none' }
 function esc(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML }
+
+function armStreamTimeout() {
+  clearTimeout(loadTimer)
+  loadTimer = setTimeout(function() {
+    if (isDone) return
+    isDone = true
+    showLoading(false)
+    el.result.innerHTML = '<div style="color:#f44336;">请求超时，请检查网络后重试</div>'
+    window.electronAPI.cancelStream()
+  }, STREAM_IDLE_TIMEOUT_MS)
+}
 
 // Full Markdown renderer (inline, no dependencies)
 function simpleMarkdown(text) {
@@ -184,15 +198,12 @@ window.electronAPI.onActionStart(function(data) {
     el.loadingText.textContent = '正在思考...'
   }
   showLoading(true)
-  clearTimeout(loadTimer)
-  loadTimer = setTimeout(function() {
-    if (!isDone) { showLoading(false); el.result.innerHTML = '<div style="color:#f44336;">请求超时</div>'; window.electronAPI.finishStream() }
-  }, 30000)
+  armStreamTimeout()
 })
 
 window.electronAPI.onStreamData(function(data) {
   if (isDone) return
-  clearTimeout(loadTimer)
+  armStreamTimeout()
   showLoading(false)
   fullText += data.content
   // Show simple formatted text during streaming
@@ -202,6 +213,7 @@ window.electronAPI.onStreamData(function(data) {
 
 window.electronAPI.onStreamReasoning(function(data) {
   if (isDone) return
+  armStreamTimeout()
   showLoading(false)
   hasReasoning = true; reasoning += data.content
   var rc = addReasoning()

@@ -8,6 +8,7 @@ const {
   ipcMain,
   Menu,
   nativeImage,
+  powerMonitor,
   safeStorage,
   screen,
   shell,
@@ -35,6 +36,8 @@ const { registerAppIpc } = require('./main/ipc/app-ipc')
 const { registerDataRootIpc } = require('./main/ipc/data-root-ipc')
 const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
+const { SelectionHookService } = require('./main/services/selection-hook-service')
+const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
 const { name: applicationName } = require('./package.json')
 
 const dataRootContext = prepareDataRoot({ app, applicationName })
@@ -191,7 +194,8 @@ function initializeStore() {
 let mainWindow = null
 let toolbarWindow = null
 let actionWindow = null
-let selectionHook = null
+let selectionHookService = null
+const selectionPowerListeners = []
 let tray = null
 let currentCaptureWindow = null
 let currentLongCapture = null
@@ -211,6 +215,7 @@ const actionWindows = []
 const MAX_PINNED = 20
 const TOOLBAR_W = getToolbarWidth(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR))
 const TOOLBAR_H = 40
+const TOOLBAR_STREAM_IDLE_TIMEOUT_MS = 30000
 const isWin = process.platform === 'win32'
 let nativeDisplayListPromise = null
 
@@ -553,11 +558,7 @@ function createActionWindow() {
     const index = actionWindows.indexOf(win)
     if (index >= 0) actionWindows.splice(index, 1)
     if (win._isPinned) pinnedCount = Math.max(0, pinnedCount - 1)
-    if (isProcessing && actionWindow === win) {
-      if (currentStreamController) currentStreamController.cancelled = true
-      isProcessing = false
-      currentStreamController = null
-    }
+    if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-closed')
     if (actionWindow === win) actionWindow = null
   })
   win.on('blur', () => {
@@ -591,28 +592,52 @@ function createTrayIcon() {
 }
 
 function initSelectionHook() {
-  try {
-    const SelectionHook = require('selection-hook')
-    if (selectionHook && selectionHook.isRunning()) return true
-    selectionHook = new SelectionHook()
-    selectionHook.on('text-selection', handleTextSelection)
-    selectionHook.on('mouse-down', (data) => {
-      if (!toolbarWindow || !toolbarWindow.isVisible()) return
-      const bounds = toolbarWindow.getBounds()
-      let point = { x: data.x, y: data.y }
-      if (isWin) point = screen.screenToDipPoint(point)
-      const inside = point.x >= bounds.x && point.x <= bounds.x + bounds.width && point.y >= bounds.y && point.y <= bounds.y + bounds.height
-      if (!inside) hideToolbar()
+  if (!selectionHookService) {
+    selectionHookService = new SelectionHookService({
+      createHook: () => {
+        const SelectionHook = require('selection-hook')
+        return new SelectionHook()
+      },
+      handlers: {
+        textSelection: handleTextSelection,
+        mouseDown: (data) => {
+          if (!toolbarWindow || !toolbarWindow.isVisible()) return
+          const bounds = toolbarWindow.getBounds()
+          let point = { x: data.x, y: data.y }
+          if (isWin) point = screen.screenToDipPoint(point)
+          const inside = point.x >= bounds.x && point.x <= bounds.x + bounds.width && point.y >= bounds.y && point.y <= bounds.y + bounds.height
+          if (!inside) hideToolbar()
+        },
+        keyDown: hideToolbar,
+        mouseWheel: hideToolbar,
+        status: (status) => log('Selection hook status:', status)
+      },
+      log
     })
-    selectionHook.on('key-down', hideToolbar)
-    selectionHook.on('mouse-wheel', hideToolbar)
-    selectionHook.on('error', (error) => log('Selection hook error:', error.message))
-    selectionHook.start({ debug: false, enableClipboard: true })
-    return true
-  } catch (error) {
-    log('Selection hook unavailable:', error.message)
-    return false
   }
+  return selectionHookService.start('startup')
+}
+
+function registerSelectionPowerEvents() {
+  if (selectionPowerListeners.length) return
+  const bindings = [
+    ['suspend', () => selectionHookService?.suspend('system-suspend')],
+    ['lock-screen', () => selectionHookService?.suspend('lock-screen')],
+    ['resume', () => selectionHookService?.scheduleRestart('system-resume')],
+    ['unlock-screen', () => selectionHookService?.scheduleRestart('unlock-screen')]
+  ]
+  for (const [eventName, listener] of bindings) {
+    powerMonitor.on(eventName, listener)
+    selectionPowerListeners.push([eventName, listener])
+  }
+}
+
+function disposeSelectionHook() {
+  for (const [eventName, listener] of selectionPowerListeners.splice(0)) {
+    powerMonitor.removeListener(eventName, listener)
+  }
+  selectionHookService?.dispose()
+  selectionHookService = null
 }
 
 function shouldFilterApp(programName) {
@@ -687,23 +712,62 @@ function hideToolbar() {
   if (toolbarWindow && !toolbarWindow.isDestroyed()) toolbarWindow.hide()
 }
 
-async function streamToWindow(win, action, text) {
+function finishToolbarStream(controller) {
+  return controller?.finish() || false
+}
+
+function cancelToolbarStream(controller, reason = 'cancelled', { notify = false } = {}) {
+  return controller?.cancel(reason, { notify }) || false
+}
+
+function armToolbarStreamTimeout(controller) {
+  controller?.armTimeout()
+}
+
+function createToolbarStreamController(win) {
+  const controller = new ToolbarStreamSession({
+    win,
+    timeoutMs: TOOLBAR_STREAM_IDLE_TIMEOUT_MS,
+    onFinish: (finishedController) => {
+      if (currentStreamController !== finishedController) return
+      currentStreamController = null
+      isProcessing = false
+    }
+  })
+  currentStreamController = controller
+  isProcessing = true
+  armToolbarStreamTimeout(controller)
+  return controller
+}
+
+function isCurrentToolbarStreamSender(event) {
+  return !!currentStreamController?.matchesSender(event.sender)
+}
+
+async function streamToWindow(win, action, text, controller) {
   const { createCustomStream, createExplainStream, createTranslateStream } = require('./deepseek')
   const apiKey = getSettings().apiKey
+  const requestOptions = { signal: controller.signal }
   try {
     let stream
-    if (action.id === 'translate') stream = await createTranslateStream(apiKey, text, action.prompt)
-    else if (action.id === 'explain') stream = await createExplainStream(apiKey, text, action.prompt)
-    else stream = await createCustomStream(apiKey, text, action.prompt)
+    if (action.id === 'translate') stream = await createTranslateStream(apiKey, text, action.prompt, requestOptions)
+    else if (action.id === 'explain') stream = await createExplainStream(apiKey, text, action.prompt, requestOptions)
+    else stream = await createCustomStream(apiKey, text, action.prompt, requestOptions)
+    armToolbarStreamTimeout(controller)
     for await (const chunk of stream) {
-      if (currentStreamController?.cancelled || win.isDestroyed()) return
+      if (controller.cancelled || win.isDestroyed()) return
+      armToolbarStreamTimeout(controller)
       const delta = chunk.choices?.[0]?.delta
       if (delta?.reasoning_content) win.webContents.send('stream:reasoning', { content: delta.reasoning_content })
       if (delta?.content) win.webContents.send('stream:data', { content: delta.content })
     }
-    if (!win.isDestroyed()) win.webContents.send('stream:done')
+    if (!controller.cancelled && !win.isDestroyed()) win.webContents.send('stream:done')
   } catch (error) {
-    if (!win.isDestroyed()) win.webContents.send('stream:error', { error: error.message || '请求失败' })
+    if (!controller.cancelled && !win.isDestroyed()) {
+      win.webContents.send('stream:error', { error: error.message || '请求失败' })
+    }
+  } finally {
+    finishToolbarStream(controller)
   }
 }
 
@@ -2335,10 +2399,9 @@ ipcMain.on('toolbar:action', async (_event, { action, text }) => {
   }
   if (!isAiToolbarAction(action, toolbarConfig)) return
   if (!getSettings().apiKey) { createMainWindow('settings-function'); hideToolbar(); return }
-  isProcessing = true
-  currentStreamController = { cancelled: false }
   hideToolbar()
   const win = createActionWindow()
+  const controller = createToolbarStreamController(win)
   if (lastToolbarPos) {
     const workArea = screen.getDisplayNearestPoint(lastToolbarPos).workArea
     const [width, height] = win.getSize()
@@ -2354,7 +2417,7 @@ ipcMain.on('toolbar:action', async (_event, { action, text }) => {
       icon: actionDefinition.icon,
       text
     })
-    streamToWindow(win, actionDefinition, text)
+    streamToWindow(win, actionDefinition, text, controller)
   })
   win.show()
   win.focus()
@@ -2367,14 +2430,20 @@ ipcMain.on('window:toggle-pin', (event, shouldPin) => {
   if (shouldPin && !win._isPinned) { win._isPinned = true; pinnedCount++; win.setAlwaysOnTop(true, 'floating') }
   if (!shouldPin && win._isPinned) { win._isPinned = false; pinnedCount = Math.max(0, pinnedCount - 1); win.setAlwaysOnTop(false) }
 })
-ipcMain.on('stream:cancel', () => {
-  if (currentStreamController) currentStreamController.cancelled = true
-  isProcessing = false
-  currentStreamController = null
+ipcMain.on('stream:cancel', (event) => {
+  if (!isCurrentToolbarStreamSender(event)) return
+  cancelToolbarStream(currentStreamController, 'user-cancelled')
 })
-ipcMain.on('stream:finish', () => { isProcessing = false; currentStreamController = null })
+ipcMain.on('stream:finish', (event) => {
+  if (!isCurrentToolbarStreamSender(event)) return
+  cancelToolbarStream(currentStreamController, 'renderer-finished')
+})
 ipcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
-ipcMain.on('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.hide())
+ipcMain.on('window:close', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-hidden')
+  win?.hide()
+})
 ipcMain.on('debug:text-received', () => {})
 
 async function chooseInitialDataRoot() {
@@ -2518,6 +2587,7 @@ async function startApplication() {
   registerShortcuts()
   createMainWindow('home')
   initSelectionHook()
+  registerSelectionPowerEvents()
   if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
   if (isWin) {
     screenshotDesktop.listDisplays()
@@ -2565,14 +2635,7 @@ else {
       .finally(() => { recordingService = null })
     closeLongCapture()
     if (ocrService) { ocrService.stop(); ocrService = null }
-    if (selectionHook) {
-      try {
-        selectionHook.cleanup()
-      } catch (error) {
-        log('Selection hook shutdown failed:', error)
-      }
-      selectionHook = null
-    }
+    disposeSelectionHook()
     if (tray) { tray.destroy(); tray = null }
   })
 }

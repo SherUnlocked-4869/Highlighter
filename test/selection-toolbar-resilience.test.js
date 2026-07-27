@@ -1,0 +1,32 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+const action = fs.readFileSync(path.join(__dirname, '..', 'action', 'action.js'), 'utf8')
+const deepseek = fs.readFileSync(path.join(__dirname, '..', 'deepseek.js'), 'utf8')
+
+test('main process rebuilds selection hooks across power and session transitions', () => {
+  assert.match(main, /const \{\s*SelectionHookService\s*\} = require\('\.\/main\/services\/selection-hook-service'\)/)
+  assert.match(main, /\['suspend', \(\) => selectionHookService\?\.suspend\('system-suspend'\)\]/)
+  assert.match(main, /\['lock-screen', \(\) => selectionHookService\?\.suspend\('lock-screen'\)\]/)
+  assert.match(main, /\['resume', \(\) => selectionHookService\?\.scheduleRestart\('system-resume'\)\]/)
+  assert.match(main, /\['unlock-screen', \(\) => selectionHookService\?\.scheduleRestart\('unlock-screen'\)\]/)
+  assert.match(main, /initSelectionHook\(\)\s*\n\s*registerSelectionPowerEvents\(\)/)
+  assert.match(main, /disposeSelectionHook\(\)/)
+})
+
+test('toolbar streams use abortable sliding timeouts and sender ownership checks', () => {
+  assert.match(main, /new ToolbarStreamSession\(\{/)
+  assert.match(main, /const requestOptions = \{ signal: controller\.signal \}/)
+  assert.match(main, /armToolbarStreamTimeout\(controller\)[\s\S]*for await \(const chunk of stream\)/)
+  assert.match(main, /for await \(const chunk of stream\) \{[\s\S]*armToolbarStreamTimeout\(controller\)/)
+  assert.match(main, /isCurrentToolbarStreamSender\(event\)/)
+  assert.match(main, /finally \{\s*finishToolbarStream\(controller\)/)
+  assert.match(deepseek, /chat\.completions\.create\(buildToolbarStreamRequest\(text, prompt\), requestOptions\)/)
+  assert.match(action, /function armStreamTimeout\(\)/)
+  assert.match(action, /window\.electronAPI\.cancelStream\(\)/)
+  assert.match(action, /onStreamData[\s\S]*armStreamTimeout\(\)/)
+  assert.match(action, /onStreamReasoning[\s\S]*armStreamTimeout\(\)/)
+})
