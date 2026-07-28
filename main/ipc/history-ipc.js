@@ -9,6 +9,7 @@ function registerHistoryIpc({
   if (!ipcMain || !historyService) throw new Error('History IPC requires ipcMain and historyService')
 
   ipcMain.handle('history:list', (_event, filter) => historyService.list(filter))
+  ipcMain.handle('history:thumbnail', (_event, id) => historyService.getThumbnail(id))
   ipcMain.handle('history:sources', () => historyService.listSources())
   ipcMain.handle('history:stats', () => historyService.stats())
   ipcMain.handle('history:delete', (_event, id) => historyService.delete(id))
@@ -19,9 +20,6 @@ function registerHistoryIpc({
     const directory = await chooseExportDirectory()
     return directory ? historyService.exportMany(ids, directory) : { canceled: true }
   })
-  ipcMain.handle('history:favorite', (_event, { id, favorite } = {}) => (
-    historyService.setFavorite(id, favorite)
-  ))
   ipcMain.handle('history:copy', (_event, id) => {
     const item = historyService.getItem(id)
     return item ? copyItem(item) : false

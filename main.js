@@ -464,12 +464,22 @@ function ensureDirectory(directory) {
   return directory
 }
 
-function dataUrlToBuffer(dataUrl) {
-  return Buffer.from(String(dataUrl).replace(/^data:image\/\w+;base64,/, ''), 'base64')
+function imageDataToBuffer(value) {
+  if (Buffer.isBuffer(value)) return value
+  if (value instanceof ArrayBuffer) return Buffer.from(value)
+  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+  if (typeof value === 'string') {
+    return Buffer.from(value.replace(/^data:image\/[^;]+;base64,/, ''), 'base64')
+  }
+  return Buffer.alloc(0)
 }
 
-function fileToDataUrl(filePath) {
-  return `data:image/png;base64,${fs.readFileSync(filePath).toString('base64')}`
+function dataUrlToBuffer(dataUrl) {
+  return imageDataToBuffer(dataUrl)
+}
+
+function bufferToDataUrl(value) {
+  return `data:image/png;base64,${imageDataToBuffer(value).toString('base64')}`
 }
 
 function makeCaptureName(prefix = 'Highlighter') {
@@ -477,8 +487,10 @@ function makeCaptureName(prefix = 'Highlighter') {
   return `${prefix}_${stamp}.png`
 }
 
-function persistHistory(dataUrl, meta = {}) {
-  return historyService.persistDataUrl(dataUrl, meta)
+function persistHistory(imageData, meta = {}) {
+  return typeof imageData === 'string'
+    ? historyService.persistDataUrl(imageData, meta)
+    : historyService.persistBuffer(imageDataToBuffer(imageData), meta)
 }
 
 async function persistHistoryFile(sourcePath, meta = {}) {
@@ -811,7 +823,7 @@ async function getDesktopCapture(display, scaleFactor) {
     })
     const source = sources.find((item) => String(item.display_id) === String(display.id)) || sources[0]
     if (source && !source.thumbnail.isEmpty() && !isBlankCapture(source.thumbnail)) {
-      return { dataUrl: source.thumbnail.toDataURL(), sourceId: source.id, scaleFactor }
+      return { imageBuffer: source.thumbnail.toPNG(), sourceId: source.id, scaleFactor }
     }
     if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 50))
   }
@@ -838,7 +850,7 @@ async function getDisplayCapture(display) {
         }
         if (isBlankCapture(image)) throw new Error('原生抓屏返回空白画面')
         return {
-          dataUrl: `data:image/png;base64,${buffer.toString('base64')}`,
+          imageBuffer: buffer,
           sourceId: `native:${nativeDisplay.id}`,
           scaleFactor
         }
@@ -864,9 +876,14 @@ async function createCaptureWindow(options = {}) {
     ? screen.getDisplayMatching(requestedBounds)
     : screen.getDisplayNearestPoint(screen.getCursorScreenPoint()))
   const captureBounds = requestedBounds || display.bounds
-  const capturePromise = options.imageDataUrl || options.mode === 'canvas'
+  const suppliedImageBuffer = options.imageBuffer
+    ? imageDataToBuffer(options.imageBuffer)
+    : options.imageDataUrl
+      ? dataUrlToBuffer(options.imageDataUrl)
+      : null
+  const capturePromise = suppliedImageBuffer || options.mode === 'canvas'
     ? Promise.resolve({
-        dataUrl: options.imageDataUrl || '',
+        imageBuffer: suppliedImageBuffer || Buffer.alloc(0),
         sourceId: '',
         scaleFactor: Number(options.sourceScaleFactor) || display.scaleFactor || 1
       })
@@ -929,7 +946,7 @@ async function createCaptureWindow(options = {}) {
     const [capture] = await Promise.all([capturePromise, loadPromise])
     if (captureWindow.isDestroyed()) return null
     captureWindow._captureInit = {
-      imageDataUrl: capture.dataUrl || '',
+      imageBuffer: capture.imageBuffer || Buffer.alloc(0),
       mode,
       autoAction: options.autoAction || '',
       source: options.source || 'region',
@@ -1199,7 +1216,7 @@ async function captureFocusedWindow() {
   return source.thumbnail.toDataURL()
 }
 
-async function saveDataUrl(dataUrl, options = {}) {
+async function saveImageBuffer(imageBuffer, options = {}) {
   const settings = getSettings()
   const preferredDirectory = options.directory || settings.screenshot.saveDirectory
   let filePath
@@ -1215,8 +1232,12 @@ async function saveDataUrl(dataUrl, options = {}) {
     if (result.canceled || !result.filePath) return null
     filePath = result.filePath
   }
-  fs.writeFileSync(filePath, dataUrlToBuffer(dataUrl))
+  fs.writeFileSync(filePath, imageDataToBuffer(imageBuffer))
   return filePath
+}
+
+async function saveDataUrl(dataUrl, options = {}) {
+  return saveImageBuffer(dataUrlToBuffer(dataUrl), options)
 }
 
 function createPinWindow(dataUrl, meta = {}) {
@@ -1359,7 +1380,7 @@ async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
   win.hide()
   try {
     const captureWindow = await createCaptureWindow({
-      imageDataUrl: win._pinData.dataUrl,
+      imageBuffer: dataUrlToBuffer(win._pinData.dataUrl),
       mode: 'image',
       autoAction,
       source: 'pin-reannotate',
@@ -1408,10 +1429,11 @@ function createRecognitionWindow(type, dataUrl, options = {}) {
   return win
 }
 
-function pinFromCapture(event, dataUrl, meta) {
+function pinFromCapture(event, imageData, meta) {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
   const editingPinWindow = captureWindow?._editingPinWindow
   if (!editingPinWindow && pinnedCount >= MAX_PINNED) throw new Error(`最多固定 ${MAX_PINNED} 张图片`)
+  const dataUrl = typeof imageData === 'string' ? imageData : bufferToDataUrl(imageData)
   const pinWindow = editingPinWindow
     ? updatePinWindow(editingPinWindow, dataUrl, meta)
     : createPinWindow(dataUrl, meta)
@@ -1811,6 +1833,7 @@ registerHistoryIpc({
   ipcMain,
   historyService: {
     list: (filter) => historyService.list(filter),
+    getThumbnail: (id) => historyService.getThumbnail(id),
     listSources: () => historyService.listSources(),
     stats: () => historyService.stats(),
     getItem: (id) => historyService.getItem(id),
@@ -1818,8 +1841,7 @@ registerHistoryIpc({
     deleteMany: (ids) => historyService.deleteMany(ids),
     exportMany: (ids, directory) => historyService.exportMany(ids, directory),
     cleanup: () => historyService.cleanup(),
-    clear: () => historyService.clear(),
-    setFavorite: (id, favorite) => historyService.setFavorite(id, favorite)
+    clear: () => historyService.clear()
   },
   copyItem: (item) => {
     if (!fs.existsSync(item.filePath)) return false
@@ -1829,7 +1851,7 @@ registerHistoryIpc({
   },
   editItem: async (item) => {
     if (!fs.existsSync(item.filePath)) return false
-    await createCaptureWindow({ imageDataUrl: fileToDataUrl(item.filePath), mode: 'image', source: 'history' })
+    await createCaptureWindow({ imageBuffer: await fs.promises.readFile(item.filePath), mode: 'image', source: 'history' })
     return true
   },
   revealItem: (item) => {
@@ -1853,7 +1875,11 @@ const captureIpcController = {
     event.sender.send('capture:init', win._captureInit)
   }
   },
-  renderReady: (event) => revealCaptureWindow(BrowserWindow.fromWebContents(event.sender)),
+  renderReady: (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  revealCaptureWindow(win)
+  if (win?._captureInit) win._captureInit.imageBuffer = null
+  },
   renderError: (event, message) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || win.isDestroyed()) return
@@ -1897,46 +1923,53 @@ const captureIpcController = {
     ? candidates
     : [{ x: 0, y: 0, w: context.captureBounds.width, h: context.captureBounds.height }]
   },
-  copy: (_event, { dataUrl, meta }) => {
-  clipboard.writeImage(nativeImage.createFromDataURL(dataUrl))
-  const item = persistHistory(dataUrl, { ...meta, action: 'copy' })
-  if (getSettings().screenshot.autoSaveOnCopy && getSettings().screenshot.saveDirectory) saveDataUrl(dataUrl, { fast: true }).catch((error) => log(error.message))
+  copy: (_event, { imageBuffer, dataUrl, meta } = {}) => {
+  const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
+  if (!buffer.length) throw new Error('截图图片数据为空')
+  clipboard.writeImage(nativeImage.createFromBuffer(buffer))
+  const item = persistHistory(buffer, { ...meta, action: 'copy' })
+  if (getSettings().screenshot.autoSaveOnCopy && getSettings().screenshot.saveDirectory) saveImageBuffer(buffer, { fast: true }).catch((error) => log(error.message))
   return item
   },
-  save: (event, { dataUrl, meta, fast }) => {
+  save: (event, { imageBuffer, dataUrl, meta, fast } = {}) => {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
+  const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
   if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
   setImmediate(async () => {
     try {
-      const filePath = await saveDataUrl(dataUrl, { fast: !!fast })
-      if (filePath) persistHistory(dataUrl, { ...meta, action: 'save' })
+      if (!buffer.length) throw new Error('截图图片数据为空')
+      const filePath = await saveImageBuffer(buffer, { fast: !!fast })
+      if (filePath) persistHistory(buffer, { ...meta, action: 'save' })
     } catch (error) {
       log('Capture save failed:', error.message)
       dialog.showErrorBox('保存截图失败', error.message || String(error))
     }
   })
   },
-  pin: (event, { dataUrl, meta }) => {
-  pinFromCapture(event, dataUrl, meta)
-  return persistHistory(dataUrl, { ...meta, action: 'pin' })
+  pin: (event, { imageBuffer, dataUrl, meta } = {}) => {
+  const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
+  pinFromCapture(event, buffer, meta)
+  return persistHistory(buffer, { ...meta, action: 'pin' })
   },
-  pinReannotate: (event, { dataUrl, meta, action }) => {
-  const { captureWindow, pinWindow } = pinFromCapture(event, dataUrl, meta)
+  pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
+  const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
+  const { captureWindow, pinWindow } = pinFromCapture(event, buffer, meta)
   pinWindow._pendingReannotateAction = action === 'ocr' ? 'ocr' : ''
   setImmediate(() => {
     if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
   })
-  return persistHistory(dataUrl, { ...meta, action: 'pin' })
+  return persistHistory(buffer, { ...meta, action: 'pin' })
   },
-  openRecognition: (event, { type, dataUrl, meta }) => {
+  openRecognition: (event, { type, imageBuffer, dataUrl, meta } = {}) => {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
-  createRecognitionWindow(type, dataUrl, { scaleFactor: meta?.scaleFactor })
+  const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
+  createRecognitionWindow(type, bufferToDataUrl(buffer), { scaleFactor: meta?.scaleFactor })
   setImmediate(() => {
     if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
   })
-  return persistHistory(dataUrl, { ...meta, action: type })
+  return persistHistory(buffer, { ...meta, action: type })
   },
-  recordHistory: (_event, { dataUrl, meta }) => persistHistory(dataUrl, meta),
+  recordHistory: (_event, { imageBuffer, dataUrl, meta } = {}) => persistHistory(imageBuffer ?? dataUrl, meta),
   longReady: (event) => {
   const state = currentLongCapture
   if (!state || event.sender !== state.controllerWindow.webContents) return
@@ -2015,10 +2048,11 @@ const captureIpcController = {
   ocrStatus: () => getOcrService().getStatus(),
   ocr: async (_event, payload) => {
   if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
-  const dataUrl = typeof payload === 'string' ? payload : payload?.dataUrl
-  if (!dataUrl) throw new Error('OCR 图片数据为空')
+  const imageData = typeof payload === 'string' ? payload : payload?.imageBuffer ?? payload?.dataUrl
+  const buffer = imageDataToBuffer(imageData)
+  if (!buffer.length) throw new Error('OCR 图片数据为空')
   const settings = getSettings()
-  return getOcrService().recognize(dataUrlToBuffer(dataUrl), {
+  return getOcrService().recognize(buffer, {
     scaleFactor: payload?.scaleFactor,
     detectAngle: settings.ocr.detectAngle,
     minConfidence: settings.ocr.minConfidence
@@ -2026,10 +2060,11 @@ const captureIpcController = {
   },
   translate: async (_event, payload) => {
   if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
-  const dataUrl = typeof payload === 'string' ? payload : payload?.dataUrl
-  if (!dataUrl) throw new Error('OCR 图片数据为空')
+  const imageData = typeof payload === 'string' ? payload : payload?.imageBuffer ?? payload?.dataUrl
+  const buffer = imageDataToBuffer(imageData)
+  if (!buffer.length) throw new Error('OCR 图片数据为空')
   const settings = getSettings()
-  const ocrResult = await getOcrService().recognize(dataUrlToBuffer(dataUrl), {
+  const ocrResult = await getOcrService().recognize(buffer, {
     scaleFactor: payload?.scaleFactor,
     detectAngle: settings.ocr.detectAngle,
     minConfidence: settings.ocr.minConfidence

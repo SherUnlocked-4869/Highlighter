@@ -12,13 +12,13 @@ contextBridge.exposeInMainWorld('captureAPI', {
   close: () => ipcRenderer.send('capture:close'),
   startLongCapture: (selection) => ipcRenderer.invoke('capture:start-long', { selection }),
   smartSelectAt: (point) => ipcRenderer.invoke('capture:smart-select', point),
-  copy: (dataUrl, meta) => ipcRenderer.invoke('capture:copy', { dataUrl, meta }),
-  save: (dataUrl, meta, fast) => ipcRenderer.send('capture:save', { dataUrl, meta, fast }),
-  pin: (dataUrl, meta) => ipcRenderer.invoke('capture:pin', { dataUrl, meta }),
-  pinAndReannotate: (dataUrl, meta, action) => ipcRenderer.invoke('capture:pin-reannotate', { dataUrl, meta, action }),
-  openRecognition: (type, dataUrl, meta) => ipcRenderer.invoke('capture:open-recognition', { type, dataUrl, meta }),
-  ocr: (dataUrl, options) => ipcRenderer.invoke('capture:ocr', { dataUrl, ...options }),
-  translate: (dataUrl, options) => ipcRenderer.invoke('capture:translate', { dataUrl, ...options }),
+  copy: (imageBuffer, meta) => ipcRenderer.invoke('capture:copy', { imageBuffer, meta }),
+  save: (imageBuffer, meta, fast) => ipcRenderer.send('capture:save', { imageBuffer, meta, fast }),
+  pin: (imageBuffer, meta) => ipcRenderer.invoke('capture:pin', { imageBuffer, meta }),
+  pinAndReannotate: (imageBuffer, meta, action) => ipcRenderer.invoke('capture:pin-reannotate', { imageBuffer, meta, action }),
+  openRecognition: (type, imageBuffer, meta) => ipcRenderer.invoke('capture:open-recognition', { type, imageBuffer, meta }),
+  ocr: (imageBuffer, options) => ipcRenderer.invoke('capture:ocr', { imageBuffer, ...options }),
+  translate: (imageBuffer, options) => ipcRenderer.invoke('capture:translate', { imageBuffer, ...options }),
   startRegionRecording: (selectionBounds) => ipcRenderer.invoke('capture:start-region-recording', { selectionBounds }),
-  recordHistory: (dataUrl, meta) => ipcRenderer.invoke('capture:record-history', { dataUrl, meta })
+  recordHistory: (imageBuffer, meta) => ipcRenderer.invoke('capture:record-history', { imageBuffer, meta })
 })

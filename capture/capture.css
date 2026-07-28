@@ -1,7 +1,9 @@
 :root { --primary: #1677ff; --panel: rgba(25,25,28,.94); --text: #f6f6f6; }
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; user-select: none; }
-#stage { position: fixed; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+#backgroundStage, #stage { position: fixed; inset: 0; width: 100%; height: 100%; }
+#backgroundStage { pointer-events: none; }
+#stage { cursor: crosshair; }
 .ocr-overlay { position: fixed; z-index: 6; overflow: hidden; pointer-events: auto; }
 .ocr-text-block { position: absolute; display: flex; align-items: center; justify-content: center; overflow: hidden; color: #111; background: rgba(255,255,255,.78); transform-origin: center; white-space: nowrap; user-select: text; cursor: text; }
 .ocr-text-block.vertical { writing-mode: vertical-rl; white-space: normal; }

@@ -1,3 +1,5 @@
+const backgroundCanvas = document.getElementById('backgroundStage')
+const backgroundCtx = backgroundCanvas.getContext('2d', { alpha: false })
 const canvas = document.getElementById('stage')
 const ctx = canvas.getContext('2d')
 const toolbar = document.getElementById('toolbar')
@@ -45,6 +47,9 @@ let smartQueryRunning = false
 let smartQueryPending = null
 let activeOcrResult = null
 let processingAction = null
+let renderRequest = 0
+let toolbarSize = null
+let imageObjectUrl = ''
 
 function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
 function normalizeRect(a, b) { return { x: Math.min(a.x,b.x), y: Math.min(a.y,b.y), w: Math.abs(b.x-a.x), h: Math.abs(b.y-a.y) } }
@@ -62,16 +67,26 @@ function updateSelectionCursor(point) {
 
 function resizeCanvas() {
   dpr = window.devicePixelRatio || 1
-  canvas.width = Math.round(innerWidth * dpr)
-  canvas.height = Math.round(innerHeight * dpr)
-  canvas.style.width = `${innerWidth}px`
-  canvas.style.height = `${innerHeight}px`
+  for (const target of [backgroundCanvas, canvas]) {
+    target.width = Math.round(innerWidth * dpr)
+    target.height = Math.round(innerHeight * dpr)
+    target.style.width = `${innerWidth}px`
+    target.style.height = `${innerHeight}px`
+  }
+  toolbarSize = null
   if (image && initData && ['fullscreen', 'image', 'canvas'].includes(initData.mode)) {
     selection = { x: 0, y: 0, w: innerWidth, h: innerHeight }
   }
+  drawBackground()
   render()
   maybeRunAutoAction()
   reportRenderReady()
+}
+
+function drawBackground() {
+  backgroundCtx.setTransform(dpr,0,0,dpr,0,0)
+  backgroundCtx.clearRect(0,0,innerWidth,innerHeight)
+  if (image) backgroundCtx.drawImage(image,0,0,innerWidth,innerHeight)
 }
 
 function reportRenderReady() {
@@ -127,11 +142,10 @@ function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offs
   context.restore()
 }
 
-function render() {
+function renderOverlay() {
   if (!image) return
   ctx.setTransform(dpr,0,0,dpr,0,0)
   ctx.clearRect(0,0,innerWidth,innerHeight)
-  ctx.drawImage(image,0,0,innerWidth,innerHeight)
   if (!selection) {
     ctx.fillStyle = initData?.settings?.screenshot?.selectionMask || 'rgba(0,0,0,.46)'
     ctx.fillRect(0,0,innerWidth,innerHeight)
@@ -143,6 +157,14 @@ function render() {
   if (activeAnnotation) drawAnnotation(ctx,activeAnnotation)
   drawHandles()
   updateFloatingUi()
+}
+
+function render() {
+  if (renderRequest) return
+  renderRequest = requestAnimationFrame(() => {
+    renderRequest = 0
+    renderOverlay()
+  })
 }
 
 function drawHandles() {
@@ -157,7 +179,7 @@ function updateFloatingUi() {
   sizeBadge.style.display='block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
   if (selectState==='auto'||activeOcrResult||selecting||dragging||resizing) { toolbar.classList.add('hidden'); return }
   toolbar.classList.remove('hidden')
-  const rect=toolbar.getBoundingClientRect(); let left=selection.x+selection.w-rect.width; let top=selection.y+selection.h+10
+  const rect=toolbarSize||(toolbarSize=toolbar.getBoundingClientRect()); let left=selection.x+selection.w-rect.width; let top=selection.y+selection.h+10
   if (top+rect.height>innerHeight-6) top=selection.y-rect.height-10
   left=Math.max(6,Math.min(left,innerWidth-rect.width-6)); top=Math.max(6,top)
   toolbar.style.left=`${left}px`; toolbar.style.top=`${top}px`
@@ -270,6 +292,18 @@ function exportSelectionCanvas(includeAnnotations = true) {
   return output
 }
 
+function canvasPngBuffer(sourceCanvas) {
+  return new Promise((resolve, reject) => {
+    sourceCanvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('截图图片编码失败'))
+        return
+      }
+      blob.arrayBuffer().then(resolve, reject)
+    }, 'image/png')
+  })
+}
+
 function clearOcrResult() {
   activeOcrResult=null
   ocrOverlay.replaceChildren()
@@ -354,18 +388,19 @@ async function performAction(action) {
   }
   const recognitionActions=['ocr','translate','table','qr']
   const output=exportSelectionCanvas(!recognitionActions.includes(action)); if(!output)return
-  const dataUrl=output.toDataURL('image/png'); const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds}
+  const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds}
   try {
-    if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(dataUrl,meta);else await window.captureAPI.copy(dataUrl,meta);window.captureAPI.close()}
-    if(action==='save'){window.captureAPI.save(dataUrl,meta,!!initData.settings.screenshot.fastSave);return}
-    if(action==='pin'){await window.captureAPI.pin(dataUrl,meta);window.captureAPI.close()}
-    if(action==='ocr'&&!initData.editPin){await window.captureAPI.pinAndReannotate(dataUrl,meta,'ocr');return}
-    if(action==='table'||action==='qr'){await window.captureAPI.openRecognition(action,dataUrl,meta);return}
+    const imageBuffer=await canvasPngBuffer(output)
+    if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(imageBuffer,meta);else await window.captureAPI.copy(imageBuffer,meta);window.captureAPI.close()}
+    if(action==='save'){window.captureAPI.save(imageBuffer,meta,!!initData.settings.screenshot.fastSave);return}
+    if(action==='pin'){await window.captureAPI.pin(imageBuffer,meta);window.captureAPI.close()}
+    if(action==='ocr'&&!initData.editPin){await window.captureAPI.pinAndReannotate(imageBuffer,meta,'ocr');return}
+    if(action==='table'||action==='qr'){await window.captureAPI.openRecognition(action,imageBuffer,meta);return}
     if(action==='ocr'||action==='translate'){
       clearOcrResult();setProcessingState(action)
       try {
         const options={scaleFactor:Number(initData.scaleFactor)||1}
-        const result=action==='ocr'?await window.captureAPI.ocr(dataUrl,options):await window.captureAPI.translate(dataUrl,options)
+        const result=action==='ocr'?await window.captureAPI.ocr(imageBuffer,options):await window.captureAPI.translate(imageBuffer,options)
         showResult(action,result)
         if(initData.autoAction===action)initData.autoAction=''
       } finally {setProcessingState(null)}
@@ -418,9 +453,14 @@ addEventListener('keydown',(event)=>{
 
 window.captureAPI.onInit((data)=>{
   clearOcrResult();setProcessingState(null);initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#1677ff')
-  image=new Image(); image.onload=()=>{if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError('截图图片解码失败'); image.src=data.mode==='canvas'?makeBlankCanvas():data.imageDataUrl
+  if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}
+  image=new Image(); image.onload=()=>{if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError('截图图片解码失败')
+  if(data.mode==='canvas')image.src=makeBlankCanvas()
+  else if(data.imageBuffer){imageObjectUrl=URL.createObjectURL(new Blob([data.imageBuffer],{type:'image/png'}));image.src=imageObjectUrl}
+  else window.captureAPI.renderError('截图图片数据为空')
 })
 
 function makeBlankCanvas(){const blank=document.createElement('canvas');blank.width=Math.max(1,innerWidth*dpr);blank.height=Math.max(1,innerHeight*dpr);const c=blank.getContext('2d');c.fillStyle='#fff';c.fillRect(0,0,blank.width,blank.height);return blank.toDataURL()}
 addEventListener('resize',resizeCanvas)
+addEventListener('beforeunload',()=>{if(renderRequest)cancelAnimationFrame(renderRequest);if(imageObjectUrl)URL.revokeObjectURL(imageObjectUrl)})
 window.captureAPI.ready()

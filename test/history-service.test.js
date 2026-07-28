@@ -40,7 +40,11 @@ function createService(directory, history = [], overrides = {}) {
     nativeImage: {
       createFromPath: () => ({
         getSize: () => ({ width: 120, height: 80 }),
-        resize: () => ({ toDataURL: () => 'data:image/png;base64,dGh1bWI=' })
+        resize: () => ({ toPNG: () => Buffer.from('thumb') })
+      }),
+      createFromBuffer: () => ({
+        getSize: () => ({ width: 120, height: 80 }),
+        resize: () => ({ toPNG: () => Buffer.from('thumb') })
       })
     },
     sharp: () => {},
@@ -60,35 +64,70 @@ function createService(directory, history = [], overrides = {}) {
 
 test('normalizes and applies history search filters', () => {
   const filter = normalizeHistoryFilter({ query: ' OCR ', source: 'capture', favoriteOnly: true })
-  assert.deepEqual(filter, { query: 'ocr', source: 'capture', favoriteOnly: true })
+  assert.deepEqual(filter, { query: 'ocr', source: 'capture', cursor: '', limit: 40 })
   assert.equal(matchesHistoryFilter({
     source: 'capture',
     action: 'copy',
     filePath: 'screen.png',
-    tags: ['OCR'],
-    favorite: true
+    tags: ['OCR']
   }, filter), true)
-  assert.equal(matchesHistoryFilter({ source: 'file', favorite: true }, filter), false)
+  assert.equal(matchesHistoryFilter({ source: 'file' }, filter), false)
 })
 
-test('lists history by query, source, and favorite state', () => {
+test('lists history by query and source', () => {
   withTempDirectory((directory) => {
     const first = path.join(directory, 'invoice.png')
     const second = path.join(directory, 'diagram.png')
     fs.writeFileSync(first, 'first')
     fs.writeFileSync(second, 'second')
     const service = createService(directory, [
-      { id: '1', filePath: first, source: 'capture', action: 'copy', favorite: true, tags: ['invoice'] },
+      { id: '1', filePath: first, source: 'capture', action: 'copy', tags: ['invoice'] },
       { id: '2', filePath: second, source: 'file', action: 'pin' }
     ])
     assert.deepEqual(service.listSources(), ['capture', 'file'])
-    assert.deepEqual(service.list({ query: 'invoice' }).map((item) => item.id), ['1'])
-    assert.deepEqual(service.list({ source: 'file' }).map((item) => item.id), ['2'])
-    assert.deepEqual(service.list({ favoriteOnly: true }).map((item) => item.id), ['1'])
+    assert.deepEqual(service.list({ query: 'invoice' }).items.map((item) => item.id), ['1'])
+    assert.deepEqual(service.list({ source: 'file' }).items.map((item) => item.id), ['2'])
   })
 })
 
-test('history limits preserve favorites while deleting old regular items', () => {
+test('paginates history metadata without embedding thumbnails', () => {
+  withTempDirectory((directory) => {
+    const history = ['1', '2', '3'].map((id) => {
+      const filePath = path.join(directory, `${id}.png`)
+      fs.writeFileSync(filePath, id)
+      return { id, filePath, source: 'capture' }
+    })
+    const service = createService(directory, history)
+    const first = service.list({ limit: 2 })
+    assert.deepEqual(first.items.map((item) => item.id), ['1', '2'])
+    assert.equal(first.items.some((item) => 'thumbnail' in item), false)
+    assert.deepEqual({ totalCount: first.totalCount, hasMore: first.hasMore, nextCursor: first.nextCursor }, {
+      totalCount: 3,
+      hasMore: true,
+      nextCursor: '2'
+    })
+    const second = service.list({ cursor: first.nextCursor, limit: 2 })
+    assert.deepEqual(second.items.map((item) => item.id), ['3'])
+    assert.equal(second.hasMore, false)
+  })
+})
+
+test('persists thumbnails on capture and lazily backfills legacy items', () => {
+  withTempDirectory((directory) => {
+    const service = createService(directory, [], { createId: () => '1700000000000-abc123' })
+    const item = service.persistBuffer(Buffer.from('image'), { source: 'capture' })
+    assert.equal(fs.readFileSync(item.thumbnailPath, 'utf8'), 'thumb')
+    assert.equal(service.getThumbnail(item.id), 'data:image/png;base64,dGh1bWI=')
+
+    const legacyPath = path.join(directory, 'legacy.png')
+    fs.writeFileSync(legacyPath, 'legacy')
+    const legacy = createService(directory, [{ id: '1700000000001-def456', filePath: legacyPath }])
+    assert.equal(legacy.getThumbnail('1700000000001-def456'), 'data:image/png;base64,dGh1bWI=')
+    assert.equal(fs.existsSync(legacy.getItem('1700000000001-def456').thumbnailPath), true)
+  })
+})
+
+test('history limits apply uniformly and ignore legacy favorite metadata', () => {
   withTempDirectory((directory) => {
     const favoritePath = path.join(directory, 'favorite.png')
     const recentPath = path.join(directory, 'recent.png')
@@ -96,29 +135,28 @@ test('history limits preserve favorites while deleting old regular items', () =>
     for (const file of [favoritePath, recentPath, oldPath]) fs.writeFileSync(file, 'image')
     const service = createService(directory)
     const kept = service.trimHistory([
-      { id: 'favorite', filePath: favoritePath, favorite: true },
       { id: 'recent', filePath: recentPath },
+      { id: 'favorite', filePath: favoritePath, favorite: true },
       { id: 'old', filePath: oldPath }
     ], 1)
-    assert.deepEqual(kept.map((item) => item.id), ['favorite', 'recent'])
-    assert.equal(fs.existsSync(favoritePath), true)
+    assert.deepEqual(kept.map((item) => item.id), ['recent'])
+    assert.equal(fs.existsSync(recentPath), true)
+    assert.equal(fs.existsSync(favoritePath), false)
     assert.equal(fs.existsSync(oldPath), false)
   })
 })
 
-test('favorite updates are migration-gated and persisted', () => {
+test('legacy favorite metadata is hidden and removed on the next history write', () => {
   withTempDirectory((directory) => {
     const filePath = path.join(directory, 'capture.png')
     fs.writeFileSync(filePath, 'image')
-    let writableChecks = 0
     let changed = 0
-    const service = createService(directory, [{ id: '1', filePath }], {
-      assertWritable: () => { writableChecks++ },
+    const service = createService(directory, [{ id: '1', filePath, favorite: true }], {
       onChanged: () => { changed++ }
     })
-    assert.equal(service.setFavorite('1', true).favorite, true)
-    assert.equal(service.getItem('1').favorite, true)
-    assert.equal(writableChecks, 1)
+    assert.equal('favorite' in service.getItem('1'), false)
+    service.writeHistory(service.readHistory())
+    assert.equal('favorite' in service.store.history[0], false)
     assert.equal(changed, 1)
   })
 })
@@ -152,7 +190,6 @@ test('reports storage use, missing records, and unreferenced managed files', () 
       totalCount: 2,
       availableCount: 1,
       missingCount: 1,
-      favoriteCount: 1,
       totalBytes: 10,
       orphanCount: 1,
       orphanBytes: 6

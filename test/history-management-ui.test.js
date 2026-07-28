@@ -11,6 +11,7 @@ const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
 
 test('preload exposes fixed history management methods', () => {
   assert.match(preload, /getHistoryStats:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('history:stats'\)/)
+  assert.match(preload, /getHistoryThumbnail:\s*\(id\)\s*=>\s*ipcRenderer\.invoke\('history:thumbnail', id\)/)
   assert.match(preload, /deleteHistoryMany:\s*\(ids\)\s*=>\s*ipcRenderer\.invoke\('history:delete-many', ids\)/)
   assert.match(preload, /exportHistory:\s*\(ids\)\s*=>\s*ipcRenderer\.invoke\('history:export', ids\)/)
   assert.match(preload, /cleanupHistory:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('history:cleanup'\)/)
@@ -22,11 +23,22 @@ test('history page renders storage statistics and batch controls', () => {
   assert.match(config, /id="exportSelectedHistory"/)
   assert.match(config, /id="deleteSelectedHistory"/)
   assert.match(config, /data-history-select/)
+  assert.match(config, /IntersectionObserver/)
+  assert.match(config, /id="loadMoreHistory"/)
+  assert.match(config, /limit:\s*HISTORY_PAGE_SIZE/)
   assert.match(config, /stats\.missingCount/)
   assert.match(config, /stats\.orphanCount/)
   assert.match(styles, /\.history-stats\{/)
   assert.match(styles, /\.history-batch\{/)
   assert.match(styles, /\.history-item\.selected\{/)
+  assert.match(styles, /\.history-image img\{display:block;width:100%;height:100%;object-fit:contain\}/)
+})
+
+test('history page does not expose favorite controls or state', () => {
+  assert.doesNotMatch(preload, /history:favorite|setHistoryFavorite/)
+  assert.doesNotMatch(config, /historyFavorites|favorite-button|仅收藏|取消收藏/)
+  assert.doesNotMatch(styles, /favorite-button|history-item\.favorite/)
+  assert.doesNotMatch(main, /setFavorite/)
 })
 
 test('history page confirms destructive cleanup and reports partial failures', () => {

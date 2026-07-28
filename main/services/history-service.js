@@ -3,20 +3,23 @@ const path = require('path')
 
 const MAX_HISTORY_QUERY_LENGTH = 200
 const MAX_HISTORY_BATCH_SIZE = 500
+const DEFAULT_HISTORY_PAGE_SIZE = 40
+const MAX_HISTORY_PAGE_SIZE = 100
 const OWNED_CAPTURE_FILE = /^Highlighter(?:_Long)?_\d{4}-\d{2}-\d{2}_[\d-]+\.png$/i
 const OWNED_THUMBNAIL_FILE = /^\d{10,}-[a-z0-9]+-thumb\.png$/i
 
 function normalizeHistoryFilter(value = {}) {
   const filter = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const requestedLimit = Math.round(Number(filter.limit) || DEFAULT_HISTORY_PAGE_SIZE)
   return {
     query: String(filter.query || '').trim().slice(0, MAX_HISTORY_QUERY_LENGTH).toLocaleLowerCase(),
     source: String(filter.source || '').trim().slice(0, 64),
-    favoriteOnly: filter.favoriteOnly === true
+    cursor: String(filter.cursor || '').trim().slice(0, 128),
+    limit: Math.max(1, Math.min(MAX_HISTORY_PAGE_SIZE, requestedLimit))
   }
 }
 
 function matchesHistoryFilter(item, filter) {
-  if (filter.favoriteOnly && item.favorite !== true) return false
   if (filter.source && item.source !== filter.source) return false
   if (!filter.query) return true
   const searchable = [
@@ -40,6 +43,12 @@ function normalizeHistoryIds(value) {
 function isOwnedHistoryFile(filePath) {
   const name = path.basename(String(filePath || ''))
   return OWNED_CAPTURE_FILE.test(name) || OWNED_THUMBNAIL_FILE.test(name)
+}
+
+function withoutFavorite(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return item
+  const { favorite: _favorite, ...historyItem } = item
+  return historyItem
 }
 
 class HistoryService {
@@ -77,12 +86,16 @@ class HistoryService {
 
   readHistory() {
     const history = this.store.get('captureHistory', [])
-    return Array.isArray(history) ? history : []
+    return Array.isArray(history) ? history.map(withoutFavorite) : []
   }
 
   writeHistory(history) {
-    this.store.set('captureHistory', history)
+    this.store.set('captureHistory', history.map(withoutFavorite))
     this.onChanged()
+  }
+
+  writeHistorySilently(history) {
+    this.store.set('captureHistory', history.map(withoutFavorite))
   }
 
   historyImagePath(meta = {}) {
@@ -95,6 +108,52 @@ class HistoryService {
     if (!item) return
     if (item.thumbnailPath && fs.existsSync(item.thumbnailPath)) fs.unlinkSync(item.thumbnailPath)
     if (item.filePath && fs.existsSync(item.filePath)) fs.unlinkSync(item.filePath)
+  }
+
+  thumbnailPath(id) {
+    return path.join(this.ensureDirectory(this.defaultHistoryDirectory), `${String(id)}-thumb.png`)
+  }
+
+  persistThumbnail(image, id) {
+    if (!image || image.isEmpty?.()) return ''
+    const size = image.getSize()
+    const width = Math.max(1, Math.min(360, Number(size.width) || 360))
+    const thumbnail = image.resize({ width, quality: 'good' })
+    const outputPath = this.thumbnailPath(id)
+    fs.writeFileSync(outputPath, thumbnail.toPNG())
+    return outputPath
+  }
+
+  ensureThumbnail(id) {
+    const normalizedId = String(id || '').slice(0, 128)
+    const history = this.readHistory()
+    const index = history.findIndex((entry) => entry.id === normalizedId)
+    if (index < 0) return ''
+    const item = history[index]
+    if (item.thumbnailPath && fs.existsSync(item.thumbnailPath)) return item.thumbnailPath
+    if (!item.filePath || !fs.existsSync(item.filePath)) return ''
+    try {
+      this.assertWritable()
+      const thumbnailPath = this.persistThumbnail(this.nativeImage.createFromPath(item.filePath), item.id)
+      if (!thumbnailPath) return ''
+      history[index] = { ...item, thumbnailPath }
+      this.writeHistorySilently(history)
+      return thumbnailPath
+    } catch (error) {
+      this.log('History thumbnail generation failed:', item.filePath, error.message)
+      return ''
+    }
+  }
+
+  getThumbnail(id) {
+    const thumbnailPath = this.ensureThumbnail(id)
+    if (!thumbnailPath) return ''
+    try {
+      return `data:image/png;base64,${fs.readFileSync(thumbnailPath).toString('base64')}`
+    } catch (error) {
+      this.log('History thumbnail read failed:', thumbnailPath, error.message)
+      return ''
+    }
   }
 
   historyDirectories() {
@@ -150,10 +209,8 @@ class HistoryService {
     const referencedFiles = new Set()
     let availableCount = 0
     let missingCount = 0
-    let favoriteCount = 0
     let totalBytes = 0
     for (const item of history) {
-      if (item?.favorite === true) favoriteCount++
       if (item?.filePath && fs.existsSync(item.filePath)) availableCount++
       else missingCount++
       for (const filePath of [item?.filePath, item?.thumbnailPath]) {
@@ -173,7 +230,6 @@ class HistoryService {
       totalCount: history.length,
       availableCount,
       missingCount,
-      favoriteCount,
       totalBytes,
       orphanCount: orphans.length,
       orphanBytes: orphans.reduce((total, item) => total + item.size, 0)
@@ -181,17 +237,8 @@ class HistoryService {
   }
 
   trimHistory(history, limit) {
-    const kept = []
-    const discarded = []
-    let regularCount = 0
-    for (const entry of history) {
-      if (entry.favorite === true || regularCount < limit) {
-        kept.push(entry)
-        if (entry.favorite !== true) regularCount++
-      } else {
-        discarded.push(entry)
-      }
-    }
+    const kept = history.slice(0, limit)
+    const discarded = history.slice(limit)
     for (const entry of discarded) {
       try {
         this.deleteFiles(entry)
@@ -209,24 +256,44 @@ class HistoryService {
     return item
   }
 
+  persistBuffer(value, meta = {}) {
+    this.assertWritable()
+    const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value || [])
+    return this.persistImageBuffer(buffer, meta)
+  }
+
   persistDataUrl(dataUrl, meta = {}) {
     this.assertWritable()
+    const buffer = Buffer.from(String(dataUrl).replace(/^data:image\/[^;]+;base64,/, ''), 'base64')
+    return this.persistImageBuffer(buffer, meta)
+  }
+
+  persistImageBuffer(buffer, meta = {}) {
     const settings = this.getSettings()
     if (!settings.screenshot.historyEnabled) return null
+    if (!Buffer.isBuffer(buffer) || !buffer.length) throw new Error('截图历史图片为空')
     const id = this.createId()
     const filePath = this.historyImagePath(meta)
-    const buffer = Buffer.from(String(dataUrl).replace(/^data:image\/\w+;base64,/, ''), 'base64')
     fs.writeFileSync(filePath, buffer)
-    const size = this.nativeImage.createFromPath(filePath).getSize()
+    const image = typeof this.nativeImage.createFromBuffer === 'function'
+      ? this.nativeImage.createFromBuffer(buffer)
+      : this.nativeImage.createFromPath(filePath)
+    const size = image.getSize()
+    let thumbnailPath = ''
+    try {
+      thumbnailPath = this.persistThumbnail(image, id)
+    } catch (error) {
+      this.log('History thumbnail persistence failed:', filePath, error.message)
+    }
     const item = {
       id,
       filePath,
+      ...(thumbnailPath ? { thumbnailPath } : {}),
       createdAt: this.now(),
       source: meta.source || 'capture',
       action: meta.action || 'edit',
       width: size.width,
-      height: size.height,
-      favorite: false
+      height: size.height
     }
     const limit = Math.max(10, Number(settings.screenshot.historyLimit) || 200)
     return this.storeItem(item, limit)
@@ -254,8 +321,7 @@ class HistoryService {
       action: meta.action || 'save',
       width: Number(meta.width) || imageMeta.width || 0,
       height: Number(meta.height) || imageMeta.height || 0,
-      longCapture: !!meta.longCapture,
-      favorite: false
+      longCapture: !!meta.longCapture
     }
     const limit = Math.max(10, Number(settings.screenshot.historyLimit) || 200)
     return this.storeItem(item, limit)
@@ -263,20 +329,21 @@ class HistoryService {
 
   list(filterValue = {}) {
     const filter = normalizeHistoryFilter(filterValue)
-    return this.readHistory()
+    const matching = this.readHistory()
       .filter((item) => item?.filePath && fs.existsSync(item.filePath))
       .filter((item) => matchesHistoryFilter(item, filter))
-      .map((item) => {
-        const thumbnailSource = item.thumbnailPath && fs.existsSync(item.thumbnailPath) ? item.thumbnailPath : item.filePath
-        const image = this.nativeImage.createFromPath(thumbnailSource)
-        const size = image.getSize()
-        const width = Math.min(360, size.width || 360)
-        return {
-          ...item,
-          favorite: item.favorite === true,
-          thumbnail: image.resize({ width, quality: 'good' }).toDataURL()
-        }
-      })
+    const cursorIndex = filter.cursor
+      ? matching.findIndex((item) => String(item.id) === filter.cursor)
+      : -1
+    const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
+    const items = matching.slice(start, start + filter.limit)
+    const hasMore = start + items.length < matching.length
+    return {
+      items,
+      totalCount: matching.length,
+      hasMore,
+      nextCursor: hasMore && items.length ? String(items[items.length - 1].id) : ''
+    }
   }
 
   listSources() {
@@ -424,15 +491,6 @@ class HistoryService {
     return true
   }
 
-  setFavorite(id, favorite) {
-    this.assertWritable()
-    const history = this.readHistory()
-    const index = history.findIndex((entry) => entry.id === String(id || ''))
-    if (index < 0) return null
-    history[index] = { ...history[index], favorite: favorite === true }
-    this.writeHistory(history)
-    return history[index]
-  }
 }
 
 module.exports = {
