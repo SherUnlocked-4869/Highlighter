@@ -134,6 +134,10 @@ async function validateDataRoot(directory, sourceRoot = '') {
   const source = sourceInput && path.resolve(sourceInput)
   if (source) await rejectLinks(source)
 
+  if (source && (isNestedPath(source, root) || isNestedPath(root, source))) {
+    throw new Error('新旧数据目录不能互相包含')
+  }
+
   const canonicalSource = source && await canonicalPath(source)
   const initialCanonicalRoot = await canonicalPath(root)
   if (source && (isNestedPath(canonicalSource, initialCanonicalRoot) || isNestedPath(initialCanonicalRoot, canonicalSource))) {

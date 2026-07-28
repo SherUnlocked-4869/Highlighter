@@ -271,6 +271,21 @@ test('rejects source and destination containment in either direction', async (t)
   await assert.rejects(validateDataRoot(source, source), /不能互相包含/)
 })
 
+test('rejects lexical containment before canonicalizing a missing source path', async (t) => {
+  const parent = await temporaryRoot(t)
+  const target = path.join(parent, 'legacy')
+  const source = path.join(target, 'nested')
+  await fsp.mkdir(target, { recursive: true })
+
+  const originalRealpath = fsp.realpath
+  fsp.realpath = async () => {
+    throw new Error('realpath should not be needed for lexical containment')
+  }
+  t.after(() => { fsp.realpath = originalRealpath })
+
+  await assert.rejects(validateDataRoot(target, source), /不能互相包含/)
+})
+
 test('requires an absolute source data root and permits disjoint absolute roots', async (t) => {
   const parent = await temporaryRoot(t)
   const source = path.join(parent, 'source')
