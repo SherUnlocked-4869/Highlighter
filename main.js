@@ -532,6 +532,7 @@ function createToolbarWindow() {
     height: TOOLBAR_H,
     frame: false,
     transparent: true,
+    hasShadow: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     focusable: !isWin,
