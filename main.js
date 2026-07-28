@@ -891,14 +891,15 @@ async function createCaptureWindow(options = {}) {
     : getDisplayCapture(display)
   const smartSelectPromise = mode === 'region' ? createSmartSelectSession() : Promise.resolve(null)
   const smartSelectSession = await smartSelectPromise
+  const transparent = mode === 'canvas' || !!options.transparent
   const captureWindow = new BrowserWindow({
     x: captureBounds.x,
     y: captureBounds.y,
     width: Math.min(captureBounds.width, 800),
     height: Math.min(captureBounds.height, 600),
     frame: false,
-    transparent: options.mode === 'canvas',
-    backgroundColor: options.mode === 'canvas' ? '#00ffffff' : '#000000',
+    transparent,
+    backgroundColor: transparent ? '#00ffffff' : '#000000',
     fullscreenable: true,
     alwaysOnTop: true,
     skipTaskbar: true,
@@ -906,6 +907,7 @@ async function createCaptureWindow(options = {}) {
     opacity: 0,
     resizable: false,
     movable: false,
+    hasShadow: !transparent,
     webPreferences: {
       preload: path.join(__dirname, 'preload-capture.js'),
       contextIsolation: true,
@@ -953,6 +955,7 @@ async function createCaptureWindow(options = {}) {
       source: options.source || 'region',
       displayBounds: display.bounds,
       captureBounds,
+      imageBounds: options.imageBounds || null,
       scaleFactor: capture.scaleFactor,
       editPin: !!options.editPin,
       smartSelect: !!captureWindow._smartSelectContext,
@@ -1241,6 +1244,36 @@ async function saveDataUrl(dataUrl, options = {}) {
   return saveImageBuffer(dataUrlToBuffer(dataUrl), options)
 }
 
+function getPixelAlignedPinSize(pixelWidth, pixelHeight, display) {
+  const scaleFactor = Math.max(0.25, Number(display?.scaleFactor) || 1)
+  return {
+    width: Math.max(1, Number(pixelWidth) / scaleFactor),
+    height: Math.max(1, Number(pixelHeight) / scaleFactor),
+    scaleFactor
+  }
+}
+
+function syncPinDisplayScale(win) {
+  if (!win || win.isDestroyed() || !win._pinData) return false
+  const data = win._pinData
+  const bounds = win.getBounds()
+  const display = screen.getDisplayMatching(bounds)
+  const aligned = getPixelAlignedPinSize(data.pixelWidth, data.pixelHeight, display)
+  if (Math.abs(aligned.scaleFactor - Number(data.displayScaleFactor || 1)) < 0.001) return false
+  data.displayScaleFactor = aligned.scaleFactor
+  data.baseWidth = aligned.width
+  data.baseHeight = aligned.height
+  data.zoom = Math.max(0.2, Math.min(3, Number(data.zoom) || 1))
+  const width = Math.max(1, Math.round(data.baseWidth * data.zoom))
+  const fullHeight = Math.max(1, Math.round(data.baseHeight * data.zoom))
+  const height = data.longCapture
+    ? Math.min(Math.round(display.workArea.height * 0.55), fullHeight)
+    : fullHeight
+  win.setBounds({ x: bounds.x, y: bounds.y, width, height }, false)
+  win.webContents.send('pin:zoom-changed', Math.round(data.zoom * 100))
+  return true
+}
+
 function createPinWindow(dataUrl, meta = {}) {
   const image = nativeImage.createFromDataURL(dataUrl)
   const size = image.getSize()
@@ -1255,17 +1288,17 @@ function createPinWindow(dataUrl, meta = {}) {
     : screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   const maxWidth = Math.round(display.workArea.width * 0.55)
   const maxHeight = Math.round(display.workArea.height * 0.55)
-  const sourceScaleFactor = Math.max(0.25, Number(meta.scaleFactor) || display.scaleFactor || 1)
   const longCapture = !!meta.longCapture
-  const naturalWidth = Math.max(1, size.width / sourceScaleFactor)
-  const naturalHeight = Math.max(1, size.height / sourceScaleFactor)
-  const baseWidth = longCapture ? naturalWidth : (selectionBounds?.width || naturalWidth)
-  const baseHeight = longCapture ? naturalHeight : (selectionBounds?.height || naturalHeight)
+  const aligned = getPixelAlignedPinSize(size.width, size.height, display)
+  const baseWidth = aligned.width
+  const baseHeight = aligned.height
   const zoom = longCapture
     ? Math.min(1, maxWidth / baseWidth)
     : (selectionBounds ? 1 : Math.min(1, maxWidth / baseWidth, maxHeight / baseHeight))
-  const width = longCapture ? Math.max(1, Math.round(baseWidth * zoom)) : (selectionBounds?.width || Math.max(1, Math.round(baseWidth * zoom)))
-  const height = longCapture ? Math.max(1, Math.min(maxHeight, Math.round(baseHeight * zoom))) : (selectionBounds?.height || Math.max(1, Math.round(baseHeight * zoom)))
+  const width = Math.max(1, Math.round(baseWidth * zoom))
+  const height = longCapture
+    ? Math.max(1, Math.min(maxHeight, Math.round(baseHeight * zoom)))
+    : Math.max(1, Math.round(baseHeight * zoom))
   const cursor = screen.getCursorScreenPoint()
   const x = selectionBounds?.x ?? Math.round(Math.min(display.workArea.x + display.workArea.width - width, Math.max(display.workArea.x, cursor.x - width / 2)))
   const y = selectionBounds?.y ?? Math.round(Math.min(display.workArea.y + display.workArea.height - height, Math.max(display.workArea.y, cursor.y - 30)))
@@ -1297,6 +1330,9 @@ function createPinWindow(dataUrl, meta = {}) {
     zoomWithMouse: getSettings().fixedContent.zoomWithMouse !== false,
     clickThrough: false,
     longCapture,
+    pixelWidth: size.width,
+    pixelHeight: size.height,
+    displayScaleFactor: aligned.scaleFactor,
     baseWidth,
     baseHeight,
     zoom
@@ -1330,17 +1366,26 @@ function updatePinWindow(win, dataUrl, meta = {}) {
         height: Math.max(1, Math.round(meta.selectionBounds.height))
       }
     : currentBounds
-  const scaleFactor = Math.max(0.25, Number(meta.scaleFactor) || size.width / targetBounds.width || 1)
+  const display = screen.getDisplayMatching(targetBounds)
+  const aligned = getPixelAlignedPinSize(size.width, size.height, display)
+  const nextBounds = {
+    ...targetBounds,
+    width: Math.max(1, Math.round(aligned.width)),
+    height: Math.max(1, Math.round(aligned.height))
+  }
   win._pinData = {
     ...win._pinData,
     dataUrl,
     meta,
-    baseWidth: Math.max(1, size.width / scaleFactor),
-    baseHeight: Math.max(1, size.height / scaleFactor),
+    pixelWidth: size.width,
+    pixelHeight: size.height,
+    displayScaleFactor: aligned.scaleFactor,
+    baseWidth: aligned.width,
+    baseHeight: aligned.height,
     zoom: 1
   }
-  win.setBounds(targetBounds, false)
-  win.setBounds(targetBounds, false)
+  win.setBounds(nextBounds, false)
+  win.setBounds(nextBounds, false)
   win.webContents.send('pin:update', win._pinData)
   return win
 }
@@ -1369,15 +1414,47 @@ function bringPinToFront(win) {
 
 async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
   if (!win || win.isDestroyed() || !win._pinData) return null
-  const windowBounds = win.getBounds()
+  const pinBounds = win.getBounds()
   const editBounds = {
-    x: Math.round(windowBounds.x + (Number(imageBounds.x) || 0)),
-    y: Math.round(windowBounds.y + (Number(imageBounds.y) || 0)),
-    width: Math.max(1, Math.round(Number(imageBounds.width) || windowBounds.width)),
-    height: Math.max(1, Math.round(Number(imageBounds.height) || windowBounds.height))
+    x: Math.round(pinBounds.x + (Number(imageBounds.x) || 0)),
+    y: Math.round(pinBounds.y + (Number(imageBounds.y) || 0)),
+    width: Math.max(1, Math.round(Number(imageBounds.width) || pinBounds.width)),
+    height: Math.max(1, Math.round(Number(imageBounds.height) || pinBounds.height))
   }
   const imageSize = nativeImage.createFromDataURL(win._pinData.dataUrl).getSize()
-  const sourceScaleFactor = Math.max(0.25, imageSize.width / editBounds.width)
+  const isOcrEditor = autoAction === 'ocr'
+  let editorBounds = editBounds
+  let editorImageBounds = null
+  let sourceScaleFactor = Math.max(0.25, imageSize.width / editBounds.width)
+  if (isOcrEditor) {
+    const workArea = screen.getDisplayMatching(editBounds).workArea
+    const actionSpace = 62
+    const scale = Math.min(
+      1,
+      workArea.width / editBounds.width,
+      Math.max(1, workArea.height - actionSpace) / editBounds.height
+    )
+    const imageWidth = Math.max(1, Math.round(editBounds.width * scale))
+    const imageHeight = Math.max(1, Math.round(editBounds.height * scale))
+    const width = Math.min(workArea.width, Math.max(420, imageWidth))
+    const height = Math.min(workArea.height, imageHeight + actionSpace)
+    const x = Math.round(Math.max(workArea.x, Math.min(
+      editBounds.x + (editBounds.width - width) / 2,
+      workArea.x + workArea.width - width
+    )))
+    const y = Math.round(Math.max(workArea.y, Math.min(
+      editBounds.y,
+      workArea.y + workArea.height - height
+    )))
+    editorBounds = { x, y, width, height }
+    editorImageBounds = {
+      x: Math.round((width - imageWidth) / 2),
+      y: 0,
+      width: imageWidth,
+      height: imageHeight
+    }
+    sourceScaleFactor = Math.max(0.25, imageSize.width / imageWidth)
+  }
   win.hide()
   try {
     const captureWindow = await createCaptureWindow({
@@ -1385,7 +1462,9 @@ async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
       mode: 'image',
       autoAction,
       source: 'pin-reannotate',
-      windowBounds: editBounds,
+      windowBounds: editorBounds,
+      imageBounds: editorImageBounds,
+      transparent: isOcrEditor,
       sourceScaleFactor,
       editPin: true,
       editingPinWindow: win
@@ -2235,7 +2314,10 @@ ipcMain.on('pin:move', (event) => {
 })
 ipcMain.on('pin:move-end', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
-  if (win) win._pinMove = null
+  if (win) {
+    win._pinMove = null
+    syncPinDisplayScale(win)
+  }
 })
 ipcMain.on('pin:toggle-click-through', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)

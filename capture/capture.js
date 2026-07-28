@@ -1,5 +1,5 @@
 const backgroundCanvas = document.getElementById('backgroundStage')
-const backgroundCtx = backgroundCanvas.getContext('2d', { alpha: false })
+const backgroundCtx = backgroundCanvas.getContext('2d')
 const canvas = document.getElementById('stage')
 const ctx = canvas.getContext('2d')
 const toolbar = document.getElementById('toolbar')
@@ -55,6 +55,12 @@ function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
 function normalizeRect(a, b) { return { x: Math.min(a.x,b.x), y: Math.min(a.y,b.y), w: Math.abs(b.x-a.x), h: Math.abs(b.y-a.y) } }
 function insideSelection(point) { return selection && point.x >= selection.x && point.x <= selection.x + selection.w && point.y >= selection.y && point.y <= selection.y + selection.h }
 function annotationStyle() { return { color: colorInput.value, width: Number(lineWidthInput.value) || 4 } }
+function imageDisplayBounds() {
+  const bounds=initData?.imageBounds
+  return bounds
+    ? {x:Number(bounds.x)||0,y:Number(bounds.y)||0,w:Math.max(1,Number(bounds.width)||1),h:Math.max(1,Number(bounds.height)||1)}
+    : {x:0,y:0,w:innerWidth,h:innerHeight}
+}
 
 function updateSelectionCursor(point) {
   if (currentTool !== 'select') {
@@ -75,7 +81,7 @@ function resizeCanvas() {
   }
   toolbarSize = null
   if (image && initData && ['fullscreen', 'image', 'canvas'].includes(initData.mode)) {
-    selection = { x: 0, y: 0, w: innerWidth, h: innerHeight }
+    selection = imageDisplayBounds()
   }
   drawBackground()
   render()
@@ -86,7 +92,10 @@ function resizeCanvas() {
 function drawBackground() {
   backgroundCtx.setTransform(dpr,0,0,dpr,0,0)
   backgroundCtx.clearRect(0,0,innerWidth,innerHeight)
-  if (image) backgroundCtx.drawImage(image,0,0,innerWidth,innerHeight)
+  if (image) {
+    const bounds=imageDisplayBounds()
+    backgroundCtx.drawImage(image,bounds.x,bounds.y,bounds.w,bounds.h)
+  }
 }
 
 function reportRenderReady() {
@@ -137,7 +146,7 @@ function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offs
   if (item.type === 'serial') { const radius=Math.max(12,width*3); context.beginPath(); context.arc(x,y,radius,0,Math.PI*2); context.fill(); context.fillStyle='#fff'; context.font=`bold ${radius}px sans-serif`; context.textAlign='center'; context.textBaseline='middle'; context.fillText(String(item.number),x,y+1) }
   if (item.type === 'blur' && sourceImage) {
     const left=Math.min(x,x2), top=Math.min(y,y2), w=Math.abs(x2-x), h=Math.abs(y2-y)
-    if (w>2&&h>2) { const tiny=document.createElement('canvas'); tiny.width=Math.max(1,Math.round(w/12)); tiny.height=Math.max(1,Math.round(h/12)); const t=tiny.getContext('2d'); const sourceScaleX=sourceImage.naturalWidth/innerWidth, sourceScaleY=sourceImage.naturalHeight/innerHeight; t.drawImage(sourceImage,Math.min(item.x,item.x2)*sourceScaleX,Math.min(item.y,item.y2)*sourceScaleY,Math.abs(item.x2-item.x)*sourceScaleX,Math.abs(item.y2-item.y)*sourceScaleY,0,0,tiny.width,tiny.height); context.imageSmoothingEnabled=false; context.drawImage(tiny,left,top,w,h); context.imageSmoothingEnabled=true }
+    if (w>2&&h>2) { const tiny=document.createElement('canvas'); tiny.width=Math.max(1,Math.round(w/12)); tiny.height=Math.max(1,Math.round(h/12)); const t=tiny.getContext('2d'); const bounds=imageDisplayBounds(); const sourceScaleX=sourceImage.naturalWidth/bounds.w, sourceScaleY=sourceImage.naturalHeight/bounds.h; t.drawImage(sourceImage,(Math.min(item.x,item.x2)-bounds.x)*sourceScaleX,(Math.min(item.y,item.y2)-bounds.y)*sourceScaleY,Math.abs(item.x2-item.x)*sourceScaleX,Math.abs(item.y2-item.y)*sourceScaleY,0,0,tiny.width,tiny.height); context.imageSmoothingEnabled=false; context.drawImage(tiny,left,top,w,h); context.imageSmoothingEnabled=true }
   }
   context.restore()
 }
@@ -151,7 +160,7 @@ function renderOverlay() {
     ctx.fillRect(0,0,innerWidth,innerHeight)
     return
   }
-  ctx.save(); ctx.fillStyle=initData?.settings?.screenshot?.selectionMask||'rgba(0,0,0,.46)'; ctx.beginPath(); ctx.rect(0,0,innerWidth,innerHeight); ctx.rect(selection.x,selection.y,selection.w,selection.h); ctx.fill('evenodd'); ctx.restore()
+  if(!initData?.imageBounds){ctx.save(); ctx.fillStyle=initData?.settings?.screenshot?.selectionMask||'rgba(0,0,0,.46)'; ctx.beginPath(); ctx.rect(0,0,innerWidth,innerHeight); ctx.rect(selection.x,selection.y,selection.w,selection.h); ctx.fill('evenodd'); ctx.restore()}
   ctx.save(); ctx.strokeStyle='#36a3ff'; ctx.lineWidth=1; ctx.setLineDash([4,3]); ctx.strokeRect(selection.x+.5,selection.y+.5,selection.w,selection.h); ctx.restore()
   annotations.forEach((item) => drawAnnotation(ctx,item))
   if (activeAnnotation) drawAnnotation(ctx,activeAnnotation)
@@ -177,12 +186,25 @@ function updateFloatingUi() {
   if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16
   sizeBadge.style.display='block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
-  if (selectState==='auto'||activeOcrResult||selecting||dragging||resizing) { toolbar.classList.add('hidden'); return }
+  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); return }
+  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); return }
   toolbar.classList.remove('hidden')
   const rect=toolbarSize||(toolbarSize=toolbar.getBoundingClientRect()); let left=selection.x+selection.w-rect.width; let top=selection.y+selection.h+10
   if (top+rect.height>innerHeight-6) top=selection.y-rect.height-10
   left=Math.max(6,Math.min(left,innerWidth-rect.width-6)); top=Math.max(6,top)
   toolbar.style.left=`${left}px`; toolbar.style.top=`${top}px`
+}
+
+function positionOcrResultBar() {
+  if (!selection||ocrResultBar.classList.contains('hidden')) return
+  const rect=ocrResultBar.getBoundingClientRect()
+  let left=selection.x+(selection.w-rect.width)/2
+  let top=selection.y+selection.h+10
+  if(top+rect.height>innerHeight-8)top=selection.y-rect.height-10
+  left=Math.max(8,Math.min(left,innerWidth-rect.width-8))
+  top=Math.max(8,Math.min(top,innerHeight-rect.height-8))
+  ocrResultBar.style.left=`${left}px`
+  ocrResultBar.style.top=`${top}px`
 }
 
 function setTool(tool) {
@@ -285,9 +307,10 @@ canvas.addEventListener('dblclick',()=>{ if(selection&&initData?.settings?.scree
 
 function exportSelectionCanvas(includeAnnotations = true) {
   if (!selection) return null
-  const scaleX=image.naturalWidth/innerWidth, scaleY=image.naturalHeight/innerHeight
+  const bounds=imageDisplayBounds()
+  const scaleX=image.naturalWidth/bounds.w, scaleY=image.naturalHeight/bounds.h
   const output=document.createElement('canvas'); output.width=Math.max(1,Math.round(selection.w*scaleX)); output.height=Math.max(1,Math.round(selection.h*scaleY))
-  const out=output.getContext('2d'); out.drawImage(image,selection.x*scaleX,selection.y*scaleY,selection.w*scaleX,selection.h*scaleY,0,0,output.width,output.height)
+  const out=output.getContext('2d'); out.drawImage(image,(selection.x-bounds.x)*scaleX,(selection.y-bounds.y)*scaleY,selection.w*scaleX,selection.h*scaleY,0,0,output.width,output.height)
   if(includeAnnotations)annotations.forEach((item)=>drawAnnotation(out,item,scaleX,scaleY,selection.x,selection.y,image))
   return output
 }
@@ -369,6 +392,7 @@ function showOcrOverlay(result) {
   ocrSummary.textContent=result.cached?`识别到 ${visibleCount} 处文本 · 已缓存`:`识别到 ${visibleCount} 处文本 · ${result.durationMs||0} ms`
   ocrOverlay.classList.remove('hidden')
   ocrResultBar.classList.remove('hidden')
+  positionOcrResultBar()
   toolbar.classList.add('hidden')
 }
 
