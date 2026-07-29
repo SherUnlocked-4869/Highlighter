@@ -1,0 +1,32 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const root = path.resolve(__dirname, '..')
+const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
+const actionScript = fs.readFileSync(path.join(root, 'action', 'action.js'), 'utf8')
+const actionHtml = fs.readFileSync(path.join(root, 'action', 'action.html'), 'utf8')
+
+test('selection result windows receive and apply the configured appearance', () => {
+  assert.match(main, /function getActionAppearance\([\s\S]*nativeTheme\.shouldUseDarkColors/)
+  assert.match(main, /backgroundColor: appearance\.resolvedTheme === 'dark'/)
+  assert.match(main, /appearance: getActionAppearance\(\)/)
+  assert.match(main, /broadcastActionAppearance\(settings\)/)
+  assert.match(preload, /onActionAppearance:[\s\S]*action:appearance/)
+  assert.match(actionScript, /function applyAppearance\(appearance = \{\}\)/)
+  assert.match(actionScript, /applyAppearance\(data\.appearance\)/)
+  assert.match(actionScript, /onActionAppearance\(applyAppearance\)/)
+})
+
+test('selection result palette follows light, dark, and primary theme variables', () => {
+  assert.match(actionHtml, /:root \{[\s\S]*--bg: #f5f5f5/)
+  assert.match(actionHtml, /body\.dark \{[\s\S]*--bg: #121316/)
+  assert.match(actionHtml, /body\.dark \{[\s\S]*--inline-code: #ff9f43/)
+  assert.match(actionHtml, /background: var\(--bg\)/)
+  assert.match(actionHtml, /color: var\(--primary\)/)
+  assert.match(actionHtml, /\.result code \{[^}]*color: var\(--inline-code\)/)
+  assert.match(actionHtml, /\.result pre code \{[^}]*color: var\(--text\)/)
+  assert.doesNotMatch(actionHtml, /background: #1a1a2e/)
+})

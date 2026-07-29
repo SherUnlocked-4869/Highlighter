@@ -7,6 +7,9 @@ let loadTimer = null
 let userScrolled = false
 const STREAM_IDLE_TIMEOUT_MS = 30000
 const hasMarkdown = !!(window.electronAPI && typeof window.electronAPI.renderMarkdown === 'function')
+const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
+let configuredTheme = 'system'
+let configuredMainColor = '#1677ff'
 
 const el = {
   headerIcon: document.getElementById('headerIcon'),
@@ -17,6 +20,22 @@ const el = {
   loading: document.getElementById('loading'),
   loadingText: document.getElementById('loadingText')
 }
+
+function applyAppearance(appearance = {}) {
+  configuredTheme = ['light', 'dark'].includes(appearance.theme) ? appearance.theme : 'system'
+  const resolvedTheme = configuredTheme === 'system'
+    ? (systemThemeMedia.matches ? 'dark' : 'light')
+    : configuredTheme
+  configuredMainColor = /^#[0-9a-f]{6}$/i.test(appearance.mainColor || '')
+    ? appearance.mainColor
+    : '#1677ff'
+  document.body.classList.toggle('dark', resolvedTheme === 'dark')
+  document.documentElement.style.setProperty('--primary', configuredMainColor)
+}
+
+systemThemeMedia.addEventListener('change', () => {
+  if (configuredTheme === 'system') applyAppearance({ theme: 'system', mainColor: configuredMainColor })
+})
 
 function resetUI() {
   isDone = false; reasoning = ''; hasReasoning = false; fullText = ''; userScrolled = false
@@ -185,6 +204,7 @@ function addReasoning() {
 }
 
 window.electronAPI.onActionStart(function(data) {
+  applyAppearance(data.appearance)
   resetUI()
   el.sourceText.textContent = data.text
   if (data.type === 'translate') {
@@ -200,6 +220,8 @@ window.electronAPI.onActionStart(function(data) {
   showLoading(true)
   armStreamTimeout()
 })
+
+window.electronAPI.onActionAppearance(applyAppearance)
 
 window.electronAPI.onStreamData(function(data) {
   if (isDone) return

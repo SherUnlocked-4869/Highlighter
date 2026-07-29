@@ -8,6 +8,7 @@ const {
   ipcMain,
   Menu,
   nativeImage,
+  nativeTheme,
   powerMonitor,
   safeStorage,
   screen,
@@ -551,6 +552,7 @@ function createToolbarWindow() {
 }
 
 function createActionWindow() {
+  const appearance = getActionAppearance()
   const win = new BrowserWindow({
     width: 550,
     height: 520,
@@ -558,6 +560,7 @@ function createActionWindow() {
     minHeight: 300,
     title: 'Highlighter',
     autoHideMenuBar: true,
+    backgroundColor: appearance.resolvedTheme === 'dark' ? '#121316' : '#f5f5f5',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -579,6 +582,24 @@ function createActionWindow() {
   })
   actionWindow = win
   return win
+}
+
+function getActionAppearance(settings = getSettings()) {
+  const configuredTheme = ['light', 'dark'].includes(settings?.theme) ? settings.theme : 'system'
+  const resolvedTheme = configuredTheme === 'system'
+    ? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
+    : configuredTheme
+  const mainColor = /^#[0-9a-f]{6}$/i.test(settings?.mainColor || '')
+    ? settings.mainColor
+    : DEFAULT_SETTINGS.mainColor
+  return { theme: configuredTheme, resolvedTheme, mainColor }
+}
+
+function broadcastActionAppearance(settings = getSettings()) {
+  const appearance = getActionAppearance(settings)
+  for (const win of actionWindows) {
+    if (!win.isDestroyed()) win.webContents.send('action:appearance', appearance)
+  }
 }
 
 function createTrayIcon() {
@@ -1782,8 +1803,12 @@ registerSettingsIpc({
     if (patch.system?.enableTray !== undefined) createTrayIcon()
     if (patch.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
     if (patch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
+    if (patch.theme !== undefined || patch.mainColor !== undefined) broadcastActionAppearance(settings)
   },
-  onSettingsReset: () => registerShortcuts(),
+  onSettingsReset: (settings) => {
+    registerShortcuts()
+    broadcastActionAppearance(settings)
+  },
   onStartHook: () => initSelectionHook(),
   validateApiKey: (apiKey) => require('./deepseek').validateApiKey(apiKey),
   log
@@ -2551,7 +2576,8 @@ ipcMain.on('toolbar:action', async (_event, { action, text }) => {
       type: actionDefinition.id,
       label: actionDefinition.label,
       icon: actionDefinition.icon,
-      text
+      text,
+      appearance: getActionAppearance()
     })
     streamToWindow(win, actionDefinition, text, controller)
   })

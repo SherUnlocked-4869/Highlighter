@@ -83,6 +83,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('action:start', handler)
     return () => ipcRenderer.removeListener('action:start', handler)
   },
+  onActionAppearance: (callback) => {
+    const handler = (_event, appearance) => callback(appearance)
+    ipcRenderer.on('action:appearance', handler)
+    return () => ipcRenderer.removeListener('action:appearance', handler)
+  },
 
   // Action - Stream
   onStreamData: (callback) => {
