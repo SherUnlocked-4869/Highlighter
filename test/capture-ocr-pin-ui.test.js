@@ -28,8 +28,10 @@ test('pinned images omit the top-right copy save and close overlay', () => {
 })
 
 test('pinned images align source pixels to the active display DPI', () => {
-  assert.match(main, /function getPixelAlignedPinSize\(pixelWidth, pixelHeight, display\)/)
+  assert.match(main, /function getPixelAlignedPinSize\(pixelWidth, pixelHeight, display, preferredSize = null\)/)
   assert.match(main, /Number\(pixelWidth\) \/ scaleFactor/)
+  assert.match(main, /getPixelAlignedPinSize\(size\.width, size\.height, display, selectionBounds\)/)
+  assert.match(main, /getPixelAlignedPinSize\(size\.width, size\.height, display, meta\.selectionBounds\)/)
   assert.match(main, /function syncPinDisplayScale\(win\)[\s\S]*screen\.getDisplayMatching\(bounds\)/)
   assert.match(main, /pixelWidth: size\.width,[\s\S]*displayScaleFactor: aligned\.scaleFactor/)
   assert.match(main, /const nextZoom = Math\.max\(0\.2, Math\.min\(3,/)

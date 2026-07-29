@@ -25,3 +25,11 @@ test('capture rendering separates the static background and coalesces overlay fr
   assert.match(capture, /function renderOverlay\(\)[\s\S]*ctx\.clearRect/)
   assert.match(capture, /function render\(\)\s*\{\s*if \(renderRequest\) return\s*renderRequest = requestAnimationFrame/)
 })
+
+test('capture preview keeps the desktop image in its native pixel buffer', () => {
+  assert.match(capture, /function usesNativeBackgroundPixels\(\)/)
+  assert.match(capture, /backgroundCanvas\.width=nativeBackground\?image\.naturalWidth:Math\.round\(innerWidth\*dpr\)/)
+  assert.match(capture, /backgroundCanvas\.height=nativeBackground\?image\.naturalHeight:Math\.round\(innerHeight\*dpr\)/)
+  assert.match(capture, /backgroundCtx\.imageSmoothingEnabled=false;backgroundCtx\.drawImage\(image,0,0\)/)
+  assert.match(capture, /backgroundCanvas\.classList\.toggle\('native-pixels',nativeBackground\)/)
+})

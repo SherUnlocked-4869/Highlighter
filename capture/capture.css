@@ -3,6 +3,7 @@
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; user-select: none; }
 #backgroundStage, #stage { position: fixed; inset: 0; width: 100%; height: 100%; }
 #backgroundStage { pointer-events: none; }
+#backgroundStage.native-pixels { image-rendering: pixelated; }
 #stage { cursor: crosshair; }
 .ocr-overlay { position: fixed; z-index: 6; overflow: hidden; pointer-events: auto; }
 .ocr-text-block { position: absolute; display: flex; align-items: center; justify-content: center; overflow: hidden; color: #111; background: rgba(255,255,255,.78); transform-origin: center; white-space: nowrap; user-select: text; cursor: text; }

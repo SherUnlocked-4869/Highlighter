@@ -71,8 +71,25 @@
     return HANDLE_CURSORS[handle] || (inside ? 'move' : 'crosshair')
   }
 
+  function getSourcePixelRect(selection, displayBounds, imageSize) {
+    const imageWidth = Math.max(1, Math.round(Number(imageSize?.width) || 1))
+    const imageHeight = Math.max(1, Math.round(Number(imageSize?.height) || 1))
+    const displayWidth = Math.max(1, Number(displayBounds?.w ?? displayBounds?.width) || 1)
+    const displayHeight = Math.max(1, Number(displayBounds?.h ?? displayBounds?.height) || 1)
+    const displayX = Number(displayBounds?.x) || 0
+    const displayY = Number(displayBounds?.y) || 0
+    const scaleX = imageWidth / displayWidth
+    const scaleY = imageHeight / displayHeight
+    const left = clamp(Math.round(((Number(selection?.x) || 0) - displayX) * scaleX), 0, imageWidth - 1)
+    const top = clamp(Math.round(((Number(selection?.y) || 0) - displayY) * scaleY), 0, imageHeight - 1)
+    const right = clamp(Math.round(((Number(selection?.x) || 0) + (Number(selection?.w) || 0) - displayX) * scaleX), left + 1, imageWidth)
+    const bottom = clamp(Math.round(((Number(selection?.y) || 0) + (Number(selection?.h) || 0) - displayY) * scaleY), top + 1, imageHeight)
+    return { x: left, y: top, width: right - left, height: bottom - top }
+  }
+
   return {
     getResizeHandle,
+    getSourcePixelRect,
     resizeSelection,
     selectionCursor
   }

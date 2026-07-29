@@ -52,6 +52,7 @@ const Store = require('electron-store')
 const { OcrService } = require('./main/services/ocr-service')
 const { RecordingService } = require('./main/services/recording-service')
 const { LongCaptureSession } = require('./main/services/long-capture-session')
+const { findNativeDisplay, getNativeDisplayBounds } = require('./main/services/capture-geometry')
 const { buildTableFromOcr } = require('./capture/recognition-utils')
 const {
   calculateFrameBounds,
@@ -859,15 +860,17 @@ async function getDisplayCapture(display) {
       if (!nativeDisplayListPromise) nativeDisplayListPromise = screenshotDesktop.listDisplays()
       const nativeDisplays = await nativeDisplayListPromise
       const physicalBounds = screen.dipToScreenRect(null, display.bounds)
-      const nativeDisplay = nativeDisplays.find((item) => (
-        item.left === physicalBounds.x && item.top === physicalBounds.y &&
-        item.width === physicalBounds.width && item.height === physicalBounds.height
-      ))
+      const nativeDisplay = findNativeDisplay(
+        nativeDisplays,
+        physicalBounds,
+        Math.max(1, Math.ceil(scaleFactor))
+      )
       if (nativeDisplay) {
         const buffer = await screenshotDesktop({ format: 'png', screen: nativeDisplay.id })
         const image = nativeImage.createFromBuffer(buffer)
         const size = image.getSize()
-        if (size.width !== physicalBounds.width || size.height !== physicalBounds.height) {
+        const nativeBounds = getNativeDisplayBounds(nativeDisplay)
+        if (size.width !== nativeBounds.width || size.height !== nativeBounds.height) {
           throw new Error(`原生抓屏尺寸异常：${size.width}x${size.height}`)
         }
         if (isBlankCapture(image)) throw new Error('原生抓屏返回空白画面')
@@ -1284,11 +1287,17 @@ async function saveDataUrl(dataUrl, options = {}) {
   return saveImageBuffer(dataUrlToBuffer(dataUrl), options)
 }
 
-function getPixelAlignedPinSize(pixelWidth, pixelHeight, display) {
+function getPixelAlignedPinSize(pixelWidth, pixelHeight, display, preferredSize = null) {
   const scaleFactor = Math.max(0.25, Number(display?.scaleFactor) || 1)
+  const preferredWidth = Number(preferredSize?.width)
+  const preferredHeight = Number(preferredSize?.height)
   return {
-    width: Math.max(1, Number(pixelWidth) / scaleFactor),
-    height: Math.max(1, Number(pixelHeight) / scaleFactor),
+    width: Number.isFinite(preferredWidth) && preferredWidth > 0
+      ? preferredWidth
+      : Math.max(1, Number(pixelWidth) / scaleFactor),
+    height: Number.isFinite(preferredHeight) && preferredHeight > 0
+      ? preferredHeight
+      : Math.max(1, Number(pixelHeight) / scaleFactor),
     scaleFactor
   }
 }
@@ -1329,7 +1338,7 @@ function createPinWindow(dataUrl, meta = {}) {
   const maxWidth = Math.round(display.workArea.width * 0.55)
   const maxHeight = Math.round(display.workArea.height * 0.55)
   const longCapture = !!meta.longCapture
-  const aligned = getPixelAlignedPinSize(size.width, size.height, display)
+  const aligned = getPixelAlignedPinSize(size.width, size.height, display, selectionBounds)
   const baseWidth = aligned.width
   const baseHeight = aligned.height
   const zoom = longCapture
@@ -1407,7 +1416,7 @@ function updatePinWindow(win, dataUrl, meta = {}) {
       }
     : currentBounds
   const display = screen.getDisplayMatching(targetBounds)
-  const aligned = getPixelAlignedPinSize(size.width, size.height, display)
+  const aligned = getPixelAlignedPinSize(size.width, size.height, display, meta.selectionBounds)
   const nextBounds = {
     ...targetBounds,
     width: Math.max(1, Math.round(aligned.width)),

@@ -19,6 +19,7 @@ const ocrResultBar = document.getElementById('ocrResultBar')
 const ocrSummary = document.getElementById('ocrSummary')
 const {
   getResizeHandle,
+  getSourcePixelRect,
   resizeSelection,
   selectionCursor
 } = window.selectionUtils
@@ -62,6 +63,15 @@ function imageDisplayBounds() {
     : {x:0,y:0,w:innerWidth,h:innerHeight}
 }
 
+function usesNativeBackgroundPixels() {
+  return !!(
+    image?.naturalWidth &&
+    image?.naturalHeight &&
+    initData?.mode !== 'canvas' &&
+    !initData?.imageBounds
+  )
+}
+
 function updateSelectionCursor(point) {
   if (currentTool !== 'select') {
     canvas.style.cursor = 'crosshair'
@@ -73,12 +83,16 @@ function updateSelectionCursor(point) {
 
 function resizeCanvas() {
   dpr = window.devicePixelRatio || 1
-  for (const target of [backgroundCanvas, canvas]) {
-    target.width = Math.round(innerWidth * dpr)
-    target.height = Math.round(innerHeight * dpr)
-    target.style.width = `${innerWidth}px`
-    target.style.height = `${innerHeight}px`
-  }
+  const nativeBackground=usesNativeBackgroundPixels()
+  backgroundCanvas.width=nativeBackground?image.naturalWidth:Math.round(innerWidth*dpr)
+  backgroundCanvas.height=nativeBackground?image.naturalHeight:Math.round(innerHeight*dpr)
+  backgroundCanvas.style.width=`${innerWidth}px`
+  backgroundCanvas.style.height=`${innerHeight}px`
+  backgroundCanvas.classList.toggle('native-pixels',nativeBackground)
+  canvas.width=Math.round(innerWidth*dpr)
+  canvas.height=Math.round(innerHeight*dpr)
+  canvas.style.width=`${innerWidth}px`
+  canvas.style.height=`${innerHeight}px`
   toolbarSize = null
   if (image && initData && ['fullscreen', 'image', 'canvas'].includes(initData.mode)) {
     selection = imageDisplayBounds()
@@ -90,11 +104,12 @@ function resizeCanvas() {
 }
 
 function drawBackground() {
-  backgroundCtx.setTransform(dpr,0,0,dpr,0,0)
-  backgroundCtx.clearRect(0,0,innerWidth,innerHeight)
+  const nativeBackground=usesNativeBackgroundPixels()
+  backgroundCtx.setTransform(nativeBackground?1:dpr,0,0,nativeBackground?1:dpr,0,0)
+  backgroundCtx.clearRect(0,0,nativeBackground?backgroundCanvas.width:innerWidth,nativeBackground?backgroundCanvas.height:innerHeight)
   if (image) {
-    const bounds=imageDisplayBounds()
-    backgroundCtx.drawImage(image,bounds.x,bounds.y,bounds.w,bounds.h)
+    if(nativeBackground){backgroundCtx.imageSmoothingEnabled=false;backgroundCtx.drawImage(image,0,0)}
+    else{const bounds=imageDisplayBounds();backgroundCtx.drawImage(image,bounds.x,bounds.y,bounds.w,bounds.h)}
   }
 }
 
@@ -308,10 +323,10 @@ canvas.addEventListener('dblclick',()=>{ if(selection&&initData?.settings?.scree
 function exportSelectionCanvas(includeAnnotations = true) {
   if (!selection) return null
   const bounds=imageDisplayBounds()
-  const scaleX=image.naturalWidth/bounds.w, scaleY=image.naturalHeight/bounds.h
-  const output=document.createElement('canvas'); output.width=Math.max(1,Math.round(selection.w*scaleX)); output.height=Math.max(1,Math.round(selection.h*scaleY))
-  const out=output.getContext('2d'); out.drawImage(image,(selection.x-bounds.x)*scaleX,(selection.y-bounds.y)*scaleY,selection.w*scaleX,selection.h*scaleY,0,0,output.width,output.height)
-  if(includeAnnotations)annotations.forEach((item)=>drawAnnotation(out,item,scaleX,scaleY,selection.x,selection.y,image))
+  const source=getSourcePixelRect(selection,bounds,{width:image.naturalWidth,height:image.naturalHeight})
+  const output=document.createElement('canvas'); output.width=source.width; output.height=source.height
+  const out=output.getContext('2d'); out.imageSmoothingEnabled=false; out.drawImage(image,source.x,source.y,source.width,source.height,0,0,source.width,source.height)
+  if(includeAnnotations){const scaleX=source.width/selection.w,scaleY=source.height/selection.h;annotations.forEach((item)=>drawAnnotation(out,item,scaleX,scaleY,selection.x,selection.y,image))}
   return output
 }
 
