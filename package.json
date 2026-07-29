@@ -5,7 +5,10 @@
   "main": "main.js",
   "author": "Highlighter",
   "scripts": {
+    "postinstall": "install-electron --no",
     "test": "node --test test/*.test.js",
+    "test:runtime": "node --test test/electron-runtime.test.js",
+    "check:version": "node scripts/check-version.js",
     "stop:app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-running.ps1",
     "build:smart-select": "powershell -NoProfile -ExecutionPolicy Bypass -File native/smart-select/build.ps1",
     "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
@@ -113,7 +116,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",
-    "electron": "^33.4.11",
+    "electron": "43.2.0",
     "electron-builder": "^26.0.12",
     "onnxruntime-node": "^1.24.2"
   },
@@ -123,6 +126,8 @@
     "@electron/rebuild": true,
     "electron-builder": true,
     "ffmpeg-static": true,
-    "sharp": true
+    "sharp": true,
+    "electron-winstaller@5.4.0": true,
+    "onnxruntime-node@1.24.2": true
   }
 }

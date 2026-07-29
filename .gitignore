@@ -10,3 +10,4 @@ native/ocr/HighlighterOcrSidecar.exe
 native/ocr/OcrSidecar.exe
 native/ocr/*.dll
 .worktrees/
+.tmp/

@@ -919,6 +919,7 @@ async function createCaptureWindow(options = {}) {
   captureWindow._editingPinWindow = options.editingPinWindow || null
   captureWindow._captureVisible = false
   captureWindow._captureInitSent = false
+  captureWindow._captureRendererReady = false
   captureWindow._smartSelectContext = smartSelectSession
     ? {
         session: smartSelectSession,
@@ -932,7 +933,9 @@ async function createCaptureWindow(options = {}) {
   // Keeping opacity at zero prevents Windows from flashing the temporary size.
   captureWindow.setPosition(display.bounds.x, display.bounds.y, false)
   captureWindow.setBounds(captureBounds, false)
-  if (!requestedBounds) captureWindow.setFullScreen(true)
+  // BrowserWindow fullscreen adds invisible border compensation on Windows 11
+  // under mixed-DPI setups, making the renderer larger than the captured display.
+  // The frameless screen-saver-level window already covers the full display bounds.
   captureWindow.setResizable(false)
 
   const loadPromise = captureWindow.loadFile(path.join(__dirname, 'capture', 'capture.html'))
@@ -965,11 +968,14 @@ async function createCaptureWindow(options = {}) {
       })(),
       settings: getSettings()
     }
-    captureWindow._captureInitSent = true
-    captureWindow.webContents.send('capture:init', captureWindow._captureInit)
+    sendCaptureInit(captureWindow)
     captureWindow._renderTimeout = setTimeout(() => {
       if (captureWindow.isDestroyed() || captureWindow._captureVisible) return
-      log('Capture render timeout:', capture.sourceId || options.mode || 'unknown')
+      log('Capture render timeout:', capture.sourceId || options.mode || 'unknown', JSON.stringify({
+        expected: captureWindow._captureInit?.captureBounds,
+        window: captureWindow.getBounds(),
+        content: captureWindow.getContentBounds()
+      }))
       captureWindow.close()
     }, 8000)
     return captureWindow
@@ -977,6 +983,19 @@ async function createCaptureWindow(options = {}) {
     if (!captureWindow.isDestroyed()) captureWindow.close()
     throw error
   }
+}
+
+function sendCaptureInit(win) {
+  if (
+    !win ||
+    win.isDestroyed() ||
+    !win._captureRendererReady ||
+    !win._captureInit ||
+    win._captureInitSent
+  ) return false
+  win._captureInitSent = true
+  win.webContents.send('capture:init', win._captureInit)
+  return true
 }
 
 function revealCaptureWindow(win) {
@@ -1950,10 +1969,9 @@ registerHistoryIpc({
 const captureIpcController = {
   ready: (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
-  if (win?._captureInit && !win._captureInitSent) {
-    win._captureInitSent = true
-    event.sender.send('capture:init', win._captureInit)
-  }
+  if (!win || win.isDestroyed()) return
+  win._captureRendererReady = true
+  sendCaptureInit(win)
   },
   renderReady: (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
