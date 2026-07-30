@@ -2,7 +2,6 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Highlighter 截图</title>
   <link rel="stylesheet" href="capture.css">
@@ -15,36 +14,35 @@
   <div id="sizeBadge"></div>
   <div id="toolbar" class="toolbar hidden">
     <div class="tool-group">
-      <button data-tool="select" class="active" data-tooltip="选择/调整" aria-label="选择或调整选区"><span class="toolbar-icon" style="--icon:url('icons/select.svg')" aria-hidden="true"></span></button>
-      <button data-tool="rect" data-tooltip="矩形" aria-label="矩形"><span class="toolbar-icon" style="--icon:url('icons/rect.svg')" aria-hidden="true"></span></button>
-      <button data-tool="ellipse" data-tooltip="椭圆" aria-label="椭圆"><span class="toolbar-icon" style="--icon:url('icons/ellipse.svg')" aria-hidden="true"></span></button>
-      <button data-tool="arrow" data-tooltip="箭头" aria-label="箭头"><span class="toolbar-icon" style="--icon:url('icons/arrow.svg')" aria-hidden="true"></span></button>
-      <button data-tool="line" data-tooltip="直线" aria-label="直线"><span class="toolbar-icon" style="--icon:url('icons/line.svg')" aria-hidden="true"></span></button>
-      <button data-tool="pen" data-tooltip="画笔" aria-label="画笔"><span class="toolbar-icon" style="--icon:url('icons/pen.svg')" aria-hidden="true"></span></button>
-      <button data-tool="highlight" data-tooltip="高亮" aria-label="高亮"><span class="toolbar-icon" style="--icon:url('icons/highlight.svg')" aria-hidden="true"></span></button>
-      <button data-tool="blur" data-tooltip="马赛克" aria-label="马赛克"><span class="toolbar-icon" style="--icon:url('icons/mosaic.svg')" aria-hidden="true"></span></button>
-      <button data-tool="text" data-tooltip="文字" aria-label="文字"><span class="toolbar-icon" style="--icon:url('icons/text.svg')" aria-hidden="true"></span></button>
-      <button data-tool="serial" data-tooltip="序号" aria-label="序号"><span class="toolbar-icon" style="--icon:url('icons/serial.svg')" aria-hidden="true"></span></button>
+      <button data-tool="select" class="active" title="选择/调整" aria-label="选择或调整选区"><span class="toolbar-icon" style="--icon:url('icons/select.svg')" aria-hidden="true"></span></button>
+      <button data-tool="rect" title="矩形" aria-label="矩形"><span class="toolbar-icon" style="--icon:url('icons/rect.svg')" aria-hidden="true"></span></button>
+      <button data-tool="ellipse" title="椭圆" aria-label="椭圆"><span class="toolbar-icon" style="--icon:url('icons/ellipse.svg')" aria-hidden="true"></span></button>
+      <button data-tool="arrow" title="箭头" aria-label="箭头"><span class="toolbar-icon" style="--icon:url('icons/arrow.svg')" aria-hidden="true"></span></button>
+      <button data-tool="line" title="直线" aria-label="直线"><span class="toolbar-icon" style="--icon:url('icons/line.svg')" aria-hidden="true"></span></button>
+      <button data-tool="pen" title="画笔" aria-label="画笔"><span class="toolbar-icon" style="--icon:url('icons/pen.svg')" aria-hidden="true"></span></button>
+      <button data-tool="highlight" title="高亮" aria-label="高亮"><span class="toolbar-icon" style="--icon:url('icons/highlight.svg')" aria-hidden="true"></span></button>
+      <button data-tool="blur" title="马赛克" aria-label="马赛克"><span class="toolbar-icon" style="--icon:url('icons/mosaic.svg')" aria-hidden="true"></span></button>
+      <button data-tool="text" title="文字" aria-label="文字"><span class="toolbar-icon" style="--icon:url('icons/text.svg')" aria-hidden="true"></span></button>
+      <button data-tool="serial" title="序号" aria-label="序号"><span class="toolbar-icon" style="--icon:url('icons/serial.svg')" aria-hidden="true"></span></button>
     </div>
     <div class="divider"></div>
-    <label class="color-wrap" data-tooltip="颜色"><input id="color" type="color" value="#ff3b30" aria-label="标注颜色"><span></span></label>
-    <select id="lineWidth" data-tooltip="线条粗细" aria-label="线条粗细"><option value="2">细</option><option value="4" selected>中</option><option value="8">粗</option><option value="14">特粗</option></select>
+    <label class="color-wrap" title="颜色"><input id="color" type="color" value="#ff3b30"><span></span></label>
+    <select id="lineWidth" title="粗细"><option value="2">细</option><option value="4" selected>中</option><option value="8">粗</option><option value="14">特粗</option></select>
     <div class="divider"></div>
-    <button id="undo" data-tooltip="撤销 Ctrl+Z" aria-label="撤销"><span class="toolbar-icon" style="--icon:url('icons/undo.svg')" aria-hidden="true"></span></button>
-    <button id="redo" data-tooltip="重做 Ctrl+Y" aria-label="重做"><span class="toolbar-icon" style="--icon:url('icons/redo.svg')" aria-hidden="true"></span></button>
+    <button id="undo" title="撤销 Ctrl+Z" aria-label="撤销"><span class="toolbar-icon" style="--icon:url('icons/undo.svg')" aria-hidden="true"></span></button>
+    <button id="redo" title="重做 Ctrl+Y" aria-label="重做"><span class="toolbar-icon" style="--icon:url('icons/redo.svg')" aria-hidden="true"></span></button>
     <div class="divider"></div>
-    <button id="longCapture" data-tooltip="长截图" aria-label="长截图"><span class="toolbar-icon" style="--icon:url('icons/long-capture.svg')" aria-hidden="true"></span></button>
-    <button id="qr" data-tooltip="二维码识别" aria-label="二维码识别"><span class="toolbar-icon" style="--icon:url('icons/qr.svg')" aria-hidden="true"></span></button>
-    <button id="table" data-tooltip="表格识别" aria-label="表格识别"><span class="toolbar-icon" style="--icon:url('icons/table.svg')" aria-hidden="true"></span></button>
-    <button id="ocr" data-tooltip="文本识别" aria-label="文本识别"><span class="toolbar-icon" style="--icon:url('icons/ocr.svg')" aria-hidden="true"></span></button>
-    <button id="translate" data-tooltip="识别并翻译" aria-label="识别并翻译"><span class="toolbar-icon" style="--icon:url('icons/translate.svg')" aria-hidden="true"></span></button>
-    <button id="record" data-tooltip="区域录制" aria-label="区域录制"><span class="toolbar-icon" style="--icon:url('icons/record.svg')" aria-hidden="true"></span></button>
-    <button id="pin" data-tooltip="固定到屏幕" aria-label="固定到屏幕"><span class="toolbar-icon" style="--icon:url('icons/pin.svg')" aria-hidden="true"></span></button>
-    <button id="save" data-tooltip="保存 Ctrl+S" aria-label="保存"><span class="toolbar-icon" style="--icon:url('icons/save.svg')" aria-hidden="true"></span></button>
-    <button id="copy" class="primary" data-tooltip="复制 Enter" aria-label="复制"><span class="toolbar-icon" style="--icon:url('icons/copy.svg')" aria-hidden="true"></span></button>
-    <button id="close" data-tooltip="取消 Esc" aria-label="取消"><span class="toolbar-icon" style="--icon:url('icons/close.svg')" aria-hidden="true"></span></button>
+    <button id="longCapture" title="长截图" aria-label="长截图"><span class="toolbar-icon" style="--icon:url('icons/long-capture.svg')" aria-hidden="true"></span></button>
+    <button id="qr" title="二维码识别" aria-label="二维码识别"><span class="toolbar-icon" style="--icon:url('icons/qr.svg')" aria-hidden="true"></span></button>
+    <button id="table" title="表格识别" aria-label="表格识别"><span class="toolbar-icon" style="--icon:url('icons/table.svg')" aria-hidden="true"></span></button>
+    <button id="ocr" title="文本识别" aria-label="文本识别"><span class="toolbar-icon" style="--icon:url('icons/ocr.svg')" aria-hidden="true"></span></button>
+    <button id="translate" title="识别并翻译" aria-label="识别并翻译"><span class="toolbar-icon" style="--icon:url('icons/translate.svg')" aria-hidden="true"></span></button>
+    <button id="record" title="区域录制" aria-label="区域录制"><span class="toolbar-icon" style="--icon:url('icons/record.svg')" aria-hidden="true"></span></button>
+    <button id="pin" title="固定到屏幕" aria-label="固定到屏幕"><span class="toolbar-icon" style="--icon:url('icons/pin.svg')" aria-hidden="true"></span></button>
+    <button id="save" title="保存 Ctrl+S" aria-label="保存"><span class="toolbar-icon" style="--icon:url('icons/save.svg')" aria-hidden="true"></span></button>
+    <button id="copy" class="primary" title="复制 Enter" aria-label="复制"><span class="toolbar-icon" style="--icon:url('icons/copy.svg')" aria-hidden="true"></span></button>
+    <button id="close" title="取消 Esc" aria-label="取消"><span class="toolbar-icon" style="--icon:url('icons/close.svg')" aria-hidden="true"></span></button>
   </div>
-  <div id="toolbarTooltip" class="toolbar-tooltip hidden" role="tooltip"></div>
   <div id="resultPanel" class="result-panel hidden">
     <div class="result-head"><strong id="resultTitle">识别结果</strong><button id="resultClose">×</button></div>
     <div id="resultSource" class="result-source hidden"></div>

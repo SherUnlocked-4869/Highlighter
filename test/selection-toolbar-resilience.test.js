@@ -7,22 +7,14 @@ const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 const action = fs.readFileSync(path.join(__dirname, '..', 'action', 'action.js'), 'utf8')
 const deepseek = fs.readFileSync(path.join(__dirname, '..', 'deepseek.js'), 'utf8')
 
-test('main process rebuilds enabled selection hooks across power and session transitions', () => {
+test('main process rebuilds selection hooks across power and session transitions', () => {
   assert.match(main, /const \{\s*SelectionHookService\s*\} = require\('\.\/main\/services\/selection-hook-service'\)/)
   assert.match(main, /\['suspend', \(\) => selectionHookService\?\.suspend\('system-suspend'\)\]/)
   assert.match(main, /\['lock-screen', \(\) => selectionHookService\?\.suspend\('lock-screen'\)\]/)
-  assert.match(main, /if \(getSettings\(\)\.selectionToolbar\.enabled\) \{[\s\S]*selectionHookService\?\.scheduleRestart\('system-resume'\)/)
-  assert.match(main, /if \(getSettings\(\)\.selectionToolbar\.enabled\) \{[\s\S]*selectionHookService\?\.scheduleRestart\('unlock-screen'\)/)
+  assert.match(main, /\['resume', \(\) => selectionHookService\?\.scheduleRestart\('system-resume'\)\]/)
+  assert.match(main, /\['unlock-screen', \(\) => selectionHookService\?\.scheduleRestart\('unlock-screen'\)\]/)
   assert.match(main, /initSelectionHook\(\)\s*\n\s*registerSelectionPowerEvents\(\)/)
   assert.match(main, /disposeSelectionHook\(\)/)
-})
-
-test('selection hook stays off when the toolbar is disabled and forbids clipboard fallback', () => {
-  const service = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'selection-hook-service.js'), 'utf8')
-
-  assert.match(main, /if \(!getSettings\(\)\.selectionToolbar\.enabled\)[\s\S]*selectionHookService\?\.suspend\('toolbar-disabled'\)/)
-  assert.match(service, /enableClipboard:\s*false/)
-  assert.match(service, /hook\.disableClipboard\(\) === false/)
 })
 
 test('toolbar streams use abortable sliding timeouts and sender ownership checks', () => {

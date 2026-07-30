@@ -2,7 +2,6 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>划词助手</title>
 <style>
@@ -115,9 +114,7 @@
   .result th, .result td { border: 1px solid var(--line); padding: 8px 12px; text-align: left; }
   .result th { background: var(--panel-soft); }
   .result hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
-  .result-error { color: #f44336; margin-top: 8px; }
   .reasoning-arrow { font-size: 11px; transition: transform 0.2s; }
-  .reasoning-spacer { flex: 1; }
   .reasoning-box.open .reasoning-arrow { transform: rotate(0deg); }
   /* Thin scrollbar */
   ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -222,7 +219,6 @@
   </div>
 </div>
 
-<script src="../node_modules/dompurify/dist/purify.min.js"></script>
 <script src="action.js"></script>
 </body>
 </html>

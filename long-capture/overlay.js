@@ -22,7 +22,6 @@ function renderBounds() {
   selection.style.top = `${local.y - 2}px`
   selection.style.width = `${local.width + 4}px`
   selection.style.height = `${local.height + 4}px`
-  selection.classList.toggle('label-inside', local.y < 38)
 }
 
 function clampBounds(next) {
@@ -39,19 +38,13 @@ window.longOverlayAPI.onInit((data) => {
   bounds = { ...data.selectionBounds }
   renderBounds()
 })
-window.longOverlayAPI.onActiveChanged((active) => {
-  selection.classList.toggle('active', active)
-  selection.querySelector('span em').textContent = active ? '采集中' : '准备'
-})
+window.longOverlayAPI.onActiveChanged((active) => selection.classList.toggle('active', active))
 window.longOverlayAPI.onEditingChanged((data = {}) => {
   editing = !!data.enabled
   lockedAxis = data.lockedAxis || ''
   document.body.classList.toggle('editing', editing)
   document.body.classList.toggle('axis-locked', !!lockedAxis)
-  selection.querySelector('span b').textContent = editing
-    ? (lockedAxis ? '沿拼接方向移动' : '调整长截图选区')
-    : '自动长截图区域'
-  selection.querySelector('span em').textContent = editing ? '调整中' : (selection.classList.contains('active') ? '采集中' : '准备')
+  selection.querySelector('span').textContent = editing ? (lockedAxis ? '沿拼接方向移动' : '调整长截图选区') : '长截图'
 })
 
 selection.addEventListener('pointerdown', (event) => {

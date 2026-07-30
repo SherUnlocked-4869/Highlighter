@@ -39,8 +39,6 @@ const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
 const { SelectionHookService } = require('./main/services/selection-hook-service')
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
-const { createSecureIpcMain } = require('./main/services/ipc-security')
-const { createSecureWindow } = require('./main/services/window-security')
 const { name: applicationName } = require('./package.json')
 
 const dataRootContext = prepareDataRoot({ app, applicationName })
@@ -54,10 +52,6 @@ const Store = require('electron-store')
 const { OcrService } = require('./main/services/ocr-service')
 const { RecordingService } = require('./main/services/recording-service')
 const { LongCaptureSession } = require('./main/services/long-capture-session')
-const { WindowsScrollDriver } = require('./main/services/windows-scroll-driver')
-const {
-  calculateLongCaptureControllerPlacement
-} = require('./main/services/long-capture-controller-placement')
 const { findNativeDisplay, getNativeDisplayBounds } = require('./main/services/capture-geometry')
 const { buildTableFromOcr } = require('./capture/recognition-utils')
 const {
@@ -293,30 +287,6 @@ function log(...args) {
   writeAppLog(...args)
 }
 
-function authorizeIpcRole(role, win) {
-  if (role === 'main') return win === mainWindow
-  if (role === 'toolbar') return win === toolbarWindow
-  if (role === 'action') return actionWindows.includes(win)
-  if (role === 'capture') return win === currentCaptureWindow
-  if (role === 'long-capture') return win === currentLongCapture?.controllerWindow
-  if (role === 'long-overlay') return win === currentLongCapture?.overlayWindow
-  if (role === 'pin') return pinWindows.has(win)
-  if (role === 'recognition') return recognitionWindows.has(win)
-  if (role === 'record') return win === recordWindow
-  if (role === 'record-frame') return win === recordFrameWindow && win._recordOwner === recordWindow
-  return false
-}
-
-const secureIpcMain = createSecureIpcMain({
-  ipcMain,
-  BrowserWindow,
-  rootDirectory: __dirname,
-  authorizeRole: authorizeIpcRole,
-  onBlocked: ({ channel, reason, role }) => {
-    log('IPC sender blocked:', { channel, reason, role: role || '' })
-  }
-})
-
 const shortcutService = new ShortcutService({
   globalShortcut,
   executeFunction: (name) => executeFunction(name),
@@ -529,18 +499,6 @@ async function persistHistoryFile(sourcePath, meta = {}) {
   return historyService.persistFile(sourcePath, meta)
 }
 
-function createLocalWindow(pagePath, options) {
-  return createSecureWindow({
-    BrowserWindow,
-    pagePath,
-    options,
-    openExternal,
-    onBlocked: ({ url, reason, error }) => {
-      log('Window navigation blocked:', { url, reason, error })
-    }
-  })
-}
-
 function createMainWindow(route = 'home') {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.show()
@@ -548,8 +506,7 @@ function createMainWindow(route = 'home') {
     mainWindow.webContents.send('app:navigate', route)
     return mainWindow
   }
-  const pagePath = path.join(__dirname, 'config', 'config.html')
-  mainWindow = createLocalWindow(pagePath, {
+  mainWindow = new BrowserWindow({
     width: 1120,
     height: 760,
     minWidth: 880,
@@ -563,7 +520,7 @@ function createMainWindow(route = 'home') {
       nodeIntegration: false
     }
   })
-  mainWindow.loadFile(pagePath)
+  mainWindow.loadFile(path.join(__dirname, 'config', 'config.html'))
   mainWindow.once('ready-to-show', () => mainWindow.show())
   mainWindow.webContents.once('did-finish-load', () => mainWindow.webContents.send('app:navigate', route))
   mainWindow.on('closed', () => { mainWindow = null })
@@ -572,8 +529,7 @@ function createMainWindow(route = 'home') {
 
 function createToolbarWindow() {
   if (toolbarWindow && !toolbarWindow.isDestroyed()) return toolbarWindow
-  const pagePath = path.join(__dirname, 'toolbar', 'toolbar.html')
-  toolbarWindow = createLocalWindow(pagePath, {
+  toolbarWindow = new BrowserWindow({
     width: TOOLBAR_W,
     height: TOOLBAR_H,
     frame: false,
@@ -592,14 +548,13 @@ function createToolbarWindow() {
   })
   toolbarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   toolbarWindow.setAlwaysOnTop(true, 'screen-saver')
-  toolbarWindow.loadFile(pagePath)
+  toolbarWindow.loadFile(path.join(__dirname, 'toolbar', 'toolbar.html'))
   return toolbarWindow
 }
 
 function createActionWindow() {
   const appearance = getActionAppearance()
-  const pagePath = path.join(__dirname, 'action', 'action.html')
-  const win = createLocalWindow(pagePath, {
+  const win = new BrowserWindow({
     width: 550,
     height: 520,
     minWidth: 380,
@@ -608,12 +563,12 @@ function createActionWindow() {
     autoHideMenuBar: true,
     backgroundColor: appearance.resolvedTheme === 'dark' ? '#121316' : '#f5f5f5',
     webPreferences: {
-      preload: path.join(__dirname, 'preload-action.js'),
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false
     }
   })
-  win.loadFile(pagePath)
+  win.loadFile(path.join(__dirname, 'action', 'action.html'))
   win._isPinned = false
   actionWindows.push(win)
   win.on('closed', () => {
@@ -672,11 +627,6 @@ function createTrayIcon() {
 }
 
 function initSelectionHook() {
-  if (!getSettings().selectionToolbar.enabled) {
-    hideToolbar()
-    selectionHookService?.suspend('toolbar-disabled')
-    return false
-  }
   if (!selectionHookService) {
     selectionHookService = new SelectionHookService({
       createHook: () => {
@@ -708,16 +658,8 @@ function registerSelectionPowerEvents() {
   const bindings = [
     ['suspend', () => selectionHookService?.suspend('system-suspend')],
     ['lock-screen', () => selectionHookService?.suspend('lock-screen')],
-    ['resume', () => {
-      if (getSettings().selectionToolbar.enabled) {
-        selectionHookService?.scheduleRestart('system-resume')
-      }
-    }],
-    ['unlock-screen', () => {
-      if (getSettings().selectionToolbar.enabled) {
-        selectionHookService?.scheduleRestart('unlock-screen')
-      }
-    }]
+    ['resume', () => selectionHookService?.scheduleRestart('system-resume')],
+    ['unlock-screen', () => selectionHookService?.scheduleRestart('unlock-screen')]
   ]
   for (const [eventName, listener] of bindings) {
     powerMonitor.on(eventName, listener)
@@ -735,9 +677,7 @@ function disposeSelectionHook() {
 
 function shouldFilterApp(programName) {
   const value = String(programName || '').toLowerCase()
-  return value.includes('highlighter') ||
-    value.includes('划词助手') ||
-    value.includes('huacizhushou')
+  return value.includes('highlighter') || value.includes('划词助手') || value.includes('huacizhushou')
 }
 
 function validCoord(point) {
@@ -976,8 +916,7 @@ async function createCaptureWindow(options = {}) {
   const smartSelectPromise = mode === 'region' ? createSmartSelectSession() : Promise.resolve(null)
   const smartSelectSession = await smartSelectPromise
   const transparent = mode === 'canvas' || !!options.transparent
-  const pagePath = path.join(__dirname, 'capture', 'capture.html')
-  const captureWindow = createLocalWindow(pagePath, {
+  const captureWindow = new BrowserWindow({
     x: captureBounds.x,
     y: captureBounds.y,
     width: Math.min(captureBounds.width, 800),
@@ -1023,7 +962,7 @@ async function createCaptureWindow(options = {}) {
   // The frameless screen-saver-level window already covers the full display bounds.
   captureWindow.setResizable(false)
 
-  const loadPromise = captureWindow.loadFile(pagePath)
+  const loadPromise = captureWindow.loadFile(path.join(__dirname, 'capture', 'capture.html'))
   captureWindow.on('closed', () => {
     clearTimeout(captureWindow._renderTimeout)
     captureWindow._smartSelectContext?.session.dispose()
@@ -1102,133 +1041,38 @@ async function getDesktopSourceForDisplay(display) {
   return source
 }
 
-function updateLongCaptureControllerPlacement(state, display) {
-  if (!state?.controllerWindow || state.controllerWindow.isDestroyed()) return null
-  const placement = calculateLongCaptureControllerPlacement(display, state.init.selectionBounds)
-  state.controllerWindow.setBounds(placement.bounds)
-  state.controllerWindow.setContentProtection(placement.overlapsSelection)
-  state.controllerWindow.moveTop()
-  return placement
+function placeLongCaptureController(display, selectionBounds, width = 420, height = 570) {
+  const area = display.workArea
+  const gap = 10
+  const candidates = [
+    { x: selectionBounds.x + selectionBounds.width + gap, y: selectionBounds.y },
+    { x: selectionBounds.x - width - gap, y: selectionBounds.y },
+    { x: selectionBounds.x, y: selectionBounds.y + selectionBounds.height + gap },
+    { x: selectionBounds.x, y: selectionBounds.y - height - gap }
+  ]
+  const fits = (bounds) => bounds.x >= area.x && bounds.y >= area.y && bounds.x + width <= area.x + area.width && bounds.y + height <= area.y + area.height
+  const candidate = candidates.find(fits)
+  if (candidate) return { ...candidate, width, height }
+  return {
+    x: Math.max(area.x, area.x + area.width - width - gap),
+    y: Math.max(area.y, area.y + area.height - height - gap),
+    width,
+    height
+  }
 }
 
 function closeLongCapture() {
   const state = currentLongCapture
   if (!state || state.closing) return
   state.closing = true
-  stopLongCaptureAutomation(state, 'closed')
   currentLongCapture = null
   if (state.overlayWindow && !state.overlayWindow.isDestroyed()) state.overlayWindow.close()
   if (state.controllerWindow && !state.controllerWindow.isDestroyed()) state.controllerWindow.close()
   state.session.cleanup()
 }
 
-function stopLongCaptureAutomation(state, reason = 'stopped') {
-  const automation = state?.automation
-  if (!automation) return { stopped: false, reason }
-  state.automation = null
-  automation.driver.dispose()
-  return { stopped: true, reason }
-}
-
-async function startLongCaptureAutomation(state, requestedAxis) {
-  if (!state || state.closing || state.finishing) throw new Error('长截图会话不可用')
-  assertManagedDataWritable()
-  if (!isWin) throw new Error('自动滚动目前仅支持 Windows')
-  if (state.selectionEditing) throw new Error('请先完成截图区域调整')
-  if (!state.session.strips.length && requestedAxis === 'vertical') {
-    state.session.axis = 'vertical'
-    settingsService.updateSettings({ screenshot: { longCaptureDirection: 'vertical' } })
-  }
-  if (state.session.axis !== 'vertical') throw new Error('自动滚动仅支持纵向长截图')
-
-  stopLongCaptureAutomation(state, 'restarted')
-  const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
-  const executablePath = path.join(resourceRoot, 'native', 'scroll-driver', 'ScrollDriver.exe')
-  if (!fs.existsSync(executablePath)) throw new Error('自动滚动组件缺失，请重新安装 Highlighter')
-  const driver = new WindowsScrollDriver({ executablePath })
-  try {
-    await driver.start()
-  } catch (error) {
-    driver.dispose()
-    throw new Error(`自动滚动启动失败：${error.message || String(error)}`)
-  }
-
-  const selection = state.init.selectionBounds
-  const dipPoint = {
-    x: Math.round(selection.x + selection.width / 2),
-    y: Math.round(selection.y + selection.height / 2)
-  }
-  const targetPoint = screen.dipToScreenPoint(dipPoint)
-  state.automation = {
-    driver,
-    cursorOrigin: screen.getCursorScreenPoint(),
-    targetPoint,
-    startedAt: Date.now(),
-    steps: 0,
-    maxSteps: 200,
-    maxDurationMs: 120000,
-    cursorTolerance: 12,
-    wheelDelta: -360,
-    smoothSteps: 6,
-    smoothDurationMs: 270
-  }
-  return {
-    settleMs: 700,
-    retryMs: 300,
-    maxFrames: 200,
-    maxDurationMs: state.automation.maxDurationMs,
-    endStillFrames: 4,
-    initialEndStillFrames: 6,
-    failedRetries: 3
-  }
-}
-
-async function scrollLongCaptureAutomation(state) {
-  const automation = state?.automation
-  if (!automation || state.closing || state.finishing) return { ok: false, reason: 'not-running' }
-  if (Date.now() - automation.startedAt >= automation.maxDurationMs) {
-    stopLongCaptureAutomation(state, 'max-duration')
-    return { ok: false, reason: 'max-duration' }
-  }
-  if (automation.steps >= automation.maxSteps) {
-    stopLongCaptureAutomation(state, 'max-frames')
-    return { ok: false, reason: 'max-frames' }
-  }
-
-  const cursor = screen.getCursorScreenPoint()
-  const distance = Math.hypot(
-    cursor.x - automation.cursorOrigin.x,
-    cursor.y - automation.cursorOrigin.y
-  )
-  if (distance > automation.cursorTolerance) {
-    stopLongCaptureAutomation(state, 'user-input')
-    return { ok: false, reason: 'user-input' }
-  }
-
-  let result
-  try {
-    result = await automation.driver.smoothScroll({
-      ...automation.targetPoint,
-      delta: automation.wheelDelta,
-      steps: automation.smoothSteps,
-      durationMs: automation.smoothDurationMs,
-      excludedProcessId: process.pid
-    })
-  } catch (error) {
-    stopLongCaptureAutomation(state, 'driver-error')
-    return { ok: false, reason: 'driver-error', message: error.message || String(error) }
-  }
-  if (!result.ok) {
-    stopLongCaptureAutomation(state, result.reason || 'scroll-failed')
-    return result
-  }
-  automation.steps++
-  return { ...result, step: automation.steps }
-}
-
 function setLongOverlayEditing(state, enabled, axis, hasContent) {
   if (!state || state.overlayWindow.isDestroyed() || state.controllerWindow.isDestroyed()) return false
-  if (enabled) stopLongCaptureAutomation(state, 'selection-editing')
   state.selectionEditing = !!enabled
   state.overlayWindow.setFocusable(state.selectionEditing)
   state.overlayWindow.setIgnoreMouseEvents(!state.selectionEditing, { forward: true })
@@ -1271,8 +1115,7 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
     tempRoot: activePaths?.longCaptureCache || app.getPath('temp'),
     axis: settings.screenshot.longCaptureDirection
   })
-  const overlayPagePath = path.join(__dirname, 'long-capture', 'overlay.html')
-  const overlayWindow = createLocalWindow(overlayPagePath, {
+  const overlayWindow = new BrowserWindow({
     ...display.bounds,
     frame: false,
     transparent: true,
@@ -1290,16 +1133,14 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
       backgroundThrottling: false
     }
   })
-  const controllerPlacement = calculateLongCaptureControllerPlacement(display, selectionBounds)
-  const controllerBounds = controllerPlacement.bounds
-  const controllerPagePath = path.join(__dirname, 'long-capture', 'long-capture.html')
-  const controllerWindow = createLocalWindow(controllerPagePath, {
+  const controllerBounds = placeLongCaptureController(display, selectionBounds)
+  const controllerWindow = new BrowserWindow({
     ...controllerBounds,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
     alwaysOnTop: true,
-    skipTaskbar: false,
+    skipTaskbar: true,
     show: false,
     resizable: false,
     maximizable: false,
@@ -1316,26 +1157,15 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
     displayBounds: display.bounds,
     selectionBounds,
     scaleFactor: display.scaleFactor || 1,
-    settings,
-    autoStart: !!payload.autoStart
+    settings
   }
-  currentLongCapture = {
-    session,
-    overlayWindow,
-    controllerWindow,
-    init,
-    closing: false,
-    finishing: false,
-    selectionEditing: false,
-    automation: null
-  }
+  currentLongCapture = { session, overlayWindow, controllerWindow, init, closing: false, finishing: false, selectionEditing: false }
   overlayWindow._longCaptureRole = 'overlay'
   controllerWindow._longCaptureRole = 'controller'
   overlayWindow.setIgnoreMouseEvents(true, { forward: true })
-  overlayWindow.setContentProtection(true)
-  controllerWindow.setContentProtection(controllerPlacement.overlapsSelection)
+  controllerWindow.setContentProtection(true)
   overlayWindow.setAlwaysOnTop(true, 'screen-saver')
-  controllerWindow.setAlwaysOnTop(true, 'screen-saver', 1)
+  controllerWindow.setAlwaysOnTop(true, 'screen-saver')
   overlayWindow.on('closed', () => {
     if (currentLongCapture?.overlayWindow === overlayWindow) closeLongCapture()
   })
@@ -1345,22 +1175,14 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
 
   try {
     await Promise.all([
-      overlayWindow.loadFile(overlayPagePath),
-      controllerWindow.loadFile(controllerPagePath)
+      overlayWindow.loadFile(path.join(__dirname, 'long-capture', 'overlay.html')),
+      controllerWindow.loadFile(path.join(__dirname, 'long-capture', 'long-capture.html'))
     ])
     if (captureWindow.isDestroyed() || currentLongCapture?.controllerWindow !== controllerWindow) throw new Error('长截图窗口初始化已取消')
     captureWindow.close()
     overlayWindow.showInactive()
-    controllerWindow.setBounds(controllerBounds)
     controllerWindow.show()
-    controllerWindow.moveTop()
     controllerWindow.focus()
-    setImmediate(() => {
-      if (controllerWindow.isDestroyed()) return
-      controllerWindow.setBounds(controllerBounds)
-      controllerWindow.moveTop()
-      controllerWindow.focus()
-    })
     return true
   } catch (error) {
     closeLongCapture()
@@ -1372,7 +1194,6 @@ async function finishLongCapture(action, fast = false) {
   const state = currentLongCapture
   if (!state || state.finishing) throw new Error('长截图会话不可用')
   state.finishing = true
-  stopLongCaptureAutomation(state, 'finishing')
   try {
     const size = state.session.getSize()
     const outputPath = await state.session.render()
@@ -1530,8 +1351,7 @@ function createPinWindow(dataUrl, meta = {}) {
   const cursor = screen.getCursorScreenPoint()
   const x = selectionBounds?.x ?? Math.round(Math.min(display.workArea.x + display.workArea.width - width, Math.max(display.workArea.x, cursor.x - width / 2)))
   const y = selectionBounds?.y ?? Math.round(Math.min(display.workArea.y + display.workArea.height - height, Math.max(display.workArea.y, cursor.y - 30)))
-  const pagePath = path.join(__dirname, 'pin', 'pin.html')
-  const win = createLocalWindow(pagePath, {
+  const win = new BrowserWindow({
     width: Math.min(width, 200),
     height: Math.min(height, 160),
     x: display.bounds.x,
@@ -1574,7 +1394,7 @@ function createPinWindow(dataUrl, meta = {}) {
   win.setBounds({ x, y, width, height }, false)
   pinWindows.add(win)
   pinnedCount++
-  win.loadFile(pagePath)
+  win.loadFile(path.join(__dirname, 'pin', 'pin.html'))
   win.on('closed', () => {
     pinWindows.delete(win)
     pinnedCount = Math.max(0, pinnedCount - 1)
@@ -1711,8 +1531,7 @@ function createRecognitionWindow(type, dataUrl, options = {}) {
   if (!dataUrl) throw new Error('识别图片数据为空')
   const isTable = type === 'table'
   const settings = getSettings()
-  const pagePath = path.join(__dirname, 'recognition', 'recognition.html')
-  const win = createLocalWindow(pagePath, {
+  const win = new BrowserWindow({
     width: isTable ? 820 : 640,
     height: isTable ? 620 : 420,
     minWidth: isTable ? 600 : 480,
@@ -1734,7 +1553,7 @@ function createRecognitionWindow(type, dataUrl, options = {}) {
     scaleFactor: Number(options.scaleFactor) || 1,
     mainColor: settings.mainColor || '#1677ff'
   }
-  win.loadFile(pagePath)
+  win.loadFile(path.join(__dirname, 'recognition', 'recognition.html'))
   win.on('closed', () => recognitionWindows.delete(win))
   return win
 }
@@ -1807,8 +1626,7 @@ async function createRecordWindow(options = {}) {
   const frameBounds = calculateFrameBounds(selectionBounds, 2)
   const controlBounds = getRecordControlBounds(selectionBounds, display.workArea)
 
-  const framePagePath = path.join(__dirname, 'record', 'frame.html')
-  const frameWindow = createLocalWindow(framePagePath, {
+  const frameWindow = new BrowserWindow({
     ...frameBounds,
     show: false,
     frame: false,
@@ -1827,8 +1645,7 @@ async function createRecordWindow(options = {}) {
       backgroundThrottling: false
     }
   })
-  const controlPagePath = path.join(__dirname, 'record', 'record.html')
-  const controlWindow = createLocalWindow(controlPagePath, {
+  const controlWindow = new BrowserWindow({
     ...controlBounds,
     show: false,
     frame: false,
@@ -1874,8 +1691,8 @@ async function createRecordWindow(options = {}) {
     if (recordFrameWindow === frameWindow) recordFrameWindow = null
   })
   await Promise.all([
-    frameWindow.loadFile(framePagePath),
-    controlWindow.loadFile(controlPagePath)
+    frameWindow.loadFile(path.join(__dirname, 'record', 'frame.html')),
+    controlWindow.loadFile(path.join(__dirname, 'record', 'record.html'))
   ])
   frameWindow.showInactive()
   controlWindow.show()
@@ -1980,7 +1797,7 @@ function restoreManagedDataWriters(restartOcr) {
 }
 
 registerSettingsIpc({
-  ipcMain: secureIpcMain,
+  ipcMain,
   settingsService: {
     getSettings: () => getSettings(),
     updateSettings: (patch) => settingsService.updateSettings(patch),
@@ -1996,19 +1813,17 @@ registerSettingsIpc({
     if (patch.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
     if (patch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
     if (patch.theme !== undefined || patch.mainColor !== undefined) broadcastActionAppearance(settings)
-    if (patch.selectionToolbar?.enabled !== undefined) initSelectionHook()
   },
   onSettingsReset: (settings) => {
     registerShortcuts()
     broadcastActionAppearance(settings)
-    initSelectionHook()
   },
   onStartHook: () => initSelectionHook(),
   validateApiKey: (apiKey) => require('./deepseek').validateApiKey(apiKey),
   log
 })
 registerShortcutIpc({
-  ipcMain: secureIpcMain,
+  ipcMain,
   shortcutService
 })
 
@@ -2111,7 +1926,7 @@ async function changeDataRoot() {
 }
 
 registerAppIpc({
-  ipcMain: secureIpcMain,
+  ipcMain,
   controller: {
     openExternal,
     executeFunction,
@@ -2139,7 +1954,7 @@ registerAppIpc({
 })
 
 registerDataRootIpc({
-  ipcMain: secureIpcMain,
+  ipcMain,
   controller: {
     get: getDataRootInfo,
     open: openDataRoot,
@@ -2148,7 +1963,7 @@ registerDataRootIpc({
 })
 
 registerHistoryIpc({
-  ipcMain: secureIpcMain,
+  ipcMain,
   historyService: {
     list: (filter) => historyService.list(filter),
     getThumbnail: (id) => historyService.getThumbnail(id),
@@ -2326,21 +2141,6 @@ const captureIpcController = {
   if (!state || event.sender !== state.controllerWindow.webContents || state.finishing) throw new Error('长截图会话不可用')
   return setLongOverlayEditing(state, enabled, axis, hasContent)
   },
-  longAutomationStart: (event, axis) => {
-  const state = currentLongCapture
-  if (!state || event.sender !== state.controllerWindow.webContents) throw new Error('长截图会话不可用')
-  return startLongCaptureAutomation(state, axis)
-  },
-  longAutomationScroll: (event) => {
-  const state = currentLongCapture
-  if (!state || event.sender !== state.controllerWindow.webContents) throw new Error('长截图会话不可用')
-  return scrollLongCaptureAutomation(state)
-  },
-  longAutomationStop: (event, reason) => {
-  const state = currentLongCapture
-  if (!state || event.sender !== state.controllerWindow.webContents) return { stopped: false }
-  return stopLongCaptureAutomation(state, String(reason || 'paused'))
-  },
   longOverlayBoundsChanged: (event, proposed = {}) => {
   const state = currentLongCapture
   if (!state || event.sender !== state.overlayWindow.webContents || !state.selectionEditing || state.finishing) return
@@ -2361,11 +2161,7 @@ const captureIpcController = {
   next.x = Math.max(display.x, Math.min(display.x + display.width - next.width, next.x))
   next.y = Math.max(display.y, Math.min(display.y + display.height - next.height, next.y))
   state.init.selectionBounds = next
-  if (!state.controllerWindow.isDestroyed()) {
-    const activeDisplay = screen.getDisplayMatching(next)
-    updateLongCaptureControllerPlacement(state, activeDisplay)
-    state.controllerWindow.webContents.send('long-capture:selection-updated', next)
-  }
+  if (!state.controllerWindow.isDestroyed()) state.controllerWindow.webContents.send('long-capture:selection-updated', next)
   },
   longFinish: (event, { action, fast } = {}) => {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
@@ -2446,15 +2242,15 @@ const captureIpcController = {
 }
 
 registerCaptureIpc({
-  ipcMain: secureIpcMain,
+  ipcMain,
   controller: captureIpcController
 })
 
-secureIpcMain.on('pin:ready', (event) => {
+ipcMain.on('pin:ready', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win?._pinData) event.sender.send('pin:init', win._pinData)
 })
-secureIpcMain.on('pin:render-ready', (event) => {
+ipcMain.on('pin:render-ready', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   revealPinWindow(win)
   const autoAction = win?._pendingReannotateAction
@@ -2467,16 +2263,16 @@ secureIpcMain.on('pin:render-ready', (event) => {
     })
   }, 80)
 })
-secureIpcMain.on('pin:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
-secureIpcMain.on('pin:copy', (event) => {
+ipcMain.on('pin:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
+ipcMain.on('pin:copy', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win?._pinData) clipboard.writeImage(nativeImage.createFromDataURL(win._pinData.dataUrl))
 })
-secureIpcMain.on('pin:save', async (event) => {
+ipcMain.on('pin:save', async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win?._pinData) await saveDataUrl(win._pinData.dataUrl)
 })
-secureIpcMain.on('pin:context-menu', (event, imageBounds = {}) => {
+ipcMain.on('pin:context-menu', (event, imageBounds = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win?._pinData) return
   const menu = Menu.buildFromTemplate([
@@ -2530,14 +2326,14 @@ secureIpcMain.on('pin:context-menu', (event, imageBounds = {}) => {
   ])
   menu.popup({ window: win })
 })
-secureIpcMain.on('pin:set-opacity', (event, opacity) => {
+ipcMain.on('pin:set-opacity', (event, opacity) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   const nextOpacity = Math.max(0.2, Math.min(1, Number(opacity) || 1))
   if (win._pinData) win._pinData.opacity = nextOpacity
   win.setOpacity(nextOpacity)
 })
-secureIpcMain.on('pin:resize', (event, { factor } = {}) => {
+ipcMain.on('pin:resize', (event, { factor } = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || !win._pinData?.zoomWithMouse) return
   const bounds = win.getBounds()
@@ -2551,12 +2347,12 @@ secureIpcMain.on('pin:resize', (event, { factor } = {}) => {
   win.setBounds({ x: bounds.x, y: bounds.y, width, height }, false)
   win.webContents.send('pin:zoom-changed', Math.round(nextZoom * 100))
 })
-secureIpcMain.on('pin:move-start', (event) => {
+ipcMain.on('pin:move-start', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   win._pinMove = { point: screen.getCursorScreenPoint(), bounds: win.getBounds() }
 })
-secureIpcMain.on('pin:move', (event) => {
+ipcMain.on('pin:move', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win?._pinMove) return
   const { point: start, bounds } = win._pinMove
@@ -2568,14 +2364,14 @@ secureIpcMain.on('pin:move', (event) => {
     height: bounds.height
   }, false)
 })
-secureIpcMain.on('pin:move-end', (event) => {
+ipcMain.on('pin:move-end', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win) {
     win._pinMove = null
     syncPinDisplayScale(win)
   }
 })
-secureIpcMain.on('pin:toggle-click-through', (event) => {
+ipcMain.on('pin:toggle-click-through', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   win._pinData.clickThrough = !win._pinData.clickThrough
@@ -2751,11 +2547,11 @@ const recordingIpcController = {
 }
 
 registerRecordingIpc({
-  ipcMain: secureIpcMain,
+  ipcMain,
   controller: recordingIpcController
 })
 
-secureIpcMain.on('toolbar:action', async (_event, { action, text }) => {
+ipcMain.on('toolbar:action', async (_event, { action, text }) => {
   if (isProcessing || !text) return
   const toolbarConfig = getSettings().selectionToolbar
   const visibleActions = getVisibleToolbarActions(toolbarConfig)
@@ -2797,30 +2593,29 @@ secureIpcMain.on('toolbar:action', async (_event, { action, text }) => {
   win.show()
   win.focus()
 })
-secureIpcMain.on('toolbar:close', hideToolbar)
-secureIpcMain.on('window:toggle-pin', (event, shouldPin) => {
+ipcMain.on('toolbar:close', hideToolbar)
+ipcMain.on('window:toggle-pin', (event, shouldPin) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   if (shouldPin && pinnedCount >= MAX_PINNED) return event.sender.send('window:pin-denied', { max: MAX_PINNED })
   if (shouldPin && !win._isPinned) { win._isPinned = true; pinnedCount++; win.setAlwaysOnTop(true, 'floating') }
   if (!shouldPin && win._isPinned) { win._isPinned = false; pinnedCount = Math.max(0, pinnedCount - 1); win.setAlwaysOnTop(false) }
 })
-secureIpcMain.on('stream:cancel', (event) => {
+ipcMain.on('stream:cancel', (event) => {
   if (!isCurrentToolbarStreamSender(event)) return
   cancelToolbarStream(currentStreamController, 'user-cancelled')
 })
-secureIpcMain.on('stream:finish', (event) => {
+ipcMain.on('stream:finish', (event) => {
   if (!isCurrentToolbarStreamSender(event)) return
   cancelToolbarStream(currentStreamController, 'renderer-finished')
 })
-secureIpcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
-secureIpcMain.on('window:close', (event) => {
+ipcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
+ipcMain.on('window:close', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-hidden')
   win?.hide()
 })
-secureIpcMain.on('debug:text-received', () => {})
-secureIpcMain.assertComplete()
+ipcMain.on('debug:text-received', () => {})
 
 async function chooseInitialDataRoot() {
   if (dataRootContext.startupError) {

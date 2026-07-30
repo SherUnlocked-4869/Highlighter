@@ -1,14 +1,8 @@
 * { box-sizing: border-box; }
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; pointer-events: none; }
-#selection { position: fixed; border: 3px solid #36a3ff; outline: 1px solid rgba(255,255,255,.9); outline-offset: -5px; box-shadow: 0 0 0 100vmax rgba(0,0,0,.18), 0 0 0 1px rgba(0,0,0,.65), inset 0 0 16px rgba(54,163,255,.22); transition: border-color .16s, box-shadow .16s; }
-#selection::before, #selection::after { content:""; position:absolute; width:28px; height:28px; pointer-events:none; }
-#selection::before { left:-5px; top:-5px; border-left:5px solid #fff; border-top:5px solid #fff; }
-#selection::after { right:-5px; bottom:-5px; border-right:5px solid #fff; border-bottom:5px solid #fff; }
-#selection.active { border-color: #34c759; box-shadow: 0 0 0 100vmax rgba(0,0,0,.18), 0 0 0 1px rgba(0,0,0,.65), 0 0 18px rgba(52,199,89,.72), inset 0 0 18px rgba(52,199,89,.2); animation: capturePulse 1.15s ease-in-out infinite; }
-#selection span { position: absolute; left: -3px; top: -31px; height: 28px; display:flex; align-items:center; gap:8px; padding: 0 10px; border:1px solid rgba(255,255,255,.3); border-radius:6px 6px 2px 2px; color: #fff; background: #1677ff; box-shadow:0 4px 16px rgba(0,0,0,.38); font: 12px/28px -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; white-space: nowrap; }
-#selection span b { font-weight:600; }
-#selection span em { padding-left:8px; border-left:1px solid rgba(255,255,255,.35); font-style:normal; opacity:.9; }
-#selection.label-inside span { top:7px; left:7px; border-radius:6px; }
+#selection { position: fixed; border: 2px solid #36a3ff; box-shadow: 0 0 0 1px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.2); transition: border-color .16s, box-shadow .16s; }
+#selection.active { border-color: #34c759; box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 0 12px rgba(52,199,89,.35); }
+#selection span { position: absolute; left: -2px; top: -25px; height: 22px; padding: 0 8px; color: #fff; background: #1677ff; font: 12px/22px -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; white-space: nowrap; }
 #selection.active span { background: #248a3d; }
 body.editing #selection { pointer-events: auto; cursor: move; }
 #selection i { position: absolute; display: none; width: 10px; height: 10px; border: 1px solid #1677ff; background: #fff; border-radius: 2px; }
@@ -21,4 +15,3 @@ body.editing:not(.axis-locked) #selection i { display: block; }
 #selection i[data-handle="ne"] { right: -6px; top: -6px; cursor: nesw-resize; }
 #selection i[data-handle="sw"] { left: -6px; bottom: -6px; cursor: nesw-resize; }
 #selection i[data-handle="se"] { right: -6px; bottom: -6px; cursor: nwse-resize; }
-@keyframes capturePulse { 0%,100% { border-color:#34c759; } 50% { border-color:#9cffb5; } }

@@ -5,14 +5,14 @@
   "main": "main.js",
   "author": "Highlighter",
   "scripts": {
+    "postinstall": "install-electron --no",
     "test": "node --test test/*.test.js",
     "test:runtime": "node --test test/electron-runtime.test.js",
     "check:version": "node scripts/check-version.js",
     "stop:app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-running.ps1",
     "build:smart-select": "powershell -NoProfile -ExecutionPolicy Bypass -File native/smart-select/build.ps1",
-    "build:scroll-driver": "powershell -NoProfile -ExecutionPolicy Bypass -File native/scroll-driver/build.ps1",
     "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
-    "build:native": "npm run stop:app && npm run build:smart-select && npm run build:scroll-driver && npm run build:ocr",
+    "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr",
     "check": "node scripts/check-js.js",
     "test:long-capture": "node tests/long-capture.test.js",
     "prestart": "npm run build:native",
@@ -39,10 +39,6 @@
         "to": "native/smart-select/SmartSelect.exe"
       },
       {
-        "from": "native/scroll-driver/ScrollDriver.exe",
-        "to": "native/scroll-driver/ScrollDriver.exe"
-      },
-      {
         "from": "native/ocr",
         "to": "native/ocr",
         "filter": [
@@ -58,7 +54,6 @@
     "files": [
       "main.js",
       "preload.js",
-      "preload-action.js",
       "preload-toolbar.js",
       "preload-capture.js",
       "preload-long-capture.js",
@@ -110,18 +105,18 @@
     }
   },
   "dependencies": {
-    "dompurify": "^3.4.12",
     "electron-store": "^8.2.0",
     "ffmpeg-static": "^5.3.0",
     "jsqr": "^1.4.0",
     "openai": "^4.87.3",
     "screenshot-desktop": "^1.15.4",
     "selection-hook": "^2.0.2",
-    "sharp": "^0.35.3"
+    "sharp": "^0.34.5",
+    "showdown": "^2.1.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",
-    "electron": "41.10.3",
+    "electron": "43.2.0",
     "electron-builder": "^26.0.12",
     "onnxruntime-node": "^1.24.2"
   },

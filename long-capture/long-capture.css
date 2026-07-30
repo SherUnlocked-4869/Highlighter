@@ -8,7 +8,6 @@ body { padding: 8px; }
 .titlebar strong { font-size: 14px; font-weight: 600; }
 .titlebar i { width: 9px; height: 9px; border-radius: 50%; background: #8e8e93; }
 body.capturing .titlebar i { background: #34c759; box-shadow: 0 0 0 5px rgba(52,199,89,.13); }
-body.automating .titlebar i { background: #ff9f0a; box-shadow: 0 0 0 5px rgba(255,159,10,.15); }
 .titlebar button { width: 30px; height: 30px; border: 0; border-radius: 6px; color: #bbb; background: transparent; font-size: 21px; cursor: pointer; -webkit-app-region: no-drag; }
 .titlebar button:hover { color: #fff; background: rgba(255,255,255,.1); }
 .preview-area { position: relative; min-height: 0; margin: 10px 12px 6px; display: grid; place-items: center; overflow: hidden; border: 1px solid rgba(255,255,255,.09); border-radius: 6px; background: #111; }
@@ -28,9 +27,8 @@ body.automating .titlebar i { background: #ff9f0a; box-shadow: 0 0 0 5px rgba(25
 .trim-controls input { width: 66px; height: 28px; padding: 0 7px; border: 1px solid rgba(255,255,255,.12); border-radius: 5px; outline: 0; color: #eee; background: rgba(255,255,255,.07); font: 11px Consolas,monospace; }
 .trim-controls input:focus { border-color: var(--primary); }
 .trim-controls input:disabled { opacity: .4; }
-.transport { display: grid; grid-template-columns: 1.25fr 1fr; gap: 5px; padding: 7px 12px 3px; }
-.transport button { min-width: 0; font-weight: 600; }
-.transport button:disabled { opacity: .4; cursor: default; filter: none; }
+.transport { display: flex; padding: 7px 12px 3px; }
+.transport button { width: 100%; font-weight: 600; }
 button.primary { color: #fff; background: var(--primary); }
 button.primary:hover { filter: brightness(1.08); }
 .actions { display: grid; grid-template-columns: repeat(4,1fr); gap: 3px; padding: 7px 9px 9px; border-top: 1px solid rgba(255,255,255,.09); }

@@ -3,11 +3,7 @@ class SelectionHookService {
     createHook,
     handlers = {},
     log = () => {},
-    // Clipboard fallback simulates Ctrl+C and then restores every clipboard
-    // format. Delayed-rendering formats used by Windows clipboard history and
-    // Electron apps cannot be restored reliably, which can corrupt normal copy
-    // operations. Keep selection detection strictly on accessibility APIs.
-    startOptions = { debug: false, enableClipboard: false },
+    startOptions = { debug: false, enableClipboard: true },
     restartDelayMs = 1200,
     retryDelayMs = 2500,
     maxStartRetries = 2,
@@ -67,14 +63,6 @@ class SelectionHookService {
       this.bindHook(hook)
       const started = hook.start(this.startOptions)
       if (started === false) throw new Error('selection-hook returned an unsuccessful start result')
-      // Apply this again after native startup. Some native implementations
-      // initialize their clipboard state during start(), after the wrapper has
-      // already applied the JS configuration.
-      if (this.startOptions.enableClipboard === false) {
-        if (typeof hook.disableClipboard !== 'function' || hook.disableClipboard() === false) {
-          throw new Error('selection-hook could not guarantee clipboard fallback is disabled')
-        }
-      }
       this.hook = hook
       this.log('Selection hook started:', reason)
       return true

@@ -6,13 +6,10 @@ let fullText = ''
 let loadTimer = null
 let userScrolled = false
 const STREAM_IDLE_TIMEOUT_MS = 30000
+const hasMarkdown = !!(window.electronAPI && typeof window.electronAPI.renderMarkdown === 'function')
 const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
 let configuredTheme = 'system'
 let configuredMainColor = '#1677ff'
-const MARKDOWN_TAGS = [
-  'p', 'h1', 'h2', 'h3', 'ul', 'ol', 'li', 'pre', 'code',
-  'strong', 'em', 'del', 'blockquote', 'hr', 'a'
-]
 
 const el = {
   headerIcon: document.getElementById('headerIcon'),
@@ -45,62 +42,12 @@ function resetUI() {
   clearTimeout(loadTimer)
   loadTimer = null
   const old = document.getElementById('reasoningBox'); if (old) old.remove()
-  el.result.replaceChildren()
+  el.result.innerHTML = ''
   el.loading.style.display = 'none'
 }
 
 function showLoading(s) { if (el.loading) el.loading.style.display = s ? 'flex' : 'none' }
-function escapeMarkdownHtml(text) {
-  return String(text || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-function safeMarkdownLink(label, escapedUrl) {
-  const candidate = escapedUrl
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-  if (/[\u0000-\u0020"'<>]/.test(candidate)) return label + ' (' + escapedUrl + ')'
-  try {
-    const url = new URL(candidate)
-    if (!['http:', 'https:'].includes(url.protocol)) return label + ' (' + escapedUrl + ')'
-    return '<a href="' + escapeMarkdownHtml(url.toString()) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>'
-  } catch {
-    return label + ' (' + escapedUrl + ')'
-  }
-}
-
-function renderMarkdownResult(text, showCursor = false) {
-  if (!window.DOMPurify) {
-    el.result.textContent = String(text || '')
-  } else {
-    const sanitized = window.DOMPurify.sanitize(simpleMarkdown(text), {
-      ALLOWED_TAGS: MARKDOWN_TAGS,
-      ALLOWED_ATTR: ['href', 'target', 'rel'],
-      ALLOW_ARIA_ATTR: false,
-      ALLOW_DATA_ATTR: false,
-      ALLOWED_URI_REGEXP: /^https?:\/\/[^\s]+$/i
-    })
-    el.result.innerHTML = sanitized
-  }
-  if (showCursor) {
-    const cursor = document.createElement('span')
-    cursor.className = 'cursor'
-    el.result.append(cursor)
-  }
-}
-
-function appendResultError(message, replace = false) {
-  if (replace) el.result.replaceChildren()
-  const error = document.createElement('div')
-  error.className = 'result-error'
-  error.textContent = message
-  el.result.append(error)
-}
+function esc(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML }
 
 function armStreamTimeout() {
   clearTimeout(loadTimer)
@@ -108,16 +55,16 @@ function armStreamTimeout() {
     if (isDone) return
     isDone = true
     showLoading(false)
-    appendResultError('请求超时，请检查网络后重试', true)
+    el.result.innerHTML = '<div style="color:#f44336;">请求超时，请检查网络后重试</div>'
     window.electronAPI.cancelStream()
   }, STREAM_IDLE_TIMEOUT_MS)
 }
 
 // Full Markdown renderer (inline, no dependencies)
 function simpleMarkdown(text) {
-  var t = String(text || '')
+  var t = text
   // Escape HTML first
-  t = escapeMarkdownHtml(t)
+  t = t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
   // Code blocks ```...```
   t = t.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
@@ -214,14 +161,13 @@ function inlineMd(text) {
   // Strikethrough
   t = t.replace(/~~(.+?)~~/g, '<del>$1</del>')
   // Links [text](url)
-  t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, label, url) {
-    return safeMarkdownLink(label, url)
-  })
+  t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
   return t
 }
 
 function renderResult(text) {
-  renderMarkdownResult(text)
+  // Use built-in simpleMarkdown for reliability - preload renderer may not be available
+  el.result.innerHTML = simpleMarkdown(text)
 }
 
 function doScroll() {
@@ -236,22 +182,10 @@ function addReasoning() {
     box = document.createElement('div')
     box.id = 'reasoningBox'
     box.className = 'reasoning-box'
-    const header = document.createElement('div')
-    header.className = 'reasoning-header'
-    header.append('🧠 思考过程 ')
-    const spacer = document.createElement('span')
-    spacer.className = 'reasoning-spacer'
-    header.append(spacer)
-    const arrow = document.createElement('span')
-    arrow.className = 'reasoning-arrow'
-    arrow.textContent = '▶'
-    header.append(arrow)
-    const preview = document.createElement('div')
-    preview.className = 'reasoning-preview'
-    const full = document.createElement('div')
-    full.className = 'reasoning-full'
-    box.append(header, preview, full)
-    header.addEventListener('click', function() {
+    box.innerHTML = '<div class="reasoning-header">🧠 思考过程 <span style="flex:1"></span><span class="reasoning-arrow">▶</span></div>' +
+      '<div class="reasoning-preview"></div>' +
+      '<div class="reasoning-full"></div>'
+    box.querySelector('.reasoning-header').addEventListener('click', function() {
       box.classList.toggle('open')
       box.querySelector('.reasoning-arrow').textContent = box.classList.contains('open') ? '▼' : '▶'
       // When opening, update full content and scroll full area
@@ -274,7 +208,7 @@ window.electronAPI.onActionStart(function(data) {
   resetUI()
   el.sourceText.textContent = data.text
   if (data.type === 'translate') {
-    el.headerIcon.textContent = '🌐'; el.headerTitle.textContent = '翻译'
+    el.headerIcon.innerHTML = '🌐'; el.headerTitle.textContent = '翻译'
     el.headerBadge.textContent = '翻译'; el.headerBadge.className = 'badge'
     el.loadingText.textContent = '正在翻译...'
   } else {
@@ -294,7 +228,8 @@ window.electronAPI.onStreamData(function(data) {
   armStreamTimeout()
   showLoading(false)
   fullText += data.content
-  renderMarkdownResult(fullText, true)
+  // Show simple formatted text during streaming
+  el.result.innerHTML = simpleMarkdown(fullText) + '<span class="cursor"></span>'
   doScroll()
 })
 
@@ -324,7 +259,7 @@ window.electronAPI.onStreamDone(function() {
 window.electronAPI.onStreamError(function(data) {
   isDone = true; showLoading(false); clearTimeout(loadTimer)
   fullText = ''
-  appendResultError('错误: ' + String(data.error || '未知错误'))
+  el.result.innerHTML += '<div style="color:#f44336;margin-top:8px;">错误: ' + esc(data.error) + '</div>'
   doScroll()
   window.electronAPI.finishStream()
 })

@@ -27,7 +27,7 @@ test('config app exposes the selection toolbar route and controls', () => {
 test('main process normalizes toolbar settings and routes configured custom prompts', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
   const deepseek = fs.readFileSync(path.join(__dirname, '..', 'deepseek.js'), 'utf8')
-  const toolbar = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar.js'), 'utf8')
+  const toolbar = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar.html'), 'utf8')
   const action = fs.readFileSync(path.join(__dirname, '..', 'action', 'action.js'), 'utf8')
 
   assert.match(main, /normalized\.selectionToolbar = normalizeSelectionToolbar/)

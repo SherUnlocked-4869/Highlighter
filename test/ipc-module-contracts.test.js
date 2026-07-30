@@ -85,9 +85,6 @@ test('capture IPC module owns capture, long-capture, OCR, and recognition channe
       'longAddStrip',
       'longSetTrim',
       'longSetSelectionEditing',
-      'longAutomationStart',
-      'longAutomationScroll',
-      'longAutomationStop',
       'longOverlayBoundsChanged',
       'longFinish',
       'longClose',
@@ -127,9 +124,6 @@ test('capture IPC module owns capture, long-capture, OCR, and recognition channe
     'long-capture:add-strip',
     'long-capture:set-trim',
     'long-capture:set-selection-editing',
-    'long-capture:automation-start',
-    'long-capture:automation-scroll',
-    'long-capture:automation-stop',
     'long-capture:finish',
     'ocr:status',
     'capture:ocr',
@@ -181,7 +175,6 @@ test('recording IPC module owns control and annotation channels', () => {
 
 test('main process delegates migrated IPC channels without registering them directly', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
-  assert.doesNotMatch(main, /\bipcMain\.(?:handle|on)\(/)
   for (const prefix of [
     'capture:',
     'long-capture:',
@@ -201,6 +194,4 @@ test('main process delegates migrated IPC channels without registering them dire
   ]) {
     assert.match(main, new RegExp(`${registration}\\(\\{`))
   }
-  assert.equal((main.match(/ipcMain:\s*secureIpcMain/g) || []).length, 7)
-  assert.match(main, /secureIpcMain\.assertComplete\(\)/)
 })
