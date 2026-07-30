@@ -1,7 +1,8 @@
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { app, BrowserWindow, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, screen } = require('electron')
+const { buildIpcPolicies, createSecureIpcMain } = require('../main/services/ipc-security')
 const { createSecureWebPreferences, createSecureWindow } = require('../main/services/window-security')
 
 const RESULT_PREFIX = 'HIGHLIGHTER_RUNTIME_PROBE='
@@ -162,6 +163,76 @@ async function probeActionSecurity() {
   }
 }
 
+async function probeIpcSecurity() {
+  const owners = new Map()
+  const blocked = []
+  const policies = buildIpcPolicies(projectRoot)
+  const secureIpcMain = createSecureIpcMain({
+    ipcMain,
+    BrowserWindow,
+    rootDirectory: projectRoot,
+    authorizeRole: (role, win) => owners.get(role) === win,
+    onBlocked: (entry) => blocked.push(entry)
+  })
+  for (const policy of policies.values()) {
+    secureIpcMain[policy.kind](policy.channel, () => policy.channel)
+  }
+  secureIpcMain.assertComplete()
+
+  const mainPagePath = path.join(projectRoot, 'config', 'config.html')
+  const mainWindow = createSecureWindow({
+    BrowserWindow,
+    pagePath: mainPagePath,
+    options: {
+      show: false,
+      webPreferences: {
+        preload: path.join(projectRoot, 'preload.js')
+      }
+    }
+  })
+  owners.set('main', mainWindow)
+
+  const crossPageWindow = createSecureWindow({
+    BrowserWindow,
+    pagePath: mainPagePath,
+    options: {
+      show: false,
+      webPreferences: {
+        preload: path.join(projectRoot, 'preload-capture.js')
+      }
+    }
+  })
+
+  try {
+    await mainWindow.loadFile(mainPagePath)
+    const allowedChannel = await mainWindow.webContents.executeJavaScript(
+      'globalThis.electronAPI.getSettings()'
+    )
+    await crossPageWindow.loadFile(mainPagePath)
+    const crossPageResult = await crossPageWindow.webContents.executeJavaScript(`(
+      async () => {
+        try {
+          await globalThis.captureAPI.copy(new Uint8Array([1]), {})
+          return { blocked: false, error: '' }
+        } catch (error) {
+          return { blocked: true, error: error.message || String(error) }
+        }
+      }
+    )()`)
+    return {
+      policyCount: policies.size,
+      allowedChannel,
+      crossPageResult,
+      blockedReasons: blocked.map(({ reason }) => reason)
+    }
+  } finally {
+    owners.clear()
+    for (const win of [mainWindow, crossPageWindow]) {
+      if (!win.isDestroyed()) win.destroy()
+    }
+  }
+}
+
 async function probeRuntime() {
   const SelectionHook = require('selection-hook')
   const selectionHook = new SelectionHook()
@@ -214,6 +285,7 @@ async function probeRuntime() {
   const preloads = await probeSandboxPreloads()
   const localPages = await probeLocalPagePolicies()
   const actionSecurity = await probeActionSecurity()
+  const ipcSecurity = await probeIpcSecurity()
 
   return {
     versions: {
@@ -246,6 +318,7 @@ async function probeRuntime() {
     preloads,
     localPages,
     actionSecurity,
+    ipcSecurity,
     displays: screen.getAllDisplays().map((display) => ({
       bounds: display.bounds,
       workArea: display.workArea,

@@ -9,6 +9,8 @@ const LOCKED_WEB_PREFERENCES = Object.freeze({
   allowRunningInsecureContent: false
 })
 
+const secureWindowRegistrations = new WeakMap()
+
 function createSecureWebPreferences(webPreferences = {}) {
   const preload = webPreferences.preload
   if (typeof preload !== 'string' || !path.isAbsolute(preload)) {
@@ -126,17 +128,29 @@ function createSecureWindow({
     ...windowOptions,
     webPreferences: createSecureWebPreferences(webPreferences)
   })
-  return installWindowSecurity(win, {
+  installWindowSecurity(win, {
     allowedFilePaths: [pagePath],
     openExternal,
     onBlocked
   })
+  secureWindowRegistrations.set(win.webContents, {
+    window: win,
+    pagePath: normalizeAllowedPath(pagePath)
+  })
+  return win
+}
+
+function getSecureWindowRegistration(webContents) {
+  return webContents && typeof webContents === 'object'
+    ? secureWindowRegistrations.get(webContents) || null
+    : null
 }
 
 module.exports = {
   LOCKED_WEB_PREFERENCES,
   createSecureWebPreferences,
   createSecureWindow,
+  getSecureWindowRegistration,
   installWindowSecurity,
   isAllowedLocalUrl,
   isSafeExternalUrl

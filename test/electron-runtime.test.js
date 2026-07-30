@@ -74,6 +74,11 @@ test('Electron loads Node-API modules and resolves packaged native components', 
   assert.match(probe.actionSecurity.html, /href="https:\/\/example\.com\/docs"/)
   assert.deepEqual(probe.actionSecurity.preloadErrors, [])
   assert.deepEqual(probe.actionSecurity.cspMessages, [])
+  assert.equal(probe.ipcSecurity.policyCount, 94)
+  assert.equal(probe.ipcSecurity.allowedChannel, 'settings:get')
+  assert.equal(probe.ipcSecurity.crossPageResult.blocked, true)
+  assert.match(probe.ipcSecurity.crossPageResult.error, /IPC sender not authorized/)
+  assert.ok(probe.ipcSecurity.blockedReasons.includes('page-not-allowed'))
   assert.ok(probe.displays.length >= 1)
 
   if (probe.components.nativeRuntimeBuilt || process.env.HIGHLIGHTER_REQUIRE_NATIVE_RUNTIME === '1') {
