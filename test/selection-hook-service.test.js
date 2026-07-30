@@ -10,6 +10,7 @@ class FakeHook extends EventEmitter {
     this.startError = startError
     this.running = false
     this.startCalls = []
+    this.disableClipboardCalls = 0
     this.cleanupCalls = 0
   }
 
@@ -22,6 +23,11 @@ class FakeHook extends EventEmitter {
 
   isRunning() {
     return this.running
+  }
+
+  disableClipboard() {
+    this.disableClipboardCalls += 1
+    return true
   }
 
   cleanup() {
@@ -73,7 +79,11 @@ test('starts one selection hook and forwards configured events', () => {
   assert.equal(service.start(), true)
   assert.equal(service.start(), true)
   assert.equal(hook.startCalls.length, 1)
-  assert.deepEqual(hook.startCalls[0], { debug: false, enableClipboard: true })
+  assert.equal(hook.disableClipboardCalls, 1)
+  assert.deepEqual(hook.startCalls[0], {
+    debug: false,
+    enableClipboard: false
+  })
 
   hook.emit('text-selection', { text: 'selected' })
   hook.emit('mouse-down', { x: 4, y: 8 })
@@ -81,6 +91,36 @@ test('starts one selection hook and forwards configured events', () => {
     ['selection', { text: 'selected' }],
     ['mouse', { x: 4, y: 8 }]
   ])
+})
+
+test('keeps clipboard fallback disabled unless the caller explicitly opts in', () => {
+  const safeHook = new FakeHook()
+  const safeService = new SelectionHookService({ createHook: () => safeHook })
+  safeService.start()
+  assert.equal(safeHook.startCalls[0].enableClipboard, false)
+  assert.equal(safeHook.disableClipboardCalls, 1)
+
+  const fallbackHook = new FakeHook()
+  const fallbackService = new SelectionHookService({
+    createHook: () => fallbackHook,
+    startOptions: { debug: false, enableClipboard: true }
+  })
+  fallbackService.start()
+  assert.equal(fallbackHook.startCalls[0].enableClipboard, true)
+  assert.equal(fallbackHook.disableClipboardCalls, 0)
+})
+
+test('fails closed when the hook cannot confirm clipboard fallback is disabled', () => {
+  const hook = new FakeHook()
+  hook.disableClipboard = () => false
+  const service = new SelectionHookService({
+    createHook: () => hook,
+    maxStartRetries: 0
+  })
+
+  assert.equal(service.start(), false)
+  assert.equal(service.isRunning(), false)
+  assert.equal(hook.cleanupCalls, 1)
 })
 
 test('resume restart discards a falsely running hook and coalesces duplicate events', () => {

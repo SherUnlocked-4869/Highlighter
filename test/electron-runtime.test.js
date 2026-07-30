@@ -9,11 +9,17 @@ const root = path.join(__dirname, '..')
 const electronPath = require('electron')
 const installedElectron = require('electron/package.json')
 const projectPackage = require('../package.json')
+const packageLock = require('../package-lock.json')
 const resultPrefix = 'HIGHLIGHTER_RUNTIME_PROBE='
 
-test('fresh installs explicitly provision the pinned Electron binary', () => {
-  assert.equal(projectPackage.devDependencies.electron, '43.2.0')
-  assert.equal(projectPackage.scripts.postinstall, 'install-electron --no')
+test('runtime stays on the WeType-compatible Electron release', () => {
+  // Electron 42+ causes WeType 2.1.1.6 to reinterpret Chrome CF_HTML bytes
+  // as UTF-16 whenever the Electron window regains focus. Keep this exact pin
+  // until the real Chrome -> Highlighter focus probe passes on a newer runtime.
+  assert.equal(projectPackage.devDependencies.electron, '41.10.3')
+  assert.equal(packageLock.packages['node_modules/electron'].version, '41.10.3')
+  assert.equal(installedElectron.version, '41.10.3')
+  assert.equal(projectPackage.scripts.postinstall, undefined)
 })
 
 test('Electron loads Node-API modules and resolves packaged native components', { timeout: 45000 }, (t) => {
@@ -50,6 +56,7 @@ test('Electron loads Node-API modules and resolves packaged native components', 
   assert.ok(probe.modules.sharp.libvipsVersion)
   assert.ok(probe.modules.sharp.pngBytes > 0)
   assert.equal(probe.components.smartSelect.name, 'SmartSelect.exe')
+  assert.equal(probe.components.scrollDriver.name, 'ScrollDriver.exe')
   assert.equal(probe.components.ocrSidecar.name, 'HighlighterOcrSidecar.exe')
   assert.equal(probe.components.onnxRuntime.name, 'onnxruntime.dll')
   assert.equal(probe.components.ffmpeg.name, 'ffmpeg.exe')
@@ -74,7 +81,7 @@ test('Electron loads Node-API modules and resolves packaged native components', 
   assert.match(probe.actionSecurity.html, /href="https:\/\/example\.com\/docs"/)
   assert.deepEqual(probe.actionSecurity.preloadErrors, [])
   assert.deepEqual(probe.actionSecurity.cspMessages, [])
-  assert.equal(probe.ipcSecurity.policyCount, 94)
+  assert.equal(probe.ipcSecurity.policyCount, 97)
   assert.equal(probe.ipcSecurity.allowedChannel, 'settings:get')
   assert.equal(probe.ipcSecurity.crossPageResult.blocked, true)
   assert.match(probe.ipcSecurity.crossPageResult.error, /IPC sender not authorized/)

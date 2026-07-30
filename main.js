@@ -54,6 +54,10 @@ const Store = require('electron-store')
 const { OcrService } = require('./main/services/ocr-service')
 const { RecordingService } = require('./main/services/recording-service')
 const { LongCaptureSession } = require('./main/services/long-capture-session')
+const { WindowsScrollDriver } = require('./main/services/windows-scroll-driver')
+const {
+  calculateLongCaptureControllerPlacement
+} = require('./main/services/long-capture-controller-placement')
 const { findNativeDisplay, getNativeDisplayBounds } = require('./main/services/capture-geometry')
 const { buildTableFromOcr } = require('./capture/recognition-utils')
 const {
@@ -668,6 +672,11 @@ function createTrayIcon() {
 }
 
 function initSelectionHook() {
+  if (!getSettings().selectionToolbar.enabled) {
+    hideToolbar()
+    selectionHookService?.suspend('toolbar-disabled')
+    return false
+  }
   if (!selectionHookService) {
     selectionHookService = new SelectionHookService({
       createHook: () => {
@@ -699,8 +708,16 @@ function registerSelectionPowerEvents() {
   const bindings = [
     ['suspend', () => selectionHookService?.suspend('system-suspend')],
     ['lock-screen', () => selectionHookService?.suspend('lock-screen')],
-    ['resume', () => selectionHookService?.scheduleRestart('system-resume')],
-    ['unlock-screen', () => selectionHookService?.scheduleRestart('unlock-screen')]
+    ['resume', () => {
+      if (getSettings().selectionToolbar.enabled) {
+        selectionHookService?.scheduleRestart('system-resume')
+      }
+    }],
+    ['unlock-screen', () => {
+      if (getSettings().selectionToolbar.enabled) {
+        selectionHookService?.scheduleRestart('unlock-screen')
+      }
+    }]
   ]
   for (const [eventName, listener] of bindings) {
     powerMonitor.on(eventName, listener)
@@ -718,7 +735,9 @@ function disposeSelectionHook() {
 
 function shouldFilterApp(programName) {
   const value = String(programName || '').toLowerCase()
-  return value.includes('highlighter') || value.includes('划词助手') || value.includes('huacizhushou')
+  return value.includes('highlighter') ||
+    value.includes('划词助手') ||
+    value.includes('huacizhushou')
 }
 
 function validCoord(point) {
@@ -1083,38 +1102,133 @@ async function getDesktopSourceForDisplay(display) {
   return source
 }
 
-function placeLongCaptureController(display, selectionBounds, width = 420, height = 570) {
-  const area = display.workArea
-  const gap = 10
-  const candidates = [
-    { x: selectionBounds.x + selectionBounds.width + gap, y: selectionBounds.y },
-    { x: selectionBounds.x - width - gap, y: selectionBounds.y },
-    { x: selectionBounds.x, y: selectionBounds.y + selectionBounds.height + gap },
-    { x: selectionBounds.x, y: selectionBounds.y - height - gap }
-  ]
-  const fits = (bounds) => bounds.x >= area.x && bounds.y >= area.y && bounds.x + width <= area.x + area.width && bounds.y + height <= area.y + area.height
-  const candidate = candidates.find(fits)
-  if (candidate) return { ...candidate, width, height }
-  return {
-    x: Math.max(area.x, area.x + area.width - width - gap),
-    y: Math.max(area.y, area.y + area.height - height - gap),
-    width,
-    height
-  }
+function updateLongCaptureControllerPlacement(state, display) {
+  if (!state?.controllerWindow || state.controllerWindow.isDestroyed()) return null
+  const placement = calculateLongCaptureControllerPlacement(display, state.init.selectionBounds)
+  state.controllerWindow.setBounds(placement.bounds)
+  state.controllerWindow.setContentProtection(placement.overlapsSelection)
+  state.controllerWindow.moveTop()
+  return placement
 }
 
 function closeLongCapture() {
   const state = currentLongCapture
   if (!state || state.closing) return
   state.closing = true
+  stopLongCaptureAutomation(state, 'closed')
   currentLongCapture = null
   if (state.overlayWindow && !state.overlayWindow.isDestroyed()) state.overlayWindow.close()
   if (state.controllerWindow && !state.controllerWindow.isDestroyed()) state.controllerWindow.close()
   state.session.cleanup()
 }
 
+function stopLongCaptureAutomation(state, reason = 'stopped') {
+  const automation = state?.automation
+  if (!automation) return { stopped: false, reason }
+  state.automation = null
+  automation.driver.dispose()
+  return { stopped: true, reason }
+}
+
+async function startLongCaptureAutomation(state, requestedAxis) {
+  if (!state || state.closing || state.finishing) throw new Error('长截图会话不可用')
+  assertManagedDataWritable()
+  if (!isWin) throw new Error('自动滚动目前仅支持 Windows')
+  if (state.selectionEditing) throw new Error('请先完成截图区域调整')
+  if (!state.session.strips.length && requestedAxis === 'vertical') {
+    state.session.axis = 'vertical'
+    settingsService.updateSettings({ screenshot: { longCaptureDirection: 'vertical' } })
+  }
+  if (state.session.axis !== 'vertical') throw new Error('自动滚动仅支持纵向长截图')
+
+  stopLongCaptureAutomation(state, 'restarted')
+  const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
+  const executablePath = path.join(resourceRoot, 'native', 'scroll-driver', 'ScrollDriver.exe')
+  if (!fs.existsSync(executablePath)) throw new Error('自动滚动组件缺失，请重新安装 Highlighter')
+  const driver = new WindowsScrollDriver({ executablePath })
+  try {
+    await driver.start()
+  } catch (error) {
+    driver.dispose()
+    throw new Error(`自动滚动启动失败：${error.message || String(error)}`)
+  }
+
+  const selection = state.init.selectionBounds
+  const dipPoint = {
+    x: Math.round(selection.x + selection.width / 2),
+    y: Math.round(selection.y + selection.height / 2)
+  }
+  const targetPoint = screen.dipToScreenPoint(dipPoint)
+  state.automation = {
+    driver,
+    cursorOrigin: screen.getCursorScreenPoint(),
+    targetPoint,
+    startedAt: Date.now(),
+    steps: 0,
+    maxSteps: 200,
+    maxDurationMs: 120000,
+    cursorTolerance: 12,
+    wheelDelta: -360,
+    smoothSteps: 6,
+    smoothDurationMs: 270
+  }
+  return {
+    settleMs: 700,
+    retryMs: 300,
+    maxFrames: 200,
+    maxDurationMs: state.automation.maxDurationMs,
+    endStillFrames: 4,
+    initialEndStillFrames: 6,
+    failedRetries: 3
+  }
+}
+
+async function scrollLongCaptureAutomation(state) {
+  const automation = state?.automation
+  if (!automation || state.closing || state.finishing) return { ok: false, reason: 'not-running' }
+  if (Date.now() - automation.startedAt >= automation.maxDurationMs) {
+    stopLongCaptureAutomation(state, 'max-duration')
+    return { ok: false, reason: 'max-duration' }
+  }
+  if (automation.steps >= automation.maxSteps) {
+    stopLongCaptureAutomation(state, 'max-frames')
+    return { ok: false, reason: 'max-frames' }
+  }
+
+  const cursor = screen.getCursorScreenPoint()
+  const distance = Math.hypot(
+    cursor.x - automation.cursorOrigin.x,
+    cursor.y - automation.cursorOrigin.y
+  )
+  if (distance > automation.cursorTolerance) {
+    stopLongCaptureAutomation(state, 'user-input')
+    return { ok: false, reason: 'user-input' }
+  }
+
+  let result
+  try {
+    result = await automation.driver.smoothScroll({
+      ...automation.targetPoint,
+      delta: automation.wheelDelta,
+      steps: automation.smoothSteps,
+      durationMs: automation.smoothDurationMs,
+      excludedProcessId: process.pid
+    })
+  } catch (error) {
+    stopLongCaptureAutomation(state, 'driver-error')
+    return { ok: false, reason: 'driver-error', message: error.message || String(error) }
+  }
+  if (!result.ok) {
+    stopLongCaptureAutomation(state, result.reason || 'scroll-failed')
+    return result
+  }
+  automation.steps++
+  return { ...result, step: automation.steps }
+}
+
 function setLongOverlayEditing(state, enabled, axis, hasContent) {
   if (!state || state.overlayWindow.isDestroyed() || state.controllerWindow.isDestroyed()) return false
+  if (enabled) stopLongCaptureAutomation(state, 'selection-editing')
   state.selectionEditing = !!enabled
   state.overlayWindow.setFocusable(state.selectionEditing)
   state.overlayWindow.setIgnoreMouseEvents(!state.selectionEditing, { forward: true })
@@ -1176,7 +1290,8 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
       backgroundThrottling: false
     }
   })
-  const controllerBounds = placeLongCaptureController(display, selectionBounds)
+  const controllerPlacement = calculateLongCaptureControllerPlacement(display, selectionBounds)
+  const controllerBounds = controllerPlacement.bounds
   const controllerPagePath = path.join(__dirname, 'long-capture', 'long-capture.html')
   const controllerWindow = createLocalWindow(controllerPagePath, {
     ...controllerBounds,
@@ -1184,7 +1299,7 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
     transparent: true,
     backgroundColor: '#00000000',
     alwaysOnTop: true,
-    skipTaskbar: true,
+    skipTaskbar: false,
     show: false,
     resizable: false,
     maximizable: false,
@@ -1201,15 +1316,26 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
     displayBounds: display.bounds,
     selectionBounds,
     scaleFactor: display.scaleFactor || 1,
-    settings
+    settings,
+    autoStart: !!payload.autoStart
   }
-  currentLongCapture = { session, overlayWindow, controllerWindow, init, closing: false, finishing: false, selectionEditing: false }
+  currentLongCapture = {
+    session,
+    overlayWindow,
+    controllerWindow,
+    init,
+    closing: false,
+    finishing: false,
+    selectionEditing: false,
+    automation: null
+  }
   overlayWindow._longCaptureRole = 'overlay'
   controllerWindow._longCaptureRole = 'controller'
   overlayWindow.setIgnoreMouseEvents(true, { forward: true })
-  controllerWindow.setContentProtection(true)
+  overlayWindow.setContentProtection(true)
+  controllerWindow.setContentProtection(controllerPlacement.overlapsSelection)
   overlayWindow.setAlwaysOnTop(true, 'screen-saver')
-  controllerWindow.setAlwaysOnTop(true, 'screen-saver')
+  controllerWindow.setAlwaysOnTop(true, 'screen-saver', 1)
   overlayWindow.on('closed', () => {
     if (currentLongCapture?.overlayWindow === overlayWindow) closeLongCapture()
   })
@@ -1225,8 +1351,16 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
     if (captureWindow.isDestroyed() || currentLongCapture?.controllerWindow !== controllerWindow) throw new Error('长截图窗口初始化已取消')
     captureWindow.close()
     overlayWindow.showInactive()
+    controllerWindow.setBounds(controllerBounds)
     controllerWindow.show()
+    controllerWindow.moveTop()
     controllerWindow.focus()
+    setImmediate(() => {
+      if (controllerWindow.isDestroyed()) return
+      controllerWindow.setBounds(controllerBounds)
+      controllerWindow.moveTop()
+      controllerWindow.focus()
+    })
     return true
   } catch (error) {
     closeLongCapture()
@@ -1238,6 +1372,7 @@ async function finishLongCapture(action, fast = false) {
   const state = currentLongCapture
   if (!state || state.finishing) throw new Error('长截图会话不可用')
   state.finishing = true
+  stopLongCaptureAutomation(state, 'finishing')
   try {
     const size = state.session.getSize()
     const outputPath = await state.session.render()
@@ -1861,10 +1996,12 @@ registerSettingsIpc({
     if (patch.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
     if (patch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
     if (patch.theme !== undefined || patch.mainColor !== undefined) broadcastActionAppearance(settings)
+    if (patch.selectionToolbar?.enabled !== undefined) initSelectionHook()
   },
   onSettingsReset: (settings) => {
     registerShortcuts()
     broadcastActionAppearance(settings)
+    initSelectionHook()
   },
   onStartHook: () => initSelectionHook(),
   validateApiKey: (apiKey) => require('./deepseek').validateApiKey(apiKey),
@@ -2189,6 +2326,21 @@ const captureIpcController = {
   if (!state || event.sender !== state.controllerWindow.webContents || state.finishing) throw new Error('长截图会话不可用')
   return setLongOverlayEditing(state, enabled, axis, hasContent)
   },
+  longAutomationStart: (event, axis) => {
+  const state = currentLongCapture
+  if (!state || event.sender !== state.controllerWindow.webContents) throw new Error('长截图会话不可用')
+  return startLongCaptureAutomation(state, axis)
+  },
+  longAutomationScroll: (event) => {
+  const state = currentLongCapture
+  if (!state || event.sender !== state.controllerWindow.webContents) throw new Error('长截图会话不可用')
+  return scrollLongCaptureAutomation(state)
+  },
+  longAutomationStop: (event, reason) => {
+  const state = currentLongCapture
+  if (!state || event.sender !== state.controllerWindow.webContents) return { stopped: false }
+  return stopLongCaptureAutomation(state, String(reason || 'paused'))
+  },
   longOverlayBoundsChanged: (event, proposed = {}) => {
   const state = currentLongCapture
   if (!state || event.sender !== state.overlayWindow.webContents || !state.selectionEditing || state.finishing) return
@@ -2209,7 +2361,11 @@ const captureIpcController = {
   next.x = Math.max(display.x, Math.min(display.x + display.width - next.width, next.x))
   next.y = Math.max(display.y, Math.min(display.y + display.height - next.height, next.y))
   state.init.selectionBounds = next
-  if (!state.controllerWindow.isDestroyed()) state.controllerWindow.webContents.send('long-capture:selection-updated', next)
+  if (!state.controllerWindow.isDestroyed()) {
+    const activeDisplay = screen.getDisplayMatching(next)
+    updateLongCaptureControllerPlacement(state, activeDisplay)
+    state.controllerWindow.webContents.send('long-capture:selection-updated', next)
+  }
   },
   longFinish: (event, { action, fast } = {}) => {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')

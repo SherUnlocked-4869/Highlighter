@@ -91,15 +91,15 @@ function registerPolicySurface(secureIpcMain, policies, calls) {
   }
 }
 
-test('IPC policy covers all 94 main-process registration points', () => {
+test('IPC policy covers all 97 main-process registration points', () => {
   const policies = buildIpcPolicies(path.resolve(__dirname, '..'))
   const counts = [...policies.values()].reduce((result, policy) => {
     result[policy.kind]++
     return result
   }, { handle: 0, on: 0 })
 
-  assert.equal(policies.size, 94)
-  assert.deepEqual(counts, { handle: 57, on: 37 })
+  assert.equal(policies.size, 97)
+  assert.deepEqual(counts, { handle: 60, on: 37 })
   assert.deepEqual(
     policies.get('shell:open-external').pages.map(({ role }) => role),
     ['main', 'recognition']

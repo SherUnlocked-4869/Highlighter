@@ -10,7 +10,10 @@ contextBridge.exposeInMainWorld('captureAPI', {
   renderReady: () => ipcRenderer.send('capture:render-ready'),
   renderError: (message) => ipcRenderer.send('capture:render-error', message),
   close: () => ipcRenderer.send('capture:close'),
-  startLongCapture: (selection) => ipcRenderer.invoke('capture:start-long', { selection }),
+  startLongCapture: (selection, autoStart = false) => ipcRenderer.invoke('capture:start-long', {
+    selection,
+    autoStart: !!autoStart
+  }),
   smartSelectAt: (point) => ipcRenderer.invoke('capture:smart-select', point),
   copy: (imageBuffer, meta) => ipcRenderer.invoke('capture:copy', { imageBuffer, meta }),
   save: (imageBuffer, meta, fast) => ipcRenderer.send('capture:save', { imageBuffer, meta, fast }),

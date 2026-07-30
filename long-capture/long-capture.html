@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'self'">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Highlighter 长截图</title>
   <link rel="stylesheet" href="long-capture.css">
@@ -32,7 +32,8 @@
       <span>px</span>
     </section>
     <section class="transport">
-      <button id="toggle" class="primary">开始</button>
+      <button id="autoToggle" class="primary" title="自动向下滚动并拼接">自动滚动</button>
+      <button id="toggle" title="手动滚动页面时持续捕获">手动捕获</button>
     </section>
     <footer class="actions">
       <button id="pin" title="贴图">📌<span>贴图</span></button>
@@ -42,6 +43,7 @@
     </footer>
   </main>
   <video id="source" muted autoplay></video>
+  <script src="automation.js"></script>
   <script src="long-capture.js"></script>
 </body>
 </html>

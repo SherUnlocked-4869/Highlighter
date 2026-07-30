@@ -3,6 +3,7 @@ const backgroundCtx = backgroundCanvas.getContext('2d')
 const canvas = document.getElementById('stage')
 const ctx = canvas.getContext('2d')
 const toolbar = document.getElementById('toolbar')
+const toolbarTooltip = document.getElementById('toolbarTooltip')
 const sizeBadge = document.getElementById('sizeBadge')
 const tip = document.getElementById('tip')
 const loading = document.getElementById('loading')
@@ -51,6 +52,7 @@ let processingAction = null
 let renderRequest = 0
 let toolbarSize = null
 let imageObjectUrl = ''
+let toolbarTooltipTarget = null
 
 function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
 function normalizeRect(a, b) { return { x: Math.min(a.x,b.x), y: Math.min(a.y,b.y), w: Math.abs(b.x-a.x), h: Math.abs(b.y-a.y) } }
@@ -198,17 +200,61 @@ function drawHandles() {
 }
 
 function updateFloatingUi() {
-  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; return }
+  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); hideToolbarTooltip(); sizeBadge.style.display='none'; return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16
   sizeBadge.style.display='block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
-  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); return }
-  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); return }
+  if (activeOcrResult) { toolbar.classList.add('hidden'); hideToolbarTooltip(); positionOcrResultBar(); return }
+  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); hideToolbarTooltip(); return }
   toolbar.classList.remove('hidden')
   const rect=toolbarSize||(toolbarSize=toolbar.getBoundingClientRect()); let left=selection.x+selection.w-rect.width; let top=selection.y+selection.h+10
   if (top+rect.height>innerHeight-6) top=selection.y-rect.height-10
   left=Math.max(6,Math.min(left,innerWidth-rect.width-6)); top=Math.max(6,top)
   toolbar.style.left=`${left}px`; toolbar.style.top=`${top}px`
 }
+
+function hideToolbarTooltip() {
+  toolbarTooltipTarget = null
+  toolbarTooltip.classList.add('hidden')
+  toolbarTooltip.textContent = ''
+}
+
+function showToolbarTooltip(target) {
+  const message = String(target?.dataset?.tooltip || target?.getAttribute?.('aria-label') || '').trim()
+  if (!message || toolbar.classList.contains('hidden') || target.disabled) {
+    hideToolbarTooltip()
+    return
+  }
+  toolbarTooltipTarget = target
+  toolbarTooltip.textContent = message
+  toolbarTooltip.classList.remove('hidden')
+  const targetRect = target.getBoundingClientRect()
+  const toolbarRect = toolbar.getBoundingClientRect()
+  const tooltipRect = toolbarTooltip.getBoundingClientRect()
+  let left = targetRect.left + (targetRect.width - tooltipRect.width) / 2
+  let top = toolbarRect.top - tooltipRect.height - 7
+  if (top < 6) top = toolbarRect.bottom + 7
+  left = Math.max(6, Math.min(left, innerWidth - tooltipRect.width - 6))
+  top = Math.max(6, Math.min(top, innerHeight - tooltipRect.height - 6))
+  toolbarTooltip.style.left = `${Math.round(left)}px`
+  toolbarTooltip.style.top = `${Math.round(top)}px`
+}
+
+toolbar.addEventListener('pointerover', (event) => {
+  const target = event.target.closest('[data-tooltip]')
+  if (target && toolbar.contains(target) && target !== toolbarTooltipTarget) showToolbarTooltip(target)
+})
+toolbar.addEventListener('pointerout', (event) => {
+  const target = event.target.closest('[data-tooltip]')
+  if (!target || target !== toolbarTooltipTarget) return
+  if (target.contains(event.relatedTarget)) return
+  hideToolbarTooltip()
+})
+toolbar.addEventListener('focusin', (event) => {
+  const target = event.target.closest('[data-tooltip]')
+  if (target) showToolbarTooltip(target)
+})
+toolbar.addEventListener('focusout', hideToolbarTooltip)
+toolbar.addEventListener('pointerdown', hideToolbarTooltip)
 
 function positionOcrResultBar() {
   if (!selection||ocrResultBar.classList.contains('hidden')) return
@@ -422,7 +468,8 @@ async function performAction(action) {
   }
   if(action==='long'){
     if(annotations.length&&!confirm('进入长截图将忽略当前标注，是否继续？'))return
-    try{await window.captureAPI.startLongCapture({...selection})}catch(error){alert(error.message||String(error))}
+    const autoStart=initData?.autoAction==='long'
+    try{await window.captureAPI.startLongCapture({...selection},autoStart)}catch(error){alert(error.message||String(error))}
     return
   }
   const recognitionActions=['ocr','translate','table','qr']

@@ -25,7 +25,14 @@ self.onmessage = (event) => {
     return
   }
 
-  const result = LongCaptureMatcher.findBestShift(previous, current, width, height, axis)
+  const result = LongCaptureMatcher.findBestShift(
+    previous,
+    current,
+    width,
+    height,
+    axis,
+    message.options || {}
+  )
   if (result.status === 'matched') previous = current
   self.postMessage({ id: message.id, ...result })
 }

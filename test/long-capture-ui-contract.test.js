@@ -1,0 +1,53 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const root = path.resolve(__dirname, '..')
+
+test('long capture UI exposes automatic scrolling with manual fallback controls', () => {
+  const html = fs.readFileSync(path.join(root, 'long-capture', 'long-capture.html'), 'utf8')
+  const renderer = fs.readFileSync(path.join(root, 'long-capture', 'long-capture.js'), 'utf8')
+  const preload = fs.readFileSync(path.join(root, 'preload-long-capture.js'), 'utf8')
+
+  assert.match(html, /id="autoToggle"[^>]*>自动滚动</)
+  assert.ok(html.indexOf('automation.js') < html.indexOf('long-capture.js'))
+  assert.match(renderer, /LongCaptureAutomation\.AutomationController/)
+  assert.match(renderer, /direction:\s*'forward'/)
+  assert.match(renderer, /end-reached/)
+  assert.match(renderer, /low-confidence/)
+  assert.match(renderer, /user-input/)
+  assert.match(renderer, /继续手动/)
+  assert.match(preload, /long-capture:automation-start/)
+  assert.match(preload, /long-capture:automation-scroll/)
+  assert.match(preload, /long-capture:automation-stop/)
+})
+
+test('main process packages and safely owns the Windows scroll driver', () => {
+  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  const ipc = fs.readFileSync(path.join(root, 'main', 'ipc', 'capture-ipc.js'), 'utf8')
+  const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+  const scrollResource = packageJson.build.extraResources.find(
+    (entry) => entry.to === 'native/scroll-driver/ScrollDriver.exe'
+  )
+
+  assert.ok(scrollResource)
+  assert.match(packageJson.scripts['build:native'], /build:scroll-driver/)
+  assert.match(main, /new WindowsScrollDriver/)
+  assert.match(main, /screen\.dipToScreenPoint/)
+  assert.match(main, /screen\.getCursorScreenPoint/)
+  assert.match(main, /cursorTolerance:\s*12/)
+  assert.match(main, /maxSteps:\s*200/)
+  assert.match(main, /maxDurationMs:\s*120000/)
+  assert.match(main, /wheelDelta:\s*-360/)
+  assert.match(main, /smoothSteps:\s*6/)
+  assert.match(main, /smoothDurationMs:\s*270/)
+  assert.match(main, /driver\.smoothScroll/)
+  assert.match(main, /settleMs:\s*700/)
+  assert.match(main, /endStillFrames:\s*4/)
+  assert.match(main, /initialEndStillFrames:\s*6/)
+  assert.match(main, /stopLongCaptureAutomation\(state, 'closed'\)/)
+  assert.match(ipc, /long-capture:automation-start/)
+  assert.match(ipc, /long-capture:automation-scroll/)
+  assert.match(ipc, /long-capture:automation-stop/)
+})

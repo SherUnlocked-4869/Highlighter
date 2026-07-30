@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld('longCaptureAPI', {
   addStrip: (arrayBuffer, metadata) => ipcRenderer.invoke('long-capture:add-strip', { arrayBuffer, metadata }),
   setTrim: (start, end) => ipcRenderer.invoke('long-capture:set-trim', { start, end }),
   setSelectionEditing: (enabled, axis, hasContent) => ipcRenderer.invoke('long-capture:set-selection-editing', { enabled, axis, hasContent }),
+  startAutomation: (axis) => ipcRenderer.invoke('long-capture:automation-start', axis),
+  scrollAutomation: () => ipcRenderer.invoke('long-capture:automation-scroll'),
+  stopAutomation: (reason) => ipcRenderer.invoke('long-capture:automation-stop', reason),
   onSelectionUpdated: (callback) => {
     const handler = (_event, bounds) => callback(bounds)
     ipcRenderer.on('long-capture:selection-updated', handler)

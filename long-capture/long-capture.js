@@ -7,6 +7,7 @@ const stripsElement = document.getElementById('strips')
 const confidenceElement = document.getElementById('confidence')
 const emptyPreview = document.getElementById('emptyPreview')
 const toggleButton = document.getElementById('toggle')
+const autoToggleButton = document.getElementById('autoToggle')
 const adjustSelectionButton = document.getElementById('adjustSelection')
 const trimStartInput = document.getElementById('trimStart')
 const trimEndInput = document.getElementById('trimEnd')
@@ -15,13 +16,26 @@ const actionButtons = [...document.querySelectorAll('.actions button')]
 
 let initData = null
 let stream = null
+let streamReady = false
 let worker = null
 let axis = 'vertical'
 let capturing = false
+let automationRunning = false
 let busy = false
 let selectionEditing = false
 let timer = null
 let requestId = 0
+let automationToken = 0
+let automationConfig = {
+  settleMs: 700,
+  retryMs: 300,
+  maxFrames: 200,
+  maxDurationMs: 120000,
+  endStillFrames: 4,
+  failedRetries: 3
+}
+let automationController = null
+let autoStartRequested = false
 let total = { width: 0, height: 0, strips: 0, trimStart: 0, trimEnd: 0 }
 const workerRequests = new Map()
 const cropCanvas = document.createElement('canvas')
@@ -35,14 +49,19 @@ function setStatus(message, confidence) {
 }
 
 function updateControls() {
+  const active = capturing || automationRunning
   document.body.classList.toggle('capturing', capturing)
-  toggleButton.textContent = capturing ? '暂停' : (total.strips ? '继续' : '开始')
-  directionButtons.forEach((button) => { button.disabled = total.strips > 0 })
-  adjustSelectionButton.disabled = capturing || busy
+  document.body.classList.toggle('automating', automationRunning)
+  toggleButton.textContent = capturing ? '暂停手动' : (total.strips ? '继续手动' : '手动捕获')
+  autoToggleButton.textContent = automationRunning ? '暂停自动' : (total.strips ? '继续自动' : '自动滚动')
+  directionButtons.forEach((button) => { button.disabled = total.strips > 0 || active })
+  autoToggleButton.disabled = !streamReady || capturing || selectionEditing || (axis !== 'vertical' && total.strips > 0)
+  toggleButton.disabled = !streamReady || automationRunning || selectionEditing
+  adjustSelectionButton.disabled = active || busy
   adjustSelectionButton.classList.toggle('active', selectionEditing)
   adjustSelectionButton.textContent = selectionEditing ? '✓ 完成' : '⌖ 选区'
-  trimStartInput.disabled = !total.strips || capturing || busy
-  trimEndInput.disabled = !total.strips || capturing || busy
+  trimStartInput.disabled = !total.strips || active || busy
+  trimEndInput.disabled = !total.strips || active || busy
   actionButtons.forEach((button) => { button.disabled = !total.strips || busy })
 }
 
@@ -56,11 +75,11 @@ function updateTrimPreview() {
     : `inset(0 ${end}% 0 ${start}%)`
 }
 
-function workerFrame(rgba, width, height) {
+function workerFrame(rgba, width, height, options = {}) {
   return new Promise((resolve) => {
     const id = ++requestId
     workerRequests.set(id, resolve)
-    worker.postMessage({ type: 'frame', id, rgba: rgba.buffer, width, height, axis }, [rgba.buffer])
+    worker.postMessage({ type: 'frame', id, rgba: rgba.buffer, width, height, axis, options }, [rgba.buffer])
   })
 }
 
@@ -212,11 +231,157 @@ async function captureFrame() {
   }
 }
 
+const automationStopMessages = {
+  'end-reached': '已检测到页面底部，自动采集完成',
+  'low-confidence': '画面匹配不稳定，已暂停；可继续手动捕获',
+  'user-input': '检测到鼠标移动，已暂停自动滚动',
+  'target-changed': '滚动目标已变化，已暂停自动滚动',
+  'app-target': '选区下方是 Highlighter 窗口，请重新调整选区',
+  'no-target': '选区下方没有可滚动窗口',
+  'invalid-target': '滚动目标不可用',
+  'send-failed': '目标窗口未响应滚动',
+  'driver-error': '自动滚动组件异常，已切换为手动模式',
+  'max-frames': '已达到自动采集帧数上限',
+  'max-duration': '已达到自动采集时长上限',
+  'scroll-failed': '自动滚动失败，已切换为手动模式',
+  paused: '已暂停自动滚动'
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)))
+}
+
+async function stopAutomation(reason = 'paused', showStatus = true) {
+  const wasRunning = automationRunning
+  automationRunning = false
+  automationToken++
+  automationController?.stop(reason)
+  try {
+    await window.longCaptureAPI.stopAutomation(reason)
+  } catch {}
+  window.longCaptureAPI.setOverlayActive(capturing)
+  if (showStatus && (wasRunning || automationStopMessages[reason])) {
+    setStatus(automationStopMessages[reason] || '自动滚动已停止')
+  }
+  updateControls()
+}
+
+async function runAutomation(token) {
+  let delayMs = 0
+  while (automationRunning && token === automationToken) {
+    if (delayMs) await wait(delayMs)
+    if (!automationRunning || token !== automationToken) return
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      delayMs = automationConfig.retryMs
+      continue
+    }
+
+    busy = true
+    updateControls()
+    let transition
+    try {
+      const imageData = drawCurrentFrame()
+      const result = await workerFrame(imageData.data, imageData.width, imageData.height, {
+        direction: 'forward',
+        minimumCoverage: 0.18,
+        minimumRun: 0.1,
+        minimumMargin: 0.12
+      })
+      if (!automationRunning || token !== automationToken) return
+      transition = automationController.acceptFrame(result)
+      if (transition.append === 'initial' && !total.strips) {
+        await uploadStrip(makeStripCanvas(0, true), 'append')
+        setStatus('已记录起始画面，正在自动滚动', 1)
+      } else if (transition.append === 'matched') {
+        const strip = makeStripCanvas(result.shift, false)
+        await uploadStrip(strip, 'append')
+        setStatus(`自动匹配成功 · 第 ${automationController.frames} 帧`, result.confidence)
+      } else if (result.status === 'still') {
+        setStatus('正在确认是否到达页面底部', 1)
+      } else if (result.status === 'failed') {
+        setStatus('匹配置信度不足，正在重试', result.confidence)
+      }
+    } catch (error) {
+      busy = false
+      await stopAutomation('driver-error', false)
+      setStatus(error.message || String(error))
+      updateControls()
+      return
+    } finally {
+      busy = false
+      updateControls()
+    }
+
+    if (!automationRunning || token !== automationToken) return
+    if (transition.action === 'stop') {
+      await stopAutomation(transition.reason)
+      return
+    }
+    if (transition.action === 'retry') {
+      delayMs = transition.delay === 'settle' ? automationConfig.settleMs : automationConfig.retryMs
+      continue
+    }
+
+    let scrollResult
+    try {
+      scrollResult = await window.longCaptureAPI.scrollAutomation()
+    } catch (error) {
+      scrollResult = { ok: false, reason: 'driver-error', message: error.message || String(error) }
+    }
+    const scrollTransition = automationController.acceptScroll(scrollResult)
+    if (scrollTransition.action === 'stop') {
+      await stopAutomation(scrollTransition.reason)
+      return
+    }
+    delayMs = automationConfig.settleMs
+  }
+}
+
+async function startAutomation() {
+  if (busy || automationRunning) return
+  if (capturing) setCapturing(false)
+  if (selectionEditing) await toggleSelectionEditing()
+  if (axis !== 'vertical') {
+    if (total.strips) {
+      setStatus('已有横向内容时不能启动自动滚动')
+      return
+    }
+    axis = 'vertical'
+    directionButtons.forEach((button) => button.classList.toggle('active', button.dataset.axis === axis))
+  }
+
+  try {
+    automationConfig = {
+      ...automationConfig,
+      ...await window.longCaptureAPI.startAutomation(axis)
+    }
+    automationController = new LongCaptureAutomation.AutomationController({
+      maxFrames: automationConfig.maxFrames,
+      maxDurationMs: automationConfig.maxDurationMs,
+      endStillFrames: automationConfig.endStillFrames,
+      initialEndStillFrames: automationConfig.initialEndStillFrames,
+      failedRetries: automationConfig.failedRetries
+    })
+    automationController.start()
+    automationRunning = true
+    const token = ++automationToken
+    worker?.postMessage({ type: 'reset' })
+    window.longCaptureAPI.setOverlayActive(true)
+    setStatus(total.strips ? '正在继续自动滚动' : '正在启动自动滚动')
+    updateControls()
+    runAutomation(token)
+  } catch (error) {
+    automationRunning = false
+    setStatus(error.message || String(error))
+    updateControls()
+  }
+}
+
 function setCapturing(active) {
   capturing = !!active
   clearInterval(timer)
   timer = null
-  window.longCaptureAPI.setOverlayActive(capturing)
+  window.longCaptureAPI.setOverlayActive(capturing || automationRunning)
   if (capturing) {
     setStatus(total.strips ? '继续捕获' : '正在记录起始画面')
     captureFrame()
@@ -228,6 +393,7 @@ function setCapturing(active) {
 async function toggleSelectionEditing() {
   if (busy) return
   if (capturing) setCapturing(false)
+  if (automationRunning) await stopAutomation('selection-editing', false)
   try {
     selectionEditing = !selectionEditing
     await window.longCaptureAPI.setSelectionEditing(selectionEditing, axis, total.strips > 0)
@@ -240,7 +406,7 @@ async function toggleSelectionEditing() {
 }
 
 async function applyTrim() {
-  if (!total.strips || capturing || busy) return
+  if (!total.strips || capturing || automationRunning || busy) return
   busy = true
   updateControls()
   try {
@@ -263,6 +429,7 @@ async function applyTrim() {
 async function finish(action, fast = false) {
   if (!total.strips || busy) return
   if (selectionEditing) await toggleSelectionEditing()
+  if (automationRunning) await stopAutomation('finishing', false)
   setCapturing(false)
   busy = true
   updateControls()
@@ -279,6 +446,7 @@ async function finish(action, fast = false) {
 
 async function initialize(data) {
   initData = data
+  autoStartRequested = !!data.autoStart
   axis = data.settings?.screenshot?.longCaptureDirection === 'horizontal' ? 'horizontal' : 'vertical'
   directionButtons.forEach((button) => button.classList.toggle('active', button.dataset.axis === axis))
   document.documentElement.style.setProperty('--primary', data.settings?.mainColor || '#1677ff')
@@ -296,20 +464,29 @@ async function initialize(data) {
     })
     video.srcObject = stream
     await video.play()
+    streamReady = true
     setStatus('准备就绪')
+    if (autoStartRequested) {
+      autoStartRequested = false
+      setTimeout(() => startAutomation(), 120)
+    }
   } catch (error) {
+    streamReady = false
     setStatus(`屏幕采集失败：${error.message}`)
-    toggleButton.disabled = true
   }
   updateControls()
 }
 
 directionButtons.forEach((button) => button.onclick = () => {
-  if (total.strips) return
+  if (total.strips || capturing || automationRunning) return
   axis = button.dataset.axis
   directionButtons.forEach((item) => item.classList.toggle('active', item === button))
   worker?.postMessage({ type: 'reset' })
 })
+autoToggleButton.onclick = () => {
+  if (automationRunning) stopAutomation('paused')
+  else startAutomation()
+}
 toggleButton.onclick = async () => {
   if (selectionEditing) await toggleSelectionEditing()
   setCapturing(!capturing)
@@ -324,7 +501,11 @@ document.getElementById('pin').onclick = () => finish('pin')
 document.getElementById('close').onclick = () => window.longCaptureAPI.close()
 addEventListener('keydown', (event) => {
   if (event.key === 'Escape') window.longCaptureAPI.close()
-  if (event.code === 'Space') { event.preventDefault(); toggleButton.click() }
+  if (event.code === 'Space') {
+    event.preventDefault()
+    if (automationRunning) autoToggleButton.click()
+    else toggleButton.click()
+  }
   if (event.ctrlKey && event.key.toLowerCase() === 's') { event.preventDefault(); finish('save') }
   if (event.key === 'Enter') finish('copy')
 })

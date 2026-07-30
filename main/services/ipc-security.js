@@ -92,6 +92,9 @@ const IPC_SURFACES = Object.freeze([
       'long-capture:add-strip',
       'long-capture:set-trim',
       'long-capture:set-selection-editing',
+      'long-capture:automation-start',
+      'long-capture:automation-scroll',
+      'long-capture:automation-stop',
       'long-capture:finish'
     ],
     listeners: [

@@ -250,18 +250,21 @@ async function probeRuntime() {
   }).png().toBuffer()
 
   const smartSelectPath = path.join(projectRoot, 'native', 'smart-select', 'SmartSelect.exe')
+  const scrollDriverPath = path.join(projectRoot, 'native', 'scroll-driver', 'ScrollDriver.exe')
   const sidecarPath = path.join(projectRoot, 'native', 'ocr', 'HighlighterOcrSidecar.exe')
   const onnxRuntimePath = path.join(projectRoot, 'native', 'ocr', 'onnxruntime.dll')
   const modelDir = path.join(projectRoot, 'ocr', 'models', 'ppocr-v4-ch')
   const ffmpegPath = require('ffmpeg-static')
   const nativeFiles = {
     smartSelect: fileStatus(smartSelectPath),
+    scrollDriver: fileStatus(scrollDriverPath),
     ocrSidecar: fileStatus(sidecarPath),
     onnxRuntime: fileStatus(onnxRuntimePath),
     ffmpeg: fileStatus(ffmpegPath)
   }
 
   const nativeRuntimeBuilt = nativeFiles.smartSelect.exists
+    && nativeFiles.scrollDriver.exists
     && nativeFiles.ocrSidecar.exists
     && nativeFiles.onnxRuntime.exists
   let ocrFilesValidated = false

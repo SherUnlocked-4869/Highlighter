@@ -34,11 +34,15 @@ test('every local page declares a restrictive content security policy', () => {
       "object-src 'none'",
       "base-uri 'none'",
       "form-action 'none'",
-      "frame-src 'none'",
-      "worker-src 'none'"
+      "frame-src 'none'"
     ]) {
       assert.match(policy, new RegExp(directive.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${relativePath}: ${directive}`)
     }
+    assert.match(
+      policy,
+      relativePath === 'long-capture/long-capture.html' ? /worker-src 'self'/ : /worker-src 'none'/,
+      `${relativePath}: worker policy`
+    )
     const scriptPolicy = policy.match(/script-src\s+([^;]+)/)?.[1] || ''
     assert.doesNotMatch(scriptPolicy, /'unsafe-inline'|'unsafe-eval'|data:|blob:/, `${relativePath} weakens script-src`)
 
