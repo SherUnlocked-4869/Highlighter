@@ -233,6 +233,8 @@ async function probeRuntime() {
       },
       sharp: {
         loaded: true,
+        version: sharp.versions.sharp,
+        libvipsVersion: sharp.versions.vips,
         pngBytes: sharpBuffer.length
       }
     },

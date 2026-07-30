@@ -46,6 +46,8 @@ test('Electron loads Node-API modules and resolves packaged native components', 
   assert.equal(probe.modules.selectionHook.loaded, true)
   assert.equal(probe.modules.selectionHook.initiallyRunning, false)
   assert.equal(probe.modules.sharp.loaded, true)
+  assert.equal(probe.modules.sharp.version, '0.35.3')
+  assert.ok(probe.modules.sharp.libvipsVersion)
   assert.ok(probe.modules.sharp.pngBytes > 0)
   assert.equal(probe.components.smartSelect.name, 'SmartSelect.exe')
   assert.equal(probe.components.ocrSidecar.name, 'HighlighterOcrSidecar.exe')
