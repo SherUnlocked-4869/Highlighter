@@ -6,7 +6,6 @@ let fullText = ''
 let loadTimer = null
 let userScrolled = false
 const STREAM_IDLE_TIMEOUT_MS = 30000
-const hasMarkdown = !!(window.electronAPI && typeof window.electronAPI.renderMarkdown === 'function')
 const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
 let configuredTheme = 'system'
 let configuredMainColor = '#1677ff'
@@ -48,6 +47,29 @@ function resetUI() {
 
 function showLoading(s) { if (el.loading) el.loading.style.display = s ? 'flex' : 'none' }
 function esc(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML }
+function escapeMarkdownHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function safeMarkdownLink(label, escapedUrl) {
+  const candidate = escapedUrl
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+  if (/[\u0000-\u0020"'<>]/.test(candidate)) return label + ' (' + escapedUrl + ')'
+  try {
+    const url = new URL(candidate)
+    if (!['http:', 'https:'].includes(url.protocol)) return label + ' (' + escapedUrl + ')'
+    return '<a href="' + escapeMarkdownHtml(url.toString()) + '" target="_blank" rel="noopener noreferrer">' + label + '</a>'
+  } catch {
+    return label + ' (' + escapedUrl + ')'
+  }
+}
 
 function armStreamTimeout() {
   clearTimeout(loadTimer)
@@ -62,9 +84,9 @@ function armStreamTimeout() {
 
 // Full Markdown renderer (inline, no dependencies)
 function simpleMarkdown(text) {
-  var t = text
+  var t = String(text || '')
   // Escape HTML first
-  t = t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  t = escapeMarkdownHtml(t)
 
   // Code blocks ```...```
   t = t.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
@@ -161,7 +183,9 @@ function inlineMd(text) {
   // Strikethrough
   t = t.replace(/~~(.+?)~~/g, '<del>$1</del>')
   // Links [text](url)
-  t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+  t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, label, url) {
+    return safeMarkdownLink(label, url)
+  })
   return t
 }
 

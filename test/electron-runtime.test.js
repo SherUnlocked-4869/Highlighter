@@ -53,6 +53,11 @@ test('Electron loads Node-API modules and resolves packaged native components', 
   assert.equal(probe.components.ffmpeg.name, 'ffmpeg.exe')
   assert.equal(probe.components.ffmpeg.exists, true)
   assert.ok(probe.components.ffmpeg.size > 0)
+  assert.equal(probe.preloads.length, 10)
+  for (const preload of probe.preloads) {
+    assert.equal(preload.sandboxed, true, `${preload.preload} did not run in a sandbox`)
+    assert.ok(preload.exposedKeys > 0, `${preload.preload} did not expose its API`)
+  }
   assert.ok(probe.displays.length >= 1)
 
   if (probe.components.nativeRuntimeBuilt || process.env.HIGHLIGHTER_REQUIRE_NATIVE_RUNTIME === '1') {

@@ -54,6 +54,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "preload-action.js",
       "preload-toolbar.js",
       "preload-capture.js",
       "preload-long-capture.js",
@@ -111,8 +112,7 @@
     "openai": "^4.87.3",
     "screenshot-desktop": "^1.15.4",
     "selection-hook": "^2.0.2",
-    "sharp": "^0.34.5",
-    "showdown": "^2.1.0"
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",

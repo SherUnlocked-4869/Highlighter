@@ -1,7 +1,8 @@
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { app, screen } = require('electron')
+const { app, BrowserWindow, screen } = require('electron')
+const { createSecureWebPreferences } = require('../main/services/window-security')
 
 const RESULT_PREFIX = 'HIGHLIGHTER_RUNTIME_PROBE='
 const projectRoot = path.resolve(__dirname, '..')
@@ -11,6 +12,7 @@ const probeDataRoot = process.env.HIGHLIGHTER_RUNTIME_PROBE_DATA_ROOT
   : path.join(os.tmpdir(), `highlighter-runtime-probe-${process.pid}`)
 
 app.disableHardwareAcceleration()
+app.on('window-all-closed', () => {})
 fs.mkdirSync(probeDataRoot, { recursive: true })
 app.setPath('userData', probeDataRoot)
 
@@ -21,6 +23,46 @@ function fileStatus(filePath) {
     name: path.basename(filePath),
     size: exists ? fs.statSync(filePath).size : 0
   }
+}
+
+async function probeSandboxPreloads() {
+  const contracts = [
+    ['preload.js', 'electronAPI'],
+    ['preload-action.js', 'electronAPI'],
+    ['preload-toolbar.js', 'toolbarAPI'],
+    ['preload-capture.js', 'captureAPI'],
+    ['preload-long-capture.js', 'longCaptureAPI'],
+    ['preload-long-overlay.js', 'longOverlayAPI'],
+    ['preload-pin.js', 'pinAPI'],
+    ['preload-recognition.js', 'recognitionAPI'],
+    ['preload-record.js', 'recordAPI'],
+    ['preload-record-frame.js', 'recordFrameAPI']
+  ]
+  const results = []
+  for (const [preloadName, globalName] of contracts) {
+    const win = new BrowserWindow({
+      show: false,
+      webPreferences: createSecureWebPreferences({
+        preload: path.join(projectRoot, preloadName)
+      })
+    })
+    try {
+      await win.loadURL('data:text/html,<meta charset="utf-8"><title>preload probe</title>')
+      const exposedKeys = await win.webContents.executeJavaScript(
+        `Object.keys(globalThis[${JSON.stringify(globalName)}] || {})`
+      )
+      if (!exposedKeys.length) throw new Error(`${preloadName} did not expose ${globalName}`)
+      results.push({
+        preload: preloadName,
+        global: globalName,
+        exposedKeys: exposedKeys.length,
+        sandboxed: win.webContents.getLastWebPreferences().sandbox === true
+      })
+    } finally {
+      if (!win.isDestroyed()) win.destroy()
+    }
+  }
+  return results
 }
 
 async function probeRuntime() {
@@ -72,6 +114,7 @@ async function probeRuntime() {
   }
 
   if (!nativeFiles.ffmpeg.exists) throw new Error('FFmpeg runtime is missing')
+  const preloads = await probeSandboxPreloads()
 
   return {
     versions: {
@@ -99,6 +142,7 @@ async function probeRuntime() {
       nativeRuntimeBuilt,
       ocrFilesValidated
     },
+    preloads,
     displays: screen.getAllDisplays().map((display) => ({
       bounds: display.bounds,
       workArea: display.workArea,
