@@ -9,6 +9,10 @@ const STREAM_IDLE_TIMEOUT_MS = 30000
 const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
 let configuredTheme = 'system'
 let configuredMainColor = '#1677ff'
+const MARKDOWN_TAGS = [
+  'p', 'h1', 'h2', 'h3', 'ul', 'ol', 'li', 'pre', 'code',
+  'strong', 'em', 'del', 'blockquote', 'hr', 'a'
+]
 
 const el = {
   headerIcon: document.getElementById('headerIcon'),
@@ -41,12 +45,11 @@ function resetUI() {
   clearTimeout(loadTimer)
   loadTimer = null
   const old = document.getElementById('reasoningBox'); if (old) old.remove()
-  el.result.innerHTML = ''
+  el.result.replaceChildren()
   el.loading.style.display = 'none'
 }
 
 function showLoading(s) { if (el.loading) el.loading.style.display = s ? 'flex' : 'none' }
-function esc(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML }
 function escapeMarkdownHtml(text) {
   return String(text || '')
     .replace(/&/g, '&amp;')
@@ -71,13 +74,41 @@ function safeMarkdownLink(label, escapedUrl) {
   }
 }
 
+function renderMarkdownResult(text, showCursor = false) {
+  if (!window.DOMPurify) {
+    el.result.textContent = String(text || '')
+  } else {
+    const sanitized = window.DOMPurify.sanitize(simpleMarkdown(text), {
+      ALLOWED_TAGS: MARKDOWN_TAGS,
+      ALLOWED_ATTR: ['href', 'target', 'rel'],
+      ALLOW_ARIA_ATTR: false,
+      ALLOW_DATA_ATTR: false,
+      ALLOWED_URI_REGEXP: /^https?:\/\/[^\s]+$/i
+    })
+    el.result.innerHTML = sanitized
+  }
+  if (showCursor) {
+    const cursor = document.createElement('span')
+    cursor.className = 'cursor'
+    el.result.append(cursor)
+  }
+}
+
+function appendResultError(message, replace = false) {
+  if (replace) el.result.replaceChildren()
+  const error = document.createElement('div')
+  error.className = 'result-error'
+  error.textContent = message
+  el.result.append(error)
+}
+
 function armStreamTimeout() {
   clearTimeout(loadTimer)
   loadTimer = setTimeout(function() {
     if (isDone) return
     isDone = true
     showLoading(false)
-    el.result.innerHTML = '<div style="color:#f44336;">请求超时，请检查网络后重试</div>'
+    appendResultError('请求超时，请检查网络后重试', true)
     window.electronAPI.cancelStream()
   }, STREAM_IDLE_TIMEOUT_MS)
 }
@@ -190,8 +221,7 @@ function inlineMd(text) {
 }
 
 function renderResult(text) {
-  // Use built-in simpleMarkdown for reliability - preload renderer may not be available
-  el.result.innerHTML = simpleMarkdown(text)
+  renderMarkdownResult(text)
 }
 
 function doScroll() {
@@ -206,10 +236,22 @@ function addReasoning() {
     box = document.createElement('div')
     box.id = 'reasoningBox'
     box.className = 'reasoning-box'
-    box.innerHTML = '<div class="reasoning-header">🧠 思考过程 <span style="flex:1"></span><span class="reasoning-arrow">▶</span></div>' +
-      '<div class="reasoning-preview"></div>' +
-      '<div class="reasoning-full"></div>'
-    box.querySelector('.reasoning-header').addEventListener('click', function() {
+    const header = document.createElement('div')
+    header.className = 'reasoning-header'
+    header.append('🧠 思考过程 ')
+    const spacer = document.createElement('span')
+    spacer.className = 'reasoning-spacer'
+    header.append(spacer)
+    const arrow = document.createElement('span')
+    arrow.className = 'reasoning-arrow'
+    arrow.textContent = '▶'
+    header.append(arrow)
+    const preview = document.createElement('div')
+    preview.className = 'reasoning-preview'
+    const full = document.createElement('div')
+    full.className = 'reasoning-full'
+    box.append(header, preview, full)
+    header.addEventListener('click', function() {
       box.classList.toggle('open')
       box.querySelector('.reasoning-arrow').textContent = box.classList.contains('open') ? '▼' : '▶'
       // When opening, update full content and scroll full area
@@ -232,7 +274,7 @@ window.electronAPI.onActionStart(function(data) {
   resetUI()
   el.sourceText.textContent = data.text
   if (data.type === 'translate') {
-    el.headerIcon.innerHTML = '🌐'; el.headerTitle.textContent = '翻译'
+    el.headerIcon.textContent = '🌐'; el.headerTitle.textContent = '翻译'
     el.headerBadge.textContent = '翻译'; el.headerBadge.className = 'badge'
     el.loadingText.textContent = '正在翻译...'
   } else {
@@ -252,8 +294,7 @@ window.electronAPI.onStreamData(function(data) {
   armStreamTimeout()
   showLoading(false)
   fullText += data.content
-  // Show simple formatted text during streaming
-  el.result.innerHTML = simpleMarkdown(fullText) + '<span class="cursor"></span>'
+  renderMarkdownResult(fullText, true)
   doScroll()
 })
 
@@ -283,7 +324,7 @@ window.electronAPI.onStreamDone(function() {
 window.electronAPI.onStreamError(function(data) {
   isDone = true; showLoading(false); clearTimeout(loadTimer)
   fullText = ''
-  el.result.innerHTML += '<div style="color:#f44336;margin-top:8px;">错误: ' + esc(data.error) + '</div>'
+  appendResultError('错误: ' + String(data.error || '未知错误'))
   doScroll()
   window.electronAPI.finishStream()
 })

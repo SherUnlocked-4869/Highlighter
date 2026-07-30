@@ -58,6 +58,20 @@ test('Electron loads Node-API modules and resolves packaged native components', 
     assert.equal(preload.sandboxed, true, `${preload.preload} did not run in a sandbox`)
     assert.ok(preload.exposedKeys > 0, `${preload.preload} did not expose its API`)
   }
+  assert.equal(probe.localPages.length, 10)
+  for (const page of probe.localPages) {
+    assert.deepEqual(page.preloadErrors, [], `${page.page} preload failed`)
+    assert.deepEqual(page.cspMessages, [], `${page.page} violated its CSP`)
+  }
+  assert.match(probe.actionSecurity.csp, /default-src 'none'/)
+  assert.equal(probe.actionSecurity.domPurify, true)
+  assert.equal(probe.actionSecurity.xss, 0)
+  assert.equal(probe.actionSecurity.dangerousElements, 0)
+  assert.equal(probe.actionSecurity.eventAttributes, 0)
+  assert.equal(probe.actionSecurity.dangerousLinks, 0)
+  assert.match(probe.actionSecurity.html, /href="https:\/\/example\.com\/docs"/)
+  assert.deepEqual(probe.actionSecurity.preloadErrors, [])
+  assert.deepEqual(probe.actionSecurity.cspMessages, [])
   assert.ok(probe.displays.length >= 1)
 
   if (probe.components.nativeRuntimeBuilt || process.env.HIGHLIGHTER_REQUIRE_NATIVE_RUNTIME === '1') {
