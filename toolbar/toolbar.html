@@ -3,43 +3,67 @@
 <head>
 <meta charset="UTF-8">
 <style>
+  :root {
+    --primary: #1677ff;
+    --bg: #f5f5f5;
+    --text: #1f1f1f;
+    --line: #e8e8e8;
+  }
+  body.dark {
+    --bg: #121316;
+    --text: #f0f0f0;
+    --line: #303239;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; background: transparent; overflow: hidden; user-select: none; }
   .toolbar {
     display: flex; align-items: center; justify-content: center; gap: 4px;
-    background: rgba(28, 28, 38, 0.96); backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 12px;
+    background: var(--bg); backdrop-filter: blur(16px);
+    border: 1px solid var(--line); border-radius: 12px;
     padding: 5px 8px;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 -1px 0 rgba(0, 0, 0, 0.22);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 -1px 0 rgba(0, 0, 0, 0.12);
     height: 40px; white-space: nowrap; width: 100%;
   }
-  .toolbar .sep { flex: 0 0 1px; width: 1px; height: 20px; background: rgba(255, 255, 255, 0.1); }
+  .toolbar .sep { flex: 0 0 1px; width: 1px; height: 20px; background: var(--line); }
   .toolbar .btn {
     display: flex; align-items: center; justify-content: center; gap: 5px;
     flex: 1 1 62px; min-width: 62px; max-width: 126px; height: 28px; padding: 5px 6px;
-    border: none; border-radius: 7px; background: transparent; color: #d0d0e0;
+    border: none; border-radius: 7px; background: transparent; color: var(--text);
     font-size: 13px; cursor: pointer; transition: all 0.15s; white-space: nowrap;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
     outline: none; overflow: hidden; text-overflow: ellipsis; -webkit-app-region: no-drag;
   }
-  .toolbar .btn:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
-  .toolbar .btn:active { background: rgba(255, 255, 255, 0.15); }
-  .toolbar .btn-copy { color: #86efac; }
-  .toolbar .btn-copy:hover { background: rgba(134, 239, 172, 0.14); color: #bbf7d0; }
-  .toolbar .btn-search { color: #facc15; }
-  .toolbar .btn-search:hover { background: rgba(250, 204, 21, 0.14); color: #fde047; }
-  .toolbar .btn-translate { color: #6c63ff; }
-  .toolbar .btn-translate:hover { background: rgba(108, 99, 255, 0.15); color: #7c73ff; }
-  .toolbar .btn-explain { color: #4fc3f7; }
-  .toolbar .btn-explain:hover { background: rgba(79, 195, 247, 0.15); color: #6fd3ff; }
-  .toolbar .btn-custom { color: #f0abfc; }
-  .toolbar .btn-custom:hover { background: rgba(240, 171, 252, 0.15); color: #f5d0fe; }
+  .toolbar .btn:hover { background: color-mix(in srgb, var(--primary) 10%, transparent); color: var(--text); }
+  .toolbar .btn:active { background: color-mix(in srgb, var(--primary) 16%, transparent); }
 </style>
 </head>
 <body>
 <div class="toolbar" id="toolbar"></div>
 <script>
-window.toolbarAPI.onSelection(({ actions }) => {
+const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
+let configuredTheme = 'system'
+let configuredMainColor = '#1677ff'
+
+function applyAppearance(appearance = {}) {
+  configuredTheme = ['light', 'dark'].includes(appearance.theme) ? appearance.theme : 'system'
+  const resolvedTheme = configuredTheme === 'system'
+    ? (systemThemeMedia.matches ? 'dark' : 'light')
+    : configuredTheme
+  configuredMainColor = /^#[0-9a-f]{6}$/i.test(appearance.mainColor || '')
+    ? appearance.mainColor
+    : '#1677ff'
+  document.body.classList.toggle('dark', resolvedTheme === 'dark')
+  document.documentElement.style.setProperty('--primary', configuredMainColor)
+}
+
+systemThemeMedia.addEventListener('change', () => {
+  if (configuredTheme === 'system') applyAppearance({ theme: 'system', mainColor: configuredMainColor })
+})
+
+window.toolbarAPI.onAppearance(applyAppearance)
+
+window.toolbarAPI.onSelection(({ actions, appearance }) => {
+  applyAppearance(appearance)
   const toolbar = document.getElementById('toolbar')
   toolbar.replaceChildren()
   actions.forEach((action, index) => {

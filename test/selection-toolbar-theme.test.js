@@ -8,6 +8,8 @@ const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
 const actionScript = fs.readFileSync(path.join(root, 'action', 'action.js'), 'utf8')
 const actionHtml = fs.readFileSync(path.join(root, 'action', 'action.html'), 'utf8')
+const toolbarPreload = fs.readFileSync(path.join(root, 'preload-toolbar.js'), 'utf8')
+const toolbarHtml = fs.readFileSync(path.join(root, 'toolbar', 'toolbar.html'), 'utf8')
 
 test('selection result windows receive and apply the configured appearance', () => {
   assert.match(main, /function getActionAppearance\([\s\S]*nativeTheme\.shouldUseDarkColors/)
@@ -29,4 +31,22 @@ test('selection result palette follows light, dark, and primary theme variables'
   assert.match(actionHtml, /\.result code \{[^}]*color: var\(--inline-code\)/)
   assert.match(actionHtml, /\.result pre code \{[^}]*color: var\(--text\)/)
   assert.doesNotMatch(actionHtml, /background: #1a1a2e/)
+})
+
+test('selection toolbar receives configured and system appearance updates', () => {
+  assert.match(main, /toolbarWindow\.webContents\.send\('toolbar:appearance', appearance\)/)
+  assert.match(main, /appearance: getActionAppearance\(\)/)
+  assert.match(main, /nativeTheme\.on\('updated',[\s\S]*broadcastActionAppearance\(\)/)
+  assert.match(toolbarPreload, /onAppearance:[\s\S]*toolbar:appearance/)
+  assert.match(toolbarHtml, /function applyAppearance\(appearance = \{\}\)/)
+  assert.match(toolbarHtml, /toolbarAPI\.onAppearance\(applyAppearance\)/)
+  assert.match(toolbarHtml, /applyAppearance\(appearance\)/)
+})
+
+test('selection toolbar uses the main interface palette and one text color', () => {
+  assert.match(toolbarHtml, /:root \{[\s\S]*--bg: #f5f5f5;[\s\S]*--text: #1f1f1f;/)
+  assert.match(toolbarHtml, /body\.dark \{[\s\S]*--bg: #121316;[\s\S]*--text: #f0f0f0;/)
+  assert.match(toolbarHtml, /\.toolbar \{[\s\S]*background: var\(--bg\)/)
+  assert.match(toolbarHtml, /\.toolbar \.btn \{[\s\S]*color: var\(--text\)/)
+  assert.doesNotMatch(toolbarHtml, /\.btn-(?:copy|search|translate|explain|custom)\s*\{[^}]*color:/)
 })

@@ -549,6 +549,11 @@ function createToolbarWindow() {
   toolbarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   toolbarWindow.setAlwaysOnTop(true, 'screen-saver')
   toolbarWindow.loadFile(path.join(__dirname, 'toolbar', 'toolbar.html'))
+  toolbarWindow.webContents.once('did-finish-load', () => {
+    if (!toolbarWindow || toolbarWindow.isDestroyed()) return
+    toolbarWindow.webContents.send('toolbar:appearance', getActionAppearance())
+  })
+  toolbarWindow.on('closed', () => { toolbarWindow = null })
   return toolbarWindow
 }
 
@@ -598,6 +603,9 @@ function getActionAppearance(settings = getSettings()) {
 
 function broadcastActionAppearance(settings = getSettings()) {
   const appearance = getActionAppearance(settings)
+  if (toolbarWindow && !toolbarWindow.isDestroyed()) {
+    toolbarWindow.webContents.send('toolbar:appearance', appearance)
+  }
   for (const win of actionWindows) {
     if (!win.isDestroyed()) win.webContents.send('action:appearance', appearance)
   }
@@ -740,7 +748,7 @@ function handleTextSelection(data) {
   lastToolbarPos = position
   toolbarWindow.setPosition(position.x, position.y)
   toolbarWindow.showInactive()
-  toolbarWindow.webContents.send('selection:text', { text, actions })
+  toolbarWindow.webContents.send('selection:text', { text, actions, appearance: getActionAppearance() })
 }
 
 function hideToolbar() {
@@ -2789,6 +2797,9 @@ else {
       exitCode: details.exitCode,
       serviceName: details.serviceName || ''
     })
+  })
+  nativeTheme.on('updated', () => {
+    if (store && getSettings().theme === 'system') broadcastActionAppearance()
   })
   process.on('unhandledRejection', (reason) => log('Unhandled promise rejection:', reason))
   app.whenReady().then(startApplication).catch((error) => {
