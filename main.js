@@ -53,6 +53,7 @@ const { OcrService } = require('./main/services/ocr-service')
 const { RecordingService } = require('./main/services/recording-service')
 const { LongCaptureSession } = require('./main/services/long-capture-session')
 const { findNativeDisplay, getNativeDisplayBounds } = require('./main/services/capture-geometry')
+const { listNativeDisplays } = require('./main/services/native-display-list')
 const { buildTableFromOcr } = require('./capture/recognition-utils')
 const {
   calculateFrameBounds,
@@ -865,7 +866,7 @@ async function getDisplayCapture(display) {
   const scaleFactor = display.scaleFactor || 1
   if (isWin) {
     try {
-      if (!nativeDisplayListPromise) nativeDisplayListPromise = screenshotDesktop.listDisplays()
+      if (!nativeDisplayListPromise) nativeDisplayListPromise = listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
       const nativeDisplays = await nativeDisplayListPromise
       const physicalBounds = screen.dipToScreenRect(null, display.bounds)
       const nativeDisplay = findNativeDisplay(
@@ -1034,10 +1035,12 @@ function revealCaptureWindow(win) {
   if (!win || win.isDestroyed() || win._captureVisible) return
   clearTimeout(win._renderTimeout)
   win._captureVisible = true
-  win.show()
+  // Reveal the fully rendered surface in one step. Showing the window while
+  // its opacity is still zero lets Windows/DWM present a transient frame.
+  win.setOpacity(1)
+  win.showInactive()
   setImmediate(() => {
     if (win.isDestroyed()) return
-    win.setOpacity(1)
     win.focus()
   })
 }
@@ -2769,7 +2772,7 @@ async function startApplication() {
   registerSelectionPowerEvents()
   if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
   if (isWin) {
-    screenshotDesktop.listDisplays()
+    listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
       .then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) })
       .catch((error) => log('Display discovery warm-up failed:', error))
   }
