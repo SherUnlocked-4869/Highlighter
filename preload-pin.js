@@ -17,7 +17,6 @@ contextBridge.exposeInMainWorld('pinAPI', {
   copy: () => ipcRenderer.send('pin:copy'),
   save: () => ipcRenderer.send('pin:save'),
   contextMenu: (imageBounds) => ipcRenderer.send('pin:context-menu', imageBounds),
-  setOpacity: (opacity) => ipcRenderer.send('pin:set-opacity', opacity),
   resize: (factor) => ipcRenderer.send('pin:resize', { factor }),
   beginMove: () => ipcRenderer.send('pin:move-start'),
   move: () => ipcRenderer.send('pin:move'),

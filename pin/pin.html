@@ -12,9 +12,6 @@ body::after{content:"";position:fixed;z-index:2;inset:0;border-radius:7px;box-sh
 .pin-surface.pixel-native{image-rendering:pixelated}
 .hidden{display:none}
 body.dragging .pin-surface{cursor:grabbing}
-.opacity{position:fixed;z-index:3;left:8px;bottom:8px;width:110px;padding:5px 8px;border-radius:7px;background:rgba(20,20,22,.72);opacity:0;transition:.18s}
-body:hover .opacity{opacity:1}
-.opacity input{width:100%}
 #zoomBadge{position:fixed;z-index:3;left:50%;top:10px;transform:translateX(-50%);padding:4px 8px;border-radius:5px;color:#fff;background:rgba(20,20,22,.76);font:12px/1.2 Consolas,monospace;opacity:0;pointer-events:none;transition:opacity .15s}
 #zoomBadge.show{opacity:1}
 </style>
@@ -22,7 +19,6 @@ body:hover .opacity{opacity:1}
 <body>
 <img id="image" class="pin-surface hidden" draggable="false">
 <canvas id="pixelImage" class="pin-surface hidden"></canvas>
-<label class="opacity" title="透明度"><input id="opacity" type="range" min="20" max="100" value="100"></label>
 <div id="zoomBadge">100%</div>
 <script>
 const image=document.getElementById('image')
@@ -60,7 +56,6 @@ function showImageSurface(dataUrl,initial){
 function applyPinData(data,initial=false){
   settings=data
   document.body.classList.toggle('long-capture',!!data.longCapture)
-  document.getElementById('opacity').value=Math.round((data.opacity||1)*100)
   setNativePixelMode(data.zoom)
   if(data.longCapture){
     sourceImage=null
@@ -90,7 +85,6 @@ function applyPinData(data,initial=false){
 
 window.pinAPI.onInit(data=>applyPinData(data,true))
 window.pinAPI.onUpdate(data=>applyPinData(data))
-document.getElementById('opacity').oninput=event=>window.pinAPI.setOpacity(Number(event.target.value)/100)
 addEventListener('contextmenu',event=>{
   event.preventDefault()
   const rect=activeSurface.getBoundingClientRect()
@@ -142,7 +136,7 @@ for(const surface of [image,pixelImage]){
 }
 
 addEventListener('wheel',event=>{
-  if(settings.longCapture||!settings.zoomWithMouse||event.target.closest('.opacity'))return
+  if(settings.longCapture||!settings.zoomWithMouse)return
   event.preventDefault()
   window.pinAPI.resize(event.deltaY<0?1.1:1/1.1)
 },{passive:false})

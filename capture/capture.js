@@ -200,7 +200,8 @@ function drawHandles() {
 function updateFloatingUi() {
   if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16
-  sizeBadge.style.display='block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
+  const hideSizeBadge=processingAction==='ocr'||!!activeOcrResult||initData?.autoAction==='ocr'
+  sizeBadge.style.display=hideSizeBadge?'none':'block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
   if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); return }
   if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); return }
   toolbar.classList.remove('hidden')
@@ -357,6 +358,7 @@ function setProcessingState(action) {
   loadingText.textContent=action==='translate'?'正在识别并翻译…':'正在识别文字…'
   loading.classList.toggle('hidden',!active)
   if(active&&selection){
+    if(action==='ocr')sizeBadge.style.display='none'
     toolbar.classList.add('hidden')
     const rect=loading.getBoundingClientRect()
     let left=selection.x+(selection.w-rect.width)/2

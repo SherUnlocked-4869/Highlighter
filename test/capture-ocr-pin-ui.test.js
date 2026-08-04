@@ -27,6 +27,20 @@ test('pinned images omit the top-right copy save and close overlay', () => {
   assert.match(pinMarkup, /addEventListener\('contextmenu'/)
 })
 
+test('pinned image opacity is chosen from the context menu instead of an overlay slider', () => {
+  assert.doesNotMatch(pinMarkup, /type="range"/)
+  assert.doesNotMatch(pinMarkup, /setOpacity/)
+  assert.doesNotMatch(main, /pin:set-opacity/)
+  assert.match(main, /label: '透明度',[\s\S]*submenu: \[1, 0\.75, 0\.5, 0\.25\]/)
+  assert.match(main, /type: 'radio',[\s\S]*click: \(\) => setPinOpacity\(win, opacity\)/)
+})
+
+test('OCR recognition hides the selected image size badge', () => {
+  assert.match(captureScript, /const hideSizeBadge=processingAction==='ocr'\|\|!!activeOcrResult\|\|initData\?\.autoAction==='ocr'/)
+  assert.match(captureScript, /sizeBadge\.style\.display=hideSizeBadge\?'none':'block'/)
+  assert.match(captureScript, /if\(action==='ocr'\)sizeBadge\.style\.display='none'/)
+})
+
 test('pinned images align source pixels to the active display DPI', () => {
   assert.match(main, /function getPixelAlignedPinSize\(pixelWidth, pixelHeight, display, preferredSize = null\)/)
   assert.match(main, /Number\(pixelWidth\) \/ scaleFactor/)

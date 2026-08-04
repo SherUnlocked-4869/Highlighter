@@ -1472,6 +1472,13 @@ function bringPinToFront(win) {
   win.focus()
 }
 
+function setPinOpacity(win, opacity) {
+  if (!win || win.isDestroyed()) return
+  const nextOpacity = Math.max(0.25, Math.min(1, Number(opacity) || 1))
+  if (win._pinData) win._pinData.opacity = nextOpacity
+  win.setOpacity(nextOpacity)
+}
+
 async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
   if (!win || win.isDestroyed() || !win._pinData) return null
   const pinBounds = win.getBounds()
@@ -2330,19 +2337,22 @@ ipcMain.on('pin:context-menu', (event, imageBounds = {}) => {
       }
     },
     { type: 'separator' },
+    {
+      label: '透明度',
+      submenu: [1, 0.75, 0.5, 0.25].map((opacity) => ({
+        label: `${Math.round(opacity * 100)}%`,
+        type: 'radio',
+        checked: Math.abs((Number(win._pinData.opacity) || 1) - opacity) < 0.005,
+        click: () => setPinOpacity(win, opacity)
+      }))
+    },
+    { type: 'separator' },
     { label: '复制', click: () => clipboard.writeImage(nativeImage.createFromDataURL(win._pinData.dataUrl)) },
     { label: '保存', click: () => saveDataUrl(win._pinData.dataUrl).catch((error) => log(error.message)) },
     { type: 'separator' },
     { label: '关闭', click: () => { if (!win.isDestroyed()) win.close() } }
   ])
   menu.popup({ window: win })
-})
-ipcMain.on('pin:set-opacity', (event, opacity) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (!win) return
-  const nextOpacity = Math.max(0.2, Math.min(1, Number(opacity) || 1))
-  if (win._pinData) win._pinData.opacity = nextOpacity
-  win.setOpacity(nextOpacity)
 })
 ipcMain.on('pin:resize', (event, { factor } = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender)
