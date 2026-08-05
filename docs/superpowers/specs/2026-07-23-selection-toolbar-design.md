@@ -30,7 +30,11 @@ selectionToolbar: {
       enabled: true
     }
   ],
-  searchEngine: 'bing'
+  searchEngine: 'bing',
+  resultWindow: {
+    width: 550,
+    height: 520
+  }
 }
 ```
 
@@ -42,6 +46,7 @@ selectionToolbar: {
 - 最多保留 12 个自定义功能。
 - 顺序列表去重并移除不存在的动作，遗漏的有效动作自动追加。
 - 未知搜索引擎回退到 Bing。
+- 结果窗口尺寸保存用户最近一次调整值，并限制在可用的最小尺寸以上。
 
 ## 设置页面
 

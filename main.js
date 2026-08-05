@@ -68,6 +68,8 @@ const {
   sanitizeAnnotationSnapshot
 } = require('./record/annotation-utils')
 const {
+  ACTION_WINDOW_MIN_HEIGHT,
+  ACTION_WINDOW_MIN_WIDTH,
   DEFAULT_SELECTION_TOOLBAR,
   buildSearchUrl,
   getToolbarActionDefinition,
@@ -219,6 +221,7 @@ const MAX_PINNED = 20
 const TOOLBAR_W = getToolbarWidth(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR))
 const TOOLBAR_H = 40
 const TOOLBAR_STREAM_IDLE_TIMEOUT_MS = 30000
+const ACTION_WINDOW_SIZE_SAVE_DELAY_MS = 180
 const isWin = process.platform === 'win32'
 let nativeDisplayListPromise = null
 
@@ -560,11 +563,12 @@ function createToolbarWindow() {
 
 function createActionWindow() {
   const appearance = getActionAppearance()
+  const size = getSettings().selectionToolbar.resultWindow
   const win = new BrowserWindow({
-    width: 550,
-    height: 520,
-    minWidth: 380,
-    minHeight: 300,
+    width: size.width,
+    height: size.height,
+    minWidth: ACTION_WINDOW_MIN_WIDTH,
+    minHeight: ACTION_WINDOW_MIN_HEIGHT,
     title: 'Highlighter',
     autoHideMenuBar: true,
     backgroundColor: appearance.resolvedTheme === 'dark' ? '#121316' : '#f5f5f5',
@@ -576,8 +580,12 @@ function createActionWindow() {
   })
   win.loadFile(path.join(__dirname, 'action', 'action.html'))
   win._isPinned = false
+  win.on('resize', () => scheduleActionWindowSizeSave(win))
+  win.on('close', () => flushActionWindowSizeSave(win))
   actionWindows.push(win)
   win.on('closed', () => {
+    clearTimeout(win._actionWindowSizeSaveTimer)
+    win._actionWindowSizeSaveTimer = null
     const index = actionWindows.indexOf(win)
     if (index >= 0) actionWindows.splice(index, 1)
     if (win._isPinned) pinnedCount = Math.max(0, pinnedCount - 1)
@@ -589,6 +597,32 @@ function createActionWindow() {
   })
   actionWindow = win
   return win
+}
+
+function persistActionWindowSize(win) {
+  if (!win || win.isDestroyed()) return
+  const [width, height] = win.getSize()
+  const current = getSettings().selectionToolbar.resultWindow
+  if (width === current.width && height === current.height) return
+  try {
+    settingsService.updateSettings({ selectionToolbar: { resultWindow: { width, height } } })
+  } catch (error) {
+    log('Failed to save selection result window size:', error.message || String(error))
+  }
+}
+
+function scheduleActionWindowSizeSave(win) {
+  clearTimeout(win._actionWindowSizeSaveTimer)
+  win._actionWindowSizeSaveTimer = setTimeout(() => {
+    win._actionWindowSizeSaveTimer = null
+    persistActionWindowSize(win)
+  }, ACTION_WINDOW_SIZE_SAVE_DELAY_MS)
+}
+
+function flushActionWindowSizeSave(win) {
+  clearTimeout(win?._actionWindowSizeSaveTimer)
+  if (win) win._actionWindowSizeSaveTimer = null
+  persistActionWindowSize(win)
 }
 
 function getActionAppearance(settings = getSettings()) {

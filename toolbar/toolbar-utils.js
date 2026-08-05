@@ -21,6 +21,11 @@ const CUSTOM_ACTION_PREFIX = 'custom:'
 const MAX_CUSTOM_ACTIONS = 12
 const MAX_CUSTOM_NAME_LENGTH = 16
 const MAX_PROMPT_LENGTH = 6000
+const ACTION_WINDOW_DEFAULT_SIZE = Object.freeze({ width: 550, height: 520 })
+const ACTION_WINDOW_MIN_WIDTH = 380
+const ACTION_WINDOW_MIN_HEIGHT = 300
+const ACTION_WINDOW_MAX_WIDTH = 10000
+const ACTION_WINDOW_MAX_HEIGHT = 10000
 
 const DEFAULT_SELECTION_TOOLBAR = Object.freeze({
   enabled: true,
@@ -31,7 +36,8 @@ const DEFAULT_SELECTION_TOOLBAR = Object.freeze({
     explain: DEFAULT_EXPLAIN_PROMPT
   }),
   customActions: Object.freeze([]),
-  searchEngine: 'bing'
+  searchEngine: 'bing',
+  resultWindow: ACTION_WINDOW_DEFAULT_SIZE
 })
 
 function cleanText(value, maximumLength) {
@@ -63,6 +69,20 @@ function normalizeCustomActions(value) {
   return actions
 }
 
+function normalizeWindowDimension(value, fallback, minimum, maximum) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return Math.min(maximum, Math.max(minimum, Math.round(number)))
+}
+
+function normalizeActionWindowSize(value = {}) {
+  const size = value && typeof value === 'object' ? value : {}
+  return {
+    width: normalizeWindowDimension(size.width, ACTION_WINDOW_DEFAULT_SIZE.width, ACTION_WINDOW_MIN_WIDTH, ACTION_WINDOW_MAX_WIDTH),
+    height: normalizeWindowDimension(size.height, ACTION_WINDOW_DEFAULT_SIZE.height, ACTION_WINDOW_MIN_HEIGHT, ACTION_WINDOW_MAX_HEIGHT)
+  }
+}
+
 function normalizeSelectionToolbar(value = {}) {
   const config = value && typeof value === 'object' ? value : {}
   const buttons = {}
@@ -89,7 +109,8 @@ function normalizeSelectionToolbar(value = {}) {
     order,
     prompts: { translate: translatePrompt, explain: explainPrompt },
     customActions,
-    searchEngine: SEARCH_ENGINES.has(config.searchEngine) ? config.searchEngine : 'bing'
+    searchEngine: SEARCH_ENGINES.has(config.searchEngine) ? config.searchEngine : 'bing',
+    resultWindow: normalizeActionWindowSize(config.resultWindow)
   }
 }
 
@@ -158,6 +179,9 @@ module.exports = {
   BUILTIN_TOOLBAR_ACTIONS,
   CUSTOM_ACTION_PREFIX,
   DEFAULT_EXPLAIN_PROMPT,
+  ACTION_WINDOW_DEFAULT_SIZE,
+  ACTION_WINDOW_MIN_HEIGHT,
+  ACTION_WINDOW_MIN_WIDTH,
   DEFAULT_SELECTION_TOOLBAR,
   DEFAULT_TRANSLATE_PROMPT,
   MAX_CUSTOM_ACTIONS,
@@ -173,5 +197,6 @@ module.exports = {
   isAiToolbarAction,
   isLocalToolbarAction,
   normalizeSelectionToolbar,
+  normalizeActionWindowSize,
   parseCustomActionKey
 }

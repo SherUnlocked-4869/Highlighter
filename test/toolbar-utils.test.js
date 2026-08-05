@@ -22,7 +22,8 @@ test('default selection toolbar enables all built-ins with editable prompts and 
       explain: DEFAULT_EXPLAIN_PROMPT
     },
     customActions: [],
-    searchEngine: 'bing'
+    searchEngine: 'bing',
+    resultWindow: { width: 550, height: 520 }
   })
   assert.deepEqual(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR), [
     'copy', 'search', 'translate', 'explain'
@@ -86,6 +87,17 @@ test('normalization rejects malformed custom actions and repairs incomplete orde
   assert.equal(config.prompts.explain, DEFAULT_EXPLAIN_PROMPT)
   assert.equal(config.searchEngine, 'bing')
   assert.equal(getToolbarActionDefinition(config, 'custom:missing'), null)
+})
+
+test('selection result window size is normalized to safe dimensions', () => {
+  assert.deepEqual(normalizeSelectionToolbar({ resultWindow: { width: 640.4, height: 180 } }).resultWindow, {
+    width: 640,
+    height: 300
+  })
+  assert.deepEqual(normalizeSelectionToolbar({ resultWindow: { width: 'invalid', height: Infinity } }).resultWindow, {
+    width: 550,
+    height: 520
+  })
 })
 
 test('disabled toolbar and disabled buttons produce no visible actions', () => {
