@@ -41,8 +41,10 @@ function buildToolbarStreamRequest(text, prompt, { thinking = false } = {}) {
   if (level) {
     delete request.temperature
     request.reasoning_effort = level
+    request.thinking = { type: 'enabled' }
     request.extra_body = { thinking: { type: 'enabled' } }
   } else if (thinking === 'off') {
+    request.thinking = { type: 'disabled' }
     request.extra_body = { thinking: { type: 'disabled' } }
   }
   return request

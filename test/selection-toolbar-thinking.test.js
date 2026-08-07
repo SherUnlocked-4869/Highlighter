@@ -18,19 +18,22 @@ test('thinking levels map to DeepSeek thinking mode requests', () => {
   const off = buildToolbarStreamRequest('划词文本', '提示词', { thinking: 'off' })
   assert.equal(off.temperature, 0.3)
   assert.equal(Object.hasOwn(off, 'reasoning_effort'), false)
+  assert.deepEqual(off.thinking, { type: 'disabled' })
   assert.deepEqual(off.extra_body, { thinking: { type: 'disabled' } })
 
   const low = buildToolbarStreamRequest('划词文本', '提示词', { thinking: 'low' })
   assert.equal(low.reasoning_effort, 'low')
+  assert.deepEqual(low.thinking, { type: 'enabled' })
   assert.deepEqual(low.extra_body, { thinking: { type: 'enabled' } })
   assert.equal(Object.hasOwn(low, 'temperature'), false)
 
   const high = buildToolbarStreamRequest('划词文本', '提示词', { thinking: 'high' })
   assert.equal(high.reasoning_effort, 'high')
-  assert.deepEqual(high.extra_body, { thinking: { type: 'enabled' } })
+  assert.deepEqual(high.thinking, { type: 'enabled' })
 
   const max = buildToolbarStreamRequest('划词文本', '提示词', { thinking: 'max' })
   assert.equal(max.reasoning_effort, 'max')
+  assert.deepEqual(max.thinking, { type: 'enabled' })
   assert.deepEqual(max.extra_body, { thinking: { type: 'enabled' } })
   assert.equal(Object.hasOwn(max, 'temperature'), false)
 })
