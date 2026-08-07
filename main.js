@@ -1566,6 +1566,7 @@ async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
   if (isOcrEditor) {
     const workArea = screen.getDisplayMatching(editBounds).workArea
     const actionSpace = 62
+    const toolbarSpace = 900
     const scale = Math.min(
       1,
       workArea.width / editBounds.width,
@@ -1573,7 +1574,7 @@ async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
     )
     const imageWidth = Math.max(1, Math.round(editBounds.width * scale))
     const imageHeight = Math.max(1, Math.round(editBounds.height * scale))
-    const width = Math.min(workArea.width, Math.max(420, imageWidth))
+    const width = Math.min(workArea.width, Math.max(toolbarSpace, Math.max(420, imageWidth)))
     const height = Math.min(workArea.height, imageHeight + actionSpace)
     const x = Math.round(Math.max(workArea.x, Math.min(
       editBounds.x + (editBounds.width - width) / 2,
