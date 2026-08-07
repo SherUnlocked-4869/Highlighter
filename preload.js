@@ -110,8 +110,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('stream:error', handler)
     return () => ipcRenderer.removeListener('stream:error', handler)
   },
-  cancelStream: () => ipcRenderer.send('stream:cancel'),
-  finishStream: () => ipcRenderer.send('stream:finish'),
+  cancelStream: (streamId) => ipcRenderer.send('stream:cancel', streamId),
+  finishStream: (streamId) => ipcRenderer.send('stream:finish', streamId),
   togglePin: (pinned) => ipcRenderer.send('window:toggle-pin', pinned),
   onPinDenied: (callback) => {
     const handler = (_e, data) => callback(data)

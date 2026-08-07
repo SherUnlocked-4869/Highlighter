@@ -10,6 +10,11 @@ const hasMarkdown = !!(window.electronAPI && typeof window.electronAPI.renderMar
 const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
 let configuredTheme = 'system'
 let configuredMainColor = '#1677ff'
+let currentStreamId = null
+let renderQueued = false
+let renderToken = 0
+let resultDirty = false
+let reasoningDirty = false
 
 const el = {
   headerIcon: document.getElementById('headerIcon'),
@@ -41,6 +46,10 @@ function resetUI() {
   isDone = false; reasoning = ''; hasReasoning = false; fullText = ''; userScrolled = false
   clearTimeout(loadTimer)
   loadTimer = null
+  renderToken++
+  renderQueued = false
+  resultDirty = false
+  reasoningDirty = false
   const old = document.getElementById('reasoningBox'); if (old) old.remove()
   el.result.innerHTML = ''
   el.loading.style.display = 'none'
@@ -176,6 +185,30 @@ function doScroll() {
   if (s) s.scrollIntoView({ block: 'end', behavior: 'instant' })
 }
 
+function scheduleStreamRender() {
+  if (renderQueued) return
+  renderQueued = true
+  var token = renderToken
+  requestAnimationFrame(function() {
+    renderQueued = false
+    if (token !== renderToken || isDone) return
+    if (reasoningDirty) {
+      reasoningDirty = false
+      var rc = addReasoning()
+      if (rc.preview) {
+        rc.preview.textContent = reasoning
+        rc.preview.scrollTop = rc.preview.scrollHeight
+        rc.full.textContent = reasoning
+      }
+    }
+    if (resultDirty) {
+      resultDirty = false
+      el.result.innerHTML = simpleMarkdown(fullText) + '<span class="cursor"></span>'
+    }
+    doScroll()
+  })
+}
+
 function addReasoning() {
   var box = document.getElementById('reasoningBox')
   if (!box) {
@@ -206,6 +239,7 @@ function addReasoning() {
 window.electronAPI.onActionStart(function(data) {
   applyAppearance(data.appearance)
   resetUI()
+  currentStreamId = data.streamId ?? null
   el.sourceText.textContent = data.text
   if (data.type === 'translate') {
     el.headerIcon.innerHTML = '🌐'; el.headerTitle.textContent = '翻译'
@@ -228,9 +262,8 @@ window.electronAPI.onStreamData(function(data) {
   armStreamTimeout()
   showLoading(false)
   fullText += data.content
-  // Show simple formatted text during streaming
-  el.result.innerHTML = simpleMarkdown(fullText) + '<span class="cursor"></span>'
-  doScroll()
+  resultDirty = true
+  scheduleStreamRender()
 })
 
 window.electronAPI.onStreamReasoning(function(data) {
@@ -238,30 +271,28 @@ window.electronAPI.onStreamReasoning(function(data) {
   armStreamTimeout()
   showLoading(false)
   hasReasoning = true; reasoning += data.content
-  var rc = addReasoning()
-  if (rc.preview) {
-    rc.preview.textContent = reasoning
-    rc.preview.scrollTop = rc.preview.scrollHeight
-    rc.full.textContent = reasoning
-  }
-  doScroll()
+  reasoningDirty = true
+  scheduleStreamRender()
 })
 
 window.electronAPI.onStreamDone(function() {
   isDone = true; showLoading(false); clearTimeout(loadTimer)
+  resultDirty = false; reasoningDirty = false
   // Final render: use full markdown if available, else simple
   renderResult(fullText)
   doScroll()
   fullText = ''
-  window.electronAPI.finishStream()
+  window.electronAPI.finishStream(currentStreamId)
 })
 
 window.electronAPI.onStreamError(function(data) {
   isDone = true; showLoading(false); clearTimeout(loadTimer)
+  if (resultDirty) el.result.innerHTML = simpleMarkdown(fullText)
+  resultDirty = false; reasoningDirty = false
   fullText = ''
   el.result.innerHTML += '<div style="color:#f44336;margin-top:8px;">错误: ' + esc(data.error) + '</div>'
   doScroll()
-  window.electronAPI.finishStream()
+  window.electronAPI.finishStream(currentStreamId)
 })
 
 document.getElementById('btnPin').addEventListener('click', function() {

@@ -212,6 +212,7 @@ const managedRecordingWriters = new ManagedWriterCoordinator()
 let dataRootMigrationInProgress = false
 let isProcessing = false
 let currentStreamController = null
+let toolbarStreamSeq = 0
 let lastToolbarPos = null
 let pinnedCount = 0
 const pinWindows = new Set()
@@ -580,6 +581,9 @@ function createActionWindow() {
   })
   win.loadFile(path.join(__dirname, 'action', 'action.html'))
   win._isPinned = false
+  win._actionRendererReady = false
+  win._pendingActionMessages = []
+  win.webContents.once('did-finish-load', () => flushActionMessages(win))
   win.on('resize', () => scheduleActionWindowSizeSave(win))
   win.on('close', () => flushActionWindowSizeSave(win))
   actionWindows.push(win)
@@ -593,10 +597,35 @@ function createActionWindow() {
     if (actionWindow === win) actionWindow = null
   })
   win.on('blur', () => {
-    if (!win._isPinned && !win.isDestroyed()) win.close()
+    if (win._isPinned || win.isDestroyed()) return
+    if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-hidden')
+    flushActionWindowSizeSave(win)
+    win.hide()
   })
   actionWindow = win
   return win
+}
+
+function getOrCreateActionWindow() {
+  if (actionWindow && !actionWindow.isDestroyed() && !actionWindow._isPinned) return actionWindow
+  return createActionWindow()
+}
+
+function queueActionMessage(win, channel, payload) {
+  if (!win || win.isDestroyed()) return
+  if (win._actionRendererReady) {
+    win.webContents.send(channel, payload)
+    return
+  }
+  win._pendingActionMessages.push([channel, payload])
+}
+
+function flushActionMessages(win) {
+  if (!win || win.isDestroyed()) return
+  win._actionRendererReady = true
+  const pending = win._pendingActionMessages
+  win._pendingActionMessages = []
+  for (const [channel, payload] of pending) win.webContents.send(channel, payload)
 }
 
 function persistActionWindowSize(win) {
@@ -812,6 +841,8 @@ function createToolbarStreamController(win) {
       isProcessing = false
     }
   })
+  toolbarStreamSeq += 1
+  controller.streamId = toolbarStreamSeq
   currentStreamController = controller
   isProcessing = true
   armToolbarStreamTimeout(controller)
@@ -820,6 +851,11 @@ function createToolbarStreamController(win) {
 
 function isCurrentToolbarStreamSender(event) {
   return !!currentStreamController?.matchesSender(event.sender)
+}
+
+function isStaleToolbarStreamSignal(event, streamId) {
+  if (streamId === undefined || streamId === null) return false
+  return currentStreamController?.streamId !== streamId
 }
 
 async function streamToWindow(win, action, text, controller) {
@@ -836,13 +872,13 @@ async function streamToWindow(win, action, text, controller) {
       if (controller.cancelled || win.isDestroyed()) return
       armToolbarStreamTimeout(controller)
       const delta = chunk.choices?.[0]?.delta
-      if (delta?.reasoning_content) win.webContents.send('stream:reasoning', { content: delta.reasoning_content })
-      if (delta?.content) win.webContents.send('stream:data', { content: delta.content })
+      if (delta?.reasoning_content) queueActionMessage(win, 'stream:reasoning', { content: delta.reasoning_content })
+      if (delta?.content) queueActionMessage(win, 'stream:data', { content: delta.content })
     }
-    if (!controller.cancelled && !win.isDestroyed()) win.webContents.send('stream:done')
+    if (!controller.cancelled && !win.isDestroyed()) queueActionMessage(win, 'stream:done')
   } catch (error) {
     if (!controller.cancelled && !win.isDestroyed()) {
-      win.webContents.send('stream:error', { error: error.message || '请求失败' })
+      queueActionMessage(win, 'stream:error', { error: error.message || '请求失败' })
     }
   } finally {
     finishToolbarStream(controller)
@@ -2625,7 +2661,7 @@ ipcMain.on('toolbar:action', async (_event, { action, text }) => {
   if (!isAiToolbarAction(action, toolbarConfig)) return
   if (!getSettings().apiKey) { createMainWindow('settings-function'); hideToolbar(); return }
   hideToolbar()
-  const win = createActionWindow()
+  const win = getOrCreateActionWindow()
   const controller = createToolbarStreamController(win)
   if (lastToolbarPos) {
     const workArea = screen.getDisplayNearestPoint(lastToolbarPos).workArea
@@ -2635,16 +2671,15 @@ ipcMain.on('toolbar:action', async (_event, { action, text }) => {
     if (y + height > workArea.y + workArea.height) y = lastToolbarPos.y - height - 12
     win.setPosition(x, Math.round(Math.max(workArea.y, y)))
   }
-  win.webContents.once('did-finish-load', () => {
-    win.webContents.send('action:start', {
-      type: actionDefinition.id,
-      label: actionDefinition.label,
-      icon: actionDefinition.icon,
-      text,
-      appearance: getActionAppearance()
-    })
-    streamToWindow(win, actionDefinition, text, controller)
+  queueActionMessage(win, 'action:start', {
+    type: actionDefinition.id,
+    label: actionDefinition.label,
+    icon: actionDefinition.icon,
+    text,
+    streamId: controller.streamId,
+    appearance: getActionAppearance()
   })
+  streamToWindow(win, actionDefinition, text, controller)
   win.show()
   win.focus()
 })
@@ -2656,12 +2691,14 @@ ipcMain.on('window:toggle-pin', (event, shouldPin) => {
   if (shouldPin && !win._isPinned) { win._isPinned = true; pinnedCount++; win.setAlwaysOnTop(true, 'floating') }
   if (!shouldPin && win._isPinned) { win._isPinned = false; pinnedCount = Math.max(0, pinnedCount - 1); win.setAlwaysOnTop(false) }
 })
-ipcMain.on('stream:cancel', (event) => {
+ipcMain.on('stream:cancel', (event, streamId) => {
   if (!isCurrentToolbarStreamSender(event)) return
+  if (isStaleToolbarStreamSignal(event, streamId)) return
   cancelToolbarStream(currentStreamController, 'user-cancelled')
 })
-ipcMain.on('stream:finish', (event) => {
+ipcMain.on('stream:finish', (event, streamId) => {
   if (!isCurrentToolbarStreamSender(event)) return
+  if (isStaleToolbarStreamSignal(event, streamId)) return
   cancelToolbarStream(currentStreamController, 'renderer-finished')
 })
 ipcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
