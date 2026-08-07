@@ -21,7 +21,14 @@ async function validateApiKey(apiKey) {
   return !!response
 }
 
+function resolveThinkingLevel(thinking) {
+  if (thinking === true) return 'medium'
+  if (thinking === 'low' || thinking === 'medium' || thinking === 'high' || thinking === 'max') return thinking
+  return ''
+}
+
 function buildToolbarStreamRequest(text, prompt, { thinking = false } = {}) {
+  const level = resolveThinkingLevel(thinking)
   const request = {
     model: 'deepseek-v4-flash',
     messages: [
@@ -29,19 +36,32 @@ function buildToolbarStreamRequest(text, prompt, { thinking = false } = {}) {
       { role: 'user', content: text }
     ],
     stream: true,
-    temperature: thinking ? undefined : 0.3
+    temperature: level ? undefined : 0.3
   }
-  if (thinking) {
+  if (level) {
     delete request.temperature
-    request.reasoning_effort = 'medium'
+    request.reasoning_effort = level
     request.extra_body = { thinking: { type: 'enabled' } }
+  } else if (thinking === 'off') {
+    request.extra_body = { thinking: { type: 'disabled' } }
   }
   return request
 }
 
+function takeThinkingOption(requestOptions, fallback) {
+  if (!requestOptions || typeof requestOptions !== 'object' || !Object.hasOwn(requestOptions, 'thinking')) return fallback
+  const thinking = requestOptions.thinking
+  delete requestOptions.thinking
+  return thinking
+}
+
 async function createTranslateStream(apiKey, text, prompt = DEFAULT_TRANSLATE_PROMPT, requestOptions = {}) {
   const client = createClient(apiKey)
-  return client.chat.completions.create(buildToolbarStreamRequest(text, prompt), requestOptions)
+  const thinking = takeThinkingOption(requestOptions, false)
+  if (!thinking) {
+    return client.chat.completions.create(buildToolbarStreamRequest(text, prompt), requestOptions)
+  }
+  return client.chat.completions.create(buildToolbarStreamRequest(text, prompt, { thinking }), requestOptions)
 }
 
 async function completeChat(apiKey, messages, options = {}) {
@@ -68,7 +88,8 @@ async function translateText(apiKey, text, sourceLanguage = 'auto', targetLangua
 
 async function createExplainStream(apiKey, text, prompt = DEFAULT_EXPLAIN_PROMPT, requestOptions = {}) {
   const client = createClient(apiKey)
-  return client.chat.completions.create(buildToolbarStreamRequest(text, prompt, { thinking: true }), requestOptions)
+  const thinking = takeThinkingOption(requestOptions, true)
+  return client.chat.completions.create(buildToolbarStreamRequest(text, prompt, { thinking }), requestOptions)
 }
 
 async function createCustomStream(apiKey, text, prompt, requestOptions = {}) {

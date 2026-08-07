@@ -71,14 +71,19 @@ const {
   ACTION_WINDOW_MIN_HEIGHT,
   ACTION_WINDOW_MIN_WIDTH,
   DEFAULT_SELECTION_TOOLBAR,
+  DEFAULT_TOOLBAR_THINKING,
+  TOOLBAR_ACTION_ORDER,
+  buildOpenUrl,
   buildSearchUrl,
   getToolbarActionDefinition,
+  getToolbarActionThinking,
   getToolbarWidth,
   getVisibleToolbarActionDefinitions,
   getVisibleToolbarActions,
   isAiToolbarAction,
   isLocalToolbarAction,
-  normalizeSelectionToolbar
+  normalizeSelectionToolbar,
+  normalizeToolbarThinking
 } = require('./toolbar/toolbar-utils')
 
 const defaultHistoryDirectory = activePaths?.history || path.join(app.getPath('userData'), 'capture-history')
@@ -93,7 +98,8 @@ const DEFAULT_SETTINGS = {
   skinPath: '',
   skinOpacity: 18,
   customCss: '',
-  selectionToolbar: DEFAULT_SELECTION_TOOLBAR,
+  selectionToolbar: { ...DEFAULT_SELECTION_TOOLBAR, order: [...TOOLBAR_ACTION_ORDER, 'open'] },
+  toolbarThinking: { ...DEFAULT_TOOLBAR_THINKING },
   plugins: { ocr: true, translation: true, ai: true, video: true },
   screenshot: {
     autoSaveOnCopy: false,
@@ -264,6 +270,7 @@ function getRecordingService() {
 function normalizeSettings(settings) {
   const normalized = settings
   normalized.selectionToolbar = normalizeSelectionToolbar(normalized.selectionToolbar)
+  normalized.toolbarThinking = normalizeToolbarThinking(normalized.toolbarThinking)
   const legacyDirectory = normalized.fixedContent?.autoSaveDirectory
   normalized.screenshot.historyDirectory = String(normalized.screenshot.historyDirectory || legacyDirectory || defaultHistoryDirectory).trim()
   if (!normalized.screenshot.historyDirectory) normalized.screenshot.historyDirectory = defaultHistoryDirectory
@@ -860,8 +867,10 @@ function isStaleToolbarStreamSignal(event, streamId) {
 
 async function streamToWindow(win, action, text, controller) {
   const { createCustomStream, createExplainStream, createTranslateStream } = require('./deepseek')
-  const apiKey = getSettings().apiKey
+  const currentSettings = getSettings()
+  const apiKey = currentSettings.apiKey
   const requestOptions = { signal: controller.signal }
+  requestOptions.thinking = getToolbarActionThinking(currentSettings.selectionToolbar, currentSettings.toolbarThinking, action.id)
   try {
     let stream
     if (action.id === 'translate') stream = await createTranslateStream(apiKey, text, action.prompt, requestOptions)
@@ -2653,6 +2662,11 @@ ipcMain.on('toolbar:action', async (_event, { action, text }) => {
   if (isLocalToolbarAction(action)) {
     hideToolbar()
     if (action === 'copy') clipboard.writeText(text)
+    else if (action === 'open') {
+      const target = buildOpenUrl(text)
+      if (!target) return
+      try { await shell.openExternal(target) } catch (error) { log('Toolbar open failed:', error.message) }
+    }
     else {
       const url = buildSearchUrl(getSettings().selectionToolbar.searchEngine, text)
       try { await shell.openExternal(url) } catch (error) { log('Toolbar search failed:', error.message) }

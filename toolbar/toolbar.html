@@ -74,7 +74,7 @@ window.toolbarAPI.onSelection(({ actions, appearance }) => {
       toolbar.append(separator)
     }
     const button = document.createElement('button')
-    const builtinClass = ['copy', 'search', 'translate', 'explain'].includes(action.id) ? action.id : 'custom'
+    const builtinClass = ['copy', 'search', 'translate', 'explain', 'open'].includes(action.id) ? action.id : 'custom'
     button.className = `btn btn-${builtinClass}`
     button.title = action.label
     button.textContent = `${action.icon || '✦'} ${action.label}`
