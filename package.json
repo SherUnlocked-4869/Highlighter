@@ -9,6 +9,9 @@
     "test": "node --test test/*.test.js",
     "test:runtime": "node --test test/electron-runtime.test.js",
     "check:version": "node scripts/check-version.js",
+    "verify:fuses": "node scripts/verify-electron-fuses.js",
+    "verify:package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1",
+    "verify:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1 -RequireSignature",
     "stop:app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-running.ps1",
     "build:smart-select": "powershell -NoProfile -ExecutionPolicy Bypass -File native/smart-select/build.ps1",
     "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
@@ -116,6 +119,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.6.0",
+    "@electron/fuses": "1.8.0",
     "electron": "43.2.0",
     "electron-builder": "^26.0.12",
     "onnxruntime-node": "^1.24.2"

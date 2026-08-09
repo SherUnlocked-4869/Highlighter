@@ -1,0 +1,125 @@
+name: Signed Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build signed draft release
+    runs-on: windows-latest
+    timeout-minutes: 75
+    environment: release
+    env:
+      WIN_SIGNING_PROVIDER: ${{ vars.WIN_SIGNING_PROVIDER }}
+      WIN_SIGNING_PUBLISHER: ${{ vars.WIN_SIGNING_PUBLISHER }}
+      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      WIN_AZURE_ENDPOINT: ${{ vars.WIN_AZURE_ENDPOINT }}
+      WIN_AZURE_CERTIFICATE_PROFILE: ${{ vars.WIN_AZURE_CERTIFICATE_PROFILE }}
+      WIN_AZURE_CODE_SIGNING_ACCOUNT: ${{ vars.WIN_AZURE_CODE_SIGNING_ACCOUNT }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/ocr
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag and source quality
+        shell: pwsh
+        run: |
+          npm run check:version -- $env:GITHUB_REF_NAME
+          npm run check
+          npm test
+          npm run test:long-capture
+
+      - name: Build native helpers
+        run: npm run build:native
+
+      - name: Verify strict Electron runtime
+        shell: pwsh
+        run: |
+          $env:HIGHLIGHTER_REQUIRE_NATIVE_RUNTIME = '1'
+          npm run test:runtime
+
+      - name: Prepare signing provider
+        id: signing
+        shell: pwsh
+        run: |
+          $configPath = & ./scripts/prepare-release-signing.ps1
+          "config_path=$configPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build signed NSIS and portable artifacts
+        shell: pwsh
+        run: |
+          $electronDist = (Resolve-Path 'node_modules/electron/dist').Path
+          npx electron-builder --config "${{ steps.signing.outputs.config_path }}" --win nsis portable --x64 --publish never "--config.electronDist=$electronDist"
+
+      - name: Generate CycloneDX SBOM
+        shell: pwsh
+        run: npm sbom --sbom-format cyclonedx | Out-File -FilePath dist/sbom.cdx.json -Encoding utf8
+
+      - name: Verify signed release
+        run: npm run verify:release
+
+      - name: Upload verified workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Highlighter-${{ github.ref_name }}-signed
+          path: |
+            dist/Highlighter-Setup-*.exe
+            dist/Highlighter-*-portable.exe
+            dist/*.blockmap
+            dist/latest*.yml
+            dist/beta*.yml
+            dist/alpha*.yml
+            dist/SHA256SUMS.txt
+            dist/sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create or update draft GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $assets = @(Get-ChildItem -LiteralPath dist -File | Where-Object {
+            $_.Name -like 'Highlighter-Setup-*.exe' -or
+            $_.Name -like 'Highlighter-*-portable.exe' -or
+            $_.Name -like '*.blockmap' -or
+            $_.Name -match '^(latest|beta|alpha)(-.+)?\.yml$' -or
+            $_.Name -eq 'SHA256SUMS.txt' -or
+            $_.Name -eq 'sbom.cdx.json'
+          } | ForEach-Object { $_.FullName })
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --clobber
+          } else {
+            gh release create $tag @assets --draft --verify-tag --generate-notes --title "Highlighter $tag"
+          }

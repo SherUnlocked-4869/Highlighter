@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - master
-    tags:
-      - "v*"
   pull_request:
     branches:
       - master
@@ -35,11 +33,17 @@ jobs:
       - name: Check JavaScript syntax
         run: npm run check
 
+      - name: Check package version
+        run: npm run check:version
+
       - name: Run tests
         run: npm test
 
+      - name: Run long capture regression tests
+        run: npm run test:long-capture
+
   package:
-    name: Build unsigned installer
+    name: Build hardened unsigned candidate
     if: github.event_name != 'pull_request'
     needs: quality
     runs-on: windows-latest
@@ -70,19 +74,37 @@ jobs:
       - name: Build native helpers
         run: npm run build:native
 
-      - name: Build installer with local Electron
+      - name: Verify strict Electron runtime
+        shell: pwsh
+        run: |
+          $env:HIGHLIGHTER_REQUIRE_NATIVE_RUNTIME = '1'
+          npm run test:runtime
+
+      - name: Build unsigned NSIS and portable candidates
         shell: pwsh
         run: |
           $electronDist = (Resolve-Path 'node_modules/electron/dist').Path
-          npx electron-builder --win nsis --x64 --publish never "-c.electronDist=$electronDist"
+          npx electron-builder --config electron-builder.release.cjs --win nsis portable --x64 --publish never "--config.electronDist=$electronDist" --config.forceCodeSigning=false --config.win.signExecutable=false
 
-      - name: Upload installer
+      - name: Generate CycloneDX SBOM
+        shell: pwsh
+        run: npm sbom --sbom-format cyclonedx | Out-File -FilePath dist/sbom.cdx.json -Encoding utf8
+
+      - name: Verify candidate artifacts
+        run: npm run verify:package
+
+      - name: Upload verified candidates
         uses: actions/upload-artifact@v4
         with:
           name: Highlighter-Windows-${{ github.sha }}
           path: |
             dist/Highlighter-Setup-*.exe
+            dist/Highlighter-*-portable.exe
             dist/*.blockmap
             dist/latest*.yml
+            dist/beta*.yml
+            dist/alpha*.yml
+            dist/SHA256SUMS.txt
+            dist/sbom.cdx.json
           if-no-files-found: error
           retention-days: 14
