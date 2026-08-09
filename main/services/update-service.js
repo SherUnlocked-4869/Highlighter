@@ -80,13 +80,25 @@ function normalizeUpdateError(error) {
       action: '请释放系统盘空间后重试。'
     },
     {
+      pattern: /ERR_UPDATER_INVALID_(?:VERSION|UPDATE_INFO)|YAMLException|bad indentation|end of (?:the )?stream|manifest.*invalid|update info.*invalid/i,
+      code: 'update-metadata-invalid',
+      message: '更新服务返回了无效的版本信息。',
+      action: '当前版本不会被修改，请稍后重试或从项目发布页确认版本状态。'
+    },
+    {
+      pattern: /ERR_UPDATER_CHANNEL_FILE_NOT_FOUND|HttpError:\s*4\d\d/i,
+      code: 'network-error',
+      message: '无法连接更新服务。',
+      action: '请检查网络连接后重试，或从项目发布页手动下载。'
+    },
+    {
       pattern: /ETIMEDOUT|ESOCKETTIMEDOUT|timeout|timed out/i,
       code: 'network-timeout',
       message: '检查或下载更新超时。',
       action: '请检查网络连接后重试，或从项目发布页手动下载。'
     },
     {
-      pattern: /ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|network|http status/i,
+      pattern: /ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ERR_(?:CONNECTION|CONTENT_LENGTH|EMPTY_RESPONSE|NAME_NOT_RESOLVED)|network|http(?: error| status)?[^\d]*4\d\d/i,
       code: 'network-error',
       message: '无法连接更新服务。',
       action: '请检查网络连接后重试，或从项目发布页手动下载。'

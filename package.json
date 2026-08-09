@@ -8,6 +8,7 @@
     "postinstall": "install-electron --no",
     "test": "node --test test/*.test.js",
     "test:e2e": "playwright test --config playwright.config.js",
+    "test:update-rehearsal": "node --test test/update-rehearsal.test.js",
     "test:coverage": "npm run test:coverage:loaded && npm run test:coverage:native && npm run test:coverage:critical",
     "test:coverage:loaded": "c8 --clean --check-coverage --lines 85 --include=main/services/**/*.js --include=main/ipc/**/*.js --include=record/**/*.js --include=toolbar/**/*.js --include=long-capture/**/*.js --include=capture/selection-utils.js --reporter=text-summary node --test --test-reporter=dot test/*.test.js tests/long-capture.test.js",
     "test:coverage:native": "c8 --clean --check-coverage --per-file --lines 60 --include=main/services/ocr-service.js --include=main/services/long-capture-session.js --reporter=text node --test test/ocr-service.test.js test/data-root.test.js tests/long-capture.test.js",
