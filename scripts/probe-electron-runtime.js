@@ -6,6 +6,7 @@ const { app, screen } = require('electron')
 const RESULT_PREFIX = 'HIGHLIGHTER_RUNTIME_PROBE='
 const projectRoot = path.resolve(__dirname, '..')
 const requireNativeRuntime = process.env.HIGHLIGHTER_REQUIRE_NATIVE_RUNTIME === '1'
+const requireCaptureRuntime = process.env.HIGHLIGHTER_REQUIRE_CAPTURE_RUNTIME === '1'
 const probeDataRoot = process.env.HIGHLIGHTER_RUNTIME_PROBE_DATA_ROOT
   ? path.resolve(process.env.HIGHLIGHTER_RUNTIME_PROBE_DATA_ROOT)
   : path.join(os.tmpdir(), `highlighter-runtime-probe-${process.pid}`)
@@ -38,6 +39,42 @@ async function probeRuntime() {
       background: { r: 20, g: 40, b: 60, alpha: 1 }
     }
   }).png().toBuffer()
+
+  let captureRuntime = { required: false }
+  if (requireCaptureRuntime) {
+    const screenshotDesktop = require('screenshot-desktop')
+    const { findNativeDisplay, getNativeDisplayBounds } = require('../main/services/capture-geometry')
+    const { listNativeDisplays } = require('../main/services/native-display-list')
+    const display = screen.getPrimaryDisplay()
+    const nativeDisplays = await listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
+    const physicalBounds = screen.dipToScreenRect(null, display.bounds)
+    const nativeDisplay = findNativeDisplay(
+      nativeDisplays,
+      physicalBounds,
+      Math.max(1, Math.ceil(display.scaleFactor || 1))
+    )
+    if (!nativeDisplay) throw new Error('Native capture display does not match the Electron primary display')
+
+    const captureBuffer = await screenshotDesktop({ format: 'png', screen: nativeDisplay.id })
+    const metadata = await sharp(captureBuffer).metadata()
+    const expected = getNativeDisplayBounds(nativeDisplay)
+    if (metadata.width !== expected.width || metadata.height !== expected.height) {
+      throw new Error(`Native capture size mismatch: ${metadata.width}x${metadata.height}, expected ${expected.width}x${expected.height}`)
+    }
+    const sample = await sharp(captureBuffer)
+      .resize({ width: 32, height: 32, fit: 'fill' })
+      .removeAlpha()
+      .raw()
+      .toBuffer()
+    if (!sample.some((value) => value > 2)) throw new Error('Native capture returned a blank frame')
+    captureRuntime = {
+      required: true,
+      nativeDisplayCount: nativeDisplays.length,
+      width: metadata.width,
+      height: metadata.height,
+      nonBlank: true
+    }
+  }
 
   const smartSelectPath = path.join(projectRoot, 'native', 'smart-select', 'SmartSelect.exe')
   const sidecarPath = path.join(projectRoot, 'native', 'ocr', 'HighlighterOcrSidecar.exe')
@@ -94,6 +131,7 @@ async function probeRuntime() {
         pngBytes: sharpBuffer.length
       }
     },
+    captureRuntime,
     components: {
       ...nativeFiles,
       nativeRuntimeBuilt,

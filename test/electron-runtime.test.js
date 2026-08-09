@@ -55,6 +55,14 @@ test('Electron loads Node-API modules and resolves packaged native components', 
   assert.ok(probe.components.ffmpeg.size > 0)
   assert.ok(probe.displays.length >= 1)
 
+  if (process.env.HIGHLIGHTER_REQUIRE_CAPTURE_RUNTIME === '1') {
+    assert.equal(probe.captureRuntime.required, true)
+    assert.ok(probe.captureRuntime.nativeDisplayCount >= 1)
+    assert.ok(probe.captureRuntime.width > 0)
+    assert.ok(probe.captureRuntime.height > 0)
+    assert.equal(probe.captureRuntime.nonBlank, true)
+  }
+
   if (probe.components.nativeRuntimeBuilt || process.env.HIGHLIGHTER_REQUIRE_NATIVE_RUNTIME === '1') {
     assert.equal(probe.components.nativeRuntimeBuilt, true)
     assert.equal(probe.components.ocrFilesValidated, true)

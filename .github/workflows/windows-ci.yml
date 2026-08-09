@@ -81,6 +81,7 @@ jobs:
         shell: pwsh
         run: |
           $env:HIGHLIGHTER_REQUIRE_NATIVE_RUNTIME = '1'
+          $env:HIGHLIGHTER_REQUIRE_CAPTURE_RUNTIME = '1'
           npm run test:runtime
 
       - name: Build unsigned NSIS and portable candidates
