@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "requiredClaims": [
+    {
+      "id": "windows-10-22h2-nsis-lifecycle",
+      "description": "Windows 10 22H2 x64 installs, upgrades, uninstalls, and preserves user data",
+      "packageTypes": ["nsis"],
+      "environment": { "osFamily": "windows-10", "osVersion": "22H2" }
+    },
+    {
+      "id": "windows-11-current-full-smoke",
+      "description": "Current stable Windows 11 x64 completes the full signed-build smoke test",
+      "packageTypes": ["nsis"],
+      "environment": { "osFamily": "windows-11" }
+    },
+    {
+      "id": "dpi-100-capture",
+      "description": "100% DPI selection, OCR overlay, pin, and recording coordinates are correct",
+      "packageTypes": ["nsis", "portable"],
+      "environment": { "scaleFactor": 1 }
+    },
+    {
+      "id": "dpi-125-capture",
+      "description": "125% DPI selection, OCR overlay, pin, and recording coordinates are correct",
+      "packageTypes": ["nsis", "portable"],
+      "environment": { "scaleFactor": 1.25 }
+    },
+    {
+      "id": "dpi-150-capture",
+      "description": "150% DPI selection, OCR overlay, pin, and recording coordinates are correct",
+      "packageTypes": ["nsis", "portable"],
+      "environment": { "scaleFactor": 1.5 }
+    },
+    {
+      "id": "dpi-200-capture",
+      "description": "200% DPI selection, OCR overlay, pin, and recording coordinates are correct",
+      "packageTypes": ["nsis", "portable"],
+      "environment": { "scaleFactor": 2 }
+    },
+    {
+      "id": "mixed-dpi-negative-coordinates",
+      "description": "Mixed-DPI displays with a negative-coordinate monitor pass capture, pin, and recording tests",
+      "packageTypes": ["nsis", "portable"],
+      "environment": { "minimumDisplays": 2, "mixedScaleFactors": true, "negativeCoordinates": true }
+    },
+    {
+      "id": "sleep-wake-lock-recovery",
+      "description": "Selection hook, shortcuts, tray, and windows recover after sleep, wake, and lock",
+      "packageTypes": ["nsis"]
+    },
+    {
+      "id": "rdp-degraded-capture",
+      "description": "RDP launch and display changes work, and unavailable capture reports an actionable error",
+      "packageTypes": ["nsis"],
+      "environment": { "sessionType": "rdp" }
+    },
+    {
+      "id": "nsis-data-and-update-paths",
+      "description": "NSIS uses the expected data root and only offers the supported update channel",
+      "packageTypes": ["nsis"]
+    },
+    {
+      "id": "portable-data-and-update-paths",
+      "description": "Portable uses the expected data root and never invokes the NSIS updater",
+      "packageTypes": ["portable"]
+    }
+  ]
+}

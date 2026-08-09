@@ -123,9 +123,17 @@ jobs:
             $_.Name -eq 'SHA256SUMS.txt' -or
             $_.Name -eq 'sbom.cdx.json'
           } | ForEach-Object { $_.FullName })
-          gh release view $tag 2>$null
+          $existingRelease = gh release view $tag --json isDraft 2>$null
           if ($LASTEXITCODE -eq 0) {
+            $releaseState = $existingRelease | ConvertFrom-Json
+            if (-not $releaseState.isDraft) {
+              throw "Refusing to replace assets on published release $tag"
+            }
             gh release upload $tag @assets --clobber
           } else {
-            gh release create $tag @assets --draft --verify-tag --generate-notes --title "Highlighter $tag"
+            $releaseFlags = @()
+            if ($tag -match '-') {
+              $releaseFlags += '--prerelease'
+            }
+            gh release create $tag @assets @releaseFlags --draft --verify-tag --generate-notes --title "Highlighter $tag"
           }

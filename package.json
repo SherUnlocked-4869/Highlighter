@@ -17,6 +17,8 @@
     "verify:fuses": "node scripts/verify-electron-fuses.js",
     "verify:package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1",
     "verify:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1 -RequireSignature",
+    "collect:hardware": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/collect-hardware-evidence.ps1",
+    "verify:hardware": "node scripts/verify-hardware-matrix.js",
     "stop:app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-running.ps1",
     "build:smart-select": "powershell -NoProfile -ExecutionPolicy Bypass -File native/smart-select/build.ps1",
     "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
