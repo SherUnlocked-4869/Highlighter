@@ -7,6 +7,11 @@
   "scripts": {
     "postinstall": "install-electron --no",
     "test": "node --test test/*.test.js",
+    "test:e2e": "playwright test --config playwright.config.js",
+    "test:coverage": "npm run test:coverage:loaded && npm run test:coverage:native && npm run test:coverage:critical",
+    "test:coverage:loaded": "c8 --clean --check-coverage --lines 85 --include=main/services/**/*.js --include=main/ipc/**/*.js --include=record/**/*.js --include=toolbar/**/*.js --include=long-capture/**/*.js --include=capture/selection-utils.js --reporter=text-summary node --test --test-reporter=dot test/*.test.js tests/long-capture.test.js",
+    "test:coverage:native": "c8 --clean --check-coverage --per-file --lines 60 --include=main/services/ocr-service.js --include=main/services/long-capture-session.js --reporter=text node --test test/ocr-service.test.js test/data-root.test.js tests/long-capture.test.js",
+    "test:coverage:critical": "c8 --clean --check-coverage --per-file --lines 90 --include=main/services/update-service.js --include=main/services/diagnostics-service.js --include=main/services/window-security.js --reporter=text node --test test/update-service.test.js test/diagnostics-service.test.js test/window-security.test.js",
     "test:runtime": "node --test test/electron-runtime.test.js",
     "check:version": "node scripts/check-version.js",
     "verify:fuses": "node scripts/verify-electron-fuses.js",
@@ -124,6 +129,8 @@
   "devDependencies": {
     "@electron/fuses": "1.8.0",
     "@electron/rebuild": "4.2.0",
+    "@playwright/test": "1.62.1",
+    "c8": "12.0.0",
     "electron": "43.2.0",
     "electron-builder": "^26.0.12",
     "onnxruntime-node": "1.27.0"

@@ -59,6 +59,8 @@ jobs:
           npm run check:version -- $env:GITHUB_REF_NAME
           npm run check
           npm test
+          npm run test:e2e
+          npm run test:coverage
           npm run test:long-capture
 
       - name: Build native helpers

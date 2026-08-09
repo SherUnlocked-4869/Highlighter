@@ -16,7 +16,10 @@ const {
   shell,
   Tray
 } = require('electron')
+const fs = require('fs')
+const path = require('path')
 const { prepareDataRoot, removeProvisionalRoot } = require('./main/services/data-root-bootstrap')
+const { configureE2eEnvironment } = require('./main/services/e2e-bootstrap')
 const { createDataPaths, ensureDataLayout, validateDataRoot, writeLocator } = require('./main/services/data-root')
 const { relaunchApplication } = require('./main/services/relaunch-application')
 const {
@@ -49,12 +52,11 @@ const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createSecureWindow } = require('./main/services/window-security')
 const { name: applicationName } = require('./package.json')
 
+const e2eContext = configureE2eEnvironment({ app })
 const dataRootContext = prepareDataRoot({ app, applicationName })
 const activePaths = dataRootContext.paths
 const { execFile, spawn } = require('child_process')
 const crypto = require('node:crypto')
-const fs = require('fs')
-const path = require('path')
 const screenshotDesktop = require('screenshot-desktop')
 const sharp = require('sharp')
 const Store = require('electron-store')
@@ -2979,19 +2981,21 @@ async function startApplication() {
   initializeUpdateService()
   initializeDiagnostics()
   persistSettings(getSettings())
-  createTrayIcon()
-  createToolbarWindow()
-  registerShortcuts()
   createMainWindow('home')
-  initSelectionHook()
-  registerSelectionPowerEvents()
-  if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
-  if (isWin) {
-    listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
-      .then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) })
-      .catch((error) => log('Display discovery warm-up failed:', error))
+  if (!e2eContext.enabled) {
+    createTrayIcon()
+    createToolbarWindow()
+    registerShortcuts()
+    initSelectionHook()
+    registerSelectionPowerEvents()
+    if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
+    if (isWin) {
+      listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
+        .then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) })
+        .catch((error) => log('Display discovery warm-up failed:', error))
+    }
+    app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
   }
-  app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
   updateService.start()
 }
 
