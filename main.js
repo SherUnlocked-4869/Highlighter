@@ -37,12 +37,14 @@ const { ShortcutService } = require('./main/services/shortcut-service')
 const { registerShortcutIpc } = require('./main/ipc/shortcut-ipc')
 const { registerAppIpc } = require('./main/ipc/app-ipc')
 const { registerDiagnosticsIpc } = require('./main/ipc/diagnostics-ipc')
+const { registerUpdateIpc } = require('./main/ipc/update-ipc')
 const { registerDataRootIpc } = require('./main/ipc/data-root-ipc')
 const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
 const { SelectionHookService } = require('./main/services/selection-hook-service')
 const { SelectionWindowManager } = require('./main/services/selection-window-manager')
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
+const { UpdateService } = require('./main/services/update-service')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createSecureWindow } = require('./main/services/window-security')
 const { name: applicationName } = require('./package.json')
@@ -159,7 +161,8 @@ const DEFAULT_SETTINGS = {
   system: {
     autoStart: true,
     runLog: true,
-    enableTray: true
+    enableTray: true,
+    updateChannel: 'stable'
   },
   shortcuts: {
     screenshot: 'F1',
@@ -187,6 +190,7 @@ let store = null
 let settingsService = null
 let historyService = null
 let diagnosticsService = null
+let updateService = null
 let sessionExitRecorded = false
 
 function initializeStore() {
@@ -291,6 +295,7 @@ function normalizeSettings(settings) {
   const legacyDirectory = normalized.fixedContent?.autoSaveDirectory
   normalized.screenshot.historyDirectory = String(normalized.screenshot.historyDirectory || legacyDirectory || defaultHistoryDirectory).trim()
   if (!normalized.screenshot.historyDirectory) normalized.screenshot.historyDirectory = defaultHistoryDirectory
+  normalized.system.updateChannel = normalized.system.updateChannel === 'beta' ? 'beta' : 'stable'
   if (normalized.fixedContent && Object.hasOwn(normalized.fixedContent, 'autoSaveDirectory')) delete normalized.fixedContent.autoSaveDirectory
   return normalized
 }
@@ -343,6 +348,47 @@ function getInstallType() {
   return 'nsis'
 }
 
+function getUpdateInstallReadiness() {
+  if (dataRootMigrationInProgress) return { ok: false, reason: '数据目录正在迁移，请完成后重试。' }
+  if (currentCaptureWindow && !currentCaptureWindow.isDestroyed()) return { ok: false, reason: '截图任务仍在进行，请完成或关闭后重试。' }
+  if (currentLongCapture) return { ok: false, reason: '长截图任务仍在进行，请完成或关闭后重试。' }
+  if (recordWindow && !recordWindow.isDestroyed()) return { ok: false, reason: '录屏任务仍在进行，请完成或关闭后重试。' }
+  if (ocrService?.inFlight?.size) return { ok: false, reason: 'OCR 正在识别，请完成后重试。' }
+  if (managedRecordingWriters.inFlight.size) return { ok: false, reason: '媒体文件仍在写入，请完成后重试。' }
+  if (isProcessing) return { ok: false, reason: '划词处理任务仍在进行，请完成后重试。' }
+  return { ok: true }
+}
+
+function initializeUpdateService() {
+  if (updateService) return updateService
+  const installType = getInstallType()
+  let updater = null
+  if (installType === 'nsis') {
+    try { updater = require('electron-updater').autoUpdater } catch (error) {
+      log('Unable to initialize update client:', error.message || String(error))
+    }
+  }
+  updateService = new UpdateService({
+    updater,
+    currentVersion: app.getVersion(),
+    installType,
+    channel: getSettings().system.updateChannel,
+    openDownloadPage: () => shell.openExternal('https://github.com/SherUnlocked-4869/Highlighter/releases'),
+    canInstall: async () => getUpdateInstallReadiness(),
+    prepareInstall: async () => {
+      await managedRecordingWriters.waitForIdle()
+      const readiness = getUpdateInstallReadiness()
+      if (!readiness.ok) throw new Error(readiness.reason)
+      markSessionClean('update-install')
+    },
+    notify: (snapshot) => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update:status', snapshot)
+    },
+    log
+  })
+  return updateService
+}
+
 function getDiagnosticComponents() {
   const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
   let ffmpegPath = ''
@@ -382,6 +428,7 @@ function initializeDiagnostics() {
     }),
     getComponents: getDiagnosticComponents,
     getSensitiveValues: collectDiagnosticSensitiveValues,
+    getUpdateStatus: () => updateService?.getStatus() || { status: 'not-configured', error: null },
     log
   })
   const session = diagnosticsService.startSession()
@@ -1934,6 +1981,7 @@ registerSettingsIpc({
     if (patch.shortcuts) registerShortcuts()
     if (patch.system?.autoStart !== undefined) app.setLoginItemSettings({ openAtLogin: !!settings.system.autoStart })
     if (patch.system?.enableTray !== undefined) createTrayIcon()
+    if (patch.system?.updateChannel !== undefined) updateService?.setChannel(settings.system.updateChannel)
     if (patch.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
     if (patch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
     if (patch.theme !== undefined || patch.mainColor !== undefined) broadcastActionAppearance(settings)
@@ -1941,6 +1989,7 @@ registerSettingsIpc({
   onSettingsReset: (settings) => {
     registerShortcuts()
     broadcastActionAppearance(settings)
+    updateService?.setChannel(settings.system.updateChannel)
   },
   onStartHook: () => initSelectionHook(),
   validateApiKey: (apiKey) => require('./deepseek').validateApiKey(apiKey),
@@ -2058,6 +2107,7 @@ registerAppIpc({
     getInfo: () => ({
       version: app.getVersion(),
       platform: process.platform,
+      installType: getInstallType(),
       dataDirectory: activePaths?.root || app.getPath('userData')
     }),
     getDisplayDiagnostics,
@@ -2096,6 +2146,32 @@ registerDiagnosticsIpc({
       if (result.canceled || !result.filePath) return { canceled: true }
       const exported = await diagnosticsService.exportZip(result.filePath, { includeCrashDumps })
       return { canceled: false, ...exported }
+    }
+  }
+})
+
+registerUpdateIpc({
+  ipcMain: secureIpcMain,
+  updateService: {
+    getStatus: () => {
+      if (!updateService) throw new Error('更新服务尚未就绪')
+      return updateService.getStatus()
+    },
+    check: (options) => {
+      if (!updateService) throw new Error('更新服务尚未就绪')
+      return updateService.check(options)
+    },
+    download: () => {
+      if (!updateService) throw new Error('更新服务尚未就绪')
+      return updateService.download()
+    },
+    install: () => {
+      if (!updateService) throw new Error('更新服务尚未就绪')
+      return updateService.install()
+    },
+    openDownloadPage: () => {
+      if (!updateService) throw new Error('更新服务尚未就绪')
+      return updateService.openDownloadPage()
     }
   }
 })
@@ -2900,6 +2976,7 @@ async function startApplication() {
   if (finalization && !finalization.finalized && finalization.cleanupErrors.length) {
     log('Data migration cleanup remains pending:', finalization.cleanupErrors)
   }
+  initializeUpdateService()
   initializeDiagnostics()
   persistSettings(getSettings())
   createTrayIcon()
@@ -2915,6 +2992,7 @@ async function startApplication() {
       .catch((error) => log('Display discovery warm-up failed:', error))
   }
   app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
+  updateService.start()
 }
 
 const gotTheLock = app.requestSingleInstanceLock()
@@ -2963,6 +3041,7 @@ else {
   app.on('window-all-closed', () => {})
   app.on('will-quit', () => {
     markSessionClean('quit')
+    updateService?.dispose()
     shortcutService.dispose()
   })
   app.on('before-quit', () => {

@@ -38,6 +38,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getDisplayDiagnostics: () => ipcRenderer.invoke('app:get-display-diagnostics'),
   previewDiagnostics: () => ipcRenderer.invoke('diagnostics:preview'),
   exportDiagnostics: (includeCrashDumps = false) => ipcRenderer.invoke('diagnostics:export', { includeCrashDumps: includeCrashDumps === true }),
+  getUpdateStatus: () => ipcRenderer.invoke('update:status'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  openUpdateDownloadPage: () => ipcRenderer.invoke('update:open-download-page'),
   getOcrStatus: () => ipcRenderer.invoke('ocr:status'),
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowClose: () => ipcRenderer.send('window:close'),
@@ -50,5 +55,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = () => callback()
     ipcRenderer.on('history:changed', handler)
     return () => ipcRenderer.removeListener('history:changed', handler)
+  },
+  onUpdateStatus: (callback) => {
+    const handler = (_event, snapshot) => callback(snapshot)
+    ipcRenderer.on('update:status', handler)
+    return () => ipcRenderer.removeListener('update:status', handler)
   }
 })
