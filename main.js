@@ -676,7 +676,8 @@ function bufferToDataUrl(value) {
 }
 
 function makeCaptureName(prefix = 'Highlighter') {
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
+  // 使用中国时区(UTC+8)的墙钟时间命名,便于直接按本地时间识别截图
+  const stamp = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
   return `${prefix}_${stamp}.png`
 }
 
