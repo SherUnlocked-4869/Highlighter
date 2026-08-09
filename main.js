@@ -2,6 +2,7 @@ const {
   app,
   BrowserWindow,
   clipboard,
+  crashReporter,
   desktopCapturer,
   dialog,
   globalShortcut,
@@ -27,6 +28,7 @@ const {
 } = require('./main/services/data-root-migration')
 const { ManagedWriterCoordinator, quiesceAndMigrate } = require('./main/services/managed-writer-coordinator')
 const { createAppLogger } = require('./main/services/app-logger')
+const { DiagnosticsService } = require('./main/services/diagnostics-service')
 const { SettingsService } = require('./main/services/settings-service')
 const { registerSettingsIpc } = require('./main/ipc/settings-ipc')
 const { HistoryService } = require('./main/services/history-service')
@@ -34,6 +36,7 @@ const { registerHistoryIpc } = require('./main/ipc/history-ipc')
 const { ShortcutService } = require('./main/services/shortcut-service')
 const { registerShortcutIpc } = require('./main/ipc/shortcut-ipc')
 const { registerAppIpc } = require('./main/ipc/app-ipc')
+const { registerDiagnosticsIpc } = require('./main/ipc/diagnostics-ipc')
 const { registerDataRootIpc } = require('./main/ipc/data-root-ipc')
 const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
@@ -47,6 +50,7 @@ const { name: applicationName } = require('./package.json')
 const dataRootContext = prepareDataRoot({ app, applicationName })
 const activePaths = dataRootContext.paths
 const { execFile, spawn } = require('child_process')
+const crypto = require('node:crypto')
 const fs = require('fs')
 const path = require('path')
 const screenshotDesktop = require('screenshot-desktop')
@@ -91,6 +95,17 @@ const {
 
 const defaultHistoryDirectory = activePaths?.history || path.join(app.getPath('userData'), 'capture-history')
 const logFile = activePaths ? path.join(activePaths.logs, 'app.log') : path.join(app.getPath('userData'), 'app.log')
+const applicationSessionId = crypto.randomUUID()
+const crashDumpsPath = activePaths
+  ? path.join(activePaths.runtime, 'crash-dumps')
+  : path.join(app.getPath('userData'), 'runtime', 'crash-dumps')
+fs.mkdirSync(crashDumpsPath, { recursive: true })
+app.setPath('crashDumps', crashDumpsPath)
+crashReporter.start({
+  productName: 'Highlighter',
+  uploadToServer: false,
+  globalExtra: { sessionId: applicationSessionId }
+})
 
 const DEFAULT_SETTINGS = {
   apiKey: '',
@@ -171,6 +186,8 @@ const DEFAULT_SETTINGS = {
 let store = null
 let settingsService = null
 let historyService = null
+let diagnosticsService = null
+let sessionExitRecorded = false
 
 function initializeStore() {
   if (store) return store
@@ -292,11 +309,100 @@ function assertManagedDataWritable() {
 
 const writeAppLog = createAppLogger({
   filePath: logFile,
-  isEnabled: () => !dataRootMigrationInProgress && !!store && getSettings().system.runLog
+  isEnabled: () => !dataRootMigrationInProgress && !!store && getSettings().system.runLog,
+  sessionId: applicationSessionId,
+  version: app.getVersion()
 })
 
 function log(...args) {
   writeAppLog(...args)
+}
+
+function collectDiagnosticSensitiveValues() {
+  if (!store) return []
+  const settings = getSettings()
+  const values = [settings.apiKey]
+  function visit(value, keyPath = '') {
+    if (typeof value === 'string') {
+      if (/(api[-_]?key|authorization|password|secret|token|prompt)/i.test(keyPath)) values.push(value)
+      return
+    }
+    if (!value || typeof value !== 'object') return
+    for (const [nestedKey, nestedValue] of Object.entries(value)) {
+      visit(nestedValue, keyPath ? `${keyPath}.${nestedKey}` : nestedKey)
+    }
+  }
+  visit(settings)
+  return values.filter(Boolean)
+}
+
+function getInstallType() {
+  if (!app.isPackaged) return 'development'
+  if (dataRootContext.portable) return 'portable'
+  if (path.basename(path.dirname(process.execPath)).toLowerCase() === 'win-unpacked') return 'unpacked'
+  return 'nsis'
+}
+
+function getDiagnosticComponents() {
+  const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
+  let ffmpegPath = ''
+  let ffmpegVersion = ''
+  try { ffmpegPath = resolveFfmpegPath() } catch {}
+  try { ffmpegVersion = require('ffmpeg-static/package.json').version } catch {}
+  return [
+    { name: 'SmartSelect', path: path.join(resourceRoot, 'native', 'smart-select', 'SmartSelect.exe'), version: app.getVersion() },
+    { name: 'OCR sidecar', path: path.join(resourceRoot, 'native', 'ocr', 'HighlighterOcrSidecar.exe'), version: app.getVersion() },
+    { name: 'FFmpeg', path: ffmpegPath, version: ffmpegVersion }
+  ]
+}
+
+function initializeDiagnostics() {
+  if (diagnosticsService) return diagnosticsService
+  const dataRoot = activePaths?.root || app.getPath('userData')
+  diagnosticsService = new DiagnosticsService({
+    sessionId: applicationSessionId,
+    version: app.getVersion(),
+    paths: {
+      dataRoot,
+      logs: activePaths?.logs || path.dirname(logFile),
+      logFile,
+      runtime: activePaths?.runtime || path.join(dataRoot, 'runtime'),
+      crashDumps: crashDumpsPath,
+      userProfile: app.getPath('home'),
+      temp: app.getPath('temp'),
+      resources: process.resourcesPath,
+      appRoot: app.getAppPath()
+    },
+    screen,
+    getAppInfo: () => ({
+      name: app.getName(),
+      version: app.getVersion(),
+      packaged: app.isPackaged,
+      installType: getInstallType()
+    }),
+    getComponents: getDiagnosticComponents,
+    getSensitiveValues: collectDiagnosticSensitiveValues,
+    log
+  })
+  const session = diagnosticsService.startSession()
+  writeAppLog.event('session-start', {
+    previousExit: session.previousExit,
+    installType: getInstallType(),
+    crashUploadEnabled: false
+  })
+  return diagnosticsService
+}
+
+function markSessionClean(exitType = 'clean') {
+  if (!diagnosticsService || sessionExitRecorded) return false
+  try {
+    writeAppLog.event('session-end', { exitType })
+    sessionExitRecorded = diagnosticsService.markClean(exitType)
+  } catch (error) {
+    log('Unable to mark diagnostics session clean:', error.message || String(error))
+    return false
+  }
+  return sessionExitRecorded
 }
 
 function authorizeIpcRole(role, win) {
@@ -1929,6 +2035,7 @@ async function changeDataRoot() {
         previousRoot
       }),
       relaunch: () => setImmediate(() => {
+        markSessionClean('data-root-relaunch')
         relaunchApplication({ app, dataRootContext })
         app.exit(0)
       })
@@ -1968,6 +2075,28 @@ registerAppIpc({
       sourceLanguage,
       targetLanguage || getSettings().ai.targetLanguage
     )
+  }
+})
+
+registerDiagnosticsIpc({
+  ipcMain: secureIpcMain,
+  controller: {
+    preview: () => {
+      if (!diagnosticsService) throw new Error('诊断服务尚未就绪')
+      return diagnosticsService.preview()
+    },
+    export: async ({ includeCrashDumps = false } = {}) => {
+      if (!diagnosticsService) throw new Error('诊断服务尚未就绪')
+      const date = new Date().toISOString().slice(0, 10)
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: '导出 Highlighter 诊断包',
+        defaultPath: path.join(app.getPath('documents'), `Highlighter-Diagnostics-${date}.zip`),
+        filters: [{ name: 'ZIP 诊断包', extensions: ['zip'] }]
+      })
+      if (result.canceled || !result.filePath) return { canceled: true }
+      const exported = await diagnosticsService.exportZip(result.filePath, { includeCrashDumps })
+      return { canceled: false, ...exported }
+    }
   }
 })
 
@@ -2771,6 +2900,7 @@ async function startApplication() {
   if (finalization && !finalization.finalized && finalization.cleanupErrors.length) {
     log('Data migration cleanup remains pending:', finalization.cleanupErrors)
   }
+  initializeDiagnostics()
   persistSettings(getSettings())
   createTrayIcon()
   createToolbarWindow()
@@ -2795,6 +2925,11 @@ if (!gotTheLock) {
 else {
   app.on('second-instance', () => { if (store) createMainWindow('home') })
   app.on('render-process-gone', (_event, webContents, details) => {
+    diagnosticsService?.recordProcessExit('renderer', {
+      reason: details.reason,
+      exitCode: details.exitCode,
+      url: webContents?.getURL?.() || ''
+    })
     log('Renderer process exited:', {
       reason: details.reason,
       exitCode: details.exitCode,
@@ -2802,6 +2937,12 @@ else {
     })
   })
   app.on('child-process-gone', (_event, details) => {
+    diagnosticsService?.recordProcessExit('child', {
+      type: details.type,
+      reason: details.reason,
+      exitCode: details.exitCode,
+      serviceName: details.serviceName || ''
+    })
     log('Child process exited:', {
       type: details.type,
       reason: details.reason,
@@ -2820,7 +2961,10 @@ else {
   })
   app.on('activate', () => { if (store) createMainWindow('home') })
   app.on('window-all-closed', () => {})
-  app.on('will-quit', () => shortcutService.dispose())
+  app.on('will-quit', () => {
+    markSessionClean('quit')
+    shortcutService.dispose()
+  })
   app.on('before-quit', () => {
     closeRecordFlow()
       .then(() => recordingService?.dispose())

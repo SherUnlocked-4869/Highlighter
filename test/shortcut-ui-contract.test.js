@@ -12,7 +12,7 @@ test('main process delegates shortcut registration and exposes status through pr
   assert.match(main, /new ShortcutService\(\{[\s\S]*globalShortcut[\s\S]*executeFunction/)
   assert.match(main, /return shortcutService\.registerAll\(getSettings\(\)\.shortcuts\)/)
   assert.match(main, /registerShortcutIpc\(\{[\s\S]*shortcutService/)
-  assert.match(main, /app\.on\('will-quit', \(\) => shortcutService\.dispose\(\)\)/)
+  assert.match(main, /app\.on\('will-quit',[\s\S]*shortcutService\.dispose\(\)/)
   assert.match(preload, /getShortcutStatuses:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('shortcuts:status'\)/)
 })
 

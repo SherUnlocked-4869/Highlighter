@@ -10,6 +10,7 @@ function redactString(value) {
   return String(value)
     .replace(/\bBearer\s+\S+/gi, `Bearer ${REDACTED}`)
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, REDACTED)
+    .replace(/\b(api[-_]?key|authorization|password|secret|token)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, (_match, key) => `${key}=${REDACTED}`)
 }
 
 function sanitizeValue(value, seen = new WeakSet()) {
@@ -52,18 +53,32 @@ function rotateLog(filePath, backupCount, fileSystem = fs) {
 function createAppLogger({
   filePath,
   isEnabled = () => true,
+  sessionId = '',
+  version = '',
   maxBytes = DEFAULT_MAX_BYTES,
   backupCount = DEFAULT_BACKUP_COUNT,
   consoleLike = console,
-  fileSystem = fs
+  fileSystem = fs,
+  now = () => new Date()
 }) {
   let writeFailureReported = false
 
-  return (...values) => {
-    const message = formatLogMessage(values)
-    consoleLike.log(message)
+  function writeEntry({ level = 'info', event = 'log', values = [], details }) {
+    const message = values.length ? formatLogMessage(values) : ''
+    const consoleMethod = level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'log'
+    const consoleMessage = message || `${event} ${formatLogMessage([details || {}])}`
+    consoleLike[consoleMethod]?.(consoleMessage)
     if (!filePath || !isEnabled()) return
-    const line = `[${new Date().toISOString()}] ${message}\n`
+    const entry = sanitizeValue({
+      timestamp: now().toISOString(),
+      level,
+      sessionId,
+      version,
+      event,
+      ...(message ? { message } : {}),
+      ...(details === undefined ? {} : { details })
+    })
+    const line = `${JSON.stringify(entry)}\n`
     try {
       fileSystem.mkdirSync(path.dirname(filePath), { recursive: true })
       const currentSize = fileSystem.existsSync(filePath) ? fileSystem.statSync(filePath).size : 0
@@ -76,6 +91,10 @@ function createAppLogger({
       consoleLike.warn(`Unable to write application log: ${error.message || String(error)}`)
     }
   }
+
+  const logger = (...values) => writeEntry({ values })
+  logger.event = (event, details = {}, level = 'info') => writeEntry({ event, details, level })
+  return logger
 }
 
 module.exports = {

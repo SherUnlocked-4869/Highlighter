@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openSaveDirectory: () => ipcRenderer.invoke('app:open-save-directory'),
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   getDisplayDiagnostics: () => ipcRenderer.invoke('app:get-display-diagnostics'),
+  previewDiagnostics: () => ipcRenderer.invoke('diagnostics:preview'),
+  exportDiagnostics: (includeCrashDumps = false) => ipcRenderer.invoke('diagnostics:export', { includeCrashDumps: includeCrashDumps === true }),
   getOcrStatus: () => ipcRenderer.invoke('ocr:status'),
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowClose: () => ipcRenderer.send('window:close'),

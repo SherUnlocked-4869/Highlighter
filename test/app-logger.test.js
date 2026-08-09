@@ -21,9 +21,10 @@ test('logger redacts credentials and bearer tokens', () => {
   const message = formatLogMessage([
     'request',
     { apiKey: 'sk-secretvalue', nested: { authorization: 'Bearer abc123', safe: 'ok' } },
-    'Bearer another-secret'
+    'Bearer another-secret',
+    'token=legacy-plain-token'
   ])
-  assert.doesNotMatch(message, /secretvalue|abc123|another-secret/)
+  assert.doesNotMatch(message, /secretvalue|abc123|another-secret|legacy-plain-token/)
   assert.match(message, /"apiKey":"\[REDACTED\]"/)
   assert.match(message, /"safe":"ok"/)
 })
@@ -54,5 +55,33 @@ test('logger skips disk writes while disabled', () => {
     })
     logger('disabled')
     assert.equal(fs.existsSync(filePath), false)
+  })
+})
+
+test('logger writes structured session, version, event, and exit fields', () => {
+  withTempDirectory((directory) => {
+    const filePath = path.join(directory, 'app.log')
+    const logger = createAppLogger({
+      filePath,
+      sessionId: 'session-123',
+      version: '2.1.0-beta.0',
+      now: () => new Date('2026-08-09T12:00:00.000Z'),
+      consoleLike: { log() {}, warn() {}, error() {} }
+    })
+    logger('application ready')
+    logger.event('session-end', { exitType: 'quit', token: 'canary-token' })
+
+    const entries = fs.readFileSync(filePath, 'utf8').trim().split('\n').map(JSON.parse)
+    assert.deepEqual(entries[0], {
+      timestamp: '2026-08-09T12:00:00.000Z',
+      level: 'info',
+      sessionId: 'session-123',
+      version: '2.1.0-beta.0',
+      event: 'log',
+      message: 'application ready'
+    })
+    assert.equal(entries[1].event, 'session-end')
+    assert.equal(entries[1].details.exitType, 'quit')
+    assert.equal(entries[1].details.token, '[REDACTED]')
   })
 })

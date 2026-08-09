@@ -14,6 +14,8 @@ const IPC_SURFACES = Object.freeze([
       'app:execute-function',
       'app:get-info',
       'app:get-display-diagnostics',
+      'diagnostics:preview',
+      'diagnostics:export',
       'dialog:choose-directory',
       'app:open-data-directory',
       'app:open-save-directory',

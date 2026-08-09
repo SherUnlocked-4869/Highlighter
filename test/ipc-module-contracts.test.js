@@ -5,6 +5,7 @@ const path = require('node:path')
 const { registerAppIpc } = require('../main/ipc/app-ipc')
 const { registerCaptureIpc } = require('../main/ipc/capture-ipc')
 const { registerDataRootIpc } = require('../main/ipc/data-root-ipc')
+const { registerDiagnosticsIpc } = require('../main/ipc/diagnostics-ipc')
 const { registerRecordingIpc } = require('../main/ipc/recording-ipc')
 
 function createIpcMain() {
@@ -59,6 +60,19 @@ test('app and data-root IPC modules own their fixed channel surfaces', () => {
   ])
   assert.equal(ipcMain.handlers.get('app:execute-function')(null, { name: 'screenshot' }).method, 'executeFunction')
   assert.equal(ipcMain.handlers.get('data-root:change')().method, 'change')
+})
+
+test('diagnostics IPC exposes preview and boolean-only crash dump export options', () => {
+  const ipcMain = createIpcMain()
+  registerDiagnosticsIpc({
+    ipcMain,
+    controller: createController(['preview', 'export'])
+  })
+
+  assert.deepEqual([...ipcMain.handlers.keys()], ['diagnostics:preview', 'diagnostics:export'])
+  assert.equal(ipcMain.handlers.get('diagnostics:preview')().method, 'preview')
+  assert.deepEqual(ipcMain.handlers.get('diagnostics:export')(null, { includeCrashDumps: 'yes' }).args[0], { includeCrashDumps: false })
+  assert.deepEqual(ipcMain.handlers.get('diagnostics:export')(null, { includeCrashDumps: true }).args[0], { includeCrashDumps: true })
 })
 
 test('capture IPC module owns capture, long-capture, OCR, and recognition channels', () => {

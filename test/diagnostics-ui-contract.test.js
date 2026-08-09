@@ -1,0 +1,30 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+
+const root = path.resolve(__dirname, '..')
+const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
+const script = fs.readFileSync(path.join(root, 'config', 'config.js'), 'utf8')
+
+test('crash reporting is local-only and session lifecycle is recorded', () => {
+  assert.match(main, /app\.setPath\('crashDumps', crashDumpsPath\)/)
+  assert.match(main, /crashReporter\.start\(\{[\s\S]*uploadToServer: false/)
+  assert.doesNotMatch(main, /crashReporter\.start\(\{[\s\S]*submitURL:/)
+  assert.match(main, /initializeDiagnostics\(\)/)
+  assert.match(main, /app\.on\('will-quit',[\s\S]*markSessionClean\('quit'\)/)
+  assert.match(main, /recordProcessExit\('renderer'/)
+  assert.match(main, /recordProcessExit\('child'/)
+})
+
+test('system settings previews and exports offline diagnostics with crash dumps opt-in', () => {
+  assert.match(preload, /previewDiagnostics:[\s\S]*diagnostics:preview/)
+  assert.match(preload, /exportDiagnostics:[\s\S]*diagnostics:export/)
+  assert.match(script, /id="previewDiagnostics"/)
+  assert.match(script, /id="exportDiagnostics"/)
+  assert.match(script, /id="includeCrashDumps" type="checkbox"/)
+  assert.match(script, /preview\.textContent = JSON\.stringify\(diagnostics, null, 2\)/)
+  assert.match(script, /崩溃转储可能包含进程内存片段/)
+  assert.match(script, /默认排除配置、凭据、AI\/划词内容、截图、OCR、历史和录屏文件/)
+})
