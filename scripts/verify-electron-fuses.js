@@ -11,7 +11,7 @@ const EXPECTED_FUSES = Object.freeze([
   [FuseV1Options.EnableNodeCliInspectArguments, FUSE_OFF, 'EnableNodeCliInspectArguments'],
   [FuseV1Options.EnableEmbeddedAsarIntegrityValidation, FUSE_ON, 'EnableEmbeddedAsarIntegrityValidation'],
   [FuseV1Options.OnlyLoadAppFromAsar, FUSE_ON, 'OnlyLoadAppFromAsar'],
-  [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot, FUSE_ON, 'LoadBrowserProcessSpecificV8Snapshot'],
+  [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot, FUSE_OFF, 'LoadBrowserProcessSpecificV8Snapshot'],
   [FuseV1Options.GrantFileProtocolExtraPrivileges, FUSE_ON, 'GrantFileProtocolExtraPrivileges']
 ])
 

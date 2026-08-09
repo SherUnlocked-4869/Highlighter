@@ -5,6 +5,10 @@ const prereleaseChannel = version.match(/-(alpha|beta)(?:\.|$)/)?.[1]
 module.exports = {
   ...base,
   asar: true,
+  extraMetadata: {
+    ...base.extraMetadata,
+    main: 'main/packaged-entry.js'
+  },
   forceCodeSigning: true,
   generateUpdatesFilesForAllChannels: true,
   electronFuses: {
@@ -14,7 +18,7 @@ module.exports = {
     enableNodeCliInspectArguments: false,
     enableEmbeddedAsarIntegrityValidation: true,
     onlyLoadAppFromAsar: true,
-    loadBrowserProcessSpecificV8Snapshot: true,
+    loadBrowserProcessSpecificV8Snapshot: false,
     grantFileProtocolExtraPrivileges: true
   },
   win: {

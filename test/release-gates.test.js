@@ -33,7 +33,7 @@ function createFakeRelease(version = '2.1.0-beta.0') {
   return dist
 }
 
-test('release fuse policy rejects any downgraded production fuse', () => {
+test('release fuse policy rejects drift from the packaged runtime policy', () => {
   const wire = {
     version: '1',
     [FuseV1Options.RunAsNode]: 48,
@@ -42,7 +42,7 @@ test('release fuse policy rejects any downgraded production fuse', () => {
     [FuseV1Options.EnableNodeCliInspectArguments]: 48,
     [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: 49,
     [FuseV1Options.OnlyLoadAppFromAsar]: 49,
-    [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot]: 49,
+    [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot]: 48,
     [FuseV1Options.GrantFileProtocolExtraPrivileges]: 49
   }
   assert.equal(assertFuseStates(wire).length, 8)
@@ -129,6 +129,21 @@ test('release workflows enforce version, native, signing, integrity, and draft g
   assert.doesNotMatch(release, /dist\/\*\.yml/)
   assert.equal(config.forceCodeSigning, true)
   assert.equal(config.publish.channel, 'beta')
+  assert.equal(config.extraMetadata.main, 'main/packaged-entry.js')
   assert.equal(config.electronFuses.enableEmbeddedAsarIntegrityValidation, true)
   assert.equal(config.electronFuses.onlyLoadAppFromAsar, true)
+  assert.equal(config.electronFuses.loadBrowserProcessSpecificV8Snapshot, false)
+})
+
+test('release verifier launches the packaged executable before accepting artifacts', () => {
+  const verifier = fs.readFileSync(path.join(root, 'scripts', 'verify-release.ps1'), 'utf8')
+  const startupProbe = fs.readFileSync(path.join(root, 'scripts', 'verify-packaged-startup.ps1'), 'utf8')
+  const packagedEntry = fs.readFileSync(path.join(root, 'main', 'packaged-entry.js'), 'utf8')
+  assert.match(verifier, /verify-packaged-startup\.ps1/)
+  assert.match(startupProbe, /--highlighter-packaged-startup-probe/)
+  assert.match(startupProbe, /WaitForExit/)
+  assert.match(startupProbe, /ExitCode -ne 0/)
+  assert.match(packagedEntry, /process\.argv\.includes\(STARTUP_PROBE_SWITCH\)/)
+  assert.match(packagedEntry, /app\.whenReady\(\)[\s\S]*app\.quit\(\)/)
+  assert.match(packagedEntry, /else \{[\s\S]*require\('\.\.\/main\.js'\)/)
 })

@@ -91,6 +91,7 @@ if (-not $SkipFuseVerification) {
   if ($LASTEXITCODE -ne 0) {
     throw "Electron fuse verification exited with code $LASTEXITCODE"
   }
+  & (Join-Path $projectRoot 'scripts/verify-packaged-startup.ps1') -ExecutablePath $mainExecutable.FullName
 }
 
 if ($RequireSignature) {
