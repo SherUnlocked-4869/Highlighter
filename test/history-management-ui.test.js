@@ -34,6 +34,15 @@ test('history page renders storage statistics and batch controls', () => {
   assert.match(styles, /\.history-image img\{display:block;width:100%;height:100%;object-fit:contain\}/)
 })
 
+test('history action buttons keep readable color in dark mode', () => {
+  assert.match(styles, /\.history-actions button\{[^}]*color:var\(--text\)/)
+})
+
+test('capture file names use China Standard Time (UTC+8)', () => {
+  assert.match(main, /function makeCaptureName\(prefix = 'Highlighter'\)[\s\S]{0,300}?8 \* 60 \* 60 \* 1000/)
+  assert.doesNotMatch(main, /function makeCaptureName\(prefix = 'Highlighter'\)[\s\S]{0,300}?new Date\(\)\.toISOString\(\)\.replace/)
+})
+
 test('history page does not expose favorite controls or state', () => {
   assert.doesNotMatch(preload, /history:favorite|setHistoryFavorite/)
   assert.doesNotMatch(config, /historyFavorites|favorite-button|仅收藏|取消收藏/)
