@@ -5,6 +5,7 @@ const path = require('node:path')
 
 const root = path.resolve(__dirname, '..')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+const manager = fs.readFileSync(path.join(root, 'main', 'services', 'selection-window-manager.js'), 'utf8')
 const actionPreload = fs.readFileSync(path.join(root, 'preload-action.js'), 'utf8')
 const actionScript = fs.readFileSync(path.join(root, 'action', 'action.js'), 'utf8')
 const actionHtml = fs.readFileSync(path.join(root, 'action', 'action.html'), 'utf8')
@@ -13,8 +14,8 @@ const toolbarHtml = fs.readFileSync(path.join(root, 'toolbar', 'toolbar.html'), 
 const toolbarScript = fs.readFileSync(path.join(root, 'toolbar', 'toolbar.js'), 'utf8')
 
 test('selection result windows receive and apply the configured appearance', () => {
-  assert.match(main, /function getActionAppearance\([\s\S]*nativeTheme\.shouldUseDarkColors/)
-  assert.match(main, /backgroundColor: appearance\.resolvedTheme === 'dark'/)
+  assert.match(manager, /getAppearance\(settings = this\.getSettings\(\)\)[\s\S]*this\.nativeTheme\.shouldUseDarkColors/)
+  assert.match(manager, /backgroundColor: appearance\.resolvedTheme === 'dark'/)
   assert.match(main, /appearance: getActionAppearance\(\)/)
   assert.match(main, /broadcastActionAppearance\(settings\)/)
   assert.match(actionPreload, /onActionAppearance:[\s\S]*action:appearance/)
@@ -35,7 +36,7 @@ test('selection result palette follows light, dark, and primary theme variables'
 })
 
 test('selection toolbar receives configured and system appearance updates', () => {
-  assert.match(main, /toolbarWindow\.webContents\.send\('toolbar:appearance', appearance\)/)
+  assert.match(manager, /this\.toolbarWindow\.webContents\.send\('toolbar:appearance', appearance\)/)
   assert.match(main, /appearance: getActionAppearance\(\)/)
   assert.match(main, /nativeTheme\.on\('updated',[\s\S]*broadcastActionAppearance\(\)/)
   assert.match(toolbarPreload, /onAppearance:[\s\S]*toolbar:appearance/)

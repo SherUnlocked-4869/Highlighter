@@ -44,10 +44,10 @@ test('main process normalizes toolbar settings and routes configured custom prom
 })
 
 test('selection toolbar appearance avoids a clipped rectangular shadow', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const manager = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'selection-window-manager.js'), 'utf8')
   const toolbar = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar.html'), 'utf8')
 
-  assert.match(main, /function createToolbarWindow\(\)[\s\S]*?hasShadow: false/)
+  assert.match(manager, /createToolbarWindow\(\)[\s\S]*?hasShadow: false/)
   assert.match(toolbar, /\.toolbar \{[\s\S]*?box-shadow: inset/)
   assert.match(toolbar, /\.toolbar \{[\s\S]*?height: 40px/)
   assert.doesNotMatch(toolbar, /box-shadow: 0 4px 24px/)

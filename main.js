@@ -38,6 +38,7 @@ const { registerDataRootIpc } = require('./main/ipc/data-root-ipc')
 const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
 const { SelectionHookService } = require('./main/services/selection-hook-service')
+const { SelectionWindowManager } = require('./main/services/selection-window-manager')
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createSecureWindow } = require('./main/services/window-security')
@@ -205,8 +206,7 @@ function initializeStore() {
 }
 
 let mainWindow = null
-let toolbarWindow = null
-let actionWindow = null
+let selectionWindowManager = null
 let selectionHookService = null
 const selectionPowerListeners = []
 let tray = null
@@ -221,11 +221,9 @@ let dataRootMigrationInProgress = false
 let isProcessing = false
 let currentStreamController = null
 let toolbarStreamSeq = 0
-let lastToolbarPos = null
 let pinnedCount = 0
 const pinWindows = new Set()
 const recognitionWindows = new Set()
-const actionWindows = []
 const MAX_PINNED = 20
 const TOOLBAR_W = getToolbarWidth(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR))
 const TOOLBAR_H = 40
@@ -303,8 +301,8 @@ function log(...args) {
 
 function authorizeIpcRole(role, win) {
   if (role === 'main') return win === mainWindow
-  if (role === 'toolbar') return win === toolbarWindow
-  if (role === 'action') return actionWindows.includes(win)
+  if (role === 'toolbar') return selectionWindowManager?.ownsToolbarWindow(win) === true
+  if (role === 'action') return selectionWindowManager?.ownsActionWindow(win) === true
   if (role === 'capture') return win === currentCaptureWindow
   if (role === 'long-capture') return win === currentLongCapture?.controllerWindow
   if (role === 'long-overlay') return win === currentLongCapture?.overlayWindow
@@ -573,145 +571,46 @@ function createMainWindow(route = 'home') {
   return mainWindow
 }
 
-function createToolbarWindow() {
-  if (toolbarWindow && !toolbarWindow.isDestroyed()) return toolbarWindow
-  const pagePath = path.join(__dirname, 'toolbar', 'toolbar.html')
-  toolbarWindow = createLocalWindow(pagePath, {
-    width: TOOLBAR_W,
-    height: TOOLBAR_H,
-    frame: false,
-    transparent: true,
-    hasShadow: false,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    focusable: !isWin,
-    show: false,
-    resizable: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-toolbar.js')
-    }
-  })
-  toolbarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-  toolbarWindow.setAlwaysOnTop(true, 'screen-saver')
-  toolbarWindow.loadFile(pagePath)
-  toolbarWindow.webContents.once('did-finish-load', () => {
-    if (!toolbarWindow || toolbarWindow.isDestroyed()) return
-    toolbarWindow.webContents.send('toolbar:appearance', getActionAppearance())
-  })
-  toolbarWindow.on('closed', () => { toolbarWindow = null })
-  return toolbarWindow
-}
-
-function createActionWindow() {
-  const appearance = getActionAppearance()
-  const size = getSettings().selectionToolbar.resultWindow
-  const pagePath = path.join(__dirname, 'action', 'action.html')
-  const win = createLocalWindow(pagePath, {
-    width: size.width,
-    height: size.height,
-    minWidth: ACTION_WINDOW_MIN_WIDTH,
-    minHeight: ACTION_WINDOW_MIN_HEIGHT,
-    title: 'Highlighter',
-    autoHideMenuBar: true,
-    backgroundColor: appearance.resolvedTheme === 'dark' ? '#121316' : '#f5f5f5',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-action.js')
-    }
-  })
-  win.loadFile(pagePath)
-  win._isPinned = false
-  win._actionRendererReady = false
-  win._pendingActionMessages = []
-  win.webContents.once('did-finish-load', () => flushActionMessages(win))
-  win.on('resize', () => scheduleActionWindowSizeSave(win))
-  win.on('close', () => flushActionWindowSizeSave(win))
-  actionWindows.push(win)
-  win.on('closed', () => {
-    clearTimeout(win._actionWindowSizeSaveTimer)
-    win._actionWindowSizeSaveTimer = null
-    const index = actionWindows.indexOf(win)
-    if (index >= 0) actionWindows.splice(index, 1)
-    if (win._isPinned) pinnedCount = Math.max(0, pinnedCount - 1)
+selectionWindowManager = new SelectionWindowManager({
+  createWindow: createLocalWindow,
+  rootDirectory: __dirname,
+  isWindows: isWin,
+  nativeTheme,
+  getSettings,
+  updateSettings: (patch) => settingsService.updateSettings(patch),
+  toolbarWidth: TOOLBAR_W,
+  toolbarHeight: TOOLBAR_H,
+  actionMinWidth: ACTION_WINDOW_MIN_WIDTH,
+  actionMinHeight: ACTION_WINDOW_MIN_HEIGHT,
+  sizeSaveDelayMs: ACTION_WINDOW_SIZE_SAVE_DELAY_MS,
+  onActionWindowClosed: (win, { wasPinned }) => {
+    if (wasPinned) pinnedCount = Math.max(0, pinnedCount - 1)
     if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-closed')
-    if (actionWindow === win) actionWindow = null
-  })
-  win.on('blur', () => {
-    if (win._isPinned || win.isDestroyed()) return
+  },
+  onActionWindowBlur: (win) => {
     if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-hidden')
-    flushActionWindowSizeSave(win)
-    win.hide()
-  })
-  actionWindow = win
-  return win
+  },
+  log
+})
+
+function createToolbarWindow() {
+  return selectionWindowManager.createToolbarWindow()
 }
 
 function getOrCreateActionWindow() {
-  if (actionWindow && !actionWindow.isDestroyed() && !actionWindow._isPinned) return actionWindow
-  return createActionWindow()
+  return selectionWindowManager.getOrCreateActionWindow()
 }
 
 function queueActionMessage(win, channel, payload) {
-  if (!win || win.isDestroyed()) return
-  if (win._actionRendererReady) {
-    win.webContents.send(channel, payload)
-    return
-  }
-  win._pendingActionMessages.push([channel, payload])
-}
-
-function flushActionMessages(win) {
-  if (!win || win.isDestroyed()) return
-  win._actionRendererReady = true
-  const pending = win._pendingActionMessages
-  win._pendingActionMessages = []
-  for (const [channel, payload] of pending) win.webContents.send(channel, payload)
-}
-
-function persistActionWindowSize(win) {
-  if (!win || win.isDestroyed()) return
-  const [width, height] = win.getSize()
-  const current = getSettings().selectionToolbar.resultWindow
-  if (width === current.width && height === current.height) return
-  try {
-    settingsService.updateSettings({ selectionToolbar: { resultWindow: { width, height } } })
-  } catch (error) {
-    log('Failed to save selection result window size:', error.message || String(error))
-  }
-}
-
-function scheduleActionWindowSizeSave(win) {
-  clearTimeout(win._actionWindowSizeSaveTimer)
-  win._actionWindowSizeSaveTimer = setTimeout(() => {
-    win._actionWindowSizeSaveTimer = null
-    persistActionWindowSize(win)
-  }, ACTION_WINDOW_SIZE_SAVE_DELAY_MS)
-}
-
-function flushActionWindowSizeSave(win) {
-  clearTimeout(win?._actionWindowSizeSaveTimer)
-  if (win) win._actionWindowSizeSaveTimer = null
-  persistActionWindowSize(win)
+  selectionWindowManager.queueActionMessage(win, channel, payload)
 }
 
 function getActionAppearance(settings = getSettings()) {
-  const configuredTheme = ['light', 'dark'].includes(settings?.theme) ? settings.theme : 'system'
-  const resolvedTheme = configuredTheme === 'system'
-    ? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
-    : configuredTheme
-  const mainColor = /^#[0-9a-f]{6}$/i.test(settings?.mainColor || '')
-    ? settings.mainColor
-    : DEFAULT_SETTINGS.mainColor
-  return { theme: configuredTheme, resolvedTheme, mainColor }
+  return selectionWindowManager.getAppearance(settings)
 }
 
 function broadcastActionAppearance(settings = getSettings()) {
-  const appearance = getActionAppearance(settings)
-  if (toolbarWindow && !toolbarWindow.isDestroyed()) {
-    toolbarWindow.webContents.send('toolbar:appearance', appearance)
-  }
-  for (const win of actionWindows) {
-    if (!win.isDestroyed()) win.webContents.send('action:appearance', appearance)
-  }
+  selectionWindowManager.broadcastAppearance(settings)
 }
 
 function createTrayIcon() {
@@ -747,6 +646,7 @@ function initSelectionHook() {
       handlers: {
         textSelection: handleTextSelection,
         mouseDown: (data) => {
+          const toolbarWindow = selectionWindowManager.getToolbarWindow()
           if (!toolbarWindow || !toolbarWindow.isVisible()) return
           const bounds = toolbarWindow.getBounds()
           let point = { x: data.x, y: data.y }
@@ -846,16 +746,11 @@ function handleTextSelection(data) {
   const toolbarWidth = getToolbarWidth(actions)
   const result = getRefPointAndOrientation(data)
   const position = calculateToolbarPosition(result.refPoint, result.orientation, toolbarWidth)
-  if (!toolbarWindow || toolbarWindow.isDestroyed()) createToolbarWindow()
-  toolbarWindow.setSize(toolbarWidth, TOOLBAR_H)
-  lastToolbarPos = position
-  toolbarWindow.setPosition(position.x, position.y)
-  toolbarWindow.showInactive()
-  toolbarWindow.webContents.send('selection:text', { text, actions, appearance: getActionAppearance() })
+  selectionWindowManager.showToolbarSelection({ text, actions, position, width: toolbarWidth })
 }
 
 function hideToolbar() {
-  if (toolbarWindow && !toolbarWindow.isDestroyed()) toolbarWindow.hide()
+  selectionWindowManager.hideToolbar()
 }
 
 function finishToolbarStream(controller) {
@@ -2703,14 +2598,7 @@ secureIpcMain.on('toolbar:action', async (_event, { action, text }) => {
   hideToolbar()
   const win = getOrCreateActionWindow()
   const controller = createToolbarStreamController(win)
-  if (lastToolbarPos) {
-    const workArea = screen.getDisplayNearestPoint(lastToolbarPos).workArea
-    const [width, height] = win.getSize()
-    const x = Math.round(Math.max(workArea.x, Math.min(lastToolbarPos.x - width / 2, workArea.x + workArea.width - width)))
-    let y = lastToolbarPos.y + 48
-    if (y + height > workArea.y + workArea.height) y = lastToolbarPos.y - height - 12
-    win.setPosition(x, Math.round(Math.max(workArea.y, y)))
-  }
+  selectionWindowManager.positionActionWindow(win, screen)
   queueActionMessage(win, 'action:start', {
     type: actionDefinition.id,
     label: actionDefinition.label,

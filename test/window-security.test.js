@@ -107,14 +107,14 @@ test('secure window factory records the exact local page registration', () => {
 })
 
 test('action renderer uses a dedicated API, CSP, sanitizer, and packaged preload', () => {
-  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  const manager = fs.readFileSync(path.join(root, 'main', 'services', 'selection-window-manager.js'), 'utf8')
   const commonPreload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
   const actionPreload = fs.readFileSync(path.join(root, 'preload-action.js'), 'utf8')
   const actionScript = fs.readFileSync(path.join(root, 'action', 'action.js'), 'utf8')
   const actionHtml = fs.readFileSync(actionPage, 'utf8')
   const packageJson = require('../package.json')
 
-  assert.match(main, /createLocalWindow\(pagePath, \{[\s\S]*preload: path\.join\(__dirname, 'preload-action\.js'\)/)
+  assert.match(manager, /this\.createWindow\(pagePath, \{[\s\S]*preload: path\.join\(this\.rootDirectory, 'preload-action\.js'\)/)
   assert.doesNotMatch(commonPreload, /showdown|renderMarkdown|action:start|stream:data|window:toggle-pin/)
   assert.match(actionPreload, /exposeInMainWorld\('actionAPI'/)
   assert.doesNotMatch(actionPreload, /config:|settings:|history:|data-root:|ai:/)
