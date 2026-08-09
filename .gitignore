@@ -11,6 +11,7 @@ native/ocr/OcrSidecar.exe
 native/ocr/*.dll
 .worktrees/
 .tmp/
+.reasonix/
 .nyc_output/
 coverage/
 playwright-report/
