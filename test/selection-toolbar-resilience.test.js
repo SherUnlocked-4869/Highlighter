@@ -26,7 +26,7 @@ test('toolbar streams use abortable sliding timeouts and sender ownership checks
   assert.match(main, /finally \{\s*finishToolbarStream\(controller\)/)
   assert.match(deepseek, /chat\.completions\.create\(buildToolbarStreamRequest\(text, prompt\), requestOptions\)/)
   assert.match(action, /function armStreamTimeout\(\)/)
-  assert.match(action, /window\.electronAPI\.cancelStream\(\)/)
+  assert.match(action, /actionBridge\.cancelStream\(currentStreamId\)/)
   assert.match(action, /onStreamData[\s\S]*armStreamTimeout\(\)/)
   assert.match(action, /onStreamReasoning[\s\S]*armStreamTimeout\(\)/)
 })

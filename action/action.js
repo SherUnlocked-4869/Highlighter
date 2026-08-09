@@ -1,13 +1,17 @@
+const actionBridge = window.actionAPI
+const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
+const STREAM_IDLE_TIMEOUT_MS = 30000
+const ALLOWED_MARKDOWN_TAGS = [
+  'a', 'blockquote', 'br', 'code', 'del', 'em', 'h1', 'h2', 'h3', 'hr',
+  'li', 'ol', 'p', 'pre', 'strong', 'ul'
+]
+
 let isPinned = false
 let isDone = false
 let reasoning = ''
-let hasReasoning = false
 let fullText = ''
 let loadTimer = null
 let userScrolled = false
-const STREAM_IDLE_TIMEOUT_MS = 30000
-const hasMarkdown = !!(window.electronAPI && typeof window.electronAPI.renderMarkdown === 'function')
-const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
 let configuredTheme = 'system'
 let configuredMainColor = '#1677ff'
 let currentStreamId = null
@@ -43,20 +47,50 @@ systemThemeMedia.addEventListener('change', () => {
 })
 
 function resetUI() {
-  isDone = false; reasoning = ''; hasReasoning = false; fullText = ''; userScrolled = false
+  isDone = false
+  reasoning = ''
+  fullText = ''
+  userScrolled = false
+  currentStreamId = null
   clearTimeout(loadTimer)
   loadTimer = null
   renderToken++
   renderQueued = false
   resultDirty = false
   reasoningDirty = false
-  const old = document.getElementById('reasoningBox'); if (old) old.remove()
-  el.result.innerHTML = ''
+  document.getElementById('reasoningBox')?.remove()
+  el.result.replaceChildren()
   el.loading.style.display = 'none'
 }
 
-function showLoading(s) { if (el.loading) el.loading.style.display = s ? 'flex' : 'none' }
-function esc(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML }
+function showLoading(visible) {
+  if (el.loading) el.loading.style.display = visible ? 'flex' : 'none'
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function normalizeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    return ['http:', 'https:'].includes(url.protocol) ? url.toString() : null
+  } catch {
+    return null
+  }
+}
+
+function appendResultError(message) {
+  const error = document.createElement('div')
+  error.className = 'result-error'
+  error.textContent = message
+  el.result.appendChild(error)
+}
 
 function armStreamTimeout() {
   clearTimeout(loadTimer)
@@ -64,168 +98,191 @@ function armStreamTimeout() {
     if (isDone) return
     isDone = true
     showLoading(false)
-    el.result.innerHTML = '<div style="color:#f44336;">请求超时，请检查网络后重试</div>'
-    window.electronAPI.cancelStream()
+    el.result.replaceChildren()
+    appendResultError('请求超时，请检查网络后重试')
+    actionBridge.cancelStream(currentStreamId)
   }, STREAM_IDLE_TIMEOUT_MS)
 }
 
-// Full Markdown renderer (inline, no dependencies)
+function safeLinkMarkup(label, value) {
+  const decoded = value
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+  const url = normalizeExternalUrl(decoded)
+  if (!url) return label
+  return `<a href="${escapeHtml(url)}" rel="noopener noreferrer">${label}</a>`
+}
+
+function inlineMarkdown(text) {
+  return text
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/~~(.+?)~~/g, '<del>$1</del>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, url) => safeLinkMarkup(label, url))
+}
+
 function simpleMarkdown(text) {
-  var t = text
-  // Escape HTML first
-  t = t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  let value = escapeHtml(text)
+  value = value.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, _language, code) => `<pre><code>${code}</code></pre>`)
 
-  // Code blocks ```...```
-  t = t.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
-    return '<pre><code>' + code + '</code></pre>'
-  })
+  const lines = value.split('\n')
+  const output = []
+  let inList = false
+  let listType = ''
 
-  var lines = t.split('\n')
-  var out = []
-  var inList = false
-  var listType = ''
-
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i]
-
-    // Empty line closes list
-    if (line.trim() === '') {
-      if (inList) { out.push('</' + listType + '>'); inList = false }
-      continue
-    }
-
-    // Horizontal rule
-    if (/^-{3,}$/.test(line.trim())) { out.push('<hr>'); continue }
-
-    // Blockquote
-    if (line.trim().startsWith('&gt; ')) {
-      if (inList) { out.push('</' + listType + '>'); inList = false }
-      out.push('<blockquote>' + inlineMd(line.trim().slice(4)) + '</blockquote>')
-      continue
-    }
-
-    // Headings
-    if (line.trim().startsWith('### ')) {
-      if (inList) { out.push('</' + listType + '>'); inList = false }
-      out.push('<h3>' + inlineMd(line.trim().slice(4)) + '</h3>')
-      continue
-    }
-    if (line.trim().startsWith('## ')) {
-      if (inList) { out.push('</' + listType + '>'); inList = false }
-      out.push('<h2>' + inlineMd(line.trim().slice(3)) + '</h2>')
-      continue
-    }
-    if (line.trim().startsWith('# ')) {
-      if (inList) { out.push('</' + listType + '>'); inList = false }
-      out.push('<h1>' + inlineMd(line.trim().slice(2)) + '</h1>')
-      continue
-    }
-
-    // Unordered list: - item or * item
-    var ulMatch = line.match(/^(\s*)[-*]\s+(.+)/)
-    if (ulMatch) {
-      if (!inList || listType !== 'ul') {
-        if (inList) out.push('</' + listType + '>')
-        out.push('<ul>')
-        inList = true; listType = 'ul'
-      }
-      out.push('<li>' + inlineMd(ulMatch[2]) + '</li>')
-      continue
-    }
-
-    // Ordered list: 1. item
-    var olMatch = line.match(/^(\s*)\d+\.\s+(.+)/)
-    if (olMatch) {
-      if (!inList || listType !== 'ol') {
-        if (inList) out.push('</' + listType + '>')
-        out.push('<ol>')
-        inList = true; listType = 'ol'
-      }
-      out.push('<li>' + inlineMd(olMatch[2]) + '</li>')
-      continue
-    }
-
-    // Regular paragraph
-    if (inList) { out.push('</' + listType + '>'); inList = false }
-    // Check if line is inside a pre block
-    if (line.indexOf('<pre>') === -1 && line.indexOf('</pre>') === -1) {
-      out.push('<p>' + inlineMd(line) + '</p>')
-    } else {
-      out.push(line)
-    }
+  function closeList() {
+    if (!inList) return
+    output.push(`</${listType}>`)
+    inList = false
   }
-  if (inList) out.push('</' + listType + '>')
-  return out.join('')
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) {
+      closeList()
+      continue
+    }
+    if (/^-{3,}$/.test(trimmed)) {
+      closeList()
+      output.push('<hr>')
+      continue
+    }
+    if (trimmed.startsWith('&gt; ')) {
+      closeList()
+      output.push(`<blockquote>${inlineMarkdown(trimmed.slice(4))}</blockquote>`)
+      continue
+    }
+
+    const heading = trimmed.match(/^(#{1,3})\s+(.+)/)
+    if (heading) {
+      closeList()
+      const level = heading[1].length
+      output.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`)
+      continue
+    }
+
+    const unorderedItem = line.match(/^\s*[-*]\s+(.+)/)
+    if (unorderedItem) {
+      if (!inList || listType !== 'ul') {
+        closeList()
+        output.push('<ul>')
+        inList = true
+        listType = 'ul'
+      }
+      output.push(`<li>${inlineMarkdown(unorderedItem[1])}</li>`)
+      continue
+    }
+
+    const orderedItem = line.match(/^\s*\d+\.\s+(.+)/)
+    if (orderedItem) {
+      if (!inList || listType !== 'ol') {
+        closeList()
+        output.push('<ol>')
+        inList = true
+        listType = 'ol'
+      }
+      output.push(`<li>${inlineMarkdown(orderedItem[1])}</li>`)
+      continue
+    }
+
+    closeList()
+    if (line.includes('<pre>') || line.includes('</pre>')) output.push(line)
+    else output.push(`<p>${inlineMarkdown(line)}</p>`)
+  }
+  closeList()
+  return output.join('')
 }
 
-// Inline markdown: bold, italic, strikethrough, code, links
-function inlineMd(text) {
-  var t = text
-  // Inline code (must come before other formatting)
-  t = t.replace(/`([^`]+)`/g, '<code>$1</code>')
-  // Bold
-  t = t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  // Italic
-  t = t.replace(/\*(.+?)\*/g, '<em>$1</em>')
-  // Strikethrough
-  t = t.replace(/~~(.+?)~~/g, '<del>$1</del>')
-  // Links [text](url)
-  t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
-  return t
+function sanitizedMarkdown(text) {
+  const markup = simpleMarkdown(text)
+  if (!window.DOMPurify) return `<p>${escapeHtml(text)}</p>`
+  return window.DOMPurify.sanitize(markup, {
+    ALLOWED_TAGS: ALLOWED_MARKDOWN_TAGS,
+    ALLOWED_ATTR: ['href', 'rel'],
+    ALLOW_ARIA_ATTR: false,
+    ALLOW_DATA_ATTR: false,
+    ALLOWED_URI_REGEXP: /^https?:\/\//i
+  })
 }
 
-function renderResult(text) {
-  // Use built-in simpleMarkdown for reliability - preload renderer may not be available
-  el.result.innerHTML = simpleMarkdown(text)
+function renderResult(text, { cursor = false } = {}) {
+  el.result.innerHTML = sanitizedMarkdown(text)
+  for (const link of el.result.querySelectorAll('a')) {
+    const url = normalizeExternalUrl(link.href)
+    if (!url) {
+      link.replaceWith(document.createTextNode(link.textContent))
+      continue
+    }
+    link.href = url
+    link.rel = 'noopener noreferrer'
+    link.removeAttribute('target')
+  }
+  if (cursor) {
+    const cursorElement = document.createElement('span')
+    cursorElement.className = 'cursor'
+    el.result.appendChild(cursorElement)
+  }
 }
 
 function doScroll() {
   if (userScrolled) return
-  var s = document.getElementById('scrollSentinel')
-  if (s) s.scrollIntoView({ block: 'end', behavior: 'instant' })
+  document.getElementById('scrollSentinel')?.scrollIntoView({ block: 'end', behavior: 'instant' })
 }
 
 function scheduleStreamRender() {
   if (renderQueued) return
   renderQueued = true
-  var token = renderToken
+  const token = renderToken
   requestAnimationFrame(function() {
     renderQueued = false
     if (token !== renderToken || isDone) return
     if (reasoningDirty) {
       reasoningDirty = false
-      var rc = addReasoning()
-      if (rc.preview) {
-        rc.preview.textContent = reasoning
-        rc.preview.scrollTop = rc.preview.scrollHeight
-        rc.full.textContent = reasoning
-      }
+      const reasoningContent = addReasoning()
+      reasoningContent.preview.textContent = reasoning
+      reasoningContent.preview.scrollTop = reasoningContent.preview.scrollHeight
+      reasoningContent.full.textContent = reasoning
     }
     if (resultDirty) {
       resultDirty = false
-      el.result.innerHTML = simpleMarkdown(fullText) + '<span class="cursor"></span>'
+      renderResult(fullText, { cursor: true })
     }
     doScroll()
   })
 }
 
 function addReasoning() {
-  var box = document.getElementById('reasoningBox')
+  let box = document.getElementById('reasoningBox')
   if (!box) {
     box = document.createElement('div')
     box.id = 'reasoningBox'
     box.className = 'reasoning-box'
-    box.innerHTML = '<div class="reasoning-header">🧠 思考过程 <span style="flex:1"></span><span class="reasoning-arrow">▶</span></div>' +
-      '<div class="reasoning-preview"></div>' +
-      '<div class="reasoning-full"></div>'
-    box.querySelector('.reasoning-header').addEventListener('click', function() {
+
+    const header = document.createElement('div')
+    header.className = 'reasoning-header'
+    const title = document.createElement('span')
+    title.textContent = '🧠 思考过程'
+    const spacer = document.createElement('span')
+    spacer.className = 'reasoning-spacer'
+    const arrow = document.createElement('span')
+    arrow.className = 'reasoning-arrow'
+    arrow.textContent = '▶'
+    header.append(title, spacer, arrow)
+
+    const preview = document.createElement('div')
+    preview.className = 'reasoning-preview'
+    const full = document.createElement('div')
+    full.className = 'reasoning-full'
+    box.append(header, preview, full)
+
+    header.addEventListener('click', function() {
       box.classList.toggle('open')
-      box.querySelector('.reasoning-arrow').textContent = box.classList.contains('open') ? '▼' : '▶'
-      // When opening, update full content and scroll full area
+      arrow.textContent = box.classList.contains('open') ? '▼' : '▶'
       if (box.classList.contains('open')) {
-        var fullEl = box.querySelector('.reasoning-full')
-        fullEl.textContent = reasoning
-        fullEl.scrollTop = fullEl.scrollHeight
+        full.textContent = reasoning
+        full.scrollTop = full.scrollHeight
       }
     })
     el.result.parentNode.insertBefore(box, el.result)
@@ -236,28 +293,32 @@ function addReasoning() {
   }
 }
 
-window.electronAPI.onActionStart(function(data) {
+actionBridge.onActionStart(function(data) {
   applyAppearance(data.appearance)
   resetUI()
-  currentStreamId = data.streamId ?? null
+  currentStreamId = data.streamId
   el.sourceText.textContent = data.text
   if (data.type === 'translate') {
-    el.headerIcon.innerHTML = '🌐'; el.headerTitle.textContent = '翻译'
-    el.headerBadge.textContent = '翻译'; el.headerBadge.className = 'badge'
+    el.headerIcon.textContent = '🌐'
+    el.headerTitle.textContent = '翻译'
+    el.headerBadge.textContent = '翻译'
+    el.headerBadge.className = 'badge'
     el.loadingText.textContent = '正在翻译...'
   } else {
     const label = data.label || '解释'
-    el.headerIcon.textContent = data.type === 'explain' ? '💡' : (data.icon || '✦'); el.headerTitle.textContent = label
-    el.headerBadge.textContent = label; el.headerBadge.className = 'badge explain'
+    el.headerIcon.textContent = data.type === 'explain' ? '💡' : (data.icon || '✦')
+    el.headerTitle.textContent = label
+    el.headerBadge.textContent = label
+    el.headerBadge.className = 'badge explain'
     el.loadingText.textContent = '正在思考...'
   }
   showLoading(true)
   armStreamTimeout()
 })
 
-window.electronAPI.onActionAppearance(applyAppearance)
+actionBridge.onActionAppearance(applyAppearance)
 
-window.electronAPI.onStreamData(function(data) {
+actionBridge.onStreamData(function(data) {
   if (isDone) return
   armStreamTimeout()
   showLoading(false)
@@ -266,65 +327,68 @@ window.electronAPI.onStreamData(function(data) {
   scheduleStreamRender()
 })
 
-window.electronAPI.onStreamReasoning(function(data) {
+actionBridge.onStreamReasoning(function(data) {
   if (isDone) return
   armStreamTimeout()
   showLoading(false)
-  hasReasoning = true; reasoning += data.content
+  reasoning += data.content
   reasoningDirty = true
   scheduleStreamRender()
 })
 
-window.electronAPI.onStreamDone(function() {
-  isDone = true; showLoading(false); clearTimeout(loadTimer)
-  resultDirty = false; reasoningDirty = false
-  // Final render: use full markdown if available, else simple
+actionBridge.onStreamDone(function() {
+  isDone = true
+  showLoading(false)
+  clearTimeout(loadTimer)
+  resultDirty = false
+  reasoningDirty = false
   renderResult(fullText)
   doScroll()
   fullText = ''
-  window.electronAPI.finishStream(currentStreamId)
+  actionBridge.finishStream(currentStreamId)
 })
 
-window.electronAPI.onStreamError(function(data) {
-  isDone = true; showLoading(false); clearTimeout(loadTimer)
-  if (resultDirty) el.result.innerHTML = simpleMarkdown(fullText)
-  resultDirty = false; reasoningDirty = false
+actionBridge.onStreamError(function(data) {
+  isDone = true
+  showLoading(false)
+  clearTimeout(loadTimer)
+  if (fullText) renderResult(fullText)
+  else el.result.replaceChildren()
+  resultDirty = false
+  reasoningDirty = false
   fullText = ''
-  el.result.innerHTML += '<div style="color:#f44336;margin-top:8px;">错误: ' + esc(data.error) + '</div>'
+  appendResultError(`错误: ${data.error}`)
   doScroll()
-  window.electronAPI.finishStream(currentStreamId)
+  actionBridge.finishStream(currentStreamId)
 })
 
 document.getElementById('btnPin').addEventListener('click', function() {
-  if (!isPinned) {
-    // Request to pin - result comes via IPC
-    isPinned = true
-    var btn = document.getElementById('btnPin')
-    btn.classList.add('pinned')
-    btn.textContent = '📍'
-    btn.title = '取消置顶'
-    window.electronAPI.togglePin(true)
-  } else {
-    isPinned = false
-    var btn = document.getElementById('btnPin')
-    btn.classList.remove('pinned')
-    btn.textContent = '📌'
-    btn.title = '置顶窗口'
-    window.electronAPI.togglePin(false)
-  }
+  isPinned = !isPinned
+  const button = document.getElementById('btnPin')
+  button.classList.toggle('pinned', isPinned)
+  button.textContent = isPinned ? '📍' : '📌'
+  button.title = isPinned ? '取消置顶' : '置顶窗口'
+  actionBridge.togglePin(isPinned)
 })
 
-// Detect manual scrolling
 document.getElementById('content').addEventListener('wheel', function() {
   userScrolled = true
 })
 
-// Listen for pin denied (max 3 reached)
-window.electronAPI.onPinDenied(function(data) {
+el.result.addEventListener('click', function(event) {
+  const link = event.target.closest('a')
+  if (!link || !el.result.contains(link)) return
+  event.preventDefault()
+  const url = normalizeExternalUrl(link.href)
+  if (!url) return
+  actionBridge.openExternal(url).catch((error) => appendResultError(error.message || '无法打开链接'))
+})
+
+actionBridge.onPinDenied(function(data) {
   isPinned = false
-  var btn = document.getElementById('btnPin')
-  btn.classList.remove('pinned')
-  btn.textContent = '📌'
-  btn.title = '置顶窗口'
-  alert('最多只能置顶 ' + data.max + ' 个窗口，请先取消其他窗口的置顶。')
+  const button = document.getElementById('btnPin')
+  button.classList.remove('pinned')
+  button.textContent = '📌'
+  button.title = '置顶窗口'
+  alert(`最多只能置顶 ${data.max} 个窗口，请先取消其他窗口的置顶。`)
 })

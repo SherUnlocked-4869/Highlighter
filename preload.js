@@ -1,23 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
-let mdConverter = null
-try {
-  const showdown = require('showdown')
-  mdConverter = new showdown.Converter({
-    tables: true, strikethrough: true, tasklists: true,
-    simpleLineBreaks: true, openLinksInNewWindow: true
-  })
-} catch {
-  mdConverter = null
-}
-
-function renderMd(text) {
-  if (mdConverter) {
-    try { return mdConverter.makeHtml(text) } catch { /* fallback */ }
-  }
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
-}
-
 contextBridge.exposeInMainWorld('electronAPI', {
   // Config
   getApiKey: () => ipcRenderer.invoke('config:get-api-key'),
@@ -66,58 +48,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = () => callback()
     ipcRenderer.on('history:changed', handler)
     return () => ipcRenderer.removeListener('history:changed', handler)
-  },
-
-  // Toolbar
-  onSelectionText: (callback) => {
-    const handler = (_event, data) => callback(data)
-    ipcRenderer.on('selection:text', handler)
-    return () => ipcRenderer.removeListener('selection:text', handler)
-  },
-  toolbarAction: (action, text) => ipcRenderer.send('toolbar:action', { action, text }),
-  toolbarClose: () => ipcRenderer.send('toolbar:close'),
-
-  // Action - Start
-  onActionStart: (callback) => {
-    const handler = (_event, data) => callback(data)
-    ipcRenderer.on('action:start', handler)
-    return () => ipcRenderer.removeListener('action:start', handler)
-  },
-  onActionAppearance: (callback) => {
-    const handler = (_event, appearance) => callback(appearance)
-    ipcRenderer.on('action:appearance', handler)
-    return () => ipcRenderer.removeListener('action:appearance', handler)
-  },
-
-  // Action - Stream
-  onStreamData: (callback) => {
-    const handler = (_event, data) => callback(data)
-    ipcRenderer.on('stream:data', handler)
-    return () => ipcRenderer.removeListener('stream:data', handler)
-  },
-  onStreamReasoning: (callback) => {
-    const handler = (_event, data) => callback(data)
-    ipcRenderer.on('stream:reasoning', handler)
-    return () => ipcRenderer.removeListener('stream:reasoning', handler)
-  },
-  onStreamDone: (callback) => {
-    const handler = () => callback()
-    ipcRenderer.on('stream:done', handler)
-    return () => ipcRenderer.removeListener('stream:done', handler)
-  },
-  onStreamError: (callback) => {
-    const handler = (_event, data) => callback(data)
-    ipcRenderer.on('stream:error', handler)
-    return () => ipcRenderer.removeListener('stream:error', handler)
-  },
-  cancelStream: (streamId) => ipcRenderer.send('stream:cancel', streamId),
-  finishStream: (streamId) => ipcRenderer.send('stream:finish', streamId),
-  togglePin: (pinned) => ipcRenderer.send('window:toggle-pin', pinned),
-  onPinDenied: (callback) => {
-    const handler = (_e, data) => callback(data)
-    ipcRenderer.on('window:pin-denied', handler)
-    return () => ipcRenderer.removeListener('window:pin-denied', handler)
-  },
-
-  renderMarkdown: (text) => renderMd(text)
+  }
 })

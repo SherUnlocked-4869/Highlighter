@@ -39,6 +39,7 @@ const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
 const { SelectionHookService } = require('./main/services/selection-hook-service')
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
+const { createSecureWindow } = require('./main/services/window-security')
 const { name: applicationName } = require('./package.json')
 
 const dataRootContext = prepareDataRoot({ app, applicationName })
@@ -572,21 +573,25 @@ function createToolbarWindow() {
 function createActionWindow() {
   const appearance = getActionAppearance()
   const size = getSettings().selectionToolbar.resultWindow
-  const win = new BrowserWindow({
-    width: size.width,
-    height: size.height,
-    minWidth: ACTION_WINDOW_MIN_WIDTH,
-    minHeight: ACTION_WINDOW_MIN_HEIGHT,
-    title: 'Highlighter',
-    autoHideMenuBar: true,
-    backgroundColor: appearance.resolvedTheme === 'dark' ? '#121316' : '#f5f5f5',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
+  const pagePath = path.join(__dirname, 'action', 'action.html')
+  const win = createSecureWindow({
+    BrowserWindow,
+    pagePath,
+    options: {
+      width: size.width,
+      height: size.height,
+      minWidth: ACTION_WINDOW_MIN_WIDTH,
+      minHeight: ACTION_WINDOW_MIN_HEIGHT,
+      title: 'Highlighter',
+      autoHideMenuBar: true,
+      backgroundColor: appearance.resolvedTheme === 'dark' ? '#121316' : '#f5f5f5',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-action.js')
+      }
+    },
+    onBlocked: ({ url, reason }) => log(`Action window ${reason}:`, url)
   })
-  win.loadFile(path.join(__dirname, 'action', 'action.html'))
+  win.loadFile(pagePath)
   win._isPinned = false
   win._actionRendererReady = false
   win._pendingActionMessages = []

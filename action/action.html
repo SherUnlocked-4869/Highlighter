@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'none'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>划词助手</title>
 <style>
   :root {
@@ -53,6 +54,7 @@
     color: var(--text);
     flex: 1;
   }
+  .header-spacer, .reasoning-spacer { flex: 1; }
   .header .badge {
     font-size: 11px;
     padding: 3px 10px;
@@ -110,6 +112,7 @@
   .result blockquote { border-left: 3px solid var(--primary); padding-left: 14px; margin: 10px 0; color: var(--muted); }
   .result strong { color: var(--text); }
   .result a { color: var(--primary); }
+  .result-error { color: #f44336; margin-top: 8px; }
   .result table { border-collapse: collapse; margin: 10px 0; width: 100%; }
   .result th, .result td { border: 1px solid var(--line); padding: 8px 12px; text-align: left; }
   .result th { background: var(--panel-soft); }
@@ -196,6 +199,7 @@
     animation: blink 0.8s infinite;
     vertical-align: text-bottom;
   }
+  .scroll-sentinel { height: 1px; width: 1px; }
   @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 </style>
 </head>
@@ -204,7 +208,7 @@
   <span class="icon" id="headerIcon">🌐</span>
   <span class="title" id="headerTitle">翻译中...</span>
   <span class="badge" id="headerBadge">翻译</span>
-  <span style="flex:1"></span>
+  <span class="header-spacer"></span>
   <div class="header-actions">
     <button class="pin-btn" id="btnPin" title="置顶">📌</button>
   </div>
@@ -212,13 +216,14 @@
 <div class="content" id="content">
   <div class="source" id="sourceText"></div>
   <div class="result" id="result"></div>
-  <div id="scrollSentinel" style="height:1px;width:1px;"></div>
+  <div id="scrollSentinel" class="scroll-sentinel"></div>
   <div class="loading" id="loading">
     <div class="spinner"></div>
     <span id="loadingText">正在请求 DeepSeek...</span>
   </div>
 </div>
 
+<script src="../node_modules/dompurify/dist/purify.min.js"></script>
 <script src="action.js"></script>
 </body>
 </html>
