@@ -39,6 +39,7 @@ const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
 const { SelectionHookService } = require('./main/services/selection-hook-service')
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
+const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createSecureWindow } = require('./main/services/window-security')
 const { name: applicationName } = require('./package.json')
 
@@ -299,6 +300,30 @@ const writeAppLog = createAppLogger({
 function log(...args) {
   writeAppLog(...args)
 }
+
+function authorizeIpcRole(role, win) {
+  if (role === 'main') return win === mainWindow
+  if (role === 'toolbar') return win === toolbarWindow
+  if (role === 'action') return actionWindows.includes(win)
+  if (role === 'capture') return win === currentCaptureWindow
+  if (role === 'long-capture') return win === currentLongCapture?.controllerWindow
+  if (role === 'long-overlay') return win === currentLongCapture?.overlayWindow
+  if (role === 'pin') return pinWindows.has(win)
+  if (role === 'recognition') return recognitionWindows.has(win)
+  if (role === 'record') return win === recordWindow
+  if (role === 'record-frame') return win === recordFrameWindow && win._recordOwner === recordWindow
+  return false
+}
+
+const secureIpcMain = createSecureIpcMain({
+  ipcMain,
+  BrowserWindow,
+  rootDirectory: __dirname,
+  authorizeRole: authorizeIpcRole,
+  onBlocked: ({ channel, reason, role }) => {
+    log('IPC sender blocked:', { channel, reason, role: role || '' })
+  }
+})
 
 const shortcutService = new ShortcutService({
   globalShortcut,
@@ -1895,7 +1920,7 @@ function restoreManagedDataWriters(restartOcr) {
 }
 
 registerSettingsIpc({
-  ipcMain,
+  ipcMain: secureIpcMain,
   settingsService: {
     getSettings: () => getSettings(),
     updateSettings: (patch) => settingsService.updateSettings(patch),
@@ -1921,7 +1946,7 @@ registerSettingsIpc({
   log
 })
 registerShortcutIpc({
-  ipcMain,
+  ipcMain: secureIpcMain,
   shortcutService
 })
 
@@ -2024,7 +2049,7 @@ async function changeDataRoot() {
 }
 
 registerAppIpc({
-  ipcMain,
+  ipcMain: secureIpcMain,
   controller: {
     openExternal,
     executeFunction,
@@ -2052,7 +2077,7 @@ registerAppIpc({
 })
 
 registerDataRootIpc({
-  ipcMain,
+  ipcMain: secureIpcMain,
   controller: {
     get: getDataRootInfo,
     open: openDataRoot,
@@ -2061,7 +2086,7 @@ registerDataRootIpc({
 })
 
 registerHistoryIpc({
-  ipcMain,
+  ipcMain: secureIpcMain,
   historyService: {
     list: (filter) => historyService.list(filter),
     getThumbnail: (id) => historyService.getThumbnail(id),
@@ -2340,15 +2365,15 @@ const captureIpcController = {
 }
 
 registerCaptureIpc({
-  ipcMain,
+  ipcMain: secureIpcMain,
   controller: captureIpcController
 })
 
-ipcMain.on('pin:ready', (event) => {
+secureIpcMain.on('pin:ready', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win?._pinData) event.sender.send('pin:init', win._pinData)
 })
-ipcMain.on('pin:render-ready', (event) => {
+secureIpcMain.on('pin:render-ready', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   revealPinWindow(win)
   const autoAction = win?._pendingReannotateAction
@@ -2361,16 +2386,16 @@ ipcMain.on('pin:render-ready', (event) => {
     })
   }, 80)
 })
-ipcMain.on('pin:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
-ipcMain.on('pin:copy', (event) => {
+secureIpcMain.on('pin:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
+secureIpcMain.on('pin:copy', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win?._pinData) clipboard.writeImage(nativeImage.createFromDataURL(win._pinData.dataUrl))
 })
-ipcMain.on('pin:save', async (event) => {
+secureIpcMain.on('pin:save', async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win?._pinData) await saveDataUrl(win._pinData.dataUrl)
 })
-ipcMain.on('pin:context-menu', (event, imageBounds = {}) => {
+secureIpcMain.on('pin:context-menu', (event, imageBounds = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win?._pinData) return
   const menu = Menu.buildFromTemplate([
@@ -2434,7 +2459,7 @@ ipcMain.on('pin:context-menu', (event, imageBounds = {}) => {
   ])
   menu.popup({ window: win })
 })
-ipcMain.on('pin:resize', (event, { factor } = {}) => {
+secureIpcMain.on('pin:resize', (event, { factor } = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || !win._pinData?.zoomWithMouse) return
   const bounds = win.getBounds()
@@ -2448,12 +2473,12 @@ ipcMain.on('pin:resize', (event, { factor } = {}) => {
   win.setBounds({ x: bounds.x, y: bounds.y, width, height }, false)
   win.webContents.send('pin:zoom-changed', Math.round(nextZoom * 100))
 })
-ipcMain.on('pin:move-start', (event) => {
+secureIpcMain.on('pin:move-start', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   win._pinMove = { point: screen.getCursorScreenPoint(), bounds: win.getBounds() }
 })
-ipcMain.on('pin:move', (event) => {
+secureIpcMain.on('pin:move', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win?._pinMove) return
   const { point: start, bounds } = win._pinMove
@@ -2465,14 +2490,14 @@ ipcMain.on('pin:move', (event) => {
     height: bounds.height
   }, false)
 })
-ipcMain.on('pin:move-end', (event) => {
+secureIpcMain.on('pin:move-end', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win) {
     win._pinMove = null
     syncPinDisplayScale(win)
   }
 })
-ipcMain.on('pin:toggle-click-through', (event) => {
+secureIpcMain.on('pin:toggle-click-through', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   win._pinData.clickThrough = !win._pinData.clickThrough
@@ -2648,11 +2673,11 @@ const recordingIpcController = {
 }
 
 registerRecordingIpc({
-  ipcMain,
+  ipcMain: secureIpcMain,
   controller: recordingIpcController
 })
 
-ipcMain.on('toolbar:action', async (_event, { action, text }) => {
+secureIpcMain.on('toolbar:action', async (_event, { action, text }) => {
   if (isProcessing || !text) return
   const toolbarConfig = getSettings().selectionToolbar
   const visibleActions = getVisibleToolbarActions(toolbarConfig)
@@ -2698,31 +2723,30 @@ ipcMain.on('toolbar:action', async (_event, { action, text }) => {
   win.show()
   win.focus()
 })
-ipcMain.on('toolbar:close', hideToolbar)
-ipcMain.on('window:toggle-pin', (event, shouldPin) => {
+secureIpcMain.on('window:toggle-pin', (event, shouldPin) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win) return
   if (shouldPin && pinnedCount >= MAX_PINNED) return event.sender.send('window:pin-denied', { max: MAX_PINNED })
   if (shouldPin && !win._isPinned) { win._isPinned = true; pinnedCount++; win.setAlwaysOnTop(true, 'floating') }
   if (!shouldPin && win._isPinned) { win._isPinned = false; pinnedCount = Math.max(0, pinnedCount - 1); win.setAlwaysOnTop(false) }
 })
-ipcMain.on('stream:cancel', (event, streamId) => {
+secureIpcMain.on('stream:cancel', (event, streamId) => {
   if (!isCurrentToolbarStreamSender(event)) return
   if (isStaleToolbarStreamSignal(event, streamId)) return
   cancelToolbarStream(currentStreamController, 'user-cancelled')
 })
-ipcMain.on('stream:finish', (event, streamId) => {
+secureIpcMain.on('stream:finish', (event, streamId) => {
   if (!isCurrentToolbarStreamSender(event)) return
   if (isStaleToolbarStreamSignal(event, streamId)) return
   cancelToolbarStream(currentStreamController, 'renderer-finished')
 })
-ipcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
-ipcMain.on('window:close', (event) => {
+secureIpcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
+secureIpcMain.on('window:close', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-hidden')
   win?.hide()
 })
-ipcMain.on('debug:text-received', () => {})
+secureIpcMain.assertComplete()
 
 async function chooseInitialDataRoot() {
   if (dataRootContext.startupError) {

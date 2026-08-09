@@ -1,5 +1,6 @@
 const path = require('node:path')
 const { app, BrowserWindow, ipcMain } = require('electron')
+const { createSecureIpcMain } = require('../main/services/ipc-security')
 const { createSecureWindow } = require('../main/services/window-security')
 
 const resultPrefix = 'HIGHLIGHTER_ACTION_SECURITY_PROBE='
@@ -26,13 +27,20 @@ async function runProbe() {
   const openedUrls = []
   const streamSignals = []
   const blocked = []
-  ipcMain.handle('shell:open-external', (_event, url) => {
+  let actionWindow = null
+  const secureIpcMain = createSecureIpcMain({
+    ipcMain,
+    BrowserWindow,
+    rootDirectory: path.join(__dirname, '..'),
+    authorizeRole: (role, win) => role === 'action' && win === actionWindow
+  })
+  secureIpcMain.handle('shell:open-external', (_event, url) => {
     openedUrls.push(url)
     return true
   })
-  ipcMain.on('stream:cancel', (_event, streamId) => streamSignals.push({ channel: 'cancel', streamId }))
-  ipcMain.on('stream:finish', (_event, streamId) => streamSignals.push({ channel: 'finish', streamId }))
-  ipcMain.on('window:toggle-pin', () => {})
+  secureIpcMain.on('stream:cancel', (_event, streamId) => streamSignals.push({ channel: 'cancel', streamId }))
+  secureIpcMain.on('stream:finish', (_event, streamId) => streamSignals.push({ channel: 'finish', streamId }))
+  secureIpcMain.on('window:toggle-pin', () => {})
 
   const pagePath = path.join(__dirname, '..', 'action', 'action.html')
   const win = createSecureWindow({
@@ -44,6 +52,7 @@ async function runProbe() {
     },
     onBlocked: (entry) => blocked.push(entry)
   })
+  actionWindow = win
   await win.loadFile(pagePath)
 
   const bridge = await win.webContents.executeJavaScript(`({
