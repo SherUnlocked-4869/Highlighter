@@ -17,6 +17,7 @@
     "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
     "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr",
     "check": "node scripts/check-js.js",
+    "audit:dependencies": "npm audit --audit-level=moderate",
     "test:long-capture": "node tests/long-capture.test.js",
     "prestart": "npm run build:native",
     "start": "electron .",
@@ -117,14 +118,14 @@
     "openai": "^4.87.3",
     "screenshot-desktop": "^1.15.4",
     "selection-hook": "^2.0.2",
-    "sharp": "^0.34.5"
+    "sharp": "0.35.3"
   },
   "devDependencies": {
     "@electron/fuses": "1.8.0",
-    "@electron/rebuild": "^3.6.0",
+    "@electron/rebuild": "4.2.0",
     "electron": "43.2.0",
     "electron-builder": "^26.0.12",
-    "onnxruntime-node": "^1.24.2"
+    "onnxruntime-node": "1.27.0"
   },
   "allowScripts": {
     "electron": true,
@@ -134,6 +135,11 @@
     "ffmpeg-static": true,
     "sharp": true,
     "electron-winstaller@5.4.0": true,
-    "onnxruntime-node@1.24.2": true
+    "onnxruntime-node@1.27.0": true
+  },
+  "overrides": {
+    "onnxruntime-node": {
+      "adm-zip": "0.6.0"
+    }
   }
 }

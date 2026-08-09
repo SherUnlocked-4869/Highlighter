@@ -50,6 +50,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit production and build dependencies
+        run: npm run audit:dependencies
+
       - name: Verify tag and source quality
         shell: pwsh
         run: |
