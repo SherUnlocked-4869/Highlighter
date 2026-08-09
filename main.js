@@ -512,6 +512,15 @@ async function persistHistoryFile(sourcePath, meta = {}) {
   return historyService.persistFile(sourcePath, meta)
 }
 
+function createLocalWindow(pagePath, options) {
+  return createSecureWindow({
+    BrowserWindow,
+    pagePath,
+    options,
+    onBlocked: ({ url, reason }) => log(`Window ${reason}:`, url)
+  })
+}
+
 function createMainWindow(route = 'home') {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.show()
@@ -519,7 +528,8 @@ function createMainWindow(route = 'home') {
     mainWindow.webContents.send('app:navigate', route)
     return mainWindow
   }
-  mainWindow = new BrowserWindow({
+  const pagePath = path.join(__dirname, 'config', 'config.html')
+  mainWindow = createLocalWindow(pagePath, {
     width: 1120,
     height: 760,
     minWidth: 880,
@@ -528,12 +538,10 @@ function createMainWindow(route = 'home') {
     title: 'Highlighter',
     backgroundColor: '#f5f5f5',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false
+      preload: path.join(__dirname, 'preload.js')
     }
   })
-  mainWindow.loadFile(path.join(__dirname, 'config', 'config.html'))
+  mainWindow.loadFile(pagePath)
   mainWindow.once('ready-to-show', () => mainWindow.show())
   mainWindow.webContents.once('did-finish-load', () => mainWindow.webContents.send('app:navigate', route))
   mainWindow.on('closed', () => { mainWindow = null })
@@ -542,7 +550,8 @@ function createMainWindow(route = 'home') {
 
 function createToolbarWindow() {
   if (toolbarWindow && !toolbarWindow.isDestroyed()) return toolbarWindow
-  toolbarWindow = new BrowserWindow({
+  const pagePath = path.join(__dirname, 'toolbar', 'toolbar.html')
+  toolbarWindow = createLocalWindow(pagePath, {
     width: TOOLBAR_W,
     height: TOOLBAR_H,
     frame: false,
@@ -554,14 +563,12 @@ function createToolbarWindow() {
     show: false,
     resizable: false,
     webPreferences: {
-      preload: path.join(__dirname, 'preload-toolbar.js'),
-      contextIsolation: true,
-      nodeIntegration: false
+      preload: path.join(__dirname, 'preload-toolbar.js')
     }
   })
   toolbarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   toolbarWindow.setAlwaysOnTop(true, 'screen-saver')
-  toolbarWindow.loadFile(path.join(__dirname, 'toolbar', 'toolbar.html'))
+  toolbarWindow.loadFile(pagePath)
   toolbarWindow.webContents.once('did-finish-load', () => {
     if (!toolbarWindow || toolbarWindow.isDestroyed()) return
     toolbarWindow.webContents.send('toolbar:appearance', getActionAppearance())
@@ -574,22 +581,17 @@ function createActionWindow() {
   const appearance = getActionAppearance()
   const size = getSettings().selectionToolbar.resultWindow
   const pagePath = path.join(__dirname, 'action', 'action.html')
-  const win = createSecureWindow({
-    BrowserWindow,
-    pagePath,
-    options: {
-      width: size.width,
-      height: size.height,
-      minWidth: ACTION_WINDOW_MIN_WIDTH,
-      minHeight: ACTION_WINDOW_MIN_HEIGHT,
-      title: 'Highlighter',
-      autoHideMenuBar: true,
-      backgroundColor: appearance.resolvedTheme === 'dark' ? '#121316' : '#f5f5f5',
-      webPreferences: {
-        preload: path.join(__dirname, 'preload-action.js')
-      }
-    },
-    onBlocked: ({ url, reason }) => log(`Action window ${reason}:`, url)
+  const win = createLocalWindow(pagePath, {
+    width: size.width,
+    height: size.height,
+    minWidth: ACTION_WINDOW_MIN_WIDTH,
+    minHeight: ACTION_WINDOW_MIN_HEIGHT,
+    title: 'Highlighter',
+    autoHideMenuBar: true,
+    backgroundColor: appearance.resolvedTheme === 'dark' ? '#121316' : '#f5f5f5',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-action.js')
+    }
   })
   win.loadFile(pagePath)
   win._isPinned = false
@@ -1009,7 +1011,8 @@ async function createCaptureWindow(options = {}) {
   const smartSelectPromise = mode === 'region' ? createSmartSelectSession() : Promise.resolve(null)
   const smartSelectSession = await smartSelectPromise
   const transparent = mode === 'canvas' || !!options.transparent
-  const captureWindow = new BrowserWindow({
+  const pagePath = path.join(__dirname, 'capture', 'capture.html')
+  const captureWindow = createLocalWindow(pagePath, {
     x: captureBounds.x,
     y: captureBounds.y,
     width: Math.min(captureBounds.width, 800),
@@ -1027,8 +1030,6 @@ async function createCaptureWindow(options = {}) {
     hasShadow: !transparent,
     webPreferences: {
       preload: path.join(__dirname, 'preload-capture.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
       backgroundThrottling: false
     }
   })
@@ -1055,7 +1056,7 @@ async function createCaptureWindow(options = {}) {
   // The frameless screen-saver-level window already covers the full display bounds.
   captureWindow.setResizable(false)
 
-  const loadPromise = captureWindow.loadFile(path.join(__dirname, 'capture', 'capture.html'))
+  const loadPromise = captureWindow.loadFile(pagePath)
   captureWindow.on('closed', () => {
     clearTimeout(captureWindow._renderTimeout)
     captureWindow._smartSelectContext?.session.dispose()
@@ -1210,7 +1211,9 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
     tempRoot: activePaths?.longCaptureCache || app.getPath('temp'),
     axis: settings.screenshot.longCaptureDirection
   })
-  const overlayWindow = new BrowserWindow({
+  const overlayPagePath = path.join(__dirname, 'long-capture', 'overlay.html')
+  const controllerPagePath = path.join(__dirname, 'long-capture', 'long-capture.html')
+  const overlayWindow = createLocalWindow(overlayPagePath, {
     ...display.bounds,
     frame: false,
     transparent: true,
@@ -1223,13 +1226,11 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
     movable: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload-long-overlay.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
       backgroundThrottling: false
     }
   })
   const controllerBounds = placeLongCaptureController(display, selectionBounds)
-  const controllerWindow = new BrowserWindow({
+  const controllerWindow = createLocalWindow(controllerPagePath, {
     ...controllerBounds,
     frame: false,
     transparent: true,
@@ -1242,8 +1243,6 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
     fullscreenable: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload-long-capture.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
       backgroundThrottling: false
     }
   })
@@ -1270,8 +1269,8 @@ async function createLongCaptureFromSelection(captureWindow, payload = {}) {
 
   try {
     await Promise.all([
-      overlayWindow.loadFile(path.join(__dirname, 'long-capture', 'overlay.html')),
-      controllerWindow.loadFile(path.join(__dirname, 'long-capture', 'long-capture.html'))
+      overlayWindow.loadFile(overlayPagePath),
+      controllerWindow.loadFile(controllerPagePath)
     ])
     if (captureWindow.isDestroyed() || currentLongCapture?.controllerWindow !== controllerWindow) throw new Error('长截图窗口初始化已取消')
     captureWindow.close()
@@ -1446,7 +1445,8 @@ function createPinWindow(dataUrl, meta = {}) {
   const cursor = screen.getCursorScreenPoint()
   const x = selectionBounds?.x ?? Math.round(Math.min(display.workArea.x + display.workArea.width - width, Math.max(display.workArea.x, cursor.x - width / 2)))
   const y = selectionBounds?.y ?? Math.round(Math.min(display.workArea.y + display.workArea.height - height, Math.max(display.workArea.y, cursor.y - 30)))
-  const win = new BrowserWindow({
+  const pagePath = path.join(__dirname, 'pin', 'pin.html')
+  const win = createLocalWindow(pagePath, {
     width: Math.min(width, 200),
     height: Math.min(height, 160),
     x: display.bounds.x,
@@ -1462,9 +1462,7 @@ function createPinWindow(dataUrl, meta = {}) {
     hasShadow: true,
     backgroundColor: '#00000000',
     webPreferences: {
-      preload: path.join(__dirname, 'preload-pin.js'),
-      contextIsolation: true,
-      nodeIntegration: false
+      preload: path.join(__dirname, 'preload-pin.js')
     }
   })
   win._pinData = {
@@ -1489,7 +1487,7 @@ function createPinWindow(dataUrl, meta = {}) {
   win.setBounds({ x, y, width, height }, false)
   pinWindows.add(win)
   pinnedCount++
-  win.loadFile(path.join(__dirname, 'pin', 'pin.html'))
+  win.loadFile(pagePath)
   win.on('closed', () => {
     pinWindows.delete(win)
     pinnedCount = Math.max(0, pinnedCount - 1)
@@ -1634,7 +1632,8 @@ function createRecognitionWindow(type, dataUrl, options = {}) {
   if (!dataUrl) throw new Error('识别图片数据为空')
   const isTable = type === 'table'
   const settings = getSettings()
-  const win = new BrowserWindow({
+  const pagePath = path.join(__dirname, 'recognition', 'recognition.html')
+  const win = createLocalWindow(pagePath, {
     width: isTable ? 820 : 640,
     height: isTable ? 620 : 420,
     minWidth: isTable ? 600 : 480,
@@ -1644,9 +1643,7 @@ function createRecognitionWindow(type, dataUrl, options = {}) {
     backgroundColor: '#18181b',
     title: isTable ? 'Highlighter 表格识别' : 'Highlighter 二维码识别',
     webPreferences: {
-      preload: path.join(__dirname, 'preload-recognition.js'),
-      contextIsolation: true,
-      nodeIntegration: false
+      preload: path.join(__dirname, 'preload-recognition.js')
     }
   })
   recognitionWindows.add(win)
@@ -1656,7 +1653,7 @@ function createRecognitionWindow(type, dataUrl, options = {}) {
     scaleFactor: Number(options.scaleFactor) || 1,
     mainColor: settings.mainColor || '#1677ff'
   }
-  win.loadFile(path.join(__dirname, 'recognition', 'recognition.html'))
+  win.loadFile(pagePath)
   win.on('closed', () => recognitionWindows.delete(win))
   return win
 }
@@ -1729,7 +1726,9 @@ async function createRecordWindow(options = {}) {
   const frameBounds = calculateFrameBounds(selectionBounds, 2)
   const controlBounds = getRecordControlBounds(selectionBounds, display.workArea)
 
-  const frameWindow = new BrowserWindow({
+  const framePagePath = path.join(__dirname, 'record', 'frame.html')
+  const controlPagePath = path.join(__dirname, 'record', 'record.html')
+  const frameWindow = createLocalWindow(framePagePath, {
     ...frameBounds,
     show: false,
     frame: false,
@@ -1743,12 +1742,10 @@ async function createRecordWindow(options = {}) {
     hasShadow: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload-record-frame.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
       backgroundThrottling: false
     }
   })
-  const controlWindow = new BrowserWindow({
+  const controlWindow = createLocalWindow(controlPagePath, {
     ...controlBounds,
     show: false,
     frame: false,
@@ -1758,8 +1755,6 @@ async function createRecordWindow(options = {}) {
     resizable: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload-record.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
       backgroundThrottling: false
     }
   })
@@ -1794,8 +1789,8 @@ async function createRecordWindow(options = {}) {
     if (recordFrameWindow === frameWindow) recordFrameWindow = null
   })
   await Promise.all([
-    frameWindow.loadFile(path.join(__dirname, 'record', 'frame.html')),
-    controlWindow.loadFile(path.join(__dirname, 'record', 'record.html'))
+    frameWindow.loadFile(framePagePath),
+    controlWindow.loadFile(controlPagePath)
   ])
   frameWindow.showInactive()
   controlWindow.show()

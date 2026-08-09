@@ -10,6 +10,7 @@ const actionScript = fs.readFileSync(path.join(root, 'action', 'action.js'), 'ut
 const actionHtml = fs.readFileSync(path.join(root, 'action', 'action.html'), 'utf8')
 const toolbarPreload = fs.readFileSync(path.join(root, 'preload-toolbar.js'), 'utf8')
 const toolbarHtml = fs.readFileSync(path.join(root, 'toolbar', 'toolbar.html'), 'utf8')
+const toolbarScript = fs.readFileSync(path.join(root, 'toolbar', 'toolbar.js'), 'utf8')
 
 test('selection result windows receive and apply the configured appearance', () => {
   assert.match(main, /function getActionAppearance\([\s\S]*nativeTheme\.shouldUseDarkColors/)
@@ -38,9 +39,9 @@ test('selection toolbar receives configured and system appearance updates', () =
   assert.match(main, /appearance: getActionAppearance\(\)/)
   assert.match(main, /nativeTheme\.on\('updated',[\s\S]*broadcastActionAppearance\(\)/)
   assert.match(toolbarPreload, /onAppearance:[\s\S]*toolbar:appearance/)
-  assert.match(toolbarHtml, /function applyAppearance\(appearance = \{\}\)/)
-  assert.match(toolbarHtml, /toolbarAPI\.onAppearance\(applyAppearance\)/)
-  assert.match(toolbarHtml, /applyAppearance\(appearance\)/)
+  assert.match(toolbarScript, /function applyAppearance\(appearance = \{\}\)/)
+  assert.match(toolbarScript, /toolbarAPI\.onAppearance\(applyAppearance\)/)
+  assert.match(toolbarScript, /applyAppearance\(appearance\)/)
 })
 
 test('selection toolbar uses the main interface palette and one text color', () => {

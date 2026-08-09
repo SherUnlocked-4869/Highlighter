@@ -114,7 +114,7 @@ test('action renderer uses a dedicated API, CSP, sanitizer, and packaged preload
   const actionHtml = fs.readFileSync(actionPage, 'utf8')
   const packageJson = require('../package.json')
 
-  assert.match(main, /createSecureWindow\(\{[\s\S]*preload: path\.join\(__dirname, 'preload-action\.js'\)/)
+  assert.match(main, /createLocalWindow\(pagePath, \{[\s\S]*preload: path\.join\(__dirname, 'preload-action\.js'\)/)
   assert.doesNotMatch(commonPreload, /showdown|renderMarkdown|action:start|stream:data|window:toggle-pin/)
   assert.match(actionPreload, /exposeInMainWorld\('actionAPI'/)
   assert.doesNotMatch(actionPreload, /config:|settings:|history:|data-root:|ai:/)
@@ -127,4 +127,37 @@ test('action renderer uses a dedicated API, CSP, sanitizer, and packaged preload
   assert.ok(packageJson.build.files.includes('preload-action.js'))
   assert.equal(packageJson.dependencies.dompurify, '3.4.13')
   assert.equal(packageJson.dependencies.showdown, undefined)
+})
+
+test('all application windows use the locked factory and deny network-capable page defaults', () => {
+  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  const service = fs.readFileSync(path.join(root, 'main', 'services', 'window-security.js'), 'utf8')
+  const htmlFiles = [
+    ['config', 'config.html'],
+    ['toolbar', 'toolbar.html'],
+    ['action', 'action.html'],
+    ['capture', 'capture.html'],
+    ['long-capture', 'overlay.html'],
+    ['long-capture', 'long-capture.html'],
+    ['pin', 'pin.html'],
+    ['recognition', 'recognition.html'],
+    ['record', 'frame.html'],
+    ['record', 'record.html']
+  ]
+
+  assert.doesNotMatch(main, /new BrowserWindow\s*\(/)
+  assert.equal((service.match(/new BrowserWindow\s*\(/g) || []).length, 1)
+  assert.match(main, /function createLocalWindow\(pagePath, options\)[\s\S]*createSecureWindow/)
+  for (const segments of htmlFiles) {
+    const html = fs.readFileSync(path.join(root, ...segments), 'utf8')
+    assert.match(html, /Content-Security-Policy/, `${segments.join('/')} CSP`)
+    assert.match(html, /default-src 'none'/, `${segments.join('/')} default-src`)
+    assert.match(html, /script-src 'self'/, `${segments.join('/')} script-src`)
+    assert.doesNotMatch(html, /script-src[^;]*(?:'unsafe-inline'|'unsafe-eval')/, `${segments.join('/')} executable inline code`)
+    assert.match(html, /connect-src 'none'/, `${segments.join('/')} connect-src`)
+    assert.match(html, /object-src 'none'/, `${segments.join('/')} object-src`)
+    assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/i, `${segments.join('/')} inline script`)
+  }
+  assert.match(fs.readFileSync(path.join(root, 'toolbar', 'toolbar.html'), 'utf8'), /<script src="toolbar\.js"><\/script>/)
+  assert.match(fs.readFileSync(path.join(root, 'pin', 'pin.html'), 'utf8'), /<script src="pin\.js"><\/script>/)
 })
