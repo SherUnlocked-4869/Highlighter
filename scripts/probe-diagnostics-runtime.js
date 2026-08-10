@@ -51,8 +51,16 @@ app.on('browser-window-created', (_event, win) => {
           }
           throw new Error('Timed out waiting for ' + description)
         }
-        document.querySelector('[data-route="settings-system"]').click()
-        const previewButton = await waitFor(() => document.getElementById('previewDiagnostics'), 'diagnostics settings')
+        let lastRouteClickAt = 0
+        const previewButton = await waitFor(() => {
+          const button = document.getElementById('previewDiagnostics')
+          if (button) return button
+          if (Date.now() - lastRouteClickAt >= 200) {
+            lastRouteClickAt = Date.now()
+            document.querySelector('[data-route="settings-system"]').click()
+          }
+          return null
+        }, 'diagnostics settings')
         previewButton.click()
         const previewElement = await waitFor(() => {
           const element = document.getElementById('diagnosticsPreview')
