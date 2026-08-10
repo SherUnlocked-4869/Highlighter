@@ -1,0 +1,126 @@
+name: Unsigned Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: unsigned-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Check and test
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production and build dependencies
+        run: npm run audit:dependencies
+
+      - name: Check JavaScript syntax
+        run: npm run check
+
+      - name: Check package version matches tag
+        run: npm run check:version
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run renderer E2E
+        run: npm run test:e2e
+
+      - name: Enforce coverage thresholds
+        run: npm run test:coverage
+
+      - name: Run long capture regression tests
+        run: npm run test:long-capture
+
+  release:
+    name: Build unsigned NSIS and portable release
+    needs: quality
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/ocr
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build native helpers
+        run: npm run build:native
+
+      - name: Verify strict Electron runtime
+        shell: pwsh
+        run: |
+          $env:HIGHLIGHTER_REQUIRE_NATIVE_RUNTIME = '1'
+          $env:HIGHLIGHTER_REQUIRE_CAPTURE_RUNTIME = '1'
+          npm run test:runtime
+
+      - name: Build unsigned NSIS and portable artifacts
+        shell: pwsh
+        run: |
+          $electronDist = (Resolve-Path 'node_modules/electron/dist').Path
+          npx electron-builder --config electron-builder.release.cjs --win nsis portable --x64 --publish never "--config.electronDist=$electronDist" --config.forceCodeSigning=false --config.win.signExecutable=false
+
+      - name: Generate CycloneDX SBOM
+        shell: pwsh
+        run: npm sbom --sbom-format cyclonedx | Out-File -FilePath dist/sbom.cdx.json -Encoding utf8
+
+      - name: Verify release artifacts
+        run: npm run verify:package
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $assets = @(Get-ChildItem -LiteralPath dist -File | Where-Object {
+            $_.Name -like 'Highlighter-Setup-*.exe' -or
+            $_.Name -like 'Highlighter-*-portable.exe' -or
+            $_.Name -like '*.blockmap' -or
+            $_.Name -match '^(latest|beta|alpha)(-.+)?\.yml$' -or
+            $_.Name -eq 'SHA256SUMS.txt' -or
+            $_.Name -eq 'sbom.cdx.json'
+          } | ForEach-Object { $_.FullName })
+          if (-not $assets) { throw 'No release assets found in dist' }
+          gh release view $tag --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release $tag already exists; refusing to overwrite"
+          }
+          $releaseFlags = @()
+          if ($tag -match '-') { $releaseFlags += '--prerelease' }
+          gh release create $tag $assets $releaseFlags --generate-notes --title "Highlighter $tag"
