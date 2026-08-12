@@ -35,6 +35,7 @@ const ACTION_WINDOW_MAX_HEIGHT = 10000
 
 const DEFAULT_SELECTION_TOOLBAR = Object.freeze({
   enabled: true,
+  clipboardFallback: false,
   buttons: Object.freeze({ copy: true, search: true, translate: true, explain: true }),
   order: TOOLBAR_ACTION_ORDER,
   prompts: Object.freeze({
@@ -117,6 +118,7 @@ function normalizeSelectionToolbar(value = {}) {
 
   return {
     enabled: config.enabled !== false,
+    clipboardFallback: config.clipboardFallback === true,
     buttons,
     order,
     prompts: { translate: translatePrompt, explain: explainPrompt },

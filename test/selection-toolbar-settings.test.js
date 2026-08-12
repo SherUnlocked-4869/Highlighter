@@ -13,6 +13,8 @@ test('config app exposes the selection toolbar route and controls', () => {
   assert.match(script, /id="translatePrompt"/)
   assert.match(script, /id="explainPrompt"/)
   assert.match(script, /id="addCustomToolbar"/)
+  assert.match(script, /剪贴板兼容模式/)
+  assert.match(script, /switchMarkup\(toolbar\.clipboardFallback, 'clipboardFallback', 'selectionToolbar'\)/)
   assert.match(script, /data-custom-name/)
   assert.match(script, /data-custom-prompt/)
   assert.match(script, /data-delete-custom-toolbar/)
@@ -31,6 +33,9 @@ test('main process normalizes toolbar settings and routes configured custom prom
   const action = fs.readFileSync(path.join(__dirname, '..', 'action', 'action.js'), 'utf8')
 
   assert.match(main, /normalized\.selectionToolbar = normalizeSelectionToolbar/)
+  assert.match(main, /enableClipboard: getSettings\(\)\.selectionToolbar\.clipboardFallback/)
+  assert.match(main, /updateStartOptions\(\{ enableClipboard: settings\.selectionToolbar\.clipboardFallback \}\)/)
+  assert.match(main, /consoleLike: app\.isPackaged \? null : console/)
   assert.match(main, /getVisibleToolbarActionDefinitions/)
   assert.match(main, /getToolbarActionDefinition\(toolbarConfig, action\)/)
   assert.match(main, /createTranslateStream\(apiKey, text, action\.prompt, requestOptions\)/)

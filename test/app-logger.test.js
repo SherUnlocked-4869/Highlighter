@@ -85,3 +85,12 @@ test('logger writes structured session, version, event, and exit fields', () => 
     assert.equal(entries[1].details.token, '[REDACTED]')
   })
 })
+
+test('logger writes to disk without a console sink', () => {
+  withTempDirectory((directory) => {
+    const filePath = path.join(directory, 'app.log')
+    const logger = createAppLogger({ filePath, consoleLike: null })
+    assert.doesNotThrow(() => logger('packaged shutdown'))
+    assert.match(fs.readFileSync(filePath, 'utf8'), /packaged shutdown/)
+  })
+})

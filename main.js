@@ -319,7 +319,8 @@ const writeAppLog = createAppLogger({
   filePath: logFile,
   isEnabled: () => !dataRootMigrationInProgress && !!store && getSettings().system.runLog,
   sessionId: applicationSessionId,
-  version: app.getVersion()
+  version: app.getVersion(),
+  consoleLike: app.isPackaged ? null : console
 })
 
 function log(...args) {
@@ -814,6 +815,10 @@ function initSelectionHook() {
         keyDown: hideToolbar,
         mouseWheel: hideToolbar,
         status: (status) => log('Selection hook status:', status)
+      },
+      startOptions: {
+        debug: false,
+        enableClipboard: getSettings().selectionToolbar.clipboardFallback
       },
       log
     })
@@ -2001,11 +2006,15 @@ registerSettingsIpc({
     if (patch.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
     if (patch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
     if (patch.theme !== undefined || patch.mainColor !== undefined) broadcastActionAppearance(settings)
+    if (patch.selectionToolbar?.clipboardFallback !== undefined) {
+      selectionHookService?.updateStartOptions({ enableClipboard: settings.selectionToolbar.clipboardFallback })
+    }
   },
   onSettingsReset: (settings) => {
     registerShortcuts()
     broadcastActionAppearance(settings)
     updateService?.setChannel(settings.system.updateChannel)
+    selectionHookService?.updateStartOptions({ enableClipboard: settings.selectionToolbar.clipboardFallback })
   },
   onStartHook: () => initSelectionHook(),
   validateApiKey: (apiKey) => require('./deepseek').validateApiKey(apiKey),

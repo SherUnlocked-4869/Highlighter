@@ -15,6 +15,7 @@ const {
 test('default selection toolbar enables all built-ins with editable prompts and stable order', () => {
   assert.deepEqual(DEFAULT_SELECTION_TOOLBAR, {
     enabled: true,
+    clipboardFallback: false,
     buttons: { copy: true, search: true, translate: true, explain: true },
     order: ['copy', 'search', 'translate', 'explain'],
     prompts: {
@@ -41,9 +42,16 @@ test('legacy toolbar settings gain defaults without losing disabled buttons or s
   assert.equal(normalized.buttons.copy, false)
   assert.equal(normalized.buttons.translate, false)
   assert.equal(normalized.searchEngine, 'google')
+  assert.equal(normalized.clipboardFallback, false)
   assert.equal(normalized.prompts.translate, DEFAULT_TRANSLATE_PROMPT)
   assert.equal(normalized.prompts.explain, DEFAULT_EXPLAIN_PROMPT)
   assert.deepEqual(normalized.customActions, [])
+})
+
+test('clipboard fallback is opt-in only', () => {
+  assert.equal(normalizeSelectionToolbar({ clipboardFallback: true }).clipboardFallback, true)
+  assert.equal(normalizeSelectionToolbar({ clipboardFallback: 1 }).clipboardFallback, false)
+  assert.equal(normalizeSelectionToolbar({ clipboardFallback: 'true' }).clipboardFallback, false)
 })
 
 test('visible actions follow configured order and include enabled custom AI actions', () => {

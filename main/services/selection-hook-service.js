@@ -3,7 +3,7 @@ class SelectionHookService {
     createHook,
     handlers = {},
     log = () => {},
-    startOptions = { debug: false, enableClipboard: true },
+    startOptions = { debug: false, enableClipboard: false },
     restartDelayMs = 1200,
     retryDelayMs = 2500,
     maxStartRetries = 2,
@@ -94,6 +94,18 @@ class SelectionHookService {
     this.stopHook()
     this.log('Selection hook restart scheduled:', reason)
     return this.scheduleStart(reason, delayMs)
+  }
+
+  updateStartOptions(patch, reason = 'configuration-change') {
+    if (!patch || typeof patch !== 'object') throw new TypeError('Selection hook options require an object')
+    const nextOptions = { ...this.startOptions, ...patch }
+    const changed = Object.keys(nextOptions).some((key) => nextOptions[key] !== this.startOptions[key])
+    if (!changed) return false
+    this.startOptions = nextOptions
+    if (!this.hook || this.disposed) return true
+    this.stopHook()
+    this.start(reason)
+    return true
   }
 
   suspend(reason = 'system-suspend') {

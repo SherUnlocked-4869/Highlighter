@@ -73,7 +73,7 @@ test('starts one selection hook and forwards configured events', () => {
   assert.equal(service.start(), true)
   assert.equal(service.start(), true)
   assert.equal(hook.startCalls.length, 1)
-  assert.deepEqual(hook.startCalls[0], { debug: false, enableClipboard: true })
+  assert.deepEqual(hook.startCalls[0], { debug: false, enableClipboard: false })
 
   hook.emit('text-selection', { text: 'selected' })
   hook.emit('mouse-down', { x: 4, y: 8 })
@@ -81,6 +81,25 @@ test('starts one selection hook and forwards configured events', () => {
     ['selection', { text: 'selected' }],
     ['mouse', { x: 4, y: 8 }]
   ])
+})
+
+test('updating clipboard fallback restarts a running hook with the new option', () => {
+  const hooks = []
+  const service = new SelectionHookService({
+    createHook: () => {
+      const hook = new FakeHook()
+      hooks.push(hook)
+      return hook
+    }
+  })
+
+  service.start()
+  assert.equal(service.updateStartOptions({ enableClipboard: false }), false)
+  assert.equal(service.updateStartOptions({ enableClipboard: true }), true)
+  assert.equal(hooks[0].cleanupCalls, 1)
+  assert.equal(hooks.length, 2)
+  assert.deepEqual(hooks[1].startCalls, [{ debug: false, enableClipboard: true }])
+  assert.equal(service.updateStartOptions({ enableClipboard: true }), false)
 })
 
 test('resume restart discards a falsely running hook and coalesces duplicate events', () => {

@@ -63,11 +63,17 @@ function createAppLogger({
 }) {
   let writeFailureReported = false
 
+  function writeConsole(method, message) {
+    try {
+      consoleLike?.[method]?.(message)
+    } catch {}
+  }
+
   function writeEntry({ level = 'info', event = 'log', values = [], details }) {
     const message = values.length ? formatLogMessage(values) : ''
     const consoleMethod = level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'log'
     const consoleMessage = message || `${event} ${formatLogMessage([details || {}])}`
-    consoleLike[consoleMethod]?.(consoleMessage)
+    writeConsole(consoleMethod, consoleMessage)
     if (!filePath || !isEnabled()) return
     const entry = sanitizeValue({
       timestamp: now().toISOString(),
@@ -88,7 +94,7 @@ function createAppLogger({
     } catch (error) {
       if (writeFailureReported) return
       writeFailureReported = true
-      consoleLike.warn(`Unable to write application log: ${error.message || String(error)}`)
+      writeConsole('warn', `Unable to write application log: ${error.message || String(error)}`)
     }
   }
 
