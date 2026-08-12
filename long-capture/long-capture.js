@@ -12,10 +12,12 @@ const trimStartInput = document.getElementById('trimStart')
 const trimEndInput = document.getElementById('trimEnd')
 const directionButtons = [...document.querySelectorAll('[data-axis]')]
 const actionButtons = [...document.querySelectorAll('.actions button')]
+const WORKER_TIMEOUT_MS = 5000
 
 let initData = null
 let stream = null
 let worker = null
+let workerError = null
 let axis = 'vertical'
 let capturing = false
 let busy = false
@@ -28,6 +30,24 @@ const cropCanvas = document.createElement('canvas')
 const cropContext = cropCanvas.getContext('2d', { willReadFrequently: true })
 const analysisCanvas = document.createElement('canvas')
 const analysisContext = analysisCanvas.getContext('2d', { willReadFrequently: true })
+
+function rejectWorkerRequests(error) {
+  for (const request of workerRequests.values()) {
+    clearTimeout(request.timeout)
+    request.reject(error)
+  }
+  workerRequests.clear()
+}
+
+function failWorker(message) {
+  const error = new Error(message || '长截图匹配器不可用，请重新打开长截图')
+  workerError = error
+  rejectWorkerRequests(error)
+  setCapturing(false)
+  toggleButton.disabled = true
+  setStatus(error.message)
+  updateControls()
+}
 
 function setStatus(message, confidence) {
   statusElement.textContent = message
@@ -57,10 +77,28 @@ function updateTrimPreview() {
 }
 
 function workerFrame(rgba, width, height) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    if (workerError) {
+      reject(workerError)
+      return
+    }
+    if (!worker) {
+      reject(new Error('长截图匹配器尚未就绪'))
+      return
+    }
     const id = ++requestId
-    workerRequests.set(id, resolve)
-    worker.postMessage({ type: 'frame', id, rgba: rgba.buffer, width, height, axis }, [rgba.buffer])
+    const timeout = setTimeout(() => {
+      workerRequests.delete(id)
+      reject(new Error('长截图匹配超时，请重新开始'))
+    }, WORKER_TIMEOUT_MS)
+    workerRequests.set(id, { reject, resolve, timeout })
+    try {
+      worker.postMessage({ type: 'frame', id, rgba: rgba.buffer, width, height, axis }, [rgba.buffer])
+    } catch (error) {
+      clearTimeout(timeout)
+      workerRequests.delete(id)
+      reject(error)
+    }
   })
 }
 
@@ -284,10 +322,15 @@ async function initialize(data) {
   document.documentElement.style.setProperty('--primary', data.settings?.mainColor || '#1677ff')
   worker = new Worker('matcher-worker.js')
   worker.onmessage = (event) => {
-    const resolve = workerRequests.get(event.data.id)
-    if (!resolve) return
+    const request = workerRequests.get(event.data.id)
+    if (!request) return
     workerRequests.delete(event.data.id)
-    resolve(event.data)
+    clearTimeout(request.timeout)
+    request.resolve(event.data)
+  }
+  worker.onerror = (event) => {
+    event.preventDefault()
+    failWorker(event.message || '长截图匹配器启动失败，请重新打开长截图')
   }
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -296,7 +339,8 @@ async function initialize(data) {
     })
     video.srcObject = stream
     await video.play()
-    setStatus('准备就绪')
+    if (workerError) setStatus(workerError.message)
+    else setStatus('准备就绪')
   } catch (error) {
     setStatus(`屏幕采集失败：${error.message}`)
     toggleButton.disabled = true
@@ -330,6 +374,7 @@ addEventListener('keydown', (event) => {
 })
 addEventListener('beforeunload', () => {
   clearInterval(timer)
+  rejectWorkerRequests(new Error('长截图窗口已关闭'))
   stream?.getTracks().forEach((track) => track.stop())
   worker?.terminate()
 })

@@ -161,3 +161,14 @@ test('all application windows use the locked factory and deny network-capable pa
   assert.match(fs.readFileSync(path.join(root, 'toolbar', 'toolbar.html'), 'utf8'), /<script src="toolbar\.js"><\/script>/)
   assert.match(fs.readFileSync(path.join(root, 'pin', 'pin.html'), 'utf8'), /<script src="pin\.js"><\/script>/)
 })
+
+test('long capture allows only its packaged matcher worker and fails closed', () => {
+  const html = fs.readFileSync(path.join(root, 'long-capture', 'long-capture.html'), 'utf8')
+  const script = fs.readFileSync(path.join(root, 'long-capture', 'long-capture.js'), 'utf8')
+
+  assert.match(html, /worker-src 'self'/)
+  assert.doesNotMatch(html, /worker-src 'none'/)
+  assert.match(script, /worker\.onerror/)
+  assert.match(script, /长截图匹配超时/)
+  assert.match(script, /rejectWorkerRequests/)
+})

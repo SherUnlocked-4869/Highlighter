@@ -69,4 +69,8 @@ test('every remaining renderer loads under the locked Electron sandbox', { timeo
     )
     assert.deepEqual(entry.blocked, [])
   }
+  assert.deepEqual(
+    probe.windows.find((entry) => entry.name === 'long-capture').state.matcherWorker,
+    { id: 7, status: 'initialized' }
+  )
 })

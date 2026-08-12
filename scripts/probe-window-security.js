@@ -137,6 +137,27 @@ async function inspectEntry(entry) {
     externalScriptCount: [...document.scripts].filter((script) => script.src).length,
     styleSheetCount: document.styleSheets.length
   })`)
+  if (entry.name === 'long-capture') {
+    state.matcherWorker = await win.webContents.executeJavaScript(`new Promise((resolve) => {
+      const matcherWorker = new Worker('matcher-worker.js')
+      const timeout = setTimeout(() => {
+        matcherWorker.terminate()
+        resolve({ status: 'timeout' })
+      }, 3000)
+      matcherWorker.onerror = () => {
+        clearTimeout(timeout)
+        matcherWorker.terminate()
+        resolve({ status: 'error' })
+      }
+      matcherWorker.onmessage = (event) => {
+        clearTimeout(timeout)
+        matcherWorker.terminate()
+        resolve(event.data)
+      }
+      const rgba = new Uint8ClampedArray(64)
+      matcherWorker.postMessage({ type: 'frame', id: 7, rgba: rgba.buffer, width: 4, height: 4, axis: 'vertical' }, [rgba.buffer])
+    })`)
+  }
   const preferences = win.webContents.getLastWebPreferences()
   win.destroy()
   return {
