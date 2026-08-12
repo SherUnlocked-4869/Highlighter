@@ -64,10 +64,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Unable to download assets for $env:RELEASE_TAG"
           }
-          & ./scripts/verify-promotion-assets.ps1 `
-            -DistDir $downloadDir `
-            -ExpectedVersion '${{ steps.candidate.outputs.version }}' `
-            -ExpectedPublisher $env:WIN_SIGNING_PUBLISHER
+          $publisher = [Environment]::GetEnvironmentVariable('WIN_SIGNING_PUBLISHER')
+          $verifyArgs = @(
+            '-DistDir', $downloadDir,
+            '-ExpectedVersion', '${{ steps.candidate.outputs.version }}'
+          )
+          if ([string]::IsNullOrWhiteSpace($publisher)) {
+            $verifyArgs += '-SkipSignature'
+          } else {
+            $verifyArgs += @('-ExpectedPublisher', $publisher)
+          }
+          & ./scripts/verify-promotion-assets.ps1 @verifyArgs
 
       - name: Publish verified release
         shell: pwsh
