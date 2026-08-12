@@ -40,6 +40,7 @@ const IPC_SURFACES = Object.freeze([
       'history:export',
       'history:copy',
       'history:edit',
+      'history:open',
       'history:reveal',
       'settings:get',
       'settings:update',

@@ -2235,6 +2235,12 @@ registerHistoryIpc({
     await createCaptureWindow({ imageBuffer: await fs.promises.readFile(item.filePath), mode: 'image', source: 'history' })
     return true
   },
+  openItem: async (item) => {
+    if (!fs.existsSync(item.filePath)) return false
+    const error = await shell.openPath(item.filePath)
+    if (error) throw new Error(`无法使用默认应用打开截图：${error}`)
+    return true
+  },
   revealItem: (item) => {
     shell.showItemInFolder(item.filePath)
     return true

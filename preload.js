@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cleanupHistory: () => ipcRenderer.invoke('history:cleanup'),
   copyHistory: (id) => ipcRenderer.invoke('history:copy', id),
   editHistory: (id) => ipcRenderer.invoke('history:edit', id),
+  openHistory: (id) => ipcRenderer.invoke('history:open', id),
   revealHistory: (id) => ipcRenderer.invoke('history:reveal', id),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
   requestAi: (messages, options) => ipcRenderer.invoke('ai:complete', { messages, options }),

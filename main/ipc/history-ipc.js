@@ -3,6 +3,7 @@ function registerHistoryIpc({
   historyService,
   copyItem,
   editItem,
+  openItem,
   revealItem,
   chooseExportDirectory
 }) {
@@ -27,6 +28,10 @@ function registerHistoryIpc({
   ipcMain.handle('history:edit', (_event, id) => {
     const item = historyService.getItem(id)
     return item ? editItem(item) : false
+  })
+  ipcMain.handle('history:open', (_event, id) => {
+    const item = historyService.getItem(id)
+    return item ? openItem(item) : false
   })
   ipcMain.handle('history:reveal', (_event, id) => {
     const item = historyService.getItem(id)

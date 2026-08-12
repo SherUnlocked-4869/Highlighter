@@ -30,6 +30,7 @@ test('history IPC registers query, batch management, and file actions', async ()
     historyService,
     copyItem: () => 'copied',
     editItem: () => 'edited',
+    openItem: () => 'opened',
     revealItem: () => 'revealed',
     chooseExportDirectory: async () => 'C:\\Exports'
   })
@@ -45,12 +46,15 @@ test('history IPC registers query, batch management, and file actions', async ()
     'history:export',
     'history:copy',
     'history:edit',
+    'history:open',
     'history:reveal'
   ])
   assert.deepEqual(ipcMain.handlers.get('history:list')(null, { query: 'test' }), [{ query: 'test' }])
   assert.equal(ipcMain.handlers.get('history:thumbnail')(null, '1'), 'thumbnail:1')
   assert.equal(ipcMain.handlers.get('history:copy')(null, '1'), 'copied')
   assert.equal(ipcMain.handlers.get('history:copy')(null, 'missing'), false)
+  assert.equal(ipcMain.handlers.get('history:open')(null, '1'), 'opened')
+  assert.equal(ipcMain.handlers.get('history:open')(null, 'missing'), false)
   assert.equal(ipcMain.handlers.get('history:delete-many')(null, ['1']).deletedCount, 1)
   assert.equal((await ipcMain.handlers.get('history:export')(null, ['1'])).directory, 'C:\\Exports')
 })

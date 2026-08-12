@@ -15,6 +15,7 @@ test('preload exposes fixed history management methods', () => {
   assert.match(preload, /deleteHistoryMany:\s*\(ids\)\s*=>\s*ipcRenderer\.invoke\('history:delete-many', ids\)/)
   assert.match(preload, /exportHistory:\s*\(ids\)\s*=>\s*ipcRenderer\.invoke\('history:export', ids\)/)
   assert.match(preload, /cleanupHistory:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('history:cleanup'\)/)
+  assert.match(preload, /openHistory:\s*\(id\)\s*=>\s*ipcRenderer\.invoke\('history:open', id\)/)
 })
 
 test('history page renders storage statistics and batch controls', () => {
@@ -36,6 +37,12 @@ test('history page renders storage statistics and batch controls', () => {
 
 test('history action buttons keep readable color in dark mode', () => {
   assert.match(styles, /\.history-actions button\{[^}]*color:var\(--text\)/)
+})
+
+test('history page opens screenshots with the default application', () => {
+  assert.match(config, /data-history-action="open"[^>]*>打开<\/button>/)
+  assert.match(config, /window\.electronAPI\.openHistory\(id\)/)
+  assert.match(main, /shell\.openPath\(item\.filePath\)/)
 })
 
 test('capture file names use China Standard Time (UTC+8)', () => {
