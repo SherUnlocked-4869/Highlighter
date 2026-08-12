@@ -1,6 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { test, expect } = require('./fixtures')
+const { version } = require('../package.json')
 
 async function navigate(page, route, title) {
   await page.locator(`[data-route="${route}"]`).click()
@@ -22,7 +23,7 @@ test('first startup renders navigation, empty history, About version, and shortc
   await expect(page.locator('[data-shortcut="screenshot"]')).toHaveText('F1')
 
   await navigate(page, 'about', '关于')
-  await expect(page.locator('.about')).toContainText('版本 2.1.0-beta.0')
+  await expect(page.locator('.about')).toContainText(`版本 ${version}`)
   await expect(page.locator('.about')).toContainText('开发环境')
   await expect(page.locator('.update-card')).toContainText('当前运行方式不支持应用内更新')
   expect(await highlighter.getUnexpectedErrors()).toEqual([])
