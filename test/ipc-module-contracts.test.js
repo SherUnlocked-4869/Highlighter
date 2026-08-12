@@ -155,6 +155,7 @@ test('recording IPC module owns control and annotation channels', () => {
       'ready',
       'frameReady',
       'frameSnapshot',
+      'performance',
       'setAnnotationCommand',
       'startSession',
       'appendChunk',
@@ -172,6 +173,7 @@ test('recording IPC module owns control and annotation channels', () => {
     'record:ready',
     'record-frame:ready',
     'record-frame:snapshot',
+    'record:performance',
     'record:close'
   ])
   assert.deepEqual([...ipcMain.handlers.keys()], [
