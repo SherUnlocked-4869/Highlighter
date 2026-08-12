@@ -175,6 +175,7 @@ Highlighter/
 | `npm start` | 构建原生组件并启动应用 |
 | `npm test` | 运行自动化测试 |
 | `npm run check` | 检查 JavaScript 语法 |
+| `npm run bench:performance` | 采集本机性能基线 |
 | `npm run build:native` | 重新构建全部原生组件 |
 | `npm run build:win` | 构建 Windows NSIS 安装包 |
 | `npm run build:win:portable` | 构建 Windows 便携版本 |

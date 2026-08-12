@@ -1,3 +1,5 @@
+const { performance } = require('node:perf_hooks')
+const mainModuleStartedAt = performance.now()
 const {
   app,
   BrowserWindow,
@@ -31,6 +33,7 @@ const {
 } = require('./main/services/data-root-migration')
 const { ManagedWriterCoordinator, quiesceAndMigrate } = require('./main/services/managed-writer-coordinator')
 const { createAppLogger } = require('./main/services/app-logger')
+const { PerformanceMonitor } = require('./main/services/performance-monitor')
 const { DiagnosticsService } = require('./main/services/diagnostics-service')
 const { SettingsService } = require('./main/services/settings-service')
 const { registerSettingsIpc } = require('./main/ipc/settings-ipc')
@@ -229,6 +232,7 @@ function initializeStore() {
 }
 
 let mainWindow = null
+let firstMainWindowReady = true
 let selectionWindowManager = null
 let selectionHookService = null
 const selectionPowerListeners = []
@@ -267,6 +271,25 @@ function getOcrService() {
     log
   })
   return ocrService
+}
+
+async function recognizeWithPerformance(imageBuffer, options, source) {
+  const token = performanceMonitor.begin('ocr.recognize', {
+    source: String(source || 'unknown'),
+    inputBytes: Buffer.isBuffer(imageBuffer) ? imageBuffer.length : Number(imageBuffer?.byteLength) || 0
+  })
+  try {
+    const result = await getOcrService().recognize(imageBuffer, options)
+    performanceMonitor.finish(token, {
+      outcome: 'success',
+      cached: result?.cached === true,
+      engineDurationMs: Number(result?.durationMs) || 0
+    })
+    return result
+  } catch (error) {
+    performanceMonitor.finish(token, { outcome: 'error', errorName: error?.name || 'Error' })
+    throw error
+  }
 }
 
 function resolveFfmpegPath() {
@@ -321,6 +344,11 @@ const writeAppLog = createAppLogger({
   sessionId: applicationSessionId,
   version: app.getVersion(),
   consoleLike: app.isPackaged ? null : console
+})
+
+const performanceMonitor = new PerformanceMonitor({
+  logger: writeAppLog,
+  getAppMetrics: () => app.getAppMetrics()
 })
 
 function log(...args) {
@@ -702,15 +730,36 @@ function createLocalWindow(pagePath, options) {
   })
 }
 
+function positionAutomationWindow(win) {
+  if (!e2eContext.enabled || !win || win.isDestroyed()) return false
+  const primary = screen.getPrimaryDisplay()
+  const secondary = screen.getAllDisplays().find((display) => display.id !== primary.id)
+  if (!secondary) return false
+  const [width, height] = win.getSize()
+  const area = secondary.workArea
+  win.setPosition(
+    Math.round(area.x + Math.max(0, (area.width - width) / 2)),
+    Math.round(area.y + Math.max(0, (area.height - height) / 2)),
+    false
+  )
+  return true
+}
+
 function createMainWindow(route = 'home') {
   if (mainWindow && !mainWindow.isDestroyed()) {
+    const startedAt = performance.now()
     mainWindow.show()
     mainWindow.focus()
     mainWindow.webContents.send('app:navigate', route)
+    performanceMonitor.record('main-window.reopen', performance.now() - startedAt, { route })
     return mainWindow
   }
+  const readyToken = performanceMonitor.begin('main-window.ready', {
+    route,
+    firstWindow: firstMainWindowReady
+  })
   const pagePath = path.join(__dirname, 'config', 'config.html')
-  mainWindow = createLocalWindow(pagePath, {
+  const win = createLocalWindow(pagePath, {
     width: 1120,
     height: 760,
     minWidth: 880,
@@ -722,11 +771,23 @@ function createMainWindow(route = 'home') {
       preload: path.join(__dirname, 'preload.js')
     }
   })
-  mainWindow.loadFile(pagePath)
-  mainWindow.once('ready-to-show', () => mainWindow.show())
-  mainWindow.webContents.once('did-finish-load', () => mainWindow.webContents.send('app:navigate', route))
-  mainWindow.on('closed', () => { mainWindow = null })
-  return mainWindow
+  mainWindow = win
+  win.loadFile(pagePath)
+  win.once('ready-to-show', () => {
+    if (mainWindow !== win || win.isDestroyed()) return
+    positionAutomationWindow(win)
+    win.show()
+    performanceMonitor.finish(readyToken, {
+      moduleElapsedMs: Math.round((performance.now() - mainModuleStartedAt) * 100) / 100
+    })
+    performanceMonitor.snapshot(firstMainWindowReady ? 'startup-main-window' : 'main-window-recreated')
+    firstMainWindowReady = false
+  })
+  win.webContents.once('did-finish-load', () => {
+    if (!win.isDestroyed()) win.webContents.send('app:navigate', route)
+  })
+  win.on('closed', () => { if (mainWindow === win) mainWindow = null })
+  return win
 }
 
 selectionWindowManager = new SelectionWindowManager({
@@ -1078,6 +1139,14 @@ async function getDisplayCapture(display) {
 }
 
 async function createCaptureWindow(options = {}) {
+  const performanceStartedAt = performance.now()
+  const performanceTiming = {
+    startedAt: performanceStartedAt,
+    mode: options.mode || 'region',
+    captureMs: 0,
+    smartSelectMs: 0,
+    windowLoadMs: 0
+  }
   if (currentCaptureWindow && !currentCaptureWindow.isDestroyed()) currentCaptureWindow.close()
   const mode = options.mode || 'region'
   const requestedBounds = options.windowBounds && {
@@ -1095,14 +1164,22 @@ async function createCaptureWindow(options = {}) {
     : options.imageDataUrl
       ? dataUrlToBuffer(options.imageDataUrl)
       : null
-  const capturePromise = suppliedImageBuffer || options.mode === 'canvas'
+  const rawCapturePromise = suppliedImageBuffer || options.mode === 'canvas'
     ? Promise.resolve({
         imageBuffer: suppliedImageBuffer || Buffer.alloc(0),
         sourceId: '',
         scaleFactor: Number(options.sourceScaleFactor) || display.scaleFactor || 1
       })
     : getDisplayCapture(display)
-  const smartSelectPromise = mode === 'region' ? createSmartSelectSession() : Promise.resolve(null)
+  const capturePromise = Promise.resolve(rawCapturePromise).then((capture) => {
+    performanceTiming.captureMs = Math.round((performance.now() - performanceStartedAt) * 100) / 100
+    return capture
+  })
+  const smartSelectStartedAt = performance.now()
+  const smartSelectPromise = (mode === 'region' ? createSmartSelectSession() : Promise.resolve(null)).then((session) => {
+    performanceTiming.smartSelectMs = Math.round((performance.now() - smartSelectStartedAt) * 100) / 100
+    return session
+  })
   const smartSelectSession = await smartSelectPromise
   const transparent = mode === 'canvas' || !!options.transparent
   const pagePath = path.join(__dirname, 'capture', 'capture.html')
@@ -1132,6 +1209,7 @@ async function createCaptureWindow(options = {}) {
   captureWindow._captureVisible = false
   captureWindow._captureInitSent = false
   captureWindow._captureRendererReady = false
+  captureWindow._performanceTiming = performanceTiming
   captureWindow._smartSelectContext = smartSelectSession
     ? {
         session: smartSelectSession,
@@ -1150,7 +1228,11 @@ async function createCaptureWindow(options = {}) {
   // The frameless screen-saver-level window already covers the full display bounds.
   captureWindow.setResizable(false)
 
-  const loadPromise = captureWindow.loadFile(pagePath)
+  const loadStartedAt = performance.now()
+  const loadPromise = captureWindow.loadFile(pagePath).then((result) => {
+    performanceTiming.windowLoadMs = Math.round((performance.now() - loadStartedAt) * 100) / 100
+    return result
+  })
   captureWindow.on('closed', () => {
     clearTimeout(captureWindow._renderTimeout)
     captureWindow._smartSelectContext?.session.dispose()
@@ -2213,10 +2295,13 @@ registerDataRootIpc({
 registerHistoryIpc({
   ipcMain: secureIpcMain,
   historyService: {
-    list: (filter) => historyService.list(filter),
+    list: (filter) => performanceMonitor.measure('history.list', () => historyService.list(filter), {
+      limit: Math.max(0, Number(filter?.limit) || 0),
+      filtered: !!(filter?.query || filter?.source)
+    }),
     getThumbnail: (id) => historyService.getThumbnail(id),
-    listSources: () => historyService.listSources(),
-    stats: () => historyService.stats(),
+    listSources: () => performanceMonitor.measure('history.sources', () => historyService.listSources()),
+    stats: () => performanceMonitor.measure('history.stats', () => historyService.stats()),
     getItem: (id) => historyService.getItem(id),
     delete: (id) => historyService.delete(id),
     deleteMany: (ids) => historyService.deleteMany(ids),
@@ -2264,7 +2349,24 @@ const captureIpcController = {
   renderReady: (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   revealCaptureWindow(win)
-  if (win?._captureInit) win._captureInit.imageBuffer = null
+  if (win?._captureInit) {
+    const timing = win._performanceTiming
+    if (timing) {
+      const bounds = win._captureInit.captureBounds || {}
+      performanceMonitor.record('capture.interactive', performance.now() - timing.startedAt, {
+        mode: timing.mode,
+        captureMs: timing.captureMs,
+        smartSelectMs: timing.smartSelectMs,
+        windowLoadMs: timing.windowLoadMs,
+        width: Number(bounds.width) || 0,
+        height: Number(bounds.height) || 0,
+        scaleFactor: Number(win._captureInit.scaleFactor) || 1
+      })
+      performanceMonitor.snapshot('capture-interactive', { mode: timing.mode })
+      win._performanceTiming = null
+    }
+    win._captureInit.imageBuffer = null
+  }
   },
   renderError: (event, message) => {
   const win = BrowserWindow.fromWebContents(event.sender)
@@ -2438,11 +2540,11 @@ const captureIpcController = {
   const buffer = imageDataToBuffer(imageData)
   if (!buffer.length) throw new Error('OCR 图片数据为空')
   const settings = getSettings()
-  return getOcrService().recognize(buffer, {
+  return recognizeWithPerformance(buffer, {
     scaleFactor: payload?.scaleFactor,
     detectAngle: settings.ocr.detectAngle,
     minConfidence: settings.ocr.minConfidence
-  })
+  }, 'capture')
   },
   translate: async (_event, payload) => {
   if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
@@ -2450,11 +2552,11 @@ const captureIpcController = {
   const buffer = imageDataToBuffer(imageData)
   if (!buffer.length) throw new Error('OCR 图片数据为空')
   const settings = getSettings()
-  const ocrResult = await getOcrService().recognize(buffer, {
+  const ocrResult = await recognizeWithPerformance(buffer, {
     scaleFactor: payload?.scaleFactor,
     detectAngle: settings.ocr.detectAngle,
     minConfidence: settings.ocr.minConfidence
-  })
+  }, 'capture-translate')
   const text = ocrResult.text.trim()
   if (!text) throw new Error('未识别到可翻译的文本')
   const translation = await require('./deepseek').translateText(getSettings().apiKey, text, 'auto', getSettings().ai.targetLanguage)
@@ -2474,11 +2576,11 @@ const captureIpcController = {
   const dataUrl = payload?.dataUrl
   if (!dataUrl) throw new Error('表格图片数据为空')
   const settings = getSettings()
-  const ocrResult = await getOcrService().recognize(dataUrlToBuffer(dataUrl), {
+  const ocrResult = await recognizeWithPerformance(dataUrlToBuffer(dataUrl), {
     scaleFactor: payload?.scaleFactor,
     detectAngle: settings.ocr.detectAngle,
     minConfidence: settings.ocr.minConfidence
-  })
+  }, 'table')
   const table = buildTableFromOcr(ocrResult, { minConfidence: settings.ocr.minConfidence })
   if (!table) throw new Error('未识别到稳定的表格结构，请扩大选区并确保至少包含两行两列')
   return table
@@ -2971,6 +3073,8 @@ async function startApplication() {
     return
   }
 
+  const startupToken = performanceMonitor.begin('startup.services-ready')
+
   let finalization = null
   if (activePaths) {
     const hasPendingMigration = fs.existsSync(dataRootContext.pendingPath)
@@ -3027,6 +3131,10 @@ async function startApplication() {
   }
   if (e2eContext.enabled) createToolbarWindow()
   updateService.start()
+  performanceMonitor.finish(startupToken, {
+    e2e: e2eContext.enabled,
+    moduleElapsedMs: Math.round((performance.now() - mainModuleStartedAt) * 100) / 100
+  })
 }
 
 const gotTheLock = app.requestSingleInstanceLock()
