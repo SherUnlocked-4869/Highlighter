@@ -3,7 +3,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const sharp = require('sharp')
-const { findBestShift } = require('../long-capture/matcher')
+const { findBestShift, scoreShift } = require('../long-capture/matcher')
 const { LongCaptureSession } = require('../main/services/long-capture-session')
 
 function makeFrame(width, height, valueAt) {
@@ -14,6 +14,35 @@ function makeFrame(width, height, valueAt) {
   return frame
 }
 
+function referenceScoreShift(previous, current, width, height, axis, shift) {
+  const amount = Math.abs(shift)
+  const horizontal = axis === 'horizontal'
+  const axisLength = horizontal ? width : height
+  const crossStart = Math.floor((horizontal ? height : width) * 0.06)
+  const crossEnd = (horizontal ? height : width) - crossStart
+  const alongLength = axisLength - amount
+  const alongStep = Math.max(1, Math.floor(alongLength / 180))
+  const crossStep = Math.max(1, Math.floor((crossEnd - crossStart) / 48))
+  let difference = 0
+  let samples = 0
+
+  for (let along = 0; along < alongLength; along += alongStep) {
+    const previousAlong = shift > 0 ? along + amount : along
+    const currentAlong = shift > 0 ? along : along + amount
+    for (let cross = crossStart; cross < crossEnd; cross += crossStep) {
+      const previousIndex = horizontal
+        ? cross * width + previousAlong
+        : previousAlong * width + cross
+      const currentIndex = horizontal
+        ? cross * width + currentAlong
+        : currentAlong * width + cross
+      difference += Math.abs(previous[previousIndex] - current[currentIndex])
+      samples++
+    }
+  }
+  return samples ? difference / samples : Number.POSITIVE_INFINITY
+}
+
 async function png(width, height, color) {
   return sharp({ create: { width, height, channels: 4, background: color } }).png().toBuffer()
 }
@@ -22,6 +51,15 @@ async function run() {
   const width = 72
   const height = 58
   const base = makeFrame(width, height, (x, y) => (x * 17 + y * 29 + x * y * 3) % 251)
+  const comparison = makeFrame(width, height, (x, y) => (x * 11 + y * 7 + x * y * 5) % 253)
+  for (const [axis, shifts] of [['vertical', [11, -7]], ['horizontal', [9, -5]]]) {
+    for (const shift of shifts) {
+      assert.equal(
+        scoreShift(base, comparison, width, height, axis, shift),
+        referenceScoreShift(base, comparison, width, height, axis, shift)
+      )
+    }
+  }
   const verticalShift = 11
   const vertical = makeFrame(width, height, (x, y) => (
     y < height - verticalShift ? base[(y + verticalShift) * width + x] : (x * 13 + y * 7) % 255

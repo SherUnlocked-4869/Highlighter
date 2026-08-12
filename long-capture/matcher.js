@@ -25,18 +25,34 @@
     let difference = 0
     let samples = 0
 
-    for (let along = 0; along < alongLength; along += alongStep) {
-      const previousAlong = shift > 0 ? along + amount : along
-      const currentAlong = shift > 0 ? along : along + amount
+    if (horizontal) {
+      const previousOffset = shift > 0 ? amount : 0
+      const currentOffset = shift > 0 ? 0 : amount
       for (let cross = crossStart; cross < crossEnd; cross += crossStep) {
-        const previousIndex = horizontal
-          ? cross * width + previousAlong
-          : previousAlong * width + cross
-        const currentIndex = horizontal
-          ? cross * width + currentAlong
-          : currentAlong * width + cross
-        difference += Math.abs(previous[previousIndex] - current[currentIndex])
-        samples++
+        let previousIndex = cross * width + previousOffset
+        let currentIndex = cross * width + currentOffset
+        for (let along = 0; along < alongLength; along += alongStep) {
+          difference += Math.abs(previous[previousIndex] - current[currentIndex])
+          previousIndex += alongStep
+          currentIndex += alongStep
+          samples++
+        }
+      }
+    } else {
+      let previousRow = (shift > 0 ? amount : 0) * width
+      let currentRow = (shift > 0 ? 0 : amount) * width
+      const rowStep = alongStep * width
+      for (let along = 0; along < alongLength; along += alongStep) {
+        let previousIndex = previousRow + crossStart
+        let currentIndex = currentRow + crossStart
+        for (let cross = crossStart; cross < crossEnd; cross += crossStep) {
+          difference += Math.abs(previous[previousIndex] - current[currentIndex])
+          previousIndex += crossStep
+          currentIndex += crossStep
+          samples++
+        }
+        previousRow += rowStep
+        currentRow += rowStep
       }
     }
     return samples ? difference / samples : Number.POSITIVE_INFINITY
@@ -68,36 +84,54 @@
     // The analysis image keeps full resolution along the scroll axis, so each
     // candidate must be checked. Skipping pixels makes text edges miss by one
     // row and can turn an exact match into a high-error candidate.
-    const coarseStep = 1
-    const candidates = []
+    const scores = new Float64Array(maximumShift * 2 + 1)
+    scores.fill(Number.POSITIVE_INFINITY)
+    let bestShift = 0
+    let bestScore = Number.POSITIVE_INFINITY
 
     for (const sign of [1, -1]) {
-      for (let amount = minimumShift; amount <= maximumShift; amount += coarseStep) {
-        candidates.push({ shift: amount * sign, score: scoreShift(previous, current, width, height, axis, amount * sign) })
+      for (let amount = minimumShift; amount <= maximumShift; amount++) {
+        const shift = amount * sign
+        const score = scoreShift(previous, current, width, height, axis, shift)
+        scores[shift + maximumShift] = score
+        if (!bestShift || score < bestScore) {
+          bestShift = shift
+          bestScore = score
+        }
       }
     }
-    candidates.sort((left, right) => left.score - right.score)
-    const coarseBest = candidates[0]
-    if (!coarseBest) return { status: 'failed', shift: 0, score: Infinity, confidence: 0 }
+    if (!bestShift) return { status: 'failed', shift: 0, score: Infinity, confidence: 0 }
 
-    const refined = []
-    for (let shift = coarseBest.shift - coarseStep; shift <= coarseBest.shift + coarseStep; shift++) {
+    const coarseBestShift = bestShift
+    bestShift = 0
+    bestScore = Number.POSITIVE_INFINITY
+    for (let shift = coarseBestShift - 1; shift <= coarseBestShift + 1; shift++) {
       if (Math.abs(shift) < minimumShift || Math.abs(shift) > maximumShift) continue
-      refined.push({ shift, score: scoreShift(previous, current, width, height, axis, shift) })
+      const score = scores[shift + maximumShift]
+      if (!bestShift || score < bestScore) {
+        bestShift = shift
+        bestScore = score
+      }
     }
-    refined.sort((left, right) => left.score - right.score)
-    const best = refined[0] || coarseBest
-    const second = candidates.find((candidate) => candidate.shift * best.shift < 0 || Math.abs(candidate.shift - best.shift) > Math.max(5, coarseStep * 2))
-    const margin = second ? second.score - best.score : 255 - best.score
+
+    let secondScore = Number.POSITIVE_INFINITY
+    for (const sign of [1, -1]) {
+      for (let amount = minimumShift; amount <= maximumShift; amount++) {
+        const shift = amount * sign
+        if (shift * bestShift >= 0 && Math.abs(shift - bestShift) <= 5) continue
+        secondScore = Math.min(secondScore, scores[shift + maximumShift])
+      }
+    }
+    const margin = Number.isFinite(secondScore) ? secondScore - bestScore : 255 - bestScore
     const matchThreshold = Number(options.matchThreshold) || 24
     const minimumMargin = Number(options.minimumMargin) || 0.8
-    const accepted = best.score <= matchThreshold && margin >= minimumMargin
-    const confidence = Math.max(0, Math.min(1, ((matchThreshold - best.score) / matchThreshold) * 0.75 + Math.min(1, margin / 8) * 0.25))
+    const accepted = bestScore <= matchThreshold && margin >= minimumMargin
+    const confidence = Math.max(0, Math.min(1, ((matchThreshold - bestScore) / matchThreshold) * 0.75 + Math.min(1, margin / 8) * 0.25))
 
     return {
       status: accepted ? 'matched' : 'failed',
-      shift: accepted ? best.shift : 0,
-      score: best.score,
+      shift: accepted ? bestShift : 0,
+      score: bestScore,
       stillScore,
       margin,
       confidence
