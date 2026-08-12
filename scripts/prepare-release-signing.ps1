@@ -16,70 +16,47 @@ function Require-EnvironmentValue {
   return $value.Trim()
 }
 
-function Write-ConfigFile {
-  param(
-    [Parameter(Mandatory = $true)][hashtable]$Config,
-    [Parameter(Mandatory = $true)][string]$OutputPath
-  )
+$provider = (Require-EnvironmentValue 'WIN_SIGNING_PROVIDER').ToLowerInvariant()
+$publisher = Require-EnvironmentValue 'WIN_SIGNING_PUBLISHER'
 
-  $projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
-  $resolvedOutput = if ([IO.Path]::IsPathRooted($OutputPath)) {
-    [IO.Path]::GetFullPath($OutputPath)
-  } else {
-    [IO.Path]::GetFullPath((Join-Path $projectRoot $OutputPath))
-  }
-  $outputDirectory = Split-Path -Parent $resolvedOutput
-  [IO.Directory]::CreateDirectory($outputDirectory) | Out-Null
-  $json = $Config | ConvertTo-Json -Depth 6
-  [IO.File]::WriteAllText($resolvedOutput, $json, [Text.UTF8Encoding]::new($false))
-  Write-Output $resolvedOutput
-}
-
-$provider = [Environment]::GetEnvironmentVariable('WIN_SIGNING_PROVIDER')
-if (-not [string]::IsNullOrWhiteSpace($provider)) {
-  $provider = $provider.Trim().ToLowerInvariant()
-  $publisher = Require-EnvironmentValue 'WIN_SIGNING_PUBLISHER'
-
-  if ($provider -eq 'pfx') {
-    Require-EnvironmentValue 'WIN_CSC_LINK' | Out-Null
-    Require-EnvironmentValue 'WIN_CSC_KEY_PASSWORD' | Out-Null
-    Write-Output 'electron-builder.release.cjs'
-    return
-  }
-
-  if ($provider -ne 'azure') {
-    throw "Unsupported WIN_SIGNING_PROVIDER: $provider (expected azure or pfx)"
-  }
-
-  Require-EnvironmentValue 'AZURE_TENANT_ID' | Out-Null
-  Require-EnvironmentValue 'AZURE_CLIENT_ID' | Out-Null
-  Require-EnvironmentValue 'AZURE_CLIENT_SECRET' | Out-Null
-
-  $config = [ordered]@{
-    extends = 'file:electron-builder.release.cjs'
-    win = [ordered]@{
-      azureSignOptions = [ordered]@{
-        publisherName = $publisher
-        endpoint = Require-EnvironmentValue 'WIN_AZURE_ENDPOINT'
-        certificateProfileName = Require-EnvironmentValue 'WIN_AZURE_CERTIFICATE_PROFILE'
-        codeSigningAccountName = Require-EnvironmentValue 'WIN_AZURE_CODE_SIGNING_ACCOUNT'
-        fileDigest = 'SHA256'
-        timestampDigest = 'SHA256'
-        timestampRfc3161 = 'http://timestamp.acs.microsoft.com'
-      }
-    }
-  }
-  Write-ConfigFile -Config $config -OutputPath $OutputPath
+if ($provider -eq 'pfx') {
+  Require-EnvironmentValue 'WIN_CSC_LINK' | Out-Null
+  Require-EnvironmentValue 'WIN_CSC_KEY_PASSWORD' | Out-Null
+  Write-Output 'electron-builder.release.cjs'
   return
 }
 
-Write-Host 'WIN_SIGNING_PROVIDER is not configured; producing an unsigned release configuration'
+if ($provider -ne 'azure') {
+  throw "Unsupported WIN_SIGNING_PROVIDER: $provider (expected azure or pfx)"
+}
+
+Require-EnvironmentValue 'AZURE_TENANT_ID' | Out-Null
+Require-EnvironmentValue 'AZURE_CLIENT_ID' | Out-Null
+Require-EnvironmentValue 'AZURE_CLIENT_SECRET' | Out-Null
+
 $config = [ordered]@{
   extends = 'file:electron-builder.release.cjs'
-  forceCodeSigning = $false
   win = [ordered]@{
-    signExecutable = $false
-    verifyUpdateCodeSignature = $false
+    azureSignOptions = [ordered]@{
+      publisherName = $publisher
+      endpoint = Require-EnvironmentValue 'WIN_AZURE_ENDPOINT'
+      certificateProfileName = Require-EnvironmentValue 'WIN_AZURE_CERTIFICATE_PROFILE'
+      codeSigningAccountName = Require-EnvironmentValue 'WIN_AZURE_CODE_SIGNING_ACCOUNT'
+      fileDigest = 'SHA256'
+      timestampDigest = 'SHA256'
+      timestampRfc3161 = 'http://timestamp.acs.microsoft.com'
+    }
   }
 }
-Write-ConfigFile -Config $config -OutputPath $OutputPath
+
+$projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$resolvedOutput = if ([IO.Path]::IsPathRooted($OutputPath)) {
+  [IO.Path]::GetFullPath($OutputPath)
+} else {
+  [IO.Path]::GetFullPath((Join-Path $projectRoot $OutputPath))
+}
+$outputDirectory = Split-Path -Parent $resolvedOutput
+[IO.Directory]::CreateDirectory($outputDirectory) | Out-Null
+$json = $config | ConvertTo-Json -Depth 6
+[IO.File]::WriteAllText($resolvedOutput, $json, [Text.UTF8Encoding]::new($false))
+Write-Output $resolvedOutput

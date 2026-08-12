@@ -15,6 +15,7 @@ concurrency:
 jobs:
   release:
     name: Build signed draft release
+    if: vars.WIN_SIGNING_PROVIDER != ''
     runs-on: windows-latest
     timeout-minutes: 75
     environment: release
@@ -91,15 +92,8 @@ jobs:
         shell: pwsh
         run: npm sbom --sbom-format cyclonedx | Out-File -FilePath dist/sbom.cdx.json -Encoding utf8
 
-      - name: Verify release artifacts
-        shell: pwsh
-        run: |
-          if ($env:WIN_SIGNING_PROVIDER) {
-            npm run verify:release
-          } else {
-            Write-Host 'Signing is not configured; verifying unsigned release artifacts'
-            npm run verify:package
-          }
+      - name: Verify signed release
+        run: npm run verify:release
 
       - name: Upload verified workflow artifact
         uses: actions/upload-artifact@v4
