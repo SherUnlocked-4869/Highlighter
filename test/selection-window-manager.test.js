@@ -9,8 +9,12 @@ class FakeWebContents extends EventEmitter {
   constructor() {
     super()
     this.messages = []
+    this.destroyed = false
+    this.crashed = false
   }
 
+  isDestroyed() { return this.destroyed }
+  isCrashed() { return this.crashed }
   send(channel, payload) {
     this.messages.push([channel, payload])
   }
@@ -25,13 +29,23 @@ class FakeWindow extends EventEmitter {
     this.visible = false
     this.size = [options.width, options.height]
     this.position = [0, 0]
+    this.loadError = null
   }
 
   isDestroyed() { return this.destroyed }
   isVisible() { return this.visible }
   setVisibleOnAllWorkspaces(value, options) { this.visibleOnAllWorkspaces = [value, options] }
   setAlwaysOnTop(value, level) { this.alwaysOnTop = [value, level] }
-  loadFile(pagePath) { this.loadedPage = pagePath }
+  loadFile(pagePath) {
+    this.loadedPage = pagePath
+    return this.loadError ? Promise.reject(this.loadError) : Promise.resolve()
+  }
+  destroy() {
+    if (this.destroyed) return
+    this.destroyed = true
+    this.webContents.destroyed = true
+    this.emit('closed')
+  }
   setSize(width, height) { this.size = [width, height] }
   getSize() { return this.size }
   setPosition(x, y) { this.position = [x, y] }
@@ -46,6 +60,7 @@ function createHarness(overrides = {}) {
   const settingsUpdates = []
   const closedActions = []
   const blurredActions = []
+  const logs = []
   const timers = new Map()
   let nextTimer = 1
   let settings = {
@@ -71,6 +86,7 @@ function createHarness(overrides = {}) {
     sizeSaveDelayMs: 180,
     onActionWindowClosed: (win, details) => closedActions.push([win, details]),
     onActionWindowBlur: (win) => blurredActions.push(win),
+    log: (...args) => logs.push(args),
     setTimer(callback, delay) {
       const id = nextTimer++
       timers.set(id, { callback, delay })
@@ -85,6 +101,7 @@ function createHarness(overrides = {}) {
     settingsUpdates,
     closedActions,
     blurredActions,
+    logs,
     timers,
     setSettings: (value) => { settings = value }
   }
@@ -179,6 +196,71 @@ test('action lifecycle queues renderer messages, saves size, and handles blur an
   action.emit('closed')
   assert.equal(manager.ownsActionWindow(action), false)
   assert.deepEqual(closedActions, [[action, { wasPinned: true }]])
+})
+
+test('crashed selection windows fail health checks and are rebuilt', () => {
+  const { manager, windows } = createHarness()
+  const toolbar = manager.createToolbarWindow()
+  toolbar.webContents.crashed = true
+
+  const replacementToolbar = manager.createToolbarWindow()
+  assert.notEqual(replacementToolbar, toolbar)
+  assert.equal(toolbar.destroyed, true)
+  assert.equal(manager.getToolbarWindow(), replacementToolbar)
+
+  const action = manager.getOrCreateActionWindow()
+  action.webContents.crashed = true
+  const replacementAction = manager.getOrCreateActionWindow()
+  assert.notEqual(replacementAction, action)
+  assert.equal(action.destroyed, true)
+  assert.equal(manager.ownsActionWindow(action), false)
+  assert.equal(manager.ownsActionWindow(replacementAction), true)
+  assert.equal(windows.length, 4)
+})
+
+test('renderer exit recovery destroys only owned selection windows', () => {
+  const { manager, logs } = createHarness()
+  const toolbar = manager.createToolbarWindow()
+  const foreign = new FakeWindow({ width: 10, height: 10 })
+
+  assert.equal(manager.handleRendererGone(foreign, { reason: 'crashed', exitCode: -1 }), false)
+  assert.equal(foreign.destroyed, false)
+  assert.equal(manager.handleRendererGone(toolbar, { reason: 'crashed', exitCode: -1 }), true)
+  assert.equal(toolbar.destroyed, true)
+  assert.equal(manager.getToolbarWindow(), null)
+  assert.match(logs.at(-1).join(' '), /renderer crashed \(-1\)/)
+})
+
+test('failed page loads destroy selection windows and allow clean retries', async () => {
+  const created = []
+  const failures = new Set(['toolbar', 'action'])
+  const { manager, closedActions, logs } = createHarness({
+    createWindow(pagePath, options) {
+      const win = new FakeWindow(options)
+      const kind = pagePath.includes(`${path.sep}toolbar${path.sep}`) ? 'toolbar' : 'action'
+      if (failures.delete(kind)) win.loadError = new Error(`${kind} fixture failed`)
+      created.push(win)
+      return win
+    }
+  })
+
+  const failedToolbar = manager.createToolbarWindow()
+  const failedAction = manager.createActionWindow()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(failedToolbar.destroyed, true)
+  assert.equal(failedAction.destroyed, true)
+  assert.equal(manager.getToolbarWindow(), null)
+  assert.equal(manager.ownsActionWindow(failedAction), false)
+  assert.deepEqual(closedActions, [[failedAction, { wasPinned: false }]])
+  assert.equal(logs.filter((entry) => entry.join(' ').includes('load failed')).length, 2)
+
+  const toolbar = manager.createToolbarWindow()
+  const action = manager.getOrCreateActionWindow()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(toolbar.destroyed, false)
+  assert.equal(action.destroyed, false)
+  assert.equal(created.length, 4)
 })
 
 test('appearance is normalized and broadcast to every live selection window', () => {

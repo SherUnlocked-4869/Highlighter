@@ -242,6 +242,7 @@ let recordingService = null
 const managedRecordingWriters = new ManagedWriterCoordinator()
 let dataRootMigrationInProgress = false
 let isProcessing = false
+const selectionEventDiagnostics = new Set()
 let currentStreamController = null
 let toolbarStreamSeq = 0
 let pinnedCount = 0
@@ -893,16 +894,28 @@ function calculateToolbarPosition(refPoint, orientation, toolbarWidth = TOOLBAR_
   return { x, y }
 }
 
+function logSelectionDiagnosticOnce(reason, data = {}) {
+  if (selectionEventDiagnostics.has(reason)) return
+  selectionEventDiagnostics.add(reason)
+  const programName = path.basename(String(data.programName || '')).slice(0, 128)
+  const textLength = typeof data.text === 'string' ? data.text.length : 0
+  log('Selection event diagnostic:', { reason, programName, textLength })
+}
+
 function handleTextSelection(data) {
-  if (isProcessing || !data?.text || shouldFilterApp(data.programName)) return
+  if (isProcessing) { logSelectionDiagnosticOnce('busy', data); return }
+  if (!data?.text) { logSelectionDiagnosticOnce('missing-text', data); return }
+  if (shouldFilterApp(data.programName)) { logSelectionDiagnosticOnce('filtered-app', data); return }
   const text = data.text.trim()
-  if (!text || text.length > 10000) return
+  if (!text) { logSelectionDiagnosticOnce('empty-text', data); return }
+  if (text.length > 10000) { logSelectionDiagnosticOnce('text-too-long', data); return }
   const actions = getVisibleToolbarActionDefinitions(getSettings().selectionToolbar)
-  if (!actions.length) { hideToolbar(); return }
+  if (!actions.length) { logSelectionDiagnosticOnce('no-actions', data); hideToolbar(); return }
   const toolbarWidth = getToolbarWidth(actions)
   const result = getRefPointAndOrientation(data)
   const position = calculateToolbarPosition(result.refPoint, result.orientation, toolbarWidth)
   selectionWindowManager.showToolbarSelection({ text, actions, position, width: toolbarWidth })
+  logSelectionDiagnosticOnce('shown', data)
 }
 
 function hideToolbar() {
@@ -2997,6 +3010,7 @@ async function startApplication() {
     }
     app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
   }
+  if (e2eContext.enabled) createToolbarWindow()
   updateService.start()
 }
 
@@ -3018,6 +3032,8 @@ else {
       exitCode: details.exitCode,
       url: webContents?.getURL?.() || ''
     })
+    const win = webContents ? BrowserWindow.fromWebContents(webContents) : null
+    selectionWindowManager?.handleRendererGone(win, details)
   })
   app.on('child-process-gone', (_event, details) => {
     diagnosticsService?.recordProcessExit('child', {

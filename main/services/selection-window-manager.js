@@ -45,8 +45,58 @@ class SelectionWindowManager {
     this.lastToolbarPosition = null
   }
 
+  isWindowHealthy(win) {
+    if (!win || win.isDestroyed()) return false
+    const contents = win.webContents
+    if (!contents) return false
+    try {
+      if (typeof contents.isDestroyed === 'function' && contents.isDestroyed()) return false
+      if (typeof contents.isCrashed === 'function' && contents.isCrashed()) return false
+    } catch {
+      return false
+    }
+    return true
+  }
+
+  destroyUnavailableWindow(win, kind, reason) {
+    if (!win || win.isDestroyed()) return false
+    this.log(`Selection ${kind} window unavailable; recreating:`, reason)
+    try {
+      win.destroy()
+      return true
+    } catch (error) {
+      this.log(`Failed to destroy selection ${kind} window:`, error.message || String(error))
+      return false
+    }
+  }
+
+  loadWindow(win, pagePath, kind) {
+    let loadPromise
+    try {
+      loadPromise = win.loadFile(pagePath)
+    } catch (error) {
+      this.destroyUnavailableWindow(win, kind, `load failed: ${error.message || String(error)}`)
+      return
+    }
+    Promise.resolve(loadPromise).catch((error) => {
+      this.destroyUnavailableWindow(win, kind, `load failed: ${error.message || String(error)}`)
+    })
+  }
+
+  handleRendererGone(win, details = {}) {
+    const kind = this.ownsToolbarWindow(win)
+      ? 'toolbar'
+      : this.ownsActionWindow(win) ? 'action' : ''
+    if (!kind) return false
+    const reason = details.reason || 'unknown'
+    const exitCode = Number.isInteger(details.exitCode) ? ` (${details.exitCode})` : ''
+    this.destroyUnavailableWindow(win, kind, `renderer ${reason}${exitCode}`)
+    return true
+  }
+
   createToolbarWindow() {
-    if (this.toolbarWindow && !this.toolbarWindow.isDestroyed()) return this.toolbarWindow
+    if (this.isWindowHealthy(this.toolbarWindow)) return this.toolbarWindow
+    if (this.toolbarWindow) this.destroyUnavailableWindow(this.toolbarWindow, 'toolbar', 'failed health check')
     const pagePath = path.join(this.rootDirectory, 'toolbar', 'toolbar.html')
     const win = this.createWindow(pagePath, {
       width: this.toolbarWidth,
@@ -64,14 +114,14 @@ class SelectionWindowManager {
     this.toolbarWindow = win
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
     win.setAlwaysOnTop(true, 'screen-saver')
-    win.loadFile(pagePath)
     win.webContents.once('did-finish-load', () => {
-      if (this.toolbarWindow !== win || win.isDestroyed()) return
+      if (this.toolbarWindow !== win || !this.isWindowHealthy(win)) return
       win.webContents.send('toolbar:appearance', this.getAppearance())
     })
     win.on('closed', () => {
       if (this.toolbarWindow === win) this.toolbarWindow = null
     })
+    this.loadWindow(win, pagePath, 'toolbar')
     return win
   }
 
@@ -89,7 +139,6 @@ class SelectionWindowManager {
       backgroundColor: appearance.resolvedTheme === 'dark' ? '#121316' : '#f5f5f5',
       webPreferences: { preload: path.join(this.rootDirectory, 'preload-action.js') }
     })
-    win.loadFile(pagePath)
     win._isPinned = false
     win._actionRendererReady = false
     win._pendingActionMessages = []
@@ -112,12 +161,17 @@ class SelectionWindowManager {
       win.hide()
     })
     this.actionWindow = win
+    this.loadWindow(win, pagePath, 'action')
     return win
   }
 
   getOrCreateActionWindow() {
-    if (this.actionWindow && !this.actionWindow.isDestroyed() && !this.actionWindow._isPinned) {
-      return this.actionWindow
+    if (this.actionWindow) {
+      if (!this.isWindowHealthy(this.actionWindow)) {
+        this.destroyUnavailableWindow(this.actionWindow, 'action', 'failed health check')
+      } else if (!this.actionWindow._isPinned) {
+        return this.actionWindow
+      }
     }
     return this.createActionWindow()
   }
@@ -178,11 +232,11 @@ class SelectionWindowManager {
 
   broadcastAppearance(settings = this.getSettings()) {
     const appearance = this.getAppearance(settings)
-    if (this.toolbarWindow && !this.toolbarWindow.isDestroyed()) {
+    if (this.isWindowHealthy(this.toolbarWindow)) {
       this.toolbarWindow.webContents.send('toolbar:appearance', appearance)
     }
     for (const win of this.actionWindows) {
-      if (!win.isDestroyed()) win.webContents.send('action:appearance', appearance)
+      if (this.isWindowHealthy(win)) win.webContents.send('action:appearance', appearance)
     }
   }
 

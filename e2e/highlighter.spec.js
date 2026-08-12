@@ -28,6 +28,35 @@ test('first startup renders navigation, empty history, About version, and shortc
   expect(await highlighter.getUnexpectedErrors()).toEqual([])
 })
 
+test('selection toolbar renderer crash destroys the dead BrowserWindow', async ({ highlighter }) => {
+  const { electronApp } = highlighter
+  const result = await electronApp.evaluate(({ BrowserWindow }) => new Promise((resolve) => {
+    const toolbar = BrowserWindow.getAllWindows().find((win) => (
+      win.webContents.getURL().includes('/toolbar/toolbar.html')
+    ))
+    if (!toolbar) return resolve({ found: false })
+    const toolbarId = toolbar.id
+    const timeout = setTimeout(() => resolve({ found: true, closed: false, toolbarId }), 10000)
+    toolbar.once('closed', () => {
+      clearTimeout(timeout)
+      setImmediate(() => resolve({
+        found: true,
+        closed: true,
+        toolbarId,
+        stillOpen: BrowserWindow.getAllWindows().some((win) => win.id === toolbarId)
+      }))
+    })
+    toolbar.webContents.forcefullyCrashRenderer()
+  }))
+
+  expect(result).toEqual({
+    found: true,
+    closed: true,
+    toolbarId: result.toolbarId,
+    stillOpen: false
+  })
+})
+
 test('settings persist through the real preload and authorized IPC surface', async ({ highlighter }) => {
   const { mainWindow: page } = highlighter
   await navigate(page, 'appearance', '外观配色')
