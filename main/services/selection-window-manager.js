@@ -112,11 +112,17 @@ class SelectionWindowManager {
       webPreferences: { preload: path.join(this.rootDirectory, 'preload-toolbar.js') }
     })
     this.toolbarWindow = win
+    win._toolbarRendererReady = false
+    win._pendingToolbarSelection = null
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
     win.setAlwaysOnTop(true, 'screen-saver')
     win.webContents.once('did-finish-load', () => {
       if (this.toolbarWindow !== win || !this.isWindowHealthy(win)) return
+      win._toolbarRendererReady = true
       win.webContents.send('toolbar:appearance', this.getAppearance())
+      const pending = win._pendingToolbarSelection
+      win._pendingToolbarSelection = null
+      if (pending) win.webContents.send('selection:text', pending)
     })
     win.on('closed', () => {
       if (this.toolbarWindow === win) this.toolbarWindow = null
@@ -193,6 +199,15 @@ class SelectionWindowManager {
     for (const [channel, payload] of pending) win.webContents.send(channel, payload)
   }
 
+  queueToolbarSelection(win, payload) {
+    if (!win || win.isDestroyed()) return
+    if (win._toolbarRendererReady) {
+      win.webContents.send('selection:text', payload)
+      return
+    }
+    win._pendingToolbarSelection = payload
+  }
+
   persistActionWindowSize(win) {
     if (!win || win.isDestroyed()) return
     const [width, height] = win.getSize()
@@ -246,7 +261,7 @@ class SelectionWindowManager {
     this.lastToolbarPosition = position
     win.setPosition(position.x, position.y)
     win.showInactive()
-    win.webContents.send('selection:text', { text, actions, appearance: this.getAppearance() })
+    this.queueToolbarSelection(win, { text, actions, appearance: this.getAppearance() })
     return win
   }
 

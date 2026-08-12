@@ -2,7 +2,7 @@
 
 - 日期：2026-08-12
 - 版本：2.1.0-beta.0
-- 状态：恢复缺陷已修复并通过自动化验证，待长期现场观察
+- 状态：恢复缺陷已修复并通过自动化及安装包真机验证，待长期现场观察
 
 ## 1. 问题现象
 
@@ -94,11 +94,20 @@ Electron 43.2.0 真实运行时探针确认：**渲染进程崩溃不会自动�
 - 记录 shown / busy / 空文本 / 超长文本 / 应用过滤 / 无动作按钮等状态；
 - 每种状态每个应用会话最多写一次，只记 `programName` 与文本长度，**不记文本内容**。
 
+### 改动 5：重建期间排队首个划词消息
+
+- 真机首次验证发现：renderer 崩溃后窗口能重建，但触发重建的 `selection:text` 可能早于 `toolbar.html` 的 `did-finish-load`，从而被新 renderer 丢弃并显示空工具栏；
+- toolbar 现在与 action 窗口一样维护 renderer-ready 状态；加载完成前只保留最新一次划词消息，`did-finish-load` 后再发送；
+- 该竞态已加入单元回归测试，覆盖“崩溃后第一次划词即恢复”以及加载期间多次划词只显示最新内容。
+
 ## 5. 测试与验证
 
 | 项 | 内容 |
 |---|---|
-| 单元测试 | 覆盖 toolbar/action 崩溃健康检查、所属窗口 renderer 退出、页面加载失败清理与后续重建 |
+| 单元测试 | 覆盖 toolbar/action 崩溃健康检查、所属窗口 renderer 退出、页面加载失败清理、后续重建及重建期间消息排队 |
 | Electron E2E | 使用 `forcefullyCrashRenderer()` 主动崩溃真实 toolbar renderer，确认死 BrowserWindow 被销毁 |
-| 完整回归 | `npm test`：330/330；`npm run test:e2e`：4/4；`npm run check`：139 个 JavaScript 文件通过 |
+| 完整回归 | `npm test`：331/331；`npm run test:e2e`：4/4；`npm run check`：139 个 JavaScript 文件通过；加载代码覆盖率 lines 93.34%、branches 77.16%、functions 92.19% |
+| hardened 包验证 | 8 项 Electron fuse 策略、打包启动探针、NSIS 7-Zip 完整性均通过；安装包 SHA-256 `E53AC2FD242896B6A741039ADD4902BA68B0235E84B3335C569AEBC5124D33A4`，未签名 |
+| 安装一致性 | 覆盖安装退出码 0；已安装 `Highlighter.exe` 与 `app.asar` 分别和本次构建 SHA-256 一致；用户配置及数据定位文件哈希安装前后不变 |
+| 真机崩溃恢复 | Windows 真实鼠标拖选形成 30 字符选区并显示 5 个按钮；主动击溃 toolbar renderer 后日志记录 crashed 与 recreating；下一次真实拖选产生新 CDP target（`6312...` → `FC1E...`），无需重启即恢复同样 5 个按钮 |
 | 长期观测 | 继续观察 `app.log`：确认崩溃/加载失败后下一次划词恢复，并通过限流诊断区分 hook 未投递与窗口失效 |

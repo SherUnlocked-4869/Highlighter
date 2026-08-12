@@ -218,6 +218,46 @@ test('crashed selection windows fail health checks and are rebuilt', () => {
   assert.equal(windows.length, 4)
 })
 
+test('toolbar recovery queues the latest selection until the replacement renderer loads', () => {
+  const { manager } = createHarness()
+  const firstToolbar = manager.showToolbarSelection({
+    text: 'before crash',
+    actions: [{ id: 'copy', label: '复制' }],
+    position: { x: 100, y: 200 },
+    width: 240
+  })
+
+  assert.deepEqual(firstToolbar.webContents.messages, [])
+  firstToolbar.webContents.emit('did-finish-load')
+  assert.equal(firstToolbar.webContents.messages.at(-1)[0], 'selection:text')
+
+  manager.handleRendererGone(firstToolbar, { reason: 'crashed', exitCode: -1 })
+  const replacement = manager.showToolbarSelection({
+    text: 'first selection after crash',
+    actions: [{ id: 'search', label: '搜索' }],
+    position: { x: 300, y: 400 },
+    width: 280
+  })
+  manager.showToolbarSelection({
+    text: 'latest selection while loading',
+    actions: [{ id: 'translate', label: '翻译' }],
+    position: { x: 320, y: 420 },
+    width: 300
+  })
+
+  assert.notEqual(replacement, firstToolbar)
+  assert.deepEqual(replacement.webContents.messages, [])
+  replacement.webContents.emit('did-finish-load')
+  assert.deepEqual(replacement.webContents.messages.at(-1), [
+    'selection:text',
+    {
+      text: 'latest selection while loading',
+      actions: [{ id: 'translate', label: '翻译' }],
+      appearance: { theme: 'system', resolvedTheme: 'dark', mainColor: '#123456' }
+    }
+  ])
+})
+
 test('renderer exit recovery destroys only owned selection windows', () => {
   const { manager, logs } = createHarness()
   const toolbar = manager.createToolbarWindow()
