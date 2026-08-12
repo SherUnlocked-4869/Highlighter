@@ -2784,6 +2784,24 @@ const recordingIpcController = {
   const clean = sanitizeAnnotationSnapshot(snapshot, { width: bounds.width, height: bounds.height })
   control.webContents.send('record:annotation-snapshot', clean)
   },
+  performance: (event, metrics = {}) => {
+  requireRecordSender(event)
+  const durationMs = Math.max(0, Math.min(24 * 60 * 60 * 1000, Number(metrics.durationMs) || 0))
+  const targetFrameRate = normalizeFrameRate(metrics.targetFrameRate)
+  const callbacks = Math.max(0, Math.min(100000000, Math.round(Number(metrics.callbacks) || 0)))
+  const renderedFrames = Math.max(0, Math.min(callbacks, Math.round(Number(metrics.renderedFrames) || 0)))
+  const skippedCallbacks = Math.max(0, Math.min(callbacks, Math.round(Number(metrics.skippedCallbacks) || 0)))
+  const scheduler = metrics.scheduler === 'video-frame' ? 'video-frame' : 'timer'
+  performanceMonitor.record('record.compositor', durationMs, {
+    targetFrameRate,
+    callbacks,
+    renderedFrames,
+    skippedCallbacks,
+    scheduler,
+    effectiveFrameRate: durationMs > 0 ? Math.round(renderedFrames * 100000 / durationMs) / 100 : 0
+  })
+  performanceMonitor.snapshot('record-compositor', { targetFrameRate, scheduler })
+  },
   setAnnotationCommand: (event, command = {}) => {
   const control = requireRecordSender(event)
   return sendRecordAnnotationCommand(control, command)

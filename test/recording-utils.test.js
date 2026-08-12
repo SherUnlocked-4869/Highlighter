@@ -6,6 +6,7 @@ const {
   calculateRecordControlSize,
   calculateTranscodeProgress,
   calculateCropRect,
+  createFramePacer,
   normalizeFrameRate,
   normalizeSelectionBounds,
   pickDesktopSource,
@@ -57,6 +58,33 @@ test('normalizes FPS to the supported recording set', () => {
   for (const fps of [5, 16, 24, 30, 60]) assert.equal(normalizeFrameRate(fps), fps)
   assert.equal(normalizeFrameRate(25), 24)
   assert.equal(normalizeFrameRate('60'), 60)
+})
+
+test('paces high-refresh callbacks to the configured recording FPS', () => {
+  const pacer = createFramePacer(24)
+  let rendered = 0
+  for (let frame = 0; frame < 144; frame++) {
+    if (pacer.shouldDraw(frame * 1000 / 144)) rendered++
+  }
+
+  assert.equal(rendered, 24)
+  assert.deepEqual(pacer.snapshot(), {
+    frameRate: 24,
+    intervalMs: 1000 / 24,
+    callbacks: 144,
+    renderedFrames: 24,
+    skippedCallbacks: 120
+  })
+})
+
+test('frame pacing resumes without discarding cumulative metrics', () => {
+  const pacer = createFramePacer(30)
+  assert.equal(pacer.shouldDraw(0), true)
+  assert.equal(pacer.shouldDraw(10), false)
+  pacer.reset({ keepStats: true })
+  assert.equal(pacer.delayUntilNext(500), 0)
+  assert.equal(pacer.shouldDraw(500), true)
+  assert.equal(pacer.snapshot().renderedFrames, 2)
 })
 
 test('clips a negative-coordinate selection to one display', () => {

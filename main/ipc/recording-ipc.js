@@ -4,6 +4,7 @@ function registerRecordingIpc({ ipcMain, controller }) {
   ipcMain.on('record:ready', controller.ready)
   ipcMain.on('record-frame:ready', controller.frameReady)
   ipcMain.on('record-frame:snapshot', controller.frameSnapshot)
+  ipcMain.on('record:performance', controller.performance)
   ipcMain.handle('record:set-annotation-command', controller.setAnnotationCommand)
   ipcMain.handle('record:start-session', controller.startSession)
   ipcMain.handle('record:append-chunk', controller.appendChunk)

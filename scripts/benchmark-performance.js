@@ -5,6 +5,7 @@ const path = require('node:path')
 const { performance } = require('node:perf_hooks')
 const { HistoryService } = require('../main/services/history-service')
 const matcher = require('../long-capture/matcher')
+const { createFramePacer } = require('../record/recording-utils')
 
 const RESULT_PREFIX = 'HIGHLIGHTER_PERFORMANCE_BASELINE='
 
@@ -74,6 +75,24 @@ function benchmarkMatcher({ width, height, axis, shift, runs = 5 }) {
     detectedShift: lastResult?.shift || 0,
     status: lastResult?.status || 'unknown',
     ...summarizeSamples(durations)
+  }
+}
+
+function benchmarkRecordingPacing({ displayFrameRate, targetFrameRate, durationSeconds = 60 }) {
+  const pacer = createFramePacer(targetFrameRate)
+  const callbackCount = Math.round(displayFrameRate * durationSeconds)
+  for (let frame = 0; frame < callbackCount; frame++) {
+    pacer.shouldDraw(frame * 1000 / displayFrameRate)
+  }
+  const stats = pacer.snapshot()
+  return {
+    displayFrameRate,
+    targetFrameRate: stats.frameRate,
+    durationSeconds,
+    previousFullFrameDraws: callbackCount,
+    pacedFullFrameDraws: stats.renderedFrames,
+    skippedCallbacks: stats.skippedCallbacks,
+    drawReductionPercent: Math.round((1 - stats.renderedFrames / callbackCount) * 10000) / 100
   }
 }
 
@@ -246,6 +265,10 @@ function run() {
       vertical4k: benchmarkMatcher({ width: 96, height: 2160, axis: 'vertical', shift: 360 }),
       horizontal4k: benchmarkMatcher({ width: 3840, height: 96, axis: 'horizontal', shift: 640 })
     },
+    recording: {
+      display60Target24: benchmarkRecordingPacing({ displayFrameRate: 60, targetFrameRate: 24 }),
+      display144Target24: benchmarkRecordingPacing({ displayFrameRate: 144, targetFrameRate: 24 })
+    },
     history: benchmarkHistory(),
     artifact: collectArtifactSnapshot(projectRoot),
     runningApp: options.includeRunningApp ? collectRunningAppSnapshot() : null
@@ -264,6 +287,7 @@ if (require.main === module) run()
 
 module.exports = {
   benchmarkMatcher,
+  benchmarkRecordingPacing,
   createRandomBytes,
   createShiftedFrame,
   percentile,

@@ -72,6 +72,8 @@ test('main process securely routes annotation commands and snapshots', () => {
   assert.match(recordPreload, /record:set-annotation-command/)
   assert.match(recordPreload, /onAnnotationSnapshot:/)
   assert.match(recordPreload, /record:annotation-snapshot/)
+  assert.match(recordPreload, /reportPerformance:/)
+  assert.match(recordingIpc, /record:performance/)
 })
 
 test('recording UI contains control and preview states', () => {
@@ -81,6 +83,8 @@ test('recording UI contains control and preview states', () => {
     assert.match(html, new RegExp(`id="${id}"`))
   }
   assert.match(script, /canvas\.captureStream\(frameRate\)/)
+  assert.match(script, /requestVideoFrameCallback/)
+  assert.match(script, /createFramePacer\(frameRate\)/)
   assert.match(script, /video\/webm/)
   assert.match(script, /appendChunk/)
   assert.match(script, /transitionRecordingState/)

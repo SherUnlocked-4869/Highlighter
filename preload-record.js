@@ -26,5 +26,6 @@ contextBridge.exposeInMainWorld('recordAPI', {
     ipcRenderer.on('record:annotation-snapshot', handler)
     return () => ipcRenderer.removeListener('record:annotation-snapshot', handler)
   },
+  reportPerformance: (details) => ipcRenderer.send('record:performance', details),
   close: () => ipcRenderer.send('record:close')
 })

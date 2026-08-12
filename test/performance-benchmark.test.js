@@ -2,6 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
   benchmarkMatcher,
+  benchmarkRecordingPacing,
   percentile,
   summarizeSamples
 } = require('../scripts/benchmark-performance')
@@ -32,4 +33,19 @@ test('long-capture benchmark verifies the expected shift as well as timing it', 
   assert.equal(result.detectedShift, 36)
   assert.equal(result.runs, 1)
   assert.ok(result.p95Ms >= 0)
+})
+
+test('recording pacing benchmark reports avoided full-frame draws', () => {
+  assert.deepEqual(
+    benchmarkRecordingPacing({ displayFrameRate: 144, targetFrameRate: 24, durationSeconds: 1 }),
+    {
+      displayFrameRate: 144,
+      targetFrameRate: 24,
+      durationSeconds: 1,
+      previousFullFrameDraws: 144,
+      pacedFullFrameDraws: 24,
+      skippedCallbacks: 120,
+      drawReductionPercent: 83.33
+    }
+  )
 })

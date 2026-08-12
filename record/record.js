@@ -1,5 +1,6 @@
 const {
   calculateCropRect,
+  createFramePacer,
   primeSeekablePreview,
   transitionRecordingState
 } = window.recordingUtils
@@ -46,7 +47,14 @@ let desktopStream = null
 let canvasStream = null
 let sourceVideo = null
 let canvas = null
-let drawRequest = 0
+let framePacer = createFramePacer(frameRate)
+let videoFrameRequest = 0
+let fallbackFrameTimer = 0
+let manualFrameTimer = 0
+let compositorActive = false
+let compositorActiveStartedAt = 0
+let compositorActiveDurationMs = 0
+let compositorScheduler = 'timer'
 let recorder = null
 let sessionId = null
 let appendQueue = Promise.resolve()
@@ -163,8 +171,8 @@ function clearFeedback() {
 }
 
 function stopSource() {
-  if (drawRequest) cancelAnimationFrame(drawRequest)
-  drawRequest = 0
+  stopCompositeLoop()
+  reportCompositorPerformance()
   canvasStream?.getTracks().forEach((track) => track.stop())
   desktopStream?.getTracks().forEach((track) => track.stop())
   if (sourceVideo) sourceVideo.srcObject = null
@@ -172,6 +180,88 @@ function stopSource() {
   desktopStream = null
   sourceVideo = null
   canvas = null
+}
+
+function renderCompositeFrame(timestamp = performance.now(), force = false) {
+  if (!canvas || !sourceVideo || !framePacer.shouldDraw(timestamp, force)) return false
+  const context = canvas._recordContext
+  const crop = canvas._recordCrop
+  context.drawImage(sourceVideo, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.width, crop.height)
+  drawAnnotationSnapshot(context, annotationSnapshot, {
+    width: initData.selectionBounds.width,
+    height: initData.selectionBounds.height
+  })
+  return true
+}
+
+function scheduleCompositeFrame() {
+  if (!compositorActive || !sourceVideo) return
+  if (typeof sourceVideo.requestVideoFrameCallback === 'function') {
+    compositorScheduler = 'video-frame'
+    videoFrameRequest = sourceVideo.requestVideoFrameCallback((timestamp) => {
+      videoFrameRequest = 0
+      if (!compositorActive) return
+      renderCompositeFrame(timestamp)
+      scheduleCompositeFrame()
+    })
+    return
+  }
+  compositorScheduler = 'timer'
+  fallbackFrameTimer = setTimeout(() => {
+    fallbackFrameTimer = 0
+    if (!compositorActive) return
+    renderCompositeFrame(performance.now())
+    scheduleCompositeFrame()
+  }, framePacer.intervalMs)
+}
+
+function requestCompositeFrame() {
+  if (!compositorActive || manualFrameTimer) return
+  const delay = framePacer.delayUntilNext(performance.now())
+  manualFrameTimer = setTimeout(() => {
+    manualFrameTimer = 0
+    if (compositorActive) renderCompositeFrame(performance.now())
+  }, delay)
+}
+
+function startCompositeLoop() {
+  if (compositorActive || !sourceVideo || !canvas) return
+  compositorActive = true
+  compositorActiveStartedAt = performance.now()
+  framePacer.reset({ keepStats: compositorActiveDurationMs > 0 })
+  renderCompositeFrame(compositorActiveStartedAt, true)
+  scheduleCompositeFrame()
+}
+
+function stopCompositeLoop() {
+  if (compositorActiveStartedAt) {
+    compositorActiveDurationMs += Math.max(0, performance.now() - compositorActiveStartedAt)
+    compositorActiveStartedAt = 0
+  }
+  compositorActive = false
+  if (videoFrameRequest && typeof sourceVideo?.cancelVideoFrameCallback === 'function') {
+    sourceVideo.cancelVideoFrameCallback(videoFrameRequest)
+  }
+  videoFrameRequest = 0
+  clearTimeout(fallbackFrameTimer)
+  fallbackFrameTimer = 0
+  clearTimeout(manualFrameTimer)
+  manualFrameTimer = 0
+}
+
+function reportCompositorPerformance() {
+  const stats = framePacer.snapshot()
+  if (!stats.renderedFrames || !compositorActiveDurationMs) return
+  window.recordAPI.reportPerformance({
+    durationMs: compositorActiveDurationMs,
+    targetFrameRate: stats.frameRate,
+    callbacks: stats.callbacks,
+    renderedFrames: stats.renderedFrames,
+    skippedCallbacks: stats.skippedCallbacks,
+    scheduler: compositorScheduler
+  })
+  compositorActiveDurationMs = 0
+  framePacer.reset()
 }
 
 function waitForMetadata(video) {
@@ -211,16 +301,11 @@ async function prepareSource() {
     canvas = document.createElement('canvas')
     canvas.width = crop.width
     canvas.height = crop.height
-    const context = canvas.getContext('2d', { alpha: false })
-    const draw = () => {
-      context.drawImage(sourceVideo, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.width, crop.height)
-      drawAnnotationSnapshot(context, annotationSnapshot, {
-        width: initData.selectionBounds.width,
-        height: initData.selectionBounds.height
-      })
-      drawRequest = requestAnimationFrame(draw)
-    }
-    draw()
+    canvas._recordCrop = crop
+    canvas._recordContext = canvas.getContext('2d', { alpha: false })
+    framePacer = createFramePacer(frameRate)
+    compositorActiveDurationMs = 0
+    renderCompositeFrame(performance.now(), true)
     canvasStream = canvas.captureStream(frameRate)
   } catch (error) {
     stopSource()
@@ -253,6 +338,7 @@ async function startRecorder() {
   recorder.addEventListener('error', (event) => {
     appendError = appendError || new Error(`视频录制失败：${event.error?.message || 'MediaRecorder 错误'}`)
   })
+  startCompositeLoop()
   recorder.start(1000)
   startedAt = Date.now()
   pausedAt = 0
@@ -313,6 +399,7 @@ async function finishRecording() {
   setBusy(true)
   await window.recordAPI.setFrameState('hidden')
   durationMs = elapsedTime()
+  stopCompositeLoop()
   await stopMediaRecorder()
   await appendQueue
   if (appendError) throw appendError
@@ -332,6 +419,7 @@ async function finishRecording() {
 }
 
 async function failRecording(error) {
+  stopCompositeLoop()
   if (sessionId) await window.recordAPI.cancelSession(sessionId).catch(() => {})
   sessionId = null
   clearInterval(clockTimer)
@@ -354,6 +442,7 @@ async function cancelRecording() {
     setBusy(true)
     state = transitionRecordingState(state, 'cancel')
     await window.recordAPI.setFrameState('hidden').catch(() => {})
+    stopCompositeLoop()
     await stopMediaRecorder().catch(() => {})
     await appendQueue
     if (sessionId) await window.recordAPI.cancelSession(sessionId).catch(() => {})
@@ -367,11 +456,13 @@ function togglePause() {
   if (busy || !recorder) return
   if (state === 'recording' && recorder.state === 'recording') {
     recorder.pause()
+    stopCompositeLoop()
     pausedAt = Date.now()
     setState(transitionRecordingState(state, 'pause'))
     window.recordAPI.setFrameState('paused')
   } else if (state === 'paused' && recorder.state === 'paused') {
     recorder.resume()
+    startCompositeLoop()
     pausedTotal += Date.now() - pausedAt
     pausedAt = 0
     setState(transitionRecordingState(state, 'resume'))
@@ -483,6 +574,7 @@ window.recordAPI.onAnnotationSnapshot((snapshot) => {
     height: initData.selectionBounds.height
   })
   renderAnnotationControls()
+  requestCompositeFrame()
 })
 window.recordAPI.onInit((data) => {
   initData = data

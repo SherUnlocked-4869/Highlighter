@@ -11,6 +11,61 @@
     return SUPPORTED_FRAME_RATES.has(parsed) ? parsed : 24
   }
 
+  function createFramePacer(value, options = {}) {
+    const frameRate = normalizeFrameRate(value)
+    const intervalMs = 1000 / frameRate
+    const toleranceMs = Math.max(0, finite(options.toleranceMs, 0.75))
+    let nextFrameAt = null
+    let callbacks = 0
+    let renderedFrames = 0
+    let skippedCallbacks = 0
+
+    function shouldDraw(timestamp, force = false) {
+      const now = finite(timestamp)
+      callbacks++
+      if (force || nextFrameAt === null) {
+        nextFrameAt = now + intervalMs
+        renderedFrames++
+        return true
+      }
+      if (now + toleranceMs < nextFrameAt) {
+        skippedCallbacks++
+        return false
+      }
+      do {
+        nextFrameAt += intervalMs
+      } while (nextFrameAt <= now + toleranceMs)
+      renderedFrames++
+      return true
+    }
+
+    function delayUntilNext(timestamp) {
+      if (nextFrameAt === null) return 0
+      return Math.max(0, nextFrameAt - finite(timestamp))
+    }
+
+    function reset({ keepStats = false } = {}) {
+      nextFrameAt = null
+      if (!keepStats) {
+        callbacks = 0
+        renderedFrames = 0
+        skippedCallbacks = 0
+      }
+    }
+
+    function snapshot() {
+      return {
+        frameRate,
+        intervalMs,
+        callbacks,
+        renderedFrames,
+        skippedCallbacks
+      }
+    }
+
+    return { delayUntilNext, intervalMs, reset, shouldDraw, snapshot }
+  }
+
   function normalizeSelectionBounds(selection = {}, display = {}) {
     const displayX = finite(display.x)
     const displayY = finite(display.y)
@@ -146,6 +201,7 @@
     calculateFrameBounds,
     calculateRecordControlSize,
     calculateTranscodeProgress,
+    createFramePacer,
     normalizeFrameRate,
     normalizeSelectionBounds,
     pickDesktopSource,

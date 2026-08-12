@@ -144,7 +144,7 @@ const IPC_SURFACES = Object.freeze([
       'record:resize-preview',
       'record:restart'
     ],
-    listeners: ['record:ready', 'record:close']
+    listeners: ['record:ready', 'record:performance', 'record:close']
   },
   {
     role: 'record-frame',
