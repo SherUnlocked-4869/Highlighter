@@ -7,6 +7,7 @@ const root = path.join(__dirname, '..')
 const html = fs.readFileSync(path.join(root, 'config', 'config.html'), 'utf8')
 const script = fs.readFileSync(path.join(root, 'config', 'config.js'), 'utf8')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+const router = fs.readFileSync(path.join(root, 'main', 'services', 'ai-feature-router.js'), 'utf8')
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
 
 test('config app exposes the model provider route with provider and feature-model subpages', () => {
@@ -31,7 +32,10 @@ test('config app exposes the model provider route with provider and feature-mode
   assert.match(script, /id="saveProviderSettings"/)
   assert.match(script, /id="saveFeatureAssignments"/)
   assert.match(script, /data-feature-provider=/)
-  assert.match(script, /void persistFeatureAssignments\(\)/)
+  assert.match(script, /markFeatureAssignmentsDirty/)
+  assert.doesNotMatch(script, /select\.onchange = \(\) => void persistFeatureAssignments/)
+  assert.match(script, /modelOptionsMarkup\(provider, '', feature\)/)
+  assert.match(script, /data-provider-enabled/)
   assert.match(script, /data-feature-model/)
   assert.match(script, /toolbar:translate/)
   assert.match(script, /toolbar:explain/)
@@ -41,7 +45,8 @@ test('config app exposes the model provider route with provider and feature-mode
 
 test('main process resolves feature assignments through the AI provider service', () => {
   assert.match(main, /require\('\.\/main\/services\/ai-providers'\)/)
-  assert.match(main, /resolveToolbarAiProvider\(currentSettings, action\.id\)/)
+  assert.match(main, /createToolbarActionStream/)
+  assert.match(router, /resolveToolbarAiProvider\(settings, actionId\)/)
   assert.match(main, /resolveAiAssignment\(settings, 'chat'\)/)
   assert.match(main, /resolveAiAssignment\(settings, 'translation'\)/)
   assert.match(main, /resolveAiAssignment\(settings, 'ocr-translate'\)/)

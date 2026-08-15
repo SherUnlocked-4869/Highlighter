@@ -9,6 +9,7 @@ let chatMessages = []
 let draggedSelectionToolbarAction = ''
 let modelsTab = 'providers'
 let modelsExpandedProviderIds = new Set()
+let featureAssignmentDraft = null
 let historyQuery = ''
 let historySource = ''
 let historyRenderVersion = 0
@@ -740,7 +741,8 @@ function modelFeatureRows() {
 }
 
 function modelAssignmentForFeature(feature) {
-  return (settings.ai?.assignments || []).find((assignment) => assignment.feature === feature)
+  const assignments = featureAssignmentDraft || settings.ai?.assignments || []
+  return assignments.find((assignment) => assignment.feature === feature)
 }
 
 function defaultModelsForProvider(provider) {
@@ -758,9 +760,10 @@ function defaultModelsForProvider(provider) {
 }
 
 function modelProviderStatus(provider) {
+  if (provider.enabled === false) return { className: 'off', title: '已停用' }
   if (!provider.baseUrl || !provider.models?.length) return { className: 'off', title: '未完成配置' }
   if (!provider.apiKey) return { className: 'warn', title: '未配置 API 密钥' }
-  return { className: 'on', title: provider.enabled === false ? '已停用' : '已启用' }
+  return { className: 'on', title: '已启用' }
 }
 
 function modelCatalogRowMarkup(provider, index) {
@@ -768,10 +771,24 @@ function modelCatalogRowMarkup(provider, index) {
   return `<div class="model-catalog-item" data-model-catalog-item="${escapeHtml(provider.id)}:${index}"><div class="model-catalog-row" data-model-index="${index}"><input class="input model-id-input" data-model-id type="text" value="${escapeHtml(model.id)}" placeholder="模型 ID"><input class="input model-name-input" data-model-name type="text" value="${escapeHtml(model.name)}" placeholder="显示名称"><button class="button icon-button model-row-details" data-model-details="${escapeHtml(provider.id)}" data-model-index="${index}" title="展开模型详情" aria-label="展开模型详情">›</button><button class="button icon-button model-row-delete" data-remove-model="${escapeHtml(provider.id)}" data-model-index="${index}" title="删除模型">🗑</button></div><div class="model-detail-panel" data-model-detail-panel="${escapeHtml(provider.id)}:${index}" hidden></div></div>`
 }
 
-function modelOptionsMarkup(provider, currentModel) {
-  const models = [...(provider?.models || [])]
-  if (currentModel && !models.some((model) => model.id === currentModel)) models.unshift({ id: currentModel, name: currentModel })
-  if (!models.length) return '<option value="">未配置模型</option>'
+function modelTaskForFeature(feature) {
+  if (feature === 'translation' || feature === 'ocr-translate' || feature === 'toolbar:translate') return 'translation'
+  if (feature === 'toolbar:explain' || String(feature || '').startsWith('custom:')) return 'explain'
+  return 'chat'
+}
+
+function modelsForFeature(provider, feature) {
+  const task = modelTaskForFeature(feature)
+  return (provider?.models || []).filter((model) => {
+    if (Array.isArray(model.capabilities?.tasks)) return model.capabilities.tasks.includes(task)
+    if (/hunyuan-mt|hy-mt|qwen-mt|mt-7b/i.test(`${model.id || ''} ${model.name || ''}`)) return task === 'translation'
+    return true
+  })
+}
+
+function modelOptionsMarkup(provider, currentModel, feature) {
+  const models = modelsForFeature(provider, feature)
+  if (!models.length) return '<option value="">该供应商无适用模型</option>'
   return models.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === currentModel ? 'selected' : ''}>${escapeHtml(model.name || model.id)}</option>`).join('')
 }
 
@@ -781,16 +798,27 @@ function featureAssignmentMarkup(feature, providers) {
     ? assignment.providerId
     : providers[0]?.id
   const provider = providers.find((item) => item.id === providerId) || providers[0]
-  return `<div class="feature-model-row" data-feature="${escapeHtml(feature.id)}"><div class="feature-model-label"><b>${escapeHtml(feature.label)}</b><small>${escapeHtml(feature.description)}</small></div><select data-feature-provider="${escapeHtml(feature.id)}">${providers.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === provider?.id ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select><select data-feature-model="${escapeHtml(feature.id)}">${modelOptionsMarkup(provider, assignment.model)}</select></div>`
+  return `<div class="feature-model-row" data-feature="${escapeHtml(feature.id)}"><div class="feature-model-label"><b>${escapeHtml(feature.label)}</b><small>${escapeHtml(feature.description)}</small></div><select data-feature-provider="${escapeHtml(feature.id)}">${providers.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === provider?.id ? 'selected' : ''}>${escapeHtml(item.name)}${item.enabled === false ? '（已停用）' : ''}</option>`).join('')}</select><select data-feature-model="${escapeHtml(feature.id)}">${modelOptionsMarkup(provider, assignment.model, feature.id)}</select></div>`
 }
 
-function readFeatureAssignments() {
+function snapshotFeatureAssignments() {
   const assignments = []
   for (const row of document.querySelectorAll('[data-feature]')) {
     const feature = row.dataset.feature
     const providerId = row.querySelector('[data-feature-provider]')?.value || ''
     const model = row.querySelector('[data-feature-model]')?.value || ''
-    if (feature && providerId && model) assignments.push({ feature, providerId, model })
+    if (feature) assignments.push({ feature, providerId, model })
+  }
+  return assignments
+}
+
+function readFeatureAssignments() {
+  const assignments = snapshotFeatureAssignments()
+  const incomplete = assignments.find((assignment) => !assignment.providerId || !assignment.model)
+  if (incomplete) {
+    const feature = modelFeatureRows().find((item) => item.id === incomplete.feature)
+    toast(`“${feature?.label || incomplete.feature}”没有可用模型，请更换供应商`)
+    return null
   }
   return assignments
 }
@@ -806,6 +834,7 @@ function readProviderEditor(providerId) {
   const name = root.querySelector('[data-provider-name]')?.value.trim() || ''
   const baseUrl = root.querySelector('[data-provider-base-url]')?.value.trim() || ''
   const protocol = root.querySelector('[data-provider-protocol]')?.value || 'openai-chat'
+  const enabled = root.querySelector('[data-provider-enabled]')?.value !== 'false'
   const apiKeyInput = root.querySelector('[data-provider-api-key]')
   const apiKey = apiKeyInput?.value.trim() || base.apiKey
   if (!name) { toast('供应商显示名称不能为空'); return null }
@@ -820,7 +849,7 @@ function readProviderEditor(providerId) {
     models.push({ id, name: row.querySelector('[data-model-name]')?.value.trim() || id })
   }
   if (!models.length) { toast('每个供应商至少需要一个模型'); return null }
-  return { ...base, name, baseUrl, apiKey, protocol, models }
+  return { ...base, name, baseUrl, apiKey, protocol, enabled, models }
 }
 
 function readProviderEditorDraft(providerId) {
@@ -838,6 +867,7 @@ function readProviderEditorDraft(providerId) {
     name: root.querySelector('[data-provider-name]')?.value.trim() || base.name,
     baseUrl: root.querySelector('[data-provider-base-url]')?.value.trim() || base.baseUrl,
     protocol: root.querySelector('[data-provider-protocol]')?.value || base.protocol,
+    enabled: root.querySelector('[data-provider-enabled]')?.value !== 'false',
     apiKey: root.querySelector('[data-provider-api-key]')?.value.trim() || base.apiKey,
     models: models.length ? models : base.models
   }
@@ -861,9 +891,9 @@ function providerEditorMarkup(provider) {
   const expanded = modelsExpandedProviderIds.has(provider.id)
   const status = modelProviderStatus(provider)
   if (!expanded) {
-    return `<article class="model-provider-accordion" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击展开供应商配置"><span class="model-provider-expand">▸</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="model-provider-chevron">展开</span></div></article>`
+    return `<article class="model-provider-accordion" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击展开供应商配置"><span class="model-provider-expand">▸</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span><span class="model-provider-chevron">展开</span></div></article>`
   }
-  return `<article class="model-provider-accordion expanded" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击收起供应商配置"><span class="model-provider-expand">▾</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="model-provider-chevron">收起</span></div><div class="model-provider-editor"><div class="model-provider-editor-head"><div class="model-provider-title"><b>${escapeHtml(provider.name)}</b><span class="provider-tag ${provider.builtin ? 'builtin' : ''}">${provider.builtin ? '内置' : '自定义'}</span><span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span></div><button class="button danger" data-delete-provider="${escapeHtml(provider.id)}">删除供应商</button></div><div class="model-field"><div class="model-field-label"><b>API 密钥</b><small>通过系统安全存储加密保存在本机</small></div><div class="model-field-control"><input class="input" data-provider-api-key type="password" value="" placeholder="${escapeHtml(provider.apiKey ? '已配置——输入新值可替换' : 'sk-...')}"><button class="button" data-test-provider="${escapeHtml(provider.id)}">测试</button></div></div><details class="model-custom-details" open><summary>自定义设置</summary><div class="model-field"><div class="model-field-label"><b>显示名称</b></div><input class="input" data-provider-name type="text" value="${escapeHtml(provider.name)}" placeholder="例如：DeepSeek"></div><div class="model-field"><div class="model-field-label"><b>API 地址</b></div><input class="input" data-provider-base-url type="text" value="${escapeHtml(provider.baseUrl)}" placeholder="https://api.example.com/v1"></div><div class="model-field"><div class="model-field-label"><b>API 协议</b></div><select data-provider-protocol><option value="openai-chat" ${provider.protocol === 'openai-chat' ? 'selected' : ''}>openai-chat</option><option value="openai-responses" ${provider.protocol === 'openai-responses' ? 'selected' : ''}>openai-responses</option></select></div></details><div class="model-catalog-block"><div class="model-catalog-head"><div><b>模型目录</b><small>${provider.models.length ? '已自定义模型目录' : '尚未配置模型'}</small></div><div class="model-catalog-actions"><button class="button" data-restore-models="${escapeHtml(provider.id)}">恢复默认模型</button><button class="button" data-fetch-models="${escapeHtml(provider.id)}">获取可用模型</button></div></div><div class="model-catalog-list">${provider.models.map((model, index) => modelCatalogRowMarkup(provider, index)).join('')}</div><button class="button" data-add-provider-model="${escapeHtml(provider.id)}">＋ 添加模型</button></div></div></article>`
+  return `<article class="model-provider-accordion expanded" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击收起供应商配置"><span class="model-provider-expand">▾</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="model-provider-chevron">收起</span></div><div class="model-provider-editor"><div class="model-provider-editor-head"><div class="model-provider-title"><b>${escapeHtml(provider.name)}</b><span class="provider-tag ${provider.builtin ? 'builtin' : ''}">${provider.builtin ? '内置' : '自定义'}</span><span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span></div><button class="button danger" data-delete-provider="${escapeHtml(provider.id)}">删除供应商</button></div><div class="model-field"><div class="model-field-label"><b>API 密钥</b><small>通过系统安全存储加密保存在本机</small></div><div class="model-field-control"><input class="input" data-provider-api-key type="password" value="" placeholder="${escapeHtml(provider.apiKey ? '已配置——输入新值可替换' : 'sk-...')}"><button class="button" data-test-provider="${escapeHtml(provider.id)}">测试</button></div></div><details class="model-custom-details" open><summary>自定义设置</summary><div class="model-field"><div class="model-field-label"><b>启用状态</b></div><select data-provider-enabled><option value="true" ${provider.enabled !== false ? 'selected' : ''}>启用</option><option value="false" ${provider.enabled === false ? 'selected' : ''}>停用</option></select></div><div class="model-field"><div class="model-field-label"><b>显示名称</b></div><input class="input" data-provider-name type="text" value="${escapeHtml(provider.name)}" placeholder="例如：DeepSeek"></div><div class="model-field"><div class="model-field-label"><b>API 地址</b></div><input class="input" data-provider-base-url type="text" value="${escapeHtml(provider.baseUrl)}" placeholder="https://api.example.com/v1"></div><div class="model-field"><div class="model-field-label"><b>API 协议</b></div><select data-provider-protocol><option value="openai-chat" ${provider.protocol === 'openai-chat' ? 'selected' : ''}>openai-chat</option><option value="openai-responses" ${provider.protocol === 'openai-responses' ? 'selected' : ''}>openai-responses</option></select></div></details><div class="model-catalog-block"><div class="model-catalog-head"><div><b>模型目录</b><small>${provider.models.length ? '已自定义模型目录' : '尚未配置模型'}</small></div><div class="model-catalog-actions"><button class="button" data-restore-models="${escapeHtml(provider.id)}">恢复默认模型</button><button class="button" data-fetch-models="${escapeHtml(provider.id)}">获取可用模型</button></div></div><div class="model-catalog-list">${provider.models.map((model, index) => modelCatalogRowMarkup(provider, index)).join('')}</div><button class="button" data-add-provider-model="${escapeHtml(provider.id)}">＋ 添加模型</button></div></div></article>`
 }
 
 function renderModelsSubnav() {
@@ -877,7 +907,8 @@ function renderModelsProviderTab(providers) {
 
 function renderModelsFeatureTab(providers) {
   const featureRows = modelFeatureRows().map((feature) => featureAssignmentMarkup(feature, providers)).join('')
-  return `<div class="models-view"><div class="models-provider-toolbar"><div class="models-section-head"><h2>功能模型</h2><p>为每个 AI 功能单独指定供应商；模型选项来自该供应商的模型目录。</p></div></div><div class="card feature-model-card"><div class="feature-model-head"><div><b>AI 功能列表</b><small>划词功能包含内置功能与自定义划词功能</small></div></div><div class="feature-model-list">${featureRows || '<div class="empty compact-empty">暂无可配置的 AI 功能</div>'}</div></div><div class="model-save-row"><button class="button primary" id="saveFeatureAssignments">保存功能模型</button></div></div>`
+  const saveLabel = featureAssignmentDraft ? '保存功能模型（有未保存更改）' : '保存功能模型'
+  return `<div class="models-view"><div class="models-provider-toolbar"><div class="models-section-head"><h2>功能模型</h2><p>为每个 AI 功能单独指定供应商；模型选项来自该供应商的模型目录。</p></div></div><div class="card feature-model-card"><div class="feature-model-head"><div><b>AI 功能列表</b><small>划词功能包含内置功能与自定义划词功能</small></div></div><div class="feature-model-list">${featureRows || '<div class="empty compact-empty">暂无可配置的 AI 功能</div>'}</div></div><div class="model-save-row"><button class="button primary" id="saveFeatureAssignments">${saveLabel}</button></div></div>`
 }
 
 function renderModels() {
@@ -949,13 +980,14 @@ function bindModelsProviderTab() {
       if (!commitOpenProviderEditors({ exceptId: providerId })) return
       if (!confirm(`确定删除供应商“${provider.name}”？`)) return
       const remaining = settings.providers.filter((item) => item.id !== providerId)
-      const fallback = remaining[0]
-      const assignments = (settings.ai?.assignments || []).map((assignment) => (
-        assignment.providerId === providerId
-          ? { ...assignment, providerId: fallback.id, model: fallback.models[0]?.id || assignment.model }
-          : assignment
-      ))
+      const assignments = (settings.ai?.assignments || []).map((assignment) => {
+        if (assignment.providerId !== providerId) return assignment
+        const fallback = remaining.find((item) => modelsForFeature(item, assignment.feature).length)
+        const model = modelsForFeature(fallback, assignment.feature)[0]
+        return fallback && model ? { ...assignment, providerId: fallback.id, model: model.id } : null
+      }).filter(Boolean)
       settings = { ...settings, providers: remaining, ai: { ...settings.ai, assignments } }
+      featureAssignmentDraft = null
       modelsExpandedProviderIds.delete(providerId)
       renderModels()
       toast('供应商已删除，请保存以生效')
@@ -1101,7 +1133,10 @@ function bindModelsProviderTab() {
   document.getElementById('saveProviderSettings')?.addEventListener('click', async () => {
     if (!commitOpenProviderEditors()) return
     try {
-      settings = await updateSettings({ providers: settings.providers }, '供应商配置已保存')
+      settings = await updateSettings({
+        providers: settings.providers,
+        ai: { schemaVersion: 2, assignments: settings.ai?.assignments || [] }
+      }, '供应商配置已保存')
       renderModels()
     } catch (error) {
       toast(error.message || '供应商配置保存失败')
@@ -1110,16 +1145,22 @@ function bindModelsProviderTab() {
 }
 
 function bindModelsFeatureTab() {
-  const persistFeatureAssignments = async ({ announce = false } = {}) => {
+  const markFeatureAssignmentsDirty = () => {
+    featureAssignmentDraft = snapshotFeatureAssignments()
+    const button = document.getElementById('saveFeatureAssignments')
+    if (button) button.textContent = '保存功能模型（有未保存更改）'
+  }
+  const persistFeatureAssignments = async () => {
     const assignments = readFeatureAssignments()
+    if (!assignments) return false
     try {
       settings = await updateSettings({
-        providers: settings.providers,
         ai: {
           schemaVersion: 2,
           assignments
         }
-      }, announce ? '功能模型已保存' : '')
+      }, '功能模型已保存')
+      featureAssignmentDraft = null
       return true
     } catch (error) {
       toast(errorMessage(error) || '功能模型保存失败')
@@ -1130,18 +1171,17 @@ function bindModelsFeatureTab() {
     select.onchange = () => {
       const feature = select.dataset.featureProvider
       const provider = modelProviderById(select.value)
-      const assignment = modelAssignmentForFeature(feature)
       const modelSelect = document.querySelector(`[data-feature-model="${feature}"]`)
       if (!modelSelect) return
-      modelSelect.innerHTML = modelOptionsMarkup(provider, assignment?.model)
-      void persistFeatureAssignments()
+      modelSelect.innerHTML = modelOptionsMarkup(provider, '', feature)
+      markFeatureAssignmentsDirty()
     }
   })
   document.querySelectorAll('[data-feature-model]').forEach((select) => {
-    select.onchange = () => void persistFeatureAssignments()
+    select.onchange = markFeatureAssignmentsDirty
   })
   document.getElementById('saveFeatureAssignments')?.addEventListener('click', async () => {
-    if (await persistFeatureAssignments({ announce: true })) renderModels()
+    if (await persistFeatureAssignments()) renderModels()
   })
 }
 

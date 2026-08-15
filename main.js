@@ -1041,16 +1041,12 @@ function isStaleToolbarStreamSignal(event, streamId) {
 }
 
 async function streamToWindow(win, action, text, controller) {
-  const { createCustomStream, createExplainStream, createTranslateStream } = require('./deepseek')
+  const { createToolbarActionStream } = require('./main/services/ai-feature-router')
   const currentSettings = getSettings()
-  const apiKey = resolveToolbarAiProvider(currentSettings, action.id)
   const requestOptions = { signal: controller.signal }
   requestOptions.thinking = getToolbarActionThinking(currentSettings.selectionToolbar, currentSettings.toolbarThinking, action.id)
   try {
-    let stream
-    if (action.id === 'translate') stream = await createTranslateStream(apiKey, text, action.prompt, requestOptions)
-    else if (action.id === 'explain') stream = await createExplainStream(apiKey, text, action.prompt, requestOptions)
-    else stream = await createCustomStream(apiKey, text, action.prompt, requestOptions)
+    const stream = await createToolbarActionStream({ settings: currentSettings, action, text, requestOptions })
     armToolbarStreamTimeout(controller)
     for await (const chunk of stream) {
       if (controller.cancelled || win.isDestroyed()) return

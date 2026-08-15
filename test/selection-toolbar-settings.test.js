@@ -28,6 +28,7 @@ test('config app exposes the selection toolbar route and controls', () => {
 
 test('main process normalizes toolbar settings and routes configured custom prompts', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const router = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'ai-feature-router.js'), 'utf8')
   const deepseek = fs.readFileSync(path.join(__dirname, '..', 'deepseek.js'), 'utf8')
   const toolbar = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar.js'), 'utf8')
   const action = fs.readFileSync(path.join(__dirname, '..', 'action', 'action.js'), 'utf8')
@@ -38,9 +39,10 @@ test('main process normalizes toolbar settings and routes configured custom prom
   assert.match(main, /consoleLike: app\.isPackaged \? null : console/)
   assert.match(main, /getVisibleToolbarActionDefinitions/)
   assert.match(main, /getToolbarActionDefinition\(toolbarConfig, action\)/)
-  assert.match(main, /createTranslateStream\(apiKey, text, action\.prompt, requestOptions\)/)
-  assert.match(main, /createExplainStream\(apiKey, text, action\.prompt, requestOptions\)/)
-  assert.match(main, /createCustomStream\(apiKey, text, action\.prompt, requestOptions\)/)
+  assert.match(main, /createToolbarActionStream\(\{ settings: currentSettings, action, text, requestOptions \}\)/)
+  assert.match(router, /clients\.createTranslateStream\(provider, text, action\.prompt, requestOptions\)/)
+  assert.match(router, /clients\.createExplainStream\(provider, text, action\.prompt, requestOptions\)/)
+  assert.match(router, /clients\.createCustomStream\(provider, text, action\.prompt, requestOptions\)/)
   assert.match(main, /label: actionDefinition\.label/)
   assert.match(deepseek, /role: 'system', content: prompt/)
   assert.match(toolbar, /action\.label/)

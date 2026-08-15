@@ -128,7 +128,7 @@ function normalizeAiProviders(value = [], { legacyApiKey = '', legacyModel = '' 
   return providers
 }
 
-function normalizeAiAssignments(value = [], providers = createDefaultProviders()) {
+function normalizeAiAssignments(value = [], providers = createDefaultProviders(), { fillDefaults = true } = {}) {
   const assignments = []
   const seenFeatures = new Set()
   const validProviderIds = new Set(providers.map((provider) => provider.id))
@@ -151,13 +151,15 @@ function normalizeAiAssignments(value = [], providers = createDefaultProviders()
     assignments.push({ feature, providerId, model })
   }
 
-  for (const fallback of createDefaultAssignments(providers)) {
-    if (seenFeatures.has(fallback.feature)) continue
-    if (!validProviderIds.has(fallback.providerId)) continue
-    const model = modelOf(fallback.providerId, fallback.model, { useProviderDefault: true })
-    if (!model) continue
-    seenFeatures.add(fallback.feature)
-    assignments.push({ feature: fallback.feature, providerId: fallback.providerId, model })
+  if (fillDefaults) {
+    for (const fallback of createDefaultAssignments(providers)) {
+      if (seenFeatures.has(fallback.feature)) continue
+      if (!validProviderIds.has(fallback.providerId)) continue
+      const model = modelOf(fallback.providerId, fallback.model, { useProviderDefault: true })
+      if (!model) continue
+      seenFeatures.add(fallback.feature)
+      assignments.push({ feature: fallback.feature, providerId: fallback.providerId, model })
+    }
   }
   return assignments
 }
@@ -217,7 +219,7 @@ function normalizeAiSettings(settings) {
   next.providers = providers
   next.ai = { ...(next.ai || {}) }
   next.ai.schemaVersion = AI_SETTINGS_SCHEMA_VERSION
-  next.ai.assignments = normalizeAiAssignments(next.ai.assignments, providers)
+  next.ai.assignments = normalizeAiAssignments(next.ai.assignments, providers, { fillDefaults: false })
   delete next.ai.providerId
   delete next.ai.model
   return next
@@ -228,7 +230,7 @@ function resolveAiAssignment(settings, feature, { fallbackFeature = '' } = {}) {
     legacyApiKey: settings?.apiKey,
     legacyModel: settings?.ai?.model
   })
-  const assignments = normalizeAiAssignments(settings?.ai?.assignments, providers)
+  const assignments = normalizeAiAssignments(settings?.ai?.assignments, providers, { fillDefaults: false })
   const assignment = assignments.find((item) => item.feature === feature)
     || (fallbackFeature ? assignments.find((item) => item.feature === fallbackFeature) : null)
   if (!assignment) return null
