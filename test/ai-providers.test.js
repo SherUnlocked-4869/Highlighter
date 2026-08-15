@@ -49,6 +49,50 @@ test('assignments normalize per feature and fall back to the first provider mode
   assert.equal(assignments.find((item) => item.feature === 'toolbar:translate').model, 'm1')
 })
 
+test('model-less providers never receive a fabricated DeepSeek assignment', () => {
+  const providers = normalizeAiProviders([
+    { id: 'custom', name: 'Custom', baseUrl: 'https://custom.example/v1', models: [] }
+  ])
+  const assignments = normalizeAiAssignments([], providers)
+  assert.deepEqual(assignments, [])
+  assert.equal(resolveAiAssignment({ providers, ai: { assignments } }, 'chat'), null)
+})
+
+test('invalid explicit assignments do not silently route to another model', () => {
+  const providers = normalizeAiProviders([
+    { id: 'custom', name: 'Custom', baseUrl: 'https://custom.example/v1', models: [{ id: 'valid', name: 'Valid' }] }
+  ])
+  const assignments = normalizeAiAssignments([
+    { feature: 'toolbar:translate', providerId: 'custom', model: 'removed' }
+  ], providers)
+  assert.equal(assignments.some((item) => item.feature === 'toolbar:translate'), false)
+  assert.equal(resolveAiAssignment({ providers, ai: { assignments: [{ feature: 'toolbar:translate', providerId: 'custom', model: 'removed' }] } }, 'toolbar:translate'), null)
+})
+
+test('disabled or endpoint-less providers cannot be resolved for requests', () => {
+  const model = [{ id: 'm1', name: 'M1' }]
+  const assignment = [{ feature: 'chat', providerId: 'custom', model: 'm1' }]
+  assert.equal(resolveAiAssignment({
+    providers: [{ id: 'custom', name: 'Custom', baseUrl: 'https://custom.example/v1', enabled: false, models: model }],
+    ai: { assignments: assignment }
+  }, 'chat'), null)
+  assert.equal(resolveAiAssignment({
+    providers: [{ id: 'custom', name: 'Custom', baseUrl: '', enabled: true, models: model }],
+    ai: { assignments: assignment }
+  }, 'chat'), null)
+})
+
+test('default assignments prefer an enabled provider over disabled DeepSeek', () => {
+  const settings = normalizeAiSettings({
+    providers: [
+      { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', enabled: false, models: [{ id: 'deepseek-v4-flash', name: 'Flash' }] },
+      { id: 'custom', name: 'Custom', baseUrl: 'https://custom.example/v1', enabled: true, models: [{ id: 'm1', name: 'M1' }] }
+    ],
+    ai: { assignments: [] }
+  })
+  assert.equal(settings.ai.assignments.find((item) => item.feature === 'chat').providerId, 'custom')
+})
+
 test('resolver returns the assigned provider and model for each feature', () => {
   const settings = normalizeAiSettings({
     providers: [

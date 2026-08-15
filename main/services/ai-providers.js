@@ -35,9 +35,13 @@ function createDefaultProviders() {
 }
 
 function createDefaultAssignments(providers = createDefaultProviders()) {
-  const fallbackProvider = providers.find((provider) => provider.id === 'deepseek') || providers[0]
-  const providerId = fallbackProvider?.id || 'deepseek'
-  const model = fallbackProvider?.models?.[0]?.id || DEFAULT_AI_MODEL
+  const candidates = Array.isArray(providers) ? providers : []
+  const fallbackProvider = candidates.find((provider) => provider.id === 'deepseek' && provider.enabled !== false && provider.models?.[0]?.id)
+    || candidates.find((provider) => provider.enabled !== false && provider.models?.[0]?.id)
+    || candidates.find((provider) => provider.models?.[0]?.id)
+  const providerId = cleanText(fallbackProvider?.id, 64)
+  const model = cleanText(fallbackProvider?.models?.[0]?.id, 200)
+  if (!providerId || !model) return []
   return AI_FEATURES.map((feature) => ({ feature: feature.id, providerId, model }))
 }
 
@@ -102,29 +106,29 @@ function normalizeAiAssignments(value = [], providers = createDefaultProviders()
   const assignments = []
   const seenFeatures = new Set()
   const validProviderIds = new Set(providers.map((provider) => provider.id))
-  const modelOf = (providerId, model) => {
+  const modelOf = (providerId, model, { useProviderDefault = false } = {}) => {
     const provider = providers.find((item) => item.id === providerId)
     const candidate = cleanText(model, 200)
     if (candidate && (provider?.models || []).some((item) => item.id === candidate)) return candidate
-    return provider?.models?.[0]?.id || DEFAULT_AI_MODEL
+    return useProviderDefault ? cleanText(provider?.models?.[0]?.id, 200) : ''
   }
 
   for (const item of Array.isArray(value) ? value : []) {
     if (!item || typeof item !== 'object' || assignments.length >= MAX_ASSIGNMENTS) continue
     const feature = cleanText(item.feature, 128)
     if (!feature || seenFeatures.has(feature)) continue
+    seenFeatures.add(feature)
     const providerId = cleanText(item.providerId, 64)
     if (!validProviderIds.has(providerId)) continue
     const model = modelOf(providerId, item.model)
     if (!model) continue
-    seenFeatures.add(feature)
     assignments.push({ feature, providerId, model })
   }
 
   for (const fallback of createDefaultAssignments(providers)) {
     if (seenFeatures.has(fallback.feature)) continue
     if (!validProviderIds.has(fallback.providerId)) continue
-    const model = modelOf(fallback.providerId, fallback.model)
+    const model = modelOf(fallback.providerId, fallback.model, { useProviderDefault: true })
     if (!model) continue
     seenFeatures.add(fallback.feature)
     assignments.push({ feature: fallback.feature, providerId: fallback.providerId, model })
@@ -166,9 +170,11 @@ function resolveAiAssignment(settings, feature, { fallbackFeature = '' } = {}) {
   const assignments = normalizeAiAssignments(settings?.ai?.assignments, providers)
   const assignment = assignments.find((item) => item.feature === feature)
     || (fallbackFeature ? assignments.find((item) => item.feature === fallbackFeature) : null)
-  const provider = providers.find((item) => item.id === assignment?.providerId) || providers[0]
-  if (!provider) return null
-  const model = assignment?.model || provider.models?.[0]?.id || settings?.ai?.model || DEFAULT_AI_MODEL
+  if (!assignment) return null
+  const provider = providers.find((item) => item.id === assignment.providerId)
+  if (!provider || provider.enabled === false || !provider.baseUrl) return null
+  const model = provider.models.some((item) => item.id === assignment.model) ? assignment.model : ''
+  if (!model) return null
   return { ...provider, model, apiKey: provider.apiKey }
 }
 

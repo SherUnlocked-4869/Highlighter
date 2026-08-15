@@ -25,26 +25,31 @@ function normalizeProviderInput(provider) {
     }
   }
   const value = provider && typeof provider === 'object' ? provider : {}
-  const baseUrl = cleanText(value.baseUrl || value.baseURL) || DEEPSEEK_BASE_URL
+  const id = cleanText(value.id, 64)
+  const configuredBaseUrl = cleanText(value.baseUrl || value.baseURL)
+  const deepseekCompatible = id.toLowerCase() === 'deepseek' || /deepseek/i.test(configuredBaseUrl)
+  const baseUrl = configuredBaseUrl || (deepseekCompatible ? DEEPSEEK_BASE_URL : '')
   const protocol = AI_PROTOCOLS.has(value.protocol) ? value.protocol : 'openai-chat'
   const models = Array.isArray(value.models) ? value.models : []
   const firstModel = models.map((item) => cleanText(item?.id, 200)).find(Boolean) || ''
   const explicitModel = cleanText(value.model, 200)
-  const deepseekCompatible = typeof provider === 'string' || /deepseek/i.test(baseUrl)
   const model = explicitModel || firstModel || (deepseekCompatible ? DEEPSEEK_DEFAULT_MODEL : '')
   return {
-    id: cleanText(value.id, 64) || 'custom',
+    id: id || 'custom',
     name: cleanText(value.name, 100) || '自定义供应商',
     baseUrl,
     apiKey: cleanText(value.apiKey, 512),
     model,
     protocol,
+    enabled: value.enabled !== false,
     vendorThinking: protocol === 'openai-chat' && /deepseek/i.test(baseUrl)
   }
 }
 
 function createClient(provider, { timeoutMs = 60000 } = {}) {
   const config = normalizeProviderInput(provider)
+  if (!config.enabled) throw new Error('该模型供应商已禁用，请先在“模型”设置中启用')
+  if (!config.baseUrl) throw new Error('请先在“模型”设置中配置供应商 API 地址')
   return new OpenAI({
     baseURL: config.baseUrl,
     apiKey: config.apiKey,
@@ -163,6 +168,7 @@ async function probeModelsList(config) {
 
 async function listProviderModels(provider) {
   const config = normalizeProviderInput(provider)
+  if (!config.baseUrl) throw new Error('请先填写 API 地址')
   if (!config.apiKey) throw new Error('请先填写 API 密钥')
   return (await probeModelsList(config)).models
 }
@@ -198,6 +204,8 @@ async function withConnectionFallback(config, request) {
 
 async function testProviderConnection(provider, { fetchModels = false } = {}) {
   const config = normalizeProviderInput(provider)
+  if (!config.enabled) throw new Error('该模型供应商已禁用，请先启用后再测试连接')
+  if (!config.baseUrl) throw new Error('请先填写 API 地址')
   if (!config.apiKey) throw new Error('请先填写 API 密钥')
   if (!config.model) {
     const probe = await probeModelsList(config)
@@ -432,6 +440,8 @@ function responsesStreamRequest(config, text, prompt) {
 
 async function createTranslateStream(provider, text, prompt = DEFAULT_TRANSLATE_PROMPT, requestOptions = {}) {
   const config = normalizeProviderInput(provider)
+  if (!config.enabled) throw new Error('该功能指定的模型供应商已禁用')
+  if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
   if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
   const thinking = takeThinkingOption(requestOptions, false)
@@ -458,6 +468,8 @@ async function createTranslateStream(provider, text, prompt = DEFAULT_TRANSLATE_
 
 async function completeChat(provider, messages, options = {}) {
   const config = normalizeProviderInput(provider)
+  if (!config.enabled) throw new Error('该功能指定的模型供应商已禁用')
+  if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
   if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
   return withConnectionFallback(config, async (attempt) => {
@@ -500,6 +512,8 @@ async function translateText(provider, text, sourceLanguage = 'auto', targetLang
 
 async function createExplainStream(provider, text, prompt = DEFAULT_EXPLAIN_PROMPT, requestOptions = {}) {
   const config = normalizeProviderInput(provider)
+  if (!config.enabled) throw new Error('该功能指定的模型供应商已禁用')
+  if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
   if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
   const thinking = takeThinkingOption(requestOptions, true)

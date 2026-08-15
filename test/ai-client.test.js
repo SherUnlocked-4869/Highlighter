@@ -41,6 +41,19 @@ test('custom providers without models do not fall back to the DeepSeek model', (
   assert.equal(provider.model, '')
 })
 
+test('custom providers without endpoints do not fall back to DeepSeek', () => {
+  const provider = normalizeProviderInput({
+    id: 'custom',
+    name: 'Custom',
+    baseUrl: '',
+    apiKey: 'sk-custom',
+    models: [{ id: 'custom-model', name: 'Custom Model' }]
+  })
+  assert.equal(provider.baseUrl, '')
+  assert.equal(provider.model, 'custom-model')
+  assert.equal(provider.vendorThinking, false)
+})
+
 test('non-DeepSeek providers omit DeepSeek thinking extension fields', () => {
   const request = buildToolbarStreamRequest('文本', '提示词', {
     thinking: 'high',
