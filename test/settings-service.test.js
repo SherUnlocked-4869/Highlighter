@@ -1,7 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { SettingsService, mergeSettings } = require('../main/services/settings-service')
-const { createDefaultAssignments, createDefaultProviders, normalizeAiSettings } = require('../main/services/ai-providers')
+const { createDefaultAssignments, createDefaultProviders, migrateAiSettings, normalizeAiSettings } = require('../main/services/ai-providers')
 
 class MemoryStore {
   constructor(values = {}) {
@@ -151,8 +151,7 @@ test('settings service migrates legacy DeepSeek settings into the provider catal
     apiKey: '',
     providers: createDefaultProviders(),
     ai: {
-      providerId: 'deepseek',
-      model: 'deepseek-v4-flash',
+      schemaVersion: 2,
       maxTokens: 4096,
       temperature: 0.7,
       targetLanguage: '中文',
@@ -166,10 +165,15 @@ test('settings service migrates legacy DeepSeek settings into the provider catal
     store,
     safeStorage: createSafeStorage(),
     defaults,
+    migrateSettings: migrateAiSettings,
     normalizeSettings: normalizeAiSettings
   })
   const settings = service.getSettings()
   assert.equal(settings.providers[0].apiKey, 'sk-legacy-key')
   assert.ok(settings.providers[0].models.some((model) => model.id === 'legacy-custom-model'))
   assert.equal(settings.ai.assignments.find((assignment) => assignment.feature === 'chat').model, 'legacy-custom-model')
+  assert.equal(settings.ai.schemaVersion, 2)
+  assert.equal(Object.hasOwn(settings.ai, 'providerId'), false)
+  assert.equal(Object.hasOwn(settings.ai, 'model'), false)
+  assert.equal(store.get('settings').ai.schemaVersion, 2)
 })

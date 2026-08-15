@@ -102,6 +102,7 @@ const {
 const {
   createDefaultAssignments,
   createDefaultProviders,
+  migrateAiSettings,
   normalizeAiSettings,
   resolveAiAssignment,
   resolveToolbarAiProvider
@@ -168,8 +169,7 @@ const DEFAULT_SETTINGS = {
     saveDirectory: ''
   },
   ai: {
-    providerId: 'deepseek',
-    model: 'deepseek-v4-flash',
+    schemaVersion: 2,
     maxTokens: 4096,
     temperature: 0.7,
     targetLanguage: '中文',
@@ -224,6 +224,7 @@ function initializeStore() {
     store,
     safeStorage,
     defaults: DEFAULT_SETTINGS,
+    migrateSettings: migrateAiSettings,
     normalizeSettings,
     onCredentialError: (error) => console.warn('Unable to access encrypted credentials:', error.message || String(error))
   })

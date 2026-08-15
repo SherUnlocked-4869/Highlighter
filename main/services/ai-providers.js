@@ -1,6 +1,7 @@
 const DEFAULT_AI_MODEL = 'deepseek-v4-flash'
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 const AI_PROTOCOLS = Object.freeze(['openai-chat', 'openai-responses'])
+const AI_SETTINGS_SCHEMA_VERSION = 2
 const MAX_PROVIDERS = 20
 const MAX_MODELS_PER_PROVIDER = 100
 const MAX_ASSIGNMENTS = 100
@@ -136,29 +137,64 @@ function normalizeAiAssignments(value = [], providers = createDefaultProviders()
   return assignments
 }
 
-function normalizeAiSettings(settings) {
-  const next = { ...(settings || {}) }
-  const providers = normalizeAiProviders(next.providers, {
-    legacyApiKey: next.apiKey,
-    legacyModel: next.ai?.model
-  })
-  next.providers = providers
-  next.ai = { ...(next.ai || {}) }
-  next.ai.assignments = normalizeAiAssignments(next.ai.assignments, providers)
+function migrateAiSettings(settings, { legacyApiKey = '' } = {}) {
+  const source = settings && typeof settings === 'object' ? settings : {}
+  const sourceAi = source.ai && typeof source.ai === 'object' ? source.ai : {}
+  const version = Number(sourceAi.schemaVersion) || 0
+  if (version >= AI_SETTINGS_SCHEMA_VERSION) return { settings: source, changed: false }
 
-  const legacyModel = cleanText(next.ai.model, 200)
-  if (legacyModel) {
-    const modelOwner = providers.find((provider) => provider.models.some((model) => model.id === legacyModel))
-      || providers.find((provider) => provider.id === 'deepseek')
-      || providers[0]
-    if (modelOwner) {
-      const chatIndex = next.ai.assignments.findIndex((assignment) => assignment.feature === 'chat')
-      const chatAssignment = { feature: 'chat', providerId: modelOwner.id, model: legacyModel }
-      if (chatIndex >= 0) next.ai.assignments[chatIndex] = chatAssignment
-      else next.ai.assignments.push(chatAssignment)
-      next.ai.providerId = modelOwner.id
+  const rawAssignments = Array.isArray(sourceAi.assignments) ? sourceAi.assignments : []
+  const hasExplicitChatAssignment = rawAssignments.some((assignment) => assignment?.feature === 'chat')
+  const providers = normalizeAiProviders(source.providers, {
+    legacyApiKey: legacyApiKey || source.apiKey
+  })
+  const assignments = normalizeAiAssignments(rawAssignments, providers)
+
+  if (!hasExplicitChatAssignment) {
+    const legacyProviderId = cleanText(sourceAi.providerId, 64)
+    const legacyModel = cleanText(sourceAi.model, 200)
+    if (legacyProviderId || legacyModel) {
+      let provider = providers.find((item) => item.id === legacyProviderId)
+      if (!provider && legacyModel) provider = providers.find((item) => item.models.some((model) => model.id === legacyModel))
+      provider ||= providers.find((item) => item.id === 'deepseek') || providers[0]
+      if (provider && legacyModel && !provider.models.some((model) => model.id === legacyModel) && provider.models.length < MAX_MODELS_PER_PROVIDER) {
+        provider.models.push({ id: legacyModel, name: legacyModel })
+      }
+      const model = legacyModel && provider?.models.some((item) => item.id === legacyModel)
+        ? legacyModel
+        : provider?.models?.[0]?.id
+      if (provider && model) {
+        const chatIndex = assignments.findIndex((assignment) => assignment.feature === 'chat')
+        const chatAssignment = { feature: 'chat', providerId: provider.id, model }
+        if (chatIndex >= 0) assignments[chatIndex] = chatAssignment
+        else assignments.push(chatAssignment)
+      }
     }
   }
+
+  const ai = {
+    ...sourceAi,
+    schemaVersion: AI_SETTINGS_SCHEMA_VERSION,
+    assignments
+  }
+  delete ai.providerId
+  delete ai.model
+  return {
+    settings: { ...source, providers, ai },
+    changed: true
+  }
+}
+
+function normalizeAiSettings(settings) {
+  const migrated = migrateAiSettings(settings).settings
+  const next = { ...migrated }
+  const providers = normalizeAiProviders(next.providers)
+  next.providers = providers
+  next.ai = { ...(next.ai || {}) }
+  next.ai.schemaVersion = AI_SETTINGS_SCHEMA_VERSION
+  next.ai.assignments = normalizeAiAssignments(next.ai.assignments, providers)
+  delete next.ai.providerId
+  delete next.ai.model
   return next
 }
 
@@ -206,6 +242,7 @@ function getProviderDefaultModels(provider) {
 module.exports = {
   AI_FEATURES,
   AI_PROTOCOLS,
+  AI_SETTINGS_SCHEMA_VERSION,
   DEFAULT_AI_MODEL,
   DEFAULT_DEEPSEEK_BASE_URL,
   MAX_ASSIGNMENTS,
@@ -215,6 +252,7 @@ module.exports = {
   createDefaultDeepSeekProvider,
   createDefaultProviders,
   getProviderDefaultModels,
+  migrateAiSettings,
   normalizeAiAssignments,
   normalizeAiProviders,
   normalizeAiSettings,

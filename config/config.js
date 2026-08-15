@@ -779,7 +779,7 @@ function featureAssignmentMarkup(feature, providers) {
   const assignment = modelAssignmentForFeature(feature.id) || {}
   const providerId = providers.some((provider) => provider.id === assignment.providerId)
     ? assignment.providerId
-    : (settings.ai?.providerId || providers[0]?.id)
+    : providers[0]?.id
   const provider = providers.find((item) => item.id === providerId) || providers[0]
   return `<div class="feature-model-row" data-feature="${escapeHtml(feature.id)}"><div class="feature-model-label"><b>${escapeHtml(feature.label)}</b><small>${escapeHtml(feature.description)}</small></div><select data-feature-provider="${escapeHtml(feature.id)}">${providers.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === provider?.id ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select><select data-feature-model="${escapeHtml(feature.id)}">${modelOptionsMarkup(provider, assignment.model)}</select></div>`
 }
@@ -1112,13 +1112,11 @@ function bindModelsProviderTab() {
 function bindModelsFeatureTab() {
   const persistFeatureAssignments = async ({ announce = false } = {}) => {
     const assignments = readFeatureAssignments()
-    const chatAssignment = assignments.find((assignment) => assignment.feature === 'chat') || assignments[0]
     try {
       settings = await updateSettings({
         providers: settings.providers,
         ai: {
-          providerId: chatAssignment?.providerId || settings.providers[0]?.id,
-          model: chatAssignment?.model || settings.providers[0]?.models[0]?.id || '',
+          schemaVersion: 2,
           assignments
         }
       }, announce ? '功能模型已保存' : '')

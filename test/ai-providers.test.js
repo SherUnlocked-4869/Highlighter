@@ -2,6 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
   createDefaultProviders,
+  migrateAiSettings,
   normalizeAiAssignments,
   normalizeAiProviders,
   normalizeAiSettings,
@@ -34,6 +35,37 @@ test('provider normalization keeps multiple providers and sanitizes model catalo
   assert.equal(providers.length, 2)
   assert.equal(providers[1].protocol, 'openai-responses')
   assert.deepEqual(providers[1].models, [{ id: 'gpt-5.6-terra', name: 'gpt-5.6-terra' }])
+})
+
+test('schema migration keeps an explicit assignment when providers share a model id', () => {
+  const migration = migrateAiSettings({
+    providers: [
+      { id: 'a', name: 'A', baseUrl: 'https://a.example/v1', models: [{ id: 'shared', name: 'Shared A' }] },
+      { id: 'b', name: 'B', baseUrl: 'https://b.example/v1', models: [{ id: 'shared', name: 'Shared B' }] }
+    ],
+    ai: {
+      providerId: 'a',
+      model: 'shared',
+      assignments: [{ feature: 'chat', providerId: 'b', model: 'shared' }]
+    }
+  })
+  assert.equal(migration.changed, true)
+  assert.equal(migration.settings.ai.schemaVersion, 2)
+  assert.equal(migration.settings.ai.assignments.find((item) => item.feature === 'chat').providerId, 'b')
+  assert.equal(Object.hasOwn(migration.settings.ai, 'providerId'), false)
+  assert.equal(Object.hasOwn(migration.settings.ai, 'model'), false)
+  assert.equal(normalizeAiSettings(migration.settings).ai.assignments.find((item) => item.feature === 'chat').providerId, 'b')
+})
+
+test('schema migration uses the legacy provider id only when no chat assignment exists', () => {
+  const migration = migrateAiSettings({
+    providers: [
+      { id: 'a', name: 'A', baseUrl: 'https://a.example/v1', models: [{ id: 'shared', name: 'Shared A' }] },
+      { id: 'b', name: 'B', baseUrl: 'https://b.example/v1', models: [{ id: 'shared', name: 'Shared B' }] }
+    ],
+    ai: { providerId: 'b', model: 'shared' }
+  })
+  assert.equal(migration.settings.ai.assignments.find((item) => item.feature === 'chat').providerId, 'b')
 })
 
 test('assignments normalize per feature and fall back to the first provider model', () => {

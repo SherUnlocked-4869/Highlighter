@@ -21,6 +21,7 @@ class SettingsService {
     safeStorage,
     defaults,
     normalizeSettings = (settings) => settings,
+    migrateSettings = () => ({ changed: false }),
     onCredentialError = () => {}
   }) {
     if (!store) throw new Error('SettingsService requires a store')
@@ -28,12 +29,24 @@ class SettingsService {
     this.store = store
     this.defaults = defaults
     this.normalizeSettings = normalizeSettings
+    this.migrateSettings = migrateSettings
     this.credentials = new CredentialStore({
       store,
       safeStorage,
       onError: onCredentialError
     })
     this.credentials.migrateLegacyApiKey()
+    this.migrateStoredSettings()
+  }
+
+  migrateStoredSettings() {
+    const stored = this.store.get('settings', {})
+    const migration = this.migrateSettings(stored, {
+      legacyApiKey: this.credentials.getApiKey(stored?.apiKey)
+    })
+    if (!migration?.changed || !migration.settings) return false
+    this.persistSettings(mergeSettings(this.defaults, migration.settings))
+    return true
   }
 
   getSettings() {
