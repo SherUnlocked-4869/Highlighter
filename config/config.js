@@ -401,7 +401,12 @@ async function renderHistory() {
         } catch (error) { toast(error.message || '无法使用默认应用打开截图') }
       }
       if (action === 'copy') { const copied = await window.electronAPI.copyHistory(id); toast(copied ? '截图已复制' : '图片过大，请从保存位置使用') }
-      if (action === 'reveal') await window.electronAPI.revealHistory(id)
+      if (action === 'address') {
+        try {
+          const copied = await window.electronAPI.copyHistoryPath(id)
+          toast(copied ? '图片地址已复制' : '截图文件不存在')
+        } catch (error) { toast(error.message || '无法复制图片地址') }
+      }
       if (action === 'delete') {
         try { historySelectedIds.delete(id); await window.electronAPI.deleteHistory(id) }
         catch (error) { toast(error.message || '图片文件删除失败') }
@@ -412,7 +417,7 @@ async function renderHistory() {
     const itemsMarkup = history.length
       ? `<div class="history-grid">${history.map((item) => {
           const selected = historySelectedIds.has(String(item.id))
-          return `<article class="card history-item ${selected ? 'selected' : ''}"><label class="history-select" title="选择此项"><input type="checkbox" data-history-select data-id="${escapeHtml(item.id)}" ${selected ? 'checked' : ''}></label><div class="history-image"><img data-history-thumbnail="${escapeHtml(item.id)}" alt=""></div><div class="history-meta">${new Date(item.createdAt).toLocaleString()} · ${escapeHtml(sourceLabels[item.source] || item.source)} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</div><div class="history-actions">${item.longCapture ? '' : `<button data-history-action="edit" data-id="${escapeHtml(item.id)}">编辑</button>`}<button data-history-action="open" data-id="${escapeHtml(item.id)}">打开</button><button data-history-action="copy" data-id="${escapeHtml(item.id)}">复制</button><button data-history-action="reveal" data-id="${escapeHtml(item.id)}">定位</button><button data-history-action="delete" data-id="${escapeHtml(item.id)}">删除</button></div></article>`
+          return `<article class="card history-item ${selected ? 'selected' : ''}"><label class="history-select" title="选择此项"><input type="checkbox" data-history-select data-id="${escapeHtml(item.id)}" ${selected ? 'checked' : ''}></label><div class="history-image"><img data-history-thumbnail="${escapeHtml(item.id)}" alt=""></div><div class="history-meta">${new Date(item.createdAt).toLocaleString()} · ${escapeHtml(sourceLabels[item.source] || item.source)} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</div><div class="history-actions">${item.longCapture ? '' : `<button data-history-action="edit" data-id="${escapeHtml(item.id)}">编辑</button>`}<button data-history-action="open" data-id="${escapeHtml(item.id)}">打开</button><button data-history-action="copy" data-id="${escapeHtml(item.id)}">复制</button><button data-history-action="address" data-id="${escapeHtml(item.id)}">地址</button><button data-history-action="delete" data-id="${escapeHtml(item.id)}">删除</button></div></article>`
         }).join('')}</div>`
       : '<div class="empty">没有符合条件的截图历史</div>'
     results.innerHTML = itemsMarkup

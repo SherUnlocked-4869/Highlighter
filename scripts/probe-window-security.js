@@ -87,7 +87,7 @@ function registerProbeIpc() {
     ['history:cleanup', () => ({ removed: [], failed: [] })],
     ['history:copy', () => true],
     ['history:edit', () => true],
-    ['history:reveal', () => true],
+    ['history:copy-path', () => true],
     ['history:clear', () => true],
     ['ai:complete', () => ({ content: '' })],
     ['ai:translate', () => ''],

@@ -2,9 +2,9 @@ function registerHistoryIpc({
   ipcMain,
   historyService,
   copyItem,
+  copyPathItem,
   editItem,
   openItem,
-  revealItem,
   chooseExportDirectory
 }) {
   if (!ipcMain || !historyService) throw new Error('History IPC requires ipcMain and historyService')
@@ -33,9 +33,9 @@ function registerHistoryIpc({
     const item = historyService.getItem(id)
     return item ? openItem(item) : false
   })
-  ipcMain.handle('history:reveal', (_event, id) => {
+  ipcMain.handle('history:copy-path', (_event, id) => {
     const item = historyService.getItem(id)
-    return item ? revealItem(item) : false
+    return item ? copyPathItem(item) : false
   })
 }
 

@@ -2349,8 +2349,9 @@ registerHistoryIpc({
     if (error) throw new Error(`无法使用默认应用打开截图：${error}`)
     return true
   },
-  revealItem: (item) => {
-    shell.showItemInFolder(item.filePath)
+  copyPathItem: (item) => {
+    if (!fs.existsSync(item.filePath)) return false
+    clipboard.writeText(path.resolve(item.filePath))
     return true
   },
   chooseExportDirectory: async () => {

@@ -16,6 +16,7 @@ test('preload exposes fixed history management methods', () => {
   assert.match(preload, /exportHistory:\s*\(ids\)\s*=>\s*ipcRenderer\.invoke\('history:export', ids\)/)
   assert.match(preload, /cleanupHistory:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('history:cleanup'\)/)
   assert.match(preload, /openHistory:\s*\(id\)\s*=>\s*ipcRenderer\.invoke\('history:open', id\)/)
+  assert.match(preload, /copyHistoryPath:\s*\(id\)\s*=>\s*ipcRenderer\.invoke\('history:copy-path', id\)/)
 })
 
 test('history page renders storage statistics and batch controls', () => {
@@ -43,6 +44,15 @@ test('history page opens screenshots with the default application', () => {
   assert.match(config, /data-history-action="open"[^>]*>打开<\/button>/)
   assert.match(config, /window\.electronAPI\.openHistory\(id\)/)
   assert.match(main, /shell\.openPath\(item\.filePath\)/)
+})
+
+test('history page copies a screenshot absolute path instead of revealing it', () => {
+  assert.match(config, /data-history-action="address"[^>]*>地址<\/button>/)
+  assert.match(config, /window\.electronAPI\.copyHistoryPath\(id\)/)
+  assert.match(config, /图片地址已复制/)
+  assert.match(main, /clipboard\.writeText\(path\.resolve\(item\.filePath\)\)/)
+  assert.doesNotMatch(config, /data-history-action="reveal"[^>]*>定位<\/button>/)
+  assert.doesNotMatch(preload, /history:reveal|revealHistory/)
 })
 
 test('capture file names use China Standard Time (UTC+8)', () => {
