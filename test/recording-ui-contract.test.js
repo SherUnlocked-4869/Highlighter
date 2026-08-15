@@ -78,6 +78,7 @@ test('main process securely routes annotation commands and snapshots', () => {
 
 test('recording UI contains control and preview states', () => {
   const html = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')
+  const style = fs.readFileSync(path.join(root, 'record', 'record.css'), 'utf8')
   const script = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')
   for (const id of ['controlView', 'countdown', 'start', 'pause', 'stop', 'previewView', 'preview', 'saveMp4', 'rerecord']) {
     assert.match(html, new RegExp(`id="${id}"`))
@@ -89,6 +90,8 @@ test('recording UI contains control and preview states', () => {
   assert.match(script, /appendChunk/)
   assert.match(script, /transitionRecordingState/)
   assert.match(script, /primeSeekablePreview\(preview\)/)
+  assert.match(style, /\.video-stage\{[^}]*position:relative[^}]*overflow:hidden/)
+  assert.match(style, /\.video-stage video\{[^}]*position:absolute[^}]*inset:14px/)
 })
 
 test('recording controls expose and composite basic live annotation tools', () => {
