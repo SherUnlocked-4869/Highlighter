@@ -23,7 +23,7 @@ test('main navigation and titlebar use local SVG icons', () => {
   const titlebarIcons = [...html.matchAll(/class="svg-icon" style="--icon:url\('(\.\.\/capture\/icons\/(?:line|close)\.svg)'\)"/g)]
     .map((match) => match[1])
 
-  assert.equal(navigationIcons.length, 12)
+  assert.equal(navigationIcons.length, 13)
   assert.deepEqual(titlebarIcons, ['../capture/icons/line.svg', '../capture/icons/close.svg'])
   for (const iconPath of [...navigationIcons, ...titlebarIcons]) assertIconExists(iconPath)
 })

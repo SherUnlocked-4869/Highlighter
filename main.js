@@ -99,6 +99,15 @@ const {
   normalizeSelectionToolbar,
   normalizeToolbarThinking
 } = require('./toolbar/toolbar-utils')
+const {
+  createDefaultAssignments,
+  createDefaultProviders,
+  normalizeAiSettings,
+  resolveAiAssignment,
+  resolveToolbarAiProvider
+} = require('./main/services/ai-providers')
+
+const DEFAULT_AI_PROVIDERS = createDefaultProviders()
 
 const defaultHistoryDirectory = activePaths?.history || path.join(app.getPath('userData'), 'capture-history')
 const logFile = activePaths ? path.join(activePaths.logs, 'app.log') : path.join(app.getPath('userData'), 'app.log')
@@ -116,6 +125,7 @@ crashReporter.start({
 
 const DEFAULT_SETTINGS = {
   apiKey: '',
+  providers: DEFAULT_AI_PROVIDERS,
   theme: 'system',
   mainColor: '#1677ff',
   borderRadius: 8,
@@ -158,10 +168,12 @@ const DEFAULT_SETTINGS = {
     saveDirectory: ''
   },
   ai: {
+    providerId: 'deepseek',
     model: 'deepseek-v4-flash',
     maxTokens: 4096,
     temperature: 0.7,
-    targetLanguage: '中文'
+    targetLanguage: '中文',
+    assignments: createDefaultAssignments(DEFAULT_AI_PROVIDERS)
   },
   system: {
     autoStart: true,
@@ -315,7 +327,7 @@ function getRecordingService() {
 }
 
 function normalizeSettings(settings) {
-  const normalized = settings
+  const normalized = normalizeAiSettings(settings)
   normalized.selectionToolbar = normalizeSelectionToolbar(normalized.selectionToolbar)
   normalized.toolbarThinking = normalizeToolbarThinking(normalized.toolbarThinking)
   const legacyDirectory = normalized.fixedContent?.autoSaveDirectory
@@ -1030,7 +1042,7 @@ function isStaleToolbarStreamSignal(event, streamId) {
 async function streamToWindow(win, action, text, controller) {
   const { createCustomStream, createExplainStream, createTranslateStream } = require('./deepseek')
   const currentSettings = getSettings()
-  const apiKey = currentSettings.apiKey
+  const apiKey = resolveToolbarAiProvider(currentSettings, action.id)
   const requestOptions = { signal: controller.signal }
   requestOptions.thinking = getToolbarActionThinking(currentSettings.selectionToolbar, currentSettings.toolbarThinking, action.id)
   try {
@@ -2099,7 +2111,16 @@ registerSettingsIpc({
     selectionHookService?.updateStartOptions({ enableClipboard: settings.selectionToolbar.clipboardFallback })
   },
   onStartHook: () => initSelectionHook(),
-  validateApiKey: (apiKey) => require('./deepseek').validateApiKey(apiKey),
+  validateApiKey: async (input) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return require('./deepseek').validateApiKey(input)
+    }
+    const provider = input.provider || input
+    const result = await require('./deepseek').testProviderConnection(provider, {
+      fetchModels: input.fetchModels === true
+    })
+    return result
+  },
   log
 })
 registerShortcutIpc({
@@ -2221,17 +2242,23 @@ registerAppIpc({
     chooseDirectory,
     openDataDirectory: () => shell.openPath(activePaths?.root || app.getPath('userData')),
     openSaveDirectory: () => shell.openPath(getSettings().screenshot.saveDirectory || app.getPath('pictures')),
-    completeAi: (messages, options) => require('./deepseek').completeChat(
-      getSettings().apiKey,
-      messages,
-      { ...getSettings().ai, ...(options || {}) }
-    ),
-    translateText: (text, sourceLanguage, targetLanguage) => require('./deepseek').translateText(
-      getSettings().apiKey,
-      text,
-      sourceLanguage,
-      targetLanguage || getSettings().ai.targetLanguage
-    )
+    completeAi: (messages, options) => {
+      const settings = getSettings()
+      return require('./deepseek').completeChat(
+        resolveAiAssignment(settings, 'chat'),
+        messages,
+        { maxTokens: settings.ai.maxTokens, temperature: settings.ai.temperature, ...(options || {}) }
+      )
+    },
+    translateText: (text, sourceLanguage, targetLanguage) => {
+      const settings = getSettings()
+      return require('./deepseek').translateText(
+        resolveAiAssignment(settings, 'translation'),
+        text,
+        sourceLanguage,
+        targetLanguage || settings.ai.targetLanguage
+      )
+    }
   }
 })
 
@@ -2559,7 +2586,12 @@ const captureIpcController = {
   }, 'capture-translate')
   const text = ocrResult.text.trim()
   if (!text) throw new Error('未识别到可翻译的文本')
-  const translation = await require('./deepseek').translateText(getSettings().apiKey, text, 'auto', getSettings().ai.targetLanguage)
+  const translation = await require('./deepseek').translateText(
+    resolveAiAssignment(settings, 'ocr-translate'),
+    text,
+    'auto',
+    settings.ai.targetLanguage
+  )
   return { text, translation, ocrResult }
   },
   recognitionReady: (event) => {
@@ -2950,7 +2982,8 @@ secureIpcMain.on('toolbar:action', async (_event, { action, text }) => {
     return
   }
   if (!isAiToolbarAction(action, toolbarConfig)) return
-  if (!getSettings().apiKey) { createMainWindow('settings-function'); hideToolbar(); return }
+  const aiRuntime = resolveToolbarAiProvider(getSettings(), action)
+  if (!aiRuntime?.apiKey) { createMainWindow('models'); hideToolbar(); return }
   hideToolbar()
   const win = getOrCreateActionWindow()
   const controller = createToolbarStreamController(win)

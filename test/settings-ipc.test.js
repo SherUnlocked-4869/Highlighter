@@ -90,3 +90,20 @@ test('start-hook failures are logged without applying the hook', () => {
   assert.equal(started, false)
   assert.match(messages[0][0], /Rejected selection hook/)
 })
+
+test('config test-connection passes provider payloads through without string normalization', async () => {
+  const ipcMain = createIpcMain()
+  const service = createSettingsService()
+  const seen = []
+  registerSettingsIpc({
+    ipcMain,
+    settingsService: service,
+    assertWritable() {},
+    validateApiKey: async (value) => { seen.push(value); return { ok: true } }
+  })
+  const provider = { id: 'jbb', baseUrl: 'https://example.com/v1', apiKey: 'sk-jbb' }
+  await ipcMain.handlers.get('config:test-connection')(null, { provider, fetchModels: true })
+  assert.deepEqual(seen, [{ provider, fetchModels: true }])
+  await ipcMain.handlers.get('config:test-connection')(null, 'sk-legacy')
+  assert.equal(seen[1], 'sk-legacy')
+})

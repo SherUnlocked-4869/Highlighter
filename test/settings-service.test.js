@@ -1,6 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { SettingsService, mergeSettings } = require('../main/services/settings-service')
+const { createDefaultAssignments, createDefaultProviders, normalizeAiSettings } = require('../main/services/ai-providers')
 
 class MemoryStore {
   constructor(values = {}) {
@@ -97,4 +98,78 @@ test('mergeSettings ignores prototype pollution keys', () => {
   const result = mergeSettings(defaults, patch)
   assert.equal(result.theme, 'dark')
   assert.equal({}.polluted, undefined)
+})
+
+test('settings service encrypts provider API keys and keeps them out of plaintext settings', () => {
+  const providerDefaults = {
+    apiKey: '',
+    providers: [
+      { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiKey: '', models: [{ id: 'deepseek-v4-flash', name: 'Flash' }] }
+    ],
+    ai: { assignments: [{ feature: 'chat', providerId: 'deepseek', model: 'deepseek-v4-flash' }] }
+  }
+  const store = new MemoryStore()
+  const service = new SettingsService({
+    store,
+    safeStorage: createSafeStorage(),
+    defaults: providerDefaults
+  })
+  service.updateSettings({
+    providers: [{ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiKey: 'sk-provider-key', models: [{ id: 'deepseek-v4-flash', name: 'Flash' }] }]
+  })
+  assert.equal(store.get('settings').providers[0].apiKey, '')
+  assert.equal(service.getSettings().providers[0].apiKey, 'sk-provider-key')
+  assert.equal(service.getSettings().apiKey, 'sk-provider-key')
+})
+
+test('settings service preserves omitted provider API keys on partial provider patches', () => {
+  const providerDefaults = {
+    apiKey: '',
+    providers: [
+      { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiKey: '', models: [{ id: 'deepseek-v4-flash', name: 'Flash' }] }
+    ],
+    ai: { assignments: [{ feature: 'chat', providerId: 'deepseek', model: 'deepseek-v4-flash' }] }
+  }
+  const store = new MemoryStore()
+  const service = new SettingsService({
+    store,
+    safeStorage: createSafeStorage(),
+    defaults: providerDefaults
+  })
+  service.updateSettings({
+    providers: [{ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiKey: 'sk-provider-key', models: [{ id: 'deepseek-v4-flash', name: 'Flash' }] }]
+  })
+  service.updateSettings({
+    providers: [{ id: 'deepseek', name: 'DeepSeek 新名称', baseUrl: 'https://api.deepseek.com' }]
+  })
+  assert.equal(service.getSettings().providers[0].name, 'DeepSeek 新名称')
+  assert.equal(service.getSettings().providers[0].apiKey, 'sk-provider-key')
+})
+
+test('settings service migrates legacy DeepSeek settings into the provider catalog', () => {
+  const defaults = {
+    apiKey: '',
+    providers: createDefaultProviders(),
+    ai: {
+      providerId: 'deepseek',
+      model: 'deepseek-v4-flash',
+      maxTokens: 4096,
+      temperature: 0.7,
+      targetLanguage: '中文',
+      assignments: createDefaultAssignments(createDefaultProviders())
+    }
+  }
+  const store = new MemoryStore({
+    settings: { apiKey: 'sk-legacy-key', ai: { model: 'legacy-custom-model' } }
+  })
+  const service = new SettingsService({
+    store,
+    safeStorage: createSafeStorage(),
+    defaults,
+    normalizeSettings: normalizeAiSettings
+  })
+  const settings = service.getSettings()
+  assert.equal(settings.providers[0].apiKey, 'sk-legacy-key')
+  assert.ok(settings.providers[0].models.some((model) => model.id === 'legacy-custom-model'))
+  assert.equal(settings.ai.assignments.find((assignment) => assignment.feature === 'chat').model, 'legacy-custom-model')
 })

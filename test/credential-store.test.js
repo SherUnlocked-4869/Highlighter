@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { API_KEY_STORAGE_KEY, CredentialStore } = require('../main/services/credential-store')
+const { API_KEY_STORAGE_KEY, PROVIDER_API_KEYS_STORAGE_KEY, CredentialStore } = require('../main/services/credential-store')
 
 class MemoryStore {
   constructor(values = {}) {
@@ -64,4 +64,28 @@ test('reports corrupt encrypted data and falls back without deleting it', () => 
   assert.equal(credentials.getApiKey('legacy'), 'legacy')
   assert.deepEqual(errors, ['decrypt failed'])
   assert.ok(store.get(API_KEY_STORAGE_KEY))
+})
+
+test('encrypts provider API keys separately and removes keys for deleted providers', () => {
+  const store = new MemoryStore()
+  const credentials = new CredentialStore({ store, safeStorage: createSafeStorage() })
+  const providers = [
+    { id: 'deepseek', apiKey: 'sk-deepseek' },
+    { id: 'jbb', apiKey: 'sk-jbb' }
+  ]
+  assert.equal(credentials.setProviderApiKeys(providers), true)
+  assert.equal(store.get(PROVIDER_API_KEYS_STORAGE_KEY).jbb.length > 0, true)
+  assert.equal(store.get(PROVIDER_API_KEYS_STORAGE_KEY).jbb, Buffer.from('encrypted:sk-jbb').toString('base64'))
+  assert.deepEqual(credentials.getProviderApiKeys(providers), { deepseek: 'sk-deepseek', jbb: 'sk-jbb' })
+
+  credentials.setProviderApiKeys([{ id: 'deepseek', apiKey: 'sk-rotated' }])
+  assert.deepEqual(credentials.getProviderApiKeys(providers.map((provider) => ({ ...provider, apiKey: '' }))), { deepseek: 'sk-rotated', jbb: '' })
+})
+
+test('provider API keys fall back to plaintext values when encryption is unavailable', () => {
+  const store = new MemoryStore()
+  const credentials = new CredentialStore({ store, safeStorage: createSafeStorage(false) })
+  const providers = [{ id: 'deepseek', apiKey: 'sk-plaintext' }]
+  assert.equal(credentials.setProviderApiKeys(providers), false)
+  assert.deepEqual(credentials.getProviderApiKeys(providers), { deepseek: 'sk-plaintext' })
 })

@@ -28,9 +28,10 @@ function registerSettingsIpc({
     assertWritable()
     return settingsService.setApiKey(apiKey)
   })
-  ipcMain.handle('config:test-connection', (_event, apiKey) => (
-    validateApiKey(settingsService.normalizeApiKey(apiKey))
-  ))
+  ipcMain.handle('config:test-connection', (_event, input) => {
+    const value = input && typeof input === 'object' && !Array.isArray(input) ? input : settingsService.normalizeApiKey(input)
+    return validateApiKey(value)
+  })
   ipcMain.on('config:start-hook', (_event, apiKey) => {
     try {
       assertWritable()

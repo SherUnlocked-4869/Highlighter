@@ -7,6 +7,8 @@ let currentRoute = 'home'
 let homeTab = 'screenshot'
 let chatMessages = []
 let draggedSelectionToolbarAction = ''
+let modelsTab = 'providers'
+let modelsExpandedProviderIds = new Set()
 let historyQuery = ''
 let historySource = ''
 let historyRenderVersion = 0
@@ -32,6 +34,7 @@ const routeTitles = {
   home: '快捷功能', translation: '翻译', chat: 'AI 对话', history: '截图历史',
   appearance: '外观配色', plugins: '插件', 'settings-general': '界面设置',
   'settings-function': '功能设置', 'settings-hotkeys': '热键设置',
+  models: '模型',
   'selection-toolbar': '划词工具',
   'settings-system': '系统设置', about: '关于'
 }
@@ -51,7 +54,7 @@ const functionGroups = {
     ['screenshotFocusedWindow', '当前焦点窗口', 'icons/focus.svg', '捕获当前活动窗口']
   ],
   ai: [
-    ['chat', '打开 AI 对话', 'icons/robot.svg', '使用 DeepSeek 进行多轮对话'],
+    ['chat', '打开 AI 对话', 'icons/robot.svg', '使用配置的 AI 模型进行多轮对话'],
     ['chatSelectText', '对话框填入选中文本', 'icons/text-style-one.svg', '保留现有划词助手工作流']
   ],
   translation: [
@@ -72,6 +75,10 @@ const functionGroups = {
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char])
+}
+
+function errorMessage(error) {
+  return String(error?.message || error || '').replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')
 }
 
 function iconMarkup(iconPath) {
@@ -154,6 +161,10 @@ function navigate(route) {
     historyThumbnailObserver?.disconnect()
     historyThumbnailObserver = null
   }
+  if (route === 'models' && currentRoute !== 'models') {
+    modelsTab = 'providers'
+    modelsExpandedProviderIds = new Set()
+  }
   currentRoute = route || 'home'
   pageTitle.textContent = routeTitles[currentRoute] || 'Highlighter'
   document.querySelectorAll('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.route === currentRoute))
@@ -168,6 +179,7 @@ function renderRoute() {
   else if (currentRoute === 'appearance') renderAppearance()
   else if (currentRoute === 'plugins') renderPlugins()
   else if (currentRoute === 'settings-general') renderGeneralSettings()
+  else if (currentRoute === 'models') renderModels()
   else if (currentRoute === 'settings-function') renderFunctionSettings()
   else if (currentRoute === 'selection-toolbar') renderSelectionToolbarSettings()
   else if (currentRoute === 'settings-hotkeys') renderHotkeySettings()
@@ -253,7 +265,7 @@ function renderTranslation() {
 }
 
 function renderChat() {
-  view.innerHTML = `<div class="page"><div class="card chat-wrap"><div class="chat-messages" id="chatMessages">${chatMessages.length ? chatMessages.map((message) => `<div class="message ${message.role}">${escapeHtml(message.content)}</div>`).join('') : '<div class="empty">输入问题开始对话。支持配置自定义 DeepSeek API Key、模型、Temperature 与 Token 上限。</div>'}</div><div class="chat-input"><textarea class="input" id="chatInput" placeholder="输入消息，Ctrl+Enter 发送"></textarea><button class="button primary" id="sendChat">发送</button></div></div></div>`
+  view.innerHTML = `<div class="page"><div class="card chat-wrap"><div class="chat-messages" id="chatMessages">${chatMessages.length ? chatMessages.map((message) => `<div class="message ${message.role}">${escapeHtml(message.content)}</div>`).join('') : '<div class="empty">输入问题开始对话。可在“设置 > 模型”中为 AI 对话选择供应商、模型，并调整 Temperature 与 Token 上限。</div>'}</div><div class="chat-input"><textarea class="input" id="chatInput" placeholder="输入消息，Ctrl+Enter 发送"></textarea><button class="button primary" id="sendChat">发送</button></div></div></div>`
   const send = async () => {
     const input = document.getElementById('chatInput'); const content = input.value.trim(); if (!content) return
     chatMessages.push({ role: 'user', content }); input.value = ''; renderChat()
@@ -702,6 +714,439 @@ function renderSelectionToolbarSettings() {
 }
 
 
+const modelFeatureCatalog = [
+  { id: 'chat', label: 'AI 对话', description: '主界面的多轮 AI 对话' },
+  { id: 'translation', label: '翻译工具', description: '翻译窗口与选中文本快速翻译' },
+  { id: 'ocr-translate', label: '截图 OCR 翻译', description: '截图识别文字后调用翻译' },
+  { id: 'toolbar:translate', label: '划词翻译', description: '划词工具栏“翻译”按钮' },
+  { id: 'toolbar:explain', label: '划词解释', description: '划词工具栏“解释”按钮' }
+]
+
+function createModelProviderId() {
+  if (globalThis.crypto?.randomUUID) return `provider-${globalThis.crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
+  return `provider-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+}
+
+function modelProviderById(id) {
+  return (settings.providers || []).find((provider) => provider.id === id)
+}
+
+function modelFeatureRows() {
+  const rows = [...modelFeatureCatalog]
+  for (const action of settings.selectionToolbar.customActions || []) {
+    rows.push({ id: `custom:${action.id}`, label: `划词 · ${action.name}`, description: `自定义划词功能“${action.name}”` })
+  }
+  return rows
+}
+
+function modelAssignmentForFeature(feature) {
+  return (settings.ai?.assignments || []).find((assignment) => assignment.feature === feature)
+}
+
+function defaultModelsForProvider(provider) {
+  const id = String(provider?.id || '').toLowerCase()
+  const baseUrl = String(provider?.baseUrl || '').toLowerCase()
+  if (id === 'deepseek' || baseUrl.includes('deepseek')) return [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }]
+  if (id === 'openai' || baseUrl.includes('openai.com') || baseUrl.includes('api.openai')) {
+    return [
+      { id: 'gpt-4o-mini', name: 'GPT-4o mini' },
+      { id: 'gpt-4o', name: 'GPT-4o' },
+      { id: 'gpt-4.1', name: 'GPT-4.1' }
+    ]
+  }
+  return []
+}
+
+function modelProviderStatus(provider) {
+  if (!provider.baseUrl || !provider.models?.length) return { className: 'off', title: '未完成配置' }
+  if (!provider.apiKey) return { className: 'warn', title: '未配置 API 密钥' }
+  return { className: 'on', title: provider.enabled === false ? '已停用' : '已启用' }
+}
+
+function modelCatalogRowMarkup(provider, index) {
+  const model = provider.models[index] || { id: '', name: '' }
+  return `<div class="model-catalog-item" data-model-catalog-item="${escapeHtml(provider.id)}:${index}"><div class="model-catalog-row" data-model-index="${index}"><input class="input model-id-input" data-model-id type="text" value="${escapeHtml(model.id)}" placeholder="模型 ID"><input class="input model-name-input" data-model-name type="text" value="${escapeHtml(model.name)}" placeholder="显示名称"><button class="button icon-button model-row-details" data-model-details="${escapeHtml(provider.id)}" data-model-index="${index}" title="展开模型详情" aria-label="展开模型详情">›</button><button class="button icon-button model-row-delete" data-remove-model="${escapeHtml(provider.id)}" data-model-index="${index}" title="删除模型">🗑</button></div><div class="model-detail-panel" data-model-detail-panel="${escapeHtml(provider.id)}:${index}" hidden></div></div>`
+}
+
+function modelOptionsMarkup(provider, currentModel) {
+  const models = [...(provider?.models || [])]
+  if (currentModel && !models.some((model) => model.id === currentModel)) models.unshift({ id: currentModel, name: currentModel })
+  if (!models.length) return '<option value="">未配置模型</option>'
+  return models.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === currentModel ? 'selected' : ''}>${escapeHtml(model.name || model.id)}</option>`).join('')
+}
+
+function featureAssignmentMarkup(feature, providers) {
+  const assignment = modelAssignmentForFeature(feature.id) || {}
+  const providerId = providers.some((provider) => provider.id === assignment.providerId)
+    ? assignment.providerId
+    : (settings.ai?.providerId || providers[0]?.id)
+  const provider = providers.find((item) => item.id === providerId) || providers[0]
+  return `<div class="feature-model-row" data-feature="${escapeHtml(feature.id)}"><div class="feature-model-label"><b>${escapeHtml(feature.label)}</b><small>${escapeHtml(feature.description)}</small></div><select data-feature-provider="${escapeHtml(feature.id)}">${providers.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === provider?.id ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select><select data-feature-model="${escapeHtml(feature.id)}">${modelOptionsMarkup(provider, assignment.model)}</select></div>`
+}
+
+function readFeatureAssignments() {
+  const assignments = []
+  for (const row of document.querySelectorAll('[data-feature]')) {
+    const feature = row.dataset.feature
+    const providerId = row.querySelector('[data-feature-provider]')?.value || ''
+    const model = row.querySelector('[data-feature-model]')?.value || ''
+    if (feature && providerId && model) assignments.push({ feature, providerId, model })
+  }
+  return assignments
+}
+
+function providerEditorRoot(providerId) {
+  return document.querySelector(`[data-provider-editor="${providerId}"]`)
+}
+
+function readProviderEditor(providerId) {
+  const base = modelProviderById(providerId)
+  const root = providerEditorRoot(providerId)
+  if (!base || !root) return null
+  const name = root.querySelector('[data-provider-name]')?.value.trim() || ''
+  const baseUrl = root.querySelector('[data-provider-base-url]')?.value.trim() || ''
+  const protocol = root.querySelector('[data-provider-protocol]')?.value || 'openai-chat'
+  const apiKeyInput = root.querySelector('[data-provider-api-key]')
+  const apiKey = apiKeyInput?.value.trim() || base.apiKey
+  if (!name) { toast('供应商显示名称不能为空'); return null }
+  if (!baseUrl) { toast('API 地址不能为空'); return null }
+  const models = []
+  const ids = new Set()
+  for (const row of root.querySelectorAll('[data-model-index]')) {
+    const id = row.querySelector('[data-model-id]')?.value.trim() || ''
+    if (!id) { toast('模型 ID 不能为空'); return null }
+    if (ids.has(id)) { toast(`模型 ID 重复：${id}`); return null }
+    ids.add(id)
+    models.push({ id, name: row.querySelector('[data-model-name]')?.value.trim() || id })
+  }
+  if (!models.length) { toast('每个供应商至少需要一个模型'); return null }
+  return { ...base, name, baseUrl, apiKey, protocol, models }
+}
+
+function readProviderEditorDraft(providerId) {
+  const base = modelProviderById(providerId)
+  const root = providerEditorRoot(providerId)
+  if (!base || !root) return base
+  const models = []
+  for (const row of root.querySelectorAll('[data-model-index]')) {
+    const id = row.querySelector('[data-model-id]')?.value.trim() || ''
+    const name = row.querySelector('[data-model-name]')?.value.trim() || id
+    models.push({ id, name })
+  }
+  return {
+    ...base,
+    name: root.querySelector('[data-provider-name]')?.value.trim() || base.name,
+    baseUrl: root.querySelector('[data-provider-base-url]')?.value.trim() || base.baseUrl,
+    protocol: root.querySelector('[data-provider-protocol]')?.value || base.protocol,
+    apiKey: root.querySelector('[data-provider-api-key]')?.value.trim() || base.apiKey,
+    models: models.length ? models : base.models
+  }
+}
+
+function commitOpenProviderEditors({ exceptId = '', tolerant = false } = {}) {
+  const providers = [...(settings.providers || [])]
+  for (const provider of providers) {
+    if (!modelsExpandedProviderIds.has(provider.id)) continue
+    if (exceptId && provider.id === exceptId) continue
+    const next = tolerant ? readProviderEditorDraft(provider.id) : readProviderEditor(provider.id)
+    if (!next) return null
+    const index = providers.findIndex((item) => item.id === provider.id)
+    providers[index] = next
+  }
+  settings = { ...settings, providers }
+  return providers
+}
+
+function providerEditorMarkup(provider) {
+  const expanded = modelsExpandedProviderIds.has(provider.id)
+  const status = modelProviderStatus(provider)
+  if (!expanded) {
+    return `<article class="model-provider-accordion" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击展开供应商配置"><span class="model-provider-expand">▸</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="model-provider-chevron">展开</span></div></article>`
+  }
+  return `<article class="model-provider-accordion expanded" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击收起供应商配置"><span class="model-provider-expand">▾</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="model-provider-chevron">收起</span></div><div class="model-provider-editor"><div class="model-provider-editor-head"><div class="model-provider-title"><b>${escapeHtml(provider.name)}</b><span class="provider-tag ${provider.builtin ? 'builtin' : ''}">${provider.builtin ? '内置' : '自定义'}</span><span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span></div><button class="button danger" data-delete-provider="${escapeHtml(provider.id)}">删除供应商</button></div><div class="model-field"><div class="model-field-label"><b>API 密钥</b><small>通过系统安全存储加密保存在本机</small></div><div class="model-field-control"><input class="input" data-provider-api-key type="password" value="" placeholder="${escapeHtml(provider.apiKey ? '已配置——输入新值可替换' : 'sk-...')}"><button class="button" data-test-provider="${escapeHtml(provider.id)}">测试</button></div></div><details class="model-custom-details" open><summary>自定义设置</summary><div class="model-field"><div class="model-field-label"><b>显示名称</b></div><input class="input" data-provider-name type="text" value="${escapeHtml(provider.name)}" placeholder="例如：DeepSeek"></div><div class="model-field"><div class="model-field-label"><b>API 地址</b></div><input class="input" data-provider-base-url type="text" value="${escapeHtml(provider.baseUrl)}" placeholder="https://api.example.com/v1"></div><div class="model-field"><div class="model-field-label"><b>API 协议</b></div><select data-provider-protocol><option value="openai-chat" ${provider.protocol === 'openai-chat' ? 'selected' : ''}>openai-chat</option><option value="openai-responses" ${provider.protocol === 'openai-responses' ? 'selected' : ''}>openai-responses</option></select></div></details><div class="model-catalog-block"><div class="model-catalog-head"><div><b>模型目录</b><small>${provider.models.length ? '已自定义模型目录' : '尚未配置模型'}</small></div><div class="model-catalog-actions"><button class="button" data-restore-models="${escapeHtml(provider.id)}">恢复默认模型</button><button class="button" data-fetch-models="${escapeHtml(provider.id)}">获取可用模型</button></div></div><div class="model-catalog-list">${provider.models.map((model, index) => modelCatalogRowMarkup(provider, index)).join('')}</div><button class="button" data-add-provider-model="${escapeHtml(provider.id)}">＋ 添加模型</button></div></div></article>`
+}
+
+function renderModelsSubnav() {
+  return `<div class="models-subnav"><button class="${modelsTab === 'providers' ? 'active' : ''}" data-models-tab="providers">供应商</button><button class="${modelsTab === 'features' ? 'active' : ''}" data-models-tab="features">功能模型</button></div>`
+}
+
+function renderModelsProviderTab(providers) {
+  const providerList = providers.map((provider) => providerEditorMarkup(provider)).join('') || '<div class="empty">暂无供应商，请点击“添加供应商”创建。</div>'
+  return `<div class="models-view"><div class="models-provider-toolbar"><div class="models-section-head"><h2>供应商</h2><p>列表默认只显示名称，点击展开后配置显示名称、API 地址、API 协议、密钥和模型目录。</p></div><div class="models-toolbar-actions"><button class="button" id="openModelConfigFile">打开配置文件</button><button class="button primary" id="addModelProvider">＋ 添加供应商</button></div></div><div class="model-provider-list-page">${providerList}</div><div class="model-save-row"><button class="button primary" id="saveProviderSettings">保存供应商配置</button></div></div>`
+}
+
+function renderModelsFeatureTab(providers) {
+  const featureRows = modelFeatureRows().map((feature) => featureAssignmentMarkup(feature, providers)).join('')
+  return `<div class="models-view"><div class="models-provider-toolbar"><div class="models-section-head"><h2>功能模型</h2><p>为每个 AI 功能单独指定供应商；模型选项来自该供应商的模型目录。</p></div></div><div class="card feature-model-card"><div class="feature-model-head"><div><b>AI 功能列表</b><small>划词功能包含内置功能与自定义划词功能</small></div></div><div class="feature-model-list">${featureRows || '<div class="empty compact-empty">暂无可配置的 AI 功能</div>'}</div></div><div class="model-save-row"><button class="button primary" id="saveFeatureAssignments">保存功能模型</button></div></div>`
+}
+
+function renderModels() {
+  const providers = settings.providers || []
+  if (!providers.length) {
+    view.innerHTML = `<div class="page">${pageHeader('模型', '配置 AI 供应商并为不同功能分配模型。')}${renderModelsSubnav()}<div class="models-view"><div class="empty">暂无供应商，请点击“添加供应商”创建。</div><button class="button primary" id="addFirstProvider">添加供应商</button></div></div>`
+    document.getElementById('addFirstProvider').onclick = () => {
+      const provider = { id: createModelProviderId(), name: '新供应商', baseUrl: '', apiKey: '', protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
+      settings = { ...settings, providers: [provider] }
+      modelsExpandedProviderIds = new Set([provider.id])
+      modelsTab = 'providers'
+      renderModels()
+    }
+    return
+  }
+  const content = modelsTab === 'features'
+    ? renderModelsFeatureTab(providers)
+    : renderModelsProviderTab(providers)
+  view.innerHTML = `<div class="page">${pageHeader('模型', '管理 AI 供应商，并为对话、翻译和划词功能分别指定模型。')}${renderModelsSubnav()}${content}</div>`
+
+  document.querySelectorAll('[data-models-tab]').forEach((button) => {
+    button.onclick = () => {
+      const nextTab = button.dataset.modelsTab
+      if (nextTab === modelsTab) return
+      if (modelsTab === 'providers' && !commitOpenProviderEditors()) return
+      modelsTab = nextTab
+      renderModels()
+    }
+  })
+
+  if (modelsTab === 'providers') {
+    bindModelsProviderTab()
+  } else {
+    bindModelsFeatureTab()
+  }
+}
+
+function bindModelsProviderTab() {
+  document.querySelectorAll('[data-expand-provider]').forEach((head) => {
+    head.onclick = () => {
+      const providerId = head.dataset.expandProvider
+      if (!commitOpenProviderEditors({ tolerant: true })) return
+      if (modelsExpandedProviderIds.has(providerId)) modelsExpandedProviderIds.delete(providerId)
+      else modelsExpandedProviderIds.add(providerId)
+      renderModels()
+    }
+    head.onkeydown = (event) => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); head.click() }
+    }
+  })
+  document.getElementById('addModelProvider')?.addEventListener('click', () => {
+    if (!commitOpenProviderEditors()) return
+    const provider = { id: createModelProviderId(), name: '新供应商', baseUrl: '', apiKey: '', protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
+    settings = { ...settings, providers: [...settings.providers, provider] }
+    modelsExpandedProviderIds = new Set([provider.id])
+    renderModels()
+    providerEditorRoot(provider.id)?.querySelector('[data-provider-name]')?.focus()
+  })
+  document.getElementById('openModelConfigFile')?.addEventListener('click', () => {
+    window.electronAPI.openDataDirectory().catch(() => {})
+    toast('已打开数据目录，配置文件位于该目录下')
+  })
+  document.querySelectorAll('[data-delete-provider]').forEach((button) => {
+    button.onclick = () => {
+      const providerId = button.dataset.deleteProvider
+      const provider = modelProviderById(providerId)
+      if (!provider) return
+      if (settings.providers.length <= 1) { toast('至少保留一个供应商'); return }
+      if (!commitOpenProviderEditors({ exceptId: providerId })) return
+      if (!confirm(`确定删除供应商“${provider.name}”？`)) return
+      const remaining = settings.providers.filter((item) => item.id !== providerId)
+      const fallback = remaining[0]
+      const assignments = (settings.ai?.assignments || []).map((assignment) => (
+        assignment.providerId === providerId
+          ? { ...assignment, providerId: fallback.id, model: fallback.models[0]?.id || assignment.model }
+          : assignment
+      ))
+      settings = { ...settings, providers: remaining, ai: { ...settings.ai, assignments } }
+      modelsExpandedProviderIds.delete(providerId)
+      renderModels()
+      toast('供应商已删除，请保存以生效')
+    }
+  })
+  document.querySelectorAll('[data-test-provider]').forEach((button) => {
+    button.onclick = async () => {
+      const providerId = button.dataset.testProvider
+      const root = providerEditorRoot(providerId)
+      const base = modelProviderById(providerId)
+      if (!root || !base) return
+      const provider = {
+        ...base,
+        apiKey: root.querySelector('[data-provider-api-key]')?.value.trim() || base.apiKey,
+        baseUrl: root.querySelector('[data-provider-base-url]')?.value.trim() || base.baseUrl,
+        protocol: root.querySelector('[data-provider-protocol]')?.value || base.protocol
+      }
+      button.disabled = true; button.textContent = '测试中'
+      try {
+        const result = await window.electronAPI.testConnection(provider)
+        if (result === true) { toast('连接成功'); return }
+        if (!result?.ok) { toast('连接失败'); return }
+        const corrections = []
+        const protocolSelect = root.querySelector('[data-provider-protocol]')
+        const baseUrlInput = root.querySelector('[data-provider-base-url]')
+        if (protocolSelect && result.protocol && result.protocol !== provider.protocol) {
+          protocolSelect.value = result.protocol
+          corrections.push(`协议已切换为 ${result.protocol}`)
+        }
+        if (baseUrlInput && result.baseUrl && String(result.baseUrl).replace(/\/+$/, '') !== String(provider.baseUrl).replace(/\/+$/, '')) {
+          baseUrlInput.value = result.baseUrl
+          corrections.push(`API 地址已修正为 ${result.baseUrl}`)
+        }
+        if (Array.isArray(result.models) && result.models.length && !(provider.models || []).some((model) => model.id)) {
+          const draft = readProviderEditorDraft(providerId)
+          if (draft) {
+            draft.protocol = protocolSelect?.value || draft.protocol
+            draft.baseUrl = baseUrlInput?.value.trim() || draft.baseUrl
+            draft.models = result.models
+            settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? draft : item) }
+            renderModels()
+            toast(`连接成功，已自动获取 ${result.models.length} 个模型`)
+            return
+          }
+        }
+        toast(corrections.length ? `连接成功：${corrections.join('，')}` : '连接成功')
+      } catch (error) { toast(errorMessage(error) || '连接失败') } finally {
+        button.disabled = false; button.textContent = '测试'
+      }
+    }
+  })
+  document.querySelectorAll('[data-restore-models]').forEach((button) => {
+    button.onclick = async () => {
+      const providerId = button.dataset.restoreModels
+      if (!commitOpenProviderEditors({ tolerant: true })) return
+      const provider = modelProviderById(providerId)
+      if (!provider) return
+      const defaults = defaultModelsForProvider(provider)
+      if (!defaults.length) {
+        providerEditorRoot(providerId)?.querySelector('[data-fetch-models]')?.click()
+        return
+      }
+      settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? { ...item, models: defaults } : item) }
+      renderModels()
+      toast('已恢复默认模型目录')
+    }
+  })
+  document.querySelectorAll('[data-fetch-models]').forEach((button) => {
+    button.onclick = async () => {
+      const providerId = button.dataset.fetchModels
+      const root = providerEditorRoot(providerId)
+      const base = modelProviderById(providerId)
+      if (!root || !base) return
+      const provider = {
+        ...base,
+        apiKey: root.querySelector('[data-provider-api-key]')?.value.trim() || base.apiKey,
+        baseUrl: root.querySelector('[data-provider-base-url]')?.value.trim() || base.baseUrl,
+        protocol: root.querySelector('[data-provider-protocol]')?.value || base.protocol
+      }
+      button.disabled = true; button.textContent = '获取中'
+      try {
+        const result = await window.electronAPI.fetchProviderModels(provider)
+        if (!result?.ok) throw new Error('获取失败')
+        if (result.protocol) root.querySelector('[data-provider-protocol]').value = result.protocol
+        if (result.baseUrl) root.querySelector('[data-provider-base-url]').value = result.baseUrl
+        if (!commitOpenProviderEditors({ tolerant: true })) {
+          button.disabled = false; button.textContent = '获取可用模型'
+          return
+        }
+        const models = Array.isArray(result.models) && result.models.length ? result.models : [{ id: '', name: '' }]
+        settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? { ...item, models } : item) }
+        renderModels()
+        toast(`已获取 ${models.length} 个模型`)
+      } catch (error) {
+        toast(errorMessage(error) || '获取可用模型失败')
+        button.disabled = false; button.textContent = '获取可用模型'
+      }
+    }
+  })
+  document.querySelectorAll('[data-add-provider-model]').forEach((button) => {
+    button.onclick = () => {
+      const providerId = button.dataset.addProviderModel
+      if (!commitOpenProviderEditors({ tolerant: true })) return
+      const provider = modelProviderById(providerId)
+      if (!provider) return
+      settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? { ...item, models: [...item.models, { id: '', name: '' }] } : item) }
+      renderModels()
+      providerEditorRoot(providerId)?.querySelector('.model-catalog-row:last-child [data-model-id]')?.focus()
+    }
+  })
+  document.querySelectorAll('[data-model-details]').forEach((button) => {
+    button.onclick = () => {
+      const providerId = button.dataset.modelDetails
+      const index = Number(button.dataset.modelIndex)
+      const provider = modelProviderById(providerId)
+      const item = button.closest('.model-catalog-item')
+      const panel = item?.querySelector('[data-model-detail-panel]')
+      if (!item || !panel || !provider) return
+      const row = item.querySelector('.model-catalog-row')
+      const modelId = row?.querySelector('[data-model-id]')?.value.trim() || provider.models?.[index]?.id || '未填写'
+      const modelName = row?.querySelector('[data-model-name]')?.value.trim() || provider.models?.[index]?.name || '—'
+      panel.innerHTML = `<div class="model-detail-grid"><span>模型 ID</span><b>${escapeHtml(modelId)}</b><span>显示名称</span><b>${escapeHtml(modelName)}</b><span>所属供应商</span><b>${escapeHtml(provider.name)}</b><span>API 协议</span><b>${escapeHtml(provider.protocol || 'openai-chat')}</b><span>API 地址</span><b>${escapeHtml(provider.baseUrl || '未填写')}</b></div>`
+      const willOpen = panel.hidden
+      panel.hidden = !panel.hidden
+      button.classList.toggle('open', willOpen)
+      button.title = willOpen ? '收起模型详情' : '展开模型详情'
+      button.setAttribute('aria-label', button.title)
+    }
+  })
+  document.querySelectorAll('[data-remove-model]').forEach((button) => {
+    button.onclick = () => {
+      const providerId = button.dataset.removeModel
+      const index = Number(button.dataset.modelIndex)
+      if (!commitOpenProviderEditors({ tolerant: true })) return
+      const provider = modelProviderById(providerId)
+      if (!provider) return
+      if (provider.models.length <= 1) { toast('每个供应商至少保留一个模型'); return }
+      const models = provider.models.filter((_model, itemIndex) => itemIndex !== index)
+      settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? { ...item, models } : item) }
+      renderModels()
+    }
+  })
+  document.getElementById('saveProviderSettings')?.addEventListener('click', async () => {
+    if (!commitOpenProviderEditors()) return
+    try {
+      settings = await updateSettings({ providers: settings.providers }, '供应商配置已保存')
+      renderModels()
+    } catch (error) {
+      toast(error.message || '供应商配置保存失败')
+    }
+  })
+}
+
+function bindModelsFeatureTab() {
+  const persistFeatureAssignments = async ({ announce = false } = {}) => {
+    const assignments = readFeatureAssignments()
+    const chatAssignment = assignments.find((assignment) => assignment.feature === 'chat') || assignments[0]
+    try {
+      settings = await updateSettings({
+        providers: settings.providers,
+        ai: {
+          providerId: chatAssignment?.providerId || settings.providers[0]?.id,
+          model: chatAssignment?.model || settings.providers[0]?.models[0]?.id || '',
+          assignments
+        }
+      }, announce ? '功能模型已保存' : '')
+      return true
+    } catch (error) {
+      toast(errorMessage(error) || '功能模型保存失败')
+      return false
+    }
+  }
+  document.querySelectorAll('[data-feature-provider]').forEach((select) => {
+    select.onchange = () => {
+      const feature = select.dataset.featureProvider
+      const provider = modelProviderById(select.value)
+      const assignment = modelAssignmentForFeature(feature)
+      const modelSelect = document.querySelector(`[data-feature-model="${feature}"]`)
+      if (!modelSelect) return
+      modelSelect.innerHTML = modelOptionsMarkup(provider, assignment?.model)
+      void persistFeatureAssignments()
+    }
+  })
+  document.querySelectorAll('[data-feature-model]').forEach((select) => {
+    select.onchange = () => void persistFeatureAssignments()
+  })
+  document.getElementById('saveFeatureAssignments')?.addEventListener('click', async () => {
+    if (await persistFeatureAssignments({ announce: true })) renderModels()
+  })
+}
+
 function renderAppearance() {
   view.innerHTML = `<div class="page">${pageHeader('外观配色', '自定义主题、主色、圆角、紧凑布局、皮肤图片与 CSS。')}<section class="section"><h2 class="section-title">主题</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>主题</b><small>跟随系统、浅色或深色</small></div><select id="theme"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></div><div class="form-row"><div class="form-label"><b>主色</b><small>按钮、选中状态和截图框颜色</small></div><input id="mainColor" type="color" value="${settings.mainColor}"></div><div class="form-row"><div class="form-label"><b>圆角</b></div><input id="borderRadius" type="range" min="0" max="20" value="${settings.borderRadius}"></div><div class="form-row"><div class="form-label"><b>紧凑布局</b></div>${switchMarkup(settings.compact, 'compact')}</div></div></section><section class="section"><h2 class="section-title">皮肤</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>皮肤图片路径</b><small>支持 PNG、JPG、WebP 等本地图片</small></div><input id="skinPath" type="text" value="${escapeHtml(settings.skinPath || '')}" placeholder="D:\\Pictures\\skin.jpg"></div><div class="form-row"><div class="form-label"><b>皮肤透明度</b></div><input id="skinOpacity" type="range" min="0" max="100" value="${settings.skinOpacity || 0}"></div><div class="form-row" style="align-items:flex-start;padding:14px 0"><div class="form-label"><b>自定义 CSS</b><small>覆盖主界面样式</small></div><textarea id="customCss" class="textarea" style="min-height:130px">${escapeHtml(settings.customCss || '')}</textarea></div></div></section><button class="button primary" id="saveAppearance">保存外观</button></div>`
   document.getElementById('theme').value = settings.theme
@@ -730,7 +1175,7 @@ function renderFunctionSettings() {
   const selectedFrameRate = supportedFrameRates.includes(Number(settings.record.frameRate)) ? Number(settings.record.frameRate) : 24
   const outputSettings = `<section class="section"><h2 class="section-title">截图与输出</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>复制后自动保存</b></div>${switchMarkup(settings.screenshot.autoSaveOnCopy, 'autoSaveOnCopy', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>一键快速保存</b></div>${switchMarkup(settings.screenshot.fastSave, 'fastSave', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>长截图默认方向</b></div><select id="longCaptureDirection"><option value="vertical">纵向</option><option value="horizontal">横向</option></select></div><div class="form-row"><div class="form-label"><b>保存目录</b></div><input id="saveDirectory" type="text" value="${escapeHtml(settings.screenshot.saveDirectory || '')}"><button class="button" id="chooseSaveDirectory">选择</button></div><div class="form-row"><div class="form-label"><b>记录截图历史</b></div>${switchMarkup(settings.screenshot.historyEnabled, 'historyEnabled', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>历史数量上限</b></div><input id="historyLimit" type="number" min="10" max="1000" value="${settings.screenshot.historyLimit}"></div></div></section>`
   const ocrSettings = `<section class="section"><h2 class="section-title">文本识别</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>识别模型</b><small>本地 PaddleOCR v4，支持简体中文与英文</small></div><select id="ocrModel"><option value="ppocr-v4-ch">PaddleOCR v4 中英移动版</option></select></div><div class="form-row"><div class="form-label"><b>运行状态</b><small id="ocrStatusDetail">正在检查本地组件</small></div><span id="ocrStatus">检查中</span></div><div class="form-row"><div class="form-label"><b>文字方向检测</b><small>旋转文字较多时开启，普通截图关闭更快</small></div>${switchMarkup(settings.ocr.detectAngle, 'detectAngle', 'ocr')}</div><div class="form-row"><div class="form-label"><b>最低置信度</b><small>低于该分值的文本块不显示</small></div><input id="ocrMinConfidence" type="number" min="0" max="1" step="0.05" value="${settings.ocr.minConfidence}"></div><div class="form-row"><div class="form-label"><b>识别后操作</b></div><select id="ocrAfterAction"><option value="none">显示识别结果</option><option value="copy">复制全部文本</option><option value="copy-and-close">复制文本并关闭截图</option></select></div></div></section>`
-  const aiSettings = `<section class="section"><h2 class="section-title">AI 与翻译</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>DeepSeek API Key</b><small>通过系统安全存储加密保存在本机</small></div><input id="apiKey" type="password" value="${escapeHtml(settings.apiKey || '')}" placeholder="sk-..."><button class="button" id="testApi">测试</button></div><div class="form-row"><div class="form-label"><b>模型</b></div><input id="aiModel" type="text" value="${escapeHtml(settings.ai.model)}"></div><div class="form-row"><div class="form-label"><b>最大 Token</b></div><input id="maxTokens" type="number" value="${settings.ai.maxTokens}"></div><div class="form-row"><div class="form-label"><b>Temperature</b></div><input id="temperature" type="number" min="0" max="2" step="0.1" value="${settings.ai.temperature}"></div><div class="form-row"><div class="form-label"><b>默认翻译目标语言</b></div><select id="targetLanguage"><option>中文</option><option>英文</option><option>日文</option><option>韩文</option><option>繁体中文</option></select></div></div></section>`
+  const aiSettings = `<section class="section"><h2 class="section-title">AI 与翻译</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>供应商与模型</b><small>在“设置 > 模型”中管理多个供应商，并为对话、翻译和划词功能分别指定模型</small></div><button class="button" id="openModelSettings">配置模型</button></div><div class="form-row"><div class="form-label"><b>最大 Token</b></div><input id="maxTokens" type="number" value="${settings.ai.maxTokens}"></div><div class="form-row"><div class="form-label"><b>Temperature</b></div><input id="temperature" type="number" min="0" max="2" step="0.1" value="${settings.ai.temperature}"></div><div class="form-row"><div class="form-label"><b>默认翻译目标语言</b></div><select id="targetLanguage"><option>中文</option><option>英文</option><option>日文</option><option>韩文</option><option>繁体中文</option></select></div></div></section>`
   const recordSettings = `<section class="section"><h2 class="section-title">视频录制</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>帧率</b><small>录制仅包含画面，保存为 MP4</small></div><select id="frameRate">${supportedFrameRates.map((value) => `<option value="${value}">${value} FPS</option>`).join('')}</select></div><div class="form-row"><div class="form-label"><b>视频保存目录</b></div><input id="recordDirectory" type="text" value="${escapeHtml(settings.record.saveDirectory || '')}"><button class="button" id="chooseRecordDirectory">选择</button></div></div></section>`
   view.innerHTML = `<div class="page">${pageHeader('功能设置', '配置截图、OCR、固定到屏幕、AI、翻译、录屏与输出。')}${outputSettings}${ocrSettings}${aiSettings}${recordSettings}<button class="button primary" id="saveFunctions">保存功能设置</button></div>`
   document.getElementById('ocrModel').value = settings.ocr.modelProfile
@@ -749,10 +1194,10 @@ function renderFunctionSettings() {
   document.getElementById('targetLanguage').value = settings.ai.targetLanguage
   document.getElementById('frameRate').value = String(selectedFrameRate)
   bindSwitches()
+  document.getElementById('openModelSettings').onclick = () => navigate('models')
   document.getElementById('chooseSaveDirectory').onclick = async () => { const directory = await window.electronAPI.chooseDirectory(); if (directory) document.getElementById('saveDirectory').value = directory }
   document.getElementById('chooseRecordDirectory').onclick = async () => { const directory = await window.electronAPI.chooseDirectory(); if (directory) document.getElementById('recordDirectory').value = directory }
-  document.getElementById('testApi').onclick = async () => { const button = document.getElementById('testApi'); button.disabled = true; button.textContent = '测试中'; try { const ok = await window.electronAPI.testConnection(document.getElementById('apiKey').value.trim()); toast(ok ? '连接成功' : '连接失败') } catch { toast('连接失败') } finally { button.disabled = false; button.textContent = '测试' } }
-  document.getElementById('saveFunctions').onclick = () => updateSettings({ apiKey: document.getElementById('apiKey').value.trim(), screenshot: { saveDirectory: document.getElementById('saveDirectory').value.trim(), historyLimit: Number(document.getElementById('historyLimit').value), longCaptureDirection: document.getElementById('longCaptureDirection').value }, ocr: { modelProfile: document.getElementById('ocrModel').value, minConfidence: Math.max(0, Math.min(1, Number(document.getElementById('ocrMinConfidence').value))), afterAction: document.getElementById('ocrAfterAction').value }, ai: { model: document.getElementById('aiModel').value.trim(), maxTokens: Number(document.getElementById('maxTokens').value), temperature: Number(document.getElementById('temperature').value), targetLanguage: document.getElementById('targetLanguage').value }, record: { frameRate: Number(document.getElementById('frameRate').value), saveDirectory: document.getElementById('recordDirectory').value.trim() } })
+  document.getElementById('saveFunctions').onclick = () => updateSettings({ screenshot: { saveDirectory: document.getElementById('saveDirectory').value.trim(), historyLimit: Number(document.getElementById('historyLimit').value), longCaptureDirection: document.getElementById('longCaptureDirection').value }, ocr: { modelProfile: document.getElementById('ocrModel').value, minConfidence: Math.max(0, Math.min(1, Number(document.getElementById('ocrMinConfidence').value))), afterAction: document.getElementById('ocrAfterAction').value }, ai: { maxTokens: Number(document.getElementById('maxTokens').value), temperature: Number(document.getElementById('temperature').value), targetLanguage: document.getElementById('targetLanguage').value }, record: { frameRate: Number(document.getElementById('frameRate').value), saveDirectory: document.getElementById('recordDirectory').value.trim() } })
 }
 
 function renderHotkeySettings() {

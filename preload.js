@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getApiKey: () => ipcRenderer.invoke('config:get-api-key'),
   saveApiKey: (apiKey) => ipcRenderer.invoke('config:save-api-key', apiKey),
   testConnection: (apiKey) => ipcRenderer.invoke('config:test-connection', apiKey),
+  fetchProviderModels: (provider) => ipcRenderer.invoke('config:test-connection', { provider, fetchModels: true }),
   onStartHook: (apiKey) => ipcRenderer.send('config:start-hook', apiKey),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
 
