@@ -762,7 +762,7 @@ function defaultModelsForProvider(provider) {
 function modelProviderStatus(provider) {
   if (provider.enabled === false) return { className: 'off', title: '已停用' }
   if (!provider.baseUrl || !provider.models?.length) return { className: 'off', title: '未完成配置' }
-  if (!provider.apiKey) return { className: 'warn', title: '未配置 API 密钥' }
+  if (!provider.apiKey && !provider.hasApiKey) return { className: 'warn', title: '未配置 API 密钥' }
   return { className: 'on', title: '已启用' }
 }
 
@@ -827,6 +827,13 @@ function providerEditorRoot(providerId) {
   return document.querySelector(`[data-provider-editor="${providerId}"]`)
 }
 
+function providerDraftWithSecret(base, root) {
+  const { apiKey: retainedApiKey = '', ...safeBase } = base
+  const enteredApiKey = root?.querySelector('[data-provider-api-key]')?.value.trim() || ''
+  const apiKey = enteredApiKey || retainedApiKey
+  return apiKey ? { ...safeBase, apiKey } : safeBase
+}
+
 function readProviderEditor(providerId) {
   const base = modelProviderById(providerId)
   const root = providerEditorRoot(providerId)
@@ -835,10 +842,13 @@ function readProviderEditor(providerId) {
   const baseUrl = root.querySelector('[data-provider-base-url]')?.value.trim() || ''
   const protocol = root.querySelector('[data-provider-protocol]')?.value || 'openai-chat'
   const enabled = root.querySelector('[data-provider-enabled]')?.value !== 'false'
-  const apiKeyInput = root.querySelector('[data-provider-api-key]')
-  const apiKey = apiKeyInput?.value.trim() || base.apiKey
+  const enteredApiKey = root.querySelector('[data-provider-api-key]')?.value.trim() || ''
   if (!name) { toast('供应商显示名称不能为空'); return null }
   if (!baseUrl) { toast('API 地址不能为空'); return null }
+  if (base.hasApiKey && !base.apiKey && !enteredApiKey && baseUrl.replace(/\/+$/, '') !== String(base.baseUrl || '').replace(/\/+$/, '')) {
+    toast('API 地址已更改，请重新输入 API 密钥')
+    return null
+  }
   const models = []
   const ids = new Set()
   for (const row of root.querySelectorAll('[data-model-index]')) {
@@ -849,7 +859,7 @@ function readProviderEditor(providerId) {
     models.push({ id, name: row.querySelector('[data-model-name]')?.value.trim() || id })
   }
   if (!models.length) { toast('每个供应商至少需要一个模型'); return null }
-  return { ...base, name, baseUrl, apiKey, protocol, enabled, models }
+  return { ...providerDraftWithSecret(base, root), name, baseUrl, protocol, enabled, models }
 }
 
 function readProviderEditorDraft(providerId) {
@@ -863,12 +873,11 @@ function readProviderEditorDraft(providerId) {
     models.push({ id, name })
   }
   return {
-    ...base,
+    ...providerDraftWithSecret(base, root),
     name: root.querySelector('[data-provider-name]')?.value.trim() || base.name,
     baseUrl: root.querySelector('[data-provider-base-url]')?.value.trim() || base.baseUrl,
     protocol: root.querySelector('[data-provider-protocol]')?.value || base.protocol,
     enabled: root.querySelector('[data-provider-enabled]')?.value !== 'false',
-    apiKey: root.querySelector('[data-provider-api-key]')?.value.trim() || base.apiKey,
     models: models.length ? models : base.models
   }
 }
@@ -893,7 +902,7 @@ function providerEditorMarkup(provider) {
   if (!expanded) {
     return `<article class="model-provider-accordion" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击展开供应商配置"><span class="model-provider-expand">▸</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span><span class="model-provider-chevron">展开</span></div></article>`
   }
-  return `<article class="model-provider-accordion expanded" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击收起供应商配置"><span class="model-provider-expand">▾</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="model-provider-chevron">收起</span></div><div class="model-provider-editor"><div class="model-provider-editor-head"><div class="model-provider-title"><b>${escapeHtml(provider.name)}</b><span class="provider-tag ${provider.builtin ? 'builtin' : ''}">${provider.builtin ? '内置' : '自定义'}</span><span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span></div><button class="button danger" data-delete-provider="${escapeHtml(provider.id)}">删除供应商</button></div><div class="model-field"><div class="model-field-label"><b>API 密钥</b><small>通过系统安全存储加密保存在本机</small></div><div class="model-field-control"><input class="input" data-provider-api-key type="password" value="" placeholder="${escapeHtml(provider.apiKey ? '已配置——输入新值可替换' : 'sk-...')}"><button class="button" data-test-provider="${escapeHtml(provider.id)}">测试</button></div></div><details class="model-custom-details" open><summary>自定义设置</summary><div class="model-field"><div class="model-field-label"><b>启用状态</b></div><select data-provider-enabled><option value="true" ${provider.enabled !== false ? 'selected' : ''}>启用</option><option value="false" ${provider.enabled === false ? 'selected' : ''}>停用</option></select></div><div class="model-field"><div class="model-field-label"><b>显示名称</b></div><input class="input" data-provider-name type="text" value="${escapeHtml(provider.name)}" placeholder="例如：DeepSeek"></div><div class="model-field"><div class="model-field-label"><b>API 地址</b></div><input class="input" data-provider-base-url type="text" value="${escapeHtml(provider.baseUrl)}" placeholder="https://api.example.com/v1"></div><div class="model-field"><div class="model-field-label"><b>API 协议</b></div><select data-provider-protocol><option value="openai-chat" ${provider.protocol === 'openai-chat' ? 'selected' : ''}>openai-chat</option><option value="openai-responses" ${provider.protocol === 'openai-responses' ? 'selected' : ''}>openai-responses</option></select></div></details><div class="model-catalog-block"><div class="model-catalog-head"><div><b>模型目录</b><small>${provider.models.length ? '已自定义模型目录' : '尚未配置模型'}</small></div><div class="model-catalog-actions"><button class="button" data-restore-models="${escapeHtml(provider.id)}">恢复默认模型</button><button class="button" data-fetch-models="${escapeHtml(provider.id)}">获取可用模型</button></div></div><div class="model-catalog-list">${provider.models.map((model, index) => modelCatalogRowMarkup(provider, index)).join('')}</div><button class="button" data-add-provider-model="${escapeHtml(provider.id)}">＋ 添加模型</button></div></div></article>`
+  return `<article class="model-provider-accordion expanded" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击收起供应商配置"><span class="model-provider-expand">▾</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="model-provider-chevron">收起</span></div><div class="model-provider-editor"><div class="model-provider-editor-head"><div class="model-provider-title"><b>${escapeHtml(provider.name)}</b><span class="provider-tag ${provider.builtin ? 'builtin' : ''}">${provider.builtin ? '内置' : '自定义'}</span><span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span></div><button class="button danger" data-delete-provider="${escapeHtml(provider.id)}">删除供应商</button></div><div class="model-field"><div class="model-field-label"><b>API 密钥</b><small>通过系统安全存储加密保存在本机</small></div><div class="model-field-control"><input class="input" data-provider-api-key type="password" value="" placeholder="${escapeHtml((provider.apiKey || provider.hasApiKey) ? '已配置——输入新值可替换' : 'sk-...')}"><button class="button" data-test-provider="${escapeHtml(provider.id)}">测试</button></div></div><details class="model-custom-details" open><summary>自定义设置</summary><div class="model-field"><div class="model-field-label"><b>启用状态</b></div><select data-provider-enabled><option value="true" ${provider.enabled !== false ? 'selected' : ''}>启用</option><option value="false" ${provider.enabled === false ? 'selected' : ''}>停用</option></select></div><div class="model-field"><div class="model-field-label"><b>显示名称</b></div><input class="input" data-provider-name type="text" value="${escapeHtml(provider.name)}" placeholder="例如：DeepSeek"></div><div class="model-field"><div class="model-field-label"><b>API 地址</b></div><input class="input" data-provider-base-url type="text" value="${escapeHtml(provider.baseUrl)}" placeholder="https://api.example.com/v1"></div><div class="model-field"><div class="model-field-label"><b>API 协议</b></div><select data-provider-protocol><option value="openai-chat" ${provider.protocol === 'openai-chat' ? 'selected' : ''}>openai-chat</option><option value="openai-responses" ${provider.protocol === 'openai-responses' ? 'selected' : ''}>openai-responses</option></select></div></details><div class="model-catalog-block"><div class="model-catalog-head"><div><b>模型目录</b><small>${provider.models.length ? '已自定义模型目录' : '尚未配置模型'}</small></div><div class="model-catalog-actions"><button class="button" data-restore-models="${escapeHtml(provider.id)}">恢复默认模型</button><button class="button" data-fetch-models="${escapeHtml(provider.id)}">获取可用模型</button></div></div><div class="model-catalog-list">${provider.models.map((model, index) => modelCatalogRowMarkup(provider, index)).join('')}</div><button class="button" data-add-provider-model="${escapeHtml(provider.id)}">＋ 添加模型</button></div></div></article>`
 }
 
 function renderModelsSubnav() {
@@ -916,7 +925,7 @@ function renderModels() {
   if (!providers.length) {
     view.innerHTML = `<div class="page">${pageHeader('模型', '配置 AI 供应商并为不同功能分配模型。')}${renderModelsSubnav()}<div class="models-view"><div class="empty">暂无供应商，请点击“添加供应商”创建。</div><button class="button primary" id="addFirstProvider">添加供应商</button></div></div>`
     document.getElementById('addFirstProvider').onclick = () => {
-      const provider = { id: createModelProviderId(), name: '新供应商', baseUrl: '', apiKey: '', protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
+      const provider = { id: createModelProviderId(), name: '新供应商', baseUrl: '', hasApiKey: false, protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
       settings = { ...settings, providers: [provider] }
       modelsExpandedProviderIds = new Set([provider.id])
       modelsTab = 'providers'
@@ -961,7 +970,7 @@ function bindModelsProviderTab() {
   })
   document.getElementById('addModelProvider')?.addEventListener('click', () => {
     if (!commitOpenProviderEditors()) return
-    const provider = { id: createModelProviderId(), name: '新供应商', baseUrl: '', apiKey: '', protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
+    const provider = { id: createModelProviderId(), name: '新供应商', baseUrl: '', hasApiKey: false, protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
     settings = { ...settings, providers: [...settings.providers, provider] }
     modelsExpandedProviderIds = new Set([provider.id])
     renderModels()
@@ -1000,8 +1009,7 @@ function bindModelsProviderTab() {
       const base = modelProviderById(providerId)
       if (!root || !base) return
       const provider = {
-        ...base,
-        apiKey: root.querySelector('[data-provider-api-key]')?.value.trim() || base.apiKey,
+        ...providerDraftWithSecret(base, root),
         baseUrl: root.querySelector('[data-provider-base-url]')?.value.trim() || base.baseUrl,
         protocol: root.querySelector('[data-provider-protocol]')?.value || base.protocol
       }
@@ -1062,8 +1070,7 @@ function bindModelsProviderTab() {
       const base = modelProviderById(providerId)
       if (!root || !base) return
       const provider = {
-        ...base,
-        apiKey: root.querySelector('[data-provider-api-key]')?.value.trim() || base.apiKey,
+        ...providerDraftWithSecret(base, root),
         baseUrl: root.querySelector('[data-provider-base-url]')?.value.trim() || base.baseUrl,
         protocol: root.querySelector('[data-provider-protocol]')?.value || base.protocol
       }

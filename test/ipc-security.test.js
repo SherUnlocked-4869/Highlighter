@@ -106,8 +106,8 @@ test('IPC policy exactly covers every main-process registration', () => {
     }
   }
 
-  assert.equal(policies.size, 100)
-  assert.deepEqual(counts, { handle: 65, on: 35 })
+  assert.equal(policies.size, 97)
+  assert.deepEqual(counts, { handle: 63, on: 34 })
   assert.equal(registrations.size, policies.size)
   for (const [channel, policy] of policies) {
     assert.equal(registrations.get(channel), policy.kind, `${channel} policy kind`)

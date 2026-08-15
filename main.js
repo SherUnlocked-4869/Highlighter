@@ -2083,10 +2083,10 @@ registerSettingsIpc({
   ipcMain: secureIpcMain,
   settingsService: {
     getSettings: () => getSettings(),
+    getPublicSettings: (settings) => settingsService.getPublicSettings(settings),
     updateSettings: (patch) => settingsService.updateSettings(patch),
     resetSettings: () => settingsService.resetSettings(),
-    normalizeApiKey: (apiKey) => settingsService.normalizeApiKey(apiKey),
-    setApiKey: (apiKey) => settingsService.setApiKey(apiKey)
+    prepareProviderConnection: (provider) => settingsService.prepareProviderConnection(provider)
   },
   assertWritable: assertManagedDataWritable,
   onSettingsUpdated: (patch, settings) => {
@@ -2107,7 +2107,6 @@ registerSettingsIpc({
     updateService?.setChannel(settings.system.updateChannel)
     selectionHookService?.updateStartOptions({ enableClipboard: settings.selectionToolbar.clipboardFallback })
   },
-  onStartHook: () => initSelectionHook(),
   validateApiKey: async (input) => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       return require('./deepseek').validateApiKey(input)

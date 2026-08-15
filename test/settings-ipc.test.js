@@ -14,12 +14,17 @@ function createIpcMain() {
 }
 
 function createSettingsService() {
+  const redact = (settings) => {
+    const result = { ...settings, hasApiKey: !!settings.apiKey }
+    delete result.apiKey
+    return result
+  }
   return {
     getSettings: () => ({ apiKey: 'secret', theme: 'system' }),
+    getPublicSettings: (settings = { apiKey: 'secret', theme: 'system' }) => redact(settings),
     updateSettings: (patch) => ({ patch, settings: { apiKey: 'secret', ...patch } }),
     resetSettings: () => ({ apiKey: '', theme: 'system' }),
-    normalizeApiKey: (value) => String(value || '').trim(),
-    setApiKey: () => true
+    prepareProviderConnection: (provider) => ({ ...provider, apiKey: provider.apiKey || 'stored-secret' })
   }
 }
 
@@ -35,11 +40,9 @@ test('settings IPC registers the complete settings and credential surface', () =
     'settings:get',
     'settings:update',
     'settings:reset',
-    'config:get-api-key',
-    'config:save-api-key',
     'config:test-connection'
   ])
-  assert.deepEqual([...ipcMain.listeners.keys()], ['config:start-hook'])
+  assert.deepEqual([...ipcMain.listeners.keys()], [])
 })
 
 test('settings IPC applies side effects only after a validated update', () => {
@@ -56,7 +59,9 @@ test('settings IPC applies side effects only after a validated update', () => {
   const settings = ipcMain.handlers.get('settings:update')(null, { theme: 'dark' })
   assert.equal(writableChecks, 1)
   assert.equal(settings.theme, 'dark')
-  assert.deepEqual(updates, [{ patch: { theme: 'dark' }, settings }])
+  assert.equal(settings.hasApiKey, true)
+  assert.equal(Object.hasOwn(settings, 'apiKey'), false)
+  assert.deepEqual(updates, [{ patch: { theme: 'dark' }, settings: { apiKey: 'secret', theme: 'dark' } }])
 })
 
 test('settings IPC blocks writes during migration', () => {
@@ -74,21 +79,17 @@ test('settings IPC blocks writes during migration', () => {
   assert.equal(updated, false)
 })
 
-test('start-hook failures are logged without applying the hook', () => {
+test('settings IPC never returns plaintext credentials', () => {
   const ipcMain = createIpcMain()
-  const messages = []
-  let started = false
   registerSettingsIpc({
     ipcMain,
     settingsService: createSettingsService(),
-    assertWritable: () => { throw new Error('blocked') },
-    onStartHook: () => { started = true },
-    validateApiKey: async () => true,
-    log: (...values) => messages.push(values)
+    assertWritable() {},
+    validateApiKey: async () => true
   })
-  ipcMain.listeners.get('config:start-hook')(null, 'sk-value')
-  assert.equal(started, false)
-  assert.match(messages[0][0], /Rejected selection hook/)
+  const settings = ipcMain.handlers.get('settings:get')()
+  assert.equal(settings.hasApiKey, true)
+  assert.equal(Object.hasOwn(settings, 'apiKey'), false)
 })
 
 test('config test-connection passes provider payloads through without string normalization', async () => {
@@ -101,9 +102,9 @@ test('config test-connection passes provider payloads through without string nor
     assertWritable() {},
     validateApiKey: async (value) => { seen.push(value); return { ok: true } }
   })
-  const provider = { id: 'jbb', baseUrl: 'https://example.com/v1', apiKey: 'sk-jbb' }
+  const provider = { id: 'jbb', baseUrl: 'https://example.com/v1' }
   await ipcMain.handlers.get('config:test-connection')(null, { provider, fetchModels: true })
-  assert.deepEqual(seen, [{ provider, fetchModels: true }])
+  assert.deepEqual(seen, [{ provider: { ...provider, apiKey: 'stored-secret' }, fetchModels: true }])
   await ipcMain.handlers.get('config:test-connection')(null, 'sk-legacy')
   assert.equal(seen[1], 'sk-legacy')
 })

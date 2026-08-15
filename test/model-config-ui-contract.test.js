@@ -22,6 +22,8 @@ test('config app exposes the model provider route with provider and feature-mode
   assert.match(script, /data-provider-base-url/)
   assert.match(script, /data-provider-protocol/)
   assert.match(script, /data-provider-api-key/)
+  assert.match(script, /provider\.hasApiKey/)
+  assert.match(script, /providerDraftWithSecret/)
   assert.match(script, /已配置——输入新值可替换/)
   assert.match(script, /data-restore-models=/)
   assert.match(script, /data-fetch-models=/)
@@ -55,4 +57,5 @@ test('main process resolves feature assignments through the AI provider service'
 
 test('preload fetches model catalogs through the existing secure test-connection channel', () => {
   assert.match(preload, /fetchProviderModels: \(provider\) => ipcRenderer\.invoke\('config:test-connection', \{ provider, fetchModels: true \}\)/)
+  assert.doesNotMatch(preload, /config:get-api-key|config:save-api-key|config:start-hook/)
 })

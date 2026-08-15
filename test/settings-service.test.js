@@ -146,6 +146,76 @@ test('settings service preserves omitted provider API keys on partial provider p
   assert.equal(service.getSettings().providers[0].apiKey, 'sk-provider-key')
 })
 
+test('settings service does not carry a stored key to a changed endpoint', () => {
+  const providerDefaults = {
+    apiKey: '',
+    providers: [
+      { id: 'custom', name: 'Custom', baseUrl: 'https://old.example/v1', apiKey: '', models: [{ id: 'model', name: 'Model' }] }
+    ],
+    ai: { assignments: [{ feature: 'chat', providerId: 'custom', model: 'model' }] }
+  }
+  const service = new SettingsService({
+    store: new MemoryStore(),
+    safeStorage: createSafeStorage(),
+    defaults: providerDefaults
+  })
+  service.updateSettings({
+    providers: [{ id: 'custom', name: 'Custom', baseUrl: 'https://old.example/v1', apiKey: 'sk-old', models: [{ id: 'model', name: 'Model' }] }]
+  })
+  service.updateSettings({
+    providers: [{ id: 'custom', name: 'Custom', baseUrl: 'https://new.example/v1', models: [{ id: 'model', name: 'Model' }] }]
+  })
+  assert.equal(service.getSettings().providers[0].apiKey, '')
+})
+
+test('public settings expose credential presence without plaintext values', () => {
+  const providerDefaults = {
+    apiKey: '',
+    providers: [
+      { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiKey: '', models: [{ id: 'deepseek-v4-flash', name: 'Flash' }] }
+    ],
+    ai: { assignments: [{ feature: 'chat', providerId: 'deepseek', model: 'deepseek-v4-flash' }] }
+  }
+  const service = new SettingsService({
+    store: new MemoryStore(),
+    safeStorage: createSafeStorage(),
+    defaults: providerDefaults
+  })
+  service.updateSettings({
+    providers: [{ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiKey: 'sk-provider-key', models: [{ id: 'deepseek-v4-flash', name: 'Flash' }] }]
+  })
+  const settings = service.getPublicSettings()
+  assert.equal(settings.hasApiKey, true)
+  assert.equal(Object.hasOwn(settings, 'apiKey'), false)
+  assert.equal(settings.providers[0].hasApiKey, true)
+  assert.equal(Object.hasOwn(settings.providers[0], 'apiKey'), false)
+  assert.doesNotMatch(JSON.stringify(settings), /sk-provider-key/)
+})
+
+test('connection drafts reuse stored keys only for the stored endpoint', () => {
+  const providerDefaults = {
+    apiKey: '',
+    providers: [
+      { id: 'custom', name: 'Custom', baseUrl: 'https://api.example/v1', apiKey: '', models: [{ id: 'model', name: 'Model' }] }
+    ],
+    ai: { assignments: [{ feature: 'chat', providerId: 'custom', model: 'model' }] }
+  }
+  const service = new SettingsService({
+    store: new MemoryStore(),
+    safeStorage: createSafeStorage(),
+    defaults: providerDefaults
+  })
+  service.updateSettings({
+    providers: [{ id: 'custom', name: 'Custom', baseUrl: 'https://api.example/v1', apiKey: 'sk-stored', models: [{ id: 'model', name: 'Model' }] }]
+  })
+  assert.equal(service.prepareProviderConnection({ id: 'custom', baseUrl: 'https://api.example/v1/' }).apiKey, 'sk-stored')
+  assert.throws(
+    () => service.prepareProviderConnection({ id: 'custom', baseUrl: 'https://attacker.example/v1' }),
+    /API 地址已更改/
+  )
+  assert.equal(service.prepareProviderConnection({ id: 'custom', baseUrl: 'https://new.example/v1', apiKey: 'sk-new' }).apiKey, 'sk-new')
+})
+
 test('settings service migrates legacy DeepSeek settings into the provider catalog', () => {
   const defaults = {
     apiKey: '',

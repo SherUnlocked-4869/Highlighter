@@ -6,6 +6,7 @@ const path = require('node:path')
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 const action = fs.readFileSync(path.join(__dirname, '..', 'action', 'action.js'), 'utf8')
 const deepseek = fs.readFileSync(path.join(__dirname, '..', 'deepseek.js'), 'utf8')
+const adapters = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'ai-protocol-adapters.js'), 'utf8')
 
 test('main process rebuilds selection hooks across power and session transitions', () => {
   assert.match(main, /const \{\s*SelectionHookService\s*\} = require\('\.\/main\/services\/selection-hook-service'\)/)
@@ -24,7 +25,8 @@ test('toolbar streams use abortable sliding timeouts and sender ownership checks
   assert.match(main, /for await \(const chunk of stream\) \{[\s\S]*armToolbarStreamTimeout\(controller\)/)
   assert.match(main, /isCurrentToolbarStreamSender\(event\)/)
   assert.match(main, /finally \{\s*finishToolbarStream\(controller\)/)
-  assert.match(deepseek, /chat\.completions\.create\(buildToolbarStreamRequest\(text, prompt\), requestOptions\)/)
+  assert.match(deepseek, /createAiProtocolAdapter\(attempt, createClient\(attempt\)\)\.stream\([\s\S]*streamOptions\.requestOptions\)/)
+  assert.match(adapters, /chat\.completions\.create\(buildChatStreamRequest\(config, messages, options\), requestOptions\)/)
   assert.match(action, /function armStreamTimeout\(\)/)
   assert.match(action, /actionBridge\.cancelStream\(currentStreamId\)/)
   assert.match(action, /onStreamData[\s\S]*armStreamTimeout\(\)/)

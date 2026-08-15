@@ -72,8 +72,6 @@ function registerProbeIpc() {
     ['settings:update', () => probeSettings],
     ['settings:reset', () => probeSettings],
     ['shortcuts:status', () => ({})],
-    ['config:get-api-key', () => ''],
-    ['config:save-api-key', () => true],
     ['config:test-connection', () => true],
     ['data-root:get', () => ({ path: 'D:\\HighlighterProbe', portable: false })],
     ['data-root:change', () => ({ canceled: true })],

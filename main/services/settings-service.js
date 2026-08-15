@@ -3,6 +3,11 @@ const { assertSettingsPatch } = require('./settings-validation')
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
+function sameProviderEndpoint(left, right) {
+  const normalize = (value) => String(value || '').trim().replace(/\/+$/, '')
+  return normalize(left?.baseUrl) === normalize(right?.baseUrl)
+}
+
 function mergeSettings(target, patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return patch
   const output = { ...(target || {}) }
@@ -71,6 +76,33 @@ class SettingsService {
     return settings
   }
 
+  getPublicSettings(settings = this.getSettings()) {
+    const publicSettings = { ...settings, hasApiKey: !!settings.apiKey }
+    delete publicSettings.apiKey
+    if (Array.isArray(settings.providers)) {
+      publicSettings.providers = settings.providers.map((provider) => {
+        const publicProvider = { ...provider, hasApiKey: !!provider.apiKey }
+        delete publicProvider.apiKey
+        return publicProvider
+      })
+    }
+    return publicSettings
+  }
+
+  prepareProviderConnection(provider) {
+    if (!provider || typeof provider !== 'object' || Array.isArray(provider)) throw new TypeError('供应商配置无效')
+    const draft = { ...provider }
+    const suppliedApiKey = String(draft.apiKey || '').trim()
+    if (suppliedApiKey) return { ...draft, apiKey: suppliedApiKey }
+    const current = this.getSettings().providers?.find((item) => item.id === draft.id)
+    if (!current?.apiKey) throw new Error('请先填写 API 密钥')
+    const trimEndpoint = (value) => String(value || '').trim().replace(/\/+$/, '')
+    if (trimEndpoint(draft.baseUrl) !== trimEndpoint(current.baseUrl)) {
+      throw new Error('API 地址已更改，请重新输入 API 密钥后再测试')
+    }
+    return { ...draft, apiKey: current.apiKey }
+  }
+
   persistSettings(settings, { updateApiKey = false } = {}) {
     const normalized = this.normalizeSettings(mergeSettings(this.defaults, settings || {}))
     const storedSettings = { ...normalized }
@@ -94,7 +126,8 @@ class SettingsService {
         const existingProviders = Array.isArray(existingSettings.providers) ? existingSettings.providers : []
         storedSettings.providers = normalized.providers.map((provider) => {
           const existing = existingProviders.find((item) => item?.id === provider?.id)
-          return { ...provider, apiKey: provider.apiKey || (existing?.apiKey || '') }
+          const retainedApiKey = sameProviderEndpoint(provider, existing) ? (existing?.apiKey || '') : ''
+          return { ...provider, apiKey: provider.apiKey || retainedApiKey }
         })
       }
     }
@@ -123,7 +156,9 @@ class SettingsService {
         if (!provider || typeof provider !== 'object') return provider
         if (Object.hasOwn(provider, 'apiKey')) return provider
         const currentProvider = currentProviders.get(provider.id)
-        return currentProvider ? { ...provider, apiKey: currentProvider.apiKey } : provider
+        return currentProvider && sameProviderEndpoint(provider, currentProvider)
+          ? { ...provider, apiKey: currentProvider.apiKey }
+          : provider
       })
       const deepseekPatch = next.providers.find((provider) => provider?.id === 'deepseek' && Object.hasOwn(provider, 'apiKey'))
       if (deepseekPatch) next.apiKey = deepseekPatch.apiKey
@@ -154,5 +189,6 @@ class SettingsService {
 
 module.exports = {
   SettingsService,
-  mergeSettings
+  mergeSettings,
+  sameProviderEndpoint
 }

@@ -45,13 +45,11 @@ const IPC_SURFACES = Object.freeze([
       'settings:get',
       'settings:update',
       'settings:reset',
-      'config:get-api-key',
-      'config:save-api-key',
       'config:test-connection',
       'shortcuts:status',
       'ocr:status'
     ],
-    listeners: ['config:start-hook', 'window:minimize', 'window:close']
+    listeners: ['window:minimize', 'window:close']
   },
   {
     role: 'toolbar',
