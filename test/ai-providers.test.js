@@ -34,7 +34,11 @@ test('provider normalization keeps multiple providers and sanitizes model catalo
   ])
   assert.equal(providers.length, 2)
   assert.equal(providers[1].protocol, 'openai-responses')
-  assert.deepEqual(providers[1].models, [{ id: 'gpt-5.6-terra', name: 'gpt-5.6-terra' }])
+  assert.deepEqual(providers[1].models, [{
+    id: 'gpt-5.6-terra',
+    name: 'gpt-5.6-terra',
+    capabilities: { tasks: ['chat', 'translation', 'explain'], reasoning: 'openai-responses' }
+  }])
 })
 
 test('schema migration keeps an explicit assignment when providers share a model id', () => {
@@ -125,6 +129,25 @@ test('default assignments prefer an enabled provider over disabled DeepSeek', ()
   assert.equal(settings.ai.assignments.find((item) => item.feature === 'chat').providerId, 'custom')
 })
 
+test('translation-only models cannot resolve for explain features', () => {
+  const settings = normalizeAiSettings({
+    providers: [{
+      id: 'mt',
+      name: 'MT',
+      baseUrl: 'https://mt.example/v1',
+      models: [{ id: 'tencent/Hunyuan-MT-7B', name: 'Hunyuan MT' }]
+    }],
+    ai: {
+      assignments: [
+        { feature: 'toolbar:translate', providerId: 'mt', model: 'tencent/Hunyuan-MT-7B' },
+        { feature: 'toolbar:explain', providerId: 'mt', model: 'tencent/Hunyuan-MT-7B' }
+      ]
+    }
+  })
+  assert.equal(resolveAiAssignment(settings, 'toolbar:translate')?.model, 'tencent/Hunyuan-MT-7B')
+  assert.equal(resolveAiAssignment(settings, 'toolbar:explain'), null)
+})
+
 test('resolver returns the assigned provider and model for each feature', () => {
   const settings = normalizeAiSettings({
     providers: [
@@ -143,7 +166,9 @@ test('resolver returns the assigned provider and model for each feature', () => 
 
   assert.deepEqual(resolveAiAssignment(settings, 'chat'), {
     id: 'a', name: 'A', baseUrl: 'https://a.example/v1', apiKey: 'sk-a', model: 'a-fast',
-    protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: 'a-fast', name: 'A Fast' }]
+    protocol: 'openai-chat', enabled: true, builtin: false, models: [{
+      id: 'a-fast', name: 'A Fast', capabilities: { tasks: ['chat', 'translation', 'explain'], reasoning: 'none' }
+    }]
   })
   assert.equal(resolveToolbarAiProvider(settings, 'translate').model, 'b-smart')
   assert.equal(resolveToolbarAiProvider(settings, 'custom:polish').model, 'b-smart')

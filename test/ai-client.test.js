@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const {
   buildToolbarStreamRequest,
   connectionBaseUrls,
+  createExplainStream,
   describeConnectionError,
   isNotFoundError,
   normalizeProviderInput
@@ -75,6 +76,17 @@ test('translation-specialized models receive the instruction in the user message
   assert.deepEqual(request.messages, [
     { role: 'user', content: 'Translate the given text from en to zh.\nReturn only the translated text, with no extra commentary.\n\nText:\nHello world' }
   ])
+})
+
+test('translation-only models are rejected for explain requests before network access', async () => {
+  await assert.rejects(() => createExplainStream({
+    id: 'mt',
+    name: 'MT',
+    baseUrl: 'https://mt.example/v1',
+    apiKey: 'sk-mt',
+    model: 'tencent/Hunyuan-MT-7B',
+    protocol: 'openai-chat'
+  }, 'hello', '解释这段文本'), /仅支持翻译/)
 })
 
 test('connection probing adds the /v1 suffix and detects 404 responses', () => {

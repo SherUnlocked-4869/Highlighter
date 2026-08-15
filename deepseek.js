@@ -3,6 +3,14 @@ const {
   DEFAULT_EXPLAIN_PROMPT,
   DEFAULT_TRANSLATE_PROMPT
 } = require('./toolbar/toolbar-utils')
+const {
+  modelSupportsTask,
+  normalizeModelCapabilities
+} = require('./main/services/ai-model-capabilities')
+const {
+  buildChatStreamRequest,
+  createAiProtocolAdapter
+} = require('./main/services/ai-protocol-adapters')
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
@@ -21,6 +29,7 @@ function normalizeProviderInput(provider) {
       apiKey: cleanText(provider, 512),
       model: DEEPSEEK_DEFAULT_MODEL,
       protocol: 'openai-chat',
+      capabilities: { tasks: ['chat', 'translation', 'explain'], reasoning: 'deepseek' },
       vendorThinking: true
     }
   }
@@ -34,6 +43,14 @@ function normalizeProviderInput(provider) {
   const firstModel = models.map((item) => cleanText(item?.id, 200)).find(Boolean) || ''
   const explicitModel = cleanText(value.model, 200)
   const model = explicitModel || firstModel || (deepseekCompatible ? DEEPSEEK_DEFAULT_MODEL : '')
+  const modelRecord = models.find((item) => cleanText(item?.id, 200) === model)
+  const capabilities = normalizeModelCapabilities(modelRecord?.capabilities, {
+    providerId: id,
+    baseUrl,
+    protocol,
+    modelId: model,
+    modelName: modelRecord?.name
+  })
   return {
     id: id || 'custom',
     name: cleanText(value.name, 100) || '自定义供应商',
@@ -42,7 +59,8 @@ function normalizeProviderInput(provider) {
     model,
     protocol,
     enabled: value.enabled !== false,
-    vendorThinking: protocol === 'openai-chat' && /deepseek/i.test(baseUrl)
+    capabilities,
+    vendorThinking: capabilities.reasoning === 'deepseek'
   }
 }
 
@@ -62,20 +80,7 @@ async function validateApiKey(apiKey) {
   const config = normalizeProviderInput(apiKey)
   if (!config.apiKey || !config.model) return false
   const client = createClient(config, { timeoutMs: 20000 })
-  if (config.protocol === 'openai-responses') {
-    const response = await client.responses.create({
-      model: config.model,
-      input: 'hi',
-      max_output_tokens: 5
-    })
-    return !!response
-  }
-  const response = await client.chat.completions.create({
-    model: config.model,
-    messages: [{ role: 'user', content: 'hi' }],
-    max_tokens: 5
-  })
-  return !!response
+  return !!(await createAiProtocolAdapter(config, client).ping())
 }
 
 function trimBaseUrl(value) {
@@ -118,19 +123,7 @@ function describeConnectionError(error) {
 async function pingConnection(config) {
   if (!config.model) throw new Error('请先在模型目录中配置要测试的模型')
   const client = createClient(config, { timeoutMs: 20000 })
-  if (config.protocol === 'openai-responses') {
-    await client.responses.create({
-      model: config.model,
-      input: 'hi',
-      max_output_tokens: 5
-    })
-    return
-  }
-  await client.chat.completions.create({
-    model: config.model,
-    messages: [{ role: 'user', content: 'hi' }],
-    max_tokens: 5
-  })
+  await createAiProtocolAdapter(config, client).ping()
 }
 
 function connectionAttempts(config) {
@@ -194,6 +187,7 @@ async function withConnectionFallback(config, request) {
     try {
       return await request(attempt)
     } catch (error) {
+      if (error?.name === 'AbortError' || error?.name === 'APIUserAbortError') throw error
       if (isModelNotFoundError(error)) throw new Error(describeConnectionError(error))
       if (!isNotFoundError(error)) throw new Error(describeConnectionError(error))
       lastError = error
@@ -242,15 +236,10 @@ async function testProviderConnection(provider, { fetchModels = false } = {}) {
   return result
 }
 
-function resolveThinkingLevel(thinking) {
-  if (thinking === true) return 'medium'
-  if (thinking === 'low' || thinking === 'medium' || thinking === 'high' || thinking === 'max') return thinking
-  return ''
-}
-
 function isTranslationOnlyModel(config) {
-  const value = `${config.id || ''} ${config.name || ''} ${config.model || ''}`.toLowerCase()
-  return /hunyuan-mt|hy-mt|qwen-mt|mt-7b/.test(value)
+  return modelSupportsTask({ capabilities: config.capabilities }, 'translation')
+    && !modelSupportsTask({ capabilities: config.capabilities }, 'chat')
+    && !modelSupportsTask({ capabilities: config.capabilities }, 'explain')
 }
 
 function isShortTranslationText(text) {
@@ -322,7 +311,7 @@ function isTranslationEcho(input, output) {
   return !!source && translated === source
 }
 
-async function* createShortTranslationStream(config, text, prompt) {
+async function* createShortTranslationStream(config, text, prompt, requestOptions = {}) {
   const attempts = [
     buildTranslationOnlyPrompt(prompt, text),
     buildTranslationOnlyPrompt(prompt, text, { retry: true })
@@ -330,7 +319,8 @@ async function* createShortTranslationStream(config, text, prompt) {
   for (const userContent of attempts) {
     const output = await completeChat(config, [{ role: 'user', content: userContent }], {
       temperature: 0.2,
-      maxTokens: 1024
+      maxTokens: 1024,
+      requestOptions
     })
     const content = String(output || '').trim()
     if (content && !isTranslationEcho(text, content)) {
@@ -341,101 +331,28 @@ async function* createShortTranslationStream(config, text, prompt) {
   throw new Error('翻译模型连续返回原文，请尝试更换模型或在划词设置中调整翻译提示词')
 }
 
-function buildToolbarStreamRequest(text, prompt, { thinking = false, model = DEEPSEEK_DEFAULT_MODEL, vendorThinking = true, promptInUser = false } = {}) {
-  const level = resolveThinkingLevel(thinking)
-  const messages = promptInUser
+function buildToolbarMessages(text, prompt, { promptInUser = false } = {}) {
+  return promptInUser
     ? [{ role: 'user', content: buildTranslationOnlyPrompt(prompt, text) }]
     : [
         { role: 'system', content: prompt },
         { role: 'user', content: text }
       ]
-  const request = {
+}
+
+function buildToolbarStreamRequest(text, prompt, { thinking = false, model = DEEPSEEK_DEFAULT_MODEL, vendorThinking = true, promptInUser = false } = {}) {
+  const messages = buildToolbarMessages(text, prompt, { promptInUser })
+  return buildChatStreamRequest({
     model,
-    messages,
-    stream: true,
-    temperature: level ? undefined : 0.3
-  }
-  if (vendorThinking) {
-    if (level) {
-      delete request.temperature
-      request.reasoning_effort = level
-      request.thinking = { type: 'enabled' }
-      request.extra_body = { thinking: { type: 'enabled' } }
-    } else if (thinking === 'off') {
-      request.thinking = { type: 'disabled' }
-      request.extra_body = { thinking: { type: 'disabled' } }
-    }
-  } else if (level) {
-    delete request.temperature
-    request.temperature = 0.3
-  }
-  return request
+    capabilities: { reasoning: vendorThinking ? 'deepseek' : 'none' }
+  }, messages, { thinking })
 }
 
-function takeThinkingOption(requestOptions, fallback) {
-  if (!requestOptions || typeof requestOptions !== 'object' || !Object.hasOwn(requestOptions, 'thinking')) return fallback
-  const thinking = requestOptions.thinking
+function splitStreamRequestOptions(options, fallback) {
+  const requestOptions = options && typeof options === 'object' ? { ...options } : {}
+  const thinking = Object.hasOwn(requestOptions, 'thinking') ? requestOptions.thinking : fallback
   delete requestOptions.thinking
-  return thinking
-}
-
-function buildToolbarStreamRequestFor(config, text, prompt, thinking, { promptInUser = false } = {}) {
-  return buildToolbarStreamRequest(text, prompt, {
-    thinking,
-    model: config.model,
-    vendorThinking: config.vendorThinking,
-    promptInUser
-  })
-}
-
-function buildResponsesInput(text, prompt, { promptInUser = false } = {}) {
-  if (promptInUser) return [{ role: 'user', content: buildTranslationOnlyPrompt(prompt, text) }]
-  return [
-    { role: 'system', content: prompt },
-    { role: 'user', content: text }
-  ]
-}
-
-function buildResponsesMessages(messages) {
-  const roles = new Set(['system', 'user', 'assistant', 'developer'])
-  return (Array.isArray(messages) ? messages : []).map((message) => ({
-    role: roles.has(message?.role) ? message.role : 'user',
-    content: typeof message?.content === 'string' ? message.content : String(message?.content || '')
-  }))
-}
-
-function extractResponsesText(response) {
-  if (!response) return ''
-  if (typeof response.output_text === 'string') return response.output_text
-  const textParts = Array.isArray(response.output)
-    ? response.output.filter((item) => item?.type === 'message' || item?.type === 'output_text').map((item) => item?.content || '')
-    : []
-  if (textParts.length) return textParts.filter((item) => typeof item === 'string').join('')
-  return response.output_text || ''
-}
-
-async function* normalizeResponsesStream(stream) {
-  for await (const chunk of stream) {
-    if (!chunk) continue
-    if (chunk.type === 'response.output_text.delta' && chunk.delta) {
-      yield { choices: [{ delta: { content: chunk.delta } }] }
-    } else if (chunk.type === 'response.reasoning_text.delta' && chunk.delta) {
-      yield { choices: [{ delta: { reasoning_content: chunk.delta } }] }
-    }
-  }
-}
-
-function responsesStreamRequest(config, text, prompt) {
-  const request = {
-    model: config.model,
-    input: buildResponsesInput(text, prompt, { promptInUser: config.promptInUser === true }),
-    stream: true
-  }
-  if (config.thinking && config.thinking !== 'off') {
-    const efforts = { low: 'low', medium: 'medium', high: 'high', max: 'high' }
-    request.reasoning = { effort: efforts[config.thinking] || 'medium' }
-  }
-  return request
+  return { thinking, requestOptions }
 }
 
 async function createTranslateStream(provider, text, prompt = DEFAULT_TRANSLATE_PROMPT, requestOptions = {}) {
@@ -444,25 +361,18 @@ async function createTranslateStream(provider, text, prompt = DEFAULT_TRANSLATE_
   if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
   if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
-  const thinking = takeThinkingOption(requestOptions, false)
+  const streamOptions = splitStreamRequestOptions(requestOptions, false)
   if (typeof provider === 'string') {
-    const client = createClient(config)
-    if (!thinking) {
-      return client.chat.completions.create(buildToolbarStreamRequest(text, prompt), requestOptions)
-    }
-    return client.chat.completions.create(buildToolbarStreamRequest(text, prompt, { thinking }), requestOptions)
+    const messages = buildToolbarMessages(text, prompt)
+    return createAiProtocolAdapter(config, createClient(config)).stream(messages, { thinking: streamOptions.thinking }, streamOptions.requestOptions)
   }
   if (isTranslationOnlyModel(config) && isShortTranslationText(text)) {
-    return createShortTranslationStream(config, text, prompt)
+    return createShortTranslationStream(config, text, prompt, streamOptions.requestOptions)
   }
   return withConnectionFallback(config, async (attempt) => {
     const promptInUser = isTranslationOnlyModel(attempt)
-    const client = createClient(attempt)
-    if (attempt.protocol === 'openai-responses') {
-      const request = responsesStreamRequest({ ...attempt, thinking, promptInUser }, text, prompt)
-      return normalizeResponsesStream(await client.responses.create(request, requestOptions))
-    }
-    return client.chat.completions.create(buildToolbarStreamRequestFor(attempt, text, prompt, thinking, { promptInUser }), requestOptions)
+    const messages = buildToolbarMessages(text, prompt, { promptInUser })
+    return createAiProtocolAdapter(attempt, createClient(attempt)).stream(messages, { thinking: streamOptions.thinking }, streamOptions.requestOptions)
   })
 }
 
@@ -472,24 +382,13 @@ async function completeChat(provider, messages, options = {}) {
   if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
   if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
+  const requestOptions = { ...(options.requestOptions || {}) }
+  if (options.signal) requestOptions.signal = options.signal
+  const completionOptions = { ...options }
+  delete completionOptions.requestOptions
+  delete completionOptions.signal
   return withConnectionFallback(config, async (attempt) => {
-    const client = createClient(attempt)
-    if (attempt.protocol === 'openai-responses') {
-      const response = await client.responses.create({
-        model: options.model || attempt.model,
-        input: buildResponsesMessages(messages),
-        max_output_tokens: options.maxTokens || 4096,
-        temperature: options.temperature ?? 0.7
-      })
-      return extractResponsesText(response)
-    }
-    const response = await client.chat.completions.create({
-      model: options.model || attempt.model,
-      messages,
-      max_tokens: options.maxTokens || 4096,
-      temperature: options.temperature ?? 0.7
-    })
-    return response.choices?.[0]?.message?.content || ''
+    return createAiProtocolAdapter(attempt, createClient(attempt)).complete(messages, completionOptions, requestOptions)
   })
 }
 
@@ -516,19 +415,17 @@ async function createExplainStream(provider, text, prompt = DEFAULT_EXPLAIN_PROM
   if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
   if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
-  const thinking = takeThinkingOption(requestOptions, true)
+  if (!modelSupportsTask({ capabilities: config.capabilities }, 'explain')) {
+    throw new Error('该模型仅支持翻译，不能用于划词解释或自定义指令')
+  }
+  const streamOptions = splitStreamRequestOptions(requestOptions, true)
   if (typeof provider === 'string') {
-    const client = createClient(config)
-    return client.chat.completions.create(buildToolbarStreamRequest(text, prompt, { thinking }), requestOptions)
+    const messages = buildToolbarMessages(text, prompt)
+    return createAiProtocolAdapter(config, createClient(config)).stream(messages, { thinking: streamOptions.thinking }, streamOptions.requestOptions)
   }
   return withConnectionFallback(config, async (attempt) => {
-    const promptInUser = isTranslationOnlyModel(attempt)
-    const client = createClient(attempt)
-    if (attempt.protocol === 'openai-responses') {
-      const request = responsesStreamRequest({ ...attempt, thinking, promptInUser }, text, prompt)
-      return normalizeResponsesStream(await client.responses.create(request, requestOptions))
-    }
-    return client.chat.completions.create(buildToolbarStreamRequestFor(attempt, text, prompt, thinking, { promptInUser }), requestOptions)
+    const messages = buildToolbarMessages(text, prompt)
+    return createAiProtocolAdapter(attempt, createClient(attempt)).stream(messages, { thinking: streamOptions.thinking }, streamOptions.requestOptions)
   })
 }
 

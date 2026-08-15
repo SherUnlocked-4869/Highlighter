@@ -1,3 +1,9 @@
+const {
+  modelSupportsTask,
+  normalizeModelCapabilities,
+  taskForFeature
+} = require('./ai-model-capabilities')
+
 const DEFAULT_AI_MODEL = 'deepseek-v4-flash'
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 const AI_PROTOCOLS = Object.freeze(['openai-chat', 'openai-responses'])
@@ -46,7 +52,7 @@ function createDefaultAssignments(providers = createDefaultProviders()) {
   return AI_FEATURES.map((feature) => ({ feature: feature.id, providerId, model }))
 }
 
-function normalizeProviderModels(value) {
+function normalizeProviderModels(value, context = {}) {
   const models = []
   const ids = new Set()
   for (const item of Array.isArray(value) ? value : []) {
@@ -54,7 +60,16 @@ function normalizeProviderModels(value) {
     const id = cleanText(item.id, 200)
     if (!id || ids.has(id)) continue
     ids.add(id)
-    models.push({ id, name: cleanText(item.name, 120) || id })
+    const name = cleanText(item.name, 120) || id
+    models.push({
+      id,
+      name,
+      capabilities: normalizeModelCapabilities(item.capabilities, {
+        ...context,
+        modelId: id,
+        modelName: name
+      })
+    })
   }
   return models
 }
@@ -71,7 +86,7 @@ function normalizeAiProviders(value = [], { legacyApiKey = '', legacyModel = '' 
     const baseUrl = cleanText(item.baseUrl, 2048)
     const apiKey = cleanText(item.apiKey, 512)
     const protocol = AI_PROTOCOLS.includes(item.protocol) ? item.protocol : AI_PROTOCOLS[0]
-    const models = normalizeProviderModels(item.models)
+    const models = normalizeProviderModels(item.models, { providerId: id, baseUrl, protocol })
     providers.push({
       id,
       name,
@@ -96,7 +111,17 @@ function normalizeAiProviders(value = [], { legacyApiKey = '', legacyModel = '' 
   if (previousModel) {
     const legacyProvider = providers.find((provider) => provider.id === 'deepseek') || providers[0]
     if (legacyProvider.models.length < MAX_MODELS_PER_PROVIDER && !legacyProvider.models.some((model) => model.id === previousModel)) {
-      legacyProvider.models.push({ id: previousModel, name: previousModel })
+      legacyProvider.models.push({
+        id: previousModel,
+        name: previousModel,
+        capabilities: normalizeModelCapabilities(null, {
+          providerId: legacyProvider.id,
+          baseUrl: legacyProvider.baseUrl,
+          protocol: legacyProvider.protocol,
+          modelId: previousModel,
+          modelName: previousModel
+        })
+      })
     }
   }
 
@@ -209,8 +234,9 @@ function resolveAiAssignment(settings, feature, { fallbackFeature = '' } = {}) {
   if (!assignment) return null
   const provider = providers.find((item) => item.id === assignment.providerId)
   if (!provider || provider.enabled === false || !provider.baseUrl) return null
-  const model = provider.models.some((item) => item.id === assignment.model) ? assignment.model : ''
-  if (!model) return null
+  const selectedModel = provider.models.find((item) => item.id === assignment.model)
+  if (!selectedModel || !modelSupportsTask(selectedModel, taskForFeature(feature))) return null
+  const model = selectedModel.id
   return { ...provider, model, apiKey: provider.apiKey }
 }
 
