@@ -24,6 +24,7 @@ test('default selection toolbar enables all built-ins with editable prompts and 
     },
     customActions: [],
     searchEngine: 'bing',
+    translateLanguages: { source: 'auto', target: '中文' },
     resultWindow: { width: 550, height: 520 }
   })
   assert.deepEqual(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR), [
@@ -43,6 +44,7 @@ test('legacy toolbar settings gain defaults without losing disabled buttons or s
   assert.equal(normalized.buttons.translate, false)
   assert.equal(normalized.searchEngine, 'google')
   assert.equal(normalized.clipboardFallback, false)
+  assert.deepEqual(normalized.translateLanguages, { source: 'auto', target: '中文' })
   assert.equal(normalized.prompts.translate, DEFAULT_TRANSLATE_PROMPT)
   assert.equal(normalized.prompts.explain, DEFAULT_EXPLAIN_PROMPT)
   assert.deepEqual(normalized.customActions, [])
@@ -52,6 +54,19 @@ test('clipboard fallback is opt-in only', () => {
   assert.equal(normalizeSelectionToolbar({ clipboardFallback: true }).clipboardFallback, true)
   assert.equal(normalizeSelectionToolbar({ clipboardFallback: 1 }).clipboardFallback, false)
   assert.equal(normalizeSelectionToolbar({ clipboardFallback: 'true' }).clipboardFallback, false)
+})
+
+test('translate languages keep whitelisted values and fall back per field', () => {
+  assert.deepEqual(normalizeSelectionToolbar({
+    translateLanguages: { source: '日文', target: '英文' }
+  }).translateLanguages, { source: '日文', target: '英文' })
+  assert.deepEqual(normalizeSelectionToolbar({
+    translateLanguages: { source: '韩文' }
+  }).translateLanguages, { source: '韩文', target: '中文' })
+  assert.deepEqual(normalizeSelectionToolbar({
+    translateLanguages: { source: '法文', target: '俄文' }
+  }).translateLanguages, { source: 'auto', target: '中文' })
+  assert.deepEqual(normalizeSelectionToolbar({}).translateLanguages, { source: 'auto', target: '中文' })
 })
 
 test('visible actions follow configured order and include enabled custom AI actions', () => {

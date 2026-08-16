@@ -264,9 +264,9 @@ function normalizeLanguageCode(language) {
 }
 
 function sourceLanguageCodeForText(text) {
-  if (containsCjk(text)) return 'zh'
   if (/[\u3040-\u30ff]/.test(String(text || ''))) return 'ja'
   if (/[\uac00-\ud7af]/.test(String(text || ''))) return 'ko'
+  if (containsCjk(text)) return 'zh'
   return 'auto'
 }
 
@@ -301,6 +301,18 @@ function buildTranslationOnlyPromptForLanguages(text, sourceLanguage, targetLang
   return `Translate the given text from ${source} to ${target}.\nReturn only the translated text, with no extra commentary.\n\nText:\n${text}`
 }
 
+function resolveTranslateTarget(sourceLanguage, targetLanguage, text) {
+  if (sourceLanguage === 'auto' && targetLanguage === '中文' && sourceLanguageCodeForText(text) === 'zh') return '英文'
+  return targetLanguage
+}
+
+function composeTranslateSystemPrompt(prompt, sourceLanguage, targetLanguage) {
+  const source = sourceLanguage === 'auto' ? '自动识别' : sourceLanguage
+  const instruction = `你是专业翻译引擎。源语言：${source}；目标语言：${targetLanguage}。只输出译文，保持段落、列表和表格结构，不添加解释。`
+  const custom = typeof prompt === 'string' && prompt.trim() && prompt !== DEFAULT_TRANSLATE_PROMPT ? `\n\n${prompt.trim()}` : ''
+  return instruction + custom
+}
+
 function normalizeTranslationText(value) {
   return String(value || '').replace(/[\s\p{P}\p{S}]+/gu, '').toLowerCase()
 }
@@ -311,10 +323,11 @@ function isTranslationEcho(input, output) {
   return !!source && translated === source
 }
 
-async function* createShortTranslationStream(config, text, prompt, requestOptions = {}) {
+async function* createShortTranslationStream(config, text, sourceLanguage, targetLanguage, requestOptions = {}) {
+  const detected = sourceLanguageCodeForText(text)
   const attempts = [
-    buildTranslationOnlyPrompt(prompt, text),
-    buildTranslationOnlyPrompt(prompt, text, { retry: true })
+    buildTranslationOnlyPromptForLanguages(text, sourceLanguage, targetLanguage),
+    buildTranslationOnlyPromptForLanguages(text, detected === 'auto' ? 'en' : detected, targetLanguage)
   ]
   for (const userContent of attempts) {
     const output = await completeChat(config, [{ role: 'user', content: userContent }], {
@@ -328,7 +341,7 @@ async function* createShortTranslationStream(config, text, prompt, requestOption
       return
     }
   }
-  throw new Error('翻译模型连续返回原文，请尝试更换模型或在划词设置中调整翻译提示词')
+  throw new Error('翻译模型连续返回原文，请尝试更换模型或在划词设置中调整翻译语言')
 }
 
 function buildToolbarMessages(text, prompt, { promptInUser = false } = {}) {
@@ -355,23 +368,31 @@ function splitStreamRequestOptions(options, fallback) {
   return { thinking, requestOptions }
 }
 
-async function createTranslateStream(provider, text, prompt = DEFAULT_TRANSLATE_PROMPT, requestOptions = {}) {
+async function createTranslateStream(provider, text, prompt = DEFAULT_TRANSLATE_PROMPT, languages = {}, requestOptions = {}) {
   const config = normalizeProviderInput(provider)
   if (!config.enabled) throw new Error('该功能指定的模型供应商已禁用')
   if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
   if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
   const streamOptions = splitStreamRequestOptions(requestOptions, false)
+  const sourceLanguage = cleanText(languages?.source, 32) || 'auto'
+  const targetLanguage = resolveTranslateTarget(sourceLanguage, cleanText(languages?.target, 32) || '中文', text)
+  if (isTranslationOnlyModel(config)) {
+    if (isShortTranslationText(text)) {
+      return createShortTranslationStream(config, text, sourceLanguage, targetLanguage, streamOptions.requestOptions)
+    }
+    return withConnectionFallback(config, async (attempt) => {
+      const messages = [{ role: 'user', content: buildTranslationOnlyPromptForLanguages(text, sourceLanguage, targetLanguage) }]
+      return createAiProtocolAdapter(attempt, createClient(attempt)).stream(messages, { thinking: streamOptions.thinking }, streamOptions.requestOptions)
+    })
+  }
+  const systemPrompt = composeTranslateSystemPrompt(prompt, sourceLanguage, targetLanguage)
   if (typeof provider === 'string') {
-    const messages = buildToolbarMessages(text, prompt)
+    const messages = buildToolbarMessages(text, systemPrompt)
     return createAiProtocolAdapter(config, createClient(config)).stream(messages, { thinking: streamOptions.thinking }, streamOptions.requestOptions)
   }
-  if (isTranslationOnlyModel(config) && isShortTranslationText(text)) {
-    return createShortTranslationStream(config, text, prompt, streamOptions.requestOptions)
-  }
   return withConnectionFallback(config, async (attempt) => {
-    const promptInUser = isTranslationOnlyModel(attempt)
-    const messages = buildToolbarMessages(text, prompt, { promptInUser })
+    const messages = buildToolbarMessages(text, systemPrompt)
     return createAiProtocolAdapter(attempt, createClient(attempt)).stream(messages, { thinking: streamOptions.thinking }, streamOptions.requestOptions)
   })
 }
@@ -435,6 +456,10 @@ async function createCustomStream(provider, text, prompt, requestOptions = {}) {
 
 module.exports = {
   buildToolbarStreamRequest,
+  buildTranslationOnlyPromptForLanguages,
+  composeTranslateSystemPrompt,
+  resolveTranslateTarget,
+  sourceLanguageCodeForText,
   createTranslateStream,
   createExplainStream,
   createCustomStream,

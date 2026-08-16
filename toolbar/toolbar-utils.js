@@ -1,4 +1,4 @@
-const DEFAULT_TRANSLATE_PROMPT = '你是一个专业的翻译助手。请将用户输入的任何语言翻译成中文。对于中文输入，翻译成英文。只输出翻译结果，不要添加任何额外说明或解释。'
+const DEFAULT_TRANSLATE_PROMPT = '你是一个专业的翻译助手。请按照设置的语言方向翻译用户输入的文本，只输出翻译结果，不要添加任何额外说明或解释。'
 const DEFAULT_EXPLAIN_PROMPT = '你是一个知识渊博的解说专家。请对用户提供的文本进行深入分析和解读：\n\n### 核心要点\n先用一句话概括核心内容。\n\n### 详细解释\n对文本中的关键概念、术语、背景进行详细解释，帮助用户全面理解。如果涉及专业知识，请进行通俗易懂的说明。\n\n### 延伸知识\n补充相关的背景信息、实际应用场景或有趣的引申知识点。\n\n请使用中文回答，内容充实但不冗长，层次分明。'
 
 const BUILTIN_TOOLBAR_ACTIONS = Object.freeze({
@@ -23,6 +23,9 @@ const SEARCH_URLS = Object.freeze({
   google: 'https://www.google.com/search?q='
 })
 const SEARCH_ENGINES = new Set(Object.keys(SEARCH_URLS))
+const TRANSLATE_SOURCE_LANGUAGES = Object.freeze(['auto', '中文', '日文', '英文', '韩文'])
+const TRANSLATE_TARGET_LANGUAGES = Object.freeze(['中文', '日文', '英文'])
+const DEFAULT_TRANSLATE_LANGUAGES = Object.freeze({ source: 'auto', target: '中文' })
 const CUSTOM_ACTION_PREFIX = 'custom:'
 const MAX_CUSTOM_ACTIONS = 12
 const MAX_CUSTOM_NAME_LENGTH = 16
@@ -44,6 +47,7 @@ const DEFAULT_SELECTION_TOOLBAR = Object.freeze({
   }),
   customActions: Object.freeze([]),
   searchEngine: 'bing',
+  translateLanguages: DEFAULT_TRANSLATE_LANGUAGES,
   resultWindow: ACTION_WINDOW_DEFAULT_SIZE
 })
 
@@ -124,7 +128,16 @@ function normalizeSelectionToolbar(value = {}) {
     prompts: { translate: translatePrompt, explain: explainPrompt },
     customActions,
     searchEngine: SEARCH_ENGINES.has(config.searchEngine) ? config.searchEngine : 'bing',
+    translateLanguages: normalizeTranslateLanguages(config.translateLanguages),
     resultWindow: normalizeActionWindowSize(config.resultWindow)
+  }
+}
+
+function normalizeTranslateLanguages(value) {
+  const config = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  return {
+    source: TRANSLATE_SOURCE_LANGUAGES.includes(config.source) ? config.source : DEFAULT_TRANSLATE_LANGUAGES.source,
+    target: TRANSLATE_TARGET_LANGUAGES.includes(config.target) ? config.target : DEFAULT_TRANSLATE_LANGUAGES.target
   }
 }
 
@@ -230,8 +243,11 @@ module.exports = {
   ACTION_WINDOW_MIN_WIDTH,
   DEFAULT_SELECTION_TOOLBAR,
   DEFAULT_TOOLBAR_THINKING,
+  DEFAULT_TRANSLATE_LANGUAGES,
   DEFAULT_TRANSLATE_PROMPT,
   THINKING_LEVELS,
+  TRANSLATE_SOURCE_LANGUAGES,
+  TRANSLATE_TARGET_LANGUAGES,
   CUSTOM_ACTION_DEFAULT_THINKING,
   MAX_CUSTOM_ACTIONS,
   MAX_CUSTOM_NAME_LENGTH,

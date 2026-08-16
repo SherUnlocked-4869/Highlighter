@@ -21,8 +21,8 @@ function createSettings() {
 test('toolbar translation and explanation route to their assigned providers', async () => {
   const calls = []
   const clients = {
-    createTranslateStream: async (provider, text, prompt, options) => {
-      calls.push({ method: 'translate', provider, text, prompt, options })
+    createTranslateStream: async (provider, text, prompt, languages, options) => {
+      calls.push({ method: 'translate', provider, text, prompt, languages, options })
       return 'translate-stream'
     },
     createExplainStream: async (provider, text, prompt, options) => {
@@ -33,6 +33,7 @@ test('toolbar translation and explanation route to their assigned providers', as
   }
   const signal = new AbortController().signal
   const settings = createSettings()
+  settings.selectionToolbar = { translateLanguages: { source: 'auto', target: '中文' } }
   assert.equal(await createToolbarActionStream({
     settings,
     action: { id: 'translate', label: '翻译', prompt: 'translate prompt' },
@@ -53,10 +54,11 @@ test('toolbar translation and explanation route to their assigned providers', as
     providerId: call.provider.id,
     baseUrl: call.provider.baseUrl,
     model: call.provider.model,
-    prompt: call.prompt
+    prompt: call.prompt,
+    languages: call.languages
   })), [
-    { method: 'translate', providerId: 'translator', baseUrl: 'https://translate.example/v1', model: 'translate-model', prompt: 'translate prompt' },
-    { method: 'explain', providerId: 'explainer', baseUrl: 'https://explain.example/v1', model: 'explain-model', prompt: 'explain prompt' }
+    { method: 'translate', providerId: 'translator', baseUrl: 'https://translate.example/v1', model: 'translate-model', prompt: 'translate prompt', languages: { source: 'auto', target: '中文' } },
+    { method: 'explain', providerId: 'explainer', baseUrl: 'https://explain.example/v1', model: 'explain-model', prompt: 'explain prompt', languages: undefined }
   ])
   assert.equal(calls[0].options.signal, signal)
   assert.equal(calls[1].options.signal, signal)
