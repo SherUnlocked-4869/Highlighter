@@ -9,7 +9,7 @@ const { UpdateService } = require('../main/services/update-service')
 const projectPackage = require('../package.json')
 
 const RESULT_PREFIX = 'HIGHLIGHTER_UPDATE_FAILURE_PROBE='
-const updateVersion = '2.1.1'
+const updateVersion = projectPackage.version.replace(/(\d+)$/, (patch) => String(Number(patch) + 1))
 const installerName = `Highlighter-Setup-${updateVersion}.exe`
 const installerPayload = Buffer.from('not-an-installer-but-a-complete-update-payload')
 const installerSha512 = crypto.createHash('sha512').update(installerPayload).digest('base64')

@@ -118,6 +118,7 @@ test('release workflows enforce version, native, signing, integrity, and draft g
   const release = fs.readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8')
   const promote = fs.readFileSync(path.join(root, '.github', 'workflows', 'promote-release.yml'), 'utf8')
   const config = require('../electron-builder.release.cjs')
+  const expectedChannel = require('../package.json').version.match(/-(alpha|beta)(?:\.|$)/)?.[1] || 'latest'
   assert.match(ci, /npm run audit:dependencies/)
   assert.match(ci, /npm run check:version/)
   assert.match(ci, /npm run test:e2e/)
@@ -141,7 +142,7 @@ test('release workflows enforce version, native, signing, integrity, and draft g
   assert.match(promote, /verify-promotion-assets\.ps1/)
   assert.match(promote, /gh release edit .*--draft=false/)
   assert.equal(config.forceCodeSigning, true)
-  assert.equal(config.publish.channel, 'beta')
+  assert.equal(config.publish.channel, expectedChannel)
   assert.equal(config.extraMetadata.main, 'main/packaged-entry.js')
   assert.equal(config.electronFuses.enableEmbeddedAsarIntegrityValidation, true)
   assert.equal(config.electronFuses.onlyLoadAppFromAsar, true)
