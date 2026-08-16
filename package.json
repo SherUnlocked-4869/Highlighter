@@ -116,7 +116,11 @@
     },
     "portable": {
       "artifactName": "Highlighter-${version}-portable.exe"
-    }
+    },
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ]
   },
   "dependencies": {
     "adm-zip": "0.6.0",

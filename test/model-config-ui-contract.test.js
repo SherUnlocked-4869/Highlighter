@@ -45,6 +45,11 @@ test('config app exposes the model provider route with provider and feature-mode
   assert.doesNotMatch(script, /modelProviderName/)
 })
 
+test('model catalog rows are enumerated by the row container only, not by buttons sharing data-model-index', () => {
+  assert.match(script, /querySelectorAll\('\.model-catalog-row\[data-model-index\]'\)/)
+  assert.doesNotMatch(script, /querySelectorAll\('\[data-model-index\]'\)/)
+})
+
 test('main process resolves feature assignments through the AI provider service', () => {
   assert.match(main, /require\('\.\/main\/services\/ai-providers'\)/)
   assert.match(main, /createToolbarActionStream/)

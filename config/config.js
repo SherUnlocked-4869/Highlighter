@@ -100,6 +100,7 @@ function applyAppearance() {
     : settings.theme
   document.body.classList.toggle('dark', theme === 'dark')
   document.body.classList.toggle('compact', !!settings.compact)
+  document.body.classList.toggle('has-skin', !!settings.skinPath)
   document.documentElement.style.setProperty('--primary', settings.mainColor || '#1677ff')
   document.documentElement.style.setProperty('--radius', `${Number(settings.borderRadius) || 8}px`)
   document.documentElement.style.setProperty('--skin', settings.skinPath ? `url("file:///${String(settings.skinPath).replace(/\\/g, '/')}")` : 'none')
@@ -365,20 +366,21 @@ async function renderHistory() {
       imageElement.closest('.history-image')?.classList.add('unavailable')
     }
   }
-  const observeThumbnails = () => {
-    historyThumbnailObserver?.disconnect()
-    const images = [...results.querySelectorAll('[data-history-thumbnail]')]
+  const observeNewThumbnails = (imageScope) => {
+    const images = [...(imageScope || results.querySelectorAll('[data-history-thumbnail]'))]
     if (!('IntersectionObserver' in window)) {
       images.forEach(loadThumbnail)
       return
     }
-    historyThumbnailObserver = new IntersectionObserver((entries, observer) => {
-      entries.forEach((entry) => {
-        if (!entry.isIntersecting) return
-        observer.unobserve(entry.target)
-        loadThumbnail(entry.target)
-      })
-    }, { root: view, rootMargin: '240px' })
+    if (!historyThumbnailObserver) {
+      historyThumbnailObserver = new IntersectionObserver((entries, observer) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return
+          observer.unobserve(entry.target)
+          loadThumbnail(entry.target)
+        })
+      }, { root: view, rootMargin: '240px' })
+    }
     images.forEach((imageElement) => historyThumbnailObserver.observe(imageElement))
   }
   const bindHistoryItems = () => {
@@ -413,20 +415,33 @@ async function renderHistory() {
       }
     })
   }
-  const renderLoadedItems = () => {
-    const itemsMarkup = history.length
-      ? `<div class="history-grid">${history.map((item) => {
-          const selected = historySelectedIds.has(String(item.id))
-          return `<article class="card history-item ${selected ? 'selected' : ''}"><label class="history-select" title="选择此项"><input type="checkbox" data-history-select data-id="${escapeHtml(item.id)}" ${selected ? 'checked' : ''}></label><div class="history-image"><img data-history-thumbnail="${escapeHtml(item.id)}" alt=""></div><div class="history-meta">${new Date(item.createdAt).toLocaleString()} · ${escapeHtml(sourceLabels[item.source] || item.source)} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</div><div class="history-actions">${item.longCapture ? '' : `<button data-history-action="edit" data-id="${escapeHtml(item.id)}">编辑</button>`}<button data-history-action="open" data-id="${escapeHtml(item.id)}">打开</button><button data-history-action="copy" data-id="${escapeHtml(item.id)}">复制</button><button data-history-action="address" data-id="${escapeHtml(item.id)}">地址</button><button data-history-action="delete" data-id="${escapeHtml(item.id)}">删除</button></div></article>`
-        }).join('')}</div>`
-      : '<div class="empty">没有符合条件的截图历史</div>'
-    results.innerHTML = itemsMarkup
+  const historyCardMarkup = (item) => {
+    const selected = historySelectedIds.has(String(item.id))
+    return `<article class="card history-item ${selected ? 'selected' : ''}"><label class="history-select" title="选择此项"><input type="checkbox" data-history-select data-id="${escapeHtml(item.id)}" ${selected ? 'checked' : ''}></label><div class="history-image"><img data-history-thumbnail="${escapeHtml(item.id)}" loading="lazy" decoding="async" alt=""></div><div class="history-meta"><span class="history-meta-time">${new Date(item.createdAt).toLocaleString()}</span><span class="history-meta-sub">${escapeHtml(sourceLabels[item.source] || item.source)} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</span></div><div class="history-actions">${item.longCapture ? '' : `<button data-history-action="edit" data-id="${escapeHtml(item.id)}">编辑</button>`}<button data-history-action="open" data-id="${escapeHtml(item.id)}">打开</button><button data-history-action="copy" data-id="${escapeHtml(item.id)}">复制</button><button data-history-action="address" data-id="${escapeHtml(item.id)}">地址</button><button class="history-delete" data-history-action="delete" data-id="${escapeHtml(item.id)}">删除</button></div></article>`
+  }
+  let renderedHistoryCount = 0
+  const renderLoadedItems = ({ append = false } = {}) => {
+    if (!history.length) {
+      results.innerHTML = '<div class="empty">没有符合条件的截图历史</div>'
+    } else if (append && renderedHistoryCount > 0) {
+      const newItems = history.slice(renderedHistoryCount)
+      let grid = results.querySelector('.history-grid')
+      if (!grid) {
+        results.innerHTML = '<div class="history-grid"></div>'
+        grid = results.querySelector('.history-grid')
+      }
+      grid.insertAdjacentHTML('beforeend', newItems.map(historyCardMarkup).join(''))
+      observeNewThumbnails(grid.querySelectorAll('[data-history-thumbnail]:not([data-loaded])'))
+    } else {
+      results.innerHTML = `<div class="history-grid">${history.map(historyCardMarkup).join('')}</div>`
+      observeNewThumbnails()
+    }
+    renderedHistoryCount = history.length
     loadedCount.textContent = totalCount > history.length ? `${history.length}/${totalCount} 项` : `${totalCount} 项`
     loadMore.hidden = !hasMore
     loadMore.disabled = false
     updateSelectionControls()
     bindHistoryItems()
-    observeThumbnails()
   }
   sourceSelect.value = historySource
   renderLoadedItems()
@@ -481,7 +496,7 @@ async function renderHistory() {
       history = history.concat(Array.isArray(page?.items) ? page.items : [])
       nextCursor = page?.nextCursor || ''
       hasMore = page?.hasMore === true
-      renderLoadedItems()
+      renderLoadedItems({ append: true })
     } catch (error) {
       loadMore.disabled = false
       toast(error.message || '加载截图历史失败')
@@ -863,7 +878,7 @@ function readProviderEditor(providerId) {
   }
   const models = []
   const ids = new Set()
-  for (const row of root.querySelectorAll('[data-model-index]')) {
+  for (const row of root.querySelectorAll('.model-catalog-row[data-model-index]')) {
     const id = row.querySelector('[data-model-id]')?.value.trim() || ''
     if (!id) { toast('模型 ID 不能为空'); return null }
     if (ids.has(id)) { toast(`模型 ID 重复：${id}`); return null }
@@ -879,7 +894,7 @@ function readProviderEditorDraft(providerId) {
   const root = providerEditorRoot(providerId)
   if (!base || !root) return base
   const models = []
-  for (const row of root.querySelectorAll('[data-model-index]')) {
+  for (const row of root.querySelectorAll('.model-catalog-row[data-model-index]')) {
     const id = row.querySelector('[data-model-id]')?.value.trim() || ''
     const name = row.querySelector('[data-model-name]')?.value.trim() || id
     models.push({ id, name })
@@ -912,9 +927,9 @@ function providerEditorMarkup(provider) {
   const expanded = modelsExpandedProviderIds.has(provider.id)
   const status = modelProviderStatus(provider)
   if (!expanded) {
-    return `<article class="model-provider-accordion" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击展开供应商配置"><span class="model-provider-expand">▸</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span><span class="model-provider-chevron">展开</span></div></article>`
+    return `<article class="model-provider-accordion" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击展开供应商配置"><span class="model-provider-expand">▸</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="provider-head-status"><span class="provider-dot ${status.className}"></span>${escapeHtml(status.title)}</span><span class="model-provider-chevron">展开</span></div></article>`
   }
-  return `<article class="model-provider-accordion expanded" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击收起供应商配置"><span class="model-provider-expand">▾</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="model-provider-chevron">收起</span></div><div class="model-provider-editor"><div class="model-provider-editor-head"><div class="model-provider-title"><b>${escapeHtml(provider.name)}</b><span class="provider-tag ${provider.builtin ? 'builtin' : ''}">${provider.builtin ? '内置' : '自定义'}</span><span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span></div><button class="button danger" data-delete-provider="${escapeHtml(provider.id)}">删除供应商</button></div><div class="model-field"><div class="model-field-label"><b>API 密钥</b><small>通过系统安全存储加密保存在本机</small></div><div class="model-field-control"><input class="input" data-provider-api-key type="password" value="" placeholder="${escapeHtml((provider.apiKey || provider.hasApiKey) ? '已配置——输入新值可替换' : 'sk-...')}"><button class="button" data-test-provider="${escapeHtml(provider.id)}">测试</button></div></div><details class="model-custom-details" open><summary>自定义设置</summary><div class="model-field"><div class="model-field-label"><b>启用状态</b></div><select data-provider-enabled><option value="true" ${provider.enabled !== false ? 'selected' : ''}>启用</option><option value="false" ${provider.enabled === false ? 'selected' : ''}>停用</option></select></div><div class="model-field"><div class="model-field-label"><b>显示名称</b></div><input class="input" data-provider-name type="text" value="${escapeHtml(provider.name)}" placeholder="例如：DeepSeek"></div><div class="model-field"><div class="model-field-label"><b>API 地址</b></div><input class="input" data-provider-base-url type="text" value="${escapeHtml(provider.baseUrl)}" placeholder="https://api.example.com/v1"></div><div class="model-field"><div class="model-field-label"><b>API 协议</b></div><select data-provider-protocol><option value="openai-chat" ${provider.protocol === 'openai-chat' ? 'selected' : ''}>openai-chat</option><option value="openai-responses" ${provider.protocol === 'openai-responses' ? 'selected' : ''}>openai-responses</option></select></div></details><div class="model-catalog-block"><div class="model-catalog-head"><div><b>模型目录</b><small>${provider.models.length ? '已自定义模型目录' : '尚未配置模型'}</small></div><div class="model-catalog-actions"><button class="button" data-restore-models="${escapeHtml(provider.id)}">恢复默认模型</button><button class="button" data-fetch-models="${escapeHtml(provider.id)}">获取可用模型</button></div></div><div class="model-catalog-list">${provider.models.map((model, index) => modelCatalogRowMarkup(provider, index)).join('')}</div><button class="button" data-add-provider-model="${escapeHtml(provider.id)}">＋ 添加模型</button></div></div></article>`
+  return `<article class="model-provider-accordion expanded" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击收起供应商配置"><span class="model-provider-expand">▾</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="provider-head-status"><span class="provider-dot ${status.className}"></span>${escapeHtml(status.title)}</span><span class="model-provider-chevron">收起</span></div><div class="model-provider-editor"><div class="model-provider-editor-head"><div class="model-provider-title"><b>${escapeHtml(provider.name)}</b><span class="provider-tag ${provider.builtin ? 'builtin' : ''}">${provider.builtin ? '内置' : '自定义'}</span><span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span></div><button class="button danger" data-delete-provider="${escapeHtml(provider.id)}">删除供应商</button></div><div class="model-field"><div class="model-field-label"><b>API 密钥</b><small>通过系统安全存储加密保存在本机</small></div><div class="model-field-control"><input class="input" data-provider-api-key type="password" value="" placeholder="${escapeHtml((provider.apiKey || provider.hasApiKey) ? '已配置——输入新值可替换' : 'sk-...')}"><button class="button" data-test-provider="${escapeHtml(provider.id)}">测试</button></div></div><details class="model-custom-details" open><summary>自定义设置</summary><div class="model-field"><div class="model-field-label"><b>启用状态</b></div><select data-provider-enabled><option value="true" ${provider.enabled !== false ? 'selected' : ''}>启用</option><option value="false" ${provider.enabled === false ? 'selected' : ''}>停用</option></select></div><div class="model-field"><div class="model-field-label"><b>显示名称</b></div><input class="input" data-provider-name type="text" value="${escapeHtml(provider.name)}" placeholder="例如：DeepSeek"></div><div class="model-field"><div class="model-field-label"><b>API 地址</b></div><input class="input" data-provider-base-url type="text" value="${escapeHtml(provider.baseUrl)}" placeholder="https://api.example.com/v1"></div><div class="model-field"><div class="model-field-label"><b>API 协议</b></div><select data-provider-protocol><option value="openai-chat" ${provider.protocol === 'openai-chat' ? 'selected' : ''}>openai-chat</option><option value="openai-responses" ${provider.protocol === 'openai-responses' ? 'selected' : ''}>openai-responses</option></select></div></details><div class="model-catalog-block"><div class="model-catalog-head"><div><b>模型目录</b><small>${provider.models.length ? '已自定义模型目录' : '尚未配置模型'}</small></div><div class="model-catalog-actions"><button class="button" data-restore-models="${escapeHtml(provider.id)}">恢复默认模型</button><button class="button" data-fetch-models="${escapeHtml(provider.id)}">获取可用模型</button></div></div><div class="model-catalog-list">${provider.models.map((model, index) => modelCatalogRowMarkup(provider, index)).join('')}</div><button class="button" data-add-provider-model="${escapeHtml(provider.id)}">＋ 添加模型</button></div></div></article>`
 }
 
 function renderModelsSubnav() {

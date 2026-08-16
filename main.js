@@ -434,6 +434,17 @@ function initializeUpdateService() {
   return updateService
 }
 
+function resolveUpdateService() {
+  return updateService || initializeUpdateService()
+}
+
+function deferUpdateServiceStart() {
+  const timer = setTimeout(() => {
+    try { resolveUpdateService().start() } catch (error) { log('Update service start failed:', error?.message || String(error)) }
+  }, 2000)
+  timer.unref?.()
+}
+
 function getDiagnosticComponents() {
   const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
   let ffmpegPath = ''
@@ -2283,26 +2294,11 @@ registerDiagnosticsIpc({
 registerUpdateIpc({
   ipcMain: secureIpcMain,
   updateService: {
-    getStatus: () => {
-      if (!updateService) throw new Error('更新服务尚未就绪')
-      return updateService.getStatus()
-    },
-    check: (options) => {
-      if (!updateService) throw new Error('更新服务尚未就绪')
-      return updateService.check(options)
-    },
-    download: () => {
-      if (!updateService) throw new Error('更新服务尚未就绪')
-      return updateService.download()
-    },
-    install: () => {
-      if (!updateService) throw new Error('更新服务尚未就绪')
-      return updateService.install()
-    },
-    openDownloadPage: () => {
-      if (!updateService) throw new Error('更新服务尚未就绪')
-      return updateService.openDownloadPage()
-    }
+    getStatus: () => resolveUpdateService().getStatus(),
+    check: (options) => resolveUpdateService().check(options),
+    download: () => resolveUpdateService().download(),
+    install: () => resolveUpdateService().install(),
+    openDownloadPage: () => resolveUpdateService().openDownloadPage()
   }
 })
 
@@ -3159,7 +3155,6 @@ async function startApplication() {
   if (finalization && !finalization.finalized && finalization.cleanupErrors.length) {
     log('Data migration cleanup remains pending:', finalization.cleanupErrors)
   }
-  initializeUpdateService()
   initializeDiagnostics()
   persistSettings(getSettings())
   createMainWindow('home')
@@ -3178,7 +3173,7 @@ async function startApplication() {
     app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
   }
   if (e2eContext.enabled) createToolbarWindow()
-  updateService.start()
+  deferUpdateServiceStart()
   performanceMonitor.finish(startupToken, {
     e2e: e2eContext.enabled,
     moduleElapsedMs: Math.round((performance.now() - mainModuleStartedAt) * 100) / 100

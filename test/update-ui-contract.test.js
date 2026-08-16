@@ -13,7 +13,9 @@ test('main process owns updater lifecycle, diagnostics, channel settings, and in
   assert.match(main, /normalized\.system\.updateChannel = normalized\.system\.updateChannel === 'beta' \? 'beta' : 'stable'/)
   assert.match(main, /new UpdateService\(\{[\s\S]*getUpdateInstallReadiness[\s\S]*markSessionClean\('update-install'\)/)
   assert.match(main, /getUpdateStatus: \(\) => updateService\?\.getStatus\(\)/)
-  assert.match(main, /initializeUpdateService\(\)[\s\S]*initializeDiagnostics\(\)[\s\S]*updateService\.start\(\)/)
+  assert.match(main, /initializeDiagnostics\(\)[\s\S]*deferUpdateServiceStart\(\)/)
+  assert.match(main, /function deferUpdateServiceStart\(\)[\s\S]*resolveUpdateService\(\)\.start\(\)/)
+  assert.match(main, /updateService: \{[\s\S]*resolveUpdateService\(\)\.getStatus\(\)/)
   assert.match(main, /app\.on\('will-quit',[\s\S]*updateService\?\.dispose\(\)/)
 })
 
