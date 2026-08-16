@@ -13,6 +13,7 @@ const {
   nativeImage,
   nativeTheme,
   powerMonitor,
+  protocol,
   safeStorage,
   screen,
   shell,
@@ -37,7 +38,11 @@ const { PerformanceMonitor } = require('./main/services/performance-monitor')
 const { DiagnosticsService } = require('./main/services/diagnostics-service')
 const { SettingsService } = require('./main/services/settings-service')
 const { registerSettingsIpc } = require('./main/ipc/settings-ipc')
-const { HistoryService } = require('./main/services/history-service')
+const { HistoryService, migrateLegacyHistoryStore } = require('./main/services/history-service')
+const {
+  registerHistoryThumbProtocol,
+  registerHistoryThumbScheme
+} = require('./main/services/history-thumb-protocol')
 const { registerHistoryIpc } = require('./main/ipc/history-ipc')
 const { ShortcutService } = require('./main/services/shortcut-service')
 const { registerShortcutIpc } = require('./main/ipc/shortcut-ipc')
@@ -109,6 +114,9 @@ const {
 } = require('./main/services/ai-providers')
 
 const DEFAULT_AI_PROVIDERS = createDefaultProviders()
+
+// Custom scheme registration must happen before app ready.
+registerHistoryThumbScheme({ protocol })
 
 const defaultHistoryDirectory = activePaths?.history || path.join(app.getPath('userData'), 'capture-history')
 const logFile = activePaths ? path.join(activePaths.logs, 'app.log') : path.join(app.getPath('userData'), 'app.log')
@@ -214,12 +222,20 @@ function initializeStore() {
   if (store) return store
   const storeOptions = {
     defaults: {
-      settings: DEFAULT_SETTINGS,
-      captureHistory: []
+      settings: DEFAULT_SETTINGS
     }
   }
   if (activePaths) storeOptions.cwd = activePaths.config
   store = new Store(storeOptions)
+  // History metadata lives in its own file so captures do not rewrite the
+  // settings store, and startup does not parse history with the config.
+  const historyStoreOptions = {
+    name: 'history',
+    defaults: { captureHistory: [] }
+  }
+  if (activePaths) historyStoreOptions.cwd = activePaths.config
+  const historyStore = new Store(historyStoreOptions)
+  migrateLegacyHistoryStore({ legacyStore: store, historyStore, log })
   settingsService = new SettingsService({
     store,
     safeStorage,
@@ -229,7 +245,7 @@ function initializeStore() {
     onCredentialError: (error) => console.warn('Unable to access encrypted credentials:', error.message || String(error))
   })
   historyService = new HistoryService({
-    store,
+    store: historyStore,
     nativeImage,
     sharp,
     getSettings,
@@ -741,6 +757,29 @@ function persistHistory(imageData, meta = {}) {
     : historyService.persistBuffer(imageDataToBuffer(imageData), meta)
 }
 
+// History persistence happens off the capture IPC critical path: the renderer
+// acknowledgement and window close are not delayed by file writes.
+const pendingHistoryPersists = []
+function deferHistoryTask(task) {
+  pendingHistoryPersists.push(task)
+  if (pendingHistoryPersists.length === 1) setImmediate(drainHistoryPersists)
+}
+
+function deferHistoryPersist(imageData, meta) {
+  deferHistoryTask(() => persistHistory(imageData, meta))
+}
+
+function drainHistoryPersists() {
+  while (pendingHistoryPersists.length) {
+    const task = pendingHistoryPersists.shift()
+    try {
+      task()
+    } catch (error) {
+      log('History persist failed:', error?.message || String(error))
+    }
+  }
+}
+
 async function persistHistoryFile(sourcePath, meta = {}) {
   return historyService.persistFile(sourcePath, meta)
 }
@@ -923,6 +962,13 @@ function registerSelectionPowerEvents() {
     powerMonitor.on(eventName, listener)
     selectionPowerListeners.push([eventName, listener])
   }
+  // Drop decrypted credential plaintext while the machine is suspended or
+  // locked so secrets do not sit in main-process memory during idle periods.
+  const clearCredentialCache = () => settingsService?.credentials?.clearDecryptionCache()
+  for (const eventName of ['suspend', 'lock-screen']) {
+    powerMonitor.on(eventName, clearCredentialCache)
+    selectionPowerListeners.push([eventName, clearCredentialCache])
+  }
 }
 
 function disposeSelectionHook() {
@@ -1028,6 +1074,7 @@ function createToolbarStreamController(win) {
   const controller = new ToolbarStreamSession({
     win,
     timeoutMs: TOOLBAR_STREAM_IDLE_TIMEOUT_MS,
+    timeoutMessage: `模型超过 ${Math.round(TOOLBAR_STREAM_IDLE_TIMEOUT_MS / 1000)} 秒无输出，已取消。免费模型高峰期易排队超时，可重试或更换模型`,
     onFinish: (finishedController) => {
       if (currentStreamController !== finishedController) return
       currentStreamController = null
@@ -1123,9 +1170,27 @@ async function getDesktopCapture(display, scaleFactor) {
   throw new Error('屏幕捕获连续返回空白画面')
 }
 
+// Windows capture strategies: the PowerShell helper is slower but historically
+// more reliable, desktopCapturer is in-process. When a strategy keeps failing
+// we stop paying for it first for the rest of the session instead of running
+// both back to back on every capture.
+const CAPTURE_STRATEGY_SWITCH_FAILURES = 2
+let preferredCaptureStrategy = 'native'
+const captureStrategyFailures = { native: 0, desktop: 0 }
+
+function noteCaptureStrategyFailure(strategy) {
+  captureStrategyFailures[strategy] += 1
+  if (captureStrategyFailures[strategy] < CAPTURE_STRATEGY_SWITCH_FAILURES) return false
+  const next = strategy === 'native' ? 'desktop' : 'native'
+  if (preferredCaptureStrategy === next) return false
+  preferredCaptureStrategy = next
+  log(`Capture strategy switched to ${next} after repeated ${strategy} failures`)
+  return true
+}
+
 async function getDisplayCapture(display) {
   const scaleFactor = display.scaleFactor || 1
-  if (isWin) {
+  if (isWin && preferredCaptureStrategy === 'native') {
     try {
       if (!nativeDisplayListPromise) nativeDisplayListPromise = listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
       const nativeDisplays = await nativeDisplayListPromise
@@ -1144,6 +1209,7 @@ async function getDisplayCapture(display) {
           throw new Error(`原生抓屏尺寸异常：${size.width}x${size.height}`)
         }
         if (isBlankCapture(image)) throw new Error('原生抓屏返回空白画面')
+        captureStrategyFailures.native = 0
         return {
           imageBuffer: buffer,
           sourceId: `native:${nativeDisplay.id}`,
@@ -1152,10 +1218,18 @@ async function getDisplayCapture(display) {
       }
     } catch (error) {
       nativeDisplayListPromise = null
+      noteCaptureStrategyFailure('native')
       log('Native capture fallback:', error.message)
     }
   }
-  return getDesktopCapture(display, scaleFactor)
+  try {
+    const capture = await getDesktopCapture(display, scaleFactor)
+    captureStrategyFailures.desktop = 0
+    return capture
+  } catch (error) {
+    if (isWin) noteCaptureStrategyFailure('desktop')
+    throw error
+  }
 }
 
 async function createCaptureWindow(options = {}) {
@@ -1527,9 +1601,9 @@ async function finishLongCapture(action, fast = false) {
       if (action === 'copy') clipboard.writeImage(image)
       else if (action === 'pin') {
         if (pinnedCount >= MAX_PINNED) throw new Error(`最多固定 ${MAX_PINNED} 张图片`)
-        createPinWindow(image.toDataURL(), meta)
+        createPinnedWindow(outputPath, meta)
       } else throw new Error('不支持的长截图操作')
-      await persistHistoryFile(outputPath, meta)
+      if (action !== 'pin') await persistHistoryFile(outputPath, meta)
     }
     setImmediate(closeLongCapture)
     return { ok: true }
@@ -1573,10 +1647,6 @@ async function saveImageBuffer(imageBuffer, options = {}) {
   return filePath
 }
 
-async function saveDataUrl(dataUrl, options = {}) {
-  return saveImageBuffer(dataUrlToBuffer(dataUrl), options)
-}
-
 function getPixelAlignedPinSize(pixelWidth, pixelHeight, display, preferredSize = null) {
   const scaleFactor = Math.max(0.25, Number(display?.scaleFactor) || 1)
   const preferredWidth = Number(preferredSize?.width)
@@ -1613,9 +1683,46 @@ function syncPinDisplayScale(win) {
   return true
 }
 
-function createPinWindow(dataUrl, meta = {}) {
-  const image = nativeImage.createFromDataURL(dataUrl)
-  const size = image.getSize()
+function pinTempDirectory() {
+  return path.join(app.getPath('temp'), 'Highlighter', 'pins')
+}
+
+// Pins reference a single on-disk source; neither the main process nor the
+// renderer keeps a base64 copy of the image in memory. The pin file lives in
+// the temp directory so history maintenance can never unlink an open pin; the
+// history entry is a separate copy made by the deferred persist below.
+function writePinSourceFile(buffer, meta = {}) {
+  const filePath = path.join(ensureDirectory(pinTempDirectory()), `${crypto.randomUUID()}.png`)
+  if (typeof buffer === 'string') fs.copyFileSync(buffer, filePath)
+  else fs.writeFileSync(filePath, buffer)
+  return { filePath, temporary: true }
+}
+
+function deferPinHistoryPersist(source, meta) {
+  if (!historyService) return
+  deferHistoryTask(() => {
+    try {
+      const result = typeof source === 'string'
+        ? historyService.persistFile(source, { ...meta, action: meta.action || 'pin' })
+        : historyService.persistImageBuffer(source, { ...meta, action: meta.action || 'pin' })
+      if (result && typeof result.catch === 'function') {
+        result.catch((error) => log('History persist failed:', error?.message || String(error)))
+      }
+    } catch (error) {
+      log('History persist failed:', error?.message || String(error))
+    }
+  })
+}
+
+function createPinnedWindow(buffer, meta = {}) {
+  const source = writePinSourceFile(buffer, meta)
+  const pinWindow = createPinWindow(source.filePath, meta, source.temporary)
+  deferPinHistoryPersist(buffer, meta)
+  return pinWindow
+}
+
+function createPinWindow(imagePath, meta = {}, temporary = false) {
+  const size = nativeImage.createFromPath(imagePath).getSize()
   const selectionBounds = meta.selectionBounds && {
     x: Math.round(meta.selectionBounds.x),
     y: Math.round(meta.selectionBounds.y),
@@ -1662,7 +1769,8 @@ function createPinWindow(dataUrl, meta = {}) {
     }
   })
   win._pinData = {
-    dataUrl,
+    imagePath,
+    temporary: !!temporary,
     meta,
     opacity: getSettings().fixedContent.opacity,
     zoomWithMouse: getSettings().fixedContent.zoomWithMouse !== false,
@@ -1687,15 +1795,18 @@ function createPinWindow(dataUrl, meta = {}) {
   win.on('closed', () => {
     pinWindows.delete(win)
     pinnedCount = Math.max(0, pinnedCount - 1)
+    if (win._pinData?.temporary && win._pinData.imagePath) {
+      fs.promises.unlink(win._pinData.imagePath).catch(() => {})
+    }
   })
   return win
 }
 
-function updatePinWindow(win, dataUrl, meta = {}) {
+function updatePinWindow(win, imagePath, meta = {}, temporary = false) {
   if (!win || win.isDestroyed()) return null
-  const image = nativeImage.createFromDataURL(dataUrl)
-  const size = image.getSize()
+  const size = nativeImage.createFromPath(imagePath).getSize()
   const currentBounds = win.getBounds()
+  const previousTemporaryPath = win._pinData?.temporary ? win._pinData.imagePath : ''
   const targetBounds = meta.selectionBounds
     ? {
         x: Math.round(meta.selectionBounds.x),
@@ -1713,7 +1824,8 @@ function updatePinWindow(win, dataUrl, meta = {}) {
   }
   win._pinData = {
     ...win._pinData,
-    dataUrl,
+    imagePath,
+    temporary: !!temporary,
     meta,
     pixelWidth: size.width,
     pixelHeight: size.height,
@@ -1721,6 +1833,9 @@ function updatePinWindow(win, dataUrl, meta = {}) {
     baseWidth: aligned.width,
     baseHeight: aligned.height,
     zoom: 1
+  }
+  if (previousTemporaryPath && previousTemporaryPath !== imagePath) {
+    fs.promises.unlink(previousTemporaryPath).catch(() => {})
   }
   win.setBounds(nextBounds, false)
   win.setBounds(nextBounds, false)
@@ -1766,7 +1881,7 @@ async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
     width: Math.max(1, Math.round(Number(imageBounds.width) || pinBounds.width)),
     height: Math.max(1, Math.round(Number(imageBounds.height) || pinBounds.height))
   }
-  const imageSize = nativeImage.createFromDataURL(win._pinData.dataUrl).getSize()
+  const imageSize = nativeImage.createFromPath(win._pinData.imagePath).getSize()
   const isOcrEditor = autoAction === 'ocr'
   let editorBounds = editBounds
   let editorImageBounds = null
@@ -1804,7 +1919,7 @@ async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
   win.hide()
   try {
     const captureWindow = await createCaptureWindow({
-      imageBuffer: dataUrlToBuffer(win._pinData.dataUrl),
+      imageBuffer: await fs.promises.readFile(win._pinData.imagePath),
       mode: 'image',
       autoAction,
       source: 'pin-reannotate',
@@ -1858,10 +1973,12 @@ function pinFromCapture(event, imageData, meta) {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
   const editingPinWindow = captureWindow?._editingPinWindow
   if (!editingPinWindow && pinnedCount >= MAX_PINNED) throw new Error(`最多固定 ${MAX_PINNED} 张图片`)
-  const dataUrl = typeof imageData === 'string' ? imageData : bufferToDataUrl(imageData)
+  const buffer = imageDataToBuffer(imageData)
+  const source = writePinSourceFile(buffer, meta)
   const pinWindow = editingPinWindow
-    ? updatePinWindow(editingPinWindow, dataUrl, meta)
-    : createPinWindow(dataUrl, meta)
+    ? updatePinWindow(editingPinWindow, source.filePath, meta, source.temporary)
+    : createPinWindow(source.filePath, meta, source.temporary)
+  deferPinHistoryPersist(buffer, meta)
   if (captureWindow) {
     captureWindow._pendingPinWindow = pinWindow
     captureWindow._editingPinWindow = null
@@ -2021,16 +2138,14 @@ async function executeFunction(name, payload = {}) {
     case 'screenshotFocusedWindow': {
       const dataUrl = await captureFocusedWindow()
       clipboard.writeImage(nativeImage.createFromDataURL(dataUrl))
-      persistHistory(dataUrl, { action: 'copy', source: 'focused-window' })
+      deferHistoryPersist(dataUrl, { action: 'copy', source: 'focused-window' })
       return true
     }
     case 'fixedContent': {
       const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }] })
       if (result.canceled || !result.filePaths[0]) return false
-      const image = nativeImage.createFromPath(result.filePaths[0])
-      const dataUrl = image.toDataURL()
-      createPinWindow(dataUrl, { source: 'file' })
-      persistHistory(dataUrl, { source: 'file', action: 'pin' })
+      const buffer = nativeImage.createFromPath(result.filePaths[0]).toPNG()
+      createPinnedWindow(buffer, { source: 'file', action: 'pin' })
       return true
     }
     case 'videoRecord': {
@@ -2435,9 +2550,9 @@ const captureIpcController = {
   const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
   if (!buffer.length) throw new Error('截图图片数据为空')
   clipboard.writeImage(nativeImage.createFromBuffer(buffer))
-  const item = persistHistory(buffer, { ...meta, action: 'copy' })
+  deferHistoryPersist(buffer, { ...meta, action: 'copy' })
   if (getSettings().screenshot.autoSaveOnCopy && getSettings().screenshot.saveDirectory) saveImageBuffer(buffer, { fast: true }).catch((error) => log(error.message))
-  return item
+  return true
   },
   save: (event, { imageBuffer, dataUrl, meta, fast } = {}) => {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
@@ -2457,7 +2572,7 @@ const captureIpcController = {
   pin: (event, { imageBuffer, dataUrl, meta } = {}) => {
   const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
   pinFromCapture(event, buffer, meta)
-  return persistHistory(buffer, { ...meta, action: 'pin' })
+  return true
   },
   pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
   const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
@@ -2466,7 +2581,7 @@ const captureIpcController = {
   setImmediate(() => {
     if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
   })
-  return persistHistory(buffer, { ...meta, action: 'pin' })
+  return true
   },
   openRecognition: (event, { type, imageBuffer, dataUrl, meta } = {}) => {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
@@ -2475,9 +2590,13 @@ const captureIpcController = {
   setImmediate(() => {
     if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
   })
-  return persistHistory(buffer, { ...meta, action: type })
+  deferHistoryPersist(buffer, { ...meta, action: type })
+  return true
   },
-  recordHistory: (_event, { imageBuffer, dataUrl, meta } = {}) => persistHistory(imageBuffer ?? dataUrl, meta),
+  recordHistory: (_event, { imageBuffer, dataUrl, meta } = {}) => {
+  deferHistoryPersist(imageBuffer ?? dataUrl, meta)
+  return true
+  },
   longReady: (event) => {
   const state = currentLongCapture
   if (!state || event.sender !== state.controllerWindow.webContents) return
@@ -2647,11 +2766,11 @@ secureIpcMain.on('pin:render-ready', (event) => {
 secureIpcMain.on('pin:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
 secureIpcMain.on('pin:copy', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
-  if (win?._pinData) clipboard.writeImage(nativeImage.createFromDataURL(win._pinData.dataUrl))
+  if (win?._pinData) clipboard.writeImage(nativeImage.createFromPath(win._pinData.imagePath))
 })
 secureIpcMain.on('pin:save', async (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
-  if (win?._pinData) await saveDataUrl(win._pinData.dataUrl)
+  if (win?._pinData) await saveImageBuffer(await fs.promises.readFile(win._pinData.imagePath))
 })
 secureIpcMain.on('pin:context-menu', (event, imageBounds = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender)
@@ -2681,9 +2800,10 @@ secureIpcMain.on('pin:context-menu', (event, imageBounds = {}) => {
     {
       label: '表格识别',
       enabled: !!getSettings().plugins.ocr,
-      click: () => {
+      click: async () => {
         try {
-          createRecognitionWindow('table', win._pinData.dataUrl, { scaleFactor: win._pinData.scaleFactor })
+          const buffer = await fs.promises.readFile(win._pinData.imagePath)
+          createRecognitionWindow('table', bufferToDataUrl(buffer), { scaleFactor: win._pinData.scaleFactor })
         } catch (error) {
           log('Table recognition failed:', error.message)
         }
@@ -2691,9 +2811,10 @@ secureIpcMain.on('pin:context-menu', (event, imageBounds = {}) => {
     },
     {
       label: '二维码识别',
-      click: () => {
+      click: async () => {
         try {
-          createRecognitionWindow('qr', win._pinData.dataUrl, { scaleFactor: win._pinData.scaleFactor })
+          const buffer = await fs.promises.readFile(win._pinData.imagePath)
+          createRecognitionWindow('qr', bufferToDataUrl(buffer), { scaleFactor: win._pinData.scaleFactor })
         } catch (error) {
           log('QR recognition failed:', error.message)
         }
@@ -2710,8 +2831,13 @@ secureIpcMain.on('pin:context-menu', (event, imageBounds = {}) => {
       }))
     },
     { type: 'separator' },
-    { label: '复制', click: () => clipboard.writeImage(nativeImage.createFromDataURL(win._pinData.dataUrl)) },
-    { label: '保存', click: () => saveDataUrl(win._pinData.dataUrl).catch((error) => log(error.message)) },
+    { label: '复制', click: () => clipboard.writeImage(nativeImage.createFromPath(win._pinData.imagePath)) },
+    {
+      label: '保存',
+      click: () => fs.promises.readFile(win._pinData.imagePath)
+        .then((buffer) => saveImageBuffer(buffer))
+        .catch((error) => log(error.message))
+    },
     { type: 'separator' },
     { label: '关闭', click: () => { if (!win.isDestroyed()) win.close() } }
   ])
@@ -3156,8 +3282,17 @@ async function startApplication() {
     log('Data migration cleanup remains pending:', finalization.cleanupErrors)
   }
   initializeDiagnostics()
-  persistSettings(getSettings())
+  registerHistoryThumbProtocol({
+    protocol,
+    historyService,
+    historyDirectories: () => historyService.historyDirectories(),
+    log
+  })
   createMainWindow('home')
+  // Normalize persisted settings off the first-window critical path.
+  setImmediate(() => {
+    try { persistSettings(getSettings()) } catch (error) { log('Startup settings persist failed:', error?.message || String(error)) }
+  })
   if (!e2eContext.enabled) {
     createTrayIcon()
     createToolbarWindow()
@@ -3232,6 +3367,7 @@ else {
     shortcutService.dispose()
   })
   app.on('before-quit', () => {
+    drainHistoryPersists()
     closeRecordFlow()
       .then(() => recordingService?.dispose())
       .catch((error) => log('Recording shutdown failed:', error.message))

@@ -9,6 +9,16 @@ const MODEL_FILES = [
   'ch_PP-OCRv4_rec_mobile.onnx'
 ]
 
+function hashFileStreaming(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256')
+    const stream = fs.createReadStream(filePath)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.on('error', reject)
+    stream.on('end', () => resolve(hash.digest('hex')))
+  })
+}
+
 class OcrService {
   constructor(options = {}) {
     if (!options.tempDir) throw new Error('OCR 临时目录不能为空')
@@ -27,6 +37,7 @@ class OcrService {
     this.tempDir = path.resolve(options.tempDir)
     this.idleTimeoutMs = Number.isFinite(Number(options.idleTimeoutMs)) ? Number(options.idleTimeoutMs) : 30000
     this.idleTimer = null
+    this.validationSignature = null
   }
 
   getStatus() {
@@ -42,7 +53,9 @@ class OcrService {
     }
   }
 
-  validateFiles() {
+  // Model files are hashed once per app session; unchanged size/mtime skips
+  // the hash entirely, and hashing itself streams off the main thread.
+  async validateFiles() {
     if (!fs.existsSync(this.sidecarPath)) {
       throw new Error(`OCR 组件不存在：${this.sidecarPath}`)
     }
@@ -52,21 +65,35 @@ class OcrService {
     if (!fs.existsSync(runtimePath)) throw new Error(`ONNX Runtime 不存在：${runtimePath}`)
     const manifestPath = path.join(this.modelDir, 'model.json')
     if (!fs.existsSync(manifestPath)) throw new Error('OCR 模型清单不存在')
+    const watchedFiles = [
+      this.sidecarPath,
+      runtimePath,
+      manifestPath,
+      ...MODEL_FILES.map((name) => path.join(this.modelDir, name))
+    ]
+    const signature = watchedFiles
+      .map((filePath) => {
+        const stat = fs.statSync(filePath)
+        return `${filePath}:${stat.size}:${stat.mtimeMs}`
+      })
+      .join('|')
+    if (this.validationSignature === signature) return
     let manifest
     try {
-      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+      manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf8'))
     } catch (error) {
       throw new Error(`OCR 模型清单无效：${error.message}`)
     }
     for (const item of Object.values(manifest.files || {})) {
       const filePath = path.join(this.modelDir, item.name || '')
-      const stat = fs.statSync(filePath)
+      const stat = await fs.promises.stat(filePath)
       if (Number(item.size) && stat.size !== Number(item.size)) throw new Error(`OCR 模型大小异常：${item.name}`)
       if (item.sha256) {
-        const actual = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
+        const actual = await hashFileStreaming(filePath)
         if (actual !== String(item.sha256).toLowerCase()) throw new Error(`OCR 模型校验失败：${item.name}`)
       }
     }
+    this.validationSignature = signature
   }
 
   async ensureStarted() {
@@ -81,8 +108,8 @@ class OcrService {
     }
   }
 
-  start() {
-    this.validateFiles()
+  async start() {
+    await this.validateFiles()
     this.stopping = false
     this.ready = false
     this.stdoutBuffer = ''

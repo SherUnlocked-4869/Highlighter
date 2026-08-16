@@ -63,9 +63,9 @@ test('stream inactivity aborts the request, reports timeout, and releases state 
 
   assert.equal(session.cancelled, true)
   assert.equal(session.finished, true)
-  assert.deepEqual(aborts, ['请求超时，请检查网络后重试'])
+  assert.deepEqual(aborts, ['模型长时间无输出，已取消。免费模型高峰期易排队超时，可重试或更换模型'])
   assert.deepEqual(win.sent, [
-    ['stream:error', { error: '请求超时，请检查网络后重试' }]
+    ['stream:error', { error: '模型长时间无输出，已取消。免费模型高峰期易排队超时，可重试或更换模型' }]
   ])
   assert.deepEqual(finishes, [session])
   assert.equal(session.finish(), false)

@@ -7,6 +7,32 @@ const DEFAULT_HISTORY_PAGE_SIZE = 40
 const MAX_HISTORY_PAGE_SIZE = 100
 const OWNED_CAPTURE_FILE = /^Highlighter(?:_Long)?_\d{4}-\d{2}-\d{2}_[\d-]+\.png$/i
 const OWNED_THUMBNAIL_FILE = /^\d{10,}-[a-z0-9]+-thumb\.png$/i
+const THUMBNAIL_WIDTH = 360
+const THUMBNAIL_HEIGHT = 240
+
+// PNG dimensions live in the fixed-position IHDR chunk; reading them directly
+// avoids decoding the full capture image just to record its size.
+function readPngSize(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 24) return null
+  if (buffer.readUInt32BE(0) !== 0x89504e47) return null
+  if (buffer.toString('ascii', 12, 16) !== 'IHDR') return null
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) }
+}
+
+function migrateLegacyHistoryStore({ legacyStore, historyStore, log = () => {} }) {
+  if (!legacyStore || !historyStore) return { migrated: 0 }
+  const legacy = legacyStore.get('captureHistory', undefined)
+  if (legacy === undefined) return { migrated: 0 }
+  if (!Array.isArray(legacy) || !legacy.length) return { migrated: 0 }
+  const existing = historyStore.get('captureHistory', [])
+  if (Array.isArray(existing) && existing.length) return { migrated: 0 }
+  // The legacy key is only removed after the migration write succeeds, so a
+  // failed store write or an already-populated target never destroys data.
+  historyStore.set('captureHistory', legacy)
+  legacyStore.delete('captureHistory')
+  log('Migrated capture history entries to dedicated store:', legacy.length)
+  return { migrated: legacy.length }
+}
 
 function normalizeHistoryFilter(value = {}) {
   const filter = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -77,6 +103,14 @@ class HistoryService {
     this.log = log
     this.now = now
     this.createId = createId
+    // outputPath -> in-flight promise, plus id -> regeneration promise for
+    // concurrent accesses to the same missing thumbnail.
+    this.thumbnailWrites = new Map()
+    this.thumbnailGenerations = new Map()
+  }
+
+  flushThumbnailWrites() {
+    return Promise.allSettled([...this.thumbnailWrites.values()])
   }
 
   ensureDirectory(directory) {
@@ -114,17 +148,44 @@ class HistoryService {
     return path.join(this.ensureDirectory(this.defaultHistoryDirectory), `${String(id)}-thumb.png`)
   }
 
-  persistThumbnail(image, id) {
-    if (!image || image.isEmpty?.()) return ''
-    const size = image.getSize()
-    const width = Math.max(1, Math.min(360, Number(size.width) || 360))
-    const thumbnail = image.resize({ width, quality: 'good' })
+  // Thumbnail resize/encode runs on the sharp thread pool so capture flows do
+  // not pay for it on the main process.
+  writeThumbnail(source, outputPath) {
+    return this.sharp(source, { limitInputPixels: false })
+      .resize({ width: THUMBNAIL_WIDTH, height: THUMBNAIL_HEIGHT, fit: 'inside', withoutEnlargement: true })
+      .png({ compressionLevel: 7 })
+      .toFile(outputPath)
+  }
+
+  queueThumbnailWrite(source, id) {
     const outputPath = this.thumbnailPath(id)
-    fs.writeFileSync(outputPath, thumbnail.toPNG())
+    const pending = this.thumbnailWrites.get(outputPath)
+    if (pending) return outputPath
+    const task = this.writeThumbnail(source, outputPath)
+      .catch((error) => {
+        this.log('History thumbnail persistence failed:', outputPath, error?.message || String(error))
+      })
+      .finally(() => {
+        if (this.thumbnailWrites.get(outputPath) === task) this.thumbnailWrites.delete(outputPath)
+      })
+    this.thumbnailWrites.set(outputPath, task)
     return outputPath
   }
 
-  ensureThumbnail(id) {
+  probeImageSize(buffer, filePath) {
+    const fromHeader = readPngSize(buffer)
+    if (fromHeader) return fromHeader
+    try {
+      const image = typeof this.nativeImage.createFromBuffer === 'function' && Buffer.isBuffer(buffer)
+        ? this.nativeImage.createFromBuffer(buffer)
+        : this.nativeImage.createFromPath(filePath)
+      return image.getSize()
+    } catch {
+      return { width: 0, height: 0 }
+    }
+  }
+
+  async ensureThumbnail(id) {
     const normalizedId = String(id || '').slice(0, 128)
     const history = this.readHistory()
     const index = history.findIndex((entry) => entry.id === normalizedId)
@@ -132,28 +193,47 @@ class HistoryService {
     const item = history[index]
     if (item.thumbnailPath && fs.existsSync(item.thumbnailPath)) return item.thumbnailPath
     if (!item.filePath || !fs.existsSync(item.filePath)) return ''
+    // A capture may have queued a write for this thumbnail moments ago; let
+    // that specific write land before deciding the entry needs regeneration.
+    const queued = this.thumbnailWrites.get(this.thumbnailPath(normalizedId))
+    if (queued) await queued
+    const refreshed = this.readHistory().find((entry) => entry.id === normalizedId)
+    if (refreshed?.thumbnailPath && fs.existsSync(refreshed.thumbnailPath)) return refreshed.thumbnailPath
+    if (!refreshed?.filePath || !fs.existsSync(refreshed.filePath)) return ''
+    // Concurrent requests for the same missing thumbnail share one regeneration.
+    const inFlight = this.thumbnailGenerations.get(normalizedId)
+    if (inFlight) return inFlight
+    const task = this.regenerateThumbnail(normalizedId, refreshed)
+      .finally(() => {
+        if (this.thumbnailGenerations.get(normalizedId) === task) this.thumbnailGenerations.delete(normalizedId)
+      })
+    this.thumbnailGenerations.set(normalizedId, task)
+    return task
+  }
+
+  async regenerateThumbnail(id, item) {
     try {
       this.assertWritable()
-      const thumbnailPath = this.persistThumbnail(this.nativeImage.createFromPath(item.filePath), item.id)
-      if (!thumbnailPath) return ''
-      history[index] = { ...item, thumbnailPath }
+      const outputPath = this.thumbnailPath(item.id)
+      await this.writeThumbnail(item.filePath, outputPath)
+      if (!fs.existsSync(outputPath)) return ''
+      const history = this.readHistory()
+      const index = history.findIndex((entry) => entry.id === id)
+      if (index < 0) return ''
+      history[index] = { ...history[index], thumbnailPath: outputPath }
       this.writeHistorySilently(history)
-      return thumbnailPath
+      return outputPath
     } catch (error) {
       this.log('History thumbnail generation failed:', item.filePath, error.message)
       return ''
     }
   }
 
-  getThumbnail(id) {
-    const thumbnailPath = this.ensureThumbnail(id)
-    if (!thumbnailPath) return ''
-    try {
-      return `data:image/png;base64,${fs.readFileSync(thumbnailPath).toString('base64')}`
-    } catch (error) {
-      this.log('History thumbnail read failed:', thumbnailPath, error.message)
-      return ''
-    }
+  async getThumbnail(id) {
+    const normalizedId = String(id || '').slice(0, 128)
+    const thumbnailPath = await this.ensureThumbnail(normalizedId)
+    if (!thumbnailPath || !fs.existsSync(thumbnailPath)) return ''
+    return `historythumb://${encodeURIComponent(normalizedId)}`
   }
 
   historyDirectories() {
@@ -275,25 +355,43 @@ class HistoryService {
     const id = this.createId()
     const filePath = this.historyImagePath(meta)
     fs.writeFileSync(filePath, buffer)
-    const image = typeof this.nativeImage.createFromBuffer === 'function'
-      ? this.nativeImage.createFromBuffer(buffer)
-      : this.nativeImage.createFromPath(filePath)
-    const size = image.getSize()
-    let thumbnailPath = ''
-    try {
-      thumbnailPath = this.persistThumbnail(image, id)
-    } catch (error) {
-      this.log('History thumbnail persistence failed:', filePath, error.message)
-    }
+    const size = this.probeImageSize(buffer, filePath)
+    const thumbnailPath = this.queueThumbnailWrite(buffer, id)
     const item = {
       id,
       filePath,
-      ...(thumbnailPath ? { thumbnailPath } : {}),
+      thumbnailPath,
       createdAt: this.now(),
       source: meta.source || 'capture',
       action: meta.action || 'edit',
       width: size.width,
       height: size.height
+    }
+    const limit = Math.max(10, Number(settings.screenshot.historyLimit) || 200)
+    return this.storeItem(item, limit)
+  }
+
+  // Indexes an already-persisted image (e.g. the pin source file) without
+  // copying it again.
+  recordExistingFile(filePath, meta = {}) {
+    this.assertWritable()
+    const settings = this.getSettings()
+    if (!settings.screenshot.historyEnabled) return null
+    if (!filePath || !fs.existsSync(filePath)) return null
+    const id = this.createId()
+    const size = this.probeImageSize(null, filePath)
+    const thumbnailPath = this.queueThumbnailWrite(filePath, id)
+    const item = {
+      id,
+      filePath,
+      thumbnailPath,
+      createdAt: this.now(),
+      source: meta.source || 'capture',
+      action: meta.action || 'pin',
+      width: size.width,
+      height: size.height,
+      ...(meta.longCapture ? { longCapture: true } : {}),
+      ...(meta.axis ? { axis: meta.axis } : {})
     }
     const limit = Math.max(10, Number(settings.screenshot.historyLimit) || 200)
     return this.storeItem(item, limit)
@@ -305,13 +403,10 @@ class HistoryService {
     if (!settings.screenshot.historyEnabled || !sourcePath || !fs.existsSync(sourcePath)) return null
     const id = this.createId()
     const filePath = this.historyImagePath(meta)
-    const thumbnailPath = path.join(this.ensureDirectory(this.defaultHistoryDirectory), `${id}-thumb.png`)
+    const thumbnailPath = this.thumbnailPath(id)
     fs.copyFileSync(sourcePath, filePath)
     const imageMeta = await this.sharp(filePath, { limitInputPixels: false }).metadata()
-    await this.sharp(filePath, { limitInputPixels: false })
-      .resize({ width: Math.min(360, imageMeta.width || 360), height: 240, fit: 'inside', withoutEnlargement: true })
-      .png({ compressionLevel: 7 })
-      .toFile(thumbnailPath)
+    await this.writeThumbnail(filePath, thumbnailPath)
     const item = {
       id,
       filePath,
@@ -497,6 +592,8 @@ module.exports = {
   HistoryService,
   isOwnedHistoryFile,
   matchesHistoryFilter,
+  migrateLegacyHistoryStore,
   normalizeHistoryIds,
-  normalizeHistoryFilter
+  normalizeHistoryFilter,
+  readPngSize
 }

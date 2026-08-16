@@ -20,6 +20,14 @@ function mergeSettings(target, patch) {
   return output
 }
 
+function deepFreeze(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value)
+    for (const nested of Object.values(value)) deepFreeze(nested)
+  }
+  return value
+}
+
 class SettingsService {
   constructor({
     store,
@@ -40,6 +48,7 @@ class SettingsService {
       safeStorage,
       onError: onCredentialError
     })
+    this.cachedSettings = null
     this.credentials.migrateLegacyApiKey()
     this.migrateStoredSettings()
   }
@@ -55,6 +64,9 @@ class SettingsService {
   }
 
   getSettings() {
+    // Settings are read on nearly every IPC call and even per log line; the
+    // merge + normalize + credential decryption is rebuilt only after writes.
+    if (this.cachedSettings) return this.cachedSettings
     const merged = mergeSettings(this.defaults, this.store.get('settings', {}))
     const legacyApiKey = this.credentials.getApiKey(merged.apiKey)
     merged.apiKey = legacyApiKey
@@ -73,6 +85,10 @@ class SettingsService {
         if (deepseek?.apiKey) settings.apiKey = deepseek.apiKey
       }
     }
+    // Freeze the cached object so a consumer mutating it (e.g. pushing a
+    // provider or clearing an apiKey) cannot silently corrupt the shared cache
+    // that every hot path reads until the next persistSettings.
+    this.cachedSettings = deepFreeze(settings)
     return settings
   }
 
@@ -132,6 +148,7 @@ class SettingsService {
       }
     }
     this.store.set('settings', storedSettings)
+    this.cachedSettings = null
     return this.getSettings()
   }
 
@@ -189,6 +206,7 @@ class SettingsService {
 
 module.exports = {
   SettingsService,
+  deepFreeze,
   mergeSettings,
   sameProviderEndpoint
 }

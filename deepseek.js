@@ -324,20 +324,28 @@ function isTranslationEcho(input, output) {
 }
 
 async function* createShortTranslationStream(config, text, sourceLanguage, targetLanguage, requestOptions = {}) {
+  // When the configured source-language hint is wrong, the model may echo the
+  // source text; retry once with the auto-detected language before failing.
   const detected = sourceLanguageCodeForText(text)
   const attempts = [
     buildTranslationOnlyPromptForLanguages(text, sourceLanguage, targetLanguage),
     buildTranslationOnlyPromptForLanguages(text, detected === 'auto' ? 'en' : detected, targetLanguage)
   ]
   for (const userContent of attempts) {
-    const output = await completeChat(config, [{ role: 'user', content: userContent }], {
-      temperature: 0.2,
-      maxTokens: 1024,
-      requestOptions
+    let content = ''
+    const stream = await withConnectionFallback(config, (attempt) => {
+      const messages = [{ role: 'user', content: userContent }]
+      return createAiProtocolAdapter(attempt, createClient(attempt)).stream(messages, {}, requestOptions)
     })
-    const content = String(output || '').trim()
-    if (content && !isTranslationEcho(text, content)) {
-      yield { choices: [{ delta: { content } }] }
+    for await (const chunk of stream) {
+      const delta = chunk?.choices?.[0]?.delta
+      if (delta?.content) content += delta.content
+    }
+    const output = content.trim()
+    if (output && !isTranslationEcho(text, output)) {
+      // Short translations are small enough to buffer before emitting, so an
+      // echo retry never shows a wrong first pass to the user.
+      yield { choices: [{ delta: { content: output } }] }
       return
     }
   }

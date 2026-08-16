@@ -16,3 +16,4 @@ native/ocr/*.dll
 coverage/
 playwright-report/
 test-results/
+.zcode/

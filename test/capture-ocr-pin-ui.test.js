@@ -57,6 +57,13 @@ test('pinned images align source pixels to the active display DPI', () => {
   assert.match(pinScript, /pixelImage\.classList\.toggle\('pixel-native'/)
   assert.match(pinScript, /Math\.abs\(Number\(zoom\) - 1\) < 0\.001/)
   assert.match(pinMarkup, /\.pin-surface\.pixel-native\{image-rendering:pixelated\}/)
-  assert.match(pinScript, /if \(data\.longCapture\)[\s\S]*showImageSurface\(data\.dataUrl, initial\)[\s\S]*return/)
+  assert.match(pinScript, /if \(data\.longCapture\)[\s\S]*showImageSurface\(imageUrl, initial\)[\s\S]*return/)
   assert.match(pinScript, /context\.drawImage\(nextImage, 0, 0\)[\s\S]*showSurface\(pixelImage\)/)
+})
+
+test('pinned images reference an on-disk source instead of a resident base64 copy', () => {
+  assert.match(main, /function writePinSourceFile\(buffer, meta = \{\}\)/)
+  assert.match(main, /imagePath,/)
+  assert.doesNotMatch(main, /_pinData\.dataUrl/)
+  assert.doesNotMatch(pinScript, /data\.dataUrl/)
 })

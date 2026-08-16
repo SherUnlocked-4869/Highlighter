@@ -19,6 +19,10 @@ let renderQueued = false
 let renderToken = 0
 let resultDirty = false
 let reasoningDirty = false
+let lastStreamRenderAt = 0
+// Full-text markdown + sanitize + innerHTML rebuild costs O(text length); a
+// per-token rAF loop makes a long answer O(n²). Throttle repaints instead.
+const STREAM_RENDER_INTERVAL_MS = 120
 
 const el = {
   headerIcon: document.getElementById('headerIcon'),
@@ -58,6 +62,7 @@ function resetUI() {
   renderQueued = false
   resultDirty = false
   reasoningDirty = false
+  lastStreamRenderAt = 0
   document.getElementById('reasoningBox')?.remove()
   el.result.replaceChildren()
   el.loading.style.display = 'none'
@@ -99,7 +104,7 @@ function armStreamTimeout() {
     isDone = true
     showLoading(false)
     el.result.replaceChildren()
-    appendResultError('请求超时，请检查网络后重试')
+    appendResultError('模型长时间无输出，已取消。免费模型高峰期易排队超时，可重试或更换模型')
     actionBridge.cancelStream(currentStreamId)
   }, STREAM_IDLE_TIMEOUT_MS)
 }
@@ -235,22 +240,30 @@ function scheduleStreamRender() {
   if (renderQueued) return
   renderQueued = true
   const token = renderToken
-  requestAnimationFrame(function() {
+  const delay = Math.max(0, STREAM_RENDER_INTERVAL_MS - (performance.now() - lastStreamRenderAt))
+  setTimeout(function() {
     renderQueued = false
     if (token !== renderToken || isDone) return
-    if (reasoningDirty) {
-      reasoningDirty = false
-      const reasoningContent = addReasoning()
-      reasoningContent.preview.textContent = reasoning
-      reasoningContent.preview.scrollTop = reasoningContent.preview.scrollHeight
-      reasoningContent.full.textContent = reasoning
-    }
-    if (resultDirty) {
-      resultDirty = false
-      renderResult(fullText, { cursor: true })
-    }
-    doScroll()
-  })
+    requestAnimationFrame(function() {
+      if (token !== renderToken || isDone) return
+      lastStreamRenderAt = performance.now()
+      if (reasoningDirty) {
+        reasoningDirty = false
+        const reasoningContent = addReasoning()
+        reasoningContent.preview.textContent = reasoning
+        reasoningContent.preview.scrollTop = reasoningContent.preview.scrollHeight
+        if (reasoningContent.full.closest('.open')) {
+          reasoningContent.full.textContent = reasoning
+          reasoningContent.full.scrollTop = reasoningContent.full.scrollHeight
+        }
+      }
+      if (resultDirty) {
+        resultDirty = false
+        renderResult(fullText, { cursor: true })
+      }
+      doScroll()
+    })
+  }, delay)
 }
 
 function addReasoning() {

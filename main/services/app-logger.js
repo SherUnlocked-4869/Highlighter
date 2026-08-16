@@ -62,6 +62,10 @@ function createAppLogger({
   now = () => new Date()
 }) {
   let writeFailureReported = false
+  // Log writes happen on hot paths; the file size and directory are tracked in
+  // memory so each entry costs a single append syscall instead of three.
+  let trackedBytes = null
+  let directoryReady = false
 
   function writeConsole(method, message) {
     try {
@@ -86,12 +90,24 @@ function createAppLogger({
     })
     const line = `${JSON.stringify(entry)}\n`
     try {
-      fileSystem.mkdirSync(path.dirname(filePath), { recursive: true })
-      const currentSize = fileSystem.existsSync(filePath) ? fileSystem.statSync(filePath).size : 0
-      if (currentSize + Buffer.byteLength(line) > maxBytes) rotateLog(filePath, backupCount, fileSystem)
+      if (!directoryReady) {
+        fileSystem.mkdirSync(path.dirname(filePath), { recursive: true })
+        directoryReady = true
+      }
+      const lineBytes = Buffer.byteLength(line)
+      if (trackedBytes === null) {
+        trackedBytes = fileSystem.existsSync(filePath) ? fileSystem.statSync(filePath).size : 0
+      }
+      if (trackedBytes + lineBytes > maxBytes) {
+        rotateLog(filePath, backupCount, fileSystem)
+        trackedBytes = 0
+      }
       fileSystem.appendFileSync(filePath, line)
+      trackedBytes += lineBytes
       writeFailureReported = false
     } catch (error) {
+      trackedBytes = null
+      directoryReady = false
       if (writeFailureReported) return
       writeFailureReported = true
       writeConsole('warn', `Unable to write application log: ${error.message || String(error)}`)

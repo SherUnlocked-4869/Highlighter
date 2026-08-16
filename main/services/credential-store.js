@@ -2,11 +2,37 @@ const API_KEY_STORAGE_KEY = 'credentials.apiKey'
 const PROVIDER_API_KEYS_STORAGE_KEY = 'credentials.providerApiKeys'
 
 class CredentialStore {
-  constructor({ store, safeStorage, onError = () => {} }) {
+  constructor({ store, safeStorage, onError = () => {}, maxDecryptedEntries = 100 }) {
     if (!store) throw new Error('CredentialStore requires a settings store')
     this.store = store
     this.safeStorage = safeStorage
     this.onError = onError
+    this.apiKeyCache = null
+    this.decryptedProviderKeys = new Map()
+    this.maxDecryptedEntries = Math.max(1, Number(maxDecryptedEntries) || 100)
+  }
+
+  clearDecryptionCache() {
+    this.apiKeyCache = null
+    this.decryptedProviderKeys.clear()
+  }
+
+  decryptCached(encrypted) {
+    const cached = this.decryptedProviderKeys.get(encrypted)
+    if (cached !== undefined) {
+      this.decryptedProviderKeys.delete(encrypted)
+      this.decryptedProviderKeys.set(encrypted, cached)
+      return cached
+    }
+    const decrypted = this.safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
+    this.decryptedProviderKeys.set(encrypted, decrypted)
+    // Bound the cache so rotated/removed keys do not accumulate plaintext for
+    // the whole process lifetime; clearDecryptionCache is also invoked on
+    // system suspend/lock so secrets do not sit in memory while idle.
+    if (this.decryptedProviderKeys.size > this.maxDecryptedEntries) {
+      this.decryptedProviderKeys.delete(this.decryptedProviderKeys.keys().next().value)
+    }
+    return decrypted
   }
 
   isEncryptionAvailable() {
@@ -27,8 +53,11 @@ class CredentialStore {
     const encrypted = this.store.get(API_KEY_STORAGE_KEY, '')
     if (!encrypted) return String(legacyValue || '')
     if (!this.isEncryptionAvailable()) return String(legacyValue || '')
+    if (this.apiKeyCache && this.apiKeyCache.encrypted === encrypted) return this.apiKeyCache.value
     try {
-      return this.safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
+      const value = this.decryptCached(encrypted)
+      this.apiKeyCache = { encrypted, value }
+      return value
     } catch (error) {
       this.onError(error)
       return String(legacyValue || '')
@@ -40,10 +69,12 @@ class CredentialStore {
     const apiKey = String(value || '').trim()
     if (!apiKey) {
       this.store.delete(API_KEY_STORAGE_KEY)
+      this.clearDecryptionCache()
       return true
     }
     const encrypted = this.safeStorage.encryptString(apiKey)
     this.store.set(API_KEY_STORAGE_KEY, Buffer.from(encrypted).toString('base64'))
+    this.clearDecryptionCache()
     return true
   }
 
@@ -57,9 +88,10 @@ class CredentialStore {
       const encrypted = encryptedByProvider[id]
       if (encrypted && this.isEncryptionAvailable()) {
         try {
-          keys[id] = this.safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
+          keys[id] = this.decryptCached(encrypted)
         } catch (error) {
           this.onError(error)
+          this.decryptedProviderKeys.delete(encrypted)
           keys[id] = String(provider.apiKey || '')
         }
       } else {
@@ -69,7 +101,7 @@ class CredentialStore {
     return keys
   }
 
-  setProviderApiKeys(providers) {
+  setProviderApiKeys(providers = []) {
     if (!this.isEncryptionAvailable()) return false
     const encryptedByProvider = {}
     for (const provider of Array.isArray(providers) ? providers : []) {
@@ -81,6 +113,7 @@ class CredentialStore {
       encryptedByProvider[id] = Buffer.from(encrypted).toString('base64')
     }
     this.store.set(PROVIDER_API_KEYS_STORAGE_KEY, encryptedByProvider)
+    this.clearDecryptionCache()
     return true
   }
 
@@ -92,6 +125,7 @@ class CredentialStore {
     const migratedSettings = { ...settings }
     delete migratedSettings.apiKey
     this.store.set('settings', migratedSettings)
+    this.clearDecryptionCache()
     return true
   }
 }

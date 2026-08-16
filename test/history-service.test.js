@@ -3,12 +3,15 @@ const assert = require('node:assert/strict')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const sharp = require('sharp')
 const {
   HistoryService,
   isOwnedHistoryFile,
   matchesHistoryFilter,
+  migrateLegacyHistoryStore,
   normalizeHistoryIds,
-  normalizeHistoryFilter
+  normalizeHistoryFilter,
+  readPngSize
 } = require('../main/services/history-service')
 
 class MemoryStore {
@@ -23,12 +26,22 @@ class MemoryStore {
   set(key, value) {
     if (key === 'captureHistory') this.history = value
   }
+
+  delete(key) {
+    if (key === 'captureHistory') this.history = []
+  }
 }
 
-function withTempDirectory(callback) {
+async function createPngBuffer(width = 400, height = 300) {
+  return sharp({
+    create: { width, height, channels: 3, background: { r: 240, g: 240, b: 240 } }
+  }).png().toBuffer()
+}
+
+async function withTempDirectory(callback) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'highlighter-history-'))
   try {
-    return callback(directory)
+    return await callback(directory)
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
   }
@@ -47,7 +60,7 @@ function createService(directory, history = [], overrides = {}) {
         resize: () => ({ toPNG: () => Buffer.from('thumb') })
       })
     },
-    sharp: () => {},
+    sharp,
     getSettings: () => ({
       screenshot: {
         historyDirectory: directory,
@@ -112,18 +125,63 @@ test('paginates history metadata without embedding thumbnails', () => {
   })
 })
 
-test('persists thumbnails on capture and lazily backfills legacy items', () => {
-  withTempDirectory((directory) => {
-    const service = createService(directory, [], { createId: () => '1700000000000-abc123' })
-    const item = service.persistBuffer(Buffer.from('image'), { source: 'capture' })
-    assert.equal(fs.readFileSync(item.thumbnailPath, 'utf8'), 'thumb')
-    assert.equal(service.getThumbnail(item.id), 'data:image/png;base64,dGh1bWI=')
+test('reads png dimensions from the IHDR header', async () => {
+  const buffer = await createPngBuffer(640, 480)
+  assert.deepEqual(readPngSize(buffer), { width: 640, height: 480 })
+  assert.equal(readPngSize(Buffer.from('not a png')), null)
+  assert.equal(readPngSize(Buffer.alloc(8)), null)
+})
 
+test('migrates legacy capture history out of the settings store', () => {
+  const legacyStore = new MemoryStore([{ id: '1', filePath: 'a.png' }])
+  const historyStore = new MemoryStore()
+  const result = migrateLegacyHistoryStore({ legacyStore, historyStore })
+  assert.deepEqual(result, { migrated: 1 })
+  assert.deepEqual(historyStore.history, [{ id: '1', filePath: 'a.png' }])
+  assert.deepEqual(legacyStore.history, [])
+
+  const untouched = new MemoryStore()
+  assert.deepEqual(migrateLegacyHistoryStore({ legacyStore: new MemoryStore(), historyStore: untouched }), { migrated: 0 })
+  assert.deepEqual(untouched.history, [])
+
+  const keepsExisting = new MemoryStore([{ id: 'existing' }])
+  assert.deepEqual(
+    migrateLegacyHistoryStore({ legacyStore: new MemoryStore([{ id: 'legacy' }]), historyStore: keepsExisting }),
+    { migrated: 0 }
+  )
+  assert.deepEqual(keepsExisting.history, [{ id: 'existing' }])
+})
+
+test('persists thumbnails asynchronously and serves historythumb urls', async () => {
+  await withTempDirectory(async (directory) => {
+    const service = createService(directory, [], { createId: () => '1700000000000-abc123' })
+    const png = await createPngBuffer(400, 300)
+    const item = service.persistBuffer(png, { source: 'capture' })
+    assert.equal(item.width, 400)
+    assert.equal(item.height, 300)
+    await service.flushThumbnailWrites()
+    assert.equal(fs.existsSync(item.thumbnailPath), true)
+    const thumbnailMeta = await sharp(item.thumbnailPath).metadata()
+    assert.equal(thumbnailMeta.width, 320)
+    assert.equal(thumbnailMeta.height, 240)
+    assert.equal(await service.getThumbnail(item.id), 'historythumb://1700000000000-abc123')
+
+    const legacyPng = await createPngBuffer(200, 100)
     const legacyPath = path.join(directory, 'legacy.png')
-    fs.writeFileSync(legacyPath, 'legacy')
+    fs.writeFileSync(legacyPath, legacyPng)
     const legacy = createService(directory, [{ id: '1700000000001-def456', filePath: legacyPath }])
-    assert.equal(legacy.getThumbnail('1700000000001-def456'), 'data:image/png;base64,dGh1bWI=')
+    assert.equal(await legacy.getThumbnail('1700000000001-def456'), 'historythumb://1700000000001-def456')
     assert.equal(fs.existsSync(legacy.getItem('1700000000001-def456').thumbnailPath), true)
+  })
+})
+
+test('getThumbnail returns empty for unknown ids and missing files', async () => {
+  await withTempDirectory(async (directory) => {
+    const service = createService(directory, [
+      { id: 'gone', filePath: path.join(directory, 'missing.png') }
+    ])
+    assert.equal(await service.getThumbnail('unknown'), '')
+    assert.equal(await service.getThumbnail('gone'), '')
   })
 })
 

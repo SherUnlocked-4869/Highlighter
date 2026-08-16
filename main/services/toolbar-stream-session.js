@@ -2,7 +2,7 @@ class ToolbarStreamSession {
   constructor({
     win,
     timeoutMs = 30000,
-    timeoutMessage = '请求超时，请检查网络后重试',
+    timeoutMessage = '模型长时间无输出，已取消。免费模型高峰期易排队超时，可重试或更换模型',
     onFinish = () => {},
     createAbortController = () => new AbortController(),
     setTimer = setTimeout,

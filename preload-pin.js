@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron')
+const { pathToFileURL } = require('node:url')
 
 contextBridge.exposeInMainWorld('pinAPI', {
+  fileUrl: (filePath) => pathToFileURL(String(filePath || '')).href,
   ready: () => ipcRenderer.send('pin:ready'),
   renderReady: () => ipcRenderer.send('pin:render-ready'),
   onInit: (callback) => {

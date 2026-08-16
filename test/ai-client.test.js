@@ -1,11 +1,13 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const http = require('node:http')
 const {
   buildToolbarStreamRequest,
   buildTranslationOnlyPromptForLanguages,
   composeTranslateSystemPrompt,
   connectionBaseUrls,
   createExplainStream,
+  createTranslateStream,
   describeConnectionError,
   isNotFoundError,
   normalizeProviderInput,
@@ -139,4 +141,68 @@ test('connection probing adds the /v1 suffix and detects 404 responses', () => {
   assert.equal(isNotFoundError({ status: 401 }), false)
   assert.match(describeConnectionError({ status: 404 }), /API 地址/)
   assert.match(describeConnectionError({ status: 401 }), /API 密钥/)
+})
+
+function startSseTranslateServer(responses) {
+  const requests = []
+  const server = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (part) => { body += part })
+    req.on('end', () => {
+      requests.push({ url: req.url, body })
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      for (const content of responses()) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`)
+      }
+      res.write('data: [DONE]\n\n')
+      res.end()
+    })
+  })
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve({ server, requests, port: server.address().port }))
+  })
+}
+
+test('short-text translation issues streaming requests so the idle watchdog keeps seeing chunks', async () => {
+  const pending = ['你好', '，世界']
+  const { server, requests, port } = await startSseTranslateServer(() => pending.splice(0))
+  try {
+    const stream = await createTranslateStream({
+      id: 'siliconflow',
+      name: '硅基流动',
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'sk-test',
+      model: 'Tencent/Hunyuan-MT-7B',
+      protocol: 'openai-chat'
+    }, 'Hello world', '', { source: 'auto', target: '中文' }, {})
+    const received = []
+    for await (const chunk of stream) {
+      received.push(chunk.choices?.[0]?.delta?.content || '')
+    }
+    assert.equal(received.join(''), '你好，世界')
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].url, '/v1/chat/completions')
+    assert.equal(JSON.parse(requests[0].body).stream, true)
+  } finally {
+    server.close()
+  }
+})
+
+test('short-text translation throws the actionable error when the model echoes the source text', async () => {
+  const { server, port } = await startSseTranslateServer(() => ['Hello world'])
+  try {
+    const stream = await createTranslateStream({
+      id: 'siliconflow',
+      name: '硅基流动',
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'sk-test',
+      model: 'Tencent/Hunyuan-MT-7B',
+      protocol: 'openai-chat'
+    }, 'Hello world', '', { source: 'auto', target: '中文' }, {})
+    await assert.rejects(async () => {
+      for await (const _chunk of stream) { /* consume */ }
+    }, /翻译模型连续返回原文/)
+  } finally {
+    server.close()
+  }
 })

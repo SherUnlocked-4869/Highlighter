@@ -15,16 +15,31 @@ function setNativePixelMode(zoom) {
   pixelImage.classList.toggle('pixel-native', Math.abs(Number(zoom) - 1) < 0.001)
 }
 
+function pinImageUrl(filePath) {
+  if (!filePath) return ''
+  // pathToFileURL percent-encodes correctly for Windows drive letters, UNC
+  // paths, and spaces — a hand-built file:// URL breaks on all of those.
+  return window.pinAPI.fileUrl(filePath)
+}
+
 function showSurface(target) {
   activeSurface = target
   image.classList.toggle('hidden', target !== image)
   pixelImage.classList.toggle('hidden', target !== pixelImage)
 }
 
+function revealWhenReady(initial) {
+  if (initial) window.pinAPI.renderReady()
+}
+
 function showImageSurface(dataUrl, initial) {
   image.onload = () => {
     image.onload = null
-    if (initial) window.pinAPI.renderReady()
+    revealWhenReady(initial)
+  }
+  image.onerror = () => {
+    image.onerror = null
+    revealWhenReady(initial)
   }
   image.src = dataUrl
   showSurface(image)
@@ -34,18 +49,23 @@ function applyPinData(data, initial = false) {
   settings = data
   document.body.classList.toggle('long-capture', !!data.longCapture)
   setNativePixelMode(data.zoom)
+  const imageUrl = pinImageUrl(data.imagePath)
   if (data.longCapture) {
     sourceImage = null
-    showImageSurface(data.dataUrl, initial)
+    showImageSurface(imageUrl, initial)
     return
   }
   const nextImage = new Image()
   sourceImage = nextImage
+  nextImage.onerror = () => {
+    if (sourceImage !== nextImage) return
+    revealWhenReady(initial)
+  }
   nextImage.onload = () => {
     if (sourceImage !== nextImage) return
     const pixels = nextImage.naturalWidth * nextImage.naturalHeight
     if (nextImage.naturalWidth > 16384 || nextImage.naturalHeight > 16384 || pixels > 64000000) {
-      showImageSurface(data.dataUrl, initial)
+      showImageSurface(imageUrl, initial)
       return
     }
     pixelImage.width = nextImage.naturalWidth
@@ -57,7 +77,7 @@ function applyPinData(data, initial = false) {
     showSurface(pixelImage)
     if (initial) window.pinAPI.renderReady()
   }
-  nextImage.src = data.dataUrl
+  nextImage.src = imageUrl
 }
 
 window.pinAPI.onInit((data) => applyPinData(data, true))

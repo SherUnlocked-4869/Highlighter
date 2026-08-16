@@ -99,7 +99,7 @@ async function probeRuntime() {
       sidecarPath,
       modelDir
     })
-    service.validateFiles()
+    await service.validateFiles()
     ocrFilesValidated = true
   } else if (requireNativeRuntime) {
     const missing = Object.entries(nativeFiles)

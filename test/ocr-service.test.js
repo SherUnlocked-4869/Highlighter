@@ -132,10 +132,11 @@ test('validates the OCR runtime, model manifest, sizes, and hashes', async (t) =
 
   assert.deepEqual(service.getStatus().missingFiles, [])
   assert.equal(service.getStatus().available, true)
-  assert.doesNotThrow(() => service.validateFiles())
+  await assert.doesNotReject(service.validateFiles())
+  await assert.doesNotReject(service.validateFiles())
 
   await fsp.writeFile(path.join(modelDir, MODEL_FILES[0]), 'tampered')
-  assert.throws(() => service.validateFiles(), /大小异常|校验失败/)
+  await assert.rejects(service.validateFiles(), /大小异常|校验失败/)
   await fsp.rm(runtimePath)
   assert.ok(service.getStatus().missingFiles.includes('onnxruntime.dll'))
 })
@@ -148,15 +149,15 @@ test('reports missing and malformed OCR model components', async (t) => {
     modelDir: path.join(root, 'models'),
     tempDir: path.join(root, 'temp')
   })
-  assert.throws(() => service.validateFiles(), /OCR 组件不存在/)
+  await assert.rejects(service.validateFiles(), /OCR 组件不存在/)
   await fsp.writeFile(service.sidecarPath, 'sidecar')
   await fsp.mkdir(service.modelDir)
-  assert.throws(() => service.validateFiles(), /OCR 模型不完整/)
+  await assert.rejects(service.validateFiles(), /OCR 模型不完整/)
   for (const name of MODEL_FILES) await fsp.writeFile(path.join(service.modelDir, name), name)
   await fsp.writeFile(path.join(root, 'onnxruntime.dll'), 'runtime')
-  assert.throws(() => service.validateFiles(), /模型清单不存在/)
+  await assert.rejects(service.validateFiles(), /模型清单不存在/)
   await fsp.writeFile(path.join(service.modelDir, 'model.json'), '{invalid')
-  assert.throws(() => service.validateFiles(), /模型清单无效/)
+  await assert.rejects(service.validateFiles(), /模型清单无效/)
 })
 
 test('parses split sidecar messages and settles pending requests', async () => {
