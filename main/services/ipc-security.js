@@ -75,7 +75,8 @@ const IPC_SURFACES = Object.freeze([
       'capture:open-recognition',
       'capture:record-history',
       'capture:ocr',
-      'capture:translate'
+      'capture:translate',
+      'settings:update'
     ],
     listeners: [
       'capture:ready',

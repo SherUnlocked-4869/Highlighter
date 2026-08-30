@@ -8,7 +8,7 @@ const html = fs.readFileSync(path.join(root, 'capture', 'capture.html'), 'utf8')
 const css = fs.readFileSync(path.join(root, 'capture', 'capture.css'), 'utf8')
 
 const expectedIcons = [
-  'select', 'rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'mosaic', 'text', 'serial',
+  'select', 'rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'mosaic', 'text', 'serial', 'watermark',
   'undo', 'redo', 'long-capture', 'qr', 'table', 'ocr', 'translate', 'record', 'pin', 'save',
   'copy', 'close'
 ]

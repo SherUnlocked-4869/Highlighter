@@ -24,6 +24,20 @@ html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background:
 .color-wrap { position: relative; width: 30px; height: 30px; display: grid; place-items: center; cursor: pointer; }
 .color-wrap input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .color-wrap span { width: 18px; height: 18px; border: 2px solid #fff; border-radius: 50%; background: #ff3b30; box-shadow: 0 0 0 1px rgba(0,0,0,.4); }
+.watermark-panel { position: fixed; z-index: 6; display: flex; flex-direction: column; gap: 8px; width: 252px; padding: 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; color: #eee; background: var(--panel); box-shadow: 0 12px 36px rgba(0,0,0,.4); backdrop-filter: blur(18px); font-size: 12px; }
+.watermark-row { display: flex; align-items: center; gap: 8px; }
+.watermark-row label { flex: none; width: 40px; color: #bbb; }
+.watermark-row input[type="text"] { flex: 1; min-width: 0; height: 26px; padding: 0 8px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; color: #eee; background: rgba(255,255,255,.08); outline: none; }
+.watermark-row input[type="text"]:focus { border-color: var(--primary); }
+.watermark-row input[type="range"] { flex: 1; min-width: 0; color-scheme: dark; }
+.watermark-row input[type="number"] { width: 62px; height: 26px; padding: 0 6px; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; color: #eee; background: rgba(255,255,255,.08); outline: none; color-scheme: dark; }
+.watermark-row input[type="color"] { width: 44px; height: 24px; padding: 0; border: 1px solid rgba(255,255,255,.16); border-radius: 6px; background: none; cursor: pointer; }
+.watermark-row span { flex: none; min-width: 30px; color: #bbb; text-align: right; }
+.watermark-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+.watermark-actions button { height: 28px; padding: 0 12px; border: 0; border-radius: 6px; color: #ddd; background: rgba(255,255,255,.1); cursor: pointer; }
+.watermark-actions button:hover { background: rgba(255,255,255,.18); }
+.watermark-actions button.primary { color: #fff; background: var(--primary); }
+.watermark-actions button.primary:hover { filter: brightness(1.1); background: var(--primary); }
 .result-panel { position: fixed; z-index: 8; top: 50%; left: 50%; width: min(620px,calc(100vw - 40px)); height: min(520px,calc(100vh - 40px)); transform: translate(-50%,-50%); display: flex; flex-direction: column; border: 1px solid rgba(255,255,255,.14); border-radius: 14px; overflow: hidden; color: #eee; background: rgba(23,23,26,.97); box-shadow: 0 24px 80px rgba(0,0,0,.55); backdrop-filter: blur(24px); }
 .result-head { height: 48px; display: flex; align-items: center; padding: 0 16px; border-bottom: 1px solid rgba(255,255,255,.1); }
 .result-head strong { flex: 1; }

@@ -10,6 +10,16 @@ const loadingText = loading.querySelector('b')
 const colorInput = document.getElementById('color')
 const colorPreview = document.querySelector('.color-wrap span')
 const lineWidthInput = document.getElementById('lineWidth')
+const watermarkPanel = document.getElementById('watermarkPanel')
+const watermarkContentInput = document.getElementById('watermarkContent')
+const watermarkOpacityInput = document.getElementById('watermarkOpacity')
+const watermarkOpacityValue = document.getElementById('watermarkOpacityValue')
+const watermarkColorInput = document.getElementById('watermarkColor')
+const watermarkSpacingInput = document.getElementById('watermarkSpacing')
+const watermarkSpacingValue = document.getElementById('watermarkSpacingValue')
+const watermarkFontSizeInput = document.getElementById('watermarkFontSize')
+const watermarkRotationInput = document.getElementById('watermarkRotation')
+const watermarkApplyButton = document.getElementById('watermarkApply')
 const resultPanel = document.getElementById('resultPanel')
 const resultTitle = document.getElementById('resultTitle')
 const resultSource = document.getElementById('resultSource')
@@ -146,6 +156,31 @@ function drawArrow(context, x1, y1, x2, y2, width) {
   context.beginPath(); context.moveTo(x2,y2); context.lineTo(x2-head*Math.cos(angle-Math.PI/6),y2-head*Math.sin(angle-Math.PI/6)); context.lineTo(x2-head*Math.cos(angle+Math.PI/6),y2-head*Math.sin(angle+Math.PI/6)); context.closePath(); context.fill()
 }
 
+function drawWatermark(context, item, scaleX, scaleY, offsetX, offsetY) {
+  const w = item.w * scaleX, h = item.h * scaleY
+  if (!(w > 1) || !(h > 1) || !item.content) return
+  const x = (item.x - offsetX) * scaleX, y = (item.y - offsetY) * scaleY
+  const fontSize = Math.max(8, item.fontSize * Math.max(scaleX, scaleY))
+  const stepX = Math.max(fontSize * 2, w * (item.spacing / 100))
+  const stepY = Math.max(fontSize * 2, h * (item.spacing / 100))
+  context.save()
+  context.beginPath(); context.rect(x, y, w, h); context.clip()
+  context.translate(x + w / 2, y + h / 2)
+  context.rotate((item.rotation || 0) * Math.PI / 180)
+  context.globalAlpha = Math.min(1, Math.max(0.02, (item.opacity ?? 100) / 100))
+  context.fillStyle = item.color
+  context.font = `${fontSize}px -apple-system,"Microsoft YaHei",sans-serif`
+  context.textAlign = 'center'
+  context.textBaseline = 'middle'
+  const reach = Math.hypot(w, h) / 2
+  for (let row = -reach; row <= reach; row += stepY) {
+    for (let col = -reach; col <= reach; col += stepX) {
+      context.fillText(item.content, col, row)
+    }
+  }
+  context.restore()
+}
+
 function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offsetY = 0, sourceImage = image) {
   const x = (item.x-offsetX)*scaleX, y = (item.y-offsetY)*scaleY
   const x2 = ((item.x2 ?? item.x)-offsetX)*scaleX, y2 = ((item.y2 ?? item.y)-offsetY)*scaleY
@@ -159,6 +194,7 @@ function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offs
   if (item.type === 'highlight') { context.globalAlpha=.28; context.lineWidth=Math.max(14,width*4); context.beginPath(); context.moveTo(x,y); context.lineTo(x2,y2); context.stroke() }
   if (item.type === 'text') { context.font = `${Math.max(14,width*5)}px -apple-system,"Microsoft YaHei",sans-serif`; context.textBaseline='top'; context.fillText(item.text,x,y) }
   if (item.type === 'serial') { const radius=Math.max(12,width*3); context.beginPath(); context.arc(x,y,radius,0,Math.PI*2); context.fill(); context.fillStyle='#fff'; context.font=`bold ${radius}px sans-serif`; context.textAlign='center'; context.textBaseline='middle'; context.fillText(String(item.number),x,y+1) }
+  if (item.type === 'watermark') drawWatermark(context,item,scaleX,scaleY,offsetX,offsetY)
   if (item.type === 'blur' && sourceImage) {
     const left=Math.min(x,x2), top=Math.min(y,y2), w=Math.abs(x2-x), h=Math.abs(y2-y)
     if (w>2&&h>2) { const tiny=document.createElement('canvas'); tiny.width=Math.max(1,Math.round(w/12)); tiny.height=Math.max(1,Math.round(h/12)); const t=tiny.getContext('2d'); const bounds=imageDisplayBounds(); const sourceScaleX=sourceImage.naturalWidth/bounds.w, sourceScaleY=sourceImage.naturalHeight/bounds.h; t.drawImage(sourceImage,(Math.min(item.x,item.x2)-bounds.x)*sourceScaleX,(Math.min(item.y,item.y2)-bounds.y)*sourceScaleY,Math.abs(item.x2-item.x)*sourceScaleX,Math.abs(item.y2-item.y)*sourceScaleY,0,0,tiny.width,tiny.height); context.imageSmoothingEnabled=false; context.drawImage(tiny,left,top,w,h); context.imageSmoothingEnabled=true }
@@ -198,17 +234,18 @@ function drawHandles() {
 }
 
 function updateFloatingUi() {
-  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; return }
+  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16
   const hideSizeBadge=processingAction==='ocr'||!!activeOcrResult||initData?.autoAction==='ocr'
   sizeBadge.style.display=hideSizeBadge?'none':'block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
-  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); return }
-  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); return }
+  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); return }
+  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); return }
   toolbar.classList.remove('hidden')
   const rect=toolbarSize||(toolbarSize=toolbar.getBoundingClientRect()); let left=selection.x+selection.w-rect.width; let top=selection.y+selection.h+10
   if (top+rect.height>innerHeight-6) top=selection.y-rect.height-10
   left=Math.max(6,Math.min(left,innerWidth-rect.width-6)); top=Math.max(6,top)
   toolbar.style.left=`${left}px`; toolbar.style.top=`${top}px`
+  syncWatermarkPanel()
 }
 
 function positionOcrResultBar() {
@@ -227,11 +264,71 @@ function setTool(tool) {
   currentTool=tool
   document.querySelectorAll('[data-tool]').forEach((button)=>button.classList.toggle('active',button.dataset.tool===tool))
   canvas.style.cursor=tool==='select'?(selection?'move':'crosshair'):'crosshair'
+  if(tool==='watermark'){activeAnnotation=buildWatermarkAnnotation();render()}
+  else if(activeAnnotation?.type==='watermark'){activeAnnotation=null;render()}
+  syncWatermarkPanel()
 }
 
 function commitAnnotation(item) {
   if (!item) return
   annotations.push(item); redoStack=[]; activeAnnotation=null; render()
+}
+
+function clampSettingNumber(value, fallback, min, max) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(max, Math.max(min, parsed))
+}
+
+function watermarkParams() {
+  return {
+    content: watermarkContentInput.value.trim(),
+    opacity: clampSettingNumber(watermarkOpacityInput.value, 80, 5, 100),
+    color: /^#[0-9a-fA-F]{6}$/.test(watermarkColorInput.value) ? watermarkColorInput.value : '#ffffff',
+    spacing: clampSettingNumber(watermarkSpacingInput.value, 30, 5, 100),
+    fontSize: clampSettingNumber(watermarkFontSizeInput.value, 24, 8, 200),
+    rotation: clampSettingNumber(watermarkRotationInput.value, 30, -180, 180)
+  }
+}
+
+function buildWatermarkAnnotation() {
+  if (!selection) return null
+  const params = watermarkParams()
+  if (!params.content) return null
+  return { type: 'watermark', x: selection.x, y: selection.y, w: selection.w, h: selection.h, ...params }
+}
+
+function applyWatermarkSettings(settings) {
+  if (!settings || typeof settings !== 'object') return
+  watermarkContentInput.value = String(settings.content ?? '')
+  watermarkOpacityInput.value = String(clampSettingNumber(settings.opacity, 80, 5, 100))
+  watermarkColorInput.value = /^#[0-9a-fA-F]{6}$/.test(String(settings.color || '')) ? String(settings.color) : '#ffffff'
+  watermarkSpacingInput.value = String(clampSettingNumber(settings.spacing, 30, 5, 100))
+  watermarkFontSizeInput.value = String(clampSettingNumber(settings.fontSize, 24, 8, 200))
+  watermarkRotationInput.value = String(clampSettingNumber(settings.rotation, 30, -180, 180))
+  watermarkOpacityValue.textContent = `${watermarkOpacityInput.value}%`
+  watermarkSpacingValue.textContent = `${watermarkSpacingInput.value}%`
+}
+
+function updateWatermarkPreview() {
+  watermarkOpacityValue.textContent = `${watermarkOpacityInput.value}%`
+  watermarkSpacingValue.textContent = `${watermarkSpacingInput.value}%`
+  if (currentTool !== 'watermark') return
+  activeAnnotation = buildWatermarkAnnotation()
+  render()
+}
+
+function syncWatermarkPanel() {
+  const visible = currentTool === 'watermark' && !!selection && !toolbar.classList.contains('hidden')
+  watermarkPanel.classList.toggle('hidden', !visible)
+  if (!visible) return
+  const barRect = toolbar.getBoundingClientRect()
+  const panelRect = watermarkPanel.getBoundingClientRect()
+  const left = Math.max(6, Math.min(barRect.left, innerWidth - panelRect.width - 6))
+  let top = barRect.bottom + 6
+  if (top + panelRect.height > innerHeight - 6) top = Math.max(6, barRect.top - panelRect.height - 6)
+  watermarkPanel.style.left = `${Math.round(left)}px`
+  watermarkPanel.style.top = `${Math.round(top)}px`
 }
 
 function finishSelection() {
@@ -271,6 +368,7 @@ canvas.addEventListener('pointerdown',(event)=>{
   if (!selection || (currentTool==='select'&&!resizeHandle&&!insideSelection(point))) { selectState='manual';selecting=true; selection={x:point.x,y:point.y,w:0,h:0}; annotations=[]; redoStack=[]; tip.style.display='none'; canvas.style.cursor='crosshair'; render(); return }
   if (resizeHandle) { resizing={handle:resizeHandle,initial:{...selection}}; updateSelectionCursor(point); try{canvas.setPointerCapture(event.pointerId)}catch{}; render(); return }
   if (currentTool==='select') { dragging=true; return }
+  if (currentTool==='watermark') return
   if (!insideSelection(point)) return
   const style=annotationStyle()
   if (currentTool==='text') { const text=prompt('输入文字'); if(text)commitAnnotation({type:'text',x:point.x,y:point.y,text,...style}); return }
@@ -299,14 +397,14 @@ canvas.addEventListener('pointerup',(event)=>{
   if(selecting){const point=pointFromEvent(event);selecting=false;if(selection.w<3||selection.h<3)selection=null;selectState=selection?'selected':'manual';finishSelection();updateSelectionCursor(point);return}
   if(resizing){resizing=null;finishSelection();updateSelectionCursor(pointFromEvent(event));return}
   if(dragging){dragging=false;render();updateSelectionCursor(pointFromEvent(event));return}
-  if(activeAnnotation)commitAnnotation(activeAnnotation)
+  if(activeAnnotation&&activeAnnotation.type!=='watermark')commitAnnotation(activeAnnotation)
 })
 
 canvas.addEventListener('pointercancel',()=>{
   selecting=false
   dragging=false
   resizing=null
-  activeAnnotation=null
+  activeAnnotation=currentTool==='watermark'?buildWatermarkAnnotation():null
   render()
 })
 
@@ -367,6 +465,7 @@ function setProcessingState(action) {
     loading.style.left=`${Math.max(8,Math.min(left,innerWidth-rect.width-8))}px`
     loading.style.top=`${Math.max(8,top)}px`
   }else if(!active&&selection&&initData)updateFloatingUi()
+  syncWatermarkPanel()
 }
 
 function showOcrOverlay(result) {
@@ -411,6 +510,7 @@ function showOcrOverlay(result) {
   ocrResultBar.classList.remove('hidden')
   positionOcrResultBar()
   toolbar.classList.add('hidden')
+  syncWatermarkPanel()
 }
 
 async function performAction(action) {
@@ -465,6 +565,17 @@ function showResult(type,result) {
 
 document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListener('click',()=>setTool(button.dataset.tool)))
 colorInput.addEventListener('input',()=>{colorPreview.style.background=colorInput.value})
+;[watermarkContentInput,watermarkOpacityInput,watermarkColorInput,watermarkSpacingInput,watermarkFontSizeInput,watermarkRotationInput].forEach((input)=>input.addEventListener('input',updateWatermarkPreview))
+watermarkContentInput.addEventListener('keydown',(event)=>{if(event.key==='Enter'){event.preventDefault();watermarkApplyButton.click()}})
+watermarkApplyButton.addEventListener('click',()=>{
+  const item=buildWatermarkAnnotation()
+  if(!item){watermarkContentInput.focus();return}
+  commitAnnotation(item)
+  const {type,x,y,w,h,...params}=item
+  window.captureAPI.saveWatermarkSettings(params).catch(()=>{})
+  setTool('select')
+})
+document.getElementById('watermarkCancel').onclick=()=>setTool('select')
 document.getElementById('undo').onclick=()=>{const item=annotations.pop();if(item)redoStack.push(item);render()}
 document.getElementById('redo').onclick=()=>{const item=redoStack.pop();if(item)annotations.push(item);render()}
 document.getElementById('longCapture').onclick=()=>performAction('long')
@@ -484,7 +595,8 @@ document.getElementById('ocrCopyAll').onclick=async()=>{if(!activeOcrResult)retu
 document.getElementById('ocrResultClose').onclick=clearOcrResult
 
 addEventListener('keydown',(event)=>{
-  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(activeOcrResult)clearOcrResult();else window.captureAPI.close()}
+  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else window.captureAPI.close();return}
+  if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName||''))return
   if(event.key==='Enter'&&!event.ctrlKey&&!activeOcrResult&&resultPanel.classList.contains('hidden'))performAction('copy')
   if(event.ctrlKey&&event.key.toLowerCase()==='s'){event.preventDefault();performAction('save')}
   if(event.ctrlKey&&event.key.toLowerCase()==='z'){event.preventDefault();document.getElementById('undo').click()}
@@ -494,6 +606,7 @@ addEventListener('keydown',(event)=>{
 
 window.captureAPI.onInit((data)=>{
   clearOcrResult();setProcessingState(null);initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#1677ff')
+  applyWatermarkSettings(data.settings?.screenshot?.watermark)
   if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}
   image=new Image(); image.onload=()=>{if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError('截图图片解码失败')
   if(data.mode==='canvas')image.src=makeBlankCanvas()

@@ -25,6 +25,7 @@
       <button data-tool="blur" title="马赛克" aria-label="马赛克"><span class="toolbar-icon" style="--icon:url('icons/mosaic.svg')" aria-hidden="true"></span></button>
       <button data-tool="text" title="文字" aria-label="文字"><span class="toolbar-icon" style="--icon:url('icons/text.svg')" aria-hidden="true"></span></button>
       <button data-tool="serial" title="序号" aria-label="序号"><span class="toolbar-icon" style="--icon:url('icons/serial.svg')" aria-hidden="true"></span></button>
+      <button data-tool="watermark" title="水印" aria-label="水印"><span class="toolbar-icon" style="--icon:url('icons/watermark.svg')" aria-hidden="true"></span></button>
     </div>
     <div class="divider"></div>
     <label class="color-wrap" title="颜色"><input id="color" type="color" value="#ff3b30"><span></span></label>
@@ -43,6 +44,15 @@
     <button id="save" title="保存 Ctrl+S" aria-label="保存"><span class="toolbar-icon" style="--icon:url('icons/save.svg')" aria-hidden="true"></span></button>
     <button id="copy" class="primary" title="复制 Enter" aria-label="复制"><span class="toolbar-icon" style="--icon:url('icons/copy.svg')" aria-hidden="true"></span></button>
     <button id="close" title="取消 Esc" aria-label="取消"><span class="toolbar-icon" style="--icon:url('icons/close.svg')" aria-hidden="true"></span></button>
+  </div>
+  <div id="watermarkPanel" class="watermark-panel hidden">
+    <div class="watermark-row"><label for="watermarkContent">内容</label><input id="watermarkContent" type="text" placeholder="输入水印文字" maxlength="200"></div>
+    <div class="watermark-row"><label for="watermarkOpacity">透明度</label><input id="watermarkOpacity" type="range" min="5" max="100" step="5" value="80"><span id="watermarkOpacityValue">80%</span></div>
+    <div class="watermark-row"><label for="watermarkColor">颜色</label><input id="watermarkColor" type="color" value="#ffffff"></div>
+    <div class="watermark-row"><label for="watermarkSpacing">间距</label><input id="watermarkSpacing" type="range" min="5" max="100" step="5" value="30"><span id="watermarkSpacingValue">30%</span></div>
+    <div class="watermark-row"><label for="watermarkFontSize">大小</label><input id="watermarkFontSize" type="number" min="8" max="200" step="1" value="24"><span>px</span></div>
+    <div class="watermark-row"><label for="watermarkRotation">角度</label><input id="watermarkRotation" type="number" min="-180" max="180" step="1" value="30"><span>°</span></div>
+    <div class="watermark-actions"><button id="watermarkCancel">取消</button><button id="watermarkApply" class="primary">添加水印</button></div>
   </div>
   <div id="resultPanel" class="result-panel hidden">
     <div class="result-head"><strong id="resultTitle">识别结果</strong><button id="resultClose">×</button></div>
