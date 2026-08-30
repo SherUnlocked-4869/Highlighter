@@ -1,6 +1,6 @@
 {
   "name": "highlighter-snowshot",
-  "version": "2.2.1",
+  "version": "2.2.2",
   "description": "Highlighter - 截图、标注、OCR、翻译与 AI 桌面效率工具",
   "main": "main.js",
   "author": "Highlighter",
