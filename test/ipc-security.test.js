@@ -230,6 +230,7 @@ test('secure IPC rejects unregistered, navigated, iframe, destroyed, and stale o
     'missing-or-destroyed-sender',
     'window-owner-mismatch'
   ])
+  assert.equal(blocked.at(-1)?.win, staleOwner)
 })
 
 test('secure IPC refuses unlisted, duplicate, wrong-kind, and incomplete registrations', () => {

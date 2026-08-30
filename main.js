@@ -273,6 +273,7 @@ const TOOLBAR_STREAM_IDLE_TIMEOUT_MS = 30000
 const ACTION_WINDOW_SIZE_SAVE_DELAY_MS = 180
 const isWin = process.platform === 'win32'
 let nativeDisplayListPromise = null
+let captureCreateSeq = 0
 
 function getOcrService() {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
@@ -528,8 +529,13 @@ const secureIpcMain = createSecureIpcMain({
   BrowserWindow,
   rootDirectory: __dirname,
   authorizeRole: authorizeIpcRole,
-  onBlocked: ({ channel, reason, role }) => {
+  onBlocked: ({ channel, reason, role, win }) => {
     log('IPC sender blocked:', { channel, reason, role: role || '' })
+    // A superseded capture window can never receive its init payload, so close
+    // it right away instead of letting it linger invisibly until the watchdog.
+    if (channel === 'capture:ready' && reason === 'window-owner-mismatch' && win && !win.isDestroyed() && win !== currentCaptureWindow) {
+      win.close()
+    }
   }
 })
 
@@ -1124,6 +1130,8 @@ async function getDesktopCapture(display, scaleFactor) {
   throw new Error('屏幕捕获连续返回空白画面')
 }
 
+const NATIVE_CAPTURE_TIMEOUT_MS = 5000
+
 async function getDisplayCapture(display) {
   const scaleFactor = display.scaleFactor || 1
   if (isWin) {
@@ -1137,7 +1145,18 @@ async function getDisplayCapture(display) {
         Math.max(1, Math.ceil(scaleFactor))
       )
       if (nativeDisplay) {
-        const buffer = await screenshotDesktop({ format: 'png', screen: nativeDisplay.id })
+        // The capture helper is an external cmd.exe pipeline with no timeout of
+        // its own; without this guard a hung spawn would wedge window creation.
+        const buffer = await new Promise((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error(`原生抓屏超时（${NATIVE_CAPTURE_TIMEOUT_MS}ms）`)),
+            NATIVE_CAPTURE_TIMEOUT_MS
+          )
+          screenshotDesktop({ format: 'png', screen: nativeDisplay.id }).then(
+            (result) => { clearTimeout(timer); resolve(result) },
+            (error) => { clearTimeout(timer); reject(error) }
+          )
+        })
         const image = nativeImage.createFromBuffer(buffer)
         const size = image.getSize()
         const nativeBounds = getNativeDisplayBounds(nativeDisplay)
@@ -1160,6 +1179,7 @@ async function getDisplayCapture(display) {
 }
 
 async function createCaptureWindow(options = {}) {
+  const createSeq = ++captureCreateSeq
   const performanceStartedAt = performance.now()
   const performanceTiming = {
     startedAt: performanceStartedAt,
@@ -1168,7 +1188,6 @@ async function createCaptureWindow(options = {}) {
     smartSelectMs: 0,
     windowLoadMs: 0
   }
-  if (currentCaptureWindow && !currentCaptureWindow.isDestroyed()) currentCaptureWindow.close()
   const mode = options.mode || 'region'
   const requestedBounds = options.windowBounds && {
     x: Math.round(options.windowBounds.x),
@@ -1202,6 +1221,16 @@ async function createCaptureWindow(options = {}) {
     return session
   })
   const smartSelectSession = await smartSelectPromise
+  // Rapid hotkey presses start overlapping creations; only the newest one may
+  // proceed. Superseded runs must bail out before creating a window, otherwise
+  // their orphaned windows fail the capture IPC owner check and stay invisible
+  // until the render watchdog reclaims them.
+  if (createSeq !== captureCreateSeq) {
+    smartSelectSession?.dispose()
+    capturePromise.catch(() => {})
+    return null
+  }
+  if (currentCaptureWindow && !currentCaptureWindow.isDestroyed()) currentCaptureWindow.close()
   const transparent = mode === 'canvas' || !!options.transparent
   const pagePath = path.join(__dirname, 'capture', 'capture.html')
   const captureWindow = createLocalWindow(pagePath, {
@@ -1262,6 +1291,18 @@ async function createCaptureWindow(options = {}) {
     const pinWindow = captureWindow._pendingPinWindow || captureWindow._editingPinWindow
     setImmediate(() => bringPinToFront(pinWindow))
   })
+  // Arm the render watchdog at creation time: a hung capture or page load must
+  // still reclaim the invisible window instead of hiding it indefinitely.
+  captureWindow._renderTimeout = setTimeout(() => {
+    if (captureWindow.isDestroyed() || captureWindow._captureVisible) return
+    const init = captureWindow._captureInit
+    log('Capture render timeout:', init ? 'renderer-stalled' : 'initializing', JSON.stringify({
+      expected: init?.captureBounds || null,
+      window: captureWindow.getBounds(),
+      content: captureWindow.getContentBounds()
+    }))
+    captureWindow.close()
+  }, 8000)
 
   try {
     const [capture] = await Promise.all([capturePromise, loadPromise])
@@ -1284,15 +1325,6 @@ async function createCaptureWindow(options = {}) {
       settings: getSettings()
     }
     sendCaptureInit(captureWindow)
-    captureWindow._renderTimeout = setTimeout(() => {
-      if (captureWindow.isDestroyed() || captureWindow._captureVisible) return
-      log('Capture render timeout:', capture.sourceId || options.mode || 'unknown', JSON.stringify({
-        expected: captureWindow._captureInit?.captureBounds,
-        window: captureWindow.getBounds(),
-        content: captureWindow.getContentBounds()
-      }))
-      captureWindow.close()
-    }, 8000)
     return captureWindow
   } catch (error) {
     if (!captureWindow.isDestroyed()) captureWindow.close()

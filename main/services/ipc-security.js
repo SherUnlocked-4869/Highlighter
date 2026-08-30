@@ -227,7 +227,7 @@ function createSecureIpcMain({
 
     let ownerAllowed = false
     try { ownerAllowed = authorizeRole(allowedPage.role, win, event) === true } catch {}
-    if (!ownerAllowed) return deny(channel, 'window-owner-mismatch', { role: allowedPage.role })
+    if (!ownerAllowed) return deny(channel, 'window-owner-mismatch', { role: allowedPage.role, win })
 
     return { allowed: true, role: allowedPage.role, win }
   }
