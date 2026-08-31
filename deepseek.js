@@ -15,6 +15,7 @@ const {
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
 const AI_PROTOCOLS = new Set(['openai-chat', 'openai-responses'])
+const OCR_TRANSLATION_TIMEOUT_MS = 30000
 
 function cleanText(value, maximumLength = 2048) {
   return String(value ?? '').trim().slice(0, maximumLength)
@@ -413,13 +414,14 @@ async function completeChat(provider, messages, options = {}) {
   })
 }
 
-async function translateText(provider, text, sourceLanguage = 'auto', targetLanguage = '中文') {
+async function translateText(provider, text, sourceLanguage = 'auto', targetLanguage = '中文', options = {}) {
   const config = normalizeProviderInput(provider)
   const instruction = `你是专业翻译引擎。源语言：${sourceLanguage}；目标语言：${targetLanguage}。只输出译文，保持段落、列表和表格结构，不添加解释。`
+  const completionOptions = { temperature: 0.2, ...options }
   if (isTranslationOnlyModel(config)) {
     return completeChat(provider, [
       { role: 'user', content: buildTranslationOnlyPromptForLanguages(text, sourceLanguage, targetLanguage) }
-    ], { temperature: 0.2 })
+    ], completionOptions)
   }
   return completeChat(provider, [
     {
@@ -427,7 +429,101 @@ async function translateText(provider, text, sourceLanguage = 'auto', targetLang
       content: instruction
     },
     { role: 'user', content: text }
-  ], { temperature: 0.2 })
+  ], completionOptions)
+}
+
+function buildOcrTranslationBatchPrompt(texts, sourceLanguage = 'auto', targetLanguage = '中文') {
+  const source = normalizeLanguageCode(sourceLanguage)
+    || (sourceLanguage === 'auto' ? sourceLanguageCodeForText(texts.join('\n')) : cleanText(sourceLanguage, 32))
+    || 'auto'
+  const target = normalizeLanguageCode(targetLanguage) || cleanText(targetLanguage, 32) || 'zh'
+  return [
+    `Translate every string in the JSON array from ${source} to ${target}.`,
+    'Return only valid JSON in exactly this shape: {"translations":["translated string", "translated string"]}.',
+    `The translations array must contain exactly ${texts.length} strings in the same order. Do not merge, omit, reorder, or explain any item.`,
+    `Input JSON: ${JSON.stringify(texts)}`
+  ].join('\n')
+}
+
+function parseOcrTranslationBatchOutput(value, expectedCount) {
+  const text = String(value || '').trim()
+  const unfenced = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+  const candidates = [unfenced]
+  const objectStart = unfenced.indexOf('{')
+  const objectEnd = unfenced.lastIndexOf('}')
+  if (objectStart >= 0 && objectEnd > objectStart) candidates.push(unfenced.slice(objectStart, objectEnd + 1))
+  const arrayStart = unfenced.indexOf('[')
+  const arrayEnd = unfenced.lastIndexOf(']')
+  if (arrayStart >= 0 && arrayEnd > arrayStart) candidates.push(unfenced.slice(arrayStart, arrayEnd + 1))
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      const parsed = JSON.parse(candidate)
+      const values = Array.isArray(parsed) ? parsed : parsed?.translations
+      if (!Array.isArray(values) || values.length !== expectedCount) continue
+      const translations = values.map((item) => String(item ?? '').trim())
+      if (translations.every(Boolean)) return translations
+    } catch {}
+  }
+  throw new Error(`批量翻译返回了无法对应 OCR 文本块的结果（期望 ${expectedCount} 项）`)
+}
+
+function splitOcrTranslationBatches(texts, { maximumItems = 24, maximumCharacters = 5000 } = {}) {
+  const batches = []
+  let current = []
+  let characters = 0
+  texts.forEach((text, index) => {
+    const length = Array.from(text).length
+    if (current.length && (current.length >= maximumItems || characters + length > maximumCharacters)) {
+      batches.push(current)
+      current = []
+      characters = 0
+    }
+    current.push({ index, text })
+    characters += length
+  })
+  if (current.length) batches.push(current)
+  return batches
+}
+
+async function translateOcrTextBlocks(provider, texts, sourceLanguage = 'auto', targetLanguage = '中文') {
+  const normalized = (Array.isArray(texts) ? texts : []).map((text) => String(text || '').trim())
+  if (!normalized.length || normalized.some((text) => !text)) throw new Error('OCR 文本块为空，无法建立翻译位置对应关系')
+  const config = normalizeProviderInput(provider)
+  const translations = Array(normalized.length)
+  const completionOptions = {
+    temperature: 0.2,
+    thinking: 'off',
+    requestOptions: { timeout: OCR_TRANSLATION_TIMEOUT_MS }
+  }
+  for (const batch of splitOcrTranslationBatches(normalized)) {
+    const sourceTexts = batch.map((item) => item.text)
+    const prompt = buildOcrTranslationBatchPrompt(sourceTexts, sourceLanguage, targetLanguage)
+    let output
+    if (isTranslationOnlyModel(config)) {
+      output = await completeChat(provider, [{ role: 'user', content: prompt }], completionOptions)
+    } else {
+      output = await completeChat(provider, [
+        {
+          role: 'system',
+          content: '你是专业 OCR 翻译引擎。严格保持输入数组的条目数量和顺序，只返回指定 JSON，不添加解释。'
+        },
+        { role: 'user', content: prompt }
+      ], completionOptions)
+    }
+    let translated
+    try {
+      translated = parseOcrTranslationBatchOutput(output, batch.length)
+    } catch {
+      translated = []
+      for (const text of sourceTexts) {
+        const value = String(await translateText(provider, text, sourceLanguage, targetLanguage, completionOptions)).trim()
+        if (!value) throw new Error('翻译模型返回了空文本，无法覆盖对应的 OCR 文本块')
+        translated.push(value)
+      }
+    }
+    batch.forEach((item, index) => { translations[item.index] = translated[index] })
+  }
+  return translations
 }
 
 async function createExplainStream(provider, text, prompt = DEFAULT_EXPLAIN_PROMPT, requestOptions = {}) {
@@ -465,6 +561,9 @@ module.exports = {
   createCustomStream,
   completeChat,
   translateText,
+  translateOcrTextBlocks,
+  buildOcrTranslationBatchPrompt,
+  parseOcrTranslationBatchOutput,
   validateApiKey,
   listProviderModels,
   testProviderConnection,

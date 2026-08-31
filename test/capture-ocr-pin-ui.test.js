@@ -12,7 +12,8 @@ const pinScript = fs.readFileSync(path.join(root, 'pin', 'pin.js'), 'utf8')
 
 test('OCR result actions stay outside the selected image area', () => {
   assert.match(main, /const actionSpace = 62[\s\S]*Math\.max\(420, imageWidth\)/)
-  assert.match(main, /windowBounds: editorBounds,[\s\S]*imageBounds: editorImageBounds,[\s\S]*transparent: isOcrEditor/)
+  assert.match(main, /const isRecognitionEditor = autoAction === 'ocr' \|\| autoAction === 'translate'/)
+  assert.match(main, /windowBounds: editorBounds,[\s\S]*imageBounds: editorImageBounds,[\s\S]*transparent: isRecognitionEditor/)
   assert.match(main, /const transparent = mode === 'canvas' \|\| !!options\.transparent[\s\S]*hasShadow: !transparent/)
   assert.match(captureScript, /function imageDisplayBounds\(\)[\s\S]*initData\?\.imageBounds/)
   assert.match(captureScript, /function positionOcrResultBar\(\)[\s\S]*selection\.y\+selection\.h\+10/)
@@ -37,9 +38,19 @@ test('pinned image opacity is chosen from the context menu instead of an overlay
 })
 
 test('OCR recognition hides the selected image size badge', () => {
-  assert.match(captureScript, /const hideSizeBadge=processingAction==='ocr'\|\|!!activeOcrResult\|\|initData\?\.autoAction==='ocr'/)
+  assert.match(captureScript, /const hideSizeBadge=\['ocr','translate'\]\.includes\(processingAction\)\|\|!!activeOcrResult\|\|\['ocr','translate'\]\.includes\(initData\?\.autoAction\)/)
   assert.match(captureScript, /sizeBadge\.style\.display=hideSizeBadge\?'none':'block'/)
-  assert.match(captureScript, /if\(action==='ocr'\)sizeBadge\.style\.display='none'/)
+  assert.match(captureScript, /if\(\['ocr','translate'\]\.includes\(action\)\)sizeBadge\.style\.display='none'/)
+})
+
+test('OCR translation uses the same positioned overlay interaction as OCR text extraction', () => {
+  assert.match(main, /translateOcrTextBlocks\([\s\S]*textBlocks\.map/)
+  assert.match(main, /translationResult: \{[\s\S]*textBlocks: translatedBlocks/)
+  assert.match(main, /_pendingReannotateAction = \['ocr', 'translate'\]\.includes\(action\)/)
+  assert.match(captureScript, /\['ocr','translate'\]\.includes\(action\)&&!initData\.editPin/)
+  assert.match(captureScript, /showOcrOverlay\(result\.translationResult,\{mode:'translate'/)
+  assert.doesNotMatch(captureScript, /resultPanel\.classList\.remove\('hidden'\); resultSource\.classList\.toggle\('hidden',type!=='translate'/)
+  assert.match(captureCss, /\.ocr-text-block\.translation/)
 })
 
 test('pinned images align source pixels to the active display DPI', () => {

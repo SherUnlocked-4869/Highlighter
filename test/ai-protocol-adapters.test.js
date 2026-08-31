@@ -1,6 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
+  buildChatCompletionRequest,
   buildChatStreamRequest,
   createAiProtocolAdapter,
   extractResponsesText,
@@ -66,7 +67,7 @@ test('Responses adapter passes AbortSignal and protocol-specific reasoning', asy
   assert.deepEqual(seen[0].body.reasoning, { effort: 'high' })
 })
 
-test('Chat adapter passes AbortSignal and sends reasoning fields only for DeepSeek', async () => {
+test('Chat adapter passes AbortSignal and maps provider-specific thinking controls', async () => {
   const signal = new AbortController().signal
   const plain = buildChatStreamRequest({
     model: 'plain',
@@ -78,6 +79,37 @@ test('Chat adapter passes AbortSignal and sends reasoning fields only for DeepSe
     capabilities: { reasoning: 'deepseek' }
   }, [{ role: 'user', content: 'hello' }], { thinking: 'high' })
   assert.equal(deepseek.reasoning_effort, 'high')
+
+  const siliconFlowConfig = {
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    model: 'deepseek-ai/DeepSeek-V4-Flash',
+    capabilities: { reasoning: 'siliconflow' }
+  }
+  const siliconFlowOff = buildChatStreamRequest(
+    siliconFlowConfig,
+    [{ role: 'user', content: 'hello' }],
+    { thinking: 'off' }
+  )
+  assert.equal(siliconFlowOff.enable_thinking, false)
+  assert.equal(Object.hasOwn(siliconFlowOff, 'thinking_budget'), false)
+
+  const siliconFlowLow = buildChatStreamRequest(
+    siliconFlowConfig,
+    [{ role: 'user', content: 'hello' }],
+    { thinking: 'low' }
+  )
+  assert.equal(siliconFlowLow.enable_thinking, true)
+  assert.equal(siliconFlowLow.thinking_budget, 1024)
+  assert.equal(Object.hasOwn(siliconFlowLow, 'temperature'), false)
+
+  const ocrCompletion = buildChatCompletionRequest(
+    siliconFlowConfig,
+    [{ role: 'user', content: '["Token-Based Usage"]' }],
+    { thinking: 'off', temperature: 0.2 }
+  )
+  assert.equal(ocrCompletion.enable_thinking, false)
+  assert.equal(ocrCompletion.temperature, 0.2)
+  assert.equal(Object.hasOwn(ocrCompletion, 'thinking_budget'), false)
 
   const seen = []
   const adapter = createAiProtocolAdapter({ protocol: 'openai-chat', model: 'plain', capabilities: { reasoning: 'none' } }, {

@@ -1861,11 +1861,11 @@ async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
     height: Math.max(1, Math.round(Number(imageBounds.height) || pinBounds.height))
   }
   const imageSize = nativeImage.createFromDataURL(win._pinData.dataUrl).getSize()
-  const isOcrEditor = autoAction === 'ocr'
+  const isRecognitionEditor = autoAction === 'ocr' || autoAction === 'translate'
   let editorBounds = editBounds
   let editorImageBounds = null
   let sourceScaleFactor = Math.max(0.25, imageSize.width / editBounds.width)
-  if (isOcrEditor) {
+  if (isRecognitionEditor) {
     const workArea = screen.getDisplayMatching(editBounds).workArea
     const actionSpace = 62
     const toolbarSpace = 900
@@ -1904,7 +1904,7 @@ async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
       source: 'pin-reannotate',
       windowBounds: editorBounds,
       imageBounds: editorImageBounds,
-      transparent: isOcrEditor,
+      transparent: isRecognitionEditor,
       sourceScaleFactor,
       editPin: true,
       editingPinWindow: win
@@ -2723,7 +2723,7 @@ const captureIpcController = {
   pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
   const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
   const { captureWindow, pinWindow } = pinFromCapture(event, buffer, meta)
-  pinWindow._pendingReannotateAction = action === 'ocr' ? 'ocr' : ''
+  pinWindow._pendingReannotateAction = ['ocr', 'translate'].includes(action) ? action : ''
   setImmediate(() => {
     if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
   })
@@ -2840,13 +2840,31 @@ const captureIpcController = {
   }, 'capture-translate')
   const text = ocrResult.text.trim()
   if (!text) throw new Error('未识别到可翻译的文本')
-  const translation = await require('./deepseek').translateText(
+  const textBlocks = (Array.isArray(ocrResult.textBlocks) ? ocrResult.textBlocks : [])
+    .filter((block) => String(block?.text || '').trim())
+  if (!textBlocks.length) throw new Error('未识别到可定位的翻译文本')
+  const translations = await require('./deepseek').translateOcrTextBlocks(
     resolveAiAssignment(settings, 'ocr-translate'),
-    text,
+    textBlocks.map((block) => String(block.text).trim()),
     'auto',
     settings.ai.targetLanguage
   )
-  return { text, translation, ocrResult }
+  const translatedBlocks = textBlocks.map((block, index) => ({
+    ...block,
+    sourceText: String(block.text).trim(),
+    text: translations[index]
+  }))
+  const translation = translations.join('\n')
+  return {
+    text,
+    translation,
+    ocrResult,
+    translationResult: {
+      ...ocrResult,
+      text: translation,
+      textBlocks: translatedBlocks
+    }
+  }
   },
   recognitionReady: (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
