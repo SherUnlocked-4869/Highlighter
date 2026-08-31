@@ -1,0 +1,393 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Highlighter 运行时架构（Windows）",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1345,
+      610
+    ],
+    "output": "highlighter-runtime-architecture.html"
+  },
+  "components": [
+    {
+      "id": "hotkey",
+      "type": "backend",
+      "label": "全局快捷键",
+      "sublabel": "ShortcutService · 托盘",
+      "pos": [
+        50,
+        268
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "selection",
+      "type": "backend",
+      "label": "智能选区钩子",
+      "sublabel": "selection-hook 原生模块",
+      "tag": "原生",
+      "pos": [
+        60,
+        96
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "media",
+      "type": "backend",
+      "label": "录屏 / 长截图",
+      "sublabel": "ffmpeg · 拼接 worker",
+      "pos": [
+        60,
+        380
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "数据与凭据存储",
+      "sublabel": "数据目录 · electron-store",
+      "pos": [
+        60,
+        492
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "main",
+      "type": "backend",
+      "label": "主进程编排核心",
+      "sublabel": "main.js · IPC · 窗口管理",
+      "tag": "Electron Main",
+      "pos": [
+        280,
+        250
+      ],
+      "size": [
+        200,
+        110
+      ]
+    },
+    {
+      "id": "capture",
+      "type": "frontend",
+      "label": "截图 / 标注窗口",
+      "sublabel": "capture + toolbar 渲染器",
+      "tag": "Canvas 标注",
+      "pos": [
+        580,
+        86
+      ],
+      "size": [
+        190,
+        100
+      ]
+    },
+    {
+      "id": "pin",
+      "type": "frontend",
+      "label": "桌面贴图",
+      "sublabel": "pin 渲染器 · 置顶窗口",
+      "pos": [
+        580,
+        300
+      ],
+      "size": [
+        190,
+        64
+      ]
+    },
+    {
+      "id": "recognition",
+      "type": "frontend",
+      "label": "识别结果窗口",
+      "sublabel": "OCR 文本 · 表格 · 二维码",
+      "pos": [
+        580,
+        440
+      ],
+      "size": [
+        190,
+        80
+      ]
+    },
+    {
+      "id": "ocr",
+      "type": "backend",
+      "label": "本地 OCR 服务",
+      "sublabel": "OCR sidecar · ONNX 模型",
+      "pos": [
+        320,
+        450
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "ai",
+      "type": "backend",
+      "label": "AI 服务层",
+      "sublabel": "多供应商 · 流式输出",
+      "tag": "OpenAI 兼容",
+      "pos": [
+        900,
+        250
+      ],
+      "size": [
+        180,
+        90
+      ]
+    },
+    {
+      "id": "ai-cloud",
+      "type": "external",
+      "label": "AI 供应商 API",
+      "sublabel": "OpenAI 兼容 · DeepSeek 等",
+      "tag": "外部依赖",
+      "pos": [
+        1150,
+        255
+      ],
+      "size": [
+        170,
+        80
+      ]
+    },
+    {
+      "id": "updates",
+      "type": "external",
+      "label": "GitHub Releases",
+      "sublabel": "electron-updater",
+      "tag": "外部依赖",
+      "pos": [
+        1150,
+        90
+      ],
+      "size": [
+        170,
+        70
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "本机信任域 — OCR · 录屏 · 存储全部离线完成",
+      "wraps": [
+        "hotkey",
+        "selection",
+        "media",
+        "store",
+        "main",
+        "capture",
+        "pin",
+        "recognition",
+        "ocr",
+        "ai"
+      ],
+      "pad": 26
+    },
+    {
+      "kind": "security-group",
+      "label": "渲染进程沙箱 — contextIsolation + preload IPC 白名单",
+      "wraps": [
+        "capture",
+        "pin",
+        "recognition"
+      ],
+      "pad": 18
+    }
+  ],
+  "connections": [
+    {
+      "id": "hotkey-to-main",
+      "from": "hotkey",
+      "to": "main",
+      "label": "触发功能",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "main-to-capture",
+      "from": "main",
+      "to": "capture",
+      "label": "抓屏开窗",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "capture-to-ai",
+      "from": "capture",
+      "to": "ai",
+      "label": "AI 动作",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          675,
+          236
+        ],
+        [
+          990,
+          236
+        ]
+      ],
+      "labelSegment": 1
+    },
+    {
+      "id": "ai-to-cloud",
+      "from": "ai",
+      "to": "ai-cloud",
+      "label": "HTTPS",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "main-to-selection",
+      "from": "main",
+      "to": "selection",
+      "label": "启动 / 事件",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "main-to-media",
+      "from": "main",
+      "to": "media",
+      "label": "编排",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "main-to-store",
+      "from": "main",
+      "to": "store",
+      "label": "读写",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "via": [
+        [
+          380,
+          420
+        ],
+        [
+          295,
+          420
+        ],
+        [
+          295,
+          524
+        ]
+      ]
+    },
+    {
+      "id": "main-to-pin",
+      "from": "main",
+      "to": "pin",
+      "label": "贴图窗口",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "capture-to-ocr",
+      "from": "capture",
+      "to": "ocr",
+      "label": "OCR / 表格 / 二维码",
+      "fromSide": "right",
+      "toSide": "top",
+      "via": [
+        [
+          795,
+          136
+        ],
+        [
+          795,
+          404
+        ],
+        [
+          415,
+          404
+        ]
+      ],
+      "labelSegment": 1
+    },
+    {
+      "id": "ocr-to-recognition",
+      "from": "ocr",
+      "to": "recognition",
+      "label": "识别结果",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "main-to-updates",
+      "from": "main",
+      "to": "updates",
+      "label": "检查更新",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          380,
+          30
+        ],
+        [
+          1235,
+          30
+        ]
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "主路径 · 截图到 AI",
+      "items": [
+        "快捷键触发选区，主进程抓屏并打开截图/标注窗口",
+        "标注后经白名单 IPC 调用 AI 服务层，结果流式返回",
+        "唯一出网路径：HTTPS 访问自配置的 OpenAI 兼容供应商"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "本地能力（离线完成）",
+      "items": [
+        "OCR/表格/二维码由 OCR sidecar 加 ONNX 模型本地推理",
+        "录屏由 ffmpeg-static 编码 MP4；长截图由 worker 拼接",
+        "识别结果可再送 AI 翻译；贴图窗口可重回截图流程"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "信任边界与数据",
+      "items": [
+        "外层本机信任域：仅 AI 推理与更新检查出网",
+        "内层渲染沙箱：contextIsolation + preload 白名单 IPC",
+        "数据目录存历史/设置；API Key 经 safeStorage 加密"
+      ]
+    }
+  ]
+}
