@@ -27,6 +27,9 @@ const resultText = document.getElementById('resultText')
 const ocrOverlay = document.getElementById('ocrOverlay')
 const ocrResultBar = document.getElementById('ocrResultBar')
 const ocrSummary = document.getElementById('ocrSummary')
+const ocrToggleSource = document.getElementById('ocrToggleSource')
+const ocrPlainText = document.getElementById('ocrPlainText')
+const ocrCopyAll = document.getElementById('ocrCopyAll')
 const {
   getResizeHandle,
   getSourcePixelRect,
@@ -236,7 +239,7 @@ function drawHandles() {
 function updateFloatingUi() {
   if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16
-  const hideSizeBadge=processingAction==='ocr'||!!activeOcrResult||initData?.autoAction==='ocr'
+  const hideSizeBadge=['ocr','translate'].includes(processingAction)||!!activeOcrResult||['ocr','translate'].includes(initData?.autoAction)
   sizeBadge.style.display=hideSizeBadge?'none':'block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
   if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); return }
   if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); return }
@@ -446,6 +449,8 @@ function clearOcrResult() {
   ocrOverlay.replaceChildren()
   ocrOverlay.classList.add('hidden')
   ocrResultBar.classList.add('hidden')
+  ocrToggleSource.classList.add('hidden')
+  ocrToggleSource.textContent='查看原文'
   if(selection&&initData)updateFloatingUi()
 }
 
@@ -456,7 +461,7 @@ function setProcessingState(action) {
   loadingText.textContent=action==='translate'?'正在识别并翻译…':'正在识别文字…'
   loading.classList.toggle('hidden',!active)
   if(active&&selection){
-    if(action==='ocr')sizeBadge.style.display='none'
+    if(['ocr','translate'].includes(action))sizeBadge.style.display='none'
     toolbar.classList.add('hidden')
     const rect=loading.getBoundingClientRect()
     let left=selection.x+(selection.w-rect.width)/2
@@ -468,20 +473,29 @@ function setProcessingState(action) {
   syncWatermarkPanel()
 }
 
-function showOcrOverlay(result) {
-  clearOcrResult()
-  if(!selection||!result||!Array.isArray(result.textBlocks))return
-  activeOcrResult=result
-  ocrOverlay.style.left=`${selection.x}px`
-  ocrOverlay.style.top=`${selection.y}px`
-  ocrOverlay.style.width=`${selection.w}px`
-  ocrOverlay.style.height=`${selection.h}px`
+function fitOverlayText(element, width, height, initialSize, vertical) {
+  let lower=7
+  let upper=Math.max(lower,initialSize)
+  let fitted=lower
+  for(let attempt=0;attempt<8;attempt++){
+    const fontSize=(lower+upper)/2
+    element.style.fontSize=`${fontSize}px`
+    element.style.lineHeight=vertical?`${Math.max(8,fontSize*1.08)}px`:`${Math.min(height,Math.max(8,fontSize*1.18))}px`
+    if(element.scrollWidth<=element.clientWidth+1&&element.scrollHeight<=element.clientHeight+1){fitted=fontSize;lower=fontSize}else upper=fontSize
+  }
+  element.style.fontSize=`${fitted}px`
+  element.style.lineHeight=vertical?`${Math.max(8,fitted*1.08)}px`:`${Math.min(height,Math.max(8,fitted*1.18))}px`
+}
+
+function renderOcrOverlayBlocks(result, blocks, translated) {
+  ocrOverlay.replaceChildren()
+  if(!selection||!result||!Array.isArray(blocks))return 0
   const scaleX=selection.w/Math.max(1,result.imageWidth||1)
   const scaleY=selection.h/Math.max(1,result.imageHeight||1)
   const configuredConfidence=Number(initData?.settings?.ocr?.minConfidence)
   const minConfidence=Number.isFinite(configuredConfidence)?configuredConfidence:.3
   let visibleCount=0
-  result.textBlocks.forEach((block)=>{
+  blocks.forEach((block)=>{
     if(!block?.text||!Array.isArray(block.box_points)||block.box_points.length<4||Number(block.text_score)<minConfidence)return
     const points=block.box_points.map((point)=>({x:Number(point.x)*scaleX,y:Number(point.y)*scaleY}))
     const width=Math.hypot(points[1].x-points[0].x,points[1].y-points[0].y)
@@ -490,23 +504,58 @@ function showOcrOverlay(result) {
     const centerX=points.reduce((sum,point)=>sum+point.x,0)/points.length
     const centerY=points.reduce((sum,point)=>sum+point.y,0)/points.length
     const angle=Math.atan2(points[1].y-points[0].y,points[1].x-points[0].x)*180/Math.PI
+    const vertical=height>width*1.5
     const element=document.createElement('div')
-    element.className=`ocr-text-block${height>width*1.5?' vertical':''}`
+    element.className=`ocr-text-block${vertical?' vertical':''}${translated?' translation':''}`
     element.textContent=block.text
-    element.title=`置信度 ${Math.round(Number(block.text_score)*100)}%`
+    element.title=translated&&block.sourceText?`原文：${block.sourceText}`:`置信度 ${Math.round(Number(block.text_score)*100)}%`
     element.style.left=`${centerX-width/2}px`
     element.style.top=`${centerY-height/2}px`
     element.style.width=`${width}px`
     element.style.height=`${height}px`
-    element.style.fontSize=`${Math.max(9,Math.min(36,(height>width*1.5?width:height)*.72))}px`
-    element.style.lineHeight=`${Math.max(10,height)}px`
     element.style.transform=`rotate(${Math.abs(angle)<3?0:angle}deg)`
     element.addEventListener('pointerdown',(event)=>event.stopPropagation())
     ocrOverlay.appendChild(element)
+    const initialSize=Math.max(9,Math.min(36,(vertical?width:height)*.72))
+    if(translated)fitOverlayText(element,width,height,initialSize,vertical)
+    else{element.style.fontSize=`${initialSize}px`;element.style.lineHeight=`${Math.max(10,height)}px`}
     visibleCount++
   })
-  ocrSummary.textContent=result.cached?`识别到 ${visibleCount} 处文本 · 已缓存`:`识别到 ${visibleCount} 处文本 · ${result.durationMs||0} ms`
+  return visibleCount
+}
+
+function renderActiveOcrOverlay() {
+  if(!activeOcrResult)return
+  const showingSource=activeOcrResult.mode==='translate'&&activeOcrResult.showingSource
+  const result=showingSource?activeOcrResult.sourceResult:activeOcrResult.displayResult
+  const visibleCount=renderOcrOverlayBlocks(result,result?.textBlocks,activeOcrResult.mode==='translate'&&!showingSource)
+  if(activeOcrResult.mode==='translate'){
+    ocrSummary.textContent=showingSource?`原文 ${visibleCount} 处`:`已翻译 ${visibleCount} 处文本`
+    ocrToggleSource.textContent=showingSource?'查看译文':'查看原文'
+  }else{
+    ocrSummary.textContent=result.cached?`识别到 ${visibleCount} 处文本 · 已缓存`:`识别到 ${visibleCount} 处文本 · ${result.durationMs||0} ms`
+  }
+}
+
+function showOcrOverlay(result, options = {}) {
+  clearOcrResult()
+  if(!selection||!result||!Array.isArray(result.textBlocks))return
+  const mode=options.mode==='translate'?'translate':'ocr'
+  activeOcrResult={
+    mode,
+    displayResult:result,
+    sourceResult:options.sourceResult||result,
+    text:String(options.text??result.text??''),
+    sourceText:String(options.sourceText??result.text??''),
+    showingSource:false
+  }
+  ocrOverlay.style.left=`${selection.x}px`
+  ocrOverlay.style.top=`${selection.y}px`
+  ocrOverlay.style.width=`${selection.w}px`
+  ocrOverlay.style.height=`${selection.h}px`
+  ocrToggleSource.classList.toggle('hidden',mode!=='translate')
   ocrOverlay.classList.remove('hidden')
+  renderActiveOcrOverlay()
   ocrResultBar.classList.remove('hidden')
   positionOcrResultBar()
   toolbar.classList.add('hidden')
@@ -535,7 +584,7 @@ async function performAction(action) {
     if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(imageBuffer,meta);else await window.captureAPI.copy(imageBuffer,meta);window.captureAPI.close()}
     if(action==='save'){window.captureAPI.save(imageBuffer,meta,!!initData.settings.screenshot.fastSave);return}
     if(action==='pin'){await window.captureAPI.pin(imageBuffer,meta);window.captureAPI.close()}
-    if(action==='ocr'&&!initData.editPin){await window.captureAPI.pinAndReannotate(imageBuffer,meta,'ocr');return}
+    if(['ocr','translate'].includes(action)&&!initData.editPin){await window.captureAPI.pinAndReannotate(imageBuffer,meta,action);return}
     if(action==='table'||action==='qr'){await window.captureAPI.openRecognition(action,imageBuffer,meta);return}
     if(action==='ocr'||action==='translate'){
       clearOcrResult();setProcessingState(action)
@@ -559,8 +608,12 @@ function showResult(type,result) {
     if(!result.text)resultPanel.classList.remove('hidden')
     return
   }
-  resultPanel.classList.remove('hidden'); resultSource.classList.toggle('hidden',type!=='translate'); resultTitle.textContent=type==='translate'?'截图翻译':'文本识别'
-  if(type==='translate'){resultSource.textContent=result.text||'';resultText.value=result.translation||''}else{resultSource.textContent='';resultText.value=result||''}
+  if(type==='translate'&&result?.translationResult){
+    resultText.value=result.translation||''
+    showOcrOverlay(result.translationResult,{mode:'translate',sourceResult:result.ocrResult,text:result.translation,sourceText:result.text})
+    return
+  }
+  resultPanel.classList.remove('hidden'); resultSource.classList.add('hidden'); resultTitle.textContent='文本识别'; resultSource.textContent=''; resultText.value=result||''
 }
 
 document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListener('click',()=>setTool(button.dataset.tool)))
@@ -590,8 +643,9 @@ document.getElementById('qr').onclick=()=>performAction('qr')
 document.getElementById('close').onclick=()=>window.captureAPI.close()
 document.getElementById('resultClose').onclick=document.getElementById('resultDone').onclick=()=>resultPanel.classList.add('hidden')
 document.getElementById('resultCopy').onclick=async()=>{await navigator.clipboard.writeText(resultText.value);document.getElementById('resultCopy').textContent='已复制';setTimeout(()=>document.getElementById('resultCopy').textContent='复制文本',1000)}
-document.getElementById('ocrPlainText').onclick=()=>{if(!activeOcrResult)return;resultSource.classList.add('hidden');resultTitle.textContent='文本识别';resultText.value=activeOcrResult.text||'';resultPanel.classList.remove('hidden')}
-document.getElementById('ocrCopyAll').onclick=async()=>{if(!activeOcrResult)return;await navigator.clipboard.writeText(activeOcrResult.text||'');const button=document.getElementById('ocrCopyAll');button.textContent='已复制';setTimeout(()=>button.textContent='复制全部',1000)}
+ocrToggleSource.onclick=()=>{if(!activeOcrResult||activeOcrResult.mode!=='translate')return;activeOcrResult.showingSource=!activeOcrResult.showingSource;renderActiveOcrOverlay()}
+ocrPlainText.onclick=()=>{if(!activeOcrResult)return;const translated=activeOcrResult.mode==='translate';resultSource.classList.toggle('hidden',!translated);resultTitle.textContent=translated?'截图翻译':'文本识别';resultSource.textContent=translated?activeOcrResult.sourceText:'';resultText.value=activeOcrResult.text||'';resultPanel.classList.remove('hidden')}
+ocrCopyAll.onclick=async()=>{if(!activeOcrResult)return;const text=activeOcrResult.mode==='translate'&&activeOcrResult.showingSource?activeOcrResult.sourceText:activeOcrResult.text;await navigator.clipboard.writeText(text||'');ocrCopyAll.textContent='已复制';setTimeout(()=>ocrCopyAll.textContent='复制全部',1000)}
 document.getElementById('ocrResultClose').onclick=clearOcrResult
 
 addEventListener('keydown',(event)=>{

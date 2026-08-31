@@ -10,7 +10,7 @@ const styles = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.css'
 
 test('main process delegates shortcut registration and exposes status through preload', () => {
   assert.match(main, /new ShortcutService\(\{[\s\S]*globalShortcut[\s\S]*executeFunction/)
-  assert.match(main, /return shortcutService\.registerAll\(getSettings\(\)\.shortcuts\)/)
+  assert.match(main, /function registerShortcuts\(\)[\s\S]*shortcutService\.suspendAll\(shortcuts, 'game-mode'\)[\s\S]*shortcutService\.registerAll\(shortcuts\)/)
   assert.match(main, /registerShortcutIpc\(\{[\s\S]*shortcutService/)
   assert.match(main, /app\.on\('will-quit',[\s\S]*shortcutService\.dispose\(\)/)
   assert.match(preload, /getShortcutStatuses:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('shortcuts:status'\)/)
@@ -20,6 +20,7 @@ test('settings UI refreshes and clearly marks unavailable shortcuts', () => {
   assert.match(config, /await window\.electronAPI\.getShortcutStatuses\(\)/)
   assert.match(config, /status\.reason === 'duplicate'/)
   assert.match(config, /status\.reason === 'unavailable'/)
+  assert.match(config, /status\.reason === 'game-mode'/)
   assert.match(config, /className: 'set unavailable'/)
   assert.match(config, /红色警告表示快捷键冲突或不可用/)
   assert.match(styles, /\.shortcut\.unavailable\{/)

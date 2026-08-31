@@ -24,7 +24,8 @@
     "stop:app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-running.ps1",
     "build:smart-select": "powershell -NoProfile -ExecutionPolicy Bypass -File native/smart-select/build.ps1",
     "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
-    "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr",
+    "build:everything": "powershell -NoProfile -ExecutionPolicy Bypass -File native/everything-search/build.ps1",
+    "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr && npm run build:everything",
     "check": "node scripts/check-js.js",
     "audit:dependencies": "npm audit --audit-level=moderate",
     "test:long-capture": "node tests/long-capture.test.js",
@@ -62,6 +63,18 @@
       {
         "from": "ocr/models",
         "to": "ocr/models"
+      },
+      {
+        "from": "native/everything-search/bin",
+        "to": "native/everything-search"
+      },
+      {
+        "from": "native/everything",
+        "to": "native/everything",
+        "filter": [
+          "Everything.exe",
+          "Everything.ini"
+        ]
       }
     ],
     "files": [
@@ -74,6 +87,7 @@
       "preload-long-overlay.js",
       "preload-pin.js",
       "preload-recognition.js",
+      "preload-search.js",
       "preload-record.js",
       "preload-record-frame.js",
       "deepseek.js",
@@ -86,6 +100,7 @@
       "long-capture/**/*",
       "pin/**/*",
       "recognition/**/*",
+      "search/**/*",
       "record/**/*",
       "node_modules/**/*"
     ],

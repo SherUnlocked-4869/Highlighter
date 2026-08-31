@@ -92,6 +92,19 @@ class ShortcutService {
     return this.getStatuses()
   }
 
+  suspendAll(shortcuts = {}, reason = 'suspended') {
+    this.globalShortcut.unregisterAll()
+    this.statuses = Object.fromEntries(
+      Object.entries(shortcuts).map(([name, value]) => {
+        const accelerator = String(value || '').trim()
+        return [name, accelerator
+          ? { accelerator, registered: false, reason }
+          : { accelerator: '', registered: false, reason: 'disabled' }]
+      })
+    )
+    return this.getStatuses()
+  }
+
   getStatuses() {
     return cloneStatuses(this.statuses)
   }

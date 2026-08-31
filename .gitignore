@@ -16,3 +16,6 @@ native/ocr/*.dll
 coverage/
 playwright-report/
 test-results/
+
+# Rust build cache for the Everything sidecar
+native/everything-search/target/

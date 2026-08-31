@@ -4,15 +4,24 @@ function resolveThinkingLevel(thinking) {
   return ''
 }
 
-function buildChatStreamRequest(config, messages, { thinking = false } = {}) {
+const SILICONFLOW_THINKING_BUDGETS = Object.freeze({
+  low: 1024,
+  medium: 4096,
+  high: 8192,
+  max: 32768
+})
+
+function applyChatThinking(request, config, thinking) {
   const level = resolveThinkingLevel(thinking)
-  const request = {
-    model: config.model,
-    messages,
-    stream: true,
-    temperature: 0.3
-  }
-  if (config.capabilities?.reasoning === 'deepseek') {
+  if (config.capabilities?.reasoning === 'siliconflow') {
+    if (level) {
+      delete request.temperature
+      request.enable_thinking = true
+      request.thinking_budget = SILICONFLOW_THINKING_BUDGETS[level] || SILICONFLOW_THINKING_BUDGETS.medium
+    } else if (thinking === 'off') {
+      request.enable_thinking = false
+    }
+  } else if (config.capabilities?.reasoning === 'deepseek') {
     if (level) {
       delete request.temperature
       request.reasoning_effort = level
@@ -24,6 +33,26 @@ function buildChatStreamRequest(config, messages, { thinking = false } = {}) {
     }
   }
   return request
+}
+
+function buildChatStreamRequest(config, messages, { thinking = false } = {}) {
+  const request = {
+    model: config.model,
+    messages,
+    stream: true,
+    temperature: 0.3
+  }
+  return applyChatThinking(request, config, thinking)
+}
+
+function buildChatCompletionRequest(config, messages, options = {}) {
+  const request = {
+    model: options.model || config.model,
+    messages,
+    max_tokens: options.maxTokens || 4096,
+    temperature: options.temperature ?? 0.7
+  }
+  return applyChatThinking(request, config, options.thinking)
 }
 
 function buildResponsesMessages(messages) {
@@ -122,18 +151,14 @@ function createAiProtocolAdapter(config, client) {
       return client.chat.completions.create(buildChatStreamRequest(config, messages, options), requestOptions)
     },
     async complete(messages, options = {}, requestOptions = {}) {
-      const response = await client.chat.completions.create({
-        model: options.model || config.model,
-        messages,
-        max_tokens: options.maxTokens || 4096,
-        temperature: options.temperature ?? 0.7
-      }, requestOptions)
+      const response = await client.chat.completions.create(buildChatCompletionRequest(config, messages, options), requestOptions)
       return response.choices?.[0]?.message?.content || ''
     }
   }
 }
 
 module.exports = {
+  buildChatCompletionRequest,
   buildChatStreamRequest,
   buildResponsesMessages,
   buildResponsesStreamRequest,

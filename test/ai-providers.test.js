@@ -41,6 +41,22 @@ test('provider normalization keeps multiple providers and sanitizes model catalo
   }])
 })
 
+test('SiliconFlow DeepSeek hybrid models retain their provider-specific thinking capability', () => {
+  const providers = normalizeAiProviders([{
+    id: 'siliconflow',
+    name: 'SiliconFlow',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    protocol: 'openai-chat',
+    models: [{
+      id: 'deepseek-ai/DeepSeek-V4-Flash',
+      name: 'deepseek-ai/DeepSeek-V4-Flash',
+      capabilities: { tasks: ['chat', 'translation', 'explain'], reasoning: 'none' }
+    }]
+  }])
+
+  assert.equal(providers[0].models[0].capabilities.reasoning, 'siliconflow')
+})
+
 test('schema migration keeps an explicit assignment when providers share a model id', () => {
   const migration = migrateAiSettings({
     providers: [

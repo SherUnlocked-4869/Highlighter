@@ -116,6 +116,25 @@ test('status snapshots cannot mutate service state', () => {
   assert.deepEqual(service.getStatuses().screenshot.conflictWith, ['screenshotDelay'])
 })
 
+test('suspends registered shortcuts for game mode and restores them later', () => {
+  const globalShortcut = createGlobalShortcut()
+  const service = new ShortcutService({
+    globalShortcut,
+    executeFunction() {}
+  })
+  const shortcuts = { screenshot: 'F1', screenshotDelay: '' }
+  service.registerAll(shortcuts)
+
+  assert.deepEqual(service.suspendAll(shortcuts, 'game-mode'), {
+    screenshot: { accelerator: 'F1', registered: false, reason: 'game-mode' },
+    screenshotDelay: { accelerator: '', registered: false, reason: 'disabled' }
+  })
+  assert.deepEqual([...globalShortcut.callbacks.keys()], [])
+
+  service.registerAll(shortcuts)
+  assert.deepEqual([...globalShortcut.callbacks.keys()], ['F1'])
+})
+
 test('dispose unregisters shortcuts and clears status', () => {
   const globalShortcut = createGlobalShortcut()
   const service = new ShortcutService({

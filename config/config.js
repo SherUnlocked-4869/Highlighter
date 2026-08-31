@@ -37,6 +37,7 @@ const routeTitles = {
   'settings-function': '功能设置', 'settings-hotkeys': '热键设置',
   models: '模型',
   'selection-toolbar': '划词工具',
+  'local-search': '本地搜索',
   'settings-system': '系统设置', about: '关于'
 }
 
@@ -65,6 +66,9 @@ const functionGroups = {
   video: [
     ['videoRecord', '视频录制', '../capture/icons/record.svg', '录制屏幕并导出 MP4 视频']
   ],
+  search: [
+    ['localSearch', '本地搜索', 'icons/search.svg', '使用 Everything 全盘搜索本地文件']
+  ],
   other: [
     ['fixedContent', '固定本地图片', '../capture/icons/pin.svg', '选择图片并固定到桌面'],
     ['fullScreenDraw', '全屏画布', 'icons/draw.svg', '在白色全屏画布中绘制'],
@@ -77,6 +81,19 @@ const functionGroups = {
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char])
 }
+
+const SEARCH_DEFAULT_CATEGORIES = Object.freeze([
+  { id: 'all', label: '全部', rule: '' },
+  { id: 'folder', label: '文件夹', rule: 'folder:' },
+  { id: 'excel', label: 'EXCEL', rule: 'ext:xls;xlsx;xlsm;csv' },
+  { id: 'word', label: 'WORD', rule: 'ext:doc;docx;rtf' },
+  { id: 'ppt', label: 'PPT', rule: 'ext:ppt;pptx' },
+  { id: 'pdf', label: 'PDF', rule: 'ext:pdf' },
+  { id: 'image', label: '图片', rule: 'ext:jpg;jpeg;png;gif;webp;bmp;svg;ico' },
+  { id: 'video', label: '视频', rule: 'ext:mp4;mkv;avi;mov;wmv;flv;webm' },
+  { id: 'audio', label: '音频', rule: 'ext:mp3;wav;flac;aac;ogg;m4a' },
+  { id: 'archive', label: '压缩文件', rule: 'ext:zip;rar;7z;tar;gz;iso' }
+])
 
 function errorMessage(error) {
   return String(error?.message || error || '').replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')
@@ -140,6 +157,8 @@ function shortcutPresentation(name, accelerator) {
     message = '已被系统或其他应用占用'
   } else if (status.reason === 'invalid') {
     message = '快捷键格式无效'
+  } else if (status.reason === 'game-mode') {
+    message = '游戏模式已暂停此快捷键'
   }
   return {
     className: 'set unavailable',
@@ -184,6 +203,7 @@ function renderRoute() {
   else if (currentRoute === 'models') renderModels()
   else if (currentRoute === 'settings-function') renderFunctionSettings()
   else if (currentRoute === 'selection-toolbar') renderSelectionToolbarSettings()
+  else if (currentRoute === 'local-search') renderLocalSearch()
   else if (currentRoute === 'settings-hotkeys') renderHotkeySettings()
   else if (currentRoute === 'settings-system') void renderSystemSettings().catch((error) => toast(error.message || '无法读取软件数据目录'))
   else void renderAbout().catch((error) => toast(error.message || '无法读取更新状态'))
@@ -1237,6 +1257,86 @@ function renderPlugins() {
   bindSwitches()
 }
 
+function renderLocalSearch() {
+  const draft = (settings.search.categories || []).map((category) => ({ ...category }))
+  view.innerHTML = `<div class="page">${pageHeader('本地搜索', '使用 Everything 快速搜索本地文件，按 Ctrl+Enter 打开文件所在目录。')}
+    <section class="section"><h2 class="section-title">搜索</h2><div class="card form-card">
+      <div class="form-row"><div class="form-label"><b>运行状态</b><small id="searchStatusDetail">正在检测 Everything</small></div><span id="searchStatus">检查中</span></div>
+      <div class="form-row"><div class="form-label"><b>打开搜索窗口</b><small>也可在“热键设置”中自定义快捷键</small></div><button class="button" id="openSearchWindow">打开</button></div>
+      <div class="form-row"><div class="form-label"><b>匹配路径</b><small>普通关键字同时匹配文件名与完整路径</small></div>${switchMarkup(settings.search.matchPath, 'matchPath', 'search')}</div>
+      <div class="form-row"><div class="form-label"><b>单次结果上限</b><small>每次查询最多返回的结果数量（100 - 2000）</small></div><input id="searchMaxResults" type="number" min="100" max="2000" step="50" value="${settings.search.maxResults}"></div>
+      <div class="form-row"><div class="form-label"><b>自动启动内置 Everything</b><small>未检测到运行中的 Everything 时，自动启动随应用分发的便携版</small></div>${switchMarkup(settings.search.useBundledEverything !== false, 'useBundledEverything', 'search')}</div>
+    </div></section>
+    <section class="section"><h2 class="section-title">搜索分类</h2><div class="card form-card" id="categoryEditor"></div>
+      <div style="display:flex;gap:8px;margin-top:12px"><button class="button" id="addCategory">添加分类</button><button class="button" id="resetCategories">恢复默认分类</button><button class="button primary" id="saveCategories">保存分类</button></div>
+    </section>
+    <button class="button primary" id="saveSearch" style="margin-top:16px">保存</button></div>`
+
+  const renderCategoryEditor = () => {
+    const editor = document.getElementById('categoryEditor')
+    editor.innerHTML = draft.map((category, index) => `<div class="form-row" data-index="${index}"><div class="form-label"><b>${index === 0 ? '分类' : ''}</b></div><input class="category-label" type="text" placeholder="名称" value="${escapeHtml(category.label)}"><input class="category-rule" type="text" placeholder="规则，如 ext:pdf 或 folder:" value="${escapeHtml(category.rule)}"><button class="button danger category-delete" data-index="${index}">删除</button></div>`).join('') || '<div class="form-row">暂无分类</div>'
+    editor.querySelectorAll('.category-delete').forEach((button) => {
+      button.onclick = () => {
+        draft.splice(Number(button.dataset.index), 1)
+        renderCategoryEditor()
+      }
+    })
+    editor.querySelectorAll('input').forEach((input) => {
+      input.onchange = () => {
+        const row = input.closest('.form-row')
+        const index = Number(row?.dataset.index)
+        if (!Number.isInteger(index) || !draft[index]) return
+        if (input.classList.contains('category-label')) draft[index].label = input.value.trim()
+        else draft[index].rule = input.value.trim()
+      }
+    })
+  }
+  renderCategoryEditor()
+
+  const saveCategories = async () => {
+    const cleaned = draft
+      .map((category, index) => ({ id: category.id || `custom-${index}`, label: String(category.label || '').trim(), rule: String(category.rule || '').trim() }))
+      .filter((category) => category.label && category.rule !== undefined)
+    if (!cleaned.length) {
+      toast('至少保留一个分类')
+      return
+    }
+    await updateSettings({ search: { categories: cleaned } }, '分类已保存')
+    draft.splice(0, draft.length, ...cleaned.map((category) => ({ ...category })))
+    renderCategoryEditor()
+  }
+
+  document.getElementById('saveSearch').onclick = () => updateSettings({ search: { maxResults: Math.max(100, Math.min(2000, Number(document.getElementById('searchMaxResults').value) || 600)) } })
+  document.getElementById('openSearchWindow').onclick = () => window.electronAPI.executeFunction('localSearch')
+  document.getElementById('addCategory').onclick = () => {
+    draft.push({ id: `custom-${Date.now()}`, label: '新分类', rule: 'ext:' })
+    renderCategoryEditor()
+  }
+  document.getElementById('resetCategories').onclick = async () => {
+    await updateSettings({ search: { categories: SEARCH_DEFAULT_CATEGORIES.map((category) => ({ ...category })) } }, '已恢复默认分类')
+    draft.splice(0, draft.length, ...SEARCH_DEFAULT_CATEGORIES.map((category) => ({ ...category })))
+    renderCategoryEditor()
+  }
+  document.getElementById('saveCategories').onclick = () => saveCategories()
+
+  bindSwitches()
+  window.electronAPI.getSearchStatus().then((status) => {
+    const statusLabel = document.getElementById('searchStatus')
+    const statusDetail = document.getElementById('searchStatusDetail')
+    if (!statusLabel || !statusDetail) return
+    if (!status?.running) {
+      statusLabel.textContent = '未运行'
+      statusDetail.textContent = status?.available ? '未检测到运行中的 Everything，打开搜索窗口时将自动启动内置便携版' : '本地组件缺失，请重新安装应用'
+      return
+    }
+    statusLabel.textContent = status.phase === 'ready' ? '已就绪' : (status.phase === 'error' ? '异常' : '检测中')
+    statusDetail.textContent = status.version ? `Everything v${status.version}${Number(status.probeTotal) === 0 ? ' · 索引暂无内容' : ''}` : 'Everything 运行中'
+  }).catch(() => {
+    const statusLabel = document.getElementById('searchStatus')
+    if (statusLabel) statusLabel.textContent = '检查失败'
+  })
+}
+
 function renderGeneralSettings() {
   view.innerHTML = `<div class="page">${pageHeader('界面设置', '控制主界面和截图界面的常用视觉行为。')}<div class="card form-card"><div class="form-row"><div class="form-label"><b>界面缩放</b><small>使用系统 DPI 与窗口缩放</small></div><span>自动</span></div><div class="form-row"><div class="form-label"><b>截图选区遮罩</b></div><input id="selectionMask" type="text" value="${escapeHtml(settings.screenshot.selectionMask)}"></div><div class="form-row"><div class="form-label"><b>双击复制截图</b></div>${switchMarkup(settings.screenshot.doubleClickCopy, 'doubleClickCopy', 'screenshot')}</div><div class="form-row"><div class="form-label"><b>显示取色器入口</b></div>${switchMarkup(settings.screenshot.showColorPicker, 'showColorPicker', 'screenshot')}</div></div><button class="button primary" id="saveGeneral" style="margin-top:16px">保存</button></div>`
   bindSwitches(); document.getElementById('saveGeneral').onclick = () => updateSettings({ screenshot: { selectionMask: document.getElementById('selectionMask').value.trim() } })
@@ -1282,7 +1382,7 @@ async function renderSystemSettings() {
   const dataRoot = await window.electronAPI.getDataRoot()
   if (currentRoute !== 'settings-system') return
   const historyDirectory = settings.screenshot.historyDirectory
-  const commonSettings = `<section class="section"><h2 class="section-title">常用</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>开机自动启动</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div><div class="form-row"><div class="form-label"><b>启用系统托盘</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div><div class="form-row"><div class="form-label"><b>运行日志</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div></div></section>`
+  const commonSettings = `<section class="section"><h2 class="section-title">常用</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>开机自动启动</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div><div class="form-row"><div class="form-label"><b>启用系统托盘</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div><div class="form-row"><div class="form-label"><b>游戏模式</b><small>暂停全局快捷键、划词工具以及截图、搜索和录屏等唤出入口</small></div>${switchMarkup(settings.system.gameMode, 'gameMode', 'system')}</div><div class="form-row"><div class="form-label"><b>运行日志</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div></div></section>`
   const dataSettings = `<section class="section"><h2 class="section-title">软件数据</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>软件数据目录</b><small>存放应用配置、运行日志、缓存及默认截图历史；更改时迁移配置、日志和目录内的截图历史，缓存将重新创建</small></div><input id="dataRoot" type="text" readonly value="${escapeHtml(dataRoot.path)}"><button class="button" id="openDataRoot">打开</button><button class="button" id="changeDataRoot">更改</button></div><div class="form-row"><div class="form-label"><b>截图导出目录</b><small>${settings.screenshot.saveDirectory ? '当前使用自定义目录' : '未自定义时使用系统“图片”目录'}</small></div><button class="button" id="openSave">打开</button></div><div class="form-row"><div class="form-label"><b>截图历史存储目录</b><small>用于保存截图历史中的图片，不能为空</small></div><input id="historyDirectory" type="text" required value="${escapeHtml(historyDirectory)}"><button class="button" id="chooseHistoryDirectory">选择</button></div><div class="form-row"><div class="form-label"><b>清除截图历史</b><small>同时删除截图历史目录中的对应图片文件</small></div><button class="button danger" id="clearData">清除</button></div></div></section>`
   const diagnosticsSettings = `<section class="section"><h2 class="section-title">本地诊断</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>预览诊断信息</b><small>仅展示版本、系统、显示器、组件、退出记录和日志文件摘要；不会上传任何数据</small></div><button class="button" id="previewDiagnostics">预览</button></div><div class="form-row"><div class="form-label"><b>导出诊断包</b><small>默认排除配置、凭据、AI/划词内容、截图、OCR、历史和录屏文件</small></div><button class="button primary" id="exportDiagnostics">导出 ZIP</button></div><div class="form-row"><div class="form-label"><b>包含崩溃转储</b><small>转储可能含进程内存片段，仅在明确需要排查崩溃时勾选</small></div><input id="includeCrashDumps" type="checkbox"></div><pre id="diagnosticsPreview" class="diagnostics-preview" hidden></pre></div></section>`
   view.innerHTML = `<div class="page">${pageHeader('系统设置', '控制自启动、托盘、日志、诊断和数据存储位置。')}${commonSettings}${dataSettings}${diagnosticsSettings}<button class="button danger" id="resetSettings">恢复默认设置</button></div>`
@@ -1462,6 +1562,15 @@ document.querySelectorAll('.nav-item').forEach((button) => button.onclick = () =
 document.getElementById('minimize').onclick = () => window.electronAPI.windowMinimize()
 document.getElementById('close').onclick = () => window.electronAPI.windowClose()
 window.electronAPI.onNavigate(navigate)
+window.electronAPI.onGameModeChanged((enabled) => {
+  if (!settings) return
+  settings = { ...settings, system: { ...settings.system, gameMode: enabled } }
+  void refreshShortcutStatuses()
+    .then(() => {
+      if (['home', 'settings-hotkeys', 'settings-system'].includes(currentRoute)) renderRoute()
+    })
+    .catch(() => {})
+})
 window.electronAPI.onHistoryChanged(() => { if (currentRoute === 'history') renderHistory() })
 window.electronAPI.onUpdateStatus((status) => {
   latestUpdateStatus = status

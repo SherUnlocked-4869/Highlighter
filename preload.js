@@ -43,12 +43,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   installUpdate: () => ipcRenderer.invoke('update:install'),
   openUpdateDownloadPage: () => ipcRenderer.invoke('update:open-download-page'),
   getOcrStatus: () => ipcRenderer.invoke('ocr:status'),
+  getSearchStatus: () => ipcRenderer.invoke('search:status'),
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowClose: () => ipcRenderer.send('window:close'),
   onNavigate: (callback) => {
     const handler = (_event, route) => callback(route)
     ipcRenderer.on('app:navigate', handler)
     return () => ipcRenderer.removeListener('app:navigate', handler)
+  },
+  onGameModeChanged: (callback) => {
+    const handler = (_event, enabled) => callback(enabled === true)
+    ipcRenderer.on('app:game-mode-changed', handler)
+    return () => ipcRenderer.removeListener('app:game-mode-changed', handler)
   },
   onHistoryChanged: (callback) => {
     const handler = () => callback()

@@ -1,7 +1,10 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
 const {
   buildToolbarStreamRequest,
+  buildOcrTranslationBatchPrompt,
   buildTranslationOnlyPromptForLanguages,
   composeTranslateSystemPrompt,
   connectionBaseUrls,
@@ -9,9 +12,36 @@ const {
   describeConnectionError,
   isNotFoundError,
   normalizeProviderInput,
+  parseOcrTranslationBatchOutput,
   resolveTranslateTarget,
   sourceLanguageCodeForText
 } = require('../deepseek')
+
+test('OCR batch translation explicitly disables reasoning with a bounded request timeout', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'deepseek.js'), 'utf8')
+  assert.match(source, /const OCR_TRANSLATION_TIMEOUT_MS = 30000/)
+  assert.match(source, /const completionOptions = \{[\s\S]*thinking: 'off',[\s\S]*requestOptions: \{ timeout: OCR_TRANSLATION_TIMEOUT_MS \}/)
+  assert.match(source, /completeChat\(provider,[\s\S]*completionOptions\)/)
+})
+
+test('OCR batch translation keeps one output slot per positioned text block', () => {
+  const prompt = buildOcrTranslationBatchPrompt(['Token-Based Usage', 'View By:', 'Model'], 'auto', '中文')
+  assert.match(prompt, /exactly 3 strings/)
+  assert.match(prompt, /\["Token-Based Usage","View By:","Model"\]/)
+
+  assert.deepEqual(
+    parseOcrTranslationBatchOutput('{"translations":["基于令牌的使用","查看方式：","模型"]}', 3),
+    ['基于令牌的使用', '查看方式：', '模型']
+  )
+  assert.deepEqual(
+    parseOcrTranslationBatchOutput('```json\n["请求","提示词令牌"]\n```', 2),
+    ['请求', '提示词令牌']
+  )
+  assert.throws(
+    () => parseOcrTranslationBatchOutput('{"translations":["合并结果"]}', 2),
+    /期望 2 项/
+  )
+})
 
 test('normalizes string keys to the legacy DeepSeek provider', () => {
   const provider = normalizeProviderInput('sk-legacy')

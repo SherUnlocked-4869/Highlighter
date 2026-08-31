@@ -7,6 +7,7 @@ const { registerCaptureIpc } = require('../main/ipc/capture-ipc')
 const { registerDataRootIpc } = require('../main/ipc/data-root-ipc')
 const { registerDiagnosticsIpc } = require('../main/ipc/diagnostics-ipc')
 const { registerRecordingIpc } = require('../main/ipc/recording-ipc')
+const { registerSearchIpc } = require('../main/ipc/search-ipc')
 
 function createIpcMain() {
   const handlers = new Map()
@@ -147,6 +148,36 @@ test('capture IPC module owns capture, long-capture, OCR, and recognition channe
   ])
 })
 
+test('search IPC module owns query, state, and file action channels', () => {
+  const ipcMain = createIpcMain()
+  registerSearchIpc({
+    ipcMain,
+    controller: createController([
+      'query',
+      'getStatus',
+      'ensureReady',
+      'openPath',
+      'revealPath',
+      'copyPath',
+      'getFileIcon',
+      'ready',
+      'close'
+    ])
+  })
+
+  assert.deepEqual([...ipcMain.handlers.keys()], [
+    'search:query',
+    'search:status',
+    'search:ensure-ready',
+    'search:open-path',
+    'search:reveal-path',
+    'search:copy-path',
+    'search:file-icon'
+  ])
+  assert.deepEqual([...ipcMain.listeners.keys()], ['search:ready', 'search:close'])
+  assert.equal(ipcMain.handlers.get('search:query')(null, { search: 'a' }).method, 'query')
+})
+
 test('recording IPC module owns control and annotation channels', () => {
   const ipcMain = createIpcMain()
   registerRecordingIpc({
@@ -198,6 +229,7 @@ test('main process delegates migrated IPC channels without registering them dire
     'recognition:',
     'record:',
     'record-frame:',
+    'search:',
     'data-root:'
   ]) {
     assert.doesNotMatch(main, new RegExp(`ipcMain\\.(?:handle|on)\\('${prefix}`))
@@ -206,7 +238,8 @@ test('main process delegates migrated IPC channels without registering them dire
     'registerAppIpc',
     'registerDataRootIpc',
     'registerCaptureIpc',
-    'registerRecordingIpc'
+    'registerRecordingIpc',
+    'registerSearchIpc'
   ]) {
     assert.match(main, new RegExp(`${registration}\\(\\{`))
   }

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>本地搜索</title>
+  <link rel="stylesheet" href="search.css">
+</head>
+<body>
+  <div class="search-shell">
+    <header class="search-top">
+      <div class="search-box">
+        <img class="search-glyph" src="icons/search.svg" alt="">
+        <input id="searchInput" type="text" placeholder="搜索本地文件（支持 Everything 语法，如 ext:pdf 报告）" autocomplete="off" spellcheck="false">
+        <button id="clearInput" class="ghost-button" title="清空" hidden>✕</button>
+      </div>
+      <button id="closeWindow" class="ghost-button" title="关闭 (Esc)">✕</button>
+    </header>
+    <nav class="category-tabs" id="categoryTabs" aria-label="搜索分类"></nav>
+    <main class="result-list" id="resultList"></main>
+    <div class="result-empty" id="emptyState">输入关键字开始搜索</div>
+    <footer class="search-footer">
+      <span class="status" id="statusText">正在检测 Everything...</span>
+      <span class="footer-spacer"></span>
+      <label class="footer-toggle" title="同时匹配文件名和完整路径"><input type="checkbox" id="matchPathToggle">匹配路径</label>
+      <select id="sortSelect" class="sort-select" title="排序方式"></select>
+      <span class="count" id="countText"></span>
+    </footer>
+  </div>
+  <script src="search-utils.js"></script>
+  <script src="search.js"></script>
+</body>
+</html>
