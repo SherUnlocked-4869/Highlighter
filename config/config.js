@@ -157,6 +157,8 @@ function shortcutPresentation(name, accelerator) {
     message = '已被系统或其他应用占用'
   } else if (status.reason === 'invalid') {
     message = '快捷键格式无效'
+  } else if (status.reason === 'game-mode') {
+    message = '游戏模式已暂停此快捷键'
   }
   return {
     className: 'set unavailable',
@@ -1380,7 +1382,7 @@ async function renderSystemSettings() {
   const dataRoot = await window.electronAPI.getDataRoot()
   if (currentRoute !== 'settings-system') return
   const historyDirectory = settings.screenshot.historyDirectory
-  const commonSettings = `<section class="section"><h2 class="section-title">常用</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>开机自动启动</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div><div class="form-row"><div class="form-label"><b>启用系统托盘</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div><div class="form-row"><div class="form-label"><b>运行日志</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div></div></section>`
+  const commonSettings = `<section class="section"><h2 class="section-title">常用</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>开机自动启动</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div><div class="form-row"><div class="form-label"><b>启用系统托盘</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div><div class="form-row"><div class="form-label"><b>游戏模式</b><small>暂停全局快捷键、划词工具以及截图、搜索和录屏等唤出入口</small></div>${switchMarkup(settings.system.gameMode, 'gameMode', 'system')}</div><div class="form-row"><div class="form-label"><b>运行日志</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div></div></section>`
   const dataSettings = `<section class="section"><h2 class="section-title">软件数据</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>软件数据目录</b><small>存放应用配置、运行日志、缓存及默认截图历史；更改时迁移配置、日志和目录内的截图历史，缓存将重新创建</small></div><input id="dataRoot" type="text" readonly value="${escapeHtml(dataRoot.path)}"><button class="button" id="openDataRoot">打开</button><button class="button" id="changeDataRoot">更改</button></div><div class="form-row"><div class="form-label"><b>截图导出目录</b><small>${settings.screenshot.saveDirectory ? '当前使用自定义目录' : '未自定义时使用系统“图片”目录'}</small></div><button class="button" id="openSave">打开</button></div><div class="form-row"><div class="form-label"><b>截图历史存储目录</b><small>用于保存截图历史中的图片，不能为空</small></div><input id="historyDirectory" type="text" required value="${escapeHtml(historyDirectory)}"><button class="button" id="chooseHistoryDirectory">选择</button></div><div class="form-row"><div class="form-label"><b>清除截图历史</b><small>同时删除截图历史目录中的对应图片文件</small></div><button class="button danger" id="clearData">清除</button></div></div></section>`
   const diagnosticsSettings = `<section class="section"><h2 class="section-title">本地诊断</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>预览诊断信息</b><small>仅展示版本、系统、显示器、组件、退出记录和日志文件摘要；不会上传任何数据</small></div><button class="button" id="previewDiagnostics">预览</button></div><div class="form-row"><div class="form-label"><b>导出诊断包</b><small>默认排除配置、凭据、AI/划词内容、截图、OCR、历史和录屏文件</small></div><button class="button primary" id="exportDiagnostics">导出 ZIP</button></div><div class="form-row"><div class="form-label"><b>包含崩溃转储</b><small>转储可能含进程内存片段，仅在明确需要排查崩溃时勾选</small></div><input id="includeCrashDumps" type="checkbox"></div><pre id="diagnosticsPreview" class="diagnostics-preview" hidden></pre></div></section>`
   view.innerHTML = `<div class="page">${pageHeader('系统设置', '控制自启动、托盘、日志、诊断和数据存储位置。')}${commonSettings}${dataSettings}${diagnosticsSettings}<button class="button danger" id="resetSettings">恢复默认设置</button></div>`
@@ -1560,6 +1562,15 @@ document.querySelectorAll('.nav-item').forEach((button) => button.onclick = () =
 document.getElementById('minimize').onclick = () => window.electronAPI.windowMinimize()
 document.getElementById('close').onclick = () => window.electronAPI.windowClose()
 window.electronAPI.onNavigate(navigate)
+window.electronAPI.onGameModeChanged((enabled) => {
+  if (!settings) return
+  settings = { ...settings, system: { ...settings.system, gameMode: enabled } }
+  void refreshShortcutStatuses()
+    .then(() => {
+      if (['home', 'settings-hotkeys', 'settings-system'].includes(currentRoute)) renderRoute()
+    })
+    .catch(() => {})
+})
 window.electronAPI.onHistoryChanged(() => { if (currentRoute === 'history') renderHistory() })
 window.electronAPI.onUpdateStatus((status) => {
   latestUpdateStatus = status

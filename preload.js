@@ -51,6 +51,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('app:navigate', handler)
     return () => ipcRenderer.removeListener('app:navigate', handler)
   },
+  onGameModeChanged: (callback) => {
+    const handler = (_event, enabled) => callback(enabled === true)
+    ipcRenderer.on('app:game-mode-changed', handler)
+    return () => ipcRenderer.removeListener('app:game-mode-changed', handler)
+  },
   onHistoryChanged: (callback) => {
     const handler = () => callback()
     ipcRenderer.on('history:changed', handler)

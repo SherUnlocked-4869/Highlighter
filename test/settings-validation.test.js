@@ -11,11 +11,12 @@ const template = {
     saveDirectory: '',
     watermark: { content: '', opacity: 80, color: '#ffffff', spacing: 30, fontSize: 24, rotation: 30 }
   },
+  system: { gameMode: false },
   selectionToolbar: { order: [], prompts: { translate: '', explain: '' } }
 }
 
 test('accepts partial settings patches with matching types', () => {
-  const patch = { compact: true, screenshot: { historyLimit: 500 } }
+  const patch = { compact: true, screenshot: { historyLimit: 500 }, system: { gameMode: true } }
   assert.equal(assertSettingsPatch(patch, template), patch)
 })
 
@@ -28,6 +29,7 @@ test('rejects unknown and prototype-related settings', () => {
 
 test('rejects mismatched types and non-finite numbers', () => {
   assert.throws(() => assertSettingsPatch({ compact: 'yes' }, template), /类型无效/)
+  assert.throws(() => assertSettingsPatch({ system: { gameMode: 'yes' } }, template), /类型无效/)
   assert.throws(() => assertSettingsPatch({ screenshot: { historyLimit: Infinity } }, template), /有限数字/)
 })
 

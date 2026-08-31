@@ -40,6 +40,7 @@ const { registerSettingsIpc } = require('./main/ipc/settings-ipc')
 const { HistoryService } = require('./main/services/history-service')
 const { registerHistoryIpc } = require('./main/ipc/history-ipc')
 const { ShortcutService } = require('./main/services/shortcut-service')
+const { buildTrayMenuTemplate } = require('./main/services/tray-menu')
 const { registerShortcutIpc } = require('./main/ipc/shortcut-ipc')
 const { registerAppIpc } = require('./main/ipc/app-ipc')
 const { registerDiagnosticsIpc } = require('./main/ipc/diagnostics-ipc')
@@ -201,6 +202,7 @@ const DEFAULT_SETTINGS = {
     autoStart: true,
     runLog: true,
     enableTray: true,
+    gameMode: false,
     updateChannel: 'stable'
   },
   shortcuts: {
@@ -363,12 +365,24 @@ function normalizeSettings(settings) {
   normalized.screenshot.historyDirectory = String(normalized.screenshot.historyDirectory || legacyDirectory || defaultHistoryDirectory).trim()
   if (!normalized.screenshot.historyDirectory) normalized.screenshot.historyDirectory = defaultHistoryDirectory
   normalized.system.updateChannel = normalized.system.updateChannel === 'beta' ? 'beta' : 'stable'
+  normalized.system.gameMode = normalized.system.gameMode === true
   if (normalized.fixedContent && Object.hasOwn(normalized.fixedContent, 'autoSaveDirectory')) delete normalized.fixedContent.autoSaveDirectory
   return normalized
 }
 
 function getSettings() {
   return settingsService.getSettings()
+}
+
+function isGameModeEnabled(settings = null) {
+  const currentSettings = settings || (settingsService ? getSettings() : null)
+  return currentSettings?.system?.gameMode === true
+}
+
+function assertGameModeDisabled() {
+  if (isGameModeEnabled()) {
+    throw new Error('游戏模式已开启，请先通过托盘菜单关闭游戏模式')
+  }
 }
 
 function persistSettings(settings, options) {
@@ -891,27 +905,39 @@ function broadcastActionAppearance(settings = getSettings()) {
 }
 
 function createTrayIcon() {
-  if (tray) tray.destroy()
-  if (!getSettings().system.enableTray) return
-  let icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'))
-  if (!icon || icon.isEmpty()) icon = nativeImage.createEmpty()
-  tray = new Tray(icon.resize({ width: 24, height: 24 }))
-  tray.setToolTip('Highlighter')
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '截图', accelerator: getSettings().shortcuts.screenshot || undefined, click: () => executeFunction('screenshot') },
-    { label: '截取全屏', click: () => executeFunction('screenshotFullScreen') },
-    { label: '截取焦点窗口', click: () => executeFunction('screenshotFocusedWindow') },
-    { label: '固定图片到屏幕', click: () => executeFunction('fixedContent') },
-    { label: '视频录制', click: () => executeFunction('videoRecord') },
-    { label: '本地搜索', click: () => executeFunction('localSearch') },
-    { type: 'separator' },
-    { label: '截图历史', click: () => createMainWindow('history') },
-    { label: '显示主界面', click: () => createMainWindow('home') },
-    { type: 'separator' },
-    { label: '退出', click: () => app.quit() }
-  ]))
-  tray.on('click', () => executeFunction('screenshot'))
-  tray.on('double-click', () => createMainWindow('home'))
+  const settings = getSettings()
+  if (!settings.system.enableTray) {
+    if (tray) { tray.destroy(); tray = null }
+    return
+  }
+  if (!tray) {
+    let icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'))
+    if (!icon || icon.isEmpty()) icon = nativeImage.createEmpty()
+    tray = new Tray(icon.resize({ width: 24, height: 24 }))
+    tray.on('click', () => {
+      if (isGameModeEnabled()) return
+      executeFunction('screenshot').catch((error) => log('Tray action failed:', error.message))
+    })
+    tray.on('double-click', () => createMainWindow('home'))
+  }
+  const gameMode = isGameModeEnabled(settings)
+  tray.setToolTip(gameMode ? 'Highlighter（游戏模式）' : 'Highlighter')
+  tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate({
+    gameMode,
+    screenshotAccelerator: settings.shortcuts.screenshot,
+    executeFunction: (name) => executeFunction(name).catch((error) => log('Tray action failed:', name, error.message)),
+    setGameModeEnabled: (enabled) => {
+      try {
+        setGameModeEnabled(enabled)
+      } catch (error) {
+        log('Game mode update failed:', error.message)
+        createTrayIcon()
+      }
+    },
+    openHistory: () => createMainWindow('history'),
+    openMainWindow: () => createMainWindow('home'),
+    quit: () => app.quit()
+  })))
 }
 
 function initSelectionHook() {
@@ -943,6 +969,7 @@ function initSelectionHook() {
       log
     })
   }
+  if (isGameModeEnabled()) return selectionHookService.suspend('game-mode')
   return selectionHookService.start('startup')
 }
 
@@ -951,8 +978,12 @@ function registerSelectionPowerEvents() {
   const bindings = [
     ['suspend', () => selectionHookService?.suspend('system-suspend')],
     ['lock-screen', () => selectionHookService?.suspend('lock-screen')],
-    ['resume', () => selectionHookService?.scheduleRestart('system-resume')],
-    ['unlock-screen', () => selectionHookService?.scheduleRestart('unlock-screen')]
+    ['resume', () => {
+      if (!isGameModeEnabled()) selectionHookService?.scheduleRestart('system-resume')
+    }],
+    ['unlock-screen', () => {
+      if (!isGameModeEnabled()) selectionHookService?.scheduleRestart('unlock-screen')
+    }]
   ]
   for (const [eventName, listener] of bindings) {
     powerMonitor.on(eventName, listener)
@@ -1028,6 +1059,7 @@ function logSelectionDiagnosticOnce(reason, data = {}) {
 }
 
 function handleTextSelection(data) {
+  if (isGameModeEnabled()) { logSelectionDiagnosticOnce('game-mode', data); return }
   if (isProcessing) { logSelectionDiagnosticOnce('busy', data); return }
   if (!data?.text) { logSelectionDiagnosticOnce('missing-text', data); return }
   if (shouldFilterApp(data.programName)) { logSelectionDiagnosticOnce('filtered-app', data); return }
@@ -1207,6 +1239,7 @@ async function getDisplayCapture(display) {
 }
 
 async function createCaptureWindow(options = {}) {
+  assertGameModeDisabled()
   const createSeq = ++captureCreateSeq
   const performanceStartedAt = performance.now()
   const performanceTiming = {
@@ -1965,6 +1998,7 @@ function positionSearchWindow(win) {
 }
 
 function showSearchWindow() {
+  if (isGameModeEnabled()) return false
   const win = searchWindow
   if (!win || win.isDestroyed()) return false
   win.webContents.send('search:init', getSearchWindowInitPayload())
@@ -1974,6 +2008,7 @@ function showSearchWindow() {
 }
 
 function createSearchWindow() {
+  assertGameModeDisabled()
   if (searchWindow && !searchWindow.isDestroyed()) {
     if (searchWindow.isVisible()) {
       searchWindow.hide()
@@ -2093,6 +2128,7 @@ function getRecordControlBounds(selectionBounds, workArea) {
 }
 
 async function createRecordWindow(options = {}) {
+  assertGameModeDisabled()
   await closeRecordFlow()
   const requestedBounds = options.selectionBounds && {
     x: Math.round(Number(options.selectionBounds.x)),
@@ -2190,6 +2226,7 @@ function togglePinVisibility() {
 }
 
 async function executeFunction(name, payload = {}) {
+  assertGameModeDisabled()
   switch (name) {
     case 'screenshot': await createCaptureWindow({ mode: 'region', source: 'region' }); return true
     case 'screenshotDelay': {
@@ -2246,7 +2283,34 @@ async function executeFunction(name, payload = {}) {
 }
 
 function registerShortcuts() {
-  return shortcutService.registerAll(getSettings().shortcuts)
+  const shortcuts = getSettings().shortcuts
+  if (isGameModeEnabled()) return shortcutService.suspendAll(shortcuts, 'game-mode')
+  return shortcutService.registerAll(shortcuts)
+}
+
+function applyGameModeState(enabled, reason = 'state-change') {
+  const gameMode = enabled === true
+  registerShortcuts()
+  if (gameMode) {
+    selectionHookService?.suspend('game-mode')
+    hideToolbar()
+    if (currentStreamController) cancelToolbarStream(currentStreamController, 'game-mode')
+    if (searchWindow && !searchWindow.isDestroyed() && searchWindow.isVisible()) searchWindow.hide()
+  } else if (selectionHookService) {
+    selectionHookService.start('game-mode-disabled')
+  }
+  createTrayIcon()
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('app:game-mode-changed', gameMode)
+  log('Game mode changed:', { enabled: gameMode, reason })
+  return gameMode
+}
+
+function setGameModeEnabled(enabled, reason = 'tray') {
+  const nextEnabled = enabled === true
+  if (isGameModeEnabled() !== nextEnabled) {
+    settingsService.updateSettings({ system: { gameMode: nextEnabled } })
+  }
+  return applyGameModeState(nextEnabled, reason)
 }
 
 async function stopManagedDataWriters() {
@@ -2291,7 +2355,8 @@ registerSettingsIpc({
   onSettingsUpdated: (patch, settings) => {
     if (patch.shortcuts) registerShortcuts()
     if (patch.system?.autoStart !== undefined) app.setLoginItemSettings({ openAtLogin: !!settings.system.autoStart })
-    if (patch.system?.enableTray !== undefined) createTrayIcon()
+    if (patch.system?.gameMode !== undefined) applyGameModeState(settings.system.gameMode, 'settings-update')
+    else if (patch.system?.enableTray !== undefined) createTrayIcon()
     if (patch.system?.updateChannel !== undefined) updateService?.setChannel(settings.system.updateChannel)
     if (patch.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
     if (patch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
@@ -2306,7 +2371,7 @@ registerSettingsIpc({
     }
   },
   onSettingsReset: (settings) => {
-    registerShortcuts()
+    applyGameModeState(settings.system.gameMode, 'settings-reset')
     broadcastActionAppearance(settings)
     updateService?.setChannel(settings.system.updateChannel)
     selectionHookService?.updateStartOptions({ enableClipboard: settings.selectionToolbar.clipboardFallback })
