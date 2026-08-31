@@ -106,8 +106,8 @@ test('IPC policy exactly covers every main-process registration', () => {
     }
   }
 
-  assert.equal(policies.size, 97)
-  assert.deepEqual(counts, { handle: 63, on: 34 })
+  assert.equal(policies.size, 106)
+  assert.deepEqual(counts, { handle: 70, on: 36 })
   assert.equal(registrations.size, policies.size)
   for (const [channel, policy] of policies) {
     assert.equal(registrations.get(channel), policy.kind, `${channel} policy kind`)
@@ -133,6 +133,7 @@ test('every renderer-to-main preload channel has a matching page policy', () => 
     ['preload-long-overlay.js', 'long-overlay'],
     ['preload-pin.js', 'pin'],
     ['preload-recognition.js', 'recognition'],
+    ['preload-search.js', 'search'],
     ['preload-record.js', 'record'],
     ['preload-record-frame.js', 'record-frame']
   ])

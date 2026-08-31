@@ -47,7 +47,8 @@ const IPC_SURFACES = Object.freeze([
       'settings:reset',
       'config:test-connection',
       'shortcuts:status',
-      'ocr:status'
+      'ocr:status',
+      'search:status'
     ],
     listeners: ['window:minimize', 'window:close']
   },
@@ -128,6 +129,21 @@ const IPC_SURFACES = Object.freeze([
     page: 'recognition/recognition.html',
     handles: ['shell:open-external', 'recognition:table', 'recognition:copy'],
     listeners: ['recognition:ready', 'recognition:close']
+  },
+  {
+    role: 'search',
+    page: 'search/search.html',
+    handles: [
+      'search:query',
+      'search:status',
+      'search:ensure-ready',
+      'search:open-path',
+      'search:reveal-path',
+      'search:copy-path',
+      'search:file-icon',
+      'settings:update'
+    ],
+    listeners: ['search:ready', 'search:close']
   },
   {
     role: 'record',

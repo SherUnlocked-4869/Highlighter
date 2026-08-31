@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   installUpdate: () => ipcRenderer.invoke('update:install'),
   openUpdateDownloadPage: () => ipcRenderer.invoke('update:open-download-page'),
   getOcrStatus: () => ipcRenderer.invoke('ocr:status'),
+  getSearchStatus: () => ipcRenderer.invoke('search:status'),
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowClose: () => ipcRenderer.send('window:close'),
   onNavigate: (callback) => {

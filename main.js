@@ -47,6 +47,7 @@ const { registerUpdateIpc } = require('./main/ipc/update-ipc')
 const { registerDataRootIpc } = require('./main/ipc/data-root-ipc')
 const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
+const { registerSearchIpc } = require('./main/ipc/search-ipc')
 const { SelectionHookService } = require('./main/services/selection-hook-service')
 const { SelectionWindowManager } = require('./main/services/selection-window-manager')
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
@@ -64,6 +65,7 @@ const screenshotDesktop = require('screenshot-desktop')
 const sharp = require('sharp')
 const Store = require('electron-store')
 const { OcrService } = require('./main/services/ocr-service')
+const { EverythingService } = require('./main/services/everything-service')
 const { RecordingService } = require('./main/services/recording-service')
 const { LongCaptureSession } = require('./main/services/long-capture-session')
 const { findNativeDisplay, getNativeDisplayBounds } = require('./main/services/capture-geometry')
@@ -169,6 +171,25 @@ const DEFAULT_SETTINGS = {
     frameRate: 24,
     saveDirectory: ''
   },
+  search: {
+    matchPath: true,
+    maxResults: 600,
+    pageSize: 30,
+    sortMode: 'modified-desc',
+    useBundledEverything: true,
+    categories: [
+      { id: 'all', label: '全部', rule: '' },
+      { id: 'folder', label: '文件夹', rule: 'folder:' },
+      { id: 'excel', label: 'EXCEL', rule: 'ext:xls;xlsx;xlsm;csv' },
+      { id: 'word', label: 'WORD', rule: 'ext:doc;docx;rtf' },
+      { id: 'ppt', label: 'PPT', rule: 'ext:ppt;pptx' },
+      { id: 'pdf', label: 'PDF', rule: 'ext:pdf' },
+      { id: 'image', label: '图片', rule: 'ext:jpg;jpeg;png;gif;webp;bmp;svg;ico' },
+      { id: 'video', label: '视频', rule: 'ext:mp4;mkv;avi;mov;wmv;flv;webm' },
+      { id: 'audio', label: '音频', rule: 'ext:mp3;wav;flac;aac;ogg;m4a' },
+      { id: 'archive', label: '压缩文件', rule: 'ext:zip;rar;7z;tar;gz;iso' }
+    ]
+  },
   ai: {
     schemaVersion: 2,
     maxTokens: 4096,
@@ -200,7 +221,8 @@ const DEFAULT_SETTINGS = {
     fullScreenDraw: '',
     toggleFixedContentVisibility: '',
     showOrHideMainWindow: '',
-    openCaptureHistory: ''
+    openCaptureHistory: '',
+    localSearch: 'Alt+F'
   }
 }
 
@@ -256,7 +278,11 @@ let currentLongCapture = null
 let recordWindow = null
 let recordFrameWindow = null
 let ocrService = null
+let everythingService = null
 let recordingService = null
+let searchWindow = null
+const fileIconCache = new Map()
+const FILE_ICON_CACHE_LIMIT = 256
 const managedRecordingWriters = new ManagedWriterCoordinator()
 let dataRootMigrationInProgress = false
 let isProcessing = false
@@ -519,6 +545,7 @@ function authorizeIpcRole(role, win) {
   if (role === 'long-overlay') return win === currentLongCapture?.overlayWindow
   if (role === 'pin') return pinWindows.has(win)
   if (role === 'recognition') return recognitionWindows.has(win)
+  if (role === 'search') return win === searchWindow
   if (role === 'record') return win === recordWindow
   if (role === 'record-frame') return win === recordFrameWindow && win._recordOwner === recordWindow
   return false
@@ -876,6 +903,7 @@ function createTrayIcon() {
     { label: '截取焦点窗口', click: () => executeFunction('screenshotFocusedWindow') },
     { label: '固定图片到屏幕', click: () => executeFunction('fixedContent') },
     { label: '视频录制', click: () => executeFunction('videoRecord') },
+    { label: '本地搜索', click: () => executeFunction('localSearch') },
     { type: 'separator' },
     { label: '截图历史', click: () => createMainWindow('history') },
     { label: '显示主界面', click: () => createMainWindow('home') },
@@ -1887,6 +1915,132 @@ function createRecognitionWindow(type, dataUrl, options = {}) {
   return win
 }
 
+function getEverythingService() {
+  if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
+  if (everythingService) return everythingService
+  const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
+  const sidecarPath = app.isPackaged
+    ? path.join(resourceRoot, 'native', 'everything-search', 'HighlighterEverything.exe')
+    : path.join(resourceRoot, 'native', 'everything-search', 'bin', 'HighlighterEverything.exe')
+  const bundledEverythingPath = path.join(resourceRoot, 'native', 'everything', 'Everything.exe')
+  everythingService = new EverythingService({
+    sidecarPath,
+    bundledEverythingPath,
+    runtimeEverythingDir: path.join(activePaths?.runtime || path.join(app.getPath('userData'), 'runtime'), 'everything'),
+    getUseBundledEverything: () => getSettings().search.useBundledEverything !== false,
+    onStatusChange: (status) => {
+      if (searchWindow && !searchWindow.isDestroyed()) {
+        searchWindow.webContents.send('search:status-changed', status)
+      }
+    },
+    log
+  })
+  return everythingService
+}
+
+function getSearchWindowInitPayload() {
+  const settings = getSettings()
+  return {
+    mainColor: settings.mainColor || '#1677ff',
+    dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors),
+    search: settings.search
+  }
+}
+
+function positionSearchWindow(win) {
+  try {
+    const cursor = screen.getCursorScreenPoint()
+    const display = screen.getDisplayNearestPoint(cursor)
+    const [width, height] = win.getSize()
+    const area = display.workArea
+    win.setPosition(
+      Math.round(area.x + Math.max(0, (area.width - width) / 2)),
+      Math.round(area.y + Math.max(0, (area.height - height) / 3)),
+      false
+    )
+  } catch (error) {
+    log('Search window positioning failed:', error.message)
+  }
+  positionAutomationWindow(win)
+}
+
+function showSearchWindow() {
+  const win = searchWindow
+  if (!win || win.isDestroyed()) return false
+  win.webContents.send('search:init', getSearchWindowInitPayload())
+  if (!win.isVisible()) win.show()
+  win.focus()
+  return true
+}
+
+function createSearchWindow() {
+  if (searchWindow && !searchWindow.isDestroyed()) {
+    if (searchWindow.isVisible()) {
+      searchWindow.hide()
+      return searchWindow
+    }
+    showSearchWindow()
+    return searchWindow
+  }
+  const pagePath = path.join(__dirname, 'search', 'search.html')
+  const win = createLocalWindow(pagePath, {
+    width: 840,
+    height: 620,
+    minWidth: 620,
+    minHeight: 420,
+    frame: false,
+    show: false,
+    title: 'Highlighter 本地搜索',
+    backgroundColor: '#f5f6f8',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-search.js')
+    }
+  })
+  searchWindow = win
+  win._searchInit = getSearchWindowInitPayload()
+  positionSearchWindow(win)
+  win.loadFile(pagePath)
+  win.on('blur', () => {
+    if (searchWindow === win && !win.isDestroyed() && win.isVisible()) win.hide()
+  })
+  win.on('closed', () => { if (searchWindow === win) searchWindow = null })
+  return win
+}
+
+async function openSearchTarget(target, { reveal = false } = {}) {
+  const value = String(target || '').trim()
+  if (!value || value.includes('\0') || !path.isAbsolute(value)) {
+    throw new Error('无效的文件路径')
+  }
+  if (reveal) {
+    shell.showItemInFolder(value)
+    return { ok: true }
+  }
+  const result = await shell.openPath(value)
+  if (result) throw new Error(result)
+  return { ok: true }
+}
+
+async function getSearchFileIcon(samplePath) {
+  const value = String(samplePath || '').trim()
+  if (!value || value.includes('\0') || !path.isAbsolute(value)) return null
+  const extension = path.extname(value).toLowerCase()
+  if (!extension) return null
+  if (fileIconCache.has(extension)) return fileIconCache.get(extension)
+  let dataUrl = null
+  try {
+    const icon = await app.getFileIcon(value, { size: 'small' })
+    if (icon && !icon.isEmpty()) dataUrl = icon.toDataURL()
+  } catch (error) {
+    log('File icon lookup failed:', error.message)
+  }
+  if (fileIconCache.size >= FILE_ICON_CACHE_LIMIT) {
+    fileIconCache.delete(fileIconCache.keys().next().value)
+  }
+  fileIconCache.set(extension, dataUrl)
+  return dataUrl
+}
+
 function pinFromCapture(event, imageData, meta) {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
   const editingPinWindow = captureWindow?._editingPinWindow
@@ -2084,6 +2238,7 @@ async function executeFunction(name, payload = {}) {
       return true
     }
     case 'openCaptureHistory': createMainWindow('history'); return true
+    case 'localSearch': createSearchWindow(); return true
     case 'translation': createMainWindow('translation'); return true
     case 'chat': createMainWindow('chat'); return true
     default: throw new Error(`未知功能：${name}`)
@@ -2141,6 +2296,11 @@ registerSettingsIpc({
     if (patch.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
     if (patch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
     if (patch.theme !== undefined || patch.mainColor !== undefined) broadcastActionAppearance(settings)
+    if (patch.search) {
+      if (searchWindow && !searchWindow.isDestroyed()) {
+        searchWindow.webContents.send('search:settings-changed', getSearchWindowInitPayload())
+      }
+    }
     if (patch.selectionToolbar?.clipboardFallback !== undefined) {
       selectionHookService?.updateStartOptions({ enableClipboard: settings.selectionToolbar.clipboardFallback })
     }
@@ -2150,6 +2310,9 @@ registerSettingsIpc({
     broadcastActionAppearance(settings)
     updateService?.setChannel(settings.system.updateChannel)
     selectionHookService?.updateStartOptions({ enableClipboard: settings.selectionToolbar.clipboardFallback })
+    if (searchWindow && !searchWindow.isDestroyed()) {
+      searchWindow.webContents.send('search:settings-changed', getSearchWindowInitPayload())
+    }
   },
   validateApiKey: async (input) => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
@@ -2658,6 +2821,46 @@ const captureIpcController = {
 registerCaptureIpc({
   ipcMain: secureIpcMain,
   controller: captureIpcController
+})
+
+const searchIpcController = {
+  ready: (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || win !== searchWindow || win.isDestroyed()) return
+    event.sender.send('search:init', win._searchInit || getSearchWindowInitPayload())
+    if (!win.isVisible()) win.show()
+    win.focus()
+  },
+  close: (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win && win === searchWindow && !win.isDestroyed() && win.isVisible()) win.hide()
+  },
+  query: (_event, payload) => {
+    const search = String(payload?.search ?? '')
+    if (search.length > 2048) throw new Error('查询内容过长')
+    return getEverythingService().query({
+      search,
+      maxResults: payload?.maxResults,
+      sortMode: payload?.sortMode,
+      matchPath: payload?.matchPath
+    })
+  },
+  getStatus: () => getEverythingService().getStatus(),
+  ensureReady: () => getEverythingService().ensureReady(),
+  openPath: (_event, payload) => openSearchTarget(payload?.path),
+  revealPath: (_event, payload) => openSearchTarget(payload?.path, { reveal: true }),
+  copyPath: (_event, payload) => {
+    const value = String(payload?.path || '')
+    if (!value || value.includes('\0')) throw new Error('无效的文件路径')
+    clipboard.writeText(value)
+    return { ok: true }
+  },
+  getFileIcon: (_event, payload) => getSearchFileIcon(payload?.path)
+}
+
+registerSearchIpc({
+  ipcMain: secureIpcMain,
+  controller: searchIpcController
 })
 
 secureIpcMain.on('pin:ready', (event) => {
@@ -3271,6 +3474,7 @@ else {
       .finally(() => { recordingService = null })
     closeLongCapture()
     if (ocrService) { ocrService.stop(); ocrService = null }
+    if (everythingService) { everythingService.stop(); everythingService = null }
     disposeSelectionHook()
     if (tray) { tray.destroy(); tray = null }
   })
