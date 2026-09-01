@@ -2928,7 +2928,7 @@ const searchIpcController = {
       matchPath: payload?.matchPath
     })
   },
-  getStatus: () => getEverythingService().getStatus(),
+  getStatus: () => getEverythingService().refreshStatus(),
   ensureReady: () => getEverythingService().ensureReady(),
   openPath: (_event, payload) => openSearchTarget(payload?.path),
   revealPath: (_event, payload) => openSearchTarget(payload?.path, { reveal: true }),

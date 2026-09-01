@@ -338,3 +338,93 @@ test('status snapshots report sidecar availability from the filesystem', async (
   await fsp.writeFile(sidecarPath, 'sidecar')
   assert.equal(service.getStatus().available, true)
 })
+
+test('refreshStatus probes the sidecar and surfaces a running Everything', async () => {
+  const { service, child } = createService({}, {
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: true, version: '1.4.1.1032', ipcAvailable: true })
+  })
+  const status = await service.refreshStatus()
+  assert.equal(status.running, true)
+  assert.equal(status.version, '1.4.1.1032')
+  assert.equal(status.phase, 'ready')
+  assert.ok(child.requests.some((item) => item.action === 'status'))
+})
+
+test('refreshStatus marks waiting when Everything runs without a loaded index', async () => {
+  const { service } = createService({}, {
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: false, ipcAvailable: true, version: '1.4' })
+  })
+  const status = await service.refreshStatus()
+  assert.equal(status.running, true)
+  assert.equal(status.phase, 'waiting')
+})
+
+test('refreshStatus reuses the recent probe while the sidecar stays active', async () => {
+  let statusCount = 0
+  const { service } = createService({}, {
+    status: (request, child) => {
+      statusCount += 1
+      child.respond(request, { running: true, dbLoaded: true, version: '1.4' })
+    }
+  })
+  await service.refreshStatus()
+  const second = await service.refreshStatus()
+  assert.equal(second.running, true)
+  assert.equal(statusCount, 1, 'no duplicate status request while active')
+})
+
+test('refreshStatus honors the throttle after the sidecar idles away', async () => {
+  let statusCount = 0
+  const { service } = createService({}, {
+    status: (request, child) => {
+      statusCount += 1
+      child.respond(request, { running: true, dbLoaded: true })
+    }
+  })
+  await service.refreshStatus()
+  service.stop()
+  const cached = await service.refreshStatus()
+  assert.equal(cached.running, false)
+  assert.equal(statusCount, 1, 'throttled within the min interval')
+})
+
+test('refreshStatus degrades to the cached status when the sidecar errors', async () => {
+  const { service } = createService({}, {
+    status: (request, child) => child.fail(request, 'send-failed', 'probe blocked')
+  })
+  const status = await service.refreshStatus()
+  assert.equal(status.running, false)
+  assert.equal(status.phase, 'idle')
+})
+
+test('refreshStatus never spawns the bundled Everything even when nothing is running', async () => {
+  const { service } = createService({
+    bundledEverythingPath: path.join(os.tmpdir(), 'missing-everything.exe')
+  }, {
+    status: (request, child) => child.respond(request, { running: false, dbLoaded: false })
+  })
+  const status = await service.refreshStatus()
+  assert.equal(status.running, false)
+  assert.equal(status.phase, 'idle')
+  assert.ok(service.spawnCalls.every((call) => call.args.length === 0), 'bundled Everything not spawned')
+})
+
+test('ensureReady fails fast when an instance is detected but unreachable', async () => {
+  const { service } = createService({
+    bundledEverythingPath: path.join(os.tmpdir(), 'missing-everything.exe')
+  }, {
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: false, ipcAvailable: false })
+  })
+  await assert.rejects(service.ensureReady(), /无法与之通信/)
+  assert.equal(service.status.phase, 'error')
+  assert.ok(service.spawnCalls.every((call) => call.args.length === 0), 'bundled Everything not spawned')
+})
+
+test('ensureReady still reaches ready when ipcAvailable is false but the probe query answers', async () => {
+  const { service } = createService({}, {
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: true, ipcAvailable: false, version: '1.5.0.1414' })
+  })
+  const status = await service.ensureReady()
+  assert.equal(status.phase, 'ready')
+  assert.equal(status.version, '1.5.0.1414')
+})

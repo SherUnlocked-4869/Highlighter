@@ -358,6 +358,12 @@ struct TargetInfo {
 fn resolve_target(reply: &ReplyWindow) -> Option<TargetInfo> {
     let candidates = enumerate_ipc_windows();
     let mut best: Option<(i64, TargetInfo)> = None;
+    // A window carrying Everything's exclusive IPC class proves an instance is
+    // running even when both probe channels stay silent (UIPI filters them
+    // when Everything runs elevated and the instance does not re-allow
+    // WM_COPYDATA). Keep the first fully silent candidate so status can still
+    // report `running` — only its version/db are unknowable.
+    let mut silent_fallback: Option<TargetInfo> = None;
     for (hwnd, class_name) in candidates {
         let minor = send_ipc_command(hwnd, IPC_GET_MINOR_VERSION);
         let version = minor.map(|_| {
@@ -373,6 +379,15 @@ fn resolve_target(reply: &ReplyWindow) -> Option<TargetInfo> {
         let probe_total = probe_result.as_ref().copied().unwrap_or(0);
         let probe_failed = matches!(&probe_result, Err(message) if message == "send-failed");
         if !ipc_available && version.is_none() && probe_total == 0 && probe_failed {
+            if silent_fallback.is_none() {
+                silent_fallback = Some(TargetInfo {
+                    hwnd,
+                    class_name,
+                    version: None,
+                    db_loaded: false,
+                    probe_total: 0,
+                });
+            }
             continue;
         }
         let content_score = i64::from(probe_total.min(100));
@@ -397,7 +412,7 @@ fn resolve_target(reply: &ReplyWindow) -> Option<TargetInfo> {
             best = Some(candidate);
         }
     }
-    best.map(|(_, info)| info)
+    best.map(|(_, info)| info).or(silent_fallback)
 }
 
 // ==================== Query execution ====================

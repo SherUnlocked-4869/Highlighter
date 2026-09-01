@@ -7,6 +7,7 @@ const READY_TIMEOUT_MS = 30000
 const QUERY_TIMEOUT_MS = 8000
 const STATUS_TIMEOUT_MS = 5000
 const READY_CACHE_MS = 2000
+const STATUS_REFRESH_MIN_INTERVAL_MS = 5000
 const DEFAULT_CACHE_LIMIT = 24
 const DEFAULT_IDLE_TIMEOUT_MS = 120000
 const SORT_MODES = new Set([
@@ -40,6 +41,8 @@ class EverythingService {
     this.process = null
     this.startPromise = null
     this.ensureReadyPromise = null
+    this.refreshPromise = null
+    this.lastStatusProbeAt = 0
     this.ready = false
     this.stopping = false
     this.stdoutBuffer = ''
@@ -63,6 +66,38 @@ class EverythingService {
 
   getStatus() {
     return { ...this.status, available: fs.existsSync(this.sidecarPath) }
+  }
+
+  // Passive status reads never probe, so surfaces like the settings page would
+  // otherwise show a stale `running:false` until a search window opens. Probe
+  // on demand here — lightweight status only, never spawning the bundled
+  // Everything (that stays a search-window behavior).
+  async refreshStatus() {
+    if (this.refreshPromise) return this.refreshPromise
+    const sidecarActive = !!(this.process && !this.process.killed && this.ready)
+    const probedRecently = Date.now() - (this.lastStatusProbeAt || 0) < STATUS_REFRESH_MIN_INTERVAL_MS
+    if (sidecarActive || probedRecently) return this.getStatus()
+    this.refreshPromise = (async () => {
+      try {
+        await this.ensureStarted()
+        const snapshot = await this.request({ action: 'status' }, STATUS_TIMEOUT_MS)
+        this.lastStatusProbeAt = Date.now()
+        const running = !!snapshot?.running
+        const ready = running && !!snapshot?.dbLoaded
+        this.applySidecarStatus(snapshot, {
+          managedByHighlighter: !!this.managedEverything,
+          phase: ready ? 'ready' : (running ? 'waiting' : 'idle'),
+          message: ready ? 'Everything 已就绪' : (running ? 'Everything 正在运行，索引尚未就绪' : '')
+        })
+        this.scheduleIdleStop()
+      } catch (error) {
+        this.log('Everything status refresh failed:', error.message)
+      }
+      return this.getStatus()
+    })().finally(() => {
+      this.refreshPromise = null
+    })
+    return this.refreshPromise
   }
 
   setStatus(patch) {
@@ -291,6 +326,15 @@ class EverythingService {
       throw new Error('Everything 组件不可用')
     }
     this.applySidecarStatus(snapshot, { managedByHighlighter: !!this.managedEverything })
+
+    if (snapshot.running && !snapshot.dbLoaded && snapshot.ipcAvailable === false) {
+      // The IPC window class matched but both probe channels stayed silent —
+      // typically an integrity-level mismatch. Fail fast instead of waiting
+      // 30s or shadowing the user's instance with the bundled copy.
+      const message = '检测到 Everything，但无法与之通信（可能正在加载索引或权限不一致），请尝试以相同权限运行 Highlighter 与 Everything'
+      this.setStatus({ phase: 'error', message })
+      throw new Error(message)
+    }
 
     if (snapshot.running && snapshot.dbLoaded) {
       this.lastReadyAt = Date.now()

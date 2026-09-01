@@ -1329,7 +1329,12 @@ function renderLocalSearch() {
       statusDetail.textContent = status?.available ? '未检测到运行中的 Everything，打开搜索窗口时将自动启动内置便携版' : '本地组件缺失，请重新安装应用'
       return
     }
-    statusLabel.textContent = status.phase === 'ready' ? '已就绪' : (status.phase === 'error' ? '异常' : '检测中')
+    if (status.ipcAvailable === false) {
+      statusLabel.textContent = '运行中'
+      statusDetail.textContent = '检测到 Everything，但无法与之通信（可能权限不一致，请以相同权限运行）'
+      return
+    }
+    statusLabel.textContent = status.phase === 'ready' ? '已就绪' : (status.phase === 'error' ? '异常' : (status.phase === 'waiting' ? '启动中' : '检测中'))
     statusDetail.textContent = status.version ? `Everything v${status.version}${Number(status.probeTotal) === 0 ? ' · 索引暂无内容' : ''}` : 'Everything 运行中'
   }).catch(() => {
     const statusLabel = document.getElementById('searchStatus')
