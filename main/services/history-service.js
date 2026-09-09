@@ -1,12 +1,18 @@
 const fs = require('fs')
 const path = require('path')
+const { ensureDirectory: ensureDirectorySync } = require('./fs-utils')
+const { DATA_URL_PATTERN, DATA_URL_PREFIX } = require('./image-buffer')
+const {
+  CAPTURE_PREFIX,
+  LONG_CAPTURE_PREFIX,
+  OWNED_CAPTURE_FILE,
+  OWNED_THUMBNAIL_FILE
+} = require('./capture-naming')
 
 const MAX_HISTORY_QUERY_LENGTH = 200
 const MAX_HISTORY_BATCH_SIZE = 500
 const DEFAULT_HISTORY_PAGE_SIZE = 40
 const MAX_HISTORY_PAGE_SIZE = 100
-const OWNED_CAPTURE_FILE = /^Highlighter(?:_Long)?_\d{4}-\d{2}-\d{2}_[\d-]+\.png$/i
-const OWNED_THUMBNAIL_FILE = /^\d{10,}-[a-z0-9]+-thumb\.png$/i
 
 function normalizeHistoryFilter(value = {}) {
   const filter = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -80,8 +86,7 @@ class HistoryService {
   }
 
   ensureDirectory(directory) {
-    fs.mkdirSync(directory, { recursive: true })
-    return directory
+    return ensureDirectorySync(directory)
   }
 
   readHistory() {
@@ -100,7 +105,7 @@ class HistoryService {
 
   historyImagePath(meta = {}) {
     const directory = this.ensureDirectory(this.getSettings().screenshot.historyDirectory)
-    const prefix = meta.longCapture ? 'Highlighter_Long' : 'Highlighter'
+    const prefix = meta.longCapture ? LONG_CAPTURE_PREFIX : CAPTURE_PREFIX
     return path.join(directory, this.makeCaptureName(prefix))
   }
 
@@ -149,7 +154,7 @@ class HistoryService {
     const thumbnailPath = this.ensureThumbnail(id)
     if (!thumbnailPath) return ''
     try {
-      return `data:image/png;base64,${fs.readFileSync(thumbnailPath).toString('base64')}`
+      return `${DATA_URL_PREFIX}${fs.readFileSync(thumbnailPath).toString('base64')}`
     } catch (error) {
       this.log('History thumbnail read failed:', thumbnailPath, error.message)
       return ''
@@ -264,7 +269,7 @@ class HistoryService {
 
   persistDataUrl(dataUrl, meta = {}) {
     this.assertWritable()
-    const buffer = Buffer.from(String(dataUrl).replace(/^data:image\/[^;]+;base64,/, ''), 'base64')
+    const buffer = Buffer.from(String(dataUrl).replace(DATA_URL_PATTERN, ''), 'base64')
     return this.persistImageBuffer(buffer, meta)
   }
 
@@ -275,9 +280,14 @@ class HistoryService {
     const id = this.createId()
     const filePath = this.historyImagePath(meta)
     fs.writeFileSync(filePath, buffer)
-    const image = typeof this.nativeImage.createFromBuffer === 'function'
-      ? this.nativeImage.createFromBuffer(buffer)
-      : this.nativeImage.createFromPath(filePath)
+    // Callers that already decoded the buffer (clipboard copy) pass it in so
+    // the full PNG is not decoded a second time on the click path.
+    const provided = meta.image
+    const image = provided && typeof provided.getSize === 'function'
+      ? provided
+      : (typeof this.nativeImage.createFromBuffer === 'function'
+        ? this.nativeImage.createFromBuffer(buffer)
+        : this.nativeImage.createFromPath(filePath))
     const size = image.getSize()
     let thumbnailPath = ''
     try {
