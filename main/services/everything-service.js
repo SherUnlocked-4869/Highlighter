@@ -38,6 +38,9 @@ class EverythingService {
       execFile(file, args, { windowsHide: true }, (error) => (error ? reject(error) : resolve()))
     }))
     this.spawn = options.spawn || spawn
+    // E2E-only: replaces the whole sidecar round-trip with a deterministic
+    // result producer so renderer specs do not depend on a host index.
+    this.e2eQuery = typeof options.e2eQuery === 'function' ? options.e2eQuery : null
     this.process = null
     this.startPromise = null
     this.ensureReadyPromise = null
@@ -65,7 +68,24 @@ class EverythingService {
   }
 
   getStatus() {
+    if (this.e2eQuery) return this.getFakeStatus()
     return { ...this.status, available: fs.existsSync(this.sidecarPath) }
+  }
+
+  // The fake query path never starts the sidecar, so readiness and status must
+  // be answered locally or the search window would wait on a process that is
+  // deliberately absent.
+  getFakeStatus() {
+    return {
+      phase: 'ready',
+      message: 'Everything 已就绪',
+      running: true,
+      dbLoaded: true,
+      version: 'e2e',
+      probeTotal: 1,
+      managedByHighlighter: false,
+      available: true
+    }
   }
 
   // Passive status reads never probe, so surfaces like the settings page would
@@ -73,6 +93,7 @@ class EverythingService {
   // on demand here — lightweight status only, never spawning the bundled
   // Everything (that stays a search-window behavior).
   async refreshStatus() {
+    if (this.e2eQuery) return this.getFakeStatus()
     if (this.refreshPromise) return this.refreshPromise
     const sidecarActive = !!(this.process && !this.process.killed && this.ready)
     const probedRecently = Date.now() - (this.lastStatusProbeAt || 0) < STATUS_REFRESH_MIN_INTERVAL_MS
@@ -303,6 +324,7 @@ class EverythingService {
   }
 
   async ensureReady(options = {}) {
+    if (this.e2eQuery) return this.getFakeStatus()
     if (this.ensureReadyPromise) return this.ensureReadyPromise
     this.ensureReadyPromise = this.ensureReadyInternal(options).finally(() => {
       this.ensureReadyPromise = null
@@ -376,6 +398,7 @@ class EverythingService {
       sortMode: SORT_MODES.has(params?.sortMode) ? params.sortMode : 'modified-desc',
       matchPath: !!params?.matchPath
     }
+    if (this.e2eQuery) return this.e2eQuery(normalized)
     const cacheKey = JSON.stringify(normalized)
     const cached = this.resultCache.get(cacheKey)
     if (cached) {
