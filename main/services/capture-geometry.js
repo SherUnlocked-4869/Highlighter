@@ -39,4 +39,14 @@ function findNativeDisplay(displays, expectedBounds, tolerance = 2) {
   return matches[0]?.display || null
 }
 
-module.exports = { findNativeDisplay, getNativeDisplayBounds }
+// Width/height live at fixed offsets in the PNG IHDR chunk (signature 8 bytes,
+// length 4, "IHDR" 4, then width and height as big-endian uint32). Reading them
+// directly lets a wrong-sized capture fail without decoding a full-screen bitmap.
+function readPngSize(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 24) return null
+  if (buffer.readUInt32BE(0) !== 0x89504e47 || buffer.readUInt32BE(4) !== 0x0d0a1a0a) return null
+  if (buffer.toString('ascii', 12, 16) !== 'IHDR') return null
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) }
+}
+
+module.exports = { findNativeDisplay, getNativeDisplayBounds, readPngSize }
