@@ -94,12 +94,15 @@ test('open action treats the selection as a browser destination without validati
 
 test('config page exposes thinking controls and the optional open action', () => {
   const script = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
+  const actionMeta = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar-action-meta.js'), 'utf8')
   assert.match(script, /id="translateThinking"/)
   assert.match(script, /id="explainThinking"/)
   assert.match(script, /data-custom-thinking/)
   assert.match(script, /value="max">最高/)
   assert.match(script, /toolbarThinking/)
-  assert.match(script, /open: \{ label: '跳转'/)
+  assert.match(script, /window\.toolbarActionMeta\.TOOLBAR_ACTION_META/)
+  assert.match(actionMeta, /label: '跳转'/)
+  assert.match(actionMeta, /optional: true/)
 })
 
 test('main process resolves thinking per action and opens links for the open action', () => {
