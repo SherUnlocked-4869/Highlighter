@@ -73,7 +73,7 @@ npm run bench:performance -- --corpus <corpus-dir> --output docs/performance/cor
 
 ## 5. 当前状态
 
-- 工具已就绪：`--corpus` 参数、`readCorpusCase`、`benchmarkCorpus`，测试见 `test/performance-benchmark.test.js`。
+- 工具已就绪并随 2.2.4 发布：`--corpus` 参数、`readCorpusCase`、`benchmarkCorpus`，测试见 `test/performance-benchmark.test.js`。
 - 真实语料**尚未采集**。在语料到位并记录 before/after 之前，**不修改 `matcher.js` 算法核心**（金字塔/粗到精）。
 - 已知合成基准数据（供对照）：垂直 4K 56.83ms、水平 4K 86.00ms，门槛 50ms P95。
 

@@ -2,6 +2,8 @@
 
 - 日期：2026-09-09
 - 基线：`master` @ `c864cd1`（工作区 `package.json` 未提交改为 2.2.4）
+- 状态：**已实施并验证**（PR #2 合并，master CI 全绿，分支保护已开启，安装包实机验收通过）
+- 验收记录：`docs/releases/2026-09-09-v2.2.4-build-acceptance.md`
 - 范围：5 项，均已用代码证据核实
 
 ---
@@ -205,3 +207,40 @@
 2. 代码改动按第 6 节顺序分提交
 3. 新增 `docs/performance/2026-09-09-long-capture-corpus.md`（第 4 项）
 4. 各测试文件的同步更新
+
+---
+
+## 9. 实施结果（2026-09-09 完成）
+
+分支 `fix/ci-ocr-capture-dedup`，PR #2，合并提交 `985e321`。分 6 个提交落地。
+
+### 9.1 与计划的偏差
+
+| 项 | 计划 | 实际 | 原因 |
+|---|---|---|---|
+| 第 1 项 | 只修 e2e | 同时修审计门禁 | 审计是 CI 第 4 步，**先于** e2e，它自己就让 master 失败；仅修 e2e 不足以转绿 |
+| 第 4 项 | 修 `appendPreview` O(n²) | **不改算法**，只加语料工具 | 实测否定 O(n²)：预览受 1200px 上限约束，峰值像素约 192k，单帧 0.058–0.107 ms。按「收益不足 10% 不保留」规则放弃 |
+| 第 4 项 | 移除 `native/scroll-driver/` | 未做 | 空目录未被 git 跟踪，无实际影响 |
+
+### 9.2 依赖修复
+
+- `npm audit fix` 升级 `@xmldom/xmldom`、`fast-uri`、`js-yaml`
+- `sharp` 0.35.3 → 0.35.4（补丁级，仍在原 `^0.35.3` 范围内）
+- `adm-zip` 无上游修复版本（advisory 范围 `>=0.5.9 <=0.6.0`，最新版本身在范围内；npm 建议的"修复"是降级到 0.5.8，低于项目下限）。漏洞路径是解压跟随符号链接，本项目只用它写诊断 ZIP。改为 `scripts/audit-dependencies.js` 的显式白名单，未列入的漏洞与失效豁免项仍会失败
+
+### 9.3 验证
+
+| 门禁 | 结果 |
+|---|---|
+| `audit:dependencies` | PASS |
+| `check` | PASS（171 文件） |
+| `check:version` | PASS（2.2.4） |
+| `npm test` | 444/444 |
+| `test:e2e` | 5/5（25 s；此前 1 失败 / 2.7 min） |
+| `test:coverage` | PASS（聚合 92.91% > 85%；`ocr-service.js` 78.81% > 60%；关键三项 > 90%） |
+| `test:long-capture` | PASS |
+| CI（PR #2 与合并后 master） | 全绿，含此前从未执行的覆盖率、长截图、打包与 fuse 校验 |
+| 分支保护 | 已开启，要求 `Check and test`（strict） |
+
+实机验收（安装 `Highlighter-Setup-2.2.4.exe` 后）全部通过，详见 `docs/releases/2026-09-09-v2.2.4-build-acceptance.md`。
+现场确认：`OCR model validation 9ms`、`capture.history-persist action=pin 54ms`、`capture.interactive mode=image captureMs=0.05ms`、搜索走真实 Everything 返回 600 条。

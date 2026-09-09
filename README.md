@@ -177,7 +177,8 @@ Highlighter/
 | `npm start` | 构建原生组件并启动应用 |
 | `npm test` | 运行自动化测试 |
 | `npm run check` | 检查 JavaScript 语法 |
-| `npm run bench:performance` | 采集本机性能基线 |
+| `npm run audit:dependencies` | 依赖漏洞门禁（含显式豁免白名单） |
+| `npm run bench:performance` | 采集本机性能基线；加 `-- --corpus <目录>` 可用真实长截图语料 |
 | `npm run build:native` | 重新构建全部原生组件 |
 | `npm run build:win` | 构建 Windows NSIS 安装包 |
 | `npm run build:win:portable` | 构建 Windows 便携版本 |
