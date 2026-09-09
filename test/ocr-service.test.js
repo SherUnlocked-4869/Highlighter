@@ -140,6 +140,51 @@ test('validates the OCR runtime, model manifest, sizes, and hashes', async (t) =
   assert.ok(service.getStatus().missingFiles.includes('onnxruntime.dll'))
 })
 
+test('caches model digests by file identity so restarts skip re-hashing', async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'highlighter-ocr-cache-'))
+  t.after(() => fsp.rm(root, { recursive: true, force: true }))
+  const sidecarPath = path.join(root, 'HighlighterOcrSidecar.exe')
+  const modelDir = path.join(root, 'models')
+  await fsp.mkdir(modelDir)
+  await fsp.writeFile(sidecarPath, 'sidecar')
+  await fsp.writeFile(path.join(root, 'onnxruntime.dll'), 'runtime')
+  const files = {}
+  for (const [index, name] of MODEL_FILES.entries()) {
+    const content = Buffer.from(`model-${index}`)
+    await fsp.writeFile(path.join(modelDir, name), content)
+    files[name] = {
+      name,
+      size: content.length,
+      sha256: crypto.createHash('sha256').update(content).digest('hex')
+    }
+  }
+  await fsp.writeFile(path.join(modelDir, 'model.json'), JSON.stringify({ files }))
+  const service = new OcrService({ sidecarPath, modelDir, tempDir: path.join(root, 'temp') })
+
+  const hashCalls = []
+  const realCreateHash = crypto.createHash
+  crypto.createHash = (algorithm) => {
+    hashCalls.push(algorithm)
+    return realCreateHash(algorithm)
+  }
+  t.after(() => { crypto.createHash = realCreateHash })
+  try {
+    service.validateFiles()
+    const firstPass = hashCalls.length
+    assert.equal(firstPass, MODEL_FILES.length, 'first validation hashes every model')
+
+    service.validateFiles()
+    assert.equal(hashCalls.length, firstPass, 'second validation reuses cached digests')
+  } finally {
+    crypto.createHash = realCreateHash
+  }
+
+  // A same-size rewrite changes identity, so the digest must be recomputed and
+  // the tampered file must still be rejected.
+  await fsp.writeFile(path.join(modelDir, MODEL_FILES[0]), Buffer.from('model-X'))
+  assert.throws(() => service.validateFiles(), /校验失败/)
+})
+
 test('reports missing and malformed OCR model components', async (t) => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'highlighter-ocr-invalid-'))
   t.after(() => fsp.rm(root, { recursive: true, force: true }))
