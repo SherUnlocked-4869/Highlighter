@@ -27,6 +27,7 @@ class OcrService {
     this.tempDir = path.resolve(options.tempDir)
     this.idleTimeoutMs = Number.isFinite(Number(options.idleTimeoutMs)) ? Number(options.idleTimeoutMs) : 30000
     this.idleTimer = null
+    this.validatedModelHashes = new Map()
   }
 
   getStatus() {
@@ -63,8 +64,16 @@ class OcrService {
       const stat = fs.statSync(filePath)
       if (Number(item.size) && stat.size !== Number(item.size)) throw new Error(`OCR 模型大小异常：${item.name}`)
       if (item.sha256) {
+        // Hashing all ~16 MB of models on every sidecar start blocks the main
+        // process; the sidecar is idle-stopped after 30s, so this repeated for
+        // every capture burst. Existence and size checks above still run every
+        // time — only the expensive digest is memoized against file identity.
+        const key = `${filePath}\u0000${stat.size}\u0000${stat.mtimeMs}\u0000${stat.ino ?? ''}`
+        const expected = String(item.sha256).toLowerCase()
+        if (this.validatedModelHashes.get(key) === expected) continue
         const actual = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
-        if (actual !== String(item.sha256).toLowerCase()) throw new Error(`OCR 模型校验失败：${item.name}`)
+        if (actual !== expected) throw new Error(`OCR 模型校验失败：${item.name}`)
+        this.validatedModelHashes.set(key, expected)
       }
     }
   }
@@ -82,7 +91,10 @@ class OcrService {
   }
 
   start() {
+    const validationStarted = Date.now()
     this.validateFiles()
+    const validationMs = Date.now() - validationStarted
+    if (validationMs >= 5) this.log('OCR model validation', `${validationMs}ms`)
     this.stopping = false
     this.ready = false
     this.stdoutBuffer = ''

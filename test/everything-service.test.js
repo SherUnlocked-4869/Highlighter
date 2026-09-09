@@ -428,3 +428,32 @@ test('ensureReady still reaches ready when ipcAvailable is false but the probe q
   assert.equal(status.phase, 'ready')
   assert.equal(status.version, '1.5.0.1414')
 })
+
+test('e2eQuery short-circuits the sidecar for query, status, and readiness', async () => {
+  const calls = []
+  const { service } = createService({
+    overrides: {
+      e2eQuery: (params) => {
+        calls.push(params)
+        return { total: 1, items: [{ name: params.search, fullPath: `C:${params.search}` }] }
+      }
+    }
+  })
+
+  const result = await service.query({ search: 'package.json', maxResults: 600 })
+  assert.deepEqual(result.items, [{ name: 'package.json', fullPath: 'C:package.json' }])
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].search, 'package.json')
+  assert.equal(calls[0].maxResults, 600)
+  assert.equal(calls[0].sortMode, 'modified-desc')
+
+  const status = await service.refreshStatus()
+  assert.equal(status.phase, 'ready')
+  assert.equal(status.running, true)
+  assert.equal(status.dbLoaded, true)
+
+  const ready = await service.ensureReady()
+  assert.equal(ready.phase, 'ready')
+
+  assert.deepEqual(service.spawnCalls, [], 'the fake path never spawns a sidecar')
+})

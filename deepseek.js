@@ -11,10 +11,13 @@ const {
   buildChatStreamRequest,
   createAiProtocolAdapter
 } = require('./main/services/ai-protocol-adapters')
+const {
+  DEFAULT_AI_MODEL: DEEPSEEK_DEFAULT_MODEL,
+  DEFAULT_DEEPSEEK_BASE_URL: DEEPSEEK_BASE_URL,
+  AI_PROTOCOLS: AI_PROTOCOL_LIST
+} = require('./main/services/ai-providers')
 
-const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
-const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash'
-const AI_PROTOCOLS = new Set(['openai-chat', 'openai-responses'])
+const AI_PROTOCOLS = new Set(AI_PROTOCOL_LIST)
 const OCR_TRANSLATION_TIMEOUT_MS = 30000
 
 function cleanText(value, maximumLength = 2048) {

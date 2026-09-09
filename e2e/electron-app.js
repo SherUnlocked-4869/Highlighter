@@ -22,7 +22,8 @@ async function launchHighlighter({ dataRoot, artifactsDir }) {
     env: {
       ...process.env,
       HIGHLIGHTER_E2E: '1',
-      HIGHLIGHTER_E2E_DATA_ROOT: dataRoot
+      HIGHLIGHTER_E2E_DATA_ROOT: dataRoot,
+      HIGHLIGHTER_E2E_FAKE_EVERYTHING: '1'
     }
   })
 

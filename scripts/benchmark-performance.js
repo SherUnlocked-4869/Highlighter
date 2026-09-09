@@ -233,10 +233,106 @@ function collectArtifactSnapshot(projectRoot) {
   }
 }
 
+// Real-world corpus support.
+//
+// The synthetic frames above are two independent LCG streams, which does not
+// match how scrolling text/lists/images actually correlate. Point --corpus at a
+// directory of recorded frame pairs to benchmark against reality.
+//
+// Layout: <dir>/<case>/frame-NNN.rgba plus a case.json describing the frames.
+//   { "width": 96, "height": 2160, "axis": "vertical", "shifts": [360, 420] }
+// frame-NNN.rgba holds width*height grayscale bytes (the matcher's input form),
+// so recordings can be captured once and replayed without a decoder.
+function readCorpusCase(caseDirectory) {
+  const descriptorPath = path.join(caseDirectory, 'case.json')
+  if (!fs.existsSync(descriptorPath)) return null
+  let descriptor
+  try {
+    descriptor = JSON.parse(fs.readFileSync(descriptorPath, 'utf8'))
+  } catch (error) {
+    return { error: `case.json 无法解析：${error.message}` }
+  }
+  const width = Number(descriptor.width)
+  const height = Number(descriptor.height)
+  const axis = descriptor.axis === 'horizontal' ? 'horizontal' : 'vertical'
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    return { error: 'case.json 的 width/height 无效' }
+  }
+  const expectedBytes = width * height
+  const frameNames = fs.readdirSync(caseDirectory)
+    .filter((name) => /^frame-\d+\.rgba$/i.test(name))
+    .sort()
+  if (frameNames.length < 2) return { error: '至少需要 frame-000.rgba 与 frame-001.rgba' }
+  const frames = []
+  for (const name of frameNames) {
+    const buffer = fs.readFileSync(path.join(caseDirectory, name))
+    if (buffer.length !== expectedBytes) {
+      return { error: `${name} 期望 ${expectedBytes} 字节，实际 ${buffer.length}` }
+    }
+    frames.push(new Uint8Array(buffer))
+  }
+  return { width, height, axis, frames, shifts: Array.isArray(descriptor.shifts) ? descriptor.shifts : [] }
+}
+
+function benchmarkCorpus(corpusRoot, runs = 5) {
+  if (!corpusRoot || !fs.existsSync(corpusRoot)) {
+    return { error: `语料目录不存在：${corpusRoot || '(未提供)'}` }
+  }
+  const caseNames = fs.readdirSync(corpusRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort()
+  if (!caseNames.length) return { error: '语料目录中没有子用例' }
+
+  const cases = []
+  for (const name of caseNames) {
+    const parsed = readCorpusCase(path.join(corpusRoot, name))
+    if (!parsed) continue
+    if (parsed.error) {
+      cases.push({ name, error: parsed.error })
+      continue
+    }
+    const durations = []
+    const statuses = []
+    const detected = []
+    for (let index = 0; index < parsed.frames.length - 1; index++) {
+      const previous = parsed.frames[index]
+      const current = parsed.frames[index + 1]
+      for (let run = 0; run < runs; run++) {
+        const startedAt = performance.now()
+        const result = matcher.findBestShift(previous, current, parsed.width, parsed.height, parsed.axis)
+        durations.push(performance.now() - startedAt)
+        if (run === 0) {
+          statuses.push(result?.status || 'unknown')
+          detected.push(result?.shift || 0)
+        }
+      }
+    }
+    const mismatches = parsed.shifts.length === detected.length
+      ? parsed.shifts.reduce((count, expected, index) => count + (expected === detected[index] ? 0 : 1), 0)
+      : null
+    cases.push({
+      name,
+      width: parsed.width,
+      height: parsed.height,
+      axis: parsed.axis,
+      pairs: detected.length,
+      statuses,
+      detectedShifts: detected,
+      expectedShifts: parsed.shifts,
+      shiftMismatches: mismatches,
+      ...summarizeSamples(durations)
+    })
+  }
+  return { corpusRoot, cases }
+}
+
 function parseArguments(args) {
   const outputIndex = args.indexOf('--output')
+  const corpusIndex = args.indexOf('--corpus')
   return {
     outputPath: outputIndex >= 0 && args[outputIndex + 1] ? path.resolve(args[outputIndex + 1]) : '',
+    corpusPath: corpusIndex >= 0 && args[corpusIndex + 1] ? path.resolve(args[corpusIndex + 1]) : '',
     includeRunningApp: args.includes('--include-running-app')
   }
 }
@@ -265,6 +361,7 @@ function run() {
       vertical4k: benchmarkMatcher({ width: 96, height: 2160, axis: 'vertical', shift: 360 }),
       horizontal4k: benchmarkMatcher({ width: 3840, height: 96, axis: 'horizontal', shift: 640 })
     },
+    longCaptureCorpus: options.corpusPath ? benchmarkCorpus(options.corpusPath) : null,
     recording: {
       display60Target24: benchmarkRecordingPacing({ displayFrameRate: 60, targetFrameRate: 24 }),
       display144Target24: benchmarkRecordingPacing({ displayFrameRate: 144, targetFrameRate: 24 })
@@ -286,10 +383,12 @@ function run() {
 if (require.main === module) run()
 
 module.exports = {
+  benchmarkCorpus,
   benchmarkMatcher,
   benchmarkRecordingPacing,
   createRandomBytes,
   createShiftedFrame,
   percentile,
+  readCorpusCase,
   summarizeSamples
 }
