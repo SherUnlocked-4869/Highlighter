@@ -12,7 +12,11 @@ function configureE2eEnvironment({ app, env = process.env, fileSystem = fs } = {
   app.setPath('userData', dataRoot)
   app.setPath('sessionData', sessionData)
   app.disableHardwareAcceleration?.()
-  return { enabled: true, dataRoot, sessionData }
+  // A hosted runner has no elevated Everything index, so the search spec would
+  // otherwise depend on host state. Opt-in so local runs can still exercise
+  // the real sidecar.
+  const fakeEverything = env.HIGHLIGHTER_E2E_FAKE_EVERYTHING === '1'
+  return { enabled: true, dataRoot, sessionData, fakeEverything }
 }
 
 module.exports = { configureE2eEnvironment }

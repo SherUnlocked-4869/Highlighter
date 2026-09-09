@@ -28,11 +28,26 @@ test('E2E bootstrap is explicit, development-only, and uses an isolated absolute
   })
   assert.equal(result.enabled, true)
   assert.equal(result.dataRoot, path.resolve(dataRoot))
+  assert.equal(result.fakeEverything, false)
   assert.equal(paths.get('userData'), path.resolve(dataRoot))
   assert.equal(paths.get('sessionData'), path.join(path.resolve(dataRoot), 'electron-cache'))
   assert.equal(fs.existsSync(paths.get('sessionData')), true)
   assert.equal(hardwareDisabled, true)
 
+  const faked = configureE2eEnvironment({
+    app,
+    env: {
+      HIGHLIGHTER_E2E: '1',
+      HIGHLIGHTER_E2E_DATA_ROOT: dataRoot,
+      HIGHLIGHTER_E2E_FAKE_EVERYTHING: '1'
+    }
+  })
+  assert.equal(faked.fakeEverything, true)
+
   app.isPackaged = true
   assert.deepEqual(configureE2eEnvironment({ app, env: { HIGHLIGHTER_E2E: '1' } }), { enabled: false })
+  assert.deepEqual(configureE2eEnvironment({
+    app,
+    env: { HIGHLIGHTER_E2E: '1', HIGHLIGHTER_E2E_DATA_ROOT: dataRoot, HIGHLIGHTER_E2E_FAKE_EVERYTHING: '1' }
+  }), { enabled: false })
 })

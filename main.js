@@ -38,6 +38,11 @@ const { DiagnosticsService } = require('./main/services/diagnostics-service')
 const { SettingsService } = require('./main/services/settings-service')
 const { registerSettingsIpc } = require('./main/ipc/settings-ipc')
 const { HistoryService } = require('./main/services/history-service')
+const { ensureDirectory: ensureDirectorySync } = require('./main/services/fs-utils')
+const imageBufferUtils = require('./main/services/image-buffer')
+const captureNaming = require('./main/services/capture-naming')
+const { CAPTURE_PREFIX } = captureNaming
+const { DEFAULT_CATEGORIES: SEARCH_DEFAULT_CATEGORIES } = require('./search/search-utils')
 const { registerHistoryIpc } = require('./main/ipc/history-ipc')
 const { ShortcutService } = require('./main/services/shortcut-service')
 const { buildTrayMenuTemplate } = require('./main/services/tray-menu')
@@ -54,7 +59,7 @@ const { SelectionWindowManager } = require('./main/services/selection-window-man
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
 const { UpdateService } = require('./main/services/update-service')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
-const { createSecureWindow } = require('./main/services/window-security')
+const { createSecureWindow, isSafeExternalUrl } = require('./main/services/window-security')
 const { name: applicationName } = require('./package.json')
 
 const e2eContext = configureE2eEnvironment({ app })
@@ -67,9 +72,10 @@ const sharp = require('sharp')
 const Store = require('electron-store')
 const { OcrService } = require('./main/services/ocr-service')
 const { EverythingService } = require('./main/services/everything-service')
+const { createFakeEverythingQuery } = require('./main/services/e2e-fake-everything')
 const { RecordingService } = require('./main/services/recording-service')
 const { LongCaptureSession } = require('./main/services/long-capture-session')
-const { findNativeDisplay, getNativeDisplayBounds } = require('./main/services/capture-geometry')
+const { findNativeDisplay, getNativeDisplayBounds, readPngSize } = require('./main/services/capture-geometry')
 const { listNativeDisplays } = require('./main/services/native-display-list')
 const { buildTableFromOcr } = require('./capture/recognition-utils')
 const {
@@ -160,7 +166,8 @@ const DEFAULT_SETTINGS = {
     modelWriteToMemory: false,
     detectAngle: false,
     minConfidence: 0.3,
-    afterAction: 'none'
+    afterAction: 'none',
+    idleTimeoutMs: 300000
   },
   fixedContent: {
     zoomWithMouse: true,
@@ -178,18 +185,7 @@ const DEFAULT_SETTINGS = {
     pageSize: 30,
     sortMode: 'modified-desc',
     useBundledEverything: true,
-    categories: [
-      { id: 'all', label: '全部', rule: '' },
-      { id: 'folder', label: '文件夹', rule: 'folder:' },
-      { id: 'excel', label: 'EXCEL', rule: 'ext:xls;xlsx;xlsm;csv' },
-      { id: 'word', label: 'WORD', rule: 'ext:doc;docx;rtf' },
-      { id: 'ppt', label: 'PPT', rule: 'ext:ppt;pptx' },
-      { id: 'pdf', label: 'PDF', rule: 'ext:pdf' },
-      { id: 'image', label: '图片', rule: 'ext:jpg;jpeg;png;gif;webp;bmp;svg;ico' },
-      { id: 'video', label: '视频', rule: 'ext:mp4;mkv;avi;mov;wmv;flv;webm' },
-      { id: 'audio', label: '音频', rule: 'ext:mp3;wav;flac;aac;ogg;m4a' },
-      { id: 'archive', label: '压缩文件', rule: 'ext:zip;rar;7z;tar;gz;iso' }
-    ]
+    categories: SEARCH_DEFAULT_CATEGORIES.map((category) => ({ ...category }))
   },
   ai: {
     schemaVersion: 2,
@@ -307,10 +303,12 @@ function getOcrService() {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
   if (ocrService) return ocrService
   const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
+  const ocrSettings = getSettings().ocr || {}
   ocrService = new OcrService({
     sidecarPath: path.join(resourceRoot, 'native', 'ocr', 'HighlighterOcrSidecar.exe'),
     modelDir: path.join(resourceRoot, 'ocr', 'models', 'ppocr-v4-ch'),
     tempDir: activePaths?.ocrCache || path.join(app.getPath('temp'), 'Highlighter', 'ocr'),
+    idleTimeoutMs: ocrSettings.idleTimeoutMs,
     log
   })
   return ocrService
@@ -755,32 +753,23 @@ function convertSmartSelectRects(rects, context) {
 }
 
 function ensureDirectory(directory) {
-  fs.mkdirSync(directory, { recursive: true })
-  return directory
+  return ensureDirectorySync(directory)
 }
 
 function imageDataToBuffer(value) {
-  if (Buffer.isBuffer(value)) return value
-  if (value instanceof ArrayBuffer) return Buffer.from(value)
-  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer, value.byteOffset, value.byteLength)
-  if (typeof value === 'string') {
-    return Buffer.from(value.replace(/^data:image\/[^;]+;base64,/, ''), 'base64')
-  }
-  return Buffer.alloc(0)
+  return imageBufferUtils.imageDataToBuffer(value)
 }
 
 function dataUrlToBuffer(dataUrl) {
-  return imageDataToBuffer(dataUrl)
+  return imageBufferUtils.dataUrlToBuffer(dataUrl)
 }
 
 function bufferToDataUrl(value) {
-  return `data:image/png;base64,${imageDataToBuffer(value).toString('base64')}`
+  return imageBufferUtils.bufferToDataUrl(value)
 }
 
-function makeCaptureName(prefix = 'Highlighter') {
-  // 使用中国时区(UTC+8)的墙钟时间命名,便于直接按本地时间识别截图
-  const stamp = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
-  return `${prefix}_${stamp}.png`
+function makeCaptureName(prefix = CAPTURE_PREFIX) {
+  return captureNaming.makeCaptureName(prefix)
 }
 
 function persistHistory(imageData, meta = {}) {
@@ -1217,13 +1206,14 @@ async function getDisplayCapture(display) {
             (error) => { clearTimeout(timer); reject(error) }
           )
         })
-        const image = nativeImage.createFromBuffer(buffer)
-        const size = image.getSize()
         const nativeBounds = getNativeDisplayBounds(nativeDisplay)
-        if (size.width !== nativeBounds.width || size.height !== nativeBounds.height) {
-          throw new Error(`原生抓屏尺寸异常：${size.width}x${size.height}`)
+        // Read the dimensions straight out of the PNG IHDR chunk so a
+        // wrong-sized capture fails without decoding a full-screen bitmap.
+        const pngSize = readPngSize(buffer)
+        if (!pngSize || pngSize.width !== nativeBounds.width || pngSize.height !== nativeBounds.height) {
+          throw new Error(`原生抓屏尺寸异常：${pngSize ? `${pngSize.width}x${pngSize.height}` : '未知'}`)
         }
-        if (isBlankCapture(image)) throw new Error('原生抓屏返回空白画面')
+        if (isBlankCapture(nativeImage.createFromBuffer(buffer))) throw new Error('原生抓屏返回空白画面')
         return {
           imageBuffer: buffer,
           sourceId: `native:${nativeDisplay.id}`,
@@ -1597,11 +1587,11 @@ async function finishLongCapture(action, fast = false) {
       let filePath = ''
       if (fast && preferredDirectory) {
         ensureDirectory(preferredDirectory)
-        filePath = path.join(preferredDirectory, makeCaptureName('Highlighter_Long'))
+        filePath = path.join(preferredDirectory, makeCaptureName(captureNaming.LONG_CAPTURE_PREFIX))
       } else {
         const result = await dialog.showSaveDialog({
           title: '保存长截图',
-          defaultPath: path.join(preferredDirectory || app.getPath('pictures'), makeCaptureName('Highlighter_Long')),
+          defaultPath: path.join(preferredDirectory || app.getPath('pictures'), makeCaptureName(captureNaming.LONG_CAPTURE_PREFIX)),
           filters: [{ name: 'PNG 图片', extensions: ['png'] }]
         })
         if (result.canceled || !result.filePath) {
@@ -1610,7 +1600,7 @@ async function finishLongCapture(action, fast = false) {
         }
         filePath = result.filePath
       }
-      fs.copyFileSync(outputPath, filePath)
+      await fs.promises.copyFile(outputPath, filePath)
       await persistHistoryFile(outputPath, { ...meta, action: 'save' })
     } else {
       if (Math.max(size.width, size.height) > 65535 || size.width * size.height > 80000000) {
@@ -1663,7 +1653,7 @@ async function saveImageBuffer(imageBuffer, options = {}) {
     if (result.canceled || !result.filePath) return null
     filePath = result.filePath
   }
-  fs.writeFileSync(filePath, imageDataToBuffer(imageBuffer))
+  await fs.promises.writeFile(filePath, imageDataToBuffer(imageBuffer))
   return filePath
 }
 
@@ -1966,6 +1956,7 @@ function getEverythingService() {
         searchWindow.webContents.send('search:status-changed', status)
       }
     },
+    ...(e2eContext.fakeEverything ? { e2eQuery: createFakeEverythingQuery() } : {}),
     log
   })
   return everythingService
@@ -2397,9 +2388,8 @@ registerShortcutIpc({
 })
 
 function openExternal(value) {
-  const url = new URL(String(value || ''))
-  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('仅支持打开 HTTP 或 HTTPS 链接')
-  return shell.openExternal(url.toString())
+  if (!isSafeExternalUrl(value)) throw new Error('仅支持打开 HTTP 或 HTTPS 链接')
+  return shell.openExternal(new URL(String(value)).toString())
 }
 
 async function getDisplayDiagnostics() {
@@ -2423,7 +2413,14 @@ async function getDisplayDiagnostics() {
 }
 
 async function chooseDirectory() {
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+  return pickDirectory()
+}
+
+async function pickDirectory(options = {}) {
+  const result = await dialog.showOpenDialog({
+    ...(options.title ? { title: options.title } : {}),
+    properties: ['openDirectory', 'createDirectory']
+  })
   return result.canceled ? '' : result.filePaths[0]
 }
 
@@ -2611,13 +2608,7 @@ registerHistoryIpc({
     clipboard.writeText(path.resolve(item.filePath))
     return true
   },
-  chooseExportDirectory: async () => {
-    const result = await dialog.showOpenDialog({
-      title: '选择截图导出目录',
-      properties: ['openDirectory', 'createDirectory']
-    })
-    return result.canceled ? '' : result.filePaths[0]
-  }
+  chooseExportDirectory: () => pickDirectory({ title: '选择截图导出目录' })
 })
 
 const captureIpcController = {
@@ -2695,10 +2686,20 @@ const captureIpcController = {
   copy: (_event, { imageBuffer, dataUrl, meta } = {}) => {
   const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
   if (!buffer.length) throw new Error('截图图片数据为空')
-  clipboard.writeImage(nativeImage.createFromBuffer(buffer))
-  const item = persistHistory(buffer, { ...meta, action: 'copy' })
+  const image = nativeImage.createFromBuffer(buffer)
+  clipboard.writeImage(image)
+  const persistMeta = { ...meta, action: 'copy', image }
+  const persistStarted = Date.now()
+  setImmediate(() => {
+    try {
+      persistHistory(buffer, persistMeta)
+      performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: 'copy' })
+    } catch (error) {
+      log('Capture history persist failed:', error.message)
+    }
+  })
   if (getSettings().screenshot.autoSaveOnCopy && getSettings().screenshot.saveDirectory) saveImageBuffer(buffer, { fast: true }).catch((error) => log(error.message))
-  return item
+  return null
   },
   save: (event, { imageBuffer, dataUrl, meta, fast } = {}) => {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
@@ -2718,7 +2719,17 @@ const captureIpcController = {
   pin: (event, { imageBuffer, dataUrl, meta } = {}) => {
   const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
   pinFromCapture(event, buffer, meta)
-  return persistHistory(buffer, { ...meta, action: 'pin' })
+  const persistMeta = { ...meta, action: 'pin' }
+  const persistStarted = Date.now()
+  setImmediate(() => {
+    try {
+      persistHistory(buffer, persistMeta)
+      performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: 'pin' })
+    } catch (error) {
+      log('Capture history persist failed:', error.message)
+    }
+  })
+  return null
   },
   pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
   const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
@@ -2727,7 +2738,15 @@ const captureIpcController = {
   setImmediate(() => {
     if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
   })
-  return persistHistory(buffer, { ...meta, action: 'pin' })
+  const persistMeta = { ...meta, action: 'pin' }
+  setImmediate(() => {
+    try {
+      persistHistory(buffer, persistMeta)
+    } catch (error) {
+      log('Capture history persist failed:', error.message)
+    }
+  })
+  return null
   },
   openRecognition: (event, { type, imageBuffer, dataUrl, meta } = {}) => {
   const captureWindow = BrowserWindow.fromWebContents(event.sender)
@@ -3186,7 +3205,7 @@ const recordingIpcController = {
   try {
     result = await dialog.showSaveDialog(win, {
       title: '保存 MP4 录屏',
-      defaultPath: path.join(directory, makeCaptureName('Highlighter_Video').replace('.png', '.mp4')),
+      defaultPath: path.join(directory, makeCaptureName(captureNaming.VIDEO_CAPTURE_PREFIX).replace('.png', '.mp4')),
       filters: [{ name: 'MP4 视频', extensions: ['mp4'] }]
     })
   } finally {
