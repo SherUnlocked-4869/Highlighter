@@ -12,6 +12,7 @@ native/ocr/*.dll
 .worktrees/
 .tmp/
 .reasonix/
+.zcode/
 .nyc_output/
 coverage/
 playwright-report/
