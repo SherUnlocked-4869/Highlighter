@@ -1,6 +1,6 @@
 {
   "name": "highlighter-snowshot",
-  "version": "2.2.3",
+  "version": "2.2.4",
   "description": "Highlighter - 截图、标注、OCR、翻译与 AI 桌面效率工具",
   "main": "main.js",
   "author": "Highlighter",
@@ -27,7 +27,7 @@
     "build:everything": "powershell -NoProfile -ExecutionPolicy Bypass -File native/everything-search/build.ps1",
     "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr && npm run build:everything",
     "check": "node scripts/check-js.js",
-    "audit:dependencies": "npm audit --audit-level=moderate",
+    "audit:dependencies": "node scripts/audit-dependencies.js",
     "test:long-capture": "node tests/long-capture.test.js",
     "prestart": "npm run build:native",
     "start": "electron .",
@@ -147,7 +147,7 @@
     "openai": "^4.87.3",
     "screenshot-desktop": "^1.15.4",
     "selection-hook": "^2.0.2",
-    "sharp": "0.35.3"
+    "sharp": "0.35.4"
   },
   "devDependencies": {
     "@electron/fuses": "1.8.0",
