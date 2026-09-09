@@ -5,6 +5,7 @@ const path = require('node:path')
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.html'), 'utf8')
 const script = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
+const actionMeta = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar-action-meta.js'), 'utf8')
 
 test('config app exposes the selection toolbar route and controls', () => {
   assert.match(html, /data-route="selection-toolbar"/)
@@ -25,8 +26,13 @@ test('config app exposes the selection toolbar route and controls', () => {
   assert.match(script, /data-move-toolbar/)
   assert.match(script, /draggable="true"/)
   assert.match(script, /ondrop/)
+  // Action metadata moved to toolbar/toolbar-action-meta.js so the main process
+  // and the settings page share one definition; the page reads it via the UMD
+  // global that config.html loads first.
+  assert.match(html, /<script src="\.\.\/toolbar\/toolbar-action-meta\.js"><\/script>/)
+  assert.match(script, /window\.toolbarActionMeta\.TOOLBAR_ACTION_META/)
   for (const action of ['copy', 'search', 'translate', 'explain']) {
-    assert.match(script, new RegExp(`${action}: \\{ label:`))
+    assert.match(actionMeta, new RegExp(`${action}: Object\\.freeze\\(\\{ id: '${action}', label:`))
   }
 })
 

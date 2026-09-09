@@ -1,17 +1,12 @@
 const DEFAULT_TRANSLATE_PROMPT = '你是一个专业的翻译助手。请按照设置的语言方向翻译用户输入的文本，只输出翻译结果，不要添加任何额外说明或解释。'
 const DEFAULT_EXPLAIN_PROMPT = '你是一个知识渊博的解说专家。请对用户提供的文本进行深入分析和解读：\n\n### 核心要点\n先用一句话概括核心内容。\n\n### 详细解释\n对文本中的关键概念、术语、背景进行详细解释，帮助用户全面理解。如果涉及专业知识，请进行通俗易懂的说明。\n\n### 延伸知识\n补充相关的背景信息、实际应用场景或有趣的引申知识点。\n\n请使用中文回答，内容充实但不冗长，层次分明。'
 
-const BUILTIN_TOOLBAR_ACTIONS = Object.freeze({
-  copy: Object.freeze({ id: 'copy', label: '复制', icon: '⧉', kind: 'local' }),
-  search: Object.freeze({ id: 'search', label: '搜索', icon: '⌕', kind: 'local' }),
-  translate: Object.freeze({ id: 'translate', label: '翻译', icon: '译', kind: 'ai' }),
-  explain: Object.freeze({ id: 'explain', label: '解释', icon: '?', kind: 'ai' })
-})
+const {
+  BUILTIN_TOOLBAR_ACTIONS,
+  OPTIONAL_TOOLBAR_ACTIONS
+} = require('./toolbar-action-meta')
 
 const TOOLBAR_ACTION_ORDER = Object.freeze(Object.keys(BUILTIN_TOOLBAR_ACTIONS))
-const OPTIONAL_TOOLBAR_ACTIONS = Object.freeze({
-  open: Object.freeze({ id: 'open', label: '跳转', icon: '↗', kind: 'local' })
-})
 const LOCAL_TOOLBAR_ACTIONS = new Set(['copy', 'search', 'open'])
 const AI_TOOLBAR_ACTIONS = new Set(['translate', 'explain'])
 const THINKING_LEVELS = Object.freeze(['off', 'low', 'high', 'max'])

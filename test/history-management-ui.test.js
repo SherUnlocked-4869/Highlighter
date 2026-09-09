@@ -8,6 +8,7 @@ const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
 const config = fs.readFileSync(path.join(root, 'config', 'config.js'), 'utf8')
 const styles = fs.readFileSync(path.join(root, 'config', 'config.css'), 'utf8')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+const naming = fs.readFileSync(path.join(root, 'main', 'services', 'capture-naming.js'), 'utf8')
 
 test('preload exposes fixed history management methods', () => {
   assert.match(preload, /getHistoryStats:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('history:stats'\)/)
@@ -56,8 +57,15 @@ test('history page copies a screenshot absolute path instead of revealing it', (
 })
 
 test('capture file names use China Standard Time (UTC+8)', () => {
-  assert.match(main, /function makeCaptureName\(prefix = 'Highlighter'\)[\s\S]{0,300}?8 \* 60 \* 60 \* 1000/)
-  assert.doesNotMatch(main, /function makeCaptureName\(prefix = 'Highlighter'\)[\s\S]{0,300}?new Date\(\)\.toISOString\(\)\.replace/)
+  // The generator moved to main/services/capture-naming.js so the writer and the
+  // ownership matcher share one definition; assert the behaviour there and that
+  // main.js still delegates to it.
+  assert.match(naming, /function makeCaptureName\(prefix = CAPTURE_PREFIX\)[\s\S]{0,300}?8 \* 60 \* 60 \* 1000/)
+  assert.doesNotMatch(naming, /function makeCaptureName\(prefix = CAPTURE_PREFIX\)[\s\S]{0,300}?new Date\(\)\.toISOString\(\)\.replace/)
+  assert.match(main, /function makeCaptureName\(prefix = CAPTURE_PREFIX\)[\s\S]{0,120}?captureNaming\.makeCaptureName\(prefix\)/)
+  const { makeCaptureName, OWNED_CAPTURE_FILE, LONG_CAPTURE_PREFIX } = require('../main/services/capture-naming')
+  const name = makeCaptureName(LONG_CAPTURE_PREFIX)
+  assert.match(name, OWNED_CAPTURE_FILE, 'generated names must be recognized by the ownership matcher')
 })
 
 test('history page does not expose favorite controls or state', () => {

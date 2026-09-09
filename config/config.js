@@ -23,13 +23,7 @@ let aboutRenderVersion = 0
 
 const HISTORY_PAGE_SIZE = 40
 
-const selectionToolbarBuiltinMeta = {
-  copy: { label: '复制', icon: '⧉', description: '复制划词内容到系统剪贴板' },
-  search: { label: '搜索', icon: '⌕', description: '使用默认浏览器搜索划词内容' },
-  translate: { label: '翻译', icon: '译', description: '使用下方自定义提示词翻译划词内容' },
-  explain: { label: '解释', icon: '?', description: '使用下方自定义提示词解释划词内容' },
-  open: { label: '跳转', icon: '↗', description: '在默认浏览器中打开划词内容，内容将直接作为网址跳转', optional: true }
-}
+const selectionToolbarBuiltinMeta = window.toolbarActionMeta.TOOLBAR_ACTION_META
 
 const routeTitles = {
   home: '快捷功能', translation: '翻译', chat: 'AI 对话', history: '截图历史',
@@ -82,18 +76,7 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char])
 }
 
-const SEARCH_DEFAULT_CATEGORIES = Object.freeze([
-  { id: 'all', label: '全部', rule: '' },
-  { id: 'folder', label: '文件夹', rule: 'folder:' },
-  { id: 'excel', label: 'EXCEL', rule: 'ext:xls;xlsx;xlsm;csv' },
-  { id: 'word', label: 'WORD', rule: 'ext:doc;docx;rtf' },
-  { id: 'ppt', label: 'PPT', rule: 'ext:ppt;pptx' },
-  { id: 'pdf', label: 'PDF', rule: 'ext:pdf' },
-  { id: 'image', label: '图片', rule: 'ext:jpg;jpeg;png;gif;webp;bmp;svg;ico' },
-  { id: 'video', label: '视频', rule: 'ext:mp4;mkv;avi;mov;wmv;flv;webm' },
-  { id: 'audio', label: '音频', rule: 'ext:mp3;wav;flac;aac;ogg;m4a' },
-  { id: 'archive', label: '压缩文件', rule: 'ext:zip;rar;7z;tar;gz;iso' }
-])
+const SEARCH_DEFAULT_CATEGORIES = window.searchUtils.DEFAULT_CATEGORIES
 
 function errorMessage(error) {
   return String(error?.message || error || '').replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')
