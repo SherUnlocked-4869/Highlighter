@@ -84,6 +84,7 @@ const { createLongCaptureDomain } = require('./main/domains/long-capture')
 const { createRecordDomain } = require('./main/domains/record')
 const { createRecognitionDomain } = require('./main/domains/recognition')
 const { createSearchDomain } = require('./main/domains/search')
+const { createSettingsEffects } = require('./main/domains/settings-effects')
 const {
   ACTION_WINDOW_MIN_HEIGHT,
   ACTION_WINDOW_MIN_WIDTH,
@@ -282,6 +283,7 @@ let longCaptureDomain = null
 let recordDomain = null
 let recognitionDomain = null
 let searchDomain = null
+let settingsEffects = null
 const TOOLBAR_W = getToolbarWidth(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR))
 const TOOLBAR_H = 40
 const TOOLBAR_STREAM_IDLE_TIMEOUT_MS = 30000
@@ -736,6 +738,25 @@ searchDomain = createSearchDomain({
   getEverythingService: () => getEverythingService(),
   positionAutomationWindow,
   getSearchFileIcon
+})
+
+settingsEffects = createSettingsEffects({
+  app,
+  registerShortcuts,
+  applyGameModeState,
+  createTrayIcon,
+  getUpdateService: () => updateService,
+  ocrServiceRef: {
+    get: () => ocrService,
+    set: (value) => { ocrService = value }
+  },
+  getOcrService,
+  broadcastActionAppearance: (...args) => broadcastActionAppearance(...args),
+  searchDomain,
+  selectionHookServiceRef: {
+    get: () => selectionHookService
+  },
+  log
 })
 
 function positionAutomationWindow(win) {
@@ -1375,27 +1396,10 @@ registerSettingsIpc({
   },
   assertWritable: assertManagedDataWritable,
   onSettingsUpdated: (patch, settings) => {
-    if (patch.shortcuts) registerShortcuts()
-    if (patch.system?.autoStart !== undefined) app.setLoginItemSettings({ openAtLogin: !!settings.system.autoStart })
-    if (patch.system?.gameMode !== undefined) applyGameModeState(settings.system.gameMode, 'settings-update')
-    else if (patch.system?.enableTray !== undefined) createTrayIcon()
-    if (patch.system?.updateChannel !== undefined) updateService?.setChannel(settings.system.updateChannel)
-    if (patch.plugins?.ocr === false && ocrService) { ocrService.stop(); ocrService = null }
-    if (patch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
-    if (patch.theme !== undefined || patch.mainColor !== undefined) broadcastActionAppearance(settings)
-    if (patch.search) {
-      searchDomain.notifySettingsChanged()
-    }
-    if (patch.selectionToolbar?.clipboardFallback !== undefined) {
-      selectionHookService?.updateStartOptions({ enableClipboard: settings.selectionToolbar.clipboardFallback })
-    }
+    settingsEffects.applyUpdate(patch, settings)
   },
   onSettingsReset: (settings) => {
-    applyGameModeState(settings.system.gameMode, 'settings-reset')
-    broadcastActionAppearance(settings)
-    updateService?.setChannel(settings.system.updateChannel)
-    selectionHookService?.updateStartOptions({ enableClipboard: settings.selectionToolbar.clipboardFallback })
-    if (searchDomain) searchDomain.notifySettingsChanged()
+    settingsEffects.applyReset(settings)
   },
   validateApiKey: async (input) => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {

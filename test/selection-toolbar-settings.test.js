@@ -38,6 +38,7 @@ test('config app exposes the selection toolbar route and controls', () => {
 
 test('main process normalizes toolbar settings and routes configured custom prompts', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const settingsEffects = fs.readFileSync(path.join(__dirname, '..', 'main/domains/settings-effects/index.js'), 'utf8')
   const router = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'ai-feature-router.js'), 'utf8')
   const deepseek = fs.readFileSync(path.join(__dirname, '..', 'deepseek.js'), 'utf8')
   const toolbar = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar.js'), 'utf8')
@@ -45,7 +46,8 @@ test('main process normalizes toolbar settings and routes configured custom prom
 
   assert.match(main, /normalized\.selectionToolbar = normalizeSelectionToolbar/)
   assert.match(main, /enableClipboard: getSettings\(\)\.selectionToolbar\.clipboardFallback/)
-  assert.match(main, /updateStartOptions\(\{ enableClipboard: settings\.selectionToolbar\.clipboardFallback \}\)/)
+  assert.match(settingsEffects, /updateStartOptions\(\{\s*enableClipboard: settings\.selectionToolbar\.clipboardFallback/)
+  assert.match(main, /settingsEffects\.applyUpdate/)
   assert.match(main, /consoleLike: app\.isPackaged \? null : console/)
   assert.match(main, /getVisibleToolbarActionDefinitions/)
   assert.match(main, /getToolbarActionDefinition\(toolbarConfig, action\)/)
