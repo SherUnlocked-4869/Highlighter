@@ -19,6 +19,7 @@ const watermarkSpacingInput = document.getElementById('watermarkSpacing')
 const watermarkSpacingValue = document.getElementById('watermarkSpacingValue')
 const watermarkFontSizeInput = document.getElementById('watermarkFontSize')
 const watermarkRotationInput = document.getElementById('watermarkRotation')
+const watermarkDateSuffixInput = document.getElementById('watermarkDateSuffix')
 const watermarkApplyButton = document.getElementById('watermarkApply')
 const resultPanel = document.getElementById('resultPanel')
 const resultTitle = document.getElementById('resultTitle')
@@ -159,9 +160,21 @@ function drawArrow(context, x1, y1, x2, y2, width) {
   context.beginPath(); context.moveTo(x2,y2); context.lineTo(x2-head*Math.cos(angle-Math.PI/6),y2-head*Math.sin(angle-Math.PI/6)); context.lineTo(x2-head*Math.cos(angle+Math.PI/6),y2-head*Math.sin(angle+Math.PI/6)); context.closePath(); context.fill()
 }
 
+function formatWatermarkDateSuffix(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+}
+
+function resolveWatermarkText(content, dateSuffix) {
+  const base = typeof content === 'string' ? content : ''
+  if (!dateSuffix) return base
+  return `${base}${formatWatermarkDateSuffix()}`
+}
+
 function drawWatermark(context, item, scaleX, scaleY, offsetX, offsetY) {
   const w = item.w * scaleX, h = item.h * scaleY
-  if (!(w > 1) || !(h > 1) || !item.content) return
+  const text = resolveWatermarkText(item.content, item.dateSuffix)
+  if (!(w > 1) || !(h > 1) || !text) return
   const x = (item.x - offsetX) * scaleX, y = (item.y - offsetY) * scaleY
   const fontSize = Math.max(8, item.fontSize * Math.max(scaleX, scaleY))
   const stepX = Math.max(fontSize * 2, w * (item.spacing / 100))
@@ -178,7 +191,7 @@ function drawWatermark(context, item, scaleX, scaleY, offsetX, offsetY) {
   const reach = Math.hypot(w, h) / 2
   for (let row = -reach; row <= reach; row += stepY) {
     for (let col = -reach; col <= reach; col += stepX) {
-      context.fillText(item.content, col, row)
+      context.fillText(text, col, row)
     }
   }
   context.restore()
@@ -290,14 +303,15 @@ function watermarkParams() {
     color: /^#[0-9a-fA-F]{6}$/.test(watermarkColorInput.value) ? watermarkColorInput.value : '#ffffff',
     spacing: clampSettingNumber(watermarkSpacingInput.value, 30, 5, 100),
     fontSize: clampSettingNumber(watermarkFontSizeInput.value, 24, 8, 200),
-    rotation: clampSettingNumber(watermarkRotationInput.value, 30, -180, 180)
+    rotation: clampSettingNumber(watermarkRotationInput.value, 30, -180, 180),
+    dateSuffix: watermarkDateSuffixInput.checked
   }
 }
 
 function buildWatermarkAnnotation() {
   if (!selection) return null
   const params = watermarkParams()
-  if (!params.content) return null
+  if (!params.content && !params.dateSuffix) return null
   return { type: 'watermark', x: selection.x, y: selection.y, w: selection.w, h: selection.h, ...params }
 }
 
@@ -309,6 +323,7 @@ function applyWatermarkSettings(settings) {
   watermarkSpacingInput.value = String(clampSettingNumber(settings.spacing, 30, 5, 100))
   watermarkFontSizeInput.value = String(clampSettingNumber(settings.fontSize, 24, 8, 200))
   watermarkRotationInput.value = String(clampSettingNumber(settings.rotation, 30, -180, 180))
+  watermarkDateSuffixInput.checked = Boolean(settings.dateSuffix)
   watermarkOpacityValue.textContent = `${watermarkOpacityInput.value}%`
   watermarkSpacingValue.textContent = `${watermarkSpacingInput.value}%`
 }
@@ -618,7 +633,7 @@ function showResult(type,result) {
 
 document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListener('click',()=>setTool(button.dataset.tool)))
 colorInput.addEventListener('input',()=>{colorPreview.style.background=colorInput.value})
-;[watermarkContentInput,watermarkOpacityInput,watermarkColorInput,watermarkSpacingInput,watermarkFontSizeInput,watermarkRotationInput].forEach((input)=>input.addEventListener('input',updateWatermarkPreview))
+;[watermarkContentInput,watermarkOpacityInput,watermarkColorInput,watermarkSpacingInput,watermarkFontSizeInput,watermarkRotationInput,watermarkDateSuffixInput].forEach((input)=>input.addEventListener('input',updateWatermarkPreview))
 watermarkContentInput.addEventListener('keydown',(event)=>{if(event.key==='Enter'){event.preventDefault();watermarkApplyButton.click()}})
 watermarkApplyButton.addEventListener('click',()=>{
   const item=buildWatermarkAnnotation()

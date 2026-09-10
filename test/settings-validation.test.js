@@ -9,7 +9,7 @@ const template = {
   screenshot: {
     historyLimit: 200,
     saveDirectory: '',
-    watermark: { content: '', opacity: 80, color: '#ffffff', spacing: 30, fontSize: 24, rotation: 30 }
+    watermark: { content: '', opacity: 80, color: '#ffffff', spacing: 30, fontSize: 24, rotation: 30, dateSuffix: false }
   },
   system: { gameMode: false },
   selectionToolbar: { order: [], prompts: { translate: '', explain: '' } }
@@ -39,11 +39,13 @@ test('bounds sensitive strings and array sizes', () => {
 })
 
 test('accepts watermark settings patches and rejects invalid watermark values', () => {
-  const watermark = { content: '仅供内部使用', opacity: 60, color: '#ffffff', spacing: 25, fontSize: 28, rotation: -30 }
+  const watermark = { content: '仅供内部使用', opacity: 60, color: '#ffffff', spacing: 25, fontSize: 28, rotation: -30, dateSuffix: true }
   const patch = { screenshot: { watermark } }
   assert.equal(assertSettingsPatch(patch, template), patch)
   assert.equal(assertSettingsPatch({ screenshot: { watermark: { opacity: 50 } } }, template).screenshot.watermark.opacity, 50)
+  assert.equal(assertSettingsPatch({ screenshot: { watermark: { dateSuffix: true } } }, template).screenshot.watermark.dateSuffix, true)
   assert.throws(() => assertSettingsPatch({ screenshot: { watermark: { unknown: 1 } } }, template), /不支持的设置项/)
   assert.throws(() => assertSettingsPatch({ screenshot: { watermark: { rotation: Infinity } } }, template), /有限数字/)
   assert.throws(() => assertSettingsPatch({ screenshot: { watermark: { content: 123 } } }, template), /类型无效/)
+  assert.throws(() => assertSettingsPatch({ screenshot: { watermark: { dateSuffix: 'yes' } } }, template), /类型无效/)
 })

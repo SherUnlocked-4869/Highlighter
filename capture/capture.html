@@ -48,6 +48,13 @@
   </div>
   <div id="watermarkPanel" class="watermark-panel hidden">
     <div class="watermark-row"><label for="watermarkContent">内容</label><input id="watermarkContent" type="text" placeholder="输入水印文字" maxlength="200"></div>
+    <div class="watermark-row watermark-check-row">
+      <label for="watermarkDateSuffix">日期</label>
+      <label class="watermark-checkbox" title="在水印文字后拼接当前时间，格式 yyyyMMddHHmmss，例如 知何似20260910154310">
+        <input id="watermarkDateSuffix" type="checkbox">
+        <span>追加日期后缀</span>
+      </label>
+    </div>
     <div class="watermark-row"><label for="watermarkOpacity">透明度</label><input id="watermarkOpacity" type="range" min="5" max="100" step="5" value="80"><span id="watermarkOpacityValue">80%</span></div>
     <div class="watermark-row"><label for="watermarkColor">颜色</label><input id="watermarkColor" type="color" value="#ffffff"></div>
     <div class="watermark-row"><label for="watermarkSpacing">间距</label><input id="watermarkSpacing" type="range" min="5" max="100" step="5" value="30"><span id="watermarkSpacingValue">30%</span></div>

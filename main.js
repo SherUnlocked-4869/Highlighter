@@ -154,7 +154,7 @@ const DEFAULT_SETTINGS = {
     selectionMask: 'rgba(0,0,0,.46)',
     showColorPicker: true,
     longCaptureDirection: 'vertical',
-    watermark: { content: '', opacity: 80, color: '#ffffff', spacing: 30, fontSize: 24, rotation: 30 }
+    watermark: { content: '', opacity: 80, color: '#ffffff', spacing: 30, fontSize: 24, rotation: 30, dateSuffix: false }
   },
   ocr: {
     modelProfile: 'ppocr-v4-ch',
