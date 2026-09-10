@@ -5,15 +5,16 @@ const path = require('node:path')
 
 const root = path.join(__dirname, '..')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+const pinDomainSource = fs.readFileSync(path.join(root, 'main/domains/pin/index.js'), 'utf8')
 const captureCss = fs.readFileSync(path.join(root, 'capture', 'capture.css'), 'utf8')
 const captureScript = fs.readFileSync(path.join(root, 'capture', 'capture.js'), 'utf8')
 const pinMarkup = fs.readFileSync(path.join(root, 'pin', 'pin.html'), 'utf8')
 const pinScript = fs.readFileSync(path.join(root, 'pin', 'pin.js'), 'utf8')
 
 test('OCR result actions stay outside the selected image area', () => {
-  assert.match(main, /const actionSpace = 62[\s\S]*Math\.max\(420, imageWidth\)/)
-  assert.match(main, /const isRecognitionEditor = autoAction === 'ocr' \|\| autoAction === 'translate'/)
-  assert.match(main, /windowBounds: editorBounds,[\s\S]*imageBounds: editorImageBounds,[\s\S]*transparent: isRecognitionEditor/)
+  assert.match(pinDomainSource, /const actionSpace = 62[\s\S]*Math\.max\(420, imageWidth\)/)
+  assert.match(pinDomainSource, /const isRecognitionEditor = autoAction === 'ocr' \|\| autoAction === 'translate'/)
+  assert.match(pinDomainSource, /windowBounds: editorBounds,[\s\S]*imageBounds: editorImageBounds,[\s\S]*transparent: isRecognitionEditor/)
   assert.match(main, /const transparent = mode === 'canvas' \|\| !!options\.transparent[\s\S]*hasShadow: !transparent/)
   assert.match(captureScript, /function imageDisplayBounds\(\)[\s\S]*initData\?\.imageBounds/)
   assert.match(captureScript, /function positionOcrResultBar\(\)[\s\S]*selection\.y\+selection\.h\+10/)
@@ -33,8 +34,9 @@ test('pinned image opacity is chosen from the context menu instead of an overlay
   assert.doesNotMatch(pinMarkup, /type="range"/)
   assert.doesNotMatch(pinScript, /setOpacity/)
   assert.doesNotMatch(main, /pin:set-opacity/)
-  assert.match(main, /label: '透明度',[\s\S]*submenu: \[1, 0\.75, 0\.5, 0\.25\]/)
-  assert.match(main, /type: 'radio',[\s\S]*click: \(\) => setPinOpacity\(win, opacity\)/)
+  assert.doesNotMatch(pinDomainSource, /pin:set-opacity/)
+  assert.match(pinDomainSource, /label: '透明度',[\s\S]*submenu: \[1, 0\.75, 0\.5, 0\.25\]/)
+  assert.match(pinDomainSource, /type: 'radio',[\s\S]*click: \(\) => setPinOpacity\(win, opacity\)/)
 })
 
 test('OCR recognition hides the selected image size badge', () => {
@@ -54,13 +56,14 @@ test('OCR translation uses the same positioned overlay interaction as OCR text e
 })
 
 test('pinned images align source pixels to the active display DPI', () => {
+  const pinDomain = fs.readFileSync(path.join(root, 'main/domains/pin/index.js'), 'utf8')
   // Pure geometry lives in main/domains/pin/geometry.js (see test/pin-geometry.test.js).
-  assert.match(main, /require\('\.\/main\/domains\/pin\/geometry'\)/)
-  assert.match(main, /getPixelAlignedPinSize\(size\.width, size\.height, display, selectionBounds\)/)
-  assert.match(main, /getPixelAlignedPinSize\(size\.width, size\.height, display, meta\.selectionBounds\)/)
-  assert.match(main, /function syncPinDisplayScale\(win\)[\s\S]*screen\.getDisplayMatching\(bounds\)/)
-  assert.match(main, /pixelWidth: size\.width,[\s\S]*displayScaleFactor: aligned\.scaleFactor/)
-  assert.match(main, /pin:move-end[\s\S]*syncPinDisplayScale\(win\)/)
+  assert.match(main, /require\('\.\/main\/domains\/pin'\)/)
+  assert.match(pinDomain, /getPixelAlignedPinSize\(size\.width, size\.height, display, selectionBounds\)/)
+  assert.match(pinDomain, /getPixelAlignedPinSize\(size\.width, size\.height, display, meta\.selectionBounds\)/)
+  assert.match(pinDomain, /function syncPinDisplayScale\(win\)[\s\S]*screen\.getDisplayMatching\(bounds\)/)
+  assert.match(pinDomain, /pixelWidth: size\.width,[\s\S]*displayScaleFactor: aligned\.scaleFactor/)
+  assert.match(pinDomain, /pin:move-end[\s\S]*syncPinDisplayScale\(win\)/)
   assert.match(pinMarkup, /<canvas id="pixelImage"/)
   assert.match(pinScript, /context\.imageSmoothingEnabled = false/)
   assert.match(pinScript, /pixelImage\.classList\.toggle\('pixel-native'/)
