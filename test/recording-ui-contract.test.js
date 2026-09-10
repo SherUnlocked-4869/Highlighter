@@ -25,7 +25,7 @@ test('main process wires protected region recording windows', () => {
   assert.match(recordingIpc, /record:append-chunk/)
   assert.match(recordingIpc, /record:finish-session/)
   assert.match(recordingIpc, /record:save-mp4/)
-  assert.match(main, /registerCaptureIpc\(\{[\s\S]*controller: captureIpcController/)
+  assert.match(main, /registerCaptureIpc\(\{[\s\S]*captureDomain\.createCaptureController\(\)/)
   assert.match(main, /registerRecordingIpc\(\{[\s\S]*controller: recordingIpcController/)
   assert.match(recordPreload, /startSession:/)
   assert.match(recordPreload, /appendChunk:/)

@@ -12,10 +12,11 @@ const pinMarkup = fs.readFileSync(path.join(root, 'pin', 'pin.html'), 'utf8')
 const pinScript = fs.readFileSync(path.join(root, 'pin', 'pin.js'), 'utf8')
 
 test('OCR result actions stay outside the selected image area', () => {
+  const captureDomain = fs.readFileSync(path.join(root, 'main/domains/capture/index.js'), 'utf8')
   assert.match(pinDomainSource, /const actionSpace = 62[\s\S]*Math\.max\(420, imageWidth\)/)
   assert.match(pinDomainSource, /const isRecognitionEditor = autoAction === 'ocr' \|\| autoAction === 'translate'/)
   assert.match(pinDomainSource, /windowBounds: editorBounds,[\s\S]*imageBounds: editorImageBounds,[\s\S]*transparent: isRecognitionEditor/)
-  assert.match(main, /const transparent = mode === 'canvas' \|\| !!options\.transparent[\s\S]*hasShadow: !transparent/)
+  assert.match(captureDomain, /const transparent = mode === 'canvas' \|\| !!options\.transparent[\s\S]*hasShadow: !transparent/)
   assert.match(captureScript, /function imageDisplayBounds\(\)[\s\S]*initData\?\.imageBounds/)
   assert.match(captureScript, /function positionOcrResultBar\(\)[\s\S]*selection\.y\+selection\.h\+10/)
   assert.match(captureScript, /top\+rect\.height>innerHeight-8\)top=selection\.y-rect\.height-10/)
@@ -46,9 +47,10 @@ test('OCR recognition hides the selected image size badge', () => {
 })
 
 test('OCR translation uses the same positioned overlay interaction as OCR text extraction', () => {
+  const captureDomain = fs.readFileSync(path.join(root, 'main/domains/capture/index.js'), 'utf8')
   assert.match(main, /translateOcrTextBlocks\([\s\S]*textBlocks\.map/)
   assert.match(main, /translationResult: \{[\s\S]*textBlocks: translatedBlocks/)
-  assert.match(main, /_pendingReannotateAction = \['ocr', 'translate'\]\.includes\(action\)/)
+  assert.match(captureDomain, /_pendingReannotateAction = \['ocr', 'translate'\]\.includes\(action\)/)
   assert.match(captureScript, /\['ocr','translate'\]\.includes\(action\)&&!initData\.editPin/)
   assert.match(captureScript, /showOcrOverlay\(result\.translationResult,\{mode:'translate'/)
   assert.doesNotMatch(captureScript, /resultPanel\.classList\.remove\('hidden'\); resultSource\.classList\.toggle\('hidden',type!=='translate'/)

@@ -87,6 +87,7 @@ const {
   pickDesktopSource
 } = require('./record/recording-utils')
 const { createPinDomain } = require('./main/domains/pin')
+const { createCaptureDomain } = require('./main/domains/capture')
 const {
   sanitizeAnnotationCommand,
   sanitizeAnnotationSnapshot
@@ -272,7 +273,6 @@ let selectionWindowManager = null
 let selectionHookService = null
 const selectionPowerListeners = []
 let tray = null
-let currentCaptureWindow = null
 let currentLongCapture = null
 let recordWindow = null
 let recordFrameWindow = null
@@ -289,6 +289,7 @@ const selectionEventDiagnostics = new Set()
 let currentStreamController = null
 let toolbarStreamSeq = 0
 let pinDomain = null
+let captureDomain = null
 const recognitionWindows = new Set()
 const TOOLBAR_W = getToolbarWidth(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR))
 const TOOLBAR_H = 40
@@ -296,7 +297,6 @@ const TOOLBAR_STREAM_IDLE_TIMEOUT_MS = 30000
 const ACTION_WINDOW_SIZE_SAVE_DELAY_MS = 180
 const isWin = process.platform === 'win32'
 let nativeDisplayListPromise = null
-let captureCreateSeq = 0
 
 function getOcrService() {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
@@ -434,7 +434,7 @@ function getInstallType() {
 
 function getUpdateInstallReadiness() {
   if (dataRootMigrationInProgress) return { ok: false, reason: '数据目录正在迁移，请完成后重试。' }
-  if (currentCaptureWindow && !currentCaptureWindow.isDestroyed()) return { ok: false, reason: '截图任务仍在进行，请完成或关闭后重试。' }
+  if (captureDomain?.isTaskActive()) return { ok: false, reason: '截图任务仍在进行，请完成或关闭后重试。' }
   if (currentLongCapture) return { ok: false, reason: '长截图任务仍在进行，请完成或关闭后重试。' }
   if (recordWindow && !recordWindow.isDestroyed()) return { ok: false, reason: '录屏任务仍在进行，请完成或关闭后重试。' }
   if (ocrService?.inFlight?.size) return { ok: false, reason: 'OCR 正在识别，请完成后重试。' }
@@ -551,7 +551,7 @@ function authorizeIpcRole(role, win) {
   if (role === 'main') return win === mainWindow
   if (role === 'toolbar') return selectionWindowManager?.ownsToolbarWindow(win) === true
   if (role === 'action') return selectionWindowManager?.ownsActionWindow(win) === true
-  if (role === 'capture') return win === currentCaptureWindow
+  if (role === 'capture') return captureDomain?.ownsWindow(win) === true
   if (role === 'long-capture') return win === currentLongCapture?.controllerWindow
   if (role === 'long-overlay') return win === currentLongCapture?.overlayWindow
   if (role === 'pin') return pinDomain?.ownsWindow(win) === true
@@ -571,7 +571,7 @@ const secureIpcMain = createSecureIpcMain({
     log('IPC sender blocked:', { channel, reason, role: role || '' })
     // A superseded capture window can never receive its init payload, so close
     // it right away instead of letting it linger invisibly until the watchdog.
-    if (channel === 'capture:ready' && reason === 'window-owner-mismatch' && win && !win.isDestroyed() && win !== currentCaptureWindow) {
+    if (channel === 'capture:ready' && reason === 'window-owner-mismatch' && win && !win.isDestroyed() && !captureDomain?.ownsWindow(win)) {
       win.close()
     }
   }
@@ -582,174 +582,6 @@ const shortcutService = new ShortcutService({
   executeFunction: (name) => executeFunction(name),
   log
 })
-
-class SmartSelectSession {
-  constructor(executablePath) {
-    this.process = spawn(executablePath, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
-    this.buffer = ''
-    this.nextRequestId = 1
-    this.pending = new Map()
-    this.windowRects = []
-    this.ready = false
-    this.available = true
-    this.readyPromise = new Promise((resolve, reject) => {
-      this.resolveReady = resolve
-      this.rejectReady = reject
-    })
-    this.process.stdout.setEncoding('utf8')
-    this.process.stdout.on('data', (chunk) => this.handleOutput(chunk))
-    this.process.stderr.setEncoding('utf8')
-    this.process.stderr.on('data', (chunk) => {
-      const message = String(chunk || '').trim()
-      if (message) log('Smart select helper:', message)
-    })
-    this.process.once('error', (error) => this.handleExit(error))
-    this.process.once('exit', (code) => this.handleExit(new Error(`helper exited (${code})`)))
-  }
-
-  handleOutput(chunk) {
-    this.buffer += chunk
-    let newline = this.buffer.indexOf('\n')
-    while (newline >= 0) {
-      const line = this.buffer.slice(0, newline).trim()
-      this.buffer = this.buffer.slice(newline + 1)
-      if (line) {
-        try {
-          const message = JSON.parse(line)
-          if (message.ready) {
-            this.ready = true
-            this.windowRects = Array.isArray(message.windows) ? message.windows : []
-            this.resolveReady(true)
-          } else if (Number.isInteger(message.id)) {
-            const request = this.pending.get(message.id)
-            if (request) {
-              clearTimeout(request.timer)
-              this.pending.delete(message.id)
-              request.resolve(Array.isArray(message.rects) ? message.rects : [])
-            }
-          }
-        } catch (error) {
-          log('Smart select response error:', error.message)
-        }
-      }
-      newline = this.buffer.indexOf('\n')
-    }
-  }
-
-  handleExit(error) {
-    if (!this.available) return
-    this.available = false
-    if (!this.ready) this.rejectReady(error)
-    for (const request of this.pending.values()) {
-      clearTimeout(request.timer)
-      request.resolve([])
-    }
-    this.pending.clear()
-  }
-
-  async waitUntilReady(timeout = 1000) {
-    let timer
-    try {
-      await Promise.race([
-        this.readyPromise,
-        new Promise((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error('helper startup timeout')), timeout)
-        })
-      ])
-    } finally {
-      clearTimeout(timer)
-    }
-  }
-
-  query(x, y) {
-    if (!this.available || !this.ready) return Promise.resolve([])
-    const id = this.nextRequestId++
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        const requests = [...this.pending.values()]
-        this.pending.clear()
-        this.available = false
-        try { this.process.kill() } catch {}
-        requests.forEach((request) => {
-          clearTimeout(request.timer)
-          request.resolve([])
-        })
-      }, 350)
-      this.pending.set(id, { resolve, timer })
-      try {
-        this.process.stdin.write(`${id} ${Math.round(x)} ${Math.round(y)}\n`)
-      } catch {
-        clearTimeout(timer)
-        this.pending.delete(id)
-        resolve([])
-      }
-    })
-  }
-
-  findWindowAt(x, y) {
-    const rect = this.windowRects.find((item) => (
-      x >= item.left && x <= item.right && y >= item.top && y <= item.bottom
-    ))
-    return rect ? [rect] : []
-  }
-
-  dispose() {
-    if (!this.available && this.process.killed) return
-    this.available = false
-    for (const request of this.pending.values()) {
-      clearTimeout(request.timer)
-      request.resolve([])
-    }
-    this.pending.clear()
-    try { this.process.stdin.end('quit\n') } catch {}
-    try { this.process.kill() } catch {}
-  }
-}
-
-async function createSmartSelectSession() {
-  if (!isWin) return null
-  const executablePath = app.isPackaged
-    ? path.join(process.resourcesPath, 'native', 'smart-select', 'SmartSelect.exe')
-    : path.join(__dirname, 'native', 'smart-select', 'SmartSelect.exe')
-  if (!fs.existsSync(executablePath)) {
-    log('Smart select helper missing:', executablePath)
-    return null
-  }
-  const session = new SmartSelectSession(executablePath)
-  try {
-    await session.waitUntilReady()
-    return session
-  } catch (error) {
-    log('Smart select unavailable:', error.message)
-    session.dispose()
-    return null
-  }
-}
-
-function convertSmartSelectRects(rects, context) {
-  const physical = context.physicalBounds
-  const logical = context.captureBounds
-  if (!physical?.width || !physical?.height) return []
-  const scaleX = logical.width / physical.width
-  const scaleY = logical.height / physical.height
-  const result = []
-  for (const rect of rects) {
-    const left = Math.max(0, Math.min(logical.width, (Number(rect.left) - physical.x) * scaleX))
-    const top = Math.max(0, Math.min(logical.height, (Number(rect.top) - physical.y) * scaleY))
-    const right = Math.max(0, Math.min(logical.width, (Number(rect.right) - physical.x) * scaleX))
-    const bottom = Math.max(0, Math.min(logical.height, (Number(rect.bottom) - physical.y) * scaleY))
-    const candidate = {
-      x: Math.round(Math.min(left, right)),
-      y: Math.round(Math.min(top, bottom)),
-      w: Math.round(Math.abs(right - left)),
-      h: Math.round(Math.abs(bottom - top))
-    }
-    if (candidate.w < 3 || candidate.h < 3) continue
-    if (result.some((item) => item.x === candidate.x && item.y === candidate.y && item.w === candidate.w && item.h === candidate.h)) continue
-    result.push(candidate)
-  }
-  return result
-}
 
 function ensureDirectory(directory) {
   return ensureDirectorySync(directory)
@@ -802,11 +634,41 @@ pinDomain = createPinDomain({
   getSettings,
   saveDataUrl: (dataUrl) => saveDataUrl(dataUrl),
   createRecognitionWindow: (...args) => createRecognitionWindow(...args),
-  getCreateCaptureWindow: () => createCaptureWindow,
+  getCreateCaptureWindow: () => (...args) => captureDomain.createCaptureWindow(...args),
   dataUrlToBuffer,
   bufferToDataUrl,
   log,
   ipcMain: secureIpcMain
+})
+
+captureDomain = createCaptureDomain({
+  app,
+  spawn,
+  fs,
+  path,
+  screen,
+  BrowserWindow,
+  nativeImage,
+  clipboard,
+  dialog,
+  performance,
+  rootDirectory: __dirname,
+  isWin,
+  createLocalWindow,
+  getSettings,
+  log,
+  assertGameModeDisabled,
+  getDisplayCapture,
+  pinDomain,
+  createRecordWindow: (...args) => createRecordWindow(...args),
+  createLongCaptureFromSelection: (...args) => createLongCaptureFromSelection(...args),
+  createRecognitionWindow: (...args) => createRecognitionWindow(...args),
+  persistHistory: (...args) => persistHistory(...args),
+  saveImageBuffer: (...args) => saveImageBuffer(...args),
+  imageDataToBuffer,
+  dataUrlToBuffer,
+  bufferToDataUrl,
+  performanceMonitor
 })
 
 function positionAutomationWindow(win) {
@@ -1246,188 +1108,6 @@ async function getDisplayCapture(display) {
   return getDesktopCapture(display, scaleFactor)
 }
 
-async function createCaptureWindow(options = {}) {
-  assertGameModeDisabled()
-  const createSeq = ++captureCreateSeq
-  const performanceStartedAt = performance.now()
-  const performanceTiming = {
-    startedAt: performanceStartedAt,
-    mode: options.mode || 'region',
-    captureMs: 0,
-    smartSelectMs: 0,
-    windowLoadMs: 0
-  }
-  const mode = options.mode || 'region'
-  const requestedBounds = options.windowBounds && {
-    x: Math.round(options.windowBounds.x),
-    y: Math.round(options.windowBounds.y),
-    width: Math.max(1, Math.round(options.windowBounds.width)),
-    height: Math.max(1, Math.round(options.windowBounds.height))
-  }
-  const display = options.display || (requestedBounds
-    ? screen.getDisplayMatching(requestedBounds)
-    : screen.getDisplayNearestPoint(screen.getCursorScreenPoint()))
-  const captureBounds = requestedBounds || display.bounds
-  const suppliedImageBuffer = options.imageBuffer
-    ? imageDataToBuffer(options.imageBuffer)
-    : options.imageDataUrl
-      ? dataUrlToBuffer(options.imageDataUrl)
-      : null
-  const rawCapturePromise = suppliedImageBuffer || options.mode === 'canvas'
-    ? Promise.resolve({
-        imageBuffer: suppliedImageBuffer || Buffer.alloc(0),
-        sourceId: '',
-        scaleFactor: Number(options.sourceScaleFactor) || display.scaleFactor || 1
-      })
-    : getDisplayCapture(display)
-  const capturePromise = Promise.resolve(rawCapturePromise).then((capture) => {
-    performanceTiming.captureMs = Math.round((performance.now() - performanceStartedAt) * 100) / 100
-    return capture
-  })
-  const smartSelectStartedAt = performance.now()
-  const smartSelectPromise = (mode === 'region' ? createSmartSelectSession() : Promise.resolve(null)).then((session) => {
-    performanceTiming.smartSelectMs = Math.round((performance.now() - smartSelectStartedAt) * 100) / 100
-    return session
-  })
-  const smartSelectSession = await smartSelectPromise
-  // Rapid hotkey presses start overlapping creations; only the newest one may
-  // proceed. Superseded runs must bail out before creating a window, otherwise
-  // their orphaned windows fail the capture IPC owner check and stay invisible
-  // until the render watchdog reclaims them.
-  if (createSeq !== captureCreateSeq) {
-    smartSelectSession?.dispose()
-    capturePromise.catch(() => {})
-    return null
-  }
-  if (currentCaptureWindow && !currentCaptureWindow.isDestroyed()) currentCaptureWindow.close()
-  const transparent = mode === 'canvas' || !!options.transparent
-  const pagePath = path.join(__dirname, 'capture', 'capture.html')
-  const captureWindow = createLocalWindow(pagePath, {
-    x: captureBounds.x,
-    y: captureBounds.y,
-    width: Math.min(captureBounds.width, 800),
-    height: Math.min(captureBounds.height, 600),
-    frame: false,
-    transparent,
-    backgroundColor: transparent ? '#00ffffff' : '#000000',
-    fullscreenable: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    show: false,
-    opacity: 0,
-    resizable: false,
-    movable: false,
-    hasShadow: !transparent,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-capture.js'),
-      backgroundThrottling: false
-    }
-  })
-  currentCaptureWindow = captureWindow
-  captureWindow._editingPinWindow = options.editingPinWindow || null
-  captureWindow._captureVisible = false
-  captureWindow._captureInitSent = false
-  captureWindow._captureRendererReady = false
-  captureWindow._performanceTiming = performanceTiming
-  captureWindow._smartSelectContext = smartSelectSession
-    ? {
-        session: smartSelectSession,
-        captureBounds,
-        physicalBounds: screen.dipToScreenRect(null, captureBounds)
-      }
-    : null
-  captureWindow.setAlwaysOnTop(true, 'screen-saver')
-
-  // Moving the hidden HWND first switches it to the target monitor's DPI.
-  // Keeping opacity at zero prevents Windows from flashing the temporary size.
-  captureWindow.setPosition(display.bounds.x, display.bounds.y, false)
-  captureWindow.setBounds(captureBounds, false)
-  // BrowserWindow fullscreen adds invisible border compensation on Windows 11
-  // under mixed-DPI setups, making the renderer larger than the captured display.
-  // The frameless screen-saver-level window already covers the full display bounds.
-  captureWindow.setResizable(false)
-
-  const loadStartedAt = performance.now()
-  const loadPromise = captureWindow.loadFile(pagePath).then((result) => {
-    performanceTiming.windowLoadMs = Math.round((performance.now() - loadStartedAt) * 100) / 100
-    return result
-  })
-  captureWindow.on('closed', () => {
-    clearTimeout(captureWindow._renderTimeout)
-    captureWindow._smartSelectContext?.session.dispose()
-    captureWindow._smartSelectContext = null
-    if (currentCaptureWindow === captureWindow) currentCaptureWindow = null
-    const pinWindow = captureWindow._pendingPinWindow || captureWindow._editingPinWindow
-    setImmediate(() => pinDomain.bringPinToFront(pinWindow))
-  })
-  // Arm the render watchdog at creation time: a hung capture or page load must
-  // still reclaim the invisible window instead of hiding it indefinitely.
-  captureWindow._renderTimeout = setTimeout(() => {
-    if (captureWindow.isDestroyed() || captureWindow._captureVisible) return
-    const init = captureWindow._captureInit
-    log('Capture render timeout:', init ? 'renderer-stalled' : 'initializing', JSON.stringify({
-      expected: init?.captureBounds || null,
-      window: captureWindow.getBounds(),
-      content: captureWindow.getContentBounds()
-    }))
-    captureWindow.close()
-  }, 8000)
-
-  try {
-    const [capture] = await Promise.all([capturePromise, loadPromise])
-    if (captureWindow.isDestroyed()) return null
-    captureWindow._captureInit = {
-      imageBuffer: capture.imageBuffer || Buffer.alloc(0),
-      mode,
-      autoAction: options.autoAction || '',
-      source: options.source || 'region',
-      displayBounds: display.bounds,
-      captureBounds,
-      imageBounds: options.imageBounds || null,
-      scaleFactor: capture.scaleFactor,
-      editPin: !!options.editPin,
-      smartSelect: !!captureWindow._smartSelectContext,
-      cursorPosition: (() => {
-        const point = screen.getCursorScreenPoint()
-        return { x: point.x - captureBounds.x, y: point.y - captureBounds.y }
-      })(),
-      settings: getSettings()
-    }
-    sendCaptureInit(captureWindow)
-    return captureWindow
-  } catch (error) {
-    if (!captureWindow.isDestroyed()) captureWindow.close()
-    throw error
-  }
-}
-
-function sendCaptureInit(win) {
-  if (
-    !win ||
-    win.isDestroyed() ||
-    !win._captureRendererReady ||
-    !win._captureInit ||
-    win._captureInitSent
-  ) return false
-  win._captureInitSent = true
-  win.webContents.send('capture:init', win._captureInit)
-  return true
-}
-
-function revealCaptureWindow(win) {
-  if (!win || win.isDestroyed() || win._captureVisible) return
-  clearTimeout(win._renderTimeout)
-  win._captureVisible = true
-  // Reveal the fully rendered surface in one step. Showing the window while
-  // its opacity is still zero lets Windows/DWM present a transient frame.
-  win.setOpacity(1)
-  win.showInactive()
-  setImmediate(() => {
-    if (win.isDestroyed()) return
-    win.focus()
-  })
-}
-
 async function getDesktopSourceForDisplay(display) {
   const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 16, height: 16 } })
   const source = sources.find((item) => String(item.display_id) === String(display.id)) || sources[0]
@@ -1488,7 +1168,7 @@ function setLongOverlayEditing(state, enabled, axis, hasContent) {
 
 async function createLongCaptureFromSelection(captureWindow, payload = {}) {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
-  if (!captureWindow || captureWindow.isDestroyed() || captureWindow !== currentCaptureWindow) throw new Error('截图选区已失效')
+  if (!captureWindow || captureWindow.isDestroyed() || !captureDomain?.ownsWindow(captureWindow)) throw new Error('截图选区已失效')
   const selected = payload.selection || {}
   const captureBounds = captureWindow._captureInit?.captureBounds
   if (!captureBounds) throw new Error('缺少截图显示器信息')
@@ -1966,20 +1646,20 @@ async function createRecordWindow(options = {}) {
 async function executeFunction(name, payload = {}) {
   assertGameModeDisabled()
   switch (name) {
-    case 'screenshot': await createCaptureWindow({ mode: 'region', source: 'region' }); return true
+    case 'screenshot': await captureDomain.createCaptureWindow({ mode: 'region', source: 'region' }); return true
     case 'screenshotDelay': {
       const seconds = Math.max(0, Number(payload.seconds ?? 3))
-      setTimeout(() => createCaptureWindow({ mode: 'region', source: 'delay' }).catch((error) => log(error.message)), seconds * 1000)
+      setTimeout(() => captureDomain.createCaptureWindow({ mode: 'region', source: 'delay' }).catch((error) => log(error.message)), seconds * 1000)
       return { scheduled: true, seconds }
     }
-    case 'screenshotFixed': await createCaptureWindow({ mode: 'region', autoAction: 'pin', source: 'fixed' }); return true
-    case 'screenshotOcr': await createCaptureWindow({ mode: 'region', autoAction: 'ocr', source: 'ocr' }); return true
-    case 'screenshotTable': await createCaptureWindow({ mode: 'region', autoAction: 'table', source: 'table' }); return true
-    case 'screenshotQr': await createCaptureWindow({ mode: 'region', autoAction: 'qr', source: 'qr' }); return true
-    case 'screenshotOcrTranslate': await createCaptureWindow({ mode: 'region', autoAction: 'translate', source: 'ocr-translate' }); return true
-    case 'screenshotCopy': await createCaptureWindow({ mode: 'region', autoAction: 'copy', source: 'copy' }); return true
-    case 'screenshotLong': await createCaptureWindow({ mode: 'region', autoAction: 'long', source: 'long-capture' }); return true
-    case 'screenshotFullScreen': await createCaptureWindow({ mode: 'fullscreen', autoAction: payload.save ? 'save' : 'copy', source: 'fullscreen' }); return true
+    case 'screenshotFixed': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'pin', source: 'fixed' }); return true
+    case 'screenshotOcr': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'ocr', source: 'ocr' }); return true
+    case 'screenshotTable': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'table', source: 'table' }); return true
+    case 'screenshotQr': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'qr', source: 'qr' }); return true
+    case 'screenshotOcrTranslate': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'translate', source: 'ocr-translate' }); return true
+    case 'screenshotCopy': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'copy', source: 'copy' }); return true
+    case 'screenshotLong': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'long', source: 'long-capture' }); return true
+    case 'screenshotFullScreen': await captureDomain.createCaptureWindow({ mode: 'fullscreen', autoAction: payload.save ? 'save' : 'copy', source: 'fullscreen' }); return true
     case 'screenshotFocusedWindow': {
       const dataUrl = await captureFocusedWindow()
       clipboard.writeImage(nativeImage.createFromDataURL(dataUrl))
@@ -2000,7 +1680,7 @@ async function executeFunction(name, payload = {}) {
       await createRecordWindow({ display, selectionBounds: display.bounds })
       return true
     }
-    case 'fullScreenDraw': await createCaptureWindow({ mode: 'canvas', source: 'canvas' }); return true
+    case 'fullScreenDraw': await captureDomain.createCaptureWindow({ mode: 'canvas', source: 'canvas' }); return true
     case 'toggleFixedContentVisibility': pinDomain.togglePinVisibility(); return true
     case 'showOrHideMainWindow': {
       if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) mainWindow.hide()
@@ -2341,7 +2021,7 @@ registerHistoryIpc({
   },
   editItem: async (item) => {
     if (!fs.existsSync(item.filePath)) return false
-    await createCaptureWindow({ imageBuffer: await fs.promises.readFile(item.filePath), mode: 'image', source: 'history' })
+    await captureDomain.createCaptureWindow({ imageBuffer: await fs.promises.readFile(item.filePath), mode: 'image', source: 'history' })
     return true
   },
   openItem: async (item) => {
@@ -2358,153 +2038,7 @@ registerHistoryIpc({
   chooseExportDirectory: () => pickDirectory({ title: '选择截图导出目录' })
 })
 
-const captureIpcController = {
-  ready: (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (!win || win.isDestroyed()) return
-  win._captureRendererReady = true
-  sendCaptureInit(win)
-  },
-  renderReady: (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  revealCaptureWindow(win)
-  if (win?._captureInit) {
-    const timing = win._performanceTiming
-    if (timing) {
-      const bounds = win._captureInit.captureBounds || {}
-      performanceMonitor.record('capture.interactive', performance.now() - timing.startedAt, {
-        mode: timing.mode,
-        captureMs: timing.captureMs,
-        smartSelectMs: timing.smartSelectMs,
-        windowLoadMs: timing.windowLoadMs,
-        width: Number(bounds.width) || 0,
-        height: Number(bounds.height) || 0,
-        scaleFactor: Number(win._captureInit.scaleFactor) || 1
-      })
-      performanceMonitor.snapshot('capture-interactive', { mode: timing.mode })
-      win._performanceTiming = null
-    }
-    win._captureInit.imageBuffer = null
-  }
-  },
-  renderError: (event, message) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (!win || win.isDestroyed()) return
-  log('Capture render failed:', message || 'image decode failed')
-  win.close()
-  },
-  close: (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  win?.close()
-  },
-  startRegionRecording: async (event, { selectionBounds } = {}) => {
-  const captureWindow = BrowserWindow.fromWebContents(event.sender)
-  if (!captureWindow || captureWindow !== currentCaptureWindow || captureWindow.isDestroyed()) {
-    throw new Error('无效的截图窗口')
-  }
-  const bounds = {
-    x: Number(selectionBounds?.x),
-    y: Number(selectionBounds?.y),
-    width: Number(selectionBounds?.width),
-    height: Number(selectionBounds?.height)
-  }
-  if (!Object.values(bounds).every(Number.isFinite)) throw new Error('录制区域无效')
-  const display = screen.getDisplayMatching(bounds)
-  await createRecordWindow({ display, selectionBounds: bounds })
-  if (!captureWindow.isDestroyed()) captureWindow.close()
-  return true
-  },
-  startLong: (event, payload) => createLongCaptureFromSelection(BrowserWindow.fromWebContents(event.sender), payload),
-  smartSelect: async (event, point = {}) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  const context = win?._smartSelectContext
-  if (!context || win.isDestroyed()) return []
-  const localX = Math.max(0, Math.min(context.captureBounds.width, Number(point.x) || 0))
-  const localY = Math.max(0, Math.min(context.captureBounds.height, Number(point.y) || 0))
-  const physicalX = context.physicalBounds.x + localX * context.physicalBounds.width / context.captureBounds.width
-  const physicalY = context.physicalBounds.y + localY * context.physicalBounds.height / context.captureBounds.height
-  let rects = await context.session.query(physicalX, physicalY)
-  if (!rects.length) rects = context.session.findWindowAt(physicalX, physicalY)
-  const candidates = convertSmartSelectRects(rects, context)
-  return candidates.length
-    ? candidates
-    : [{ x: 0, y: 0, w: context.captureBounds.width, h: context.captureBounds.height }]
-  },
-  copy: (_event, { imageBuffer, dataUrl, meta } = {}) => {
-  const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
-  if (!buffer.length) throw new Error('截图图片数据为空')
-  const image = nativeImage.createFromBuffer(buffer)
-  clipboard.writeImage(image)
-  const persistMeta = { ...meta, action: 'copy', image }
-  const persistStarted = Date.now()
-  setImmediate(() => {
-    try {
-      persistHistory(buffer, persistMeta)
-      performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: 'copy' })
-    } catch (error) {
-      log('Capture history persist failed:', error.message)
-    }
-  })
-  if (getSettings().screenshot.autoSaveOnCopy && getSettings().screenshot.saveDirectory) saveImageBuffer(buffer, { fast: true }).catch((error) => log(error.message))
-  return null
-  },
-  save: (event, { imageBuffer, dataUrl, meta, fast } = {}) => {
-  const captureWindow = BrowserWindow.fromWebContents(event.sender)
-  const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
-  if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
-  setImmediate(async () => {
-    try {
-      if (!buffer.length) throw new Error('截图图片数据为空')
-      const filePath = await saveImageBuffer(buffer, { fast: !!fast })
-      if (filePath) persistHistory(buffer, { ...meta, action: 'save' })
-    } catch (error) {
-      log('Capture save failed:', error.message)
-      dialog.showErrorBox('保存截图失败', error.message || String(error))
-    }
-  })
-  },
-  pin: (event, { imageBuffer, dataUrl, meta } = {}) => {
-  const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
-  pinDomain.pinFromCapture(event, buffer, meta)
-  const persistMeta = { ...meta, action: 'pin' }
-  const persistStarted = Date.now()
-  setImmediate(() => {
-    try {
-      persistHistory(buffer, persistMeta)
-      performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: 'pin' })
-    } catch (error) {
-      log('Capture history persist failed:', error.message)
-    }
-  })
-  return null
-  },
-  pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
-  const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
-  const { captureWindow, pinWindow } = pinDomain.pinFromCapture(event, buffer, meta)
-  pinWindow._pendingReannotateAction = ['ocr', 'translate'].includes(action) ? action : ''
-  setImmediate(() => {
-    if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
-  })
-  const persistMeta = { ...meta, action: 'pin' }
-  setImmediate(() => {
-    try {
-      persistHistory(buffer, persistMeta)
-    } catch (error) {
-      log('Capture history persist failed:', error.message)
-    }
-  })
-  return null
-  },
-  openRecognition: (event, { type, imageBuffer, dataUrl, meta } = {}) => {
-  const captureWindow = BrowserWindow.fromWebContents(event.sender)
-  const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
-  createRecognitionWindow(type, bufferToDataUrl(buffer), { scaleFactor: meta?.scaleFactor })
-  setImmediate(() => {
-    if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
-  })
-  return persistHistory(buffer, { ...meta, action: type })
-  },
-  recordHistory: (_event, { imageBuffer, dataUrl, meta } = {}) => persistHistory(imageBuffer ?? dataUrl, meta),
+const longCaptureIpcController = {
   longReady: (event) => {
   const state = currentLongCapture
   if (!state || event.sender !== state.controllerWindow.webContents) return
@@ -2669,7 +2203,10 @@ const captureIpcController = {
 
 registerCaptureIpc({
   ipcMain: secureIpcMain,
-  controller: captureIpcController
+  controller: {
+    ...captureDomain.createCaptureController(),
+    ...longCaptureIpcController
+  }
 })
 
 const searchIpcController = {

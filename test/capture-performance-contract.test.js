@@ -10,9 +10,10 @@ const capture = fs.readFileSync(path.join(root, 'capture', 'capture.js'), 'utf8'
 const markup = fs.readFileSync(path.join(root, 'capture', 'capture.html'), 'utf8')
 
 test('capture input and output use PNG binary buffers across IPC', () => {
+  const captureDomain = fs.readFileSync(path.join(root, 'main/domains/capture/index.js'), 'utf8')
   assert.match(main, /imageBuffer:\s*source\.thumbnail\.toPNG\(\)/)
-  assert.match(main, /_captureInit\s*=\s*\{[\s\S]*imageBuffer:/)
-  assert.match(main, /nativeImage\.createFromBuffer\(buffer\)/)
+  assert.match(captureDomain, /_captureInit\s*=\s*\{[\s\S]*imageBuffer:/)
+  assert.match(captureDomain, /nativeImage\.createFromBuffer\(buffer\)/)
   assert.match(preload, /copy:\s*\(imageBuffer, meta\)[\s\S]*\{ imageBuffer, meta \}/)
   assert.match(capture, /sourceCanvas\.toBlob\(/)
   assert.match(capture, /new Blob\(\[data\.imageBuffer\],\{type:'image\/png'\}\)/)

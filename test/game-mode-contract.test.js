@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+const captureDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/capture/index.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
 const config = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
 
@@ -22,7 +23,7 @@ test('game mode is persisted and synchronizes tray, shortcuts, selection, and se
 
 test('game mode guards every feature dispatch and passive summon entry point', () => {
   assert.match(main, /async function executeFunction\(name, payload = \{\}\) \{\s*assertGameModeDisabled\(\)/)
-  assert.match(main, /async function createCaptureWindow\(options = \{\}\) \{\s*assertGameModeDisabled\(\)/)
+  assert.match(captureDomain, /async function createCaptureWindow\(options = \{\}\) \{\s*assertGameModeDisabled\(\)/)
   assert.match(main, /function createSearchWindow\(\) \{\s*assertGameModeDisabled\(\)/)
   assert.match(main, /async function createRecordWindow\(options = \{\}\) \{\s*assertGameModeDisabled\(\)/)
   assert.match(main, /function handleTextSelection\(data\) \{\s*if \(isGameModeEnabled\(\)\)/)
