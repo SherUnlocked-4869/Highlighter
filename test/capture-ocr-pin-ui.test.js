@@ -9,6 +9,7 @@ const pinDomainSource = fs.readFileSync(path.join(root, 'main/domains/pin/index.
 const captureCss = fs.readFileSync(path.join(root, 'capture', 'capture.css'), 'utf8')
 const captureScript = fs.readFileSync(path.join(root, 'capture', 'capture.js'), 'utf8')
 const pinMarkup = fs.readFileSync(path.join(root, 'pin', 'pin.html'), 'utf8')
+const pinCss = fs.readFileSync(path.join(root, 'pin', 'pin.css'), 'utf8')
 const pinScript = fs.readFileSync(path.join(root, 'pin', 'pin.js'), 'utf8')
 
 test('OCR result actions stay outside the selected image area', () => {
@@ -70,7 +71,7 @@ test('pinned images align source pixels to the active display DPI', () => {
   assert.match(pinScript, /context\.imageSmoothingEnabled = false/)
   assert.match(pinScript, /pixelImage\.classList\.toggle\('pixel-native'/)
   assert.match(pinScript, /Math\.abs\(Number\(zoom\) - 1\) < 0\.001/)
-  assert.match(pinMarkup, /\.pin-surface\.pixel-native\{image-rendering:pixelated\}/)
+  assert.match(pinCss, /\.pin-surface\.pixel-native\{image-rendering:pixelated\}/)
   assert.match(pinScript, /if \(data\.longCapture\)[\s\S]*showImageSurface\(data\.dataUrl, initial\)[\s\S]*return/)
   assert.match(pinScript, /context\.drawImage\(nextImage, 0, 0\)[\s\S]*showSurface\(pixelImage\)/)
 })
