@@ -18,7 +18,7 @@ const {
 } = require('../deepseek')
 
 test('OCR batch translation explicitly disables reasoning with a bounded request timeout', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'deepseek.js'), 'utf8')
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'ai', 'client.js'), 'utf8')
   assert.match(source, /const OCR_TRANSLATION_TIMEOUT_MS = 30000/)
   assert.match(source, /const completionOptions = \{[\s\S]*thinking: 'off',[\s\S]*requestOptions: \{ timeout: OCR_TRANSLATION_TIMEOUT_MS \}/)
   assert.match(source, /completeChat\(provider,[\s\S]*completionOptions\)/)

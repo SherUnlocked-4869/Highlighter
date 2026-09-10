@@ -5,7 +5,7 @@ const path = require('node:path')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 const action = fs.readFileSync(path.join(__dirname, '..', 'action', 'action.js'), 'utf8')
-const deepseek = fs.readFileSync(path.join(__dirname, '..', 'deepseek.js'), 'utf8')
+const deepseek = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'ai', 'client.js'), 'utf8')
 const adapters = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'ai-protocol-adapters.js'), 'utf8')
 
 test('main process rebuilds selection hooks across power and session transitions', () => {
