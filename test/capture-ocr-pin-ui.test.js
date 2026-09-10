@@ -54,14 +54,12 @@ test('OCR translation uses the same positioned overlay interaction as OCR text e
 })
 
 test('pinned images align source pixels to the active display DPI', () => {
-  assert.match(main, /function getPixelAlignedPinSize\(pixelWidth, pixelHeight, display, preferredSize = null\)/)
-  assert.match(main, /Number\(pixelWidth\) \/ scaleFactor/)
+  // Pure geometry lives in main/domains/pin/geometry.js (see test/pin-geometry.test.js).
+  assert.match(main, /require\('\.\/main\/domains\/pin\/geometry'\)/)
   assert.match(main, /getPixelAlignedPinSize\(size\.width, size\.height, display, selectionBounds\)/)
   assert.match(main, /getPixelAlignedPinSize\(size\.width, size\.height, display, meta\.selectionBounds\)/)
   assert.match(main, /function syncPinDisplayScale\(win\)[\s\S]*screen\.getDisplayMatching\(bounds\)/)
   assert.match(main, /pixelWidth: size\.width,[\s\S]*displayScaleFactor: aligned\.scaleFactor/)
-  assert.match(main, /const nextZoom = Math\.max\(0\.2, Math\.min\(3,/)
-  assert.match(main, /data\.zoom = Math\.max\(0\.2, Math\.min\(3,/)
   assert.match(main, /pin:move-end[\s\S]*syncPinDisplayScale\(win\)/)
   assert.match(pinMarkup, /<canvas id="pixelImage"/)
   assert.match(pinScript, /context\.imageSmoothingEnabled = false/)

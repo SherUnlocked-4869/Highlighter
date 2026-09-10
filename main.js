@@ -87,6 +87,14 @@ const {
   pickDesktopSource
 } = require('./record/recording-utils')
 const {
+  applyPinZoomFactor,
+  clampPinOpacity,
+  clampPinZoom,
+  computePinDisplaySize,
+  getPixelAlignedPinSize,
+  normalizeSelectionBounds: normalizePinSelectionBounds
+} = require('./main/domains/pin/geometry')
+const {
   sanitizeAnnotationCommand,
   sanitizeAnnotationSnapshot
 } = require('./record/annotation-utils')
@@ -1661,21 +1669,6 @@ async function saveDataUrl(dataUrl, options = {}) {
   return saveImageBuffer(dataUrlToBuffer(dataUrl), options)
 }
 
-function getPixelAlignedPinSize(pixelWidth, pixelHeight, display, preferredSize = null) {
-  const scaleFactor = Math.max(0.25, Number(display?.scaleFactor) || 1)
-  const preferredWidth = Number(preferredSize?.width)
-  const preferredHeight = Number(preferredSize?.height)
-  return {
-    width: Number.isFinite(preferredWidth) && preferredWidth > 0
-      ? preferredWidth
-      : Math.max(1, Number(pixelWidth) / scaleFactor),
-    height: Number.isFinite(preferredHeight) && preferredHeight > 0
-      ? preferredHeight
-      : Math.max(1, Number(pixelHeight) / scaleFactor),
-    scaleFactor
-  }
-}
-
 function syncPinDisplayScale(win) {
   if (!win || win.isDestroyed() || !win._pinData) return false
   const data = win._pinData
@@ -1686,13 +1679,15 @@ function syncPinDisplayScale(win) {
   data.displayScaleFactor = aligned.scaleFactor
   data.baseWidth = aligned.width
   data.baseHeight = aligned.height
-  data.zoom = Math.max(0.2, Math.min(3, Number(data.zoom) || 1))
-  const width = Math.max(1, Math.round(data.baseWidth * data.zoom))
-  const fullHeight = Math.max(1, Math.round(data.baseHeight * data.zoom))
-  const height = data.longCapture
-    ? Math.min(Math.round(display.workArea.height * 0.55), fullHeight)
-    : fullHeight
-  win.setBounds({ x: bounds.x, y: bounds.y, width, height }, false)
+  const sized = computePinDisplaySize({
+    baseWidth: data.baseWidth,
+    baseHeight: data.baseHeight,
+    zoom: data.zoom,
+    longCapture: data.longCapture,
+    workAreaHeight: display.workArea.height
+  })
+  data.zoom = sized.zoom
+  win.setBounds({ x: bounds.x, y: bounds.y, width: sized.width, height: sized.height }, false)
   win.webContents.send('pin:zoom-changed', Math.round(data.zoom * 100))
   return true
 }
@@ -1700,12 +1695,7 @@ function syncPinDisplayScale(win) {
 function createPinWindow(dataUrl, meta = {}) {
   const image = nativeImage.createFromDataURL(dataUrl)
   const size = image.getSize()
-  const selectionBounds = meta.selectionBounds && {
-    x: Math.round(meta.selectionBounds.x),
-    y: Math.round(meta.selectionBounds.y),
-    width: Math.max(1, Math.round(meta.selectionBounds.width)),
-    height: Math.max(1, Math.round(meta.selectionBounds.height))
-  }
+  const selectionBounds = normalizePinSelectionBounds(meta.selectionBounds)
   const display = selectionBounds
     ? screen.getDisplayMatching(selectionBounds)
     : screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
@@ -1780,14 +1770,7 @@ function updatePinWindow(win, dataUrl, meta = {}) {
   const image = nativeImage.createFromDataURL(dataUrl)
   const size = image.getSize()
   const currentBounds = win.getBounds()
-  const targetBounds = meta.selectionBounds
-    ? {
-        x: Math.round(meta.selectionBounds.x),
-        y: Math.round(meta.selectionBounds.y),
-        width: Math.max(1, Math.round(meta.selectionBounds.width)),
-        height: Math.max(1, Math.round(meta.selectionBounds.height))
-      }
-    : currentBounds
+  const targetBounds = normalizePinSelectionBounds(meta.selectionBounds) || currentBounds
   const display = screen.getDisplayMatching(targetBounds)
   const aligned = getPixelAlignedPinSize(size.width, size.height, display, meta.selectionBounds)
   const nextBounds = {
@@ -1836,7 +1819,7 @@ function bringPinToFront(win) {
 
 function setPinOpacity(win, opacity) {
   if (!win || win.isDestroyed()) return
-  const nextOpacity = Math.max(0.25, Math.min(1, Number(opacity) || 1))
+  const nextOpacity = clampPinOpacity(opacity)
   if (win._pinData) win._pinData.opacity = nextOpacity
   win.setOpacity(nextOpacity)
 }
@@ -3061,12 +3044,16 @@ secureIpcMain.on('pin:resize', (event, { factor } = {}) => {
   const bounds = win.getBounds()
   const data = win._pinData
   const currentZoom = Number(data.zoom) || 1
-  const nextZoom = Math.max(0.2, Math.min(3, currentZoom * (Number(factor) || 1)))
+  const nextZoom = applyPinZoomFactor(currentZoom, factor)
   if (Math.abs(nextZoom - currentZoom) < 0.001) return
-  const width = Math.max(1, Math.round(data.baseWidth * nextZoom))
-  const height = Math.max(1, Math.round(data.baseHeight * nextZoom))
+  const sized = computePinDisplaySize({
+    baseWidth: data.baseWidth,
+    baseHeight: data.baseHeight,
+    zoom: nextZoom,
+    longCapture: false
+  })
   data.zoom = nextZoom
-  win.setBounds({ x: bounds.x, y: bounds.y, width, height }, false)
+  win.setBounds({ x: bounds.x, y: bounds.y, width: sized.width, height: sized.height }, false)
   win.webContents.send('pin:zoom-changed', Math.round(nextZoom * 100))
 })
 secureIpcMain.on('pin:move-start', (event) => {
