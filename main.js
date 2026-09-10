@@ -82,6 +82,8 @@ const { createPinDomain } = require('./main/domains/pin')
 const { createCaptureDomain } = require('./main/domains/capture')
 const { createLongCaptureDomain } = require('./main/domains/long-capture')
 const { createRecordDomain } = require('./main/domains/record')
+const { createRecognitionDomain } = require('./main/domains/recognition')
+const { createSearchDomain } = require('./main/domains/search')
 const {
   ACTION_WINDOW_MIN_HEIGHT,
   ACTION_WINDOW_MIN_WIDTH,
@@ -266,7 +268,6 @@ let tray = null
 let ocrService = null
 let everythingService = null
 let recordingService = null
-let searchWindow = null
 const fileIconCache = new Map()
 const FILE_ICON_CACHE_LIMIT = 256
 const managedRecordingWriters = new ManagedWriterCoordinator()
@@ -279,7 +280,8 @@ let pinDomain = null
 let captureDomain = null
 let longCaptureDomain = null
 let recordDomain = null
-const recognitionWindows = new Set()
+let recognitionDomain = null
+let searchDomain = null
 const TOOLBAR_W = getToolbarWidth(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR))
 const TOOLBAR_H = 40
 const TOOLBAR_STREAM_IDLE_TIMEOUT_MS = 30000
@@ -544,8 +546,8 @@ function authorizeIpcRole(role, win) {
   if (role === 'long-capture') return longCaptureDomain?.ownsControllerWindow(win) === true
   if (role === 'long-overlay') return longCaptureDomain?.ownsOverlayWindow(win) === true
   if (role === 'pin') return pinDomain?.ownsWindow(win) === true
-  if (role === 'recognition') return recognitionWindows.has(win)
-  if (role === 'search') return win === searchWindow
+  if (role === 'recognition') return recognitionDomain?.ownsWindow(win) === true
+  if (role === 'search') return searchDomain?.ownsWindow(win) === true
   if (role === 'record') return recordDomain?.ownsControlWindow(win) === true
   if (role === 'record-frame') return recordDomain?.ownsFrameWindow(win) === true
   return false
@@ -622,7 +624,7 @@ pinDomain = createPinDomain({
   createLocalWindow,
   getSettings,
   saveDataUrl: (dataUrl) => saveDataUrl(dataUrl),
-  createRecognitionWindow: (...args) => createRecognitionWindow(...args),
+  createRecognitionWindow: (...args) => recognitionDomain.createRecognitionWindow(...args),
   getCreateCaptureWindow: () => (...args) => captureDomain.createCaptureWindow(...args),
   dataUrlToBuffer,
   bufferToDataUrl,
@@ -651,7 +653,7 @@ captureDomain = createCaptureDomain({
   pinDomain,
   createRecordWindow: (...args) => recordDomain.createRecordWindow(...args),
   createLongCaptureFromSelection: (...args) => longCaptureDomain.createLongCaptureFromSelection(...args),
-  createRecognitionWindow: (...args) => createRecognitionWindow(...args),
+  createRecognitionWindow: (...args) => recognitionDomain.createRecognitionWindow(...args),
   persistHistory: (...args) => persistHistory(...args),
   saveImageBuffer: (...args) => saveImageBuffer(...args),
   imageDataToBuffer,
@@ -704,6 +706,36 @@ recordDomain = createRecordDomain({
   makeCaptureName,
   VIDEO_CAPTURE_PREFIX: captureNaming.VIDEO_CAPTURE_PREFIX,
   performanceMonitor
+})
+
+recognitionDomain = createRecognitionDomain({
+  path,
+  rootDirectory: __dirname,
+  BrowserWindow,
+  clipboard,
+  createLocalWindow,
+  getSettings,
+  dataUrlToBuffer,
+  recognizeWithPerformance: (...args) => recognizeWithPerformance(...args),
+  buildTableFromOcr
+})
+
+searchDomain = createSearchDomain({
+  path,
+  rootDirectory: __dirname,
+  screen,
+  clipboard,
+  nativeTheme,
+  shell,
+  BrowserWindow,
+  createLocalWindow,
+  getSettings,
+  log,
+  assertGameModeDisabled,
+  isGameModeEnabled,
+  getEverythingService: () => getEverythingService(),
+  positionAutomationWindow,
+  getSearchFileIcon
 })
 
 function positionAutomationWindow(win) {
@@ -1181,37 +1213,6 @@ async function saveDataUrl(dataUrl, options = {}) {
   return saveImageBuffer(dataUrlToBuffer(dataUrl), options)
 }
 
-function createRecognitionWindow(type, dataUrl, options = {}) {
-  if (!['table', 'qr'].includes(type)) throw new Error('不支持的识别类型')
-  if (!dataUrl) throw new Error('识别图片数据为空')
-  const isTable = type === 'table'
-  const settings = getSettings()
-  const pagePath = path.join(__dirname, 'recognition', 'recognition.html')
-  const win = createLocalWindow(pagePath, {
-    width: isTable ? 820 : 640,
-    height: isTable ? 620 : 420,
-    minWidth: isTable ? 600 : 480,
-    minHeight: isTable ? 440 : 320,
-    frame: false,
-    show: false,
-    backgroundColor: '#18181b',
-    title: isTable ? 'Highlighter 表格识别' : 'Highlighter 二维码识别',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-recognition.js')
-    }
-  })
-  recognitionWindows.add(win)
-  win._recognitionInit = {
-    type,
-    dataUrl,
-    scaleFactor: Number(options.scaleFactor) || 1,
-    mainColor: settings.mainColor || '#1677ff'
-  }
-  win.loadFile(pagePath)
-  win.on('closed', () => recognitionWindows.delete(win))
-  return win
-}
-
 function getEverythingService() {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
   if (everythingService) return everythingService
@@ -1226,99 +1227,12 @@ function getEverythingService() {
     runtimeEverythingDir: path.join(activePaths?.runtime || path.join(app.getPath('userData'), 'runtime'), 'everything'),
     getUseBundledEverything: () => getSettings().search.useBundledEverything !== false,
     onStatusChange: (status) => {
-      if (searchWindow && !searchWindow.isDestroyed()) {
-        searchWindow.webContents.send('search:status-changed', status)
-      }
+      searchDomain?.notifyStatusChanged(status)
     },
     ...(e2eContext.fakeEverything ? { e2eQuery: createFakeEverythingQuery() } : {}),
     log
   })
   return everythingService
-}
-
-function getSearchWindowInitPayload() {
-  const settings = getSettings()
-  return {
-    mainColor: settings.mainColor || '#1677ff',
-    dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors),
-    search: settings.search
-  }
-}
-
-function positionSearchWindow(win) {
-  try {
-    const cursor = screen.getCursorScreenPoint()
-    const display = screen.getDisplayNearestPoint(cursor)
-    const [width, height] = win.getSize()
-    const area = display.workArea
-    win.setPosition(
-      Math.round(area.x + Math.max(0, (area.width - width) / 2)),
-      Math.round(area.y + Math.max(0, (area.height - height) / 3)),
-      false
-    )
-  } catch (error) {
-    log('Search window positioning failed:', error.message)
-  }
-  positionAutomationWindow(win)
-}
-
-function showSearchWindow() {
-  if (isGameModeEnabled()) return false
-  const win = searchWindow
-  if (!win || win.isDestroyed()) return false
-  win.webContents.send('search:init', getSearchWindowInitPayload())
-  if (!win.isVisible()) win.show()
-  win.focus()
-  return true
-}
-
-function createSearchWindow() {
-  assertGameModeDisabled()
-  if (searchWindow && !searchWindow.isDestroyed()) {
-    if (searchWindow.isVisible()) {
-      searchWindow.hide()
-      return searchWindow
-    }
-    showSearchWindow()
-    return searchWindow
-  }
-  const pagePath = path.join(__dirname, 'search', 'search.html')
-  const win = createLocalWindow(pagePath, {
-    width: 840,
-    height: 620,
-    minWidth: 620,
-    minHeight: 420,
-    frame: false,
-    show: false,
-    title: 'Highlighter 本地搜索',
-    backgroundColor: '#f5f6f8',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-search.js')
-    }
-  })
-  searchWindow = win
-  win._searchInit = getSearchWindowInitPayload()
-  positionSearchWindow(win)
-  win.loadFile(pagePath)
-  win.on('blur', () => {
-    if (searchWindow === win && !win.isDestroyed() && win.isVisible()) win.hide()
-  })
-  win.on('closed', () => { if (searchWindow === win) searchWindow = null })
-  return win
-}
-
-async function openSearchTarget(target, { reveal = false } = {}) {
-  const value = String(target || '').trim()
-  if (!value || value.includes('\0') || !path.isAbsolute(value)) {
-    throw new Error('无效的文件路径')
-  }
-  if (reveal) {
-    shell.showItemInFolder(value)
-    return { ok: true }
-  }
-  const result = await shell.openPath(value)
-  if (result) throw new Error(result)
-  return { ok: true }
 }
 
 async function getSearchFileIcon(samplePath) {
@@ -1392,7 +1306,7 @@ async function executeFunction(name, payload = {}) {
       return true
     }
     case 'openCaptureHistory': createMainWindow('history'); return true
-    case 'localSearch': createSearchWindow(); return true
+    case 'localSearch': searchDomain.createSearchWindow(); return true
     case 'translation': createMainWindow('translation'); return true
     case 'chat': createMainWindow('chat'); return true
     default: throw new Error(`未知功能：${name}`)
@@ -1412,7 +1326,7 @@ function applyGameModeState(enabled, reason = 'state-change') {
     selectionHookService?.suspend('game-mode')
     hideToolbar()
     if (currentStreamController) cancelToolbarStream(currentStreamController, 'game-mode')
-    if (searchWindow && !searchWindow.isDestroyed() && searchWindow.isVisible()) searchWindow.hide()
+    searchDomain.hideSearchWindow()
   } else if (selectionHookService) {
     selectionHookService.start('game-mode-disabled')
   }
@@ -1470,9 +1384,7 @@ registerSettingsIpc({
     if (patch.plugins?.ocr === true && settings.ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
     if (patch.theme !== undefined || patch.mainColor !== undefined) broadcastActionAppearance(settings)
     if (patch.search) {
-      if (searchWindow && !searchWindow.isDestroyed()) {
-        searchWindow.webContents.send('search:settings-changed', getSearchWindowInitPayload())
-      }
+      searchDomain.notifySettingsChanged()
     }
     if (patch.selectionToolbar?.clipboardFallback !== undefined) {
       selectionHookService?.updateStartOptions({ enableClipboard: settings.selectionToolbar.clipboardFallback })
@@ -1483,9 +1395,7 @@ registerSettingsIpc({
     broadcastActionAppearance(settings)
     updateService?.setChannel(settings.system.updateChannel)
     selectionHookService?.updateStartOptions({ enableClipboard: settings.selectionToolbar.clipboardFallback })
-    if (searchWindow && !searchWindow.isDestroyed()) {
-      searchWindow.webContents.send('search:settings-changed', getSearchWindowInitPayload())
-    }
+    if (searchDomain) searchDomain.notifySettingsChanged()
   },
   validateApiKey: async (input) => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
@@ -1728,7 +1638,7 @@ registerHistoryIpc({
   chooseExportDirectory: () => pickDirectory({ title: '选择截图导出目录' })
 })
 
-const recognitionIpcController = {
+const ocrIpcController = {
   ocrStatus: () => getOcrService().getStatus(),
   ocr: async (_event, payload) => {
   if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
@@ -1780,39 +1690,6 @@ const recognitionIpcController = {
       textBlocks: translatedBlocks
     }
   }
-  },
-  recognitionReady: (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (!win || !recognitionWindows.has(win) || !win._recognitionInit) return
-  event.sender.send('recognition:init', win._recognitionInit)
-  win.show()
-  win.focus()
-  },
-  recognitionTable: async (event, payload) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (!win || !recognitionWindows.has(win)) throw new Error('无效的表格识别窗口')
-  if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
-  const dataUrl = payload?.dataUrl
-  if (!dataUrl) throw new Error('表格图片数据为空')
-  const settings = getSettings()
-  const ocrResult = await recognizeWithPerformance(dataUrlToBuffer(dataUrl), {
-    scaleFactor: payload?.scaleFactor,
-    detectAngle: settings.ocr.detectAngle,
-    minConfidence: settings.ocr.minConfidence
-  }, 'table')
-  const table = buildTableFromOcr(ocrResult, { minConfidence: settings.ocr.minConfidence })
-  if (!table) throw new Error('未识别到稳定的表格结构，请扩大选区并确保至少包含两行两列')
-  return table
-  },
-  recognitionCopy: (event, value) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (!win || !recognitionWindows.has(win)) throw new Error('无效的识别结果窗口')
-  clipboard.writeText(String(value || ''))
-  return true
-  },
-  recognitionClose: (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (win && recognitionWindows.has(win) && !win.isDestroyed()) win.close()
   }
 }
 
@@ -1821,48 +1698,14 @@ registerCaptureIpc({
   controller: {
     ...captureDomain.createCaptureController(),
     ...longCaptureDomain.createLongCaptureController(),
-    ...recognitionIpcController
+    ...ocrIpcController,
+    ...recognitionDomain.createRecognitionController()
   }
 })
 
-const searchIpcController = {
-  ready: (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (!win || win !== searchWindow || win.isDestroyed()) return
-    event.sender.send('search:init', win._searchInit || getSearchWindowInitPayload())
-    if (!win.isVisible()) win.show()
-    win.focus()
-  },
-  close: (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win && win === searchWindow && !win.isDestroyed() && win.isVisible()) win.hide()
-  },
-  query: (_event, payload) => {
-    const search = String(payload?.search ?? '')
-    if (search.length > 2048) throw new Error('查询内容过长')
-    return getEverythingService().query({
-      search,
-      maxResults: payload?.maxResults,
-      sortMode: payload?.sortMode,
-      matchPath: payload?.matchPath
-    })
-  },
-  getStatus: () => getEverythingService().refreshStatus(),
-  ensureReady: () => getEverythingService().ensureReady(),
-  openPath: (_event, payload) => openSearchTarget(payload?.path),
-  revealPath: (_event, payload) => openSearchTarget(payload?.path, { reveal: true }),
-  copyPath: (_event, payload) => {
-    const value = String(payload?.path || '')
-    if (!value || value.includes('\0')) throw new Error('无效的文件路径')
-    clipboard.writeText(value)
-    return { ok: true }
-  },
-  getFileIcon: (_event, payload) => getSearchFileIcon(payload?.path)
-}
-
 registerSearchIpc({
   ipcMain: secureIpcMain,
-  controller: searchIpcController
+  controller: searchDomain.createSearchController()
 })
 
 registerRecordingIpc({
