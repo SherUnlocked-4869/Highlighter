@@ -101,7 +101,10 @@ test('IPC policy exactly covers every main-process registration', () => {
       .map((name) => path.join(root, 'main', 'domains', 'pin', name)),
     ...fs.readdirSync(path.join(root, 'main', 'domains', 'capture'))
       .filter((name) => name.endsWith('.js'))
-      .map((name) => path.join(root, 'main', 'domains', 'capture', name))
+      .map((name) => path.join(root, 'main', 'domains', 'capture', name)),
+    ...fs.readdirSync(path.join(root, 'main', 'domains', 'long-capture'))
+      .filter((name) => name.endsWith('.js'))
+      .map((name) => path.join(root, 'main', 'domains', 'long-capture', name))
   ]
   const registrations = new Map()
   for (const file of sourceFiles) {

@@ -38,7 +38,7 @@ test('portable named paths own history, logs, and service caches', () => {
   assert.match(main, /const logFile = activePaths \? path\.join\(activePaths\.logs, 'app\.log'\) : path\.join\(app\.getPath\('userData'\), 'app\.log'\)/)
   assert.match(main, /tempDir: activePaths\?\.ocrCache \|\| path\.join\(app\.getPath\('temp'\), 'Highlighter', 'ocr'\)/)
   assert.match(main, /tempRoot: activePaths\?\.recordingCache \|\| path\.join\(app\.getPath\('userData'\), 'temp', 'recordings'\)/)
-  assert.match(main, /tempRoot: activePaths\?\.longCaptureCache \|\| app\.getPath\('temp'\)/)
+  assert.match(main, /getLongCaptureTempRoot: \(\) => activePaths\?\.longCaptureCache \|\| app\.getPath\('temp'\)/)
   assert.doesNotMatch(main, /tempRoot: path\.join\(app\.getPath\('userData'\), 'temp', 'recordings'\)/)
   assert.match(main, /dataDirectory: activePaths\?\.root \|\| app\.getPath\('userData'\)/)
   assert.match(main, /shell\.openPath\(activePaths\?\.root \|\| app\.getPath\('userData'\)\)/)
@@ -152,7 +152,7 @@ test('migration quiesces managed writers and blocks late config, log, and histor
   const stopWriters = section('async function stopManagedDataWriters()', 'function restoreManagedDataWriters')
   assert.match(stopWriters, /activeOcrService\.stop\(\)[\s\S]*await Promise\.allSettled\(inFlight\)/)
   assert.match(stopWriters, /await closeRecordFlow\(activeRecordingService, true\)[\s\S]*await activeRecordingService\.dispose\(\)/)
-  assert.match(stopWriters, /await longCapture\.finishingPromise[\s\S]*closeLongCapture\(\)/)
+  assert.match(main, /await longCaptureDomain\.shutdown\(\)/)
   assert.match(main, /function assertManagedDataWritable\(\)[\s\S]*dataRootMigrationInProgress[\s\S]*throw new Error/)
   assert.match(main, /createAppLogger\(\{[\s\S]*isEnabled: \(\) => !dataRootMigrationInProgress/)
   assert.match(historyService, /persistDataUrl\(dataUrl, meta = \{\}\) \{[\s\S]*this\.assertWritable\(\)/)
@@ -162,11 +162,12 @@ test('migration quiesces managed writers and blocks late config, log, and histor
 })
 
 test('long capture rechecks the migration gate after desktop source lookup', () => {
-  const createLongCapture = section('async function createLongCaptureFromSelection', 'async function finishLongCapture')
+  const longCaptureDomain = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'long-capture', 'index.js'), 'utf8')
   assert.match(
-    createLongCapture,
+    longCaptureDomain,
     /const source = await getDesktopSourceForDisplay\(display\)\s+assertManagedDataWritable\(\)\s+const settings = getSettings\(\)\s+const session = new LongCaptureSession\(/
   )
+  assert.match(longCaptureDomain, /isMigrationInProgress\?\.\(\)/)
 })
 
 test('recording cache operations are tracked until they settle before migration', () => {
