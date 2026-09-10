@@ -78,21 +78,10 @@ const { LongCaptureSession } = require('./main/services/long-capture-session')
 const { findNativeDisplay, getNativeDisplayBounds, readPngSize } = require('./main/services/capture-geometry')
 const { listNativeDisplays } = require('./main/services/native-display-list')
 const { buildTableFromOcr } = require('./capture/recognition-utils')
-const {
-  calculateFrameBounds,
-  calculateRecordControlSize,
-  calculateTranscodeProgress,
-  normalizeFrameRate,
-  normalizeSelectionBounds,
-  pickDesktopSource
-} = require('./record/recording-utils')
 const { createPinDomain } = require('./main/domains/pin')
 const { createCaptureDomain } = require('./main/domains/capture')
 const { createLongCaptureDomain } = require('./main/domains/long-capture')
-const {
-  sanitizeAnnotationCommand,
-  sanitizeAnnotationSnapshot
-} = require('./record/annotation-utils')
+const { createRecordDomain } = require('./main/domains/record')
 const {
   ACTION_WINDOW_MIN_HEIGHT,
   ACTION_WINDOW_MIN_WIDTH,
@@ -274,8 +263,6 @@ let selectionWindowManager = null
 let selectionHookService = null
 const selectionPowerListeners = []
 let tray = null
-let recordWindow = null
-let recordFrameWindow = null
 let ocrService = null
 let everythingService = null
 let recordingService = null
@@ -291,6 +278,7 @@ let toolbarStreamSeq = 0
 let pinDomain = null
 let captureDomain = null
 let longCaptureDomain = null
+let recordDomain = null
 const recognitionWindows = new Set()
 const TOOLBAR_W = getToolbarWidth(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR))
 const TOOLBAR_H = 40
@@ -437,7 +425,7 @@ function getUpdateInstallReadiness() {
   if (dataRootMigrationInProgress) return { ok: false, reason: '数据目录正在迁移，请完成后重试。' }
   if (captureDomain?.isTaskActive()) return { ok: false, reason: '截图任务仍在进行，请完成或关闭后重试。' }
   if (longCaptureDomain?.isTaskActive()) return { ok: false, reason: '长截图任务仍在进行，请完成或关闭后重试。' }
-  if (recordWindow && !recordWindow.isDestroyed()) return { ok: false, reason: '录屏任务仍在进行，请完成或关闭后重试。' }
+  if (recordDomain?.isTaskActive()) return { ok: false, reason: '录屏任务仍在进行，请完成或关闭后重试。' }
   if (ocrService?.inFlight?.size) return { ok: false, reason: 'OCR 正在识别，请完成后重试。' }
   if (managedRecordingWriters.inFlight.size) return { ok: false, reason: '媒体文件仍在写入，请完成后重试。' }
   if (isProcessing) return { ok: false, reason: '划词处理任务仍在进行，请完成后重试。' }
@@ -558,8 +546,8 @@ function authorizeIpcRole(role, win) {
   if (role === 'pin') return pinDomain?.ownsWindow(win) === true
   if (role === 'recognition') return recognitionWindows.has(win)
   if (role === 'search') return win === searchWindow
-  if (role === 'record') return win === recordWindow
-  if (role === 'record-frame') return win === recordFrameWindow && win._recordOwner === recordWindow
+  if (role === 'record') return recordDomain?.ownsControlWindow(win) === true
+  if (role === 'record-frame') return recordDomain?.ownsFrameWindow(win) === true
   return false
 }
 
@@ -661,7 +649,7 @@ captureDomain = createCaptureDomain({
   assertGameModeDisabled,
   getDisplayCapture,
   pinDomain,
-  createRecordWindow: (...args) => createRecordWindow(...args),
+  createRecordWindow: (...args) => recordDomain.createRecordWindow(...args),
   createLongCaptureFromSelection: (...args) => longCaptureDomain.createLongCaptureFromSelection(...args),
   createRecognitionWindow: (...args) => createRecognitionWindow(...args),
   persistHistory: (...args) => persistHistory(...args),
@@ -696,6 +684,26 @@ longCaptureDomain = createLongCaptureDomain({
   makeCaptureName,
   LONG_CAPTURE_PREFIX: captureNaming.LONG_CAPTURE_PREFIX,
   updateSettings: (patch) => settingsService.updateSettings(patch)
+})
+
+recordDomain = createRecordDomain({
+  app,
+  desktopCapturer,
+  path,
+  screen,
+  dialog,
+  BrowserWindow,
+  rootDirectory: __dirname,
+  createLocalWindow,
+  getSettings,
+  log,
+  assertGameModeDisabled,
+  assertManagedDataWritable,
+  getRecordingService: () => getRecordingService(),
+  managedRecordingWriters,
+  makeCaptureName,
+  VIDEO_CAPTURE_PREFIX: captureNaming.VIDEO_CAPTURE_PREFIX,
+  performanceMonitor
 })
 
 function positionAutomationWindow(win) {
@@ -1333,130 +1341,6 @@ async function getSearchFileIcon(samplePath) {
   return dataUrl
 }
 
-async function cleanupRecordSession(win, service = recordingService, allowBlocked = false) {
-  const sessionId = win?._recordSessionId
-  if (!sessionId || !service) return false
-  win._recordSessionId = null
-  return managedRecordingWriters.track(() => service.cleanupSession(sessionId), { allowBlocked })
-}
-
-async function closeRecordFlow(service = recordingService, allowBlockedCleanup = false) {
-  const control = recordWindow
-  const frame = recordFrameWindow
-  if (recordWindow === control) recordWindow = null
-  if (recordFrameWindow === frame) recordFrameWindow = null
-  await cleanupRecordSession(control, service, allowBlockedCleanup).catch((error) => log('Recording cleanup failed:', error.message))
-  restoreRecordFramePassthrough(frame)
-  if (control && !control.isDestroyed()) control.close()
-  if (frame && !frame.isDestroyed()) frame.close()
-}
-
-function restoreRecordFramePassthrough(frame = recordFrameWindow) {
-  if (!frame || frame.isDestroyed()) return false
-  frame.setIgnoreMouseEvents(true, { forward: true })
-  return true
-}
-
-function getRecordControlBounds(selectionBounds, workArea) {
-  const { width, height } = calculateRecordControlSize(workArea)
-  const minX = workArea.x
-  const maxX = workArea.x + workArea.width - width
-  const minY = workArea.y
-  const maxY = workArea.y + workArea.height - height
-  const x = Math.max(minX, Math.min(maxX, Math.round(selectionBounds.x + (selectionBounds.width - width) / 2)))
-  let y = selectionBounds.y + selectionBounds.height + 12
-  if (y > maxY) y = selectionBounds.y - height - 12
-  return { x, y: Math.max(minY, Math.min(maxY, Math.round(y))), width, height }
-}
-
-async function createRecordWindow(options = {}) {
-  assertGameModeDisabled()
-  await closeRecordFlow()
-  const requestedBounds = options.selectionBounds && {
-    x: Math.round(Number(options.selectionBounds.x)),
-    y: Math.round(Number(options.selectionBounds.y)),
-    width: Math.round(Number(options.selectionBounds.width)),
-    height: Math.round(Number(options.selectionBounds.height))
-  }
-  const display = options.display || (requestedBounds
-    ? screen.getDisplayMatching(requestedBounds)
-    : screen.getDisplayNearestPoint(screen.getCursorScreenPoint()))
-  const selectionBounds = normalizeSelectionBounds(requestedBounds || display.bounds, display.bounds)
-  const source = await getDesktopSource(display)
-  const frameRate = normalizeFrameRate(getSettings().record.frameRate)
-  const frameBounds = calculateFrameBounds(selectionBounds, 2)
-  const controlBounds = getRecordControlBounds(selectionBounds, display.workArea)
-
-  const framePagePath = path.join(__dirname, 'record', 'frame.html')
-  const controlPagePath = path.join(__dirname, 'record', 'record.html')
-  const frameWindow = createLocalWindow(framePagePath, {
-    ...frameBounds,
-    show: false,
-    frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    focusable: false,
-    resizable: false,
-    movable: false,
-    hasShadow: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-record-frame.js'),
-      backgroundThrottling: false
-    }
-  })
-  const controlWindow = createLocalWindow(controlPagePath, {
-    ...controlBounds,
-    show: false,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: false,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-record.js'),
-      backgroundThrottling: false
-    }
-  })
-  recordFrameWindow = frameWindow
-  recordWindow = controlWindow
-  frameWindow._recordOwner = controlWindow
-  controlWindow._recordControlBounds = controlBounds
-  controlWindow._recordFrameState = 'idle'
-  controlWindow._recordAnnotationCommand = sanitizeAnnotationCommand({})
-  controlWindow._recordInit = {
-    sourceId: source.id,
-    displayBounds: display.bounds,
-    selectionBounds,
-    frameRate
-  }
-
-  for (const win of [frameWindow, controlWindow]) {
-    win.setAlwaysOnTop(true, 'screen-saver')
-    win.setContentProtection(true)
-  }
-  restoreRecordFramePassthrough(frameWindow)
-  controlWindow.on('closed', () => {
-    cleanupRecordSession(controlWindow).catch((error) => log('Recording cleanup failed:', error.message))
-    if (recordWindow === controlWindow) recordWindow = null
-    if (recordFrameWindow?._recordOwner === controlWindow) {
-      const ownedFrame = recordFrameWindow
-      recordFrameWindow = null
-      if (!ownedFrame.isDestroyed()) ownedFrame.close()
-    }
-  })
-  frameWindow.on('closed', () => {
-    if (recordFrameWindow === frameWindow) recordFrameWindow = null
-  })
-  await Promise.all([
-    frameWindow.loadFile(framePagePath),
-    controlWindow.loadFile(controlPagePath)
-  ])
-  frameWindow.showInactive()
-  controlWindow.show()
-  return controlWindow
-}
 
 async function executeFunction(name, payload = {}) {
   assertGameModeDisabled()
@@ -1492,7 +1376,7 @@ async function executeFunction(name, payload = {}) {
     }
     case 'videoRecord': {
       const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-      await createRecordWindow({ display, selectionBounds: display.bounds })
+      await recordDomain.createRecordWindow({ display, selectionBounds: display.bounds })
       return true
     }
     case 'fullScreenDraw': await captureDomain.createCaptureWindow({ mode: 'canvas', source: 'canvas' }); return true
@@ -1555,13 +1439,8 @@ async function stopManagedDataWriters() {
     if (ocrService === activeOcrService) ocrService = null
   }
 
-  const activeRecordingService = recordingService
-  await closeRecordFlow(activeRecordingService, true)
-  try {
-    if (activeRecordingService) await activeRecordingService.dispose()
-  } finally {
-    if (recordingService === activeRecordingService) recordingService = null
-  }
+  await recordDomain.shutdown()
+  recordingService = null
 
   await longCaptureDomain.shutdown()
 }
@@ -1986,196 +1865,11 @@ registerSearchIpc({
   controller: searchIpcController
 })
 
-function requireRecordSender(event) {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (!win || win !== recordWindow || win.isDestroyed()) throw new Error('无效的录制窗口')
-  return win
-}
-
-function requireRecordFrameSender(event) {
-  const frame = BrowserWindow.fromWebContents(event.sender)
-  if (!frame || frame !== recordFrameWindow || frame.isDestroyed() || frame._recordOwner !== recordWindow) {
-    throw new Error('无效的录制标注窗口')
-  }
-  return frame
-}
-
-function sendRecordAnnotationCommand(control, payload = {}) {
-  const frame = recordFrameWindow
-  if (!control || control !== recordWindow || control.isDestroyed() || !frame || frame.isDestroyed() || frame._recordOwner !== control) return false
-  const sanitized = sanitizeAnnotationCommand({ ...control._recordAnnotationCommand, ...payload })
-  const enabled = ['recording', 'paused'].includes(control._recordFrameState)
-  const message = { ...sanitized, enabled, tool: enabled ? sanitized.tool : 'pointer' }
-  control._recordAnnotationCommand = { ...sanitized, action: '' }
-  frame.setIgnoreMouseEvents(message.tool === 'pointer', { forward: true })
-  frame.webContents.send('record-frame:command', message)
-  return message
-}
-
-function requireRecordSession(win, sessionId) {
-  if (!sessionId || win._recordSessionId !== sessionId) throw new Error('录制会话不匹配')
-  return sessionId
-}
-
-const recordingIpcController = {
-  ready: (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (win === recordWindow && win?._recordInit) event.sender.send('record:init', win._recordInit)
-  },
-  frameReady: (event) => {
-  const frame = requireRecordFrameSender(event)
-  sendRecordAnnotationCommand(frame._recordOwner)
-  },
-  frameSnapshot: (event, snapshot = {}) => {
-  const frame = requireRecordFrameSender(event)
-  const control = frame._recordOwner
-  const bounds = control._recordInit.selectionBounds
-  const clean = sanitizeAnnotationSnapshot(snapshot, { width: bounds.width, height: bounds.height })
-  control.webContents.send('record:annotation-snapshot', clean)
-  },
-  performance: (event, metrics = {}) => {
-  requireRecordSender(event)
-  const durationMs = Math.max(0, Math.min(24 * 60 * 60 * 1000, Number(metrics.durationMs) || 0))
-  const targetFrameRate = normalizeFrameRate(metrics.targetFrameRate)
-  const callbacks = Math.max(0, Math.min(100000000, Math.round(Number(metrics.callbacks) || 0)))
-  const renderedFrames = Math.max(0, Math.min(callbacks, Math.round(Number(metrics.renderedFrames) || 0)))
-  const skippedCallbacks = Math.max(0, Math.min(callbacks, Math.round(Number(metrics.skippedCallbacks) || 0)))
-  const scheduler = metrics.scheduler === 'video-frame' ? 'video-frame' : 'timer'
-  performanceMonitor.record('record.compositor', durationMs, {
-    targetFrameRate,
-    callbacks,
-    renderedFrames,
-    skippedCallbacks,
-    scheduler,
-    effectiveFrameRate: durationMs > 0 ? Math.round(renderedFrames * 100000 / durationMs) / 100 : 0
-  })
-  performanceMonitor.snapshot('record-compositor', { targetFrameRate, scheduler })
-  },
-  setAnnotationCommand: (event, command = {}) => {
-  const control = requireRecordSender(event)
-  return sendRecordAnnotationCommand(control, command)
-  },
-  startSession: async (event) => {
-  assertManagedDataWritable()
-  const win = requireRecordSender(event)
-  const service = getRecordingService()
-  await cleanupRecordSession(win, service)
-  managedRecordingWriters.assertOpen()
-  const session = await managedRecordingWriters.track(() => service.startSession())
-  win._recordSessionId = session.id
-  return { id: session.id }
-  },
-  appendChunk: async (event, { sessionId, arrayBuffer } = {}) => {
-  assertManagedDataWritable()
-  const win = requireRecordSender(event)
-  requireRecordSession(win, sessionId)
-  const service = getRecordingService()
-  await managedRecordingWriters.track(service.appendChunk(sessionId, Buffer.from(arrayBuffer || [])))
-  return true
-  },
-  finishSession: async (event, { sessionId } = {}) => {
-  assertManagedDataWritable()
-  const win = requireRecordSender(event)
-  requireRecordSession(win, sessionId)
-  const service = getRecordingService()
-  return managedRecordingWriters.track(service.finishSession(sessionId))
-  },
-  saveMp4: async (event, { sessionId, durationMs } = {}) => {
-  assertManagedDataWritable()
-  const win = requireRecordSender(event)
-  requireRecordSession(win, sessionId)
-  const settings = getSettings()
-  const directory = settings.record.saveDirectory || app.getPath('videos')
-  let result
-  win.setAlwaysOnTop(false)
-  try {
-    result = await dialog.showSaveDialog(win, {
-      title: '保存 MP4 录屏',
-      defaultPath: path.join(directory, makeCaptureName(captureNaming.VIDEO_CAPTURE_PREFIX).replace('.png', '.mp4')),
-      filters: [{ name: 'MP4 视频', extensions: ['mp4'] }]
-    })
-  } finally {
-    if (!win.isDestroyed()) win.setAlwaysOnTop(true, 'screen-saver')
-  }
-  if (result.canceled || !result.filePath) return ''
-  assertManagedDataWritable()
-  const duration = Math.max(1, Number(durationMs) || 1)
-  const service = getRecordingService()
-  const outputPath = await managedRecordingWriters.track(service.transcode(sessionId, result.filePath, (elapsedMicroseconds) => {
-    if (win.isDestroyed()) return
-    const percent = calculateTranscodeProgress(elapsedMicroseconds, duration)
-    win.webContents.send('record:save-progress', percent)
-  }))
-  if (!win.isDestroyed()) win.webContents.send('record:save-progress', 100)
-  win._recordSessionId = null
-  await managedRecordingWriters.track(service.cleanupSession(sessionId))
-  return outputPath
-  },
-  cancelSession: async (event, { sessionId } = {}) => {
-  assertManagedDataWritable()
-  const win = requireRecordSender(event)
-  requireRecordSession(win, sessionId)
-  win._recordSessionId = null
-  const service = getRecordingService()
-  await managedRecordingWriters.track(service.cleanupSession(sessionId))
-  return true
-  },
-  setFrameState: (event, state = 'idle') => {
-  const control = requireRecordSender(event)
-  const frame = recordFrameWindow
-  if (!frame || frame.isDestroyed()) return false
-  control._recordFrameState = ['recording', 'paused'].includes(state) ? state : 'idle'
-  sendRecordAnnotationCommand(control)
-  if (state === 'hidden') {
-    restoreRecordFramePassthrough(frame)
-    frame.hide()
-  }
-  else {
-    frame.showInactive()
-    frame.webContents.send('record-frame:state', ['recording', 'paused'].includes(state) ? state : 'idle')
-  }
-  return true
-  },
-  resizePreview: (event) => {
-  const win = requireRecordSender(event)
-  const display = screen.getDisplayMatching(win._recordInit.selectionBounds)
-  const width = Math.min(760, display.workArea.width)
-  const height = Math.min(560, display.workArea.height)
-  win.setBounds({
-    x: Math.round(display.workArea.x + (display.workArea.width - width) / 2),
-    y: Math.round(display.workArea.y + (display.workArea.height - height) / 2),
-    width,
-    height
-  }, false)
-  return true
-  },
-  restart: async (event, { sessionId } = {}) => {
-  assertManagedDataWritable()
-  const win = requireRecordSender(event)
-  if (sessionId) requireRecordSession(win, sessionId)
-  await cleanupRecordSession(win, getRecordingService())
-  win.setBounds(win._recordControlBounds, false)
-  if (recordFrameWindow && !recordFrameWindow.isDestroyed()) {
-    win._recordFrameState = 'idle'
-    const resetVersion = Number(win._recordAnnotationCommand?.resetVersion || 0) + 1
-    sendRecordAnnotationCommand(win, { action: 'reset', resetVersion })
-    restoreRecordFramePassthrough(recordFrameWindow)
-    recordFrameWindow.showInactive()
-    recordFrameWindow.webContents.send('record-frame:state', 'idle')
-  }
-  return true
-  },
-  close: (event) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (win !== recordWindow) return
-  closeRecordFlow().catch((error) => log('Recording close failed:', error.message))
-  }
-}
-
 registerRecordingIpc({
   ipcMain: secureIpcMain,
-  controller: recordingIpcController
+  controller: recordDomain.createRecordingController()
 })
+
 
 secureIpcMain.on('toolbar:action', async (_event, { action, text }) => {
   if (isProcessing || !text) return
@@ -2467,8 +2161,7 @@ else {
     shortcutService.dispose()
   })
   app.on('before-quit', () => {
-    closeRecordFlow()
-      .then(() => recordingService?.dispose())
+    recordDomain.shutdown()
       .catch((error) => log('Recording shutdown failed:', error.message))
       .finally(() => { recordingService = null })
     longCaptureDomain.closeLongCapture()

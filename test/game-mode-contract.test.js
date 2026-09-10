@@ -5,6 +5,7 @@ const path = require('node:path')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 const captureDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/capture/index.js'), 'utf8')
+const recordDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/record/index.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
 const config = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
 
@@ -25,6 +26,6 @@ test('game mode guards every feature dispatch and passive summon entry point', (
   assert.match(main, /async function executeFunction\(name, payload = \{\}\) \{\s*assertGameModeDisabled\(\)/)
   assert.match(captureDomain, /async function createCaptureWindow\(options = \{\}\) \{\s*assertGameModeDisabled\(\)/)
   assert.match(main, /function createSearchWindow\(\) \{\s*assertGameModeDisabled\(\)/)
-  assert.match(main, /async function createRecordWindow\(options = \{\}\) \{\s*assertGameModeDisabled\(\)/)
+  assert.match(recordDomain, /async function createRecordWindow\(options = \{\}\) \{\s*assertGameModeDisabled\(\)/)
   assert.match(main, /function handleTextSelection\(data\) \{\s*if \(isGameModeEnabled\(\)\)/)
 })

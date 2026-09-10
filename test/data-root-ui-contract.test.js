@@ -151,7 +151,7 @@ test('main process keeps data-root migration privileged, serialized, and restart
 test('migration quiesces managed writers and blocks late config, log, and history writes', () => {
   const stopWriters = section('async function stopManagedDataWriters()', 'function restoreManagedDataWriters')
   assert.match(stopWriters, /activeOcrService\.stop\(\)[\s\S]*await Promise\.allSettled\(inFlight\)/)
-  assert.match(stopWriters, /await closeRecordFlow\(activeRecordingService, true\)[\s\S]*await activeRecordingService\.dispose\(\)/)
+  assert.match(stopWriters, /await recordDomain\.shutdown\(\)[\s\S]*recordingService = null/)
   assert.match(main, /await longCaptureDomain\.shutdown\(\)/)
   assert.match(main, /function assertManagedDataWritable\(\)[\s\S]*dataRootMigrationInProgress[\s\S]*throw new Error/)
   assert.match(main, /createAppLogger\(\{[\s\S]*isEnabled: \(\) => !dataRootMigrationInProgress/)
@@ -171,17 +171,16 @@ test('long capture rechecks the migration gate after desktop source lookup', () 
 })
 
 test('recording cache operations are tracked until they settle before migration', () => {
+  const recordDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/record/index.js'), 'utf8')
   assert.match(main, /require\('\.\/main\/services\/managed-writer-coordinator'\)/)
   assert.match(main, /const managedRecordingWriters = new ManagedWriterCoordinator\(\)/)
-  assert.match(main, /function cleanupRecordSession\(win, service = recordingService, allowBlocked = false\)/)
-  const recording = section('const recordingIpcController = {', 'registerRecordingIpc({')
+  assert.match(recordDomain, /function cleanupRecordSession\(win, service = null, allowBlocked = false\)/)
   for (const operation of ['appendChunk', 'finishSession', 'transcode']) {
-    assert.match(recording, new RegExp(`managedRecordingWriters\\.track\\([^)]*${operation}`))
+    assert.match(recordDomain, new RegExp(`managedRecordingWriters\\.track\\([^)]*${operation}`))
   }
-  assert.match(recording, /managedRecordingWriters\.track\(\(\) => service\.startSession\(\)/)
-  assert.match(main, /function cleanupRecordSession\(win, service = recordingService, allowBlocked = false\)[\s\S]*managedRecordingWriters\.track\(\(\) => service\.cleanupSession[\s\S]*\{ allowBlocked \}/)
+  assert.match(recordDomain, /managedRecordingWriters\.track\(\(\) => service\.startSession\(\)/)
+  assert.match(recordDomain, /function cleanupRecordSession\(win, service = null, allowBlocked = false\)[\s\S]*managedRecordingWriters\.track\(\(\) => activeService\.cleanupSession[\s\S]*\{ allowBlocked \}/)
   const change = section('async function changeDataRoot()', 'registerAppIpc({')
   assert.match(change, /quiesceAndMigrate\(\{[\s\S]*coordinator: managedRecordingWriters[\s\S]*stopWriters: stopManagedDataWriters[\s\S]*migrate:/)
-  const start = section('startSession: async (event)', 'appendChunk: async (event')
-  assert.match(start, /await cleanupRecordSession\(win, service\)[\s\S]*managedRecordingWriters\.assertOpen\(\)[\s\S]*managedRecordingWriters\.track\(\(\) => service\.startSession\(\)\)/)
+  assert.match(recordDomain, /await cleanupRecordSession\(win, service\)[\s\S]*managedRecordingWriters\.assertOpen\(\)[\s\S]*managedRecordingWriters\.track\(\(\) => service\.startSession\(\)\)/)
 })
