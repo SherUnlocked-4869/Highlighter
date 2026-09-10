@@ -102,6 +102,7 @@
       "recognition/**/*",
       "search/**/*",
       "record/**/*",
+      "shared/**/*",
       "node_modules/**/*"
     ],
     "win": {
