@@ -9,9 +9,3 @@
   --font-mono: Consolas, "Courier New", monospace;
 }
 
-body.dark,
-:root[data-theme="dark"] {
-  --danger: #ff6b63;
-  --ok: #7bd88f;
-  --warn: #ffd666;
-}

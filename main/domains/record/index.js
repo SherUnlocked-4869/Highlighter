@@ -28,6 +28,7 @@ function createRecordDomain(deps) {
     assertGameModeDisabled,
     assertManagedDataWritable,
     getRecordingService,
+    peekRecordingService,
     managedRecordingWriters,
     makeCaptureName,
     VIDEO_CAPTURE_PREFIX,
@@ -50,9 +51,9 @@ function createRecordDomain(deps) {
   }
 
   async function cleanupRecordSession(win, service = null, allowBlocked = false) {
-    const activeService = service || getRecordingService()
     const sessionId = win?._recordSessionId
-    if (!sessionId || !activeService) return false
+    if (!sessionId) return false
+    const activeService = service || getRecordingService()
     win._recordSessionId = null
     return managedRecordingWriters.track(() => activeService.cleanupSession(sessionId), { allowBlocked })
   }
@@ -64,12 +65,11 @@ function createRecordDomain(deps) {
   }
 
   async function closeRecordFlow(service = null, allowBlockedCleanup = false) {
-    const activeService = service || getRecordingService()
     const control = recordWindow
     const frame = recordFrameWindow
     if (recordWindow === control) recordWindow = null
     if (recordFrameWindow === frame) recordFrameWindow = null
-    await cleanupRecordSession(control, activeService, allowBlockedCleanup).catch((error) => log('Recording cleanup failed:', error.message))
+    await cleanupRecordSession(control, service, allowBlockedCleanup).catch((error) => log('Recording cleanup failed:', error.message))
     restoreRecordFramePassthrough(frame)
     if (control && !control.isDestroyed()) control.close()
     if (frame && !frame.isDestroyed()) frame.close()
@@ -378,13 +378,11 @@ function createRecordDomain(deps) {
   }
 
   async function shutdown() {
-    const activeService = getRecordingService()
+    const activeService = typeof peekRecordingService === 'function'
+      ? peekRecordingService()
+      : null
     await closeRecordFlow(activeService, true)
-    try {
-      if (activeService) await activeService.dispose()
-    } finally {
-      // caller owns recordingService nulling
-    }
+    if (activeService) await activeService.dispose()
   }
 
   return {

@@ -369,7 +369,7 @@ function createPinDomain(deps) {
           enabled: !!getSettings().plugins.ocr,
           click: () => {
             try {
-              createRecognitionWindow('table', win._pinData.dataUrl, { scaleFactor: win._pinData.scaleFactor })
+              createRecognitionWindow('table', win._pinData.dataUrl, { scaleFactor: win._pinData.displayScaleFactor })
             } catch (error) {
               log('Table recognition failed:', error.message)
             }
@@ -379,7 +379,7 @@ function createPinDomain(deps) {
           label: '二维码识别',
           click: () => {
             try {
-              createRecognitionWindow('qr', win._pinData.dataUrl, { scaleFactor: win._pinData.scaleFactor })
+              createRecognitionWindow('qr', win._pinData.dataUrl, { scaleFactor: win._pinData.displayScaleFactor })
             } catch (error) {
               log('QR recognition failed:', error.message)
             }

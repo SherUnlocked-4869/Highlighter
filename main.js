@@ -705,6 +705,7 @@ recordDomain = createRecordDomain({
   assertGameModeDisabled,
   assertManagedDataWritable,
   getRecordingService: () => getRecordingService(),
+  peekRecordingService: () => recordingService,
   managedRecordingWriters,
   makeCaptureName,
   VIDEO_CAPTURE_PREFIX: captureNaming.VIDEO_CAPTURE_PREFIX,
@@ -1114,20 +1115,6 @@ function isBlankCapture(image) {
     if (sample[index] > 2 || sample[index + 1] > 2 || sample[index + 2] > 2) return false
   }
   return true
-}
-
-async function getDesktopSource(display) {
-  try {
-    const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: { width: 0, height: 0 }
-    })
-    const source = pickDesktopSource(sources, display.id)
-    if (!source) throw new Error('未找到匹配显示器的桌面源')
-    return source
-  } catch (error) {
-    throw new Error(`无法获取桌面录制源：${error.message || error}`)
-  }
 }
 
 async function getDesktopCapture(display, scaleFactor) {

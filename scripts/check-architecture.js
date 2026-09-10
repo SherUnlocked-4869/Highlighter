@@ -24,9 +24,13 @@ const FORBIDDEN_IN_MAIN = [
   /function createRecordWindow\s*\(/,
   /function createSearchWindow\s*\(/,
   /function createRecognitionWindow\s*\(/,
+  /function createLongCaptureWindow\s*\(/,
   /class SmartSelectSession/,
   /secureIpcMain\.on\('pin:/,
-  /secureIpcMain\.on\('recognition:/
+  /secureIpcMain\.on\('recognition:/,
+  /secureIpcMain\.on\('capture:/,
+  /secureIpcMain\.on\('record:/,
+  /secureIpcMain\.on\('search:/
 ]
 
 function fail(message) {
@@ -51,10 +55,13 @@ for (const pattern of FORBIDDEN_IN_MAIN) {
   }
 }
 
-if (!/require\('\.\/main\/domains\/pin'\)/.test(mainSource)) fail('main.js must load pin domain')
-if (!/require\('\.\/main\/domains\/capture'\)/.test(mainSource)) fail('main.js must load capture domain')
-if (!/require\('\.\/main\/domains\/record'\)/.test(mainSource)) fail('main.js must load record domain')
-if (!/require\('\.\/main\/services\/ai'\)/.test(mainSource)) fail('main.js must load AI client entry')
+for (const domain of REQUIRED_DOMAINS) {
+  const requirePattern = new RegExp(`require\\(['"]\\./main/domains/${domain}['"]\\)`)
+  if (!requirePattern.test(mainSource)) {
+    fail(`main.js must load ${domain} domain`)
+  }
+}
+if (!/require\(['"]\.\/main\/services\/ai['"]\)/.test(mainSource)) fail('main.js must load AI client entry')
 
 if (!process.exitCode) {
   console.log(`architecture-check: ok (main.js ${mainLines} lines, domains ${REQUIRED_DOMAINS.length})`)

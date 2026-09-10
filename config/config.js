@@ -753,6 +753,10 @@ const modelFeatureCatalog = [
   { id: 'toolbar:explain', label: '划词解释', description: '划词工具栏“解释”按钮' }
 ]
 
+if (!window.modelHelpers) {
+  throw new Error('config.js requires routes/model-helpers.js to be loaded first')
+}
+
 const {
   createModelProviderId,
   defaultModelsForProvider,

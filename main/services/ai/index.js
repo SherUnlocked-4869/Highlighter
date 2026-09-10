@@ -1,10 +1,10 @@
 'use strict'
 
 const client = require('./client')
-const { createAiProtocolAdapter, AI_PROTOCOLS } = require('../ai-protocol-adapters')
+const { createAiProtocolAdapter } = require('../ai-protocol-adapters')
 const { AI_PROTOCOLS: AI_PROTOCOL_LIST } = require('../ai-providers')
 
-const SUPPORTED_PROTOCOLS = new Set(AI_PROTOCOL_LIST || AI_PROTOCOLS || ['openai-chat', 'openai-responses'])
+const SUPPORTED_PROTOCOLS = new Set(AI_PROTOCOL_LIST)
 
 function resolveProtocolAdapter(config, openaiClient) {
   if (!config || typeof config !== 'object') {

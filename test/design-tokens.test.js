@@ -21,7 +21,8 @@ test('core renderer shells load shared tokens before window CSS', () => {
     ['config/config.html', 'config.css'],
     ['capture/capture.html', 'capture.css'],
     ['search/search.html', 'search.css'],
-    ['record/record.html', 'record.css']
+    ['record/record.html', 'record.css'],
+    ['action/action.html', 'action.css']
   ]) {
     const html = fs.readFileSync(path.join(root, page), 'utf8')
     const tokensIndex = html.indexOf('../shared/tokens.css')
