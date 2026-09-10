@@ -753,10 +753,13 @@ const modelFeatureCatalog = [
   { id: 'toolbar:explain', label: '划词解释', description: '划词工具栏“解释”按钮' }
 ]
 
-function createModelProviderId() {
-  if (globalThis.crypto?.randomUUID) return `provider-${globalThis.crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
-  return `provider-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
-}
+const {
+  createModelProviderId,
+  defaultModelsForProvider,
+  modelProviderStatus,
+  modelTaskForFeature,
+  modelsForFeature
+} = window.modelHelpers
 
 function modelProviderById(id) {
   return (settings.providers || []).find((provider) => provider.id === id)
@@ -775,45 +778,9 @@ function modelAssignmentForFeature(feature) {
   return assignments.find((assignment) => assignment.feature === feature)
 }
 
-function defaultModelsForProvider(provider) {
-  const id = String(provider?.id || '').toLowerCase()
-  const baseUrl = String(provider?.baseUrl || '').toLowerCase()
-  if (id === 'deepseek' || baseUrl.includes('deepseek')) return [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }]
-  if (id === 'openai' || baseUrl.includes('openai.com') || baseUrl.includes('api.openai')) {
-    return [
-      { id: 'gpt-4o-mini', name: 'GPT-4o mini' },
-      { id: 'gpt-4o', name: 'GPT-4o' },
-      { id: 'gpt-4.1', name: 'GPT-4.1' }
-    ]
-  }
-  return []
-}
-
-function modelProviderStatus(provider) {
-  if (provider.enabled === false) return { className: 'off', title: '已停用' }
-  if (!provider.baseUrl || !provider.models?.length) return { className: 'off', title: '未完成配置' }
-  if (!provider.apiKey && !provider.hasApiKey) return { className: 'warn', title: '未配置 API 密钥' }
-  return { className: 'on', title: '已启用' }
-}
-
 function modelCatalogRowMarkup(provider, index) {
   const model = provider.models[index] || { id: '', name: '' }
   return `<div class="model-catalog-item" data-model-catalog-item="${escapeHtml(provider.id)}:${index}"><div class="model-catalog-row" data-model-index="${index}"><input class="input model-id-input" data-model-id type="text" value="${escapeHtml(model.id)}" placeholder="模型 ID"><input class="input model-name-input" data-model-name type="text" value="${escapeHtml(model.name)}" placeholder="显示名称"><button class="button icon-button model-row-details" data-model-details="${escapeHtml(provider.id)}" data-model-index="${index}" title="展开模型详情" aria-label="展开模型详情">›</button><button class="button icon-button model-row-delete" data-remove-model="${escapeHtml(provider.id)}" data-model-index="${index}" title="删除模型">🗑</button></div><div class="model-detail-panel" data-model-detail-panel="${escapeHtml(provider.id)}:${index}" hidden></div></div>`
-}
-
-function modelTaskForFeature(feature) {
-  if (feature === 'translation' || feature === 'ocr-translate' || feature === 'toolbar:translate') return 'translation'
-  if (feature === 'toolbar:explain' || String(feature || '').startsWith('custom:')) return 'explain'
-  return 'chat'
-}
-
-function modelsForFeature(provider, feature) {
-  const task = modelTaskForFeature(feature)
-  return (provider?.models || []).filter((model) => {
-    if (Array.isArray(model.capabilities?.tasks)) return model.capabilities.tasks.includes(task)
-    if (/hunyuan-mt|hy-mt|qwen-mt|mt-7b/i.test(`${model.id || ''} ${model.name || ''}`)) return task === 'translation'
-    return true
-  })
 }
 
 function modelOptionsMarkup(provider, currentModel, feature) {
