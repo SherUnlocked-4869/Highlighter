@@ -85,6 +85,7 @@ const { createRecordDomain } = require('./main/domains/record')
 const { createRecognitionDomain } = require('./main/domains/recognition')
 const { createSearchDomain } = require('./main/domains/search')
 const { createSettingsEffects } = require('./main/domains/settings-effects')
+const aiClient = require('./main/services/ai')
 const {
   ACTION_WINDOW_MIN_HEIGHT,
   ACTION_WINDOW_MIN_WIDTH,
@@ -1403,10 +1404,10 @@ registerSettingsIpc({
   },
   validateApiKey: async (input) => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
-      return require('./deepseek').validateApiKey(input)
+      return aiClient.validateApiKey(input)
     }
     const provider = input.provider || input
-    const result = await require('./deepseek').testProviderConnection(provider, {
+    const result = await aiClient.testProviderConnection(provider, {
       fetchModels: input.fetchModels === true
     })
     return result
@@ -1540,7 +1541,7 @@ registerAppIpc({
     openSaveDirectory: () => shell.openPath(getSettings().screenshot.saveDirectory || app.getPath('pictures')),
     completeAi: (messages, options) => {
       const settings = getSettings()
-      return require('./deepseek').completeChat(
+      return aiClient.completeChat(
         resolveAiAssignment(settings, 'chat'),
         messages,
         { maxTokens: settings.ai.maxTokens, temperature: settings.ai.temperature, ...(options || {}) }
@@ -1548,7 +1549,7 @@ registerAppIpc({
     },
     translateText: (text, sourceLanguage, targetLanguage) => {
       const settings = getSettings()
-      return require('./deepseek').translateText(
+      return aiClient.translateText(
         resolveAiAssignment(settings, 'translation'),
         text,
         sourceLanguage,
@@ -1672,7 +1673,7 @@ const ocrIpcController = {
   const textBlocks = (Array.isArray(ocrResult.textBlocks) ? ocrResult.textBlocks : [])
     .filter((block) => String(block?.text || '').trim())
   if (!textBlocks.length) throw new Error('未识别到可定位的翻译文本')
-  const translations = await require('./deepseek').translateOcrTextBlocks(
+  const translations = await aiClient.translateOcrTextBlocks(
     resolveAiAssignment(settings, 'ocr-translate'),
     textBlocks.map((block) => String(block.text).trim()),
     'auto',
