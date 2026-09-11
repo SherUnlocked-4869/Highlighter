@@ -152,6 +152,17 @@ $env:CSC_IDENTITY_AUTO_DISCOVERY = 'false'
 npm run build:win:portable -- --config.electronDist=node_modules/electron/dist
 ```
 
+## 架构图
+
+全功能总览与截图链路的交互式流程图（支持缩放、路径聚焦、主题切换）：
+
+| 图 | 说明 | 交互页面 | 预览 |
+|---|---|---|---|
+| 全功能流程 | 截图 / 长图 / 录屏 / 识别 / AI / 历史主路径 | [highlighter-full-features.html](docs/architecture/highlighter-full-features.html) | ![全功能流程](docs/architecture/highlighter-full-features.preview.png) |
+| 截图功能流程 | 选区、标注工具栏与复制/保存/贴图/OCR 出口 | [highlighter-screenshot-flow.html](docs/architecture/highlighter-screenshot-flow.html) | ![截图功能流程](docs/architecture/highlighter-screenshot-flow.preview.png) |
+
+源规格（JSON）与渲染结果一并放在 [`docs/architecture/`](docs/architecture/)。
+
 ## 项目结构
 
 ```text
@@ -166,6 +177,7 @@ Highlighter/
 ├─ main/             主进程服务与 IPC 模块
 ├─ native/           智能选区及本地 OCR 组件
 ├─ ocr/models/       OCR 模型
+├─ docs/architecture/ 架构图（HTML + JSON + 预览图）
 ├─ test/             Node.js 自动化测试
 └─ dist/             本地构建产物
 ```
