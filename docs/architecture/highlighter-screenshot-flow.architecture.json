@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Highlighter 截图功能流程",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1180, 620],
+    "views": [
+      {
+        "id": "main-screenshot",
+        "label": "截图主路径",
+        "focus": ["hotkey", "select", "annotate", "deliver", "history"],
+        "note": "快捷键框选，标注后复制/保存/贴图并写入历史。"
+      },
+      {
+        "id": "capture-modes",
+        "label": "截图方式",
+        "focus": ["tray", "hotkey", "select", "longcap", "record"],
+        "note": "托盘/热键进入框选、全屏、窗口；选区可转长截图或录屏。"
+      },
+      {
+        "id": "recognition",
+        "label": "识别与翻译",
+        "focus": ["annotate", "ocr", "translate"],
+        "note": "工具栏直接发起 OCR、表格、二维码与识别翻译。"
+      },
+      {
+        "id": "output-ways",
+        "label": "输出方式",
+        "focus": ["annotate", "pin", "deliver", "history"],
+        "note": "复制、保存、贴图与历史归档。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "hotkey",
+      "type": "frontend",
+      "label": "全局快捷键",
+      "sublabel": "截图热键",
+      "pos": [36, 250],
+      "size": [118, 58]
+    },
+    {
+      "id": "tray",
+      "type": "frontend",
+      "label": "托盘快捷入口",
+      "sublabel": "全屏/焦点窗口",
+      "pos": [36, 110],
+      "size": [118, 58]
+    },
+    {
+      "id": "select",
+      "type": "frontend",
+      "label": "智能选区",
+      "sublabel": "框选 · 角点可调",
+      "pos": [210, 250],
+      "size": [124, 58]
+    },
+    {
+      "id": "longcap",
+      "type": "backend",
+      "label": "长截图",
+      "sublabel": "纵向/横向拼接",
+      "pos": [210, 110],
+      "size": [124, 58]
+    },
+    {
+      "id": "annotate",
+      "type": "frontend",
+      "label": "标注工具栏",
+      "sublabel": "形状/文字/水印",
+      "pos": [390, 250],
+      "size": [128, 58]
+    },
+    {
+      "id": "record",
+      "type": "backend",
+      "label": "区域录屏",
+      "sublabel": "暂停 · MP4",
+      "pos": [390, 110],
+      "size": [128, 58]
+    },
+    {
+      "id": "ocr",
+      "type": "backend",
+      "label": "本地识别",
+      "sublabel": "OCR/表格/二维码",
+      "pos": [575, 390],
+      "size": [128, 58]
+    },
+    {
+      "id": "translate",
+      "type": "cloud",
+      "label": "截图翻译",
+      "sublabel": "OCR 后送 AI",
+      "pos": [760, 390],
+      "size": [120, 58]
+    },
+    {
+      "id": "pin",
+      "type": "frontend",
+      "label": "桌面贴图",
+      "sublabel": "钉在最前",
+      "pos": [760, 110],
+      "size": [120, 58]
+    },
+    {
+      "id": "deliver",
+      "type": "messagebus",
+      "label": "复制 / 保存",
+      "sublabel": "剪贴板 · 文件",
+      "pos": [760, 250],
+      "size": [120, 58]
+    },
+    {
+      "id": "history",
+      "type": "database",
+      "label": "截图历史",
+      "sublabel": "缩略图 · 搜索",
+      "pos": [940, 250],
+      "size": [120, 58]
+    },
+    {
+      "id": "settings",
+      "type": "backend",
+      "label": "截图设置",
+      "sublabel": "快捷保存/双击复制",
+      "pos": [940, 110],
+      "size": [120, 58]
+    }
+  ],
+  "connections": [
+    {
+      "id": "hotkey-select",
+      "from": "hotkey",
+      "to": "select",
+      "label": "框选",
+      "variant": "emphasis"
+    },
+    {
+      "id": "tray-select",
+      "from": "tray",
+      "to": "select",
+      "label": "截图",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 22
+    },
+    {
+      "id": "select-annotate",
+      "from": "select",
+      "to": "annotate",
+      "label": "完成选区",
+      "variant": "emphasis"
+    },
+    {
+      "id": "select-longcap",
+      "from": "select",
+      "to": "longcap",
+      "label": "长图",
+      "variant": "default",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": 30
+    },
+    {
+      "id": "annotate-record",
+      "from": "annotate",
+      "to": "record",
+      "label": "录屏",
+      "variant": "default",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": -36
+    },
+    {
+      "id": "annotate-ocr",
+      "from": "annotate",
+      "to": "ocr",
+      "label": "识别",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 10
+    },
+    {
+      "id": "annotate-deliver",
+      "from": "annotate",
+      "to": "deliver",
+      "label": "输出",
+      "variant": "emphasis"
+    },
+    {
+      "id": "annotate-pin",
+      "from": "annotate",
+      "to": "pin",
+      "label": "贴图",
+      "variant": "default",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": 64
+    },
+    {
+      "id": "ocr-translate",
+      "from": "ocr",
+      "to": "translate",
+      "label": "续译",
+      "variant": "default"
+    },
+    {
+      "id": "ocr-deliver",
+      "from": "ocr",
+      "to": "deliver",
+      "label": "复制文本",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": 32,
+      "labelDy": 10
+    },
+    {
+      "id": "deliver-history",
+      "from": "deliver",
+      "to": "history",
+      "label": "归档",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": []
+}
