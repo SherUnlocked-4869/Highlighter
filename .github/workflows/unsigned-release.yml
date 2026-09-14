@@ -108,6 +108,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
+          $isPrerelease = $tag -match '-'
           $assets = @(Get-ChildItem -LiteralPath dist -File | Where-Object {
             $_.Name -like 'Highlighter-Setup-*.exe' -or
             $_.Name -like 'Highlighter-*-portable.exe' -or
@@ -117,10 +118,23 @@ jobs:
             $_.Name -eq 'sbom.cdx.json'
           } | ForEach-Object { $_.FullName })
           if (-not $assets) { throw 'No release assets found in dist' }
-          gh release view $tag --json tagName 2>$null | Out-Null
+
+          $existing = gh release view $tag --json isDraft 2>$null
           if ($LASTEXITCODE -eq 0) {
-            throw "Release $tag already exists; refusing to overwrite"
+            $state = $existing | ConvertFrom-Json
+            if (-not $state.isDraft) {
+              throw "Refusing to replace assets on published release $tag"
+            }
+            # Pre-created draft (e.g. release notes): attach assets, then publish.
+            gh release upload $tag @assets --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Unable to upload assets to draft $tag" }
+            $editFlags = @('--draft=false')
+            if ($isPrerelease) { $editFlags += '--prerelease' } else { $editFlags += '--latest' }
+            gh release edit $tag @editFlags
+            if ($LASTEXITCODE -ne 0) { throw "Unable to publish draft release $tag" }
+            exit 0
           }
+
           $releaseFlags = @()
-          if ($tag -match '-') { $releaseFlags += '--prerelease' }
-          gh release create $tag $assets $releaseFlags --generate-notes --title "Highlighter $tag"
+          if ($isPrerelease) { $releaseFlags += '--prerelease' }
+          gh release create $tag @assets @releaseFlags --generate-notes --title "Highlighter $tag"
