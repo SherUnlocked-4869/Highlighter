@@ -10,10 +10,13 @@ const adapters = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 
 
 test('main process rebuilds selection hooks across power and session transitions', () => {
   assert.match(main, /const \{\s*SelectionHookService\s*\} = require\('\.\/main\/services\/selection-hook-service'\)/)
-  assert.match(main, /\['suspend', \(\) => selectionHookService\?\.suspend\('system-suspend'\)\]/)
-  assert.match(main, /\['lock-screen', \(\) => selectionHookService\?\.suspend\('lock-screen'\)\]/)
-  assert.match(main, /\['resume',[\s\S]*if \(!isGameModeEnabled\(\)\) selectionHookService\?\.scheduleRestart\('system-resume'\)/)
-  assert.match(main, /\['unlock-screen',[\s\S]*if \(!isGameModeEnabled\(\)\) selectionHookService\?\.scheduleRestart\('unlock-screen'\)/)
+  assert.match(main, /\['suspend', \(\) => selectionHookService\?\.notePowerEvent\('sleep', 'system-suspend'\)\]/)
+  assert.match(main, /\['lock-screen', \(\) => selectionHookService\?\.notePowerEvent\('sleep', 'lock-screen'\)\]/)
+  assert.match(main, /\['resume',[\s\S]*if \(!isGameModeEnabled\(\)\) selectionHookService\?\.notePowerEvent\('wake', 'system-resume'\)/)
+  assert.match(main, /\['unlock-screen',[\s\S]*if \(!isGameModeEnabled\(\)\) selectionHookService\?\.notePowerEvent\('wake', 'unlock-screen'\)/)
+  assert.match(main, /createUtilityProcessHostFactory/)
+  const hookService = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'selection-hook-service.js'), 'utf8')
+  assert.match(hookService, /selection-hook-host\.js/)
   assert.match(main, /initSelectionHook\(\)\s*\n\s*registerSelectionPowerEvents\(\)/)
   assert.match(main, /disposeSelectionHook\(\)/)
 })

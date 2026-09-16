@@ -3,31 +3,49 @@ const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const { SelectionHookService } = require('../main/services/selection-hook-service')
 
-class FakeHook extends EventEmitter {
-  constructor({ startResult = true, startError = null } = {}) {
+class FakeHost extends EventEmitter {
+  constructor() {
     super()
-    this.startResult = startResult
-    this.startError = startError
-    this.running = false
-    this.startCalls = []
-    this.cleanupCalls = 0
+    this.messages = []
+    this.killed = false
+    this.unsubMessage = null
+    this.unsubExit = null
   }
 
-  start(options) {
-    this.startCalls.push(options)
-    if (this.startError) throw this.startError
-    this.running = this.startResult
-    return this.startResult
+  postMessage(message) {
+    if (this.killed) throw new Error('host killed')
+    this.messages.push(message)
   }
 
-  isRunning() {
-    return this.running
+  onMessage(listener) {
+    this.messageListener = listener
+    this.unsubMessage = () => { this.messageListener = null }
+    return this.unsubMessage
   }
 
-  cleanup() {
-    this.cleanupCalls += 1
-    this.running = false
-    this.removeAllListeners()
+  onExit(listener) {
+    this.exitListener = listener
+    this.unsubExit = () => { this.exitListener = null }
+    return this.unsubExit
+  }
+
+  kill() {
+    this.killed = true
+  }
+
+  emitMessage(message) {
+    this.messageListener?.(message)
+  }
+
+  emitExit(info = { code: 0 }) {
+    this.exitListener?.(info)
+  }
+
+  lastMessage(type) {
+    for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+      if (this.messages[i].type === type) return this.messages[i]
+    }
+    return null
   }
 }
 
@@ -50,6 +68,11 @@ function createScheduler() {
       timer.callback()
       return true
     },
+    runAll(limit = 20) {
+      let ran = 0
+      while (ran < limit && this.runNext()) ran += 1
+      return ran
+    },
     get size() {
       return scheduled.size
     },
@@ -59,116 +82,120 @@ function createScheduler() {
   }
 }
 
-test('starts one selection hook and forwards configured events', () => {
-  const hook = new FakeHook()
-  const events = []
+function createService({ scheduler = createScheduler(), handlers = {}, hosts = [], ...rest } = {}) {
   const service = new SelectionHookService({
-    createHook: () => hook,
+    createHost: () => {
+      const host = new FakeHost()
+      hosts.push(host)
+      return host
+    },
+    handlers,
+    setTimer: scheduler.setTimer,
+    clearTimer: scheduler.clearTimer,
+    restartDelayMs: 1200,
+    retryDelayMs: 2500,
+    heartbeatIntervalMs: 30000,
+    heartbeatTimeoutMs: 8000,
+    powerDebounceMs: 1500,
+    unexpectedStopRestartDelayMs: 400,
+    ...rest
+  })
+  return { service, scheduler, hosts }
+}
+
+function startAndReady(service, hosts) {
+  assert.equal(service.start('startup'), true)
+  const host = hosts.at(-1)
+  host.emitMessage({ type: 'ready' })
+  host.emitMessage({ type: 'status', status: 'started', hookRunning: true })
+  return host
+}
+
+test('starts a host process and forwards configured events', () => {
+  const events = []
+  const { service, hosts } = createService({
     handlers: {
       textSelection: (data) => events.push(['selection', data]),
       mouseDown: (data) => events.push(['mouse', data])
     }
   })
 
-  assert.equal(service.start(), true)
-  assert.equal(service.start(), true)
-  assert.equal(hook.startCalls.length, 1)
-  assert.deepEqual(hook.startCalls[0], { debug: false, enableClipboard: false })
+  const host = startAndReady(service, hosts)
+  assert.equal(service.isRunning(), true)
+  assert.equal(host.lastMessage('start').options.enableClipboard, false)
 
-  hook.emit('text-selection', { text: 'selected' })
-  hook.emit('mouse-down', { x: 4, y: 8 })
+  host.emitMessage({ type: 'event', event: 'text-selection', data: { text: 'selected' } })
+  host.emitMessage({ type: 'event', event: 'mouse-down', data: { x: 4, y: 8 } })
   assert.deepEqual(events, [
     ['selection', { text: 'selected' }],
     ['mouse', { x: 4, y: 8 }]
   ])
 })
 
-test('updating clipboard fallback restarts a running hook with the new option', () => {
-  const hooks = []
-  const service = new SelectionHookService({
-    createHook: () => {
-      const hook = new FakeHook()
-      hooks.push(hook)
-      return hook
-    }
-  })
+test('updating clipboard fallback posts update-options to the host', () => {
+  const { service, hosts } = createService()
+  const host = startAndReady(service, hosts)
 
-  service.start()
   assert.equal(service.updateStartOptions({ enableClipboard: false }), false)
   assert.equal(service.updateStartOptions({ enableClipboard: true }), true)
-  assert.equal(hooks[0].cleanupCalls, 1)
-  assert.equal(hooks.length, 2)
-  assert.deepEqual(hooks[1].startCalls, [{ debug: false, enableClipboard: true }])
-  assert.equal(service.updateStartOptions({ enableClipboard: true }), false)
+  assert.equal(host.lastMessage('update-options').options.enableClipboard, true)
 })
 
-test('resume restart discards a falsely running hook and coalesces duplicate events', () => {
-  const scheduler = createScheduler()
-  const hooks = []
-  const service = new SelectionHookService({
-    createHook: () => {
-      const hook = new FakeHook()
-      hooks.push(hook)
-      return hook
-    },
-    setTimer: scheduler.setTimer,
-    clearTimer: scheduler.clearTimer,
-    restartDelayMs: 1200
-  })
+test('resume restart discards the host and coalesces duplicate power events', () => {
+  const { service, scheduler, hosts } = createService()
+  const host = startAndReady(service, hosts)
 
-  service.start()
-  assert.equal(hooks[0].running, true)
+  service.notePowerEvent('wake', 'system-resume')
+  service.notePowerEvent('wake', 'unlock-screen')
+  assert.equal(scheduler.delays.filter((delay) => delay === 1500).length, 1)
+  assert.equal(host.killed, false)
 
-  service.scheduleRestart('resume')
-  service.scheduleRestart('unlock-screen')
-  assert.equal(hooks[0].cleanupCalls, 1)
-  assert.equal(scheduler.size, 1)
-  assert.deepEqual(scheduler.delays, [1200])
-
-  scheduler.runNext()
-  assert.equal(hooks.length, 2)
-  assert.equal(hooks[1].running, true)
+  while (scheduler.runNext()) {
+    if (hosts.length >= 2) break
+  }
+  assert.equal(hosts.length, 2)
+  assert.equal(host.killed, true)
+  const next = hosts.at(-1)
+  next.emitMessage({ type: 'ready' })
+  next.emitMessage({ type: 'status', status: 'started', hookRunning: true })
+  assert.equal(service.isRunning(), true)
+  assert.equal(scheduler.size >= 1, true)
 })
 
-test('a failed hook start is cleaned up and retried a bounded number of times', () => {
+test('a failed host start is cleaned up and retried a bounded number of times', () => {
+  const hosts = []
+  let failNext = 1
   const scheduler = createScheduler()
-  const hooks = []
   const service = new SelectionHookService({
-    createHook: () => {
-      const hook = new FakeHook({ startResult: hooks.length >= 1 })
-      hooks.push(hook)
-      return hook
+    createHost: () => {
+      const host = new FakeHost()
+      hosts.push(host)
+      return host
     },
     setTimer: scheduler.setTimer,
     clearTimer: scheduler.clearTimer,
     retryDelayMs: 2500,
-    maxStartRetries: 2
+    maxStartRetries: 2,
+    restartDelayMs: 1200,
+    heartbeatIntervalMs: 30000,
+    heartbeatTimeoutMs: 8000
   })
 
-  assert.equal(service.start('startup'), false)
-  assert.equal(hooks[0].cleanupCalls, 1)
-  assert.deepEqual(scheduler.delays, [2500])
+  assert.equal(service.start('startup'), true)
+  hosts.at(-1).emitMessage({ type: 'status', status: 'start-failed', hookRunning: false })
+  assert.equal(scheduler.delays.includes(2500), true)
 
   scheduler.runNext()
-  assert.equal(hooks.length, 2)
+  assert.equal(hosts.length, 2)
+  hosts.at(-1).emitMessage({ type: 'ready' })
+  hosts.at(-1).emitMessage({ type: 'status', status: 'started', hookRunning: true })
   assert.equal(service.isRunning(), true)
-  assert.equal(scheduler.size, 0)
 })
 
 test('suspend and dispose prevent stale scheduled restarts', () => {
-  const scheduler = createScheduler()
-  const hooks = []
-  const service = new SelectionHookService({
-    createHook: () => {
-      const hook = new FakeHook()
-      hooks.push(hook)
-      return hook
-    },
-    setTimer: scheduler.setTimer,
-    clearTimer: scheduler.clearTimer
-  })
+  const { service, scheduler, hosts } = createService()
+  const host = startAndReady(service, hosts)
 
-  service.start()
   service.scheduleRestart('resume')
   assert.equal(scheduler.size, 1)
   service.suspend('lock-screen')
@@ -178,5 +205,97 @@ test('suspend and dispose prevent stale scheduled restarts', () => {
   assert.equal(scheduler.size, 0)
   assert.equal(scheduler.runNext(), false)
   assert.equal(service.start(), false)
-  assert.equal(hooks.length, 1)
+  assert.equal(hosts.length, 1)
+})
+
+test('unexpected host stop schedules recovery when still desired', () => {
+  const { service, scheduler, hosts } = createService()
+  const host = startAndReady(service, hosts)
+
+  host.emitMessage({ type: 'status', status: 'stopped', hookRunning: false })
+  assert.equal(scheduler.delays.includes(400), true)
+  while (scheduler.runNext()) {
+    if (hosts.length >= 2) break
+  }
+  assert.equal(hosts.length, 2)
+})
+
+test('intentional suspend does not recover from stopped', () => {
+  const { service, scheduler, hosts } = createService()
+  const host = startAndReady(service, hosts)
+
+  service.suspend('game-mode')
+  host.emitMessage({ type: 'status', status: 'stopped', hookRunning: false })
+  assert.equal(scheduler.size, 0)
+})
+
+test('host exit while desired running forces recreate', () => {
+  const { service, scheduler, hosts } = createService()
+  const host = startAndReady(service, hosts)
+
+  host.emitExit({ code: 1 })
+  assert.equal(scheduler.delays.includes(400), true)
+  while (scheduler.runNext()) {
+    if (hosts.length >= 2) break
+  }
+  assert.equal(hosts.length, 2)
+})
+
+test('heartbeat timeout recreates the host after repeated failures', () => {
+  const { service, scheduler, hosts } = createService({
+    heartbeatIntervalMs: 1000,
+    heartbeatTimeoutMs: 100,
+    maxHeartbeatFailures: 2
+  })
+  const host = startAndReady(service, hosts)
+
+  // first heartbeat interval
+  assert.equal(scheduler.runNext(), true)
+  assert.equal(host.lastMessage('ping')?.type, 'ping')
+  // timeout #1
+  assert.equal(scheduler.runNext(), true)
+  // re-arm interval
+  assert.equal(scheduler.runNext(), true)
+  // timeout #2 -> recreate
+  assert.equal(scheduler.runNext(), true)
+  assert.equal(host.killed, true)
+  scheduler.runNext()
+  assert.equal(hosts.length, 2)
+})
+
+test('heartbeat pong keeps the same host', () => {
+  const { service, scheduler, hosts } = createService({
+    heartbeatIntervalMs: 1000,
+    heartbeatTimeoutMs: 100,
+    maxHeartbeatFailures: 2
+  })
+  const host = startAndReady(service, hosts)
+
+  assert.equal(scheduler.runNext(), true)
+  host.emitMessage({ type: 'pong', hookRunning: true, lastInputAt: Date.now() })
+  assert.equal(host.killed, false)
+  assert.equal(service.isRunning(), true)
+})
+
+test('utility process host factory forks the host script', () => {
+  const calls = []
+  const fakeUtilityProcess = {
+    fork(modulePath, args, options) {
+      calls.push({ modulePath, args, options })
+      return {
+        postMessage() {},
+        on() {},
+        removeListener() {},
+        kill() {}
+      }
+    }
+  }
+  const createHost = SelectionHookService.createUtilityProcessHostFactory({
+    utilityProcess: fakeUtilityProcess,
+    hostPath: 'C:/app/main/services/selection-hook-host.js'
+  })
+  createHost()
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].modulePath, 'C:/app/main/services/selection-hook-host.js')
+  assert.equal(calls[0].options.serviceName, 'highlighter-selection-hook')
 })

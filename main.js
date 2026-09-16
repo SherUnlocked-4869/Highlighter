@@ -16,7 +16,8 @@ const {
   safeStorage,
   screen,
   shell,
-  Tray
+  Tray,
+  utilityProcess
 } = require('electron')
 const fs = require('fs')
 const path = require('path')
@@ -902,10 +903,10 @@ function createTrayIcon() {
 function initSelectionHook() {
   if (!selectionHookService) {
     selectionHookService = new SelectionHookService({
-      createHook: () => {
-        const SelectionHook = require('selection-hook')
-        return new SelectionHook()
-      },
+      createHost: SelectionHookService.createUtilityProcessHostFactory({
+        utilityProcess,
+        hostPath: SelectionHookService.defaultHostPath()
+      }),
       handlers: {
         textSelection: handleTextSelection,
         mouseDown: (data) => {
@@ -935,13 +936,13 @@ function initSelectionHook() {
 function registerSelectionPowerEvents() {
   if (selectionPowerListeners.length) return
   const bindings = [
-    ['suspend', () => selectionHookService?.suspend('system-suspend')],
-    ['lock-screen', () => selectionHookService?.suspend('lock-screen')],
+    ['suspend', () => selectionHookService?.notePowerEvent('sleep', 'system-suspend')],
+    ['lock-screen', () => selectionHookService?.notePowerEvent('sleep', 'lock-screen')],
     ['resume', () => {
-      if (!isGameModeEnabled()) selectionHookService?.scheduleRestart('system-resume')
+      if (!isGameModeEnabled()) selectionHookService?.notePowerEvent('wake', 'system-resume')
     }],
     ['unlock-screen', () => {
-      if (!isGameModeEnabled()) selectionHookService?.scheduleRestart('unlock-screen')
+      if (!isGameModeEnabled()) selectionHookService?.notePowerEvent('wake', 'unlock-screen')
     }]
   ]
   for (const [eventName, listener] of bindings) {
