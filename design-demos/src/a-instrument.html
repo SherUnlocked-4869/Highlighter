@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · 方向 A「仪器」</title>
+<!--
+Direction A — INSTRUMENT
+假设：Highlighter 是一件桌面精密仪器，用户每次按下快捷键都在"操作设备"。
+参照：Teenage Engineering / Braun 面板逻辑 —— 功能分区、等宽标签、信号色、可见边界。
+色彩：暖灰机身 + 单信号橙 #ff4d00；不用渐变，靠明度分层。
+字体：IBM Plex Mono 承担所有标签/数值/按键（仪表面板感），IBM Plex Sans + Noto Sans SC 承担正文。
+签名细节：快捷键渲染成有物理厚度的键帽（2px 下唇 + 按下位移）。
+反 slop：无紫渐变、无 emoji、无"圆角卡 + 左彩条"。
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/*__ICON_SHEET__*/
+:root{
+  --bg:#d6d3cc;
+  --board:#dedbd4;
+  --panel:#eceae4;
+  --face:#faf9f6;
+  --face-2:#f2f0ea;
+  --ink:#131309;
+  --ink-2:#3d3c33;
+  --muted:#6d6b60;
+  --faint:#94917f;
+  --line:#c3bfb4;
+  --line-2:#a9a496;
+  --sig:#ff4d00;
+  --sig-ink:#c43a00;
+  --sig-soft:rgba(255,77,0,.10);
+  --ok:#1f7a4d;
+  --warn:#9a7400;
+  --bad:#b3261e;
+  --r:2px;
+  --font:"IBM Plex Sans","Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"IBM Plex Mono","Cascadia Mono",Consolas,monospace;
+  --shadow-panel:0 1px 0 rgba(255,255,255,.7) inset, 0 12px 28px rgba(40,36,24,.14);
+  --key-shadow:0 2px 0 var(--line-2);
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.5 var(--font);-webkit-font-smoothing:antialiased}
+body{
+  padding:34px 40px 56px;
+  background-image:
+    linear-gradient(rgba(0,0,0,.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,0,0,.028) 1px, transparent 1px);
+  background-size:22px 22px;
+}
+
+/* ---------- board header ---------- */
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;max-width:1560px;margin:0 auto 26px}
+.mark{display:flex;align-items:baseline;gap:12px}
+.mark h1{margin:0;font:600 21px/1 var(--mono);letter-spacing:.02em}
+.mark h1 i{font-style:normal;color:var(--sig)}
+.mark .code{font:500 10.5px/1 var(--mono);letter-spacing:.14em;color:var(--muted);border:1px solid var(--line-2);padding:5px 8px;background:var(--panel)}
+.head .note{font:400 11px/1.4 var(--mono);color:var(--muted);letter-spacing:.04em;text-align:right}
+.toggle{display:flex;border:1px solid var(--line-2);background:var(--panel)}
+.toggle button{border:0;background:transparent;color:var(--muted);font:500 10.5px/1 var(--mono);letter-spacing:.12em;padding:8px 14px;cursor:pointer}
+.toggle button.on{background:var(--ink);color:var(--panel)}
+.toggle button + button{border-left:1px solid var(--line-2)}
+
+/* ---------- board grid ---------- */
+.board{max-width:1560px;margin:0 auto;display:flex;flex-direction:column;gap:24px}
+.row{display:grid;gap:24px}
+.row.one{grid-template-columns:minmax(0,1fr) 470px}
+.row.two{grid-template-columns:620px minmax(0,1fr)}
+.col{display:flex;flex-direction:column;gap:24px;min-width:0}
+
+/* ---------- window chrome ---------- */
+.win{background:var(--panel);border:1px solid var(--line-2);box-shadow:var(--shadow-panel);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.chrome{display:flex;align-items:center;gap:10px;height:30px;padding:0 10px;background:var(--face-2);border-bottom:1px solid var(--line-2);flex:0 0 auto}
+.chrome .idx{font:600 9.5px/1 var(--mono);letter-spacing:.08em;color:var(--panel);background:var(--ink);padding:4px 5px}
+.chrome .name{font:500 10px/1 var(--mono);letter-spacing:.16em;color:var(--ink-2);text-transform:uppercase}
+.chrome .dash{flex:1;height:1px;background:repeating-linear-gradient(90deg,var(--line-2) 0 4px,transparent 4px 8px)}
+.chrome .x{border:1px solid transparent;background:transparent;color:var(--faint);width:20px;height:20px;line-height:1;font:400 13px/1 var(--mono);cursor:pointer;display:grid;place-items:center}
+.chrome .x:hover{color:var(--panel);background:var(--bad);border-color:var(--bad)}
+.win-body{display:flex;min-height:0;flex:1}
+
+/* ---------- sidebar ---------- */
+.side{width:186px;flex:0 0 186px;background:var(--face-2);border-right:1px solid var(--line-2);padding:14px 0;display:flex;flex-direction:column;min-height:0}
+.side .brand{padding:2px 14px 16px;font:600 14px/1 var(--mono);letter-spacing:.01em}
+.side .brand i{font-style:normal;color:var(--sig)}
+.side .brand small{display:block;margin-top:7px;font:400 9px/1.3 var(--mono);letter-spacing:.1em;color:var(--faint)}
+.side .scroll{overflow:auto;flex:1;min-height:0}
+.grp{font:500 9px/1 var(--mono);letter-spacing:.18em;color:var(--faint);padding:15px 14px 7px;border-top:1px solid var(--line);margin-top:12px}
+.grp:first-child{border-top:0;margin-top:0;padding-top:6px}
+.nav{display:flex;align-items:center;gap:10px;width:100%;border:0;border-left:2px solid transparent;background:transparent;text-align:left;color:var(--ink-2);font:400 12.5px/1 var(--font);padding:9px 13px;cursor:pointer}
+.nav:hover{background:rgba(0,0,0,.045)}
+.nav.on{background:var(--face);border-left-color:var(--sig);color:var(--ink);font-weight:500}
+.nav .ic{width:15px;height:15px;flex:0 0 15px;background:currentColor;opacity:.8;
+  -webkit-mask-image:var(--i);mask-image:var(--i);-webkit-mask-position:center;mask-position:center;
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-size:contain;mask-size:contain}
+.nav.on .ic{opacity:1;color:var(--sig-ink)}
+.side .foot{margin-top:auto;border-top:1px solid var(--line-2)}
+
+/* ---------- content ---------- */
+.content{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--face)}
+.page{padding:22px 26px 16px;border-bottom:1px solid var(--line)}
+.page .kicker{font:500 9.5px/1 var(--mono);letter-spacing:.16em;color:var(--sig-ink);margin-bottom:9px}
+.page h2{margin:0 0 5px;font:600 21px/1.15 var(--font);letter-spacing:-.01em}
+.page p{margin:0;color:var(--muted);font-size:12.5px}
+.tabs{display:flex;gap:0;padding:0 26px;border-bottom:1px solid var(--line);background:var(--face)}
+.tab{border:0;border-bottom:2px solid transparent;background:transparent;padding:12px 16px 11px;font:500 11px/1 var(--mono);letter-spacing:.1em;color:var(--muted);cursor:pointer}
+.tab:first-child{padding-left:0}
+.tab:hover{color:var(--ink)}
+.tab.on{color:var(--ink);border-bottom-color:var(--sig)}
+.tab .n{color:var(--faint);margin-left:5px;font-size:9.5px}
+.tab.on .n{color:var(--sig-ink)}
+.list{overflow:auto;flex:1;min-height:0}
+.item{display:grid;grid-template-columns:30px minmax(0,1fr) auto;gap:13px;align-items:center;padding:11px 26px;border-bottom:1px solid var(--line)}
+.item:hover{background:var(--face-2)}
+.item .ic{width:17px;height:17px;background:var(--ink-2);opacity:.85;
+  -webkit-mask-image:var(--i);mask-image:var(--i);-webkit-mask-position:center;mask-position:center;
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-size:contain;mask-size:contain}
+.item b{display:block;font-weight:500;font-size:13px;letter-spacing:-.005em}
+.item small{display:block;color:var(--muted);font-size:11.5px;margin-top:2px}
+
+/* signature: physical keycap */
+.cap{font:500 11px/1 var(--mono);letter-spacing:.03em;padding:7px 10px 8px;background:var(--face);
+  border:1px solid var(--line-2);border-radius:var(--r);box-shadow:var(--key-shadow);
+  color:var(--ink);white-space:nowrap;position:relative;top:-2px}
+.cap:hover{top:0;box-shadow:0 0 0 var(--line-2)}
+.cap.empty{background:transparent;border-style:dashed;box-shadow:none;color:var(--faint);font-style:italic;font-family:var(--font);font-size:11px}
+.cap.bad{border-color:var(--bad);color:var(--bad);box-shadow:0 2px 0 rgba(179,38,30,.35);background:rgba(179,38,30,.05)}
+
+/* ---------- search window ---------- */
+.search{padding:15px 16px 12px;display:flex;flex-direction:column;gap:12px;flex:1;min-height:0;background:var(--face)}
+.field{display:flex;align-items:center;gap:9px;height:38px;padding:0 11px;background:var(--face-2);border:1px solid var(--line-2)}
+.field:focus-within{border-color:var(--sig);box-shadow:0 0 0 2px var(--sig-soft)}
+.field .ic{width:14px;height:14px;flex:0 0 14px;background:var(--muted);
+  -webkit-mask-image:var(--i);mask-image:var(--i);-webkit-mask-position:center;mask-position:center;
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-size:contain;mask-size:contain}
+.field input{flex:1;border:0;outline:0;background:transparent;font:400 12.5px/1 var(--font);color:var(--ink)}
+.field input::placeholder{color:var(--faint)}
+.field .hint{font:500 9px/1 var(--mono);letter-spacing:.1em;color:var(--faint);border:1px solid var(--line-2);padding:4px 5px}
+.cats{display:flex;flex-wrap:wrap;gap:5px}
+.cats button{border:1px solid var(--line-2);background:var(--face-2);color:var(--muted);font:500 10px/1 var(--mono);letter-spacing:.06em;padding:6px 9px;cursor:pointer}
+.cats button:hover{color:var(--ink);border-color:var(--ink-2)}
+.cats button.on{background:var(--ink);border-color:var(--ink);color:var(--panel)}
+.results{flex:1;overflow:auto;min-height:0;border:1px solid var(--line);background:var(--face);
+  -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 20px),transparent 100%);
+  mask-image:linear-gradient(to bottom,#000 calc(100% - 20px),transparent 100%)}
+.hit{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:11px;align-items:center;padding:9px 11px;border-bottom:1px solid var(--line);cursor:pointer}
+.hit:last-child{border-bottom:0}
+.hit:hover{background:var(--face-2)}
+.hit.sel{background:var(--sig-soft);box-shadow:inset 2px 0 0 var(--sig)}
+.hit .kind{font:600 9px/1 var(--mono);letter-spacing:.06em;border:1px solid var(--line-2);color:var(--muted);text-align:center;padding:6px 0;background:var(--face-2)}
+.hit.sel .kind{border-color:var(--sig);color:var(--sig-ink)}
+.hit b{display:block;font-weight:500;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hit small{display:block;font:400 10.5px/1.4 var(--mono);color:var(--faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hit .meta{text-align:right;font:400 10px/1.5 var(--mono);color:var(--muted)}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:12px;font:500 10px/1 var(--mono);letter-spacing:.06em;color:var(--muted);padding-top:2px}
+.bar .dot{width:5px;height:5px;background:var(--ok);display:inline-block;margin-right:7px;vertical-align:middle}
+
+/* ---------- assistant ---------- */
+.assist{display:flex;flex-direction:column;flex:1;min-height:0;background:var(--face)}
+.assist .top{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line)}
+.assist .top .st{font:500 11px/1 var(--mono);letter-spacing:.06em;color:var(--ink)}
+.assist .top .sp{width:6px;height:6px;background:var(--sig);animation:blink 1.1s steps(2,end) infinite}
+@keyframes blink{50%{opacity:.25}}
+.assist .top .tag{font:500 9px/1 var(--mono);letter-spacing:.12em;color:var(--sig-ink);border:1px solid var(--sig);padding:4px 6px;background:var(--sig-soft)}
+.assist .top .pin{margin-left:auto;border:0;background:transparent;font:500 10px/1 var(--mono);letter-spacing:.1em;color:var(--muted);cursor:pointer;padding:4px}
+.assist .top .pin:hover{color:var(--ink)}
+.assist .bd{padding:14px;display:flex;flex-direction:column;gap:13px;flex:1;min-height:0}
+.assist .src{font:400 11.5px/1.6 var(--mono);color:var(--muted);border-left:2px solid var(--line-2);padding-left:11px}
+.assist .out{font-size:13px;line-height:1.65}
+.assist .load{display:flex;align-items:center;gap:8px;font:400 10.5px/1 var(--mono);color:var(--faint);margin-top:10px}
+.assist .bar2{height:2px;background:var(--line);overflow:hidden;margin-top:auto}
+.assist .bar2 i{display:block;height:100%;width:38%;background:var(--sig);animation:slide 1.4s ease-in-out infinite}
+@keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+
+/* ---------- recognition ---------- */
+.recog{display:flex;flex-direction:column;flex:1;min-height:0;background:var(--face)}
+.recog .hd{padding:18px 22px 14px;border-bottom:1px solid var(--line)}
+.recog .hd h3{margin:0 0 6px;font:600 16px/1.2 var(--font)}
+.recog .hd .sum{font:500 10px/1 var(--mono);letter-spacing:.08em;color:var(--muted)}
+.recog .txt{margin:0;padding:16px 22px;overflow:auto;flex:1;min-height:0;font-size:12.5px;line-height:1.8;white-space:pre-wrap;
+  font-family:var(--font);background:var(--face-2);border-bottom:1px solid var(--line)}
+.recog .txt mark{background:var(--sig-soft);color:var(--sig-ink);box-shadow:inset 0 -2px 0 var(--sig);font-weight:500;padding:1px 0}
+.recog .ft{display:flex;align-items:center;gap:10px;padding:12px 22px}
+.recog .ft .n{font:500 10px/1 var(--mono);letter-spacing:.08em;color:var(--faint);margin-right:auto}
+
+/* ---------- buttons ---------- */
+.btn{border:1px solid var(--line-2);background:var(--face);color:var(--ink);font:500 11.5px/1 var(--font);padding:9px 15px;cursor:pointer;border-radius:var(--r)}
+.btn:hover{background:var(--face-2);border-color:var(--ink-2)}
+.btn.pri{background:var(--sig);border-color:var(--sig);color:#fff;font-weight:600}
+.btn.pri:hover{background:var(--sig-ink);border-color:var(--sig-ink)}
+.btn.dg{border-color:var(--bad);color:var(--bad)}
+.btn.dg:hover{background:rgba(179,38,30,.07)}
+
+/* ---------- kit strip ---------- */
+.kit{padding:20px 24px;background:var(--face);flex:1;min-height:0;overflow:auto}
+.kit h3{margin:0 0 4px;font:600 15px/1.2 var(--font)}
+.kit .cap2{font:500 9.5px/1 var(--mono);letter-spacing:.14em;color:var(--muted);margin-bottom:16px}
+.kit .grp2{font:500 9px/1 var(--mono);letter-spacing:.16em;color:var(--faint);margin:18px 0 10px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+.kit .grp2:first-of-type{margin-top:0}
+.rowset{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:7px;font:500 11px/1 var(--font);border:1px solid var(--line-2);padding:7px 11px;background:var(--face-2)}
+.chip .d{width:6px;height:6px;background:var(--ok)}
+.chip.w .d{background:var(--warn)}
+.chip.b .d{background:var(--bad)}
+.sw{width:36px;height:20px;border:1px solid var(--line-2);background:var(--face-2);position:relative;cursor:pointer;padding:0}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:14px;background:var(--muted);transition:.14s}
+.sw.on{background:var(--sig);border-color:var(--sig)}
+.sw.on::after{left:20px;background:#fff}
+.swatches{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.swift{border:1px solid var(--line);background:var(--face-2)}
+.swift .sw1{height:34px}
+.swift .lb{padding:6px 8px;font:400 10px/1.3 var(--mono);color:var(--muted);display:flex;justify-content:space-between;gap:6px}
+.swift .lb em{font-style:normal;color:var(--faint);text-transform:uppercase;font-size:9px}
+
+.note-foot{max-width:1560px;margin:22px auto 0;font:400 10.5px/1.6 var(--mono);color:var(--muted);letter-spacing:.03em}
+
+/* ---------- dark ---------- */
+body.dark{
+  --bg:#191814;--board:#1e1d18;--panel:#232219;--face:#1b1a15;--face-2:#21201a;
+  --ink:#f0ece1;--ink-2:#c9c4b4;--muted:#8e8878;--faint:#6b6659;
+  --line:#33312a;--line-2:#413e34;
+  --sig:#ff6a2b;--sig-ink:#ffa77d;--sig-soft:rgba(255,106,43,.14);
+  --ok:#4fbf85;--warn:#d9ab35;--bad:#f0736a;
+  --shadow-panel:0 1px 0 rgba(255,255,255,.04) inset, 0 14px 30px rgba(0,0,0,.4);
+  --key-shadow:0 2px 0 #000;
+}
+body.dark{background-image:linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px)}
+</style>
+</head>
+<body>
+
+<header class="head">
+  <div class="mark">
+    <h1>High<i>lighter</i></h1>
+    <span class="code">DIRECTION A · INSTRUMENT</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:18px">
+    <p class="note">暖灰机身 · 等宽标签 · 信号橙 #ff4d00<br>键帽 = 物理按键隐喻</p>
+    <div class="toggle">
+      <button id="tLight" class="on">LIGHT</button>
+      <button id="tDark">DARK</button>
+    </div>
+  </div>
+</header>
+
+<div class="board">
+  <div class="row one">
+    <!-- 01 MAIN / CONFIG -->
+    <section class="win" style="height:740px">
+      <div class="chrome">
+        <span class="idx">01</span><span class="name">Main / Config</span>
+        <span class="dash"></span>
+        <button class="x" title="关闭">×</button>
+      </div>
+      <div class="win-body">
+        <aside class="side">
+          <div class="brand">High<i>lighter</i><small>DESKTOP CAPTURE</small></div>
+          <div class="scroll"><div id="navBox"></div></div>
+          <div class="foot"><button class="nav" data-id="about"><span class="ic" style="--i:var(--ico-info)"></span>关于</button></div>
+        </aside>
+        <div class="content">
+          <div class="page">
+            <div class="kicker" id="pKick">HOME</div>
+            <h2 id="pTitle">快捷功能</h2>
+            <p id="pDesc">统一管理截图、AI、翻译、录屏和桌面工具。</p>
+          </div>
+          <div class="tabs" id="tabs"></div>
+          <div class="list" id="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="col">
+      <!-- 02 LOCAL SEARCH -->
+      <section class="win" style="height:400px">
+        <div class="chrome"><span class="idx">02</span><span class="name">Local Search</span><span class="dash"></span><button class="x">×</button></div>
+        <div class="search">
+          <div class="field">
+            <span class="ic" style="--i:var(--ico-search)"></span>
+            <input id="q" placeholder="搜索本地文件（支持 Everything 语法，如 ext:pdf 报告）">
+            <span class="hint">ALT+S</span>
+          </div>
+          <div class="cats" id="cats"></div>
+          <div class="results" id="hits"></div>
+          <div class="bar">
+            <span><i class="dot"></i><span id="cnt">已找到 5 项</span></span>
+            <span>匹配路径 · 按修改时间</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 04 SELECTION ASSIST -->
+      <section class="win" style="height:316px">
+        <div class="chrome"><span class="idx">04</span><span class="name">Selection Assist</span><span class="dash"></span><button class="x">×</button></div>
+        <div class="assist">
+          <div class="top">
+            <span class="sp"></span><span class="st">翻译中…</span>
+            <span class="tag">翻译</span>
+            <button class="pin">置顶</button>
+          </div>
+          <div class="bd">
+            <div class="src">Ship a calmer capture tool for Windows — fewer chrome, more focus.</div>
+            <div class="out">为 Windows 交付更安静的截图工具——更少界面噪音，更多专注。</div>
+            <div class="load">正在请求 DeepSeek…</div>
+            <div class="bar2"><i></i></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="row two">
+    <!-- 03 OCR RESULT -->
+    <section class="win" style="height:436px">
+      <div class="chrome"><span class="idx">03</span><span class="name">Recognition Result</span><span class="dash"></span><button class="x">×</button></div>
+      <div class="recog">
+        <div class="hd">
+          <h3>识别结果</h3>
+          <div class="sum">LINES = 8 · ZH · CONFIDENCE HIGH</div>
+        </div>
+        <pre class="txt" id="ocr"></pre>
+        <div class="ft">
+          <span class="n">ENGINE: LOCAL OCR</span>
+          <button class="btn">导出 Markdown</button>
+          <button class="btn pri">复制</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- kit -->
+    <section class="win" style="height:436px">
+      <div class="chrome"><span class="idx">05</span><span class="name">Component Language</span><span class="dash"></span><button class="x">×</button></div>
+      <div class="kit">
+        <h3>组件语言</h3>
+        <div class="cap2">一套 tokens 同时驱动 4 个窗口</div>
+
+        <div class="grp2">按钮</div>
+        <div class="rowset">
+          <button class="btn pri">保存设置</button>
+          <button class="btn">导出 Markdown</button>
+          <button class="btn dg">恢复默认设置</button>
+        </div>
+
+        <div class="grp2">状态</div>
+        <div class="rowset">
+          <span class="chip"><i class="d"></i>已连接</span>
+          <span class="chip w"><i class="d"></i>未配置</span>
+          <span class="chip b"><i class="d"></i>快捷键冲突</span>
+          <span class="cap">Alt+A</span>
+          <button class="sw on" id="sw"></button>
+        </div>
+
+        <div class="grp2">色板</div>
+        <div class="swatches">
+          <div class="swift"><div class="sw1" style="background:var(--bg)"></div><div class="lb">背景<em>bg</em></div></div>
+          <div class="swift"><div class="sw1" style="background:var(--face)"></div><div class="lb">面板<em>face</em></div></div>
+          <div class="swift"><div class="sw1" style="background:var(--line-2)"></div><div class="lb">分隔<em>line</em></div></div>
+          <div class="swift"><div class="sw1" style="background:var(--ink)"></div><div class="lb">正文<em>ink</em></div></div>
+          <div class="swift"><div class="sw1" style="background:var(--muted)"></div><div class="lb">弱化<em>muted</em></div></div>
+          <div class="swift"><div class="sw1" style="background:var(--sig)"></div><div class="lb">强调<em>sig</em></div></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<p class="note-foot">签名细节：键帽（2px 下唇 + 悬停位移）／面板虚线导轨／等宽大写标签。状态色仅用于状态，强调橙仅用于选中与主操作。</p>
+
+<script>
+/*__CONTENT__*/
+</script>
+<script>
+const HL = window.HL
+const $ = (s) => document.querySelector(s)
+let route = 'home', tab = 'shot'
+
+/* nav */
+const navBox = $('#navBox')
+navBox.innerHTML = HL.nav.map((g) => `
+  ${g.group ? `<div class="grp">${g.group}</div>` : ''}
+  ${g.items.map((it) => `<button class="nav${it.id === 'home' ? ' on' : ''}" data-id="${it.id}">
+    <span class="ic" style="--i:var(--ico-${it.icon})"></span>${it.label}</button>`).join('')}
+`).join('')
+
+/* tabs */
+$('#tabs').innerHTML = HL.tabs.map((t, i) =>
+  `<button class="tab${i === 0 ? ' on' : ''}" data-tab="${t.id}">${t.label}<span class="n">${HL.features[t.id].length}</span></button>`
+).join('')
+
+const capMarkup = (f) => {
+  if (f.key === 'conflict') return `<span class="cap bad" title="与「截图」重复">Alt+A 冲突</span>`
+  if (!f.key) return `<span class="cap empty">设置快捷键</span>`
+  return `<span class="cap">${f.key}</span>`
+}
+
+const renderList = () => {
+  const isHome = route === 'home'
+  $('#tabs').style.display = isHome ? 'flex' : 'none'
+  if (isHome) {
+    $('#pKick').textContent = 'HOME'
+    $('#pTitle').textContent = HL.pages.home.title
+    $('#pDesc').textContent = HL.pages.home.desc
+    $('#list').innerHTML = HL.features[tab].map((f) => `
+      <div class="item">
+        <span class="ic" style="--i:var(--ico-${f.icon})"></span>
+        <div><b>${f.name}</b><small>${f.desc}</small></div>
+        ${capMarkup(f)}
+      </div>`).join('')
+  } else if (route === 'settings-hotkeys') {
+    $('#pKick').textContent = 'SETTINGS / HOTKEYS'
+    $('#pTitle').textContent = HL.pages['settings-hotkeys'].title
+    $('#pDesc').textContent = HL.pages['settings-hotkeys'].desc
+    $('#list').innerHTML = HL.hotkeys.map((h) => `
+      <div class="item">
+        <span class="ic" style="--i:var(--ico-${h.icon})"></span>
+        <div><b>${h.name}</b><small>${h.state === 'conflict' ? '与「截图」冲突' : h.state === 'unset' ? '尚未分配按键' : '已启用'}</small></div>
+        ${h.state === 'conflict' ? `<span class="cap bad">${h.key} 冲突</span>`
+          : h.state === 'unset' ? `<span class="cap empty">点击录入</span>`
+          : `<span class="cap">${h.key}</span>`}
+      </div>`).join('')
+  } else {
+    const it = HL.nav.flatMap((g) => g.items).find((x) => x.id === route)
+    $('#pKick').textContent = 'ROUTE'
+    $('#pTitle').textContent = it.label
+    $('#pDesc').textContent = '该路由在本原型中未展开，导航切换能力已演示。'
+    $('#list').innerHTML = `<div class="item"><span class="ic" style="--i:var(--ico-${it.icon})"></span>
+      <div><b>${it.label}</b><small>点击左侧「快捷功能」或「热键设置」查看完整内容</small></div>
+      <span class="cap empty">占位</span></div>`
+  }
+}
+
+$('#tabs').onclick = (e) => {
+  const b = e.target.closest('.tab'); if (!b) return
+  tab = b.dataset.tab
+  ;[...$('#tabs').children].forEach((x) => x.classList.toggle('on', x === b))
+  renderList()
+}
+navBox.onclick = (e) => {
+  const b = e.target.closest('.nav'); if (!b) return
+  route = b.dataset.id
+  ;[...navBox.querySelectorAll('.nav')].forEach((x) => x.classList.toggle('on', x === b))
+  document.querySelectorAll('.side .foot .nav').forEach((x) => x.classList.remove('on'))
+  renderList()
+}
+document.querySelector('.side .foot .nav').onclick = (e) => {
+  route = 'about'
+  navBox.querySelectorAll('.nav').forEach((x) => x.classList.remove('on'))
+  e.currentTarget.classList.add('on')
+  renderList()
+}
+
+/* search */
+$('#cats').innerHTML = HL.search.cats.map((c, i) => `<button class="${i === 0 ? 'on' : ''}">${c}</button>`).join('')
+$('#cats').onclick = (e) => {
+  const b = e.target.closest('button'); if (!b) return
+  ;[...$('#cats').children].forEach((x) => x.classList.toggle('on', x === b))
+}
+const renderHits = (q = '') => {
+  const rows = HL.search.files.filter((f) =>
+    !q || f.name.toLowerCase().includes(q.toLowerCase()) || f.dir.toLowerCase().includes(q.toLowerCase()))
+  $('#hits').innerHTML = rows.length ? rows.map((f, i) => `
+    <div class="hit${i === 1 ? ' sel' : ''}">
+      <span class="kind">${f.kind}</span>
+      <div><b>${f.name}</b><small>${f.dir}</small></div>
+      <div class="meta">${f.size}<br>${f.time}</div>
+    </div>`).join('') : `<div style="padding:18px;font:400 11px/1.5 var(--mono);color:var(--faint)">没有匹配的文件</div>`
+  $('#cnt').textContent = `已找到 ${rows.length} 项`
+}
+$('#q').oninput = (e) => renderHits(e.target.value)
+
+/* ocr */
+$('#ocr').innerHTML = HL.recognition.lines
+  .map((l) => l === HL.recognition.mark ? `<mark>${l}</mark>` : l).join('\n')
+
+$('#sw').onclick = (e) => e.currentTarget.classList.toggle('on')
+
+/* theme */
+const setLight = () => { document.body.classList.remove('dark'); $('#tLight').classList.add('on'); $('#tDark').classList.remove('on') }
+const setDark = () => { document.body.classList.add('dark'); $('#tDark').classList.add('on'); $('#tLight').classList.remove('on') }
+$('#tLight').onclick = setLight
+$('#tDark').onclick = setDark
+
+renderList(); renderHits()
+</script>
+</body>
+</html>

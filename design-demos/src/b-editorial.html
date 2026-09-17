@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · 方向 B「朱批」</title>
+<!--
+Direction B — EDITORIAL / 朱批
+假设：截图工具每天开合几十次，最好的界面是"几乎不存在"的界面。让内容成为主视觉。
+参照：Kenya Hara 的留白 + 中文书籍的排版传统 —— 发丝线、字阶、负空间，容器消失。
+色彩：纸白 + 墨黑 + 一点朱砂 #a8331f（只给选中、主操作、品牌字）。无阴影，靠线划分。
+字体：Noto Serif SC / Source Serif 4 承担标题（书卷气），无衬线承担 UI 正文。
+签名细节：功能列表做成目录索引 —— 名称 + 点线引导 + 右对齐快捷键，读起来像书。
+反 slop：无渐变、无 emoji、无卡片阴影堆叠、无左彩条。
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/*__ICON_SHEET__*/
+:root{
+  --bg:#f4f3f0;
+  --paper:#fffefc;
+  --paper-2:#f9f8f5;
+  --ink:#14130f;
+  --ink-2:#3b3a33;
+  --muted:#6f6d64;
+  --faint:#9c9a90;
+  --line:#e6e4dd;
+  --line-2:#d6d3ca;
+  --seal:#a8331f;
+  --seal-soft:rgba(168,51,31,.07);
+  --ok:#3d6b4a;
+  --warn:#8a6a1f;
+  --bad:#a8331f;
+  --r:1px;
+  --font:"Inter","Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --serif:"Source Serif 4","Noto Serif SC","Songti SC","SimSun",Georgia,serif;
+  --mono:"JetBrains Mono","Cascadia Mono",Consolas,monospace;
+  --shadow:0 1px 2px rgba(30,25,15,.04), 0 24px 60px rgba(30,25,15,.055);
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.6 var(--font);-webkit-font-smoothing:antialiased}
+body{padding:44px 52px 72px}
+
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:28px;max-width:1520px;margin:0 auto 34px}
+.mark{display:flex;align-items:baseline;gap:16px}
+.mark h1{margin:0;font:400 25px/1 var(--serif);letter-spacing:.01em}
+.mark h1 i{font-style:normal;color:var(--seal)}
+.mark .code{font:400 10px/1 var(--mono);letter-spacing:.2em;color:var(--faint);padding-top:2px}
+.head .note{font:400 11.5px/1.5 var(--font);color:var(--muted);text-align:right;max-width:330px}
+.toggle{display:flex;gap:0;border-bottom:1px solid var(--line-2)}
+.toggle button{border:0;background:transparent;color:var(--faint);font:400 10px/1 var(--mono);letter-spacing:.16em;padding:8px 2px 7px;margin-right:20px;cursor:pointer;border-bottom:1px solid transparent;margin-bottom:-1px}
+.toggle button.on{color:var(--ink);border-bottom-color:var(--seal)}
+
+.board{max-width:1520px;margin:0 auto;display:flex;flex-direction:column;gap:30px}
+.row{display:grid;gap:30px}
+.row.one{grid-template-columns:minmax(0,1fr) 452px}
+.row.two{grid-template-columns:604px minmax(0,1fr)}
+.col{display:flex;flex-direction:column;gap:30px;min-width:0}
+
+/* ---------- window: chrome is a hairline, not a bar ---------- */
+.win{background:var(--paper);border:1px solid var(--line);box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.chrome{display:flex;align-items:center;gap:14px;padding:11px 18px;border-bottom:1px solid var(--line);flex:0 0 auto}
+.chrome .name{font:400 10px/1 var(--mono);letter-spacing:.2em;color:var(--faint);text-transform:uppercase}
+.chrome .rule{flex:1;height:1px;background:var(--line)}
+.chrome .x{border:0;background:transparent;color:var(--faint);font:300 15px/1 var(--font);cursor:pointer;padding:0 2px}
+.chrome .x:hover{color:var(--seal)}
+.win-body{display:flex;min-height:0;flex:1}
+
+/* ---------- sidebar: no fill, hairline + rhythm ---------- */
+.side{width:196px;flex:0 0 196px;border-right:1px solid var(--line);padding:22px 0 16px;display:flex;flex-direction:column;min-height:0;background:var(--paper)}
+.side .brand{padding:0 22px 20px;font:400 16px/1 var(--serif)}
+.side .brand i{font-style:normal;color:var(--seal)}
+.side .brand small{display:block;margin-top:9px;font:400 9.5px/1.4 var(--font);letter-spacing:.04em;color:var(--faint)}
+.side .scroll{overflow:auto;flex:1;min-height:0}
+.grp{font:400 9.5px/1 var(--mono);letter-spacing:.2em;color:var(--faint);padding:20px 22px 9px}
+.nav{position:relative;display:flex;align-items:center;gap:11px;width:100%;border:0;background:transparent;text-align:left;color:var(--ink-2);font:400 13px/1 var(--font);padding:9px 22px;cursor:pointer}
+.nav:hover{color:var(--seal);background:var(--paper-2)}
+.nav.on{color:var(--ink);font-weight:500}
+.nav.on::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:2px;background:var(--seal)}
+.nav .ic{width:16px;height:16px;flex:0 0 16px;background:currentColor;opacity:.62;
+  -webkit-mask-image:var(--i);mask-image:var(--i);-webkit-mask-position:center;mask-position:center;
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-size:contain;mask-size:contain}
+.nav.on .ic{opacity:1;color:var(--seal)}
+.side .foot{border-top:1px solid var(--line);padding-top:8px}
+
+.content{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--paper)}
+.page{padding:34px 40px 22px}
+.page .kicker{font:400 9.5px/1 var(--mono);letter-spacing:.22em;color:var(--seal);margin-bottom:14px}
+.page h2{margin:0 0 9px;font:400 29px/1.1 var(--serif);letter-spacing:.005em}
+.page p{margin:0;color:var(--muted);font-size:13px;max-width:46ch}
+.tabs{display:flex;gap:26px;padding:0 40px;border-bottom:1px solid var(--line)}
+.tab{border:0;background:transparent;padding:0 0 12px;font:400 12.5px/1 var(--font);color:var(--faint);cursor:pointer;border-bottom:1px solid transparent;margin-bottom:-1px}
+.tab:hover{color:var(--ink)}
+.tab.on{color:var(--ink);border-bottom-color:var(--seal);font-weight:500}
+.tab .n{font:400 9.5px/1 var(--mono);color:var(--faint);margin-left:5px;vertical-align:super}
+.list{overflow:auto;flex:1;min-height:0;padding:6px 40px 20px}
+
+/* signature: index/contents row with dot leader */
+.item{display:grid;grid-template-columns:26px auto 1fr auto;gap:14px;align-items:baseline;padding:15px 0;border-bottom:1px solid var(--line)}
+.item:last-child{border-bottom:0}
+.item .ic{width:15px;height:15px;background:var(--ink);opacity:.5;align-self:center;
+  -webkit-mask-image:var(--i);mask-image:var(--i);-webkit-mask-position:center;mask-position:center;
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-size:contain;mask-size:contain}
+.item .tx b{font-weight:500;font-size:13.5px;letter-spacing:.002em}
+.item .tx small{display:block;color:var(--muted);font-size:12px;margin-top:3px}
+.leader{align-self:center;height:1px;border-bottom:1px dotted var(--line-2);transform:translateY(2px)}
+.k{font:400 11px/1 var(--mono);letter-spacing:.04em;color:var(--ink);white-space:nowrap}
+.k.empty{color:var(--faint);font-style:italic}
+.k.bad{color:var(--seal)}
+.k.bad::after{content:" 冲突";font-style:normal}
+.k.ink{color:var(--muted)}
+
+/* ---------- search ---------- */
+.search{padding:24px 24px 16px;display:flex;flex-direction:column;gap:18px;flex:1;min-height:0;background:var(--paper)}
+.field{display:flex;align-items:center;gap:12px;padding:0 2px 11px;border-bottom:1px solid var(--ink)}
+.field .ic{width:15px;height:15px;flex:0 0 15px;background:var(--ink);opacity:.55;
+  -webkit-mask-image:var(--i);mask-image:var(--i);-webkit-mask-position:center;mask-position:center;
+  -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;-webkit-mask-size:contain;mask-size:contain}
+.field input{flex:1;border:0;outline:0;background:transparent;font:400 13.5px/1.4 var(--font);color:var(--ink)}
+.field input::placeholder{color:var(--faint)}
+.cats{display:flex;flex-wrap:wrap;gap:20px}
+.cats button{border:0;background:transparent;color:var(--faint);font:400 12px/1 var(--font);padding:0 0 4px;cursor:pointer;border-bottom:1px solid transparent}
+.cats button:hover{color:var(--ink)}
+.cats button.on{color:var(--seal);border-bottom-color:var(--seal)}
+.results{flex:1;overflow:auto;min-height:0;
+  -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 18px),transparent 100%);
+  mask-image:linear-gradient(to bottom,#000 calc(100% - 18px),transparent 100%)}
+.hit{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:14px;align-items:baseline;padding:11px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.hit:last-child{border-bottom:0}
+.hit:hover .nm{color:var(--seal)}
+.hit.sel{background:var(--seal-soft);box-shadow:-10px 0 0 var(--seal-soft), 10px 0 0 var(--seal-soft)}
+.hit .kind{font:400 10px/1 var(--mono);letter-spacing:.1em;color:var(--faint);width:30px}
+.hit .nm{font-weight:500;font-size:13px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hit .dir{display:block;font:400 10.5px/1.5 var(--mono);color:var(--faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hit .meta{text-align:right;font:400 10.5px/1.6 var(--mono);color:var(--muted);white-space:nowrap}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:12px;border-top:1px solid var(--line);font:400 11px/1 var(--font);color:var(--muted)}
+.bar .dot{width:5px;height:5px;border-radius:50%;background:var(--ok);display:inline-block;margin-right:7px;vertical-align:middle}
+
+/* ---------- assistant ---------- */
+.assist{display:flex;flex-direction:column;flex:1;min-height:0;background:var(--paper)}
+.assist .top{display:flex;align-items:center;gap:10px;padding:15px 22px 0}
+.assist .top .st{font:400 10px/1 var(--mono);letter-spacing:.2em;color:var(--faint)}
+.assist .top .tag{font:400 10px/1 var(--mono);letter-spacing:.14em;color:var(--seal)}
+.assist .top .pin{margin-left:auto;border:0;background:transparent;font:400 10.5px/1 var(--font);color:var(--faint);cursor:pointer;padding:0}
+.assist .top .pin:hover{color:var(--ink)}
+.assist .bd{padding:14px 22px 22px;display:flex;flex-direction:column;gap:15px;flex:1;min-height:0}
+.assist .src{font:400 14px/1.6 var(--serif);color:var(--muted)}
+.assist .out{font:400 14.5px/1.7 var(--serif);color:var(--ink);border-top:1px solid var(--line);padding-top:14px}
+.assist .load{display:flex;align-items:center;gap:9px;font:400 11px/1 var(--font);color:var(--faint);margin-top:auto;padding-top:14px;border-top:1px solid var(--line)}
+.assist .dots i{display:inline-block;width:3px;height:3px;border-radius:50%;background:var(--seal);margin-right:4px;animation:pp 1.2s ease-in-out infinite}
+.assist .dots i:nth-child(2){animation-delay:.18s}
+.assist .dots i:nth-child(3){animation-delay:.36s}
+@keyframes pp{0%,100%{opacity:.2}50%{opacity:1}}
+
+/* ---------- recognition ---------- */
+.recog{display:flex;flex-direction:column;flex:1;min-height:0;background:var(--paper)}
+.recog .hd{padding:26px 34px 16px}
+.recog .hd h3{margin:0 0 8px;font:400 20px/1.2 var(--serif)}
+.recog .hd .sum{font:400 10px/1 var(--mono);letter-spacing:.16em;color:var(--faint)}
+.recog .txt{margin:0;padding:20px 34px;overflow:auto;flex:1;min-height:0;font:400 13.5px/2 var(--serif);white-space:pre-wrap;
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--paper-2)}
+.recog .txt mark{background:transparent;color:var(--seal);border-bottom:1px solid var(--seal);font-weight:600}
+.recog .ft{display:flex;align-items:center;gap:22px;padding:14px 34px}
+.recog .ft .n{font:400 10px/1 var(--mono);letter-spacing:.16em;color:var(--faint);margin-right:auto}
+
+/* ---------- buttons ---------- */
+.btn{border:1px solid var(--line-2);background:transparent;color:var(--ink);font:400 12.5px/1 var(--font);padding:11px 20px;cursor:pointer;border-radius:var(--r)}
+.btn:hover{border-color:var(--ink);background:var(--paper-2)}
+.btn.pri{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.btn.pri:hover{background:var(--seal);border-color:var(--seal)}
+.btn.dg{border-color:transparent;color:var(--seal);text-decoration:underline;text-underline-offset:4px;padding-left:0;padding-right:0}
+.btn.dg:hover{background:transparent;border-color:transparent}
+
+/* ---------- kit ---------- */
+.kit{padding:28px 34px;background:var(--paper);flex:1;min-height:0;overflow:auto}
+.kit h3{margin:0 0 5px;font:400 19px/1.2 var(--serif)}
+.kit .cap2{font:400 11.5px/1.5 var(--font);color:var(--muted);margin-bottom:20px}
+.kit .grp2{font:400 9.5px/1 var(--mono);letter-spacing:.2em;color:var(--faint);margin:22px 0 13px}
+.kit .grp2:first-of-type{margin-top:0}
+.rowset{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:8px;font:400 11.5px/1 var(--font);color:var(--ink-2);padding:6px 0}
+.chip .d{width:5px;height:5px;border-radius:50%;background:var(--ok)}
+.chip.w .d{background:var(--warn)}
+.chip.b .d{background:var(--seal)}
+.sw{width:38px;height:21px;border:1px solid var(--line-2);border-radius:999px;background:transparent;position:relative;cursor:pointer;padding:0}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:13px;height:13px;border-radius:50%;background:var(--line-2);transition:.16s}
+.sw.on{background:var(--ink);border-color:var(--ink)}
+.sw.on::after{left:20px;background:var(--paper)}
+.swatches{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border:1px solid var(--line)}
+.swift{border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+.swift:nth-child(3n){border-right:0}
+.swift:nth-child(n+4){border-bottom:0}
+.swift .sw1{height:40px}
+.swift .lb{padding:8px 10px;font:400 10px/1.4 var(--mono);color:var(--muted);display:flex;justify-content:space-between;gap:6px}
+.swift .lb em{font-style:normal;color:var(--faint);font-size:9px;text-transform:uppercase}
+
+.note-foot{max-width:1520px;margin:26px auto 0;font:400 11.5px/1.6 var(--font);color:var(--faint)}
+
+body.dark{
+  --bg:#141310;--paper:#1a1916;--paper-2:#1f1e1a;
+  --ink:#f2efe7;--ink-2:#cdc9bd;--muted:#8f8b7f;--faint:#6c6960;
+  --line:#2b2a25;--line-2:#3a3831;
+  --seal:#e0705a;--seal-soft:rgba(224,112,90,.10);
+  --ok:#6cbf8a;--warn:#d4ab4a;--bad:#e0705a;
+  --shadow:0 24px 60px rgba(0,0,0,.4);
+}
+</style>
+</head>
+<body>
+
+<header class="head">
+  <div class="mark">
+    <h1>High<i>lighter</i></h1>
+    <span class="code">DIRECTION B · EDITORIAL</span>
+  </div>
+  <div style="display:flex;align-items:flex-end;gap:30px">
+    <p class="note">纸白 + 朱砂 · 发丝线划分 · 容器消失，让功能名成为主视觉<br>清单读起来像一本书的目录</p>
+    <div class="toggle"><button id="tLight" class="on">LIGHT</button><button id="tDark">DARK</button></div>
+  </div>
+</header>
+
+<div class="board">
+  <div class="row one">
+    <section class="win" style="height:740px">
+      <div class="chrome">
+        <span class="name">01 · 主配置</span><span class="rule"></span><button class="x" title="关闭">×</button>
+      </div>
+      <div class="win-body">
+        <aside class="side">
+          <div class="brand">High<i>lighter</i><small>桌面截图与划词效率工具</small></div>
+          <div class="scroll"><div id="navBox"></div></div>
+          <div class="foot"><button class="nav" data-id="about"><span class="ic" style="--i:var(--ico-info)"></span>关于</button></div>
+        </aside>
+        <div class="content">
+          <div class="page">
+            <div class="kicker" id="pKick">HOME</div>
+            <h2 id="pTitle">快捷功能</h2>
+            <p id="pDesc">统一管理截图、AI、翻译、录屏和桌面工具。</p>
+          </div>
+          <div class="tabs" id="tabs"></div>
+          <div class="list" id="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="col">
+      <section class="win" style="height:400px">
+        <div class="chrome"><span class="name">02 · 本地搜索</span><span class="rule"></span><button class="x">×</button></div>
+        <div class="search">
+          <div class="field">
+            <span class="ic" style="--i:var(--ico-search)"></span>
+            <input id="q" placeholder="搜索本地文件（支持 Everything 语法，如 ext:pdf 报告）">
+          </div>
+          <div class="cats" id="cats"></div>
+          <div class="results" id="hits"></div>
+          <div class="bar">
+            <span><i class="dot"></i><span id="cnt">已找到 5 项</span></span>
+            <span>匹配路径 · 按修改时间</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="win" style="height:310px">
+        <div class="chrome"><span class="name">04 · 划词助手</span><span class="rule"></span><button class="x">×</button></div>
+        <div class="assist">
+          <div class="top"><span class="st">TRANSLATING</span><span class="tag">翻译</span><button class="pin">置顶</button></div>
+          <div class="bd">
+            <div class="src">Ship a calmer capture tool for Windows — fewer chrome, more focus.</div>
+            <div class="out">为 Windows 交付更安静的截图工具——更少界面噪音，更多专注。</div>
+            <div class="load"><span class="dots"><i></i><i></i><i></i></span>正在请求 DeepSeek…</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="row two">
+    <section class="win" style="height:452px">
+      <div class="chrome"><span class="name">03 · 识别结果</span><span class="rule"></span><button class="x">×</button></div>
+      <div class="recog">
+        <div class="hd">
+          <h3>识别结果</h3>
+          <div class="sum">共识别 8 行 · 中文 · 置信度高</div>
+        </div>
+        <pre class="txt" id="ocr"></pre>
+        <div class="ft">
+          <span class="n">引擎：本地 OCR</span>
+          <button class="btn">导出 Markdown</button>
+          <button class="btn pri">复制</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="win" style="height:452px">
+      <div class="chrome"><span class="name">05 · 组件语言</span><span class="rule"></span><button class="x">×</button></div>
+      <div class="kit">
+        <h3>组件语言</h3>
+        <div class="cap2">同一套 tokens 同时驱动 4 个窗口——这里的状态色只用于状态本身。</div>
+
+        <div class="grp2">按钮</div>
+        <div class="rowset">
+          <button class="btn pri">保存设置</button>
+          <button class="btn">导出 Markdown</button>
+          <button class="btn dg">恢复默认设置</button>
+        </div>
+
+        <div class="grp2">状态与开关</div>
+        <div class="rowset">
+          <span class="chip"><i class="d"></i>已连接</span>
+          <span class="chip w"><i class="d"></i>未配置</span>
+          <span class="chip b"><i class="d"></i>快捷键冲突</span>
+          <span class="k">Alt+A</span>
+          <button class="sw on" id="sw"></button>
+        </div>
+
+        <div class="grp2">色板</div>
+        <div class="swatches">
+          <div class="swift"><div class="sw1" style="background:var(--bg)"></div><div class="lb">背景<em>bg</em></div></div>
+          <div class="swift"><div class="sw1" style="background:var(--paper)"></div><div class="lb">纸面<em>paper</em></div></div>
+          <div class="swift"><div class="sw1" style="background:var(--line-2)"></div><div class="lb">发丝线<em>line</em></div></div>
+          <div class="swift"><div class="sw1" style="background:var(--ink)"></div><div class="lb">墨<em>ink</em></div></div>
+          <div class="swift"><div class="sw1" style="background:var(--muted)"></div><div class="lb">弱化<em>muted</em></div></div>
+          <div class="swift"><div class="sw1" style="background:var(--seal)"></div><div class="lb">朱砂<em>seal</em></div></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<p class="note-foot">签名细节：目录式清单（点线引导 + 右对齐快捷键）、朱砂只出现在选中与主操作、正文用衬线让识别结果读起来像排版好的文稿。</p>
+
+<script>
+/*__CONTENT__*/
+</script>
+<script>
+const HL = window.HL
+const $ = (s) => document.querySelector(s)
+let route = 'home', tab = 'shot'
+
+$('#navBox').innerHTML = HL.nav.map((g) => `
+  ${g.group ? `<div class="grp">${g.group}</div>` : ''}
+  ${g.items.map((it) => `<button class="nav${it.id === 'home' ? ' on' : ''}" data-id="${it.id}">
+    <span class="ic" style="--i:var(--ico-${it.icon})"></span>${it.label}</button>`).join('')}
+`).join('')
+
+$('#tabs').innerHTML = HL.tabs.map((t, i) =>
+  `<button class="tab${i === 0 ? ' on' : ''}" data-tab="${t.id}">${t.label}<span class="n">${HL.features[t.id].length}</span></button>`
+).join('')
+
+const kMarkup = (f) => {
+  if (f.key === 'conflict') return `<span class="k bad">Alt+A</span>`
+  if (!f.key) return `<span class="k empty">未设置</span>`
+  return `<span class="k">${f.key}</span>`
+}
+
+const renderList = () => {
+  const isHome = route === 'home'
+  $('#tabs').style.display = isHome ? 'flex' : 'none'
+  if (isHome) {
+    $('#pKick').textContent = 'HOME · 快捷功能'
+    $('#pTitle').textContent = HL.pages.home.title
+    $('#pDesc').textContent = HL.pages.home.desc
+    $('#list').innerHTML = HL.features[tab].map((f) => `
+      <div class="item">
+        <span class="ic" style="--i:var(--ico-${f.icon})"></span>
+        <span class="tx"><b>${f.name}</b><small>${f.desc}</small></span>
+        <span class="leader"></span>
+        ${kMarkup(f)}
+      </div>`).join('')
+  } else if (route === 'settings-hotkeys') {
+    $('#pKick').textContent = 'SETTINGS · 热键设置'
+    $('#pTitle').textContent = HL.pages['settings-hotkeys'].title
+    $('#pDesc').textContent = '点击右侧按键录入组合键；右键清除。'
+    $('#list').innerHTML = HL.hotkeys.map((h) => `
+      <div class="item">
+        <span class="ic" style="--i:var(--ico-${h.icon})"></span>
+        <span class="tx"><b>${h.name}</b><small>${h.state === 'conflict' ? '与「截图」冲突' : h.state === 'unset' ? '尚未分配按键' : '已启用'}</small></span>
+        <span class="leader"></span>
+        ${h.state === 'conflict' ? `<span class="k bad">${h.key}</span>`
+          : h.state === 'unset' ? `<span class="k empty">点击录入</span>`
+          : `<span class="k">${h.key}</span>`}
+      </div>`).join('')
+  } else {
+    const it = HL.nav.flatMap((g) => g.items).find((x) => x.id === route)
+    $('#pKick').textContent = 'ROUTE'
+    $('#pTitle').textContent = it.label
+    $('#pDesc').textContent = '该路由在本原型中未展开，导航切换能力已演示。'
+    $('#list').innerHTML = `<div class="item">
+      <span class="ic" style="--i:var(--ico-${it.icon})"></span>
+      <span class="tx"><b>${it.label}</b><small>点击左侧「快捷功能」或「热键设置」查看完整内容</small></span>
+      <span class="leader"></span><span class="k empty">占位</span></div>`
+  }
+}
+
+$('#tabs').onclick = (e) => {
+  const b = e.target.closest('.tab'); if (!b) return
+  tab = b.dataset.tab
+  ;[...$('#tabs').children].forEach((x) => x.classList.toggle('on', x === b))
+  renderList()
+}
+const navBox = $('#navBox')
+navBox.onclick = (e) => {
+  const b = e.target.closest('.nav'); if (!b) return
+  route = b.dataset.id
+  navBox.querySelectorAll('.nav').forEach((x) => x.classList.toggle('on', x === b))
+  $('.side .foot .nav').classList.remove('on')
+  renderList()
+}
+$('.side .foot .nav').onclick = (e) => {
+  route = 'about'
+  navBox.querySelectorAll('.nav').forEach((x) => x.classList.remove('on'))
+  e.currentTarget.classList.add('on')
+  renderList()
+}
+
+$('#cats').innerHTML = HL.search.cats.map((c, i) => `<button class="${i === 0 ? 'on' : ''}">${c}</button>`).join('')
+$('#cats').onclick = (e) => {
+  const b = e.target.closest('button'); if (!b) return
+  ;[...$('#cats').children].forEach((x) => x.classList.toggle('on', x === b))
+}
+const renderHits = (q = '') => {
+  const rows = HL.search.files.filter((f) =>
+    !q || f.name.toLowerCase().includes(q.toLowerCase()) || f.dir.toLowerCase().includes(q.toLowerCase()))
+  $('#hits').innerHTML = rows.length ? rows.map((f, i) => `
+    <div class="hit${i === 1 ? ' sel' : ''}">
+      <span class="kind">${f.kind}</span>
+      <span><b class="nm">${f.name}</b><small class="dir">${f.dir}</small></span>
+      <span class="meta">${f.size}<br>${f.time}</span>
+    </div>`).join('') : `<div style="padding:20px 0;font:400 12px/1.6 var(--font);color:var(--faint)">没有匹配的文件</div>`
+  $('#cnt').textContent = `已找到 ${rows.length} 项`
+}
+$('#q').oninput = (e) => renderHits(e.target.value)
+
+$('#ocr').innerHTML = HL.recognition.lines
+  .map((l) => l === HL.recognition.mark ? `<mark>${l}</mark>` : l).join('\n')
+
+$('#sw').onclick = (e) => e.currentTarget.classList.toggle('on')
+
+const setLight = () => { document.body.classList.remove('dark'); $('#tLight').classList.add('on'); $('#tDark').classList.remove('on') }
+const setDark = () => { document.body.classList.add('dark'); $('#tDark').classList.add('on'); $('#tLight').classList.remove('on') }
+$('#tLight').onclick = setLight
+$('#tDark').onclick = setDark
+
+renderList(); renderHits()
+</script>
+</body>
+</html>

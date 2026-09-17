@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · UI 语言三方向对比</title>
+<!--
+Comparison shell for the three design directions. Each direction lives in its
+own self-contained HTML file and is loaded in an iframe so the directions can
+never leak styles into each other or into this page.
+-->
+<style>
+:root{
+  --bg:#101010;
+  --surface:#181818;
+  --surface-2:#202020;
+  --line:#2b2b2b;
+  --line-2:#383838;
+  --ink:#f2f0ec;
+  --ink-2:#bdb9b2;
+  --muted:#87837b;
+  --faint:#63605a;
+  --font:"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"JetBrains Mono","Cascadia Mono",Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.55 var(--font);-webkit-font-smoothing:antialiased}
+body{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+
+header{display:flex;align-items:center;gap:20px;padding:0 20px;height:54px;border-bottom:1px solid var(--line);background:var(--surface);flex:0 0 auto}
+header h1{margin:0;font:500 15px/1 var(--font);letter-spacing:-.01em}
+header h1 i{font-style:normal;color:#e5a44c}
+header .sub{font:400 11px/1 var(--mono);letter-spacing:.06em;color:var(--faint)}
+header .sp{flex:1}
+header .hint{font:400 11px/1 var(--font);color:var(--faint)}
+header .hint kbd{font:400 10px/1 var(--mono);border:1px solid var(--line-2);border-radius:4px;padding:3px 5px;color:var(--muted)}
+
+.tabs{display:flex;gap:6px;padding:10px 20px;border-bottom:1px solid var(--line);background:var(--surface);flex:0 0 auto;overflow-x:auto}
+.tab{display:flex;flex-direction:column;gap:3px;border:1px solid var(--line-2);background:var(--surface-2);color:var(--ink-2);
+  padding:9px 15px;border-radius:8px;cursor:pointer;text-align:left;font:inherit;min-width:0;flex:0 0 auto}
+.tab:hover{border-color:var(--muted);color:var(--ink)}
+.tab.on{background:#f2f0ec;border-color:#f2f0ec;color:#111}
+.tab b{font-weight:500;font-size:12.5px;white-space:nowrap}
+.tab span{font:400 10px/1 var(--mono);letter-spacing:.06em;color:var(--faint);white-space:nowrap}
+.tab.on span{color:#5c5a55}
+
+.stagewrap{flex:1;min-height:0;position:relative;background:var(--surface-2)}
+.stagewrap iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:none;background:#fff}
+.stagewrap iframe.on{display:block}
+
+.info{flex:0 0 auto;display:flex;align-items:stretch;padding:0;border-top:1px solid var(--line);background:var(--surface)}
+.info .blk{min-width:0;padding:14px 22px;border-right:1px solid var(--line)}
+.info .blk:last-child{border-right:0}
+.info .blk h2{margin:0 0 7px;font:400 9.5px/1 var(--mono);letter-spacing:.14em;color:var(--faint);text-transform:uppercase}
+.info .blk p{margin:0;font-size:11.5px;color:var(--ink-2);line-height:1.65}
+.info .blk.lead p{font-size:12.5px;color:var(--ink)}
+.info .meta{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px}
+.info .pill{font:400 10px/1 var(--mono);border:1px solid var(--line-2);border-radius:999px;padding:5px 9px;color:var(--muted)}
+.info .sw{display:flex;gap:5px;align-items:center}
+.info .sw i{width:22px;height:22px;border-radius:6px;border:1px solid rgba(255,255,255,.14)}
+.info .open{flex:0 0 auto;display:flex;align-items:center;padding:0 20px;border-left:1px solid var(--line)}
+.info .open a{font:400 11.5px/1 var(--font);color:var(--ink);text-decoration:none;border:1px solid var(--line-2);border-radius:7px;padding:10px 15px;display:inline-block;background:var(--surface-2);white-space:nowrap}
+.info .open a:hover{border-color:var(--muted)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>High<i>lighter</i></h1>
+  <span class="sub">UI 语言 · 三方向对比</span>
+  <span class="sp"></span>
+  <span class="hint">每个方向都是自包含单文件 · <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> 切换</span>
+</header>
+
+<div class="tabs" id="tabs"></div>
+
+<div class="stagewrap" id="stage">
+  <iframe data-id="a" src="a-instrument.html" title="方向 A 仪器"></iframe>
+  <iframe data-id="b" src="b-editorial.html" title="方向 B 朱批"></iframe>
+  <iframe data-id="c" src="c-nightshift.html" title="方向 C 夜航"></iframe>
+</div>
+
+<div class="info" id="info"></div>
+
+<script>
+const DIRS = {
+  a: {
+    label: 'A · 仪器',
+    code: 'INSTRUMENT',
+    file: 'a-instrument.html',
+    line: '把 Highlighter 当一台桌面精密仪器：功能分区、等宽大写标签、信号色。',
+    tone: '冷静 · 工业 · 精确',
+    font: 'IBM Plex Mono + IBM Plex Sans + Noto Sans SC',
+    accent: ['#d6d3cc', '#faf9f6', '#ff4d00'],
+    accentName: '信号橙',
+    sig: '快捷键渲染成有物理厚度的键帽（2px 下唇 + 悬停位移）',
+    why: '工具型产品最需要「一眼定位」——等宽标签和面板网格让 11 项功能像仪表盘一样可扫读。',
+  },
+  b: {
+    label: 'B · 朱批',
+    code: 'EDITORIAL',
+    file: 'b-editorial.html',
+    line: '纸白 + 朱砂，容器消失：只用发丝线和字阶划分，让功能名成为主视觉。',
+    tone: '安静 · 书卷 · 克制',
+    font: 'Source Serif 4 + Noto Serif SC + Inter',
+    accent: ['#f4f3f0', '#fffefc', '#a8331f'],
+    accentName: '朱砂',
+    sig: '清单做成目录索引——名称 + 点线引导 + 右对齐快捷键',
+    why: '每天开合几十次的工具，最好的界面是几乎不存在的界面；识别结果用衬线排版读起来像文稿。',
+  },
+  c: {
+    label: 'C · 夜航',
+    code: 'NIGHTSHIFT',
+    file: 'c-nightshift.html',
+    line: '暖炭灰 + 琥珀的暗色工作室：用表面明度台阶造深度，不用霓虹发光。',
+    tone: '沉浸 · 温暖 · 有层次',
+    font: 'Space Grotesk + Noto Sans SC + JetBrains Mono',
+    accent: ['#121110', '#1c1a18', '#e5a44c'],
+    accentName: '琥珀',
+    sig: '状态轨把「智能感」摊开：OCR 引擎 / 当前模型 / 热键配置度 / Everything 状态',
+    why: '截图与 OCR 是深夜高频工作，暗色是主场景；状态轨让用户随时知道系统在用什么能力。',
+  },
+}
+
+const tabs = document.getElementById('tabs')
+const info = document.getElementById('info')
+const frames = [...document.querySelectorAll('#stage iframe')]
+let cur = 'a'
+
+tabs.innerHTML = Object.entries(DIRS).map(([id, d]) =>
+  `<button class="tab" data-id="${id}"><b>${d.label}</b><span>${d.code}</span></button>`).join('')
+
+function show(id) {
+  cur = id
+  const d = DIRS[id]
+  ;[...tabs.children].forEach((b) => b.classList.toggle('on', b.dataset.id === id))
+  frames.forEach((f) => f.classList.toggle('on', f.dataset.id === id))
+  info.innerHTML = `
+    <div class="blk lead" style="flex:1 1 30%">
+      <h2>方向 · ${d.code}</h2>
+      <p>${d.line}</p>
+      <div class="meta"><span class="pill">${d.tone}</span></div>
+    </div>
+    <div class="blk" style="flex:1 1 25%">
+      <h2>签名细节</h2>
+      <p>${d.sig}</p>
+    </div>
+    <div class="blk" style="flex:1 1 25%">
+      <h2>为什么这么定</h2>
+      <p>${d.why}</p>
+    </div>
+    <div class="blk" style="flex:0 0 auto">
+      <h2>主色 · ${d.accentName}</h2>
+      <div class="sw">${d.accent.map((c) => `<i style="background:${c}"></i>`).join('')}</div>
+      <p style="margin-top:8px;font-family:var(--mono);font-size:10px;color:var(--muted);max-width:22ch">${d.font}</p>
+    </div>
+    <div class="open"><a href="${d.file}" target="_blank" rel="noopener">单独打开 ↗</a></div>`
+  document.title = `Highlighter · ${d.label}`
+}
+
+tabs.onclick = (e) => {
+  const b = e.target.closest('.tab'); if (b) show(b.dataset.id)
+}
+addEventListener('keydown', (e) => {
+  const map = { 1: 'a', 2: 'b', 3: 'c' }
+  if (map[e.key]) show(map[e.key])
+})
+
+show('a')
+</script>
+</body>
+</html>
