@@ -217,7 +217,8 @@ const DEFAULT_SETTINGS = {
     toggleFixedContentVisibility: '',
     showOrHideMainWindow: '',
     openCaptureHistory: '',
-    localSearch: 'Alt+F'
+    localSearch: 'Alt+F',
+    explainClipboard: 'Ctrl+Alt+E'
   }
 }
 
@@ -1266,6 +1267,32 @@ async function getSearchFileIcon(samplePath) {
 }
 
 
+async function openToolbarAiAction(action, text) {
+  const toolbarConfig = getSettings().selectionToolbar
+  const actionDefinition = getToolbarActionDefinition(toolbarConfig, action)
+  if (!actionDefinition) return false
+  const aiRuntime = resolveToolbarAiProvider(getSettings(), action)
+  if (!aiRuntime?.apiKey) {
+    createMainWindow('models')
+    return false
+  }
+  const win = getOrCreateActionWindow()
+  const controller = createToolbarStreamController(win)
+  selectionWindowManager.positionActionWindow(win, screen)
+  queueActionMessage(win, 'action:start', {
+    type: actionDefinition.id,
+    label: actionDefinition.label,
+    icon: actionDefinition.icon,
+    text,
+    streamId: controller.streamId,
+    appearance: getActionAppearance()
+  })
+  streamToWindow(win, actionDefinition, text, controller)
+  win.show()
+  win.focus()
+  return true
+}
+
 async function executeFunction(name, payload = {}) {
   assertGameModeDisabled()
   switch (name) {
@@ -1319,6 +1346,17 @@ async function executeFunction(name, payload = {}) {
     case 'localSearch': searchDomain.createSearchWindow(); return true
     case 'translation': createMainWindow('translation'); return true
     case 'chat': createMainWindow('chat'); return true
+    case 'explainClipboard': {
+      // Read-only clipboard path: never write or empty the clipboard.
+      const text = String(clipboard.readText() || '').trim()
+      if (!text) return false
+      if (text.length > 10000) {
+        log('Explain clipboard skipped: text too long', text.length)
+        return false
+      }
+      hideToolbar()
+      return openToolbarAiAction('explain', text)
+    }
     default: throw new Error(`未知功能：${name}`)
   }
 }
@@ -1729,23 +1767,8 @@ secureIpcMain.on('toolbar:action', async (_event, { action, text }) => {
     return
   }
   if (!isAiToolbarAction(action, toolbarConfig)) return
-  const aiRuntime = resolveToolbarAiProvider(getSettings(), action)
-  if (!aiRuntime?.apiKey) { createMainWindow('models'); hideToolbar(); return }
   hideToolbar()
-  const win = getOrCreateActionWindow()
-  const controller = createToolbarStreamController(win)
-  selectionWindowManager.positionActionWindow(win, screen)
-  queueActionMessage(win, 'action:start', {
-    type: actionDefinition.id,
-    label: actionDefinition.label,
-    icon: actionDefinition.icon,
-    text,
-    streamId: controller.streamId,
-    appearance: getActionAppearance()
-  })
-  streamToWindow(win, actionDefinition, text, controller)
-  win.show()
-  win.focus()
+  await openToolbarAiAction(action, text)
 })
 secureIpcMain.on('window:toggle-pin', (event, shouldPin) => {
   const win = BrowserWindow.fromWebContents(event.sender)

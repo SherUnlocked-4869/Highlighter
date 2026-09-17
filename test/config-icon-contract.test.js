@@ -32,7 +32,7 @@ test('quick functions and hotkey settings share SVG-backed function metadata', (
   const functionIcons = [...script.matchAll(/\['[^']+',\s*'[^']+',\s*'([^']+\.svg)',\s*'[^']*'\]/g)]
     .map((match) => match[1])
 
-  assert.equal(functionIcons.length, 22)
+  assert.equal(functionIcons.length, 23)
   for (const iconPath of functionIcons) assertIconExists(iconPath)
   assert.match(script, /function iconMarkup\(iconPath\)/)
   assert.match(script, /renderHome\(\)[\s\S]*iconMarkup\(icon\)/)

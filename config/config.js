@@ -51,7 +51,8 @@ const functionGroups = {
   ],
   ai: [
     ['chat', '打开 AI 对话', 'icons/robot.svg', '使用配置的 AI 模型进行多轮对话'],
-    ['chatSelectText', '对话框填入选中文本', 'icons/text-style-one.svg', '保留现有划词助手工作流']
+    ['chatSelectText', '对话框填入选中文本', 'icons/text-style-one.svg', '保留现有划词助手工作流'],
+    ['explainClipboard', '解释剪贴板文本', 'icons/robot.svg', '只读剪贴板并送入解释窗口，不写回剪贴板']
   ],
   translation: [
     ['translation', '打开翻译工具', '../capture/icons/translate.svg', '支持自动检测与中英互译'],

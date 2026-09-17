@@ -30,3 +30,24 @@ test('shortcut changes refresh registration status before user feedback', () => 
   assert.match(config, /if \(patch\.shortcuts\) await refreshShortcutStatuses\(\)/)
   assert.match(config, /const presentation = shortcutPresentation\(shortcutName, accelerator\)[\s\S]*renderRoute\(\)[\s\S]*toast\(presentation\.message \|\| '快捷键已更新'\)/)
 })
+
+test('explainClipboard shortcut reads clipboard only and opens the explain window', () => {
+  assert.match(main, /explainClipboard:\s*'Ctrl\+Alt\+E'/)
+  assert.match(main, /case 'explainClipboard':\s*\{[\s\S]*clipboard\.readText\(\)[\s\S]*openToolbarAiAction\('explain', text\)/)
+  // Must not write or empty the clipboard in this path.
+  const explainCase = main.match(/case 'explainClipboard':\s*\{[\s\S]*?\n    \}/)?.[0] || ''
+  assert.ok(explainCase, 'explainClipboard case present')
+  assert.doesNotMatch(explainCase, /clipboard\.write/)
+  assert.doesNotMatch(explainCase, /EmptyClipboard|clipboard\.clear/)
+  assert.match(config, /\['explainClipboard', '解释剪贴板文本'/)
+})
+
+test('selection extraction native patch includes a UIA timeout', () => {
+  const patched = fs.readFileSync(
+    path.join(__dirname, '..', 'patches', 'selection-hook', 'selection_hook.cc'),
+    'utf8'
+  )
+  assert.match(patched, /SELECTION_EXTRACT_TIMEOUT_MS/)
+  assert.match(patched, /GetSelectedTextTimed/)
+  assert.match(patched, /selection_epoch/)
+})

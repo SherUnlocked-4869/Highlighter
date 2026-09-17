@@ -26,6 +26,7 @@
     "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
     "build:everything": "powershell -NoProfile -ExecutionPolicy Bypass -File native/everything-search/build.ps1",
     "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr && npm run build:everything",
+    "patch:selection-hook": "node scripts/apply-selection-hook-patch.js",
     "check": "node scripts/check-js.js && npm run check:architecture",
     "check:architecture": "node scripts/check-architecture.js",
     "audit:dependencies": "node scripts/audit-dependencies.js",
