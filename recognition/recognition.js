@@ -1,5 +1,6 @@
 const title = document.getElementById('title')
 const summary = document.getElementById('summary')
+const badge = document.getElementById('badge')
 const loading = document.getElementById('loading')
 const loadingText = document.getElementById('loadingText')
 const errorView = document.getElementById('error')
@@ -22,6 +23,7 @@ function showError(error) {
   tableView.classList.add('hidden')
   qrView.classList.add('hidden')
   actions.classList.add('hidden')
+  badge.textContent = '识别失败'
   errorText.textContent = error?.message || String(error)
   errorView.classList.remove('hidden')
 }
@@ -30,6 +32,7 @@ function renderTable(result) {
   tableResult = result
   title.textContent = '表格识别'
   summary.textContent = `${result.rowCount} 行 × ${result.columnCount} 列`
+  badge.textContent = '本地 OCR'
   const head = document.createElement('thead')
   const headRow = document.createElement('tr')
   result.rows[0].forEach((value) => {
@@ -70,6 +73,7 @@ function renderQr(value) {
   activeUrl = parseHttpUrl(qrResult)
   title.textContent = '二维码识别'
   summary.textContent = activeUrl ? '已识别链接' : '已识别文本内容'
+  badge.textContent = '本地 OCR'
   qrText.value = qrResult
   copyButton.textContent = '复制内容'
   loading.classList.add('hidden')

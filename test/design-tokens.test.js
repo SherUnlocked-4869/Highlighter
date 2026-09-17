@@ -110,6 +110,40 @@ test('the default accent matches the design system', () => {
   assert.match(main, /mainColor:\s*'#e5a44c'/, 'main.js default mainColor is the Nightshift amber')
 })
 
+test('legacy blue accents are migrated to Nightshift amber', () => {
+  const migration = fs.readFileSync(path.join(root, 'main/services/appearance-migration.js'), 'utf8')
+  assert.match(migration, /#1677ff/)
+  assert.match(migration, /NIGHTSHIFT_AMBER\s*=\s*'#e5a44c'/)
+  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  assert.match(main, /migrateAppearanceSettings/, 'main.js wires appearance migration')
+  assert.match(main, /resolveMainColor/, 'normalizeSettings resolves legacy accents at runtime')
+})
+
+test('recognition window follows the Nightshift result design', () => {
+  const html = fs.readFileSync(path.join(root, 'recognition/recognition.html'), 'utf8')
+  const css = fs.readFileSync(path.join(root, 'recognition/recognition.css'), 'utf8')
+  assert.match(html, /id="badge"/)
+  assert.match(css, /font-display/)
+  assert.match(css, /--ok-soft/)
+  assert.match(css, /var\(--primary\)/)
+  assert.doesNotMatch(css, /#1677ff|#1890ff|rgba\(22,\s*135,\s*255/)
+})
+
+test('history thumbnails use a clean surface plate, not a checkerboard', () => {
+  const css = fs.readFileSync(path.join(root, 'config/config.css'), 'utf8')
+  assert.match(css, /\.history-image\{[^}]*background:var\(--surface-2\)/)
+  assert.doesNotMatch(css, /repeating-conic-gradient/)
+})
+
+test('selection toolbar carries a Nightshift status LED and primary copy', () => {
+  const html = fs.readFileSync(path.join(root, 'toolbar/toolbar.html'), 'utf8')
+  const js = fs.readFileSync(path.join(root, 'toolbar/toolbar.js'), 'utf8')
+  assert.match(html, /\.toolbar \.led\s*\{/)
+  assert.match(html, /\.toolbar \.btn\.pri\s*\{/)
+  assert.match(js, /led\.className = 'led'/)
+  assert.match(js, /action\.id === 'copy' \? ' pri' : ''/)
+})
+
 test('no renderer ships an emoji glyph as an icon', () => {
   // Windows substitutes the colour emoji font for Extended_Pictographic
   // characters, so they render differently across OS versions and carry no

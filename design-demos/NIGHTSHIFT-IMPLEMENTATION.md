@@ -62,8 +62,13 @@ window 样式表**不再声明** `--bg` / `--primary` 等颜色，只做布局�
 | 划词助手用 `🌐`/`📌`/`💡`/`🧠` emoji | 该窗口 CSP 为 `img-src 'none'`，无法用 mask 图标 → 改为内联 SVG |
 | 识别结果窗口硬编码深色板，永远不跟随主题 | 改为消费 token + 跟随主题 |
 | 历史页四个统计卡各带彩色渐变顶条（2020 dashboard slop） | 改为单一边框内用 1px 分割的仪表条 |
+| 透明截图缩略图铺高对比棋盘格 | 改为 `--surface-2` 实底板 + inset hairline |
+| 历史卡操作条常驻占满视觉 | hover / focus-within / 选中才显现 |
+| 划词工具栏无签名、无主操作强调 | 琥珀 LED + 复制实心主色（B 方案） |
 | 长截图「开始」「复制」按钮透明（页面没 link tokens.css） | 补 link；加测试防止复发 |
 | 原生 range/checkbox 保持系统默认蓝（第二个强调色） | `accent-color:var(--primary)` |
+| 旧安装把 `mainColor=#1677ff` 持久化到设置，开关/主按钮仍显蓝 | `main/services/appearance-migration.js` 启动时迁移到 `#e5a44c`；`normalizeSettings` 运行时兜底 |
+| 录屏状态点硬编码 Ant 蓝光晕 `rgba(22,135,255,.16)` | 改用 `var(--primary)` + `var(--primary-soft)` |
 | 工具条外阴影被无边框窗口裁切 | 改回 inset 阴影（窗口尺寸恰好等于元素） |
 
 ## 验证

@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · 划词工具栏 × 截图历史 · Nightshift 重设计</title>
+<style>
+:root{
+  --bg:#121110; --surface:#1c1a18; --surface-2:#242220; --surface-3:#2d2a27;
+  --line:#332f2b; --line-2:#453f39;
+  --ink:#f1ece4; --ink-2:#c6c0b5; --muted:#8c8679; --faint:#67615a;
+  --primary:#e5a44c; --primary-ink:#241a08; --primary-soft:rgba(229,164,76,.13); --primary-line:rgba(229,164,76,.4);
+  --ok:#63b98a; --danger:#e0736a;
+  --r:9px; --r-sm:6px; --r-lg:14px;
+  --font:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --disp:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono","Cascadia Code",Consolas,monospace;
+}
+body.day{
+  --bg:#eeebe4; --surface:#fffefb; --surface-2:#f6f3ed; --surface-3:#ece8e0;
+  --line:#e2ddd3; --line-2:#cdc6ba;
+  --ink:#1b1815; --ink-2:#4a453d; --muted:#6d675e; --faint:#9a938a;
+  --primary-ink:#fff8ec; --primary-soft:rgba(168,106,31,.11); --primary-line:rgba(168,106,31,.38);
+  --ok:#2e7d51; --danger:#b8382c;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.55 var(--font);-webkit-font-smoothing:antialiased}
+body{padding:36px 40px 72px}
+.wrap{max-width:1480px;margin:0 auto;display:flex;flex-direction:column;gap:36px}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px}
+.head h1{margin:0;font:500 26px/1.1 var(--disp);letter-spacing:-.02em}
+.head h1 i{font-style:normal;color:var(--primary)}
+.head p{margin:8px 0 0;color:var(--muted);font-size:12.5px;max-width:560px}
+.toggle{display:flex;gap:3px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:3px}
+.toggle button{border:0;background:transparent;color:var(--muted);font:500 10px/1 var(--mono);letter-spacing:.12em;padding:8px 14px;border-radius:999px;cursor:pointer}
+.toggle button.on{background:var(--surface-3);color:var(--ink)}
+.sec>h2{margin:0 0 6px;font:500 18px/1.2 var(--disp);letter-spacing:-.01em}
+.sec>p.hint{margin:0 0 18px;color:var(--muted);font-size:12px}
+.grid{display:grid;gap:22px}
+.grid.tools{grid-template-columns:repeat(3,minmax(0,1fr))}
+.grid.hist{grid-template-columns:repeat(3,minmax(0,1fr))}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.card>header{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.card>header .led{width:7px;height:7px;border-radius:2px;background:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
+.card>header b{font:500 12px/1 var(--font)}
+.card>header span{margin-left:auto;font:400 9.5px/1 var(--mono);letter-spacing:.1em;color:var(--faint)}
+.stage{padding:22px 18px;min-height:120px;display:grid;place-items:center;background:
+  radial-gradient(80% 70% at 50% 0%, color-mix(in srgb,var(--primary) 5%,transparent), transparent 70%),
+  var(--surface)}
+.stage.plain{min-height:320px;place-items:start center;padding-top:28px}
+.note{padding:12px 14px 14px;border-top:1px solid var(--line);color:var(--muted);font-size:11.5px;line-height:1.65}
+.note b{color:var(--ink-2);font-weight:600}
+
+/* ========== TOOLBAR VARIANTS ========== */
+/* Fake desktop strip under floating toolbar */
+.float-bg{width:100%;height:72px;border-radius:8px;background:
+  linear-gradient(180deg, color-mix(in srgb,var(--surface-3) 70%,transparent), var(--surface-2));
+  border:1px dashed var(--line-2);display:grid;place-items:center;color:var(--faint);font:400 10px/1 var(--mono)}
+
+/* A · Quiet plate */
+.tb-a{display:flex;align-items:center;gap:2px;background:var(--surface);border:1px solid var(--line-2);
+  border-radius:var(--r-lg);padding:4px 5px;box-shadow:inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 0 rgba(0,0,0,.12)}
+.tb-a button{display:flex;align-items:center;gap:6px;height:30px;padding:0 11px;border:0;border-radius:var(--r-sm);
+  background:transparent;color:var(--ink-2);font:400 12.5px/1 var(--font);cursor:pointer}
+.tb-a button:hover{background:var(--surface-3);color:var(--ink)}
+.tb-a button.ai{color:var(--primary)}
+.tb-a button.ai:hover{background:var(--primary-soft)}
+.tb-a .sep{width:1px;height:16px;background:var(--line);margin:0 3px}
+.tb-a .ico{width:14px;height:14px;opacity:.75;display:inline-block;background:currentColor;
+  -webkit-mask-position:center;mask-position:center;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
+  -webkit-mask-size:contain;mask-size:contain}
+
+/* B · Status-rail sibling (LED + raised primary) */
+.tb-b{display:flex;align-items:center;gap:3px;background:var(--surface-2);border:1px solid var(--line);
+  border-radius:var(--r-lg);padding:4px 6px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+.tb-b .led{width:6px;height:6px;border-radius:2px;background:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);margin:0 4px 0 2px}
+.tb-b button{height:30px;padding:0 12px;border:1px solid transparent;border-radius:var(--r-sm);
+  background:var(--surface);color:var(--ink-2);font:500 12px/1 var(--font);cursor:pointer}
+.tb-b button:hover{border-color:var(--line-2);color:var(--ink);background:var(--surface-3)}
+.tb-b button.pri{background:var(--primary);border-color:var(--primary);color:var(--primary-ink);font-weight:600}
+.tb-b button.pri:hover{filter:brightness(1.06)}
+.tb-b .sep{width:1px;height:16px;background:var(--line);margin:0 2px}
+
+/* C · Density split · AI tagged */
+.tb-c{display:flex;align-items:stretch;gap:0;background:var(--surface);border:1px solid var(--line-2);
+  border-radius:var(--r-lg);padding:3px;overflow:hidden}
+.tb-c button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  min-width:64px;height:42px;padding:0 10px;border:0;border-radius:var(--r-sm);background:transparent;
+  color:var(--ink-2);font:400 11px/1.1 var(--font);cursor:pointer}
+.tb-c button small{font:500 8.5px/1 var(--mono);letter-spacing:.08em;color:var(--faint)}
+.tb-c button:hover{background:var(--surface-3);color:var(--ink)}
+.tb-c button.ai{background:var(--primary-soft);color:var(--ink)}
+.tb-c button.ai small{color:var(--primary)}
+.tb-c button.ai:hover{background:color-mix(in srgb,var(--primary) 22%,transparent)}
+.tb-c .sep{width:1px;margin:8px 2px;background:var(--line)}
+
+/* ========== HISTORY VARIANTS ========== */
+/* Fake transparent screenshot: alpha PNG look via layered shapes */
+.shot{position:relative;width:100%;aspect-ratio:16/10;overflow:hidden}
+.shot .win{position:absolute;left:12%;top:14%;width:76%;height:58%;border-radius:6px;
+  background:color-mix(in srgb,var(--ink) 88%,transparent);box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.shot .win::before{content:"";position:absolute;left:0;right:0;top:0;height:14px;border-radius:6px 6px 0 0;
+  background:color-mix(in srgb,var(--primary) 55%, var(--surface-3))}
+.shot .win::after{content:"";position:absolute;left:10%;right:28%;top:32%;height:6px;border-radius:3px;
+  background:color-mix(in srgb,var(--ink-2) 40%,transparent)}
+.shot .chip{position:absolute;right:10%;bottom:16%;width:18%;height:12%;border-radius:4px;
+  background:var(--primary);opacity:.85}
+/* transparent region shows the plate behind */
+
+/* A · Clean plate (recommended) */
+.h-a .plate{position:relative;height:168px;background:var(--surface-2);display:grid;place-items:center;overflow:hidden}
+.h-a .plate .shot{width:86%;height:78%}
+.h-a .plate::after{content:"";position:absolute;inset:0;box-shadow:inset 0 0 0 1px var(--line);pointer-events:none}
+.h-a .meta{display:flex;align-items:baseline;gap:10px;padding:11px 13px 4px}
+.h-a .meta b{font:500 12.5px/1 var(--font)}
+.h-a .meta span{font:400 10px/1 var(--mono);color:var(--faint);letter-spacing:.04em}
+.h-a .acts{display:flex;gap:4px;padding:8px 10px 12px;opacity:0;transform:translateY(4px);transition:.16s}
+.h-card:hover .h-a .acts,.h-a:hover .acts{opacity:1;transform:none}
+.h-a .acts button{flex:1;height:28px;border:1px solid var(--line);border-radius:var(--r-sm);
+  background:transparent;color:var(--muted);font:400 11.5px/1 var(--font);cursor:pointer}
+.h-a .acts button:hover{color:var(--ink);background:var(--surface-3);border-color:var(--line-2)}
+.h-a .acts button.del:hover{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 45%,var(--line));background:color-mix(in srgb,var(--danger) 10%,transparent)}
+.h-a .check{position:absolute;top:10px;right:10px;width:22px;height:22px;border-radius:5px;
+  border:1px solid var(--line-2);background:color-mix(in srgb,var(--surface) 90%,transparent);z-index:2}
+
+/* B · Soft pad · mono footer */
+.h-b .plate{position:relative;height:152px;margin:10px;border-radius:var(--r-sm);background:var(--surface-2);
+  border:1px solid var(--line);display:grid;place-items:center;overflow:hidden}
+.h-b .plate .shot{width:78%;height:70%}
+.h-b .meta{display:grid;gap:4px;padding:0 13px 12px}
+.h-b .meta b{font:500 12.5px/1.2 var(--font)}
+.h-b .meta span{font:400 10px/1.4 var(--mono);color:var(--muted);letter-spacing:.04em}
+.h-b .acts{display:flex;gap:5px;padding:0 10px 12px}
+.h-b .acts button{flex:1;height:28px;border:1px solid var(--line-2);border-radius:var(--r-sm);
+  background:var(--surface-2);color:var(--ink-2);font:400 11.5px/1 var(--font);cursor:pointer}
+.h-b .acts button:hover{background:var(--surface-3);color:var(--ink)}
+
+/* C · Hit-row density · cover crop + overlay actions */
+.h-c{position:relative}
+.h-c .plate{position:relative;height:190px;background:var(--surface-2);overflow:hidden}
+.h-c .plate .shot{position:absolute;inset:0;width:100%;height:100%}
+.h-c .plate .shot .win{left:18%;top:18%;width:64%;height:52%}
+.h-c .plate::after{content:"";position:absolute;inset:auto 0 0 0;height:46%;
+  background:linear-gradient(to top, color-mix(in srgb,var(--surface) 92%,transparent), transparent);pointer-events:none}
+.h-c .overlay{position:absolute;left:0;right:0;bottom:0;padding:12px 12px 11px;display:grid;gap:8px;z-index:1}
+.h-c .overlay .row{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.h-c .overlay b{font:500 12.5px/1 var(--font)}
+.h-c .overlay span{font:400 10px/1 var(--mono);color:var(--muted)}
+.h-c .overlay .acts{display:flex;gap:4px}
+.h-c .overlay .acts button{flex:1;height:28px;border:0;border-radius:var(--r-sm);
+  background:color-mix(in srgb,var(--surface-3) 88%,transparent);color:var(--ink-2);font:400 11.5px/1 var(--font);cursor:pointer}
+.h-c .overlay .acts button:hover{background:var(--surface-3);color:var(--ink)}
+.h-c .overlay .acts button.pri{background:var(--primary);color:var(--primary-ink);font-weight:600}
+.h-card{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.h-card:hover{border-color:var(--line-2)}
+
+/* Old checkerboard callout */
+.bad-demo{border:1px dashed color-mix(in srgb,var(--danger) 50%,var(--line));border-radius:var(--r)}
+.bad-demo .plate{background:repeating-conic-gradient(color-mix(in srgb,var(--ink) 8%,var(--surface)) 0 25%,var(--surface) 0 50%) 50%/14px 14px}
+.bad-tag{position:absolute;top:8px;left:8px;z-index:3;padding:4px 8px;border-radius:999px;
+  background:color-mix(in srgb,var(--danger) 16%,var(--surface));color:var(--danger);
+  font:500 9px/1 var(--mono);letter-spacing:.08em}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="head">
+    <div>
+      <h1>High<i>lighter</i> · 两界面重设计</h1>
+      <p>沿用 Nightshift：暖炭灰表面台阶 + 单一琥珀强调。划词工具栏要「浮在任意内容上仍可读」；截图历史要消掉透明缩略图的黑白棋盘格。</p>
+    </div>
+    <div class="toggle"><button id="tDark" class="on">DARK</button><button id="tLight">DAY</button></div>
+  </header>
+
+  <section class="sec">
+    <h2>划词工具栏 · 3 版</h2>
+    <p class="hint">约束：无边框透明窗口、hasShadow:false → 深度只能 inset；浮层恒暗色逻辑保留，但消费共享 token。</p>
+    <div class="grid tools">
+      <article class="card">
+        <header><i class="led"></i><b>A · Quiet Plate</b><span>QUIET</span></header>
+        <div class="stage">
+          <div class="float-bg">
+            <div class="tb-a">
+              <button>⧉ 复制</button><i class="sep"></i>
+              <button>⌕ 搜索</button><i class="sep"></i>
+              <button class="ai">译 翻译</button>
+              <button class="ai">? 解释</button>
+            </div>
+          </div>
+        </div>
+        <div class="note"><b>思路</b>：最薄。本地操作中性色，AI 操作直接用主色字。无 LED，不抢选区注意力。适合「点了就走」的高频划词。</div>
+      </article>
+
+      <article class="card">
+        <header><i class="led"></i><b>B · Status LED + Primary</b><span>RAIL</span></header>
+        <div class="stage">
+          <div class="float-bg">
+            <div class="tb-b">
+              <i class="led"></i>
+              <button class="pri">⧉ 复制</button>
+              <button>⌕ 搜索</button><i class="sep"></i>
+              <button>译 翻译</button>
+              <button>? 解释</button>
+            </div>
+          </div>
+        </div>
+        <div class="note"><b>思路</b>：与主窗状态轨同语言。琥珀 LED 点一下，主操作「复制」实心琥珀。识别度最高，也最「产品」。</div>
+      </article>
+
+      <article class="card">
+        <header><i class="led"></i><b>C · Density Split</b><span>DENSE</span></header>
+        <div class="stage">
+          <div class="float-bg">
+            <div class="tb-c">
+              <button>⧉<small>COPY</small></button>
+              <button>⌕<small>SEARCH</small></button>
+              <i class="sep"></i>
+              <button class="ai">译<small>AI</small></button>
+              <button class="ai">?<small>AI</small></button>
+            </div>
+          </div>
+        </div>
+        <div class="note"><b>思路</b>：双行密度。图标主导，AI 区块用 soft 填充分组。信息密度高，但字更小——触控/小屏要慎。</div>
+      </article>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>截图历史卡片 · 3 版 + 反例</h2>
+    <p class="hint">核心修复：透明 PNG 不再铺棋盘格，改用 <b>surface-2 实底板</b>（Nightshift 台阶），缩略图像「标本放在纸垫上」。</p>
+    <div class="grid hist">
+      <article class="card">
+        <header><i class="led"></i><b>A · Clean Plate</b><span>REC</span></header>
+        <div class="stage plain">
+          <div class="h-card h-a" style="width:100%;max-width:280px">
+            <div class="check"></div>
+            <div class="plate">
+              <div class="shot"><div class="win"></div><div class="chip"></div></div>
+            </div>
+            <div class="meta"><b>14:32:08</b><span>区域 · 1280×720</span></div>
+            <div class="acts">
+              <button>打开</button><button>复制</button><button>地址</button><button class="del">删除</button>
+            </div>
+          </div>
+        </div>
+        <div class="note"><b>推荐</b>：实底板 + hover 才出操作条。透明区干净；操作不常驻，网格更透气。</div>
+      </article>
+
+      <article class="card">
+        <header><i class="led"></i><b>B · Soft Pad</b><span>PAD</span></header>
+        <div class="stage plain">
+          <div class="h-card h-b" style="width:100%;max-width:280px">
+            <div class="plate">
+              <div class="shot"><div class="win"></div><div class="chip"></div></div>
+            </div>
+            <div class="meta">
+              <b>14:32:08 · 区域</b>
+              <span>1280×720 · PNG</span>
+            </div>
+            <div class="acts">
+              <button>打开</button><button>复制</button><button>删除</button>
+            </div>
+          </div>
+        </div>
+        <div class="note"><b>思路</b>：缩略图再内缩一圈，像相纸留白。操作常驻但压到 3 个。适合「总要点按钮」的用户。</div>
+      </article>
+
+      <article class="card">
+        <header><i class="led"></i><b>C · Overlay Hit</b><span>OVERLAY</span></header>
+        <div class="stage plain">
+          <div class="h-card h-c" style="width:100%;max-width:280px">
+            <div class="plate">
+              <div class="shot"><div class="win"></div><div class="chip"></div></div>
+            </div>
+            <div class="overlay">
+              <div class="row"><b>14:32:08</b><span>1280×720</span></div>
+              <div class="acts">
+                <button class="pri">打开</button><button>复制</button><button>删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="note"><b>思路</b>：封面式裁切 + 底栏叠字。视觉最「作品集」，但透明截图会被裁切——区域截图更合适，全屏长图会挤。</div>
+      </article>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>反例 · 当前棋盘格（不要再用）</h2>
+    <div class="grid" style="grid-template-columns:minmax(0,320px)">
+      <article class="card bad-demo">
+        <header><i class="led" style="background:var(--danger);box-shadow:none"></i><b>Checkerboard</b><span>REJECT</span></header>
+        <div class="stage plain">
+          <div class="h-card" style="width:100%;max-width:280px;position:relative">
+            <span class="bad-tag">反例 · 勿用</span>
+            <div class="plate" style="height:168px">
+              <div class="shot" style="width:86%;height:78%"><div class="win"></div><div class="chip"></div></div>
+            </div>
+            <div class="meta" style="padding:11px 13px 12px"><b style="font-size:12.5px">14:32:08</b></div>
+          </div>
+        </div>
+        <div class="note">高对比棋盘在暗色下像坏掉的纹理，抢走缩略图本身。Nightshift 不该出现 Photoshop 背板。</div>
+      </article>
+    </div>
+  </section>
+</div>
+<script>
+const tD=document.getElementById('tDark'), tL=document.getElementById('tLight')
+tD.onclick=()=>{document.body.classList.remove('day');tD.classList.add('on');tL.classList.remove('on')}
+tL.onclick=()=>{document.body.classList.add('day');tL.classList.add('on');tD.classList.remove('on')}
+</script>
+</body>
+</html>

@@ -113,6 +113,10 @@ const {
   resolveAiAssignment,
   resolveToolbarAiProvider
 } = require('./main/services/ai-providers')
+const {
+  migrateAppearanceSettings,
+  resolveMainColor
+} = require('./main/services/appearance-migration')
 
 const DEFAULT_AI_PROVIDERS = createDefaultProviders()
 
@@ -243,7 +247,14 @@ function initializeStore() {
     store,
     safeStorage,
     defaults: DEFAULT_SETTINGS,
-    migrateSettings: migrateAiSettings,
+    migrateSettings: (settings, context) => {
+      const ai = migrateAiSettings(settings, context)
+      const appearance = migrateAppearanceSettings(ai.settings)
+      return {
+        settings: appearance.settings,
+        changed: ai.changed || appearance.changed
+      }
+    },
     normalizeSettings,
     onCredentialError: (error) => console.warn('Unable to access encrypted credentials:', error.message || String(error))
   })
@@ -359,6 +370,7 @@ function normalizeSettings(settings) {
   if (!normalized.screenshot.historyDirectory) normalized.screenshot.historyDirectory = defaultHistoryDirectory
   normalized.system.updateChannel = normalized.system.updateChannel === 'beta' ? 'beta' : 'stable'
   normalized.system.gameMode = normalized.system.gameMode === true
+  normalized.mainColor = resolveMainColor(normalized.mainColor)
   if (normalized.fixedContent && Object.hasOwn(normalized.fixedContent, 'autoSaveDirectory')) delete normalized.fixedContent.autoSaveDirectory
   return normalized
 }

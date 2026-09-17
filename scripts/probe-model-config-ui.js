@@ -27,7 +27,7 @@ const providers = [
 
 let settings = {
   theme: 'system',
-  mainColor: '#1677ff',
+  mainColor: '#e5a44c',
   borderRadius: 8,
   compact: false,
   skinPath: '',

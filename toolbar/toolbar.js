@@ -24,6 +24,10 @@ window.toolbarAPI.onSelection(({ actions, appearance }) => {
   applyAppearance(appearance)
   const toolbar = document.getElementById('toolbar')
   toolbar.replaceChildren()
+  const led = document.createElement('i')
+  led.className = 'led'
+  led.setAttribute('aria-hidden', 'true')
+  toolbar.append(led)
   actions.forEach((action, index) => {
     if (!action || !action.id || !action.label) return
     if (index) {
@@ -33,7 +37,10 @@ window.toolbarAPI.onSelection(({ actions, appearance }) => {
     }
     const button = document.createElement('button')
     const builtinClass = ['copy', 'search', 'translate', 'explain', 'open'].includes(action.id) ? action.id : 'custom'
-    button.className = `btn btn-${builtinClass}`
+    // Solid accent reserved for the primary local action (copy). AI and other
+    // actions stay on the surface ladder so the strip keeps one accent.
+    const primaryClass = action.id === 'copy' ? ' pri' : ''
+    button.className = `btn btn-${builtinClass}${primaryClass}`
     button.title = action.label
     button.textContent = `${action.icon || '✦'} ${action.label}`
     button.onclick = () => window.toolbarAPI.action(action.id)

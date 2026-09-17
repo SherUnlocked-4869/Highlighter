@@ -1,9 +1,9 @@
 /*
- * Recognition result window (OCR text / table / QR).
+ * Recognition result window (OCR table / QR).
  *
- * Palette comes from shared/tokens.css. This window previously hard-coded a
- * dark palette in :root, so it ignored the user's theme entirely and rendered
- * dark even in light mode.
+ * Palette comes from shared/tokens.css. Layout and component language follow
+ * design-demos/c-nightshift.html (Direction C · Nightshift): surface ladder,
+ * mono summary line, status badge, and a single amber primary action.
  */
 
 * { box-sizing: border-box; }
@@ -13,7 +13,7 @@ html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 body {
   display: grid;
   grid-template-rows: auto 1fr auto;
-  color: var(--text);
+  color: var(--ink);
   background: var(--bg);
   font-family: var(--font-ui);
 }
@@ -22,26 +22,62 @@ button, select, textarea { font: inherit; }
 
 .hidden { display: none !important; }
 
-/* ---------- topbar ---------- */
+/* ---------- topbar: design .recog .hd ---------- */
 
 .topbar {
   min-height: 64px;
   display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 18px;
+  align-items: flex-end;
+  gap: 14px;
+  padding: 18px 22px 14px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
   -webkit-app-region: drag;
 }
 
-.topbar > div { min-width: 0; flex: 1; }
-.topbar h1 { margin: 0; font-size: 16px; line-height: 1.5; font-weight: 600; letter-spacing: -.01em; }
-.topbar p { min-height: 18px; margin: 2px 0 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.topbar-copy { min-width: 0; flex: 1; }
+
+.topbar h1 {
+  margin: 0 0 7px;
+  font-family: var(--font-display);
+  font-size: 17px;
+  line-height: 1.2;
+  font-weight: 500;
+  letter-spacing: -.01em;
+}
+
+.topbar p {
+  min-height: 14px;
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  letter-spacing: .06em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  flex: 0 0 auto;
+  margin-bottom: 2px;
+  padding: 6px 10px;
+  border-radius: var(--radius-pill);
+  color: var(--ok);
+  background: var(--ok-soft);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: .08em;
+  -webkit-app-region: no-drag;
+}
 
 .icon-button {
   width: 34px;
   height: 34px;
+  margin-bottom: -2px;
   border: 0;
   border-radius: var(--radius-sm);
   color: var(--muted);
@@ -52,29 +88,82 @@ button, select, textarea { font: inherit; }
   transition: background .13s, color .13s;
 }
 
-.icon-button:hover { color: var(--text); background: var(--surface-3); }
+.icon-button:hover { color: var(--ink); background: var(--surface-3); }
 
-/* ---------- body ---------- */
+/* ---------- body: design .recog .txt on surface-2 ---------- */
 
 main { min-height: 0; position: relative; overflow: hidden; }
 
-.loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); }
-.loading span { width: 20px; height: 20px; border: 2px solid var(--line-2); border-top-color: var(--primary); border-radius: 50%; animation: spin .75s linear infinite; }
-.loading b { font-size: 13px; font-weight: 500; }
+.loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+}
+
+.loading span {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--line-2);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin .75s linear infinite;
+}
+
+.loading b { font-size: 12px; font-weight: 500; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .error { height: 100%; display: grid; place-content: center; justify-items: center; padding: 32px; text-align: center; }
 .error strong { font-size: 16px; }
 .error p { max-width: 520px; margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
 
-/* Table output: sticky header on a surface step, zebra via the ladder. */
-.table-view { height: 100%; overflow: auto; padding: 16px 18px; }
-.table-view table { width: 100%; border-collapse: collapse; color: var(--text); font-size: 13px; user-select: text; }
-.table-view th, .table-view td { min-width: 96px; padding: 10px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; white-space: pre-wrap; }
-.table-view th { position: sticky; top: 0; z-index: 1; background: var(--surface-3); font-weight: 600; }
-.table-view tr:nth-child(even) td { background: var(--surface-2); }
+.table-view {
+  height: 100%;
+  overflow: auto;
+  padding: 0;
+  background: var(--surface-2);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
 
-.qr-view { height: 100%; padding: 18px; }
+.table-view table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--ink);
+  font-size: 13px;
+  user-select: text;
+}
+
+.table-view th, .table-view td {
+  min-width: 96px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+}
+
+.table-view th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface-3);
+  font-weight: 500;
+}
+
+.table-view tr:nth-child(even) td { background: var(--surface); }
+
+.qr-view {
+  height: 100%;
+  padding: 18px 22px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
 .qr-view textarea {
   width: 100%;
   height: 100%;
@@ -83,34 +172,51 @@ main { min-height: 0; position: relative; overflow: hidden; }
   border: 1px solid var(--line-2);
   border-radius: var(--radius-sm);
   outline: none;
-  color: var(--text);
-  background: var(--surface-2);
+  color: var(--ink);
+  background: var(--surface);
   font: 14px/1.7 var(--font-mono);
   user-select: text;
 }
+
 .qr-view textarea:focus { border-color: var(--primary); box-shadow: var(--focus-ring); }
 
-/* ---------- actions ---------- */
+/* ---------- actions: design .recog .ft ---------- */
 
-.actions { min-height: 58px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 18px; border-top: 1px solid var(--line); background: var(--surface); }
+.actions {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 13px 22px;
+  background: var(--surface);
+}
+
 .actions button, .actions select {
   height: 36px;
   padding: 0 14px;
   border: 1px solid var(--line-2);
   border-radius: var(--radius-sm);
-  color: var(--text);
+  color: var(--ink);
   background: var(--surface-2);
   cursor: pointer;
   transition: background .14s, border-color .14s, color .14s;
 }
+
 .actions select { margin-right: auto; min-width: 190px; outline: none; }
 .actions button:hover { background: var(--surface-3); border-color: var(--muted); }
-.actions button.primary { border-color: var(--primary); background: var(--primary); color: var(--primary-ink); font-weight: 600; }
+.actions button.primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-ink);
+  font-weight: 500;
+}
 .actions button.primary:hover { filter: brightness(1.07); }
 
 @media (max-width: 520px) {
   .topbar { padding-inline: 12px; }
-  .table-view, .qr-view { padding: 12px; }
+  .table-view, .qr-view { padding-inline: 12px; }
   .actions { padding-inline: 12px; }
   .actions select { min-width: 0; max-width: 52%; }
+  .badge { display: none; }
 }
