@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · Teenage Engineering 定制版</title>
+<!--
+假设：Highlighter 是桌面精密工具，不是 SaaS。
+锚点：Teenage Engineering — 工业面板、等宽标签、功能色信号、分区网格。
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#d9d7d1;
+  --panel:#eceae4;
+  --face:#f7f5f0;
+  --ink:#111210;
+  --muted:#5f5e58;
+  --faint:#8b8981;
+  --line:#b9b6ad;
+  --line2:#cfcbc1;
+  --sig:#ff4d00;
+  --sig-soft:rgba(255,77,0,.12);
+  --ok:#1f8f4f;
+  --warn:#c9a000;
+  --bad:#c22b2b;
+  --r:2px;
+  --font:"IBM Plex Sans","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:"IBM Plex Mono","Cascadia Mono",Consolas,monospace;
+  --shadow:0 1px 0 rgba(0,0,0,.08), 0 10px 24px rgba(0,0,0,.08);
+}
+*{box-sizing:border-box}
+body{margin:0;background:
+  linear-gradient(90deg, rgba(0,0,0,.035) 1px, transparent 1px) 0 0/24px 24px,
+  linear-gradient(rgba(0,0,0,.035) 1px, transparent 1px) 0 0/24px 24px,
+  var(--bg);
+  color:var(--ink);font:13px/1.45 var(--font);padding:32px 36px 52px}
+.mast{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:24px;max-width:1540px}
+.mast h1{margin:0;font:700 20px/1.1 var(--mono);letter-spacing:.08em}
+.mast h1 i{font-style:normal;color:var(--sig)}
+.mast p{margin:6px 0 0;color:var(--muted);font:12px var(--mono)}
+.sw{display:flex;gap:8px;align-items:center}
+.sw button{font:600 11px var(--mono);letter-spacing:.08em;border:1px solid var(--ink);background:transparent;color:var(--ink);padding:7px 12px;cursor:pointer}
+.sw button.on{background:var(--ink);color:var(--face)}
+.stage{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.9fr);gap:18px;align-items:start;max-width:1540px}
+.stack{display:flex;flex-direction:column;gap:16px}
+.panel{background:var(--panel);border:1px solid var(--ink);box-shadow:var(--shadow);display:flex;flex-direction:column}
+.panel-head{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--ink);background:var(--face)}
+.panel-head .no{font:700 10px var(--mono);letter-spacing:.12em;background:var(--ink);color:var(--face);padding:3px 6px}
+.panel-head .ttl{flex:1;font:600 12px var(--mono);letter-spacing:.06em}
+.panel-head .x{border:1px solid var(--line);background:transparent;cursor:pointer;font:12px var(--mono);padding:2px 6px;color:var(--muted)}
+.panel-head .x:hover{border-color:var(--ink);color:var(--ink)}
+.shell{display:flex;flex:1;min-height:0}
+.rail{width:196px;flex:0 0 196px;border-right:1px solid var(--ink);background:var(--face);padding:12px 0;display:flex;flex-direction:column}
+.brand{padding:8px 12px 16px;font:700 14px var(--mono);letter-spacing:.1em}
+.brand i{font-style:normal;color:var(--sig)}
+.sec{font:600 9px var(--mono);letter-spacing:.16em;color:var(--faint);padding:10px 12px 4px}
+.nav{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;text-align:left;color:var(--muted);padding:8px 12px;cursor:pointer;font:500 12px var(--font)}
+.nav:hover{color:var(--ink);background:rgba(0,0,0,.04)}
+.nav.on{color:var(--face);background:var(--ink)}
+.nav .ic{width:13px;height:13px;background:currentColor;-webkit-mask:var(--m) center/contain no-repeat;mask:var(--m) center/contain no-repeat}
+.view{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--panel)}
+.vhead{padding:16px 16px 10px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.vhead h2{margin:0;font:700 16px var(--font)}
+.vhead p{margin:3px 0 0;color:var(--muted);font-size:12px}
+.led{display:inline-flex;align-items:center;gap:6px;font:600 10px var(--mono);letter-spacing:.08em;color:var(--muted)}
+.led i{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 2px rgba(31,143,79,.2)}
+.tabs{display:flex;border-bottom:1px solid var(--line);background:var(--face)}
+.tab{flex:1;border:0;border-right:1px solid var(--line);background:transparent;padding:10px 6px;cursor:pointer;font:600 11px var(--mono);letter-spacing:.08em;color:var(--muted)}
+.tab:last-child{border-right:0}
+.tab:hover{color:var(--ink);background:rgba(0,0,0,.03)}
+.tab.on{background:var(--ink);color:var(--face)}
+.rows{flex:1;overflow:auto}
+.row{display:grid;grid-template-columns:42px minmax(0,1fr) auto;gap:0;border-bottom:1px solid var(--line);align-items:stretch}
+.row:last-child{border-bottom:0}
+.row:hover{background:var(--face)}
+.cell-i{display:grid;place-items:center;border-right:1px solid var(--line)}
+.cell-i span{width:15px;height:15px;background:var(--ink);opacity:.85;-webkit-mask:var(--m) center/contain no-repeat;mask:var(--m) center/contain no-repeat}
+.cell-t{padding:10px 12px;min-width:0}
+.cell-t b{display:block;font-weight:600;font-size:13px}
+.cell-t small{display:block;color:var(--muted);font-size:11.5px;margin-top:2px}
+.cell-k{display:grid;place-items:center;padding:0 12px;border-left:1px solid var(--line);min-width:110px}
+.key{font:700 11px var(--mono);letter-spacing:.04em;border:1px solid var(--ink);background:var(--face);padding:5px 8px;box-shadow:2px 2px 0 var(--ink)}
+.key.ghost{border-color:var(--line);box-shadow:none;color:var(--faint);font-weight:500}
+.key.bad{border-color:var(--bad);color:var(--bad);box-shadow:2px 2px 0 var(--bad);background:#fff}
+
+.pad{padding:12px;display:flex;flex-direction:column;gap:10px;flex:1;min-height:0}
+.field{display:flex;align-items:center;gap:8px;height:38px;border:1px solid var(--ink);background:var(--face);padding:0 10px;box-shadow:inset 0 0 0 0 var(--ink)}
+.field:focus-within{box-shadow:inset 0 0 0 1px var(--sig)}
+.field span{width:13px;height:13px;background:var(--muted);-webkit-mask:url('./assets/icons/search.svg') center/contain no-repeat;mask:url('./assets/icons/search.svg') center/contain no-repeat}
+.field input{flex:1;border:0;outline:0;background:transparent;font:13px var(--font);color:var(--ink)}
+.field input::placeholder{color:var(--faint)}
+.segs{display:flex;border:1px solid var(--ink)}
+.segs button{flex:1;border:0;border-right:1px solid var(--ink);background:var(--face);padding:7px 4px;font:600 10px var(--mono);letter-spacing:.06em;cursor:pointer;color:var(--muted)}
+.segs button:last-child{border-right:0}
+.segs button.on{background:var(--sig);color:#fff}
+.files{flex:1;overflow:auto;border:1px solid var(--line);background:var(--face)}
+.fr{display:grid;grid-template-columns:52px minmax(0,1fr) auto;border-bottom:1px solid var(--line);cursor:pointer}
+.fr:last-child{border-bottom:0}
+.fr:hover{background:var(--panel)}
+.fr.sel{background:var(--sig-soft)}
+.fr .ext{display:grid;place-items:center;font:700 10px var(--mono);border-right:1px solid var(--line);letter-spacing:.04em}
+.fr .meta{padding:8px 10px;min-width:0}
+.fr b{display:block;font-size:12.5px}
+.fr small{color:var(--muted);font-size:11px}
+.fr .sz{font:11px var(--mono);color:var(--faint);padding:0 10px;display:grid;place-items:center;white-space:nowrap}
+.footbar{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--ink);padding-top:8px;font:11px var(--mono);color:var(--muted)}
+
+.rpad{padding:14px;display:flex;flex-direction:column;gap:10px;flex:1}
+.rpad h3{margin:0;font-size:14px}
+.sum{font:11px var(--mono);color:var(--muted);letter-spacing:.04em}
+.ocr{flex:1;border:1px solid var(--ink);background:var(--face);padding:12px;font-size:12.5px;line-height:1.7;overflow:auto}
+.ocr mark{background:var(--sig);color:#fff;padding:0 3px}
+.acts{display:flex;justify-content:flex-end;gap:8px}
+.btn{border:1px solid var(--ink);background:var(--face);color:var(--ink);font:600 11px var(--mono);letter-spacing:.06em;padding:8px 12px;cursor:pointer;box-shadow:2px 2px 0 var(--ink)}
+.btn:active{transform:translate(1px,1px);box-shadow:1px 1px 0 var(--ink)}
+.btn.pri{background:var(--sig);border-color:var(--ink);color:#fff}
+
+.ah{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--ink);font:600 12px var(--mono);letter-spacing:.04em;background:var(--face)}
+.tag{background:var(--sig);color:#fff;font:700 10px var(--mono);letter-spacing:.08em;padding:3px 6px}
+.ah .pin{margin-left:auto;border:1px solid var(--line);background:transparent;cursor:pointer;font:11px var(--mono);padding:3px 7px}
+.ab{padding:12px;display:flex;flex-direction:column;gap:10px}
+.src{border-left:3px solid var(--ink);padding:6px 10px;color:var(--muted);font-size:12px}
+.out{font-size:13px;line-height:1.65}
+.load{display:flex;align-items:center;gap:8px;margin-top:6px;font:11px var(--mono);color:var(--muted)}
+.spin{width:10px;height:10px;border:2px solid var(--line);border-top-color:var(--sig);border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.note{max-width:1540px;margin-top:18px;font:11px var(--mono);color:var(--muted);letter-spacing:.04em}
+
+body.dark{--bg:#1c1c19;--panel:#232320;--face:#2a2a26;--ink:#f2f0ea;--muted:#a09c92;--faint:#6f6c64;--line:#3d3c36;--line2:#4a4942;--sig:#ff5a1f;--shadow:0 10px 24px rgba(0,0,0,.35)}
+body.dark .key,body.dark .btn{background:var(--face)}
+body.dark .tab.on,body.dark .nav.on{background:var(--ink);color:var(--panel)}
+</style>
+</head>
+<body>
+<div class="mast">
+  <div>
+    <h1>HIGHLIGHTER <i>·</i> INSTRUMENT UI</h1>
+    <p>TEENAGE ENGINEERING PHILOSOPHY / PANEL LAYOUT / SIGNAL ORANGE</p>
+  </div>
+  <div class="sw">
+    <button id="L" class="on">LIGHT</button>
+    <button id="D">DARK</button>
+  </div>
+</div>
+
+<div class="stage">
+  <div class="stack">
+    <section class="panel" style="min-height:700px">
+      <div class="panel-head"><span class="no">01</span><span class="ttl">MAIN / CONFIG</span><button class="x">×</button></div>
+      <div class="shell">
+        <aside class="rail">
+          <div class="brand">HIGH<i>LIGHTER</i></div>
+          <div class="sec">CAPTURE</div>
+          <button class="nav on" data-r="home"><span class="ic" style="--m:url('./assets/icons/lightning.svg')"></span>快捷功能</button>
+          <button class="nav"><span class="ic" style="--m:url('./assets/icons/history.svg')"></span>截图历史</button>
+          <button class="nav"><span class="ic" style="--m:url('./assets/icons/search.svg')"></span>本地搜索</button>
+          <div class="sec">AI</div>
+          <button class="nav"><span class="ic" style="--m:url('./assets/icons/translate.svg')"></span>翻译</button>
+          <button class="nav"><span class="ic" style="--m:url('./assets/icons/robot.svg')"></span>AI 对话</button>
+          <button class="nav"><span class="ic" style="--m:url('./assets/icons/model.svg')"></span>模型</button>
+          <div class="sec">SYS</div>
+          <button class="nav"><span class="ic" style="--m:url('./assets/icons/palette.svg')"></span>外观配色</button>
+          <button class="nav" data-r="hot"><span class="ic" style="--m:url('./assets/icons/keyboard.svg')"></span>热键设置</button>
+          <button class="nav"><span class="ic" style="--m:url('./assets/icons/settings.svg')"></span>系统设置</button>
+        </aside>
+        <div class="view">
+          <div class="vhead">
+            <div><h2 id="t">快捷功能</h2><p id="d">统一管理截图、AI、翻译、录屏和桌面工具。</p></div>
+            <span class="led"><i></i>READY</span>
+          </div>
+          <div class="tabs" id="tabs">
+            <button class="tab on" data-t="shot">SHOT</button>
+            <button class="tab" data-t="ai">AI</button>
+            <button class="tab" data-t="tr">TRANSLATE</button>
+            <button class="tab" data-t="video">REC</button>
+            <button class="tab" data-t="other">OTHER</button>
+          </div>
+          <div class="rows" id="rows"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="stack">
+    <section class="panel" style="min-height:450px">
+      <div class="panel-head"><span class="no">02</span><span class="ttl">LOCAL SEARCH</span><button class="x">×</button></div>
+      <div class="pad">
+        <div class="field"><span></span><input id="q" placeholder="搜索本地文件（支持 Everything 语法，如 ext:pdf 报告）"></div>
+        <div class="segs" id="cats"><button class="on">ALL</button><button>DOC</button><button>IMG</button><button>VID</button><button>CODE</button></div>
+        <div class="files" id="files"></div>
+        <div class="footbar"><span id="st">N=5</span><span>PATH MATCH · SORT=M</span></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><span class="no">03</span><span class="ttl">OCR RESULT</span><button class="x">×</button></div>
+      <div class="rpad">
+        <div>
+          <h3>识别结果</h3>
+          <div class="sum">LINES=8 · LANG=ZH · CONF=HIGH</div>
+        </div>
+        <div class="ocr">
+          Highlighter 产品评审纪要<br>
+          1. 截图后默认进入标注，保留撤销栈<br>
+          2. <mark>OCR 与表格识别保持本地执行</mark><br>
+          3. 划词翻译思考强度默认「关」<br>
+          4. 供应商：OpenAI 兼容 / openai-responses<br>
+          5. 长截图拼接跟随滚动主轴
+        </div>
+        <div class="acts"><button class="btn">MD</button><button class="btn pri">COPY</button></div>
+      </div>
+    </section>
+
+    <section class="panel" style="max-width:380px">
+      <div class="panel-head"><span class="no">04</span><span class="ttl">SELECTION ASSIST</span></div>
+      <div class="ah">TRANSLATING <span class="tag">TR</span><button class="pin">PIN</button></div>
+      <div class="ab">
+        <div class="src">Ship a calmer capture tool for Windows.</div>
+        <div class="out">为 Windows 交付更安静的截图工具。
+          <div class="load"><span class="spin"></span>DeepSeek · STREAM</div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+<p class="note">SIGNATURE: 实体键帽快捷键 + 信号橙 LED 语言 + 面板分区编号。工具像仪器，而不是仪表盘。</p>
+
+<script>
+const data={
+ shot:[
+  ['screenshot.svg','截图','自由框选、智能标注与导出','ALT+A'],
+  ['timer.svg','延迟截图','倒计时后开始区域截图',null],
+  ['pin.svg','固定到屏幕','截图完成后直接贴到桌面','ALT+P'],
+  ['ocr.svg','文本识别','截图后提取中文、英文等文字','ALT+O'],
+  ['table.svg','表格识别','恢复截图中的行列并复制到 Excel',null],
+  ['qr.svg','二维码识别','扫描二维码内容或打开其中的链接',null],
+  ['translate.svg','文本识别翻译','OCR 后调用翻译服务',null],
+  ['copy.svg','复制到剪贴板','完成选区后立即复制',null],
+  ['long-capture.svg','长截图','框选滚动区域并自动拼接',null],
+  ['fullscreen.svg','截取全屏','捕获鼠标所在显示器',null],
+  ['focus.svg','当前焦点窗口','捕获当前活动窗口',null]
+ ],
+ ai:[
+  ['robot.svg','打开 AI 对话','使用配置的 AI 模型进行多轮对话',null],
+  ['text-style-one.svg','对话框填入选中文本','保留现有划词助手工作流',null],
+  ['robot.svg','解释剪贴板文本','只读剪贴板并送入解释窗口',null]
+ ],
+ tr:[
+  ['translate.svg','打开翻译工具','支持自动检测与中英互译',null],
+  ['translation.svg','翻译选中的文本','划词后快速翻译',null]
+ ],
+ video:[['record.svg','视频录制','录制屏幕并导出 MP4 视频',null]],
+ other:[
+  ['pin.svg','固定本地图片','选择图片并固定到桌面',null],
+  ['draw.svg','全屏画布','在白色全屏画布中绘制',null],
+  ['preview.svg','显示/隐藏所有贴图','批量控制桌面贴图',null],
+  ['folder-open.svg','打开图片目录','打开默认截图保存位置',null],
+  ['history.svg','打开截图历史','回顾、复制和重新编辑截图',null]
+ ]
+}
+const hot=[
+ ['screenshot.svg','截图','ALT+A','set'],
+ ['ocr.svg','文本识别','ALT+O','set'],
+ ['search.svg','本地搜索','ALT+S','set'],
+ ['robot.svg','打开 AI 对话','UNSET','unset'],
+ ['record.svg','视频录制','CONFLICT','bad'],
+ ['translate.svg','打开翻译工具','UNSET','unset']
+]
+const files=[
+ ['MD','Highlighter-架构说明.md','D:\\Projects\\Highlighter\\docs','42K'],
+ ['JS','capture-domain.test.js','D:\\Projects\\Highlighter\\test','18K'],
+ ['DOC','产品评审纪要.docx','D:\\Docs\\工作','126K'],
+ ['PNG','screenshot-2026-03-12.png','D:\\Pictures\\Screenshots','1.4M'],
+ ['MD','release-notes-0.9.md','D:\\Projects\\Highlighter','6K']
+]
+let tab='shot',route='home'
+function key(k){
+  if(!k||k==='UNSET') return '<span class="key ghost">SET KEY</span>'
+  return `<span class="key">${k}</span>`
+}
+function render(){
+  const rows=document.getElementById('rows'),t=document.getElementById('t'),d=document.getElementById('d'),tabs=document.getElementById('tabs')
+  if(route==='hot'){
+    t.textContent='热键设置';d.textContent='录入组合键；红色表示冲突或不可用。';tabs.style.display='none'
+    rows.innerHTML=hot.map(([ic,n,k,s])=>`<div class="row"><div class="cell-i"><span style="--m:url('./assets/icons/${ic}')"></span></div><div class="cell-t"><b>${n}</b><small>${s==='bad'?'快捷键冲突':'全局快捷键'}</small></div><div class="cell-k"><span class="key ${s==='bad'?'bad':s==='unset'?'ghost':''}">${k}</span></div></div>`).join('')
+  }else{
+    t.textContent='快捷功能';d.textContent='统一管理截图、AI、翻译、录屏和桌面工具。';tabs.style.display='flex'
+    rows.innerHTML=data[tab].map(([ic,n,de,k])=>`<div class="row"><div class="cell-i"><span style="--m:url('./assets/icons/${ic}')"></span></div><div class="cell-t"><b>${n}</b><small>${de}</small></div><div class="cell-k">${key(k)}</div></div>`).join('')
+  }
+}
+function renderFiles(q=''){
+  const box=document.getElementById('files')
+  const r=files.filter(f=>!q||f[1].toLowerCase().includes(q.toLowerCase())||f[2].toLowerCase().includes(q.toLowerCase()))
+  box.innerHTML=r.map((f,i)=>`<div class="fr${i===1?' sel':''}"><div class="ext">${f[0]}</div><div class="meta"><b>${f[1]}</b><small>${f[2]}</small></div><div class="sz">${f[3]}</div></div>`).join('')
+  document.getElementById('st').textContent=`N=${r.length}`
+}
+document.getElementById('tabs').onclick=e=>{const b=e.target.closest('.tab');if(!b)return;tab=b.dataset.t;document.querySelectorAll('#tabs .tab').forEach(x=>x.classList.toggle('on',x===b));render()}
+document.querySelectorAll('.rail .nav').forEach(b=>b.onclick=()=>{route=b.dataset.r||'home';document.querySelectorAll('.rail .nav').forEach(x=>x.classList.toggle('on',x===b));render()})
+document.getElementById('cats').onclick=e=>{const b=e.target.closest('button');if(!b)return;document.querySelectorAll('#cats button').forEach(x=>x.classList.toggle('on',x===b))}
+document.getElementById('q').oninput=e=>renderFiles(e.target.value)
+document.getElementById('L').onclick=()=>{document.body.classList.remove('dark');L.classList.add('on');D.classList.remove('on')}
+document.getElementById('D').onclick=()=>{document.body.classList.add('dark');D.classList.add('on');L.classList.remove('on')}
+render();renderFiles()
+</script>
+</body>
+</html>

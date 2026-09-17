@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · 白盒画廊 · 轮盘版</title>
+<!--
+Assumptions
+1. 工具型 UI 语言重设，不是营销页；4 个真实窗口并置成设计板
+2. 轮盘 #20 Kenya Hara White Gallery：近全白 + 发丝线 + 大留白，UI 隐退
+3. 一点朱印作品牌「印」，其余全靠内容色与负空间
+-->
+<style>
+:root{
+  --bg:#fafafa;
+  --paper:#ffffff;
+  --ink:#0a0a0a;
+  --muted:#6b6b6b;
+  --faint:#9a9a9a;
+  --line:#efefef;
+  --line-strong:#e2e2e2;
+  --seal:#b33a2b;
+  --seal-soft:rgba(179,58,43,.08);
+  --ok:#2f6b4f;
+  --warn:#8a6a1f;
+  --danger:#a33;
+  --radius:2px;
+  --shadow:0 1px 0 rgba(0,0,0,.02), 0 18px 48px rgba(0,0,0,.04);
+  --font:"PingFang SC","Hiragino Sans GB","Source Han Sans SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font-family:var(--font);font-size:13px;line-height:1.55;-webkit-font-smoothing:antialiased}
+body{padding:40px 48px 64px}
+.board-head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:36px;max-width:1500px}
+.brand{display:flex;align-items:baseline;gap:14px}
+.brand h1{margin:0;font-size:22px;font-weight:500;letter-spacing:.04em}
+.brand h1 em{font-style:normal;color:var(--seal)}
+.brand p{margin:0;color:var(--muted);font-size:12px;letter-spacing:.08em}
+.mode{display:flex;gap:8px;align-items:center}
+.mode button{border:1px solid var(--line-strong);background:transparent;color:var(--muted);padding:6px 12px;border-radius:var(--radius);cursor:pointer;font:inherit;font-size:11px;letter-spacing:.06em}
+.mode button.on{color:var(--ink);border-color:var(--ink);background:var(--paper)}
+.stage{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(280px,.85fr);gap:28px;align-items:start;max-width:1500px}
+.col{display:flex;flex-direction:column;gap:28px}
+.win{background:var(--paper);border:1px solid var(--line-strong);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.win-bar{height:34px;display:flex;align-items:center;gap:10px;padding:0 12px;border-bottom:1px solid var(--line);background:#fcfcfc;-webkit-app-region:drag}
+.win-bar .title{flex:1;font-size:11px;color:var(--muted);letter-spacing:.08em}
+.win-bar .dots{display:flex;gap:5px}
+.win-bar .dots i{width:8px;height:8px;border-radius:50%;background:var(--line-strong);display:block}
+.win-bar .x{border:0;background:transparent;color:var(--faint);cursor:pointer;font-size:14px;line-height:1;padding:4px}
+.win-bar .x:hover{color:var(--ink)}
+.win-main{display:flex;min-height:0;flex:1}
+
+/* sidebar */
+.side{width:200px;flex:0 0 200px;border-right:1px solid var(--line);padding:18px 12px 14px;display:flex;flex-direction:column;gap:4px;background:#fcfcfc}
+.side .logo{padding:8px 10px 18px;font-size:15px;letter-spacing:.12em;font-weight:500}
+.side .logo span{color:var(--seal)}
+.side .grp{padding:14px 10px 6px;color:var(--faint);font-size:10px;letter-spacing:.18em}
+.nav{display:flex;align-items:center;gap:10px;width:100%;border:0;background:transparent;text-align:left;color:var(--muted);padding:8px 10px;border-radius:var(--radius);cursor:pointer;font:inherit;font-size:12.5px}
+.nav:hover{color:var(--ink);background:rgba(0,0,0,.02)}
+.nav.on{color:var(--ink);background:rgba(0,0,0,.04)}
+.nav .ic{width:14px;height:14px;background:currentColor;opacity:.72;-webkit-mask:var(--i) center/contain no-repeat;mask:var(--i) center/contain no-repeat;flex:0 0 auto}
+.nav.about{margin-top:auto;border-top:1px solid var(--line);border-radius:0;padding-top:12px}
+
+.content{flex:1;min-width:0;display:flex;flex-direction:column}
+.page-head{padding:28px 32px 18px;border-bottom:1px solid var(--line)}
+.page-head h2{margin:0 0 6px;font-size:22px;font-weight:500;letter-spacing:.02em}
+.page-head p{margin:0;color:var(--muted);font-size:12.5px}
+.tabs{display:flex;gap:18px;padding:0 32px;border-bottom:1px solid var(--line)}
+.tab{border:0;background:transparent;padding:12px 0;color:var(--faint);cursor:pointer;font:inherit;font-size:12.5px;border-bottom:1px solid transparent;margin-bottom:-1px}
+.tab:hover{color:var(--ink)}
+.tab.on{color:var(--ink);border-bottom-color:var(--ink)}
+.list{flex:1;overflow:auto;padding:8px 12px 20px}
+.row{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.row:hover{background:rgba(0,0,0,.015)}
+.row .ic{width:16px;height:16px;background:var(--ink);opacity:.78;-webkit-mask:var(--i) center/contain no-repeat;mask:var(--i) center/contain no-repeat}
+.row b{display:block;font-weight:500;font-size:13px}
+.row small{display:block;color:var(--muted);font-size:11.5px;margin-top:2px}
+.chip{font-family:var(--mono);font-size:11px;padding:4px 8px;border:1px solid var(--line-strong);border-radius:var(--radius);color:var(--ink);background:#fff;white-space:nowrap}
+.chip.ghost{color:var(--faint);border-style:dashed}
+.chip.bad{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,var(--line));background:var(--seal-soft)}
+.hot-row{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:12px;align-items:center;padding:11px 16px;border-bottom:1px solid var(--line)}
+.switch{width:34px;height:20px;border-radius:999px;background:var(--line-strong);position:relative;cursor:pointer;border:0;padding:0}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.12);transition:.15s}
+.switch.on{background:var(--ink)}
+.switch.on::after{left:16px}
+
+/* search window */
+.search-body{padding:16px 18px 12px;display:flex;flex-direction:column;gap:12px;flex:1;min-height:0}
+.search-box{display:flex;align-items:center;gap:10px;height:40px;padding:0 12px;border:1px solid var(--line-strong);background:#fff}
+.search-box:focus-within{border-color:var(--ink)}
+.search-box .ic{width:14px;height:14px;background:var(--faint);-webkit-mask:url('./assets/icons/search.svg') center/contain no-repeat;mask:url('./assets/icons/search.svg') center/contain no-repeat}
+.search-box input{border:0;outline:0;flex:1;font:inherit;font-size:13px;background:transparent;color:var(--ink)}
+.search-box input::placeholder{color:var(--faint)}
+.cats{display:flex;gap:14px;flex-wrap:wrap}
+.cats button{border:0;background:transparent;color:var(--faint);font:inherit;font-size:11.5px;cursor:pointer;padding:2px 0;border-bottom:1px solid transparent}
+.cats button.on{color:var(--ink);border-bottom-color:var(--ink)}
+.results{flex:1;overflow:auto;min-height:0}
+.file{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px 8px;border-bottom:1px solid var(--line);cursor:pointer}
+.file:hover{background:rgba(0,0,0,.015)}
+.file.sel{background:rgba(0,0,0,.035)}
+.file .dot{width:6px;height:6px;border-radius:50%;background:var(--line-strong);margin-left:5px}
+.file b{display:block;font-weight:500;font-size:12.5px}
+.file small{color:var(--faint);font-size:11px}
+.file .meta{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-align:right}
+.status{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:8px;border-top:1px solid var(--line);color:var(--muted);font-size:11px}
+
+/* recognition */
+.recog{padding:22px 24px;display:flex;flex-direction:column;gap:14px;flex:1}
+.recog h3{margin:0;font-size:16px;font-weight:500}
+.recog .sum{color:var(--muted);font-size:12px}
+.ocr{flex:1;border:1px solid var(--line);padding:16px;overflow:auto;font-size:12.5px;line-height:1.75;color:var(--ink);background:#fff}
+.ocr mark{background:transparent;color:var(--seal);font-weight:500}
+.recog-actions{display:flex;justify-content:flex-end;gap:8px}
+.btn{border:1px solid var(--line-strong);background:#fff;color:var(--ink);padding:7px 14px;font:inherit;font-size:12px;cursor:pointer;border-radius:var(--radius)}
+.btn:hover{border-color:var(--ink)}
+.btn.pri{background:var(--ink);border-color:var(--ink);color:#fff}
+.btn.pri:hover{opacity:.88}
+
+/* action overlay */
+.action-head{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line);font-size:12px}
+.action-head .badge{font-size:10px;letter-spacing:.1em;color:var(--muted);border:1px solid var(--line-strong);padding:2px 6px}
+.action-head .pin{margin-left:auto;border:0;background:transparent;cursor:pointer;color:var(--faint);font-size:12px}
+.action-body{padding:14px;display:flex;flex-direction:column;gap:12px;flex:1}
+.src{font-size:11.5px;color:var(--muted);border-left:1px solid var(--line-strong);padding-left:10px}
+.out{font-size:13px;line-height:1.7}
+.out .load{color:var(--faint);font-size:11.5px;margin-top:8px;display:flex;align-items:center;gap:8px}
+.spin{width:10px;height:10px;border:1px solid var(--line-strong);border-top-color:var(--ink);border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.foot-note{margin-top:28px;max-width:1500px;color:var(--faint);font-size:11px;letter-spacing:.04em}
+
+body.dark{--bg:#111;--paper:#161616;--ink:#f2f2f2;--muted:#9a9a9a;--faint:#666;--line:#242424;--line-strong:#2e2e2e;--seal:#d46858;--seal-soft:rgba(212,104,88,.12);--shadow:0 18px 48px rgba(0,0,0,.35)}
+body.dark .win-bar,body.dark .side{background:#141414}
+body.dark .chip,body.dark .search-box,body.dark .ocr,body.dark .btn{background:#161616;color:var(--ink)}
+body.dark .btn.pri{background:#f2f2f2;color:#111;border-color:#f2f2f4}
+body.dark .nav.on,body.dark .row:hover,body.dark .file:hover{background:rgba(255,255,255,.04)}
+body.dark .file.sel{background:rgba(255,255,255,.07)}
+body.dark .switch.on{background:#f2f2f2}
+body.dark .switch.on::after{background:#111}
+</style>
+</head>
+<body>
+<header class="board-head">
+  <div class="brand">
+    <h1>High<em>lighter</em></h1>
+    <p>UI 语言 · 白盒画廊 · 轮盘 #20</p>
+  </div>
+  <div class="mode">
+    <button id="btnLight" class="on">浅色</button>
+    <button id="btnDark">深色</button>
+  </div>
+</header>
+
+<div class="stage">
+  <div class="col">
+    <!-- main config -->
+    <section class="win" style="min-height:720px">
+      <div class="win-bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <div class="title">Highlighter</div>
+        <button class="x" title="关闭">×</button>
+      </div>
+      <div class="win-main">
+        <aside class="side">
+          <div class="logo">High<span>lighter</span></div>
+          <button class="nav on" data-route="home"><span class="ic" style="--i:url('./assets/icons/lightning.svg')"></span>快捷功能</button>
+          <div class="grp">工具箱</div>
+          <button class="nav"><span class="ic" style="--i:url('./assets/icons/translate.svg')"></span>翻译</button>
+          <button class="nav"><span class="ic" style="--i:url('./assets/icons/robot.svg')"></span>AI 对话</button>
+          <button class="nav"><span class="ic" style="--i:url('./assets/icons/history.svg')"></span>截图历史</button>
+          <button class="nav"><span class="ic" style="--i:url('./assets/icons/search.svg')"></span>本地搜索</button>
+          <div class="grp">个性化</div>
+          <button class="nav"><span class="ic" style="--i:url('./assets/icons/palette.svg')"></span>外观配色</button>
+          <button class="nav"><span class="ic" style="--i:url('./assets/icons/components.svg')"></span>插件</button>
+          <div class="grp">设置</div>
+          <button class="nav"><span class="ic" style="--i:url('./assets/icons/layout.svg')"></span>界面设置</button>
+          <button class="nav"><span class="ic" style="--i:url('./assets/icons/model.svg')"></span>模型</button>
+          <button class="nav" data-route="hotkeys"><span class="ic" style="--i:url('./assets/icons/keyboard.svg')"></span>热键设置</button>
+          <button class="nav"><span class="ic" style="--i:url('./assets/icons/settings.svg')"></span>功能设置</button>
+          <button class="nav about"><span class="ic" style="--i:url('./assets/icons/info.svg')"></span>关于</button>
+        </aside>
+        <div class="content">
+          <div class="page-head">
+            <h2 id="pageTitle">快捷功能</h2>
+            <p id="pageDesc">统一管理截图、AI、翻译、录屏和桌面工具。</p>
+          </div>
+          <div class="tabs" id="homeTabs">
+            <button class="tab on" data-tab="shot">截图</button>
+            <button class="tab" data-tab="ai">AI</button>
+            <button class="tab" data-tab="tr">翻译</button>
+            <button class="tab" data-tab="video">录屏</button>
+            <button class="tab" data-tab="other">其他</button>
+          </div>
+          <div class="list" id="mainList"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="win" style="min-height:480px">
+      <div class="win-bar">
+        <div class="title">本地搜索</div>
+        <button class="x">×</button>
+      </div>
+      <div class="search-body">
+        <div class="search-box">
+          <span class="ic"></span>
+          <input id="searchInput" placeholder="搜索本地文件（支持 Everything 语法，如 ext:pdf 报告）">
+        </div>
+        <div class="cats" id="cats">
+          <button class="on">全部</button><button>文档</button><button>图片</button><button>视频</button><button>代码</button><button>其他</button>
+        </div>
+        <div class="results" id="results"></div>
+        <div class="status">
+          <span id="statusText">已找到 5 项</span>
+          <span>匹配路径 · 按修改时间</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="win">
+      <div class="win-bar">
+        <div class="title">识别结果</div>
+        <button class="x">×</button>
+      </div>
+      <div class="recog">
+        <div>
+          <h3>识别结果</h3>
+          <div class="sum">共识别 8 行 · 中文 · 置信度高</div>
+        </div>
+        <div class="ocr">
+          Highlighter 产品评审纪要<br>
+          1. 截图后默认进入标注，保留撤销栈<br>
+          2. <mark>OCR 与表格识别保持本地执行</mark>，不上传原始图像<br>
+          3. 划词翻译思考强度默认「关」，高延迟场景可开「高」<br>
+          4. 模型供应商支持 OpenAI 兼容与 openai-responses<br>
+          5. 长截图拼接方向跟随滚动区域主轴<br>
+          Action items：热键冲突提示需在录入时即时反馈
+        </div>
+        <div class="recog-actions">
+          <button class="btn">导出 Markdown</button>
+          <button class="btn pri">复制</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="win" style="max-width:360px">
+      <div class="win-bar">
+        <div class="title">划词助手</div>
+        <button class="x">×</button>
+      </div>
+      <div class="action-head">
+        <span>翻译中…</span>
+        <span class="badge">翻译</span>
+        <button class="pin">置顶</button>
+      </div>
+      <div class="action-body">
+        <div class="src">Ship a calmer capture tool for Windows — fewer chrome, more focus.</div>
+        <div class="out">
+          为 Windows 交付更安静的截图工具——更少界面噪音，更多专注。
+          <div class="load"><span class="spin"></span>正在请求 DeepSeek...</div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+<p class="foot-note">签名细节：发丝分割线 + 朱印点缀 + 负空间主导。UI 隐退，功能名成为主视觉。</p>
+
+<script>
+const shot = [
+  ['screenshot.svg','截图','自由框选、智能标注与导出','Alt+A'],
+  ['timer.svg','延迟截图','倒计时后开始区域截图','未设置'],
+  ['pin.svg','固定到屏幕','截图完成后直接贴到桌面','Alt+P'],
+  ['ocr.svg','文本识别','截图后提取中文、英文等文字','Alt+O'],
+  ['table.svg','表格识别','恢复截图中的行列并复制到 Excel',''],
+  ['qr.svg','二维码识别','扫描二维码内容或打开其中的链接',''],
+  ['translate.svg','文本识别翻译','OCR 后调用翻译服务',''],
+  ['copy.svg','复制到剪贴板','完成选区后立即复制',''],
+  ['long-capture.svg','长截图','框选滚动区域并自动拼接',''],
+  ['fullscreen.svg','截取全屏','捕获鼠标所在显示器',''],
+  ['focus.svg','当前焦点窗口','捕获当前活动窗口','']
+]
+const ai = [
+  ['robot.svg','打开 AI 对话','使用配置的 AI 模型进行多轮对话',''],
+  ['text-style-one.svg','对话框填入选中文本','保留现有划词助手工作流',''],
+  ['robot.svg','解释剪贴板文本','只读剪贴板并送入解释窗口','']
+]
+const tr = [
+  ['translate.svg','打开翻译工具','支持自动检测与中英互译',''],
+  ['translation.svg','翻译选中的文本','划词后快速翻译','']
+]
+const video = [['record.svg','视频录制','录制屏幕并导出 MP4 视频','']]
+const other = [
+  ['pin.svg','固定本地图片','选择图片并固定到桌面',''],
+  ['draw.svg','全屏画布','在白色全屏画布中绘制',''],
+  ['preview.svg','显示/隐藏所有贴图','批量控制桌面贴图',''],
+  ['folder-open.svg','打开图片目录','打开默认截图保存位置',''],
+  ['history.svg','打开截图历史','回顾、复制和重新编辑截图','']
+]
+const hotkeys = [
+  ['screenshot.svg','截图','Alt+A','set'],
+  ['ocr.svg','文本识别','Alt+O','set'],
+  ['search.svg','本地搜索','Alt+S','set'],
+  ['robot.svg','打开 AI 对话','未设置','unset'],
+  ['record.svg','视频录制','Alt+A','bad'],
+  ['translate.svg','打开翻译工具','未设置','unset']
+]
+const files = [
+  ['Highlighter-架构说明.md','D:\\Projects\\Highlighter\\docs','42 KB','今天 10:18'],
+  ['capture-domain.test.js','D:\\Projects\\Highlighter\\test','18 KB','昨天 22:04'],
+  ['产品评审纪要.docx','D:\\Docs\\工作','126 KB','周一 09:30'],
+  ['screenshot-2026-03-12.png','D:\\Pictures\\Screenshots','1.4 MB','3 月 12 日'],
+  ['release-notes-0.9.md','D:\\Projects\\Highlighter','6 KB','3 月 8 日']
+]
+const tabs = {shot,ai,tr,video,other}
+let tab='shot', route='home'
+
+function chipFor(k){
+  if(!k) return '<span class="chip ghost">设置快捷键</span>'
+  if(k==='未设置') return '<span class="chip ghost">未设置</span>'
+  return `<span class="chip">${k}</span>`
+}
+function renderMain(){
+  const list=document.getElementById('mainList')
+  const title=document.getElementById('pageTitle')
+  const desc=document.getElementById('pageDesc')
+  const homeTabs=document.getElementById('homeTabs')
+  if(route==='hotkeys'){
+    title.textContent='热键设置'
+    desc.textContent='点击右侧按键框后录入组合键；右键可清除。红色表示冲突。'
+    homeTabs.style.display='none'
+    list.innerHTML=hotkeys.map(([ic,name,k,st])=>{
+      const cls=st==='bad'?'chip bad':st==='unset'?'chip ghost':'chip'
+      const label=st==='bad'?'与「截图」重复':k
+      return `<div class="hot-row"><span class="ic" style="--i:url('./assets/icons/${ic}')"></span><b>${name}</b><span class="${cls}">${label}</span></div>`
+    }).join('')
+  } else {
+    title.textContent='快捷功能'
+    desc.textContent='统一管理截图、AI、翻译、录屏和桌面工具。'
+    homeTabs.style.display='flex'
+    list.innerHTML=tabs[tab].map(([ic,name,desc,k])=>
+      `<div class="row"><span class="ic" style="--i:url('./assets/icons/${ic}')"></span><div><b>${name}</b><small>${desc}</small></div>${chipFor(k)}</div>`
+    ).join('')
+  }
+}
+function renderFiles(q=''){
+  const box=document.getElementById('results')
+  const rows=files.filter(f=>!q||f[0].toLowerCase().includes(q.toLowerCase())||f[1].toLowerCase().includes(q.toLowerCase()))
+  box.innerHTML=rows.map((f,i)=>`<div class="file${i===1?' sel':''}"><span class="dot"></span><div><b>${f[0]}</b><small>${f[1]}</small></div><div class="meta">${f[2]}<br>${f[3]}</div></div>`).join('')
+  document.getElementById('statusText').textContent=`已找到 ${rows.length} 项`
+}
+document.getElementById('homeTabs').addEventListener('click',e=>{
+  const b=e.target.closest('.tab'); if(!b) return
+  tab=b.dataset.tab
+  document.querySelectorAll('#homeTabs .tab').forEach(x=>x.classList.toggle('on',x===b))
+  renderMain()
+})
+document.querySelectorAll('.side .nav').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    route=btn.dataset.route||'home'
+    document.querySelectorAll('.side .nav').forEach(x=>x.classList.toggle('on',x===btn))
+    renderMain()
+  })
+})
+document.getElementById('cats').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return
+  document.querySelectorAll('#cats button').forEach(x=>x.classList.toggle('on',x===b))
+})
+document.getElementById('searchInput').addEventListener('input',e=>renderFiles(e.target.value))
+document.getElementById('btnLight').onclick=()=>{document.body.classList.remove('dark');btnLight.classList.add('on');btnDark.classList.remove('on')}
+document.getElementById('btnDark').onclick=()=>{document.body.classList.add('dark');btnDark.classList.add('on');btnLight.classList.remove('on')}
+renderMain(); renderFiles()
+</script>
+</body>
+</html>

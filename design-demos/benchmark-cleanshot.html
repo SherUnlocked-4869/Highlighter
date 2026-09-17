@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · 标杆迁移 · CleanShot X</title>
+<!--
+Benchmark: CleanShot X — 色/字/布局三句
+色：产品界面浅冷灰底 + 纯白面板，强调色极少，状态用绿/红点。
+字：系统字气质，功能名中等字号、描述弱灰、快捷键永远以芯片露出。
+布局：工具条=横向芯片；设置=左导航+分组列表；浮层 chrome 极薄。
+迁移：不抄 Mac 红绿灯；主色自建深海青 #0B6E99；学克制专业感。
+-->
+<style>
+:root{
+  --bg:#eef0f3;--board:#e8ebef;--surface:#fff;--surface-2:#f6f7f9;--surface-3:#eceff3;
+  --line:#dfe3e8;--line-strong:#c8ced6;--text:#171a20;--text-2:#3a4250;--muted:#7b8492;--faint:#a3aab6;
+  --accent:#0b6e99;--accent-hover:#095a7e;--accent-soft:#e3f1f7;--accent-line:#b7d8e8;
+  --danger:#c23b3b;--danger-soft:#fceaea;--ok:#1f8a5b;--ok-soft:#e5f5ee;--warn:#b07d12;
+  --r:8px;--r-sm:6px;
+  --font:"IBM Plex Sans","Noto Sans SC","Segoe UI","Microsoft YaHei",sans-serif;
+  --mono:"IBM Plex Mono","Cascadia Code",Consolas,monospace;
+  --shadow:0 1px 2px rgba(16,24,40,.05),0 10px 28px rgba(16,24,40,.08);
+  --shadow-float:0 4px 14px rgba(16,24,40,.1),0 18px 40px rgba(16,24,40,.12);
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--board);color:var(--text);font:13px/1.5 var(--font);-webkit-font-smoothing:antialiased}
+body{padding:36px 40px 56px}
+.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;max-width:1480px}
+.top h1{margin:0;font-size:18px;font-weight:600;letter-spacing:-.01em}
+.top h1 span{color:var(--accent)}
+.top .meta{color:var(--muted);font-size:12px}
+.seg{display:inline-flex;padding:3px;background:var(--surface-3);border-radius:999px;gap:2px}
+.seg button{border:0;background:transparent;color:var(--muted);padding:6px 14px;border-radius:999px;cursor:pointer;font:inherit;font-size:12px}
+.seg button.on{background:var(--surface);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+
+.stage{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(300px,.9fr);gap:24px;align-items:start;max-width:1480px}
+.col{display:flex;flex-direction:column;gap:24px}
+
+.win{background:var(--surface);border-radius:12px;border:1px solid var(--line);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column}
+.cap{height:40px;display:flex;align-items:center;padding:0 14px;gap:10px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#fafbfc,#f3f4f6)}
+.cap .t{flex:1;font-size:12px;font-weight:500;color:var(--text-2)}
+.cap .btns{display:flex;gap:6px}
+.cap .btns i{width:10px;height:10px;border-radius:50%;background:#d5dae1;display:block}
+.cap .btns i.close:hover{background:#e56b6b}
+.main{display:flex;flex:1;min-height:0}
+
+.side{width:196px;flex:0 0 196px;background:var(--surface-2);border-right:1px solid var(--line);padding:16px 10px;display:flex;flex-direction:column;gap:2px}
+.brand{padding:8px 10px 16px;font-weight:600;font-size:14px}
+.brand i{color:var(--accent);font-style:normal}
+.grp{padding:12px 10px 4px;color:var(--faint);font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+.n{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;text-align:left;padding:7px 10px;border-radius:var(--r-sm);cursor:pointer;font:inherit;font-size:12.5px;color:var(--text-2)}
+.n:hover{background:rgba(0,0,0,.04)}
+.n.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.n .ic{width:15px;height:15px;background:currentColor;-webkit-mask:var(--i) center/contain no-repeat;mask:var(--i) center/contain no-repeat;flex:0 0 auto}
+.n.about{margin-top:auto}
+
+.body{flex:1;min-width:0;display:flex;flex-direction:column}
+.head{padding:22px 24px 12px}
+.head h2{margin:0 0 4px;font-size:18px;font-weight:600;letter-spacing:-.01em}
+.head p{margin:0;color:var(--muted);font-size:12px}
+.pills{display:flex;gap:6px;padding:0 24px 14px;flex-wrap:wrap}
+.pill{border:1px solid var(--line);background:var(--surface);color:var(--text-2);padding:5px 12px;border-radius:999px;font:inherit;font-size:12px;cursor:pointer}
+.pill:hover{border-color:var(--accent-line)}
+.pill.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.rows{flex:1;overflow:auto;padding:0 12px 16px}
+.r{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px 12px;border-radius:var(--r-sm)}
+.r:hover{background:var(--surface-2)}
+.r .ic{width:16px;height:16px;color:var(--accent);background:currentColor;-webkit-mask:var(--i) center/contain no-repeat;mask:var(--i) center/contain no-repeat}
+.r b{display:block;font-size:13px;font-weight:500}
+.r small{display:block;color:var(--muted);font-size:11.5px;margin-top:1px}
+.kbd{font-family:var(--mono);font-size:11px;padding:3px 7px;border-radius:5px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text-2);box-shadow:inset 0 -1px 0 rgba(0,0,0,.04)}
+.kbd.empty{border-style:dashed;color:var(--faint)}
+.kbd.bad{background:var(--danger-soft);border-color:#f0b4b4;color:var(--danger)}
+.sw{width:36px;height:20px;border-radius:999px;background:#cfd6de;border:0;position:relative;cursor:pointer;padding:0}
+.sw::after{content:"";position:absolute;width:16px;height:16px;left:2px;top:2px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.15);transition:.15s}
+.sw.on{background:var(--accent)}
+.sw.on::after{left:18px}
+
+/* search */
+.sbody{padding:14px 16px;display:flex;flex-direction:column;gap:10px;flex:1}
+.s\boxed{display:flex;align-items:center;gap:8px;height:38px;padding:0 12px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px}
+.sbox:focus-within{border-color:var(--accent);background:#fff;box-shadow:0 0 0 3px var(--accent-soft)}
+.sbox .ic{width:14px;height:14px;background:var(--muted);-webkit-mask:url('./assets/icons/search.svg') center/contain no-repeat;mask:url('./assets/icons/search.svg') center/contain no-repeat}
+.sbox input{flex:1;border:0;background:transparent;outline:0;font:inherit;color:var(--text)}
+.sbox input::placeholder{color:var(--faint)}
+.scats{display:flex;gap:6px;flex-wrap:wrap}
+.scats button{border:1px solid transparent;background:transparent;color:var(--muted);padding:4px 10px;border-radius:999px;font:inherit;font-size:11.5px;cursor:pointer}
+.scats button:hover{background:var(--surface-2)}
+.scats button.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.slist{flex:1;overflow:auto}
+.f{display:grid;grid-template-columns:8px minmax(0,1fr) auto;gap:10px;align-items:center;padding:9px 8px;border-radius:var(--r-sm);cursor:pointer}
+.f:hover{background:var(--surface-2)}
+.f.sel{background:var(--accent-soft)}
+.f .dot{width:7px;height:7px;border-radius:50%;background:var(--ok)}
+.f b{display:block;font-size:12.5px;font-weight:500}
+.f small{color:var(--faint);font-size:11px}
+.f .m{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-align:right}
+.sfoot{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding-top:8px;color:var(--muted);font-size:11px}
+
+/* recognition */
+.recog{padding:20px 22px;display:flex;flex-direction:column;gap:12px;flex:1}
+.recog h3{margin:0;font-size:15px;font-weight:600}
+.recog .sum{color:var(--muted);font-size:11.5px}
+.txt{flex:1;border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:var(--surface-2);font-size:12.5px;line-height:1.75;overflow:auto}
+.txt mark{background:transparent;color:var(--accent);font-weight:600}
+.acts{display:flex;justify-content:flex-end;gap:8px}
+.b{border:1px solid var(--line-strong);background:#fff;color:var(--text);padding:7px 14px;border-radius:8px;font:inherit;font-size:12px;cursor:pointer}
+.b:hover{border-color:var(--accent);color:var(--accent)}
+.b.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.b.pri:hover{background:var(--accent-hover);color:#fff}
+
+/* action */
+.ahead{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.ahead b{font-size:12px;font-weight:500}
+.badge{font-size:10px;padding:2px 7px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-weight:600}
+.abody{padding:14px;display:flex;flex-direction:column;gap:10px;flex:1}
+.src{font-size:11.5px;color:var(--muted);padding:10px 12px;background:var(--surface-2);border-radius:8px}
+.out{font-size:12.5px;line-height:1.7;padding:0 2px}
+.load{display:flex;align-items:center;gap:8px;color:var(--faint);font-size:11px;margin-top:8px}
+.sp{width:11px;height:11px;border:1.5px solid var(--line-strong);border-top-color:var(--accent);border-radius:50%;animation:sp 0.8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+.note{margin-top:22px;max-width:1480px;color:var(--muted);font-size:11.5px}
+body.dark{--board:#0f1216;--surface:#171b21;--surface-2:#1c222a;--surface-3:#222933;--line:#2a323c;--line-strong:#3a4552;--text:#e8ecf1;--text-2:#c2c9d2;--muted:#8b95a3;--faint:#5f6a78;--accent:#3db2d4;--accent-hover:#2f9abb;--accent-soft:rgba(61,178,212,.14);--shadow:0 10px 28px rgba(0,0,0,.35)}
+body.dark .cap{background:#14181e}
+body.dark .b,body.dark .kbd{background:var(--surface-2);color:var(--text)}
+body.dark .b.pri{background:var(--accent);border-color:var(--accent);color:#041018}
+body.dark .sw.on{background:var(--accent)}
+body.dark .sw.on::after{background:#0b1014}
+</style>
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>High<span>lighter</span> · 界面语言</h1>
+    <div class="meta">Benchmark CleanShot X · 深海青 Identity · 工具型克制</div>
+  </div>
+  <div class="seg"><button class="on" id="l">浅色</button><button id="d">深色</button></div>
+</header>
+
+<div class="stage">
+  <div class="col">
+    <section class="win" style="min-height:740px">
+      <div class="cap"><div class="btns"><i></i><i></i><i class="close"></i></div><div class="t">Highlighter</div></div>
+      <div class="main">
+        <aside class="side">
+          <div class="brand">High<i>lighter</i></div>
+          <button class="n on" data-r="home"><span class="ic" style="--i:url('./assets/icons/lightning.svg')"></span>快捷功能</button>
+          <div class="grp">工具箱</div>
+          <button class="n"><span class="ic" style="--i:url('./assets/icons/translate.svg')"></span>翻译</button>
+          <button class="n"><span class="ic" style="--i:url('./assets/icons/robot.svg')"></span>AI 对话</button>
+          <button class="n"><span class="ic" style="--i:url('./assets/icons/history.svg')"></span>截图历史</button>
+          <button class="n"><span class="ic" style="--i:url('./assets/icons/search.svg')"></span>本地搜索</button>
+          <div class="grp">个性化</div>
+          <button class="n"><span class="ic" style="--i:url('./assets/icons/palette.svg')"></span>外观配色</button>
+          <button class="n"><span class="ic" style="--i:url('./assets/icons/components.svg')"></span>插件</button>
+          <div class="grp">设置</div>
+          <button class="n"><span class="ic" style="--i:url('./assets/icons/layout.svg')"></span>界面设置</button>
+          <button class="n"><span class="ic" style="--i:url('./assets/icons/model.svg')"></span>模型</button>
+          <button class="n" data-r="hot"><span class="ic" style="--i:url('./assets/icons/keyboard.svg')"></span>热键设置</button>
+          <button class="n"><span class="ic" style="--i:url('./assets/icons/settings.svg')"></span>功能设置</button>
+          <button class="n about"><span class="ic" style="--i:url('./assets/icons/info.svg')"></span>关于</button>
+        </aside>
+        <div class="body">
+          <div class="head"><h2 id="pt">快捷功能</h2><p id="pd">统一管理截图、AI、翻译、录屏和桌面工具。</p></div>
+          <div class="pills" id="pills">
+            <button class="pill on" data-t="shot">截图</button>
+            <button class="pill" data-t="ai">AI</button>
+            <button class="pill" data-t="tr">翻译</button>
+            <button class="pill" data-t="video">录屏</button>
+            <button class="pill" data-t="other">其他</button>
+          </div>
+          <div class="rows" id="rows"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="win" style="min-height:460px">
+      <div class="cap"><div class="t">本地搜索</div><div class="btns"><i class="close"></i></div></div>
+      <div class="sbody">
+        <div class="sbox"><span class="ic"></span><input id="q" placeholder="搜索本地文件（支持 Everything 语法，如 ext:pdf 报告）"></div>
+        <div class="scats" id="scats"><button class="on">全部</button><button>文档</button><button>图片</button><button>视频</button><button>代码</button></div>
+        <div class="slist" id="slist"></div>
+        <div class="sfoot"><span id="st">已找到 5 项</span><span>匹配路径 · 按修改时间</span></div>
+      </div>
+    </section>
+
+    <section class="win">
+      <div class="cap"><div class="t">识别结果</div><div class="btns"><i class="close"></i></div></div>
+      <div class="recog">
+        <div><h3>识别结果</h3><div class="sum">共识别 8 行 · 中文 · 置信度高</div></div>
+        <div class="txt">
+          Highlighter 产品评审纪要<br>
+          1. 截图后默认进入标注，保留撤销栈<br>
+          2. <mark>OCR 与表格识别保持本地执行</mark>，不上传原始图像<br>
+          3. 划词翻译思考强度默认「关」<br>
+          4. 模型供应商支持 OpenAI 兼容与 openai-responses<br>
+          5. 长截图拼接方向跟随滚动区域主轴<br>
+          Action items：热键冲突提示需在录入时即时反馈
+        </div>
+        <div class="acts"><button class="b">导出 Markdown</button><button class="b pri">复制</button></div>
+      </div>
+    </section>
+
+    <section class="win" style="max-width:380px">
+      <div class="ahead"><b>翻译中…</b><span class="badge">翻译</span></div>
+      <div class="abody">
+        <div class="src">Ship a calmer capture tool for Windows — fewer chrome, more focus.</div>
+        <div class="out">为 Windows 交付更安静的截图工具——更少界面噪音，更多专注。
+          <div class="load"><span class="sp"></span>正在请求 DeepSeek...</div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+<p class="note">签名细节：快捷键芯片永不出场、浅冷灰窗体 + 深海青单一强调、操作路径 ≤2 步。</p>
+
+<script>
+const data={
+shot:[['screenshot.svg','截图','自由框选、智能标注与导出','Alt+A'],['timer.svg','延迟截图','倒计时后开始区域截图',''],['pin.svg','固定到屏幕','截图完成后直接贴到桌面','Alt+P'],['ocr.svg','文本识别','截图后提取中文、英文等文字','Alt+O'],['table.svg','表格识别','恢复截图中的行列并复制到 Excel',''],['qr.svg','二维码识别','扫描二维码内容或打开其中的链接',''],['translate.svg','文本识别翻译','OCR 后调用翻译服务',''],['copy.svg','复制到剪贴板','完成选区后立即复制',''],['long-capture.svg','长截图','框选滚动区域并自动拼接',''],['fullscreen.svg','截取全屏','捕获鼠标所在显示器',''],['focus.svg','当前焦点窗口','捕获当前活动窗口','']],
+ai:[['robot.svg','打开 AI 对话','使用配置的 AI 模型进行多轮对话',''],['text-style-one.svg','对话框填入选中文本','保留现有划词助手工作流',''],['robot.svg','解释剪贴板文本','只读剪贴板并送入解释窗口','']],
+tr:[['translate.svg','打开翻译工具','支持自动检测与中英互译',''],['translation.svg','翻译选中的文本','划词后快速翻译','']],
+video:[['record.svg','视频录制','录制屏幕并导出 MP4 视频','']],
+other:[['pin.svg','固定本地图片','选择图片并固定到桌面',''],['draw.svg','全屏画布','在白色全屏画布中绘制',''],['preview.svg','显示/隐藏所有贴图','批量控制桌面贴图',''],['folder-open.svg','打开图片目录','打开默认截图保存位置',''],['history.svg','打开截图历史','回顾、复制和重新编辑截图','']]
+}
+const hot=[['screenshot.svg','截图','Alt+A','set'],['ocr.svg','文本识别','Alt+O','set'],['search.svg','本地搜索','Alt+S','set'],['robot.svg','打开 AI 对话','','unset'],['record.svg','视频录制','Alt+A','bad'],['translate.svg','打开翻译工具','','unset']]
+const files=[['Highlighter-架构说明.md','D:\\Projects\\Highlighter\\docs','42 KB','今天 10:18'],['capture-domain.test.js','D:\\Projects\\Highlighter\\test','18 KB','昨天 22:04'],['产品评审纪要.docx','D:\\Docs\\工作','126 KB','周一 09:30'],['screenshot-2026-03-12.png','D:\\Pictures\\Screenshots','1.4 MB','3 月 12 日'],['release-notes-0.9.md','D:\\Projects\\Highlighter','6 KB','3 月 8 日']]
+let tab='shot',route='home'
+function kbd(k){return k?`<span class="kbd">${k}</span>`:`<span class="kbd empty">设置快捷键</span>`}
+function draw(){
+  const el=document.getElementById('rows'),pt=document.getElementById('pt'),pd=document.getElementById('pd'),pills=document.getElementById('pills')
+  if(route==='hot'){
+    pt.textContent='热键设置';pd.textContent='点击右侧按键框后录入组合键；红色表示冲突。';pills.style.display='none'
+    el.innerHTML=hot.map(([ic,n,k,s])=>{
+      const cls=s==='bad'?'kbd bad':s==='unset'?'kbd empty':'kbd'
+      const label=s==='bad'?'与「截图」重复':(k||'未设置')
+      return `<div class="r"><span class="ic" style="--i:url('./assets/icons/${ic}')"></span><b>${n}</b><span class="${cls}">${label}</span></div>`
+    }).join('')||`<div class="r" style="grid-template-columns:1fr"><div>${hot.map(([ic,n,k,s])=>{
+      const cls=s==='bad'?'kbd bad':s==='unset'?'kbd empty':'kbd';const label=s==='bad'?'与「截图」重复':(k||'未设置')
+      return `<div class="r"><span class="ic" style="--i:url('./assets/icons/${ic}')"></span><b>${n}</b><span class="${cls}">${label}</span></div>`
+    }).join('')}</div></div>`
+    // simpler rewrite
+    el.innerHTML=hot.map(([ic,n,k,s])=>{
+      const cls=s==='bad'?'kbd bad':s==='unset'?'kbd empty':'kbd';const label=s==='bad'?'与「截图」重复':(k||'未设置')
+      return `<div class="r"><span class="ic" style="--i:url('./assets/icons/${ic}')"></span><b>${n}</b><span class="${cls}">${label}</span></div>`
+    }).join('')
+    return
+  }
+  pt.textContent='快捷功能';pd.textContent='统一管理截图、AI、翻译、录屏和桌面工具。';pills.style.display='flex'
+  el.innerHTML=data[tab].map(([ic,n,d,k])=>`<div class="r"><span class="ic" style="--i:url('./assets/icons/${ic}')"></span><div><b>${n}</b><small>${d}</small></div>${kbd(k)}</div>`).join('')
+}
+function filesDraw(q=''){
+  const rows=files.filter(f=>!q||(f[0]+f[1]).toLowerCase().includes(q.toLowerCase()))
+  document.getElementById('slist').innerHTML=rows.map((f,i)=>`<div class="f${i===1?' sel':''}"><span class="dot"></span><div><b>${f[0]}</b><small>${f[1]}</small></div><div class="m">${f[2]}<br>${f[3]}</div></div>`).join('')
+  document.getElementById('st').textContent=`已找到 ${rows.length} 项`
+}
+document.getElementById('pills').onclick=e=>{const b=e.target.closest('.pill');if(!b)return;tab=b.dataset.t;document.querySelectorAll('#pills .pill').forEach(x=>x.classList.toggle('on',x===b));draw()}
+document.querySelectorAll('.side .n').forEach(b=>b.onclick=()=>{route=b.dataset.r||'home';document.querySelectorAll('.side .n').forEach(x=>x.classList.toggle('on',x===b));draw()})
+document.getElementById('scats').onclick=e=>{const b=e.target.closest('button');if(!b)return;document.querySelectorAll('#scats button').forEach(x=>x.classList.toggle('on',x===b))}
+document.getElementById('q').oninput=e=>filesDraw(e.target.value)
+document.getElementById('l').onclick=()=>{document.body.classList.remove('dark');l.classList.add('on');d.classList.remove('on')}
+document.getElementById('d').onclick=()=>{document.body.classList.add('dark');d.classList.add('on');l.classList.remove('on')}
+draw();filesDraw()
+</script>
+</body>
+</html>

@@ -116,6 +116,7 @@ test('signing preparation emits Azure metadata without credentials', { skip: pro
 test('release workflows enforce version, native, signing, integrity, and draft gates', () => {
   const ci = fs.readFileSync(path.join(root, '.github', 'workflows', 'windows-ci.yml'), 'utf8')
   const release = fs.readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8')
+  const unsigned = fs.readFileSync(path.join(root, '.github', 'workflows', 'unsigned-release.yml'), 'utf8')
   const promote = fs.readFileSync(path.join(root, '.github', 'workflows', 'promote-release.yml'), 'utf8')
   const config = require('../electron-builder.release.cjs')
   const expectedChannel = require('../package.json').version.match(/-(alpha|beta)(?:\.|$)/)?.[1] || 'latest'
@@ -137,6 +138,9 @@ test('release workflows enforce version, native, signing, integrity, and draft g
   assert.match(release, /--prerelease/)
   assert.match(release, /Refusing to replace assets on published release/)
   assert.doesNotMatch(release, /dist\/\*\.yml/)
+  assert.match(unsigned, /gh release upload \$tag @assets --clobber/)
+  assert.match(unsigned, /--draft=false/)
+  assert.doesNotMatch(unsigned, /refusing to overwrite/)
   assert.match(promote, /workflow_dispatch/)
   assert.match(promote, /verify-hardware-matrix\.js --version .* --source-commit/)
   assert.match(promote, /verify-promotion-assets\.ps1/)
