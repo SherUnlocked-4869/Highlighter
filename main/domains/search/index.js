@@ -32,7 +32,7 @@ function createSearchDomain(deps) {
   function getSearchWindowInitPayload() {
     const settings = getSettings()
     return {
-      mainColor: settings.mainColor || '#1677ff',
+      mainColor: settings.mainColor || '#e5a44c',
       dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors),
       search: settings.search
     }

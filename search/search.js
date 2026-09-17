@@ -41,7 +41,7 @@ function debounce(fn, delay) {
 const runSearchDebounced = debounce(() => runSearch(), SEARCH_DEBOUNCE_MS)
 
 function applyAppearance(payload) {
-  document.documentElement.style.setProperty('--primary', payload.mainColor || '#1677ff')
+  document.documentElement.style.setProperty('--primary', payload.mainColor || '#e5a44c')
   document.body.classList.toggle('dark', !!payload.dark)
 }
 

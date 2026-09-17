@@ -1,37 +1,113 @@
-:root { --primary: #1677ff; --bg: #18181b; --surface: #222226; --border: #39393f; --text: #f4f4f5; --muted: #a1a1aa; }
+/*
+ * Recognition result window (OCR text / table / QR).
+ *
+ * Palette comes from shared/tokens.css. This window previously hard-coded a
+ * dark palette in :root, so it ignored the user's theme entirely and rendered
+ * dark even in light mode.
+ */
+
 * { box-sizing: border-box; }
+
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-body { display: grid; grid-template-rows: auto 1fr auto; color: var(--text); background: var(--bg); font-family: -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
+
+body {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  color: var(--text);
+  background: var(--bg);
+  font-family: var(--font-ui);
+}
+
 button, select, textarea { font: inherit; }
+
 .hidden { display: none !important; }
-.topbar { min-height: 68px; display: flex; align-items: center; gap: 16px; padding: 12px 18px; border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
+
+/* ---------- topbar ---------- */
+
+.topbar {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  -webkit-app-region: drag;
+}
+
 .topbar > div { min-width: 0; flex: 1; }
-.topbar h1 { margin: 0; font-size: 17px; line-height: 1.5; letter-spacing: 0; }
+.topbar h1 { margin: 0; font-size: 16px; line-height: 1.5; font-weight: 600; letter-spacing: -.01em; }
 .topbar p { min-height: 18px; margin: 2px 0 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.icon-button { width: 34px; height: 34px; border: 0; color: var(--muted); background: transparent; font-size: 23px; cursor: pointer; -webkit-app-region: no-drag; }
-.icon-button:hover { color: var(--text); background: #2d2d32; }
+
+.icon-button {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  background: transparent;
+  font-size: 22px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background .13s, color .13s;
+}
+
+.icon-button:hover { color: var(--text); background: var(--surface-3); }
+
+/* ---------- body ---------- */
+
 main { min-height: 0; position: relative; overflow: hidden; }
+
 .loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); }
-.loading span { width: 20px; height: 20px; border: 2px solid #48484f; border-top-color: var(--primary); border-radius: 50%; animation: spin .75s linear infinite; }
+.loading span { width: 20px; height: 20px; border: 2px solid var(--line-2); border-top-color: var(--primary); border-radius: 50%; animation: spin .75s linear infinite; }
 .loading b { font-size: 13px; font-weight: 500; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
 .error { height: 100%; display: grid; place-content: center; justify-items: center; padding: 32px; text-align: center; }
 .error strong { font-size: 16px; }
 .error p { max-width: 520px; margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+
+/* Table output: sticky header on a surface step, zebra via the ladder. */
 .table-view { height: 100%; overflow: auto; padding: 16px 18px; }
 .table-view table { width: 100%; border-collapse: collapse; color: var(--text); font-size: 13px; user-select: text; }
-.table-view th, .table-view td { min-width: 96px; padding: 10px 12px; border: 1px solid var(--border); text-align: left; vertical-align: top; white-space: pre-wrap; }
-.table-view th { position: sticky; top: 0; z-index: 1; background: #303036; font-weight: 600; }
-.table-view tr:nth-child(even) td { background: #1e1e22; }
+.table-view th, .table-view td { min-width: 96px; padding: 10px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; white-space: pre-wrap; }
+.table-view th { position: sticky; top: 0; z-index: 1; background: var(--surface-3); font-weight: 600; }
+.table-view tr:nth-child(even) td { background: var(--surface-2); }
+
 .qr-view { height: 100%; padding: 18px; }
-.qr-view textarea { width: 100%; height: 100%; resize: none; padding: 14px; border: 1px solid var(--border); border-radius: 6px; outline: none; color: var(--text); background: var(--surface); font: 14px/1.7 Consolas,"Microsoft YaHei",sans-serif; user-select: text; }
-.qr-view textarea:focus { border-color: var(--primary); }
-.actions { min-height: 58px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 18px; border-top: 1px solid var(--border); }
-.actions button, .actions select { height: 36px; padding: 0 14px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface); cursor: pointer; }
-.actions select { margin-right: auto; min-width: 190px; outline: none; color-scheme: dark; }
-.actions button:hover { background: #303036; }
-.actions button.primary { border-color: var(--primary); background: var(--primary); }
-.actions button.primary:hover { filter: brightness(1.08); }
+.qr-view textarea {
+  width: 100%;
+  height: 100%;
+  resize: none;
+  padding: 14px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  outline: none;
+  color: var(--text);
+  background: var(--surface-2);
+  font: 14px/1.7 var(--font-mono);
+  user-select: text;
+}
+.qr-view textarea:focus { border-color: var(--primary); box-shadow: var(--focus-ring); }
+
+/* ---------- actions ---------- */
+
+.actions { min-height: 58px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 18px; border-top: 1px solid var(--line); background: var(--surface); }
+.actions button, .actions select {
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: background .14s, border-color .14s, color .14s;
+}
+.actions select { margin-right: auto; min-width: 190px; outline: none; }
+.actions button:hover { background: var(--surface-3); border-color: var(--muted); }
+.actions button.primary { border-color: var(--primary); background: var(--primary); color: var(--primary-ink); font-weight: 600; }
+.actions button.primary:hover { filter: brightness(1.07); }
+
 @media (max-width: 520px) {
   .topbar { padding-inline: 12px; }
   .table-view, .qr-view { padding: 12px; }

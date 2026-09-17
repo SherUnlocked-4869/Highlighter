@@ -1,5 +1,6 @@
 const view = document.getElementById('view')
 const pageTitle = document.getElementById('pageTitle')
+const statusRail = document.getElementById('statusRail')
 const toastElement = document.getElementById('toast')
 
 let settings = null
@@ -102,7 +103,7 @@ function applyAppearance() {
   document.body.classList.toggle('dark', theme === 'dark')
   document.body.classList.toggle('compact', !!settings.compact)
   document.body.classList.toggle('has-skin', !!settings.skinPath)
-  document.documentElement.style.setProperty('--primary', settings.mainColor || '#1677ff')
+  document.documentElement.style.setProperty('--primary', settings.mainColor || '#e5a44c')
   document.documentElement.style.setProperty('--radius', `${Number(settings.borderRadius) || 8}px`)
   document.documentElement.style.setProperty('--skin', settings.skinPath ? `url("file:///${String(settings.skinPath).replace(/\\/g, '/')}")` : 'none')
   document.documentElement.style.setProperty('--skin-opacity', String((Number(settings.skinOpacity) || 0) / 100))
@@ -115,6 +116,7 @@ async function updateSettings(patch, message = '设置已保存') {
   settings = await window.electronAPI.updateSettings(patch)
   if (patch.shortcuts) await refreshShortcutStatuses()
   applyAppearance()
+  void refreshStatusRail()
   if (message) toast(message)
   return settings
 }
@@ -146,7 +148,10 @@ function shortcutPresentation(name, accelerator) {
   }
   return {
     className: 'set unavailable',
-    text: `${accelerator} ⚠`,
+    // The chip carries the reason in its tooltip and signals the state with the
+    // .unavailable styling; a trailing warning glyph added no information and
+    // rendered as an emoji on Windows.
+    text: accelerator,
     title: message,
     message
   }
@@ -161,6 +166,71 @@ function pageHeader(title, description, extra = '') {
   return `<div class="page-head"><div><h1>${title}</h1><p>${description || ''}</p></div>${extra}</div>`
 }
 
+const OCR_PROFILE_LABELS = { 'ppocr-v4-ch': 'PaddleOCR v4 中英' }
+
+const statusRailCell = (label, value, tone = '') => {
+  const cls = tone ? ` tone-${tone}` : ''
+  return `<span class="cell${cls}"><i class="dot"></i>${label} <b>${escapeHtml(value)}</b></span>`
+}
+
+// The rail answers "what can this app do right now?" — engine, model, hotkey
+// coverage and search index — without making the user open four settings pages.
+// Any source that is slow or outside the renderer simply degrades to a neutral
+// state; the rail must never block or throw.
+async function refreshStatusRail() {
+  if (!statusRail) return
+  const showOn = new Set(['home', 'settings-hotkeys', 'settings-function', 'models'])
+  if (!showOn.has(currentRoute)) {
+    statusRail.hidden = true
+    return
+  }
+  if (!settings) {
+    statusRail.hidden = true
+    return
+  }
+
+  const cells = []
+
+  const ocrProfile = settings.ocr?.modelProfile || 'ppocr-v4-ch'
+  cells.push(statusRailCell('识别引擎', OCR_PROFILE_LABELS[ocrProfile] || ocrProfile))
+
+  const assignments = settings.ai?.assignments || []
+  const primary = assignments.find((item) => item.feature === 'chat') || assignments[0]
+  const provider = primary ? (settings.providers || []).find((item) => item.id === primary.providerId) : null
+  if (provider && primary.model) {
+    cells.push(statusRailCell('模型', `${provider.name} · ${primary.model}`, 'accent'))
+  } else {
+    cells.push(statusRailCell('模型', '未配置', 'warn'))
+  }
+
+  const configured = Object.values(settings.shortcuts || {}).filter(Boolean).length
+  const total = Object.values(functionGroups).flat().length
+  cells.push(statusRailCell('热键', `${configured}/${total} 已配置`, configured === 0 ? 'warn' : ''))
+
+  // Everything is checked out of process and may not be running yet.
+  let searchText = '检测中'
+  let searchTone = 'off'
+  try {
+    const status = await window.electronAPI.getSearchStatus()
+    if (status?.running && status.ipcAvailable !== false) {
+      searchText = status.phase === 'ready' ? '已就绪' : '启动中'
+      searchTone = status.phase === 'ready' ? '' : 'warn'
+    } else {
+      searchText = status?.available ? '待启用' : '组件缺失'
+      searchTone = 'warn'
+    }
+  } catch {
+    searchText = '检测失败'
+    searchTone = 'warn'
+  }
+  cells.push(statusRailCell('本地搜索', searchText, searchTone))
+
+  // Guard against a route change while awaiting the IPC round trip.
+  if (!showOn.has(currentRoute)) return
+  statusRail.innerHTML = cells.join('')
+  statusRail.hidden = false
+}
+
 function navigate(route) {
   if (currentRoute === 'history' && route !== 'history') {
     historyThumbnailObserver?.disconnect()
@@ -173,6 +243,7 @@ function navigate(route) {
   currentRoute = route || 'home'
   pageTitle.textContent = routeTitles[currentRoute] || 'Highlighter'
   document.querySelectorAll('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.route === currentRoute))
+  void refreshStatusRail()
   renderRoute()
 }
 
@@ -785,7 +856,7 @@ function modelAssignmentForFeature(feature) {
 
 function modelCatalogRowMarkup(provider, index) {
   const model = provider.models[index] || { id: '', name: '' }
-  return `<div class="model-catalog-item" data-model-catalog-item="${escapeHtml(provider.id)}:${index}"><div class="model-catalog-row" data-model-index="${index}"><input class="input model-id-input" data-model-id type="text" value="${escapeHtml(model.id)}" placeholder="模型 ID"><input class="input model-name-input" data-model-name type="text" value="${escapeHtml(model.name)}" placeholder="显示名称"><button class="button icon-button model-row-details" data-model-details="${escapeHtml(provider.id)}" data-model-index="${index}" title="展开模型详情" aria-label="展开模型详情">›</button><button class="button icon-button model-row-delete" data-remove-model="${escapeHtml(provider.id)}" data-model-index="${index}" title="删除模型">🗑</button></div><div class="model-detail-panel" data-model-detail-panel="${escapeHtml(provider.id)}:${index}" hidden></div></div>`
+  return `<div class="model-catalog-item" data-model-catalog-item="${escapeHtml(provider.id)}:${index}"><div class="model-catalog-row" data-model-index="${index}"><input class="input model-id-input" data-model-id type="text" value="${escapeHtml(model.id)}" placeholder="模型 ID"><input class="input model-name-input" data-model-name type="text" value="${escapeHtml(model.name)}" placeholder="显示名称"><button class="button icon-button model-row-details" data-model-details="${escapeHtml(provider.id)}" data-model-index="${index}" title="展开模型详情" aria-label="展开模型详情">›</button><button class="button icon-button model-row-delete" data-remove-model="${escapeHtml(provider.id)}" data-model-index="${index}" title="删除模型" aria-label="删除模型">${iconMarkup('../capture/icons/close.svg')}</button></div><div class="model-detail-panel" data-model-detail-panel="${escapeHtml(provider.id)}:${index}" hidden></div></div>`
 }
 
 function modelOptionsMarkup(provider, currentModel, feature) {

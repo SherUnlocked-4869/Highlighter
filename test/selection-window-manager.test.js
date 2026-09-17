@@ -320,13 +320,13 @@ test('appearance is normalized and broadcast to every live selection window', ()
   assert.deepEqual(manager.getAppearance(), {
     theme: 'light',
     resolvedTheme: 'light',
-    mainColor: '#1677ff'
+    mainColor: '#e5a44c'
   })
 
   manager.broadcastAppearance()
-  const expected = ['action:appearance', { theme: 'light', resolvedTheme: 'light', mainColor: '#1677ff' }]
+  const expected = ['action:appearance', { theme: 'light', resolvedTheme: 'light', mainColor: '#e5a44c' }]
   assert.deepEqual(toolbar.webContents.messages, [
-    ['toolbar:appearance', { theme: 'light', resolvedTheme: 'light', mainColor: '#1677ff' }]
+    ['toolbar:appearance', { theme: 'light', resolvedTheme: 'light', mainColor: '#e5a44c' }]
   ])
   assert.deepEqual(firstAction.webContents.messages, [expected])
   assert.deepEqual(secondAction.webContents.messages, [expected])

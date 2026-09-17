@@ -5,6 +5,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'self'">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Highlighter 长截图</title>
+  <link rel="stylesheet" href="../shared/tokens.css">
   <link rel="stylesheet" href="long-capture.css">
 </head>
 <body>
@@ -22,8 +23,8 @@
       <div class="metrics"><span id="size">0 × 0</span><span id="strips">0 段</span><span id="confidence">--</span></div>
     </section>
     <section class="direction" aria-label="拼接方向">
-      <button data-axis="vertical" class="active" title="纵向拼接">↕ 纵向</button>
-      <button data-axis="horizontal" title="横向拼接">↔ 横向</button>
+      <button data-axis="vertical" class="active" title="纵向拼接">⇕ 纵向</button>
+      <button data-axis="horizontal" title="横向拼接">⇔ 横向</button>
       <button id="adjustSelection" title="调整截图区域">⌖ 选区</button>
     </section>
     <section class="trim-controls">
@@ -35,10 +36,10 @@
       <button id="toggle" class="primary">开始</button>
     </section>
     <footer class="actions">
-      <button id="pin" title="贴图">📌<span>贴图</span></button>
-      <button id="save" title="保存">💾<span>保存</span></button>
-      <button id="fastSave" title="快速保存">⇩<span>快存</span></button>
-      <button id="copy" class="primary" title="复制并关闭">✓<span>复制</span></button>
+      <button id="pin" title="贴图"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/><path d="M12 15v5"/></svg><span>贴图</span></button>
+      <button id="save" title="保存"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h11l3 3v13H5z"/><path d="M8 4v6h7V4"/><path d="M8 20v-6h8v6"/></svg><span>保存</span></button>
+      <button id="fastSave" title="快速保存"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></svg><span>快存</span></button>
+      <button id="copy" class="primary" title="复制并关闭"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5 10 17.5 19 7"/></svg><span>复制</span></button>
     </footer>
   </main>
   <video id="source" muted autoplay></video>

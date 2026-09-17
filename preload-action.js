@@ -16,7 +16,7 @@ function subscribe(channel, callback, mapPayload = (value) => value) {
 function normalizeAppearance(value = {}) {
   return {
     theme: ['light', 'dark', 'system'].includes(value?.theme) ? value.theme : 'system',
-    mainColor: /^#[0-9a-f]{6}$/i.test(value?.mainColor || '') ? value.mainColor : '#1677ff'
+    mainColor: /^#[0-9a-f]{6}$/i.test(value?.mainColor || '') ? value.mainColor : '#e5a44c'
   }
 }
 

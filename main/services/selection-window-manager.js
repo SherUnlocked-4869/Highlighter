@@ -241,7 +241,7 @@ class SelectionWindowManager {
       : theme
     const mainColor = /^#[0-9a-f]{6}$/i.test(settings.mainColor || '')
       ? settings.mainColor
-      : '#1677ff'
+      : '#e5a44c'
     return { theme, resolvedTheme, mainColor }
   }
 

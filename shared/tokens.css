@@ -1,11 +1,169 @@
+/*
+ * Highlighter · shared design tokens
+ *
+ * Single source of truth for the "Nightshift" language: warm charcoal
+ * surfaces, one accent reserved for selection and primary action, and depth
+ * expressed as a surface-elevation ladder rather than borders or glow.
+ *
+ * Load order matters: this file must come before any window stylesheet, so
+ * window CSS can consume these values instead of redefining them.
+ *
+ * ── Two rules govern this file ──────────────────────────────────────────
+ *
+ * 1. The accent is user-configurable (settings.mainColor). Runtime code sets
+ *    --primary as an inline style on <html>, which outranks this sheet. So
+ *    --primary is never re-declared under body.dark; doing that would
+ *    silently ignore the user's chosen color in dark mode.
+ *
+ * 2. A custom property containing var() is resolved once, on the element
+ *    where it is declared, and descendants inherit the resolved result. So
+ *    every derived token and every alias below is declared in BOTH :root and
+ *    body.dark — otherwise the light-mode value would leak into dark mode.
+ *
+ * Derived accent colors, so that any user-picked hue stays legible:
+ *   --primary-ink   contrast-safe text ON a solid accent fill
+ *   --primary-text  accent adjusted for use as foreground text on a surface
+ *
+ * --primary-ink is black or white, chosen at an oklch lightness of 0.54. That
+ * threshold is the measured optimum: sweeping 1008 hues and lightnesses, no
+ * other threshold raises the worst case. The floor is ~3.8:1, because a vivid
+ * mid-tone fill (e.g. oklch(0.55 0.22 330)) cannot reach 4.5:1 against either
+ * black or white — a property of the color space, not of this formula. Every
+ * common brand accent tested clears 4.5:1. See design-demos/tools/.
+ */
+
 :root {
-  --primary: #1677ff;
-  --radius: 8px;
-  --danger: #e5484d;
-  --ok: #52c41a;
-  --warn: #faad14;
-  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
-  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-  --font-mono: Consolas, "Courier New", monospace;
+  color-scheme: light;
+
+  /* ---- surfaces: base to raised. Depth comes from this ladder. ---- */
+  --bg: #eeebe4;
+  --surface: #fffefb;
+  --surface-2: #f6f3ed;
+  --surface-3: #ece8e0;
+
+  /* ---- hairlines ---- */
+  --line: #e2ddd3;
+  --line-2: #cdc6ba;
+
+  /* ---- ink ladder ---- */
+  --ink: #1b1815;
+  --ink-2: #4a453d;
+  --muted: #6d675e;
+  --faint: #9a938a;
+
+  /* ---- accent ---- */
+  --primary: #e5a44c;
+
+  /* ---- status ---- */
+  --ok: #2e7d51;
+  --warn: #8a6a1f;
+  --danger: #b8382c;
+
+  /* ---- selection / highlight ---- */
+  --mark-bg: transparent;
+  --mark-fg: #b8382c;
+
+  /* ---- radii: derived from the one user-facing knob (settings.borderRadius) ---- */
+  --radius: 9px;
+
+  /* ---- type ----
+     No web fonts: the renderer CSP is font-src 'self' data:, and a desktop
+     capture tool must not depend on network availability to draw its UI.
+     Segoe UI Variable ships with Windows 11 and carries the geometric
+     character this language calls for; Cascadia Mono carries numeric and
+     keycap text. */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+
+  /* ---- elevation ---- */
+  --shadow-1: 0 1px 2px rgba(40, 32, 20, .06);
+  --shadow-2: 0 2px 6px rgba(40, 32, 20, .07), 0 14px 30px rgba(40, 32, 20, .07);
+  --shadow-3: 0 2px 8px rgba(40, 32, 20, .08), 0 26px 60px rgba(40, 32, 20, .12);
+
+  /* ---- skin (user background image) ---- */
+  --skin: none;
+  --skin-opacity: .18;
+
+  /* derived + aliases (see rule 2 — repeated under body.dark) */
+  --primary-ink: oklch(from var(--primary) clamp(0, (0.54 - l) * 1000, 1) 0 0);
+  --primary-text: oklch(from var(--primary) min(l, 0.48) c h);
+  --primary-soft: color-mix(in srgb, var(--primary) 13%, transparent);
+  --primary-line: color-mix(in srgb, var(--primary) 40%, transparent);
+  --ok-soft: color-mix(in srgb, var(--ok) 13%, transparent);
+  --warn-soft: color-mix(in srgb, var(--warn) 15%, transparent);
+  --danger-soft: color-mix(in srgb, var(--danger) 11%, transparent);
+  --radius-sm: max(0px, calc(var(--radius) - 3px));
+  --radius-lg: calc(var(--radius) + 5px);
+  --radius-pill: 999px;
+  --shadow: var(--shadow-3);
+  --focus-ring: 0 0 0 3px var(--primary-soft);
+  --inline-code: var(--primary-text);
+  --reasoning-bg: var(--surface-2);
+
+  /* Compatibility aliases. Each window stylesheet previously declared its own
+     palette under slightly different names; rather than rewrite several
+     hundred rules, the historical names resolve to the canonical ladder.
+     New rules should use the canonical names. */
+  --panel: var(--surface);
+  --panel-soft: var(--surface-2);
+  --text: var(--ink);
+  --text-dim: var(--muted);
+  --border: var(--line);
+  --surface-hover: var(--surface-2);
+  --surface-active: var(--surface-3);
 }
 
+body.dark {
+  color-scheme: dark;
+
+  /* warm charcoal, not blue-black: the ladder keeps a trace of the accent */
+  --bg: #121110;
+  --surface: #1c1a18;
+  --surface-2: #242220;
+  --surface-3: #2d2a27;
+
+  --line: #332f2b;
+  --line-2: #453f39;
+
+  --ink: #f1ece4;
+  --ink-2: #c6c0b5;
+  --muted: #8c8679;
+  --faint: #67615a;
+
+  --ok: #63b98a;
+  --warn: #d9a94a;
+  --danger: #e0736a;
+
+  --mark-fg: #f0a08a;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-2: 0 2px 6px rgba(0, 0, 0, .45), 0 14px 30px rgba(0, 0, 0, .4);
+  --shadow-3: 0 2px 8px rgba(0, 0, 0, .5), 0 26px 60px rgba(0, 0, 0, .55);
+
+  /* --primary is deliberately absent: it is owned by the runtime setting. */
+  --primary-ink: oklch(from var(--primary) clamp(0, (0.54 - l) * 1000, 1) 0 0);
+  /* In dark mode the surface is the dark end, so a user-picked dark accent
+     must be lightened rather than used raw, or it disappears. */
+  --primary-text: oklch(from var(--primary) max(l, 0.72) c h);
+  --primary-soft: color-mix(in srgb, var(--primary) 14%, transparent);
+  --primary-line: color-mix(in srgb, var(--primary) 42%, transparent);
+  --ok-soft: color-mix(in srgb, var(--ok) 14%, transparent);
+  --warn-soft: color-mix(in srgb, var(--warn) 15%, transparent);
+  --danger-soft: color-mix(in srgb, var(--danger) 12%, transparent);
+  --radius-sm: max(0px, calc(var(--radius) - 3px));
+  --radius-lg: calc(var(--radius) + 5px);
+  --radius-pill: 999px;
+  --shadow: var(--shadow-3);
+  --focus-ring: 0 0 0 3px var(--primary-soft);
+  --inline-code: var(--primary-text);
+  --reasoning-bg: var(--surface-2);
+
+  --panel: var(--surface);
+  --panel-soft: var(--surface-2);
+  --text: var(--ink);
+  --text-dim: var(--muted);
+  --border: var(--line);
+  --surface-hover: var(--surface-2);
+  --surface-active: var(--surface-3);
+}

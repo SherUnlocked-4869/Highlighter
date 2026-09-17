@@ -37,6 +37,11 @@
         <div id="pageTitle">快捷功能</div>
         <div class="window-actions"><button id="minimize" title="最小化" aria-label="最小化"><span class="svg-icon" style="--icon:url('../capture/icons/line.svg')" aria-hidden="true"></span></button><button id="close" title="关闭" aria-label="关闭"><span class="svg-icon" style="--icon:url('../capture/icons/close.svg')" aria-hidden="true"></span></button></div>
       </header>
+      <!-- Status rail: surfaces what the app is currently capable of doing
+           (OCR engine, active model, hotkey coverage, local search index)
+           instead of hiding it behind separate settings pages. Populated by
+           refreshStatusRail() and shown only on routes where it is relevant. -->
+      <div class="status-rail" id="statusRail" hidden></div>
       <main id="view"></main>
     </section>
   </div>

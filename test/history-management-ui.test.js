@@ -34,11 +34,20 @@ test('history page renders storage statistics and batch controls', () => {
   assert.match(styles, /\.history-stats\{/)
   assert.match(styles, /\.history-batch\{/)
   assert.match(styles, /\.history-item\.selected\{/)
-  assert.match(styles, /\.history-image img\{display:block;width:100%;height:100%;object-fit:contain\}/)
+  // Thumbnails must fill the frame without stretching or cropping. The rule also
+  // carries positioning and a hover transition, so match the properties rather
+  // than the exact declaration order.
+  assert.match(styles, /\.history-image img\{[^}]*display:block/)
+  assert.match(styles, /\.history-image img\{[^}]*width:100%/)
+  assert.match(styles, /\.history-image img\{[^}]*height:100%/)
+  assert.match(styles, /\.history-image img\{[^}]*object-fit:contain/)
 })
 
 test('history action buttons keep readable color in dark mode', () => {
-  assert.match(styles, /\.history-actions button\{[^}]*color:var\(--text\)/)
+  // The buttons must take their color from a theme-aware token so they stay
+  // legible in both themes, rather than hardcoding a value.
+  assert.match(styles, /\.history-actions button\{[^}]*color:var\(--[\w-]+\)/)
+  assert.doesNotMatch(styles, /\.history-actions button\{[^}]*color:\s*#/)
 })
 
 test('history page opens screenshots with the default application', () => {

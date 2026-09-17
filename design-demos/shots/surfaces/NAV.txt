@@ -1,0 +1,8 @@
+ok   home               title=快捷功能     active=["home"] painted=["home"] rail=true/4
+ok   settings-hotkeys   title=热键设置     active=["settings-hotkeys"] painted=["settings-hotkeys"] rail=true/4
+ok   models             title=模型       active=["models"] painted=["models"] rail=true/4
+ok   settings-function  title=功能设置     active=["settings-function"] painted=["settings-function"] rail=true/4
+ok   history            title=截图历史     active=["history"] painted=["history"] rail=false/4
+ok   appearance         title=外观配色     active=["appearance"] painted=["appearance"] rail=false/4
+ok   settings-system    title=系统设置     active=["settings-system"] painted=["settings-system"] rail=false/4
+ok   about              title=关于       active=["about"] painted=["about"] rail=false/4

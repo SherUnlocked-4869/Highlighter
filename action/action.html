@@ -10,12 +10,15 @@
 </head>
 <body>
 <div class="header">
-  <span class="icon" id="headerIcon">🌐</span>
+  <!-- Inline SVG rather than emoji: this window's CSP is img-src 'none', so a
+       mask-image icon cannot be used, and emoji render inconsistently across
+       Windows font versions. -->
+  <span class="icon" id="headerIcon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/></svg></span>
   <span class="title" id="headerTitle">翻译中...</span>
   <span class="badge" id="headerBadge">翻译</span>
   <span class="header-spacer"></span>
   <div class="header-actions">
-    <button class="pin-btn" id="btnPin" title="置顶">📌</button>
+    <button class="pin-btn" id="btnPin" title="置顶" aria-label="置顶"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/><path d="M12 15v5"/></svg></button>
   </div>
 </div>
 <div class="content" id="content">

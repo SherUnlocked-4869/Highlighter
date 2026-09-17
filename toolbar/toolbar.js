@@ -1,6 +1,6 @@
 const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
 let configuredTheme = 'system'
-let configuredMainColor = '#1677ff'
+let configuredMainColor = '#e5a44c'
 
 function applyAppearance(appearance = {}) {
   configuredTheme = ['light', 'dark'].includes(appearance.theme) ? appearance.theme : 'system'
@@ -9,7 +9,7 @@ function applyAppearance(appearance = {}) {
     : configuredTheme
   configuredMainColor = /^#[0-9a-f]{6}$/i.test(appearance.mainColor || '')
     ? appearance.mainColor
-    : '#1677ff'
+    : '#e5a44c'
   document.body.classList.toggle('dark', resolvedTheme === 'dark')
   document.documentElement.style.setProperty('--primary', configuredMainColor)
 }

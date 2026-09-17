@@ -1,11 +1,46 @@
+/*
+ * Long-capture region overlay.
+ *
+ * Draws the selection rectangle over the scrolled page. Colors come from the
+ * shared tokens so the selection hue matches the app accent rather than a
+ * hardcoded blue.
+ */
+
 * { box-sizing: border-box; }
+
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; pointer-events: none; }
-#selection { position: fixed; border: 2px solid #36a3ff; box-shadow: 0 0 0 1px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.2); transition: border-color .16s, box-shadow .16s; }
-#selection.active { border-color: #34c759; box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 0 12px rgba(52,199,89,.35); }
-#selection span { position: absolute; left: -2px; top: -25px; height: 22px; padding: 0 8px; color: #fff; background: #1677ff; font: 12px/22px -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; white-space: nowrap; }
-#selection.active span { background: #248a3d; }
+
+#selection {
+  position: fixed;
+  border: 2px solid var(--primary);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .45), inset 0 0 0 1px rgba(255, 255, 255, .2);
+  transition: border-color .16s, box-shadow .16s;
+}
+#selection.active { border-color: var(--ok); box-shadow: 0 0 0 1px rgba(0, 0, 0, .45), 0 0 12px var(--ok-soft); }
+#selection span {
+  position: absolute;
+  left: -2px;
+  top: -25px;
+  height: 22px;
+  padding: 0 8px;
+  color: var(--primary-ink);
+  background: var(--primary);
+  font: 12px/22px var(--font-ui);
+  white-space: nowrap;
+}
+#selection.active span { background: var(--ok); }
+
 body.editing #selection { pointer-events: auto; cursor: move; }
-#selection i { position: absolute; display: none; width: 10px; height: 10px; border: 1px solid #1677ff; background: #fff; border-radius: 2px; }
+
+#selection i {
+  position: absolute;
+  display: none;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--primary);
+  background: #fff;
+  border-radius: 2px;
+}
 body.editing:not(.axis-locked) #selection i { display: block; }
 #selection i[data-handle="n"] { left: 50%; top: -6px; transform: translateX(-50%); cursor: ns-resize; }
 #selection i[data-handle="s"] { left: 50%; bottom: -6px; transform: translateX(-50%); cursor: ns-resize; }

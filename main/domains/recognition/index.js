@@ -43,7 +43,7 @@ function createRecognitionDomain(deps) {
       type,
       dataUrl,
       scaleFactor: Number(options.scaleFactor) || 1,
-      mainColor: settings.mainColor || '#1677ff'
+      mainColor: settings.mainColor || '#e5a44c'
     }
     win.loadFile(pagePath)
     win.on('closed', () => recognitionWindows.delete(win))

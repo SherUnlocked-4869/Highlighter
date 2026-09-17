@@ -14,6 +14,7 @@ const actionCss = fs.readFileSync(path.join(root, 'action', 'action.css'), 'utf8
 const toolbarPreload = fs.readFileSync(path.join(root, 'preload-toolbar.js'), 'utf8')
 const toolbarHtml = fs.readFileSync(path.join(root, 'toolbar', 'toolbar.html'), 'utf8')
 const toolbarScript = fs.readFileSync(path.join(root, 'toolbar', 'toolbar.js'), 'utf8')
+const tokensCss = fs.readFileSync(path.join(root, 'shared', 'tokens.css'), 'utf8')
 
 test('selection result windows receive and apply the configured appearance', () => {
   assert.match(manager, /getAppearance\(settings = this\.getSettings\(\)\)[\s\S]*this\.nativeTheme\.shouldUseDarkColors/)
@@ -27,16 +28,22 @@ test('selection result windows receive and apply the configured appearance', () 
   assert.match(actionScript, /onActionAppearance\(applyAppearance\)/)
 })
 
-test('selection result palette follows light, dark, and primary theme variables', () => {
+test('selection result palette follows the shared light/dark tokens', () => {
+  // This window used to carry its own :root/body.dark palette, which shadowed
+  // shared/tokens.css and let it drift from the main window. It now consumes the
+  // shared tokens, so assert the consumption rather than duplicated hex values.
   assert.match(actionHtml, /action\.css/)
-  assert.match(actionCss, /:root \{[\s\S]*--bg: #f5f5f5/)
-  assert.match(actionCss, /body\.dark \{[\s\S]*--bg: #121316/)
-  assert.match(actionCss, /body\.dark \{[\s\S]*--inline-code: #ff9f43/)
+  assert.match(actionHtml, /shared\/tokens\.css/)
+  assert.doesNotMatch(actionCss, /:root\s*\{[^}]*--bg:\s*#/, 'no private palette')
+  assert.doesNotMatch(actionCss, /body\.dark\s*\{/, 'theme switching lives in tokens.css')
   assert.match(actionCss, /background: var\(--bg\)/)
-  assert.match(actionCss, /color: var\(--primary\)/)
+  assert.match(actionCss, /color: var\(--primary-text\)/)
   assert.match(actionCss, /\.result code \{[^}]*color: var\(--inline-code\)/)
   assert.match(actionCss, /\.result pre code \{[^}]*color: var\(--text\)/)
   assert.doesNotMatch(actionCss, /background: #1a1a2e/)
+  // The shared sheet must actually define the tokens this file relies on.
+  assert.match(tokensCss, /--inline-code:/)
+  assert.match(tokensCss, /body\.dark \{/)
 })
 
 test('selection toolbar receives configured and system appearance updates', () => {
@@ -50,9 +57,12 @@ test('selection toolbar receives configured and system appearance updates', () =
 })
 
 test('selection toolbar uses the main interface palette and one text color', () => {
-  assert.match(toolbarHtml, /:root \{[\s\S]*--bg: #f5f5f5;[\s\S]*--text: #1f1f1f;/)
-  assert.match(toolbarHtml, /body\.dark \{[\s\S]*--bg: #121316;[\s\S]*--text: #f0f0f0;/)
-  assert.match(toolbarHtml, /\.toolbar \{[\s\S]*background: var\(--bg\)/)
+  // The toolbar previously declared its own light/dark palette inline. It now
+  // links the shared tokens, so the palette cannot diverge from the main window.
+  assert.match(toolbarHtml, /shared\/tokens\.css/)
+  assert.doesNotMatch(toolbarHtml, /:root\s*\{[^}]*--bg:\s*#/, 'no private palette')
+  assert.doesNotMatch(toolbarHtml, /body\.dark\s*\{/, 'theme switching lives in tokens.css')
+  assert.match(toolbarHtml, /\.toolbar \{[\s\S]*background: var\(--surface\)/)
   assert.match(toolbarHtml, /\.toolbar \.btn \{[\s\S]*color: var\(--text\)/)
   assert.doesNotMatch(toolbarHtml, /\.btn-(?:copy|search|translate|explain|custom)\s*\{[^}]*color:/)
 })

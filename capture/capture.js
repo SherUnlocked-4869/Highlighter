@@ -246,7 +246,7 @@ function render() {
 function drawHandles() {
   if (!selection || currentTool !== 'select') return
   const points=[[selection.x,selection.y],[selection.x+selection.w/2,selection.y],[selection.x+selection.w,selection.y],[selection.x,selection.y+selection.h/2],[selection.x+selection.w,selection.y+selection.h/2],[selection.x,selection.y+selection.h],[selection.x+selection.w/2,selection.y+selection.h],[selection.x+selection.w,selection.y+selection.h]]
-  ctx.save(); ctx.fillStyle='#fff'; ctx.strokeStyle='#1677ff'; ctx.lineWidth=1; points.forEach(([x,y])=>{ctx.fillRect(x-4,y-4,8,8);ctx.strokeRect(x-4,y-4,8,8)}); ctx.restore()
+  ctx.save(); ctx.fillStyle='#fff'; ctx.strokeStyle='#e5a44c'; ctx.lineWidth=1; points.forEach(([x,y])=>{ctx.fillRect(x-4,y-4,8,8);ctx.strokeRect(x-4,y-4,8,8)}); ctx.restore()
 }
 
 function updateFloatingUi() {
@@ -674,7 +674,7 @@ addEventListener('keydown',(event)=>{
 })
 
 window.captureAPI.onInit((data)=>{
-  clearOcrResult();setProcessingState(null);initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#1677ff')
+  clearOcrResult();setProcessingState(null);initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#e5a44c')
   applyWatermarkSettings(data.settings?.screenshot?.watermark)
   if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}
   image=new Image(); image.onload=()=>{if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError('截图图片解码失败')

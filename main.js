@@ -134,7 +134,7 @@ const DEFAULT_SETTINGS = {
   apiKey: '',
   providers: DEFAULT_AI_PROVIDERS,
   theme: 'system',
-  mainColor: '#1677ff',
+  mainColor: '#e5a44c',
   borderRadius: 8,
   compact: false,
   skinPath: '',

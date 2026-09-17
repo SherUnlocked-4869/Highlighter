@@ -319,7 +319,7 @@ async function initialize(data) {
   initData = data
   axis = data.settings?.screenshot?.longCaptureDirection === 'horizontal' ? 'horizontal' : 'vertical'
   directionButtons.forEach((button) => button.classList.toggle('active', button.dataset.axis === axis))
-  document.documentElement.style.setProperty('--primary', data.settings?.mainColor || '#1677ff')
+  document.documentElement.style.setProperty('--primary', data.settings?.mainColor || '#e5a44c')
   worker = new Worker('matcher-worker.js')
   worker.onmessage = (event) => {
     const request = workerRequests.get(event.data.id)

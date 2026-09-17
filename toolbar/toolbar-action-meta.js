@@ -18,7 +18,7 @@
     open: Object.freeze({
       id: 'open',
       label: '跳转',
-      icon: '↗',
+      icon: '⇗',
       kind: 'local',
       description: '在默认浏览器中打开划词内容，内容将直接作为网址跳转',
       optional: true

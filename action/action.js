@@ -6,6 +6,15 @@ const ALLOWED_MARKDOWN_TAGS = [
   'li', 'ol', 'p', 'pre', 'strong', 'ul'
 ]
 
+const ACTION_ICONS = {
+  translate: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/></svg>',
+  explain: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6"/><path d="M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3Z"/></svg>',
+  reasoning: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3Z"/><path d="M9.5 19.5h5"/></svg>',
+  custom: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4l1.9 5.1L19 11l-5.1 1.9L12 18l-1.9-5.1L5 11l5.1-1.9Z"/></svg>',
+  pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/><path d="M12 15v5"/></svg>',
+  pinned: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/><path d="M12 15v5"/></svg>'
+}
+
 let isPinned = false
 let isDone = false
 let reasoning = ''
@@ -13,7 +22,7 @@ let fullText = ''
 let loadTimer = null
 let userScrolled = false
 let configuredTheme = 'system'
-let configuredMainColor = '#1677ff'
+let configuredMainColor = '#e5a44c'
 let currentStreamId = null
 let renderQueued = false
 let renderToken = 0
@@ -37,7 +46,7 @@ function applyAppearance(appearance = {}) {
     : configuredTheme
   configuredMainColor = /^#[0-9a-f]{6}$/i.test(appearance.mainColor || '')
     ? appearance.mainColor
-    : '#1677ff'
+    : '#e5a44c'
   document.body.classList.toggle('dark', resolvedTheme === 'dark')
   document.documentElement.style.setProperty('--primary', configuredMainColor)
 }
@@ -263,12 +272,13 @@ function addReasoning() {
     const header = document.createElement('div')
     header.className = 'reasoning-header'
     const title = document.createElement('span')
-    title.textContent = '🧠 思考过程'
+    title.className = 'reasoning-title'
+    title.innerHTML = ACTION_ICONS.reasoning + '<span>思考过程</span>'
     const spacer = document.createElement('span')
     spacer.className = 'reasoning-spacer'
     const arrow = document.createElement('span')
     arrow.className = 'reasoning-arrow'
-    arrow.textContent = '▶'
+    arrow.textContent = '▸'
     header.append(title, spacer, arrow)
 
     const preview = document.createElement('div')
@@ -279,7 +289,7 @@ function addReasoning() {
 
     header.addEventListener('click', function() {
       box.classList.toggle('open')
-      arrow.textContent = box.classList.contains('open') ? '▼' : '▶'
+      arrow.textContent = box.classList.contains('open') ? '▾' : '▸'
       if (box.classList.contains('open')) {
         full.textContent = reasoning
         full.scrollTop = full.scrollHeight
@@ -299,14 +309,20 @@ actionBridge.onActionStart(function(data) {
   currentStreamId = data.streamId
   el.sourceText.textContent = data.text
   if (data.type === 'translate') {
-    el.headerIcon.textContent = '🌐'
+    el.headerIcon.innerHTML = ACTION_ICONS.translate
     el.headerTitle.textContent = '翻译'
     el.headerBadge.textContent = '翻译'
     el.headerBadge.className = 'badge'
     el.loadingText.textContent = '正在翻译...'
   } else {
     const label = data.label || '解释'
-    el.headerIcon.textContent = data.type === 'explain' ? '💡' : (data.icon || '✦')
+    // Custom AI functions supply their own short glyph (e.g. '译', '⇗'), which
+    // is rendered as text. The built-ins and the no-icon fallback use an inline
+    // SVG. textContent is used for the caller-supplied glyph so it can never
+    // inject markup.
+    if (data.type === 'explain') el.headerIcon.innerHTML = ACTION_ICONS.explain
+    else if (data.icon) el.headerIcon.textContent = data.icon
+    else el.headerIcon.innerHTML = ACTION_ICONS.custom
     el.headerTitle.textContent = label
     el.headerBadge.textContent = label
     el.headerBadge.className = 'badge explain'
@@ -366,7 +382,7 @@ document.getElementById('btnPin').addEventListener('click', function() {
   isPinned = !isPinned
   const button = document.getElementById('btnPin')
   button.classList.toggle('pinned', isPinned)
-  button.textContent = isPinned ? '📍' : '📌'
+  button.innerHTML = isPinned ? ACTION_ICONS.pinned : ACTION_ICONS.pin
   button.title = isPinned ? '取消置顶' : '置顶窗口'
   actionBridge.togglePin(isPinned)
 })
@@ -388,7 +404,7 @@ actionBridge.onPinDenied(function(data) {
   isPinned = false
   const button = document.getElementById('btnPin')
   button.classList.remove('pinned')
-  button.textContent = '📌'
+  button.innerHTML = ACTION_ICONS.pin
   button.title = '置顶窗口'
   alert(`最多只能置顶 ${data.max} 个窗口，请先取消其他窗口的置顶。`)
 })

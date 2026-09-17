@@ -75,7 +75,9 @@ test('optional open action joins the toolbar only when configured into the order
   assert.deepEqual(getToolbarActionDefinition(enabled, 'open'), {
     id: 'open',
     label: '跳转',
-    icon: '↗',
+    // U+21D7 rather than U+2197: the latter is Extended_Pictographic, so Windows
+    // may substitute the colour emoji font instead of a text mark.
+    icon: '⇗',
     kind: 'local',
     prompt: ''
   })

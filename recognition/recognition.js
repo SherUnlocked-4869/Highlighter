@@ -151,7 +151,14 @@ function currentOutput() {
 }
 
 window.recognitionAPI.onInit(async (data) => {
-  document.documentElement.style.setProperty('--primary', data.mainColor || '#1677ff')
+  // This window follows the app theme like every other surface. It previously
+  // stayed dark regardless of the user's setting, because its stylesheet
+  // hard-coded a dark palette.
+  const resolvedTheme = ['light', 'dark'].includes(data.theme)
+    ? data.theme
+    : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+  document.body.classList.toggle('dark', resolvedTheme === 'dark')
+  document.documentElement.style.setProperty('--primary', data.mainColor || '#e5a44c')
   try {
     if (data.type === 'table') {
       title.textContent = '表格识别'
