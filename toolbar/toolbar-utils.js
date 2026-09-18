@@ -212,11 +212,23 @@ function getToolbarActionThinking(toolbarConfig, thinkingConfig, action) {
 
 function getToolbarWidth(actions) {
   if (!Array.isArray(actions) || !actions.length) return 0
-  return 20 + actions.reduce((width, action) => {
+  const buttons = actions.reduce((width, action) => {
     const label = typeof action === 'object' ? action?.label : (BUILTIN_TOOLBAR_ACTIONS[action]?.label || OPTIONAL_TOOLBAR_ACTIONS[action]?.label)
     const characters = Array.from(String(label || '')).length
     return width + Math.max(70, Math.min(126, 42 + characters * 14))
   }, 0)
+  // Mirror the boxes toolbar/toolbar.html wraps around the buttons. The window is
+  // frameless and sized exactly to this value, so an unbudgeted LED, gap or
+  // separator makes the strip overflow its own content box: the buttons eat the
+  // 6px padding and the outer insets collapse, and once the overflow exceeds that
+  // padding the edge items are clipped and long labels truncate. Keep these terms
+  // in sync with that stylesheet:
+  //   fixed       border 1+1, padding 6+6, status LED 6 with 2px/5px margins
+  //   per action  1px separator with 2px margins
+  //   per child   the 3px flex gap between all (2n-1) children
+  const count = actions.length
+  const chrome = 14 + 13 + (count - 1) * 5 + (2 * count - 1) * 3
+  return chrome + buttons
 }
 
 function isLocalToolbarAction(action) {

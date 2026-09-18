@@ -141,7 +141,21 @@ test('search URLs encode text and unknown engines fall back to Bing', () => {
 
 test('toolbar width grows by stable slots and accommodates longer custom labels', () => {
   assert.equal(getToolbarWidth([]), 0)
-  assert.equal(getToolbarWidth(['copy']), 90)
-  assert.equal(getToolbarWidth(['copy', 'search', 'translate', 'explain']), 300)
+  assert.equal(getToolbarWidth(['copy']), 100)
+  assert.equal(getToolbarWidth(['copy', 'search', 'translate', 'explain']), 343)
   assert.ok(getToolbarWidth([{ label: '这是一个较长功能' }]) > getToolbarWidth(['copy']))
+})
+
+test('toolbar window budget covers the chrome the strip CSS adds', () => {
+  // Mirrors toolbar/toolbar.html. 17 is the largest reachable action count:
+  // 4 builtin + 1 optional + MAX_CUSTOM_ACTIONS (12).
+  const minimum = (count) =>
+    14 + 13 + (count - 1) * 5 + (2 * count - 1) * 3 + 62 * count
+  for (let count = 1; count <= 17; count += 1) {
+    const actions = Array.from({ length: count }, () => 'copy')
+    assert.ok(
+      getToolbarWidth(actions) >= minimum(count),
+      `${count} actions must fit inside the window the manager is told to open`
+    )
+  }
 })

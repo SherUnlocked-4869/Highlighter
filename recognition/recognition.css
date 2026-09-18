@@ -74,6 +74,13 @@ button, select, textarea { font: inherit; }
   -webkit-app-region: no-drag;
 }
 
+/* The badge reports the outcome as well as the engine, so the failure path needs
+   its own tone instead of staying on the success green. */
+.badge.is-error {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
 .icon-button {
   width: 34px;
   height: 34px;
