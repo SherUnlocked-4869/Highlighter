@@ -1315,8 +1315,9 @@ async function openToolbarAiAction(action, text) {
     text,
     provider: aiRuntime,
     translateLanguages: toolbarConfig.translateLanguages,
+    conversationConfig: toolbarConfig.conversation,
     thinking: getToolbarActionThinking(toolbarConfig, getSettings().toolbarThinking, actionDefinition.id),
-    support: resolveFollowUpSupport(aiRuntime)
+    support: resolveFollowUpSupport(aiRuntime, { conversation: toolbarConfig.conversation })
   })
   actionConversations.set(win, conversation)
   selectionWindowManager.positionActionWindow(win, screen)

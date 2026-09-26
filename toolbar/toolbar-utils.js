@@ -21,6 +21,11 @@ const SEARCH_ENGINES = new Set(Object.keys(SEARCH_URLS))
 const TRANSLATE_SOURCE_LANGUAGES = Object.freeze(['auto', '中文', '日文', '英文', '韩文'])
 const TRANSLATE_TARGET_LANGUAGES = Object.freeze(['中文', '日文', '英文'])
 const DEFAULT_TRANSLATE_LANGUAGES = Object.freeze({ source: 'auto', target: '中文' })
+// Follow-up conversations are only configurable by picking one of these; a
+// value outside the list would be unreachable from the settings UI, so
+// normalization clamps to the default instead of to the nearest bound.
+const CONVERSATION_TURN_LIMITS = Object.freeze([3, 5, 10, 20])
+const DEFAULT_CONVERSATION = Object.freeze({ enabled: true, maxFollowUpTurns: 10 })
 const CUSTOM_ACTION_PREFIX = 'custom:'
 const MAX_CUSTOM_ACTIONS = 12
 const MAX_CUSTOM_NAME_LENGTH = 16
@@ -43,6 +48,7 @@ const DEFAULT_SELECTION_TOOLBAR = Object.freeze({
   customActions: Object.freeze([]),
   searchEngine: 'bing',
   translateLanguages: DEFAULT_TRANSLATE_LANGUAGES,
+  conversation: DEFAULT_CONVERSATION,
   resultWindow: ACTION_WINDOW_DEFAULT_SIZE
 })
 
@@ -124,7 +130,20 @@ function normalizeSelectionToolbar(value = {}) {
     customActions,
     searchEngine: SEARCH_ENGINES.has(config.searchEngine) ? config.searchEngine : 'bing',
     translateLanguages: normalizeTranslateLanguages(config.translateLanguages),
+    conversation: normalizeConversation(config.conversation),
     resultWindow: normalizeActionWindowSize(config.resultWindow)
+  }
+}
+
+function normalizeConversation(value) {
+  const config = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  // Strict membership: the settings layer only ever stores a number, and coercion
+  // here would also accept odd inputs like [5].
+  return {
+    enabled: config.enabled !== false,
+    maxFollowUpTurns: CONVERSATION_TURN_LIMITS.includes(config.maxFollowUpTurns)
+      ? config.maxFollowUpTurns
+      : DEFAULT_CONVERSATION.maxFollowUpTurns
   }
 }
 
@@ -244,6 +263,8 @@ module.exports = {
   BUILTIN_TOOLBAR_ACTIONS,
   OPTIONAL_TOOLBAR_ACTIONS,
   CUSTOM_ACTION_PREFIX,
+  CONVERSATION_TURN_LIMITS,
+  DEFAULT_CONVERSATION,
   DEFAULT_EXPLAIN_PROMPT,
   ACTION_WINDOW_DEFAULT_SIZE,
   ACTION_WINDOW_MIN_HEIGHT,
@@ -273,6 +294,7 @@ module.exports = {
   normalizeSelectionToolbar,
   normalizeThinkingLevel,
   normalizeToolbarThinking,
+  normalizeConversation,
   normalizeActionWindowSize,
   parseCustomActionKey
 }

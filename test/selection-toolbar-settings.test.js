@@ -6,6 +6,24 @@ const path = require('node:path')
 const html = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.html'), 'utf8')
 const script = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
 const actionMeta = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar-action-meta.js'), 'utf8')
+const { CONVERSATION_TURN_LIMITS } = require('../toolbar/toolbar-utils')
+
+test('settings page wires the follow-up switch and a turn limit matching the whitelist', () => {
+  assert.match(script, /id="conversationEnabled"/)
+  assert.match(script, /id="conversationTurns"/)
+  assert.match(script, /追问开关/)
+  assert.match(script, /追问轮数/)
+  // conversation is a nested object and bindSwitches only builds one level, so
+  // this switch has to be hand-wired; a data-switch here would send
+  // { selectionToolbar: { conversation: false } } and get rejected as a type error.
+  assert.doesNotMatch(script, /switchMarkup\([^)]*conversation/)
+  assert.match(script, /updateSettings\(\{ selectionToolbar: \{ conversation: \{ enabled: value \} \} \}, '追问开关已更新'\)/)
+  assert.match(script, /conversationTurns\.onchange = \(\) => updateSettings\(\{ selectionToolbar: \{ conversation: \{ maxFollowUpTurns: Number\(conversationTurns\.value\) \} \} \}, '追问轮数已更新'\)/)
+  // A selectable option outside the whitelist would be silently reset on the
+  // next normalization; a missing one would make that value unreachable.
+  const options = [...script.matchAll(/<option value="(\d+)">\d+ 轮<\/option>/g)].map((match) => Number(match[1]))
+  assert.deepEqual(options, [...CONVERSATION_TURN_LIMITS])
+})
 
 test('config app exposes the selection toolbar route and controls', () => {
   assert.match(html, /data-route="selection-toolbar"/)

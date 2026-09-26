@@ -12,7 +12,11 @@ const template = {
     watermark: { content: '', opacity: 80, color: '#ffffff', spacing: 30, fontSize: 24, rotation: 30, dateSuffix: false }
   },
   system: { gameMode: false },
-  selectionToolbar: { order: [], prompts: { translate: '', explain: '' } }
+  selectionToolbar: {
+    order: [],
+    prompts: { translate: '', explain: '' },
+    conversation: { enabled: true, maxFollowUpTurns: 10 }
+  }
 }
 
 test('accepts partial settings patches with matching types', () => {
@@ -48,4 +52,17 @@ test('accepts watermark settings patches and rejects invalid watermark values', 
   assert.throws(() => assertSettingsPatch({ screenshot: { watermark: { rotation: Infinity } } }, template), /有限数字/)
   assert.throws(() => assertSettingsPatch({ screenshot: { watermark: { content: 123 } } }, template), /类型无效/)
   assert.throws(() => assertSettingsPatch({ screenshot: { watermark: { dateSuffix: 'yes' } } }, template), /类型无效/)
+})
+
+test('accepts follow-up conversation patches and rejects broken shapes', () => {
+  const patch = { selectionToolbar: { conversation: { enabled: false } } }
+  assert.equal(assertSettingsPatch(patch, template), patch)
+  assert.equal(assertSettingsPatch({ selectionToolbar: { conversation: { maxFollowUpTurns: 5 } } }, template)
+    .selectionToolbar.conversation.maxFollowUpTurns, 5)
+  assert.throws(() => assertSettingsPatch({ selectionToolbar: { conversation: { unknown: 1 } } }, template), /不支持的设置项/)
+  assert.throws(() => assertSettingsPatch({ selectionToolbar: { conversation: { enabled: 'yes' } } }, template), /类型无效/)
+  assert.throws(() => assertSettingsPatch({ selectionToolbar: { conversation: { maxFollowUpTurns: '5' } } }, template), /类型无效/)
+  // This is the shape a dotted data-switch would produce: a boolean where the
+  // template holds an object. The settings page must not write it.
+  assert.throws(() => assertSettingsPatch({ selectionToolbar: { conversation: false } }, template), /必须是对象/)
 })

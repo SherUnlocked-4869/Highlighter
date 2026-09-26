@@ -9,6 +9,7 @@ const {
   getToolbarWidth,
   getVisibleToolbarActionDefinitions,
   getVisibleToolbarActions,
+  normalizeConversation,
   normalizeSelectionToolbar
 } = require('../toolbar/toolbar-utils')
 
@@ -25,6 +26,7 @@ test('default selection toolbar enables all built-ins with editable prompts and 
     customActions: [],
     searchEngine: 'bing',
     translateLanguages: { source: 'auto', target: '中文' },
+    conversation: { enabled: true, maxFollowUpTurns: 10 },
     resultWindow: { width: 550, height: 560 }
   })
   assert.deepEqual(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR), [
@@ -112,8 +114,27 @@ test('normalization rejects malformed custom actions and repairs incomplete orde
   assert.equal(getToolbarActionDefinition(config, 'custom:missing'), null)
 })
 
-test('selection result window size is normalized to safe dimensions', () => {
-  assert.deepEqual(normalizeSelectionToolbar({ resultWindow: { width: 640.4, height: 180 } }).resultWindow, {
+test('follow-up conversation settings default on with a whitelisted turn limit', () => {
+  assert.deepEqual(normalizeConversation(undefined), { enabled: true, maxFollowUpTurns: 10 })
+  assert.deepEqual(normalizeConversation({}), { enabled: true, maxFollowUpTurns: 10 })
+  // enabled is strictly boolean: neither a truthy string nor 1 turns it on.
+  assert.equal(normalizeConversation({ enabled: 'false' }).enabled, true)
+  assert.equal(normalizeConversation({ enabled: 0 }).enabled, true)
+  assert.equal(normalizeConversation({ enabled: false }).enabled, false)
+  // Only the listed steps are reachable from the settings UI, so anything else
+  // falls back to the default rather than to the nearest bound.
+  for (const value of [3, 5, 10, 20]) {
+    assert.equal(normalizeConversation({ maxFollowUpTurns: value }).maxFollowUpTurns, value)
+  }
+  for (const value of [0, 4, 7, 11, 100, -3, '5', null, NaN]) {
+    assert.equal(normalizeConversation({ maxFollowUpTurns: value }).maxFollowUpTurns, 10, String(value))
+  }
+  assert.equal(normalizeSelectionToolbar({ conversation: { maxFollowUpTurns: 5 } }).conversation.maxFollowUpTurns, 5)
+  assert.equal(normalizeSelectionToolbar({ conversation: 'yes' }).conversation.enabled, true)
+  assert.equal(normalizeSelectionToolbar({ conversation: [] }).conversation.maxFollowUpTurns, 10)
+})
+
+test('selection result window size is normalized to safe dimensions', () => {  assert.deepEqual(normalizeSelectionToolbar({ resultWindow: { width: 640.4, height: 180 } }).resultWindow, {
     width: 640,
     height: 340
   })

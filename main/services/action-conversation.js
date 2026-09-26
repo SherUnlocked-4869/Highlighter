@@ -62,7 +62,13 @@ function buildConversationSystemPrompt({ actionId, label, prompt, translateLangu
 // so the capabilities live on `provider.models[i].capabilities` rather than on
 // the returned object itself: go through normalizeProviderInput so this matches
 // exactly what createFollowUpStream will decide.
-function resolveFollowUpSupport(provider) {
+//
+// The user's own switch is checked first: turning follow-up off is an explicit
+// intent and must win over any model capability reasoning.
+function resolveFollowUpSupport(provider, { conversation } = {}) {
+  if (conversation?.enabled === false) {
+    return { canFollowUp: false, reason: '划词追问已在设置中关闭' }
+  }
   if (!provider) return { canFollowUp: false, reason: '当前功能未配置可用的模型供应商' }
   const config = normalizeProviderInput(provider)
   if (!config.enabled) return { canFollowUp: false, reason: '该功能指定的模型供应商已禁用' }
@@ -137,6 +143,11 @@ function reportCancelledTurn({ controller, win, queueMessage = () => {} } = {}) 
   return false
 }
 
+function positiveInteger(value, fallback) {
+  const number = Number(value)
+  return Number.isSafeInteger(number) && number > 0 ? number : fallback
+}
+
 class ActionConversation {
   constructor({
     streamId,
@@ -146,7 +157,8 @@ class ActionConversation {
     translateLanguages = {},
     thinking = 'off',
     support = { canFollowUp: false, reason: '' },
-    maxFollowUpTurns = MAX_FOLLOW_UP_TURNS,
+    conversationConfig,
+    maxFollowUpTurns,
     maxQuestionLength = MAX_QUESTION_LENGTH,
     maxContextChars = MAX_CONTEXT_CHARS
   } = {}) {
@@ -157,9 +169,11 @@ class ActionConversation {
     this.translateLanguages = translateLanguages && typeof translateLanguages === 'object' ? translateLanguages : {}
     this.thinking = thinking || 'off'
     this.support = support && typeof support === 'object' ? support : { canFollowUp: false, reason: '' }
-    this.maxFollowUpTurns = Number.isSafeInteger(maxFollowUpTurns) && maxFollowUpTurns > 0 ? maxFollowUpTurns : MAX_FOLLOW_UP_TURNS
-    this.maxQuestionLength = Number.isSafeInteger(maxQuestionLength) && maxQuestionLength > 0 ? maxQuestionLength : MAX_QUESTION_LENGTH
-    this.maxContextChars = Number.isSafeInteger(maxContextChars) && maxContextChars > 0 ? maxContextChars : MAX_CONTEXT_CHARS
+    // The configured limit wins over the module default; an explicit
+    // maxFollowUpTurns argument still overrides both so tests can pin a value.
+    this.maxFollowUpTurns = positiveInteger(maxFollowUpTurns, positiveInteger(conversationConfig?.maxFollowUpTurns, MAX_FOLLOW_UP_TURNS))
+    this.maxQuestionLength = positiveInteger(maxQuestionLength, MAX_QUESTION_LENGTH)
+    this.maxContextChars = positiveInteger(maxContextChars, MAX_CONTEXT_CHARS)
     this.history = []
     this.firstResultContent = ''
     this.pending = null

@@ -79,6 +79,46 @@ test('follow-up support reads capabilities from the resolved provider models', (
   assert.equal(resolveFollowUpSupport(null).canFollowUp, false)
 })
 
+test('the follow-up switch wins over model capability and blocks the round', () => {
+  const normal = resolveAiAssignment(settingsFor('deepseek-v4-flash', 'toolbar:explain'), 'toolbar:explain')
+  const disabled = resolveFollowUpSupport(normal, { conversation: { enabled: false, maxFollowUpTurns: 10 } })
+  assert.equal(disabled.canFollowUp, false)
+  assert.equal(disabled.reason, '划词追问已在设置中关闭')
+  // A chat-capable model must not override the user's explicit switch.
+  assert.deepEqual(resolveFollowUpSupport(normal, { conversation: { enabled: true, maxFollowUpTurns: 10 } }), {
+    canFollowUp: true,
+    reason: ''
+  })
+
+  const conversation = conversationFor({ support: disabled })
+  conversation.commitFirstResult('结果')
+  assert.equal(conversation.status.canFollowUp, false)
+  assert.equal(conversation.status.disabledReason, '划词追问已在设置中关闭')
+  assert.equal(conversation.beginTurn('还能问吗').ok, false)
+  assert.deepEqual(conversation.followUpConfig(), {
+    enabled: false,
+    disabledReason: '划词追问已在设置中关闭',
+    maxTurns: 10,
+    questionMaxLength: 2000
+  })
+})
+
+test('the turn limit comes from the conversation settings', () => {
+  const conversation = conversationFor({ conversationConfig: { enabled: true, maxFollowUpTurns: 3 } })
+  conversation.commitFirstResult('结果')
+  assert.equal(conversation.status.maxFollowUpTurns, 3)
+  for (let index = 0; index < 3; index += 1) {
+    assert.equal(conversation.beginTurn(`第 ${index + 1} 问`).ok, true)
+    conversation.commitTurn({ content: `答 ${index + 1}` })
+  }
+  const over = conversation.beginTurn('第 4 问')
+  assert.equal(over.ok, false)
+  assert.match(over.reason, /最大追问轮数（3）/)
+  // An explicit argument still wins, so tests can pin a value without settings.
+  assert.equal(conversationFor({ conversationConfig: { maxFollowUpTurns: 3 }, maxFollowUpTurns: 20 }).maxFollowUpTurns, 20)
+  assert.equal(conversationFor({ conversationConfig: { maxFollowUpTurns: 'nope' } }).maxFollowUpTurns, 10)
+})
+
 test('beginTurn rejects empty, in-flight and over-limit rounds while clamping length', () => {
   const conversation = conversationFor({ maxFollowUpTurns: 2, maxQuestionLength: 5 })
   conversation.commitFirstResult('结果')
