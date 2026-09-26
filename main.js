@@ -58,6 +58,7 @@ const { registerSearchIpc } = require('./main/ipc/search-ipc')
 const { SelectionHookService } = require('./main/services/selection-hook-service')
 const { SelectionWindowManager } = require('./main/services/selection-window-manager')
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
+const { ActionConversation, resolveFollowUpSupport, streamConversationTurn } = require('./main/services/action-conversation')
 const { UpdateService } = require('./main/services/update-service')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createSecureWindow, isSafeExternalUrl } = require('./main/services/window-security')
@@ -291,6 +292,7 @@ let isProcessing = false
 const selectionEventDiagnostics = new Set()
 let currentStreamController = null
 let toolbarStreamSeq = 0
+const actionConversations = new Map()
 let pinDomain = null
 let captureDomain = null
 let longCaptureDomain = null
@@ -849,6 +851,7 @@ selectionWindowManager = new SelectionWindowManager({
   sizeSaveDelayMs: ACTION_WINDOW_SIZE_SAVE_DELAY_MS,
   onActionWindowClosed: (win, { wasPinned }) => {
     if (wasPinned) pinDomain.releasePinnedSlot()
+    actionConversations.delete(win)
     if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-closed')
   },
   onActionWindowBlur: (win) => {
@@ -1064,7 +1067,7 @@ function armToolbarStreamTimeout(controller) {
   controller?.armTimeout()
 }
 
-function createToolbarStreamController(win) {
+function createToolbarStreamController(win, streamId) {
   const controller = new ToolbarStreamSession({
     win,
     timeoutMs: TOOLBAR_STREAM_IDLE_TIMEOUT_MS,
@@ -1074,8 +1077,12 @@ function createToolbarStreamController(win) {
       isProcessing = false
     }
   })
-  toolbarStreamSeq += 1
-  controller.streamId = toolbarStreamSeq
+  if (streamId === undefined) {
+    toolbarStreamSeq += 1
+    controller.streamId = toolbarStreamSeq
+  } else {
+    controller.streamId = streamId
+  }
   currentStreamController = controller
   isProcessing = true
   armToolbarStreamTimeout(controller)
@@ -1091,22 +1098,29 @@ function isStaleToolbarStreamSignal(event, streamId) {
   return currentStreamController?.streamId !== streamId
 }
 
-async function streamToWindow(win, action, text, controller) {
+async function streamToWindow(win, action, text, controller, conversation) {
   const { createToolbarActionStream } = require('./main/services/ai-feature-router')
   const currentSettings = getSettings()
   const requestOptions = { signal: controller.signal }
   requestOptions.thinking = getToolbarActionThinking(currentSettings.selectionToolbar, currentSettings.toolbarThinking, action.id)
+  let content = ''
   try {
     const stream = await createToolbarActionStream({ settings: currentSettings, action, text, requestOptions })
     armToolbarStreamTimeout(controller)
     for await (const chunk of stream) {
-      if (controller.cancelled || win.isDestroyed()) return
+      if (controller.cancelled || win.isDestroyed()) break
       armToolbarStreamTimeout(controller)
       const delta = chunk.choices?.[0]?.delta
       if (delta?.reasoning_content) queueActionMessage(win, 'stream:reasoning', { content: delta.reasoning_content })
-      if (delta?.content) queueActionMessage(win, 'stream:data', { content: delta.content })
+      if (delta?.content) {
+        content += delta.content
+        queueActionMessage(win, 'stream:data', { content: delta.content })
+      }
     }
-    if (!controller.cancelled && !win.isDestroyed()) queueActionMessage(win, 'stream:done')
+    if (!controller.cancelled && !win.isDestroyed()) {
+      conversation?.commitFirstResult(content)
+      queueActionMessage(win, 'stream:done')
+    }
   } catch (error) {
     if (!controller.cancelled && !win.isDestroyed()) {
       queueActionMessage(win, 'stream:error', { error: error.message || '请求失败' })
@@ -1290,6 +1304,16 @@ async function openToolbarAiAction(action, text) {
   }
   const win = getOrCreateActionWindow()
   const controller = createToolbarStreamController(win)
+  const conversation = new ActionConversation({
+    streamId: controller.streamId,
+    action: actionDefinition,
+    text,
+    provider: aiRuntime,
+    translateLanguages: toolbarConfig.translateLanguages,
+    thinking: getToolbarActionThinking(toolbarConfig, getSettings().toolbarThinking, actionDefinition.id),
+    support: resolveFollowUpSupport(aiRuntime)
+  })
+  actionConversations.set(win, conversation)
   selectionWindowManager.positionActionWindow(win, screen)
   queueActionMessage(win, 'action:start', {
     type: actionDefinition.id,
@@ -1297,9 +1321,10 @@ async function openToolbarAiAction(action, text) {
     icon: actionDefinition.icon,
     text,
     streamId: controller.streamId,
-    appearance: getActionAppearance()
+    appearance: getActionAppearance(),
+    followUp: conversation.followUpConfig()
   })
-  streamToWindow(win, actionDefinition, text, controller)
+  streamToWindow(win, actionDefinition, text, controller, conversation)
   win.show()
   win.focus()
   return true
@@ -1809,6 +1834,29 @@ secureIpcMain.on('stream:finish', (event, streamId) => {
   if (!isCurrentToolbarStreamSender(event)) return
   if (isStaleToolbarStreamSignal(event, streamId)) return
   cancelToolbarStream(currentStreamController, 'renderer-finished')
+})
+secureIpcMain.on('chat:ask', (event, payload) => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+  const conversation = win ? actionConversations.get(win) : null
+  if (!conversation) return
+  if (Number(payload?.streamId) !== conversation.streamId) return
+  const turn = conversation.beginTurn(payload?.question)
+  if (!turn.ok) {
+    queueActionMessage(win, 'stream:error', { error: turn.reason, rejected: true })
+    return
+  }
+  queueActionMessage(win, 'chat:turn', { streamId: conversation.streamId, question: turn.question })
+  const controller = createToolbarStreamController(win, conversation.streamId)
+  streamConversationTurn({
+    conversation,
+    win,
+    controller,
+    queueMessage: (channel, data) => queueActionMessage(win, channel, data)
+  }).catch((error) => {
+    if (!controller.cancelled && !win.isDestroyed()) {
+      queueActionMessage(win, 'stream:error', { error: error.message || '请求失败' })
+    }
+  })
 })
 secureIpcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
 secureIpcMain.on('window:close', (event) => {

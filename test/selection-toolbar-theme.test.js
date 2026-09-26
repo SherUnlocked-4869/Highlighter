@@ -28,8 +28,18 @@ test('selection result windows receive and apply the configured appearance', () 
   assert.match(actionScript, /onActionAppearance\(applyAppearance\)/)
 })
 
-test('selection result palette follows the shared light/dark tokens', () => {
-  // This window used to carry its own :root/body.dark palette, which shadowed
+test('selection result window pins the header and composer around a scrolling transcript', () => {
+  // A min-height body let the column grow to fit a long conversation: the
+  // document became the scroller and pushed the follow-up input below the fold.
+  // The body therefore needs a definite height and the transcript a bounded,
+  // internally scrolling flex item.
+  assert.match(actionCss, /body \{[\s\S]*?height: 100vh;[\s\S]*?overflow: hidden;/)
+  assert.match(actionCss, /\.content \{ flex: 1 1 0; min-height: 0; overflow-y: auto;/)
+  assert.match(actionCss, /\.composer \{\s*flex-shrink: 0;/)
+  assert.doesNotMatch(actionCss, /body \{[\s\S]*?min-height: 100vh;/)
+})
+
+test('selection result palette follows the shared light/dark tokens', () => {  // This window used to carry its own :root/body.dark palette, which shadowed
   // shared/tokens.css and let it drift from the main window. It now consumes the
   // shared tokens, so assert the consumption rather than duplicated hex values.
   assert.match(actionHtml, /action\.css/)
@@ -38,8 +48,8 @@ test('selection result palette follows the shared light/dark tokens', () => {
   assert.doesNotMatch(actionCss, /body\.dark\s*\{/, 'theme switching lives in tokens.css')
   assert.match(actionCss, /background: var\(--bg\)/)
   assert.match(actionCss, /color: var\(--primary-text\)/)
-  assert.match(actionCss, /\.result code \{[^}]*color: var\(--inline-code\)/)
-  assert.match(actionCss, /\.result pre code \{[^}]*color: var\(--text\)/)
+  assert.match(actionCss, /\.answer code \{[^}]*color: var\(--inline-code\)/)
+  assert.match(actionCss, /\.answer pre code \{[^}]*color: var\(--text\)/)
   assert.doesNotMatch(actionCss, /background: #1a1a2e/)
   // The shared sheet must actually define the tokens this file relies on.
   assert.match(tokensCss, /--inline-code:/)

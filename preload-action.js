@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 const MAX_TEXT_LENGTH = 1024 * 1024
+const MAX_QUESTION_LENGTH = 2000
 
 function boundedText(value, maxLength = MAX_TEXT_LENGTH) {
   return typeof value === 'string' ? value.slice(0, maxLength) : ''
@@ -20,6 +21,17 @@ function normalizeAppearance(value = {}) {
   }
 }
 
+function normalizeFollowUp(value = {}) {
+  return {
+    enabled: value?.enabled === true,
+    disabledReason: boundedText(value?.disabledReason, 256),
+    maxTurns: Number.isSafeInteger(value?.maxTurns) && value.maxTurns > 0 ? value.maxTurns : 10,
+    questionMaxLength: Number.isSafeInteger(value?.questionMaxLength) && value.questionMaxLength > 0
+      ? value.questionMaxLength
+      : MAX_QUESTION_LENGTH
+  }
+}
+
 function normalizeActionStart(value = {}) {
   return {
     type: boundedText(value?.type, 64),
@@ -27,7 +39,8 @@ function normalizeActionStart(value = {}) {
     icon: boundedText(value?.icon, 16),
     text: boundedText(value?.text),
     streamId: Number.isSafeInteger(value?.streamId) && value.streamId > 0 ? value.streamId : null,
-    appearance: normalizeAppearance(value?.appearance)
+    appearance: normalizeAppearance(value?.appearance),
+    followUp: normalizeFollowUp(value?.followUp)
   }
 }
 
@@ -53,9 +66,26 @@ contextBridge.exposeInMainWorld('actionAPI', {
   onStreamData: (callback) => subscribe('stream:data', callback, (data) => ({ content: boundedText(data?.content) })),
   onStreamReasoning: (callback) => subscribe('stream:reasoning', callback, (data) => ({ content: boundedText(data?.content) })),
   onStreamDone: (callback) => subscribe('stream:done', callback, () => undefined),
-  onStreamError: (callback) => subscribe('stream:error', callback, (data) => ({ error: boundedText(data?.error, 4096) })),
+  onStreamError: (callback) => subscribe('stream:error', callback, (data) => ({
+    error: boundedText(data?.error, 4096),
+    cancelled: data?.cancelled === true,
+    rejected: data?.rejected === true,
+    interrupted: data?.interrupted === true
+  })),
+  onChatTurn: (callback) => subscribe('chat:turn', callback, (data) => ({
+    streamId: Number.isSafeInteger(data?.streamId) ? data.streamId : null,
+    question: boundedText(data?.question, MAX_QUESTION_LENGTH)
+  })),
   cancelStream: (streamId) => sendStreamSignal('stream:cancel', streamId),
   finishStream: (streamId) => sendStreamSignal('stream:finish', streamId),
+  askQuestion: (streamId, question) => {
+    if (!Number.isSafeInteger(streamId) || streamId <= 0) return false
+    if (typeof question !== 'string') return false
+    const value = question.trim().slice(0, MAX_QUESTION_LENGTH)
+    if (!value) return false
+    ipcRenderer.send('chat:ask', { streamId, question: value })
+    return true
+  },
   togglePin: (pinned) => ipcRenderer.send('window:toggle-pin', pinned === true),
   onPinDenied: (callback) => subscribe('window:pin-denied', callback, (data) => ({
     max: Number.isSafeInteger(data?.max) && data.max > 0 ? data.max : 1

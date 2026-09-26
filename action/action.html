@@ -23,12 +23,20 @@
 </div>
 <div class="content" id="content">
   <div class="source" id="sourceText"></div>
-  <div class="result" id="result"></div>
+  <div class="transcript" id="transcript"></div>
   <div id="scrollSentinel" class="scroll-sentinel"></div>
   <div class="loading" id="loading">
     <div class="spinner"></div>
     <span id="loadingText">正在请求 DeepSeek...</span>
   </div>
+</div>
+
+<div class="composer" id="composer">
+  <div class="composer-row">
+    <textarea id="questionInput" rows="1" maxlength="2000" placeholder="就上面的结果继续追问…"></textarea>
+    <button class="send-btn" id="btnSend" type="button" title="发送" aria-label="发送"></button>
+  </div>
+  <div class="composer-hint" id="composerHint"></div>
 </div>
 
 <script src="../node_modules/dompurify/dist/purify.min.js"></script>

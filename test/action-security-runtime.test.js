@@ -9,6 +9,17 @@ const root = path.resolve(__dirname, '..')
 const electronPath = require('electron')
 const resultPrefix = 'HIGHLIGHTER_ACTION_SECURITY_PROBE='
 
+test('action security probe registers every action-surface IPC channel', () => {
+  const probe = fs.readFileSync(path.join(root, 'scripts', 'probe-action-security.js'), 'utf8')
+  // The probe only stands up the action surface, so assertComplete() cannot run
+  // there. Lock its channel coverage here instead: a new action channel must be
+  // added to the probe in the same change, or the probe silently stops testing it.
+  for (const channel of ['shell:open-external', 'stream:cancel', 'stream:finish', 'window:toggle-pin', 'chat:ask']) {
+    const kind = channel === 'shell:open-external' ? 'handle' : 'on'
+    assert.match(probe, new RegExp(`secureIpcMain\\.${kind}\\('${channel}'`), `probe must register ${channel}`)
+  }
+})
+
 test('action renderer stays sandboxed and sanitizes AI output in Electron', { timeout: 45000 }, (t) => {
   const probeUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'highlighter-action-security-'))
   t.after(() => fs.rmSync(probeUserData, { recursive: true, force: true }))
@@ -34,10 +45,12 @@ test('action renderer stays sandboxed and sanitizes AI output in Electron', { ti
   const probe = JSON.parse(line.slice(resultPrefix.length))
 
   assert.deepEqual(probe.bridge.actionKeys, [
+    'askQuestion',
     'cancelStream',
     'finishStream',
     'onActionAppearance',
     'onActionStart',
+    'onChatTurn',
     'onPinDenied',
     'onStreamData',
     'onStreamDone',
@@ -66,7 +79,25 @@ test('action renderer stays sandboxed and sanitizes AI output in Electron', { ti
   assert.equal(probe.rendered.links[0].rel, 'noopener noreferrer')
   assert.equal(probe.rendered.links[0].target, '')
   assert.deepEqual(probe.openedUrls, ['https://example.com/safe?q=1&ok=2'])
-  assert.deepEqual(probe.streamSignals, [{ channel: 'finish', streamId: 7 }])
+  assert.deepEqual(probe.streamSignals, [
+    { channel: 'finish', streamId: 7 },
+    { channel: 'finish', streamId: 7 }
+  ])
+  assert.equal(probe.followUpAsked, true)
+  assert.deepEqual(probe.chatAsks, [{ streamId: 7, question: '追问 <b>内容</b>' }])
+  // The follow-up round goes through the same sanitizer as the first one.
+  assert.equal(probe.followUp.imageCount, 0)
+  assert.equal(probe.followUp.scriptCount, 0)
+  assert.equal(probe.followUp.xssExecuted, false)
+  assert.doesNotMatch(probe.followUp.html, /<img|href=["']javascript:/i)
+  assert.match(probe.followUp.text, /bad/)
+  assert.equal(probe.followUp.links.length, 1)
+  assert.equal(probe.followUp.links[0].href, 'https://example.com/follow?x=1&y=2')
+  assert.equal(probe.followUp.links[0].rel, 'noopener noreferrer')
+  assert.equal(probe.followUp.links[0].target, '')
+  // The user's question is injected with textContent, never as markup.
+  assert.equal(probe.followUp.questionText, '追问 <b>内容</b>')
+  assert.doesNotMatch(probe.followUp.questionMarkup, /<b>/i)
   assert.equal(probe.childWindowResult, true)
   assert.match(probe.finalUrl, /action\/action\.html$/)
   assert.deepEqual(probe.blocked.map((entry) => entry.reason).sort(), [

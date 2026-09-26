@@ -31,7 +31,7 @@ test('toolbar streams use abortable sliding timeouts and sender ownership checks
   assert.match(deepseek, /createAiProtocolAdapter\(attempt, createClient\(attempt\)\)\.stream\([\s\S]*streamOptions\.requestOptions\)/)
   assert.match(adapters, /chat\.completions\.create\(buildChatStreamRequest\(config, messages, options\), requestOptions\)/)
   assert.match(action, /function armStreamTimeout\(\)/)
-  assert.match(action, /actionBridge\.cancelStream\(currentStreamId\)/)
+  assert.match(action, /actionBridge\.cancelStream\(conversation\.streamId\)/)
   assert.match(action, /onStreamData[\s\S]*armStreamTimeout\(\)/)
   assert.match(action, /onStreamReasoning[\s\S]*armStreamTimeout\(\)/)
 })

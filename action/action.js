@@ -1,6 +1,9 @@
 const actionBridge = window.actionAPI
 const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
 const STREAM_IDLE_TIMEOUT_MS = 30000
+const MIN_COMPOSER_HEIGHT = 34
+const MAX_COMPOSER_HEIGHT = 120
+const DEFAULT_FOLLOW_UP = { enabled: false, disabledReason: '', maxTurns: 10, questionMaxLength: 2000 }
 const ALLOWED_MARKDOWN_TAGS = [
   'a', 'blockquote', 'br', 'code', 'del', 'em', 'h1', 'h2', 'h3', 'hr',
   'li', 'ol', 'p', 'pre', 'strong', 'ul'
@@ -16,27 +19,37 @@ const ACTION_ICONS = {
 }
 
 let isPinned = false
-let isDone = false
-let reasoning = ''
-let fullText = ''
 let loadTimer = null
 let userScrolled = false
 let configuredTheme = 'system'
 let configuredMainColor = '#e5a44c'
-let currentStreamId = null
 let renderQueued = false
 let renderToken = 0
 let resultDirty = false
 let reasoningDirty = false
+
+// The window is a conversation: turns[0] is the assistant's first answer (its
+// prompt is the selection shown in .source), every later pair is one follow-up.
+const conversation = {
+  streamId: null,
+  followUp: { ...DEFAULT_FOLLOW_UP },
+  turns: [],
+  activeTurn: -1,
+  pendingQuestion: '',
+  notice: ''
+}
 
 const el = {
   headerIcon: document.getElementById('headerIcon'),
   headerTitle: document.getElementById('headerTitle'),
   headerBadge: document.getElementById('headerBadge'),
   sourceText: document.getElementById('sourceText'),
-  result: document.getElementById('result'),
+  transcript: document.getElementById('transcript'),
   loading: document.getElementById('loading'),
-  loadingText: document.getElementById('loadingText')
+  loadingText: document.getElementById('loadingText'),
+  composerHint: document.getElementById('composerHint'),
+  questionInput: document.getElementById('questionInput'),
+  btnSend: document.getElementById('btnSend')
 }
 
 function applyAppearance(appearance = {}) {
@@ -56,20 +69,24 @@ systemThemeMedia.addEventListener('change', () => {
 })
 
 function resetUI() {
-  isDone = false
-  reasoning = ''
-  fullText = ''
   userScrolled = false
-  currentStreamId = null
+  conversation.streamId = null
+  conversation.followUp = { ...DEFAULT_FOLLOW_UP }
+  conversation.turns = []
+  conversation.activeTurn = -1
+  conversation.pendingQuestion = ''
+  conversation.notice = ''
   clearTimeout(loadTimer)
   loadTimer = null
   renderToken++
   renderQueued = false
   resultDirty = false
   reasoningDirty = false
-  document.getElementById('reasoningBox')?.remove()
-  el.result.replaceChildren()
+  el.transcript.replaceChildren()
+  el.questionInput.value = ''
+  resizeComposerInput()
   el.loading.style.display = 'none'
+  renderComposer()
 }
 
 function showLoading(visible) {
@@ -98,18 +115,18 @@ function appendResultError(message) {
   const error = document.createElement('div')
   error.className = 'result-error'
   error.textContent = message
-  el.result.appendChild(error)
+  el.transcript.appendChild(error)
 }
 
 function armStreamTimeout() {
   clearTimeout(loadTimer)
   loadTimer = setTimeout(function() {
-    if (isDone) return
-    isDone = true
+    const turn = activeAssistantTurn()
+    if (!turn) return
+    finishTurnWith(turn, 'cancelled', '请求超时，请检查网络后重试')
     showLoading(false)
-    el.result.replaceChildren()
-    appendResultError('请求超时，请检查网络后重试')
-    actionBridge.cancelStream(currentStreamId)
+    renderComposer()
+    actionBridge.cancelStream(conversation.streamId)
   }, STREAM_IDLE_TIMEOUT_MS)
 }
 
@@ -216,9 +233,8 @@ function sanitizedMarkdown(text) {
   })
 }
 
-function renderResult(text, { cursor = false } = {}) {
-  el.result.innerHTML = sanitizedMarkdown(text)
-  for (const link of el.result.querySelectorAll('a')) {
+function normalizeLinks(root) {
+  for (const link of root.querySelectorAll('a')) {
     const url = normalizeExternalUrl(link.href)
     if (!url) {
       link.replaceWith(document.createTextNode(link.textContent))
@@ -228,45 +244,54 @@ function renderResult(text, { cursor = false } = {}) {
     link.rel = 'noopener noreferrer'
     link.removeAttribute('target')
   }
+}
+
+function renderTurnAnswer(turn, { cursor = false } = {}) {
+  turn.answerEl.innerHTML = sanitizedMarkdown(turn.content)
+  normalizeLinks(turn.answerEl)
   if (cursor) {
     const cursorElement = document.createElement('span')
     cursorElement.className = 'cursor'
-    el.result.appendChild(cursorElement)
+    turn.answerEl.appendChild(cursorElement)
   }
 }
 
-function doScroll() {
-  if (userScrolled) return
-  document.getElementById('scrollSentinel')?.scrollIntoView({ block: 'end', behavior: 'instant' })
+function createAssistantTurn() {
+  const turn = { role: 'assistant', content: '', reasoning: '', status: 'streaming', note: '' }
+  turn.el = document.createElement('div')
+  turn.el.className = 'turn turn-assistant'
+  turn.answerEl = document.createElement('div')
+  turn.answerEl.className = 'answer'
+  turn.noteEl = document.createElement('div')
+  turn.noteEl.className = 'turn-note'
+  turn.el.append(turn.answerEl, turn.noteEl)
+  conversation.turns.push(turn)
+  conversation.activeTurn = conversation.turns.length - 1
+  el.transcript.appendChild(turn.el)
+  return turn
 }
 
-function scheduleStreamRender() {
-  if (renderQueued) return
-  renderQueued = true
-  const token = renderToken
-  requestAnimationFrame(function() {
-    renderQueued = false
-    if (token !== renderToken || isDone) return
-    if (reasoningDirty) {
-      reasoningDirty = false
-      const reasoningContent = addReasoning()
-      reasoningContent.preview.textContent = reasoning
-      reasoningContent.preview.scrollTop = reasoningContent.preview.scrollHeight
-      reasoningContent.full.textContent = reasoning
-    }
-    if (resultDirty) {
-      resultDirty = false
-      renderResult(fullText, { cursor: true })
-    }
-    doScroll()
-  })
+function appendUserTurn(question) {
+  const turn = { role: 'user', content: question, status: 'done' }
+  conversation.turns.push(turn)
+  const node = document.createElement('div')
+  node.className = 'turn turn-user'
+  const bubble = document.createElement('div')
+  bubble.className = 'bubble'
+  bubble.textContent = question
+  node.appendChild(bubble)
+  el.transcript.appendChild(node)
+  return turn
 }
 
-function addReasoning() {
-  let box = document.getElementById('reasoningBox')
-  if (!box) {
-    box = document.createElement('div')
-    box.id = 'reasoningBox'
+function activeAssistantTurn() {
+  const turn = conversation.turns[conversation.activeTurn]
+  return turn && turn.role === 'assistant' ? turn : null
+}
+
+function addReasoning(turn) {
+  if (!turn.reasoningBox) {
+    const box = document.createElement('div')
     box.className = 'reasoning-box'
 
     const header = document.createElement('div')
@@ -291,22 +316,144 @@ function addReasoning() {
       box.classList.toggle('open')
       arrow.textContent = box.classList.contains('open') ? '▾' : '▸'
       if (box.classList.contains('open')) {
-        full.textContent = reasoning
+        full.textContent = turn.reasoning
         full.scrollTop = full.scrollHeight
       }
     })
-    el.result.parentNode.insertBefore(box, el.result)
+    turn.el.insertBefore(box, turn.answerEl)
+    turn.reasoningBox = box
   }
-  return {
-    preview: box.querySelector('.reasoning-preview'),
-    full: box.querySelector('.reasoning-full')
+  return turn.reasoningBox
+}
+
+function renderTurnReasoning(turn) {
+  const box = addReasoning(turn)
+  const preview = box.querySelector('.reasoning-preview')
+  const full = box.querySelector('.reasoning-full')
+  preview.textContent = turn.reasoning
+  preview.scrollTop = preview.scrollHeight
+  full.textContent = turn.reasoning
+}
+
+function renderFinalTurn(turn) {
+  if (turn.reasoning) renderTurnReasoning(turn)
+  if (turn.content) renderTurnAnswer(turn)
+  else turn.answerEl.replaceChildren()
+  turn.noteEl.textContent = turn.note
+  const isError = turn.status === 'error' || turn.status === 'rejected'
+  turn.noteEl.className = isError ? 'turn-note error' : 'turn-note'
+}
+
+function finishTurnWith(turn, status, note) {
+  turn.status = status
+  turn.note = note
+  renderFinalTurn(turn)
+  conversation.activeTurn = -1
+}
+
+function doScroll() {
+  if (userScrolled) return
+  document.getElementById('scrollSentinel')?.scrollIntoView({ block: 'end', behavior: 'instant' })
+}
+
+function scheduleStreamRender() {
+  if (renderQueued) return
+  renderQueued = true
+  const token = renderToken
+  requestAnimationFrame(function() {
+    renderQueued = false
+    if (token !== renderToken) return
+    const turn = activeAssistantTurn()
+    if (!turn) return
+    if (reasoningDirty) {
+      reasoningDirty = false
+      renderTurnReasoning(turn)
+    }
+    if (resultDirty) {
+      resultDirty = false
+      renderTurnAnswer(turn, { cursor: true })
+    }
+    doScroll()
+  })
+}
+
+function followUpCount() {
+  return conversation.turns.filter((turn) => turn.role === 'user').length
+}
+
+function composerState() {
+  const followUp = conversation.followUp
+  if (followUp.enabled !== true) {
+    return { enabled: false, reason: followUp.disabledReason || '当前无法追问' }
   }
+  const first = conversation.turns.find((turn) => turn.role === 'assistant')
+  if (!first || first.status === 'error' || first.status === 'cancelled') {
+    return { enabled: false, reason: '首次请求失败，无法继续追问，请重新划词' }
+  }
+  if (followUpCount() >= followUp.maxTurns) {
+    return { enabled: false, reason: `已达到最大追问轮数（${followUp.maxTurns}），请重新划词开始新会话` }
+  }
+  return { enabled: true, reason: '' }
+}
+
+function resizeComposerInput() {
+  const input = el.questionInput
+  input.style.height = 'auto'
+  input.style.height = `${Math.min(MAX_COMPOSER_HEIGHT, Math.max(MIN_COMPOSER_HEIGHT, input.scrollHeight))}px`
+}
+
+function renderComposer() {
+  const busy = conversation.activeTurn >= 0 || conversation.pendingQuestion !== ''
+  const state = busy ? { enabled: false, reason: '' } : composerState()
+  el.questionInput.disabled = true
+  el.btnSend.classList.toggle('stop', busy)
+  if (busy) {
+    el.btnSend.disabled = false
+    el.btnSend.title = '停止生成'
+    el.composerHint.textContent = ''
+    el.composerHint.className = 'composer-hint'
+  } else {
+    el.btnSend.disabled = !state.enabled
+    el.btnSend.title = '发送'
+    el.composerHint.textContent = conversation.notice || (state.enabled ? '' : state.reason)
+    el.composerHint.className = conversation.notice ? 'composer-hint error' : 'composer-hint'
+    el.questionInput.disabled = !state.enabled
+  }
+}
+
+function submitQuestion() {
+  if (conversation.activeTurn >= 0 || conversation.pendingQuestion) return
+  if (!composerState().enabled) return
+  const value = el.questionInput.value.trim()
+  if (!value) return
+  conversation.notice = ''
+  conversation.pendingQuestion = value
+  if (!actionBridge.askQuestion(conversation.streamId, value)) {
+    conversation.pendingQuestion = ''
+    conversation.notice = '追问发送失败，请重试'
+    renderComposer()
+    return
+  }
+  renderComposer()
+}
+
+function stopStream() {
+  const turn = activeAssistantTurn()
+  if (turn) finishTurnWith(turn, 'cancelled', '已停止生成')
+  else if (conversation.pendingQuestion) conversation.notice = '已取消本次追问'
+  conversation.pendingQuestion = ''
+  clearTimeout(loadTimer)
+  loadTimer = null
+  showLoading(false)
+  renderComposer()
+  actionBridge.cancelStream(conversation.streamId)
 }
 
 actionBridge.onActionStart(function(data) {
   applyAppearance(data.appearance)
   resetUI()
-  currentStreamId = data.streamId
+  conversation.streamId = data.streamId
+  if (data.followUp) conversation.followUp = data.followUp
   el.sourceText.textContent = data.text
   if (data.type === 'translate') {
     el.headerIcon.innerHTML = ACTION_ICONS.translate
@@ -328,6 +475,8 @@ actionBridge.onActionStart(function(data) {
     el.headerBadge.className = 'badge explain'
     el.loadingText.textContent = '正在思考...'
   }
+  createAssistantTurn()
+  renderComposer()
   showLoading(true)
   armStreamTimeout()
 })
@@ -335,47 +484,109 @@ actionBridge.onActionStart(function(data) {
 actionBridge.onActionAppearance(applyAppearance)
 
 actionBridge.onStreamData(function(data) {
-  if (isDone) return
+  const turn = activeAssistantTurn()
+  if (!turn) return
   armStreamTimeout()
   showLoading(false)
-  fullText += data.content
+  turn.content += data.content
   resultDirty = true
   scheduleStreamRender()
 })
 
 actionBridge.onStreamReasoning(function(data) {
-  if (isDone) return
+  const turn = activeAssistantTurn()
+  if (!turn) return
   armStreamTimeout()
   showLoading(false)
-  reasoning += data.content
+  turn.reasoning += data.content
   reasoningDirty = true
   scheduleStreamRender()
 })
 
-actionBridge.onStreamDone(function() {
-  isDone = true
-  showLoading(false)
-  clearTimeout(loadTimer)
+actionBridge.onChatTurn(function(data) {
+  if (data.streamId !== null && data.streamId !== conversation.streamId) return
+  const question = data.question || conversation.pendingQuestion
+  conversation.pendingQuestion = ''
+  conversation.notice = ''
+  el.questionInput.value = ''
+  resizeComposerInput()
+  appendUserTurn(question)
+  createAssistantTurn()
+  userScrolled = false
   resultDirty = false
   reasoningDirty = false
-  renderResult(fullText)
+  armStreamTimeout()
+  renderComposer()
   doScroll()
-  fullText = ''
-  actionBridge.finishStream(currentStreamId)
+})
+
+actionBridge.onStreamDone(function() {
+  clearTimeout(loadTimer)
+  loadTimer = null
+  resultDirty = false
+  reasoningDirty = false
+  showLoading(false)
+  const turn = activeAssistantTurn()
+  if (turn) finishTurnWith(turn, 'done', '')
+  renderComposer()
+  doScroll()
+  actionBridge.finishStream(conversation.streamId)
 })
 
 actionBridge.onStreamError(function(data) {
-  isDone = true
-  showLoading(false)
   clearTimeout(loadTimer)
-  if (fullText) renderResult(fullText)
-  else el.result.replaceChildren()
+  loadTimer = null
   resultDirty = false
   reasoningDirty = false
-  fullText = ''
-  appendResultError(`错误: ${data.error}`)
+  showLoading(false)
+  const turn = activeAssistantTurn()
+  if (turn) {
+    const note = data.interrupted
+      ? '窗口已隐藏，生成已中断'
+      : (data.cancelled ? '已停止生成' : `错误: ${data.error}`)
+    finishTurnWith(turn, data.cancelled ? 'cancelled' : (data.rejected ? 'rejected' : 'error'), note)
+  } else if (data.rejected) {
+    // The ask never became a turn: keep the typed text and surface the reason.
+    conversation.pendingQuestion = ''
+    conversation.notice = data.error
+  }
+  renderComposer()
   doScroll()
-  actionBridge.finishStream(currentStreamId)
+  actionBridge.finishStream(conversation.streamId)
+})
+
+function onSendClick() {
+  if (conversation.activeTurn >= 0 || conversation.pendingQuestion) stopStream()
+  else submitQuestion()
+}
+
+el.btnSend.addEventListener('click', onSendClick)
+
+el.questionInput.addEventListener('keydown', function(event) {
+  if (event.key !== 'Enter' || event.shiftKey) return
+  // Chinese IMEs confirm a candidate with Enter; that must not send.
+  if (event.isComposing) return
+  event.preventDefault()
+  if (conversation.activeTurn >= 0 || conversation.pendingQuestion) return
+  submitQuestion()
+})
+
+el.questionInput.addEventListener('input', function() {
+  resizeComposerInput()
+  if (conversation.notice) {
+    conversation.notice = ''
+    renderComposer()
+  }
+})
+
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden || conversation.activeTurn < 0) return
+  const turn = activeAssistantTurn()
+  if (turn) finishTurnWith(turn, 'cancelled', '窗口已隐藏，生成已中断')
+  clearTimeout(loadTimer)
+  loadTimer = null
+  showLoading(false)
+  renderComposer()
 })
 
 document.getElementById('btnPin').addEventListener('click', function() {
@@ -391,9 +602,9 @@ document.getElementById('content').addEventListener('wheel', function() {
   userScrolled = true
 })
 
-el.result.addEventListener('click', function(event) {
+el.transcript.addEventListener('click', function(event) {
   const link = event.target.closest('a')
-  if (!link || !el.result.contains(link)) return
+  if (!link || !el.transcript.contains(link)) return
   event.preventDefault()
   const url = normalizeExternalUrl(link.href)
   if (!url) return

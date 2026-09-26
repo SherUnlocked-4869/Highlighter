@@ -26,6 +26,7 @@ async function waitFor(check, description, timeoutMs = 5000) {
 async function runProbe() {
   const openedUrls = []
   const streamSignals = []
+  const chatAsks = []
   const blocked = []
   let actionWindow = null
   const secureIpcMain = createSecureIpcMain({
@@ -41,6 +42,15 @@ async function runProbe() {
   secureIpcMain.on('stream:cancel', (_event, streamId) => streamSignals.push({ channel: 'cancel', streamId }))
   secureIpcMain.on('stream:finish', (_event, streamId) => streamSignals.push({ channel: 'finish', streamId }))
   secureIpcMain.on('window:toggle-pin', () => {})
+  secureIpcMain.on('chat:ask', (event, payload) => {
+    chatAsks.push(payload)
+    if (payload?.streamId !== 7) return
+    event.sender.send('chat:turn', { streamId: payload.streamId, question: payload.question })
+    event.sender.send('stream:data', {
+      content: '<img src=x onerror="window.__actionXssFollowUp = true"> [bad](javascript:alert(2)) [good](https://example.com/follow?x=1&y=2)'
+    })
+    event.sender.send('stream:done')
+  })
 
   const pagePath = path.join(__dirname, '..', 'action', 'action.html')
   const win = createSecureWindow({
@@ -69,7 +79,8 @@ async function runProbe() {
     icon: '✦',
     text: 'source',
     streamId: 7,
-    appearance: { theme: 'dark', mainColor: '#336699' }
+    appearance: { theme: 'dark', mainColor: '#336699' },
+    followUp: { enabled: true, disabledReason: '', maxTurns: 10, questionMaxLength: 2000 }
   })
   win.webContents.send('stream:data', {
     content: '<img src=x onerror="window.__actionXss = true"> [bad](javascript:alert(1)) [good](https://example.com/safe?q=1&ok=2)'
@@ -78,27 +89,55 @@ async function runProbe() {
 
   const rendered = await waitFor(
     () => win.webContents.executeJavaScript(`(() => {
-      const result = document.getElementById('result')
-      const link = result.querySelector('a')
+      const answer = document.querySelector('#transcript .turn-assistant .answer')
+      if (!answer) return null
+      const link = answer.querySelector('a')
       if (!link) return null
       return {
-        html: result.innerHTML,
-        text: result.textContent,
-        links: [...result.querySelectorAll('a')].map((item) => ({
+        html: answer.innerHTML,
+        text: answer.textContent,
+        links: [...answer.querySelectorAll('a')].map((item) => ({
           href: item.href,
           rel: item.rel,
           target: item.target
         })),
-        imageCount: result.querySelectorAll('img').length,
-        scriptCount: result.querySelectorAll('script').length,
+        imageCount: answer.querySelectorAll('img').length,
+        scriptCount: answer.querySelectorAll('script').length,
         xssExecuted: window.__actionXss === true
       }
     })()`),
     'sanitized action result'
   )
 
-  await win.webContents.executeJavaScript(`document.querySelector('#result a').click()`)
+  await win.webContents.executeJavaScript(`document.querySelector('#transcript .turn-assistant .answer a').click()`)
   await waitFor(() => Promise.resolve(openedUrls.length > 0), 'main-process external link handoff')
+
+  const followUpAsked = await win.webContents.executeJavaScript(`window.actionAPI.askQuestion(7, '追问 <b>内容</b>')`)
+  const followUp = await waitFor(
+    () => win.webContents.executeJavaScript(`(() => {
+      const transcript = document.getElementById('transcript')
+      const answers = transcript.querySelectorAll('.turn-assistant .answer')
+      if (answers.length < 2) return null
+      const answer = answers[1]
+      const link = answer.querySelector('a')
+      if (!link) return null
+      return {
+        html: answer.innerHTML,
+        text: answer.textContent,
+        links: [...answer.querySelectorAll('a')].map((item) => ({
+          href: item.href,
+          rel: item.rel,
+          target: item.target
+        })),
+        imageCount: answer.querySelectorAll('img').length,
+        scriptCount: answer.querySelectorAll('script').length,
+        xssExecuted: window.__actionXssFollowUp === true,
+        questionText: transcript.querySelector('.turn-user .bubble')?.textContent || '',
+        questionMarkup: transcript.querySelector('.turn-user .bubble')?.innerHTML || ''
+      }
+    })()`),
+    'sanitized follow-up answer'
+  )
 
   const childWindowResult = await win.webContents.executeJavaScript(`window.open('https://blocked.example/new') === null`)
   await waitFor(() => Promise.resolve(blocked.some((entry) => entry.reason === 'blocked-window-open')), 'blocked child window')
@@ -118,8 +157,11 @@ async function runProbe() {
       webviewTag: preferences.webviewTag
     },
     rendered,
+    followUpAsked,
+    followUp,
     openedUrls,
     streamSignals,
+    chatAsks,
     childWindowResult,
     blocked,
     finalUrl
