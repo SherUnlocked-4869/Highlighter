@@ -5,6 +5,7 @@ const path = require('node:path')
 
 const root = path.join(__dirname, '..')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+const dataRootDomain = fs.readFileSync(path.join(root, 'main/domains/data-root/index.js'), 'utf8')
 const longCaptureSource = fs.readFileSync(path.join(root, 'main/domains/long-capture/index.js'), 'utf8')
 
 test('main.js delegates long-capture domain instead of inlining session windows', () => {
@@ -25,7 +26,7 @@ test('main.js routes long-capture ownership, task checks, and IPC through the do
   assert.match(main, /\.\.\.longCaptureDomain\.createLongCaptureController\(\)/)
   assert.match(main, /longCaptureDomain\.createLongCaptureFromSelection\(/)
   assert.match(main, /longCaptureDomain\.closeLongCapture\(\)/)
-  assert.match(main, /await longCaptureDomain\.shutdown\(\)/)
+  assert.match(dataRootDomain, /await longCaptureDomain\.shutdown\(\)/)
 })
 
 test('long-capture domain owns session lifecycle and long:* IPC handlers', () => {

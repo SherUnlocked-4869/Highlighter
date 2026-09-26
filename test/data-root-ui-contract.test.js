@@ -4,22 +4,23 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+const dataRootDomain = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'data-root', 'index.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
 const config = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
 const settingsIpc = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'settings-ipc.js'), 'utf8')
 const historyService = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'history-service.js'), 'utf8')
 
-function section(start, end) {
-  const startIndex = main.indexOf(start)
+function section(source, start, end) {
+  const startIndex = source.indexOf(start)
   assert.notEqual(startIndex, -1, `missing ${start}`)
-  const endIndex = end ? main.indexOf(end, startIndex + start.length) : main.length
+  const endIndex = end ? source.indexOf(end, startIndex + start.length) : source.length
   assert.notEqual(endIndex, -1, `missing ${end}`)
-  return main.slice(startIndex, endIndex)
+  return source.slice(startIndex, endIndex)
 }
 
 test('portable bootstrap runs before Electron storage or window consumers', () => {
   assert.match(main, /require\('\.\/main\/services\/data-root-bootstrap'\)/)
-  assert.match(main, /require\('\.\/main\/services\/data-root'\)/)
+  assert.match(dataRootDomain, /require\('\.\.\/\.\.\/services\/data-root'\)/)
   assert.match(main, /require\('\.\/main\/services\/data-root-migration'\)/)
   assert.match(main, /const \{ relaunchApplication \} = require\('\.\/main\/services\/relaunch-application'\)/)
   assert.doesNotMatch(main, /\bapp\.relaunch\(/)
@@ -45,7 +46,7 @@ test('portable named paths own history, logs, and service caches', () => {
 })
 
 test('first portable run selects a root, migrates legacy data, and never starts the app on cancel', () => {
-  const choose = section('async function chooseInitialDataRoot()', 'async function recoverUnavailableDataRoot()')
+  const choose = section(dataRootDomain, 'async function chooseInitialDataRoot()', 'async function recoverUnavailableDataRoot()')
   assert.match(choose, /dataRootContext\.startupError[\s\S]*showMessageBox/)
   assert.match(choose, /showOpenDialog\([\s\S]*openDirectory[\s\S]*createDirectory/)
   assert.match(choose, /if \(result\.canceled \|\| !result\.filePaths\[0\]\)[\s\S]*removeProvisionalRoot\(dataRootContext\)[\s\S]*app\.exit\(0\)[\s\S]*return/)
@@ -56,7 +57,7 @@ test('first portable run selects a root, migrates legacy data, and never starts 
 })
 
 test('unavailable portable roots recover by retry, alternate root, or exit only', () => {
-  const recover = section('async function recoverUnavailableDataRoot()', 'async function startApplication()')
+  const recover = section(dataRootDomain, 'async function recoverUnavailableDataRoot()', 'function getInfo()')
   assert.match(recover, /buttons: \['重试', '选择其他目录', '退出'\]/)
   assert.match(recover, /validateDataRoot\(dataRootContext\.requestedRoot\)[\s\S]*ensureDataLayout\(createDataPaths/)
   assert.match(recover, /showOpenDialog\([\s\S]*openDirectory[\s\S]*createDirectory/)
@@ -67,7 +68,7 @@ test('unavailable portable roots recover by retry, alternate root, or exit only'
 })
 
 test('unavailable recovery never replaces the locator while migration is pending', () => {
-  const recover = section('async function recoverUnavailableDataRoot()', 'async function startApplication()')
+  const recover = section(dataRootDomain, 'async function recoverUnavailableDataRoot()', 'function getInfo()')
   const chooseAnother = recover.slice(recover.indexOf('if (response === 1)'), recover.indexOf('removeProvisionalRoot(dataRootContext)', recover.indexOf('if (response === 1)')))
   const pendingGuard = chooseAnother.match(/if \(fs\.existsSync\(dataRootContext\.pendingPath\)\) \{[^}]*\}/)?.[0] || ''
 
@@ -78,7 +79,7 @@ test('unavailable recovery never replaces the locator while migration is pending
 })
 
 test('startup recovers unavailable roots and finalizes every customized root before initialization', () => {
-  const start = section('async function startApplication()', 'const gotTheLock')
+  const start = section(main, 'async function startApplication()', 'const gotTheLock')
   assert.match(start, /if \(dataRootContext\.needsSelection\) \{[\s\S]*recoverUnavailableDataRoot\(\)[\s\S]*return[\s\S]*\}[\s\S]*initializeStore\(\)/)
   assert.match(start, /if \(activePaths\) \{[\s\S]*verifyAndFinalizeMigration\(\{[\s\S]*pendingPath: dataRootContext\.pendingPath[\s\S]*activeRoot: activePaths\.root/)
   assert.doesNotMatch(start, /verifyAndFinalizeMigration\([\s\S]*pendingPath: (?:undefined|null)/)
@@ -89,7 +90,7 @@ test('startup recovers unavailable roots and finalizes every customized root bef
 })
 
 test('a pending startup failure rolls back, reports, and relaunches without starting services', () => {
-  const start = section('async function startApplication()', 'const gotTheLock')
+  const start = section(main, 'async function startApplication()', 'const gotTheLock')
   assert.match(start, /const hasPendingMigration = fs\.existsSync\(dataRootContext\.pendingPath\)/)
   assert.match(start, /catch \(startupError\) \{[\s\S]*if \(!hasPendingMigration\) throw startupError[\s\S]*app\.releaseSingleInstanceLock\(\)[\s\S]*rollbackPendingMigration\(\{[\s\S]*dialog\.showErrorBox[\s\S]*relaunchApplication\(\{ app, dataRootContext \}\)[\s\S]*app\.exit\(1\)[\s\S]*return/)
   assert.ok(start.indexOf('app.releaseSingleInstanceLock()') < start.indexOf('rollbackPendingMigration({'))
@@ -98,7 +99,7 @@ test('a pending startup failure rolls back, reports, and relaunches without star
 })
 
 test('single-instance rejection removes provisional storage and ready failures exit cleanly', () => {
-  const lifecycle = section('const gotTheLock')
+  const lifecycle = section(main, 'const gotTheLock')
   assert.match(lifecycle, /if \(!gotTheLock\) \{[\s\S]*removeProvisionalRoot\(dataRootContext\)[\s\S]*app\.quit\(\)/)
   assert.match(lifecycle, /app\.whenReady\(\)\.then\(startApplication\)\.catch\([\s\S]*dialog\.showErrorBox[\s\S]*removeProvisionalRoot\(dataRootContext\)[\s\S]*app\.exit\(1\)/)
 })
@@ -128,13 +129,13 @@ test('system settings renders and uses data-root controls in every build', () =>
 })
 
 test('main process keeps data-root migration privileged, serialized, and restart-only on success', () => {
-  assert.match(main, /function getDataRootInfo\(\)[\s\S]*customized: !!dataRootContext\.paths/)
-  assert.match(main, /path: dataRootContext\.paths\?\.root \|\| dataRootContext\.legacyUserData/)
-  assert.match(main, /function openDataRoot\(\)[\s\S]*shell\.openPath\(dataRootContext\.paths\?\.root \|\| app\.getPath\('userData'\)\)/)
-  assert.match(main, /registerDataRootIpc\(\{[\s\S]*get: getDataRootInfo[\s\S]*open: openDataRoot[\s\S]*change: changeDataRoot/)
-  const change = section('async function changeDataRoot()', 'registerAppIpc({')
+  assert.match(dataRootDomain, /function getInfo\(\)[\s\S]*customized: !!dataRootContext\.paths/)
+  assert.match(dataRootDomain, /path: dataRootContext\.paths\?\.root \|\| dataRootContext\.legacyUserData/)
+  assert.match(dataRootDomain, /function open\(\)[\s\S]*shell\.openPath\(dataRootContext\.paths\?\.root \|\| app\.getPath\('userData'\)\)/)
+  assert.match(main, /registerDataRootIpc\(\{[\s\S]*controller: dataRootDomain\.createController\(\)/)
+  const change = section(dataRootDomain, 'async function changeDataRoot()', 'async function chooseInitialDataRoot()')
   assert.doesNotMatch(change, /只有便携版/)
-  assert.match(change, /dataRootMigrationInProgress \|\| fs\.existsSync\(dataRootContext\.pendingPath\)/)
+  assert.match(change, /isMigrationInProgress\(\) \|\| fs\.existsSync\(dataRootContext\.pendingPath\)/)
   assert.match(change, /dataRootContext\.paths[\s\S]*createManagedSourcePaths\(activeRoot\)[\s\S]*createLegacySourcePaths\(activeRoot\)/)
   assert.match(change, /dialog\.showOpenDialog\([\s\S]*openDirectory[\s\S]*createDirectory/)
   assert.match(change, /if \(result\.canceled \|\| !result\.filePaths\[0]\) return \{ canceled: true \}/)
@@ -149,10 +150,10 @@ test('main process keeps data-root migration privileged, serialized, and restart
 })
 
 test('migration quiesces managed writers and blocks late config, log, and history writes', () => {
-  const stopWriters = section('async function stopManagedDataWriters()', 'function restoreManagedDataWriters')
+  const stopWriters = section(dataRootDomain, 'async function stopManagedDataWriters()', 'function restoreManagedDataWriters')
   assert.match(stopWriters, /activeOcrService\.stop\(\)[\s\S]*await Promise\.allSettled\(inFlight\)/)
-  assert.match(stopWriters, /await recordDomain\.shutdown\(\)[\s\S]*recordingService = null/)
-  assert.match(main, /await longCaptureDomain\.shutdown\(\)/)
+  assert.match(stopWriters, /await recordDomain\.shutdown\(\)[\s\S]*recordingServiceRef\.set\(null\)/)
+  assert.match(dataRootDomain, /await longCaptureDomain\.shutdown\(\)/)
   assert.match(main, /function assertManagedDataWritable\(\)[\s\S]*dataRootMigrationInProgress[\s\S]*throw new Error/)
   assert.match(main, /createAppLogger\(\{[\s\S]*isEnabled: \(\) => !dataRootMigrationInProgress/)
   assert.match(historyService, /persistDataUrl\(dataUrl, meta = \{\}\) \{[\s\S]*this\.assertWritable\(\)/)
@@ -180,7 +181,7 @@ test('recording cache operations are tracked until they settle before migration'
   }
   assert.match(recordDomain, /managedRecordingWriters\.track\(\(\) => service\.startSession\(\)/)
   assert.match(recordDomain, /function cleanupRecordSession\(win, service = null, allowBlocked = false\)[\s\S]*managedRecordingWriters\.track\(\(\) => activeService\.cleanupSession[\s\S]*\{ allowBlocked \}/)
-  const change = section('async function changeDataRoot()', 'registerAppIpc({')
+  const change = section(dataRootDomain, 'async function changeDataRoot()', 'async function chooseInitialDataRoot()')
   assert.match(change, /quiesceAndMigrate\(\{[\s\S]*coordinator: managedRecordingWriters[\s\S]*stopWriters: stopManagedDataWriters[\s\S]*migrate:/)
   assert.match(recordDomain, /await cleanupRecordSession\(win, service\)[\s\S]*managedRecordingWriters\.assertOpen\(\)[\s\S]*managedRecordingWriters\.track\(\(\) => service\.startSession\(\)\)/)
 })

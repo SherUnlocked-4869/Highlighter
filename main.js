@@ -23,16 +23,12 @@ const fs = require('fs')
 const path = require('path')
 const { prepareDataRoot, removeProvisionalRoot } = require('./main/services/data-root-bootstrap')
 const { configureE2eEnvironment } = require('./main/services/e2e-bootstrap')
-const { createDataPaths, ensureDataLayout, validateDataRoot, writeLocator } = require('./main/services/data-root')
 const { relaunchApplication } = require('./main/services/relaunch-application')
 const {
-  createLegacySourcePaths,
-  createManagedSourcePaths,
-  migrateDataRoot,
   rollbackPendingMigration,
   verifyAndFinalizeMigration
 } = require('./main/services/data-root-migration')
-const { ManagedWriterCoordinator, quiesceAndMigrate } = require('./main/services/managed-writer-coordinator')
+const { ManagedWriterCoordinator } = require('./main/services/managed-writer-coordinator')
 const { createAppLogger } = require('./main/services/app-logger')
 const { PerformanceMonitor } = require('./main/services/performance-monitor')
 const { DiagnosticsService } = require('./main/services/diagnostics-service')
@@ -85,6 +81,7 @@ const { createRecordDomain } = require('./main/domains/record')
 const { createRecognitionDomain } = require('./main/domains/recognition')
 const { createSearchDomain } = require('./main/domains/search')
 const { createSelectionDomain } = require('./main/domains/selection')
+const { createDataRootDomain } = require('./main/domains/data-root')
 const { createSettingsEffects } = require('./main/domains/settings-effects')
 const aiClient = require('./main/services/ai')
 const {
@@ -281,8 +278,24 @@ let recordDomain = null
 let recognitionDomain = null
 let searchDomain = null
 let selectionDomain = null
+let dataRootDomain = null
 let settingsEffects = null
 const isWin = process.platform === 'win32'
+
+// Shared mutable service handles. The refs let domains that need to stop or
+// replace a lazily created service without main.js owning the call.
+const ocrServiceRef = {
+  get: () => ocrService,
+  set: (value) => { ocrService = value }
+}
+const recordingServiceRef = {
+  get: () => recordingService,
+  set: (value) => { recordingService = value }
+}
+const dataRootMigrationState = {
+  get: () => dataRootMigrationInProgress,
+  set: (value) => { dataRootMigrationInProgress = value }
+}
 
 function shouldFilterApp(programName) {
   const value = String(programName || '').toLowerCase()
@@ -775,10 +788,7 @@ settingsEffects = createSettingsEffects({
   applyGameModeState,
   createTrayIcon,
   getUpdateService: () => updateService,
-  ocrServiceRef: {
-    get: () => ocrService,
-    set: (value) => { ocrService = value }
-  },
+  ocrServiceRef,
   getOcrService,
   broadcastActionAppearance: (settings) => selectionDomain.broadcastActionAppearance(settings),
   searchDomain,
@@ -786,6 +796,28 @@ settingsEffects = createSettingsEffects({
     get: () => selectionDomain.hookService()
   },
   syncConversationStore: () => selectionDomain.syncConversationStore(),
+  log
+})
+
+dataRootDomain = createDataRootDomain({
+  app,
+  dialog,
+  fs,
+  path,
+  shell,
+  dataRootContext,
+  getSettings,
+  persistSettings,
+  isMigrationInProgress: () => dataRootMigrationState.get(),
+  setMigrationInProgress: (value) => dataRootMigrationState.set(value),
+  ocrServiceRef,
+  recordingServiceRef,
+  getOcrService,
+  recordDomain,
+  longCaptureDomain,
+  managedRecordingWriters,
+  removeProvisionalRoot,
+  markSessionClean,
   log
 })
 
@@ -1045,27 +1077,6 @@ function setGameModeEnabled(enabled, reason = 'tray') {
   }
   return applyGameModeState(nextEnabled, reason)
 }
-
-async function stopManagedDataWriters() {
-  const activeOcrService = ocrService
-  if (activeOcrService) {
-    const inFlight = [...activeOcrService.inFlight.values()]
-    activeOcrService.stop()
-    await Promise.allSettled(inFlight)
-    if (ocrService === activeOcrService) ocrService = null
-  }
-
-  await recordDomain.shutdown()
-  recordingService = null
-
-  await longCaptureDomain.shutdown()
-}
-
-function restoreManagedDataWriters(restartOcr) {
-  if (!restartOcr) return
-  getOcrService().ensureStarted().catch((error) => log('OCR restart failed:', error.message))
-}
-
 registerSettingsIpc({
   ipcMain: secureIpcMain,
   settingsService: {
@@ -1135,75 +1146,6 @@ async function pickDirectory(options = {}) {
   })
   return result.canceled ? '' : result.filePaths[0]
 }
-
-function getDataRootInfo() {
-  return {
-  portable: dataRootContext.portable,
-  customized: !!dataRootContext.paths,
-  path: dataRootContext.paths?.root || dataRootContext.legacyUserData
-  }
-}
-
-function openDataRoot() {
-  return shell.openPath(dataRootContext.paths?.root || app.getPath('userData'))
-}
-
-async function changeDataRoot() {
-  if (dataRootMigrationInProgress || fs.existsSync(dataRootContext.pendingPath)) throw new Error('已有未完成的数据目录迁移，不能开始新的迁移')
-
-  const activeRoot = dataRootContext.paths?.root || dataRootContext.legacyUserData
-  const sourcePaths = dataRootContext.paths
-    ? createManagedSourcePaths(activeRoot)
-    : createLegacySourcePaths(activeRoot)
-  const previousRoot = dataRootContext.paths ? activeRoot : ''
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
-  if (result.canceled || !result.filePaths[0]) return { canceled: true }
-  if (path.resolve(result.filePaths[0]) === path.resolve(activeRoot)) return { unchanged: true }
-  const targetRoot = await validateDataRoot(result.filePaths[0], activeRoot)
-  if (path.resolve(targetRoot) === path.resolve(activeRoot)) return { unchanged: true }
-
-  const confirmation = await dialog.showMessageBox({
-    type: 'warning',
-    buttons: ['取消', '迁移并重启'],
-    defaultId: 1,
-    cancelId: 0,
-    message: '更改软件数据目录？',
-    detail: 'Highlighter 将迁移配置、日志、截图历史，并在迁移完成后重启。缓存和运行数据不会迁移。'
-  })
-  if (confirmation.response !== 1) return { canceled: true }
-  if (dataRootMigrationInProgress || fs.existsSync(dataRootContext.pendingPath)) throw new Error('已有未完成的数据目录迁移，不能开始新的迁移')
-
-  const restartOcr = !!ocrService && getSettings().plugins.ocr && getSettings().ocr.hotStart
-  let writerShutdownStarted = false
-  dataRootMigrationInProgress = true
-  try {
-    persistSettings(getSettings())
-    writerShutdownStarted = true
-    await quiesceAndMigrate({
-      coordinator: managedRecordingWriters,
-      stopWriters: stopManagedDataWriters,
-      migrate: () => migrateDataRoot({
-        source: sourcePaths,
-        target: createDataPaths(targetRoot),
-        portableDirectory: dataRootContext.locatorDirectory,
-        previousRoot
-      }),
-      relaunch: () => setImmediate(() => {
-        markSessionClean('data-root-relaunch')
-        relaunchApplication({ app, dataRootContext })
-        app.exit(0)
-      })
-    })
-  } catch (error) {
-    dataRootMigrationInProgress = false
-    restoreManagedDataWriters(restartOcr)
-    const recovery = writerShutdownStarted ? '；为保证数据安全，录屏和长截图已停止，可重新启动这些功能' : ''
-    throw new Error(`数据目录迁移失败：${error.message || String(error)}${recovery}`)
-  }
-
-  return { restarting: true }
-}
-
 registerAppIpc({
   ipcMain: secureIpcMain,
   controller: {
@@ -1274,11 +1216,7 @@ registerUpdateIpc({
 
 registerDataRootIpc({
   ipcMain: secureIpcMain,
-  controller: {
-    get: getDataRootInfo,
-    open: openDataRoot,
-    change: changeDataRoot
-  }
+  controller: dataRootDomain.createController()
 })
 
 registerHistoryIpc({
@@ -1366,103 +1304,10 @@ secureIpcMain.on('window:close', (event) => {
   win?.hide()
 })
 secureIpcMain.assertComplete()
-
-async function chooseInitialDataRoot() {
-  if (dataRootContext.startupError) {
-    await dialog.showMessageBox({
-      type: 'warning',
-      title: '数据目录启动警告',
-      message: '当前数据目录不可用，请重新选择。',
-      detail: dataRootContext.startupError.message || String(dataRootContext.startupError),
-      buttons: ['确定']
-    })
-  }
-
-  const result = await dialog.showOpenDialog({
-    title: '选择 Highlighter 数据目录',
-    properties: ['openDirectory', 'createDirectory']
-  })
-  if (result.canceled || !result.filePaths[0]) {
-    removeProvisionalRoot(dataRootContext)
-    app.exit(0)
-    return
-  }
-
-  let targetRoot = result.filePaths[0]
-  targetRoot = await validateDataRoot(targetRoot, dataRootContext.legacyUserData)
-  await migrateDataRoot({
-    source: createLegacySourcePaths(dataRootContext.legacyUserData),
-    target: createDataPaths(targetRoot),
-    portableDirectory: dataRootContext.locatorDirectory,
-    previousRoot: ''
-  })
-  if (!removeProvisionalRoot(dataRootContext)) console.warn('Unable to remove provisional data directory')
-  relaunchApplication({ app, dataRootContext })
-  app.exit(0)
-}
-
-async function recoverUnavailableDataRoot() {
-  let recoveryError = dataRootContext.startupError
-  while (true) {
-    const { response } = await dialog.showMessageBox({
-      type: 'error',
-      title: 'Highlighter 数据目录不可用',
-      message: '无法使用已配置的数据目录。',
-      detail: recoveryError?.message || String(recoveryError || ''),
-      buttons: ['重试', '选择其他目录', '退出'],
-      defaultId: 0,
-      cancelId: 2,
-      noLink: true
-    })
-
-    if (response === 0) {
-      try {
-        const targetRoot = await validateDataRoot(dataRootContext.requestedRoot)
-        await ensureDataLayout(createDataPaths(targetRoot))
-        if (!removeProvisionalRoot(dataRootContext)) console.warn('Unable to remove provisional data directory')
-        relaunchApplication({ app, dataRootContext })
-        app.exit(0)
-        return
-      } catch (error) {
-        recoveryError = error
-      }
-      continue
-    }
-
-    if (response === 1) {
-      if (fs.existsSync(dataRootContext.pendingPath)) {
-        recoveryError = new Error('检测到未完成的数据目录迁移，请先恢复原数据目录')
-        continue
-      }
-      const result = await dialog.showOpenDialog({
-        title: '选择 Highlighter 数据目录',
-        properties: ['openDirectory', 'createDirectory']
-      })
-      if (result.canceled || !result.filePaths[0]) continue
-      try {
-        const targetRoot = await validateDataRoot(result.filePaths[0])
-        await ensureDataLayout(createDataPaths(targetRoot))
-        await writeLocator(dataRootContext.locatorPath, targetRoot)
-        if (!removeProvisionalRoot(dataRootContext)) console.warn('Unable to remove provisional data directory')
-        relaunchApplication({ app, dataRootContext })
-        app.exit(0)
-        return
-      } catch (error) {
-        recoveryError = error
-      }
-      continue
-    }
-
-    removeProvisionalRoot(dataRootContext)
-    app.exit(1)
-    return
-  }
-}
-
 async function startApplication() {
   if (dataRootContext.needsSelection) {
-    if (dataRootContext.startupError || !dataRootContext.portable) await recoverUnavailableDataRoot()
-    else await chooseInitialDataRoot()
+    if (dataRootContext.startupError || !dataRootContext.portable) await dataRootDomain.recoverUnavailableDataRoot()
+    else await dataRootDomain.chooseInitialDataRoot()
     return
   }
 
