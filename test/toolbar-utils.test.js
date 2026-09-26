@@ -25,7 +25,7 @@ test('default selection toolbar enables all built-ins with editable prompts and 
     customActions: [],
     searchEngine: 'bing',
     translateLanguages: { source: 'auto', target: '中文' },
-    resultWindow: { width: 550, height: 520 }
+    resultWindow: { width: 550, height: 560 }
   })
   assert.deepEqual(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR), [
     'copy', 'search', 'translate', 'explain'
@@ -115,11 +115,11 @@ test('normalization rejects malformed custom actions and repairs incomplete orde
 test('selection result window size is normalized to safe dimensions', () => {
   assert.deepEqual(normalizeSelectionToolbar({ resultWindow: { width: 640.4, height: 180 } }).resultWindow, {
     width: 640,
-    height: 300
+    height: 340
   })
   assert.deepEqual(normalizeSelectionToolbar({ resultWindow: { width: 'invalid', height: Infinity } }).resultWindow, {
     width: 550,
-    height: 520
+    height: 560
   })
 })
 
