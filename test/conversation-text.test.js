@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { buildConversationText } = require('../action/conversation-text')
+const { buildConversationText, buildQuoteBlock, MAX_QUOTE_LENGTH } = require('../action/conversation-text')
 
 function turn(role, content, extra = {}) {
   return { role, content, ...extra }
@@ -54,6 +54,24 @@ test('marks stopped and failed rounds instead of folding in a half answer', () =
   assert.match(text, /【追问 1】\n详细展开\n半截回答\n（已停止生成）/)
   assert.match(text, /【追问 2】\n再来一次\n（生成失败）/)
   assert.match(text, /【追问 3】\n再试\n（无内容）/)
+})
+
+test('quotes are plain prefixed text, clamped and reported as truncated', () => {
+  assert.deepEqual(buildQuoteBlock('  一句话  '), { text: '> 一句话', truncated: false })
+  // Multi-line selections are prefixed per line so markdown keeps the block together.
+  assert.deepEqual(buildQuoteBlock('第一行\n第二行'), { text: '> 第一行\n> 第二行', truncated: false })
+  assert.deepEqual(buildQuoteBlock(''), { text: '', truncated: false })
+  assert.deepEqual(buildQuoteBlock(undefined), { text: '', truncated: false })
+
+  const long = 'x'.repeat(MAX_QUOTE_LENGTH + 20)
+  const clamped = buildQuoteBlock(long)
+  assert.equal(clamped.truncated, true)
+  assert.equal(clamped.text, `> ${'x'.repeat(MAX_QUOTE_LENGTH)}`)
+  // Exactly at the cap is not a truncation.
+  assert.equal(buildQuoteBlock('y'.repeat(MAX_QUOTE_LENGTH)).truncated, false)
+  // The cap is overridable so the caller can keep quote and question inside the
+  // 2000-character question limit the bridge enforces.
+  assert.equal(buildQuoteBlock(long, { maxLength: 10 }).text, '> xxxxxxxxxx')
 })
 
 test('omits the source block when there is no source and never emits stray headings', () => {

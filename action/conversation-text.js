@@ -19,6 +19,9 @@
     rejected: '（未发送）'
   })
   const EMPTY_ANSWER = '（无内容）'
+  // A quote must leave room for the question itself inside the character limit
+  // the service and the bridge enforce on questions (2000).
+  const MAX_QUOTE_LENGTH = 300
 
   function statusNote(turn) {
     return TURN_STATUS_NOTES[turn?.status] || (turn?.note ? `（${String(turn.note)}）` : '')
@@ -60,5 +63,17 @@
     return blocks.join('\n\n').trim()
   }
 
-  return { buildConversationText, TURN_STATUS_NOTES }
+  // A quoted fragment becomes plain text in the composer: nothing parses it
+  // downstream, the model simply receives a "> "-prefixed user message.
+  function buildQuoteBlock(value, { maxLength = MAX_QUOTE_LENGTH } = {}) {
+    const text = String(value ?? '').trim()
+    if (!text) return { text: '', truncated: false }
+    const clipped = text.length > maxLength ? text.slice(0, maxLength) : text
+    return {
+      text: clipped.split('\n').map((line) => `> ${line}`).join('\n'),
+      truncated: clipped.length < text.length
+    }
+  }
+
+  return { buildConversationText, buildQuoteBlock, MAX_QUOTE_LENGTH, TURN_STATUS_NOTES }
 })

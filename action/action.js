@@ -52,6 +52,7 @@ const el = {
   composerHint: document.getElementById('composerHint'),
   btnCopy: document.getElementById('btnCopy'),
   btnRetry: document.getElementById('btnRetry'),
+  btnQuote: document.getElementById('btnQuote'),
   questionInput: document.getElementById('questionInput'),
   btnSend: document.getElementById('btnSend')
 }
@@ -404,6 +405,37 @@ function lastFollowUpQuestion() {
   return question && question.role === 'user' ? question.content : ''
 }
 
+// A quote is only meaningful from an answer. Selecting the source text or the
+// chrome around it is either pointless or a stray drag.
+function selectedAnswerText() {
+  const selection = window.getSelection()
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return ''
+  const range = selection.getRangeAt(0)
+  const answers = [...el.transcript.querySelectorAll('.turn-assistant .answer')]
+  if (!answers.some((answer) => answer.contains(range.commonAncestorContainer))) return ''
+  return selection.toString().trim()
+}
+
+// Injects the quote at the top of the composer instead of replacing what is
+// already typed, and leaves the caret after it so the user can keep writing.
+function quoteSelectedText() {
+  const selected = selectedAnswerText()
+  if (!selected) return
+  const block = window.conversationText.buildQuoteBlock(selected)
+  if (!block.text) return
+  const input = el.questionInput
+  const existing = input.value.trim()
+  input.value = existing ? `${block.text}\n\n${existing}` : `${block.text}\n\n`
+  input.focus()
+  input.setSelectionRange(input.value.length, input.value.length)
+  resizeComposerInput()
+  window.getSelection().removeAllRanges()
+  conversation.notice = block.truncated
+    ? `引用已截断到 ${window.conversationText.MAX_QUOTE_LENGTH} 字`
+    : ''
+  renderComposer()
+}
+
 // Drops the newest pair so the regenerated round replaces it instead of piling a
 // second copy next to it. Called only once the server has echoed chat:turn, so a
 // rejected retry keeps the old answer on screen.
@@ -445,6 +477,7 @@ function renderComposer() {
   // round is still streaming it copies what has arrived so far.
   el.btnCopy.disabled = !conversation.turns.some((turn) => turn.role === 'assistant' && turn.content)
   el.btnRetry.disabled = busy || !lastFollowUpQuestion()
+  el.btnQuote.disabled = busy || !selectedAnswerText()
   if (busy) {
     el.btnSend.disabled = false
     el.btnSend.title = '停止生成'
@@ -627,6 +660,16 @@ function onSendClick() {
 el.btnSend.addEventListener('click', onSendClick)
 
 el.btnRetry.addEventListener('click', retryLastTurn)
+el.btnQuote.addEventListener('click', quoteSelectedText)
+// A real mouse press would move focus and can collapse the document selection
+// before the click handler reads it, so the button must not take focus.
+el.btnQuote.addEventListener('mousedown', function(event) { event.preventDefault() })
+
+// The quote button tracks the live selection, so it lights up as soon as a piece
+// of an answer is selected.
+document.addEventListener('selectionchange', function() {
+  el.btnQuote.disabled = conversation.activeTurn >= 0 || !selectedAnswerText()
+})
 
 let copyResetTimer = null
 
