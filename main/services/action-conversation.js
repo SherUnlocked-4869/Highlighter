@@ -85,13 +85,17 @@ function pairLength(pair) {
   return String(pair?.question ?? '').length + String(pair?.answer ?? '').length
 }
 
+function historyPairs(value) {
+  return (Array.isArray(value) ? value : []).filter((pair) => pair && typeof pair === 'object')
+}
+
 // `budget` is the character budget left for the follow-up pairs once the fixed
 // part (system prompt + source text + first result + current question) is paid
 // for. Whole pairs are dropped from the oldest end; a half pair is never kept.
 // When the fixed part alone already exceeds the total budget nothing is trimmed
 // — the anchor is what gives the model its context, so losing it is worse.
 function trimHistory(history, budget) {
-  const pairs = (Array.isArray(history) ? history : []).filter((pair) => pair && typeof pair === 'object')
+  const pairs = historyPairs(history)
   if (!(budget > 0)) return pairs.slice()
   const kept = []
   let used = 0
@@ -104,6 +108,8 @@ function trimHistory(history, budget) {
   return kept
 }
 
+// Returns `{ messages, omittedPairs }`: the dropped count is what the renderer
+// turns into "已省略更早的 N 轮对话", so trimming must never be silent.
 function buildFollowUpMessages({ conversation, question }) {
   const systemPrompt = String(conversation?.systemPrompt ?? '')
   const text = String(conversation?.text ?? '')
@@ -111,7 +117,8 @@ function buildFollowUpMessages({ conversation, question }) {
   const questionText = String(question ?? '').trim()
   const configured = Number(conversation?.maxContextChars)
   const budget = configured > 0 ? configured : MAX_CONTEXT_CHARS
-  const history = trimHistory(conversation?.history, budget - systemPrompt.length - text.length - firstResult.length - questionText.length)
+  const pairs = historyPairs(conversation?.history)
+  const history = trimHistory(pairs, budget - systemPrompt.length - text.length - firstResult.length - questionText.length)
   const messages = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: text },
@@ -121,7 +128,7 @@ function buildFollowUpMessages({ conversation, question }) {
     messages.push({ role: 'user', content: pair.question }, { role: 'assistant', content: pair.answer })
   }
   messages.push({ role: 'user', content: questionText })
-  return messages
+  return { messages, omittedPairs: pairs.length - history.length }
 }
 
 // A cancelled round has to be reported to the renderer, because main.js notifies
@@ -241,17 +248,29 @@ class ActionConversation {
     return this.firstResultContent
   }
 
+  // The messages are built here rather than in buildMessages() because the
+  // renderer needs to know how many pairs were dropped *before* the stream
+  // starts: chat:turn is what opens the round and paints the notice.
   beginTurn(question) {
     const value = typeof question === 'string' ? question.trim().slice(0, this.maxQuestionLength) : ''
     if (!value) return { ok: false, reason: DISABLED_REASONS.emptyQuestion, rejected: true }
     const reason = this.disabledReason()
     if (reason) return { ok: false, reason, rejected: true }
-    this.pending = { question: value, content: '' }
-    return { ok: true, question: value }
+    const built = buildFollowUpMessages({ conversation: this, question: value })
+    this.pending = { question: value, content: '', built, omittedPairs: built.omittedPairs }
+    return {
+      ok: true,
+      question: value,
+      omittedPairs: built.omittedPairs,
+      // Assembled here so the payload the renderer depends on is unit-testable
+      // and main.js only forwards it.
+      turnPayload: { streamId: this.streamId, question: value, omittedPairs: built.omittedPairs }
+    }
   }
 
   buildMessages() {
-    return buildFollowUpMessages({ conversation: this, question: this.pending?.question || '' })
+    if (this.pending) return this.pending.built.messages
+    return buildFollowUpMessages({ conversation: this, question: '' }).messages
   }
 
   commitTurn({ content } = {}) {

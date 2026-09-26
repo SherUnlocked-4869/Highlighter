@@ -257,14 +257,18 @@ function renderTurnAnswer(turn, { cursor = false } = {}) {
 }
 
 function createAssistantTurn() {
-  const turn = { role: 'assistant', content: '', reasoning: '', status: 'streaming', note: '' }
+  const turn = { role: 'assistant', content: '', reasoning: '', status: 'streaming', note: '', notice: '' }
   turn.el = document.createElement('div')
   turn.el.className = 'turn turn-assistant'
+  // The notice is a separate element from the note: the note carries the round's
+  // outcome (stopped / interrupted / failed) and must never be overwritten.
+  turn.noticeEl = document.createElement('div')
+  turn.noticeEl.className = 'turn-notice'
   turn.answerEl = document.createElement('div')
   turn.answerEl.className = 'answer'
   turn.noteEl = document.createElement('div')
   turn.noteEl.className = 'turn-note'
-  turn.el.append(turn.answerEl, turn.noteEl)
+  turn.el.append(turn.noticeEl, turn.answerEl, turn.noteEl)
   conversation.turns.push(turn)
   conversation.activeTurn = conversation.turns.length - 1
   el.transcript.appendChild(turn.el)
@@ -511,7 +515,11 @@ actionBridge.onChatTurn(function(data) {
   el.questionInput.value = ''
   resizeComposerInput()
   appendUserTurn(question)
-  createAssistantTurn()
+  const turn = createAssistantTurn()
+  if (data.omittedPairs > 0) {
+    turn.notice = `已省略更早的 ${data.omittedPairs} 轮对话以控制上下文长度`
+    turn.noticeEl.textContent = turn.notice
+  }
   userScrolled = false
   resultDirty = false
   reasoningDirty = false

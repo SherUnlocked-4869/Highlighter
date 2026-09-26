@@ -124,7 +124,12 @@ test('beginTurn rejects empty, in-flight and over-limit rounds while clamping le
   conversation.commitFirstResult('结果')
 
   assert.equal(conversation.beginTurn('   ').ok, false)
-  assert.deepEqual(conversation.beginTurn('abcdefgh'), { ok: true, question: 'abcde' })
+  assert.deepEqual(conversation.beginTurn('abcdefgh'), {
+    ok: true,
+    question: 'abcde',
+    omittedPairs: 0,
+    turnPayload: { streamId: 1, question: 'abcde', omittedPairs: 0 }
+  })
   assert.equal(conversation.isTurnPending, true)
   assert.equal(conversation.beginTurn('再问').ok, false)
 
@@ -206,15 +211,54 @@ test('buildFollowUpMessages trims old pairs against the shared character budget'
   })
   conversation.beginTurn('now')
 
-  assert.deepEqual(
-    buildFollowUpMessages({ conversation, question: 'now' }).map((message) => message.content),
-    ['S', 'T', 'F', 'q3', 'a3', 'now']
-  )
+  const trimmed = buildFollowUpMessages({ conversation, question: 'now' })
+  assert.deepEqual(trimmed.messages.map((message) => message.content), ['S', 'T', 'F', 'q3', 'a3', 'now'])
+  // Trimming is never silent: the dropped pair count travels with the messages.
+  assert.equal(trimmed.omittedPairs, 2)
 
   // Fixed part alone exceeds the budget: nothing is trimmed at all.
   conversation.maxContextChars = 2
+  const untrimmed = buildFollowUpMessages({ conversation, question: 'now' })
   assert.deepEqual(
-    buildFollowUpMessages({ conversation, question: 'now' }).map((message) => message.content),
+    untrimmed.messages.map((message) => message.content),
     ['S', 'T', 'F', 'q1', 'a1', 'q2', 'a2', 'q3', 'a3', 'now']
   )
+  assert.equal(untrimmed.omittedPairs, 0)
+})
+
+test('beginTurn reports how many earlier pairs the round will drop', () => {
+  const conversation = conversationFor({ text: '原文文本' })
+  conversation.commitFirstResult('首轮结果')
+  assert.equal(conversation.beginTurn('第一问').omittedPairs, 0)
+  conversation.commitTurn({ content: '第一答' })
+  assert.equal(conversation.beginTurn('第二问').omittedPairs, 0)
+  conversation.commitTurn({ content: '第二答' })
+
+  // Each committed pair is 6 characters; size the budget around the fixed part
+  // so the trimming is exact rather than incidental.
+  const question = '第三问'
+  const fixed = conversation.systemPrompt.length + conversation.text.length + conversation.firstResult.length + question.length
+
+  // Room for nothing: the anchor survives, both pairs are dropped.
+  conversation.maxContextChars = fixed + 5
+  const dropped = conversation.beginTurn(question)
+  assert.equal(dropped.ok, true)
+  assert.equal(dropped.omittedPairs, 2)
+  const withoutHistory = conversation.buildMessages()
+  // Two user messages remain: the anchor and the question being asked.
+  assert.equal(withoutHistory.filter((message) => message.role === 'user').length, 2)
+  assert.equal(withoutHistory.at(-1).content, question)
+  conversation.rollbackTurn()
+
+  // Room for the newest pair only: the oldest one is dropped.
+  conversation.maxContextChars = fixed + 7
+  const newest = conversation.beginTurn(question)
+  assert.equal(newest.omittedPairs, 1)
+  // The payload the renderer opens the round with is the one main.js forwards.
+  assert.deepEqual(newest.turnPayload, { streamId: 1, question, omittedPairs: 1 })
+  const withNewest = conversation.buildMessages()
+  assert.equal(withNewest.filter((message) => message.role === 'user').length, 3)
+  assert.equal(withNewest.at(-3).content, '第二问')
+  assert.equal(withNewest.at(-2).content, '第二答')
+  assert.equal(conversation.followUpCount, 3)
 })

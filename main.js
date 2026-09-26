@@ -1851,7 +1851,7 @@ secureIpcMain.on('chat:ask', (event, payload) => {
     queueActionMessage(win, 'stream:error', { error: turn.reason, rejected: true })
     return
   }
-  queueActionMessage(win, 'chat:turn', { streamId: conversation.streamId, question: turn.question })
+  queueActionMessage(win, 'chat:turn', turn.turnPayload)
   const controller = createToolbarStreamController(win, conversation.streamId)
   streamConversationTurn({
     conversation,

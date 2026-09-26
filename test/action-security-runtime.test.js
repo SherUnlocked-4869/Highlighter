@@ -98,6 +98,10 @@ test('action renderer stays sandboxed and sanitizes AI output in Electron', { ti
   // The user's question is injected with textContent, never as markup.
   assert.equal(probe.followUp.questionText, '追问 <b>内容</b>')
   assert.doesNotMatch(probe.followUp.questionMarkup, /<b>/i)
+  // The context-trim notice rides on chat:turn and lands on the round it applies
+  // to — the first round must not grow one.
+  assert.equal(probe.followUp.noticeText, '已省略更早的 2 轮对话以控制上下文长度')
+  assert.equal(probe.followUp.firstRoundNotice, '')
   assert.equal(probe.childWindowResult, true)
   assert.match(probe.finalUrl, /action\/action\.html$/)
   assert.deepEqual(probe.blocked.map((entry) => entry.reason).sort(), [

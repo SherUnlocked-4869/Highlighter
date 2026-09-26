@@ -96,6 +96,10 @@ body {
 }
 .transcript .turn-note { margin-top: 6px; font-size: 12px; color: var(--muted); }
 .transcript .turn-note.error { color: var(--danger); }
+/* Context-trim notice. Deliberately not a variant of .turn-note: it reports a
+   fact about the round's input, not its outcome, and both can be present. */
+.transcript .turn-notice { margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+.transcript .turn-notice:empty { display: none; }
 
 /* ---------- markdown ---------- */
 .answer h1, .answer h2, .answer h3, .answer h4 { color: var(--text); margin: 16px 0 8px; font-weight: 600; }

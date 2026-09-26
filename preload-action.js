@@ -74,7 +74,8 @@ contextBridge.exposeInMainWorld('actionAPI', {
   })),
   onChatTurn: (callback) => subscribe('chat:turn', callback, (data) => ({
     streamId: Number.isSafeInteger(data?.streamId) ? data.streamId : null,
-    question: boundedText(data?.question, MAX_QUESTION_LENGTH)
+    question: boundedText(data?.question, MAX_QUESTION_LENGTH),
+    omittedPairs: Number.isSafeInteger(data?.omittedPairs) && data.omittedPairs > 0 ? data.omittedPairs : 0
   })),
   cancelStream: (streamId) => sendStreamSignal('stream:cancel', streamId),
   finishStream: (streamId) => sendStreamSignal('stream:finish', streamId),

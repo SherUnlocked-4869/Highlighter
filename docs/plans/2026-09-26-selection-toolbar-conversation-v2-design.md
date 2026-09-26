@@ -241,14 +241,24 @@ beginTurn(question) {
   …
   const built = buildFollowUpMessages({ conversation: this, question: value })
   this.pending = { question: value, content: '', built, omittedPairs: built.omittedPairs }
-  return { ok: true, question: value, omittedPairs: built.omittedPairs }
+  return {
+    ok: true,
+    question: value,
+    omittedPairs: built.omittedPairs,
+    turnPayload: { streamId: this.streamId, question: value, omittedPairs: built.omittedPairs }
+  }
 }
-buildMessages() { return this.pending?.built?.messages ?? ... }
+buildMessages() { return this.pending.built.messages }
 ```
 
 为什么提前到 `beginTurn`：`chat:turn` 必须在流开始前发出（渲染层靠它开轮并清空输入框），而
 `omittedPairs` 只有构建过 messages 才知道。提前构建一次、`buildMessages()` 复用结果，
 既不重复计算，也不必新增通道。
+
+**实施时的改进（与设计稿的差异）**：`chat:turn` 的载荷改为由服务层在 `beginTurn` 里组装成
+`turnPayload`，`main.js` 只做 `queueActionMessage(win, 'chat:turn', turn.turnPayload)` 一行转发。
+理由是设计稿原本让 `main.js` 用内联对象字面量拼这个载荷，而"新增功能不得为 `main.js` 写源码文本断言"
+意味着那行拼接无法被任何测试覆盖；搬进服务层后 `turnPayload` 的形状变成可断言的纯函数输出。
 
 ### 6.2 通道与渲染层
 

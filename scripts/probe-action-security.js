@@ -45,7 +45,7 @@ async function runProbe() {
   secureIpcMain.on('chat:ask', (event, payload) => {
     chatAsks.push(payload)
     if (payload?.streamId !== 7) return
-    event.sender.send('chat:turn', { streamId: payload.streamId, question: payload.question })
+    event.sender.send('chat:turn', { streamId: payload.streamId, question: payload.question, omittedPairs: 2 })
     event.sender.send('stream:data', {
       content: '<img src=x onerror="window.__actionXssFollowUp = true"> [bad](javascript:alert(2)) [good](https://example.com/follow?x=1&y=2)'
     })
@@ -133,7 +133,9 @@ async function runProbe() {
         scriptCount: answer.querySelectorAll('script').length,
         xssExecuted: window.__actionXssFollowUp === true,
         questionText: transcript.querySelector('.turn-user .bubble')?.textContent || '',
-        questionMarkup: transcript.querySelector('.turn-user .bubble')?.innerHTML || ''
+        questionMarkup: transcript.querySelector('.turn-user .bubble')?.innerHTML || '',
+        noticeText: answers[1].closest('.turn-assistant')?.querySelector('.turn-notice')?.textContent || '',
+        firstRoundNotice: answers[0].closest('.turn-assistant')?.querySelector('.turn-notice')?.textContent || ''
       }
     })()`),
     'sanitized follow-up answer'
