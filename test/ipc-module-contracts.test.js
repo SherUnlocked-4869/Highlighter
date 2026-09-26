@@ -6,6 +6,7 @@ const { registerAppIpc } = require('../main/ipc/app-ipc')
 const { registerCaptureIpc } = require('../main/ipc/capture-ipc')
 const { registerDataRootIpc } = require('../main/ipc/data-root-ipc')
 const { registerDiagnosticsIpc } = require('../main/ipc/diagnostics-ipc')
+const { registerOcrIpc } = require('../main/ipc/ocr-ipc')
 const { registerRecordingIpc } = require('../main/ipc/recording-ipc')
 const { registerSearchIpc } = require('../main/ipc/search-ipc')
 
@@ -76,7 +77,7 @@ test('diagnostics IPC exposes preview and boolean-only crash dump export options
   assert.deepEqual(ipcMain.handlers.get('diagnostics:export')(null, { includeCrashDumps: true }).args[0], { includeCrashDumps: true })
 })
 
-test('capture IPC module owns capture, long-capture, OCR, and recognition channels', () => {
+test('capture IPC module owns capture, long-capture, and recognition channels', () => {
   const ipcMain = createIpcMain()
   registerCaptureIpc({
     ipcMain,
@@ -103,9 +104,6 @@ test('capture IPC module owns capture, long-capture, OCR, and recognition channe
       'longOverlayBoundsChanged',
       'longFinish',
       'longClose',
-      'ocrStatus',
-      'ocr',
-      'translate',
       'recognitionReady',
       'recognitionTable',
       'recognitionCopy',
@@ -140,12 +138,23 @@ test('capture IPC module owns capture, long-capture, OCR, and recognition channe
     'long-capture:set-trim',
     'long-capture:set-selection-editing',
     'long-capture:finish',
-    'ocr:status',
-    'capture:ocr',
-    'capture:translate',
     'recognition:table',
     'recognition:copy'
   ])
+})
+
+test('OCR IPC module owns status, recognition, and translation channels', () => {
+  const ipcMain = createIpcMain()
+  registerOcrIpc({
+    ipcMain,
+    controller: createController(['ocrStatus', 'ocr', 'translate'])
+  })
+
+  assert.deepEqual([...ipcMain.handlers.keys()], ['ocr:status', 'capture:ocr', 'capture:translate'])
+  assert.deepEqual([...ipcMain.listeners.keys()], [])
+  assert.equal(ipcMain.handlers.get('ocr:status')().method, 'ocrStatus')
+  assert.equal(ipcMain.handlers.get('capture:ocr')(null, 'x').method, 'ocr')
+  assert.equal(ipcMain.handlers.get('capture:translate')(null, 'x').method, 'translate')
 })
 
 test('search IPC module owns query, state, and file action channels', () => {
@@ -230,7 +239,8 @@ test('main process delegates migrated IPC channels without registering them dire
     'record:',
     'record-frame:',
     'search:',
-    'data-root:'
+    'data-root:',
+    'ocr:'
   ]) {
     assert.doesNotMatch(main, new RegExp(`ipcMain\\.(?:handle|on)\\('${prefix}`))
   }
@@ -238,6 +248,7 @@ test('main process delegates migrated IPC channels without registering them dire
     'registerAppIpc',
     'registerDataRootIpc',
     'registerCaptureIpc',
+    'registerOcrIpc',
     'registerRecordingIpc',
     'registerSearchIpc'
   ]) {

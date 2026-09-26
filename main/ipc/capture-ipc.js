@@ -25,9 +25,6 @@ function registerCaptureIpc({ ipcMain, controller }) {
   ipcMain.handle('long-capture:finish', controller.longFinish)
   ipcMain.on('long-capture:close', controller.longClose)
 
-  ipcMain.handle('ocr:status', controller.ocrStatus)
-  ipcMain.handle('capture:ocr', controller.ocr)
-  ipcMain.handle('capture:translate', controller.translate)
   ipcMain.on('recognition:ready', controller.recognitionReady)
   ipcMain.handle('recognition:table', controller.recognitionTable)
   ipcMain.handle('recognition:copy', controller.recognitionCopy)

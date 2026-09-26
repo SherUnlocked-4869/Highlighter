@@ -49,8 +49,9 @@ test('OCR recognition hides the selected image size badge', () => {
 
 test('OCR translation uses the same positioned overlay interaction as OCR text extraction', () => {
   const captureDomain = fs.readFileSync(path.join(root, 'main/domains/capture/index.js'), 'utf8')
-  assert.match(main, /translateOcrTextBlocks\([\s\S]*textBlocks\.map/)
-  assert.match(main, /translationResult: \{[\s\S]*textBlocks: translatedBlocks/)
+  const ocrIpc = fs.readFileSync(path.join(root, 'main/ipc/ocr-ipc.js'), 'utf8')
+  assert.match(ocrIpc, /translateOcrTextBlocks\([\s\S]*textBlocks\.map/)
+  assert.match(ocrIpc, /translationResult: \{[\s\S]*textBlocks: translatedBlocks/)
   assert.match(captureDomain, /_pendingReannotateAction = \['ocr', 'translate'\]\.includes\(action\)/)
   assert.match(captureScript, /\['ocr','translate'\]\.includes\(action\)&&!initData\.editPin/)
   assert.match(captureScript, /showOcrOverlay\(result\.translationResult,\{mode:'translate'/)

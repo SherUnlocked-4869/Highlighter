@@ -53,6 +53,7 @@ const { registerDiagnosticsIpc } = require('./main/ipc/diagnostics-ipc')
 const { registerUpdateIpc } = require('./main/ipc/update-ipc')
 const { registerDataRootIpc } = require('./main/ipc/data-root-ipc')
 const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
+const { createOcrIpcController, registerOcrIpc } = require('./main/ipc/ocr-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
 const { registerSearchIpc } = require('./main/ipc/search-ipc')
 const { registerSelectionIpc } = require('./main/ipc/selection-ipc')
@@ -1775,69 +1776,25 @@ registerHistoryIpc({
   chooseExportDirectory: () => pickDirectory({ title: '选择截图导出目录' })
 })
 
-const ocrIpcController = {
-  ocrStatus: () => getOcrService().getStatus(),
-  ocr: async (_event, payload) => {
-  if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
-  const imageData = typeof payload === 'string' ? payload : payload?.imageBuffer ?? payload?.dataUrl
-  const buffer = imageDataToBuffer(imageData)
-  if (!buffer.length) throw new Error('OCR 图片数据为空')
-  const settings = getSettings()
-  return recognizeWithPerformance(buffer, {
-    scaleFactor: payload?.scaleFactor,
-    detectAngle: settings.ocr.detectAngle,
-    minConfidence: settings.ocr.minConfidence
-  }, 'capture')
-  },
-  translate: async (_event, payload) => {
-  if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
-  const imageData = typeof payload === 'string' ? payload : payload?.imageBuffer ?? payload?.dataUrl
-  const buffer = imageDataToBuffer(imageData)
-  if (!buffer.length) throw new Error('OCR 图片数据为空')
-  const settings = getSettings()
-  const ocrResult = await recognizeWithPerformance(buffer, {
-    scaleFactor: payload?.scaleFactor,
-    detectAngle: settings.ocr.detectAngle,
-    minConfidence: settings.ocr.minConfidence
-  }, 'capture-translate')
-  const text = ocrResult.text.trim()
-  if (!text) throw new Error('未识别到可翻译的文本')
-  const textBlocks = (Array.isArray(ocrResult.textBlocks) ? ocrResult.textBlocks : [])
-    .filter((block) => String(block?.text || '').trim())
-  if (!textBlocks.length) throw new Error('未识别到可定位的翻译文本')
-  const translations = await aiClient.translateOcrTextBlocks(
-    resolveAiAssignment(settings, 'ocr-translate'),
-    textBlocks.map((block) => String(block.text).trim()),
-    'auto',
-    settings.ai.targetLanguage
-  )
-  const translatedBlocks = textBlocks.map((block, index) => ({
-    ...block,
-    sourceText: String(block.text).trim(),
-    text: translations[index]
-  }))
-  const translation = translations.join('\n')
-  return {
-    text,
-    translation,
-    ocrResult,
-    translationResult: {
-      ...ocrResult,
-      text: translation,
-      textBlocks: translatedBlocks
-    }
-  }
-  }
-}
-
 registerCaptureIpc({
   ipcMain: secureIpcMain,
   controller: {
     ...captureDomain.createCaptureController(),
     ...longCaptureDomain.createLongCaptureController(),
-    ...ocrIpcController,
     ...recognitionDomain.createRecognitionController()
   }
+})
+
+registerOcrIpc({
+  ipcMain: secureIpcMain,
+  controller: createOcrIpcController({
+    getSettings,
+    getOcrService,
+    imageDataToBuffer,
+    recognizeWithPerformance,
+    aiClient,
+    resolveAiAssignment
+  })
 })
 
 registerSearchIpc({

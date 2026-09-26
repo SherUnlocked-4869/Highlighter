@@ -5,6 +5,7 @@ const path = require('node:path')
 
 const root = path.join(__dirname, '..')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+const ocrIpc = fs.readFileSync(path.join(root, 'main/ipc/ocr-ipc.js'), 'utf8')
 const aiIndex = fs.readFileSync(path.join(root, 'main/services/ai/index.js'), 'utf8')
 
 test('main process uses a single AI client entry instead of ad-hoc deepseek requires', () => {
@@ -14,7 +15,7 @@ test('main process uses a single AI client entry instead of ad-hoc deepseek requ
   assert.match(main, /aiClient\.validateApiKey/)
   assert.match(main, /aiClient\.completeChat/)
   assert.match(main, /aiClient\.translateText/)
-  assert.match(main, /aiClient\.translateOcrTextBlocks/)
+  assert.match(ocrIpc, /aiClient\.translateOcrTextBlocks/)
   assert.match(aiIndex, /require\('\.\/client'\)/)
   assert.equal(fs.existsSync(path.join(root, 'main/services/ai/client.js')), true)
   const shim = fs.readFileSync(path.join(root, 'deepseek.js'), 'utf8')
