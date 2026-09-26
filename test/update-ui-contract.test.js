@@ -5,11 +5,12 @@ const path = require('node:path')
 
 const root = path.resolve(__dirname, '..')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+const settingsDefaults = fs.readFileSync(path.join(root, 'main', 'services', 'settings-defaults.js'), 'utf8')
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
 const config = fs.readFileSync(path.join(root, 'config/config.js'), 'utf8')
 
 test('main process owns updater lifecycle, diagnostics, channel settings, and install gate', () => {
-  assert.match(main, /updateChannel: 'stable'/)
+  assert.match(settingsDefaults, /updateChannel: 'stable'/)
   assert.match(main, /normalized\.system\.updateChannel = normalized\.system\.updateChannel === 'beta' \? 'beta' : 'stable'/)
   assert.match(main, /new UpdateService\(\{[\s\S]*getUpdateInstallReadiness[\s\S]*markSessionClean\('update-install'\)/)
   assert.match(main, /getUpdateStatus: \(\) => updateService\?\.getStatus\(\)/)

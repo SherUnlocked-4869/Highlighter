@@ -106,8 +106,8 @@ test('core renderer shells load shared tokens before window CSS', () => {
 })
 
 test('the default accent matches the design system', () => {
-  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
-  assert.match(main, /mainColor:\s*'#e5a44c'/, 'main.js default mainColor is the Nightshift amber')
+  const settingsDefaults = fs.readFileSync(path.join(root, 'main', 'services', 'settings-defaults.js'), 'utf8')
+  assert.match(settingsDefaults, /mainColor:\s*'#e5a44c'/, 'the default mainColor is the Nightshift amber')
 })
 
 test('legacy blue accents are migrated to Nightshift amber', () => {

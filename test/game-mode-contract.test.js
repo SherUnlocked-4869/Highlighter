@@ -8,11 +8,12 @@ const captureDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/c
 const recordDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/record/index.js'), 'utf8')
 const searchDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/search/index.js'), 'utf8')
 const selectionDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/selection/index.js'), 'utf8')
+const settingsDefaults = fs.readFileSync(path.join(__dirname, '..', 'main/services/settings-defaults.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
 const config = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
 
 test('game mode is persisted and synchronizes tray, shortcuts, selection, and search', () => {
-  assert.match(main, /system:\s*\{[\s\S]*gameMode: false/)
+  assert.match(settingsDefaults, /system:\s*\{[\s\S]*gameMode: false/)
   assert.match(main, /settingsService\.updateSettings\(\{ system: \{ gameMode: nextEnabled \} \}\)/)
   assert.match(main, /function applyGameModeState\([\s\S]*registerShortcuts\(\)[\s\S]*selectionDomain\.applyGameMode\(gameMode\)[\s\S]*searchDomain\.hideSearchWindow\(\)/)
   assert.match(selectionDomain, /function applyGameMode\(gameMode\) \{[\s\S]*hookService\?\.suspend\('game-mode'\)[\s\S]*hideToolbar\(\)/)
