@@ -55,10 +55,11 @@ const { registerDataRootIpc } = require('./main/ipc/data-root-ipc')
 const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
 const { registerSearchIpc } = require('./main/ipc/search-ipc')
+const { registerSelectionIpc } = require('./main/ipc/selection-ipc')
 const { SelectionHookService } = require('./main/services/selection-hook-service')
 const { SelectionWindowManager } = require('./main/services/selection-window-manager')
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
-const { ActionConversation, boundConversationCopyText, prepareRestoredConversation, reportCancelledTurn, resolveFollowUpSupport, streamConversationTurn } = require('./main/services/action-conversation')
+const { ActionConversation, prepareRestoredConversation, reportCancelledTurn, resolveFollowUpSupport } = require('./main/services/action-conversation')
 const { ConversationStore } = require('./main/services/conversation-store')
 const { UpdateService } = require('./main/services/update-service')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
@@ -95,15 +96,11 @@ const {
   DEFAULT_SELECTION_TOOLBAR,
   DEFAULT_TOOLBAR_THINKING,
   TOOLBAR_ACTION_ORDER,
-  buildOpenUrl,
-  buildSearchUrl,
   getToolbarActionDefinition,
   getToolbarActionThinking,
   getToolbarWidth,
   getVisibleToolbarActionDefinitions,
   getVisibleToolbarActions,
-  isAiToolbarAction,
-  isLocalToolbarAction,
   normalizeSelectionToolbar,
   normalizeToolbarThinking
 } = require('./toolbar/toolbar-utils')
@@ -1854,88 +1851,31 @@ registerRecordingIpc({
 })
 
 
-secureIpcMain.on('toolbar:action', async (_event, { action, text }) => {
-  if (isProcessing || !text) return
-  const toolbarConfig = getSettings().selectionToolbar
-  const visibleActions = getVisibleToolbarActions(toolbarConfig)
-  if (!visibleActions.includes(action)) return
-  const actionDefinition = getToolbarActionDefinition(toolbarConfig, action)
-  if (!actionDefinition) return
-  if (isLocalToolbarAction(action)) {
-    hideToolbar()
-    if (action === 'copy') clipboard.writeText(text)
-    else if (action === 'open') {
-      const target = buildOpenUrl(text)
-      if (!target) return
-      try { await shell.openExternal(target) } catch (error) { log('Toolbar open failed:', error.message) }
+registerSelectionIpc({
+  ipcMain: secureIpcMain,
+  controller: {
+    BrowserWindow,
+    clipboard,
+    shell,
+    log,
+    getSettings,
+    isProcessing: () => isProcessing,
+    hideToolbar,
+    openToolbarAiAction,
+    getPinDomain: () => pinDomain,
+    streams: {
+      getCurrent: () => currentStreamController,
+      isCurrentSender: isCurrentToolbarStreamSender,
+      isStaleSignal: isStaleToolbarStreamSignal,
+      cancel: (controller, reason) => cancelToolbarStream(controller, reason),
+      create: (win, streamId) => createToolbarStreamController(win, streamId)
+    },
+    conversations: {
+      get: (win) => actionConversations.get(win),
+      queueMessage: (win, channel, payload) => queueActionMessage(win, channel, payload),
+      save: saveConversation
     }
-    else {
-      const url = buildSearchUrl(getSettings().selectionToolbar.searchEngine, text)
-      try { await shell.openExternal(url) } catch (error) { log('Toolbar search failed:', error.message) }
-    }
-    return
   }
-  if (!isAiToolbarAction(action, toolbarConfig)) return
-  hideToolbar()
-  await openToolbarAiAction(action, text)
-})
-secureIpcMain.on('window:toggle-pin', (event, shouldPin) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (!win) return
-  if (shouldPin && !pinDomain.canPinMore()) return event.sender.send('window:pin-denied', { max: pinDomain.MAX_PINNED })
-  if (shouldPin && !win._isPinned) {
-    if (!pinDomain.acquirePinnedSlot()) {
-      event.sender.send('window:pin-denied', { max: pinDomain.MAX_PINNED })
-      return
-    }
-    win._isPinned = true
-    win.setAlwaysOnTop(true, 'floating')
-  }
-  if (!shouldPin && win._isPinned) {
-    win._isPinned = false
-    pinDomain.releasePinnedSlot()
-    win.setAlwaysOnTop(false)
-  }
-})
-secureIpcMain.on('stream:cancel', (event, streamId) => {
-  if (!isCurrentToolbarStreamSender(event)) return
-  if (isStaleToolbarStreamSignal(event, streamId)) return
-  cancelToolbarStream(currentStreamController, 'user-cancelled')
-})
-secureIpcMain.on('stream:finish', (event, streamId) => {
-  if (!isCurrentToolbarStreamSender(event)) return
-  if (isStaleToolbarStreamSignal(event, streamId)) return
-  cancelToolbarStream(currentStreamController, 'renderer-finished')
-})
-secureIpcMain.on('chat:ask', (event, payload) => {
-  const win = BrowserWindow.fromWebContents(event.sender)
-  const conversation = win ? actionConversations.get(win) : null
-  if (!conversation) return
-  if (Number(payload?.streamId) !== conversation.streamId) return
-  const turn = conversation.beginTurn(payload?.question, { replaceLast: payload?.replaceLast === true })
-  if (!turn.ok) {
-    queueActionMessage(win, 'stream:error', { error: turn.reason, rejected: true })
-    return
-  }
-  queueActionMessage(win, 'chat:turn', turn.turnPayload)
-  const controller = createToolbarStreamController(win, conversation.streamId)
-  streamConversationTurn({
-    conversation,
-    win,
-    controller,
-    queueMessage: (channel, data) => queueActionMessage(win, channel, data),
-    onRoundCommitted: saveConversation
-  }).catch((error) => {
-    if (!controller.cancelled && !win.isDestroyed()) {
-      queueActionMessage(win, 'stream:error', { error: error.message || '请求失败' })
-    }
-  })
-})
-secureIpcMain.handle('chat:copy', (_event, text) => {
-  const value = boundConversationCopyText(text)
-  if (!value) return false
-  clipboard.writeText(value)
-  return true          // never logged: the transcript is private content
 })
 secureIpcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
 secureIpcMain.on('window:close', (event) => {
