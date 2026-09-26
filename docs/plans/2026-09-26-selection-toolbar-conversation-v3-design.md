@@ -356,3 +356,52 @@ function restoreLastConversation(win) {
 | `test/conversation-store.test.js` | **新增** |
 | `test/action-conversation.test.js` · `test/toolbar-utils.test.js` · `test/data-root.test.js` · `test/conversation-text.test.js` · `test/action-security-runtime.test.js` | 修改 |
 | `scripts/probe-action-security.js` | 修改（`chat:ask` 带 `replaceLast` 的载荷断言） |
+
+---
+
+## 11. 实施后记（2026-09-26 三阶段完成）
+
+| 阶段 | 提交 | 门禁 |
+|---|---|---|
+| 1 追问轮内「重新生成」 | `04f7a60` | 547 通过 / 0 失败；三级覆盖率门禁通过 |
+| 2 选中片段追问 | `f000e89` | 548 通过 / 0 失败；同上 |
+| 3 会话持久化 | `ac2234c` | 556 通过 / 0 失败；同上 |
+
+`main.js` 从 2105 涨到 **2173 行**（上限已解除，只上报）。这一版为持久化加进来的装配（存储实例、保存钩子、
+托盘恢复 + 重放）约 70 行，正是第四版要迁走的那类代码。
+
+### 11.1 真机验证（开发模式，真实模型）
+
+| 脚本 | 结果 | 关键证据 |
+|---|---|---|
+| `.tmp/verify-v3-retry.js` | **11/11** | 首轮没有「重新生成」；追问后可用；点击后仍是 1 问 2 答（**替换**而非追加）、问题不变、回答是重新生成的新内容；换问题的“重新生成”被服务端拒绝并显示「只能重新生成最近一轮追问」，**旧回答仍在** |
+| `.tmp/verify-v3-quote.js` | **10/10** | 选中原文不激活按钮、选中回答片段才激活；引用以 `> 片段` 进入输入框且光标在末尾；追问消息里确实带着引用块；355 字被截断到 300 并提示 |
+| `.tmp/verify-v3-persist.js` | **12/12** | 默认关闭时不写文件；经真实 IPC 开启后，真实对话落盘且**一次对话只有一份文件**、含锚点与已提交追问对；关闭开关**立刻删除**；重放一份快照后界面得到完整会话（2 问 3 答、输入区/重新生成/复制都可用）——这一段**不需要任何模型调用** |
+
+截图：[01-regenerated.png](F:/workspace/Highlighter/test-results/realdevice-v3/01-regenerated.png) ·
+[02-quoted-fragment.png](F:/workspace/Highlighter/test-results/realdevice-v3/02-quoted-fragment.png) ·
+[03-restored-conversation.png](F:/workspace/Highlighter/test-results/realdevice-v3/03-restored-conversation.png)
+
+### 11.2 与设计稿的差异（都是实施中改好的）
+
+1. **会话有稳定身份**（`conversationId`，UUID）。设计说「一会话一份 JSON」，但第一版实现是按"每次保存"
+   落一份文件——一轮一存就变成一次对话多份版本，`maxEntries = 20` 实际只装得下两次对话。
+   现在文件名用会话 id，每轮**改写**同一份；`restoreFrom` 也会沿用快照里的 id，所以恢复后继续追问
+   仍然写回同一份文件。
+2. **恢复的组装抽成 `prepareRestoredConversation`**（纯函数，可断言）。与第二版把 `turnPayload`
+   移进服务层同理：`main.js` 里那 20 行装配无法被任何测试覆盖，抽出来之后"没有 action/provider 时返回
+   null""重放顺序"都成了单测用例。
+3. **`保存对话到本地` 的开关联动**落在 `main/domains/settings-effects`：关闭开关要**删除**已落盘内容、
+   开启要立刻裁剪，这是主进程的活，不是设置页能做的；而本版禁止新增通道，所以走既有的设置副作用机制。
+4. **新增受管目录不是"改一行"**：`createDataPaths` 加了 `conversations` 之后，数据根迁移的
+   `MANAGED_DIRECTORIES` 回滚清单也必须加上，否则一次失败的数据根迁移会把该目录留在目标根里
+   （`data-root-migration.test.js` 的"回滚后目标为空"断言正是这样失败的）。这条值得记进 v4 的清单：
+   **新增一个受管目录 = 数据根 + 迁移 + 三个测试**。
+
+### 11.3 遗留
+
+- **托盘点击本身仍未验证**：恢复的触发点是托盘项「显示划词对话」，而这个 CUA 构建枚举不到、也截不了
+  系统通知区域（v2 第 5 步就卡在这里）。已覆盖的部分：存储读写/裁剪/删除（单测 + 真机文件）、
+  恢复组装与重放顺序（单测）、重放后的界面（真机 DOM）。未覆盖的只有"点托盘 → 调用同一条路径"这一步。
+- 被停止/失败的轮次不落盘（D21 明示取舍），重启后不再出现。
+- 第 7 步（release 打包线：fuses / `packaged-entry.js` / 签名）仍未做。
