@@ -109,8 +109,9 @@ test('config page exposes thinking controls and the optional open action', () =>
 
 test('main process resolves thinking per action and opens links for the open action', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const selectionDomain = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'selection', 'index.js'), 'utf8')
   const selectionIpc = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'selection-ipc.js'), 'utf8')
-  assert.match(main, /requestOptions\.thinking = getToolbarActionThinking\(/)
+  assert.match(selectionDomain, /requestOptions\.thinking = getToolbarActionThinking\(/)
   assert.match(main, /toolbarThinking: \{ \.\.\.DEFAULT_TOOLBAR_THINKING \}/)
   assert.match(selectionIpc, /else if \(action === 'open'\)/)
   assert.match(selectionIpc, /buildOpenUrl\(text\)/)

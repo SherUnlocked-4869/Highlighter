@@ -5,14 +5,18 @@ const {
   convertSmartSelectRects
 } = require('./smart-select')
 
+const NATIVE_CAPTURE_TIMEOUT_MS = 5000
+
 function createCaptureDomain(deps) {
   const {
     app,
     spawn,
+    execFile,
     fs,
     path,
     screen,
     BrowserWindow,
+    desktopCapturer,
     nativeImage,
     clipboard,
     dialog,
@@ -23,7 +27,12 @@ function createCaptureDomain(deps) {
     getSettings,
     log,
     assertGameModeDisabled,
-    getDisplayCapture,
+    screenshotDesktop,
+    listNativeDisplays,
+    findNativeDisplay,
+    getNativeDisplayBounds,
+    readPngSize,
+    shouldFilterApp,
     pinDomain,
     createRecordWindow,
     createLongCaptureFromSelection,
@@ -38,6 +47,7 @@ function createCaptureDomain(deps) {
 
   const SmartSelectSession = createSmartSelectSessionClass({ spawn, log })
   let currentCaptureWindow = null
+  let nativeDisplayListPromise = null
   let captureCreateSeq = 0
 
   async function createSmartSelectSession() {
@@ -58,6 +68,106 @@ function createCaptureDomain(deps) {
       session.dispose()
       return null
     }
+  }
+
+  function isBlankCapture(image) {
+    if (!image || image.isEmpty()) return true
+    const size = image.getSize()
+    const sample = image.resize({
+      width: Math.max(1, Math.min(32, size.width)),
+      height: Math.max(1, Math.min(32, size.height)),
+      quality: 'good'
+    }).toBitmap()
+    if (!sample.length) return true
+    for (let index = 0; index + 2 < sample.length; index += 4) {
+      if (sample[index] > 2 || sample[index + 1] > 2 || sample[index + 2] > 2) return false
+    }
+    return true
+  }
+
+  async function getDesktopCapture(display, scaleFactor) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: {
+          width: Math.max(1, Math.round(display.bounds.width * scaleFactor)),
+          height: Math.max(1, Math.round(display.bounds.height * scaleFactor))
+        }
+      })
+      const source = sources.find((item) => String(item.display_id) === String(display.id)) || sources[0]
+      if (source && !source.thumbnail.isEmpty() && !isBlankCapture(source.thumbnail)) {
+        return { imageBuffer: source.thumbnail.toPNG(), sourceId: source.id, scaleFactor }
+      }
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    throw new Error('屏幕捕获连续返回空白画面')
+  }
+
+  async function getDisplayCapture(display) {
+    const scaleFactor = display.scaleFactor || 1
+    if (isWin) {
+      try {
+        if (!nativeDisplayListPromise) nativeDisplayListPromise = listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
+        const nativeDisplays = await nativeDisplayListPromise
+        const physicalBounds = screen.dipToScreenRect(null, display.bounds)
+        const nativeDisplay = findNativeDisplay(
+          nativeDisplays,
+          physicalBounds,
+          Math.max(1, Math.ceil(scaleFactor))
+        )
+        if (nativeDisplay) {
+          // The capture helper is an external cmd.exe pipeline with no timeout of
+          // its own; without this guard a hung spawn would wedge window creation.
+          const buffer = await new Promise((resolve, reject) => {
+            const timer = setTimeout(
+              () => reject(new Error(`原生抓屏超时（${NATIVE_CAPTURE_TIMEOUT_MS}ms）`)),
+              NATIVE_CAPTURE_TIMEOUT_MS
+            )
+            screenshotDesktop({ format: 'png', screen: nativeDisplay.id }).then(
+              (result) => { clearTimeout(timer); resolve(result) },
+              (error) => { clearTimeout(timer); reject(error) }
+            )
+          })
+          const nativeBounds = getNativeDisplayBounds(nativeDisplay)
+          // Read the dimensions straight out of the PNG IHDR chunk so a
+          // wrong-sized capture fails without decoding a full-screen bitmap.
+          const pngSize = readPngSize(buffer)
+          if (!pngSize || pngSize.width !== nativeBounds.width || pngSize.height !== nativeBounds.height) {
+            throw new Error(`原生抓屏尺寸异常：${pngSize ? `${pngSize.width}x${pngSize.height}` : '未知'}`)
+          }
+          if (isBlankCapture(nativeImage.createFromBuffer(buffer))) throw new Error('原生抓屏返回空白画面')
+          return {
+            imageBuffer: buffer,
+            sourceId: `native:${nativeDisplay.id}`,
+            scaleFactor
+          }
+        }
+      } catch (error) {
+        nativeDisplayListPromise = null
+        log('Native capture fallback:', error.message)
+      }
+    }
+    return getDesktopCapture(display, scaleFactor)
+  }
+
+  async function captureFocusedWindow() {
+    let title = ''
+    if (isWin) {
+      title = await new Promise((resolve) => {
+        const script = `$sig='[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);'; Add-Type -MemberDefinition $sig -Name Win32 -Namespace Native; $h=[Native.Win32]::GetForegroundWindow(); $b=New-Object System.Text.StringBuilder 1024; [void][Native.Win32]::GetWindowText($h,$b,$b.Capacity); $b.ToString()`
+        execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 4000 }, (_error, stdout) => resolve(String(stdout || '').trim()))
+      })
+    }
+    const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 1920, height: 1080 }, fetchWindowIcons: true })
+    const source = sources.find((item) => title && (item.name === title || title.includes(item.name) || item.name.includes(title))) || sources.find((item) => !shouldFilterApp(item.name))
+    if (!source || source.thumbnail.isEmpty()) throw new Error('无法捕获焦点窗口')
+    return source.thumbnail.toDataURL()
+  }
+
+  function warmUpNativeDisplays() {
+    return listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
+      .then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) })
+      .catch((error) => log('Display discovery warm-up failed:', error))
   }
 
   function sendCaptureInit(win) {
@@ -400,6 +510,9 @@ function createCaptureDomain(deps) {
     createSmartSelectSession,
     convertSmartSelectRects,
     createCaptureController,
+    getDisplayCapture,
+    captureFocusedWindow,
+    warmUpNativeDisplays,
     ownsWindow,
     getCurrentWindow,
     isTaskActive

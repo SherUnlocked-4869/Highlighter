@@ -57,11 +57,6 @@ const { createOcrIpcController, registerOcrIpc } = require('./main/ipc/ocr-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
 const { registerSearchIpc } = require('./main/ipc/search-ipc')
 const { registerSelectionIpc } = require('./main/ipc/selection-ipc')
-const { SelectionHookService } = require('./main/services/selection-hook-service')
-const { SelectionWindowManager } = require('./main/services/selection-window-manager')
-const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
-const { ActionConversation, prepareRestoredConversation, reportCancelledTurn, resolveFollowUpSupport } = require('./main/services/action-conversation')
-const { ConversationStore } = require('./main/services/conversation-store')
 const { UpdateService } = require('./main/services/update-service')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createSecureWindow, isSafeExternalUrl } = require('./main/services/window-security')
@@ -89,19 +84,13 @@ const { createLongCaptureDomain } = require('./main/domains/long-capture')
 const { createRecordDomain } = require('./main/domains/record')
 const { createRecognitionDomain } = require('./main/domains/recognition')
 const { createSearchDomain } = require('./main/domains/search')
+const { createSelectionDomain } = require('./main/domains/selection')
 const { createSettingsEffects } = require('./main/domains/settings-effects')
 const aiClient = require('./main/services/ai')
 const {
-  ACTION_WINDOW_MIN_HEIGHT,
-  ACTION_WINDOW_MIN_WIDTH,
   DEFAULT_SELECTION_TOOLBAR,
   DEFAULT_TOOLBAR_THINKING,
   TOOLBAR_ACTION_ORDER,
-  getToolbarActionDefinition,
-  getToolbarActionThinking,
-  getToolbarWidth,
-  getVisibleToolbarActionDefinitions,
-  getVisibleToolbarActions,
   normalizeSelectionToolbar,
   normalizeToolbarThinking
 } = require('./toolbar/toolbar-utils')
@@ -110,8 +99,7 @@ const {
   createDefaultProviders,
   migrateAiSettings,
   normalizeAiSettings,
-  resolveAiAssignment,
-  resolveToolbarAiProvider
+  resolveAiAssignment
 } = require('./main/services/ai-providers')
 const {
   migrateAppearanceSettings,
@@ -272,67 +260,12 @@ function initializeStore() {
     },
     log
   })
-  conversationStore ||= new ConversationStore({ directory: conversationsDirectory, getSettings, log })
+  selectionDomain.ensureConversationStore()
   return store
-}
-
-// Opt-in persistence (design D19/D20): turning the switch off deletes what was
-// already written, and the cap is enforced on every start as well as on write.
-function syncConversationStore() {
-  if (!conversationStore) return
-  if (conversationStore.isEnabled()) conversationStore.trim()
-  else conversationStore.clear()
-}
-
-// Brings back the newest saved conversation. Nothing streams, so the transcript
-// is replayed over the same channels a live round uses and the renderer needs no
-// changes: it ends up in the ordinary "round finished, composer ready" state.
-function restoreConversation(win, snapshot) {
-  const settings = getSettings()
-  const prepared = prepareRestoredConversation({
-    snapshot,
-    action: getToolbarActionDefinition(settings.selectionToolbar, snapshot.actionId),
-    provider: resolveToolbarAiProvider(settings, snapshot.actionId),
-    translateLanguages: settings.selectionToolbar.translateLanguages,
-    thinking: getToolbarActionThinking(settings.selectionToolbar, settings.toolbarThinking, snapshot.actionId),
-    support: resolveFollowUpSupport(
-      resolveToolbarAiProvider(settings, snapshot.actionId),
-      { conversation: settings.selectionToolbar.conversation }
-    ),
-    streamId: nextToolbarStreamId()
-  })
-  if (!prepared) return false
-  const { conversation, replay } = prepared
-  actionConversations.set(win, conversation)
-  queueActionMessage(win, 'action:start', {
-    type: conversation.action.id,
-    label: conversation.action.label,
-    icon: conversation.action.icon,
-    text: conversation.text,
-    streamId: conversation.streamId,
-    appearance: getActionAppearance(),
-    followUp: conversation.followUpConfig()
-  })
-  for (const { channel, payload } of replay) queueActionMessage(win, channel, payload)
-  return true
-}
-
-function showOrRestoreConversation() {
-  if (selectionWindowManager.showActionWindow()) return true
-  const snapshot = conversationStore?.latest()
-  if (!snapshot) return false
-  const win = getOrCreateActionWindow()
-  if (!restoreConversation(win, snapshot)) return false
-  win.show()
-  win.focus()
-  return true
 }
 
 let mainWindow = null
 let firstMainWindowReady = true
-let selectionWindowManager = null
-let selectionHookService = null
-const selectionPowerListeners = []
 let tray = null
 let ocrService = null
 let everythingService = null
@@ -341,25 +274,20 @@ const fileIconCache = new Map()
 const FILE_ICON_CACHE_LIMIT = 256
 const managedRecordingWriters = new ManagedWriterCoordinator()
 let dataRootMigrationInProgress = false
-let isProcessing = false
-const selectionEventDiagnostics = new Set()
-let currentStreamController = null
-let toolbarStreamSeq = 0
-const actionConversations = new Map()
-let conversationStore = null
 let pinDomain = null
 let captureDomain = null
 let longCaptureDomain = null
 let recordDomain = null
 let recognitionDomain = null
 let searchDomain = null
+let selectionDomain = null
 let settingsEffects = null
-const TOOLBAR_W = getToolbarWidth(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR))
-const TOOLBAR_H = 40
-const TOOLBAR_STREAM_IDLE_TIMEOUT_MS = 30000
-const ACTION_WINDOW_SIZE_SAVE_DELAY_MS = 180
 const isWin = process.platform === 'win32'
-let nativeDisplayListPromise = null
+
+function shouldFilterApp(programName) {
+  const value = String(programName || '').toLowerCase()
+  return value.includes('highlighter') || value.includes('划词助手') || value.includes('huacizhushou')
+}
 
 function getOcrService() {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
@@ -503,7 +431,7 @@ function getUpdateInstallReadiness() {
   if (recordDomain?.isTaskActive()) return { ok: false, reason: '录屏任务仍在进行，请完成或关闭后重试。' }
   if (ocrService?.inFlight?.size) return { ok: false, reason: 'OCR 正在识别，请完成后重试。' }
   if (managedRecordingWriters.inFlight.size) return { ok: false, reason: '媒体文件仍在写入，请完成后重试。' }
-  if (isProcessing) return { ok: false, reason: '划词处理任务仍在进行，请完成后重试。' }
+  if (selectionDomain?.isProcessing()) return { ok: false, reason: '划词处理任务仍在进行，请完成后重试。' }
   return { ok: true }
 }
 
@@ -613,8 +541,8 @@ function markSessionClean(exitType = 'clean') {
 
 function authorizeIpcRole(role, win) {
   if (role === 'main') return win === mainWindow
-  if (role === 'toolbar') return selectionWindowManager?.ownsToolbarWindow(win) === true
-  if (role === 'action') return selectionWindowManager?.ownsActionWindow(win) === true
+  if (role === 'toolbar') return selectionDomain?.ownsToolbarWindow(win) === true
+  if (role === 'action') return selectionDomain?.ownsActionWindow(win) === true
   if (role === 'capture') return captureDomain?.ownsWindow(win) === true
   if (role === 'long-capture') return longCaptureDomain?.ownsControllerWindow(win) === true
   if (role === 'long-overlay') return longCaptureDomain?.ownsOverlayWindow(win) === true
@@ -708,10 +636,12 @@ pinDomain = createPinDomain({
 captureDomain = createCaptureDomain({
   app,
   spawn,
+  execFile,
   fs,
   path,
   screen,
   BrowserWindow,
+  desktopCapturer,
   nativeImage,
   clipboard,
   dialog,
@@ -722,7 +652,12 @@ captureDomain = createCaptureDomain({
   getSettings,
   log,
   assertGameModeDisabled,
-  getDisplayCapture,
+  screenshotDesktop,
+  listNativeDisplays,
+  findNativeDisplay,
+  getNativeDisplayBounds,
+  readPngSize,
+  shouldFilterApp,
   pinDomain,
   createRecordWindow: (...args) => recordDomain.createRecordWindow(...args),
   createLongCaptureFromSelection: (...args) => longCaptureDomain.createLongCaptureFromSelection(...args),
@@ -812,6 +747,28 @@ searchDomain = createSearchDomain({
   getSearchFileIcon
 })
 
+selectionDomain = createSelectionDomain({
+  BrowserWindow,
+  clipboard,
+  screen,
+  shell,
+  nativeTheme,
+  powerMonitor,
+  utilityProcess,
+  createLocalWindow,
+  rootDirectory: __dirname,
+  isWin,
+  getSettings,
+  updateSettings: (patch) => settingsService.updateSettings(patch),
+  createTrayIcon,
+  createMainWindow,
+  getPinDomain: () => pinDomain,
+  isGameModeEnabled,
+  shouldFilterApp,
+  conversationsDirectory,
+  log
+})
+
 settingsEffects = createSettingsEffects({
   app,
   registerShortcuts,
@@ -823,12 +780,12 @@ settingsEffects = createSettingsEffects({
     set: (value) => { ocrService = value }
   },
   getOcrService,
-  broadcastActionAppearance: (...args) => broadcastActionAppearance(...args),
+  broadcastActionAppearance: (settings) => selectionDomain.broadcastActionAppearance(settings),
   searchDomain,
   selectionHookServiceRef: {
-    get: () => selectionHookService
+    get: () => selectionDomain.hookService()
   },
-  syncConversationStore,
+  syncConversationStore: () => selectionDomain.syncConversationStore(),
   log
 })
 
@@ -892,51 +849,6 @@ function createMainWindow(route = 'home') {
   return win
 }
 
-selectionWindowManager = new SelectionWindowManager({
-  createWindow: createLocalWindow,
-  rootDirectory: __dirname,
-  isWindows: isWin,
-  nativeTheme,
-  getSettings,
-  updateSettings: (patch) => settingsService.updateSettings(patch),
-  toolbarWidth: TOOLBAR_W,
-  toolbarHeight: TOOLBAR_H,
-  actionMinWidth: ACTION_WINDOW_MIN_WIDTH,
-  actionMinHeight: ACTION_WINDOW_MIN_HEIGHT,
-  sizeSaveDelayMs: ACTION_WINDOW_SIZE_SAVE_DELAY_MS,
-  onActionWindowClosed: (win, { wasPinned }) => {
-    if (wasPinned) pinDomain.releasePinnedSlot()
-    actionConversations.delete(win)
-    if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-closed')
-    createTrayIcon()
-  },
-  onActionWindowBlur: (win) => {
-    if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-hidden')
-    createTrayIcon()
-  },
-  log
-})
-
-function createToolbarWindow() {
-  return selectionWindowManager.createToolbarWindow()
-}
-
-function getOrCreateActionWindow() {
-  return selectionWindowManager.getOrCreateActionWindow()
-}
-
-function queueActionMessage(win, channel, payload) {
-  selectionWindowManager.queueActionMessage(win, channel, payload)
-}
-
-function getActionAppearance(settings = getSettings()) {
-  return selectionWindowManager.getAppearance(settings)
-}
-
-function broadcastActionAppearance(settings = getSettings()) {
-  selectionWindowManager.broadcastAppearance(settings)
-}
-
 function createTrayIcon() {
   const settings = getSettings()
   if (!settings.system.enableTray) {
@@ -969,330 +881,10 @@ function createTrayIcon() {
     },
     openHistory: () => createMainWindow('history'),
     openMainWindow: () => createMainWindow('home'),
-    hasConversation: !!selectionWindowManager.getActionWindow() || !!conversationStore?.latest(),
-    showConversation: () => showOrRestoreConversation(),
+    hasConversation: selectionDomain.hasConversation(),
+    showConversation: () => selectionDomain.showOrRestoreConversation(),
     quit: () => app.quit()
   })))
-}
-
-function initSelectionHook() {
-  if (!selectionHookService) {
-    selectionHookService = new SelectionHookService({
-      createHost: SelectionHookService.createUtilityProcessHostFactory({
-        utilityProcess,
-        hostPath: SelectionHookService.defaultHostPath()
-      }),
-      handlers: {
-        textSelection: handleTextSelection,
-        mouseDown: (data) => {
-          const toolbarWindow = selectionWindowManager.getToolbarWindow()
-          if (!toolbarWindow || !toolbarWindow.isVisible()) return
-          const bounds = toolbarWindow.getBounds()
-          let point = { x: data.x, y: data.y }
-          if (isWin) point = screen.screenToDipPoint(point)
-          const inside = point.x >= bounds.x && point.x <= bounds.x + bounds.width && point.y >= bounds.y && point.y <= bounds.y + bounds.height
-          if (!inside) hideToolbar()
-        },
-        keyDown: hideToolbar,
-        mouseWheel: hideToolbar,
-        status: (status) => log('Selection hook status:', status)
-      },
-      startOptions: {
-        debug: false,
-        enableClipboard: getSettings().selectionToolbar.clipboardFallback
-      },
-      log
-    })
-  }
-  if (isGameModeEnabled()) return selectionHookService.suspend('game-mode')
-  return selectionHookService.start('startup')
-}
-
-function registerSelectionPowerEvents() {
-  if (selectionPowerListeners.length) return
-  const bindings = [
-    ['suspend', () => selectionHookService?.notePowerEvent('sleep', 'system-suspend')],
-    ['lock-screen', () => selectionHookService?.notePowerEvent('sleep', 'lock-screen')],
-    ['resume', () => {
-      if (!isGameModeEnabled()) selectionHookService?.notePowerEvent('wake', 'system-resume')
-    }],
-    ['unlock-screen', () => {
-      if (!isGameModeEnabled()) selectionHookService?.notePowerEvent('wake', 'unlock-screen')
-    }]
-  ]
-  for (const [eventName, listener] of bindings) {
-    powerMonitor.on(eventName, listener)
-    selectionPowerListeners.push([eventName, listener])
-  }
-}
-
-function disposeSelectionHook() {
-  for (const [eventName, listener] of selectionPowerListeners.splice(0)) {
-    powerMonitor.removeListener(eventName, listener)
-  }
-  selectionHookService?.dispose()
-  selectionHookService = null
-}
-
-function shouldFilterApp(programName) {
-  const value = String(programName || '').toLowerCase()
-  return value.includes('highlighter') || value.includes('划词助手') || value.includes('huacizhushou')
-}
-
-function validCoord(point) {
-  return point && point.x > -90000 && point.x < 90000 && point.y > -90000 && point.y < 90000
-}
-
-function getRefPointAndOrientation(data) {
-  const cursor = screen.getCursorScreenPoint()
-  let refX = cursor.x
-  let refY = cursor.y
-  let orientation = 'bottomMiddle'
-  const level = data.posLevel || 0
-  if (level === 1) {
-    if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y + 16 }
-  } else if (level === 2) {
-    if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y }
-    if (validCoord(data.startBottom) && validCoord(data.endBottom)) {
-      const delta = data.endBottom.y - data.startBottom.y
-      orientation = delta > 10 ? 'bottomLeft' : delta < -10 ? 'topRight' : 'bottomRight'
-    }
-  } else if (level > 2) {
-    if (validCoord(data.endBottom)) { refX = data.endBottom.x; refY = data.endBottom.y + 4 }
-    else if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y }
-    if (validCoord(data.startBottom) && validCoord(data.endBottom)) {
-      const delta = data.endBottom.y - data.startBottom.y
-      orientation = delta > 0 ? 'bottomLeft' : delta < 0 ? 'topRight' : 'bottomRight'
-    }
-  }
-  if (isWin) {
-    const point = screen.screenToDipPoint({ x: refX, y: refY })
-    refX = point.x
-    refY = point.y
-  }
-  return { refPoint: { x: refX, y: refY }, orientation }
-}
-
-function calculateToolbarPosition(refPoint, orientation, toolbarWidth = TOOLBAR_W) {
-  let x = refPoint.x - toolbarWidth / 2
-  let y = refPoint.y
-  if (orientation === 'topRight') { x = refPoint.x; y = refPoint.y - TOOLBAR_H }
-  if (orientation === 'bottomLeft') x = refPoint.x - toolbarWidth
-  if (orientation === 'bottomRight') x = refPoint.x
-  const workArea = screen.getDisplayNearestPoint(refPoint).workArea
-  x = Math.round(Math.max(workArea.x, Math.min(x, workArea.x + workArea.width - toolbarWidth)))
-  y = Math.round(Math.max(workArea.y, Math.min(y, workArea.y + workArea.height - TOOLBAR_H)))
-  return { x, y }
-}
-
-function logSelectionDiagnosticOnce(reason, data = {}) {
-  if (selectionEventDiagnostics.has(reason)) return
-  selectionEventDiagnostics.add(reason)
-  const programName = path.basename(String(data.programName || '')).slice(0, 128)
-  const textLength = typeof data.text === 'string' ? data.text.length : 0
-  log('Selection event diagnostic:', { reason, programName, textLength })
-}
-
-function handleTextSelection(data) {
-  if (isGameModeEnabled()) { logSelectionDiagnosticOnce('game-mode', data); return }
-  if (isProcessing) { logSelectionDiagnosticOnce('busy', data); return }
-  if (!data?.text) { logSelectionDiagnosticOnce('missing-text', data); return }
-  if (shouldFilterApp(data.programName)) { logSelectionDiagnosticOnce('filtered-app', data); return }
-  const text = data.text.trim()
-  if (!text) { logSelectionDiagnosticOnce('empty-text', data); return }
-  if (text.length > 10000) { logSelectionDiagnosticOnce('text-too-long', data); return }
-  const actions = getVisibleToolbarActionDefinitions(getSettings().selectionToolbar)
-  if (!actions.length) { logSelectionDiagnosticOnce('no-actions', data); hideToolbar(); return }
-  const toolbarWidth = getToolbarWidth(actions)
-  const result = getRefPointAndOrientation(data)
-  const position = calculateToolbarPosition(result.refPoint, result.orientation, toolbarWidth)
-  selectionWindowManager.showToolbarSelection({ text, actions, position, width: toolbarWidth })
-  logSelectionDiagnosticOnce('shown', data)
-}
-
-function hideToolbar() {
-  selectionWindowManager.hideToolbar()
-}
-
-function finishToolbarStream(controller) {
-  return controller?.finish() || false
-}
-
-function cancelToolbarStream(controller, reason = 'cancelled', { notify = false } = {}) {
-  return controller?.cancel(reason, { notify }) || false
-}
-
-function armToolbarStreamTimeout(controller) {
-  controller?.armTimeout()
-}
-
-function createToolbarStreamController(win, streamId) {
-  const controller = new ToolbarStreamSession({
-    win,
-    timeoutMs: TOOLBAR_STREAM_IDLE_TIMEOUT_MS,
-    onFinish: (finishedController) => {
-      if (currentStreamController !== finishedController) return
-      currentStreamController = null
-      isProcessing = false
-    }
-  })
-  if (streamId === undefined) controller.streamId = nextToolbarStreamId()
-  else controller.streamId = streamId
-  currentStreamController = controller
-  isProcessing = true
-  armToolbarStreamTimeout(controller)
-  return controller
-}
-
-// A restored conversation needs an id but no controller: nothing is streaming,
-// so arming an idle timer would cancel a round that never started.
-function nextToolbarStreamId() {
-  toolbarStreamSeq += 1
-  return toolbarStreamSeq
-}
-
-function isCurrentToolbarStreamSender(event) {
-  return !!currentStreamController?.matchesSender(event.sender)
-}
-
-function isStaleToolbarStreamSignal(event, streamId) {
-  if (streamId === undefined || streamId === null) return false
-  return currentStreamController?.streamId !== streamId
-}
-
-function saveConversation(conversation) {
-  if (!conversationStore || !conversation) return false
-  return conversationStore.save(conversation.serialize())
-}
-
-async function streamToWindow(win, action, text, controller, conversation) {
-  const { createToolbarActionStream } = require('./main/services/ai-feature-router')
-  const currentSettings = getSettings()
-  const requestOptions = { signal: controller.signal }
-  requestOptions.thinking = getToolbarActionThinking(currentSettings.selectionToolbar, currentSettings.toolbarThinking, action.id)
-  let content = ''
-  try {
-    const stream = await createToolbarActionStream({ settings: currentSettings, action, text, requestOptions })
-    armToolbarStreamTimeout(controller)
-    for await (const chunk of stream) {
-      if (controller.cancelled || win.isDestroyed()) break
-      armToolbarStreamTimeout(controller)
-      const delta = chunk.choices?.[0]?.delta
-      if (delta?.reasoning_content) queueActionMessage(win, 'stream:reasoning', { content: delta.reasoning_content })
-      if (delta?.content) {
-        content += delta.content
-        queueActionMessage(win, 'stream:data', { content: delta.content })
-      }
-    }
-    if (!controller.cancelled && !win.isDestroyed()) {
-      conversation?.commitFirstResult(content)
-      saveConversation(conversation)
-      queueActionMessage(win, 'stream:done')
-    }
-  } catch (error) {
-    if (!controller.cancelled && !win.isDestroyed()) {
-      queueActionMessage(win, 'stream:error', { error: error.message || '请求失败' })
-    }
-  } finally {
-    reportCancelledTurn({ controller, win, queueMessage: (channel, data) => queueActionMessage(win, channel, data) })
-    finishToolbarStream(controller)
-  }
-}
-
-function isBlankCapture(image) {
-  if (!image || image.isEmpty()) return true
-  const size = image.getSize()
-  const sample = image.resize({
-    width: Math.max(1, Math.min(32, size.width)),
-    height: Math.max(1, Math.min(32, size.height)),
-    quality: 'good'
-  }).toBitmap()
-  if (!sample.length) return true
-  for (let index = 0; index + 2 < sample.length; index += 4) {
-    if (sample[index] > 2 || sample[index + 1] > 2 || sample[index + 2] > 2) return false
-  }
-  return true
-}
-
-async function getDesktopCapture(display, scaleFactor) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: {
-        width: Math.max(1, Math.round(display.bounds.width * scaleFactor)),
-        height: Math.max(1, Math.round(display.bounds.height * scaleFactor))
-      }
-    })
-    const source = sources.find((item) => String(item.display_id) === String(display.id)) || sources[0]
-    if (source && !source.thumbnail.isEmpty() && !isBlankCapture(source.thumbnail)) {
-      return { imageBuffer: source.thumbnail.toPNG(), sourceId: source.id, scaleFactor }
-    }
-    if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 50))
-  }
-  throw new Error('屏幕捕获连续返回空白画面')
-}
-
-const NATIVE_CAPTURE_TIMEOUT_MS = 5000
-
-async function getDisplayCapture(display) {
-  const scaleFactor = display.scaleFactor || 1
-  if (isWin) {
-    try {
-      if (!nativeDisplayListPromise) nativeDisplayListPromise = listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
-      const nativeDisplays = await nativeDisplayListPromise
-      const physicalBounds = screen.dipToScreenRect(null, display.bounds)
-      const nativeDisplay = findNativeDisplay(
-        nativeDisplays,
-        physicalBounds,
-        Math.max(1, Math.ceil(scaleFactor))
-      )
-      if (nativeDisplay) {
-        // The capture helper is an external cmd.exe pipeline with no timeout of
-        // its own; without this guard a hung spawn would wedge window creation.
-        const buffer = await new Promise((resolve, reject) => {
-          const timer = setTimeout(
-            () => reject(new Error(`原生抓屏超时（${NATIVE_CAPTURE_TIMEOUT_MS}ms）`)),
-            NATIVE_CAPTURE_TIMEOUT_MS
-          )
-          screenshotDesktop({ format: 'png', screen: nativeDisplay.id }).then(
-            (result) => { clearTimeout(timer); resolve(result) },
-            (error) => { clearTimeout(timer); reject(error) }
-          )
-        })
-        const nativeBounds = getNativeDisplayBounds(nativeDisplay)
-        // Read the dimensions straight out of the PNG IHDR chunk so a
-        // wrong-sized capture fails without decoding a full-screen bitmap.
-        const pngSize = readPngSize(buffer)
-        if (!pngSize || pngSize.width !== nativeBounds.width || pngSize.height !== nativeBounds.height) {
-          throw new Error(`原生抓屏尺寸异常：${pngSize ? `${pngSize.width}x${pngSize.height}` : '未知'}`)
-        }
-        if (isBlankCapture(nativeImage.createFromBuffer(buffer))) throw new Error('原生抓屏返回空白画面')
-        return {
-          imageBuffer: buffer,
-          sourceId: `native:${nativeDisplay.id}`,
-          scaleFactor
-        }
-      }
-    } catch (error) {
-      nativeDisplayListPromise = null
-      log('Native capture fallback:', error.message)
-    }
-  }
-  return getDesktopCapture(display, scaleFactor)
-}
-
-async function captureFocusedWindow() {
-  let title = ''
-  if (isWin) {
-    title = await new Promise((resolve) => {
-      const script = `$sig='[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);'; Add-Type -MemberDefinition $sig -Name Win32 -Namespace Native; $h=[Native.Win32]::GetForegroundWindow(); $b=New-Object System.Text.StringBuilder 1024; [void][Native.Win32]::GetWindowText($h,$b,$b.Capacity); $b.ToString()`
-      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 4000 }, (_error, stdout) => resolve(String(stdout || '').trim()))
-    })
-  }
-  const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 1920, height: 1080 }, fetchWindowIcons: true })
-  const source = sources.find((item) => title && (item.name === title || title.includes(item.name) || item.name.includes(title))) || sources.find((item) => !shouldFilterApp(item.name))
-  if (!source || source.thumbnail.isEmpty()) throw new Error('无法捕获焦点窗口')
-  return source.thumbnail.toDataURL()
 }
 
 async function saveImageBuffer(imageBuffer, options = {}) {
@@ -1361,45 +953,6 @@ async function getSearchFileIcon(samplePath) {
   return dataUrl
 }
 
-
-async function openToolbarAiAction(action, text) {
-  const toolbarConfig = getSettings().selectionToolbar
-  const actionDefinition = getToolbarActionDefinition(toolbarConfig, action)
-  if (!actionDefinition) return false
-  const aiRuntime = resolveToolbarAiProvider(getSettings(), action)
-  if (!aiRuntime?.apiKey) {
-    createMainWindow('models')
-    return false
-  }
-  const win = getOrCreateActionWindow()
-  const controller = createToolbarStreamController(win)
-  const conversation = new ActionConversation({
-    streamId: controller.streamId,
-    action: actionDefinition,
-    text,
-    provider: aiRuntime,
-    translateLanguages: toolbarConfig.translateLanguages,
-    conversationConfig: toolbarConfig.conversation,
-    thinking: getToolbarActionThinking(toolbarConfig, getSettings().toolbarThinking, actionDefinition.id),
-    support: resolveFollowUpSupport(aiRuntime, { conversation: toolbarConfig.conversation })
-  })
-  actionConversations.set(win, conversation)
-  selectionWindowManager.positionActionWindow(win, screen)
-  queueActionMessage(win, 'action:start', {
-    type: actionDefinition.id,
-    label: actionDefinition.label,
-    icon: actionDefinition.icon,
-    text,
-    streamId: controller.streamId,
-    appearance: getActionAppearance(),
-    followUp: conversation.followUpConfig()
-  })
-  streamToWindow(win, actionDefinition, text, controller, conversation)
-  win.show()
-  win.focus()
-  return true
-}
-
 async function executeFunction(name, payload = {}) {
   assertGameModeDisabled()
   switch (name) {
@@ -1418,7 +971,7 @@ async function executeFunction(name, payload = {}) {
     case 'screenshotLong': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'long', source: 'long-capture' }); return true
     case 'screenshotFullScreen': await captureDomain.createCaptureWindow({ mode: 'fullscreen', autoAction: payload.save ? 'save' : 'copy', source: 'fullscreen' }); return true
     case 'screenshotFocusedWindow': {
-      const dataUrl = await captureFocusedWindow()
+      const dataUrl = await captureDomain.captureFocusedWindow()
       clipboard.writeImage(nativeImage.createFromDataURL(dataUrl))
       persistHistory(dataUrl, { action: 'copy', source: 'focused-window' })
       return true
@@ -1461,8 +1014,8 @@ async function executeFunction(name, payload = {}) {
         log('Explain clipboard skipped: text too long', text.length)
         return false
       }
-      hideToolbar()
-      return openToolbarAiAction('explain', text)
+      selectionDomain.hideToolbar()
+      return selectionDomain.openToolbarAiAction('explain', text)
     }
     default: throw new Error(`未知功能：${name}`)
   }
@@ -1477,14 +1030,8 @@ function registerShortcuts() {
 function applyGameModeState(enabled, reason = 'state-change') {
   const gameMode = enabled === true
   registerShortcuts()
-  if (gameMode) {
-    selectionHookService?.suspend('game-mode')
-    hideToolbar()
-    if (currentStreamController) cancelToolbarStream(currentStreamController, 'game-mode')
-    searchDomain.hideSearchWindow()
-  } else if (selectionHookService) {
-    selectionHookService.start('game-mode-disabled')
-  }
+  selectionDomain.applyGameMode(gameMode)
+  if (gameMode) searchDomain.hideSearchWindow()
   createTrayIcon()
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('app:game-mode-changed', gameMode)
   log('Game mode changed:', { enabled: gameMode, reason })
@@ -1810,34 +1357,12 @@ registerRecordingIpc({
 
 registerSelectionIpc({
   ipcMain: secureIpcMain,
-  controller: {
-    BrowserWindow,
-    clipboard,
-    shell,
-    log,
-    getSettings,
-    isProcessing: () => isProcessing,
-    hideToolbar,
-    openToolbarAiAction,
-    getPinDomain: () => pinDomain,
-    streams: {
-      getCurrent: () => currentStreamController,
-      isCurrentSender: isCurrentToolbarStreamSender,
-      isStaleSignal: isStaleToolbarStreamSignal,
-      cancel: (controller, reason) => cancelToolbarStream(controller, reason),
-      create: (win, streamId) => createToolbarStreamController(win, streamId)
-    },
-    conversations: {
-      get: (win) => actionConversations.get(win),
-      queueMessage: (win, channel, payload) => queueActionMessage(win, channel, payload),
-      save: saveConversation
-    }
-  }
+  controller: selectionDomain.createIpcController()
 })
 secureIpcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
 secureIpcMain.on('window:close', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
-  if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-hidden')
+  selectionDomain.cancelStreamForWindow(win, 'window-hidden')
   win?.hide()
 })
 secureIpcMain.assertComplete()
@@ -1981,23 +1506,19 @@ async function startApplication() {
   }
   initializeDiagnostics()
   persistSettings(getSettings())
-  syncConversationStore()
+  selectionDomain.syncConversationStore()
   createMainWindow('home')
   if (!e2eContext.enabled) {
     createTrayIcon()
-    createToolbarWindow()
+    selectionDomain.createToolbarWindow()
     registerShortcuts()
-    initSelectionHook()
-    registerSelectionPowerEvents()
+    selectionDomain.initSelectionHook()
+    selectionDomain.registerSelectionPowerEvents()
     if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
-    if (isWin) {
-      listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
-        .then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) })
-        .catch((error) => log('Display discovery warm-up failed:', error))
-    }
+    if (isWin) captureDomain.warmUpNativeDisplays()
     app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
   }
-  if (e2eContext.enabled) createToolbarWindow()
+  if (e2eContext.enabled) selectionDomain.createToolbarWindow()
   deferUpdateServiceStart()
   performanceMonitor.finish(startupToken, {
     e2e: e2eContext.enabled,
@@ -2024,7 +1545,7 @@ else {
       url: webContents?.getURL?.() || ''
     })
     const win = webContents ? BrowserWindow.fromWebContents(webContents) : null
-    selectionWindowManager?.handleRendererGone(win, details)
+    selectionDomain?.handleRendererGone(win, details)
   })
   app.on('child-process-gone', (_event, details) => {
     diagnosticsService?.recordProcessExit('child', {
@@ -2041,7 +1562,7 @@ else {
     })
   })
   nativeTheme.on('updated', () => {
-    if (store && getSettings().theme === 'system') broadcastActionAppearance()
+    if (store && getSettings().theme === 'system') selectionDomain.broadcastActionAppearance()
   })
   process.on('unhandledRejection', (reason) => log('Unhandled promise rejection:', reason))
   app.whenReady().then(startApplication).catch((error) => {
@@ -2063,7 +1584,7 @@ else {
     longCaptureDomain.closeLongCapture()
     if (ocrService) { ocrService.stop(); ocrService = null }
     if (everythingService) { everythingService.stop(); everythingService = null }
-    disposeSelectionHook()
+    selectionDomain.disposeSelectionHook()
     if (tray) { tray.destroy(); tray = null }
   })
 }

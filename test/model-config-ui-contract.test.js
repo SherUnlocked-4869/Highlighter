@@ -9,6 +9,7 @@ const script = fs.readFileSync(path.join(root, 'config', 'config.js'), 'utf8')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
 const router = fs.readFileSync(path.join(root, 'main', 'services', 'ai-feature-router.js'), 'utf8')
 const ocrIpc = fs.readFileSync(path.join(root, 'main', 'ipc', 'ocr-ipc.js'), 'utf8')
+const selectionDomain = fs.readFileSync(path.join(root, 'main', 'domains', 'selection', 'index.js'), 'utf8')
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
 
 test('config app exposes the model provider route with provider and feature-model subpages', () => {
@@ -53,12 +54,12 @@ test('model catalog rows are enumerated by the row container only, not by button
 
 test('main process resolves feature assignments through the AI provider service', () => {
   assert.match(main, /require\('\.\/main\/services\/ai-providers'\)/)
-  assert.match(main, /createToolbarActionStream/)
+  assert.match(selectionDomain, /createToolbarActionStream/)
   assert.match(router, /resolveToolbarAiProvider\(settings, actionId\)/)
   assert.match(main, /resolveAiAssignment\(settings, 'chat'\)/)
   assert.match(main, /resolveAiAssignment\(settings, 'translation'\)/)
   assert.match(ocrIpc, /resolveAiAssignment\(settings, 'ocr-translate'\)/)
-  assert.match(main, /createMainWindow\('models'\)/)
+  assert.match(selectionDomain, /createMainWindow\('models'\)/)
 })
 
 test('preload fetches model catalogs through the existing secure test-connection channel', () => {
