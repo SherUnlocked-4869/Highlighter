@@ -18,7 +18,8 @@ const DISABLED_REASONS = Object.freeze({
   translationOnly: '当前模型仅支持翻译，无法追问。请在「模型」设置中为划词功能选择一个支持对话的模型',
   turnLimit: (maxTurns) => `已达到最大追问轮数（${maxTurns}），请重新划词开始新会话`,
   pending: '正在生成回答，请稍候',
-  emptyQuestion: '追问内容不能为空'
+  emptyQuestion: '追问内容不能为空',
+  retryNotNewest: '只能重新生成最近一轮追问'
 })
 
 function isCustomAction(actionId) {
@@ -258,11 +259,29 @@ class ActionConversation {
   // The messages are built here rather than in buildMessages() because the
   // renderer needs to know how many pairs were dropped *before* the stream
   // starts: chat:turn is what opens the round and paints the notice.
-  beginTurn(question) {
+  //
+  // `replaceLast` regenerates the newest round: that pair is dropped before the
+  // new one is built, so it is never answered against its own previous attempt.
+  beginTurn(question, { replaceLast = false } = {}) {
     const value = typeof question === 'string' ? question.trim().slice(0, this.maxQuestionLength) : ''
     if (!value) return { ok: false, reason: DISABLED_REASONS.emptyQuestion, rejected: true }
+    // Replacing anything but the newest round would invalidate every answer
+    // after it, and the question has to match or the request and the session
+    // have drifted apart. Both are refused before anything is touched.
+    const replaced = replaceLast ? this.history.at(-1) : null
+    if (replaceLast) {
+      if (!replaced || replaced.question !== value) {
+        return { ok: false, reason: DISABLED_REASONS.retryNotNewest, rejected: true }
+      }
+      this.history.pop()
+    }
+    // Checked after the drop: a regenerated round frees its own slot, so being
+    // at the turn limit must not block it.
     const reason = this.disabledReason()
-    if (reason) return { ok: false, reason, rejected: true }
+    if (reason) {
+      if (replaced) this.history.push(replaced)
+      return { ok: false, reason, rejected: true }
+    }
     const built = buildFollowUpMessages({ conversation: this, question: value })
     this.pending = { question: value, content: '', built, omittedPairs: built.omittedPairs }
     return {

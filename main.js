@@ -1846,7 +1846,7 @@ secureIpcMain.on('chat:ask', (event, payload) => {
   const conversation = win ? actionConversations.get(win) : null
   if (!conversation) return
   if (Number(payload?.streamId) !== conversation.streamId) return
-  const turn = conversation.beginTurn(payload?.question)
+  const turn = conversation.beginTurn(payload?.question, { replaceLast: payload?.replaceLast === true })
   if (!turn.ok) {
     queueActionMessage(win, 'stream:error', { error: turn.reason, rejected: true })
     return

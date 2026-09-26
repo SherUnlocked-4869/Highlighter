@@ -80,12 +80,12 @@ contextBridge.exposeInMainWorld('actionAPI', {
   })),
   cancelStream: (streamId) => sendStreamSignal('stream:cancel', streamId),
   finishStream: (streamId) => sendStreamSignal('stream:finish', streamId),
-  askQuestion: (streamId, question) => {
+  askQuestion: (streamId, question, replaceLast = false) => {
     if (!Number.isSafeInteger(streamId) || streamId <= 0) return false
     if (typeof question !== 'string') return false
     const value = question.trim().slice(0, MAX_QUESTION_LENGTH)
     if (!value) return false
-    ipcRenderer.send('chat:ask', { streamId, question: value })
+    ipcRenderer.send('chat:ask', { streamId, question: value, replaceLast: replaceLast === true })
     return true
   },
   copyConversation: (text) => {

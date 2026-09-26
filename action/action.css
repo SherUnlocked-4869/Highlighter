@@ -204,7 +204,7 @@ body {
 .composer-hint:empty { display: none; }
 .composer-hint.error { color: var(--danger); }
 .composer-hint-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.composer .copy-btn {
+.composer .ghost-btn {
   flex-shrink: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -217,8 +217,8 @@ body {
   outline: none;
   transition: background .14s, border-color .14s, color .14s;
 }
-.composer .copy-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
-.composer .copy-btn:disabled { opacity: .5; cursor: not-allowed; }
+.composer .ghost-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.composer .ghost-btn:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ---------- scrollbar ---------- */
 ::-webkit-scrollbar { width: 6px; height: 6px; }

@@ -80,12 +80,20 @@ test('action renderer stays sandboxed and sanitizes AI output in Electron', { ti
   assert.equal(probe.rendered.links[0].rel, 'noopener noreferrer')
   assert.equal(probe.rendered.links[0].target, '')
   assert.deepEqual(probe.openedUrls, ['https://example.com/safe?q=1&ok=2'])
+  // One finish per completed round: the first round, the follow-up, and the
+  // retry round the probe asks for.
   assert.deepEqual(probe.streamSignals, [
+    { channel: 'finish', streamId: 7 },
     { channel: 'finish', streamId: 7 },
     { channel: 'finish', streamId: 7 }
   ])
   assert.equal(probe.followUpAsked, true)
-  assert.deepEqual(probe.chatAsks, [{ streamId: 7, question: '追问 <b>内容</b>' }])
+  assert.deepEqual(probe.chatAsks, [
+    { streamId: 7, question: '追问 <b>内容</b>', replaceLast: false },
+    { streamId: 7, question: '再生成一次', replaceLast: true }
+  ])
+  assert.equal(probe.retryAsked, true)
+  assert.equal(probe.retryRefused, false)
   // The follow-up round goes through the same sanitizer as the first one.
   assert.equal(probe.followUp.imageCount, 0)
   assert.equal(probe.followUp.scriptCount, 0)

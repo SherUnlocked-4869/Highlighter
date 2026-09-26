@@ -118,6 +118,8 @@ async function runProbe() {
   await waitFor(() => Promise.resolve(openedUrls.length > 0), 'main-process external link handoff')
 
   const followUpAsked = await win.webContents.executeJavaScript(`window.actionAPI.askQuestion(7, '追问 <b>内容</b>')`)
+  const retryAsked = await win.webContents.executeJavaScript(`window.actionAPI.askQuestion(7, '再生成一次', true)`)
+  const retryRefused = await win.webContents.executeJavaScript(`window.actionAPI.askQuestion(7, '', true)`)
   const followUp = await waitFor(
     () => win.webContents.executeJavaScript(`(() => {
       const transcript = document.getElementById('transcript')
@@ -171,6 +173,8 @@ async function runProbe() {
     },
     rendered,
     followUpAsked,
+    retryAsked,
+    retryRefused,
     followUp,
     openedUrls,
     streamSignals,

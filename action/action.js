@@ -37,7 +37,8 @@ const conversation = {
   turns: [],
   activeTurn: -1,
   pendingQuestion: '',
-  notice: ''
+  notice: '',
+  replaceOnNextTurn: false
 }
 
 const el = {
@@ -50,6 +51,7 @@ const el = {
   loadingText: document.getElementById('loadingText'),
   composerHint: document.getElementById('composerHint'),
   btnCopy: document.getElementById('btnCopy'),
+  btnRetry: document.getElementById('btnRetry'),
   questionInput: document.getElementById('questionInput'),
   btnSend: document.getElementById('btnSend')
 }
@@ -78,6 +80,7 @@ function resetUI() {
   conversation.activeTurn = -1
   conversation.pendingQuestion = ''
   conversation.notice = ''
+  conversation.replaceOnNextTurn = false
   clearTimeout(loadTimer)
   loadTimer = null
   renderToken++
@@ -279,13 +282,16 @@ function createAssistantTurn() {
 
 function appendUserTurn(question) {
   const turn = { role: 'user', content: question, status: 'done' }
-  conversation.turns.push(turn)
   const node = document.createElement('div')
   node.className = 'turn turn-user'
   const bubble = document.createElement('div')
   bubble.className = 'bubble'
   bubble.textContent = question
   node.appendChild(bubble)
+  // Kept so a regenerated pair can be removed again — the model and the DOM
+  // must stay in step.
+  turn.el = node
+  conversation.turns.push(turn)
   el.transcript.appendChild(node)
   return turn
 }
@@ -387,6 +393,28 @@ function followUpCount() {
   return conversation.turns.filter((turn) => turn.role === 'user').length
 }
 
+// The newest follow-up question, or '' when the latest round is not a follow-up.
+// Regeneration only ever targets that round, so its question is simply the user
+// turn sitting right before the last assistant turn.
+function lastFollowUpQuestion() {
+  const turns = conversation.turns
+  const last = turns[turns.length - 1]
+  if (!last || last.role !== 'assistant' || last.status === 'streaming') return ''
+  const question = turns[turns.length - 2]
+  return question && question.role === 'user' ? question.content : ''
+}
+
+// Drops the newest pair so the regenerated round replaces it instead of piling a
+// second copy next to it. Called only once the server has echoed chat:turn, so a
+// rejected retry keeps the old answer on screen.
+function dropLastPair() {
+  for (let count = 0; count < 2; count += 1) {
+    const turn = conversation.turns.pop()
+    if (turn && turn.el) turn.el.remove()
+  }
+  conversation.activeTurn = -1
+}
+
 function composerState() {
   const followUp = conversation.followUp
   if (followUp.enabled !== true) {
@@ -416,6 +444,7 @@ function renderComposer() {
   // The transcript is copyable as soon as there is an answer to copy — while a
   // round is still streaming it copies what has arrived so far.
   el.btnCopy.disabled = !conversation.turns.some((turn) => turn.role === 'assistant' && turn.content)
+  el.btnRetry.disabled = busy || !lastFollowUpQuestion()
   if (busy) {
     el.btnSend.disabled = false
     el.btnSend.title = '停止生成'
@@ -435,13 +464,25 @@ function submitQuestion() {
   if (!composerState().enabled) return
   const value = el.questionInput.value.trim()
   if (!value) return
+  sendTurn(value, false)
+}
+
+// Regenerating keeps the question and lets the server drop the previous answer
+// from the context, so the new answer is not built on top of the old attempt.
+function retryLastTurn() {
+  const question = lastFollowUpQuestion()
+  if (!question) return
+  sendTurn(question, true)
+}
+
+function sendTurn(question, replaceLast) {
   conversation.notice = ''
-  conversation.pendingQuestion = value
-  if (!actionBridge.askQuestion(conversation.streamId, value)) {
+  conversation.pendingQuestion = question
+  conversation.replaceOnNextTurn = replaceLast
+  if (!actionBridge.askQuestion(conversation.streamId, question, replaceLast)) {
     conversation.pendingQuestion = ''
-    conversation.notice = '追问发送失败，请重试'
-    renderComposer()
-    return
+    conversation.replaceOnNextTurn = false
+    conversation.notice = replaceLast ? '重新生成失败，请重试' : '追问发送失败，请重试'
   }
   renderComposer()
 }
@@ -515,6 +556,12 @@ actionBridge.onStreamReasoning(function(data) {
 
 actionBridge.onChatTurn(function(data) {
   if (data.streamId !== null && data.streamId !== conversation.streamId) return
+  // The server accepted the round: only now is it safe to drop the pair that is
+  // being regenerated.
+  if (conversation.replaceOnNextTurn) {
+    conversation.replaceOnNextTurn = false
+    dropLastPair()
+  }
   const question = data.question || conversation.pendingQuestion
   conversation.pendingQuestion = ''
   conversation.notice = ''
@@ -561,7 +608,10 @@ actionBridge.onStreamError(function(data) {
     finishTurnWith(turn, data.cancelled ? 'cancelled' : (data.rejected ? 'rejected' : 'error'), note)
   } else if (data.rejected) {
     // The ask never became a turn: keep the typed text and surface the reason.
+    // A refused regeneration must also release its intent, or the next accepted
+    // round would drop an unrelated pair.
     conversation.pendingQuestion = ''
+    conversation.replaceOnNextTurn = false
     conversation.notice = data.error
   }
   renderComposer()
@@ -575,6 +625,8 @@ function onSendClick() {
 }
 
 el.btnSend.addEventListener('click', onSendClick)
+
+el.btnRetry.addEventListener('click', retryLastTurn)
 
 let copyResetTimer = null
 

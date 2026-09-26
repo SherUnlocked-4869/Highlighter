@@ -212,6 +212,48 @@ test('copied transcripts are bounded and non-strings are refused', () => {
   assert.equal(boundConversationCopyText(long).length, MAX_CONVERSATION_COPY_LENGTH)
 })
 
+test('regenerating replaces the newest pair and never leaves a trace on refusal', () => {
+  const conversation = conversationFor({ maxFollowUpTurns: 2 })
+  conversation.commitFirstResult('结果')
+  conversation.beginTurn('第一问')
+  conversation.commitTurn({ content: '第一答' })
+  conversation.beginTurn('第二问')
+  conversation.commitTurn({ content: '第二答' })
+  assert.equal(conversation.history.length, 2)
+
+  // At the turn limit already, yet replacing frees its own slot.
+  const retry = conversation.beginTurn('第二问', { replaceLast: true })
+  assert.equal(retry.ok, true)
+  assert.equal(retry.omittedPairs, 0)
+  // The old answer is out of the context before the new round is built.
+  assert.equal(conversation.history.length, 1)
+  assert.equal(conversation.history.at(-1).answer, '第一答')
+  assert.equal(conversation.buildMessages().at(-1).content, '第二问')
+  conversation.commitTurn({ content: '第二答（重来）' })
+  assert.deepEqual(conversation.history.map((pair) => pair.answer), ['第一答', '第二答（重来）'])
+
+  // An older round cannot be regenerated, and a mismatched question is refused
+  // rather than silently dropping the newest pair.
+  assert.equal(conversation.beginTurn('第一问', { replaceLast: true }).ok, false)
+  assert.match(conversation.beginTurn('第一问', { replaceLast: true }).reason, /只能重新生成最近一轮追问/)
+  assert.equal(conversation.history.length, 2)
+
+  // A refusal for any other reason restores what it dropped.
+  const bare = conversationFor({ maxFollowUpTurns: 2 })
+  bare.commitFirstResult('结果')
+  bare.beginTurn('只剩一轮')
+  bare.commitTurn({ content: '答' })
+  bare.support = { canFollowUp: false, reason: '仅翻译模型可用' }
+  const refused = bare.beginTurn('只剩一轮', { replaceLast: true })
+  assert.equal(refused.ok, false)
+  assert.equal(refused.reason, '仅翻译模型可用')
+  assert.equal(bare.history.length, 1, 'a refused retry must not drop the pair')
+  assert.equal(bare.history[0].question, '只剩一轮')
+
+  // Nothing to regenerate.
+  assert.equal(bare.beginTurn('还没有的问题', { replaceLast: true }).ok, false)
+})
+
 test('buildFollowUpMessages trims old pairs against the shared character budget', () => {
   const conversation = conversationFor({ text: 'T' })
   conversation.systemPrompt = 'S'
