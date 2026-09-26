@@ -118,6 +118,25 @@ function buildFollowUpMessages({ conversation, question }) {
   return messages
 }
 
+// A cancelled round has to be reported to the renderer, because main.js notifies
+// nobody on window-hidden / window-closed / game-mode. Electron never fires
+// visibilitychange for BrowserWindow.hide(), so the renderer cannot self-heal:
+// without this the round sits in "generating" until the 30s idle timeout and
+// then blames the network. Both rounds share this path so they cannot drift.
+// window-closed / game-mode stay silent — the window is going away.
+function reportCancelledTurn({ controller, win, queueMessage = () => {} } = {}) {
+  if (!controller?.cancelled || win?.isDestroyed()) return false
+  if (controller.cancelReason === 'user-cancelled') {
+    queueMessage('stream:error', { error: '已停止生成', cancelled: true })
+    return true
+  }
+  if (controller.cancelReason === 'window-hidden') {
+    queueMessage('stream:error', { error: '窗口已隐藏，生成已中断', cancelled: true, interrupted: true })
+    return true
+  }
+  return false
+}
+
 class ActionConversation {
   constructor({
     streamId,
@@ -276,20 +295,8 @@ async function streamConversationTurn({
     conversation.commitTurn({ content })
   } else {
     conversation.rollbackTurn()
-    if (controller.cancelled) {
-      if (controller.cancelReason === 'user-cancelled') {
-        queueMessage('stream:error', { error: '已停止生成', cancelled: true })
-      } else if (controller.cancelReason === 'window-hidden') {
-        // Electron never marks the page hidden for BrowserWindow.hide(), so the
-        // renderer's visibilitychange self-heal cannot fire here: without this the
-        // round would sit in "generating" until the 30s idle timeout and then
-        // report a bogus network timeout. window-closed/game-mode need nothing —
-        // the window is going away.
-        queueMessage('stream:error', { error: '窗口已隐藏，生成已中断', cancelled: true, interrupted: true })
-      }
-    } else {
-      queueMessage('stream:error', { error: failure?.message || '请求失败' })
-    }
+    if (controller.cancelled) reportCancelledTurn({ controller, win, queueMessage })
+    else queueMessage('stream:error', { error: failure?.message || '请求失败' })
   }
   controller.finish()
 }
@@ -303,6 +310,7 @@ module.exports = {
   buildConversationSystemPrompt,
   buildFollowUpMessages,
   describeOriginalTask,
+  reportCancelledTurn,
   resolveFollowUpSupport,
   streamConversationTurn,
   trimHistory

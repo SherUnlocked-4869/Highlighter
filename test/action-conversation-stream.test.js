@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { ActionConversation, streamConversationTurn } = require('../main/services/action-conversation')
+const { ActionConversation, reportCancelledTurn, streamConversationTurn } = require('../main/services/action-conversation')
 
 function createController() {
   return {
@@ -187,4 +187,32 @@ test('a destroyed window sends nothing and rolls the round back', async () => {
   assert.deepEqual(events, [])
   assert.equal(conversation.history.length, 0)
   assert.equal(controller.finished, true)
+})
+
+test('reportCancelledTurn is the single place that decides what a cancel reports', () => {
+  const cases = [
+    // reason, expected event (null = stay silent)
+    ['user-cancelled', { channel: 'stream:error', data: { error: '已停止生成', cancelled: true } }],
+    ['window-hidden', { channel: 'stream:error', data: { error: '窗口已隐藏，生成已中断', cancelled: true, interrupted: true } }],
+    ['window-closed', null],
+    ['game-mode', null],
+    ['请求超时，请检查网络后重试', null]
+  ]
+  for (const [reason, expected] of cases) {
+    const { events, queueMessage } = collect()
+    const controller = { ...createController(), cancelled: true, cancelReason: reason }
+    reportCancelledTurn({ controller, win: createWin(), queueMessage })
+    assert.deepEqual(events, expected ? [expected] : [], reason)
+  }
+
+  // A live round, a destroyed window and a missing controller never report.
+  for (const input of [
+    { controller: createController(), win: createWin() },
+    { controller: { ...createController(), cancelled: true, cancelReason: 'window-hidden' }, win: createWin(true) },
+    {}
+  ]) {
+    const { events, queueMessage } = collect()
+    assert.equal(reportCancelledTurn({ ...input, queueMessage }), false)
+    assert.deepEqual(events, [])
+  }
 })

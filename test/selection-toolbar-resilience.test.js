@@ -27,7 +27,9 @@ test('toolbar streams use abortable sliding timeouts and sender ownership checks
   assert.match(main, /armToolbarStreamTimeout\(controller\)[\s\S]*for await \(const chunk of stream\)/)
   assert.match(main, /for await \(const chunk of stream\) \{[\s\S]*armToolbarStreamTimeout\(controller\)/)
   assert.match(main, /isCurrentToolbarStreamSender\(event\)/)
-  assert.match(main, /finally \{\s*finishToolbarStream\(controller\)/)
+  // Both rounds report a cancelled round before finalizing it, so a hidden window
+  // cannot leave the renderer waiting for the 30s idle timeout.
+  assert.match(main, /finally \{\s*reportCancelledTurn\([\s\S]*?finishToolbarStream\(controller\)/)
   assert.match(deepseek, /createAiProtocolAdapter\(attempt, createClient\(attempt\)\)\.stream\([\s\S]*streamOptions\.requestOptions\)/)
   assert.match(adapters, /chat\.completions\.create\(buildChatStreamRequest\(config, messages, options\), requestOptions\)/)
   assert.match(action, /function armStreamTimeout\(\)/)

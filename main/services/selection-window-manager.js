@@ -182,6 +182,21 @@ class SelectionWindowManager {
     return this.createActionWindow()
   }
 
+  // Unlike getOrCreateActionWindow this never opens a new window: the tray entry
+  // that brings a hidden conversation back must not create an empty one.
+  getActionWindow() {
+    if (!this.actionWindow) return null
+    return this.isWindowHealthy(this.actionWindow) ? this.actionWindow : null
+  }
+
+  showActionWindow() {
+    const win = this.getActionWindow()
+    if (!win) return false
+    win.show()
+    win.focus()
+    return true
+  }
+
   queueActionMessage(win, channel, payload) {
     if (!win || win.isDestroyed()) return
     if (win._actionRendererReady) {

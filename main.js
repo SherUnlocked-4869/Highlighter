@@ -58,7 +58,7 @@ const { registerSearchIpc } = require('./main/ipc/search-ipc')
 const { SelectionHookService } = require('./main/services/selection-hook-service')
 const { SelectionWindowManager } = require('./main/services/selection-window-manager')
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
-const { ActionConversation, resolveFollowUpSupport, streamConversationTurn } = require('./main/services/action-conversation')
+const { ActionConversation, reportCancelledTurn, resolveFollowUpSupport, streamConversationTurn } = require('./main/services/action-conversation')
 const { UpdateService } = require('./main/services/update-service')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createSecureWindow, isSafeExternalUrl } = require('./main/services/window-security')
@@ -853,9 +853,11 @@ selectionWindowManager = new SelectionWindowManager({
     if (wasPinned) pinDomain.releasePinnedSlot()
     actionConversations.delete(win)
     if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-closed')
+    createTrayIcon()
   },
   onActionWindowBlur: (win) => {
     if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-hidden')
+    createTrayIcon()
   },
   log
 })
@@ -912,6 +914,8 @@ function createTrayIcon() {
     },
     openHistory: () => createMainWindow('history'),
     openMainWindow: () => createMainWindow('home'),
+    hasConversation: !!selectionWindowManager.getActionWindow(),
+    showConversation: () => selectionWindowManager.showActionWindow(),
     quit: () => app.quit()
   })))
 }
@@ -1126,6 +1130,7 @@ async function streamToWindow(win, action, text, controller, conversation) {
       queueActionMessage(win, 'stream:error', { error: error.message || '请求失败' })
     }
   } finally {
+    reportCancelledTurn({ controller, win, queueMessage: (channel, data) => queueActionMessage(win, channel, data) })
     finishToolbarStream(controller)
   }
 }
