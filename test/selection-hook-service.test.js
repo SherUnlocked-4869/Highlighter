@@ -1,7 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
-const { SelectionHookService } = require('../main/services/selection-hook-service')
+const { SelectionHookService, SELECTION_HOOK_HOST_DEFAULTS } = require('../main/services/selection-hook-service')
 
 class FakeHost extends EventEmitter {
   constructor() {
@@ -51,6 +51,7 @@ class FakeHost extends EventEmitter {
 
 function createScheduler() {
   let nextId = 1
+  let elapsed = 0
   const scheduled = new Map()
   return {
     setTimer(callback, delay) {
@@ -65,6 +66,7 @@ function createScheduler() {
       const timer = scheduled.values().next().value
       if (!timer) return false
       scheduled.delete(timer.id)
+      elapsed += timer.delay
       timer.callback()
       return true
     },
@@ -78,6 +80,9 @@ function createScheduler() {
     },
     get delays() {
       return [...scheduled.values()].map((timer) => timer.delay)
+    },
+    get elapsed() {
+      return elapsed
     }
   }
 }
@@ -275,6 +280,113 @@ test('heartbeat pong keeps the same host', () => {
   host.emitMessage({ type: 'pong', hookRunning: true, lastInputAt: Date.now() })
   assert.equal(host.killed, false)
   assert.equal(service.isRunning(), true)
+})
+
+test('first missed heartbeat re-probes after the confirm delay', () => {
+  const { service, scheduler, hosts } = createService({
+    heartbeatIntervalMs: 1000,
+    heartbeatTimeoutMs: 100,
+    maxHeartbeatFailures: 2,
+    heartbeatConfirmDelayMs: 250
+  })
+  startAndReady(service, hosts)
+
+  // interval -> ping in flight
+  assert.equal(scheduler.runNext(), true)
+  // timeout #1 -> prompt re-probe rather than a full interval wait
+  assert.equal(scheduler.runNext(), true)
+  assert.equal(scheduler.delays.includes(250), true)
+  assert.equal(scheduler.delays.includes(1000), false)
+})
+
+test('power events drop the in-flight probe and count no failure', () => {
+  const { service, scheduler, hosts } = createService()
+  const host = startAndReady(service, hosts)
+
+  assert.equal(scheduler.runNext(), true)
+  assert.equal(host.lastMessage('ping')?.type, 'ping')
+  const pingsBefore = host.messages.filter((message) => message.type === 'ping').length
+
+  service.notePowerEvent('wake', 'system-resume')
+
+  assert.equal(host.messages.filter((message) => message.type === 'ping').length, pingsBefore)
+  const diag = service.getDiagnostics()
+  assert.equal(diag.consecutiveHeartbeatFailures, 0)
+  assert.equal(diag.heartbeatFailureCount, 0)
+})
+
+test('a late pong after one miss cancels the recycle and restores cadence', () => {
+  const { service, scheduler, hosts } = createService({
+    heartbeatIntervalMs: 1000,
+    heartbeatTimeoutMs: 100,
+    maxHeartbeatFailures: 2,
+    heartbeatConfirmDelayMs: 250
+  })
+  const host = startAndReady(service, hosts)
+
+  scheduler.runNext() // interval -> ping
+  scheduler.runNext() // timeout #1
+  assert.equal(service.getDiagnostics().consecutiveHeartbeatFailures, 1)
+
+  host.emitMessage({ type: 'pong', hookRunning: true, lastInputAt: Date.now(), pid: 4242 })
+
+  const diag = service.getDiagnostics()
+  assert.equal(diag.consecutiveHeartbeatFailures, 0)
+  assert.equal(diag.hostRecreateCount, 0)
+  assert.equal(diag.hostPid, 4242)
+  assert.equal(host.killed, false)
+  assert.equal(scheduler.delays.includes(1000), true)
+})
+
+test('host recycles are counted and exposed via getDiagnostics', () => {
+  const { service, scheduler, hosts } = createService({
+    heartbeatIntervalMs: 1000,
+    heartbeatTimeoutMs: 100,
+    maxHeartbeatFailures: 2
+  })
+  const host = startAndReady(service, hosts)
+  assert.equal(service.getDiagnostics().hostRecreateCount, 0)
+
+  while (!host.killed && scheduler.runNext()) {
+    // advance until the host is recycled
+  }
+
+  assert.equal(host.killed, true)
+  const diag = service.getDiagnostics()
+  assert.equal(diag.hostRecreateCount, 1)
+  assert.equal(diag.lastRecreateReason, 'heartbeat-timeout')
+  assert.equal(diag.heartbeatFailureCount, 2)
+})
+
+test('a wedged host is recycled within the production heartbeat budget', () => {
+  const scheduler = createScheduler()
+  const hosts = []
+  const service = new SelectionHookService({
+    createHost: () => {
+      const host = new FakeHost()
+      hosts.push(host)
+      return host
+    },
+    setTimer: scheduler.setTimer,
+    clearTimer: scheduler.clearTimer
+  })
+
+  // Production defaults, not the test overrides.
+  assert.equal(service.heartbeatIntervalMs, SELECTION_HOOK_HOST_DEFAULTS.heartbeatIntervalMs)
+
+  const host = startAndReady(service, hosts)
+  // Worst case: the host wedges right after a pong, so the first probe waits out
+  // a full interval before it can even fire.
+  while (!host.killed && scheduler.runNext()) {
+    // advance until the host is recycled
+  }
+
+  assert.equal(host.killed, true)
+  assert.equal(
+    scheduler.elapsed <= 4300,
+    true,
+    `recycle took ${scheduler.elapsed}ms, expected <= 4300ms`
+  )
 })
 
 test('utility process host factory forks the host script', () => {

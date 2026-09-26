@@ -6,9 +6,16 @@ const DEFAULTS = {
   restartDelayMs: 1200,
   retryDelayMs: 2500,
   maxStartRetries: 2,
-  heartbeatIntervalMs: 30000,
-  heartbeatTimeoutMs: 8000,
+  // Liveness probes for a wedged host. A blocked synchronous UIA/COM call
+  // occupies the host event loop, so a missed pong is the signal to recycle the
+  // process. The timeout must stay above the longest legitimate synchronous
+  // block in the host (~435-700ms, the clipboard fallback path) to avoid
+  // recycling a host that is merely busy.
+  heartbeatIntervalMs: 1000,
+  heartbeatTimeoutMs: 1500,
   maxHeartbeatFailures: 2,
+  // Re-probe promptly after the first miss instead of waiting a full interval.
+  heartbeatConfirmDelayMs: 250,
   powerDebounceMs: 1500,
   unexpectedStopRestartDelayMs: 400
 }
@@ -25,6 +32,7 @@ class SelectionHookService {
     heartbeatIntervalMs = DEFAULTS.heartbeatIntervalMs,
     heartbeatTimeoutMs = DEFAULTS.heartbeatTimeoutMs,
     maxHeartbeatFailures = DEFAULTS.maxHeartbeatFailures,
+    heartbeatConfirmDelayMs = DEFAULTS.heartbeatConfirmDelayMs,
     powerDebounceMs = DEFAULTS.powerDebounceMs,
     unexpectedStopRestartDelayMs = DEFAULTS.unexpectedStopRestartDelayMs,
     setTimer = setTimeout,
@@ -42,6 +50,7 @@ class SelectionHookService {
     this.heartbeatIntervalMs = heartbeatIntervalMs
     this.heartbeatTimeoutMs = heartbeatTimeoutMs
     this.maxHeartbeatFailures = maxHeartbeatFailures
+    this.heartbeatConfirmDelayMs = heartbeatConfirmDelayMs
     this.powerDebounceMs = powerDebounceMs
     this.unexpectedStopRestartDelayMs = unexpectedStopRestartDelayMs
     this.setTimer = setTimer
@@ -62,6 +71,10 @@ class SelectionHookService {
     this.pendingStartAttempt = 0
     this.heartbeatFailures = 0
     this.lastHookInputAt = 0
+    this.hostRecreateCount = 0
+    this.heartbeatFailureCount = 0
+    this.lastRecreateReason = null
+    this.hostPid = null
   }
 
   static createUtilityProcessHostFactory({ utilityProcess, hostPath }) {
@@ -98,6 +111,20 @@ class SelectionHookService {
 
   isRunning() {
     return !!this.host && this.hostReady && this.hookReportedRunning
+  }
+
+  getDiagnostics() {
+    return {
+      running: this.isRunning(),
+      desiredRunning: this.desiredRunning,
+      hostReady: this.hostReady,
+      hookReportedRunning: this.hookReportedRunning,
+      hostPid: this.hostPid,
+      hostRecreateCount: this.hostRecreateCount,
+      heartbeatFailureCount: this.heartbeatFailureCount,
+      consecutiveHeartbeatFailures: this.heartbeatFailures,
+      lastRecreateReason: this.lastRecreateReason
+    }
   }
 
   start(reason = 'startup', retryAttempt = 0) {
@@ -180,6 +207,10 @@ class SelectionHookService {
    */
   notePowerEvent(type, reason) {
     if (this.disposed) return false
+    // The debounced action stops or recreates the host anyway, so an in-flight
+    // probe is moot and must not be counted as a failure while the OS suspends
+    // the process. Its timeout now equals the debounce window, so drop it first.
+    this.cancelHeartbeat()
     this.cancelPowerTimer()
     this.powerTimer = this.setTimer(() => {
       this.powerTimer = null
@@ -231,10 +262,10 @@ class SelectionHookService {
     this.powerTimer = null
   }
 
-  armHeartbeat() {
+  armHeartbeat(delayMs = this.heartbeatIntervalMs) {
     this.cancelHeartbeat()
-    if (this.disposed) return
-    this.heartbeatTimer = this.setTimer(() => this.runHeartbeat(), this.heartbeatIntervalMs)
+    if (this.disposed || !this.desiredRunning) return
+    this.heartbeatTimer = this.setTimer(() => this.runHeartbeat(), delayMs)
     this.heartbeatTimer?.unref?.()
   }
 
@@ -268,12 +299,13 @@ class SelectionHookService {
       if (settled || this.disposed || this.host !== host) return
       settled = true
       this.heartbeatFailures += 1
+      this.heartbeatFailureCount += 1
       this.log('Selection hook heartbeat timeout:', this.heartbeatFailures)
       if (this.heartbeatFailures >= this.maxHeartbeatFailures) {
         this.heartbeatFailures = 0
         this.forceHostRecreate('heartbeat-timeout')
       } else {
-        this.armHeartbeat()
+        this.armHeartbeat(this.heartbeatConfirmDelayMs)
       }
     }, this.heartbeatTimeoutMs)
     this.heartbeatTimeoutTimer?.unref?.()
@@ -288,7 +320,13 @@ class SelectionHookService {
 
   forceHostRecreate(reason) {
     if (this.disposed || !this.desiredRunning) return false
-    this.log('Selection hook host recreate:', reason)
+    this.hostRecreateCount += 1
+    this.lastRecreateReason = reason
+    this.log('Selection hook host recreate:', reason, {
+      count: this.hostRecreateCount,
+      failures: this.heartbeatFailureCount,
+      pid: this.hostPid
+    })
     this.stopHost(reason)
     return this.scheduleStart(reason, this.unexpectedStopRestartDelayMs, 0)
   }
@@ -299,6 +337,7 @@ class SelectionHookService {
     this.host = null
     this.hostReady = false
     this.hookReportedRunning = false
+    this.hostPid = null
     this.pendingStartReason = null
     this.pendingStartAttempt = 0
     if (this.unbindHost) {
@@ -332,6 +371,7 @@ class SelectionHookService {
           this.heartbeatTimeoutTimer = null
         }
         this.hookReportedRunning = message.hookRunning === true
+        if (message.pid) this.hostPid = message.pid
         if (message.lastInputAt) this.lastHookInputAt = message.lastInputAt
         this.armHeartbeat()
         break

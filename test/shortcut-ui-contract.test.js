@@ -41,13 +41,3 @@ test('explainClipboard shortcut reads clipboard only and opens the explain windo
   assert.doesNotMatch(explainCase, /EmptyClipboard|clipboard\.clear/)
   assert.match(config, /\['explainClipboard', '解释剪贴板文本'/)
 })
-
-test('selection extraction native patch includes a UIA timeout', () => {
-  const patched = fs.readFileSync(
-    path.join(__dirname, '..', 'patches', 'selection-hook', 'selection_hook.cc'),
-    'utf8'
-  )
-  assert.match(patched, /SELECTION_EXTRACT_TIMEOUT_MS/)
-  assert.match(patched, /GetSelectedTextTimed/)
-  assert.match(patched, /selection_epoch/)
-})
