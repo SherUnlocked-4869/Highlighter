@@ -11,8 +11,10 @@ const { CONVERSATION_TURN_LIMITS } = require('../toolbar/toolbar-utils')
 test('settings page wires the follow-up switch and a turn limit matching the whitelist', () => {
   assert.match(script, /id="conversationEnabled"/)
   assert.match(script, /id="conversationTurns"/)
+  assert.match(script, /id="conversationPersist"/)
   assert.match(script, /追问开关/)
   assert.match(script, /追问轮数/)
+  assert.match(script, /保存对话到本地/)
   // conversation is a nested object and bindSwitches only builds one level, so
   // this switch has to be hand-wired; a data-switch here would send
   // { selectionToolbar: { conversation: false } } and get rejected as a type error.

@@ -15,7 +15,7 @@ const template = {
   selectionToolbar: {
     order: [],
     prompts: { translate: '', explain: '' },
-    conversation: { enabled: true, maxFollowUpTurns: 10 }
+    conversation: { enabled: true, maxFollowUpTurns: 10, persist: false }
   }
 }
 
@@ -59,6 +59,9 @@ test('accepts follow-up conversation patches and rejects broken shapes', () => {
   assert.equal(assertSettingsPatch(patch, template), patch)
   assert.equal(assertSettingsPatch({ selectionToolbar: { conversation: { maxFollowUpTurns: 5 } } }, template)
     .selectionToolbar.conversation.maxFollowUpTurns, 5)
+  assert.equal(assertSettingsPatch({ selectionToolbar: { conversation: { persist: true } } }, template)
+    .selectionToolbar.conversation.persist, true)
+  assert.throws(() => assertSettingsPatch({ selectionToolbar: { conversation: { persist: 'yes' } } }, template), /类型无效/)
   assert.throws(() => assertSettingsPatch({ selectionToolbar: { conversation: { unknown: 1 } } }, template), /不支持的设置项/)
   assert.throws(() => assertSettingsPatch({ selectionToolbar: { conversation: { enabled: 'yes' } } }, template), /类型无效/)
   assert.throws(() => assertSettingsPatch({ selectionToolbar: { conversation: { maxFollowUpTurns: '5' } } }, template), /类型无效/)

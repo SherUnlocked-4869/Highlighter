@@ -26,7 +26,7 @@ test('default selection toolbar enables all built-ins with editable prompts and 
     customActions: [],
     searchEngine: 'bing',
     translateLanguages: { source: 'auto', target: '中文' },
-    conversation: { enabled: true, maxFollowUpTurns: 10 },
+    conversation: { enabled: true, maxFollowUpTurns: 10, persist: false },
     resultWindow: { width: 550, height: 560 }
   })
   assert.deepEqual(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR), [
@@ -115,12 +115,17 @@ test('normalization rejects malformed custom actions and repairs incomplete orde
 })
 
 test('follow-up conversation settings default on with a whitelisted turn limit', () => {
-  assert.deepEqual(normalizeConversation(undefined), { enabled: true, maxFollowUpTurns: 10 })
-  assert.deepEqual(normalizeConversation({}), { enabled: true, maxFollowUpTurns: 10 })
+  assert.deepEqual(normalizeConversation(undefined), { enabled: true, maxFollowUpTurns: 10, persist: false })
+  assert.deepEqual(normalizeConversation({}), { enabled: true, maxFollowUpTurns: 10, persist: false })
   // enabled is strictly boolean: neither a truthy string nor 1 turns it on.
   assert.equal(normalizeConversation({ enabled: 'false' }).enabled, true)
   assert.equal(normalizeConversation({ enabled: 0 }).enabled, true)
   assert.equal(normalizeConversation({ enabled: false }).enabled, false)
+  // Saving transcripts is opt-in, so only an explicit true enables it.
+  assert.equal(normalizeConversation({ persist: true }).persist, true)
+  for (const value of ['true', 1, {}]) {
+    assert.equal(normalizeConversation({ persist: value }).persist, false, String(value))
+  }
   // Only the listed steps are reachable from the settings UI, so anything else
   // falls back to the default rather than to the nearest bound.
   for (const value of [3, 5, 10, 20]) {

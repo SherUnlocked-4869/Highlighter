@@ -25,7 +25,9 @@ const DEFAULT_TRANSLATE_LANGUAGES = Object.freeze({ source: 'auto', target: '中
 // value outside the list would be unreachable from the settings UI, so
 // normalization clamps to the default instead of to the nearest bound.
 const CONVERSATION_TURN_LIMITS = Object.freeze([3, 5, 10, 20])
-const DEFAULT_CONVERSATION = Object.freeze({ enabled: true, maxFollowUpTurns: 10 })
+// `persist` is opt-in: a selected passage can be a password, a private message or
+// internal material, so saving transcripts to disk is the user's call.
+const DEFAULT_CONVERSATION = Object.freeze({ enabled: true, maxFollowUpTurns: 10, persist: false })
 const CUSTOM_ACTION_PREFIX = 'custom:'
 const MAX_CUSTOM_ACTIONS = 12
 const MAX_CUSTOM_NAME_LENGTH = 16
@@ -143,7 +145,8 @@ function normalizeConversation(value) {
     enabled: config.enabled !== false,
     maxFollowUpTurns: CONVERSATION_TURN_LIMITS.includes(config.maxFollowUpTurns)
       ? config.maxFollowUpTurns
-      : DEFAULT_CONVERSATION.maxFollowUpTurns
+      : DEFAULT_CONVERSATION.maxFollowUpTurns,
+    persist: config.persist === true
   }
 }
 

@@ -17,6 +17,11 @@ function createDataPaths(value) {
     config: path.join(root, 'config'),
     logs: path.join(root, 'logs'),
     history: path.join(root, 'history'),
+    // Saved selection-assistant conversations live apart from the screenshot
+    // history: same deletion discipline, different kind of content (text, and
+    // considerably more sensitive), and a directory of its own makes "delete my
+    // saved conversations" a single, auditable operation.
+    conversations: path.join(root, 'conversations'),
     cache: path.join(root, 'cache'),
     electronCache: path.join(root, 'cache', 'electron'),
     ocrCache: path.join(root, 'cache', 'ocr'),

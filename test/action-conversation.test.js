@@ -6,6 +6,7 @@ const {
   boundConversationCopyText,
   buildConversationSystemPrompt,
   buildFollowUpMessages,
+  prepareRestoredConversation,
   resolveFollowUpSupport,
   trimHistory
 } = require('../main/services/action-conversation')
@@ -252,6 +253,52 @@ test('regenerating replaces the newest pair and never leaves a trace on refusal'
 
   // Nothing to regenerate.
   assert.equal(bare.beginTurn('还没有的问题', { replaceLast: true }).ok, false)
+})
+
+test('a saved conversation round-trips and replays in order', () => {
+  const conversation = conversationFor({ text: '原文' })
+  conversation.commitFirstResult('首轮结果')
+  conversation.beginTurn('第一问')
+  conversation.commitTurn({ content: '第一答' })
+  const saved = conversation.serialize()
+  assert.equal(saved.actionId, 'explain')
+  assert.equal(saved.source, '原文')
+  assert.equal(saved.firstResult, '首轮结果')
+  assert.deepEqual(saved.history, [{ question: '第一问', answer: '第一答' }])
+
+  // restoreFrom coerces what it reads: the file is on disk and may be edited.
+  const restored = conversationFor({ streamId: 9 })
+  restored.restoreFrom({
+    firstResult: 42,
+    history: [{ question: '问', answer: null }, 'not a pair', { question: 'q2' }]
+  })
+  assert.equal(restored.firstResult, '42')
+  assert.deepEqual(restored.history, [{ question: '问', answer: '' }, { question: 'q2', answer: '' }])
+  assert.equal(restored.beginTurn('接着问').ok, true)
+
+  // A prepared restore carries both the state and the redraw messages.
+  const prepared = prepareRestoredConversation({
+    snapshot: saved,
+    action: { id: 'explain', label: '解释' },
+    provider: { id: 'p1' },
+    translateLanguages: {},
+    thinking: 'high',
+    support: { canFollowUp: true, reason: '' },
+    streamId: 12
+  })
+  assert.equal(prepared.conversation.firstResult, '首轮结果')
+  assert.deepEqual(prepared.conversation.history, [{ question: '第一问', answer: '第一答' }])
+  assert.deepEqual(
+    prepared.replay.map((entry) => entry.channel),
+    ['stream:data', 'stream:done', 'chat:turn', 'stream:data', 'stream:done']
+  )
+  assert.equal(prepared.replay[2].payload.question, '第一问')
+  assert.equal(prepared.replay[0].payload.content, '首轮结果')
+  // No action, no provider: restoring is skipped rather than throwing, because
+  // the model behind a saved conversation may no longer be configured.
+  assert.equal(prepareRestoredConversation({ snapshot: saved, action: null, provider: { id: 'p' } }), null)
+  assert.equal(prepareRestoredConversation({ snapshot: saved, action: { id: 'explain' }, provider: null }), null)
+  assert.equal(prepareRestoredConversation({}), null)
 })
 
 test('buildFollowUpMessages trims old pairs against the shared character budget', () => {

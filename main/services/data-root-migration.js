@@ -23,7 +23,10 @@ const {
   validateCleanupTopology
 } = require('./data-root-migration-cleanup')
 
-const MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'cache', 'runtime']
+// Every top-level directory the app manages. A migration that rolls back has to
+// remove all of them, so a new one added to createDataPaths must be listed here
+// too or a failed migration would leave it behind in the target root.
+const MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'conversations', 'cache', 'runtime']
 const MIGRATION_MARKER = '.migration.json'
 const MARKER_VERSION = 1
 const SHA256_PATTERN = /^[a-f0-9]{64}$/

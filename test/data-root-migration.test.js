@@ -96,7 +96,7 @@ test('defines exact legacy and managed source cleanup boundaries', async (t) => 
     logFile: path.join(managedLayout.logs, 'app.log'),
     history: managedLayout.history,
     cleanupFiles: [],
-    cleanupDirectories: [managedLayout.config, managedLayout.logs, managedLayout.history, managedLayout.cache, managedLayout.runtime]
+    cleanupDirectories: [managedLayout.config, managedLayout.logs, managedLayout.history, managedLayout.conversations, managedLayout.cache, managedLayout.runtime]
   })
 })
 

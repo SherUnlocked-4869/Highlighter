@@ -58,7 +58,8 @@ const { registerSearchIpc } = require('./main/ipc/search-ipc')
 const { SelectionHookService } = require('./main/services/selection-hook-service')
 const { SelectionWindowManager } = require('./main/services/selection-window-manager')
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
-const { ActionConversation, boundConversationCopyText, reportCancelledTurn, resolveFollowUpSupport, streamConversationTurn } = require('./main/services/action-conversation')
+const { ActionConversation, boundConversationCopyText, prepareRestoredConversation, reportCancelledTurn, resolveFollowUpSupport, streamConversationTurn } = require('./main/services/action-conversation')
+const { ConversationStore } = require('./main/services/conversation-store')
 const { UpdateService } = require('./main/services/update-service')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createSecureWindow, isSafeExternalUrl } = require('./main/services/window-security')
@@ -122,6 +123,7 @@ const {
 const DEFAULT_AI_PROVIDERS = createDefaultProviders()
 
 const defaultHistoryDirectory = activePaths?.history || path.join(app.getPath('userData'), 'capture-history')
+const conversationsDirectory = activePaths?.conversations || path.join(app.getPath('userData'), 'conversations')
 const logFile = activePaths ? path.join(activePaths.logs, 'app.log') : path.join(app.getPath('userData'), 'app.log')
 const applicationSessionId = crypto.randomUUID()
 const crashDumpsPath = activePaths
@@ -272,7 +274,60 @@ function initializeStore() {
     },
     log
   })
+  conversationStore ||= new ConversationStore({ directory: conversationsDirectory, getSettings, log })
   return store
+}
+
+// Opt-in persistence (design D19/D20): turning the switch off deletes what was
+// already written, and the cap is enforced on every start as well as on write.
+function syncConversationStore() {
+  if (!conversationStore) return
+  if (conversationStore.isEnabled()) conversationStore.trim()
+  else conversationStore.clear()
+}
+
+// Brings back the newest saved conversation. Nothing streams, so the transcript
+// is replayed over the same channels a live round uses and the renderer needs no
+// changes: it ends up in the ordinary "round finished, composer ready" state.
+function restoreConversation(win, snapshot) {
+  const settings = getSettings()
+  const prepared = prepareRestoredConversation({
+    snapshot,
+    action: getToolbarActionDefinition(settings.selectionToolbar, snapshot.actionId),
+    provider: resolveToolbarAiProvider(settings, snapshot.actionId),
+    translateLanguages: settings.selectionToolbar.translateLanguages,
+    thinking: getToolbarActionThinking(settings.selectionToolbar, settings.toolbarThinking, snapshot.actionId),
+    support: resolveFollowUpSupport(
+      resolveToolbarAiProvider(settings, snapshot.actionId),
+      { conversation: settings.selectionToolbar.conversation }
+    ),
+    streamId: nextToolbarStreamId()
+  })
+  if (!prepared) return false
+  const { conversation, replay } = prepared
+  actionConversations.set(win, conversation)
+  queueActionMessage(win, 'action:start', {
+    type: conversation.action.id,
+    label: conversation.action.label,
+    icon: conversation.action.icon,
+    text: conversation.text,
+    streamId: conversation.streamId,
+    appearance: getActionAppearance(),
+    followUp: conversation.followUpConfig()
+  })
+  for (const { channel, payload } of replay) queueActionMessage(win, channel, payload)
+  return true
+}
+
+function showOrRestoreConversation() {
+  if (selectionWindowManager.showActionWindow()) return true
+  const snapshot = conversationStore?.latest()
+  if (!snapshot) return false
+  const win = getOrCreateActionWindow()
+  if (!restoreConversation(win, snapshot)) return false
+  win.show()
+  win.focus()
+  return true
 }
 
 let mainWindow = null
@@ -293,6 +348,7 @@ const selectionEventDiagnostics = new Set()
 let currentStreamController = null
 let toolbarStreamSeq = 0
 const actionConversations = new Map()
+let conversationStore = null
 let pinDomain = null
 let captureDomain = null
 let longCaptureDomain = null
@@ -774,6 +830,7 @@ settingsEffects = createSettingsEffects({
   selectionHookServiceRef: {
     get: () => selectionHookService
   },
+  syncConversationStore,
   log
 })
 
@@ -914,8 +971,8 @@ function createTrayIcon() {
     },
     openHistory: () => createMainWindow('history'),
     openMainWindow: () => createMainWindow('home'),
-    hasConversation: !!selectionWindowManager.getActionWindow(),
-    showConversation: () => selectionWindowManager.showActionWindow(),
+    hasConversation: !!selectionWindowManager.getActionWindow() || !!conversationStore?.latest(),
+    showConversation: () => showOrRestoreConversation(),
     quit: () => app.quit()
   })))
 }
@@ -1081,16 +1138,19 @@ function createToolbarStreamController(win, streamId) {
       isProcessing = false
     }
   })
-  if (streamId === undefined) {
-    toolbarStreamSeq += 1
-    controller.streamId = toolbarStreamSeq
-  } else {
-    controller.streamId = streamId
-  }
+  if (streamId === undefined) controller.streamId = nextToolbarStreamId()
+  else controller.streamId = streamId
   currentStreamController = controller
   isProcessing = true
   armToolbarStreamTimeout(controller)
   return controller
+}
+
+// A restored conversation needs an id but no controller: nothing is streaming,
+// so arming an idle timer would cancel a round that never started.
+function nextToolbarStreamId() {
+  toolbarStreamSeq += 1
+  return toolbarStreamSeq
 }
 
 function isCurrentToolbarStreamSender(event) {
@@ -1100,6 +1160,11 @@ function isCurrentToolbarStreamSender(event) {
 function isStaleToolbarStreamSignal(event, streamId) {
   if (streamId === undefined || streamId === null) return false
   return currentStreamController?.streamId !== streamId
+}
+
+function saveConversation(conversation) {
+  if (!conversationStore || !conversation) return false
+  return conversationStore.save(conversation.serialize())
 }
 
 async function streamToWindow(win, action, text, controller, conversation) {
@@ -1123,6 +1188,7 @@ async function streamToWindow(win, action, text, controller, conversation) {
     }
     if (!controller.cancelled && !win.isDestroyed()) {
       conversation?.commitFirstResult(content)
+      saveConversation(conversation)
       queueActionMessage(win, 'stream:done')
     }
   } catch (error) {
@@ -1857,7 +1923,8 @@ secureIpcMain.on('chat:ask', (event, payload) => {
     conversation,
     win,
     controller,
-    queueMessage: (channel, data) => queueActionMessage(win, channel, data)
+    queueMessage: (channel, data) => queueActionMessage(win, channel, data),
+    onRoundCommitted: saveConversation
   }).catch((error) => {
     if (!controller.cancelled && !win.isDestroyed()) {
       queueActionMessage(win, 'stream:error', { error: error.message || '请求失败' })
@@ -2017,6 +2084,7 @@ async function startApplication() {
   }
   initializeDiagnostics()
   persistSettings(getSettings())
+  syncConversationStore()
   createMainWindow('home')
   if (!e2eContext.enabled) {
     createTrayIcon()

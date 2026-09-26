@@ -12,6 +12,7 @@ function createSettingsEffects(deps) {
     broadcastActionAppearance,
     searchDomain,
     selectionHookServiceRef,
+    syncConversationStore = null,
     log
   } = deps
 
@@ -74,6 +75,14 @@ function createSettingsEffects(deps) {
       run: (_patch, settings) => selectionHookServiceRef.get()?.updateStartOptions({
         enableClipboard: settings.selectionToolbar.clipboardFallback
       })
+    },
+    {
+      id: 'selectionToolbar.conversation.persist',
+      // Switching saving off has to delete what was already written, and
+      // switching it on has to enforce the cap. Both are the store's job, so the
+      // page only writes the setting.
+      when: (patch) => patch.selectionToolbar?.conversation?.persist !== undefined,
+      run: () => syncConversationStore?.()
     }
   ]
 

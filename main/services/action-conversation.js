@@ -1,5 +1,6 @@
 'use strict'
 
+const { randomUUID } = require('node:crypto')
 const { normalizeProviderInput } = require('./ai/client')
 const { modelSupportsTask } = require('./ai-model-capabilities')
 
@@ -93,6 +94,55 @@ function historyPairs(value) {
   return (Array.isArray(value) ? value : []).filter((pair) => pair && typeof pair === 'object')
 }
 
+// Replays a saved conversation over the same channels a live one uses, so the
+// renderer draws it with no changes and the restored window is in the ordinary
+// "round finished, composer ready" state. Nothing streams, so no controller and
+// no idle timer are involved.
+function buildConversationReplay(snapshot, { streamId, followUp } = {}) {
+  const messages = []
+  const source = String(snapshot?.source ?? '')
+  const firstResult = String(snapshot?.firstResult ?? '')
+  if (firstResult) {
+    messages.push({ channel: 'stream:data', payload: { content: firstResult } }, { channel: 'stream:done', payload: undefined })
+  }
+  for (const pair of historyPairs(snapshot?.history)) {
+    messages.push(
+      { channel: 'chat:turn', payload: { streamId, question: pair.question, omittedPairs: 0 } },
+      { channel: 'stream:data', payload: { content: pair.answer } },
+      { channel: 'stream:done', payload: undefined }
+    )
+  }
+  if (!messages.length && source) messages.push({ channel: 'stream:done', payload: undefined })
+  return messages
+}
+
+// Rebuilds a conversation from a saved snapshot together with the messages that
+// redraw it. Returning null instead of throwing is deliberate: the model that
+// produced the transcript may no longer be configured, and failing to restore is
+// not an error worth surfacing.
+function prepareRestoredConversation({
+  snapshot,
+  action,
+  provider,
+  translateLanguages,
+  thinking,
+  conversation: conversationConfig,
+  support,
+  streamId
+} = {}) {
+  if (!snapshot || !action || !provider) return null
+  const conversation = new ActionConversation({
+    streamId,
+    action,
+    text: String(snapshot.source ?? ''),
+    provider,
+    translateLanguages,
+    thinking,
+    support
+  }).restoreFrom(snapshot)
+  return { conversation, replay: buildConversationReplay(snapshot, { streamId }) }
+}
+
 // `budget` is the character budget left for the follow-up pairs once the fixed
 // part (system prompt + source text + first result + current question) is paid
 // for. Whole pairs are dropped from the oldest end; a half pair is never kept.
@@ -173,11 +223,18 @@ class ActionConversation {
     thinking = 'off',
     support = { canFollowUp: false, reason: '' },
     conversationConfig,
+    conversationId,
     maxFollowUpTurns,
     maxQuestionLength = MAX_QUESTION_LENGTH,
     maxContextChars = MAX_CONTEXT_CHARS
   } = {}) {
     this._streamId = Number.isSafeInteger(streamId) ? streamId : 0
+    // One identity per conversation, stable for its whole life: the store names
+    // its file after this, so each round rewrites that file instead of adding a
+    // version, and the retention cap counts conversations rather than saves.
+    this.conversationId = typeof conversationId === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(conversationId)
+      ? conversationId
+      : randomUUID()
     this.action = action && typeof action === 'object' ? action : {}
     this.text = String(text ?? '')
     this.provider = provider || null
@@ -306,6 +363,34 @@ class ActionConversation {
     return true
   }
 
+  // Only the service-side truth is persisted: the anchor plus the pairs that
+  // were actually committed. Rounds that were stopped or failed exist in the
+  // interface but never entered the context, and keeping them here would make a
+  // restored conversation disagree with what the model had seen.
+  serialize() {
+    return {
+      id: this.conversationId,
+      savedAt: Date.now(),
+      actionId: String(this.action?.id || ''),
+      actionLabel: String(this.action?.label || ''),
+      source: this.text,
+      firstResult: this.firstResultContent,
+      history: this.history.map((pair) => ({ question: pair.question, answer: pair.answer }))
+    }
+  }
+
+  // Rebuilds the state a saved snapshot describes. The question and answer are
+  // coerced because the file is on disk and may have been hand-edited.
+  restoreFrom(snapshot) {
+    if (typeof snapshot?.id === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(snapshot.id)) this.conversationId = snapshot.id
+    this.firstResultContent = String(snapshot?.firstResult ?? '')
+    this.history = historyPairs(snapshot?.history).map((pair) => ({
+      question: String(pair.question ?? ''),
+      answer: String(pair.answer ?? '')
+    }))
+    return this
+  }
+
   // A failed or cancelled round never enters the context: the half answer would
   // pollute later rounds. The renderer still shows it, marked as such.
   rollbackTurn() {
@@ -320,7 +405,8 @@ async function streamConversationTurn({
   win,
   controller,
   queueMessage = () => {},
-  createStream
+  createStream,
+  onRoundCommitted = () => {}
 }) {
   if (!conversation || !win || !controller) throw new TypeError('streamConversationTurn requires a conversation, window and controller')
   const requestStream = createStream || require('./ai/client').createFollowUpStream
@@ -352,6 +438,7 @@ async function streamConversationTurn({
   } else if (!controller.cancelled && !failure) {
     queueMessage('stream:done')
     conversation.commitTurn({ content })
+    onRoundCommitted(conversation)
   } else {
     conversation.rollbackTurn()
     if (controller.cancelled) reportCancelledTurn({ controller, win, queueMessage })
@@ -368,6 +455,8 @@ module.exports = {
   FOLLOW_UP_TASK,
   ActionConversation,
   boundConversationCopyText,
+  buildConversationReplay,
+  prepareRestoredConversation,
   buildConversationSystemPrompt,
   buildFollowUpMessages,
   describeOriginalTask,

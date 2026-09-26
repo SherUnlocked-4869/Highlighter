@@ -56,6 +56,7 @@ function expectedDataPaths(root) {
     config: path.join(absoluteRoot, 'config'),
     logs: path.join(absoluteRoot, 'logs'),
     history: path.join(absoluteRoot, 'history'),
+    conversations: path.join(absoluteRoot, 'conversations'),
     cache: path.join(absoluteRoot, 'cache'),
     electronCache: path.join(absoluteRoot, 'cache', 'electron'),
     ocrCache: path.join(absoluteRoot, 'cache', 'ocr'),
