@@ -1,6 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
+const http = require('node:http')
 const path = require('node:path')
 const {
   buildToolbarStreamRequest,
@@ -9,6 +10,7 @@ const {
   composeTranslateSystemPrompt,
   connectionBaseUrls,
   createExplainStream,
+  createFollowUpStream,
   describeConnectionError,
   isNotFoundError,
   normalizeProviderInput,
@@ -169,4 +171,71 @@ test('connection probing adds the /v1 suffix and detects 404 responses', () => {
   assert.equal(isNotFoundError({ status: 401 }), false)
   assert.match(describeConnectionError({ status: 404 }), /API 地址/)
   assert.match(describeConnectionError({ status: 401 }), /API 密钥/)
+})
+
+test('createFollowUpStream rejects unconfigured providers before any network access', async () => {
+  const messages = [{ role: 'user', content: '追问' }]
+  await assert.rejects(
+    () => createFollowUpStream({
+      id: 'p1', name: 'P1', baseUrl: 'https://p1.example/v1', apiKey: '', model: 'm1'
+    }, messages),
+    /API 密钥/
+  )
+  await assert.rejects(
+    () => createFollowUpStream({
+      id: 'p1', name: 'P1', baseUrl: 'https://p1.example/v1', apiKey: 'sk-p1', model: 'm1', enabled: false
+    }, messages),
+    /已禁用/
+  )
+  await assert.rejects(
+    () => createFollowUpStream({
+      id: 'mt', name: 'MT', baseUrl: 'https://mt.example/v1', apiKey: 'sk-mt', model: 'tencent/Hunyuan-MT-7B'
+    }, messages),
+    /不支持对话/
+  )
+})
+
+test('createFollowUpStream falls back to the /v1 suffix and forwards thinking and messages', async () => {
+  const requests = []
+  const server = http.createServer((request, response) => {
+    let body = ''
+    request.on('data', (part) => { body += part })
+    request.on('end', () => {
+      requests.push({ url: request.url, body })
+      if (request.url !== '/api/v1/chat/completions') {
+        response.writeHead(404, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ error: { message: 'missing' } }))
+        return
+      }
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
+      response.write(`data: ${JSON.stringify({ id: '1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: '追问答案' } }] })}\n\n`)
+      response.write('data: [DONE]\n\n')
+      response.end()
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  const messages = [{ role: 'system', content: 'sys' }, { role: 'user', content: '追问' }]
+  try {
+    const stream = await createFollowUpStream({
+      id: 'deepseek',
+      name: 'Local',
+      baseUrl: `http://127.0.0.1:${port}/api`,
+      apiKey: 'sk-test',
+      model: 'deepseek-v4-flash',
+      protocol: 'openai-chat'
+    }, messages, { thinking: 'high' })
+
+    const contents = []
+    for await (const part of stream) contents.push(part.choices?.[0]?.delta?.content)
+    assert.deepEqual(contents, ['追问答案'])
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
+
+  assert.deepEqual(requests.map((entry) => entry.url), ['/api/chat/completions', '/api/v1/chat/completions'])
+  const sent = JSON.parse(requests[1].body)
+  assert.equal(sent.stream, true)
+  assert.equal(sent.reasoning_effort, 'high')
+  assert.deepEqual(sent.messages, messages)
 })

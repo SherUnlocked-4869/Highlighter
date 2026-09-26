@@ -553,6 +553,21 @@ async function createCustomStream(provider, text, prompt, requestOptions = {}) {
   return createExplainStream(provider, text, prompt, requestOptions)
 }
 
+async function createFollowUpStream(provider, messages, requestOptions = {}) {
+  const config = normalizeProviderInput(provider)
+  if (!config.enabled) throw new Error('该功能指定的模型供应商已禁用')
+  if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
+  if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
+  if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
+  if (!modelSupportsTask({ capabilities: config.capabilities }, 'chat')) {
+    throw new Error('当前模型不支持对话，无法继续追问')
+  }
+  const streamOptions = splitStreamRequestOptions(requestOptions, true)
+  return withConnectionFallback(config, async (attempt) => {
+    return createAiProtocolAdapter(attempt, createClient(attempt)).stream(messages, { thinking: streamOptions.thinking }, streamOptions.requestOptions)
+  })
+}
+
 module.exports = {
   buildToolbarStreamRequest,
   buildTranslationOnlyPromptForLanguages,
@@ -562,6 +577,7 @@ module.exports = {
   createTranslateStream,
   createExplainStream,
   createCustomStream,
+  createFollowUpStream,
   completeChat,
   translateText,
   translateOcrTextBlocks,
