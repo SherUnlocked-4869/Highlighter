@@ -14,8 +14,8 @@ test('action security probe registers every action-surface IPC channel', () => {
   // The probe only stands up the action surface, so assertComplete() cannot run
   // there. Lock its channel coverage here instead: a new action channel must be
   // added to the probe in the same change, or the probe silently stops testing it.
-  for (const channel of ['shell:open-external', 'stream:cancel', 'stream:finish', 'window:toggle-pin', 'chat:ask']) {
-    const kind = channel === 'shell:open-external' ? 'handle' : 'on'
+  for (const channel of ['shell:open-external', 'stream:cancel', 'stream:finish', 'window:toggle-pin', 'chat:ask', 'chat:copy']) {
+    const kind = channel === 'shell:open-external' || channel === 'chat:copy' ? 'handle' : 'on'
     assert.match(probe, new RegExp(`secureIpcMain\\.${kind}\\('${channel}'`), `probe must register ${channel}`)
   }
 })
@@ -47,6 +47,7 @@ test('action renderer stays sandboxed and sanitizes AI output in Electron', { ti
   assert.deepEqual(probe.bridge.actionKeys, [
     'askQuestion',
     'cancelStream',
+    'copyConversation',
     'finishStream',
     'onActionAppearance',
     'onActionStart',
@@ -102,6 +103,12 @@ test('action renderer stays sandboxed and sanitizes AI output in Electron', { ti
   // to — the first round must not grow one.
   assert.equal(probe.followUp.noticeText, '已省略更早的 2 轮对话以控制上下文长度')
   assert.equal(probe.followUp.firstRoundNotice, '')
+  // Only the bridge's own clamp protects the main process from an oversized
+  // transcript, so assert both what arrives and how the edge cases are refused.
+  assert.deepEqual(probe.copyRequests, [65536])
+  assert.equal(probe.copyOversized, true)
+  assert.equal(probe.copyEmpty, false)
+  assert.equal(probe.copyNonString, false)
   assert.equal(probe.childWindowResult, true)
   assert.match(probe.finalUrl, /action\/action\.html$/)
   assert.deepEqual(probe.blocked.map((entry) => entry.reason).sort(), [

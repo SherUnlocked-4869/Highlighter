@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 const MAX_TEXT_LENGTH = 1024 * 1024
 const MAX_QUESTION_LENGTH = 2000
+const MAX_COPY_LENGTH = 65536
 
 function boundedText(value, maxLength = MAX_TEXT_LENGTH) {
   return typeof value === 'string' ? value.slice(0, maxLength) : ''
@@ -86,6 +87,12 @@ contextBridge.exposeInMainWorld('actionAPI', {
     if (!value) return false
     ipcRenderer.send('chat:ask', { streamId, question: value })
     return true
+  },
+  copyConversation: (text) => {
+    if (typeof text !== 'string') return Promise.resolve(false)
+    const value = text.slice(0, MAX_COPY_LENGTH)
+    if (!value) return Promise.resolve(false)
+    return ipcRenderer.invoke('chat:copy', value)
   },
   togglePin: (pinned) => ipcRenderer.send('window:toggle-pin', pinned === true),
   onPinDenied: (callback) => subscribe('window:pin-denied', callback, (data) => ({

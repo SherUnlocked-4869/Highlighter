@@ -8,6 +8,9 @@ const { modelSupportsTask } = require('./ai-model-capabilities')
 const MAX_FOLLOW_UP_TURNS = 10
 const MAX_QUESTION_LENGTH = 2000
 const MAX_CONTEXT_CHARS = 24000
+// Clipboard writes are bounded on both sides of the bridge: the preload clamps
+// what the renderer may send, and this bounds what the main process will write.
+const MAX_CONVERSATION_COPY_LENGTH = 65536
 const FOLLOW_UP_TASK = 'chat'
 const CUSTOM_ACTION_PREFIX = 'custom:'
 const DISABLED_REASONS = Object.freeze({
@@ -153,6 +156,10 @@ function reportCancelledTurn({ controller, win, queueMessage = () => {} } = {}) 
 function positiveInteger(value, fallback) {
   const number = Number(value)
   return Number.isSafeInteger(number) && number > 0 ? number : fallback
+}
+
+function boundConversationCopyText(text) {
+  return typeof text === 'string' ? text.slice(0, MAX_CONVERSATION_COPY_LENGTH) : ''
 }
 
 class ActionConversation {
@@ -338,8 +345,10 @@ module.exports = {
   MAX_FOLLOW_UP_TURNS,
   MAX_QUESTION_LENGTH,
   MAX_CONTEXT_CHARS,
+  MAX_CONVERSATION_COPY_LENGTH,
   FOLLOW_UP_TASK,
   ActionConversation,
+  boundConversationCopyText,
   buildConversationSystemPrompt,
   buildFollowUpMessages,
   describeOriginalTask,

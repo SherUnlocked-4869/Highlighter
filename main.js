@@ -58,7 +58,7 @@ const { registerSearchIpc } = require('./main/ipc/search-ipc')
 const { SelectionHookService } = require('./main/services/selection-hook-service')
 const { SelectionWindowManager } = require('./main/services/selection-window-manager')
 const { ToolbarStreamSession } = require('./main/services/toolbar-stream-session')
-const { ActionConversation, reportCancelledTurn, resolveFollowUpSupport, streamConversationTurn } = require('./main/services/action-conversation')
+const { ActionConversation, boundConversationCopyText, reportCancelledTurn, resolveFollowUpSupport, streamConversationTurn } = require('./main/services/action-conversation')
 const { UpdateService } = require('./main/services/update-service')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createSecureWindow, isSafeExternalUrl } = require('./main/services/window-security')
@@ -1863,6 +1863,12 @@ secureIpcMain.on('chat:ask', (event, payload) => {
       queueActionMessage(win, 'stream:error', { error: error.message || '请求失败' })
     }
   })
+})
+secureIpcMain.handle('chat:copy', (_event, text) => {
+  const value = boundConversationCopyText(text)
+  if (!value) return false
+  clipboard.writeText(value)
+  return true          // never logged: the transcript is private content
 })
 secureIpcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
 secureIpcMain.on('window:close', (event) => {

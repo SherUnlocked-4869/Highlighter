@@ -36,10 +36,14 @@
     <textarea id="questionInput" rows="1" maxlength="2000" placeholder="就上面的结果继续追问…"></textarea>
     <button class="send-btn" id="btnSend" type="button" title="发送" aria-label="发送"></button>
   </div>
-  <div class="composer-hint" id="composerHint"></div>
+  <div class="composer-hint-row">
+    <div class="composer-hint" id="composerHint"></div>
+    <button class="copy-btn" id="btnCopy" type="button" title="复制整段对话">复制对话</button>
+  </div>
 </div>
 
 <script src="../node_modules/dompurify/dist/purify.min.js"></script>
+<script src="conversation-text.js"></script>
 <script src="action.js"></script>
 </body>
 </html>

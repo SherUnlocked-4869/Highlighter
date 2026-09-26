@@ -60,7 +60,7 @@ const IPC_SURFACES = Object.freeze([
   {
     role: 'action',
     page: 'action/action.html',
-    handles: ['shell:open-external'],
+    handles: ['shell:open-external', 'chat:copy'],
     listeners: ['stream:cancel', 'stream:finish', 'window:toggle-pin', 'chat:ask']
   },
   {

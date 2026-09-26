@@ -2,6 +2,8 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const {
   ActionConversation,
+  MAX_CONVERSATION_COPY_LENGTH,
+  boundConversationCopyText,
   buildConversationSystemPrompt,
   buildFollowUpMessages,
   resolveFollowUpSupport,
@@ -198,6 +200,16 @@ test('failed rounds never enter the context and buildMessages keeps the anchor o
   assert.equal(messages[4].content, '第二答')
   assert.equal(messages[5].content, '第三问')
   assert.match(messages[0].content, /划词解释/)
+})
+
+test('copied transcripts are bounded and non-strings are refused', () => {
+  assert.equal(boundConversationCopyText('short'), 'short')
+  assert.equal(boundConversationCopyText(''), '')
+  for (const value of [undefined, null, 42, {}, ['x']]) {
+    assert.equal(boundConversationCopyText(value), '', String(value))
+  }
+  const long = 'x'.repeat(MAX_CONVERSATION_COPY_LENGTH + 500)
+  assert.equal(boundConversationCopyText(long).length, MAX_CONVERSATION_COPY_LENGTH)
 })
 
 test('buildFollowUpMessages trims old pairs against the shared character budget', () => {

@@ -27,6 +27,7 @@ async function runProbe() {
   const openedUrls = []
   const streamSignals = []
   const chatAsks = []
+  const copyRequests = []
   const blocked = []
   let actionWindow = null
   const secureIpcMain = createSecureIpcMain({
@@ -37,6 +38,10 @@ async function runProbe() {
   })
   secureIpcMain.handle('shell:open-external', (_event, url) => {
     openedUrls.push(url)
+    return true
+  })
+  secureIpcMain.handle('chat:copy', (_event, text) => {
+    copyRequests.push(typeof text === 'string' ? text.length : null)
     return true
   })
   secureIpcMain.on('stream:cancel', (_event, streamId) => streamSignals.push({ channel: 'cancel', streamId }))
@@ -144,6 +149,12 @@ async function runProbe() {
   const childWindowResult = await win.webContents.executeJavaScript(`window.open('https://blocked.example/new') === null`)
   await waitFor(() => Promise.resolve(blocked.some((entry) => entry.reason === 'blocked-window-open')), 'blocked child window')
 
+  // The renderer-side clamp is the only thing that can keep an oversized
+  // transcript from reaching the main process, so assert what arrives there.
+  const copyOversized = await win.webContents.executeJavaScript(`window.actionAPI.copyConversation('x'.repeat(70000))`)
+  const copyEmpty = await win.webContents.executeJavaScript(`window.actionAPI.copyConversation('')`)
+  const copyNonString = await win.webContents.executeJavaScript(`window.actionAPI.copyConversation(42)`)
+
   await win.webContents.executeJavaScript(`window.location.href = 'https://blocked.example/navigation'`)
   await waitFor(() => Promise.resolve(blocked.some((entry) => entry.reason === 'blocked-navigation')), 'blocked navigation')
   const finalUrl = win.webContents.getURL()
@@ -164,6 +175,10 @@ async function runProbe() {
     openedUrls,
     streamSignals,
     chatAsks,
+    copyRequests,
+    copyOversized,
+    copyEmpty,
+    copyNonString,
     childWindowResult,
     blocked,
     finalUrl

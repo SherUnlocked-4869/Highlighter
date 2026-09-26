@@ -32,6 +32,7 @@ let reasoningDirty = false
 // prompt is the selection shown in .source), every later pair is one follow-up.
 const conversation = {
   streamId: null,
+  label: '',
   followUp: { ...DEFAULT_FOLLOW_UP },
   turns: [],
   activeTurn: -1,
@@ -48,6 +49,7 @@ const el = {
   loading: document.getElementById('loading'),
   loadingText: document.getElementById('loadingText'),
   composerHint: document.getElementById('composerHint'),
+  btnCopy: document.getElementById('btnCopy'),
   questionInput: document.getElementById('questionInput'),
   btnSend: document.getElementById('btnSend')
 }
@@ -411,6 +413,9 @@ function renderComposer() {
   const state = busy ? { enabled: false, reason: '' } : composerState()
   el.questionInput.disabled = true
   el.btnSend.classList.toggle('stop', busy)
+  // The transcript is copyable as soon as there is an answer to copy — while a
+  // round is still streaming it copies what has arrived so far.
+  el.btnCopy.disabled = !conversation.turns.some((turn) => turn.role === 'assistant' && turn.content)
   if (busy) {
     el.btnSend.disabled = false
     el.btnSend.title = '停止生成'
@@ -457,6 +462,7 @@ actionBridge.onActionStart(function(data) {
   applyAppearance(data.appearance)
   resetUI()
   conversation.streamId = data.streamId
+  conversation.label = data.type === 'translate' ? '翻译' : (data.label || '解释')
   if (data.followUp) conversation.followUp = data.followUp
   el.sourceText.textContent = data.text
   if (data.type === 'translate') {
@@ -569,6 +575,29 @@ function onSendClick() {
 }
 
 el.btnSend.addEventListener('click', onSendClick)
+
+let copyResetTimer = null
+
+el.btnCopy.addEventListener('click', function() {
+  const text = window.conversationText.buildConversationText({
+    source: el.sourceText.textContent,
+    label: conversation.label,
+    turns: conversation.turns.map((turn) => ({
+      role: turn.role,
+      content: turn.content,
+      status: turn.status,
+      note: turn.note
+    }))
+  })
+  if (!text) return
+  actionBridge.copyConversation(text).then(function(copied) {
+    el.btnCopy.textContent = copied ? '已复制' : '复制失败'
+    clearTimeout(copyResetTimer)
+    copyResetTimer = setTimeout(function() { el.btnCopy.textContent = '复制对话' }, 1500)
+  }, function() {
+    el.btnCopy.textContent = '复制失败'
+  })
+})
 
 el.questionInput.addEventListener('keydown', function(event) {
   if (event.key !== 'Enter' || event.shiftKey) return
