@@ -814,7 +814,32 @@ Electron 在 `BrowserWindow.hide()` 时**不会**把页面标为 hidden：隐藏
 才是一个真正贴底的输入区。已补 `test/selection-toolbar-theme.test.js`
 「pins the header and composer around a scrolling transcript」回归断言。
 
-### 16.3 遗留
+### 16.3 首轮中断也由服务层上报（「首轮行为不变」已放宽）
 
-首轮被隐藏打断时同样会等满 30 秒超时（与 §16.1 同根因，属改动前既有行为）。本文档要求
-「首轮行为保持不变」，故未改动，建议后续单独评估。
+§16.1 的修正最初只覆盖追问路径，首轮 `streamToWindow` 仍保持静默，于是首轮被隐藏打断同样要等满
+30 秒并显示「请求超时」。经确认放宽本文档「首轮行为保持不变」的约束后，取消上报收敛成共享函数
+`reportCancelledTurn`（`action-conversation.js`），两轮走同一条路径：
+
+- `window-hidden` → `stream:error { error:'窗口已隐藏，生成已中断', cancelled:true, interrupted:true }`
+- `user-cancelled` → `stream:error { error:'已停止生成', cancelled:true }`
+- `window-closed` / `game-mode` / 空闲超时 → 静默。前两者窗口即将销毁；空闲超时已由
+  `controller.cancel(reason, { notify: true })` 自己发过 `stream:error`，重复发会让界面出现两条错误。
+
+§4.6「取消时按原因分流、其他原因不发通知」因此不再成立：分流规则对两轮一致。
+
+### 16.4 隐藏后的会话补上了唤起入口（托盘菜单项）
+
+§10.4 假设「重新唤起窗口 → 对话记录完整保留」可用，但没有指明入口。实际上未置顶的动作窗口失焦即
+`hide()`，而唯一能再次显示它的路径是新的划词动作，那条路会重置会话（D4）——被隐藏的会话在界面上
+**根本不可达**。补法：
+
+- `SelectionWindowManager` 新增 `getActionWindow()` / `showActionWindow()`，只显示既有窗口、**不新建**；
+- 托盘菜单新增「显示划词对话」：仅在有活跃会话时 `visible`，游戏模式下 `enabled: false`
+  （与其余召唤类项一致）；
+- 托盘菜单在动作窗口 blur / close 时重建（`createTrayIcon()`）。Electron 的菜单是快照，
+  不重建的话该项可见性会一直停在启动时的状态，功能等于不存在。
+
+### 16.5 遗留
+
+- `main.js` 现为 2098 行，距 `MAX_MAIN_LINES = 2100` 只剩 **2 行**。下一次需要改动 `main.js` 的功能
+  应当先按 `docs/plans/2026-09-10-v2.3-architecture-roadmap.md` 迁出一个域，而不是上调上限。
