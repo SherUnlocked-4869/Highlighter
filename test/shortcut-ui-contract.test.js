@@ -5,6 +5,7 @@ const path = require('node:path')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 const settingsDefaults = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'settings-defaults.js'), 'utf8')
+const functionRouter = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'function-router.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
 const config = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
 const styles = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.css'), 'utf8')
@@ -34,10 +35,10 @@ test('shortcut changes refresh registration status before user feedback', () => 
 
 test('explainClipboard shortcut reads clipboard only and opens the explain window', () => {
   assert.match(settingsDefaults, /explainClipboard:\s*'Ctrl\+Alt\+E'/)
-  assert.match(main, /case 'explainClipboard':\s*\{[\s\S]*clipboard\.readText\(\)[\s\S]*openToolbarAiAction\('explain', text\)/)
+  assert.match(functionRouter, /async explainClipboard\(\) \{[\s\S]*clipboard\.readText\(\)[\s\S]*openToolbarAiAction\('explain', text\)/)
   // Must not write or empty the clipboard in this path.
-  const explainCase = main.match(/case 'explainClipboard':\s*\{[\s\S]*?\n    \}/)?.[0] || ''
-  assert.ok(explainCase, 'explainClipboard case present')
+  const explainCase = functionRouter.match(/async explainClipboard\(\) \{[\s\S]*?\n    \},?/)?.[0] || ''
+  assert.ok(explainCase, 'explainClipboard handler present')
   assert.doesNotMatch(explainCase, /clipboard\.write/)
   assert.doesNotMatch(explainCase, /EmptyClipboard|clipboard\.clear/)
   assert.match(config, /\['explainClipboard', '解释剪贴板文本'/)

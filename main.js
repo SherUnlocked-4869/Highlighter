@@ -84,6 +84,7 @@ const { createSelectionDomain } = require('./main/domains/selection')
 const { createDataRootDomain } = require('./main/domains/data-root')
 const { createSettingsEffects } = require('./main/domains/settings-effects')
 const aiClient = require('./main/services/ai')
+const { createFunctionRouter } = require('./main/services/function-router')
 const { normalizeSelectionToolbar, normalizeToolbarThinking } = require('./toolbar/toolbar-utils')
 const {
   migrateAiSettings,
@@ -177,6 +178,7 @@ let recognitionDomain = null
 let searchDomain = null
 let selectionDomain = null
 let dataRootDomain = null
+let functionRouter = null
 let settingsEffects = null
 const isWin = process.platform === 'win32'
 
@@ -482,7 +484,7 @@ const secureIpcMain = createSecureIpcMain({
 
 const shortcutService = new ShortcutService({
   globalShortcut,
-  executeFunction: (name) => executeFunction(name),
+  executeFunction: (name) => functionRouter.executeFunction(name),
   log
 })
 
@@ -719,6 +721,26 @@ dataRootDomain = createDataRootDomain({
   log
 })
 
+functionRouter = createFunctionRouter({
+  app,
+  clipboard,
+  dialog,
+  nativeImage,
+  screen,
+  shell,
+  captureDomain,
+  pinDomain,
+  recordDomain,
+  searchDomain,
+  selectionDomain,
+  getMainWindow: () => mainWindow,
+  createMainWindow,
+  getSettings,
+  persistHistory,
+  assertGameModeDisabled,
+  log
+})
+
 function positionAutomationWindow(win) {
   if (!e2eContext.enabled || !win || win.isDestroyed()) return false
   const primary = screen.getPrimaryDisplay()
@@ -791,7 +813,7 @@ function createTrayIcon() {
     tray = new Tray(icon.resize({ width: 24, height: 24 }))
     tray.on('click', () => {
       if (isGameModeEnabled()) return
-      executeFunction('screenshot').catch((error) => log('Tray action failed:', error.message))
+      functionRouter.executeFunction('screenshot').catch((error) => log('Tray action failed:', error.message))
     })
     tray.on('double-click', () => createMainWindow('home'))
   }
@@ -800,7 +822,7 @@ function createTrayIcon() {
   tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate({
     gameMode,
     screenshotAccelerator: settings.shortcuts.screenshot,
-    executeFunction: (name) => executeFunction(name).catch((error) => log('Tray action failed:', name, error.message)),
+    executeFunction: (name) => functionRouter.executeFunction(name).catch((error) => log('Tray action failed:', name, error.message)),
     setGameModeEnabled: (enabled) => {
       try {
         setGameModeEnabled(enabled)
@@ -881,74 +903,6 @@ async function getSearchFileIcon(samplePath) {
   }
   fileIconCache.set(extension, dataUrl)
   return dataUrl
-}
-
-async function executeFunction(name, payload = {}) {
-  assertGameModeDisabled()
-  switch (name) {
-    case 'screenshot': await captureDomain.createCaptureWindow({ mode: 'region', source: 'region' }); return true
-    case 'screenshotDelay': {
-      const seconds = Math.max(0, Number(payload.seconds ?? 3))
-      setTimeout(() => captureDomain.createCaptureWindow({ mode: 'region', source: 'delay' }).catch((error) => log(error.message)), seconds * 1000)
-      return { scheduled: true, seconds }
-    }
-    case 'screenshotFixed': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'pin', source: 'fixed' }); return true
-    case 'screenshotOcr': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'ocr', source: 'ocr' }); return true
-    case 'screenshotTable': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'table', source: 'table' }); return true
-    case 'screenshotQr': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'qr', source: 'qr' }); return true
-    case 'screenshotOcrTranslate': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'translate', source: 'ocr-translate' }); return true
-    case 'screenshotCopy': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'copy', source: 'copy' }); return true
-    case 'screenshotLong': await captureDomain.createCaptureWindow({ mode: 'region', autoAction: 'long', source: 'long-capture' }); return true
-    case 'screenshotFullScreen': await captureDomain.createCaptureWindow({ mode: 'fullscreen', autoAction: payload.save ? 'save' : 'copy', source: 'fullscreen' }); return true
-    case 'screenshotFocusedWindow': {
-      const dataUrl = await captureDomain.captureFocusedWindow()
-      clipboard.writeImage(nativeImage.createFromDataURL(dataUrl))
-      persistHistory(dataUrl, { action: 'copy', source: 'focused-window' })
-      return true
-    }
-    case 'fixedContent': {
-      const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }] })
-      if (result.canceled || !result.filePaths[0]) return false
-      const image = nativeImage.createFromPath(result.filePaths[0])
-      const dataUrl = image.toDataURL()
-      pinDomain.createPinWindow(dataUrl, { source: 'file' })
-      persistHistory(dataUrl, { source: 'file', action: 'pin' })
-      return true
-    }
-    case 'videoRecord': {
-      const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-      await recordDomain.createRecordWindow({ display, selectionBounds: display.bounds })
-      return true
-    }
-    case 'fullScreenDraw': await captureDomain.createCaptureWindow({ mode: 'canvas', source: 'canvas' }); return true
-    case 'toggleFixedContentVisibility': pinDomain.togglePinVisibility(); return true
-    case 'showOrHideMainWindow': {
-      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) mainWindow.hide()
-      else createMainWindow('home')
-      return true
-    }
-    case 'openImageSaveFolder': {
-      const directory = getSettings().screenshot.saveDirectory || app.getPath('pictures')
-      await shell.openPath(directory)
-      return true
-    }
-    case 'openCaptureHistory': createMainWindow('history'); return true
-    case 'localSearch': searchDomain.createSearchWindow(); return true
-    case 'translation': createMainWindow('translation'); return true
-    case 'chat': createMainWindow('chat'); return true
-    case 'explainClipboard': {
-      // Read-only clipboard path: never write or empty the clipboard.
-      const text = String(clipboard.readText() || '').trim()
-      if (!text) return false
-      if (text.length > 10000) {
-        log('Explain clipboard skipped: text too long', text.length)
-        return false
-      }
-      selectionDomain.hideToolbar()
-      return selectionDomain.openToolbarAiAction('explain', text)
-    }
-    default: throw new Error(`未知功能：${name}`)
-  }
 }
 
 function registerShortcuts() {
@@ -1048,7 +1002,7 @@ registerAppIpc({
   ipcMain: secureIpcMain,
   controller: {
     openExternal,
-    executeFunction,
+    executeFunction: (name, payload) => functionRouter.executeFunction(name, payload),
     getInfo: () => ({
       version: app.getVersion(),
       platform: process.platform,

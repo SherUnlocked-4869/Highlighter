@@ -9,6 +9,7 @@ const recordDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/re
 const searchDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/search/index.js'), 'utf8')
 const selectionDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/selection/index.js'), 'utf8')
 const settingsDefaults = fs.readFileSync(path.join(__dirname, '..', 'main/services/settings-defaults.js'), 'utf8')
+const functionRouter = fs.readFileSync(path.join(__dirname, '..', 'main/services/function-router.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
 const config = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
 
@@ -27,7 +28,7 @@ test('game mode is persisted and synchronizes tray, shortcuts, selection, and se
 })
 
 test('game mode guards every feature dispatch and passive summon entry point', () => {
-  assert.match(main, /async function executeFunction\(name, payload = \{\}\) \{\s*assertGameModeDisabled\(\)/)
+  assert.match(functionRouter, /async function executeFunction\(name, payload = \{\}\) \{\s*assertGameModeDisabled\(\)/)
   assert.match(captureDomain, /async function createCaptureWindow\(options = \{\}\) \{\s*assertGameModeDisabled\(\)/)
   assert.match(searchDomain, /function createSearchWindow\(\) \{\s*assertGameModeDisabled\(\)/)
   assert.match(recordDomain, /async function createRecordWindow\(options = \{\}\) \{\s*assertGameModeDisabled\(\)/)
