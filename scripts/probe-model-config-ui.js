@@ -62,6 +62,24 @@ async function runProbe() {
     return settings
   })
   ipcMain.handle('shortcuts:status', () => ({}))
+  // Stands in for coding-plan:create-provider: the real handler lives in
+  // main/ipc/coding-plan-ipc.js and is covered by its own unit tests.
+  ipcMain.handle('coding-plan:create-provider', (_event, input) => {
+    const provider = {
+      id: 'provider-cp',
+      presetId: input.presetId,
+      name: input.displayName || 'Open Code Go',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      hasApiKey: true,
+      protocol: 'openai-chat',
+      enabled: true,
+      builtin: false,
+      modelsVerified: true,
+      models: [{ id: 'kimi-k3', name: 'Kimi K3', capabilities: { tasks: ['chat', 'translation', 'explain'], reasoning: 'none' } }]
+    }
+    settings = { ...settings, providers: [...settings.providers, provider] }
+    return { ok: true, provider, verified: true, warning: '', modelsCount: 1 }
+  })
 
   const win = new BrowserWindow({
     width: 1100,
@@ -93,6 +111,13 @@ async function runProbe() {
       }
       return document.querySelector(selector)
     }
+    async function waitUntil(predicate, label) {
+      const started = Date.now()
+      while (!predicate()) {
+        if (Date.now() - started > 5000) throw new Error('Timed out waiting for ' + label)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+    }
     await waitFor('#saveProviderSettings')
     document.querySelector('[data-models-tab="features"]').click()
     await waitFor('#saveFeatureAssignments')
@@ -109,17 +134,33 @@ async function runProbe() {
     }
     await new Promise((resolve) => setTimeout(resolve, 100))
     document.getElementById('saveFeatureAssignments').click()
-    await new Promise((resolve, reject) => {
-      const started = Date.now()
-      const timer = setInterval(() => {
-        if (document.getElementById('saveFeatureAssignments')?.textContent === '保存功能模型') {
-          clearInterval(timer); resolve()
-        } else if (Date.now() - started > 5000) {
-          clearInterval(timer); reject(new Error('Feature assignment save did not finish'))
-        }
-      }, 20)
-    })
-    return afterChange
+    await waitUntil(() => document.getElementById('saveFeatureAssignments')?.textContent === '保存功能模型', 'feature save')
+
+    document.querySelector('[data-models-tab="providers"]').click()
+    await waitFor('#addCodingPlanProvider')
+    document.getElementById('addCodingPlanProvider').click()
+    await waitFor('.coding-plan-card')
+    const presetNames = [...document.querySelectorAll('.coding-plan-card b')].map((item) => item.textContent)
+    document.querySelector('.coding-plan-card').click()
+    await waitFor('[data-coding-plan-key]')
+    const baseUrlEcho = document.querySelector('.coding-plan-form .coding-plan-readonly').textContent
+    document.querySelector('[data-coding-plan-key]').value = 'sk-probe-key'
+    document.querySelector('[data-coding-plan-name]').value = 'Probe Plan'
+    document.querySelector('[data-coding-plan-save]').click()
+    await waitFor('.coding-plan-assignment')
+    const featureCount = document.querySelectorAll('[data-coding-plan-feature]').length
+    document.querySelector('[data-coding-plan-apply]').click()
+    await waitUntil(() => !document.querySelector('.coding-plan-assignment'), 'assignment guide close')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    return {
+      ...afterChange,
+      codingPlan: {
+        presetNames,
+        baseUrlEcho,
+        featureCount,
+        badge: document.querySelector('[data-provider-editor="provider-cp"] .provider-tag.coding-plan')?.textContent || ''
+      }
+    }
   })()`)
   console.log(`${resultPrefix}${JSON.stringify({ ...result, updates })}`)
   win.destroy()

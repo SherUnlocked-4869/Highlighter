@@ -46,6 +46,7 @@ const IPC_SURFACES = Object.freeze([
       'settings:update',
       'settings:reset',
       'config:test-connection',
+      'coding-plan:create-provider',
       'shortcuts:status',
       'ocr:status',
       'search:status'

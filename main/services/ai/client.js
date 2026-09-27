@@ -16,6 +16,11 @@ const {
   DEFAULT_DEEPSEEK_BASE_URL: DEEPSEEK_BASE_URL,
   AI_PROTOCOLS: AI_PROTOCOL_LIST
 } = require('../ai-providers')
+const {
+  resolveRuntimeHeaders,
+  sanitizeProviderHeaders
+} = require('../../../shared/coding-plan-presets')
+const { getAiSessionId } = require('./session-id')
 
 const AI_PROTOCOLS = new Set(AI_PROTOCOL_LIST)
 const OCR_TRANSLATION_TIMEOUT_MS = 30000
@@ -64,7 +69,8 @@ function normalizeProviderInput(provider) {
     protocol,
     enabled: value.enabled !== false,
     capabilities,
-    vendorThinking: capabilities.reasoning === 'deepseek'
+    vendorThinking: capabilities.reasoning === 'deepseek',
+    headers: sanitizeProviderHeaders(value.headers)
   }
 }
 
@@ -72,11 +78,13 @@ function createClient(provider, { timeoutMs = 60000 } = {}) {
   const config = normalizeProviderInput(provider)
   if (!config.enabled) throw new Error('该模型供应商已禁用，请先在“模型”设置中启用')
   if (!config.baseUrl) throw new Error('请先在“模型”设置中配置供应商 API 地址')
+  const defaultHeaders = resolveRuntimeHeaders(config.headers, { sessionId: getAiSessionId() })
   return new OpenAI({
     baseURL: config.baseUrl,
     apiKey: config.apiKey,
     timeout: timeoutMs,
-    maxRetries: 0
+    maxRetries: 0,
+    ...(Object.keys(defaultHeaders).length ? { defaultHeaders } : {})
   })
 }
 

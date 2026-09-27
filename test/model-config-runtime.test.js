@@ -27,8 +27,21 @@ test('feature model editor saves only on demand and replaces stale model options
   assert.equal(probe.model, 'b-new')
   assert.deepEqual(probe.options, ['b-new'])
   assert.match(probe.buttonText, /未保存更改/)
-  assert.equal(probe.updates.length, 1)
+  assert.equal(probe.updates.length, 2)
   assert.equal(Object.hasOwn(probe.updates[0], 'providers'), false)
   const translation = probe.updates[0].ai.assignments.find((assignment) => assignment.feature === 'toolbar:translate')
   assert.deepEqual(translation, { feature: 'toolbar:translate', providerId: 'provider-b', model: 'b-new' })
+
+  // The coding plan flow: pick a preset, fill only the key, then apply the
+  // offered assignments — the provider is badged and no other feature moves.
+  assert.deepEqual(probe.codingPlan.presetNames, ['Open Code Go', 'GLM Coding Plan', 'MiniMax Coding Plan'])
+  assert.equal(probe.codingPlan.baseUrlEcho, 'https://opencode.ai/zen/go/v1')
+  assert.equal(probe.codingPlan.featureCount, 5)
+  assert.equal(probe.codingPlan.badge, 'Coding Plan')
+  const applied = probe.updates[1].ai.assignments
+  assert.equal(applied.length, 5)
+  for (const assignment of applied) {
+    assert.equal(assignment.providerId, 'provider-cp')
+    assert.equal(assignment.model, 'kimi-k3')
+  }
 })

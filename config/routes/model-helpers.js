@@ -8,20 +8,6 @@
     return `provider-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
   }
 
-  function defaultModelsForProvider(provider) {
-    const id = String(provider?.id || '').toLowerCase()
-    const baseUrl = String(provider?.baseUrl || '').toLowerCase()
-    if (id === 'deepseek' || baseUrl.includes('deepseek')) return [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }]
-    if (id === 'openai' || baseUrl.includes('openai.com') || baseUrl.includes('api.openai')) {
-      return [
-        { id: 'gpt-4o-mini', name: 'GPT-4o mini' },
-        { id: 'gpt-4o', name: 'GPT-4o' },
-        { id: 'gpt-4.1', name: 'GPT-4.1' }
-      ]
-    }
-    return []
-  }
-
   function modelProviderStatus(provider) {
     if (provider.enabled === false) return { className: 'off', title: '已停用' }
     if (!provider.baseUrl || !provider.models?.length) return { className: 'off', title: '未完成配置' }
@@ -46,7 +32,6 @@
 
   return {
     createModelProviderId,
-    defaultModelsForProvider,
     modelProviderStatus,
     modelTaskForFeature,
     modelsForFeature

@@ -292,7 +292,7 @@ progress{accent-color:var(--primary)}
 .model-provider-accordion{border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--surface);overflow:hidden;transition:border-color .16s}
 .model-provider-accordion:hover{border-color:var(--line-2)}
 .model-provider-accordion.expanded{border-color:var(--primary-line)}
-.model-provider-accordion-head{min-height:52px;display:grid;grid-template-columns:26px minmax(0,1fr) auto auto;align-items:center;gap:10px;padding:0 16px;cursor:pointer;user-select:none;transition:background .14s}
+.model-provider-accordion-head{min-height:52px;display:grid;grid-template-columns:26px minmax(0,1fr) auto auto auto;align-items:center;gap:10px;padding:0 16px;cursor:pointer;user-select:none;transition:background .14s}
 .model-provider-accordion-head:hover{background:var(--surface-2)}
 .model-provider-expand{width:22px;height:22px;display:grid;place-items:center;border:1px solid var(--line-2);border-radius:var(--radius-sm);color:var(--muted);font-size:12px;transition:transform .18s,color .18s,border-color .18s}
 .model-provider-accordion-head .model-provider-item-name{font-size:14px;font-weight:600}
@@ -304,6 +304,46 @@ progress{accent-color:var(--primary)}
 .model-provider-editor-head .button.danger:hover{background:var(--danger-soft);box-shadow:none}
 .model-catalog-block{margin-top:14px;padding-top:4px;border-top:1px solid var(--line)}
 .provider-head-status{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:11px;white-space:nowrap}
+
+/* ---------- coding plan ---------- */
+#addCodingPlanProvider{display:inline-flex;align-items:center;gap:6px}
+#addCodingPlanProvider .svg-icon{width:15px;height:15px}
+.provider-badges{display:inline-flex;align-items:center;gap:6px}
+.provider-tag.coding-plan{color:var(--primary-text);border-color:var(--primary-line);background:var(--primary-soft)}
+.provider-tag.unverified{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 42%,var(--line));background:var(--warn-soft)}
+.modal-overlay{position:fixed;inset:0;z-index:30;display:grid;place-items:center;padding:32px;background:color-mix(in srgb,var(--ink) 42%,transparent)}
+.modal{width:min(560px,100%);max-height:calc(100vh - 64px);display:flex;flex-direction:column;gap:14px;padding:20px;overflow:auto;border:1px solid var(--line-2);border-radius:var(--radius-lg);background:var(--surface);box-shadow:var(--shadow-3)}
+.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+.modal-head h3{margin:0;font-family:var(--font-display);font-size:18px;font-weight:600}
+.modal-head p{margin:6px 0 0;color:var(--muted);font-size:12.5px;line-height:1.6}
+.modal-head .icon-button{font-size:18px;line-height:1}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px}
+.coding-plan-picker{display:flex;flex-direction:column;gap:10px}
+/* The flex display would otherwise win over the [hidden] attribute and leave the
+   picker stacked above the form. */
+.coding-plan-picker[hidden],.coding-plan-form[hidden]{display:none}
+.coding-plan-card{display:flex;flex-direction:column;gap:8px;padding:14px 16px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface-2);cursor:pointer;text-align:left;transition:border-color .14s,background .14s}
+.coding-plan-card:hover{border-color:var(--primary-line);background:var(--surface-3)}
+.coding-plan-card:focus-visible{outline:0;border-color:var(--primary);box-shadow:var(--focus-ring)}
+.coding-plan-card-head{display:flex;align-items:center;gap:9px}
+.coding-plan-card-head b{font-size:14.5px}
+.coding-plan-card p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}
+.coding-plan-docs{align-self:flex-start;padding:5px 11px;font-size:12px}
+.coding-plan-form{display:flex;flex-direction:column}
+.coding-plan-form-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+.coding-plan-form-head b{display:block;font-size:15px}
+.coding-plan-form-head small{display:block;margin-top:3px;color:var(--muted);font-size:12px}
+.coding-plan-preset-info{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.coding-plan-preset-field span{display:block;margin-bottom:6px;color:var(--muted);font-size:12px}
+.coding-plan-readonly{display:block;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius-sm);color:var(--text-dim);background:var(--surface-3);font-family:var(--font-mono);font-size:12px;word-break:break-all}
+.coding-plan-note{margin:10px 0 0;padding:10px 12px;border-radius:var(--radius-sm);color:var(--text-dim);background:var(--surface-2);font-size:12px;line-height:1.65}
+.coding-plan-assignment-list{display:flex;flex-direction:column;gap:8px}
+.coding-plan-assignment{display:grid;grid-template-columns:auto minmax(0,1fr) 190px;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--surface-2);cursor:pointer}
+.coding-plan-assignment input[type=checkbox]{width:16px;height:16px}
+.coding-plan-assignment-label b{display:block;font-size:13px}
+.coding-plan-assignment-label small{display:block;margin-top:3px;color:var(--muted);font-size:11px}
+.coding-plan-assignment select{padding:7px 9px;border:1px solid var(--line-2);border-radius:var(--radius-sm);color:var(--text);background:var(--surface-2)}
+.coding-plan-assignment select:focus{outline:0;border-color:var(--primary);box-shadow:var(--focus-ring)}
 
 /* ---------- toolbar order list ---------- */
 .toolbar-order-list{padding:6px 18px}
@@ -394,6 +434,8 @@ body.compact #view{padding:16px}
   .update-head label{width:100%;justify-content:space-between}
   .models-provider-toolbar{align-items:flex-start;flex-direction:column}
   .models-toolbar-actions{flex-wrap:wrap}
+  .coding-plan-assignment{grid-template-columns:auto minmax(0,1fr)}
+  .coding-plan-assignment select{grid-column:2;width:100%}
   .model-provider-editor{padding-left:12px;padding-right:12px}
   .model-provider-editor-head{align-items:flex-start;flex-direction:column}
 }

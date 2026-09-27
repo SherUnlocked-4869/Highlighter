@@ -4,13 +4,16 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const helpers = require('../config/routes/model-helpers')
+const presets = require('../shared/coding-plan-presets')
 const configHtml = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.html'), 'utf8')
 const configJs = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
 
 test('config loads shared model helpers before the shell script', () => {
+  const presetsIndex = configHtml.indexOf('../shared/coding-plan-presets.js')
   const helpersIndex = configHtml.indexOf('routes/model-helpers.js')
   const configIndex = configHtml.indexOf('config.js')
-  assert.ok(helpersIndex >= 0)
+  assert.ok(presetsIndex >= 0)
+  assert.ok(helpersIndex > presetsIndex)
   assert.ok(configIndex > helpersIndex)
 })
 
@@ -23,9 +26,10 @@ test('config.js delegates pure model helpers instead of redefining them', () => 
   assert.doesNotMatch(configJs, /function modelsForFeature\(/)
 })
 
-test('model helpers keep provider defaults and feature task mapping', () => {
+test('model helpers keep feature task mapping and the shared module owns provider defaults', () => {
   assert.equal(helpers.createModelProviderId().startsWith('provider-'), true)
-  assert.equal(helpers.defaultModelsForProvider({ id: 'deepseek', baseUrl: '' })[0].id, 'deepseek-v4-flash')
+  assert.equal(helpers.defaultModelsForProvider, undefined)
+  assert.equal(presets.defaultModelsForProvider({ id: 'deepseek', baseUrl: '' })[0].id, 'deepseek-v4-flash')
   assert.equal(helpers.modelProviderStatus({ enabled: false }).className, 'off')
   assert.equal(helpers.modelTaskForFeature('ocr-translate'), 'translation')
   assert.equal(helpers.modelTaskForFeature('toolbar:explain'), 'explain')

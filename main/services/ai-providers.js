@@ -3,6 +3,7 @@ const {
   normalizeModelCapabilities,
   taskForFeature
 } = require('./ai-model-capabilities')
+const { sanitizeProviderHeaders } = require('../../shared/coding-plan-presets')
 
 const DEFAULT_AI_MODEL = 'deepseek-v4-flash'
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
@@ -11,6 +12,7 @@ const AI_SETTINGS_SCHEMA_VERSION = 2
 const MAX_PROVIDERS = 20
 const MAX_MODELS_PER_PROVIDER = 100
 const MAX_ASSIGNMENTS = 100
+const PRESET_ID_PATTERN = /^[a-z0-9-]+$/
 
 const AI_FEATURES = Object.freeze([
   Object.freeze({ id: 'chat', label: 'AI 对话' }),
@@ -74,6 +76,19 @@ function normalizeProviderModels(value, context = {}) {
   return models
 }
 
+// Optional coding-plan fields. They are only attached when the source provider
+// actually carries them, so providers created by hand keep their old shape and
+// old configs load unchanged (design NFR-2).
+function presetProviderFields(item) {
+  const fields = {}
+  const presetId = cleanText(item.presetId, 64)
+  if (presetId && PRESET_ID_PATTERN.test(presetId)) fields.presetId = presetId
+  const headers = sanitizeProviderHeaders(item.headers)
+  if (Object.keys(headers).length) fields.headers = headers
+  if (typeof item.modelsVerified === 'boolean') fields.modelsVerified = item.modelsVerified
+  return fields
+}
+
 function normalizeAiProviders(value = [], { legacyApiKey = '', legacyModel = '' } = {}) {
   const providers = []
   const ids = new Set()
@@ -95,7 +110,8 @@ function normalizeAiProviders(value = [], { legacyApiKey = '', legacyModel = '' 
       protocol,
       enabled: item.enabled !== false,
       builtin: id === 'deepseek' && baseUrl === DEFAULT_DEEPSEEK_BASE_URL && item.builtin !== false,
-      models
+      models,
+      ...presetProviderFields(item)
     })
   }
 
@@ -251,22 +267,6 @@ function resolveToolbarAiProvider(settings, actionId) {
   return resolveAiAssignment(settings, 'chat', { fallbackFeature: 'toolbar:explain' })
 }
 
-function getProviderDefaultModels(provider) {
-  const id = String(provider?.id || '').toLowerCase()
-  const baseUrl = String(provider?.baseUrl || '').toLowerCase()
-  if (id === 'deepseek' || baseUrl.includes('deepseek')) {
-    return [{ id: DEFAULT_AI_MODEL, name: 'DeepSeek V4 Flash' }]
-  }
-  if (id === 'openai' || baseUrl.includes('openai.com') || baseUrl.includes('api.openai')) {
-    return [
-      { id: 'gpt-4o-mini', name: 'GPT-4o mini' },
-      { id: 'gpt-4o', name: 'GPT-4o' },
-      { id: 'gpt-4.1', name: 'GPT-4.1' }
-    ]
-  }
-  return []
-}
-
 module.exports = {
   AI_FEATURES,
   AI_PROTOCOLS,
@@ -279,7 +279,6 @@ module.exports = {
   createDefaultAssignments,
   createDefaultDeepSeekProvider,
   createDefaultProviders,
-  getProviderDefaultModels,
   migrateAiSettings,
   normalizeAiAssignments,
   normalizeAiProviders,
