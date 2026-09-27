@@ -24,6 +24,7 @@ const { ConversationStore } = require('../../services/conversation-store')
 const { SelectionHookService } = require('../../services/selection-hook-service')
 const { SelectionWindowManager } = require('../../services/selection-window-manager')
 const { ToolbarStreamSession } = require('../../services/toolbar-stream-session')
+const { resolveSelectionAnchor } = require('./anchor')
 
 const TOOLBAR_H = 40
 const TOOLBAR_STREAM_IDLE_TIMEOUT_MS = 30000
@@ -253,38 +254,12 @@ function createSelectionDomain(deps) {
     hookService = null
   }
 
-  function validCoord(point) {
-    return point && point.x > -90000 && point.x < 90000 && point.y > -90000 && point.y < 90000
-  }
-
   function getRefPointAndOrientation(data) {
-    const cursor = screen.getCursorScreenPoint()
-    let refX = cursor.x
-    let refY = cursor.y
-    let orientation = 'bottomMiddle'
-    const level = data.posLevel || 0
-    if (level === 1) {
-      if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y + 16 }
-    } else if (level === 2) {
-      if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y }
-      if (validCoord(data.startBottom) && validCoord(data.endBottom)) {
-        const delta = data.endBottom.y - data.startBottom.y
-        orientation = delta > 10 ? 'bottomLeft' : delta < -10 ? 'topRight' : 'bottomRight'
-      }
-    } else if (level > 2) {
-      if (validCoord(data.endBottom)) { refX = data.endBottom.x; refY = data.endBottom.y + 4 }
-      else if (validCoord(data.mousePosEnd)) { refX = data.mousePosEnd.x; refY = data.mousePosEnd.y }
-      if (validCoord(data.startBottom) && validCoord(data.endBottom)) {
-        const delta = data.endBottom.y - data.startBottom.y
-        orientation = delta > 0 ? 'bottomLeft' : delta < 0 ? 'topRight' : 'bottomRight'
-      }
-    }
-    if (isWin) {
-      const point = screen.screenToDipPoint({ x: refX, y: refY })
-      refX = point.x
-      refY = point.y
-    }
-    return { refPoint: { x: refX, y: refY }, orientation }
+    return resolveSelectionAnchor(data, {
+      cursorPoint: screen.getCursorScreenPoint(),
+      isWin,
+      toDip: (point) => screen.screenToDipPoint(point)
+    })
   }
 
   function calculateToolbarPosition(refPoint, orientation, toolbarWidth = TOOLBAR_W) {
@@ -299,12 +274,12 @@ function createSelectionDomain(deps) {
     return { x, y }
   }
 
-  function logSelectionDiagnosticOnce(reason, data = {}) {
+  function logSelectionDiagnosticOnce(reason, data = {}, details = {}) {
     if (selectionEventDiagnostics.has(reason)) return
     selectionEventDiagnostics.add(reason)
     const programName = path.basename(String(data.programName || '')).slice(0, 128)
     const textLength = typeof data.text === 'string' ? data.text.length : 0
-    log('Selection event diagnostic:', { reason, programName, textLength })
+    log('Selection event diagnostic:', { reason, programName, textLength, ...details })
   }
 
   function handleTextSelection(data) {
@@ -321,7 +296,13 @@ function createSelectionDomain(deps) {
     const result = getRefPointAndOrientation(data)
     const position = calculateToolbarPosition(result.refPoint, result.orientation, toolbarWidth)
     windowManager.showToolbarSelection({ text, actions, position, width: toolbarWidth })
-    logSelectionDiagnosticOnce('shown', data)
+    logSelectionDiagnosticOnce('shown', data, {
+      posLevel: Number(data.posLevel) || 0,
+      anchorSource: result.source,
+      refPoint: result.refPoint,
+      displayId: screen.getDisplayNearestPoint(result.refPoint).id,
+      toolbarPosition: position
+    })
   }
 
   function hideToolbar() {
