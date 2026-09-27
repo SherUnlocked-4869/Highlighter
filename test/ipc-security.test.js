@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const {
+  IPC_SURFACES,
   buildIpcPolicies,
   createSecureIpcMain
 } = require('../main/services/ipc-security')
@@ -84,6 +85,14 @@ function registerPolicySurface(secureIpcMain, policies, calls) {
   }
 }
 
+function collectJavaScriptFiles(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const target = path.join(directory, entry.name)
+    if (entry.isDirectory()) return collectJavaScriptFiles(target)
+    return entry.isFile() && entry.name.endsWith('.js') ? [target] : []
+  })
+}
+
 test('IPC policy exactly covers every main-process registration', () => {
   const root = path.resolve(__dirname, '..')
   const policies = buildIpcPolicies(root)
@@ -91,32 +100,12 @@ test('IPC policy exactly covers every main-process registration', () => {
     result[policy.kind]++
     return result
   }, { handle: 0, on: 0 })
+  // Walk the whole main process rather than a hand-kept list, so a new module or
+  // domain is scanned the moment it exists.
   const sourceFiles = [
     path.join(root, 'main.js'),
-    ...fs.readdirSync(path.join(root, 'main', 'ipc'))
-      .filter((name) => name.endsWith('.js'))
-      .map((name) => path.join(root, 'main', 'ipc', name)),
-    ...fs.readdirSync(path.join(root, 'main', 'domains', 'pin'))
-      .filter((name) => name.endsWith('.js'))
-      .map((name) => path.join(root, 'main', 'domains', 'pin', name)),
-    ...fs.readdirSync(path.join(root, 'main', 'domains', 'capture'))
-      .filter((name) => name.endsWith('.js'))
-      .map((name) => path.join(root, 'main', 'domains', 'capture', name)),
-    ...fs.readdirSync(path.join(root, 'main', 'domains', 'long-capture'))
-      .filter((name) => name.endsWith('.js'))
-      .map((name) => path.join(root, 'main', 'domains', 'long-capture', name)),
-    ...fs.readdirSync(path.join(root, 'main', 'domains', 'record'))
-      .filter((name) => name.endsWith('.js'))
-      .map((name) => path.join(root, 'main', 'domains', 'record', name)),
-    ...fs.readdirSync(path.join(root, 'main', 'domains', 'recognition'))
-      .filter((name) => name.endsWith('.js'))
-      .map((name) => path.join(root, 'main', 'domains', 'recognition', name)),
-    ...fs.readdirSync(path.join(root, 'main', 'domains', 'search'))
-      .filter((name) => name.endsWith('.js'))
-      .map((name) => path.join(root, 'main', 'domains', 'search', name)),
-    ...fs.readdirSync(path.join(root, 'main', 'domains', 'settings-effects'))
-      .filter((name) => name.endsWith('.js'))
-      .map((name) => path.join(root, 'main', 'domains', 'settings-effects', name))
+    ...collectJavaScriptFiles(path.join(root, 'main', 'ipc')),
+    ...collectJavaScriptFiles(path.join(root, 'main', 'domains'))
   ]
   const registrations = new Map()
   for (const file of sourceFiles) {
@@ -127,8 +116,17 @@ test('IPC policy exactly covers every main-process registration', () => {
     }
   }
 
-  assert.equal(policies.size, 108)
-  assert.deepEqual(counts, { handle: 71, on: 37 })
+  // Derived from IPC_SURFACES instead of hard-coded: adding a channel used to mean
+  // hand-editing a policy count and a {handle, on} pair here (design D30). Channels
+  // shared by several surfaces (shell:open-external, settings:update) collapse into
+  // one policy, so compare unique sets rather than the raw list lengths.
+  const surfaceHandles = new Set(IPC_SURFACES.flatMap((surface) => surface.handles || []))
+  const surfaceListeners = new Set(IPC_SURFACES.flatMap((surface) => surface.listeners || []))
+  for (const channel of surfaceHandles) {
+    assert.equal(surfaceListeners.has(channel), false, `${channel} must not be both a handle and a listener`)
+  }
+  assert.equal(policies.size, surfaceHandles.size + surfaceListeners.size)
+  assert.deepEqual(counts, { handle: surfaceHandles.size, on: surfaceListeners.size })
   assert.equal(registrations.size, policies.size)
   for (const [channel, policy] of policies) {
     assert.equal(registrations.get(channel), policy.kind, `${channel} policy kind`)

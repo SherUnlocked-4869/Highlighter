@@ -9,6 +9,7 @@ const { registerDiagnosticsIpc } = require('../main/ipc/diagnostics-ipc')
 const { registerOcrIpc } = require('../main/ipc/ocr-ipc')
 const { registerRecordingIpc } = require('../main/ipc/recording-ipc')
 const { registerSearchIpc } = require('../main/ipc/search-ipc')
+const { registerSelectionIpc } = require('../main/ipc/selection-ipc')
 
 function createIpcMain() {
   const handlers = new Map()
@@ -157,6 +158,37 @@ test('OCR IPC module owns status, recognition, and translation channels', () => 
   assert.equal(ipcMain.handlers.get('capture:translate')(null, 'x').method, 'translate')
 })
 
+test('selection IPC module owns the toolbar, stream, chat, and pin channels', () => {
+  const ipcMain = createIpcMain()
+  registerSelectionIpc({
+    ipcMain,
+    controller: createController([
+      'BrowserWindow',
+      'clipboard',
+      'shell',
+      'log',
+      'getSettings',
+      'isProcessing',
+      'hideToolbar',
+      'openToolbarAiAction',
+      'getPinDomain',
+      'streams',
+      'conversations'
+    ])
+  })
+
+  assert.deepEqual([...ipcMain.listeners.keys()], [
+    'toolbar:action',
+    'window:toggle-pin',
+    'stream:cancel',
+    'stream:finish',
+    'chat:ask'
+  ])
+  assert.deepEqual([...ipcMain.handlers.keys()], ['chat:copy'])
+  assert.throws(() => registerSelectionIpc({ ipcMain: null, controller: {} }), /Selection IPC requires/)
+  assert.throws(() => registerSelectionIpc({ ipcMain: createIpcMain(), controller: null }), /Selection IPC requires/)
+})
+
 test('search IPC module owns query, state, and file action channels', () => {
   const ipcMain = createIpcMain()
   registerSearchIpc({
@@ -240,7 +272,10 @@ test('main process delegates migrated IPC channels without registering them dire
     'record-frame:',
     'search:',
     'data-root:',
-    'ocr:'
+    'ocr:',
+    'toolbar:',
+    'stream:',
+    'chat:'
   ]) {
     assert.doesNotMatch(main, new RegExp(`ipcMain\\.(?:handle|on)\\('${prefix}`))
   }
@@ -250,7 +285,8 @@ test('main process delegates migrated IPC channels without registering them dire
     'registerCaptureIpc',
     'registerOcrIpc',
     'registerRecordingIpc',
-    'registerSearchIpc'
+    'registerSearchIpc',
+    'registerSelectionIpc'
   ]) {
     assert.match(main, new RegExp(`${registration}\\(\\{`))
   }
