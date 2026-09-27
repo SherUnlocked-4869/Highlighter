@@ -11,6 +11,8 @@ let draggedSelectionToolbarAction = ''
 let modelsTab = 'providers'
 let modelsExpandedProviderIds = new Set()
 let featureAssignmentDraft = null
+let codingPlanPresetId = ''
+let modalOverlay = null
 let historyQuery = ''
 let historySource = ''
 let historyRenderVersion = 0
@@ -849,17 +851,23 @@ const modelFeatureCatalog = [
   { id: 'toolbar:explain', label: '划词解释', description: '划词工具栏“解释”按钮' }
 ]
 
-if (!window.modelHelpers) {
-  throw new Error('config.js requires routes/model-helpers.js to be loaded first')
+if (!window.modelHelpers || !window.codingPlanPresets) {
+  throw new Error('config.js requires routes/model-helpers.js and shared/coding-plan-presets.js to be loaded first')
 }
 
 const {
   createModelProviderId,
-  defaultModelsForProvider,
   modelProviderStatus,
   modelTaskForFeature,
   modelsForFeature
 } = window.modelHelpers
+
+const {
+  defaultModelsForProvider,
+  filterPresetModels,
+  getCodingPlanPreset,
+  listCodingPlanPresets
+} = window.codingPlanPresets
 
 function modelProviderById(id) {
   return (settings.providers || []).find((provider) => provider.id === id)
@@ -993,13 +1001,159 @@ function commitOpenProviderEditors({ exceptId = '', tolerant = false } = {}) {
   return providers
 }
 
+/* ---------- coding plan: preset picker, simplified form, assignment guide ---------- */
+
+function closeModal() {
+  modalOverlay?.remove()
+  modalOverlay = null
+  codingPlanPresetId = ''
+}
+
+function openModal(contentHtml, { onMount } = {}) {
+  closeModal()
+  const overlay = document.createElement('div')
+  overlay.className = 'modal-overlay'
+  overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${contentHtml}</div>`
+  overlay.addEventListener('click', (event) => { if (event.target === overlay) closeModal() })
+  overlay.onkeydown = (event) => { if (event.key === 'Escape') closeModal() }
+  document.body.appendChild(overlay)
+  modalOverlay = overlay
+  const modal = overlay.querySelector('.modal')
+  modal.querySelectorAll('[data-close-modal]').forEach((button) => { button.onclick = closeModal })
+  onMount?.(modal)
+  modal.querySelector('input,select,button')?.focus()
+  return modal
+}
+
+function openDocs(url) {
+  window.electronAPI.openExternal(url).catch(() => toast('无法打开文档链接'))
+}
+
+function codingPlanPresetCardMarkup(preset) {
+  return `<div class="coding-plan-card" data-coding-plan-preset="${escapeHtml(preset.id)}" role="button" tabindex="0"><div class="coding-plan-card-head"><b>${escapeHtml(preset.name)}</b><span class="provider-tag coding-plan">Coding Plan</span></div><p>${escapeHtml(preset.tagline)}</p><button class="button coding-plan-docs" data-docs-url="${escapeHtml(preset.docsUrl)}">查看文档</button></div>`
+}
+
+function codingPlanReadonlyRow(label, value) {
+  return `<div class="coding-plan-preset-field"><span>${escapeHtml(label)}</span><code class="coding-plan-readonly">${escapeHtml(value)}</code></div>`
+}
+
+function codingPlanFormMarkup(preset) {
+  return `<div class="coding-plan-form-head"><div><b>${escapeHtml(preset.name)}</b><small>${escapeHtml(preset.tagline)}</small></div><span class="provider-tag coding-plan">Coding Plan</span></div><div class="model-field"><div class="model-field-label"><b>API 密钥</b><small>通过系统安全存储加密保存在本机</small></div><input class="input" data-coding-plan-key type="password" placeholder="sk-..." autocomplete="off"></div><div class="model-field"><div class="model-field-label"><b>显示名称</b><small>可选，留空则使用套餐名称</small></div><input class="input" data-coding-plan-name type="text" value="${escapeHtml(preset.name)}"></div><div class="coding-plan-preset-info">${codingPlanReadonlyRow('API 地址', preset.baseUrl)}${codingPlanReadonlyRow('API 协议', preset.protocol)}</div><p class="coding-plan-note">保存时自动测试连接并拉取实时模型目录；拉取失败会写入内置模型清单，不阻断保存。coding plan 通常有额度窗口限制。</p><div class="modal-actions"><button class="button" data-coding-plan-back>返回</button><button class="button primary" data-coding-plan-save>保存并验证</button></div>`
+}
+
+function openCodingPlanDialog() {
+  const presets = listCodingPlanPresets()
+  const modal = openModal(`<div class="modal-head"><div><h3>添加 Coding Plan</h3><p>选择套餐后只需填写 API 密钥，API 地址、协议与模型目录会自动配置。</p></div><button class="button icon-button" data-close-modal aria-label="关闭">×</button></div><div class="coding-plan-picker">${presets.map(codingPlanPresetCardMarkup).join('')}</div><div class="coding-plan-form" data-coding-plan-form hidden></div>`)
+  const picker = modal.querySelector('.coding-plan-picker')
+  const form = modal.querySelector('[data-coding-plan-form]')
+
+  const selectPreset = (presetId) => {
+    const preset = presets.find((item) => item.id === presetId)
+    if (!preset) return
+    codingPlanPresetId = preset.id
+    picker.hidden = true
+    form.hidden = false
+    form.innerHTML = codingPlanFormMarkup(preset)
+    form.querySelector('[data-coding-plan-key]')?.focus()
+    form.querySelector('[data-coding-plan-back]').onclick = () => {
+      codingPlanPresetId = ''
+      form.hidden = true
+      form.innerHTML = ''
+      picker.hidden = false
+    }
+    form.querySelector('[data-coding-plan-save]').onclick = () => saveCodingPlanPreset(preset)
+  }
+
+  picker.querySelectorAll('[data-coding-plan-preset]').forEach((card) => {
+    const activate = () => selectPreset(card.dataset.codingPlanPreset)
+    card.onclick = activate
+    card.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate() } }
+  })
+  picker.querySelectorAll('[data-docs-url]').forEach((button) => {
+    button.onclick = (event) => { event.stopPropagation(); openDocs(button.dataset.docsUrl) }
+  })
+}
+
+async function saveCodingPlanPreset(preset) {
+  const form = modalOverlay?.querySelector('[data-coding-plan-form]')
+  const saveButton = form?.querySelector('[data-coding-plan-save]')
+  const apiKey = form?.querySelector('[data-coding-plan-key]')?.value.trim() || ''
+  const displayName = form?.querySelector('[data-coding-plan-name]')?.value.trim() || ''
+  if (!apiKey) { toast('请填写 API 密钥'); return }
+  if (saveButton) { saveButton.disabled = true; saveButton.textContent = '保存并验证…' }
+  try {
+    const result = await window.electronAPI.createCodingPlanProvider({ presetId: preset.id, apiKey, displayName })
+    closeModal()
+    settings = await window.electronAPI.getSettings()
+    applyAppearance()
+    void refreshStatusRail()
+    modelsTab = 'providers'
+    modelsExpandedProviderIds = new Set([result.provider.id])
+    renderModels()
+    toast(result.verified ? `已添加 ${result.provider.name}，获取到 ${result.modelsCount} 个模型` : `已添加 ${result.provider.name}：${result.warning}`)
+    openCodingPlanAssignmentGuide(result.provider)
+  } catch (error) {
+    toast(errorMessage(error) || '添加 Coding Plan 失败')
+    if (saveButton) { saveButton.disabled = false; saveButton.textContent = '保存并验证' }
+  }
+}
+
+// The save already wrote the provider; this only offers to repoint AI features
+// at it, and never overwrites an assignment the user did not tick (design D8).
+function openCodingPlanAssignmentGuide(provider) {
+  const models = provider.models || []
+  if (!models.length) return
+  const rows = modelFeatureRows().map((feature) => `<label class="coding-plan-assignment"><input type="checkbox" data-coding-plan-feature="${escapeHtml(feature.id)}" checked><span class="coding-plan-assignment-label"><b>${escapeHtml(feature.label)}</b><small>${escapeHtml(feature.description)}</small></span><select data-coding-plan-feature-model="${escapeHtml(feature.id)}">${models.map((model, index) => `<option value="${escapeHtml(model.id)}" ${index === 0 ? 'selected' : ''}>${escapeHtml(model.name || model.id)}</option>`).join('')}</select></label>`).join('')
+  const modal = openModal(`<div class="modal-head"><div><h3>把功能切换到 ${escapeHtml(provider.name)}？</h3><p>勾选要使用该套餐的功能并选择模型；未勾选的功能保持原配置。也可以直接跳过。</p></div><button class="button icon-button" data-close-modal aria-label="关闭">×</button></div><div class="coding-plan-assignment-list">${rows}</div><p class="coding-plan-note">coding plan 有额度窗口限制，建议只把常用功能切过来。</p><div class="modal-actions"><button class="button" data-coding-plan-skip>跳过</button><button class="button primary" data-coding-plan-apply>应用功能模型</button></div>`)
+  modal.querySelector('[data-coding-plan-skip]').onclick = closeModal
+  modal.querySelector('[data-coding-plan-apply]').onclick = async () => {
+    const assignments = [...(settings.ai?.assignments || [])]
+    modal.querySelectorAll('[data-coding-plan-feature]').forEach((checkbox) => {
+      if (!checkbox.checked) return
+      const feature = checkbox.dataset.codingPlanFeature
+      const model = modal.querySelector(`[data-coding-plan-feature-model="${feature}"]`)?.value || ''
+      if (!model) return
+      const next = { feature, providerId: provider.id, model }
+      const index = assignments.findIndex((item) => item.feature === feature)
+      if (index >= 0) assignments[index] = next
+      else assignments.push(next)
+    })
+    try {
+      await updateSettings({ ai: { schemaVersion: 2, assignments } }, '功能模型已更新')
+      closeModal()
+      renderModels()
+    } catch (error) {
+      toast(errorMessage(error) || '功能模型保存失败')
+    }
+  }
+}
+
+// Coding-plan providers are marked as such, and a fallback catalog is surfaced
+// as "目录未验证" instead of hiding behind a green status dot (design FR-6 / FR-4).
+// Always renders the wrapper so the accordion head keeps a stable column count.
+function providerBadgesMarkup(provider) {
+  const badges = []
+  if (provider.presetId) badges.push('<span class="provider-tag coding-plan">Coding Plan</span>')
+  if (provider.modelsVerified === false) badges.push('<span class="provider-tag unverified">目录未验证</span>')
+  return `<span class="provider-badges">${badges.join('')}</span>`
+}
+
+// Keeps a preset provider's catalog honest on the retry paths: the same endpoint
+// filter applies, and a successful fetch clears "目录未验证" (design D7 / FR-4).
+function applyFetchedModels(provider, models) {
+  const preset = provider?.presetId ? getCodingPlanPreset(provider.presetId) : null
+  const fetched = Array.isArray(models) ? models : []
+  const filtered = preset ? filterPresetModels(fetched, preset) : fetched
+  return provider?.presetId ? { models: filtered, modelsVerified: filtered.length > 0 } : { models: filtered }
+}
+
 function providerEditorMarkup(provider) {
   const expanded = modelsExpandedProviderIds.has(provider.id)
   const status = modelProviderStatus(provider)
   if (!expanded) {
-    return `<article class="model-provider-accordion" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击展开供应商配置"><span class="model-provider-expand">▸</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="provider-head-status"><span class="provider-dot ${status.className}"></span>${escapeHtml(status.title)}</span><span class="model-provider-chevron">展开</span></div></article>`
+    return `<article class="model-provider-accordion" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击展开供应商配置"><span class="model-provider-expand">▸</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span>${providerBadgesMarkup(provider)}<span class="provider-head-status"><span class="provider-dot ${status.className}"></span>${escapeHtml(status.title)}</span><span class="model-provider-chevron">展开</span></div></article>`
   }
-  return `<article class="model-provider-accordion expanded" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击收起供应商配置"><span class="model-provider-expand">▾</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="provider-head-status"><span class="provider-dot ${status.className}"></span>${escapeHtml(status.title)}</span><span class="model-provider-chevron">收起</span></div><div class="model-provider-editor"><div class="model-provider-editor-head"><div class="model-provider-title"><b>${escapeHtml(provider.name)}</b><span class="provider-tag ${provider.builtin ? 'builtin' : ''}">${provider.builtin ? '内置' : '自定义'}</span><span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span></div><button class="button danger" data-delete-provider="${escapeHtml(provider.id)}">删除供应商</button></div><div class="model-field"><div class="model-field-label"><b>API 密钥</b><small>通过系统安全存储加密保存在本机</small></div><div class="model-field-control"><input class="input" data-provider-api-key type="password" value="" placeholder="${escapeHtml((provider.apiKey || provider.hasApiKey) ? '已配置——输入新值可替换' : 'sk-...')}"><button class="button" data-test-provider="${escapeHtml(provider.id)}">测试</button></div></div><details class="model-custom-details" open><summary>自定义设置</summary><div class="model-field"><div class="model-field-label"><b>启用状态</b></div><select data-provider-enabled><option value="true" ${provider.enabled !== false ? 'selected' : ''}>启用</option><option value="false" ${provider.enabled === false ? 'selected' : ''}>停用</option></select></div><div class="model-field"><div class="model-field-label"><b>显示名称</b></div><input class="input" data-provider-name type="text" value="${escapeHtml(provider.name)}" placeholder="例如：DeepSeek"></div><div class="model-field"><div class="model-field-label"><b>API 地址</b></div><input class="input" data-provider-base-url type="text" value="${escapeHtml(provider.baseUrl)}" placeholder="https://api.example.com/v1"></div><div class="model-field"><div class="model-field-label"><b>API 协议</b></div><select data-provider-protocol><option value="openai-chat" ${provider.protocol === 'openai-chat' ? 'selected' : ''}>openai-chat</option><option value="openai-responses" ${provider.protocol === 'openai-responses' ? 'selected' : ''}>openai-responses</option></select></div></details><div class="model-catalog-block"><div class="model-catalog-head"><div><b>模型目录</b><small>${provider.models.length ? '已自定义模型目录' : '尚未配置模型'}</small></div><div class="model-catalog-actions"><button class="button" data-restore-models="${escapeHtml(provider.id)}">恢复默认模型</button><button class="button" data-fetch-models="${escapeHtml(provider.id)}">获取可用模型</button></div></div><div class="model-catalog-list">${provider.models.map((model, index) => modelCatalogRowMarkup(provider, index)).join('')}</div><button class="button" data-add-provider-model="${escapeHtml(provider.id)}">＋ 添加模型</button></div></div></article>`
+  return `<article class="model-provider-accordion expanded" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="点击收起供应商配置"><span class="model-provider-expand">▾</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="provider-head-status"><span class="provider-dot ${status.className}"></span>${escapeHtml(status.title)}</span><span class="model-provider-chevron">收起</span></div><div class="model-provider-editor"><div class="model-provider-editor-head"><div class="model-provider-title"><b>${escapeHtml(provider.name)}</b><span class="provider-tag ${provider.builtin ? 'builtin' : ''}">${provider.builtin ? '内置' : '自定义'}</span>${providerBadgesMarkup(provider)}<span class="provider-dot ${status.className}" title="${escapeHtml(status.title)}"></span></div><button class="button danger" data-delete-provider="${escapeHtml(provider.id)}">删除供应商</button></div><div class="model-field"><div class="model-field-label"><b>API 密钥</b><small>通过系统安全存储加密保存在本机</small></div><div class="model-field-control"><input class="input" data-provider-api-key type="password" value="" placeholder="${escapeHtml((provider.apiKey || provider.hasApiKey) ? '已配置——输入新值可替换' : 'sk-...')}"><button class="button" data-test-provider="${escapeHtml(provider.id)}">测试</button></div></div><details class="model-custom-details" open><summary>自定义设置</summary><div class="model-field"><div class="model-field-label"><b>启用状态</b></div><select data-provider-enabled><option value="true" ${provider.enabled !== false ? 'selected' : ''}>启用</option><option value="false" ${provider.enabled === false ? 'selected' : ''}>停用</option></select></div><div class="model-field"><div class="model-field-label"><b>显示名称</b></div><input class="input" data-provider-name type="text" value="${escapeHtml(provider.name)}" placeholder="例如：DeepSeek"></div><div class="model-field"><div class="model-field-label"><b>API 地址</b></div><input class="input" data-provider-base-url type="text" value="${escapeHtml(provider.baseUrl)}" placeholder="https://api.example.com/v1"></div><div class="model-field"><div class="model-field-label"><b>API 协议</b></div><select data-provider-protocol><option value="openai-chat" ${provider.protocol === 'openai-chat' ? 'selected' : ''}>openai-chat</option><option value="openai-responses" ${provider.protocol === 'openai-responses' ? 'selected' : ''}>openai-responses</option></select></div></details><div class="model-catalog-block"><div class="model-catalog-head"><div><b>模型目录</b><small>${provider.models.length ? '已自定义模型目录' : '尚未配置模型'}</small></div><div class="model-catalog-actions"><button class="button" data-restore-models="${escapeHtml(provider.id)}">恢复默认模型</button><button class="button" data-fetch-models="${escapeHtml(provider.id)}">获取可用模型</button></div></div><div class="model-catalog-list">${provider.models.map((model, index) => modelCatalogRowMarkup(provider, index)).join('')}</div><button class="button" data-add-provider-model="${escapeHtml(provider.id)}">＋ 添加模型</button></div></div></article>`
 }
 
 function renderModelsSubnav() {
@@ -1008,7 +1162,7 @@ function renderModelsSubnav() {
 
 function renderModelsProviderTab(providers) {
   const providerList = providers.map((provider) => providerEditorMarkup(provider)).join('') || '<div class="empty">暂无供应商，请点击“添加供应商”创建。</div>'
-  return `<div class="models-view"><div class="models-provider-toolbar"><div class="models-section-head"><h2>供应商</h2><p>列表默认只显示名称，点击展开后配置显示名称、API 地址、API 协议、密钥和模型目录。</p></div><div class="models-toolbar-actions"><button class="button" id="openModelConfigFile">打开配置文件</button><button class="button primary" id="addModelProvider">＋ 添加供应商</button></div></div><div class="model-provider-list-page">${providerList}</div><div class="model-save-row"><button class="button primary" id="saveProviderSettings">保存供应商配置</button></div></div>`
+  return `<div class="models-view"><div class="models-provider-toolbar"><div class="models-section-head"><h2>供应商</h2><p>列表默认只显示名称，点击展开后配置显示名称、API 地址、API 协议、密钥和模型目录。Coding Plan 套餐可一键接入。</p></div><div class="models-toolbar-actions"><button class="button" id="openModelConfigFile">打开配置文件</button><button class="button" id="addCodingPlanProvider">${iconMarkup('icons/lightning.svg')}添加 Coding Plan</button><button class="button primary" id="addModelProvider">＋ 添加供应商</button></div></div><div class="model-provider-list-page">${providerList}</div><div class="model-save-row"><button class="button primary" id="saveProviderSettings">保存供应商配置</button></div></div>`
 }
 
 function renderModelsFeatureTab(providers) {
@@ -1073,6 +1227,10 @@ function bindModelsProviderTab() {
     renderModels()
     providerEditorRoot(provider.id)?.querySelector('[data-provider-name]')?.focus()
   })
+  document.getElementById('addCodingPlanProvider')?.addEventListener('click', () => {
+    if (!commitOpenProviderEditors()) return
+    openCodingPlanDialog()
+  })
   document.getElementById('openModelConfigFile')?.addEventListener('click', () => {
     window.electronAPI.openDataDirectory().catch(() => {})
     toast('已打开数据目录，配置文件位于该目录下')
@@ -1131,7 +1289,7 @@ function bindModelsProviderTab() {
           if (draft) {
             draft.protocol = protocolSelect?.value || draft.protocol
             draft.baseUrl = baseUrlInput?.value.trim() || draft.baseUrl
-            draft.models = result.models
+            Object.assign(draft, applyFetchedModels(base, result.models))
             settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? draft : item) }
             renderModels()
             toast(`连接成功，已自动获取 ${result.models.length} 个模型`)
@@ -1181,10 +1339,15 @@ function bindModelsProviderTab() {
           button.disabled = false; button.textContent = '获取可用模型'
           return
         }
-        const models = Array.isArray(result.models) && result.models.length ? result.models : [{ id: '', name: '' }]
-        settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? { ...item, models } : item) }
+        const fetched = (Array.isArray(result.models) ? result.models : []).filter((model) => String(model?.id || '').trim())
+        if (!fetched.length) {
+          toast('未获取到模型，已保留当前模型目录')
+          button.disabled = false; button.textContent = '获取可用模型'
+          return
+        }
+        settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? { ...item, ...applyFetchedModels(base, fetched) } : item) }
         renderModels()
-        toast(`已获取 ${models.length} 个模型`)
+        toast(`已获取 ${fetched.length} 个模型`)
       } catch (error) {
         toast(errorMessage(error) || '获取可用模型失败')
         button.disabled = false; button.textContent = '获取可用模型'

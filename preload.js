@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Config
   testConnection: (apiKey) => ipcRenderer.invoke('config:test-connection', apiKey),
   fetchProviderModels: (provider) => ipcRenderer.invoke('config:test-connection', { provider, fetchModels: true }),
+  createCodingPlanProvider: (input) => ipcRenderer.invoke('coding-plan:create-provider', input),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
 
   // Main app / settings

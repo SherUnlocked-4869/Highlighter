@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { registerAppIpc } = require('../main/ipc/app-ipc')
 const { registerCaptureIpc } = require('../main/ipc/capture-ipc')
+const { registerCodingPlanIpc, createCodingPlanIpcController } = require('../main/ipc/coding-plan-ipc')
 const { registerDataRootIpc } = require('../main/ipc/data-root-ipc')
 const { registerDiagnosticsIpc } = require('../main/ipc/diagnostics-ipc')
 const { registerOcrIpc } = require('../main/ipc/ocr-ipc')
@@ -259,6 +260,28 @@ test('recording IPC module owns control and annotation channels', () => {
     'record:resize-preview',
     'record:restart'
   ])
+})
+
+test('coding plan IPC owns one provider-creation channel and gates writes', async () => {
+  const ipcMain = createIpcMain()
+  let writableChecks = 0
+  const controller = createCodingPlanIpcController({
+    settingsService: {
+      getSettings: () => ({ providers: [] }),
+      updateSettings: (patch) => ({ patch, settings: { providers: patch.providers } })
+    },
+    testProviderConnection: async () => ({ ok: true, models: [{ id: 'kimi-k3', name: 'Kimi K3' }] }),
+    appVersion: '2.2.8',
+    assertWritable: () => { writableChecks += 1 }
+  })
+  registerCodingPlanIpc({ ipcMain, controller })
+
+  assert.deepEqual([...ipcMain.handlers.keys()], ['coding-plan:create-provider'])
+  const result = await ipcMain.handlers.get('coding-plan:create-provider')(null, { presetId: 'opencode-go', apiKey: 'sk-x' })
+  assert.equal(writableChecks, 1)
+  assert.equal(result.verified, true)
+  assert.equal(result.provider.presetId, 'opencode-go')
+  assert.throws(() => registerCodingPlanIpc({ ipcMain: null, controller }), /Coding plan IPC requires/)
 })
 
 test('main process delegates migrated IPC channels without registering them directly', () => {

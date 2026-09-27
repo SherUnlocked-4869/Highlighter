@@ -13,6 +13,7 @@ const sourceDirectories = [
   'recognition',
   'record',
   'scripts',
+  'shared',
   'test',
   'tests',
   'toolbar'

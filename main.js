@@ -35,6 +35,7 @@ const { DiagnosticsService } = require('./main/services/diagnostics-service')
 const { SettingsService } = require('./main/services/settings-service')
 const { DEFAULT_SETTINGS } = require('./main/services/settings-defaults')
 const { registerSettingsIpc } = require('./main/ipc/settings-ipc')
+const { createCodingPlanIpcController, registerCodingPlanIpc } = require('./main/ipc/coding-plan-ipc')
 const { HistoryService } = require('./main/services/history-service')
 const { ensureDirectory: ensureDirectorySync } = require('./main/services/fs-utils')
 const imageBufferUtils = require('./main/services/image-buffer')
@@ -956,6 +957,15 @@ registerSettingsIpc({
     return result
   },
   log
+})
+registerCodingPlanIpc({
+  ipcMain: secureIpcMain,
+  controller: createCodingPlanIpcController({
+    settingsService,
+    assertWritable: assertManagedDataWritable,
+    testProviderConnection: (provider, options) => aiClient.testProviderConnection(provider, options),
+    appVersion: app.getVersion()
+  })
 })
 registerShortcutIpc({
   ipcMain: secureIpcMain,

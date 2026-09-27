@@ -190,3 +190,64 @@ test('resolver returns the assigned provider and model for each feature', () => 
   assert.equal(resolveToolbarAiProvider(settings, 'custom:polish').model, 'b-smart')
   assert.equal(resolveToolbarAiProvider(settings, 'custom:unknown').model, 'a-fast')
 })
+
+test('providers without coding plan fields keep the legacy shape untouched', () => {
+  const providers = normalizeAiProviders([
+    { id: 'plain', name: 'Plain', baseUrl: 'https://plain.example/v1', apiKey: 'sk-plain', models: [{ id: 'm1', name: 'M1' }] }
+  ])
+  assert.deepEqual(Object.keys(providers[0]).sort(), [
+    'apiKey', 'baseUrl', 'builtin', 'enabled', 'id', 'models', 'name', 'protocol'
+  ])
+  assert.equal(Object.hasOwn(providers[0], 'presetId'), false)
+  assert.equal(Object.hasOwn(providers[0], 'headers'), false)
+  assert.equal(Object.hasOwn(providers[0], 'modelsVerified'), false)
+})
+
+test('coding plan provider fields survive normalization and reject unsafe headers', () => {
+  const providers = normalizeAiProviders([
+    {
+      id: 'provider-cp',
+      name: 'Open Code Go',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      apiKey: 'sk-cp',
+      protocol: 'openai-chat',
+      presetId: 'opencode-go',
+      headers: {
+        Authorization: 'Bearer leaked',
+        'User-Agent': 'highlighter/2.2.8',
+        'x-opencode-session': '${sessionId}'
+      },
+      modelsVerified: false,
+      models: [{ id: 'kimi-k3', name: 'Kimi K3' }]
+    }
+  ])
+  assert.equal(providers[0].presetId, 'opencode-go')
+  assert.equal(providers[0].modelsVerified, false)
+  assert.deepEqual(providers[0].headers, {
+    'User-Agent': 'highlighter/2.2.8',
+    'x-opencode-session': '${sessionId}'
+  })
+})
+
+test('an invalid preset id and empty headers are dropped instead of persisted', () => {
+  const providers = normalizeAiProviders([
+    {
+      id: 'provider-bad',
+      name: 'Bad',
+      baseUrl: 'https://bad.example/v1',
+      presetId: 'Not A Preset',
+      headers: { Authorization: 'Bearer x' },
+      modelsVerified: 'yes',
+      models: [{ id: 'm1', name: 'M1' }]
+    }
+  ])
+  assert.equal(Object.hasOwn(providers[0], 'presetId'), false)
+  assert.equal(Object.hasOwn(providers[0], 'headers'), false)
+  assert.equal(Object.hasOwn(providers[0], 'modelsVerified'), false)
+})
+
+test('the duplicate provider-default helper is gone from the main service', () => {
+  const providers = require('../main/services/ai-providers')
+  assert.equal(Object.hasOwn(providers, 'getProviderDefaultModels'), false)
+  assert.equal(require('../shared/coding-plan-presets').defaultModelsForProvider({ id: 'deepseek', baseUrl: '' })[0].id, 'deepseek-v4-flash')
+})
