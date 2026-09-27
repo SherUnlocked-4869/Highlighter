@@ -268,3 +268,71 @@ test('window ownership drives renderer-gone recovery for the toolbar only', () =
   assert.equal(domain.handleRendererGone(toolbar, { reason: 'crashed', exitCode: 1 }), true)
   assert.equal(toolbar.destroyed, true)
 })
+
+// --- mixed-DPI anchoring -----------------------------------------------------
+// The layout the defect was reported on: a 1.5 landscape primary with a 1.25
+// portrait secondary to its right. `screenToDipPoint` scales relative to the
+// display containing the *physical* point, so feeding it a DIP point resolves
+// onto the wrong monitor — the toolbar then clamps into that monitor's work area.
+const DIP_PRIMARY = { x: 0, y: 0, width: 2560, height: 1440 }
+const DIP_SECONDARY = { x: 2560, y: -136, width: 1152, height: 2048 }
+const PHYSICAL_SECONDARY = { x: 3840, y: -170, width: 1440, height: 2560 }
+
+function createMixedDpiScreen({ cursorPoint, calls = [] }) {
+  const displays = [
+    { workArea: DIP_PRIMARY, scale: 1.5, physical: { x: 0, y: 0, width: 3840, height: 2160 }, origin: { x: 0, y: 0 } },
+    { workArea: DIP_SECONDARY, scale: 1.25, physical: PHYSICAL_SECONDARY, origin: { x: DIP_SECONDARY.x, y: DIP_SECONDARY.y } }
+  ]
+  return {
+    calls,
+    getCursorScreenPoint: () => cursorPoint,
+    getDisplayNearestPoint: (point) => displays.find((display) => (
+      point.x >= display.workArea.x && point.x <= display.workArea.x + display.workArea.width
+      && point.y >= display.workArea.y && point.y <= display.workArea.y + display.workArea.height
+    )) || displays[0],
+    screenToDipPoint: (point) => {
+      calls.push({ ...point })
+      const display = displays.find((item) => point.x >= item.physical.x
+        && point.x < item.physical.x + item.physical.width
+        && point.y >= item.physical.y
+        && point.y < item.physical.y + item.physical.height)
+      if (!display) return { ...point }
+      return {
+        x: display.origin.x + (point.x - display.physical.x) / display.scale,
+        y: display.origin.y + (point.y - display.physical.y) / display.scale
+      }
+    },
+    dipToScreenRect: (_source, rect) => rect
+  }
+}
+
+function insideWorkArea(win, workArea) {
+  return win.bounds.x >= workArea.x && win.bounds.x <= workArea.x + workArea.width
+    && win.bounds.y >= workArea.y && win.bounds.y <= workArea.y + workArea.height
+}
+
+test('a selection on a mixed-DPI secondary display anchors the toolbar on that display', () => {
+  const cursorOnSecondary = { x: 3136, y: 720 }   // DIP, middle of the secondary
+  const screen = createMixedDpiScreen({ cursorPoint: cursorOnSecondary })
+  const { domain, state } = createHarness({ isWin: true, screen })
+
+  // posLevel 0: the hook has no geometry, so the pointer is the anchor and it is
+  // already DIP — converting it again is what used to drag the toolbar away.
+  domain.handleTextSelection({ text: 'hi', programName: 'chrome.exe', posLevel: 0 })
+  const fromCursor = state.windows.at(-1)
+  assert.ok(insideWorkArea(fromCursor, DIP_SECONDARY), `cursor anchor left the secondary: ${JSON.stringify(fromCursor.bounds)}`)
+  assert.equal(screen.calls.length, 0, 'a DIP pointer point must never be converted')
+
+  // posLevel 3: the hook's physical point is converted exactly once and stays put.
+  domain.handleTextSelection({
+    text: 'hi',
+    programName: 'chrome.exe',
+    posLevel: 3,
+    endBottom: { x: 4560, y: 900 },
+    startBottom: { x: 4400, y: 400 }
+  })
+  const fromHook = state.windows.at(-1)
+  assert.ok(insideWorkArea(fromHook, DIP_SECONDARY), `hook anchor left the secondary: ${JSON.stringify(fromHook.bounds)}`)
+  assert.equal(screen.calls.length, 1, 'the hook point is converted exactly once')
+  assert.deepEqual(screen.calls[0], { x: 4560, y: 900 })
+})
