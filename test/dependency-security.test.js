@@ -46,7 +46,10 @@ test('dependency audit is a required CI and release gate', () => {
 
 test('dependency audit allowlist is explicit, reasoned, and time-boxed', () => {
   const { ALLOWLIST, collectFindings, severityRank } = require('../scripts/audit-dependencies')
-  assert.ok(ALLOWLIST.size > 0, 'the audit gate must carry a reviewable allowlist')
+  // The list may be empty when the tree is clean - it is empty as of 2026-09-27.
+  // What must hold is that the mechanism is reviewable and that any entry it does
+  // carry is explicit, reasoned and time-boxed.
+  assert.ok(ALLOWLIST instanceof Map, 'the audit gate must expose its allowlist for review')
   for (const [key, entry] of ALLOWLIST) {
     assert.match(key, /^[^|]+\|https:\/\/github\.com\/advisories\/GHSA-/, `allowlist key must be package|advisory-url: ${key}`)
     assert.ok(entry.reason && entry.reason.length > 40, `allowlist entry needs a substantive reason: ${key}`)
@@ -77,9 +80,11 @@ test('native runtime and build dependencies stay on audited versions', () => {
   assert.equal(packageJson.dependencies.sharp, '0.35.4')
   assert.equal(packageJson.devDependencies['@electron/rebuild'], '4.2.0')
   assert.equal(packageJson.devDependencies['onnxruntime-node'], '1.27.0')
-  assert.equal(packageJson.overrides['onnxruntime-node']['adm-zip'], '0.6.0')
+  // 0.6.1 is the first version outside both adm-zip advisory ranges
+  // (GHSA-vwc7-r8mq-g2x9 <=0.6.0 and GHSA-7q85-xj36-vmfc <0.6.1).
+  assert.equal(packageJson.overrides['onnxruntime-node']['adm-zip'], '0.6.1')
 
-  assertMinimumVersion('adm-zip', '0.6.0')
+  assertMinimumVersion('adm-zip', '0.6.1')
   assertMinimumVersion('brace-expansion', '1.1.18')
   assertMinimumVersion('fast-uri', '3.1.7')
   assertMinimumVersion('js-yaml', '4.3.2')

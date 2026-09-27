@@ -14,13 +14,14 @@ const { spawnSync } = require('node:child_process')
 const AUDIT_LEVELS = ['info', 'low', 'moderate', 'high', 'critical']
 
 // key: "package|advisory-url"
-const ALLOWLIST = new Map([
-  ['adm-zip|https://github.com/advisories/GHSA-vwc7-r8mq-g2x9', {
-    reason: 'advisories 范围是 >=0.5.9 <=0.6.0，当前最新 0.6.0 本身在范围内，上游无修复版本（npm 建议的 "修复" 是降级到 0.5.8，低于本项目既有下限）。'
-      + '漏洞触发路径是解压时跟随符号链接；本仓库只在 main/services/diagnostics-service.js 中用 AdmZip 写入诊断 ZIP（new AdmZip/addFile/writeZip），从不调用 extract*，路径不可达。',
-    reviewBy: '2027-03-01'
-  }]
-])
+//
+// Empty as of 2026-09-27. The last entry was the adm-zip symlink advisory
+// (GHSA-vwc7-r8mq-g2x9, vulnerable range >=0.5.9 <=0.6.0); adm-zip 0.6.1 is
+// outside that range and outside the DoS advisory's (<0.6.1), so the dependency
+// is pinned to 0.6.1 and the exemption is no longer needed. Keep the map in
+// place: a new finding lands here with a reason and a review date, and an entry
+// that stops being reported still fails the gate so the list cannot rot.
+const ALLOWLIST = new Map()
 
 function severityRank(value) {
   const index = AUDIT_LEVELS.indexOf(String(value || '').toLowerCase())
