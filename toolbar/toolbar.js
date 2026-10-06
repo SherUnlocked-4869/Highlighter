@@ -2,6 +2,17 @@ const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
 let configuredTheme = 'system'
 let configuredMainColor = '#e5a44c'
 
+// Icons are Bootstrap Icons assets painted as CSS masks, so the strip follows
+// the theme and the accent automatically instead of shipping two variants.
+// The name is validated before it reaches a url(): it comes from our own frozen
+// metadata today, and the guard keeps that true if a caller ever changes.
+const TOOLBAR_ICON_PATTERN = /^[a-z0-9-]+$/
+const FALLBACK_TOOLBAR_ICON = 'stars'
+
+function toolbarIconName(action) {
+  return TOOLBAR_ICON_PATTERN.test(action.icon || '') ? action.icon : FALLBACK_TOOLBAR_ICON
+}
+
 function applyAppearance(appearance = {}) {
   configuredTheme = ['light', 'dark'].includes(appearance.theme) ? appearance.theme : 'system'
   const resolvedTheme = configuredTheme === 'system'
@@ -42,7 +53,14 @@ window.toolbarAPI.onSelection(({ actions, appearance }) => {
     const primaryClass = action.id === 'copy' ? ' pri' : ''
     button.className = `btn btn-${builtinClass}${primaryClass}`
     button.title = action.label
-    button.textContent = `${action.icon || '✦'} ${action.label}`
+    const icon = document.createElement('span')
+    icon.className = 'toolbar-icon'
+    icon.style.setProperty('--icon', `url('icons/${toolbarIconName(action)}.svg')`)
+    icon.setAttribute('aria-hidden', 'true')
+    const label = document.createElement('span')
+    label.className = 'label'
+    label.textContent = action.label
+    button.append(icon, label)
     button.onclick = () => window.toolbarAPI.action(action.id)
     toolbar.append(button)
   })

@@ -547,12 +547,11 @@ actionBridge.onActionStart(function(data) {
     el.loadingText.textContent = '正在翻译...'
   } else {
     const label = data.label || '解释'
-    // Custom AI functions supply their own short glyph (e.g. '译', '⇗'), which
-    // is rendered as text. The built-ins and the no-icon fallback use an inline
-    // SVG. textContent is used for the caller-supplied glyph so it can never
-    // inject markup.
+    // This window's CSP is img-src 'none', so a mask-image icon cannot be used
+    // here: every branch paints an inline SVG. The three cases are translate,
+    // explain and everything else (custom AI functions, plus any future
+    // built-in that routes through this window).
     if (data.type === 'explain') el.headerIcon.innerHTML = ACTION_ICONS.explain
-    else if (data.icon) el.headerIcon.textContent = data.icon
     else el.headerIcon.innerHTML = ACTION_ICONS.custom
     el.headerTitle.textContent = label
     el.headerBadge.textContent = label

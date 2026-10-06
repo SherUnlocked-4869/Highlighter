@@ -90,6 +90,18 @@ function iconMarkup(iconPath) {
   return `<span class="svg-icon" style="--icon:url('${escapeHtml(iconPath)}')" aria-hidden="true"></span>`
 }
 
+// Selection-toolbar actions carry a Bootstrap Icons asset name (see
+// toolbar/toolbar-action-meta.js). The settings page owns the same icons as the
+// strip itself, so it resolves the name against the toolbar folder rather than
+// shipping a second copy under config/icons.
+const TOOLBAR_ICON_NAME = /^[a-z0-9-]+$/
+const TOOLBAR_ICON_FALLBACK = 'stars'
+
+function toolbarIconMarkup(name) {
+  const asset = TOOLBAR_ICON_NAME.test(name || '') ? name : TOOLBAR_ICON_FALLBACK
+  return iconMarkup(`../toolbar/icons/${asset}.svg`)
+}
+
 function toast(message) {
   toastElement.textContent = message
   toastElement.classList.add('show')
@@ -618,7 +630,7 @@ function selectionToolbarActionInfo(toolbar, action) {
   if (!custom) return null
   return {
     label: custom.name,
-    icon: '✦',
+    icon: 'stars',
     description: `自定义 AI 功能 · ${custom.prompt}`,
     enabled: custom.enabled !== false,
     custom: true,
@@ -638,7 +650,7 @@ function selectionToolbarOrderMarkup(toolbar) {
       ? `<div class="switch ${info.enabled ? 'on' : ''}" data-custom-toolbar-toggle="${escapeHtml(info.id)}"></div>`
       : `<div class="switch ${enabled ? 'on' : ''}" data-toolbar-button="${action}"></div>`
     const movable = info.custom || inOrder
-    return `<div class="toolbar-order-row" draggable="true" data-toolbar-order="${escapeHtml(action)}"><span class="toolbar-drag" title="拖动排序">⋮⋮</span><span class="toolbar-order-icon">${escapeHtml(info.icon)}</span><div class="form-label"><b>${escapeHtml(info.label)}</b><small>${escapeHtml(info.description)}</small></div>${toggle}<div class="toolbar-order-actions"><button class="button icon-button" data-move-toolbar="${escapeHtml(action)}" data-direction="-1" ${index === 0 || !movable ? 'disabled' : ''} title="上移">↑</button><button class="button icon-button" data-move-toolbar="${escapeHtml(action)}" data-direction="1" ${index === actions.length - 1 || !movable ? 'disabled' : ''} title="下移">↓</button></div></div>`
+    return `<div class="toolbar-order-row" draggable="true" data-toolbar-order="${escapeHtml(action)}"><span class="toolbar-drag" title="拖动排序">⋮⋮</span><span class="toolbar-order-icon">${toolbarIconMarkup(info.icon)}</span><div class="form-label"><b>${escapeHtml(info.label)}</b><small>${escapeHtml(info.description)}</small></div>${toggle}<div class="toolbar-order-actions"><button class="button icon-button" data-move-toolbar="${escapeHtml(action)}" data-direction="-1" ${index === 0 || !movable ? 'disabled' : ''} title="上移">↑</button><button class="button icon-button" data-move-toolbar="${escapeHtml(action)}" data-direction="1" ${index === actions.length - 1 || !movable ? 'disabled' : ''} title="下移">↓</button></div></div>`
   }).join('')
 }
 

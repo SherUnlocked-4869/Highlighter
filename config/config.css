@@ -392,6 +392,7 @@ progress{accent-color:var(--primary)}
 .function-row .icon .svg-icon{width:22px;height:22px}
 .window-actions button{display:grid;place-items:center}
 .window-actions .svg-icon{width:16px;height:16px}
+.toolbar-order-icon .svg-icon{width:16px;height:16px;color:var(--primary-text)}
 .function-row:hover .icon .svg-icon{color:var(--primary-text)}
 /* skin gating */
 body.has-skin .sidebar{backdrop-filter:blur(20px)}

@@ -41,6 +41,21 @@
   }
   .toolbar .btn:hover { border-color: var(--line-2); background: var(--surface-3); color: var(--text); }
   .toolbar .btn:active { background: var(--surface-3); }
+  /*
+   * Icon role: a Bootstrap Icons asset painted through a mask, so the ink is
+   * always currentColor and the primary button's inverted ink needs no
+   * special case. 15px because the library draws to 87.5% of its 16px box
+   * while the previous glyph work sat at ~80%, so the same box would read
+   * larger than before.
+   */
+  .toolbar .toolbar-icon {
+    flex: 0 0 auto; display: block; width: 15px; height: 15px;
+    background: currentColor;
+    -webkit-mask: var(--icon) center/contain no-repeat;
+    mask: var(--icon) center/contain no-repeat;
+  }
+  /* A 16-character custom name must ellipsize rather than push the icon out. */
+  .toolbar .btn .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .toolbar .btn.pri {
     background: var(--primary); border-color: var(--primary);
     color: var(--primary-ink); font-weight: 600;

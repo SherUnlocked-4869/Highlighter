@@ -131,7 +131,7 @@ const EMIT = {
     appearance: { theme: 'system', mainColor: '#e5a44c' }, streamId: 'demo', type: 'translate',
     text: 'Ship a calmer capture tool for Windows — fewer chrome, more focus.'
   })`,
-  'toolbar/toolbar.html': `window.__fire('appearance', { theme: 'system', mainColor: '#e5a44c' }); window.__fire('selection', { appearance: { theme: 'system', mainColor: '#e5a44c' }, actions: [{ id: 'copy', label: '复制', icon: '⧉' }, { id: 'search', label: '搜索', icon: '⌕' }, { id: 'translate', label: '翻译', icon: '译' }, { id: 'explain', label: '解释', icon: '?' }, { id: 'open', label: '跳转', icon: '⇗' }] })`
+  'toolbar/toolbar.html': `window.__fire('appearance', { theme: 'system', mainColor: '#e5a44c' }); window.__fire('selection', { appearance: { theme: 'system', mainColor: '#e5a44c' }, actions: [{ id: 'copy', label: '复制', icon: 'copy' }, { id: 'search', label: '搜索', icon: 'search' }, { id: 'translate', label: '翻译', icon: 'translate' }, { id: 'explain', label: '解释', icon: 'lightbulb' }, { id: 'open', label: '跳转', icon: 'box-arrow-up-right' }] })`
 }
 
 const SURFACES = [

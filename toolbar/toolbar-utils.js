@@ -32,6 +32,10 @@ const CUSTOM_ACTION_PREFIX = 'custom:'
 const MAX_CUSTOM_ACTIONS = 12
 const MAX_CUSTOM_NAME_LENGTH = 16
 const MAX_PROMPT_LENGTH = 6000
+// Every custom AI function shares one icon: the user names the function, and
+// the name is what distinguishes it in the strip. Values are Bootstrap Icons
+// asset names resolved by the renderers (see toolbar-action-meta.js).
+const CUSTOM_ACTION_ICON = 'stars'
 const ACTION_WINDOW_DEFAULT_SIZE = Object.freeze({ width: 550, height: 560 })
 const ACTION_WINDOW_MIN_WIDTH = 380
 const ACTION_WINDOW_MIN_HEIGHT = 340
@@ -184,7 +188,7 @@ function getToolbarActionDefinition(config, action) {
   return {
     id: customActionKey(custom.id),
     label: custom.name,
-    icon: '✦',
+    icon: CUSTOM_ACTION_ICON,
     kind: 'ai',
     prompt: custom.prompt,
     custom: true
@@ -237,7 +241,11 @@ function getToolbarWidth(actions) {
   const buttons = actions.reduce((width, action) => {
     const label = typeof action === 'object' ? action?.label : (BUILTIN_TOOLBAR_ACTIONS[action]?.label || OPTIONAL_TOOLBAR_ACTIONS[action]?.label)
     const characters = Array.from(String(label || '')).length
-    return width + Math.max(70, Math.min(126, 42 + characters * 14))
+    // 46 is the button's fixed cost: padding 10+10, border 1+1, the 15px icon
+    // and the 5px gap to the label. It was 42 while the icon was a text glyph
+    // (~16px) and the mask icon is ~20px, so the difference has to be paid here
+    // or a two-character label loses its only slack. See the icon design doc.
+    return width + Math.max(70, Math.min(126, 46 + characters * 14))
   }, 0)
   // Mirror the boxes toolbar/toolbar.html wraps around the buttons. The window is
   // frameless and sized exactly to this value, so an unbudgeted LED, gap or
@@ -280,6 +288,7 @@ module.exports = {
   TRANSLATE_SOURCE_LANGUAGES,
   TRANSLATE_TARGET_LANGUAGES,
   CUSTOM_ACTION_DEFAULT_THINKING,
+  CUSTOM_ACTION_ICON,
   MAX_CUSTOM_ACTIONS,
   MAX_CUSTOM_NAME_LENGTH,
   MAX_PROMPT_LENGTH,

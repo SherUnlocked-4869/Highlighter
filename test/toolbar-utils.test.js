@@ -85,9 +85,9 @@ test('visible actions follow configured order and include enabled custom AI acti
 
   assert.deepEqual(getVisibleToolbarActions(config), ['custom:polish', 'translate', 'copy'])
   assert.deepEqual(getVisibleToolbarActionDefinitions(config), [
-    { id: 'custom:polish', label: '优化', icon: '✦', kind: 'ai', prompt: '优化这段话', custom: true },
-    { id: 'translate', label: '翻译', icon: '译', kind: 'ai', prompt: '翻译提示' },
-    { id: 'copy', label: '复制', icon: '⧉', kind: 'local', prompt: '' }
+    { id: 'custom:polish', label: '优化', icon: 'stars', kind: 'ai', prompt: '优化这段话', custom: true },
+    { id: 'translate', label: '翻译', icon: 'translate', kind: 'ai', prompt: '翻译提示' },
+    { id: 'copy', label: '复制', icon: 'copy', kind: 'local', prompt: '' }
   ])
 })
 
@@ -167,16 +167,22 @@ test('search URLs encode text and unknown engines fall back to Bing', () => {
 
 test('toolbar width grows by stable slots and accommodates longer custom labels', () => {
   assert.equal(getToolbarWidth([]), 0)
-  assert.equal(getToolbarWidth(['copy']), 100)
-  assert.equal(getToolbarWidth(['copy', 'search', 'translate', 'explain']), 343)
+  assert.equal(getToolbarWidth(['copy']), 104)
+  assert.equal(getToolbarWidth(['copy', 'search', 'translate', 'explain']), 359)
   assert.ok(getToolbarWidth([{ label: '这是一个较长功能' }]) > getToolbarWidth(['copy']))
 })
 
 test('toolbar window budget covers the chrome the strip CSS adds', () => {
   // Mirrors toolbar/toolbar.html. 17 is the largest reachable action count:
   // 4 builtin + 1 optional + MAX_CUSTOM_ACTIONS (12).
+  // 66 is the measured natural width of a two-character button once the 15px
+  // mask icon is in place (padding 20 + border 2 + icon 15 + gap 5 + 2x12px
+  // glyphs), and it is the binding constraint: the strip is a flex row inside a
+  // frameless window sized to exactly this budget, so a budget that only clears
+  // the 62px CSS min-width still shrinks the button below its own content and
+  // clips the ends once the overflow passes the window padding.
   const minimum = (count) =>
-    14 + 13 + (count - 1) * 5 + (2 * count - 1) * 3 + 62 * count
+    14 + 13 + (count - 1) * 5 + (2 * count - 1) * 3 + 66 * count
   for (let count = 1; count <= 17; count += 1) {
     const actions = Array.from({ length: count }, () => 'copy')
     assert.ok(

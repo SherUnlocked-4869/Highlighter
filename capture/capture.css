@@ -91,7 +91,10 @@ html, body {
   outline: none;
 }
 .toolbar button { display: grid; place-items: center; }
-.toolbar-icon { display: block; width: 18px; height: 18px; background: currentColor; -webkit-mask: var(--icon) center/contain no-repeat; mask: var(--icon) center/contain no-repeat; }
+/* 17px, not 18: the mask assets draw to 87.5% of their 16px box while the
+   previous 48px linear set drew to 80%, so 18px would render ~10% heavier and
+   crowd the 30px buttons. 17px holds the original optical size. */
+.toolbar-icon { display: block; width: 17px; height: 17px; background: currentColor; -webkit-mask: var(--icon) center/contain no-repeat; mask: var(--icon) center/contain no-repeat; }
 .toolbar button:hover, .toolbar button.active { color: #fff; background: rgba(255, 255, 255, .13); }
 .toolbar button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .toolbar button.primary, .result-actions .primary { color: var(--primary-ink); background: var(--primary); }

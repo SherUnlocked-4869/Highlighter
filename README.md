@@ -195,6 +195,11 @@ Highlighter/
 | `npm run build:win` | 构建 Windows NSIS 安装包 |
 | `npm run build:win:portable` | 构建 Windows 便携版本 |
 
+## 第三方资源
+
+- 截图工具栏与划词工具栏的图标来自 [Bootstrap Icons](https://icons.getbootstrap.com/) v1.13.1（MIT），
+  仅归一化了 SVG 外层属性，路径数据未改动。许可全文见 `capture/icons/LICENSE` 与 `toolbar/icons/LICENSE`。
+
 ## 反馈与贡献
 
 如需报告问题或提出功能建议，请在 [GitHub Issues](https://github.com/SherUnlocked-4869/Highlighter/issues) 中提交，并尽量附上：

@@ -81,7 +81,7 @@ async function runProbe() {
   win.webContents.send('action:start', {
     type: 'explain',
     label: '安全测试',
-    icon: '✦',
+    icon: 'stars',
     text: 'source',
     streamId: 7,
     appearance: { theme: 'dark', mainColor: '#336699' },

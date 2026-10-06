@@ -75,9 +75,10 @@ test('optional open action joins the toolbar only when configured into the order
   assert.deepEqual(getToolbarActionDefinition(enabled, 'open'), {
     id: 'open',
     label: '跳转',
-    // U+21D7 rather than U+2197: the latter is Extended_Pictographic, so Windows
-    // may substitute the colour emoji font instead of a text mark.
-    icon: '⇗',
+    // A Bootstrap Icons asset name resolved by each renderer, not a display
+    // glyph: the old U+21D7 mark existed only because U+2197 is
+    // Extended_Pictographic and Windows could swap in the colour emoji font.
+    icon: 'box-arrow-up-right',
     kind: 'local',
     prompt: ''
   })

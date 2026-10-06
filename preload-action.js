@@ -37,7 +37,9 @@ function normalizeActionStart(value = {}) {
   return {
     type: boundedText(value?.type, 64),
     label: boundedText(value?.label, 128),
-    icon: boundedText(value?.icon, 16),
+    // An icon is a Bootstrap Icons asset name (e.g. 'box-arrow-up-right', 19
+    // characters), not the one-character glyph this bound was sized for.
+    icon: boundedText(value?.icon, 64),
     text: boundedText(value?.text),
     streamId: Number.isSafeInteger(value?.streamId) && value.streamId > 0 ? value.streamId : null,
     appearance: normalizeAppearance(value?.appearance),
