@@ -9,7 +9,7 @@ const loading = document.getElementById('loading')
 const loadingText = loading.querySelector('b')
 const colorInput = document.getElementById('color')
 const colorPreview = document.querySelector('.color-wrap span')
-const lineWidthInput = document.getElementById('lineWidth')
+const lineWidthGroup = document.getElementById('widthGroup')
 const watermarkPanel = document.getElementById('watermarkPanel')
 const watermarkContentInput = document.getElementById('watermarkContent')
 const watermarkOpacityInput = document.getElementById('watermarkOpacity')
@@ -37,6 +37,12 @@ const {
   resizeSelection,
   selectionCursor
 } = window.selectionUtils
+const {
+  resolveWidth: resolveAnnotationWidth,
+  textFontSize,
+  serialRadius,
+  highlightWidth
+} = window.annotationStyleUtils
 
 let initData = null
 let image = null
@@ -50,6 +56,7 @@ let activeAnnotation = null
 let annotations = []
 let redoStack = []
 let serialNumber = 1
+let annotationWidth = 4
 let dpr = window.devicePixelRatio || 1
 let autoActionStarted = false
 let renderReadySent = false
@@ -69,7 +76,7 @@ let imageObjectUrl = ''
 function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
 function normalizeRect(a, b) { return { x: Math.min(a.x,b.x), y: Math.min(a.y,b.y), w: Math.abs(b.x-a.x), h: Math.abs(b.y-a.y) } }
 function insideSelection(point) { return selection && point.x >= selection.x && point.x <= selection.x + selection.w && point.y >= selection.y && point.y <= selection.y + selection.h }
-function annotationStyle() { return { color: colorInput.value, width: Number(lineWidthInput.value) || 4 } }
+function annotationStyle() { return { color: colorInput.value, width: annotationWidth } }
 function imageDisplayBounds() {
   const bounds=initData?.imageBounds
   return bounds
@@ -200,16 +207,18 @@ function drawWatermark(context, item, scaleX, scaleY, offsetX, offsetY) {
 function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offsetY = 0, sourceImage = image) {
   const x = (item.x-offsetX)*scaleX, y = (item.y-offsetY)*scaleY
   const x2 = ((item.x2 ?? item.x)-offsetX)*scaleX, y2 = ((item.y2 ?? item.y)-offsetY)*scaleY
-  const width = item.width * Math.max(scaleX,scaleY)
+  const widthScale = Math.max(scaleX,scaleY)
+  const baseWidth = item.width
+  const width = baseWidth * widthScale
   context.save(); context.strokeStyle = item.color; context.fillStyle = item.color; context.lineWidth = width; context.lineCap = 'round'; context.lineJoin = 'round'
   if (item.type === 'rect') context.strokeRect(x,y,(item.x2-item.x)*scaleX,(item.y2-item.y)*scaleY)
   if (item.type === 'ellipse') { context.beginPath(); context.ellipse((x+x2)/2,(y+y2)/2,Math.abs(x2-x)/2,Math.abs(y2-y)/2,0,0,Math.PI*2); context.stroke() }
   if (item.type === 'line') { context.beginPath(); context.moveTo(x,y); context.lineTo(x2,y2); context.stroke() }
   if (item.type === 'arrow') drawArrow(context,x,y,x2,y2,width)
   if (item.type === 'pen') { context.beginPath(); item.points.forEach((point,index) => { const px=(point.x-offsetX)*scaleX, py=(point.y-offsetY)*scaleY; index?context.lineTo(px,py):context.moveTo(px,py) }); context.stroke() }
-  if (item.type === 'highlight') { context.globalAlpha=.28; context.lineWidth=Math.max(14,width*4); context.beginPath(); context.moveTo(x,y); context.lineTo(x2,y2); context.stroke() }
-  if (item.type === 'text') { context.font = `${Math.max(14,width*5)}px -apple-system,"Microsoft YaHei",sans-serif`; context.textBaseline='top'; context.fillText(item.text,x,y) }
-  if (item.type === 'serial') { const radius=Math.max(12,width*3); context.beginPath(); context.arc(x,y,radius,0,Math.PI*2); context.fill(); context.fillStyle='#fff'; context.font=`bold ${radius}px sans-serif`; context.textAlign='center'; context.textBaseline='middle'; context.fillText(String(item.number),x,y+1) }
+  if (item.type === 'highlight') { context.globalAlpha=.28; context.lineWidth=highlightWidth(baseWidth,widthScale); context.beginPath(); context.moveTo(x,y); context.lineTo(x2,y2); context.stroke() }
+  if (item.type === 'text') { context.font = `${textFontSize(baseWidth,widthScale)}px -apple-system,"Microsoft YaHei",sans-serif`; context.textBaseline='top'; context.fillText(item.text,x,y) }
+  if (item.type === 'serial') { const radius=serialRadius(baseWidth,widthScale); context.beginPath(); context.arc(x,y,radius,0,Math.PI*2); context.fill(); context.fillStyle='#fff'; context.font=`bold ${radius}px sans-serif`; context.textAlign='center'; context.textBaseline='middle'; context.fillText(String(item.number),x,y+1) }
   if (item.type === 'watermark') drawWatermark(context,item,scaleX,scaleY,offsetX,offsetY)
   if (item.type === 'blur' && sourceImage) {
     const left=Math.min(x,x2), top=Math.min(y,y2), w=Math.abs(x2-x), h=Math.abs(y2-y)
@@ -283,6 +292,18 @@ function setTool(tool) {
   if(tool==='watermark'){activeAnnotation=buildWatermarkAnnotation();render()}
   else if(activeAnnotation?.type==='watermark'){activeAnnotation=null;render()}
   syncWatermarkPanel()
+}
+
+// Persist only user clicks; restoring the stored value on init must not write back.
+function setAnnotationWidth(width, persist = false) {
+  annotationWidth = resolveAnnotationWidth(width)
+  lineWidthGroup.querySelectorAll('[data-annotation-width]').forEach((button) => {
+    const active = Number(button.dataset.annotationWidth) === annotationWidth
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+  })
+  if (!persist) return
+  window.captureAPI.saveAnnotationWidth(annotationWidth).catch(() => {})
 }
 
 function commitAnnotation(item) {
@@ -632,6 +653,7 @@ function showResult(type,result) {
 }
 
 document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListener('click',()=>setTool(button.dataset.tool)))
+lineWidthGroup.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-width]');if(button)setAnnotationWidth(button.dataset.annotationWidth,true)})
 colorInput.addEventListener('input',()=>{colorPreview.style.background=colorInput.value})
 ;[watermarkContentInput,watermarkOpacityInput,watermarkColorInput,watermarkSpacingInput,watermarkFontSizeInput,watermarkRotationInput,watermarkDateSuffixInput].forEach((input)=>input.addEventListener('input',updateWatermarkPreview))
 watermarkContentInput.addEventListener('keydown',(event)=>{if(event.key==='Enter'){event.preventDefault();watermarkApplyButton.click()}})
@@ -665,7 +687,9 @@ document.getElementById('ocrResultClose').onclick=clearOcrResult
 
 addEventListener('keydown',(event)=>{
   if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else window.captureAPI.close();return}
-  if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName||''))return
+  const focused=document.activeElement
+  if(['INPUT','TEXTAREA','SELECT'].includes(focused?.tagName||''))return
+  if(focused?.closest?.('#widthGroup'))return
   if(event.key==='Enter'&&!event.ctrlKey&&!activeOcrResult&&resultPanel.classList.contains('hidden'))performAction('copy')
   if(event.ctrlKey&&event.key.toLowerCase()==='s'){event.preventDefault();performAction('save')}
   if(event.ctrlKey&&event.key.toLowerCase()==='z'){event.preventDefault();document.getElementById('undo').click()}
@@ -676,6 +700,7 @@ addEventListener('keydown',(event)=>{
 window.captureAPI.onInit((data)=>{
   clearOcrResult();setProcessingState(null);initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#e5a44c')
   applyWatermarkSettings(data.settings?.screenshot?.watermark)
+  setAnnotationWidth(data.settings?.screenshot?.annotationWidth)
   if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}
   image=new Image(); image.onload=()=>{if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError('截图图片解码失败')
   if(data.mode==='canvas')image.src=makeBlankCanvas()

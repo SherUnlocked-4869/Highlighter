@@ -30,7 +30,11 @@
     </div>
     <div class="divider"></div>
     <label class="color-wrap" title="颜色"><input id="color" type="color" value="#ff3b30"><span></span></label>
-    <select id="lineWidth" title="粗细"><option value="2">细</option><option value="4" selected>中</option><option value="8">粗</option><option value="14">特粗</option></select>
+    <div id="widthGroup" class="width-group" role="group" aria-label="标注线宽">
+      <button type="button" data-annotation-width="2" title="线宽：细（2px）" aria-pressed="false">细</button>
+      <button type="button" data-annotation-width="4" class="active" title="线宽：中（4px）" aria-pressed="true">中</button>
+      <button type="button" data-annotation-width="8" title="线宽：粗（8px）" aria-pressed="false">粗</button>
+    </div>
     <div class="divider"></div>
     <button id="undo" title="撤销 Ctrl+Z" aria-label="撤销"><span class="toolbar-icon" style="--icon:url('icons/undo.svg')" aria-hidden="true"></span></button>
     <button id="redo" title="重做 Ctrl+Y" aria-label="重做"><span class="toolbar-icon" style="--icon:url('icons/redo.svg')" aria-hidden="true"></span></button>
@@ -76,6 +80,7 @@
     <button id="ocrResultClose" title="关闭识别结果">×</button>
   </div>
   <div id="loading" class="loading hidden"><span></span><b>处理中…</b></div>
+  <script src="annotation-style.js"></script>
   <script src="selection-utils.js"></script>
   <script src="capture.js"></script>
 </body>

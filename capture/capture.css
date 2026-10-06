@@ -78,7 +78,7 @@ html, body {
   backdrop-filter: blur(18px);
 }
 .tool-group { display: flex; gap: 2px; }
-.toolbar button, .toolbar select {
+.toolbar button {
   height: 30px;
   min-width: 30px;
   padding: 0 7px;
@@ -92,12 +92,18 @@ html, body {
 }
 .toolbar button { display: grid; place-items: center; }
 .toolbar-icon { display: block; width: 18px; height: 18px; background: currentColor; -webkit-mask: var(--icon) center/contain no-repeat; mask: var(--icon) center/contain no-repeat; }
-.toolbar button:hover, .toolbar button.active, .toolbar select:hover { color: #fff; background: rgba(255, 255, 255, .13); }
+.toolbar button:hover, .toolbar button.active { color: #fff; background: rgba(255, 255, 255, .13); }
 .toolbar button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .toolbar button.primary, .result-actions .primary { color: var(--primary-ink); background: var(--primary); }
 .toolbar button.primary:hover { filter: brightness(1.1); }
 .divider { width: 1px; height: 22px; margin: 0 3px; background: rgba(255, 255, 255, .14); }
-.toolbar select { width: 48px; color-scheme: dark; }
+
+/* Three-level thickness picker: always visible, one click per level. The old
+   native <select> was squeezed to ~30px by the flex row and rendered as an
+   illegible glyph, which is why the control looked like it did not exist. */
+.width-group { display: flex; gap: 2px; }
+.width-group button { min-width: 28px; padding: 0 6px; font: 13px/1 inherit; }
+.width-group button.active { color: #fff; background: rgba(255, 255, 255, .18); }
 
 .color-wrap { position: relative; width: 30px; height: 30px; display: grid; place-items: center; cursor: pointer; }
 .color-wrap input { position: absolute; opacity: 0; width: 1px; height: 1px; }

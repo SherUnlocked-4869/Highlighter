@@ -37,6 +37,7 @@ const DEFAULT_SETTINGS = {
     doubleClickCopy: true,
     selectionMask: 'rgba(0,0,0,.46)',
     showColorPicker: true,
+    annotationWidth: 4,
     longCaptureDirection: 'vertical',
     watermark: { content: '', opacity: 80, color: '#ffffff', spacing: 30, fontSize: 24, rotation: 30, dateSuffix: false }
   },

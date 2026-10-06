@@ -1,6 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { assertSettingsPatch } = require('../main/services/settings-validation')
+const { DEFAULT_SETTINGS } = require('../main/services/settings-defaults')
 
 const template = {
   apiKey: '',
@@ -52,6 +53,19 @@ test('accepts watermark settings patches and rejects invalid watermark values', 
   assert.throws(() => assertSettingsPatch({ screenshot: { watermark: { rotation: Infinity } } }, template), /有限数字/)
   assert.throws(() => assertSettingsPatch({ screenshot: { watermark: { content: 123 } } }, template), /类型无效/)
   assert.throws(() => assertSettingsPatch({ screenshot: { watermark: { dateSuffix: 'yes' } } }, template), /类型无效/)
+})
+
+test('accepts the annotation width patch and only enforces its type', () => {
+  // The real patch template is DEFAULT_SETTINGS, so the default value added for
+  // the screenshot thickness picker is what authorises this patch. The validator
+  // checks the type only — the 2/4/8 whitelist lives in capture/annotation-style.js.
+  assert.equal(
+    assertSettingsPatch({ screenshot: { annotationWidth: 8 } }, DEFAULT_SETTINGS).screenshot.annotationWidth,
+    8
+  )
+  assert.equal(DEFAULT_SETTINGS.screenshot.annotationWidth, 4)
+  assert.throws(() => assertSettingsPatch({ screenshot: { annotationWidth: '8' } }, DEFAULT_SETTINGS), /类型无效/)
+  assert.throws(() => assertSettingsPatch({ screenshot: { annotationWidth: Infinity } }, DEFAULT_SETTINGS), /有限数字/)
 })
 
 test('accepts follow-up conversation patches and rejects broken shapes', () => {
