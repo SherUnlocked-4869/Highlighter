@@ -72,6 +72,9 @@ function createSelectionDomain(deps) {
   let conversationStore = null
   let processing = false
   const selectionEventDiagnostics = new Set()
+  const displayListeners = []
+  // Set while game mode keeps the toolbar hidden; applied on the next show.
+  let toolbarRecyclePending = false
 
   function ensureConversationStore() {
     conversationStore ||= new ConversationStore({ directory: conversationsDirectory, getSettings, log })
@@ -225,6 +228,7 @@ function createSelectionDomain(deps) {
       })
     }
     if (isGameModeEnabled()) return hookService.suspend('game-mode')
+    registerSelectionDisplayEvents()
     return hookService.start('startup')
   }
 
@@ -250,8 +254,58 @@ function createSelectionDomain(deps) {
     for (const [eventName, listener] of powerListeners.splice(0)) {
       powerMonitor.removeListener(eventName, listener)
     }
+    disposeSelectionDisplayEvents()
     hookService?.dispose()
     hookService = null
+  }
+
+  // The toolbar window is pre-created at startup and normally reused for hours.
+  // A window that long can lose its compositor surface without Electron
+  // reporting anything wrong (2026-10-07: WS_VISIBLE, TOPMOST, uncloaked,
+  // renderer painting, nothing on screen), so the events that can invalidate a
+  // surface recycle the cached window instead of trusting it. Registered from
+  // initSelectionHook so main.js stays assembly-only.
+  function registerSelectionDisplayEvents() {
+    if (displayListeners.length || typeof screen?.on !== 'function') return false
+    const bindings = [
+      ['display-added', () => recycleToolbarWindow('display-added')],
+      ['display-removed', () => recycleToolbarWindow('display-removed')],
+      ['display-metrics-changed', () => recycleToolbarWindow('display-metrics-changed')]
+    ]
+    for (const [eventName, listener] of bindings) {
+      screen.on(eventName, listener)
+      displayListeners.push([eventName, listener])
+    }
+    return true
+  }
+
+  function disposeSelectionDisplayEvents() {
+    const listeners = displayListeners.splice(0)
+    if (typeof screen?.removeListener !== 'function') return listeners.length > 0
+    for (const [eventName, listener] of listeners) screen.removeListener(eventName, listener)
+    return listeners.length > 0
+  }
+
+  // Game mode keeps the toolbar hidden, so a recycle request is remembered and
+  // applied on the next real show rather than destroying a window mid-hide.
+  function recycleToolbarWindow(reason) {
+    if (isGameModeEnabled()) {
+      toolbarRecyclePending = true
+      return false
+    }
+    toolbarRecyclePending = false
+    return windowManager.recycleToolbarWindow(reason)
+  }
+
+  function handleChildProcessGone(details = {}) {
+    if (details?.type !== 'GPU') return false
+    return recycleToolbarWindow(`gpu-process-gone:${details.reason || 'unknown'}`)
+  }
+
+  function getToolbarPresentationReport() {
+    return typeof windowManager.getToolbarPresentationReport === 'function'
+      ? windowManager.getToolbarPresentationReport()
+      : null
   }
 
   function getRefPointAndOrientation(data) {
@@ -295,13 +349,27 @@ function createSelectionDomain(deps) {
     const toolbarWidth = getToolbarWidth(actions)
     const result = getRefPointAndOrientation(data)
     const position = calculateToolbarPosition(result.refPoint, result.orientation, toolbarWidth)
+    if (toolbarRecyclePending) {
+      toolbarRecyclePending = false
+      windowManager.recycleToolbarWindow('pending-after-game-mode')
+    }
     windowManager.showToolbarSelection({ text, actions, position, width: toolbarWidth })
+    // The window can be shown and still never reach the screen (2026-10-07), so
+    // the report is recorded: the fields below are what a future occurrence
+    // needs to tell "not triggered" from "triggered, window never presented".
+    const presentation = getToolbarPresentationReport()
     logSelectionDiagnosticOnce('shown', data, {
       posLevel: Number(data.posLevel) || 0,
       anchorSource: result.source,
       refPoint: result.refPoint,
       displayId: screen.getDisplayNearestPoint(result.refPoint).id,
-      toolbarPosition: position
+      toolbarPosition: position,
+      toolbarPresentationOk: presentation ? presentation.ok : null,
+      toolbarVisible: presentation ? presentation.visible : null,
+      toolbarSize: presentation ? presentation.actualSize : null,
+      toolbarRequestedSize: presentation ? presentation.requestedSize : null,
+      toolbarAgeMs: presentation ? presentation.ageMs : null,
+      toolbarRecycled: presentation ? presentation.rebuilt === true : null
     })
   }
 
@@ -499,6 +567,11 @@ function createSelectionDomain(deps) {
     handleTextSelection,
     initSelectionHook,
     registerSelectionPowerEvents,
+    registerSelectionDisplayEvents,
+    disposeSelectionDisplayEvents,
+    handleChildProcessGone,
+    recycleToolbarWindow,
+    getToolbarPresentationReport,
     disposeSelectionHook,
     hookService: () => hookService,
     isProcessing: () => processing,

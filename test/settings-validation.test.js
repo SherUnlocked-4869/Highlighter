@@ -83,3 +83,17 @@ test('accepts follow-up conversation patches and rejects broken shapes', () => {
   // template holds an object. The settings page must not write it.
   assert.throws(() => assertSettingsPatch({ selectionToolbar: { conversation: false } }, template), /必须是对象/)
 })
+
+test('rejects an accelerator that could never register while keeping clearing legal', () => {
+  const shortcutsTemplate = { ...template, shortcuts: { screenshot: '', chatSelectText: '', localSearch: '' } }
+  assert.equal(assertSettingsPatch({ shortcuts: { screenshot: 'Ctrl+1' } }, shortcutsTemplate).shortcuts.screenshot, 'Ctrl+1')
+  // Clearing a shortcut is a right-click action, so an empty value stays legal.
+  assert.equal(assertSettingsPatch({ shortcuts: { chatSelectText: '' } }, shortcutsTemplate).shortcuts.chatSelectText, '')
+  // "Process" is what an input method reports for the key that starts a
+  // composition; it reached the store once and made every start log
+  // `Shortcut registration failed: Process ...`.
+  assert.throws(() => assertSettingsPatch({ shortcuts: { chatSelectText: 'Process' } }, shortcutsTemplate), /快捷键格式无效/)
+  assert.throws(() => assertSettingsPatch({ shortcuts: { localSearch: 'Ctrl+' } }, shortcutsTemplate), /快捷键格式无效/)
+  // Validation checks syntax only; canonicalising case/order is the migration's job.
+  assert.equal(assertSettingsPatch({ shortcuts: { localSearch: 'alt+f' } }, shortcutsTemplate).shortcuts.localSearch, 'alt+f')
+})

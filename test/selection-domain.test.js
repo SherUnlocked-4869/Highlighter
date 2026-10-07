@@ -336,3 +336,76 @@ test('a selection on a mixed-DPI secondary display anchors the toolbar on that d
   assert.equal(screen.calls.length, 1, 'the hook point is converted exactly once')
   assert.deepEqual(screen.calls[0], { x: 4560, y: 900 })
 })
+
+function createScreenHarness() {
+  const listeners = new Map()
+  return {
+    listeners,
+    on(event, listener) {
+      if (!listeners.has(event)) listeners.set(event, [])
+      listeners.get(event).push(listener)
+    },
+    removeListener(event, listener) {
+      const list = listeners.get(event) || []
+      const index = list.indexOf(listener)
+      if (index >= 0) list.splice(index, 1)
+    },
+    emit(event, ...args) {
+      for (const listener of [...(listeners.get(event) || [])]) listener(...args)
+    },
+    getCursorScreenPoint: () => ({ x: 400, y: 300 }),
+    getDisplayNearestPoint: () => ({ id: 7, workArea: { x: 0, y: 0, width: 1920, height: 1080 } }),
+    screenToDipPoint: (point) => point,
+    dipToScreenRect: (_source, rect) => rect
+  }
+}
+
+test('display changes, a restarted GPU process and game mode recycle the toolbar window', () => {
+  const screen = createScreenHarness()
+  const { domain, state } = createHarness({ screen })
+  domain.initSelectionHook()
+  assert.deepEqual(
+    [...screen.listeners.keys()].sort(),
+    ['display-added', 'display-metrics-changed', 'display-removed'],
+    'display changes are watched once the selection surface starts'
+  )
+
+  domain.handleTextSelection({ text: 'hello', programName: 'chrome.exe' })
+  const first = state.windows.at(-1)
+  assert.equal(domain.ownsToolbarWindow(first), true)
+  assert.equal(domain.getToolbarPresentationReport().ok, true)
+
+  // A window that lived through a display change can end up with a surface that
+  // never reaches the screen (2026-10-07), so it is dropped rather than trusted.
+  screen.emit('display-metrics-changed')
+  assert.equal(first.destroyed, true, 'a display change drops the cached window')
+  assert.equal(domain.ownsToolbarWindow(first), false)
+
+  domain.handleTextSelection({ text: 'again', programName: 'chrome.exe' })
+  const second = state.windows.at(-1)
+  assert.notEqual(second, first, 'the next selection builds a fresh window')
+
+  assert.equal(domain.handleChildProcessGone({ type: 'GPU', reason: 'crashed' }), true)
+  assert.equal(second.destroyed, true)
+  domain.handleTextSelection({ text: 'third', programName: 'chrome.exe' })
+  const third = state.windows.at(-1)
+  assert.equal(domain.handleChildProcessGone({ type: 'Utility', reason: 'crashed' }), false)
+  assert.equal(third.destroyed, false, 'only a GPU restart invalidates the surface')
+
+  // Game mode keeps the toolbar hidden: the recycle is remembered instead of
+  // destroying a window in the middle of a hidden state.
+  state.settings.system.gameMode = true
+  assert.equal(domain.recycleToolbarWindow('display-added'), false, 'game mode defers the recycle')
+  assert.equal(third.destroyed, false)
+  state.settings.system.gameMode = false
+  domain.handleTextSelection({ text: 'after game mode', programName: 'chrome.exe' })
+  assert.equal(third.destroyed, true, 'the deferred recycle runs before the next show')
+  assert.equal(state.windows.at(-1)._pendingToolbarSelection.text, 'after game mode')
+
+  domain.disposeSelectionHook()
+  assert.deepEqual(
+    [...screen.listeners.keys()].map((event) => screen.listeners.get(event).length),
+    [0, 0, 0],
+    'display listeners are removed with the hook'
+  )
+})

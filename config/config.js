@@ -303,27 +303,39 @@ function renderHome() {
 }
 
 function bindShortcutRecorders() {
+  const keys = window.shortcutKeys
   document.querySelectorAll('[data-shortcut]').forEach((button) => {
     button.onclick = (event) => {
       event.stopPropagation()
+      const shortcutName = button.dataset.shortcut
+      const restoreLabel = () => { button.textContent = settings.shortcuts[shortcutName] || '未设置' }
       button.textContent = '请按组合键…'
       button.classList.remove('set')
       const handler = async (keyEvent) => {
         keyEvent.preventDefault(); keyEvent.stopPropagation()
-        if (keyEvent.key === 'Escape') { button.textContent = settings.shortcuts[button.dataset.shortcut] || '未设置'; cleanup(); return }
-        if (['Control', 'Shift', 'Alt', 'Meta'].includes(keyEvent.key)) return
-        const parts = []
-        if (keyEvent.ctrlKey) parts.push('Ctrl')
-        if (keyEvent.altKey) parts.push('Alt')
-        if (keyEvent.shiftKey) parts.push('Shift')
-        if (keyEvent.metaKey) parts.push('Super')
-        let key = keyEvent.key.length === 1 ? keyEvent.key.toUpperCase() : keyEvent.key
-        if (key === ' ') key = 'Space'
-        parts.push(key)
-        const accelerator = parts.join('+')
-        const shortcutName = button.dataset.shortcut
+        // While an input method composes, the browser reports Process /
+        // Unidentified for the physical key. Recording that value is how the
+        // invalid "Process" accelerator was written before, so keep waiting for
+        // a usable key instead of closing the recorder.
+        if (keys.isIgnoredRecordingEvent(keyEvent)) return
+        if (keyEvent.key === 'Escape') { restoreLabel(); cleanup(); return }
+        if (keys.isModifierOnlyKey(keyEvent.key)) return
+        const accelerator = keys.acceleratorFromKeyboardEvent(keyEvent)
+        if (!accelerator || !keys.isRecordableShortcut(accelerator)) {
+          cleanup()
+          restoreLabel()
+          toast(keys.describeShortcutRejection(accelerator || keyEvent.key))
+          return
+        }
         const shortcuts = { ...settings.shortcuts, [shortcutName]: accelerator }
-        await updateSettings({ shortcuts }, '')
+        try {
+          await updateSettings({ shortcuts }, '')
+        } catch (error) {
+          cleanup()
+          restoreLabel()
+          toast(errorMessage(error))
+          return
+        }
         const presentation = shortcutPresentation(shortcutName, accelerator)
         cleanup()
         renderRoute()
@@ -1604,7 +1616,7 @@ function renderFunctionSettings() {
 
 function renderHotkeySettings() {
   const all = Object.values(functionGroups).flat()
-  view.innerHTML = `<div class="page">${pageHeader('热键设置', '点击右侧按键框后录入组合键；右键可清除。红色警告表示快捷键冲突或不可用。')}<div class="function-list">${all.map(([name, label, icon]) => `<div class="function-row"><span class="icon">${iconMarkup(icon)}</span><span class="label">${label}</span>${shortcutButton(name, settings.shortcuts[name] || '')}</div>`).join('')}</div></div>`
+  view.innerHTML = `<div class="page">${pageHeader('热键设置', '点击右侧按键框后录入组合键（输入法组合键等无效按键会被忽略）；右键可清除。红色警告表示快捷键冲突或不可用。')}<div class="function-list">${all.map(([name, label, icon]) => `<div class="function-row"><span class="icon">${iconMarkup(icon)}</span><span class="label">${label}</span>${shortcutButton(name, settings.shortcuts[name] || '')}</div>`).join('')}</div></div>`
   bindShortcutRecorders()
 }
 

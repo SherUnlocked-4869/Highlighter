@@ -331,3 +331,95 @@ test('appearance is normalized and broadcast to every live selection window', ()
   assert.deepEqual(firstAction.webContents.messages, [expected])
   assert.deepEqual(secondAction.webContents.messages, [expected])
 })
+
+test('a recycled toolbar window is rebuilt on the next selection and keeps its anchor', () => {
+  const { manager, windows, logs } = createHarness()
+  const first = manager.showToolbarSelection({ text: 'one', actions: [], position: { x: 500, y: 400 }, width: 200 })
+  assert.equal(manager.getToolbarWindow(), first)
+  assert.deepEqual(manager.lastToolbarPosition, { x: 500, y: 400 })
+
+  assert.equal(manager.recycleToolbarWindow('display-metrics-changed'), true)
+  assert.equal(first.destroyed, true)
+  assert.equal(manager.getToolbarWindow(), null)
+  assert.deepEqual(manager.lastToolbarPosition, { x: 500, y: 400 }, 'the anchor survives a recycle')
+  assert.ok(logs.some(([message, reason]) => message === 'Selection toolbar window recycled:' && reason === 'display-metrics-changed'))
+
+  const second = manager.showToolbarSelection({ text: 'two', actions: [], position: { x: 500, y: 400 }, width: 200 })
+  assert.notEqual(second, first, 'the next selection builds a fresh window')
+  assert.equal(windows.length, 2)
+  assert.equal(second.visible, true)
+  assert.equal(manager.recycleToolbarWindow('again'), true)
+  assert.equal(manager.recycleToolbarWindow('nothing-cached'), false)
+})
+
+test('a toolbar window whose native size stopped following setSize is rebuilt once', () => {
+  const now = { value: 1000 }
+  const { manager, windows, logs } = createHarness({ now: () => now.value })
+  const first = manager.createToolbarWindow()
+  // The 2026-10-07 failure mode: the window stayed at 508x102 although every
+  // show asked for 444x40.
+  first.setSize = () => {}
+
+  manager.showToolbarSelection({ text: 'x', actions: [], position: { x: 10, y: 20 }, width: 444 })
+
+  const report = manager.getToolbarPresentationReport()
+  assert.equal(report.ok, false)
+  assert.equal(report.reason, 'size-mismatch')
+  assert.equal(report.rebuilt, true)
+  assert.equal(report.requestedSize[0], 444)
+  assert.equal(first.destroyed, true, 'the window that cannot be sized is dropped')
+  assert.equal(windows.length, 2, 'a replacement is created and shown')
+  assert.deepEqual(windows.at(-1).win.size, [444, 40])
+  assert.equal(windows.at(-1).win.visible, true)
+  assert.equal(windows.at(-1).win._pendingToolbarSelection.text, 'x')
+  assert.ok(logs.some(([message]) => message === 'Selection toolbar presentation check failed:'))
+})
+
+test('the rebuild cooldown stops a second rebuild for the next selection', () => {
+  const now = { value: 5000 }
+  const { manager, windows } = createHarness({ now: () => now.value })
+  const first = manager.createToolbarWindow()
+  first.setSize = () => {}
+  manager.showToolbarSelection({ text: 'x', actions: [], position: { x: 10, y: 20 }, width: 444 })
+  assert.equal(windows.length, 2)
+
+  const second = windows.at(-1).win
+  // The real failure mode: the window is stuck at a native size setSize can no
+  // longer change.
+  second.size = [508, 102]
+  second.setSize = () => {}
+  now.value += 1000
+  manager.showToolbarSelection({ text: 'y', actions: [], position: { x: 10, y: 20 }, width: 444 })
+  assert.equal(windows.length, 2, 'inside the cooldown the failure is only reported')
+  assert.equal(manager.getToolbarPresentationReport().ok, false)
+  assert.equal(manager.getToolbarPresentationReport().rebuilt, false)
+
+  now.value += 10000
+  manager.showToolbarSelection({ text: 'z', actions: [], position: { x: 10, y: 20 }, width: 444 })
+  assert.equal(windows.length, 3, 'past the cooldown the window is replaced')
+})
+
+test('a toolbar window that never becomes visible is rebuilt', () => {
+  const { manager, windows } = createHarness()
+  const first = manager.createToolbarWindow()
+  first.showInactive = () => {}
+
+  manager.showToolbarSelection({ text: 'x', actions: [], position: { x: 0, y: 0 }, width: 200 })
+
+  assert.equal(manager.getToolbarPresentationReport().reason, 'not-visible')
+  assert.equal(manager.getToolbarPresentationReport().rebuilt, true)
+  assert.equal(windows.length, 2)
+  assert.equal(windows.at(-1).win.visible, true)
+})
+
+test('a signal the manager cannot read is not treated as a failure', () => {
+  const { manager, windows } = createHarness()
+  const first = manager.createToolbarWindow()
+  first.getSize = undefined
+
+  manager.showToolbarSelection({ text: 'x', actions: [], position: { x: 1, y: 2 }, width: 260 })
+
+  assert.equal(manager.getToolbarPresentationReport().ok, true)
+  assert.equal(manager.getToolbarPresentationReport().actualSize, null)
+  assert.equal(windows.length, 1, 'no rebuild without proof of failure')
+})

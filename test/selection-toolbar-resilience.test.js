@@ -38,3 +38,26 @@ test('toolbar streams use abortable sliding timeouts and sender ownership checks
   assert.match(action, /onStreamData[\s\S]*armStreamTimeout\(\)/)
   assert.match(action, /onStreamReasoning[\s\S]*armStreamTimeout\(\)/)
 })
+
+test('a long-lived toolbar window is recycled and checked instead of trusted', () => {
+  const windowManager = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'selection-window-manager.js'), 'utf8')
+
+  // The window may be shown and still never reach the screen (2026-10-07), so
+  // every show records a presentation report instead of assuming success.
+  assert.match(windowManager, /inspectToolbarPresentation\(win, \{ width, height: this\.toolbarHeight \}\)/)
+  assert.match(windowManager, /'Selection toolbar presentation check failed:'/)
+  assert.match(windowManager, /reason: 'size-mismatch'/)
+  assert.match(windowManager, /reason: 'not-visible'/)
+  assert.match(windowManager, /canRebuildToolbar\(\)/)
+  // The transitions that can invalidate a compositor surface drop the cached window.
+  assert.match(windowManager, /recycleToolbarWindow\(reason = 'recycle'\)/)
+  assert.match(selectionDomain, /'display-added'[\s\S]*'display-removed'[\s\S]*'display-metrics-changed'/)
+  assert.match(selectionDomain, /handleChildProcessGone\(details = \{\}\)/)
+  assert.match(selectionDomain, /toolbarPresentationOk: presentation \? presentation\.ok : null/)
+  // Registered with the hook so main.js stays assembly-only, and disposed with it.
+  assert.match(selectionDomain, /registerSelectionDisplayEvents\(\)\s*\n\s*return hookService\.start\('startup'\)/)
+  assert.match(selectionDomain, /disposeSelectionDisplayEvents\(\)[\s\S]*?hookService\?\.dispose\(\)/)
+  assert.match(main, /selectionDomain\?\.handleChildProcessGone\(details\)/)
+  // The toolbar window is still pre-created on startup: first selection stays instant.
+  assert.match(main, /selectionDomain\.createToolbarWindow\(\)\s*\n\s*registerShortcuts\(\)/)
+})

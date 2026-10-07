@@ -43,3 +43,24 @@ test('explainClipboard shortcut reads clipboard only and opens the explain windo
   assert.doesNotMatch(explainCase, /EmptyClipboard|clipboard\.clear/)
   assert.match(config, /\['explainClipboard', '解释剪贴板文本'/)
 })
+
+test('recording defers to the shared key rules and stored values are repaired', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.html'), 'utf8')
+  const validation = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'settings-validation.js'), 'utf8')
+  const shortcutService = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'shortcut-service.js'), 'utf8')
+  const migration = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'shortcut-migration.js'), 'utf8')
+
+  // The renderer needs the shared module before config.js runs.
+  assert.match(html, /<script src="\.\.\/shared\/shortcut-keys\.js"><\/script>\s*<script src="routes\/model-helpers\.js"><\/script>\s*<script src="config\.js"><\/script>/)
+  // The recorder must not rebuild an accelerator by hand again: it asks the
+  // shared module, waits out input-method compositions, and reports rejections.
+  assert.match(config, /keys\.isIgnoredRecordingEvent\(keyEvent\)/)
+  assert.match(config, /keys\.isRecordableShortcut\(accelerator\)/)
+  assert.match(config, /keys\.describeShortcutRejection\(/)
+  assert.doesNotMatch(config, /keyEvent\.key\.length === 1 \? keyEvent\.key\.toUpperCase\(\)/)
+  // Both the patch validator and the registry refuse a value that cannot register.
+  assert.match(validation, /isValidAccelerator\(value\)/)
+  assert.match(shortcutService, /!isValidAccelerator\(accelerator\)/)
+  assert.match(migration, /isValidAccelerator\(raw\)/)
+  assert.match(main, /migrateShortcutSettings\(appearance\.settings, \{ log \}\)/)
+})

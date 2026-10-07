@@ -1,3 +1,5 @@
+const { isValidAccelerator } = require('../../shared/shortcut-keys')
+
 const MAX_PATCH_BYTES = 256 * 1024
 const MAX_ARRAY_ITEMS = 100
 const DEFAULT_STRING_LIMIT = 32 * 1024
@@ -33,6 +35,14 @@ function assertValue(value, template, path) {
   if (typeof value !== typeof template) throw new TypeError(`${path} 类型无效`)
   if (typeof value === 'number' && !Number.isFinite(value)) throw new TypeError(`${path} 必须是有限数字`)
   if (typeof value === 'string') {
+    // Defence in depth for the recorder: an accelerator the browser reported
+    // while an input method was composing ("Process") can never register, so it
+    // must not reach the store even when a caller or a hand-edited config file
+    // supplies one. An empty value stays legal - that is how a shortcut is
+    // cleared.
+    if (path.startsWith('shortcuts.') && value.trim() && !isValidAccelerator(value)) {
+      throw new Error(`快捷键格式无效：${value}`)
+    }
     const maximumLength = STRING_LIMITS.get(path) || DEFAULT_STRING_LIMIT
     if (value.length > maximumLength) throw new RangeError(`${path} 内容过长`)
   }
