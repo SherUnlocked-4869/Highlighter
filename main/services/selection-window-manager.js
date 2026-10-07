@@ -17,7 +17,11 @@ class SelectionWindowManager {
     onActionWindowBlur = () => {},
     log = () => {},
     setTimer = setTimeout,
-    clearTimer = clearTimeout
+    clearTimer = clearTimeout,
+    now = () => Date.now(),
+    // A presentation check that fails twice in a row must not rebuild twice:
+    // one selection may legitimately arrive while a rebuild is still settling.
+    toolbarRebuildCooldownMs = 5000
   }) {
     if (typeof createWindow !== 'function') throw new TypeError('Selection windows require a window factory')
     if (typeof rootDirectory !== 'string' || !path.isAbsolute(rootDirectory)) {
@@ -39,10 +43,16 @@ class SelectionWindowManager {
     this.log = log
     this.setTimer = setTimer
     this.clearTimer = clearTimer
+    this.now = now
+    this.toolbarRebuildCooldownMs = toolbarRebuildCooldownMs
     this.toolbarWindow = null
     this.actionWindow = null
     this.actionWindows = []
     this.lastToolbarPosition = null
+    this.toolbarCreatedAt = 0
+    this.lastToolbarRebuildAt = null
+    this.lastPresentationFailureLogAt = null
+    this.toolbarPresentationReport = null
   }
 
   isWindowHealthy(win) {
@@ -112,6 +122,8 @@ class SelectionWindowManager {
       webPreferences: { preload: path.join(this.rootDirectory, 'preload-toolbar.js') }
     })
     this.toolbarWindow = win
+    this.toolbarCreatedAt = this.now()
+    this.toolbarPresentationReport = null
     win._toolbarRendererReady = false
     win._pendingToolbarSelection = null
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
@@ -125,7 +137,10 @@ class SelectionWindowManager {
       if (pending) win.webContents.send('selection:text', pending)
     })
     win.on('closed', () => {
-      if (this.toolbarWindow === win) this.toolbarWindow = null
+      if (this.toolbarWindow !== win) return
+      this.toolbarWindow = null
+      this.toolbarCreatedAt = 0
+      this.toolbarPresentationReport = null
     })
     this.loadWindow(win, pagePath, 'toolbar')
     return win
@@ -271,13 +286,131 @@ class SelectionWindowManager {
   }
 
   showToolbarSelection({ text, actions, position, width }) {
-    const win = this.createToolbarWindow()
+    const payload = { text, actions, appearance: this.getAppearance() }
+    let win = this.createToolbarWindow()
+    this.applyToolbarGeometry(win, position, width)
+    win.showInactive()
+    this.queueToolbarSelection(win, payload)
+    const report = this.inspectToolbarPresentation(win, { width, height: this.toolbarHeight })
+    this.toolbarPresentationReport = report
+    if (!report.ok) {
+      this.logPresentationFailure(report)
+      // One rebuild per show, and never two rebuilds inside the cooldown: a
+      // window that still fails afterwards is reported rather than recreated
+      // in a loop.
+      if (this.canRebuildToolbar()) {
+        win = this.rebuildToolbarWindow(`presentation:${report.reason}`)
+        this.applyToolbarGeometry(win, position, width)
+        win.showInactive()
+        this.queueToolbarSelection(win, payload)
+        this.toolbarPresentationReport = { ...report, rebuilt: true }
+      }
+    }
+    return win
+  }
+
+  applyToolbarGeometry(win, position, width) {
     win.setSize(width, this.toolbarHeight)
     this.lastToolbarPosition = position
     win.setPosition(position.x, position.y)
-    win.showInactive()
-    this.queueToolbarSelection(win, { text, actions, appearance: this.getAppearance() })
-    return win
+  }
+
+  /**
+   * Best-effort presentation check.
+   *
+   * The failure this guards against (2026-10-07) cannot be detected directly:
+   * the window was WS_VISIBLE, TOPMOST, uncloaked and its renderer painted, yet
+   * nothing reached the display. What it *did* expose was a native size that no
+   * longer matched what the code set, so the size is compared here too. Every
+   * signal is optional: an unknown signal (a fake window in tests, a method that
+   * is missing) must not report a failure it cannot prove.
+   */
+  inspectToolbarPresentation(win, { width, height, tolerance = 2 } = {}) {
+    const report = {
+      ok: true,
+      reason: '',
+      requestedSize: [width, height],
+      actualSize: null,
+      visible: null,
+      crashed: false,
+      ageMs: this.toolbarCreatedAt ? Math.max(0, this.now() - this.toolbarCreatedAt) : 0,
+      rebuilt: false
+    }
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed())) {
+      return { ...report, ok: false, reason: 'destroyed' }
+    }
+    try {
+      if (typeof win.isVisible === 'function') report.visible = win.isVisible() === true
+    } catch {
+      report.visible = null
+    }
+    try {
+      if (typeof win.webContents?.isCrashed === 'function') report.crashed = win.webContents.isCrashed() === true
+    } catch {
+      report.crashed = false
+    }
+    try {
+      if (typeof win.getSize === 'function') {
+        const size = win.getSize()
+        if (Array.isArray(size) && size.length === 2 && size.every(Number.isFinite)) report.actualSize = [size[0], size[1]]
+      }
+    } catch {
+      report.actualSize = null
+    }
+    if (report.visible === false) return { ...report, ok: false, reason: 'not-visible' }
+    if (report.crashed) return { ...report, ok: false, reason: 'renderer-crashed' }
+    if (report.actualSize
+      && (Math.abs(report.actualSize[0] - width) > tolerance || Math.abs(report.actualSize[1] - height) > tolerance)) {
+      return { ...report, ok: false, reason: 'size-mismatch' }
+    }
+    return report
+  }
+
+  logPresentationFailure(report) {
+    if (this.lastPresentationFailureLogAt !== null
+      && this.now() - this.lastPresentationFailureLogAt < this.toolbarRebuildCooldownMs) return
+    this.lastPresentationFailureLogAt = this.now()
+    this.log('Selection toolbar presentation check failed:', report)
+  }
+
+  canRebuildToolbar() {
+    if (this.lastToolbarRebuildAt === null) return true
+    return this.now() - this.lastToolbarRebuildAt >= this.toolbarRebuildCooldownMs
+  }
+
+  rebuildToolbarWindow(reason) {
+    this.lastToolbarRebuildAt = this.now()
+    this.destroyUnavailableWindow(this.toolbarWindow, 'toolbar', reason)
+    return this.createToolbarWindow()
+  }
+
+  /**
+   * Drop the cached toolbar window without waiting for a crash.
+   *
+   * The window is normally created once at startup and reused for the rest of
+   * the session. Events that can invalidate its compositor surface (session
+   * unlock, display changes, a restarted GPU process) therefore recycle it so
+   * the next selection builds a fresh one. `lastToolbarPosition` is kept: the
+   * rebuilt window still belongs at the last anchor.
+   */
+  recycleToolbarWindow(reason = 'recycle') {
+    const win = this.toolbarWindow
+    this.toolbarWindow = null
+    this.toolbarCreatedAt = 0
+    this.toolbarPresentationReport = null
+    if (!win) return false
+    this.log('Selection toolbar window recycled:', reason)
+    if (typeof win.isDestroyed === 'function' && win.isDestroyed()) return true
+    try {
+      win.destroy()
+    } catch (error) {
+      this.log('Failed to recycle selection toolbar window:', error.message || String(error))
+    }
+    return true
+  }
+
+  getToolbarPresentationReport() {
+    return this.toolbarPresentationReport
   }
 
   positionActionWindow(win, screen) {

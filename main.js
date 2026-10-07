@@ -96,6 +96,7 @@ const {
   migrateAppearanceSettings,
   resolveMainColor
 } = require('./main/services/appearance-migration')
+const { migrateShortcutSettings } = require('./main/services/shortcut-migration')
 
 const defaultHistoryDirectory = activePaths?.history || path.join(app.getPath('userData'), 'capture-history')
 const conversationsDirectory = activePaths?.conversations || path.join(app.getPath('userData'), 'conversations')
@@ -136,9 +137,10 @@ function initializeStore() {
     migrateSettings: (settings, context) => {
       const ai = migrateAiSettings(settings, context)
       const appearance = migrateAppearanceSettings(ai.settings)
+      const shortcuts = migrateShortcutSettings(appearance.settings, { log })
       return {
-        settings: appearance.settings,
-        changed: ai.changed || appearance.changed
+        settings: shortcuts.settings,
+        changed: ai.changed || appearance.changed || shortcuts.changed
       }
     },
     normalizeSettings,
@@ -298,7 +300,10 @@ function assertManagedDataWritable() {
 
 const writeAppLog = createAppLogger({
   filePath: logFile,
-  isEnabled: () => !dataRootMigrationInProgress && !!store && getSettings().system.runLog,
+  // Reads the store rather than getSettings(): this predicate also runs while the
+  // settings service is still being constructed (a stored-value migration logs),
+  // and getSettings() would dereference the not-yet-assigned service.
+  isEnabled: () => !dataRootMigrationInProgress && !!store && store.get('settings', {}).system?.runLog !== false,
   sessionId: applicationSessionId,
   version: app.getVersion(),
   consoleLike: app.isPackaged ? null : console
@@ -1255,18 +1260,13 @@ else {
     selectionDomain?.handleRendererGone(win, details)
   })
   app.on('child-process-gone', (_event, details) => {
-    diagnosticsService?.recordProcessExit('child', {
-      type: details.type,
-      reason: details.reason,
-      exitCode: details.exitCode,
-      serviceName: details.serviceName || ''
-    })
-    log('Child process exited:', {
-      type: details.type,
-      reason: details.reason,
-      exitCode: details.exitCode,
-      serviceName: details.serviceName || ''
-    })
+    const description = { type: details.type, reason: details.reason, exitCode: details.exitCode, serviceName: details.serviceName || '' }
+    diagnosticsService?.recordProcessExit('child', description)
+    log('Child process exited:', description)
+    // A restarted GPU process invalidates the surfaces of long-lived windows,
+    // so the selection toolbar is recycled instead of reused. See
+    // main/domains/selection/index.js (handleChildProcessGone).
+    selectionDomain?.handleChildProcessGone(details)
   })
   nativeTheme.on('updated', () => {
     if (store && getSettings().theme === 'system') selectionDomain.broadcastActionAppearance()

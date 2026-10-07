@@ -147,3 +147,19 @@ test('dispose unregisters shortcuts and clears status', () => {
   assert.equal(globalShortcut.unregisterCount, 2)
   assert.deepEqual(service.getStatuses(), {})
 })
+
+test('a syntactically invalid accelerator never reaches the global shortcut registry', () => {
+  const globalShortcut = createGlobalShortcut()
+  const service = new ShortcutService({
+    globalShortcut,
+    executeFunction() {}
+  })
+
+  const statuses = service.registerAll({ chatSelectText: 'Process', screenshot: 'Ctrl+1' })
+
+  assert.equal(statuses.chatSelectText.reason, 'invalid')
+  assert.equal(statuses.chatSelectText.registered, false)
+  assert.equal(globalShortcut.callbacks.has('Process'), false)
+  assert.equal(statuses.screenshot.registered, true)
+  assert.equal(globalShortcut.callbacks.has('Ctrl+1'), true)
+})

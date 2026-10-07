@@ -1,3 +1,5 @@
+const { isValidAccelerator } = require('../../shared/shortcut-keys')
+
 function normalizeAccelerator(value) {
   return String(value || '').trim().toLocaleLowerCase('en-US')
 }
@@ -62,6 +64,21 @@ class ShortcutService {
           conflictWith: owners.filter((owner) => owner !== name)
         }
         this.log('Shortcut duplicated:', accelerator, owners.join(', '))
+        continue
+      }
+
+      // Validate before touching Electron: a stored accelerator the recorder
+      // should have rejected ("Process") is reported as invalid without ever
+      // reaching globalShortcut.register, whose failure mode is a thrown
+      // conversion error rather than a clean false.
+      if (!isValidAccelerator(accelerator)) {
+        statuses[name] = {
+          accelerator,
+          registered: false,
+          reason: 'invalid',
+          message: `invalid accelerator: ${accelerator}`
+        }
+        this.log('Shortcut invalid:', accelerator)
         continue
       }
 
