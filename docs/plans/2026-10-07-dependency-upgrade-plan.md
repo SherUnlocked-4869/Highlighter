@@ -15,6 +15,7 @@
 3. **2 条没有可用补丁**：`sprintf-js`（上游无修复版本）与 `http-cache-semantics`（advisory 未列 first_patched_version），只能靠依赖链变化或继续豁免。
 4. **3 条有现成规避手段**（`sharp` 的 SVG 禁用、electron 的三条高危本仓库已有硬性缓解），可作为升级前的临时保护。
 5. 建议分四期推进：**M1 锁文件刷新 → M2 直接依赖补丁 → M3 Electron 43.2.0 → 43.7.9 → M4 收尾删豁免**；只有 M3 需要真机复验（透明窗口/截图/贴图/录屏/OCR/快捷键）。
+6. **兼容性单独成章（§5）**：推荐目标 43.7.9 与现状同属 Chromium 150 / Node 24 线（补丁级刷新，无引擎级破坏性变更）；备选 44.6.0 是 Chromium 150 → **152** 的跨版本，风险集中在渲染/合成/捕获——恰好是本项目用得最重的部分。
 
 ## 1. 现状与暴露面总览
 
@@ -131,7 +132,61 @@ npm test; npm run check        # 653 用例 + 语法/架构门禁
 
 真机（**仅 M3 强制**，因为换的是运行时外壳）：按 README 的功能面逐项过一遍——划词工具栏弹出与动作、区域截图/标注/复制/保存/贴图、OCR（文本/表格/二维码）、长截图、录屏导出、翻译与 AI 对话、托盘与全局快捷键、多显示器与 150% DPI 下的工具栏锚点（2026-10-07 那次事故就是透明窗口合成路径，DComp 行为必须重看）。构建产物要重做一次 setup 并静默安装，再确认 `Highlighter.exe`/`app.asar` 指纹变化与运行时日志版本号。
 
-## 5. 风险与回滚
+## 5. 兼容性分析（升级会动到什么）
+
+第一版文档只把兼容性放在"风险与缓解"表和验证清单里；这一章把它补成逐项分析。
+
+### 5.1 引擎栈对照（本地实测 + 上游 `DEPS` 取数）
+
+| | Electron | Chromium | Node | V8 | N-API / ABI |
+|---|---|---|---|---|---|
+| **现状**（本机 `process.versions`） | 43.2.0 | 150.0.7871.129 | 24.18.0 | 15.0.1240245-electron.0 | napi 10 / modules 148 |
+| **M3 推荐**（[DEPS@v43.7.9](https://raw.githubusercontent.com/electron/electron/v43.7.9/DEPS)） | 43.7.9 | **150.0.7871.250**（同 150 线，+121 patch） | **24.21.0**（同 24 线） | 同 major | 同 major（N-API 稳定） |
+| **M3 备选**（[DEPS@v44.6.0](https://raw.githubusercontent.com/electron/electron/v44.6.0/DEPS)） | 44.6.0 | **152.0.7977.130**（跨 150→152 两个 major） | 24.21.0 | 新 major | 需实测 |
+
+结论：
+- 43.2.0 → 43.7.9 是**同 Chromium major、同 Node major 的补丁级刷新**，不存在引擎级破坏性变更 → 风险主要来自 Electron 自身的 5 个次版本修复；
+- 44.6.0 才是真正的跨版本（Chromium 150 → 152），风险集中在 Chromium 行为，而本项目的核心功能恰好全压在 Chromium 的合成与捕获上（见 5.2）。
+
+### 5.2 本仓库用到的 Electron 敏感面（升级后逐项对照）
+
+| 能力 | 用在哪 | 跨版本关注点 |
+|---|---|---|
+| 透明/无边框窗口 + `setAlwaysOnTop('screen-saver')` + `setVisibleOnAllWorkspaces` + `skipTaskbar` | 划词工具栏（[selection-window-manager.js](../../main/services/selection-window-manager.js#L115)）、截图浮层、贴图 | Chromium 合成/DComp 路径 —— **2026-10-07 的"工具栏被显示但没上屏"就出在这条路径上**，必须重跑真机 |
+| `desktopCapturer`（5 处）+ `screenshot-desktop` + 原生智能选区 | 截图、长截图、录屏 | 捕获 API 与显示器枚举语义 |
+| `screen.getCursorScreenPoint` / `getDisplayNearestPoint` / `screenToDipPoint` / `dipToScreenRect` + `display-*` 事件 | 划词锚点（[anchor.js](../../main/domains/selection/anchor.js)）、多显示器定位 | DPI 换算与 display 事件语义（历史上出过 DPI 重复换算事故，且刚做过锚点修复） |
+| `globalShortcut`（11 处） | 全部热键 | 注册失败/冲突语义变化会影响 UI 状态展示 |
+| `safeStorage`（11 处） | API Key 凭据存储 | **加密后端变化会影响已有密文能否解密**：升级后必须验证旧密钥仍可读，否则用户要重填 |
+| `session`（26 处）+ `webContents.setWindowOpenHandler` | IPC 安全层与窗口安全（[window-security.js](../../main/services/window-security.js)） | 沙箱/CSP 默认值变化 |
+| `utilityProcess` | 划词 hook 宿主（隔离 COM/UIA） | fork / stdio / 退出语义 |
+| `nativeImage`（19 处）/ `clipboard.write`（10 处）/ `dialog`（19 处）/ `Tray` / `powerMonitor` / `nativeTheme` / `crashReporter` / `app.setLoginItemSettings` | 各功能面 | 常规 API，靠真机清单回归 |
+| `electronFuses` 配置（[electron-builder.release.cjs](../../electron-builder.release.cjs#L14)） | 打包加固 | **fuses 是版本敏感项**（Electron 会新增/调整 fuse），必须 `npm run verify:fuses` |
+
+### 5.3 工具链与原生模块耦合
+
+- 构建/打包链：electron-builder 26.15.3、@electron/fuses 1.8.0、@electron/rebuild 4.2.0（`engines: node >= 22.12`）、@electron/asar 4.3.1、electron-updater 6.8.9、electron-store 8.2.0。这些包**都不声明 Electron 版本范围**，所以兼容性只能靠实测，不能靠声明推断。
+- 原生模块：`sharp`、`onnxruntime-node`、`selection-hook` 都是 **N-API 预编译产物**（现状 napi 10 / ABI 148）；同一 N-API major 下换 Electron 不需要重编，且本仓库 `npmRebuild: false` + `allowScripts` 白名单已经固定了安装脚本行为。但升级后必须真机确认三者仍能加载：缩略图（sharp）、OCR（onnxruntime）、划词 hook（selection-hook）。
+- 打包路径：`asarUnpack`（ffmpeg-static、screenshot-desktop）与 `extraResources`（`native/`、`ocr/models`）要在打包日志里复核，确认新版本的 asar 行为没有让路径漂移。
+- 磁盘/网络：Electron 二进制从 43.2.0 换到 43.7.9/44.6.0 会重新下载 `node_modules/electron/dist`（`build:win` 用 `--config.electronDist=node_modules/electron/dist`），CI 上的缓存键要跟着变。
+
+### 5.4 锁文件刷新（M1）对"打包内容"的影响
+
+- `npm audit fix` 更新的不只是构建工具：**生产依赖树也会被写进 `app.asar`**（`files` 里包含 `node_modules/**/*`，但打包时只收生产依赖），所以 M1 也必须"打包 + 真机冒烟"，不能只看单测；
+- **禁止 `npm audit fix --force`**（允许跨 major，会把 electron/sharp 之外的父链一起拽上新大版本）；
+- 既有 `overrides`（`adm-zip 0.6.1`）必须在刷新后仍然生效（`npm ls adm-zip` 复核）；
+- 升级前后对比 `app.asar` 的模块清单差异（新增/消失的包），确认没有把 devDependencies 带进包。
+
+### 5.5 兼容性验证的硬性步骤（并入 §4 执行）
+
+1. **基线存档**：升级前后各跑一次
+   `ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe -e "console.log(process.versions)"`
+   （现状已录得 5.1 第一行），把 `electron/chrome/node/v8/modules/napi` 写进验证报告；
+2. `npm run test:runtime`、`npm run test:e2e`、`npm run verify:fuses`、`npm run test:coverage`；
+3. 打包 + 静默安装 + `Highlighter.exe`/`app.asar` 指纹对比 + 运行时日志里的 `version` 字段；
+4. §4 的真机清单（透明窗口/合成、区域截图、OCR、长截图、录屏、贴图、热键、150% DPI 与多显示器锚点）；
+5. **旧数据兼容**：用升级前的 `config.json`、`safeStorage` 加密的 API Key、`history/` 目录各启动一次，确认设置可读、密钥可解密、缩略图可重新生成——这是跨版本最容易被忽略的一类回归。
+
+## 6. 风险与回滚
 
 | 风险 | 影响 | 缓解 / 回滚 |
 |---|---|---|
@@ -141,14 +196,14 @@ npm test; npm run check        # 653 用例 + 语法/架构门禁
 | 跨 major（44.x） | API 弃用/签名链路变化 | 不放进本次范围，单独设计 |
 | 豁免被当成"已修复"遗忘 | 风险长期滞留 | allowlist 每条带 `reviewBy`，且失效条目会让门禁变红，强制复核 |
 
-## 6. 待确认
+## 7. 待确认
 
 1. **M3 是否只到 43.7.9，还是今年内直接规划 44.x？**（43.7.9 可立刻消掉 4 条 high；44.x 是跨 major，需要单独一期。）
 2. `sharp` 的 SVG 硬性禁用（`VipsForeignLoadSvg`）要不要作为**独立小改动**先落地？
 3. `npm audit fix` 允许动到什么程度：只允许锁文件，还是也允许 `package.json` 里 `^`/`~` 范围内的直接依赖被动更新？
 4. 是否把"审计红灯"设为**发布门禁的一部分**（tag 之前必须绿），避免以后又靠豁免兜底？
 
-## 7. 附录：豁免清单（2026-10-07 写入 `scripts/audit-dependencies.js`）
+## 8. 附录：豁免清单（2026-10-07 写入 `scripts/audit-dependencies.js`）
 
 18 条（26 个 finding，其中 brace-expansion 与 undici 因 npm 的 `via` 重复计数）：
 
