@@ -7,7 +7,13 @@ const { createImageTargetResolver, createImageFileSaver, PNG_FILTER, SAVE_TITLE 
 const PICTURES = 'C:/Users/me/Pictures'
 
 // A fake file system: `existing` lists the base names already taken.
-function makeSaver({ dialogResult = { canceled: true }, template = '', saveDirectory = 'D:/shots', existing = [] } = {}) {
+function makeSaver({
+  dialogResult = { canceled: true },
+  template = '',
+  saveDirectory = 'D:/shots',
+  lastSaveDirectory = '',
+  existing = []
+} = {}) {
   const written = []
   const remembered = []
   const ensured = []
@@ -25,7 +31,7 @@ function makeSaver({ dialogResult = { canceled: true }, template = '', saveDirec
     },
     ensureDirectory: (directory) => ensured.push(directory),
     getPicturesDirectory: () => PICTURES,
-    getSettings: () => ({ screenshot: { saveDirectory, nameTemplate: template } }),
+    getSettings: () => ({ screenshot: { saveDirectory, lastSaveDirectory, nameTemplate: template } }),
     makeCaptureName: (prefix, ext, nameSettings) => {
       const label = nameSettings?.template ? `_${nameSettings.template}` : ''
       const name = `${prefix}${label}.${ext}`
@@ -166,8 +172,7 @@ test('a cancelled dialog writes nothing and returns null', async () => {
   assert.deepEqual(remembered, [])
 })
 
-test('a failing directory memory does not fail the save', async () => {
-  const logged = []
+test('a failing directory memory does not fail the save', async () => {  const logged = []
   const written = []
   const saver = createImageFileSaver({
     dialog: { showSaveDialog: async () => ({ canceled: true }) },
@@ -190,4 +195,39 @@ test('a failing directory memory does not fail the save', async () => {
   assert.equal(written.length, 1)
   assert.equal(logged.length, 1)
   assert.match(logged[0][0], /last save directory/)
+})
+
+test('a memorized directory wins over the configured save directory', async () => {
+  const { saver, remembered, ensured } = makeSaver({
+    saveDirectory: 'D:/configured',
+    lastSaveDirectory: 'E:/remembered'
+  })
+  const filePath = await saver(Buffer.from('image'), { fast: true })
+  assert.equal(filePath, path.join('E:/remembered', 'Highlighter.png'))
+  assert.deepEqual(ensured, ['E:/remembered'])
+  // The resolved directory already equals the memory, so no settings write.
+  assert.deepEqual(remembered, [])
+})
+
+test('an explicit directory still wins over the memorized one', async () => {
+  const { saver } = makeSaver({ saveDirectory: 'D:/configured', lastSaveDirectory: 'E:/remembered' })
+  const filePath = await saver(Buffer.from('image'), { fast: true, directory: 'F:/explicit' })
+  assert.equal(filePath, path.join('F:/explicit', 'Highlighter.png'))
+})
+
+test('a save elsewhere refreshes the memory', async () => {
+  const { saver, remembered } = makeSaver({
+    dialogResult: { canceled: false, filePath: path.join('E:/picked', 'mine.png') },
+    lastSaveDirectory: 'D:/old'
+  })
+  await saver(Buffer.from('image'), {})
+  assert.deepEqual(remembered, [path.dirname(path.join('E:/picked', 'mine.png'))])
+})
+
+test('a blank memorized value falls back to the configured directory', async () => {
+  const { saver, remembered } = makeSaver({ saveDirectory: 'D:/configured', lastSaveDirectory: '   ' })
+  const filePath = await saver(Buffer.from('image'), { fast: true })
+  assert.equal(filePath, path.join('D:/configured', 'Highlighter.png'))
+  // The memory was blank, so the write-back still happens.
+  assert.deepEqual(remembered, [path.dirname(filePath)])
 })
