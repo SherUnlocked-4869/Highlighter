@@ -269,3 +269,30 @@ test('cleanup removes missing metadata and only unreferenced managed files', () 
     assert.equal(fs.existsSync(unrelatedPath), true)
   })
 })
+
+test('history image paths follow the screenshot naming template', () => {
+  withTempDirectory((directory) => {
+    const calls = []
+    const service = createService(directory, [], {
+      makeCaptureName: (prefix, ext, nameSettings) => {
+        calls.push({ prefix, ext, template: nameSettings?.template })
+        return `${prefix}${nameSettings?.template ? `_${nameSettings.template}` : ''}.png`
+      },
+      getSettings: () => ({
+        screenshot: {
+          historyDirectory: directory,
+          historyEnabled: true,
+          historyLimit: 10,
+          nameTemplate: 'shot'
+        }
+      })
+    })
+
+    assert.match(service.historyImagePath({}), /Highlighter_shot\.png$/)
+    assert.match(service.historyImagePath({ longCapture: true }), /Highlighter_Long_shot\.png$/)
+    assert.deepEqual(calls, [
+      { prefix: 'Highlighter', ext: 'png', template: 'shot' },
+      { prefix: 'Highlighter_Long', ext: 'png', template: 'shot' }
+    ])
+  })
+})

@@ -88,7 +88,7 @@ const aiClient = require('./main/services/ai')
 const { createFunctionRouter } = require('./main/services/function-router')
 const { createSettingsNormalizer } = require('./main/services/settings-normalize')
 const { createFfmpegPathResolver } = require('./main/services/ffmpeg-path')
-const { createImageTargetResolver } = require('./main/services/image-file-save')
+const { createImageFileSaver } = require('./main/services/image-file-save')
 const {
   migrateAiSettings,
   resolveAiAssignment
@@ -99,7 +99,6 @@ const { migrateShortcutSettings } = require('./main/services/shortcut-migration'
 const defaultHistoryDirectory = activePaths?.history || path.join(app.getPath('userData'), 'capture-history')
 const normalizeSettings = createSettingsNormalizer({ defaultHistoryDirectory })
 const resolveFfmpegPath = createFfmpegPathResolver({ log, isPackaged: () => app.isPackaged })
-const resolveImageTarget = createImageTargetResolver({ dialog, ensureDirectory, getPicturesDirectory: () => app.getPath('pictures') })
 const conversationsDirectory = activePaths?.conversations || path.join(app.getPath('userData'), 'conversations')
 const logFile = activePaths ? path.join(activePaths.logs, 'app.log') : path.join(app.getPath('userData'), 'app.log')
 const applicationSessionId = crypto.randomUUID()
@@ -486,8 +485,12 @@ function bufferToDataUrl(value) {
   return imageBufferUtils.bufferToDataUrl(value)
 }
 
-function makeCaptureName(prefix = CAPTURE_PREFIX) {
-  return captureNaming.makeCaptureName(prefix)
+// The extended signature is a pass-through: `ext` and `nameSettings` are read by
+// the module, and callers that omit them keep the legacy `*.png` shape. That is
+// how the history and long-capture paths opt into screenshot.nameTemplate while
+// the recorder deliberately stays on the legacy format.
+function makeCaptureName(prefix = CAPTURE_PREFIX, ext, nameSettings) {
+  return captureNaming.makeCaptureName(prefix, ext, nameSettings)
 }
 
 function persistHistory(imageData, meta = {}) {
@@ -832,34 +835,15 @@ function createTrayIcon() {
   })))
 }
 
-async function saveImageBuffer(imageBuffer, options = {}) {
-  const settings = getSettings()
-  const preferredDirectory = options.directory || settings.screenshot.saveDirectory
-  // Only the fast path can silently overwrite, so the uniqueness probe looks at
-  // the directory it is about to write into; the dialog branch lets the OS ask.
-  // The extension/options ride on captureNaming.makeCaptureName's extended
-  // signature (P0-7-T1) - never through the single-argument wrapper above, whose
-  // exact text test/history-management-ui.test.js:74 asserts.
-  const fastDirectory = options.fast === true && preferredDirectory ? preferredDirectory : ''
-  const defaultName = captureNaming.makeCaptureName(CAPTURE_PREFIX, 'png', {
-    template: settings.screenshot.nameTemplate,
-    app: app.getName(),
-    isTaken: (name) => fs.existsSync(path.join(fastDirectory || preferredDirectory || app.getPath('pictures'), name))
-  })
-  const filePath = await resolveImageTarget({
-    fast: options.fast === true,
-    directory: preferredDirectory,
-    defaultName
-  })
-  if (!filePath) return null
-  await fs.promises.writeFile(filePath, imageDataToBuffer(imageBuffer))
-  try {
-    settingsService?.updateSettings({ screenshot: { lastSaveDirectory: path.dirname(filePath) } })
-  } catch (error) {
-    log('Unable to remember the last save directory:', error.message)
-  }
-  return filePath
-}
+// The save flow lives in main/services/image-file-save.js, which owns the
+// template-aware naming, the fast-path uniqueness probe and the write itself.
+const saveImageBuffer = createImageFileSaver({
+  dialog,
+  getSettings,
+  getPicturesDirectory: () => app.getPath('pictures'),
+  rememberDirectory: (directory) => settingsService?.updateSettings({ screenshot: { lastSaveDirectory: directory } }),
+  log
+})
 
 async function saveDataUrl(dataUrl, options = {}) {
   return saveImageBuffer(dataUrlToBuffer(dataUrl), options)

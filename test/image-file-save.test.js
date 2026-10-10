@@ -2,9 +2,41 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const path = require('node:path')
 
-const { createImageTargetResolver, PNG_FILTER, SAVE_TITLE } = require('../main/services/image-file-save')
+const { createImageTargetResolver, createImageFileSaver, PNG_FILTER, SAVE_TITLE } = require('../main/services/image-file-save')
 
 const PICTURES = 'C:/Users/me/Pictures'
+
+// A fake file system: `existing` lists the base names already taken.
+function makeSaver({ dialogResult = { canceled: true }, template = '', saveDirectory = 'D:/shots', existing = [] } = {}) {
+  const written = []
+  const remembered = []
+  const ensured = []
+  const dialogCalls = []
+  const saver = createImageFileSaver({
+    dialog: {
+      showSaveDialog: async (options) => {
+        dialogCalls.push(options)
+        return dialogResult
+      }
+    },
+    fs: {
+      existsSync: (target) => existing.includes(path.basename(target)),
+      promises: { writeFile: async (target, buffer) => written.push({ target, buffer }) }
+    },
+    ensureDirectory: (directory) => ensured.push(directory),
+    getPicturesDirectory: () => PICTURES,
+    getSettings: () => ({ screenshot: { saveDirectory, nameTemplate: template } }),
+    makeCaptureName: (prefix, ext, nameSettings) => {
+      const label = nameSettings?.template ? `_${nameSettings.template}` : ''
+      const name = `${prefix}${label}.${ext}`
+      return nameSettings?.isTaken?.(name) ? `${prefix}${label}-1.${ext}` : name
+    },
+    imageDataToBuffer: (value) => Buffer.from(String(value)),
+    rememberDirectory: (directory) => remembered.push(directory),
+    log: () => {}
+  })
+  return { saver, written, remembered, ensured, dialogCalls }
+}
 
 function makeResolver({ dialogResult = { canceled: true } } = {}) {
   const calls = { ensure: [], dialog: [] }
@@ -75,4 +107,87 @@ test('cancelling, dismissing, or an empty dialog result yields no target', async
   assert.equal(await dismissed.resolver({ defaultName: 'shot.png' }), null)
   const empty = makeResolver({ dialogResult: {} })
   assert.equal(await empty.resolver({ defaultName: 'shot.png' }), null)
+})
+
+test('the image file saver validates its collaborators', () => {
+  // The fs/naming/buffer collaborators have real defaults, so only an explicitly
+  // broken injection - or a missing settings/pictures probe - can fail.
+  assert.throws(() => createImageFileSaver({ fs: {} }), /requires a file system/)
+  assert.throws(() => createImageFileSaver(), /requires getSettings/)
+  assert.throws(() => createImageFileSaver({ getSettings: () => ({}) }), /requires a pictures directory probe/)
+  assert.throws(
+    () => createImageFileSaver({ getSettings: () => ({}), getPicturesDirectory: () => PICTURES, makeCaptureName: null }),
+    /requires makeCaptureName/
+  )
+  assert.throws(
+    () => createImageFileSaver({ getSettings: () => ({}), getPicturesDirectory: () => PICTURES, imageDataToBuffer: null }),
+    /requires imageDataToBuffer/
+  )
+})
+
+test('a fast save writes a template-aware, de-duplicated name and remembers the directory', async () => {
+  const { saver, written, remembered, ensured } = makeSaver({ template: 'shot' })
+  const filePath = await saver(Buffer.from('image'), { fast: true })
+  assert.equal(filePath, path.join('D:/shots', 'Highlighter_shot.png'))
+  assert.deepEqual(ensured, ['D:/shots'])
+  assert.deepEqual(written.map((entry) => entry.target), [filePath])
+  assert.equal(written[0].buffer.toString(), 'image')
+  assert.deepEqual(remembered, [path.dirname(filePath)])
+})
+
+test('a taken name is de-duplicated instead of overwritten', async () => {
+  const { saver, written } = makeSaver({ template: 'shot', existing: ['Highlighter_shot.png'] })
+  const filePath = await saver(Buffer.from('image'), { fast: true })
+  assert.equal(path.basename(filePath), 'Highlighter_shot-1.png')
+  assert.equal(written.length, 1)
+})
+
+test('an empty template keeps the legacy name', async () => {
+  const { saver } = makeSaver()
+  assert.equal(path.basename(await saver(Buffer.from('image'), { fast: true })), 'Highlighter.png')
+})
+
+test('the dialog branch writes the chosen path and remembers its directory', async () => {
+  const { saver, written, remembered, ensured, dialogCalls } = makeSaver({
+    dialogResult: { canceled: false, filePath: path.join('E:/picked', 'mine.png') }
+  })
+  const filePath = await saver(Buffer.from('image'), {})
+  assert.equal(filePath, path.join('E:/picked', 'mine.png'))
+  assert.deepEqual(ensured, [])
+  assert.deepEqual(remembered, [path.dirname(filePath)])
+  assert.deepEqual(written.map((entry) => entry.target), [filePath])
+  assert.equal(dialogCalls[0].title, SAVE_TITLE)
+})
+
+test('a cancelled dialog writes nothing and returns null', async () => {
+  const { saver, written, remembered } = makeSaver({ dialogResult: { canceled: true } })
+  assert.equal(await saver(Buffer.from('image'), {}), null)
+  assert.deepEqual(written, [])
+  assert.deepEqual(remembered, [])
+})
+
+test('a failing directory memory does not fail the save', async () => {
+  const logged = []
+  const written = []
+  const saver = createImageFileSaver({
+    dialog: { showSaveDialog: async () => ({ canceled: true }) },
+    fs: {
+      existsSync: () => false,
+      promises: { writeFile: async (target) => written.push(target) }
+    },
+    ensureDirectory: () => {},
+    getPicturesDirectory: () => PICTURES,
+    getSettings: () => ({ screenshot: { saveDirectory: 'D:/shots', nameTemplate: '' } }),
+    makeCaptureName: (prefix) => `${prefix}.png`,
+    imageDataToBuffer: () => Buffer.from('x'),
+    rememberDirectory: () => {
+      throw new Error('store is read-only')
+    },
+    log: (...args) => logged.push(args)
+  })
+  const filePath = await saver(Buffer.from('image'), { fast: true })
+  assert.equal(filePath, path.join('D:/shots', 'Highlighter.png'))
+  assert.equal(written.length, 1)
+  assert.equal(logged.length, 1)
+  assert.match(logged[0][0], /last save directory/)
 })

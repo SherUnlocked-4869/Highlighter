@@ -104,9 +104,13 @@ class HistoryService {
   }
 
   historyImagePath(meta = {}) {
-    const directory = this.ensureDirectory(this.getSettings().screenshot.historyDirectory)
+    const settings = this.getSettings()
+    const directory = this.ensureDirectory(settings.screenshot.historyDirectory)
     const prefix = meta.longCapture ? LONG_CAPTURE_PREFIX : CAPTURE_PREFIX
-    return path.join(directory, this.makeCaptureName(prefix))
+    // History entries are screenshots, so they follow the same naming template as
+    // an export (P0-7-T1). The recorder deliberately does not: it owns a separate
+    // format until a dedicated key exists.
+    return path.join(directory, this.makeCaptureName(prefix, 'png', { template: settings.screenshot.nameTemplate }))
   }
 
   deleteFiles(item) {

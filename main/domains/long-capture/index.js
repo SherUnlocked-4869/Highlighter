@@ -219,14 +219,17 @@ function createLongCaptureDomain(deps) {
       if (action === 'save') {
         const settings = getSettings()
         const preferredDirectory = settings.screenshot.saveDirectory
+        // A long capture is still a screenshot, so it follows the same naming
+        // template as a normal export (P0-7-T1).
+        const nameSettings = { template: settings.screenshot.nameTemplate }
         let filePath = ''
         if (fast && preferredDirectory) {
           ensureDirectory(preferredDirectory)
-          filePath = path.join(preferredDirectory, makeCaptureName(LONG_CAPTURE_PREFIX))
+          filePath = path.join(preferredDirectory, makeCaptureName(LONG_CAPTURE_PREFIX, 'png', nameSettings))
         } else {
           const result = await dialog.showSaveDialog({
             title: '保存长截图',
-            defaultPath: path.join(preferredDirectory || app.getPath('pictures'), makeCaptureName(LONG_CAPTURE_PREFIX)),
+            defaultPath: path.join(preferredDirectory || app.getPath('pictures'), makeCaptureName(LONG_CAPTURE_PREFIX, 'png', nameSettings)),
             filters: [{ name: 'PNG 图片', extensions: ['png'] }]
           })
           if (result.canceled || !result.filePath) {
