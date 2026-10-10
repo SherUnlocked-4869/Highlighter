@@ -20,3 +20,6 @@ test-results/
 
 # Rust build cache for the Everything sidecar
 native/everything-search/target/
+
+# 只读参考克隆（Snow Apps 对标分析用，见 docs/plans/2026-10-10-snow-apps-feature-gap-analysis.md）
+_repo_snow_apps/
