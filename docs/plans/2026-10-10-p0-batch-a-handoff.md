@@ -1,0 +1,207 @@
+# 交接文档：P0 批次 A 收尾 → 新会话继续（2026-10-10）
+
+> 用途：上一会话上下文已过大，本文件是新会话的**唯一入口**。请先读本文件，再按其中的指针读方案文档的相关小节，不要从头重读 900 行方案。
+
+---
+
+## 0. 30 秒速览
+
+| 项 | 状态 |
+| --- | --- |
+| 方案进度 | **Wave 0 ✅ · Wave 1 ✅ · Wave 2 ✅ · Wave 3（真机验收）进行中** |
+| 代码 | 批次 A 全部落地，**HEAD = `a46bbc0`**（含本轮 5 个提交） |
+| 门禁 | `npm test` **766/766** · `main.js` **1278/1300** · 覆盖率 **91.87%** · critical 93.22/92.99/92.42 · `audit` 26/0 · **e2e 5/5** |
+| 真机验收 | 已验：A1/A2/A3、B1/B2、C1、C4 前半。**剩余 9 项**见 §4 |
+| dev 实例 | **正在运行**（主窗口标题 `Highlighter`，进程 2456；后台 job `pwsh-358`）。✕ 是"收进托盘"不是退出，要它出来就再跑一次 `.\node_modules\.bin\electron.cmd .`（`main.js:1227` 的 `second-instance` 会调出主窗口） |
+| 下一步 | ① 继续 §4 的剩余验收；② 验完回填 §11 收口（v2.3.2）；③ 再派 Wave 4（批次 B） |
+
+---
+
+## 1. 仓库与提交状态
+
+工作区在本文件提交后应为**干净**（仅 `.zcodeignore` 为有意保留的 untracked）。
+
+| 提交 | 内容 |
+| --- | --- |
+| `07153a6` | 两份规划文档（上一轮） |
+| `5c6a0ef` | **Wave 0**：15 键设置契约 + IPC「通道与注册点同 PR」规则 + `main.js` 1298→1267 |
+| `83aabeb` | **Wave 1**：`pdf-export.js`/`print.html`、贴图穿透接线、命名模板 + 两个快捷键 handler + 托盘兜底；Lead 落两条通道登记与 3 处 `main.js` 接线 |
+| `724be28` · `3fb3d0d` · `455a1db` · `64efc29` | 评审跟进：`makeCaptureName` 正常双参声明；保存流程迁入 `image-file-save.js`（`main.js` 1294→**1278**）；命名模板覆盖历史与长截图；`lastSaveDirectory` **读闭环** + 两处"打开目录"对齐 |
+| `b1c1cc2` | **Wave 2**：config 设置项（3 个快捷键行 + `sourceLabels` + 4 个冻结键行）+ 图标计数同步 + `region` 标签 |
+| `1139a5a` | **Wave 2**：capture 接线（PDF 按钮+图标、`saveMode`、快门音、`Ctrl+A`、序号、PDF 命名跟随模板） |
+| `f8b2109` | 收口门禁抓到的**跨流集成修复**（`test/pdf-export.test.js` 补 `getSettings`） |
+| `82fe6ce` | 方案文档 §18 回填 |
+| `7727f0b` | **真机验收发现的缺陷修复**：打印图片按 DPI 换算尺寸排版（高 DPI 屏 PDF 分页） |
+| `a46bbc0` | **评审改进**：打印页图片居中（留白对称） |
+| 本文件 + 验收记录 | 交接文档 + `2026-10-10-p0-batch-a-verification.md` |
+
+**`main.js` 现状**：1278 行 / 上限 1300（**余量 22**）。批次 A 期间零净增长；二次腾挪已做（保存流程迁入 `main/services/image-file-save.js`）。**任何新接线前先看余量。**
+
+---
+
+## 2. 三份必读文档（按顺序，只读相关小节）
+
+| 文档 | 用途 | 建议读法 |
+| --- | --- | --- |
+| `docs/plans/2026-10-10-p0-gap-closure-plan.md`（执行手册，~950 行） | §0.1 总账（唯一数字来源）、§1 约束、§2 冻结契约、§3.1.1 **工作流注册表（owner 唯一来源）**、§3.1.2 回滚纪律、§4–§10 各功能任务表、§11 收口、§13 决策、**§16/§17/§18 已回填的实施结果** | 先读 §3.1.1 + §3.2 + 你要派发的那一节 |
+| `docs/plans/2026-10-10-snow-apps-feature-gap-analysis.md`（~456 行） | §2 能力差依据、§3 优先级、§5 许可证与义务、§5.6 L1–L16 落地清单 | 只在碰 P1/许可证时读 |
+| `docs/plans/2026-10-10-p0-batch-a-verification.md`（本轮新建） | **真机验收记录**：§3 逐项实测、§3.4 高 DPI 分页缺陷、§3.5 居中、§6 观察项、**§7 剩余待验清单** | 接手验收时先读 §7 |
+
+---
+
+## 3. 门禁怎么跑（含环境陷阱）
+
+```powershell
+Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue   # 必做！
+npm test                       # 766/766（114 个测试文件）
+npm run check                  # 语法 250 文件 + main.js 1278/1300
+npm run test:coverage:loaded   # 行覆盖 91.87%
+npm run test:coverage:critical # 93.22 / 92.99 / 92.42
+npm run audit:dependencies     # 26 已豁免 / 0 未豁免
+npm run test:e2e               # 5/5
+```
+
+**环境陷阱（本机实测，务必记住）**：
+1. **本 shell 预设 `ELECTRON_RUN_AS_NODE=1`** → 所有 spawn Electron 的测试（`test/diagnostics-runtime.test.js`、`test:runtime`、e2e、真实窗口探针）都会在探针 `app.setPath` 处崩（`TypeError: Cannot read properties of undefined (reading 'setPath')`）。**跑任何门禁前先清掉**。这是环境事实，不是代码回归。
+2. **`read`/`grep` 工具在本机曾出现显示差异**：`main.js:89` 的 `require('./toolbar/toolbar-utils')` 被显示成 `require('../../toolbar/toolbar-utils')`（磁盘以 node/pwsh 为准）。**改动前用 node/pwsh 核对确切字符串**，`edit` 工具匹配的是磁盘。
+3. **`edit` 的转义陷阱**：JS 源里写 `'C:\\pictures'`（两个反斜杠），在 `edit` 参数里要写**四个**反斜杠；尽量改用正斜杠路径或正则规避。
+4. **子智能体通信是单向的**：subagent 能向 Lead 发消息（中途与最终报告），但 Lead **无法** `send_message` 回子智能体（它们不是 teammate，`list_agents` 里看不到）。→ **派发时必须把所有约束一次写进 prompt**，别指望中途纠偏。
+5. 可见窗口按 `AGENTS.md` 放副屏（`\\.\DISPLAY2`，1152×2048 @ 3072,-136，**125% 缩放**）；主屏 2560×1440。
+
+---
+
+## 4. 真机验收：已验 / 剩余
+
+### 已验（用户真机确认 + 我方量化）
+
+- **A1** 工具栏出现 PDF 打印机图标（保存与复制之间）
+- **A2** 点击 → 保存对话框 → `test-wide.pdf` = 1 页、A4 横向；**导出后截图窗保持打开**；截图时快门音响一次
+- **A3** 高选区（1440×2520 @125%）导出 = **1 页**、A4 纵向（详见 §3.4/§3.5 的缺陷与修复）；居中留白复验用户确认通过
+- **B1/B2** 贴图点击穿透：右键「点击穿透」开启 → 底层记事本收到点击；角标悬停退出；穿透态拖动/缩放被禁
+- **C1** 设置页三行快捷键 + 4 个新控件默认值正确
+
+### 剩余（**新会话从这里继续**）
+
+| # | 步骤 | 期望 |
+| --- | --- | --- |
+| **B3** | 两个贴图都开穿透 → 托盘「取消全部穿透」 | 两个都退出（handler 返回退出数） |
+| **B4** | **开游戏模式 → 托盘「取消全部穿透」** | **仍能退出**（穿透明令下唯一恢复路径，务必单验） |
+| **C2** | 设置页录入「快速保存」「另存为」热键 → 截图后分别触发 | 快速保存直接落盘无对话框；另存为弹对话框 |
+| **C3** | 另存到桌面 → 再快速保存 | 落桌面（记忆目录）；设置页「打开截图目录」也开桌面 |
+| **C4 后半** | 关掉「截图快门音」开关 → 截图 | 不响（前半已验：开着时响一次） |
+| **C5** | `Ctrl+A` | 选中整屏（徽标 = 屏幕分辨率）；Enter/Ctrl+S 不受影响 |
+| **C6** | 连续两次截图 | 序号各自从 1 开始；开启「序号跨截图保留」后接续（粗粒度，见 §5） |
+| **C7** | 命名模板（如 `{date}_{time}-{app}`）→ 保存 | 文件名符合模板；**历史库仍认「本应用所有」**；非法字符被 sanitize；重名加 `-1` 不覆盖 |
+| **C8** | 历史筛选下拉 | 普通截图显示「区域截图」（不再是裸 `region`） |
+| **A4** | 贴图/识别窗口复用导出函数 | 本期无 UI 入口，以单测 + 隐藏窗口探针为准（已绿） |
+
+**我方侧证手段**（验收时可用）：
+- 读 `E:\document\highlighter\config\config.json` 验证设置落盘（**注意：里面可能含凭据字段，只读你要的键**）；同目录 `captureHistory` 现有 **160 条**用户真实历史，勿损坏。
+- 解析导出的 PDF：页数/MediaBox 用 `.tmp/pdf-ctm.js`（逐 token 解释 q/Q/cm 变换栈，给出图片在页面上的 bbox —— 比肉眼看可靠）。
+- 用户数据根：`E:\document\highlighter`；`saveDirectory = E:\pictures\highlighterQuickSave`；截图热键 = `Ctrl+1`。
+
+---
+
+## 5. 已定口径（**不要重新论证**）
+
+### 决策（方案 §13 / §13.1）
+**D1–D8 全部已确认闭环。**
+
+### 本会话新增/修正的口径
+1. **IPC 通道登记规则（W0-3 修法 ①，§2.2）**：`IPC_SURFACES` 只登记页面→主进程通道，且**每条通道与它的运行时注册点同一个 PR 落地**。W0-3 只冻结规则、不登记通道。主→渲染广播**一律不登记**（`pin:click-through-changed`、`i18n:language`）。新通道/新键走 **§2.1.1 契约变更流程**（Lead 串行落地）。
+   - `test/ipc-security.test.js:96` 与 `:143` 是**派生断言**（扫 main.js/main\/ipc\/**/main\/domains\/** 与 11 个 preload），所以加通道不需要手改清单，但**注册点与策略必须同 PR**。
+2. **W0-1 目标**：从"≥60 行 / ≤1240"下调为"**净 ≥20 行 / ≤1280**"（原目标按点名的三处抽取不可达）。实际落地净 −31。
+3. **命名模板覆盖边界**：✅ 快速保存/另存为、**历史入库**、**长截图保存**、**PDF 默认名**；❌ 录屏（`screenshot.*` 是截图键，按路径拆模板属后续立项）。
+   - 实现：`main.js` 的 `makeCaptureName` 是**透传**（`prefix, ext, nameSettings`），各调用点显式决定是否传 `{ template }`。
+   - 所有权正则与生成器**同源**（`capture-naming.js:61-63`，可选有界标签段）。**注意该谓词被 `history-service.js` 的 `cleanup()` 用于 unlink**，标签段因此限长 ≤120 且不得以点开头。
+4. **`lastSaveDirectory`（P0-7B）语义**：目录解析优先级 = `options.directory` → **记忆目录** → 配置的 `saveDirectory`；两个分支共用；仅当目录变化时才回写（比较走 `path.resolve` + Windows 折叠大小写）。两个"打开截图目录"动作（`main.js` 的 `openSaveDirectory`、`function-router.js` 的 `openImageSaveFolder`）共用 `resolveSaveDirectory` 单一来源。
+   - 可见行为变化（**用户已明确同意**）：未配置固定目录的用户，经历一次另存为后快速保存不再弹对话框。
+5. **PDF 纸张**：`printToPDF` 自定义 `pageSize` 单位是**英寸**（不是微米），且**下限 1 英寸**（低于则 `content area is empty`）；200 英寸上限为保守夹取。模块内部保留微米口径 + 夹取，只在 Chromium 边界换算。**图片必须按 DPI 换算后的 CSS 尺寸排版**（否则高 DPI 屏分页）。
+6. **PDF 产品口径**：**A4 是唯一模式**（未暴露"原图尺寸"）；**导出后不关闭截图窗口**；页面内图片**居中**（留白对称）。
+7. **`keepSerialAcrossCaptures` 是粗粒度**：启用后按"第 N 次截图从 N 开始"接续；精确"上一张实际用到的最后序号"需要渲染层回报 = 新通道/新键 → §2.1.1，**未做**。
+8. **`{app}` 模板变量**统一展开为 `DEFAULT_APP_LABEL = 'Highlighter'`（不再用 `app.getName()`，避免出现包名 `highlighter-snowshot`）。
+
+### 仍待用户拍板（阻塞 P1 / 合规）
+- **F1-① 许可证字符串**：`GPL-3.0-only`（建议）还是 `-or-later` —— **任何 `snow_shot/` 代码移植之前必须先定案**。
+- **F1-②** `sharp`/libvips 的 LGPL 专项（建议接受并落实 L15）。
+- **F1-③** 历史 release 追溯合规（建议轻量盘点 + 只补最新版）。
+- **L2 版权人署名**。
+- **真机验证需用户配合**（副屏操作）。
+
+---
+
+## 6. 本会话值得记住的发现（含两次"门禁抓不到"的教训）
+
+1. **跨流集成缺陷**：S9a 让 `exportPdf` 用 `getSettings()` 取名后，S4 在 Wave 1 写的 harness 没注入它 → **两流各自全绿、合并后炸**。→ 处置：修 harness（`getSettings` 是域的真实契约），不在生产代码加防御性回落。
+2. **真机才暴露的缺陷**：PDF 分页（高 DPI 排版/缩放不一致）——**dpi=96 的探针永远抓不到**。→ 教训：涉及物理尺寸/DPI 的验收，探针必须带 `scaleFactor ≠ 1` 的用例。
+3. **我自己犯过一次解析错误**：用正则解析 PDF 内容流时重复计了矩阵，得出"图片被裁切"的错误结论，写了逐 token 的 q/Q/cm 解释器才纠正。→ 复杂格式断言要用状态机，不要用正则。
+4. `pin/geometry.js` 与 `test/pin-geometry.test.js` **并非新建**（`de1d3c7` 已存在），S3 是扩展；T5 的三个函数此前全仓不存在，且**当前无生产调用方**（旋转按 D5 延后）。
+5. `pinned.clickThrough` 此前**无读取方**，现接为新贴图预显示前的初始态。
+6. **观察项（未处理，非本批次引入）**：划词工具条在 125% 缩放下周期性因尺寸不匹配重建（请求 444×40 vs 实际 446×46/447×47，来自 `3ffc9d6` 的容差）；`.toolbar` 无 flex-wrap（新按钮再加宽 ~33px）。详见验收记录 §6。
+
+---
+
+## 7. 后续波次与 owner（**owner 唯一来源是方案 §3.1.1**）
+
+| 波次 | 内容 | owner / 作用域要点 |
+| --- | --- | --- |
+| **Wave 3** | 批次 A 收口：§11 步骤 4 剩余真机验收 → 回填 → v2.3.2 | Lead |
+| **Wave 4** | S2 录屏音轨（`record/**` + `recording-service.js`）· S5 光标原生采集（`native/smart-select/**` + `cursor-provider.js` + `shared/cursor-geometry.js`） | 两流并行、作用域互斥 |
+| **Wave 5** | Lead 接线：`setDisplayMediaRequestHandler` + 光标 provider 注入 | 预计 5–8 行 `main.js`（余量 22 够用） |
+| **Wave 6** | S6 标注二次编辑（`capture/**` 独占，PR1–PR4 串行） | 需同步 `test/capture-toolbar-icons.test.js`；c8 `--include` 追加由 Lead 做 |
+| **Wave 7** | S9b capture 光标合成接线 | 依赖 W6 释放 `capture/**` |
+| **Wave 7.5** | S10b 批次 B 的 `config/**` 收口（录屏音频/光标开关；含 P0-3-T6 文案"仅包含画面"必须改） | 串行小波次 |
+| **Wave 8** | 批次 B 收口 + 真机（音轨/光标/标注编辑）→ v2.4.0 | Lead |
+| **Wave 8.5** | **S14 / D2 配置页路由拆分**（批次 C 硬前置门 D7） | `config/**` 独占；3.75–6.5 人日；先建 `test/helpers/config-source.js` 再搬迁 |
+| **Wave 9** | 批次 C：S1 i18n 框架+config · S11 capture 窗 · S12 其余渲染窗 · S13 主进程文案 | 四路并行 |
+| **Wave 10** | 批次 C 收口 + 三语言真机 → v2.5.0 | Lead |
+
+> 另：P1（Auto Filter / MCP）**以"L1–L3 + L9 + L10 已落地"为前置门**（分析文档 §5.6），且受 F1-① 阻塞。
+
+---
+
+## 8. 派发子智能体的既有做法（照抄即可）
+
+1. **一个工作流 = 一个 `subagent`**；在**同一条消息**里并发派发多个（互不依赖），Lead 继续做自己的事。
+2. Prompt 必须**自包含**并写全：项目路径与基线 HEAD、要读的方案小节、**独占写作用域（逐文件列出）**、明确禁止触碰的文件（`main.js`、`settings-defaults.js`、`ipc-security.js`、`package.json`、`docs/**`、其他流的作用域）、交付物五件套（代码 / 定向测试 / 门禁证据 / 接线说明 / 验收自证）、**只能跑定向测试不得跑全量**（规则 C8）、禁止任何 git 写操作、可见窗口放副屏、`ELECTRON_RUN_AS_NODE` 陷阱、read/grep 显示差异与 `edit` 转义陷阱。
+3. 子智能体跑完会**主动发最终报告**（含偏差）。Lead 逐个复核：`git status` 对照声明作用域（越界即按 §3.1.2 第 3 条丢弃重派）、审关键 diff、再决定落地。
+4. **Lead 独占**：`main.js` 接线、冻结文件（`ipc-security.js` / `settings-defaults.js`）的契约变更、`package.json`（c8 include）、文档回填、全量门禁、git 提交。
+5. **每个波次收口必须重跑 §1.1 全部门禁**（不接受"上次跑过"）；本轮两次真实收益：`f8b2109`（跨流 harness）与真机发现的 `7727f0b`。
+
+---
+
+## 9. 本机环境与运行态（交接时快照）
+
+| 项 | 值 |
+| --- | --- |
+| dev 实例 | **运行中**：主窗口 `Highlighter`（pid 2456），后台 job `pwsh-358`；日志 `.tmp/dev-instance.log` |
+| 调出主窗口 | 再跑一次 `.\node_modules\.bin\electron.cmd .`（`second-instance` → `createMainWindow('home')`） |
+| 停止实例 | `npm run stop:app`（会结束所有 Highlighter/electron） |
+| **不要用** `npm start` | 它的 `prestart` 会重建被跟踪的 `native/everything-search/bin/HighlighterEverything.exe`，把工作区弄脏 |
+| 副屏测试目标 | 已开：`F:\workspace\Highlighter\.tmp\click-through-test.txt`（记事本，副屏 `x 3160, y -100, 980×820`）；**用户自己的 `opencodego.txt` 窗口勿动** |
+| 用户数据根 | `E:\document\highlighter`（`config/config.json`，`captureHistory` 160 条；`saveDirectory = E:\pictures\highlighterQuickSave`；截图热键 `Ctrl+1`） |
+| 证据目录 | `.tmp/`（gitignored）：`pdf-export-probe/`（PDF 与 `test-result.json`）、`capture-renderer-probe/`、`tall-probe.js`、`pdf-ctm.js`、`print-icon-preview.png`、各门禁输出 `*.txt`、`dev-instance.log` |
+| 环境 | Windows / PowerShell；主屏 2560×1440，副屏 DISPLAY2 1152×2048 @3072,-136 **125%** |
+
+---
+
+## 10. 新会话建议的第一批动作
+
+1. `git log --oneline -12` + `git status` 确认干净、`HEAD = a46bbc0`（或本文件所在提交）。
+2. 读本文件 §4 的剩余清单 + 验收记录 `2026-10-10-p0-batch-a-verification.md` §7。
+3. 与用户约时间做完剩余 9 项真机验收（**B4 游戏模式兜底优先级最高**）。
+4. 验完后按 §11 收口：全量门禁 + 真机记录回填 + 版本号到 v2.3.2（版本 bump 属 Lead，涉及 `package.json`，按需与用户确认）。
+5. 再进 **Wave 4（批次 B 两流并行）**：按 §3.1.1 的 S2/S5 作用域派发（照 §8 的模板写 prompt）。
+6. 许可证三问（F1-①/②/③）与 L2 署名仍在等用户拍板 —— 只在要碰 P1 或合规文件时再提。
+
+---
+
+## 11. 交接时的已知风险
+
+| 风险 | 说明 |
+| --- | --- |
+| 真机验收只完成约一半 | §4 剩余 9 项；其中 **B4（游戏模式托盘兜底）**若失效，用户会遇到"穿透后无法退出"的陷阱 |
+| `main.js` 余量 22 行 | Wave 5/9 的接线预计 10–15 行，够用但需盯住；不够时按同一套路再腾挪 |
+| 观察项 | 划词工具条周期性重建（125%）与工具栏无 flex-wrap —— 非本批次引入，未处理 |
+| 新会话无本会话记忆 | 所有口径都在本文件与方案 §16–§18；**不要凭直觉改口径** |
+| dev 实例仍在跑 | 会占用单实例锁与用户数据根；测试用 E2E/探针实例走独立 userData，互不干扰（但 `npm run stop:app` 会一锅端） |
