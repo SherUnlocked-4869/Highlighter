@@ -380,6 +380,10 @@ function createCaptureDomainDeps(overrides = {}) {
     imageDataToBuffer: (value) => (Buffer.isBuffer(value) ? value : Buffer.from(value || '')),
     readPngSize,
     rootDirectory: ROOT,
+    // exportPdf names the file through screenshot.nameTemplate (P0-7-T1), so the
+    // domain needs its real getSettings collaborator even when the save helper is
+    // left to the module default.
+    getSettings: () => ({ screenshot: { nameTemplate: '' } }),
     dialog: { showSaveDialog: async () => ({ canceled: true }) },
     fs: { promises: { writeFile: async () => {} } },
     createLocalWindow: (pagePath, options) => {
