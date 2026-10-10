@@ -495,7 +495,7 @@ Wave 10 [Lead]      §1.1 全量门禁 + 真机（三语言切换）            
 
 **合计 = 6.5 人日**（2.0 + 1.5 + 0.5 + 0.75 + 0.5 + 0.25 + 1.0；P0-7-T2 已含在 T1）。
 
-**验收标准**：① 命名模板非空时导出文件名符合模板，且**该文件仍被历史库识别为"本应用所有"**（`OWNED_CAPTURE_FILE` 同源）；非法字符与 Windows 保留名被 sanitize；重名不静默覆盖。② 两个新全局快捷键可在设置页录入并触发"快速保存 / 另存为"；默认留空不抢占系统热键。③ 快速保存记住上次目录（`lastSaveDirectory` 落盘）。④ 截图窗口打开时按快门音一次，关闭开关后不响。⑤ `Ctrl+A` 选中当前屏幕，且 Enter/Ctrl+S 等既有快捷键不受影响。⑥ 连续两次截图，序号各自从 1 开始。⑦ `test/capture-naming.test.js`（新）、`test/function-router.test.js` 全绿。
+**验收标准**：① 命名模板非空时导出文件名符合模板，且**该文件仍被历史库识别为"本应用所有"**（`OWNED_CAPTURE_FILE` 同源）；非法字符与 Windows 保留名被 sanitize；重名不静默覆盖。② 两个新全局快捷键可在设置页录入并触发"快速保存 / 另存为"；默认留空不抢占系统热键。③ 快速保存记住上次目录（`lastSaveDirectory` **读 + 写闭环**，见 §17.6）。④ 截图窗口打开时按快门音一次，关闭开关后不响。⑤ `Ctrl+A` 选中当前屏幕，且 Enter/Ctrl+S 等既有快捷键不受影响。⑥ 连续两次截图，序号各自从 1 开始。⑦ `test/capture-naming.test.js`（新）、`test/function-router.test.js` 全绿。
 
 ### 6.2 命名模板的已知坑
 
@@ -993,3 +993,19 @@ Wave 1 的模板只覆盖了新保存点；评审旁路观察者指出**历史�
 **实现方式**：`main.js` 的 `makeCaptureName` 包装函数改为**透传**（`prefix, ext, nameSettings`），调用方按需传 `{ template }` —— "是否跟随模板"因此是各调用点的**显式选择**，而不是全局副作用（这也让录屏能干净地留在旧格式）。`test/history-management-ui.test.js:79` 的包装函数断言已同步为容忍扩展参数（同 `724be28` 的做法）。
 
 **为什么仓库层面安全**：旧格式名与新模板名**都能被放宽后的 `OWNED_CAPTURE_FILE` 识别**（标签段可选），历史引用、缩略图与 `cleanup()` 的孤儿判定都不受影响；因此本次放宽模板覆盖**不会**产生"历史找不到自己文件"的风险。唯一需要留意的仍是 §17.3 第 2 条：该放宽让 `cleanup()` 的删除面扩到"模仿本应用命名约定"的文件。
+
+### 17.6 P0-7B「记住上次目录」的读取方（2026-10-10 评审补齐）
+
+Wave 1 只做了**写回**；评审旁路观察者指出该键**只写不读**。核实结论：`lastSaveDirectory` 全仓**仅一个写点**（`main.js` 的 `rememberDirectory`）、**零个读点**；而截图域调用 `saveImageBuffer(buffer, { fast })` 时**根本不传 `directory`** —— 因此读点只能落在保存模块，**不需要 S9a 参与**（比"写成 S9a 必交项"少一个跨流依赖）。
+
+**落地方案（`main/services/image-file-save.js`）**：目录解析优先级 = `options.directory`（显式调用方）→ `lastSaveDirectory`（trim 后非空）→ `saveDirectory`（设置页配置的固定目录）；快速保存与另存为两个分支共用该解析；保存后**仅当解析出的目录与记忆值不同**时才回写 —— 比较用 `path.resolve`（Windows 下再折叠大小写），避免用户手输 `E:/shots` 与平台返回的 `E:\shots` 被当成两个目录、导致每次截图都写一次设置并广播。
+
+**产品口径**：`saveDirectory` 从此是"尚未记忆时的默认目录"，记忆值优先 —— 这正是"记住上次目录"的字面含义；用户在设置页改回固定目录后，再保存一次即刷新记忆。附带效果：未配置固定目录的用户，只要经历过一次另存为，快速保存就不再弹对话框（此前 `fast` 因无目录而回落对话框）。
+
+**本轮明确不覆盖的相邻三处（已登记，非遗漏）**：
+
+| 位置 | 现状 | 处置 |
+|---|---|---|
+| `main/domains/capture/index.js:451`：复制后自动保存的前置条件 `autoSaveOnCopy && saveDirectory` | 仅在配置了固定目录时才自动保存 | **交 S9a**（该文件 Wave 2 归 S9a）：可放宽为 `saveDirectory || lastSaveDirectory` |
+| `main.js:1010` `openSaveDirectory`（托盘/设置页"打开截图目录"） | 打开 `saveDirectory \|\| pictures` | 未动；建议后续与记忆值对齐（Lead 一行改动） |
+| `main/domains/long-capture/index.js:221`：长截图保存目录 | 只读 `saveDirectory`，且**不写回**记忆 | 长截图本轮已跟随命名模板，但目录记忆未纳入；如需请单独立项 |
