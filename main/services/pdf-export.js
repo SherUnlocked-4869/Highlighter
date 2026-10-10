@@ -129,6 +129,8 @@ function computePaperOptions({ pxW, pxH, dpi = DEFAULT_IMAGE_DPI, mode = 'a4' } 
       margins: { ...NO_MARGINS },
       preferCSSPageSize: false,
       clamped: pageWidthMicrons !== requestedWidthMicrons || pageHeightMicrons !== requestedHeightMicrons,
+      // Same reason as the A4 branch: layout must match the DPI-corrected size.
+      intrinsicCssPx: { width: Math.round(intrinsicWidth), height: Math.round(intrinsicHeight) },
       pageSizeMicrons: { width: pageWidthMicrons, height: pageHeightMicrons },
       requestedPageSizeMicrons: { width: requestedWidthMicrons, height: requestedHeightMicrons }
     }
@@ -150,6 +152,10 @@ function computePaperOptions({ pxW, pxH, dpi = DEFAULT_IMAGE_DPI, mode = 'a4' } 
     margins: { ...NO_MARGINS },
     preferCSSPageSize: false,
     clamped: false,
+    // The image must be laid out at the DPI-corrected CSS size the scale above is
+    // derived from. Laying it out at its natural pixels instead made a 125%/150%
+    // screenshot 1/scaleFactor larger than the page and split it over two pages.
+    intrinsicCssPx: { width: Math.round(intrinsicWidth), height: Math.round(intrinsicHeight) },
     pageSizeMicrons: { width: pageWidthMicrons, height: pageHeightMicrons },
     requestedPageSizeMicrons: { width: pageWidthMicrons, height: pageHeightMicrons }
   }
@@ -359,8 +365,11 @@ async function exportPdfBuffer(imageBuffer, options = {}) {
     await win.loadFile(pagePath)
     await win.webContents.executeJavaScript(buildImageInjectionScript({
       dataUrl,
-      width: size.width,
-      height: size.height
+      // DPI-corrected CSS size, not the PNG's natural pixels: the scale option is
+      // derived from this size, so the layout has to agree with it (see
+      // computePaperOptions' intrinsicCssPx note).
+      width: paper.intrinsicCssPx?.width || size.width,
+      height: paper.intrinsicCssPx?.height || size.height
     }))
     return await withTimeout(
       Promise.resolve(printToPdf(win, buildPrintOptions(paper, options))),

@@ -92,6 +92,15 @@ test('the image dpi corrects physical-pixel screenshots back to 1:1 CSS size', (
   assert.equal(paper.scale, 0.8769)
   // scaleFactor 不影响横竖方向（dpi 在宽高比里抵消）。
   assert.equal(paper.landscape, true)
+  // The scale is derived from this size, so the print page must lay the image out
+  // at it - a natural-pixel layout overflows a 125%/150% screenshot by exactly the
+  // device scale factor and paginates it (real-device finding, 2026-10-10).
+  assert.deepEqual(paper.intrinsicCssPx, { width: 1280, height: 720 })
+})
+
+test('the intrinsic CSS size is reported in original-size mode too', () => {
+  const paper = computePaperOptions({ pxW: 2880, pxH: 1600, dpi: DEFAULT_IMAGE_DPI * 2, mode: 'original' })
+  assert.deepEqual(paper.intrinsicCssPx, { width: 1440, height: 800 })
 })
 
 test('original-size mode converts inches to microns and hands Chromium inches', () => {
@@ -496,7 +505,7 @@ async function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true })
 
   const cases = []
-  async function runCase(name, pixels, mode) {
+  async function runCase(name, pixels, mode, dpi) {
     const visibleAtPrint = []
     const buffer = await pdfExport.exportPdfBuffer(pixels.buffer, {
       rootDirectory: ROOT,
@@ -504,6 +513,7 @@ async function main() {
       pxW: pixels.width,
       pxH: pixels.height,
       mode,
+      ...(dpi ? { dpi } : {}),
       printToPdf: async (win, printOptions) => {
         visibleAtPrint.push(win.isVisible())
         return win.webContents.printToPDF(printOptions)
@@ -519,6 +529,10 @@ async function main() {
   }).png().toBuffer().then((buffer) => ({ buffer, width, height }))
 
   await runCase('a4-landscape-1920x1080', await image(1920, 1080, '#3366ff'))
+  // A 125% display: the image is laid out at its DPI-corrected CSS size, so a
+  // natural-pixel layout (which made the content 1/scaleFactor too tall and split
+  // it across two pages) fails the single-page assertion below.
+  await runCase('a4-portrait-1440x2520-dpi120', await image(1440, 2520, '#884400'), undefined, 120)
   await runCase('original-600x400', await image(600, 400, '#ff6633'), 'original')
   await runCase('original-2000x20000-clamped', await image(2000, 20000, '#22aa66'), 'original')
 
@@ -572,7 +586,7 @@ test('real Electron prints capture/print.html in hidden windows (P0-4-T8)', { ti
   const probe = JSON.parse(fs.readFileSync(resultPath, 'utf8'))
   assert.equal(probe.error, undefined, `probe error: ${probe.error}`)
   assert.equal(probe.activePrintWindowCount, 0, 'offscreen print windows must not leak')
-  assert.equal(probe.cases.length, 3)
+  assert.equal(probe.cases.length, 4)
 
   const byName = Object.fromEntries(probe.cases.map((entry) => [entry.name, entry]))
   for (const entry of probe.cases) {
@@ -582,6 +596,11 @@ test('real Electron prints capture/print.html in hidden windows (P0-4-T8)', { ti
     assert.equal(fs.existsSync(entry.file), true)
     assert.ok(entry.bytes > 1000, `${entry.name} looks empty (${entry.bytes} bytes)`)
   }
+
+  // A 125% display keeps one page: the image is laid out at its DPI-corrected CSS
+  // size, so this case regresses to two pages if the layout goes back to natural
+  // pixels (real-device finding, 2026-10-10; reproduced at 1440x2520 @dpi 120).
+  assert.equal(byName['a4-portrait-1440x2520-dpi120'].pageCount, 1)
 
   // A4 landscape: Chromium's A4 is 11.7067in x 8.2767in.
   const landscape = byName['a4-landscape-1920x1080'].boxes[0]
