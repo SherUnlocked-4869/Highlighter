@@ -962,13 +962,13 @@ scripts/check-i18n.js    ① 三份 locale 键集合对称差必空
 5. **`test/design-tokens.test.js:168` 的目录级契约**被新页面 `capture/print.html` 触发（该断言按**目录**判定：capture/ 下任一 .css 使用 token ⇒ 该目录每个 .html 都必须链接 tokens.css）→ Lead 收口补 `tokens.css` 链接；`tokens.css` 只声明自定义属性，对打印页无视觉影响。
 6. **`test/ipc-security.test.js` 对两条新通道都不需要改动**：其断言从 `IPC_SURFACES` + 源码扫描派生（`:96` 走 main.js/main\/ipc\/**/main\/domains\/**，`:143` 走 11 个 preload 文件），S3 另加了一条显式契约测试。
 7. **`makeCaptureName` 的声明拼写（待你决定）**：`test/history-management-ui.test.js:72-73` 逐字固定**单参**声明，与 §4.3-T6 的 `(prefix, ext)` 矛盾。S7 保持声明逐字节不变、改从 `arguments[1..2]` 读取 ext/options（文件内 JSDoc 已注明）。**更干净的写法**是正常双参声明 + 同步该测试正则（§3.3 规则 9 允许），但会触及一条不在任何流作用域内的测试文件 —— 等你的意思。
-8. **`{app}` 模板变量展开为 `highlighter-snowshot`**：`package.json` 无根级 `productName`（只有 `build.productName: "Highlighter"`），故 `app.getName()` 返回包名，而单测回落值是 `Highlighter`。仅当用户显式使用 `{app}` 时可见。
+8. **`{app}` 模板变量曾不一致（已修）**：原先保存路径注入 `app.getName()`（= `highlighter-snowshot`，因 `package.json` 无根级 `productName`，只有 `build.productName: "Highlighter"`），而历史/长截图路径与单测回落值是 `DEFAULT_APP_LABEL = 'Highlighter'`。**2026-10-10 已统一为 `Highlighter`**（提交 `3fb3d0d`：不再注入 `app`，全路径使用同一回落值）。
 
 ### 17.4 结论与 Wave 2 开工条件
 
 **批次 A 的三条主进程流已全部落地**，并通过 §1.1 全量门禁 + e2e + 真实 Electron 启动验证。
 
-> **⚠️ R1 重新成立（需你决策）**：`main.js` 现为 **1294 / 1300，仅剩 6 行**（Wave 0 腾出的 31 行被本轮接线用掉 27 行）。批次 B（Wave 5 的 `setDisplayMediaRequestHandler` + 光标 provider 注入）与批次 C（i18n 语言广播 + 托盘 labels）预计还需 **10–15 行**。建议在 **Wave 2 期间并行**做一次二次腾挪（候选：把 `saveImageBuffer` 整体迁入 `main/services/image-file-save.js`，可回收约 20 行；或迁出托盘模板依赖对象）。**Wave 2 本身（S9a/S10a）预计不需要 `main.js` 行。**
+> **✅ R1 已缓解（2026-10-10，提交 `3fb3d0d`）**：`main.js` **1294 → 1278**，余量回到 **22 行**。做法：把整个保存流程（模板化命名 + 快速路径唯一性探针 + 目标解析 + 写盘 + 目录记忆）迁入 `main/services/image-file-save.js` 的 `createImageFileSaver`（协作者均有真实缺省，`main.js` 只留一段绑定）。批次 B（Wave 5 的 `setDisplayMediaRequestHandler` + 光标 provider 注入）与批次 C（i18n 语言广播 + 托盘 labels）预计共需 10–15 行，现有余量足够；**Wave 2 本身（S9a/S10a）不需要 `main.js` 行**。
 
 **Wave 2（S9a `capture/**` + S10a `config/**`）具备开工条件**，派发时必须带上：
 1. §3.1.1 各自独占作用域 —— S9a 本轮**新增承接** P0-4-T7②："导出 PDF"图标 + `test/capture-toolbar-icons.test.js` 有序清单**同 PR**；
@@ -977,3 +977,19 @@ scripts/check-i18n.js    ① 三份 locale 键集合对称差必空
 4. 冻结键（已在 `settings-defaults.js`）：`screenshot.shutterSound` / `nameTemplate` / `captureCursor` / `keepSerialAcrossCaptures` / `lastSaveDirectory`、`pinned.clickThrough`、`shortcuts.screenshotQuickSave` / `screenshotSaveAs` / `togglePinClickThrough`；
 5. §3.1.2 回滚纪律与跨波次交接清单（`capture/**`：S9a → S6 → S9b → S11；`config/**`：S10a → S10b → S1 → S14）；
 6. 环境：Electron 相关测试前清 `ELECTRON_RUN_AS_NODE`。
+
+### 17.5 命名模板的覆盖边界（2026-10-10 评审决定，提交 `3fb3d0d`）
+
+Wave 1 的模板只覆盖了新保存点；评审旁路观察者指出**历史入库仍走旧格式**。核实后确认该缺口**比观察者描述更大**（共 5 处命名调用点，模板只到 1 处），经确认按**定向覆盖**处理：
+
+| 命名调用点 | 跟随 `screenshot.nameTemplate` |
+|---|---|
+| 快速保存 / 另存为默认名（`saveImageBuffer`） | ✅ Wave 1 |
+| **历史入库**（`HistoryService.historyImagePath`，普通与长截图条目） | ✅ **本轮新增** |
+| **长截图保存**（快速路径 + 另存为默认名） | ✅ **本轮新增** |
+| 录屏另存为默认名（`.mp4`） | ❌ 有意保持旧格式：`screenshot.*` 是截图键；按路径拆模板（对齐 Snow Shot 的"手动/自动/录屏三套"）属后续立项 |
+| PDF 导出默认名（`createDefaultPdfName`） | ❌ 暂保持旧格式，由 **S9a 在 Wave 2 决定**是否跟随 |
+
+**实现方式**：`main.js` 的 `makeCaptureName` 包装函数改为**透传**（`prefix, ext, nameSettings`），调用方按需传 `{ template }` —— "是否跟随模板"因此是各调用点的**显式选择**，而不是全局副作用（这也让录屏能干净地留在旧格式）。`test/history-management-ui.test.js:79` 的包装函数断言已同步为容忍扩展参数（同 `724be28` 的做法）。
+
+**为什么仓库层面安全**：旧格式名与新模板名**都能被放宽后的 `OWNED_CAPTURE_FILE` 识别**（标签段可选），历史引用、缩略图与 `cleanup()` 的孤儿判定都不受影响；因此本次放宽模板覆盖**不会**产生"历史找不到自己文件"的风险。唯一需要留意的仍是 §17.3 第 2 条：该放宽让 `cleanup()` 的删除面扩到"模仿本应用命名约定"的文件。
