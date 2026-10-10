@@ -186,27 +186,18 @@ function readNameOptions(value) {
 /**
  * Build a capture file name: `PREFIX_YYYY-MM-DD_HH-mm-ss[_label].EXT`.
  *
- * Call shape is `makeCaptureName(prefix, ext, options)`:
- *   - @param {string} [prefix] `Highlighter` / `Highlighter_Long` / `Highlighter_Video`
- *   - `arguments[1]` extension, with or without the dot (P0-4-T6 needs
- *     `makeCaptureName(prefix, 'pdf')`; default `png`, so every existing
- *     single-argument call site keeps producing `*.png`)
- *   - `arguments[2]` options: `{ template, app, isTaken, now }` — `template` is
- *     `settings.screenshot.nameTemplate` (empty = legacy format), `isTaken` is
- *     the de-duplication probe (`ensureUniqueName`).
- *
- * The extension/options parameters are read from `arguments` because the
- * declaration below is asserted verbatim by
- * test/history-management-ui.test.js:72-73 (an out-of-scope file for this
- * stream). The public contract is unchanged; only the spelling of the
- * declaration is. See the S7 report for the one-line alternative.
- *
- * @param {string} [prefix]
+ * @param {string} [prefix] `Highlighter` / `Highlighter_Long` / `Highlighter_Video`
+ * @param {string} [ext] extension, with or without the dot (P0-4-T6 needs
+ *   `makeCaptureName(prefix, 'pdf')`; default `png`, so every existing
+ *   single-argument call site keeps producing `*.png`)
+ * @param {{ template?: string, app?: string, isTaken?: Function, now?: number }} [nameSettings]
+ *   `template` is `settings.screenshot.nameTemplate` (empty = legacy format),
+ *   `isTaken` is the de-duplication probe handed to `ensureUniqueName`.
  * @returns {string}
  */
-function makeCaptureName(prefix = CAPTURE_PREFIX) {
-  const extension = normalizeExtension(arguments.length > 1 ? arguments[1] : DEFAULT_EXTENSION)
-  const options = readNameOptions(arguments[2])
+function makeCaptureName(prefix = CAPTURE_PREFIX, ext = DEFAULT_EXTENSION, nameSettings = {}) {
+  const extension = normalizeExtension(ext)
+  const options = readNameOptions(nameSettings)
   // 使用中国时区(UTC+8)的墙钟时间命名,便于直接按本地时间识别截图;偏移量为 8 * 60 * 60 * 1000 毫秒。
   const { date, time } = chinaWallClock(options.now)
   // Sanitized, then trimmed of separators/space so a dropped `{token}` cannot

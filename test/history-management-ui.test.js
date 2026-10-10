@@ -69,8 +69,10 @@ test('capture file names use China Standard Time (UTC+8)', () => {
   // The generator moved to main/services/capture-naming.js so the writer and the
   // ownership matcher share one definition; assert the behaviour there and that
   // main.js still delegates to it.
-  assert.match(naming, /function makeCaptureName\(prefix = CAPTURE_PREFIX\)[\s\S]{0,300}?8 \* 60 \* 60 \* 1000/)
-  assert.doesNotMatch(naming, /function makeCaptureName\(prefix = CAPTURE_PREFIX\)[\s\S]{0,300}?new Date\(\)\.toISOString\(\)\.replace/)
+  // The declaration may carry the extended signature (P0-7-T1 / P0-4-T6:
+  // `(prefix, ext, nameSettings)`); the China wall-clock assertion is unchanged.
+  assert.match(naming, /function makeCaptureName\(prefix = CAPTURE_PREFIX[\s\S]{0,300}?8 \* 60 \* 60 \* 1000/)
+  assert.doesNotMatch(naming, /function makeCaptureName\(prefix = CAPTURE_PREFIX[\s\S]{0,300}?new Date\(\)\.toISOString\(\)\.replace/)
   assert.match(main, /function makeCaptureName\(prefix = CAPTURE_PREFIX\)[\s\S]{0,120}?captureNaming\.makeCaptureName\(prefix\)/)
   const { makeCaptureName, OWNED_CAPTURE_FILE, LONG_CAPTURE_PREFIX } = require('../main/services/capture-naming')
   const name = makeCaptureName(LONG_CAPTURE_PREFIX)
