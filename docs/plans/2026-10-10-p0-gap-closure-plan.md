@@ -1002,10 +1002,11 @@ Wave 1 只做了**写回**；评审旁路观察者指出该键**只写不读**�
 
 **产品口径**：`saveDirectory` 从此是"尚未记忆时的默认目录"，记忆值优先 —— 这正是"记住上次目录"的字面含义；用户在设置页改回固定目录后，再保存一次即刷新记忆。附带效果：未配置固定目录的用户，只要经历过一次另存为，快速保存就不再弹对话框（此前 `fast` 因无目录而回落对话框）。
 
-**本轮明确不覆盖的相邻三处（已登记，非遗漏）**：
+**与本轮同时对齐的"打开目录"两处**：`main.js:1010` 的 `openSaveDirectory`（设置页"打开截图目录"）与 `main/services/function-router.js` 的 `openImageSaveFolder`（托盘/快捷键）原先都按 `saveDirectory` 打开 —— 在保存位置可能落在记忆目录之后，它们会打开错的文件夹。现两者统一调用 `image-file-save.js` 导出的 **`resolveSaveDirectory(settings)`** 单一来源，与保存解析完全同源（"打开截图目录"因此与文件实际落点一致）。
+
+**本轮明确不覆盖的两处（已登记，非遗漏）**：
 
 | 位置 | 现状 | 处置 |
 |---|---|---|
-| `main/domains/capture/index.js:451`：复制后自动保存的前置条件 `autoSaveOnCopy && saveDirectory` | 仅在配置了固定目录时才自动保存 | **交 S9a**（该文件 Wave 2 归 S9a）：可放宽为 `saveDirectory || lastSaveDirectory` |
-| `main.js:1010` `openSaveDirectory`（托盘/设置页"打开截图目录"） | 打开 `saveDirectory \|\| pictures` | 未动；建议后续与记忆值对齐（Lead 一行改动） |
+| `main/domains/capture/index.js:451`：复制后自动保存的前置条件 `autoSaveOnCopy && saveDirectory` | 仅在配置了固定目录时才自动保存 | **交 S9a**（该文件 Wave 2 归 S9a）：可放宽为 `saveDirectory \|\| lastSaveDirectory` |
 | `main/domains/long-capture/index.js:221`：长截图保存目录 | 只读 `saveDirectory`，且**不写回**记忆 | 长截图本轮已跟随命名模板，但目录记忆未纳入；如需请单独立项 |
