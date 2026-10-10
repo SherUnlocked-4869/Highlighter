@@ -988,7 +988,7 @@ Wave 1 的模板只覆盖了新保存点；评审旁路观察者指出**历史�
 | **历史入库**（`HistoryService.historyImagePath`，普通与长截图条目） | ✅ **本轮新增** |
 | **长截图保存**（快速路径 + 另存为默认名） | ✅ **本轮新增** |
 | 录屏另存为默认名（`.mp4`） | ❌ 有意保持旧格式：`screenshot.*` 是截图键；按路径拆模板（对齐 Snow Shot 的"手动/自动/录屏三套"）属后续立项 |
-| PDF 导出默认名（`createDefaultPdfName`） | ❌ 暂保持旧格式，由 **S9a 在 Wave 2 决定**是否跟随 |
+| PDF 导出默认名（`createDefaultPdfName`） | ✅ **Wave 2 已跟随**（S9a 决定，经 `savePdfBuffer` 的 `makeName`；空模板 = 与旧格式逐字节相同的名字） |
 
 **实现方式**：`main.js` 的 `makeCaptureName` 包装函数改为**透传**（`prefix, ext, nameSettings`），调用方按需传 `{ template }` —— "是否跟随模板"因此是各调用点的**显式选择**，而不是全局副作用（这也让录屏能干净地留在旧格式）。`test/history-management-ui.test.js:79` 的包装函数断言已同步为容忍扩展参数（同 `724be28` 的做法）。
 
@@ -1008,5 +1008,55 @@ Wave 1 只做了**写回**；评审旁路观察者指出该键**只写不读**�
 
 | 位置 | 现状 | 处置 |
 |---|---|---|
-| `main/domains/capture/index.js:451`：复制后自动保存的前置条件 `autoSaveOnCopy && saveDirectory` | 仅在配置了固定目录时才自动保存 | **交 S9a**（该文件 Wave 2 归 S9a）：可放宽为 `saveDirectory \|\| lastSaveDirectory` |
+| `main/domains/capture/index.js:451`：复制后自动保存的前置条件 `autoSaveOnCopy && saveDirectory` | 仅在配置了固定目录时才自动保存 | ✅ **Wave 2 已修**（S9a 改为 `resolveSaveDirectory(settings)`，与保存解析同源） |
 | `main/domains/long-capture/index.js:221`：长截图保存目录 | 只读 `saveDirectory`，且**不写回**记忆 | 长截图本轮已跟随命名模板，但目录记忆未纳入；如需请单独立项 |
+
+---
+
+## 18. M1（Wave 2 / 批次 A 接线与收口）实施结果（2026-10-10）
+
+> 按 §11 收口：S9a / S10a 各自交付五件套 → Lead 落零散接线（本轮 `main.js` **零改动**）→ §1.1 全量门禁 + e2e → 回填本节。
+
+### 18.1 已落地的改动
+
+| 流 | 文件 | 改动 |
+|---|---|---|
+| **S9a**<br>capture 接线 | `capture/capture.html` | `#exportPdf` 按钮（插在保存与复制之间，`icons/print.svg`）+ `<audio id="shutterSound" src="../assets/shutter.wav" preload="auto">`；**CSP 未改**（见 18.3-7） |
+| | `capture/icons/print.svg`（新） | 本地手绘打印机字形，符合 `test/toolbar-icons.test.js:27` 的 mask 资产契约；`capture/icons/LICENSE` 追加"该文件非 Bootstrap 来源"的说明（L4 合规口径） |
+| | `capture/capture.js` | `playShutterSound()`（吞掉 play() 拒绝）、`resetSerialNumber()`；`saveMode` 表达式；`action==='pdf'` 分支（重入守卫 + 禁用按钮 + `finally` 复位 + **不关窗**）；`Ctrl+A` 选当前屏（排除 shift/alt，清 OCR 覆盖层）；`onInit` 调序号重置 + 受 `shutterSound` 控制播一次 |
+| | `main/domains/capture/index.js` | `autoplayPolicy:'no-user-gesture-required'`；`_captureInit` += `saveMode` + `serialNumber`；复制自动保存前置条件改 `resolveSaveDirectory(settings)`；PDF 默认名经 `makeName` 跟随 `screenshot.nameTemplate` |
+| | `assets/shutter.wav`（新） | 本地合成的 130ms 双响快门，PCM 44.1kHz 单声道 16bit（**无第三方权利**；生成脚本留在 `.tmp/` 未入库） |
+| | 测试 | `test/capture-export-pdf-ui.test.js`、`test/capture-experience-wiring.test.js`、`test/capture-renderer-runtime.test.js`（真实隐藏 Electron 窗口）（均新）；`test/capture-domain.test.js` +4；`test/capture-toolbar-icons.test.js` 有序清单 + print（**与图标同 PR**，即 §4.3 T7 拆分的初衷） |
+| **S10a**<br>config 收口 | `config/config.js` | `functionGroups.other` += 3 个快捷键行（S7 规格）；`sourceLabels` += `quick-save`/`save-as`（**+ Lead 补 `region`**，见 18.3-2）；截图与输出卡片 += 快门音开关、命名模板输入（提示写明旧格式 + 变量 + sanitize/去重）、序号跨截图开关；新增"固定到屏幕"卡片承载 `pinned.clickThrough`；`saveFunctions` 提交 `nameTemplate` |
+| | `test/shortcut-ui-contract.test.js`（+76）· `test/config-icon-contract.test.js` | 行/开关/提交-回读断言 + 真实校验器正反用例；图标计数 23 → 26（规则 C6 同步） |
+| **Lead** | `test/pdf-export.test.js` | 跨流集成修复：harness 补 `getSettings`（见 18.3-8） |
+| | `config/config.js` | 补 `region` 标签（1 行 + 注释） |
+
+### 18.2 门禁实况
+
+| 门禁 | Wave 1 收口 | **Wave 2 收口** |
+|---|---|---|
+| `npm test` | 736 / 736 | **765 / 765 pass**（114 个测试文件） |
+| `npm run check` | `main.js` 1294 | 语法 **250 文件**；`main.js` **1278** / 1300（余量 **22**） |
+| `test:coverage:loaded` | 91.67% | **91.84%**（9996/10883） |
+| `test:coverage:critical` | 93.22 / 92.99 / 92.42 | 93.22 / 92.99 / 92.42 |
+| `audit:dependencies` | 26 / 0 | **26 / 0** |
+| Playwright e2e | 5 / 5 | **5 / 5**（25.4s） |
+
+### 18.3 偏差与决定（9 项）
+
+1. **图标计数断言同步**（S10a 的 D1）：`test/config-icon-contract.test.js:35` 硬编码 `functionIcons.length === 23`，三个新快捷键行使之为 26 → 同步为 26（规则 C6）。该文件名不在派发时给 S10a 的字面 glob 内，属合理越界，**已接受**。
+2. **`sourceLabels` 缺 `region`**（S10a 的 D2，Lead 补）：`main/domains/capture/index.js:341` 把普通截图存为 `source:'region'`，而 `capture` 只是 `history-service.js:366` 给旧数据的兜底 —— 历史筛选下拉此前把最常见的来源显示成裸 `region`。已补 `'region': '区域截图'`。
+3. **派发前提有误**（S10a 的 D3）：我写的"Ctrl+S/Ctrl+Shift+S 常用占用"提示并不存在于 `config.js`；真实机制是通用红片（`shortcutPresentation`）+ 页面描述，未被触碰。三个新键默认 `''` → 渲染"未设置"，不会抢占系统热键。
+4. **§6.1-T5 的 CSP 指令不必要**（S9a 实测）：方案要求 `media-src` 补 `file:`，但真实页面在 `media-src 'self' blob:` 下把 `../assets/shutter.wav` 加载到 `readyState 4`、`error 0`、**零** CSP/媒体控制台消息，`play()` 无拒绝 → **CSP 保持不动**（证据 `.tmp/capture-renderer-probe/result.json`）。
+5. **S9a 被授权的三项决定**：① **A4 是唯一模式**（未暴露"原图尺寸"，也没有隐藏修饰键）；② **导出后不关闭截图窗口**（主进程 handler 本就不关；取消与成功流程一致，用户仍可复制/保存/贴图）；③ **PDF 默认名跟随 `screenshot.nameTemplate`**（落地 §17.5 的开放项，空模板 = 逐字节相同的旧名字）。
+6. **`keepSerialAcrossCaptures` 是粗粒度实现**：启用后按"第 N 次截图从 N 开始"接续（`main/domains/capture/index.js` 的 `captureSerialSeq`）；精确到"上一张实际用掉的最后一个序号"需要渲染层回报 → 新通道/新键 → 属 §2.1.1 契约变更，**本期不做**（已在代码注释与本节登记）。
+7. **计划行号在 Wave 1 后偏移 +5**（S10a 的 D4）：派发时给的锚点在 ±1 行内仍有效，各流均以磁盘为准复核。`npm run check` 文件数 250 而非 §17.2 的 247，差额是 S9a 新增的 3 个 JS 文件。
+8. **跨流集成缺陷（本波次收口门禁的价值所在）**：S9a 让 `exportPdf` 经 `getSettings()` 取名后，S4 在 Wave 1 写的 `test/pdf-export.test.js` harness **没有注入 `getSettings`** → "the capture domain uses the module save helper when nothing is injected" 抛 `getSettings is not a function`。**两个流各自全绿、合并后才暴露。** 处置：`getSettings` 是域的真实契约（`main.js` 一直注入、其它 handler 无保护调用），因此**修 harness 而不是在生产代码里加防御性回落**（提交 `f8b2109`）。
+9. **工具栏宽度观察（未处理）**：`.toolbar` 有 `max-width: calc(100vw - 20px)` 但**没有 flex-wrap**，窄屏下本就可能溢出；新按钮再加宽约 33px。属**既有**条件，非本轮引入；登记待后续（可与 P0-7 的体验项或 v2.4 的工具栏重排一并处理）。
+
+**顺带修复**：`test/capture-domain.test.js` 此前泄漏 8s 渲染超时定时器，S9a 让 fake `close()` 清理后，该文件运行时间 **8.13s → 0.13s**。
+
+### 18.4 批次 A 代码已全部落地 —— 只剩 Wave 3 真机验收
+
+三条主进程流（Wave 1）+ 两条接线流（Wave 2）全部完成并通过 §1.1 全量门禁 + e2e；**`main.js` 未增加任何行**（1278/1300）。批次 A 的剩余唯一事项是 **§11 步骤 4 的真机验收**（副屏 `\\.\DISPLAY2`），验完即可按 §11 步骤 5/6 回填并出 v2.3.2。
