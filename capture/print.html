@@ -13,7 +13,12 @@
     /* 纸张尺寸与边距完全由主进程的 printToPDF 参数决定（pageSize + margins: none）；
        这里只保留零边距与“按固有像素绘制”的图片样式，避免与纸张换算重复缩放。 */
     @page { margin: 0 }
-    html, body { margin: 0; padding: 0; background: #fff; }
+    html, body { margin: 0; padding: 0; background: #fff; height: 100%; }
+    /* Centre the sheet in both axes: a fixed-ratio A4 page letterboxes an
+       off-ratio screenshot, and left/top alignment used to pile all of that
+       leftover space on the right (real-device review, 2026-10-10). The scale is
+       still computed to fit, so the image never exceeds the page. */
+    body { display: flex; align-items: center; justify-content: center; }
     #print-image {
       display: block;
       margin: 0;
