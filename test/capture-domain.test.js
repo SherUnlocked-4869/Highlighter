@@ -197,8 +197,41 @@ test('capture init payload carries saveMode, the serial start value and the auto
   const third = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
   const fourth = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
   assert.equal(third._captureInit.serialNumber, 1, 'the first kept capture still starts at 1')
-  assert.equal(fourth._captureInit.serialNumber, 2)
+  assert.equal(
+    fourth._captureInit.serialNumber,
+    1,
+    'without a renderer report the main process cannot know a serial was used, so it repeats 1 instead of guessing'
+  )
   assert.equal(second._captureInit.serialNumber, 1, 'earlier captures keep the reset value')
+  fourth.close()
+})
+
+// 2026-10-10 真机验收抓到的缺陷：旧实现按"第 N 次截图从 N 开始"接续，一张图里落 3 个序号后，
+// 下一张仍从 3 开始（重复）。修正后主进程只记"上一张实际用掉的最后一个序号"，由渲染层回报。
+test('a kept serial continues from the last number the previous capture actually used (P0-7-T7)', async () => {
+  const harness = createHarness({ screenshot: { keepSerialAcrossCaptures: true } })
+  const controller = harness.domain.createCaptureController()
+
+  const first = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(first._captureInit.serialNumber, 1)
+
+  // 渲染层落了 3 个序号 → 计数走到 4，保存时随 meta 回报（capture:save 通道）。
+  controller.save({ sender: {} }, { imageBuffer: Buffer.from([1]), meta: { serialNumber: 4 } })
+  assert.equal(first._captureInit.serialNumber, 1, 'the already-sent init payload is untouched')
+
+  const second = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(second._captureInit.serialNumber, 4, 'the next capture starts after the last used serial')
+
+  // ✕ / Esc 关窗同样回报（capture:close 通道）：落过就推进。
+  controller.close({ sender: {} }, { serialNumber: 7 })
+  const third = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(third._captureInit.serialNumber, 7)
+
+  // 只前进：重复或过期的回报不得把计数推回去或推过头。
+  controller.save({ sender: {} }, { imageBuffer: Buffer.from([1]), meta: { serialNumber: 5 } })
+  const fourth = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(fourth._captureInit.serialNumber, 7, 'a stale report must not rewind the counter')
+  assert.equal(second._captureInit.serialNumber, 4, 'earlier captures keep the value they were sent')
   fourth.close()
 })
 

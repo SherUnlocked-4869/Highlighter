@@ -31,10 +31,20 @@ test('Ctrl+A selects the current display without breaking the other shortcuts (P
 
 test('the serial counter is reset explicitly on init and continues only when asked (P0-7-T7)', () => {
   assert.match(script, /let serialNumber = 1/)
-  assert.match(script, /function resetSerialNumber\(data\) \{[\s\S]{0,120}?serialNumber=Number\.isFinite\(start\)&&start>0\?start:1/)
+  assert.match(script, /function resetSerialNumber\(data\) \{[\s\S]{0,160}?serialNumber=Number\.isFinite\(start\)&&start>0\?start:1/)
   assert.match(script, /window\.captureAPI\.onInit\(\(data\)=>\{[\s\S]{0,900}?resetSerialNumber\(data\)/, 'the reset runs inside the init path')
-  assert.match(captureDomain, /keepSerialAcrossCaptures === true \? captureSerialSeq\+\+ : 1/)
+  assert.match(captureDomain, /keepSerialAcrossCaptures === true \? captureSerialSeq : 1/, 'the init payload carries the last used serial, not the capture index')
   assert.match(captureDomain, /serialNumber,/, 'the init payload carries the start value')
+  // 精确接续（2026-10-10 真机验收修正）：渲染层回报"下一个该用的号"，主进程只接受前进。
+  assert.match(captureDomain, /function reportCaptureSerial\(meta\) \{[\s\S]{0,220}?reported > captureSerialSeq\) captureSerialSeq = reported/)
+  assert.match(captureDomain, /close: \(event, payload = \{\}\) => \{[\s\S]{0,160}?reportCaptureSerial\(payload\)/, '✕/Esc 关窗也要推进序号')
+  assert.match(script, /function serialMeta\(\) \{[\s\S]{0,140}?serialNumber>initialSerialNumber\?\{serialNumber\}:\{\}/)
+  assert.match(
+    script,
+    /const imageBuffer=await canvasPngBuffer\(output\)\s*\/\/[^\r\n]*[\s\S]{0,80}?Object\.assign\(meta,serialMeta\(\)\)/,
+    'the serial must be read after the export/encode, not from the stale pre-action count'
+  )
+  assert.match(script, /function closeCaptureWindow\(\) \{[\s\S]{0,160}?window\.captureAPI\.close\(/)
 })
 
 test('the shutter sound is declared, gated on the frozen key and allowed to autoplay (P0-7-T5)', () => {

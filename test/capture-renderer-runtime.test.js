@@ -21,13 +21,16 @@ const RESULT = process.env.W2_PROBE_RESULT
 const { createSecureWindow } = require(path.join(ROOT, 'main', 'services', 'window-security'))
 const { readPngSize } = require(path.join(ROOT, 'main', 'services', 'capture-geometry'))
 
-const records = { saves: [], pdfs: [], consoles: [], renders: 0, closeRequests: 0 }
+const records = { saves: [], pdfs: [], consoles: [], renders: 0, closeRequests: 0, closes: [] }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 ipcMain.on('capture:ready', () => {})
 ipcMain.on('capture:render-ready', () => { records.renders++ })
 ipcMain.on('capture:render-error', (_event, message) => records.consoles.push('render-error: ' + message))
-ipcMain.on('capture:close', () => { records.closeRequests++ })
+ipcMain.on('capture:close', (_event, payload) => {
+  records.closeRequests++
+  records.closes.push(payload || null)
+})
 ipcMain.on('capture:save', (_event, payload) => {
   const buffer = payload && payload.imageBuffer
   records.saves.push({ fast: payload ? payload.fast : null, bytes: buffer ? buffer.byteLength : 0, meta: payload ? payload.meta : null })
@@ -121,6 +124,20 @@ async function clickExportPdf (win) {
   await waitFor(() => records.pdfs.length > before, 'the export-pdf payload never reached the main process')
 }
 
+// 真机验收抓到的缺陷（2026-10-10）：一张图里落 3 个序号后，保存载荷必须带上"下一个该用的号"
+// （4），否则主进程只会按"第几次截图"接续，下一张会从 3 重复开始。
+async function placeThreeSerials (win) {
+  await win.webContents.executeJavaScript(
+    '(function(){document.dispatchEvent(new KeyboardEvent("keydown",{key:"a",ctrlKey:true,bubbles:true}));' +
+    'document.querySelector("[data-tool=serial]").click();' +
+    'var c=document.getElementById("stage");' +
+    '[[120,120],[240,160],[360,200]].forEach(function(p){c.dispatchEvent(new PointerEvent("pointerdown",' +
+    '{clientX:p[0],clientY:p[1],bubbles:true,cancelable:true,pointerId:1,isPrimary:true}))});return true})()'
+  )
+  await sleep(60)
+  return win.webContents.executeJavaScript('serialNumber')
+}
+
 async function main () {
   const report = { ok: false }
   let win = null
@@ -191,6 +208,19 @@ async function main () {
     await sendInit(win, makeInit({}))
     const serialReset = await readSerial(win)
 
+    // --- D2: placed serials must ride out on the save payload (P0-7-T7 exact continuation) --
+    await sendInit(win, makeInit({}))
+    const serialAfterThree = await placeThreeSerials(win)
+    const savesBeforeSerials = records.saves.length
+    await clickSave(win)
+    const serialReported = records.saves[savesBeforeSerials].meta && records.saves[savesBeforeSerials].meta.serialNumber
+
+    // --- D3: closing without saving must report too, and an untouched capture must not ------
+    await sendInit(win, makeInit({}))
+    await win.webContents.executeJavaScript('document.getElementById("close").click()')
+    await waitFor(() => records.closes.length > 0, 'the close payload never reached the main process')
+    const closeReported = records.closes[records.closes.length - 1]
+
     // --- E: shutterSound false must not play --------------------------------------------
     const playsBeforeMute = (await readProbe(win)).plays
     await sendInit(win, makeInit({ screenshot: { shutterSound: false } }))
@@ -201,6 +231,7 @@ async function main () {
     report.saveModes = { fast: modeBeforeFastSave, dialog: modeBeforeDialogSave }
     report.pdfs = records.pdfs
     report.serial = { fromPayload: serialFromPayload, reset: serialReset }
+    report.serialReport = { afterThree: serialAfterThree, inSaveMeta: serialReported, onClose: closeReported }
     report.shutterGate = { playsBeforeMute: playsBeforeMute, playsAfterMute: playsAfterMute }
     report.consoleMedia = records.consoles.filter((text) => /Content Security Policy|media-src|shutter|Refused to load/i.test(text))
     report.renders = records.renders
@@ -277,15 +308,21 @@ test('capture renderer honors saveMode, Ctrl+A, the serial reset, the shutter ga
   assert.equal(report.pdfs[0].meta.height, report.pngSize.height)
   assert.equal(report.windowOpenAfterExport, true, 'the export must not close the capture window')
   assert.equal(report.exportButtonReenabled, true)
-  assert.equal(report.closeRequests, 0)
+  assert.equal(report.closeRequests, 1, 'only the deliberate ✕ in section D3 reports a close')
 
   // P0-7-T4: an explicit saveMode wins over screenshot.fastSave in both directions.
-  assert.deepEqual(report.saves.map((entry) => entry.fast), [false, true, false])
+  assert.deepEqual(report.saves.map((entry) => entry.fast), [false, true, false, false])
   for (const entry of report.saves) assert.ok(entry.bytes > 1000, 'every save must ship real PNG bytes')
 
   // P0-7-T7: the payload value is consumed, and an absent value resets to 1.
   assert.equal(report.serial.fromPayload, 7)
   assert.equal(report.serial.reset, 1)
+
+  // P0-7-T7 精确接续：落 3 个序号 → 计数走到 4 → 必须随保存载荷与关窗载荷回报；
+  // 没落过序号的截图关窗时报 0（主进程据此不推进）。
+  assert.equal(report.serialReport.afterThree, 4, 'three placed serials must advance the renderer counter to 4')
+  assert.equal(report.serialReport.inSaveMeta, 4, 'the save payload must carry the next serial, not the stale pre-action count')
+  assert.deepEqual(report.serialReport.onClose, { serialNumber: 0 }, 'an untouched capture must not consume a serial')
 
   // P0-7-T5 gate: shutterSound false means no second play().
   assert.equal(report.shutterGate.playsAfterMute, report.shutterGate.playsBeforeMute)

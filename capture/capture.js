@@ -57,6 +57,7 @@ let activeAnnotation = null
 let annotations = []
 let redoStack = []
 let serialNumber = 1
+let initialSerialNumber = 1
 let annotationWidth = 4
 let dpr = window.devicePixelRatio || 1
 let autoActionStarted = false
@@ -91,6 +92,19 @@ function playShutterSound() {
 function resetSerialNumber(data) {
   const start=Math.round(Number(data?.serialNumber))
   serialNumber=Number.isFinite(start)&&start>0?start:1
+  initialSerialNumber=serialNumber
+}
+
+// P0-7-T7 精确接续（2026-10-10 真机验收修正）：落过序号就把"下一个该用的号"回报给主进程
+// （沿用 capture:save / capture:pin 等既有通道的 meta 字段，不新增通道）；没落过就不回报，
+// 避免空截图白白吃掉号段。必须在导出/编码之后取值 —— 否则拿到的是上一次的旧计数。
+function serialMeta() {
+  return serialNumber>initialSerialNumber?{serialNumber}:{}
+}
+
+// 关窗（✕ / Esc）同样要回报已落过的序号，否则"落过就推进"会在取消路径上失效。
+function closeCaptureWindow() {
+  window.captureAPI.close(serialNumber>initialSerialNumber?serialNumber:0)
 }
 
 function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
@@ -637,6 +651,8 @@ async function performAction(action) {
   const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds}
   try {
     const imageBuffer=await canvasPngBuffer(output)
+    // 序号只在导出/编码完成后取值，保证带上本次截图已落的号（P0-7-T7 精确接续）。
+    Object.assign(meta,serialMeta())
     if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(imageBuffer,meta);else await window.captureAPI.copy(imageBuffer,meta);window.captureAPI.close()}
     // P0-7-T4：saveMode 由调用方下发（快捷保存 'fast' / 另存为 'dialog'），未下发时回落到设置项。
     if(action==='save'){window.captureAPI.save(imageBuffer,meta,initData.saveMode?initData.saveMode==='fast':!!initData.settings.screenshot.fastSave);return}
@@ -709,7 +725,7 @@ document.getElementById('table').onclick=()=>performAction('table')
 document.getElementById('translate').onclick=()=>performAction('translate')
 document.getElementById('record').onclick=()=>performAction('record')
 document.getElementById('qr').onclick=()=>performAction('qr')
-document.getElementById('close').onclick=()=>window.captureAPI.close()
+document.getElementById('close').onclick=()=>closeCaptureWindow()
 document.getElementById('resultClose').onclick=document.getElementById('resultDone').onclick=()=>resultPanel.classList.add('hidden')
 document.getElementById('resultCopy').onclick=async()=>{await navigator.clipboard.writeText(resultText.value);document.getElementById('resultCopy').textContent='已复制';setTimeout(()=>document.getElementById('resultCopy').textContent='复制文本',1000)}
 ocrToggleSource.onclick=()=>{if(!activeOcrResult||activeOcrResult.mode!=='translate')return;activeOcrResult.showingSource=!activeOcrResult.showingSource;renderActiveOcrOverlay()}
@@ -718,7 +734,7 @@ ocrCopyAll.onclick=async()=>{if(!activeOcrResult)return;const text=activeOcrResu
 document.getElementById('ocrResultClose').onclick=clearOcrResult
 
 addEventListener('keydown',(event)=>{
-  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else window.captureAPI.close();return}
+  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else closeCaptureWindow();return}
   const focused=document.activeElement
   if(['INPUT','TEXTAREA','SELECT'].includes(focused?.tagName||''))return
   if(focused?.closest?.('#widthGroup'))return

@@ -63,7 +63,17 @@ function createCaptureDomain(deps) {
   let currentCaptureWindow = null
   let nativeDisplayListPromise = null
   let captureCreateSeq = 0
+  // P0-7-T7 精确接续（2026-10-10 真机验收修正）：主进程记的是"上一张实际用掉的最后一个序号"，
+  // 而不是"第几次截图"。窗口新建时下发这个值，渲染层每落一个序号就自增，并在完成动作时
+  // 通过既有通道的 meta.serialNumber 回报（不新增通道）；这里只接受前进。
   let captureSerialSeq = 1
+
+  // 渲染层回报的序号是本张图"下一个该用的号"，比当前值大才推进 —— 同一张图可能经多条
+  // 路径回报（保存/贴图/导出 PDF/关窗），重复回报不会把计数推过头。
+  function reportCaptureSerial(meta) {
+    const reported = Math.round(Number(meta?.serialNumber))
+    if (Number.isFinite(reported) && reported > captureSerialSeq) captureSerialSeq = reported
+  }
 
   async function createSmartSelectSession() {
     if (!isWin) return null
@@ -333,9 +343,9 @@ function createCaptureDomain(deps) {
       if (captureWindow.isDestroyed()) return null
       const settings = getSettings()
       // P0-7-T7：每次截图都是新窗口，序号默认从 1 开始（显式下发）；
-      // screenshot.keepSerialAcrossCaptures 打开时下发接续值 —— 口径是"启用后第 N 次截图从 N 开始"，
-      // 精确到"上一张实际用掉的最后一个序号"需要渲染层回报，属于新通道，不走本期范围。
-      const serialNumber = settings?.screenshot?.keepSerialAcrossCaptures === true ? captureSerialSeq++ : 1
+      // screenshot.keepSerialAcrossCaptures 打开时下发"上一张用掉的最后一个序号 + 1"，
+      // 由渲染层在动作完成时回报（reportCaptureSerial），因此这里不再自增。
+      const serialNumber = settings?.screenshot?.keepSerialAcrossCaptures === true ? captureSerialSeq : 1
       captureWindow._captureInit = {
         imageBuffer: capture.imageBuffer || Buffer.alloc(0),
         mode,
@@ -412,7 +422,9 @@ function createCaptureDomain(deps) {
         log('Capture render failed:', message || 'image decode failed')
         win.close()
       },
-      close: (event) => {
+      close: (event, payload = {}) => {
+        // ✕ / Esc 关窗时也带着已落过的序号（P0-7-T7 精确接续）：落过就推进。
+        reportCaptureSerial(payload)
         const win = BrowserWindow.fromWebContents(event.sender)
         win?.close()
       },
@@ -473,6 +485,7 @@ function createCaptureDomain(deps) {
         return null
       },
       save: (event, { imageBuffer, dataUrl, meta, fast } = {}) => {
+        reportCaptureSerial(meta)
         const captureWindow = BrowserWindow.fromWebContents(event.sender)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
         if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
@@ -488,6 +501,7 @@ function createCaptureDomain(deps) {
         })
       },
       pin: (event, { imageBuffer, dataUrl, meta } = {}) => {
+        reportCaptureSerial(meta)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
         pinDomain.pinFromCapture(event, buffer, meta)
         const persistMeta = { ...meta, action: 'pin' }
@@ -503,6 +517,7 @@ function createCaptureDomain(deps) {
         return null
       },
       pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
+        reportCaptureSerial(meta)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
         const { captureWindow, pinWindow } = pinDomain.pinFromCapture(event, buffer, meta)
         pinWindow._pendingReannotateAction = ['ocr', 'translate'].includes(action) ? action : ''
@@ -520,6 +535,7 @@ function createCaptureDomain(deps) {
         return null
       },
       openRecognition: (event, { type, imageBuffer, dataUrl, meta } = {}) => {
+        reportCaptureSerial(meta)
         const captureWindow = BrowserWindow.fromWebContents(event.sender)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
         createRecognitionWindow(type, bufferToDataUrl(buffer), { scaleFactor: meta?.scaleFactor })
@@ -528,8 +544,12 @@ function createCaptureDomain(deps) {
         })
         return persistHistory(buffer, { ...meta, action: type })
       },
-      recordHistory: (_event, { imageBuffer, dataUrl, meta } = {}) => persistHistory(imageBuffer ?? dataUrl, meta),
+      recordHistory: (_event, { imageBuffer, dataUrl, meta } = {}) => {
+        reportCaptureSerial(meta)
+        return persistHistory(imageBuffer ?? dataUrl, meta)
+      },
       exportPdf: async (event, { imageBuffer, dataUrl, meta, mode } = {}) => {
+        reportCaptureSerial(meta)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
         if (!buffer.length) throw new Error('截图图片数据为空')
         // 以 PNG 头部为准：meta.width/height 属于导出坐标系，PNG 才是真正要打印的像素。

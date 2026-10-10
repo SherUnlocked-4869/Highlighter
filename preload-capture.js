@@ -9,7 +9,8 @@ contextBridge.exposeInMainWorld('captureAPI', {
   },
   renderReady: () => ipcRenderer.send('capture:render-ready'),
   renderError: (message) => ipcRenderer.send('capture:render-error', message),
-  close: () => ipcRenderer.send('capture:close'),
+  // serialNumber 只在本次截图落过序号时才有值（0 = 没落过），用于主进程精确接续序号（P0-7-T7）。
+  close: (serialNumber) => ipcRenderer.send('capture:close', { serialNumber }),
   startLongCapture: (selection) => ipcRenderer.invoke('capture:start-long', { selection }),
   smartSelectAt: (point) => ipcRenderer.invoke('capture:smart-select', point),
   copy: (imageBuffer, meta) => ipcRenderer.invoke('capture:copy', { imageBuffer, meta }),
