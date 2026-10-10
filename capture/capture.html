@@ -47,6 +47,7 @@
     <button id="record" title="区域录制" aria-label="区域录制"><span class="toolbar-icon" style="--icon:url('icons/record.svg')" aria-hidden="true"></span></button>
     <button id="pin" title="固定到屏幕" aria-label="固定到屏幕"><span class="toolbar-icon" style="--icon:url('icons/pin.svg')" aria-hidden="true"></span></button>
     <button id="save" title="保存 Ctrl+S" aria-label="保存"><span class="toolbar-icon" style="--icon:url('icons/save.svg')" aria-hidden="true"></span></button>
+    <button id="exportPdf" title="导出 PDF" aria-label="导出 PDF"><span class="toolbar-icon" style="--icon:url('icons/print.svg')" aria-hidden="true"></span></button>
     <button id="copy" class="primary" title="复制 Enter" aria-label="复制"><span class="toolbar-icon" style="--icon:url('icons/copy.svg')" aria-hidden="true"></span></button>
     <button id="close" title="取消 Esc" aria-label="取消"><span class="toolbar-icon" style="--icon:url('icons/close.svg')" aria-hidden="true"></span></button>
   </div>
@@ -80,6 +81,7 @@
     <button id="ocrResultClose" title="关闭识别结果">×</button>
   </div>
   <div id="loading" class="loading hidden"><span></span><b>处理中…</b></div>
+  <audio id="shutterSound" src="../assets/shutter.wav" preload="auto"></audio>
   <script src="annotation-style.js"></script>
   <script src="selection-utils.js"></script>
   <script src="capture.js"></script>

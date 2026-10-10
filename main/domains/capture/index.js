@@ -9,6 +9,10 @@ const {
   exportPdfBuffer,
   savePdfBuffer: writePdfBuffer
 } = require('../../services/pdf-export')
+// P0-7B（§17.6）：目录解析与保存模块同源，避免"自动保存"与此前落点判断不一致。
+const { resolveSaveDirectory } = require('../../services/image-file-save')
+// §17.5 的 PDF 默认名决定（S9a）：与截图保存共用同一套模板命名。
+const { makeCaptureName } = require('../../services/capture-naming')
 
 const NATIVE_CAPTURE_TIMEOUT_MS = 5000
 
@@ -59,6 +63,7 @@ function createCaptureDomain(deps) {
   let currentCaptureWindow = null
   let nativeDisplayListPromise = null
   let captureCreateSeq = 0
+  let captureSerialSeq = 1
 
   async function createSmartSelectSession() {
     if (!isWin) return null
@@ -275,7 +280,10 @@ function createCaptureDomain(deps) {
       hasShadow: !transparent,
       webPreferences: {
         preload: path.join(rootDirectory, 'preload-capture.js'),
-        backgroundThrottling: false
+        backgroundThrottling: false,
+        // P0-7-T5：快门音由渲染层 play() 触发，截图窗口没有用户手势，
+        // 必须放开自动播放策略，否则 play() 会被 Autoplay Policy 拒绝。
+        autoplayPolicy: 'no-user-gesture-required'
       }
     })
     currentCaptureWindow = captureWindow
@@ -323,6 +331,11 @@ function createCaptureDomain(deps) {
     try {
       const [capture] = await Promise.all([capturePromise, loadPromise])
       if (captureWindow.isDestroyed()) return null
+      const settings = getSettings()
+      // P0-7-T7：每次截图都是新窗口，序号默认从 1 开始（显式下发）；
+      // screenshot.keepSerialAcrossCaptures 打开时下发接续值 —— 口径是"启用后第 N 次截图从 N 开始"，
+      // 精确到"上一张实际用掉的最后一个序号"需要渲染层回报，属于新通道，不走本期范围。
+      const serialNumber = settings?.screenshot?.keepSerialAcrossCaptures === true ? captureSerialSeq++ : 1
       captureWindow._captureInit = {
         imageBuffer: capture.imageBuffer || Buffer.alloc(0),
         mode,
@@ -338,7 +351,10 @@ function createCaptureDomain(deps) {
           const point = screen.getCursorScreenPoint()
           return { x: point.x - captureBounds.x, y: point.y - captureBounds.y }
         })(),
-        settings: getSettings()
+        // P0-7-T4：快捷保存 / 另存为调用方下发的保存模式；空值时渲染层回落到设置项。
+        saveMode: options.saveMode || '',
+        serialNumber,
+        settings
       }
       sendCaptureInit(captureWindow)
       return captureWindow
@@ -448,7 +464,10 @@ function createCaptureDomain(deps) {
             log('Capture history persist failed:', error.message)
           }
         })
-        if (getSettings().screenshot.autoSaveOnCopy && getSettings().screenshot.saveDirectory) {
+        // P0-7B（§17.6）：保存落点可能是记忆目录（screenshot.lastSaveDirectory），
+        // 因此"配置了固定目录或已有记忆目录"任一成立即可自动保存。
+        const settings = getSettings()
+        if (settings.screenshot.autoSaveOnCopy && resolveSaveDirectory(settings)) {
           saveImageBuffer(buffer, { fast: true }).catch((error) => log(error.message))
         }
         return null
@@ -534,7 +553,10 @@ function createCaptureDomain(deps) {
         return savePdfBuffer(pdfBuffer, {
           parentWindow: parentWindow && !parentWindow.isDestroyed() ? parentWindow : null,
           dialog,
-          fs
+          fs,
+          // §17.5 交 S9a 决定：PDF 默认名跟随 screenshot.nameTemplate（空模板 = 旧格式，
+          // 与截图保存完全同源）。重名仍由保存对话框兜底，与改动前一致。
+          makeName: (prefix, ext) => makeCaptureName(prefix, ext, { template: getSettings()?.screenshot?.nameTemplate })
         })
       }
     }

@@ -7,6 +7,7 @@ const sizeBadge = document.getElementById('sizeBadge')
 const tip = document.getElementById('tip')
 const loading = document.getElementById('loading')
 const loadingText = loading.querySelector('b')
+const shutterSound = document.getElementById('shutterSound')
 const colorInput = document.getElementById('color')
 const colorPreview = document.querySelector('.color-wrap span')
 const lineWidthGroup = document.getElementById('widthGroup')
@@ -72,6 +73,25 @@ let processingAction = null
 let renderRequest = 0
 let toolbarSize = null
 let imageObjectUrl = ''
+let pdfExporting = false
+
+// P0-7-T5：每次截图窗口初始化时播一次快门音，受 screenshot.shutterSound 控制。
+// play() 在 CSP 拦截 / 自动播放被拒时会 reject，这里必须吞掉，否则渲染层报未处理拒绝。
+function playShutterSound() {
+  if(!shutterSound)return
+  try{
+    shutterSound.currentTime=0
+    const played=shutterSound.play()
+    if(played?.catch)played.catch(()=>{})
+  }catch{}
+}
+
+// P0-7-T7：每次截图都是新窗口，序号必须在初始化路径里显式重置；
+// screenshot.keepSerialAcrossCaptures 打开时由主进程下发接续值。
+function resetSerialNumber(data) {
+  const start=Math.round(Number(data?.serialNumber))
+  serialNumber=Number.isFinite(start)&&start>0?start:1
+}
 
 function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
 function normalizeRect(a, b) { return { x: Math.min(a.x,b.x), y: Math.min(a.y,b.y), w: Math.abs(b.x-a.x), h: Math.abs(b.y-a.y) } }
@@ -618,7 +638,18 @@ async function performAction(action) {
   try {
     const imageBuffer=await canvasPngBuffer(output)
     if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(imageBuffer,meta);else await window.captureAPI.copy(imageBuffer,meta);window.captureAPI.close()}
-    if(action==='save'){window.captureAPI.save(imageBuffer,meta,!!initData.settings.screenshot.fastSave);return}
+    // P0-7-T4：saveMode 由调用方下发（快捷保存 'fast' / 另存为 'dialog'），未下发时回落到设置项。
+    if(action==='save'){window.captureAPI.save(imageBuffer,meta,initData.saveMode?initData.saveMode==='fast':!!initData.settings.screenshot.fastSave);return}
+    // P0-4-T7②：导出 PDF 后不关闭截图窗口（主进程 handler 刻意不关），用户可以继续复制/保存/贴图。
+    if(action==='pdf'){
+      if(pdfExporting)return
+      pdfExporting=true
+      const exportButton=document.getElementById('exportPdf')
+      if(exportButton)exportButton.disabled=true
+      try{await window.captureAPI.exportPdf(imageBuffer,meta,'a4')}
+      finally{pdfExporting=false;if(exportButton)exportButton.disabled=false}
+      return
+    }
     if(action==='pin'){await window.captureAPI.pin(imageBuffer,meta);window.captureAPI.close()}
     if(['ocr','translate'].includes(action)&&!initData.editPin){await window.captureAPI.pinAndReannotate(imageBuffer,meta,action);return}
     if(action==='table'||action==='qr'){await window.captureAPI.openRecognition(action,imageBuffer,meta);return}
@@ -671,6 +702,7 @@ document.getElementById('redo').onclick=()=>{const item=redoStack.pop();if(item)
 document.getElementById('longCapture').onclick=()=>performAction('long')
 document.getElementById('copy').onclick=()=>performAction('copy')
 document.getElementById('save').onclick=()=>performAction('save')
+document.getElementById('exportPdf').onclick=()=>performAction('pdf')
 document.getElementById('pin').onclick=()=>performAction('pin')
 document.getElementById('ocr').onclick=()=>performAction('ocr')
 document.getElementById('table').onclick=()=>performAction('table')
@@ -692,6 +724,8 @@ addEventListener('keydown',(event)=>{
   if(focused?.closest?.('#widthGroup'))return
   if(event.key==='Enter'&&!event.ctrlKey&&!activeOcrResult&&resultPanel.classList.contains('hidden'))performAction('copy')
   if(event.ctrlKey&&event.key.toLowerCase()==='s'){event.preventDefault();performAction('save')}
+  // P0-7-T6：Ctrl+A 选中当前显示器（imageDisplayBounds() 已按 imageBounds/displayBounds 解析）。
+  if(event.ctrlKey&&event.key.toLowerCase()==='a'&&!event.shiftKey&&!event.altKey){event.preventDefault();if(activeOcrResult)clearOcrResult();selection={...imageDisplayBounds()};selectState='selected';pointerDownPoint=null;tip.style.display='none';render()}
   if(event.ctrlKey&&event.key.toLowerCase()==='z'){event.preventDefault();document.getElementById('undo').click()}
   if(event.ctrlKey&&event.key.toLowerCase()==='y'){event.preventDefault();document.getElementById('redo').click()}
   if(event.key==='Delete'&&annotations.length){annotations.pop();render()}
@@ -699,6 +733,8 @@ addEventListener('keydown',(event)=>{
 
 window.captureAPI.onInit((data)=>{
   clearOcrResult();setProcessingState(null);initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#e5a44c')
+  resetSerialNumber(data)
+  if(data.settings?.screenshot?.shutterSound!==false)playShutterSound()
   applyWatermarkSettings(data.settings?.screenshot?.watermark)
   setAnnotationWidth(data.settings?.screenshot?.annotationWidth)
   if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}

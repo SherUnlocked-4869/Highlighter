@@ -5,6 +5,10 @@ The path data is unmodified. Only the SVG wrapper attributes were normalized
 (viewBox="0 0 16 16", fill="#000", no width/height/class, single line) so the
 files can be used as CSS mask images with `background: currentColor`.
 
+`print.svg` (the capture toolbar's "export PDF" button) is the one exception: it
+is drawn locally for this project on the same 16x16 grid, so its path data does
+not come from Bootstrap Icons.
+
 --------------------------------------------------------------------------------
 
 The MIT License (MIT)
