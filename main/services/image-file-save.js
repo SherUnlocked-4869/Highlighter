@@ -9,6 +9,17 @@ const { CAPTURE_PREFIX, makeCaptureName: makeCaptureNameDefault } = require('./c
 const SAVE_TITLE = '保存截图'
 const PNG_FILTER = Object.freeze({ name: 'PNG 图片', extensions: ['png'] })
 
+// Single source for "where does a screenshot go": an explicit caller wins, then
+// the remembered directory (P0-7B), then the configured directory. Callers that
+// need a guaranteed path apply their own fallback (the dialog uses Pictures, the
+// "open folder" actions keep their existing fallback too).
+function resolveSaveDirectory(settings, explicitDirectory = '') {
+  if (explicitDirectory) return explicitDirectory
+  const screenshot = settings?.screenshot || {}
+  const memorized = typeof screenshot.lastSaveDirectory === 'string' ? screenshot.lastSaveDirectory.trim() : ''
+  return memorized || screenshot.saveDirectory || ''
+}
+
 // Directory comparison for the memory: resolve, and fold case on Windows, so a
 // hand-typed `E:/shots` does not look different from the `E:\shots` the platform
 // returns and trigger a settings write on every capture.
@@ -75,7 +86,7 @@ function createImageFileSaver({
     // both. Before this the key was write-only, so a save-as elsewhere never
     // changed where the next fast save landed.
     const memorized = typeof screenshot.lastSaveDirectory === 'string' ? screenshot.lastSaveDirectory.trim() : ''
-    const preferredDirectory = options.directory || memorized || screenshot.saveDirectory
+    const preferredDirectory = resolveSaveDirectory(settings, options.directory)
     const fast = options.fast === true
     // The fast path is the only branch that can silently overwrite, so the probe
     // only has to look at the directory it is about to write into; the dialog
@@ -104,4 +115,4 @@ function createImageFileSaver({
   }
 }
 
-module.exports = { createImageTargetResolver, createImageFileSaver, PNG_FILTER, SAVE_TITLE }
+module.exports = { createImageTargetResolver, createImageFileSaver, resolveSaveDirectory, PNG_FILTER, SAVE_TITLE }

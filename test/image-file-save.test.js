@@ -2,7 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const path = require('node:path')
 
-const { createImageTargetResolver, createImageFileSaver, PNG_FILTER, SAVE_TITLE } = require('../main/services/image-file-save')
+const { createImageTargetResolver, createImageFileSaver, resolveSaveDirectory, PNG_FILTER, SAVE_TITLE } = require('../main/services/image-file-save')
 
 const PICTURES = 'C:/Users/me/Pictures'
 
@@ -230,4 +230,16 @@ test('a blank memorized value falls back to the configured directory', async () 
   assert.equal(filePath, path.join('D:/configured', 'Highlighter.png'))
   // The memory was blank, so the write-back still happens.
   assert.deepEqual(remembered, [path.dirname(filePath)])
+})
+
+test('resolveSaveDirectory orders the caller, the memory, then the setting', () => {
+  const settings = { screenshot: { saveDirectory: 'D:/configured', lastSaveDirectory: 'E:/remembered' } }
+  assert.equal(resolveSaveDirectory(settings), 'E:/remembered')
+  assert.equal(resolveSaveDirectory(settings, 'F:/explicit'), 'F:/explicit')
+  assert.equal(resolveSaveDirectory({ screenshot: { saveDirectory: 'D:/configured', lastSaveDirectory: '  ' } }), 'D:/configured')
+  assert.equal(resolveSaveDirectory({ screenshot: { saveDirectory: 'D:/configured' } }), 'D:/configured')
+  // No fallback lives here: callers that need a guaranteed path add their own.
+  assert.equal(resolveSaveDirectory({}), '')
+  assert.equal(resolveSaveDirectory(undefined), '')
+  assert.equal(resolveSaveDirectory(undefined, 'F:/explicit'), 'F:/explicit')
 })

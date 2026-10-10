@@ -1,5 +1,7 @@
 'use strict'
 
+const { resolveSaveDirectory } = require('./image-file-save')
+
 // The shortcut/tray/IPC feature entry point. Each name maps to one handler, so
 // the dispatcher is a lookup rather than a growing switch; the ownership of the
 // actual work stays in the domains, which arrive injected along with the shell
@@ -103,7 +105,9 @@ function createFunctionRouter(deps) {
       return true
     },
     async openImageSaveFolder() {
-      const directory = getSettings().screenshot.saveDirectory || app.getPath('pictures')
+      // Matches where a screenshot actually lands: the remembered directory
+      // (P0-7B) wins over the configured one.
+      const directory = resolveSaveDirectory(getSettings()) || app.getPath('pictures')
       await shell.openPath(directory)
       return true
     },

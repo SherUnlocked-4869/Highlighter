@@ -88,7 +88,7 @@ const aiClient = require('./main/services/ai')
 const { createFunctionRouter } = require('./main/services/function-router')
 const { createSettingsNormalizer } = require('./main/services/settings-normalize')
 const { createFfmpegPathResolver } = require('./main/services/ffmpeg-path')
-const { createImageFileSaver } = require('./main/services/image-file-save')
+const { createImageFileSaver, resolveSaveDirectory } = require('./main/services/image-file-save')
 const {
   migrateAiSettings,
   resolveAiAssignment
@@ -1007,7 +1007,7 @@ registerAppIpc({
     getDisplayDiagnostics,
     chooseDirectory,
     openDataDirectory: () => shell.openPath(activePaths?.root || app.getPath('userData')),
-    openSaveDirectory: () => shell.openPath(getSettings().screenshot.saveDirectory || app.getPath('pictures')),
+    openSaveDirectory: () => shell.openPath(resolveSaveDirectory(getSettings()) || app.getPath('pictures')),
     completeAi: (messages, options) => {
       const settings = getSettings()
       return aiClient.completeChat(

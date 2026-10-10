@@ -59,7 +59,7 @@ function createHarness(overrides = {}) {
     getMainWindow: () => mainWindow,
     createMainWindow: (route) => { calls.routes.push(route) },
     getPinDomain: () => pinDomain,
-    getSettings: () => ({ screenshot: { saveDirectory: '' } }),
+    getSettings: () => overrides.settings || { screenshot: { saveDirectory: '' } },
     persistHistory: (...args) => calls.persisted.push(args),
     assertGameModeDisabled: () => {
       if (overrides.gameMode) throw new Error('游戏模式已开启，请先通过托盘菜单关闭游戏模式')
@@ -180,6 +180,14 @@ test('record, pin, search, folder and window routes land on their domains', asyn
   assert.equal(mainWindow.visible, false, 'a visible main window is hidden')
   assert.equal(await router.executeFunction('showOrHideMainWindow'), true)
   assert.deepEqual(calls.routes, ['history', 'translation', 'chat', 'home'])
+})
+
+test('opening the save folder follows the remembered directory', async () => {
+  const { router, calls } = createHarness({
+    settings: { screenshot: { saveDirectory: 'C:/configured', lastSaveDirectory: 'C:/remembered' } }
+  })
+  assert.equal(await router.executeFunction('openImageSaveFolder'), true)
+  assert.deepEqual(calls.openedPaths, ['C:/remembered'])
 })
 
 test('explain clipboard only reads the clipboard and refuses empty or oversized text', async () => {
