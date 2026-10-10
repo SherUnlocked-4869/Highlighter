@@ -125,6 +125,7 @@ test('region recording uses supported silent MP4 settings', () => {
   const recordHtml = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')
   const recordScript = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  const ffmpegResolver = fs.readFileSync(path.join(root, 'main', 'services', 'ffmpeg-path.js'), 'utf8')
   assert.match(config, /5.*16.*24.*30.*60/)
   assert.doesNotMatch(config, /includeMicrophone|录制麦克风/i)
   assert.doesNotMatch(recordHtml, /microphone|麦克风|系统声音/i)
@@ -133,7 +134,8 @@ test('region recording uses supported silent MP4 settings', () => {
   assert.match(recordScript, /无法获取桌面录制画面/)
   assert.match(recordScript, /cancelButton\.disabled/)
   assert.match(recordScript, /async function rerecord\(\)[\s\S]*catch \(error\) \{[\s\S]*cancelSession\(sessionId\)/)
-  assert.match(main, /未找到 MP4 编码组件/)
+  assert.match(main, /createFfmpegPathResolver/)
+  assert.match(ffmpegResolver, /未找到 MP4 编码组件/)
 })
 
 test('MP4 save dialog is owned and not covered by the topmost preview', () => {

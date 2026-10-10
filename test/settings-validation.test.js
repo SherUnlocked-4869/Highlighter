@@ -97,3 +97,78 @@ test('rejects an accelerator that could never register while keeping clearing le
   // Validation checks syntax only; canonicalising case/order is the migration's job.
   assert.equal(assertSettingsPatch({ shortcuts: { localSearch: 'alt+f' } }, shortcutsTemplate).shortcuts.localSearch, 'alt+f')
 })
+
+// Wave 0 froze these keys on 2026-10-10 so every later workstream can write them.
+// Validation is type-only (the ranges live in the normalizer), so each key needs
+// one accepted value and one rejected type here.
+function patchFor(dottedPath, value) {
+  const parts = dottedPath.split('.')
+  const patch = {}
+  let cursor = patch
+  for (const part of parts.slice(0, -1)) cursor = cursor[part] = {}
+  cursor[parts[parts.length - 1]] = value
+  return patch
+}
+
+function readPath(settings, dottedPath) {
+  return dottedPath.split('.').reduce((value, part) => value[part], settings)
+}
+
+test('accepts every Wave 0 frozen settings key with its declared type', () => {
+  const accepted = [
+    ['language', 'en-US'],
+    ['screenshot.captureCursor', true],
+    ['screenshot.shutterSound', false],
+    ['screenshot.nameTemplate', '{date}-{time}'],
+    ['screenshot.lastSaveDirectory', 'D:/shots'],
+    ['screenshot.keepSerialAcrossCaptures', true],
+    ['record.audioSystem', false],
+    ['record.audioMicrophone', true],
+    ['record.audioSystemGain', 0.5],
+    ['record.audioMicrophoneGain', 2],
+    ['record.captureCursor', true],
+    ['pinned.clickThrough', true],
+    ['shortcuts.screenshotQuickSave', 'Ctrl+Shift+S'],
+    ['shortcuts.screenshotSaveAs', 'Ctrl+Alt+S'],
+    ['shortcuts.togglePinClickThrough', 'Ctrl+Alt+P']
+  ]
+
+  for (const [dottedPath, value] of accepted) {
+    const patch = patchFor(dottedPath, value)
+    assert.equal(readPath(assertSettingsPatch(patch, DEFAULT_SETTINGS), dottedPath), value, `${dottedPath} should accept its declared type`)
+  }
+})
+
+test('rejects a wrong type for every Wave 0 frozen settings key', () => {
+  const rejected = [
+    ['language', 1],
+    ['screenshot.captureCursor', 'yes'],
+    ['screenshot.shutterSound', 1],
+    ['screenshot.nameTemplate', false],
+    ['screenshot.lastSaveDirectory', 5],
+    ['screenshot.keepSerialAcrossCaptures', 'true'],
+    ['record.audioSystem', 'on'],
+    ['record.audioMicrophone', 0],
+    ['record.audioSystemGain', '1'],
+    ['record.audioMicrophoneGain', true],
+    ['record.captureCursor', 'no'],
+    ['pinned.clickThrough', 'yes'],
+    ['shortcuts.screenshotQuickSave', true],
+    ['shortcuts.screenshotSaveAs', 3],
+    ['shortcuts.togglePinClickThrough', false]
+  ]
+
+  for (const [dottedPath, value] of rejected) {
+    assert.throws(
+      () => assertSettingsPatch(patchFor(dottedPath, value), DEFAULT_SETTINGS),
+      /类型无效/,
+      `${dottedPath} should reject ${JSON.stringify(value)}`
+    )
+  }
+})
+
+test('validation stays type-only: an out-of-range language is a normalizer concern', () => {
+  const patch = { language: 'fr' }
+  assert.equal(assertSettingsPatch(patch, DEFAULT_SETTINGS).language, 'fr')
+})
+

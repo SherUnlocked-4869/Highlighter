@@ -58,6 +58,7 @@ test('config app exposes the selection toolbar route and controls', () => {
 
 test('main process normalizes toolbar settings and routes configured custom prompts', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const normalizer = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'settings-normalize.js'), 'utf8')
   const settingsEffects = fs.readFileSync(path.join(__dirname, '..', 'main/domains/settings-effects/index.js'), 'utf8')
   const selectionDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/selection/index.js'), 'utf8')
   const router = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'ai-feature-router.js'), 'utf8')
@@ -65,7 +66,7 @@ test('main process normalizes toolbar settings and routes configured custom prom
   const toolbar = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar.js'), 'utf8')
   const action = fs.readFileSync(path.join(__dirname, '..', 'action', 'action.js'), 'utf8')
 
-  assert.match(main, /normalized\.selectionToolbar = normalizeSelectionToolbar/)
+  assert.match(normalizer, /normalized\.selectionToolbar = normalizeSelectionToolbar/)
   assert.match(selectionDomain, /enableClipboard: getSettings\(\)\.selectionToolbar\.clipboardFallback/)
   assert.match(settingsEffects, /updateStartOptions\(\{\s*enableClipboard: settings\.selectionToolbar\.clipboardFallback/)
   assert.match(main, /settingsEffects\.applyUpdate/)

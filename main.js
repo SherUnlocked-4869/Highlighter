@@ -86,19 +86,20 @@ const { createDataRootDomain } = require('./main/domains/data-root')
 const { createSettingsEffects } = require('./main/domains/settings-effects')
 const aiClient = require('./main/services/ai')
 const { createFunctionRouter } = require('./main/services/function-router')
-const { normalizeSelectionToolbar, normalizeToolbarThinking } = require('./toolbar/toolbar-utils')
+const { createSettingsNormalizer } = require('./main/services/settings-normalize')
+const { createFfmpegPathResolver } = require('./main/services/ffmpeg-path')
+const { createImageTargetResolver } = require('./main/services/image-file-save')
 const {
   migrateAiSettings,
-  normalizeAiSettings,
   resolveAiAssignment
 } = require('./main/services/ai-providers')
-const {
-  migrateAppearanceSettings,
-  resolveMainColor
-} = require('./main/services/appearance-migration')
+const { migrateAppearanceSettings } = require('./main/services/appearance-migration')
 const { migrateShortcutSettings } = require('./main/services/shortcut-migration')
 
 const defaultHistoryDirectory = activePaths?.history || path.join(app.getPath('userData'), 'capture-history')
+const normalizeSettings = createSettingsNormalizer({ defaultHistoryDirectory })
+const resolveFfmpegPath = createFfmpegPathResolver({ log, isPackaged: () => app.isPackaged })
+const resolveImageTarget = createImageTargetResolver({ dialog, ensureDirectory, getPicturesDirectory: () => app.getPath('pictures') })
 const conversationsDirectory = activePaths?.conversations || path.join(app.getPath('userData'), 'conversations')
 const logFile = activePaths ? path.join(activePaths.logs, 'app.log') : path.join(app.getPath('userData'), 'app.log')
 const applicationSessionId = crypto.randomUUID()
@@ -239,17 +240,6 @@ async function recognizeWithPerformance(imageBuffer, options, source) {
   }
 }
 
-function resolveFfmpegPath() {
-  let candidate = ''
-  try {
-    candidate = require('ffmpeg-static')
-  } catch (error) {
-    log('Unable to resolve FFmpeg:', error)
-  }
-  if (!candidate || typeof candidate !== 'string') throw new Error('未找到 MP4 编码组件')
-  return app.isPackaged ? candidate.replace('app.asar', 'app.asar.unpacked') : candidate
-}
-
 function getRecordingService() {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
   if (recordingService) return recordingService
@@ -259,20 +249,6 @@ function getRecordingService() {
     log
   })
   return recordingService
-}
-
-function normalizeSettings(settings) {
-  const normalized = normalizeAiSettings(settings)
-  normalized.selectionToolbar = normalizeSelectionToolbar(normalized.selectionToolbar)
-  normalized.toolbarThinking = normalizeToolbarThinking(normalized.toolbarThinking)
-  const legacyDirectory = normalized.fixedContent?.autoSaveDirectory
-  normalized.screenshot.historyDirectory = String(normalized.screenshot.historyDirectory || legacyDirectory || defaultHistoryDirectory).trim()
-  if (!normalized.screenshot.historyDirectory) normalized.screenshot.historyDirectory = defaultHistoryDirectory
-  normalized.system.updateChannel = normalized.system.updateChannel === 'beta' ? 'beta' : 'stable'
-  normalized.system.gameMode = normalized.system.gameMode === true
-  normalized.mainColor = resolveMainColor(normalized.mainColor)
-  if (normalized.fixedContent && Object.hasOwn(normalized.fixedContent, 'autoSaveDirectory')) delete normalized.fixedContent.autoSaveDirectory
-  return normalized
 }
 
 function getSettings() {
@@ -848,19 +824,12 @@ function createTrayIcon() {
 async function saveImageBuffer(imageBuffer, options = {}) {
   const settings = getSettings()
   const preferredDirectory = options.directory || settings.screenshot.saveDirectory
-  let filePath
-  if (options.fast && preferredDirectory) {
-    ensureDirectory(preferredDirectory)
-    filePath = path.join(preferredDirectory, makeCaptureName())
-  } else {
-    const result = await dialog.showSaveDialog({
-      title: '保存截图',
-      defaultPath: path.join(preferredDirectory || app.getPath('pictures'), makeCaptureName()),
-      filters: [{ name: 'PNG 图片', extensions: ['png'] }]
-    })
-    if (result.canceled || !result.filePath) return null
-    filePath = result.filePath
-  }
+  const filePath = await resolveImageTarget({
+    fast: options.fast === true,
+    directory: preferredDirectory,
+    defaultName: makeCaptureName()
+  })
+  if (!filePath) return null
   await fs.promises.writeFile(filePath, imageDataToBuffer(imageBuffer))
   return filePath
 }

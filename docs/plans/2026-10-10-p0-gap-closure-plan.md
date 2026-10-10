@@ -60,7 +60,7 @@
 ### 0.2 编排要点（本方案的核心机制）
 
 1. **`main.js` 是 Lead 独占的集成写作用域**。各功能流**只交付模块**，需要的接线行写进 PR 说明，由 Lead 在收口波次统一接线。理由：`main.js` 仅剩 **2 行**余量（1298/1300，`scripts/check-architecture.js:18`），且 `FORBIDDEN_IN_MAIN` 禁止把域逻辑写回该文件。
-2. **Wave 0 先冻结共享契约**：`main/services/settings-defaults.js` 与 `main/services/ipc-security.js` 被几乎所有工作流触碰，必须在任何并行开始前**一次性写全**，之后转为只读。这是避免 7 路互相踩踏的关键。
+2. **Wave 0 先冻结共享契约**：`main/services/settings-defaults.js` 必须在任何并行开始前**一次性写全**（§2.1 的 15 个新键），此后只读；`main/services/ipc-security.js` 在 W0-3 冻结的是**登记规则**（§2.2），此后**只由 Lead 在波次边界按 §2.1.1 串行追加通道**，不再"一次性登记通道 + 文件只读"。这是避免 7 路互相踩踏的关键。（2026-10-10 第二轮复核：原"文件只读 + W0-3 一次性登记两条通道"与"通道注册点最早在 W1、`capture:export-pdf` 可能迟至 Wave 3"直接冲突，会让 Wave 0 无法绿着出口，见 §2.2 修正 2。）
 3. **独占写作用域（single-writer）**：同一时刻一个文件只有一个 owner。冲突面最大的三处——`main.js`、`capture/**`、`config/**`——采用"先后移交"而非"并发共享"。
 4. **每个工作流 = 一个子智能体**，交付物统一为「代码 + 定向测试 + 门禁证据 + 接线说明」；全量门禁与真机验收只在波次收口由 Lead 执行。
 5. **前置工程单独认领、单独估工**：`config/` 的路由拆分（D2）不是 i18n 的一部分，而是它的前置条件。任何"被某决策依赖但无人认领"的工作，都必须在 §3.4 这类小节里落到任务与工日，否则总账失真（2026-10-10 旁路观察者指出的一次真实缺口）。
@@ -77,7 +77,7 @@
 | C3 | 新增 IPC 通道**必须**登记 `main/services/ipc-security.js` | `main/services/ipc-security.js:257` | 注册时直接抛错 |
 | C4 | 自定义宽度/线宽等数值白名单**两端归一**（主进程只校验类型，不校验值域） | `settings-validation.js:33` | 非法值落盘 |
 | C5 | 不修改 `capture/capture.js` 的两套坐标系语义（屏幕 CSS 坐标 vs 导出坐标） | 见 §8.3 | 导出与屏幕不一致 |
-| C6 | 既有契约测试的**硬编码清单**（图标序列、通道 deepEqual、探针名单）改动需同步 | `test/capture-toolbar-icons.test.js:10-14`、`test/ipc-module-contracts.test.js:86-145`、`scripts/probe-diagnostics-runtime.js:16-21` | 门禁失败 |
+| C6 | 既有契约测试的**硬编码清单**（图标序列、通道 deepEqual、探针名单）改动需同步 | `test/capture-toolbar-icons.test.js:10-14`、`test/ipc-module-contracts.test.js:86-145`、`scripts/probe-diagnostics-runtime.js:16-21`、`test/pin-domain.test.js:35`（硬断言 `pin:toggle-click-through`，须与 `main/services/ipc-security.js:125` 的条目删除**同 PR** 同步） | 门禁失败 |
 | C7 | 可见测试窗口按 `AGENTS.md` 放**副屏**；无副屏先询问 | `AGENTS.md` | 打扰用户 |
 | C8 | 全量 `npm test` / `npm run check` 只在波次收口由 Lead 跑；工作流只跑定向测试 | 避免 CPU 争抢与假失败 | —— |
 
@@ -96,6 +96,10 @@
 
 > §1.1 是**收口**门禁（批次结束时逐条核对），本节是**开工**门禁（M0 开始前必须满足）。2026-10-10 旁路观察者指出，核实成立。**本节结论：M0 不能直接开工，需先插入 M-1。**
 
+> **2026-10-10 复核：本节结论已履行，M-1 已结案。** 实际落地路径是**选项 A 的"丢弃在制改动"分支**：文档与 `.gitignore` 的 3 行已在提交 **`07153a6`**（`master`，经 `pull --ff-only` 快进）；`package.json:151` 仍为 `selection-hook: "^2.0.2"`、`node_modules/selection-hook` 实测 **2.0.2**（2.1.1 升级**未保留**，故出口条件 3 的"划词真机验证记录"不适用）；`native/everything-search/bin/HighlighterEverything.exe` 与 HEAD **逐字节一致**（343552 B，无 diff）；`_repo_snow_apps/` **已不在磁盘**；本节提到的两份 `2026-10-08`/`2026-10-09` 文档**从未提交、当前不存在**。**工作区干净**，唯一未跟踪项为工具文件 `.zcodeignore`（经确认保持 untracked）。下表为当时的实测留档，保留以记录依据。
+>
+> **复核补记（与 M-1 无关但影响开工）**：`npm start` 的 `prestart` 会跑 `npm run build:native`，**会重新生成被跟踪的 `native/everything-search/bin/HighlighterEverything.exe`**、把工作区再次弄脏。该问题按本节末"仓库策略问题"处理，**不塞进 M-1**。
+
 **现状（实测）**：文档基线写的 `master @ b97391e` 指的是 **HEAD**（该值准确），但**工作区并不干净** —— 带着 4 项未提交改动，其中 3 项由本文档之外的在制工作引入：
 
 | 路径 | 差异 | 性质 | 来源 |
@@ -105,7 +109,7 @@
 | `native/everything-search/bin/HighlighterEverything.exe` | `Bin 343552 → 343552 bytes`（**同尺寸、内容不同**） | **纯重建噪声**（Rust 边车被重新构建） | 同上 |
 | `.gitignore` | +3 行（忽略 `_repo_snow_apps/`） | 本文档配套 | 本次 |
 
-另有两份**未跟踪**的在制规划文档：`docs/plans/2026-10-08-selection-toolbar-app-blacklist-research.md`、`docs/plans/2026-10-09-selection-toolbar-centered-placement-design.md`。
+另有两份**未跟踪**的在制规划文档（**2026-10-10 复核：两者均不存在于仓库，也从未提交**）：`docs/plans/2026-10-08-selection-toolbar-app-blacklist-research.md`、`docs/plans/2026-10-09-selection-toolbar-centered-placement-design.md`。
 
 **为什么必须先处理**：
 
@@ -143,9 +147,9 @@
 
 | 任务 | 内容 | 写作用域 | 验收 |
 |---|---|---|---|
-| **W0-1 main.js 容量腾挪** | 抽出纯函数以腾出 ≥60 行余量：`normalizeSettings`（`main.js:264-276`）→ `main/services/settings-normalize.js`；`resolveFfmpegPath` → `main/services/ffmpeg-path.js`；`saveImageBuffer` 的对话框分支 → `main/services/image-file-save.js`。**必须同时改 3 处指向被抽走的 `main.js` 的源码断言**（见下） | `main.js`、`main/services/settings-normalize.js`（新）、`main/services/ffmpeg-path.js`（新）、`main/services/image-file-save.js`（新）、`test/design-tokens.test.js`（`:119`，`/resolveMainColor/` 指向 `main.js:273`）、`test/selection-toolbar-settings.test.js`（`:68`，指向 `main.js:266`）、`test/update-ui-contract.test.js`（`:14`，指向 `main.js:271`） | `main.js` ≤ **1240** 行；`npm run check` 绿；**上述 3 个测试文件全绿** |
-| **W0-2 设置契约冻结** | 一次性写入**本期全部 15 个**新设置键（见 §2.1），此后本文件只读；同时**固化"加键流程"**（见 §2.1.1） | `main/services/settings-defaults.js` | `test/settings-validation.test.js` 全绿；每个新键有类型用例 |
-| **W0-3 IPC 契约冻结** | 一次性登记**页面→主进程**的新通道（见 §2.2）。**主→渲染广播通道不进 `IPC_SURFACES`** | `main/services/ipc-security.js`、`test/ipc-security.test.js` | `assertComplete()`（`main.js:1173`）通过；`electron .` 可正常启动 |
+| **W0-1 main.js 容量腾挪** | 抽出纯函数以**净腾出 ≥20 行**（2026-10-10 实测可腾出约 25 行，见 §15 第 12 条 (f)）：`normalizeSettings`（`main.js:264-276`）→ `main/services/settings-normalize.js`；`resolveFfmpegPath`（`main.js:242-251`）→ `main/services/ffmpeg-path.js`；`saveImageBuffer` 的对话框分支（`main.js:856-862`）→ `main/services/image-file-save.js`。**必须同时改 4 处指向被抽走的 `main.js` 的源码断言**（见下；第 4 处 `test/recording-ui-contract.test.js:136` 由 2026-10-10 实测补入 —— 原方案只列了 3 处）。**实现约束**：`normalizeSettings` 依赖 `defaultHistoryDirectory`（`main.js:101`，运行时值）与 4 个已 import 的纯函数 → 须以工厂或第二参数注入；`resolveFfmpegPath` 依赖 `log` 与 `app.isPackaged` → 须工厂注入。 | `main.js`、`main/services/settings-normalize.js`（新）、`main/services/ffmpeg-path.js`（新）、`main/services/image-file-save.js`（新）、`test/settings-normalize.test.js`（新）、`test/ffmpeg-path.test.js`（新）、`test/image-file-save.test.js`（新）、`test/design-tokens.test.js`（`:119`，`/resolveMainColor/` 指向 `main.js:273`）、`test/selection-toolbar-settings.test.js`（`:68`，指向 `main.js:266`）、`test/update-ui-contract.test.js`（`:14`，指向 `main.js:271`）、`test/recording-ui-contract.test.js`（`:136`，`/未找到 MP4 编码组件/`；改为断言 `main.js` 的 `createFfmpegPathResolver` + 模块内的错误文案） | `main.js` ≤ **1280** 行（门禁读数）且**净腾出 ≥20 行**；`npm run check` 绿；**上述 4 个源码断言测试 + 3 个新单测全绿**；`npm run test:coverage:loaded` 不下降 |
+| **W0-2 设置契约冻结** | 一次性写入**本期全部 15 个**新设置键（见 §2.1），此后本文件只读；同时**固化"契约变更流程"**（加键 / 加通道，见 §2.1.1） | `main/services/settings-defaults.js`、`test/settings-validation.test.js` | `test/settings-validation.test.js` 全绿；每个新键有类型用例 |
+| **W0-3 IPC 登记规则冻结** | **冻结"登记时机"规则而非通道清单**：确认 `IPC_SURFACES` 只登记页面→主进程通道，且**每条通道与它的运行时注册点同一个 PR 落地**（修法 ①，见 §2.2）。**W0-3 不新增任何通道** | `main/services/ipc-security.js`（本波次只读核对）、`test/ipc-security.test.js`（基线核对） | `assertComplete()`（`main.js:1173`）通过；`electron .` 可正常启动；**W0-3 前后 `IPC_SURFACES` 通道集合不变** |
 | **W0-4 i18n key 规范** | 定义 key 命名（`<域>.<模块>.<语义>`）、`shared/locales/` 目录骨架与 `scripts/check-i18n.js` 的接口 | `shared/i18n.js`（骨架）、`shared/locales/*.js`（空表）、`scripts/check-i18n.js` | `node scripts/check-i18n.js` 可运行（此时允许报"未迁移"清单） |
 | **W0-5 依赖决策** | 确认无需新增 npm 依赖（`ffmpeg-static`、`sharp`、`onnxruntime-node`、`jsqr` 已足够）；如确需新增，由 Lead 单独提交 `package.json` | `package.json`、`package-lock.json` | 若新增依赖须过 `audit:dependencies` |
 
@@ -175,29 +179,38 @@ shortcuts.togglePinClickThrough     : ''        // P0-6-T4 穿透退出兜底热
 >
 > 新增键必须**同时**进设置归一化路径（W0-1 后位于 `main/services/settings-normalize.js`，原 `main.js:264-276`）。
 
-### 2.1.1 加键流程（Wave 0 冻结之后的唯一合法路径）
+### 2.1.1 契约变更流程（加键 / 加通道；Wave 0 冻结之后的唯一合法路径）
 
 Wave 0 冻结 `settings-defaults.js` 与 `ipc-security.js` 是为了防止并发写冲突，**不是禁止新增**。冻结后如需新键/新通道（例如某工作流在实施中才发现缺口），按以下流程：
 
-1. **发起**：工作流**停止编码**，向 Lead 提交一条"契约变更请求"，内容为：键名 / 默认值 / 类型 / 用途 / 发起功能 / 为什么不能复用已有键。
+1. **发起**：工作流**停止编码**，向 Lead 提交一条"契约变更请求"，内容为：**（加键）**键名 / 默认值 / 类型 / 用途 / 发起功能 / 为什么不能复用已有键；**（加通道）**通道名 / `handle` 还是 `on` / 角色 / 用途 / 发起功能 / **注册点所在文件与行** / 为什么不能复用已有通道。**加通道时必须与它的运行时注册点同一个 PR 落地**（§2.2 规则 2），不得先登记后落地。
 2. **串行执行**：Lead 在**当前波次全部 owner 都处于暂停或已完成**时，以**单一提交**追加键或通道，并同步 `test/settings-validation.test.js` 或 `test/ipc-security.test.js` 的用例。
 3. **广播**：Lead 向该波次所有活跃 owner 发一条变更通知（键名 + 默认值）。
 4. **禁止**：任何工作流**不得**自行修改这两个文件；发现需要新键时**不得**改用"临时不落盘"等绕过手段（`settings-validation.js:30` 会以"不支持的设置项"直接拒绝）。
 
 > 本流程的存在是 2026-10-10 独立审查的产物：此前 W0-2 宣称"此后只读"，而 §6.1 的 P0-7-T3 与 §5.3 的 P0-6-T4 都必须新增键 —— 形成一个**死锁**。现已把所需键一次性补进 §2.1，并留下这条合法回路。
 
-### 2.2 冻结的 IPC 通道（W0-3 一次性登记）
+### 2.2 IPC 通道的登记规则（W0-3 冻结"时机"，不冻结清单）
 
-`main/services/ipc-security.js` 的 `IPC_SURFACES` **只登记"页面→主进程"方向的通道**（每条 surface 只有 `handles`（`invoke`）与 `listeners`（`send`）两个字段）。`main.js:1173` 启动即调用 `assertComplete()`。
+`main/services/ipc-security.js` 的 `IPC_SURFACES` **只登记"页面→主进程"方向的通道**（每条 surface 只有 `handles`（`invoke`）与 `listeners`（`send`）两个字段）。`main.js:1173` 在**模块顶层**调用 `assertComplete()`，而 `assertComplete()`（`ipc-security.js:279-283`）的语义是：**`IPC_SURFACES` 里的每个通道在运行时都必须已有注册点**。
 
-> **⚠️ 关键修正（2026-10-10 独立审查发现）**：`pin:click-through-changed` 与 `i18n:language` 是**主→渲染广播**（走 `webContents.send`），**不能**登记进 `IPC_SURFACES`：登记后没有对应的注册点，`assertComplete()` 会直接抛错，`electron .` 与 `scripts/probe-diagnostics-runtime.js:95` 的 `require('../main')` 全部挂掉。实测 `pin:init`、`search:status-changed` 等 23 个既有广播通道都**不在** `IPC_SURFACES` 中，与此一致。
+> **⚠️ 修正 1（2026-10-10 独立审查发现，保留）**：`pin:click-through-changed` 与 `i18n:language` 是**主→渲染广播**（走 `webContents.send`），**不能**登记进 `IPC_SURFACES`：登记后没有对应的注册点，`assertComplete()` 会直接抛错，`electron .` 与 `scripts/probe-diagnostics-runtime.js:95` 的 `require('../main')` 全部挂掉。实测 `pin:init`、`search:status-changed` 等 23 个既有广播通道都**不在** `IPC_SURFACES` 中，与此一致。
 
-**需登记（页面→主进程）：**
+> **⚠️ 修正 2（2026-10-10 第二轮复核发现，采纳修法 ①）**：本节的初版让 **W0-3 一次性登记** `capture:export-pdf` 与 `pin:set-click-through`，但这两个通道的运行时注册点分别落在 **S4·W1**（`main/ipc/capture-ipc.js`；且 §4.3 的 P0-4-T5 还要求 `main.js` 注入 dep，实际可能迟至 Wave 3）与 **S3·W1**（`main/domains/pin/index.js`）。于是从 W0-3 到注册点落地之间：`assertComplete()` 必抛、`electron .` 起不来、**`npm test` 也红**（`test/diagnostics-runtime.test.js:19` → `scripts/probe-diagnostics-runtime.js:95` → `require('../main')`）；若 W0-3 同时把旧 `pin:toggle-click-through` 的条目删掉，pin 域注册旧通道时还会直接抛 `IPC channel has no sender policy`。**结论：原 W0-3 的验收在 Wave 0 内不可满足**，并与 §0.2 的"`main.js` 只由 Lead 在收口接线"叠成硬冲突。
 
-| 通道 | 角色 | 用途 | 归属 |
-|---|---|---|---|
-| `capture:export-pdf` | `capture` | 截图导出 PDF | P0-4 |
-| `pin:set-click-through` | `pin` | 显式设置穿透（替代旧 `pin:toggle-click-through`） | P0-6 |
+**登记规则（W0-3 冻结的唯一内容）：**
+
+1. **只登记页面→主进程通道**；主→渲染广播**一律不进** `IPC_SURFACES`。
+2. **每条通道与它的运行时注册点同一个 PR 落地。** W0-3 **不新增任何通道**：`capture:export-pdf` 随 S4·W1 的注册点、`pin:set-click-through` 随 S3·W1 的注册点，按 §2.1.1 的契约变更流程（"加键"已泛化为"加键**或**加通道"）由 Lead 串行登记，并与 `test/ipc-security.test.js` 同步。
+3. **派发 S4 时的硬性要求**：`capture:export-pdf` 的注册**不得依赖 Wave 3 的 `main.js` 接线**（依赖注入须能在模块内自解析，或在 W1 内完成最小接线）；做不到就把该通道的登记与 `main.js` 接线一并推到 Wave 3，并相应推迟 P0-4 的验收。
+4. **删除旧通道必须同步三处**：S3·W1 删除 `main/domains/pin/index.js:448-453` 的 `pin:toggle-click-through` 时，必须在**同一个 PR** 内改掉 `ipc-security.js:125` 的条目与 `test/pin-domain.test.js:35` 的硬断言。
+
+**待登记的通道清单（登记时机见上方规则 2）：**
+
+| 通道 | 角色 | 用途 | 归属 | 登记波次 |
+|---|---|---|---|---|
+| `capture:export-pdf` | `capture` | 截图导出 PDF | P0-4 / S4 | 与 S4 注册点同 PR（W1；受规则 3 约束） |
+| `pin:set-click-through` | `pin` | 显式设置穿透（替代旧 `pin:toggle-click-through`） | P0-6 / S3 | 与 S3 注册点同 PR（W1） |
 
 **不登记（主→渲染广播，随各波次自行实现，不走 `IPC_SURFACES`）：**
 
@@ -206,9 +219,7 @@ Wave 0 冻结 `settings-defaults.js` 与 `ipc-security.js` 是为了防止并发
 | `pin:click-through-changed` | 主→渲染 | 穿透状态回执 | P0-6 |
 | `i18n:language` | 主→渲染广播 | 语言切换广播到 11 个窗口 | P0-1 |
 
-> 旧通道 `pin:toggle-click-through`（`main/domains/pin/index.js:448-453`）在 P0-6 中**删除**，避免双通道共存。
->
-> W0-3 的验收从"未见通道列表为空"改为"**`assertComplete()` 通过且 `electron .` 可正常启动**"，因为前者对广播通道是伪要求。
+> **W0-3 的验收**：`assertComplete()` 通过 且 `electron .` 可正常启动，**且 W0-3 前后 `IPC_SURFACES` 的通道集合不变**（本波次只冻结规则，不登记通道）。初版"未见通道列表为空"的写法对广播通道是伪要求，已作废。
 
 ---
 
@@ -224,10 +235,12 @@ Wave 0 冻结 `settings-defaults.js` 与 `ipc-security.js` 是为了防止并发
 |---|---|---|
 | `main.js` | Lead（W0-1）→ Lead（各收口波次） | 任何工作流禁止直接写；接线行写入 PR 说明 |
 | `main/services/settings-defaults.js` | Lead（W0-2）→ 冻结只读 | 新键走 §2.1.1 加键流程 |
-| `main/services/ipc-security.js` | Lead（W0-3）→ 冻结只读 | 同上 |
+| `main/services/ipc-security.js` | Lead（W0-3 冻结**规则**）→ 之后**只由 Lead 在波次边界按 §2.1.1 串行追加通道** | 修法 ①（§2.2）：文件不再"只读"，但除 Lead 外任何工作流禁写；追加必须与注册点**同 PR** |
+| `main/services/settings-normalize.js`、`main/services/ffmpeg-path.js`、`main/services/image-file-save.js` | **Lead**（W0-1 新建、W0-2 扩写归一化）→ 此后如需改动走 §2.1.1 | 2026-10-10 W0-1 抽出的三个模块；§2.1 要求的新设置键归一化统一落在这里，工作流不得自行修改 |
 | `package.json` / `package-lock.json` | Lead | 含 c8 `--include` 增改 |
 | `main/services/capture-naming.js` | **S7**（批次 A W1） | P0-4-T6 与 P0-7-T1 都要改它 → **统一归 S7**；P0-4 只调用不修改 |
 | `main/services/function-router.js` | **S7**（批次 A W1） | P0-6-T4 与 P0-7-T3 都要改它 → **统一归 S7**；P0-6 提供接口约定 |
+| `main/services/tray-menu.js` | **S7**（批次 A W1） | **2026-10-10 第二轮复核补入**：P0-6-T4 的托盘兜底出口是它的唯一写点。此前它只出现在 §3.1.1 的 S7 作用域里、**没有任何 S7 任务认领**，而 §5.3 的 T4 却把它派给 S3 → 归属无解；现统一归 S7 |
 | `main/domains/capture/index.js` | **S4**（批次 A W1）→ **S9a**（批次 A W2）→ **S6**（批次 B W6）→ **S9b**（批次 B W7） | 四个写点串行，见 §3.1.1 |
 | `capture/**`（含 `capture.html/js/css`、`annotation-geometry.js`） | **S9a**（A W2）→ **S6**（B W6）→ **S9b**（B W7） | 批次 A 的所有 `capture/**` 改动**推迟到 W2 的 S9a** |
 | `config/**` | **S10a**（A W2）→ **S10b**（B W7.5）→ **S1**（C W9）→ **S14** | 四个写点串行 |
@@ -239,7 +252,7 @@ Wave 0 冻结 `settings-defaults.js` 与 `ipc-security.js` 是为了防止并发
 
 **关键改动（相对初版）**：
 
-1. `capture-naming.js`、`function-router.js` 从"多 owner"改为**单 owner（S7）**；P0-4-T6 与 P0-6-T4 相应改为**由 S7 承接**的相邻任务。
+1. `capture-naming.js`、`function-router.js`、`tray-menu.js` 从"多 owner"改为**单 owner（S7）**；P0-4-T6 与 P0-6-T4 相应改为**由 S7 承接**的相邻任务（§4.3 / §5.3 的写作用域列已同步，2026-10-10 第二轮复核）。
 2. 批次 A 中所有 `capture/**` 与 `config/**` 的改动**移出 Wave 1**，推入 Wave 2 的 S9a / S10a，消除与 S3/S4/S7 的重叠。
 3. §0.1 中"三流零交集"的表述**已删除**，改为"Wave 1 三流写作用域互斥（见 §3.1.1）"。
 
@@ -247,23 +260,27 @@ Wave 0 冻结 `settings-defaults.js` 与 `ipc-security.js` 是为了防止并发
 
 | S | 波次 | 内容 | 独占写作用域 | 交付物 |
 |---|---|---|---|---|
-| **S1** | C·W9 | i18n 框架 + `config/` 全量迁移 | `shared/i18n.js`、`shared/locales/**`、`scripts/check-i18n.js`、`config/**` | 框架 + 三语 + config 迁移 + 漏译门禁 |
-| **S2** | B·W4 | 录屏音轨 | `record/**`、`main/services/recording-service.js` | 音轨采集与混流 + ffmpeg 参数 + 定向测试 |
-| **S3** | A·W1 | 贴图点击穿透接线 | `main/domains/pin/**`、`preload-pin.js`、`pin/**` | 显式 set + 回执 + 角标 + 纯函数 + 测试 |
-| **S4** | A·W1 | 打印 / 导出 PDF（主进程） | `main/services/pdf-export.js`（新）、`capture/print.html`（新）、`main/domains/capture/index.js`、`main/ipc/capture-ipc.js`、`preload-capture.js`、`test/pdf-export.test.js` | 导出能力 + IPC + 纯函数 + 接线说明 |
+| **S1** | C·W9 | i18n 框架 + `config/` 全量迁移 | `shared/i18n.js`、`shared/locales/**`、`scripts/check-i18n.js`、`config/**`、`test/i18n.test.js`（新）、`test/i18n-contract.test.js`（新） | 框架 + 三语 + config 迁移 + 漏译门禁 |
+| **S2** | B·W4 | 录屏音轨 | `record/**`、`main/services/recording-service.js`、`test/recording-utils.test.js`、`test/recording-service.test.js`、`test/audio-mixer.test.js`（新） | 音轨采集与混流 + ffmpeg 参数 + 定向测试 |
+| **S3** | A·W1 | 贴图点击穿透接线 | `main/domains/pin/**`（含新 `geometry.js`）、`preload-pin.js`、`pin/**`、`test/pin-geometry.test.js`（新）、`test/pin-domain.test.js`、`test/ipc-security.test.js`、`test/capture-ocr-pin-ui.test.js` | 显式 set + 回执 + 角标 + 纯函数 + 测试；**旧通道三处同步删除**（§2.2 规则 4） |
+| **S4** | A·W1 | 打印 / 导出 PDF（主进程） | `main/services/pdf-export.js`（新）、`capture/print.html`（新）、`main/domains/capture/index.js`、`main/ipc/capture-ipc.js`、`preload-capture.js`、`test/pdf-export.test.js`、`test/ipc-module-contracts.test.js` | 导出能力 + IPC + 纯函数 + 接线说明 |
 | **S5** | B·W4 | 光标原生采集 | `native/smart-select/**`、`main/services/cursor-provider.js`（新）、`shared/cursor-geometry.js`（新）、`test/cursor-geometry.test.js` | C# `cursor` 命令 + 位置解析 + 纯几何 |
-| **S6** | B·W6 | 标注元素二次编辑 | `capture/**`（除 `print.html`）、`main/domains/capture/index.js` | PR1–PR4 + 快照栈 + `annotation-geometry.js` |
-| **S7** | A·W1 | 体验细节（主进程部分） | `main/services/capture-naming.js`、`main/services/function-router.js`、`main/services/tray-menu.js`、`main/services/shortcut-*.js`、`shared/shortcut-keys.js`、`scripts/probe-diagnostics-runtime.js`、`test/capture-naming.test.js`（新）、`test/function-router.test.js` | 命名模板 + 快捷键 handler + 兜底热键 + 探针名单 |
-| **S9a** | A·W2 | 批次 A 的 `capture/**` 接线 | `capture/**`、`assets/shutter.wav`（新）、`main/domains/capture/index.js` | 打印按钮 + 快门音 + Ctrl+A + 序号 + saveMode |
-| **S10a** | A·W2 | 批次 A 的 `config/**` 收口 | `config/**` | 快门音/命名模板/两个快捷键/穿透开关的设置项 |
+| **S6** | B·W6 | 标注元素二次编辑 | `capture/**`（除 `print.html`）、`main/domains/capture/index.js`、`test/capture-toolbar-icons.test.js` | PR1–PR4 + 快照栈 + `annotation-geometry.js`（c8 `--include` 追加由 Lead 执行） |
+| **S7** | A·W1 | 体验细节（主进程部分） | `main/services/capture-naming.js`、`main/services/function-router.js`、`main/services/tray-menu.js`、`main/services/shortcut-*.js`、`shared/shortcut-keys.js`、`scripts/probe-diagnostics-runtime.js`、`test/capture-naming.test.js`（新）、`test/function-router.test.js`、`test/shortcut-ui-contract.test.js` | 命名模板 + 快捷键 handler + 兜底热键（含 P0-6-T4 托盘出口与 P0-4-T6 接口约定）+ 探针名单 |
+| **S9a** | A·W2 | 批次 A 的 `capture/**` 接线 | `capture/**`、`assets/shutter.wav`（新）、`main/domains/capture/index.js`、`test/capture-toolbar-icons.test.js` | 打印按钮 + **打印图标与有序清单同步（P0-4-T7②，与 `capture.html` 同 PR）** + 快门音 + Ctrl+A + 序号 + saveMode |
+| **S10a** | A·W2 | 批次 A 的 `config/**` 收口 | `config/**` | 快门音/命名模板/两个快捷键（P0-7-T3 的设置页行）/穿透开关的设置项 |
 | **S10b** | B·W7.5 | 批次 B 的 `config/**` 收口 | `config/**` | 录屏音频/光标开关的设置项与文案 |
 | **S9b** | B·W7 | 批次 B 的 `capture/**` 接线 | `capture/**`、`main/domains/capture/index.js` | 光标合成接线 |
 | **S11** | C·W9 | i18n：`capture/` 窗口 | `capture/**` | capture 窗迁移 |
 | **S12** | C·W9 | i18n：其余渲染窗 | `record/**`、`long-capture/**`、`action/**`、`search/**`、`recognition/**`、`toolbar/**` | 六窗迁移 |
 | **S13** | C·W9 | i18n：主进程文案 | `main/services/tray-menu.js`、`main/services/update-service.js`、`main/services/everything-service.js`、`main/services/ai/client.js`、`main/services/function-router.js` | 托盘/更新/状态/错误文案（不含 `throw`，见 D6） |
-| **S14** | A/B 之间·W8.5 | D2 配置页路由拆分 | `config/**`、`test/helpers/config-source.js`（新）、15 个 config 耦合测试的读取行 | 路由拆分 + 测试解耦 |
+| **S14** | A/B 之间·W8.5 | D2 配置页路由拆分 | `config/**`、`test/helpers/config-source.js`（新）、15 个 config 耦合测试的读取行**与 D2-4 的边界断言**（`test/config-model-helpers.test.js:20`、`test/model-config-ui-contract.test.js:72`、`test/design-tokens.test.js:156`） | 路由拆分 + 测试解耦 |
 
 > **S 编号说明**：`S9a/S9b` 是同一个 `capture/**` 写点在**两个不同批次**的两次占用，不是两个并行 owner；`S1α` 已取消，批次 C 拆为 S1/S11/S12/S13 四路。**每个波次内，上表任一文件只能有一个 owner**。
+>
+> **跨波次交接清单（2026-10-10 第二轮复核补入）**：以下文件在同一波次内唯一，但被**不同波次**先后占用。前一 owner **未收口**（未通过自己的定向测试 + `npm run check`）时，后一 owner **不得开工**（§3.1.2 第 1 条）：`main/domains/capture/index.js`（S4→S9a→S6→S9b）、`capture/**`（S9a→S6→S9b→S11）、`config/**`（S10a→S10b→S1→S14）、`record/**`（S2→S12）、`main/services/function-router.js` 与 `main/services/tray-menu.js`（S7→S13）、`shared/*`（S7、S5→S1）。
+>
+> **测试文件 owner 补登说明（同上轮复核）**：初版注册表只登记了 `test/pdf-export.test.js`、`test/cursor-geometry.test.js`、`test/capture-naming.test.js`、`test/function-router.test.js`、`test/pin-geometry.test.js`，漏了 §5.3/§6.1/§7.3/§4.3 任务表已经指派的 9 个既有测试文件（`test/pin-domain.test.js`、`test/ipc-security.test.js`、`test/capture-ocr-pin-ui.test.js`、`test/recording-utils.test.js`、`test/recording-service.test.js`、`test/audio-mixer.test.js`、`test/ipc-module-contracts.test.js`、`test/capture-toolbar-icons.test.js`、`test/shortcut-ui-contract.test.js`）。这会让"注册表 = 唯一 owner 来源"失效，现已逐项补入上表。**同一测试文件在不同波次被两个 owner 触碰是允许的（如 `test/capture-toolbar-icons.test.js`：S9a·W2 加 print 图标 → S6·W6 补标注元素），但同一波次内只能有一个 owner。**
 
 ### 3.1.2 波次失败处置与回滚纪律
 
@@ -272,7 +289,7 @@ Wave 0 冻结 `settings-defaults.js` 与 `ipc-security.js` 是为了防止并发
 1. **半成品不得合并**：任何工作流若未通过自己的定向测试与 `npm run check`，其分支不得并入该波次收口。
 2. **单流失败不阻塞同波次其他流**：某流失败时，Lead 在收口波次仅合并已通过的流，失败流**退出本波次**并进入下一波次重排；**不得**为凑齐进度而放宽验收。
 3. **写作用域污染即回滚**：若发现某流改动了作用域外的文件，Lead 丢弃该流全部改动并重新派发（不尝试局部保留）。
-4. **契约冻结后不可回退**：W0-2/W0-3 一旦冻结，本方案周期内不撤销；确需变更走 §2.1.1。
+4. **契约冻结后不可回退**：W0-2（设置键）一旦冻结即不撤销；W0-3 冻结的是**登记规则**（§2.2），通道本身按"与注册点同 PR"由 Lead 串行追加 —— 两者确需变更时均走 §2.1.1。
 5. **大爆炸搬迁必须可逐步验证**：D2（S14）按 §3.4 的 D2-1→D2-5 顺序，每一步独立提交、独立跑门禁；`config/config.js` 的搬迁**不允许**一个提交改完全部路由。
 6. **每波次收口必须重跑 §1.1 全部门禁**，不接受"上一次跑过"。记录基线↔收口的读数差（供 §11 回填）。
 
@@ -406,8 +423,8 @@ Wave 10 [Lead]      §1.1 全量门禁 + 真机（三语言切换）            
 | P0-4-T3 | 纯函数单测：纸张换算（A4/横向/原图/超限夹取）、命名 | `test/pdf-export.test.js`（新） | T1 | 0.5 |
 | P0-4-T4 | 域工厂内新增 `exportPdf`（依赖注入 `printToPdf`/`savePdfBuffer`，便于 mock） | `main/domains/capture/index.js` | T1 | 0.5 |
 | P0-4-T5 | IPC 接线：`main/ipc/capture-ipc.js` 注册 handler；`preload-capture.js` 暴露 `exportPdf`；**接线说明**：`main.js` 需注入 dep | `main/ipc/capture-ipc.js`、`preload-capture.js` + PR 说明 | W0-3、T4 | 0.5 |
-| P0-4-T6 | 文件名复用 `main/services/capture-naming.js:15-19`，扩展 `makeCaptureName(prefix, ext)` | `main/services/capture-naming.js` | P0-7-T1 | 0.25 |
-| P0-4-T7 | 契约测试更新：`test/capture-toolbar-icons.test.js:10-14,19`（新增 print 图标）、`test/ipc-module-contracts.test.js:86-145` | 上述测试文件 | T5 | 0.5 |
+| P0-4-T6 | 文件名复用 `main/services/capture-naming.js:15-19`，扩展 `makeCaptureName(prefix, ext)` | **—（由 S7 承接，见 §3.1）**：本任务只提供接口约定，实际落点归 P0-7-T1 | P0-7-T1 | 0.25 |
+| P0-4-T7 | 契约测试更新（**2026-10-10 第二轮复核拆分为两半**）：① `test/ipc-module-contracts.test.js:86-145` 的通道 deepEqual 清单随 T5 留在 **S4·W1**（0.25）；② `test/capture-toolbar-icons.test.js:10-14,19` 的 print 图标 + 有序清单**移入 S9a·W2**（0.25），必须与 `capture/capture.html` **同 PR** | ① `test/ipc-module-contracts.test.js`（S4）；② `test/capture-toolbar-icons.test.js`（S9a） | T5 | 0.5（S4 0.25 + S9a 0.25） |
 | P0-4-T8 | 真机验证：隐藏窗口 `printToPDF` 产物可打开、尺寸正确；可见窗口按 AGENTS.md | 验收记录 | 全部 | 0.5 |
 
 **验收标准**：截图工具栏出现"导出 PDF"图标 → 点击后弹出保存对话框 → 产物 PDF 尺寸/方向与图片宽高比一致；贴图与识别结果窗口可复用同一函数；`npm run check` 绿。
@@ -443,7 +460,7 @@ Wave 10 [Lead]      §1.1 全量门禁 + 真机（三语言切换）            
 | P0-6-T1 | 主进程：`pin:set-click-through`（**显式布尔** + 回执 `pin:click-through-changed`）；穿透时 move/resize 早退；**删除**旧 `toggle` 通道 | `main/domains/pin/index.js` | W0-3 | 0.5 |
 | P0-6-T2 | preload：换 `setClickThrough(bool)` / `onClickThroughChanged(cb)`，删旧 `toggleClickThrough` | `preload-pin.js` | T1 | 0.25 |
 | P0-6-T3 | 渲染层：右键菜单项（模板取透明度 radio `main/domains/pin/index.js:389-397`）+ 穿透态 `#clickThroughTag` 角标（样式复用 `pin/pin.css:11` 的 zoomBadge） | `pin/pin.js`、`pin/pin.html`、`pin/pin.css` | T2 | 0.75 |
-| P0-6-T4 | 兜底出口：全局快捷键 + 托盘"取消全部穿透"（多贴图上限 20，需批量入口） | `main/services/function-router.js`、`main/services/tray-menu.js` + 接线说明 | T1 | 0.5 |
+| P0-6-T4 | 兜底出口：全局快捷键 + 托盘"取消全部穿透"（多贴图上限 20，需批量入口） | **由 S7 承接（见 §3.1）**：`main/services/function-router.js`、`main/services/tray-menu.js` + 接线说明；S3 只提供批量退出的接口约定 | T1 | 0.5 |
 | P0-6-T5 | 纯函数抽取与单测：`getRotatedPinSize`、`normalizePinRotation`、`hitTestPinHotspot` | `main/domains/pin/geometry.js`、`test/pin-geometry.test.js` | —— | 0.5 |
 | P0-6-T6 | 契约测试：`test/pin-domain.test.js:35`、`test/ipc-security.test.js:143-175`、`test/capture-ocr-pin-ui.test.js:28-42` 同步 | 上述测试文件 | T1–T4 | 0.5 |
 
@@ -649,6 +666,8 @@ scripts/check-i18n.js    ① 三份 locale 键集合对称差必空
 
 **免爆炸改造**：每个 HTML 只加 **1 行** `<script src="../shared/i18n.js">` + 给元素加 `data-i18n` 属性；JS 侧直接用全局 `t()`。**不动 CommonJS、不引打包器。**
 
+> **计数口径（2026-10-10 W0-4 实测，务必区分）**：`scripts/check-i18n.js` 统计的是**含 CJK 的行数**，不是可译串数。W0-4 落地骨架后的实测：`config` 299 / `capture` 67 / `record` 50 / `long-capture` 45 / `action` 46 / `search` 34 / `recognition` 29 / `toolbar` 11 / `pin` 0 / `main` 182（另有 **160 行** `main/**` 的 `throw` 按 **D6** 单独计数、不计入强制总数），**强制总数 763 行**。§10.1 的 ≈1000 条是**字符串**口径（config ≈660 等），两者**不可直接比较**；`--max` 的阈值必须以本 checker 的实测行数为基准逐批收紧。checker 还内置两项零容忍检查：三份 locale 的键集合对称差、以及 `data-i18n*` 键在表中缺失。主进程 `throw` 的分账口径与 D6 一致（W0-4 实测 160 行）。
+
 **语言优先级**：`document.documentElement.dataset.language` → `localStorage` → 默认。
 **切换生效**（mirror `theme` 的既有做法）：设置 effect 广播 `i18n:language` 到 11 个窗口，渲染层收消息重扫 DOM；`config` 窗靠 `updateSettings` 返回值本地重渲染（`config/config.js:129-136`）。
 
@@ -698,7 +717,7 @@ scripts/check-i18n.js    ① 三份 locale 键集合对称差必空
 
 | # | 风险 | 等级 | 缓解 |
 |---|---|---|---|
-| R1 | `main.js` 仅 2 行余量，接线必然撞门禁 | **高** | W0-1 先腾出 ≥60 行；`main.js` 由 Lead 独占 |
+| R1 | `main.js` 仅 2 行余量，接线必然撞门禁 | **高** | W0-1 先净腾出 **≥20 行**（目标 `main.js` ≤1280；2026-10-10 复核下调，原"≥60 行 / ≤1240"按三处抽取实测不可达，见 §15 第 12 条 (f)）；`main.js` 由 Lead 独占 |
 | R2 | 7 路并发抢 `settings-defaults.js` / `ipc-security.js` → 反复冲突 | **高** | W0-2/W0-3 一次性冻结，此后只读 |
 | R3 | `capture/**` 被打印、标注编辑、体验细节三方争抢 | **高** | **已修**：批次 A 的 `capture/**` 改动全部推入 W2 的 S9a；owner 链 S9a(A) → S6(B) → S9b(B)。`config/**` 同理 S10a → S10b → S1 → S14（§3.1） |
 | R4 | i18n 连带改 430 行中文测试断言，回归面失控 | 中 | **D6：本期不翻 `main/` 的 185 处 `throw`**；`scripts/check-i18n.js` 的 `--max` 逐批收紧 |
@@ -721,7 +740,7 @@ scripts/check-i18n.js    ① 三份 locale 键集合对称差必空
 | # | 决策点 | **已确认的结论** | 落点 | 未采纳的备选 / 代价 |
 |---|---|---|---|---|
 | **D1** | 批次节奏 | **接受 A/B/C 三段交付**：A 打印PDF + 贴图穿透 + 体验细节 → B 录屏音轨 + 光标 + 标注编辑 → C i18n | §0.1、§3.2、§14 | 未采纳"一版做全"：**55.25–59.5 人日**不可控，且批次 A 的低成本价值要等最久才可见 |
-| **D2** | `main.js` 容量策略 | **先腾挪，暂不动 1300 上限**：W0-1 先抽出 ≥60 行余量，再做集成接线 | §2 W0-1、§11 步骤 1、R1 | 未采纳"直接提高上限"：会削弱 v2.3 架构减负（`main.js` 1298/1300）既有纪律的约束力 |
+| **D2** | `main.js` 容量策略 | **先腾挪，暂不动 1300 上限**：W0-1 先抽出**净 ≥20 行**余量（目标 ≤1280，2026-10-10 复核下调），再做集成接线 | §2 W0-1、§11 步骤 1、R1 | 未采纳"直接提高上限"：会削弱 v2.3 架构减负（`main.js` 1298/1300）既有纪律的约束力；亦未采纳"削到 ≤1240"：按三处抽取实测不可达，且 `check-architecture.js:8-16` 已把剩余 ~90 行登记为 follow-up 而非本期目标 |
 | **D3** | 录屏默认音源 | **系统声默认开；麦克风默认关**（隐私优先） | §2.1（`record.audioSystem:true` / `record.audioMicrophone:false`）、§7.2 | 未采纳"麦克风默认开"：静默开麦不可接受；未采纳"系统声默认关"：会让该功能默认不可见，等于没做 |
 | **D4** | 标注与选区的关系 | **保持"锚定屏幕、不随选区缩放"**；并把"替换选区清空全部标注"改为**先确认** | §8.3、§8.4 "D4 落地项" | 未采纳"标注随选区缩放"：与现有绘制/导出模型冲突，需重写 `:467` 换算；未采纳"维持静默清空"：数据丢失无提示 |
 | **D5** | 贴图旋转语义 | **先做"仅预览"**（渲染层 CSS transform + 窗口尺寸换算），重编码回写延后 | §5 后续 | 未采纳"直接回写 `_pinData.dataUrl`"：会干扰 `getPixelAlignedPinSize` / `syncPinDisplayScale`（`main/domains/pin/index.js:66-87`），且"导出像素是否含旋转"要重新定义 |
@@ -792,19 +811,19 @@ scripts/check-i18n.js    ① 三份 locale 键集合对称差必空
 | 里程碑 | 出口条件 | 预估 |
 |---|---|---|
 | **M-1** | **工作区整理（§1.2，M0 的前置）**：3 项非文档改动已提交或已丢弃；若保留 `selection-hook` 2.1.1 须附划词真机验证记录 | 0.5–1 人日 |
-| M0 | Wave 0 完成：`main.js` ≤1240；契约冻结；`npm run check` 绿 | 2–3 人日 |
+| M0 | Wave 0 完成：`main.js` ≤1280（净腾出 ≥20 行）；契约冻结（§2.1 的 15 键 + §2.2 的登记规则）；`npm run check` 绿 | 2–3 人日 |
 | M1 | 批次 A 完成并真机验收 → v2.3.2 | +13.5 人日 |
 | M2 | 批次 B 完成并真机验收 → v2.4.0 | +18.75 人日 |
 | **M2.5** | **前置工程 D2 完成（§3.4）**：`test/helpers/config-source.js` 落地、15 个测试解耦、`config/config.js` 拆为 `config/routes/*.js`、8 个路由页 smoke 绿 → 随 v2.4.x。**这里是批次 C 的硬前置门（D7/D8）** | **+3.75–6.5 人日** |
 | M3 | 批次 C 完成（三语言真机切换）→ v2.5.0。**前置门（D7）**：M2.5 已完成 | +16.75 人日 |
-| M4 | P1 立项（Auto Filter / MCP） | **License 已选定（2026-10-10）：`GPL-3.0-or-later`（路线 A）**，`snow_shot/`（GPL）实现自此可移植/逐行参照，P1 自研成本下降。**但移植同时触发四项 GPL 义务**（保留原作者版权、被修改文件注明改动与日期、衍生文件同许可、交互界面展示 Appropriate Legal Notices），见分析文档 §5.5.2 的 O1–O4；**落地清单（`LICENSE`/`COPYRIGHT`/`THIRD_PARTY_NOTICES.md`/About 页许可区块等 L1–L10）已规划但未执行**，见分析文档 §5.6 |
+| M4 | P1 立项（Auto Filter / MCP） | **License 路线已选定（2026-10-10）：GPL-3.x（路线 A）**；**许可字符串 `or-later` 还是 `only` 待定**（F1-①/§13.2，建议 `-only`），定案前**不得开始任何移植**。路线 A 下 `snow_shot/`（GPL）实现可移植/逐行参照，P1 自研成本下降。**但移植同时触发四项 GPL 义务**（保留原作者版权、被修改文件注明改动与日期、衍生文件同许可、交互界面展示 Appropriate Legal Notices），见分析文档 §5.5.2 的 O1–O4；**落地清单（`LICENSE`/`COPYRIGHT`/`THIRD_PARTY_NOTICES.md`/About 页许可区块等 L1–L10）已规划但未执行**，见分析文档 §5.6 |
 | M5 | **补第三方许可合规**（`ffmpeg-static` 为 GPL-3.0，当前零 NOTICE；另需复核 `native/everything/Everything.exe` 再分发条款） | 见分析文档 §5.2 / §5.6 L4+L8，与批次 A 可并行；**未执行** |
 
 ---
 
 ## 15. 与上游文档的差异记录
 
-撰写本方案时对 `2026-10-10-snow-apps-feature-gap-analysis.md` 与既有假设做了**十一处**修正（第 7–11 项由 2026-10-10 的六路独立审查产出）：
+撰写本方案时对 `2026-10-10-snow-apps-feature-gap-analysis.md` 与既有假设做了**十二处**修正（第 7–11 项由 2026-10-10 的六路独立审查产出；第 12 项由 2026-10-10 的第二轮复核产出）：
 
 1. **`main/domains/<域>/` 不是四文件模板**：实际布局是 `main/domains/<域>/index.js` 单文件工厂 + `main/ipc/<域>-ipc.js`（对照 `scripts/check-architecture.js:73-85` 只要求 `index.js` 存在）。任务拆解已按真实布局编写。
 2. **`main.js` 行数以门禁读数 = 1298 为准**（`npm run check:architecture` 实测；`(Get-Content main.js).Count` 因换行计数差异给出 1297，两者差 1 属正常）。任何工作流若引用不同数字（如 1219），一律以 1298 与 `scripts/check-architecture.js:18` 的 1300 上限为准。
@@ -817,3 +836,75 @@ scripts/check-i18n.js    ① 三份 locale 键集合对称差必空
 9. **两个硬死锁**（独立审查指出，核实成立）：① `IPC_SURFACES` 只登记"页面→主进程"通道（每条 surface 只有 `handles`/`listeners`），而 §2.2 把两个**主→渲染广播**登记进去 → `assertComplete()`（`main.js:1173`）抛错、`electron .` 与 `scripts/probe-diagnostics-runtime.js:95` 全挂；② `settings-defaults.js` 冻结只读，但 P0-7-T3 与 P0-6-T4 必须新增键，且 §2.1 清单里没有。已修（§2.2 区分登记/不登记、§2.1 补齐 15 键、新增 §2.1.1 加键流程）。
 10. **`nameTemplate` 默认值与所有权正则冲突**（独立审查指出，核实成立）：原默认 `'{date}-{time}'` 与 `capture-naming.js:12` 的 `OWNED_CAPTURE_FILE`（`^Highlighter(?:_Long)?_\d{4}-…`）不匹配，会让每张新截图被历史库判为"非本应用"。默认已改为 `''`。
 11. **若干可核实的事实失真**（独立审查指出，已逐条修正）：`renderSelectionToolbarSettings` 实为 **144 行**（`:724-867`，非 459）；"575 处 assert"是 15 文件总数、**指向 config.js 的约 170 处**；`screenshotclipboardplacement.cpp` 路径缺一层 `services/`；Snow Shot 测试文件实为 **211 个**（非"约 190"）；`codec.rs:340-371` 不含 GIF/APNG/WebP；Highlighter 保存实际**只写 PNG**；"全仓 grep 零命中"应为"**源码** grep 零命中"；`long-capture` 失败提示在 `:242`；函数名是 `getPixelAlignedPinSize`。
+12. **第二轮复核（2026-10-10，接续执行者，静态核对、未改业务代码）**：
+    - **(a) 总账复现**：按 §4–§10 任务表逐项重算，**七项 = 49.0 人日**（P0-4 4.0 / P0-6 3.0 / P0-7 6.5 / 批次 A 13.5；P0-3 7.0 / P0-5 5.75 / P0-2 6.0 / 批次 B 18.75；P0-1 16.75），含工程开销 **55.25–59.5 人日**，与分析文档 §3 的 P0 表完全一致。**§0.1 无需改动。**
+    - **(b) §4–§10 与 §3.1.1 的写作用域不一致（4 处，已修）**：`capture-naming.js`（§4.3 T6 vs S7）、`function-router.js`（§5.3 T4 vs S7）、**`tray-menu.js` 归属无解**（§3.1.1 归 S7 但无 S7 任务认领，§5.3 却派给 S3 → 现补 §3.1 单写者行并统一归 S7）、**P0-4-T7 的跨波次顺序缺陷**（图标清单断言在 W1、`capture/capture.html` 的图标在 W2 才加 → W1 收口必红，违反 §3.1.2 第 1 条；现拆为 S4·W1 的通道 deepEqual + S9a·W2 的图标与清单同 PR）。另补登 9 个已被任务表指派的测试文件 owner（§3.1.1）。
+    - **(c) W0-3 时序硬缺陷（本轮最重要的发现，已按修法 ① 修正）**：`assertComplete()`（`ipc-security.js:279-283`）要求 `IPC_SURFACES` 每个通道**运行时已有注册点**，且 `main.js:1173` 在**模块顶层**调用它；`test/diagnostics-runtime.test.js:19` 经 `scripts/probe-diagnostics-runtime.js:95` 的 `require('../main')` 让 **`npm test` 同样受影响**。原 §2.2 让 W0-3 一次性登记 `capture:export-pdf`（注册点在 S4·W1，且可能迟至 Wave 3 的 main.js 依赖注入）与 `pin:set-click-through`（S3·W1）→ **Wave 0 无法绿着出口，`electron .` 起不来**。现 §2.2 改为冻结"**通道与注册点同 PR 落地**"的规则，W0-3 不新增通道；§0.2 第 2 条、§2 的 W0-3 行、§3.1 的 `ipc-security.js` 行、§3.1.2 第 4 条、§2.1.1（泛化为"加键 / 加通道"）已同步。
+    - **(d) 开工前提已履行**：M-1 以 `07153a6` 结案（详见 §1.2 顶部复核框）；`_repo_snow_apps/` 已删除、两份 10-08/10-09 文档不存在、`selection-hook` 维持 2.0.2。
+    - **(e) 待你拍板项（本轮未动）**：F1-①（许可字符串 `or-later`/`only`）、F1-②/③、L2 版权人署名、真机验证配合 —— 见 §13.2 与分析文档 §5.6。**`main/services/settings-defaults.js` 与 `main/services/ipc-security.js` 未做任何代码改动。**
+    - **(f) W0-1 目标下调（2026-10-10 复核实测，已确认）**：原验收"腾出 ≥60 行 / `main.js` ≤1240"**按 W0-1 点名的三处抽取不可达** —— `normalizeSettings` 13 行 + `resolveFfmpegPath` 10 行 + `saveImageBuffer` 对话框分支 7 行 = 30 行代码，扣掉 3 条 `require` 与 2 处调用点改写（`defaultHistoryDirectory` 与 `log`/`isPackaged` 须注入）后**净腾出约 25 行 → `main.js` ≈1273**，距 1240 差约 33 行。且 `scripts/check-architecture.js:8-16` 已把剩余 ~90 行登记为 follow-up 而非本期目标，Wave 3 的真实接线需求约 8–12 行。**现目标改为"净腾出 ≥20 行 / ≤1280"**，同步落点：§2 W0-1 行、§12 R1、§13 D2、§14 M0。同时按复核结论为 3 个新模块补 3 个定向单测（`test/settings-normalize.test.js`、`test/ffmpeg-path.test.js`、`test/image-file-save.test.js`）并登入 W0-1 的写作用域 —— 它们会自动进入 `test:coverage:loaded` 的 `--include=main/services/**` 分母，不补单测会与 §1.1"覆盖率不下降"冲突。
+    - **(g) 勘察已核实无误的项**：W0-1 点名的三条源码断言位置准确（`test/design-tokens.test.js:119`、`test/selection-toolbar-settings.test.js:68`、`test/update-ui-contract.test.js:14`）；**无任何测试枚举 `main/services/*` 文件清单**，新增 3 个模块不会误伤其它门禁；`shared/` 已存在、`shared/locales/` 与 `scripts/check-i18n.js` 不存在（W0-4 需新建）；W0-5 确认**无需新增依赖**（`ffmpeg-static`/`sharp`/`onnxruntime-node`/`jsqr` 均在）。
+    - **(h) W0-1 实施结果（2026-10-10）**：`main.js` **1298 → 1267**（净 −31 行，满足"净 ≥20 行"目标；上限 1300 下余量 33 行）。新增 3 个模块 + 3 个定向单测（行覆盖均 **100%**）：`main/services/settings-normalize.js`（`createSettingsNormalizer({ defaultHistoryDirectory })`）、`main/services/ffmpeg-path.js`（`createFfmpegPathResolver({ loadCandidate, log, isPackaged })`）、`main/services/image-file-save.js`（`createImageTargetResolver({ dialog, ensureDirectory, getPicturesDirectory })`）。**源码断言实际为 4 处而非 3 处** —— 第 4 处 `test/recording-ui-contract.test.js:136`（`/未找到 MP4 编码组件/`）未被原方案列出，实测补入并同步（改为 `main.js` 断言 `createFfmpegPathResolver` + 模块内断言错误文案）。`check-js` 与 `check:architecture` 绿（Wave 0 收口读数为 244 个文件，见 §16.2）；29 个读取 `main.js` 的测试文件全绿。
+    - **(i) W0-2 … W0-5 实施结果（2026-10-10）**：
+      - **W0-2**：15 个新键一次性写入 `main/services/settings-defaults.js`（`language`、`pinned.clickThrough`；`screenshot.*` 5 个；`record.*` 5 个；`shortcuts.*` 3 个），并按 §2.1 要求同步进入归一化路径 —— `settings-normalize.js` 新增 `normalizeFrozenSettings`（语言白名单回落 `zh-CN`、7 个布尔 `=== true` 严格化、两个增益非有限数回落 1、字符串 trim、缺失域兜底）。`test/settings-validation.test.js` 新增"15 键逐个接受声明类型 / 逐个拒绝错误类型"两组用例；`test/settings-normalize.test.js` 新增 6 条归一化用例。覆盖率：`settings-normalize.js` 100%、`settings-defaults.js` 100%、`settings-validation.js` 97.0%。
+      - **W0-3**：按修法 ① **`main/services/ipc-security.js` 一个字节未改**（`git diff` 为空），**未登记任何新通道**（`pin:set-click-through`/`capture:export-pdf`/`i18n:language`/`pin:click-through-changed` 均不存在）；`assertComplete()` 与 App 启动由 `test/diagnostics-runtime.test.js` 在**真实 Electron**中验证通过。
+      - **W0-4**：`shared/i18n.js`（`t()`/`setLanguage`/`applyTranslations`/`observeTranslations` + key 约定 + 全局挂载）、`shared/locales/{zh-CN,en-US,zh-TW}.js`（空表，`globalThis.__LOCALES` 注入，CSP 安全，不 fetch）、`scripts/check-i18n.js`（键对称差 / key 形状 / `data-i18n*` 覆盖 / CJK 未迁移清单；支持 `--list`/`--max`/`--json`/`--area`）全部落地并通过运行验证。计数口径见 §10.3 的注。
+      - **W0-5**：确认**无需新增依赖**；`npm run audit:dependencies` 绿（26 个已豁免、0 个未豁免），`package.json`/`package-lock.json` **未改动**。
+      - **Wave 0 收口门禁实况**：`npm test`（测试文件 **106 → 109**、用例 **684 / 684 pass**）全绿；`check-js` **244 文件** + `check:architecture` 绿（`main.js` **1267**/1300）；`test:coverage:loaded` 行覆盖 **91.32%**（基线要求 ≥85）；`test:coverage:critical` 三文件 **93.22% / 92.99% / 92.42%**（要求 ≥90）；`audit:dependencies` 绿；Playwright e2e **5 / 5 passed**。
+      - **环境注记（重要）**：本会话 shell 预设 `ELECTRON_RUN_AS_NODE=1`，会让所有 spawn Electron 的测试（`test/diagnostics-runtime.test.js`、`npm run test:runtime`、Playwright e2e）在探针 `app.setPath` 处即崩（`TypeError: Cannot read properties of undefined (reading 'setPath')`）。**跑 §1.1 门禁前必须先 `Remove-Item Env:ELECTRON_RUN_AS_NODE`**；清除后全部通过。这是环境事实，不是代码回归。
+
+---
+
+## 16. M0（Wave 0）实施结果（2026-10-10）
+
+> 按 §11 收口：Wave 0 无外部接线（W0-1 直接改 `main.js`）→ 跑 §1.1 全量门禁 → 真实 Electron 启动验证 → 回填本节。写法沿用 `docs/plans/2026-10-06-capture-annotation-width-design.md` §10（改动表 + 门禁实况 + 偏差记录）。
+
+### 16.1 已落地的改动
+
+| 文件 | 改动 |
+|---|---|
+| `main/services/settings-normalize.js` | **新增**：`createSettingsNormalizer({ defaultHistoryDirectory })`（W0-1 从 `main.js:264-276` 抽出）+ W0-2 的 `normalizeFrozenSettings`（15 个新键：语言白名单、7 个布尔严格化、2 个增益有限数回退、字符串 trim、缺失域兜底） |
+| `main/services/ffmpeg-path.js` | **新增**：`createFfmpegPathResolver({ loadCandidate, log, isPackaged })`（从 `main.js:242-251` 抽出；打包态 `app.asar` → `app.asar.unpacked`，失败抛"未找到 MP4 编码组件"） |
+| `main/services/image-file-save.js` | **新增**：`createImageTargetResolver({ dialog, ensureDirectory, getPicturesDirectory })`（从 `main.js:848-866` 抽出；快速保存目录分支 + 原生对话框分支 + 取消返回 `null`） |
+| `main.js` | **1298 → 1267 行**：删除三个被抽出的函数、迁移 3 条 import；新增 3 条 require + 3 行装配（`normalizeSettings`/`resolveFfmpegPath`/`resolveImageTarget`）；`saveImageBuffer` 改为调用 `resolveImageTarget` |
+| `main/services/settings-defaults.js` | W0-2 一次性写入 §2.1 的 **15 个新键**（`language`、`pinned.clickThrough`、`screenshot.*` ×5、`record.*` ×5、`shortcuts.*` ×3），同时充当 `settings:update` 的校验模板 |
+| `shared/i18n.js` | **新增**（W0-4 骨架）：`t()` 插值 + 默认语言回退链、`setLanguage`、`applyTranslations`、`observeTranslations`、`data-i18n*` 约定、语言优先级 `<html data-language>` → `localStorage` → 默认 |
+| `shared/locales/{zh-CN,en-US,zh-TW}.js` | **新增**（W0-4 空表）：`globalThis.__LOCALES` 注入（CSP 下不可 fetch，必须是 `<script>` 全局） |
+| `scripts/check-i18n.js` | **新增**（W0-4）：键集合对称差 / key 形状 / `data-i18n*` 覆盖 / CJK 未迁移清单；支持 `--max`/`--list`/`--json`/`--area` |
+| `test/settings-normalize.test.js`（新，14 条）· `test/ffmpeg-path.test.js`（新，7 条）· `test/image-file-save.test.js`（新，7 条） | W0-1 的 3 个模块各带定向单测；3 个模块行覆盖均 **100%** |
+| `test/settings-validation.test.js` | 追加 3 条：15 键逐个接受声明类型、逐个拒绝错误类型、validation 保持 type-only（共 11 条） |
+| `test/design-tokens.test.js` · `test/selection-toolbar-settings.test.js` · `test/update-ui-contract.test.js` · `test/recording-ui-contract.test.js` | **4 处**指向被抽走代码的源码断言改指新模块（第 4 处为实测补发现，见 §15 第 12 条 (h)） |
+| `main/services/ipc-security.js` · `package.json` · `package-lock.json` | **零改动**（W0-3 / W0-5 只做规则冻结与依赖确认） |
+
+### 16.2 门禁实况
+
+| 门禁 | 基线（§1.1） | Wave 0 收口实测 |
+|---|---|---|
+| `npm test` | 106 个测试文件 | **109 个文件 / 684 用例全绿**（新增 31 条用例：14+7+7+3） |
+| `npm run check` | `main.js` 1298 行 | 语法 **244 文件**通过；`main.js` **1267** / 上限 1300（余量 33 行） |
+| `npm run test:coverage:loaded` | 行覆盖 ≥85% | **91.32%**（9213/10088），未下降 |
+| `npm run test:coverage:critical` | 单文件 ≥90% | **93.22% / 92.99% / 92.42%**（诊断 / 更新 / 窗口安全） |
+| `npm run audit:dependencies` | 有白名单门禁 | **26 个已豁免、0 个未豁免**；无新增豁免 |
+| Playwright e2e | 2 个 spec | **5 个用例 / 5 passed**（25.9s，副屏 `\\.\DISPLAY2`，`positionAutomationWindow` 生效） |
+| 启动验证（W0-3 验收） | —— | `test/diagnostics-runtime.test.js` 在**真实 Electron** 中启动 `main.js`、`assertComplete()` 通过、正常退出 |
+| 契约冻结核验 | —— | `ipc-security.js` `git diff` 为空；4 条新通道均**未**登记 |
+
+### 16.3 与方案/设计稿的偏差（5 处）
+
+1. **W0-1 目标下调**：原"腾出 ≥60 行 / ≤1240"按点名的三处抽取不可达（净约 25 行），经确认改为"**净 ≥20 行 / ≤1280**"；实际落地 **净 −31 行 → 1267**，超目标。依据与算术见 §15 第 12 条 (f)。
+2. **源码断言是 4 处而非 3 处**：`test/recording-ui-contract.test.js:136` 断言 `main.js` 含 `/未找到 MP4 编码组件/`，方案未列出；已改为"`main.js` 断言 `createFfmpegPathResolver` + 模块内断言错误文案"，语义不变。
+3. **W0-3 不再登记通道（修法 ①）**：原 §2.2 的"W0-3 一次性登记 `capture:export-pdf` + `pin:set-click-through`"会让 Wave 0 无法绿着出口（`assertComplete()` 抛错、`npm test` 红）；现改为冻结"**通道与注册点同 PR 落地**"的规则，`ipc-security.js` 本轮零改动。两条通道的登记移到 W1 与 S4/S3 的注册点一起做（§2.2 规则 2）。
+4. **`scripts/check-i18n.js` 的计数口径**：统计"**含 CJK 的行数**"（实测 763 行：config 299 / capture 67 / record 50 / long-capture 45 / action 46 / search 34 / recognition 29 / toolbar 11 / pin 0 / main 182，另有 160 行 `main/**` 的 `throw` 按 D6 单独计数），与 §10.1 的"可译串数 ≈1000"不可直接比较；已在 §10.3 加注，`--max` 阈值须以本 checker 实测行数为基准逐批收紧。
+5. **环境注记**：本会话 shell 预设 `ELECTRON_RUN_AS_NODE=1`，会让所有 spawn Electron 的测试在探针 `app.setPath` 处崩（`TypeError: Cannot read properties of undefined (reading 'setPath')`）。清掉该变量后全部通过；**这是环境事实，不是代码回归**（清除前 `npm test` 会红，容易被误判为 Wave 0 引入的回归）。
+
+### 16.4 结论与 Wave 1 开工条件
+
+**M0 出口条件全部满足**：`main.js` 1267 ≤ 1280（门禁上限 1300 下余量 33 行）；§2.1 的 15 键与 §2.2 的通道登记规则均已冻结；`npm run check` 绿；§1.1 全量门禁 + e2e 全绿；真实 Electron 启动验证通过。
+
+**Wave 1（S4 / S3 / S7 三流并行）具备开工条件**，派发时每流必须带上：
+1. §3.1.1 中分配给自己那一行的**独占写作用域**（含 2026-10-10 补登的测试文件）；
+2. §3.1.2 的回滚纪律 + 跨波次交接清单（§3.1.1 表下注）；
+3. **§2.2 规则 3（S4 专属）**：`capture:export-pdf` 的注册**不得依赖 Wave 3 的 `main.js` 接线**；做不到就把该通道登记与接线一并推到 Wave 3 并相应推迟 P0-4 验收；
+4. **§2.2 规则 4（S3 专属）**：删除 `pin:toggle-click-through` 时三处同 PR 同步（`main/domains/pin/index.js`、`ipc-security.js:125`、`test/pin-domain.test.js:35`）；
+5. **§2.2 规则 2（Lead 动作）**：每流落地注册点后，由 Lead 按 §2.1.1 在**同一提交**内登记通道并同步 `test/ipc-security.test.js`；
+6. **环境**：派发前提醒 —— 跑 Electron 相关测试需清除 `ELECTRON_RUN_AS_NODE`。

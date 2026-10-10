@@ -20,6 +20,7 @@ const DEFAULT_SETTINGS = {
   mainColor: '#e5a44c',
   borderRadius: 8,
   compact: false,
+  language: 'zh-CN',
   skinPath: '',
   skinOpacity: 18,
   customCss: '',
@@ -38,6 +39,11 @@ const DEFAULT_SETTINGS = {
     selectionMask: 'rgba(0,0,0,.46)',
     showColorPicker: true,
     annotationWidth: 4,
+    captureCursor: false,
+    shutterSound: true,
+    nameTemplate: '',
+    lastSaveDirectory: '',
+    keepSerialAcrossCaptures: false,
     longCaptureDirection: 'vertical',
     watermark: { content: '', opacity: 80, color: '#ffffff', spacing: 30, fontSize: 24, rotation: 30, dateSuffix: false }
   },
@@ -56,9 +62,17 @@ const DEFAULT_SETTINGS = {
     autoOcr: false,
     opacity: 1
   },
+  pinned: {
+    clickThrough: false
+  },
   record: {
     frameRate: 24,
-    saveDirectory: ''
+    saveDirectory: '',
+    audioSystem: true,
+    audioMicrophone: false,
+    audioSystemGain: 1,
+    audioMicrophoneGain: 1,
+    captureCursor: false
   },
   search: {
     matchPath: true,
@@ -102,7 +116,10 @@ const DEFAULT_SETTINGS = {
     showOrHideMainWindow: '',
     openCaptureHistory: '',
     localSearch: 'Alt+F',
-    explainClipboard: 'Ctrl+Alt+E'
+    explainClipboard: 'Ctrl+Alt+E',
+    screenshotQuickSave: '',
+    screenshotSaveAs: '',
+    togglePinClickThrough: ''
   }
 }
 

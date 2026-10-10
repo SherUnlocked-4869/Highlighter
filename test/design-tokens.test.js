@@ -116,7 +116,8 @@ test('legacy blue accents are migrated to Nightshift amber', () => {
   assert.match(migration, /NIGHTSHIFT_AMBER\s*=\s*'#e5a44c'/)
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
   assert.match(main, /migrateAppearanceSettings/, 'main.js wires appearance migration')
-  assert.match(main, /resolveMainColor/, 'normalizeSettings resolves legacy accents at runtime')
+  const normalizer = fs.readFileSync(path.join(root, 'main/services/settings-normalize.js'), 'utf8')
+  assert.match(normalizer, /resolveMainColor/, 'settings normalization resolves legacy accents at runtime')
 })
 
 test('recognition window follows the Nightshift result design', () => {
