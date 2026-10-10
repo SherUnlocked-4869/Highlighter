@@ -26,5 +26,14 @@ contextBridge.exposeInMainWorld('pinAPI', {
     ipcRenderer.on('pin:zoom-changed', handler)
     return () => ipcRenderer.removeListener('pin:zoom-changed', handler)
   },
-  toggleClickThrough: () => ipcRenderer.send('pin:toggle-click-through')
+  // Explicit boolean, never a toggle: the renderer's corner badge and the main
+  // process' batch exit can both fire, and a flip would land on the wrong state.
+  setClickThrough: (enabled) => ipcRenderer.send('pin:set-click-through', enabled === true),
+  // Main -> renderer receipt. Sent for every applied change, including the ones
+  // this renderer did not request (batch exit from the shortcut/tray).
+  onClickThroughChanged: (callback) => {
+    const handler = (_event, enabled) => callback(enabled === true)
+    ipcRenderer.on('pin:click-through-changed', handler)
+    return () => ipcRenderer.removeListener('pin:click-through-changed', handler)
+  }
 })

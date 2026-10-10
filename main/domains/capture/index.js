@@ -4,6 +4,11 @@ const {
   createSmartSelectSessionClass,
   convertSmartSelectRects
 } = require('./smart-select')
+const {
+  DEFAULT_IMAGE_DPI,
+  exportPdfBuffer,
+  savePdfBuffer: writePdfBuffer
+} = require('../../services/pdf-export')
 
 const NATIVE_CAPTURE_TIMEOUT_MS = 5000
 
@@ -44,6 +49,11 @@ function createCaptureDomain(deps) {
     bufferToDataUrl,
     performanceMonitor
   } = deps
+
+  // P0-4：可选注入，便于单测 mock；主进程不注入时由 pdf-export 自解析 Electron 依赖，
+  // 因此本特性不需要任何 main.js 接线（§2.2 规则 3）。
+  const printToPdf = typeof deps.printToPdf === 'function' ? deps.printToPdf : null
+  const savePdfBuffer = typeof deps.savePdfBuffer === 'function' ? deps.savePdfBuffer : writePdfBuffer
 
   const SmartSelectSession = createSmartSelectSessionClass({ spawn, log })
   let currentCaptureWindow = null
@@ -499,7 +509,34 @@ function createCaptureDomain(deps) {
         })
         return persistHistory(buffer, { ...meta, action: type })
       },
-      recordHistory: (_event, { imageBuffer, dataUrl, meta } = {}) => persistHistory(imageBuffer ?? dataUrl, meta)
+      recordHistory: (_event, { imageBuffer, dataUrl, meta } = {}) => persistHistory(imageBuffer ?? dataUrl, meta),
+      exportPdf: async (event, { imageBuffer, dataUrl, meta, mode } = {}) => {
+        const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
+        if (!buffer.length) throw new Error('截图图片数据为空')
+        // 以 PNG 头部为准：meta.width/height 属于导出坐标系，PNG 才是真正要打印的像素。
+        const pngSize = readPngSize(buffer)
+        const pxW = pngSize?.width || Number(meta?.width)
+        const pxH = pngSize?.height || Number(meta?.height)
+        if (!pxW || !pxH) throw new Error('导出 PDF 需要 PNG 截图数据或有效的图片尺寸')
+        const parentWindow = BrowserWindow.fromWebContents(event.sender)
+        const pdfBuffer = await exportPdfBuffer(buffer, {
+          createPrintWindow: createLocalWindow,
+          rootDirectory,
+          pxW,
+          pxH,
+          dataUrl: typeof dataUrl === 'string' && dataUrl.startsWith('data:') ? dataUrl : undefined,
+          // 截图是物理像素：96 × scaleFactor 还原 1:1 的 CSS 尺寸，避免 DPI 尺寸偏差（§4.3 风险②）。
+          dpi: DEFAULT_IMAGE_DPI * Math.max(1, Number(meta?.scaleFactor) || 1),
+          mode,
+          printToPdf,
+          log
+        })
+        return savePdfBuffer(pdfBuffer, {
+          parentWindow: parentWindow && !parentWindow.isDestroyed() ? parentWindow : null,
+          dialog,
+          fs
+        })
+      }
     }
   }
 

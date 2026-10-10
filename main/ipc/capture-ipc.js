@@ -14,6 +14,7 @@ function registerCaptureIpc({ ipcMain, controller }) {
   ipcMain.handle('capture:pin-reannotate', controller.pinReannotate)
   ipcMain.handle('capture:open-recognition', controller.openRecognition)
   ipcMain.handle('capture:record-history', controller.recordHistory)
+  ipcMain.handle('capture:export-pdf', controller.exportPdf)
 
   ipcMain.on('long-capture:ready', controller.longReady)
   ipcMain.on('long-overlay:ready', controller.longOverlayReady)

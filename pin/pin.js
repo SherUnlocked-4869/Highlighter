@@ -1,9 +1,11 @@
 const image = document.getElementById('image')
 const pixelImage = document.getElementById('pixelImage')
 const zoomBadge = document.getElementById('zoomBadge')
+const clickThroughTag = document.getElementById('clickThroughTag')
 let activeSurface = pixelImage
 let sourceImage = null
 let settings = {}
+let clickThrough = false
 let pressed = false
 let moving = false
 let pointerId = null
@@ -13,6 +15,14 @@ let zoomTimer = 0
 
 function setNativePixelMode(zoom) {
   pixelImage.classList.toggle('pixel-native', Math.abs(Number(zoom) - 1) < 0.001)
+}
+
+// The main process is the single writer of this state; the renderer only mirrors
+// it (init payload, update payload, and the pin:click-through-changed receipt).
+function applyClickThrough(enabled) {
+  clickThrough = enabled === true
+  clickThroughTag.classList.toggle('show', clickThrough)
+  document.body.classList.toggle('click-through', clickThrough)
 }
 
 function showSurface(target) {
@@ -33,6 +43,7 @@ function showImageSurface(dataUrl, initial) {
 function applyPinData(data, initial = false) {
   settings = data
   document.body.classList.toggle('long-capture', !!data.longCapture)
+  if (typeof data.clickThrough === 'boolean') applyClickThrough(data.clickThrough)
   setNativePixelMode(data.zoom)
   if (data.longCapture) {
     sourceImage = null
@@ -62,6 +73,14 @@ function applyPinData(data, initial = false) {
 
 window.pinAPI.onInit((data) => applyPinData(data, true))
 window.pinAPI.onUpdate((data) => applyPinData(data))
+window.pinAPI.onClickThroughChanged((enabled) => applyClickThrough(enabled))
+// A click-through pin receives forwarded mouse *moves* only (clicks and the wheel
+// are dropped), so hovering the reserved badge is the in-window way back — the
+// global shortcut and the tray item are the guaranteed fallback. mouseenter is
+// the renderer-side hit test: it fires only for the element under the pointer.
+clickThroughTag.addEventListener('mouseenter', () => {
+  if (clickThrough) window.pinAPI.setClickThrough(false)
+})
 addEventListener('contextmenu', (event) => {
   event.preventDefault()
   const rect = activeSurface.getBoundingClientRect()
@@ -70,6 +89,7 @@ addEventListener('contextmenu', (event) => {
 
 function beginMove(event) {
   if (event.button !== 0) return
+  if (clickThrough) return
   pressed = true
   moving = false
   pointerId = event.pointerId
@@ -115,6 +135,7 @@ for (const surface of [image, pixelImage]) {
 }
 
 addEventListener('wheel', (event) => {
+  if (clickThrough) return
   if (settings.longCapture || !settings.zoomWithMouse) return
   event.preventDefault()
   window.pinAPI.resize(event.deltaY < 0 ? 1.1 : 1 / 1.1)

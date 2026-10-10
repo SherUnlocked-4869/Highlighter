@@ -19,6 +19,9 @@ function createFunctionRouter(deps) {
     selectionDomain,
     getMainWindow,
     createMainWindow,
+    // Injected as a getter because the pin domain is assembled after the
+    // router; the click-through fallback entry (P0-6-T4) is its only consumer.
+    getPinDomain,
     getSettings,
     persistHistory,
     assertGameModeDisabled,
@@ -48,6 +51,12 @@ function createFunctionRouter(deps) {
       autoAction: payload.save ? 'save' : 'copy',
       source: 'fullscreen'
     }),
+    // P0-7-T3: the two save shortcuts preset the save intent of the capture they
+    // open. `saveMode` reaches the renderer through `capture:init` (P0-7-T4,
+    // S9a) and decides fast-save vs the save dialog there; `autoAction: 'save'`
+    // is the same convention `screenshotFullScreen({ save: true })` uses.
+    screenshotQuickSave: () => createCapture({ mode: 'region', autoAction: 'save', saveMode: 'fast', source: 'quick-save' }),
+    screenshotSaveAs: () => createCapture({ mode: 'region', autoAction: 'save', saveMode: 'dialog', source: 'save-as' }),
     async screenshotFocusedWindow() {
       const dataUrl = await captureDomain.captureFocusedWindow()
       clipboard.writeImage(nativeImage.createFromDataURL(dataUrl))
@@ -72,6 +81,20 @@ function createFunctionRouter(deps) {
     async toggleFixedContentVisibility() {
       pinDomain.togglePinVisibility()
       return true
+    },
+    // P0-6-T4: a pin in click-through mode receives no clicks and Esc is
+    // unreliable, so this bulk exit is the mandatory recovery path (up to 20
+    // pins). The count of pins that left click-through is passed through; a pin
+    // domain that does not expose the interface yet degrades to 0 with one log
+    // line instead of throwing inside a global-shortcut callback.
+    async togglePinClickThrough() {
+      const domain = typeof getPinDomain === 'function' ? getPinDomain() : null
+      if (!domain || typeof domain.exitAllClickThrough !== 'function') {
+        log('Click-through exit unavailable: pin domain does not expose exitAllClickThrough')
+        return 0
+      }
+      const exited = await domain.exitAllClickThrough()
+      return Number.isFinite(exited) ? exited : 0
     },
     async showOrHideMainWindow() {
       const mainWindow = getMainWindow()

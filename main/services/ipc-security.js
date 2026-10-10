@@ -76,6 +76,7 @@ const IPC_SURFACES = Object.freeze([
       'capture:pin-reannotate',
       'capture:open-recognition',
       'capture:record-history',
+      'capture:export-pdf',
       'capture:ocr',
       'capture:translate',
       'settings:update'
@@ -122,7 +123,7 @@ const IPC_SURFACES = Object.freeze([
       'pin:move-start',
       'pin:move',
       'pin:move-end',
-      'pin:toggle-click-through'
+      'pin:set-click-through'
     ]
   },
   {

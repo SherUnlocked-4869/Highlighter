@@ -7,6 +7,7 @@ function buildTrayMenuTemplate({
   openHistory,
   openMainWindow,
   showConversation,
+  exitClickThrough,
   quit
 } = {}) {
   if (typeof executeFunction !== 'function') throw new Error('Tray menu requires executeFunction')
@@ -18,6 +19,15 @@ function buildTrayMenuTemplate({
 
   const featureEnabled = gameMode !== true
   const run = (name) => () => executeFunction(name)
+  // P0-6-T4: a click-through pin has no keyboard focus, so this entry is the
+  // mandatory way out (the global shortcut is suspended in game mode, and the
+  // router refuses every feature while game mode is on — see
+  // assertGameModeDisabled). It therefore stays enabled in game mode, like the
+  // other recovery entries below, and prefers a direct domain call when the
+  // host injects one.
+  const exitAllClickThrough = typeof exitClickThrough === 'function'
+    ? exitClickThrough
+    : run('togglePinClickThrough')
 
   return [
     { label: '截图', accelerator: screenshotAccelerator || undefined, enabled: featureEnabled, click: run('screenshot') },
@@ -34,6 +44,9 @@ function buildTrayMenuTemplate({
       click: () => setGameModeEnabled(gameMode !== true)
     },
     { type: 'separator' },
+    // A click-through pin cannot be reached by clicking it, so the bulk exit
+    // lives with the always-available entries rather than the pin actions.
+    { label: '取消全部穿透', enabled: true, click: exitAllClickThrough },
     // An unpinned result window hides as soon as it loses focus, and the only
     // other way to bring it back (a new selection) discards the conversation.
     // Without this entry the preserved turns are unreachable.

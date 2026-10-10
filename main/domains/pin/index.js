@@ -135,7 +135,10 @@ function createPinDomain(deps) {
       meta,
       opacity: getSettings().fixedContent.opacity,
       zoomWithMouse: getSettings().fixedContent.zoomWithMouse !== false,
-      clickThrough: false,
+      // The frozen `pinned.clickThrough` key (settings-defaults.js) is the
+      // default state of a new pin; it is applied below, before the window is
+      // ever shown, so a click-through pin does not swallow its first click.
+      clickThrough: getSettings().pinned?.clickThrough === true,
       longCapture,
       pixelWidth: size.width,
       pixelHeight: size.height,
@@ -144,6 +147,7 @@ function createPinDomain(deps) {
       baseHeight,
       zoom
     }
+    if (win._pinData.clickThrough) win.setIgnoreMouseEvents(true, { forward: true })
     win._pinVisible = false
     win.setPosition(display.bounds.x, display.bounds.y, false)
     win.setContentSize(width, height, false)
@@ -216,6 +220,49 @@ function createPinDomain(deps) {
     const nextOpacity = clampPinOpacity(opacity)
     if (win._pinData) win._pinData.opacity = nextOpacity
     win.setOpacity(nextOpacity)
+  }
+
+  // Click-through is an explicit boolean, never a flip: the renderer's radio
+  // item, the batch exit and (later) the settings default all state the value
+  // they want, so a duplicated or replayed request cannot land on the opposite
+  // state. `forward: true` keeps mouse moves arriving so the renderer's corner
+  // badge stays reachable; clicks and the wheel are deliberately not forwarded.
+  function setPinClickThrough(win, enabled) {
+    if (!win || win.isDestroyed() || !win._pinData) return false
+    const next = enabled === true
+    if (win._pinData.clickThrough !== next) {
+      win._pinData.clickThrough = next
+      if (next) win.setIgnoreMouseEvents(true, { forward: true })
+      else win.setIgnoreMouseEvents(false)
+    }
+    // The receipt is the authoritative echo: it also carries changes nobody in
+    // this renderer asked for (batch exit, settings-driven default), so it is
+    // sent even when the stored flag already matched. `pin:click-through-changed`
+    // is a main -> renderer broadcast and must stay OUT of IPC_SURFACES (§2.2).
+    if (win.webContents && !win.webContents.isDestroyed?.()) {
+      win.webContents.send('pin:click-through-changed', next)
+    }
+    return true
+  }
+
+  // Returns true only when the window actually left click-through mode, so the
+  // batch exit can report a meaningful count.
+  function clearPinClickThrough(win) {
+    if (!win || win.isDestroyed() || win._pinData?.clickThrough !== true) return false
+    setPinClickThrough(win, false)
+    return true
+  }
+
+  // P0-6-T4 exit path (owned by S7, called through the injected pin domain):
+  // takes every pinned window out of click-through without any renderer
+  // round-trip, so the global shortcut and the tray item still work when a
+  // renderer is wedged. Returns how many pins left click-through mode.
+  function exitAllClickThrough() {
+    let exited = 0
+    for (const win of pinWindows) {
+      if (clearPinClickThrough(win)) exited += 1
+    }
+    return exited
   }
 
   async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
@@ -395,6 +442,19 @@ function createPinDomain(deps) {
             click: () => setPinOpacity(win, opacity)
           }))
         },
+        {
+          // Same radio template as the opacity submenu: each item states the
+          // value it wants, and the checked item is the current state. Once the
+          // pin ignores mouse events this menu is unreachable (clicks are not
+          // forwarded), which is why the batch exit below exists.
+          label: '点击穿透',
+          submenu: [true, false].map((enabled) => ({
+            label: enabled ? '开启' : '关闭',
+            type: 'radio',
+            checked: (win._pinData.clickThrough === true) === enabled,
+            click: () => setPinClickThrough(win, enabled)
+          }))
+        },
         { type: 'separator' },
         { label: '复制', click: () => clipboard.writeImage(nativeImage.createFromDataURL(win._pinData.dataUrl)) },
         { label: '保存', click: () => saveDataUrl(win._pinData.dataUrl).catch((error) => log(error.message)) },
@@ -406,6 +466,9 @@ function createPinDomain(deps) {
     ipcMain.on('pin:resize', (event, { factor } = {}) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win || !win._pinData?.zoomWithMouse) return
+      // While the pin ignores mouse events the wheel is not forwarded, so this
+      // is defence in depth: a stale request must not resize a click-through pin.
+      if (win._pinData.clickThrough === true) return
       const bounds = win.getBounds()
       const data = win._pinData
       const currentZoom = Number(data.zoom) || 1
@@ -423,12 +486,13 @@ function createPinDomain(deps) {
     })
     ipcMain.on('pin:move-start', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win) return
+      if (!win || win._pinData?.clickThrough === true) return
       win._pinMove = { point: screen.getCursorScreenPoint(), bounds: win.getBounds() }
     })
     ipcMain.on('pin:move', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win?._pinMove) return
+      if (!win || win._pinData?.clickThrough === true) return
+      if (!win._pinMove) return
       const { point: start, bounds } = win._pinMove
       const point = screen.getCursorScreenPoint()
       win.setBounds({
@@ -445,11 +509,10 @@ function createPinDomain(deps) {
         syncPinDisplayScale(win)
       }
     })
-    ipcMain.on('pin:toggle-click-through', (event) => {
+    ipcMain.on('pin:set-click-through', (event, enabled) => {
       const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win) return
-      win._pinData.clickThrough = !win._pinData.clickThrough
-      win.setIgnoreMouseEvents(win._pinData.clickThrough, { forward: true })
+      if (!win || !win._pinData) return
+      setPinClickThrough(win, enabled === true)
     })
   }
 
@@ -468,6 +531,8 @@ function createPinDomain(deps) {
     revealPinWindow,
     bringPinToFront,
     setPinOpacity,
+    setPinClickThrough,
+    exitAllClickThrough,
     startPinReannotation,
     pinFromCapture,
     togglePinVisibility,

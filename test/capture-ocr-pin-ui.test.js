@@ -41,6 +41,22 @@ test('pinned image opacity is chosen from the context menu instead of an overlay
   assert.match(pinDomainSource, /type: 'radio',[\s\S]*click: \(\) => setPinOpacity\(win, opacity\)/)
 })
 
+test('pinned image click-through adds a corner badge and a context-menu radio, never an overlay control', () => {
+  assert.match(pinDomainSource, /label: '点击穿透',[\s\S]*type: 'radio'[\s\S]*click: \(\) => setPinClickThrough\(win, enabled\)/)
+  assert.match(pinMarkup, /<div id="clickThroughTag"/)
+  // The badge is the only pointer target a click-through pin keeps, and it stays
+  // hidden while the pin still accepts the mouse.
+  assert.match(pinCss, /#clickThroughTag\{[^}]*pointer-events:auto[^}]*display:none\}/)
+  assert.match(pinCss, /#clickThroughTag\.show\{display:block\}/)
+  assert.match(pinScript, /onClickThroughChanged/)
+  assert.match(pinScript, /clickThroughTag\.addEventListener\('mouseenter'/)
+  assert.match(pinScript, /window\.pinAPI\.setClickThrough\(false\)/)
+  // Must not reintroduce the overlay controls the pin window deliberately dropped.
+  assert.doesNotMatch(pinMarkup, /type="range"/)
+  assert.doesNotMatch(pinMarkup, /<button id="(?:copy|save|close|clickThrough)"/)
+  assert.doesNotMatch(pinScript, /setOpacity/)
+})
+
 test('OCR recognition hides the selected image size badge', () => {
   assert.match(captureScript, /const hideSizeBadge=\['ocr','translate'\]\.includes\(processingAction\)\|\|!!activeOcrResult\|\|\['ocr','translate'\]\.includes\(initData\?\.autoAction\)/)
   assert.match(captureScript, /sizeBadge\.style\.display=hideSizeBadge\?'none':'block'/)

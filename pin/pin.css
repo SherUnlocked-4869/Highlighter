@@ -10,3 +10,9 @@ body::after{content:"";position:fixed;z-index:2;inset:0;border-radius:7px;box-sh
 body.dragging .pin-surface{cursor:grabbing}
 #zoomBadge{position:fixed;z-index:3;left:50%;top:10px;transform:translateX(-50%);padding:4px 8px;border-radius:5px;color:#fff;background:rgba(20,20,22,.76);font:12px/1.2 Consolas,monospace;opacity:0;pointer-events:none;transition:opacity .15s}
 #zoomBadge.show{opacity:1}
+/* Reserved hover hotspot while click-through is on. It stays hidden (and inert)
+   otherwise, and unlike #zoomBadge it keeps pointer-events:auto so the mouse
+   moves the main process still forwards can reach it and unlock the pin. */
+#clickThroughTag{position:fixed;z-index:3;right:10px;top:10px;padding:4px 8px;border-radius:5px;color:#fff;background:rgba(20,20,22,.76);font:12px/1.2 Consolas,monospace;white-space:nowrap;cursor:pointer;pointer-events:auto;display:none}
+#clickThroughTag.show{display:block}
+body.click-through .pin-surface{cursor:default}

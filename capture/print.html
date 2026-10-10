@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Highlighter 导出 PDF</title>
+  <!-- Directory-scoped contract (test/design-tokens.test.js:168): every page in
+       capture/ links the shared tokens because capture.css consumes them. This
+       sheet only declares custom properties, so the print page renders unchanged. -->
+  <link rel="stylesheet" href="../shared/tokens.css">
+  <style>
+    /* 纸张尺寸与边距完全由主进程的 printToPDF 参数决定（pageSize + margins: none）；
+       这里只保留零边距与“按固有像素绘制”的图片样式，避免与纸张换算重复缩放。 */
+    @page { margin: 0 }
+    html, body { margin: 0; padding: 0; background: #fff; }
+    #print-image {
+      display: block;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      max-width: none;
+      max-height: none;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+  </style>
+</head>
+<body>
+  <img id="print-image" alt="">
+</body>
+</html>

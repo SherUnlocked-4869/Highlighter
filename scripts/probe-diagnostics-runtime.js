@@ -16,8 +16,9 @@ dialog.showSaveDialog = async () => ({ canceled: false, filePath: outputPath })
 const shortcutNames = [
   'screenshot', 'screenshotDelay', 'screenshotFixed', 'screenshotOcr', 'screenshotTable', 'screenshotQr',
   'screenshotOcrTranslate', 'screenshotCopy', 'screenshotFullScreen', 'screenshotFocusedWindow', 'screenshotLong',
+  'screenshotQuickSave', 'screenshotSaveAs',
   'translationSelectText', 'chatSelectText', 'videoRecord', 'fullScreenDraw', 'toggleFixedContentVisibility',
-  'showOrHideMainWindow', 'openCaptureHistory'
+  'togglePinClickThrough', 'showOrHideMainWindow', 'openCaptureHistory'
 ]
 fs.writeFileSync(path.join(userDataPath, 'config.json'), JSON.stringify({
   settings: {

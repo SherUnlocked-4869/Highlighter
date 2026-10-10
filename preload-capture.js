@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('captureAPI', {
   translate: (imageBuffer, options) => ipcRenderer.invoke('capture:translate', { imageBuffer, ...options }),
   startRegionRecording: (selectionBounds) => ipcRenderer.invoke('capture:start-region-recording', { selectionBounds }),
   recordHistory: (imageBuffer, meta) => ipcRenderer.invoke('capture:record-history', { imageBuffer, meta }),
+  exportPdf: (imageBuffer, meta, mode) => ipcRenderer.invoke('capture:export-pdf', { imageBuffer, meta, mode }),
   saveWatermarkSettings: (watermark) => ipcRenderer.invoke('settings:update', { screenshot: { watermark } }),
   saveAnnotationWidth: (annotationWidth) => ipcRenderer.invoke('settings:update', { screenshot: { annotationWidth } })
 })

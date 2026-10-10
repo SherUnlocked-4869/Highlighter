@@ -414,6 +414,10 @@ Wave 10 [Lead]      §1.1 全量门禁 + 真机（三语言切换）            
 - **复用已渲染窗口**：贴图 `main/domains/pin/index.js:338-340,400`、识别 `main/domains/recognition/index.js:22-51` 可直接 `win.webContents.printToPDF()`，无需临时窗口。
 - **页码参数**：`pageSize:'A4'`、`landscape = w > h`、`printBackground:true`、`scale = min(1, 可打印区/固有尺寸)`；"原图尺寸"用 `pageSize:{width,height}`（单位**微米** = 英寸 × 25400），并夹到 Chromium 200 英寸上限。
 
+> **⚠️ 勘误（2026-10-10 实测，Wave 1 · S4 隐藏窗口探针）**：`printToPDF` 自定义 `pageSize:{width,height}` 的实际单位是**英寸**，**不是本节原写的微米**。同值传微米口径（`{width:158750,height:105833}`）直接 `Failed to generate PDF: Printing failed`；传 `{width:6.25,height:4.166667}` → MediaBox `450 × 300.96pt`（= 6.25in × 4.18in），与期望一致（证据 `.tmp/pdf-export-probe/units-result.json`）。**照原文实现会让"原图尺寸"导出 100% 失败。** 落地方式：模块内部保留"英寸 × 25400 = 微米"的口径与 200 英寸夹取（`pageSizeMicrons` / `requestedPageSizeMicrons` / `clamped` 全部保留且被单测覆盖），**只在交给 Chromium 的边界换算成英寸**（`micronsToInches`，`PAGE_SIZE_UNIT='inches'`）。
+>
+> **同轮实测的第二处修正**：自定义纸张的**下限是 1 英寸**（0.1 / 0.25 / 0.5 英寸均报 `invalid print parameters: content area is empty`），故取 `MIN_PAGE_INCHES = 1` —— 原文隐含的 0.1 英寸下限会让小尺寸截图失败。上限方面：实测 200 / 201 / 300 英寸均可出纸、1000 英寸失败，**200 英寸作为保守夹取保留**（R8）。另：`mode:'original'` 下必须 `landscape:false`，因为自定义 `Size` 已编码方向，再传 `landscape` 会让 Chromium 二次旋转。
+
 ### 4.3 任务拆解
 
 | 任务 | 内容 | 写作用域 | 依赖 | 人日 |
@@ -908,3 +912,68 @@ scripts/check-i18n.js    ① 三份 locale 键集合对称差必空
 4. **§2.2 规则 4（S3 专属）**：删除 `pin:toggle-click-through` 时三处同 PR 同步（`main/domains/pin/index.js`、`ipc-security.js:125`、`test/pin-domain.test.js:35`）；
 5. **§2.2 规则 2（Lead 动作）**：每流落地注册点后，由 Lead 按 §2.1.1 在**同一提交**内登记通道并同步 `test/ipc-security.test.js`；
 6. **环境**：派发前提醒 —— 跑 Electron 相关测试需清除 `ELECTRON_RUN_AS_NODE`。
+
+---
+
+## 17. M1（Wave 1 / 批次 A 主进程三流）实施结果（2026-10-10）
+
+> 按 §11 收口：三流子智能体各自交付「代码 + 定向测试 + 门禁证据 + 接线说明 + 验收自证」→ Lead 落**冻结文件契约变更**与 `main.js` 接线 → §1.1 全量门禁 + e2e → 回填本节。写法沿用 §16 与 `2026-10-06-capture-annotation-width-design.md` §10。
+
+### 17.1 已落地的改动（按流）
+
+| 流 | 文件 | 改动 |
+|---|---|---|
+| **S4**<br>打印 / 导出 PDF | `main/services/pdf-export.js`（新，456 行） | `computePaperOptions`（A4 横竖 / 原图尺寸 / 200 英寸夹取 / **1 英寸下限** / `scale` 向下取 4 位）、`exportPdfBuffer`（离屏 `capture/print.html` + 30s 超时 + `closed` 钩子登记表 + `finally` 销毁）、`exportWindowToPdf`（复用已渲染的贴图/识别窗）、`savePdfBuffer`（保存对话框，取消 → `null`）；Electron 依赖全部可注入，纯 node 可加载 |
+| | `capture/print.html`（新） | 单 `<img id="print-image">` + `@page{margin:0}`，CSP 镜像 `capture.html:5`；**并链接 `../shared/tokens.css`**（Lead 收口补入，见偏差 5） |
+| | `main/domains/capture/index.js` | `exportPdf`（`:513`）：以 **PNG IHDR 为尺寸真值**（`meta` 兜底）、`dpi = 96 × scaleFactor` 还原 1:1 CSS 尺寸、保存对话框 parent 到截图窗、可选 DI（`deps.printToPdf` / `deps.savePdfBuffer`，缺省回落模块实现） |
+| | `main/ipc/capture-ipc.js:17` · `preload-capture.js:24` | `ipcMain.handle('capture:export-pdf', controller.exportPdf)` · `captureAPI.exportPdf(imageBuffer, meta, mode)` |
+| | `test/pdf-export.test.js`（新）· `test/ipc-module-contracts.test.js` | 28 条（含**真实 Electron 隐藏窗口**探针）；capture 模块 deepEqual 清单同步 |
+| **S3**<br>贴图点击穿透 | `main/domains/pin/index.js` | `setPinClickThrough`（显式布尔；**仅真实跳变才调 OS**；回执无条件回送以便渲染层重同步）、`clearPinClickThrough`、`exitAllClickThrough()`（**无渲染器往返**，返回退出数）、`pin:set-click-through` 注册（旧 `pin:toggle-click-through` 删除）、右键"点击穿透"单选菜单（镜像透明度模板）、穿透态 move/resize/wheel 早退、`pinned.clickThrough` 作为新贴图**预显示前**的初始态 |
+| | `main/domains/pin/geometry.js`（**扩展**，非新建） | `normalizePinRotation` / `getRotatedPinSize` / `hitTestPinHotspot` |
+| | `preload-pin.js` · `pin/pin.html` · `pin/pin.css` · `pin/pin.js` | `setClickThrough(bool)` / `onClickThroughChanged(cb)`；`#clickThroughTag` 角标（沿用 zoomBadge 样式，`pointer-events:auto`）+ `mouseenter` 原地退出 + 拖动/滚轮守卫 |
+| | 4 个测试文件 | `test/pin-geometry.test.js`(+7) · `test/pin-domain.test.js`（重写为记录式 harness，8 例，含无渲染器批量退出） · `test/ipc-security.test.js`(+1 显式契约测试) · `test/capture-ocr-pin-ui.test.js`(+1，且未破坏原"禁止 overlay 滑块"契约) |
+| **S7**<br>体验细节 | `main/services/capture-naming.js` | `sanitizeFileName` / `renderNameTemplate` / `ensureUniqueName` / 模板化的 `makeCaptureName`；**所有权正则与生成器同源**（`OWNED_NAME_HEAD` + 有界标签段） |
+| | `main/services/function-router.js` | `getPinDomain` dep；`screenshotQuickSave` / `screenshotSaveAs` handler（`autoAction:'save'` + `saveMode` fast/dialog）；`togglePinClickThrough` → `exitAllClickThrough()` 并透传数量、缺接口时降级为 0 + 一行日志 |
+| | `main/services/tray-menu.js` | 可选 `exitClickThrough` dep + 常驻"取消全部穿透"托盘项（**游戏模式下仍可用**，是唯一的恢复路径） |
+| | `scripts/probe-diagnostics-runtime.js` | 探针名单补 3 个 handler |
+| | `test/capture-naming.test.js`（新，14 例）· `test/function-router.test.js`(+38) · `test/shortcut-ui-contract.test.js`(+59，含托盘行为测试) |
+| **Lead**<br>（收口） | `main/services/ipc-security.js` | **契约变更（§2.1.1 加通道，与注册点同一提交）**：capture surface +`'capture:export-pdf'`（handle）；pin surface `'pin:toggle-click-through'` → `'pin:set-click-through'`（on） |
+| | `main.js` | W1 `getPinDomain: () => pinDomain`（`:714`，否则快捷键路径静默返回 0）；W2 `exitClickThrough`（`:804`，**绕过 router** 以免游戏模式抛错）；W3 `saveImageBuffer` 模板化命名 + 唯一性探针 + `lastSaveDirectory` 记忆（经 `settingsService.updateSettings`，已核对该 API 存在于 `settings-service.js:138`） |
+| | `test/shortcut-ui-contract.test.js` | 把 S7 注释掉的 `main.js` 接线断言改为真实测试 |
+
+### 17.2 门禁实况
+
+| 门禁 | Wave 0 收口 | **Wave 1 收口** |
+|---|---|---|
+| `npm test` | 684 / 684 | **736 / 736 pass**（+52：S4 28 + S3/S7 定向用例） |
+| `npm run check` | `main.js` 1267 | 语法 **247 文件**；`main.js` **1294** / 上限 1300（**余量 6**） |
+| `test:coverage:loaded` | 91.32% | **91.67%**（9900/10799） |
+| `test:coverage:critical` | 93.22 / 92.99 / 92.42 | 93.22 / 92.99 / 92.42（未改动） |
+| `audit:dependencies` | 26 / 0 | **26 / 0** |
+| Playwright e2e | 5 / 5 | **5 / 5**（25.4s） |
+| 启动验证 | ✅ | **✅**（`test/diagnostics-runtime.test.js`：真实 Electron 启动 `main.js`、`assertComplete()` 通过） |
+
+### 17.3 偏差记录（8 处）
+
+1. **§4.2 单位勘误（高）**：自定义 `pageSize` 单位是**英寸**而非微米（详见 §4.2 勘误框）。**照原文实现会让"原图尺寸"导出 100% 失败**；本流已按实测实现并保留微米口径的内部数学与单测。
+2. **自定义纸张下限 = 1 英寸**（0.1/0.25/0.5 英寸均 `content area is empty`）；200 英寸上限为保守夹取（实测 300 英寸可用、1000 英寸失败）。
+3. **`pin/geometry.js` 与 `test/pin-geometry.test.js` 并非新建**（`de1d3c7` 已存在），且 T5 点名的三个函数此前**不存在**于仓库 → 由"抽取"改为"扩展 + 新增"。**注意：三者当前无生产调用方**（旋转按 D5 延后），`hitTestPinHotspot` 是为后续旋转/方案 A 控制条留的接缝。
+4. **`pinned.clickThrough` 此前无读取方**（冻结键缺消费者）→ 由 S3 接为"新贴图预显示前的初始态"，与 §2.1 注释"贴图穿透默认关"一致（解释性判断，已确认）。
+5. **`test/design-tokens.test.js:168` 的目录级契约**被新页面 `capture/print.html` 触发（该断言按**目录**判定：capture/ 下任一 .css 使用 token ⇒ 该目录每个 .html 都必须链接 tokens.css）→ Lead 收口补 `tokens.css` 链接；`tokens.css` 只声明自定义属性，对打印页无视觉影响。
+6. **`test/ipc-security.test.js` 对两条新通道都不需要改动**：其断言从 `IPC_SURFACES` + 源码扫描派生（`:96` 走 main.js/main\/ipc\/**/main\/domains\/**，`:143` 走 11 个 preload 文件），S3 另加了一条显式契约测试。
+7. **`makeCaptureName` 的声明拼写（待你决定）**：`test/history-management-ui.test.js:72-73` 逐字固定**单参**声明，与 §4.3-T6 的 `(prefix, ext)` 矛盾。S7 保持声明逐字节不变、改从 `arguments[1..2]` 读取 ext/options（文件内 JSDoc 已注明）。**更干净的写法**是正常双参声明 + 同步该测试正则（§3.3 规则 9 允许），但会触及一条不在任何流作用域内的测试文件 —— 等你的意思。
+8. **`{app}` 模板变量展开为 `highlighter-snowshot`**：`package.json` 无根级 `productName`（只有 `build.productName: "Highlighter"`），故 `app.getName()` 返回包名，而单测回落值是 `Highlighter`。仅当用户显式使用 `{app}` 时可见。
+
+### 17.4 结论与 Wave 2 开工条件
+
+**批次 A 的三条主进程流已全部落地**，并通过 §1.1 全量门禁 + e2e + 真实 Electron 启动验证。
+
+> **⚠️ R1 重新成立（需你决策）**：`main.js` 现为 **1294 / 1300，仅剩 6 行**（Wave 0 腾出的 31 行被本轮接线用掉 27 行）。批次 B（Wave 5 的 `setDisplayMediaRequestHandler` + 光标 provider 注入）与批次 C（i18n 语言广播 + 托盘 labels）预计还需 **10–15 行**。建议在 **Wave 2 期间并行**做一次二次腾挪（候选：把 `saveImageBuffer` 整体迁入 `main/services/image-file-save.js`，可回收约 20 行；或迁出托盘模板依赖对象）。**Wave 2 本身（S9a/S10a）预计不需要 `main.js` 行。**
+
+**Wave 2（S9a `capture/**` + S10a `config/**`）具备开工条件**，派发时必须带上：
+1. §3.1.1 各自独占作用域 —— S9a 本轮**新增承接** P0-4-T7②："导出 PDF"图标 + `test/capture-toolbar-icons.test.js` 有序清单**同 PR**；
+2. S7 交付的 **W6 设置页规格**（3 个快捷键 + `sourceLabels` 的 `quick-save`/`save-as`）与 **W7 capture 侧接线**（`_captureInit.saveMode`、`capture.js` 的 fast/dialog 分支）；
+3. S4 交付的 **S9a 钩子**：工具栏"导出 PDF"默认 `mode:'a4'`，需要"原图尺寸"时传 `mode:'original'`；`exportPdf` handler **不关闭**截图窗口，由 S9a 决定；
+4. 冻结键（已在 `settings-defaults.js`）：`screenshot.shutterSound` / `nameTemplate` / `captureCursor` / `keepSerialAcrossCaptures` / `lastSaveDirectory`、`pinned.clickThrough`、`shortcuts.screenshotQuickSave` / `screenshotSaveAs` / `togglePinClickThrough`；
+5. §3.1.2 回滚纪律与跨波次交接清单（`capture/**`：S9a → S6 → S9b → S11；`config/**`：S10a → S10b → S1 → S14）；
+6. 环境：Electron 相关测试前清 `ELECTRON_RUN_AS_NODE`。

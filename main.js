@@ -712,6 +712,9 @@ functionRouter = createFunctionRouter({
   shell,
   captureDomain,
   pinDomain,
+  // P0-6-T4: the click-through fallback resolves the pin domain lazily so a
+  // recycled delegate cannot hold a stale reference.
+  getPinDomain: () => pinDomain,
   recordDomain,
   searchDomain,
   selectionDomain,
@@ -805,6 +808,14 @@ function createTrayIcon() {
     gameMode,
     screenshotAccelerator: settings.shortcuts.screenshot,
     executeFunction: (name) => functionRouter.executeFunction(name).catch((error) => log('Tray action failed:', name, error.message)),
+    // P0-6-T4: a click-through pin swallows clicks, and game mode suspends both
+    // the router and the global shortcuts, so this entry calls the domain
+    // directly - it is the only recovery path that survives game mode.
+    exitClickThrough: () => {
+      const exited = pinDomain.exitAllClickThrough()
+      log('Click-through exit:', exited)
+      return exited
+    },
     setGameModeEnabled: (enabled) => {
       try {
         setGameModeEnabled(enabled)
@@ -824,13 +835,29 @@ function createTrayIcon() {
 async function saveImageBuffer(imageBuffer, options = {}) {
   const settings = getSettings()
   const preferredDirectory = options.directory || settings.screenshot.saveDirectory
+  // Only the fast path can silently overwrite, so the uniqueness probe looks at
+  // the directory it is about to write into; the dialog branch lets the OS ask.
+  // The extension/options ride on captureNaming.makeCaptureName's extended
+  // signature (P0-7-T1) - never through the single-argument wrapper above, whose
+  // exact text test/history-management-ui.test.js:74 asserts.
+  const fastDirectory = options.fast === true && preferredDirectory ? preferredDirectory : ''
+  const defaultName = captureNaming.makeCaptureName(CAPTURE_PREFIX, 'png', {
+    template: settings.screenshot.nameTemplate,
+    app: app.getName(),
+    isTaken: (name) => fs.existsSync(path.join(fastDirectory || preferredDirectory || app.getPath('pictures'), name))
+  })
   const filePath = await resolveImageTarget({
     fast: options.fast === true,
     directory: preferredDirectory,
-    defaultName: makeCaptureName()
+    defaultName
   })
   if (!filePath) return null
   await fs.promises.writeFile(filePath, imageDataToBuffer(imageBuffer))
+  try {
+    settingsService?.updateSettings({ screenshot: { lastSaveDirectory: path.dirname(filePath) } })
+  } catch (error) {
+    log('Unable to remember the last save directory:', error.message)
+  }
   return filePath
 }
 

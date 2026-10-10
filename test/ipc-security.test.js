@@ -140,6 +140,20 @@ test('IPC policy exactly covers every main-process registration', () => {
   assert.equal(registrations.has('debug:text-received'), false)
 })
 
+test('pin click-through registers one explicit on-channel and keeps the receipt off IPC_SURFACES', () => {
+  const root = path.resolve(__dirname, '..')
+  const policies = buildIpcPolicies(root)
+  // The old flip channel and its policy entry are deleted together with the new
+  // registration (§2.2 rule 4), and the receipt is a main -> renderer broadcast:
+  // registering it would make assertComplete() throw (§2.2 修正 1).
+  const policy = policies.get('pin:set-click-through')
+  assert.ok(policy, 'pin:set-click-through must have a sender policy')
+  assert.equal(policy.kind, 'on')
+  assert.deepEqual(policy.pages.map(({ role }) => role), ['pin'])
+  assert.equal(policies.has('pin:toggle-click-through'), false)
+  assert.equal(policies.has('pin:click-through-changed'), false)
+})
+
 test('every renderer-to-main preload channel has a matching page policy', () => {
   const root = path.resolve(__dirname, '..')
   const policies = buildIpcPolicies(root)

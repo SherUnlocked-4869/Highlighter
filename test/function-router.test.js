@@ -18,9 +18,15 @@ function createHarness(overrides = {}) {
     dialogs: [],
     log: [],
     hiddenToolbar: 0,
-    aiActions: []
+    aiActions: [],
+    clickThroughExits: 0
   }
   const mainWindow = { destroyed: false, visible: true, isDestroyed: () => mainWindow.destroyed, isVisible: () => mainWindow.visible, hide: () => { mainWindow.visible = false } }
+  const pinDomain = overrides.pinDomain || {
+    createPinWindow: (...args) => calls.pinWindows.push(args),
+    togglePinVisibility: () => { calls.pinVisibility += 1 },
+    exitAllClickThrough: () => { calls.clickThroughExits += 1; return overrides.clickThroughExited ?? 1 }
+  }
   const router = createFunctionRouter({
     app: { getPath: (name) => (name === 'pictures' ? 'C:\\pictures' : 'C:\\user') },
     clipboard: {
@@ -41,10 +47,7 @@ function createHarness(overrides = {}) {
       createCaptureWindow: (options) => { calls.capture.push(options); return Promise.resolve({}) },
       captureFocusedWindow: () => { calls.captureFocusedWindow += 1; return Promise.resolve('data:image/png;base64,AAA') }
     },
-    pinDomain: {
-      createPinWindow: (...args) => calls.pinWindows.push(args),
-      togglePinVisibility: () => { calls.pinVisibility += 1 }
-    },
+    pinDomain,
     recordDomain: {
       createRecordWindow: (options) => { calls.record.push(options); return Promise.resolve() }
     },
@@ -55,6 +58,7 @@ function createHarness(overrides = {}) {
     },
     getMainWindow: () => mainWindow,
     createMainWindow: (route) => { calls.routes.push(route) },
+    getPinDomain: () => pinDomain,
     getSettings: () => ({ screenshot: { saveDirectory: '' } }),
     persistHistory: (...args) => calls.persisted.push(args),
     assertGameModeDisabled: () => {
@@ -76,6 +80,10 @@ test('game mode blocks every dispatch before the handler runs', async () => {
   const { router, calls } = createHarness({ gameMode: true })
   await assert.rejects(() => router.executeFunction('screenshot'), /游戏模式已开启/)
   assert.equal(calls.capture.length, 0)
+  // The tray entry is the reason this matters: a suspended shortcut and a
+  // refused router call would both leave a click-through pin unreachable.
+  await assert.rejects(() => router.executeFunction('togglePinClickThrough'), /游戏模式已开启/)
+  assert.equal(calls.clickThroughExits, 0)
 })
 
 test('screenshot variants map to capture window options', async () => {
@@ -107,6 +115,27 @@ test('fullscreen capture honours the save flag and delay schedules without openi
   const scheduled = await router.executeFunction('screenshotDelay', { seconds: 0 })
   assert.deepEqual(scheduled, { scheduled: true, seconds: 0 })
   assert.equal(calls.capture.length, 2, 'the delayed capture runs later, not inline')
+})
+
+test('the save shortcuts preset the capture window save mode', async () => {
+  const { router, calls } = createHarness()
+  assert.equal(await router.executeFunction('screenshotQuickSave'), true)
+  assert.deepEqual(calls.capture.at(-1), { mode: 'region', autoAction: 'save', saveMode: 'fast', source: 'quick-save' })
+  assert.equal(await router.executeFunction('screenshotSaveAs'), true)
+  assert.deepEqual(calls.capture.at(-1), { mode: 'region', autoAction: 'save', saveMode: 'dialog', source: 'save-as' })
+})
+
+test('the click-through fallback exits every pin and reports the count', async () => {
+  const { router, calls } = createHarness({ clickThroughExited: 3 })
+  assert.equal(await router.executeFunction('togglePinClickThrough'), 3)
+  assert.equal(calls.clickThroughExits, 1)
+})
+
+test('the click-through fallback degrades to zero without the domain interface', async () => {
+  const bare = { createPinWindow: () => {}, togglePinVisibility: () => {} }
+  const { router, calls } = createHarness({ pinDomain: bare })
+  assert.equal(await router.executeFunction('togglePinClickThrough'), 0)
+  assert.equal(calls.log.at(-1)[0], 'Click-through exit unavailable: pin domain does not expose exitAllClickThrough')
 })
 
 test('focused window capture copies the image and records history', async () => {
@@ -173,5 +202,9 @@ test('the router advertises every feature name it dispatches', () => {
   const names = router.functionNames()
   assert.ok(names.includes('screenshot'))
   assert.ok(names.includes('explainClipboard'))
+  // P0-7-T3 + P0-6-T4: the names must match the frozen settings keys.
+  assert.ok(names.includes('screenshotQuickSave'))
+  assert.ok(names.includes('screenshotSaveAs'))
+  assert.ok(names.includes('togglePinClickThrough'))
   assert.equal(new Set(names).size, names.length)
 })
