@@ -4,9 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'none'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-<title>划词助手</title>
+<!-- P0-1-T5 (S12): the markup carries the English fallback; action.js calls
+     applyTranslations() synchronously at load, so a zh-CN window renders the
+     Chinese copy on the first frame (acceptance ⑤). -->
+<title data-i18n="action.title.window">Selection assistant</title>
 <link rel="stylesheet" href="../shared/tokens.css">
 <link rel="stylesheet" href="action.css">
+<!-- The locale tables and the runtime must load before action.js. -->
+<script src="../shared/locales/zh-CN.js"></script>
+<script src="../shared/locales/en-US.js"></script>
+<script src="../shared/locales/zh-TW.js"></script>
+<script src="../shared/locales/action.js"></script>
+<script src="../shared/i18n.js"></script>
 </head>
 <body>
 <div class="header">
@@ -14,11 +23,11 @@
        mask-image icon cannot be used, and emoji render inconsistently across
        Windows font versions. -->
   <span class="icon" id="headerIcon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/></svg></span>
-  <span class="title" id="headerTitle">翻译中...</span>
-  <span class="badge" id="headerBadge">翻译</span>
+  <span class="title" id="headerTitle" data-i18n="action.header.translating">Translating...</span>
+  <span class="badge" id="headerBadge" data-i18n="action.answer.label.translate">Translation</span>
   <span class="header-spacer"></span>
   <div class="header-actions">
-    <button class="pin-btn" id="btnPin" title="置顶" aria-label="置顶"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/><path d="M12 15v5"/></svg></button>
+    <button class="pin-btn" id="btnPin" data-i18n-title="action.pin.pin" data-i18n-aria-label="action.pin.pin" title="Pin on top" aria-label="Pin on top"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/><path d="M12 15v5"/></svg></button>
   </div>
 </div>
 <div class="content" id="content">
@@ -27,20 +36,20 @@
   <div id="scrollSentinel" class="scroll-sentinel"></div>
   <div class="loading" id="loading">
     <div class="spinner"></div>
-    <span id="loadingText">正在请求 DeepSeek...</span>
+    <span id="loadingText" data-i18n="action.loading.requesting">Requesting DeepSeek...</span>
   </div>
 </div>
 
 <div class="composer" id="composer">
   <div class="composer-row">
-    <textarea id="questionInput" rows="1" maxlength="2000" placeholder="就上面的结果继续追问…"></textarea>
-    <button class="send-btn" id="btnSend" type="button" title="发送" aria-label="发送"></button>
+    <textarea id="questionInput" rows="1" maxlength="2000" data-i18n-placeholder="action.composer.placeholder" placeholder="Ask a follow-up about the result above…"></textarea>
+    <button class="send-btn" id="btnSend" type="button" data-i18n-title="action.composer.send" data-i18n-aria-label="action.composer.send" title="Send" aria-label="Send"></button>
   </div>
   <div class="composer-hint-row">
     <div class="composer-hint" id="composerHint"></div>
-    <button class="ghost-btn" id="btnQuote" type="button" title="引用回答里选中的片段">引用选中</button>
-    <button class="ghost-btn" id="btnRetry" type="button" title="重新生成最近一轮追问">重新生成</button>
-    <button class="ghost-btn" id="btnCopy" type="button" title="复制整段对话">复制对话</button>
+    <button class="ghost-btn" id="btnQuote" type="button" data-i18n="action.composer.quote" data-i18n-title="action.composer.quote-selected">Quote selection</button>
+    <button class="ghost-btn" id="btnRetry" type="button" data-i18n="action.composer.regenerate" data-i18n-title="action.composer.regenerate-hint">Regenerate</button>
+    <button class="ghost-btn" id="btnCopy" type="button" data-i18n="action.composer.copy" data-i18n-title="action.composer.copy-hint">Copy conversation</button>
   </div>
 </div>
 

@@ -1,5 +1,10 @@
 const { formatSize, formatTime, buildQuery, planQueries, mergeQueryResults, renderHighlighted, extensionBadge, escapeHtml } = window.searchUtils
 
+// P0-1-T5 (S12): `shared/i18n.js` is a classic script, so its `t`, `setLanguage`
+// and `applyTranslations` bindings are already visible here. They must NOT be
+// re-declared (the runtime's top-level `const`s share this script's global
+// lexical scope, so destructuring them from `window` throws).
+
 const els = {
   input: document.getElementById('searchInput'),
   clear: document.getElementById('clearInput'),
@@ -61,29 +66,36 @@ function applySettings(searchSettings) {
 
 function renderSortOptions() {
   const options = window.searchUtils.SORT_OPTIONS
-  els.sort.innerHTML = options.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')
+  // P0-1-T5 (S12): the label half of each pair is an i18n key.
+  els.sort.innerHTML = options.map(([value, label]) => `<option value="${value}">${escapeHtml(t(label))}</option>`).join('')
   els.sort.value = state.settings.sortMode
 }
 
 function renderTabs() {
   els.tabs.innerHTML = state.categories.map((category) => (
-    `<button class="category-tab${category.id === state.activeCategoryId ? ' active' : ''}" data-id="${escapeHtml(category.id)}">${escapeHtml(category.label)}</button>`
+    `<button class="category-tab${category.id === state.activeCategoryId ? ' active' : ''}" data-id="${escapeHtml(category.id)}">${escapeHtml(t(category.label))}</button>`
   )).join('')
 }
 
 function getActiveCategory() {
-  return state.categories.find((category) => category.id === state.activeCategoryId) || state.categories[0] || { id: 'all', label: '全部', rule: '' }
+  // A user-defined category keeps its own free-text label; `t()` returns an
+  // unknown key verbatim, so both kinds resolve through the same call.
+  return state.categories.find((category) => category.id === state.activeCategoryId)
+    || state.categories[0]
+    || { id: 'all', label: 'search.category.fallback', rule: '' }
 }
 
 function renderStatus(status) {
   if (!status) return
   state.ready = status.phase === 'ready'
   els.status.classList.toggle('is-error', status.phase === 'error')
-  let text = status.message || '正在检测 Everything...'
+  let text = status.message || t('search.status.detecting')
   if (status.phase === 'ready') {
-    text = `Everything 已就绪${status.version ? ` · v${status.version}` : ''}`
+    text = status.version
+      ? t('search.status.ready-version', { version: status.version })
+      : t('search.status.ready')
     if (Number(status.probeTotal) === 0) {
-      text += ' · 索引暂无内容（可能需要以管理员身份运行 Everything 或安装 Everything 服务）'
+      text += t('search.status.index-empty')
     }
   }
   els.status.textContent = text
@@ -97,17 +109,17 @@ function updateEmptyState(message) {
     return
   }
   if (!state.keyword.trim()) {
-    els.empty.textContent = '输入关键字开始搜索'
+    els.empty.textContent = t('search.empty.prompt')
     els.empty.hidden = false
     return
   }
   if (state.searching) {
-    els.empty.textContent = '正在搜索...'
+    els.empty.textContent = t('search.empty.searching')
     els.empty.hidden = false
     return
   }
   if (!state.results.length) {
-    els.empty.textContent = '没有找到结果'
+    els.empty.textContent = t('search.empty.no-results')
     els.empty.hidden = false
     return
   }
@@ -119,7 +131,7 @@ function updateCount() {
     els.count.textContent = ''
     return
   }
-  els.count.textContent = `已加载 ${state.results.length} / 共 ${state.total} 条结果`
+  els.count.textContent = t('search.count.loaded', { loaded: state.results.length, total: state.total })
 }
 
 function iconMarkup(item) {
@@ -137,8 +149,8 @@ function rowMarkup(item, index) {
     `<div class="row-main"><div class="row-name">${nameHtml}</div><div class="row-path">${pathHtml}</div></div>` +
     `<div class="row-meta"><span class="row-size">${escapeHtml(formatSize(item.size))}</span><span class="row-date">${escapeHtml(formatTime(item.modifiedAt))}</span></div>` +
     `<div class="row-actions">` +
-    `<button data-act="reveal" data-path="${escapeHtml(item.fullPath)}">打开所在目录</button>` +
-    `<button data-act="copy" data-path="${escapeHtml(item.fullPath)}">复制路径</button>` +
+    `<button data-act="reveal" data-path="${escapeHtml(item.fullPath)}">${escapeHtml(t('search.action.reveal'))}</button>` +
+    `<button data-act="copy" data-path="${escapeHtml(item.fullPath)}">${escapeHtml(t('search.action.copy-path'))}</button>` +
     `</div></div>`
 }
 
@@ -246,7 +258,7 @@ function runSearch() {
 }
 
 function errorMessage(error) {
-  return String(error?.message || error || '查询失败').replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')
+  return String(error?.message || error || t('search.error.query-failed')).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')
 }
 
 function extendResults() {
@@ -359,6 +371,18 @@ els.sort.addEventListener('change', () => {
   runSearch()
 })
 
+// P0-1-T2/T5: the initial pass translates the markup; the broadcast subscription
+// re-renders everything the script owns (tabs, sort options, result rows, the
+// empty state and the status line) in the newly selected language.
+applyTranslations()
+window.searchAPI.onInterfaceLanguage((language) => {
+  setLanguage(language)
+  applyTranslations()
+  renderTabs()
+  renderSortOptions()
+  renderResults()
+  updateEmptyState()
+})
 searchAPI.ready()
 searchAPI.onInit((payload) => {
   applyAppearance(payload)

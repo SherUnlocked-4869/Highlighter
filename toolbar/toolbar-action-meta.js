@@ -9,6 +9,12 @@
 // resolves it against its own icon folder (toolbar.js -> toolbar/icons,
 // config.js -> ../toolbar/icons) and paints it as a CSS mask. Shipping the
 // name instead of the path is what lets both windows share one definition.
+//
+// P0-1-T5 (S12): `label` and `description` are i18n keys, not sentences. This
+// module runs under Node too (`test/toolbar-*.test.js`) where no locale table is
+// loaded, so it cannot call `t()` itself; every renderer resolves the key at the
+// point of use (`toolbar/toolbar.js` for the strip, `config/routes/*.js` for the
+// settings page). `id`, `icon`, `kind` and `optional` are unaffected.
 
 (function exposeToolbarActionMeta(root, factory) {
   const api = factory()
@@ -16,16 +22,16 @@
   else root.toolbarActionMeta = api
 })(typeof globalThis === 'object' ? globalThis : window, () => {
   const TOOLBAR_ACTION_META = Object.freeze({
-    copy: Object.freeze({ id: 'copy', label: '复制', icon: 'copy', kind: 'local', description: '复制划词内容到系统剪贴板' }),
-    search: Object.freeze({ id: 'search', label: '搜索', icon: 'search', kind: 'local', description: '使用默认浏览器搜索划词内容' }),
-    translate: Object.freeze({ id: 'translate', label: '翻译', icon: 'translate', kind: 'ai', description: '使用下方自定义提示词翻译划词内容' }),
-    explain: Object.freeze({ id: 'explain', label: '解释', icon: 'lightbulb', kind: 'ai', description: '使用下方自定义提示词解释划词内容' }),
+    copy: Object.freeze({ id: 'copy', label: 'toolbar.action.copy.label', icon: 'copy', kind: 'local', description: 'toolbar.action.copy.description' }),
+    search: Object.freeze({ id: 'search', label: 'toolbar.action.search.label', icon: 'search', kind: 'local', description: 'toolbar.action.search.description' }),
+    translate: Object.freeze({ id: 'translate', label: 'toolbar.action.translate.label', icon: 'translate', kind: 'ai', description: 'toolbar.action.translate.description' }),
+    explain: Object.freeze({ id: 'explain', label: 'toolbar.action.explain.label', icon: 'lightbulb', kind: 'ai', description: 'toolbar.action.explain.description' }),
     open: Object.freeze({
       id: 'open',
-      label: '跳转',
+      label: 'toolbar.action.open.label',
       icon: 'box-arrow-up-right',
       kind: 'local',
-      description: '在默认浏览器中打开划词内容，内容将直接作为网址跳转',
+      description: 'toolbar.action.open.description',
       optional: true
     })
   })

@@ -12,6 +12,7 @@ const {
   normalizeSelectionToolbar,
   normalizeToolbarThinking
 } = require('../toolbar/toolbar-utils')
+const { TOOLBAR_ACTION_META } = require('../toolbar/toolbar-action-meta')
 const { buildToolbarStreamRequest } = require('../deepseek')
 const { readConfigSource } = require('./helpers/config-source')
 
@@ -73,9 +74,11 @@ test('built-in and custom AI actions resolve their configured thinking levels', 
 test('optional open action joins the toolbar only when configured into the order', () => {
   const enabled = normalizeSelectionToolbar({ order: ['copy', 'open'] })
   assert.deepEqual(getVisibleToolbarActions(enabled), ['copy', 'open', 'search', 'translate', 'explain'])
+  // P0-1-T5（S12，批次 C）：标签改为语言表的键，断言改为引用元数据本身，
+  // 语义不变（仍然是"open 动作带上可选标记与正确的图标/种类"）。
   assert.deepEqual(getToolbarActionDefinition(enabled, 'open'), {
     id: 'open',
-    label: '跳转',
+    label: TOOLBAR_ACTION_META.open.label,
     // A Bootstrap Icons asset name resolved by each renderer, not a display
     // glyph: the old U+21D7 mark existed only because U+2197 is
     // Extended_Pictographic and Windows could swap in the colour emoji font.
@@ -106,7 +109,7 @@ test('config page exposes thinking controls and the optional open action', () =>
   assert.match(script, /value="max">\$\{t\('config\.selection-toolbar\.thinking-max'\)\}/)
   assert.match(script, /toolbarThinking/)
   assert.match(script, /window\.toolbarActionMeta\.TOOLBAR_ACTION_META/)
-  assert.match(actionMeta, /label: '跳转'/)
+  assert.match(actionMeta, new RegExp(`label: '${TOOLBAR_ACTION_META.open.label.replace(/\./g, '\\.')}'`))
   assert.match(actionMeta, /optional: true/)
 })
 

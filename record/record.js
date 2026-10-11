@@ -39,6 +39,21 @@ const annotationToolButtons = [...document.querySelectorAll('[data-annotation-to
 const annotationColorButtons = [...document.querySelectorAll('[data-annotation-color]')]
 const annotationWidthButtons = [...document.querySelectorAll('[data-annotation-width]')]
 
+// P0-1-T5 (S12): `shared/i18n.js` is a classic script, so its `t`, `setLanguage`
+// and `applyTranslations` bindings are already visible here. They must NOT be
+// re-declared (destructuring them from `window` throws "Identifier 't' has
+// already been declared", because the runtime's top-level `const`s share this
+// script's global lexical scope).
+
+// Degradations are collected as keys (record/audio-mixer.js has no language of
+// its own) and only turned into a sentence when they are shown.
+function renderAudioWarning(warning) {
+  if (!warning) return ''
+  const code = typeof warning === 'string' ? warning : warning.code
+  const detail = typeof warning === 'string' ? '' : warning.detail
+  return detail ? t(code, { detail }) : t(code)
+}
+
 let initData = null
 let frameRate = 24
 let state = 'idle'
@@ -147,21 +162,24 @@ async function resetAnnotations() {
   await sendAnnotationCommand('reset')
 }
 
+// P0-1-T5 (S12): the table holds i18n keys, not sentences, so a language switch
+// re-renders the current state without restarting the recording.
 const STATUS_LABELS = {
-  idle: '区域已就绪',
-  countdown: '即将开始',
-  recording: '正在录制',
-  paused: '录制已暂停',
-  preview: '录制完成',
-  saving: '正在生成 MP4'
+  idle: 'record.status.idle',
+  countdown: 'record.status.countdown',
+  recording: 'record.status.recording',
+  paused: 'record.status.paused',
+  preview: 'record.status.preview',
+  saving: 'record.status.saving'
 }
 
 // The audio degradation notice (microphone lost, no microphone, silent recording ...) is
 // appended to whatever the state label shows, so it stays visible while recording.
 function renderStatus() {
   statusLabel.removeAttribute('title')
-  const label = STATUS_LABELS[state]
-  if (!label) return
+  const key = STATUS_LABELS[state]
+  if (!key) return
+  const label = t(key)
   statusLabel.textContent = audioNotice ? `${label} · ${audioNotice}` : label
   if (audioNotice) statusLabel.title = audioNotice
 }
@@ -173,8 +191,8 @@ function setAudioNotice(notice) {
   renderStatus()
 }
 
-function noteAudioWarning(message) {
-  if (message) audioWarnings.push(String(message))
+function noteAudioWarning(warning) {
+  if (warning) audioWarnings.push(warning)
 }
 
 function setState(nextState) {
@@ -184,13 +202,17 @@ function setState(nextState) {
   pauseButton.hidden = !['recording', 'paused'].includes(state)
   stopButton.hidden = !['recording', 'paused'].includes(state)
   countdownElement.hidden = state !== 'countdown'
-  pauseButton.textContent = state === 'paused' ? '继续' : '暂停'
+  pauseButton.textContent = t(state === 'paused' ? 'record.control.resume' : 'record.control.pause')
   renderStatus()
   renderAnnotationControls()
 }
 
 function reportError(error) {
-  const message = error?.message || String(error || '录制失败')
+  // recording-utils.js reports failures as keys plus data so it can run headless.
+  const key = error?.i18nParams ? error.message : ''
+  const message = key
+    ? t(key, error.i18nParams)
+    : (error?.message || String(error || t('record.error.record-failed')))
   errorElement.textContent = message
   statusLabel.textContent = message
   statusLabel.title = message
@@ -305,7 +327,7 @@ function waitForMetadata(video) {
   if (video.readyState >= 1 && video.videoWidth && video.videoHeight) return Promise.resolve()
   return new Promise((resolve, reject) => {
     video.addEventListener('loadedmetadata', resolve, { once: true })
-    video.addEventListener('error', () => reject(new Error('无法读取桌面视频尺寸')), { once: true })
+    video.addEventListener('error', () => reject(new Error(t('record.error.desktop-video-unreadable'))), { once: true })
   })
 }
 
@@ -360,12 +382,14 @@ function loadAudioMixer() {
     audioMixerPromise = new Promise((resolve, reject) => {
       const script = document.createElement('script')
       script.src = 'audio-mixer.js'
-      script.onload = () => (window.audioMixer ? resolve(window.audioMixer) : reject(new Error('音频混音模块未导出')))
-      script.onerror = () => reject(new Error('音频混音模块加载失败'))
+      script.onload = () => (window.audioMixer
+        ? resolve(window.audioMixer)
+        : reject(new Error(t('record.error.audio-mixer-exports-missing'))))
+      script.onerror = () => reject(new Error(t('record.error.audio-mixer-unavailable')))
       document.head.appendChild(script)
     }).catch((error) => {
       // A missing mixer degrades to a silent video instead of failing the whole recording.
-      noteAudioWarning(`音频混音不可用：${error?.message || error}`)
+      noteAudioWarning({ code: 'record.audio.warning.mixer-missing', detail: error?.message || String(error) })
       return null
     })
   }
@@ -380,27 +404,30 @@ async function acquireMicrophone() {
     })
     if (!stream.getAudioTracks().length) {
       stream.getTracks().forEach((track) => track.stop())
-      noteAudioWarning('未检测到可用的麦克风音轨')
+      noteAudioWarning({ code: 'record.audio.warning.microphone-track-missing' })
       return null
     }
     return stream
   } catch (error) {
-    noteAudioWarning(`麦克风采集失败：${error?.message || error}`)
+    noteAudioWarning({ code: 'record.audio.warning.microphone-capture-failed', detail: error?.message || String(error) })
     return null
   }
 }
 
 function renderAudioIndicator() {
   const recorded = []
-  if (audioOutcome.system) recorded.push('系统声音')
-  if (audioOutcome.microphone) recorded.push('麦克风')
-  fpsElement.title = recorded.length ? `录制包含：${recorded.join(' + ')}` : '录制不包含声音'
+  if (audioOutcome.system) recorded.push(t('record.audio.source.system'))
+  if (audioOutcome.microphone) recorded.push(t('record.audio.source.microphone'))
+  fpsElement.title = recorded.length
+    ? t('record.audio.contains-detail', { sources: recorded.join(' + ') })
+    : t('record.audio.contains-none')
 }
 
 function applyAudioOutcome(outcome = {}) {
   audioOutcome = { system: !!outcome.system, microphone: !!outcome.microphone }
   renderAudioIndicator()
-  setAudioNotice(outcome.notice || audioWarnings[0] || '')
+  // Both the outcome notice and the collected warnings arrive as i18n keys.
+  setAudioNotice(outcome.notice ? t(outcome.notice) : renderAudioWarning(audioWarnings[0]))
 }
 
 async function attachAudioTracks() {
@@ -477,7 +504,7 @@ async function prepareSource() {
     await attachAudioTracks()
   } catch (error) {
     stopSource()
-    throw new Error(`无法获取桌面录制画面：${error.message || error}`)
+    throw new Error(t('record.error.desktop-capture-failed', { detail: error.message || String(error) }))
   }
 }
 
@@ -498,7 +525,7 @@ function createMediaRecorder() {
   try {
     return new MediaRecorder(canvasStream, options)
   } catch (error) {
-    throw new Error(`无法创建视频录制器：${error.message || error}`)
+    throw new Error(t('record.error.recorder-create-failed', { detail: error.message || String(error) }))
   }
 }
 
@@ -510,7 +537,7 @@ function probeMicrophoneAvailability() {
   navigator.mediaDevices.enumerateDevices().then((devices) => {
     if (state !== 'idle' && state !== 'preview') return
     const inputs = (Array.isArray(devices) ? devices : []).filter((device) => device.kind === 'audioinput')
-    setAudioNotice(inputs.length ? '' : '未检测到麦克风，本次录制不包含麦克风声音')
+    setAudioNotice(inputs.length ? '' : t('record.error.microphone-not-detected'))
   }).catch(() => {})
 }
 
@@ -518,12 +545,14 @@ function handleDeviceChange() {
   const microphoneTrack = micStream?.getAudioTracks()[0]
   if (microphoneTrack && microphoneTrack.readyState === 'ended') {
     // 系统声也关着时已无任何音轨，不能照抄"仅保留系统声音"（文案必须与文件实际内容一致）。
-    setAudioNotice(audioRequest.system ? '麦克风已断开，本次录制仅保留系统声音' : '麦克风已断开，本次录制不再包含声音')
+    setAudioNotice(audioRequest.system
+      ? t('record.audio.notice.microphone-disconnected-system')
+      : t('record.audio.notice.microphone-disconnected-none'))
     return
   }
   const systemTrack = desktopStream?.getAudioTracks()[0]
   if (audioRequest.system && systemTrack && systemTrack.readyState === 'ended') {
-    setAudioNotice('系统声音已中断，本次录制继续但不再包含系统声音')
+    setAudioNotice(t('record.audio.notice.system-interrupted'))
     return
   }
   if (!['recording', 'paused'].includes(state)) probeMicrophoneAvailability()
@@ -542,7 +571,9 @@ async function startRecorder() {
       .catch((error) => { appendError = appendError || error })
   })
   recorder.addEventListener('error', (event) => {
-    appendError = appendError || new Error(`视频录制失败：${event.error?.message || 'MediaRecorder 错误'}`)
+    appendError = appendError || new Error(t('record.warn.video-failed', {
+      detail: event.error?.message || t('record.warn.mediarecorder')
+    }))
   })
   startCompositeLoop()
   recorder.start(1000)
@@ -608,7 +639,11 @@ async function finishRecording() {
   stopCompositeLoop()
   await stopMediaRecorder()
   await appendQueue
-  if (appendError) throw appendError
+  if (appendError) {
+    // The queue can also reject with a bare IPC error, which carries no wording.
+    if (!appendError.message) appendError = new Error(t('record.warn.video-failed', { detail: t('record.warn.mediarecorder') }))
+    throw appendError
+  }
   const result = await window.recordAPI.finishSession(sessionId)
   clearInterval(clockTimer)
   stopSource()
@@ -771,7 +806,9 @@ document.addEventListener('click', (event) => {
 })
 
 window.recordAPI.onSaveProgress((percent) => {
-  saveProgressElement.textContent = `正在生成 MP4 · ${Math.max(0, Math.min(100, Number(percent) || 0))}%`
+  saveProgressElement.textContent = t('record.save.progress', {
+    percent: Math.max(0, Math.min(100, Number(percent) || 0))
+  })
 })
 window.recordAPI.onAnnotationSnapshot((snapshot) => {
   if (!initData) return
@@ -796,7 +833,9 @@ window.recordAPI.onInit((data) => {
     microphoneGain: data.audioMicrophoneGain
   }
   fpsElement.textContent = `${frameRate} FPS`
-  fpsElement.title = audioRequest.system || audioRequest.microphone ? '录制包含声音' : '录制不包含声音'
+  fpsElement.title = audioRequest.system || audioRequest.microphone
+    ? t('record.audio.contains')
+    : t('record.audio.contains-none')
   setState('idle')
   window.recordAPI.setFrameState('idle')
 })
@@ -804,6 +843,16 @@ window.recordAPI.onInit((data) => {
 if (typeof navigator.mediaDevices?.addEventListener === 'function') {
   navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange)
 }
+
+// P0-1-T2/T5: the initial pass translates the markup; the broadcast subscription
+// re-renders the dynamic parts (status label, annotation titles, audio notice) too.
+applyTranslations()
+window.recordAPI.onInterfaceLanguage((language) => {
+  setLanguage(language)
+  applyTranslations()
+  setState(state)
+  renderAudioIndicator()
+})
 
 addEventListener('beforeunload', () => {
   countdownVersion++

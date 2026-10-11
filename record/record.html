@@ -4,9 +4,18 @@
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Highlighter 区域录制</title>
+  <!-- P0-1-T5 (S12): the markup carries the English fallback; record.js calls
+       applyTranslations() synchronously at load, so a zh-CN window renders the
+       Chinese copy on the first frame (acceptance ⑤). -->
+  <title data-i18n="record.title.window">Highlighter region recording</title>
   <link rel="stylesheet" href="../shared/tokens.css">
   <link rel="stylesheet" href="record.css">
+  <!-- The locale tables and the runtime must load before record.js. -->
+  <script src="../shared/locales/zh-CN.js"></script>
+  <script src="../shared/locales/en-US.js"></script>
+  <script src="../shared/locales/zh-TW.js"></script>
+  <script src="../shared/locales/record.js"></script>
+  <script src="../shared/i18n.js"></script>
 </head>
 <body data-state="idle">
   <section id="controlView" class="control-view">
@@ -14,51 +23,51 @@
       <i class="status-dot" aria-hidden="true"></i>
       <div class="status-copy">
         <strong id="time">00:00</strong>
-        <span id="statusLabel">区域已就绪</span>
+        <span id="statusLabel" data-i18n="record.status.idle">Area ready</span>
       </div>
     </div>
     <span id="fps" class="fps">24 FPS</span>
     <strong id="countdown" class="countdown" hidden></strong>
-    <div id="annotationTools" class="annotation-tools" aria-label="录制标注工具">
-      <button class="annotation-tool active" data-annotation-tool="pointer" type="button" title="指针" aria-label="指针" disabled>↖</button>
-      <button class="annotation-tool" data-annotation-tool="pen" type="button" title="画笔" aria-label="画笔" disabled>✎</button>
-      <button class="annotation-tool" data-annotation-tool="rect" type="button" title="矩形" aria-label="矩形" disabled>□</button>
-      <button class="annotation-tool" data-annotation-tool="ellipse" type="button" title="椭圆" aria-label="椭圆" disabled>○</button>
-      <button class="annotation-tool" data-annotation-tool="arrow" type="button" title="箭头" aria-label="箭头" disabled>↗</button>
+    <div id="annotationTools" class="annotation-tools" data-i18n-aria-label="record.annotation.tools" aria-label="Recording annotation tools">
+      <button class="annotation-tool active" data-annotation-tool="pointer" type="button" data-i18n-title="record.annotation.tool.pointer" data-i18n-aria-label="record.annotation.tool.pointer" title="Pointer" aria-label="Pointer" disabled>↖</button>
+      <button class="annotation-tool" data-annotation-tool="pen" type="button" data-i18n-title="record.annotation.tool.pen" data-i18n-aria-label="record.annotation.tool.pen" title="Pen" aria-label="Pen" disabled>✎</button>
+      <button class="annotation-tool" data-annotation-tool="rect" type="button" data-i18n-title="record.annotation.tool.rect" data-i18n-aria-label="record.annotation.tool.rect" title="Rectangle" aria-label="Rectangle" disabled>□</button>
+      <button class="annotation-tool" data-annotation-tool="ellipse" type="button" data-i18n-title="record.annotation.tool.ellipse" data-i18n-aria-label="record.annotation.tool.ellipse" title="Ellipse" aria-label="Ellipse" disabled>○</button>
+      <button class="annotation-tool" data-annotation-tool="arrow" type="button" data-i18n-title="record.annotation.tool.arrow" data-i18n-aria-label="record.annotation.tool.arrow" title="Arrow" aria-label="Arrow" disabled>↗</button>
       <div class="annotation-style-wrap">
-        <button id="annotationStyle" class="annotation-style" type="button" title="颜色和粗细" aria-label="颜色和粗细" disabled><i id="annotationSwatch"></i><b id="annotationWidthMark">4</b></button>
+        <button id="annotationStyle" class="annotation-style" type="button" data-i18n-title="record.annotation.style" data-i18n-aria-label="record.annotation.style" title="Colour and thickness" aria-label="Colour and thickness" disabled><i id="annotationSwatch"></i><b id="annotationWidthMark">4</b></button>
         <div id="annotationPalette" class="annotation-palette" hidden>
-          <div class="color-options" aria-label="标注颜色">
-            <button data-annotation-color="#ff3b30" type="button" title="红色" style="--swatch:#ff3b30"></button>
-            <button data-annotation-color="#ff9500" type="button" title="橙色" style="--swatch:#ff9500"></button>
-            <button data-annotation-color="#ffcc00" type="button" title="黄色" style="--swatch:#ffcc00"></button>
-            <button data-annotation-color="#34c759" type="button" title="绿色" style="--swatch:#34c759"></button>
-            <button data-annotation-color="#1687ff" type="button" title="蓝色" style="--swatch:#1687ff"></button>
-            <button data-annotation-color="#111111" type="button" title="黑色" style="--swatch:#111111"></button>
-            <button data-annotation-color="#ffffff" type="button" title="白色" style="--swatch:#ffffff"></button>
+          <div class="color-options" data-i18n-aria-label="record.annotation.colors" aria-label="Annotation colours">
+            <button data-annotation-color="#ff3b30" type="button" data-i18n-title="record.annotation.color.red" title="Red" style="--swatch:#ff3b30"></button>
+            <button data-annotation-color="#ff9500" type="button" data-i18n-title="record.annotation.color.orange" title="Orange" style="--swatch:#ff9500"></button>
+            <button data-annotation-color="#ffcc00" type="button" data-i18n-title="record.annotation.color.yellow" title="Yellow" style="--swatch:#ffcc00"></button>
+            <button data-annotation-color="#34c759" type="button" data-i18n-title="record.annotation.color.green" title="Green" style="--swatch:#34c759"></button>
+            <button data-annotation-color="#1687ff" type="button" data-i18n-title="record.annotation.color.blue" title="Blue" style="--swatch:#1687ff"></button>
+            <button data-annotation-color="#111111" type="button" data-i18n-title="record.annotation.color.black" title="Black" style="--swatch:#111111"></button>
+            <button data-annotation-color="#ffffff" type="button" data-i18n-title="record.annotation.color.white" title="White" style="--swatch:#ffffff"></button>
           </div>
-          <div class="width-options" aria-label="标注粗细">
-            <button data-annotation-width="2" type="button">细</button>
-            <button data-annotation-width="4" type="button">中</button>
-            <button data-annotation-width="7" type="button">粗</button>
+          <div class="width-options" data-i18n-aria-label="record.annotation.widths" aria-label="Annotation thickness">
+            <button data-annotation-width="2" type="button" data-i18n="record.annotation.width.thin">Thin</button>
+            <button data-annotation-width="4" type="button" data-i18n="record.annotation.width.medium">Medium</button>
+            <button data-annotation-width="7" type="button" data-i18n="record.annotation.width.thick">Thick</button>
           </div>
         </div>
       </div>
-      <button id="annotationUndo" class="annotation-tool" type="button" title="撤销标注" aria-label="撤销标注" disabled>↶</button>
-      <button id="annotationClear" class="annotation-tool" type="button" title="清除全部标注" aria-label="清除全部标注" disabled>×</button>
+      <button id="annotationUndo" class="annotation-tool" type="button" data-i18n-title="record.annotation.undo" data-i18n-aria-label="record.annotation.undo" title="Undo annotation" aria-label="Undo annotation" disabled>↶</button>
+      <button id="annotationClear" class="annotation-tool" type="button" data-i18n-title="record.annotation.clear" data-i18n-aria-label="record.annotation.clear" title="Clear all annotations" aria-label="Clear all annotations" disabled>×</button>
     </div>
     <div class="control-actions">
-      <button id="start" class="primary" type="button">开始</button>
-      <button id="pause" type="button" hidden>暂停</button>
-      <button id="stop" class="danger" type="button" hidden>停止</button>
-      <button id="cancel" class="icon-button" type="button" title="取消录制" aria-label="取消录制">×</button>
+      <button id="start" class="primary" type="button" data-i18n="record.control.start">Start</button>
+      <button id="pause" type="button" data-i18n="record.control.pause" hidden>Pause</button>
+      <button id="stop" class="danger" type="button" data-i18n="record.control.stop" hidden>Stop</button>
+      <button id="cancel" class="icon-button" type="button" data-i18n-title="record.control.cancel-recording" data-i18n-aria-label="record.control.cancel-recording" title="Cancel recording" aria-label="Cancel recording">×</button>
     </div>
   </section>
 
   <section id="previewView" class="preview-view" hidden>
     <header class="preview-head">
-      <div><strong>录制预览</strong><span id="previewDuration">00:00</span></div>
-      <button id="closePreview" class="icon-button" type="button" title="关闭预览" aria-label="关闭预览">×</button>
+      <div><strong data-i18n="record.preview.title">Recording preview</strong><span id="previewDuration">00:00</span></div>
+      <button id="closePreview" class="icon-button" type="button" data-i18n-title="record.preview.close" data-i18n-aria-label="record.preview.close" title="Close preview" aria-label="Close preview">×</button>
     </header>
     <div class="video-stage">
       <video id="preview" controls playsinline></video>
@@ -68,8 +77,8 @@
       <span id="saveProgress"></span>
     </div>
     <footer class="preview-actions">
-      <button id="rerecord" type="button">重新录制</button>
-      <button id="saveMp4" class="primary" type="button">保存 MP4</button>
+      <button id="rerecord" type="button" data-i18n="record.preview.rerecord">Record again</button>
+      <button id="saveMp4" class="primary" type="button" data-i18n="record.preview.save-mp4">Save MP4</button>
     </footer>
   </section>
 

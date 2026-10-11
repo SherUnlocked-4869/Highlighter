@@ -51,13 +51,17 @@
   /**
    * Pure degradation policy: which buses ended up in the recording and what the user
    * must be told. Keeps the "microphone failed -> system only" ladder out of the DOM code.
+   *
+   * P0-1-T5 (S12): the values are i18n keys, not sentences. This module also runs
+   * under Node (test/audio-mixer.test.js) where no locale table is loaded, so it
+   * must stay language-free and let the renderer resolve the key with `t()`.
    */
   const AUDIO_NOTICES = Object.freeze({
-    microphoneUnavailable: '麦克风不可用，本次录制仅包含系统声音',
-    systemUnavailable: '系统声音不可用，本次录制仅包含麦克风',
-    audioUnavailable: '无法采集声音，本次录制为无声视频',
-    microphoneFailed: '麦克风采集失败，本次录制为无声视频',
-    systemFailed: '系统声音采集失败，本次录制为无声视频'
+    microphoneUnavailable: 'record.audio.notice.microphone-unavailable',
+    systemUnavailable: 'record.audio.notice.system-unavailable',
+    audioUnavailable: 'record.audio.notice.audio-unavailable',
+    microphoneFailed: 'record.audio.notice.microphone-failed',
+    systemFailed: 'record.audio.notice.system-failed'
   })
 
   function describeAudioOutcome(options = {}) {
@@ -79,12 +83,22 @@
     return { system, microphone, notice, silent: !system && !microphone }
   }
 
+  /**
+   * P0-1-T5 (S12): a degradation report is a key plus an optional detail, not a
+   * sentence — this module also runs under Node where no locale table is loaded.
+   * `code` is a `record.audio.warning.*` key; `detail` is a raw error message that
+   * the renderer interpolates, never translated.
+   */
+  function audioWarning(code, detail = '') {
+    return Object.freeze({ code, detail: String(detail ?? '') })
+  }
+
   function audioTracks(stream) {
     if (!stream || typeof stream.getAudioTracks !== 'function') return []
     return stream.getAudioTracks().filter(Boolean)
   }
 
-  function createSilentMix(warning = '') {
+  function createSilentMix(warning = null) {
     return {
       active: false,
       context: null,
@@ -131,7 +145,7 @@
       micGain: buses.some((bus) => bus.role === 'microphone') ? requested.micGain : 0
     })
     if (typeof AudioContextClass !== 'function') {
-      const warning = '音频混音组件不可用，本次录制为无声视频'
+      const warning = audioWarning('record.audio.warning.mixer-unavailable')
       onWarn(warning)
       return createSilentMix(warning)
     }
@@ -140,7 +154,7 @@
     try {
       context = new AudioContextClass()
     } catch (error) {
-      const warning = `音频混音初始化失败：${error?.message || error}`
+      const warning = audioWarning('record.audio.warning.mixer-init-failed', error?.message || error)
       onWarn(warning)
       return createSilentMix(warning)
     }
@@ -164,7 +178,7 @@
       const stream = destination.stream
       const tracks = audioTracks(stream)
       if (!tracks.length) {
-        const warning = '音频混音未产生音轨，本次录制为无声视频'
+        const warning = audioWarning('record.audio.warning.mixer-no-track')
         onWarn(warning)
         disconnectAll(nodes, master, destination, context)
         return createSilentMix(warning)
@@ -183,7 +197,7 @@
             try {
               await context.resume()
             } catch (error) {
-              onWarn(`音频混音恢复失败：${error?.message || error}`)
+              onWarn(audioWarning('record.audio.warning.mixer-resume-failed', error?.message || error))
             }
           }
           return context.state || 'running'
@@ -193,7 +207,7 @@
         }
       }
     } catch (error) {
-      const warning = `音频混音失败：${error?.message || error}`
+      const warning = audioWarning('record.audio.warning.mixer-failed', error?.message || error)
       onWarn(warning)
       disconnectAll(nodes, master, destination, context)
       return createSilentMix(warning)

@@ -1,9 +1,17 @@
 const actionBridge = window.actionAPI
+// P0-1-T5 (S12): `shared/i18n.js` is a classic script, so its `t`, `setLanguage`
+// and `applyTranslations` bindings are already visible here. They must NOT be
+// re-declared (destructuring them from `window` throws "Identifier 't' has
+// already been declared", because the runtime's top-level `const`s share this
+// script's global lexical scope).
 const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
 const STREAM_IDLE_TIMEOUT_MS = 30000
 const MIN_COMPOSER_HEIGHT = 34
 const MAX_COMPOSER_HEIGHT = 120
 const DEFAULT_FOLLOW_UP = { enabled: false, disabledReason: '', maxTurns: 10, questionMaxLength: 2000 }
+// P0-1-T5 (S12): the built-in label for the explain flow, kept as a named key so
+// `test/selection-toolbar-settings.test.js` can still pin the fallback.
+const EXPLAIN_LABEL = t('action.answer.label.explain')
 const ALLOWED_MARKDOWN_TAGS = [
   'a', 'blockquote', 'br', 'code', 'del', 'em', 'h1', 'h2', 'h3', 'hr',
   'li', 'ol', 'p', 'pre', 'strong', 'ul'
@@ -54,7 +62,16 @@ const el = {
   btnRetry: document.getElementById('btnRetry'),
   btnQuote: document.getElementById('btnQuote'),
   questionInput: document.getElementById('questionInput'),
-  btnSend: document.getElementById('btnSend')
+  btnSend: document.getElementById('btnSend'),
+  btnPin: document.getElementById('btnPin')
+}
+
+// The pin button's label is state-dependent on top of being language-dependent,
+// so it is rendered from both facts rather than only re-applied from markup.
+function renderPinButton() {
+  const key = isPinned ? 'action.pin.unpin' : 'action.pin.pin'
+  el.btnPin.title = t(key)
+  el.btnPin.setAttribute('aria-label', t(key))
 }
 
 function applyAppearance(appearance = {}) {
@@ -129,7 +146,7 @@ function armStreamTimeout() {
   loadTimer = setTimeout(function() {
     const turn = activeAssistantTurn()
     if (!turn) return
-    finishTurnWith(turn, 'cancelled', '请求超时，请检查网络后重试')
+    finishTurnWith(turn, 'cancelled', t('action.turn.error-timeout'))
     showLoading(false)
     renderComposer()
     actionBridge.cancelStream(conversation.streamId)
@@ -311,7 +328,7 @@ function addReasoning(turn) {
     header.className = 'reasoning-header'
     const title = document.createElement('span')
     title.className = 'reasoning-title'
-    title.innerHTML = ACTION_ICONS.reasoning + '<span>思考过程</span>'
+    title.innerHTML = ACTION_ICONS.reasoning + `<span>${escapeHtml(t('action.reasoning.title'))}</span>`
     const spacer = document.createElement('span')
     spacer.className = 'reasoning-spacer'
     const arrow = document.createElement('span')
@@ -431,7 +448,7 @@ function quoteSelectedText() {
   resizeComposerInput()
   window.getSelection().removeAllRanges()
   conversation.notice = block.truncated
-    ? `引用已截断到 ${window.conversationText.MAX_QUOTE_LENGTH} 字`
+    ? t('action.composer.notice.quote-truncated', { maxLength: window.conversationText.MAX_QUOTE_LENGTH })
     : ''
   renderComposer()
 }
@@ -450,14 +467,17 @@ function dropLastPair() {
 function composerState() {
   const followUp = conversation.followUp
   if (followUp.enabled !== true) {
-    return { enabled: false, reason: followUp.disabledReason || '当前无法追问' }
+    return { enabled: false, reason: followUp.disabledReason || t('action.composer.reason.unavailable') }
   }
   const first = conversation.turns.find((turn) => turn.role === 'assistant')
   if (!first || first.status === 'error' || first.status === 'cancelled') {
-    return { enabled: false, reason: '首次请求失败，无法继续追问，请重新划词' }
+    return { enabled: false, reason: t('action.composer.reason.first-request-failed') }
   }
   if (followUpCount() >= followUp.maxTurns) {
-    return { enabled: false, reason: `已达到最大追问轮数（${followUp.maxTurns}），请重新划词开始新会话` }
+    return {
+      enabled: false,
+      reason: t('action.composer.reason.max-turns', { maxTurns: followUp.maxTurns })
+    }
   }
   return { enabled: true, reason: '' }
 }
@@ -480,12 +500,12 @@ function renderComposer() {
   el.btnQuote.disabled = busy || !selectedAnswerText()
   if (busy) {
     el.btnSend.disabled = false
-    el.btnSend.title = '停止生成'
+    el.btnSend.title = t('action.composer.stop')
     el.composerHint.textContent = ''
     el.composerHint.className = 'composer-hint'
   } else {
     el.btnSend.disabled = !state.enabled
-    el.btnSend.title = '发送'
+    el.btnSend.title = t('action.composer.send')
     el.composerHint.textContent = conversation.notice || (state.enabled ? '' : state.reason)
     el.composerHint.className = conversation.notice ? 'composer-hint error' : 'composer-hint'
     el.questionInput.disabled = !state.enabled
@@ -515,15 +535,15 @@ function sendTurn(question, replaceLast) {
   if (!actionBridge.askQuestion(conversation.streamId, question, replaceLast)) {
     conversation.pendingQuestion = ''
     conversation.replaceOnNextTurn = false
-    conversation.notice = replaceLast ? '重新生成失败，请重试' : '追问发送失败，请重试'
+    conversation.notice = replaceLast ? t('action.composer.notice.retry-failed') : t('action.composer.notice.send-failed')
   }
   renderComposer()
 }
 
 function stopStream() {
   const turn = activeAssistantTurn()
-  if (turn) finishTurnWith(turn, 'cancelled', '已停止生成')
-  else if (conversation.pendingQuestion) conversation.notice = '已取消本次追问'
+  if (turn) finishTurnWith(turn, 'cancelled', t('action.turn.stopped'))
+  else if (conversation.pendingQuestion) conversation.notice = t('action.composer.notice.cancelled')
   conversation.pendingQuestion = ''
   clearTimeout(loadTimer)
   loadTimer = null
@@ -536,17 +556,19 @@ actionBridge.onActionStart(function(data) {
   applyAppearance(data.appearance)
   resetUI()
   conversation.streamId = data.streamId
-  conversation.label = data.type === 'translate' ? '翻译' : (data.label || '解释')
+  // The main process sends a built-in action's label as an i18n key (see
+  // toolbar/toolbar-action-meta.js); `t()` returns a user-defined name verbatim.
+  const label = data.label ? t(data.label) : EXPLAIN_LABEL
+  conversation.label = data.type === 'translate' ? t('action.answer.label.translate') : label
   if (data.followUp) conversation.followUp = data.followUp
   el.sourceText.textContent = data.text
   if (data.type === 'translate') {
     el.headerIcon.innerHTML = ACTION_ICONS.translate
-    el.headerTitle.textContent = '翻译'
-    el.headerBadge.textContent = '翻译'
+    el.headerTitle.textContent = t('action.answer.label.translate')
+    el.headerBadge.textContent = t('action.answer.label.translate')
     el.headerBadge.className = 'badge'
-    el.loadingText.textContent = '正在翻译...'
+    el.loadingText.textContent = t('action.loading.translating')
   } else {
-    const label = data.label || '解释'
     // This window's CSP is img-src 'none', so a mask-image icon cannot be used
     // here: every branch paints an inline SVG. The three cases are translate,
     // explain and everything else (custom AI functions, plus any future
@@ -556,7 +578,7 @@ actionBridge.onActionStart(function(data) {
     el.headerTitle.textContent = label
     el.headerBadge.textContent = label
     el.headerBadge.className = 'badge explain'
-    el.loadingText.textContent = '正在思考...'
+    el.loadingText.textContent = t('action.loading.thinking')
   }
   createAssistantTurn()
   renderComposer()
@@ -602,7 +624,7 @@ actionBridge.onChatTurn(function(data) {
   appendUserTurn(question)
   const turn = createAssistantTurn()
   if (data.omittedPairs > 0) {
-    turn.notice = `已省略更早的 ${data.omittedPairs} 轮对话以控制上下文长度`
+    turn.notice = t('action.turn.omitted', { count: data.omittedPairs })
     turn.noticeEl.textContent = turn.notice
   }
   userScrolled = false
@@ -635,8 +657,8 @@ actionBridge.onStreamError(function(data) {
   const turn = activeAssistantTurn()
   if (turn) {
     const note = data.interrupted
-      ? '窗口已隐藏，生成已中断'
-      : (data.cancelled ? '已停止生成' : `错误: ${data.error}`)
+      ? t('action.turn.interrupted')
+      : (data.cancelled ? t('action.turn.stopped') : t('action.turn.error', { detail: data.error }))
     finishTurnWith(turn, data.cancelled ? 'cancelled' : (data.rejected ? 'rejected' : 'error'), note)
   } else if (data.rejected) {
     // The ask never became a turn: keep the typed text and surface the reason.
@@ -685,11 +707,11 @@ el.btnCopy.addEventListener('click', function() {
   })
   if (!text) return
   actionBridge.copyConversation(text).then(function(copied) {
-    el.btnCopy.textContent = copied ? '已复制' : '复制失败'
+    el.btnCopy.textContent = copied ? t('action.composer.copied') : t('action.composer.copy-failed')
     clearTimeout(copyResetTimer)
-    copyResetTimer = setTimeout(function() { el.btnCopy.textContent = '复制对话' }, 1500)
+    copyResetTimer = setTimeout(function() { el.btnCopy.textContent = t('action.composer.copy') }, 1500)
   }, function() {
-    el.btnCopy.textContent = '复制失败'
+    el.btnCopy.textContent = t('action.composer.copy-failed')
   })
 })
 
@@ -713,7 +735,7 @@ el.questionInput.addEventListener('input', function() {
 document.addEventListener('visibilitychange', function() {
   if (!document.hidden || conversation.activeTurn < 0) return
   const turn = activeAssistantTurn()
-  if (turn) finishTurnWith(turn, 'cancelled', '窗口已隐藏，生成已中断')
+  if (turn) finishTurnWith(turn, 'cancelled', t('action.turn.interrupted'))
   clearTimeout(loadTimer)
   loadTimer = null
   showLoading(false)
@@ -725,7 +747,7 @@ document.getElementById('btnPin').addEventListener('click', function() {
   const button = document.getElementById('btnPin')
   button.classList.toggle('pinned', isPinned)
   button.innerHTML = isPinned ? ACTION_ICONS.pinned : ACTION_ICONS.pin
-  button.title = isPinned ? '取消置顶' : '置顶窗口'
+  renderPinButton()
   actionBridge.togglePin(isPinned)
 })
 
@@ -739,7 +761,7 @@ el.transcript.addEventListener('click', function(event) {
   event.preventDefault()
   const url = normalizeExternalUrl(link.href)
   if (!url) return
-  actionBridge.openExternal(url).catch((error) => appendResultError(error.message || '无法打开链接'))
+  actionBridge.openExternal(url).catch((error) => appendResultError(error.message || t('action.error.open-link')))
 })
 
 actionBridge.onPinDenied(function(data) {
@@ -747,6 +769,17 @@ actionBridge.onPinDenied(function(data) {
   const button = document.getElementById('btnPin')
   button.classList.remove('pinned')
   button.innerHTML = ACTION_ICONS.pin
-  button.title = '置顶窗口'
-  alert(`最多只能置顶 ${data.max} 个窗口，请先取消其他窗口的置顶。`)
+  renderPinButton()
+  alert(t('action.error.pin-limit', { max: data.max }))
+})
+
+// P0-1-T2/T5: the initial pass translates the markup (placeholder, titles, button
+// labels); the broadcast subscription re-renders the parts the script owns.
+applyTranslations()
+renderPinButton()
+window.actionAPI.onInterfaceLanguage((language) => {
+  setLanguage(language)
+  applyTranslations()
+  renderPinButton()
+  renderComposer()
 })

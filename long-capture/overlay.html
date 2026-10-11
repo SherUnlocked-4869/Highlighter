@@ -2,15 +2,26 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'; worker-src 'none'">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>长截图选区</title>
+  <!-- P0-1-T5 (S12): the markup carries the English fallback; overlay.js calls
+       applyTranslations() synchronously at load, so a zh-CN overlay renders the
+       Chinese label on the first frame. The label itself is dynamic (it switches
+       with the editing state), so it lives behind data-i18n and is re-rendered by
+       the script. -->
+  <title data-i18n="long-capture.title.overlay">Scrolling capture selection</title>
   <link rel="stylesheet" href="../shared/tokens.css">
   <link rel="stylesheet" href="overlay.css">
+  <!-- The locale tables and the runtime must load before overlay.js. -->
+  <script src="../shared/locales/zh-CN.js"></script>
+  <script src="../shared/locales/en-US.js"></script>
+  <script src="../shared/locales/zh-TW.js"></script>
+  <script src="../shared/locales/long-capture.js"></script>
+  <script src="../shared/i18n.js"></script>
 </head>
 <body>
   <div id="selection">
-    <span>长截图</span>
+    <span data-i18n="long-capture.header.title">Scrolling capture</span>
     <i data-handle="n"></i><i data-handle="s"></i><i data-handle="e"></i><i data-handle="w"></i>
     <i data-handle="nw"></i><i data-handle="ne"></i><i data-handle="sw"></i><i data-handle="se"></i>
   </div>

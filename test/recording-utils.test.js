@@ -131,7 +131,14 @@ test('accepts only declared recording state transitions', () => {
   assert.equal(transitionRecordingState('recording', 'stop'), 'preview')
   assert.equal(transitionRecordingState('preview', 'save'), 'saving')
   assert.equal(transitionRecordingState('saving', 'save-failed'), 'preview')
-  assert.throws(() => transitionRecordingState('idle', 'pause'), /非法录制状态转换/)
+  // P0-1-T5 (S12): the message is an i18n key plus data, because this module also
+  // runs under Node with no locale table loaded.
+  assert.throws(
+    () => transitionRecordingState('idle', 'pause'),
+    (error) => error.message === 'record.error.state-transition-invalid'
+      && error.i18nParams.from === 'idle'
+      && error.i18nParams.to === 'pause'
+  )
 })
 
 test('builds silent H.264 fast-start MP4 arguments by default', () => {

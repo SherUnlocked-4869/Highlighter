@@ -147,7 +147,13 @@ test('region recording settings expose the frozen frame rates and audio sources'
   assert.doesNotMatch(recordHtml, /microphone|麦克风|系统声音/i)
   assert.match(recordHtml, /id="recordError"/)
   assert.match(recordHtml, /id="saveProgress"/)
-  assert.match(recordScript, /无法获取桌面录制画面/)
+  // P0-1-T5 (S12): the copy moved into shared/locales/record.js. Each assertion
+  // below keeps the original intent — the four acquisition failures must still be
+  // reported to the user — by matching the key the renderer now looks up.
+  assert.match(recordScript, /record\.error\.desktop-capture-failed/)
+  assert.match(recordScript, /record\.error\.recorder-create-failed/)
+  assert.match(recordScript, /record\.error\.desktop-video-unreadable/)
+  assert.match(recordScript, /record\.error\.record-failed/)
   assert.match(recordScript, /cancelButton\.disabled/)
   assert.match(recordScript, /async function rerecord\(\)[\s\S]*catch \(error\) \{[\s\S]*cancelSession\(sessionId\)/)
   assert.match(main, /createFfmpegPathResolver/)
@@ -162,15 +168,20 @@ test('MP4 save dialog is owned and not covered by the topmost preview', () => {
 
 // OCR 评审修复：麦克风断连提示原先写死"仅保留系统声音"，但"系统声关 + 麦克风开"时
 // 实际已无任何音轨 —— 文案必须与文件实际内容一致。
+// P0-1-T5 (S12)：文案移入 shared/locales/record.js，断言改为追踪两个不同的键，
+// 语义不变：系统声还开着才说"仅保留系统声音"，否则必须说"不再包含声音"。
 test('the microphone-disconnect notice matches the audio the file actually keeps', () => {
   const recordScript = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')
+  const locales = fs.readFileSync(path.join(root, 'shared', 'locales', 'record.js'), 'utf8')
   assert.match(
     recordScript,
-    /setAudioNotice\(audioRequest\.system \? '麦克风已断开，本次录制仅保留系统声音' : '麦克风已断开，本次录制不再包含声音'\)/
+    /setAudioNotice\(audioRequest\.system\s*\n?\s*\? t\('record\.audio\.notice\.microphone-disconnected-system'\)\s*\n?\s*: t\('record\.audio\.notice\.microphone-disconnected-none'\)\)/
   )
   assert.doesNotMatch(
     recordScript,
-    /setAudioNotice\('麦克风已断开，本次录制仅保留系统声音'\)/,
+    /setAudioNotice\(t\('record\.audio\.notice\.microphone-disconnected-system'\)\)/,
     'the unconditional wording must be gone'
   )
+  assert.match(locales, /'record\.audio\.notice\.microphone-disconnected-system': '麦克风已断开，本次录制仅保留系统声音'/)
+  assert.match(locales, /'record\.audio\.notice\.microphone-disconnected-none': '麦克风已断开，本次录制不再包含声音'/)
 })

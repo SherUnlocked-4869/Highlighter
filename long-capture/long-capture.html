@@ -2,44 +2,55 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'; worker-src 'self'">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Highlighter 长截图</title>
+  <!-- P0-1-T5 (S12): the markup carries the English fallback; long-capture.js calls
+       applyTranslations() synchronously at load, so a zh-CN window renders the
+       Chinese copy on the first frame (acceptance ⑤). Dynamic labels live in inner
+       <span data-i18n> nodes so the JavaScript can update the text without
+       destroying the marker. -->
+  <title data-i18n="long-capture.title.window">Highlighter scrolling capture</title>
   <link rel="stylesheet" href="../shared/tokens.css">
   <link rel="stylesheet" href="long-capture.css">
+  <!-- The locale tables and the runtime must load before long-capture.js. -->
+  <script src="../shared/locales/zh-CN.js"></script>
+  <script src="../shared/locales/en-US.js"></script>
+  <script src="../shared/locales/zh-TW.js"></script>
+  <script src="../shared/locales/long-capture.js"></script>
+  <script src="../shared/i18n.js"></script>
 </head>
 <body>
   <main class="panel">
     <header class="titlebar">
-      <div><i id="stateDot"></i><strong>长截图</strong></div>
-      <button id="close" title="取消长截图">×</button>
+      <div><i id="stateDot"></i><strong data-i18n="long-capture.header.title">Scrolling capture</strong></div>
+      <button id="close" data-i18n-title="long-capture.header.close" title="Cancel scrolling capture">×</button>
     </header>
     <section class="preview-area">
       <canvas id="preview" width="160" height="180"></canvas>
-      <div id="emptyPreview">等待开始</div>
+      <div id="emptyPreview" data-i18n="long-capture.empty.waiting">Waiting to start</div>
     </section>
     <section class="status-area">
-      <div id="status">正在准备屏幕采集</div>
-      <div class="metrics"><span id="size">0 × 0</span><span id="strips">0 段</span><span id="confidence">--</span></div>
+      <div id="status" data-i18n="long-capture.status.preparing">Preparing screen capture</div>
+      <div class="metrics"><span id="size">0 × 0</span><span id="strips">0 strips</span><span id="confidence">--</span></div>
     </section>
-    <section class="direction" aria-label="拼接方向">
-      <button data-axis="vertical" class="active" title="纵向拼接">⇕ 纵向</button>
-      <button data-axis="horizontal" title="横向拼接">⇔ 横向</button>
-      <button id="adjustSelection" title="调整截图区域">⌖ 选区</button>
+    <section class="direction" data-i18n-aria-label="long-capture.direction.label" aria-label="Stitch direction">
+      <button data-axis="vertical" class="active" data-i18n-title="long-capture.direction.vertical" title="Stitch vertically">⇕ <span data-i18n="long-capture.direction.vertical-short">Vertical</span></button>
+      <button data-axis="horizontal" data-i18n-title="long-capture.direction.horizontal" title="Stitch horizontally">⇔ <span data-i18n="long-capture.direction.horizontal-short">Horizontal</span></button>
+      <button id="adjustSelection" data-i18n-title="long-capture.selection.adjust" title="Adjust capture area">⌖ <span id="adjustSelectionLabel" data-i18n="long-capture.selection.short">Select</span></button>
     </section>
     <section class="trim-controls">
-      <label>裁前 <input id="trimStart" type="number" min="0" value="0"></label>
-      <label>裁后 <input id="trimEnd" type="number" min="0" value="0"></label>
+      <label><span data-i18n="long-capture.trim.before">Trim top</span> <input id="trimStart" type="number" min="0" value="0"></label>
+      <label><span data-i18n="long-capture.trim.after">Trim bottom</span> <input id="trimEnd" type="number" min="0" value="0"></label>
       <span>px</span>
     </section>
     <section class="transport">
-      <button id="toggle" class="primary">开始</button>
+      <button id="toggle" class="primary" data-i18n="long-capture.action.start">Start</button>
     </section>
     <footer class="actions">
-      <button id="pin" title="贴图"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/><path d="M12 15v5"/></svg><span>贴图</span></button>
-      <button id="save" title="保存"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h11l3 3v13H5z"/><path d="M8 4v6h7V4"/><path d="M8 20v-6h8v6"/></svg><span>保存</span></button>
-      <button id="fastSave" title="快速保存"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></svg><span>快存</span></button>
-      <button id="copy" class="primary" title="复制并关闭"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5 10 17.5 19 7"/></svg><span>复制</span></button>
+      <button id="pin" data-i18n-title="long-capture.action.pin" title="Pin"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/><path d="M12 15v5"/></svg><span data-i18n="long-capture.action.pin">Pin</span></button>
+      <button id="save" data-i18n-title="long-capture.action.save" title="Save"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h11l3 3v13H5z"/><path d="M8 4v6h7V4"/><path d="M8 20v-6h8v6"/></svg><span data-i18n="long-capture.action.save">Save</span></button>
+      <button id="fastSave" data-i18n-title="long-capture.action.fast-save" title="Quick save"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></svg><span data-i18n="long-capture.action.fast-save">Quick save</span></button>
+      <button id="copy" class="primary" data-i18n-title="long-capture.action.copy" title="Copy and close"><svg class="act" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5 10 17.5 19 7"/></svg><span data-i18n="long-capture.action.copy-short">Copy</span></button>
     </footer>
   </main>
   <video id="source" muted autoplay></video>

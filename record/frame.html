@@ -4,12 +4,21 @@
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Highlighter 录制区域</title>
+  <!-- P0-1-T5 (S12): the markup carries the English fallback; frame.js calls
+       applyTranslations() synchronously at load, so a zh-CN frame renders the
+       Chinese aria-label on the first frame. -->
+  <title data-i18n="record.title.frame">Highlighter recording area</title>
   <link rel="stylesheet" href="../shared/tokens.css">
   <link rel="stylesheet" href="frame.css">
+  <!-- The locale tables and the runtime must load before frame.js. -->
+  <script src="../shared/locales/zh-CN.js"></script>
+  <script src="../shared/locales/en-US.js"></script>
+  <script src="../shared/locales/zh-TW.js"></script>
+  <script src="../shared/locales/record.js"></script>
+  <script src="../shared/i18n.js"></script>
 </head>
 <body data-state="idle">
-  <canvas id="annotationStage" aria-label="录制标注区域"></canvas>
+  <canvas id="annotationStage" data-i18n-aria-label="record.annotation.stage" aria-label="Recording annotation area"></canvas>
   <script src="annotation-utils.js"></script>
   <script src="frame.js"></script>
 </body>

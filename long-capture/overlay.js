@@ -1,10 +1,24 @@
 const selection = document.getElementById('selection')
+const selectionLabel = selection.querySelector('span')
+
+// P0-1-T5 (S12): `shared/i18n.js` is a classic script, so its `t`, `setLanguage`
+// and `applyTranslations` bindings are already visible here. They must NOT be
+// re-declared (the runtime's top-level `const`s share this script's global
+// lexical scope, so destructuring them from `window` throws).
 
 let displayBounds = null
 let bounds = null
 let editing = false
 let lockedAxis = ''
 let dragState = null
+
+// The label is state-dependent, so it is rendered from the current state rather
+// than only from the markup.
+function renderSelectionLabel() {
+  selectionLabel.textContent = t(editing
+    ? (lockedAxis ? 'long-capture.overlay.move-along-axis' : 'long-capture.overlay.adjust-selection')
+    : 'long-capture.header.title')
+}
 
 function localBounds() {
   return {
@@ -44,7 +58,7 @@ window.longOverlayAPI.onEditingChanged((data = {}) => {
   lockedAxis = data.lockedAxis || ''
   document.body.classList.toggle('editing', editing)
   document.body.classList.toggle('axis-locked', !!lockedAxis)
-  selection.querySelector('span').textContent = editing ? (lockedAxis ? '沿拼接方向移动' : '调整长截图选区') : '长截图'
+  renderSelectionLabel()
 })
 
 selection.addEventListener('pointerdown', (event) => {
@@ -83,4 +97,13 @@ function finishDrag(event) {
 
 selection.addEventListener('pointerup', finishDrag)
 selection.addEventListener('pointercancel', finishDrag)
+
+// P0-1-T2/T5: translate the markup now and re-render the dynamic label on a switch.
+applyTranslations()
+renderSelectionLabel()
+window.longOverlayAPI.onInterfaceLanguage((language) => {
+  setLanguage(language)
+  applyTranslations()
+  renderSelectionLabel()
+})
 window.longOverlayAPI.ready()

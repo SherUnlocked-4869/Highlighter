@@ -8,11 +8,17 @@ const confidenceElement = document.getElementById('confidence')
 const emptyPreview = document.getElementById('emptyPreview')
 const toggleButton = document.getElementById('toggle')
 const adjustSelectionButton = document.getElementById('adjustSelection')
+const adjustSelectionLabel = document.getElementById('adjustSelectionLabel')
 const trimStartInput = document.getElementById('trimStart')
 const trimEndInput = document.getElementById('trimEnd')
 const directionButtons = [...document.querySelectorAll('[data-axis]')]
 const actionButtons = [...document.querySelectorAll('.actions button')]
 const WORKER_TIMEOUT_MS = 5000
+
+// P0-1-T5 (S12): `shared/i18n.js` is a classic script, so its `t`, `setLanguage`
+// and `applyTranslations` bindings are already visible here. They must NOT be
+// re-declared (the runtime's top-level `const`s share this script's global
+// lexical scope, so destructuring them from `window` throws).
 
 let initData = null
 let stream = null
@@ -40,7 +46,7 @@ function rejectWorkerRequests(error) {
 }
 
 function failWorker(message) {
-  const error = new Error(message || '长截图匹配器不可用，请重新打开长截图')
+  const error = new Error(message || t('long-capture.error.matcher-unavailable'))
   workerError = error
   rejectWorkerRequests(error)
   setCapturing(false)
@@ -56,11 +62,13 @@ function setStatus(message, confidence) {
 
 function updateControls() {
   document.body.classList.toggle('capturing', capturing)
-  toggleButton.textContent = capturing ? '暂停' : (total.strips ? '继续' : '开始')
+  toggleButton.textContent = t(capturing
+    ? 'long-capture.action.pause'
+    : (total.strips ? 'long-capture.action.resume' : 'long-capture.action.start'))
   directionButtons.forEach((button) => { button.disabled = total.strips > 0 })
   adjustSelectionButton.disabled = capturing || busy
   adjustSelectionButton.classList.toggle('active', selectionEditing)
-  adjustSelectionButton.textContent = selectionEditing ? '✓ 完成' : '⌖ 选区'
+  adjustSelectionLabel.textContent = t(selectionEditing ? 'long-capture.selection.done' : 'long-capture.selection.short')
   trimStartInput.disabled = !total.strips || capturing || busy
   trimEndInput.disabled = !total.strips || capturing || busy
   actionButtons.forEach((button) => { button.disabled = !total.strips || busy })
@@ -83,13 +91,13 @@ function workerFrame(rgba, width, height) {
       return
     }
     if (!worker) {
-      reject(new Error('长截图匹配器尚未就绪'))
+      reject(new Error(t('long-capture.error.matcher-not-ready')))
       return
     }
     const id = ++requestId
     const timeout = setTimeout(() => {
       workerRequests.delete(id)
-      reject(new Error('长截图匹配超时，请重新开始'))
+      reject(new Error(t('long-capture.error.match-timeout')))
     }, WORKER_TIMEOUT_MS)
     workerRequests.set(id, { reject, resolve, timeout })
     try {
@@ -156,7 +164,7 @@ function makeStripCanvas(shift, initialized) {
 }
 
 function canvasBlob(canvas) {
-  return new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('长截图条带编码失败')), 'image/png'))
+  return new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error(t('long-capture.error.strip-encode-failed'))), 'image/png'))
 }
 
 function appendPreview(strip, position) {
@@ -214,7 +222,7 @@ async function uploadStrip(strip, position) {
   appendPreview(strip, position)
   total = next
   sizeElement.textContent = `${total.width} × ${total.height}`
-  stripsElement.textContent = `${total.strips} 段`
+  stripsElement.textContent = t('long-capture.status.strips', { count: total.strips })
   const outputLength = axis === 'vertical' ? total.height : total.width
   trimStartInput.max = String(Math.max(0, outputLength + (total.trimStart || 0) + (total.trimEnd || 0) - 1))
   trimEndInput.max = trimStartInput.max
@@ -231,15 +239,15 @@ async function captureFrame() {
     const result = await workerFrame(imageData.data, imageData.width, imageData.height)
     if (result.status === 'initialized') {
       await uploadStrip(makeStripCanvas(0, true), 'append')
-      setStatus('已记录起始画面，等待滚动', 1)
+      setStatus(t('long-capture.status.initial-recorded'), 1)
     } else if (result.status === 'matched') {
       const strip = makeStripCanvas(result.shift, false)
       await uploadStrip(strip, result.shift > 0 ? 'append' : 'prepend')
-      setStatus('匹配成功', result.confidence)
+      setStatus(t('long-capture.status.matched'), result.confidence)
     } else if (result.status === 'still') {
-      setStatus('等待画面滚动', 1)
+      setStatus(t('long-capture.status.waiting-scroll'), 1)
     } else {
-      setStatus('未能匹配，请放慢滚动速度', result.confidence)
+      setStatus(t('long-capture.status.no-match'), result.confidence)
     }
   } catch (error) {
     setStatus(error.message || String(error))
@@ -256,10 +264,10 @@ function setCapturing(active) {
   timer = null
   window.longCaptureAPI.setOverlayActive(capturing)
   if (capturing) {
-    setStatus(total.strips ? '继续捕获' : '正在记录起始画面')
+    setStatus(t(total.strips ? 'long-capture.status.capturing-continue' : 'long-capture.status.capturing-initial'))
     captureFrame()
     timer = setInterval(captureFrame, 180)
-  } else if (total.strips) setStatus('已暂停')
+  } else if (total.strips) setStatus(t('long-capture.status.paused'))
   updateControls()
 }
 
@@ -269,7 +277,9 @@ async function toggleSelectionEditing() {
   try {
     selectionEditing = !selectionEditing
     await window.longCaptureAPI.setSelectionEditing(selectionEditing, axis, total.strips > 0)
-    setStatus(selectionEditing ? (total.strips ? '沿拼接方向拖动选区' : '可移动或缩放截图区域') : '选区调整完成')
+    setStatus(t(selectionEditing
+      ? (total.strips ? 'long-capture.status.drag-along-axis' : 'long-capture.status.move-or-resize')
+      : 'long-capture.status.selection-updated'))
   } catch (error) {
     selectionEditing = false
     setStatus(error.message || String(error))
@@ -287,7 +297,7 @@ async function applyTrim() {
     trimEndInput.value = String(total.trimEnd || 0)
     sizeElement.textContent = `${total.width} × ${total.height}`
     updateTrimPreview()
-    setStatus('裁剪范围已更新')
+    setStatus(t('long-capture.status.trim-updated'))
   } catch (error) {
     trimStartInput.value = String(total.trimStart || 0)
     trimEndInput.value = String(total.trimEnd || 0)
@@ -304,10 +314,12 @@ async function finish(action, fast = false) {
   setCapturing(false)
   busy = true
   updateControls()
-  setStatus(action === 'copy' ? '正在复制长截图' : action === 'pin' ? '正在创建贴图' : '正在生成长截图')
+  setStatus(t(action === 'copy'
+    ? 'long-capture.status.copying'
+    : (action === 'pin' ? 'long-capture.status.pinning' : 'long-capture.status.generating')))
   try {
     const result = await window.longCaptureAPI.finish(action, fast)
-    if (result?.canceled) setStatus('已取消保存')
+    if (result?.canceled) setStatus(t('long-capture.status.save-canceled'))
   } catch (error) {
     busy = false
     setStatus(error.message || String(error))
@@ -330,7 +342,7 @@ async function initialize(data) {
   }
   worker.onerror = (event) => {
     event.preventDefault()
-    failWorker(event.message || '长截图匹配器启动失败，请重新打开长截图')
+    failWorker(event.message || t('long-capture.error.matcher-start-failed'))
   }
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -340,9 +352,9 @@ async function initialize(data) {
     video.srcObject = stream
     await video.play()
     if (workerError) setStatus(workerError.message)
-    else setStatus('准备就绪')
+    else setStatus(t('long-capture.status.ready'))
   } catch (error) {
-    setStatus(`屏幕采集失败：${error.message}`)
+    setStatus(t('long-capture.status.capture-failed', { detail: error.message }))
     toggleButton.disabled = true
   }
   updateControls()
@@ -374,15 +386,27 @@ addEventListener('keydown', (event) => {
 })
 addEventListener('beforeunload', () => {
   clearInterval(timer)
-  rejectWorkerRequests(new Error('长截图窗口已关闭'))
+  rejectWorkerRequests(new Error(t('long-capture.error.window-closed')))
   stream?.getTracks().forEach((track) => track.stop())
   worker?.terminate()
 })
 
+// P0-1-T2/T5: the initial pass translates the markup; the broadcast subscription
+// re-renders the dynamic labels (status, strip count, buttons) in the new language.
+// The strip counter is parameterised, so it is rendered by the script rather than
+// by a data-i18n attribute.
+applyTranslations()
+stripsElement.textContent = t('long-capture.status.strips', { count: total.strips })
+window.longCaptureAPI.onInterfaceLanguage((language) => {
+  setLanguage(language)
+  applyTranslations()
+  stripsElement.textContent = t('long-capture.status.strips', { count: total.strips })
+  updateControls()
+})
 window.longCaptureAPI.onInit(initialize)
 window.longCaptureAPI.onSelectionUpdated((bounds) => {
   if (!initData || !bounds) return
   initData.selectionBounds = bounds
-  setStatus('截图区域已更新')
+  setStatus(t('long-capture.status.selection-area-updated'))
 })
 window.longCaptureAPI.ready()

@@ -85,7 +85,10 @@ test('main process normalizes toolbar settings and routes configured custom prom
   assert.match(deepseek, /role: 'system', content: prompt/)
   assert.match(toolbar, /action\.label/)
   assert.match(toolbar, /toolbarAPI\.action\(action\.id\)/)
-  assert.match(action, /const label = data\.label \|\| '解释'/)
+  // P0-1-T5（S12，批次 C）：兜底标签改为语言表取键并抽成具名常量，
+  // 断言随之改为"该常量存在 + 取自语言表"。
+  assert.match(action, /const EXPLAIN_LABEL = t\('action\.answer\.label\.explain'\)/)
+  assert.match(action, /const label = data\.label \? t\(data\.label\) : EXPLAIN_LABEL/)
 })
 
 test('selection toolbar appearance avoids a clipped rectangular shadow', () => {

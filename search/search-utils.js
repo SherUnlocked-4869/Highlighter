@@ -3,28 +3,34 @@
   if (typeof module === 'object' && module.exports) module.exports = api
   else root.searchUtils = api
 })(typeof globalThis === 'object' ? globalThis : window, () => {
+  // P0-1-T5 (S12): `label` holds an i18n key, not a sentence — this module also
+  // runs under Node (test/search-utils.test.js) where no locale table is loaded.
+  // `search.js` resolves the key with `t()`. `rule` and `id` are the data/API
+  // contract and never change.
   const DEFAULT_CATEGORIES = Object.freeze([
-    { id: 'all', label: '全部', rule: '' },
-    { id: 'folder', label: '文件夹', rule: 'folder:' },
+    { id: 'all', label: 'search.category.all', rule: '' },
+    { id: 'folder', label: 'search.category.folder', rule: 'folder:' },
     { id: 'excel', label: 'EXCEL', rule: 'ext:xls;xlsx;xlsm;csv' },
     { id: 'word', label: 'WORD', rule: 'ext:doc;docx;rtf' },
     { id: 'ppt', label: 'PPT', rule: 'ext:ppt;pptx' },
     { id: 'pdf', label: 'PDF', rule: 'ext:pdf' },
-    { id: 'image', label: '图片', rule: 'ext:jpg;jpeg;png;gif;webp;bmp;svg;ico' },
-    { id: 'video', label: '视频', rule: 'ext:mp4;mkv;avi;mov;wmv;flv;webm' },
-    { id: 'audio', label: '音频', rule: 'ext:mp3;wav;flac;aac;ogg;m4a' },
-    { id: 'archive', label: '压缩文件', rule: 'ext:zip;rar;7z;tar;gz;iso' }
+    { id: 'image', label: 'search.category.image', rule: 'ext:jpg;jpeg;png;gif;webp;bmp;svg;ico' },
+    { id: 'video', label: 'search.category.video', rule: 'ext:mp4;mkv;avi;mov;wmv;flv;webm' },
+    { id: 'audio', label: 'search.category.audio', rule: 'ext:mp3;wav;flac;aac;ogg;m4a' },
+    { id: 'archive', label: 'search.category.archive', rule: 'ext:zip;rar;7z;tar;gz;iso' }
   ])
 
+  // Same convention: the first element is the persisted value, the second is an
+  // i18n key resolved by the renderer.
   const SORT_OPTIONS = Object.freeze([
-    ['modified-desc', '按修改时间降序'],
-    ['modified-asc', '按修改时间升序'],
-    ['name-asc', '按名称升序'],
-    ['name-desc', '按名称降序'],
-    ['path-asc', '按路径升序'],
-    ['path-desc', '按路径降序'],
-    ['size-asc', '按大小升序'],
-    ['size-desc', '按大小降序']
+    ['modified-desc', 'search.sort.modified-desc'],
+    ['modified-asc', 'search.sort.modified-asc'],
+    ['name-asc', 'search.sort.name-asc'],
+    ['name-desc', 'search.sort.name-desc'],
+    ['path-asc', 'search.sort.path-asc'],
+    ['path-desc', 'search.sort.path-desc'],
+    ['size-asc', 'search.sort.size-asc'],
+    ['size-desc', 'search.sort.size-desc']
   ])
 
   function escapeHtml(value) {

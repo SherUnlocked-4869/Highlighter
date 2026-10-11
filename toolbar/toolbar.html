@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
 <link rel="stylesheet" href="../shared/tokens.css">
+<!--
+  P0-1-T5 (S12): this window has no static copy — the whole strip is built by
+  toolbar.js from action metadata — but the locale tables and the runtime still
+  have to load before it so `t()` exists when the first selection arrives.
+-->
+<script src="../shared/locales/zh-CN.js"></script>
+<script src="../shared/locales/en-US.js"></script>
+<script src="../shared/locales/zh-TW.js"></script>
+<script src="../shared/locales/toolbar.js"></script>
+<script src="../shared/i18n.js"></script>
 <style>
   /*
    * Selection toolbar · Nightshift “B · Status LED + Primary”.

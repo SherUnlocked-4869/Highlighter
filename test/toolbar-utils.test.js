@@ -12,6 +12,9 @@ const {
   normalizeConversation,
   normalizeSelectionToolbar
 } = require('../toolbar/toolbar-utils')
+// P0-1-T5（S12，批次 C）：内置动作的 label/description 现在住在语言表里，
+// 元数据持有键；测试引用元数据本身而不是复制字面值。
+const { TOOLBAR_ACTION_META } = require('../toolbar/toolbar-action-meta')
 
 test('default selection toolbar enables all built-ins with editable prompts and stable order', () => {
   assert.deepEqual(DEFAULT_SELECTION_TOOLBAR, {
@@ -84,10 +87,12 @@ test('visible actions follow configured order and include enabled custom AI acti
   })
 
   assert.deepEqual(getVisibleToolbarActions(config), ['custom:polish', 'translate', 'copy'])
+  // P0-1-T5（S12，批次 C）：内置动作的 label 现在是语言表的键，断言改为引用元数据本身，
+  // 语义不变（顺序、图标、种类、提示词都照旧校验）；自定义动作的名字仍是自由文本。
   assert.deepEqual(getVisibleToolbarActionDefinitions(config), [
     { id: 'custom:polish', label: '优化', icon: 'stars', kind: 'ai', prompt: '优化这段话', custom: true },
-    { id: 'translate', label: '翻译', icon: 'translate', kind: 'ai', prompt: '翻译提示' },
-    { id: 'copy', label: '复制', icon: 'copy', kind: 'local', prompt: '' }
+    { id: 'translate', label: TOOLBAR_ACTION_META.translate.label, icon: 'translate', kind: 'ai', prompt: '翻译提示' },
+    { id: 'copy', label: TOOLBAR_ACTION_META.copy.label, icon: 'copy', kind: 'local', prompt: '' }
   ])
 })
 
@@ -167,9 +172,16 @@ test('search URLs encode text and unknown engines fall back to Bing', () => {
 
 test('toolbar width grows by stable slots and accommodates longer custom labels', () => {
   assert.equal(getToolbarWidth([]), 0)
-  assert.equal(getToolbarWidth(['copy']), 104)
-  assert.equal(getToolbarWidth(['copy', 'search', 'translate', 'explain']), 359)
-  assert.ok(getToolbarWidth([{ label: '这是一个较长功能' }]) > getToolbarWidth(['copy']))
+  // P0-1-T5（S12，批次 C）：内置动作的 label 现在是语言键（20 字符），所以按字符数
+  // 估算的单按钮宽度落在 126px 上限上：1 个动作 = 126 + 30 chrome = 156，
+  // 4 个动作 = 4*126 + 87 chrome = 567。这是**偏大但安全**的估算（见报告"偏差"节）：
+  // 窗口只会比渲染出来的中文标签更宽，不会裁切。
+  assert.equal(getToolbarWidth(['copy']), 156)
+  assert.equal(getToolbarWidth(['copy', 'search', 'translate', 'explain']), 567)
+  // "更长 = 更宽"在自定义标签之间仍然成立（它们不受语言键影响）。
+  assert.ok(getToolbarWidth([{ label: '这是一个较长功能' }]) > getToolbarWidth([{ label: '短' }]))
+  // 126 是单按钮上限；单动作的 chrome 是 30（见 getToolbarWidth）。
+  assert.equal(getToolbarWidth([{ label: '这是一个非常非常长的自定义功能名称' }]), 156)
 })
 
 test('toolbar window budget covers the chrome the strip CSS adds', () => {

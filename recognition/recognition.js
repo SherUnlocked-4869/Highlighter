@@ -14,13 +14,35 @@ const format = document.getElementById('format')
 const openLink = document.getElementById('openLink')
 const copyButton = document.getElementById('copy')
 
+// P0-1-T5 (S12): `shared/i18n.js` is a classic script, so its `t`, `setLanguage`
+// and `applyTranslations` bindings are already visible here. They must NOT be
+// re-declared (the runtime's top-level `const`s share this script's global
+// lexical scope, so destructuring them from `window` throws).
+
 let tableResult = null
 let qrResult = ''
 let activeUrl = ''
+let loadingKey = 'recognition.status.loading'
 
 function setBadge(text, failed = false) {
   badge.textContent = text
   badge.classList.toggle('is-error', failed)
+}
+
+// The views are rendered by the script, so each one records which key produced
+// its copy: a language switch re-renders the current view instead of only the
+// markup that applyTranslations() reaches.
+function renderCurrentView() {
+  loadingText.textContent = t(loadingKey)
+  if (!errorView.classList.contains('hidden')) {
+    setBadge(t('recognition.error.title'), true)
+    return
+  }
+  if (tableResult) {
+    renderTable(tableResult)
+    return
+  }
+  if (!qrView.classList.contains('hidden')) renderQr(qrResult)
 }
 
 function showError(error) {
@@ -28,16 +50,16 @@ function showError(error) {
   tableView.classList.add('hidden')
   qrView.classList.add('hidden')
   actions.classList.add('hidden')
-  setBadge('识别失败', true)
+  setBadge(t('recognition.error.title'), true)
   errorText.textContent = error?.message || String(error)
   errorView.classList.remove('hidden')
 }
 
 function renderTable(result) {
   tableResult = result
-  title.textContent = '表格识别'
-  summary.textContent = `${result.rowCount} 行 × ${result.columnCount} 列`
-  setBadge('本地 OCR')
+  title.textContent = t('recognition.table.title')
+  summary.textContent = t('recognition.table.summary', { rows: result.rowCount, columns: result.columnCount })
+  setBadge(t('recognition.badge.local-ocr'))
   const head = document.createElement('thead')
   const headRow = document.createElement('tr')
   result.rows[0].forEach((value) => {
@@ -57,8 +79,9 @@ function renderTable(result) {
     body.appendChild(element)
   })
   tableElement.replaceChildren(head, body)
-  copyButton.textContent = '复制表格'
+  copyButton.textContent = t('recognition.action.copy-table')
   loading.classList.add('hidden')
+  errorView.classList.add('hidden')
   tableView.classList.remove('hidden')
   format.classList.remove('hidden')
   actions.classList.remove('hidden')
@@ -75,16 +98,20 @@ function parseHttpUrl(value) {
 
 function renderQr(value) {
   qrResult = String(value)
+  tableResult = null
   activeUrl = parseHttpUrl(qrResult)
-  title.textContent = '二维码识别'
-  summary.textContent = activeUrl ? '已识别链接' : '已识别文本内容'
-  setBadge('本地 OCR')
+  title.textContent = t('recognition.qr.title')
+  summary.textContent = t(activeUrl ? 'recognition.qr.summary-link' : 'recognition.qr.summary-text')
+  setBadge(t('recognition.badge.local-ocr'))
   qrText.value = qrResult
-  copyButton.textContent = '复制内容'
+  copyButton.textContent = t('recognition.action.copy-content')
   loading.classList.add('hidden')
+  errorView.classList.add('hidden')
+  tableView.classList.add('hidden')
   qrView.classList.remove('hidden')
   openLink.classList.toggle('hidden', !activeUrl)
   actions.classList.remove('hidden')
+  format.classList.add('hidden')
 }
 
 function resizedCanvas(source, scale) {
@@ -137,7 +164,7 @@ function loadImage(dataUrl) {
   return new Promise((resolve, reject) => {
     const image = new Image()
     image.onload = () => resolve(image)
-    image.onerror = () => reject(new Error('无法读取二维码图片'))
+    image.onerror = () => reject(new Error(t('recognition.error.read-qr-image')))
     image.src = dataUrl
   })
 }
@@ -150,7 +177,7 @@ async function recognizeQr(dataUrl) {
   canvas.height = image.naturalHeight
   canvas.getContext('2d').drawImage(image, 0, 0)
   const result = decodeCanvas(canvas)
-  if (!result?.data) throw new Error('未识别到二维码，请保持二维码完整并适当扩大选区')
+  if (!result?.data) throw new Error(t('recognition.error.qr-not-found'))
   renderQr(result.data)
 }
 
@@ -170,12 +197,14 @@ window.recognitionAPI.onInit(async (data) => {
   document.documentElement.style.setProperty('--primary', data.mainColor || '#e5a44c')
   try {
     if (data.type === 'table') {
-      title.textContent = '表格识别'
-      loadingText.textContent = '正在恢复表格结构…'
+      title.textContent = t('recognition.table.title')
+      loadingKey = 'recognition.table.loading'
+      loadingText.textContent = t(loadingKey)
       renderTable(await window.recognitionAPI.recognizeTable(data.dataUrl, data.scaleFactor))
     } else {
-      title.textContent = '二维码识别'
-      loadingText.textContent = '正在扫描二维码…'
+      title.textContent = t('recognition.qr.title')
+      loadingKey = 'recognition.qr.loading'
+      loadingText.textContent = t(loadingKey)
       await recognizeQr(data.dataUrl)
     }
   } catch (error) {
@@ -186,8 +215,8 @@ window.recognitionAPI.onInit(async (data) => {
 document.getElementById('close').onclick = () => window.recognitionAPI.close()
 copyButton.onclick = async () => {
   await window.recognitionAPI.copyText(currentOutput())
-  const original = tableResult ? '复制表格' : '复制内容'
-  copyButton.textContent = '已复制'
+  const original = t(tableResult ? 'recognition.action.copy-table' : 'recognition.action.copy-content')
+  copyButton.textContent = t('recognition.action.copied')
   setTimeout(() => { copyButton.textContent = original }, 1000)
 }
 openLink.onclick = async () => {
@@ -198,8 +227,17 @@ openLink.onclick = async () => {
     window.recognitionAPI.close()
   } catch (error) {
     openLink.disabled = false
-    summary.textContent = `打开链接失败：${error?.message || String(error)}`
+    summary.textContent = t('recognition.error.open-link', { detail: error?.message || String(error) })
   }
 }
 addEventListener('keydown', (event) => { if (event.key === 'Escape') window.recognitionAPI.close() })
+
+// P0-1-T2/T5: the initial pass translates the markup; the broadcast subscription
+// re-renders the view the script built (title, summary, badge, copy label).
+applyTranslations()
+window.recognitionAPI.onInterfaceLanguage((language) => {
+  setLanguage(language)
+  applyTranslations()
+  renderCurrentView()
+})
 window.recognitionAPI.ready()

@@ -7,6 +7,13 @@ const {
   drawAnnotationSnapshot
 } = window.annotationUtils
 
+// P0-1-T5 (S12): the i18n runtime is a classic script loaded from
+// ../shared/i18n.js, so `t`, `setLanguage` and `applyTranslations` are already
+// visible as bindings here — re-declaring them would throw. The frame window
+// carries one translated attribute (the canvas aria-label), so a single pass plus
+// one re-apply on the broadcast is the whole migration.
+applyTranslations()
+
 const stage = document.getElementById('annotationStage')
 const context = stage.getContext('2d')
 
@@ -122,6 +129,12 @@ window.recordFrameAPI.onCommand(applyCommand)
 addEventListener('resize', resizeStage)
 addEventListener('beforeunload', () => {
   if (publishRequest) cancelAnimationFrame(publishRequest)
+})
+
+// P0-1-T2/T5: a language switch re-applies the marked attributes in place.
+window.recordFrameAPI.onInterfaceLanguage((language) => {
+  setLanguage(language)
+  applyTranslations()
 })
 
 resizeStage()

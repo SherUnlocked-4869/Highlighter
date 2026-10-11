@@ -174,9 +174,16 @@
     saving: Object.freeze({ saved: 'saved', 'save-failed': 'preview' })
   })
 
+  // P0-1-T5 (S12): the message is an i18n key and the values travel as data — this
+  // module also runs under Node (test/recording-utils.test.js) where no locale table
+  // is loaded, so it must not carry a sentence. The caller resolves it with `t()`.
   function transitionRecordingState(state, event) {
     const next = TRANSITIONS[state]?.[event]
-    if (!next) throw new Error(`非法录制状态转换：${state} -> ${event}`)
+    if (!next) {
+      const error = new Error('record.error.state-transition-invalid')
+      error.i18nParams = { from: state, to: event }
+      throw error
+    }
     return next
   }
 
