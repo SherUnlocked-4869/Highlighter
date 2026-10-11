@@ -7,7 +7,17 @@ function selectionToolbarCustomKey(id) {
 
 function selectionToolbarActionInfo(toolbar, action) {
   const builtin = selectionToolbarBuiltinMeta[action]
-  if (builtin) return { ...builtin, enabled: toolbar.buttons[action] !== false, custom: false }
+  // P0-1-T5（A1）：`TOOLBAR_ACTION_META` 的 label/description 已是 i18n 键（工具条窗自己用
+  // `t()` 解析），设置页必须同样解析，否则这里会渲染出裸键名。
+  if (builtin) {
+    return {
+      ...builtin,
+      label: t(builtin.label),
+      description: t(builtin.description),
+      enabled: toolbar.buttons[action] !== false,
+      custom: false
+    }
+  }
   const id = action.startsWith('custom:') ? action.slice(7) : ''
   const custom = toolbar.customActions.find((item) => item.id === id)
   if (!custom) return null

@@ -337,15 +337,33 @@ test('the checker reports every locale file and passes all three checks', () => 
   const result = runChecker(['--json'])
   assert.equal(result.status, 0, `checker exited ${result.status}: ${result.stderr}`)
   const report = JSON.parse(result.stdout)
+  // The checker has to report every shared/locales/*.js file in file-name order. The
+  // contract is deliberately "every expected file is present + the list is sorted"
+  // rather than an exact deepEqual: wave 9 runs four streams in parallel and each one
+  // adds a <domain>.js file (S11 capture, S12 record, S13 main, S14 config), so an
+  // exact list would have all four editing this one array.
+  for (const file of [
+    'shared/locales/capture.js',
+    'shared/locales/config.js',
+    'shared/locales/en-US.js',
+    'shared/locales/main.js',
+    'shared/locales/record.js',
+    'shared/locales/zh-CN.js',
+    'shared/locales/zh-TW.js'
+  ]) {
+    assert.ok(report.localeFiles.includes(file), `${file} must be loaded by the checker`)
+  }
   assert.deepEqual(
     report.localeFiles,
-    ['shared/locales/config.js', 'shared/locales/en-US.js', 'shared/locales/zh-CN.js', 'shared/locales/zh-TW.js'],
-    'the checker must glob shared/locales/*.js, not hard-code the three language files'
+    [...report.localeFiles].sort(),
+    'the checker reports locale files in file-name order (readdir + sort)'
   )
   assert.deepEqual(report.symmetry, [])
   assert.deepEqual(report.shapes, [])
   assert.deepEqual(report.missingKeys, [])
   assert.ok(report.localeFiles.includes('shared/locales/config.js'), 'a domain file has to be checked too')
+  assert.ok(report.localeFiles.includes('shared/locales/main.js'), 'the main-process domain file has to be checked too')
+  assert.ok(report.localeFiles.includes('shared/locales/capture.js'), 'the capture domain file has to be checked too')
 })
 
 test('the checker fails when a window uses a data-i18n key missing from a table', () => {

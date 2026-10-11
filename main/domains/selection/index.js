@@ -25,6 +25,14 @@ const { SelectionHookService } = require('../../services/selection-hook-service'
 const { SelectionWindowManager } = require('../../services/selection-window-manager')
 const { ToolbarStreamSession } = require('../../services/toolbar-stream-session')
 const { resolveSelectionAnchor } = require('./anchor')
+// P0-1-T5：`TOOLBAR_ACTION_META` 的 label/description 已改为 i18n 键，而窗口宽度是按
+// **渲染后的文本**估的（`getToolbarWidth` 量的是字符数）。所以测量前必须先把键解析成当前语言，
+// 否则每个按钮都会按 20+ 字符的键命中 126px 上限，工具条明显偏宽。
+const { t } = require('../../services/i18n-bootstrap')
+
+function resolveToolbarLabel(action) {
+  return typeof action === 'object' && action ? { ...action, label: t(action.label) } : action
+}
 
 const TOOLBAR_H = 40
 const TOOLBAR_STREAM_IDLE_TIMEOUT_MS = 30000
@@ -57,7 +65,7 @@ function createSelectionDomain(deps) {
     log
   } = deps
 
-  const TOOLBAR_W = getToolbarWidth(getVisibleToolbarActions(DEFAULT_SELECTION_TOOLBAR))
+  const TOOLBAR_W = getToolbarWidth(getVisibleToolbarActionDefinitions(DEFAULT_SELECTION_TOOLBAR).map(resolveToolbarLabel))
 
   // Overridable so node:test can observe the handlers and power-event forwarding
   // without spawning the real utility-process host.
@@ -346,7 +354,7 @@ function createSelectionDomain(deps) {
     if (text.length > 10000) { logSelectionDiagnosticOnce('text-too-long', data); return }
     const actions = getVisibleToolbarActionDefinitions(getSettings().selectionToolbar)
     if (!actions.length) { logSelectionDiagnosticOnce('no-actions', data); hideToolbar(); return }
-    const toolbarWidth = getToolbarWidth(actions)
+    const toolbarWidth = getToolbarWidth(actions.map(resolveToolbarLabel))
     const result = getRefPointAndOrientation(data)
     const position = calculateToolbarPosition(result.refPoint, result.orientation, toolbarWidth)
     if (toolbarRecyclePending) {

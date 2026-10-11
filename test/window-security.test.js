@@ -169,6 +169,7 @@ test('long capture allows only its packaged matcher worker and fails closed', ()
   assert.match(html, /worker-src 'self'/)
   assert.doesNotMatch(html, /worker-src 'none'/)
   assert.match(script, /worker\.onerror/)
-  assert.match(script, /长截图匹配超时/)
+  // P0-1-T5：文案已迁到 locale 表，脚本里断言的是键（值在 shared/locales/long-capture.js）。
+  assert.match(script, /t\('long-capture\.error\.match-timeout'\)/)
   assert.match(script, /rejectWorkerRequests/)
 })
