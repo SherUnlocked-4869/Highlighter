@@ -683,6 +683,10 @@ settingsEffects = createSettingsEffects({
   ocrServiceRef,
   getOcrService,
   broadcastActionAppearance: (settings) => selectionDomain.broadcastActionAppearance(settings),
+  // P0-1-T2：语言切换广播到所有窗口（主→渲染；按方案 §2.2 不登记 IPC_SURFACES）。
+  broadcastInterfaceLanguage: (language) => {
+    for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send('i18n:language', language)
+  },
   searchDomain,
   selectionHookServiceRef: {
     get: () => selectionDomain.hookService()

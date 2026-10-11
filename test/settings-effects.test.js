@@ -94,6 +94,7 @@ test('update effect ids are stable for contract tests', () => {
     'plugins.ocr.off',
     'plugins.ocr.hotStart',
     'appearance',
+    'language',
     'search',
     'selectionToolbar.clipboardFallback',
     'selectionToolbar.conversation.persist'

@@ -13,6 +13,7 @@ function createSettingsEffects(deps) {
     searchDomain,
     selectionHookServiceRef,
     syncConversationStore = null,
+    broadcastInterfaceLanguage = null,
     log
   } = deps
 
@@ -65,6 +66,15 @@ function createSettingsEffects(deps) {
       run: (_patch, settings) => broadcastActionAppearance(settings)
     },
     {
+      // P0-1-T2: the language reaches already-open windows as a broadcast, the
+      // same shape as `appearance`. `i18n:language` is main -> renderer, so it is
+      // deliberately absent from IPC_SURFACES (plan §2.2, correction 1); the
+      // renderer re-scans the DOM on receipt.
+      id: 'language',
+      when: (patch) => patch.language !== undefined,
+      run: (_patch, settings) => broadcastInterfaceLanguage?.(settings?.language)
+    },
+    {
       id: 'search',
       when: (patch) => !!patch.search,
       run: () => searchDomain?.notifySettingsChanged()
@@ -89,6 +99,9 @@ function createSettingsEffects(deps) {
   const resetEffects = [
     { id: 'system.gameMode', run: (settings) => applyGameModeState(settings.system.gameMode, 'settings-reset') },
     { id: 'appearance', run: (settings) => broadcastActionAppearance(settings) },
+    // A reset restores `language` to its default, so open windows have to be
+    // told about it exactly like an update does.
+    { id: 'language', run: (settings) => broadcastInterfaceLanguage?.(settings?.language) },
     { id: 'system.updateChannel', run: (settings) => getUpdateService()?.setChannel(settings.system.updateChannel) },
     {
       id: 'selectionToolbar.clipboardFallback',

@@ -52,6 +52,8 @@ test('action renderer stays sandboxed and sanitizes AI output in Electron', { ti
     'onActionAppearance',
     'onActionStart',
     'onChatTurn',
+    // P0-1-T2：语言广播订阅（sandbox preload 内联，不走共享 require）。
+    'onInterfaceLanguage',
     'onPinDenied',
     'onStreamData',
     'onStreamDone',

@@ -11,6 +11,12 @@
 //   node scripts/check-i18n.js --json          machine-readable report
 //   node scripts/check-i18n.js --area config   limit the scan to one area
 //
+// Locale sources: every `shared/locales/*.js`, in file-name order (S1, 2026-10-11).
+// The three per-language files carry the cross-window keys; each `<domain>.js`
+// file registers that domain's keys for all three languages at once, so one
+// domain is one file and the wave-9 streams never share a write target. A
+// hard-coded three-file list would silently skip every new domain file.
+//
 // Three checks:
 //   1. the three locale tables have an empty key-set symmetric difference;
 //   2. every key follows <domain>.<module>.<semantic>;
@@ -57,18 +63,56 @@ function relative(file) {
   return path.relative(root, file).split(path.sep).join('/')
 }
 
+// Scans shared/locales/*.js (file-name order). Each file registers one or more
+// languages into the shared globalThis.__LOCALES bag, so requiring all of them
+// and reading the bag back is the same merge the windows perform with <script>.
+function localeFiles() {
+  const directory = path.join(root, 'shared', 'locales')
+  return fs.readdirSync(directory)
+    .filter((name) => name.endsWith('.js'))
+    .sort()
+    .map((name) => path.join(directory, name))
+}
+
 function loadLocales() {
-  for (const language of LANGUAGES) {
-    const file = path.join(root, 'shared', 'locales', `${language}.js`)
-    delete require.cache[require.resolve(file)]
-  }
+  // A fresh bag per run: require() caches, so the files must be re-evaluated and
+  // the bag reset to keep repeated in-process calls independent.
   globalThis.__LOCALES = {}
-  for (const language of LANGUAGES) {
-    require(path.join(root, 'shared', 'locales', `${language}.js`))
+  const files = localeFiles()
+  const registrations = new Map()
+  for (const file of files) {
+    delete require.cache[require.resolve(file)]
+    require(file)
+    registrations.set(relative(file), languagesIn(globalThis.__LOCALES))
   }
   const tables = {}
   for (const language of LANGUAGES) tables[language] = globalThis.__LOCALES[language] || {}
-  return tables
+  return { tables, files: files.map(relative), registrations }
+}
+
+function languagesIn(bag) {
+  return LANGUAGES.filter((language) => {
+    const table = bag[language]
+    return !!table && typeof table === 'object' && Object.keys(table).length > 0
+  })
+}
+
+// Every domain file must register all three languages: a file that only fills
+// zh-CN produces a cross-language key gap that the symmetric-difference check
+// reports per key rather than per file (S1, 2026-10-11).
+function localeCoverageProblems(registrations) {
+  const problems = []
+  for (const [file, languages] of registrations) {
+    if (languages.length === 0) {
+      problems.push(`${file} registers none of ${LANGUAGES.join(' / ')}`)
+      continue
+    }
+    const absent = LANGUAGES.filter((language) => !languages.includes(language))
+    if (absent.length > 0) {
+      problems.push(`${file} registers ${languages.join(' / ')} but not ${absent.join(' / ')}`)
+    }
+  }
+  return problems
 }
 
 function keySetOf(table) {
@@ -154,9 +198,14 @@ function main() {
     return
   }
 
-  const tables = loadLocales()
+  const { tables, files: localeFileList, registrations } = loadLocales()
   const symmetry = symmetricDifference(tables)
-  const shapes = keyShapeProblems(tables)
+  const shapes = [
+    // A domain file that forgets one language would otherwise surface only as a
+    // giant symmetric-difference list; naming the file is what makes it fixable.
+    ...localeCoverageProblems(registrations),
+    ...keyShapeProblems(tables)
+  ]
   const used = usedKeys(areas)
   const missingKeys = [...used.entries()].filter(([key]) => LANGUAGES.some((language) => !Object.hasOwn(tables[language], key)))
   const { perArea, lines } = scanUntranslated(areas)
@@ -166,6 +215,7 @@ function main() {
   if (hasFlag('--json')) {
     console.log(JSON.stringify({
       languages: LANGUAGES,
+      localeFiles: localeFileList,
       keys: Object.fromEntries(LANGUAGES.map((language) => [language, keySetOf(tables[language]).length])),
       symmetry,
       shapes,
@@ -177,6 +227,7 @@ function main() {
     }, null, 2))
   } else {
     console.log('i18n check')
+    console.log(`  locale files     : ${localeFileList.length} (${localeFileList.join(', ')})`)
     console.log(`  locale keys      : ${LANGUAGES.map((language) => `${language}=${keySetOf(tables[language]).length}`).join(' ')}`)
     console.log(`  symmetric diff   : ${symmetry.length === 0 ? 'ok' : `${symmetry.length} problem(s)`}`)
     console.log(`  key shape        : ${shapes.length === 0 ? 'ok' : `${shapes.length} problem(s)`}`)

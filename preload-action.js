@@ -64,6 +64,12 @@ function normalizeExternalUrl(value) {
 }
 
 contextBridge.exposeInMainWorld('actionAPI', {
+  // P0-1-T2：语言广播（主→渲染；sandbox preload 不能 require 本地文件，故内联）。
+  onInterfaceLanguage: (callback) => {
+    const handler = (_event, language) => callback(typeof language === 'string' && language.length <= 16 ? language : '')
+    ipcRenderer.on('i18n:language', handler)
+    return () => ipcRenderer.removeListener('i18n:language', handler)
+  },
   onActionStart: (callback) => subscribe('action:start', callback, normalizeActionStart),
   onActionAppearance: (callback) => subscribe('action:appearance', callback, normalizeAppearance),
   onStreamData: (callback) => subscribe('stream:data', callback, (data) => ({ content: boundedText(data?.content) })),

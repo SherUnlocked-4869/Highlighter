@@ -111,6 +111,18 @@ function applyTranslations(root = globalThis.document) {
   return marked.length
 }
 
+// The renderers apply a broadcast by calling setLanguage(payload.language) and
+// then applyTranslations(); this entry point is the boot-time half of the same
+// job, for markup that has no `data-language` (the second step of the documented
+// priority: data-language -> localStorage -> default).
+function restoreStoredLanguage() {
+  const stored = storedLanguage()
+  if (!isSupportedLanguage(stored)) return currentLanguage()
+  activeLanguage = stored
+  applyTranslations()
+  return activeLanguage
+}
+
 function observeTranslations(root = globalThis.document) {
   const Observer = globalThis.MutationObserver
   if (!root || !Observer) return null
@@ -134,6 +146,7 @@ const api = {
   TRANSLATABLE_ATTRIBUTES,
   currentLanguage,
   setLanguage,
+  restoreStoredLanguage,
   interpolate,
   t,
   translateElement,
