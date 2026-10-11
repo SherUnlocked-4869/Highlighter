@@ -12,7 +12,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / HEAD | `master` / **`780b76c`**（292 个提交） |
+| 分支 / HEAD | `master` / **`8dd5862`**（299 个提交） |
 | 工作区 | **干净**（仅 `.zcodeignore` untracked，是有意保留的忽略文件） |
 | `package.json` 版本 | **仍是 `2.3.1`**（批次 A/B/C 的 bump 都未做，见 §5.2） |
 | 代码完成度 | 批次 A ✅ · 批次 B ✅ · 批次 C ✅（Wave 8.5 / 9 / 10 全部完成） |
@@ -20,17 +20,17 @@
 
 ---
 
-## 1. 门禁读数（在 HEAD `780b76c` 实测）
+## 1. 门禁读数（2026-10-11 评审修复后在 HEAD `8dd5862` 实测）
 
 | 门禁 | 命令 | 读数 |
 | --- | --- | --- |
-| 单元/契约测试 | `npm test` | **904 / 904 pass**（122 个 `test/*.test.js` + `tests/long-capture.test.js`） |
-| 语法 + 架构 + i18n | `npm run check` | 语法 **290 文件** · `main.js` **1297 / 1300**（**余量 3**）· i18n 未迁移 **607 ≤ 607** |
+| 单元/契约测试 | `npm test` | **905 / 905 pass**（123 个 `test/*.test.js` + `tests/long-capture.test.js`） |
+| 语法 + 架构 + i18n | `npm run check` | 语法 **291 文件** · `main.js` **1297 / 1300**（**余量 3**）· i18n 未迁移 **606 ≤ 606** |
 | 覆盖率 | `npm run test:coverage:loaded` | **92.7%（11405/12302）** |
 | 关键模块覆盖率 | `npm run test:coverage:critical` | **93.22 / 94.07 / 92.42**（门槛 90） |
 | 依赖审计 | `npm run audit:dependencies` | **26 已豁免 / 0 未豁免** |
 | 端到端 | `npm run test:e2e` | **6 / 6**（约 32s，Playwright + 真实 Electron） |
-| i18n 明细 | `node scripts/check-i18n.js` | 12 个 locale 文件 · **三语各 967 键** · 对称差/键名形状/data-i18n 缺失**全 0** · 残留 607 行 |
+| i18n 明细 | `node scripts/check-i18n.js` | 13 个 locale 文件 · **三语各 971 键** · 对称差/键名形状/data-i18n 缺失**全 0** · 残留 606 行 |
 
 **所有门禁命令前必须先清环境变量**（否则 Electron 会被当成 Node 跑，测试成片失败）：
 
@@ -87,6 +87,21 @@ ba35790/6f1cca4/c8e245c/3f1dcd0 Wave 6 标注二次编辑 PR1–PR4 · 7991198 S
 
 细节见方案 **§16–§21**（批次 A/B 的逐波结果）与 `2026-10-10-p0-batch-a-verification.md`。
 
+### 3.3 评审修复（2026-10-11，批次 C 收口后）
+
+用 `open-code-review`（deepseek 路由）对 `f634018..HEAD` 做了一轮评审：80 个文件、33 条评论、约 18m41s。逐条在代码里核实后，High 全部修掉、Medium 修了 5 条，共 6 个提交：
+
+| 提交 | 内容 |
+| --- | --- |
+| `a5b6e20` | `shared/locales/record.js` 的 **zh-CN 块有 5 条仍是英文**（zh-TW 已翻）；其中 4 条是活调用点（`record/record.js:387,388,540`、`record/recording-utils.js:183`）→ 默认语言下显示英文报错 |
+| `599b513` | **pin 窗从未迁移**：`pin/pin.html` 的可见文案「穿透中 · 悬停退出」＋ tooltip 是硬编码，窗口不载任何语言表，`preload-pin.js` 的订阅无人消费。新增 `shared/locales/pin.js` + pin.html 载表 + pin.js 载入/广播时 `applyTranslations()`；`--max` 607 → **606** |
+| `f7fd3b2` | **裸键名**：`toolbar.action.*` 只定义在 `shared/locales/toolbar.js`，而 config 窗与 action 窗都没载它 → 设置页「功能与顺序」与 explain 窗标题显示 `toolbar.action.copy.label` 这类裸键。同提交修 `models-render.js` 的模板串错误（`' + t(...) + '` 写在反引号内，首启「无供应商」空状态渲染出字面量）与 `models-plan.js` 漏 `t()`（编队套餐对话框显示 `config.models.feature-chat`） |
+| `8a4d3ee` | 恢复 `long-capture.html` / `overlay.html` 被批次 C 改没的 `form-action 'none'`（`form-action` 不吃 `default-src` 回退，另 10 个窗口都还留着） |
+| `8d62dd5` | `about.js` 主按钮用 `busy`（含 `available`/`downloaded`）禁用，而 `update-service.js` 的 `autoDownload=false` → **应用内更新永远点不动**；`history.js` 4 处 IPC 无 catch（初始加载 reject 会永远停在「加载中」，因为 `renderRoute()` 不管这条路由） |
+| `8dd5862` | **同类的第二例**：config 窗还缺 `shared/locales/search.js` → 本地搜索分类名输入框显示 `search.category.all`（且未编辑直接保存会把裸键写进用户配置）。并给 `test/i18n-contract.test.js` 加了**按窗口**的键解析门禁——现有 checker 与 data-i18n 测试都**先合并全部表**，所以「整窗缺一张表」能全绿通过 |
+
+**未修的评审项**（都已在代码里核实，见 §4.4）：语言热切换后旧文案残留（`search.js` 状态行、`action.js` 头部/loading、`record.js` 音频提示、`recognition.js` 标题与复制计时器、`long-capture.js` `#status`）；`scripts/check-i18n.js` 的 `localeCoverageProblems()` 因读**累计** bag 而永不触发；死键 `action.pin.window`、死变量 `codingPlanPresetId`/`modelTaskForFeature`、`toolbar.js` 的孤立 `;`、若干嵌套三元与陈旧注释。
+
 ---
 
 ## 4. 剩余工作
@@ -121,6 +136,9 @@ ba35790/6f1cca4/c8e245c/3f1dcd0 Wave 6 标注二次编辑 PR1–PR4 · 7991198 S
 | `capture.js:315` 局部 `const t = tiny.getContext('2d')` | 遮蔽全局 `t()`；该 blur 分支目前无 i18n 调用，**后续谁在该块内加 `t()` 必须先改名** |
 | `main.js:1197,1267` 启动错误框 `'Highlighter 启动失败'` | 属 T6 范围但未做（需 `dialog.showErrorBox` 两行接线），需决定是否回收 |
 | `main.js:820` 托盘 tooltip `'Highlighter（游戏模式）'` | `main.js` 禁改期未做 |
+| **语言热切换后旧文案残留**（5 处，评审已核实） | `search/search.js` 状态行（`renderStatus` 未被重建，切换后仍显示旧语言的「正在检测」）、`action/action.js` 头部/loading（`applyTranslations()` 会把脚本自己写的头部打回静态键）、`record/record.js` 音频提示、`recognition/recognition.js` 标题与复制计时器、`long-capture/long-capture.js` `#status`（`data-i18n` 与 JS 双写冲突） |
+| **`scripts/check-i18n.js` 的 `localeCoverageProblems()` 永不触发** | 它读 `globalThis.__LOCALES` 这个**累计** bag（只在循环前重置一次），从 `action.js` 起每个文件都"注册了三语"。修的时候必须同时豁免 `zh-CN.js`/`en-US.js`/`zh-TW.js` 三个单语文件，否则会误报。真正的兜底是 §23.3 的对称差 + 新增的按窗口门禁 |
+| 死键 / 死变量 / 陈旧注释（评审 Low） | `action.pin.window`（三语都在、无调用点）、`record.error.system-audio-capture-failed`（无调用点，且与 `record.audio.notice.system-failed` 重复）、`config/routes/models-render.js` 的 `codingPlanPresetId`、`config/routes/models-editor.js` 解构出的 `modelTaskForFeature`、`main/domains/selection/index.js` 未用的 `getVisibleToolbarActions` 导入、`shared/locales/toolbar.js` 的孤立 `;`、`shared/locales/long-capture.js:9` 里写旧的键形正则、`config/routes/about.js` 与 `local-search.js` 的嵌套三元 |
 
 ---
 
@@ -130,7 +148,7 @@ ba35790/6f1cca4/c8e245c/3f1dcd0 Wave 6 标注二次编辑 PR1–PR4 · 7991198 S
 
 `scripts/check-i18n.js` 统计的是**含 CJK 的行数**，其中包含中文注释、纯模块校验 `throw`、喂给模型的转录格式、提示词、存储/API 契约值。**这些都不翻**（依据 D6 与方案 §10.5）。所以残留**永远不为 0**。
 
-**残留 607 行的构成**（方案 §23.3 有逐 area 表）：
+**残留 606 行的构成**（方案 §23.3 有逐 area 表）：
 
 | area | 残留 | 主要构成 |
 | --- | --- | --- |
@@ -139,7 +157,9 @@ ba35790/6f1cca4/c8e245c/3f1dcd0 Wave 6 标注二次编辑 PR1–PR4 · 7991198 S
 | `main` | 281（另 **169** 行 `throw` 按 D6 单独出账） | UI 已迁；`throw`/日志/release notes/提示词不翻 |
 | `action` | 8 | `conversation-text.js` 的剪贴板转录格式 + 回喂模型标记 |
 | `toolbar` | 5 | 默认提示词 + `TRANSLATE_*_LANGUAGES` 契约值 |
-| `record` / `long-capture` / `pin` | 4 / 3 / 1 | 注释 + 纯模块校验 `throw` |
+| `record` | 4 | 注释 + 纯模块校验 `throw` |
+| `long-capture` | 3 | `matcher.js` 类型校验 `throw` |
+| `pin` | 0 | **已迁移（§3.3 `599b513`）**。原表记成"注释"是错的：它是 `pin/pin.html` 的可见文案。 |
 | `search` / `recognition` | 0 / 0 | —— |
 
 ### 5.2 门禁只能下调
@@ -147,17 +167,18 @@ ba35790/6f1cca4/c8e245c/3f1dcd0 Wave 6 标注二次编辑 PR1–PR4 · 7991198 S
 ```jsonc
 // package.json
 "check": "node scripts/check-js.js && npm run check:architecture && npm run check:i18n",
-"check:i18n": "node scripts/check-i18n.js --max 607"
+"check:i18n": "node scripts/check-i18n.js --max 606"
 ```
 
-**`--max 607` 是硬门禁，只能往下调，不得上调。** 下调前先更新方案 §23.3 的残留表。注意 `--max` **默认不开**：不传时 checker 永远 exit 0，所以"有残留"本身不会让测试变红。
+**`--max 606` 是硬门禁，只能往下调，不得上调。** 下调前先更新方案 §23.3 的残留表。注意 `--max` **默认不开**：不传时 checker 永远 exit 0，所以"有残留"本身不会让测试变红。
 
 ### 5.3 键名与文件约定
 
 - 键名 `<domain>.<module>.<semantic>`，**每段都允许连字符**（`long-capture.*` 合法；checker 的正则原实现只允许第一段无连字符，已在 `0377ed1` 放宽）。
 - **一个 domain 一个文件** `shared/locales/<domain>.js`，**每个文件内同时注册三语**。新增 domain 时**新建自己的文件**，不要写进 `zh-CN.js`/`en-US.js`/`zh-TW.js`（那三个只放跨窗口公共键）。
 - 三语键集合对称差**必须为空**（零容忍）。
-- 每个窗口 HTML 在自身脚本**之前**加：三个语言文件 + 自己的 domain 表 + `shared/i18n.js`。
+- 每个窗口 HTML 在自身脚本**之前**加：三个语言文件 + `shared/i18n.js` + **它要解析的每一张 domain 表**。
+- **跨域键必须载表**（§3.3 两个真实缺陷）：窗口只看得见自己 `<script>` 载入的表。config 窗解析 `toolbar.action.*` 与 `search.category.*`，就必须既载 `shared/locales/toolbar.js` 也载 `shared/locales/search.js`；否则 `t()` 返回键名本身、页面直接显示裸键。`test/i18n-contract.test.js` 的「every key a window resolves exists in the tables that window loads」现在按窗口校验这条（含 `t(category.label)` 这类**计算参数**，靠键形字面量兜住）。
 
 ---
 
@@ -233,21 +254,21 @@ D2 拆分后出现过 **3 个白屏级缺陷**，而 `npm test` 全绿、`npm ru
 2. **F1-②/③ 与 L2 署名**：合规文件相关。
 3. **三个版本 bump**（v2.3.2 / v2.4.0 / v2.5.0）何时做、是否合并成一次发布。
 4. **统一真机测试的时间**（需要用户配合操作；`B4 游戏模式`优先级最高）。
-5. 是否要**把各域中文注释英文化**（可把残留 607 进一步压低，但纯属体力活、无功能收益 —— 当前口径已接受注释保留中文）。
+5. 是否要**把各域中文注释英文化**（可把残留 606 进一步压低，但纯属体力活、无功能收益 —— 当前口径已接受注释保留中文）。
 
 ---
 
 ## 9. 新会话建议的第一批动作
 
 ```powershell
-# 1) 确认状态（应为：HEAD=780b76c、工作区仅 .zcodeignore）
+# 1) 确认状态（应为：HEAD=8dd5862、工作区仅 .zcodeignore）
 git log --oneline -5
 git status --short
 
 # 2) 复跑门禁（务必先清环境变量）
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-npm test                # 期望 904/904
-npm run check           # 期望 290 文件 + main.js 1297/1300 + i18n 607
+npm test                # 期望 905/905
+npm run check           # 期望 291 文件 + main.js 1297/1300 + i18n 606
 npm run test:e2e        # 期望 6/6
 ```
 

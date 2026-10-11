@@ -1317,6 +1317,8 @@ D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次�
 7. **`--max` 默认不开**（实测）：checker 不传 `--max` 时始终 exit 0，所以"有残留 CJK"本身不会让测试变红；Wave 10 才把 `--max 607` 并入门禁。
 8. **新增 locale 文件与窗口脚本同名会误伤 `indexOf` 断言**：统一改为匹配脚本标签（`src="capture.js"`）。
 9. **同步的既有断言（规则 C6）**：`window-security.test.js` 的 `长截图匹配超时` → 断言键；`selection-toolbar-thinking/settings` 的 `label:'跳转'` / `data.label || '解释'` → 断言键；`audio-mixer` 的警告串改吐 key；`i18n.test.js` 的 localeFiles 改为"包含 + 排序"（端态契约，四路全部落地后转绿）。
+10. **2026-10-11 评审修复（批次 C 收口后）**：用 `open-code-review` 对 `f634018..HEAD` 评审得 33 条，逐条核实后 High 全修、Medium 修 5 条，6 个提交：`a5b6e20`（record zh-CN 五条英文）· `599b513`（pin 窗迁移 + 上限降到 606）· `f7fd3b2`（裸键名 + 模板串错误 + 漏 `t()`）· `8a4d3ee`（恢复 `form-action 'none'`）· `8d62dd5`（更新按钮被禁用 + history 4 处 IPC 无 catch）· `8dd5862`（同类第二例 + 按窗口门禁）。最重的一类是**整窗缺 domain 表 → 渲染裸键**：`toolbar.action.*` 与 `search.category.*` 只在各自 domain 文件里，而 config 窗两个都没载；现有 checker 与 data-i18n 测试都**先合并全部表**，所以完全看不见（`check-i18n.js` 的 `localeCoverageProblems()` 又因读累计 bag 而永不触发）。
+11. **新增"按窗口"键解析门禁**：`test/i18n-contract.test.js` 加 `every key a window resolves exists in the tables that window loads`。它按窗口合并**该窗口实际载入**的表，并把**键形字面量**也算作使用——`t(category.label)` / `t(action.label)` 这类计算参数用普通 `t('...')` 扫描是抓不到的，而这正是两个真实缺陷的形态。已用「删掉 `config.html` 的 `search.js` 标签」做过反向验证（测试如实变红并指出缺失键）。
 
 ### 23.5 结论：批次 C 代码完成，真机项挂账
 
