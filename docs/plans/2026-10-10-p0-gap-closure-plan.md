@@ -681,6 +681,15 @@ scripts/check-i18n.js    ① 三份 locale 键集合对称差必空
 > **连带改动**：`scripts/check-i18n.js` 的 `loadLocales()` 由硬编码三文件改为**扫描 `shared/locales/*.js` 并按名排序全部 require**（否则新增 domain 文件不被检查）；`shared/i18n.js` 运行时**无需改动**（`Object.assign` 合并进 `__LOCALES[lang]` 即可）。
 > **口径不变**：键名仍 `<domain>.<module>.<semantic>`；三语键集合对称差仍须为空（checker ①）；`--max` 仍以 checker 的实测行数为基准逐批收紧。
 
+> **口径澄清（2026-10-11，Lead，Wave 9 四路并行期间由 S11/S12 上报后裁决）**
+>
+> 1. **迁移目标是"用户可见 UI 文案"，不是"CJK 行数归零"。** `scripts/check-i18n.js` 统计的是**含 CJK 的行数**，其中包含中文注释、类型校验/状态机的 `throw`、喂给模型的对话文本格式（§10.5-4）、以及存储/API 契约值（§10.5-3 的 `value`）。这些**都不翻**。因此各 area 的计数**不会到 0**（实测基线：config 307 / capture 223 / record 41 / long-capture 45 / action 46 / search 34 / recognition 29 / toolbar 11 / main 278 + 169 throw 出账）。
+>    → **§10 验收标准②"未迁移清单逐批收紧到 0"按本条修正为**："收紧到**非 UI 残留**的实测值，并把残留清单显式登记（file:line + 不翻理由）"；Wave 10 收口时由 Lead 给 checker 加**豁免/忽略清单**机制（而不是把注释也翻译掉），`--max` 才随之收紧。
+> 2. **`test/i18n.test.js` 的 `localeFiles` 断言采用"端态契约"形态**：断言 checker 报出的文件列表**排序正确**且**包含四路各自应新增的 domain 文件**（`capture.js`/`config.js`/`main.js`/`record.js` + 三个语言文件）。它在四路全部落地后才转绿 —— 这是 Wave 10 的验收点之一；**该文件的最终归一由 Lead 在收口时负责**（避免四路同时改它）。
+> 3. **新增 locale 文件与窗口脚本同名会误伤 `indexOf` 断言**：`shared/locales/capture.js` 含子串 `capture.js`，会让 `html.indexOf('capture.js')` 命中语言包而非控制器脚本。**统一修法**：把这类断言改为匹配脚本标签本身（`html.indexOf('src="capture.js"')`）。S12（`record.js`/`action.js`）、S13 同理。
+> 4. **纯模块的警告串改吐 i18n key**：`record/audio-mixer.js` 的降级文案改为返回 key（如 `record.audio.warning.*`），由 `record/record.js` 用 `t()` 渲染；`test/audio-mixer.test.js` 的 3 处中文断言随之同步（属"因文案迁移必须同步的测试"）。
+> 5. **`--max` 默认不开**：checker 不传 `--max` 时**始终 exit 0**（已实测），所以"有残留 CJK"本身不会让任何测试变红；只有显式 `--max` 才会。
+
 ### 10.4 任务拆解
 
 | 任务 | 内容 | 写作用域 | 人日 |
