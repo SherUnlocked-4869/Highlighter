@@ -89,6 +89,7 @@ const { createFunctionRouter } = require('./main/services/function-router')
 const { createSettingsNormalizer } = require('./main/services/settings-normalize')
 const { createFfmpegPathResolver } = require('./main/services/ffmpeg-path')
 const { createImageFileSaver, resolveSaveDirectory } = require('./main/services/image-file-save')
+const { createCursorProvider } = require('./main/services/cursor-provider')
 const {
   migrateAiSettings,
   resolveAiAssignment
@@ -175,6 +176,7 @@ const managedRecordingWriters = new ManagedWriterCoordinator()
 let dataRootMigrationInProgress = false
 let pinDomain = null
 let captureDomain = null
+let cursorProvider = null
 let longCaptureDomain = null
 let recordDomain = null
 let recognitionDomain = null
@@ -531,6 +533,10 @@ pinDomain = createPinDomain({
   ipcMain: secureIpcMain
 })
 
+// P0-2-T2: the screenshot path asks this provider for the cursor shape; it stays lazy, so no
+// helper process is spawned until a capture actually requests the cursor.
+cursorProvider = createCursorProvider({ app, spawn, log, rootDirectory: __dirname })
+
 captureDomain = createCaptureDomain({
   app,
   spawn,
@@ -565,7 +571,8 @@ captureDomain = createCaptureDomain({
   imageDataToBuffer,
   dataUrlToBuffer,
   bufferToDataUrl,
-  performanceMonitor
+  performanceMonitor,
+  cursorProvider
 })
 
 longCaptureDomain = createLongCaptureDomain({
@@ -1263,6 +1270,7 @@ else {
     markSessionClean('quit')
     updateService?.dispose()
     shortcutService.dispose()
+    cursorProvider?.dispose()
   })
   app.on('before-quit', () => {
     recordDomain.shutdown()
