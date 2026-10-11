@@ -61,6 +61,10 @@
        needs the toolbar domain table too — without it those rows render the raw
        key names. -->
   <script src="../shared/locales/toolbar.js"></script>
+  <!-- Same reason: `search-utils.js` below hands this window `search.category.*`
+       and `search.sort.*` key literals for the local-search route's category
+       editor and sort select, and those keys live in the search domain table. -->
+  <script src="../shared/locales/search.js"></script>
   <script src="../shared/i18n.js"></script>
   <script src="../search/search-utils.js"></script>
   <script src="../toolbar/toolbar-action-meta.js"></script>

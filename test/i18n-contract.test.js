@@ -128,3 +128,90 @@ test('the config window loads its domain table before the runtime and the shell'
   assert.ok(runtime < shell, 'the runtime loads before the shell that calls t()')
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/i, 'config.html must stay inline-script free')
 })
+
+// --- per-window key resolution ----------------------------------------------
+//
+// A window only sees the locale files its own <script> tags load. Resolving keys
+// against the merged bag — which scripts/check-i18n.js and the data-i18n test
+// above both do — hides the failure that shipped twice in batch C: the settings
+// window consumed `toolbar.action.*` and `search.category.*`, which are defined
+// only in domain tables it never loaded, so t() returned the key and the page
+// rendered "toolbar.action.copy.label" and "search.category.all" verbatim.
+//
+// A key reached through a computed argument (t(category.label) over
+// DEFAULT_CATEGORIES, t(action.label) over TOOLBAR_ACTION_META) is invisible to a
+// plain t('...') scan, so key-shaped string literals count too when the literal's
+// first two segments match a real key prefix. A failure means either the window
+// is missing a table it needs, or the literal is a data contract that this window
+// never resolves — in which case narrow the check rather than the production code.
+
+const KEY_SHAPE = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/
+
+function localeKeysByFile () {
+  const byFile = new Map()
+  const allKeys = new Set()
+  for (const name of fs.readdirSync(localesDirectory).filter((entry) => entry.endsWith('.js')).sort()) {
+    const file = path.join(localesDirectory, name)
+    globalThis.__LOCALES = {}
+    delete require.cache[require.resolve(file)]
+    require(file)
+    const per = {}
+    for (const language of LANGUAGES) {
+      per[language] = new Set(Object.keys(globalThis.__LOCALES[language] || {}))
+      for (const key of per[language]) allKeys.add(key)
+    }
+    byFile.set(name, per)
+  }
+  return { byFile, allKeys }
+}
+
+function prefixIsDefined (key, allKeys) {
+  const segments = key.split('.')
+  if (segments.length < 3) return false
+  const prefix = `${segments.slice(0, 2).join('.')}.`
+  for (const candidate of allKeys) if (candidate.startsWith(prefix)) return true
+  return false
+}
+
+test('every key a window resolves exists in the tables that window loads', () => {
+  const { byFile, allKeys } = localeKeysByFile()
+  const offenders = []
+  for (const { file } of windowPages()) {
+    const html = fs.readFileSync(file, 'utf8')
+    if (!html.includes('shared/i18n.js')) continue
+    const sources = [...html.matchAll(/<script[^>]*\bsrc="([^"]+)"/g)].map((match) => match[1])
+    const loaded = sources
+      .filter((src) => /shared\/locales\/[A-Za-z-]+\.js$/.test(src))
+      .map((src) => path.basename(src))
+      .filter((name) => byFile.has(name))
+    const table = {}
+    for (const language of LANGUAGES) table[language] = new Set()
+    for (const name of loaded) {
+      for (const language of LANGUAGES) {
+        for (const key of byFile.get(name)[language]) table[language].add(key)
+      }
+    }
+    const used = new Map()
+    for (const match of html.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)) used.set(match[1], relative(file))
+    for (const src of sources) {
+      if (/shared\/locales\//.test(src) || /shared\/i18n\.js$/.test(src) || /node_modules\//.test(src)) continue
+      const scriptPath = path.resolve(path.dirname(file), src)
+      if (!fs.existsSync(scriptPath)) continue
+      const code = fs.readFileSync(scriptPath, 'utf8')
+      const where = relative(scriptPath)
+      for (const match of code.matchAll(/(?<![\w$.])t\(\s*(['"])([^'"]*)\1/g)) {
+        if (KEY_SHAPE.test(match[2])) used.set(match[2], where)
+      }
+      for (const match of code.matchAll(/(['"])([a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+)\1/g)) {
+        if (KEY_SHAPE.test(match[2]) && prefixIsDefined(match[2], allKeys)) used.set(match[2], `${where} (key literal)`)
+      }
+    }
+    for (const [key, where] of used) {
+      const absent = LANGUAGES.filter((language) => !table[language].has(key))
+      if (absent.length) {
+        offenders.push(`${relative(file)} resolves "${key}" (${where}) but loads no table defining it (loads: ${loaded.join(', ') || 'none'})`)
+      }
+    }
+  }
+  assert.deepEqual(offenders, [])
+})

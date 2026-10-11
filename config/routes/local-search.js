@@ -18,7 +18,7 @@ function renderLocalSearch() {
 
   const renderCategoryEditor = () => {
     const editor = document.getElementById('categoryEditor')
-    editor.innerHTML = draft.map((category, index) => `<div class="form-row" data-index="${index}"><div class="form-label"><b>${index === 0 ? t('config.local-search.category') : ''}</b></div><input class="category-label" type="text" placeholder="${t('config.local-search.category-name')}" value="${escapeHtml(category.label)}"><input class="category-rule" type="text" placeholder="${t('config.local-search.category-rule')}" value="${escapeHtml(category.rule)}"><button class="button danger category-delete" data-index="${index}">${t('config.local-search.delete-category')}</button></div>`).join('') || '<div class="form-row">' + t('config.local-search.no-categories') + '</div>'
+    editor.innerHTML = draft.map((category, index) => `<div class="form-row" data-index="${index}"><div class="form-label"><b>${index === 0 ? t('config.local-search.category') : ''}</b></div><input class="category-label" type="text" placeholder="${t('config.local-search.category-name')}" value="${escapeHtml(t(category.label))}"><input class="category-rule" type="text" placeholder="${t('config.local-search.category-rule')}" value="${escapeHtml(category.rule)}"><button class="button danger category-delete" data-index="${index}">${t('config.local-search.delete-category')}</button></div>`).join('') || '<div class="form-row">' + t('config.local-search.no-categories') + '</div>'
     editor.querySelectorAll('.category-delete').forEach((button) => {
       button.onclick = () => {
         draft.splice(Number(button.dataset.index), 1)
