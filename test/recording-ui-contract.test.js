@@ -5,6 +5,7 @@ const path = require('node:path')
 
 const root = path.join(__dirname, '..')
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+const { DEFAULT_SETTINGS } = require('../main/services/settings-defaults')
 
 test('recording runtime packages ffmpeg', () => {
   assert.match(packageJson.dependencies['ffmpeg-static'], /^\^5\./)
@@ -120,14 +121,28 @@ test('recording controls expose and composite basic live annotation tools', () =
   assert.match(script, /async function finishRecording\(\)[\s\S]*setFrameState\('hidden'\)[\s\S]*stopMediaRecorder/)
 })
 
-test('region recording uses supported silent MP4 settings', () => {
+test('region recording settings expose the frozen frame rates and audio sources', () => {
   const config = fs.readFileSync(path.join(root, 'config', 'config.js'), 'utf8')
   const recordHtml = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')
   const recordScript = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
   const ffmpegResolver = fs.readFileSync(path.join(root, 'main', 'services', 'ffmpeg-path.js'), 'utf8')
   assert.match(config, /5.*16.*24.*30.*60/)
-  assert.doesNotMatch(config, /includeMicrophone|录制麦克风/i)
+  // This contract was updated when the feature landed (S10b, Wave 7.5): the old
+  // assertion pinned the settings page to a silent-only recorder, which is no
+  // longer true now that P0-3 exposes the two frozen audio sources. Both rows
+  // must stay visible, and the defaults must stay the frozen ones (system sound
+  // on, microphone off for privacy).
+  assert.match(config, /switchMarkup\(settings\.record\.audioSystem !== false, 'audioSystem', 'record'\)/)
+  assert.match(config, /switchMarkup\(settings\.record\.audioMicrophone === true, 'audioMicrophone', 'record'\)/)
+  // switchMarkup turns the key into the DOM hook the shared binder reads, so the
+  // two rows above really render data-switch="audioSystem" / "audioMicrophone".
+  assert.match(config, /data-switch="\$\{key\}" data-group="\$\{group \|\| ''\}"/)
+  assert.equal(DEFAULT_SETTINGS.record.audioSystem, true)
+  assert.equal(DEFAULT_SETTINGS.record.audioMicrophone, false)
+  // Acceptance §7.3-⑥: the settings copy must no longer claim the MP4 is silent.
+  assert.doesNotMatch(config, /仅包含画面/)
+  assert.match(config, /录制包含画面与所选音轨，保存为 MP4/)
   assert.doesNotMatch(recordHtml, /microphone|麦克风|系统声音/i)
   assert.match(recordHtml, /id="recordError"/)
   assert.match(recordHtml, /id="saveProgress"/)

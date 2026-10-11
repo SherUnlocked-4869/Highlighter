@@ -98,6 +98,26 @@ test('the settings page exposes the new capture rows through the shared update p
   assert.ok(switchBinder.includes('await updateSettings({ [group]: { [key]: value } })'), 'a switch submits one nested group')
   assert.ok(switchBinder.includes("element.classList.toggle('on', value)"), 'the switch reflects the stored value back')
 
+  // S10b (Wave 7.5) lands the record audio rows and the screenshot cursor row on
+  // that same switchMarkup/bindSwitches path, so neither renderer needs extra
+  // wiring: bindSwitches already submits `{ record: { audioSystem: next } }`.
+  assert.ok(config.includes("switchMarkup(settings.record.audioSystem !== false, 'audioSystem', 'record')"))
+  assert.ok(config.includes("switchMarkup(settings.record.audioMicrophone === true, 'audioMicrophone', 'record')"))
+  assert.ok(config.includes("switchMarkup(settings.screenshot.captureCursor === true, 'captureCursor', 'screenshot')"))
+  // The rows render the frozen defaults (system sound on, microphone off, cursor
+  // off) instead of carrying a default of their own.
+  assert.equal(DEFAULT_SETTINGS.record.audioSystem, true)
+  assert.equal(DEFAULT_SETTINGS.record.audioMicrophone, false)
+  assert.equal(DEFAULT_SETTINGS.screenshot.captureCursor, false)
+  // C2: the validator accepts exactly the patches those three switches submit.
+  for (const patch of [
+    { record: { audioSystem: false } },
+    { record: { audioMicrophone: true } },
+    { screenshot: { captureCursor: true } }
+  ]) {
+    assert.doesNotThrow(() => assertSettingsPatch(patch, DEFAULT_SETTINGS), JSON.stringify(patch))
+  }
+
   // The text row round-trips like the neighbouring saveDirectory row: the
   // template renders from stored settings and the save button submits it.
   assert.ok(config.includes('id="nameTemplate" type="text" value="${escapeHtml(settings.screenshot.nameTemplate'))
@@ -107,10 +127,11 @@ test('the settings page exposes the new capture rows through the shared update p
   assert.ok(config.includes('留空沿用 Highlighter_&lt;date&gt;_&lt;time&gt;.png 旧格式'))
   assert.ok(config.includes('可用变量 {app}、{date}、{time}、{datetime}'))
 
-  // Out of scope on purpose: the remembered directory is memory, not a row, and
-  // the record.* / captureCursor rows belong to later waves (S10b).
+  // Out of scope on purpose: the remembered directory is memory, not a row. The
+  // record.* and captureCursor rows did land later (S10b), but they ride
+  // data-switch, so no id-addressed "recordAudioSystem" input exists to find.
   assert.ok(!config.includes('id="lastSaveDirectory"'), 'lastSaveDirectory is a memory value, not a row')
-  assert.ok(!/id="record(AudioSystem|CaptureCursor)"/.test(config), 'record rows belong to S10b')
+  assert.ok(!/id="record(AudioSystem|CaptureCursor)"/.test(config), 'the record rows are switches, not id-addressed inputs')
 
   // C2 / the "new key" trap: the patch validator rejects keys that are missing
   // from the frozen template, so prove every new row's payload is accepted.
