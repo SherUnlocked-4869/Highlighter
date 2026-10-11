@@ -1060,3 +1060,55 @@ Wave 1 只做了**写回**；评审旁路观察者指出该键**只写不读**�
 ### 18.4 批次 A 代码已全部落地 —— 只剩 Wave 3 真机验收
 
 三条主进程流（Wave 1）+ 两条接线流（Wave 2）全部完成并通过 §1.1 全量门禁 + e2e；**`main.js` 未增加任何行**（1278/1300）。批次 A 的剩余唯一事项是 **§11 步骤 4 的真机验收**（副屏 `\\.\DISPLAY2`），验完即可按 §11 步骤 5/6 回填并出 v2.3.2。
+
+> **2026-10-11 补充**：用户决定"测试都先跳过，先进行后续开发，开发完成后统一测试处理"→ 批次 A 剩余真机项**全部挂账**（清单见 `2026-10-10-p0-batch-a-verification.md` §7），批次 A 收口**不再阻塞** Wave 4。另：**§18.3-6 的"粗粒度、本期不做"已被推翻** —— 真机首验抓到序号重复（一张图落 3 个序号后下一张从 3 开始），已修复为精确接续（提交 `c116b58`，详见验收记录 §3.6）：主进程改记"下一个该用的号"，渲染层在导出/编码完成后经**既有通道的 `meta.serialNumber`** 与 `capture:close` 载荷回报，主进程只接受前进。**不新增 IPC 通道、不改 `main.js`、不碰冻结文件**。
+
+---
+
+## 19. M2（Wave 4 / 批次 B 前两流 + Wave 5 接线）实施结果（2026-10-11）
+
+> 按 §11 收口：S2 / S5 各自交付五件套 → Lead 落接线（`main.js` +5 行、`package.json` c8 include）→ §1.1 全量门禁 + e2e → 回填本节。**真机项按用户指示整体挂账**（本批次的 T6/T8）。
+
+### 19.1 已落地的改动
+
+| 流 | 文件 | 改动 |
+|---|---|---|
+| **S2**<br>录屏音轨 | `record/audio-mixer.js`（新，227 行） | `createGainPlan` 纯函数（非有限→1、负值→0、上限 4、仅两条总线都出声且和>1 时防削波衰减）；`createAudioMix` 注入 `AudioContext`，总线只按**实际存在**的流计算 master；`describeAudioOutcome` 固化降级文案；失败一律 inactive+warning 不抛 |
+| | `record/record.js`（594→815） | `prepareSource()` 拆出 `acquireDesktopStream()`：主路径 `getDisplayMedia`（系统声失败先重试 `audio:false`）；`canvas.captureStream()` 后 `addTrack` 混音轨；MediaRecorder 优先 opus mime + `audioBitsPerSecond`；`devicechange` + 轨 `ended` 热切换；降级提示复用 `#statusLabel` 后缀（**不新增 DOM/CSS**） |
+| | `record/recording-utils.js`（214→257） | `buildFfmpegArgs(input, output, options?)`：`audio:true → -map 0:v:0 -map 0:a? -c:a aac -b:a 160k -ar 48000 -ac 2`；**两参调用逐 token 不变**（`-an`） |
+| | `main/services/recording-service.js` | `transcode(..., options = {})` 原样透传 |
+| | 测试 | `test/audio-mixer.test.js`（新，12 用例）· `test/recording-utils.test.js` +3 · `test/recording-service.test.js` +1 |
+| **S5**<br>光标采集 | `native/smart-select/Program.cs`（339→553） | 新增 `cursor` 命令：`GetCursorInfo` + `GetIconInfo` + `DrawIconEx` 到 32bpp ARGB + PNG（保 alpha）；两个 GDI 位图在 `finally` 释放；`CURSOR_SHOWING=0 → showing:false`；**既有 `ready` / `id x y` 语义未动** |
+| | `native/smart-select/build.ps1` | `/reference:System.Drawing.dll` |
+| | `main/services/cursor-provider.js`（新，291 行） | 懒启动、250ms 形状缓存（`fresh:true` 绕过）、缺失/超时/中途退出一律返回 `null` 不抛 |
+| | `shared/cursor-geometry.js`（新，206 行） | UMD：`resolveCursorPlacement` + `parseHelperMessage` + `toCursorDataUrl` |
+| | `test/cursor-geometry.test.js`（新，602 行） | 29 用例（几何 5 类边界 + 协议解析 + provider 传输/缓存/降级） |
+| **Lead**<br>接线 | `main/domains/record/index.js` | `setDisplayMediaRequestHandler`（按 `audioRequested` 决定是否给 `loopback`，按 `display.id` 用 `pickDesktopSource` 选源）；`_recordInit` += 4 个冻结音频键；`saveMp4` 透传 `{ audio }` |
+| | `record/record.html` | `<script src="audio-mixer.js">`（渲染层另有懒加载兜底） |
+| | `main.js`（1278→**1286**） | `createCursorProvider` require + `let cursorProvider` + 在 `createCaptureDomain` 前构造 + 注入 deps + `will-quit` 释放（**懒启动，未查询不起进程**） |
+| | `package.json` | `test:coverage:loaded` 追加 `--include=shared/cursor-geometry.js`（§3.3 第 8 条要求的提请） |
+| | `test/record-domain.test.js` | harness 补 `webContents.session.setDisplayMediaRequestHandler`；+2 用例（handler 尊重 `audioRequested`/`videoRequested`、save 路径从冻结键派生 `{ audio }`） |
+
+### 19.2 门禁实况
+
+| 门禁 | Wave 2 收口（§18.2） | **Wave 4/5 收口** |
+|---|---|---|
+| `npm test` | 765 / 765 | **814 / 814 pass**（+49 用例） |
+| `npm run check` | 语法 250 文件；`main.js` 1278 / 1300 | 语法 **255 文件**；`main.js` **1286** / 1300（余量 **14**） |
+| `test:coverage:loaded` | 91.84%（9996/10883） | **92.2%（10752/11661）**（新增模块自带测试，分母 +769 而覆盖上升） |
+| `test:coverage:critical` | 93.22 / 92.99 / 92.42 | 93.22 / 92.99 / 92.42（不变） |
+| `audit:dependencies` | 26 / 0 | **26 / 0** |
+| Playwright e2e | 5 / 5 | **5 / 5**（25.8s） |
+
+### 19.3 偏差与决定（6 项）
+
+1. **热点按 1:1 减，而不是 ×scaleFactor（S5 的 D1，已接受）**。方案 §9.3 风险条写的"减去热点 × scale"基于"位图是逻辑像素"的假设，实测推翻：本机 150% 下 DPI-unaware 进程给 32×32 位图/热点 (3,9)，而 helper（PMv2）给 48×48/热点 (5,14) —— **`GetIconInfo` 返回的位图已被系统按 DPI 缩放，热点与它同一像素空间**；本管线把位图按自然尺寸贴到物理像素画布，故热点必须 1:1，再乘 scaleFactor 会在 125% 下多偏 25%（正是该风险条警告的偏移）。已用测试钉死并留反面断言，另留可选 `drawScale`（默认 1）。
+2. **provider 独立起一个 helper 进程（S5 的 D3，已接受）**。方案原意是复用 smart-select session，但 `main/domains/capture/smart-select.js` 的解析只认 `rects`，且它是 S4/S9a 作用域 → S5 不改它，改为自带薄会话。代价：冷启动多一次 ~61–73ms（单次查询 1–6ms）；收益：零跨作用域改动。若日后要省这次启动，需 S9b 在 `smart-select.js` 放行 cursor 载荷（3 行）。
+3. **识别路径默认不画光标（Lead 决定）**。`includeAnnotations === false` 的 OCR/翻译/表格/二维码路径不贴光标，避免把光标混进识别输入；截图/复制/保存路径正常贴。
+4. **光标取"抓屏时刻"（Lead 决定）**。与用户看到的冻结画面一致；若改"动作时刻"需在 `performAction` 前查询，属 S9b 的实现选择。
+5. **旧 `getUserMedia({mandatory:{chromeMediaSource:'desktop'}})` 保留为纯视频兜底（S2 的偏差 2，已接受）**。它**绝不请求音频**（规避 electron#42765/#25120），仅在 `setDisplayMediaRequestHandler` 未注册时不至于让录制功能整体不可用；代价是"无声 + UI 明示"。
+6. **`long-capture/long-capture.js` 仍用旧写法（纯视频、无音频）**，不属 P0-3，未动（S2 的偏差 6，登记备查）。
+
+### 19.4 结论与 Wave 6 开工条件
+
+批次 B 的两条独立流（录屏音轨 / 光标采集）与 Wave 5 接线全部落地并通过 §1.1 全量门禁 + e2e；`main.js` 净 +8 行（余量 14，仍够 Wave 6/7 的预计接线）。**光标进图的截图侧合成属 Wave 7（S9b）**，标注二次编辑属 Wave 6（S6），两者都在 `capture/**` 上串行 —— 因此 **Wave 6 开工条件是 S6 独占 `capture/**` 并完成 PR1–PR4**。真机项（音轨四组合、光标 100%/125%、副屏负坐标）按用户指示**统一挂账**。

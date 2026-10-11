@@ -8,12 +8,12 @@
 
 | 项 | 状态 |
 | --- | --- |
-| 方案进度 | **Wave 0 ✅ · Wave 1 ✅ · Wave 2 ✅ · Wave 3（真机验收）→ 剩余项全部挂账 · Wave 4 已派出** |
-| 代码 | 批次 A 全部落地 + **序号接续修复**（`c116b58` / `dea6ee4`）；**HEAD = `dea6ee4`** |
-| 门禁 | `npm test` **767/767** · `main.js` **1278/1300** · 覆盖率 **91.85%**（见 §1 勘误）· critical 93.22/92.99/92.42 · `audit` 26/0 · **e2e 5/5** |
-| 真机验收 | 已验：A1/A2/A3、B1/B2、C1、C4 前半、C8（静态）。**C6 缺陷已修（待复验）**；**其余全部挂账**（2026-10-11 用户决定：先开发、开发完成后统一测试） |
+| 方案进度 | **Wave 0 ✅ · Wave 1 ✅ · Wave 2 ✅ · Wave 3（真机）→ 全部挂账 · Wave 4 ✅ · Wave 5 ✅ · Wave 6（S6 标注二次编辑）进行中** |
+| 代码 | 批次 A + 序号接续修复 + **批次 B 前两流（录屏音轨 / 光标采集）与 Wave 5 接线**；**HEAD = `2ae1042`** |
+| 门禁 | `npm test` **814/814** · `main.js` **1286/1300**（余量 14）· 覆盖率 **92.2%**（10752/11661）· critical 93.22/92.99/92.42 · `audit` 26/0 · **e2e 5/5** · `check` 255 文件 |
+| 真机验收 | 已验：A1/A2/A3、B1/B2、C1、C4 前半、C8（静态）。**C6 缺陷已修（待复验）**；**其余全部挂账**（2026-10-11 用户决定：先开发、开发完成后统一测试）；批次 B 的 T6/T8 同样挂账 |
 | dev 实例 | **已停止**（2026-10-11；测试挂账）。需要时再跑 `.\node_modules\.bin\electron.cmd .`；✕ 是"收进托盘"不是退出（`main.js:1227` 的 `second-instance` 会调出主窗口） |
-| 下一步 | ① 等 **Wave 4** 两条流（S2 录屏音轨 / S5 光标采集）交付并复核；② 收口 Wave 4 → **Wave 5（Lead 接线）**；③ 挂账项与 C6 复验在"统一测试"阶段一并处理 |
+| 下一步 | ① Wave 6：S6 标注二次编辑 PR1–PR4（`capture/**` 独占，**串行**）；② Wave 7：S9b 光标合成接线；③ Wave 7.5：S10b config 收口；④ Wave 8 批次 B 收口 → 统一测试 |
 
 ---
 
@@ -35,8 +35,12 @@
 | `a46bbc0` | **评审改进**：打印页图片居中（留白对称） |
 | 本文件 + 验收记录 | 交接文档 + `2026-10-10-p0-batch-a-verification.md` |
 | 第二轮真机验收产出 | **序号跨截图保留精确接续修复**（验收记录 §3.6）：`capture/capture.js` · `main/domains/capture/index.js` · `preload-capture.js` + 2 个测试文件。**不新增 IPC 通道、不改 `main.js`、不碰冻结文件**（复用既有通道的 `meta` 字段） |
+| `eb90eb7` | **Wave 4·S2**：录屏音轨（`record/audio-mixer.js` 新 + `record.js` getDisplayMedia 迁移 + ffmpeg AAC 参数 + `recording-service` 透传 + 热切换） |
+| `882b1f0` | **Wave 5 接线（S2 部分）**：`setDisplayMediaRequestHandler` + `_recordInit` 4 个音频键 + `saveMp4` 透传 `{audio}` + `record.html` 引入 mixer |
+| `0ceaa3b` | **Wave 4·S5**：光标原生采集（C# `cursor` 命令 + `cursor-provider.js` + `shared/cursor-geometry.js` + 29 用例） |
+| `2ae1042` | **Wave 5 接线（S5 部分）**：`main.js` 注入 cursor provider + `package.json` c8 include 追加 `shared/cursor-geometry.js` |
 
-**`main.js` 现状**：1278 行 / 上限 1300（**余量 22**）。批次 A 期间零净增长；二次腾挪已做（保存流程迁入 `main/services/image-file-save.js`）。**任何新接线前先看余量。**
+**`main.js` 现状**：1286 行 / 上限 1300（**余量 14**）。批次 A 期间零净增长；批次 B 的 Wave 5 接线净 +8（cursor provider 注入 + 释放）。**任何新接线前先看余量。**
 
 > **覆盖率读数勘误（2026-10-10）**：旧值 **91.87%（10007/10892）在干净 HEAD 上复测不可复现**；用 `git stash` 退回 HEAD 实测 **10005/10892 = 91.85%**，与带修复的工作区**完全一致**（修复落在 `main/domains/**` 与 `capture/capture.js`，不在 `test:coverage:loaded` 的 `--include` 内）。门禁阈值 85% 不受影响。详见验收记录 §2。
 
@@ -46,7 +50,7 @@
 
 | 文档 | 用途 | 建议读法 |
 | --- | --- | --- |
-| `docs/plans/2026-10-10-p0-gap-closure-plan.md`（执行手册，~950 行） | §0.1 总账（唯一数字来源）、§1 约束、§2 冻结契约、§3.1.1 **工作流注册表（owner 唯一来源）**、§3.1.2 回滚纪律、§4–§10 各功能任务表、§11 收口、§13 决策、**§16/§17/§18 已回填的实施结果** | 先读 §3.1.1 + §3.2 + 你要派发的那一节 |
+| `docs/plans/2026-10-10-p0-gap-closure-plan.md`（执行手册，~1100 行） | §0.1 总账（唯一数字来源）、§1 约束、§2 冻结契约、§3.1.1 **工作流注册表（owner 唯一来源）**、§3.1.2 回滚纪律、§4–§10 各功能任务表、§11 收口、§13 决策、**§16/§17/§18/§19 已回填的实施结果** | 先读 §3.1.1 + §3.2 + 你要派发的那一节 |
 | `docs/plans/2026-10-10-snow-apps-feature-gap-analysis.md`（~456 行） | §2 能力差依据、§3 优先级、§5 许可证与义务、§5.6 L1–L16 落地清单 | 只在碰 P1/许可证时读 |
 | `docs/plans/2026-10-10-p0-batch-a-verification.md`（本轮新建） | **真机验收记录**：§3 逐项实测、§3.4 高 DPI 分页缺陷、§3.5 居中、§6 观察项、**§7 剩余待验清单** | 接手验收时先读 §7 |
 
@@ -151,9 +155,9 @@ npm run test:e2e               # 5/5
 | 波次 | 内容 | owner / 作用域要点 |
 | --- | --- | --- |
 | **Wave 3** | 批次 A 收口：真机验收剩余项**全部挂账**（2026-10-11 用户决定先开发）→ 回填 → v2.3.2 | Lead |
-| **Wave 4** | S2 录屏音轨（`record/**` + `recording-service.js`）· S5 光标原生采集（`native/smart-select/**` + `cursor-provider.js` + `shared/cursor-geometry.js`） | **已派出（2026-10-11）**：`task-1` / `task-2`，两流并行、作用域互斥 |
-| **Wave 5** | Lead 接线：`setDisplayMediaRequestHandler` + 光标 provider 注入 | 预计 5–8 行 `main.js`（余量 22 够用） |
-| **Wave 6** | S6 标注二次编辑（`capture/**` 独占，PR1–PR4 串行） | 需同步 `test/capture-toolbar-icons.test.js`；c8 `--include` 追加由 Lead 做 |
+| **Wave 4** | S2 录屏音轨（`record/**` + `recording-service.js`）· S5 光标原生采集（`native/smart-select/**` + `cursor-provider.js` + `shared/cursor-geometry.js`） | ✅ **已完成（2026-10-11）**：`eb90eb7`（S2）/ `0ceaa3b`（S5）；两条流作用域互斥、各自定向测试绿 |
+| **Wave 5** | Lead 接线：`setDisplayMediaRequestHandler` + 光标 provider 注入 | ✅ **已完成**：`882b1f0`（record 侧 4 处）/ `2ae1042`（main.js + c8 include）；`main.js` 1278→1286 |
+| **Wave 6** | S6 标注二次编辑（`capture/**` 独占，PR1–PR4 串行） | **进行中**：PR1（选中+删除+快照栈+`annotation-geometry.js`）已派出；需同步 `test/capture-toolbar-icons.test.js`；c8 `--include` 追加由 Lead 做 |
 | **Wave 7** | S9b capture 光标合成接线 | 依赖 W6 释放 `capture/**` |
 | **Wave 7.5** | S10b 批次 B 的 `config/**` 收口（录屏音频/光标开关；含 P0-3-T6 文案"仅包含画面"必须改） | 串行小波次 |
 | **Wave 8** | 批次 B 收口 + 真机（音轨/光标/标注编辑）→ v2.4.0 | Lead |
