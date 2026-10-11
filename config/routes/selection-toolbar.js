@@ -6,22 +6,22 @@ let draggedSelectionToolbarAction = ''
 function renderSelectionToolbarSettings() {
   const toolbar = settings.selectionToolbar
   const customLimitReached = toolbar.customActions.length >= 12
-  view.innerHTML = `<div class="page">${pageHeader('划词工具', '自定义工具栏顺序、内置提示词和你自己的 AI 功能。')}<section class="section"><h2 class="section-title">工具栏</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>启用划词工具栏</b><small>选中文本后显示已启用的快捷操作</small></div>${switchMarkup(toolbar.enabled, 'enabled', 'selectionToolbar')}</div><div class="form-row"><div class="form-label"><b>剪贴板兼容模式</b><small>仅在无法直接读取选区的应用中启用；可能与远程剪贴板软件冲突</small></div>${switchMarkup(toolbar.clipboardFallback, 'clipboardFallback', 'selectionToolbar')}</div></div></section><section class="section"><h2 class="section-title">功能与顺序 <small>拖动项目或使用箭头调整</small></h2><div class="card toolbar-order-list" id="toolbarOrderList">${selectionToolbarOrderMarkup(toolbar)}</div></section><section class="section"><h2 class="section-title">内置功能设置</h2><div class="card prompt-settings"><div class="prompt-setting"><label for="translatePrompt"><b>翻译提示词</b><small>用于划词工具栏的“翻译”功能</small></label><textarea class="textarea prompt-editor" id="translatePrompt" maxlength="6000">${escapeHtml(toolbar.prompts.translate)}</textarea></div><div class="prompt-setting"><label for="explainPrompt"><b>解释提示词</b><small>用于划词工具栏的“解释”功能</small></label><textarea class="textarea prompt-editor" id="explainPrompt" maxlength="6000">${escapeHtml(toolbar.prompts.explain)}</textarea></div><div class="form-row search-setting"><div class="form-label"><b>翻译思考强度</b><small>“翻译”功能请求 AI 时的思考深度，关闭时响应更快</small></div><select id="translateThinking"><option value="off">关</option><option value="low">低</option><option value="high">高</option><option value="max">最高</option></select></div><div class="form-row search-setting"><div class="form-label"><b>翻译原语言</b><small>“翻译”功能的源语言，自动识别适合大多数场景</small></div><select id="translateSourceLanguage"><option value="auto">自动识别</option><option value="中文">中文</option><option value="日文">日文</option><option value="英文">英文</option><option value="韩文">韩文</option></select></div><div class="form-row search-setting"><div class="form-label"><b>翻译目标语言</b><small>“翻译”功能的结果输出语言</small></div><select id="translateTargetLanguage"><option value="中文">中文</option><option value="日文">日文</option><option value="英文">英文</option></select></div><div class="form-row search-setting"><div class="form-label"><b>解释思考强度</b><small>“解释”功能请求 AI 时的思考深度，强度越高分析越深入</small></div><select id="explainThinking"><option value="off">关</option><option value="low">低</option><option value="high">高</option><option value="max">最高</option></select></div><div class="form-row search-setting"><div class="form-label"><b>搜索引擎</b><small>“搜索”功能使用系统默认浏览器打开</small></div><select id="searchEngine"><option value="bing">Bing</option><option value="baidu">百度</option><option value="google">Google</option></select></div></div></section><section class="section"><h2 class="section-title">划词追问</h2><div class="card prompt-settings"><div class="form-row"><div class="form-label"><b>追问开关</b><small>在结果窗口底部显示输入区，可就该结果继续提问；关闭后只影响追问，翻译与解释本身不受影响</small></div><div class="switch ${toolbar.conversation.enabled ? 'on' : ''}" id="conversationEnabled"></div></div><div class="form-row search-setting"><div class="form-label"><b>追问轮数</b><small>单次会话最多追问几轮，超出后需重新划词</small></div><select id="conversationTurns"><option value="3">3 轮</option><option value="5">5 轮</option><option value="10">10 轮</option><option value="20">20 轮</option></select></div><div class="form-row"><div class="form-label"><b>保存对话到本地</b><small>把已完成的划词对话存到本机，重启后仍可从托盘打开；关闭时会删除已保存的内容</small></div><div class="switch ${toolbar.conversation.persist ? 'on' : ''}" id="conversationPersist"></div></div></div></section><section class="section"><h2 class="section-title">自定义 AI 功能 <button class="button" id="addCustomToolbar" ${customLimitReached ? 'disabled' : ''}>＋ 添加功能</button></h2><div class="card custom-toolbar-list">${selectionToolbarCustomMarkup(toolbar)}</div>${customLimitReached ? '<small class="section-note">最多可创建 12 个自定义功能。</small>' : ''}</section><button class="button primary" id="saveSelectionToolbar">保存划词工具设置</button></div>`
+  view.innerHTML = `<div class="page">${pageHeader(t('config.route.selection-toolbar'), t('config.selection-toolbar.description'))}<section class="section"><h2 class="section-title">${t('config.selection-toolbar.toolbar-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.selection-toolbar.enable-toolbar')}</b><small>${t('config.selection-toolbar.enable-toolbar-hint')}</small></div>${switchMarkup(toolbar.enabled, 'enabled', 'selectionToolbar')}</div><div class="form-row"><div class="form-label"><b>${t('config.selection-toolbar.clipboard-fallback')}</b><small>${t('config.selection-toolbar.clipboard-fallback-hint')}</small></div>${switchMarkup(toolbar.clipboardFallback, 'clipboardFallback', 'selectionToolbar')}</div></div></section><section class="section"><h2 class="section-title">${t('config.selection-toolbar.order-section')} <small>${t('config.selection-toolbar.order-hint')}</small></h2><div class="card toolbar-order-list" id="toolbarOrderList">${selectionToolbarOrderMarkup(toolbar)}</div></section><section class="section"><h2 class="section-title">${t('config.selection-toolbar.builtin-section')}</h2><div class="card prompt-settings"><div class="prompt-setting"><label for="translatePrompt"><b>${t('config.selection-toolbar.translate-prompt')}</b><small>${t('config.selection-toolbar.translate-prompt-hint')}</small></label><textarea class="textarea prompt-editor" id="translatePrompt" maxlength="6000">${escapeHtml(toolbar.prompts.translate)}</textarea></div><div class="prompt-setting"><label for="explainPrompt"><b>${t('config.selection-toolbar.explain-prompt')}</b><small>${t('config.selection-toolbar.explain-prompt-hint')}</small></label><textarea class="textarea prompt-editor" id="explainPrompt" maxlength="6000">${escapeHtml(toolbar.prompts.explain)}</textarea></div><div class="form-row search-setting"><div class="form-label"><b>${t('config.selection-toolbar.translate-thinking')}</b><small>${t('config.selection-toolbar.translate-thinking-hint')}</small></div><select id="translateThinking"><option value="off">${t('config.selection-toolbar.thinking-off')}</option><option value="low">${t('config.selection-toolbar.thinking-low')}</option><option value="high">${t('config.selection-toolbar.thinking-high')}</option><option value="max">${t('config.selection-toolbar.thinking-max')}</option></select></div><div class="form-row search-setting"><div class="form-label"><b>${t('config.selection-toolbar.translate-source')}</b><small>${t('config.selection-toolbar.translate-source-hint')}</small></div><select id="translateSourceLanguage"><option value="auto">${t('config.selection-toolbar.source-auto')}</option><option value="中文">${t('config.language.zh')}</option><option value="日文">${t('config.language.ja')}</option><option value="英文">${t('config.language.en')}</option><option value="韩文">${t('config.language.ko')}</option></select></div><div class="form-row search-setting"><div class="form-label"><b>${t('config.selection-toolbar.translate-target')}</b><small>${t('config.selection-toolbar.translate-target-hint')}</small></div><select id="translateTargetLanguage"><option value="中文">${t('config.language.zh')}</option><option value="日文">${t('config.language.ja')}</option><option value="英文">${t('config.language.en')}</option></select></div><div class="form-row search-setting"><div class="form-label"><b>${t('config.selection-toolbar.explain-thinking')}</b><small>${t('config.selection-toolbar.explain-thinking-hint')}</small></div><select id="explainThinking"><option value="off">${t('config.selection-toolbar.thinking-off')}</option><option value="low">${t('config.selection-toolbar.thinking-low')}</option><option value="high">${t('config.selection-toolbar.thinking-high')}</option><option value="max">${t('config.selection-toolbar.thinking-max')}</option></select></div><div class="form-row search-setting"><div class="form-label"><b>${t('config.selection-toolbar.search-engine')}</b><small>${t('config.selection-toolbar.search-engine-hint')}</small></div><select id="searchEngine"><option value="bing">Bing</option><option value="baidu">${t('config.selection-toolbar.search-engine-baidu')}</option><option value="google">Google</option></select></div></div></section><section class="section"><h2 class="section-title">${t('config.selection-toolbar.conversation-section')}</h2><div class="card prompt-settings"><div class="form-row"><div class="form-label"><b>${t('config.selection-toolbar.conversation-enabled')}</b><small>${t('config.selection-toolbar.conversation-enabled-hint')}</small></div><div class="switch ${toolbar.conversation.enabled ? 'on' : ''}" id="conversationEnabled"></div></div><div class="form-row search-setting"><div class="form-label"><b>${t('config.selection-toolbar.conversation-turns')}</b><small>${t('config.selection-toolbar.conversation-turns-hint')}</small></div><select id="conversationTurns"><option value="3">${t('config.selection-toolbar.conversation-turns-option', { count: 3 })}</option><option value="5">${t('config.selection-toolbar.conversation-turns-option', { count: 5 })}</option><option value="10">${t('config.selection-toolbar.conversation-turns-option', { count: 10 })}</option><option value="20">${t('config.selection-toolbar.conversation-turns-option', { count: 20 })}</option></select></div><div class="form-row"><div class="form-label"><b>${t('config.selection-toolbar.conversation-persist')}</b><small>${t('config.selection-toolbar.conversation-persist-hint')}</small></div><div class="switch ${toolbar.conversation.persist ? 'on' : ''}" id="conversationPersist"></div></div></div></section><section class="section"><h2 class="section-title">${t('config.selection-toolbar.custom-section')} <button class="button" id="addCustomToolbar" ${customLimitReached ? 'disabled' : ''}>${t('config.selection-toolbar.add-custom')}</button></h2><div class="card custom-toolbar-list">${selectionToolbarCustomMarkup(toolbar)}</div>${customLimitReached ? '<small class="section-note">' + t('config.selection-toolbar.custom-limit') + '</small>' : ''}</section><button class="button primary" id="saveSelectionToolbar">${t('config.selection-toolbar.save')}</button></div>`
   document.getElementById('searchEngine').value = toolbar.searchEngine || 'bing'
   const toolbarThinking = settings.toolbarThinking || {}
   const translateThinking = document.getElementById('translateThinking')
   const explainThinking = document.getElementById('explainThinking')
   translateThinking.value = ['off', 'low', 'high', 'max'].includes(toolbarThinking.translate) ? toolbarThinking.translate : 'off'
   explainThinking.value = ['off', 'low', 'high', 'max'].includes(toolbarThinking.explain) ? toolbarThinking.explain : 'high'
-  translateThinking.onchange = () => updateSettings({ toolbarThinking: { translate: translateThinking.value } }, '翻译思考强度已更新')
-  explainThinking.onchange = () => updateSettings({ toolbarThinking: { explain: explainThinking.value } }, '解释思考强度已更新')
+  translateThinking.onchange = () => updateSettings({ toolbarThinking: { translate: translateThinking.value } }, t('config.selection-toolbar.translate-thinking-updated'))
+  explainThinking.onchange = () => updateSettings({ toolbarThinking: { explain: explainThinking.value } }, t('config.selection-toolbar.explain-thinking-updated'))
   const translateLanguages = toolbar.translateLanguages || {}
   const translateSourceLanguage = document.getElementById('translateSourceLanguage')
   const translateTargetLanguage = document.getElementById('translateTargetLanguage')
   translateSourceLanguage.value = ['auto', '中文', '日文', '英文', '韩文'].includes(translateLanguages.source) ? translateLanguages.source : 'auto'
   translateTargetLanguage.value = ['中文', '日文', '英文'].includes(translateLanguages.target) ? translateLanguages.target : '中文'
-  translateSourceLanguage.onchange = () => updateSettings({ selectionToolbar: { translateLanguages: { source: translateSourceLanguage.value } } }, '翻译原语言已更新')
-  translateTargetLanguage.onchange = () => updateSettings({ selectionToolbar: { translateLanguages: { target: translateTargetLanguage.value } } }, '翻译目标语言已更新')
+  translateSourceLanguage.onchange = () => updateSettings({ selectionToolbar: { translateLanguages: { source: translateSourceLanguage.value } } }, t('config.selection-toolbar.translate-source-updated'))
+  translateTargetLanguage.onchange = () => updateSettings({ selectionToolbar: { translateLanguages: { target: translateTargetLanguage.value } } }, t('config.selection-toolbar.translate-target-updated'))
   const conversationTurns = document.getElementById('conversationTurns')
   const conversationEnabled = document.getElementById('conversationEnabled')
   conversationTurns.value = String(toolbar.conversation.maxFollowUpTurns)
@@ -31,10 +31,10 @@ function renderSelectionToolbarSettings() {
   // 所以这个开关必须手写 handler。
   conversationEnabled.onclick = async () => {
     const value = !conversationEnabled.classList.contains('on')
-    await updateSettings({ selectionToolbar: { conversation: { enabled: value } } }, '追问开关已更新')
+    await updateSettings({ selectionToolbar: { conversation: { enabled: value } } }, t('config.selection-toolbar.conversation-enabled-updated'))
     renderSelectionToolbarSettings()
   }
-  conversationTurns.onchange = () => updateSettings({ selectionToolbar: { conversation: { maxFollowUpTurns: Number(conversationTurns.value) } } }, '追问轮数已更新')
+  conversationTurns.onchange = () => updateSettings({ selectionToolbar: { conversation: { maxFollowUpTurns: Number(conversationTurns.value) } } }, t('config.selection-toolbar.conversation-turns-updated'))
   const conversationPersist = document.getElementById('conversationPersist')
   // Same nested-object reason as the switch above: this cannot use bindSwitches.
   // The main process reacts to the setting by trimming or deleting the store.
@@ -42,7 +42,7 @@ function renderSelectionToolbarSettings() {
     const value = !conversationPersist.classList.contains('on')
     await updateSettings(
       { selectionToolbar: { conversation: { persist: value } } },
-      value ? '已开启本地保存' : '已关闭本地保存，已删除保存的对话'
+      value ? t('config.selection-toolbar.persist-enabled') : t('config.selection-toolbar.persist-disabled')
     )
     renderSelectionToolbarSettings()
   }
@@ -111,8 +111,8 @@ function renderSelectionToolbarSettings() {
     const id = createSelectionToolbarActionId()
     const customActions = [...editor.customActions, {
       id,
-      name: '新功能',
-      prompt: '请根据要求处理这段文字。',
+      name: t('config.selection-toolbar.new-custom-name'),
+      prompt: t('config.selection-toolbar.new-custom-prompt'),
       enabled: true,
       thinking: 'high'
     }]
@@ -125,14 +125,14 @@ function renderSelectionToolbarSettings() {
     button.onclick = async () => {
       const id = button.dataset.deleteCustomToolbar
       const item = toolbar.customActions.find((candidate) => candidate.id === id)
-      if (!item || !confirm(`确定删除自定义功能“${item.name}”？`)) return
+      if (!item || !confirm(t('config.selection-toolbar.confirm-delete-custom', { name: item.name }))) return
       const editor = readSelectionToolbarEditor(toolbar)
       if (!editor) return
       const customActions = editor.customActions.filter((candidate) => candidate.id !== id)
       const order = toolbar.order.filter((action) => action !== selectionToolbarCustomKey(id))
       await updateSettings({ selectionToolbar: { ...editor, customActions, order } }, '')
       renderSelectionToolbarSettings()
-      toast('自定义功能已删除')
+      toast(t('config.selection-toolbar.custom-deleted'))
     }
   })
   document.getElementById('saveSelectionToolbar').onclick = async () => {
@@ -143,7 +143,7 @@ function renderSelectionToolbarSettings() {
         ...editor,
         order: toolbar.order,
       }
-    }, '划词工具设置已保存')
+    }, t('config.selection-toolbar.saved'))
     renderSelectionToolbarSettings()
   }
 }

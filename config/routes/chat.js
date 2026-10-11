@@ -4,13 +4,13 @@
 let chatMessages = []
 
 function renderChat() {
-  view.innerHTML = `<div class="page"><div class="card chat-wrap"><div class="chat-messages" id="chatMessages">${chatMessages.length ? chatMessages.map((message) => `<div class="message ${message.role}">${escapeHtml(message.content)}</div>`).join('') : '<div class="empty">输入问题开始对话。可在“设置 > 模型”中为 AI 对话选择供应商、模型，并调整 Temperature 与 Token 上限。</div>'}</div><div class="chat-input"><textarea class="input" id="chatInput" placeholder="输入消息，Ctrl+Enter 发送"></textarea><button class="button primary" id="sendChat">发送</button></div></div></div>`
+  view.innerHTML = `<div class="page"><div class="card chat-wrap"><div class="chat-messages" id="chatMessages">${chatMessages.length ? chatMessages.map((message) => `<div class="message ${message.role}">${escapeHtml(message.content)}</div>`).join('') : '<div class="empty">' + t('config.chat.empty') + '</div>'}</div><div class="chat-input"><textarea class="input" id="chatInput" placeholder="${t('config.chat.input-placeholder')}"></textarea><button class="button primary" id="sendChat">${t('config.chat.send')}</button></div></div></div>`
   const send = async () => {
     const input = document.getElementById('chatInput'); const content = input.value.trim(); if (!content) return
     chatMessages.push({ role: 'user', content }); input.value = ''; renderChat()
     const messages = chatMessages.map((message) => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content }))
     try { const answer = await window.electronAPI.requestAi(messages); chatMessages.push({ role: 'assistant', content: answer }) }
-    catch (error) { chatMessages.push({ role: 'assistant', content: `请求失败：${error.message || error}` }) }
+    catch (error) { chatMessages.push({ role: 'assistant', content: t('config.chat.request-failed', { message: error.message || error }) }) }
     renderChat(); const box = document.getElementById('chatMessages'); box.scrollTop = box.scrollHeight
   }
   document.getElementById('sendChat').onclick = send

@@ -61,7 +61,7 @@ function applyAppearance() {
   customStyle.textContent = settings.customCss || ''
 }
 
-async function updateSettings(patch, message = '设置已保存') {
+async function updateSettings(patch, message = t('config.setting.saved')) {
   settings = await window.electronAPI.updateSettings(patch)
   if (patch.shortcuts) await refreshShortcutStatuses()
   applyAppearance()
@@ -76,24 +76,27 @@ async function refreshShortcutStatuses() {
 
 function shortcutPresentation(name, accelerator) {
   if (!accelerator) {
-    return { className: '', text: '未设置', title: '点击录入快捷键' }
+    return { className: '', text: t('config.shortcut.unset'), title: t('config.shortcut.unset-title') }
   }
   const status = shortcutStatuses[name]
   if (!status || status.registered) {
-    return { className: 'set', text: accelerator, title: '快捷键已启用' }
+    return { className: 'set', text: accelerator, title: t('config.shortcut.enabled') }
   }
-  let message = '快捷键未能注册'
+  let message = t('config.shortcut.not-registered')
   if (status.reason === 'duplicate') {
     const conflicts = (status.conflictWith || [])
-      .map((owner) => Object.values(functionGroups).flat().find(([itemName]) => itemName === owner)?.[1] || owner)
-      .join('、')
-    message = conflicts ? `与“${conflicts}”重复` : '与其他应用内快捷键重复'
+      .map((owner) => {
+        const label = Object.values(functionGroups).flat().find(([itemName]) => itemName === owner)?.[1]
+        return label ? t(label) : owner
+      })
+      .join(t('config.common.list-separator'))
+    message = conflicts ? t('config.shortcut.duplicate-with', { names: conflicts }) : t('config.shortcut.duplicate-other')
   } else if (status.reason === 'unavailable') {
-    message = '已被系统或其他应用占用'
+    message = t('config.shortcut.system-taken')
   } else if (status.reason === 'invalid') {
-    message = '快捷键格式无效'
+    message = t('config.shortcut.invalid')
   } else if (status.reason === 'game-mode') {
-    message = '游戏模式已暂停此快捷键'
+    message = t('config.shortcut.game-mode')
   }
   return {
     className: 'set unavailable',
@@ -115,7 +118,7 @@ function pageHeader(title, description, extra = '') {
   return `<div class="page-head"><div><h1>${title}</h1><p>${description || ''}</p></div>${extra}</div>`
 }
 
-const OCR_PROFILE_LABELS = { 'ppocr-v4-ch': 'PaddleOCR v4 中英' }
+const OCR_PROFILE_LABELS = { 'ppocr-v4-ch': 'config.status.ocr-profile-chinese-english' }
 
 const statusRailCell = (label, value, tone = '') => {
   const cls = tone ? ` tone-${tone}` : ''
@@ -141,38 +144,39 @@ async function refreshStatusRail() {
   const cells = []
 
   const ocrProfile = settings.ocr?.modelProfile || 'ppocr-v4-ch'
-  cells.push(statusRailCell('识别引擎', OCR_PROFILE_LABELS[ocrProfile] || ocrProfile))
+  const ocrProfileKey = OCR_PROFILE_LABELS[ocrProfile]
+  cells.push(statusRailCell(t('config.status.ocr-engine'), ocrProfileKey ? t(ocrProfileKey) : ocrProfile))
 
   const assignments = settings.ai?.assignments || []
   const primary = assignments.find((item) => item.feature === 'chat') || assignments[0]
   const provider = primary ? (settings.providers || []).find((item) => item.id === primary.providerId) : null
   if (provider && primary.model) {
-    cells.push(statusRailCell('模型', `${provider.name} · ${primary.model}`, 'accent'))
+    cells.push(statusRailCell(t('config.status.model'), `${provider.name} · ${primary.model}`, 'accent'))
   } else {
-    cells.push(statusRailCell('模型', '未配置', 'warn'))
+    cells.push(statusRailCell(t('config.status.model'), t('config.status.not-configured'), 'warn'))
   }
 
   const configured = Object.values(settings.shortcuts || {}).filter(Boolean).length
   const total = Object.values(functionGroups).flat().length
-  cells.push(statusRailCell('热键', `${configured}/${total} 已配置`, configured === 0 ? 'warn' : ''))
+  cells.push(statusRailCell(t('config.status.hotkey'), t('config.status.hotkey-configured', { configured, total }), configured === 0 ? 'warn' : ''))
 
   // Everything is checked out of process and may not be running yet.
-  let searchText = '检测中'
+  let searchText = t('config.status.checking')
   let searchTone = 'off'
   try {
     const status = await window.electronAPI.getSearchStatus()
     if (status?.running && status.ipcAvailable !== false) {
-      searchText = status.phase === 'ready' ? '已就绪' : '启动中'
+      searchText = status.phase === 'ready' ? t('config.status.ready') : t('config.status.starting')
       searchTone = status.phase === 'ready' ? '' : 'warn'
     } else {
-      searchText = status?.available ? '待启用' : '组件缺失'
+      searchText = status?.available ? t('config.status.pending') : t('config.status.component-missing')
       searchTone = 'warn'
     }
   } catch {
-    searchText = '检测失败'
+    searchText = t('config.status.check-failed')
     searchTone = 'warn'
   }
-  cells.push(statusRailCell('本地搜索', searchText, searchTone))
+  cells.push(statusRailCell(t('config.status.local-search'), searchText, searchTone))
 
   // Guard against a route change while awaiting the IPC round trip.
   if (!showOn.has(currentRoute)) return
@@ -229,7 +233,7 @@ function openModal(contentHtml, { onMount } = {}) {
 }
 
 function openDocs(url) {
-  window.electronAPI.openExternal(url).catch(() => toast('无法打开文档链接'))
+  window.electronAPI.openExternal(url).catch(() => toast(t('config.error.open-docs')))
 }
 
 // D2-2（S14）：共享 helper 的显式登记面，便于测试与后续 i18n 取用。

@@ -52,13 +52,14 @@ test('history action buttons keep readable color in dark mode', () => {
 })
 
 test('history page opens screenshots with the default application', () => {
-  assert.match(config, /data-history-action="open"[^>]*>打开<\/button>/)
+  // P0-1-T3（S1，批次 C）：按钮文案改为语言表取键，动作属性与键名一起断言。
+  assert.match(config, /data-history-action="open"[^>]*>\$\{t\('config\.history\.action-open'\)\}<\/button>/)
   assert.match(config, /window\.electronAPI\.openHistory\(id\)/)
   assert.match(main, /shell\.openPath\(item\.filePath\)/)
 })
 
 test('history page copies a screenshot absolute path instead of revealing it', () => {
-  assert.match(config, /data-history-action="address"[^>]*>地址<\/button>/)
+  assert.match(config, /data-history-action="address"[^>]*>\$\{t\('config\.history\.action-address'\)\}<\/button>/)
   assert.match(config, /window\.electronAPI\.copyHistoryPath\(id\)/)
   assert.match(config, /图片地址已复制/)
   assert.match(main, /clipboard\.writeText\(path\.resolve\(item\.filePath\)\)/)
@@ -91,7 +92,8 @@ test('history page does not expose favorite controls or state', () => {
 })
 
 test('history page confirms destructive cleanup and reports partial failures', () => {
-  assert.match(config, /confirm\(`确定删除选中的 \$\{historySelectedIds\.size\} 项截图及对应文件？`\)/)
+  // P0-1-T3（S1，批次 C）：确认文案迁到语言表，参数插值改为 t() 的 params。
+  assert.match(config, /confirm\(t\('config\.history\.confirm-delete-selected', \{ count: historySelectedIds\.size \}\)\)/)
   assert.match(config, /window\.electronAPI\.deleteHistoryMany\(\[\.\.\.historySelectedIds\]\)/)
   assert.match(config, /未被引用的 Highlighter 文件/)
   assert.match(config, /window\.electronAPI\.cleanupHistory\(\)/)

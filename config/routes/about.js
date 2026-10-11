@@ -15,15 +15,15 @@ function formatUpdateBytes(value) {
 
 function updateStatusPresentation(status) {
   const labels = {
-    idle: status.lastCheckedAt ? '已是最新版本' : '尚未检查更新',
-    checking: '正在检查更新…',
-    available: `发现新版本 ${status.version || ''}`.trim(),
-    downloading: `正在下载 ${Math.round(status.progress?.percent || 0)}%`,
-    downloaded: `版本 ${status.version || ''} 已准备安装`.trim(),
-    installing: '正在退出并安装更新…',
-    error: status.error?.message || '更新操作失败'
+    idle: status.lastCheckedAt ? t('config.about.update-idle-current') : t('config.about.update-idle'),
+    checking: t('config.about.update-checking'),
+    available: t('config.about.update-available', { version: status.version || '' }).trim(),
+    downloading: t('config.about.update-downloading', { percent: Math.round(status.progress?.percent || 0) }),
+    downloaded: t('config.about.update-downloaded', { version: status.version || '' }).trim(),
+    installing: t('config.about.update-installing'),
+    error: status.error?.message || t('config.about.update-failed')
   }
-  return labels[status.status] || '更新状态未知'
+  return labels[status.status] || t('config.about.update-unknown')
 }
 
 async function renderAbout(snapshot = null) {
@@ -35,19 +35,19 @@ async function renderAbout(snapshot = null) {
   if (renderVersion !== aboutRenderVersion || currentRoute !== 'about') return
   aboutInfo = info
   latestUpdateStatus = status
-  const installTypeLabels = { nsis: '安装版', portable: '便携版', unpacked: '解压测试版', development: '开发环境' }
+  const installTypeLabels = { nsis: 'config.about.install-nsis', portable: 'config.about.install-portable', unpacked: 'config.about.install-unpacked', development: 'config.about.install-development' }
   const busy = ['checking', 'available', 'downloading', 'downloaded', 'installing'].includes(status.status)
   let primaryAction = 'check'
-  let primaryLabel = '检查更新'
+  let primaryLabel = t('config.about.check-update')
   if (status.portable || status.installType !== 'nsis') {
     primaryAction = 'open'
-    primaryLabel = '打开下载页'
+    primaryLabel = t('config.about.open-download-page')
   } else if (status.status === 'available') {
     primaryAction = 'download'
-    primaryLabel = '下载更新'
+    primaryLabel = t('config.about.download-update')
   } else if (status.status === 'downloaded') {
     primaryAction = 'install'
-    primaryLabel = '退出并安装'
+    primaryLabel = t('config.about.install-update')
   }
   const releaseDetails = status.version
     ? `<div class="update-release"><b>${escapeHtml(status.version)}</b>${status.releaseDate ? `<span>${escapeHtml(new Date(status.releaseDate).toLocaleDateString())}</span>` : ''}${status.size ? `<span>${escapeHtml(formatUpdateBytes(status.size))}</span>` : ''}</div>`
@@ -64,18 +64,18 @@ async function renderAbout(snapshot = null) {
       ? `<div class="update-guidance">${escapeHtml(status.error.action)}</div>`
       : ''
   const portabilityNote = status.portable
-    ? '<small class="section-note">便携版不会在应用内替换自身，请从发布页下载新版本。</small>'
+    ? '<small class="section-note">' + t('config.about.portable-note') + '</small>'
     : status.installType !== 'nsis'
-      ? '<small class="section-note">当前运行方式不支持应用内更新，请使用正式安装版。</small>'
+      ? '<small class="section-note">' + t('config.about.unsupported-note') + '</small>'
       : ''
-  view.innerHTML = `<div class="page"><div class="card about"><div class="about-logo"><span>High</span>lighter</div><h2>桌面截图与划词效率工具</h2><p>版本 ${escapeHtml(info.version)} · ${escapeHtml(info.platform)} · ${escapeHtml(installTypeLabels[info.installType] || info.installType)}</p><p>集截图标注、长截图、文字与表格识别、二维码扫描、贴图、历史管理、翻译、AI 对话、录屏、全屏画布、热键和个性化设置于一体。</p><button class="button" id="openProjectHome">项目主页</button></div><section class="card update-card"><div class="update-head"><div><h2>软件更新</h2><p>${escapeHtml(updateStatusPresentation(status))}</p></div><label>更新通道<select id="updateChannel" ${busy ? 'disabled' : ''}><option value="stable" ${status.channel === 'stable' ? 'selected' : ''}>稳定版</option><option value="beta" ${status.channel === 'beta' ? 'selected' : ''}>测试版</option></select></label></div>${status.channel === 'beta' ? '<div class="update-guidance warning">测试版可能包含尚未完成验证的改动；切回稳定版不会自动降级。</div>' : ''}${releaseDetails}${progress}${releaseNotes}${guidance}${portabilityNote}<div class="update-actions"><button class="button primary" id="primaryUpdateAction" data-action="${primaryAction}" ${busy ? 'disabled' : ''}>${primaryLabel}</button><button class="button" id="openUpdateDownloads">发布页</button></div></section></div>`
+  view.innerHTML = `<div class="page"><div class="card about"><div class="about-logo"><span>High</span>lighter</div><h2>${t('config.about.tagline')}</h2><p>${t('config.about.version-line', { version: escapeHtml(info.version), platform: escapeHtml(info.platform), installType: escapeHtml(installTypeLabels[info.installType] ? t(installTypeLabels[info.installType]) : info.installType) })}</p><p>${t('config.about.intro')}</p><button class="button" id="openProjectHome">${t('config.about.project-home')}</button></div><section class="card update-card"><div class="update-head"><div><h2>${t('config.about.update-section')}</h2><p>${escapeHtml(updateStatusPresentation(status))}</p></div><label>${t('config.about.update-channel')}<select id="updateChannel" ${busy ? 'disabled' : ''}><option value="stable" ${status.channel === 'stable' ? 'selected' : ''}>${t('config.about.channel-stable')}</option><option value="beta" ${status.channel === 'beta' ? 'selected' : ''}>${t('config.about.channel-beta')}</option></select></label></div>${status.channel === 'beta' ? '<div class="update-guidance warning">' + t('config.about.beta-warning') + '</div>' : ''}${releaseDetails}${progress}${releaseNotes}${guidance}${portabilityNote}<div class="update-actions"><button class="button primary" id="primaryUpdateAction" data-action="${primaryAction}" ${busy ? 'disabled' : ''}>${primaryLabel}</button><button class="button" id="openUpdateDownloads">${t('config.about.release-page')}</button></div></section></div>`
   document.getElementById('openProjectHome').onclick = () => window.electronAPI.openExternal('https://github.com/SherUnlocked-4869/Highlighter')
   document.getElementById('openUpdateDownloads').onclick = () => window.electronAPI.openUpdateDownloadPage()
   document.getElementById('updateChannel').onchange = async (event) => {
     try {
       await updateSettings({ system: { updateChannel: event.target.value } }, '')
       await renderAbout()
-    } catch (error) { toast(error.message || '无法切换更新通道') }
+    } catch (error) { toast(error.message || t('config.about.channel-switch-failed')) }
   }
   document.getElementById('primaryUpdateAction').onclick = async (event) => {
     const actions = {
@@ -88,7 +88,7 @@ async function renderAbout(snapshot = null) {
       const nextStatus = await actions[event.currentTarget.dataset.action]()
       if (nextStatus?.status) latestUpdateStatus = nextStatus
       await renderAbout(nextStatus?.status ? nextStatus : null)
-    } catch (error) { toast(error.message || '更新操作失败') }
+    } catch (error) { toast(error.message || t('config.about.update-failed')) }
   }
 }
 

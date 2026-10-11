@@ -129,9 +129,12 @@ test('system settings renders and uses data-root controls in every build', () =>
   // D2-4（S14/D2-2）：renderSystemSettings 搬到 routes/settings.js 后，主壳不再内联
   // `void renderSystemSettings().catch(...)`；async 失败提示改由分派表承载 ——
   // 断言随之改为"主壳仍为 settings-system 保留错误回退文案 + 该入口已登记"。
-  assert.match(config, /'settings-system': \{ key: 'renderSystemSettings', fallbackMessage: '无法读取软件数据目录' \}/)
+  // P0-1-T3（S1，批次 C）：fallbackMessage 改为语言表的键，文案本体落在
+  // shared/locales/config.js（readConfigSource() 已拼接它），两条一起断言。
+  assert.match(config, /'settings-system': \{ key: 'renderSystemSettings', fallbackMessage: 'config\.error\.read-data-root' \}/)
+  assert.match(config, /'config\.error\.read-data-root': '无法读取软件数据目录'/)
   assert.match(config, /window\.configRoutes\[entry\.key\]/)
-  assert.match(config, /catch\(\(error\) => toast\(error\.message \|\| entry\.fallbackMessage\)\)/)
+  assert.match(config, /catch\(\(error\) => toast\(error\.message \|\| t\(entry\.fallbackMessage\)\)\)/)
   assert.match(config, /window\.configRoutes\['renderSystemSettings'\]/)
 })
 

@@ -9,10 +9,10 @@
   }
 
   function modelProviderStatus(provider) {
-    if (provider.enabled === false) return { className: 'off', title: '已停用' }
-    if (!provider.baseUrl || !provider.models?.length) return { className: 'off', title: '未完成配置' }
-    if (!provider.apiKey && !provider.hasApiKey) return { className: 'warn', title: '未配置 API 密钥' }
-    return { className: 'on', title: '已启用' }
+    if (provider.enabled === false) return { className: 'off', title: 'config.models.status-disabled' }
+    if (!provider.baseUrl || !provider.models?.length) return { className: 'off', title: 'config.models.status-incomplete' }
+    if (!provider.apiKey && !provider.hasApiKey) return { className: 'warn', title: 'config.models.status-no-api-key' }
+    return { className: 'on', title: 'config.models.status-enabled' }
   }
 
   function modelTaskForFeature(feature) {

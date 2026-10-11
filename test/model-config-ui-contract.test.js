@@ -70,7 +70,9 @@ test('preload fetches model catalogs through the existing secure test-connection
 
 test('config exposes the coding plan entry, picker, simplified form, and assignment guide', () => {
   assert.match(html, /shared\/coding-plan-presets\.js/)
-  assert.ok(html.indexOf('shared/coding-plan-presets.js') < html.indexOf('config.js'))
+  // P0-1-T3（S1，批次 C）：config.html 现在还加载 ../shared/locales/config.js，裸的
+  // indexOf('config.js') 会先命中语言表；这里改为定位主壳自己的 script 标签。
+  assert.ok(html.indexOf('shared/coding-plan-presets.js') < html.indexOf('<script src="config.js"></script>'))
   assert.match(script, /id="addCodingPlanProvider"/)
   assert.match(script, /添加 Coding Plan/)
   assert.match(script, /function openCodingPlanDialog\(\)/)
@@ -81,8 +83,8 @@ test('config exposes the coding plan entry, picker, simplified form, and assignm
   assert.match(script, /data-coding-plan-name/)
   assert.match(script, /data-coding-plan-save/)
   assert.match(script, /data-coding-plan-back/)
-  assert.match(script, /codingPlanReadonlyRow\('API 地址'/)
-  assert.match(script, /codingPlanReadonlyRow\('API 协议'/)
+  assert.match(script, /codingPlanReadonlyRow\(t\('config\.models\.api-url'\)/)
+  assert.match(script, /codingPlanReadonlyRow\(t\('config\.models\.api-protocol'\)/)
   assert.match(script, /createCodingPlanProvider\(\{ presetId: preset\.id, apiKey, displayName \}\)/)
   assert.match(script, /function openCodingPlanAssignmentGuide\(provider\)/)
   assert.match(script, /data-coding-plan-feature=/)

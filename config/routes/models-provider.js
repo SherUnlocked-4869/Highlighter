@@ -16,7 +16,7 @@ function bindModelsProviderTab() {
   })
   document.getElementById('addModelProvider')?.addEventListener('click', () => {
     if (!commitOpenProviderEditors()) return
-    const provider = { id: createModelProviderId(), name: '新供应商', baseUrl: '', hasApiKey: false, protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
+    const provider = { id: createModelProviderId(), name: t('config.models.new-provider'), baseUrl: '', hasApiKey: false, protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
     settings = { ...settings, providers: [...settings.providers, provider] }
     modelsExpandedProviderIds = new Set([provider.id])
     renderModels()
@@ -28,16 +28,16 @@ function bindModelsProviderTab() {
   })
   document.getElementById('openModelConfigFile')?.addEventListener('click', () => {
     window.electronAPI.openDataDirectory().catch(() => {})
-    toast('已打开数据目录，配置文件位于该目录下')
+    toast(t('config.models.config-file-opened'))
   })
   document.querySelectorAll('[data-delete-provider]').forEach((button) => {
     button.onclick = () => {
       const providerId = button.dataset.deleteProvider
       const provider = modelProviderById(providerId)
       if (!provider) return
-      if (settings.providers.length <= 1) { toast('至少保留一个供应商'); return }
+      if (settings.providers.length <= 1) { toast(t('config.models.keep-one-provider')); return }
       if (!commitOpenProviderEditors({ exceptId: providerId })) return
-      if (!confirm(`确定删除供应商“${provider.name}”？`)) return
+      if (!confirm(t('config.models.confirm-delete-provider', { name: provider.name }))) return
       const remaining = settings.providers.filter((item) => item.id !== providerId)
       const assignments = (settings.ai?.assignments || []).map((assignment) => {
         if (assignment.providerId !== providerId) return assignment
@@ -49,7 +49,7 @@ function bindModelsProviderTab() {
       featureAssignmentDraft = null
       modelsExpandedProviderIds.delete(providerId)
       renderModels()
-      toast('供应商已删除，请保存以生效')
+      toast(t('config.models.provider-deleted'))
     }
   })
   document.querySelectorAll('[data-test-provider]').forEach((button) => {
@@ -63,21 +63,21 @@ function bindModelsProviderTab() {
         baseUrl: root.querySelector('[data-provider-base-url]')?.value.trim() || base.baseUrl,
         protocol: root.querySelector('[data-provider-protocol]')?.value || base.protocol
       }
-      button.disabled = true; button.textContent = '测试中'
+      button.disabled = true; button.textContent = t('config.models.testing')
       try {
         const result = await window.electronAPI.testConnection(provider)
-        if (result === true) { toast('连接成功'); return }
-        if (!result?.ok) { toast('连接失败'); return }
+        if (result === true) { toast(t('config.models.connected')); return }
+        if (!result?.ok) { toast(t('config.models.connect-failed')); return }
         const corrections = []
         const protocolSelect = root.querySelector('[data-provider-protocol]')
         const baseUrlInput = root.querySelector('[data-provider-base-url]')
         if (protocolSelect && result.protocol && result.protocol !== provider.protocol) {
           protocolSelect.value = result.protocol
-          corrections.push(`协议已切换为 ${result.protocol}`)
+          corrections.push(t('config.models.protocol-switched', { protocol: result.protocol }))
         }
         if (baseUrlInput && result.baseUrl && String(result.baseUrl).replace(/\/+$/, '') !== String(provider.baseUrl).replace(/\/+$/, '')) {
           baseUrlInput.value = result.baseUrl
-          corrections.push(`API 地址已修正为 ${result.baseUrl}`)
+          corrections.push(t('config.models.base-url-corrected', { url: result.baseUrl }))
         }
         if (Array.isArray(result.models) && result.models.length && !(provider.models || []).some((model) => model.id)) {
           const draft = readProviderEditorDraft(providerId)
@@ -87,13 +87,13 @@ function bindModelsProviderTab() {
             Object.assign(draft, applyFetchedModels(base, result.models))
             settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? draft : item) }
             renderModels()
-            toast(`连接成功，已自动获取 ${result.models.length} 个模型`)
+            toast(t('config.models.connected-with-models', { count: result.models.length }))
             return
           }
         }
-        toast(corrections.length ? `连接成功：${corrections.join('，')}` : '连接成功')
-      } catch (error) { toast(errorMessage(error) || '连接失败') } finally {
-        button.disabled = false; button.textContent = '测试'
+        toast(corrections.length ? t('config.models.connected-with-corrections', { details: corrections.join(t('config.common.clause-separator')) }) : t('config.models.connected'))
+      } catch (error) { toast(errorMessage(error) || t('config.models.connect-failed')) } finally {
+        button.disabled = false; button.textContent = t('config.models.test')
       }
     }
   })
@@ -110,7 +110,7 @@ function bindModelsProviderTab() {
       }
       settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? { ...item, models: defaults } : item) }
       renderModels()
-      toast('已恢复默认模型目录')
+      toast(t('config.models.models-restored'))
     }
   })
   document.querySelectorAll('[data-fetch-models]').forEach((button) => {
@@ -124,28 +124,28 @@ function bindModelsProviderTab() {
         baseUrl: root.querySelector('[data-provider-base-url]')?.value.trim() || base.baseUrl,
         protocol: root.querySelector('[data-provider-protocol]')?.value || base.protocol
       }
-      button.disabled = true; button.textContent = '获取中'
+      button.disabled = true; button.textContent = t('config.models.fetching')
       try {
         const result = await window.electronAPI.fetchProviderModels(provider)
-        if (!result?.ok) throw new Error('获取失败')
+        if (!result?.ok) throw new Error(t('config.models.fetch-failed'))
         if (result.protocol) root.querySelector('[data-provider-protocol]').value = result.protocol
         if (result.baseUrl) root.querySelector('[data-provider-base-url]').value = result.baseUrl
         if (!commitOpenProviderEditors({ tolerant: true })) {
-          button.disabled = false; button.textContent = '获取可用模型'
+          button.disabled = false; button.textContent = t('config.models.fetch-models')
           return
         }
         const fetched = (Array.isArray(result.models) ? result.models : []).filter((model) => String(model?.id || '').trim())
         if (!fetched.length) {
-          toast('未获取到模型，已保留当前模型目录')
-          button.disabled = false; button.textContent = '获取可用模型'
+          toast(t('config.models.no-models-fetched'))
+          button.disabled = false; button.textContent = t('config.models.fetch-models')
           return
         }
         settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? { ...item, ...applyFetchedModels(base, fetched) } : item) }
         renderModels()
-        toast(`已获取 ${fetched.length} 个模型`)
+        toast(t('config.models.models-fetched', { count: fetched.length }))
       } catch (error) {
-        toast(errorMessage(error) || '获取可用模型失败')
-        button.disabled = false; button.textContent = '获取可用模型'
+        toast(errorMessage(error) || t('config.models.fetch-models-failed'))
+        button.disabled = false; button.textContent = t('config.models.fetch-models')
       }
     }
   })
@@ -169,13 +169,13 @@ function bindModelsProviderTab() {
       const panel = item?.querySelector('[data-model-detail-panel]')
       if (!item || !panel || !provider) return
       const row = item.querySelector('.model-catalog-row')
-      const modelId = row?.querySelector('[data-model-id]')?.value.trim() || provider.models?.[index]?.id || '未填写'
+      const modelId = row?.querySelector('[data-model-id]')?.value.trim() || provider.models?.[index]?.id || t('config.models.not-filled')
       const modelName = row?.querySelector('[data-model-name]')?.value.trim() || provider.models?.[index]?.name || '—'
-      panel.innerHTML = `<div class="model-detail-grid"><span>模型 ID</span><b>${escapeHtml(modelId)}</b><span>显示名称</span><b>${escapeHtml(modelName)}</b><span>所属供应商</span><b>${escapeHtml(provider.name)}</b><span>API 协议</span><b>${escapeHtml(provider.protocol || 'openai-chat')}</b><span>API 地址</span><b>${escapeHtml(provider.baseUrl || '未填写')}</b></div>`
+      panel.innerHTML = `<div class="model-detail-grid"><span>${t('config.models.model-id')}</span><b>${escapeHtml(modelId)}</b><span>${t('config.models.display-name')}</span><b>${escapeHtml(modelName)}</b><span>${t('config.models.owning-provider')}</span><b>${escapeHtml(provider.name)}</b><span>${t('config.models.api-protocol')}</span><b>${escapeHtml(provider.protocol || 'openai-chat')}</b><span>${t('config.models.api-url')}</span><b>${escapeHtml(provider.baseUrl || t('config.models.not-filled'))}</b></div>`
       const willOpen = panel.hidden
       panel.hidden = !panel.hidden
       button.classList.toggle('open', willOpen)
-      button.title = willOpen ? '收起模型详情' : '展开模型详情'
+      button.title = willOpen ? t('config.models.collapse-model-details') : t('config.models.expand-model-details')
       button.setAttribute('aria-label', button.title)
     }
   })
@@ -186,7 +186,7 @@ function bindModelsProviderTab() {
       if (!commitOpenProviderEditors({ tolerant: true })) return
       const provider = modelProviderById(providerId)
       if (!provider) return
-      if (provider.models.length <= 1) { toast('每个供应商至少保留一个模型'); return }
+      if (provider.models.length <= 1) { toast(t('config.models.keep-one-model')); return }
       const models = provider.models.filter((_model, itemIndex) => itemIndex !== index)
       settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? { ...item, models } : item) }
       renderModels()
@@ -198,10 +198,10 @@ function bindModelsProviderTab() {
       settings = await updateSettings({
         providers: settings.providers,
         ai: { schemaVersion: 2, assignments: settings.ai?.assignments || [] }
-      }, '供应商配置已保存')
+      }, t('config.models.providers-saved'))
       renderModels()
     } catch (error) {
-      toast(error.message || '供应商配置保存失败')
+      toast(error.message || t('config.models.providers-save-failed'))
     }
   })
 }

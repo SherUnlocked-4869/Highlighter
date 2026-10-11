@@ -19,6 +19,7 @@ const path = require('node:path')
 const ROOT = path.join(__dirname, '..', '..')
 const CONFIG_DIRECTORY = path.join(ROOT, 'config')
 const ROUTES_DIRECTORY = path.join(CONFIG_DIRECTORY, 'routes')
+const LOCALES_DIRECTORY = path.join(ROOT, 'shared', 'locales')
 
 // 主壳永远第一，其后是按文件名排序的路由文件。
 function configSourceFiles () {
@@ -32,9 +33,21 @@ function configSourceFiles () {
   return files
 }
 
-// 拼接后的设置页源码（测试用它做 assert.match / doesNotMatch）。
+// P0-1-T3（S1，批次 C）：设置页的中文文案迁到 `shared/locales/config.js` 之后，
+// "设置页有没有这段文案"这一类断言（约 170 处）必须连语言表一起读 —— 它们问的是
+// **文案是否存在于这个窗口**，而不是它落在哪个文件里。迁移前这些文案就写在主壳/
+// 路由文件里，所以拼接语言表只是把同一份事实换了存放位置。
+//
+// 注意：本 helper **不**改变 `configSourceFiles()`（emoji/图标类断言按文件边界扫描，
+// 不能把语言表算进去），也**不**改变 `readConfigShell()`（它专供文件边界断言）；
+// 顺序敏感的断言（比较 HTML 里的 script 顺序）同样不在职责内。
+function configLocaleFile () {
+  return path.join(LOCALES_DIRECTORY, 'config.js')
+}
+
+// 拼接后的设置页源码 + 本窗口的语言表（测试用它做 assert.match / doesNotMatch）。
 function readConfigSource () {
-  return configSourceFiles()
+  return [...configSourceFiles(), configLocaleFile()]
     .map((file) => fs.readFileSync(file, 'utf8'))
     .join('\n')
 }
@@ -48,6 +61,7 @@ function readConfigShell () {
 
 module.exports = {
   configSourceFiles,
+  configLocaleFile,
   readConfigShell,
   readConfigSource
 }

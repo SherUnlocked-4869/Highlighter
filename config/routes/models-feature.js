@@ -5,7 +5,7 @@ function bindModelsFeatureTab() {
   const markFeatureAssignmentsDirty = () => {
     featureAssignmentDraft = snapshotFeatureAssignments()
     const button = document.getElementById('saveFeatureAssignments')
-    if (button) button.textContent = '保存功能模型（有未保存更改）'
+    if (button) button.textContent = t('config.models.save-features-dirty')
   }
   const persistFeatureAssignments = async () => {
     const assignments = readFeatureAssignments()
@@ -16,11 +16,11 @@ function bindModelsFeatureTab() {
           schemaVersion: 2,
           assignments
         }
-      }, '功能模型已保存')
+      }, t('config.models.features-saved'))
       featureAssignmentDraft = null
       return true
     } catch (error) {
-      toast(errorMessage(error) || '功能模型保存失败')
+      toast(errorMessage(error) || t('config.models.features-save-failed'))
       return false
     }
   }

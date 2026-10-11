@@ -20,11 +20,13 @@ test('settings page wires the follow-up switch and a turn limit matching the whi
   // this switch has to be hand-wired; a data-switch here would send
   // { selectionToolbar: { conversation: false } } and get rejected as a type error.
   assert.doesNotMatch(script, /switchMarkup\([^)]*conversation/)
-  assert.match(script, /updateSettings\(\{ selectionToolbar: \{ conversation: \{ enabled: value \} \} \}, '追问开关已更新'\)/)
-  assert.match(script, /conversationTurns\.onchange = \(\) => updateSettings\(\{ selectionToolbar: \{ conversation: \{ maxFollowUpTurns: Number\(conversationTurns\.value\) \} \} \}, '追问轮数已更新'\)/)
+  // P0-1-T3（S1，批次 C）：toast 文案改为语言表取键（文案本体在
+  // shared/locales/config.js，readConfigSource() 已拼接它）。
+  assert.match(script, /updateSettings\(\{ selectionToolbar: \{ conversation: \{ enabled: value \} \} \}, t\('config\.selection-toolbar\.conversation-enabled-updated'\)\)/)
+  assert.match(script, /conversationTurns\.onchange = \(\) => updateSettings\(\{ selectionToolbar: \{ conversation: \{ maxFollowUpTurns: Number\(conversationTurns\.value\) \} \} \}, t\('config\.selection-toolbar\.conversation-turns-updated'\)\)/)
   // A selectable option outside the whitelist would be silently reset on the
   // next normalization; a missing one would make that value unreachable.
-  const options = [...script.matchAll(/<option value="(\d+)">\d+ 轮<\/option>/g)].map((match) => Number(match[1]))
+  const options = [...script.matchAll(/<option value="(\d+)">\$\{t\('config\.selection-toolbar\.conversation-turns-option', \{ count: \d+ \}\)\}<\/option>/g)].map((match) => Number(match[1]))
   assert.deepEqual(options, [...CONVERSATION_TURN_LIMITS])
 })
 

@@ -1,31 +1,38 @@
-// S14 / D2-2（Wave 8.5）：设置页主壳。render 函数按路由拆到 config/routes/*.js，
-// 本文件只保留 DOM 引用、设置状态、导航与 renderRoute() 分派、启动接线。
-// 经典脚本共享全局作用域：路由文件里的顶层 function/const 在这里调用时可见。
+// S14 / D2-2 (Wave 8.5): settings-window shell. The render functions were split
+// into config/routes/*.js; this file keeps the DOM references, the settings state,
+// navigation plus the renderRoute() dispatch, and the boot wiring.
+// Classic scripts share one global scope, so the top-level functions and consts
+// declared by the route files are visible here.
 const view = document.getElementById('view')
 const pageTitle = document.getElementById('pageTitle')
 const statusRail = document.getElementById('statusRail')
 const toastElement = document.getElementById('toast')
 
-// 经典脚本的顶层语句按 <script> 顺序执行，而各路由文件先于本文件加载并各自带上
-// `window.configRoutes = window.configRoutes || {}` 兜底；这里再确认一次，幂等且不覆盖。
+// Classic top-level statements run in <script> order, and every route file loads
+// before this one with its own `window.configRoutes = window.configRoutes || {}`
+// fallback; repeating it here is idempotent and never overwrites.
 window.configRoutes = window.configRoutes || {}
 
 let settings = null
 let currentRoute = 'home'
 
+// P0-1-T3 (S1, batch C): the titles are locale KEYS, resolved on every navigation
+// so a language switch takes effect without a reload.
 const routeTitles = {
-  home: '快捷功能', translation: '翻译', chat: 'AI 对话', history: '截图历史',
-  appearance: '外观配色', plugins: '插件', 'settings-general': '界面设置',
-  'settings-function': '功能设置', 'settings-hotkeys': '热键设置',
-  models: '模型',
-  'selection-toolbar': '划词工具',
-  'local-search': '本地搜索',
-  'settings-system': '系统设置', about: '关于'
+  home: 'config.route.home', translation: 'config.route.translation', chat: 'config.route.chat', history: 'config.route.history',
+  appearance: 'config.route.appearance', plugins: 'config.route.plugins', 'settings-general': 'config.route.settings-general',
+  'settings-function': 'config.route.settings-function', 'settings-hotkeys': 'config.route.settings-hotkeys',
+  models: 'config.route.models',
+  'selection-toolbar': 'config.route.selection-toolbar',
+  'local-search': 'config.route.local-search',
+  'settings-system': 'config.route.settings-system', about: 'config.route.about'
 }
 
-// 路由 -> 分派表。键是路由（config.html 的 data-route），`key` 是各路由文件登记到
-// window.configRoutes 的入口名；主壳只按 key 调用，不认识任何 render 函数的实现。
-// fallbackMessage 保留拆分前 renderRoute() 里那两条路由各自的错误提示。
+// Route -> dispatch table. The key is the route (config.html's data-route), `key`
+// is the entry each route file registers on window.configRoutes; the shell only
+// calls that key and knows nothing about the render implementations.
+// fallbackMessage keeps the two per-route error prompts renderRoute() carried
+// before the split; both are locale keys now.
 const routes = {
   home: { key: 'renderHome' },
   translation: { key: 'renderTranslation' },
@@ -39,12 +46,13 @@ const routes = {
   'selection-toolbar': { key: 'renderSelectionToolbarSettings' },
   'local-search': { key: 'renderLocalSearch' },
   'settings-hotkeys': { key: 'renderHotkeySettings' },
-  'settings-system': { key: 'renderSystemSettings', fallbackMessage: '无法读取软件数据目录' },
-  about: { key: 'renderAbout', fallbackMessage: '无法读取更新状态' }
+  'settings-system': { key: 'renderSystemSettings', fallbackMessage: 'config.error.read-data-root' },
+  about: { key: 'renderAbout', fallbackMessage: 'config.error.read-update-status' }
 }
 
-// 注册面契约：Object.keys(routes) 必须与 window.configRoutes 的登记键逐一对上，
-// 否则 renderRoute() 会在某个路由上静默 no-op。契约测试直接核对这两份清单。
+// Registration contract: Object.keys(routes) must line up with the keys registered
+// on window.configRoutes, otherwise renderRoute() silently no-ops on a route.
+// test/config-routes.test.js diffs the two lists.
 const CONFIG_ROUTE_KEYS = Object.keys(routes)
 window.configRouteKeys = CONFIG_ROUTE_KEYS
 
@@ -58,22 +66,25 @@ function navigate(route) {
     modelsExpandedProviderIds = new Set()
   }
   currentRoute = route || 'home'
-  pageTitle.textContent = routeTitles[currentRoute] || 'Highlighter'
+  const titleKey = routeTitles[currentRoute]
+  pageTitle.textContent = titleKey ? t(titleKey) : 'Highlighter'
   document.querySelectorAll('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.route === currentRoute))
   void refreshStatusRail()
   renderRoute()
 }
 
-// renderRoute() 只读 entry.key，路由文件里各自 `window.configRoutes[<key>] = ...` 登记，
-// 所以这里的 key 与登记键必须逐字一致；test/config-routes.test.js 会把两份清单对拍。
+// renderRoute() only reads entry.key; each route file registers itself through
+// `window.configRoutes[<key>] = ...`, so the two spellings have to match exactly.
+// test/config-routes.test.js diffs both lists.
 function renderRoute() {
   const entry = routes[currentRoute]
   const render = entry && window.configRoutes[entry.key]
   if (!render) return false
-  // 与拆分前一致：只有 settings-system / about 是 async 且需要 catch，
-  // 其余路由保持同步调用（历史路由内部自己吞掉异步错误）。
+  // Same shape as before the split: only settings-system / about are async and
+  // need a catch; the remaining routes stay synchronous (the history route
+  // swallows its own async errors).
   if (entry.fallbackMessage) {
-    void Promise.resolve(render()).catch((error) => toast(error.message || entry.fallbackMessage))
+    void Promise.resolve(render()).catch((error) => toast(error.message || t(entry.fallbackMessage)))
   } else {
     render()
   }
@@ -96,12 +107,41 @@ window.electronAPI.onGameModeChanged((enabled) => {
 window.electronAPI.onHistoryChanged(() => { if (currentRoute === 'history') renderHistory() })
 window.electronAPI.onUpdateStatus((status) => {
   latestUpdateStatus = status
-  if (currentRoute === 'about') void renderAbout(status).catch((error) => toast(error.message || '无法刷新更新状态'))
+  if (currentRoute === 'about') void renderAbout(status).catch((error) => toast(error.message || t('config.error.refresh-update-status')))
 })
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyAppearance)
 
+// P0-1-T3: the static shell carries data-i18n attributes, so it is translated once
+// the markup is parsed; the renderers resolve their own strings through t() as
+// they build markup.
+applyTranslations()
+
+// Language hot switch (P0-1-T2 broadcasts `i18n:language` to every window).
+// Re-rendering the current route rebuilds the strings the renderers resolved at
+// build time; the local settings copy is kept in step so a route that reads
+// settings.language renders the new value even when the broadcast beats the
+// settings:update reply.
+window.electronAPI.onInterfaceLanguage((language) => {
+  setLanguage(language)
+  if (!settings) {
+    applyTranslations()
+    return
+  }
+  settings = { ...settings, language }
+  // applyTranslations() rewrites the whole shell, #pageTitle included (it carries
+  // data-i18n="config.route.home"), so the current route is re-entered afterwards:
+  // that restores its title, the nav highlight and the freshly translated body.
+  applyTranslations()
+  navigate(currentRoute)
+})
+
 async function init() {
   settings = await window.electronAPI.getSettings()
+  // The stored `language` is authoritative (settings-normalize.js repairs it);
+  // setLanguage mirrors it into localStorage for the windows without settings.
+  if (settings.language) setLanguage(settings.language)
+  else restoreStoredLanguage()
+  applyTranslations()
   await refreshShortcutStatuses()
   applyAppearance()
   navigate('home')

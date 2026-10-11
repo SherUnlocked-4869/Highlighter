@@ -14,8 +14,8 @@ async function renderHistory() {
   const renderVersion = ++historyRenderVersion
   historyThumbnailObserver?.disconnect()
   historyThumbnailObserver = null
-  const headerActions = '<div class="page-head-actions"><button class="button" id="cleanupHistory">清理失效项</button><button class="button danger" id="clearHistory">清空全部</button></div>'
-  view.innerHTML = `<div class="page">${pageHeader('截图历史', '搜索、筛选和批量管理截图。', headerActions)}<div class="empty">正在加载…</div></div>`
+  const headerActions = '<div class="page-head-actions"><button class="button" id="cleanupHistory">' + t('config.history.cleanup-invalid') + '</button><button class="button danger" id="clearHistory">' + t('config.history.clear-all') + '</button></div>'
+  view.innerHTML = `<div class="page">${pageHeader(t('config.route.history'), t('config.history.description'), headerActions)}<div class="empty">${t('config.history.loading')}</div></div>`
   const [firstPage, sources, stats] = await Promise.all([
     window.electronAPI.getHistory({
       query: historyQuery,
@@ -38,20 +38,20 @@ async function renderHistory() {
   const sourceLabels = {
     // `region` is what the capture domain stores for a plain screenshot; `capture`
     // is the fallback HistoryService gives legacy rows with no source.
-    capture: '区域截图',
-    region: '区域截图',
-    'long-capture': '长截图',
-    'focused-window': '焦点窗口',
-    file: '本地图片',
-    history: '历史编辑',
-    'quick-save': '快速保存',
-    'save-as': '另存为'
+    capture: 'config.history.source.region',
+    region: 'config.history.source.region',
+    'long-capture': 'config.history.source.long-capture',
+    'focused-window': 'config.history.source.focused-window',
+    file: 'config.history.source.file',
+    history: 'config.history.source.history',
+    'quick-save': 'config.history.source.quick-save',
+    'save-as': 'config.history.source.save-as'
   }
-  const sourceOptions = sources.map((source) => `<option value="${escapeHtml(source)}">${escapeHtml(sourceLabels[source] || source)}</option>`).join('')
-  const statsMarkup = `<div class="history-stats card"><div><b>${formatBytes(stats.totalBytes)}</b><span>占用空间</span></div><div><b>${stats.availableCount}</b><span>有效记录</span></div><div class="${stats.missingCount ? 'warning' : ''}"><b>${stats.missingCount}</b><span>失效记录</span></div><div class="${stats.orphanCount ? 'warning' : ''}"><b>${stats.orphanCount}</b><span>孤立文件 · ${formatBytes(stats.orphanBytes)}</span></div></div>`
-  const filtersMarkup = `<div class="history-filters card"><input class="input" id="historySearch" type="search" value="${escapeHtml(historyQuery)}" placeholder="搜索来源、操作或文件名"><select id="historySource"><option value="">全部来源</option>${sourceOptions}</select><span id="historyLoadedCount"></span></div>`
-  const batchMarkup = `<div class="history-batch card"><label><input type="checkbox" id="selectAllHistory"> 全选已加载项</label><span id="historySelectedCount">已选择 0 项</span><button class="button" id="exportSelectedHistory" disabled>导出选中项</button><button class="button danger" id="deleteSelectedHistory" disabled>删除选中项</button></div>`
-  container.insertAdjacentHTML('beforeend', `${statsMarkup}${filtersMarkup}${batchMarkup}<div id="historyResults"></div><div class="history-load-more"><button class="button" id="loadMoreHistory">加载更多</button></div>`)
+  const sourceOptions = sources.map((source) => `<option value="${escapeHtml(source)}">${escapeHtml(sourceLabels[source] ? t(sourceLabels[source]) : source)}</option>`).join('')
+  const statsMarkup = `<div class="history-stats card"><div><b>${formatBytes(stats.totalBytes)}</b><span>${t('config.history.stats-space')}</span></div><div><b>${stats.availableCount}</b><span>${t('config.history.stats-available')}</span></div><div class="${stats.missingCount ? 'warning' : ''}"><b>${stats.missingCount}</b><span>${t('config.history.stats-missing')}</span></div><div class="${stats.orphanCount ? 'warning' : ''}"><b>${stats.orphanCount}</b><span>${t('config.history.stats-orphan', { size: formatBytes(stats.orphanBytes) })}</span></div></div>`
+  const filtersMarkup = `<div class="history-filters card"><input class="input" id="historySearch" type="search" value="${escapeHtml(historyQuery)}" placeholder="${t('config.history.search-placeholder')}"><select id="historySource"><option value="">${t('config.history.all-sources')}</option>${sourceOptions}</select><span id="historyLoadedCount"></span></div>`
+  const batchMarkup = `<div class="history-batch card"><label><input type="checkbox" id="selectAllHistory"> ${t('config.history.select-all')}</label><span id="historySelectedCount">${t('config.history.selected-count', { count: 0 })}</span><button class="button" id="exportSelectedHistory" disabled>${t('config.history.export-selected')}</button><button class="button danger" id="deleteSelectedHistory" disabled>${t('config.history.delete-selected')}</button></div>`
+  container.insertAdjacentHTML('beforeend', `${statsMarkup}${filtersMarkup}${batchMarkup}<div id="historyResults"></div><div class="history-load-more"><button class="button" id="loadMoreHistory">${t('config.history.load-more')}</button></div>`)
 
   const searchInput = document.getElementById('historySearch')
   const sourceSelect = document.getElementById('historySource')
@@ -64,11 +64,19 @@ async function renderHistory() {
   const loadMore = document.getElementById('loadMoreHistory')
   const updateSelectionControls = () => {
     const count = historySelectedIds.size
-    selectedCount.textContent = `已选择 ${count} 项`
+    selectedCount.textContent = t('config.history.selected-count', { count })
     exportSelected.disabled = count === 0
     deleteSelected.disabled = count === 0
     selectAll.checked = history.length > 0 && count === history.length
     selectAll.indeterminate = count > 0 && count < history.length
+  }
+  // The CSS plate labels an unusable thumbnail through attr(data-unavailable), so
+  // the copy lives in the locale table rather than in config.css.
+  const markThumbnailUnavailable = (imageElement) => {
+    const plate = imageElement.closest('.history-image')
+    if (!plate) return
+    plate.dataset.unavailable = t('config.history.thumbnail-unavailable')
+    plate.classList.add('unavailable')
   }
   const loadThumbnail = async (imageElement) => {
     const id = imageElement.dataset.historyThumbnail
@@ -81,10 +89,10 @@ async function renderHistory() {
       if (thumbnail && currentRoute === 'history' && renderVersion === historyRenderVersion && imageElement.isConnected) {
         imageElement.src = thumbnail
       } else {
-        imageElement.closest('.history-image')?.classList.add('unavailable')
+        markThumbnailUnavailable(imageElement)
       }
     } catch {
-      imageElement.closest('.history-image')?.classList.add('unavailable')
+      markThumbnailUnavailable(imageElement)
     }
   }
   const observeNewThumbnails = (imageScope) => {
@@ -120,30 +128,30 @@ async function renderHistory() {
       if (action === 'open') {
         try {
           const opened = await window.electronAPI.openHistory(id)
-          if (!opened) toast('截图文件不存在')
-        } catch (error) { toast(error.message || '无法使用默认应用打开截图') }
+          if (!opened) toast(t('config.history.file-missing'))
+        } catch (error) { toast(error.message || t('config.history.open-failed')) }
       }
-      if (action === 'copy') { const copied = await window.electronAPI.copyHistory(id); toast(copied ? '截图已复制' : '图片过大，请从保存位置使用') }
+      if (action === 'copy') { const copied = await window.electronAPI.copyHistory(id); toast(copied ? t('config.history.copied') : t('config.history.too-large')) }
       if (action === 'address') {
         try {
           const copied = await window.electronAPI.copyHistoryPath(id)
-          toast(copied ? '图片地址已复制' : '截图文件不存在')
-        } catch (error) { toast(error.message || '无法复制图片地址') }
+          toast(copied ? t('config.history.address-copied') : t('config.history.file-missing'))
+        } catch (error) { toast(error.message || t('config.history.address-copy-failed')) }
       }
       if (action === 'delete') {
         try { historySelectedIds.delete(id); await window.electronAPI.deleteHistory(id) }
-        catch (error) { toast(error.message || '图片文件删除失败') }
+        catch (error) { toast(error.message || t('config.history.delete-failed')) }
       }
     })
   }
   const historyCardMarkup = (item) => {
     const selected = historySelectedIds.has(String(item.id))
-    return `<article class="card history-item ${selected ? 'selected' : ''}"><label class="history-select" title="选择此项"><input type="checkbox" data-history-select data-id="${escapeHtml(item.id)}" ${selected ? 'checked' : ''}></label><div class="history-image"><img data-history-thumbnail="${escapeHtml(item.id)}" loading="lazy" decoding="async" alt=""></div><div class="history-meta"><span class="history-meta-time">${new Date(item.createdAt).toLocaleString()}</span><span class="history-meta-sub">${escapeHtml(sourceLabels[item.source] || item.source)} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</span></div><div class="history-actions">${item.longCapture ? '' : `<button data-history-action="edit" data-id="${escapeHtml(item.id)}">编辑</button>`}<button data-history-action="open" data-id="${escapeHtml(item.id)}">打开</button><button data-history-action="copy" data-id="${escapeHtml(item.id)}">复制</button><button data-history-action="address" data-id="${escapeHtml(item.id)}">地址</button><button class="history-delete" data-history-action="delete" data-id="${escapeHtml(item.id)}">删除</button></div></article>`
+    return `<article class="card history-item ${selected ? 'selected' : ''}"><label class="history-select" title="${t('config.history.select-item')}"><input type="checkbox" data-history-select data-id="${escapeHtml(item.id)}" ${selected ? 'checked' : ''}></label><div class="history-image"><img data-history-thumbnail="${escapeHtml(item.id)}" loading="lazy" decoding="async" alt=""></div><div class="history-meta"><span class="history-meta-time">${new Date(item.createdAt).toLocaleString()}</span><span class="history-meta-sub">${escapeHtml(sourceLabels[item.source] ? t(sourceLabels[item.source]) : item.source)} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</span></div><div class="history-actions">${item.longCapture ? '' : `<button data-history-action="edit" data-id="${escapeHtml(item.id)}">${t('config.history.action-edit')}</button>`}<button data-history-action="open" data-id="${escapeHtml(item.id)}">${t('config.history.action-open')}</button><button data-history-action="copy" data-id="${escapeHtml(item.id)}">${t('config.history.action-copy')}</button><button data-history-action="address" data-id="${escapeHtml(item.id)}">${t('config.history.action-address')}</button><button class="history-delete" data-history-action="delete" data-id="${escapeHtml(item.id)}">${t('config.history.action-delete')}</button></div></article>`
   }
   let renderedHistoryCount = 0
   const renderLoadedItems = ({ append = false } = {}) => {
     if (!history.length) {
-      results.innerHTML = '<div class="empty">没有符合条件的截图历史</div>'
+      results.innerHTML = '<div class="empty">' + t('config.history.empty') + '</div>'
     } else if (append && renderedHistoryCount > 0) {
       const newItems = history.slice(renderedHistoryCount)
       let grid = results.querySelector('.history-grid')
@@ -158,7 +166,7 @@ async function renderHistory() {
       observeNewThumbnails()
     }
     renderedHistoryCount = history.length
-    loadedCount.textContent = totalCount > history.length ? `${history.length}/${totalCount} 项` : `${totalCount} 项`
+    loadedCount.textContent = totalCount > history.length ? t('config.history.count-of-total', { loaded: history.length, total: totalCount }) : t('config.history.count-total', { total: totalCount })
     loadMore.hidden = !hasMore
     loadMore.disabled = false
     updateSelectionControls()
@@ -192,15 +200,15 @@ async function renderHistory() {
   exportSelected.onclick = async () => {
     const result = await window.electronAPI.exportHistory([...historySelectedIds])
     if (result.canceled) return
-    const suffix = result.failures?.length ? `，${result.failures.length} 项失败` : ''
-    toast(`已导出 ${result.exportedCount} 项${suffix}`)
+    const suffix = result.failures?.length ? t('config.history.failure-suffix', { count: result.failures.length }) : ''
+    toast(t('config.history.exported', { count: result.exportedCount, failures: suffix }))
   }
   deleteSelected.onclick = async () => {
-    if (!confirm(`确定删除选中的 ${historySelectedIds.size} 项截图及对应文件？`)) return
+    if (!confirm(t('config.history.confirm-delete-selected', { count: historySelectedIds.size }))) return
     const result = await window.electronAPI.deleteHistoryMany([...historySelectedIds])
     historySelectedIds.clear()
-    const suffix = result.failures?.length ? `，${result.failures.length} 项失败` : ''
-    toast(`已删除 ${result.deletedCount} 项${suffix}`)
+    const suffix = result.failures?.length ? t('config.history.failure-suffix', { count: result.failures.length }) : ''
+    toast(t('config.history.deleted', { count: result.deletedCount, failures: suffix }))
     renderHistory()
   }
   loadMore.onclick = async () => {
@@ -220,21 +228,21 @@ async function renderHistory() {
       renderLoadedItems({ append: true })
     } catch (error) {
       loadMore.disabled = false
-      toast(error.message || '加载截图历史失败')
+      toast(error.message || t('config.history.load-failed'))
     }
   }
   document.getElementById('cleanupHistory').onclick = async () => {
-    if (!stats.missingCount && !stats.orphanCount) { toast('没有需要清理的项目'); return }
-    if (!confirm(`将移除 ${stats.missingCount} 条失效记录，并删除 ${stats.orphanCount} 个未被引用的 Highlighter 文件，是否继续？`)) return
+    if (!stats.missingCount && !stats.orphanCount) { toast(t('config.history.nothing-to-clean')); return }
+    if (!confirm(t('config.history.confirm-cleanup', { missing: stats.missingCount, orphans: stats.orphanCount }))) return
     const result = await window.electronAPI.cleanupHistory()
-    const suffix = result.failures?.length ? `，${result.failures.length} 项失败` : ''
-    toast(`已清理 ${result.removedEntries} 条记录和 ${result.removedFiles} 个文件${suffix}`)
+    const suffix = result.failures?.length ? t('config.history.failure-suffix', { count: result.failures.length }) : ''
+    toast(t('config.history.cleaned', { entries: result.removedEntries, files: result.removedFiles, failures: suffix }))
     renderHistory()
   }
   document.getElementById('clearHistory').onclick = async () => {
-    if (!confirm('确定清空全部截图历史并删除对应图片文件？')) return
+    if (!confirm(t('config.history.confirm-clear-all'))) return
     try { historySelectedIds.clear(); await window.electronAPI.clearHistory(); renderHistory() }
-    catch (error) { toast(error.message || '部分图片文件删除失败'); renderHistory() }
+    catch (error) { toast(error.message || t('config.history.clear-failed')); renderHistory() }
   }
 }
 

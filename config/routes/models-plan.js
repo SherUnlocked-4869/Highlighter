@@ -4,7 +4,7 @@
 // 与 routes/shared.js（openModal/closeModal/toast/updateSettings）。
 
 function codingPlanPresetCardMarkup(preset) {
-  return `<div class="coding-plan-card" data-coding-plan-preset="${escapeHtml(preset.id)}" role="button" tabindex="0"><div class="coding-plan-card-head"><b>${escapeHtml(preset.name)}</b><span class="provider-tag coding-plan">Coding Plan</span></div><p>${escapeHtml(preset.tagline)}</p><button class="button coding-plan-docs" data-docs-url="${escapeHtml(preset.docsUrl)}">查看文档</button></div>`
+  return `<div class="coding-plan-card" data-coding-plan-preset="${escapeHtml(preset.id)}" role="button" tabindex="0"><div class="coding-plan-card-head"><b>${escapeHtml(preset.name)}</b><span class="provider-tag coding-plan">Coding Plan</span></div><p>${escapeHtml(preset.tagline)}</p><button class="button coding-plan-docs" data-docs-url="${escapeHtml(preset.docsUrl)}">${t('config.models.view-docs')}</button></div>`
 }
 
 function codingPlanReadonlyRow(label, value) {
@@ -12,12 +12,12 @@ function codingPlanReadonlyRow(label, value) {
 }
 
 function codingPlanFormMarkup(preset) {
-  return `<div class="coding-plan-form-head"><div><b>${escapeHtml(preset.name)}</b><small>${escapeHtml(preset.tagline)}</small></div><span class="provider-tag coding-plan">Coding Plan</span></div><div class="model-field"><div class="model-field-label"><b>API 密钥</b><small>通过系统安全存储加密保存在本机</small></div><input class="input" data-coding-plan-key type="password" placeholder="sk-..." autocomplete="off"></div><div class="model-field"><div class="model-field-label"><b>显示名称</b><small>可选，留空则使用套餐名称</small></div><input class="input" data-coding-plan-name type="text" value="${escapeHtml(preset.name)}"></div><div class="coding-plan-preset-info">${codingPlanReadonlyRow('API 地址', preset.baseUrl)}${codingPlanReadonlyRow('API 协议', preset.protocol)}</div><p class="coding-plan-note">保存时自动测试连接并拉取实时模型目录；拉取失败会写入内置模型清单，不阻断保存。coding plan 通常有额度窗口限制。</p><div class="modal-actions"><button class="button" data-coding-plan-back>返回</button><button class="button primary" data-coding-plan-save>保存并验证</button></div>`
+  return `<div class="coding-plan-form-head"><div><b>${escapeHtml(preset.name)}</b><small>${escapeHtml(preset.tagline)}</small></div><span class="provider-tag coding-plan">Coding Plan</span></div><div class="model-field"><div class="model-field-label"><b>${t('config.models.api-key')}</b><small>${t('config.models.api-key-hint')}</small></div><input class="input" data-coding-plan-key type="password" placeholder="sk-..." autocomplete="off"></div><div class="model-field"><div class="model-field-label"><b>${t('config.models.display-name')}</b><small>${t('config.models.display-name-optional')}</small></div><input class="input" data-coding-plan-name type="text" value="${escapeHtml(preset.name)}"></div><div class="coding-plan-preset-info">${codingPlanReadonlyRow(t('config.models.api-url'), preset.baseUrl)}${codingPlanReadonlyRow(t('config.models.api-protocol'), preset.protocol)}</div><p class="coding-plan-note">${t('config.models.coding-plan-note')}</p><div class="modal-actions"><button class="button" data-coding-plan-back>${t('config.models.back')}</button><button class="button primary" data-coding-plan-save>${t('config.models.save-and-verify')}</button></div>`
 }
 
 function openCodingPlanDialog() {
   const presets = listCodingPlanPresets()
-  const modal = openModal(`<div class="modal-head"><div><h3>添加 Coding Plan</h3><p>选择套餐后只需填写 API 密钥，API 地址、协议与模型目录会自动配置。</p></div><button class="button icon-button" data-close-modal aria-label="关闭">×</button></div><div class="coding-plan-picker">${presets.map(codingPlanPresetCardMarkup).join('')}</div><div class="coding-plan-form" data-coding-plan-form hidden></div>`)
+  const modal = openModal(`<div class="modal-head"><div><h3>${t('config.models.add-coding-plan')}</h3><p>${t('config.models.coding-plan-intro')}</p></div><button class="button icon-button" data-close-modal aria-label="${t('config.models.close-modal')}">×</button></div><div class="coding-plan-picker">${presets.map(codingPlanPresetCardMarkup).join('')}</div><div class="coding-plan-form" data-coding-plan-form hidden></div>`)
   const picker = modal.querySelector('.coding-plan-picker')
   const form = modal.querySelector('[data-coding-plan-form]')
 
@@ -53,8 +53,8 @@ async function saveCodingPlanPreset(preset) {
   const saveButton = form?.querySelector('[data-coding-plan-save]')
   const apiKey = form?.querySelector('[data-coding-plan-key]')?.value.trim() || ''
   const displayName = form?.querySelector('[data-coding-plan-name]')?.value.trim() || ''
-  if (!apiKey) { toast('请填写 API 密钥'); return }
-  if (saveButton) { saveButton.disabled = true; saveButton.textContent = '保存并验证…' }
+  if (!apiKey) { toast(t('config.models.api-key-required')); return }
+  if (saveButton) { saveButton.disabled = true; saveButton.textContent = t('config.models.saving-and-verifying') }
   try {
     const result = await window.electronAPI.createCodingPlanProvider({ presetId: preset.id, apiKey, displayName })
     closeModal()
@@ -64,11 +64,11 @@ async function saveCodingPlanPreset(preset) {
     modelsTab = 'providers'
     modelsExpandedProviderIds = new Set([result.provider.id])
     renderModels()
-    toast(result.verified ? `已添加 ${result.provider.name}，获取到 ${result.modelsCount} 个模型` : `已添加 ${result.provider.name}：${result.warning}`)
+    toast(result.verified ? t('config.models.preset-added', { name: result.provider.name, count: result.modelsCount }) : t('config.models.preset-added-with-warning', { name: result.provider.name, warning: result.warning }))
     openCodingPlanAssignmentGuide(result.provider)
   } catch (error) {
-    toast(errorMessage(error) || '添加 Coding Plan 失败')
-    if (saveButton) { saveButton.disabled = false; saveButton.textContent = '保存并验证' }
+    toast(errorMessage(error) || t('config.models.add-coding-plan-failed'))
+    if (saveButton) { saveButton.disabled = false; saveButton.textContent = t('config.models.save-and-verify') }
   }
 }
 
@@ -78,7 +78,7 @@ function openCodingPlanAssignmentGuide(provider) {
   const models = provider.models || []
   if (!models.length) return
   const rows = modelFeatureRows().map((feature) => `<label class="coding-plan-assignment"><input type="checkbox" data-coding-plan-feature="${escapeHtml(feature.id)}" checked><span class="coding-plan-assignment-label"><b>${escapeHtml(feature.label)}</b><small>${escapeHtml(feature.description)}</small></span><select data-coding-plan-feature-model="${escapeHtml(feature.id)}">${models.map((model, index) => `<option value="${escapeHtml(model.id)}" ${index === 0 ? 'selected' : ''}>${escapeHtml(model.name || model.id)}</option>`).join('')}</select></label>`).join('')
-  const modal = openModal(`<div class="modal-head"><div><h3>把功能切换到 ${escapeHtml(provider.name)}？</h3><p>勾选要使用该套餐的功能并选择模型；未勾选的功能保持原配置。也可以直接跳过。</p></div><button class="button icon-button" data-close-modal aria-label="关闭">×</button></div><div class="coding-plan-assignment-list">${rows}</div><p class="coding-plan-note">coding plan 有额度窗口限制，建议只把常用功能切过来。</p><div class="modal-actions"><button class="button" data-coding-plan-skip>跳过</button><button class="button primary" data-coding-plan-apply>应用功能模型</button></div>`)
+  const modal = openModal(`<div class="modal-head"><div><h3>${t('config.models.switch-features-title', { name: escapeHtml(provider.name) })}</h3><p>${t('config.models.switch-features-intro')}</p></div><button class="button icon-button" data-close-modal aria-label="${t('config.models.close-modal')}">×</button></div><div class="coding-plan-assignment-list">${rows}</div><p class="coding-plan-note">${t('config.models.coding-plan-assignment-note')}</p><div class="modal-actions"><button class="button" data-coding-plan-skip>${t('config.models.skip')}</button><button class="button primary" data-coding-plan-apply>${t('config.models.apply-features')}</button></div>`)
   modal.querySelector('[data-coding-plan-skip]').onclick = closeModal
   modal.querySelector('[data-coding-plan-apply]').onclick = async () => {
     const assignments = [...(settings.ai?.assignments || [])]
@@ -93,11 +93,11 @@ function openCodingPlanAssignmentGuide(provider) {
       else assignments.push(next)
     })
     try {
-      await updateSettings({ ai: { schemaVersion: 2, assignments } }, '功能模型已更新')
+      await updateSettings({ ai: { schemaVersion: 2, assignments } }, t('config.models.features-updated'))
       closeModal()
       renderModels()
     } catch (error) {
-      toast(errorMessage(error) || '功能模型保存失败')
+      toast(errorMessage(error) || t('config.models.features-save-failed'))
     }
   }
 }

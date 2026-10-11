@@ -27,7 +27,7 @@ function modelProviderById(id) {
 function modelFeatureRows() {
   const rows = [...modelFeatureCatalog]
   for (const action of settings.selectionToolbar.customActions || []) {
-    rows.push({ id: `custom:${action.id}`, label: `划词 · ${action.name}`, description: `自定义划词功能“${action.name}”` })
+    rows.push({ id: `custom:${action.id}`, label: t('config.models.custom-feature-label', { name: action.name }), description: t('config.models.custom-feature-description', { name: action.name }) })
   }
   return rows
 }
@@ -40,12 +40,12 @@ function modelAssignmentForFeature(feature) {
 
 function modelCatalogRowMarkup(provider, index) {
   const model = provider.models[index] || { id: '', name: '' }
-  return `<div class="model-catalog-item" data-model-catalog-item="${escapeHtml(provider.id)}:${index}"><div class="model-catalog-row" data-model-index="${index}"><input class="input model-id-input" data-model-id type="text" value="${escapeHtml(model.id)}" placeholder="模型 ID"><input class="input model-name-input" data-model-name type="text" value="${escapeHtml(model.name)}" placeholder="显示名称"><button class="button icon-button model-row-details" data-model-details="${escapeHtml(provider.id)}" data-model-index="${index}" title="展开模型详情" aria-label="展开模型详情">›</button><button class="button icon-button model-row-delete" data-remove-model="${escapeHtml(provider.id)}" data-model-index="${index}" title="删除模型" aria-label="删除模型">${iconMarkup('../capture/icons/close.svg')}</button></div><div class="model-detail-panel" data-model-detail-panel="${escapeHtml(provider.id)}:${index}" hidden></div></div>`
+  return `<div class="model-catalog-item" data-model-catalog-item="${escapeHtml(provider.id)}:${index}"><div class="model-catalog-row" data-model-index="${index}"><input class="input model-id-input" data-model-id type="text" value="${escapeHtml(model.id)}" placeholder="${t('config.models.model-id')}"><input class="input model-name-input" data-model-name type="text" value="${escapeHtml(model.name)}" placeholder="${t('config.models.name-placeholder')}"><button class="button icon-button model-row-details" data-model-details="${escapeHtml(provider.id)}" data-model-index="${index}" title="${t('config.models.expand-model-details')}" aria-label="${t('config.models.expand-model-details')}">›</button><button class="button icon-button model-row-delete" data-remove-model="${escapeHtml(provider.id)}" data-model-index="${index}" title="${t('config.models.delete-model')}" aria-label="${t('config.models.delete-model')}">${iconMarkup('../capture/icons/close.svg')}</button></div><div class="model-detail-panel" data-model-detail-panel="${escapeHtml(provider.id)}:${index}" hidden></div></div>`
 }
 
 function modelOptionsMarkup(provider, currentModel, feature) {
   const models = modelsForFeature(provider, feature)
-  if (!models.length) return '<option value="">该供应商无适用模型</option>'
+  if (!models.length) return '<option value="">' + t('config.models.no-applicable-model') + '</option>'
   return models.map((model) => `<option value="${escapeHtml(model.id)}" ${model.id === currentModel ? 'selected' : ''}>${escapeHtml(model.name || model.id)}</option>`).join('')
 }
 
@@ -55,7 +55,7 @@ function featureAssignmentMarkup(feature, providers) {
     ? assignment.providerId
     : providers[0]?.id
   const provider = providers.find((item) => item.id === providerId) || providers[0]
-  return `<div class="feature-model-row" data-feature="${escapeHtml(feature.id)}"><div class="feature-model-label"><b>${escapeHtml(feature.label)}</b><small>${escapeHtml(feature.description)}</small></div><select data-feature-provider="${escapeHtml(feature.id)}">${providers.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === provider?.id ? 'selected' : ''}>${escapeHtml(item.name)}${item.enabled === false ? '（已停用）' : ''}</option>`).join('')}</select><select data-feature-model="${escapeHtml(feature.id)}">${modelOptionsMarkup(provider, assignment.model, feature.id)}</select></div>`
+  return `<div class="feature-model-row" data-feature="${escapeHtml(feature.id)}"><div class="feature-model-label"><b>${escapeHtml(t(feature.label))}</b><small>${escapeHtml(t(feature.description))}</small></div><select data-feature-provider="${escapeHtml(feature.id)}">${providers.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === provider?.id ? 'selected' : ''}>${escapeHtml(item.name)}${item.enabled === false ? t('config.models.provider-disabled-suffix') : ''}</option>`).join('')}</select><select data-feature-model="${escapeHtml(feature.id)}">${modelOptionsMarkup(provider, assignment.model, feature.id)}</select></div>`
 }
 
 function snapshotFeatureAssignments() {
@@ -74,7 +74,7 @@ function readFeatureAssignments() {
   const incomplete = assignments.find((assignment) => !assignment.providerId || !assignment.model)
   if (incomplete) {
     const feature = modelFeatureRows().find((item) => item.id === incomplete.feature)
-    toast(`“${feature?.label || incomplete.feature}”没有可用模型，请更换供应商`)
+    toast(t('config.models.no-model-for-feature', { feature: feature ? t(feature.label) : incomplete.feature }))
     return null
   }
   return assignments
@@ -100,22 +100,22 @@ function readProviderEditor(providerId) {
   const protocol = root.querySelector('[data-provider-protocol]')?.value || 'openai-chat'
   const enabled = root.querySelector('[data-provider-enabled]')?.value !== 'false'
   const enteredApiKey = root.querySelector('[data-provider-api-key]')?.value.trim() || ''
-  if (!name) { toast('供应商显示名称不能为空'); return null }
-  if (!baseUrl) { toast('API 地址不能为空'); return null }
+  if (!name) { toast(t('config.models.provider-name-required')); return null }
+  if (!baseUrl) { toast(t('config.models.api-url-required')); return null }
   if (base.hasApiKey && !base.apiKey && !enteredApiKey && baseUrl.replace(/\/+$/, '') !== String(base.baseUrl || '').replace(/\/+$/, '')) {
-    toast('API 地址已更改，请重新输入 API 密钥')
+    toast(t('config.models.api-key-changed'))
     return null
   }
   const models = []
   const ids = new Set()
   for (const row of root.querySelectorAll('.model-catalog-row[data-model-index]')) {
     const id = row.querySelector('[data-model-id]')?.value.trim() || ''
-    if (!id) { toast('模型 ID 不能为空'); return null }
-    if (ids.has(id)) { toast(`模型 ID 重复：${id}`); return null }
+    if (!id) { toast(t('config.models.model-id-required')); return null }
+    if (ids.has(id)) { toast(t('config.models.model-id-duplicate', { id })); return null }
     ids.add(id)
     models.push({ id, name: row.querySelector('[data-model-name]')?.value.trim() || id })
   }
-  if (!models.length) { toast('每个供应商至少需要一个模型'); return null }
+  if (!models.length) { toast(t('config.models.need-one-model')); return null }
   return { ...providerDraftWithSecret(base, root), name, baseUrl, protocol, enabled, models }
 }
 
@@ -159,7 +159,7 @@ function commitOpenProviderEditors({ exceptId = '', tolerant = false } = {}) {
 function providerBadgesMarkup(provider) {
   const badges = []
   if (provider.presetId) badges.push('<span class="provider-tag coding-plan">Coding Plan</span>')
-  if (provider.modelsVerified === false) badges.push('<span class="provider-tag unverified">目录未验证</span>')
+  if (provider.modelsVerified === false) badges.push('<span class="provider-tag unverified">' + t('config.models.catalog-unverified') + '</span>')
   return `<span class="provider-badges">${badges.join('')}</span>`
 }
 

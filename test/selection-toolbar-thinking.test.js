@@ -102,7 +102,8 @@ test('config page exposes thinking controls and the optional open action', () =>
   assert.match(script, /id="translateThinking"/)
   assert.match(script, /id="explainThinking"/)
   assert.match(script, /data-custom-thinking/)
-  assert.match(script, /value="max">最高/)
+  // P0-1-T3（S1，批次 C）：选项文案改为语言表取键（最高 = thinking-max）。
+  assert.match(script, /value="max">\$\{t\('config\.selection-toolbar\.thinking-max'\)\}/)
   assert.match(script, /toolbarThinking/)
   assert.match(script, /window\.toolbarActionMeta\.TOOLBAR_ACTION_META/)
   assert.match(actionMeta, /label: '跳转'/)

@@ -36,7 +36,7 @@ test('settings UI refreshes and clearly marks unavailable shortcuts', () => {
 
 test('shortcut changes refresh registration status before user feedback', () => {
   assert.match(config, /if \(patch\.shortcuts\) await refreshShortcutStatuses\(\)/)
-  assert.match(config, /const presentation = shortcutPresentation\(shortcutName, accelerator\)[\s\S]*renderRoute\(\)[\s\S]*toast\(presentation\.message \|\| '快捷键已更新'\)/)
+  assert.match(config, /const presentation = shortcutPresentation\(shortcutName, accelerator\)[\s\S]*renderRoute\(\)[\s\S]*toast\(presentation\.message \|\| t\('config\.shortcut\.updated'\)\)/)
 })
 
 test('explainClipboard shortcut reads clipboard only and opens the explain window', () => {
@@ -47,7 +47,8 @@ test('explainClipboard shortcut reads clipboard only and opens the explain windo
   assert.ok(explainCase, 'explainClipboard handler present')
   assert.doesNotMatch(explainCase, /clipboard\.write/)
   assert.doesNotMatch(explainCase, /EmptyClipboard|clipboard\.clear/)
-  assert.match(config, /\['explainClipboard', '解释剪贴板文本'/)
+  // P0-1-T3（S1，批次 C）：functionGroups 文案键化后，键名本身即是契约。
+  assert.match(config, /\['explainClipboard', 'config\.function\.explain-clipboard'/)
 })
 
 test('the two save shortcuts and the click-through exit are frozen keys with router handlers', () => {
@@ -74,9 +75,12 @@ test('the settings page exposes the new capture rows through the shared update p
   // rows, so the two save shortcuts and the click-through exit need no extra
   // renderer wiring — the settings page picks them up from the same table S7's
   // router handlers are named after.
-  assert.ok(config.includes("['screenshotQuickSave', '快速保存', '../capture/icons/save.svg', '完成选区后直接保存到上次的目录']"))
-  assert.ok(config.includes("['screenshotSaveAs', '另存为', '../capture/icons/save.svg', '完成选区后弹出保存对话框']"))
-  assert.ok(config.includes("['togglePinClickThrough', '取消全部穿透', '../capture/icons/pin.svg', '立即让所有贴图退出点击穿透状态']"))
+  // P0-1-T3（S1，批次 C）：functionGroups 的第 2/4 项改为语言表的键
+  // （形状仍是 [名称, 文案键, 图标, 描述键]，图标契约不变），文案本体在
+  // shared/locales/config.js —— readConfigSource() 已把它拼进来。
+  assert.ok(config.includes("['screenshotQuickSave', 'config.function.screenshot-quick-save', '../capture/icons/save.svg', 'config.function.screenshot-quick-save-description']"))
+  assert.ok(config.includes("['screenshotSaveAs', 'config.function.screenshot-save-as', '../capture/icons/save.svg', 'config.function.screenshot-save-as-description']"))
+  assert.ok(config.includes("['togglePinClickThrough', 'config.function.toggle-pin-click-through', '../capture/icons/pin.svg', 'config.function.toggle-pin-click-through-description']"))
 
   // renderHotkeySettings flattens that table and pairs every entry with its
   // stored accelerator, so the three rows above appear without a second list.
@@ -89,8 +93,8 @@ test('the settings page exposes the new capture rows through the shared update p
 
   // S7's handlers emit these two source values (function-router.js), and the
   // history source filter labels them through this map.
-  assert.ok(config.includes("'quick-save': '快速保存'"))
-  assert.ok(config.includes("'save-as': '另存为'"))
+  assert.ok(config.includes("'quick-save': 'config.history.source.quick-save'"))
+  assert.ok(config.includes("'save-as': 'config.history.source.save-as'"))
 
   // Switch rows ride the shared switchMarkup/bindSwitches path: one level of
   // group nesting, so pinned.clickThrough must carry its own group name.
