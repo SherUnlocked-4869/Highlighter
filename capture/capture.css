@@ -150,6 +150,10 @@ html, body {
   cursor: pointer;
 }
 .element-bar button:hover { background: rgba(255, 255, 255, .18); }
+/* P0-5 PR4：层级上移/下移在"已在最上/最下层"时置灰 —— no-op 不该给出可点的错觉。
+   规则必须排在上面的 :hover 之后（同特异度则后者胜），再用 :disabled:hover 压住悬停底色。 */
+.element-bar button:disabled { color: #7a7a80; background: rgba(255, 255, 255, .04); cursor: default; }
+.element-bar button:disabled:hover { background: rgba(255, 255, 255, .04); }
 .element-bar button.danger { color: #fff; background: var(--danger); }
 .element-bar button.danger:hover { filter: brightness(1.1); }
 .element-bar button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }

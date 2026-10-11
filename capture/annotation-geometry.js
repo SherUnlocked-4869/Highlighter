@@ -364,6 +364,32 @@
     return Object.assign({}, item, { x: target.x, y: target.y, x2: target.x + target.w, y2: target.y + target.h })
   }
 
+  // PR4 层级：把指定标注在数组内上移/下移**一层**。下标即 z 序（方案 §8.1）：数组末尾是最
+  // 上层，而 renderOverlay() 与 exportSelectionCanvas() 都是 forEach 顺序遍历 —— 只改数组顺序
+  // 就等于同时改屏幕层序与导出层序，绘制代码一行都不用动（这是 PR4 的关键简化）。
+  //
+  // 参数：target 接受元素引用（也接受下标数字），direction **只取符号**：
+  //   direction > 0 → 上移一层（朝数组末尾、更靠前）；< 0 → 下移一层（朝数组开头、更靠后）。
+  // 契约：
+  //   · 永远返回**新数组**（只搬同一批元素引用，既不复制也不改写元素本身），调用方直接替换；
+  //   · 边界 no-op：已在最上/最下层、下标越界、target 不在数组里、direction 为 0/非法、
+  //     空数组、入参不是数组 —— 一律返回"原顺序的等价浅拷贝"，不抛错、不改动任何内容；
+  //   · 只移一层：|direction| > 1 也不会跨过多个邻居（避免调用方误以为能一次置顶）。
+  // 注意：不动 id、不重编号 serial.number（§8 风险⑥ 的既有口径不变）。
+  function reorderAnnotation(annotations, target, direction) {
+    if (!Array.isArray(annotations)) return []
+    const ordered = annotations.slice()
+    const step = numberOr(direction, 0)
+    if (!step) return ordered
+    const index = typeof target === 'number' ? Math.trunc(target) : ordered.indexOf(target)
+    if (!Number.isFinite(index) || index < 0 || index >= ordered.length) return ordered
+    const neighbour = index + (step > 0 ? 1 : -1)
+    if (neighbour < 0 || neighbour >= ordered.length) return ordered
+    const [item] = ordered.splice(index, 1)
+    ordered.splice(neighbour, 0, item)
+    return ordered
+  }
+
   // 单个轴向上的 clamp：把 box 的起点夹进"能放下的区间"。box 比舞台还大时区间退化为
   // [limit-size, 0]（起点为负），即至少保证有一侧贴住舞台边，绝不整块飞出去。
   function clampAxis(position, size, limit) {
@@ -419,6 +445,7 @@
     findAnnotationAt,
     translateAnnotation,
     resizeAnnotationToBox,
+    reorderAnnotation,
     clampAnnotationToStage,
     cloneAnnotations
   }

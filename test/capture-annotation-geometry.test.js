@@ -19,6 +19,7 @@ const {
   findAnnotationAt,
   translateAnnotation,
   resizeAnnotationToBox,
+  reorderAnnotation,
   clampAnnotationToStage,
   cloneAnnotations
 } = require('../capture/annotation-geometry')
@@ -434,6 +435,87 @@ test('resizeAnnotationToBox always returns a fresh copy, even when the box equal
   assert.notEqual(penSame.points, pen.points)
 })
 
+// ---------- PR4 纯函数：reorderAnnotation（方案 §8.4「测试」行第 11 条：边界 no-op） ----------
+// 第 11 条 =「reorderAnnotation 边界 no-op」：下面第 2 个用例是它的主体；第 1 个覆盖"上移/下移
+// 一层 + 永远返回新数组 + 只搬引用"，第 3 个覆盖"越界/非法入参一律不抛错"。
+
+test('reorderAnnotation moves an item exactly one layer up or down and returns a fresh array (PR4)', () => {
+  const bottom = { id: 1, type: 'rect', color: '#f00', width: 4 }
+  const middle = { id: 2, type: 'rect', color: '#0f0', width: 4 }
+  const top = { id: 3, type: 'rect', color: '#00f', width: 4 }
+  const annotations = [bottom, middle, top]
+
+  // direction > 0 = 上移一层（朝数组末尾 = 更靠前）；< 0 = 下移一层。
+  const up = reorderAnnotation(annotations, middle, 1)
+  assert.deepEqual(up, [bottom, top, middle])
+  assert.notEqual(up, annotations, '必须返回新数组，调用方直接替换 annotations')
+  // 只搬引用、不复制元素：同一个对象还是同一个对象（快照与选中都按引用/id 解析）。
+  assert.equal(up[2], middle)
+  assert.equal(up[0], bottom)
+  assert.equal(up[1], top)
+  assert.deepEqual(annotations, [bottom, middle, top], '源数组的顺序原地不动')
+
+  const down = reorderAnnotation(annotations, middle, -1)
+  assert.deepEqual(down, [middle, bottom, top])
+
+  // target 也接受下标：与传引用等价。
+  assert.deepEqual(reorderAnnotation(annotations, 0, 1), [middle, bottom, top])
+  assert.deepEqual(reorderAnnotation(annotations, 2, -1), [bottom, top, middle])
+
+  // 只移一层：|direction| > 1 也不会跨过多个邻居（更不会越界）。
+  assert.deepEqual(reorderAnnotation(annotations, middle, 5), [bottom, top, middle])
+  assert.deepEqual(reorderAnnotation(annotations, middle, -9), [middle, bottom, top])
+
+  // 返回的新数组可以随意改写，源数组不受影响。
+  up.length = 1
+  assert.equal(annotations.length, 3)
+})
+
+test('reorderAnnotation is a boundary no-op: already top/bottom, out of range, missing target, no direction (PR4)', () => {
+  const a = { id: 1 }
+  const b = { id: 2 }
+  const c = { id: 3 }
+  const annotations = [a, b, c]
+
+  // 已在最上层再上移 / 已在最下层再下移：原顺序的**等价浅拷贝**（新数组、内容不变、不抛错）。
+  for (const [target, direction] of [[c, 1], [a, -1]]) {
+    const result = reorderAnnotation(annotations, target, direction)
+    assert.notEqual(result, annotations)
+    assert.deepEqual(result, [a, b, c])
+  }
+
+  // 下标越界 / 非法下标 / target 不在数组里：一律 no-op（绝不抛错）。
+  for (const target of [3, 99, -1, Number.NaN, Number.POSITIVE_INFINITY, { id: 9 }, 'nope', null, undefined]) {
+    assert.deepEqual(reorderAnnotation(annotations, target, 1), [a, b, c], `target ${String(target)}`)
+    assert.deepEqual(reorderAnnotation(annotations, target, -1), [a, b, c], `target ${String(target)}`)
+  }
+
+  // 方向缺失 / 为 0 / 非法：no-op。
+  for (const direction of [0, -0, undefined, null, Number.NaN, 'up', {}]) {
+    assert.deepEqual(reorderAnnotation(annotations, b, direction), [a, b, c], `direction ${String(direction)}`)
+  }
+
+  // 空数组 / 单元素数组 / 非数组入参：返回空数组或等价浅拷贝，绝不抛错。
+  assert.deepEqual(reorderAnnotation([], a, 1), [])
+  assert.deepEqual(reorderAnnotation([a], a, 1), [a], '单元素数组无从移动')
+  assert.deepEqual(reorderAnnotation(null, a, 1), [])
+  assert.deepEqual(reorderAnnotation(undefined, a, 1), [])
+  assert.deepEqual(reorderAnnotation('nope', a, 1), [])
+})
+
+test('reorderAnnotation never throws for out-of-range indices and never touches the originals (PR4)', () => {
+  const items = [{ id: 1 }, { id: 2 }]
+  assert.doesNotThrow(() => reorderAnnotation(items, 1, 1))
+  assert.doesNotThrow(() => reorderAnnotation(items, 0, -1))
+  assert.doesNotThrow(() => reorderAnnotation(items, 2, 1))
+  assert.doesNotThrow(() => reorderAnnotation(items, -7, -1))
+  assert.doesNotThrow(() => reorderAnnotation(items, 1.7, 1))
+  // 越界不改变内容，也不修改原对象（"绝不就地改原对象"是 PR1–PR4 的一致契约）。
+  assert.deepEqual(reorderAnnotation(items, 5, 1), [{ id: 1 }, { id: 2 }])
+  assert.deepEqual(reorderAnnotation(items, 1.7, 1), [{ id: 1 }, { id: 2 }])
+  assert.deepEqual(items, [{ id: 1 }, { id: 2 }])
+})
+
 // ---------- PR1 接线契约 ----------
 
 test('capture.js gives every committed annotation a monotonic id and undoes through a snapshot stack', () => {
@@ -498,7 +580,8 @@ test('the element bar is a separate floating surface wired to delete/deselect, w
   assert.match(html, /id="elementBar" class="element-bar hidden"/)
   assert.ok(html.indexOf('id="toolbar"') < html.indexOf('id="elementBar"'), 'the bar is not another button on the tool strip')
   assert.ok(html.indexOf('id="elementBar"') < html.indexOf('id="watermarkPanel"'), 'the bar sits right after the tool strip')
-  assert.match(html, /id="elementDelete"[\s\S]{0,160}?id="elementDeselect"/)
+  // PR4：层级 ↑↓ 两个按钮插在删除与取消选中之间（工具栏不塞按钮，见方案 §8 风险⑦）。
+  assert.match(html, /id="elementDelete"[\s\S]{0,200}?id="elementFront"[\s\S]{0,200}?id="elementBack"[\s\S]{0,200}?id="elementDeselect"/)
   // 模块加载顺序：style → selection → geometry → capture
   assert.match(html, /annotation-style\.js[\s\S]{0,200}?selection-utils\.js[\s\S]{0,200}?annotation-geometry\.js[\s\S]{0,200}?capture\.js/)
   assert.match(
@@ -558,7 +641,8 @@ test('PR2: arrow keys nudge 1px (Shift 10px) and merge into a single undo frame'
   assert.match(script, /if \(event\.ctrlKey \|\| event\.altKey \|\| event\.metaKey\) return false/)
   assert.match(script, /nudgeTimer = setTimeout\(commitNudge, NUDGE_COMMIT_DELAY\)/)
   assert.match(script, /function commitNudge\(\) \{[\s\S]{0,220}?snapshotAnnotations\(\)/)
-  assert.match(script, /function snapshotAnnotations\(\) \{[\s\S]{0,120}?cancelNudge\(\)[\s\S]{0,120}?annotationHistory\.push\(cloneAnnotations\(annotations\)\)/)
+  // 窗口放宽到 240：PR4 在 cancelNudge() 与 push 之间插入了 cancelStyleCommit()（样式帧同口径收口）。
+  assert.match(script, /function snapshotAnnotations\(\) \{[\s\S]{0,120}?cancelNudge\(\)[\s\S]{0,240}?annotationHistory\.push\(cloneAnnotations\(annotations\)\)/)
   assert.match(script, /if\(nudgeSelectedAnnotation\(event\)\)return/)
   // 方向键不得吞掉既有快捷键：Ctrl+A/Z/Y/S、Delete、Enter、Esc 全部照旧
   assert.match(script, /if\(event\.key==='Escape'\)/)
@@ -653,4 +737,104 @@ test('PR3: eight element handles are drawn on the dashed frame in a style distin
   assert.match(html, /拖动圆点缩放/)
   const elementBar = html.slice(html.indexOf('<div id="elementBar"'), html.indexOf('id="watermarkPanel"'))
   assert.doesNotMatch(elementBar, /--icon:url\(/)
+})
+
+// ---------- PR4 接线契约（层级 ↑↓ / 颜色与线宽作用于选中项 / 层序进入导出） ----------
+
+const reorderSource = sliceBetween(script, 'function reorderSelectedAnnotation(direction)', 'function resetAnnotationState()')
+const styleSource = sliceBetween(script, 'function applyStyleToSelectedAnnotation(patch)', 'function resetAnnotationState()')
+
+test('PR4: the layer buttons live on #elementBar between delete and deselect and add no toolbar icons', () => {
+  assert.match(html, /id="elementDelete"[\s\S]{0,200}?id="elementFront"[\s\S]{0,200}?id="elementBack"[\s\S]{0,200}?id="elementDeselect"/)
+  // 工具栏已近满宽（方案 §8 风险⑦）：层级入口只放浮动条，绝不进 .toolbar。
+  assert.ok(html.indexOf('id="toolbar"') < html.indexOf('id="elementFront"'), '层级按钮在浮动条里，不在工具栏上')
+  assert.ok(html.indexOf('id="elementBar"') < html.indexOf('id="elementFront"'))
+  assert.ok(html.indexOf('id="elementBack"') < html.indexOf('id="watermarkPanel"'))
+  const elementBar = html.slice(html.indexOf('<div id="elementBar"'), html.indexOf('id="watermarkPanel"'))
+  assert.doesNotMatch(elementBar, /--icon:url\(/, 'element actions must not inflate the toolbar icon list')
+  assert.match(html, /id="elementFront"[^>]*aria-label="上移一层"/)
+  assert.match(html, /id="elementBack"[^>]*aria-label="下移一层"/)
+
+  assert.match(script, /const elementFront = document\.getElementById\('elementFront'\)/)
+  assert.match(script, /const elementBack = document\.getElementById\('elementBack'\)/)
+  assert.match(script, /elementFront\.onclick=\(\)=>reorderSelectedAnnotation\(1\)/)
+  assert.match(script, /elementBack\.onclick=\(\)=>reorderSelectedAnnotation\(-1\)/)
+  // 禁用态统一在 updateElementBar（与删除/取消选中同一处），已在最上/最下层时置灰。
+  assert.match(
+    script,
+    /function updateElementBar\(\) \{[\s\S]{0,700}?elementFront\.disabled = index < 0 \|\| index >= annotations\.length - 1[\s\S]{0,120}?elementBack\.disabled = index <= 0/
+  )
+  assert.match(css, /\.element-bar button:disabled \{/)
+})
+
+test('PR4: one reorder = exactly one snapshot, and the selection is re-resolved by id (undo/redo 不串)', () => {
+  assert.match(reorderSource, /const ordered = reorderAnnotation\(annotations, annotations\.indexOf\(item\), direction\)/)
+  // 边界 no-op 在压帧之前返回：不制造无效撤销步。
+  assert.match(reorderSource, /if \(ordered\.every\(\(entry, position\) => entry === annotations\[position\]\)\) return/)
+  assert.match(reorderSource, /annotations = ordered/)
+  assert.equal(reorderSource.match(/snapshotAnnotations\(\)/g).length, 1, '一次操作恰好一帧快照')
+  assert.ok(
+    reorderSource.indexOf('ordered.every(') < reorderSource.indexOf('snapshotAnnotations()'),
+    'the boundary no-op returns before the snapshot'
+  )
+  assert.match(reorderSource, /syncSelectedAnnotation\(\)/)
+  assert.ok(
+    reorderSource.indexOf('snapshotAnnotations()') < reorderSource.indexOf('syncSelectedAnnotation()'),
+    '层序变化后按 id 重新解析选中项（快照还原会换掉对象身份）'
+  )
+  // 层级路径不碰导出坐标换算（方案 §8.3）。
+  assert.doesNotMatch(reorderSource, /scaleX|scaleY/)
+})
+
+test('PR4: the array order is the z-order, so renderOverlay and exportSelectionCanvas iterate without sorting (层序进入导出)', () => {
+  const overlaySource = sliceBetween(script, 'function renderOverlay()', 'function render()')
+  const exportSource = sliceBetween(script, 'function exportSelectionCanvas(includeAnnotations = true)', 'function canvasPngBuffer(')
+  // 两条绘制路径都是**顺序 forEach**：数组顺序就是 z 序（§8.1），所以改数组顺序同时改屏幕与导出层序，
+  // 绘制代码一行都不用动 —— 这正是 PR4 的关键简化。
+  assert.match(overlaySource, /annotations\.forEach\(\(item\) => drawAnnotation\(ctx,item\)\)/)
+  assert.match(exportSource, /annotations\.forEach\(\(item\)=>drawAnnotation\(out,item,scaleX,scaleY,selection\.x,selection\.y,image\)\)/)
+  assert.doesNotMatch(overlaySource, /annotations\.(sort|reverse|slice)\(/, '屏幕层序必须直接来自数组顺序')
+  assert.doesNotMatch(exportSource, /annotations\.(sort|reverse)\(/, '导出层序必须直接来自数组顺序')
+  // 导出坐标换算只活在 exportSelectionCanvas 内部（§8.3）；样式路径也不碰它。
+  assert.match(exportSource, /const scaleX=source\.width\/selection\.w,scaleY=source\.height\/selection\.h/)
+  assert.doesNotMatch(styleSource, /scaleX|scaleY/)
+})
+
+test('PR4: a style change lands on the selected item with a fresh copy, never on "the next new annotation"', () => {
+  // 生成新副本 → 替换数组项（绝不就地改原对象，与 PR2/PR3 同一契约）。
+  assert.match(styleSource, /const styled = Object\.assign\(\{\}, item, patch\)/)
+  assert.match(styleSource, /annotations\[index\] = styled/)
+  assert.match(styleSource, /selectedAnnotation = styled/)
+  assert.equal(styleSource.match(/annotations\[index\] = /g).length, 1, '只有一处写回，且写的是副本')
+  // 0 变化不制造无效撤销步（与 PR2 的 annotationWasMoved / PR3 的 annotationWasResized 同口径）。
+  assert.match(styleSource, /if \(!keys\.length \|\| !keys\.some\(\(key\) => item\[key\] !== patch\[key\]\)\) return false/)
+  assert.match(styleSource, /function applyStyleToSelectedAnnotation\(patch\) \{\s*const item = selectedAnnotationItem\(\)/)
+  // 离散操作（线宽按钮）：先收口未提交的颜色帧，再压样式帧 —— 两次用户操作不挤进同一个撤销步。
+  assert.match(styleSource, /function commitSelectedStyle\(patch\) \{\s*commitStyle\(\)/)
+  assert.match(styleSource, /function commitSelectedStyle\(patch\) \{[\s\S]{0,240}?snapshotAnnotations\(\)/)
+  // 连续操作（取色器）：input 合帧、change 立刻收口。
+  assert.match(styleSource, /function stageSelectedStyle\(patch\) \{[\s\S]{0,200}?styleDirty = true[\s\S]{0,200}?styleTimer = setTimeout\(commitStyle, STYLE_COMMIT_DELAY\)/)
+  assert.match(styleSource, /function cancelStyleCommit\(\) \{[\s\S]{0,160}?styleDirty = false/)
+  assert.match(styleSource, /function commitStyle\(\) \{[\s\S]{0,200}?if \(!styleDirty\) return false[\s\S]{0,120}?snapshotAnnotations\(\)/)
+  assert.match(script, /const STYLE_COMMIT_DELAY = 300/)
+
+  // 落点 1：线宽 —— setAnnotationWidth() 改选中项，同时新建路径 annotationStyle() 原样保留。
+  assert.match(script, /function setAnnotationWidth\(width, persist = false\) \{[\s\S]{0,460}?commitSelectedStyle\(\{ width: annotationWidth \}\)/)
+  assert.match(script, /function annotationStyle\(\) \{ return \{ color: colorInput\.value, width: annotationWidth \} \}/)
+  // 落点 2：颜色 —— 预览照旧，同时作用于选中项；change 立刻把这一帧收口。
+  assert.match(script, /colorInput\.addEventListener\('input',\(\)=>\{colorPreview\.style\.background=colorInput\.value;stageSelectedStyle\(\{color:colorInput\.value\}\)\}\)/)
+  assert.match(script, /colorInput\.addEventListener\('change',\(\)=>commitStyle\(\)\)/)
+
+  // 快照栈口径：待收口的样式帧被 snapshot 吸收，不出现"两帧同样的快照"。
+  assert.match(
+    script,
+    /function snapshotAnnotations\(\) \{[\s\S]{0,120}?cancelNudge\(\)[\s\S]{0,140}?cancelStyleCommit\(\)[\s\S]{0,140}?annotationHistory\.push\(cloneAnnotations\(annotations\)\)/
+  )
+  assert.match(script, /function restoreAnnotations\(index\) \{[\s\S]{0,160}?cancelStyleCommit\(\)/)
+  // Ctrl+Z：先把未收口的颜色改动单独压一帧，才是"精确回退一步"。
+  assert.match(script, /function undoAnnotations\(\) \{\r?\n\s*\/\/[^\r\n]*\r?\n\s*commitStyle\(\)/)
+  // 新一次截图不得让上一张的样式计时器落进这一次的历史。
+  assert.match(script, /function resetAnnotationState\(\) \{[\s\S]{0,300}?cancelStyleCommit\(\)/)
+  // 样式补丁只补 color/width 之类的字段，id 与 serial.number 原样带过（不重编号）。
+  assert.doesNotMatch(styleSource, /number\s*[:=]/)
 })

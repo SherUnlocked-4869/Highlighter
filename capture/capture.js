@@ -4,6 +4,9 @@ const canvas = document.getElementById('stage')
 const ctx = canvas.getContext('2d')
 const toolbar = document.getElementById('toolbar')
 const elementBar = document.getElementById('elementBar')
+// P0-5 PR4：层级 ↑↓ 两个按钮（#elementBar 内，加在删除与取消选中之间 —— 工具栏不塞按钮）。
+const elementFront = document.getElementById('elementFront')
+const elementBack = document.getElementById('elementBack')
 const sizeBadge = document.getElementById('sizeBadge')
 const tip = document.getElementById('tip')
 const loading = document.getElementById('loading')
@@ -48,7 +51,11 @@ const {
 // P0-5 PR1：命中测试/选中框/快照深拷贝都走纯函数模块（屏幕 CSS 坐标，方案 §8.3）。
 // PR2 追加 translateAnnotation（生成位移副本）与 clampAnnotationToStage（边界 clamp）。
 // PR3 追加 resizeAnnotationToBox（把标注按新 box 缩放的纯函数，永远返回新对象）。
+// PR4 追加 reorderAnnotation（层级 ↑↓ 的纯函数：数组顺序即 z 序，永远返回新数组）。
+// 注意：新条目一律插在最前/最后，不要打断下面这条既有的相对顺序断言
+// （test/capture-annotation-geometry.test.js 里 resizeAnnotationToBox → … → MAX_PEN_POINTS 的链条）。
 const {
+  reorderAnnotation,
   resizeAnnotationToBox,
   annotationBounds,
   findAnnotationAt,
@@ -94,6 +101,11 @@ let nudgeDirty = false
 const NUDGE_STEP = 1
 const NUDGE_STEP_FAST = 10
 const NUDGE_COMMIT_DELAY = 500
+// P0-5 PR4：样式（颜色）作用于选中项的合帧计时器 —— 系统取色器拖动时会连发 input，与方向键
+// 微调同构：应用即时可见，快照静默 STYLE_COMMIT_DELAY 毫秒后才收口（change 也会立刻收口）。
+let styleTimer = 0
+let styleDirty = false
+const STYLE_COMMIT_DELAY = 300
 let elementBarSize = null
 let serialNumber = 1
 let initialSerialNumber = 1
@@ -384,6 +396,10 @@ function updateElementBar() {
   const visible = !!item && !!selection && !activeOcrResult && !processingAction && !selecting && !dragging && !resizing && !movingAnnotation && !resizingAnnotation && selectState !== 'auto'
   if (!visible) { elementBar.classList.add('hidden'); return }
   elementBar.classList.remove('hidden')
+  // P0-5 PR4：层级按钮的可用态 —— 已在最上层/最下层时置灰，no-op 就不该给出可点的错觉。
+  const index = annotations.indexOf(item)
+  elementFront.disabled = index < 0 || index >= annotations.length - 1
+  elementBack.disabled = index <= 0
   const bounds = annotationBounds(item) || { x: 0, y: 0, w: 0, h: 0 }
   const rect = elementBarSize || (elementBarSize = elementBar.getBoundingClientRect())
   let left = bounds.x + bounds.w - rect.width
@@ -442,6 +458,9 @@ function setAnnotationWidth(width, persist = false) {
     button.classList.toggle('active', active)
     button.setAttribute('aria-pressed', String(active))
   })
+  // P0-5 PR4：线宽不再只服务"下一次新建"—— 有选中项时改的是**该选中项**（生成新副本 →
+  // 替换数组项 → 一帧快照）；没有选中项时是 no-op，新建仍照旧读 annotationStyle()。
+  commitSelectedStyle({ width: annotationWidth })
   if (!persist) return
   window.captureAPI.saveAnnotationWidth(annotationWidth).catch(() => {})
 }
@@ -468,6 +487,8 @@ function setSelectedAnnotation(item) {
 // 出现两帧完全相同的快照（那会让 Ctrl+Z 按下后"看起来没反应"）。
 function snapshotAnnotations() {
   cancelNudge()
+  // PR4：待收口的样式改动已包含在这一帧里，丢掉它的计时器，避免同一步撤销出现两帧同样的快照。
+  cancelStyleCommit()
   annotationHistory.length = historyIndex + 1
   annotationHistory.push(cloneAnnotations(annotations))
   if (annotationHistory.length > MAX_ANNOTATION_HISTORY) annotationHistory.splice(0, annotationHistory.length - MAX_ANNOTATION_HISTORY)
@@ -476,6 +497,8 @@ function snapshotAnnotations() {
 
 function restoreAnnotations(index) {
   cancelNudge()
+  // PR4：撤销/重做会整体换掉 annotations，未收口的样式改动随这次还原一起作废（与微调同口径）。
+  cancelStyleCommit()
   historyIndex = Math.max(0, Math.min(annotationHistory.length - 1, index))
   annotations = cloneAnnotations(annotationHistory[historyIndex])
   syncSelectedAnnotation()
@@ -483,6 +506,8 @@ function restoreAnnotations(index) {
 }
 
 function undoAnnotations() {
+  // PR4：未收口的颜色改动先单独压一帧，Ctrl+Z 才是"精确回退一步"（不会连上一个操作一起撤掉）。
+  commitStyle()
   if (historyIndex <= 0) return
   restoreAnnotations(historyIndex - 1)
 }
@@ -675,12 +700,83 @@ function cancelResizeAnnotation() {
   render()
 }
 
+// ---------- P0-5 PR4：层级 ↑↓ + 颜色/线宽作用于选中项 ----------
+
+// 样式补丁落到**选中项**上：生成新副本 → 替换数组项（绝不就地改原对象，与 translateAnnotation /
+// resizeAnnotationToBox 同一契约）。id 与 serial.number 等字段原样带过 —— 样式编辑不重编号。
+// 补丁里的每一项都与现值相等时返回 false：0 变化不制造无效撤销步（与 PR2/PR3 的 editDirty 同口径）。
+function applyStyleToSelectedAnnotation(patch) {
+  const item = selectedAnnotationItem()
+  if (!item || !patch) return false
+  const keys = Object.keys(patch)
+  if (!keys.length || !keys.some((key) => item[key] !== patch[key])) return false
+  const index = annotations.indexOf(item)
+  if (index < 0) return false
+  const styled = Object.assign({}, item, patch)
+  annotations[index] = styled
+  selectedAnnotation = styled
+  render()
+  return true
+}
+
+// 离散样式操作（线宽按钮）：立刻压一帧。若还有未收口的颜色改动，先把它单独收一帧 —— 两次
+// 用户操作不该挤进同一个撤销步（这正是"undo/redo 不串"）。
+function commitSelectedStyle(patch) {
+  commitStyle()
+  if (!applyStyleToSelectedAnnotation(patch)) return false
+  snapshotAnnotations()
+  render()
+  return true
+}
+
+// 连续样式操作（取色器 input）：应用即时可见，快照静默 STYLE_COMMIT_DELAY 毫秒后收口；
+// 取色器关闭时触发的 change 会立刻收口（见文件末尾的 colorInput 监听）。
+function stageSelectedStyle(patch) {
+  if (!applyStyleToSelectedAnnotation(patch)) return false
+  styleDirty = true
+  if (styleTimer) clearTimeout(styleTimer)
+  styleTimer = setTimeout(commitStyle, STYLE_COMMIT_DELAY)
+  return true
+}
+
+// 丢掉"待收口的样式帧"（**不**还原已应用的样式）：它的结果已经包含在别的帧里时用。
+function cancelStyleCommit() {
+  if (styleTimer) { clearTimeout(styleTimer); styleTimer = 0 }
+  styleDirty = false
+}
+
+// 把"已应用但未收口"的样式改动压成一帧；没有待收口改动时是 no-op。
+function commitStyle() {
+  if (styleTimer) { clearTimeout(styleTimer); styleTimer = 0 }
+  if (!styleDirty) return false
+  styleDirty = false
+  snapshotAnnotations()
+  render()
+  return true
+}
+
+// 层级 ↑↓：只改数组顺序（§8.1 下标即 z 序）。renderOverlay() 与 exportSelectionCanvas() 都是
+// 顺序 forEach，所以屏幕层序与导出层序同时改变 —— 绘制代码一行都不用动。一次操作一帧快照；
+// 边界 no-op（已在最上/最下层）不压帧；syncSelectedAnnotation() 让选中项跟着新数组重新解析。
+function reorderSelectedAnnotation(direction) {
+  const item = selectedAnnotationItem()
+  if (!item) return
+  const ordered = reorderAnnotation(annotations, annotations.indexOf(item), direction)
+  if (ordered.every((entry, position) => entry === annotations[position])) return
+  annotations = ordered
+  snapshotAnnotations()
+  syncSelectedAnnotation()
+  render()
+}
+
 function resetAnnotationState() {
   annotations = []
   selectedAnnotation = null
   movingAnnotation = null
   resizingAnnotation = null
   cancelNudge()
+  // PR4：新一次截图不得让上一张的样式计时器落进这一次的历史里。
+  cancelStyleCommit()
   annotationHistory = [[]]
   historyIndex = 0
   elementBarSize = null
@@ -1098,7 +1194,9 @@ function showResult(type,result) {
 
 document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListener('click',()=>setTool(button.dataset.tool)))
 lineWidthGroup.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-width]');if(button)setAnnotationWidth(button.dataset.annotationWidth,true)})
-colorInput.addEventListener('input',()=>{colorPreview.style.background=colorInput.value})
+colorInput.addEventListener('input',()=>{colorPreview.style.background=colorInput.value;stageSelectedStyle({color:colorInput.value})})
+// PR4：取色器关闭时立刻把颜色改动收成一帧（input 的 300ms 兜底计时器随之取消）。
+colorInput.addEventListener('change',()=>commitStyle())
 ;[watermarkContentInput,watermarkOpacityInput,watermarkColorInput,watermarkSpacingInput,watermarkFontSizeInput,watermarkRotationInput,watermarkDateSuffixInput].forEach((input)=>input.addEventListener('input',updateWatermarkPreview))
 watermarkContentInput.addEventListener('keydown',(event)=>{if(event.key==='Enter'){event.preventDefault();watermarkApplyButton.click()}})
 watermarkApplyButton.addEventListener('click',()=>{
@@ -1114,6 +1212,9 @@ document.getElementById('undo').onclick=()=>undoAnnotations()
 document.getElementById('redo').onclick=()=>redoAnnotations()
 document.getElementById('elementDelete').onclick=()=>deleteSelectedAnnotation()
 document.getElementById('elementDeselect').onclick=()=>setSelectedAnnotation(null)
+// P0-5 PR4：层级 ↑↓ 只作用于**选中项**；一次点击一帧快照，undo/redo 精确回退且不串。
+elementFront.onclick=()=>reorderSelectedAnnotation(1)
+elementBack.onclick=()=>reorderSelectedAnnotation(-1)
 document.getElementById('longCapture').onclick=()=>performAction('long')
 document.getElementById('copy').onclick=()=>performAction('copy')
 document.getElementById('save').onclick=()=>performAction('save')
