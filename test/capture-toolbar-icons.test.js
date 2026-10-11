@@ -37,3 +37,16 @@ test('capture toolbar uses local SVG icons with current-color masking', () => {
   assert.match(css, /\.toolbar-icon\s*\{[^}]*background:\s*currentColor/)
   assert.match(css, /-webkit-mask:\s*var\(--icon\)\s+center\/contain\s+no-repeat/)
 })
+
+test('the element bar adds no toolbar icons and stays off the tool strip (P0-5 PR1)', () => {
+  // The ordered list above is an exact deepEqual over every --icon:url() in the page,
+  // not just the ones inside .toolbar, so the P0-5 element actions must not borrow the
+  // mask-icon set: they are plain text buttons on their own floating surface.
+  const iconPaths = [...html.matchAll(/--icon:url\('([^']+\.svg)'\)/g)].map((match) => match[1])
+  assert.deepEqual(iconPaths, expectedIcons.map((name) => `icons/${name}.svg`))
+
+  assert.match(html, /id="toolbar"[\s\S]*<\/div>\s*<div id="elementBar"/, 'the element bar is a sibling after the strip, not another button on it')
+  const elementBar = html.slice(html.indexOf('<div id="elementBar"'), html.indexOf('id="watermarkPanel"'))
+  assert.doesNotMatch(elementBar, /--icon:url\(/, 'element actions must not inflate the toolbar icon list')
+  assert.match(css, /\.element-bar \{/)
+})

@@ -51,6 +51,11 @@
     <button id="copy" class="primary" title="复制 Enter" aria-label="复制"><span class="toolbar-icon" style="--icon:url('icons/copy.svg')" aria-hidden="true"></span></button>
     <button id="close" title="取消 Esc" aria-label="取消"><span class="toolbar-icon" style="--icon:url('icons/close.svg')" aria-hidden="true"></span></button>
   </div>
+  <div id="elementBar" class="element-bar hidden">
+    <span>已选中标注</span>
+    <button id="elementDelete" class="danger" title="删除选中标注 Delete" aria-label="删除选中标注">删除</button>
+    <button id="elementDeselect" title="取消选中 Esc" aria-label="取消选中">取消选中</button>
+  </div>
   <div id="watermarkPanel" class="watermark-panel hidden">
     <div class="watermark-row"><label for="watermarkContent">内容</label><input id="watermarkContent" type="text" placeholder="输入水印文字" maxlength="200"></div>
     <div class="watermark-row watermark-check-row">
@@ -84,6 +89,7 @@
   <audio id="shutterSound" src="../assets/shutter.wav" preload="auto"></audio>
   <script src="annotation-style.js"></script>
   <script src="selection-utils.js"></script>
+  <script src="annotation-geometry.js"></script>
   <script src="capture.js"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@ const backgroundCtx = backgroundCanvas.getContext('2d')
 const canvas = document.getElementById('stage')
 const ctx = canvas.getContext('2d')
 const toolbar = document.getElementById('toolbar')
+const elementBar = document.getElementById('elementBar')
 const sizeBadge = document.getElementById('sizeBadge')
 const tip = document.getElementById('tip')
 const loading = document.getElementById('loading')
@@ -44,6 +45,14 @@ const {
   serialRadius,
   highlightWidth
 } = window.annotationStyleUtils
+// P0-5 PR1：命中测试/选中框/快照深拷贝都走纯函数模块（屏幕 CSS 坐标，方案 §8.3）。
+const {
+  annotationBounds,
+  findAnnotationAt,
+  cloneAnnotations,
+  MAX_ANNOTATION_HISTORY,
+  MAX_PEN_POINTS
+} = window.annotationGeometry
 
 let initData = null
 let image = null
@@ -55,7 +64,16 @@ let startPoint = null
 let currentTool = 'select'
 let activeAnnotation = null
 let annotations = []
-let redoStack = []
+// P0-5 PR1：历史从"数组即栈（pop 末尾）"升级为**深拷贝快照栈**——编辑已有元素（位置/样式/层级）
+// 无法用 pop 表达，且 pen 的点集必须深拷贝，否则撤销后仍然指向同一个数组（方案 §8.2）。
+// annotationHistory[historyIndex] 始终等于"当前已提交状态"；redo 不再是独立数组，
+// 而是 historyIndex 之后仍然保留的那一段快照。
+let annotationHistory = [[]]
+let historyIndex = 0
+// 单调递增 id：选中/快照/撤销都按 id 重解析对象（快照还原会换掉对象身份）。
+let annotationSeq = 0
+let selectedAnnotation = null
+let elementBarSize = null
 let serialNumber = 1
 let initialSerialNumber = 1
 let annotationWidth = 4
@@ -149,6 +167,7 @@ function resizeCanvas() {
   canvas.style.width=`${innerWidth}px`
   canvas.style.height=`${innerHeight}px`
   toolbarSize = null
+  elementBarSize = null
   if (image && initData && ['fullscreen', 'image', 'canvas'].includes(initData.mode)) {
     selection = imageDisplayBounds()
   }
@@ -274,6 +293,7 @@ function renderOverlay() {
   ctx.save(); ctx.strokeStyle='#36a3ff'; ctx.lineWidth=1; ctx.setLineDash([4,3]); ctx.strokeRect(selection.x+.5,selection.y+.5,selection.w,selection.h); ctx.restore()
   annotations.forEach((item) => drawAnnotation(ctx,item))
   if (activeAnnotation) drawAnnotation(ctx,activeAnnotation)
+  drawSelectedOutline()
   drawHandles()
   updateFloatingUi()
 }
@@ -292,7 +312,46 @@ function drawHandles() {
   ctx.save(); ctx.fillStyle='#fff'; ctx.strokeStyle='#e5a44c'; ctx.lineWidth=1; points.forEach(([x,y])=>{ctx.fillRect(x-4,y-4,8,8);ctx.strokeRect(x-4,y-4,8,8)}); ctx.restore()
 }
 
+// 选中项虚线框：画在标注之后、手柄之前（方案 §8.4 指定插入点）。坐标同样是屏幕 CSS
+// 坐标；颜色取 shared/tokens.css 的 --primary（onInit 已把用户主色写进 :root）。
+function selectedAccent() {
+  const value = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim()
+  return value || '#36a3ff'
+}
+
+function drawSelectedOutline() {
+  const item = selectedAnnotationItem()
+  if (!item) return
+  const bounds = annotationBounds(item)
+  if (!bounds) return
+  const pad = 5
+  ctx.save()
+  ctx.strokeStyle = selectedAccent()
+  ctx.lineWidth = 1
+  ctx.setLineDash([5, 4])
+  ctx.strokeRect(Math.round(bounds.x - pad) + .5, Math.round(bounds.y - pad) + .5, Math.round(bounds.w + pad * 2), Math.round(bounds.h + pad * 2))
+  ctx.restore()
+}
+
+// 浮动元素条（#elementBar）：元素操作走独立浮动条，不往已近满宽的工具栏塞按钮（方案 §8 风险⑦）。
+function updateElementBar() {
+  const item = selectedAnnotationItem()
+  const visible = !!item && !!selection && !activeOcrResult && !processingAction && !selecting && !dragging && !resizing && selectState !== 'auto'
+  if (!visible) { elementBar.classList.add('hidden'); return }
+  elementBar.classList.remove('hidden')
+  const bounds = annotationBounds(item) || { x: 0, y: 0, w: 0, h: 0 }
+  const rect = elementBarSize || (elementBarSize = elementBar.getBoundingClientRect())
+  let left = bounds.x + bounds.w - rect.width
+  let top = bounds.y + bounds.h + 10
+  if (top + rect.height > innerHeight - 6) top = bounds.y - rect.height - 10
+  left = Math.max(6, Math.min(left, innerWidth - rect.width - 6))
+  top = Math.max(6, top)
+  elementBar.style.left = `${Math.round(left)}px`
+  elementBar.style.top = `${Math.round(top)}px`
+}
+
 function updateFloatingUi() {
+  updateElementBar()
   if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16
   const hideSizeBadge=['ocr','translate'].includes(processingAction)||!!activeOcrResult||['ocr','translate'].includes(initData?.autoAction)
@@ -320,6 +379,8 @@ function positionOcrResultBar() {
 }
 
 function setTool(tool) {
+  // 方案 §8.4：换工具即清选中，避免虚线框/浮动条挂在另一个工具上。
+  setSelectedAnnotation(null)
   currentTool=tool
   document.querySelectorAll('[data-tool]').forEach((button)=>button.classList.toggle('active',button.dataset.tool===tool))
   canvas.style.cursor=tool==='select'?(selection?'move':'crosshair'):'crosshair'
@@ -340,9 +401,87 @@ function setAnnotationWidth(width, persist = false) {
   window.captureAPI.saveAnnotationWidth(annotationWidth).catch(() => {})
 }
 
+// ---------- P0-5 PR1：选中 + 删除 + 快照栈 ----------
+
+// 当前仍然有效的选中项（快照还原会换掉对象身份，所以按引用校验一次）。
+function selectedAnnotationItem() {
+  return selectedAnnotation && annotations.includes(selectedAnnotation) ? selectedAnnotation : null
+}
+
+function syncSelectedAnnotation() {
+  const id = selectedAnnotation?.id
+  selectedAnnotation = id === undefined || id === null ? null : annotations.find((item) => item.id === id) || null
+}
+
+function setSelectedAnnotation(item) {
+  selectedAnnotation = item || null
+  render()
+}
+
+// 提交一帧快照：截断 redo 分支 → 深拷贝当前 annotations → 上限 60 条（丢最旧的一条）。
+function snapshotAnnotations() {
+  annotationHistory.length = historyIndex + 1
+  annotationHistory.push(cloneAnnotations(annotations))
+  if (annotationHistory.length > MAX_ANNOTATION_HISTORY) annotationHistory.splice(0, annotationHistory.length - MAX_ANNOTATION_HISTORY)
+  historyIndex = annotationHistory.length - 1
+}
+
+function restoreAnnotations(index) {
+  historyIndex = Math.max(0, Math.min(annotationHistory.length - 1, index))
+  annotations = cloneAnnotations(annotationHistory[historyIndex])
+  syncSelectedAnnotation()
+  render()
+}
+
+function undoAnnotations() {
+  if (historyIndex <= 0) return
+  restoreAnnotations(historyIndex - 1)
+}
+
+function redoAnnotations() {
+  if (historyIndex >= annotationHistory.length - 1) return
+  restoreAnnotations(historyIndex + 1)
+}
+
+// 删除选中项：序列号删除后**不重编号**（方案 §8 风险⑥），空隙保留。
+function deleteSelectedAnnotation() {
+  const item = selectedAnnotationItem()
+  if (!item) return
+  annotations.splice(annotations.indexOf(item), 1)
+  selectedAnnotation = null
+  snapshotAnnotations()
+  render()
+}
+
+// D4 落地项：重划选区会丢弃全部已提交标注——改为**先确认**；
+// 取消（返回 false）时调用方必须原样保留选区与标注，不得先改状态再问。
+function confirmDiscardAnnotations() {
+  if (!annotations.length) return true
+  return confirm('重新划选将清除已添加的标注，是否继续？')
+}
+
+// 确认后清空；仍然压一帧快照，使这次清空也能被 Ctrl+Z 精确回退。
+function clearAnnotationsForNewSelection() {
+  annotations = []
+  selectedAnnotation = null
+  snapshotAnnotations()
+}
+
+function resetAnnotationState() {
+  annotations = []
+  selectedAnnotation = null
+  annotationHistory = [[]]
+  historyIndex = 0
+  elementBarSize = null
+}
+
 function commitAnnotation(item) {
   if (!item) return
-  annotations.push(item); redoStack=[]; activeAnnotation=null; render()
+  item.id = ++annotationSeq
+  annotations.push(item)
+  activeAnnotation = null
+  snapshotAnnotations()
+  render()
 }
 
 function clampSettingNumber(value, fallback, min, max) {
@@ -438,9 +577,20 @@ canvas.addEventListener('pointerdown',(event)=>{
   const point=pointFromEvent(event); startPoint=point
   if(selectState==='auto'){pointerDownPoint=point;return}
   const resizeHandle=currentTool==='select'?getResizeHandle(selection,point):''
-  if (!selection || (currentTool==='select'&&!resizeHandle&&!insideSelection(point))) { selectState='manual';selecting=true; selection={x:point.x,y:point.y,w:0,h:0}; annotations=[]; redoStack=[]; tip.style.display='none'; canvas.style.cursor='crosshair'; render(); return }
+  if (!selection || (currentTool==='select'&&!resizeHandle&&!insideSelection(point))) {
+    // D4 落地项：重划选区会丢弃全部已提交标注 —— 先弹确认；取消则标注与选区都保持原状。
+    if(!confirmDiscardAnnotations())return
+    selectState='manual';selecting=true; selection={x:point.x,y:point.y,w:0,h:0}; clearAnnotationsForNewSelection(); tip.style.display='none'; canvas.style.cursor='crosshair'; render(); return
+  }
   if (resizeHandle) { resizing={handle:resizeHandle,initial:{...selection}}; updateSelectionCursor(point); try{canvas.setPointerCapture(event.pointerId)}catch{}; render(); return }
-  if (currentTool==='select') { dragging=true; return }
+  if (currentTool==='select') {
+    // PR1 元素命中（逆序取最上层）→ 选中；未命中才退回"拖选区"。
+    // PR2 的"选中元素体内拖动"与 PR3 的"选中元素手柄缩放"插在本分支之前（方案 §8.4 优先级）。
+    const hit=findAnnotationAt(annotations,point)
+    if(hit){setSelectedAnnotation(hit);updateSelectionCursor(point);return}
+    setSelectedAnnotation(null)
+    dragging=true; return
+  }
   if (currentTool==='watermark') return
   if (!insideSelection(point)) return
   const style=annotationStyle()
@@ -454,14 +604,24 @@ canvas.addEventListener('pointermove',(event)=>{
   const point=pointFromEvent(event)
   if(selectState==='auto'){
     if(pointerDownPoint){
-      if(Math.hypot(point.x-pointerDownPoint.x,point.y-pointerDownPoint.y)>6){selectState='manual';selecting=true;startPoint=pointerDownPoint;pointerDownPoint=null;selection=normalizeRect(startPoint,point);annotations=[];redoStack=[];smartCandidates=[];tip.style.display='none';render()}
+      if(Math.hypot(point.x-pointerDownPoint.x,point.y-pointerDownPoint.y)>6){if(!confirmDiscardAnnotations()){pointerDownPoint=null;return}selectState='manual';selecting=true;startPoint=pointerDownPoint;pointerDownPoint=null;selection=normalizeRect(startPoint,point);clearAnnotationsForNewSelection();smartCandidates=[];tip.style.display='none';render()}
     }else requestSmartSelection(point)
     return
+  }
+  // D4 副作用防护：pointerdown 里的 confirm() 是主线程模态对话框，用户点掉它时那次
+  // pointerup 可能交不回页面（Chromium 把它交给了对话框），拖拽态就会一直挂着、选区
+  // 跟着没按键的鼠标乱跑。没有按键按下的 move 说明按钮已经抬起 —— 按 pointerup 的
+  // 收尾动作补一次隐式结束。
+  if ((selecting||dragging||resizing)&&event.buttons===0) {
+    if(selecting){selecting=false;if(selection&&(selection.w<3||selection.h<3))selection=null;selectState=selection?'selected':'manual'}
+    if(dragging)dragging=false
+    if(resizing)resizing=null
+    finishSelection(); updateSelectionCursor(point); return
   }
   if (selecting) { selection=normalizeRect(startPoint,point); render(); return }
   if (resizing&&selection) { selection=resizeSelection(resizing.initial,resizing.handle,point,{width:innerWidth,height:innerHeight}); updateSelectionCursor(point); render(); return }
   if (dragging&&selection) { const dx=point.x-startPoint.x,dy=point.y-startPoint.y; selection.x=Math.max(0,Math.min(innerWidth-selection.w,selection.x+dx)); selection.y=Math.max(0,Math.min(innerHeight-selection.h,selection.y+dy)); startPoint=point; render(); return }
-  if (activeAnnotation) { activeAnnotation.x2=point.x; activeAnnotation.y2=point.y; if(activeAnnotation.type==='pen')activeAnnotation.points.push(point); render() }
+  if (activeAnnotation) { activeAnnotation.x2=point.x; activeAnnotation.y2=point.y; if(activeAnnotation.type==='pen'&&activeAnnotation.points.length<MAX_PEN_POINTS)activeAnnotation.points.push(point); render() }
   else updateSelectionCursor(point)
 })
 
@@ -713,8 +873,10 @@ watermarkApplyButton.addEventListener('click',()=>{
   setTool('select')
 })
 document.getElementById('watermarkCancel').onclick=()=>setTool('select')
-document.getElementById('undo').onclick=()=>{const item=annotations.pop();if(item)redoStack.push(item);render()}
-document.getElementById('redo').onclick=()=>{const item=redoStack.pop();if(item)annotations.push(item);render()}
+document.getElementById('undo').onclick=()=>undoAnnotations()
+document.getElementById('redo').onclick=()=>redoAnnotations()
+document.getElementById('elementDelete').onclick=()=>deleteSelectedAnnotation()
+document.getElementById('elementDeselect').onclick=()=>setSelectedAnnotation(null)
 document.getElementById('longCapture').onclick=()=>performAction('long')
 document.getElementById('copy').onclick=()=>performAction('copy')
 document.getElementById('save').onclick=()=>performAction('save')
@@ -734,7 +896,7 @@ ocrCopyAll.onclick=async()=>{if(!activeOcrResult)return;const text=activeOcrResu
 document.getElementById('ocrResultClose').onclick=clearOcrResult
 
 addEventListener('keydown',(event)=>{
-  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else closeCaptureWindow();return}
+  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else if(selectedAnnotationItem())setSelectedAnnotation(null);else closeCaptureWindow();return}
   const focused=document.activeElement
   if(['INPUT','TEXTAREA','SELECT'].includes(focused?.tagName||''))return
   if(focused?.closest?.('#widthGroup'))return
@@ -744,11 +906,12 @@ addEventListener('keydown',(event)=>{
   if(event.ctrlKey&&event.key.toLowerCase()==='a'&&!event.shiftKey&&!event.altKey){event.preventDefault();if(activeOcrResult)clearOcrResult();selection={...imageDisplayBounds()};selectState='selected';pointerDownPoint=null;tip.style.display='none';render()}
   if(event.ctrlKey&&event.key.toLowerCase()==='z'){event.preventDefault();document.getElementById('undo').click()}
   if(event.ctrlKey&&event.key.toLowerCase()==='y'){event.preventDefault();document.getElementById('redo').click()}
-  if(event.key==='Delete'&&annotations.length){annotations.pop();render()}
+  if(event.key==='Delete'){event.preventDefault();deleteSelectedAnnotation()}
 })
 
 window.captureAPI.onInit((data)=>{
   clearOcrResult();setProcessingState(null);initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#e5a44c')
+  resetAnnotationState()
   resetSerialNumber(data)
   if(data.settings?.screenshot?.shutterSound!==false)playShutterSound()
   applyWatermarkSettings(data.settings?.screenshot?.watermark)

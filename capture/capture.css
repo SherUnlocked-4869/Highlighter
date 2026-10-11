@@ -112,6 +112,46 @@ html, body {
 .color-wrap input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .color-wrap span { width: 18px; height: 18px; border: 2px solid #fff; border-radius: 50%; background: #ff3b30; box-shadow: 0 0 0 1px rgba(0, 0, 0, .4); }
 
+/* ---------- selected annotation: floating element bar ---------- */
+/*
+ * P0-5 PR1. The tool strip already fills nearly the whole window width, so element
+ * actions live in their own bar instead of one more button on it. The dashed
+ * selection frame itself is drawn on the overlay canvas next to the annotation it
+ * frames — sharing that coordinate space is what keeps it from drifting — and
+ * takes its accent from the shared --primary token, like this bar does.
+ */
+.element-bar {
+  position: fixed;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: var(--radius);
+  color: #eee;
+  background: rgba(25, 25, 28, .96);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .4);
+  backdrop-filter: blur(18px);
+}
+.element-bar span { color: #bbb; white-space: nowrap; font-size: 12px; }
+.element-bar button {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: #ddd;
+  background: rgba(255, 255, 255, .1);
+  font: 12px/1 inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.element-bar button:hover { background: rgba(255, 255, 255, .18); }
+.element-bar button.danger { color: #fff; background: var(--danger); }
+.element-bar button.danger:hover { filter: brightness(1.1); }
+.element-bar button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+
 /* ---------- watermark panel ---------- */
 .watermark-panel {
   position: fixed;
