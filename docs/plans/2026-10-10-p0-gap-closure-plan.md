@@ -675,6 +675,12 @@ scripts/check-i18n.js    ① 三份 locale 键集合对称差必空
 **语言优先级**：`document.documentElement.dataset.language` → `localStorage` → 默认。
 **切换生效**（mirror `theme` 的既有做法）：设置 effect 广播 `i18n:language` 到 11 个窗口，渲染层收消息重扫 DOM；`config` 窗靠 `updateSettings` 返回值本地重渲染（`config/config.js:129-136`）。
 
+> **架构决策（2026-10-11，Lead）：locale 表按 domain 分文件。** 上面代码块里的三个语言文件**保留**（承载跨窗口公共键），另增 `shared/locales/<domain>.js`（domain ∈ `capture` / `record` / `long-capture` / `action` / `search` / `recognition` / `toolbar` / `main` / `config`），**每个文件同时注册三种语言**该 domain 的键。
+>
+> **理由**：Wave 9 声明为"四路并行"，但若全部键都写进同三个文件，S1/S11/S12/S13 会同时写同一文件 → 只能串行。按 domain 分文件后每个流独占自己的文件，四路才真正可并行（也顺带让每个窗口只加载自己需要的字符串）。
+> **连带改动**：`scripts/check-i18n.js` 的 `loadLocales()` 由硬编码三文件改为**扫描 `shared/locales/*.js` 并按名排序全部 require**（否则新增 domain 文件不被检查）；`shared/i18n.js` 运行时**无需改动**（`Object.assign` 合并进 `__LOCALES[lang]` 即可）。
+> **口径不变**：键名仍 `<domain>.<module>.<semantic>`；三语键集合对称差仍须为空（checker ①）；`--max` 仍以 checker 的实测行数为基准逐批收紧。
+
 ### 10.4 任务拆解
 
 | 任务 | 内容 | 写作用域 | 人日 |
