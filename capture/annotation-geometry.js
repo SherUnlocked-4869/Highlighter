@@ -23,6 +23,14 @@
   const DEFAULT_HIT_TOLERANCE = 6
   // text 没有 x2，纯函数层也拿不到 canvas 度量：用 0.6em/字符 估计盒宽（见 annotationBounds）。
   const TEXT_WIDTH_RATIO = 0.6
+  // PR3 缩放下限：任何一维小于 3px 时按 3px 处理（方案 §8.4 PR3 验收「镜像不崩、最小 3px」）。
+  // 与 selection-utils.js 的 resizeSelection(minimumSize=3) 同值 —— 手柄层与纯函数层给出
+  // 同一个下限，镜像/退化输入都不会产出负尺寸。
+  const MIN_RESIZE_SIZE = 3
+  // text/serial 的宽度字段是**预设**而不是自由数值（annotation-style.js 的 resolveWidth 会把
+  // 非预设值打回 4），所以「仅字号 / 仅半径」只能把缩放比换算成最接近的预设。
+  const WIDTH_PRESETS = Array.isArray(style.WIDTHS) && style.WIDTHS.length ? style.WIDTHS : null
+  const resolveWidth = typeof style.resolveWidth === 'function' ? style.resolveWidth : (value) => value
 
   // 字号/半径必须与 drawAnnotation() 同源，否则选中虚线框和图形对不上。
   const fontSize = typeof style.textFontSize === 'function' ? style.textFontSize : () => 20
@@ -228,6 +236,134 @@
     return moved
   }
 
+  // PR3 缩放的入参归一化：接受 {x,y,w,h}（也接受 {width,height} 别名），一律取绝对值并
+  // 抬到 MIN_RESIZE_SIZE —— 镜像（负宽/负高）与退化（0 宽/0 高）都不得产出非法尺寸。
+  function targetBox(box) {
+    if (!box || typeof box !== 'object') return null
+    return {
+      x: numberOr(box.x, 0),
+      y: numberOr(box.y, 0),
+      w: Math.max(MIN_RESIZE_SIZE, Math.abs(numberOr(box.w ?? box.width, 0))),
+      h: Math.max(MIN_RESIZE_SIZE, Math.abs(numberOr(box.h ?? box.height, 0)))
+    }
+  }
+
+  // 把点按"它在 oldBox 里的相对位置"映射到 newBox：line/arrow 靠它保端点方向，pen 靠它
+  // 等比映射点集。oldBox 某一维退化为 0 时取中点（0.5），既避免除零也不让整条线塌到一边。
+  function mapPointToBox(px, py, oldBox, newBox) {
+    const u = oldBox.w > 0 ? (px - oldBox.x) / oldBox.w : 0.5
+    const v = oldBox.h > 0 ? (py - oldBox.y) / oldBox.h : 0.5
+    return { x: newBox.x + u * newBox.w, y: newBox.y + v * newBox.h }
+  }
+
+  function boxScaleRatio(oldBox, newBox) {
+    const ratios = []
+    if (oldBox.w > 0) ratios.push(newBox.w / oldBox.w)
+    if (oldBox.h > 0) ratios.push(newBox.h / oldBox.h)
+    if (!ratios.length) return 1
+    // 取较大的那一维：拖左右边时高度不变（该维比值恒为 1），取 max 才能让字号/半径真的动。
+    return Math.max(...ratios)
+  }
+
+  // text/serial 的「仅字号 / 仅半径」：把缩放比换算成**派生尺寸最接近的 width 预设**。
+  // 比值恰好为 1（没缩放）或没有预设表时返回 null，调用方保持原宽度（= 不制造无效编辑）。
+  function presetWidthForScale(baseWidth, oldBox, newBox) {
+    if (!WIDTH_PRESETS) return null
+    const ratio = boxScaleRatio(oldBox, newBox)
+    if (!Number.isFinite(ratio) || ratio <= 0 || ratio === 1) return null
+    const current = Math.max(1, numberOr(resolveWidth(baseWidth), 4))
+    const desired = current * ratio
+    let best = WIDTH_PRESETS[0]
+    for (const preset of WIDTH_PRESETS) {
+      // <= 让"同样接近"时取更大的预设：放大手势必须能看出字号/半径的变化。
+      if (Math.abs(preset - desired) <= Math.abs(best - desired)) best = preset
+    }
+    return best === numberOr(baseWidth, Number.NaN) ? null : best
+  }
+
+  // PR3：把标注按新 box 缩放。契约与 translateAnnotation 一致 —— **永远返回新对象**
+  // （pen 点集也换新数组），绝不就地修改入参。box 一律是屏幕 CSS 坐标（方案 §8.3），
+  // 导出坐标（(item.x-selection.x)*scaleX）只在 exportSelectionCanvas() 内部存在。
+  //
+  // 逐类型语义（方案 §8.4 PR3）：
+  //   rect / ellipse / blur / watermark（以及未知类型）：直接采用新 box（watermark 改 x/y/w/h）；
+  //   line / arrow（含同族的 highlight）：两端各按相对位置映射，**保持端点方向**——
+  //     反向拖拽（镜像）不会把箭头掉头，因为旧端点相对旧 bbox 的 u/v 不变；
+  //   pen：按新旧 box 的逐轴比例等比映射每个点，点集换新数组；
+  //   text：**仅移动原点 + 字号**，不写 x2/y2（字形绝不拉伸，宽度仍由字号推出）；
+  //   serial：**仅半径**（序号是 2×radius 的圆心方框：圆心跟到新 box 中心），number 不变。
+  // 已知边界（方案 §8 风险③）：字号/半径只能落在 annotation-style 的 width 预设上，所以
+  // text/serial 缩放后实际 bbox 可能与虚线框不完全吻合 —— 这是既有绘制模型的上限，
+  // 不是坐标换算错误（导出仍走同一套 item 字段）。
+  function resizeAnnotationToBox(item, box) {
+    if (!item || typeof item !== 'object') return null
+    const target = targetBox(box)
+    if (!target) return null
+    const source = annotationBounds(item)
+    if (!source) return null
+    const type = item.type
+
+    if (type === 'watermark') {
+      return Object.assign({}, item, { x: target.x, y: target.y, w: target.w, h: target.h })
+    }
+
+    if (type === 'text') {
+      const resized = Object.assign({}, item, { x: target.x, y: target.y })
+      const width = presetWidthForScale(item.width, source, target)
+      if (width !== null) resized.width = width
+      return resized
+    }
+
+    if (type === 'serial') {
+      const resized = Object.assign({}, item, {
+        x: target.x + target.w / 2,
+        y: target.y + target.h / 2
+      })
+      const width = presetWidthForScale(item.width, source, target)
+      if (width !== null) resized.width = width
+      return resized
+    }
+
+    if (type === 'line' || type === 'arrow' || type === 'highlight') {
+      const from = mapPointToBox(numberOr(item.x, 0), numberOr(item.y, 0), source, target)
+      const to = mapPointToBox(
+        hasX2(item) ? Number(item.x2) : numberOr(item.x, 0),
+        hasY2(item) ? Number(item.y2) : numberOr(item.y, 0),
+        source,
+        target
+      )
+      const resized = Object.assign({}, item, { x: from.x, y: from.y })
+      if (hasX2(item)) resized.x2 = to.x
+      if (hasY2(item)) resized.y2 = to.y
+      return resized
+    }
+
+    if (type === 'pen') {
+      const resized = Object.assign({}, item)
+      const from = mapPointToBox(numberOr(item.x, 0), numberOr(item.y, 0), source, target)
+      const to = mapPointToBox(
+        hasX2(item) ? Number(item.x2) : numberOr(item.x, 0),
+        hasY2(item) ? Number(item.y2) : numberOr(item.y, 0),
+        source,
+        target
+      )
+      resized.x = from.x
+      resized.y = from.y
+      if (hasX2(item)) resized.x2 = to.x
+      if (hasY2(item)) resized.y2 = to.y
+      if (Array.isArray(item.points)) {
+        resized.points = item.points.map((point) => {
+          const mapped = mapPointToBox(numberOr(point?.x, 0), numberOr(point?.y, 0), source, target)
+          return { x: mapped.x, y: mapped.y }
+        })
+      }
+      return resized
+    }
+
+    // rect / ellipse / blur 以及任何带 x2/y2 的实心块：直接采用新 box。
+    return Object.assign({}, item, { x: target.x, y: target.y, x2: target.x + target.w, y2: target.y + target.h })
+  }
+
   // 单个轴向上的 clamp：把 box 的起点夹进"能放下的区间"。box 比舞台还大时区间退化为
   // [limit-size, 0]（起点为负），即至少保证有一侧贴住舞台边，绝不整块飞出去。
   function clampAxis(position, size, limit) {
@@ -277,10 +413,12 @@
     MAX_ANNOTATION_HISTORY,
     MAX_PEN_POINTS,
     DEFAULT_HIT_TOLERANCE,
+    MIN_RESIZE_SIZE,
     annotationBounds,
     hitTestAnnotation,
     findAnnotationAt,
     translateAnnotation,
+    resizeAnnotationToBox,
     clampAnnotationToStage,
     cloneAnnotations
   }

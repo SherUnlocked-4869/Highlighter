@@ -13,10 +13,12 @@ const {
   MAX_ANNOTATION_HISTORY,
   MAX_PEN_POINTS,
   DEFAULT_HIT_TOLERANCE,
+  MIN_RESIZE_SIZE,
   annotationBounds,
   hitTestAnnotation,
   findAnnotationAt,
   translateAnnotation,
+  resizeAnnotationToBox,
   clampAnnotationToStage,
   cloneAnnotations
 } = require('../capture/annotation-geometry')
@@ -282,6 +284,156 @@ test('cloneAnnotations deep-copies pen points, caps them and isolates the snapsh
   assert.deepEqual([MAX_ANNOTATION_HISTORY, MAX_PEN_POINTS, DEFAULT_HIT_TOLERANCE], [60, 10000, 6])
 })
 
+// ---------- PR3 纯函数：resizeAnnotationToBox（方案 §8.4 PR3，12 条用例的第 10 条） ----------
+// 第 10 条 =「保方向 + 最小 3px」：下面第 1 个用例覆盖"保方向（含镜像不崩）"，第 3 个覆盖
+// "最小 3px"；其余用例覆盖方案 §8.4 PR3 逐类型语义（rect/ellipse/blur/watermark、pen 等比、
+// text 仅移动+字号、serial 仅半径）与"永远返回新对象"契约。
+
+test('resizeAnnotationToBox adopts the new box for rect/ellipse/blur/watermark without touching the original (PR3)', () => {
+  const rect = { type: 'rect', x: 100, y: 100, x2: 300, y2: 250, color: '#f00', width: 4 }
+  const target = { x: 50, y: 60, w: 250, h: 190 }
+  const resized = resizeAnnotationToBox(rect, target)
+  assert.notEqual(resized, rect)
+  assert.deepEqual(resized, { type: 'rect', x: 50, y: 60, x2: 300, y2: 250, color: '#f00', width: 4 })
+  // 原对象原地不动：缩放走的始终是副本。
+  assert.deepEqual([rect.x, rect.y, rect.x2, rect.y2], [100, 100, 300, 250])
+
+  assert.deepEqual(
+    resizeAnnotationToBox({ type: 'ellipse', x: 0, y: 0, x2: 40, y2: 20, color: '#f00', width: 2 }, { x: 10, y: 10, w: 80, h: 40 }),
+    { type: 'ellipse', x: 10, y: 10, x2: 90, y2: 50, color: '#f00', width: 2 }
+  )
+  assert.deepEqual(
+    resizeAnnotationToBox({ type: 'blur', x: 5, y: 5, x2: 15, y2: 25, color: '#f00', width: 4 }, { x: 0, y: 0, w: 30, h: 60 }),
+    { type: 'blur', x: 0, y: 0, x2: 30, y2: 60, color: '#f00', width: 4 }
+  )
+  // watermark 用 x/y/w/h，没有 x2/y2 —— 四个字段同步跟到新 box。
+  const watermark = { type: 'watermark', x: 4, y: 8, w: 300, h: 200, content: '知何似' }
+  const scaled = resizeAnnotationToBox(watermark, { x: 20, y: 30, w: 150, h: 90 })
+  assert.deepEqual(scaled, { type: 'watermark', x: 20, y: 30, w: 150, h: 90, content: '知何似' })
+  assert.equal('x2' in scaled, false)
+  assert.deepEqual([watermark.x, watermark.w], [4, 300])
+
+  // 空输入/空 box 一律 null，绝不抛错。
+  assert.equal(resizeAnnotationToBox(null, target), null)
+  assert.equal(resizeAnnotationToBox(rect, null), null)
+})
+
+test('resizeAnnotationToBox keeps the endpoint direction of line/arrow so a reversed drag cannot flip it (PR3)', () => {
+  // 旧 bbox 是 (0,0)-(100,100)，端点 1 在右下、端点 2 在左上；映射到新 box 后方向必须保持。
+  const line = { type: 'line', x: 100, y: 100, x2: 0, y2: 0, color: '#f00', width: 4 }
+  assert.deepEqual(
+    resizeAnnotationToBox(line, { x: 200, y: 200, w: 100, h: 100 }),
+    { type: 'line', x: 300, y: 300, x2: 200, y2: 200, color: '#f00', width: 4 }
+  )
+  assert.deepEqual([line.x, line.y, line.x2, line.y2], [100, 100, 0, 0], 'the source line stays untouched')
+
+  // 箭头：水平段在新 box 里仍是同向水平段（高度退化时按中线映射，不塌到角上）。
+  const arrow = { type: 'arrow', x: 0, y: 0, x2: 100, y2: 0, color: '#f00', width: 4 }
+  assert.deepEqual(
+    resizeAnnotationToBox(arrow, { x: 50, y: 50, w: 200, h: 100 }),
+    { type: 'arrow', x: 50, y: 100, x2: 250, y2: 100, color: '#f00', width: 4 }
+  )
+  // 反向（镜像）拖拽：新 box 的宽高为负也不能让端点掉头，取绝对值后方向不变。
+  const mirrored = resizeAnnotationToBox(line, { x: 10, y: 10, w: -90, h: -90 })
+  assert.deepEqual(mirrored, { type: 'line', x: 100, y: 100, x2: 10, y2: 10, color: '#f00', width: 4 })
+  assert.ok(mirrored.x2 < mirrored.x && mirrored.y2 < mirrored.y, 'the mirrored line still runs from its old start corner to its old end corner')
+
+  // 垂直退化线（旧 w=0）：横向按中线映射，仍然是一条居中的竖线。
+  const vertical = { type: 'line', x: 50, y: 0, x2: 50, y2: 100, color: '#f00', width: 2 }
+  assert.deepEqual(
+    resizeAnnotationToBox(vertical, { x: 0, y: 0, w: 100, h: 100 }),
+    { type: 'line', x: 50, y: 0, x2: 50, y2: 100, color: '#f00', width: 2 }
+  )
+})
+
+test('resizeAnnotationToBox floors every axis at 3px so a degenerate or mirrored box cannot produce a negative size (PR3)', () => {
+  assert.equal(MIN_RESIZE_SIZE, 3)
+  const rect = { type: 'rect', x: 100, y: 100, x2: 300, y2: 250, color: '#f00', width: 4 }
+  const zero = resizeAnnotationToBox(rect, { x: 10, y: 10, w: 0, h: 0 })
+  assert.deepEqual([zero.x2 - zero.x, zero.y2 - zero.y], [3, 3])
+  const negative = resizeAnnotationToBox(rect, { x: 10, y: 10, w: -40, h: -60 })
+  assert.deepEqual([negative.x, negative.y, negative.x2 - negative.x, negative.y2 - negative.y], [10, 10, 40, 60])
+  // 舞台外的极端值也不崩：NaN/缺失一律按 0 处理后再抬到下限。
+  const nan = resizeAnnotationToBox(rect, { x: Number.NaN, y: undefined, w: Number.NaN, h: 'x' })
+  assert.deepEqual([nan.x, nan.y, nan.x2 - nan.x, nan.y2 - nan.y], [0, 0, 3, 3])
+  assert.ok(Number.isFinite(nan.x2) && Number.isFinite(nan.y2))
+})
+
+test('resizeAnnotationToBox scales a pen point set proportionally into a brand-new array (PR3)', () => {
+  const pen = {
+    id: 3,
+    type: 'pen',
+    x: 10,
+    y: 10,
+    x2: 30,
+    y2: 40,
+    color: '#f00',
+    width: 4,
+    points: [{ x: 10, y: 10 }, { x: 20, y: 25 }, { x: 30, y: 40 }]
+  }
+  const resized = resizeAnnotationToBox(pen, { x: 10, y: 10, w: 40, h: 60 })
+  assert.deepEqual(resized.points, [{ x: 10, y: 10 }, { x: 30, y: 40 }, { x: 50, y: 70 }])
+  assert.notEqual(resized.points, pen.points)
+  assert.deepEqual([resized.x, resized.y, resized.x2, resized.y2], [10, 10, 50, 70])
+  assert.equal(resized.id, 3, 'the stable id rides along so the selection survives the resize')
+  assert.deepEqual(pen.points, [{ x: 10, y: 10 }, { x: 20, y: 25 }, { x: 30, y: 40 }])
+
+  // 退化（单点）pen：两维都为 0 时按中点映射，不产生 NaN/Infinity。
+  const dot = { type: 'pen', x: 5, y: 5, color: '#f00', width: 4, points: [{ x: 5, y: 5 }] }
+  const scaledDot = resizeAnnotationToBox(dot, { x: 0, y: 0, w: 10, h: 10 })
+  assert.deepEqual(scaledDot.points, [{ x: 5, y: 5 }])
+  assert.deepEqual([scaledDot.x, scaledDot.y], [5, 5])
+})
+
+test('resizeAnnotationToBox only moves text and re-picks its font size, never stretching the glyph box (PR3)', () => {
+  const text = { type: 'text', x: 10, y: 10, text: 'abc', color: '#f00', width: 4 }
+  const source = annotationBounds(text)
+  // 2× 放大：字号按 width 预设从 4 跳到 8（drawAnnotation 的字号由 width 推出）。
+  const bigger = resizeAnnotationToBox(text, { x: 10, y: 10, w: source.w * 2, h: source.h * 2 })
+  assert.equal(bigger.width, 8)
+  assert.equal(textFontSize(bigger.width), textFontSize(4) * 2)
+  assert.deepEqual([bigger.x, bigger.y], [10, 10])
+  assert.equal('x2' in bigger, false, 'text must not grow an x2 — that would look like a stretched glyph box')
+  assert.equal(bigger.text, 'abc')
+
+  // 只拖动（盒子尺寸不变）不改字号：不制造无效编辑步。
+  const dragged = resizeAnnotationToBox(text, { x: 40, y: 50, w: source.w, h: source.h })
+  assert.equal(dragged.width, 4)
+  assert.deepEqual([dragged.x, dragged.y], [40, 50])
+
+  // 缩小到下限：字号回到最小预设，仍然不写 x2/y2、不产生负尺寸。
+  const smaller = resizeAnnotationToBox(text, { x: 5, y: 5, w: 3, h: 3 })
+  assert.ok([2, 4, 8].includes(smaller.width))
+  assert.equal('x2' in smaller, false)
+})
+
+test('resizeAnnotationToBox only changes a serial radius and keeps its number (PR3)', () => {
+  const serial = { type: 'serial', x: 100, y: 100, number: 3, color: '#f00', width: 4 }
+  const resized = resizeAnnotationToBox(serial, { x: 0, y: 0, w: 48, h: 48 })
+  assert.equal(resized.number, 3, 'serials are never renumbered')
+  assert.equal(resized.width, 8)
+  // 2×radius 的圆心方框：新 box 48×48 恰好等于新半径（24）的方框。
+  assert.deepEqual(annotationBounds(resized), { x: 0, y: 0, w: 48, h: 48 })
+  assert.ok(serialRadius(resized.width) > serialRadius(serial.width))
+  assert.deepEqual([serial.x, serial.width], [100, 4])
+
+  // 圆心跟着新 box 的中心走；半径只能落在 width 预设上（drawAnnotation 由 width 推半径）。
+  const moved = resizeAnnotationToBox(serial, { x: 10, y: 20, w: 48, h: 48 })
+  assert.deepEqual([moved.x, moved.y], [34, 44])
+  assert.equal(moved.number, 3)
+})
+
+test('resizeAnnotationToBox always returns a fresh copy, even when the box equals the current bounds (PR3)', () => {
+  const rect = { type: 'rect', x: 10, y: 10, x2: 60, y2: 40, color: '#f00', width: 4 }
+  const same = resizeAnnotationToBox(rect, annotationBounds(rect))
+  assert.notEqual(same, rect)
+  assert.deepEqual(same, rect)
+  const pen = { type: 'pen', x: 0, y: 0, x2: 10, y2: 10, color: '#f00', width: 4, points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] }
+  const penSame = resizeAnnotationToBox(pen, annotationBounds(pen))
+  assert.deepEqual(penSame, pen)
+  assert.notEqual(penSame.points, pen.points)
+})
+
 // ---------- PR1 接线契约 ----------
 
 test('capture.js gives every committed annotation a monotonic id and undoes through a snapshot stack', () => {
@@ -425,4 +577,80 @@ test('PR2: Alt+drag on the selection bar hint moves the selection and never the 
   assert.match(css, /\.element-bar \.element-hint \{ color: #8a8a92; \}/)
   // 拖动/微调一律走屏幕 CSS 坐标：不出现导出换算的 scaleX/scaleY。
   assert.doesNotMatch(pointermoveSource, /scaleX|scaleY/)
+})
+
+// ---------- PR3 接线契约（8 手柄缩放 / 镜像不崩 / 最小 3px / 与 PR2 同一 editDirty 口径） ----------
+
+const resizeToSource = sliceBetween(script, 'function resizeAnnotationTo(point)', 'function annotationWasResized(')
+const resizeHandlesSource = sliceBetween(script, 'function drawSelectedHandles(bounds)', 'function updateElementBar')
+
+test('PR3: pointerdown tries the selected-element handles after the selection handle and before the element body', () => {
+  // 纯函数进 capture.js 的接线：插在解构清单里，且不打乱既有条目的相对顺序。
+  assert.match(script, /resizeAnnotationToBox,\s*annotationBounds,\s*findAnnotationAt,\s*translateAnnotation,/)
+  assert.match(script, /const ELEMENT_HANDLE_HIT = 6/)
+  assert.match(script, /const SELECTED_OUTLINE_PAD = 5/)
+  assert.match(script, /function selectedResizeHandle\(point\) \{[\s\S]{0,340}?getResizeHandle\(bounds, point, ELEMENT_HANDLE_HIT\)/)
+  // 零尺寸元素（单点 pen / 退化线）不给手柄：与 getResizeHandle() 的 no-op 条件一致。
+  assert.match(script, /function selectedResizeHandle\(point\) \{[\s\S]{0,260}?bounds\.w <= 0 \|\| bounds\.h <= 0\) return ''/)
+
+  const handleIndex = pointerdownSource.indexOf('selectedResizeHandle(point)')
+  const bodyIndex = pointerdownSource.indexOf('pointInAnnotationBounds(selected,point)')
+  const hitIndex = pointerdownSource.indexOf('findAnnotationAt(annotations,point)')
+  const selectionHandleIndex = pointerdownSource.indexOf('if (resizeHandle)')
+  const altIndex = pointerdownSource.indexOf('if(event.altKey)')
+  assert.ok(selectionHandleIndex >= 0 && selectionHandleIndex < handleIndex, 'the selection handle keeps priority (选区手柄 > 选中元素手柄)')
+  assert.ok(handleIndex >= 0 && handleIndex < bodyIndex, 'an element handle precedes the element-body move (选中元素手柄 > 元素体内)')
+  assert.ok(bodyIndex < hitIndex, 'and the body move still precedes the element hit test')
+  assert.ok(altIndex >= 0 && altIndex < handleIndex, 'Alt+drag stays the escape hatch in front of every element branch')
+  // Alt 逃生门本身没有被改动。
+  assert.match(pointerdownSource, /if\(event\.altKey\)\{setSelectedAnnotation\(null\);dragging=true;return\}/)
+  // 缩放态的形状：origin 是未被改动的原对象，originBounds 是它的屏幕 CSS 坐标 bbox。
+  assert.match(
+    pointerdownSource,
+    /const elementHandle=selectedResizeHandle\(point\)\s*if\(elementHandle\)\{const target=selectedAnnotationItem\(\);resizingAnnotation=\{id:target\.id,origin:target,originBounds:annotationBounds\(target\),handle:elementHandle\}/
+  )
+  assert.equal(pointerdownSource.match(/resizingAnnotation=\{/g).length, 1, 'only the pointerdown arm creates the resize state')
+  assert.match(pointerdownSource, /if\(resizingAnnotation\)finishResizeAnnotation\(\)/)
+})
+
+test('PR3: the resize gesture recomputes the box from the untouched origin, with the stage as bounds', () => {
+  // bounds 传**舞台**而不是选区（方案 §8.4 PR3）；每帧都从 origin 重算，绝不就地改原对象。
+  assert.match(resizeToSource, /resizeSelection\(state\.originBounds, state\.handle, point, \{ width: innerWidth, height: innerHeight \}\)/)
+  assert.match(resizeToSource, /const resized = resizeAnnotationToBox\(state\.origin, box\)/)
+  assert.match(resizeToSource, /annotations\[index\] = resized/)
+  assert.doesNotMatch(resizeToSource, /scaleX|scaleY/, 'the resize path never touches the export coordinate conversion')
+  assert.doesNotMatch(pointermoveSource, /scaleX|scaleY/)
+
+  // pointermove：紧跟元素拖动分支之后；没有按键的 move 也能自愈收口。
+  assert.match(pointermoveSource, /if \(movingAnnotation\) \{ moveAnnotationTo\(point\); return \}[\s\S]{0,200}?if \(resizingAnnotation\) \{ resizeAnnotationTo\(point\); updateSelectionCursor\(point\); return \}/)
+  assert.match(pointermoveSource, /if \(resizingAnnotation&&event\.buttons===0\) \{ finishResizeAnnotation\(\); updateSelectionCursor\(point\); return \}/)
+  // pointerup / pointercancel：与 PR2 同一套收口口径（有变化才 snapshot；cancel 回滚原对象）。
+  assert.match(pointerupSource, /if\(resizingAnnotation\)\{finishResizeAnnotation\(\);updateSelectionCursor\(pointFromEvent\(event\)\);return\}/)
+  assert.match(script, /canvas\.addEventListener\('pointercancel',\(\)=>\{[\s\S]{0,200}?cancelResizeAnnotation\(\)/)
+  assert.match(script, /function annotationWasResized\(item, origin\) \{\s*return JSON\.stringify\(item\) !== JSON\.stringify\(origin\)/)
+  assert.match(script, /function finishResizeAnnotation\(\) \{[\s\S]{0,340}?if \(current && annotationWasResized\(current, state\.origin\)\) snapshotAnnotations\(\)/)
+  assert.match(script, /function cancelResizeAnnotation\(\) \{[\s\S]{0,480}?annotations\[index\] = state\.origin/)
+  assert.equal(script.match(/snapshotAnnotations\(\)/g).length >= 5, true)
+  // 新一次按下 / 重置时都不会把上一次的缩放态留着。
+  assert.match(script, /function resetAnnotationState\(\) \{[\s\S]{0,220}?resizingAnnotation = null/)
+  // 交互中浮动条隐藏（和拖动一致），否则它会跟着缩放的元素乱跳。
+  assert.match(script, /const visible = !!item && !!selection && !activeOcrResult[\s\S]{0,200}?!resizingAnnotation/)
+  // 光标反馈优先级与 pointerdown 一致。
+  assert.match(script, /const handle = resizing\?\.handle \|\| getResizeHandle\(selection, point\) \|\| resizingAnnotation\?\.handle \|\| selectedResizeHandle\(point\)/)
+})
+
+test('PR3: eight element handles are drawn on the dashed frame in a style distinct from the selection handles', () => {
+  // 手柄必须有可见落点（否则用户无从发现缩放），画在选中虚线框的 8 个位置上。
+  assert.match(script, /function drawSelectedOutline\(\) \{[\s\S]{0,700}?drawSelectedHandles\(bounds\)/)
+  assert.match(resizeHandlesSource, /ctx\.arc\(x, y, 3\.5, 0, Math\.PI \* 2\)/)
+  assert.match(resizeHandlesSource, /if \(!bounds \|\| bounds\.w <= 0 \|\| bounds\.h <= 0\) return/)
+  assert.equal(resizeHandlesSource.match(/ctx\.arc\(/g).length, 1, 'one arc inside a forEach over the eight positions')
+  assert.match(resizeHandlesSource, /\[left, top\], \[midX, top\], \[right, top\], \[left, midY\], \[right, midY\], \[left, bottom\], \[midX, bottom\], \[right, bottom\]/)
+  // 与选区手柄刻意区分：选区是白底橙边 8×8 方块（fillRect），元素是实心圆点（arc），不混用。
+  assert.doesNotMatch(resizeHandlesSource, /fillRect/)
+  assert.match(script, /function drawHandles\(\) \{[\s\S]{0,600}?ctx\.fillRect\(x-4,y-4,8,8\)/)
+  // #elementBar 上多一行纯文本提示，不占工具栏图标清单。
+  assert.match(html, /拖动圆点缩放/)
+  const elementBar = html.slice(html.indexOf('<div id="elementBar"'), html.indexOf('id="watermarkPanel"'))
+  assert.doesNotMatch(elementBar, /--icon:url\(/)
 })

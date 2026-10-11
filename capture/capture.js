@@ -47,7 +47,9 @@ const {
 } = window.annotationStyleUtils
 // P0-5 PR1：命中测试/选中框/快照深拷贝都走纯函数模块（屏幕 CSS 坐标，方案 §8.3）。
 // PR2 追加 translateAnnotation（生成位移副本）与 clampAnnotationToStage（边界 clamp）。
+// PR3 追加 resizeAnnotationToBox（把标注按新 box 缩放的纯函数，永远返回新对象）。
 const {
+  resizeAnnotationToBox,
   annotationBounds,
   findAnnotationAt,
   translateAnnotation,
@@ -79,6 +81,13 @@ let selectedAnnotation = null
 // P0-5 PR2：拖动交互态。origin 始终是**未被改动的**原对象，每帧都从它重新平移（绝不就地改
 // 原对象），所以 clamp 不累积漂移、松开时也能可靠判断"到底动没动"。
 let movingAnnotation = null
+// P0-5 PR3：8 手柄缩放交互态，与 movingAnnotation 同构（origin/originBounds 也是**未被改动的**
+// 原对象与其屏幕 CSS 坐标 bbox，每帧从它重算，绝不就地改）。
+let resizingAnnotation = null
+// PR3：选中元素手柄的命中半径（比选区手柄默认的 8px 更紧 —— 元素普遍更小，太宽会整块吃掉
+// "元素体内拖动"）；绘制时手柄落在选中虚线框上，与 SELECTED_OUTLINE_PAD 同源。
+const ELEMENT_HANDLE_HIT = 6
+const SELECTED_OUTLINE_PAD = 5
 // 方向键微调：连续按键合并为一次可撤销操作，静默 NUDGE_COMMIT_DELAY 毫秒后才压一帧快照。
 let nudgeTimer = 0
 let nudgeDirty = false
@@ -162,7 +171,8 @@ function updateSelectionCursor(point) {
     canvas.style.cursor = 'crosshair'
     return
   }
-  const handle = resizing?.handle || getResizeHandle(selection, point)
+  // 优先级与 pointerdown 一致：选区手柄 > 选中元素手柄 > 元素体内(move)/新建(crosshair)。
+  const handle = resizing?.handle || getResizeHandle(selection, point) || resizingAnnotation?.handle || selectedResizeHandle(point)
   canvas.style.cursor = selectionCursor(handle, insideSelection(point))
 }
 
@@ -336,19 +346,42 @@ function drawSelectedOutline() {
   if (!item) return
   const bounds = annotationBounds(item)
   if (!bounds) return
-  const pad = 5
+  const pad = SELECTED_OUTLINE_PAD
   ctx.save()
   ctx.strokeStyle = selectedAccent()
   ctx.lineWidth = 1
   ctx.setLineDash([5, 4])
   ctx.strokeRect(Math.round(bounds.x - pad) + .5, Math.round(bounds.y - pad) + .5, Math.round(bounds.w + pad * 2), Math.round(bounds.h + pad * 2))
   ctx.restore()
+  // PR3：虚线框之后立刻画 8 个缩放手柄 —— 手柄必须有可见落点，否则用户无从发现缩放。
+  drawSelectedHandles(bounds)
+}
+
+// PR3 的 8 个元素手柄：画在选中虚线框的 4 角 + 4 边中点，样式是**实心圆点 + 白描边**，
+// 与选区手柄（白底橙边 8×8 方块，见 drawHandles()）刻意区分，避免两套手柄视觉混淆。
+// 命中判定仍用 annotationBounds 本身：圆点距真实角点约 SELECTED_OUTLINE_PAD(5) < 6px 命中半径。
+// 零尺寸元素（单点 pen、退化线/椭圆）不画 —— getResizeHandle() 对这些形状本来就不出手柄。
+function drawSelectedHandles(bounds) {
+  if (!bounds || bounds.w <= 0 || bounds.h <= 0) return
+  const left = bounds.x - SELECTED_OUTLINE_PAD
+  const top = bounds.y - SELECTED_OUTLINE_PAD
+  const right = bounds.x + bounds.w + SELECTED_OUTLINE_PAD
+  const bottom = bounds.y + bounds.h + SELECTED_OUTLINE_PAD
+  const midX = (left + right) / 2
+  const midY = (top + bottom) / 2
+  const points = [[left, top], [midX, top], [right, top], [left, midY], [right, midY], [left, bottom], [midX, bottom], [right, bottom]]
+  ctx.save()
+  ctx.fillStyle = selectedAccent()
+  ctx.strokeStyle = '#fff'
+  ctx.lineWidth = 1
+  points.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke() })
+  ctx.restore()
 }
 
 // 浮动元素条（#elementBar）：元素操作走独立浮动条，不往已近满宽的工具栏塞按钮（方案 §8 风险⑦）。
 function updateElementBar() {
   const item = selectedAnnotationItem()
-  const visible = !!item && !!selection && !activeOcrResult && !processingAction && !selecting && !dragging && !resizing && !movingAnnotation && selectState !== 'auto'
+  const visible = !!item && !!selection && !activeOcrResult && !processingAction && !selecting && !dragging && !resizing && !movingAnnotation && !resizingAnnotation && selectState !== 'auto'
   if (!visible) { elementBar.classList.add('hidden'); return }
   elementBar.classList.remove('hidden')
   const bounds = annotationBounds(item) || { x: 0, y: 0, w: 0, h: 0 }
@@ -585,10 +618,68 @@ function cancelNudge() {
   nudgeDirty = false
 }
 
+// ---------- P0-5 PR3：选中元素的 8 手柄缩放 ----------
+
+// 手柄命中：只用 annotationBounds（屏幕 CSS 坐标，方案 §8.3），不掺任何导出换算。
+// 零尺寸元素拿不到手柄 —— 与 getResizeHandle() 自身的 no-op 条件（w<=0||h<=0）一致。
+function selectedResizeHandle(point) {
+  const item = selectedAnnotationItem()
+  if (!item) return ''
+  const bounds = annotationBounds(item)
+  if (!bounds || bounds.w <= 0 || bounds.h <= 0) return ''
+  return getResizeHandle(bounds, point, ELEMENT_HANDLE_HIT)
+}
+
+// 缩放中：每帧都从**未被改动的** state.origin / originBounds 重算，绝不就地改原对象，
+// 所以反向拖拽（镜像）不会累积翻转、松开时也能可靠判断"到底变没变"。
+// bounds 传**舞台**而不是选区（方案 §8.4 PR3）：缩放结果整体落在舞台内。
+function resizeAnnotationTo(point) {
+  const state = resizingAnnotation
+  if (!state) return
+  const index = annotations.findIndex((item) => item.id === state.id)
+  if (index < 0) return
+  const box = resizeSelection(state.originBounds, state.handle, point, { width: innerWidth, height: innerHeight })
+  const resized = resizeAnnotationToBox(state.origin, box)
+  if (!resized) return
+  annotations[index] = resized
+  selectedAnnotation = resized
+  render()
+}
+
+// 只有真的产生了变化才值得压帧（与 PR2 的 annotationWasMoved 同一套 editDirty 口径）。
+// 逐字段比较：text/serial 的缩放可能是"盒变了但字号/半径仍落在同一预设"→ 不该制造无效 undo 步。
+function annotationWasResized(item, origin) {
+  return JSON.stringify(item) !== JSON.stringify(origin)
+}
+
+// pointerup：有变化才压一帧快照（一次手势 = 一帧），0 变化不制造无效撤销步。
+function finishResizeAnnotation() {
+  const state = resizingAnnotation
+  resizingAnnotation = null
+  if (!state) return
+  const current = annotations.find((item) => item.id === state.id)
+  if (current && annotationWasResized(current, state.origin)) snapshotAnnotations()
+  render()
+}
+
+// pointercancel：手势被中断 = 这次缩放作废，原对象放回数组且不压帧（与 PR2 cancel 同一口径）。
+function cancelResizeAnnotation() {
+  const state = resizingAnnotation
+  resizingAnnotation = null
+  if (!state) return
+  const index = annotations.findIndex((item) => item.id === state.id)
+  if (index >= 0) {
+    annotations[index] = state.origin
+    if (selectedAnnotation && selectedAnnotation.id === state.id) selectedAnnotation = state.origin
+  }
+  render()
+}
+
 function resetAnnotationState() {
   annotations = []
   selectedAnnotation = null
   movingAnnotation = null
+  resizingAnnotation = null
   cancelNudge()
   annotationHistory = [[]]
   historyIndex = 0
@@ -698,6 +789,8 @@ canvas.addEventListener('pointerdown',(event)=>{
   // PR2 防御：上一次元素拖动若没等到 pointerup（被模态框/系统手势吞掉），新一次按下先把它
   // 收口，避免两个手势叠在同一个 movingAnnotation 上（选区拖动有同款自愈，见 pointermove）。
   if(movingAnnotation)finishMoveAnnotation()
+  // PR3 同款防御：上一次元素缩放没收到 pointerup 时先收口。
+  if(resizingAnnotation)finishResizeAnnotation()
   if(selectState==='auto'){pointerDownPoint=point;return}
   const resizeHandle=currentTool==='select'?getResizeHandle(selection,point):''
   if (!selection || (currentTool==='select'&&!resizeHandle&&!insideSelection(point))) {
@@ -711,8 +804,11 @@ canvas.addEventListener('pointerdown',(event)=>{
     // 当 watermark（按设计铺满整个选区）或大范围 blur 覆盖选区时，用户将无法移动选区；Alt 是
     // 逃生门，它跳过下面所有元素分支，直接落到既有的选区拖动路径（提示见 #elementBar）。
     if(event.altKey){setSelectedAnnotation(null);dragging=true;return}
+    // PR3 选中元素手柄（8 手柄缩放）：优先级 = 选区手柄 > **选中元素手柄** > 元素体内 > 元素命中。
+    // 命中与缩放一律屏幕 CSS 坐标；resizeSelection 的 bounds 传**舞台**（见 resizeAnnotationTo）。
+    const elementHandle=selectedResizeHandle(point)
+    if(elementHandle){const target=selectedAnnotationItem();resizingAnnotation={id:target.id,origin:target,originBounds:annotationBounds(target),handle:elementHandle};try{canvas.setPointerCapture(event.pointerId)}catch{};updateSelectionCursor(point);render();return}
     // PR2 元素体内拖动：点落在**当前已选中**元素的 annotationBounds 内 → 进入 move 态。
-    // PR3 的"选中元素手柄（8 手柄缩放）"插在这一行之前（方案 §8.4：手柄 > 元素体内 > 命中）。
     const selected=selectedAnnotationItem()
     if(selected&&pointInAnnotationBounds(selected,point)){movingAnnotation={id:selected.id,origin:selected,start:{x:point.x,y:point.y}};try{canvas.setPointerCapture(event.pointerId)}catch{};render();return}
     // PR1 元素命中（逆序取最上层）→ 选中；未命中才退回"拖选区"。
@@ -750,9 +846,13 @@ canvas.addEventListener('pointermove',(event)=>{
   }
   // PR2 同款自愈：元素拖动期间 pointerup 被吞掉时，没有按键的 move 也要把这次拖动收口。
   if (movingAnnotation&&event.buttons===0) { finishMoveAnnotation(); updateSelectionCursor(point); return }
+  // PR3 同款自愈：元素缩放期间 pointerup 被吞掉时同样要收口。
+  if (resizingAnnotation&&event.buttons===0) { finishResizeAnnotation(); updateSelectionCursor(point); return }
   if (selecting) { selection=normalizeRect(startPoint,point); render(); return }
   if (resizing&&selection) { selection=resizeSelection(resizing.initial,resizing.handle,point,{width:innerWidth,height:innerHeight}); updateSelectionCursor(point); render(); return }
   if (movingAnnotation) { moveAnnotationTo(point); return }
+  // PR3 元素缩放：新 box 由 resizeSelection 在**舞台**坐标系里算出，再交给纯函数写回新对象。
+  if (resizingAnnotation) { resizeAnnotationTo(point); updateSelectionCursor(point); return }
   if (dragging&&selection) { const dx=point.x-startPoint.x,dy=point.y-startPoint.y; selection.x=Math.max(0,Math.min(innerWidth-selection.w,selection.x+dx)); selection.y=Math.max(0,Math.min(innerHeight-selection.h,selection.y+dy)); startPoint=point; render(); return }
   if (activeAnnotation) { activeAnnotation.x2=point.x; activeAnnotation.y2=point.y; if(activeAnnotation.type==='pen'&&activeAnnotation.points.length<MAX_PEN_POINTS)activeAnnotation.points.push(point); render() }
   else updateSelectionCursor(point)
@@ -763,6 +863,7 @@ canvas.addEventListener('pointerup',(event)=>{
   if(selecting){const point=pointFromEvent(event);selecting=false;if(selection.w<3||selection.h<3)selection=null;selectState=selection?'selected':'manual';finishSelection();updateSelectionCursor(point);return}
   if(resizing){resizing=null;finishSelection();updateSelectionCursor(pointFromEvent(event));return}
   if(movingAnnotation){finishMoveAnnotation();updateSelectionCursor(pointFromEvent(event));return}
+  if(resizingAnnotation){finishResizeAnnotation();updateSelectionCursor(pointFromEvent(event));return}
   if(dragging){dragging=false;render();updateSelectionCursor(pointFromEvent(event));return}
   if(activeAnnotation&&activeAnnotation.type!=='watermark')commitAnnotation(activeAnnotation)
 })
@@ -772,6 +873,7 @@ canvas.addEventListener('pointercancel',()=>{
   dragging=false
   resizing=null
   cancelMoveAnnotation()
+  cancelResizeAnnotation()
   activeAnnotation=currentTool==='watermark'?buildWatermarkAnnotation():null
   render()
 })
