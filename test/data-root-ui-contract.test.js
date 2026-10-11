@@ -2,11 +2,12 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const { readConfigSource } = require('./helpers/config-source')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 const dataRootDomain = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'data-root', 'index.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
-const config = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
+const config = readConfigSource()
 const settingsIpc = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'settings-ipc.js'), 'utf8')
 const historyService = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'history-service.js'), 'utf8')
 

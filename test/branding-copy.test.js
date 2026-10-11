@@ -2,10 +2,11 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const { readConfigSource } = require('./helpers/config-source')
 
 const root = path.join(__dirname, '..')
 const configHtml = fs.readFileSync(path.join(root, 'config', 'config.html'), 'utf8')
-const configScript = fs.readFileSync(path.join(root, 'config', 'config.js'), 'utf8')
+const configScript = readConfigSource()
 const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8')
 
 test('visible config UI uses Highlighter-owned copy and project links', () => {

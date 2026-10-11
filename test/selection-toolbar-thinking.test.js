@@ -13,6 +13,7 @@ const {
   normalizeToolbarThinking
 } = require('../toolbar/toolbar-utils')
 const { buildToolbarStreamRequest } = require('../deepseek')
+const { readConfigSource } = require('./helpers/config-source')
 
 test('thinking levels map to DeepSeek thinking mode requests', () => {
   const off = buildToolbarStreamRequest('划词文本', '提示词', { thinking: 'off' })
@@ -96,7 +97,7 @@ test('open action treats the selection as a browser destination without validati
 })
 
 test('config page exposes thinking controls and the optional open action', () => {
-  const script = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
+  const script = readConfigSource()
   const actionMeta = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar-action-meta.js'), 'utf8')
   assert.match(script, /id="translateThinking"/)
   assert.match(script, /id="explainThinking"/)

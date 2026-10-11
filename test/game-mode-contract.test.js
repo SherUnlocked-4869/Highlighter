@@ -2,6 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const { readConfigSource } = require('./helpers/config-source')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 const captureDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains/capture/index.js'), 'utf8')
@@ -11,7 +12,7 @@ const selectionDomain = fs.readFileSync(path.join(__dirname, '..', 'main/domains
 const settingsDefaults = fs.readFileSync(path.join(__dirname, '..', 'main/services/settings-defaults.js'), 'utf8')
 const functionRouter = fs.readFileSync(path.join(__dirname, '..', 'main/services/function-router.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
-const config = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
+const config = readConfigSource()
 
 test('game mode is persisted and synchronizes tray, shortcuts, selection, and search', () => {
   assert.match(settingsDefaults, /system:\s*\{[\s\S]*gameMode: false/)

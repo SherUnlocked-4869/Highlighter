@@ -5,8 +5,11 @@ const path = require('node:path')
 
 const helpers = require('../config/routes/model-helpers')
 const presets = require('../shared/coding-plan-presets')
+const { readConfigShell } = require('./helpers/config-source')
 const configHtml = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.html'), 'utf8')
-const configJs = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
+// D2-4：这条断言问的是"**主壳**有没有重新定义 helper"（文件边界），所以只读 config.js。
+// 若用拼接源码，helpers 从 routes/model-helpers.js 出现反而会让它失败。
+const configJs = readConfigShell()
 
 test('config loads shared model helpers before the shell script', () => {
   const presetsIndex = configHtml.indexOf('../shared/coding-plan-presets.js')

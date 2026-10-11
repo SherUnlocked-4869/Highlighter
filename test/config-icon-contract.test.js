@@ -2,11 +2,12 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const { readConfigSource } = require('./helpers/config-source')
 
 const root = path.join(__dirname, '..')
 const configDirectory = path.join(root, 'config')
 const html = fs.readFileSync(path.join(configDirectory, 'config.html'), 'utf8')
-const script = fs.readFileSync(path.join(configDirectory, 'config.js'), 'utf8')
+const script = readConfigSource()
 const css = fs.readFileSync(path.join(configDirectory, 'config.css'), 'utf8')
 
 function assertIconExists(iconPath) {

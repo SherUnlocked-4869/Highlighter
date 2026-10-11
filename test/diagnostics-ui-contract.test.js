@@ -2,11 +2,12 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const { readConfigSource } = require('./helpers/config-source')
 
 const root = path.resolve(__dirname, '..')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
-const script = fs.readFileSync(path.join(root, 'config', 'config.js'), 'utf8')
+const script = readConfigSource()
 
 test('crash reporting is local-only and session lifecycle is recorded', () => {
   assert.match(main, /app\.setPath\('crashDumps', crashDumpsPath\)/)

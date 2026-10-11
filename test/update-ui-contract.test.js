@@ -2,13 +2,14 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const { readConfigSource } = require('./helpers/config-source')
 
 const root = path.resolve(__dirname, '..')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
 const settingsDefaults = fs.readFileSync(path.join(root, 'main', 'services', 'settings-defaults.js'), 'utf8')
 const settingsNormalize = fs.readFileSync(path.join(root, 'main', 'services', 'settings-normalize.js'), 'utf8')
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
-const config = fs.readFileSync(path.join(root, 'config/config.js'), 'utf8')
+const config = readConfigSource()
 
 test('main process owns updater lifecycle, diagnostics, channel settings, and install gate', () => {
   assert.match(settingsDefaults, /updateChannel: 'stable'/)

@@ -7,12 +7,13 @@ const { buildTrayMenuTemplate } = require('../main/services/tray-menu')
 const { DEFAULT_SETTINGS } = require('../main/services/settings-defaults')
 const { assertSettingsPatch } = require('../main/services/settings-validation')
 const { isRecordableShortcut } = require('../shared/shortcut-keys')
+const { readConfigSource } = require('./helpers/config-source')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
 const settingsDefaults = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'settings-defaults.js'), 'utf8')
 const functionRouter = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'function-router.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
-const config = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
+const config = readConfigSource()
 const styles = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.css'), 'utf8')
 
 test('main process delegates shortcut registration and exposes status through preload', () => {

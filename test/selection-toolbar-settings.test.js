@@ -2,9 +2,10 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const { readConfigSource } = require('./helpers/config-source')
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.html'), 'utf8')
-const script = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.js'), 'utf8')
+const script = readConfigSource()
 const actionMeta = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar-action-meta.js'), 'utf8')
 const { CONVERSATION_TURN_LIMITS } = require('../toolbar/toolbar-utils')
 

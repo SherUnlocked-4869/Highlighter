@@ -2,6 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const { configSourceFiles } = require('./helpers/config-source')
 
 const root = path.join(__dirname, '..')
 const tokens = fs.readFileSync(path.join(root, 'shared/tokens.css'), 'utf8')
@@ -154,11 +155,11 @@ test('no renderer ships an emoji glyph as an icon', () => {
   const files = [
     'action/action.html', 'action/action.js',
     'long-capture/long-capture.html',
-    'config/config.js', 'config/config.css'
+    'config/config.css'
   ]
   const pictographic = /\p{Extended_Pictographic}/u
   const withEmojiPresentation = /[\u{1F300}-\u{1FAFF}]|[\u2600-\u27BF]\uFE0F/u
-  for (const file of files) {
+  for (const file of [...files, ...configSourceFiles().map((entry) => path.relative(root, entry))]) {
     const text = fs.readFileSync(path.join(root, file), 'utf8')
     assert.doesNotMatch(text, pictographic, `${file} must not use emoji as icons`)
     assert.doesNotMatch(text, withEmojiPresentation, `${file} must not use emoji-presentation glyphs`)

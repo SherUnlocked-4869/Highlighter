@@ -6,6 +6,7 @@ const path = require('node:path')
 const root = path.join(__dirname, '..')
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const { DEFAULT_SETTINGS } = require('../main/services/settings-defaults')
+const { readConfigSource } = require('./helpers/config-source')
 
 test('recording runtime packages ffmpeg', () => {
   assert.match(packageJson.dependencies['ffmpeg-static'], /^\^5\./)
@@ -122,7 +123,7 @@ test('recording controls expose and composite basic live annotation tools', () =
 })
 
 test('region recording settings expose the frozen frame rates and audio sources', () => {
-  const config = fs.readFileSync(path.join(root, 'config', 'config.js'), 'utf8')
+  const config = readConfigSource()
   const recordHtml = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')
   const recordScript = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
