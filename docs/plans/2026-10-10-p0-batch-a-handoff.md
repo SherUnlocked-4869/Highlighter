@@ -8,12 +8,12 @@
 
 | 项 | 状态 |
 | --- | --- |
-| 方案进度 | **Wave 0 ✅ · Wave 1 ✅ · Wave 2 ✅ · Wave 3（真机）→ 全部挂账 · Wave 4 ✅ · Wave 5 ✅ · Wave 6 ✅ · Wave 7（S9b 光标合成）进行中 · Wave 7.5 ✅** |
-| 代码 | 批次 A + 序号接续修复 + 批次 B 四流（录屏音轨 / 光标采集 / 标注二次编辑 / config 收口）；**HEAD = `3f1dcd0`** |
-| 门禁 | `npm test` **855/855** · `main.js` **1286/1300**（余量 14）· 覆盖率 **92.62%**（11220/12113）· critical 93.22/92.99/92.42 · `audit` 26/0 · **e2e 5/5** · `check` 257 文件 |
+| 方案进度 | **批次 A：Wave 0 ✅ · Wave 1 ✅ · Wave 2 ✅ · Wave 3（真机）→ 全部挂账。批次 B：Wave 4 ✅ · Wave 5 ✅ · Wave 6 ✅ · Wave 7 ✅ · Wave 7.5 ✅ · Wave 8（收口门禁）✅ → 代码完成** |
+| 代码 | 批次 A + 序号接续修复 + 批次 B 四流（录屏音轨 / 光标采集 / 标注二次编辑 / config 收口）；**HEAD = `453b027`** |
+| 门禁 | `npm test` **858/858** · `main.js` **1286/1300**（余量 14）· 覆盖率 **92.62%**（11220/12113）· critical 93.22/92.99/92.42 · `audit` 26/0 · **e2e 5/5** · `check` 257 文件 |
 | 真机验收 | 已验：A1/A2/A3、B1/B2、C1、C4 前半、C8（静态）。**C6 缺陷已修（待复验）**；**其余全部挂账**（2026-10-11 用户决定：先开发、开发完成后统一测试）；批次 B 的 T6/T8 同样挂账 |
 | dev 实例 | **已停止**（测试挂账）。需要时再跑 `.\node_modules\.bin\electron.cmd .`；✕ 是"收进托盘"不是退出（`main.js:1227` 的 `second-instance` 会调出主窗口） |
-| 下一步 | ① Wave 7：S9b 光标合成接线（`capture/**` + `main/domains/capture/index.js`，**已派出**）；② Wave 8 批次 B 收口门禁 + 回填；③ 挂账项与 C6 复验在"统一测试"阶段一并处理 |
+| 下一步 | ① **统一测试阶段**（用户配合）：批次 A 挂账项 + C6 复验 + 批次 B 的音轨/光标/标注编辑（清单见 `2026-10-11-consolidated-verification-checklist.md`）；② 之后进 **Wave 8.5（S14/D2 配置页拆分）→ Wave 9（批次 C i18n）** |
 
 ---
 
@@ -44,6 +44,7 @@
 | `6f1cca4` | **Wave 6·PR2**：标注拖动 + 边界 clamp + 方向键微调 + **Alt+拖动=移动选区**（Lead 决策） |
 | `c8e245c` | **Wave 6·PR3**：8 手柄缩放（`resizeAnnotationToBox`：镜像不翻、最小 3px、pen 等比、text 仅字号、serial 仅半径） |
 | `3f1dcd0` | **Wave 6·PR4**：层级 ↑↓ + 颜色/线宽作用于选中项（离散/连续样式分开压帧，undo 不串） |
+| `453b027` | **Wave 7·S9b**：光标合成接线（域侧并行查询 + 120ms 预算 + `_captureInit.cursor`；渲染层预解码 + `resolveCursorPlacement` 贴图；识别路径不画） |
 
 **`main.js` 现状**：1286 行 / 上限 1300（**余量 14**）。批次 A 期间零净增长；批次 B 的 Wave 5 接线净 +8（cursor provider 注入 + 释放）。**任何新接线前先看余量。**
 
@@ -163,8 +164,9 @@ npm run test:e2e               # 5/5
 | **Wave 4** | S2 录屏音轨（`record/**` + `recording-service.js`）· S5 光标原生采集（`native/smart-select/**` + `cursor-provider.js` + `shared/cursor-geometry.js`） | ✅ **已完成（2026-10-11）**：`eb90eb7`（S2）/ `0ceaa3b`（S5）；两条流作用域互斥、各自定向测试绿 |
 | **Wave 5** | Lead 接线：`setDisplayMediaRequestHandler` + 光标 provider 注入 | ✅ **已完成**：`882b1f0`（record 侧 4 处）/ `2ae1042`（main.js + c8 include）；`main.js` 1278→1286 |
 | **Wave 6** | S6 标注二次编辑（`capture/**` 独占，PR1–PR4 串行） | ✅ **已完成（2026-10-11）**：`ba35790`（PR1）/ `6f1cca4`（PR2）/ `c8e245c`（PR3）/ `3f1dcd0`（PR4）；`capture/**` 已释放；方案 §20 已回填 |
-| **Wave 7** | S9b capture 光标合成接线 | **进行中**：`capture/**` + `main/domains/capture/index.js`；依赖 W5 的 provider 注入（已就绪）与 W6 释放 `capture/**`（已释放） |
+| **Wave 7** | S9b capture 光标合成接线 | ✅ **已完成（2026-10-11）**：`453b027`；`capture/**` + `main/domains/capture/index.js`；方案 §21 已回填 |
 | **Wave 7.5** | S10b 批次 B 的 `config/**` 收口（录屏音频/光标开关；含 P0-3-T6 文案"仅包含画面"必须改） | ✅ **已完成**：`7991198`；「仅包含画面」已改写并被测试锁死 |
+| **Wave 8** | 批次 B 收口 + 真机（音轨/光标/标注编辑）→ v2.4.0 | ✅ **代码收口完成**：858/858 · 覆盖率 92.62% · e2e 5/5 · `main.js` 1286/1300（§21.2）；**真机项挂账**到统一测试阶段 |
 | **Wave 8** | 批次 B 收口 + 真机（音轨/光标/标注编辑）→ v2.4.0 | Lead |
 | **Wave 8.5** | **S14 / D2 配置页路由拆分**（批次 C 硬前置门 D7） | `config/**` 独占；3.75–6.5 人日；先建 `test/helpers/config-source.js` 再搬迁 |
 | **Wave 9** | 批次 C：S1 i18n 框架+config · S11 capture 窗 · S12 其余渲染窗 · S13 主进程文案 | 四路并行 |

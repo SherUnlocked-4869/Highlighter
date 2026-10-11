@@ -1159,3 +1159,42 @@ Wave 1 只做了**写回**；评审旁路观察者指出该键**只写不读**�
 ### 20.4 结论与 Wave 7 开工条件
 
 S6 的 PR1–PR4 全部落地并通过 §1.1 全量门禁 + e2e，**`capture/**` 自此释放**。Wave 7（S9b 光标合成）与 Wave 7.5（S10b `config/**` 收口，已在并行波次完成，提交 `7991198`）均不再与 S6 争用写点。`main.js` 余量仍为 14 行。真机项（标注二次编辑的真实鼠标操作、光标 100%/125%、音轨四组合）按用户指示**统一挂账**。
+
+---
+
+## 21. M2（Wave 7 / S9b 光标合成 + Wave 8 批次 B 收口）实施结果（2026-10-11）
+
+### 21.1 已落地的改动
+
+| 流 | 文件 | 改动 |
+|---|---|---|
+| **S9b**<br>光标合成 | `main/domains/capture/index.js`（+43/−2） | 新增 `queryCursorSnapshot()`：门顺序 =「provider 已注入」→「`screenshot.captureCursor === true`」；命中才 `cursorProvider.query({ fresh: true })`（**必须 fresh**，绕过 provider 的 250ms 形状缓存）；`CURSOR_QUERY_BUDGET_MS = 120` 的 `Promise.race` 兜底；任何拒绝/超时 → `null`。`cursorPromise` 与抓屏**并行**启动，`Promise.all([capturePromise, loadPromise, cursorPromise])` 收割，`_captureInit.cursor = {png,dataUrl,width,height,hotspot,physicalPoint} \| null` |
+| | `capture/capture.html`（+3） | `../shared/cursor-geometry.js` 引在 `capture.js` 之前（CSP `script-src 'self'` 下实测加载成功） |
+| | `capture/capture.js`（+25） | `cursorImage` 预解码（`onInit`，每次 init 重置）；`exportSelectionCanvas` 在**标注之后**贴图，门 = `includeAnnotations && initData.cursor && 已解码 && window.cursorGeometry`；`physicalPoint / scaleFactor` 换回 DIP 后交 `resolveCursorPlacement`，`visible` 才 `drawImage(..., x - source.x, ...)` |
+| | 测试 | `test/capture-renderer-runtime.test.js`（真实隐藏窗探针，**注入合成光标**）、`test/capture-domain.test.js`、`test/capture-experience-wiring.test.js` |
+| **Wave 8**<br>批次 B 收口 | —— | §1.1 全量门禁 + e2e（见 21.2）；本文件 §19–§21 回填 |
+
+### 21.2 门禁实况（Wave 8 批次 B 收口）
+
+| 门禁 | Wave 6 收口（§20.2） | **批次 B 收口（Wave 8）** |
+|---|---|---|
+| `npm test` | 855 / 855 | **858 / 858 pass** |
+| `npm run check` | 语法 257 文件；`main.js` 1286 / 1300 | 语法 **257 文件**；`main.js` **1286** / 1300（**未变**） |
+| `test:coverage:loaded` | 92.62%（11220/12113） | **92.62%（11220/12113）** |
+| `test:coverage:critical` | 93.22 / 92.99 / 92.42 | 93.22 / 92.99 / 92.42（不变） |
+| `audit:dependencies` | 26 / 0 | **26 / 0** |
+| Playwright e2e | 5 / 5 | **5 / 5**（25.4s） |
+
+**批次 B 起点（§18.2 的批次 A 收口）→ 终点对照**：`npm test` 765 → **858**；覆盖率 91.84% → **92.62%**；`main.js` 1278 → **1286**（净 +8，全部来自 Wave 5 的 cursor provider 注入与释放；Wave 6/7 的接线都落在域与渲染层，**未占 `main.js` 行数**）。
+
+### 21.3 偏差与未决（3 项）
+
+1. **⚠️ 首次截图可能抓不到光标（S9b 的偏差 2，未修，登记备查）**。provider 的 helper 是懒启动（`ensureStarted()` 只被 `query()` 调用），冷启动 = spawn + ready（`readyTimeoutMs = 1000`），而域侧预算是 **120ms**。S5 实测冷启动 **61–73ms**、单次查询 1–6ms，**通常落在 120ms 内**；但冷文件缓存/杀软扫描等情况下可能超预算 → 首次 `cursor:null`（第二张起正常）。**修法（若集中测试确认需要）**：在 `main.js` 的 `startApplication()` 里于 `initializeStore()` 之后按开关预热一次 —— `if (getSettings().screenshot.captureCursor === true) cursorProvider?.query({ fresh: true }).catch(() => {})`（约 1–2 行，`main.js` 余量 14 够用）。**本轮不做**：本机 `GetCursorInfo` 恒返回 `flags=0`（无可见光标），无法用真机证据证明预热是否必要，避免加不可验证的推测性代码。
+2. **`else cursorImage = null`（S9b 主动加固）**：任务书片段只给了 `if(data.cursor?.dataUrl)` 分支；同一 capture 窗口若收到多次 `capture:init`（探针复用窗口场景），不重置会沿用上一张的光标位图。真实链路每次新窗口，但该加固成本为零且更正确，**已接受**。
+3. **本机无法验证 `showing:true` 的真机路径**：`GetCursorInfo` 恒 `flags=0, hCursor=0`（独立 P/Invoke 复核过），所以 ⑥「`CURSOR_SHOWING=0` 不绘制」在本机属**真机验证通过**，而 ①–④ 用**合成载荷**在真实 Electron 渲染层验证（热点对齐、1.25 + 负坐标、选区外、关闭态逐像素一致）。**T6（100%/125% 真机光标）按指示挂账**。
+
+### 21.4 结论：批次 B 代码完成，真机项挂账待集中测试
+
+批次 B 的四条流（S2 录屏音轨 · S5 光标采集 · S6 标注二次编辑 · S10b config 收口）与两波接线（Wave 5 / Wave 7）全部落地，通过 §1.1 全量门禁 + e2e，文档 §19–§21 已回填。**批次 B 的剩余唯一事项是 §11 步骤 4 的真机验收**（音轨四组合、光标 100%/125%、标注编辑的真实鼠标操作），按用户 2026-10-11 指示与批次 A 的挂账项**一并留到"统一测试"阶段**。
+
+**后续路线**：Wave 8.5（S14 / D2 配置页路由拆分，批次 C 硬前置门 D7，3.75–6.5 人日）→ Wave 9（批次 C：S1 i18n 框架+config · S11 capture 窗 · S12 其余渲染窗 · S13 主进程文案，四路并行）→ Wave 10（三语言真机 + v2.5.0）。**P1（Auto Filter / MCP）仍受 F1-① 许可证字符串阻塞**。
