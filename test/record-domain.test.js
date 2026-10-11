@@ -68,11 +68,15 @@ function createRecordHarness() {
         hide: () => {},
         close: () => {},
         loadFile: () => Promise.resolve(),
-        on: () => {},
+        on: (event, cb) => { if (event === 'closed') win._onClosed = cb },
         webContents: {
           send: () => {},
+          mainFrame: { id: 'record-main-frame' },
           session: {
-            setDisplayMediaRequestHandler: (handler) => { win.displayMediaHandler = handler }
+            setDisplayMediaRequestHandler: (handler) => {
+              win.displayMediaHandler = handler
+              win.displayMediaHandlerCalls = (win.displayMediaHandlerCalls || []).concat([handler])
+            }
           }
         }
       }
@@ -161,6 +165,34 @@ test('the record window registers the display-media handler and carries the froz
     { audioSystem: true, audioMicrophone: false, audioSystemGain: 1, audioMicrophoneGain: 1 }
   )
   assert.equal(created.length, 2)
+})
+
+// OCR 评审修复：handler 注册在**共享默认 session** 上，必须校验请求来源帧，否则任何渲染进程
+// 调用 getDisplayMedia 都能拿到屏幕 + Windows loopback 音频；且窗口关闭后必须注销，
+// 否则它仍存活并指向旧 display。
+test('the display-media handler only serves the record window frame and is unregistered on close (P0-3-T2)', async () => {
+  const { domain } = createRecordHarness()
+  const control = await domain.createRecordWindow({ selectionBounds: { x: 10, y: 10, width: 200, height: 150 } })
+
+  const foreignFrame = await new Promise((resolve) => {
+    control.displayMediaHandler({ frame: { id: 'some-other-frame' }, videoRequested: true, audioRequested: true }, resolve)
+  })
+  assert.deepEqual(foreignFrame, {}, 'a request from another frame must be refused')
+
+  const ownFrame = await new Promise((resolve) => {
+    control.displayMediaHandler({
+      frame: control.webContents.mainFrame,
+      videoRequested: true,
+      audioRequested: false
+    }, resolve)
+  })
+  assert.equal(ownFrame.video.id, 'screen:1', 'the record window frame is still served')
+
+  // 窗口关闭 → 共享 session 上的 handler 必须被清掉。
+  assert.equal(control.displayMediaHandlerCalls.length, 1)
+  control._onClosed()
+  assert.equal(control.displayMediaHandlerCalls.length, 2)
+  assert.equal(control.displayMediaHandlerCalls[1], null, 'closing the window unregisters the handler')
 })
 
 test('saving an MP4 forwards the audio option derived from the frozen record keys (P0-3-T3/T4)', () => {

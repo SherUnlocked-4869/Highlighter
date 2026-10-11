@@ -517,7 +517,8 @@ function probeMicrophoneAvailability() {
 function handleDeviceChange() {
   const microphoneTrack = micStream?.getAudioTracks()[0]
   if (microphoneTrack && microphoneTrack.readyState === 'ended') {
-    setAudioNotice('麦克风已断开，本次录制仅保留系统声音')
+    // 系统声也关着时已无任何音轨，不能照抄"仅保留系统声音"（文案必须与文件实际内容一致）。
+    setAudioNotice(audioRequest.system ? '麦克风已断开，本次录制仅保留系统声音' : '麦克风已断开，本次录制不再包含声音')
     return
   }
   const systemTrack = desktopStream?.getAudioTracks()[0]

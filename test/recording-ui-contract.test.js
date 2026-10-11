@@ -158,3 +158,18 @@ test('MP4 save dialog is owned and not covered by the topmost preview', () => {
   assert.match(recordDomain, /saveMp4: async[\s\S]*setAlwaysOnTop\(false\)[\s\S]*showSaveDialog\(win,/)
   assert.match(recordDomain, /showSaveDialog\(win,[\s\S]*finally[\s\S]*setAlwaysOnTop\(true, 'screen-saver'\)/)
 })
+
+// OCR 评审修复：麦克风断连提示原先写死"仅保留系统声音"，但"系统声关 + 麦克风开"时
+// 实际已无任何音轨 —— 文案必须与文件实际内容一致。
+test('the microphone-disconnect notice matches the audio the file actually keeps', () => {
+  const recordScript = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')
+  assert.match(
+    recordScript,
+    /setAudioNotice\(audioRequest\.system \? '麦克风已断开，本次录制仅保留系统声音' : '麦克风已断开，本次录制不再包含声音'\)/
+  )
+  assert.doesNotMatch(
+    recordScript,
+    /setAudioNotice\('麦克风已断开，本次录制仅保留系统声音'\)/,
+    'the unconditional wording must be gone'
+  )
+})

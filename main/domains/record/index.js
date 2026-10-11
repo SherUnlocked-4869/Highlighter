@@ -176,8 +176,12 @@ function createRecordDomain(deps) {
     // display is selected here with the same pickDesktopSource the legacy path used; the
     // system-audio track is offered only when the renderer actually asked for audio, which
     // is what keeps the "system sound off" contract (settings-defaults.js:71) honest.
-    controlWindow.webContents.session.setDisplayMediaRequestHandler(async (request, callback) => {
+    const recordSession = controlWindow.webContents.session
+    recordSession.setDisplayMediaRequestHandler(async (request, callback) => {
       try {
+        // 只服务录制窗自己的主帧：该 handler 注册在**共享默认 session** 上，若不校验来源，
+        // 任何渲染进程（含将来新增的窗口）调用 getDisplayMedia 都能拿到屏幕 + loopback 音频。
+        if (request.frame && request.frame !== controlWindow.webContents.mainFrame) return callback({})
         if (!request.videoRequested) return callback({})
         const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } })
         const target = pickDesktopSource(sources, display.id)
@@ -196,6 +200,8 @@ function createRecordDomain(deps) {
     }
     restoreRecordFramePassthrough(frameWindow)
     controlWindow.on('closed', () => {
+      // 注销共享 session 上的 display-media handler：否则窗口关闭后它仍存活并指向旧 display。
+      try { recordSession.setDisplayMediaRequestHandler(null) } catch (error) { log('Display media handler cleanup failed:', error.message) }
       cleanupRecordSession(controlWindow).catch((error) => log('Recording cleanup failed:', error.message))
       if (recordWindow === controlWindow) recordWindow = null
       if (recordFrameWindow?._recordOwner === controlWindow) {
