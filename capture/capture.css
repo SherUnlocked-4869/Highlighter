@@ -136,6 +136,8 @@ html, body {
   backdrop-filter: blur(18px);
 }
 .element-bar span { color: #bbb; white-space: nowrap; font-size: 12px; }
+/* PR2 Lead 决策的提示：元素铺满选区时用 Alt+拖动 移动选区（不是又一个按钮）。 */
+.element-bar .element-hint { color: #8a8a92; }
 .element-bar button {
   height: 26px;
   padding: 0 10px;

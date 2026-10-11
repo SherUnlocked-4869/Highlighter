@@ -46,9 +46,12 @@ const {
   highlightWidth
 } = window.annotationStyleUtils
 // P0-5 PR1：命中测试/选中框/快照深拷贝都走纯函数模块（屏幕 CSS 坐标，方案 §8.3）。
+// PR2 追加 translateAnnotation（生成位移副本）与 clampAnnotationToStage（边界 clamp）。
 const {
   annotationBounds,
   findAnnotationAt,
+  translateAnnotation,
+  clampAnnotationToStage,
   cloneAnnotations,
   MAX_ANNOTATION_HISTORY,
   MAX_PEN_POINTS
@@ -73,6 +76,15 @@ let historyIndex = 0
 // 单调递增 id：选中/快照/撤销都按 id 重解析对象（快照还原会换掉对象身份）。
 let annotationSeq = 0
 let selectedAnnotation = null
+// P0-5 PR2：拖动交互态。origin 始终是**未被改动的**原对象，每帧都从它重新平移（绝不就地改
+// 原对象），所以 clamp 不累积漂移、松开时也能可靠判断"到底动没动"。
+let movingAnnotation = null
+// 方向键微调：连续按键合并为一次可撤销操作，静默 NUDGE_COMMIT_DELAY 毫秒后才压一帧快照。
+let nudgeTimer = 0
+let nudgeDirty = false
+const NUDGE_STEP = 1
+const NUDGE_STEP_FAST = 10
+const NUDGE_COMMIT_DELAY = 500
 let elementBarSize = null
 let serialNumber = 1
 let initialSerialNumber = 1
@@ -336,7 +348,7 @@ function drawSelectedOutline() {
 // 浮动元素条（#elementBar）：元素操作走独立浮动条，不往已近满宽的工具栏塞按钮（方案 §8 风险⑦）。
 function updateElementBar() {
   const item = selectedAnnotationItem()
-  const visible = !!item && !!selection && !activeOcrResult && !processingAction && !selecting && !dragging && !resizing && selectState !== 'auto'
+  const visible = !!item && !!selection && !activeOcrResult && !processingAction && !selecting && !dragging && !resizing && !movingAnnotation && selectState !== 'auto'
   if (!visible) { elementBar.classList.add('hidden'); return }
   elementBar.classList.remove('hidden')
   const bounds = annotationBounds(item) || { x: 0, y: 0, w: 0, h: 0 }
@@ -419,7 +431,10 @@ function setSelectedAnnotation(item) {
 }
 
 // 提交一帧快照：截断 redo 分支 → 深拷贝当前 annotations → 上限 60 条（丢最旧的一条）。
+// PR2：先把待提交的方向键微调收掉 —— 之后压的这一帧已经包含微调结果，避免同一步撤销里
+// 出现两帧完全相同的快照（那会让 Ctrl+Z 按下后"看起来没反应"）。
 function snapshotAnnotations() {
+  cancelNudge()
   annotationHistory.length = historyIndex + 1
   annotationHistory.push(cloneAnnotations(annotations))
   if (annotationHistory.length > MAX_ANNOTATION_HISTORY) annotationHistory.splice(0, annotationHistory.length - MAX_ANNOTATION_HISTORY)
@@ -427,6 +442,7 @@ function snapshotAnnotations() {
 }
 
 function restoreAnnotations(index) {
+  cancelNudge()
   historyIndex = Math.max(0, Math.min(annotationHistory.length - 1, index))
   annotations = cloneAnnotations(annotationHistory[historyIndex])
   syncSelectedAnnotation()
@@ -467,9 +483,113 @@ function clearAnnotationsForNewSelection() {
   snapshotAnnotations()
 }
 
+// ---------- P0-5 PR2：元素拖动 + 方向键微调 ----------
+
+// 舞台矩形：命中/拖动/clamp 一律是屏幕 CSS 坐标（方案 §8.3），导出坐标不参与。
+function stageRect() {
+  return { w: innerWidth, h: innerHeight }
+}
+
+// 拖动入口：点必须落在**当前已选中**元素的 annotationBounds 内（方案 §8.4 优先级里
+// "选中元素手柄 > 元素体内"）。rect/ellipse 的命中测试只认描边环带，选中之后这里按
+// bbox 判定，才能从图形内部拖着走。
+function pointInAnnotationBounds(item, point) {
+  const bounds = annotationBounds(item)
+  if (!bounds || !point) return false
+  return point.x >= bounds.x && point.x <= bounds.x + bounds.w && point.y >= bounds.y && point.y <= bounds.y + bounds.h
+}
+
+// 拖动中：从 origin 重新平移 + clamp，把新副本放回数组；绝不就地改 state.origin。
+function moveAnnotationTo(point) {
+  const state = movingAnnotation
+  if (!state) return
+  const index = annotations.findIndex((item) => item.id === state.id)
+  if (index < 0) return
+  const moved = clampAnnotationToStage(
+    translateAnnotation(state.origin, point.x - state.start.x, point.y - state.start.y),
+    stageRect()
+  )
+  if (!moved) return
+  annotations[index] = moved
+  selectedAnnotation = moved
+  render()
+}
+
+function annotationWasMoved(item, origin) {
+  return item.x !== origin.x || item.y !== origin.y
+}
+
+// pointerup：只有真的产生了位移才压帧 —— 0 位移不制造无效 undo 步（方案 §8.4 PR2）。
+function finishMoveAnnotation() {
+  const state = movingAnnotation
+  movingAnnotation = null
+  if (!state) return
+  const current = annotations.find((item) => item.id === state.id)
+  if (current && annotationWasMoved(current, state.origin)) snapshotAnnotations()
+  render()
+}
+
+// pointercancel：手势被中断 = 这次编辑作废，原对象放回数组且不压帧。
+function cancelMoveAnnotation() {
+  const state = movingAnnotation
+  movingAnnotation = null
+  if (!state) return
+  const index = annotations.findIndex((item) => item.id === state.id)
+  if (index >= 0) {
+    annotations[index] = state.origin
+    if (selectedAnnotation && selectedAnnotation.id === state.id) selectedAnnotation = state.origin
+  }
+  render()
+}
+
+// 方向键微调：1px，按住 Shift 10px。返回 true 表示这次按键已被消费。
+// Ctrl/Alt/Meta 组合一律放行给既有快捷键（Ctrl+A/Z/Y/S 等），不做位移。
+const NUDGE_DIRECTIONS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
+
+function nudgeSelectedAnnotation(event) {
+  const direction = NUDGE_DIRECTIONS[event.key]
+  if (!direction) return false
+  if (event.ctrlKey || event.altKey || event.metaKey) return false
+  const item = selectedAnnotationItem()
+  if (!item) return false
+  event.preventDefault()
+  const index = annotations.indexOf(item)
+  if (index < 0) return true
+  const step = event.shiftKey ? NUDGE_STEP_FAST : NUDGE_STEP
+  const moved = clampAnnotationToStage(
+    translateAnnotation(item, direction[0] * step, direction[1] * step),
+    stageRect()
+  )
+  if (!moved) return true
+  annotations[index] = moved
+  selectedAnnotation = moved
+  nudgeDirty = true
+  if (nudgeTimer) clearTimeout(nudgeTimer)
+  nudgeTimer = setTimeout(commitNudge, NUDGE_COMMIT_DELAY)
+  render()
+  return true
+}
+
+// 微调静默收口：连续按键合并成一次可撤销操作。
+function commitNudge() {
+  if (nudgeTimer) { clearTimeout(nudgeTimer); nudgeTimer = 0 }
+  if (!nudgeDirty) return
+  nudgeDirty = false
+  snapshotAnnotations()
+  render()
+}
+
+// 别的编辑抢先压帧时丢掉待提交的微调（它的结果已包含在那一帧里）。
+function cancelNudge() {
+  if (nudgeTimer) { clearTimeout(nudgeTimer); nudgeTimer = 0 }
+  nudgeDirty = false
+}
+
 function resetAnnotationState() {
   annotations = []
   selectedAnnotation = null
+  movingAnnotation = null
+  cancelNudge()
   annotationHistory = [[]]
   historyIndex = 0
   elementBarSize = null
@@ -575,6 +695,9 @@ canvas.addEventListener('pointerdown',(event)=>{
   if (!resultPanel.classList.contains('hidden')) return
   if(activeOcrResult){clearOcrResult();return}
   const point=pointFromEvent(event); startPoint=point
+  // PR2 防御：上一次元素拖动若没等到 pointerup（被模态框/系统手势吞掉），新一次按下先把它
+  // 收口，避免两个手势叠在同一个 movingAnnotation 上（选区拖动有同款自愈，见 pointermove）。
+  if(movingAnnotation)finishMoveAnnotation()
   if(selectState==='auto'){pointerDownPoint=point;return}
   const resizeHandle=currentTool==='select'?getResizeHandle(selection,point):''
   if (!selection || (currentTool==='select'&&!resizeHandle&&!insideSelection(point))) {
@@ -584,8 +707,15 @@ canvas.addEventListener('pointerdown',(event)=>{
   }
   if (resizeHandle) { resizing={handle:resizeHandle,initial:{...selection}}; updateSelectionCursor(point); try{canvas.setPointerCapture(event.pointerId)}catch{}; render(); return }
   if (currentTool==='select') {
+    // PR2 Lead 决策：按住 Alt 在选区内拖动 = 直接移动选区。PR1 让"元素命中"优先于拖选区，
+    // 当 watermark（按设计铺满整个选区）或大范围 blur 覆盖选区时，用户将无法移动选区；Alt 是
+    // 逃生门，它跳过下面所有元素分支，直接落到既有的选区拖动路径（提示见 #elementBar）。
+    if(event.altKey){setSelectedAnnotation(null);dragging=true;return}
+    // PR2 元素体内拖动：点落在**当前已选中**元素的 annotationBounds 内 → 进入 move 态。
+    // PR3 的"选中元素手柄（8 手柄缩放）"插在这一行之前（方案 §8.4：手柄 > 元素体内 > 命中）。
+    const selected=selectedAnnotationItem()
+    if(selected&&pointInAnnotationBounds(selected,point)){movingAnnotation={id:selected.id,origin:selected,start:{x:point.x,y:point.y}};try{canvas.setPointerCapture(event.pointerId)}catch{};render();return}
     // PR1 元素命中（逆序取最上层）→ 选中；未命中才退回"拖选区"。
-    // PR2 的"选中元素体内拖动"与 PR3 的"选中元素手柄缩放"插在本分支之前（方案 §8.4 优先级）。
     const hit=findAnnotationAt(annotations,point)
     if(hit){setSelectedAnnotation(hit);updateSelectionCursor(point);return}
     setSelectedAnnotation(null)
@@ -618,8 +748,11 @@ canvas.addEventListener('pointermove',(event)=>{
     if(resizing)resizing=null
     finishSelection(); updateSelectionCursor(point); return
   }
+  // PR2 同款自愈：元素拖动期间 pointerup 被吞掉时，没有按键的 move 也要把这次拖动收口。
+  if (movingAnnotation&&event.buttons===0) { finishMoveAnnotation(); updateSelectionCursor(point); return }
   if (selecting) { selection=normalizeRect(startPoint,point); render(); return }
   if (resizing&&selection) { selection=resizeSelection(resizing.initial,resizing.handle,point,{width:innerWidth,height:innerHeight}); updateSelectionCursor(point); render(); return }
+  if (movingAnnotation) { moveAnnotationTo(point); return }
   if (dragging&&selection) { const dx=point.x-startPoint.x,dy=point.y-startPoint.y; selection.x=Math.max(0,Math.min(innerWidth-selection.w,selection.x+dx)); selection.y=Math.max(0,Math.min(innerHeight-selection.h,selection.y+dy)); startPoint=point; render(); return }
   if (activeAnnotation) { activeAnnotation.x2=point.x; activeAnnotation.y2=point.y; if(activeAnnotation.type==='pen'&&activeAnnotation.points.length<MAX_PEN_POINTS)activeAnnotation.points.push(point); render() }
   else updateSelectionCursor(point)
@@ -629,6 +762,7 @@ canvas.addEventListener('pointerup',(event)=>{
   if(selectState==='auto'&&pointerDownPoint){const point=pointFromEvent(event);const moved=Math.hypot(point.x-pointerDownPoint.x,point.y-pointerDownPoint.y)>6;pointerDownPoint=null;if(moved){selectState='selected';selection=normalizeRect(startPoint,point);if(selection.w<3||selection.h<3)selection=null}else if(selection){selectState='selected'}tip.style.display='none';finishSelection();updateSelectionCursor(point);return}
   if(selecting){const point=pointFromEvent(event);selecting=false;if(selection.w<3||selection.h<3)selection=null;selectState=selection?'selected':'manual';finishSelection();updateSelectionCursor(point);return}
   if(resizing){resizing=null;finishSelection();updateSelectionCursor(pointFromEvent(event));return}
+  if(movingAnnotation){finishMoveAnnotation();updateSelectionCursor(pointFromEvent(event));return}
   if(dragging){dragging=false;render();updateSelectionCursor(pointFromEvent(event));return}
   if(activeAnnotation&&activeAnnotation.type!=='watermark')commitAnnotation(activeAnnotation)
 })
@@ -637,6 +771,7 @@ canvas.addEventListener('pointercancel',()=>{
   selecting=false
   dragging=false
   resizing=null
+  cancelMoveAnnotation()
   activeAnnotation=currentTool==='watermark'?buildWatermarkAnnotation():null
   render()
 })
@@ -900,6 +1035,9 @@ addEventListener('keydown',(event)=>{
   const focused=document.activeElement
   if(['INPUT','TEXTAREA','SELECT'].includes(focused?.tagName||''))return
   if(focused?.closest?.('#widthGroup'))return
+  // P0-5 PR2：方向键微调选中元素（1px；Shift 10px）。方向键不与 Ctrl+A/Z/Y/S、Delete、
+  // Enter、Esc 同键，Ctrl/Alt/Meta 组合在 nudgeSelectedAnnotation 里直接放行给下面的既有分支。
+  if(nudgeSelectedAnnotation(event))return
   if(event.key==='Enter'&&!event.ctrlKey&&!activeOcrResult&&resultPanel.classList.contains('hidden'))performAction('copy')
   if(event.ctrlKey&&event.key.toLowerCase()==='s'){event.preventDefault();performAction('save')}
   // P0-7-T6：Ctrl+A 选中当前显示器（imageDisplayBounds() 已按 imageBounds/displayBounds 解析）。

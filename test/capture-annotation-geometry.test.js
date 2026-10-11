@@ -17,6 +17,7 @@ const {
   hitTestAnnotation,
   findAnnotationAt,
   translateAnnotation,
+  clampAnnotationToStage,
   cloneAnnotations
 } = require('../capture/annotation-geometry')
 const { textFontSize, serialRadius, highlightWidth } = require('../capture/annotation-style')
@@ -35,6 +36,7 @@ function sliceBetween(source, from, to) {
 
 const pointerdownSource = sliceBetween(script, "canvas.addEventListener('pointerdown'", "canvas.addEventListener('pointermove'")
 const pointermoveSource = sliceBetween(script, "canvas.addEventListener('pointermove'", "canvas.addEventListener('pointerup'")
+const pointerupSource = sliceBetween(script, "canvas.addEventListener('pointerup'", "canvas.addEventListener('pointercancel'")
 
 test('annotationBounds normalizes reversed endpoints instead of trusting the drag direction', () => {
   assert.deepEqual(
@@ -203,6 +205,47 @@ test('translateAnnotation returns a moved copy and never mutates the original', 
   assert.equal(translateAnnotation(null, 1, 1), null)
 })
 
+test('clampAnnotationToStage keeps the whole box inside the stage without touching the original (PR2)', () => {
+  const rect = { type: 'rect', x: 700, y: 550, x2: 900, y2: 800, color: '#f00', width: 4 }
+  const clamped = clampAnnotationToStage(rect, { w: 800, h: 600 })
+  assert.notEqual(clamped, rect)
+  assert.deepEqual(annotationBounds(clamped), { x: 600, y: 350, w: 200, h: 250 })
+  // 原对象必须原地不动：拖动/微调走的一直是副本。
+  assert.deepEqual([rect.x, rect.y, rect.x2, rect.y2], [700, 550, 900, 800])
+
+  // 已经在舞台内也要返回副本（浅拷贝语义，不是同一个引用）。
+  const serial = { type: 'serial', x: 100, y: 100, number: 1, color: '#f00', width: 4 }
+  const untouched = clampAnnotationToStage(serial, { w: 800, h: 600 })
+  assert.notEqual(untouched, serial)
+  assert.deepEqual(untouched, serial)
+
+  // 舞台参数接受 { width, height } 别名，结果一致。
+  assert.deepEqual(
+    clampAnnotationToStage(rect, { width: 800, height: 600 }),
+    clampAnnotationToStage(rect, { w: 800, h: 600 })
+  )
+  assert.equal(clampAnnotationToStage(null, { w: 1, h: 1 }), null)
+})
+
+test('clampAnnotationToStage pins an oversized box to the stage edge instead of pushing it fully out (PR2)', () => {
+  // 水印本身比舞台大：两个方向都退化为 [limit-size, 0]，起点被夹到 -200 / -300（右侧贴边）。
+  const oversized = { type: 'watermark', x: -500, y: -500, w: 1000, h: 900, content: 'w' }
+  assert.deepEqual(annotationBounds(clampAnnotationToStage(oversized, { w: 800, h: 600 })), { x: -200, y: -300, w: 1000, h: 900 })
+  assert.deepEqual(
+    annotationBounds(clampAnnotationToStage({ type: 'watermark', x: 400, y: 300, w: 1000, h: 900, content: 'w' }, { w: 800, h: 600 })),
+    { x: 0, y: 0, w: 1000, h: 900 }
+  )
+})
+
+test('clampAnnotationToStage moves a pen point set as one rigid body and rewrites its points (PR2)', () => {
+  const pen = { type: 'pen', x: 780, y: 10, x2: 820, y2: 50, color: '#f00', width: 4, points: [{ x: 780, y: 10 }, { x: 820, y: 50 }] }
+  const clamped = clampAnnotationToStage(pen, { w: 800, h: 600 })
+  assert.deepEqual(clamped.points, [{ x: 760, y: 10 }, { x: 800, y: 50 }])
+  assert.equal(clamped.x, 760)
+  assert.notEqual(clamped.points, pen.points)
+  assert.deepEqual(pen.points, [{ x: 780, y: 10 }, { x: 820, y: 50 }], 'the source point set stays untouched')
+})
+
 test('cloneAnnotations deep-copies pen points, caps them and isolates the snapshot (undo 精确还原)', () => {
   const annotations = [{
     id: 1,
@@ -268,8 +311,14 @@ test('pointerdown keeps the handles first and selects the topmost annotation bef
     'the selection handle keeps priority over an element hit'
   )
   assert.ok(
-    pointerdownSource.indexOf('findAnnotationAt(annotations,point)') < pointerdownSource.indexOf('dragging=true'),
+    pointerdownSource.indexOf('findAnnotationAt(annotations,point)') < pointerdownSource.lastIndexOf('dragging=true'),
     'the element hit precedes moving/replacing the selection'
+  )
+  // PR2：Alt 逃生门在那之前就把指针引到选区拖动路径，所以这里取最后一个 dragging=true
+  // （= 非 Alt 的回退分支），顺序断言的原意（命中优先于回退拖选区）保持不变。
+  assert.ok(
+    pointerdownSource.indexOf('if(event.altKey)') < pointerdownSource.indexOf('findAnnotationAt(annotations,point)'),
+    'Alt+drag bypasses the element hit test and falls through to moving the selection'
   )
   // setTool 清选中（方案 §8.4）
   assert.match(script, /function setTool\(tool\) \{[\s\S]{0,200}?setSelectedAnnotation\(null\)[\s\S]{0,60}?currentTool=tool/)
@@ -302,7 +351,7 @@ test('the element bar is a separate floating surface wired to delete/deselect, w
   assert.match(html, /annotation-style\.js[\s\S]{0,200}?selection-utils\.js[\s\S]{0,200}?annotation-geometry\.js[\s\S]{0,200}?capture\.js/)
   assert.match(
     script,
-    /const \{[\s\S]{0,160}?annotationBounds,\s*findAnnotationAt,\s*cloneAnnotations,\s*MAX_ANNOTATION_HISTORY,\s*MAX_PEN_POINTS\s*\} = window\.annotationGeometry/
+    /const \{[\s\S]{0,200}?annotationBounds,\s*findAnnotationAt,\s*translateAnnotation,\s*clampAnnotationToStage,\s*cloneAnnotations,\s*MAX_ANNOTATION_HISTORY,\s*MAX_PEN_POINTS\s*\} = window\.annotationGeometry/
   )
   assert.match(script, /document\.getElementById\('elementDelete'\)\.onclick=\(\)=>deleteSelectedAnnotation\(\)/)
   assert.match(script, /document\.getElementById\('elementDeselect'\)\.onclick=\(\)=>setSelectedAnnotation\(null\)/)
@@ -315,4 +364,65 @@ test('the element bar is a separate floating surface wired to delete/deselect, w
 
   assert.match(css, /\.element-bar \{[\s\S]{0,240}?position: fixed/)
   assert.match(css, /\.element-bar button\.danger \{[^}]*var\(--danger\)/)
+})
+
+// ---------- PR2 接线契约（拖动 / 边界 clamp / 方向键微调 / Alt+拖动 移动选区） ----------
+
+test('PR2: pointerdown starts an element-body move inside the selected bounds, before the element hit test', () => {
+  // 优先级（方案 §8.4）：选区手柄 → [PR3 选中元素手柄插槽] → 元素体内 → 元素命中 → 拖选区。
+  const altIndex = pointerdownSource.indexOf('if(event.altKey)')
+  const bodyIndex = pointerdownSource.indexOf('pointInAnnotationBounds(selected,point)')
+  const hitIndex = pointerdownSource.indexOf('findAnnotationAt(annotations,point)')
+  assert.ok(altIndex >= 0 && altIndex < hitIndex, 'Alt+drag bypasses the element hit test')
+  assert.ok(bodyIndex >= 0 && bodyIndex < hitIndex, 'the element-body move precedes the element hit test')
+  assert.match(pointerdownSource, /const selected=selectedAnnotationItem\(\)/)
+  assert.ok(
+    pointerdownSource.indexOf('if (resizeHandle)') < bodyIndex,
+    'the selection handle keeps priority over the element-body move'
+  )
+  assert.match(script, /function pointInAnnotationBounds\(item, point\) \{[\s\S]{0,260}?point\.x >= bounds\.x && point\.x <= bounds\.x \+ bounds\.w/)
+})
+
+test('PR2: a drag produces exactly one snapshot on pointerup, only when it actually moved', () => {
+  assert.match(script, /function moveAnnotationTo\(point\) \{[\s\S]{0,520}?translateAnnotation\(state\.origin, point\.x - state\.start\.x, point\.y - state\.start\.y\)/)
+  assert.match(script, /function moveAnnotationTo\(point\) \{[\s\S]{0,700}?clampAnnotationToStage\(/)
+  assert.match(script, /function finishMoveAnnotation\(\) \{[\s\S]{0,320}?if \(current && annotationWasMoved\(current, state\.origin\)\) snapshotAnnotations\(\)/)
+  assert.match(script, /function cancelMoveAnnotation\(\) \{[\s\S]{0,460}?annotations\[index\] = state\.origin/)
+  // pointerup 只有一处收口、pointermove 只有一处位移；其余地方不碰 movingAnnotation
+  assert.match(pointerupSource, /if\(movingAnnotation\)\{finishMoveAnnotation\(\);updateSelectionCursor\(pointFromEvent\(event\)\);return\}/)
+  // 新一次按下先把上一次没收到 pointerup 的拖动收口，避免两个手势叠在一起
+  assert.match(pointerdownSource, /if\(movingAnnotation\)finishMoveAnnotation\(\)/)
+  assert.match(pointermoveSource, /if \(movingAnnotation\) \{ moveAnnotationTo\(point\); return \}/)
+  assert.match(pointermoveSource, /if \(movingAnnotation&&event\.buttons===0\) \{ finishMoveAnnotation\(\); updateSelectionCursor\(point\); return \}/)
+  assert.equal(pointerdownSource.match(/movingAnnotation=\{/g).length, 1, 'only the pointerdown arm creates the move state')
+})
+
+test('PR2: arrow keys nudge 1px (Shift 10px) and merge into a single undo frame', () => {
+  assert.match(script, /const NUDGE_STEP = 1/)
+  assert.match(script, /const NUDGE_STEP_FAST = 10/)
+  assert.match(script, /const NUDGE_COMMIT_DELAY = 500/)
+  assert.match(script, /const NUDGE_DIRECTIONS = \{ ArrowLeft: \[-1, 0\], ArrowRight: \[1, 0\], ArrowUp: \[0, -1\], ArrowDown: \[0, 1\] \}/)
+  assert.match(script, /const step = event\.shiftKey \? NUDGE_STEP_FAST : NUDGE_STEP/)
+  assert.match(script, /if \(event\.ctrlKey \|\| event\.altKey \|\| event\.metaKey\) return false/)
+  assert.match(script, /nudgeTimer = setTimeout\(commitNudge, NUDGE_COMMIT_DELAY\)/)
+  assert.match(script, /function commitNudge\(\) \{[\s\S]{0,220}?snapshotAnnotations\(\)/)
+  assert.match(script, /function snapshotAnnotations\(\) \{[\s\S]{0,120}?cancelNudge\(\)[\s\S]{0,120}?annotationHistory\.push\(cloneAnnotations\(annotations\)\)/)
+  assert.match(script, /if\(nudgeSelectedAnnotation\(event\)\)return/)
+  // 方向键不得吞掉既有快捷键：Ctrl+A/Z/Y/S、Delete、Enter、Esc 全部照旧
+  assert.match(script, /if\(event\.key==='Escape'\)/)
+  assert.match(script, /if\(event\.ctrlKey&&event\.key\.toLowerCase\(\)==='s'\)\{event\.preventDefault\(\);performAction\('save'\)\}/)
+  assert.match(script, /if\(event\.ctrlKey&&event\.key\.toLowerCase\(\)==='z'\)\{event\.preventDefault\(\);document\.getElementById\('undo'\)\.click\(\)\}/)
+  assert.match(script, /if\(event\.key==='Delete'\)\{event\.preventDefault\(\);deleteSelectedAnnotation\(\)\}/)
+})
+
+test('PR2: Alt+drag on the selection bar hint moves the selection and never the element', () => {
+  // 落点：select 分支最前面的 if(event.altKey)，落到既有 dragging=true 选区拖动路径。
+  assert.match(pointerdownSource, /if\(event\.altKey\)\{setSelectedAnnotation\(null\);dragging=true;return\}/)
+  // #elementBar 上有一行提示文案，且仍然是纯文本、不占工具栏图标清单。
+  assert.match(html, /id="elementBar"[\s\S]{0,320}?Alt\+拖动 移动选区/)
+  const elementBar = html.slice(html.indexOf('<div id="elementBar"'), html.indexOf('id="watermarkPanel"'))
+  assert.doesNotMatch(elementBar, /--icon:url\(/)
+  assert.match(css, /\.element-bar \.element-hint \{ color: #8a8a92; \}/)
+  // 拖动/微调一律走屏幕 CSS 坐标：不出现导出换算的 scaleX/scaleY。
+  assert.doesNotMatch(pointermoveSource, /scaleX|scaleY/)
 })

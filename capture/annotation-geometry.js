@@ -228,6 +228,34 @@
     return moved
   }
 
+  // 单个轴向上的 clamp：把 box 的起点夹进"能放下的区间"。box 比舞台还大时区间退化为
+  // [limit-size, 0]（起点为负），即至少保证有一侧贴住舞台边，绝不整块飞出去。
+  function clampAxis(position, size, limit) {
+    const span = limit - size
+    const minimum = Math.min(0, span)
+    const maximum = Math.max(0, span)
+    return Math.min(maximum, Math.max(minimum, position))
+  }
+
+  // PR2 拖动边界 clamp（方案 §8.4 PR2「边界 clamp」）。舞台一律是屏幕 CSS 坐标系里的
+  // [0, stage.w]×[0, stage.h]；调用方传 { w: innerWidth, h: innerHeight }（也接受
+  // { width, height } 别名）。口径 = **整体包含**：平移后 annotationBounds() 必须完全落在
+  // 舞台内；元素本身就比舞台大时由 clampAxis 退化为"贴住一侧"。
+  //
+  // 永远返回新对象（含 pen 点集的新数组），调用方拿到的副本可以安全放回 annotations；
+  // 没有位移时也返回新副本，保证"绝不就地改原对象"这条契约无条件成立。
+  function clampAnnotationToStage(item, stage) {
+    if (!item || typeof item !== 'object') return null
+    const bounds = annotationBounds(item)
+    if (!bounds) return null
+    const stageW = Math.max(0, numberOr(stage?.w ?? stage?.width, 0))
+    const stageH = Math.max(0, numberOr(stage?.h ?? stage?.height, 0))
+    const targetX = clampAxis(bounds.x, bounds.w, stageW)
+    const targetY = clampAxis(bounds.y, bounds.h, stageH)
+    // 即使 (0,0) 也走 translateAnnotation：它保证返回新对象、pen 点集也换新数组。
+    return translateAnnotation(item, targetX - bounds.x, targetY - bounds.y)
+  }
+
   // 快照栈的深拷贝原语：pen 点集必须换新数组并封顶，其余字段是扁平的。
   function cloneAnnotations(annotations, options = {}) {
     if (!Array.isArray(annotations)) return []
@@ -253,6 +281,7 @@
     hitTestAnnotation,
     findAnnotationAt,
     translateAnnotation,
+    clampAnnotationToStage,
     cloneAnnotations
   }
 })
