@@ -1258,3 +1258,70 @@ D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次�
 **Wave 9 开工条件**：① `config/**` 已释放（D2 完成）✓；② i18n 框架与 locale 布局已就位 ✓；③ 四路写作用域互斥（S1 独占 `config/**` 与 `shared/locales/config.js`；S11 独占 `capture/**`；S12 独占 `record/**`、`long-capture/**`、`action/**`、`search/**`、`recognition/**`、`toolbar/**`；S13 独占托盘/更新/状态/AI 错误文案）—— 各窗口流新建**自己的** `shared/locales/<domain>.js`，互不冲突。
 
 > **事故记录（2026-10-11）**：并行跑 D2-2 与 S1 期间，有外部命令执行了 `git reset --hard HEAD`，一次性清空两个流全部未提交工作（16 个路由文件 + S1 的 locale/checker 改动）。两流均已重做，但这是**真实损失过工作的事故**。纪律已更新到交接文档 §11：派发 prompt 的"禁止 git 写操作"要逐个列出 `reset`/`checkout`/`restore`/`clean`/`stash`/`add`/`commit`；Lead 在并行波次期间用 `git stash create` 周期取恢复点。
+
+---
+
+## 23. M3（Wave 9 / 批次 C i18n 四路并行 + Wave 10 收口）实施结果（2026-10-11）
+
+> 四路并行：**S1 第 2 阶段（`config/**`）· S11（`capture/**`）· S12（六个渲染窗）· S13（主进程文案）**。每路独占自己的 `shared/locales/<domain>.js`，写作用域互斥（§10.3 的分文件决策正是为此）。Lead 负责框架接线、跨流裁决与收口门禁。
+
+### 23.1 已落地的改动
+
+| 流 | 提交 | 内容 |
+|---|---|---|
+| 框架（S1 阶段 1） | `2d31a34` | `shared/i18n.js` 补全 + 按 domain 的 locale 布局 + checker glob + `i18n:language` 广播 + 11 个 preload 内联订阅 |
+| **S1 阶段 2** | `7c02fe4` | `config/**` 全量迁移：**582 个 `config.*` 键 × 三语**；`config.html` 22 处 `data-i18n*` + 6 行 script；路由标题/回退文案键化；`test/helpers/config-source.js` 追加读 `shared/locales/config.js`（那 ~170 处"文案存在性"断言问的是设置页有没有这段文案）；新增 `test/i18n-contract.test.js`。**并修掉一个真机缺陷**：`applyTranslations()` 会把 `#pageTitle` 重置成首页标题 → 热切换后改为 `navigate(currentRoute)` |
+| **S11** | `a338bf7` | `capture/**` 迁移：**93 个 `capture.*` 键 × 三语**，120 个串槽（HTML 96 / JS 24，含 6 个插值模板）；GOLDEN 表逐字审计（95 值 0 miss）+ 真机 DOM（30/30 文本标记、66/66 属性标记、0 空值）；`print.html` 零脚本故不动 |
+| **S12** | `52e1ae6` | 六窗迁移：**227 键 × 三语**（record 72 / long-capture 51 / action 36 / search 34 / recognition 24 / toolbar 10）；6 个 domain 表；`toolbar-action-meta` 的 label/description 改为键 |
+| **S13** | `7c12fad` | 主进程迁移：**48 键 × 三语**（tray 12 / update 17 / everything 11 / ai 7 / dialog 1）+ 新增 `main/services/i18n-bootstrap.js`（主进程 i18n 入口）；`throw`/日志/提示词/契约值按 D6 与 §10.5 不动 |
+| Lead 接线与收口 | `7c12fad` · `8509ebd` · `0377ed1` | `main.js` 启动 `setLanguage(getSettings().language)` + 广播内同步主进程；`settings-effects` 新增 `language.tray` effect（托盘 label 构建时求值，必须重建）并在 `resetEffects` 镜像；`window.i18n` 命名空间 + 两条框架陷阱注释；**checker 键名正则放宽到每段都允许连字符**；`config` 解析键化的 toolbar label；工具条宽度按解析后文本估；`check` 追加 `check:i18n --max 607` |
+
+### 23.2 门禁实况（Wave 10 批次 C 收口）
+
+| 门禁 | Wave 8.5 收口（§22.2） | **批次 C 收口** |
+|---|---|---|
+| `npm test` | 885 / 885 | **904 / 904 pass** |
+| `npm run check` | 语法 278 文件 | 语法 **290 文件** + 架构 ok（`main.js` **1297** / 1300）+ **i18n 门禁 `--max 607` 通过** |
+| `test:coverage:loaded` | —— | **92.7%（11405/12302）** |
+| `test:coverage:critical` | 93.22 / 92.99 / 92.42 | **93.22 / 94.07 / 92.42** |
+| `audit:dependencies` | 26 / 0 | **26 / 0** |
+| Playwright e2e | 6 / 6 | **6 / 6**（31.7s） |
+| `check-i18n` | TOTAL 1237（框架阶段） | **TOTAL 607**，12 个 locale 文件、**三语各 967 键**、对称差/键形/data-i18n 缺失**全 0** |
+
+### 23.3 未迁移残留（607 行）的构成与口径
+
+> **口径**：迁移目标是**用户可见 UI 文案**，不是"CJK 行数归零"（§10.3 澄清 1）。checker 统计的是**含 CJK 的行数**，含注释、纯模块校验 `throw`、提示词与存储契约值。这些**都不翻**。
+
+| area | 残留 | 构成与理由 |
+|---|---|---|
+| `config` | 82 | 73 行中文注释（18 个路由文件保留 D2 时代注释以缩小 diff）+ 7 行存储/API 契约（翻译语言下拉 `value="中文/日文/…"`、`targetLanguage` 白名单）+ 插件图标字形「译」 |
+| `capture` | 223 | 219 行注释 + 4 行数据（`annotation-style.js` 的 3 个**未被任何渲染路径使用**的 `label` + `print.html` 的 `<title>`） |
+| `record` | 4 | 1 行注释 + 3 个参数校验 `throw`（纯模块，Node 测试直接 require） |
+| `long-capture` | 3 | `matcher.js` 类型校验 `throw` |
+| `action` | 8 | `conversation-text.js` 的**剪贴板转录格式 + 回喂模型的上下文标记**（`【划词原文】` 等，属数据格式，同 §10.5-4） |
+| `toolbar` | 5 | 默认提示词（§10.5-4）+ `TRANSLATE_*_LANGUAGES` 契约值（§10.5-3） |
+| `pin` | 1 | 注释 |
+| `main` | 281（另 **169** 行 `throw` 按 D6 出账） | UI 状态已迁；`throw`/updater 日志/release notes/AI 提示词不翻 |
+| **TOTAL** | **607** | 相对基线 **1237 降 51%** |
+
+**门禁化**：`npm run check:i18n` = `node scripts/check-i18n.js --max 607`，已并入 `npm run check`。**该上限只能下调，不得上调**；下调前先更新本表。
+
+### 23.4 偏差与决定（9 项）
+
+1. **locale 按 domain 分文件**（Lead，§10.3）：为让"四路并行"真的并行；否则四路写同三个文件只能串行。
+2. **窗口脚本不得解构 i18n 绑定**（S12 实测踩到，Lead 补 `window.i18n` + 注释）：`t`/`setLanguage`/`applyTranslations` 是顶层 `const`（全局词法作用域），`const { t } = window` 会抛 `Identifier 't' has already been declared` 并**整脚本不执行**（真机探针才看得到，`npm test` 全绿也照样白屏）。
+3. **静态 HTML 文本不能传参**：`data-i18n` 只取固定值，带插值的串必须在 JS 里 `t(key, params)` 渲染。
+4. **S12 窗口的 HTML 回退文案改为英文（已接受）**：这些窗口 `show:false` 建窗、脚本执行后才 `show()`，默认语言下不会闪烁；保留中文回退会让那些行永远计入未迁移数。
+5. **`toolbar-action-meta` 键化后，`config/**` 的消费点必须包 `t()`**（S12 上报的 A1，Lead 落地）：`selectionToolbarActionInfo()` 是唯一访问器，已在其中解析 label/description，否则设置页显示裸键名。
+6. **工具条宽度必须按"解析后的文本"估**（S12 上报的诚实缺陷，Lead 修）：`getToolbarWidth` 量的是字符数，键化后每个按钮都命中 126px 上限（4 按钮 359→567，明显偏宽）。修法：`main/domains/selection/index.js` 在测量前用 `t()` 解析 label（保持 `toolbar-utils.js` 纯函数签名不变；用户自定义名不是键，`t()` 原样返回）。
+7. **`--max` 默认不开**（实测）：checker 不传 `--max` 时始终 exit 0，所以"有残留 CJK"本身不会让测试变红；Wave 10 才把 `--max 607` 并入门禁。
+8. **新增 locale 文件与窗口脚本同名会误伤 `indexOf` 断言**：统一改为匹配脚本标签（`src="capture.js"`）。
+9. **同步的既有断言（规则 C6）**：`window-security.test.js` 的 `长截图匹配超时` → 断言键；`selection-toolbar-thinking/settings` 的 `label:'跳转'` / `data.label || '解释'` → 断言键；`audio-mixer` 的警告串改吐 key；`i18n.test.js` 的 localeFiles 改为"包含 + 排序"（端态契约，四路全部落地后转绿）。
+
+### 23.5 结论：批次 C 代码完成，真机项挂账
+
+批次 C 的 i18n 四路 + 框架全部落地，通过 §1.1 全量门禁（含新增 i18n 门禁）+ e2e；**三语 967 键对称、184 个 `data-i18n` 键零缺失**。批次 C 的剩余事项是 **§11 步骤 4 的真机验收**（三语言切换、11 个窗口文案随语言变化、切换不重启生效），按用户指示与批次 A/B 的挂账项**一并留到"统一测试"阶段**（清单见 `2026-10-11-consolidated-verification-checklist.md`，需补三语言一节）。
+
+**发布动作仍未做**：`package.json` 仍是 **2.3.1**，批次 A（v2.3.2）、批次 B（v2.4.0）、批次 C（v2.5.0）三个版本 bump 与 release 记录都未执行（属 Lead，需与用户确认）。
+
+**剩余路线**：`main.js` 余量仅 **3 行**（1297/1300）——任何新接线前必须先腾挪；P1（Auto Filter / MCP）仍受 **F1-① 许可证字符串**阻塞。
