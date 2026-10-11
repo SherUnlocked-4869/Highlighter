@@ -1,0 +1,349 @@
+'use strict'
+
+// Domain locale table: the capture overlay window (`capture/`).
+//
+// Layout decision (2026-10-11, Lead; plan §10.3): one file per domain, each file
+// registering all three languages for that domain. The three per-language files
+// keep the cross-window keys; this file owns `capture.*` alone, so the wave-9
+// `capture` migration never shares a write target with another stream.
+//
+// Checker contract (scripts/check-i18n.js): every file in shared/locales/ is
+// loaded, every language must be registered here, and every key must match
+// /^[a-z][a-z0-9]*(\.[a-z][a-z0-9-]*)+$/ — hence `capture.toolbar.export-pdf`
+// and `capture.element.delete-aria`, never a camelCase or uppercase segment.
+//
+// Naming scheme (kept deliberately small — one key is one user-visible string
+// role, not one DOM attribute):
+//   capture.<module>.<name>        label: button text, aria-label, and the
+//                                 tooltip when all three show the same wording
+//   capture.<module>.<name>-tip    tooltip (title attribute) when it differs
+//                                 from the label — mostly the shortcut suffix
+//   capture.<module>.<name>-aria   aria-label when it differs from the label
+//
+// Two strings are shared with the cross-window table instead of being cloned
+// here: `common.button.cancel` (the watermark panel's 取消) and
+// `common.button.delete` (the element bar's 删除). Both are byte-identical to
+// the literals they replace in all three languages.
+//
+// zh-CN values are byte-identical to the literals that shipped before the
+// migration (acceptance §10.4-T4 / plan §10 acceptance ⑤: migrating must not
+// change any visible wording or interaction).
+//
+// P0-1-T4 / S11 (2026-10-11).
+;(function () {
+  const tables = (globalThis.__LOCALES = globalThis.__LOCALES || {})
+  const add = (language, entries) => Object.assign((tables[language] = tables[language] || {}), entries)
+
+  add('zh-CN', {
+    // --- document + selection tip ------------------------------------------
+    'capture.window.title': 'Highlighter 截图',
+    'capture.tip.drag': '拖动选择区域 · 拖动边缘或角点调整 · Esc 退出',
+
+    // --- tool strip (capture.html) -----------------------------------------
+    'capture.toolbar.select': '选择或调整选区',
+    'capture.toolbar.select-tip': '选择/调整',
+    'capture.toolbar.rect': '矩形',
+    'capture.toolbar.ellipse': '椭圆',
+    'capture.toolbar.arrow': '箭头',
+    'capture.toolbar.line': '直线',
+    'capture.toolbar.pen': '画笔',
+    'capture.toolbar.highlight': '高亮',
+    'capture.toolbar.blur': '马赛克',
+    'capture.toolbar.text': '文字',
+    'capture.toolbar.serial': '序号',
+    'capture.toolbar.watermark': '水印',
+    'capture.toolbar.color': '颜色',
+    'capture.toolbar.width-group': '标注线宽',
+    'capture.toolbar.width-thin': '细',
+    'capture.toolbar.width-thin-tip': '线宽：细（2px）',
+    'capture.toolbar.width-medium': '中',
+    'capture.toolbar.width-medium-tip': '线宽：中（4px）',
+    'capture.toolbar.width-thick': '粗',
+    'capture.toolbar.width-thick-tip': '线宽：粗（8px）',
+    'capture.toolbar.undo': '撤销',
+    'capture.toolbar.undo-tip': '撤销 Ctrl+Z',
+    'capture.toolbar.redo': '重做',
+    'capture.toolbar.redo-tip': '重做 Ctrl+Y',
+    'capture.toolbar.long-capture': '长截图',
+    'capture.toolbar.qr': '二维码识别',
+    'capture.toolbar.table': '表格识别',
+    'capture.toolbar.ocr': '文本识别',
+    'capture.toolbar.translate': '识别并翻译',
+    'capture.toolbar.record': '区域录制',
+    'capture.toolbar.pin': '固定到屏幕',
+    'capture.toolbar.save': '保存',
+    'capture.toolbar.save-tip': '保存 Ctrl+S',
+    'capture.toolbar.export-pdf': '导出 PDF',
+    'capture.toolbar.copy': '复制',
+    'capture.toolbar.copy-tip': '复制 Enter',
+    'capture.toolbar.close': '取消',
+    'capture.toolbar.close-tip': '取消 Esc',
+
+    // --- floating element bar (P0-5) ---------------------------------------
+    'capture.element.selected': '已选中标注',
+    'capture.element.move-hint': 'Alt+拖动 移动选区',
+    'capture.element.move-hint-tip': '元素铺满选区（如水印）时，按住 Alt 在选区内拖动即可移动选区',
+    'capture.element.resize-hint': '拖动圆点缩放',
+    'capture.element.resize-hint-tip': '拖动选中虚线框上的 8 个圆点即可缩放；文本框只改字号，序号只改半径',
+    'capture.element.delete-tip': '删除选中标注 Delete',
+    'capture.element.delete-aria': '删除选中标注',
+    'capture.element.front': '上移',
+    'capture.element.front-tip': '上移一层（更靠前）',
+    'capture.element.front-aria': '上移一层',
+    'capture.element.back': '下移',
+    'capture.element.back-tip': '下移一层（更靠后）',
+    'capture.element.back-aria': '下移一层',
+    'capture.element.deselect': '取消选中',
+    'capture.element.deselect-tip': '取消选中 Esc',
+
+    // --- watermark panel ----------------------------------------------------
+    'capture.watermark.content': '内容',
+    'capture.watermark.content-placeholder': '输入水印文字',
+    'capture.watermark.date': '日期',
+    'capture.watermark.date-tip': '在水印文字后拼接当前时间，格式 yyyyMMddHHmmss，例如 知何似20260910154310',
+    'capture.watermark.date-suffix': '追加日期后缀',
+    'capture.watermark.opacity': '透明度',
+    'capture.watermark.color': '颜色',
+    'capture.watermark.spacing': '间距',
+    'capture.watermark.font-size': '大小',
+    'capture.watermark.rotation': '角度',
+    'capture.watermark.apply': '添加水印',
+
+    // --- result panel + OCR overlay ----------------------------------------
+    'capture.result.title': '识别结果',
+    'capture.result.title-ocr': '文本识别',
+    'capture.result.title-translate': '截图翻译',
+    'capture.result.copy': '复制文本',
+    'capture.result.done': '完成',
+    'capture.ocr.summary': '识别完成',
+    'capture.ocr.show-source': '查看原文',
+    'capture.ocr.show-translation': '查看译文',
+    'capture.ocr.plain-text': '纯文本',
+    'capture.ocr.copy-all': '复制全部',
+    'capture.ocr.close-tip': '关闭识别结果',
+    'capture.ocr.tooltip-source': '原文：{text}',
+    'capture.ocr.tooltip-confidence': '置信度 {value}%',
+    'capture.ocr.source-count': '原文 {count} 处',
+    'capture.ocr.translated-count': '已翻译 {count} 处文本',
+    'capture.ocr.count-cached': '识别到 {count} 处文本 · 已缓存',
+    'capture.ocr.count-timed': '识别到 {count} 处文本 · {ms} ms',
+
+    // --- transient state (loading / prompt / confirm / clipboard) ----------
+    'capture.loading.text': '处理中…',
+    'capture.loading.ocr': '正在识别文字…',
+    'capture.loading.translate': '正在识别并翻译…',
+    'capture.input.text': '输入文字',
+    'capture.confirm.reset-selection': '重新划选将清除已添加的标注，是否继续？',
+    'capture.confirm.long-capture': '进入长截图将忽略当前标注，是否继续？',
+    'capture.action.copied': '已复制',
+
+    // --- renderer-side failures surfaced through capture:render-error -------
+    'capture.error.decode-failed': '截图图片解码失败',
+    'capture.error.empty-image': '截图图片数据为空',
+    'capture.error.encode-failed': '截图图片编码失败'
+  })
+
+  add('en-US', {
+    'capture.window.title': 'Highlighter capture',
+    'capture.tip.drag': 'Drag to select · Drag the edges or corners to adjust · Esc to exit',
+
+    'capture.toolbar.select': 'Select or adjust the region',
+    'capture.toolbar.select-tip': 'Select / adjust',
+    'capture.toolbar.rect': 'Rectangle',
+    'capture.toolbar.ellipse': 'Ellipse',
+    'capture.toolbar.arrow': 'Arrow',
+    'capture.toolbar.line': 'Line',
+    'capture.toolbar.pen': 'Pen',
+    'capture.toolbar.highlight': 'Highlight',
+    'capture.toolbar.blur': 'Mosaic',
+    'capture.toolbar.text': 'Text',
+    'capture.toolbar.serial': 'Number',
+    'capture.toolbar.watermark': 'Watermark',
+    'capture.toolbar.color': 'Color',
+    'capture.toolbar.width-group': 'Annotation width',
+    'capture.toolbar.width-thin': 'Thin',
+    'capture.toolbar.width-thin-tip': 'Width: thin (2px)',
+    'capture.toolbar.width-medium': 'Medium',
+    'capture.toolbar.width-medium-tip': 'Width: medium (4px)',
+    'capture.toolbar.width-thick': 'Thick',
+    'capture.toolbar.width-thick-tip': 'Width: thick (8px)',
+    'capture.toolbar.undo': 'Undo',
+    'capture.toolbar.undo-tip': 'Undo Ctrl+Z',
+    'capture.toolbar.redo': 'Redo',
+    'capture.toolbar.redo-tip': 'Redo Ctrl+Y',
+    'capture.toolbar.long-capture': 'Scrolling capture',
+    'capture.toolbar.qr': 'QR code recognition',
+    'capture.toolbar.table': 'Table recognition',
+    'capture.toolbar.ocr': 'Text recognition',
+    'capture.toolbar.translate': 'Recognize and translate',
+    'capture.toolbar.record': 'Record region',
+    'capture.toolbar.pin': 'Pin to screen',
+    'capture.toolbar.save': 'Save',
+    'capture.toolbar.save-tip': 'Save Ctrl+S',
+    'capture.toolbar.export-pdf': 'Export PDF',
+    'capture.toolbar.copy': 'Copy',
+    'capture.toolbar.copy-tip': 'Copy Enter',
+    'capture.toolbar.close': 'Cancel',
+    'capture.toolbar.close-tip': 'Cancel Esc',
+
+    'capture.element.selected': 'Annotation selected',
+    'capture.element.move-hint': 'Alt+drag to move the region',
+    'capture.element.move-hint-tip': 'When an element fills the region (a watermark, say), hold Alt and drag inside it to move the region instead',
+    'capture.element.resize-hint': 'Drag a dot to resize',
+    'capture.element.resize-hint-tip': 'Drag the 8 dots on the selection outline to resize; a text box only changes its font size and a number only its radius',
+    'capture.element.delete-tip': 'Delete the selected annotation Delete',
+    'capture.element.delete-aria': 'Delete the selected annotation',
+    'capture.element.front': 'Forward',
+    'capture.element.front-tip': 'Move up one layer (closer to the front)',
+    'capture.element.front-aria': 'Move up one layer',
+    'capture.element.back': 'Backward',
+    'capture.element.back-tip': 'Move down one layer (further back)',
+    'capture.element.back-aria': 'Move down one layer',
+    'capture.element.deselect': 'Deselect',
+    'capture.element.deselect-tip': 'Deselect Esc',
+
+    'capture.watermark.content': 'Content',
+    'capture.watermark.content-placeholder': 'Enter the watermark text',
+    'capture.watermark.date': 'Date',
+    'capture.watermark.date-tip': 'Append the current time to the watermark text as yyyyMMddHHmmss, for example 知何似20260910154310',
+    'capture.watermark.date-suffix': 'Append the date suffix',
+    'capture.watermark.opacity': 'Opacity',
+    'capture.watermark.color': 'Color',
+    'capture.watermark.spacing': 'Spacing',
+    'capture.watermark.font-size': 'Size',
+    'capture.watermark.rotation': 'Angle',
+    'capture.watermark.apply': 'Add watermark',
+
+    'capture.result.title': 'Recognition result',
+    'capture.result.title-ocr': 'Text recognition',
+    'capture.result.title-translate': 'Screenshot translation',
+    'capture.result.copy': 'Copy text',
+    'capture.result.done': 'Done',
+    'capture.ocr.summary': 'Recognition complete',
+    'capture.ocr.show-source': 'View source',
+    'capture.ocr.show-translation': 'View translation',
+    'capture.ocr.plain-text': 'Plain text',
+    'capture.ocr.copy-all': 'Copy all',
+    'capture.ocr.close-tip': 'Close the recognition result',
+    'capture.ocr.tooltip-source': 'Source: {text}',
+    'capture.ocr.tooltip-confidence': 'Confidence {value}%',
+    'capture.ocr.source-count': '{count} source segments',
+    'capture.ocr.translated-count': '{count} text segments translated',
+    'capture.ocr.count-cached': 'Recognized {count} text segments · cached',
+    'capture.ocr.count-timed': 'Recognized {count} text segments · {ms} ms',
+
+    'capture.loading.text': 'Working…',
+    'capture.loading.ocr': 'Recognizing text…',
+    'capture.loading.translate': 'Recognizing and translating…',
+    'capture.input.text': 'Enter the text',
+    'capture.confirm.reset-selection': 'Drawing a new region clears the annotations you added. Continue?',
+    'capture.confirm.long-capture': 'Scrolling capture ignores the current annotations. Continue?',
+    'capture.action.copied': 'Copied',
+
+    'capture.error.decode-failed': 'The capture image could not be decoded',
+    'capture.error.empty-image': 'The capture image payload is empty',
+    'capture.error.encode-failed': 'The capture image could not be encoded'
+  })
+
+  add('zh-TW', {
+    'capture.window.title': 'Highlighter 截圖',
+    'capture.tip.drag': '拖曳選擇區域 · 拖曳邊緣或角點調整 · Esc 結束',
+
+    'capture.toolbar.select': '選擇或調整選取區',
+    'capture.toolbar.select-tip': '選擇／調整',
+    'capture.toolbar.rect': '矩形',
+    'capture.toolbar.ellipse': '橢圓',
+    'capture.toolbar.arrow': '箭頭',
+    'capture.toolbar.line': '直線',
+    'capture.toolbar.pen': '畫筆',
+    'capture.toolbar.highlight': '高亮',
+    'capture.toolbar.blur': '馬賽克',
+    'capture.toolbar.text': '文字',
+    'capture.toolbar.serial': '序號',
+    'capture.toolbar.watermark': '浮水印',
+    'capture.toolbar.color': '顏色',
+    'capture.toolbar.width-group': '標註線寬',
+    'capture.toolbar.width-thin': '細',
+    'capture.toolbar.width-thin-tip': '線寬：細（2px）',
+    'capture.toolbar.width-medium': '中',
+    'capture.toolbar.width-medium-tip': '線寬：中（4px）',
+    'capture.toolbar.width-thick': '粗',
+    'capture.toolbar.width-thick-tip': '線寬：粗（8px）',
+    'capture.toolbar.undo': '復原',
+    'capture.toolbar.undo-tip': '復原 Ctrl+Z',
+    'capture.toolbar.redo': '重做',
+    'capture.toolbar.redo-tip': '重做 Ctrl+Y',
+    'capture.toolbar.long-capture': '長截圖',
+    'capture.toolbar.qr': 'QR Code 辨識',
+    'capture.toolbar.table': '表格辨識',
+    'capture.toolbar.ocr': '文字辨識',
+    'capture.toolbar.translate': '辨識並翻譯',
+    'capture.toolbar.record': '區域錄影',
+    'capture.toolbar.pin': '釘選到螢幕',
+    'capture.toolbar.save': '儲存',
+    'capture.toolbar.save-tip': '儲存 Ctrl+S',
+    'capture.toolbar.export-pdf': '匯出 PDF',
+    'capture.toolbar.copy': '複製',
+    'capture.toolbar.copy-tip': '複製 Enter',
+    'capture.toolbar.close': '取消',
+    'capture.toolbar.close-tip': '取消 Esc',
+
+    'capture.element.selected': '已選取標註',
+    'capture.element.move-hint': 'Alt+拖曳 移動選取區',
+    'capture.element.move-hint-tip': '元素佈滿選取區（如浮水印）時，按住 Alt 在選取區內拖曳即可移動選取區',
+    'capture.element.resize-hint': '拖曳圓點縮放',
+    'capture.element.resize-hint-tip': '拖曳選取虛線框上的 8 個圓點即可縮放；文字框只改字級，序號只改半徑',
+    'capture.element.delete-tip': '刪除選取標註 Delete',
+    'capture.element.delete-aria': '刪除選取標註',
+    'capture.element.front': '上移',
+    'capture.element.front-tip': '上移一層（更靠前）',
+    'capture.element.front-aria': '上移一層',
+    'capture.element.back': '下移',
+    'capture.element.back-tip': '下移一層（更靠後）',
+    'capture.element.back-aria': '下移一層',
+    'capture.element.deselect': '取消選取',
+    'capture.element.deselect-tip': '取消選取 Esc',
+
+    'capture.watermark.content': '內容',
+    'capture.watermark.content-placeholder': '輸入浮水印文字',
+    'capture.watermark.date': '日期',
+    'capture.watermark.date-tip': '在浮水印文字後串接目前時間，格式 yyyyMMddHHmmss，例如 知何似20260910154310',
+    'capture.watermark.date-suffix': '附加日期後綴',
+    'capture.watermark.opacity': '透明度',
+    'capture.watermark.color': '顏色',
+    'capture.watermark.spacing': '間距',
+    'capture.watermark.font-size': '大小',
+    'capture.watermark.rotation': '角度',
+    'capture.watermark.apply': '新增浮水印',
+
+    'capture.result.title': '辨識結果',
+    'capture.result.title-ocr': '文字辨識',
+    'capture.result.title-translate': '截圖翻譯',
+    'capture.result.copy': '複製文字',
+    'capture.result.done': '完成',
+    'capture.ocr.summary': '辨識完成',
+    'capture.ocr.show-source': '檢視原文',
+    'capture.ocr.show-translation': '檢視譯文',
+    'capture.ocr.plain-text': '純文字',
+    'capture.ocr.copy-all': '複製全部',
+    'capture.ocr.close-tip': '關閉辨識結果',
+    'capture.ocr.tooltip-source': '原文：{text}',
+    'capture.ocr.tooltip-confidence': '信心度 {value}%',
+    'capture.ocr.source-count': '原文 {count} 處',
+    'capture.ocr.translated-count': '已翻譯 {count} 處文字',
+    'capture.ocr.count-cached': '辨識到 {count} 處文字 · 已快取',
+    'capture.ocr.count-timed': '辨識到 {count} 處文字 · {ms} ms',
+
+    'capture.loading.text': '處理中…',
+    'capture.loading.ocr': '正在辨識文字…',
+    'capture.loading.translate': '正在辨識並翻譯…',
+    'capture.input.text': '輸入文字',
+    'capture.confirm.reset-selection': '重新選取將清除已新增的標註，是否繼續？',
+    'capture.confirm.long-capture': '進入長截圖將忽略目前的標註，是否繼續？',
+    'capture.action.copied': '已複製',
+
+    'capture.error.decode-failed': '截圖影像解碼失敗',
+    'capture.error.empty-image': '截圖影像資料為空',
+    'capture.error.encode-failed': '截圖影像編碼失敗'
+  })
+})()

@@ -576,7 +576,7 @@ test('pointerdown keeps the handles first and selects the topmost annotation bef
 })
 
 test('D4: replacing the selection confirms first and keeps both untouched when cancelled', () => {
-  assert.match(script, /function confirmDiscardAnnotations\(\) \{\s*if \(!annotations\.length\) return true\s*return confirm\('重新划选将清除已添加的标注，是否继续？'\)/)
+  assert.match(script, /function confirmDiscardAnnotations\(\) \{\s*if \(!annotations\.length\) return true\s*return confirm\(t\('capture\.confirm\.reset-selection'\)\)/)
   assert.match(pointerdownSource, /if\(!confirmDiscardAnnotations\(\)\)return/)
   assert.match(pointermoveSource, /if\(!confirmDiscardAnnotations\(\)\)\{pointerDownPoint=null;return\}/)
   assert.ok(
@@ -674,7 +674,7 @@ test('PR2: Alt+drag on the selection bar hint moves the selection and never the 
   // 落点：select 分支最前面的 if(event.altKey)，落到既有 dragging=true 选区拖动路径。
   assert.match(pointerdownSource, /if\(event\.altKey\)\{setSelectedAnnotation\(null\);dragging=true;return\}/)
   // #elementBar 上有一行提示文案，且仍然是纯文本、不占工具栏图标清单。
-  assert.match(html, /id="elementBar"[\s\S]{0,320}?Alt\+拖动 移动选区/)
+  assert.match(html, /id="elementBar"[\s\S]{0,320}?data-i18n="capture\.element\.move-hint"/)
   const elementBar = html.slice(html.indexOf('<div id="elementBar"'), html.indexOf('id="watermarkPanel"'))
   assert.doesNotMatch(elementBar, /--icon:url\(/)
   assert.match(css, /\.element-bar \.element-hint \{ color: #8a8a92; \}/)
@@ -753,7 +753,7 @@ test('PR3: eight element handles are drawn on the dashed frame in a style distin
   assert.doesNotMatch(resizeHandlesSource, /fillRect/)
   assert.match(script, /function drawHandles\(\) \{[\s\S]{0,600}?ctx\.fillRect\(x-4,y-4,8,8\)/)
   // #elementBar 上多一行纯文本提示，不占工具栏图标清单。
-  assert.match(html, /拖动圆点缩放/)
+  assert.match(html, /data-i18n="capture\.element\.resize-hint"/)
   const elementBar = html.slice(html.indexOf('<div id="elementBar"'), html.indexOf('id="watermarkPanel"'))
   assert.doesNotMatch(elementBar, /--icon:url\(/)
 })
@@ -771,8 +771,8 @@ test('PR4: the layer buttons live on #elementBar between delete and deselect and
   assert.ok(html.indexOf('id="elementBack"') < html.indexOf('id="watermarkPanel"'))
   const elementBar = html.slice(html.indexOf('<div id="elementBar"'), html.indexOf('id="watermarkPanel"'))
   assert.doesNotMatch(elementBar, /--icon:url\(/, 'element actions must not inflate the toolbar icon list')
-  assert.match(html, /id="elementFront"[^>]*aria-label="上移一层"/)
-  assert.match(html, /id="elementBack"[^>]*aria-label="下移一层"/)
+  assert.match(html, /id="elementFront"[^>]*data-i18n-aria-label="capture\.element\.front-aria"/)
+  assert.match(html, /id="elementBack"[^>]*data-i18n-aria-label="capture\.element\.back-aria"/)
 
   assert.match(script, /const elementFront = document\.getElementById\('elementFront'\)/)
   assert.match(script, /const elementBack = document\.getElementById\('elementBack'\)/)

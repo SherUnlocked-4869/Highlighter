@@ -20,7 +20,7 @@ function pdfBranchSource () {
 }
 
 test('capture toolbar exposes an export-PDF button that reuses the print icon (P0-4-T7②)', () => {
-  assert.match(html, /<button id="exportPdf" title="导出 PDF" aria-label="导出 PDF"><span class="toolbar-icon" style="--icon:url\('icons\/print\.svg'\)" aria-hidden="true"><\/span><\/button>/)
+  assert.match(html, /<button id="exportPdf" data-i18n-title="capture\.toolbar\.export-pdf" data-i18n-aria-label="capture\.toolbar\.export-pdf"><span class="toolbar-icon" style="--icon:url\('icons\/print\.svg'\)" aria-hidden="true"><\/span><\/button>/)
 
   const iconPath = path.join(root, 'capture', 'icons', 'print.svg')
   assert.equal(fs.existsSync(iconPath), true, 'capture/icons/print.svg must exist')

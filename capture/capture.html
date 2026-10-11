@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Highlighter 截图</title>
+  <title data-i18n="capture.window.title"></title>
   <link rel="stylesheet" href="../shared/tokens.css">
   <link rel="stylesheet" href="capture.css">
 </head>
@@ -12,85 +12,94 @@
   <canvas id="backgroundStage"></canvas>
   <canvas id="stage"></canvas>
   <div id="ocrOverlay" class="ocr-overlay hidden"></div>
-  <div id="tip">拖动选择区域 · 拖动边缘或角点调整 · Esc 退出</div>
+  <div id="tip" data-i18n="capture.tip.drag"></div>
   <div id="sizeBadge"></div>
   <div id="toolbar" class="toolbar hidden">
     <div class="tool-group">
-      <button data-tool="select" class="active" title="选择/调整" aria-label="选择或调整选区"><span class="toolbar-icon" style="--icon:url('icons/select.svg')" aria-hidden="true"></span></button>
-      <button data-tool="rect" title="矩形" aria-label="矩形"><span class="toolbar-icon" style="--icon:url('icons/rect.svg')" aria-hidden="true"></span></button>
-      <button data-tool="ellipse" title="椭圆" aria-label="椭圆"><span class="toolbar-icon" style="--icon:url('icons/ellipse.svg')" aria-hidden="true"></span></button>
-      <button data-tool="arrow" title="箭头" aria-label="箭头"><span class="toolbar-icon" style="--icon:url('icons/arrow.svg')" aria-hidden="true"></span></button>
-      <button data-tool="line" title="直线" aria-label="直线"><span class="toolbar-icon" style="--icon:url('icons/line-tool.svg')" aria-hidden="true"></span></button>
-      <button data-tool="pen" title="画笔" aria-label="画笔"><span class="toolbar-icon" style="--icon:url('icons/pen.svg')" aria-hidden="true"></span></button>
-      <button data-tool="highlight" title="高亮" aria-label="高亮"><span class="toolbar-icon" style="--icon:url('icons/highlight.svg')" aria-hidden="true"></span></button>
-      <button data-tool="blur" title="马赛克" aria-label="马赛克"><span class="toolbar-icon" style="--icon:url('icons/mosaic.svg')" aria-hidden="true"></span></button>
-      <button data-tool="text" title="文字" aria-label="文字"><span class="toolbar-icon" style="--icon:url('icons/text.svg')" aria-hidden="true"></span></button>
-      <button data-tool="serial" title="序号" aria-label="序号"><span class="toolbar-icon" style="--icon:url('icons/serial.svg')" aria-hidden="true"></span></button>
-      <button data-tool="watermark" title="水印" aria-label="水印"><span class="toolbar-icon" style="--icon:url('icons/watermark.svg')" aria-hidden="true"></span></button>
+      <button data-tool="select" class="active" data-i18n-title="capture.toolbar.select-tip" data-i18n-aria-label="capture.toolbar.select"><span class="toolbar-icon" style="--icon:url('icons/select.svg')" aria-hidden="true"></span></button>
+      <button data-tool="rect" data-i18n-title="capture.toolbar.rect" data-i18n-aria-label="capture.toolbar.rect"><span class="toolbar-icon" style="--icon:url('icons/rect.svg')" aria-hidden="true"></span></button>
+      <button data-tool="ellipse" data-i18n-title="capture.toolbar.ellipse" data-i18n-aria-label="capture.toolbar.ellipse"><span class="toolbar-icon" style="--icon:url('icons/ellipse.svg')" aria-hidden="true"></span></button>
+      <button data-tool="arrow" data-i18n-title="capture.toolbar.arrow" data-i18n-aria-label="capture.toolbar.arrow"><span class="toolbar-icon" style="--icon:url('icons/arrow.svg')" aria-hidden="true"></span></button>
+      <button data-tool="line" data-i18n-title="capture.toolbar.line" data-i18n-aria-label="capture.toolbar.line"><span class="toolbar-icon" style="--icon:url('icons/line-tool.svg')" aria-hidden="true"></span></button>
+      <button data-tool="pen" data-i18n-title="capture.toolbar.pen" data-i18n-aria-label="capture.toolbar.pen"><span class="toolbar-icon" style="--icon:url('icons/pen.svg')" aria-hidden="true"></span></button>
+      <button data-tool="highlight" data-i18n-title="capture.toolbar.highlight" data-i18n-aria-label="capture.toolbar.highlight"><span class="toolbar-icon" style="--icon:url('icons/highlight.svg')" aria-hidden="true"></span></button>
+      <button data-tool="blur" data-i18n-title="capture.toolbar.blur" data-i18n-aria-label="capture.toolbar.blur"><span class="toolbar-icon" style="--icon:url('icons/mosaic.svg')" aria-hidden="true"></span></button>
+      <button data-tool="text" data-i18n-title="capture.toolbar.text" data-i18n-aria-label="capture.toolbar.text"><span class="toolbar-icon" style="--icon:url('icons/text.svg')" aria-hidden="true"></span></button>
+      <button data-tool="serial" data-i18n-title="capture.toolbar.serial" data-i18n-aria-label="capture.toolbar.serial"><span class="toolbar-icon" style="--icon:url('icons/serial.svg')" aria-hidden="true"></span></button>
+      <button data-tool="watermark" data-i18n-title="capture.toolbar.watermark" data-i18n-aria-label="capture.toolbar.watermark"><span class="toolbar-icon" style="--icon:url('icons/watermark.svg')" aria-hidden="true"></span></button>
     </div>
     <div class="divider"></div>
-    <label class="color-wrap" title="颜色"><input id="color" type="color" value="#ff3b30"><span></span></label>
-    <div id="widthGroup" class="width-group" role="group" aria-label="标注线宽">
-      <button type="button" data-annotation-width="2" title="线宽：细（2px）" aria-pressed="false">细</button>
-      <button type="button" data-annotation-width="4" class="active" title="线宽：中（4px）" aria-pressed="true">中</button>
-      <button type="button" data-annotation-width="8" title="线宽：粗（8px）" aria-pressed="false">粗</button>
+    <label class="color-wrap" data-i18n-title="capture.toolbar.color"><input id="color" type="color" value="#ff3b30"><span></span></label>
+    <div id="widthGroup" class="width-group" role="group" data-i18n-aria-label="capture.toolbar.width-group">
+      <button type="button" data-annotation-width="2" data-i18n-title="capture.toolbar.width-thin-tip" aria-pressed="false" data-i18n="capture.toolbar.width-thin"></button>
+      <button type="button" data-annotation-width="4" class="active" data-i18n-title="capture.toolbar.width-medium-tip" aria-pressed="true" data-i18n="capture.toolbar.width-medium"></button>
+      <button type="button" data-annotation-width="8" data-i18n-title="capture.toolbar.width-thick-tip" aria-pressed="false" data-i18n="capture.toolbar.width-thick"></button>
     </div>
     <div class="divider"></div>
-    <button id="undo" title="撤销 Ctrl+Z" aria-label="撤销"><span class="toolbar-icon" style="--icon:url('icons/undo.svg')" aria-hidden="true"></span></button>
-    <button id="redo" title="重做 Ctrl+Y" aria-label="重做"><span class="toolbar-icon" style="--icon:url('icons/redo.svg')" aria-hidden="true"></span></button>
+    <button id="undo" data-i18n-title="capture.toolbar.undo-tip" data-i18n-aria-label="capture.toolbar.undo"><span class="toolbar-icon" style="--icon:url('icons/undo.svg')" aria-hidden="true"></span></button>
+    <button id="redo" data-i18n-title="capture.toolbar.redo-tip" data-i18n-aria-label="capture.toolbar.redo"><span class="toolbar-icon" style="--icon:url('icons/redo.svg')" aria-hidden="true"></span></button>
     <div class="divider"></div>
-    <button id="longCapture" title="长截图" aria-label="长截图"><span class="toolbar-icon" style="--icon:url('icons/long-capture.svg')" aria-hidden="true"></span></button>
-    <button id="qr" title="二维码识别" aria-label="二维码识别"><span class="toolbar-icon" style="--icon:url('icons/qr.svg')" aria-hidden="true"></span></button>
-    <button id="table" title="表格识别" aria-label="表格识别"><span class="toolbar-icon" style="--icon:url('icons/table.svg')" aria-hidden="true"></span></button>
-    <button id="ocr" title="文本识别" aria-label="文本识别"><span class="toolbar-icon" style="--icon:url('icons/ocr.svg')" aria-hidden="true"></span></button>
-    <button id="translate" title="识别并翻译" aria-label="识别并翻译"><span class="toolbar-icon" style="--icon:url('icons/translate.svg')" aria-hidden="true"></span></button>
-    <button id="record" title="区域录制" aria-label="区域录制"><span class="toolbar-icon" style="--icon:url('icons/record.svg')" aria-hidden="true"></span></button>
-    <button id="pin" title="固定到屏幕" aria-label="固定到屏幕"><span class="toolbar-icon" style="--icon:url('icons/pin.svg')" aria-hidden="true"></span></button>
-    <button id="save" title="保存 Ctrl+S" aria-label="保存"><span class="toolbar-icon" style="--icon:url('icons/save.svg')" aria-hidden="true"></span></button>
-    <button id="exportPdf" title="导出 PDF" aria-label="导出 PDF"><span class="toolbar-icon" style="--icon:url('icons/print.svg')" aria-hidden="true"></span></button>
-    <button id="copy" class="primary" title="复制 Enter" aria-label="复制"><span class="toolbar-icon" style="--icon:url('icons/copy.svg')" aria-hidden="true"></span></button>
-    <button id="close" title="取消 Esc" aria-label="取消"><span class="toolbar-icon" style="--icon:url('icons/close.svg')" aria-hidden="true"></span></button>
+    <button id="longCapture" data-i18n-title="capture.toolbar.long-capture" data-i18n-aria-label="capture.toolbar.long-capture"><span class="toolbar-icon" style="--icon:url('icons/long-capture.svg')" aria-hidden="true"></span></button>
+    <button id="qr" data-i18n-title="capture.toolbar.qr" data-i18n-aria-label="capture.toolbar.qr"><span class="toolbar-icon" style="--icon:url('icons/qr.svg')" aria-hidden="true"></span></button>
+    <button id="table" data-i18n-title="capture.toolbar.table" data-i18n-aria-label="capture.toolbar.table"><span class="toolbar-icon" style="--icon:url('icons/table.svg')" aria-hidden="true"></span></button>
+    <button id="ocr" data-i18n-title="capture.toolbar.ocr" data-i18n-aria-label="capture.toolbar.ocr"><span class="toolbar-icon" style="--icon:url('icons/ocr.svg')" aria-hidden="true"></span></button>
+    <button id="translate" data-i18n-title="capture.toolbar.translate" data-i18n-aria-label="capture.toolbar.translate"><span class="toolbar-icon" style="--icon:url('icons/translate.svg')" aria-hidden="true"></span></button>
+    <button id="record" data-i18n-title="capture.toolbar.record" data-i18n-aria-label="capture.toolbar.record"><span class="toolbar-icon" style="--icon:url('icons/record.svg')" aria-hidden="true"></span></button>
+    <button id="pin" data-i18n-title="capture.toolbar.pin" data-i18n-aria-label="capture.toolbar.pin"><span class="toolbar-icon" style="--icon:url('icons/pin.svg')" aria-hidden="true"></span></button>
+    <button id="save" data-i18n-title="capture.toolbar.save-tip" data-i18n-aria-label="capture.toolbar.save"><span class="toolbar-icon" style="--icon:url('icons/save.svg')" aria-hidden="true"></span></button>
+    <button id="exportPdf" data-i18n-title="capture.toolbar.export-pdf" data-i18n-aria-label="capture.toolbar.export-pdf"><span class="toolbar-icon" style="--icon:url('icons/print.svg')" aria-hidden="true"></span></button>
+    <button id="copy" class="primary" data-i18n-title="capture.toolbar.copy-tip" data-i18n-aria-label="capture.toolbar.copy"><span class="toolbar-icon" style="--icon:url('icons/copy.svg')" aria-hidden="true"></span></button>
+    <button id="close" data-i18n-title="capture.toolbar.close-tip" data-i18n-aria-label="capture.toolbar.close"><span class="toolbar-icon" style="--icon:url('icons/close.svg')" aria-hidden="true"></span></button>
   </div>
   <div id="elementBar" class="element-bar hidden">
-    <span>已选中标注</span>
-    <span class="element-hint" title="元素铺满选区（如水印）时，按住 Alt 在选区内拖动即可移动选区">Alt+拖动 移动选区</span>
-    <span class="element-hint" title="拖动选中虚线框上的 8 个圆点即可缩放；文本框只改字号，序号只改半径">拖动圆点缩放</span>
-    <button id="elementDelete" class="danger" title="删除选中标注 Delete" aria-label="删除选中标注">删除</button>
-    <button id="elementFront" title="上移一层（更靠前）" aria-label="上移一层">上移</button>
-    <button id="elementBack" title="下移一层（更靠后）" aria-label="下移一层">下移</button>
-    <button id="elementDeselect" title="取消选中 Esc" aria-label="取消选中">取消选中</button>
+    <span data-i18n="capture.element.selected"></span>
+    <span class="element-hint" data-i18n-title="capture.element.move-hint-tip" data-i18n="capture.element.move-hint"></span>
+    <span class="element-hint" data-i18n-title="capture.element.resize-hint-tip" data-i18n="capture.element.resize-hint"></span>
+    <button id="elementDelete" class="danger" data-i18n-title="capture.element.delete-tip" data-i18n-aria-label="capture.element.delete-aria" data-i18n="common.button.delete"></button>
+    <button id="elementFront" data-i18n-title="capture.element.front-tip" data-i18n-aria-label="capture.element.front-aria" data-i18n="capture.element.front"></button>
+    <button id="elementBack" data-i18n-title="capture.element.back-tip" data-i18n-aria-label="capture.element.back-aria" data-i18n="capture.element.back"></button>
+    <button id="elementDeselect" data-i18n-title="capture.element.deselect-tip" data-i18n-aria-label="capture.element.deselect" data-i18n="capture.element.deselect"></button>
   </div>
   <div id="watermarkPanel" class="watermark-panel hidden">
-    <div class="watermark-row"><label for="watermarkContent">内容</label><input id="watermarkContent" type="text" placeholder="输入水印文字" maxlength="200"></div>
+    <div class="watermark-row"><label for="watermarkContent" data-i18n="capture.watermark.content"></label><input id="watermarkContent" type="text" data-i18n-placeholder="capture.watermark.content-placeholder" maxlength="200"></div>
     <div class="watermark-row watermark-check-row">
-      <label for="watermarkDateSuffix">日期</label>
-      <label class="watermark-checkbox" title="在水印文字后拼接当前时间，格式 yyyyMMddHHmmss，例如 知何似20260910154310">
+      <label for="watermarkDateSuffix" data-i18n="capture.watermark.date"></label>
+      <label class="watermark-checkbox" data-i18n-title="capture.watermark.date-tip">
         <input id="watermarkDateSuffix" type="checkbox">
-        <span>追加日期后缀</span>
+        <span data-i18n="capture.watermark.date-suffix"></span>
       </label>
     </div>
-    <div class="watermark-row"><label for="watermarkOpacity">透明度</label><input id="watermarkOpacity" type="range" min="5" max="100" step="5" value="80"><span id="watermarkOpacityValue">80%</span></div>
-    <div class="watermark-row"><label for="watermarkColor">颜色</label><input id="watermarkColor" type="color" value="#ffffff"></div>
-    <div class="watermark-row"><label for="watermarkSpacing">间距</label><input id="watermarkSpacing" type="range" min="5" max="100" step="5" value="30"><span id="watermarkSpacingValue">30%</span></div>
-    <div class="watermark-row"><label for="watermarkFontSize">大小</label><input id="watermarkFontSize" type="number" min="8" max="200" step="1" value="24"><span>px</span></div>
-    <div class="watermark-row"><label for="watermarkRotation">角度</label><input id="watermarkRotation" type="number" min="-180" max="180" step="1" value="30"><span>°</span></div>
-    <div class="watermark-actions"><button id="watermarkCancel">取消</button><button id="watermarkApply" class="primary">添加水印</button></div>
+    <div class="watermark-row"><label for="watermarkOpacity" data-i18n="capture.watermark.opacity"></label><input id="watermarkOpacity" type="range" min="5" max="100" step="5" value="80"><span id="watermarkOpacityValue">80%</span></div>
+    <div class="watermark-row"><label for="watermarkColor" data-i18n="capture.watermark.color"></label><input id="watermarkColor" type="color" value="#ffffff"></div>
+    <div class="watermark-row"><label for="watermarkSpacing" data-i18n="capture.watermark.spacing"></label><input id="watermarkSpacing" type="range" min="5" max="100" step="5" value="30"><span id="watermarkSpacingValue">30%</span></div>
+    <div class="watermark-row"><label for="watermarkFontSize" data-i18n="capture.watermark.font-size"></label><input id="watermarkFontSize" type="number" min="8" max="200" step="1" value="24"><span>px</span></div>
+    <div class="watermark-row"><label for="watermarkRotation" data-i18n="capture.watermark.rotation"></label><input id="watermarkRotation" type="number" min="-180" max="180" step="1" value="30"><span>°</span></div>
+    <div class="watermark-actions"><button id="watermarkCancel" data-i18n="common.button.cancel"></button><button id="watermarkApply" class="primary" data-i18n="capture.watermark.apply"></button></div>
   </div>
   <div id="resultPanel" class="result-panel hidden">
-    <div class="result-head"><strong id="resultTitle">识别结果</strong><button id="resultClose">×</button></div>
+    <div class="result-head"><strong id="resultTitle" data-i18n="capture.result.title"></strong><button id="resultClose">×</button></div>
     <div id="resultSource" class="result-source hidden"></div>
     <textarea id="resultText" readonly></textarea>
-    <div class="result-actions"><button id="resultCopy">复制文本</button><button id="resultDone" class="primary">完成</button></div>
+    <div class="result-actions"><button id="resultCopy" data-i18n="capture.result.copy"></button><button id="resultDone" class="primary" data-i18n="capture.result.done"></button></div>
   </div>
   <div id="ocrResultBar" class="ocr-result-bar hidden">
-    <span id="ocrSummary">识别完成</span>
-    <button id="ocrToggleSource" class="hidden">查看原文</button>
-    <button id="ocrPlainText">纯文本</button>
-    <button id="ocrCopyAll" class="primary">复制全部</button>
-    <button id="ocrResultClose" title="关闭识别结果">×</button>
+    <span id="ocrSummary" data-i18n="capture.ocr.summary"></span>
+    <button id="ocrToggleSource" class="hidden" data-i18n="capture.ocr.show-source"></button>
+    <button id="ocrPlainText" data-i18n="capture.ocr.plain-text"></button>
+    <button id="ocrCopyAll" class="primary" data-i18n="capture.ocr.copy-all"></button>
+    <button id="ocrResultClose" data-i18n-title="capture.ocr.close-tip">×</button>
   </div>
-  <div id="loading" class="loading hidden"><span></span><b>处理中…</b></div>
+  <div id="loading" class="loading hidden"><span></span><b data-i18n="capture.loading.text"></b></div>
   <audio id="shutterSound" src="../assets/shutter.wav" preload="auto"></audio>
+  <!-- P0-1-T4（S11）：i18n runtime + locale tables. They must load before capture.js: the
+       controller calls restoreStoredLanguage()/applyTranslations() on load and builds every
+       dynamic string with t(). The three per-language files carry the cross-window keys,
+       ../shared/locales/capture.js carries the `capture.*` keys. -->
+  <script src="../shared/i18n.js"></script>
+  <script src="../shared/locales/zh-CN.js"></script>
+  <script src="../shared/locales/en-US.js"></script>
+  <script src="../shared/locales/zh-TW.js"></script>
+  <script src="../shared/locales/capture.js"></script>
   <script src="annotation-style.js"></script>
   <script src="selection-utils.js"></script>
   <script src="annotation-geometry.js"></script>

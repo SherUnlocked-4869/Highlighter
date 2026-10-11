@@ -9,12 +9,14 @@ const css = fs.readFileSync(path.join(root, 'capture', 'capture.css'), 'utf8')
 const script = fs.readFileSync(path.join(root, 'capture', 'capture.js'), 'utf8')
 
 test('screenshot toolbar shows three thickness levels instead of a native select', () => {
-  assert.match(html, /id="widthGroup" class="width-group" role="group" aria-label="标注线宽"/)
+  assert.match(html, /id="widthGroup" class="width-group" role="group" data-i18n-aria-label="capture\.toolbar\.width-group"/)
 
-  for (const [width, label] of [[2, '细'], [4, '中'], [8, '粗']]) {
+  // P0-1-T4 (S11): the visible 细/中/粗 labels come from shared/locales/capture.js now,
+  // so what this file pins is the width -> data-i18n key mapping, not the literal text.
+  for (const [width, name] of [[2, 'thin'], [4, 'medium'], [8, 'thick']]) {
     assert.match(
       html,
-      new RegExp(`data-annotation-width="${width}"[^>]*aria-pressed="(?:true|false)"[^>]*>${label}<`)
+      new RegExp(`data-annotation-width="${width}"[^>]*aria-pressed="(?:true|false)"[^>]*data-i18n="capture\\.toolbar\\.width-${name}"`)
     )
   }
   assert.match(html, /data-annotation-width="4" class="active"[^>]*aria-pressed="true"/)
@@ -56,7 +58,9 @@ test('capture script keeps Enter from copying while the thickness picker has foc
 test('capture page loads the width module before the overlay scripts', () => {
   const styleIndex = html.indexOf('annotation-style.js')
   const selectionIndex = html.indexOf('selection-utils.js')
-  const captureIndex = html.indexOf('capture.js')
+  // The controller, not the locale table: shared/locales/capture.js also contains the
+  // substring "capture.js" and is loaded first (P0-1-T4 / S11).
+  const captureIndex = html.indexOf('src="capture.js"')
   assert.ok(styleIndex >= 0, 'annotation-style.js is loaded')
   assert.ok(styleIndex < selectionIndex && selectionIndex < captureIndex, 'load order: style, selection, capture')
 })

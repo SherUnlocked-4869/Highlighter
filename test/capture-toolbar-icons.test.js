@@ -22,7 +22,7 @@ test('capture toolbar export-PDF button ships its icon in the same ordered list 
   assert.equal(exportIndex, iconPaths.indexOf('icons/save.svg') + 1, 'the export-PDF icon follows the save icon')
   assert.match(
     html,
-    /id="save"[\s\S]*id="exportPdf"[^>]*title="导出 PDF"[^>]*aria-label="导出 PDF"[\s\S]*id="copy"/,
+    /id="save"[\s\S]*id="exportPdf"[^>]*data-i18n-title="capture\.toolbar\.export-pdf"[^>]*data-i18n-aria-label="capture\.toolbar\.export-pdf"[\s\S]*id="copy"/,
     'the export-PDF button sits between save and copy on the strip'
   )
 })

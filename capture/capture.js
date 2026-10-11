@@ -561,7 +561,7 @@ function deleteSelectedAnnotation() {
 // 取消（返回 false）时调用方必须原样保留选区与标注，不得先改状态再问。
 function confirmDiscardAnnotations() {
   if (!annotations.length) return true
-  return confirm('重新划选将清除已添加的标注，是否继续？')
+  return confirm(t('capture.confirm.reset-selection'))
 }
 
 // 确认后清空；仍然压一帧快照，使这次清空也能被 Ctrl+Z 精确回退。
@@ -955,7 +955,7 @@ canvas.addEventListener('pointerdown',(event)=>{
   if (currentTool==='watermark') return
   if (!insideSelection(point)) return
   const style=annotationStyle()
-  if (currentTool==='text') { const text=prompt('输入文字'); if(text)commitAnnotation({type:'text',x:point.x,y:point.y,text,...style}); return }
+  if (currentTool==='text') { const text=prompt(t('capture.input.text')); if(text)commitAnnotation({type:'text',x:point.x,y:point.y,text,...style}); return }
   if (currentTool==='serial') { commitAnnotation({type:'serial',x:point.x,y:point.y,number:serialNumber++,...style}); return }
   activeAnnotation={type:currentTool,x:point.x,y:point.y,x2:point.x,y2:point.y,...style}
   if (currentTool==='pen') activeAnnotation.points=[point]
@@ -1057,7 +1057,7 @@ function canvasPngBuffer(sourceCanvas) {
   return new Promise((resolve, reject) => {
     sourceCanvas.toBlob((blob) => {
       if (!blob) {
-        reject(new Error('截图图片编码失败'))
+        reject(new Error(t('capture.error.encode-failed')))
         return
       }
       blob.arrayBuffer().then(resolve, reject)
@@ -1071,7 +1071,7 @@ function clearOcrResult() {
   ocrOverlay.classList.add('hidden')
   ocrResultBar.classList.add('hidden')
   ocrToggleSource.classList.add('hidden')
-  ocrToggleSource.textContent='查看原文'
+  ocrToggleSource.textContent=t('capture.ocr.show-source')
   if(selection&&initData)updateFloatingUi()
 }
 
@@ -1079,7 +1079,7 @@ function setProcessingState(action) {
   processingAction=action||null
   const active=!!processingAction
   document.body.classList.toggle('processing',active)
-  loadingText.textContent=action==='translate'?'正在识别并翻译…':'正在识别文字…'
+  loadingText.textContent=action==='translate'?t('capture.loading.translate'):t('capture.loading.ocr')
   loading.classList.toggle('hidden',!active)
   if(active&&selection){
     if(['ocr','translate'].includes(action))sizeBadge.style.display='none'
@@ -1129,7 +1129,7 @@ function renderOcrOverlayBlocks(result, blocks, translated) {
     const element=document.createElement('div')
     element.className=`ocr-text-block${vertical?' vertical':''}${translated?' translation':''}`
     element.textContent=block.text
-    element.title=translated&&block.sourceText?`原文：${block.sourceText}`:`置信度 ${Math.round(Number(block.text_score)*100)}%`
+    element.title=translated&&block.sourceText?t('capture.ocr.tooltip-source',{text:block.sourceText}):t('capture.ocr.tooltip-confidence',{value:Math.round(Number(block.text_score)*100)})
     element.style.left=`${centerX-width/2}px`
     element.style.top=`${centerY-height/2}px`
     element.style.width=`${width}px`
@@ -1151,10 +1151,10 @@ function renderActiveOcrOverlay() {
   const result=showingSource?activeOcrResult.sourceResult:activeOcrResult.displayResult
   const visibleCount=renderOcrOverlayBlocks(result,result?.textBlocks,activeOcrResult.mode==='translate'&&!showingSource)
   if(activeOcrResult.mode==='translate'){
-    ocrSummary.textContent=showingSource?`原文 ${visibleCount} 处`:`已翻译 ${visibleCount} 处文本`
-    ocrToggleSource.textContent=showingSource?'查看译文':'查看原文'
+    ocrSummary.textContent=showingSource?t('capture.ocr.source-count',{count:visibleCount}):t('capture.ocr.translated-count',{count:visibleCount})
+    ocrToggleSource.textContent=showingSource?t('capture.ocr.show-translation'):t('capture.ocr.show-source')
   }else{
-    ocrSummary.textContent=result.cached?`识别到 ${visibleCount} 处文本 · 已缓存`:`识别到 ${visibleCount} 处文本 · ${result.durationMs||0} ms`
+    ocrSummary.textContent=result.cached?t('capture.ocr.count-cached',{count:visibleCount}):t('capture.ocr.count-timed',{count:visibleCount,ms:result.durationMs||0})
   }
 }
 
@@ -1193,7 +1193,7 @@ async function performAction(action) {
     return
   }
   if(action==='long'){
-    if(annotations.length&&!confirm('进入长截图将忽略当前标注，是否继续？'))return
+    if(annotations.length&&!confirm(t('capture.confirm.long-capture')))return
     try{await window.captureAPI.startLongCapture({...selection},serialMeta())}catch(error){alert(error.message||String(error))}
     return
   }
@@ -1247,7 +1247,7 @@ function showResult(type,result) {
     showOcrOverlay(result.translationResult,{mode:'translate',sourceResult:result.ocrResult,text:result.translation,sourceText:result.text})
     return
   }
-  resultPanel.classList.remove('hidden'); resultSource.classList.add('hidden'); resultTitle.textContent='文本识别'; resultSource.textContent=''; resultText.value=result||''
+  resultPanel.classList.remove('hidden'); resultSource.classList.add('hidden'); resultTitle.textContent=t('capture.result.title-ocr'); resultSource.textContent=''; resultText.value=result||''
 }
 
 document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListener('click',()=>setTool(button.dataset.tool)))
@@ -1285,10 +1285,10 @@ document.getElementById('record').onclick=()=>performAction('record')
 document.getElementById('qr').onclick=()=>performAction('qr')
 document.getElementById('close').onclick=()=>closeCaptureWindow()
 document.getElementById('resultClose').onclick=document.getElementById('resultDone').onclick=()=>resultPanel.classList.add('hidden')
-document.getElementById('resultCopy').onclick=async()=>{await navigator.clipboard.writeText(resultText.value);document.getElementById('resultCopy').textContent='已复制';setTimeout(()=>document.getElementById('resultCopy').textContent='复制文本',1000)}
+document.getElementById('resultCopy').onclick=async()=>{await navigator.clipboard.writeText(resultText.value);document.getElementById('resultCopy').textContent=t('capture.action.copied');setTimeout(()=>document.getElementById('resultCopy').textContent=t('capture.result.copy'),1000)}
 ocrToggleSource.onclick=()=>{if(!activeOcrResult||activeOcrResult.mode!=='translate')return;activeOcrResult.showingSource=!activeOcrResult.showingSource;renderActiveOcrOverlay()}
-ocrPlainText.onclick=()=>{if(!activeOcrResult)return;const translated=activeOcrResult.mode==='translate';resultSource.classList.toggle('hidden',!translated);resultTitle.textContent=translated?'截图翻译':'文本识别';resultSource.textContent=translated?activeOcrResult.sourceText:'';resultText.value=activeOcrResult.text||'';resultPanel.classList.remove('hidden')}
-ocrCopyAll.onclick=async()=>{if(!activeOcrResult)return;const text=activeOcrResult.mode==='translate'&&activeOcrResult.showingSource?activeOcrResult.sourceText:activeOcrResult.text;await navigator.clipboard.writeText(text||'');ocrCopyAll.textContent='已复制';setTimeout(()=>ocrCopyAll.textContent='复制全部',1000)}
+ocrPlainText.onclick=()=>{if(!activeOcrResult)return;const translated=activeOcrResult.mode==='translate';resultSource.classList.toggle('hidden',!translated);resultTitle.textContent=translated?t('capture.result.title-translate'):t('capture.result.title-ocr');resultSource.textContent=translated?activeOcrResult.sourceText:'';resultText.value=activeOcrResult.text||'';resultPanel.classList.remove('hidden')}
+ocrCopyAll.onclick=async()=>{if(!activeOcrResult)return;const text=activeOcrResult.mode==='translate'&&activeOcrResult.showingSource?activeOcrResult.sourceText:activeOcrResult.text;await navigator.clipboard.writeText(text||'');ocrCopyAll.textContent=t('capture.action.copied');setTimeout(()=>ocrCopyAll.textContent=t('capture.ocr.copy-all'),1000)}
 document.getElementById('ocrResultClose').onclick=clearOcrResult
 
 addEventListener('keydown',(event)=>{
@@ -1319,13 +1319,34 @@ window.captureAPI.onInit((data)=>{
   // P0-2（S9b）：光标位图在这里预解码（每次 init 都重置，避免沿用上一张的光标）。
   // exportSelectionCanvas 是同步函数，贴图时只认"已解码"的光标，不能在里面等。
   if(data.cursor?.dataUrl){cursorImage=new Image();cursorImage.src=data.cursor.dataUrl}else cursorImage=null
-  image=new Image(); image.onload=()=>{if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError('截图图片解码失败')
+  image=new Image(); image.onload=()=>{if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError(t('capture.error.decode-failed'))
   if(data.mode==='canvas')image.src=makeBlankCanvas()
   else if(data.imageBuffer){imageObjectUrl=URL.createObjectURL(new Blob([data.imageBuffer],{type:'image/png'}));image.src=imageObjectUrl}
-  else window.captureAPI.renderError('截图图片数据为空')
+  else window.captureAPI.renderError(t('capture.error.empty-image'))
 })
 
 function makeBlankCanvas(){const blank=document.createElement('canvas');blank.width=Math.max(1,innerWidth*dpr);blank.height=Math.max(1,innerHeight*dpr);const c=blank.getContext('2d');c.fillStyle='#fff';c.fillRect(0,0,blank.width,blank.height);return blank.toDataURL()}
 addEventListener('resize',resizeCanvas)
 addEventListener('beforeunload',()=>{if(renderRequest)cancelAnimationFrame(renderRequest);if(imageObjectUrl)URL.revokeObjectURL(imageObjectUrl)})
 window.captureAPI.ready()
+
+// ---------- P0-1-T4 / S11: interface language ----------
+// Boot: capture.html declares no `data-language`, so the documented priority applies —
+// localStorage (a choice persisted by whichever window switched last) and then the
+// default zh-CN. restoreStoredLanguage() applies the stored choice; applyTranslations()
+// then fills every data-i18n* marker (and is the correct no-op-with-fallback pass when
+// there is no stored choice). Both must run after the markup exists, which is why they
+// sit at the end of this file.
+restoreStoredLanguage()
+applyTranslations()
+// Hot switch (mirror of `theme`): the settings effect broadcasts i18n:language to every
+// open window, so re-resolve the language and re-scan the DOM.
+window.captureAPI.onInterfaceLanguage((language) => {
+  setLanguage(language)
+  applyTranslations()
+  // Strings capture.js writes itself are not data-i18n markers, so re-derive the ones
+  // whose owner is still on screen. All three are idempotent re-renders of live state.
+  if (processingAction) setProcessingState(processingAction)
+  if (activeOcrResult) renderActiveOcrOverlay()
+  if (!resultPanel.classList.contains('hidden')) resultTitle.textContent = t(activeOcrResult?.mode === 'translate' ? 'capture.result.title-translate' : 'capture.result.title-ocr')
+})

@@ -8,7 +8,9 @@ const html = fs.readFileSync(path.join(__dirname, '..', 'capture', 'capture.html
 const { getSourcePixelRect } = require('../capture/selection-utils')
 
 test('capture page loads selection resize utilities before its controller', () => {
-  assert.ok(html.indexOf('selection-utils.js') < html.indexOf('capture.js'))
+  // src="capture.js" pins the controller: shared/locales/capture.js holds the same
+  // substring but loads first (P0-1-T4 / S11).
+  assert.ok(html.indexOf('selection-utils.js') < html.indexOf('src="capture.js"'))
   assert.match(capture, /const \{\s*getResizeHandle,\s*getSourcePixelRect,\s*resizeSelection,\s*selectionCursor\s*\} = window\.selectionUtils/)
 })
 

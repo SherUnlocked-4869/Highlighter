@@ -6,6 +6,12 @@ const { spawnSync } = require('node:child_process')
 
 const root = path.join(__dirname, '..')
 
+// P0-1-T4 / S11: the marked-element counts the live DOM must end up with, straight from the
+// markup, so the runtime check is an exact equality instead of a magic minimum.
+const captureMarkup = fs.readFileSync(path.join(root, 'capture', 'capture.html'), 'utf8')
+const expectedTextMarkers = (captureMarkup.match(/data-i18n="/g) || []).length
+const expectedAttributeMarkers = (captureMarkup.match(/data-i18n-(?:title|aria-label|placeholder)="/g) || []).length
+
 // A real capture.html in a real (hidden) Electron window, driven through the same
 // preload the production capture window uses. The init payload is produced by the
 // real main-process domain shape, so this covers P0-4-T7② (export PDF), P0-7-T4
@@ -100,7 +106,25 @@ const PAGE_HELPERS = [
   'pixels:pixels,',
   'withCursor:function(value,includeAnnotations){var saved=initData?initData.cursor:null;if(initData)initData.cursor=value;var result=pixels(includeAnnotations);if(initData)initData.cursor=saved;return result},',
   'state:function(){return {cursorImage:!!cursorImage,decoded:!!(cursorImage&&cursorImage.complete&&cursorImage.naturalWidth>0),initCursor:initData?initData.cursor:null,scaleFactor:initData?initData.scaleFactor:null,captureBounds:initData?initData.captureBounds:null,imageSize:{width:image.naturalWidth,height:image.naturalHeight},displayBounds:imageDisplayBounds(),selection:selection,source:sourceRect()}}',
-  '};return true})()'
+  '};',
+  // P0-1-T4 / S11: read the rendered zh-CN wording out of the real DOM, then drive the
+  // same hot switch the settings effect broadcasts, then restore zh-CN so the probe leaves
+  // the profile (and localStorage) where it found it.
+  'window.__s9b.i18n=function(){',
+  'setLanguage("zh-CN");applyTranslations();',
+  'var markers=document.querySelectorAll("[data-i18n]");var emptyText=0;',
+  'for(var i=0;i<markers.length;i++)if(!markers[i].textContent)emptyText++;',
+  'function countMarked(selector,attribute){var list=document.querySelectorAll(selector);var empty=0;',
+  'for(var k=0;k<list.length;k++)if(!list[k].getAttribute(attribute))empty++;return {total:list.length,empty:empty};}',
+  'var byTitle=countMarked("[data-i18n-title]","title"),byAria=countMarked("[data-i18n-aria-label]","aria-label"),byPlaceholder=countMarked("[data-i18n-placeholder]","placeholder");',
+  'var attrMarkers=byTitle.total+byAria.total+byPlaceholder.total;var emptyAttr=byTitle.empty+byAria.empty+byPlaceholder.empty;',
+  'var zh={title:document.title,recordTitle:document.getElementById("record").getAttribute("title"),exportTitle:document.getElementById("exportPdf").getAttribute("title"),frontAria:document.getElementById("elementFront").getAttribute("aria-label"),watermarkPlaceholder:document.getElementById("watermarkContent").getAttribute("placeholder"),thin:document.querySelectorAll("[data-annotation-width]")[0].textContent,markers:markers.length,emptyText:emptyText,attrMarkers:attrMarkers,emptyAttr:emptyAttr};',
+  'setLanguage("en-US");applyTranslations();',
+  'var en={title:document.title,recordTitle:document.getElementById("record").getAttribute("title"),thin:document.querySelectorAll("[data-annotation-width]")[0].textContent};',
+  'setLanguage("zh-CN");applyTranslations();',
+  'return {before:zh,after:en};',
+  '};',
+  'return true})()'
 ].join('')
 
 // OCR 评审修复（High）的两条渲染层回归：都在真实窗口里跑真实交互路径。
@@ -340,6 +364,9 @@ async function main () {
     await sendInit(win, makeInit({}))
     report.nudgeUndo = await win.webContents.executeJavaScript('window.__pr.nudgeUndo()')
     report.elementBarOverlap = await win.webContents.executeJavaScript('window.__pr.elementBarOverlap()')
+    // P0-1-T4 / S11: the last section, because the hot-switch helper deliberately rewrites the
+    // whole overlay's wording twice (and restores it) before the probe reports.
+    report.i18n = await win.webContents.executeJavaScript('window.__s9b.i18n()')
 
     report.saveModes = { fast: modeBeforeFastSave, dialog: modeBeforeDialogSave }
     report.pdfs = records.pdfs
@@ -465,6 +492,22 @@ test('capture renderer honors saveMode, Ctrl+A, the serial reset, the shutter ga
 
   // OCR 评审修复（High）：水印（bounds == 选区）选中时，浮动条不得压在工具栏上。
   assert.equal(report.elementBarOverlap.overlap, false, 'the element bar must not cover the toolbar')
+
+  // P0-1-T4 / S11：迁移后 zh-CN 文案必须与迁移前逐字一致，且 i18n:language 热切换能在不重载的
+  // 前提下改写同一批 DOM（data-i18n* 标记与 t() 动态文案共用同一套表）。
+  assert.equal(report.i18n.before.markers, expectedTextMarkers, 'every marked element is in the live DOM')
+  assert.equal(report.i18n.before.attrMarkers, expectedAttributeMarkers, 'every marked attribute is in the live DOM')
+  assert.equal(report.i18n.before.emptyText, 0, 'every data-i18n marker must be filled')
+  assert.equal(report.i18n.before.emptyAttr, 0, 'every data-i18n-* attribute must be filled')
+  assert.equal(report.i18n.before.title, 'Highlighter 截图')
+  assert.equal(report.i18n.before.recordTitle, '区域录制')
+  assert.equal(report.i18n.before.exportTitle, '导出 PDF')
+  assert.equal(report.i18n.before.frontAria, '上移一层')
+  assert.equal(report.i18n.before.watermarkPlaceholder, '输入水印文字')
+  assert.equal(report.i18n.before.thin, '细')
+  assert.equal(report.i18n.after.title, 'Highlighter capture', 'the hot switch rewrites the document title')
+  assert.equal(report.i18n.after.recordTitle, 'Record region')
+  assert.equal(report.i18n.after.thin, 'Thin')
 
   // P0-2 / S9b: the cursor is composited where the pure geometry says, and nowhere else.
   // The host has no visible cursor, so this is driven by a synthetic payload; the expected
