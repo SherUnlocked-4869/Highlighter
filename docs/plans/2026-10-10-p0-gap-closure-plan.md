@@ -689,6 +689,10 @@ scripts/check-i18n.js    ① 三份 locale 键集合对称差必空
 > 3. **新增 locale 文件与窗口脚本同名会误伤 `indexOf` 断言**：`shared/locales/capture.js` 含子串 `capture.js`，会让 `html.indexOf('capture.js')` 命中语言包而非控制器脚本。**统一修法**：把这类断言改为匹配脚本标签本身（`html.indexOf('src="capture.js"')`）。S12（`record.js`/`action.js`）、S13 同理。
 > 4. **纯模块的警告串改吐 i18n key**：`record/audio-mixer.js` 的降级文案改为返回 key（如 `record.audio.warning.*`），由 `record/record.js` 用 `t()` 渲染；`test/audio-mixer.test.js` 的 3 处中文断言随之同步（属"因文案迁移必须同步的测试"）。
 > 5. **`--max` 默认不开**：checker 不传 `--max` 时**始终 exit 0**（已实测），所以"有残留 CJK"本身不会让任何测试变红；只有显式 `--max` 才会。
+> 6. **窗口脚本不得解构 `window` 上的 i18n 绑定（S12 实测踩到）**：`t`/`setLanguage`/`applyTranslations` 是 `shared/i18n.js` 的**顶层 `const`**（全局词法作用域），窗口脚本写 `const { t } = window` 会抛 `Identifier 't' has already been declared` 并**整脚本不执行**。**用法**：直接 `t(...)`，或用新增的 `window.i18n` 命名空间（`shared/i18n.js` 已加，并附注释说明）。
+> 7. **静态 HTML 文本不能传参**：`data-i18n` 只取表里的固定值；带插值的串必须在 JS 里 `t(key, params)` 渲染（`data-i18n-params` 不会被读取）。
+> 8. **HTML 里的静态回退文案改为英文（S12 口径，已接受）**：这些窗口（record / long-capture / action / search / recognition）都是 `show:false` 建窗、**脚本执行后**才 `show()`，所以默认语言下不会出现英文闪烁；保留中文回退则那些行会永远计入未迁移数。S1/S11 的窗口（config/capture）保留中文标记不变（它们同样在 show 前完成翻译）。
+> 9. **`toolbar/toolbar-action-meta.js` 的 `label`/`description` 键化后，`config/**` 的消费点必须跟着 `t()` 包一层**（S12 上报的 A1 方案）：否则设置页会显示裸键名。`config/**` 已释放，由 Lead 在 Wave 10 收口时改（`info.label` → `t(info.label)`）。
 
 ### 10.4 任务拆解
 

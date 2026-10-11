@@ -155,4 +155,14 @@ const api = {
 }
 
 if (typeof module !== 'undefined' && module.exports) module.exports = api
-if (typeof window !== 'undefined') Object.assign(window, api)
+if (typeof window !== 'undefined') {
+  Object.assign(window, api)
+  // `t` / `setLanguage` / `applyTranslations` are top-level `const`s, so they live in the
+  // global **lexical** scope. A window script must therefore call `t(...)` directly (or use
+  // this namespace) -- writing `const { t } = window` throws
+  // "Identifier 't' has already been declared" and kills the whole window script.
+  window.i18n = api
+}
+
+// 静态 HTML 文本只能靠 `data-i18n` 取表里的固定值：**没有**给静态文本传参数的机制。
+// 带插值的串（例如 "{count} 段"）必须在 JS 里用 `t(key, params)` 渲染。
