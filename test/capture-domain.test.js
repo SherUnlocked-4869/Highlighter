@@ -112,8 +112,9 @@ test('capture domain factory tracks the current window and create sequence', () 
 })
 
 // Shared harness for the Wave-2 (S9a) init-payload contracts. Every collaborator
-// is a fake so the factory can run under plain node.
-function createHarness({ screenshot = {} } = {}) {
+// is a fake so the factory can run under plain node. `cursorProvider` stays optional:
+// the P0-2 gate must treat "not injected" exactly like "switch off".
+function createHarness({ screenshot = {}, cursorProvider = null } = {}) {
   const created = []
   const calls = { windows: [], saved: [], persisted: [] }
   const settings = { screenshot }
@@ -170,7 +171,8 @@ function createHarness({ screenshot = {} } = {}) {
     imageDataToBuffer: (value) => Buffer.isBuffer(value) ? value : Buffer.from(String(value || '')),
     dataUrlToBuffer: () => Buffer.from([1]),
     bufferToDataUrl: () => 'data:image/png;base64,AA==',
-    performanceMonitor: { record: () => {}, snapshot: () => {} }
+    performanceMonitor: { record: () => {}, snapshot: () => {} },
+    cursorProvider
   })
   return { domain, created, calls, settings }
 }
@@ -281,4 +283,92 @@ test('the exported PDF default name follows screenshot.nameTemplate (§17.5, dec
     /^Highlighter_\d{4}-\d{2}-\d{2}_[\d-]+_Highlighter-\d{4}-\d{2}-\d{2}_[\d-]+\.pdf$/,
     'a non-empty template is rendered into the PDF name'
   )
+})
+
+// ---------------------------------------------------------------------------
+// P0-2 / S9b: the captureCursor switch is the only thing that starts the cursor
+// helper, and its absence/failure must never disturb the screenshot itself.
+// ---------------------------------------------------------------------------
+
+function createCursorHarness (options = {}) {
+  const queries = []
+  const provider = {
+    query: (queryOptions) => {
+      queries.push(queryOptions)
+      return Promise.resolve({
+        showing: true,
+        png: 'AAAA',
+        dataUrl: 'data:image/png;base64,AAAA',
+        width: 32,
+        height: 32,
+        hotspot: { x: 3, y: 9 },
+        physicalPoint: { x: 320, y: 240 },
+        at: 1,
+        cached: false
+      })
+    },
+    isAvailable: () => true,
+    dispose: () => {}
+  }
+  const harness = createHarness({ screenshot: options.screenshot || {}, cursorProvider: provider })
+  harness.provider = provider
+  harness.queries = queries
+  return harness
+}
+
+test('the cursor is only queried when screenshot.captureCursor is on, and only as a fresh read (P0-2/S9b)', async () => {
+  const offHarness = createCursorHarness()
+  const off = await offHarness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(off._captureInit.cursor, null, 'the switch defaults to off, so the payload stays null')
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(
+    offHarness.queries.length,
+    0,
+    'switch off must not query the provider at all: query() is the only entry point that could spawn the helper'
+  )
+
+  const onHarness = createCursorHarness({ screenshot: { captureCursor: true } })
+  const on = await onHarness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(onHarness.queries.length, 1, 'switch on queries exactly once, in parallel with the screen grab')
+  assert.deepEqual(onHarness.queries[0], { fresh: true }, 'fresh:true is required or the provider replays a 250ms-old position')
+  assert.deepEqual(on._captureInit.cursor, {
+    png: 'AAAA',
+    dataUrl: 'data:image/png;base64,AAAA',
+    width: 32,
+    height: 32,
+    hotspot: { x: 3, y: 9 },
+    physicalPoint: { x: 320, y: 240 }
+  })
+
+  // An injected provider without the setting is still a no-op; and no provider with the
+  // setting on must not throw.
+  const noProvider = createHarness({ screenshot: { captureCursor: true } })
+  const noProviderWindow = await noProvider.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(noProviderWindow._captureInit.cursor, null)
+
+  off.close()
+  on.close()
+  noProviderWindow.close()
+})
+
+test('a cursor failure or timeout degrades to a null cursor without breaking the capture (P0-2/S9b)', async () => {
+  const captureWith = async (provider) => {
+    const harness = createHarness({ screenshot: { captureCursor: true }, cursorProvider: provider })
+    const win = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+    assert.equal(win._captureInit.cursor, null)
+    assert.equal(Buffer.isBuffer(win._captureInit.imageBuffer), true, 'the screenshot payload is untouched')
+    assert.equal(win._captureInit.imageBuffer.length, 1)
+    assert.ok(win._captureInit.settings, 'the rest of the init payload still ships')
+    win.close()
+  }
+
+  await captureWith({ query: () => { throw new Error('helper boom') } })
+  await captureWith({ query: () => Promise.reject(new Error('helper boom')) })
+  await captureWith({ query: () => Promise.resolve(null) })
+  await captureWith(null)
+
+  // A provider that never answers must be cut off by the ~120ms budget, not hold the window.
+  const startedAt = Date.now()
+  await captureWith({ query: () => new Promise(() => {}) })
+  assert.ok(Date.now() - startedAt < 2000, 'the cursor budget must not hold the capture window hostage')
 })

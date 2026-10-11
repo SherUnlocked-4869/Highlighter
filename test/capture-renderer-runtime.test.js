@@ -57,14 +57,16 @@ function makeInit (options) {
     mode: 'region',
     autoAction: '',
     source: 'region',
-    displayBounds: { x: 0, y: 0, width: 800, height: 600 },
-    captureBounds: { x: 0, y: 0, width: 800, height: 600 },
+    displayBounds: opts.displayBounds || { x: 0, y: 0, width: 800, height: 600 },
+    captureBounds: opts.captureBounds || { x: 0, y: 0, width: 800, height: 600 },
     imageBounds: null,
-    scaleFactor: 1,
+    scaleFactor: opts.scaleFactor === undefined ? 1 : opts.scaleFactor,
     editPin: false,
     smartSelect: false,
     cursorPosition: { x: 0, y: 0 },
     saveMode: opts.saveMode || '',
+    // P0-2 (S9b): the real domain always ships the key; the switch off value is null.
+    cursor: opts.cursor || null,
     serialNumber: opts.serialNumber === undefined ? 1 : opts.serialNumber,
     settings: { mainColor: '#e5a44c', screenshot: screenshot, ocr: {} }
   }
@@ -84,6 +86,30 @@ async function sendInit (win, payload) {
     await sleep(50)
   }
   throw new Error('the renderer never observed the capture:init payload')
+}
+
+// P0-2 (S9b) helper: export the current selection and hand back raw pixels so the
+// node side can do the arithmetic (hotspot alignment, cropping, diff) itself.
+const PAGE_HELPERS = [
+  '(function(){',
+  'function sourceRect(){return getSourcePixelRect(selection,imageDisplayBounds(),{width:image.naturalWidth,height:image.naturalHeight})}',
+  'function pixels(includeAnnotations){var out=exportSelectionCanvas(includeAnnotations!==false);var ctx=out.getContext("2d");var data=ctx.getImageData(0,0,out.width,out.height);return {width:out.width,height:out.height,data:Array.prototype.slice.call(data.data)}}',
+  'window.__s9b={',
+  'setSelection:function(x,y,w,h){selection={x:x,y:y,w:w,h:h};return sourceRect()},',
+  'sourceRect:sourceRect,',
+  'pixels:pixels,',
+  'withCursor:function(value,includeAnnotations){var saved=initData?initData.cursor:null;if(initData)initData.cursor=value;var result=pixels(includeAnnotations);if(initData)initData.cursor=saved;return result},',
+  'state:function(){return {cursorImage:!!cursorImage,decoded:!!(cursorImage&&cursorImage.complete&&cursorImage.naturalWidth>0),initCursor:initData?initData.cursor:null,scaleFactor:initData?initData.scaleFactor:null,captureBounds:initData?initData.captureBounds:null,imageSize:{width:image.naturalWidth,height:image.naturalHeight},displayBounds:imageDisplayBounds(),selection:selection,source:sourceRect()}}',
+  '};return true})()'
+].join('')
+
+async function waitForCursorDecode (win) {
+  for (let attempt = 0; attempt < 80; attempt++) {
+    const decoded = await win.webContents.executeJavaScript('!!(cursorImage&&cursorImage.complete&&cursorImage.naturalWidth>0)')
+    if (decoded) return true
+    await sleep(25)
+  }
+  return false
 }
 
 async function readProbe (win) {
@@ -175,6 +201,7 @@ async function main () {
       'if(p&&p.catch)p.catch(function(e){window.__probe.errors.push(String((e&&e.name)||e)+":"+String((e&&e.message)||""))});' +
       'return p};return true})()'
     )
+    await win.webContents.executeJavaScript(PAGE_HELPERS)
 
     // --- A: stock payload, no saveMode -------------------------------------------------
     await sendInit(win, makeInit({}))
@@ -227,12 +254,80 @@ async function main () {
     await sleep(180)
     const playsAfterMute = (await readProbe(win)).plays
 
+    // --- F: cursor compositing (P0-2 / S9b) ---------------------------------------------
+    // This host has no visible cursor (GetCursorInfo always reports flags=0), so the real
+    // path can only ever yield cursor:null. The synthetic payload below keeps the geometry
+    // and the compositing itself under test: 4x4 magenta, hotspot (3,2), physical (64,64).
+    const cursorDataUrl = await win.webContents.executeJavaScript(
+      '(function(){var c=document.createElement("canvas");c.width=4;c.height=4;' +
+      'var g=c.getContext("2d");g.fillStyle="#ff00ff";g.fillRect(0,0,4,4);return c.toDataURL("image/png")})()'
+    )
+    const cursorPng = cursorDataUrl.indexOf(',') >= 0 ? cursorDataUrl.slice(cursorDataUrl.indexOf(',') + 1) : ''
+    const syntheticCursor = {
+      png: cursorPng,
+      dataUrl: cursorDataUrl,
+      width: 4,
+      height: 4,
+      hotspot: { x: 3, y: 2 },
+      physicalPoint: { x: 64, y: 64 }
+    }
+    const outsideCursor = Object.assign({}, syntheticCursor, { physicalPoint: { x: 9000, y: 9000 } })
+
+    await sendInit(win, makeInit({ cursor: syntheticCursor }))
+    const cursorDecoded = await waitForCursorDecode(win)
+    const cursorSource = await win.webContents.executeJavaScript('window.__s9b.setSelection(100,100,200,200)')
+    const cursorOn = await win.webContents.executeJavaScript('window.__s9b.pixels(true)')
+    // Same init, same image: nulling initData.cursor is exactly what the main process ships
+    // when the "screenshot with cursor" switch is off.
+    const cursorOff = await win.webContents.executeJavaScript('window.__s9b.withCursor(null,true)')
+    // Recognition paths pass includeAnnotations=false and must not get the cursor.
+    const cursorRecognition = await win.webContents.executeJavaScript(
+      'window.__s9b.withCursor(' + JSON.stringify(syntheticCursor) + ',false)'
+    )
+    // The cursor point outside the selection must not be drawn at all.
+    const cursorOutside = await win.webContents.executeJavaScript(
+      'window.__s9b.withCursor(' + JSON.stringify(outsideCursor) + ',true)'
+    )
+    const cursorState = await win.webContents.executeJavaScript('window.__s9b.state()')
+
+    // F2: mixed DPI + a negative-coordinate secondary display. scaleFactor 1.25 and
+    // captureBounds at (-1000,-500) make "physicalPoint used raw as DIP" land far outside
+    // the crop, so this scenario only passes if the renderer really divides by scaleFactor.
+    const scaledCursor = Object.assign({}, syntheticCursor, { physicalPoint: { x: -1200, y: -565 } })
+    await sendInit(win, makeInit({
+      cursor: scaledCursor,
+      scaleFactor: 1.25,
+      captureBounds: { x: -1000, y: -500, width: 800, height: 600 }
+    }))
+    const scaledDecoded = await waitForCursorDecode(win)
+    await win.webContents.executeJavaScript('window.__s9b.setSelection(100,100,200,200)')
+    const scaledOn = await win.webContents.executeJavaScript('window.__s9b.pixels(true)')
+    const scaledOff = await win.webContents.executeJavaScript('window.__s9b.withCursor(null,true)')
+    const scaledState = await win.webContents.executeJavaScript('window.__s9b.state()')
+
     report.saves = records.saves
     report.saveModes = { fast: modeBeforeFastSave, dialog: modeBeforeDialogSave }
     report.pdfs = records.pdfs
     report.serial = { fromPayload: serialFromPayload, reset: serialReset }
     report.serialReport = { afterThree: serialAfterThree, inSaveMeta: serialReported, onClose: closeReported }
     report.shutterGate = { playsBeforeMute: playsBeforeMute, playsAfterMute: playsAfterMute }
+    report.cursor = {
+      decoded: cursorDecoded,
+      state: cursorState,
+      source: cursorSource,
+      on: cursorOn,
+      off: cursorOff,
+      recognition: cursorRecognition,
+      outside: cursorOutside,
+      scaled: {
+        decoded: scaledDecoded,
+        state: scaledState,
+        on: scaledOn,
+        off: scaledOff,
+        physicalPoint: scaledCursor.physicalPoint,
+        hotspot: scaledCursor.hotspot
+      }
+    }
     report.consoleMedia = records.consoles.filter((text) => /Content Security Policy|media-src|shutter|Refused to load/i.test(text))
     report.renders = records.renders
     report.closeRequests = records.closeRequests
@@ -326,4 +421,118 @@ test('capture renderer honors saveMode, Ctrl+A, the serial reset, the shutter ga
 
   // P0-7-T5 gate: shutterSound false means no second play().
   assert.equal(report.shutterGate.playsAfterMute, report.shutterGate.playsBeforeMute)
+
+  // P0-2 / S9b: the cursor is composited where the pure geometry says, and nowhere else.
+  // The host has no visible cursor, so this is driven by a synthetic payload; the expected
+  // position below is plain arithmetic (not a call back into shared/cursor-geometry.js).
+  const cursor = report.cursor
+  assert.equal(cursor.decoded, true, 'the renderer must decode the cursor bitmap carried by the init payload')
+  assert.ok(cursor.state.initCursor, 'the init payload cursor must reach the renderer')
+  assert.equal(cursor.state.initCursor.width, 4)
+  assert.deepEqual(cursor.state.initCursor.hotspot, { x: 3, y: 2 })
+  // The 200x200 CSS selection maps onto the image through getSourcePixelRect(); the exact
+  // crop depends on the viewport, so only its non-emptiness is pinned here.
+  assert.ok(
+    cursor.state.source.width > 0 && cursor.state.source.height > 0,
+    `the selection must map to a non-empty crop (${JSON.stringify(cursor.state.source)})`
+  )
+  assert.equal(cursor.on.data.length, cursor.on.width * cursor.on.height * 4)
+
+  const cursorScale = cursor.state.scaleFactor
+  const cursorBounds = cursor.state.captureBounds
+  const dipX = 64 / cursorScale
+  const dipY = 64 / cursorScale
+  const expectedX = Math.round((dipX - cursorBounds.x) * cursorScale - 3) - cursor.state.source.x
+  const expectedY = Math.round((dipY - cursorBounds.y) * cursorScale - 2) - cursor.state.source.y
+  assert.ok(
+    expectedX >= 0 && expectedY >= 0 && expectedX + 3 < cursor.on.width && expectedY + 3 < cursor.on.height,
+    `the synthetic cursor should land inside the export (${expectedX},${expectedY})`
+  )
+
+  const emptyBox = { count: 0, minX: Infinity, minY: Infinity, maxX: -1, maxY: -1 }
+  assert.deepEqual(magentaBox(cursor.off), emptyBox, 'a null cursor must not put any cursor pixel in the export')
+  assert.deepEqual(
+    magentaBox(cursor.on),
+    { count: 16, minX: expectedX, minY: expectedY, maxX: expectedX + 3, maxY: expectedY + 3 },
+    'the 4x4 bitmap must be pasted at the hotspot-corrected position'
+  )
+  assert.deepEqual(
+    pixelDiffBox(cursor.on.data, cursor.off.data, cursor.on.width),
+    { count: 16, minX: expectedX, minY: expectedY, maxX: expectedX + 3, maxY: expectedY + 3 },
+    'the only pixels a cursor may change are its own 4x4 block (switch off = pixel identical)'
+  )
+
+  // F2: scaleFactor 1.25 on a negative-coordinate display. The renderer must turn the
+  // provider's physical point back into DIP before the geometry runs; using it raw would
+  // put the cursor far outside the crop and this block would be empty.
+  const scaled = cursor.scaled
+  assert.equal(scaled.decoded, true)
+  assert.equal(scaled.state.scaleFactor, 1.25)
+  assert.deepEqual(scaled.state.captureBounds, { x: -1000, y: -500, width: 800, height: 600 })
+  const scaledExpectedX = Math.round((scaled.physicalPoint.x / 1.25 - scaled.state.captureBounds.x) * 1.25 - scaled.hotspot.x) - scaled.state.source.x
+  const scaledExpectedY = Math.round((scaled.physicalPoint.y / 1.25 - scaled.state.captureBounds.y) * 1.25 - scaled.hotspot.y) - scaled.state.source.y
+  assert.ok(
+    scaledExpectedX >= 0 && scaledExpectedY >= 0 &&
+    scaledExpectedX + 3 < scaled.on.width && scaledExpectedY + 3 < scaled.on.height,
+    `the mixed-DPI cursor should land inside the export (${scaledExpectedX},${scaledExpectedY})`
+  )
+  assert.deepEqual(magentaBox(scaled.off), emptyBox, 'the mixed-DPI baseline must carry no cursor')
+  assert.deepEqual(
+    magentaBox(scaled.on),
+    { count: 16, minX: scaledExpectedX, minY: scaledExpectedY, maxX: scaledExpectedX + 3, maxY: scaledExpectedY + 3 },
+    'the 1.25x / negative-origin payload must still land hotspot-aligned'
+  )
+  assert.deepEqual(
+    pixelDiffBox(scaled.on.data, scaled.off.data, scaled.on.width),
+    { count: 16, minX: scaledExpectedX, minY: scaledExpectedY, maxX: scaledExpectedX + 3, maxY: scaledExpectedY + 3 },
+    'the mixed-DPI paste may only change its own 4x4 block'
+  )
+
+  assert.equal(
+    pixelDiffBox(cursor.recognition.data, cursor.off.data, cursor.on.width).count,
+    0,
+    'includeAnnotations=false (OCR/translate/table/QR) must never get the cursor'
+  )
+  assert.equal(
+    pixelDiffBox(cursor.outside.data, cursor.off.data, cursor.on.width).count,
+    0,
+    'a cursor point outside the selection must not be drawn'
+  )
 })
+
+function magentaBox (frame) {
+  const box = { count: 0, minX: Infinity, minY: Infinity, maxX: -1, maxY: -1 }
+  for (let offset = 0; offset + 3 < frame.data.length; offset += 4) {
+    if (!(frame.data[offset] >= 240 && frame.data[offset + 1] <= 15 && frame.data[offset + 2] >= 240)) continue
+    const pixel = offset / 4
+    const x = pixel % frame.width
+    const y = Math.floor(pixel / frame.width)
+    box.count++
+    box.minX = Math.min(box.minX, x)
+    box.maxX = Math.max(box.maxX, x)
+    box.minY = Math.min(box.minY, y)
+    box.maxY = Math.max(box.maxY, y)
+  }
+  return box
+}
+
+function pixelDiffBox (before, after, width) {
+  const box = { count: 0, minX: Infinity, minY: Infinity, maxX: -1, maxY: -1 }
+  for (let offset = 0; offset + 3 < before.length; offset += 4) {
+    if (
+      before[offset] === after[offset] &&
+      before[offset + 1] === after[offset + 1] &&
+      before[offset + 2] === after[offset + 2] &&
+      before[offset + 3] === after[offset + 3]
+    ) continue
+    const pixel = offset / 4
+    const x = pixel % width
+    const y = Math.floor(pixel / width)
+    box.count++
+    box.minX = Math.min(box.minX, x)
+    box.maxX = Math.max(box.maxX, x)
+    box.minY = Math.min(box.minY, y)
+    box.maxY = Math.max(box.maxY, y)
+  }
+  return box
+}

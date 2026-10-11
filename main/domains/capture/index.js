@@ -15,6 +15,9 @@ const { resolveSaveDirectory } = require('../../services/image-file-save')
 const { makeCaptureName } = require('../../services/capture-naming')
 
 const NATIVE_CAPTURE_TIMEOUT_MS = 5000
+// P0-2（S9b）：光标查询的兜底预算。provider 自身的查询超时是 350ms，比抓屏慢得多，
+// 这里再压一道硬预算，保证截图窗口不会被"取光标"拖住；超时按"不画"处理。
+const CURSOR_QUERY_BUDGET_MS = 120
 
 function createCaptureDomain(deps) {
   const {
@@ -51,7 +54,9 @@ function createCaptureDomain(deps) {
     imageDataToBuffer,
     dataUrlToBuffer,
     bufferToDataUrl,
-    performanceMonitor
+    performanceMonitor,
+    // P0-2（S9b）：可选注入。main.js 已注入；未注入时等价于"永远不画光标"。
+    cursorProvider
   } = deps
 
   // P0-4：可选注入，便于单测 mock；主进程不注入时由 pdf-export 自解析 Electron 依赖，
@@ -93,6 +98,25 @@ function createCaptureDomain(deps) {
       session.dispose()
       return null
     }
+  }
+
+  // P0-2（S9b）：只有"截图带光标"开关打开、且 deps 里真的注入了 provider 时才查询。
+  // provider 是懒启动的（`query()` 是拉起 SmartSelect.exe 的唯一入口），所以开关关闭时
+  // 连 helper 进程都不会被创建 —— 这就是"关 = 零开销"的证明点。
+  // 必须 `fresh: true`：provider 默认复用 250ms 内的形状缓存，而截图要的是"此刻"的位置。
+  // 任何失败（拒绝 / 超时 / provider 抛错）都降级成 null = 不画光标，绝不影响抓屏。
+  function queryCursorSnapshot() {
+    if (!cursorProvider || typeof cursorProvider.query !== 'function') return Promise.resolve(null)
+    if (getSettings()?.screenshot?.captureCursor !== true) return Promise.resolve(null)
+    let timer = null
+    const providerPromise = Promise.resolve()
+      .then(() => cursorProvider.query({ fresh: true }))
+      .then((snapshot) => snapshot || null, () => null)
+    const budgetPromise = new Promise((resolve) => { timer = setTimeout(() => resolve(null), CURSOR_QUERY_BUDGET_MS) })
+    return Promise.race([providerPromise, budgetPromise]).then((snapshot) => {
+      clearTimeout(timer)
+      return snapshot || null
+    }, () => null)
   }
 
   function isBlankCapture(image) {
@@ -258,6 +282,9 @@ function createCaptureDomain(deps) {
       performanceTiming.captureMs = Math.round((performance.now() - performanceStartedAt) * 100) / 100
       return capture
     })
+    // P0-2（S9b）：光标查询与抓屏并行；开关关闭时 queryCursorSnapshot() 立刻解析成 null，
+    // 不产生任何进程/IO 开销。
+    const cursorPromise = queryCursorSnapshot()
     const smartSelectStartedAt = performance.now()
     const smartSelectPromise = (mode === 'region' ? createSmartSelectSession() : Promise.resolve(null)).then((session) => {
       performanceTiming.smartSelectMs = Math.round((performance.now() - smartSelectStartedAt) * 100) / 100
@@ -339,7 +366,8 @@ function createCaptureDomain(deps) {
     }, 8000)
 
     try {
-      const [capture] = await Promise.all([capturePromise, loadPromise])
+      // 中间那项是 loadPromise 的结果（loadFile），本函数不用它，故留空位。
+      const [capture, , cursorSnapshot] = await Promise.all([capturePromise, loadPromise, cursorPromise])
       if (captureWindow.isDestroyed()) return null
       const settings = getSettings()
       // P0-7-T7：每次截图都是新窗口，序号默认从 1 开始（显式下发）；
@@ -364,6 +392,19 @@ function createCaptureDomain(deps) {
         // P0-7-T4：快捷保存 / 另存为调用方下发的保存模式；空值时渲染层回落到设置项。
         saveMode: options.saveMode || '',
         serialNumber,
+        // P0-2（S9b）：截图带光标的合成载荷。开关关闭 / provider 不可用 / 查询失败都是 null，
+        // 渲染层据此"一行都不画"，与旧版逐像素一致。physicalPoint 是**物理像素**，
+        // 渲染层贴图前必须按 scaleFactor 换回 DIP（见 shared/cursor-geometry.js 头注释）。
+        cursor: cursorSnapshot
+          ? {
+              png: cursorSnapshot.png,
+              dataUrl: cursorSnapshot.dataUrl,
+              width: cursorSnapshot.width,
+              height: cursorSnapshot.height,
+              hotspot: { x: cursorSnapshot.hotspot.x, y: cursorSnapshot.hotspot.y },
+              physicalPoint: { x: cursorSnapshot.physicalPoint.x, y: cursorSnapshot.physicalPoint.y }
+            }
+          : null,
         settings
       }
       sendCaptureInit(captureWindow)

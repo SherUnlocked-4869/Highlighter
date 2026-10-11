@@ -94,6 +94,9 @@
   <script src="annotation-style.js"></script>
   <script src="selection-utils.js"></script>
   <script src="annotation-geometry.js"></script>
+  <!-- P0-2（S9b）：光标落点的纯几何函数，与主进程 main/services/cursor-provider.js 共用同一份
+       契约（UMD）。必须在 capture.js 之前加载，capture.js 里以 window.cursorGeometry 同步取用。 -->
+  <script src="../shared/cursor-geometry.js"></script>
   <script src="capture.js"></script>
 </body>
 </html>

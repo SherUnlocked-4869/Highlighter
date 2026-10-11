@@ -125,6 +125,9 @@ let processingAction = null
 let renderRequest = 0
 let toolbarSize = null
 let imageObjectUrl = ''
+// P0-2（S9b）：预解码的光标位图。exportSelectionCanvas 是同步函数，不能在里面等解码，
+// 所以在 onInit 里建好；没带光标（开关关闭）时恒为 null。
+let cursorImage = null
 let pdfExporting = false
 
 // P0-7-T5：每次截图窗口初始化时播一次快门音，受 screenshot.shutterSound 控制。
@@ -992,6 +995,25 @@ function exportSelectionCanvas(includeAnnotations = true) {
   const output=document.createElement('canvas'); output.width=source.width; output.height=source.height
   const out=output.getContext('2d'); out.imageSmoothingEnabled=false; out.drawImage(image,source.x,source.y,source.width,source.height,0,0,source.width,source.height)
   if(includeAnnotations){const scaleX=source.width/selection.w,scaleY=source.height/selection.h;annotations.forEach((item)=>drawAnnotation(out,item,scaleX,scaleY,selection.x,selection.y,image))}
+  // P0-2（S9b）：光标贴在**标注之后**，且只在 includeAnnotations 时贴 —— OCR/翻译/表格/
+  // 二维码等识别路径用 includeAnnotations=false 取图，绝不能把光标混进识别输入。
+  // 坐标契约（shared/cursor-geometry.js 头注释）：cursorScreenPoint / captureBounds 用 DIP，
+  // imageSize / hotspot / selectionRect 用物理像素。provider 的 physicalPoint 是**物理像素**，
+  // 这里先按 scaleFactor 换回 DIP 再喂纯函数；热点由纯函数按 1:1 减（位图已被系统按 DPI
+  // 缩放，热点与它同一像素空间），这里不得再乘 scaleFactor。
+  if(includeAnnotations&&initData?.cursor&&cursorImage&&cursorImage.complete&&cursorImage.naturalWidth>0&&window.cursorGeometry){
+    const cursor=initData.cursor,pointScale=Number(initData.scaleFactor)||1
+    const placement=window.cursorGeometry.resolveCursorPlacement({
+      cursorScreenPoint:{x:(Number(cursor.physicalPoint?.x)||0)/pointScale,y:(Number(cursor.physicalPoint?.y)||0)/pointScale},
+      captureBounds:initData.captureBounds,
+      imageSize:{width:image.naturalWidth,height:image.naturalHeight},
+      hotspot:cursor.hotspot,
+      selectionRect:source,
+      cursorSize:{width:cursor.width,height:cursor.height},
+      scaleFactor:initData.scaleFactor
+    })
+    if(placement.visible)out.drawImage(cursorImage,placement.x-source.x,placement.y-source.y,placement.width||cursorImage.naturalWidth,placement.height||cursorImage.naturalHeight)
+  }
   return output
 }
 
@@ -1258,6 +1280,9 @@ window.captureAPI.onInit((data)=>{
   applyWatermarkSettings(data.settings?.screenshot?.watermark)
   setAnnotationWidth(data.settings?.screenshot?.annotationWidth)
   if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}
+  // P0-2（S9b）：光标位图在这里预解码（每次 init 都重置，避免沿用上一张的光标）。
+  // exportSelectionCanvas 是同步函数，贴图时只认"已解码"的光标，不能在里面等。
+  if(data.cursor?.dataUrl){cursorImage=new Image();cursorImage.src=data.cursor.dataUrl}else cursorImage=null
   image=new Image(); image.onload=()=>{if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError('截图图片解码失败')
   if(data.mode==='canvas')image.src=makeBlankCanvas()
   else if(data.imageBuffer){imageObjectUrl=URL.createObjectURL(new Blob([data.imageBuffer],{type:'image/png'}));image.src=imageObjectUrl}

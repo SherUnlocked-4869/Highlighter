@@ -82,3 +82,51 @@ test('assets/shutter.wav is a real PCM wav, not a placeholder', () => {
   for (let index = 44; index + 1 < wav.length; index += 2) peak = Math.max(peak, Math.abs(wav.readInt16LE(index)))
   assert.ok(peak > 8000, `peak sample ${peak} looks like silence`)
 })
+
+test('the cursor overlay is wired after the annotations and only on the annotated export (P0-2/S9b)', () => {
+  // Script order: capture.js reads window.cursorGeometry synchronously at paste time,
+  // so the shared UMD module must be loaded first (same pattern as shortcut-keys.js).
+  const geometryAt = html.indexOf('../shared/cursor-geometry.js')
+  const captureAt = html.indexOf('src="capture.js"')
+  assert.ok(geometryAt >= 0, 'capture.html must load ../shared/cursor-geometry.js')
+  assert.ok(captureAt >= 0 && geometryAt < captureAt, 'cursor-geometry.js must be loaded before capture.js')
+
+  // The bitmap is pre-decoded on init: exportSelectionCanvas is synchronous and cannot wait.
+  assert.match(script, /let cursorImage = null/)
+  assert.match(
+    script,
+    /if\(data\.cursor\?\.dataUrl\)\{cursorImage=new Image\(\);cursorImage\.src=data\.cursor\.dataUrl\}else cursorImage=null/,
+    'init decodes the cursor bitmap and resets it when the payload carries none'
+  )
+  assert.ok(
+    script.indexOf('cursorImage=new Image()') > script.indexOf("window.captureAPI.onInit((data)=>{"),
+    'the pre-decode lives inside the init handler'
+  )
+
+  // The paste only runs on the annotated export, and only after the annotations.
+  assert.match(
+    script,
+    /if\(includeAnnotations&&initData\?\.cursor&&cursorImage&&cursorImage\.complete&&cursorImage\.naturalWidth>0&&window\.cursorGeometry\)\{/
+  )
+  const annotationsAt = script.indexOf('annotations.forEach((item)=>drawAnnotation(out,item,')
+  const placementAt = script.indexOf('resolveCursorPlacement')
+  assert.ok(annotationsAt >= 0 && placementAt > annotationsAt, 'the cursor must be pasted after the annotations')
+
+  // DIP contract: provider physicalPoint -> DIP before the pure function sees it; the
+  // hotspot stays 1:1 (no scaleFactor multiplication) and the paste subtracts the crop origin.
+  assert.match(script, /cursorScreenPoint:\{x:\(Number\(cursor\.physicalPoint\?\.x\)\|\|0\)\/pointScale/)
+  assert.match(script, /captureBounds:initData\.captureBounds/)
+  assert.match(script, /imageSize:\{width:image\.naturalWidth,height:image\.naturalHeight\}/)
+  assert.match(script, /selectionRect:source/)
+  assert.match(script, /scaleFactor:initData\.scaleFactor/)
+  assert.doesNotMatch(script, /hotspot\.x\*/, 'the hotspot must not be multiplied by the scale factor')
+  assert.match(
+    script,
+    /if\(placement\.visible\)out\.drawImage\(cursorImage,placement\.x-source\.x,placement\.y-source\.y,placement\.width\|\|cursorImage\.naturalWidth,placement\.height\|\|cursorImage\.naturalHeight\)/,
+    'paste on the cropped output canvas, at natural size, only when the geometry says visible'
+  )
+
+  // The main process ships null when the frozen switch is off, which is the pixel-identical path.
+  assert.match(captureDomain, /cursor: cursorSnapshot/)
+  assert.match(captureDomain, /\? \{[\s\S]{0,600}?physicalPoint: \{ x: cursorSnapshot\.physicalPoint\.x, y: cursorSnapshot\.physicalPoint\.y \}[\s\S]{0,40}?: null/)
+})
