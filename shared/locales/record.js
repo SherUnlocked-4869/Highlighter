@@ -90,11 +90,11 @@
     'record.error.desktop-video-unreadable': '无法读取桌面视频尺寸',
     'record.error.desktop-capture-failed': '无法获取桌面录制画面：{detail}',
     'record.error.recorder-create-failed': '无法创建视频录制器：{detail}',
-    'record.error.audio-mixer-unavailable': 'The audio mixer module is not loaded',
-    'record.error.audio-mixer-exports-missing': 'The audio mixer module exported nothing',
-    'record.error.microphone-not-detected': 'No microphone was detected; this recording will not include microphone sound',
-    'record.error.state-transition-invalid': 'Invalid recording state transition: {from} -> {to}',
-    'record.error.system-audio-capture-failed': 'System sound capture failed; this recording is a silent video'
+    'record.error.audio-mixer-unavailable': '音频混音模块未载入',
+    'record.error.audio-mixer-exports-missing': '音频混音模块未导出',
+    'record.error.microphone-not-detected': '未检测到麦克风，本次录制将不包含麦克风声音',
+    'record.error.state-transition-invalid': '非法的录制状态转换：{from} -> {to}',
+    'record.error.system-audio-capture-failed': '系统声音捕获失败，本次录制为无声影片'
   })
 
   add('en-US', {
