@@ -4,12 +4,18 @@
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
 <link rel="stylesheet" href="pin.css">
+<!-- The locale tables and the runtime must load before pin.js (plan §10.3). -->
+<script src="../shared/locales/zh-CN.js"></script>
+<script src="../shared/locales/en-US.js"></script>
+<script src="../shared/locales/zh-TW.js"></script>
+<script src="../shared/locales/pin.js"></script>
+<script src="../shared/i18n.js"></script>
 </head>
 <body>
 <img id="image" class="pin-surface hidden" draggable="false">
 <canvas id="pixelImage" class="pin-surface hidden"></canvas>
 <div id="zoomBadge">100%</div>
-<div id="clickThroughTag" title="鼠标穿透中">穿透中 · 悬停退出</div>
+<div id="clickThroughTag" data-i18n="pin.click-through.label" data-i18n-title="pin.click-through.title" title="Click-through active">Click-through · hover to exit</div>
 <script src="pin.js"></script>
 </body>
 </html>

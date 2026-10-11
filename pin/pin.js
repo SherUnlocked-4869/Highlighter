@@ -151,4 +151,11 @@ addEventListener('keydown', (event) => {
   if (event.key === 'Escape') window.pinAPI.close()
   if (event.ctrlKey && event.key.toLowerCase() === 'c') window.pinAPI.copy()
 })
+// P0-1-T2/T5: the click-through tag is static markup, so it is translated once
+// at load and re-translated when the main process broadcasts a language change.
+applyTranslations()
+window.pinAPI.onInterfaceLanguage((language) => {
+  setLanguage(language)
+  applyTranslations()
+})
 window.pinAPI.ready()
