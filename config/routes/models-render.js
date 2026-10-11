@@ -42,7 +42,7 @@ function renderModelsFeatureTab(providers) {
 function renderModels() {
   const providers = settings.providers || []
   if (!providers.length) {
-    view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), t('config.models.description'))}${renderModelsSubnav()}<div class="models-view"><div class="empty">' + t('config.models.no-providers') + '</div><button class="button primary" id="addFirstProvider">' + t('config.models.add-first-provider') + '</button></div></div>`
+    view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), t('config.models.description'))}${renderModelsSubnav()}<div class="models-view"><div class="empty">${t('config.models.no-providers')}</div><button class="button primary" id="addFirstProvider">${t('config.models.add-first-provider')}</button></div></div>`
     document.getElementById('addFirstProvider').onclick = () => {
       const provider = { id: createModelProviderId(), name: t('config.models.new-provider'), baseUrl: '', hasApiKey: false, protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
       settings = { ...settings, providers: [provider] }

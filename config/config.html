@@ -56,6 +56,11 @@
   <script src="../shared/locales/en-US.js"></script>
   <script src="../shared/locales/zh-TW.js"></script>
   <script src="../shared/locales/config.js"></script>
+  <!-- `toolbar-action-meta.js` below carries `toolbar.action.*` as i18n keys and
+       the selection-toolbar settings route resolves them with t(), so this window
+       needs the toolbar domain table too — without it those rows render the raw
+       key names. -->
+  <script src="../shared/locales/toolbar.js"></script>
   <script src="../shared/i18n.js"></script>
   <script src="../search/search-utils.js"></script>
   <script src="../toolbar/toolbar-action-meta.js"></script>
