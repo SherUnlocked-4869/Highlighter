@@ -176,17 +176,26 @@
 | 工具栏无 flex-wrap | `.toolbar` 有 `max-width: calc(100vw - 20px)` 但无换行，窄屏本就可能溢出；批次 A 的 PDF 按钮再加宽约 33px | `capture/capture.css` | 既有条件；§18.3-9 已登记 |
 | 主窗口默认落在主屏 | `positionAutomationWindow` 仅在 E2E 模式下生效，日常启动主窗口由系统放置 | 本机实测 | 非缺陷（AGENTS.md 约束的是自动化/测试窗口）；验收时人工移到副屏 |
 
-## 7. 剩余待验项（新会话继续）
+## 7. 剩余待验项（**2026-10-11 用户决定：全部挂账，开发完成后统一处理**）
 
-| # | 状态（2026-10-10 第二轮） |
+> **口径变更（2026-10-11）**：用户明确指示"测试都先跳过，先进行后续开发，开发完成后统一进行测试处理"。因此下表全部转为**挂账**，本会话不再逐项走真机；批次 A 收口**不阻塞** Wave 4 开工。**已修的 C6 缺陷同样待统一复验**。
+
+| # | 状态（2026-10-11） |
 | --- | --- |
 | **A4** | ✅ 以单测 + 探针为准（本期无 UI 入口） |
-| **B3** | ⬜ 待验（两个贴图均穿透 → 托盘「取消全部穿透」应全部退出；handler 返回退出数） |
-| **B4** | ⏭️ **用户 2026-10-10 明确决定跳过**。代码侧已核：`main.js:817` 把托盘项直连 `pinDomain.exitAllClickThrough()`，**绕开** `function-router.js:144` 的 `assertGameModeDisabled()`；`tray-menu.js:49` 该项 `enabled: true` 不随游戏模式置灰。**但运行时行为仍未实测** —— 风险保留在交接文档 §11 |
-| **C2** | ⬜ 待验（录入两个新热键并触发） |
-| **C3** | ⬜ 待验（另存到别处后快速保存落记忆目录、且「打开截图目录」一致） |
-| **C4 后半** | ⬜ 待验（关掉快门音开关后不响；前半已验） |
-| **C5** | ⬜ 待验（`Ctrl+A` 选整屏，Enter/Ctrl+S 不受影响） |
-| **C6** | 🔧 **首验暴露缺陷并已修复**（§3.6）；**待用户复验**（关闭态各自从 1 已实测正常） |
-| **C7** | ⬜ 待验（命名模板 + 历史库仍认「本应用所有」 + 非法字符 sanitize + 重名加 `-1`） |
+| **B3** | ⏸️ **挂账**（两个贴图均穿透 → 托盘「取消全部穿透」应全部退出；handler 返回退出数） |
+| **B4** | ⏸️ **挂账**（用户 2026-10-10 曾决定跳过，2026-10-11 并入统一挂账）。代码侧已核：`main.js:817` 把托盘项直连 `pinDomain.exitAllClickThrough()`，**绕开** `function-router.js:144` 的 `assertGameModeDisabled()`；`tray-menu.js:49` 该项 `enabled: true` 不随游戏模式置灰。**运行时仍未实测** |
+| **C2** | ⏸️ **挂账**（录入两个新热键并触发） |
+| **C3** | ⏸️ **挂账**（另存到别处后快速保存落记忆目录、且「打开截图目录」一致） |
+| **C4 后半** | ⏸️ **挂账**（关掉快门音开关后不响；前半已验） |
+| **C5** | ⏸️ **挂账**（`Ctrl+A` 选整屏，Enter/Ctrl+S 不受影响） |
+| **C6** | 🔧 **缺陷已修（§3.6）**，⏸️ **复验挂账**（关闭态各自从 1 已实测正常） |
+| **C7** | ⏸️ **挂账**（命名模板 + 历史库仍认「本应用所有」 + 非法字符 sanitize + 重名加 `-1`） |
 | **C8** | ✅ **静态核实**：`config/config.js:426-437` 把 `region`/`capture` 映射为「区域截图」；历史库 164 条来源集合 = {region, long-capture, focused-window, pin-reannotate}。下拉渲染走同一 `sourceLabels`（`:438`） |
+
+### 7.1 挂账项的取证准备（统一测试时直接用）
+
+- dev 实例启动：`Remove-Item Env:ELECTRON_RUN_AS_NODE; .\node_modules\.bin\electron.cmd .`（**不用** `npm start`，其 `prestart` 会重建被跟踪的 `native/everything-search/bin/HighlighterEverything.exe`）。
+- 侧证手段：读 `E:\document\highlighter\config\config.json`（**只读需要的键**，含凭据字段）；历史库 `captureHistory`（现有 164 条真实历史，**勿损坏**）；PDF 解析用 `.tmp/pdf-ctm.js`。
+- 用户数据根 `E:\document\highlighter`；`saveDirectory = E:\pictures\highlighterQuickSave`；截图热键 `Ctrl+1`。
+- 副屏 `\\.\DISPLAY2` 1152×2048 @3072,-136，125% 缩放；可见窗口按 `AGENTS.md` 一律放副屏。
