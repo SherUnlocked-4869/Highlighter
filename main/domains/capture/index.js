@@ -76,6 +76,9 @@ function createCaptureDomain(deps) {
   // 渲染层回报的序号是本张图"下一个该用的号"，比当前值大才推进 —— 同一张图可能经多条
   // 路径回报（保存/贴图/导出 PDF/关窗），重复回报不会把计数推过头。
   function reportCaptureSerial(meta) {
+    // 开关关闭时不推进计数：渲染层每张仍从 1 开始，若此时也记"下一个该用的号"，用户"先关后开"
+    // 时首张启用截图就不再从 1 开始（旧实现 captureSerialSeq++ 只在启用时自增）。
+    if (getSettings()?.screenshot?.keepSerialAcrossCaptures !== true) return
     const reported = Math.round(Number(meta?.serialNumber))
     if (Number.isFinite(reported) && reported > captureSerialSeq) captureSerialSeq = reported
   }
@@ -282,9 +285,12 @@ function createCaptureDomain(deps) {
       performanceTiming.captureMs = Math.round((performance.now() - performanceStartedAt) * 100) / 100
       return capture
     })
-    // P0-2（S9b）：光标查询与抓屏并行；开关关闭时 queryCursorSnapshot() 立刻解析成 null，
-    // 不产生任何进程/IO 开销。
-    const cursorPromise = queryCursorSnapshot()
+    // P0-2（S9b 补漏）：只有"真的抓了屏幕"的路径才查光标。mode:'image'（贴图重新标注）与
+    // mode:'canvas'（空白画布）的画面不是本次屏幕内容 —— 把此刻的光标贴上去是杂散像素，且它们
+    // 的 scaleFactor 是"图像/编辑器比例"而非显示缩放，落点无意义。
+    const cursorPromise = suppliedImageBuffer || mode === 'canvas'
+      ? Promise.resolve(null)
+      : queryCursorSnapshot()
     const smartSelectStartedAt = performance.now()
     const smartSelectPromise = (mode === 'region' ? createSmartSelectSession() : Promise.resolve(null)).then((session) => {
       performanceTiming.smartSelectMs = Math.round((performance.now() - smartSelectStartedAt) * 100) / 100
@@ -469,7 +475,9 @@ function createCaptureDomain(deps) {
         const win = BrowserWindow.fromWebContents(event.sender)
         win?.close()
       },
-      startRegionRecording: async (event, { selectionBounds } = {}) => {
+      startRegionRecording: async (event, { selectionBounds, serialNumber } = {}) => {
+        // 录制/long 都会在算 meta 之前离开截图流程（渲染层提前 return），序号只能随调用载荷回来。
+        reportCaptureSerial({ serialNumber })
         const captureWindow = BrowserWindow.fromWebContents(event.sender)
         if (!captureWindow || captureWindow !== currentCaptureWindow || captureWindow.isDestroyed()) {
           throw new Error('无效的截图窗口')
@@ -486,7 +494,10 @@ function createCaptureDomain(deps) {
         if (!captureWindow.isDestroyed()) captureWindow.close()
         return true
       },
-      startLong: (event, payload) => createLongCaptureFromSelection(BrowserWindow.fromWebContents(event.sender), payload),
+      startLong: (event, payload = {}) => {
+        reportCaptureSerial(payload)
+        return createLongCaptureFromSelection(BrowserWindow.fromWebContents(event.sender), payload)
+      },
       smartSelect: async (event, point = {}) => {
         const win = BrowserWindow.fromWebContents(event.sender)
         const context = win?._smartSelectContext
@@ -503,6 +514,8 @@ function createCaptureDomain(deps) {
           : [{ x: 0, y: 0, w: context.captureBounds.width, h: context.captureBounds.height }]
       },
       copy: (_event, { imageBuffer, dataUrl, meta } = {}) => {
+        // 复制同样消耗已落的序号（Enter 走的就是这条路径）—— 与 save/pin/... 同一回报口径。
+        reportCaptureSerial(meta)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
         if (!buffer.length) throw new Error('截图图片数据为空')
         const image = nativeImage.createFromBuffer(buffer)

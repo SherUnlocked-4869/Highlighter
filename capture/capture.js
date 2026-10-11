@@ -410,6 +410,24 @@ function updateElementBar() {
   if (top + rect.height > innerHeight - 6) top = bounds.y - rect.height - 10
   left = Math.max(6, Math.min(left, innerWidth - rect.width - 6))
   top = Math.max(6, top)
+  // 与工具栏避让：水印的 bounds 按设计等于选区，而本条的定位公式与工具栏逐字相同、z-index 更高
+  // （6 > 5），于是选中水印时浮动条会整条压在工具栏右端，挡住 保存/导出PDF/复制/取消 四个按钮。
+  // 重叠时改放到选区上方外侧；上方也放不下（贴顶）则落到工具栏下方。
+  if (!toolbar.classList.contains('hidden') && selection) {
+    const toolbarRect = toolbarSize || (toolbarSize = toolbar.getBoundingClientRect())
+    let toolbarLeft = selection.x + selection.w - toolbarRect.width
+    let toolbarTop = selection.y + selection.h + 10
+    if (toolbarTop + toolbarRect.height > innerHeight - 6) toolbarTop = selection.y - toolbarRect.height - 10
+    toolbarLeft = Math.max(6, Math.min(toolbarLeft, innerWidth - toolbarRect.width - 6))
+    toolbarTop = Math.max(6, toolbarTop)
+    const overlaps = left < toolbarLeft + toolbarRect.width && left + rect.width > toolbarLeft &&
+      top < toolbarTop + toolbarRect.height && top + rect.height > toolbarTop
+    if (overlaps) {
+      let nextTop = bounds.y - rect.height - 10
+      if (nextTop < 6) nextTop = Math.min(innerHeight - rect.height - 6, toolbarTop + toolbarRect.height + 10)
+      top = Math.max(6, nextTop)
+    }
+  }
   elementBar.style.left = `${Math.round(left)}px`
   elementBar.style.top = `${Math.round(top)}px`
 }
@@ -486,16 +504,20 @@ function setSelectedAnnotation(item) {
 }
 
 // 提交一帧快照：截断 redo 分支 → 深拷贝当前 annotations → 上限 60 条（丢最旧的一条）。
-// PR2：先把待提交的方向键微调收掉 —— 之后压的这一帧已经包含微调结果，避免同一步撤销里
-// 出现两帧完全相同的快照（那会让 Ctrl+Z 按下后"看起来没反应"）。
+// 注意：这里**不再**取消待收口的微调/样式帧 —— 那会把两次用户操作合并进同一帧（Ctrl+Z 一次退两步）。
+// 每个"用户动作"路径在压帧前先调 flushCoalescedEdits()，让待收口的合并型编辑各自独立成帧。
 function snapshotAnnotations() {
-  cancelNudge()
-  // PR4：待收口的样式改动已包含在这一帧里，丢掉它的计时器，避免同一步撤销出现两帧同样的快照。
-  cancelStyleCommit()
   annotationHistory.length = historyIndex + 1
   annotationHistory.push(cloneAnnotations(annotations))
   if (annotationHistory.length > MAX_ANNOTATION_HISTORY) annotationHistory.splice(0, annotationHistory.length - MAX_ANNOTATION_HISTORY)
   historyIndex = annotationHistory.length - 1
+}
+
+// 把"已生效但未收口"的合并型编辑（方向键微调、取色器连续改色）各自压成独立一帧。
+// 顺序固定为 微调 → 样式；两者互不吞并（commitNudge/commitStyle 只清自己的标志位）。
+function flushCoalescedEdits() {
+  if (nudgeDirty) commitNudge()
+  if (styleDirty) commitStyle()
 }
 
 function restoreAnnotations(index) {
@@ -509,13 +531,17 @@ function restoreAnnotations(index) {
 }
 
 function undoAnnotations() {
-  // PR4：未收口的颜色改动先单独压一帧，Ctrl+Z 才是"精确回退一步"（不会连上一个操作一起撤掉）。
-  commitStyle()
+  // 待收口的微调/样式各自先落一帧，Ctrl+Z 才是"精确回退一步"（不会连上一个操作一起撤掉，
+  // 也不会把微调直接丢掉）。flush 必须在 restoreAnnotations 之前 —— 后者会整体换掉 annotations。
+  flushCoalescedEdits()
   if (historyIndex <= 0) return
   restoreAnnotations(historyIndex - 1)
 }
 
 function redoAnnotations() {
+  // 与 undo 同口径：存在 redo 分支时 Ctrl+Y 也不该静默丢掉未收口的改动。
+  // flush 会把 redo 分支截断（新编辑作废 redo，正确语义），随后 historyIndex 已到栈顶 → no-op。
+  flushCoalescedEdits()
   if (historyIndex >= annotationHistory.length - 1) return
   restoreAnnotations(historyIndex + 1)
 }
@@ -524,6 +550,7 @@ function redoAnnotations() {
 function deleteSelectedAnnotation() {
   const item = selectedAnnotationItem()
   if (!item) return
+  flushCoalescedEdits()
   annotations.splice(annotations.indexOf(item), 1)
   selectedAnnotation = null
   snapshotAnnotations()
@@ -539,6 +566,9 @@ function confirmDiscardAnnotations() {
 
 // 确认后清空；仍然压一帧快照，使这次清空也能被 Ctrl+Z 精确回退。
 function clearAnnotationsForNewSelection() {
+  // 没有标注可清时不压帧：否则首次手动划选区会在栈底多出一个与初始状态相同的死撤销步。
+  if (!annotations.length) { selectedAnnotation = null; return }
+  flushCoalescedEdits()
   annotations = []
   selectedAnnotation = null
   snapshotAnnotations()
@@ -586,7 +616,7 @@ function finishMoveAnnotation() {
   movingAnnotation = null
   if (!state) return
   const current = annotations.find((item) => item.id === state.id)
-  if (current && annotationWasMoved(current, state.origin)) snapshotAnnotations()
+  if (current && annotationWasMoved(current, state.origin)) { flushCoalescedEdits(); snapshotAnnotations() }
   render()
 }
 
@@ -622,6 +652,9 @@ function nudgeSelectedAnnotation(event) {
     stageRect()
   )
   if (!moved) return true
+  // 贴舞台边时 clamp 会把这一步位移吃掉 —— 此时不置 dirty，否则 500ms 后会压入与上一帧
+  // 完全相同的快照，Ctrl+Z 变成空按（违反"0 位移不压帧"）。
+  if (!annotationWasMoved(moved, item)) { render(); return true }
   annotations[index] = moved
   selectedAnnotation = moved
   nudgeDirty = true
@@ -686,7 +719,7 @@ function finishResizeAnnotation() {
   resizingAnnotation = null
   if (!state) return
   const current = annotations.find((item) => item.id === state.id)
-  if (current && annotationWasResized(current, state.origin)) snapshotAnnotations()
+  if (current && annotationWasResized(current, state.origin)) { flushCoalescedEdits(); snapshotAnnotations() }
   render()
 }
 
@@ -725,7 +758,8 @@ function applyStyleToSelectedAnnotation(patch) {
 // 离散样式操作（线宽按钮）：立刻压一帧。若还有未收口的颜色改动，先把它单独收一帧 —— 两次
 // 用户操作不该挤进同一个撤销步（这正是"undo/redo 不串"）。
 function commitSelectedStyle(patch) {
-  commitStyle()
+  // 待收口的微调/样式先各自成帧，再压这次离散样式改动 —— 保证"一次用户操作一帧"。
+  flushCoalescedEdits()
   if (!applyStyleToSelectedAnnotation(patch)) return false
   snapshotAnnotations()
   render()
@@ -766,6 +800,7 @@ function reorderSelectedAnnotation(direction) {
   if (!item) return
   const ordered = reorderAnnotation(annotations, annotations.indexOf(item), direction)
   if (ordered.every((entry, position) => entry === annotations[position])) return
+  flushCoalescedEdits()
   annotations = ordered
   snapshotAnnotations()
   syncSelectedAnnotation()
@@ -790,6 +825,7 @@ function commitAnnotation(item) {
   item.id = ++annotationSeq
   annotations.push(item)
   activeAnnotation = null
+  flushCoalescedEdits()
   snapshotAnnotations()
   render()
 }
@@ -1153,12 +1189,12 @@ async function performAction(action) {
   const captureBounds=initData.captureBounds||initData.displayBounds||{x:0,y:0}
   const selectionBounds={x:Math.round(captureBounds.x+selection.x),y:Math.round(captureBounds.y+selection.y),width:Math.max(1,Math.round(selection.w)),height:Math.max(1,Math.round(selection.h))}
   if(action==='record'){
-    try{await window.captureAPI.startRegionRecording(selectionBounds)}catch(error){alert(error.message||String(error))}
+    try{await window.captureAPI.startRegionRecording(selectionBounds,serialMeta())}catch(error){alert(error.message||String(error))}
     return
   }
   if(action==='long'){
     if(annotations.length&&!confirm('进入长截图将忽略当前标注，是否继续？'))return
-    try{await window.captureAPI.startLongCapture({...selection})}catch(error){alert(error.message||String(error))}
+    try{await window.captureAPI.startLongCapture({...selection},serialMeta())}catch(error){alert(error.message||String(error))}
     return
   }
   const recognitionActions=['ocr','translate','table','qr']
@@ -1168,7 +1204,7 @@ async function performAction(action) {
     const imageBuffer=await canvasPngBuffer(output)
     // 序号只在导出/编码完成后取值，保证带上本次截图已落的号（P0-7-T7 精确接续）。
     Object.assign(meta,serialMeta())
-    if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(imageBuffer,meta);else await window.captureAPI.copy(imageBuffer,meta);window.captureAPI.close()}
+    if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(imageBuffer,meta);else await window.captureAPI.copy(imageBuffer,meta);closeCaptureWindow()}
     // P0-7-T4：saveMode 由调用方下发（快捷保存 'fast' / 另存为 'dialog'），未下发时回落到设置项。
     if(action==='save'){window.captureAPI.save(imageBuffer,meta,initData.saveMode?initData.saveMode==='fast':!!initData.settings.screenshot.fastSave);return}
     // P0-4-T7②：导出 PDF 后不关闭截图窗口（主进程 handler 刻意不关），用户可以继续复制/保存/贴图。
@@ -1181,7 +1217,7 @@ async function performAction(action) {
       finally{pdfExporting=false;if(exportButton)exportButton.disabled=false}
       return
     }
-    if(action==='pin'){await window.captureAPI.pin(imageBuffer,meta);window.captureAPI.close()}
+    if(action==='pin'){await window.captureAPI.pin(imageBuffer,meta);closeCaptureWindow()}
     if(['ocr','translate'].includes(action)&&!initData.editPin){await window.captureAPI.pinAndReannotate(imageBuffer,meta,action);return}
     if(action==='table'||action==='qr'){await window.captureAPI.openRecognition(action,imageBuffer,meta);return}
     if(action==='ocr'||action==='translate'){
@@ -1201,7 +1237,7 @@ function showResult(type,result) {
     resultText.value=result.text||''
     const afterAction=initData?.settings?.ocr?.afterAction||'none'
     if(result.text&&['copy','copy-and-close'].includes(afterAction))navigator.clipboard.writeText(result.text).catch(()=>{})
-    if(result.text&&afterAction==='copy-and-close'){window.captureAPI.close();return}
+    if(result.text&&afterAction==='copy-and-close'){closeCaptureWindow();return}
     showOcrOverlay(result)
     if(!result.text)resultPanel.classList.remove('hidden')
     return

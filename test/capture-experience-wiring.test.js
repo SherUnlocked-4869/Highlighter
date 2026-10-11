@@ -36,8 +36,22 @@ test('the serial counter is reset explicitly on init and continues only when ask
   assert.match(captureDomain, /keepSerialAcrossCaptures === true \? captureSerialSeq : 1/, 'the init payload carries the last used serial, not the capture index')
   assert.match(captureDomain, /serialNumber,/, 'the init payload carries the start value')
   // 精确接续（2026-10-10 真机验收修正）：渲染层回报"下一个该用的号"，主进程只接受前进。
-  assert.match(captureDomain, /function reportCaptureSerial\(meta\) \{[\s\S]{0,220}?reported > captureSerialSeq\) captureSerialSeq = reported/)
+  assert.match(captureDomain, /function reportCaptureSerial\(meta\) \{[\s\S]{0,520}?reported > captureSerialSeq\) captureSerialSeq = reported/)
+  // OCR 评审修复：开关关闭时不推进计数，否则"先关后开"时首张启用截图不再从 1 开始。
+  assert.match(
+    captureDomain,
+    /function reportCaptureSerial\(meta\) \{[\s\S]{0,320}?keepSerialAcrossCaptures !== true\) return/,
+    'the counter must only advance while keepSerialAcrossCaptures is on'
+  )
   assert.match(captureDomain, /close: \(event, payload = \{\}\) => \{[\s\S]{0,160}?reportCaptureSerial\(payload\)/, '✕/Esc 关窗也要推进序号')
+  // OCR 评审修复：复制（Enter 走的路径）与录制/长截图出口也必须回报序号。
+  assert.match(captureDomain, /copy: \(_event, \{ imageBuffer, dataUrl, meta \} = \{\}\) => \{[\s\S]{0,200}?reportCaptureSerial\(meta\)/)
+  assert.match(captureDomain, /startRegionRecording: async \(event, \{ selectionBounds, serialNumber \} = \{\}\) => \{[\s\S]{0,200}?reportCaptureSerial\(\{ serialNumber \}\)/)
+  assert.match(captureDomain, /startLong: \(event, payload = \{\}\) => \{[\s\S]{0,160}?reportCaptureSerial\(payload\)/)
+  assert.match(script, /startRegionRecording\(selectionBounds,serialMeta\(\)\)/)
+  assert.match(script, /startLongCapture\(\{\.\.\.selection\},serialMeta\(\)\)/)
+  // 所有关窗出口统一走 closeCaptureWindow()（带序号），不再有裸的 captureAPI.close()。
+  assert.doesNotMatch(script, /window\.captureAPI\.close\(\)/)
   assert.match(script, /function serialMeta\(\) \{[\s\S]{0,140}?serialNumber>initialSerialNumber\?\{serialNumber\}:\{\}/)
   assert.match(
     script,

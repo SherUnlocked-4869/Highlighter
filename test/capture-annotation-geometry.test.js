@@ -108,6 +108,21 @@ test('findAnnotationAt hits a rect edge inside the stroke tolerance and never it
   assert.equal(findAnnotationAt([rect], { x: Number.NaN, y: 0 }), null)
 })
 
+// OCR 评审修复：highlight 是"粗线段"，必须与 line/arrow 同走 pointToSegmentDistance；
+// 若落进 insideBox，斜向高亮的整个 bbox 都会可点 —— 既吞掉其下元素的选中，
+// 又因 pointerdown 的"元素命中 > 拖选区"挡住拖选区（rect/ellipse 用环带刻意规避的同一失效模式）。
+test('a diagonal highlight is hit along its stroke, not across its whole bounding box', () => {
+  const highlight = { type: 'highlight', x: 0, y: 0, x2: 100, y2: 100, color: '#ff0', width: 4 }
+  const onStroke = { x: 50, y: 50 }
+  assert.equal(hitTestAnnotation(highlight, onStroke), true, 'the stroke itself is hittable')
+  // bbox 内的对角空白处：离线段约 35px，远大于默认容差 → 必须不命中。
+  const offStroke = { x: 90, y: 10 }
+  assert.equal(hitTestAnnotation(highlight, offStroke), false, 'the empty corner of the bbox must stay free')
+  assert.equal(findAnnotationAt([highlight], offStroke), null)
+  // 与 line/arrow 同口径：沿线段的近旁仍可命中。
+  assert.equal(hitTestAnnotation(highlight, { x: 52, y: 48 }), true)
+})
+
 test('findAnnotationAt follows the ellipse ring, not the disc, and survives a zero radius', () => {
   const ellipse = { type: 'ellipse', x: 0, y: 0, x2: 100, y2: 100, color: '#f00', width: 4 }
   assert.equal(findAnnotationAt([ellipse], { x: 100, y: 50 }), ellipse)
@@ -525,8 +540,8 @@ test('capture.js gives every committed annotation a monotonic id and undoes thro
   assert.match(script, /function snapshotAnnotations\(\) \{[\s\S]{0,400}?annotationHistory\.push\(cloneAnnotations\(annotations\)\)/)
   assert.match(script, /annotationHistory\.length > MAX_ANNOTATION_HISTORY[\s\S]{0,140}?annotationHistory\.splice\(0,/)
   assert.match(script, /function commitAnnotation\(item\) \{\s*if \(!item\) return\s*item\.id = \+\+annotationSeq/)
-  assert.match(script, /function undoAnnotations\(\) \{[\s\S]{0,160}?restoreAnnotations\(historyIndex - 1\)/)
-  assert.match(script, /function redoAnnotations\(\) \{[\s\S]{0,160}?restoreAnnotations\(historyIndex \+ 1\)/)
+  assert.match(script, /function undoAnnotations\(\) \{[\s\S]{0,420}?flushCoalescedEdits\(\)[\s\S]{0,160}?restoreAnnotations\(historyIndex - 1\)/)
+  assert.match(script, /function redoAnnotations\(\) \{[\s\S]{0,420}?flushCoalescedEdits\(\)[\s\S]{0,160}?restoreAnnotations\(historyIndex \+ 1\)/)
   assert.match(script, /document\.getElementById\('undo'\)\.onclick=\(\)=>undoAnnotations\(\)/)
   assert.match(script, /document\.getElementById\('redo'\)\.onclick=\(\)=>redoAnnotations\(\)/)
   // 契约（方案 §8.4）：Delete 不再 pop 末尾；redoStack 随快照栈一起消失
@@ -621,7 +636,7 @@ test('PR2: pointerdown starts an element-body move inside the selected bounds, b
 test('PR2: a drag produces exactly one snapshot on pointerup, only when it actually moved', () => {
   assert.match(script, /function moveAnnotationTo\(point\) \{[\s\S]{0,520}?translateAnnotation\(state\.origin, point\.x - state\.start\.x, point\.y - state\.start\.y\)/)
   assert.match(script, /function moveAnnotationTo\(point\) \{[\s\S]{0,700}?clampAnnotationToStage\(/)
-  assert.match(script, /function finishMoveAnnotation\(\) \{[\s\S]{0,320}?if \(current && annotationWasMoved\(current, state\.origin\)\) snapshotAnnotations\(\)/)
+  assert.match(script, /function finishMoveAnnotation\(\) \{[\s\S]{0,340}?if \(current && annotationWasMoved\(current, state\.origin\)\) \{ flushCoalescedEdits\(\); snapshotAnnotations\(\) \}/)
   assert.match(script, /function cancelMoveAnnotation\(\) \{[\s\S]{0,460}?annotations\[index\] = state\.origin/)
   // pointerup 只有一处收口、pointermove 只有一处位移；其余地方不碰 movingAnnotation
   assert.match(pointerupSource, /if\(movingAnnotation\)\{finishMoveAnnotation\(\);updateSelectionCursor\(pointFromEvent\(event\)\);return\}/)
@@ -641,8 +656,12 @@ test('PR2: arrow keys nudge 1px (Shift 10px) and merge into a single undo frame'
   assert.match(script, /if \(event\.ctrlKey \|\| event\.altKey \|\| event\.metaKey\) return false/)
   assert.match(script, /nudgeTimer = setTimeout\(commitNudge, NUDGE_COMMIT_DELAY\)/)
   assert.match(script, /function commitNudge\(\) \{[\s\S]{0,220}?snapshotAnnotations\(\)/)
-  // 窗口放宽到 240：PR4 在 cancelNudge() 与 push 之间插入了 cancelStyleCommit()（样式帧同口径收口）。
-  assert.match(script, /function snapshotAnnotations\(\) \{[\s\S]{0,120}?cancelNudge\(\)[\s\S]{0,240}?annotationHistory\.push\(cloneAnnotations\(annotations\)\)/)
+  // OCR 评审修复：snapshotAnnotations 不再吞掉待收口的微调/样式帧 —— 那会把两次用户操作
+  // 合并进同一个撤销步（Ctrl+Z 一次退两步）。合并型编辑改由 flushCoalescedEdits() 各自独立成帧。
+  assert.match(script, /function snapshotAnnotations\(\) \{[\s\S]{0,220}?annotationHistory\.push\(cloneAnnotations\(annotations\)\)/)
+  assert.doesNotMatch(script, /function snapshotAnnotations\(\) \{[\s\S]{0,220}?cancelNudge\(\)/)
+  assert.doesNotMatch(script, /function snapshotAnnotations\(\) \{[\s\S]{0,220}?cancelStyleCommit\(\)/)
+  assert.match(script, /function flushCoalescedEdits\(\) \{[\s\S]{0,160}?if \(nudgeDirty\) commitNudge\(\)[\s\S]{0,80}?if \(styleDirty\) commitStyle\(\)/)
   assert.match(script, /if\(nudgeSelectedAnnotation\(event\)\)return/)
   // 方向键不得吞掉既有快捷键：Ctrl+A/Z/Y/S、Delete、Enter、Esc 全部照旧
   assert.match(script, /if\(event\.key==='Escape'\)/)
@@ -712,7 +731,7 @@ test('PR3: the resize gesture recomputes the box from the untouched origin, with
   assert.match(pointerupSource, /if\(resizingAnnotation\)\{finishResizeAnnotation\(\);updateSelectionCursor\(pointFromEvent\(event\)\);return\}/)
   assert.match(script, /canvas\.addEventListener\('pointercancel',\(\)=>\{[\s\S]{0,200}?cancelResizeAnnotation\(\)/)
   assert.match(script, /function annotationWasResized\(item, origin\) \{\s*return JSON\.stringify\(item\) !== JSON\.stringify\(origin\)/)
-  assert.match(script, /function finishResizeAnnotation\(\) \{[\s\S]{0,340}?if \(current && annotationWasResized\(current, state\.origin\)\) snapshotAnnotations\(\)/)
+  assert.match(script, /function finishResizeAnnotation\(\) \{[\s\S]{0,360}?if \(current && annotationWasResized\(current, state\.origin\)\) \{ flushCoalescedEdits\(\); snapshotAnnotations\(\) \}/)
   assert.match(script, /function cancelResizeAnnotation\(\) \{[\s\S]{0,480}?annotations\[index\] = state\.origin/)
   assert.equal(script.match(/snapshotAnnotations\(\)/g).length >= 5, true)
   // 新一次按下 / 重置时都不会把上一次的缩放态留着。
@@ -809,9 +828,10 @@ test('PR4: a style change lands on the selected item with a fresh copy, never on
   // 0 变化不制造无效撤销步（与 PR2 的 annotationWasMoved / PR3 的 annotationWasResized 同口径）。
   assert.match(styleSource, /if \(!keys\.length \|\| !keys\.some\(\(key\) => item\[key\] !== patch\[key\]\)\) return false/)
   assert.match(styleSource, /function applyStyleToSelectedAnnotation\(patch\) \{\s*const item = selectedAnnotationItem\(\)/)
-  // 离散操作（线宽按钮）：先收口未提交的颜色帧，再压样式帧 —— 两次用户操作不挤进同一个撤销步。
-  assert.match(styleSource, /function commitSelectedStyle\(patch\) \{\s*commitStyle\(\)/)
-  assert.match(styleSource, /function commitSelectedStyle\(patch\) \{[\s\S]{0,240}?snapshotAnnotations\(\)/)
+  // 离散操作（线宽按钮）：先把待收口的合并型编辑各自成帧，再压这次样式帧 ——
+  // 两次用户操作不挤进同一个撤销步（OCR 评审修复后由 flushCoalescedEdits 统一承担）。
+  assert.match(styleSource, /function commitSelectedStyle\(patch\) \{[\s\S]{0,220}?flushCoalescedEdits\(\)/)
+  assert.match(styleSource, /function commitSelectedStyle\(patch\) \{[\s\S]{0,280}?snapshotAnnotations\(\)/)
   // 连续操作（取色器）：input 合帧、change 立刻收口。
   assert.match(styleSource, /function stageSelectedStyle\(patch\) \{[\s\S]{0,200}?styleDirty = true[\s\S]{0,200}?styleTimer = setTimeout\(commitStyle, STYLE_COMMIT_DELAY\)/)
   assert.match(styleSource, /function cancelStyleCommit\(\) \{[\s\S]{0,160}?styleDirty = false/)
@@ -825,14 +845,12 @@ test('PR4: a style change lands on the selected item with a fresh copy, never on
   assert.match(script, /colorInput\.addEventListener\('input',\(\)=>\{colorPreview\.style\.background=colorInput\.value;stageSelectedStyle\(\{color:colorInput\.value\}\)\}\)/)
   assert.match(script, /colorInput\.addEventListener\('change',\(\)=>commitStyle\(\)\)/)
 
-  // 快照栈口径：待收口的样式帧被 snapshot 吸收，不出现"两帧同样的快照"。
-  assert.match(
-    script,
-    /function snapshotAnnotations\(\) \{[\s\S]{0,120}?cancelNudge\(\)[\s\S]{0,140}?cancelStyleCommit\(\)[\s\S]{0,140}?annotationHistory\.push\(cloneAnnotations\(annotations\)\)/
-  )
+  // 快照栈口径（OCR 评审修复后）：snapshotAnnotations 只负责压帧，不再吞掉待收口的
+  // 微调/样式帧；合并型编辑由 flushCoalescedEdits() 在各自的动作路径前独立成帧。
+  assert.match(script, /function snapshotAnnotations\(\) \{[\s\S]{0,220}?annotationHistory\.push\(cloneAnnotations\(annotations\)\)/)
   assert.match(script, /function restoreAnnotations\(index\) \{[\s\S]{0,160}?cancelStyleCommit\(\)/)
-  // Ctrl+Z：先把未收口的颜色改动单独压一帧，才是"精确回退一步"。
-  assert.match(script, /function undoAnnotations\(\) \{\r?\n\s*\/\/[^\r\n]*\r?\n\s*commitStyle\(\)/)
+  // Ctrl+Z：先把未收口的颜色/微调各自压一帧，才是"精确回退一步"（不会连上一个操作一起撤掉）。
+  assert.match(script, /function undoAnnotations\(\) \{[\s\S]{0,420}?flushCoalescedEdits\(\)/)
   // 新一次截图不得让上一张的样式计时器落进这一次的历史。
   assert.match(script, /function resetAnnotationState\(\) \{[\s\S]{0,300}?cancelStyleCommit\(\)/)
   // 样式补丁只补 color/width 之类的字段，id 与 serial.number 原样带过（不重编号）。

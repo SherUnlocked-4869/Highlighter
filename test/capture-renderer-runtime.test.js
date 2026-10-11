@@ -103,6 +103,35 @@ const PAGE_HELPERS = [
   '};return true})()'
 ].join('')
 
+// OCR 评审修复（High）的两条渲染层回归：都在真实窗口里跑真实交互路径。
+const PR_HELPERS = [
+  '(function(){',
+  'window.__pr={',
+  // G1：待提交的方向键微调必须先在 Ctrl+Z 之前独立成帧 —— 否则一次撤销会同时丢掉微调
+  // 并回退上一个已提交操作（标注整个消失）。
+  'nudgeUndo:function(){',
+  'annotations=[{type:"rect",id:1,x:200,y:200,x2:260,y2:240,color:"#f00",width:4}];',
+  'annotationSeq=1;annotationHistory=[[]];historyIndex=0;snapshotAnnotations();',
+  'setSelectedAnnotation(annotations[0]);',
+  'nudgeSelectedAnnotation({key:"ArrowRight",preventDefault:function(){},shiftKey:false});',
+  'var afterNudge=annotations.length?annotations[0].x:null;',
+  'document.dispatchEvent(new KeyboardEvent("keydown",{key:"z",ctrlKey:true,bubbles:true}));',
+  'return {afterNudge:afterNudge,count:annotations.length,x:annotations.length?annotations[0].x:null};',
+  '},',
+  // G2：水印的 bounds 按设计等于选区，浮动条不得压在工具栏上（z-index 更高会挡住按钮）。
+  'elementBarOverlap:function(){',
+  'selection={x:100,y:100,w:300,h:200};',
+  'annotations=[{type:"watermark",id:2,x:100,y:100,w:300,h:200,content:"w",opacity:10,color:"#fff",spacing:15,fontSize:24,rotation:30,dateSuffix:false}];',
+  'setSelectedAnnotation(annotations[0]);renderOverlay();',
+  'var bar=document.getElementById("elementBar").getBoundingClientRect();',
+  'var tb=document.getElementById("toolbar").getBoundingClientRect();',
+  'return {overlap:(bar.left<tb.right&&bar.right>tb.left&&bar.top<tb.bottom&&bar.bottom>tb.top),',
+  'bar:{left:bar.left,top:bar.top,right:bar.right,bottom:bar.bottom},',
+  'toolbar:{left:tb.left,top:tb.top,right:tb.right,bottom:tb.bottom}};',
+  '}',
+  '};return true})()'
+].join('')
+
 async function waitForCursorDecode (win) {
   for (let attempt = 0; attempt < 80; attempt++) {
     const decoded = await win.webContents.executeJavaScript('!!(cursorImage&&cursorImage.complete&&cursorImage.naturalWidth>0)')
@@ -202,6 +231,7 @@ async function main () {
       'return p};return true})()'
     )
     await win.webContents.executeJavaScript(PAGE_HELPERS)
+    await win.webContents.executeJavaScript(PR_HELPERS)
 
     // --- A: stock payload, no saveMode -------------------------------------------------
     await sendInit(win, makeInit({}))
@@ -306,6 +336,11 @@ async function main () {
     const scaledState = await win.webContents.executeJavaScript('window.__s9b.state()')
 
     report.saves = records.saves
+    // --- G: annotation-editing regressions (OCR review fixes) ---------------------------
+    await sendInit(win, makeInit({}))
+    report.nudgeUndo = await win.webContents.executeJavaScript('window.__pr.nudgeUndo()')
+    report.elementBarOverlap = await win.webContents.executeJavaScript('window.__pr.elementBarOverlap()')
+
     report.saveModes = { fast: modeBeforeFastSave, dialog: modeBeforeDialogSave }
     report.pdfs = records.pdfs
     report.serial = { fromPayload: serialFromPayload, reset: serialReset }
@@ -421,6 +456,15 @@ test('capture renderer honors saveMode, Ctrl+A, the serial reset, the shutter ga
 
   // P0-7-T5 gate: shutterSound false means no second play().
   assert.equal(report.shutterGate.playsAfterMute, report.shutterGate.playsBeforeMute)
+
+  // OCR 评审修复（High）：方向键微调与 Ctrl+Z 的交互 —— 微调必须先独立成帧，
+  // 否则一次撤销会同时丢掉微调并回退上一步，标注整个消失。
+  assert.equal(report.nudgeUndo.afterNudge, 201, 'the nudge moved the annotation by 1px')
+  assert.equal(report.nudgeUndo.count, 1, 'Ctrl+Z after a nudge must keep the annotation')
+  assert.equal(report.nudgeUndo.x, 200, 'and must only undo the nudge itself')
+
+  // OCR 评审修复（High）：水印（bounds == 选区）选中时，浮动条不得压在工具栏上。
+  assert.equal(report.elementBarOverlap.overlap, false, 'the element bar must not cover the toolbar')
 
   // P0-2 / S9b: the cursor is composited where the pure geometry says, and nowhere else.
   // The host has no visible cursor, so this is driven by a synthetic payload; the expected

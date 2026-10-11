@@ -42,7 +42,18 @@ function createFakeHelper(autoReady = true) {
       if (typeof child.onWrite === 'function') child.onWrite(String(chunk))
       return true
     },
-    end() { child.stdinEnded = true }
+    end() { child.stdinEnded = true },
+    // 真 stdin 是 Writable 流：provider 会挂 'error' 兜底（异步 EPIPE 不得变成主进程未捕获异常），
+    // 所以 harness 必须提供 on()，否则测不到那条路径。
+    on(event, handler) {
+      if (!child.stdinHandlers) child.stdinHandlers = {}
+      child.stdinHandlers[event] = handler
+      return child.stdin
+    },
+    emit(event, payload) {
+      const handler = child.stdinHandlers && child.stdinHandlers[event]
+      if (handler) handler(payload)
+    }
   }
   child.kill = () => { child.killed = true }
   // 真 helper 启动后立刻打一行 ready；在 spawn 返回之后（下一个 tick）发出，
@@ -59,14 +70,15 @@ function createHarness(overrides = {}) {
   const { autoReady = true, ...providerOptions } = overrides
   const child = createFakeHelper(autoReady)
   const logs = []
+  let spawnCount = 0
   const provider = createCursorProvider({
-    spawn: () => child,
+    spawn: () => { spawnCount += 1; return child },
     executablePath: 'C:\\fake\\SmartSelect.exe',
     existsSync: () => true,
     log: (...args) => logs.push(args.filter((item) => item !== undefined).join(' ')),
     ...providerOptions
   })
-  return { child, logs, provider }
+  return { child, logs, provider, spawns: () => spawnCount }
 }
 
 function cursorPayload(overrides = {}) {
@@ -334,6 +346,28 @@ test('resolveCursorPlacement: 非法输入一律 visible=false 且不抛错', ()
   assert.equal(resolveCursorPlacement().visible, false)
 })
 
+// OCR 评审修复：光标点缺失/非数值时必须判为 invalid（visible:false），
+// 不能像 bounds/imageSize 那样静默回落 0 —— 那会在截图左上角画出一枚幽灵光标。
+test('resolveCursorPlacement: 缺失或非数值的光标点判为 invalid，不产生左上角幽灵光标', () => {
+  const base = {
+    captureBounds: { x: 0, y: 0, width: 800, height: 600 },
+    imageSize: { width: 800, height: 600 },
+    hotspot: { x: 3, y: 9 },
+    scaleFactor: 1
+  }
+  const invalidPoints = [undefined, null, {}, { x: 'a', y: 1 }, { y: 1 }, { x: NaN, y: 0 }, { x: Infinity, y: 0 }]
+  for (const cursorScreenPoint of invalidPoints) {
+    const placement = resolveCursorPlacement({ ...base, cursorScreenPoint })
+    assert.equal(placement.visible, false, `point=${JSON.stringify(cursorScreenPoint)}`)
+    assert.equal(placement.reason, 'invalid-input')
+  }
+  // 合法点仍然正常（(0,0) 是合法坐标，不是"缺失"）。
+  const origin = resolveCursorPlacement({ ...base, cursorScreenPoint: { x: 0, y: 0 } })
+  assert.equal(origin.visible, true)
+  assert.equal(origin.x, -3)
+  assert.equal(origin.y, -9)
+})
+
 // ===========================================================================
 // helper 行协议解析
 // ===========================================================================
@@ -537,14 +571,22 @@ test('provider: 启动超时 → 收掉 helper 并降级', async () => {
   assert.match(harness.logs.join('\n'), /startup timeout/)
 })
 
-test('provider: 查询超时 → 这一次返回 null 并收掉 helper', async () => {
+test('provider: 查询超时 → 这一次返回 null 且只回收子进程，provider 仍可用（P0-2 修复）', async () => {
   const harness = createHarness({ autoReady: false, queryTimeoutMs: 20 })
   harness.child.onWrite = () => { /* 永不回应 */ }
   const pending = harness.provider.query()
   setImmediate(() => harness.child.stdout.emit('data', '{"ready":true}\n'))
   assert.equal(await pending, null)
-  assert.equal(harness.provider.isAvailable(), false)
   assert.match(harness.logs.join('\n'), /query timeout/)
+  // 关键：一次超时不得把整会话打成永久不可用 —— 否则用户只看到"这张没光标"，
+  // 之后每张图（以及录屏轮询）都静默无光标且无从察觉。
+  assert.equal(harness.provider.isAvailable(), true)
+  assert.equal(harness.child.killed, true)
+  assert.equal(harness.spawns(), 1)
+  // 下一次查询会重新拉起 helper（这就是"仍可用"的可观测证据）。
+  harness.provider.query()
+  assert.equal(harness.spawns(), 2)
+  harness.provider.dispose()
 })
 
 test('provider: stdin 写入抛错 → 降级；stderr 有内容时记日志', async () => {

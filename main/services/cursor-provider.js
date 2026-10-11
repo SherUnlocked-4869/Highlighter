@@ -88,6 +88,7 @@ function createCursorProvider(options = {}) {
   let readyPromise = null
   let nextRequestId = 1
   let shapeCache = null
+  let expectedExit = false
   const pending = new Map()
 
   function settleReady(ok) {
@@ -105,8 +106,9 @@ function createCursorProvider(options = {}) {
     }
   }
 
-  // 内部原因（启动失败 / 超时 / 写管道失败）：标记不可用并收掉子进程。
+  // 内部原因（启动失败 / helper 缺失 / 写管道失败）：标记**永久**不可用并收掉子进程。
   // 先置 available=false，子进程随后的 exit 事件会被 handleExit 的守卫吞掉。
+  // 注意：查询超时**不走这里** —— 那次只是这一张没光标，不该让整会话失去能力（见 recycleChild）。
   function markUnavailable(reason) {
     if (!available) return
     available = false
@@ -123,8 +125,35 @@ function createCursorProvider(options = {}) {
     }
   }
 
+  // 主动回收子进程但**保留 available**：下一次 query() 会重新 spawn。
+  // 用于"这一次查询超时"（helper 慢/卡住），而不是"helper 根本不可用"。
+  // expectedExit 让随后的 exit 事件只做收尾，不再把 available 打成 false。
+  function recycleChild(reason) {
+    if (!child) return
+    log('Cursor helper recycled:', reason)
+    expectedExit = true
+    const process2 = child
+    child = null
+    ready = false
+    shapeCache = null
+    settleReady(false)
+    clearPending()
+    try { process2.stdin.end('quit\n') } catch {}
+    try { process2.kill() } catch {}
+  }
+
   // 子进程自己退出（崩溃 / 被杀 / 初始化失败）：只收尾，不再重复杀。
   function handleExit(reason) {
+    // 我们自己回收的那次（查询超时）：只收尾，available 保持 true，下次查询重新拉起。
+    if (expectedExit) {
+      expectedExit = false
+      child = null
+      ready = false
+      shapeCache = null
+      settleReady(false)
+      clearPending()
+      return
+    }
     if (!available) return
     available = false
     child = null
@@ -189,6 +218,10 @@ function createCursorProvider(options = {}) {
 
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk) => handleOutput(chunk))
+    // 写管道在 helper 猝死时可能异步报 EPIPE。本机实测（Node 24，5 种时序）未复现崩溃，
+    // 但无监听器的 stream 'error' 一旦触发就是主进程未捕获异常 —— 加一行只记日志的兜底，
+    // 不在这里调 handleExit（瞬时写失败不该升级成整会话不可用）。
+    child.stdin.on('error', (error) => log('Cursor helper stdin:', error.message))
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk) => {
       const text = String(chunk || '').trim()
@@ -237,7 +270,9 @@ function createCursorProvider(options = {}) {
       const timer = setTimeout(() => {
         pending.delete(id)
         resolve(null)
-        markUnavailable('query timeout')
+        // 查询超时只回收这一次的子进程：下一次 query() 会重新 spawn。
+        // 若在这里 markUnavailable，一次 CPU 争用就会让整会话（以及将来的录屏轮询）永久无光标。
+        recycleChild('query timeout')
       }, queryTimeoutMs)
       pending.set(id, {
         timer,

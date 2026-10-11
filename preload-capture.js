@@ -11,7 +11,9 @@ contextBridge.exposeInMainWorld('captureAPI', {
   renderError: (message) => ipcRenderer.send('capture:render-error', message),
   // serialNumber 只在本次截图落过序号时才有值（0 = 没落过），用于主进程精确接续序号（P0-7-T7）。
   close: (serialNumber) => ipcRenderer.send('capture:close', { serialNumber }),
-  startLongCapture: (selection) => ipcRenderer.invoke('capture:start-long', { selection }),
+  // 录制/长截图在渲染层是"提前 return"，拿不到动作 meta，所以序号单独作为第二参带回
+  // （P0-7-T7 精确接续的补充：这两个出口同样要"落过就推进"）。
+  startLongCapture: (selection, serial) => ipcRenderer.invoke('capture:start-long', { selection, ...serial }),
   smartSelectAt: (point) => ipcRenderer.invoke('capture:smart-select', point),
   copy: (imageBuffer, meta) => ipcRenderer.invoke('capture:copy', { imageBuffer, meta }),
   save: (imageBuffer, meta, fast) => ipcRenderer.send('capture:save', { imageBuffer, meta, fast }),
@@ -20,7 +22,7 @@ contextBridge.exposeInMainWorld('captureAPI', {
   openRecognition: (type, imageBuffer, meta) => ipcRenderer.invoke('capture:open-recognition', { type, imageBuffer, meta }),
   ocr: (imageBuffer, options) => ipcRenderer.invoke('capture:ocr', { imageBuffer, ...options }),
   translate: (imageBuffer, options) => ipcRenderer.invoke('capture:translate', { imageBuffer, ...options }),
-  startRegionRecording: (selectionBounds) => ipcRenderer.invoke('capture:start-region-recording', { selectionBounds }),
+  startRegionRecording: (selectionBounds, serial) => ipcRenderer.invoke('capture:start-region-recording', { selectionBounds, ...serial }),
   recordHistory: (imageBuffer, meta) => ipcRenderer.invoke('capture:record-history', { imageBuffer, meta }),
   exportPdf: (imageBuffer, meta, mode) => ipcRenderer.invoke('capture:export-pdf', { imageBuffer, meta, mode }),
   saveWatermarkSettings: (watermark) => ipcRenderer.invoke('settings:update', { screenshot: { watermark } }),

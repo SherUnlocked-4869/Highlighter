@@ -192,7 +192,10 @@
     if (!box) return false
     if (item.type === 'rect') return nearBoxRing(px, py, box, limit)
     if (item.type === 'ellipse') return nearEllipseRing(px, py, box, limit)
-    if (item.type === 'line' || item.type === 'arrow') {
+    // highlight 也是"粗线段"（markerWidth 决定粗细）：若落进 insideBox，斜向高亮的整个 bbox
+    // 都会可点 —— 既吞掉其下元素的选中，又因 pointerdown 的"元素命中 > 拖选区"挡住拖选区，
+    // 正是 rect/ellipse 用环带命中刻意规避的失效模式。
+    if (item.type === 'line' || item.type === 'arrow' || item.type === 'highlight') {
       const segment = endpoints(item)
       return pointToSegmentDistance(px, py, segment.x1, segment.y1, segment.x2, segment.y2) <= limit
     }

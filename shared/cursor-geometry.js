@@ -78,9 +78,19 @@
       width: finiteNumber(imageSize && imageSize.width),
       height: finiteNumber(imageSize && imageSize.height)
     }
+    // 光标点单独校验：缺失/非数值必须判为"输入不合法"（visible:false），
+    // 不能像 bounds/imageSize 那样回落到 0 —— 否则会在截图左上角画出一枚只减了热点的幽灵光标。
+    // 注意不能写成 `Number(point && point.x)`：null 会被 Number() 变成 0（有限值）而蒙混过关。
+    const hasPoint = cursorScreenPoint !== null && typeof cursorScreenPoint === 'object'
+    const rawPointX = hasPoint ? Number(cursorScreenPoint.x) : NaN
+    const rawPointY = hasPoint ? Number(cursorScreenPoint.y) : NaN
     const point = {
-      x: finiteNumber(cursorScreenPoint && cursorScreenPoint.x),
-      y: finiteNumber(cursorScreenPoint && cursorScreenPoint.y)
+      x: Number.isFinite(rawPointX) ? rawPointX : 0,
+      y: Number.isFinite(rawPointY) ? rawPointY : 0
+    }
+
+    if (!Number.isFinite(rawPointX) || !Number.isFinite(rawPointY)) {
+      return { visible: false, x: 0, y: 0, width: 0, height: 0, pointX: 0, pointY: 0, scaleFactor: 0, reason: 'invalid-input' }
     }
 
     if (!(bounds.width > 0) || !(bounds.height > 0) || !(image.width > 0) || !(image.height > 0)) {

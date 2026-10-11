@@ -50,7 +50,12 @@ internal static class Program
                 int cursorId = -1;
                 if (parts.Length == 2)
                 {
-                    int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out cursorId);
+                    // 解析失败时 TryParse 会把 out 参数清 0，而 0 是合法 id —— 必须显式回到 -1，
+                    // 否则 `cursor abc` 会回一个 "id":0，与"不带 id 则省略该字段"的约定矛盾。
+                    if (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out cursorId))
+                    {
+                        cursorId = -1;
+                    }
                 }
                 WriteCursor(cursorId);
                 continue;
@@ -371,7 +376,12 @@ internal static class Program
                 {
                     // DI_NORMAL 把光标按 alpha 混合进 32bpp ARGB 的后台缓冲，透明区域保持透明。
                     // （用 Icon.ToBitmap() 会丢掉 alpha，透明处变黑。）
-                    DrawIconEx(hdc, 0, 0, cursor, width, height, 0, IntPtr.Zero, DiNormal);
+                    // 必须接住返回值：绘制失败时不能产出一张"合法但全空白"的 PNG 并上报 showing:true，
+                    // 那会让上层把空白当真实形状缓存、用户"以为抓到光标却什么都没画"。
+                    if (!DrawIconEx(hdc, 0, 0, cursor, width, height, 0, IntPtr.Zero, DiNormal))
+                    {
+                        return null;
+                    }
                 }
                 finally
                 {

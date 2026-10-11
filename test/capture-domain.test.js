@@ -114,7 +114,7 @@ test('capture domain factory tracks the current window and create sequence', () 
 // Shared harness for the Wave-2 (S9a) init-payload contracts. Every collaborator
 // is a fake so the factory can run under plain node. `cursorProvider` stays optional:
 // the P0-2 gate must treat "not injected" exactly like "switch off".
-function createHarness({ screenshot = {}, cursorProvider = null } = {}) {
+function createHarness({ screenshot = {}, cursorProvider = null, ...deps } = {}) {
   const created = []
   const calls = { windows: [], saved: [], persisted: [] }
   const settings = { screenshot }
@@ -172,7 +172,9 @@ function createHarness({ screenshot = {}, cursorProvider = null } = {}) {
     dataUrlToBuffer: () => Buffer.from([1]),
     bufferToDataUrl: () => 'data:image/png;base64,AA==',
     performanceMonitor: { record: () => {}, snapshot: () => {} },
-    cursorProvider
+    cursorProvider,
+    // 允许单个用例追加/覆盖 deps（例如光标 mode 门要跑真正的抓屏分支）。
+    ...deps
   })
   return { domain, created, calls, settings }
 }
@@ -237,6 +239,44 @@ test('a kept serial continues from the last number the previous capture actually
   fourth.close()
 })
 
+// OCR 评审修复（High）：复制是最常用的完成动作（Enter 走的就是 performAction('copy')），
+// 而 capture:copy 是 7 个 handler 里唯一漏了 reportCaptureSerial 的 —— 落过序号再复制，
+// 下一张仍从 1 开始，正是序号接续缺陷本身。录制/长截图同理（渲染层提前 return）。
+test('every output path that consumes serials advances the counter, including copy and recording (P0-7-T7)', async () => {
+  const harness = createHarness({ screenshot: { keepSerialAcrossCaptures: true } })
+  const controller = harness.domain.createCaptureController()
+
+  controller.copy({ sender: {} }, { imageBuffer: Buffer.from([1]), meta: { serialNumber: 5 } })
+  const afterCopy = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(afterCopy._captureInit.serialNumber, 5, 'copy (the Enter path) must advance the serial')
+
+  controller.startRegionRecording({ sender: {} }, { selectionBounds: { x: 0, y: 0, width: 32, height: 32 }, serialNumber: 9 })
+    .catch(() => {})
+  await new Promise((resolve) => setImmediate(resolve))
+  const afterRecord = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(afterRecord._captureInit.serialNumber, 9, 'the recording entry returns before meta, so its payload carries the serial')
+
+  controller.startLong({ sender: {} }, { selection: { x: 0, y: 0, w: 32, h: 32 }, serialNumber: 12 })
+  const afterLong = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(afterLong._captureInit.serialNumber, 12, 'the long-capture entry carries the serial too')
+
+  afterCopy.close()
+  afterRecord.close()
+  afterLong.close()
+})
+
+// OCR 评审修复：开关关闭时不推进计数，否则"先关后开"时首张启用截图不再从 1 开始。
+test('a report while keepSerialAcrossCaptures is off does not advance the counter (P0-7-T7)', async () => {
+  const harness = createHarness({ screenshot: { keepSerialAcrossCaptures: false } })
+  const controller = harness.domain.createCaptureController()
+
+  controller.save({ sender: {} }, { imageBuffer: Buffer.from([1]), meta: { serialNumber: 40 } })
+  harness.settings.screenshot.keepSerialAcrossCaptures = true
+  const first = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  assert.equal(first._captureInit.serialNumber, 1, 'turning the setting on starts fresh at 1, as the old implementation did')
+  first.close()
+})
+
 test('capture domain auto-saves on copy when only the remembered directory exists (§17.6)', async () => {
   const harness = createHarness({ screenshot: { autoSaveOnCopy: true, saveDirectory: '', lastSaveDirectory: '  E:/shots  ' } })
   const controller = harness.domain.createCaptureController()
@@ -290,6 +330,27 @@ test('the exported PDF default name follows screenshot.nameTemplate (§17.5, dec
 // helper, and its absence/failure must never disturb the screenshot itself.
 // ---------------------------------------------------------------------------
 
+// mode:'region' 会走真正的抓屏分支（这正是"只有抓屏路径才查光标"要覆盖的路径），
+// 所以补上 desktopCapturer 与能通过 isBlankCapture 的 nativeImage（thumbnail 与 nativeImage 同形）。
+function regionCaptureDeps () {
+  const thumbnail = {
+    isEmpty: () => false,
+    getSize: () => ({ width: 1, height: 1 }),
+    resize: () => ({ toBitmap: () => Buffer.from([1, 2, 3, 4]) }),
+    toPNG: () => Buffer.from([137, 80, 78, 71])
+  }
+  return {
+    desktopCapturer: { getSources: async () => [{ id: 'screen:1', display_id: 1, thumbnail }] },
+    nativeImage: {
+      createFromBuffer: () => ({
+        isEmpty: () => false,
+        getSize: () => ({ width: 1, height: 1 }),
+        resize: () => ({ toBitmap: () => Buffer.from([1, 2, 3, 4]) })
+      })
+    }
+  }
+}
+
 function createCursorHarness (options = {}) {
   const queries = []
   const provider = {
@@ -310,7 +371,11 @@ function createCursorHarness (options = {}) {
     isAvailable: () => true,
     dispose: () => {}
   }
-  const harness = createHarness({ screenshot: options.screenshot || {}, cursorProvider: provider })
+  const harness = createHarness({
+    screenshot: options.screenshot || {},
+    cursorProvider: provider,
+    ...regionCaptureDeps()
+  })
   harness.provider = provider
   harness.queries = queries
   return harness
@@ -318,7 +383,7 @@ function createCursorHarness (options = {}) {
 
 test('the cursor is only queried when screenshot.captureCursor is on, and only as a fresh read (P0-2/S9b)', async () => {
   const offHarness = createCursorHarness()
-  const off = await offHarness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  const off = await offHarness.domain.createCaptureWindow({ mode: 'region' })
   assert.equal(off._captureInit.cursor, null, 'the switch defaults to off, so the payload stays null')
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(
@@ -328,7 +393,7 @@ test('the cursor is only queried when screenshot.captureCursor is on, and only a
   )
 
   const onHarness = createCursorHarness({ screenshot: { captureCursor: true } })
-  const on = await onHarness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  const on = await onHarness.domain.createCaptureWindow({ mode: 'region' })
   assert.equal(onHarness.queries.length, 1, 'switch on queries exactly once, in parallel with the screen grab')
   assert.deepEqual(onHarness.queries[0], { fresh: true }, 'fresh:true is required or the provider replays a 250ms-old position')
   assert.deepEqual(on._captureInit.cursor, {
@@ -340,10 +405,22 @@ test('the cursor is only queried when screenshot.captureCursor is on, and only a
     physicalPoint: { x: 320, y: 240 }
   })
 
+  // OCR 评审修复：只有"真的抓了屏幕"的路径才查光标。mode:'image'（贴图重新标注）与
+  // mode:'canvas'（空白画布）的画面不是本次屏幕内容，贴此刻光标是杂散像素，且它们的
+  // scaleFactor 是图像/编辑器比例而非显示缩放，落点无意义。
+  for (const mode of ['image', 'canvas']) {
+    const gatedHarness = createCursorHarness({ screenshot: { captureCursor: true } })
+    const gated = await gatedHarness.domain.createCaptureWindow({ mode, imageBuffer: Buffer.from([1]) })
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(gated._captureInit.cursor, null, `${mode} must not receive a cursor payload`)
+    assert.equal(gatedHarness.queries.length, 0, `${mode} must not query the provider`)
+    gated.close()
+  }
+
   // An injected provider without the setting is still a no-op; and no provider with the
   // setting on must not throw.
-  const noProvider = createHarness({ screenshot: { captureCursor: true } })
-  const noProviderWindow = await noProvider.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  const noProvider = createHarness({ screenshot: { captureCursor: true }, ...regionCaptureDeps() })
+  const noProviderWindow = await noProvider.domain.createCaptureWindow({ mode: 'region' })
   assert.equal(noProviderWindow._captureInit.cursor, null)
 
   off.close()
