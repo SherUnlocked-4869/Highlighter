@@ -80,7 +80,9 @@ test('reset reapplies the documented effect set', () => {
     system: { gameMode: false, updateChannel: 'stable' },
     selectionToolbar: { clipboardFallback: false }
   })
-  assert.deepEqual(calls.map((c) => c.name), ['gameMode', 'appearance', 'channel', 'clipboard', 'search'])
+  // `language.tray` rebuilds the tray on reset too (the template resolves its labels at
+  // build time), so the reset path now records that call as well.
+  assert.deepEqual(calls.map((c) => c.name), ['gameMode', 'appearance', 'tray', 'channel', 'clipboard', 'search'])
 })
 
 test('update effect ids are stable for contract tests', () => {
@@ -95,6 +97,7 @@ test('update effect ids are stable for contract tests', () => {
     'plugins.ocr.hotStart',
     'appearance',
     'language',
+    'language.tray',
     'search',
     'selectionToolbar.clipboardFallback',
     'selectionToolbar.conversation.persist'

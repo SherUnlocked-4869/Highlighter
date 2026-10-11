@@ -1,3 +1,11 @@
+// P0-1-T6 / plan §10.5-5: only user-visible copy is translated. The updater's
+// own log lines stay English and verbatim (createSanitizedUpdaterLogger, the
+// `Update state:` trace, the /^Updater (debug|info|warn|error):/ prefix), as do
+// the release notes, which come from the remote feed and belong to the release
+// author rather than the UI. `message`/`action` below are rendered by the
+// settings window's About route (config/routes/about.js), so they are UI copy.
+const { t } = require('./i18n-bootstrap')
+
 const DEFAULT_STARTUP_DELAY_MS = 30 * 1000
 const DEFAULT_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 const MAX_RELEASE_NOTES_LENGTH = 8000
@@ -70,44 +78,44 @@ function normalizeUpdateError(error) {
     {
       pattern: /signature|not signed|code signing|certificate|publisher|checksum|sha(?:256|512)?|integrity/i,
       code: 'signature-invalid',
-      message: '更新包签名或完整性校验失败。',
-      action: '请从项目发布页下载安装包，并确认发布者为 Highlighter。'
+      message: t('main.update.signature-invalid.message'),
+      action: t('main.update.signature-invalid.action')
     },
     {
       pattern: /ENOSPC|not enough space|disk full|insufficient disk/i,
       code: 'disk-full',
-      message: '磁盘空间不足，无法保存更新包。',
-      action: '请释放系统盘空间后重试。'
+      message: t('main.update.disk-full.message'),
+      action: t('main.update.disk-full.action')
     },
     {
       pattern: /ERR_UPDATER_INVALID_(?:VERSION|UPDATE_INFO)|YAMLException|bad indentation|end of (?:the )?stream|manifest.*invalid|update info.*invalid/i,
       code: 'update-metadata-invalid',
-      message: '更新服务返回了无效的版本信息。',
-      action: '当前版本不会被修改，请稍后重试或从项目发布页确认版本状态。'
+      message: t('main.update.metadata-invalid.message'),
+      action: t('main.update.metadata-invalid.action')
     },
     {
       pattern: /ERR_UPDATER_CHANNEL_FILE_NOT_FOUND|HttpError:\s*4\d\d/i,
       code: 'network-error',
-      message: '无法连接更新服务。',
-      action: '请检查网络连接后重试，或从项目发布页手动下载。'
+      message: t('main.update.network.message'),
+      action: t('main.update.network.action')
     },
     {
       pattern: /ETIMEDOUT|ESOCKETTIMEDOUT|timeout|timed out/i,
       code: 'network-timeout',
-      message: '检查或下载更新超时。',
-      action: '请检查网络连接后重试，或从项目发布页手动下载。'
+      message: t('main.update.timeout.message'),
+      action: t('main.update.network.action')
     },
     {
       pattern: /ENOTFOUND|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ERR_(?:CONNECTION|CONTENT_LENGTH|EMPTY_RESPONSE|NAME_NOT_RESOLVED)|network|http(?: error| status)?[^\d]*4\d\d/i,
       code: 'network-error',
-      message: '无法连接更新服务。',
-      action: '请检查网络连接后重试，或从项目发布页手动下载。'
+      message: t('main.update.network.message'),
+      action: t('main.update.network.action')
     },
     {
       pattern: /download/i,
       code: 'download-failed',
-      message: '更新包下载失败。',
-      action: '请重新下载；若问题持续，请从项目发布页手动下载。'
+      message: t('main.update.download-failed.message'),
+      action: t('main.update.download-failed.action')
     }
   ]
   const matched = matchers.find(({ pattern }) => pattern.test(raw))
@@ -115,8 +123,8 @@ function normalizeUpdateError(error) {
     ? { code: matched.code, message: matched.message, action: matched.action }
     : {
         code: 'update-failed',
-        message: '更新操作失败。',
-        action: '请稍后重试；若问题持续，请从项目发布页手动下载。'
+        message: t('main.update.failed.message'),
+        action: t('main.update.failed.action')
       }
 }
 
@@ -253,7 +261,7 @@ class UpdateService {
     })
     on('update-cancelled', () => {
       if (this.state.status !== 'downloading') return
-      this.setState({ status: 'available', progress: null, installBlocked: '下载已取消。' })
+      this.setState({ status: 'available', progress: null, installBlocked: t('main.update.cancelled') })
     })
     on('error', (error) => this.fail(error))
   }
@@ -298,8 +306,8 @@ class UpdateService {
         status: 'error',
         error: {
           code: 'unsupported-install-type',
-          message: '当前运行方式不支持应用内更新。',
-          action: '请安装正式安装版，或从项目发布页手动下载。'
+          message: t('main.update.unsupported.message'),
+          action: t('main.update.unsupported.action')
         }
       })
     }
@@ -351,7 +359,7 @@ class UpdateService {
       try {
         const gate = await this.canInstall()
         if (!gate?.ok) {
-          const reason = sanitizeUpdateText(gate?.reason || '当前有任务正在运行，请结束后重试。')
+          const reason = sanitizeUpdateText(gate?.reason || t('main.update.install-blocked'))
           return this.setState({ status: 'downloaded', installBlocked: reason, error: null })
         }
         this.setState({ status: 'installing', installBlocked: '', error: null })

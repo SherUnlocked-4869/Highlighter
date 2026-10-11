@@ -1,3 +1,9 @@
+// P0-1-T6: the labels are user-visible UI copy, so they resolve through the
+// shared runtime instead of being hard-coded. The template is rebuilt from
+// scratch on every language change (the caller re-runs createTrayIcon), so a
+// `t()` call at build time is enough — no re-translation pass is needed.
+const { t } = require('./i18n-bootstrap')
+
 function buildTrayMenuTemplate({
   gameMode = false,
   screenshotAccelerator = '',
@@ -30,15 +36,15 @@ function buildTrayMenuTemplate({
     : run('togglePinClickThrough')
 
   return [
-    { label: '截图', accelerator: screenshotAccelerator || undefined, enabled: featureEnabled, click: run('screenshot') },
-    { label: '截取全屏', enabled: featureEnabled, click: run('screenshotFullScreen') },
-    { label: '截取焦点窗口', enabled: featureEnabled, click: run('screenshotFocusedWindow') },
-    { label: '固定图片到屏幕', enabled: featureEnabled, click: run('fixedContent') },
-    { label: '视频录制', enabled: featureEnabled, click: run('videoRecord') },
-    { label: '本地搜索', enabled: featureEnabled, click: run('localSearch') },
+    { label: t('main.tray.screenshot'), accelerator: screenshotAccelerator || undefined, enabled: featureEnabled, click: run('screenshot') },
+    { label: t('main.tray.screenshot-full-screen'), enabled: featureEnabled, click: run('screenshotFullScreen') },
+    { label: t('main.tray.screenshot-focused-window'), enabled: featureEnabled, click: run('screenshotFocusedWindow') },
+    { label: t('main.tray.pin-image'), enabled: featureEnabled, click: run('fixedContent') },
+    { label: t('main.tray.video-record'), enabled: featureEnabled, click: run('videoRecord') },
+    { label: t('main.tray.local-search'), enabled: featureEnabled, click: run('localSearch') },
     { type: 'separator' },
     {
-      label: '游戏模式',
+      label: t('main.tray.game-mode'),
       type: 'checkbox',
       checked: gameMode === true,
       click: () => setGameModeEnabled(gameMode !== true)
@@ -46,15 +52,15 @@ function buildTrayMenuTemplate({
     { type: 'separator' },
     // A click-through pin cannot be reached by clicking it, so the bulk exit
     // lives with the always-available entries rather than the pin actions.
-    { label: '取消全部穿透', enabled: true, click: exitAllClickThrough },
+    { label: t('main.tray.exit-all-click-through'), enabled: true, click: exitAllClickThrough },
     // An unpinned result window hides as soon as it loses focus, and the only
     // other way to bring it back (a new selection) discards the conversation.
     // Without this entry the preserved turns are unreachable.
-    { label: '显示划词对话', visible: hasConversation === true, enabled: featureEnabled, click: showConversation },
-    { label: '截图历史', click: openHistory },
-    { label: '显示主界面', click: openMainWindow },
+    { label: t('main.tray.show-selection-chat'), visible: hasConversation === true, enabled: featureEnabled, click: showConversation },
+    { label: t('main.tray.capture-history'), click: openHistory },
+    { label: t('main.tray.show-main-window'), click: openMainWindow },
     { type: 'separator' },
-    { label: '退出', click: quit }
+    { label: t('main.tray.quit'), click: quit }
   ]
 }
 

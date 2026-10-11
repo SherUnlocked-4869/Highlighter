@@ -75,6 +75,13 @@ function createSettingsEffects(deps) {
       run: (_patch, settings) => broadcastInterfaceLanguage?.(settings?.language)
     },
     {
+      // The tray template resolves its labels when it is built, so a language change has to
+      // rebuild it; the broadcast above only reaches renderer windows.
+      id: 'language.tray',
+      when: (patch) => patch.language !== undefined,
+      run: () => createTrayIcon()
+    },
+    {
       id: 'search',
       when: (patch) => !!patch.search,
       run: () => searchDomain?.notifySettingsChanged()
@@ -102,6 +109,8 @@ function createSettingsEffects(deps) {
     // A reset restores `language` to its default, so open windows have to be
     // told about it exactly like an update does.
     { id: 'language', run: (settings) => broadcastInterfaceLanguage?.(settings?.language) },
+    // Same reason as the update path: the tray resolves its labels at build time.
+    { id: 'language.tray', run: () => createTrayIcon() },
     { id: 'system.updateChannel', run: (settings) => getUpdateService()?.setChannel(settings.system.updateChannel) },
     {
       id: 'selectionToolbar.clipboardFallback',

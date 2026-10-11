@@ -1,6 +1,11 @@
 'use strict'
 
 const { resolveSaveDirectory } = require('./image-file-save')
+// P0-1-T6: the image-picker filter label is rendered by the OS dialog, so it is
+// UI copy. The "unknown feature" error below is deliberately untouched: decision
+// D6 keeps every main-process error message out of this release, and
+// test/function-router.test.js asserts on its Chinese text.
+const { t } = require('./i18n-bootstrap')
 
 // The shortcut/tray/IPC feature entry point. Each name maps to one handler, so
 // the dispatcher is a lookup rather than a growing switch; the ownership of the
@@ -66,7 +71,7 @@ function createFunctionRouter(deps) {
       return true
     },
     async fixedContent() {
-      const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }] })
+      const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: t('main.dialog.image-filter'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }] })
       if (result.canceled || !result.filePaths[0]) return false
       const image = nativeImage.createFromPath(result.filePaths[0])
       const dataUrl = image.toDataURL()

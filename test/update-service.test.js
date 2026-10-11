@@ -233,3 +233,49 @@ test('survives a destroyed status target and removes updater listeners on dispos
   service.dispose()
   assert.equal(updater.listenerCount('error'), 0)
 })
+
+// S13 / P0-1-T6: `message` and `action` are rendered by the settings window's
+// About route (config/routes/about.js), so they resolve through the i18n table
+// at call time instead of being literal copy. The codes above stay the contract;
+// this pins down that the displayed text now comes from the table for every
+// language, while the release notes (remote feed) and the updater log lines stay
+// untouched.
+test('update error copy resolves from the locale table for every language', () => {
+  const { t, setLanguage, currentLanguage, registerLocales } = require('../main/services/i18n-bootstrap')
+  registerLocales()
+  const previous = currentLanguage()
+  // Code -> the table prefix that owns its copy. `network-timeout` deliberately
+  // reuses the network guidance, so its action key differs from its message key.
+  const keys = {
+    'signature-invalid': { message: 'signature-invalid', action: 'signature-invalid' },
+    'disk-full': { message: 'disk-full', action: 'disk-full' },
+    'update-metadata-invalid': { message: 'metadata-invalid', action: 'metadata-invalid' },
+    'network-error': { message: 'network', action: 'network' },
+    'network-timeout': { message: 'timeout', action: 'network' },
+    'download-failed': { message: 'download-failed', action: 'download-failed' },
+    'update-failed': { message: 'failed', action: 'failed' }
+  }
+  const cases = [
+    [new Error('certificate mismatch'), 'signature-invalid'],
+    [new Error('ENOSPC'), 'disk-full'],
+    [new Error('ERR_UPDATER_INVALID_UPDATE_INFO YAMLException'), 'update-metadata-invalid'],
+    [new Error('ETIMEDOUT'), 'network-timeout'],
+    [new Error('ENOTFOUND'), 'network-error'],
+    [new Error('download interrupted'), 'download-failed'],
+    [new Error('something else entirely'), 'update-failed']
+  ]
+  try {
+    for (const language of ['zh-CN', 'en-US', 'zh-TW']) {
+      setLanguage(language)
+      for (const [error, code] of cases) {
+        const normalized = normalizeUpdateError(error)
+        assert.equal(normalized.code, code)
+        assert.equal(normalized.message, t(`main.update.${keys[code].message}.message`), `${language} ${code} message`)
+        assert.equal(normalized.action, t(`main.update.${keys[code].action}.action`), `${language} ${code} action`)
+        assert.ok(normalized.message && normalized.action, `${language} ${code} must not be empty`)
+      }
+    }
+  } finally {
+    setLanguage(previous)
+  }
+})

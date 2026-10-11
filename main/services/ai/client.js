@@ -21,6 +21,14 @@ const {
   sanitizeProviderHeaders
 } = require('../../../shared/coding-plan-presets')
 const { getAiSessionId } = require('./session-id')
+// P0-1-T6: the connection-error copy below is returned to the settings window and
+// rendered verbatim (`toast(error.message)` in config/routes/models-provider.js),
+// so it is UI text. Everything else in this module is AI pipeline content — the
+// translation system prompt, the language-name matchers ("中文"/"英文"), the OCR
+// batch prompts and the `ai.targetLanguage` default — and is deliberately left
+// alone: plan §10.5-4 keeps prompt/target-language data out of UI language
+// coupling, and the matchers parse user-supplied prompt text.
+const { t } = require('../i18n-bootstrap')
 
 const AI_PROTOCOLS = new Set(AI_PROTOCOL_LIST)
 const OCR_TRANSLATION_TIMEOUT_MS = 30000
@@ -121,15 +129,30 @@ function isModelNotFoundError(error) {
   return /model[\s\S]*(not found|does not exist|doesn't exist|invalid)|does not exist[\s\S]*model/i.test(message)
 }
 
+// The provider detail is appended verbatim (it is the upstream message, not our
+// copy), separated by the full-width colon the Simplified/`Traditional tables
+// carry inside their own sentences. English appends it with a regular colon so
+// the result reads naturally in both scripts.
+function withDetail(base, detail) {
+  const value = String(detail || '').trim()
+  if (!value) return base
+  const separator = /[\u4e00-\u9fff]/.test(base) ? '：' : ': '
+  return `${base}${separator}${value}`
+}
+
 function describeConnectionError(error) {
   const status = Number(error?.status || error?.statusCode || 0)
   const message = String(error?.message || error || '').trim()
-  if (isModelNotFoundError(error)) return `连接失败：模型不存在或不可用（HTTP ${status || 404}），请检查模型目录`
-  if (status === 401 || status === 403) return `连接失败：API 密钥无效或没有访问权限（HTTP ${status}）`
-  if (status === 404 || status === 405) return '连接失败：接口地址不存在（HTTP 404/405）。请检查 API 地址是否以 /v1 结尾，以及 API 协议是否与供应商兼容'
-  if (status === 400) return `连接失败：请求被供应商拒绝（HTTP 400）${message ? `：${message}` : ''}`
-  if (status) return `连接失败：供应商返回 HTTP ${status}${message ? `：${message}` : ''}`
-  return `连接失败：${message || '网络请求失败，请检查 API 地址'}`.replace(/^连接失败：Error:\s*/, '连接失败：')
+  if (isModelNotFoundError(error)) return t('main.ai.model-missing', { status: status || 404 })
+  if (status === 401 || status === 403) return t('main.ai.unauthorized', { status })
+  if (status === 404 || status === 405) return t('main.ai.endpoint-missing')
+  if (status === 400) return withDetail(t('main.ai.bad-request'), message)
+  if (status) return withDetail(t('main.ai.http-status', { status }), message)
+  // `Error:` is what an Error object stringifies with; the previous single
+  // template dropped it only when it led the string, so strip that one prefix
+  // rather than rewriting the message.
+  const detail = String(message || '').replace(/^Error:\s*/, '') || t('main.ai.fallback')
+  return t('main.ai.network', { detail })
 }
 
 async function pingConnection(config) {

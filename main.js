@@ -90,6 +90,8 @@ const { createSettingsNormalizer } = require('./main/services/settings-normalize
 const { createFfmpegPathResolver } = require('./main/services/ffmpeg-path')
 const { createImageFileSaver, resolveSaveDirectory } = require('./main/services/image-file-save')
 const { createCursorProvider } = require('./main/services/cursor-provider')
+// P0-1-T6：主进程文案的 i18n 入口（加载 shared/locales/*.js 并提供 t/setLanguage）。
+const { setLanguage } = require('./main/services/i18n-bootstrap')
 const {
   migrateAiSettings,
   resolveAiAssignment
@@ -685,6 +687,9 @@ settingsEffects = createSettingsEffects({
   broadcastActionAppearance: (settings) => selectionDomain.broadcastActionAppearance(settings),
   // P0-1-T2：语言切换广播到所有窗口（主→渲染；按方案 §2.2 不登记 IPC_SURFACES）。
   broadcastInterfaceLanguage: (language) => {
+    // 主进程自己的文案（托盘/更新/状态）也要跟着切；托盘 label 在构建时求值，
+    // 由 settings-effects 的 `language.tray` effect 负责重建。
+    setLanguage(language)
     for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send('i18n:language', language)
   },
   searchDomain,
@@ -1209,6 +1214,8 @@ async function startApplication() {
   }
   initializeDiagnostics()
   persistSettings(getSettings())
+  // P0-1-T6：主进程文案要先按设置里的语言生效，再建托盘（label 在构建时求值）。
+  setLanguage(getSettings().language)
   selectionDomain.syncConversationStore()
   createMainWindow('home')
   if (!e2eContext.enabled) {

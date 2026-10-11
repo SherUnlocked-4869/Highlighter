@@ -2,6 +2,14 @@ const fs = require('fs')
 const path = require('path')
 const { execFile, spawn } = require('child_process')
 
+// P0-1-T6: `status.message` is rendered by the local-search window
+// (search/search.js), so it is UI copy and resolves through the shared runtime.
+// Everything passes through a `new Error(...)` instead (sidecar missing / failed
+// to start / query failed) is diagnostic text: plan §10.5-5 keeps log and
+// diagnostic strings verbatim, and decision D6 keeps every main-process `throw`
+// out of this release, so those messages stay exactly as they were.
+const { t } = require('./i18n-bootstrap')
+
 const SIDECAR_START_TIMEOUT_MS = 15000
 const READY_TIMEOUT_MS = 30000
 const QUERY_TIMEOUT_MS = 8000
@@ -78,7 +86,7 @@ class EverythingService {
   getFakeStatus() {
     return {
       phase: 'ready',
-      message: 'Everything 已就绪',
+      message: t('main.everything.ready'),
       running: true,
       dbLoaded: true,
       version: 'e2e',
@@ -108,7 +116,7 @@ class EverythingService {
         this.applySidecarStatus(snapshot, {
           managedByHighlighter: !!this.managedEverything,
           phase: ready ? 'ready' : (running ? 'waiting' : 'idle'),
-          message: ready ? 'Everything 已就绪' : (running ? 'Everything 正在运行，索引尚未就绪' : '')
+          message: ready ? t('main.everything.ready') : (running ? t('main.everything.index-pending') : '')
         })
         this.scheduleIdleStop()
       } catch (error) {
@@ -338,13 +346,13 @@ class EverythingService {
       return this.getStatus()
     }
     await this.ensureStarted()
-    this.setStatus({ phase: 'checking', message: '正在检测 Everything...' })
+    this.setStatus({ phase: 'checking', message: t('main.everything.checking') })
     const snapshot = await this.request({ action: 'status' }, STATUS_TIMEOUT_MS).catch((error) => {
       this.log('Everything status check failed:', error.message)
       return null
     })
     if (!snapshot) {
-      this.setStatus({ phase: 'error', message: 'Everything 组件不可用' })
+      this.setStatus({ phase: 'error', message: t('main.everything.unavailable') })
       throw new Error('Everything 组件不可用')
     }
     this.applySidecarStatus(snapshot, { managedByHighlighter: !!this.managedEverything })
@@ -354,24 +362,24 @@ class EverythingService {
       // typically an integrity-level mismatch. Fail fast instead of waiting
       // 30s or shadowing the user's instance with the bundled copy.
       const message = '检测到 Everything，但无法与之通信（可能正在加载索引或权限不一致），请尝试以相同权限运行 Highlighter 与 Everything'
-      this.setStatus({ phase: 'error', message })
+      this.setStatus({ phase: 'error', message: t('main.everything.ipc-mismatch') })
       throw new Error(message)
     }
 
     if (snapshot.running && snapshot.dbLoaded) {
       this.lastReadyAt = Date.now()
-      this.setStatus({ phase: 'ready', message: 'Everything 已就绪' })
+      this.setStatus({ phase: 'ready', message: t('main.everything.ready') })
       return this.getStatus()
     }
 
     if (snapshot.running) {
-      this.setStatus({ phase: 'waiting', message: '检测到 Everything 正在运行，正在等待索引服务就绪...' })
+      this.setStatus({ phase: 'waiting', message: t('main.everything.waiting') })
     } else if (this.getUseBundledEverything()) {
-      this.setStatus({ phase: 'starting', message: '未检测到 Everything，正在启动内置 Everything...' })
+      this.setStatus({ phase: 'starting', message: t('main.everything.starting') })
       await this.spawnBundledEverything()
     } else {
       const message = '未检测到 Everything，请安装并启动 Everything 后重试'
-      this.setStatus({ phase: 'error', message, downloadUrl: EVERYTHING_DOWNLOAD_URL })
+      this.setStatus({ phase: 'error', message: t('main.everything.not-installed'), downloadUrl: EVERYTHING_DOWNLOAD_URL })
       throw new Error(message)
     }
 
@@ -381,13 +389,16 @@ class EverythingService {
     })
     if (ready) {
       this.lastReadyAt = Date.now()
-      this.setStatus({ phase: 'ready', message: 'Everything 已就绪' })
+      this.setStatus({ phase: 'ready', message: t('main.everything.ready') })
       return this.getStatus()
     }
     const message = snapshot.running
       ? 'Everything 初始化超时，索引尚未就绪'
       : 'Everything 初始化超时，请确认 Everything 可正常启动（NTFS 索引需要管理员权限或 Everything 服务）'
-    this.setStatus({ phase: 'error', message })
+    this.setStatus({
+      phase: 'error',
+      message: snapshot.running ? t('main.everything.timeout-index') : t('main.everything.timeout-start')
+    })
     throw new Error(message)
   }
 
@@ -426,7 +437,7 @@ class EverythingService {
         // Everything may have exited after the readiness check; force a
         // re-check on the next query.
         this.lastReadyAt = 0
-        this.setStatus({ phase: 'checking', message: '正在重新检测 Everything...' })
+        this.setStatus({ phase: 'checking', message: t('main.everything.rechecking') })
       }
       throw error
     }).finally(() => {
