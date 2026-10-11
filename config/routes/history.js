@@ -16,15 +16,29 @@ async function renderHistory() {
   historyThumbnailObserver = null
   const headerActions = '<div class="page-head-actions"><button class="button" id="cleanupHistory">' + t('config.history.cleanup-invalid') + '</button><button class="button danger" id="clearHistory">' + t('config.history.clear-all') + '</button></div>'
   view.innerHTML = `<div class="page">${pageHeader(t('config.route.history'), t('config.history.description'), headerActions)}<div class="empty">${t('config.history.loading')}</div></div>`
-  const [firstPage, sources, stats] = await Promise.all([
-    window.electronAPI.getHistory({
-      query: historyQuery,
-      source: historySource,
-      limit: HISTORY_PAGE_SIZE
-    }),
-    window.electronAPI.getHistorySources(),
-    window.electronAPI.getHistoryStats()
-  ])
+  let firstPage
+  let sources
+  let stats
+  try {
+    const [page, sourceList, statistics] = await Promise.all([
+      window.electronAPI.getHistory({
+        query: historyQuery,
+        source: historySource,
+        limit: HISTORY_PAGE_SIZE
+      }),
+      window.electronAPI.getHistorySources(),
+      window.electronAPI.getHistoryStats()
+    ])
+    firstPage = page
+    sources = sourceList
+    stats = statistics
+  } catch (error) {
+    if (currentRoute === 'history' && renderVersion === historyRenderVersion) {
+      view.innerHTML = `<div class="page">${pageHeader(t('config.route.history'), t('config.history.description'), headerActions)}<div class="empty">${t('config.history.load-failed')}</div></div>`
+      toast(error?.message || t('config.history.load-failed'))
+    }
+    return
+  }
   if (currentRoute !== 'history' || renderVersion !== historyRenderVersion) return
   let history = Array.isArray(firstPage?.items) ? firstPage.items : []
   let nextCursor = firstPage?.nextCursor || ''
@@ -198,14 +212,26 @@ async function renderHistory() {
     updateSelectionControls()
   }
   exportSelected.onclick = async () => {
-    const result = await window.electronAPI.exportHistory([...historySelectedIds])
+    let result
+    try {
+      result = await window.electronAPI.exportHistory([...historySelectedIds])
+    } catch (error) {
+      toast(error.message || t('config.history.export-failed'))
+      return
+    }
     if (result.canceled) return
     const suffix = result.failures?.length ? t('config.history.failure-suffix', { count: result.failures.length }) : ''
     toast(t('config.history.exported', { count: result.exportedCount, failures: suffix }))
   }
   deleteSelected.onclick = async () => {
     if (!confirm(t('config.history.confirm-delete-selected', { count: historySelectedIds.size }))) return
-    const result = await window.electronAPI.deleteHistoryMany([...historySelectedIds])
+    let result
+    try {
+      result = await window.electronAPI.deleteHistoryMany([...historySelectedIds])
+    } catch (error) {
+      toast(error.message || t('config.history.delete-failed'))
+      return
+    }
     historySelectedIds.clear()
     const suffix = result.failures?.length ? t('config.history.failure-suffix', { count: result.failures.length }) : ''
     toast(t('config.history.deleted', { count: result.deletedCount, failures: suffix }))
@@ -234,7 +260,13 @@ async function renderHistory() {
   document.getElementById('cleanupHistory').onclick = async () => {
     if (!stats.missingCount && !stats.orphanCount) { toast(t('config.history.nothing-to-clean')); return }
     if (!confirm(t('config.history.confirm-cleanup', { missing: stats.missingCount, orphans: stats.orphanCount }))) return
-    const result = await window.electronAPI.cleanupHistory()
+    let result
+    try {
+      result = await window.electronAPI.cleanupHistory()
+    } catch (error) {
+      toast(error.message || t('config.history.cleanup-failed'))
+      return
+    }
     const suffix = result.failures?.length ? t('config.history.failure-suffix', { count: result.failures.length }) : ''
     toast(t('config.history.cleaned', { entries: result.removedEntries, files: result.removedFiles, failures: suffix }))
     renderHistory()
