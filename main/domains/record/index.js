@@ -116,6 +116,7 @@ function createRecordDomain(deps) {
     const selectionBounds = normalizeSelectionBounds(requestedBounds || display.bounds, display.bounds)
     const source = await getDesktopSource(display)
     const frameRate = normalizeFrameRate(getSettings().record.frameRate)
+    const recordSettings = getSettings().record
     const frameBounds = calculateFrameBounds(selectionBounds, 2)
     const controlBounds = getRecordControlBounds(selectionBounds, display.workArea)
 
@@ -161,8 +162,33 @@ function createRecordDomain(deps) {
       sourceId: source.id,
       displayBounds: display.bounds,
       selectionBounds,
-      frameRate
+      frameRate,
+      // P0-3-T2: the recorder renderer reads these four frozen keys to decide which audio
+      // buses to request; the renderer falls back to the same defaults when they are absent.
+      audioSystem: recordSettings.audioSystem,
+      audioMicrophone: recordSettings.audioMicrophone,
+      audioSystemGain: recordSettings.audioSystemGain,
+      audioMicrophoneGain: recordSettings.audioMicrophoneGain
     }
+
+    // P0-3-T2: the renderer acquires the desktop through getDisplayMedia, which Electron
+    // only grants from this handler. getDisplayMedia cannot pin a source by deviceId, so the
+    // display is selected here with the same pickDesktopSource the legacy path used; the
+    // system-audio track is offered only when the renderer actually asked for audio, which
+    // is what keeps the "system sound off" contract (settings-defaults.js:71) honest.
+    controlWindow.webContents.session.setDisplayMediaRequestHandler(async (request, callback) => {
+      try {
+        if (!request.videoRequested) return callback({})
+        const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } })
+        const target = pickDesktopSource(sources, display.id)
+        if (!target) return callback({})
+        const audio = request.audioRequested && process.platform === 'win32' ? 'loopback' : undefined
+        callback(audio ? { video: target, audio } : { video: target })
+      } catch (error) {
+        log('Display media request failed:', error.message)
+        callback({})
+      }
+    })
 
     for (const win of [frameWindow, controlWindow]) {
       win.setAlwaysOnTop(true, 'screen-saver')
@@ -310,7 +336,7 @@ function createRecordDomain(deps) {
           if (win.isDestroyed()) return
           const percent = calculateTranscodeProgress(elapsedMicroseconds, duration)
           win.webContents.send('record:save-progress', percent)
-        }))
+        }, { audio: !!(settings.record.audioSystem || settings.record.audioMicrophone) }))
         if (!win.isDestroyed()) win.webContents.send('record:save-progress', 100)
         win._recordSessionId = null
         await managedRecordingWriters.track(service.cleanupSession(sessionId))
