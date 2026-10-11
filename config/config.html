@@ -50,7 +50,28 @@
   <script src="../toolbar/toolbar-action-meta.js"></script>
   <script src="../shared/coding-plan-presets.js"></script>
   <script src="../shared/shortcut-keys.js"></script>
+  <!-- D2-2（S14）：设置页按路由拆分。顺序 = 共享 helper -> 纯 helper -> 各路由 -> 主壳。 -->
+  <!-- 经典脚本共享全局作用域，主壳因此能直接调用路由文件里的顶层 function/const。 -->
+  <!-- window.configRoutes 由 routes/shared.js 在载入时创建（CSP 禁止内联脚本）； -->
+  <!-- shared.js 先于其余路由文件执行，所以各路由文件顶层那行登记一定有容器可写。 -->
+  <script src="routes/shared.js"></script>
   <script src="routes/model-helpers.js"></script>
+  <script src="routes/home.js"></script>
+  <script src="routes/translation.js"></script>
+  <script src="routes/chat.js"></script>
+  <script src="routes/history.js"></script>
+  <script src="routes/selection-toolbar-editor.js"></script>
+  <script src="routes/selection-toolbar.js"></script>
+  <script src="routes/models-editor.js"></script>
+  <script src="routes/models-provider.js"></script>
+  <script src="routes/models-feature.js"></script>
+  <script src="routes/models-render.js"></script>
+  <script src="routes/models-plan.js"></script>
+  <script src="routes/appearance.js"></script>
+  <script src="routes/plugins.js"></script>
+  <script src="routes/local-search.js"></script>
+  <script src="routes/settings.js"></script>
+  <script src="routes/about.js"></script>
   <script src="config.js"></script>
 </body>
 </html>

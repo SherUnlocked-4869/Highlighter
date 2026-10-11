@@ -80,7 +80,10 @@ test('the settings page exposes the new capture rows through the shared update p
 
   // renderHotkeySettings flattens that table and pairs every entry with its
   // stored accelerator, so the three rows above appear without a second list.
-  const hotkeyRender = config.slice(config.indexOf('function renderHotkeySettings()'), config.indexOf('function renderSystemSettings()'))
+  // D2-2（S14）：热键设置整体落在 routes/settings.js；只读该文件做边界断言，
+  // 这样"热键页长什么样"仍与它在哪个文件无关。
+  const settingsRoute = fs.readFileSync(path.join(__dirname, '..', 'config', 'routes', 'settings.js'), 'utf8')
+  const hotkeyRender = settingsRoute.slice(settingsRoute.indexOf('function renderHotkeySettings()'), settingsRoute.indexOf('function renderSystemSettings()'))
   assert.ok(hotkeyRender.includes('Object.values(functionGroups).flat()'), 'the hotkey page flattens functionGroups')
   assert.ok(hotkeyRender.includes("shortcutButton(name, settings.shortcuts[name] || '')"), 'every entry renders its stored hotkey')
 
@@ -94,7 +97,11 @@ test('the settings page exposes the new capture rows through the shared update p
   assert.ok(config.includes("switchMarkup(settings.screenshot.shutterSound, 'shutterSound', 'screenshot')"))
   assert.ok(config.includes("switchMarkup(settings.screenshot.keepSerialAcrossCaptures, 'keepSerialAcrossCaptures', 'screenshot')"))
   assert.ok(config.includes("switchMarkup(settings.pinned.clickThrough, 'clickThrough', 'pinned')"))
-  const switchBinder = config.slice(config.indexOf('function bindSwitches()'), config.indexOf('function selectionToolbarCustomKey('))
+  // D2-2（S14）：bindSwitches 移到 routes/shared.js，而 selectionToolbarCustomKey 移到
+  // routes/selection-toolbar-editor.js，两者不再同文件 —— 原来的"到下一个函数为止"
+  // 切片会把整条拼接源码都算进去，失去边界意义。改为切出 bindSwitches 自身的函数体。
+  // CRLF：用 [\s\S]*? 配 \r?\n\}，不能用 [^\n]*\n 那类写法。
+  const switchBinder = config.match(/function bindSwitches\(\) \{[\s\S]*?\r?\n\}/)[0]
   assert.ok(switchBinder.includes("document.querySelectorAll('[data-switch]')"), 'bindSwitches binds every rendered switch')
   assert.ok(switchBinder.includes('await updateSettings({ [group]: { [key]: value } })'), 'a switch submits one nested group')
   assert.ok(switchBinder.includes("element.classList.toggle('on', value)"), 'the switch reflects the stored value back')
@@ -207,8 +214,11 @@ test('recording defers to the shared key rules and stored values are repaired', 
   const shortcutService = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'shortcut-service.js'), 'utf8')
   const migration = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'shortcut-migration.js'), 'utf8')
 
-  // The renderer needs the shared module before config.js runs.
-  assert.match(html, /<script src="\.\.\/shared\/shortcut-keys\.js"><\/script>\s*<script src="routes\/model-helpers\.js"><\/script>\s*<script src="config\.js"><\/script>/)
+  // The renderer needs the shared module before config.js runs. D2-2（S14）：路由文件
+  // 插在共享模块与主壳之间（中间还有说明注释），因此按**顺序**断言：
+  // shared/shortcut-keys.js 先于 routes/shared.js，后者先于主壳 config.js。
+  assert.ok(html.indexOf('<script src="../shared/shortcut-keys.js"></script>') < html.indexOf('<script src="routes/shared.js"></script>'))
+  assert.ok(html.indexOf('<script src="routes/shared.js"></script>') < html.lastIndexOf('<script src="config.js"></script>'))
   // The recorder must not rebuild an accelerator by hand again: it asks the
   // shared module, waits out input-method compositions, and reports rejections.
   assert.match(config, /keys\.isIgnoredRecordingEvent\(keyEvent\)/)

@@ -126,7 +126,13 @@ test('system settings renders and uses data-root controls in every build', () =>
   assert.match(config, /readonly/)
   assert.match(config, /window\.electronAPI\.openDataRoot\(\)/)
   assert.match(config, /window\.electronAPI\.changeDataRoot\(\)/)
-  assert.match(config, /void renderSystemSettings\(\)\.catch/)
+  // D2-4（S14/D2-2）：renderSystemSettings 搬到 routes/settings.js 后，主壳不再内联
+  // `void renderSystemSettings().catch(...)`；async 失败提示改由分派表承载 ——
+  // 断言随之改为"主壳仍为 settings-system 保留错误回退文案 + 该入口已登记"。
+  assert.match(config, /'settings-system': \{ key: 'renderSystemSettings', fallbackMessage: '无法读取软件数据目录' \}/)
+  assert.match(config, /window\.configRoutes\[entry\.key\]/)
+  assert.match(config, /catch\(\(error\) => toast\(error\.message \|\| entry\.fallbackMessage\)\)/)
+  assert.match(config, /window\.configRoutes\['renderSystemSettings'\]/)
 })
 
 test('main process keeps data-root migration privileged, serialized, and restart-only on success', () => {

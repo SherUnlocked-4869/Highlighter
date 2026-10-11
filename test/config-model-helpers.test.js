@@ -14,19 +14,24 @@ const configJs = readConfigShell()
 test('config loads shared model helpers before the shell script', () => {
   const presetsIndex = configHtml.indexOf('../shared/coding-plan-presets.js')
   const helpersIndex = configHtml.indexOf('routes/model-helpers.js')
-  const configIndex = configHtml.indexOf('config.js')
+  // D2-2（S14）：路由文件同样以 "config.js" 结尾，必须取**最后**一处才是主壳。
+  const configIndex = configHtml.lastIndexOf('config.js')
   assert.ok(presetsIndex >= 0)
   assert.ok(helpersIndex > presetsIndex)
   assert.ok(configIndex > helpersIndex)
+  assert.match(configHtml, /routes\/shared\.js[\s\S]*<script src="config\.js"><\/script>/)
 })
 
 test('config.js delegates pure model helpers instead of redefining them', () => {
-  assert.match(configJs, /window\.modelHelpers/)
   assert.doesNotMatch(configJs, /function createModelProviderId\(/)
   assert.doesNotMatch(configJs, /function defaultModelsForProvider\(/)
   assert.doesNotMatch(configJs, /function modelProviderStatus\(/)
   assert.doesNotMatch(configJs, /function modelTaskForFeature\(/)
   assert.doesNotMatch(configJs, /function modelsForFeature\(/)
+  // D2-2（S14）：主壳改为按 key 分派，models 的实现落在 routes/ 里；
+  // "主壳没有重新定义 helper" 仍逐条成立，但 helper 的引用不再是主壳的职责。
+  assert.match(configJs, /window\.configRoutes/)
+  assert.match(configJs, /models: \{ key: 'bootstrapModels' \}/)
 })
 
 test('model helpers keep feature task mapping and the shared module owns provider defaults', () => {

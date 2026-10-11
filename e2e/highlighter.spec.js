@@ -95,3 +95,32 @@ test('main-context dialog stubs support diagnostics and the close button hides c
   await expect.poll(() => highlighter.isMainWindowVisible()).toBe(true)
   expect(await highlighter.getUnexpectedErrors()).toEqual([])
 })
+
+// D2-2/D2-3/D2-5（S14）：render 函数拆到 config/routes/*.js 后，每个路由都要真的
+// 能渲染。主壳的 renderRoute() 按 window.configRoutes 的 key 分派；漏挂一个文件或
+// key 拼错都会退化成"点开是空白页"，而 npm test（纯 Node）看不到真实渲染结果。
+test('every settings route renders content after the D2-2 route split', async ({ highlighter }) => {
+  const { mainWindow: page } = highlighter
+  const routes = [
+    ['home', '快捷功能', '.function-row'],
+    ['translation', '翻译', '#translateNow'],
+    ['chat', 'AI 对话', '#sendChat'],
+    ['history', '截图历史', '#historyResults'],
+    ['local-search', '本地搜索', '#saveSearch'],
+    ['appearance', '外观配色', '#saveAppearance'],
+    ['plugins', '插件', '.plugin-card'],
+    ['settings-general', '界面设置', '#saveGeneral'],
+    ['models', '模型', '#addModelProvider'],
+    ['settings-function', '功能设置', '#saveFunctions'],
+    ['selection-toolbar', '划词工具', '#saveSelectionToolbar'],
+    ['settings-hotkeys', '热键设置', '.shortcut'],
+    ['settings-system', '系统设置', '#dataRoot'],
+    ['about', '关于', '.about']
+  ]
+  for (const [route, title, selector] of routes) {
+    await page.locator(`[data-route="${route}"]`).click()
+    await expect(page.locator('#pageTitle')).toHaveText(title)
+    await expect(page.locator(selector).first()).toBeVisible()
+  }
+  expect(await highlighter.getUnexpectedErrors()).toEqual([])
+})
