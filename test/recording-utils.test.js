@@ -134,10 +134,71 @@ test('accepts only declared recording state transitions', () => {
   assert.throws(() => transitionRecordingState('idle', 'pause'), /非法录制状态转换/)
 })
 
-test('builds silent H.264 fast-start MP4 arguments', () => {
+test('builds silent H.264 fast-start MP4 arguments by default', () => {
   const args = buildFfmpegArgs('input.webm', 'output.mp4')
   assert.deepEqual(args.slice(0, 2), ['-i', 'input.webm'])
   for (const token of ['-an', 'libx264', 'yuv420p', '+faststart', 'output.mp4']) {
     assert.ok(args.includes(token), token)
   }
+  assert.equal(args.includes('-c:a'), false)
+  assert.equal(args.includes('-map'), false)
+})
+
+test('keeps the legacy two-argument call byte-identical to an explicit silent export', () => {
+  assert.deepEqual(
+    buildFfmpegArgs('input.webm', 'output.mp4'),
+    buildFfmpegArgs('input.webm', 'output.mp4', { audio: false })
+  )
+  assert.deepEqual(
+    buildFfmpegArgs('input.webm', 'output.mp4'),
+    [
+      '-i', 'input.webm',
+      '-an',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '23',
+      '-pix_fmt', 'yuv420p',
+      '-movflags', '+faststart',
+      '-progress', 'pipe:2',
+      '-nostats',
+      '-y', 'output.mp4'
+    ]
+  )
+})
+
+test('maps the recorded audio track as AAC when audio is enabled', () => {
+  const args = buildFfmpegArgs('input.webm', 'output.mp4', { audio: true })
+  assert.deepEqual(args.slice(0, 14), [
+    '-i', 'input.webm',
+    '-map', '0:v:0',
+    '-map', '0:a?',
+    '-c:a', 'aac',
+    '-b:a', '160k',
+    '-ar', '48000',
+    '-ac', '2'
+  ])
+  assert.equal(args.includes('-an'), false)
+  for (const token of ['libx264', 'yuv420p', '+faststart', 'output.mp4']) {
+    assert.ok(args.includes(token), token)
+  }
+})
+
+test('honours explicit audio encoding options and ignores junk values', () => {
+  const custom = buildFfmpegArgs('input.webm', 'output.mp4', {
+    audio: true,
+    audioBitrate: '96k',
+    audioSampleRate: 44100,
+    audioChannels: 1
+  })
+  assert.deepEqual(custom.slice(6, 14), ['-c:a', 'aac', '-b:a', '96k', '-ar', '44100', '-ac', '1'])
+  const fallback = buildFfmpegArgs('input.webm', 'output.mp4', {
+    audio: true,
+    audioBitrate: '',
+    audioSampleRate: 'x',
+    audioChannels: 0
+  })
+  assert.deepEqual(fallback.slice(6, 14), ['-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-ac', '2'])
+  // Non-object third arguments stay on the silent path instead of throwing.
+  assert.ok(buildFfmpegArgs('input.webm', 'output.mp4', null).includes('-an'))
+  assert.ok(buildFfmpegArgs('input.webm', 'output.mp4', 'audio').includes('-an'))
 })

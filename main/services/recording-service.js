@@ -63,14 +63,16 @@ class RecordingService {
     }
   }
 
-  async transcode(sessionId, outputPath, onProgress = () => {}) {
+  // `options` is forwarded to buildFfmpegArgs; `{ audio: true }` muxes the recorded audio
+  // track as AAC and `{ audio: false }` (also the legacy three-argument call) keeps `-an`.
+  async transcode(sessionId, outputPath, onProgress = () => {}, options = {}) {
     const session = this.getSession(sessionId)
     if (!session.finalized) throw new Error('录制会话尚未完成')
     if (session.process) throw new Error('MP4 正在转码')
     const target = path.resolve(String(outputPath || ''))
     if (!target.toLowerCase().endsWith('.mp4')) throw new Error('输出文件必须为 MP4')
     await fs.mkdir(path.dirname(target), { recursive: true })
-    const args = buildFfmpegArgs(session.inputPath, target)
+    const args = buildFfmpegArgs(session.inputPath, target, options)
 
     return new Promise((resolve, reject) => {
       let stderr = ''

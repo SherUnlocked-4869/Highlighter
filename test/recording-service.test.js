@@ -98,6 +98,43 @@ test('parses progress from standard ffmpeg time output', async (t) => {
   assert.deepEqual(progress, [500_000])
 })
 
+test('forwards audio transcoding options to ffmpeg', async (t) => {
+  const root = await createRoot(t)
+  const calls = []
+  const fakeSpawn = (_executable, args) => {
+    calls.push(args)
+    const child = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.kill = () => {}
+    queueMicrotask(async () => {
+      await fs.writeFile(args.at(-1), 'mp4')
+      child.emit('close', 0)
+    })
+    return child
+  }
+  const service = new RecordingService({ tempRoot: root, ffmpegPath: 'ffmpeg', spawnProcess: fakeSpawn })
+  t.after(() => service.dispose())
+  const session = await service.startSession()
+  await service.appendChunk(session.id, Buffer.from('webm'))
+  await service.finishSession(session.id)
+
+  await service.transcode(session.id, path.join(root, 'audio.mp4'), () => {}, { audio: true })
+  const withAudio = calls.at(-1)
+  assert.equal(withAudio.includes('-an'), false)
+  assert.deepEqual(withAudio.slice(withAudio.indexOf('-map'), withAudio.indexOf('-map') + 2), ['-map', '0:v:0'])
+  assert.equal(withAudio[withAudio.indexOf('-c:a') + 1], 'aac')
+  assert.equal(withAudio[withAudio.indexOf('-b:a') + 1], '160k')
+  assert.deepEqual(withAudio.slice(withAudio.indexOf('-ar'), withAudio.indexOf('-ar') + 4), ['-ar', '48000', '-ac', '2'])
+
+  await service.transcode(session.id, path.join(root, 'silent.mp4'), () => {}, { audio: false })
+  assert.ok(calls.at(-1).includes('-an'))
+
+  // The legacy three-argument call stays silent.
+  await service.transcode(session.id, path.join(root, 'legacy.mp4'))
+  assert.ok(calls.at(-1).includes('-an'))
+  assert.equal(calls.at(-1).includes('-c:a'), false)
+})
+
 test('cleanup removes only the selected session directory', async (t) => {
   const root = await createRoot(t)
   const service = new RecordingService({ tempRoot: root, ffmpegPath: 'ffmpeg' })

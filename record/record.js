@@ -45,6 +45,16 @@ let state = 'idle'
 let busy = false
 let desktopStream = null
 let canvasStream = null
+// Audio bus state (P0-3). `audioRequest` mirrors the frozen record settings contract:
+// system sound defaults to on, the microphone defaults to off (privacy first).
+let audioRequest = { system: true, microphone: false, systemGain: 1, microphoneGain: 1 }
+let audioOutcome = { system: false, microphone: false }
+let audioMix = null
+let micStream = null
+let audioMixerPromise = null
+let audioWarnings = []
+let audioNotice = ''
+let audioBitsPerSecond = 160_000
 let sourceVideo = null
 let canvas = null
 let framePacer = createFramePacer(frameRate)
@@ -137,6 +147,36 @@ async function resetAnnotations() {
   await sendAnnotationCommand('reset')
 }
 
+const STATUS_LABELS = {
+  idle: '区域已就绪',
+  countdown: '即将开始',
+  recording: '正在录制',
+  paused: '录制已暂停',
+  preview: '录制完成',
+  saving: '正在生成 MP4'
+}
+
+// The audio degradation notice (microphone lost, no microphone, silent recording ...) is
+// appended to whatever the state label shows, so it stays visible while recording.
+function renderStatus() {
+  statusLabel.removeAttribute('title')
+  const label = STATUS_LABELS[state]
+  if (!label) return
+  statusLabel.textContent = audioNotice ? `${label} · ${audioNotice}` : label
+  if (audioNotice) statusLabel.title = audioNotice
+}
+
+function setAudioNotice(notice) {
+  const next = String(notice || '')
+  if (next === audioNotice) return
+  audioNotice = next
+  renderStatus()
+}
+
+function noteAudioWarning(message) {
+  if (message) audioWarnings.push(String(message))
+}
+
 function setState(nextState) {
   state = nextState
   document.body.dataset.state = state
@@ -145,16 +185,7 @@ function setState(nextState) {
   stopButton.hidden = !['recording', 'paused'].includes(state)
   countdownElement.hidden = state !== 'countdown'
   pauseButton.textContent = state === 'paused' ? '继续' : '暂停'
-  const labels = {
-    idle: '区域已就绪',
-    countdown: '即将开始',
-    recording: '正在录制',
-    paused: '录制已暂停',
-    preview: '录制完成',
-    saving: '正在生成 MP4'
-  }
-  statusLabel.textContent = labels[state] || statusLabel.textContent
-  statusLabel.removeAttribute('title')
+  renderStatus()
   renderAnnotationControls()
 }
 
@@ -173,6 +204,12 @@ function clearFeedback() {
 function stopSource() {
   stopCompositeLoop()
   reportCompositorPerformance()
+  if (audioMix) {
+    audioMix.dispose()
+    audioMix = null
+  }
+  micStream?.getTracks().forEach((track) => track.stop())
+  micStream = null
   canvasStream?.getTracks().forEach((track) => track.stop())
   desktopStream?.getTracks().forEach((track) => track.stop())
   if (sourceVideo) sourceVideo.srcObject = null
@@ -272,10 +309,35 @@ function waitForMetadata(video) {
   })
 }
 
-async function prepareSource() {
-  if (desktopStream && canvasStream) return
+function desktopVideoConstraints() {
+  return { frameRate: { ideal: frameRate, max: frameRate } }
+}
+
+async function acquireDesktopStream() {
+  const failures = []
+  if (typeof navigator.mediaDevices?.getDisplayMedia === 'function') {
+    // Electron only grants this through `session.setDisplayMediaRequestHandler`; the source
+    // cannot be pinned by deviceId, so the main process selects the display with
+    // `pickDesktopSource` (record/recording-utils.js:163) — see the wiring note in the report.
+    if (audioRequest.system) {
+      try {
+        return await navigator.mediaDevices.getDisplayMedia({ video: desktopVideoConstraints(), audio: true })
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    try {
+      return await navigator.mediaDevices.getDisplayMedia({ video: desktopVideoConstraints(), audio: false })
+    } catch (error) {
+      failures.push(error)
+    }
+  }
   try {
-    desktopStream = await navigator.mediaDevices.getUserMedia({
+    // Compatibility fallback for builds whose session has no display-media handler yet: the
+    // legacy desktop constraint still returns video. It deliberately never requests audio —
+    // that legacy form is the known Windows audio bug (electron#42765 / #25120) this change
+    // migrates away from, and the missing system track is reported through the audio notice.
+    return await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
         mandatory: {
@@ -286,6 +348,111 @@ async function prepareSource() {
         }
       }
     })
+  } catch (error) {
+    failures.push(error)
+    throw failures[0]
+  }
+}
+
+function loadAudioMixer() {
+  if (window.audioMixer) return Promise.resolve(window.audioMixer)
+  if (!audioMixerPromise) {
+    audioMixerPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script')
+      script.src = 'audio-mixer.js'
+      script.onload = () => (window.audioMixer ? resolve(window.audioMixer) : reject(new Error('音频混音模块未导出')))
+      script.onerror = () => reject(new Error('音频混音模块加载失败'))
+      document.head.appendChild(script)
+    }).catch((error) => {
+      // A missing mixer degrades to a silent video instead of failing the whole recording.
+      noteAudioWarning(`音频混音不可用：${error?.message || error}`)
+      return null
+    })
+  }
+  return audioMixerPromise
+}
+
+async function acquireMicrophone() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false },
+      video: false
+    })
+    if (!stream.getAudioTracks().length) {
+      stream.getTracks().forEach((track) => track.stop())
+      noteAudioWarning('未检测到可用的麦克风音轨')
+      return null
+    }
+    return stream
+  } catch (error) {
+    noteAudioWarning(`麦克风采集失败：${error?.message || error}`)
+    return null
+  }
+}
+
+function renderAudioIndicator() {
+  const recorded = []
+  if (audioOutcome.system) recorded.push('系统声音')
+  if (audioOutcome.microphone) recorded.push('麦克风')
+  fpsElement.title = recorded.length ? `录制包含：${recorded.join(' + ')}` : '录制不包含声音'
+}
+
+function applyAudioOutcome(outcome = {}) {
+  audioOutcome = { system: !!outcome.system, microphone: !!outcome.microphone }
+  renderAudioIndicator()
+  setAudioNotice(outcome.notice || audioWarnings[0] || '')
+}
+
+async function attachAudioTracks() {
+  audioWarnings = []
+  setAudioNotice('')
+  // The renderer request is the contract: when system sound is off, drop any loopback track
+  // the handler may still have attached so a silent recording really has no audio track.
+  if (!audioRequest.system && desktopStream) {
+    desktopStream.getAudioTracks().forEach((track) => track.stop())
+  }
+  if (!audioRequest.system && !audioRequest.microphone) {
+    applyAudioOutcome({ system: false, microphone: false, notice: '' })
+    return
+  }
+  const systemCaptured = audioRequest.system && desktopStream?.getAudioTracks().length > 0
+  if (audioRequest.microphone) micStream = await acquireMicrophone()
+  const microphoneCaptured = micStream?.getAudioTracks().length > 0
+  const mixer = await loadAudioMixer()
+  let captured = { system: systemCaptured, microphone: !!microphoneCaptured }
+  if (mixer) {
+    audioBitsPerSecond = Number(mixer.AUDIO_BITS_PER_SECOND) || audioBitsPerSecond
+    audioMix = mixer.createAudioMix({
+      AudioContextClass: window.AudioContext || window.webkitAudioContext,
+      systemStream: systemCaptured ? desktopStream : null,
+      micStream: microphoneCaptured ? micStream : null,
+      plan: mixer.createGainPlan({
+        systemGain: audioRequest.systemGain,
+        micGain: audioRequest.microphoneGain
+      }),
+      onWarn: noteAudioWarning
+    })
+    if (audioMix.active) {
+      audioMix.tracks.forEach((track) => canvasStream.addTrack(track))
+      await audioMix.resume()
+    } else {
+      captured = { system: false, microphone: false }
+    }
+    applyAudioOutcome(mixer.describeAudioOutcome({
+      systemRequested: audioRequest.system,
+      microphoneRequested: audioRequest.microphone,
+      systemCaptured: captured.system,
+      microphoneCaptured: captured.microphone
+    }))
+    return
+  }
+  applyAudioOutcome({ system: false, microphone: false, notice: '' })
+}
+
+async function prepareSource() {
+  if (desktopStream && canvasStream) return
+  try {
+    desktopStream = await acquireDesktopStream()
     sourceVideo = document.createElement('video')
     sourceVideo.muted = true
     sourceVideo.playsInline = true
@@ -307,6 +474,7 @@ async function prepareSource() {
     compositorActiveDurationMs = 0
     renderCompositeFrame(performance.now(), true)
     canvasStream = canvas.captureStream(frameRate)
+    await attachAudioTracks()
   } catch (error) {
     stopSource()
     throw new Error(`无法获取桌面录制画面：${error.message || error}`)
@@ -314,13 +482,50 @@ async function prepareSource() {
 }
 
 function createMediaRecorder() {
-  const mimeTypes = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+  // Opus is preferred whenever an audio track was mixed into the canvas stream; the plain
+  // forms stay last so a video-only recording keeps working on builds without Opus support.
+  const mimeTypes = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp8',
+    'video/webm'
+  ]
   const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) || ''
+  const options = { videoBitsPerSecond: 8_000_000 }
+  if (mimeType) options.mimeType = mimeType
+  if (canvasStream?.getAudioTracks().length) options.audioBitsPerSecond = audioBitsPerSecond
   try {
-    return new MediaRecorder(canvasStream, mimeType ? { mimeType, videoBitsPerSecond: 8_000_000 } : undefined)
+    return new MediaRecorder(canvasStream, options)
   } catch (error) {
-    throw new Error(`无法创建无声视频录制器：${error.message || error}`)
+    throw new Error(`无法创建视频录制器：${error.message || error}`)
   }
+}
+
+// Hot-swap robustness (P0-3-T5): a bluetooth or headset change either kills the live
+// microphone track or removes the device before the next take. Either way the recording
+// keeps going and the user is told what the file will actually contain.
+function probeMicrophoneAvailability() {
+  if (!audioRequest.microphone || typeof navigator.mediaDevices?.enumerateDevices !== 'function') return
+  navigator.mediaDevices.enumerateDevices().then((devices) => {
+    if (state !== 'idle' && state !== 'preview') return
+    const inputs = (Array.isArray(devices) ? devices : []).filter((device) => device.kind === 'audioinput')
+    setAudioNotice(inputs.length ? '' : '未检测到麦克风，本次录制不包含麦克风声音')
+  }).catch(() => {})
+}
+
+function handleDeviceChange() {
+  const microphoneTrack = micStream?.getAudioTracks()[0]
+  if (microphoneTrack && microphoneTrack.readyState === 'ended') {
+    setAudioNotice('麦克风已断开，本次录制仅保留系统声音')
+    return
+  }
+  const systemTrack = desktopStream?.getAudioTracks()[0]
+  if (audioRequest.system && systemTrack && systemTrack.readyState === 'ended') {
+    setAudioNotice('系统声音已中断，本次录制继续但不再包含系统声音')
+    return
+  }
+  if (!['recording', 'paused'].includes(state)) probeMicrophoneAvailability()
 }
 
 async function startRecorder() {
@@ -579,15 +784,31 @@ window.recordAPI.onAnnotationSnapshot((snapshot) => {
 window.recordAPI.onInit((data) => {
   initData = data
   frameRate = Number(data.frameRate) || 24
+  // Frozen settings contract (main/services/settings-defaults.js:68-76): system sound is on
+  // unless explicitly disabled, the microphone is off unless explicitly enabled. Missing keys
+  // degrade to those same defaults, so this file stays correct before the init payload is
+  // extended (see the wiring note in the report).
+  audioRequest = {
+    system: data.audioSystem !== false,
+    microphone: data.audioMicrophone === true,
+    systemGain: data.audioSystemGain,
+    microphoneGain: data.audioMicrophoneGain
+  }
   fpsElement.textContent = `${frameRate} FPS`
+  fpsElement.title = audioRequest.system || audioRequest.microphone ? '录制包含声音' : '录制不包含声音'
   setState('idle')
   window.recordAPI.setFrameState('idle')
 })
+
+if (typeof navigator.mediaDevices?.addEventListener === 'function') {
+  navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange)
+}
 
 addEventListener('beforeunload', () => {
   countdownVersion++
   clearInterval(clockTimer)
   disposePreviewProbe()
+  navigator.mediaDevices?.removeEventListener?.('devicechange', handleDeviceChange)
   stopSource()
 })
 

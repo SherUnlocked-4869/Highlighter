@@ -180,10 +180,53 @@
     return next
   }
 
-  function buildFfmpegArgs(inputPath, outputPath) {
+  // Audio defaults mirror the frozen record settings contract: system sound on, AAC 160 kbps
+  // at 48 kHz stereo. `audio:false` (and the legacy two-argument call) keeps the silent `-an`
+  // path, so every existing caller stays byte-compatible.
+  const AUDIO_ARG_DEFAULTS = Object.freeze({
+    audio: false,
+    audioBitrate: '160k',
+    audioSampleRate: 48000,
+    audioChannels: 2
+  })
+
+  function normalizeAudioArgs(options) {
+    const source = options && typeof options === 'object' ? options : {}
+    const bitrate = typeof source.audioBitrate === 'string' && source.audioBitrate.trim()
+      ? source.audioBitrate.trim()
+      : AUDIO_ARG_DEFAULTS.audioBitrate
+    const sampleRate = Number(source.audioSampleRate)
+    const channels = Number(source.audioChannels)
+    return {
+      audio: source.audio === true,
+      audioBitrate: bitrate,
+      audioSampleRate: Number.isFinite(sampleRate) && sampleRate > 0
+        ? Math.round(sampleRate)
+        : AUDIO_ARG_DEFAULTS.audioSampleRate,
+      audioChannels: Number.isFinite(channels) && channels > 0
+        ? Math.round(channels)
+        : AUDIO_ARG_DEFAULTS.audioChannels
+    }
+  }
+
+  function audioArgs(audio) {
+    if (!audio.audio) return ['-an']
+    // `0:a?` keeps a silent recording valid if the WebM carried no audio track.
+    return [
+      '-map', '0:v:0',
+      '-map', '0:a?',
+      '-c:a', 'aac',
+      '-b:a', audio.audioBitrate,
+      '-ar', String(audio.audioSampleRate),
+      '-ac', String(audio.audioChannels)
+    ]
+  }
+
+  function buildFfmpegArgs(inputPath, outputPath, options) {
+    const audio = normalizeAudioArgs(options)
     return [
       '-i', inputPath,
-      '-an',
+      ...audioArgs(audio),
       '-c:v', 'libx264',
       '-preset', 'veryfast',
       '-crf', '23',
