@@ -1112,3 +1112,50 @@ Wave 1 只做了**写回**；评审旁路观察者指出该键**只写不读**�
 ### 19.4 结论与 Wave 6 开工条件
 
 批次 B 的两条独立流（录屏音轨 / 光标采集）与 Wave 5 接线全部落地并通过 §1.1 全量门禁 + e2e；`main.js` 净 +8 行（余量 14，仍够 Wave 6/7 的预计接线）。**光标进图的截图侧合成属 Wave 7（S9b）**，标注二次编辑属 Wave 6（S6），两者都在 `capture/**` 上串行 —— 因此 **Wave 6 开工条件是 S6 独占 `capture/**` 并完成 PR1–PR4**。真机项（音轨四组合、光标 100%/125%、副屏负坐标）按用户指示**统一挂账**。
+
+---
+
+## 20. M2（Wave 6 / S6 标注二次编辑 PR1–PR4）实施结果（2026-10-11）
+
+> 按 §8.4「4 个可独立合并的 PR」逐 PR 串行派发：每个 PR 落地后 Lead 复核 `git status` 对照作用域、审关键 diff、跑该 PR 的定向测试 + 真实 Electron 隐藏窗探针，再提交下一个。**`capture/**` 全程单写者**（§3.1.1）。
+
+### 20.1 已落地的改动（4 个提交）
+
+| PR | 提交 | 文件 | 内容 |
+|---|---|---|---|
+| **PR1**<br>选中+删除+快照栈 | `ba35790` | `capture/annotation-geometry.js`（新，258 行） | `annotationBounds` / `hitTestAnnotation` / `findAnnotationAt`（逆序取最上）/ `translateAnnotation` / `cloneAnnotations`；`MAX_ANNOTATION_HISTORY=60`、`MAX_PEN_POINTS=10000`、`DEFAULT_HIT_TOLERANCE=6`；rect/ellipse 走**环带**命中（空心区不吞拖动） |
+| | | `capture/capture.js` | 历史从"数组即栈（pop 末尾）"升级为**深拷贝快照栈**（`annotationHistory`/`historyIndex`）；`commitAnnotation` 补单调 `id`；选中态 + 虚线框 + `#elementBar`；Delete/Esc；§8.4 的 pointerdown 优先级；**D4 落地项**（重划选区先 `confirm`，确认后仍压一帧快照使其可撤销）；`event.buttons===0` 自愈（模态 `confirm()` 会吞掉 pointerup） |
+| | | `capture/capture.html` / `capture.css` | `#elementBar`（纯文字按钮）+ 样式；`annotation-geometry.js` 引在 `capture.js` 之前 |
+| | | 测试 | `test/capture-annotation-geometry.test.js`（新）+ `test/capture-toolbar-icons.test.js`（元素条不进 `.toolbar`、不引 mask 图标守卫） |
+| **PR2**<br>拖动 | `6f1cca4` | `capture/annotation-geometry.js` | `clampAnnotationToStage`（整体包含，元素大于舞台时退化为贴边） |
+| | | `capture/capture.js` | 元素体内拖动（只从按下时的 `origin` 生成副本，原对象永不改）；`pointerup` 有位移才压一帧、0 位移不压、`pointercancel` 回滚；方向键 1px / Shift 10px（500ms 静默合并为一次可撤销）；**Alt+拖动 = 移动选区**（见 20.3-1） |
+| **PR3**<br>8 手柄缩放 | `c8e245c` | `capture/annotation-geometry.js` | `resizeAnnotationToBox`：rect/ellipse/blur/watermark 采用新 box；line/arrow/highlight **保端点方向**（镜像不翻）；pen 逐轴等比 + 新数组；text 仅移动+字号；serial 仅半径（`number` 不变）；任何一维 <3px 抬到 3px |
+| | | `capture/capture.js` | `resizingAnnotation` 态；复用 `selection-utils` 的 `getResizeHandle`/`resizeSelection`，**bounds 传舞台**；`drawSelectedHandles()` 画 8 个圆点（`--primary` 填充 + 白描边，与选区白底橙边方块区分） |
+| **PR4**<br>层级+样式 | `3f1dcd0` | `capture/annotation-geometry.js` | `reorderAnnotation`：只移一层；越界/未知目标/零方向/空数组一律返回等价浅拷贝不抛错 |
+| | | `capture/capture.js` | 层级 ↑↓（只改数组顺序 → 屏幕与导出层序同时改变，**绘制代码零改动**）；`applyStyleToSelectedAnnotation`（生成副本 → 替换数组项 → 一次快照）；离散样式（线宽按钮）与连续样式（取色器，静默合并 + `change` 立即收口）**分开压帧**，避免两次用户操作挤进同一撤销步 |
+
+**验收自证（§8.4 六条）**：① 任意类型可选（10 种类型逐类型用例 + 真实窗口点选）✅；② 拖动 / 8 手柄缩放 / Delete / 层级上下移 / 改颜色线宽 ✅；③ 每次编辑 `Ctrl+Z` 精确回退（含 pen 点集深拷贝）✅；④ 导出与屏幕逐像素一致（探针像素差 ≤1px，即描边半宽）✅；⑤ `test/capture-annotation-geometry.test.js` 12 条纯函数用例全绿（第 10/11 条分别随 PR3/PR4 落地）✅；⑥ D4 落地项：`confirm` 取消后标注与选区**双双原状**，确认后清空可 `Ctrl+Z` 找回 ✅。
+
+### 20.2 门禁实况（Wave 6 收口）
+
+| 门禁 | Wave 4/5 收口（§19.2） | **Wave 6 收口** |
+|---|---|---|
+| `npm test` | 814 / 814 | **855 / 855 pass**（+41 用例） |
+| `npm run check` | 语法 255 文件；`main.js` 1286 / 1300 | 语法 **257 文件**；`main.js` **1286** / 1300（未变） |
+| `test:coverage:loaded` | 92.2%（10752/11661） | **92.62%（11220/12113）** |
+| `test:coverage:critical` | 93.22 / 92.99 / 92.42 | 93.22 / 92.99 / 92.42（不变） |
+| `audit:dependencies` | 26 / 0 | **26 / 0** |
+| Playwright e2e | 5 / 5 | **5 / 5**（25.9s） |
+
+### 20.3 偏差与决定（6 项）
+
+1. **Alt+拖动 = 移动选区（Lead 决定，PR2 落地）**。方案 §8.4 的优先级让"元素命中"先于"拖选区"；而 `watermark` 按设计**铺满整个选区**、大范围 `blur` 也常覆盖选区 —— 此时用户将**无法移动选区**（这是 PR1 引入的真实可用性回归）。选择**显式逃生门**（`Alt`+拖动跳过全部元素分支，落到既有选区拖动路径）+ `#elementBar` 提示，而**不**改动方案既定优先级（改序会让"点选元素"在大元素上失效）。
+2. **`text`/`serial` 缩放只能落在 `width` 预设**（2/4/8）：`drawAnnotation` 由 `width` 推字号/半径（`resolveWidth` 会把非预设值打回 4），所以"仅字号/仅半径"换算成最接近的预设。缩放后实际 bbox 可能与虚线框不完全吻合 —— **既有绘制模型的上限**，不是坐标错误（导出走同一套 item 字段）。
+3. **元素手柄命中半径 6px < 选区手柄 8px**（元素普遍更小）：某个维度 ≲12px 的元素（单点 pen、极短线）整块落在手柄带上 → **只能缩放不能拖动**；零尺寸元素（w 或 h = 0）按 `getResizeHandle` 自身条件**不给手柄**（仍可拖动/方向键微调）。
+4. **元素被甩到选区之外后无法再选/抓手柄**：这是 PR1 既有的分支顺序（`!insideSelection` → 重划选区 在元素分支之前），PR3 按派发要求未移位。若要修，属后续"选区与元素的包含关系"设计问题。
+5. **`Esc` 不进快照栈**（只取消选中、不改变标注内容）：压空快照会制造无效 undo 步。Delete / undo / redo / D4 清空 / 每次 commit / 每次拖动·缩放·层级·样式均走快照栈。
+6. **`task-4` 的"任务卡不存在"是误报**：S6 的 PR3 报告称全仓找不到 `task-4`。事实是该卡在**团队任务板**上（`team_task_create` 创建），不是仓库文件；派发描述与卡内容一致，无缺口。
+
+### 20.4 结论与 Wave 7 开工条件
+
+S6 的 PR1–PR4 全部落地并通过 §1.1 全量门禁 + e2e，**`capture/**` 自此释放**。Wave 7（S9b 光标合成）与 Wave 7.5（S10b `config/**` 收口，已在并行波次完成，提交 `7991198`）均不再与 S6 争用写点。`main.js` 余量仍为 14 行。真机项（标注二次编辑的真实鼠标操作、光标 100%/125%、音轨四组合）按用户指示**统一挂账**。
