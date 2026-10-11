@@ -73,6 +73,12 @@ async function launchHighlighter({ dataRoot, artifactsDir }) {
   }
   attachPage(mainWindow)
   await mainWindow.locator('.window-shell').waitFor({ state: 'visible' })
+  // D2-2（S14）把设置页拆成 18 个脚本后，"静态外壳可见"与"路由已接线"之间出现了一个可观测的
+  // 窗口：`.window-shell` 是 config.html 里的静态节点，HTML 一解析完就可见，而导航点击处理与
+  // renderRoute() 要等最后一个脚本（config.js）跑完、且 getSettings() 回来后才装上。
+  // 只等静态外壳会让"第一次点击导航"偶发落空（#pageTitle 一直不变）。
+  // 首页真正渲染出内容（.function-row 由 renderHome 生成）才证明整条链路已就绪。
+  await mainWindow.locator('#view .function-row').first().waitFor({ state: 'visible', timeout: 30_000 })
 
   return {
     electronApp,
