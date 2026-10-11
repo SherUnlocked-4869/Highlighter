@@ -1204,3 +1204,44 @@ S6 的 PR1–PR4 全部落地并通过 §1.1 全量门禁 + e2e，**`capture/**`
 批次 B 的四条流（S2 录屏音轨 · S5 光标采集 · S6 标注二次编辑 · S10b config 收口）与两波接线（Wave 5 / Wave 7）全部落地，通过 §1.1 全量门禁 + e2e，文档 §19–§21 已回填。**批次 B 的剩余唯一事项是 §11 步骤 4 的真机验收**（音轨四组合、光标 100%/125%、标注编辑的真实鼠标操作），按用户 2026-10-11 指示与批次 A 的挂账项**一并留到"统一测试"阶段**。
 
 **后续路线**：Wave 8.5（S14 / D2 配置页路由拆分，批次 C 硬前置门 D7，3.75–6.5 人日）→ Wave 9（批次 C：S1 i18n 框架+config · S11 capture 窗 · S12 其余渲染窗 · S13 主进程文案，四路并行）→ Wave 10（三语言真机 + v2.5.0）。**P1（Auto Filter / MCP）仍受 F1-① 许可证字符串阻塞**。
+
+---
+
+## 22. M2.5（Wave 8.5 / S14：D2 配置页路由拆分）实施结果（2026-10-11）
+
+> 按 §3.1.2 第 5 条分步推进：**D2-1 测试解耦 → D2-2 路由拆分 → D2-3 巨型路由再分解 → D2-4 边界断言 → D2-5 验收**，每步独立提交、独立跑门禁。`config/**` 全程单写者。
+
+### 22.1 已落地的改动（4 个提交）
+
+| 步骤 | 提交 | 内容 |
+|---|---|---|
+| **D2-1** 测试解耦 | `f634018` | 新增 `test/helpers/config-source.js`：`readConfigSource()`（主壳 + 全部 `config/routes/*.js`，按名排序拼接）与 `readConfigShell()`（只读主壳，供文件边界断言）。**15 个**读 `config/config.js` 的契约测试改走它 → 搬迁时 ~170 处源码文本断言**零改动**。以一次性 `config/routes/zzz-d2-proof.js` 证明：拼接读取会纳入新路由文件、shell-only 不会 |
+| **D2-2/D2-3** 路由拆分 | `f7cb92a` | `config/config.js` **1838 → 109 行**；新增 17 个 `config/routes/*.js`（**最大 246 行**，无一 >300）：`shared`(共享 helper/状态/常量) · `home` · `translation` · `chat` · `history` · `selection-toolbar{,-editor}` · `models-{render,provider,feature,plan,editor}` · `appearance` · `plugins` · `local-search` · `settings` · `about`。主壳 `renderRoute()` 改为按 `window.configRoutes` 的 key 分派，保留拆分前"仅 settings-system/about async + catch"的调用形态。**函数体逐字保留**（经典脚本共享全局作用域，无一处标识符重命名）；`config.html` 顺序 = `shared.js → model-helpers.js → 16 个路由 → config.js`。新增 `test/config-routes.test.js` 锁死"分派 key ↔ 登记 key 对拍 / config.html 挂载完整性 / 主壳零 render 函数 / configShared 精确面" |
+| **D2-4** 边界断言 | 同 `f7cb92a` | 仅 4 处**真正的文件边界**断言需改：`config-model-helpers`（"主壳不得重定义 helper"→ 用 `readConfigShell()`；并去掉主壳已不再持有的 `window.modelHelpers` 断言）· `data-root-ui-contract`（原来断言主壳内联 `void renderSystemSettings().catch`，改为断言分派表的 `fallbackMessage` 口径）· `shortcut-ui-contract`（两处切片/边界改到新文件） |
+| **D2-5** 验收 | 同 `f7cb92a` | 新增 e2e 用例：逐个打开 **14 个路由**，断言标题 + 可见锚点 + `getUnexpectedErrors()===[]` |
+
+### 22.2 门禁实况（Wave 8.5 收口）
+
+| 门禁 | 批次 B 收口（§21.2） | **Wave 8.5 收口** |
+|---|---|---|
+| `npm test` | 858 / 858 | **885 / 885 pass** |
+| `npm run check` | 语法 257 文件；`main.js` 1286 / 1300 | 语法 **278 文件**；`main.js` **1290** / 1300 |
+| Playwright e2e | 5 / 5 | **6 / 6**（连续 3 次复跑均 6/6） |
+| `config/config.js` | 1838 行 | **109 行**（验收要求 ≤400） |
+| 最大 `config/routes/*.js` | —— | **246 行**（`shared.js`；验收要求无单文件 >300） |
+
+### 22.3 偏差与决定（5 项）
+
+1. **locale 表按 domain 分文件（Lead 决策，已写入 §10.3）**：Wave 9 声称"四路并行"，但若所有键都进同三个语言文件，S1/S11/S12/S13 会写同一文件 → 只能串行。改为三个语言文件承载公共键 + 每个 domain 一个文件（内含三语），checker 改 glob。**这是为并行度付的架构代价，已在 §10.3 记录。**
+2. **`window.configShared` 的登记面收窄（S14 实测决定）**：该对象字面量在 `shared.js` 载入时求值，若引用后加载文件里的 `const`（如 `home.js` 的 `functionGroups`）会当场抛 ReferenceError，**连带主壳尾部的 `onNavigate` 接线永不执行 → 设置页整页白屏**。修法：`configShared` 只登记 `shared.js` 自己声明的名字，并由 `test/config-routes.test.js` 锁死清单。
+3. **三个"只有真机才暴露"的缺陷（`npm test` 全绿、`check` 语法门禁完全无感）**：① `homeTab`/`modalOverlay` 留在主壳而路由文件引用它们；② 路由文件顶层登记时容器尚不存在（CSP `script-src 'self'` 禁止内联脚本初始化）→ 容器改由 `shared.js` 顶部创建；③ 上述 `configShared` TDZ。**教训与批次 A 的 §6.2 同类：跨文件搬迁必须用真实页面验收，纯 Node 测试与语法门禁都看不见。**
+4. **e2e fixture 的"就绪门"（Lead 修复，`b027444`）**：fixture 原先只等 `.window-shell`（静态节点，HTML 一解析完就可见），而导航接线要等最后一个脚本 + `getSettings()` 回来。脚本从 5 个涨到 22 个后，首次导航点击偶发落空（两次全量 e2e 各在不同用例失败，单跑却都过）。改为再等 `#view .function-row`（`renderHome` 的产物）→ **连续 3 次 6/6**，且整体快约 10s（重试消失）。
+5. **`scripts/probe-window-security.js` 的 `marker:'renderHome'` 是误报**：S14 报告称该字符串已不在 `config.html`。实测该探针是在页面里求值 `typeof renderHome`（不是搜源码字符串），`home.js` 的顶层 `function` 仍是全局绑定 → `test/window-security-runtime.test.js` 通过，**无需改动**。
+
+### 22.4 结论与 Wave 9 开工条件
+
+D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次稳定）；`config/**` 自此释放，**批次 C 的硬前置门 D7 已兑现**。i18n 框架（S1 第 1 阶段）已在并行波次完成（`2d31a34`：runtime 补全 + 按 domain 的 locale 布局 + checker glob + `i18n:language` 广播与 11 个 preload 订阅）。
+
+**Wave 9 开工条件**：① `config/**` 已释放（D2 完成）✓；② i18n 框架与 locale 布局已就位 ✓；③ 四路写作用域互斥（S1 独占 `config/**` 与 `shared/locales/config.js`；S11 独占 `capture/**`；S12 独占 `record/**`、`long-capture/**`、`action/**`、`search/**`、`recognition/**`、`toolbar/**`；S13 独占托盘/更新/状态/AI 错误文案）—— 各窗口流新建**自己的** `shared/locales/<domain>.js`，互不冲突。
+
+> **事故记录（2026-10-11）**：并行跑 D2-2 与 S1 期间，有外部命令执行了 `git reset --hard HEAD`，一次性清空两个流全部未提交工作（16 个路由文件 + S1 的 locale/checker 改动）。两流均已重做，但这是**真实损失过工作的事故**。纪律已更新到交接文档 §11：派发 prompt 的"禁止 git 写操作"要逐个列出 `reset`/`checkout`/`restore`/`clean`/`stash`/`add`/`commit`；Lead 在并行波次期间用 `git stash create` 周期取恢复点。
