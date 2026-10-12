@@ -131,3 +131,45 @@
 
   ccar_done:
 !macroend
+
+; ---------------------------------------------------------------------------
+; Legacy-installation shim (2026-10-12).
+;
+; electron-builder's `uninstallOldVersion` (installSection.nsh -> installUtil.nsh)
+; runs the PREVIOUS version's uninstaller IN PLACE:
+;
+;     ExecWait '"$PLUGINSDIR\old-uninstaller.exe" /S ... _?=$installationDir'
+;
+; uninstallers built before this fix decide "the app is running" with a PATH PREFIX
+; test against the install directory — and the uninstaller process itself lives in
+; that directory, so it matches ITSELF, can never terminate itself, and after five
+; attempts shows `$(appCannotBeClosed)`. That text says "Highlighter 无法关闭 / please
+; close it manually", which has nothing to do with the user's app being open; it is
+; the old-version removal that cannot complete. Measured on 2026-10-12: the upgrade
+; of 2.3.1 -> 2.5.0 stalls there whether or not the app is running.
+;
+; Dropping the legacy uninstall entry makes `uninstallOldVersion` return immediately
+; (`if $uninstallString == "" ... Return`), so the new version is installed over the
+; old files in the same directory. The setup writes its own uninstall entry at the
+; end, so the application stays uninstallable.
+;
+; This shim is only needed while users may still run an uninstaller built before the
+; fix; it can be deleted in a later release.
+
+!macro customInit
+  DetailPrint "Checking for a legacy installation whose own uninstaller cannot complete..."
+  ClearErrors
+  !ifdef UNINSTALL_REGISTRY_KEY
+    DeleteRegValue HKCU "${UNINSTALL_REGISTRY_KEY}" UninstallString
+    DeleteRegValue HKCU "${UNINSTALL_REGISTRY_KEY}" QuietUninstallString
+    DeleteRegValue HKLM "${UNINSTALL_REGISTRY_KEY}" UninstallString
+    DeleteRegValue HKLM "${UNINSTALL_REGISTRY_KEY}" QuietUninstallString
+  !endif
+  !ifdef UNINSTALL_REGISTRY_KEY_2
+    DeleteRegValue HKCU "${UNINSTALL_REGISTRY_KEY_2}" UninstallString
+    DeleteRegValue HKCU "${UNINSTALL_REGISTRY_KEY_2}" QuietUninstallString
+    DeleteRegValue HKLM "${UNINSTALL_REGISTRY_KEY_2}" UninstallString
+    DeleteRegValue HKLM "${UNINSTALL_REGISTRY_KEY_2}" QuietUninstallString
+  !endif
+  ClearErrors
+!macroend

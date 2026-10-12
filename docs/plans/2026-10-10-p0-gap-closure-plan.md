@@ -1472,9 +1472,22 @@ D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次�
 **修复**：新增 build/installer.nsh（经 build.nsis.include 接入），定义 customCheckAppRunning 取代默认实现：① 空 INSTDIR 直接放行；② 按**精确路径** INSTDIR\Highlighter.exe（忽略大小写）匹配，绝不用前缀——安装器自身、卸载器与无关进程都不可能命中；③ 辅助逻辑写入 PLUGINSDIR\ccar.ps1 并用 -File 调用（消除 NSIS↔PowerShell 的引号风险），且 nsExec 带**硬超时**——宏不可能把安装器拖死；④ 先礼貌关闭再强杀，最后复核；⑤ 真杀不掉时**打印确切路径与 PID**；静默安装**永不弹框**。
 
 **验证状态（诚实口径）**：
-- ✅ **接线已证**：故意在 build/installer.nsh 写一行非法指令 → 构建失败，makensis 报错点名该文件第 2 行 → 该文件确实被编进安装器。
+- ✅ **接线已证**：故意在 build/installer.nsh 写一行非法指令 → 构建失败，makensis 报错点名该文件 → 该文件确实被编进安装器。
 - ✅ **辅助逻辑已证**（独立进程实测）：以目标进程的真实路径查询 → 输出 closed 且进程被杀；用同目录不同名的进程 → 不匹配。
-- ✅ **产物已重建并通过仓库自己的打包验收**：npm run verify:package exit 0（fuses 8/8、win-unpacked 与 portable 启动探针通过），dist/SHA256SUMS.txt 已按新产物重算。
-- ⚠️ **未完成**：本会话**没能跑通一次完整的可见安装/升级**。静默安装在本环境会卡在安装段之前（PLUGINSDIR 从未创建 → **本宏从未执行**，与本次修复无关），因此静默路径不作为验证手段；可见向导需要用户点击，本轮用户尚未复测。**用户本机的 2.3.1 安装未被改动**（注册表与 exe 均为 10-08 原状）。
+- ✅ **新检查在真实安装器里确实执行了**：用户 13:42 那次可见安装留下了 `$PLUGINSDIR\ccar.ps1` 与 `ccar.out`，内容为 **`none`**（该目录非空、精确路径未命中任何进程、检查正常放行）。→ **"应用是否在运行"这一环已经修好。**
+- ⚠️ **产物验收受本机环境影响**：13:27 那版 `npm run verify:package` exit 0（fuses 8/8 + 两个启动探针）；13:54 那版重跑时 **启动探针被本会话拦截**（`Start-Process` 报 "operation was canceled by the user"，疑似 UAC/HIPS/沙箱），**但 fuses 独立复核仍为 8/8 通过**，且两版**应用载荷完全相同**（仅安装器脚本不同）。`dist/SHA256SUMS.txt` 尚停留在 13:27 一版的数值。
+- ⚠️ **完整安装仍未由用户复测**：用户本机 2.3.1 未被改动（注册表与 exe 均为 10-08 原状）。
 
-**给用户的结论**：修复已落地到新的 dist/Highlighter-Setup-2.5.0.exe（sha256 987CB8CF…，144,868,109 B）。升级前建议**从托盘图标退出**应用（关窗口不等于退出：默认 system.autoStart / enableTray 为 true，且 window-all-closed 是空实现）。若仍有异常，安装器现在会给出被占用程序的**确切路径与 PID**，而不是一个无法通过的循环。
+### 27.1 真正的卡点：旧版卸载器"自我误判"（13:43 定位）
+
+新检查通过后，安装依然停在**同一句**「Highlighter 无法关闭」。把进度窗口的控件文本读出来才看清：那是 **`uninstallOldVersion` 的失败提示**（`installUtil.nsh:219`，与 `_CHECK_APP_RUNNING` 用同一句 `$(appCannotBeClosed)` 文案），与"应用在运行"无关：
+
+1. `installSection.nsh:52` 调 `uninstallOldVersion`，它把**上一版（2.3.1）自带卸载器**复制到 `$PLUGINSDIR\old-uninstaller.exe` 并以 `ExecWait ... _?=$installationDir` **原地**运行；
+2. 2.3.1 的卸载器内置的是**旧判据**（路径前缀）——而**卸载器自身就跑在安装目录里** → 它永远匹配到自己、永远无法结束自己 → 重试 5 次后弹框。**与用户是否开着应用无关，"重试"因此永远无效**。
+3. 本环境还叠加了两点：安装器进程的 `$PLUGINSDIR` 落在 `%LOCALAPPDATA%\Temp\**Low**`（低完整性/受限上下文），进一步让"删除 `Program Files` 下的旧安装"更容易失败。
+
+**修复（兼容垫片）**：`build/installer.nsh` 里新增 `!macro customInit`（electron-builder 的 `.onInit` 钩子，`installer.nsi:79`）：安装前**删除旧版卸载入口**（HKCU/HKLM × 两个键变体），使 `uninstallOldVersion` 读取空 `UninstallString` 后立即返回，改为**原地覆盖安装**；新安装包随后写入自己的卸载入口，应用仍可卸载。
+
+**代价（旁路观察者指出，接受）**：这条垫片**不会清理旧版残留文件**，且会先删掉旧卸载登记。因此**推荐路径是"先在 设置 → 应用 里正常卸载 2.3.1，再运行新安装包"**（该路径不传 `_?=`，卸载器会先把自己复制到临时目录，不会自我误判）→ 得到干净安装；垫片只在用户无法正常卸载、或直接覆盖安装时兜底。垫片的 DetailPrint 已写明，可在后续版本移除（它只为"卸载器早于本次修复"这一窗口期存在）。
+
+**给用户的结论**：见 `docs/releases/2026-10-12-v2.5.0-build-acceptance.md` §8（含最新产物的 sha256）。升级前建议**从托盘图标退出**应用（关窗口不等于退出：默认 system.autoStart / enableTray 为 true，且 window-all-closed 是空实现）。再遇到"无法关闭"时，先分辨是哪一种：新文案会带**路径 + PID**（应用占用）；旧文案则极可能是**旧版卸载器失败**，此时走"先正常卸载再装"这条路。
