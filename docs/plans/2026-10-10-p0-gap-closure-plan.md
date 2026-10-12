@@ -1330,74 +1330,6 @@ D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次�
 
 ---
 
-## 25. 批次 C 遗留修复：5 处「热切换旧文案残留」实施结果（2026-10-12）
-
-> 来源：`2026-10-11-post-review-handoff.md` §4.5（5 处，已核实、当时未修）。按用户 2026-10-12 指示先修此项，再进统一真机测试。**统一修法**：把"已经翻译好的句子"改成"i18n 键（+ 参数）"存为状态，并在广播处理器里于 `applyTranslations()` **之后**重跑该窗口自己的渲染函数；动态节点保留 `data-i18n` 以便首屏正确（apply 覆盖 → 再渲染回来）。
-
-### 25.1 已落地的改动
-
-| 站点 | 文件 | 改动 |
-|---|---|---|
-| ① search 状态行 | `search/search.js` | 保留最后一份状态负载（`lastStatus`）；广播处理器在 `applyTranslations()` 后调 `renderStatus()`；负载带 `messageKey` 时优先 `t(messageKey)`，否则保持原逻辑 |
-| | `search/search.html` | 新增 `shared/locales/main.js`（`messageKey` 是 `main.everything.*`；该窗此前不载这张表，不加会渲染裸键 —— 即 §6.6 那类缺陷） |
-| | `main/services/everything-service.js` | 11 处 `message: t(KEY)` 同时发布 `messageKey: KEY`；`stop()` 置 `messageKey: ''`；`message` 逐字不变，D6 的 `throw`/诊断文本未动 |
-| ⑤ long-capture 状态 | `long-capture/long-capture.js` | 新增 `statusState`/`statusConfidence` + `renderStatusText()`；拆出 `setStatusKey(key, params, confidence)`（可译）与 `setStatus(message)`（原始诊断，D6 保持原样）；13 处 `setStatus(t(...))` 全改 `setStatusKey`；广播与首屏各重渲染一次 |
-| ② action 表头/加载 | `action/action.js` | `conversation` 改存原始身份（`type`/`labelSource`）；新增顶层 `renderHeader()` 在**渲染期**解析 5 个节点（未开始/翻译/解释/自定义四态，输出与改动前逐字一致）并刷新 `conversation.label`；`onActionStart`、首屏与广播都调它；`action.html` 无需改（`data-i18n` 保留） |
-| ③ record 音频提示 | `record/record.js` | 成品句改存 `audioNoticeKey` + `audioNoticeParams`；`renderStatus()` 在渲染期重建整句（`${label} · ${notice}` / `title` 形态不变）；`renderAudioWarning` → `audioWarningKey()` 返回 `{key, params}`；全部调用点传键 |
-| ④ recognition 标题/复制 | `recognition/recognition.js` | `renderCurrentView()` 成为 `#title` 的**唯一写者**（error/table/qr/loading 四态）；删掉 `onInit` 里 await 前的两处重复写；复制按钮保留键、在 1 s 计时器**内**才 `t()` 解析 |
-
-**测试**：新增 6 个契约用例（`test/window-security.test.js` ×2、`test/selection-toolbar-settings.test.js` ×1、`test/recording-ui-contract.test.js` ×1、`test/recognition-ui-contract.test.js` ×2）+ `test/everything-service.test.js` 3 个新用例与 6 处追加断言。**仅修改 2 处既有断言**（都是"标签/提示从启动期句子改为渲染期取键"，语义不变；其中一处同时新增反向断言"任何调用点都不得把成品句子塞进 `setAudioNotice()`"）。
-**新增真机覆盖（此前这一类完全没有运行时验证）**：`scripts/probe-i18n-hot-switch.js` + `test/i18n-hot-switch-runtime.test.js` —— 真实 Electron 渲染层逐窗做种、发真实 `i18n:language` 广播、比对 DOM（6 用例 zh-CN → en-US）。**修复前该探针如实变红**（`setStatusKey is not defined`），修复后 **2 / 2 通过**。
-
-### 25.2 门禁实况
-
-| 门禁 | §24.3（修复前） | **本轮收口** |
-|---|---|---|
-| `npm test` | 905 / 905 | **916 / 916 pass**（+11 用例） |
-| `npm run check` | 293 文件 · `main.js` 1297 · i18n 606 | **293 文件 · 1297/1300 · 606 ≤ 606**（未变） |
-| `test:coverage:loaded` | 92.72%（11407/12302） | **92.78%（11444/12334）** |
-| `test:coverage:critical` | 93.22 / 94.07 / 92.42 | 93.22 / 94.07 / 92.42（23 用例全绿） |
-| `audit:dependencies` | 26 / 0（官方 registry） | **26 / 0** |
-| Playwright e2e | 6 / 6 | **6 / 6（34.1s）** |
-| 真机热切换探针 | 红（缺陷在） | **2 / 2 绿** |
-
-### 25.3 偏差与决定（5 项）
-
-1. **搜索窗新增一张 domain 表**（`shared/locales/main.js`）：`t(messageKey)` 必须能解析，做法与 `config.html` 载多张表的先例一致；未新增任何 locale 键。
-2. **`messageKey` 是加法**：主进程 `message` 继续是"发布时刻语言的成品句"，其它消费方与既有测试不受影响；D6 的 `throw`/日志文本一字未动。
-3. **`recognition.js` 删掉了 `onInit` 里 await 前的两处标题写入**：加载中显示 `recognition.header.title`（规格指定的 loading 文案），最终标题仍由 `renderTable`/`renderQr` 设定。`showError()` 仍只写 badge，故错误态的**首次**绘制与改动前一致，切换后由 `renderCurrentView()` 修正。
-4. **`EXPLAIN_LABEL` 变成"仅被测试引用"**：保留声明（有测试逐字固定），但 `renderHeader()` 不再使用它，改在渲染期 `t('action.answer.label.explain')`，否则切语言后兜底标签仍是启动期语言。
-5. **探针首个用例的 localStorage 泄漏（Lead 自己的 bug，非产品缺陷）**：所有 `file://` 窗共享同一 localStorage，用例 1 的广播把 `en-US` 持久化，导致后续用例在 en-US 下启动、`zh` 期望不可能满足。已修为每个用例前 `clearStorageData({ storages: ['localstorage'] })`，并新增"boot 语言必须是 zh-CN"断言；**两个子智能体各自独立发现并给出同一证据**。
-
-### 25.4 结论
-
-批次 C 的 5 处遗留**全部修复**；`shared/**`、`main.js`、`settings-defaults.js`、`ipc-security.js` 与 i18n `--max 606` 门槛均未被触碰。验收清单 §3.5 的"已知预期"已同步改为"已修复，真机复核应全绿"。批次 C 至此只剩**统一真机测试（三语言切换）**与**版本 bump**。
-
----
-
-## 26. v2.5.0 构建与打包验收（2026-10-12）
-
-> 用户决定：A/B/C **合并为单次发布 v2.5.0**；本轮做到"本地出安装包 + 打包验收"，**合规随后单独做**。完整记录见 `docs/releases/2026-10-12-v2.5.0-build-acceptance.md`。
-
-| 项 | 结果 |
-|---|---|
-| 版本 | **`2.5.0`**（`d4d02a5` 单独提交：`package.json` + `package-lock.json`；`node scripts/check-version.js` 通过） |
-| 候选代码 | `2c46825`（批次 C 遗留修复） |
-| 原生组件 | `npm run build:native` 三件全成功（cargo 命中缓存） |
-| 打包 | `electron-builder --config electron-builder.release.cjs --win nsis portable --x64 --publish never --config.forceCodeSigning=false --config.win.signExecutable=false`，约 45 s |
-| 产物 | Setup **144,788,573 B** · Portable **144,520,065 B** · blockmap 151,985 B · `latest.yml`（2.5.0）· `sbom.cdx.json`（CycloneDX 1.5 / 378 组件）· `SHA256SUMS.txt` · `win-unpacked/Highlighter.exe` 225,639,936 B |
-| `npm run verify:package` | **exit 0**：fuses **8/8**（与 2.2.4 发布记录逐项一致）· `win-unpacked/Highlighter.exe` 与 portable 的启动探针均通过 · 更新清单与校验和已生成 |
-| **未做** | 安装/覆盖升级/卸载验收、真机功能验收、**打 tag / 推送 / CI draft Release**、签名（`verify:release`） |
-| 合规 | **带着既有缺口外出**：无 `LICENSE`/`COPYRIGHT`/`THIRD_PARTY_NOTICES.md`，`build.files` 白名单不含它们，已分发的 GPL FFmpeg 与 LGPL libvips 零告知（分析文档 §5.6 / M5） |
-
-**为什么不是三次发布**：`2.3.0`/`2.3.1` **从未打 tag**（最新 tag 为 `v2.2.8`），且历史提交缺后续的 D2 拆分、i18n 与两轮修复 → 事后补 tag 得到的发布内容与版本叙事不符。
-
-**环境注记**：本会话的打包与启动探针需要 `ELECTRON_DISABLE_SANDBOX=1` + `TEMP/TMP` 指向工作区内 + `ELECTRON_BUILDER_CACHE` 指向工作区内副本（原因见 §24.4）；CI runner 不需要。
-
-**顺带登记**：`native/everything-search/bin/HighlighterEverything.exe` **构建即变脏**（本次重建 sha256 `AD12472B…` vs 库内 `B77DED4D…`，同尺寸 343,552 B）——已按 M-1 先例丢弃；该被跟踪构建产物的策略仍待单独立项。
-
----
-
 ## 24. 统一测试阶段前的状态核实与门禁复跑（2026-10-12，DSH 会话）
 
 > 本节不是新波次，而是**接手核实的记录**：新会话拿到的指令假设"上一轮只写了文档、未改业务代码、HEAD=b97391e、两份文档 untracked"，实测全部不成立（批次 A/B/C 已落地、HEAD=`b2cf101`、文档已 tracked、`main.js` 1297）。核实与自检结论见本节；**未改动任何业务代码**。
@@ -1454,3 +1386,95 @@ D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次�
 
 - 统一真机测试（需用户 + 副屏）、三个版本 bump、L1–L16 许可落地、P1（仍受 F1-① 阻塞）。
 - 验收清单已补 **§3.5 批次 C 三语言**，并修正了过期的副屏读数与环境准备说明。**同日追加**：§3.5 原先按"5 处热切换残留未修"写成预期，该 5 处已在 **§25** 全部修复，清单中的预期已同步改为"应全绿"。
+
+---
+
+
+## 25. 批次 C 遗留修复：5 处「热切换旧文案残留」实施结果（2026-10-12）
+
+> 来源：`2026-10-11-post-review-handoff.md` §4.5（5 处，已核实、当时未修）。按用户 2026-10-12 指示先修此项，再进统一真机测试。**统一修法**：把"已经翻译好的句子"改成"i18n 键（+ 参数）"存为状态，并在广播处理器里于 `applyTranslations()` **之后**重跑该窗口自己的渲染函数；动态节点保留 `data-i18n` 以便首屏正确（apply 覆盖 → 再渲染回来）。
+
+### 25.1 已落地的改动
+
+| 站点 | 文件 | 改动 |
+|---|---|---|
+| ① search 状态行 | `search/search.js` | 保留最后一份状态负载（`lastStatus`）；广播处理器在 `applyTranslations()` 后调 `renderStatus()`；负载带 `messageKey` 时优先 `t(messageKey)`，否则保持原逻辑 |
+| | `search/search.html` | 新增 `shared/locales/main.js`（`messageKey` 是 `main.everything.*`；该窗此前不载这张表，不加会渲染裸键 —— 即 §6.6 那类缺陷） |
+| | `main/services/everything-service.js` | 11 处 `message: t(KEY)` 同时发布 `messageKey: KEY`；`stop()` 置 `messageKey: ''`；`message` 逐字不变，D6 的 `throw`/诊断文本未动 |
+| ⑤ long-capture 状态 | `long-capture/long-capture.js` | 新增 `statusState`/`statusConfidence` + `renderStatusText()`；拆出 `setStatusKey(key, params, confidence)`（可译）与 `setStatus(message)`（原始诊断，D6 保持原样）；13 处 `setStatus(t(...))` 全改 `setStatusKey`；广播与首屏各重渲染一次 |
+| ② action 表头/加载 | `action/action.js` | `conversation` 改存原始身份（`type`/`labelSource`）；新增顶层 `renderHeader()` 在**渲染期**解析 5 个节点（未开始/翻译/解释/自定义四态，输出与改动前逐字一致）并刷新 `conversation.label`；`onActionStart`、首屏与广播都调它；`action.html` 无需改（`data-i18n` 保留） |
+| ③ record 音频提示 | `record/record.js` | 成品句改存 `audioNoticeKey` + `audioNoticeParams`；`renderStatus()` 在渲染期重建整句（`${label} · ${notice}` / `title` 形态不变）；`renderAudioWarning` → `audioWarningKey()` 返回 `{key, params}`；全部调用点传键 |
+| ④ recognition 标题/复制 | `recognition/recognition.js` | `renderCurrentView()` 成为 `#title` 的**唯一写者**（error/table/qr/loading 四态）；删掉 `onInit` 里 await 前的两处重复写；复制按钮保留键、在 1 s 计时器**内**才 `t()` 解析 |
+
+**测试**：新增 6 个契约用例（`test/window-security.test.js` ×2、`test/selection-toolbar-settings.test.js` ×1、`test/recording-ui-contract.test.js` ×1、`test/recognition-ui-contract.test.js` ×2）+ `test/everything-service.test.js` 3 个新用例与 6 处追加断言。**仅修改 2 处既有断言**（都是"标签/提示从启动期句子改为渲染期取键"，语义不变；其中一处同时新增反向断言"任何调用点都不得把成品句子塞进 `setAudioNotice()`"）。
+**新增真机覆盖（此前这一类完全没有运行时验证）**：`scripts/probe-i18n-hot-switch.js` + `test/i18n-hot-switch-runtime.test.js` —— 真实 Electron 渲染层逐窗做种、发真实 `i18n:language` 广播、比对 DOM（6 用例 zh-CN → en-US）。**修复前该探针如实变红**（`setStatusKey is not defined`），修复后 **2 / 2 通过**。
+
+### 25.2 门禁实况
+
+| 门禁 | §24.3（修复前） | **本轮收口** |
+|---|---|---|
+| `npm test` | 905 / 905 | **916 / 916 pass**（+11 用例） |
+| `npm run check` | 293 文件 · `main.js` 1297 · i18n 606 | **293 文件 · 1297/1300 · 606 ≤ 606**（未变） |
+| `test:coverage:loaded` | 92.72%（11407/12302） | **92.78%（11444/12334）** |
+| `test:coverage:critical` | 93.22 / 94.07 / 92.42 | 93.22 / 94.07 / 92.42（23 用例全绿） |
+| `audit:dependencies` | 26 / 0（官方 registry） | **26 / 0** |
+| Playwright e2e | 6 / 6 | **6 / 6（34.1s）** |
+| 真机热切换探针 | 红（缺陷在） | **2 / 2 绿** |
+
+### 25.3 偏差与决定（5 项）
+
+1. **搜索窗新增一张 domain 表**（`shared/locales/main.js`）：`t(messageKey)` 必须能解析，做法与 `config.html` 载多张表的先例一致；未新增任何 locale 键。
+2. **`messageKey` 是加法**：主进程 `message` 继续是"发布时刻语言的成品句"，其它消费方与既有测试不受影响；D6 的 `throw`/日志文本一字未动。
+3. **`recognition.js` 删掉了 `onInit` 里 await 前的两处标题写入**：加载中显示 `recognition.header.title`（规格指定的 loading 文案），最终标题仍由 `renderTable`/`renderQr` 设定。`showError()` 仍只写 badge，故错误态的**首次**绘制与改动前一致，切换后由 `renderCurrentView()` 修正。
+4. **`EXPLAIN_LABEL` 变成"仅被测试引用"**：保留声明（有测试逐字固定），但 `renderHeader()` 不再使用它，改在渲染期 `t('action.answer.label.explain')`，否则切语言后兜底标签仍是启动期语言。
+5. **探针首个用例的 localStorage 泄漏（Lead 自己的 bug，非产品缺陷）**：所有 `file://` 窗共享同一 localStorage，用例 1 的广播把 `en-US` 持久化，导致后续用例在 en-US 下启动、`zh` 期望不可能满足。已修为每个用例前 `clearStorageData({ storages: ['localstorage'] })`，并新增"boot 语言必须是 zh-CN"断言；**两个子智能体各自独立发现并给出同一证据**。
+
+### 25.4 结论
+
+批次 C 的 5 处遗留**全部修复**；`shared/**`、`main.js`、`settings-defaults.js`、`ipc-security.js` 与 i18n `--max 606` 门槛均未被触碰。验收清单 §3.5 的"已知预期"已同步改为"已修复，真机复核应全绿"。批次 C 至此只剩**统一真机测试（三语言切换）**与**版本 bump**。
+
+---
+
+---
+
+
+## 26. v2.5.0 构建与打包验收（2026-10-12）
+
+> 用户决定：A/B/C **合并为单次发布 v2.5.0**；本轮做到"本地出安装包 + 打包验收"，**合规随后单独做**。完整记录见 `docs/releases/2026-10-12-v2.5.0-build-acceptance.md`。
+
+| 项 | 结果 |
+|---|---|
+| 版本 | **`2.5.0`**（`d4d02a5` 单独提交：`package.json` + `package-lock.json`；`node scripts/check-version.js` 通过） |
+| 候选代码 | `2c46825`（批次 C 遗留修复） |
+| 原生组件 | `npm run build:native` 三件全成功（cargo 命中缓存） |
+| 打包 | `electron-builder --config electron-builder.release.cjs --win nsis portable --x64 --publish never --config.forceCodeSigning=false --config.win.signExecutable=false`，约 45 s |
+| 产物 | Setup **144,788,573 B** · Portable **144,520,065 B** · blockmap 151,985 B · `latest.yml`（2.5.0）· `sbom.cdx.json`（CycloneDX 1.5 / 378 组件）· `SHA256SUMS.txt` · `win-unpacked/Highlighter.exe` 225,639,936 B |
+| `npm run verify:package` | **exit 0**：fuses **8/8**（与 2.2.4 发布记录逐项一致）· `win-unpacked/Highlighter.exe` 与 portable 的启动探针均通过 · 更新清单与校验和已生成 |
+| **未做** | 安装/覆盖升级/卸载验收、真机功能验收、**打 tag / 推送 / CI draft Release**、签名（`verify:release`） |
+| 合规 | **带着既有缺口外出**：无 `LICENSE`/`COPYRIGHT`/`THIRD_PARTY_NOTICES.md`，`build.files` 白名单不含它们，已分发的 GPL FFmpeg 与 LGPL libvips 零告知（分析文档 §5.6 / M5） |
+
+**为什么不是三次发布**：`2.3.0`/`2.3.1` **从未打 tag**（最新 tag 为 `v2.2.8`），且历史提交缺后续的 D2 拆分、i18n 与两轮修复 → 事后补 tag 得到的发布内容与版本叙事不符。
+
+**环境注记**：本会话的打包与启动探针需要 `ELECTRON_DISABLE_SANDBOX=1` + `TEMP/TMP` 指向工作区内 + `ELECTRON_BUILDER_CACHE` 指向工作区内副本（原因见 §24.4）；CI runner 不需要。
+
+**顺带登记**：`native/everything-search/bin/HighlighterEverything.exe` **构建即变脏**（本次重建 sha256 `AD12472B…` vs 库内 `B77DED4D…`，同尺寸 343,552 B）——已按 M-1 先例丢弃；该被跟踪构建产物的策略仍待单独立项。
+
+---
+
+---
+
+## 27. v2.5.0 安装器修复：替换「应用仍在运行」检查（2026-10-12）
+
+> 用户在本机升级 v2.5.0 时被安装器的「Highlighter 无法关闭（重试/取消）」死循环挡住（见 §26 与 docs/releases/2026-10-12-v2.5.0-build-acceptance.md 的 §8）。本节记录根因、修复与验证状态。
+
+**根因（已用它自己的判据复现）**：electron-builder 的默认检查用**路径前缀**判定应用是否在运行（Path.StartsWith(INSTDIR)），杀不掉就弹「请手动关闭」。实测同一判据：INSTDIR 为空 → 恒判「在运行」；INSTDIR 为 D: → 恒判「在运行」；只有精确到 D:\Program Files\Highlighter 才返回「未找到」。也就是说**空/过宽的安装目录会让对话框永远无法通过**；它还会命中**同目录下的卸载器**与任何残留子进程（OCR 边车、selection-hook host），并且从不告诉你它在等谁（无路径、无 PID）。
+
+**修复**：新增 build/installer.nsh（经 build.nsis.include 接入），定义 customCheckAppRunning 取代默认实现：① 空 INSTDIR 直接放行；② 按**精确路径** INSTDIR\Highlighter.exe（忽略大小写）匹配，绝不用前缀——安装器自身、卸载器与无关进程都不可能命中；③ 辅助逻辑写入 PLUGINSDIR\ccar.ps1 并用 -File 调用（消除 NSIS↔PowerShell 的引号风险），且 nsExec 带**硬超时**——宏不可能把安装器拖死；④ 先礼貌关闭再强杀，最后复核；⑤ 真杀不掉时**打印确切路径与 PID**；静默安装**永不弹框**。
+
+**验证状态（诚实口径）**：
+- ✅ **接线已证**：故意在 build/installer.nsh 写一行非法指令 → 构建失败，makensis 报错点名该文件第 2 行 → 该文件确实被编进安装器。
+- ✅ **辅助逻辑已证**（独立进程实测）：以目标进程的真实路径查询 → 输出 closed 且进程被杀；用同目录不同名的进程 → 不匹配。
+- ✅ **产物已重建并通过仓库自己的打包验收**：npm run verify:package exit 0（fuses 8/8、win-unpacked 与 portable 启动探针通过），dist/SHA256SUMS.txt 已按新产物重算。
+- ⚠️ **未完成**：本会话**没能跑通一次完整的可见安装/升级**。静默安装在本环境会卡在安装段之前（PLUGINSDIR 从未创建 → **本宏从未执行**，与本次修复无关），因此静默路径不作为验证手段；可见向导需要用户点击，本轮用户尚未复测。**用户本机的 2.3.1 安装未被改动**（注册表与 exe 均为 10-08 原状）。
+
+**给用户的结论**：修复已落地到新的 dist/Highlighter-Setup-2.5.0.exe（sha256 987CB8CF…，144,868,109 B）。升级前建议**从托盘图标退出**应用（关窗口不等于退出：默认 system.autoStart / enableTray 为 true，且 window-all-closed 是空实现）。若仍有异常，安装器现在会给出被占用程序的**确切路径与 PID**，而不是一个无法通过的循环。

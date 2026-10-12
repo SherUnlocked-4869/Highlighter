@@ -125,6 +125,7 @@
       "icon": "assets/icon.png"
     },
     "nsis": {
+      "include": "build/installer.nsh",
       "artifactName": "Highlighter-Setup-${version}.${ext}",
       "oneClick": false,
       "perMachine": false,
