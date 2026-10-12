@@ -134,7 +134,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue   # 必做，
 | ④ | 切到 `en-US` 后**新开**截图窗 / 贴图窗 | 新窗按新语言渲染（`localStorage` 跨 `file://` 目录共享已实测） | 新窗文案 |
 | ⑤ | 切回 `zh-CN` | 全部窗口回中文 | 目视 |
 
-**⚠️ 已知预期（不是新发现的偶发 bug）**：以下 **5 处**热切换后会显示旧语言残留，已核实、本轮未修（交接文档 §4.5）：
+**✅ 已修复（2026-10-12，方案 §25）**：下列 5 处"热切换后显示旧语言"的残留**已全部修复**并经真机探针验证（`test/i18n-hot-switch-runtime.test.js` 2/2 绿）。**真机复核时它们应当全绿；若仍复现，按 P0 报缺陷**（下表保留为修复前的现场记录）：
 
 | 位置 | 现象 |
 | --- | --- |
@@ -144,9 +144,9 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue   # 必做，
 | `recognition/recognition.js:218,238` | `#title` 的 `data-i18n` 与 JS 视图标题双写冲突；复制按钮 1s 计时器捕获旧语言串 |
 | `long-capture/long-capture.js:400` | `#status` 同时有 `data-i18n` 与 `setStatus()` → 切换后回到静态 preparing |
 
-**判定**：①–⑤ 中除上述 5 处外**其余必须干净**；②（裸键）与 ③（托盘）失败按 **P0** 处理。
+**判定**：①–⑤ **全部必须干净**（原"除上表 5 处外"的豁免随 §25 的修复作废）；②（裸键）与 ③（托盘）失败按 **P0** 处理。
 
-**门禁侧对照**：`npm run check:i18n` = `node scripts/check-i18n.js --max 606`（**只能下调**）；checker 应报 13 个 locale 文件、三语各 971 键、对称差/键名形状/`data-i18n` 缺失全 0。注意 checker 与 `test/i18n.test.js` 都**先合并全部表**，因此**看不见"整窗缺表"** —— 那类缺陷只能靠本节真机目视 + `test/i18n-contract.test.js` 的**按窗口**门禁发现（已用「删掉 `config.html` 的 `search.js` 标签」反向验证过）。
+**门禁侧对照**：`npm run check:i18n` = `node scripts/check-i18n.js --max 606`（**只能下调**）；checker 应报 13 个 locale 文件、三语各 971 键、对称差/键名形状/`data-i18n` 缺失全 0。注意 checker 与 `test/i18n.test.js` 都**先合并全部表**，因此**看不见"整窗缺表"** —— 那类缺陷只能靠本节真机目视 + `test/i18n-contract.test.js` 的**按窗口**门禁发现（已用「删掉 `config.html` 的 `search.js` 标签」反向验证过）。**新增**：`test/i18n-hot-switch-runtime.test.js`（2026-10-12，方案 §25）用真实 Electron 渲染层覆盖"脚本自绘文案在 `i18n:language` 广播后是否改用新语言"，与本节 ②/⑤ 互补（它同样看不见"整窗缺表"，因为那是静态加载问题）。
 
 ---
 

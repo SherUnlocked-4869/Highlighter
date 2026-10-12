@@ -1330,6 +1330,51 @@ D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次�
 
 ---
 
+## 25. 批次 C 遗留修复：5 处「热切换旧文案残留」实施结果（2026-10-12）
+
+> 来源：`2026-10-11-post-review-handoff.md` §4.5（5 处，已核实、当时未修）。按用户 2026-10-12 指示先修此项，再进统一真机测试。**统一修法**：把"已经翻译好的句子"改成"i18n 键（+ 参数）"存为状态，并在广播处理器里于 `applyTranslations()` **之后**重跑该窗口自己的渲染函数；动态节点保留 `data-i18n` 以便首屏正确（apply 覆盖 → 再渲染回来）。
+
+### 25.1 已落地的改动
+
+| 站点 | 文件 | 改动 |
+|---|---|---|
+| ① search 状态行 | `search/search.js` | 保留最后一份状态负载（`lastStatus`）；广播处理器在 `applyTranslations()` 后调 `renderStatus()`；负载带 `messageKey` 时优先 `t(messageKey)`，否则保持原逻辑 |
+| | `search/search.html` | 新增 `shared/locales/main.js`（`messageKey` 是 `main.everything.*`；该窗此前不载这张表，不加会渲染裸键 —— 即 §6.6 那类缺陷） |
+| | `main/services/everything-service.js` | 11 处 `message: t(KEY)` 同时发布 `messageKey: KEY`；`stop()` 置 `messageKey: ''`；`message` 逐字不变，D6 的 `throw`/诊断文本未动 |
+| ⑤ long-capture 状态 | `long-capture/long-capture.js` | 新增 `statusState`/`statusConfidence` + `renderStatusText()`；拆出 `setStatusKey(key, params, confidence)`（可译）与 `setStatus(message)`（原始诊断，D6 保持原样）；13 处 `setStatus(t(...))` 全改 `setStatusKey`；广播与首屏各重渲染一次 |
+| ② action 表头/加载 | `action/action.js` | `conversation` 改存原始身份（`type`/`labelSource`）；新增顶层 `renderHeader()` 在**渲染期**解析 5 个节点（未开始/翻译/解释/自定义四态，输出与改动前逐字一致）并刷新 `conversation.label`；`onActionStart`、首屏与广播都调它；`action.html` 无需改（`data-i18n` 保留） |
+| ③ record 音频提示 | `record/record.js` | 成品句改存 `audioNoticeKey` + `audioNoticeParams`；`renderStatus()` 在渲染期重建整句（`${label} · ${notice}` / `title` 形态不变）；`renderAudioWarning` → `audioWarningKey()` 返回 `{key, params}`；全部调用点传键 |
+| ④ recognition 标题/复制 | `recognition/recognition.js` | `renderCurrentView()` 成为 `#title` 的**唯一写者**（error/table/qr/loading 四态）；删掉 `onInit` 里 await 前的两处重复写；复制按钮保留键、在 1 s 计时器**内**才 `t()` 解析 |
+
+**测试**：新增 6 个契约用例（`test/window-security.test.js` ×2、`test/selection-toolbar-settings.test.js` ×1、`test/recording-ui-contract.test.js` ×1、`test/recognition-ui-contract.test.js` ×2）+ `test/everything-service.test.js` 3 个新用例与 6 处追加断言。**仅修改 2 处既有断言**（都是"标签/提示从启动期句子改为渲染期取键"，语义不变；其中一处同时新增反向断言"任何调用点都不得把成品句子塞进 `setAudioNotice()`"）。
+**新增真机覆盖（此前这一类完全没有运行时验证）**：`scripts/probe-i18n-hot-switch.js` + `test/i18n-hot-switch-runtime.test.js` —— 真实 Electron 渲染层逐窗做种、发真实 `i18n:language` 广播、比对 DOM（6 用例 zh-CN → en-US）。**修复前该探针如实变红**（`setStatusKey is not defined`），修复后 **2 / 2 通过**。
+
+### 25.2 门禁实况
+
+| 门禁 | §24.3（修复前） | **本轮收口** |
+|---|---|---|
+| `npm test` | 905 / 905 | **916 / 916 pass**（+11 用例） |
+| `npm run check` | 293 文件 · `main.js` 1297 · i18n 606 | **293 文件 · 1297/1300 · 606 ≤ 606**（未变） |
+| `test:coverage:loaded` | 92.72%（11407/12302） | **92.78%（11444/12334）** |
+| `test:coverage:critical` | 93.22 / 94.07 / 92.42 | 93.22 / 94.07 / 92.42（23 用例全绿） |
+| `audit:dependencies` | 26 / 0（官方 registry） | **26 / 0** |
+| Playwright e2e | 6 / 6 | **6 / 6（34.1s）** |
+| 真机热切换探针 | 红（缺陷在） | **2 / 2 绿** |
+
+### 25.3 偏差与决定（5 项）
+
+1. **搜索窗新增一张 domain 表**（`shared/locales/main.js`）：`t(messageKey)` 必须能解析，做法与 `config.html` 载多张表的先例一致；未新增任何 locale 键。
+2. **`messageKey` 是加法**：主进程 `message` 继续是"发布时刻语言的成品句"，其它消费方与既有测试不受影响；D6 的 `throw`/日志文本一字未动。
+3. **`recognition.js` 删掉了 `onInit` 里 await 前的两处标题写入**：加载中显示 `recognition.header.title`（规格指定的 loading 文案），最终标题仍由 `renderTable`/`renderQr` 设定。`showError()` 仍只写 badge，故错误态的**首次**绘制与改动前一致，切换后由 `renderCurrentView()` 修正。
+4. **`EXPLAIN_LABEL` 变成"仅被测试引用"**：保留声明（有测试逐字固定），但 `renderHeader()` 不再使用它，改在渲染期 `t('action.answer.label.explain')`，否则切语言后兜底标签仍是启动期语言。
+5. **探针首个用例的 localStorage 泄漏（Lead 自己的 bug，非产品缺陷）**：所有 `file://` 窗共享同一 localStorage，用例 1 的广播把 `en-US` 持久化，导致后续用例在 en-US 下启动、`zh` 期望不可能满足。已修为每个用例前 `clearStorageData({ storages: ['localstorage'] })`，并新增"boot 语言必须是 zh-CN"断言；**两个子智能体各自独立发现并给出同一证据**。
+
+### 25.4 结论
+
+批次 C 的 5 处遗留**全部修复**；`shared/**`、`main.js`、`settings-defaults.js`、`ipc-security.js` 与 i18n `--max 606` 门槛均未被触碰。验收清单 §3.5 的"已知预期"已同步改为"已修复，真机复核应全绿"。批次 C 至此只剩**统一真机测试（三语言切换）**与**版本 bump**。
+
+---
+
 ## 24. 统一测试阶段前的状态核实与门禁复跑（2026-10-12，DSH 会话）
 
 > 本节不是新波次，而是**接手核实的记录**：新会话拿到的指令假设"上一轮只写了文档、未改业务代码、HEAD=b97391e、两份文档 untracked"，实测全部不成立（批次 A/B/C 已落地、HEAD=`b2cf101`、文档已 tracked、`main.js` 1297）。核实与自检结论见本节；**未改动任何业务代码**。
@@ -1371,7 +1416,7 @@ D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次�
 | `test:coverage:loaded` | 92.7%（11405/12302） | **92.72%（11407/12302）** | ✅（+2 行，来自被绕行救回的两个 Electron 探针） |
 | `test:coverage:critical` | 93.22 / 94.07 / 92.42 | **93.46%（21 用例全绿）** | ✅ |
 | `audit:dependencies` | 26 豁免 / 0 未豁免 | 配置 registry 下 ❌ **18 个失效豁免项**；显式走官方 registry 则 ✅ **26 豁免 / 0 未豁免（exit 0）** | 红灯**仅由镜像缺少 audit 端点造成**，门禁结论与基线一致，见 24.4-③ |
-| `test:e2e` | 6 / 6 | **未跑** | 无副屏，需用户授权，见 24.4-④ |
+| `test:e2e` | 6 / 6 | ✅ **6 / 6（34.2s）** | 经用户授权后在**主屏**可见窗运行（无副屏），见 24.4-④ |
 
 ### 24.4 环境事实（**均非代码缺陷**，逐条有证据）
 
@@ -1384,5 +1429,5 @@ D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次�
 
 ### 24.5 本轮未做（有意留待用户决定的）
 
-- `test:e2e`（需可见窗授权）、统一真机测试（需用户 + 副屏）、三个版本 bump、L1–L16 许可落地、P1（仍受 F1-① 阻塞）。
-- 验收清单已补 **§3.5 批次 C 三语言**（含 5 处已知热切换残留的预期）并修正了过期的副屏读数与环境准备说明。
+- 统一真机测试（需用户 + 副屏）、三个版本 bump、L1–L16 许可落地、P1（仍受 F1-① 阻塞）。
+- 验收清单已补 **§3.5 批次 C 三语言**，并修正了过期的副屏读数与环境准备说明。**同日追加**：§3.5 原先按"5 处热切换残留未修"写成预期，该 5 处已在 **§25** 全部修复，清单中的预期已同步改为"应全绿"。

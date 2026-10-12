@@ -147,6 +147,8 @@ ocr review --audience agent --from f634018 --to HEAD `
 
 ### 4.5 批次 C 评审遗留（**已核实、本轮未修**，按等级排列）
 
+> **2026-10-12 更新**：下表的 **5 处热切换残留已全部修复**（方案 §25），并有真实 Electron 渲染层探针覆盖（`test/i18n-hot-switch-runtime.test.js`，修复前红、修复后 2/2 绿）。交接文档 §0 的"⚠️ 已知未修缺陷"随之作废；`check-i18n.js` 的 `localeCoverageProblems()` 与 Low 级清理项**仍未处理**。
+
 | 项 | 位置 | 建议修法 |
 | --- | --- | --- |
 | **热切换后旧文案残留（5 处）** | ① `search/search.js:378`：`renderStatus` 未被重建 → 切换后仍显示旧语言的状态行与 `title`；② `action/action.js:780`：`applyTranslations()` 会把脚本自己写的头部/loading 打回静态键（explain/custom 动作会变回"翻译中…"）；③ `record/record.js:849`：`audioNotice` 存的是**已翻译的句子**，切换后不重算；④ `recognition/recognition.js:218,238`：`#title` 的 `data-i18n` 与 JS 视图标题双写冲突，另复制按钮的 1s 计时器捕获了旧语言字符串；⑤ `long-capture/long-capture.js:400`：`#status` 同时有 `data-i18n` 与 `setStatus()`，切换后显示静态的"preparing" | 统一模式：**把状态存成「键 + 参数」而不是成品句子**，广播时重跑各自的 render（参照 `record.js:850` 的 `setState(state)` 与 `capture.js:1344` 的做法）。①④⑤ 也可考虑去掉 `data-i18n` 标记、纯由 JS 渲染 |
