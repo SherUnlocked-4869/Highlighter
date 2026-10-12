@@ -40,7 +40,7 @@
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 ```
 
-> **`npm test` 有一个已知 flake**：`test/capture-renderer-runtime.test.js` 的 `report.ctrlA.toolbarVisible` 在全量跑时偶发失败（单跑 3/3 稳定通过）。详见 §6.8。
+> 🔴 **`npm test` 有一处会在 CI 上稳定失败**：`test/capture-renderer-runtime.test.js` 的 `report.ctrlA.toolbarVisible`。本地是间歇性（约 6 次全量跑红 1 次，单跑 3/3 通过），但在 GitHub 的 Windows runner 上**两次运行两次失败**（2026-10-12 实测），是 master 必需检查 "Check and test" 变红的直接原因。详见 §6.8。
 
 ---
 
@@ -69,7 +69,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
 1. **交接文档 §5.1 与方案 §23.3 把 `pin` 的 1 行残留言误记为"注释"。** 实测 `node scripts/check-i18n.js --area pin --list`，那唯一一行是 `pin/pin.html:12`——**可见 UI 文案**（「穿透中 · 悬停退出」＋ tooltip），且 pin 是唯一完全没接 i18n 的窗口（不载语言表、`preload-pin.js` 的订阅无人消费）。record / long-capture 的残留言确实分别是注释与纯校验 `throw`。**两份文档都已改正。**
 2. **显示器拓扑与文档不符**（见 §2）：不是故障，是环境变了；副屏存在故未阻塞。
-3. **`npm test` 非完全确定性**：一次全量跑出 903/904（`capture-renderer-runtime.test.js` 的 `ctrlA.toolbarVisible`），单跑 3/3 通过、其后每次全量都全过 → 判定为**既有 flake，非本次改动引入**（见 §6.8）。
+3. **`npm test` 非完全确定性**：一次全量跑出 903/904（`capture-renderer-runtime.test.js` 的 `ctrlA.toolbarVisible`），单跑 3/3 通过、其后本地每次全量都全过。**当时判定为"既有 flake"——这个定性在 2026-10-12 被证伪**：推送到远程后该测试在 CI 上 2/2 稳定失败（见 §6.8），所以它对本项目的门禁来说是**确定性失败**，不只是本地抖动。
 4. 尚未发现第 4 项读数错误——残留构成、覆盖率、审计读数均与文档一致。
 
 ### 3.2 用 `open-code-review` 评审 `f634018..HEAD`（批次 C 全部改动）
@@ -143,7 +143,7 @@ ocr review --audience agent --from f634018 --to HEAD `
 | `capture.js:315` 局部 `const t = tiny.getContext('2d')` | 遮蔽全局 `t()`；该 blur 分支目前无 i18n 调用，**后续谁在该块内加 `t()` 必须先改名** |
 | `main.js:1197,1267` 启动错误框 `'Highlighter 启动失败'` | 属 T6 范围但未做（需 `dialog.showErrorBox` 两行接线），需决定是否回收 |
 | `main.js:820` 托盘 tooltip `'Highlighter（游戏模式）'` | `main.js` 禁改期未做 |
-| **`npm test` 存在 flake** | 见 §6.8 |
+| 🔴 **CI 必需检查在 `capture-renderer-runtime` 上红** | `test/capture-renderer-runtime.test.js:455` 在 GitHub runner 上稳定失败（本地间歇）；已加诊断+轮询，待重推后据读数据定修法。见 §6.8 |
 
 ### 4.5 批次 C 评审遗留（**已核实、本轮未修**，按等级排列）
 
@@ -242,7 +242,11 @@ D2 拆分后出现过 **3 个白屏级缺陷**，而 `npm test` 全绿、`npm ru
 
 ### 6.8 其它
 
-- **`npm test` 有 flake**：`test/capture-renderer-runtime.test.js` 的 `ctrlA.toolbarVisible` 偶发失败（一次全量跑出 903/904，单跑 3/3 通过）。**看到 903/904 先单跑该文件确认**，不要当成本次改动引入的回归。
+- 🔴 **`test/capture-renderer-runtime.test.js:455` 的 `ctrlA.toolbarVisible` 在 CI 上稳定失败**（本地间歇）。**这是当前 master 必需检查 "Check and test" 变红的原因**，任何推送/发布门禁在修好前都会红。
+  - 已确认：本地 905/905 绿；CI（GitHub Windows runner）原始运行 + 重跑 **2/2 失败**，同一断言 `actual:false expected:true`，卡在 "Run tests" 步骤，E2E/覆盖率/long-capture 三步被跳过。
+  - 断言读 `#toolbar` 是否去掉 `hidden`。`capture/capture.js:1305` 的 Ctrl+A 处理**是同步的**，`render()` 只在三种情况保持隐藏：`selection.w<2||h<2`、`activeOcrResult` 非空、`selectState` 为 auto/selecting/dragging/resizing。该子用例 `imageBounds=null` → 回退 viewport（本地实测 `displayBounds 800×602`、`selectState "selected"`、`activeOcr false`）。
+  - **根因尚未钉死**。2026-10-12 已加诊断：探针的 ctrlA 读数现在带上 `toolbarClass/selectionState/activeOcr/rawSelection/imageLoaded/imageSize/displayBounds`，且 455 的失败信息会打印整个 `report.ctrlA`；同时把 Ctrl+A 后的固定 `sleep(150)` 换成最多 3s 的轮询（慢 runner 不再被调度误杀）。**如果 CI 仍红，失败信息里就会有 runner 上的真实读数**，据此再定最终修法。
+  - 本地先看到 903/904 时的处理：**单跑该文件确认**（`node --test test/capture-renderer-runtime.test.js`），不要当成本次改动引入的回归。
 - **子智能体（`subagent`）不是 teammate**：`list_agents`/`wait_agent` 看不到，Lead **无法** `send_message`。所有约束必须写进初始 prompt。
 - **并行波次必须写作用域互斥**：可行前提是"一路一个 `shared/locales/<domain>.js`"。
 - **`npm test` 与 e2e 都必须先清 `ELECTRON_RUN_AS_NODE`**（见 §1）。

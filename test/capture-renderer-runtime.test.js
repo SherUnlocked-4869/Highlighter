@@ -262,11 +262,33 @@ async function main () {
     await sleep(220)
     report.audio = await readProbe(win)
     await win.webContents.executeJavaScript('document.dispatchEvent(new KeyboardEvent("keydown",{key:"a",ctrlKey:true,bubbles:true}))')
-    await sleep(150)
+    // Ctrl+A's handler is synchronous (capture.js:1305 -> render()), but whether the
+    // toolbar ends up visible still depends on renderer state. Poll for it instead of
+    // trusting one fixed sleep, so a slow runner is not failed by scheduling alone; if
+    // it genuinely never becomes visible the read below still records why.
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const revealed = await win.webContents.executeJavaScript(
+        '!document.getElementById("toolbar").classList.contains("hidden")'
+      )
+      if (revealed) break
+      await sleep(50)
+    }
     report.ctrlA = await win.webContents.executeJavaScript(
       '(function(){return {toolbarVisible:!document.getElementById("toolbar").classList.contains("hidden"),' +
       'badge:document.getElementById("sizeBadge").textContent,innerWidth:innerWidth,innerHeight:innerHeight,' +
-      'ruleDisappeared:document.getElementById("tip").style.display}})()'
+      'ruleDisappeared:document.getElementById("tip").style.display,' +
+      // Diagnostics (2026-10-12): this assertion failed deterministically on the GitHub
+      // Windows runner while passing locally, and the old message carried no state, so the
+      // runner gave us nothing to reason about. Capture every input that can keep
+      // #toolbar hidden (capture.js render(): degenerate selection, an active OCR result,
+      // or a non-idle selectState) plus the viewport, so a failure names its own cause.
+      'toolbarClass:document.getElementById("toolbar").className,' +
+      'selectionState:typeof selectState==="undefined"?null:selectState,' +
+      'activeOcr:typeof activeOcrResult!=="undefined"&&!!activeOcrResult,' +
+      'rawSelection:typeof selection==="undefined"||!selection?null:selection,' +
+      'imageLoaded:!!(image&&image.complete&&image.naturalWidth>0),' +
+      'imageSize:{w:image?image.naturalWidth:0,h:image?image.naturalHeight:0},' +
+      'displayBounds:imageDisplayBounds()}})()'
     )
     await clickExportPdf(win)
     report.windowOpenAfterExport = !win.isDestroyed()
@@ -452,7 +474,7 @@ test('capture renderer honors saveMode, Ctrl+A, the serial reset, the shutter ga
 
   // P0-7-T6: Ctrl+A selects the whole display (imageDisplayBounds() with no imageBounds
   // falls back to the viewport) and reveals the toolbar.
-  assert.equal(report.ctrlA.toolbarVisible, true)
+  assert.equal(report.ctrlA.toolbarVisible, true, `Ctrl+A must reveal #toolbar; ctrlA=${JSON.stringify(report.ctrlA)}`)
   assert.equal(report.ctrlA.badge, `${report.ctrlA.innerWidth} × ${report.ctrlA.innerHeight}`)
   assert.ok(report.ctrlA.innerWidth >= 700 && report.ctrlA.innerHeight >= 500, 'the probe window is roughly display sized')
   assert.equal(report.ctrlA.ruleDisappeared, 'none')
