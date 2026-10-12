@@ -1450,7 +1450,7 @@ D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次�
 | 打包 | `electron-builder --config electron-builder.release.cjs --win nsis portable --x64 --publish never --config.forceCodeSigning=false --config.win.signExecutable=false`，约 45 s |
 | 产物 | Setup **144,788,573 B** · Portable **144,520,065 B** · blockmap 151,985 B · `latest.yml`（2.5.0）· `sbom.cdx.json`（CycloneDX 1.5 / 378 组件）· `SHA256SUMS.txt` · `win-unpacked/Highlighter.exe` 225,639,936 B |
 | `npm run verify:package` | **exit 0**：fuses **8/8**（与 2.2.4 发布记录逐项一致）· `win-unpacked/Highlighter.exe` 与 portable 的启动探针均通过 · 更新清单与校验和已生成 |
-| **未做** | 安装/覆盖升级/卸载验收（安装器修复后仍**未经用户复测**）、真机功能验收、签名（`verify:release`）。**tag 与推送已于 2026-10-12 完成**：`v2.5.0` 触发 `unsigned-release.yml` 且 **Release 直接公开（非 draft，该工作流的既定行为）**，CI 全绿、发布资产自洽校验通过 —— 详见发布记录 §9 |
+| **未做** | **实机功能验收**（批次 A 8 项 · 批次 B 音轨/光标/标注 · 批次 C 三语言）、隔离环境的安装/覆盖升级/卸载验收、签名（`verify:release`）。**安装本身已于 2026-10-12 实证成功**（本机装 13:54 构建，干净安装、运行中 —— 发布记录 §4）。**tag 与推送已于 2026-10-12 完成**：`v2.5.0` 触发 `unsigned-release.yml` 且 **Release 直接公开（非 draft，该工作流的既定行为）**，CI 全绿、发布资产自洽校验通过 —— 详见发布记录 §9 |
 | 合规 | **带着既有缺口外出**：无 `LICENSE`/`COPYRIGHT`/`THIRD_PARTY_NOTICES.md`，`build.files` 白名单不含它们，已分发的 GPL FFmpeg 与 LGPL libvips 零告知（分析文档 §5.6 / M5） |
 
 **为什么不是三次发布**：`2.3.0`/`2.3.1` **从未打 tag**（最新 tag 为 `v2.2.8`），且历史提交缺后续的 D2 拆分、i18n 与两轮修复 → 事后补 tag 得到的发布内容与版本叙事不符。

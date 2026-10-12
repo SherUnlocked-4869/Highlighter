@@ -125,7 +125,7 @@ ocr review --audience agent --from f634018 --to HEAD `
 
 ### 4.2 发布动作（**一次都没做**）
 
-> **2026-10-12 更新（已部分执行）**：用户决定 **A/B/C 合并为单次发布 `v2.5.0`**（`2.3.0`/`2.3.1` 从未打 tag，无法事后拆三次）。已完成：版本 bump（`d4d02a5`，`check:version` 通过）· `npm run build:native` · 本地打包 nsis + portable + SBOM + `latest.yml` · **`npm run verify:package` exit 0（fuses 8/8、两个启动探针通过）**。记录见 `docs/releases/2026-10-12-v2.5.0-build-acceptance.md`。**仍未做**：安装/覆盖升级/卸载验收、真机功能验收（仍挂账）、**打 tag 并推送触发 `release.yml`**（需远程写授权与 required reviewer）、签名（`verify:release`）。**合规缺口按用户决定随后单独做**（发布包当前不含 LICENSE/NOTICE）。
+> **2026-10-12 更新（发布已完成，功能验收待做）**：用户决定 **A/B/C 合并为单次发布 `v2.5.0`**（`2.3.0`/`2.3.1` 从未打 tag，无法事后拆三次）。已完成：版本 bump（`d4d02a5`）· 本机 native 构建与打包（nsis + portable + SBOM + `latest.yml`）· **`npm run verify:package` exit 0（fuses 8/8、两个启动探针通过）** · **tag `v2.5.0` 已推送**，`unsigned-release.yml` **success 并直接公开 Release**（6 资产，校验和自洽）· **2.5.0 已在本机安装成功且干净、运行中**（本机 13:54 构建；发布记录 §4 有实测证据）。记录见 `docs/releases/2026-10-12-v2.5.0-build-acceptance.md`（§9 发布与 CI 实况）。**仍未做**：**实机功能验收**（批次 A 8 项 · 批次 B 音轨/光标/标注 · 批次 C 三语言）、隔离环境的安装/覆盖升级/卸载验收、签名（`verify:release`）。**合规缺口按用户决定随后单独做**（发布包当前不含 LICENSE/NOTICE）。
 
 ### 4.3 P1（Auto Filter / MCP）：**被阻塞**
 
