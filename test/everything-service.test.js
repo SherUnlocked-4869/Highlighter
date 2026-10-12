@@ -104,6 +104,19 @@ function deferred() {
   return { promise, resolve }
 }
 
+// Poll a condition instead of racing a fixed delay. The query path awaits the
+// readiness chain (status + wait-ready round trips) before it registers the shared
+// request, and on a loaded CI runner that can outlast a handful of milliseconds:
+// CI run 38244060488 (2026-10-12) still observed a query count of 0 after 10 ms,
+// which made the merge assertion flake while the code was fine.
+async function waitFor(check, message, attempts = 400) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (check()) return
+    await delay(5)
+  }
+  throw new Error(message)
+}
+
 test('starts the sidecar once and shares the startup promise', async () => {
   const { service, child } = createService()
   let starts = 0
@@ -148,10 +161,11 @@ test('merges concurrent identical queries into one sidecar request', async () =>
   })
   const first = service.query({ search: 'slow' })
   const second = service.query({ search: 'slow' })
-  await delay(10)
-  assert.equal(queryCount, 1)
+  await waitFor(() => queryCount === 1, 'the coalesced sidecar query was never issued')
+  assert.equal(queryCount, 1, 'the two concurrent queries issue one sidecar request')
   pending.resolve()
   await Promise.all([first, second])
+  assert.equal(queryCount, 1, 'the coalesced query must not issue a second request')
   assert.equal(service.inFlight.size, 0)
 })
 
