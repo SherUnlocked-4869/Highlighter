@@ -40,7 +40,7 @@
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 ```
 
-> 🔴 **`npm test` 有一处会在 CI 上稳定失败**：`test/capture-renderer-runtime.test.js` 的 `report.ctrlA.toolbarVisible`。本地是间歇性（约 6 次全量跑红 1 次，单跑 3/3 通过），但在 GitHub 的 Windows runner 上**两次运行两次失败**（2026-10-12 实测），是 master 必需检查 "Check and test" 变红的直接原因。详见 §6.8。
+> ✅ **`npm test` 的 CI 失败已修**：`test/capture-renderer-runtime.test.js` 的 `report.ctrlA.toolbarVisible` 曾在 GitHub Windows runner 上 2/2 稳定失败（本地只是间歇），把固定 `sleep(150)` 换成轮询 + 补诊断后（`9db90bb`）CI 2/2 全绿。教训与细节见 §6.8。
 
 ---
 
@@ -143,7 +143,7 @@ ocr review --audience agent --from f634018 --to HEAD `
 | `capture.js:315` 局部 `const t = tiny.getContext('2d')` | 遮蔽全局 `t()`；该 blur 分支目前无 i18n 调用，**后续谁在该块内加 `t()` 必须先改名** |
 | `main.js:1197,1267` 启动错误框 `'Highlighter 启动失败'` | 属 T6 范围但未做（需 `dialog.showErrorBox` 两行接线），需决定是否回收 |
 | `main.js:820` 托盘 tooltip `'Highlighter（游戏模式）'` | `main.js` 禁改期未做 |
-| 🔴 **CI 必需检查在 `capture-renderer-runtime` 上红** | `test/capture-renderer-runtime.test.js:455` 在 GitHub runner 上稳定失败（本地间歇）；已加诊断+轮询，待重推后据读数据定修法。见 §6.8 |
+| ✅ **已解决**：CI 曾在 `capture-renderer-runtime` 上红 | `9db90bb` 把固定 `sleep(150)` 换成轮询 + 补诊断后，CI 2/2 全绿（`Check and test` success）。见 §6.8 |
 
 ### 4.5 批次 C 评审遗留（**已核实、本轮未修**，按等级排列）
 
@@ -245,7 +245,7 @@ D2 拆分后出现过 **3 个白屏级缺陷**，而 `npm test` 全绿、`npm ru
 - 🔴 **`test/capture-renderer-runtime.test.js:455` 的 `ctrlA.toolbarVisible` 在 CI 上稳定失败**（本地间歇）。**这是当前 master 必需检查 "Check and test" 变红的原因**，任何推送/发布门禁在修好前都会红。
   - 已确认：本地 905/905 绿；CI（GitHub Windows runner）原始运行 + 重跑 **2/2 失败**，同一断言 `actual:false expected:true`，卡在 "Run tests" 步骤，E2E/覆盖率/long-capture 三步被跳过。
   - 断言读 `#toolbar` 是否去掉 `hidden`。`capture/capture.js:1305` 的 Ctrl+A 处理**是同步的**，`render()` 只在三种情况保持隐藏：`selection.w<2||h<2`、`activeOcrResult` 非空、`selectState` 为 auto/selecting/dragging/resizing。该子用例 `imageBounds=null` → 回退 viewport（本地实测 `displayBounds 800×602`、`selectState "selected"`、`activeOcr false`）。
-  - **根因尚未钉死**。2026-10-12 已加诊断：探针的 ctrlA 读数现在带上 `toolbarClass/selectionState/activeOcr/rawSelection/imageLoaded/imageSize/displayBounds`，且 455 的失败信息会打印整个 `report.ctrlA`；同时把 Ctrl+A 后的固定 `sleep(150)` 换成最多 3s 的轮询（慢 runner 不再被调度误杀）。**如果 CI 仍红，失败信息里就会有 runner 上的真实读数**，据此再定最终修法。
+  - **处置与结果（2026-10-12 当天完成）**：改动只落在测试里——① 探针的 ctrlA 读数补上 `toolbarClass/selectionState/activeOcr/rawSelection/imageLoaded/imageSize/displayBounds`，455 的失败信息打印整个 `report.ctrlA`；② 把 Ctrl+A 后的固定 `sleep(150)` 换成最多 3s 的轮询。提交 `9db90bb` 推送后，**CI 原始运行与随后整轮重跑 2/2 全绿**（`Check and test` 与 `Build hardened unsigned candidate` 均 success）。→ **结论：触发条件是"固定 150ms 在慢 runner 上不够"的调度竞态**，不是产品缺陷；探针仍保留上述诊断字段，日后若再红会自带读数。
   - 本地先看到 903/904 时的处理：**单跑该文件确认**（`node --test test/capture-renderer-runtime.test.js`），不要当成本次改动引入的回归。
 - **子智能体（`subagent`）不是 teammate**：`list_agents`/`wait_agent` 看不到，Lead **无法** `send_message`。所有约束必须写进初始 prompt。
 - **并行波次必须写作用域互斥**：可行前提是"一路一个 `shared/locales/<domain>.js`"。
