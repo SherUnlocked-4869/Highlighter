@@ -1375,6 +1375,29 @@ D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次�
 
 ---
 
+## 26. v2.5.0 构建与打包验收（2026-10-12）
+
+> 用户决定：A/B/C **合并为单次发布 v2.5.0**；本轮做到"本地出安装包 + 打包验收"，**合规随后单独做**。完整记录见 `docs/releases/2026-10-12-v2.5.0-build-acceptance.md`。
+
+| 项 | 结果 |
+|---|---|
+| 版本 | **`2.5.0`**（`d4d02a5` 单独提交：`package.json` + `package-lock.json`；`node scripts/check-version.js` 通过） |
+| 候选代码 | `2c46825`（批次 C 遗留修复） |
+| 原生组件 | `npm run build:native` 三件全成功（cargo 命中缓存） |
+| 打包 | `electron-builder --config electron-builder.release.cjs --win nsis portable --x64 --publish never --config.forceCodeSigning=false --config.win.signExecutable=false`，约 45 s |
+| 产物 | Setup **144,788,573 B** · Portable **144,520,065 B** · blockmap 151,985 B · `latest.yml`（2.5.0）· `sbom.cdx.json`（CycloneDX 1.5 / 378 组件）· `SHA256SUMS.txt` · `win-unpacked/Highlighter.exe` 225,639,936 B |
+| `npm run verify:package` | **exit 0**：fuses **8/8**（与 2.2.4 发布记录逐项一致）· `win-unpacked/Highlighter.exe` 与 portable 的启动探针均通过 · 更新清单与校验和已生成 |
+| **未做** | 安装/覆盖升级/卸载验收、真机功能验收、**打 tag / 推送 / CI draft Release**、签名（`verify:release`） |
+| 合规 | **带着既有缺口外出**：无 `LICENSE`/`COPYRIGHT`/`THIRD_PARTY_NOTICES.md`，`build.files` 白名单不含它们，已分发的 GPL FFmpeg 与 LGPL libvips 零告知（分析文档 §5.6 / M5） |
+
+**为什么不是三次发布**：`2.3.0`/`2.3.1` **从未打 tag**（最新 tag 为 `v2.2.8`），且历史提交缺后续的 D2 拆分、i18n 与两轮修复 → 事后补 tag 得到的发布内容与版本叙事不符。
+
+**环境注记**：本会话的打包与启动探针需要 `ELECTRON_DISABLE_SANDBOX=1` + `TEMP/TMP` 指向工作区内 + `ELECTRON_BUILDER_CACHE` 指向工作区内副本（原因见 §24.4）；CI runner 不需要。
+
+**顺带登记**：`native/everything-search/bin/HighlighterEverything.exe` **构建即变脏**（本次重建 sha256 `AD12472B…` vs 库内 `B77DED4D…`，同尺寸 343,552 B）——已按 M-1 先例丢弃；该被跟踪构建产物的策略仍待单独立项。
+
+---
+
 ## 24. 统一测试阶段前的状态核实与门禁复跑（2026-10-12，DSH 会话）
 
 > 本节不是新波次，而是**接手核实的记录**：新会话拿到的指令假设"上一轮只写了文档、未改业务代码、HEAD=b97391e、两份文档 untracked"，实测全部不成立（批次 A/B/C 已落地、HEAD=`b2cf101`、文档已 tracked、`main.js` 1297）。核实与自检结论见本节；**未改动任何业务代码**。

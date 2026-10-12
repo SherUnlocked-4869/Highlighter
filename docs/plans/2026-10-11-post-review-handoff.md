@@ -14,7 +14,7 @@
 | --- | --- |
 | 分支 / HEAD | `master` / **`f4cfda9`**（300 个提交） |
 | 工作区 | **干净**（仅 `.zcodeignore` untracked，是有意保留的忽略文件） |
-| `package.json` 版本 | **仍是 `2.3.1`**（批次 A/B/C 的 bump 都未做，见 §4.2） |
+| `package.json` 版本 | **`2.5.0`**（2026-10-12 单次发布 bump，`d4d02a5`；构建与打包验收已通过，见 §4.2） |
 | 代码完成度 | 批次 A ✅ · 批次 B ✅ · 批次 C ✅ · **批次 C 评审修复 ✅（§3.3）** |
 | 唯一剩余验收 | **统一真机测试**（清单见 `2026-10-11-consolidated-verification-checklist.md`，**仍需补"批次 C 三语言"一节**） |
 | ⚠️ 已知未修缺陷 | **5 处"语言热切换后旧文案残留"**（§4.5）——真机测三语言时**会红**，先决定是修还是接受 |
@@ -125,7 +125,7 @@ ocr review --audience agent --from f634018 --to HEAD `
 
 ### 4.2 发布动作（**一次都没做**）
 
-`package.json` 仍是 **2.3.1**。三个版本的 bump 与 release 记录都未执行：批次 A → **v2.3.2**、批次 B → **v2.4.0**、批次 C → **v2.5.0**。属 Lead 职责，**需与用户确认**（涉及 `package.json` 与版本号断言，见 §6.5）。
+> **2026-10-12 更新（已部分执行）**：用户决定 **A/B/C 合并为单次发布 `v2.5.0`**（`2.3.0`/`2.3.1` 从未打 tag，无法事后拆三次）。已完成：版本 bump（`d4d02a5`，`check:version` 通过）· `npm run build:native` · 本地打包 nsis + portable + SBOM + `latest.yml` · **`npm run verify:package` exit 0（fuses 8/8、两个启动探针通过）**。记录见 `docs/releases/2026-10-12-v2.5.0-build-acceptance.md`。**仍未做**：安装/覆盖升级/卸载验收、真机功能验收（仍挂账）、**打 tag 并推送触发 `release.yml`**（需远程写授权与 required reviewer）、签名（`verify:release`）。**合规缺口按用户决定随后单独做**（发布包当前不含 LICENSE/NOTICE）。
 
 ### 4.3 P1（Auto Filter / MCP）：**被阻塞**
 
