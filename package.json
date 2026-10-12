@@ -149,7 +149,7 @@
     "jsqr": "^1.4.0",
     "openai": "^4.87.3",
     "screenshot-desktop": "^1.15.4",
-    "selection-hook": "^2.0.2",
+    "selection-hook": "^2.1.1",
     "sharp": "0.35.4"
   },
   "devDependencies": {
