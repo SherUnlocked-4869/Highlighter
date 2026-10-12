@@ -1327,3 +1327,62 @@ D2 的四个步骤全部落地并通过 §1.1 全量门禁 + e2e（连续 3 次�
 **发布动作仍未做**：`package.json` 仍是 **2.3.1**，批次 A（v2.3.2）、批次 B（v2.4.0）、批次 C（v2.5.0）三个版本 bump 与 release 记录都未执行（属 Lead，需与用户确认）。
 
 **剩余路线**：`main.js` 余量仅 **3 行**（1297/1300）——任何新接线前必须先腾挪；P1（Auto Filter / MCP）仍受 **F1-① 许可证字符串**阻塞。
+
+---
+
+## 24. 统一测试阶段前的状态核实与门禁复跑（2026-10-12，DSH 会话）
+
+> 本节不是新波次，而是**接手核实的记录**：新会话拿到的指令假设"上一轮只写了文档、未改业务代码、HEAD=b97391e、两份文档 untracked"，实测全部不成立（批次 A/B/C 已落地、HEAD=`b2cf101`、文档已 tracked、`main.js` 1297）。核实与自检结论见本节；**未改动任何业务代码**。
+
+### 24.1 前提核实（与指令的差异）
+
+| 指令描述 | 实测（2026-10-12） |
+|---|---|
+| 上一轮未改业务代码 | ❌ 批次 A/B/C 全部落地并提交（`pdf-export.js`、`print.html`、`audio-mixer.js`、`annotation-geometry.js`、`cursor-provider.js`、`shared/i18n.js`、`config/routes/*.js` 等均在版本控制内） |
+| HEAD = `master @ b97391e` | ❌ `master @ b2cf101`（2026-10-12 09:31） |
+| 两份方案文档 untracked | ❌ 均已 tracked；untracked 的是另外两份（`2026-10-08-selection-toolbar-app-blacklist-research.md`、`2026-10-09-selection-toolbar-centered-placement-design.md`） |
+| `main.js` 1298/1300（余 2） | ⚠️ **1297/1300（余 3）**，`scripts/check-architecture.js` 实测 ok |
+| 3 项在制非文档改动 | ✅ 完全一致（selection-hook `^2.0.2 → ^2.1.1` + 同尺寸重建的 `.exe`） |
+| LICENSE / COPYRIGHT / THIRD_PARTY_NOTICES.md 不存在 | ✅ 一致（`package.json` 仍 2.3.1、无 `license`） |
+| `_repo_snow_apps/` 只读克隆 | ✅ 存在，`.gitignore:25` 忽略（§1.3 记的"已删除"对该副本不成立） |
+
+**§0.1 总账自检**：按 §4–§10 任务表逐项重算，P0-4=4.0、P0-6=3.0、P0-7=6.5（批次 A **13.5**）；P0-3=7.0、P0-5=5.75、P0-2=6.0（批次 B **18.75**）；P0-1=16.75（批次 C **16.75**）；**七项 49.0**，含工程开销 **55.25–59.5** —— 与 §0.1 一致，无需修订。
+**§3.1.1 同波次写作用域自检**：Wave 0/1/2/4/6/7/7.5/8.5 均互斥；仅 **2 处口径错位（不影响人日）**：① `shared/locales/**` 在 §3.1.1 整块归 S1，而 §10.3 的"一 domain 一文件"实际由 S11/S12/S13 各写自己的文件，注册表未同步；② §6.1 的 P0-7-T3 把 `settings-defaults.js` 与 `config/config.js` 列为"关键落点"，但二者属 Lead 冻结文件与 S10a 作用域（实际实现亦由 S10a 落地）。
+
+### 24.2 M-1 二次开案与结案（工作区再次变脏）
+
+`2026-10-11-post-review-handoff.md` 记录的工作区"仅 `.zcodeignore` untracked"已不成立：实测重新出现 §1.2 描述的 3 项改动 + 2 份未跟踪文档，`.zcodeignore` 且已不在磁盘。按用户 2026-10-12 批准（M-1 选项 A 的修订版）处置：
+
+| 动作 | 结果 |
+|---|---|
+| 丢弃构建产物噪声 | `git checkout -- native/everything-search/bin/HighlighterEverything.exe` |
+| `selection-hook` 升级独立提交 | **`ea7ff2f`** `chore(deps): align selection-hook to 2.1.1`（`node_modules` 本就是 2.1.1，属对齐而非半应用） |
+| 2 份未跟踪规划文档入库 | **`ba196d4`** `docs(plans): add the selection-toolbar blacklist research and centered placement design` |
+| 出口条件 3（划词 hook 真机验证） | 按用户"统一测试"决定**挂账**，已写进 `ea7ff2f` 的提交说明 |
+
+工作区自此**完全干净**（`git status --short` 空）。
+
+### 24.3 门禁复跑（2026-10-12，工作区干净）
+
+| 门禁 | 交接文档 §1 记录 | **本次复跑** | 结论 |
+|---|---|---|---|
+| `npm test` | 905 / 905 | **905 / 905**（16.5s） | ✅ 复现（须加 24.4 的两条环境绕行） |
+| `npm run check` | 291 文件 · `main.js` 1297 · i18n 606 | **291 文件 · 1297/1300 · 606 ≤ 606** | ✅ 一致 |
+| `test:coverage:loaded` | 92.7%（11405/12302） | **92.72%（11407/12302）** | ✅（+2 行，来自被绕行救回的两个 Electron 探针） |
+| `test:coverage:critical` | 93.22 / 94.07 / 92.42 | **93.46%（21 用例全绿）** | ✅ |
+| `audit:dependencies` | 26 豁免 / 0 未豁免 | 配置 registry 下 ❌ **18 个失效豁免项**；显式走官方 registry 则 ✅ **26 豁免 / 0 未豁免（exit 0）** | 红灯**仅由镜像缺少 audit 端点造成**，门禁结论与基线一致，见 24.4-③ |
+| `test:e2e` | 6 / 6 | **未跑** | 无副屏，需用户授权，见 24.4-④ |
+
+### 24.4 环境事实（**均非代码缺陷**，逐条有证据）
+
+1. **Chromium OS 沙箱在本会话无法初始化**：Electron 以 `0x80000003 STATUS_BREAKPOINT` 立即崩溃、stdout/stderr 全空（`electron.exe --version` 亦然）；`--no-sandbox` 或 `$env:ELECTRON_DISABLE_SANDBOX='1'` 后正常（`app ready; displays = 1`）。缺此绕行时 `npm test` 红 **9** 项——全部是真实 Electron 探针。
+2. **派生二进制写不了 `%TEMP%`**：`electron.exe` / `ffmpeg.exe` 在 `os.tmpdir()` 下建文件报 `EPERM`（`node` 自己可以写，工作区内也可以）；把 `TEMP`/`TMP` 指到工作区内目录后正常。缺此绕行时 `npm test` 红 **3** 项（两项探针 40s/65s 超时 + `recording-preview-runtime` 的 ffmpeg fixture EACCES）。
+3. **`npm audit` 端点在配置 registry 上不可用（门禁本身没坏）**：用户级 `~/.npmrc` 指向 `registry.npmmirror.com`，该镜像对 `POST /-/npm/v1/security/advisories/bulk` 返回 `404 NOT_IMPLEMENTED`，`npm audit --json` 给出 `{"error":{"summary":"","detail":""}}` 且 **0 条漏洞** → 18 条豁免全部被判"失效"。
+   **权威复核（显式走官方 registry）**：`$env:npm_config_registry='https://registry.npmjs.org'; node scripts/audit-dependencies.js` → **审计通过：26 个已豁免，0 个未豁免（exit 0）**，与交接文档 §1 的读数一致（`metadata.vulnerabilities` = 1 low / 9 moderate / 5 high，moderate+ 共 26 条全部落在豁免清单内）。**结论：门禁可用，红灯只由镜像端点缺失造成。** 注意 `npm run audit:dependencies --registry=…` **无效**（该参数会进脚本 argv，而不是脚本内部那次 `npm audit`）。
+   **附带发现（建议单独立项）**：`scripts/audit-dependencies.js:92-95` 只校验 stdout 是否存在，**不校验 `report.error`**，于是"审计不可用"被误报成"豁免清单腐烂"，门禁信息误导。建议在 `runAudit()` 中检测 `report.error` / `auditReportVersion === undefined` 时直接以"审计不可用"失败。
+4. **显示器只有一块**：`\\.\DISPLAY1` 1493×933（主屏），**无副屏**。与交接文档 §2（3840×2160 + 1728×3072）和验收清单 §0（1152×2048 @3072,−136）都不同 → 可见窗/e2e/真机项须按 `AGENTS.md` 先问用户，且**必须在有副屏的环境执行**。
+
+### 24.5 本轮未做（有意留待用户决定的）
+
+- `test:e2e`（需可见窗授权）、统一真机测试（需用户 + 副屏）、三个版本 bump、L1–L16 许可落地、P1（仍受 F1-① 阻塞）。
+- 验收清单已补 **§3.5 批次 C 三语言**（含 5 处已知热切换残留的预期）并修正了过期的副屏读数与环境准备说明。

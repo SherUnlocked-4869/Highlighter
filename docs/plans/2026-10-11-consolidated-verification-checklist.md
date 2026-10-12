@@ -15,9 +15,11 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue   # 必做，
 .\node_modules\.bin\electron.cmd .        # 不要用 npm start（prestart 会重建被跟踪的 native 二进制）
 ```
 
+> **DSH 会话内的环境附加限制（2026-10-12 实测；不是代码缺陷）**：① **Chromium OS 沙箱无法初始化** —— Electron 以 `0x80000003 STATUS_BREAKPOINT` 立即崩、stdout/stderr 全空；须 `$env:ELECTRON_DISABLE_SANDBOX='1'`（或 `--no-sandbox`）。② **派生二进制写不了 `%TEMP%`** —— `electron.exe` / `ffmpeg.exe` 在 `os.tmpdir()` 下建文件报 EPERM（`node` 自己可以写）；须把 `TEMP`/`TMP` 指到工作区内目录（如 `.tmp/sys-temp`）。两条**同时**施加后 `npm test` 复现 **905/905**；只清 `ELECTRON_RUN_AS_NODE` 会红 9 项，只加沙箱绕行会红 3 项。
+
 - 用户数据根：`E:\document\highlighter`（`config/config.json`；`captureHistory` 现有 164 条真实历史，**勿损坏**）。
 - 侧证：只读 `config.json` 里**需要的键**（文件含 `credentials`，不要整读）；截图热键 `Ctrl+1`；`saveDirectory = E:\pictures\highlighterQuickSave`。
-- 副屏：`\\.\DISPLAY2` 1152×2048 @3072,−136，**125% 缩放**；主屏 2560×1440。
+- 副屏：**参数会变，接手时先自己量**（`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens`）。历史记录有两组：1152×2048 @3072,−136（125%）与 1728×3072 @4608,−204。**2026-10-12 在 DSH 会话内实测只有 1 块 `\\.\DISPLAY1` 1493×933（无副屏）→ 可见窗与真机项须在有副屏的环境执行（按 AGENTS.md 先问用户）。**
 - MP4 音轨取证：`ffprobe -show_streams`（`node_modules/ffmpeg-static/` 同目录有 ffmpeg；ffprobe 若无，用 `ffmpeg -i out.mp4` 看 `Stream #0:1: Audio`）。
 - PDF 取证：`.tmp/pdf-ctm.js`（逐 token 解释 q/Q/cm，给出图片 bbox 与页数）。
 - 日志：dev 实例输出到 `.tmp/dev-instance.log`（托盘/穿透/降级提示都打在这里）。
@@ -115,6 +117,36 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue   # 必做，
 | ② | 帧率小字 | 不再写「仅包含画面」，改为反映音轨的表述 |
 | ③ | 切换三个开关 → 重开设置页 | 状态**回读一致**；`config.json` 的 `record.audioSystem` / `record.audioMicrophone` / `screenshot.captureCursor` 同步 |
 | ④ | 切换开关后再看帧率/保存目录 | **不被清空**（部分补丁深合并，`test/settings-service.test.js` 已覆盖） |
+
+---
+
+### 3.5 批次 C 三语言（**2026-10-12 新增**）
+
+> 批次 C（i18n）的代码与门禁已在 `2026-10-11-post-review-handoff.md` §1/§3 收口，但**真机项此前从未列入本清单**，故补此节。
+
+**前置**：设置页存在「界面语言」行，可在 `zh-CN / en-US / zh-TW` 间切换，且切换**不重启生效**。
+
+| # | 步骤 | 期望 | 取证 |
+| --- | --- | --- | --- |
+| ① | 设置页依次切 `en-US` → `zh-TW` → `zh-CN` | 设置页自身**不重启即变**；其余窗口随之变化 | 截图；只读 `config.json` 的 `language` |
+| ② | 逐窗打开：`config` / `capture` / `toolbar` / `long-capture`（overlay + 主窗）/ `record` / `recognition` / `pin` / `action` / `search` | **无裸键名**（形如 `domain.module.semantic` 的字符串）、无空文案 | 目视；**发现裸键即 P0**（根因多为该窗未载对应 `shared/locales/<domain>.js`，见交接文档 §6.6） |
+| ③ | 托盘菜单（切语言后） | 托盘项用当前语言，且是**重建**而非残留 | 托盘截图 + dev 日志 |
+| ④ | 切到 `en-US` 后**新开**截图窗 / 贴图窗 | 新窗按新语言渲染（`localStorage` 跨 `file://` 目录共享已实测） | 新窗文案 |
+| ⑤ | 切回 `zh-CN` | 全部窗口回中文 | 目视 |
+
+**⚠️ 已知预期（不是新发现的偶发 bug）**：以下 **5 处**热切换后会显示旧语言残留，已核实、本轮未修（交接文档 §4.5）：
+
+| 位置 | 现象 |
+| --- | --- |
+| `search/search.js:378` | `renderStatus` 不重建 → 状态行与 `title` 仍为旧语言 |
+| `action/action.js:780` | `applyTranslations()` 把脚本写入的头部/loading 打回静态键（explain/custom 会变回"翻译中…"） |
+| `record/record.js:849` | `audioNotice` 存的是**已翻译的句子** → 切换后不重算 |
+| `recognition/recognition.js:218,238` | `#title` 的 `data-i18n` 与 JS 视图标题双写冲突；复制按钮 1s 计时器捕获旧语言串 |
+| `long-capture/long-capture.js:400` | `#status` 同时有 `data-i18n` 与 `setStatus()` → 切换后回到静态 preparing |
+
+**判定**：①–⑤ 中除上述 5 处外**其余必须干净**；②（裸键）与 ③（托盘）失败按 **P0** 处理。
+
+**门禁侧对照**：`npm run check:i18n` = `node scripts/check-i18n.js --max 606`（**只能下调**）；checker 应报 13 个 locale 文件、三语各 971 键、对称差/键名形状/`data-i18n` 缺失全 0。注意 checker 与 `test/i18n.test.js` 都**先合并全部表**，因此**看不见"整窗缺表"** —— 那类缺陷只能靠本节真机目视 + `test/i18n-contract.test.js` 的**按窗口**门禁发现（已用「删掉 `config.html` 的 `search.js` 标签」反向验证过）。
 
 ---
 
