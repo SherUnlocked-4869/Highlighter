@@ -55,9 +55,37 @@ function failWorker(message) {
   updateControls()
 }
 
+// P0-1-T5 (S12) hot-switch: `#status` carries a static `data-i18n` marker so the
+// first frame is translated by applyTranslations(), but the live status is
+// written by this script. Keeping it as state (a key + params, or a raw
+// diagnostic) instead of a finished sentence is what lets the broadcast handler
+// re-render it after applyTranslations() has clobbered the element back to the
+// static "preparing" copy. The confidence readout is stored too, so the
+// re-render keeps it (it is language-neutral, but it belongs to the same status).
+let statusState = { key: 'long-capture.status.preparing' }
+let statusConfidence = null
+
+function renderStatusText() {
+  statusElement.textContent = Object.hasOwn(statusState, 'raw')
+    ? statusState.raw
+    : t(statusState.key, statusState.params)
+  if (Number.isFinite(statusConfidence)) confidenceElement.textContent = `${Math.round(statusConfidence * 100)}%`
+}
+
+// Translatable status: store the key (+ interpolation params) so a language
+// switch re-renders it, instead of freezing the sentence of the moment.
+function setStatusKey(key, params, confidence) {
+  statusState = { key, params }
+  statusConfidence = confidence
+  renderStatusText()
+}
+
+// Raw diagnostic (worker/API error text): decision D6 keeps these verbatim, so
+// they are not re-translated — only kept on screen across a language switch.
 function setStatus(message, confidence) {
-  statusElement.textContent = message
-  if (Number.isFinite(confidence)) confidenceElement.textContent = `${Math.round(confidence * 100)}%`
+  statusState = { raw: message }
+  statusConfidence = confidence
+  renderStatusText()
 }
 
 function updateControls() {
@@ -239,15 +267,15 @@ async function captureFrame() {
     const result = await workerFrame(imageData.data, imageData.width, imageData.height)
     if (result.status === 'initialized') {
       await uploadStrip(makeStripCanvas(0, true), 'append')
-      setStatus(t('long-capture.status.initial-recorded'), 1)
+      setStatusKey('long-capture.status.initial-recorded', undefined, 1)
     } else if (result.status === 'matched') {
       const strip = makeStripCanvas(result.shift, false)
       await uploadStrip(strip, result.shift > 0 ? 'append' : 'prepend')
-      setStatus(t('long-capture.status.matched'), result.confidence)
+      setStatusKey('long-capture.status.matched', undefined, result.confidence)
     } else if (result.status === 'still') {
-      setStatus(t('long-capture.status.waiting-scroll'), 1)
+      setStatusKey('long-capture.status.waiting-scroll', undefined, 1)
     } else {
-      setStatus(t('long-capture.status.no-match'), result.confidence)
+      setStatusKey('long-capture.status.no-match', undefined, result.confidence)
     }
   } catch (error) {
     setStatus(error.message || String(error))
@@ -264,10 +292,10 @@ function setCapturing(active) {
   timer = null
   window.longCaptureAPI.setOverlayActive(capturing)
   if (capturing) {
-    setStatus(t(total.strips ? 'long-capture.status.capturing-continue' : 'long-capture.status.capturing-initial'))
+    setStatusKey(total.strips ? 'long-capture.status.capturing-continue' : 'long-capture.status.capturing-initial')
     captureFrame()
     timer = setInterval(captureFrame, 180)
-  } else if (total.strips) setStatus(t('long-capture.status.paused'))
+  } else if (total.strips) setStatusKey('long-capture.status.paused')
   updateControls()
 }
 
@@ -277,9 +305,9 @@ async function toggleSelectionEditing() {
   try {
     selectionEditing = !selectionEditing
     await window.longCaptureAPI.setSelectionEditing(selectionEditing, axis, total.strips > 0)
-    setStatus(t(selectionEditing
+    setStatusKey(selectionEditing
       ? (total.strips ? 'long-capture.status.drag-along-axis' : 'long-capture.status.move-or-resize')
-      : 'long-capture.status.selection-updated'))
+      : 'long-capture.status.selection-updated')
   } catch (error) {
     selectionEditing = false
     setStatus(error.message || String(error))
@@ -297,7 +325,7 @@ async function applyTrim() {
     trimEndInput.value = String(total.trimEnd || 0)
     sizeElement.textContent = `${total.width} × ${total.height}`
     updateTrimPreview()
-    setStatus(t('long-capture.status.trim-updated'))
+    setStatusKey('long-capture.status.trim-updated')
   } catch (error) {
     trimStartInput.value = String(total.trimStart || 0)
     trimEndInput.value = String(total.trimEnd || 0)
@@ -314,12 +342,12 @@ async function finish(action, fast = false) {
   setCapturing(false)
   busy = true
   updateControls()
-  setStatus(t(action === 'copy'
+  setStatusKey(action === 'copy'
     ? 'long-capture.status.copying'
-    : (action === 'pin' ? 'long-capture.status.pinning' : 'long-capture.status.generating')))
+    : (action === 'pin' ? 'long-capture.status.pinning' : 'long-capture.status.generating'))
   try {
     const result = await window.longCaptureAPI.finish(action, fast)
-    if (result?.canceled) setStatus(t('long-capture.status.save-canceled'))
+    if (result?.canceled) setStatusKey('long-capture.status.save-canceled')
   } catch (error) {
     busy = false
     setStatus(error.message || String(error))
@@ -352,9 +380,9 @@ async function initialize(data) {
     video.srcObject = stream
     await video.play()
     if (workerError) setStatus(workerError.message)
-    else setStatus(t('long-capture.status.ready'))
+    else setStatusKey('long-capture.status.ready')
   } catch (error) {
-    setStatus(t('long-capture.status.capture-failed', { detail: error.message }))
+    setStatusKey('long-capture.status.capture-failed', { detail: error.message })
     toggleButton.disabled = true
   }
   updateControls()
@@ -394,12 +422,16 @@ addEventListener('beforeunload', () => {
 // P0-1-T2/T5: the initial pass translates the markup; the broadcast subscription
 // re-renders the dynamic labels (status, strip count, buttons) in the new language.
 // The strip counter is parameterised, so it is rendered by the script rather than
-// by a data-i18n attribute.
+// by a data-i18n attribute; `#status` keeps its data-i18n marker on purpose —
+// applyTranslations() restores the static copy first and renderStatusText() then
+// puts the live status back, re-resolved from the stored key.
 applyTranslations()
+renderStatusText()
 stripsElement.textContent = t('long-capture.status.strips', { count: total.strips })
 window.longCaptureAPI.onInterfaceLanguage((language) => {
   setLanguage(language)
   applyTranslations()
+  renderStatusText()
   stripsElement.textContent = t('long-capture.status.strips', { count: total.strips })
   updateControls()
 })
@@ -407,6 +439,6 @@ window.longCaptureAPI.onInit(initialize)
 window.longCaptureAPI.onSelectionUpdated((bounds) => {
   if (!initData || !bounds) return
   initData.selectionBounds = bounds
-  setStatus(t('long-capture.status.selection-area-updated'))
+  setStatusKey('long-capture.status.selection-area-updated')
 })
 window.longCaptureAPI.ready()

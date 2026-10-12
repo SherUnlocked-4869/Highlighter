@@ -173,3 +173,51 @@ test('long capture allows only its packaged matcher worker and fails closed', ()
   assert.match(script, /t\('long-capture\.error\.match-timeout'\)/)
   assert.match(script, /rejectWorkerRequests/)
 })
+
+// --- language hot-switch (P0-1-T7) -------------------------------------------
+
+test('the search window re-renders its status line when the language switches', () => {
+  // `#statusText` carries a static `data-i18n` marker, so the broadcast's
+  // applyTranslations() rewrites it to "detecting" and the status render has to
+  // run again afterwards. The retained payload's `messageKey` is what makes that
+  // re-render change the language: the main process publishes `message` already
+  // resolved, in the language that was active when it published.
+  const html = fs.readFileSync(path.join(root, 'search', 'search.html'), 'utf8')
+  const script = fs.readFileSync(path.join(root, 'search', 'search.js'), 'utf8')
+
+  assert.match(html, /data-i18n="search\.status\.detecting"/)
+  assert.match(script, /let lastStatus = null/)
+  assert.match(script, /typeof current\.messageKey === 'string' && current\.messageKey/)
+  assert.match(script, /t\(\s*current\.messageKey\s*\)/)
+  assert.match(script, /current\.message \|\| t\('search\.status\.detecting'\)/)
+  assert.match(
+    script,
+    /onInterfaceLanguage\(\(language\) => \{[\s\S]*?applyTranslations\(\)\s*\n\s*renderStatus\(\)\s*\n\s*renderTabs\(\)/
+  )
+  // `t(status.messageKey)` only resolves because the window loads the domain
+  // table that owns the Everything status keys (shared/locales/main.js).
+  assert.match(html, /shared\/locales\/main\.js/)
+})
+
+test('the long-capture status line survives a language switch', () => {
+  // The markup keeps the static key on purpose: applyTranslations() restores the
+  // static copy first, then renderStatusText() puts the live status back from the
+  // stored state (a key + params, or a raw diagnostic).
+  const html = fs.readFileSync(path.join(root, 'long-capture', 'long-capture.html'), 'utf8')
+  const script = fs.readFileSync(path.join(root, 'long-capture', 'long-capture.js'), 'utf8')
+
+  assert.match(html, /id="status" data-i18n="long-capture\.status\.preparing"/)
+  assert.match(script, /let statusState = \{ key: 'long-capture\.status\.preparing' \}/)
+  assert.match(script, /function renderStatusText\(\) \{/)
+  assert.match(script, /function setStatusKey\(key, params, confidence\) \{/)
+  assert.match(script, /Object\.hasOwn\(statusState, 'raw'\)/)
+  assert.match(script, /Number\.isFinite\(statusConfidence\)/)
+  // Every translatable status stores its key; only raw diagnostics stay sentences.
+  assert.doesNotMatch(script, /setStatus\(t\(/)
+  assert.match(script, /setStatusKey\('long-capture\.status\.capture-failed', \{ detail: error\.message \}\)/)
+  assert.match(script, /setStatus\(error\.message \|\| String\(error\)\)/)
+  assert.match(script, /if \(workerError\) setStatus\(workerError\.message\)/)
+  // Re-render after applyTranslations() in the broadcast, and once at boot.
+  assert.match(script, /^applyTranslations\(\)\r?\nrenderStatusText\(\)/m)
+  assert.match(script, /onInterfaceLanguage\(\(language\) => \{[\s\S]*?applyTranslations\(\)\r?\n\s+renderStatusText\(\)/)
+})

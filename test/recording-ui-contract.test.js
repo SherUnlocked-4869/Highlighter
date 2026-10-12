@@ -170,12 +170,14 @@ test('MP4 save dialog is owned and not covered by the topmost preview', () => {
 // 实际已无任何音轨 —— 文案必须与文件实际内容一致。
 // P0-1-T5 (S12)：文案移入 shared/locales/record.js，断言改为追踪两个不同的键，
 // 语义不变：系统声还开着才说"仅保留系统声音"，否则必须说"不再包含声音"。
+// 热切换修复：两个键现在以"键 + 参数"的形式存进 setAudioNotice()，句子由
+// renderStatus() 在渲染时构造，所以断言跟踪的是这两个键字面量。
 test('the microphone-disconnect notice matches the audio the file actually keeps', () => {
   const recordScript = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')
   const locales = fs.readFileSync(path.join(root, 'shared', 'locales', 'record.js'), 'utf8')
   assert.match(
     recordScript,
-    /setAudioNotice\(audioRequest\.system\s*\n?\s*\? t\('record\.audio\.notice\.microphone-disconnected-system'\)\s*\n?\s*: t\('record\.audio\.notice\.microphone-disconnected-none'\)\)/
+    /setAudioNotice\(audioRequest\.system\s*\n?\s*\? 'record\.audio\.notice\.microphone-disconnected-system'\s*\n?\s*: 'record\.audio\.notice\.microphone-disconnected-none'\)/
   )
   assert.doesNotMatch(
     recordScript,
@@ -184,4 +186,33 @@ test('the microphone-disconnect notice matches the audio the file actually keeps
   )
   assert.match(locales, /'record\.audio\.notice\.microphone-disconnected-system': '麦克风已断开，本次录制仅保留系统声音'/)
   assert.match(locales, /'record\.audio\.notice\.microphone-disconnected-none': '麦克风已断开，本次录制不再包含声音'/)
+})
+
+// 热切换修复（批次 C 遗留）：提示原先以"已经翻译好的句子"存储，切语言后仍停在
+// 捕获时的语言。现在存的是键 + 参数，renderStatus() 每次都用当前语言重建整句。
+test('the audio notice is stored as a key and rendered in the active language', () => {
+  const recordScript = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')
+  // 状态是键 + 参数，不是句子；键相同时仍然提前返回。
+  assert.match(recordScript, /let audioNoticeKey = ''/)
+  assert.match(recordScript, /let audioNoticeParams = null/)
+  assert.match(
+    recordScript,
+    /function setAudioNotice\(key, params = null\) \{[\s\S]*?if \(nextKey === audioNoticeKey && sameAudioNoticeParams\(audioNoticeParams, nextParams\)\) return[\s\S]*?renderStatus\(\)/
+  )
+  // 句子只在渲染期构造，形状与改动前一致（`${label} · ${notice}` / title = notice）。
+  assert.match(recordScript, /const notice = audioNoticeKey \? t\(audioNoticeKey, audioNoticeParams\) : ''/)
+  assert.match(recordScript, /statusLabel\.textContent = notice \? `\$\{label\} · \$\{notice\}` : label/)
+  assert.match(recordScript, /if \(notice\) statusLabel\.title = notice/)
+  // 降级告警转成 {key, params} 描述符，原始 detail 只作为插值参数出入。
+  assert.match(recordScript, /function audioWarningKey\(warning\) \{[\s\S]*?return \{ key, params: detail \? \{ detail \} : null \}/)
+  assert.match(recordScript, /audioWarningKey\(audioWarnings\[0\]\)/)
+  // 调用点全部传键：没有任何一处把成品句子塞进 setAudioNotice()。
+  assert.match(recordScript, /setAudioNotice\(inputs\.length \? '' : 'record\.error\.microphone-not-detected'\)/)
+  assert.match(recordScript, /setAudioNotice\('record\.audio\.notice\.system-interrupted'\)/)
+  assert.doesNotMatch(recordScript, /setAudioNotice\(t\(/, 'no call site may freeze a sentence')
+  // 语言广播 -> applyTranslations() -> setState() -> renderStatus() 用新语言重建整句。
+  const broadcast = recordScript.match(/window\.recordAPI\.onInterfaceLanguage\(\(language\) => \{[\s\S]*?\n\}\)/)
+  assert.ok(broadcast, 'the language broadcast handler must exist')
+  assert.match(broadcast[0], /setLanguage\(language\)\s*\n\s*applyTranslations\(\)\s*\n\s*setState\(state\)/)
+  assert.match(recordScript, /function setState\(nextState\) \{[\s\S]*?renderStatus\(\)/)
 })

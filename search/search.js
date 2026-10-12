@@ -85,16 +85,28 @@ function getActiveCategory() {
     || { id: 'all', label: 'search.category.fallback', rule: '' }
 }
 
+// P0-1-T2/T5: the last status payload is retained so a language switch can
+// re-render the footer line in place. `status.message` arrives already resolved
+// in the main-process language (main/services/everything-service.js), so
+// re-running renderStatus() only helps because the payload also carries the key
+// (`messageKey`) it was resolved from; the shared runtime resolves that key
+// against the language the window just switched to.
+let lastStatus = null
+
 function renderStatus(status) {
-  if (!status) return
-  state.ready = status.phase === 'ready'
-  els.status.classList.toggle('is-error', status.phase === 'error')
-  let text = status.message || t('search.status.detecting')
-  if (status.phase === 'ready') {
-    text = status.version
-      ? t('search.status.ready-version', { version: status.version })
+  if (status) lastStatus = status
+  const current = lastStatus
+  if (!current) return
+  state.ready = current.phase === 'ready'
+  els.status.classList.toggle('is-error', current.phase === 'error')
+  let text = (typeof current.messageKey === 'string' && current.messageKey)
+    ? t(current.messageKey)
+    : (current.message || t('search.status.detecting'))
+  if (current.phase === 'ready') {
+    text = current.version
+      ? t('search.status.ready-version', { version: current.version })
       : t('search.status.ready')
-    if (Number(status.probeTotal) === 0) {
+    if (Number(current.probeTotal) === 0) {
       text += t('search.status.index-empty')
     }
   }
@@ -373,11 +385,15 @@ els.sort.addEventListener('change', () => {
 
 // P0-1-T2/T5: the initial pass translates the markup; the broadcast subscription
 // re-renders everything the script owns (tabs, sort options, result rows, the
-// empty state and the status line) in the newly selected language.
+// empty state and the status line) in the newly selected language. The status
+// line has a `data-i18n` marker, so applyTranslations() rewrites it to the static
+// "detecting" copy and renderStatus() has to run after it to restore the real
+// state — re-resolved from the retained key.
 applyTranslations()
 window.searchAPI.onInterfaceLanguage((language) => {
   setLanguage(language)
   applyTranslations()
+  renderStatus()
   renderTabs()
   renderSortOptions()
   renderResults()

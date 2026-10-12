@@ -8,6 +8,13 @@ const { execFile, spawn } = require('child_process')
 // to start / query failed) is diagnostic text: plan §10.5-5 keeps log and
 // diagnostic strings verbatim, and decision D6 keeps every main-process `throw`
 // out of this release, so those messages stay exactly as they were.
+//
+// P0-1-T7 (status hot-switch): every status that carries UI copy now also
+// carries the key it was resolved from (`messageKey`). `message` stays exactly
+// as before — it is the sentence in the main-process language at publish time,
+// which is stale the moment the user switches language. The search window keeps
+// the last payload and re-resolves `messageKey` through its own `t()`, so the
+// key is what makes the language switch visible without another round trip.
 const { t } = require('./i18n-bootstrap')
 
 const SIDECAR_START_TIMEOUT_MS = 15000
@@ -67,6 +74,7 @@ class EverythingService {
     this.status = {
       phase: 'idle',
       message: '',
+      messageKey: '',
       running: false,
       dbLoaded: false,
       version: null,
@@ -87,6 +95,7 @@ class EverythingService {
     return {
       phase: 'ready',
       message: t('main.everything.ready'),
+      messageKey: 'main.everything.ready',
       running: true,
       dbLoaded: true,
       version: 'e2e',
@@ -116,7 +125,8 @@ class EverythingService {
         this.applySidecarStatus(snapshot, {
           managedByHighlighter: !!this.managedEverything,
           phase: ready ? 'ready' : (running ? 'waiting' : 'idle'),
-          message: ready ? t('main.everything.ready') : (running ? t('main.everything.index-pending') : '')
+          message: ready ? t('main.everything.ready') : (running ? t('main.everything.index-pending') : ''),
+          messageKey: ready ? 'main.everything.ready' : (running ? 'main.everything.index-pending' : '')
         })
         this.scheduleIdleStop()
       } catch (error) {
@@ -346,13 +356,21 @@ class EverythingService {
       return this.getStatus()
     }
     await this.ensureStarted()
-    this.setStatus({ phase: 'checking', message: t('main.everything.checking') })
+    this.setStatus({
+      phase: 'checking',
+      message: t('main.everything.checking'),
+      messageKey: 'main.everything.checking'
+    })
     const snapshot = await this.request({ action: 'status' }, STATUS_TIMEOUT_MS).catch((error) => {
       this.log('Everything status check failed:', error.message)
       return null
     })
     if (!snapshot) {
-      this.setStatus({ phase: 'error', message: t('main.everything.unavailable') })
+      this.setStatus({
+        phase: 'error',
+        message: t('main.everything.unavailable'),
+        messageKey: 'main.everything.unavailable'
+      })
       throw new Error('Everything 组件不可用')
     }
     this.applySidecarStatus(snapshot, { managedByHighlighter: !!this.managedEverything })
@@ -362,24 +380,33 @@ class EverythingService {
       // typically an integrity-level mismatch. Fail fast instead of waiting
       // 30s or shadowing the user's instance with the bundled copy.
       const message = '检测到 Everything，但无法与之通信（可能正在加载索引或权限不一致），请尝试以相同权限运行 Highlighter 与 Everything'
-      this.setStatus({ phase: 'error', message: t('main.everything.ipc-mismatch') })
+      this.setStatus({
+        phase: 'error',
+        message: t('main.everything.ipc-mismatch'),
+        messageKey: 'main.everything.ipc-mismatch'
+      })
       throw new Error(message)
     }
 
     if (snapshot.running && snapshot.dbLoaded) {
       this.lastReadyAt = Date.now()
-      this.setStatus({ phase: 'ready', message: t('main.everything.ready') })
+      this.setStatus({ phase: 'ready', message: t('main.everything.ready'), messageKey: 'main.everything.ready' })
       return this.getStatus()
     }
 
     if (snapshot.running) {
-      this.setStatus({ phase: 'waiting', message: t('main.everything.waiting') })
+      this.setStatus({ phase: 'waiting', message: t('main.everything.waiting'), messageKey: 'main.everything.waiting' })
     } else if (this.getUseBundledEverything()) {
-      this.setStatus({ phase: 'starting', message: t('main.everything.starting') })
+      this.setStatus({ phase: 'starting', message: t('main.everything.starting'), messageKey: 'main.everything.starting' })
       await this.spawnBundledEverything()
     } else {
       const message = '未检测到 Everything，请安装并启动 Everything 后重试'
-      this.setStatus({ phase: 'error', message: t('main.everything.not-installed'), downloadUrl: EVERYTHING_DOWNLOAD_URL })
+      this.setStatus({
+        phase: 'error',
+        message: t('main.everything.not-installed'),
+        messageKey: 'main.everything.not-installed',
+        downloadUrl: EVERYTHING_DOWNLOAD_URL
+      })
       throw new Error(message)
     }
 
@@ -389,7 +416,7 @@ class EverythingService {
     })
     if (ready) {
       this.lastReadyAt = Date.now()
-      this.setStatus({ phase: 'ready', message: t('main.everything.ready') })
+      this.setStatus({ phase: 'ready', message: t('main.everything.ready'), messageKey: 'main.everything.ready' })
       return this.getStatus()
     }
     const message = snapshot.running
@@ -397,7 +424,8 @@ class EverythingService {
       : 'Everything 初始化超时，请确认 Everything 可正常启动（NTFS 索引需要管理员权限或 Everything 服务）'
     this.setStatus({
       phase: 'error',
-      message: snapshot.running ? t('main.everything.timeout-index') : t('main.everything.timeout-start')
+      message: snapshot.running ? t('main.everything.timeout-index') : t('main.everything.timeout-start'),
+      messageKey: snapshot.running ? 'main.everything.timeout-index' : 'main.everything.timeout-start'
     })
     throw new Error(message)
   }
@@ -437,7 +465,11 @@ class EverythingService {
         // Everything may have exited after the readiness check; force a
         // re-check on the next query.
         this.lastReadyAt = 0
-        this.setStatus({ phase: 'checking', message: t('main.everything.rechecking') })
+        this.setStatus({
+          phase: 'checking',
+          message: t('main.everything.rechecking'),
+          messageKey: 'main.everything.rechecking'
+        })
       }
       throw error
     }).finally(() => {
@@ -483,7 +515,7 @@ class EverythingService {
     }
     this.pending.clear()
     this.inFlight.clear()
-    this.setStatus({ phase: 'idle', message: '', running: false, dbLoaded: false, managedByHighlighter: false })
+    this.setStatus({ phase: 'idle', message: '', messageKey: '', running: false, dbLoaded: false, managedByHighlighter: false })
     return this.stopManagedEverything()
   }
 }

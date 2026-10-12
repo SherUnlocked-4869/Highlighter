@@ -40,6 +40,12 @@ let reasoningDirty = false
 // prompt is the selection shown in .source), every later pair is one follow-up.
 const conversation = {
   streamId: null,
+  // The action's identity as raw data, not as a finished sentence: `type` is the
+  // built-in id (or anything else for a custom function) and `labelSource` is the
+  // key the main process sent (a user-defined name is not a key and `t()` returns
+  // it verbatim). renderHeader() re-resolves both on every language change.
+  type: '',
+  labelSource: '',
   label: '',
   followUp: { ...DEFAULT_FOLLOW_UP },
   turns: [],
@@ -64,6 +70,46 @@ const el = {
   questionInput: document.getElementById('questionInput'),
   btnSend: document.getElementById('btnSend'),
   btnPin: document.getElementById('btnPin')
+}
+
+// P0-1-T5 (S12): the header used to be painted once, from a sentence the action
+// handler had already resolved, so `applyTranslations()` put the static markup
+// back on the next language change and the header reverted to "Translating...".
+// Keeping the raw action identity in `conversation` lets this function re-resolve
+// all five nodes in the active language.
+function renderHeader() {
+  // Before any action arrives the header shows exactly what the markup shows.
+  if (conversation.type === '') {
+    el.headerIcon.innerHTML = ACTION_ICONS.translate
+    el.headerTitle.textContent = t('action.header.translating')
+    el.headerBadge.textContent = t('action.answer.label.translate')
+    el.headerBadge.className = 'badge'
+    el.loadingText.textContent = t('action.loading.requesting')
+    return
+  }
+  if (conversation.type === 'translate') {
+    conversation.label = t('action.answer.label.translate')
+    el.headerIcon.innerHTML = ACTION_ICONS.translate
+    el.headerTitle.textContent = conversation.label
+    el.headerBadge.textContent = conversation.label
+    el.headerBadge.className = 'badge'
+    el.loadingText.textContent = t('action.loading.translating')
+    return
+  }
+  // This window's CSP is img-src 'none', so a mask-image icon cannot be used
+  // here: every branch paints an inline SVG. The remaining cases are explain and
+  // everything else (custom AI functions, plus any future built-in that routes
+  // through this window). A built-in label arrives as an i18n key
+  // (toolbar/toolbar-action-meta.js); a user-defined name is not a key, and `t()`
+  // returns it verbatim. Resolving here — not in the action handler — is what
+  // makes the header follow the active language.
+  const label = conversation.labelSource ? t(conversation.labelSource) : t('action.answer.label.explain')
+  conversation.label = label
+  el.headerIcon.innerHTML = conversation.type === 'explain' ? ACTION_ICONS.explain : ACTION_ICONS.custom
+  el.headerTitle.textContent = label
+  el.headerBadge.textContent = label
+  el.headerBadge.className = 'badge explain'
+  el.loadingText.textContent = t('action.loading.thinking')
 }
 
 // The pin button's label is state-dependent on top of being language-dependent,
@@ -558,28 +604,12 @@ actionBridge.onActionStart(function(data) {
   conversation.streamId = data.streamId
   // The main process sends a built-in action's label as an i18n key (see
   // toolbar/toolbar-action-meta.js); `t()` returns a user-defined name verbatim.
-  const label = data.label ? t(data.label) : EXPLAIN_LABEL
-  conversation.label = data.type === 'translate' ? t('action.answer.label.translate') : label
+  // Both facts are stored raw so renderHeader() can re-resolve them later.
+  conversation.type = data.type || ''
+  conversation.labelSource = data.label || ''
   if (data.followUp) conversation.followUp = data.followUp
   el.sourceText.textContent = data.text
-  if (data.type === 'translate') {
-    el.headerIcon.innerHTML = ACTION_ICONS.translate
-    el.headerTitle.textContent = t('action.answer.label.translate')
-    el.headerBadge.textContent = t('action.answer.label.translate')
-    el.headerBadge.className = 'badge'
-    el.loadingText.textContent = t('action.loading.translating')
-  } else {
-    // This window's CSP is img-src 'none', so a mask-image icon cannot be used
-    // here: every branch paints an inline SVG. The three cases are translate,
-    // explain and everything else (custom AI functions, plus any future
-    // built-in that routes through this window).
-    if (data.type === 'explain') el.headerIcon.innerHTML = ACTION_ICONS.explain
-    else el.headerIcon.innerHTML = ACTION_ICONS.custom
-    el.headerTitle.textContent = label
-    el.headerBadge.textContent = label
-    el.headerBadge.className = 'badge explain'
-    el.loadingText.textContent = t('action.loading.thinking')
-  }
+  renderHeader()
   createAssistantTurn()
   renderComposer()
   showLoading(true)
@@ -776,10 +806,12 @@ actionBridge.onPinDenied(function(data) {
 // P0-1-T2/T5: the initial pass translates the markup (placeholder, titles, button
 // labels); the broadcast subscription re-renders the parts the script owns.
 applyTranslations()
+renderHeader()
 renderPinButton()
 window.actionAPI.onInterfaceLanguage((language) => {
   setLanguage(language)
   applyTranslations()
+  renderHeader()
   renderPinButton()
   renderComposer()
 })

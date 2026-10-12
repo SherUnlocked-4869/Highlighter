@@ -8,6 +8,10 @@ const { setTimeout: delay } = require('node:timers/promises')
 const { EventEmitter } = require('node:events')
 
 const { EverythingService } = require('../main/services/everything-service')
+// The service resolves its status copy through the main-process runtime; the
+// tests assert the published pair (message + the key it came from) instead of
+// hard-coding one language's sentence.
+const { t } = require('../main/services/i18n-bootstrap')
 
 function createFakeSidecar() {
   const child = new EventEmitter()
@@ -183,6 +187,7 @@ test('ensureReady times out with a hint when the index never loads', async () =>
   })
   await assert.rejects(service.ensureReady(), /初始化超时，索引尚未就绪/)
   assert.equal(service.status.phase, 'error')
+  assert.equal(service.status.messageKey, 'main.everything.timeout-index')
 })
 
 test('ensureReady spawns the bundled Everything only when allowed and present', async () => {
@@ -219,6 +224,7 @@ test('ensureReady fails with guidance when bundled fallback is disabled', async 
   })
   await assert.rejects(service.ensureReady(), /未检测到 Everything/)
   assert.equal(service.status.phase, 'error')
+  assert.equal(service.status.messageKey, 'main.everything.not-installed')
   assert.ok(service.status.downloadUrl)
 })
 
@@ -303,6 +309,7 @@ test('stop() shuts the sidecar down, rejects pending requests, and stops managed
   assert.equal(killed, true)
   assert.equal(service.managedEverything, null)
   assert.equal(service.status.phase, 'idle')
+  assert.equal(service.status.messageKey, '', 'stop() clears the retained UI-copy key with the message')
   assert.ok(writes.some((request) => request.action === 'shutdown'))
 })
 
@@ -357,6 +364,8 @@ test('refreshStatus marks waiting when Everything runs without a loaded index', 
   const status = await service.refreshStatus()
   assert.equal(status.running, true)
   assert.equal(status.phase, 'waiting')
+  assert.equal(status.messageKey, 'main.everything.index-pending')
+  assert.equal(status.message, t('main.everything.index-pending'))
 })
 
 test('refreshStatus reuses the recent probe while the sidecar stays active', async () => {
@@ -417,6 +426,7 @@ test('ensureReady fails fast when an instance is detected but unreachable', asyn
   })
   await assert.rejects(service.ensureReady(), /无法与之通信/)
   assert.equal(service.status.phase, 'error')
+  assert.equal(service.status.messageKey, 'main.everything.ipc-mismatch')
   assert.ok(service.spawnCalls.every((call) => call.args.length === 0), 'bundled Everything not spawned')
 })
 
@@ -451,9 +461,106 @@ test('e2eQuery short-circuits the sidecar for query, status, and readiness', asy
   assert.equal(status.phase, 'ready')
   assert.equal(status.running, true)
   assert.equal(status.dbLoaded, true)
+  assert.equal(status.messageKey, 'main.everything.ready')
 
   const ready = await service.ensureReady()
   assert.equal(ready.phase, 'ready')
 
   assert.deepEqual(service.spawnCalls, [], 'the fake path never spawns a sidecar')
+})
+
+// --- language hot-switch (P0-1-T7) ------------------------------------------
+//
+// The search window keeps the last status payload and re-resolves `messageKey`
+// after a language switch, because `message` was frozen in the language that was
+// active when the status was published. That only works if the service really
+// publishes the key next to the sentence, on every path.
+
+test('every published status pairs its message with the key it was resolved from', async () => {
+  const published = []
+  const run = async (options, handlers) => {
+    const { service } = createService({ onStatusChange: (status) => published.push(status), ...options }, handlers)
+    await service.ensureReady().catch((error) => error)
+    service.stop()
+  }
+
+  // ready
+  await run({}, {
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: true, version: '1.5' })
+  })
+  // waiting for the index, then ready
+  await run({}, {
+    status: (request, child) => child.respond(request, { running: true, dbLoaded: false }),
+    'wait-ready': (request, child) => child.respond(request, { ready: true, elapsedMs: 1, status: { running: true, dbLoaded: true } })
+  })
+  // bundled fallback disabled -> not installed
+  await run({ getUseBundledEverything: () => false }, {
+    status: (request, child) => child.respond(request, { running: false, dbLoaded: false })
+  })
+  // the status probe never answers -> unavailable
+  await run({}, {
+    status: (request, child) => child.fail(request, 'send-failed', 'probe blocked')
+  })
+
+  assert.ok(published.length >= 6, `expected the status stream to be observable, saw ${published.length}`)
+  for (const status of published) {
+    if (!status.message) {
+      assert.equal(status.messageKey, '', `phase ${status.phase} published no copy but kept a key`)
+      continue
+    }
+    assert.equal(typeof status.messageKey, 'string', `phase ${status.phase} lost its message key`)
+    assert.ok(status.messageKey, `phase ${status.phase} published copy without a key`)
+    assert.equal(status.message, t(status.messageKey), `phase ${status.phase} message/key mismatch`)
+  }
+  const keys = new Set(published.map((status) => status.messageKey))
+  for (const key of [
+    'main.everything.checking',
+    'main.everything.ready',
+    'main.everything.waiting',
+    'main.everything.not-installed',
+    'main.everything.unavailable'
+  ]) {
+    assert.ok(keys.has(key), `no status was published with messageKey ${key}`)
+  }
+})
+
+test('ensureReady reports the unavailable key when the status probe fails', async () => {
+  const { service } = createService({}, {
+    status: (request, child) => child.fail(request, 'send-failed', 'probe blocked')
+  })
+  await assert.rejects(service.ensureReady(), /组件不可用/)
+  assert.equal(service.status.phase, 'error')
+  assert.equal(service.status.messageKey, 'main.everything.unavailable')
+  assert.equal(service.status.message, t('main.everything.unavailable'))
+})
+
+test('the service names a key for every copy status it can publish', () => {
+  // Source-level companion to the runtime invariant above: the paths this test
+  // does not drive (bundled-start timeout, re-check after a dropped sidecar) must
+  // still declare their key, otherwise the search window would fall back to the
+  // stale sentence of the main-process language.
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'everything-service.js'), 'utf8')
+  const declared = new Set()
+  for (const match of source.matchAll(/messageKey:[^\n]*/g)) {
+    for (const quoted of match[0].matchAll(/'([^']+)'/g)) declared.add(quoted[1])
+  }
+  for (const key of [
+    'main.everything.checking',
+    'main.everything.rechecking',
+    'main.everything.unavailable',
+    'main.everything.ipc-mismatch',
+    'main.everything.ready',
+    'main.everything.waiting',
+    'main.everything.starting',
+    'main.everything.not-installed',
+    'main.everything.index-pending',
+    'main.everything.timeout-index',
+    'main.everything.timeout-start'
+  ]) {
+    assert.ok(declared.has(key), `no status publishes messageKey ${key}`)
+  }
+  // `message` has to stay populated for the consumers that read the sentence.
+  for (const key of declared) {
+    assert.match(source, new RegExp(`t\\('${key.replace(/\./g, '\\.')}'\\)`), `message is not rendered from ${key}`)
+  }
 })

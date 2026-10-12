@@ -31,10 +31,14 @@ function setBadge(text, failed = false) {
 
 // The views are rendered by the script, so each one records which key produced
 // its copy: a language switch re-renders the current view instead of only the
-// markup that applyTranslations() reaches.
+// markup that applyTranslations() reaches. This is the single writer of #title
+// for every state, which is why the `<h1 data-i18n>` boot paint cannot survive a
+// switch: the marked element is re-applied by applyTranslations() first and then
+// re-rendered here from the branch that is actually on screen.
 function renderCurrentView() {
   loadingText.textContent = t(loadingKey)
   if (!errorView.classList.contains('hidden')) {
+    title.textContent = t('recognition.error.title')
     setBadge(t('recognition.error.title'), true)
     return
   }
@@ -42,7 +46,12 @@ function renderCurrentView() {
     renderTable(tableResult)
     return
   }
-  if (!qrView.classList.contains('hidden')) renderQr(qrResult)
+  if (!qrView.classList.contains('hidden')) {
+    renderQr(qrResult)
+    return
+  }
+  // Still loading, or nothing recognized yet: the markup's own header copy.
+  title.textContent = t('recognition.header.title')
 }
 
 function showError(error) {
@@ -197,12 +206,13 @@ window.recognitionAPI.onInit(async (data) => {
   document.documentElement.style.setProperty('--primary', data.mainColor || '#e5a44c')
   try {
     if (data.type === 'table') {
-      title.textContent = t('recognition.table.title')
+      // The title is owned by renderTable() (and by renderCurrentView() for the
+      // loading state), so reloading the language mid-flight cannot leave two
+      // different sentences in that one node.
       loadingKey = 'recognition.table.loading'
       loadingText.textContent = t(loadingKey)
       renderTable(await window.recognitionAPI.recognizeTable(data.dataUrl, data.scaleFactor))
     } else {
-      title.textContent = t('recognition.qr.title')
       loadingKey = 'recognition.qr.loading'
       loadingText.textContent = t(loadingKey)
       await recognizeQr(data.dataUrl)
@@ -215,9 +225,12 @@ window.recognitionAPI.onInit(async (data) => {
 document.getElementById('close').onclick = () => window.recognitionAPI.close()
 copyButton.onclick = async () => {
   await window.recognitionAPI.copyText(currentOutput())
-  const original = t(tableResult ? 'recognition.action.copy-table' : 'recognition.action.copy-content')
+  // A language switch during the 1 s window must show the new language, so the
+  // key is kept and only resolved inside the timer: capturing `t(key)` here would
+  // restore the pre-switch sentence.
+  const restoreKey = tableResult ? 'recognition.action.copy-table' : 'recognition.action.copy-content'
   copyButton.textContent = t('recognition.action.copied')
-  setTimeout(() => { copyButton.textContent = original }, 1000)
+  setTimeout(() => { copyButton.textContent = t(restoreKey) }, 1000)
 }
 openLink.onclick = async () => {
   if (!activeUrl) return

@@ -15,6 +15,12 @@
   <script src="../shared/locales/en-US.js"></script>
   <script src="../shared/locales/zh-TW.js"></script>
   <script src="../shared/locales/search.js"></script>
+  <!-- The footer status line re-resolves the `main.everything.*` keys the
+       Everything sidecar publishes (main/services/everything-service.js) after a
+       language switch, so the search window has to load that domain table too
+       (same rule as config.html, which loads config.js + toolbar.js +
+       search.js). -->
+  <script src="../shared/locales/main.js"></script>
   <script src="../shared/i18n.js"></script>
 </head>
 <body>

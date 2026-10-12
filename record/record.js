@@ -46,12 +46,15 @@ const annotationWidthButtons = [...document.querySelectorAll('[data-annotation-w
 // script's global lexical scope).
 
 // Degradations are collected as keys (record/audio-mixer.js has no language of
-// its own) and only turned into a sentence when they are shown.
-function renderAudioWarning(warning) {
-  if (!warning) return ''
-  const code = typeof warning === 'string' ? warning : warning.code
+// its own) and only turned into a sentence by renderStatus(). A warning is a
+// `record.audio.warning.*` key plus an optional raw detail; nothing here calls
+// `t()`, so the descriptor can be stored and re-resolved on a language change.
+function audioWarningKey(warning) {
+  if (!warning) return null
+  const key = typeof warning === 'string' ? warning : warning.code
+  if (!key) return null
   const detail = typeof warning === 'string' ? '' : warning.detail
-  return detail ? t(code, { detail }) : t(code)
+  return { key, params: detail ? { detail } : null }
 }
 
 let initData = null
@@ -68,7 +71,11 @@ let audioMix = null
 let micStream = null
 let audioMixerPromise = null
 let audioWarnings = []
-let audioNotice = ''
+// The audio degradation notice is stored as a key plus optional params, not as a
+// sentence: renderStatus() resolves it in the active language, so a language
+// switch no longer leaves the notice in the language it was captured in.
+let audioNoticeKey = ''
+let audioNoticeParams = null
 let audioBitsPerSecond = 160_000
 let sourceVideo = null
 let canvas = null
@@ -180,14 +187,28 @@ function renderStatus() {
   const key = STATUS_LABELS[state]
   if (!key) return
   const label = t(key)
-  statusLabel.textContent = audioNotice ? `${label} · ${audioNotice}` : label
-  if (audioNotice) statusLabel.title = audioNotice
+  const notice = audioNoticeKey ? t(audioNoticeKey, audioNoticeParams) : ''
+  statusLabel.textContent = notice ? `${label} · ${notice}` : label
+  if (notice) statusLabel.title = notice
 }
 
-function setAudioNotice(notice) {
-  const next = String(notice || '')
-  if (next === audioNotice) return
-  audioNotice = next
+function sameAudioNoticeParams(left, right) {
+  const a = left || null
+  const b = right || null
+  if (!a || !b) return !a && !b
+  const keys = Object.keys(a)
+  if (keys.length !== Object.keys(b).length) return false
+  return keys.every((key) => a[key] === b[key])
+}
+
+// `key` is an i18n key ('' clears the notice) and `params` its interpolation
+// values; the sentence itself is only ever built by renderStatus().
+function setAudioNotice(key, params = null) {
+  const nextKey = String(key || '')
+  const nextParams = nextKey ? (params || null) : null
+  if (nextKey === audioNoticeKey && sameAudioNoticeParams(audioNoticeParams, nextParams)) return
+  audioNoticeKey = nextKey
+  audioNoticeParams = nextParams
   renderStatus()
 }
 
@@ -426,8 +447,10 @@ function renderAudioIndicator() {
 function applyAudioOutcome(outcome = {}) {
   audioOutcome = { system: !!outcome.system, microphone: !!outcome.microphone }
   renderAudioIndicator()
-  // Both the outcome notice and the collected warnings arrive as i18n keys.
-  setAudioNotice(outcome.notice ? t(outcome.notice) : renderAudioWarning(audioWarnings[0]))
+  // Both the outcome notice and the collected warnings arrive as i18n keys, so
+  // only the key (plus its params) is stored; renderStatus() builds the sentence.
+  const notice = outcome.notice ? { key: outcome.notice, params: null } : audioWarningKey(audioWarnings[0])
+  setAudioNotice(notice ? notice.key : '', notice ? notice.params : null)
 }
 
 async function attachAudioTracks() {
@@ -537,7 +560,7 @@ function probeMicrophoneAvailability() {
   navigator.mediaDevices.enumerateDevices().then((devices) => {
     if (state !== 'idle' && state !== 'preview') return
     const inputs = (Array.isArray(devices) ? devices : []).filter((device) => device.kind === 'audioinput')
-    setAudioNotice(inputs.length ? '' : t('record.error.microphone-not-detected'))
+    setAudioNotice(inputs.length ? '' : 'record.error.microphone-not-detected')
   }).catch(() => {})
 }
 
@@ -545,14 +568,16 @@ function handleDeviceChange() {
   const microphoneTrack = micStream?.getAudioTracks()[0]
   if (microphoneTrack && microphoneTrack.readyState === 'ended') {
     // 系统声也关着时已无任何音轨，不能照抄"仅保留系统声音"（文案必须与文件实际内容一致）。
+    // The keys are stored, not the sentences, so renderStatus() can re-resolve
+    // them in whichever language is active when the notice is drawn.
     setAudioNotice(audioRequest.system
-      ? t('record.audio.notice.microphone-disconnected-system')
-      : t('record.audio.notice.microphone-disconnected-none'))
+      ? 'record.audio.notice.microphone-disconnected-system'
+      : 'record.audio.notice.microphone-disconnected-none')
     return
   }
   const systemTrack = desktopStream?.getAudioTracks()[0]
   if (audioRequest.system && systemTrack && systemTrack.readyState === 'ended') {
-    setAudioNotice(t('record.audio.notice.system-interrupted'))
+    setAudioNotice('record.audio.notice.system-interrupted')
     return
   }
   if (!['recording', 'paused'].includes(state)) probeMicrophoneAvailability()
