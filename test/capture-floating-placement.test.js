@@ -105,16 +105,89 @@ test('capture.js has exactly one placement rule, shared by the strip and the ele
   assert.doesNotMatch(toolbarSlice, /top=Math\.max\(6,top\)|top = Math\.max\(6, top\)/)
 })
 
-test('the pin re-annotate editor reserves a strip that fits the two-row strip', () => {
-  // 预留条带 = 图像高度之外的空间：必须 ≥ 工具栏两行高度 + gap + padding，否则渲染层
-  // 只能退到"内侧贴底"，与 region 截图的位置就不一致了。
-  const match = pinDomain.match(/const actionSpace = (\d+)/)
-  assert.ok(match, 'actionSpace must stay a named constant in the pin editor')
-  const actionSpace = Number(match[1])
-  const stripHeight = 78 // 2 x 30px rows + 12px padding + 4px gap + 2px borders
-  assert.ok(actionSpace >= stripHeight + 10 + 6, `actionSpace ${actionSpace} must fit the two-row strip + gap + padding`)
-  assert.match(pinDomain, /const toolbarSpace = 900/)
-  // 两条路径（普通重新标注与 OCR/翻译）都走同一段预留逻辑，不再有 if (isRecognitionEditor) 分支。
+// ---------- 主进程预留条带：必须容得下"这个窗口宽度下工具栏实际会有多高" ----------
+
+function stripConstants() {
+  const read = (name) => {
+    const match = pinDomain.match(new RegExp(`const ${name} = (\\d+)`))
+    assert.ok(match, `${name} must stay a named constant in the pin editor`)
+    return Number(match[1])
+  }
+  return {
+    rowMinContent: read('ROW_MIN_CONTENT'),
+    rowHeight: read('STRIP_ROW_HEIGHT'),
+    optionsRow: read('OPTIONS_ROW_HEIGHT'),
+    chrome: read('STRIP_CHROME'),
+    slack: read('STRIP_SLACK'),
+    toolbarSpace: read('toolbarSpace')
+  }
+}
+
+// 从 capture.html/capture.css 现算主行单行最小宽度（不依赖源码里的常数）。
+function measureMainRowMinContent() {
+  const html = fs.readFileSync(path.join(root, 'capture/capture.html'), 'utf8')
+  const css = fs.readFileSync(path.join(root, 'capture/capture.css'), 'utf8')
+  const mainRow = html.slice(html.indexOf('<div class="toolbar-row">'), html.indexOf('<div id="toolOptions"'))
+  const number = (pattern, source = css) => {
+    const match = source.match(pattern)
+    assert.ok(match, `could not read ${pattern}`)
+    return Number(match[1])
+  }
+  const iconMinimum = number(/\.toolbar button \{[^}]*min-width:\s*(\d+)px/)
+  const iconPadding = number(/\.toolbar button \{[^}]*padding:\s*0 (\d+)px/)
+  const iconWidth = Math.max(iconMinimum, number(/\.toolbar-icon \{[^}]*width:\s*(\d+)px/) + iconPadding * 2)
+  const widthMinimum = number(/\.width-group button \{[^}]*min-width:\s*(\d+)px/)
+  const rowGap = number(/\.toolbar-row \{[^}]*gap:\s*(\d+)px/)
+  const toolGap = number(/\.tool-group \{[^}]*gap:\s*(\d+)px/)
+  const dividerBreadth = number(/\.divider \{[^}]*width:\s*(\d+)px/) + number(/\.divider \{[^}]*margin:\s*0 (\d+)px/) * 2
+  const swatch = number(/\.color-wrap > button \{[^}]*width:\s*(\d+)px/)
+  const toolButtons = (mainRow.match(/data-tool="/g) || []).length
+  const widthButtons = (mainRow.match(/data-annotation-width="/g) || []).length
+  const dividers = (mainRow.match(/class="divider"/g) || []).length
+  const iconButtons = (mainRow.match(/<button[^>]*>\s*<span class="toolbar-icon"/g) || []).length
+  const actionButtons = iconButtons - toolButtons // undo/redo + the action buttons
+  const toolGroup = toolButtons * iconWidth + (toolButtons - 1) * toolGap
+  const widthGroup = widthButtons * widthMinimum + (widthButtons - 1) * toolGap
+  // 直接子元素：tool-group、分隔线、色块、宽度组、分隔线、undo/redo、分隔线、其余动作按钮。
+  const children = [
+    toolGroup,
+    ...Array(dividers - 2).fill(dividerBreadth),
+    swatch,
+    widthGroup,
+    ...Array(2).fill(iconWidth),
+    ...Array(actionButtons - 2).fill(iconWidth)
+  ]
+  return children.reduce((sum, width) => sum + width, 0) + Math.max(0, children.length - 1) * rowGap
+}
+
+test('the reserved strip is derived from the toolbar the window will actually show', () => {
+  const { rowMinContent, rowHeight, optionsRow, chrome, slack, toolbarSpace } = stripConstants()
+  const measured = measureMainRowMinContent()
+
+  // 1. 单行最小宽度：源码常数必须 ≥ 从 HTML/CSS 现算的值（漏算新按钮会让这条先红）。
+  assert.ok(rowMinContent >= measured, `ROW_MIN_CONTENT ${rowMinContent} must cover the measured ${measured}`)
+  // 2. 窗口宽度扣掉工具栏自身内边距/留白后仍然放得下一行 —— 否则主行会折行、条带变矮。
+  assert.ok(toolbarSpace - chrome - 20 >= measured, `toolbarSpace ${toolbarSpace} must fit one line (${measured}) after chrome and viewport padding`)
+
+  const stripFor = (rows) => rows * rowHeight + optionsRow + chrome + slack
+  const toolbarFor = (rows) => rows * rowHeight + optionsRow + chrome
+  // 3. 一行：条带要能容纳两行工具栏（主行 + 选项行）+ 10px 间距 + 6px 边距。
+  assert.ok(stripFor(1) >= toolbarFor(1) + 16, `one-line strip ${stripFor(1)} must fit ${toolbarFor(1)} + gap + padding`)
+  // 4. 折成两行时同理（真机缺陷：折行后条带不够高，工具栏被推回图像内侧）。
+  assert.ok(stripFor(2) >= toolbarFor(2) + 16, `two-line strip ${stripFor(2)} must fit ${toolbarFor(2)} + gap + padding`)
+  assert.ok(stripFor(3) >= toolbarFor(3) + 16, `three-line strip ${stripFor(3)} must fit ${toolbarFor(3)} + gap + padding`)
+})
+
+test('the pin editor sizes the strip from the width it picks, for both re-annotate paths', () => {
+  assert.match(pinDomain, /const toolbarSpace = 1088/)
+  assert.match(pinDomain, /const stripRows = Math\.max\(1, Math\.ceil\(ROW_MIN_CONTENT \/ Math\.max\(1, width - STRIP_CHROME\)\)\)/)
+  assert.match(pinDomain, /const actionSpace = stripRows \* STRIP_ROW_HEIGHT \+ OPTIONS_ROW_HEIGHT \+ STRIP_CHROME \+ STRIP_SLACK/)
+  // width 必须先于 scale 算出（非循环依赖）：用 editBounds.width 而不是缩放后的 imageWidth。
+  const widthIndex = pinDomain.indexOf('const width = Math.min(workArea.width')
+  const actionIndex = pinDomain.indexOf('const actionSpace = stripRows')
+  const scaleIndex = pinDomain.indexOf('const scale = Math.min(')
+  assert.ok(widthIndex > 0 && actionIndex > widthIndex && scaleIndex > actionIndex, 'width -> strip -> scale order')
+  // 两条路径（普通重新标注与 OCR/翻译）共用同一段预留逻辑。
   assert.doesNotMatch(pinDomain, /isRecognitionEditor/)
   assert.match(pinDomain, /transparent: true,/)
 })

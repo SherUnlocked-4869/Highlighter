@@ -466,4 +466,19 @@ annotationStyles: {
 
 **验证**：`test/capture-floating-placement.test.js`（新增，含"无空间时停靠内侧底边而不是视图顶部"的回归用例）+ `capture-ocr-pin-ui` / `capture-tool-options` / `capture-selection-resize` 契约同步。全量 994 用例 / 982 通过 / 12 失败（与基线逐字相同，全部是本机无法启动 Electron 的 runtime 探针）；`npm run check` 全绿（303 文件、`main.js` 1297/1300、i18n 605）。**该修复仍未在真机上复核**（本机无法启动 Electron），需用户实测确认。
 
+### 10.6 真机复测第二轮：折行导致条带不够高（2026-10-14 晚）
+
+**复测结论**：§10.5 的修复通过 —— 工具栏出现在图像下方且完整可见。
+
+**新现象**：在重新标注窗口里点击**矩形**工具后，工具栏整体上移、遮住图片下半部分。
+
+**根因（上一轮修复引入的副作用）**：`§10.5` 为"窄窗口不被裁"加了 `.toolbar-row { flex-wrap: wrap }`，而重标注窗口宽度取 `toolbarSpace = 900`；主行单行最小宽度实测约 **1019px**（11 个工具按钮 + 色块 + 3 个宽度按钮 + 13 个动作按钮 + 3 条分隔线，逐个按 `min-width/padding` 累加），因此 900px 窗口下主行**折成两行**。矩形工具再让第二行（选项行）出现后，工具栏高 44px → **112px**，超过预留的 100px 条带 → 渲染层按"下方放不下、上方也放不下"进入**内侧停靠**兜底，表现为整体上移盖住图片。
+
+**修复**：把条带高度从"拍一个常数"改为**按窗口宽度推导**：
+- `main/domains/pin/index.js`：`ROW_MIN_CONTENT = 1040`、`STRIP_ROW_HEIGHT = 34`、`OPTIONS_ROW_HEIGHT = 30`、`STRIP_CHROME = 14`、`STRIP_SLACK = 22`；`width` 先算（非循环依赖），`stripRows = ceil(ROW_MIN_CONTENT / (width - STRIP_CHROME))`，`actionSpace = stripRows * STRIP_ROW_HEIGHT + OPTIONS_ROW_HEIGHT + STRIP_CHROME + STRIP_SLACK`。`toolbarSpace` 提到 **1088**，让主行在工作区允许时保持**单行**（条带只需 100px；折成两行时自动变成 134px）。
+- `test/capture-floating-placement.test.js`：新增不变量测试 —— **从 `capture.html` / `capture.css` 现算主行单行最小宽度**，断言 `ROW_MIN_CONTENT` ≥ 实测值、`toolbarSpace - STRIP_CHROME - 20` ≥ 实测值、以及一行/两行/三行三种折行下条带都容得下工具栏 + 16px。以后任何人往主行加按钮（或改按钮尺寸）而忘了同步常数，这条会先红。
+
+**状态**：待真机复测（本机仍无法启动 Electron；`npm test` 191/192，唯一失败是本机 Electron 探针）。
+
+
 

@@ -279,15 +279,31 @@ function createPinDomain(deps) {
       height: Math.max(1, Math.round(Number(imageBounds.height) || pinBounds.height))
     }
     const imageSize = nativeImage.createFromDataURL(win._pinData.dataUrl).getSize()
-    // The editor always reserves a strip BELOW the image for the tool strip (and the
-    // OCR result bar), in every mode. The region capture shows its strip below the
-    // region, so a re-annotate editor that was exactly the size of the pinned image
-    // had nowhere to put it: the renderer fell back to clamping, which dropped the
-    // strip inside the top of the image and clipped it. 100px covers the two-row strip
-    // (2 x 30px buttons + padding + gap = 78px) plus the 10px gap and 6px padding.
+    // The editor always reserves a strip BELOW the image for the tool strip (and the OCR
+    // result bar), in every mode. The region capture shows its strip below the region, so
+    // a re-annotate editor that was exactly the size of the pinned image had nowhere to
+    // put it: the renderer fell back to clamping, which dropped the strip inside the top
+    // of the image and clipped it.
+    //
+    // The strip height is DERIVED, not guessed: the strip wraps when the window is
+    // narrower than the main row (capture/capture.css gives every icon button a 30px
+    // minimum plus 7px padding, so one row needs ROW_MIN_CONTENT px), and a wrapped row
+    // is taller. Guessing 100px here is what made the strip cover the image as soon as
+    // the rectangle tool added the options row to an already wrapped row.
+    // test/capture-floating-placement.test.js re-derives these numbers from
+    // capture.html/capture.css and fails when the UI outgrows them.
+    const ROW_MIN_CONTENT = 1040 // single-line minimum of the main row (measured 1019 today)
+    const STRIP_ROW_HEIGHT = 34 // 30px button + 3px row gap, rounded up
+    const OPTIONS_ROW_HEIGHT = 30
+    const STRIP_CHROME = 14 // 6px toolbar padding x2 + 1px borders x2
+    const STRIP_SLACK = 22 // 10px gap below the image + 6px viewport padding + 6px margin
+    // Wide enough that the main row stays on ONE line (like the region capture); the
+    // strip then only needs the two-row height.
+    const toolbarSpace = 1088
     const workArea = screen.getDisplayMatching(editBounds).workArea
-    const actionSpace = 100
-    const toolbarSpace = 900
+    const width = Math.min(workArea.width, Math.max(toolbarSpace, Math.max(420, editBounds.width)))
+    const stripRows = Math.max(1, Math.ceil(ROW_MIN_CONTENT / Math.max(1, width - STRIP_CHROME)))
+    const actionSpace = stripRows * STRIP_ROW_HEIGHT + OPTIONS_ROW_HEIGHT + STRIP_CHROME + STRIP_SLACK
     const scale = Math.min(
       1,
       workArea.width / editBounds.width,
@@ -295,7 +311,6 @@ function createPinDomain(deps) {
     )
     const imageWidth = Math.max(1, Math.round(editBounds.width * scale))
     const imageHeight = Math.max(1, Math.round(editBounds.height * scale))
-    const width = Math.min(workArea.width, Math.max(toolbarSpace, Math.max(420, imageWidth)))
     const height = Math.min(workArea.height, imageHeight + actionSpace)
     const x = Math.round(Math.max(workArea.x, Math.min(
       editBounds.x + (editBounds.width - width) / 2,
