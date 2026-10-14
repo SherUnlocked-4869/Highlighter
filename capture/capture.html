@@ -29,7 +29,22 @@
       <button data-tool="watermark" data-i18n-title="capture.toolbar.watermark" data-i18n-aria-label="capture.toolbar.watermark"><span class="toolbar-icon" style="--icon:url('icons/watermark.svg')" aria-hidden="true"></span></button>
     </div>
     <div class="divider"></div>
-    <label class="color-wrap" data-i18n-title="capture.toolbar.color"><input id="color" type="color" value="#ff3b30"><span></span></label>
+    <div class="color-wrap">
+      <button id="colorButton" type="button" aria-haspopup="true" aria-expanded="false" data-i18n-title="capture.toolbar.color" data-i18n-aria-label="capture.toolbar.color"><span id="colorSwatch"></span></button>
+      <div id="colorPalette" class="color-palette hidden" role="group" data-i18n-aria-label="capture.palette.group">
+        <div class="color-options">
+          <button type="button" class="color-swatch" data-annotation-color="#ff3b30" aria-pressed="false" style="--swatch:#ff3b30" data-i18n-title="capture.palette.red" data-i18n-aria-label="capture.palette.red"></button>
+          <button type="button" class="color-swatch" data-annotation-color="#ff9500" aria-pressed="false" style="--swatch:#ff9500" data-i18n-title="capture.palette.orange" data-i18n-aria-label="capture.palette.orange"></button>
+          <button type="button" class="color-swatch" data-annotation-color="#ffcc00" aria-pressed="false" style="--swatch:#ffcc00" data-i18n-title="capture.palette.yellow" data-i18n-aria-label="capture.palette.yellow"></button>
+          <button type="button" class="color-swatch" data-annotation-color="#34c759" aria-pressed="false" style="--swatch:#34c759" data-i18n-title="capture.palette.green" data-i18n-aria-label="capture.palette.green"></button>
+          <button type="button" class="color-swatch" data-annotation-color="#1687ff" aria-pressed="false" style="--swatch:#1687ff" data-i18n-title="capture.palette.blue" data-i18n-aria-label="capture.palette.blue"></button>
+          <button type="button" class="color-swatch" data-annotation-color="#111111" aria-pressed="false" style="--swatch:#111111" data-i18n-title="capture.palette.black" data-i18n-aria-label="capture.palette.black"></button>
+          <button type="button" class="color-swatch" data-annotation-color="#ffffff" aria-pressed="false" style="--swatch:#ffffff" data-i18n-title="capture.palette.white" data-i18n-aria-label="capture.palette.white"></button>
+        </div>
+        <label class="color-custom" data-i18n-title="capture.palette.custom"><input id="color" type="color" value="#ff3b30"><span data-i18n="capture.palette.custom"></span></label>
+        <div id="recentColors" class="color-recent hidden" data-i18n-aria-label="capture.palette.recent"></div>
+      </div>
+    </div>
     <div id="widthGroup" class="width-group" role="group" data-i18n-aria-label="capture.toolbar.width-group">
       <button type="button" data-annotation-width="2" data-i18n-title="capture.toolbar.width-thin-tip" aria-pressed="false" data-i18n="capture.toolbar.width-thin"></button>
       <button type="button" data-annotation-width="4" class="active" data-i18n-title="capture.toolbar.width-medium-tip" aria-pressed="true" data-i18n="capture.toolbar.width-medium"></button>

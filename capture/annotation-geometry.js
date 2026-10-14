@@ -21,6 +21,10 @@
   const MAX_PEN_POINTS = 10000
   // 描边命中容差：细线也要能点中，但不能大到把矩形中心当成边。
   const DEFAULT_HIT_TOLERANCE = 6
+  // A1 (D2): a press on an element only turns into a move once the pointer has
+  // travelled further than this. Below it the gesture is a plain click, which
+  // selects without producing a (no-op) undo frame or a visible jitter.
+  const MOVE_THRESHOLD = 3
   // text 没有 x2，纯函数层也拿不到 canvas 度量：用 0.6em/字符 估计盒宽（见 annotationBounds）。
   const TEXT_WIDTH_RATIO = 0.6
   // PR3 缩放下限：任何一维小于 3px 时按 3px 处理（方案 §8.4 PR3 验收「镜像不崩、最小 3px」）。
@@ -120,6 +124,19 @@
       return { x, y, w: Math.max(0, numberOr(item.w, 0)), h: Math.max(0, numberOr(item.h, 0)) }
     }
     return endpointBox(item)
+  }
+
+  // A1 (D2): did the pointer travel past the click/drag threshold? Non-finite
+  // input is "not moved" so a broken event can never start an element move.
+  function movedBeyondThreshold(start, point, threshold) {
+    if (!start || !point) return false
+    const x1 = numberOr(start.x, Number.NaN)
+    const y1 = numberOr(start.y, Number.NaN)
+    const x2 = numberOr(point.x, Number.NaN)
+    const y2 = numberOr(point.y, Number.NaN)
+    if (![x1, y1, x2, y2].every(Number.isFinite)) return false
+    const limit = Number(threshold)
+    return Math.hypot(x2 - x1, y2 - y1) > (Number.isFinite(limit) ? Math.max(0, limit) : 0)
   }
 
   function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
@@ -443,9 +460,11 @@
     MAX_PEN_POINTS,
     DEFAULT_HIT_TOLERANCE,
     MIN_RESIZE_SIZE,
+    MOVE_THRESHOLD,
     annotationBounds,
     hitTestAnnotation,
     findAnnotationAt,
+    movedBeyondThreshold,
     translateAnnotation,
     resizeAnnotationToBox,
     reorderAnnotation,

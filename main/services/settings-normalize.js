@@ -10,9 +10,17 @@ const { resolveMainColor } = require('./appearance-migration')
 const SUPPORTED_LANGUAGES = new Set(['zh-CN', 'en-US', 'zh-TW'])
 const DEFAULT_LANGUAGE = 'zh-CN'
 const DEFAULT_AUDIO_GAIN = 1
+// A3 (2026-10-14 plan): the capture palette stores any #rrggbb colour; anything
+// else (hand-edited store, legacy value) falls back to the shipped default.
+const DEFAULT_ANNOTATION_COLOR = '#ff3b30'
+const HEX_COLOR = /^#[0-9a-f]{6}$/i
 
 function normalizeLanguage(value) {
   return SUPPORTED_LANGUAGES.has(value) ? value : DEFAULT_LANGUAGE
+}
+
+function normalizeHexColor(value, fallback) {
+  return typeof value === 'string' && HEX_COLOR.test(value.trim()) ? value.trim().toLowerCase() : fallback
 }
 
 function normalizeToggle(value) {
@@ -38,6 +46,7 @@ function normalizeFrozenSettings(settings) {
   settings.screenshot.keepSerialAcrossCaptures = normalizeToggle(settings.screenshot.keepSerialAcrossCaptures)
   settings.screenshot.nameTemplate = normalizeText(settings.screenshot.nameTemplate)
   settings.screenshot.lastSaveDirectory = normalizeText(settings.screenshot.lastSaveDirectory)
+  settings.screenshot.annotationColor = normalizeHexColor(settings.screenshot.annotationColor, DEFAULT_ANNOTATION_COLOR)
   settings.record.audioSystem = normalizeToggle(settings.record.audioSystem)
   settings.record.audioMicrophone = normalizeToggle(settings.record.audioMicrophone)
   settings.record.captureCursor = normalizeToggle(settings.record.captureCursor)

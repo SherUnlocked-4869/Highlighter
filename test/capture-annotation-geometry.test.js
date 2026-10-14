@@ -14,9 +14,11 @@ const {
   MAX_PEN_POINTS,
   DEFAULT_HIT_TOLERANCE,
   MIN_RESIZE_SIZE,
+  MOVE_THRESHOLD,
   annotationBounds,
   hitTestAnnotation,
   findAnnotationAt,
+  movedBeyondThreshold,
   translateAnnotation,
   resizeAnnotationToBox,
   reorderAnnotation,
@@ -555,18 +557,29 @@ test('pointerdown keeps the handles first and selects the topmost annotation bef
   assert.match(pointerdownSource, /if \(resizeHandle\) \{ resizing=\{handle:resizeHandle,initial:\{\.\.\.selection\}\}/)
   assert.match(pointerdownSource, /const hit=findAnnotationAt\(annotations,point\)/)
   assert.match(pointerdownSource, /if\(hit\)\{setSelectedAnnotation\(hit\);updateSelectionCursor\(point\);return\}/)
+  // A5（D10）后 pointerdown 里有两处命中测试：选区外那一处在前（元素被拖出选区仍可选），
+  // 选区内的既有优先级不动 —— 所以下面的顺序断言一律对准**选区内**那一处。
+  const inRegionHit = 'const hit=findAnnotationAt(annotations,point)'
+  assert.match(pointerdownSource, /const outsideHit=findAnnotationAt\(annotations,point\)/)
+  const outsideHitIndex = pointerdownSource.indexOf('const outsideHit=findAnnotationAt(annotations,point)')
+  const inRegionHitIndex = pointerdownSource.indexOf(inRegionHit)
+  assert.ok(outsideHitIndex >= 0 && outsideHitIndex < inRegionHitIndex, 'the out-of-region hit test runs before the in-region one')
   assert.ok(
-    pointerdownSource.indexOf('if (resizeHandle)') < pointerdownSource.indexOf('findAnnotationAt(annotations,point)'),
+    pointerdownSource.indexOf('if (resizeHandle)') < inRegionHitIndex,
     'the selection handle keeps priority over an element hit'
   )
   assert.ok(
-    pointerdownSource.indexOf('findAnnotationAt(annotations,point)') < pointerdownSource.lastIndexOf('dragging=true'),
+    pointerdownSource.indexOf('!resizeHandle&&!insideSelection(point)') < outsideHitIndex,
+    'the out-of-region hit test is gated on "no selection handle" (the handle keeps priority)'
+  )
+  assert.ok(
+    pointerdownSource.indexOf(inRegionHit) < pointerdownSource.lastIndexOf('dragging=true'),
     'the element hit precedes moving/replacing the selection'
   )
   // PR2：Alt 逃生门在那之前就把指针引到选区拖动路径，所以这里取最后一个 dragging=true
   // （= 非 Alt 的回退分支），顺序断言的原意（命中优先于回退拖选区）保持不变。
   assert.ok(
-    pointerdownSource.indexOf('if(event.altKey)') < pointerdownSource.indexOf('findAnnotationAt(annotations,point)'),
+    pointerdownSource.indexOf('if(event.altKey)') < inRegionHitIndex,
     'Alt+drag bypasses the element hit test and falls through to moving the selection'
   )
   // setTool 清选中（方案 §8.4）
@@ -620,11 +633,16 @@ test('the element bar is a separate floating surface wired to delete/deselect, w
 
 test('PR2: pointerdown starts an element-body move inside the selected bounds, before the element hit test', () => {
   // 优先级（方案 §8.4）：选区手柄 → [PR3 选中元素手柄插槽] → 元素体内 → 元素命中 → 拖选区。
+  // A5（D10）新增的选区外命中测试在前，所以这些断言都对准选区内那一处 `const hit=...`。
   const altIndex = pointerdownSource.indexOf('if(event.altKey)')
   const bodyIndex = pointerdownSource.indexOf('pointInAnnotationBounds(selected,point)')
-  const hitIndex = pointerdownSource.indexOf('findAnnotationAt(annotations,point)')
+  const hitIndex = pointerdownSource.indexOf('const hit=findAnnotationAt(annotations,point)')
   assert.ok(altIndex >= 0 && altIndex < hitIndex, 'Alt+drag bypasses the element hit test')
   assert.ok(bodyIndex >= 0 && bodyIndex < hitIndex, 'the element-body move precedes the element hit test')
+  assert.ok(
+    pointerdownSource.indexOf('const outsideHit=findAnnotationAt(annotations,point)') < bodyIndex,
+    'the out-of-region hit test (A5) precedes the in-region body move, which it cannot shadow'
+  )
   assert.match(pointerdownSource, /const selected=selectedAnnotationItem\(\)/)
   assert.ok(
     pointerdownSource.indexOf('if (resizeHandle)') < bodyIndex,
@@ -638,13 +656,15 @@ test('PR2: a drag produces exactly one snapshot on pointerup, only when it actua
   assert.match(script, /function moveAnnotationTo\(point\) \{[\s\S]{0,700}?clampAnnotationToStage\(/)
   assert.match(script, /function finishMoveAnnotation\(\) \{[\s\S]{0,340}?if \(current && annotationWasMoved\(current, state\.origin\)\) \{ flushCoalescedEdits\(\); snapshotAnnotations\(\) \}/)
   assert.match(script, /function cancelMoveAnnotation\(\) \{[\s\S]{0,460}?annotations\[index\] = state\.origin/)
-  // pointerup 只有一处收口、pointermove 只有一处位移；其余地方不碰 movingAnnotation
-  assert.match(pointerupSource, /if\(movingAnnotation\)\{finishMoveAnnotation\(\);updateSelectionCursor\(pointFromEvent\(event\)\);return\}/)
+  // pointerup 只有一处收口、pointermove 只有一处位移；其余地方不碰 pendingMove
+  assert.match(pointerupSource, /if\(pendingMove\)\{finishMoveAnnotation\(\);updateSelectionCursor\(pointFromEvent\(event\)\);return\}/)
   // 新一次按下先把上一次没收到 pointerup 的拖动收口，避免两个手势叠在一起
-  assert.match(pointerdownSource, /if\(movingAnnotation\)finishMoveAnnotation\(\)/)
-  assert.match(pointermoveSource, /if \(movingAnnotation\) \{ moveAnnotationTo\(point\); return \}/)
-  assert.match(pointermoveSource, /if \(movingAnnotation&&event\.buttons===0\) \{ finishMoveAnnotation\(\); updateSelectionCursor\(point\); return \}/)
-  assert.equal(pointerdownSource.match(/movingAnnotation=\{/g).length, 1, 'only the pointerdown arm creates the move state')
+  assert.match(pointerdownSource, /if\(pendingMove\)finishMoveAnnotation\(\)/)
+  assert.match(pointermoveSource, /if \(pendingMove\) \{ moveAnnotationTo\(point\); return \}/)
+  assert.match(pointermoveSource, /if \(pendingMove&&event\.buttons===0\) \{ finishMoveAnnotation\(\); updateSelectionCursor\(point\); return \}/)
+  // A1（D2）：拖动交互态只有一个创建点（beginPendingMove），而它被左键体内/右键快选/选区外命中三处复用。
+  assert.equal(script.match(/pendingMove = \{/g).length, 1, 'only one arm creates the move state')
+  assert.match(script, /function beginPendingMove\(item, point, event\) \{[\s\S]{0,220}?pendingMove = \{ id: item\.id, origin: item, start: \{ x: point\.x, y: point\.y \}, thresholdPassed: false \}/)
 })
 
 test('PR2: arrow keys nudge 1px (Shift 10px) and merge into a single undo frame', () => {
@@ -698,7 +718,8 @@ test('PR3: pointerdown tries the selected-element handles after the selection ha
 
   const handleIndex = pointerdownSource.indexOf('selectedResizeHandle(point)')
   const bodyIndex = pointerdownSource.indexOf('pointInAnnotationBounds(selected,point)')
-  const hitIndex = pointerdownSource.indexOf('findAnnotationAt(annotations,point)')
+  // A5（D10）的选区外命中测试在最前面，这里对准选区内那一处。
+  const hitIndex = pointerdownSource.indexOf('const hit=findAnnotationAt(annotations,point)')
   const selectionHandleIndex = pointerdownSource.indexOf('if (resizeHandle)')
   const altIndex = pointerdownSource.indexOf('if(event.altKey)')
   assert.ok(selectionHandleIndex >= 0 && selectionHandleIndex < handleIndex, 'the selection handle keeps priority (选区手柄 > 选中元素手柄)')
@@ -725,7 +746,7 @@ test('PR3: the resize gesture recomputes the box from the untouched origin, with
   assert.doesNotMatch(pointermoveSource, /scaleX|scaleY/)
 
   // pointermove：紧跟元素拖动分支之后；没有按键的 move 也能自愈收口。
-  assert.match(pointermoveSource, /if \(movingAnnotation\) \{ moveAnnotationTo\(point\); return \}[\s\S]{0,200}?if \(resizingAnnotation\) \{ resizeAnnotationTo\(point\); updateSelectionCursor\(point\); return \}/)
+  assert.match(pointermoveSource, /if \(pendingMove\) \{ moveAnnotationTo\(point\); return \}[\s\S]{0,200}?if \(resizingAnnotation\) \{ resizeAnnotationTo\(point\); updateSelectionCursor\(point\); return \}/)
   assert.match(pointermoveSource, /if \(resizingAnnotation&&event\.buttons===0\) \{ finishResizeAnnotation\(\); updateSelectionCursor\(point\); return \}/)
   // pointerup / pointercancel：与 PR2 同一套收口口径（有变化才 snapshot；cancel 回滚原对象）。
   assert.match(pointerupSource, /if\(resizingAnnotation\)\{finishResizeAnnotation\(\);updateSelectionCursor\(pointFromEvent\(event\)\);return\}/)
@@ -838,12 +859,13 @@ test('PR4: a style change lands on the selected item with a fresh copy, never on
   assert.match(styleSource, /function commitStyle\(\) \{[\s\S]{0,200}?if \(!styleDirty\) return false[\s\S]{0,120}?snapshotAnnotations\(\)/)
   assert.match(script, /const STYLE_COMMIT_DELAY = 300/)
 
-  // 落点 1：线宽 —— setAnnotationWidth() 改选中项，同时新建路径 annotationStyle() 原样保留。
+  // 落点 1：线宽 —— setAnnotationWidth() 改选中项，同时新建路径 annotationStyle() 读全局默认。
   assert.match(script, /function setAnnotationWidth\(width, persist = false\) \{[\s\S]{0,460}?commitSelectedStyle\(\{ width: annotationWidth \}\)/)
-  assert.match(script, /function annotationStyle\(\) \{ return \{ color: colorInput\.value, width: annotationWidth \} \}/)
+  assert.match(script, /function annotationStyle\(\) \{ return \{ color: annotationColor, width: annotationWidth \} \}/)
   // 落点 2：颜色 —— 预览照旧，同时作用于选中项；change 立刻把这一帧收口。
-  assert.match(script, /colorInput\.addEventListener\('input',\(\)=>\{colorPreview\.style\.background=colorInput\.value;stageSelectedStyle\(\{color:colorInput\.value\}\)\}\)/)
-  assert.match(script, /colorInput\.addEventListener\('change',\(\)=>commitStyle\(\)\)/)
+  // A3 之后 input 还同步全局默认色（回显只写 UI 镜像，不经过这两个 listener）。
+  assert.match(script, /colorInput\.addEventListener\('input',\(\)=>\{colorPreview\.style\.background=colorInput\.value;annotationColor=normalizeAnnotationColor\(colorInput\.value\);stageSelectedStyle\(\{color:annotationColor\}\)\}\)/)
+  assert.match(script, /colorInput\.addEventListener\('change',\(\)=>\{rememberRecentColor\(colorInput\.value\);setAnnotationColor\(colorInput\.value,true\)\}\)/)
 
   // 快照栈口径（OCR 评审修复后）：snapshotAnnotations 只负责压帧，不再吞掉待收口的
   // 微调/样式帧；合并型编辑由 flushCoalescedEdits() 在各自的动作路径前独立成帧。
@@ -855,4 +877,29 @@ test('PR4: a style change lands on the selected item with a fresh copy, never on
   assert.match(script, /function resetAnnotationState\(\) \{[\s\S]{0,300}?cancelStyleCommit\(\)/)
   // 样式补丁只补 color/width 之类的字段，id 与 serial.number 原样带过（不重编号）。
   assert.doesNotMatch(styleSource, /number\s*[:=]/)
+})
+
+// ---------- A1：点击/拖动阈值（方案 D2，纯函数） ----------
+
+test('A1: movedBeyondThreshold is strictly greater than the threshold and never moves on broken input', () => {
+  assert.equal(MOVE_THRESHOLD, 3)
+  const start = { x: 100, y: 100 }
+  // 阈值是"必须超过"：正好 3px 的抖动仍然算点击（不进入 move 态）。
+  assert.equal(movedBeyondThreshold(start, { x: 103, y: 100 }, MOVE_THRESHOLD), false)
+  assert.equal(movedBeyondThreshold(start, { x: 100, y: 103 }, MOVE_THRESHOLD), false)
+  assert.equal(movedBeyondThreshold(start, { x: 104, y: 100 }, MOVE_THRESHOLD), true)
+  // 对角线也按欧氏距离判定（3-4-5 三角形：位移 5 > 3）。
+  assert.equal(movedBeyondThreshold(start, { x: 103, y: 104 }, MOVE_THRESHOLD), true)
+  assert.equal(movedBeyondThreshold(start, { x: 103, y: 102 }, MOVE_THRESHOLD), true)
+  assert.equal(movedBeyondThreshold(start, start, MOVE_THRESHOLD), false)
+  // 非法输入一律 false：坏事件不得开启元素拖动。
+  assert.equal(movedBeyondThreshold(null, { x: 104, y: 100 }, MOVE_THRESHOLD), false)
+  assert.equal(movedBeyondThreshold(start, null, MOVE_THRESHOLD), false)
+  assert.equal(movedBeyondThreshold(start, { x: 'a', y: 0 }, MOVE_THRESHOLD), false)
+  assert.equal(movedBeyondThreshold({ x: 0 }, { x: 10, y: 0 }, MOVE_THRESHOLD), false)
+  // 阈值缺省/非法时退化为 0（任何位移都算移动），不会变成 NaN 比较。
+  assert.equal(movedBeyondThreshold(start, { x: 100.5, y: 100 }, undefined), true)
+  assert.equal(movedBeyondThreshold(start, { x: 100, y: 100 }, Number.NaN), false)
+  // 入参绝不被修改。
+  assert.deepEqual(start, { x: 100, y: 100 })
 })

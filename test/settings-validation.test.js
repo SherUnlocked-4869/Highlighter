@@ -68,6 +68,23 @@ test('accepts the annotation width patch and only enforces its type', () => {
   assert.throws(() => assertSettingsPatch({ screenshot: { annotationWidth: Infinity } }, DEFAULT_SETTINGS), /有限数字/)
 })
 
+test('accepts the annotation colour patch and only enforces its type', () => {
+  // A3（2026-10-14 方案 §1 C2/C4）：键先落 DEFAULT_SETTINGS，模板递归自动放行；主进程只校验
+  // "是字符串"，#rrggbb 的形状与预设表都在渲染端（capture/annotation-style.js）归一。
+  assert.equal(
+    assertSettingsPatch({ screenshot: { annotationColor: '#123456' } }, DEFAULT_SETTINGS).screenshot.annotationColor,
+    '#123456'
+  )
+  // 自定义色不设白名单：不在 7 个预设里的值同样是合法补丁。
+  assert.equal(
+    assertSettingsPatch({ screenshot: { annotationColor: '#0a0b0c' } }, DEFAULT_SETTINGS).screenshot.annotationColor,
+    '#0a0b0c'
+  )
+  assert.equal(DEFAULT_SETTINGS.screenshot.annotationColor, '#ff3b30')
+  assert.throws(() => assertSettingsPatch({ screenshot: { annotationColor: 0xff3b30 } }, DEFAULT_SETTINGS), /类型无效/)
+  assert.throws(() => assertSettingsPatch({ screenshot: { annotationColor: null } }, DEFAULT_SETTINGS), /类型无效/)
+})
+
 test('accepts follow-up conversation patches and rejects broken shapes', () => {
   const patch = { selectionToolbar: { conversation: { enabled: false } } }
   assert.equal(assertSettingsPatch(patch, template), patch)

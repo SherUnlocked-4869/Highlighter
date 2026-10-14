@@ -41,7 +41,9 @@ test('capture script drives thickness from the group and remembers the choice', 
   assert.doesNotMatch(script, /getElementById\('lineWidth'\)/)
   assert.doesNotMatch(script, /lineWidthInput/)
 
-  assert.match(script, /function annotationStyle\(\) \{ return \{ color: colorInput\.value, width: annotationWidth \} \}/)
+  // A4（2026-10-14 方案 D4）：新建标注读**已提交的全局默认色**，不是工具栏回显
+  // （回显只改 colorInput 这个 UI 镜像，选中项的样式不得被下一笔继承）。
+  assert.match(script, /function annotationStyle\(\) \{ return \{ color: annotationColor, width: annotationWidth \} \}/)
   assert.match(script, /function setAnnotationWidth\(width, persist = false\)/)
   assert.match(script, /resolveAnnotationWidth\(width\)/)
   assert.match(script, /button\.setAttribute\('aria-pressed', String\(active\)\)/)

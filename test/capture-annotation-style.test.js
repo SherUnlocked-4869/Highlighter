@@ -5,7 +5,11 @@ const {
   WIDTH_PRESETS,
   WIDTHS,
   DEFAULT_WIDTH,
+  PRESET_COLORS,
+  DEFAULT_COLOR,
   resolveWidth,
+  normalizeAnnotationColor,
+  nextWidthPreset,
   scaleFactor,
   textFontSize,
   serialRadius,
@@ -52,4 +56,46 @@ test('a missing or nonsensical scale is ignored', () => {
   assert.equal(scaleFactor('2'), 2)
   assert.equal(textFontSize(4), 20)
   assert.equal(serialRadius(8, 0), 24)
+})
+
+// ---------- A3：色板预设与颜色归一（方案 D3） ----------
+
+test('the palette ships the same seven colours as the region recorder', () => {
+  const recorder = require('../record/annotation-utils')
+  assert.deepEqual(
+    PRESET_COLORS.map((preset) => preset.color),
+    ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#1687ff', '#111111', '#ffffff']
+  )
+  // 刻意复制而不是 import（两模块加载环境不同）：两处色值必须逐字一致。
+  assert.deepEqual(
+    PRESET_COLORS.map((preset) => preset.color),
+    [...recorder.ANNOTATION_COLORS]
+  )
+  assert.equal(DEFAULT_COLOR, '#ff3b30')
+  assert.equal(new Set(PRESET_COLORS.map((preset) => preset.id)).size, PRESET_COLORS.length)
+})
+
+test('normalizeAnnotationColor keeps any #rrggbb and only rejects the shape', () => {
+  // 自定义色必须能存能回显：capture 端不做预设白名单（与 record 的 cleanStyle 差异是刻意的）。
+  assert.equal(normalizeAnnotationColor('#123456'), '#123456')
+  assert.equal(normalizeAnnotationColor('#ABCDEF'), '#abcdef')
+  assert.equal(normalizeAnnotationColor('  #FF3B30  '), '#ff3b30')
+  for (const invalid of ['', 'red', '#fff', '#12345', '#1234567', 'ff3b30', null, undefined, 123, {}, '#12345g']) {
+    assert.equal(normalizeAnnotationColor(invalid), DEFAULT_COLOR, `${String(invalid)} should fall back to the default`)
+  }
+})
+
+test('nextWidthPreset steps one level and clamps at both ends instead of wrapping', () => {
+  assert.equal(nextWidthPreset(2, 1), 4)
+  assert.equal(nextWidthPreset(4, 1), 8)
+  assert.equal(nextWidthPreset(8, 1), 8)
+  assert.equal(nextWidthPreset(8, -1), 4)
+  assert.equal(nextWidthPreset(4, -1), 2)
+  assert.equal(nextWidthPreset(2, -1), 2)
+  // 非预设的当前值先按 resolveWidth 归一（9 → 4），非法步长是 no-op 而不是 NaN。
+  assert.equal(nextWidthPreset(9, 1), 8)
+  assert.equal(nextWidthPreset('4', -1), 2)
+  assert.equal(nextWidthPreset(4, 0), 4)
+  assert.equal(nextWidthPreset(4, NaN), 4)
+  assert.equal(nextWidthPreset(4, undefined), 4)
 })

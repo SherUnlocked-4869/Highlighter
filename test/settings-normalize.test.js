@@ -137,6 +137,19 @@ test('template, directory, and shortcut strings are trimmed', () => {
   assert.equal(normalized.shortcuts.togglePinClickThrough, '')
 })
 
+test('the annotation colour is normalised to a lower-case #rrggbb or the default (A3)', () => {
+  // A3（D3）：capture 端要能存任意自定义色，所以这里只归一"形状"而不是白名单。
+  const custom = normalizeWith(makeSettings((settings) => { settings.screenshot.annotationColor = '#0A0B0C' }))
+  const padded = normalizeWith(makeSettings((settings) => { settings.screenshot.annotationColor = '  #1Ab2C3  ' }))
+  const broken = normalizeWith(makeSettings((settings) => { settings.screenshot.annotationColor = 'red' }))
+  const missing = normalizeWith(makeSettings((settings) => { delete settings.screenshot.annotationColor }))
+  assert.equal(custom.screenshot.annotationColor, '#0a0b0c')
+  assert.equal(padded.screenshot.annotationColor, '#1ab2c3')
+  assert.equal(broken.screenshot.annotationColor, '#ff3b30')
+  assert.equal(missing.screenshot.annotationColor, '#ff3b30')
+  assert.equal(DEFAULT_SETTINGS.screenshot.annotationColor, '#ff3b30')
+})
+
 test('a legacy store without the new domains still normalizes', () => {
   const normalized = normalizeWith(makeSettings((settings) => {
     delete settings.pinned

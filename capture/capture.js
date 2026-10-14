@@ -13,7 +13,10 @@ const loading = document.getElementById('loading')
 const loadingText = loading.querySelector('b')
 const shutterSound = document.getElementById('shutterSound')
 const colorInput = document.getElementById('color')
-const colorPreview = document.querySelector('.color-wrap span')
+const colorPreview = document.getElementById('colorSwatch')
+const colorButton = document.getElementById('colorButton')
+const colorPalette = document.getElementById('colorPalette')
+const recentColorList = document.getElementById('recentColors')
 const lineWidthGroup = document.getElementById('widthGroup')
 const watermarkPanel = document.getElementById('watermarkPanel')
 const watermarkContentInput = document.getElementById('watermarkContent')
@@ -43,7 +46,11 @@ const {
   selectionCursor
 } = window.selectionUtils
 const {
+  PRESET_COLORS,
+  DEFAULT_COLOR: DEFAULT_ANNOTATION_COLOR,
   resolveWidth: resolveAnnotationWidth,
+  normalizeAnnotationColor,
+  nextWidthPreset,
   textFontSize,
   serialRadius,
   highlightWidth
@@ -55,6 +62,8 @@ const {
 // 注意：新条目一律插在最前/最后，不要打断下面这条既有的相对顺序断言
 // （test/capture-annotation-geometry.test.js 里 resizeAnnotationToBox → … → MAX_PEN_POINTS 的链条）。
 const {
+  movedBeyondThreshold,
+  MOVE_THRESHOLD,
   reorderAnnotation,
   resizeAnnotationToBox,
   annotationBounds,
@@ -85,10 +94,12 @@ let historyIndex = 0
 // 单调递增 id：选中/快照/撤销都按 id 重解析对象（快照还原会换掉对象身份）。
 let annotationSeq = 0
 let selectedAnnotation = null
-// P0-5 PR2：拖动交互态。origin 始终是**未被改动的**原对象，每帧都从它重新平移（绝不就地改
-// 原对象），所以 clamp 不累积漂移、松开时也能可靠判断"到底动没动"。
-let movingAnnotation = null
-// P0-5 PR3：8 手柄缩放交互态，与 movingAnnotation 同构（origin/originBounds 也是**未被改动的**
+// P0-5 PR2 + A1 (D2): the element drag state. origin is always the UNTOUCHED
+// original object and every frame re-translates from it, so clamping cannot
+// accumulate drift and pointerup can tell "did it actually move". thresholdPassed
+// is A1's addition: a press below MOVE_THRESHOLD stays a plain click.
+let pendingMove = null
+// P0-5 PR3：8 手柄缩放交互态，与 pendingMove 同构（origin/originBounds 也是**未被改动的**
 // 原对象与其屏幕 CSS 坐标 bbox，每帧从它重算，绝不就地改）。
 let resizingAnnotation = null
 // PR3：选中元素手柄的命中半径（比选区手柄默认的 8px 更紧 —— 元素普遍更小，太宽会整块吃掉
@@ -110,6 +121,19 @@ let elementBarSize = null
 let serialNumber = 1
 let initialSerialNumber = 1
 let annotationWidth = 4
+// A3 (D3): the persisted default colour that new annotations use. colorInput is
+// only its UI mirror - A4's selection echo may repaint the toolbar without
+// touching this value, so the next stroke must not inherit a selected item's colour.
+let annotationColor = DEFAULT_ANNOTATION_COLOR
+// A3: the last few custom colours, window-session only (never persisted, so the
+// settings schema does not grow another list).
+const MAX_RECENT_COLORS = 3
+let recentAnnotationColors = []
+// A2: one wheel burst must not write the store per notch, so persistence trails.
+let widthPersistTimer = 0
+const WIDTH_PERSIST_DELAY = 500
+// A2: the tools whose stroke width is meaningful (all but select/blur/watermark).
+const WIDTH_TOOLS = new Set(['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial'])
 let dpr = window.devicePixelRatio || 1
 let autoActionStarted = false
 let renderReadySent = false
@@ -164,7 +188,10 @@ function closeCaptureWindow() {
 function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
 function normalizeRect(a, b) { return { x: Math.min(a.x,b.x), y: Math.min(a.y,b.y), w: Math.abs(b.x-a.x), h: Math.abs(b.y-a.y) } }
 function insideSelection(point) { return selection && point.x >= selection.x && point.x <= selection.x + selection.w && point.y >= selection.y && point.y <= selection.y + selection.h }
-function annotationStyle() { return { color: colorInput.value, width: annotationWidth } }
+// A4 (D4): new annotations read the committed global defaults, never the toolbar
+// mirror - the echo (syncToolbarStyleFromSelection) repaints colorInput for a
+// selected item without hijacking what the next stroke will look like.
+function annotationStyle() { return { color: annotationColor, width: annotationWidth } }
 function imageDisplayBounds() {
   const bounds=initData?.imageBounds
   return bounds
@@ -396,7 +423,7 @@ function drawSelectedHandles(bounds) {
 // 浮动元素条（#elementBar）：元素操作走独立浮动条，不往已近满宽的工具栏塞按钮（方案 §8 风险⑦）。
 function updateElementBar() {
   const item = selectedAnnotationItem()
-  const visible = !!item && !!selection && !activeOcrResult && !processingAction && !selecting && !dragging && !resizing && !movingAnnotation && !resizingAnnotation && selectState !== 'auto'
+  const visible = !!item && !!selection && !activeOcrResult && !processingAction && !selecting && !dragging && !resizing && !pendingMove?.thresholdPassed && !resizingAnnotation && selectState !== 'auto'
   if (!visible) { elementBar.classList.add('hidden'); return }
   elementBar.classList.remove('hidden')
   // P0-5 PR4：层级按钮的可用态 —— 已在最上层/最下层时置灰，no-op 就不该给出可点的错觉。
@@ -471,19 +498,109 @@ function setTool(tool) {
   syncWatermarkPanel()
 }
 
-// Persist only user clicks; restoring the stored value on init must not write back.
-function setAnnotationWidth(width, persist = false) {
-  annotationWidth = resolveAnnotationWidth(width)
+// A1/A4: one place paints the toolbar's width and colour controls, so the
+// selection echo (A4) can repaint them WITHOUT going through the edit paths
+// (which would push an undo frame for a mere selection change).
+function applyToolbarWidth(width) {
   lineWidthGroup.querySelectorAll('[data-annotation-width]').forEach((button) => {
-    const active = Number(button.dataset.annotationWidth) === annotationWidth
+    const active = Number(button.dataset.annotationWidth) === width
     button.classList.toggle('active', active)
     button.setAttribute('aria-pressed', String(active))
   })
+}
+
+function applyToolbarColor(color) {
+  colorInput.value = color
+  colorPreview.style.background = color
+  colorPalette.querySelectorAll('[data-annotation-color]').forEach((button) => {
+    const active = button.dataset.annotationColor === color
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+  })
+}
+
+// A3 (D3): recents are session memory only (never persisted); the newest custom
+// colour leads and a preset never enters the list - it already has its own swatch.
+function rememberRecentColor(value) {
+  const color = normalizeAnnotationColor(value)
+  if (!PRESET_COLORS.some((preset) => preset.color === color)) {
+    recentAnnotationColors = [color, ...recentAnnotationColors.filter((entry) => entry !== color)]
+      .slice(0, MAX_RECENT_COLORS)
+  }
+  renderRecentColors()
+}
+
+function renderRecentColors() {
+  recentColorList.replaceChildren()
+  recentColorList.classList.toggle('hidden', !recentAnnotationColors.length)
+  recentAnnotationColors.forEach((color) => {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.dataset.annotationColor = color
+    button.style.setProperty('--swatch', color)
+    button.title = color
+    button.setAttribute('aria-label', color)
+    button.setAttribute('aria-pressed', String(color === annotationColor))
+    recentColorList.appendChild(button)
+  })
+}
+
+function openColorPalette() {
+  renderRecentColors()
+  colorPalette.classList.remove('hidden')
+  colorButton.setAttribute('aria-expanded', 'true')
+}
+
+function closeColorPalette() {
+  colorPalette.classList.add('hidden')
+  colorButton.setAttribute('aria-expanded', 'false')
+}
+
+function toggleColorPalette() {
+  if (colorPalette.classList.contains('hidden')) openColorPalette()
+  else closeColorPalette()
+}
+
+// A3 (D4): the global default for the next annotation; when something is selected
+// the same colour lands on it in one discrete undo frame (applyStyle is a no-op
+// when the value is unchanged, so selecting and re-picking costs no frame).
+function setAnnotationColor(color, persist = false) {
+  annotationColor = normalizeAnnotationColor(color)
+  applyToolbarColor(annotationColor)
+  commitSelectedStyle({ color: annotationColor })
+  if (!persist) return
+  window.captureAPI.saveAnnotationColor(annotationColor).catch(() => {})
+}
+
+// Persist only user clicks; restoring the stored value on init must not write back.
+function setAnnotationWidth(width, persist = false) {
+  annotationWidth = resolveAnnotationWidth(width)
+  applyToolbarWidth(annotationWidth)
   // P0-5 PR4：线宽不再只服务"下一次新建"—— 有选中项时改的是**该选中项**（生成新副本 →
   // 替换数组项 → 一帧快照）；没有选中项时是 no-op，新建仍照旧读 annotationStyle()。
   commitSelectedStyle({ width: annotationWidth })
   if (!persist) return
   window.captureAPI.saveAnnotationWidth(annotationWidth).catch(() => {})
+}
+
+// A2: a wheel burst must not write the store once per notch, so persistence trails.
+function scheduleAnnotationWidthPersist() {
+  if (widthPersistTimer) clearTimeout(widthPersistTimer)
+  widthPersistTimer = setTimeout(() => {
+    widthPersistTimer = 0
+    window.captureAPI.saveAnnotationWidth(annotationWidth).catch(() => {})
+  }, WIDTH_PERSIST_DELAY)
+}
+
+function cancelAnnotationWidthPersist() {
+  if (widthPersistTimer) { clearTimeout(widthPersistTimer); widthPersistTimer = 0 }
+}
+
+// A2: the wheel steps thickness only when that is unambiguous - a width-bearing
+// tool is active (or a selected item can absorb it) and no region gesture is running.
+function canStepAnnotationWidth() {
+  if (!selection || selecting || dragging || resizing || selectState === 'auto') return false
+  return WIDTH_TOOLS.has(currentTool) || !!selectedAnnotationItem()
 }
 
 // ---------- P0-5 PR1：选中 + 删除 + 快照栈 ----------
@@ -493,13 +610,27 @@ function selectedAnnotationItem() {
   return selectedAnnotation && annotations.includes(selectedAnnotation) ? selectedAnnotation : null
 }
 
+// A4 (D4): selection echo is UI-only. It repaints the width/colour controls from
+// the selected item so the toolbar stops lying about what is on screen; it must
+// never call commitSelectedStyle/stageSelectedStyle, or a mere selection would
+// create an undo frame. With nothing selected the committed defaults come back.
+function syncToolbarStyleFromSelection() {
+  const item = selectedAnnotationItem()
+  applyToolbarColor(item ? normalizeAnnotationColor(item.color) : annotationColor)
+  applyToolbarWidth(item ? resolveAnnotationWidth(item.width) : annotationWidth)
+}
+
 function syncSelectedAnnotation() {
   const id = selectedAnnotation?.id
   selectedAnnotation = id === undefined || id === null ? null : annotations.find((item) => item.id === id) || null
+  // A4-T1: undo/redo replaces object identities, so the re-resolved selection has
+  // to repaint the toolbar too (the restored item may carry different styles).
+  syncToolbarStyleFromSelection()
 }
 
 function setSelectedAnnotation(item) {
   selectedAnnotation = item || null
+  syncToolbarStyleFromSelection()
   render()
 }
 
@@ -553,6 +684,8 @@ function deleteSelectedAnnotation() {
   flushCoalescedEdits()
   annotations.splice(annotations.indexOf(item), 1)
   selectedAnnotation = null
+  // A4: with nothing selected the toolbar returns to the committed defaults.
+  syncToolbarStyleFromSelection()
   snapshotAnnotations()
   render()
 }
@@ -567,10 +700,11 @@ function confirmDiscardAnnotations() {
 // 确认后清空；仍然压一帧快照，使这次清空也能被 Ctrl+Z 精确回退。
 function clearAnnotationsForNewSelection() {
   // 没有标注可清时不压帧：否则首次手动划选区会在栈底多出一个与初始状态相同的死撤销步。
-  if (!annotations.length) { selectedAnnotation = null; return }
+  if (!annotations.length) { selectedAnnotation = null; syncToolbarStyleFromSelection(); return }
   flushCoalescedEdits()
   annotations = []
   selectedAnnotation = null
+  syncToolbarStyleFromSelection()
   snapshotAnnotations()
 }
 
@@ -590,10 +724,24 @@ function pointInAnnotationBounds(item, point) {
   return point.x >= bounds.x && point.x <= bounds.x + bounds.w && point.y >= bounds.y && point.y <= bounds.y + bounds.h
 }
 
+// A1 (D2): the press that may become a move. thresholdPassed flips on the first
+// pointermove past MOVE_THRESHOLD; until then nothing is translated, so a plain
+// click on an element neither jitters it nor pushes an undo frame.
+function beginPendingMove(item, point, event) {
+  if (!item) return
+  pendingMove = { id: item.id, origin: item, start: { x: point.x, y: point.y }, thresholdPassed: false }
+  try { canvas.setPointerCapture(event.pointerId) } catch {}
+  render()
+}
+
 // 拖动中：从 origin 重新平移 + clamp，把新副本放回数组；绝不就地改 state.origin。
 function moveAnnotationTo(point) {
-  const state = movingAnnotation
+  const state = pendingMove
   if (!state) return
+  if (!state.thresholdPassed) {
+    if (!movedBeyondThreshold(state.start, point, MOVE_THRESHOLD)) return
+    state.thresholdPassed = true
+  }
   const index = annotations.findIndex((item) => item.id === state.id)
   if (index < 0) return
   const moved = clampAnnotationToStage(
@@ -611,10 +759,13 @@ function annotationWasMoved(item, origin) {
 }
 
 // pointerup：只有真的产生了位移才压帧 —— 0 位移不制造无效 undo 步（方案 §8.4 PR2）。
+// A1: a press that never crossed the threshold stays a plain click - the selection
+// it made survives, but no move frame is pushed.
 function finishMoveAnnotation() {
-  const state = movingAnnotation
-  movingAnnotation = null
+  const state = pendingMove
+  pendingMove = null
   if (!state) return
+  if (!state.thresholdPassed) { render(); return }
   const current = annotations.find((item) => item.id === state.id)
   if (current && annotationWasMoved(current, state.origin)) { flushCoalescedEdits(); snapshotAnnotations() }
   render()
@@ -622,8 +773,8 @@ function finishMoveAnnotation() {
 
 // pointercancel：手势被中断 = 这次编辑作废，原对象放回数组且不压帧。
 function cancelMoveAnnotation() {
-  const state = movingAnnotation
-  movingAnnotation = null
+  const state = pendingMove
+  pendingMove = null
   if (!state) return
   const index = annotations.findIndex((item) => item.id === state.id)
   if (index >= 0) {
@@ -810,11 +961,13 @@ function reorderSelectedAnnotation(direction) {
 function resetAnnotationState() {
   annotations = []
   selectedAnnotation = null
-  movingAnnotation = null
+  pendingMove = null
   resizingAnnotation = null
   cancelNudge()
   // PR4：新一次截图不得让上一张的样式计时器落进这一次的历史里。
   cancelStyleCommit()
+  // A2: a pending width write belongs to the previous capture.
+  cancelAnnotationWidthPersist()
   annotationHistory = [[]]
   historyIndex = 0
   elementBarSize = null
@@ -917,18 +1070,46 @@ async function requestSmartSelection(point) {
   }finally{smartQueryRunning=false}
 }
 
+// A1 (D1): the right button is a quick-select + drag gesture in every tool
+// (Snow Shot's quick_selection). It never draws and never re-runs the region
+// selection, which is why it lives in front of every tool branch below.
+function quickSelectAnnotation(event, point) {
+  if (selectState === 'auto') return
+  const hit = findAnnotationAt(annotations, point)
+  if (hit) {
+    setSelectedAnnotation(hit)
+    beginPendingMove(hit, point, event)
+    return
+  }
+  if (currentTool === 'select') setSelectedAnnotation(null)
+}
+
 canvas.addEventListener('pointerdown',(event)=>{
   if (!resultPanel.classList.contains('hidden')) return
   if(activeOcrResult){clearOcrResult();return}
   const point=pointFromEvent(event); startPoint=point
   // PR2 防御：上一次元素拖动若没等到 pointerup（被模态框/系统手势吞掉），新一次按下先把它
-  // 收口，避免两个手势叠在同一个 movingAnnotation 上（选区拖动有同款自愈，见 pointermove）。
-  if(movingAnnotation)finishMoveAnnotation()
+  // 收口，避免两个手势叠在同一个 pendingMove 上（选区拖动有同款自愈，见 pointermove）。
+  if(pendingMove)finishMoveAnnotation()
   // PR3 同款防御：上一次元素缩放没收到 pointerup 时先收口。
   if(resizingAnnotation)finishResizeAnnotation()
+  // A1 (D1): only the primary button edits. The right button is handled above every
+  // tool branch (quick select + drag); any other button is ignored, so a stray
+  // middle-drag can no longer create an annotation.
+  if(event.button!==0){if(event.button===2)quickSelectAnnotation(event,point);return}
   if(selectState==='auto'){pointerDownPoint=point;return}
   const resizeHandle=currentTool==='select'?getResizeHandle(selection,point):''
-  if (!selection || (currentTool==='select'&&!resizeHandle&&!insideSelection(point))) {
+  // A5 (D10): a select-tool press that misses the region still selects an element.
+  // Dragging an element out of the region used to make it unreachable - the next
+  // press re-ran "replace the region" (and asked to discard every annotation)
+  // before the element could ever be hit again. The selection handle keeps its
+  // priority through the !resizeHandle guard.
+  const outsideSelection=currentTool==='select'&&!resizeHandle&&!insideSelection(point)
+  if (outsideSelection) {
+    const outsideHit=findAnnotationAt(annotations,point)
+    if(outsideHit){setSelectedAnnotation(outsideHit);beginPendingMove(outsideHit,point,event);return}
+  }
+  if (!selection || outsideSelection) {
     // D4 落地项：重划选区会丢弃全部已提交标注 —— 先弹确认；取消则标注与选区都保持原状。
     if(!confirmDiscardAnnotations())return
     selectState='manual';selecting=true; selection={x:point.x,y:point.y,w:0,h:0}; clearAnnotationsForNewSelection(); tip.style.display='none'; canvas.style.cursor='crosshair'; render(); return
@@ -945,7 +1126,7 @@ canvas.addEventListener('pointerdown',(event)=>{
     if(elementHandle){const target=selectedAnnotationItem();resizingAnnotation={id:target.id,origin:target,originBounds:annotationBounds(target),handle:elementHandle};try{canvas.setPointerCapture(event.pointerId)}catch{};updateSelectionCursor(point);render();return}
     // PR2 元素体内拖动：点落在**当前已选中**元素的 annotationBounds 内 → 进入 move 态。
     const selected=selectedAnnotationItem()
-    if(selected&&pointInAnnotationBounds(selected,point)){movingAnnotation={id:selected.id,origin:selected,start:{x:point.x,y:point.y}};try{canvas.setPointerCapture(event.pointerId)}catch{};render();return}
+    if(selected&&pointInAnnotationBounds(selected,point)){beginPendingMove(selected,point,event);return}
     // PR1 元素命中（逆序取最上层）→ 选中；未命中才退回"拖选区"。
     const hit=findAnnotationAt(annotations,point)
     if(hit){setSelectedAnnotation(hit);updateSelectionCursor(point);return}
@@ -979,13 +1160,13 @@ canvas.addEventListener('pointermove',(event)=>{
     if(resizing)resizing=null
     finishSelection(); updateSelectionCursor(point); return
   }
-  // PR2 同款自愈：元素拖动期间 pointerup 被吞掉时，没有按键的 move 也要把这次拖动收口。
-  if (movingAnnotation&&event.buttons===0) { finishMoveAnnotation(); updateSelectionCursor(point); return }
+  // PR2/A1 同款自愈：元素拖动期间 pointerup 被吞掉时，没有按键的 move 也要把这次拖动收口。
+  if (pendingMove&&event.buttons===0) { finishMoveAnnotation(); updateSelectionCursor(point); return }
   // PR3 同款自愈：元素缩放期间 pointerup 被吞掉时同样要收口。
   if (resizingAnnotation&&event.buttons===0) { finishResizeAnnotation(); updateSelectionCursor(point); return }
   if (selecting) { selection=normalizeRect(startPoint,point); render(); return }
   if (resizing&&selection) { selection=resizeSelection(resizing.initial,resizing.handle,point,{width:innerWidth,height:innerHeight}); updateSelectionCursor(point); render(); return }
-  if (movingAnnotation) { moveAnnotationTo(point); return }
+  if (pendingMove) { moveAnnotationTo(point); return }
   // PR3 元素缩放：新 box 由 resizeSelection 在**舞台**坐标系里算出，再交给纯函数写回新对象。
   if (resizingAnnotation) { resizeAnnotationTo(point); updateSelectionCursor(point); return }
   if (dragging&&selection) { const dx=point.x-startPoint.x,dy=point.y-startPoint.y; selection.x=Math.max(0,Math.min(innerWidth-selection.w,selection.x+dx)); selection.y=Math.max(0,Math.min(innerHeight-selection.h,selection.y+dy)); startPoint=point; render(); return }
@@ -997,7 +1178,7 @@ canvas.addEventListener('pointerup',(event)=>{
   if(selectState==='auto'&&pointerDownPoint){const point=pointFromEvent(event);const moved=Math.hypot(point.x-pointerDownPoint.x,point.y-pointerDownPoint.y)>6;pointerDownPoint=null;if(moved){selectState='selected';selection=normalizeRect(startPoint,point);if(selection.w<3||selection.h<3)selection=null}else if(selection){selectState='selected'}tip.style.display='none';finishSelection();updateSelectionCursor(point);return}
   if(selecting){const point=pointFromEvent(event);selecting=false;if(selection.w<3||selection.h<3)selection=null;selectState=selection?'selected':'manual';finishSelection();updateSelectionCursor(point);return}
   if(resizing){resizing=null;finishSelection();updateSelectionCursor(pointFromEvent(event));return}
-  if(movingAnnotation){finishMoveAnnotation();updateSelectionCursor(pointFromEvent(event));return}
+  if(pendingMove){finishMoveAnnotation();updateSelectionCursor(pointFromEvent(event));return}
   if(resizingAnnotation){finishResizeAnnotation();updateSelectionCursor(pointFromEvent(event));return}
   if(dragging){dragging=false;render();updateSelectionCursor(pointFromEvent(event));return}
   if(activeAnnotation&&activeAnnotation.type!=='watermark')commitAnnotation(activeAnnotation)
@@ -1014,11 +1195,24 @@ canvas.addEventListener('pointercancel',()=>{
 })
 
 canvas.addEventListener('wheel',(event)=>{
-  if(selectState!=='auto'||smartCandidates.length<2)return
+  // A2: the smart-selection stepper keeps priority in auto mode.
+  if(selectState==='auto'){
+    if(smartCandidates.length<2)return
+    event.preventDefault()
+    const delta=event.deltaY<0?1:-1
+    smartCandidateLevel=Math.max(0,Math.min(smartCandidates.length-1,smartCandidateLevel+delta))
+    selection={...smartCandidates[smartCandidateLevel]}
+    render()
+    return
+  }
+  // A2: otherwise the wheel steps the stroke width (up = thicker, same direction as
+  // the smart-selection stepper) and a stroke being drawn right now follows along.
+  if(!canStepAnnotationWidth())return
   event.preventDefault()
-  const delta=event.deltaY<0?1:-1
-  smartCandidateLevel=Math.max(0,Math.min(smartCandidates.length-1,smartCandidateLevel+delta))
-  selection={...smartCandidates[smartCandidateLevel]}
+  const width=nextWidthPreset(annotationWidth,event.deltaY<0?1:-1)
+  setAnnotationWidth(width)
+  if(activeAnnotation&&activeAnnotation.type!=='watermark')activeAnnotation.width=width
+  scheduleAnnotationWidthPersist()
   render()
 },{passive:false})
 
@@ -1252,9 +1446,18 @@ function showResult(type,result) {
 
 document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListener('click',()=>setTool(button.dataset.tool)))
 lineWidthGroup.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-width]');if(button)setAnnotationWidth(button.dataset.annotationWidth,true)})
-colorInput.addEventListener('input',()=>{colorPreview.style.background=colorInput.value;stageSelectedStyle({color:colorInput.value})})
-// PR4：取色器关闭时立刻把颜色改动收成一帧（input 的 300ms 兜底计时器随之取消）。
-colorInput.addEventListener('change',()=>commitStyle())
+// A3 (D3): the swatch button opens the popover; a preset click is a discrete
+// two-target edit (global default + selected item) and anything outside closes it.
+colorButton.addEventListener('click',(event)=>{event.stopPropagation();toggleColorPalette()})
+colorPalette.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-color]');if(!button)return;event.stopPropagation();setAnnotationColor(button.dataset.annotationColor,true)})
+document.addEventListener('click',(event)=>{if(colorPalette.classList.contains('hidden'))return;if(colorPalette.contains(event.target)||colorButton.contains(event.target))return;closeColorPalette()})
+// A1 (D1): the right button is a quick-select gesture now, so the native context
+// menu must never appear (future-proofing the semantics of that button).
+canvas.addEventListener('contextmenu',(event)=>event.preventDefault())
+colorInput.addEventListener('input',()=>{colorPreview.style.background=colorInput.value;annotationColor=normalizeAnnotationColor(colorInput.value);stageSelectedStyle({color:annotationColor})})
+// PR4/A3：取色器关闭时立刻把颜色改动收成一帧（input 的 300ms 兜底计时器随之取消），
+// 自定义色同时进入会话内的最近色槽并持久化。
+colorInput.addEventListener('change',()=>{rememberRecentColor(colorInput.value);setAnnotationColor(colorInput.value,true)})
 ;[watermarkContentInput,watermarkOpacityInput,watermarkColorInput,watermarkSpacingInput,watermarkFontSizeInput,watermarkRotationInput,watermarkDateSuffixInput].forEach((input)=>input.addEventListener('input',updateWatermarkPreview))
 watermarkContentInput.addEventListener('keydown',(event)=>{if(event.key==='Enter'){event.preventDefault();watermarkApplyButton.click()}})
 watermarkApplyButton.addEventListener('click',()=>{
@@ -1292,7 +1495,7 @@ ocrCopyAll.onclick=async()=>{if(!activeOcrResult)return;const text=activeOcrResu
 document.getElementById('ocrResultClose').onclick=clearOcrResult
 
 addEventListener('keydown',(event)=>{
-  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else if(selectedAnnotationItem())setSelectedAnnotation(null);else closeCaptureWindow();return}
+  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(!colorPalette.classList.contains('hidden'))closeColorPalette();else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else if(selectedAnnotationItem())setSelectedAnnotation(null);else closeCaptureWindow();return}
   const focused=document.activeElement
   if(['INPUT','TEXTAREA','SELECT'].includes(focused?.tagName||''))return
   if(focused?.closest?.('#widthGroup'))return
@@ -1315,6 +1518,7 @@ window.captureAPI.onInit((data)=>{
   if(data.settings?.screenshot?.shutterSound!==false)playShutterSound()
   applyWatermarkSettings(data.settings?.screenshot?.watermark)
   setAnnotationWidth(data.settings?.screenshot?.annotationWidth)
+  setAnnotationColor(data.settings?.screenshot?.annotationColor)
   if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}
   // P0-2（S9b）：光标位图在这里预解码（每次 init 都重置，避免沿用上一张的光标）。
   // exportSelectionCanvas 是同步函数，贴图时只认"已解码"的光标，不能在里面等。

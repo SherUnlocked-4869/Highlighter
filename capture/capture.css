@@ -95,7 +95,11 @@ html, body {
    previous 48px linear set drew to 80%, so 18px would render ~10% heavier and
    crowd the 30px buttons. 17px holds the original optical size. */
 .toolbar-icon { display: block; width: 17px; height: 17px; background: currentColor; -webkit-mask: var(--icon) center/contain no-repeat; mask: var(--icon) center/contain no-repeat; }
-.toolbar button:hover, .toolbar button.active { color: #fff; background: rgba(255, 255, 255, .13); }
+/* A3 (D3): hover and the committed state used to share one rule, so a hovered
+   control was indistinguishable from a latched one. Hover stays lighter than
+   active, matching the thickness picker below. */
+.toolbar button:hover { color: #fff; background: rgba(255, 255, 255, .13); }
+.toolbar button.active { color: #fff; background: rgba(255, 255, 255, .18); }
 .toolbar button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .toolbar button.primary, .result-actions .primary { color: var(--primary-ink); background: var(--primary); }
 .toolbar button.primary:hover { filter: brightness(1.1); }
@@ -108,9 +112,43 @@ html, body {
 .width-group button { min-width: 28px; padding: 0 6px; font: 13px/1 inherit; }
 .width-group button.active { color: #fff; background: rgba(255, 255, 255, .18); }
 
-.color-wrap { position: relative; width: 30px; height: 30px; display: grid; place-items: center; cursor: pointer; }
-.color-wrap input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-.color-wrap span { width: 18px; height: 18px; border: 2px solid #fff; border-radius: 50%; background: #ff3b30; box-shadow: 0 0 0 1px rgba(0, 0, 0, .4); }
+/* A3 (D3): the trigger is a swatch button, not a hidden native input - the
+   picker only opens when the user explicitly asks for a custom colour. */
+.color-wrap { position: relative; }
+.color-wrap > button { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; }
+/* The trigger latches while its popover is open (aria-expanded mirrors the state). */
+.color-wrap > button[aria-expanded="true"] { background: rgba(255, 255, 255, .18); }
+.color-wrap > button span { width: 18px; height: 18px; border: 2px solid #fff; border-radius: 50%; background: #ff3b30; box-shadow: 0 0 0 1px rgba(0, 0, 0, .4); }
+.color-palette {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  width: max-content;
+  max-width: calc(100vw - 20px);
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: var(--radius);
+  background: rgba(25, 25, 28, .96);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .4);
+  backdrop-filter: blur(18px);
+}
+.color-options { display: flex; gap: 4px; }
+/* These must stay after the shared .toolbar button rules above: same specificity,
+   so the last declaration wins and the swatch keeps its own colour. */
+.color-options button,
+.color-recent button { width: 22px; height: 22px; padding: 0; border: 2px solid transparent; border-radius: 50%; background: var(--swatch); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .35); }
+.color-options button:hover,
+.color-recent button:hover { background: var(--swatch); border-color: rgba(255, 255, 255, .55); }
+.color-options button.active,
+.color-recent button.active { background: var(--swatch); border-color: #fff; box-shadow: 0 0 0 2px rgba(255, 255, 255, .18); }
+.color-recent { display: flex; gap: 4px; padding-top: 6px; border-top: 1px solid rgba(255, 255, 255, .12); }
+.color-custom { display: flex; align-items: center; gap: 6px; color: #bbb; font-size: 12px; cursor: pointer; }
+.color-custom input { width: 22px; height: 22px; padding: 0; border: 1px solid rgba(255, 255, 255, .3); border-radius: 50%; background: none; cursor: pointer; }
+.color-custom:hover { color: #fff; }
 
 /* ---------- selected annotation: floating element bar ---------- */
 /*

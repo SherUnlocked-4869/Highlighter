@@ -39,6 +39,10 @@ const DEFAULT_SETTINGS = {
     selectionMask: 'rgba(0,0,0,.46)',
     showColorPicker: true,
     annotationWidth: 4,
+    // A3 (2026-10-14 plan): the capture palette's persisted default colour. The
+    // value stays unwhitelisted on the main side - only its type is checked - and
+    // capture/annotation-style.js normalises the #rrggbb shape on read.
+    annotationColor: '#ff3b30',
     captureCursor: false,
     shutterSound: true,
     nameTemplate: '',

@@ -32,5 +32,8 @@ contextBridge.exposeInMainWorld('captureAPI', {
   recordHistory: (imageBuffer, meta) => ipcRenderer.invoke('capture:record-history', { imageBuffer, meta }),
   exportPdf: (imageBuffer, meta, mode) => ipcRenderer.invoke('capture:export-pdf', { imageBuffer, meta, mode }),
   saveWatermarkSettings: (watermark) => ipcRenderer.invoke('settings:update', { screenshot: { watermark } }),
-  saveAnnotationWidth: (annotationWidth) => ipcRenderer.invoke('settings:update', { screenshot: { annotationWidth } })
+  saveAnnotationWidth: (annotationWidth) => ipcRenderer.invoke('settings:update', { screenshot: { annotationWidth } }),
+  // A3: the palette colour rides the same settings:update pipe as the width, so
+  // no new IPC channel (and no ipc-security.js entry) is needed.
+  saveAnnotationColor: (annotationColor) => ipcRenderer.invoke('settings:update', { screenshot: { annotationColor } })
 })

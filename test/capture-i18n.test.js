@@ -96,9 +96,21 @@ const GOLDEN = {
   'capture.toolbar.close': '取消',
   'capture.toolbar.close-tip': '取消 Esc',
 
+  // A3（2026-10-14 方案）：色板新增键（迁移后新增，非 P0-1 迁移口径）。
+  'capture.palette.group': '标注颜色',
+  'capture.palette.red': '红',
+  'capture.palette.orange': '橙',
+  'capture.palette.yellow': '黄',
+  'capture.palette.green': '绿',
+  'capture.palette.blue': '蓝',
+  'capture.palette.black': '黑',
+  'capture.palette.white': '白',
+  'capture.palette.custom': '自定义',
+  'capture.palette.recent': '最近使用',
+
   'capture.element.selected': '已选中标注',
-  'capture.element.move-hint': 'Alt+拖动 移动选区',
-  'capture.element.move-hint-tip': '元素铺满选区（如水印）时，按住 Alt 在选区内拖动即可移动选区',
+  'capture.element.move-hint': '右键拖动元素 · Alt+拖动选区',
+  'capture.element.move-hint-tip': '任意工具下按住右键拖动即可移动标注；元素铺满选区（如水印）时按住 Alt 在选区内拖动即可移动选区',
   'capture.element.resize-hint': '拖动圆点缩放',
   'capture.element.resize-hint-tip': '拖动选中虚线框上的 8 个圆点即可缩放；文本框只改字号，序号只改半径',
   'capture.element.delete-tip': '删除选中标注 Delete',
