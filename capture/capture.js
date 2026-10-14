@@ -687,7 +687,7 @@ function renderRecentColors() {
     button.style.setProperty('--swatch', color)
     button.title = color
     button.setAttribute('aria-label', color)
-    button.setAttribute('aria-pressed', String(color === annotationColor))
+    button.setAttribute('aria-pressed', String(color === colorInput.value))
     recentColorList.appendChild(button)
   })
 }
@@ -780,6 +780,14 @@ function scheduleAnnotationWidthPersist() {
 
 function cancelAnnotationWidthPersist() {
   if (widthPersistTimer) { clearTimeout(widthPersistTimer); widthPersistTimer = 0 }
+}
+
+// A2/B4: what the toolbar currently shows. The wheel and the width echo must agree on
+// this, otherwise the first tick would jump to a value derived from the legacy mirror
+// instead of the tool (or element) the user is looking at.
+function displayedToolWidth() {
+  const item = selectedAnnotationItem()
+  return item ? resolveAnnotationWidth(item.width) : currentToolStyle().width
 }
 
 // A2: the wheel steps thickness only when that is unambiguous - a width-bearing
@@ -1465,7 +1473,7 @@ canvas.addEventListener('wheel',(event)=>{
   // the smart-selection stepper) and a stroke being drawn right now follows along.
   if(!canStepAnnotationWidth())return
   event.preventDefault()
-  const width=nextWidthPreset(annotationWidth,event.deltaY<0?1:-1)
+  const width=nextWidthPreset(displayedToolWidth(),event.deltaY<0?1:-1)
   setAnnotationWidth(width)
   if(activeAnnotation&&activeAnnotation.type!=='watermark')activeAnnotation.width=width
   scheduleAnnotationWidthPersist()

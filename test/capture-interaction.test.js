@@ -97,7 +97,9 @@ test('A2: the smart-selection stepper keeps priority and the wheel then steps th
   const stepIndex = wheelSource.indexOf('nextWidthPreset(')
   assert.ok(smartIndex >= 0 && smartIndex < stepIndex, 'auto mode keeps the candidate stepper first')
   assert.match(wheelSource, /if\(!canStepAnnotationWidth\(\)\)return/)
-  assert.match(wheelSource, /const width=nextWidthPreset\(annotationWidth,event\.deltaY<0\?1:-1\)/)
+  assert.match(wheelSource, /const width=nextWidthPreset\(displayedToolWidth\(\),event\.deltaY<0\?1:-1\)/)
+  // 步进起点是"工具栏当前显示的宽度"（选中项优先，否则当前工具的记忆），不是旧键镜像。
+  assert.match(script, /function displayedToolWidth\(\) \{\s*const item = selectedAnnotationItem\(\)\s*return item \? resolveAnnotationWidth\(item\.width\) : currentToolStyle\(\)\.width\s*\}/)
   assert.match(wheelSource, /setAnnotationWidth\(width\)/)
   // 正在绘制的笔迹实时跟随（一行赋值 + render）。
   assert.match(wheelSource, /if\(activeAnnotation&&activeAnnotation\.type!=='watermark'\)activeAnnotation\.width=width/)
