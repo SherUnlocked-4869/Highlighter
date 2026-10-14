@@ -130,13 +130,13 @@ test('B2/B3/B5: clicking an option writes the row tool memory and, when it match
   assert.match(script, /const OPTION_VALUE_PARSERS = \{ radius: Number, startHead: \(value\) => value === 'true', endHead: \(value\) => value === 'true', bold: \(value\) => value === 'true' \}/)
   assert.match(
     script,
-    /function setAnnotationOption\(key, rawValue\) \{[\s\S]{0,420}?const fields = TOOL_OPTION_FIELDS\[tool\]\s*if \(!fields \|\| !fields\.includes\(key\)\) return[\s\S]{0,420}?storedToolOptions\[tool\] = Object\.assign\(resolveToolOptions\(tool, storedToolOptions\[tool\]\), \{ \[key\]: value \}\)[\s\S]{0,260}?if \(item && item\.type === tool\) commitSelectedStyle\(\{ \[key\]: value \}\)/
+    /function setAnnotationOption\(key, rawValue\) \{[\s\S]{0,420}?const fields = TOOL_OPTION_FIELDS\[tool\]\s*if \(!fields \|\| !fields\.includes\(key\)\) return[\s\S]{0,420}?writeToolStyle\(tool, \{ \[key\]: value \}, true\)[\s\S]{0,260}?if \(item && item\.type === tool\) commitSelectedStyle\(\{ \[key\]: value \}\)/
   )
   assert.match(script, /function syncToolOptionControls\(\) \{[\s\S]{0,520}?String\(options\[key\]\) === button\.dataset\.annotationOptionValue[\s\S]{0,200}?button\.setAttribute\('aria-pressed', String\(active\)\)/)
   // 回显优先读选中项自己的选项（与 A4 同源：只改 UI，不压帧）。
   assert.match(
     script,
-    /function rowToolOptions\(tool\) \{\s*const item = selectedAnnotationItem\(\)\s*if \(item && item\.type === tool\) return resolveToolOptions\(tool, item\)\s*return resolveToolOptions\(tool, storedToolOptions\[tool\]\)\s*\}/
+    /function rowToolOptions\(tool\) \{\s*const item = selectedAnnotationItem\(\)\s*if \(item && item\.type === tool\) return resolveToolOptions\(tool, item\)\s*return resolveToolOptions\(tool, toolStyles\[tool\]\)\s*\}/
   )
 })
 
@@ -166,9 +166,9 @@ test('B3/B5 (D9): arrow heads, highlight opacity and bold text default to exactl
 })
 
 test('B2: the tools with no options never receive option fields', () => {
-  // 只有声明过的工具才有选项字段；annotationStyle() 通过 resolveToolOptions 取（无声明 → {}）。
-  assert.match(script, /function annotationStyle\(\) \{\s*return Object\.assign\(\{ color: annotationColor, width: annotationWidth \}, resolveToolOptions\(currentTool, storedToolOptions\[currentTool\]\)\)/)
+  // 只有声明过的工具才有选项字段；annotationStyle() 通过 resolveToolStyle 取（无声明 → 只有 color/width）。
+  assert.match(script, /function annotationStyle\(\) \{\s*return resolveToolStyle\(currentTool, toolStyles\[currentTool\]\)\s*\}/)
   assert.equal(Object.hasOwn(TOOL_OPTION_FIELDS, 'pen'), false)
   assert.equal(Object.hasOwn(TOOL_OPTION_FIELDS, 'serial'), false)
-  assert.doesNotMatch(script, /storedToolOptions\[currentTool\]\.(fill|dash|radius|alpha|bold)/)
+  assert.doesNotMatch(script, /toolStyles\[currentTool\]\.(fill|dash|radius|alpha|bold)/)
 })

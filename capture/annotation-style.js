@@ -66,6 +66,12 @@
     text: Object.freeze({ bold: false })
   })
 
+  // B4 (D7): the tools that own a remembered style. The settings template enumerates
+  // exactly these, so this list is what keeps the store and the renderer in step.
+  const TOOL_STYLE_TOOLS = Object.freeze(['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial'])
+  // Highlight shipped yellow (its own default colour), every other tool red.
+  const TOOL_DEFAULT_COLORS = Object.freeze({ highlight: '#ffcc00' })
+
   // Drawings are scaled on export, so the width reaching these helpers may be a
   // scaled float (e.g. 4 * 1.5). Only the unscaled base width is matched against
   // the whitelist; the scale is applied afterwards.
@@ -91,6 +97,32 @@
     if (!Number.isFinite(step) || step === 0) return WIDTHS[index]
     const next = Math.min(WIDTHS.length - 1, Math.max(0, index + (step > 0 ? 1 : -1)))
     return WIDTHS[next]
+  }
+
+  // B4 (D7) + A4 (D4): the field-level normaliser for one tool's remembered style.
+  // `stored` may be the persisted block or a selected annotation (the echo reads a
+  // selected item through the same function), and every field degrades to the shipped
+  // default instead of reaching the renderer.
+  function defaultColorForTool(tool) {
+    return Object.hasOwn(TOOL_DEFAULT_COLORS, tool) ? TOOL_DEFAULT_COLORS[tool] : DEFAULT_COLOR
+  }
+
+  function resolveToolStyle(tool, stored) {
+    const source = stored && typeof stored === 'object' ? stored : {}
+    return Object.assign({
+      color: normalizeAnnotationColor(source.color === undefined ? defaultColorForTool(tool) : source.color),
+      width: resolveWidth(source.width === undefined ? DEFAULT_WIDTH : source.width)
+    }, resolveToolOptions(tool, source))
+  }
+
+  // The full canonical map, one block per remembered tool. Persisting this whole
+  // object is what makes the "always merge with the newest store" rule safe: nothing
+  // is written field by field, so a stale window cannot clobber half a style.
+  function resolveToolStyles(stored) {
+    const source = stored && typeof stored === 'object' ? stored : {}
+    const styles = {}
+    for (const tool of TOOL_STYLE_TOOLS) styles[tool] = resolveToolStyle(tool, source[tool])
+    return styles
   }
 
   function scaleFactor(value) {
@@ -179,6 +211,8 @@
     FILL_ALPHA,
     TOOL_OPTION_FIELDS,
     DEFAULT_TOOL_OPTIONS,
+    TOOL_STYLE_TOOLS,
+    TOOL_DEFAULT_COLORS,
     resolveWidth,
     normalizeAnnotationColor,
     nextWidthPreset,
@@ -188,6 +222,8 @@
     resolveAlpha,
     dashPattern,
     resolveToolOptions,
+    resolveToolStyle,
+    resolveToolStyles,
     scaleFactor,
     textFontSize,
     serialRadius,

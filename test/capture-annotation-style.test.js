@@ -14,6 +14,8 @@ const {
   FILL_ALPHA,
   TOOL_OPTION_FIELDS,
   DEFAULT_TOOL_OPTIONS,
+  TOOL_STYLE_TOOLS,
+  TOOL_DEFAULT_COLORS,
   resolveWidth,
   normalizeAnnotationColor,
   nextWidthPreset,
@@ -23,6 +25,8 @@ const {
   resolveAlpha,
   dashPattern,
   resolveToolOptions,
+  resolveToolStyle,
+  resolveToolStyles,
   scaleFactor,
   textFontSize,
   serialRadius,
@@ -207,4 +211,50 @@ test('DEFAULT_TOOL_OPTIONS matches the pre-B2 rendering for every tool', () => {
     assert.ok(DEFAULT_TOOL_OPTIONS[tool], `${tool} needs a default option set`)
     assert.deepEqual(Object.keys(DEFAULT_TOOL_OPTIONS[tool]).sort(), [...TOOL_OPTION_FIELDS[tool]].sort(), `${tool} defaults must cover its fields`)
   }
+})
+
+// ---------- B4：per-tool 样式归一与整表输出（方案 D7） ----------
+
+test('B4: the remembered style table covers exactly the eight drawing tools', () => {
+  assert.deepEqual(TOOL_STYLE_TOOLS, ['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial'])
+  // 高亮出厂是黄色（它自己的默认色），其余工具红。
+  assert.deepEqual(TOOL_DEFAULT_COLORS, { highlight: '#ffcc00' })
+})
+
+test('B4: resolveToolStyle normalises colour, width and that tool options only', () => {
+  assert.deepEqual(resolveToolStyle('pen', undefined), { color: '#ff3b30', width: 4 })
+  assert.deepEqual(resolveToolStyle('highlight', {}), { color: '#ffcc00', width: 4, alpha: 'medium' })
+  assert.deepEqual(resolveToolStyle('rect', {}), { color: '#ff3b30', width: 4, fill: 'none', dash: 'solid', radius: 0 })
+  assert.deepEqual(resolveToolStyle('arrow', {}), { color: '#ff3b30', width: 4, dash: 'solid', startHead: false, endHead: true })
+  assert.deepEqual(resolveToolStyle('text', {}), { color: '#ff3b30', width: 4, bold: false })
+  // 存过什么就用什么（宽度走 2/4/8 白名单，颜色按 #rrggbb 小写化）。
+  assert.deepEqual(resolveToolStyle('pen', { color: '#0A0B0C', width: 8 }), { color: '#0a0b0c', width: 8 })
+  assert.deepEqual(resolveToolStyle('pen', { color: 'red', width: 9 }), { color: '#ff3b30', width: 4 })
+  assert.deepEqual(
+    resolveToolStyle('rect', { color: '#123456', width: 2, fill: 'solid', dash: 'dotted', radius: 8 }),
+    { color: '#123456', width: 2, fill: 'solid', dash: 'dotted', radius: 8 }
+  )
+  // 脏值逐字段降级，未声明的字段绝不出现（pen 不吃 fill）。
+  assert.deepEqual(resolveToolStyle('pen', { fill: 'solid', dash: 'dashed' }), { color: '#ff3b30', width: 4 })
+  assert.deepEqual(resolveToolStyle('select', { fill: 'solid' }), { color: '#ff3b30', width: 4 })
+  assert.deepEqual(resolveToolStyle('pen', 'junk'), { color: '#ff3b30', width: 4 })
+  assert.deepEqual(resolveToolStyle('pen', []), { color: '#ff3b30', width: 4 })
+})
+
+test('B4: resolveToolStyles always returns the full canonical map for persistence', () => {
+  const full = resolveToolStyles(undefined)
+  assert.deepEqual(Object.keys(full), [...TOOL_STYLE_TOOLS])
+  assert.deepEqual(full.pen, { color: '#ff3b30', width: 4 })
+  assert.deepEqual(full.highlight, { color: '#ffcc00', width: 4, alpha: 'medium' })
+  // 只写了一部分也能得到合法整表：未写的工具回到默认（避免半截对象落盘）。
+  const partial = resolveToolStyles({ pen: { color: '#111111', width: 8 } })
+  assert.deepEqual(partial.pen, { color: '#111111', width: 8 })
+  assert.deepEqual(partial.rect, { color: '#ff3b30', width: 4, fill: 'none', dash: 'solid', radius: 0 })
+  // 非对象（旧 store / 手改）不抛错。
+  assert.deepEqual(Object.keys(resolveToolStyles('junk')), [...TOOL_STYLE_TOOLS])
+  // 返回的是新对象：写入它不会污染入参。
+  const source = { pen: { color: '#111111', width: 8 } }
+  const resolved = resolveToolStyles(source)
+  resolved.pen.width = 2
+  assert.deepEqual(source.pen, { color: '#111111', width: 8 })
 })

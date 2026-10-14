@@ -41,19 +41,16 @@ test('capture script drives thickness from the group and remembers the choice', 
   assert.doesNotMatch(script, /getElementById\('lineWidth'\)/)
   assert.doesNotMatch(script, /lineWidthInput/)
 
-  // A4（2026-10-14 方案 D4）：新建标注读**已提交的全局默认色**，不是工具栏回显
-  // （回显只改 colorInput 这个 UI 镜像，选中项的样式不得被下一笔继承）；B2-B5 之后
-  // 再叠加当前工具自己的选项字段。
-  assert.match(
-    script,
-    /function annotationStyle\(\) \{\s*return Object\.assign\(\{ color: annotationColor, width: annotationWidth \}, resolveToolOptions\(currentTool, storedToolOptions\[currentTool\]\)\)/
-  )
+  // A4（2026-10-14 方案 D4）+ B4（D7）：新建标注读当前工具的**记忆样式**（resolveToolStyle），
+  // 不是工具栏回显（回显只改 UI 镜像，选中项的样式不得被下一笔继承）。
+  assert.match(script, /function annotationStyle\(\) \{\s*return resolveToolStyle\(currentTool, toolStyles\[currentTool\]\)\s*\}/)
   assert.match(script, /function setAnnotationWidth\(width, persist = false\)/)
   assert.match(script, /resolveAnnotationWidth\(width\)/)
   assert.match(script, /button\.setAttribute\('aria-pressed', String\(active\)\)/)
   assert.match(script, /lineWidthGroup\.addEventListener\('click'[^)]*\)[^\n]*setAnnotationWidth\(button\.dataset\.annotationWidth,true\)/)
   assert.match(script, /window\.captureAPI\.saveAnnotationWidth\(annotationWidth\)\.catch\(\(\) => \{\}\)/)
-  assert.match(script, /setAnnotationWidth\(data\.settings\?\.screenshot\?\.annotationWidth\)/)
+  // B4（D7）：初始化不再逐键回填，而是整块加载 annotationStyles（含旧键迁移）。
+  assert.match(script, /applyAnnotationStyles\(data\.settings\)/)
 })
 
 test('capture script keeps Enter from copying while the thickness picker has focus', () => {

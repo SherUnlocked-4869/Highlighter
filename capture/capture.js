@@ -51,6 +51,7 @@ const {
   DEFAULT_COLOR: DEFAULT_ANNOTATION_COLOR,
   FILL_ALPHA,
   TOOL_OPTION_FIELDS,
+  TOOL_STYLE_TOOLS,
   resolveWidth: resolveAnnotationWidth,
   normalizeAnnotationColor,
   nextWidthPreset,
@@ -60,6 +61,8 @@ const {
   resolveAlpha,
   dashPattern,
   resolveToolOptions,
+  resolveToolStyle,
+  resolveToolStyles,
   textFontSize,
   serialRadius,
   highlightWidth
@@ -144,11 +147,11 @@ let widthPersistTimer = 0
 const WIDTH_PERSIST_DELAY = 500
 // A2: the tools whose stroke width is meaningful (all but select/blur/watermark).
 const WIDTH_TOOLS = new Set(['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial'])
-// B2-B5 (D9): the per-tool option memory for this capture window, keyed by tool and
-// holding only the fields that tool owns. B4 (D7) persists it into
-// screenshot.annotationStyles; until then it lives as long as the window does and
-// every lookup falls back to the D9 defaults, so untouched tools render unchanged.
-let storedToolOptions = {}
+// B2-B5 (D9) + B4 (D7): the remembered style per tool, keyed by tool and holding only
+// the fields that tool owns. B4 persists it into screenshot.annotationStyles; every
+// lookup goes through resolveToolStyle, so a hand-edited store or a partially written
+// block still degrades to the shipped defaults.
+let toolStyles = {}
 // B7 (D11): the pen being continued. The original is lifted out of the layer list for
 // the duration of the gesture, so an interrupted one has to be put back.
 let continuedPen = null
@@ -207,11 +210,11 @@ function closeCaptureWindow() {
 function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
 function normalizeRect(a, b) { return { x: Math.min(a.x,b.x), y: Math.min(a.y,b.y), w: Math.abs(b.x-a.x), h: Math.abs(b.y-a.y) } }
 function insideSelection(point) { return selection && point.x >= selection.x && point.x <= selection.x + selection.w && point.y >= selection.y && point.y <= selection.y + selection.h }
-// A4 (D4) + B2-B5 (D9): new annotations read the committed global colour/width plus
-// the active tool's own options - never the toolbar mirror, which the echo repaints
-// for a selected item without hijacking what the next stroke will look like.
+// A4 (D4) + B2-B5 (D9) + B4 (D7): new annotations read the current tool's remembered
+// style - never the toolbar mirror, which the echo repaints for a selected item
+// without hijacking what the next stroke will look like.
 function annotationStyle() {
-  return Object.assign({ color: annotationColor, width: annotationWidth }, resolveToolOptions(currentTool, storedToolOptions[currentTool]))
+  return resolveToolStyle(currentTool, toolStyles[currentTool])
 }
 function imageDisplayBounds() {
   const bounds=initData?.imageBounds
@@ -536,11 +539,11 @@ function optionRowTool() {
 }
 
 // The style the row displays: the selected item's own options when it owns the row
-// (A4 echo), otherwise the current tool's memory.
+// (A4 echo), otherwise the remembered style of that tool.
 function rowToolOptions(tool) {
   const item = selectedAnnotationItem()
   if (item && item.type === tool) return resolveToolOptions(tool, item)
-  return resolveToolOptions(tool, storedToolOptions[tool])
+  return resolveToolOptions(tool, toolStyles[tool])
 }
 
 function syncToolOptionControls() {
@@ -591,7 +594,7 @@ function setAnnotationOption(key, rawValue) {
   if (!fields || !fields.includes(key)) return
   const parse = OPTION_VALUE_PARSERS[key]
   const value = parse ? parse(rawValue) : rawValue
-  storedToolOptions[tool] = Object.assign(resolveToolOptions(tool, storedToolOptions[tool]), { [key]: value })
+  writeToolStyle(tool, { [key]: value }, true)
   const item = selectedAnnotationItem()
   if (item && item.type === tool) commitSelectedStyle({ [key]: value })
   syncToolOptionControls()
@@ -705,26 +708,64 @@ function toggleColorPalette() {
   else closeColorPalette()
 }
 
-// A3 (D4): the global default for the next annotation; when something is selected
-// the same colour lands on it in one discrete undo frame (applyStyle is a no-op
-// when the value is unchanged, so selecting and re-picking costs no frame).
+// B4 (D7): one write path for a remembered style. The value is normalised through
+// resolveToolStyle, so the in-memory map and the persisted block always agree on the
+// shape (and a hand-edited store cannot smuggle a bad value into a new annotation).
+function writeToolStyle(tool, patch, persist) {
+  if (!tool) return
+  toolStyles[tool] = Object.assign(resolveToolStyle(tool, toolStyles[tool]), patch)
+  if (persist) persistToolStyles()
+}
+
+// B4 (D7): always submit the WHOLE canonical map (all eight tools). settings:update
+// deep-merges, so a field-by-field write could leave another tool's block stale; one
+// atomic object is what makes "always merge with the newest store" safe.
+function annotationStylesPayload() {
+  return resolveToolStyles(toolStyles)
+}
+
+function persistToolStyles() {
+  window.captureAPI.saveAnnotationStyles(annotationStylesPayload()).catch(() => {})
+}
+
+// B4 (D7) + A4 (D4): the tool whose style the toolbar edits - the selected element's
+// own tool when there is one, otherwise the active tool. This is also the echo's
+// source of truth, which is why deselecting restores a tool style and not a global.
+function toolbarStyleTool() {
+  const item = selectedAnnotationItem()
+  if (item && TOOL_STYLE_TOOLS.includes(item.type)) return item.type
+  return TOOL_STYLE_TOOLS.includes(currentTool) ? currentTool : ''
+}
+
+function currentToolStyle() {
+  return resolveToolStyle(currentTool, toolStyles[currentTool])
+}
+
+// A3 (D4) + B4: the colour lands on the row tool's remembered style; when something is
+// selected it also lands on that item in one discrete undo frame (applyStyle is a
+// no-op for an unchanged value, so selecting and re-picking costs no frame). The
+// legacy scalar key is still written so an older build keeps its last choice.
 function setAnnotationColor(color, persist = false) {
-  annotationColor = normalizeAnnotationColor(color)
-  applyToolbarColor(annotationColor)
-  commitSelectedStyle({ color: annotationColor })
+  const resolved = normalizeAnnotationColor(color)
+  annotationColor = resolved
+  writeToolStyle(toolbarStyleTool(), { color: resolved }, persist)
+  applyToolbarColor(resolved)
+  commitSelectedStyle({ color: resolved })
   if (!persist) return
-  window.captureAPI.saveAnnotationColor(annotationColor).catch(() => {})
+  window.captureAPI.saveAnnotationColor(resolved).catch(() => {})
 }
 
 // Persist only user clicks; restoring the stored value on init must not write back.
 function setAnnotationWidth(width, persist = false) {
-  annotationWidth = resolveAnnotationWidth(width)
-  applyToolbarWidth(annotationWidth)
+  const resolved = resolveAnnotationWidth(width)
+  annotationWidth = resolved
+  writeToolStyle(toolbarStyleTool(), { width: resolved }, persist)
+  applyToolbarWidth(resolved)
   // P0-5 PR4：线宽不再只服务"下一次新建"—— 有选中项时改的是**该选中项**（生成新副本 →
   // 替换数组项 → 一帧快照）；没有选中项时是 no-op，新建仍照旧读 annotationStyle()。
-  commitSelectedStyle({ width: annotationWidth })
+  commitSelectedStyle({ width: resolved })
   if (!persist) return
-  window.captureAPI.saveAnnotationWidth(annotationWidth).catch(() => {})
+  window.captureAPI.saveAnnotationWidth(resolved).catch(() => {})
 }
 
 // A2: a wheel burst must not write the store once per notch, so persistence trails.
@@ -733,6 +774,7 @@ function scheduleAnnotationWidthPersist() {
   widthPersistTimer = setTimeout(() => {
     widthPersistTimer = 0
     window.captureAPI.saveAnnotationWidth(annotationWidth).catch(() => {})
+    persistToolStyles()
   }, WIDTH_PERSIST_DELAY)
 }
 
@@ -760,8 +802,11 @@ function selectedAnnotationItem() {
 // create an undo frame. With nothing selected the committed defaults come back.
 function syncToolbarStyleFromSelection() {
   const item = selectedAnnotationItem()
-  applyToolbarColor(item ? normalizeAnnotationColor(item.color) : annotationColor)
-  applyToolbarWidth(item ? resolveAnnotationWidth(item.width) : annotationWidth)
+  // B4 (D4): with nothing selected the toolbar shows the active tool's remembered
+  // style (which the migration seeded from the legacy colour/width keys).
+  const fallback = currentToolStyle()
+  applyToolbarColor(item ? normalizeAnnotationColor(item.color) : fallback.color)
+  applyToolbarWidth(item ? resolveAnnotationWidth(item.width) : fallback.width)
   // B2: the second row belongs to whichever tool can offer options right now, so a
   // selection change is also a row change.
   syncToolOptionsRow()
@@ -1232,6 +1277,23 @@ function syncWatermarkPanel() {
 function finishSelection() {
   render()
   if(selection&&initData?.autoAction&&!autoActionStarted){autoActionStarted=true;setTimeout(()=>performAction(initData.autoAction),80)}
+}
+
+// B4 (D7): load the per-tool styles for this capture. A store without the structured
+// key is the migration path: every tool is seeded from the legacy scalars, once, and
+// nothing is written back until the user edits a style.
+function applyAnnotationStyles(settings) {
+  const stored = settings?.screenshot?.annotationStyles
+  const hasStructured = !!stored && typeof stored === 'object' && !Array.isArray(stored)
+  toolStyles = hasStructured ? Object.assign({}, stored) : {}
+  const legacyColor = normalizeAnnotationColor(settings?.screenshot?.annotationColor)
+  const legacyWidth = resolveAnnotationWidth(settings?.screenshot?.annotationWidth)
+  annotationColor = legacyColor
+  annotationWidth = legacyWidth
+  if (!hasStructured) {
+    TOOL_STYLE_TOOLS.forEach((tool) => { toolStyles[tool] = { color: legacyColor, width: legacyWidth } })
+  }
+  syncToolbarStyleFromSelection()
 }
 
 function applySmartCandidates(candidates) {
@@ -1714,8 +1776,9 @@ window.captureAPI.onInit((data)=>{
   resetSerialNumber(data)
   if(data.settings?.screenshot?.shutterSound!==false)playShutterSound()
   applyWatermarkSettings(data.settings?.screenshot?.watermark)
-  setAnnotationWidth(data.settings?.screenshot?.annotationWidth)
-  setAnnotationColor(data.settings?.screenshot?.annotationColor)
+  // B4: replaces the T1 setAnnotationWidth/setAnnotationColor init calls - both now
+  // write the current tool's remembered block, which is meaningless before it is read.
+  applyAnnotationStyles(data.settings)
   if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}
   // P0-2（S9b）：光标位图在这里预解码（每次 init 都重置，避免沿用上一张的光标）。
   // exportSelectionCanvas 是同步函数，贴图时只认"已解码"的光标，不能在里面等。

@@ -85,6 +85,31 @@ test('accepts the annotation colour patch and only enforces its type', () => {
   assert.throws(() => assertSettingsPatch({ screenshot: { annotationColor: null } }, DEFAULT_SETTINGS), /类型无效/)
 })
 
+test('accepts the per-tool style block and rejects unlisted tools or fields (B4/D7)', () => {
+  // 模板递归就是白名单：annotationStyles 的每个工具块与字段都必须在 DEFAULT_SETTINGS 里登记，
+  // 否则 settings:update 会直接拒绝 —— 这是"主进程只校验类型、白名单在渲染端"的例外：
+  // 结构（有哪些键）在主进程，取值（2/4/8、预设 id）在 capture/annotation-style.js。
+  const defaults = DEFAULT_SETTINGS.screenshot.annotationStyles
+  assert.deepEqual(Object.keys(defaults).sort(), ['arrow', 'ellipse', 'highlight', 'line', 'pen', 'rect', 'serial', 'text'])
+  assert.deepEqual(defaults.highlight, { color: '#ffcc00', width: 4, alpha: 'medium' })
+  assert.equal(defaults.rect.fill, 'none')
+
+  const patch = { screenshot: { annotationStyles: { rect: { fill: 'solid', dash: 'dashed', radius: 8 } } } }
+  assert.equal(assertSettingsPatch(patch, DEFAULT_SETTINGS).screenshot.annotationStyles.rect.fill, 'solid')
+  // 部分补丁同样合法（settings:update 是深合并）。
+  assert.equal(
+    assertSettingsPatch({ screenshot: { annotationStyles: { pen: { width: 8 } } } }, DEFAULT_SETTINGS).screenshot.annotationStyles.pen.width,
+    8
+  )
+  // 未登记的工具 / 字段 / 错误类型一律拒绝。
+  assert.throws(() => assertSettingsPatch({ screenshot: { annotationStyles: { blur: { width: 4 } } } }, DEFAULT_SETTINGS), /不支持的设置项/)
+  assert.throws(() => assertSettingsPatch({ screenshot: { annotationStyles: { pen: { fill: 'solid' } } } }, DEFAULT_SETTINGS), /不支持的设置项/)
+  assert.throws(() => assertSettingsPatch({ screenshot: { annotationStyles: { pen: { width: '8' } } } }, DEFAULT_SETTINGS), /类型无效/)
+  assert.throws(() => assertSettingsPatch({ screenshot: { annotationStyles: { rect: { fill: 3 } } } }, DEFAULT_SETTINGS), /类型无效/)
+  assert.throws(() => assertSettingsPatch({ screenshot: { annotationStyles: { rect: { radius: Infinity } } } }, DEFAULT_SETTINGS), /有限数字/)
+  assert.throws(() => assertSettingsPatch({ screenshot: { annotationStyles: { rect: false } } }, DEFAULT_SETTINGS), /必须是对象/)
+})
+
 test('accepts follow-up conversation patches and rejects broken shapes', () => {
   const patch = { selectionToolbar: { conversation: { enabled: false } } }
   assert.equal(assertSettingsPatch(patch, template), patch)

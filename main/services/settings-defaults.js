@@ -43,6 +43,21 @@ const DEFAULT_SETTINGS = {
     // value stays unwhitelisted on the main side - only its type is checked - and
     // capture/annotation-style.js normalises the #rrggbb shape on read.
     annotationColor: '#ff3b30',
+    // B4 (D7): one remembered style per drawing tool. This block IS the validation
+    // template (settings-validation recurses through it), so every field the capture
+    // window may write has to be enumerated here - an unlisted field is rejected.
+    // Value ranges (2/4/8, the dash/fill/alpha preset ids) are normalised by
+    // capture/annotation-style.js on read, exactly like annotationWidth.
+    annotationStyles: {
+      rect: { color: '#ff3b30', width: 4, fill: 'none', dash: 'solid', radius: 0 },
+      ellipse: { color: '#ff3b30', width: 4, fill: 'none', dash: 'solid' },
+      arrow: { color: '#ff3b30', width: 4, dash: 'solid', startHead: false, endHead: true },
+      line: { color: '#ff3b30', width: 4, dash: 'solid' },
+      pen: { color: '#ff3b30', width: 4 },
+      highlight: { color: '#ffcc00', width: 4, alpha: 'medium' },
+      text: { color: '#ff3b30', width: 4, bold: false },
+      serial: { color: '#ff3b30', width: 4 }
+    },
     captureCursor: false,
     shutterSound: true,
     nameTemplate: '',

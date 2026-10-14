@@ -35,5 +35,8 @@ contextBridge.exposeInMainWorld('captureAPI', {
   saveAnnotationWidth: (annotationWidth) => ipcRenderer.invoke('settings:update', { screenshot: { annotationWidth } }),
   // A3: the palette colour rides the same settings:update pipe as the width, so
   // no new IPC channel (and no ipc-security.js entry) is needed.
-  saveAnnotationColor: (annotationColor) => ipcRenderer.invoke('settings:update', { screenshot: { annotationColor } })
+  saveAnnotationColor: (annotationColor) => ipcRenderer.invoke('settings:update', { screenshot: { annotationColor } }),
+  // B4: the whole per-tool style map is submitted at once (settings:update deep-merges,
+  // so a partial write could otherwise leave one tool's block stale).
+  saveAnnotationStyles: (annotationStyles) => ipcRenderer.invoke('settings:update', { screenshot: { annotationStyles } })
 })

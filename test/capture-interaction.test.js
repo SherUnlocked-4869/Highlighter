@@ -116,7 +116,7 @@ test('A2: a wheel burst trails its persistence and the step only runs when it is
   )
   assert.match(script, /function cancelAnnotationWidthPersist\(\) \{[\s\S]{0,160}?clearTimeout\(widthPersistTimer\)/)
   // 新一次截图不得让上一张的写盘计时器落进这一次（与样式计时器同口径）。
-  assert.match(script, /function resetAnnotationState\(\) \{[\s\S]{0,320}?cancelAnnotationWidthPersist\(\)/)
+  assert.match(script, /function resetAnnotationState\(\) \{[\s\S]{0,460}?cancelAnnotationWidthPersist\(\)/)
   // 支持宽度的工具集合 = 除 select / blur / watermark 之外的全部。
   assert.match(script, /const WIDTH_TOOLS = new Set\(\['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial'\]\)/)
   assert.match(
@@ -129,11 +129,13 @@ test('A2: a wheel burst trails its persistence and the step only runs when it is
 
 test('A4 (D4): the selection echo is UI-only and never reaches the undo/commit paths', () => {
   assert.match(echoSource, /const item = selectedAnnotationItem\(\)/)
-  assert.match(echoSource, /applyToolbarColor\(item \? normalizeAnnotationColor\(item\.color\) : annotationColor\)/)
-  assert.match(echoSource, /applyToolbarWidth\(item \? resolveAnnotationWidth\(item\.width\) : annotationWidth\)/)
-  // 回显不压帧、不改全局默认色（否则选中就成了隐式样式编辑）。
+  // B4（D7）：无选中项时回到**当前工具的记忆样式**，而不是某个全局值。
+  assert.match(echoSource, /const fallback = currentToolStyle\(\)/)
+  assert.match(echoSource, /applyToolbarColor\(item \? normalizeAnnotationColor\(item\.color\) : fallback\.color\)/)
+  assert.match(echoSource, /applyToolbarWidth\(item \? resolveAnnotationWidth\(item\.width\) : fallback\.width\)/)
+  // 回显不压帧、不改任何记忆样式（否则选中就成了隐式样式编辑）。
   assert.doesNotMatch(echoSource, /commitSelectedStyle|stageSelectedStyle|snapshotAnnotations/)
-  assert.doesNotMatch(echoSource, /annotationColor =/)
+  assert.doesNotMatch(echoSource, /annotationColor =|toolStyles\[/)
   // setSelectedAnnotation 只做"置变量 + 回显 + render"，不得混入编辑路径。
   assert.match(setSelectedSource, /selectedAnnotation = item \|\| null[\s\S]{0,120}?syncToolbarStyleFromSelection\(\)[\s\S]{0,60}?render\(\)/)
   assert.doesNotMatch(setSelectedSource, /commitSelectedStyle|stageSelectedStyle/)

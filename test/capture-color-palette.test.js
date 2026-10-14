@@ -80,10 +80,10 @@ test('A3: capture.js paints, toggles and persists the colour from one place', ()
     script,
     /function applyToolbarColor\(color\) \{[\s\S]{0,260}?colorInput\.value = color[\s\S]{0,160}?colorPreview\.style\.background = color[\s\S]{0,320}?colorPalette\.querySelectorAll\('\[data-annotation-color\]'\)[\s\S]{0,200}?button\.setAttribute\('aria-pressed', String\(active\)\)/
   )
-  // 点击色板 = 设全局默认色 + 持久化 + 双目标写入（选中项走离散帧）。
+  // 点击色板 = 设该工具的默认色 + 持久化 + 双目标写入（选中项走离散帧）。
   assert.match(
     script,
-    /function setAnnotationColor\(color, persist = false\) \{[\s\S]{0,120}?annotationColor = normalizeAnnotationColor\(color\)[\s\S]{0,120}?applyToolbarColor\(annotationColor\)[\s\S]{0,120}?commitSelectedStyle\(\{ color: annotationColor \}\)[\s\S]{0,200}?window\.captureAPI\.saveAnnotationColor\(annotationColor\)\.catch\(\(\) => \{\}\)/
+    /function setAnnotationColor\(color, persist = false\) \{[\s\S]{0,120}?const resolved = normalizeAnnotationColor\(color\)[\s\S]{0,120}?annotationColor = resolved[\s\S]{0,120}?writeToolStyle\(toolbarStyleTool\(\), \{ color: resolved \}, persist\)[\s\S]{0,120}?applyToolbarColor\(resolved\)[\s\S]{0,120}?commitSelectedStyle\(\{ color: resolved \}\)[\s\S]{0,200}?window\.captureAPI\.saveAnnotationColor\(resolved\)\.catch\(\(\) => \{\}\)/
   )
   assert.match(script, /colorButton\.addEventListener\('click',\(event\)=>\{event\.stopPropagation\(\);toggleColorPalette\(\)\}\)/)
   assert.match(
@@ -95,8 +95,8 @@ test('A3: capture.js paints, toggles and persists the colour from one place', ()
   assert.match(script, /else if\(!colorPalette\.classList\.contains\('hidden'\)\)closeColorPalette\(\)/)
   assert.match(script, /function openColorPalette\(\) \{[\s\S]{0,160}?colorButton\.setAttribute\('aria-expanded', 'true'\)/)
   assert.match(script, /function closeColorPalette\(\) \{[\s\S]{0,160}?colorButton\.setAttribute\('aria-expanded', 'false'\)/)
-  // onInit 回填持久化色（与线宽同位）。
-  assert.match(script, /setAnnotationColor\(data\.settings\?\.screenshot\?\.annotationColor\)/)
+  // onInit 回填（B4 之后由 applyAnnotationStyles 整块加载，含旧键迁移）。
+  assert.match(script, /applyAnnotationStyles\(data\.settings\)/)
 })
 
 test('A3: recents are session-only, capped at three, and never whitelist the custom colour', () => {

@@ -901,13 +901,10 @@ test('PR4: a style change lands on the selected item with a fresh copy, never on
   assert.match(styleSource, /function commitStyle\(\) \{[\s\S]{0,200}?if \(!styleDirty\) return false[\s\S]{0,120}?snapshotAnnotations\(\)/)
   assert.match(script, /const STYLE_COMMIT_DELAY = 300/)
 
-  // 落点 1：线宽 —— setAnnotationWidth() 改选中项，同时新建路径 annotationStyle() 读全局默认。
-  assert.match(script, /function setAnnotationWidth\(width, persist = false\) \{[\s\S]{0,460}?commitSelectedStyle\(\{ width: annotationWidth \}\)/)
-  // B2-B5 之后 annotationStyle() 还带上当前工具的选项（resolveToolOptions 只产出该工具自己的字段）。
-  assert.match(
-    script,
-    /function annotationStyle\(\) \{\s*return Object\.assign\(\{ color: annotationColor, width: annotationWidth \}, resolveToolOptions\(currentTool, storedToolOptions\[currentTool\]\)\)/
-  )
+  // 落点 1：线宽 —— setAnnotationWidth() 改选中项（B4 之后同时写当前工具的记忆块）。
+  assert.match(script, /function setAnnotationWidth\(width, persist = false\) \{[\s\S]{0,460}?commitSelectedStyle\(\{ width: resolved \}\)/)
+  // B2-B5/B4 之后 annotationStyle() 读当前工具的记忆样式（resolveToolStyle 只产出该工具自己的字段）。
+  assert.match(script, /function annotationStyle\(\) \{\s*return resolveToolStyle\(currentTool, toolStyles\[currentTool\]\)\s*\}/)
   // 落点 2：颜色 —— 预览照旧，同时作用于选中项；change 立刻把这一帧收口。
   // A3 之后 input 还同步全局默认色（回显只写 UI 镜像，不经过这两个 listener）。
   assert.match(script, /colorInput\.addEventListener\('input',\(\)=>\{colorPreview\.style\.background=colorInput\.value;annotationColor=normalizeAnnotationColor\(colorInput\.value\);stageSelectedStyle\(\{color:annotationColor\}\)\}\)/)
