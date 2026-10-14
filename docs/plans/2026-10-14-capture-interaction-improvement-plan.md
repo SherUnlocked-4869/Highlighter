@@ -5,6 +5,7 @@
 - 状态：**T1（A1–A5）与 T2 除 B6 外（B1/B2/B3/B4/B5/B7）已实施，见 §10 实施结果；B6 未开工**
 - 上游依据：`docs/plans/2026-10-14-snow-apps-toolbar-interaction-gap-analysis.md`（六支柱差距分析与三梯队建议，本文不重复论证，只做落地设计）
 - 关联文档：`docs/plans/2026-10-10-snow-apps-feature-gap-analysis.md`（全仓对标）、`docs/plans/2026-10-10-p0-gap-closure-plan.md` §20（P0-5 实施记录与 §20.3 遗留短板）
+- **新会话入口**：`docs/plans/2026-10-14-capture-interaction-handoff.md`（状态/代码地图/契约钉死点/环境坑/开场文案）
 - 范围：`capture/**` 交互层（右键快选、滚轮调宽、色板与颜色持久化、选中回显、第二行工具栏、多选）、`main/services/settings-defaults.js`、`main/services/settings-normalize.js`、`preload-capture.js`、`shared/locales/capture.js`、`test/**`
 - 明确不在范围：自研渲染引擎 / FFI 架构（旧文档已定论不跟）、工具栏手动拖动（分析 §6 已列"不建议跟"）
 
