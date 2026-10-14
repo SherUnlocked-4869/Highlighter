@@ -40,6 +40,9 @@
   const fontSize = typeof style.textFontSize === 'function' ? style.textFontSize : () => 20
   const serialRadius = typeof style.serialRadius === 'function' ? style.serialRadius : () => 12
   const markerWidth = typeof style.highlightWidth === 'function' ? style.highlightWidth : () => 16
+  // B2 (D9): a filled rect/ellipse is clickable through its interior, so the hit test
+  // needs the same fill resolution the renderer uses.
+  const resolveFill = typeof style.resolveFill === 'function' ? style.resolveFill : () => 'none'
 
   function numberOr(value, fallback) {
     const parsed = Number(value)
@@ -180,6 +183,17 @@
     return Math.abs(Math.sqrt(value) - 1) * Math.min(rx, ry) <= tolerance
   }
 
+  // B2 (D9): the ellipse interior (a filled ellipse must be draggable from inside).
+  // Degenerate axes are "not inside" - nearEllipseRing already handles those.
+  function insideEllipse(px, py, box) {
+    const rx = box.w / 2
+    const ry = box.h / 2
+    if (rx <= 0 || ry <= 0) return false
+    const cx = box.x + rx
+    const cy = box.y + ry
+    return ((px - cx) / rx) ** 2 + ((py - cy) / ry) ** 2 <= 1
+  }
+
   function nearPolyline(px, py, points, tolerance) {
     if (!points.length) return false
     if (points.length === 1) return Math.hypot(px - points[0].x, py - points[0].y) <= tolerance
@@ -207,8 +221,15 @@
     const limit = Number.isFinite(forced) ? Math.max(0, forced) : hitTolerance(item)
     const box = annotationBounds(item)
     if (!box) return false
-    if (item.type === 'rect') return nearBoxRing(px, py, box, limit)
-    if (item.type === 'ellipse') return nearEllipseRing(px, py, box, limit)
+    // B2 (D9): an outline-only shape keeps the ring test (its interior stays free for
+    // dragging the region); a filled one upgrades to ring ∪ interior, exactly like
+    // text/serial/watermark already behave.
+    if (item.type === 'rect') {
+      return nearBoxRing(px, py, box, limit) || (resolveFill(item.fill) !== 'none' && insideBox(px, py, box, 0))
+    }
+    if (item.type === 'ellipse') {
+      return nearEllipseRing(px, py, box, limit) || (resolveFill(item.fill) !== 'none' && insideEllipse(px, py, box))
+    }
     // highlight 也是"粗线段"（markerWidth 决定粗细）：若落进 insideBox，斜向高亮的整个 bbox
     // 都会可点 —— 既吞掉其下元素的选中，又因 pointerdown 的"元素命中 > 拖选区"挡住拖选区，
     // 正是 rect/ellipse 用环带命中刻意规避的失效模式。

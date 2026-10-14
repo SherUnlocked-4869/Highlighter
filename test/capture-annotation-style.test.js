@@ -7,9 +7,22 @@ const {
   DEFAULT_WIDTH,
   PRESET_COLORS,
   DEFAULT_COLOR,
+  FILL_PRESETS,
+  DASH_PRESETS,
+  RADIUS_PRESETS,
+  ALPHA_PRESETS,
+  FILL_ALPHA,
+  TOOL_OPTION_FIELDS,
+  DEFAULT_TOOL_OPTIONS,
   resolveWidth,
   normalizeAnnotationColor,
   nextWidthPreset,
+  resolveFill,
+  resolveDash,
+  resolveRadius,
+  resolveAlpha,
+  dashPattern,
+  resolveToolOptions,
   scaleFactor,
   textFontSize,
   serialRadius,
@@ -98,4 +111,100 @@ test('nextWidthPreset steps one level and clamps at both ends instead of wrappin
   assert.equal(nextWidthPreset(4, 0), 4)
   assert.equal(nextWidthPreset(4, NaN), 4)
   assert.equal(nextWidthPreset(4, undefined), 4)
+})
+
+// ---------- B2/B3/B5：第二行选项的预设与归一（方案 D9） ----------
+
+test('the option preset tables are exactly the levels the second row offers', () => {
+  assert.deepEqual(FILL_PRESETS, ['none', 'translucent', 'solid'])
+  assert.deepEqual(DASH_PRESETS, ['solid', 'dashed', 'dotted'])
+  assert.deepEqual(RADIUS_PRESETS, [0, 4, 8])
+  // 高亮浓度：medium(.28) 是改造前写死的值（drawAnnotation 的 globalAlpha）。
+  assert.deepEqual(ALPHA_PRESETS, { light: 0.18, medium: 0.28, strong: 0.45 })
+  assert.equal(FILL_ALPHA, 0.28)
+  // 每个工具只声明自己的字段：cross-tool 字段污染会写进标注对象并进快照。
+  assert.deepEqual(TOOL_OPTION_FIELDS.rect, ['fill', 'dash', 'radius'])
+  assert.deepEqual(TOOL_OPTION_FIELDS.ellipse, ['fill', 'dash'])
+  assert.deepEqual(TOOL_OPTION_FIELDS.line, ['dash'])
+  assert.deepEqual(TOOL_OPTION_FIELDS.arrow, ['dash', 'startHead', 'endHead'])
+  assert.deepEqual(TOOL_OPTION_FIELDS.highlight, ['alpha'])
+  assert.deepEqual(TOOL_OPTION_FIELDS.text, ['bold'])
+  for (const tool of ['pen', 'blur', 'serial', 'watermark', 'select']) {
+    assert.equal(TOOL_OPTION_FIELDS[tool], undefined, `${tool} owns no options`)
+  }
+})
+
+test('option resolvers keep whitelisted levels and fall back to the shipped rendering', () => {
+  assert.equal(resolveFill('solid'), 'solid')
+  assert.equal(resolveFill('translucent'), 'translucent')
+  assert.equal(resolveFill('none'), 'none')
+  for (const invalid of ['', 'filled', null, undefined, 1, {}]) assert.equal(resolveFill(invalid), 'none')
+
+  assert.equal(resolveDash('dashed'), 'dashed')
+  assert.equal(resolveDash('dotted'), 'dotted')
+  for (const invalid of ['dash', '', null, undefined, 3]) assert.equal(resolveDash(invalid), 'solid')
+
+  assert.equal(resolveRadius(4), 4)
+  assert.equal(resolveRadius('8'), 8)
+  for (const invalid of [1, 5, 12, -4, NaN, Infinity, '', null]) assert.equal(resolveRadius(invalid), 0)
+
+  // resolveAlpha 直接给渲染层数值：缺省/非法一律回到 medium。
+  assert.equal(resolveAlpha('light'), 0.18)
+  assert.equal(resolveAlpha('strong'), 0.45)
+  for (const invalid of ['medium-ish', '', null, undefined, 0.28, {}]) assert.equal(resolveAlpha(invalid), 0.28)
+})
+
+test('dashPattern scales with the stroke width and leaves "solid" to the canvas default', () => {
+  // solid 返回空数组：调用方完全不碰 setLineDash，旧标注的渲染逐字节不变。
+  assert.deepEqual(dashPattern('solid', 4), [])
+  assert.deepEqual(dashPattern(undefined, 4), [])
+  assert.deepEqual(dashPattern('weird', 4), [])
+  assert.deepEqual(dashPattern('dashed', 4), [12, 8])
+  assert.deepEqual(dashPattern('dotted', 4), [4, 6])
+  // 导出坐标下 width 已经是缩放后的值（4 * 1.5），图案跟着缩放。
+  assert.deepEqual(dashPattern('dashed', 6), [18, 12])
+  // 极小/非法宽度兜底为 1，绝不产出 0 长度的虚线段。
+  assert.deepEqual(dashPattern('dotted', 0), [1, 1.5])
+  assert.deepEqual(dashPattern('dotted', -3), [1, 1.5])
+  assert.deepEqual(dashPattern('dashed', undefined), [3, 2])
+})
+
+test('resolveToolOptions normalises one tool at a time and never invents a field', () => {
+  assert.deepEqual(resolveToolOptions('rect', {}), { fill: 'none', dash: 'solid', radius: 0 })
+  assert.deepEqual(resolveToolOptions('ellipse', undefined), { fill: 'none', dash: 'solid' })
+  assert.deepEqual(resolveToolOptions('line', null), { dash: 'solid' })
+  assert.deepEqual(resolveToolOptions('arrow', {}), { dash: 'solid', startHead: false, endHead: true })
+  assert.deepEqual(resolveToolOptions('highlight', {}), { alpha: 'medium' })
+  assert.deepEqual(resolveToolOptions('text', {}), { bold: false })
+  // 无选项的工具恒为空对象（不进标注对象）。
+  assert.deepEqual(resolveToolOptions('pen', { fill: 'solid' }), {})
+  assert.deepEqual(resolveToolOptions('select', {}), {})
+  // 选中项本身就是合法来源（A4 回显复用同一个函数）。
+  assert.deepEqual(
+    resolveToolOptions('rect', { type: 'rect', x: 1, y: 2, color: '#000', width: 4, fill: 'solid', dash: 'dashed', radius: 8 }),
+    { fill: 'solid', dash: 'dashed', radius: 8 }
+  )
+  // 手改 store / 旧标注的脏值一律降级到 D9 默认，绝不透传到渲染层。
+  assert.deepEqual(resolveToolOptions('rect', { fill: 'filled', dash: 'wavy', radius: 5 }), { fill: 'none', dash: 'solid', radius: 0 })
+  assert.deepEqual(resolveToolOptions('rect', 'junk'), { fill: 'none', dash: 'solid', radius: 0 })
+  assert.deepEqual(resolveToolOptions('text', { bold: 'yes' }), { bold: false })
+  assert.deepEqual(resolveToolOptions('text', { bold: true }), { bold: true })
+  assert.deepEqual(resolveToolOptions('arrow', { startHead: true, endHead: false }), { dash: 'solid', startHead: true, endHead: false })
+  assert.deepEqual(resolveToolOptions('highlight', { alpha: 'strong' }), { alpha: 'strong' })
+  // 返回新对象，绝不修改入参（与几何模块的"绝不就地改"契约一致）。
+  const source = { fill: 'solid' }
+  const resolved = resolveToolOptions('rect', source)
+  resolved.fill = 'none'
+  assert.deepEqual(source, { fill: 'solid' })
+})
+
+test('DEFAULT_TOOL_OPTIONS matches the pre-B2 rendering for every tool', () => {
+  assert.deepEqual(DEFAULT_TOOL_OPTIONS.rect, { fill: 'none', dash: 'solid', radius: 0 })
+  assert.deepEqual(DEFAULT_TOOL_OPTIONS.ellipse, { fill: 'none', dash: 'solid' })
+  assert.deepEqual(DEFAULT_TOOL_OPTIONS.arrow, { dash: 'solid', startHead: false, endHead: true })
+  // 每个有选项的工具都必须有默认值，否则 resolveToolOptions 会产出 undefined。
+  for (const tool of Object.keys(TOOL_OPTION_FIELDS)) {
+    assert.ok(DEFAULT_TOOL_OPTIONS[tool], `${tool} needs a default option set`)
+    assert.deepEqual(Object.keys(DEFAULT_TOOL_OPTIONS[tool]).sort(), [...TOOL_OPTION_FIELDS[tool]].sort(), `${tool} defaults must cover its fields`)
+  }
 })

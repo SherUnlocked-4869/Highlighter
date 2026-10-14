@@ -67,8 +67,8 @@ html, body {
   position: fixed;
   z-index: 5;
   display: flex;
-  align-items: center;
-  gap: 3px;
+  flex-direction: column;
+  gap: 4px;
   max-width: calc(100vw - 20px);
   padding: 6px;
   border: 1px solid rgba(255, 255, 255, .12);
@@ -77,6 +77,18 @@ html, body {
   box-shadow: 0 10px 35px rgba(0, 0, 0, .38);
   backdrop-filter: blur(18px);
 }
+/* B1 (D5): row 1 keeps every control that shipped before; #toolOptions is the
+   second row and carries only the new per-tool options. */
+.toolbar-row { display: flex; align-items: center; gap: 3px; }
+/* B1 (D6): once the strip flips above the region, the options row has to sit
+   between the region and the main row - i.e. the row order is reversed. */
+.toolbar.above { flex-direction: column-reverse; }
+/* B2/B3/B5: the option groups are plain text buttons, one latched level per group.
+   The separator is drawn by CSS from the visible siblings only, so a hidden group
+   cannot leave a stray divider behind. */
+.option-group { display: flex; gap: 2px; }
+.option-group button { min-width: 28px; padding: 0 6px; font: 12px/1 inherit; }
+.option-group:not(.hidden) ~ .option-group:not(.hidden) { margin-left: 3px; padding-left: 8px; border-left: 1px solid rgba(255, 255, 255, .14); }
 .tool-group { display: flex; gap: 2px; }
 .toolbar button {
   height: 30px;

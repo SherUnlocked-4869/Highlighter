@@ -3,6 +3,7 @@ const backgroundCtx = backgroundCanvas.getContext('2d')
 const canvas = document.getElementById('stage')
 const ctx = canvas.getContext('2d')
 const toolbar = document.getElementById('toolbar')
+const toolOptions = document.getElementById('toolOptions')
 const elementBar = document.getElementById('elementBar')
 // P0-5 PR4：层级 ↑↓ 两个按钮（#elementBar 内，加在删除与取消选中之间 —— 工具栏不塞按钮）。
 const elementFront = document.getElementById('elementFront')
@@ -48,9 +49,17 @@ const {
 const {
   PRESET_COLORS,
   DEFAULT_COLOR: DEFAULT_ANNOTATION_COLOR,
+  FILL_ALPHA,
+  TOOL_OPTION_FIELDS,
   resolveWidth: resolveAnnotationWidth,
   normalizeAnnotationColor,
   nextWidthPreset,
+  resolveFill,
+  resolveDash,
+  resolveRadius,
+  resolveAlpha,
+  dashPattern,
+  resolveToolOptions,
   textFontSize,
   serialRadius,
   highlightWidth
@@ -134,6 +143,11 @@ let widthPersistTimer = 0
 const WIDTH_PERSIST_DELAY = 500
 // A2: the tools whose stroke width is meaningful (all but select/blur/watermark).
 const WIDTH_TOOLS = new Set(['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial'])
+// B2-B5 (D9): the per-tool option memory for this capture window, keyed by tool and
+// holding only the fields that tool owns. B4 (D7) persists it into
+// screenshot.annotationStyles; until then it lives as long as the window does and
+// every lookup falls back to the D9 defaults, so untouched tools render unchanged.
+let storedToolOptions = {}
 let dpr = window.devicePixelRatio || 1
 let autoActionStarted = false
 let renderReadySent = false
@@ -188,10 +202,12 @@ function closeCaptureWindow() {
 function pointFromEvent(event) { return { x: event.clientX, y: event.clientY } }
 function normalizeRect(a, b) { return { x: Math.min(a.x,b.x), y: Math.min(a.y,b.y), w: Math.abs(b.x-a.x), h: Math.abs(b.y-a.y) } }
 function insideSelection(point) { return selection && point.x >= selection.x && point.x <= selection.x + selection.w && point.y >= selection.y && point.y <= selection.y + selection.h }
-// A4 (D4): new annotations read the committed global defaults, never the toolbar
-// mirror - the echo (syncToolbarStyleFromSelection) repaints colorInput for a
-// selected item without hijacking what the next stroke will look like.
-function annotationStyle() { return { color: annotationColor, width: annotationWidth } }
+// A4 (D4) + B2-B5 (D9): new annotations read the committed global colour/width plus
+// the active tool's own options - never the toolbar mirror, which the echo repaints
+// for a selected item without hijacking what the next stroke will look like.
+function annotationStyle() {
+  return Object.assign({ color: annotationColor, width: annotationWidth }, resolveToolOptions(currentTool, storedToolOptions[currentTool]))
+}
 function imageDisplayBounds() {
   const bounds=initData?.imageBounds
   return bounds
@@ -230,7 +246,7 @@ function resizeCanvas() {
   canvas.height=Math.round(innerHeight*dpr)
   canvas.style.width=`${innerWidth}px`
   canvas.style.height=`${innerHeight}px`
-  toolbarSize = null
+  invalidateToolbarSize()
   elementBarSize = null
   if (image && initData && ['fullscreen', 'image', 'canvas'].includes(initData.mode)) {
     selection = imageDisplayBounds()
@@ -277,11 +293,15 @@ function maybeRunAutoAction() {
   }
 }
 
-function drawArrow(context, x1, y1, x2, y2, width) {
+// B3 (D9): the shaft is stroked first, then each requested head is filled at its own
+// endpoint. The default (startHead false, endHead true) draws exactly what shipped:
+// one head at the tip, after the stroke.
+function drawArrow(context, x1, y1, x2, y2, width, startHead = false, endHead = true) {
   const angle = Math.atan2(y2-y1,x2-x1)
   const head = Math.max(10,width*3)
   context.beginPath(); context.moveTo(x1,y1); context.lineTo(x2,y2); context.stroke()
-  context.beginPath(); context.moveTo(x2,y2); context.lineTo(x2-head*Math.cos(angle-Math.PI/6),y2-head*Math.sin(angle-Math.PI/6)); context.lineTo(x2-head*Math.cos(angle+Math.PI/6),y2-head*Math.sin(angle+Math.PI/6)); context.closePath(); context.fill()
+  if (startHead) { context.beginPath(); context.moveTo(x1,y1); context.lineTo(x1-head*Math.cos(angle-Math.PI/6),y1-head*Math.sin(angle-Math.PI/6)); context.lineTo(x1-head*Math.cos(angle+Math.PI/6),y1-head*Math.sin(angle+Math.PI/6)); context.closePath(); context.fill() }
+  if (endHead) { context.beginPath(); context.moveTo(x2,y2); context.lineTo(x2-head*Math.cos(angle-Math.PI/6),y2-head*Math.sin(angle-Math.PI/6)); context.lineTo(x2-head*Math.cos(angle+Math.PI/6),y2-head*Math.sin(angle+Math.PI/6)); context.closePath(); context.fill() }
 }
 
 function formatWatermarkDateSuffix(date = new Date()) {
@@ -328,13 +348,37 @@ function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offs
   const baseWidth = item.width
   const width = baseWidth * widthScale
   context.save(); context.strokeStyle = item.color; context.fillStyle = item.color; context.lineWidth = width; context.lineCap = 'round'; context.lineJoin = 'round'
-  if (item.type === 'rect') context.strokeRect(x,y,(item.x2-item.x)*scaleX,(item.y2-item.y)*scaleY)
-  if (item.type === 'ellipse') { context.beginPath(); context.ellipse((x+x2)/2,(y+y2)/2,Math.abs(x2-x)/2,Math.abs(y2-y)/2,0,0,Math.PI*2); context.stroke() }
+  // B2/B3 (D9): dashed and dotted strokes. A solid (or missing) dash leaves the canvas
+  // default untouched, so pre-B2 annotations keep rendering byte-identically.
+  const dash = dashPattern(item.dash, width)
+  if (dash.length) context.setLineDash(dash)
+  if (item.type === 'rect') {
+    // Normalised box: a reversed drag draws the same shape, rounded or not.
+    const left = Math.min(x, x + (item.x2-item.x)*scaleX), top = Math.min(y, y + (item.y2-item.y)*scaleY)
+    const w = Math.abs((item.x2-item.x)*scaleX), h = Math.abs((item.y2-item.y)*scaleY)
+    const radius = resolveRadius(item.radius) * widthScale
+    const fill = resolveFill(item.fill)
+    if (radius > 0) {
+      const corner = Math.min(radius, w/2, h/2)
+      context.beginPath(); context.roundRect(left, top, w, h, corner)
+      if (fill !== 'none') { context.save(); if (fill === 'translucent') context.globalAlpha = FILL_ALPHA; context.fill(); context.restore() }
+      context.stroke()
+    } else {
+      if (fill !== 'none') { context.save(); if (fill === 'translucent') context.globalAlpha = FILL_ALPHA; context.fillRect(left, top, w, h); context.restore() }
+      context.strokeRect(left, top, w, h)
+    }
+  }
+  if (item.type === 'ellipse') {
+    const fill = resolveFill(item.fill)
+    context.beginPath(); context.ellipse((x+x2)/2,(y+y2)/2,Math.abs(x2-x)/2,Math.abs(y2-y)/2,0,0,Math.PI*2)
+    if (fill !== 'none') { context.save(); if (fill === 'translucent') context.globalAlpha = FILL_ALPHA; context.fill(); context.restore() }
+    context.stroke()
+  }
   if (item.type === 'line') { context.beginPath(); context.moveTo(x,y); context.lineTo(x2,y2); context.stroke() }
-  if (item.type === 'arrow') drawArrow(context,x,y,x2,y2,width)
+  if (item.type === 'arrow') drawArrow(context,x,y,x2,y2,width,item.startHead === true,item.endHead !== false)
   if (item.type === 'pen') { context.beginPath(); item.points.forEach((point,index) => { const px=(point.x-offsetX)*scaleX, py=(point.y-offsetY)*scaleY; index?context.lineTo(px,py):context.moveTo(px,py) }); context.stroke() }
-  if (item.type === 'highlight') { context.globalAlpha=.28; context.lineWidth=highlightWidth(baseWidth,widthScale); context.beginPath(); context.moveTo(x,y); context.lineTo(x2,y2); context.stroke() }
-  if (item.type === 'text') { context.font = `${textFontSize(baseWidth,widthScale)}px -apple-system,"Microsoft YaHei",sans-serif`; context.textBaseline='top'; context.fillText(item.text,x,y) }
+  if (item.type === 'highlight') { context.globalAlpha=resolveAlpha(item.alpha); context.lineWidth=highlightWidth(baseWidth,widthScale); context.beginPath(); context.moveTo(x,y); context.lineTo(x2,y2); context.stroke() }
+  if (item.type === 'text') { context.font = `${item.bold === true ? 'bold ' : ''}${textFontSize(baseWidth,widthScale)}px -apple-system,"Microsoft YaHei",sans-serif`; context.textBaseline='top'; context.fillText(item.text,x,y) }
   if (item.type === 'serial') { const radius=serialRadius(baseWidth,widthScale); context.beginPath(); context.arc(x,y,radius,0,Math.PI*2); context.fill(); context.fillStyle='#fff'; context.font=`bold ${radius}px sans-serif`; context.textAlign='center'; context.textBaseline='middle'; context.fillText(String(item.number),x,y+1) }
   if (item.type === 'watermark') drawWatermark(context,item,scaleX,scaleY,offsetX,offsetY)
   if (item.type === 'blur' && sourceImage) {
@@ -459,6 +503,96 @@ function updateElementBar() {
   elementBar.style.top = `${Math.round(top)}px`
 }
 
+// ---------- B1 (D5/D6): the two-row strip ----------
+
+// B2-B5 add one group per option role; each group declares the tools it belongs to
+// (`data-option-tools="rect ellipse"`), so the second row is a projection of the
+// current tool and needs no per-tool wiring of its own.
+const TOOL_OPTION_GROUPS = Array.from(document.querySelectorAll('[data-option-tools]'))
+
+// D6/R3: the toolbar's own size is cached, so anything that can change the
+// container's height must drop the cache - otherwise the next placement reuses a
+// stale height and the second row can push the whole strip off screen.
+function invalidateToolbarSize() {
+  toolbarSize = null
+}
+
+function toolOptionGroups(tool) {
+  if (!tool) return []
+  return TOOL_OPTION_GROUPS.filter((group) => group.dataset.optionTools.split(' ').includes(tool))
+}
+
+// B2: the row follows the selection when the selected element owns options (so a
+// rect stays editable while the select tool is active) and otherwise the active tool.
+function optionRowTool() {
+  const item = selectedAnnotationItem()
+  if (item && TOOL_OPTION_FIELDS[item.type]) return item.type
+  return TOOL_OPTION_FIELDS[currentTool] ? currentTool : ''
+}
+
+// The style the row displays: the selected item's own options when it owns the row
+// (A4 echo), otherwise the current tool's memory.
+function rowToolOptions(tool) {
+  const item = selectedAnnotationItem()
+  if (item && item.type === tool) return resolveToolOptions(tool, item)
+  return resolveToolOptions(tool, storedToolOptions[tool])
+}
+
+function syncToolOptionControls() {
+  const tool = optionRowTool()
+  const options = tool ? rowToolOptions(tool) : {}
+  toolOptions.querySelectorAll('[data-annotation-option]').forEach((button) => {
+    const key = button.dataset.annotationOption
+    if (!Object.hasOwn(options, key)) return
+    const active = String(options[key]) === button.dataset.annotationOptionValue
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+  })
+}
+
+// Show only the groups the row's tool owns; the row itself hides when none is
+// visible. A visibility or family change is one of the size-invalidating events
+// (the other is a window resize).
+function syncToolOptionsRow() {
+  const tool = optionRowTool()
+  const visible = toolOptionGroups(tool)
+  let changed = false
+  TOOL_OPTION_GROUPS.forEach((group) => {
+    const show = visible.includes(group)
+    if (group.classList.contains('hidden') === show) {
+      group.classList.toggle('hidden', !show)
+      changed = true
+    }
+  })
+  const rowVisible = visible.length > 0
+  if (toolOptions.classList.contains('hidden') === rowVisible) {
+    toolOptions.classList.toggle('hidden', !rowVisible)
+    changed = true
+  }
+  syncToolOptionControls()
+  if (!changed) return
+  invalidateToolbarSize()
+  render()
+}
+
+// B2/B3/B5: an option click writes the row tool's memory and, when the selected item
+// belongs to that tool, the item itself in one discrete undo frame. Typed parsing is
+// what lets one delegated listener serve numbers, booleans and strings.
+const OPTION_VALUE_PARSERS = { radius: Number, startHead: (value) => value === 'true', endHead: (value) => value === 'true', bold: (value) => value === 'true' }
+
+function setAnnotationOption(key, rawValue) {
+  const tool = optionRowTool()
+  const fields = TOOL_OPTION_FIELDS[tool]
+  if (!fields || !fields.includes(key)) return
+  const parse = OPTION_VALUE_PARSERS[key]
+  const value = parse ? parse(rawValue) : rawValue
+  storedToolOptions[tool] = Object.assign(resolveToolOptions(tool, storedToolOptions[tool]), { [key]: value })
+  const item = selectedAnnotationItem()
+  if (item && item.type === tool) commitSelectedStyle({ [key]: value })
+  syncToolOptionControls()
+  render()
+}
+
 function updateFloatingUi() {
   updateElementBar()
   if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); return }
@@ -469,9 +603,12 @@ function updateFloatingUi() {
   if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); return }
   toolbar.classList.remove('hidden')
   const rect=toolbarSize||(toolbarSize=toolbar.getBoundingClientRect()); let left=selection.x+selection.w-rect.width; let top=selection.y+selection.h+10
-  if (top+rect.height>innerHeight-6) top=selection.y-rect.height-10
+  // D6: the flip is decided here, and the container learns about it through the
+  // .above class so the options row stays closest to the region either way.
+  let above=false
+  if (top+rect.height>innerHeight-6) { top=selection.y-rect.height-10; above=true }
   left=Math.max(6,Math.min(left,innerWidth-rect.width-6)); top=Math.max(6,top)
-  toolbar.style.left=`${left}px`; toolbar.style.top=`${top}px`
+  toolbar.style.left=`${left}px`; toolbar.style.top=`${top}px`; toolbar.classList.toggle('above',above)
   syncWatermarkPanel()
 }
 
@@ -495,6 +632,8 @@ function setTool(tool) {
   canvas.style.cursor=tool==='select'?(selection?'move':'crosshair'):'crosshair'
   if(tool==='watermark'){activeAnnotation=buildWatermarkAnnotation();render()}
   else if(activeAnnotation?.type==='watermark'){activeAnnotation=null;render()}
+  // B1: the second row follows the tool (and, once B2-B5 land, also the selection).
+  syncToolOptionsRow()
   syncWatermarkPanel()
 }
 
@@ -618,6 +757,9 @@ function syncToolbarStyleFromSelection() {
   const item = selectedAnnotationItem()
   applyToolbarColor(item ? normalizeAnnotationColor(item.color) : annotationColor)
   applyToolbarWidth(item ? resolveAnnotationWidth(item.width) : annotationWidth)
+  // B2: the second row belongs to whichever tool can offer options right now, so a
+  // selection change is also a row change.
+  syncToolOptionsRow()
 }
 
 function syncSelectedAnnotation() {
@@ -1446,6 +1588,9 @@ function showResult(type,result) {
 
 document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListener('click',()=>setTool(button.dataset.tool)))
 lineWidthGroup.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-width]');if(button)setAnnotationWidth(button.dataset.annotationWidth,true)})
+// B2/B3/B5: one delegated listener for every option group (the key/value pair lives in
+// data attributes, so a new group needs no new wiring).
+toolOptions.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-option]');if(button)setAnnotationOption(button.dataset.annotationOption,button.dataset.annotationOptionValue)})
 // A3 (D3): the swatch button opens the popover; a preset click is a discrete
 // two-target edit (global default + selected item) and anything outside closes it.
 colorButton.addEventListener('click',(event)=>{event.stopPropagation();toggleColorPalette()})

@@ -137,6 +137,48 @@ test('findAnnotationAt follows the ellipse ring, not the disc, and survives a ze
   assert.equal(hitTestAnnotation(degenerate, { x: 90, y: 90 }), false)
 })
 
+// ---------- B2：实心形状的内部命中（方案 D9） ----------
+
+test('B2: a filled rect is hit through its interior, an outline-only one is not', () => {
+  const outline = { type: 'rect', x: 0, y: 0, x2: 100, y2: 60, color: '#f00', width: 4 }
+  const translucent = { ...outline, fill: 'translucent' }
+  const solid = { ...outline, fill: 'solid' }
+  // 改造前的语义（环带命中）必须逐字保持：空心矩形的中心仍然落空，否则它会吃掉拖选区。
+  assert.equal(hitTestAnnotation(outline, { x: 50, y: 30 }), false)
+  assert.equal(hitTestAnnotation(outline, { x: 0, y: 30 }), true)
+  assert.equal(hitTestAnnotation(outline, { x: 2, y: 30 }), true)
+  for (const filled of [translucent, solid]) {
+    assert.equal(hitTestAnnotation(filled, { x: 50, y: 30 }), true, 'the interior belongs to a filled shape')
+    assert.equal(hitTestAnnotation(filled, { x: 0, y: 30 }), true, 'the ring still hits')
+    assert.equal(hitTestAnnotation(filled, { x: 140, y: 30 }), false, 'outside stays outside')
+  }
+  // 未知/脏 fill 一律按空心处理（resolveFill 的兜底 == D9 缺省）。
+  assert.equal(hitTestAnnotation({ ...outline, fill: 'filled' }, { x: 50, y: 30 }), false)
+  assert.equal(hitTestAnnotation({ ...outline, fill: null }, { x: 50, y: 30 }), false)
+})
+
+test('B2: a filled ellipse is hit through its interior, an outline-only one is not', () => {
+  const outline = { type: 'ellipse', x: 0, y: 0, x2: 100, y2: 100, color: '#f00', width: 4 }
+  const solid = { ...outline, fill: 'solid' }
+  assert.equal(hitTestAnnotation(outline, { x: 50, y: 50 }), false)
+  assert.equal(hitTestAnnotation(solid, { x: 50, y: 50 }), true)
+  // 椭圆内部判定按半轴归一：角落（圆心到角点的归一距离 > 1）仍然不算命中。
+  assert.equal(hitTestAnnotation(solid, { x: 4, y: 4 }), false)
+  assert.equal(hitTestAnnotation(solid, { x: 100, y: 50 }), true, 'the ring still hits')
+  // 退化椭圆（零半轴）不会被内部判定命中，也不会抛错。
+  const degenerate = { type: 'ellipse', x: 10, y: 10, x2: 10, y2: 10, color: '#f00', width: 4, fill: 'solid' }
+  assert.doesNotThrow(() => hitTestAnnotation(degenerate, { x: 10, y: 10 }))
+  assert.equal(hitTestAnnotation(degenerate, { x: 10, y: 10 }), true)
+  assert.equal(hitTestAnnotation(degenerate, { x: 60, y: 60 }), false)
+})
+
+test('B2: fill-aware hit testing still returns the topmost annotation (array end wins)', () => {
+  const filled = { type: 'rect', x: 0, y: 0, x2: 100, y2: 100, color: '#f00', width: 4, fill: 'solid' }
+  const text = { type: 'text', x: 30, y: 30, text: 'hi', color: '#0f0', width: 4 }
+  assert.equal(findAnnotationAt([filled, text], { x: 50, y: 50 }), text)
+  assert.equal(findAnnotationAt([text, filled], { x: 50, y: 50 }), filled)
+})
+
 test('findAnnotationAt uses the real segment for line and arrow, not the bbox corners', () => {
   const line = { type: 'line', x: 100, y: 100, x2: 0, y2: 0, color: '#f00', width: 4 }
   assert.deepEqual(annotationBounds(line), { x: 0, y: 0, w: 100, h: 100 })
@@ -861,7 +903,11 @@ test('PR4: a style change lands on the selected item with a fresh copy, never on
 
   // 落点 1：线宽 —— setAnnotationWidth() 改选中项，同时新建路径 annotationStyle() 读全局默认。
   assert.match(script, /function setAnnotationWidth\(width, persist = false\) \{[\s\S]{0,460}?commitSelectedStyle\(\{ width: annotationWidth \}\)/)
-  assert.match(script, /function annotationStyle\(\) \{ return \{ color: annotationColor, width: annotationWidth \} \}/)
+  // B2-B5 之后 annotationStyle() 还带上当前工具的选项（resolveToolOptions 只产出该工具自己的字段）。
+  assert.match(
+    script,
+    /function annotationStyle\(\) \{\s*return Object\.assign\(\{ color: annotationColor, width: annotationWidth \}, resolveToolOptions\(currentTool, storedToolOptions\[currentTool\]\)\)/
+  )
   // 落点 2：颜色 —— 预览照旧，同时作用于选中项；change 立刻把这一帧收口。
   // A3 之后 input 还同步全局默认色（回显只写 UI 镜像，不经过这两个 listener）。
   assert.match(script, /colorInput\.addEventListener\('input',\(\)=>\{colorPreview\.style\.background=colorInput\.value;annotationColor=normalizeAnnotationColor\(colorInput\.value\);stageSelectedStyle\(\{color:annotationColor\}\)\}\)/)

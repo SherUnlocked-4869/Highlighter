@@ -32,6 +32,40 @@
   const DEFAULT_COLOR = '#ff3b30'
   const HEX_COLOR = /^#[0-9a-f]{6}$/i
 
+  // B2/B3/B5 (D9): per-tool style options. Every table is a preset list plus a
+  // resolver whose fallback is the pre-B2 rendering, so an annotation carrying none
+  // of these fields still draws exactly what it drew before.
+  const FILL_PRESETS = Object.freeze(['none', 'translucent', 'solid'])
+  const DASH_PRESETS = Object.freeze(['solid', 'dashed', 'dotted'])
+  const RADIUS_PRESETS = Object.freeze([0, 4, 8])
+  // B5: highlight opacity levels; medium (.28) is the value that shipped.
+  const ALPHA_PRESETS = Object.freeze({ light: 0.18, medium: 0.28, strong: 0.45 })
+  const ALPHA_IDS = Object.freeze(Object.keys(ALPHA_PRESETS))
+  // A translucent fill is drawn at the same opacity the highlight already used.
+  const FILL_ALPHA = 0.28
+
+  // Which option fields each tool owns. Reading and writing per tool is what keeps
+  // unrelated fields off an item (a pen must never carry a fill, a rect no alpha).
+  const TOOL_OPTION_FIELDS = Object.freeze({
+    rect: Object.freeze(['fill', 'dash', 'radius']),
+    ellipse: Object.freeze(['fill', 'dash']),
+    line: Object.freeze(['dash']),
+    arrow: Object.freeze(['dash', 'startHead', 'endHead']),
+    highlight: Object.freeze(['alpha']),
+    text: Object.freeze(['bold'])
+  })
+
+  // D9 defaults: outline-only shapes, solid strokes, square corners, one arrow head
+  // at the tip, medium highlight, no bold text.
+  const DEFAULT_TOOL_OPTIONS = Object.freeze({
+    rect: Object.freeze({ fill: 'none', dash: 'solid', radius: 0 }),
+    ellipse: Object.freeze({ fill: 'none', dash: 'solid' }),
+    line: Object.freeze({ dash: 'solid' }),
+    arrow: Object.freeze({ dash: 'solid', startHead: false, endHead: true }),
+    highlight: Object.freeze({ alpha: 'medium' }),
+    text: Object.freeze({ bold: false })
+  })
+
   // Drawings are scaled on export, so the width reaching these helpers may be a
   // scaled float (e.g. 4 * 1.5). Only the unscaled base width is matched against
   // the whitelist; the scale is applied afterwards.
@@ -64,6 +98,62 @@
     return Number.isFinite(scale) && scale > 0 ? scale : 1
   }
 
+  // ---------- B2/B3/B5: option presets ----------
+
+  function resolveFill(value) {
+    return FILL_PRESETS.includes(value) ? value : 'none'
+  }
+
+  function resolveDash(value) {
+    return DASH_PRESETS.includes(value) ? value : 'solid'
+  }
+
+  function resolveRadius(value) {
+    const radius = Number(value)
+    return RADIUS_PRESETS.includes(radius) ? radius : 0
+  }
+
+  // Returns the numeric opacity so the renderer assigns it directly; an unknown or
+  // missing level keeps the shipped .28.
+  function resolveAlpha(value) {
+    return Object.hasOwn(ALPHA_PRESETS, value) ? ALPHA_PRESETS[value] : ALPHA_PRESETS.medium
+  }
+
+  // The dash pattern in device pixels for one stroke of `width` (already scaled by
+  // the export factor by the caller). 'solid' returns [] so the caller leaves the
+  // canvas default alone and pre-B2 output stays byte-identical.
+  function dashPattern(dash, width) {
+    const resolved = resolveDash(dash)
+    if (resolved === 'solid') return []
+    const stroke = Math.max(1, Number(width) || 1)
+    return resolved === 'dashed' ? [stroke * 3, stroke * 2] : [stroke, stroke * 1.5]
+  }
+
+  // Field-level normalisation of one tool's stored options. `stored` may be a stored
+  // settings block or an annotation itself (A4 reads a selected item through it), and
+  // anything unknown degrades to the D9 default instead of reaching the renderer.
+  function resolveToolOptions(tool, stored) {
+    const fields = TOOL_OPTION_FIELDS[tool]
+    if (!fields) return {}
+    const base = DEFAULT_TOOL_OPTIONS[tool] || {}
+    const source = stored && typeof stored === 'object' ? stored : {}
+    const options = {}
+    for (const field of fields) {
+      const value = source[field] === undefined ? base[field] : source[field]
+      switch (field) {
+        case 'fill': options.fill = resolveFill(value); break
+        case 'dash': options.dash = resolveDash(value); break
+        case 'radius': options.radius = resolveRadius(value); break
+        case 'alpha': options.alpha = ALPHA_IDS.includes(value) ? value : 'medium'; break
+        case 'bold': options.bold = value === true; break
+        case 'startHead': options.startHead = value === true; break
+        case 'endHead': options.endHead = value !== false; break
+        default: break
+      }
+    }
+    return options
+  }
+
   function textFontSize(width, scale) {
     return Math.max(14, resolveWidth(width) * scaleFactor(scale) * 5)
   }
@@ -82,9 +172,22 @@
     DEFAULT_WIDTH,
     PRESET_COLORS,
     DEFAULT_COLOR,
+    FILL_PRESETS,
+    DASH_PRESETS,
+    RADIUS_PRESETS,
+    ALPHA_PRESETS,
+    FILL_ALPHA,
+    TOOL_OPTION_FIELDS,
+    DEFAULT_TOOL_OPTIONS,
     resolveWidth,
     normalizeAnnotationColor,
     nextWidthPreset,
+    resolveFill,
+    resolveDash,
+    resolveRadius,
+    resolveAlpha,
+    dashPattern,
+    resolveToolOptions,
     scaleFactor,
     textFontSize,
     serialRadius,
