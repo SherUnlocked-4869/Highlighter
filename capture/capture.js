@@ -72,6 +72,7 @@ const {
 // （test/capture-annotation-geometry.test.js 里 resizeAnnotationToBox → … → MAX_PEN_POINTS 的链条）。
 const {
   movedBeyondThreshold,
+  penContinuationTarget,
   MOVE_THRESHOLD,
   reorderAnnotation,
   resizeAnnotationToBox,
@@ -148,6 +149,10 @@ const WIDTH_TOOLS = new Set(['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlig
 // screenshot.annotationStyles; until then it lives as long as the window does and
 // every lookup falls back to the D9 defaults, so untouched tools render unchanged.
 let storedToolOptions = {}
+// B7 (D11): the pen being continued. The original is lifted out of the layer list for
+// the duration of the gesture, so an interrupted one has to be put back.
+let continuedPen = null
+const PEN_CONTINUATION_DISTANCE = 12
 let dpr = window.devicePixelRatio || 1
 let autoActionStarted = false
 let renderReadySent = false
@@ -900,6 +905,42 @@ function annotationWasMoved(item, origin) {
   return item.x !== origin.x || item.y !== origin.y
 }
 
+// ---------- B7 (D11): pen endpoint continuation ----------
+
+// A press within PEN_CONTINUATION_DISTANCE of either endpoint of the topmost stroke
+// continues that stroke instead of starting a new one. The original leaves the layer
+// list for the duration of the gesture (the growing stroke is the active annotation),
+// keeps its z-index slot, and is superseded by commitAnnotation on pointerup - so the
+// whole continuation is still exactly one undo frame.
+function beginPenContinuation(item, point, event) {
+  const index = annotations.indexOf(item)
+  if (index < 0) return false
+  const points = item.points.map((entry) => ({ x: entry.x, y: entry.y }))
+  const first = points[0]
+  const last = points[points.length - 1]
+  const fromStart = Math.hypot(point.x-first.x, point.y-first.y) <= Math.hypot(point.x-last.x, point.y-last.y)
+  if (fromStart) points.reverse()
+  annotations.splice(index, 1)
+  continuedPen = { item, index }
+  activeAnnotation = Object.assign({}, item, {
+    x: point.x, y: point.y, x2: point.x, y2: point.y,
+    points: points.concat([{ x: point.x, y: point.y }])
+  })
+  try { canvas.setPointerCapture(event.pointerId) } catch {}
+  render()
+  return true
+}
+
+// pointercancel: the gesture never happened, so the original stroke comes back
+// untouched and no frame is pushed (same rule as cancelMoveAnnotation).
+function restoreContinuedPen() {
+  if (!continuedPen) return
+  const { item, index } = continuedPen
+  continuedPen = null
+  if (annotations.some((entry) => entry.id === item.id)) return
+  annotations.splice(Math.max(0, Math.min(index, annotations.length)), 0, item)
+}
+
 // pointerup：只有真的产生了位移才压帧 —— 0 位移不制造无效 undo 步（方案 §8.4 PR2）。
 // A1: a press that never crossed the threshold stays a plain click - the selection
 // it made survives, but no move frame is pushed.
@@ -1105,6 +1146,8 @@ function resetAnnotationState() {
   selectedAnnotation = null
   pendingMove = null
   resizingAnnotation = null
+  // B7: a continuation that never settled belongs to the previous capture.
+  continuedPen = null
   cancelNudge()
   // PR4：新一次截图不得让上一张的样式计时器落进这一次的历史里。
   cancelStyleCommit()
@@ -1120,6 +1163,8 @@ function commitAnnotation(item) {
   item.id = ++annotationSeq
   annotations.push(item)
   activeAnnotation = null
+  // B7: the gesture ended in a commit, so the continued original is superseded for good.
+  continuedPen = null
   flushCoalescedEdits()
   snapshotAnnotations()
   render()
@@ -1280,6 +1325,11 @@ canvas.addEventListener('pointerdown',(event)=>{
   const style=annotationStyle()
   if (currentTool==='text') { const text=prompt(t('capture.input.text')); if(text)commitAnnotation({type:'text',x:point.x,y:point.y,text,...style}); return }
   if (currentTool==='serial') { commitAnnotation({type:'serial',x:point.x,y:point.y,number:serialNumber++,...style}); return }
+  // B7 (D11): a pen press on either endpoint of the topmost stroke continues it.
+  if (currentTool==='pen') {
+    const target=penContinuationTarget(annotations,point,PEN_CONTINUATION_DISTANCE)
+    if(target&&beginPenContinuation(target,point,event))return
+  }
   activeAnnotation={type:currentTool,x:point.x,y:point.y,x2:point.x,y2:point.y,...style}
   if (currentTool==='pen') activeAnnotation.points=[point]
 })
@@ -1332,6 +1382,8 @@ canvas.addEventListener('pointercancel',()=>{
   resizing=null
   cancelMoveAnnotation()
   cancelResizeAnnotation()
+  // B7: an interrupted continuation puts the original stroke back (no frame).
+  restoreContinuedPen()
   activeAnnotation=currentTool==='watermark'?buildWatermarkAnnotation():null
   render()
 })

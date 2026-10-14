@@ -129,6 +129,30 @@
     return endpointBox(item)
   }
 
+  // B7 (D11): the stroke a pen press should continue. Only the topmost pen is
+  // considered (the array end is the top layer, §8.1) and either of its endpoints can
+  // be grabbed. `maxDistance` is the caller's tolerance; a thick stroke widens its own
+  // target so the grab area matches what the user sees (MAX(width, maxDistance)).
+  // Returns the annotation itself (never a copy): the caller decides how to extend it.
+  function penContinuationTarget(annotations, point, maxDistance) {
+    if (!Array.isArray(annotations) || !point) return null
+    const px = Number(point.x)
+    const py = Number(point.y)
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return null
+    for (let index = annotations.length - 1; index >= 0; index -= 1) {
+      const item = annotations[index]
+      if (item?.type !== 'pen') continue
+      const points = penPoints(item)
+      if (!points.length) return null
+      const limit = Math.max(numberOr(maxDistance, 0), numberOr(item.width, 0))
+      const first = points[0]
+      const last = points[points.length - 1]
+      const reach = Math.min(Math.hypot(px - first.x, py - first.y), Math.hypot(px - last.x, py - last.y))
+      return reach <= limit ? item : null
+    }
+    return null
+  }
+
   // A1 (D2): did the pointer travel past the click/drag threshold? Non-finite
   // input is "not moved" so a broken event can never start an element move.
   function movedBeyondThreshold(start, point, threshold) {
@@ -486,6 +510,7 @@
     hitTestAnnotation,
     findAnnotationAt,
     movedBeyondThreshold,
+    penContinuationTarget,
     translateAnnotation,
     resizeAnnotationToBox,
     reorderAnnotation,
