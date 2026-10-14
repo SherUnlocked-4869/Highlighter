@@ -38,6 +38,43 @@ test('the strip flips above the region only when that is where it fits', () => {
   assert.equal(placement.above, true)
 })
 
+test('when the strip cannot right-align it centres on the region instead of the screen edge', () => {
+  // 真机缺陷：951px 宽的工具栏 + 200px 的小选区时，右对齐装不下就夹到 left=6 —— 工具组
+  // 离选区最远 ~600px。新规则：装不下时居中到选区中心（仍夹在视图内）。
+  const strip = { width: 951, height: 78 }
+  const viewport = { width: 1493, height: 933 }
+  const placeWith = (x1, x2) => {
+    const anchor = { x: x1, y: 500, w: x2 - x1, h: 200 }
+    return resolveFloatingPlacement({ anchor, size: strip, viewport, gap: 10, padding: 6 })
+  }
+  // 中间的小选区：中心对齐（不再贴到屏幕最左）。
+  assert.equal(placeWith(600, 800).left, Math.round(700 - 951 / 2))
+  assert.equal(placeWith(400, 600).left, Math.round(500 - 951 / 2))
+  assert.ok(placeWith(600, 800).left > 6, 'not thrown to the viewport edge')
+  // 选区贴屏左时居中会算出负值 → 仍然只能贴左（物理上无解，不是回归）。
+  assert.equal(placeWith(100, 300).left, 6)
+  // 红线：右对齐装得下时逐字不变（宽选区与右半屏选区都不受影响）。
+  assert.equal(placeWith(900, 1100).left, 1100 - 951)
+  assert.equal(placeWith(100, 1300).left, 1300 - 951)
+  // 越到右边界之外时仍然夹到最右可用位（此时居中与右对齐同解）。
+  assert.equal(placeWith(1400, 1490).left, 1493 - 951 - 6)
+  // 性质断言：居中后的工具栏中心不会比"夹到最左"离选区中心更远。
+  for (const [x1, x2] of [[100, 300], [400, 600], [600, 800], [700, 900]]) {
+    const placement = placeWith(x1, x2)
+    const center = (x1 + x2) / 2
+    const centredDistance = Math.abs(placement.left + strip.width / 2 - center)
+    const clampedDistance = Math.abs(6 + strip.width / 2 - center)
+    assert.ok(centredDistance <= clampedDistance, `region ${x1}..${x2} must not be farther than the old clamp`)
+  }
+})
+
+test('the placement source keeps both halves of the horizontal rule', () => {
+  const utils = fs.readFileSync(path.join(root, 'capture/selection-utils.js'), 'utf8')
+  // 右对齐优先、越界改居中 —— 两个分支都必须留在源码里（删掉任一都会踩回真机缺陷）。
+  assert.match(utils, /const rightAligned = anchorX \+ anchorW - width/)
+  assert.match(utils, /const left = rightAligned >= padding && rightAligned <= maximumLeft\s*\?\s*rightAligned\s*:\s*clamp\(anchorX \+ anchorW \/ 2 - width \/ 2, padding, maximumLeft\)/)
+})
+
 test('a region with no room on either side docks the strip inside its bottom, never at the top', () => {
   // 真机现场：钉图重新标注时窗口只比图像大一点点 —— 下方放不下、上方也放不下。
   // 旧实现 Math.max(6, ...) 把工具栏夹到视图顶部（= 落在图像内侧顶部）且右侧越界被裁。

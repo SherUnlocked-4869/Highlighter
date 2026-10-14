@@ -34,6 +34,12 @@
   //   1. below the anchor, right-aligned with it (the shipped placement);
   //   2. above the anchor when below does not fit and above does;
   //   3. docked inside, hugging the anchor's bottom edge (never the viewport top).
+  // Horizontally the surface right-aligns with the anchor, and when that is impossible
+  // (the surface is much wider than the anchor's right offset - a 200px region under a
+  // ~950px strip) it CENTRES on the anchor instead of clamping to the viewport's left
+  // edge: clamping threw the strip to the far side of the screen, leaving the drawing
+  // tools up to ~600px from the region the user is working on. Centring never changes
+  // the right-overflow case, where it clamps to the same right edge.
   // Always returns integer CSS pixels; `above` tells the caller to reverse the row
   // order so the options row stays closest to the anchor.
   function resolveFloatingPlacement(options = {}) {
@@ -54,7 +60,10 @@
     // then flush with the visible area instead of being pushed off it.
     const maximumLeft = Math.max(padding, viewportWidth - width - padding)
     const maximumTop = Math.max(padding, viewportHeight - height - padding)
-    const left = clamp(anchorX + anchorW - width, padding, maximumLeft)
+    const rightAligned = anchorX + anchorW - width
+    const left = rightAligned >= padding && rightAligned <= maximumLeft
+      ? rightAligned
+      : clamp(anchorX + anchorW / 2 - width / 2, padding, maximumLeft)
     const bottom = anchorY + anchorH
     let above = false
     let top = bottom + gap
