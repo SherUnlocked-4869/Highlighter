@@ -14,9 +14,11 @@ const pinScript = fs.readFileSync(path.join(root, 'pin', 'pin.js'), 'utf8')
 
 test('OCR result actions stay outside the selected image area', () => {
   const captureDomain = fs.readFileSync(path.join(root, 'main/domains/capture/index.js'), 'utf8')
-  assert.match(pinDomainSource, /const actionSpace = 62[\s\S]*Math\.max\(420, imageWidth\)/)
-  assert.match(pinDomainSource, /const isRecognitionEditor = autoAction === 'ocr' \|\| autoAction === 'translate'/)
-  assert.match(pinDomainSource, /windowBounds: editorBounds,[\s\S]*imageBounds: editorImageBounds,[\s\S]*transparent: isRecognitionEditor/)
+  // 重新标注编辑器（普通右键重新标注与 OCR/翻译两条路径）统一在图像下方预留工具栏条带：
+  // 条带高度必须容得下两行工具栏（78px）+ 10px 间距 + 6px 边距。
+  assert.match(pinDomainSource, /const actionSpace = 100[\s\S]*Math\.max\(420, imageWidth\)/)
+  assert.match(pinDomainSource, /const editorImageBounds = \{[\s\S]{0,160}?y: 0,/)
+  assert.match(pinDomainSource, /windowBounds: editorBounds,[\s\S]*imageBounds: editorImageBounds,[\s\S]*transparent: true,/)
   assert.match(captureDomain, /const transparent = mode === 'canvas' \|\| !!options\.transparent[\s\S]*hasShadow: !transparent/)
   assert.match(captureScript, /function imageDisplayBounds\(\)[\s\S]*initData\?\.imageBounds/)
   assert.match(captureScript, /function positionOcrResultBar\(\)[\s\S]*selection\.y\+selection\.h\+10/)

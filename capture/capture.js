@@ -44,7 +44,8 @@ const {
   getResizeHandle,
   getSourcePixelRect,
   resizeSelection,
-  selectionCursor
+  selectionCursor,
+  resolveFloatingPlacement
 } = window.selectionUtils
 const {
   PRESET_COLORS,
@@ -484,26 +485,35 @@ function updateElementBar() {
   elementBack.disabled = index <= 0
   const bounds = annotationBounds(item) || { x: 0, y: 0, w: 0, h: 0 }
   const rect = elementBarSize || (elementBarSize = elementBar.getBoundingClientRect())
-  let left = bounds.x + bounds.w - rect.width
-  let top = bounds.y + bounds.h + 10
-  if (top + rect.height > innerHeight - 6) top = bounds.y - rect.height - 10
-  left = Math.max(6, Math.min(left, innerWidth - rect.width - 6))
-  top = Math.max(6, top)
-  // 与工具栏避让：水印的 bounds 按设计等于选区，而本条的定位公式与工具栏逐字相同、z-index 更高
+  // The element bar shares the strip's placement rule, so the two floating surfaces can
+  // never disagree about where the strip is.
+  const own = resolveFloatingPlacement({
+    anchor: bounds,
+    size: { width: rect.width, height: rect.height },
+    viewport: { width: innerWidth, height: innerHeight },
+    gap: 10,
+    padding: 6
+  })
+  let left = own.left
+  let top = own.top
+  // 与工具栏避让：水印的 bounds 按设计等于选区，而本条的落位与工具栏同源、z-index 更高
   // （6 > 5），于是选中水印时浮动条会整条压在工具栏右端，挡住 保存/导出PDF/复制/取消 四个按钮。
   // 重叠时改放到选区上方外侧；上方也放不下（贴顶）则落到工具栏下方。
   if (!toolbar.classList.contains('hidden') && selection) {
     const toolbarRect = toolbarSize || (toolbarSize = toolbar.getBoundingClientRect())
-    let toolbarLeft = selection.x + selection.w - toolbarRect.width
-    let toolbarTop = selection.y + selection.h + 10
-    if (toolbarTop + toolbarRect.height > innerHeight - 6) toolbarTop = selection.y - toolbarRect.height - 10
-    toolbarLeft = Math.max(6, Math.min(toolbarLeft, innerWidth - toolbarRect.width - 6))
-    toolbarTop = Math.max(6, toolbarTop)
-    const overlaps = left < toolbarLeft + toolbarRect.width && left + rect.width > toolbarLeft &&
-      top < toolbarTop + toolbarRect.height && top + rect.height > toolbarTop
+    // Same function and same inputs as updateFloatingUi: one answer to "where is the strip".
+    const toolbarPlace = resolveFloatingPlacement({
+      anchor: selection,
+      size: { width: toolbarRect.width, height: toolbarRect.height },
+      viewport: { width: innerWidth, height: innerHeight },
+      gap: 10,
+      padding: 6
+    })
+    const overlaps = left < toolbarPlace.left + toolbarRect.width && left + rect.width > toolbarPlace.left &&
+      top < toolbarPlace.top + toolbarRect.height && top + rect.height > toolbarPlace.top
     if (overlaps) {
       let nextTop = bounds.y - rect.height - 10
-      if (nextTop < 6) nextTop = Math.min(innerHeight - rect.height - 6, toolbarTop + toolbarRect.height + 10)
+      if (nextTop < 6) nextTop = Math.min(innerHeight - rect.height - 6, toolbarPlace.top + toolbarRect.height + 10)
       top = Math.max(6, nextTop)
     }
   }
@@ -601,6 +611,20 @@ function setAnnotationOption(key, rawValue) {
   render()
 }
 
+// The strip's position has exactly one source: the pure placement rule in
+// selection-utils.js. Both the region capture and the pin re-annotate editor go
+// through it, and updateElementBar reads it to know what to avoid.
+function toolbarPlacement() {
+  const rect = toolbarSize || (toolbarSize = toolbar.getBoundingClientRect())
+  return resolveFloatingPlacement({
+    anchor: selection,
+    size: { width: rect.width, height: rect.height },
+    viewport: { width: innerWidth, height: innerHeight },
+    gap: 10,
+    padding: 6
+  })
+}
+
 function updateFloatingUi() {
   updateElementBar()
   if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); return }
@@ -610,13 +634,11 @@ function updateFloatingUi() {
   if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); return }
   if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); return }
   toolbar.classList.remove('hidden')
-  const rect=toolbarSize||(toolbarSize=toolbar.getBoundingClientRect()); let left=selection.x+selection.w-rect.width; let top=selection.y+selection.h+10
-  // D6: the flip is decided here, and the container learns about it through the
-  // .above class so the options row stays closest to the region either way.
-  let above=false
-  if (top+rect.height>innerHeight-6) { top=selection.y-rect.height-10; above=true }
-  left=Math.max(6,Math.min(left,innerWidth-rect.width-6)); top=Math.max(6,top)
-  toolbar.style.left=`${left}px`; toolbar.style.top=`${top}px`; toolbar.classList.toggle('above',above)
+  // D6 + the pin re-annotate fix: below the region when it fits, above it when only that
+  // fits, otherwise docked inside hugging the region's bottom - never clipped, and never
+  // clamped into the top of the region the way the old fallback did.
+  const placement=toolbarPlacement()
+  toolbar.style.left=`${placement.left}px`; toolbar.style.top=`${placement.top}px`; toolbar.classList.toggle('above',placement.above)
   syncWatermarkPanel()
 }
 

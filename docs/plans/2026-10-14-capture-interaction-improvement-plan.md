@@ -450,3 +450,20 @@ annotationStyles: {
 7. **B6 未开工**（多选 + mixed）：计划自己把它标为"风险最大项"，要求对全部单选中路径做 `size===1` 退化改造；其验收（shift 加选、shift 框选、mixed 显示）以交互为主，而本会话无法启动 Electron，无法给出真机或 e2e 证据。建议按计划的缓解措施拆两波（先 shift 加选、后 marquee）并在可运行环境里专项验收。B6 的前置（A1/A4）已满足。
 8. **未纳入本波的两处顺手项**：`updateElementBar` 的 `elementBarSize` 缓存仍只在 resize 失效（B6 的多选计数会改内容，届时需要同样收敛）；`test/capture-performance-contract.test.js` 等既有契约未受影响，未做"顺带重构"。
 
+### 10.5 真机缺陷修复（2026-10-14 晚，用户实测报告）
+
+**现象**：标注完成 → 钉图 → 右键「重新标注」后，工具栏出现在**截图内侧顶部**、右侧被窗口**截断显示不全**，与首次截图的工具栏位置不一致。
+
+**根因（两处叠加，前者为既有缺陷）**：
+
+1. `main/domains/pin/index.js` 的 `startPinReannotation` 只在 `isRecognitionEditor`（OCR/翻译）分支里给图像下方预留 `actionSpace = 62` 的条带；**普通右键重新标注走的是"窗口 = 钉图本身"**，图像外没有任何空间。
+2. 渲染层 `updateFloatingUi` 的落位只有两个候选（区域下方 → 区域上方），都放不下时 `top = Math.max(6, top)` 兜底 —— 于是工具栏被夹到视图 `(6,6)`：纵向落进图像内侧顶部，横向（钉图比工具栏窄时）右侧越界被 `body{overflow:hidden}` 裁掉。B1 的两行工具栏（78px vs 单行 44px）让 62px 的预留条带也不再够用，缺陷因此更容易触发。
+
+**修复**：
+
+1. 落位规则下沉为纯函数 `capture/selection-utils.js: resolveFloatingPlacement`（区域下方 → 上方 → **贴着区域底边停靠在区域内侧**，绝不夹到视图顶部；横向右对齐并夹进视图，超宽时靠 `.toolbar-row { flex-wrap: wrap }` 换行而不是被裁）。`updateFloatingUi` 与 `updateElementBar` 的避让改用同一函数，两条浮层不再各算一套。
+2. `main/domains/pin/index.js` 把"预留条带"提到所有重新标注路径（普通右键与 OCR/翻译共用一段逻辑）：`actionSpace = 100`（两行工具栏 78px + 10px 间距 + 6px 边距）、`toolbarSpace = 900`，窗口按工作区缩放图像并居中，`imageBounds` 指向图像矩形、窗口 `transparent: true`，工具栏因此落在**图像下方**，与首次截图同一相对位置。
+
+**验证**：`test/capture-floating-placement.test.js`（新增，含"无空间时停靠内侧底边而不是视图顶部"的回归用例）+ `capture-ocr-pin-ui` / `capture-tool-options` / `capture-selection-resize` 契约同步。全量 994 用例 / 982 通过 / 12 失败（与基线逐字相同，全部是本机无法启动 Electron 的 runtime 探针）；`npm run check` 全绿（303 文件、`main.js` 1297/1300、i18n 605）。**该修复仍未在真机上复核**（本机无法启动 Electron），需用户实测确认。
+
+

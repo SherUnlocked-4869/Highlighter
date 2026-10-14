@@ -18,6 +18,63 @@
     return Math.max(minimum, Math.min(maximum, value))
   }
 
+  function finiteOr(value, fallback) {
+    const number = Number(value)
+    return Number.isFinite(number) ? number : fallback
+  }
+
+  // Floating surfaces (the tool strip; the element bar asks for the same placement so
+  // it can avoid it) must stay COMPLETELY inside the viewport. The region capture
+  // shows the strip below the region; the pin re-annotate editor is only as big as the
+  // pinned image, and there the old "clamp into the viewport" fallback dropped the
+  // strip at the top INSIDE the image and clipped it on the right.
+  //
+  // Preference order (one rule for every flow, which is what keeps the interaction
+  // consistent between a fresh capture and a re-annotation):
+  //   1. below the anchor, right-aligned with it (the shipped placement);
+  //   2. above the anchor when below does not fit and above does;
+  //   3. docked inside, hugging the anchor's bottom edge (never the viewport top).
+  // Always returns integer CSS pixels; `above` tells the caller to reverse the row
+  // order so the options row stays closest to the anchor.
+  function resolveFloatingPlacement(options = {}) {
+    const anchor = options.anchor || {}
+    const size = options.size || {}
+    const viewport = options.viewport || {}
+    const gap = Math.max(0, finiteOr(options.gap, 10))
+    const padding = Math.max(0, finiteOr(options.padding, 6))
+    const anchorX = finiteOr(anchor.x, 0)
+    const anchorY = finiteOr(anchor.y, 0)
+    const anchorW = Math.max(0, finiteOr(anchor.w, 0))
+    const anchorH = Math.max(0, finiteOr(anchor.h, 0))
+    const width = Math.max(0, finiteOr(size.width, 0))
+    const height = Math.max(0, finiteOr(size.height, 0))
+    const viewportWidth = Math.max(0, finiteOr(viewport.width, 0))
+    const viewportHeight = Math.max(0, finiteOr(viewport.height, 0))
+    // A surface wider/taller than the viewport keeps its origin at the padding: it is
+    // then flush with the visible area instead of being pushed off it.
+    const maximumLeft = Math.max(padding, viewportWidth - width - padding)
+    const maximumTop = Math.max(padding, viewportHeight - height - padding)
+    const left = clamp(anchorX + anchorW - width, padding, maximumLeft)
+    const bottom = anchorY + anchorH
+    let above = false
+    let top = bottom + gap
+    if (top + height > viewportHeight - padding) {
+      const aboveTop = anchorY - gap - height
+      if (aboveTop >= padding) {
+        top = aboveTop
+        above = true
+      } else {
+        // No room on either side: dock inside, still anchored to the region's bottom.
+        top = bottom - gap - height
+      }
+    }
+    return {
+      left: Math.round(left),
+      top: Math.round(clamp(top, padding, maximumTop)),
+      above
+    }
+  }
+
   function getResizeHandle(selection, point, hitSize = 8) {
     if (!selection || !point || selection.w <= 0 || selection.h <= 0) return ''
     const left = selection.x
@@ -91,6 +148,7 @@
     getResizeHandle,
     getSourcePixelRect,
     resizeSelection,
-    selectionCursor
+    selectionCursor,
+    resolveFloatingPlacement
   }
 })

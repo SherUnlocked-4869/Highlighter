@@ -279,40 +279,40 @@ function createPinDomain(deps) {
       height: Math.max(1, Math.round(Number(imageBounds.height) || pinBounds.height))
     }
     const imageSize = nativeImage.createFromDataURL(win._pinData.dataUrl).getSize()
-    const isRecognitionEditor = autoAction === 'ocr' || autoAction === 'translate'
-    let editorBounds = editBounds
-    let editorImageBounds = null
-    let sourceScaleFactor = Math.max(0.25, imageSize.width / editBounds.width)
-    if (isRecognitionEditor) {
-      const workArea = screen.getDisplayMatching(editBounds).workArea
-      const actionSpace = 62
-      const toolbarSpace = 900
-      const scale = Math.min(
-        1,
-        workArea.width / editBounds.width,
-        Math.max(1, workArea.height - actionSpace) / editBounds.height
-      )
-      const imageWidth = Math.max(1, Math.round(editBounds.width * scale))
-      const imageHeight = Math.max(1, Math.round(editBounds.height * scale))
-      const width = Math.min(workArea.width, Math.max(toolbarSpace, Math.max(420, imageWidth)))
-      const height = Math.min(workArea.height, imageHeight + actionSpace)
-      const x = Math.round(Math.max(workArea.x, Math.min(
-        editBounds.x + (editBounds.width - width) / 2,
-        workArea.x + workArea.width - width
-      )))
-      const y = Math.round(Math.max(workArea.y, Math.min(
-        editBounds.y,
-        workArea.y + workArea.height - height
-      )))
-      editorBounds = { x, y, width, height }
-      editorImageBounds = {
-        x: Math.round((width - imageWidth) / 2),
-        y: 0,
-        width: imageWidth,
-        height: imageHeight
-      }
-      sourceScaleFactor = Math.max(0.25, imageSize.width / imageWidth)
+    // The editor always reserves a strip BELOW the image for the tool strip (and the
+    // OCR result bar), in every mode. The region capture shows its strip below the
+    // region, so a re-annotate editor that was exactly the size of the pinned image
+    // had nowhere to put it: the renderer fell back to clamping, which dropped the
+    // strip inside the top of the image and clipped it. 100px covers the two-row strip
+    // (2 x 30px buttons + padding + gap = 78px) plus the 10px gap and 6px padding.
+    const workArea = screen.getDisplayMatching(editBounds).workArea
+    const actionSpace = 100
+    const toolbarSpace = 900
+    const scale = Math.min(
+      1,
+      workArea.width / editBounds.width,
+      Math.max(1, workArea.height - actionSpace) / editBounds.height
+    )
+    const imageWidth = Math.max(1, Math.round(editBounds.width * scale))
+    const imageHeight = Math.max(1, Math.round(editBounds.height * scale))
+    const width = Math.min(workArea.width, Math.max(toolbarSpace, Math.max(420, imageWidth)))
+    const height = Math.min(workArea.height, imageHeight + actionSpace)
+    const x = Math.round(Math.max(workArea.x, Math.min(
+      editBounds.x + (editBounds.width - width) / 2,
+      workArea.x + workArea.width - width
+    )))
+    const y = Math.round(Math.max(workArea.y, Math.min(
+      editBounds.y,
+      workArea.y + workArea.height - height
+    )))
+    const editorBounds = { x, y, width, height }
+    const editorImageBounds = {
+      x: Math.round((width - imageWidth) / 2),
+      y: 0,
+      width: imageWidth,
+      height: imageHeight
     }
+    const sourceScaleFactor = Math.max(0.25, imageSize.width / imageWidth)
     win.hide()
     try {
       const captureWindow = await createCaptureWindow({
@@ -322,7 +322,9 @@ function createPinDomain(deps) {
         source: 'pin-reannotate',
         windowBounds: editorBounds,
         imageBounds: editorImageBounds,
-        transparent: isRecognitionEditor,
+        // The reserved strip sits outside the image, so the window must be transparent
+        // in both modes - an opaque window would paint that strip in its background.
+        transparent: true,
         sourceScaleFactor,
         editPin: true,
         editingPinWindow: win

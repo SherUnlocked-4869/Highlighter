@@ -48,7 +48,8 @@ test('B1 (D5): the strip is a column container whose first row still carries eve
 
 test('B1 (D5/D6): the CSS makes the strip a column, keeps each row a flex row and flips the row order', () => {
   assert.match(css, /\.toolbar \{[\s\S]{0,240}?display: flex;\s*flex-direction: column;/)
-  assert.match(css, /\.toolbar-row \{ display: flex; align-items: center; gap: 3px; \}/)
+  // flex-wrap：窗口比工具栏窄时（贴图重新标注的小图）换行而不是被窗口裁掉。
+  assert.match(css, /\.toolbar-row \{ display: flex; align-items: center; flex-wrap: wrap; gap: 3px; \}/)
   assert.match(css, /\.toolbar\.above \{ flex-direction: column-reverse; \}/)
 })
 
@@ -64,12 +65,15 @@ test('B1 (D6/R3): the toolbar size cache has exactly one invalidation helper wit
 })
 
 test('B1 (D6): placement measures the whole container and latches the above-the-region flip', () => {
-  // 容器整体 rect（含第二行）—— 第二行展开后高度变化必须参与避让计算。
-  assert.match(script, /function updateFloatingUi\(\) \{[\s\S]{0,1200}?const rect=toolbarSize\|\|\(toolbarSize=toolbar\.getBoundingClientRect\(\)\)/)
-  assert.match(script, /if \(top\+rect\.height>innerHeight-6\) \{ top=selection\.y-rect\.height-10; above=true \}/)
-  assert.match(script, /toolbar\.classList\.toggle\('above',above\)/)
-  // 元素条避让读同一个缓存（失效机制共享）。
+  // 容器整体 rect（含第二行）—— 第二行展开后高度变化必须参与避让计算；落位规则本身
+  // 收敛到纯函数（selection-utils.resolveFloatingPlacement，见 capture-floating-placement.test.js）。
+  assert.match(script, /function toolbarPlacement\(\) \{[\s\S]{0,260}?toolbarSize \|\| \(toolbarSize = toolbar\.getBoundingClientRect\(\)\)/)
+  assert.match(script, /function toolbarPlacement\(\) \{[\s\S]{0,520}?resolveFloatingPlacement\(\{[\s\S]{0,220}?anchor: selection,/)
+  assert.match(script, /function updateFloatingUi\(\) \{[\s\S]{0,1400}?const placement=toolbarPlacement\(\)/)
+  assert.match(script, /toolbar\.classList\.toggle\('above',placement\.above\)/)
+  // 元素条避让读同一个缓存 + 同一套落位（两条浮层不再各算一遍）。
   assert.match(script, /const toolbarRect = toolbarSize \|\| \(toolbarSize = toolbar\.getBoundingClientRect\(\)\)/)
+  assert.match(script, /const toolbarPlace = resolveFloatingPlacement\(\{\s*anchor: selection,/)
 })
 
 test('B1/B2: the options row is a projection of the tool that owns options right now', () => {

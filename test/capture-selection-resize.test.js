@@ -11,7 +11,9 @@ test('capture page loads selection resize utilities before its controller', () =
   // src="capture.js" pins the controller: shared/locales/capture.js holds the same
   // substring but loads first (P0-1-T4 / S11).
   assert.ok(html.indexOf('selection-utils.js') < html.indexOf('src="capture.js"'))
-  assert.match(capture, /const \{\s*getResizeHandle,\s*getSourcePixelRect,\s*resizeSelection,\s*selectionCursor\s*\} = window\.selectionUtils/)
+  // 浮动落位（resolveFloatingPlacement）也走同一个纯函数模块：工具栏与元素条的避让
+  // 必须共用一条规则（见 test/capture-floating-placement.test.js）。
+  assert.match(capture, /const \{\s*getResizeHandle,\s*getSourcePixelRect,\s*resizeSelection,\s*selectionCursor,\s*resolveFloatingPlacement\s*\} = window\.selectionUtils/)
 })
 
 test('selection crops snap every edge to native source pixels at fractional DPI', () => {

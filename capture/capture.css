@@ -78,8 +78,10 @@ html, body {
   backdrop-filter: blur(18px);
 }
 /* B1 (D5): row 1 keeps every control that shipped before; #toolOptions is the
-   second row and carries only the new per-tool options. */
-.toolbar-row { display: flex; align-items: center; gap: 3px; }
+   second row and carries only the new per-tool options. Both rows wrap, so a strip
+   that is wider than a small pin re-annotate window stays fully visible instead of
+   being clipped by the window edge. */
+.toolbar-row { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; }
 /* B1 (D6): once the strip flips above the region, the options row has to sit
    between the region and the main row - i.e. the row order is reversed. */
 .toolbar.above { flex-direction: column-reverse; }
