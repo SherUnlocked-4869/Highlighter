@@ -5,9 +5,26 @@ The path data is unmodified. Only the SVG wrapper attributes were normalized
 (viewBox="0 0 16 16", fill="#000", no width/height/class, single line) so the
 files can be used as CSS mask images with `background: currentColor`.
 
-`print.svg` (the capture toolbar's "export PDF" button) is the one exception: it
-is drawn locally for this project on the same 16x16 grid, so its path data does
-not come from Bootstrap Icons.
+Two groups of files are drawn locally for this project on the same 16x16 grid,
+so their path data does not come from Bootstrap Icons:
+
+- `print.svg` (the capture toolbar's "export PDF" button).
+- The icon-only option row and thickness picker added on 2026-10-15
+  (`weight-*` / `stroke-*` / `radius-*` / `head-*`): the upstream set has no
+  line-weight, stroke-style, corner-radius or arrowhead-end glyphs. They re-use
+  the family's conventions instead: 1px features with 0.5px round caps, and
+  `fill-rule="evenodd"` where a shape needs an outline.
+
+The remaining files added on 2026-10-15 still carry unmodified upstream path
+data and are only renamed after the option they represent:
+
+- `fill-outline.svg`     = `square.svg`
+- `fill-translucent.svg` = `square-half.svg`
+- `fill-solid.svg`       = `square-fill.svg`
+- `alpha-light.svg`      = `droplet.svg`
+- `alpha-medium.svg`     = `droplet-half.svg`
+- `alpha-strong.svg`     = `droplet-fill.svg`
+- `bold.svg`             = `type-bold.svg`
 
 --------------------------------------------------------------------------------
 

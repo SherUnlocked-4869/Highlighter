@@ -48,6 +48,7 @@ const {
   resizeSelection,
   selectionCursor,
   resolveFloatingPlacement,
+  toolbarWidthLimit,
   revalidateSelection,
   commonSelectionValue,
   rectsIntersect
@@ -564,6 +565,43 @@ function invalidateToolbarSize() {
   toolbarSize = null
 }
 
+// Plan 2 (D12): the strip narrows itself to hug the region instead of always asking for
+// "viewport minus 20px" (the CSS default below). The rule is the pure function
+// toolbarWidthLimit() in selection-utils.js; this is the single write point for the
+// element's inline max-width, and a change here is a height change (a narrower strip
+// wraps into more rows), so it must go through the same size-invalidation helper as
+// every other size-changing event. Called from updateFloatingUi(), which renderOverlay()
+// runs every frame, so a region resize and a stage resize both re-apply it without
+// extra hooks.
+const TOOLBAR_MIN_WIDTH = 420
+const TOOLBAR_WIDTH_SLACK = 160
+let toolbarMaxWidth = null
+
+// The pin re-annotate editor is the one flow that hands the renderer a fixed imageBounds
+// to lay the strip out around, and the main process pre-reserves its strip from a
+// single-line assumption (main/domains/pin/index.js: stripRows / actionSpace). Wrapping
+// the strip there would outgrow that reservation and push the strip back over the image,
+// so this flow keeps the shipped CSS cap; test/capture-floating-placement.test.js pins
+// both halves of that trade-off.
+function stripFollowsRegion() {
+  return !initData?.imageBounds
+}
+
+function applyToolbarWidthLimit() {
+  const limit = stripFollowsRegion() && selection
+    ? toolbarWidthLimit({
+      anchor: selection,
+      viewport: { width: innerWidth, height: innerHeight },
+      minimum: TOOLBAR_MIN_WIDTH,
+      slack: TOOLBAR_WIDTH_SLACK
+    })
+    : null
+  if (limit === toolbarMaxWidth) return
+  toolbarMaxWidth = limit
+  toolbar.style.maxWidth = limit === null ? '' : `${limit}px`
+  invalidateToolbarSize()
+}
+
 // B6 (D8): the element bar caches its own rect too, and the multi-selection counter
 // changes that rect's width. Same discipline as the strip: one write point, called from
 // the places that can change the bar's content or the stage size.
@@ -690,6 +728,9 @@ function toolbarPlacement() {
 }
 
 function updateFloatingUi() {
+  // Plan 2 (D12): the region's width cap must be on the element before anything reads
+  // the cached strip rect (the element bar avoids that rect below).
+  applyToolbarWidthLimit()
   updateElementBar()
   if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16

@@ -84,6 +84,30 @@
     }
   }
 
+  // Plan 2 (D12): how wide the strip is allowed to be on this stage. The shipped rule is
+  // "as wide as the viewport minus the 20px CSS margin", which on a 1493px display makes
+  // a ~1000px bar: for a 200px region the drawing tools end up ~600px away from the
+  // region. Capping the strip at the region's own width (plus `slack` for the tool group
+  // and the width picker) lets the flex rows wrap into a compact block that stays under
+  // the region, and it is what makes the horizontal rule in resolveFloatingPlacement able
+  // to right-align or centre the strip on a small region instead of clamping it left.
+  // `minimum` is a floor, not a promise: the viewport cap still wins, exactly like the
+  // CSS default it replaces, so a stage narrower than the floor yields a narrower strip
+  // rather than one that overflows. A non-finite viewport degrades to the region-derived
+  // width instead of collapsing the strip to zero.
+  function toolbarWidthLimit(options = {}) {
+    const anchor = options.anchor || {}
+    const viewport = options.viewport || {}
+    const minimum = Math.max(0, finiteOr(options.minimum, 420))
+    const slack = Math.max(0, finiteOr(options.slack, 160))
+    const margin = Math.max(0, finiteOr(options.margin, 20))
+    const anchorWidth = Math.max(0, finiteOr(anchor.w ?? anchor.width, 0))
+    const desired = Math.max(minimum, anchorWidth + slack)
+    const viewportWidth = finiteOr(viewport.w ?? viewport.width, Number.NaN)
+    if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) return Math.round(desired)
+    return Math.round(Math.min(Math.max(0, viewportWidth - margin), desired))
+  }
+
   // B6 (D8): keep only the selected ids that still exist in the annotation array.
   // Snapshot restore replaces object identities but keeps ids, so revalidating by id
   // is what lets a multi-selection survive undo/redo while dropping items that are
@@ -201,6 +225,7 @@
     resizeSelection,
     selectionCursor,
     resolveFloatingPlacement,
+    toolbarWidthLimit,
     revalidateSelection,
     commonSelectionValue,
     rectsIntersect

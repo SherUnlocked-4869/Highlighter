@@ -50,9 +50,9 @@
         </div>
       </div>
       <div id="widthGroup" class="width-group" role="group" data-i18n-aria-label="capture.toolbar.width-group">
-        <button type="button" data-annotation-width="2" data-i18n-title="capture.toolbar.width-thin-tip" aria-pressed="false" data-i18n="capture.toolbar.width-thin"></button>
-        <button type="button" data-annotation-width="4" class="active" data-i18n-title="capture.toolbar.width-medium-tip" aria-pressed="true" data-i18n="capture.toolbar.width-medium"></button>
-        <button type="button" data-annotation-width="8" data-i18n-title="capture.toolbar.width-thick-tip" aria-pressed="false" data-i18n="capture.toolbar.width-thick"></button>
+        <button type="button" data-annotation-width="2" aria-pressed="false" data-i18n-title="capture.toolbar.width-thin-tip" data-i18n-aria-label="capture.toolbar.width-thin"><span class="toolbar-icon" style="--icon:url('icons/weight-thin.svg')" aria-hidden="true"></span></button>
+        <button type="button" data-annotation-width="4" class="active" aria-pressed="true" data-i18n-title="capture.toolbar.width-medium-tip" data-i18n-aria-label="capture.toolbar.width-medium"><span class="toolbar-icon" style="--icon:url('icons/weight-medium.svg')" aria-hidden="true"></span></button>
+        <button type="button" data-annotation-width="8" aria-pressed="false" data-i18n-title="capture.toolbar.width-thick-tip" data-i18n-aria-label="capture.toolbar.width-thick"><span class="toolbar-icon" style="--icon:url('icons/weight-thick.svg')" aria-hidden="true"></span></button>
       </div>
       <div class="divider"></div>
       <button id="undo" data-i18n-title="capture.toolbar.undo-tip" data-i18n-aria-label="capture.toolbar.undo"><span class="toolbar-icon" style="--icon:url('icons/undo.svg')" aria-hidden="true"></span></button>
@@ -74,31 +74,31 @@
       <!-- B2/B3/B5 (D5/D9): one group per option role; data-option-tools is the
            declarative owner list, so the row is a projection of the active tool. -->
       <div class="option-group" data-option-group="fill" data-option-tools="rect ellipse" role="group" data-i18n-aria-label="capture.options.fill-group">
-        <button type="button" data-annotation-option="fill" data-annotation-option-value="none" aria-pressed="true" data-i18n-title="capture.options.fill-none" data-i18n="capture.options.fill-none"></button>
-        <button type="button" data-annotation-option="fill" data-annotation-option-value="translucent" aria-pressed="false" data-i18n-title="capture.options.fill-translucent" data-i18n="capture.options.fill-translucent"></button>
-        <button type="button" data-annotation-option="fill" data-annotation-option-value="solid" aria-pressed="false" data-i18n-title="capture.options.fill-solid" data-i18n="capture.options.fill-solid"></button>
+        <button type="button" data-annotation-option="fill" data-annotation-option-value="none" aria-pressed="true" data-i18n-title="capture.options.fill-none" data-i18n-aria-label="capture.options.fill-none"><span class="toolbar-icon" style="--icon:url('icons/fill-outline.svg')" aria-hidden="true"></span></button>
+        <button type="button" data-annotation-option="fill" data-annotation-option-value="translucent" aria-pressed="false" data-i18n-title="capture.options.fill-translucent" data-i18n-aria-label="capture.options.fill-translucent"><span class="toolbar-icon" style="--icon:url('icons/fill-translucent.svg')" aria-hidden="true"></span></button>
+        <button type="button" data-annotation-option="fill" data-annotation-option-value="solid" aria-pressed="false" data-i18n-title="capture.options.fill-solid" data-i18n-aria-label="capture.options.fill-solid"><span class="toolbar-icon" style="--icon:url('icons/fill-solid.svg')" aria-hidden="true"></span></button>
       </div>
       <div class="option-group" data-option-group="dash" data-option-tools="rect ellipse line arrow" role="group" data-i18n-aria-label="capture.options.dash-group">
-        <button type="button" data-annotation-option="dash" data-annotation-option-value="solid" aria-pressed="true" data-i18n-title="capture.options.dash-solid" data-i18n="capture.options.dash-solid"></button>
-        <button type="button" data-annotation-option="dash" data-annotation-option-value="dashed" aria-pressed="false" data-i18n-title="capture.options.dash-dashed" data-i18n="capture.options.dash-dashed"></button>
-        <button type="button" data-annotation-option="dash" data-annotation-option-value="dotted" aria-pressed="false" data-i18n-title="capture.options.dash-dotted" data-i18n="capture.options.dash-dotted"></button>
+        <button type="button" data-annotation-option="dash" data-annotation-option-value="solid" aria-pressed="true" data-i18n-title="capture.options.dash-solid" data-i18n-aria-label="capture.options.dash-solid"><span class="toolbar-icon" style="--icon:url('icons/stroke-solid.svg')" aria-hidden="true"></span></button>
+        <button type="button" data-annotation-option="dash" data-annotation-option-value="dashed" aria-pressed="false" data-i18n-title="capture.options.dash-dashed" data-i18n-aria-label="capture.options.dash-dashed"><span class="toolbar-icon" style="--icon:url('icons/stroke-dashed.svg')" aria-hidden="true"></span></button>
+        <button type="button" data-annotation-option="dash" data-annotation-option-value="dotted" aria-pressed="false" data-i18n-title="capture.options.dash-dotted" data-i18n-aria-label="capture.options.dash-dotted"><span class="toolbar-icon" style="--icon:url('icons/stroke-dotted.svg')" aria-hidden="true"></span></button>
       </div>
       <div class="option-group" data-option-group="radius" data-option-tools="rect" role="group" data-i18n-aria-label="capture.options.radius-group">
-        <button type="button" data-annotation-option="radius" data-annotation-option-value="0" aria-pressed="true" data-i18n-title="capture.options.radius-none" data-i18n="capture.options.radius-none"></button>
-        <button type="button" data-annotation-option="radius" data-annotation-option-value="4" aria-pressed="false" data-i18n-title="capture.options.radius-small" data-i18n="capture.options.radius-small"></button>
-        <button type="button" data-annotation-option="radius" data-annotation-option-value="8" aria-pressed="false" data-i18n-title="capture.options.radius-large" data-i18n="capture.options.radius-large"></button>
+        <button type="button" data-annotation-option="radius" data-annotation-option-value="0" aria-pressed="true" data-i18n-title="capture.options.radius-none" data-i18n-aria-label="capture.options.radius-none"><span class="toolbar-icon" style="--icon:url('icons/radius-none.svg')" aria-hidden="true"></span></button>
+        <button type="button" data-annotation-option="radius" data-annotation-option-value="4" aria-pressed="false" data-i18n-title="capture.options.radius-small" data-i18n-aria-label="capture.options.radius-small"><span class="toolbar-icon" style="--icon:url('icons/radius-small.svg')" aria-hidden="true"></span></button>
+        <button type="button" data-annotation-option="radius" data-annotation-option-value="8" aria-pressed="false" data-i18n-title="capture.options.radius-large" data-i18n-aria-label="capture.options.radius-large"><span class="toolbar-icon" style="--icon:url('icons/radius-large.svg')" aria-hidden="true"></span></button>
       </div>
       <div class="option-group" data-option-group="heads" data-option-tools="arrow" role="group" data-i18n-aria-label="capture.options.head-group">
-        <button type="button" data-annotation-option="startHead" data-annotation-option-value="true" aria-pressed="false" data-i18n-title="capture.options.head-start" data-i18n="capture.options.head-start"></button>
-        <button type="button" data-annotation-option="endHead" data-annotation-option-value="true" aria-pressed="true" data-i18n-title="capture.options.head-end" data-i18n="capture.options.head-end"></button>
+        <button type="button" data-annotation-option="startHead" data-annotation-option-value="true" aria-pressed="false" data-i18n-title="capture.options.head-start" data-i18n-aria-label="capture.options.head-start"><span class="toolbar-icon" style="--icon:url('icons/head-start.svg')" aria-hidden="true"></span></button>
+        <button type="button" data-annotation-option="endHead" data-annotation-option-value="true" aria-pressed="true" data-i18n-title="capture.options.head-end" data-i18n-aria-label="capture.options.head-end"><span class="toolbar-icon" style="--icon:url('icons/head-end.svg')" aria-hidden="true"></span></button>
       </div>
       <div class="option-group" data-option-group="alpha" data-option-tools="highlight" role="group" data-i18n-aria-label="capture.options.alpha-group">
-        <button type="button" data-annotation-option="alpha" data-annotation-option-value="light" aria-pressed="false" data-i18n-title="capture.options.alpha-light" data-i18n="capture.options.alpha-light"></button>
-        <button type="button" data-annotation-option="alpha" data-annotation-option-value="medium" aria-pressed="true" data-i18n-title="capture.options.alpha-medium" data-i18n="capture.options.alpha-medium"></button>
-        <button type="button" data-annotation-option="alpha" data-annotation-option-value="strong" aria-pressed="false" data-i18n-title="capture.options.alpha-strong" data-i18n="capture.options.alpha-strong"></button>
+        <button type="button" data-annotation-option="alpha" data-annotation-option-value="light" aria-pressed="false" data-i18n-title="capture.options.alpha-light" data-i18n-aria-label="capture.options.alpha-light"><span class="toolbar-icon" style="--icon:url('icons/alpha-light.svg')" aria-hidden="true"></span></button>
+        <button type="button" data-annotation-option="alpha" data-annotation-option-value="medium" aria-pressed="true" data-i18n-title="capture.options.alpha-medium" data-i18n-aria-label="capture.options.alpha-medium"><span class="toolbar-icon" style="--icon:url('icons/alpha-medium.svg')" aria-hidden="true"></span></button>
+        <button type="button" data-annotation-option="alpha" data-annotation-option-value="strong" aria-pressed="false" data-i18n-title="capture.options.alpha-strong" data-i18n-aria-label="capture.options.alpha-strong"><span class="toolbar-icon" style="--icon:url('icons/alpha-strong.svg')" aria-hidden="true"></span></button>
       </div>
       <div class="option-group" data-option-group="bold" data-option-tools="text" role="group" data-i18n-aria-label="capture.options.bold-group">
-        <button type="button" data-annotation-option="bold" data-annotation-option-value="true" aria-pressed="false" data-i18n-title="capture.options.bold" data-i18n="capture.options.bold"></button>
+        <button type="button" data-annotation-option="bold" data-annotation-option-value="true" aria-pressed="false" data-i18n-title="capture.options.bold" data-i18n-aria-label="capture.options.bold"><span class="toolbar-icon" style="--icon:url('icons/bold.svg')" aria-hidden="true"></span></button>
       </div>
     </div>
   </div>

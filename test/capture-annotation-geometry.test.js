@@ -669,7 +669,8 @@ test('the element bar is a separate floating surface wired to delete/deselect, w
   assert.match(script, /function drawSelectedOutline\(\) \{[\s\S]{0,420}?ctx\.setLineDash\(\[5, 4\]\)/)
   // 浮动条只在有选中项且没有交互中/自动选区/OCR 覆盖时出现
   assert.match(script, /function updateElementBar\(\) \{[\s\S]{0,240}?const visible = !!item && !!selection && !activeOcrResult/)
-  assert.match(script, /function updateFloatingUi\(\) \{\s*updateElementBar\(\)/)
+  // 方案 2（D12）在元素条之前插入宽度上限应用；元素条仍是同一次浮动 UI 刷新里的第一步。
+  assert.match(script, /function updateFloatingUi\(\) \{[\s\S]{0,240}?applyToolbarWidthLimit\(\)\s*\n\s*updateElementBar\(\)/)
 
   assert.match(css, /\.element-bar \{[\s\S]{0,240}?position: fixed/)
   assert.match(css, /\.element-bar button\.danger \{[^}]*var\(--danger\)/)

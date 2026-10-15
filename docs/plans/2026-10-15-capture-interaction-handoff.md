@@ -7,7 +7,7 @@
 
 ## 0. 一句话状态
 
-**方案 `2026-10-14-capture-interaction-improvement-plan.md` 的 T1（A1–A5）与 T2（B1–B7，含 B6 多选 + mixed 态）已全部开发完成**，三轮真机反馈修复（钉图重新标注工具栏位置、小选区落位）也已落地。版本 `3.0.0`。**门禁在"纯 ASCII 工作副本 + 默认环境"下全绿**：`npm test` 1012/1012/0、`npm run check` 全绿、`npm run test:e2e` 6/6、覆盖率达标。计划内**已无未开工项**；剩余的是"工具栏宽度优化（方案 2/3b）"、"3.0.0 发布侧收尾"、"人眼/真机验收"、"B6 的两项有意未做"。
+**方案 `2026-10-14-capture-interaction-improvement-plan.md` 的 T1（A1–A5）与 T2（B1–B7，含 B6 多选 + mixed 态）已全部开发完成**，三轮真机反馈修复（钉图重新标注工具栏位置、小选区落位）也已落地；**2026-10-15 追加：方案 2「工具栏宽度跟随选区」也已落地**（§4.1）。版本 `3.0.0`。**门禁在"纯 ASCII 工作副本 + 默认环境"下全绿**：`npm test` 1001/1001/0（见 §4.1 的口径说明）、`npm run check` 全绿、`npm run test:e2e` 6/6、覆盖率达标。计划内**已无未开工项**；剩余的是"工具栏宽度优化（**仅剩方案 3b**）"、"3.0.0 发布侧收尾"、"人眼/真机验收"、"B6 的两项有意未做"。
 
 | 项 | 值 |
 | --- | --- |
@@ -15,8 +15,8 @@
 | 分支 / HEAD | **`feat/capture-interaction-t1`** —— 代码收尾于 **`d8d46ab`**（B6 wave 2）；本交接文档本身也是一个提交，最新 HEAD 用 `git log --oneline -1` 核对（截至 2026-10-15 共 **17** 个提交） |
 | 版本 | `package.json` = **`3.0.0`**（提交 `36a89e9`） |
 | 代码完成度 | T1 ✅（A1–A5） · T2 ✅（B1/B2/B3/B4/B5/**B6**/B7） |
-| `npm test` | **1012 用例 / 1012 通过 / 0 失败** |
-| `npm run check` | 语法 **304 文件** · `main.js` **1297/1300** · i18n **605 ≤ 606** · locale **1003×3 对称** |
+| `npm test` | **1012 用例 / 1012 通过 / 0 失败**（旧工作副本口径）。**全新 clone 为 1001 / 1001 / 0**（本 clone 基线 997 + 本次新增 4 条契约）；与 1012 差的 11 条 = 另一条工作线的两个**未跟踪**测试文件（`action-table-runtime` / `markdown-render`，共 15 条）减去本次新增的 4 条 |
+| `npm run check` | 语法 **304 文件**（全新 clone **300**，差 4 = 另一条工作线的未跟踪 JS）· `main.js` **1297/1300** · i18n **605 ≤ 606** · locale **1003×3 对称** |
 | `npm run test:e2e` | **6 / 6**（34.1s；**会开 app 窗口，跑之前先问用户**，见 §7.6） |
 | 覆盖率 | `test:coverage:loaded` 行 **92.9%**（≥85 门槛） · `test:coverage:critical` **93.22 / 94.07 / 92.42**（与方案 §1.1 记录值逐字相同） |
 | `npm run audit:dependencies` | **0 个未豁免漏洞、18 个失效豁免项 → exit 1**（**既有状态**，非本分支引入；`package.json`/`package-lock.json` 零改动） |
@@ -119,17 +119,24 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 | T2（B1–B5、B7） | 第二行选项行（列容器 + `invalidateToolbarSize()` 唯一失效点 + `.above` 行序翻转）· rect/ellipse 填充/线型/圆角 · 箭头起终点 · per-tool 样式记忆（`screenshot.annotationStyles` = 8 工具模板 = 校验白名单）· 高亮浓度 / 文字粗体 · 画笔端点续画 | 方案 §10.1 |
 | **T2-B6（新）** | **多选 + mixed 态，拆两波**：wave 1 = `selectedIds: Set` 权威集合 + `selectedAnnotation` 退化为 anchor（**既有 15 个 `selectedAnnotationItem()` 调用点一行不改**）· shift 在「命中 / 已选中体内 / 选区外命中」三处加减选、shift+右键只加 · mixed 三态回显（色块 `.mixed` 分裂色 / 宽度按钮全灭 / 第二行按字段取共同值）· 色/宽/选项一条补丁落到整集且仍**一帧**（按目标工具归属过滤字段）· Delete/方向键覆盖整集 · `#elementBar` 计数 + `elementBarSize` 收敛到唯一失效点 · 每项虚线框（手柄只在 anchor）；wave 2 = shift+空白拖**框选**（只增不减、阈值内 shift 点击**不清空**选中、三处收口、绘制在最后且不进导出） | **方案 §10.8** |
 
+| **方案 2（新，2026-10-15）** | **工具栏宽度跟随选区**：`#toolbar` inline `max-width = min(视口−20, max(420, 选区宽+160))`（上限只收窄）· 唯一写点 `applyToolbarWidthLimit()` + 唯一调用点 `updateFloatingUi()` · 失效走 `invalidateToolbarSize()`（计数 3→4）· **钉图重新标注 `initData.imageBounds` 时跳过**（不碰 `stripRows`/`toolbarSpace`） | **方案 §10.9** |
+
+| **工具栏图标化（新，2026-10-15）** | 截图工具栏里"汉字当图标"的两处全部换成真图标：① 第一行线宽组 `细/中/粗` → `weight-thin/medium/thick.svg`；② 第二行选项行 15 个按钮（`空心/半透明/实心`、`实线/虚线/点线`、`直角/圆角 4/圆角 8`、`起点/终点`、`淡/中/浓`、`粗体`）→ 15 个图标。**文案不丢**：`data-i18n="…"` 改成 `data-i18n-aria-label="…"`（无障碍名 + 键仍被使用，无死键），`data-i18n-title` 工具提示原样保留。图标仍走同一套 mask（`capture/icons/`），新增 18 个：7 个取 Bootstrap Icons v1.13.1 未改动的 path data（`square`/`square-half`/`square-fill`/`droplet`/`droplet-half`/`droplet-fill`/`type-bold`，只是改名），11 个按 `print.svg` 先例在同一 16×16 网格手绘（线宽/线型/圆角/箭头端点，家族里没有）。来历逐条写在 `capture/icons/LICENSE` | **§3 下方说明 + 测试名单** |
+
 真机修复历史（钉图重新标注工具栏位置 ×3 轮、小选区落位）见方案 §10.5–§10.7。
 
 ---
 
 ## 4. 剩余工作（按建议优先级）
 
-### 4.1 工具栏宽度优化：方案 2 / 方案 3b（用户已看过方案，此前只选了方案 1）
+### 4.1 工具栏宽度优化：**方案 2 已落地（2026-10-15）**，方案 3b 待独立立项
 
-- **方案 2（体验向）**：渲染层给 `#toolbar` 设动态 `max-width = min(视口−20, max(420, 选区宽+160))`，窄选区自动折行成紧凑块、紧贴选区。**必须协同**：钉图编辑器的条带是按"单行条带"推导的（`main/domains/pin/index.js` 的 `stripRows`），折行后变高 → 要么在 `initData.imageBounds` 时跳过本方案，要么把折行算进条带推导；另需在选区尺寸变化时失效 `toolbarSize`。
-- **方案 3b（根治）**：把 11 个识别/导出动作（≈370px）收进「··· 更多」溢出面板 → 主行 ≈ **566px**（38%），小选区也能右对齐/居中；同时可把钉图编辑器 `toolbarSpace` 从 1088 降下来。**代价**：`test/capture-toolbar-icons.test.js` 是**精确图标序列 deepEqual**，加/移图标必须同提交更新；i18n 新键三语；肌肉记忆改变。**建议独立立项。**
-- 方案 1 的剩余局限：选区落在屏幕左侧约 2/3 以内且居中仍算负值时（如 100..300）只能贴左。
+- ✅ **方案 2（体验向）已落地**：`#toolbar` 的 inline `max-width = min(视口−20, max(420, 选区宽+160))`；上限只收窄、从不撑宽（宽选区渲染逐字不变）。落地要点：
+  - 纯函数 `capture/selection-utils.js: toolbarWidthLimit()`；接线 `capture/capture.js: applyToolbarWidthLimit()`（**唯一写点**，仅在上限变化时写 DOM）+ **唯一调用点** `updateFloatingUi()`（`renderOverlay()` 每帧都走 → 选区变化与窗口 resize 自动跟随）。上限变化 = 折行 = 高度变化 → 走既有唯一失效点 `invalidateToolbarSize()`（调用点计数 3 → **4**，契约测试已同步）。
+  - **与钉图条带的协同方式：跳过**。`stripFollowsRegion()` = `!initData.imageBounds`；该流程是唯一由主进程下发固定 `imageBounds`、且按"单行条带"预留 `actionSpace` 的路径（`main/domains/pin/index.js` 的 `stripRows`），折行会顶穿预留条带。跳过时清空 inline 上限，回落 `capture.css` 的 `calc(100vw - 20px)` —— 所以**钉图的 `toolbarSpace = 1088` / `stripRows` 推导一行都不用改**。
+  - 实测（1493×933，主行 min-content 937 / 条宽 951）：「画图工具组 ↔ 选区」距离在右半屏小选区上 **384px → 0**，左半屏 **8px → 0**；代价是小选区条高 78 → 144（≤3 行）。完整前后对照表见方案 §10.9。
+  - 仍未做的**方案 3b（根治）**：把 11 个识别/导出动作（≈370px）收进「··· 更多」溢出面板 → 主行 ≈ **566px**（38%），小选区也能右对齐/居中；同时可把钉图编辑器 `toolbarSpace` 从 1088 降下来。**代价**：`test/capture-toolbar-icons.test.js` 是**精确图标序列 deepEqual**，加/移图标必须同提交更新；i18n 新键三语；肌肉记忆改变。**建议独立立项。**
+  - 方案 1 的剩余局限（选区贴屏左、如 100..300 时只能贴左）仍在，但方案 2 落地后该行的工具组已横向覆盖到选区（距离 0）。
 
 ### 4.2 3.0.0 发布侧收尾
 
@@ -167,13 +174,15 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
 | 文件 | 关键导出 |
 | --- | --- |
-| `capture/selection-utils.js` | `getResizeHandle`(129) · `getSourcePixelRect`(182) · `resizeSelection`(153) · `selectionCursor`(178) · **`resolveFloatingPlacement`(45)（工具栏/元素条唯一落位规则）** · **`revalidateSelection`(92) · `commonSelectionValue`(105) · `rectsIntersect`(115)（B6：按 id 存活 / mixed 判定 / 框选相交）** |
+| `capture/selection-utils.js` | `getResizeHandle`(153) · `getSourcePixelRect`(206) · `resizeSelection`(177) · `selectionCursor`(202) · **`resolveFloatingPlacement`(45)（工具栏/元素条唯一落位规则）** · **`toolbarWidthLimit`(98)（方案 2：工具栏宽度上限唯一规则）** · **`revalidateSelection`(116) · `commonSelectionValue`(129) · `rectsIntersect`(139)（B6：按 id 存活 / mixed 判定 / 框选相交）** |
 | `capture/annotation-geometry.js` | `annotationBounds`(109) · `hitTestAnnotation`(239) · `findAnnotationAt`(274) · `MOVE_THRESHOLD`(27) + `movedBeyondThreshold`(158) · **`penContinuationTarget`(137)** · `translateAnnotation`(285) · `resizeAnnotationToBox`(363) · `reorderAnnotation`(444) · `clampAnnotationToStage`(474) · `cloneAnnotations`(487) |
 | `capture/annotation-style.js` | `WIDTH_PRESETS/WIDTHS/resolveWidth`(78) · `PRESET_COLORS`(23)/`normalizeAnnotationColor`(87) · `nextWidthPreset`(94) · `FILL/DASH/RADIUS/ALPHA_PRESETS` + `resolveFill/resolveDash/resolveRadius/resolveAlpha/dashPattern` · `TOOL_OPTION_FIELDS`(49)/`DEFAULT_TOOL_OPTIONS`(60)/`resolveToolOptions`(167) · `TOOL_STYLE_TOOLS`(71)/`resolveToolStyle`(110)/`resolveToolStyles`(121) |
 
 > ⚠️ `capture/annotation-style.js` **不在** `test:coverage:loaded` 的 include 清单里（`package.json:14` 只含 `selection-utils.js` 与 `annotation-geometry.js`）。
 
-### 5.2 `capture/capture.js`（单写者，最易踩契约；行号为 HEAD `b892e42`）
+### 5.2 `capture/capture.js`（单写者，最易踩契约）
+
+> 行号基线 HEAD `b892e42`；**方案 2 之后顺移**：`updateElementBar` / `invalidateToolbarSize` **+1**，**`invalidateElementBarSize` 及其后一律 +38**（下表括号内已是本分支实测值）。
 
 | 关注点 | 函数（行号） |
 | --- | --- |
@@ -181,7 +190,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 | 回显 / mixed | `syncToolbarStyleFromSelection`(1033) · `applyToolbarSelection`(778) · `toolbarStyleTool`(852) · `applyToolbarColor/Width`(~749) |
 | 样式编辑 | `applyStyleToSelectedAnnotation`(1373) · `ownsAnnotationField`(1386) · `writeAnnotationStyles`(1396，**唯一写回点**) · `commitSelectedStyle`(1415) · `stageSelectedStyle`(1426) · `setAnnotationColor`(866) · `setAnnotationWidth`(877) |
 | 第二行 | `TOOL_OPTION_GROUPS`(~588) · `optionRowTool`(594) · `rowToolOptions`(602) · `selectionToolOptions`(612) · `syncToolOptionControls`(622) · `syncToolOptionsRow`(638) · `setAnnotationOption`(665) |
-| 落位 | `toolbarPlacement`(681) · `updateFloatingUi`(692) · `updateElementBar`(503) · `invalidateToolbarSize`(563) · `invalidateElementBarSize`(570) · `syncElementBarCount`(576) |
+| 落位 | `toolbarPlacement`(719) · `updateFloatingUi`(730) · `updateElementBar`(504) · **`stripFollowsRegion`(586) · `applyToolbarWidthLimit`(590)（方案 2：唯一写点）** · `invalidateToolbarSize`(564) · `invalidateElementBarSize`(608) · `syncElementBarCount`(614) |
 | 拖动 / 阈值 | `beginPendingMove`(1165) · `moveAnnotationTo`(1173) · `finishMoveAnnotation`(1235) · `cancelMoveAnnotation`(1246) · `quickSelectAnnotation`(1604，右键) |
 | 框选（B6 w2） | `marquee`(123) · `beginMarquee`(977) · `updateMarquee`(983) · `finishMarquee`(993) · `cancelMarquee`(1010) · `drawMarquee`(1016) |
 | 绘制 | `drawAnnotation`(368，唯一绘制入口，屏幕与导出同源) · `drawSelectedOutline`(465) · `drawSelectionOutlineBox`(459) |
@@ -197,7 +206,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 | `main/services/settings-defaults.js` | `screenshot.annotationColor`、**`screenshot.annotationStyles`（8 工具模板 = 校验白名单，字段增删必须改这里）** |
 | `main/services/settings-normalize.js` | `annotationColor` 的 `#rrggbb` 归一（`annotationStyles` 由渲染端 `resolveToolStyle` 归一） |
 | `preload-capture.js` | `saveAnnotationColor` / `saveAnnotationStyles` / `saveAnnotationWidth`（全走既有 `settings:update`，**零新增 IPC**） |
-| `main/domains/pin/index.js` | `startPinReannotation`：**所有重新标注路径**统一预留图像下方条带（`ROW_MIN_CONTENT=1040` / `toolbarSpace=1088` / `stripRows` 推导） |
+| `main/domains/pin/index.js` | `startPinReannotation`：**所有重新标注路径**统一预留图像下方条带（`ROW_MIN_CONTENT=1040` / `toolbarSpace=1088` / `stripRows` 推导）。**方案 2 在该流程被跳过**（见 `initData.imageBounds`），所以这三个常数与推导一行都不用改 |
 | `shared/locales/capture.js` | A3 色板 10 键 + B2/B3/B5 选项 21 键 + B6 计数 1 键（三语） |
 
 ---
@@ -209,15 +218,16 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 | `test/capture-annotation-geometry.test.js` | pointerdown **分支顺序**（选区手柄 > 选中元素手柄 > 选中体内 > 命中；A5 的"选区外命中"在前）· `pendingMove` **只有一个创建点** · 单一写回点与 0 变化不压帧 · `drawSelectedOutline` 后跟手柄 · `#elementBar` 结构 · 导出/绘制顺序 · geometry 解构清单 |
 | `test/capture-interaction.test.js` | A1 按键门位置/右键快选形态 · A2 滚轮起点 `displayedToolWidth()` · A4 回显"只改 UI" · A5 选区外命中顺序 |
 | **`test/capture-multi-select.test.js`（B6，15 条）** | `selectedIds` 权威集合 + anchor 退化 · 三个 B6 纯函数 · shift 四个落点 · mixed 回显 · 批量编辑仍一帧 · Delete/方向键覆盖整集 · elementBar 计数与 `elementBarSize` 唯一失效点 · marquee 只增不减与三处收口 · 每项虚线框但手柄只在 anchor |
-| `test/capture-tool-options.test.js` | B1 结构（`.toolbar-row`/`#toolOptions`/`flex-wrap`/`.above`）· `invalidateToolbarSize()` 唯一写点 + 调用点计数 · 六个选项组与 owner 列表 · 绘制分支"缺省逐字节不变" |
-| `test/capture-floating-placement.test.js` | 落位两分支都必须在源码里 · 右对齐装得下逐字不变 · 居中兜底 · 内侧贴底 · **从 HTML/CSS 现算主行最小宽度**并断言 `ROW_MIN_CONTENT`/`toolbarSpace` 容得下 |
+| `test/capture-tool-options.test.js` | B1 结构（`.toolbar-row`/`#toolOptions`/`flex-wrap`/`.above`）· `invalidateToolbarSize()` 唯一写点 + **调用点计数（方案 2 之后 = 4：定义 / resize / 第二行 / 宽度上限）** · 六个选项组与 owner 列表 · **15 个选项按钮各自带 `.toolbar-icon` 且只有 `aria-label` 承载文案（不再有可见文字）** · 绘制分支"缺省逐字节不变" |
+| `test/capture-floating-placement.test.js` | 落位两分支都必须在源码里 · 右对齐装得下逐字不变 · 居中兜底 · 内侧贴底 · **从 HTML/CSS 现算主行最小宽度**并断言 `ROW_MIN_CONTENT`/`toolbarSpace` 容得下 · **方案 2：`toolbarWidthLimit` 纯函数三段（下限 / 视口上限 / 退化入参）· 紧凑条的落位性质 · 唯一 `max-width` 写点 + 唯一调用点 + `stripFollowsRegion()` opt-out** |
+| `test/capture-renderer-runtime.test.js` | **真 Electron 隐藏窗渲染层探针**：`window.__pr.stripWrap()` 实测条宽/主行高（方案 2：200px 选区 → inline `420px` + 渲染宽 420 + 主行 96px；宽选区 → 视口上限；`initData.imageBounds` 下发 → 无 inline 上限） |
 | `test/capture-tool-styles.test.js` | 模板 ≡ `resolveToolStyles()` 规范表 · **整表一次写盘**（`saveAnnotationStyles` 只有一个调用点）· `toolbarStyleTool()` · 迁移铺底 · 旧键双写 |
 | `test/capture-pen-continuation.test.js` | 纯函数 + 抬起/还原/一帧语义（**pointercancel 窗口 260 字符**，插代码别插在它前面） |
 | `test/capture-color-palette.test.js` | 色板 DOM/CSS/接线 · recents ≤3 · capture 端无颜色白名单 |
 | `test/capture-i18n.test.js` | **GOLDEN 表**：每个 `capture.*` 键的 zh-CN 文案逐字 + 双向"无死键/无漏标记"。**新增/改文案必须同步 GOLDEN** |
 | `test/capture-selection-resize.test.js` | `window.selectionUtils` 的**解构清单**（加一个导出就要改这里） |
 | `test/capture-ocr-pin-ui.test.js` | 钉图编辑器条带推导与 `transparent: true` · OCR 结果条定位公式 |
-| `test/capture-toolbar-icons.test.js` | **精确图标序列 deepEqual**（加/移工具栏图标必须同 PR 更新） |
+| `test/capture-toolbar-icons.test.js` | **精确图标序列 deepEqual**（加/移工具栏图标必须同 PR 更新）。2026-10-15 起该序列含 42 项：11 工具 + 3 线宽 + 13 动作 + 15 选项图标 —— 顺序即 DOM 顺序，改 HTML 必须同步 |
 | `test/settings-validation.test.js` / `settings-normalize.test.js` | 两个样式键的类型契约与归一 |
 
 ---
@@ -233,6 +243,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 7. **GitHub 下载不可达**：electron-builder 直接打包会 ETIMEDOUT，必须带 `--config.electronDist=<repo>\node_modules\electron\dist`（§8.1）。
 8. **`capture.js` 单写者**：新算法下沉到 `selection-utils.js` / `annotation-geometry.js`（覆盖率 include 清单），`capture.js` 只留接线；改动 pointerdown/落位/样式接线时**同提交**更新 §6 的契约测试。
 9. **契约窗口是按字符数钉死的**（例如 `[\s\S]{0,360}?`）：往被钉住的函数里加注释/代码很可能**挤爆窗口**。加完先用 `.tmp/gates/` 里的量距脚本或临时 node 脚本量一下，再跑定向测试。
+10. **新增图标必须过"规范化 mask 资源"断言**（`test/toolbar-icons.test.js` 的 `MASK_ASSET`）：wrapper 只能是 `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#000">`，内部**只能是自闭合的 `<path …/>`**（不接受 `<circle>`/`<rect>`），且必须单行 + 结尾一个换行。要描边就写在 `<path>` 上（`fill="none" stroke="#000" stroke-width="1"`），**不要写到 `<svg>` 上**。踩过一次：`<circle>` 的点线图标与 wrapper 带 stroke 的三个圆角图标都被这条断言拦下。
 
 ---
 
@@ -244,7 +255,8 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
 # 1) 全量门禁（默认环境即可，无需任何 override）
 npm test                      # 期望 1012 用例 / 1012 通过 / 0 失败
-npm run check                 # 期望 304 文件 · main.js 1297/1300 · i18n 605
+                              #   注：全新 clone（缺另一条工作线的两个未跟踪测试文件）为 1001/1001/0
+npm run check                 # 期望 304 文件 · main.js 1297/1300 · i18n 605（全新 clone 为 300 文件）
 
 # 2) 覆盖率
 npm run test:coverage:loaded     # 期望 行 ≥85%（当前 92.9%）
@@ -258,6 +270,9 @@ npm run audit:dependencies
 
 # 5) 定向测试（改 capture 时先跑这几个）
 node --test test/capture-multi-select.test.js test/capture-annotation-geometry.test.js test/capture-interaction.test.js test/capture-selection-resize.test.js test/capture-tool-options.test.js test/capture-i18n.test.js
+
+# 6) 方案 2 的落位前后对照（改工具栏宽度/落位时跑；一次性脚本，在 .tmp/gates/ 下）
+node .tmp/gates/measure-plan2.js   # 期望：175..791px 宽的选区，工具组↔选区距离 → 0
 ```
 
 ### 8.1 打包（唯一可行的一条；本机 GitHub 不可达）
@@ -293,11 +308,11 @@ node node_modules/electron-builder/cli.js --config electron-builder.release.cjs 
    Set-Location 'D:\workspace\Highlighter'
    Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
    git log --oneline -12 ; git status --short ; git branch --show-current
-   npm test        # 期望 1012 / 1012 / 0
+   npm test        # 期望 1012 / 1012 / 0（全新 clone 为 1001 / 1001 / 0，见 §0）
    npm run check   # 期望 304 文件 + main.js 1297/1300 + i18n 605
 
-先做什么：计划内 T1/T2（含 B6）已全部开发完成，剩余按优先级是
-① 工具栏宽度优化方案 2 或 3b（3b 建议独立立项）
+先做什么：计划内 T1/T2（含 B6）与**方案 2**均已开发完成，剩余按优先级是
+① 工具栏宽度优化的**方案 3b**（方案 2 已落地，见 §4.1；3b 建议独立立项）
 ② 3.0.0 发布侧收尾（portable + verify:package + 发布记录 + tag）
 ③ 人眼/真机验收清单（自动化已覆盖隐藏窗探针与 e2e；剩下的只有观感手感）
 ④ B6 有意未做的两项（多选整体拖动、多选层级，建议与 ①② 合并评估）

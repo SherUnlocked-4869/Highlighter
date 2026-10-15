@@ -9,8 +9,17 @@ const css = fs.readFileSync(path.join(root, 'capture', 'capture.css'), 'utf8')
 
 const expectedIcons = [
   'select', 'rect', 'ellipse', 'arrow', 'line-tool', 'pen', 'highlight', 'mosaic', 'text', 'serial', 'watermark',
+  // 2026-10-15: the thickness picker and the option row became icon-only (the wording moved
+  // to title/aria-label), so both groups are part of this ordered list now.
+  'weight-thin', 'weight-medium', 'weight-thick',
   'undo', 'redo', 'long-capture', 'qr', 'table', 'ocr', 'translate', 'record', 'pin', 'save', 'print',
-  'copy', 'close'
+  'copy', 'close',
+  'fill-outline', 'fill-translucent', 'fill-solid',
+  'stroke-solid', 'stroke-dashed', 'stroke-dotted',
+  'radius-none', 'radius-small', 'radius-large',
+  'head-start', 'head-end',
+  'alpha-light', 'alpha-medium', 'alpha-strong',
+  'bold'
 ]
 
 test('capture toolbar export-PDF button ships its icon in the same ordered list (P0-4-T7②)', () => {

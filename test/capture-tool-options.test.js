@@ -53,15 +53,17 @@ test('B1 (D5/D6): the CSS makes the strip a column, keeps each row a flex row an
   assert.match(css, /\.toolbar\.above \{ flex-direction: column-reverse; \}/)
 })
 
-test('B1 (D6/R3): the toolbar size cache has exactly one invalidation helper with two call sites', () => {
+test('B1 (D6/R3): the toolbar size cache has exactly one invalidation helper with every size-changing call site', () => {
   assert.match(script, /const toolOptions = document\.getElementById\('toolOptions'\)/)
   assert.match(script, /function invalidateToolbarSize\(\) \{\s*toolbarSize = null\s*\}/)
   // 唯一写点：任何别处直接置 null 都会绕过失效纪律（R3 的"收敛为一个函数"）。
   assert.equal((script.match(/^\s+toolbarSize = null/gm) || []).length, 1, 'only invalidateToolbarSize() clears the cache')
-  // 调用点 = 定义 + resize + 第二行可见性/换族（后者由 syncToolOptionsRow 统一承担）。
-  assert.equal(script.match(/invalidateToolbarSize\(\)/g).length, 3, 'definition + resize + row change')
+  // 调用点 = 定义 + resize + 第二行可见性/换族 + 方案 2 的宽度上限变化
+  // （applyToolbarWidthLimit 改了 max-width 就等于改了高度，必须走同一个失效点）。
+  assert.equal(script.match(/invalidateToolbarSize\(\)/g).length, 4, 'definition + resize + row change + width limit')
   assert.match(script, /function resizeCanvas\(\) \{[\s\S]{0,1200}?invalidateToolbarSize\(\)/)
   assert.match(script, /function syncToolOptionsRow\(\) \{[\s\S]{0,760}?invalidateToolbarSize\(\)\s*\n\s*render\(\)/)
+  assert.match(script, /function applyToolbarWidthLimit\(\) \{[\s\S]{0,900}?invalidateToolbarSize\(\)/)
 })
 
 test('B1 (D6): placement measures the whole container and latches the above-the-region flip', () => {
@@ -115,7 +117,19 @@ test('B2/B3/B5 (D9): every option group declares its owner tools and its preset 
     assert.match(button, /data-annotation-option-value="[a-z0-9]+"/)
     assert.match(button, /aria-pressed="(?:true|false)"/)
     assert.match(button, /data-i18n-title="capture\.options\.[a-z-]+"/)
-    assert.match(button, /data-i18n="capture\.options\.[a-z-]+"/)
+    // 2026-10-15：选项行也只留图标（汉字文字下沉），所以承载文案的标记是 aria-label。
+    assert.match(button, /data-i18n-aria-label="capture\.options\.[a-z-]+"/)
+    assert.doesNotMatch(button, /data-i18n="capture\.options\./, 'no visible text label any more')
+  }
+  // 每个选项按钮都必须带一个 mask 图标（图标行与 DOM 漂移会静默变成一个空白按钮）。
+  const optionButtons = optionsMarkup.match(/<button[\s\S]*?<\/button>/g) || []
+  assert.equal(optionButtons.length, 15, 'fifteen option buttons in the row')
+  for (const button of optionButtons) {
+    assert.match(
+      button,
+      /<span class="toolbar-icon" style="--icon:url\('icons\/[a-z-]+\.svg'\)" aria-hidden="true"><\/span>/,
+      'every option button renders an icon'
+    )
   }
   // 值集合必须与纯函数预设表逐字一致（DOM 与模型漂移会静默失效）。
   for (const value of FILL_PRESETS) assert.match(optionsMarkup, new RegExp(`data-annotation-option="fill" data-annotation-option-value="${value}"`))

@@ -15,9 +15,11 @@ test('capture page loads selection resize utilities before its controller', () =
   // 必须共用一条规则（见 test/capture-floating-placement.test.js）。
   // B6（D8）追加 selection 集合原语：revalidateSelection（按 id 存活）+ commonSelectionValue
   // （mixed 判定）+ rectsIntersect（shift 框选命中）—— 加一个导出就要改这里（解构清单契约）。
+  // 方案 2（D12）追加 toolbarWidthLimit（工具栏宽度的唯一规则，见
+  // test/capture-floating-placement.test.js）。
   assert.match(
     capture,
-    /const \{\s*getResizeHandle,\s*getSourcePixelRect,\s*resizeSelection,\s*selectionCursor,\s*resolveFloatingPlacement,\s*revalidateSelection,\s*commonSelectionValue,\s*rectsIntersect\s*\} = window\.selectionUtils/
+    /const \{\s*getResizeHandle,\s*getSourcePixelRect,\s*resizeSelection,\s*selectionCursor,\s*resolveFloatingPlacement,\s*toolbarWidthLimit,\s*revalidateSelection,\s*commonSelectionValue,\s*rectsIntersect\s*\} = window\.selectionUtils/
   )
 })
 

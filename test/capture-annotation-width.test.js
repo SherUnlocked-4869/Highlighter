@@ -11,12 +11,17 @@ const script = fs.readFileSync(path.join(root, 'capture', 'capture.js'), 'utf8')
 test('screenshot toolbar shows three thickness levels instead of a native select', () => {
   assert.match(html, /id="widthGroup" class="width-group" role="group" data-i18n-aria-label="capture\.toolbar\.width-group"/)
 
-  // P0-1-T4 (S11): the visible 细/中/粗 labels come from shared/locales/capture.js now,
-  // so what this file pins is the width -> data-i18n key mapping, not the literal text.
+  // P0-1-T4 (S11): the visible labels come from shared/locales/capture.js now, so what this
+  // file pins is the width -> data-i18n key mapping, not the literal text. 2026-10-15: the
+  // three buttons are icon-only (weight-*.svg mask), so the key is the accessible name
+  // (data-i18n-aria-label) and the visible text is gone; the tooltip key is unchanged.
   for (const [width, name] of [[2, 'thin'], [4, 'medium'], [8, 'thick']]) {
     assert.match(
       html,
-      new RegExp(`data-annotation-width="${width}"[^>]*aria-pressed="(?:true|false)"[^>]*data-i18n="capture\\.toolbar\\.width-${name}"`)
+      new RegExp(
+        `data-annotation-width="${width}"[^>]*aria-pressed="(?:true|false)"[^>]*data-i18n-aria-label="capture\\.toolbar\\.width-${name}"` +
+        `[^>]*><span class="toolbar-icon" style="--icon:url\\('icons/weight-${name}\\.svg'\\)" aria-hidden="true"></span>`
+      )
     )
   }
   assert.match(html, /data-annotation-width="4" class="active"[^>]*aria-pressed="true"/)
@@ -32,7 +37,9 @@ test('capture styles size the three buttons instead of a shrunken select', () =>
   assert.doesNotMatch(css, /\.toolbar select/)
   assert.doesNotMatch(css, /\.toolbar button,\s*\.toolbar select/)
   assert.match(css, /\.width-group\s*\{[^}]*display:\s*flex/)
-  assert.match(css, /\.width-group button\s*\{[^}]*min-width:\s*2[4-9]px/)
+  // 2026-10-15：三个按钮改成只放图标（weight-*.svg）后按 30px 方形排齐，原来的 28px 文字
+  // 下限随之调整；这条断言的本意不变 —— 厚度必须由三个够大的按钮承载，而不是被压扁的控件。
+  assert.match(css, /\.width-group button\s*\{[^}]*min-width:\s*3[0-9]px/)
   assert.match(css, /\.width-group button\.active\s*\{/)
 })
 
