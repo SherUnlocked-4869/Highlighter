@@ -435,18 +435,18 @@ annotationStyles: {
 | `audit:dependencies` | 18 个失效豁免项（既有） | 同 | 本分支 `package.json`/`package-lock.json` 零改动 |
 | Playwright e2e | 6/6（计划记录） | **不可执行** | 见 §10.3 |
 
-**环境限制（2026-10-15 更正 → 不成立）**：原记录称"本会话无法启动 Electron——最小 `app.whenReady()` 冒烟也以 `0x80000003`（STATUS_BREAKPOINT）崩溃，因此 12 个 runtime 探针全是环境性失败"。**2026-10-15 复测证明这是路径误诊**：崩溃源于仓库路径含中文目录名 `副本`，把 `node_modules/electron/dist` 复制到 ASCII 路径并用 `ELECTRON_OVERRIDE_DIST_PATH` 指过去后，同一份二进制 **exit 0**，隐藏窗冒烟 `app ready; displays = 1`，全量 `npm test` **1012 / 1012 / 0**（含 `capture-renderer-runtime` 等真渲染层探针）。详见交接文档 **§2.2**（含两条环境变量与证据链）。因此：
+**环境限制（2026-10-15 更正 → 不成立，已根治）**：原记录称"本会话无法启动 Electron——最小 `app.whenReady()` 冒烟也以 `0x80000003`（STATUS_BREAKPOINT）崩溃，因此 12 个 runtime 探针全是环境性失败"。**2026-10-15 复测证明这是路径误诊**：崩溃源于工作副本路径含中文目录名 `副本`；把 Electron dist 复制到 ASCII 路径（`ELECTRON_OVERRIDE_DIST_PATH`）就 **exit 0**，隐藏窗冒烟 `app ready; displays = 1`，全量 `npm test` **1012 / 1012 / 0**。**随后把整个工作副本迁到纯 ASCII 的 `D:\workspace\Highlighter`，问题彻底消失**（默认环境即全绿）。详见交接文档 **§2.2**（含证据链）。因此：
 
-- 12 个"环境性失败"**不再是既成事实**，而是"没有按 §2.2 设环境变量"的后果；
-- `test:coverage:loaded` 的计划记录值 92.78% **现在应当可以在本机复现**（探针能跑了），下一次收口时重取；
-- Playwright e2e **环境上已具备执行条件**，但它会开 app 窗口 → 无副屏，跑之前先问用户。
+- 12 个"环境性失败"**不再是既成事实**，而是"工作副本路径含中文"的后果；
+- `test:coverage:loaded` 已复现并**超过**计划记录值：**行 92.9%**（计划记 92.78%）；`test:coverage:critical` **93.22 / 94.07 / 92.42** 与 §1.1 记录值逐字相同；
+- Playwright e2e **已执行：6 / 6 通过**（已获用户同意，因为会开 app 窗口）。
 
 ### 10.3 真机可见窗验收（仍受另一条约束限制，未执行）
 
-`AGENTS.md` 要求可见测试窗放副屏、**无副屏先询问**。本机只有单显示器 1493×933，所以本会话仍未打开任何**可见**窗口。注意区分两件事：
+`AGENTS.md` 要求可见测试窗放副屏、**无副屏先询问**。本机只有单显示器 1493×933，所以仍未把交互项交给**人眼**验证。注意区分三件事：
 
-- **可以做的**：真 Electron 的**隐藏窗**探针（`test/*runtime*.test.js`，全部 `show:false`）—— 2026-10-15 已全绿，覆盖捕获渲染层、窗口安全、i18n 热切换、更新演练、打印导出等；
-- **仍没做的**：把交互项交给**人眼**验证（右键拖动、滚轮调宽、色板、第二行重摆位、续画、B6 多选/框选）。这些需要用户在自己机器上跑，或先征得同意再开可见窗。
+- **已做的**：真 Electron 的**隐藏窗**探针（`test/*runtime*.test.js`，全部 `show:false`）—— 2026-10-15 全绿，覆盖捕获渲染层、窗口安全、i18n 热切换、更新演练、打印导出等；Playwright e2e **6 / 6** 也已跑通（会短暂开 app 窗口，用户同意后执行）；
+- **仍没做的**：把交互项交给**人眼**验收（右键拖动、滚轮调宽、色板、第二行重摆位、续画、B6 多选/框选的手感与观感）。
 
 T1/T2/B6 的真机验收清单见 §3/§4 各"验收"行与 §10.8 末尾。
 
@@ -531,7 +531,7 @@ T1/T2/B6 的真机验收清单见 §3/§4 各"验收"行与 §10.8 末尾。
 2. **层级 ↑↓ 在多选下仍只作用于 anchor**（与拖动同源）。
 > 两项都建议与 §4.2 的方案 2/3b 一起评估（那时会碰落位与主行结构，回归面本来就大）。
 
-**门禁实况（2026-10-15，本机）**：按交接文档 **§2.2** 的两条环境变量（ASCII 路径 Electron dist + 工作区 `TEMP`）跑 `npm test` → **1012 用例 / 1012 通过 / 0 失败** —— 其中 **`capture-renderer-runtime` 等真 Electron 渲染层探针真的跑了**，也就是说 B6 的接线（选中集合、mixed 回显、`elementBarOverlap`、方向键微调）拿到了**真渲染层证据**，不再只有源码契约。不设那两条变量时会退化成 1012 / 1000 / 12（12 个假失败全是"Electron 从含中文的路径启动"导致）。`npm run check` 全绿（**304 文件** · `main.js` 1297/1300 · i18n **605 ≤ 606** · locale **1003 × 3 对称**）。新增 `test/capture-multi-select.test.js`（纯函数 + 接线契约），并同步更新了 5 个契约测试文件（pointerdown 分支形态、单一写回点、`syncSelectedAnnotation`/`deleteSelectedAnnotation` 窗口、解构清单、GOLDEN 表）。
+**门禁实况（2026-10-15，工作副本 `D:\workspace\Highlighter`，默认环境只需清 `ELECTRON_RUN_AS_NODE`）**：`npm test` → **1012 用例 / 1012 通过 / 0 失败**；`npm run check` → 全绿（**304 文件** · `main.js` 1297/1300 · i18n **605 ≤ 606** · locale **1003 × 3 对称**）；`npm run test:e2e` → **6 / 6**（34.1s）；`test:coverage:loaded` → **行 92.9%**（≥85）；`test:coverage:critical` → 93.22 / 94.07 / 92.42。其中 **`capture-renderer-runtime` 等真 Electron 渲染层探针真的跑了**，也就是说 B6 的接线（选中集合、mixed 回显、`elementBarOverlap`、方向键微调）拿到了**真渲染层证据**，不再只有源码契约。旧的中文路径副本下同样代码是 1012 / 1000 / 12（12 个假失败全部由路径导致，见交接文档 §2.2）。新增 `test/capture-multi-select.test.js`（纯函数 + 接线契约），并同步更新了 5 个契约测试文件（pointerdown 分支形态、单一写回点、`syncSelectedAnnotation`/`deleteSelectedAnnotation` 窗口、解构清单、GOLDEN 表）。
 
 **待真机复测（人眼，本机单显示器无副屏 → 需用户配合或先征得同意再开可见窗）**：shift 加选/减选（含右键只加）、mixed 三态（色分裂 / 宽度全灭 / 第二行字段无 active）、批量改色改宽改选项各一帧且 Ctrl+Z 一步回退、批量 Delete、多选方向键、框选加选、**框选阈值内 shift 点击不清空选中**、框选期间 pointercancel 与"拖动那一项其余不动"。
 
