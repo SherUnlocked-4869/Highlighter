@@ -116,6 +116,7 @@
 
     // --- floating element bar (P0-5) ---------------------------------------
     'capture.element.selected': '已选中标注',
+    'capture.element.selected-count': '已选中 {count} 个元素',
     'capture.element.move-hint': '右键拖动元素 · Alt+拖动选区',
     'capture.element.move-hint-tip': '任意工具下按住右键拖动即可移动标注；元素铺满选区（如水印）时按住 Alt 在选区内拖动即可移动选区',
     'capture.element.resize-hint': '拖动圆点缩放',
@@ -255,6 +256,7 @@
     'capture.options.bold': 'Bold',
 
     'capture.element.selected': 'Annotation selected',
+    'capture.element.selected-count': '{count} elements selected',
     'capture.element.move-hint': 'Right-drag the element · Alt+drag the region',
     'capture.element.move-hint-tip': 'Hold the right button and drag to move an annotation with any tool; when an element fills the region (a watermark, say), hold Alt and drag inside it to move the region instead',
     'capture.element.resize-hint': 'Drag a dot to resize',
@@ -390,6 +392,7 @@
     'capture.options.bold': '粗體',
 
     'capture.element.selected': '已選取標註',
+    'capture.element.selected-count': '已選取 {count} 個元素',
     'capture.element.move-hint': '右鍵拖曳元素 · Alt+拖曳選取區',
     'capture.element.move-hint-tip': '任意工具下按住右鍵拖曳即可移動標註；元素佈滿選取區（如浮水印）時按住 Alt 在選取區內拖曳即可移動選取區',
     'capture.element.resize-hint': '拖曳圓點縮放',

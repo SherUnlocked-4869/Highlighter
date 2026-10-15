@@ -133,6 +133,9 @@ html, body {
 /* The trigger latches while its popover is open (aria-expanded mirrors the state). */
 .color-wrap > button[aria-expanded="true"] { background: rgba(255, 255, 255, .18); }
 .color-wrap > button span { width: 18px; height: 18px; border: 2px solid #fff; border-radius: 50%; background: #ff3b30; box-shadow: 0 0 0 1px rgba(0, 0, 0, .4); }
+/* B6 (D8): a multi-selection whose items disagree shows a split swatch instead of
+   pretending one of the colours is the current one. */
+.color-wrap > button span.mixed { background: linear-gradient(135deg, #ff3b30 0 50%, #1687ff 50% 100%); }
 .color-palette {
   position: absolute;
   left: 0;
@@ -188,6 +191,8 @@ html, body {
   backdrop-filter: blur(18px);
 }
 .element-bar span { color: #bbb; white-space: nowrap; font-size: 12px; }
+/* B6 (D8): the multi-selection counter reads as data, not as a hint. */
+.element-bar .element-count { color: #eee; font-variant-numeric: tabular-nums; }
 /* PR2 Lead 决策的提示：元素铺满选区时用 Alt+拖动 移动选区（不是又一个按钮）。 */
 .element-bar .element-hint { color: #8a8a92; }
 .element-bar button {

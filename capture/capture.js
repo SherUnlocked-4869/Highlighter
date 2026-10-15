@@ -8,6 +8,8 @@ const elementBar = document.getElementById('elementBar')
 // P0-5 PR4：层级 ↑↓ 两个按钮（#elementBar 内，加在删除与取消选中之间 —— 工具栏不塞按钮）。
 const elementFront = document.getElementById('elementFront')
 const elementBack = document.getElementById('elementBack')
+// B6 (D8): the multi-selection counter on #elementBar.
+const elementCount = document.getElementById('elementCount')
 const sizeBadge = document.getElementById('sizeBadge')
 const tip = document.getElementById('tip')
 const loading = document.getElementById('loading')
@@ -45,7 +47,9 @@ const {
   getSourcePixelRect,
   resizeSelection,
   selectionCursor,
-  resolveFloatingPlacement
+  resolveFloatingPlacement,
+  revalidateSelection,
+  commonSelectionValue
 } = window.selectionUtils
 const {
   PRESET_COLORS,
@@ -108,6 +112,11 @@ let historyIndex = 0
 // 单调递增 id：选中/快照/撤销都按 id 重解析对象（快照还原会换掉对象身份）。
 let annotationSeq = 0
 let selectedAnnotation = null
+// B6 (D8): the authoritative multi-selection. selectedAnnotation stays the primary
+// (anchor) item, so every single-selection path that shipped before keeps reading
+// selectedAnnotationItem() unchanged; this set is what tells the multi-aware paths
+// (echo, style edit, delete, nudge, element bar) how many items are really selected.
+let selectedIds = new Set()
 // P0-5 PR2 + A1 (D2): the element drag state. origin is always the UNTOUCHED
 // original object and every frame re-translates from it, so clamping cannot
 // accumulate drift and pointerup can tell "did it actually move". thresholdPassed
@@ -256,7 +265,9 @@ function resizeCanvas() {
   canvas.style.width=`${innerWidth}px`
   canvas.style.height=`${innerHeight}px`
   invalidateToolbarSize()
-  elementBarSize = null
+  // B6 (D8): the element bar's cached rect has the same single invalidation point now,
+  // so a counter change and a resize can never disagree about the bar's size.
+  invalidateElementBarSize()
   if (image && initData && ['fullscreen', 'image', 'canvas'].includes(initData.mode)) {
     selection = imageDisplayBounds()
   }
@@ -483,6 +494,9 @@ function updateElementBar() {
   const index = annotations.indexOf(item)
   elementFront.disabled = index < 0 || index >= annotations.length - 1
   elementBack.disabled = index <= 0
+  // B6 (D8): the counter label. It changes the bar's width, so it must drop the cached
+  // rect - otherwise the placement below keeps using the single-selection width.
+  syncElementBarCount()
   const bounds = annotationBounds(item) || { x: 0, y: 0, w: 0, h: 0 }
   const rect = elementBarSize || (elementBarSize = elementBar.getBoundingClientRect())
   // The element bar shares the strip's placement rule, so the two floating surfaces can
@@ -535,6 +549,26 @@ function invalidateToolbarSize() {
   toolbarSize = null
 }
 
+// B6 (D8): the element bar caches its own rect too, and the multi-selection counter
+// changes that rect's width. Same discipline as the strip: one write point, called from
+// the places that can change the bar's content or the stage size.
+function invalidateElementBarSize() {
+  elementBarSize = null
+}
+
+// B6 (D8): the counter is plain text written by the controller (like the size badge),
+// so it is not a data-i18n marker; the wording still comes from the locale table.
+function syncElementBarCount() {
+  const count = selectedIds.size
+  const label = count > 1 ? t('capture.element.selected-count', { count }) : ''
+  if (elementCount.textContent !== label) elementCount.textContent = label
+  const visible = count > 1
+  if (elementCount.classList.contains('hidden') === visible) {
+    elementCount.classList.toggle('hidden', !visible)
+    invalidateElementBarSize()
+  }
+}
+
 function toolOptionGroups(tool) {
   if (!tool) return []
   return TOOL_OPTION_GROUPS.filter((group) => group.dataset.optionTools.split(' ').includes(tool))
@@ -556,9 +590,24 @@ function rowToolOptions(tool) {
   return resolveToolOptions(tool, toolStyles[tool])
 }
 
+// B6 (D8): the option map for a multi-selection. A field keeps the value its items
+// agree on, or null where they disagree - String(null) matches no button value, so a
+// mixed field simply shows nothing active. Items of another type are ignored, which is
+// what keeps the row honest when the selection mixes a rect with a pen.
+function selectionToolOptions(tool, selected) {
+  const fields = TOOL_OPTION_FIELDS[tool]
+  if (!fields) return {}
+  const rows = selected.filter((entry) => entry.type === tool).map((entry) => resolveToolOptions(tool, entry))
+  if (!rows.length) return resolveToolOptions(tool, toolStyles[tool])
+  const options = {}
+  fields.forEach((field) => { options[field] = commonSelectionValue(rows.map((row) => row[field])) })
+  return options
+}
+
 function syncToolOptionControls() {
   const tool = optionRowTool()
-  const options = tool ? rowToolOptions(tool) : {}
+  const selected = selectedAnnotations()
+  const options = !tool ? {} : (selected.length > 1 ? selectionToolOptions(tool, selected) : rowToolOptions(tool))
   toolOptions.querySelectorAll('[data-annotation-option]').forEach((button) => {
     const key = button.dataset.annotationOption
     if (!Object.hasOwn(options, key)) return
@@ -680,12 +729,44 @@ function applyToolbarWidth(width) {
 
 function applyToolbarColor(color) {
   colorInput.value = color
+  // B6 (D8): a concrete colour always leaves the mixed state behind.
+  colorPreview.classList.remove('mixed')
   colorPreview.style.background = color
   colorPalette.querySelectorAll('[data-annotation-color]').forEach((button) => {
     const active = button.dataset.annotationColor === color
     button.classList.toggle('active', active)
     button.setAttribute('aria-pressed', String(active))
   })
+}
+
+// B6 (D8): "mixed" is the cheapest honest display for a field the selected items
+// disagree on - no option looks active and the swatch shows a two-colour split.
+function applyToolbarMixedColor() {
+  colorPreview.classList.add('mixed')
+  colorPreview.style.background = ''
+  colorPalette.querySelectorAll('[data-annotation-color]').forEach((button) => {
+    button.classList.remove('active')
+    button.setAttribute('aria-pressed', 'false')
+  })
+}
+
+function applyToolbarMixedWidth() {
+  lineWidthGroup.querySelectorAll('[data-annotation-width]').forEach((button) => {
+    button.classList.remove('active')
+    button.setAttribute('aria-pressed', 'false')
+  })
+}
+
+// B6 (D8): the toolbar echo for a multi-selection. Each of the two main controls keeps
+// its shared value or goes indeterminate; the second row gets the same treatment in
+// syncToolOptionControls(). UI-only, exactly like the single-selection echo.
+function applyToolbarSelection(selected) {
+  const sharedColor = commonSelectionValue(selected.map((entry) => normalizeAnnotationColor(entry.color)))
+  const sharedWidth = commonSelectionValue(selected.map((entry) => resolveAnnotationWidth(entry.width)))
+  if (sharedColor === null) applyToolbarMixedColor()
+  else applyToolbarColor(sharedColor)
+  if (sharedWidth === null) applyToolbarMixedWidth()
+  else applyToolbarWidth(sharedWidth)
 }
 
 // A3 (D3): recents are session memory only (never persisted); the newest custom
@@ -826,15 +907,67 @@ function selectedAnnotationItem() {
   return selectedAnnotation && annotations.includes(selectedAnnotation) ? selectedAnnotation : null
 }
 
+// B6 (D8): the whole selection in z-order. The primary item is guaranteed to be one of
+// them, so `length === 1` is exactly the pre-B6 single-selection case and every existing
+// single-item path stays correct because it reads selectedAnnotationItem().
+function selectedAnnotations() {
+  return annotations.filter((item) => selectedIds.has(item.id))
+}
+
+// B6 (D8): shift+click adds one item and promotes it to the primary (the anchor whose
+// style the toolbar echoes). Adding is also what shift+right-click does: a right press
+// is a pick-up-and-drag gesture, so it can only grow the selection.
+function addSelectedAnnotation(item) {
+  if (!item || selectedIds.has(item.id)) return
+  selectedIds = new Set(selectedIds).add(item.id)
+  selectedAnnotation = item
+  syncToolbarStyleFromSelection()
+  render()
+}
+
+// B6 (D8): shift+click on an already selected item removes it. Removing the primary
+// hands the anchor to the topmost survivor, and removing the last item clears the
+// selection through the one path that keeps the set and the anchor in step.
+function toggleSelectedAnnotation(item) {
+  if (!item) return
+  if (!selectedIds.has(item.id)) { addSelectedAnnotation(item); return }
+  const next = new Set(selectedIds)
+  next.delete(item.id)
+  selectedIds = next
+  const remaining = selectedAnnotations()
+  if (!remaining.length) { setSelectedAnnotation(null); return }
+  if (!next.has(selectedAnnotation?.id)) selectedAnnotation = remaining[remaining.length - 1]
+  syncToolbarStyleFromSelection()
+  render()
+}
+
+// B6 (D8) + A4-T1: a snapshot restore replaces the objects, so both the set and the
+// anchor are re-resolved by id. The topmost survivor becomes the anchor when the old one
+// is gone, which keeps the single-selection case identical to the pre-B6 behaviour.
+function reResolveSelectedAnnotation(annotations, ids, current) {
+  const id = current?.id
+  const resolved = ids.has(id) ? annotations.find((item) => item.id === id) || null : null
+  if (resolved) return resolved
+  return ids.size ? annotations.filter((item) => ids.has(item.id)).pop() || null : null
+}
+
 // A4 (D4): selection echo is UI-only. It repaints the width/colour controls from
 // the selected item so the toolbar stops lying about what is on screen; it must
 // never call commitSelectedStyle/stageSelectedStyle, or a mere selection would
 // create an undo frame. With nothing selected the committed defaults come back.
 function syncToolbarStyleFromSelection() {
+  const selected = selectedAnnotations()
   const item = selectedAnnotationItem()
   // B4 (D4): with nothing selected the toolbar shows the active tool's remembered
   // style (which the migration seeded from the legacy colour/width keys).
   const fallback = currentToolStyle()
+  // B6 (D8): a multi-selection echoes the value the items agree on, or an
+  // indeterminate control where they disagree. Still UI-only - never a commit path.
+  if (selected.length > 1) {
+    applyToolbarSelection(selected)
+    syncToolOptionsRow()
+    return
+  }
   applyToolbarColor(item ? normalizeAnnotationColor(item.color) : fallback.color)
   applyToolbarWidth(item ? resolveAnnotationWidth(item.width) : fallback.width)
   // B2: the second row belongs to whichever tool can offer options right now, so a
@@ -843,15 +976,14 @@ function syncToolbarStyleFromSelection() {
 }
 
 function syncSelectedAnnotation() {
-  const id = selectedAnnotation?.id
-  selectedAnnotation = id === undefined || id === null ? null : annotations.find((item) => item.id === id) || null
-  // A4-T1: undo/redo replaces object identities, so the re-resolved selection has
-  // to repaint the toolbar too (the restored item may carry different styles).
+  selectedIds = revalidateSelection(annotations, selectedIds)
+  selectedAnnotation = reResolveSelectedAnnotation(annotations, selectedIds, selectedAnnotation)
   syncToolbarStyleFromSelection()
 }
 
 function setSelectedAnnotation(item) {
   selectedAnnotation = item || null
+  selectedIds = item ? new Set([item.id]) : new Set()
   syncToolbarStyleFromSelection()
   render()
 }
@@ -900,13 +1032,18 @@ function redoAnnotations() {
 }
 
 // 删除选中项：序列号删除后**不重编号**（方案 §8 风险⑥），空隙保留。
+// B6 (D8): the whole selection goes in one frame - Delete on a multi-selection must not
+// force the user to repeat the key per item.
 function deleteSelectedAnnotation() {
-  const item = selectedAnnotationItem()
-  if (!item) return
+  const targets = selectedAnnotations()
+  if (!targets.length) return
   flushCoalescedEdits()
-  annotations.splice(annotations.indexOf(item), 1)
+  targets.forEach((item) => {
+    const index = annotations.indexOf(item)
+    if (index >= 0) annotations.splice(index, 1)
+  })
   selectedAnnotation = null
-  // A4: with nothing selected the toolbar returns to the committed defaults.
+  selectedIds = new Set()
   syncToolbarStyleFromSelection()
   snapshotAnnotations()
   render()
@@ -922,10 +1059,11 @@ function confirmDiscardAnnotations() {
 // 确认后清空；仍然压一帧快照，使这次清空也能被 Ctrl+Z 精确回退。
 function clearAnnotationsForNewSelection() {
   // 没有标注可清时不压帧：否则首次手动划选区会在栈底多出一个与初始状态相同的死撤销步。
-  if (!annotations.length) { selectedAnnotation = null; syncToolbarStyleFromSelection(); return }
+  if (!annotations.length) { selectedAnnotation = null; selectedIds = new Set(); syncToolbarStyleFromSelection(); return }
   flushCoalescedEdits()
   annotations = []
   selectedAnnotation = null
+  selectedIds = new Set()
   syncToolbarStyleFromSelection()
   snapshotAnnotations()
 }
@@ -1050,22 +1188,27 @@ function nudgeSelectedAnnotation(event) {
   const direction = NUDGE_DIRECTIONS[event.key]
   if (!direction) return false
   if (event.ctrlKey || event.altKey || event.metaKey) return false
-  const item = selectedAnnotationItem()
-  if (!item) return false
+  const targets = selectedAnnotations()
+  if (!targets.length) return false
   event.preventDefault()
-  const index = annotations.indexOf(item)
-  if (index < 0) return true
   const step = event.shiftKey ? NUDGE_STEP_FAST : NUDGE_STEP
-  const moved = clampAnnotationToStage(
-    translateAnnotation(item, direction[0] * step, direction[1] * step),
-    stageRect()
-  )
-  if (!moved) return true
-  // 贴舞台边时 clamp 会把这一步位移吃掉 —— 此时不置 dirty，否则 500ms 后会压入与上一帧
-  // 完全相同的快照，Ctrl+Z 变成空按（违反"0 位移不压帧"）。
-  if (!annotationWasMoved(moved, item)) { render(); return true }
-  annotations[index] = moved
-  selectedAnnotation = moved
+  // B6 (D8): the whole selection moves together and still merges into one undo frame.
+  let moved = false
+  targets.forEach((item) => {
+    const index = annotations.indexOf(item)
+    if (index < 0) return
+    const next = clampAnnotationToStage(
+      translateAnnotation(item, direction[0] * step, direction[1] * step),
+      stageRect()
+    )
+    // 贴舞台边时 clamp 会把这一步位移吃掉 —— 此时不算位移，否则 500ms 后会压入与上一帧
+    // 完全相同的快照，Ctrl+Z 变成空按（违反"0 位移不压帧"）。
+    if (!next || !annotationWasMoved(next, item)) return
+    annotations[index] = next
+    if (selectedAnnotation && selectedAnnotation.id === item.id) selectedAnnotation = next
+    moved = true
+  })
+  if (!moved) { render(); return true }
   nudgeDirty = true
   if (nudgeTimer) clearTimeout(nudgeTimer)
   nudgeTimer = setTimeout(commitNudge, NUDGE_COMMIT_DELAY)
@@ -1150,18 +1293,46 @@ function cancelResizeAnnotation() {
 // 样式补丁落到**选中项**上：生成新副本 → 替换数组项（绝不就地改原对象，与 translateAnnotation /
 // resizeAnnotationToBox 同一契约）。id 与 serial.number 等字段原样带过 —— 样式编辑不重编号。
 // 补丁里的每一项都与现值相等时返回 false：0 变化不制造无效撤销步（与 PR2/PR3 的 editDirty 同口径）。
+// B6 (D8): with more than one item selected the same patch lands on the whole selection,
+// still as one undo frame - the pre-B6 single-item behaviour is passed through untouched.
 function applyStyleToSelectedAnnotation(patch) {
   const item = selectedAnnotationItem()
   if (!item || !patch) return false
   const keys = Object.keys(patch)
-  if (!keys.length || !keys.some((key) => item[key] !== patch[key])) return false
-  const index = annotations.indexOf(item)
-  if (index < 0) return false
-  const styled = Object.assign({}, item, patch)
-  annotations[index] = styled
-  selectedAnnotation = styled
-  render()
-  return true
+  if (!keys.length) return false
+  const selected = selectedAnnotations()
+  if (selected.length > 1) return writeAnnotationStyles(selected, patch, keys, true)
+  return writeAnnotationStyles([item], patch, keys, false)
+}
+
+// Does this tool own the patched field? Colour and width belong to every remembered
+// style tool; the fields of the second row belong to the tool that declares them. B6
+// uses this to let one patch cross a mixed-type selection without giving a pen a fill.
+function ownsAnnotationField(tool, field) {
+  if (field === 'color' || field === 'width') return TOOL_STYLE_TOOLS.includes(tool)
+  const fields = TOOL_OPTION_FIELDS[tool]
+  return !!fields && fields.includes(field)
+}
+
+// B6 (D8): the one write-back point for a style patch. Every target gets a fresh copy
+// (never an in-place edit); the whole selection is written before a single render, so a
+// multi-selection edit is still exactly one undo frame. `ownership` restricts a target
+// to the fields its own tool owns (only the multi-selection path asks for that).
+function writeAnnotationStyles(targets, patch, fields, ownership) {
+  let changed = false
+  targets.forEach((target) => {
+    const keys = ownership ? fields.filter((key) => ownsAnnotationField(target.type, key)) : fields
+    if (!keys.length || !keys.some((key) => target[key] !== patch[key])) return
+    const index = annotations.indexOf(target)
+    if (index < 0) return
+    const styled = Object.assign({}, target)
+    keys.forEach((key) => { styled[key] = patch[key] })
+    annotations[index] = styled
+    if (selectedAnnotation && selectedAnnotation.id === target.id) selectedAnnotation = styled
+    changed = true
+  })
+  if (changed) render()
+  return changed
 }
 
 // 离散样式操作（线宽按钮）：立刻压一帧。若还有未收口的颜色改动，先把它单独收一帧 —— 两次
@@ -1219,6 +1390,7 @@ function reorderSelectedAnnotation(direction) {
 function resetAnnotationState() {
   annotations = []
   selectedAnnotation = null
+  selectedIds = new Set()
   pendingMove = null
   resizingAnnotation = null
   // B7: a continuation that never settled belongs to the previous capture.
@@ -1230,7 +1402,7 @@ function resetAnnotationState() {
   cancelAnnotationWidthPersist()
   annotationHistory = [[]]
   historyIndex = 0
-  elementBarSize = null
+  invalidateElementBarSize()
 }
 
 function commitAnnotation(item) {
@@ -1356,7 +1528,10 @@ function quickSelectAnnotation(event, point) {
   if (selectState === 'auto') return
   const hit = findAnnotationAt(annotations, point)
   if (hit) {
-    setSelectedAnnotation(hit)
+    // B6 (D8): shift+right-click extends the selection; the press still starts a move
+    // on the item it grabbed (a right press never removes anything from the set).
+    if (event.shiftKey) addSelectedAnnotation(hit)
+    else setSelectedAnnotation(hit)
     beginPendingMove(hit, point, event)
     return
   }
@@ -1386,7 +1561,12 @@ canvas.addEventListener('pointerdown',(event)=>{
   const outsideSelection=currentTool==='select'&&!resizeHandle&&!insideSelection(point)
   if (outsideSelection) {
     const outsideHit=findAnnotationAt(annotations,point)
-    if(outsideHit){setSelectedAnnotation(outsideHit);beginPendingMove(outsideHit,point,event);return}
+    if(outsideHit){
+      // B6 (D8): shift extends the selection here too, but without starting a move -
+      // the item the user just added must not be dragged away by the same gesture.
+      if(event.shiftKey){toggleSelectedAnnotation(outsideHit);updateSelectionCursor(point);return}
+      setSelectedAnnotation(outsideHit);beginPendingMove(outsideHit,point,event);return
+    }
   }
   if (!selection || outsideSelection) {
     // D4 落地项：重划选区会丢弃全部已提交标注 —— 先弹确认；取消则标注与选区都保持原状。
@@ -1403,12 +1583,19 @@ canvas.addEventListener('pointerdown',(event)=>{
     // 命中与缩放一律屏幕 CSS 坐标；resizeSelection 的 bounds 传**舞台**（见 resizeAnnotationTo）。
     const elementHandle=selectedResizeHandle(point)
     if(elementHandle){const target=selectedAnnotationItem();resizingAnnotation={id:target.id,origin:target,originBounds:annotationBounds(target),handle:elementHandle};try{canvas.setPointerCapture(event.pointerId)}catch{};updateSelectionCursor(point);render();return}
-    // PR2 元素体内拖动：点落在**当前已选中**元素的 annotationBounds 内 → 进入 move 态。
-    const selected=selectedAnnotationItem()
-    if(selected&&pointInAnnotationBounds(selected,point)){beginPendingMove(selected,point,event);return}
+    // PR2 元素体内拖动：点落在**已选中**元素的 annotationBounds 内 → 进入 move 态。
+    // B6 (D8): any selected element accepts the body press. Shift over one of them
+    // removes it from the selection instead of starting a move (the standard toggle).
+    const bodyItem=selectedAnnotations().find((entry)=>pointInAnnotationBounds(entry,point))
+    if(bodyItem&&event.shiftKey){toggleSelectedAnnotation(bodyItem);updateSelectionCursor(point);return}
+    if(bodyItem){beginPendingMove(bodyItem,point,event);return}
     // PR1 元素命中（逆序取最上层）→ 选中；未命中才退回"拖选区"。
     const hit=findAnnotationAt(annotations,point)
-    if(hit){setSelectedAnnotation(hit);updateSelectionCursor(point);return}
+    if(hit){
+      // B6 (D8): shift+click toggles the hit item in or out of the selection.
+      if(event.shiftKey){toggleSelectedAnnotation(hit);updateSelectionCursor(point);return}
+      setSelectedAnnotation(hit);updateSelectionCursor(point);return
+    }
     setSelectedAnnotation(null)
     dragging=true; return
   }

@@ -132,6 +132,8 @@ const GOLDEN = {
   'capture.options.bold': '粗体',
 
   'capture.element.selected': '已选中标注',
+  // B6 (D8)：多选计数（新增键，非迁移口径；沿用已有的 {count} 插值形态）。
+  'capture.element.selected-count': { source: '已选中 3 个元素', params: { count: '3' } },
   'capture.element.move-hint': '右键拖动元素 · Alt+拖动选区',
   'capture.element.move-hint-tip': '任意工具下按住右键拖动即可移动标注；元素铺满选区（如水印）时按住 Alt 在选区内拖动即可移动选区',
   'capture.element.resize-hint': '拖动圆点缩放',

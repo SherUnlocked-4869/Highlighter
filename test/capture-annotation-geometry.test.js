@@ -591,14 +591,18 @@ test('capture.js gives every committed annotation a monotonic id and undoes thro
   // 契约（方案 §8.4）：Delete 不再 pop 末尾；redoStack 随快照栈一起消失
   assert.doesNotMatch(script, /annotations\.pop\(\)/)
   assert.doesNotMatch(script, /redoStack/)
-  assert.match(script, /function deleteSelectedAnnotation\(\) \{[\s\S]{0,320}?annotations\.splice\(annotations\.indexOf\(item\), 1\)/)
+  // B6（D8）：Delete 删的是**整个选中集合**（仍是"删选中项、不 pop 末尾"），
+  // 单选中时逐个删除与旧行为逐字等价。
+  assert.match(script, /function deleteSelectedAnnotation\(\) \{[\s\S]{0,400}?const index = annotations\.indexOf\(item\)[\s\S]{0,80}?annotations\.splice\(index, 1\)/)
   assert.match(script, /if\(event\.key==='Delete'\)\{event\.preventDefault\(\);deleteSelectedAnnotation\(\)\}/)
 })
 
 test('pointerdown keeps the handles first and selects the topmost annotation before moving the selection', () => {
   assert.match(pointerdownSource, /if \(resizeHandle\) \{ resizing=\{handle:resizeHandle,initial:\{\.\.\.selection\}\}/)
   assert.match(pointerdownSource, /const hit=findAnnotationAt\(annotations,point\)/)
-  assert.match(pointerdownSource, /if\(hit\)\{setSelectedAnnotation\(hit\);updateSelectionCursor\(point\);return\}/)
+  // B6（D8）：shift+命中 = 加选/减选，普通命中仍是"选中并更新光标"（不进入 move）。
+  assert.match(pointerdownSource, /if\(event\.shiftKey\)\{toggleSelectedAnnotation\(hit\);updateSelectionCursor\(point\);return\}/)
+  assert.match(pointerdownSource, /setSelectedAnnotation\(hit\);updateSelectionCursor\(point\);return/)
   // A5（D10）后 pointerdown 里有两处命中测试：选区外那一处在前（元素被拖出选区仍可选），
   // 选区内的既有优先级不动 —— 所以下面的顺序断言一律对准**选区内**那一处。
   const inRegionHit = 'const hit=findAnnotationAt(annotations,point)'
@@ -677,7 +681,7 @@ test('PR2: pointerdown starts an element-body move inside the selected bounds, b
   // 优先级（方案 §8.4）：选区手柄 → [PR3 选中元素手柄插槽] → 元素体内 → 元素命中 → 拖选区。
   // A5（D10）新增的选区外命中测试在前，所以这些断言都对准选区内那一处 `const hit=...`。
   const altIndex = pointerdownSource.indexOf('if(event.altKey)')
-  const bodyIndex = pointerdownSource.indexOf('pointInAnnotationBounds(selected,point)')
+  const bodyIndex = pointerdownSource.indexOf('pointInAnnotationBounds(entry,point)')
   const hitIndex = pointerdownSource.indexOf('const hit=findAnnotationAt(annotations,point)')
   assert.ok(altIndex >= 0 && altIndex < hitIndex, 'Alt+drag bypasses the element hit test')
   assert.ok(bodyIndex >= 0 && bodyIndex < hitIndex, 'the element-body move precedes the element hit test')
@@ -685,7 +689,9 @@ test('PR2: pointerdown starts an element-body move inside the selected bounds, b
     pointerdownSource.indexOf('const outsideHit=findAnnotationAt(annotations,point)') < bodyIndex,
     'the out-of-region hit test (A5) precedes the in-region body move, which it cannot shadow'
   )
-  assert.match(pointerdownSource, /const selected=selectedAnnotationItem\(\)/)
+  // B6（D8）：体内拖动现在覆盖**任意选中项**（shift 落在已选中项上则改为减选）。
+  assert.match(pointerdownSource, /const bodyItem=selectedAnnotations\(\)\.find\(\(entry\)=>pointInAnnotationBounds\(entry,point\)\)/)
+  assert.match(pointerdownSource, /if\(bodyItem\)\{beginPendingMove\(bodyItem,point,event\);return\}/)
   assert.ok(
     pointerdownSource.indexOf('if (resizeHandle)') < bodyIndex,
     'the selection handle keeps priority over the element-body move'
@@ -759,7 +765,7 @@ test('PR3: pointerdown tries the selected-element handles after the selection ha
   assert.match(script, /function selectedResizeHandle\(point\) \{[\s\S]{0,260}?bounds\.w <= 0 \|\| bounds\.h <= 0\) return ''/)
 
   const handleIndex = pointerdownSource.indexOf('selectedResizeHandle(point)')
-  const bodyIndex = pointerdownSource.indexOf('pointInAnnotationBounds(selected,point)')
+  const bodyIndex = pointerdownSource.indexOf('pointInAnnotationBounds(entry,point)')
   // A5（D10）的选区外命中测试在最前面，这里对准选区内那一处。
   const hitIndex = pointerdownSource.indexOf('const hit=findAnnotationAt(annotations,point)')
   const selectionHandleIndex = pointerdownSource.indexOf('if (resizeHandle)')
@@ -884,13 +890,19 @@ test('PR4: the array order is the z-order, so renderOverlay and exportSelectionC
 
 test('PR4: a style change lands on the selected item with a fresh copy, never on "the next new annotation"', () => {
   // 生成新副本 → 替换数组项（绝不就地改原对象，与 PR2/PR3 同一契约）。
-  assert.match(styleSource, /const styled = Object\.assign\(\{\}, item, patch\)/)
+  assert.match(styleSource, /const styled = Object\.assign\(\{\}, target\)/)
   assert.match(styleSource, /annotations\[index\] = styled/)
   assert.match(styleSource, /selectedAnnotation = styled/)
   assert.equal(styleSource.match(/annotations\[index\] = /g).length, 1, '只有一处写回，且写的是副本')
   // 0 变化不制造无效撤销步（与 PR2 的 annotationWasMoved / PR3 的 annotationWasResized 同口径）。
-  assert.match(styleSource, /if \(!keys\.length \|\| !keys\.some\(\(key\) => item\[key\] !== patch\[key\]\)\) return false/)
+  assert.match(styleSource, /if \(!keys\.length \|\| !keys\.some\(\(key\) => target\[key\] !== patch\[key\]\)\) return/)
   assert.match(styleSource, /function applyStyleToSelectedAnnotation\(patch\) \{\s*const item = selectedAnnotationItem\(\)/)
+  // B6（D8）：多选时同一条补丁落到**整个选中集合**，仍然只压一帧快照；且只写目标
+  // 自己拥有的字段（混合类型的选择集不会给 pen 塞 fill、也不会给 rect 塞 alpha）。
+  assert.match(styleSource, /function writeAnnotationStyles\(targets, patch, fields, ownership\) \{/)
+  assert.match(styleSource, /const keys = ownership \? fields\.filter\(\(key\) => ownsAnnotationField\(target\.type, key\)\) : fields/)
+  assert.match(styleSource, /if \(selected\.length > 1\) return writeAnnotationStyles\(selected, patch, keys, true\)/)
+  assert.match(styleSource, /return writeAnnotationStyles\(\[item\], patch, keys, false\)/)
   // 离散操作（线宽按钮）：先把待收口的合并型编辑各自成帧，再压这次样式帧 ——
   // 两次用户操作不挤进同一个撤销步（OCR 评审修复后由 flushCoalescedEdits 统一承担）。
   assert.match(styleSource, /function commitSelectedStyle\(patch\) \{[\s\S]{0,220}?flushCoalescedEdits\(\)/)

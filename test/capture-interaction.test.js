@@ -46,7 +46,8 @@ test('A1 (D1): pointerdown gates on event.button after the self-heal and before 
 test('A1 (D1): the right button quick-selects or deselects, and can never draw or re-run the region', () => {
   // 命中 → 选中 + 进入 pendingMove（与左键体内拖动同构）。
   assert.match(quickSelectSource, /const hit = findAnnotationAt\(annotations, point\)/)
-  assert.match(quickSelectSource, /if \(hit\) \{\s*setSelectedAnnotation\(hit\)\s*beginPendingMove\(hit, point, event\)\s*return\s*\}/)
+  // B6（D8）：shift+右键是"加选"（右键是拿起即拖的手势，绝不从集合里移除）。
+  assert.match(quickSelectSource, /if \(hit\) \{\s*\/\/[\s\S]{0,200}?if \(event\.shiftKey\) addSelectedAnnotation\(hit\)\s*else setSelectedAnnotation\(hit\)\s*beginPendingMove\(hit, point, event\)\s*return\s*\}/)
   // 未命中：select 工具取消选中；绘图工具 no-op。
   assert.match(quickSelectSource, /if \(currentTool === 'select'\) setSelectedAnnotation\(null\)/)
   assert.match(quickSelectSource, /if \(selectState === 'auto'\) return/)
@@ -87,7 +88,8 @@ test('A1 (D2): a press only becomes a move once it crosses MOVE_THRESHOLD, and a
   assert.match(script, /function cancelMoveAnnotation\(\) \{[\s\S]{0,200}?const state = pendingMove/)
   // 三个入口复用同一个创建点：左键体内、右键快选、选区外命中。
   assert.equal(script.match(/beginPendingMove\(/g).length, 4, 'one definition + three call sites')
-  assert.match(pointerdownSource, /if\(selected&&pointInAnnotationBounds\(selected,point\)\)\{beginPendingMove\(selected,point,event\);return\}/)
+  // B6（D8）：体内拖动覆盖任意选中项；shift 落在已选中项上改为减选。
+  assert.match(pointerdownSource, /if\(bodyItem\)\{beginPendingMove\(bodyItem,point,event\);return\}/)
 })
 
 // ---------- A2：滚轮调笔画粗细 ----------
@@ -159,9 +161,11 @@ test('A4: undo/redo, deletion and region reset all repaint the toolbar from the 
 
 test('A5 (D10): an out-of-region element hit wins over replacing the region', () => {
   assert.match(pointerdownSource, /const outsideSelection=currentTool==='select'&&!resizeHandle&&!insideSelection\(point\)/)
+  // B6（D8）：选区外命中同样支持 shift 加减选；shift 分支不进入 pendingMove（刚加进来的
+  // 元素不会被同一次手势拖走），普通命中路径逐字不变。
   assert.match(
     pointerdownSource,
-    /if \(outsideSelection\) \{\s*const outsideHit=findAnnotationAt\(annotations,point\)\s*if\(outsideHit\)\{setSelectedAnnotation\(outsideHit\);beginPendingMove\(outsideHit,point,event\);return\}\s*\}/
+    /if \(outsideSelection\) \{\s*const outsideHit=findAnnotationAt\(annotations,point\)\s*if\(outsideHit\)\{[\s\S]{0,320}?if\(event\.shiftKey\)\{toggleSelectedAnnotation\(outsideHit\);updateSelectionCursor\(point\);return\}\s*setSelectedAnnotation\(outsideHit\);beginPendingMove\(outsideHit,point,event\);return\s*\}\s*\}/
   )
   const outsideIndex = pointerdownSource.indexOf('const outsideHit=findAnnotationAt(annotations,point)')
   const reselectIndex = pointerdownSource.indexOf('if (!selection || outsideSelection)')

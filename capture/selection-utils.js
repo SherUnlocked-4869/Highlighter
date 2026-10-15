@@ -84,6 +84,30 @@
     }
   }
 
+  // B6 (D8): keep only the selected ids that still exist in the annotation array.
+  // Snapshot restore replaces object identities but keeps ids, so revalidating by id
+  // is what lets a multi-selection survive undo/redo while dropping items that are
+  // gone. Non-Set / non-array input degrades to the empty selection instead of
+  // throwing, because the caller runs this on every undo/redo.
+  function revalidateSelection(annotations, ids) {
+    const source = ids instanceof Set ? ids : new Set(Array.isArray(ids) ? ids : [])
+    if (!Array.isArray(annotations) || !annotations.length) return new Set()
+    const alive = new Set()
+    for (const item of annotations) {
+      if (item && source.has(item.id)) alive.add(item.id)
+    }
+    return alive
+  }
+
+  // B6 (D8): the value every entry agrees on, or null when they disagree (the "mixed"
+  // state the toolbar renders as an indeterminate control). Empty input is also null,
+  // so an empty selection can never look like a shared value.
+  function commonSelectionValue(values) {
+    if (!Array.isArray(values) || !values.length) return null
+    const first = values[0]
+    return values.every((value) => value === first) ? first : null
+  }
+
   function getResizeHandle(selection, point, hitSize = 8) {
     if (!selection || !point || selection.w <= 0 || selection.h <= 0) return ''
     const left = selection.x
@@ -158,6 +182,8 @@
     getSourcePixelRect,
     resizeSelection,
     selectionCursor,
-    resolveFloatingPlacement
+    resolveFloatingPlacement,
+    revalidateSelection,
+    commonSelectionValue
   }
 })

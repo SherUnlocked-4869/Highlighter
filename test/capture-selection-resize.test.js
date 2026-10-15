@@ -13,7 +13,12 @@ test('capture page loads selection resize utilities before its controller', () =
   assert.ok(html.indexOf('selection-utils.js') < html.indexOf('src="capture.js"'))
   // 浮动落位（resolveFloatingPlacement）也走同一个纯函数模块：工具栏与元素条的避让
   // 必须共用一条规则（见 test/capture-floating-placement.test.js）。
-  assert.match(capture, /const \{\s*getResizeHandle,\s*getSourcePixelRect,\s*resizeSelection,\s*selectionCursor,\s*resolveFloatingPlacement\s*\} = window\.selectionUtils/)
+  // B6（D8）追加 selection 集合原语：revalidateSelection（按 id 存活）+ commonSelectionValue
+  // （mixed 判定）—— 加一个导出就要改这里（解构清单契约）。
+  assert.match(
+    capture,
+    /const \{\s*getResizeHandle,\s*getSourcePixelRect,\s*resizeSelection,\s*selectionCursor,\s*resolveFloatingPlacement,\s*revalidateSelection,\s*commonSelectionValue\s*\} = window\.selectionUtils/
+  )
 })
 
 test('selection crops snap every edge to native source pixels at fractional DPI', () => {
