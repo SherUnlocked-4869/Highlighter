@@ -8,15 +8,15 @@
 
 ## 0. 一句话状态
 
-**方案 `2026-10-14-capture-interaction-improvement-plan.md` 的 T1（A1–A5）与 T2 除 B6 外全部落地（B1/B2/B3/B4/B5/B7），并已按三轮真机反馈修掉钉图重新标注的工具栏缺陷（§3.3）+ 一轮小选区"过于靠左"的体验修复（方案 1）。版本已 bump 到 `3.0.0`，NSIS 安装包已构建（未签名、未安装成功——安装由用户自理）。唯一未开发的计划项是 B6（多选 + mixed 态）；真机功能验收只完成了一部分。**
+**方案 `2026-10-14-capture-interaction-improvement-plan.md` 的 T1（A1–A5）与 T2（B1–B7）已全部落地。B6（多选 + mixed 态）于 2026-10-15 按计划自己的缓解措施拆两波补齐（wave 1 `3effa97`：shift 加选/减选 + mixed 回显 + 批量编辑；wave 2 `d8d46ab`：shift+空白拖框选 + 每项虚线框）—— 计划内已无未开工项。此前还按三轮真机反馈修掉了钉图重新标注的工具栏缺陷（§3.3）+ 一轮小选区"过于靠左"的体验修复（方案 1）。版本已 bump 到 `3.0.0`，NSIS 安装包已构建（未签名、未安装成功——安装由用户自理）。真机功能验收只完成了一部分（B6 全部交互项、以及 §4.3 的既有清单都还没上真机）。**
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / HEAD | **`feat/capture-interaction-t1`** / **`775f5f0`**（基于 `master` `e4ce41c`，共 10 个提交） |
+| 分支 / HEAD | **`feat/capture-interaction-t1`** / **`d8d46ab`**（基于 `master` `e4ce41c`，共 13 个提交） |
 | 工作区 | **不干净**：有**另一条工作线**的未提交改动（见 §1.2），**不是本分支的产物，禁止提交/修改** |
 | `package.json` 版本 | **`3.0.0`**（提交 `36a89e9`；`package-lock.json` 两处同步） |
-| 代码完成度 | T1 ✅ · T2 B1/B2/B3/B4/B5/B7 ✅ · **B6 ❌ 未开工** |
-| 门禁 | `npm test` **997 / 985 通过 / 12 失败（12 个全是环境性 Electron 探针）** · `npm run check` **全绿**（303 文件 · `main.js` 1297/1300 · i18n 605/606） |
+| 代码完成度 | T1 ✅ · T2 **B1/B2/B3/B4/B5/B6/B7 全部 ✅** |
+| 门禁 | `npm test` **1012 / 1000 通过 / 12 失败（12 个全是环境性 Electron 探针，失败集合与基线逐字相同）** · `npm run check` **全绿**（304 文件 · `main.js` 1297/1300 · i18n 605/606 · locale 1003×3 对称） |
 | 安装包 | `dist/Highlighter-Setup-3.0.0.exe` · 144,882,056 B · SHA256 `5D2C63EEFD8F182D718D5985A8ED47EC932919700CC347568C5B3424C4D3C298` |
 | ⚠️ 本会话最大限制 | **Electron 无法启动**（§2.2）→ 一切 runtime/e2e/真机验证都做不了，只有源码契约 + 纯函数用例 |
 | 下一会话的上下文锚点 | 本文件 + 方案 §10（实施结果与三轮修复实录）+ 方案 §3/§4（验收清单） |
@@ -25,9 +25,12 @@
 
 ## 1. 分支、提交与工作区
 
-### 1.1 本分支的 10 个提交（`git log --oneline master..HEAD`）
+### 1.1 本分支的 13 个提交（`git log --oneline master..HEAD`）
 
 ```
+d8d46ab feat(capture): shift+drag marquee and per-item selection outlines (B6 wave 2)   ← B6 第二波
+3effa97 feat(capture): shift multi-select with mixed-state toolbar echo (B6 wave 1)     ← B6 第一波
+48f5801 docs(plans): hand off the capture interaction work to a new session
 775f5f0 fix(capture): centre the tool strip on a small region instead of the screen edge   ← 方案 1
 aa7d3a8 fix(capture): derive the reserved strip from the strip the window will show         ← 真机第 2 轮
 ef8ac63 fix(capture): keep the tool strip fully visible when re-annotating a pin            ← 真机第 1 轮
@@ -131,12 +134,13 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
 ## 4. 剩余工作（按建议优先级）
 
-### 4.1 B6：多选 + mixed 态（**计划内唯一未开工项**，2.0–3.0 人日）
+### 4.1 B6：多选 + mixed 态（**已于 2026-10-15 开发完成**）
 
-- 依据：方案 §4 **B6** + §2 决策 **D8**（`selectedAnnotation` 单引用 → `selectedIds: Set`；shift 加选/减选；shift+空白拖 marquee；mixed 只做显示；mixed 编辑=批量一帧；`#elementBar` 多选态计数；右键快选升级 shift+右键加选）。
-- 前置**已满足**：B6 要求在 A1/A4 之后（右键快选与回显接口已按"单选中"落地）。
-- **风险**：所有单选中路径要系统性过一遍 `size===1` 退化（elementBar / nudge / Delete / 层级 / 回显 / 选项行 `optionRowTool` / `toolbarStyleTool` / `canStepAnnotationWidth`）；`elementBarSize` 缓存目前只在 resize 失效，多选计数会改内容，**需要同样收敛到 `invalidateToolbarSize` 式的单一失效点**。
-- **建议**：按方案自己的缓解措施**拆两波**（先 shift 加选 + mixed 显示，后 marquee 框选），每波自带纯函数（`rectsIntersect`）+ 契约测试；**交互语义必须真机验收**（本机做不了，需要用户配合或换环境）。
+- 依据：方案 §4 **B6** + §2 决策 **D8**；**实施结果见方案 §10.8**（含每个波次改了哪些文件、契约测试同步点、门禁读数）。
+- 提交：**`3effa97`（wave 1：shift 加选/减选 + mixed 回显 + 批量编辑）** → **`d8d46ab`（wave 2：shift+空白拖框选 + 每项虚线框）**。
+- 关键取舍：`selectedIds: Set` 是权威集合，`selectedAnnotation` 退化为 anchor，因此既有 15 个 `selectedAnnotationItem()` 调用点**一行不改**，单选中行为与 B6 之前逐字等价。
+- **明确未做**（不是遗漏，见方案 §10.8 末尾）：① 多选**整体拖动**（`pendingMove` 形态被契约测试钉死为唯一创建点 + 精确字段，扩形态的回归风险高于收益；当前是"拖动命中的那一项，其余保持选中"）；② 层级 ↑↓ 在多选下仍只作用于 anchor。两项都建议与 §4.2 的方案 2/3b 一起评估。
+- **仍待真机验收**：shift 加选/减选（含右键只加）、mixed 三态、批量改色/宽/选项各一帧且 Ctrl+Z 一步回退、批量 Delete、多选方向键、框选加选、框选阈值内 shift 点击不清空选中、框选 pointercancel。
 
 ### 4.2 工具栏宽度优化：方案 2 / 方案 3b（用户已看过方案，只选了方案 1）
 
@@ -147,7 +151,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 ### 4.3 真机功能验收（**本机做不了，需要用户/可运行环境**）
 
 已完成（用户口述/复测）：钉图重新标注工具栏位置（3 轮）、小选区落位（第 4 轮）。
-**仍未经真机确认**：右键快选拖动与 <3px 点击阈值 · 中键无效果 · 滚轮调宽（含绘制中实时生效与去抖落盘）· 色板弹出/点外关闭/自定义色跨会话 · 选中回显（含 undo/redo 后同步、Esc 恢复）· 选区外元素再选 · 第二行各行控件（填充/线型/圆角/箭头端点/浓度/粗体）· **per-tool 记忆跨重启** · 画笔端点续画（含中断还原）。
+**仍未经真机确认**：右键快选拖动与 <3px 点击阈值 · 中键无效果 · 滚轮调宽（含绘制中实时生效与去抖落盘）· 色板弹出/点外关闭/自定义色跨会话 · 选中回显（含 undo/redo 后同步、Esc 恢复）· 选区外元素再选 · 第二行各行控件（填充/线型/圆角/箭头端点/浓度/粗体）· **per-tool 记忆跨重启** · 画笔端点续画（含中断还原）· **B6 全部交互项**（shift 加选/减选、shift+右键只加、mixed 三态、批量改色/宽/选项一帧、批量 Delete、多选方向键、框选加选、框选阈值内 shift 点击不清空、框选 pointercancel）。
 > 验收条目见方案 §3/§4 各项"验收"行；`docs/plans/2026-10-11-consolidated-verification-checklist.md` 是更早的统一清单（含批次 A/B/C，**未含本次交互项**）。
 
 ### 4.4 发布/构建侧欠账
@@ -169,7 +173,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
 | 文件 | 关键导出 |
 | --- | --- |
-| `capture/selection-utils.js` | `getResizeHandle` · `getSourcePixelRect` · `resizeSelection` · `selectionCursor` · **`resolveFloatingPlacement`（工具栏/元素条唯一落位规则）** |
+| `capture/selection-utils.js` | `getResizeHandle` · `getSourcePixelRect` · `resizeSelection` · `selectionCursor` · **`resolveFloatingPlacement`（工具栏/元素条唯一落位规则）** · **`revalidateSelection` / `commonSelectionValue` / `rectsIntersect`（B6 多选：按 id 存活 / mixed 判定 / 框选相交）** |
 | `capture/annotation-geometry.js` | `annotationBounds` · `hitTestAnnotation`（含 B2 实心内部命中）· `findAnnotationAt` · `MOVE_THRESHOLD` + `movedBeyondThreshold` · **`penContinuationTarget`** · `translateAnnotation` · `resizeAnnotationToBox` · `reorderAnnotation` · `clampAnnotationToStage` · `cloneAnnotations` |
 | `capture/annotation-style.js` | `WIDTH_PRESETS/WIDTHS/resolveWidth` · `PRESET_COLORS/normalizeAnnotationColor` · `nextWidthPreset` · `FILL/DASH/RADIUS/ALPHA_PRESETS` + `resolveFill/resolveDash/resolveRadius/resolveAlpha/dashPattern` · `TOOL_OPTION_FIELDS/DEFAULT_TOOL_OPTIONS/resolveToolOptions` · `TOOL_STYLE_TOOLS/TOOL_DEFAULT_COLORS/resolveToolStyle/resolveToolStyles` |
 
@@ -214,6 +218,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 | `test/capture-ocr-pin-ui.test.js` | 钉图编辑器条带推导与 `transparent: true` · OCR 结果条定位公式 |
 | `test/capture-toolbar-icons.test.js` | **精确图标序列 deepEqual**（加/移工具栏图标必须同 PR 更新） |
 | `test/settings-validation.test.js` / `settings-normalize.test.js` | 两个新键的类型契约与归一 |
+| `test/capture-multi-select.test.js` | **B6（D8）：`selectedIds` 权威集合 + anchor 退化 · `revalidateSelection`/`commonSelectionValue`/`rectsIntersect` 纯函数 · shift 四个落点 · mixed 回显 · 批量编辑仍一帧 · Delete/方向键覆盖整集 · elementBar 计数与 `elementBarSize` 唯一失效点 · marquee 只增不减与三处收口 · 每项虚线框但手柄只在 anchor** |
 
 ---
 
@@ -330,17 +335,17 @@ npm run check                      # 期望 303 文件 + main.js 1297/1300 + i18
 ## 11. 新会话开场文案（**直接复制给接手模型**）
 
 ```text
-接手 Highlighter（Electron 截图/标注工具）的截图交互改进工作。工作副本：D:\workspace\Highlighter - 副本，分支 feat/capture-interaction-t1（HEAD 775f5f0，版本 3.0.0）。
+接手 Highlighter（Electron 截图/标注工具）的截图交互改进工作。工作副本：D:\workspace\Highlighter - 副本，分支 feat/capture-interaction-t1（HEAD d8d46ab，版本 3.0.0）。
 
 第一步（按顺序）：
 1) 读交接文档 docs/plans/2026-10-14-capture-interaction-handoff.md（全文，含代码地图/契约钉死点/坑）。
-2) 读方案 docs/plans/2026-10-14-capture-interaction-improvement-plan.md 的 §1（约束）、§2（决策 D1–D12）、§10（实施结果与三轮真机修复实录）。
+2) 读方案 docs/plans/2026-10-14-capture-interaction-improvement-plan.md 的 §1（约束）、§2（决策 D1–D12）、§10（实施结果与三轮真机修复实录 + §10.8 B6 落地）。
 3) 跑状态核对：git log --oneline -12 / git status --short / git branch --show-current。
 
-先做什么：交接文档 §4 列了剩余工作，按优先级是 ① B6 多选+mixed（计划内唯一未开发项）② 工具栏宽度优化方案 2 或 3b ③ 补真机功能验收清单 ④ 3.0.0 的 portable+verify:package+发布记录。**开工前先问用户做哪一个**，不要自行拍板。
+先做什么：交接文档 §4 列了剩余工作（计划内的 T1/T2 含 B6 已全部开发完成），按优先级是 ① 工具栏宽度优化方案 2 或 3b ② 补真机功能验收清单 ③ 3.0.0 的 portable+verify:package+发布记录 ④ B6 剩余两项（多选整体拖动 / 多选层级，建议与 ①② 合并评估）。**开工前先问用户做哪一个**，不要自行拍板。
 
 硬约束（违反会直接踩坑）：
-- 本机 Electron 启动即崩（0x80000003，最小 app.whenReady() 冒烟也一样），所以 npm test 固定有 12 个 runtime 探针失败、Playwright e2e 与真机可见窗验证都做不了；判断"是不是我改坏了"的唯一标准是失败集合是否与开工前基线逐字相同（基线日志 $env:TEMP\hl-baseline-test.log）。当前读数：997 用例 / 985 通过 / 12 失败。
+- 本机 Electron 启动即崩（0x80000003，最小 app.whenReady() 冒烟也一样），所以 npm test 固定有 12 个 runtime 探针失败、Playwright e2e 与真机可见窗验证都做不了；判断"是不是我改坏了"的唯一标准是失败集合是否与开工前基线逐字相同（基线日志 $env:TEMP\hl-baseline-test.log）。当前读数：1012 用例 / 1000 通过 / 12 失败。
 - 任何 node/npm 命令前先 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue。
 - i18n 是硬门禁且零余量：npm run check 的 check-i18n --max 606，当前 TOTAL 605。capture/**、main/**、config/** 等扫描区里**新增中文注释就会破门禁** → 新注释一律英文；shared/locales/** 不在扫描范围。
 - 工作区里 action/**、build/installer.nsh、test/action-*.test.js、test/design-tokens.test.js、test/window-security.test.js 以及几个 untracked 文件属于**另一条工作线**，禁止修改/提交；提交只按具体路径 git add，绝不用 git add -A（历史上发生过 git reset --hard 清空两个流工作的事故）。
@@ -359,8 +364,8 @@ npm run check                      # 期望 303 文件 + main.js 1297/1300 + i18
 
 ## 12. 待用户决策（**不要在没确认前自行拍板**）
 
-1. **下一件事做哪个**：B6 / 方案 2 / 方案 3b / 真机验收清单 / 3.0.0 发布记录。
-2. **B6 是否拆两波**（先 shift 加选 + mixed，后 marquee）—— 方案自己给了这个缓解措施。
+1. **下一件事做哪个**：方案 2（工具栏宽度跟随选区）/ 方案 3b（动作收进溢出面板，建议独立立项）/ 真机验收清单 / 3.0.0 发布记录与 portable+`verify:package`。~~B6~~ 已于 2026-10-15 完成（`3effa97` + `d8d46ab`）。
+2. ~~B6 是否拆两波~~ —— 已按两波落地（见方案 §10.8）；剩余未做的两项（**多选整体拖动**、多选下的层级 ↑↓）建议与方案 2/3b 一起评估。
 3. **方案 3b（动作收进溢出面板）是否立项**：它会改主行结构与图标清单契约、影响肌肉记忆。
 4. **3.0.0 是否要出 portable + 跑 `verify:package` + 写发布记录 + 打 tag 发布**（当前只有本机 NSIS setup、未签名）。
 5. **安装器静默安装失败的处置**：是否把安装包加入安全软件信任区/以管理员运行后再试（需要用户在本机操作与观察提示）。

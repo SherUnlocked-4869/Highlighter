@@ -503,6 +503,29 @@ annotationStyles: {
 
 **未做（待定）**：方案 2（工具栏宽度跟随选区、窄选区折行成紧凑块）需与钉图编辑器的条带推导协同；方案 3b（11 个动作收进溢出面板、主行降到 ~566px）是根治但属独立立项。方案 1 的剩余局限：选区落在屏幕左侧约 2/3 以内且工具栏仍无法居中时（上表第一行）只能贴左，需要方案 2/3b 才能进一步改善。**待真机复测**。
 
+### 10.8 B6 多选 + mixed 态落地（2026-10-15，按 §10.4-7 的缓解措施拆两波）
+
+> 状态：**B6 已开发完成**（wave 1 + wave 2 两个提交），计划内已无未开工项。交互语义仍**待真机复测**（本机 Electron 起不来，见 §10.2）。
+
+**为什么拆两波**：§10.4 偏差 7 记录 B6 是"风险最大项"（单选中路径要系统性过 `size===1` 退化），且验收以交互为主。故 wave 1 = shift 加选/减选 + mixed 显示 + 批量编辑，wave 2 = shift+空白拖框选。
+
+**状态模型（保住单选中路径的关键取舍）**：`selectedIds: Set<number>` 是**权威集合**，`selectedAnnotation` 退化为"主选中项/anchor"。于是既有 **15 个** `selectedAnnotationItem()` 调用点（`optionRowTool` / `rowToolOptions` / `toolbarStyleTool` / `displayedToolWidth` / `canStepAnnotationWidth` / `optionRowTool` / 8 手柄缩放 / 层级 / Esc …）全部**一行不改**地保持 B6 之前的语义；多选能力只在新路径上叠加。
+
+| 波次 | 交付 |
+|---|---|
+| wave 1（提交 `3effa97`） | ① `selection-utils.js` 新增纯函数 `revalidateSelection`（快照还原后按 id 存活）与 `commonSelectionValue`（共同值 / mixed 为 `null`）；② shift+左键在**命中 / 已选中体内 / 选区外命中**三处加减选，shift+右键**只加选**（右键是拿起即拖的手势）；③ mixed 回显：`applyToolbarSelection` —— 色分岔时色块加 `.mixed`（对角分裂色）并清空全部预设 active，宽度分岔时 3 个宽度按钮全灭活，第二行按字段取共同值（`String(null)` 匹配不上任何按钮 = 无 active）；④ 批量编辑：色/宽/选项一条补丁落到**整个选中集**且仍是**一帧**，并按目标工具归属过滤字段（`ownsAnnotationField`，混合类型不会给 pen 塞 fill）；⑤ Delete / 方向键覆盖整个选中集（仍一帧）；⑥ `#elementBar` 计数（`capture.element.selected-count`，三语）+ `elementBarSize` 收敛到唯一失效点 `invalidateElementBarSize()`（resize 也改走它）；⑦ 每个选中项都画虚线框（`drawSelectionOutlineBox`），**8 个缩放手柄仍只在 anchor** 上 |
+| wave 2（提交 `d8d46ab`） | ① `selection-utils.js` 新增纯函数 `rectsIntersect`（闭区间相交，贴边算命中；退化盒 h=0 / w=0 仍可被框到）；② shift+空白拖 marquee：**只增不减**（手势要求 shift）、阈值内视为纯 shift 点击**保留原选中集**（避免误清空）、pointerup/pointercancel/无按键 move 自愈三处收口、绘制在最后且**不进入导出** |
+
+**明确未做（留给后续立项，不是遗漏）**：
+1. **多选整体拖动**（拖一个动整组）：`pendingMove` 的形态被 `test/capture-annotation-geometry.test.js:709` 钉死（`{ id, origin, start, thresholdPassed }` + 唯一创建点），整组拖动要扩形态并同步三处收口路径，风险高于收益；当前语义是"拖动命中的那一项，其余保持选中"。
+2. **层级 ↑↓ 在多选下仍只作用于 anchor**（与拖动同源）。
+> 两项都建议与 §4.2 的方案 2/3b 一起评估（那时会碰落位与主行结构，回归面本来就大）。
+
+**门禁实况（2026-10-15，本机）**：`npm test` **1012 用例 / 1000 通过 / 12 失败**（失败集合与开工前基线**逐字相同**，仍是 12 个 Electron 环境探针）；`npm run check` 全绿（**304 文件** · `main.js` 1297/1300 · i18n **605 ≤ 606** · locale **1003 × 3 对称**）。新增 `test/capture-multi-select.test.js`（纯函数 + 接线契约），并同步更新了 5 个契约测试文件（pointerdown 分支形态、单一写回点、`syncSelectedAnnotation`/`deleteSelectedAnnotation` 窗口、解构清单、GOLDEN 表）。
+
+**待真机复测（本机做不了）**：shift 加选/减选（含右键只加）、mixed 三态（色分裂 / 宽度全灭 / 第二行字段无 active）、批量改色改宽改选项各一帧且 Ctrl+Z 一步回退、批量 Delete、多选方向键、框选加选、**框选阈值内 shift 点击不清空选中**、框选期间 pointercancel 与"拖动那一项其余不动"。
+
+
 
 
 
