@@ -9,10 +9,11 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 
-const { resolveFloatingPlacement } = require('../capture/selection-utils')
+const { resolveFloatingPlacement, toolbarWidthLimit } = require('../capture/selection-utils')
 
 const root = path.join(__dirname, '..')
 const script = fs.readFileSync(path.join(root, 'capture', 'capture.js'), 'utf8')
+const css = fs.readFileSync(path.join(root, 'capture', 'capture.css'), 'utf8')
 const pinDomain = fs.readFileSync(path.join(root, 'main/domains/pin/index.js'), 'utf8')
 
 const STRIP = { width: 880, height: 78 }
@@ -227,4 +228,80 @@ test('the pin editor sizes the strip from the width it picks, for both re-annota
   // 两条路径（普通重新标注与 OCR/翻译）共用同一段预留逻辑。
   assert.doesNotMatch(pinDomain, /isRecognitionEditor/)
   assert.match(pinDomain, /transparent: true,/)
+})
+
+// ---------- 方案 2（D12）：工具栏宽度跟随选区，窄选区折行成紧凑块 ----------
+
+function limitFor(x1, x2, viewportWidth = 1493) {
+  return toolbarWidthLimit({
+    anchor: { x: x1, y: 0, w: x2 - x1, h: 200 },
+    viewport: { width: viewportWidth, height: 933 },
+    minimum: 420,
+    slack: 160,
+    margin: 20
+  })
+}
+
+test('the strip width limit follows a narrow region but never drops below its own floor', () => {
+  // 小选区：420 的下限接管（选区宽 + 160 够不到下限）—— 一个紧凑块，而不是 ~1000px 的长条。
+  assert.equal(limitFor(600, 800), 420)
+  assert.equal(limitFor(100, 300), 420)
+  // 中等选区：选区宽 + 160 才是指标（400 + 160）。
+  assert.equal(limitFor(400, 800), 560)
+  // 宽选区：视口上限接管（1493 − 20 = 1473），与它替换掉的 CSS 默认逐字一致。
+  assert.equal(limitFor(0, 1400), 1473)
+  assert.equal(limitFor(0, 1493), 1473)
+})
+
+test('the strip width limit is integral, deterministic and degrades instead of collapsing', () => {
+  const anchor = { x: 0, y: 0, w: 333.7, h: 200 }
+  const viewport = { width: 1473, height: 933 }
+  assert.equal(toolbarWidthLimit({ anchor, viewport }), 494) // round(333.7 + 160)
+  assert.deepEqual(toolbarWidthLimit({ anchor, viewport }), toolbarWidthLimit({ anchor, viewport }))
+  assert.ok(Number.isInteger(toolbarWidthLimit({ anchor: { w: 42.4 }, viewport: { width: 900 } })))
+  // 视口比下限还窄时以视口为准（与 CSS 的 calc(100vw - 20px) 同解），不产生负数。
+  assert.equal(toolbarWidthLimit({ anchor: { w: 200 }, viewport: { width: 300 } }), 280)
+  // 非有限/缺失视口退化为"选区 + slack"而不是塌成 0；空入参退化为下限。
+  assert.equal(toolbarWidthLimit({ anchor: { w: 1000 }, viewport: { width: Number.NaN } }), 1160)
+  assert.equal(toolbarWidthLimit({ anchor: { w: 1000 }, viewport: { width: 0 } }), 1160)
+  assert.equal(toolbarWidthLimit({}), 420)
+  assert.equal(toolbarWidthLimit(), 420)
+})
+
+test('the region-following width keeps a small region\u2019s tools next to it', () => {
+  const viewport = { width: 1493, height: 933 }
+  const height = 145 // 折行后的实测高度
+  for (const [x1, x2] of [[100, 300], [400, 600], [600, 800], [900, 1100], [1200, 1400]]) {
+    const anchor = { x: x1, y: 500, w: x2 - x1, h: 200 }
+    const width = limitFor(x1, x2)
+    const placed = resolveFloatingPlacement({ anchor, size: { width, height }, viewport, gap: 10, padding: 6 })
+    const rightAligned = x1 + anchor.w - width
+    if (rightAligned >= 6 && rightAligned <= 1493 - width - 6) {
+      // 落位规则本身没动：宽度变小后"右对齐到选区右缘"这一分支才真的装得下。
+      assert.equal(placed.left, rightAligned, `region ${x1}..${x2} must right-align the compact strip`)
+    }
+    // 条的左缘最多比选区左缘再靠左 (width − 选区宽) —— 被 420 的下限封住，而不是被视口宽封住。
+    assert.ok(
+      x1 - placed.left <= width - anchor.w || placed.left === 6,
+      `region ${x1}..${x2} must keep the strip near the region (left=${placed.left}, width=${width})`
+    )
+  }
+})
+
+test('the width limit has one write point, one call site and an explicit opt-out for the pin editor', () => {
+  // 唯一的 inline max-width 写点：跳过时清成空串，回落到 capture.css 的 calc(100vw - 20px)。
+  assert.equal((script.match(/toolbar\.style\.maxWidth =/g) || []).length, 1, 'one write point for the inline cap')
+  assert.match(
+    script,
+    /function applyToolbarWidthLimit\(\) \{[\s\S]{0,900}?toolbar\.style\.maxWidth = limit === null \? '' : `\$\{limit\}px`\s*\n\s*invalidateToolbarSize\(\)/
+  )
+  // 每帧在任何人读缓存 rect 之前应用（renderOverlay -> updateFloatingUi）。
+  assert.match(script, /function updateFloatingUi\(\) \{[\s\S]{0,240}?applyToolbarWidthLimit\(\)\s*\n\s*updateElementBar\(\)/)
+  // CSS 默认必须留着：opt-out 的路径（钉图重新标注）靠它兜底。
+  assert.match(css, /\.toolbar \{[\s\S]{0,240}?max-width: calc\(100vw - 20px\)/)
+  // opt-out 条件 = 主进程下发了固定 imageBounds（只有钉图重新标注这一条路径，见 capture/index.js）。
+  assert.match(script, /function stripFollowsRegion\(\) \{\s*return !initData\?\.imageBounds\s*\}/)
+  assert.match(script, /const limit = stripFollowsRegion\(\) && selection\s*\n\s*\? toolbarWidthLimit\(\{/)
+  // 上限不变时不写 DOM、不失效缓存（每帧都会走到这里）。
+  assert.match(script, /if \(limit === toolbarMaxWidth\) return/)
 })

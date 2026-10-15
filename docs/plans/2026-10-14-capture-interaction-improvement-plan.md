@@ -511,7 +511,7 @@ T1/T2/B6 的真机验收清单见 §3/§4 各"验收"行与 §10.8 末尾。
 
 **测试**：`test/capture-floating-placement.test.js` 新增"装不下时居中、贴屏左仍为 6、右对齐装得下逐字不变、越右边界仍夹最右、居中不比夹最左更远（性质断言）"以及"源码必须同时保留右对齐与居中两个分支"。全量 997 用例 / 985 通过 / 12 失败（失败集合与基线逐字相同）；`npm run check` 全绿（303 文件、`main.js` 1297/1300、i18n 605）。
 
-**未做（待定）**：方案 2（工具栏宽度跟随选区、窄选区折行成紧凑块）需与钉图编辑器的条带推导协同；方案 3b（11 个动作收进溢出面板、主行降到 ~566px）是根治但属独立立项。方案 1 的剩余局限：选区落在屏幕左侧约 2/3 以内且工具栏仍无法居中时（上表第一行）只能贴左，需要方案 2/3b 才能进一步改善。**待真机复测**。
+**未做（待定）**：方案 3b（11 个动作收进溢出面板、主行降到 ~566px）是根治但属独立立项。（**方案 2 已于 2026-10-15 落地**：采用"`initData.imageBounds` 时跳过本方案"的协同方式，见 §10.9。）方案 1 的剩余局限：选区落在屏幕左侧约 2/3 以内且工具栏仍无法居中时（上表第一行）只能贴左，需方案 2/3b 才能进一步改善 —— 方案 2 落地后该行的工具组已横向覆盖到选区（见 §10.9 实测表）。**待真机复测**。
 
 ### 10.8 B6 多选 + mixed 态落地（2026-10-15，按 §10.4-7 的缓解措施拆两波）
 
@@ -534,6 +534,42 @@ T1/T2/B6 的真机验收清单见 §3/§4 各"验收"行与 §10.8 末尾。
 **门禁实况（2026-10-15，工作副本 `D:\workspace\Highlighter`，默认环境只需清 `ELECTRON_RUN_AS_NODE`）**：`npm test` → **1012 用例 / 1012 通过 / 0 失败**；`npm run check` → 全绿（**304 文件** · `main.js` 1297/1300 · i18n **605 ≤ 606** · locale **1003 × 3 对称**）；`npm run test:e2e` → **6 / 6**（34.1s）；`test:coverage:loaded` → **行 92.9%**（≥85）；`test:coverage:critical` → 93.22 / 94.07 / 92.42。其中 **`capture-renderer-runtime` 等真 Electron 渲染层探针真的跑了**，也就是说 B6 的接线（选中集合、mixed 回显、`elementBarOverlap`、方向键微调）拿到了**真渲染层证据**，不再只有源码契约。旧的中文路径副本下同样代码是 1012 / 1000 / 12（12 个假失败全部由路径导致，见交接文档 §2.2）。新增 `test/capture-multi-select.test.js`（纯函数 + 接线契约），并同步更新了 5 个契约测试文件（pointerdown 分支形态、单一写回点、`syncSelectedAnnotation`/`deleteSelectedAnnotation` 窗口、解构清单、GOLDEN 表）。
 
 **待真机复测（人眼，本机单显示器无副屏 → 需用户配合或先征得同意再开可见窗）**：shift 加选/减选（含右键只加）、mixed 三态（色分裂 / 宽度全灭 / 第二行字段无 active）、批量改色改宽改选项各一帧且 Ctrl+Z 一步回退、批量 Delete、多选方向键、框选加选、**框选阈值内 shift 点击不清空选中**、框选期间 pointercancel 与"拖动那一项其余不动"。
+
+### 10.9 方案 2 落地：工具栏宽度跟随选区（2026-10-15）
+
+> 状态：**已开发完成**，纯函数 + 真渲染层探针都有断言；观感/手感仍待真机复测（见文末）。用户在本会话选定"只做方案 2"，方案 3b 仍待独立立项。
+
+**做了什么**：`#toolbar` 不再只用"视口 − 20px"这一个上限。渲染层每帧按选区算一个更紧的上限，落到元素的 inline `max-width`：
+
+- 新纯函数 `capture/selection-utils.js: toolbarWidthLimit({ anchor, viewport, minimum, slack, margin })`
+  = `min(视口宽 − margin, max(minimum, 选区宽 + slack))`，默认 `420 / 160 / 20`。**上限只收窄、从不撑宽**：宽选区与全屏选区算出的上限大于条的 max-content（实测 951），因此**渲染逐字不变**。
+- `capture/capture.js`：唯一写点 `applyToolbarWidthLimit()`（写 `toolbar.style.maxWidth`，且仅在上限变化时才写 DOM），调用点只有 `updateFloatingUi()` 一处 —— 而 `renderOverlay()` 每帧都走它，所以**选区变化与窗口 resize 都自动跟随**，不需要额外的 resize 钩子。
+- 上限变化 = 高度变化（折行）→ 必须走既有唯一失效点 `invalidateToolbarSize()`；`updateElementBar()` 在同一帧里读同一份缓存 rect，元素条避让不落后。
+- **钉图重新标注跳过本方案**：`stripFollowsRegion()` = `!initData.imageBounds`。该流程是唯一由主进程下发固定 `imageBounds`、并按"单行条带"预留 `actionSpace` 的路径（`main/domains/pin/index.js` 的 `stripRows`），折行会顶穿预留条带把工具栏推回图像上；跳过时清空 inline `max-width`，回落 `capture.css` 的 `calc(100vw - 20px)`。
+
+**实测前后（`.tmp/gates/measure-plan2.js` 现算；1493×933 下主行 min-content **937**、条宽 **951**，与 §10.7 逐字一致）**：
+
+| 选区（y=500..700） | 改前 left | 改前 工具组↔选区 | 改后上限 | 改后 left | 改后 工具组↔选区 |
+| --- | --- | --- | --- | --- | --- |
+| 100..300（200） | 6 | 0 | 420 | 6 | 0 |
+| 400..600（200） | 25 | 8 | 420 | **180** | **0** |
+| 600..800（200） | 225 | 8 | 420 | **380** | **0** |
+| 900..1100（200） | 149 | **384** | 420 | **680** | **0** |
+| 1200..1400（200） | 449 | **384** | 420 | **980** | **0** |
+| 100..1300（1200，宽） | 349 | 0 | 1360（> 951，不生效） | 349 | 0 |
+
+即"画图工具组离选区最远 ~600px"的既有缺陷，在右半屏选区上从 **384px → 0**（工具组横向覆盖到选区），左半屏小选区也从 8px → 0。代价：选区窄于 ~791px 时条会从 1 行折成最多 3 行（高度 78 → **144**），落位按实测 rect 计算，仍整体在视口内（不够下方时按既定规则翻到上方/内侧贴底）。
+
+**测试（同提交）**：
+- `test/capture-floating-placement.test.js` 新增 4 条：纯函数（下限/视口上限/整数与退化入参）、落位性质（上限变小后"右对齐到选区右缘"这一分支才真的装得下）、单一写点 + 唯一调用点 + 钉图 opt-out 的源码契约。
+- 同步更新 3 个既有契约：`test/capture-tool-options.test.js`（失效点计数 3 → 4）、`test/capture-selection-resize.test.js`（`window.selectionUtils` 解构清单）、`test/capture-annotation-geometry.test.js`（`updateFloatingUi` 的 pinned 窗口）。
+- `test/capture-renderer-runtime.test.js` 新增 `window.__pr.stripWrap()` **真渲染层测量**（隐藏窗）：200px 选区 → inline `420px`、**渲染宽度 420px**、主行实测 96px（真的折行）；宽选区仍是视口上限 `780px`（800px 探针窗）；同一选区在 `initData.imageBounds` 下发时 **无 inline 上限**、渲染 438px（opt-out 在渲染层真实生效）。
+
+**门禁实况（2026-10-15，纯 ASCII 工作副本，默认环境只需清 `ELECTRON_RUN_AS_NODE`）**：`npm test` → **1001 用例 / 1001 通过 / 0 失败**（本 clone 基线 997，+4 = 本次新增契约；文档他处记的 1012 含另一条工作线的两个**未跟踪**测试文件，本 clone 没有）；`npm run check` → **全绿**（`main.js` 1297/1300 · i18n **605 ≤ 606** · locale 1003×3 对称）；`test:coverage:loaded` → **行 92.9%**（≥85，与基线逐字相同）；`capture-renderer-runtime` 真 Electron 探针真的跑了。
+
+**踩到的坑（新增一条给后续会话）**：i18n 门禁**零余量**（605/606），本次在 `capture/` 的新注释里写了"方案 2"三个中文字 → TOTAL 立刻 608 > 606 exit 1。**`capture/`、`main/` 等扫描区里的新注释一律英文**（写成 `Plan 2 (D12)` 即可）。
+
+**待真机复测（人眼）**：小选区（≤420px 宽、以及 420~791px 的中等选区）下条的折行观感与贴选区手感；选区拖拽过程中上限实时跟随（不跳变）；工具栏折到 3 行时下方放不下会翻到选区上方/内侧贴底；钉图编辑器里条宽与以前逐字一致（opt-out 生效）。
 
 
 

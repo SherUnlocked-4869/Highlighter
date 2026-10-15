@@ -152,6 +152,28 @@ const PR_HELPERS = [
   'return {overlap:(bar.left<tb.right&&bar.right>tb.left&&bar.top<tb.bottom&&bar.bottom>tb.top),',
   'bar:{left:bar.left,top:bar.top,right:bar.right,bottom:bar.bottom},',
   'toolbar:{left:tb.left,top:tb.top,right:tb.right,bottom:tb.bottom}};',
+  '},',
+  // Plan 2 (D12): measure the strip the renderer really lays out. A 200px region must get
+  // a compact wrapped block, the pin re-annotate opt-out (initData.imageBounds) must keep
+  // the shipped CSS cap, and the compact block must sit closer to its region than the
+  // viewport-wide bar did.
+  'stripWrap:function(){',
+  'function measure(region,pinned){',
+  'var saved=initData.imageBounds;',
+  'initData.imageBounds=pinned?{x:0,y:0,width:region.w,height:region.w}:null;',
+  'selection={x:region.x,y:region.y,w:region.w,h:region.h};',
+  'renderOverlay();',
+  'var el=document.getElementById("toolbar");',
+  'var rect=el.getBoundingClientRect();',
+  'var row=el.querySelector(".toolbar-row").getBoundingClientRect();',
+  'var out={inline:el.style.maxWidth,width:Math.round(rect.width),rowHeight:Math.round(row.height),mainRowWidth:Math.round(row.width),left:Math.round(rect.left),visible:!el.classList.contains("hidden"),imageLoaded:!!(image&&image.complete&&image.naturalWidth>0)};',
+  'initData.imageBounds=saved;',
+  'return out;',
+  '}',
+  'var narrow=measure({x:600,y:100,w:200,h:200},false);',
+  'var wide=measure({x:100,y:100,w:1200,h:400},false);',
+  'var pinned=measure({x:600,y:100,w:200,h:200},true);',
+  'return {narrow:narrow,wide:wide,pinned:pinned,viewport:{width:innerWidth,height:innerHeight}};',
   '}',
   '};return true})()'
 ].join('')
@@ -386,6 +408,14 @@ async function main () {
     await sendInit(win, makeInit({}))
     report.nudgeUndo = await win.webContents.executeJavaScript('window.__pr.nudgeUndo()')
     report.elementBarOverlap = await win.webContents.executeJavaScript('window.__pr.elementBarOverlap()')
+    // Plan 2 (D12) measures the RENDERED strip, so wait for the fresh init's Image to
+    // decode (capture.js onInit builds a new one per payload) before reading its geometry.
+    for (let attempt = 0; attempt < 80; attempt++) {
+      const loaded = await win.webContents.executeJavaScript('!!(image&&image.complete&&image.naturalWidth>0)')
+      if (loaded) break
+      await sleep(25)
+    }
+    report.stripWrap = await win.webContents.executeJavaScript('window.__pr.stripWrap()')
     // P0-1-T4 / S11: the last section, because the hot-switch helper deliberately rewrites the
     // whole overlay's wording twice (and restores it) before the probe reports.
     report.i18n = await win.webContents.executeJavaScript('window.__s9b.i18n()')
@@ -514,6 +544,25 @@ test('capture renderer honors saveMode, Ctrl+A, the serial reset, the shutter ga
 
   // OCR 评审修复（High）：水印（bounds == 选区）选中时，浮动条不得压在工具栏上。
   assert.equal(report.elementBarOverlap.overlap, false, 'the element bar must not cover the toolbar')
+
+  // 方案 2（D12）：真实渲染层证据 —— 同一个 200px 选区，应用上限时渲染宽度正好 420px
+  // 且主行真的折行；钉图重新标注（主进程下发 imageBounds）没有 inline 上限、渲染更宽；
+  // 宽选区仍是视口上限（不被选区规则收窄）。
+  const stripWrap = report.stripWrap
+  assert.equal(stripWrap.narrow.imageLoaded, true, `the probe must measure a loaded image: ${JSON.stringify(stripWrap)}`)
+  assert.equal(stripWrap.narrow.visible, true, 'the strip must be visible while it is measured')
+  assert.equal(stripWrap.narrow.inline, '420px', `narrow region cap: ${JSON.stringify(stripWrap.narrow)}`)
+  assert.equal(stripWrap.narrow.width, 420, 'the rendered strip honours its inline cap exactly')
+  assert.equal(stripWrap.wide.inline, `${stripWrap.viewport.width - 20}px`, 'a wide region keeps the shipped viewport cap')
+  assert.ok(
+    stripWrap.narrow.rowHeight >= 60,
+    `the narrow strip must really wrap into more than one row (got ${stripWrap.narrow.rowHeight})`
+  )
+  assert.equal(stripWrap.pinned.inline, '', 'the pin re-annotate opt-out falls back to the CSS cap')
+  assert.ok(
+    stripWrap.pinned.width > stripWrap.narrow.width,
+    `the same region without the cap must render wider (${stripWrap.pinned.width} vs ${stripWrap.narrow.width})`
+  )
 
   // P0-1-T4 / S11：迁移后 zh-CN 文案必须与迁移前逐字一致，且 i18n:language 热切换能在不重载的
   // 前提下改写同一批 DOM（data-i18n* 标记与 t() 动态文案共用同一套表）。
