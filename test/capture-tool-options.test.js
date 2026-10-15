@@ -117,7 +117,19 @@ test('B2/B3/B5 (D9): every option group declares its owner tools and its preset 
     assert.match(button, /data-annotation-option-value="[a-z0-9]+"/)
     assert.match(button, /aria-pressed="(?:true|false)"/)
     assert.match(button, /data-i18n-title="capture\.options\.[a-z-]+"/)
-    assert.match(button, /data-i18n="capture\.options\.[a-z-]+"/)
+    // 2026-10-15：选项行也只留图标（汉字文字下沉），所以承载文案的标记是 aria-label。
+    assert.match(button, /data-i18n-aria-label="capture\.options\.[a-z-]+"/)
+    assert.doesNotMatch(button, /data-i18n="capture\.options\./, 'no visible text label any more')
+  }
+  // 每个选项按钮都必须带一个 mask 图标（图标行与 DOM 漂移会静默变成一个空白按钮）。
+  const optionButtons = optionsMarkup.match(/<button[\s\S]*?<\/button>/g) || []
+  assert.equal(optionButtons.length, 15, 'fifteen option buttons in the row')
+  for (const button of optionButtons) {
+    assert.match(
+      button,
+      /<span class="toolbar-icon" style="--icon:url\('icons\/[a-z-]+\.svg'\)" aria-hidden="true"><\/span>/,
+      'every option button renders an icon'
+    )
   }
   // 值集合必须与纯函数预设表逐字一致（DOM 与模型漂移会静默失效）。
   for (const value of FILL_PRESETS) assert.match(optionsMarkup, new RegExp(`data-annotation-option="fill" data-annotation-option-value="${value}"`))

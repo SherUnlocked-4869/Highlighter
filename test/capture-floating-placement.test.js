@@ -173,8 +173,13 @@ function measureMainRowMinContent() {
   }
   const iconMinimum = number(/\.toolbar button \{[^}]*min-width:\s*(\d+)px/)
   const iconPadding = number(/\.toolbar button \{[^}]*padding:\s*0 (\d+)px/)
-  const iconWidth = Math.max(iconMinimum, number(/\.toolbar-icon \{[^}]*width:\s*(\d+)px/) + iconPadding * 2)
+  const iconGlyph = number(/\.toolbar-icon \{[^}]*width:\s*(\d+)px/)
+  const iconWidth = Math.max(iconMinimum, iconGlyph + iconPadding * 2)
+  // 2026-10-15：线宽组也成了图标按钮 —— 实际宽度由它自己的 min-width/padding 决定（不再按
+  // 文字的 min-width 算），而且这三个按钮必须从"动作按钮"里排除。
   const widthMinimum = number(/\.width-group button \{[^}]*min-width:\s*(\d+)px/)
+  const widthPadding = number(/\.width-group button \{[^}]*padding:\s*0 (\d+)px/)
+  const widthButton = Math.max(widthMinimum, iconGlyph + widthPadding * 2)
   const rowGap = number(/\.toolbar-row \{[^}]*gap:\s*(\d+)px/)
   const toolGap = number(/\.tool-group \{[^}]*gap:\s*(\d+)px/)
   const dividerBreadth = number(/\.divider \{[^}]*width:\s*(\d+)px/) + number(/\.divider \{[^}]*margin:\s*0 (\d+)px/) * 2
@@ -182,10 +187,11 @@ function measureMainRowMinContent() {
   const toolButtons = (mainRow.match(/data-tool="/g) || []).length
   const widthButtons = (mainRow.match(/data-annotation-width="/g) || []).length
   const dividers = (mainRow.match(/class="divider"/g) || []).length
-  const iconButtons = (mainRow.match(/<button[^>]*>\s*<span class="toolbar-icon"/g) || []).length
+  const widthIcons = (mainRow.match(/data-annotation-width="\d"[^>]*>\s*<span class="toolbar-icon"/g) || []).length
+  const iconButtons = (mainRow.match(/<button[^>]*>\s*<span class="toolbar-icon"/g) || []).length - widthIcons
   const actionButtons = iconButtons - toolButtons // undo/redo + the action buttons
   const toolGroup = toolButtons * iconWidth + (toolButtons - 1) * toolGap
-  const widthGroup = widthButtons * widthMinimum + (widthButtons - 1) * toolGap
+  const widthGroup = widthButtons * widthButton + (widthButtons - 1) * toolGap
   // 直接子元素：tool-group、分隔线、色块、宽度组、分隔线、undo/redo、分隔线、其余动作按钮。
   const children = [
     toolGroup,

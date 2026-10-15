@@ -89,7 +89,10 @@ html, body {
    The separator is drawn by CSS from the visible siblings only, so a hidden group
    cannot leave a stray divider behind. */
 .option-group { display: flex; gap: 2px; }
-.option-group button { min-width: 28px; padding: 0 6px; font: 12px/1 inherit; }
+/* The groups are icon-only now (the wording lives in title/aria-label), so every
+   button is the same 30px square as row 1 instead of sizing itself to its text -
+   which is also what keeps the row width identical across the three languages. */
+.option-group button { min-width: 30px; padding: 0 6px; font: 12px/1 inherit; }
 .option-group:not(.hidden) ~ .option-group:not(.hidden) { margin-left: 3px; padding-left: 8px; border-left: 1px solid rgba(255, 255, 255, .14); }
 .tool-group { display: flex; gap: 2px; }
 .toolbar button {
@@ -123,7 +126,7 @@ html, body {
    native <select> was squeezed to ~30px by the flex row and rendered as an
    illegible glyph, which is why the control looked like it did not exist. */
 .width-group { display: flex; gap: 2px; }
-.width-group button { min-width: 28px; padding: 0 6px; font: 13px/1 inherit; }
+.width-group button { min-width: 30px; padding: 0 6px; font: 13px/1 inherit; }
 .width-group button.active { color: #fff; background: rgba(255, 255, 255, .18); }
 
 /* A3 (D3): the trigger is a swatch button, not a hidden native input - the

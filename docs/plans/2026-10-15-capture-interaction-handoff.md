@@ -121,6 +121,8 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
 | **方案 2（新，2026-10-15）** | **工具栏宽度跟随选区**：`#toolbar` inline `max-width = min(视口−20, max(420, 选区宽+160))`（上限只收窄）· 唯一写点 `applyToolbarWidthLimit()` + 唯一调用点 `updateFloatingUi()` · 失效走 `invalidateToolbarSize()`（计数 3→4）· **钉图重新标注 `initData.imageBounds` 时跳过**（不碰 `stripRows`/`toolbarSpace`） | **方案 §10.9** |
 
+| **工具栏图标化（新，2026-10-15）** | 截图工具栏里"汉字当图标"的两处全部换成真图标：① 第一行线宽组 `细/中/粗` → `weight-thin/medium/thick.svg`；② 第二行选项行 15 个按钮（`空心/半透明/实心`、`实线/虚线/点线`、`直角/圆角 4/圆角 8`、`起点/终点`、`淡/中/浓`、`粗体`）→ 15 个图标。**文案不丢**：`data-i18n="…"` 改成 `data-i18n-aria-label="…"`（无障碍名 + 键仍被使用，无死键），`data-i18n-title` 工具提示原样保留。图标仍走同一套 mask（`capture/icons/`），新增 18 个：7 个取 Bootstrap Icons v1.13.1 未改动的 path data（`square`/`square-half`/`square-fill`/`droplet`/`droplet-half`/`droplet-fill`/`type-bold`，只是改名），11 个按 `print.svg` 先例在同一 16×16 网格手绘（线宽/线型/圆角/箭头端点，家族里没有）。来历逐条写在 `capture/icons/LICENSE` | **§3 下方说明 + 测试名单** |
+
 真机修复历史（钉图重新标注工具栏位置 ×3 轮、小选区落位）见方案 §10.5–§10.7。
 
 ---
@@ -216,7 +218,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 | `test/capture-annotation-geometry.test.js` | pointerdown **分支顺序**（选区手柄 > 选中元素手柄 > 选中体内 > 命中；A5 的"选区外命中"在前）· `pendingMove` **只有一个创建点** · 单一写回点与 0 变化不压帧 · `drawSelectedOutline` 后跟手柄 · `#elementBar` 结构 · 导出/绘制顺序 · geometry 解构清单 |
 | `test/capture-interaction.test.js` | A1 按键门位置/右键快选形态 · A2 滚轮起点 `displayedToolWidth()` · A4 回显"只改 UI" · A5 选区外命中顺序 |
 | **`test/capture-multi-select.test.js`（B6，15 条）** | `selectedIds` 权威集合 + anchor 退化 · 三个 B6 纯函数 · shift 四个落点 · mixed 回显 · 批量编辑仍一帧 · Delete/方向键覆盖整集 · elementBar 计数与 `elementBarSize` 唯一失效点 · marquee 只增不减与三处收口 · 每项虚线框但手柄只在 anchor |
-| `test/capture-tool-options.test.js` | B1 结构（`.toolbar-row`/`#toolOptions`/`flex-wrap`/`.above`）· `invalidateToolbarSize()` 唯一写点 + **调用点计数（方案 2 之后 = 4：定义 / resize / 第二行 / 宽度上限）** · 六个选项组与 owner 列表 · 绘制分支"缺省逐字节不变" |
+| `test/capture-tool-options.test.js` | B1 结构（`.toolbar-row`/`#toolOptions`/`flex-wrap`/`.above`）· `invalidateToolbarSize()` 唯一写点 + **调用点计数（方案 2 之后 = 4：定义 / resize / 第二行 / 宽度上限）** · 六个选项组与 owner 列表 · **15 个选项按钮各自带 `.toolbar-icon` 且只有 `aria-label` 承载文案（不再有可见文字）** · 绘制分支"缺省逐字节不变" |
 | `test/capture-floating-placement.test.js` | 落位两分支都必须在源码里 · 右对齐装得下逐字不变 · 居中兜底 · 内侧贴底 · **从 HTML/CSS 现算主行最小宽度**并断言 `ROW_MIN_CONTENT`/`toolbarSpace` 容得下 · **方案 2：`toolbarWidthLimit` 纯函数三段（下限 / 视口上限 / 退化入参）· 紧凑条的落位性质 · 唯一 `max-width` 写点 + 唯一调用点 + `stripFollowsRegion()` opt-out** |
 | `test/capture-renderer-runtime.test.js` | **真 Electron 隐藏窗渲染层探针**：`window.__pr.stripWrap()` 实测条宽/主行高（方案 2：200px 选区 → inline `420px` + 渲染宽 420 + 主行 96px；宽选区 → 视口上限；`initData.imageBounds` 下发 → 无 inline 上限） |
 | `test/capture-tool-styles.test.js` | 模板 ≡ `resolveToolStyles()` 规范表 · **整表一次写盘**（`saveAnnotationStyles` 只有一个调用点）· `toolbarStyleTool()` · 迁移铺底 · 旧键双写 |
@@ -225,7 +227,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 | `test/capture-i18n.test.js` | **GOLDEN 表**：每个 `capture.*` 键的 zh-CN 文案逐字 + 双向"无死键/无漏标记"。**新增/改文案必须同步 GOLDEN** |
 | `test/capture-selection-resize.test.js` | `window.selectionUtils` 的**解构清单**（加一个导出就要改这里） |
 | `test/capture-ocr-pin-ui.test.js` | 钉图编辑器条带推导与 `transparent: true` · OCR 结果条定位公式 |
-| `test/capture-toolbar-icons.test.js` | **精确图标序列 deepEqual**（加/移工具栏图标必须同 PR 更新） |
+| `test/capture-toolbar-icons.test.js` | **精确图标序列 deepEqual**（加/移工具栏图标必须同 PR 更新）。2026-10-15 起该序列含 42 项：11 工具 + 3 线宽 + 13 动作 + 15 选项图标 —— 顺序即 DOM 顺序，改 HTML 必须同步 |
 | `test/settings-validation.test.js` / `settings-normalize.test.js` | 两个样式键的类型契约与归一 |
 
 ---
@@ -241,6 +243,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 7. **GitHub 下载不可达**：electron-builder 直接打包会 ETIMEDOUT，必须带 `--config.electronDist=<repo>\node_modules\electron\dist`（§8.1）。
 8. **`capture.js` 单写者**：新算法下沉到 `selection-utils.js` / `annotation-geometry.js`（覆盖率 include 清单），`capture.js` 只留接线；改动 pointerdown/落位/样式接线时**同提交**更新 §6 的契约测试。
 9. **契约窗口是按字符数钉死的**（例如 `[\s\S]{0,360}?`）：往被钉住的函数里加注释/代码很可能**挤爆窗口**。加完先用 `.tmp/gates/` 里的量距脚本或临时 node 脚本量一下，再跑定向测试。
+10. **新增图标必须过"规范化 mask 资源"断言**（`test/toolbar-icons.test.js` 的 `MASK_ASSET`）：wrapper 只能是 `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#000">`，内部**只能是自闭合的 `<path …/>`**（不接受 `<circle>`/`<rect>`），且必须单行 + 结尾一个换行。要描边就写在 `<path>` 上（`fill="none" stroke="#000" stroke-width="1"`），**不要写到 `<svg>` 上**。踩过一次：`<circle>` 的点线图标与 wrapper 带 stroke 的三个圆角图标都被这条断言拦下。
 
 ---
 
