@@ -401,8 +401,9 @@ annotationStyles: {
 
 ## 10. 实施结果（2026-10-14，分支 `feat/capture-interaction-t1`）
 
-> 状态：**T1 全部落地（A1–A5）+ T2 除 B6 外全部落地（B1/B2/B3/B4/B5/B7）**；B6（多选）未开工，理由见 §10.4。
-> 提交：`0b90609`（T1 A1–A5）→ `27e4499`（B1+B2/B3/B5）→ `f6dae10`（B7）→ `c0887be`（B4）。
+> 状态（2026-10-15 更新）：**T1 全部落地（A1–A5）+ T2 全部落地（B1/B2/B3/B4/B5/B6/B7）** —— B6 于 2026-10-15 拆两波补齐，见 **§10.8**。
+> 提交：`0b90609`（T1 A1–A5）→ `27e4499`（B1+B2/B3/B5）→ `f6dae10`（B7）→ `c0887be`（B4）→ `87ded5b`/`36a89e9`/`ef8ac63`/`aa7d3a8`/`775f5f0`（三轮真机修复 + 版本）→ `3effa97` + `d8d46ab`（B6 两波）。
+> ⚠️ 阅读提示：§10.2–§10.7 与 §10.4 偏差 7 里"本机无法启动 Electron"的记述是 **2026-10-14 当时的记录**（§10.2 已附更正块）；**该结论已于 2026-10-15 推翻为"仓库路径含中文导致"**，请以 §10.2 的更正段与 §10.8 的门禁读数为准。
 
 ### 10.1 改动表（按项）
 
@@ -434,11 +435,20 @@ annotationStyles: {
 | `audit:dependencies` | 18 个失效豁免项（既有） | 同 | 本分支 `package.json`/`package-lock.json` 零改动 |
 | Playwright e2e | 6/6（计划记录） | **不可执行** | 见 §10.3 |
 
-**环境限制（必须记录）**：本会话无法启动 Electron——最小 `app.whenReady()` 冒烟脚本也以 `0x80000003`（STATUS_BREAKPOINT）在启动阶段崩溃，删掉 `ELECTRON_RUN_AS_NODE` 后同样如此。因此 12 个失败的 runtime 探针（`window-security`、`capture-renderer`、`update-rehearsal`、i18n 热切换等）**全是环境性失败**，与本次改动无关（失败集合与开工前实测逐字相同，`git stash` 级别的对照由开工前那次全量 `npm test` 提供）。同理：Playwright e2e、真机验收（C7）与 `test:coverage:loaded` 的 92.78% 对照值都无法在本会话复现。
+**环境限制（2026-10-15 更正 → 不成立）**：原记录称"本会话无法启动 Electron——最小 `app.whenReady()` 冒烟也以 `0x80000003`（STATUS_BREAKPOINT）崩溃，因此 12 个 runtime 探针全是环境性失败"。**2026-10-15 复测证明这是路径误诊**：崩溃源于仓库路径含中文目录名 `副本`，把 `node_modules/electron/dist` 复制到 ASCII 路径并用 `ELECTRON_OVERRIDE_DIST_PATH` 指过去后，同一份二进制 **exit 0**，隐藏窗冒烟 `app ready; displays = 1`，全量 `npm test` **1012 / 1012 / 0**（含 `capture-renderer-runtime` 等真渲染层探针）。详见交接文档 **§2.2**（含两条环境变量与证据链）。因此：
 
-### 10.3 真机验收（未执行）
+- 12 个"环境性失败"**不再是既成事实**，而是"没有按 §2.2 设环境变量"的后果；
+- `test:coverage:loaded` 的计划记录值 92.78% **现在应当可以在本机复现**（探针能跑了），下一次收口时重取；
+- Playwright e2e **环境上已具备执行条件**，但它会开 app 窗口 → 无副屏，跑之前先问用户。
 
-`AGENTS.md` 要求可见测试窗放副屏、无副屏先询问。本会话未打开任何可见窗口：Electron 无法启动，右键拖动/滚轮调宽/色板/第二行重摆位/续画这些**交互项**因此只有源码契约 + 纯函数用例覆盖，**没有真机证据**。T1/T2 的真机验收清单（§3 T1 收口 第 2 条、§4 各验收行）需在能启动 Electron 的会话里补做。
+### 10.3 真机可见窗验收（仍受另一条约束限制，未执行）
+
+`AGENTS.md` 要求可见测试窗放副屏、**无副屏先询问**。本机只有单显示器 1493×933，所以本会话仍未打开任何**可见**窗口。注意区分两件事：
+
+- **可以做的**：真 Electron 的**隐藏窗**探针（`test/*runtime*.test.js`，全部 `show:false`）—— 2026-10-15 已全绿，覆盖捕获渲染层、窗口安全、i18n 热切换、更新演练、打印导出等；
+- **仍没做的**：把交互项交给**人眼**验证（右键拖动、滚轮调宽、色板、第二行重摆位、续画、B6 多选/框选）。这些需要用户在自己机器上跑，或先征得同意再开可见窗。
+
+T1/T2/B6 的真机验收清单见 §3/§4 各"验收"行与 §10.8 末尾。
 
 ### 10.4 偏差记录
 
@@ -448,7 +458,7 @@ annotationStyles: {
 4. **B4 旧键双写**：`annotationWidth`/`annotationColor` 继续写（旧构建/回滚仍能恢复最后一次颜色与线宽），`annotationStyles` 为权威结构；init 的逐键回填改为 `applyAnnotationStyles` 整块加载 + 一次性迁移（不写回）。
 5. **数据源切换带来的契约更新（C6 同 PR）**：`annotationStyle()`、`setAnnotationWidth`/`setAnnotationColor`、init 断言在 4 个测试文件里同步改写；`capture-annotation-geometry.test.js` 的 pointerdown 顺序断言按 A5 重算索引（对准选区内那一处 `const hit=...`）。
 6. **i18n 口径**：新增 31 个键属于"迁移后新增"，GOLDEN 表按此注明；`capture/**` 新增注释一律英文——开工时未迁移 CJK 计数正好卡在 606/606，零余量。
-7. **B6 未开工**（多选 + mixed）：计划自己把它标为"风险最大项"，要求对全部单选中路径做 `size===1` 退化改造；其验收（shift 加选、shift 框选、mixed 显示）以交互为主，而本会话无法启动 Electron，无法给出真机或 e2e 证据。建议按计划的缓解措施拆两波（先 shift 加选、后 marquee）并在可运行环境里专项验收。B6 的前置（A1/A4）已满足。
+7. **B6 未开工**（多选 + mixed）——**2026-10-15 已由 §10.8 拆两波补齐**，本条保留为当时的偏差记录：计划自己把它标为"风险最大项"，要求对全部单选中路径做 `size===1` 退化改造；其验收（shift 加选、shift 框选、mixed 显示）以交互为主。当时以为"本机无法启动 Electron"（已证为路径误诊，见 §10.2 更正段），故未给真机/e2e 证据；B6 的前置（A1/A4）当时已满足。
 8. **未纳入本波的两处顺手项**：`updateElementBar` 的 `elementBarSize` 缓存仍只在 resize 失效（B6 的多选计数会改内容，届时需要同样收敛）；`test/capture-performance-contract.test.js` 等既有契约未受影响，未做"顺带重构"。
 
 ### 10.5 真机缺陷修复（2026-10-14 晚，用户实测报告）
@@ -521,9 +531,9 @@ annotationStyles: {
 2. **层级 ↑↓ 在多选下仍只作用于 anchor**（与拖动同源）。
 > 两项都建议与 §4.2 的方案 2/3b 一起评估（那时会碰落位与主行结构，回归面本来就大）。
 
-**门禁实况（2026-10-15，本机）**：`npm test` **1012 用例 / 1000 通过 / 12 失败**（失败集合与开工前基线**逐字相同**，仍是 12 个 Electron 环境探针）；`npm run check` 全绿（**304 文件** · `main.js` 1297/1300 · i18n **605 ≤ 606** · locale **1003 × 3 对称**）。新增 `test/capture-multi-select.test.js`（纯函数 + 接线契约），并同步更新了 5 个契约测试文件（pointerdown 分支形态、单一写回点、`syncSelectedAnnotation`/`deleteSelectedAnnotation` 窗口、解构清单、GOLDEN 表）。
+**门禁实况（2026-10-15，本机）**：按交接文档 **§2.2** 的两条环境变量（ASCII 路径 Electron dist + 工作区 `TEMP`）跑 `npm test` → **1012 用例 / 1012 通过 / 0 失败** —— 其中 **`capture-renderer-runtime` 等真 Electron 渲染层探针真的跑了**，也就是说 B6 的接线（选中集合、mixed 回显、`elementBarOverlap`、方向键微调）拿到了**真渲染层证据**，不再只有源码契约。不设那两条变量时会退化成 1012 / 1000 / 12（12 个假失败全是"Electron 从含中文的路径启动"导致）。`npm run check` 全绿（**304 文件** · `main.js` 1297/1300 · i18n **605 ≤ 606** · locale **1003 × 3 对称**）。新增 `test/capture-multi-select.test.js`（纯函数 + 接线契约），并同步更新了 5 个契约测试文件（pointerdown 分支形态、单一写回点、`syncSelectedAnnotation`/`deleteSelectedAnnotation` 窗口、解构清单、GOLDEN 表）。
 
-**待真机复测（本机做不了）**：shift 加选/减选（含右键只加）、mixed 三态（色分裂 / 宽度全灭 / 第二行字段无 active）、批量改色改宽改选项各一帧且 Ctrl+Z 一步回退、批量 Delete、多选方向键、框选加选、**框选阈值内 shift 点击不清空选中**、框选期间 pointercancel 与"拖动那一项其余不动"。
+**待真机复测（人眼，本机单显示器无副屏 → 需用户配合或先征得同意再开可见窗）**：shift 加选/减选（含右键只加）、mixed 三态（色分裂 / 宽度全灭 / 第二行字段无 active）、批量改色改宽改选项各一帧且 Ctrl+Z 一步回退、批量 Delete、多选方向键、框选加选、**框选阈值内 shift 点击不清空选中**、框选期间 pointercancel 与"拖动那一项其余不动"。
 
 
 

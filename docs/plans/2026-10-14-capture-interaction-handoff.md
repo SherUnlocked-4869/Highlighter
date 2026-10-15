@@ -2,13 +2,15 @@
 
 > **本文件是新会话的入口。** 前一入口 `2026-10-11-post-review-handoff.md` 记录的是 **v2.5.0 时代**的状态，**其 §1 门禁读数、§5 残留表、§8 待决策已被本文件取代**（版本、测试数、i18n 读数全部变了）。更早的 `2026-10-10-p0-*.md` 属历史。
 >
-> 读完本文件就能接手：§0 一句话状态 → §1 提交与工作区 → §2 门禁（**含"Electron 起不来"这条致命环境限制**）→ §3 已落地 → §4 剩余工作 → §5 代码地图 → §6 契约钉死点 → §7 坑 → §9 第一批动作 → **§11 新会话开场文案（可直接复制）**。
+> 读完本文件就能接手：§0 一句话状态 → §1 提交与工作区 → §2 门禁（**含 2026-10-15 更正的"Electron 路径含中文导致启动崩溃"及其绕过办法**）→ §3 已落地 → §4 剩余工作 → §5 代码地图 → §6 契约钉死点 → §7 坑 → §9 第一批动作 → **§11 新会话开场文案（可直接复制）**。
 
 ---
 
 ## 0. 一句话状态
 
-**方案 `2026-10-14-capture-interaction-improvement-plan.md` 的 T1（A1–A5）与 T2（B1–B7）已全部落地。B6（多选 + mixed 态）于 2026-10-15 按计划自己的缓解措施拆两波补齐（wave 1 `3effa97`：shift 加选/减选 + mixed 回显 + 批量编辑；wave 2 `d8d46ab`：shift+空白拖框选 + 每项虚线框）—— 计划内已无未开工项。此前还按三轮真机反馈修掉了钉图重新标注的工具栏缺陷（§3.3）+ 一轮小选区"过于靠左"的体验修复（方案 1）。版本已 bump 到 `3.0.0`，NSIS 安装包已构建（未签名、未安装成功——安装由用户自理）。真机功能验收只完成了一部分（B6 全部交互项、以及 §4.3 的既有清单都还没上真机）。**
+**方案 `2026-10-14-capture-interaction-improvement-plan.md` 的 T1（A1–A5）与 T2（B1–B7）已全部落地。B6（多选 + mixed 态）于 2026-10-15 按计划自己的缓解措施拆两波补齐（wave 1 `3effa97`：shift 加选/减选 + mixed 回显 + 批量编辑；wave 2 `d8d46ab`：shift+空白拖框选 + 每项虚线框）—— 计划内已无未开工项。此前还按三轮真机反馈修掉了钉图重新标注的工具栏缺陷（§3.3）+ 一轮小选区"过于靠左"的体验修复（方案 1）。版本已 bump 到 `3.0.0`，NSIS 安装包已构建（未签名、未安装成功——安装由用户自理）。**
+
+> ⚠️ **2026-10-15 重要更正**：旧文档里"本机 Electron 无法启动 = 致命环境限制"**是误诊**。崩溃由仓库路径中的中文目录名 `副本` 引起，把 Electron dist 复制到 ASCII 路径并用 `ELECTRON_OVERRIDE_DIST_PATH` 指过去即可正常运行 —— 全量 `npm test` 因此达到 **1012 / 1012 / 0**，也为 B6 提供了**真 Electron 渲染层探针**（`capture-renderer-runtime` 等）的实证。详见 **§2.2**。真机**可见窗**验收仍受"单显示器无副屏、开窗前先问用户"限制。
 
 | 项 | 值 |
 | --- | --- |
@@ -16,9 +18,9 @@
 | 工作区 | **不干净**：有**另一条工作线**的未提交改动（见 §1.2），**不是本分支的产物，禁止提交/修改** |
 | `package.json` 版本 | **`3.0.0`**（提交 `36a89e9`；`package-lock.json` 两处同步） |
 | 代码完成度 | T1 ✅ · T2 **B1/B2/B3/B4/B5/B6/B7 全部 ✅** |
-| 门禁 | `npm test` **1012 / 1000 通过 / 12 失败（12 个全是环境性 Electron 探针，失败集合与基线逐字相同）** · `npm run check` **全绿**（304 文件 · `main.js` 1297/1300 · i18n 605/606 · locale 1003×3 对称） |
+| 门禁 | `npm test` **1012 / 1012 通过 / 0 失败**（按 §2.2 的两条环境变量；不设变量时是 1012 / 1000 / 12，那 12 个是"Electron 路径含中文起不来"的探针失败，**2026-10-15 已定位并可绕开**） · `npm run check` **全绿**（304 文件 · `main.js` 1297/1300 · i18n 605/606 · locale 1003×3 对称） |
 | 安装包 | `dist/Highlighter-Setup-3.0.0.exe` · 144,882,056 B · SHA256 `5D2C63EEFD8F182D718D5985A8ED47EC932919700CC347568C5B3424C4D3C298` |
-| ⚠️ 本会话最大限制 | **Electron 无法启动**（§2.2）→ 一切 runtime/e2e/真机验证都做不了，只有源码契约 + 纯函数用例 |
+| ⚠️ 环境要点（已更正） | Electron **能**跑：必须从 **ASCII 路径**启动（旧文档的"起不来"是仓库中文路径所致）→ 用 §2.2 的 `ELECTRON_OVERRIDE_DIST_PATH` + 工作区 `TEMP`，`npm test` 全绿；**唯一仍不可做的是"真机可见窗"验收**（单显示器无副屏，开窗前先问用户） |
 | 下一会话的上下文锚点 | 本文件 + 方案 §10（实施结果与三轮修复实录）+ 方案 §3/§4（验收清单） |
 
 ---
@@ -62,15 +64,16 @@ f6dae10 feat(capture): continue a pen stroke from either endpoint (B7)
 
 ## 2. 门禁读数与运行环境
 
-### 2.1 读数（**在 HEAD `775f5f0` 实测，2026-10-14 19:2x**）
+### 2.1 读数（**2026-10-15 复测：Electron 起不来是误诊，见 §2.2；修好后全绿**）
 
-| 门禁 | 命令 | 读数 |
+| 门禁 | 命令 | 读数（HEAD `d8d46ab`，2026-10-15） |
 | --- | --- | --- |
-| 单元/契约测试 | `npm test` | **997 用例 / 985 通过 / 12 失败**（失败集合与开工前基线**逐字相同**） |
-| 语法+架构+i18n | `npm run check` | 语法 **303 文件** · `main.js` **1297 / 1300** · i18n **605 ≤ 606** |
+| 单元/契约测试（**修好 Electron 后**） | `npm test`（按 §2.2 的两条环境变量） | **1012 用例 / 1012 通过 / 0 失败** |
+| 单元/契约测试（不设环境变量，旧口径） | `npm test` | 1012 / 1000 / **12 失败**（12 个全是"Electron 路径含 CJK 起不来"导致的探针失败，非代码缺陷） |
+| 语法+架构+i18n | `npm run check` | 语法 **304 文件** · `main.js` **1297 / 1300** · i18n **605 ≤ 606** · locale **1003×3 对称** |
 | 覆盖率（关键模块） | `npx c8 --include=... node --test test/*.test.js` | 触达模块行覆盖：`annotation-geometry.js` 99.8% · `annotation-style.js` 99.56% · `settings-defaults.js` 100% · `settings-normalize.js` 100% |
 | 依赖审计 | `npm run audit:dependencies` | **18 个失效豁免项 → exit 1**（**既有状态**：本分支 `package.json`/`package-lock.json` 零依赖改动） |
-| Playwright e2e | `npm run test:e2e` | **不可执行**（要真 Electron，见 §2.2） |
+| Playwright e2e | `npm run test:e2e` | 环境上**已具备执行条件**（`require('electron')` 会走 §2.2 的 ASCII dist）；**是否会开可见窗还没确认** —— 无副屏，开之前先问用户（§2.2 后果三） |
 
 **所有 node/npm 命令前先清环境变量**，否则 Electron 会被当 Node 跑、成片失败：
 
@@ -78,20 +81,55 @@ f6dae10 feat(capture): continue a pen stroke from either endpoint (B7)
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 ```
 
-### 2.2 🔴 致命环境限制：**本机 Electron 无法启动**
+### 2.2 ✅ 更正（2026-10-15）：Electron **能**启动；旧文档的"致命环境限制"是**路径问题**
 
-- 最小 `app.whenReady()` 冒烟脚本（`.tmp/gates/minimal-electron.js`）**同样崩溃**，退出码 `2147483651` = `0x80000003`（STATUS_BREAKPOINT），删掉 `ELECTRON_RUN_AS_NODE`、加 `--no-sandbox`/`--disable-gpu`/自定义 `--user-data-dir` 全部无效。
-- 后果：**12 个失败全部是环境性失败**，不是代码缺陷 —— 就是 `test/*runtime*.test.js` 这一批（`window-security-runtime`、`capture-renderer-runtime`、`action-security-runtime`、`action-table-runtime`、`diagnostics-runtime`、`electron-runtime`、`i18n-hot-switch-runtime`（2 条）、`model-config-runtime`、`recording-preview-runtime`、`update-rehearsal`、`capture-print` 等）。**判断标准：失败集合与开工前基线对比是否新增**（基线日志在 `$env:TEMP\hl-baseline-test.log`，本轮开工时 `931 用例 / 919 通过 / 12 失败`）。
-- 后果二：`npm run test:coverage:loaded` 的计划记录值 92.78% **在本机复现不了**（探针不跑 → main/ipc/services 少覆盖），实测 **92.49%**；**门槛 ≥85% 通过**，且上述触达模块单文件 ~100%。
-- 后果三：**真机可见窗验收做不了**。本机只有 **单显示器 1493×933（无副屏）**，`AGENTS.md` 要求可见测试窗放副屏、**无副屏先问用户**；不要在没问的情况下开可见窗/启动 app。
+> 2026-10-14 的结论"本机 Electron 启动即崩、无法修复"**不成立**。当时的观测（退出码 `0x80000003`）是真的，但归因错了：**崩溃由仓库路径里的中文目录名 `副本` 触发**，与机器、显卡、沙箱、安全软件都无关。
+
+**证据链（2026-10-15 实测）**：
+
+| 试验 | 结果 |
+| --- | --- |
+| `node_modules\electron\dist\electron.exe --version`（原 CJK 路径） | **exit `0x80000003`（STATUS_BREAKPOINT），零输出** |
+| 同一份 dist **整目录复制**到 `%LOCALAPPDATA%\Temp\edist-ascii\` 后 `--version` | **exit 0，输出 `v43.2.0`** |
+| ASCII dist + `.tmp/gates/minimal-electron.js`（cwd 仍是 CJK 仓库） | **exit 0**：`app ready; displays = 1`（隐藏窗冒烟，无可见窗） |
+| 命名管道创建 + Node `spawnSync` 管道 stdio 探测 | 都 **OK** → 排除"DSH 沙箱禁命名管道"这条猜测 |
+| `dist\win-unpacked\Highlighter.exe --version`（CJK）vs 复制到 ASCII 后 | 同样是 `0x80000003` vs **exit 0** → **打包后的 app 只要放在 CJK 路径下也一样起不来** |
+| 12 个 runtime 探针 + 全量 `npm test`（ASCII dist） | **1012 / 1012 通过 / 0 失败** |
+
+**结论**：Chromium/Electron 在启动早期从**可执行文件所在目录**读 `icudtl.dat` / `snapshot_blob.bin` / `resources.pak`，目录名里的非 ASCII 字符让这条路径解析失败 → 早期 fatal CHECK → `__debugbreak`（= `0x80000003`，所以既没有 stdout 也没有 WER 记录）。
+
+**两条环境变量（今后所有需要真 Electron 的命令都加）**：
+
+```powershell
+# ① ASCII 路径的 Electron dist（首次复制一次即可；升级 electron 后要重新复制）
+$edist = Join-Path $env:LOCALAPPDATA 'Temp\edist-ascii'
+if (-not (Test-Path $edist)) {
+  New-Item -ItemType Directory -Path $edist | Out-Null
+  Copy-Item (Join-Path (Get-Location).Path 'node_modules\electron\dist\*') -Destination $edist -Recurse -Force
+}
+# ② TEMP 挪进工作区：ffmpeg-static 的 ffmpeg.exe 在本机**无法写工作区之外**（实测 %TEMP% 下 EACCES /
+#    status -13、工作区内 OK），而 recording-preview-runtime 要用 ffmpeg 生成测试视频
+$wsTemp = Join-Path (Get-Location).Path '.tmp\test-temp'
+New-Item -ItemType Directory -Force -Path $wsTemp | Out-Null
+
+Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+$env:ELECTRON_OVERRIDE_DIST_PATH = $edist      # electron npm 包认这个变量（node_modules/electron/index.js:30）
+$env:TEMP = $wsTemp; $env:TMP = $wsTemp
+npm test                                       # → 1012 / 1012 / 0
+```
+
+**仍未解决/待决策**：
+1. **根治**是让 Electron 永远从 ASCII 路径启动：把仓库克隆/移动到纯 ASCII 路径（如 `D:\workspace\Highlighter`），或在 CI 上跑。当前用环境变量绕过，不动仓库。
+2. **打包产物**：`dist\win-unpacked\` 在工作区内（CJK）→ 直接双击会起不来；但 NSIS 装到 `D:\Program Files\Highlighter`（ASCII）后正常。`npm run verify:package` 的启动探针若指向 `dist\win-unpacked`，需要先把产物复制到 ASCII 路径。
+3. **真机可见窗验收仍受另一条约束限制**：本机只有 **单显示器 1493×933（无副屏）**，`AGENTS.md` 要求可见测试窗放副屏、**无副屏先问用户**；`npm run test:e2e` 会开 app 窗口，**跑之前先问**。
 
 ### 2.3 其它环境事实
 
 | 项 | 值 |
 | --- | --- |
 | 平台 / shell | Windows + `pwsh`（PowerShell 7.6） |
-| 仓库根 | `D:\workspace\Highlighter - 副本`（**路径含空格**，会影响命令行引号，见 §7.5） |
-| Node / Electron | node v24.15+ · Electron 43.2.0 |
+| 仓库根 | `D:\workspace\Highlighter - 副本`（**路径含空格 + 中文 `副本`**；后者是 §2.2 的崩溃根因，前者影响命令行引号见 §7.5） |
+| Node / Electron | node v24.15+ · Electron 43.2.0（**必须从 ASCII 路径启动**，见 §2.2） |
 | 显示器 | 单屏 `1493×933 @0,0`（**无副屏**） |
 | 打包缓存 | `%LOCALAPPDATA%\electron-builder\Cache` 已有 `nsis-3.0.4.1` / `nsis-resources-3.4.1` / `7zip` / `icons` |
 | 原生件 | `native/smart-select/SmartSelect.exe`、`native/ocr/HighlighterOcrSidecar.exe`、`native/everything-search/bin`、`native/everything/Everything.exe`、`ocr/models` **全部在位**（打包无需重编） |
@@ -148,10 +186,12 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 - **方案 3b（根治）**：把 11 个识别/导出动作（≈370px）收进「··· 更多」溢出面板 → 主行 ≈ **566px**（38%），此后小选区也能右对齐/居中且工具就在手边；同时可把钉图编辑器 `toolbarSpace` 从 1088 降下来（更少透明带）。**代价**：`test/capture-toolbar-icons.test.js` 是**精确图标序列 deepEqual**，加/移图标必须同提交更新；i18n 新键三语；肌肉记忆改变。**建议独立立项**。
 - 方案 1 的剩余局限：选区落在屏幕左侧约 2/3 以内且居中仍算负值时（如 100..300）只能贴左 —— 需要方案 2/3b 才能继续改善。
 
-### 4.3 真机功能验收（**本机做不了，需要用户/可运行环境**）
+### 4.3 真机功能验收（**人眼验证：需用户配合，或先征得同意再开可见窗**）
+
+> 2026-10-15 更正：**隐藏窗的真 Electron 探针已经能跑并且全绿**（§2.2），所以这一节现在只剩"人眼交互验收"。区分：自动化跑得到的（渲染层探针）已覆盖；只有"观感/手感"类需要人看。
 
 已完成（用户口述/复测）：钉图重新标注工具栏位置（3 轮）、小选区落位（第 4 轮）。
-**仍未经真机确认**：右键快选拖动与 <3px 点击阈值 · 中键无效果 · 滚轮调宽（含绘制中实时生效与去抖落盘）· 色板弹出/点外关闭/自定义色跨会话 · 选中回显（含 undo/redo 后同步、Esc 恢复）· 选区外元素再选 · 第二行各行控件（填充/线型/圆角/箭头端点/浓度/粗体）· **per-tool 记忆跨重启** · 画笔端点续画（含中断还原）· **B6 全部交互项**（shift 加选/减选、shift+右键只加、mixed 三态、批量改色/宽/选项一帧、批量 Delete、多选方向键、框选加选、框选阈值内 shift 点击不清空、框选 pointercancel）。
+**仍未经人眼确认**：右键快选拖动与 <3px 点击阈值 · 中键无效果 · 滚轮调宽（含绘制中实时生效与去抖落盘）· 色板弹出/点外关闭/自定义色跨会话 · 选中回显（含 undo/redo 后同步、Esc 恢复）· 选区外元素再选 · 第二行各行控件（填充/线型/圆角/箭头端点/浓度/粗体）· **per-tool 记忆跨重启** · 画笔端点续画（含中断还原）· **B6 全部交互项**（shift 加选/减选、shift+右键只加、mixed 三态、批量改色/宽/选项一帧、批量 Delete、多选方向键、框选加选、框选阈值内 shift 点击不清空、框选 pointercancel）。
 > 验收条目见方案 §3/§4 各项"验收"行；`docs/plans/2026-10-11-consolidated-verification-checklist.md` 是更早的统一清单（含批次 A/B/C，**未含本次交互项**）。
 
 ### 4.4 发布/构建侧欠账
@@ -159,7 +199,7 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 | 项 | 状态 |
 | --- | --- |
 | portable 安装包 | **未构建**（只构建了 NSIS setup） |
-| `npm run verify:package` | **未跑**（它要求 nsis + portable + 启动探针；本机 Electron 起不来，启动探针必然失败） |
+| `npm run verify:package` | **未跑**（它要求 nsis + portable + 启动探针）。⚠️ 2026-10-15：启动探针**不再是必然失败** —— 但 `dist\win-unpacked\Highlighter.exe` 位于含中文的仓库路径下、直接启动会 `0x80000003`（§2.2 已证），所以跑它之前要先把打包产物复制到 ASCII 路径（或把仓库挪到 ASCII 路径） |
 | `dist/SHA256SUMS.txt` | **陈旧**（仍是 2026-10-12 的旧清单）；本次产物哈希见 §8 |
 | 签名 | 未签名（`--config.forceCodeSigning=false --config.win.signExecutable=false`） |
 | `docs/releases/` 3.0.0 发布记录 | **未写**（建议补一份，格式照 `docs/releases/2026-10-12-v2.5.0-build-acceptance.md`） |
@@ -230,9 +270,9 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 → **扫描区（config, capture, record, long-capture, action, search, recognition, toolbar, pin, main）里新写的注释一律英文**；`shared/locales/**` 不在扫描范围内（CJK 文案随便写）。
 → 本轮就出现过一次"加了 3 行中文注释 → 607 超限"，靠把这 2 行改英文 + 复用已有中文行才压回 605。
 
-### 7.2 Electron 起不来 = 一切 runtime 验证都别指望（§2.2）
+### 7.2 Electron 起不来 = **误诊**，真正原因是路径含中文（§2.2）
 
-不要因为 12 个探针失败就以为是自己改坏了；**判断依据是"与 `$env:TEMP\hl-baseline-test.log` 的失败集合是否逐字相同"**。
+`0x80000003` 不代表"环境不支持 Electron"，而是**可执行文件所在目录名含非 ASCII 字符**（本仓库是 `副本`）时早期 CHECK 失败。判断"是不是我改坏了"的正规做法现在是：**按 §2.2 设好 `ELECTRON_OVERRIDE_DIST_PATH` + 工作区 `TEMP` 跑全量 `npm test`，期望 1012 / 1012 / 0**。旧的"与 `$env:TEMP\hl-baseline-test.log` 失败集合逐字相同"标准只在无法使用 ASCII dist 时作为退路。
 
 ### 7.3 `ELECTRON_RUN_AS_NODE`
 
@@ -298,23 +338,29 @@ node node_modules/electron-builder/cli.js --config electron-builder.release.cjs 
 ## 9. 新会话建议的第一批动作
 
 ```powershell
-# 1) 确认状态：HEAD 应为 775f5f0 或其后继；工作区会有 §1.2 的一堆"别人的"改动（正常）
+# 1) 确认状态：HEAD 应为 d8d46ab 或其后继；工作区会有 §1.2 的一堆"别人的"改动（正常）
 git log --oneline -12
 git status --short
 git branch --show-current          # feat/capture-interaction-t1
 
-# 2) 复跑门禁（先清环境变量！）
+# 2) 复跑门禁 —— **先按 §2.2 把 Electron dist 指到 ASCII 路径 + TEMP 挪进工作区**
+#    （否则本机会出现 12 个"Electron 起不来"的假失败）
+$edist = Join-Path $env:LOCALAPPDATA 'Temp\edist-ascii'
+if (-not (Test-Path $edist)) { New-Item -ItemType Directory -Path $edist | Out-Null; Copy-Item (Join-Path (Get-Location).Path 'node_modules\electron\dist\*') -Destination $edist -Recurse -Force }
+$wsTemp = Join-Path (Get-Location).Path '.tmp\test-temp'; New-Item -ItemType Directory -Force -Path $wsTemp | Out-Null
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-npm test                           # 期望 997 用例 / 985 通过 / 12 失败
-npm run check                      # 期望 303 文件 + main.js 1297/1300 + i18n 605
+$env:ELECTRON_OVERRIDE_DIST_PATH = $edist
+$env:TEMP = $wsTemp; $env:TMP = $wsTemp
+npm test                           # 期望 1012 用例 / 1012 通过 / 0 失败
+npm run check                      # 期望 304 文件 + main.js 1297/1300 + i18n 605
 
-# 3) 若 12 个失败里有"新面孔"，与基线对比确认是否环境性
-#    （基线失败集合在 $env:TEMP\hl-baseline-test.log）
+# 3) 若仍有失败，先判断是不是"Electron 路径/临时目录"这类环境问题（§2.2），再怀疑代码
 ```
 
-4. 读方案 §10（实施结果 + 三轮修复实录）与本文件 §4。
-5. **先问用户下一件事做哪个**：B6（计划内唯一未开发项）／方案 2 或 3b（工具栏宽度优化）／补真机验收清单 ／ 3.0.0 发布记录与 portable+`verify:package`。
-6. **不要**在没被要求时重新打包、不要动 §1.2 的他人改动、不要在扫描区写中文注释、不要开可见窗（无副屏）。
+4. 读方案 §10（实施结果 + 三轮修复实录 + §10.8 B6）+ 本文件 §4。
+5. **先问用户下一件事做哪个**：方案 2 或 3b（工具栏宽度优化）／补真机验收清单 ／ 3.0.0 发布记录与 portable+`verify:package` ／ B6 剩余两项（多选整体拖动、多选层级）。
+6. 需要**真机可见窗**验收或跑 `npm run test:e2e` 之前，先问用户（单显示器无副屏，`AGENTS.md` 要求）。
+7. **不要**在没被要求时重新打包、不要动 §1.2 的他人改动、不要在扫描区写中文注释。
 
 ---
 
@@ -345,7 +391,7 @@ npm run check                      # 期望 303 文件 + main.js 1297/1300 + i18
 先做什么：交接文档 §4 列了剩余工作（计划内的 T1/T2 含 B6 已全部开发完成），按优先级是 ① 工具栏宽度优化方案 2 或 3b ② 补真机功能验收清单 ③ 3.0.0 的 portable+verify:package+发布记录 ④ B6 剩余两项（多选整体拖动 / 多选层级，建议与 ①② 合并评估）。**开工前先问用户做哪一个**，不要自行拍板。
 
 硬约束（违反会直接踩坑）：
-- 本机 Electron 启动即崩（0x80000003，最小 app.whenReady() 冒烟也一样），所以 npm test 固定有 12 个 runtime 探针失败、Playwright e2e 与真机可见窗验证都做不了；判断"是不是我改坏了"的唯一标准是失败集合是否与开工前基线逐字相同（基线日志 $env:TEMP\hl-baseline-test.log）。当前读数：1012 用例 / 1000 通过 / 12 失败。
+- **Electron 能跑，但必须从 ASCII 路径启动**：本仓库路径含中文 `副本`，直接跑 `node_modules\electron\dist\electron.exe` 会以 0x80000003（STATUS_BREAKPOINT）静默崩溃 —— 这是路径问题，不是机器/沙箱问题。按 §2.2 把 dist 复制到 ASCII 路径、设 `ELECTRON_OVERRIDE_DIST_PATH` 并把 `TEMP/TMP` 挪进工作区（ffmpeg 无法写工作区之外），`npm test` 即 **1012 / 1012 / 0**。**不要**再用"12 个探针失败是环境性的"来给自己开脱。真机**可见窗**验收仍要问用户（单显示器无副屏；`npm run test:e2e` 会开 app 窗口）。
 - 任何 node/npm 命令前先 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue。
 - i18n 是硬门禁且零余量：npm run check 的 check-i18n --max 606，当前 TOTAL 605。capture/**、main/**、config/** 等扫描区里**新增中文注释就会破门禁** → 新注释一律英文；shared/locales/** 不在扫描范围。
 - 工作区里 action/**、build/installer.nsh、test/action-*.test.js、test/design-tokens.test.js、test/window-security.test.js 以及几个 untracked 文件属于**另一条工作线**，禁止修改/提交；提交只按具体路径 git add，绝不用 git add -A（历史上发生过 git reset --hard 清空两个流工作的事故）。
@@ -369,3 +415,5 @@ npm run check                      # 期望 303 文件 + main.js 1297/1300 + i18
 3. **方案 3b（动作收进溢出面板）是否立项**：它会改主行结构与图标清单契约、影响肌肉记忆。
 4. **3.0.0 是否要出 portable + 跑 `verify:package` + 写发布记录 + 打 tag 发布**（当前只有本机 NSIS setup、未签名）。
 5. **安装器静默安装失败的处置**：是否把安装包加入安全软件信任区/以管理员运行后再试（需要用户在本机操作与观察提示）。
+6. **（新增，2026-10-15）Electron 路径问题的根治方式**：现在靠 §2.2 的 `ELECTRON_OVERRIDE_DIST_PATH` + 工作区 `TEMP` 绕过。更彻底的做法是把工作副本挪到纯 ASCII 路径（如 `D:\workspace\Highlighter`）——但本节 §1.2 的"另一条工作线"改动也在同一工作区，移动/重命名需要两边协调；或在 CI 上跑（CI 路径通常已是 ASCII）。要不要做、什么时候做，请用户定。
+7. **（新增，2026-10-15）要不要跑 `npm run test:e2e`**：环境上已具备条件（`require('electron')` 会走 ASCII dist），但它会打开 app 窗口（含搜索窗/配置窗）；本机只有单显示器、无副屏，`AGENTS.md` 要求开可见窗前先问用户。
