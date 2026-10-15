@@ -12,7 +12,7 @@ const root = path.join(__dirname, '..')
 const script = fs.readFileSync(path.join(root, 'capture', 'capture.js'), 'utf8')
 const html = fs.readFileSync(path.join(root, 'capture', 'capture.html'), 'utf8')
 const css = fs.readFileSync(path.join(root, 'capture', 'capture.css'), 'utf8')
-const { revalidateSelection, commonSelectionValue } = require('../capture/selection-utils')
+const { revalidateSelection, commonSelectionValue, rectsIntersect } = require('../capture/selection-utils')
 
 function sliceBetween(source, from, to) {
   const start = source.indexOf(from)
@@ -22,6 +22,9 @@ function sliceBetween(source, from, to) {
 }
 
 const pointerdownSource = sliceBetween(script, "canvas.addEventListener('pointerdown'", "canvas.addEventListener('pointermove'")
+const pointermoveSource = sliceBetween(script, "canvas.addEventListener('pointermove'", "canvas.addEventListener('pointerup'")
+const pointerupSource = sliceBetween(script, "canvas.addEventListener('pointerup'", "canvas.addEventListener('pointercancel'")
+const exportSource = sliceBetween(script, 'function exportSelectionCanvas(includeAnnotations = true)', 'function canvasPngBuffer(')
 const quickSelectSource = sliceBetween(script, 'function quickSelectAnnotation(event, point)', "canvas.addEventListener('pointerdown'")
 const echoSource = sliceBetween(script, 'function syncToolbarStyleFromSelection()', 'function setSelectedAnnotation(item)')
 
@@ -188,3 +191,70 @@ test('B6: the counter wording exists in all three languages', () => {
   assert.match(tables['zh-TW']['capture.element.selected-count'], /個元素/)
   assert.match(tables['en-US']['capture.element.selected-count'], /elements selected/)
 })
+
+// ---------- B6 wave 2（D8）：shift+拖框选 ----------
+
+test('B6 wave 2: rectsIntersect is a closed-interval overlap that survives degenerate boxes', () => {
+  assert.equal(rectsIntersect({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: 5, w: 10, h: 10 }), true)
+  // 贴边算命中（"框到即选中"），差 1px 才算不中。
+  assert.equal(rectsIntersect({ x: 0, y: 0, w: 10, h: 10 }, { x: 10, y: 0, w: 5, h: 5 }), true)
+  assert.equal(rectsIntersect({ x: 0, y: 0, w: 10, h: 10 }, { x: 11, y: 0, w: 5, h: 5 }), false)
+  assert.equal(rectsIntersect({ x: 2, y: 2, w: 4, h: 4 }, { x: 0, y: 0, w: 10, h: 10 }), true, 'contained')
+  assert.equal(rectsIntersect({ x: 20, y: 20, w: 5, h: 5 }, { x: 0, y: 0, w: 10, h: 10 }), false)
+  // 退化盒（水平线的 h=0、单点 pen 的 w=h=0）不是空集：落在框里就能被框选到。
+  assert.equal(rectsIntersect({ x: 5, y: 5, w: 0, h: 0 }, { x: 0, y: 0, w: 10, h: 10 }), true)
+  assert.equal(rectsIntersect({ x: 5, y: 5, w: 8, h: 0 }, { x: 0, y: 0, w: 10, h: 10 }), true)
+  // width/height 别名与非法输入。
+  assert.equal(rectsIntersect({ x: 0, y: 0, width: 10, height: 10 }, { x: 5, y: 5, w: 1, h: 1 }), true)
+  assert.equal(rectsIntersect(null, { x: 0, y: 0, w: 1, h: 1 }), false)
+  assert.equal(rectsIntersect({ x: 'a', y: 0, w: 1, h: 1 }, { x: 0, y: 0, w: 1, h: 1 }), false)
+  assert.equal(rectsIntersect(undefined, undefined), false)
+})
+
+test('B6 wave 2: shift+drag on empty space marquees and only ever adds what it touches', () => {
+  assert.match(script, /let marquee = null/)
+  assert.match(script, /function beginMarquee\(point, event\) \{\s*marquee = \{ start: point, current: point \}/)
+  assert.match(script, /function updateMarquee\(point\) \{[\s\S]{0,160}?marquee\.current = point/)
+  // 阈值内 = 纯 shift 点击：保持原选中集，绝不误清空（这是与"shift 点空白清空"的取舍）。
+  assert.match(script, /if \(!movedBeyondThreshold\(state\.start, point, MOVE_THRESHOLD\)\) \{ render\(\); return \}/)
+  assert.match(script, /const hits = annotations\.filter\(\(item\) => rectsIntersect\(annotationBounds\(item\), rect\)\)/)
+  assert.match(script, /const next = new Set\(selectedIds\)\s*hits\.forEach\(\(item\) => next\.add\(item\.id\)\)/)
+  // anchor 取最上层命中项（数组末尾 = 最上层）。
+  assert.match(script, /selectedAnnotation = hits\[hits\.length - 1\]/)
+  // 空框不改选中集。
+  assert.match(script, /if \(!hits\.length\) \{ render\(\); return \}/)
+  // 框选本身不压帧（只改选中，不改标注）。
+  const marqueeSource = sliceBetween(script, 'function beginMarquee(point, event)', '// A4 (D4): selection echo is UI-only')
+  assert.doesNotMatch(marqueeSource, /snapshotAnnotations/)
+})
+
+test('B6 wave 2: the marquee is wired into pointerdown/move/up/cancel and drawn last', () => {
+  // 空白处 shift 进入框选，且必须排在"取消选中 + 拖选区"兜底之前（框选是加选）。
+  const marqueeDown = pointerdownSource.indexOf('if(event.shiftKey){beginMarquee(point,event);return}')
+  assert.ok(marqueeDown >= 0, 'shift on empty space starts the marquee')
+  assert.ok(marqueeDown < pointerdownSource.lastIndexOf('dragging=true'), 'the marquee runs before the plain region-drag fallback')
+  assert.match(pointerdownSource, /if\(event\.shiftKey\)\{beginMarquee\(point,event\);return\}\s*setSelectedAnnotation\(null\)/)
+  // Alt 逃生门仍在其之前（选区拖动优先级不变）。
+  assert.ok(pointerdownSource.indexOf('if(event.altKey)') < marqueeDown)
+  assert.match(pointermoveSource, /if \(marquee\) \{ updateMarquee\(point\); return \}/)
+  assert.match(pointermoveSource, /if \(marquee&&event\.buttons===0\) \{ finishMarquee\(point\); updateSelectionCursor\(point\); return \}/)
+  assert.match(pointerupSource, /if\(marquee\)\{const point=pointFromEvent\(event\);finishMarquee\(point\);updateSelectionCursor\(point\);return\}/)
+  assert.match(script, /canvas\.addEventListener\('pointercancel',\(\)=>\{[\s\S]{0,300}?cancelMarquee\(\)/)
+  // 绘制在最后（不被标注盖住），且绝不进入导出路径 / 不新增 i18n 文案。
+  assert.match(script, /drawHandles\(\)\s*\/\/[\s\S]{0,160}?drawMarquee\(\)/)
+  assert.doesNotMatch(exportSource, /marquee/)
+  assert.match(script, /function resetAnnotationState\(\) \{[\s\S]{0,700}?marquee = null/)
+  assert.doesNotMatch(html, /marquee/)
+})
+
+test('B6: every selected item draws the dashed outline, but the handles stay on the anchor', () => {
+  const outlineSource = sliceBetween(script, 'function drawSelectionOutlineBox(box)', 'function drawSelectedHandles(bounds)')
+  assert.match(outlineSource, /function drawSelectedOutline\(\) \{\s*const selected = selectedAnnotations\(\)/)
+  assert.match(outlineSource, /selected\.forEach\(\(entry\) => drawSelectionOutlineBox\(entry === item \? bounds : annotationBounds\(entry\)\)\)/)
+  assert.match(outlineSource, /drawSelectedHandles\(bounds\)/)
+  // 手柄只有 anchor 一套（多选时其余项只画虚线框）—— 多的那一套没有落点语义。
+  assert.equal(outlineSource.match(/drawSelectedHandles\(/g).length, 1)
+  // 框选/多选不进入导出：导出仍只画标注本身。
+  assert.doesNotMatch(exportSource, /drawSelectionOutlineBox|drawSelectedOutline/)
+})
+

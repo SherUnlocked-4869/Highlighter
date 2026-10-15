@@ -14,10 +14,10 @@ test('capture page loads selection resize utilities before its controller', () =
   // 浮动落位（resolveFloatingPlacement）也走同一个纯函数模块：工具栏与元素条的避让
   // 必须共用一条规则（见 test/capture-floating-placement.test.js）。
   // B6（D8）追加 selection 集合原语：revalidateSelection（按 id 存活）+ commonSelectionValue
-  // （mixed 判定）—— 加一个导出就要改这里（解构清单契约）。
+  // （mixed 判定）+ rectsIntersect（shift 框选命中）—— 加一个导出就要改这里（解构清单契约）。
   assert.match(
     capture,
-    /const \{\s*getResizeHandle,\s*getSourcePixelRect,\s*resizeSelection,\s*selectionCursor,\s*resolveFloatingPlacement,\s*revalidateSelection,\s*commonSelectionValue\s*\} = window\.selectionUtils/
+    /const \{\s*getResizeHandle,\s*getSourcePixelRect,\s*resizeSelection,\s*selectionCursor,\s*resolveFloatingPlacement,\s*revalidateSelection,\s*commonSelectionValue,\s*rectsIntersect\s*\} = window\.selectionUtils/
   )
 })
 

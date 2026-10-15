@@ -49,7 +49,8 @@ const {
   selectionCursor,
   resolveFloatingPlacement,
   revalidateSelection,
-  commonSelectionValue
+  commonSelectionValue,
+  rectsIntersect
 } = window.selectionUtils
 const {
   PRESET_COLORS,
@@ -117,6 +118,9 @@ let selectedAnnotation = null
 // selectedAnnotationItem() unchanged; this set is what tells the multi-aware paths
 // (echo, style edit, delete, nudge, element bar) how many items are really selected.
 let selectedIds = new Set()
+// B6 wave 2 (D8): the shift+drag marquee. start/current are screen CSS points; the
+// rectangle is derived, so the gesture never accumulates drift.
+let marquee = null
 // P0-5 PR2 + A1 (D2): the element drag state. origin is always the UNTOUCHED
 // original object and every frame re-translates from it, so clamping cannot
 // accumulate drift and pointerup can tell "did it actually move". thresholdPassed
@@ -423,6 +427,9 @@ function renderOverlay() {
   if (activeAnnotation) drawAnnotation(ctx,activeAnnotation)
   drawSelectedOutline()
   drawHandles()
+  // B6 wave 2: the marquee is the last overlay, so it is never hidden by an
+  // annotation drawn above it.
+  drawMarquee()
   updateFloatingUi()
 }
 
@@ -447,17 +454,25 @@ function selectedAccent() {
   return value || '#36a3ff'
 }
 
+// B6 (D8): one dashed outline per selected item, so a multi-selection is visible on the
+// stage; the 8 resize handles stay on the anchor, the only item they can resize.
+function drawSelectionOutlineBox(box) {
+  if (!box) return
+  const pad = SELECTED_OUTLINE_PAD
+  ctx.strokeRect(Math.round(box.x - pad) + .5, Math.round(box.y - pad) + .5, Math.round(box.w + pad * 2), Math.round(box.h + pad * 2))
+}
+
 function drawSelectedOutline() {
+  const selected = selectedAnnotations()
   const item = selectedAnnotationItem()
-  if (!item) return
+  if (!item || !selected.length) return
   const bounds = annotationBounds(item)
   if (!bounds) return
-  const pad = SELECTED_OUTLINE_PAD
   ctx.save()
   ctx.strokeStyle = selectedAccent()
   ctx.lineWidth = 1
   ctx.setLineDash([5, 4])
-  ctx.strokeRect(Math.round(bounds.x - pad) + .5, Math.round(bounds.y - pad) + .5, Math.round(bounds.w + pad * 2), Math.round(bounds.h + pad * 2))
+  selected.forEach((entry) => drawSelectionOutlineBox(entry === item ? bounds : annotationBounds(entry)))
   ctx.restore()
   // PR3：虚线框之后立刻画 8 个缩放手柄 —— 手柄必须有可见落点，否则用户无从发现缩放。
   drawSelectedHandles(bounds)
@@ -951,6 +966,66 @@ function reResolveSelectedAnnotation(annotations, ids, current) {
   return ids.size ? annotations.filter((item) => ids.has(item.id)).pop() || null : null
 }
 
+// ---------- B6 wave 2 (D8): shift+drag marquee ----------
+
+// The derived rectangle. `start`/`current` are screen CSS points, so the marquee shares
+// the coordinate space of annotationBounds() and needs no export conversion (§8.3).
+function marqueeRect() {
+  return marquee ? normalizeRect(marquee.start, marquee.current) : null
+}
+
+function beginMarquee(point, event) {
+  marquee = { start: point, current: point }
+  try { canvas.setPointerCapture(event.pointerId) } catch {}
+  render()
+}
+
+function updateMarquee(point) {
+  if (!marquee) return
+  marquee.current = point
+  render()
+}
+
+// Release: a sub-threshold press is a plain shift+click and keeps the selection as it
+// was, so a stray click can never wipe a multi-selection. Otherwise everything the
+// rectangle touches is ADDED (the gesture requires shift, so it can only grow the set)
+// and the topmost hit becomes the anchor.
+function finishMarquee(point) {
+  const state = marquee
+  marquee = null
+  if (!state) return
+  if (!movedBeyondThreshold(state.start, point, MOVE_THRESHOLD)) { render(); return }
+  const rect = normalizeRect(state.start, point)
+  const hits = annotations.filter((item) => rectsIntersect(annotationBounds(item), rect))
+  if (!hits.length) { render(); return }
+  const next = new Set(selectedIds)
+  hits.forEach((item) => next.add(item.id))
+  selectedIds = next
+  selectedAnnotation = hits[hits.length - 1]
+  syncToolbarStyleFromSelection()
+  render()
+}
+
+// pointercancel: an interrupted marquee changes nothing (no frame, no selection edit).
+function cancelMarquee() {
+  if (!marquee) return
+  marquee = null
+  render()
+}
+
+function drawMarquee() {
+  const rect = marqueeRect()
+  if (!rect) return
+  ctx.save()
+  ctx.fillStyle = 'rgba(54,163,255,.14)'
+  ctx.strokeStyle = selectedAccent()
+  ctx.lineWidth = 1
+  ctx.setLineDash([5, 4])
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h)
+  ctx.strokeRect(Math.round(rect.x) + .5, Math.round(rect.y) + .5, Math.round(rect.w), Math.round(rect.h))
+  ctx.restore()
+}
+
 // A4 (D4): selection echo is UI-only. It repaints the width/colour controls from
 // the selected item so the toolbar stops lying about what is on screen; it must
 // never call commitSelectedStyle/stageSelectedStyle, or a mere selection would
@@ -1400,6 +1475,8 @@ function resetAnnotationState() {
   cancelStyleCommit()
   // A2: a pending width write belongs to the previous capture.
   cancelAnnotationWidthPersist()
+  // B6 wave 2: a marquee that never settled belongs to the previous capture.
+  marquee = null
   annotationHistory = [[]]
   historyIndex = 0
   invalidateElementBarSize()
@@ -1596,6 +1673,10 @@ canvas.addEventListener('pointerdown',(event)=>{
       if(event.shiftKey){toggleSelectedAnnotation(hit);updateSelectionCursor(point);return}
       setSelectedAnnotation(hit);updateSelectionCursor(point);return
     }
+    // B6 wave 2 (D8): shift on empty space starts a marquee instead of moving the
+    // region - it must run BEFORE the deselect below, because the marquee adds to the
+    // current selection. The plain region-drag path stays untouched.
+    if(event.shiftKey){beginMarquee(point,event);return}
     setSelectedAnnotation(null)
     dragging=true; return
   }
@@ -1635,12 +1716,17 @@ canvas.addEventListener('pointermove',(event)=>{
   if (pendingMove&&event.buttons===0) { finishMoveAnnotation(); updateSelectionCursor(point); return }
   // PR3 同款自愈：元素缩放期间 pointerup 被吞掉时同样要收口。
   if (resizingAnnotation&&event.buttons===0) { finishResizeAnnotation(); updateSelectionCursor(point); return }
+  // B6 wave 2 self-heal: a swallowed pointerup during a marquee also settles it
+  // (the current point is the final corner).
+  if (marquee&&event.buttons===0) { finishMarquee(point); updateSelectionCursor(point); return }
   if (selecting) { selection=normalizeRect(startPoint,point); render(); return }
   if (resizing&&selection) { selection=resizeSelection(resizing.initial,resizing.handle,point,{width:innerWidth,height:innerHeight}); updateSelectionCursor(point); render(); return }
   if (pendingMove) { moveAnnotationTo(point); return }
   // PR3 元素缩放：新 box 由 resizeSelection 在**舞台**坐标系里算出，再交给纯函数写回新对象。
   if (resizingAnnotation) { resizeAnnotationTo(point); updateSelectionCursor(point); return }
   if (dragging&&selection) { const dx=point.x-startPoint.x,dy=point.y-startPoint.y; selection.x=Math.max(0,Math.min(innerWidth-selection.w,selection.x+dx)); selection.y=Math.max(0,Math.min(innerHeight-selection.h,selection.y+dy)); startPoint=point; render(); return }
+  // B6 wave 2: the marquee grows with the pointer and repaints itself (no frame).
+  if (marquee) { updateMarquee(point); return }
   if (activeAnnotation) { activeAnnotation.x2=point.x; activeAnnotation.y2=point.y; if(activeAnnotation.type==='pen'&&activeAnnotation.points.length<MAX_PEN_POINTS)activeAnnotation.points.push(point); render() }
   else updateSelectionCursor(point)
 })
@@ -1651,6 +1737,7 @@ canvas.addEventListener('pointerup',(event)=>{
   if(resizing){resizing=null;finishSelection();updateSelectionCursor(pointFromEvent(event));return}
   if(pendingMove){finishMoveAnnotation();updateSelectionCursor(pointFromEvent(event));return}
   if(resizingAnnotation){finishResizeAnnotation();updateSelectionCursor(pointFromEvent(event));return}
+  if(marquee){const point=pointFromEvent(event);finishMarquee(point);updateSelectionCursor(point);return}
   if(dragging){dragging=false;render();updateSelectionCursor(pointFromEvent(event));return}
   if(activeAnnotation&&activeAnnotation.type!=='watermark')commitAnnotation(activeAnnotation)
 })
@@ -1663,6 +1750,8 @@ canvas.addEventListener('pointercancel',()=>{
   cancelResizeAnnotation()
   // B7: an interrupted continuation puts the original stroke back (no frame).
   restoreContinuedPen()
+  // B6 wave 2: an interrupted marquee edits nothing (no frame).
+  cancelMarquee()
   activeAnnotation=currentTool==='watermark'?buildWatermarkAnnotation():null
   render()
 })

@@ -108,6 +108,24 @@
     return values.every((value) => value === first) ? first : null
   }
 
+  // B6 wave 2 (D8): do two screen-CSS rectangles overlap? Touching an edge counts,
+  // because the marquee's contract is "everything it touches gets selected". A
+  // degenerate box (a horizontal line has h = 0) is a segment, not empty, so it can
+  // still be caught - only non-finite input refuses to intersect.
+  function rectsIntersect(a, b) {
+    if (!a || !b) return false
+    const ax = finiteOr(a.x, Number.NaN)
+    const ay = finiteOr(a.y, Number.NaN)
+    const aw = Math.max(0, finiteOr(a.w ?? a.width, Number.NaN))
+    const ah = Math.max(0, finiteOr(a.h ?? a.height, Number.NaN))
+    const bx = finiteOr(b.x, Number.NaN)
+    const by = finiteOr(b.y, Number.NaN)
+    const bw = Math.max(0, finiteOr(b.w ?? b.width, Number.NaN))
+    const bh = Math.max(0, finiteOr(b.h ?? b.height, Number.NaN))
+    if (![ax, ay, aw, ah, bx, by, bw, bh].every(Number.isFinite)) return false
+    return ax <= bx + bw && bx <= ax + aw && ay <= by + bh && by <= ay + ah
+  }
+
   function getResizeHandle(selection, point, hitSize = 8) {
     if (!selection || !point || selection.w <= 0 || selection.h <= 0) return ''
     const left = selection.x
@@ -184,6 +202,7 @@
     selectionCursor,
     resolveFloatingPlacement,
     revalidateSelection,
-    commonSelectionValue
+    commonSelectionValue,
+    rectsIntersect
   }
 })
