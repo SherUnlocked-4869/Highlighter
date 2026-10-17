@@ -87,10 +87,13 @@ pub fn prepare(kind: &str, bytes: &[u8]) -> Result<PreparedImage, &'static str> 
     budget.max_alloc = Some(64 * 1024 * 1024);
     reader.limits(budget);
     let decoded = reader.decode().map_err(|_| "INVALID_IMAGE")?;
+    drop(bmp); // Do not retain the BMP container while allocating encoded PNG.
     let (width, height) =
         limits::dimensions(decoded.width(), decoded.height()).map_err(|_| "INVALID_IMAGE")?;
     // <=240x240 RGBA also fits the 256KiB protocol chunk in the worst case.
-    let thumbnail = encode(&decoded.thumbnail(240, 240))?;
+    let thumbnail = encode(&image::DynamicImage::ImageRgba8(
+        decoded.thumbnail(240, 240).into_rgba8(),
+    ))?;
     if thumbnail.len() > 256 * 1024 {
         return Err("IMAGE_ENCODING_FAILED");
     }

@@ -185,22 +185,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             .and_then(Value::as_str)
                             .ok_or("INVALID_OPERATION")?;
                         let store = store.as_ref().ok_or("STORAGE_NOT_OPEN")?;
-                        let data = {
-                            let mut locked = store.lock().map_err(|_| "STORAGE_FAILED")?;
-                            let payload = locked.payload(id, false)?;
-                            if locked.begin_copy(id, op)? {
-                                Some(payload)
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some((mime, bytes)) = data {
-                            highlighter_clipboard::writer::copy(&barrier, &mime, &bytes)?;
-                            store
-                                .lock()
-                                .map_err(|_| "STORAGE_FAILED")?
-                                .finish_copy(id, op)?;
-                        }
+                        highlighter_clipboard::writer::copy_item(&barrier, store, id, op)?;
                         Ok(json!({"copied":true}))
                     }
                     "set-pinned" | "delete" | "clear" => {
