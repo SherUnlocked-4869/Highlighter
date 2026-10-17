@@ -37,7 +37,7 @@ const STUB = `
   const __on = (name) => function (fn) { (__handlers[name] = __handlers[name] || []).push(fn) }
   const record = (name) => (...args) => { __calls.push({ name, args }); return Promise.resolve(undefined) }
   window.captureAPI = {
-    onInit: __on('init'), ready() {}, renderReady() {}, renderError() {},
+    onInit: __on('init'), onShown: __on('shown'), ready() {}, renderReady() {}, renderError() {},
     close: record('close'), save: record('save'),
     saveWatermarkSettings: record('saveWatermarkSettings'),
     saveAnnotationWidth: record('saveAnnotationWidth'),

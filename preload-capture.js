@@ -13,6 +13,11 @@ contextBridge.exposeInMainWorld('captureAPI', {
     ipcRenderer.on('capture:init', handler)
     return () => ipcRenderer.removeListener('capture:init', handler)
   },
+  onShown: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('capture:shown', handler)
+    return () => ipcRenderer.removeListener('capture:shown', handler)
+  },
   renderReady: () => ipcRenderer.send('capture:render-ready'),
   renderError: (message) => ipcRenderer.send('capture:render-error', message),
   // serialNumber 只在本次截图落过序号时才有值（0 = 没落过），用于主进程精确接续序号（P0-7-T7）。

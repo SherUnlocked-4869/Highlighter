@@ -282,6 +282,11 @@ async function main () {
     // --- A: stock payload, no saveMode -------------------------------------------------
     await sendInit(win, makeInit({}))
     await sleep(220)
+    report.audioBeforeShown = await readProbe(win)
+    win.webContents.send('capture:shown')
+    await waitFor(async () => (await readProbe(win)).plays === 1, 'the shown receipt did not play the shutter')
+    win.webContents.send('capture:shown')
+    await sleep(50)
     report.audio = await readProbe(win)
     await win.webContents.executeJavaScript('document.dispatchEvent(new KeyboardEvent("keydown",{key:"a",ctrlKey:true,bubbles:true}))')
     // Ctrl+A's handler is synchronous (capture.js:1305 -> render()), but whether the
@@ -350,6 +355,8 @@ async function main () {
     const playsBeforeMute = (await readProbe(win)).plays
     await sendInit(win, makeInit({ screenshot: { shutterSound: false } }))
     await sleep(180)
+    win.webContents.send('capture:shown')
+    await sleep(50)
     const playsAfterMute = (await readProbe(win)).plays
 
     // --- F: cursor compositing (P0-2 / S9b) ---------------------------------------------
@@ -498,7 +505,8 @@ test('capture renderer honors saveMode, Ctrl+A, the serial reset, the shutter ga
   // pins the CSP media-src decision) and the play() must be allowed without a gesture.
   assert.ok(report.audio.readyState >= 1, `shutter.wav did not load (readyState ${report.audio.readyState}, error ${report.audio.error}, networkState ${report.audio.networkState})`)
   assert.ok(report.audio.duration > 0.05, `shutter.wav duration looks wrong (${report.audio.duration})`)
-  assert.ok(report.audio.plays >= 1, 'the page must play the shutter sound once on init')
+  assert.equal(report.audioBeforeShown.plays, 0, 'a hidden initialized page must stay silent')
+  assert.equal(report.audio.plays, 1, 'the shown receipt must play once, including duplicate receipts')
   assert.deepEqual(report.audio.errors, [], 'play() must not be rejected (autoplay policy + CSP)')
   assert.deepEqual(report.consoleMedia, [], `the page must not log media/CSP violations: ${JSON.stringify(report.consoleMedia)}`)
 

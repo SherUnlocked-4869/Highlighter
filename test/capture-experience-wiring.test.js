@@ -66,8 +66,9 @@ test('the shutter sound is declared, gated on the frozen key and allowed to auto
 
   assert.match(script, /const shutterSound = document\.getElementById\('shutterSound'\)/)
   assert.match(script, /function playShutterSound\(\) \{[\s\S]{0,220}?shutterSound\.currentTime=0[\s\S]{0,120}?shutterSound\.play\(\)/)
-  assert.match(script, /if\(data\.settings\?\.screenshot\?\.shutterSound!==false\)playShutterSound\(\)/, 'the frozen key default is true')
-  assert.match(script, /window\.captureAPI\.onInit\(\(data\)=>\{[\s\S]{0,900}?playShutterSound\(\)/, 'played once per capture window')
+  assert.match(script, /if\(initData\.settings\?\.screenshot\?\.shutterSound!==false\)playShutterSound\(\)/, 'the frozen key default is true')
+  assert.match(script, /window\.captureAPI\.onShown\(\(\) => \{[\s\S]{0,260}?playShutterSound\(\)/, 'played after the main process shows the window')
+  assert.doesNotMatch(script.slice(script.indexOf('window.captureAPI.onInit((data)=>{')), /playShutterSound\(\)/, 'init must stay silent')
 
   assert.match(captureDomain, /autoplayPolicy: 'no-user-gesture-required'/, 'the capture window must allow a gesture-free play()')
 

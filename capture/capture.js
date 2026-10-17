@@ -15,6 +15,7 @@ const tip = document.getElementById('tip')
 const loading = document.getElementById('loading')
 const loadingText = loading.querySelector('b')
 const shutterSound = document.getElementById('shutterSound')
+let shutterSoundPlayed = false
 const colorInput = document.getElementById('color')
 const colorPreview = document.getElementById('colorSwatch')
 const colorButton = document.getElementById('colorButton')
@@ -194,7 +195,7 @@ let imageObjectUrl = ''
 let cursorImage = null
 let pdfExporting = false
 
-// P0-7-T5：每次截图窗口初始化时播一次快门音，受 screenshot.shutterSound 控制。
+// P0-7-T5：主进程确认窗口已显示后播一次快门音，受 screenshot.shutterSound 控制。
 // play() 在 CSP 拦截 / 自动播放被拒时会 reject，这里必须吞掉，否则渲染层报未处理拒绝。
 function playShutterSound() {
   if(!shutterSound)return
@@ -2143,12 +2144,18 @@ addEventListener('keydown',(event)=>{
   if(event.key==='Delete'){event.preventDefault();deleteSelectedAnnotation()}
 })
 
+window.captureAPI.onShown(() => {
+  if (!renderReadySent || shutterSoundPlayed) return
+  shutterSoundPlayed = true
+  if(initData.settings?.screenshot?.shutterSound!==false)playShutterSound()
+})
+
 window.captureAPI.onInit((data)=>{
   cancelRenderReady()
+  shutterSoundPlayed = false
   clearOcrResult();setProcessingState(null);initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#e5a44c')
   resetAnnotationState()
   resetSerialNumber(data)
-  if(data.settings?.screenshot?.shutterSound!==false)playShutterSound()
   applyWatermarkSettings(data.settings?.screenshot?.watermark)
   // B4: replaces the T1 setAnnotationWidth/setAnnotationColor init calls - both now
   // write the current tool's remembered block, which is meaningless before it is read.

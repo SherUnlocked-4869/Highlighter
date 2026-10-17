@@ -241,6 +241,7 @@ function createCaptureDomain(deps) {
     win._captureVisible = true
     win.setOpacity(1)
     win.showInactive()
+    win.webContents.send('capture:shown')
     setImmediate(() => {
       if (win.isDestroyed()) return
       win.focus()

@@ -179,6 +179,23 @@ function createHarness({ screenshot = {}, cursorProvider = null, ...deps } = {})
   return { domain, created, calls, settings }
 }
 
+test('capture sends one shown receipt after revealing the window', async () => {
+  const harness = createHarness()
+  const win = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+  const events = []
+  win.setOpacity = value => events.push(['opacity', value])
+  win.showInactive = () => events.push(['show'])
+  win.webContents.send = channel => events.push(['send', channel])
+  const controller = harness.domain.createCaptureController()
+  try {
+    controller.renderReady({ sender: {} })
+    controller.renderReady({ sender: {} })
+    assert.deepEqual(events, [['opacity', 1], ['show'], ['send', 'capture:shown']])
+  } finally {
+    win.close()
+  }
+})
+
 test('capture init payload carries saveMode, the serial start value and the autoplay policy (P0-7-T4/T5/T7)', async () => {
   const harness = createHarness()
 
