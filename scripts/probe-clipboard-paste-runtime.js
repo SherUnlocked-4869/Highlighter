@@ -1,7 +1,7 @@
 'use strict'
 // Explicit manual-device probe. Electron only; never starts the normal app,
 // hooks, user data root, updater, installer, or capture of the old clipboard.
-const { app, BrowserWindow, screen, nativeTheme, session, dialog, powerMonitor, ipcMain, globalShortcut } = require('electron')
+const { app, BrowserWindow, screen, nativeTheme, session, dialog, powerMonitor, ipcMain, globalShortcut, clipboard } = require('electron')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -10,6 +10,7 @@ const { spawnSync } = require('node:child_process')
 const { randomUUID } = require('node:crypto')
 const rootDirectory = path.resolve(__dirname, '..')
 if (process.env.HIGHLIGHTER_CLIPBOARD_TEST_INTERACTIVE !== '1') throw new Error('Explicit synthetic paste opt-in required')
+fs.mkdirSync(path.join(rootDirectory, '.tmp'), { recursive: true })
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'highlighter-paste-probe-'))
 app.setPath('userData', `${directory}-electron`)
 const { createClipboardDomain } = require('../main/domains/clipboard')
@@ -18,19 +19,24 @@ const { createSecureIpcMain } = require('../main/services/ipc-security')
 const { DEFAULT_CLIPBOARD } = require('../main/services/clipboard-settings')
 const settings = { language: 'zh-CN', theme: 'light', mainColor: '#e5a44c', clipboard: { ...DEFAULT_CLIPBOARD, enabled: true, paused: true } }
 let domain; let server; let stopping = false
-const token = randomUUID(); const operations = []
+const token = randomUUID(); const operations = []; const windowEvents = []; const ipcBlocks = []
 app.whenReady().then(async () => {
   const secondary = screen.getAllDisplays().find((display) => display.id !== screen.getPrimaryDisplay().id)
   if (!secondary) throw new Error('Secondary display required before any visible window')
   const seeded = spawnSync('cargo', ['run', '--quiet', '--locked', '--manifest-path', 'native/clipboard/Cargo.toml', '--example', 'seed_paste_probe', '--', directory], { cwd: rootDirectory, windowsHide: true, encoding: 'utf8' })
   if (seeded.status !== 0) throw new Error(seeded.stderr || 'Fixture seeding failed')
-  const secureIpc = createSecureIpcMain({ ipcMain, BrowserWindow, rootDirectory })
+  const secureIpc = createSecureIpcMain({ ipcMain, BrowserWindow, rootDirectory, onBlocked: ({ channel, reason }) => ipcBlocks.push({ channel, reason }) })
+  app.on('browser-window-created', (_event, win) => {
+    for (const event of ['show', 'hide', 'focus', 'blur', 'closed']) win.on(event, () => windowEvents.push({ event, time: Date.now() }))
+  })
   domain = createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, session, dialog, powerMonitor, ipcMain: secureIpc, rootDirectory, directory,
     getSettings: () => settings, updateSettings: () => {}, getHook: () => null,
     createLocalWindow: (pagePath, options) => createSecureWindow({ BrowserWindow, pagePath, options }),
     positionAutomationWindow: (win) => { const area = secondary.workArea; win.setPosition(area.x + 40, area.y + 180) },
     isGameModeEnabled: () => false, isMigrationInProgress: () => false })
   const command = domain.service.command.bind(domain.service)
+  const allowForeground = domain.service.allowPasteForeground.bind(domain.service)
+  domain.service.allowPasteForeground = () => { const granted = allowForeground(); operations.push({ method: 'foreground-grant', granted }); return granted }
   domain.service.command = async (method, args) => {
     const started = performance.now()
     try {
@@ -44,12 +50,23 @@ app.whenReady().then(async () => {
   await domain.service.apply(settings.clipboard); await domain.service.refresh()
   if (!globalShortcut.register('Control+Alt+Shift+F10', () => domain.show())) throw new Error('Probe shortcut unavailable')
   server = http.createServer(async (request, response) => {
+    if (request.url === '/synthetic-target' && request.method === 'GET') {
+      response.setHeader('Content-Type', 'text/html; charset=utf-8')
+      response.end(fs.readFileSync(path.join(rootDirectory, 'test', 'fixtures', 'clipboard-paste-target.html'))); return
+    }
     if (request.headers.authorization !== token) { response.writeHead(403).end(); return }
     try {
       let value
-      if (request.url === '/state') value = { pid: process.pid, nativePid: domain.service.child?.pid, secondary: secondary.workArea, operations,
+      if (request.url === '/state') value = { pid: process.pid, nativePid: domain.service.child?.pid, secondary: secondary.workArea, operations, windowEvents, ipcBlocks,
         windows: BrowserWindow.getAllWindows().map((win) => ({ visible: win.isVisible(), focused: win.isFocused(), focusable: win.isFocusable(), bounds: win.getBounds() })),
-        native: await command('status'), publication: await command('publication.diagnostics') }
+        native: await command('status'), publication: await command('publication.diagnostics'), paste: await command('paste.diagnostics') }
+      else if (request.url === '/verify-synthetic-document') {
+        // Invoke only after explicitly copying the controlled synthetic editor
+        // document. Return equality/size, never the clipboard body.
+        const expected = fs.readFileSync(path.join(rootDirectory, '.tmp', 'clipboard-paste-expected.txt'), 'utf8').replaceAll('\r\n', '\n')
+        const actual = clipboard.readText().replaceAll('\r\n', '\n')
+        value = { matches: actual === expected, actualLength: actual.length, expectedLength: expected.length }
+      }
       else if (request.url === '/quit') { value = { quitting: true }; setImmediate(() => app.quit()) }
       else { response.writeHead(404).end(); return }
       response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(value))

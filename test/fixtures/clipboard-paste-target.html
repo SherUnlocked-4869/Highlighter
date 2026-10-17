@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Highlighter Synthetic Paste Target</title>
+<style>body{font:18px sans-serif;padding:25px}input,textarea,[contenteditable]{display:block;width:90%;margin:12px 0;padding:8px;border:1px solid #777}textarea{height:200px}</style>
+<h1>Highlighter Synthetic Paste Target</h1>
+<label>Single line<input id="single" aria-label="Single line"></label>
+<label>Multiple lines<textarea id="multi" aria-label="Multiple lines"></textarea></label>
+<div id="editable" contenteditable="true" role="textbox" aria-label="Editable document"></div>
+<script>window.pasteEvents=[];document.addEventListener('paste',e=>window.pasteEvents.push({id:e.target.id,time:performance.now()}))</script>
+</html>
