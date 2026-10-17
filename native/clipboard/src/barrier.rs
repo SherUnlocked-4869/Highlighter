@@ -1,6 +1,6 @@
 //! The lease blocks reads before acknowledging the worker. Notification epochs
 //! invalidate queued and in-flight candidates without classifying sequence ranges.
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,9 @@ pub struct Barrier {
     state: Mutex<State>,
     drained: Condvar,
     published_epoch: AtomicU64,
+    published_idle: AtomicBool,
+    published_baseline: AtomicU32,
+    idle_notifier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 pub struct ReadPermit {
@@ -46,6 +49,9 @@ impl Default for Barrier {
             }),
             drained: Condvar::new(),
             published_epoch: AtomicU64::new(1),
+            published_idle: AtomicBool::new(true),
+            published_baseline: AtomicU32::new(0),
+            idle_notifier: Mutex::new(None),
         }
     }
 }
@@ -61,6 +67,31 @@ impl Barrier {
     }
     pub fn notice_epoch(&self) -> u64 {
         self.published_epoch.load(Ordering::Acquire)
+    }
+    pub fn baseline(&self) -> u32 {
+        self.published_baseline.load(Ordering::Acquire)
+    }
+    // The message callback never waits for the barrier mutex. A worker still
+    // acquires an authoritative read permit before touching payloads.
+    pub fn capture_epoch(&self, sequence: u32) -> Option<u64> {
+        let epoch = self.notice_epoch();
+        (self.published_idle.load(Ordering::Acquire)
+            && self.baseline() != sequence
+            && epoch == self.notice_epoch())
+        .then_some(epoch)
+    }
+    pub fn set_idle_notifier(&self, notifier: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *self.idle_notifier.lock().unwrap_or_else(|e| e.into_inner()) = notifier;
+    }
+    fn notify_idle(&self) {
+        let notifier = self
+            .idle_notifier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(notify) = notifier {
+            notify();
+        }
     }
 
     pub fn try_read(self: &Arc<Self>, epoch: u64, sequence: u32) -> Option<ReadPermit> {
@@ -95,6 +126,7 @@ impl Barrier {
             return Err("STALE_TRANSACTION");
         }
         state.phase = Phase::Pending;
+        self.published_idle.store(false, Ordering::Release);
         state.epoch += 1;
         self.published_epoch.store(state.epoch, Ordering::Release);
         state.tx = tx;
@@ -107,6 +139,9 @@ impl Barrier {
                 state.phase = Phase::Idle;
                 state.epoch += 1;
                 self.published_epoch.store(state.epoch, Ordering::Release);
+                self.published_idle.store(true, Ordering::Release);
+                drop(state);
+                self.notify_idle();
                 return Err("CAPTURE_DRAIN_TIMEOUT");
             }
             let waited = self
@@ -128,9 +163,13 @@ impl Barrier {
             return Err("STALE_TRANSACTION");
         }
         state.baseline = baseline;
+        self.published_baseline.store(baseline, Ordering::Release);
         state.epoch += 1;
         self.published_epoch.store(state.epoch, Ordering::Release);
         state.phase = Phase::Idle;
+        self.published_idle.store(true, Ordering::Release);
+        drop(state);
+        self.notify_idle();
         Ok(())
     }
 
@@ -138,6 +177,7 @@ impl Barrier {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if matches!(state.phase, Phase::Pending | Phase::Active) {
             state.phase = Phase::Orphaned;
+            self.published_idle.store(false, Ordering::Release);
             state.epoch += 1;
             self.published_epoch.store(state.epoch, Ordering::Release);
             self.drained.notify_all();
@@ -152,15 +192,20 @@ impl Barrier {
             return Err("NOT_ORPHANED");
         }
         state.baseline = baseline;
+        self.published_baseline.store(baseline, Ordering::Release);
         state.epoch += 1;
         self.published_epoch.store(state.epoch, Ordering::Release);
         state.phase = Phase::Idle;
+        self.published_idle.store(true, Ordering::Release);
+        drop(state);
+        self.notify_idle();
         Ok(())
     }
 
     pub fn close(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.phase = Phase::Closed;
+        self.published_idle.store(false, Ordering::Release);
         state.epoch += 1;
         self.published_epoch.store(state.epoch, Ordering::Release);
         self.drained.notify_all();
@@ -190,6 +235,33 @@ impl Drop for ReadPermit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn idle_notification_is_outside_lock_and_preserves_exact_baseline() {
+        let gate = Arc::new(Barrier::default());
+        let weak = Arc::downgrade(&gate);
+        let notified = Arc::new(AtomicU64::new(0));
+        let counter = notified.clone();
+        gate.set_idle_notifier(Some(Arc::new(move || {
+            let gate = weak.upgrade().unwrap();
+            assert_eq!(gate.phase(), Phase::Idle);
+            counter.fetch_add(1, Ordering::Relaxed);
+        })));
+        let epoch = gate.begin_local(Duration::ZERO).unwrap();
+        assert!(gate.capture_epoch(11).is_none());
+        gate.end(0, epoch, 10).unwrap();
+        assert!(gate.capture_epoch(10).is_none());
+        assert!(gate.capture_epoch(11).is_some());
+        assert_eq!(notified.load(Ordering::Relaxed), 1);
+        let read = gate.try_read(gate.notice_epoch(), 11).unwrap();
+        assert_eq!(
+            gate.begin_local(Duration::ZERO),
+            Err("CAPTURE_DRAIN_TIMEOUT")
+        );
+        assert_eq!(notified.load(Ordering::Relaxed), 2);
+        drop(read);
+        gate.close();
+        assert!(gate.capture_epoch(11).is_none());
+    }
     #[test]
     fn drains_open_reads_before_granting_and_invalidates_candidates() {
         let gate = Arc::new(Barrier::default());

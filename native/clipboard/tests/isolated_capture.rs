@@ -115,10 +115,10 @@ fn capture_and_restart_on_private_window_station() {
         for _ in 0..3 {
             let mut monitor = Monitor::start().unwrap();
             assert_eq!(monitor.status()["enabled"], false);
-            monitor.configure(true);
+            monitor.configure(true).unwrap();
             publish(owner, &[(13, &bytes)]);
             wait_until(|| monitor.status()["accepted"].as_u64().unwrap() == 1);
-            monitor.configure(false);
+            monitor.configure(false).unwrap();
             publish(owner, &[(13, &bytes)]);
             monitor.stop().unwrap();
             assert_eq!(monitor.status()["accepted"], 1);

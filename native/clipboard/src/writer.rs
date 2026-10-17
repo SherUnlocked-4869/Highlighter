@@ -1,17 +1,27 @@
 //! Publishes concrete owned formats without restoring old clipboard content.
 //! Allocation/encoding occurs before opening. Paste orchestration lives separately.
-use crate::{barrier::Barrier, capture::named_format};
-use std::time::Duration;
-use windows::{
-    core::w,
-    Win32::{
-        Foundation::{HANDLE, HGLOBAL, HWND},
-        System::{DataExchange::*, Memory::*},
-        UI::WindowsAndMessaging::*,
-    },
+use crate::{
+    barrier::Barrier,
+    capture::named_format,
+    publication::{PublicationProof, PublicationTrace, WriterContext},
+};
+use sha2::{Digest, Sha256};
+use std::time::{Duration, Instant};
+use windows::Win32::{
+    Foundation::{HANDLE, HGLOBAL, HWND},
+    System::{DataExchange::*, Memory::*},
 };
 
-struct Global(HGLOBAL);
+struct Global {
+    handle: HGLOBAL,
+    length: usize,
+    digest: [u8; 32],
+}
+struct Signature {
+    format: u32,
+    length: usize,
+    digest: [u8; 32],
+}
 impl Global {
     fn new(bytes: &[u8]) -> Result<Self, &'static str> {
         Self::generate(bytes.len(), |buffer| buffer.copy_from_slice(bytes))
@@ -20,42 +30,41 @@ impl Global {
         unsafe {
             let handle = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, length)
                 .map_err(|_| "ALLOCATION_FAILED")?;
-            let allocation = Self(handle);
+            let mut allocation = Self {
+                handle,
+                length,
+                digest: [0; 32],
+            };
             let ptr = GlobalLock(handle);
             if ptr.is_null() {
                 return Err("ALLOCATION_FAILED");
             }
-            fill(std::slice::from_raw_parts_mut(ptr.cast::<u8>(), length));
+            let buffer = std::slice::from_raw_parts_mut(ptr.cast::<u8>(), length);
+            fill(buffer);
+            allocation.digest = Sha256::digest(buffer).into();
             let _ = GlobalUnlock(handle);
             Ok(allocation)
         }
     }
     unsafe fn publish(mut self, format: u32) -> Result<(), &'static str> {
-        SetClipboardData(format, Some(HANDLE(self.0 .0))).map_err(|_| "COPY_OUTCOME_UNKNOWN")?;
-        self.0 = HGLOBAL::default();
+        SetClipboardData(format, Some(HANDLE(self.handle.0)))
+            .map_err(|_| "COPY_OUTCOME_UNKNOWN")?;
+        self.handle = HGLOBAL::default();
         Ok(())
     }
 }
 impl Drop for Global {
     fn drop(&mut self) {
-        if !self.0 .0.is_null() {
+        if !self.handle.0.is_null() {
             unsafe {
-                let _ = windows::Win32::Foundation::GlobalFree(Some(self.0));
+                let _ = windows::Win32::Foundation::GlobalFree(Some(self.handle));
             }
         }
     }
 }
-struct Owner(HWND);
-impl Drop for Owner {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = DestroyWindow(self.0);
-        }
-    }
-}
-
 pub fn copy_item(
     barrier: &Barrier,
+    context: &WriterContext,
     store: &std::sync::Mutex<crate::storage::Store>,
     id: &str,
     op: &str,
@@ -63,7 +72,7 @@ pub fn copy_item(
     // Drain capture before loading/decoding the original: capture and history
     // image conversion must not multiply one another's peak memory.
     let epoch = barrier.begin_local(Duration::from_millis(100))?;
-    let owned_sequence = std::cell::Cell::new(unsafe { GetClipboardSequenceNumber() });
+    let owned_sequence = std::cell::Cell::new(barrier.baseline());
     let result = (|| {
         let data = {
             let mut locked = store.lock().map_err(|_| "STORAGE_FAILED")?;
@@ -75,7 +84,8 @@ pub fn copy_item(
             }
         };
         if let Some((mime, bytes)) = data {
-            copy(&mime, &bytes, &owned_sequence)?;
+            let proof = copy(context, &mime, &bytes)?;
+            owned_sequence.set(proof.sequence);
             store
                 .lock()
                 .map_err(|_| "COPY_OUTCOME_UNKNOWN")?
@@ -89,18 +99,19 @@ pub fn copy_item(
 }
 
 pub enum PasteWrite {
-    Published(u32),
+    Published(PublicationProof),
     Completed(serde_json::Value),
 }
 
 pub fn prepare_paste(
     barrier: &Barrier,
+    context: &WriterContext,
     store: &std::sync::Mutex<crate::storage::Store>,
     id: &str,
     op: &str,
 ) -> Result<PasteWrite, &'static str> {
     let epoch = barrier.begin_local(Duration::from_millis(100))?;
-    let sequence = std::cell::Cell::new(unsafe { GetClipboardSequenceNumber() });
+    let sequence = std::cell::Cell::new(barrier.baseline());
     let result = (|| {
         let (mime, bytes) = {
             let mut locked = store.lock().map_err(|_| "STORAGE_FAILED")?;
@@ -109,24 +120,27 @@ pub fn prepare_paste(
             }
             locked.payload(id, false)?
         };
-        copy(&mime, &bytes, &sequence).map_err(|code| {
+        let proof = copy(context, &mime, &bytes).map_err(|code| {
             if code == "COPY_OUTCOME_UNKNOWN" {
                 "PASTE_OUTCOME_UNKNOWN"
             } else {
                 code
             }
         })?;
-        Ok(PasteWrite::Published(sequence.get()))
+        sequence.set(proof.sequence);
+        Ok(PasteWrite::Published(proof))
     })();
     let ended = barrier.end(0, epoch, sequence.get());
     result.and_then(|value| ended.map(|()| value))
 }
 
 fn copy(
+    context: &WriterContext,
     mime: &str,
     bytes: &[u8],
-    owned_sequence: &std::cell::Cell<u32>,
-) -> Result<(), &'static str> {
+) -> Result<PublicationProof, &'static str> {
+    let started = Instant::now();
+    let original_sequence = unsafe { GetClipboardSequenceNumber() };
     let mut formats = Vec::new();
     if mime.starts_with("text/plain") {
         let text = std::str::from_utf8(bytes).map_err(|_| "INVALID_ENCODING")?;
@@ -172,47 +186,147 @@ fn copy(
     } else {
         return Err("UNSUPPORTED");
     }
+    let mut trace = PublicationTrace::default();
     let result = (|| unsafe {
-        let owner = Owner(
-            CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                w!("STATIC"),
-                w!(""),
-                WINDOW_STYLE::default(),
-                0,
-                0,
-                0,
-                0,
-                Some(HWND_MESSAGE),
-                None,
-                None,
-                None,
-            )
-            .map_err(|_| "COPY_FAILED")?,
-        );
-        OpenClipboard(Some(owner.0)).map_err(|_| "CLIPBOARD_BUSY")?;
-        let mutated = std::cell::Cell::new(false);
-        struct Close<'a>(&'a std::cell::Cell<u32>, &'a std::cell::Cell<bool>);
-        impl Drop for Close<'_> {
-            fn drop(&mut self) {
-                unsafe {
-                    if self.1.get() {
-                        self.0.set(GetClipboardSequenceNumber());
-                    }
-                    let _ = CloseClipboard();
-                }
-            }
-        }
-        let _close = Close(owned_sequence, &mutated);
-        if GetClipboardSequenceNumber() != owned_sequence.get() {
+        let owner = context.window()?;
+        let mut opened = Open::new(owner)?;
+        if GetClipboardSequenceNumber() != original_sequence {
             return Err("COPY_INTERRUPTED");
         }
         EmptyClipboard().map_err(|_| "COPY_FAILED")?;
-        mutated.set(true);
+        let mut signatures = Vec::with_capacity(formats.len());
         for (format, data) in formats {
+            signatures.push(Signature {
+                format,
+                length: data.length,
+                digest: data.digest,
+            });
             data.publish(format)?;
         }
-        Ok(())
+        let generation = context.generation();
+        trace.before_close = GetClipboardSequenceNumber();
+        opened.close()?;
+        trace.after_close = GetClipboardSequenceNumber();
+        trace.publish_micros = started.elapsed().as_micros() as u64;
+        let verifying = Instant::now();
+        let candidate = trace.after_close;
+        // A candidate is not a baseline. Reject an intervening copy rather than
+        // adopting its sequence, even when its payload might look identical.
+        let mut verification = None;
+        for wait in [0, 5, 15, 30] {
+            if wait != 0 {
+                std::thread::sleep(Duration::from_millis(wait));
+            }
+            if !context.unchanged(generation) || GetClipboardSequenceNumber() != candidate {
+                return Err("CLIPBOARD_CHANGED");
+            }
+            if let Ok(opened) = Open::new(owner) {
+                verification = Some(opened);
+                break;
+            }
+        }
+        let mut verification = verification.ok_or("CLIPBOARD_BUSY")?;
+        trace.owner_is_ours = context.unchanged(generation);
+        if !trace.owner_is_ours || GetClipboardSequenceNumber() != candidate {
+            return Err("CLIPBOARD_CHANGED");
+        }
+        verify_formats(&signatures, mime, verifying + Duration::from_millis(500))?;
+        trace.content_matched = true;
+        if !context.unchanged(generation) || GetClipboardSequenceNumber() != candidate {
+            return Err("CLIPBOARD_CHANGED");
+        }
+        verification.close()?;
+        trace.verify_micros = verifying.elapsed().as_micros() as u64;
+        if !context.unchanged(generation) || GetClipboardSequenceNumber() != candidate {
+            return Err("CLIPBOARD_CHANGED");
+        }
+        trace.verified_sequence = candidate;
+        Ok(context.proof(candidate, generation))
     })();
+    trace.phase = match &result {
+        Ok(_) => "verified",
+        Err(code) => code,
+    };
+    context.record(trace);
     result
+}
+
+struct Open(bool);
+impl Open {
+    unsafe fn new(owner: HWND) -> Result<Self, &'static str> {
+        OpenClipboard(Some(owner)).map_err(|_| "CLIPBOARD_BUSY")?;
+        Ok(Self(true))
+    }
+    unsafe fn close(&mut self) -> Result<(), &'static str> {
+        CloseClipboard().map_err(|_| "COPY_OUTCOME_UNKNOWN")?;
+        self.0 = false;
+        Ok(())
+    }
+}
+impl Drop for Open {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe {
+                let _ = CloseClipboard();
+            }
+        }
+    }
+}
+
+unsafe fn verify_formats(
+    signatures: &[Signature],
+    mime: &str,
+    deadline: Instant,
+) -> Result<(), &'static str> {
+    let mut format = 0;
+    let mut count = 0;
+    loop {
+        format = EnumClipboardFormats(format);
+        if format == 0 {
+            break;
+        }
+        count += 1;
+        let derived = if mime.starts_with("text/plain") {
+            [1, 7, 16].contains(&format)
+        } else {
+            [2, 8, 9].contains(&format)
+        };
+        if count > 8 || (!derived && !signatures.iter().any(|entry| entry.format == format)) {
+            return Err("PUBLICATION_UNVERIFIED");
+        }
+    }
+    for expected in signatures {
+        if Instant::now() >= deadline {
+            return Err("PUBLICATION_UNVERIFIED");
+        }
+        let handle = GetClipboardData(expected.format).map_err(|_| "PUBLICATION_UNVERIFIED")?;
+        let memory = HGLOBAL(handle.0);
+        let size = GlobalSize(memory);
+        if size < expected.length || size > expected.length.saturating_add(65536) {
+            return Err("PUBLICATION_UNVERIFIED");
+        }
+        let pointer = GlobalLock(memory);
+        if pointer.is_null() {
+            return Err("PUBLICATION_UNVERIFIED");
+        }
+        let checked = (|| {
+            let bytes = std::slice::from_raw_parts(pointer.cast::<u8>(), size);
+            let mut digest = Sha256::new();
+            for chunk in bytes[..expected.length].chunks(65536) {
+                if Instant::now() >= deadline {
+                    return Err("PUBLICATION_UNVERIFIED");
+                }
+                digest.update(chunk);
+            }
+            if <[u8; 32]>::from(digest.finalize()) != expected.digest
+                || bytes[expected.length..].iter().any(|byte| *byte != 0)
+            {
+                return Err("PUBLICATION_UNVERIFIED");
+            }
+            Ok(())
+        })();
+        let _ = GlobalUnlock(memory);
+        checked?;
+    }
+    Ok(())
 }

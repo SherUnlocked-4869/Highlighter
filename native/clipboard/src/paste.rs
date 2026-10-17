@@ -2,6 +2,7 @@
 //! No global hooks, idle polling, elevation, clipboard rollback or paste retries.
 use crate::{
     barrier::Barrier,
+    publication::{PublicationProof, WriterContext},
     storage::Store,
     writer::{self, PasteWrite},
 };
@@ -15,7 +16,7 @@ use std::{
 };
 use windows::Win32::{
     Foundation::*,
-    System::{DataExchange::GetClipboardSequenceNumber, StationsAndDesktops::*, Threading::*},
+    System::{StationsAndDesktops::*, Threading::*},
     UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 
@@ -64,7 +65,7 @@ struct Prepared {
     operation: String,
     target: Target,
     panel: HWND,
-    sequence: u32,
+    proof: PublicationProof,
     written: Instant,
 }
 #[derive(Default)]
@@ -234,6 +235,7 @@ impl PasteSession {
     pub fn prepare(
         &mut self,
         barrier: &Barrier,
+        context: &WriterContext,
         store: &Mutex<Store>,
         id: &str,
         op: &str,
@@ -248,9 +250,9 @@ impl PasteSession {
             .target
             .take()
             .filter(|target| Some(target.id.as_str()) == target_id);
-        match writer::prepare_paste(barrier, store, id, op)? {
+        match writer::prepare_paste(barrier, context, store, id, op)? {
             PasteWrite::Completed(value) => Ok(value),
-            PasteWrite::Published(sequence) => {
+            PasteWrite::Published(proof) => {
                 let Some(target) = target.filter(Target::valid) else {
                     return finish(store, id, op, copied_only("TARGET_UNAVAILABLE"));
                 };
@@ -261,7 +263,7 @@ impl PasteSession {
                     operation: op.into(),
                     target,
                     panel,
-                    sequence,
+                    proof,
                     written: Instant::now(),
                 });
                 Ok(json!({"copied":true,"ticket":ticket}))
@@ -296,7 +298,7 @@ impl PasteSession {
                 // This phase never writes: preserve the owned-copy baseline,
                 // allowing any intervening genuine clipboard change through.
                 barrier
-                    .end(0, epoch, prepared.sequence)
+                    .end(0, epoch, prepared.proof.sequence)
                     .map_err(|_| "PASTE_OUTCOME_UNKNOWN")?;
                 result?
             }
@@ -333,7 +335,7 @@ fn inject(prepared: &Prepared) -> Result<Value, &'static str> {
     }
     let deadline = Instant::now() + Duration::from_millis(300);
     loop {
-        if unsafe { GetClipboardSequenceNumber() } != prepared.sequence {
+        if !prepared.proof.current() {
             return Ok(copied_only("CLIPBOARD_CHANGED"));
         }
         let foreground = unsafe { GetForegroundWindow() };
@@ -348,11 +350,7 @@ fn inject(prepared: &Prepared) -> Result<Value, &'static str> {
         }
         thread::sleep(Duration::from_millis(10));
     }
-    if !input_desktop()
-        || !target.focused()
-        || !released()
-        || unsafe { GetClipboardSequenceNumber() } != prepared.sequence
-    {
+    if !input_desktop() || !target.focused() || !released() || !prepared.proof.current() {
         return Ok(copied_only("FOCUS_CHANGED"));
     }
     // One batch, one attempt. Success only proves insertion into the input

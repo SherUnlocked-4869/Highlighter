@@ -3,8 +3,10 @@
 use crate::barrier::Barrier;
 use crate::capture::read_snapshot_with_rules;
 use crate::limits::Skip;
+use crate::publication::WriterContext;
 use crate::storage::{Rules, Store};
 use serde_json::{json, Value};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -19,6 +21,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const STOP: u32 = WM_APP + 1;
+const REPLAY: u32 = WM_APP + 2;
 
 #[derive(Default)]
 struct State {
@@ -34,6 +37,8 @@ struct State {
     skipped: Mutex<BTreeMap<&'static str, u64>>,
     rules: Mutex<Rules>,
     capture_started: Mutex<Option<Instant>>,
+    writer: WriterContext,
+    replay_posted: AtomicBool,
 }
 
 struct Notice {
@@ -54,6 +59,7 @@ impl Drop for Activity {
 struct Context {
     state: Arc<State>,
     sender: mpsc::SyncSender<Notice>,
+    last_queued: Cell<(u32, u64, u64)>,
 }
 
 unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -61,30 +67,46 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
         PostQuitMessage(0);
         return LRESULT(0);
     }
-    if message == WM_CLIPBOARDUPDATE {
-        let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Context;
-        if let Some(context) = pointer.as_ref() {
+    let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Context;
+    if let Some(context) = pointer.as_ref() {
+        if message == WM_DESTROYCLIPBOARD {
+            context.state.writer.revoke();
+        }
+        if message == WM_CLIPBOARDUPDATE || message == REPLAY {
+            if message == REPLAY {
+                context.state.replay_posted.store(false, Ordering::Release);
+            }
             let state = &context.state;
             if state.enabled.load(Ordering::Acquire) {
                 let sequence = GetClipboardSequenceNumber();
-                if state.last_notified.swap(sequence, Ordering::AcqRel) != sequence {
-                    if context
-                        .sender
-                        .try_send(Notice {
-                            sequence,
-                            generation: state.generation.load(Ordering::Acquire),
-                            barrier_epoch: state.barrier.notice_epoch(),
-                        })
-                        .is_ok()
-                    {
-                        state.queued.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        state.queue_full.fetch_add(1, Ordering::Relaxed);
+                state.last_notified.store(sequence, Ordering::Release);
+                // Exact native-owner exclusion also covers an incomplete own
+                // write. Parent Electron copies are a different owner.
+                if !state.writer.owns_clipboard() {
+                    if let Some(epoch) = state.barrier.capture_epoch(sequence) {
+                        let generation = state.generation.load(Ordering::Acquire);
+                        let stamp = (sequence, generation, epoch);
+                        if context.last_queued.get() != stamp {
+                            if context
+                                .sender
+                                .try_send(Notice {
+                                    sequence,
+                                    generation,
+                                    barrier_epoch: epoch,
+                                })
+                                .is_ok()
+                            {
+                                context.last_queued.set(stamp);
+                                state.queued.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                state.queue_full.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
                     }
                 }
             }
+            return LRESULT(0);
         }
-        return LRESULT(0);
     }
     DefWindowProcW(hwnd, message, wp, lp)
 }
@@ -95,7 +117,9 @@ pub struct Monitor {
     listener: Option<thread::JoinHandle<()>>,
     listener_done: mpsc::Receiver<()>,
     worker: Option<thread::JoinHandle<()>>,
-    worker_done: mpsc::Receiver<()>,
+    worker_done: Option<mpsc::Receiver<()>>,
+    receiver: Option<mpsc::Receiver<Notice>>,
+    store: Option<Arc<Mutex<Store>>>,
 }
 
 impl Monitor {
@@ -160,7 +184,9 @@ impl Monitor {
                 let pointer = Box::into_raw(Box::new(Context {
                     state: window_state,
                     sender,
+                    last_queued: Cell::new((0, 0, 0)),
                 }));
+                (&*pointer).state.writer.bind(hwnd);
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, pointer as isize);
                 if let Err(error) = AddClipboardFormatListener(hwnd) {
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -182,6 +208,7 @@ impl Monitor {
                             let _ = DispatchMessageW(&message);
                         }
                     }
+                    (&*pointer).state.writer.close();
                     let _ = RemoveClipboardFormatListener(hwnd);
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                     let _ = DestroyWindow(hwnd);
@@ -197,10 +224,41 @@ impl Monitor {
         let hwnd = startup
             .recv_timeout(Duration::from_secs(5))
             .map_err(|_| "LISTENER_START_TIMEOUT")??;
-        let worker_state = state.clone();
+        let weak = Arc::downgrade(&state);
+        state.barrier.set_idle_notifier(Some(Arc::new(move || {
+            if let Some(state) = weak.upgrade() {
+                post_replay(&state);
+            }
+        })));
+        Ok(Self {
+            state,
+            hwnd,
+            listener: Some(listener),
+            listener_done,
+            worker: None,
+            worker_done: None,
+            receiver: Some(receiver),
+            store,
+        })
+    }
+
+    fn start_worker(&mut self) -> Result<(), &'static str> {
+        if self.worker.is_some() {
+            return Ok(());
+        }
+        let worker_state = self.state.clone();
+        let receiver = self.receiver.take().ok_or("CAPTURE_WORKER_CLOSED")?;
+        let store = self.store.clone();
         let (done, worker_done) = mpsc::channel();
         let worker = thread::spawn(move || {
             while let Ok(notice) = receiver.recv() {
+                struct Replay(Arc<State>);
+                impl Drop for Replay {
+                    fn drop(&mut self) {
+                        post_replay(&self.0);
+                    }
+                }
+                let _replay = Replay(worker_state.clone());
                 if !current(&worker_state, &notice) {
                     skip(&worker_state, "stale_configuration");
                     continue;
@@ -293,23 +351,25 @@ impl Monitor {
             }
             let _ = done.send(());
         });
-        Ok(Self {
-            state,
-            hwnd,
-            listener: Some(listener),
-            listener_done,
-            worker: Some(worker),
-            worker_done,
-        })
+        self.worker = Some(worker);
+        self.worker_done = Some(worker_done);
+        Ok(())
+    }
+    pub fn writer(&self) -> WriterContext {
+        self.state.writer.clone()
     }
 
-    pub fn configure(&self, enabled: bool) {
+    pub fn configure(&mut self, enabled: bool) -> Result<(), &'static str> {
+        if enabled {
+            self.start_worker()?;
+        }
         self.state.enabled.store(false, Ordering::Release);
         self.state.generation.fetch_add(1, Ordering::AcqRel);
         self.state
             .last_notified
             .store(unsafe { GetClipboardSequenceNumber() }, Ordering::Release);
         self.state.enabled.store(enabled, Ordering::Release);
+        Ok(())
     }
 
     pub fn invalidate(&self) {
@@ -326,6 +386,8 @@ impl Monitor {
 
     pub fn status(&self) -> Value {
         json!({
+            "messageWindow": self.state.writer.window().is_ok(),
+            "captureWorker": self.worker.is_some(),
             "captureBusyMs": self.state.capture_started.lock().unwrap_or_else(|e|e.into_inner()).map(|start|start.elapsed().as_millis() as u64).unwrap_or(0),
             "enabled": self.state.enabled.load(Ordering::Acquire),
             "coordinationPhase": format!("{:?}", self.state.barrier.phase()).to_lowercase(),
@@ -339,7 +401,8 @@ impl Monitor {
     }
 
     pub fn stop(&mut self) -> Result<(), &'static str> {
-        self.configure(false);
+        self.configure(false)?;
+        self.state.barrier.set_idle_notifier(None);
         if self.listener.is_some() {
             unsafe { PostMessageW(Some(HWND(self.hwnd as *mut _)), STOP, WPARAM(0), LPARAM(0)) }
                 .map_err(|_| "LISTENER_STOP_FAILED")?;
@@ -352,6 +415,8 @@ impl Monitor {
         }
         if self.worker.is_some() {
             self.worker_done
+                .as_ref()
+                .ok_or("CAPTURE_STOP_FAILED")?
                 .recv_timeout(Duration::from_secs(5))
                 .map_err(|_| "CAPTURE_STOP_TIMEOUT")?;
             if let Some(worker) = self.worker.take() {
@@ -367,6 +432,7 @@ impl Drop for Monitor {
         // Explicit stop reports timeouts; Drop must not repeat a blocking wait
         // or falsely report a blocked native capture as successfully stopped.
         self.state.enabled.store(false, Ordering::Release);
+        self.state.barrier.set_idle_notifier(None);
         self.state.generation.fetch_add(1, Ordering::AcqRel);
         if self.listener.is_some() {
             unsafe {
@@ -388,4 +454,16 @@ fn skip(state: &State, code: &'static str) {
         .unwrap_or_else(|e| e.into_inner())
         .entry(code)
         .or_default() += 1;
+}
+
+fn post_replay(state: &State) {
+    if !state.enabled.load(Ordering::Acquire) || state.replay_posted.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    if let Ok(window) = state.writer.window() {
+        if unsafe { PostMessageW(Some(window), REPLAY, WPARAM(0), LPARAM(0)) }.is_ok() {
+            return;
+        }
+    }
+    state.replay_posted.store(false, Ordering::Release);
 }

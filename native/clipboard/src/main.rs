@@ -105,11 +105,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             } else {
                                 Ok(())
                             };
-                            started.map(|()| {
-                                if let Some(current) = &monitor {
-                                    current.configure(enabled);
+                            started.and_then(|()| {
+                                if let Some(current) = &mut monitor {
+                                    current.configure(enabled)?;
                                 }
-                                json!({"enabled":enabled,"persistent":store.is_some()})
+                                Ok(json!({"enabled":enabled,"persistent":store.is_some()}))
                             })
                         } else {
                             Err("INVALID_ARGUMENT")
@@ -179,21 +179,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         paste.clear();
                         Ok(json!({"cleared":true}))
                     }
-                    "paste.prepare" => paste.prepare(
-                        &barrier,
-                        store.as_ref().ok_or("STORAGE_NOT_OPEN")?,
-                        request
-                            .params
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .ok_or("INVALID_ID")?,
-                        request
-                            .params
-                            .get("operationId")
-                            .and_then(Value::as_str)
-                            .ok_or("INVALID_OPERATION")?,
-                        request.params.get("targetId").and_then(Value::as_str),
-                    ),
+                    "publication.diagnostics" => Ok(monitor
+                        .as_ref()
+                        .map(|runtime| runtime.writer().diagnostics())
+                        .unwrap_or_else(|| json!({"recent":[]}))),
+                    "paste.prepare" => {
+                        if quiescing {
+                            return Err("QUIESCING");
+                        }
+                        if monitor.is_none() {
+                            let runtime =
+                                Monitor::start_with_store(barrier.clone(), store.clone())?;
+                            runtime.set_rules(rules.clone());
+                            monitor = Some(runtime);
+                        }
+                        paste.prepare(
+                            &barrier,
+                            &monitor.as_ref().ok_or("WRITER_UNAVAILABLE")?.writer(),
+                            store.as_ref().ok_or("STORAGE_NOT_OPEN")?,
+                            request
+                                .params
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .ok_or("INVALID_ID")?,
+                            request
+                                .params
+                                .get("operationId")
+                                .and_then(Value::as_str)
+                                .ok_or("INVALID_OPERATION")?,
+                            request.params.get("targetId").and_then(Value::as_str),
+                        )
+                    }
                     "paste.commit" | "paste.cancel" => paste.commit(
                         &barrier,
                         store.as_ref().ok_or("STORAGE_NOT_OPEN")?,
@@ -216,7 +232,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             .and_then(Value::as_str)
                             .ok_or("INVALID_OPERATION")?;
                         let store = store.as_ref().ok_or("STORAGE_NOT_OPEN")?;
-                        highlighter_clipboard::writer::copy_item(&barrier, store, id, op)?;
+                        if quiescing {
+                            return Err("QUIESCING");
+                        }
+                        if monitor.is_none() {
+                            let runtime =
+                                Monitor::start_with_store(barrier.clone(), Some(store.clone()))?;
+                            runtime.set_rules(rules.clone());
+                            monitor = Some(runtime);
+                        }
+                        highlighter_clipboard::writer::copy_item(
+                            &barrier,
+                            &monitor.as_ref().ok_or("WRITER_UNAVAILABLE")?.writer(),
+                            store,
+                            id,
+                            op,
+                        )?;
                         Ok(json!({"copied":true}))
                     }
                     "set-pinned" | "delete" | "clear" => {
@@ -288,8 +319,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "quiesce" => {
                         paste.clear();
                         quiescing = true;
-                        if let Some(current) = &monitor {
-                            current.configure(false);
+                        if let Some(current) = &mut monitor {
+                            current.configure(false)?;
                         }
                         let stopped = coordinator
                             .as_mut()
