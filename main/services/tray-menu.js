@@ -6,6 +6,7 @@ const { t } = require('./i18n-bootstrap')
 
 function buildTrayMenuTemplate({
   gameMode = false,
+  clipboardEnabled = false,
   screenshotAccelerator = '',
   hasConversation = false,
   // { running, busy } for the Index-Translate proxy bridge, or null when the
@@ -65,6 +66,7 @@ function buildTrayMenuTemplate({
     { label: t('main.tray.pin-image'), enabled: featureEnabled, click: run('fixedContent') },
     { label: t('main.tray.video-record'), enabled: featureEnabled, click: run('videoRecord') },
     { label: t('main.tray.local-search'), enabled: featureEnabled, click: run('localSearch') },
+    { label: t('clipboard.title'), enabled: featureEnabled && clipboardEnabled, click: run('openClipboardHistory') },
     ...(proxyEntry ? [{ type: 'separator' }, proxyEntry] : []),
     { type: 'separator' },
     {

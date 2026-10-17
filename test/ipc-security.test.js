@@ -167,6 +167,7 @@ test('every renderer-to-main preload channel has a matching page policy', () => 
     ['preload-pin.js', 'pin'],
     ['preload-recognition.js', 'recognition'],
     ['preload-search.js', 'search'],
+    ['preload-clipboard.js', 'clipboard'],
     ['preload-record.js', 'record'],
     ['preload-record-frame.js', 'record-frame']
   ])

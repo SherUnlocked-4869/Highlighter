@@ -31,6 +31,7 @@ const functionGroups = {
     ['localSearch', 'config.function.local-search', 'icons/search.svg', 'config.function.local-search-description']
   ],
   other: [
+    ['openClipboardHistory', 'clipboard.title', 'icons/history.svg', 'clipboard.description'],
     ['fixedContent', 'config.function.fixed-content', '../capture/icons/pin.svg', 'config.function.fixed-content-description'],
     ['fullScreenDraw', 'config.function.full-screen-draw', 'icons/draw.svg', 'config.function.full-screen-draw-description'],
     ['toggleFixedContentVisibility', 'config.function.toggle-fixed-content-visibility', 'icons/preview.svg', 'config.function.toggle-fixed-content-visibility-description'],

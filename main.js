@@ -17,7 +17,7 @@ const {
   screen,
   shell,
   Tray,
-  utilityProcess
+  utilityProcess, protocol, session
 } = require('electron')
 const fs = require('fs')
 const path = require('path')
@@ -60,6 +60,7 @@ const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createSecureWindow, isSafeExternalUrl } = require('./main/services/window-security')
 const { name: applicationName } = require('./package.json')
 
+protocol.registerSchemesAsPrivileged([{ scheme: 'highlighter-clipboard', privileges: { standard: true, secure: true, supportFetchAPI: false } }])
 const e2eContext = configureE2eEnvironment({ app })
 const dataRootContext = prepareDataRoot({ app, applicationName })
 const activePaths = dataRootContext.paths
@@ -82,6 +83,8 @@ const { createLongCaptureDomain } = require('./main/domains/long-capture')
 const { createRecordDomain } = require('./main/domains/record')
 const { createRecognitionDomain } = require('./main/domains/recognition')
 const { createSearchDomain } = require('./main/domains/search')
+const { createClipboardDomain } = require('./main/domains/clipboard')
+const { createFileIconLookup } = require('./main/services/file-icon-lookup')
 const { createSelectionDomain } = require('./main/domains/selection')
 const { createDataRootDomain } = require('./main/domains/data-root')
 const { createSettingsEffects } = require('./main/domains/settings-effects')
@@ -174,8 +177,7 @@ let tray = null
 let ocrService = null
 let everythingService = null
 let recordingService = null
-const fileIconCache = new Map()
-const FILE_ICON_CACHE_LIMIT = 256
+const getSearchFileIcon = createFileIconLookup({ app, log })
 const managedRecordingWriters = new ManagedWriterCoordinator()
 let dataRootMigrationInProgress = false
 let pinDomain = null
@@ -185,6 +187,7 @@ let longCaptureDomain = null
 let recordDomain = null
 let recognitionDomain = null
 let searchDomain = null
+let clipboardDomain = null
 let selectionDomain = null
 let dataRootDomain = null
 let functionRouter = null
@@ -448,6 +451,7 @@ function authorizeIpcRole(role, win) {
   if (role === 'long-overlay') return longCaptureDomain?.ownsOverlayWindow(win) === true
   if (role === 'pin') return pinDomain?.ownsWindow(win) === true
   if (role === 'recognition') return recognitionDomain?.ownsWindow(win) === true
+  if (role === 'clipboard') return clipboardDomain?.ownsWindow(win) === true
   if (role === 'search') return searchDomain?.ownsWindow(win) === true
   if (role === 'record') return recordDomain?.ownsControlWindow(win) === true
   if (role === 'record-frame') return recordDomain?.ownsFrameWindow(win) === true
@@ -678,6 +682,16 @@ selectionDomain = createSelectionDomain({
   log
 })
 
+clipboardDomain = createClipboardDomain({
+  app, BrowserWindow, screen, nativeTheme, session, dialog, powerMonitor,
+  ipcMain: secureIpcMain, rootDirectory: __dirname,
+  directory: activePaths?.clipboard || path.join(app.getPath('userData'), 'clipboard'),
+  getSettings, updateSettings: (patch) => settingsService.updateSettings(patch),
+  getHook: () => selectionDomain.hookService(), createLocalWindow,
+  positionAutomationWindow, isGameModeEnabled,
+  isMigrationInProgress: () => dataRootMigrationState.get(), automation: e2eContext.enabled
+})
+
 settingsEffects = createSettingsEffects({
   app,
   registerShortcuts,
@@ -699,6 +713,7 @@ settingsEffects = createSettingsEffects({
     get: () => selectionDomain.hookService()
   },
   syncConversationStore: () => selectionDomain.syncConversationStore(),
+  getClipboardDomain: () => clipboardDomain,
   log
 })
 
@@ -718,7 +733,7 @@ dataRootDomain = createDataRootDomain({
   getOcrService,
   recordDomain,
   longCaptureDomain,
-  managedRecordingWriters,
+  managedRecordingWriters, selectionDomain, getClipboardDomain: () => clipboardDomain,
   removeProvisionalRoot,
   markSessionClean,
   log
@@ -739,6 +754,7 @@ functionRouter = createFunctionRouter({
   // Owned by the tray bridge controller: the shortcut shares the same toggle so
   // both entry points send the user through the same failure copy.
   getProxyBridge: () => proxyBridgeController,
+  getClipboardDomain: () => clipboardDomain,
   recordDomain,
   searchDomain,
   selectionDomain,
@@ -842,7 +858,7 @@ function createTrayIcon() {
   tray.setToolTip([gameMode ? 'Highlighter（游戏模式）' : 'Highlighter', proxyState?.running ? t('main.proxy.tooltip-running') : ''].filter(Boolean).join(' · '))
   tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate({
     gameMode,
-    screenshotAccelerator: settings.shortcuts.screenshot,
+    screenshotAccelerator: settings.shortcuts.screenshot, clipboardEnabled: settings.clipboard.enabled,
     translationProxy: proxyState,
     setTranslationProxyEnabled: (enabled) => proxyBridgeController.setEnabled(enabled),
     executeFunction: (name) => functionRouter.executeFunction(name).catch((error) => log('Tray action failed:', name, error.message)),
@@ -906,25 +922,6 @@ function getEverythingService() {
   return everythingService
 }
 
-async function getSearchFileIcon(samplePath) {
-  const value = String(samplePath || '').trim()
-  if (!value || value.includes('\0') || !path.isAbsolute(value)) return null
-  const extension = path.extname(value).toLowerCase()
-  if (!extension) return null
-  if (fileIconCache.has(extension)) return fileIconCache.get(extension)
-  let dataUrl = null
-  try {
-    const icon = await app.getFileIcon(value, { size: 'small' })
-    if (icon && !icon.isEmpty()) dataUrl = icon.toDataURL()
-  } catch (error) {
-    log('File icon lookup failed:', error.message)
-  }
-  if (fileIconCache.size >= FILE_ICON_CACHE_LIMIT) {
-    fileIconCache.delete(fileIconCache.keys().next().value)
-  }
-  fileIconCache.set(extension, dataUrl)
-  return dataUrl
-}
 
 function registerShortcuts() {
   const shortcuts = getSettings().shortcuts
@@ -936,6 +933,7 @@ function applyGameModeState(enabled, reason = 'state-change') {
   const gameMode = enabled === true
   registerShortcuts()
   selectionDomain.applyGameMode(gameMode)
+  clipboardDomain?.applyGameMode(gameMode)
   if (gameMode) searchDomain.hideSearchWindow()
   createTrayIcon()
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('app:game-mode-changed', gameMode)
@@ -1244,6 +1242,7 @@ async function startApplication() {
     registerShortcuts()
     selectionDomain.initSelectionHook()
     selectionDomain.registerSelectionPowerEvents()
+    clipboardDomain.start()
     if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
     if (isWin) captureDomain.warmUpNativeDisplays()
     app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
@@ -1292,6 +1291,7 @@ else {
     selectionDomain?.handleChildProcessGone(details)
   })
   nativeTheme.on('updated', () => {
+    if (store) clipboardDomain?.notifyAppearance()
     if (store && getSettings().theme === 'system') selectionDomain.broadcastActionAppearance()
   })
   process.on('unhandledRejection', (reason) => log('Unhandled promise rejection:', reason))
@@ -1308,7 +1308,12 @@ else {
     shortcutService.dispose()
     cursorProvider?.dispose()
   })
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
+    if (clipboardDomain && !clipboardDomain.service.disposed) {
+      event.preventDefault()
+      clipboardDomain.dispose().catch((error) => log('Clipboard shutdown failed:', error.code || 'SHUTDOWN_FAILED')).finally(() => app.quit())
+      return
+    }
     recordDomain.shutdown()
       .catch((error) => log('Recording shutdown failed:', error.message))
       .finally(() => { recordingService = null })

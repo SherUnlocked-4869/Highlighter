@@ -43,6 +43,7 @@ function createFunctionRouter(deps) {
   }
 
   const handlers = {
+    openClipboardHistory: () => deps.getClipboardDomain?.()?.show() || false,
     screenshot: () => createCapture({ mode: 'region', source: 'region' }),
     screenshotDelay(payload) {
       const seconds = Math.max(0, Number(payload.seconds ?? 3))

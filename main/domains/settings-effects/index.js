@@ -87,6 +87,16 @@ function createSettingsEffects(deps) {
       run: () => searchDomain?.notifySettingsChanged()
     },
     {
+      id: 'clipboard',
+      when: (patch) => !!patch.clipboard,
+      run: () => { deps.getClipboardDomain?.()?.applySettings().catch(() => {}); createTrayIcon() }
+    },
+    {
+      id: 'clipboard.appearance',
+      when: (patch) => patch.theme !== undefined || patch.mainColor !== undefined || patch.language !== undefined,
+      run: () => deps.getClipboardDomain?.()?.notifyAppearance()
+    },
+    {
       id: 'selectionToolbar.clipboardFallback',
       when: (patch) => patch.selectionToolbar?.clipboardFallback !== undefined,
       run: (_patch, settings) => selectionHookServiceRef.get()?.updateStartOptions({
@@ -104,6 +114,7 @@ function createSettingsEffects(deps) {
   ]
 
   const resetEffects = [
+    { id: 'clipboard', run: () => deps.getClipboardDomain?.()?.applySettings().catch(() => {}) },
     { id: 'system.gameMode', run: (settings) => applyGameModeState(settings.system.gameMode, 'settings-reset') },
     { id: 'appearance', run: (settings) => broadcastActionAppearance(settings) },
     // A reset restores `language` to its default, so open windows have to be

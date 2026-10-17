@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src highlighter-clipboard:; connect-src 'none'; font-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Highlighter</title><link rel="stylesheet" href="clipboard.css"></head>
+<body>
+  <header><strong data-i18n="clipboard.title"></strong><button id="pause"></button><button id="close" data-i18n="clipboard.close"></button></header>
+  <div class="filters"><input id="search" type="search" maxlength="400" data-i18n-placeholder="clipboard.search" data-i18n-aria-label="clipboard.search"><select id="kind" data-i18n-aria-label="clipboard.kind"><option value="" data-i18n="clipboard.all"></option><option value="text" data-i18n="clipboard.text"></option><option value="url" data-i18n="clipboard.url"></option><option value="image" data-i18n="clipboard.image"></option></select><label><input id="pinned" type="checkbox"><span data-i18n="clipboard.pinned"></span></label></div>
+  <div class="status"><span id="status" role="status" aria-live="polite"></span><button id="refresh" data-i18n="clipboard.refresh"></button></div>
+  <button id="new" hidden data-i18n="clipboard.new"></button>
+  <main id="list" tabindex="0" role="listbox" data-i18n-aria-label="clipboard.title"><div id="rows"></div></main>
+  <button id="more" hidden data-i18n="clipboard.more"></button>
+  <section id="detail" hidden><div class="actions"><button id="copy" data-i18n="clipboard.copy"></button><button id="pin"></button><button id="delete" data-i18n="clipboard.delete"></button></div><pre id="text"></pre><img id="image" alt="" hidden><small id="truncated" hidden data-i18n="clipboard.truncated"></small></section>
+  <footer><span data-i18n="clipboard.copy-only"></span><button id="clear" data-i18n="clipboard.clear-ordinary"></button></footer>
+  <script src="../shared/locales/zh-CN.js"></script><script src="../shared/locales/en-US.js"></script><script src="../shared/locales/zh-TW.js"></script><script src="../shared/locales/clipboard.js"></script><script src="../shared/i18n.js"></script><script src="clipboard.js"></script>
+</body></html>

@@ -50,9 +50,15 @@ const IPC_SURFACES = Object.freeze([
       'coding-plan:create-provider',
       'shortcuts:status',
       'ocr:status',
-      'search:status'
+      'search:status', 'clipboard:status', 'clipboard:prepare-clear', 'clipboard:commit-clear'
     ],
     listeners: ['window:minimize', 'window:close']
+  },
+  {
+    role: 'clipboard',
+    page: 'clipboard/clipboard.html',
+    handles: ['clipboard:list', 'clipboard:detail', 'clipboard:preview', 'clipboard:copy', 'clipboard:set-pinned', 'clipboard:delete', 'clipboard:prepare-clear', 'clipboard:commit-clear', 'clipboard:status', 'clipboard:set-paused'],
+    listeners: ['clipboard:ready', 'clipboard:interactive', 'clipboard:close']
   },
   {
     role: 'toolbar',

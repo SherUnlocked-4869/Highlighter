@@ -25,6 +25,7 @@ const routeTitles = {
   models: 'config.route.models',
   'selection-toolbar': 'config.route.selection-toolbar',
   'local-search': 'config.route.local-search',
+  'clipboard-history': 'clipboard.title',
   'settings-system': 'config.route.settings-system', about: 'config.route.about'
 }
 
@@ -45,6 +46,7 @@ const routes = {
   'settings-function': { key: 'renderFunctionSettings' },
   'selection-toolbar': { key: 'renderSelectionToolbarSettings' },
   'local-search': { key: 'renderLocalSearch' },
+  'clipboard-history': { key: 'renderClipboardSettings' },
   'settings-hotkeys': { key: 'renderHotkeySettings' },
   'settings-system': { key: 'renderSystemSettings', fallbackMessage: 'config.error.read-data-root' },
   about: { key: 'renderAbout', fallbackMessage: 'config.error.read-update-status' }

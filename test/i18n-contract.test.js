@@ -29,7 +29,7 @@ const LANGUAGES = ['zh-CN', 'en-US', 'zh-TW']
 // process and has no HTML of its own; its copy is a separate stream (S13).
 const WINDOW_AREAS = [
   'config', 'capture', 'record', 'long-capture', 'action',
-  'search', 'recognition', 'toolbar', 'pin'
+  'search', 'clipboard', 'recognition', 'toolbar', 'pin'
 ]
 
 function loadTables () {

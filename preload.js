@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  getClipboardStatus: () => ipcRenderer.invoke('clipboard:status'),
+  prepareClipboardClear: (scope) => ipcRenderer.invoke('clipboard:prepare-clear', { scope }),
+  commitClipboardClear: (token, operationId) => ipcRenderer.invoke('clipboard:commit-clear', { token, operationId }),
   // P0-1-T2：语言广播（主→渲染；sandbox preload 不能 require 本地文件，故内联）。
   onInterfaceLanguage: (callback) => {
     const handler = (_event, language) => callback(typeof language === 'string' && language.length <= 16 ? language : '')
