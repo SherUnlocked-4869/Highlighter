@@ -59,3 +59,13 @@ granting; orphaned leases remain blocked until the registered host has exited.
 Coordinated configuration, recovery and shutdown require capture to be paused.
 See `docs/performance/2026-10-17-clipboard-t03.md` for the wire format, limits,
 automated evidence and unresolved same-application delayed-publication cases.
+
+Explicit history paste is implemented separately in `src/paste.rs`. The parent
+captures a private foreground target before showing history, prepares a complete
+owned copy, hides the panel, then consumes a single-use commit ticket. It verifies
+the original live process/window/focus, input desktop, released modifiers and
+clipboard sequence before one Ctrl+V batch. No idle hook/polling thread, automatic
+retry, elevation or clipboard restoration is added. An inserted input batch is
+not proof that the target consumed the clipboard. See
+`docs/performance/2026-10-17-clipboard-active-paste.md` for limits and pending
+real-device qualification. The earlier Setup does not contain this addition.

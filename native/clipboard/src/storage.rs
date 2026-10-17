@@ -682,10 +682,18 @@ impl Store {
     }
 
     pub fn begin_copy(&self, id: &str, op: &str) -> Result<bool> {
+        Ok(self.begin_use(id, op, "copy")?.is_none())
+    }
+    pub fn begin_paste(&self, id: &str, op: &str) -> Result<Option<Value>> {
+        self.begin_use(id, op, "paste")?
+            .map(|value| serde_json::from_str(&value).map_err(|_| "PASTE_OUTCOME_UNKNOWN"))
+            .transpose()
+    }
+    fn begin_use(&self, id: &str, op: &str, method: &str) -> Result<Option<String>> {
         if !valid_id(id) || !valid_id(op) {
             return Err("INVALID_OPERATION");
         }
-        let fingerprint = format!("copy:{id}");
+        let fingerprint = format!("{method}:{id}");
         let prior: Option<(String, String)> = self
             .db
             .query_row(
@@ -699,10 +707,14 @@ impl Store {
             if fingerprint != expected {
                 return Err("OPERATION_CONFLICT");
             }
-            if result != "copied" {
-                return Err("COPY_OUTCOME_UNKNOWN");
+            if result == "pending" || (method == "copy" && result != "copied") {
+                return Err(if method == "copy" {
+                    "COPY_OUTCOME_UNKNOWN"
+                } else {
+                    "PASTE_OUTCOME_UNKNOWN"
+                });
             }
-            return Ok(false);
+            return Ok(Some(result));
         }
         self.db
             .execute(
@@ -710,9 +722,15 @@ impl Store {
                 params![op, fingerprint, now()],
             )
             .stored()?;
-        Ok(true)
+        Ok(None)
     }
     pub fn finish_copy(&self, id: &str, op: &str) -> Result<()> {
+        self.finish_use(id, op, "copied")
+    }
+    pub fn finish_paste(&self, id: &str, op: &str, result: &Value) -> Result<()> {
+        self.finish_use(id, op, &serde_json::to_string(result).stored()?)
+    }
+    fn finish_use(&self, id: &str, op: &str, result: &str) -> Result<()> {
         let tx = self.db.unchecked_transaction().stored()?;
         tx.execute(
             "UPDATE items SET last_used_at=?2,sort_at=?2,use_count=use_count+1 WHERE id=?1",
@@ -720,8 +738,8 @@ impl Store {
         )
         .stored()?;
         tx.execute(
-            "UPDATE operation_receipts SET result='copied' WHERE id=?1",
-            [op],
+            "UPDATE operation_receipts SET result=?2 WHERE id=?1 AND result='pending'",
+            params![op, result],
         )
         .stored()?;
         tx.execute("DELETE FROM operation_receipts WHERE id NOT IN (SELECT id FROM operation_receipts ORDER BY created_at DESC LIMIT 256)",[]).stored()?;

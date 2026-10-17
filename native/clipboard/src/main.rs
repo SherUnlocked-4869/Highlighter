@@ -37,6 +37,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut quiescing = false;
     let mut store: Option<Arc<Mutex<Store>>> = None;
     let mut rules = Rules::default();
+    let mut paste = highlighter_clipboard::paste::PasteSession::default();
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     while let Some(frame) = read_frame(&mut input)? {
@@ -173,6 +174,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         binary = bytes;
                         Ok(json!({"mime":mime,"byteLength":binary.len()}))
                     }
+                    "paste.capture" => paste.capture(request.params.clone()),
+                    "paste.clear" => {
+                        paste.clear();
+                        Ok(json!({"cleared":true}))
+                    }
+                    "paste.prepare" => paste.prepare(
+                        &barrier,
+                        store.as_ref().ok_or("STORAGE_NOT_OPEN")?,
+                        request
+                            .params
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .ok_or("INVALID_ID")?,
+                        request
+                            .params
+                            .get("operationId")
+                            .and_then(Value::as_str)
+                            .ok_or("INVALID_OPERATION")?,
+                        request.params.get("targetId").and_then(Value::as_str),
+                    ),
+                    "paste.commit" | "paste.cancel" => paste.commit(
+                        &barrier,
+                        store.as_ref().ok_or("STORAGE_NOT_OPEN")?,
+                        request
+                            .params
+                            .get("ticket")
+                            .and_then(Value::as_str)
+                            .ok_or("INVALID_OPERATION")?,
+                        request.method == "paste.cancel",
+                    ),
                     "copy" => {
                         let id = request
                             .params
@@ -255,6 +286,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         })
                     }
                     "quiesce" => {
+                        paste.clear();
                         quiescing = true;
                         if let Some(current) = &monitor {
                             current.configure(false);

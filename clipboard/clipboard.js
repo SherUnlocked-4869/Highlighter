@@ -4,10 +4,17 @@ const api = window.clipboardAPI
 const $ = (id) => document.getElementById(id)
 let items = []; let cursor = null; let selected = null; let status = {}; let busy = false; let visible = false
 let queryGeneration = 0; let detailGeneration = 0; let debounce = null; let composing = false
+let actionInFlight = false
 const rowHeight = 72
+const actionButtons = ['copy', 'paste', 'pin', 'delete']
 function result(value) { if (!value?.ok) throw new Error(value?.error?.code || 'CLIPBOARD_FAILED'); return value.result }
 function message(error) { $('status').textContent = t(`clipboard.error.${error.message.toLowerCase().replaceAll('_', '-')}`) === `clipboard.error.${error.message.toLowerCase().replaceAll('_', '-')}` ? t('clipboard.failed') : t(`clipboard.error.${error.message.toLowerCase().replaceAll('_', '-')}`) }
 function selectedItem() { return items.find((item) => item.id === selected) }
+function pasteMessage(value) {
+  const key = value?.error ? `clipboard.error.${value.error.toLowerCase().replaceAll('_', '-')}` : value?.outcome === 'injected' ? 'clipboard.paste-sent' : value?.reason === 'CLIPBOARD_CHANGED' ? 'clipboard.paste-canceled' : 'clipboard.paste-copied-only'
+  $('feedback').textContent = t(key) === key ? t('clipboard.failed') : t(key)
+  $('feedback').hidden = false
+}
 function renderRows() {
   if (selected) $('pin').textContent = t(selectedItem()?.isPinned ? 'clipboard.unpin' : 'clipboard.pin')
   const first = Math.max(0, Math.floor($('list').scrollTop / rowHeight) - 4)
@@ -68,17 +75,19 @@ async function select(id) {
 }
 async function perform(action) {
   const item = selectedItem()
-  if (!item || busy) return
-  busy = true
-  for (const id of ['copy', 'pin', 'delete']) $(id).disabled = true
+  if (!item || busy || actionInFlight) return
+  busy = true; actionInFlight = true
+  $('feedback').hidden = true
+  for (const id of actionButtons) $(id).disabled = true
   try {
     const operation = crypto.randomUUID()
     if (action === 'copy') { result(await api.copy(item.id, operation)); $('status').textContent = t('clipboard.copied') }
+    if (action === 'paste') pasteMessage(result(await api.paste(item.id, operation)))
     if (action === 'pin') result(await api.setPinned(item.id, !item.isPinned, operation))
     if (action === 'delete') { result(await api.delete([item.id], operation)); selected = null; clearDetail() }
-    if (action !== 'copy') await refresh()
-  } catch (error) { message(error) }
-  finally { busy = false; for (const id of ['copy', 'pin', 'delete']) $(id).disabled = false }
+    if (['pin', 'delete'].includes(action)) await refresh()
+  } catch (error) { if (action === 'paste') pasteMessage({ error: error.message }); else message(error) }
+  finally { busy = false; actionInFlight = false; for (const id of actionButtons) $(id).disabled = false }
 }
 $('list').onscroll = renderRows
 new ResizeObserver(renderRows).observe($('list'))
@@ -98,6 +107,7 @@ function searchChanged() { if (composing) return; clearTimeout(debounce); deboun
 $('search').oninput = searchChanged; $('kind').onchange = () => refresh(); $('pinned').onchange = () => refresh()
 $('refresh').onclick = () => refresh(); $('new').onclick = () => refresh(); $('more').onclick = () => refresh(true)
 $('close').onclick = () => api.close(); $('copy').onclick = () => perform('copy'); $('pin').onclick = () => perform('pin'); $('delete').onclick = () => perform('delete')
+$('paste').onclick = () => perform('paste')
 $('pause').onclick = async () => { try { renderStatus(result(await api.setPaused(!status.userPaused))) } catch (error) { message(error) } }
 $('clear').onclick = async () => {
   try { const prepared = result(await api.prepareClear('ordinary')); if (prepared.token) { result(await api.commitClear(prepared.token, crypto.randomUUID())); selected = null; clearDetail(); await refresh() } }
@@ -108,6 +118,7 @@ const cleanups = [
     visible = true; setLanguage(data.language); applyTranslations(); document.documentElement.lang = currentLanguage(); document.documentElement.classList.toggle('dark', data.dark === true)
     if (/^#[0-9a-f]{6}$/i.test(data.mainColor || '')) document.documentElement.style.setProperty('--accent', data.mainColor)
     renderStatus(data.status); refresh().then(() => api.interactive(data.generation)); $('search').focus()
+    $('feedback').hidden = true; if (data.pasteFeedback) pasteMessage(data.pasteFeedback)
   }),
   api.onStatus((data) => { if (visible) renderStatus(data) }),
   api.onHistory(() => { if (visible) $('new').hidden = false }),

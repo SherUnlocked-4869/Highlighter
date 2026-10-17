@@ -19,6 +19,7 @@ function registerClipboardIpc({ ipcMain, service, domain, setPaused }) {
   handle('detail', (_event, args) => { object(args, ['id']); return service.command('detail', { id: id(args.id) }) })
   handle('preview', (event, args) => { object(args, ['id']); return domain.preview(event, id(args.id)) })
   handle('copy', (_event, args) => { object(args, ['id', 'operationId']); return service.command('copy', { id: id(args.id), operationId: id(args.operationId) }) })
+  handle('paste', (event, args) => { object(args, ['id', 'operationId']); return domain.paste(event, id(args.id), id(args.operationId)) })
   handle('set-pinned', (_event, args) => {
     object(args, ['id', 'pinned', 'operationId'])
     if (typeof args.pinned !== 'boolean') throw new Error('INVALID_ARGUMENT')

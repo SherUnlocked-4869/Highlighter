@@ -7,6 +7,8 @@ pub mod images;
 pub mod limits;
 #[cfg(windows)]
 pub mod listener;
+#[cfg(windows)]
+pub mod paste;
 pub mod protocol;
 pub mod storage;
 #[cfg(windows)]

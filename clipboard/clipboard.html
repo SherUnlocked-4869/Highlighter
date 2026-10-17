@@ -9,7 +9,8 @@
   <button id="new" hidden data-i18n="clipboard.new"></button>
   <main id="list" tabindex="0" role="listbox" data-i18n-aria-label="clipboard.title"><div id="rows"></div></main>
   <button id="more" hidden data-i18n="clipboard.more"></button>
-  <section id="detail" hidden><div class="actions"><button id="copy" data-i18n="clipboard.copy"></button><button id="pin"></button><button id="delete" data-i18n="clipboard.delete"></button></div><pre id="text"></pre><img id="image" alt="" hidden><small id="truncated" hidden data-i18n="clipboard.truncated"></small></section>
-  <footer><span data-i18n="clipboard.copy-only"></span><button id="clear" data-i18n="clipboard.clear-ordinary"></button></footer>
+  <div id="feedback" role="status" aria-live="polite" hidden></div>
+  <section id="detail" hidden><div class="actions"><button id="copy" data-i18n="clipboard.copy"></button><button id="paste" data-i18n="clipboard.paste"></button><button id="pin"></button><button id="delete" data-i18n="clipboard.delete"></button></div><pre id="text"></pre><img id="image" alt="" hidden><small id="truncated" hidden data-i18n="clipboard.truncated"></small></section>
+  <footer><span data-i18n="clipboard.paste-hint"></span><button id="clear" data-i18n="clipboard.clear-ordinary"></button></footer>
   <script src="../shared/locales/zh-CN.js"></script><script src="../shared/locales/en-US.js"></script><script src="../shared/locales/zh-TW.js"></script><script src="../shared/locales/clipboard.js"></script><script src="../shared/i18n.js"></script><script src="clipboard.js"></script>
 </body></html>

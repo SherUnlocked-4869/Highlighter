@@ -8,6 +8,7 @@ const { FrameDecoder, encodeFrame } = require('../../shared/clipboard-protocol')
 const { nativeRules } = require('./clipboard-settings')
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const failure = (code) => Object.assign(new Error(code), { code })
+const outcomeFailure = (method, code) => method === 'copy' ? 'COPY_OUTCOME_UNKNOWN' : ['paste.prepare', 'paste.commit'].includes(method) ? 'PASTE_OUTCOME_UNKNOWN' : code
 
 class ClipboardService extends EventEmitter {
   constructor({ executable, directory, getHook, spawnChild = spawn }) {
@@ -133,7 +134,7 @@ class ClipboardService extends EventEmitter {
     if (this.child !== child) return
     this.child = null; this.epoch = null; this.coordinatedPid = null; this.retiredExit = this.exited
     clearTimeout(this.pollTimer); this.pollTimer = null
-    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(failure(pending.method === 'copy' ? 'COPY_OUTCOME_UNKNOWN' : code)) }
+    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(failure(outcomeFailure(pending.method, code))) }
     this.pending.clear()
     try { child.kill() } catch {}
     if (!this.stopping) { this.publish({ phase: 'error', available: false, messageKey: code }); this.retry() }
@@ -183,8 +184,9 @@ class ClipboardService extends EventEmitter {
     if (!this.settings?.enabled) throw failure('FEATURE_DISABLED')
     if (this.reasons.has('migration') || this.disposed) throw failure('QUIESCING')
     if (!this.status.available || !this.child) throw failure('BACKEND_UNAVAILABLE')
+    if (['paste.capture', 'paste.prepare', 'paste.commit'].includes(method) && this.reasons.size) throw failure('PASTE_UNAVAILABLE')
     const value = await this.request(method, args, method === 'thumbnail')
-    if (['copy', 'set-pinned', 'delete', 'clear'].includes(method)) await this.refresh().catch(() => {})
+    if (['copy', 'paste.commit', 'paste.cancel', 'set-pinned', 'delete', 'clear'].includes(method)) await this.refresh().catch(() => {})
     return value
   }
   async stop() {
@@ -222,7 +224,7 @@ class ClipboardService extends EventEmitter {
     const child = this.child
     this.child = null; this.epoch = null; this.coordinatedPid = null
     clearTimeout(this.pollTimer); this.pollTimer = null
-    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(failure('BACKEND_EXITED')) }
+    for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(failure(outcomeFailure(pending.method, 'BACKEND_EXITED'))) }
     this.pending.clear()
     if (child) { this.retiredExit = this.exited; try { child.kill() } catch {}; await this.waitForExit(this.exited) }
     else if (this.retiredExit) await this.waitForExit(this.retiredExit)

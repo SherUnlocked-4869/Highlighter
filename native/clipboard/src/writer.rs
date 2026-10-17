@@ -1,5 +1,5 @@
-//! A history copy publishes concrete owned formats. It never sends keys or
-//! restores old clipboard content. Allocation/encoding occurs before opening.
+//! Publishes concrete owned formats without restoring old clipboard content.
+//! Allocation/encoding occurs before opening. Paste orchestration lives separately.
 use crate::{barrier::Barrier, capture::named_format};
 use std::time::Duration;
 use windows::{
@@ -86,6 +86,40 @@ pub fn copy_item(
     })();
     let ended = barrier.end(0, epoch, owned_sequence.get());
     result.and(ended)
+}
+
+pub enum PasteWrite {
+    Published(u32),
+    Completed(serde_json::Value),
+}
+
+pub fn prepare_paste(
+    barrier: &Barrier,
+    store: &std::sync::Mutex<crate::storage::Store>,
+    id: &str,
+    op: &str,
+) -> Result<PasteWrite, &'static str> {
+    let epoch = barrier.begin_local(Duration::from_millis(100))?;
+    let sequence = std::cell::Cell::new(unsafe { GetClipboardSequenceNumber() });
+    let result = (|| {
+        let (mime, bytes) = {
+            let mut locked = store.lock().map_err(|_| "STORAGE_FAILED")?;
+            if let Some(prior) = locked.begin_paste(id, op)? {
+                return Ok(PasteWrite::Completed(prior));
+            }
+            locked.payload(id, false)?
+        };
+        copy(&mime, &bytes, &sequence).map_err(|code| {
+            if code == "COPY_OUTCOME_UNKNOWN" {
+                "PASTE_OUTCOME_UNKNOWN"
+            } else {
+                code
+            }
+        })?;
+        Ok(PasteWrite::Published(sequence.get()))
+    })();
+    let ended = barrier.end(0, epoch, sequence.get());
+    result.and_then(|value| ended.map(|()| value))
 }
 
 fn copy(

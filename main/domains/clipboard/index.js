@@ -11,6 +11,8 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   let win = null; let generation = null; let releaseTimer = null; let panelSession = null
   let confirmationOpen = false; let readyToShow = false; let disposed = false
   let wantsVisible = false
+  let targetId = null; let presentation = 0; let opening = false
+  let pasteInProgress = false; let releaseAfterPaste = false; let pasteFeedback = null
   let shutdownPromise = null; let shutdownComplete = false
   const tokens = new Map(); const clearTokens = new Map(); const powerListeners = []
   const ownsWindow = (target) => target != null && target === win
@@ -20,22 +22,48 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   service.on('history', (value) => { revokePreviews(); send('clipboard:history-changed', value) })
   function appearance() {
     const settings = getSettings()
-    return { language: settings.language, dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors), mainColor: settings.mainColor, generation, status: service.snapshot() }
+    return { language: settings.language, dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors), mainColor: settings.mainColor, generation, status: service.snapshot(), pasteFeedback }
   }
   function release() {
+    if (pasteInProgress) {
+      releaseAfterPaste = true; targetId = null; ++presentation; wantsVisible = false; opening = false
+      revokePreviews(); clearTokens.clear()
+      if (win && !win.isDestroyed()) { win.webContents.send('clipboard:hidden'); win.hide() }
+      return
+    }
     clearTimeout(releaseTimer); releaseTimer = null; revokePreviews(); clearTokens.clear()
     const previous = win; win = null; generation = null; readyToShow = false; wantsVisible = false
+    targetId = null; ++presentation; opening = false
+    service.command('paste.clear').catch(() => {})
     if (previous && !previous.isDestroyed()) previous.destroy()
     if (panelSession) { panelSession.protocol.unhandle('highlighter-clipboard'); panelSession = null }
   }
   function hide() {
     wantsVisible = false
+    targetId = null; ++presentation; opening = false
+    if (!pasteInProgress) service.command('paste.clear').catch(() => {})
     if (!win || win.isDestroyed()) return
     win.webContents.send('clipboard:hidden'); win.hide(); revokePreviews(); clearTokens.clear()
     clearTimeout(releaseTimer)
     const timeout = getSettings().clipboard.releaseAfterMs
-    if (!timeout) release()
+    if (!timeout) { if (pasteInProgress) releaseAfterPaste = true; else release() }
     else { releaseTimer = setTimeout(release, timeout); releaseTimer.unref?.() }
+  }
+  async function present() {
+    if (!win || !readyToShow || !wantsVisible || opening || pasteInProgress) return
+    const created = win; const ticket = ++presentation; opening = true; targetId = null
+    try {
+      // A hidden BrowserWindow has not taken input focus yet. Capture the
+      // external foreground now; never accept HWNDs or target IDs from a page.
+      const handle = created.getNativeWindowHandle()
+      const panelWindow = (handle.length === 8 ? handle.readBigUInt64LE() : BigInt(handle.readUInt32LE())).toString(16)
+      const value = await service.command('paste.capture', { panelWindow, parentPid: process.pid })
+      if (ticket === presentation) targetId = value.targetId || null
+    } catch {} // History/copy remain usable when there is no paste target.
+    finally { if (ticket === presentation) opening = false }
+    if (ticket !== presentation || created !== win || created.isDestroyed() || !wantsVisible || disposed || isGameModeEnabled() || isMigrationInProgress() || !getSettings().clipboard.enabled) return
+    created.show(); created.focus(); created.webContents.send('clipboard:init', appearance())
+    pasteFeedback = null
   }
   async function handleResource(request) {
     const fail = () => new Response(null, { status: 404 })
@@ -51,12 +79,12 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     } catch { return fail() }
   }
   function show() {
-    if (disposed || isMigrationInProgress() || isGameModeEnabled()) return false
+    if (disposed || pasteInProgress || isMigrationInProgress() || isGameModeEnabled()) return false
     if (!getSettings().clipboard.enabled) return false
     clearTimeout(releaseTimer); releaseTimer = null
     if (win && !win.isDestroyed()) {
       if (win.isVisible() || wantsVisible) hide()
-      else if (readyToShow) { wantsVisible = true; win.show(); win.focus(); win.webContents.send('clipboard:init', appearance()) }
+      else if (readyToShow) { wantsVisible = true; present() }
       else wantsVisible = true
       return true
     }
@@ -75,7 +103,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
       webPreferences: { preload: path.join(rootDirectory, 'preload-clipboard.js'), session: panelSession } })
     win = created
     positionAutomationWindow(created)
-    created.on('blur', () => { if (!confirmationOpen && created === win) hide() })
+    created.on('blur', () => { if (!confirmationOpen && created === win && created.isVisible()) hide() })
     created.on('closed', () => { if (created === win) release() })
     created.webContents.on('render-process-gone', () => { if (created === win) release() })
     created.loadFile(page).catch(() => { if (created === win) release() })
@@ -85,7 +113,37 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     if (!win || event.sender !== win.webContents) return
     readyToShow = true
     if (!wantsVisible || isGameModeEnabled() || isMigrationInProgress() || !getSettings().clipboard.enabled) return
-    win.show(); win.focus(); event.sender.send('clipboard:init', appearance())
+    present()
+  }
+  async function paste(event, id, operationId) {
+    const created = win; const ticket = presentation; const savedTarget = targetId
+    if (!created || event.sender !== created.webContents || !created.isVisible() || !created.isFocused()) throw new Error('WINDOW_NOT_VISIBLE')
+    if (pasteInProgress) throw new Error('OPERATION_BUSY')
+    if (isGameModeEnabled() || isMigrationInProgress()) throw new Error('PASTE_UNAVAILABLE')
+    pasteInProgress = true; pasteFeedback = null
+    let hiddenByPaste = false
+    try {
+      const prepared = await service.command('paste.prepare', { id, operationId, targetId: savedTarget })
+      let value = prepared
+      if (prepared.ticket) {
+        const unchanged = created === win && !created.isDestroyed() && created.isVisible() && created.isFocused() && presentation === ticket && !disposed && !isGameModeEnabled() && !isMigrationInProgress()
+        if (unchanged) { hide(); hiddenByPaste = true }
+        value = await service.command(unchanged ? 'paste.commit' : 'paste.cancel', { ticket: prepared.ticket })
+      }
+      pasteFeedback = { outcome: value.outcome, reason: value.reason }
+      return { copied: value.copied === true, ...pasteFeedback }
+    } catch (error) {
+      pasteFeedback = { error: error.code || error.message }
+      throw error
+    } finally {
+      pasteInProgress = false
+      if (hiddenByPaste && presentation === ticket + 1 && created === win && !created.isDestroyed() && !disposed && !isGameModeEnabled() && !isMigrationInProgress() && getSettings().clipboard.enabled && pasteFeedback?.outcome !== 'injected' && !['FOCUS_CHANGED', 'CLIPBOARD_CHANGED'].includes(pasteFeedback?.reason)) {
+        // Show fallback feedback without taking keyboard focus from the user.
+        clearTimeout(releaseTimer); releaseTimer = null; wantsVisible = true; releaseAfterPaste = false
+        created.showInactive(); created.webContents.send('clipboard:init', appearance())
+      }
+      else if (releaseAfterPaste) { releaseAfterPaste = false; release() }
+    }
   }
   function interactive(event, token) { if (win && event.sender === win.webContents && token === generation) win._clipboardInteractiveAt = Date.now() }
   function preview(event, id) {
@@ -132,7 +190,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     service.setReason('game-mode', isGameModeEnabled())
     applySettings()
   }
-  registerClipboardIpc({ ipcMain, service, domain: { ready, interactive, hide, preview, revokePreviews, prepareClear, commitClear },
+  registerClipboardIpc({ ipcMain, service, domain: { ready, interactive, hide, paste, preview, revokePreviews, prepareClear, commitClear },
     setPaused: async (paused) => { if (isMigrationInProgress()) throw new Error('QUIESCING'); updateSettings({ clipboard: { paused } }); await applySettings(); return service.snapshot() } })
   return { service, ownsWindow, show, hide, applySettings, start,
     applyGameMode(enabled) { if (enabled) hide(); return service.setReason('game-mode', enabled) },
