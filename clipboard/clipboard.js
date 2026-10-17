@@ -11,7 +11,8 @@ function result(value) { if (!value?.ok) throw new Error(value?.error?.code || '
 function message(error) { $('status').textContent = t(`clipboard.error.${error.message.toLowerCase().replaceAll('_', '-')}`) === `clipboard.error.${error.message.toLowerCase().replaceAll('_', '-')}` ? t('clipboard.failed') : t(`clipboard.error.${error.message.toLowerCase().replaceAll('_', '-')}`) }
 function selectedItem() { return items.find((item) => item.id === selected) }
 function pasteMessage(value) {
-  const key = value?.error ? `clipboard.error.${value.error.toLowerCase().replaceAll('_', '-')}` : value?.outcome === 'injected' ? 'clipboard.paste-sent' : value?.reason === 'CLIPBOARD_CHANGED' ? 'clipboard.paste-canceled' : 'clipboard.paste-copied-only'
+  const code = value?.error || value?.reason
+  const key = code === 'CLIPBOARD_CHANGED' || code === 'COPY_INTERRUPTED' ? 'clipboard.paste-canceled' : value?.error ? `clipboard.error.${value.error.toLowerCase().replaceAll('_', '-')}` : value?.outcome === 'injected' ? 'clipboard.paste-sent' : 'clipboard.paste-copied-only'
   $('feedback').textContent = t(key) === key ? t('clipboard.failed') : t(key)
   $('feedback').hidden = false
 }
@@ -115,6 +116,7 @@ $('clear').onclick = async () => {
 }
 const cleanups = [
   api.onInit((data) => {
+    document.body.classList.remove('feedback-only')
     visible = true; setLanguage(data.language); applyTranslations(); document.documentElement.lang = currentLanguage(); document.documentElement.classList.toggle('dark', data.dark === true)
     if (/^#[0-9a-f]{6}$/i.test(data.mainColor || '')) document.documentElement.style.setProperty('--accent', data.mainColor)
     renderStatus(data.status); refresh().then(() => api.interactive(data.generation)); $('search').focus()
@@ -122,9 +124,18 @@ const cleanups = [
   }),
   api.onStatus((data) => { if (visible) renderStatus(data) }),
   api.onHistory(() => { if (visible) $('new').hidden = false }),
-  api.onHidden(() => { visible = false; ++queryGeneration; clearTimeout(debounce); items = []; cursor = null; selected = null; busy = false; clearDetail(); renderRows(); $('search').value = '' }),
+  api.onHidden(clearHistory),
+  api.onPasteResult((data) => {
+    clearHistory(); document.body.classList.add('feedback-only')
+    setLanguage(data.language); applyTranslations(); document.documentElement.lang = currentLanguage(); document.documentElement.classList.toggle('dark', data.dark === true)
+    pasteMessage(data.pasteFeedback)
+  }),
   api.onLanguage((language) => { setLanguage(language); applyTranslations(); renderRows(); renderStatus(status) })
 ]
+function clearHistory() {
+  visible = false; ++queryGeneration; clearTimeout(debounce); items = []; cursor = null; selected = null; busy = false
+  clearDetail(); renderRows(); $('search').value = ''; $('feedback').hidden = true
+}
 window.addEventListener('unload', () => { for (const cleanup of cleanups) cleanup(); clearTimeout(debounce) })
 api.ready()
 

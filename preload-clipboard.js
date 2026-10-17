@@ -23,5 +23,6 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   onStatus: (callback) => on('clipboard:status-changed', callback),
   onHistory: (callback) => on('clipboard:history-changed', callback),
   onHidden: (callback) => on('clipboard:hidden', callback),
+  onPasteResult: (callback) => on('clipboard:paste-result', callback),
   onLanguage: (callback) => on('i18n:language', callback)
 })

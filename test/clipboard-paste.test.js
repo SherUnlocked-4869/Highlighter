@@ -17,12 +17,16 @@ function harness(releaseAfterMs = 0) {
     nativeTheme: {}, getSettings: () => ({ clipboard: { enabled: true, releaseAfterMs } }),
     getHook: () => null, isGameModeEnabled: () => false, isMigrationInProgress: () => false,
     positionAutomationWindow() {},
-    screen: { getCursorScreenPoint: () => ({}), getDisplayNearestPoint: () => ({ workArea: { x: 0, y: 0, width: 1200, height: 900 } }) },
+    screen: { getCursorScreenPoint: () => ({}), getDisplayNearestPoint: () => ({ workArea: { x: 0, y: 0, width: 1200, height: 900 } }), getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1200, height: 900 } }) },
     session: { fromPartition: () => ({ setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, protocol: { handle() {}, unhandle() {} } }) },
     ipcMain: { handle: (name, handler) => handlers.set(name, handler), on: (name, handler) => listeners.set(name, handler) },
     createLocalWindow: () => {
       win = new EventEmitter(); win.visible = false; win.focused = false; win.destroyed = false
-      win.webContents = new EventEmitter(); win.webContents.id = 1; win.webContents.send = () => {}; win.webContents.isDestroyed = () => win.destroyed
+      win.messages = []; win.bounds = { x: 100, y: 100, width: 480, height: 640 }; win.minimum = [380, 420]; win.focusable = true
+      win.getBounds = () => ({ ...win.bounds }); win.setBounds = (value) => { win.bounds = value }
+      win.getMinimumSize = () => win.minimum; win.setMinimumSize = (...value) => { win.minimum = value }
+      win.setFocusable = (value) => { win.focusable = value }
+      win.webContents = new EventEmitter(); win.webContents.id = 1; win.webContents.send = (channel, data) => win.messages.push({ channel, data }); win.webContents.isDestroyed = () => win.destroyed
       win.isDestroyed = () => win.destroyed; win.isVisible = () => win.visible; win.isFocused = () => win.focused
       win.getNativeWindowHandle = () => Buffer.from('3412000000000000', 'hex')
       win.loadFile = async () => {}
@@ -35,20 +39,59 @@ function harness(releaseAfterMs = 0) {
     }
   })
   let prepare = async () => ({ copied: true, ticket: 'private-ticket' })
+  let commit = async () => ({ copied: true, outcome: 'injected' })
   domain.service.command = async (method, args) => {
     calls.push(method)
     if (method === 'paste.capture') { assert.equal(win.visible, false); return { targetId: 'private-target' } }
     if (method === 'paste.prepare') { assert.equal(args.targetId, 'private-target'); return prepare() }
-    if (method === 'paste.commit') { assert.equal(win.visible, false); assert.equal(win.destroyed, false); return { copied: true, outcome: 'injected' } }
+    if (method === 'paste.commit') { assert.equal(win.visible, false); assert.equal(win.destroyed, false); return commit() }
     if (method === 'paste.cancel') return { copied: true, outcome: 'copiedOnly', reason: 'FOCUS_CHANGED' }
     return {}
   }
   return { domain, calls, get win() { return win },
     prepare: (fn) => { prepare = fn },
+    commit: (fn) => { commit = fn },
     async open() { domain.show(); listeners.get('clipboard:ready')({ sender: win.webContents }); await tick() },
     paste: (args = { id, operationId }) => handlers.get('clipboard:paste')({ sender: win.webContents }, args)
   }
 }
+
+test('clipboard change shows immediate, inactive feedback without reinitializing history', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = harness(); await h.open()
+  h.commit(async () => ({ copied: true, outcome: 'copiedOnly', reason: 'CLIPBOARD_CHANGED' }))
+  h.win.messages.length = 0
+  await h.paste()
+  assert.equal(h.win.visible, true); assert.equal(h.win.focusable, false); assert.equal(h.win.focused, false)
+  assert.equal(h.win.bounds.height, 148)
+  assert.deepEqual(h.win.messages.map((value) => value.channel), ['clipboard:hidden', 'clipboard:paste-result'])
+  assert.equal(h.win.messages[1].data.pasteFeedback.reason, 'CLIPBOARD_CHANGED')
+  t.mock.timers.tick(3999); assert.equal(h.win.destroyed, false)
+  t.mock.timers.tick(1); assert.equal(h.win.destroyed, true)
+})
+
+test('new shortcut restores normal panel and cancels feedback expiry', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = harness(60000); await h.open()
+  h.commit(async () => { throw Object.assign(new Error('unknown'), { code: 'PASTE_OUTCOME_UNKNOWN' }) })
+  assert.equal((await h.paste()).error.code, 'PASTE_OUTCOME_UNKNOWN')
+  assert.equal(h.win.focusable, false)
+  h.domain.show(); await tick()
+  assert.equal(h.win.bounds.height, 640); assert.equal(h.win.focusable, true); assert.equal(h.win.focused, true)
+  t.mock.timers.tick(4000); assert.equal(h.win.visible, true)
+  assert.equal(h.win.messages.at(-1).channel, 'clipboard:init')
+  assert.equal(h.win.messages.at(-1).data.pasteFeedback, undefined)
+  h.domain.hide()
+})
+
+test('explicit close during commit prevents fallback resurrection', async () => {
+  const h = harness(); await h.open()
+  let complete; h.commit(() => new Promise((resolve) => { complete = resolve }))
+  const pending = h.paste(); await tick(); h.domain.hide()
+  complete({ copied: true, outcome: 'copiedOnly', reason: 'CLIPBOARD_CHANGED' }); await pending
+  assert.equal(h.win.destroyed, true)
+  assert.equal(h.calls.includes('showInactive'), false)
+})
 
 test('paste captures before focus, copies before hiding, and keeps an immediate-release panel alive until commit', async () => {
   const h = harness(); await h.open()

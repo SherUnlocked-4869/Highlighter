@@ -4,6 +4,7 @@ const { randomUUID } = require('node:crypto')
 const { ClipboardService } = require('../../services/clipboard-service')
 const { registerClipboardIpc } = require('../../ipc/clipboard-ipc')
 const { t } = require('../../services/i18n-bootstrap')
+const { createPasteFeedback } = require('../../services/clipboard-paste-feedback')
 
 function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, session, dialog, powerMonitor, ipcMain, rootDirectory, directory, getSettings, updateSettings, getHook, createLocalWindow, positionAutomationWindow, isGameModeEnabled, isMigrationInProgress, automation = false }) {
   const executable = path.join(app.isPackaged ? process.resourcesPath : rootDirectory, 'native', 'clipboard', ...(app.isPackaged ? [] : ['bin']), 'HighlighterClipboard.exe')
@@ -15,6 +16,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   let pasteInProgress = false; let releaseAfterPaste = false; let pasteFeedback = null
   let shutdownPromise = null; let shutdownComplete = false
   const tokens = new Map(); const clearTokens = new Map(); const powerListeners = []
+  const feedback = createPasteFeedback({ getWindow: () => win, screen, expire: () => hide() })
   const ownsWindow = (target) => target != null && target === win
   function send(channel, value) { if (win && !win.isDestroyed() && win.isVisible()) win.webContents.send(channel, value) }
   function revokePreviews() { tokens.clear() }
@@ -22,9 +24,10 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   service.on('history', (value) => { revokePreviews(); send('clipboard:history-changed', value) })
   function appearance() {
     const settings = getSettings()
-    return { language: settings.language, dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors), mainColor: settings.mainColor, generation, status: service.snapshot(), pasteFeedback }
+    return { language: settings.language, dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors), mainColor: settings.mainColor, generation, status: service.snapshot() }
   }
   function release() {
+    feedback.clear(false)
     if (pasteInProgress) {
       releaseAfterPaste = true; targetId = null; ++presentation; wantsVisible = false; opening = false
       revokePreviews(); clearTokens.clear()
@@ -39,6 +42,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     if (panelSession) { panelSession.protocol.unhandle('highlighter-clipboard'); panelSession = null }
   }
   function hide() {
+    feedback.clear()
     wantsVisible = false
     targetId = null; ++presentation; opening = false
     if (!pasteInProgress) service.command('paste.clear').catch(() => {})
@@ -83,7 +87,8 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     if (!getSettings().clipboard.enabled) return false
     clearTimeout(releaseTimer); releaseTimer = null
     if (win && !win.isDestroyed()) {
-      if (win.isVisible() || wantsVisible) hide()
+      if (feedback.active) { hide(); clearTimeout(releaseTimer); releaseTimer = null; if (win) { wantsVisible = true; present() } else return show() }
+      else if (win.isVisible() || wantsVisible) hide()
       else if (readyToShow) { wantsVisible = true; present() }
       else wantsVisible = true
       return true
@@ -103,7 +108,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
       webPreferences: { preload: path.join(rootDirectory, 'preload-clipboard.js'), session: panelSession } })
     win = created
     positionAutomationWindow(created)
-    created.on('blur', () => { if (!confirmationOpen && created === win && created.isVisible()) hide() })
+    created.on('blur', () => { if (!feedback.active && !confirmationOpen && created === win && created.isVisible()) hide() })
     created.on('closed', () => { if (created === win) release() })
     created.webContents.on('render-process-gone', () => { if (created === win) release() })
     created.loadFile(page).catch(() => { if (created === win) release() })
@@ -137,10 +142,10 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
       throw error
     } finally {
       pasteInProgress = false
-      if (hiddenByPaste && presentation === ticket + 1 && created === win && !created.isDestroyed() && !disposed && !isGameModeEnabled() && !isMigrationInProgress() && getSettings().clipboard.enabled && pasteFeedback?.outcome !== 'injected' && !['FOCUS_CHANGED', 'CLIPBOARD_CHANGED'].includes(pasteFeedback?.reason)) {
+      if (hiddenByPaste && presentation === ticket + 1 && created === win && !created.isDestroyed() && !disposed && !isGameModeEnabled() && !isMigrationInProgress() && getSettings().clipboard.enabled && pasteFeedback?.outcome !== 'injected') {
         // Show fallback feedback without taking keyboard focus from the user.
-        clearTimeout(releaseTimer); releaseTimer = null; wantsVisible = true; releaseAfterPaste = false
-        created.showInactive(); created.webContents.send('clipboard:init', appearance())
+        clearTimeout(releaseTimer); releaseTimer = null; wantsVisible = false; releaseAfterPaste = false
+        feedback.show({ ...appearance(), pasteFeedback })
       }
       else if (releaseAfterPaste) { releaseAfterPaste = false; release() }
     }
@@ -179,7 +184,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     if (automation) return
     if (!getSettings().clipboard.enabled) release()
     await service.apply(getSettings().clipboard)
-    send('clipboard:init', appearance())
+    if (!feedback.active) send('clipboard:init', appearance())
   }
   function start() {
     if (automation || process.platform !== 'win32') return
@@ -194,7 +199,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     setPaused: async (paused) => { if (isMigrationInProgress()) throw new Error('QUIESCING'); updateSettings({ clipboard: { paused } }); await applySettings(); return service.snapshot() } })
   return { service, ownsWindow, show, hide, applySettings, start,
     applyGameMode(enabled) { if (enabled) hide(); return service.setReason('game-mode', enabled) },
-    notifyAppearance() { send('clipboard:init', appearance()) },
+    notifyAppearance() { if (!feedback.active) send('clipboard:init', appearance()) },
     async quiesce() { release(); await service.quiesce() },
     async resume() { await service.setReason('migration', false) },
     isShutdownComplete: () => shutdownComplete,

@@ -75,6 +75,8 @@
   "clipboard.error.window-not-visible": "请从目标输入框重新呼出历史面板后粘贴。",
   "clipboard.error.operation-busy": "正在处理上一条记录，请稍候。",
   "clipboard.error.clipboard-busy": "系统剪贴板正忙，请稍后重试。",
+  "clipboard.error.publication-unverified": "无法确认剪贴板发布内容，粘贴已取消。请重新选择记录。",
+  "clipboard.error.writer-unavailable": "剪贴板服务尚未就绪，请重新打开历史面板。",
   "clipboard.error.feature-disabled": "请先启用剪贴板历史。",
   "clipboard.error.coordination-orphaned": "取词事务异常，采集已停止，请关闭再启用剪贴板历史。",
   "clipboard.error.selection-not-ready": "等待取词服务启动，历史仍可查看。"
@@ -153,6 +155,8 @@
   "clipboard.error.window-not-visible": "Reopen history from the target input before pasting.",
   "clipboard.error.operation-busy": "The previous operation is still in progress.",
   "clipboard.error.clipboard-busy": "The system clipboard is busy. Try again shortly.",
+  "clipboard.error.publication-unverified": "Clipboard publication could not be verified. Paste canceled; select the record again.",
+  "clipboard.error.writer-unavailable": "The clipboard service is not ready. Reopen history.",
   "clipboard.error.feature-disabled": "Enable clipboard history first.",
   "clipboard.error.coordination-orphaned": "A selection transaction failed. Recording stopped. Disable and enable clipboard history to recover.",
   "clipboard.error.selection-not-ready": "Waiting for the selection service. Saved history is available."
@@ -231,6 +235,8 @@
   "clipboard.error.window-not-visible": "請從目標輸入框重新開啟歷史面板後貼上。",
   "clipboard.error.operation-busy": "正在處理上一條記錄，請稍候。",
   "clipboard.error.clipboard-busy": "系統剪貼簿正忙，請稍後重試。",
+  "clipboard.error.publication-unverified": "無法確認剪貼簿發佈內容，已取消貼上。請重新選擇記錄。",
+  "clipboard.error.writer-unavailable": "剪貼簿服務尚未就緒，請重新開啟歷史面板。",
   "clipboard.error.feature-disabled": "請先啟用剪貼簿歷史。",
   "clipboard.error.coordination-orphaned": "取词事务异常，采集已停止，請關閉再啟用剪貼簿歷史。",
   "clipboard.error.selection-not-ready": "等待取词服务啟动，歷史仍可查看。"
