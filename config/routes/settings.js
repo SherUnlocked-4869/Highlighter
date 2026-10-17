@@ -5,6 +5,113 @@
 //   settings-system   -> app data, translation proxy, diagnostics and reset
 // Settings save on change: there is no per-page save button any more.
 
+// --- Software update (moved here from the about page in P3) -----------------
+// The General page is a synchronous route, so it renders a placeholder card and
+// refreshGeneralUpdateCard() fills it once the status IPC round trip returns.
+let latestUpdateStatus = null
+
+function formatUpdateBytes(value) {
+  const bytes = Number(value) || 0
+  if (!bytes) return ''
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+function updateStatusPresentation(status) {
+  const labels = {
+    idle: status.lastCheckedAt ? t('config.about.update-idle-current') : t('config.about.update-idle'),
+    checking: t('config.about.update-checking'),
+    available: t('config.about.update-available', { version: status.version || '' }).trim(),
+    downloading: t('config.about.update-downloading', { percent: Math.round(status.progress?.percent || 0) }),
+    downloaded: t('config.about.update-downloaded', { version: status.version || '' }).trim(),
+    installing: t('config.about.update-installing'),
+    error: status.error?.message || t('config.about.update-failed')
+  }
+  return labels[status.status] || t('config.about.update-unknown')
+}
+
+function updateCardInnerMarkup(status) {
+  const busy = ['checking', 'available', 'downloading', 'downloaded', 'installing'].includes(status.status)
+  // autoDownload is off (main/services/update-service.js), so 'available' and
+  // 'downloaded' advance only when the user clicks; disabling the primary button
+  // in those states made the in-app update unreachable. Only in-flight states may
+  // disable it (the channel select keeps the broader `busy`).
+  const primaryBusy = ['checking', 'downloading', 'installing'].includes(status.status)
+  let primaryAction = 'check'
+  let primaryLabel = t('config.about.check-update')
+  if (status.portable || status.installType !== 'nsis') {
+    primaryAction = 'open'
+    primaryLabel = t('config.about.open-download-page')
+  } else if (status.status === 'available') {
+    primaryAction = 'download'
+    primaryLabel = t('config.about.download-update')
+  } else if (status.status === 'downloaded') {
+    primaryAction = 'install'
+    primaryLabel = t('config.about.install-update')
+  }
+  const releaseDetails = status.version
+    ? `<div class="update-release"><b>${escapeHtml(status.version)}</b>${status.releaseDate ? `<span>${escapeHtml(new Date(status.releaseDate).toLocaleDateString())}</span>` : ''}${status.size ? `<span>${escapeHtml(formatUpdateBytes(status.size))}</span>` : ''}</div>`
+    : ''
+  const releaseNotes = status.releaseNotes
+    ? `<div class="update-notes">${escapeHtml(status.releaseNotes).replace(/\n/g, '<br>')}</div>`
+    : ''
+  const progress = status.status === 'downloading'
+    ? `<progress class="update-progress" max="100" value="${Math.max(0, Math.min(100, Number(status.progress?.percent) || 0))}"></progress>`
+    : ''
+  const guidance = status.installBlocked
+    ? `<div class="update-guidance warning">${escapeHtml(status.installBlocked)}</div>`
+    : status.error?.action
+      ? `<div class="update-guidance">${escapeHtml(status.error.action)}</div>`
+      : ''
+  const portabilityNote = status.portable
+    ? '<small class="section-note">' + t('config.about.portable-note') + '</small>'
+    : status.installType !== 'nsis'
+      ? '<small class="section-note">' + t('config.about.unsupported-note') + '</small>'
+      : ''
+  return `<div class="card update-card"><div class="update-head"><div><h2>${t('config.about.update-section')}</h2><p>${escapeHtml(updateStatusPresentation(status))}</p></div><label>${t('config.about.update-channel')}<select id="updateChannel" ${busy ? 'disabled' : ''}><option value="stable" ${status.channel === 'stable' ? 'selected' : ''}>${t('config.about.channel-stable')}</option><option value="beta" ${status.channel === 'beta' ? 'selected' : ''}>${t('config.about.channel-beta')}</option></select></label></div>${status.channel === 'beta' ? '<div class="update-guidance warning">' + t('config.about.beta-warning') + '</div>' : ''}${releaseDetails}${progress}${releaseNotes}${guidance}${portabilityNote}<div class="update-actions"><button class="button primary" id="primaryUpdateAction" data-action="${primaryAction}" ${primaryBusy ? 'disabled' : ''}>${primaryLabel}</button><button class="button" id="openUpdateDownloads">${t('config.about.release-page')}</button></div></div>`
+}
+
+function bindGeneralUpdateCard() {
+  const channel = document.getElementById('updateChannel')
+  if (channel) {
+    channel.onchange = async (event) => {
+      try {
+        await updateSettings({ system: { updateChannel: event.target.value } }, '')
+        await refreshGeneralUpdateCard()
+      } catch (error) { toast(error.message || t('config.about.channel-switch-failed')) }
+    }
+  }
+  const downloads = document.getElementById('openUpdateDownloads')
+  if (downloads) downloads.onclick = () => window.electronAPI.openUpdateDownloadPage()
+  const primary = document.getElementById('primaryUpdateAction')
+  if (primary) {
+    primary.onclick = async (event) => {
+      const actions = {
+        check: () => window.electronAPI.checkForUpdates(),
+        download: () => window.electronAPI.downloadUpdate(),
+        install: () => window.electronAPI.installUpdate(),
+        open: () => window.electronAPI.openUpdateDownloadPage()
+      }
+      try {
+        const nextStatus = await actions[event.currentTarget.dataset.action]()
+        if (nextStatus?.status) latestUpdateStatus = nextStatus
+        await refreshGeneralUpdateCard(nextStatus?.status ? nextStatus : null)
+      } catch (error) { toast(error.message || t('config.about.update-failed')) }
+    }
+  }
+}
+
+async function refreshGeneralUpdateCard(snapshot = null) {
+  if (currentRoute !== 'settings-general') return
+  const status = snapshot || latestUpdateStatus || await window.electronAPI.getUpdateStatus().catch(() => null)
+  if (!status) return
+  latestUpdateStatus = status
+  const container = document.getElementById('updateCard')
+  if (!container) return
+  container.innerHTML = updateCardInnerMarkup(status)
+  bindGeneralUpdateCard()
+}
+
 function renderGeneralSettings() {
   const moduleRows = [
     ['ocr', 'config.plugin.ocr-title', 'config.plugin.ocr-description'],
@@ -34,7 +141,8 @@ function renderGeneralSettings() {
   const moduleSettings = `<section class="section"><h2 class="section-title">${t('config.general.modules-section')} <small>${t('config.plugins.description')}</small></h2><div class="card form-card">
     ${moduleRows.map(([key, title, description]) => `<div class="form-row"><div class="form-label"><b>${t(title)}</b><small>${t(description)}</small></div>${switchMarkup(settings.plugins[key], key, 'plugins')}</div>`).join('')}
   </div></section>`
-  view.innerHTML = `<div class="page">${pageHeader(t('config.route.settings-general'), t('config.settings-general.description'))}${appearanceSettings}${interfaceSettings}${startupSettings}${moduleSettings}</div>`
+  const updateSection = `<section class="section"><h2 class="section-title">${t('config.about.update-section')}</h2><div id="updateCard"><div class="card update-card"><div class="update-head"><div><p>${t('config.about.update-checking')}</p></div></div></div></div></section>`
+  view.innerHTML = `<div class="page">${pageHeader(t('config.route.settings-general'), t('config.settings-general.description'))}${appearanceSettings}${interfaceSettings}${startupSettings}${moduleSettings}${updateSection}</div>`
 
   const theme = document.getElementById('theme')
   theme.value = settings.theme
@@ -55,6 +163,7 @@ function renderGeneralSettings() {
   interfaceLanguage.value = settings.language || 'zh-CN'
   interfaceLanguage.onchange = () => updateSettings({ language: interfaceLanguage.value }, t('config.settings-general.language-updated'))
   bindSwitches()
+  void refreshGeneralUpdateCard()
 }
 
 // settings-function keeps its tab in module state so leaving the route and

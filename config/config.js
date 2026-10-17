@@ -106,7 +106,9 @@ window.electronAPI.onGameModeChanged((enabled) => {
 window.electronAPI.onHistoryChanged(() => { if (currentRoute === 'history') renderHistory() })
 window.electronAPI.onUpdateStatus((status) => {
   latestUpdateStatus = status
-  if (currentRoute === 'about') void renderAbout(status).catch((error) => toast(error.message || t('config.error.refresh-update-status')))
+  // P3: the update card lives on the General settings page. Refresh only that
+  // card so download-progress pushes never rebuild the rest of the form.
+  if (currentRoute === 'settings-general') void refreshGeneralUpdateCard(status).catch(() => {})
 })
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyAppearance)
 

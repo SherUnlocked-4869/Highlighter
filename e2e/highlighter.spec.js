@@ -26,6 +26,10 @@ test('first startup renders navigation, empty history, About version, and shortc
   await navigate(page, 'about', '关于')
   await expect(page.locator('.about')).toContainText(`版本 ${version}`)
   await expect(page.locator('.about')).toContainText('开发环境')
+  await expect(page.locator('.about')).toContainText('软件更新已移至')
+
+  // P3: the update card moved from About to Settings > General > Software update.
+  await navigate(page, 'settings-general', '通用')
   await expect(page.locator('.update-card')).toContainText('当前运行方式不支持应用内更新')
   expect(await highlighter.getUnexpectedErrors()).toEqual([])
 })

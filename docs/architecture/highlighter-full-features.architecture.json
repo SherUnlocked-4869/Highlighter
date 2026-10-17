@@ -29,7 +29,7 @@
         "id": "system-side",
         "label": "入口与系统",
         "focus": ["tray", "settings", "hotkey"],
-        "note": "托盘入口与热键、模型、主题等系统配置。"
+        "note": "托盘入口与 12 项侧栏导航；设置分通用、截图与录制、AI 与模型、系统与数据四页。"
       }
     ]
   },
@@ -125,8 +125,8 @@
     {
       "id": "settings",
       "type": "backend",
-      "label": "设置中心",
-      "sublabel": "热键/主题/模型",
+      "label": "设置与导航中心",
+      "sublabel": "12 项导航/4 页设置",
       "pos": [940, 120],
       "size": [120, 58]
     }

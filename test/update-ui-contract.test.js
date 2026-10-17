@@ -22,7 +22,7 @@ test('main process owns updater lifecycle, diagnostics, channel settings, and in
   assert.match(main, /app\.on\('will-quit',[\s\S]*updateService\?\.dispose\(\)/)
 })
 
-test('preload and about page expose fixed update actions without renderer URLs', () => {
+test('preload and the General settings page expose fixed update actions without renderer URLs', () => {
   for (const channel of ['update:status', 'update:check', 'update:download', 'update:install', 'update:open-download-page']) {
     assert.match(preload, new RegExp(`ipcRenderer\\.invoke\\('${channel}'\\)`))
   }

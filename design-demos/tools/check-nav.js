@@ -10,6 +10,16 @@ const SETTINGS = {
   providers: [{ id: 'deepseek', name: 'DeepSeek', enabled: true, hasApiKey: true, builtin: true,
     models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] }],
   ai: { assignments: [{ feature: 'chat', providerId: 'deepseek', model: 'deepseek-chat' }] },
+  selectionToolbar: {
+    enabled: true, clipboardFallback: false,
+    buttons: { copy: true, search: true, translate: true, explain: true },
+    order: ['copy', 'search', 'translate', 'explain', 'open'],
+    prompts: { translate: '', explain: '' },
+    customActions: [], searchEngine: 'bing',
+    translateLanguages: { source: 'auto', target: '中文' },
+    conversation: { enabled: true, maxFollowUpTurns: 10, persist: false }
+  },
+  toolbarThinking: { translate: 'off', explain: 'high' },
   shortcuts: { screenshot: 'Alt+A' },
   ocr: { modelProfile: 'ppocr-v4-ch' },
   screenshot: {}, record: {}, search: {}, system: {}, plugins: {}
@@ -40,7 +50,7 @@ app.whenReady().then(async () => {
     `(() => { const s = document.createElement('style'); s.textContent = '*{transition:none !important;animation:none !important}'; document.head.appendChild(s); return 'frozen' })()`)
   await new Promise((r) => setTimeout(r, 200))
 
-  const routes = ['home', 'settings-hotkeys', 'models', 'settings-function', 'history', 'appearance', 'settings-system', 'about']
+  const routes = ['home', 'settings-general', 'settings-function', 'models', 'settings-system', 'selection-toolbar', 'local-search', 'about']
   const lines = []
   for (const route of routes) {
     await win.webContents.executeJavaScript(

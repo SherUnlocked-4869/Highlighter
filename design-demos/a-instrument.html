@@ -428,25 +428,23 @@ window.HL = {
         { id: 'translation', label: '翻译', icon: 'translate' },
         { id: 'chat', label: 'AI 对话', icon: 'robot' },
         { id: 'history', label: '截图历史', icon: 'history' },
-        { id: 'local-search', label: '本地搜索', icon: 'search' },
       ],
     },
     {
-      group: '个性化',
+      group: '工具设置',
       items: [
-        { id: 'appearance', label: '外观配色', icon: 'palette' },
-        { id: 'plugins', label: '插件', icon: 'components' },
+        { id: 'selection-toolbar', label: '划词工具', icon: 'text-style' },
+        { id: 'local-search', label: '本地搜索', icon: 'search' },
+        { id: 'clipboard-history', label: '剪贴板历史', icon: 'history' },
       ],
     },
     {
       group: '设置',
       items: [
-        { id: 'settings-general', label: '界面设置', icon: 'layout' },
-        { id: 'models', label: '模型', icon: 'model' },
-        { id: 'settings-function', label: '功能设置', icon: 'settings' },
-        { id: 'selection-toolbar', label: '划词工具', icon: 'select' },
-        { id: 'settings-hotkeys', label: '热键设置', icon: 'keyboard' },
-        { id: 'settings-system', label: '系统设置', icon: 'system' },
+        { id: 'settings-general', label: '通用', icon: 'layout' },
+        { id: 'settings-function', label: '截图与录制', icon: 'settings' },
+        { id: 'models', label: 'AI 与模型', icon: 'model' },
+        { id: 'settings-system', label: '系统与数据', icon: 'system' },
       ],
     },
   ],
@@ -455,11 +453,11 @@ window.HL = {
   pages: {
     home: {
       title: '快捷功能',
-      desc: '统一管理截图、AI、翻译、录屏和桌面工具。',
+      desc: '统一管理截图、AI、翻译、录屏和桌面工具；「快捷键」页签集中录入全局快捷键。',
     },
-    'settings-hotkeys': {
-      title: '热键设置',
-      desc: '点击右侧按键框后录入组合键；右键可清除。红色警告表示快捷键冲突或不可用。',
+    'settings-general': {
+      title: '通用',
+      desc: '外观、界面语言、启动与托盘、功能模块和软件更新。',
     },
   },
 

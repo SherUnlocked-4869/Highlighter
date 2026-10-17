@@ -23,19 +23,33 @@ fs.mkdirSync(OUT, { recursive: true })
 
 const SETTINGS = {
   theme: 'light', mainColor: '#e5a44c', borderRadius: 9, compact: false,
-  skinPath: '', skinOpacity: 18, customCss: '',
+  language: 'zh-CN', skinPath: '', skinOpacity: 18, customCss: '',
   providers: [{
     id: 'deepseek', name: 'DeepSeek', enabled: true, apiKey: '', hasApiKey: true,
     baseUrl: 'https://api.deepseek.com/v1', protocol: 'openai-chat', builtin: true,
     models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }, { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner' }]
   }],
   ai: { maxTokens: 4096, temperature: 0.7, targetLanguage: '中文', assignments: [{ feature: 'chat', providerId: 'deepseek', model: 'deepseek-chat' }] },
+  selectionToolbar: {
+    enabled: true, clipboardFallback: false,
+    buttons: { copy: true, search: true, translate: true, explain: true },
+    order: ['copy', 'search', 'translate', 'explain', 'open'],
+    prompts: {
+      translate: '你是一个专业的翻译助手。请按照设置的语言方向翻译用户输入的文本，只输出翻译结果，不要添加任何额外说明或解释。',
+      explain: '你是一个知识渊博的解说专家。请对用户提供的文本进行深入分析和解读：\n\n### 核心要点\n先用一句话概括核心内容。\n\n### 详细解释\n对文本中的关键概念、术语、背景进行详细解释，帮助用户全面理解。如果涉及专业知识，请进行通俗易懂的说明。\n\n### 延伸知识\n补充相关的背景信息、实际应用场景或有趣的引申知识点。\n\n请使用中文回答，内容充实但不冗长，层次分明。'
+    },
+    customActions: [], searchEngine: 'bing',
+    translateLanguages: { source: 'auto', target: '中文' },
+    conversation: { enabled: true, maxFollowUpTurns: 10, persist: false }
+  },
+  toolbarThinking: { translate: 'off', explain: 'high' },
   shortcuts: { screenshot: 'Alt+A', ocr: 'Alt+O', localSearch: 'Alt+S', pin: 'Alt+P', videoRecord: 'Alt+A' },
   screenshot: { autoSaveOnCopy: false, saveDirectory: '', historyEnabled: true, historyLimit: 200, doubleClickCopy: true, selectionMask: 'rgba(0,0,0,.46)', showColorPicker: true, longCaptureDirection: 'vertical' },
   ocr: { modelProfile: 'ppocr-v4-ch', minConfidence: 0.3, detectAngle: false, afterAction: 'none', hotStart: true },
   record: { frameRate: 30, saveDirectory: '' },
-  search: { useBundledEverything: true, categories: [] },
-  system: { autoStart: true, gameMode: false, trayIcon: true },
+  search: { useBundledEverything: true, matchPath: true, maxResults: 600, categories: [] },
+  proxy: { autoStart: false, port: 8080, host: '127.0.0.1', apiBase: '' },
+  system: { autoStart: true, enableTray: true, gameMode: false, runLog: true },
   plugins: { ocr: true, translation: true, ai: true, video: true }
 }
 
@@ -69,7 +83,7 @@ const STUB_PRELUDE = `
     getOcrStatus: async () => ({ available: true, phase: 'ready' }),
     updateSettings: async (p) => Object.assign(__settings, p || {}),
     getAppInfo: async () => ({ version: '2.2.6', platform: 'win32', installType: 'installed' }),
-    getUpdateStatus: async () => ({ state: 'idle', channel: 'stable' }),
+    getUpdateStatus: async () => ({ status: 'idle', channel: 'stable', installType: 'nsis' }),
     getSoftwareDataPaths: async () => ({ root: 'D:/Highlighter' }),
     getHistory: async () => ({ items: [], nextCursor: '', hasMore: false, totalCount: 0 }),
     getHistorySources: async () => ([]),
@@ -135,13 +149,15 @@ const EMIT = {
 }
 
 const SURFACES = [
+  // Settings pages: route ids follow the 12-item sidebar (general / capture &
+  // recording / AI & models / system & data are settings, the rest are tools).
   { name: 'config-home', file: 'config/config.html', w: 1180, h: 760 },
-  { name: 'config-hotkeys', file: 'config/config.html', w: 1180, h: 760, route: 'settings-hotkeys' },
-  { name: 'config-models', file: 'config/config.html', w: 1180, h: 760, route: 'models' },
-  { name: 'config-history', file: 'config/config.html', w: 1180, h: 760, route: 'history' },
-  { name: 'config-appearance', file: 'config/config.html', w: 1180, h: 760, route: 'appearance' },
+  { name: 'config-general', file: 'config/config.html', w: 1180, h: 760, route: 'settings-general' },
   { name: 'config-function', file: 'config/config.html', w: 1180, h: 760, route: 'settings-function' },
+  { name: 'config-models', file: 'config/config.html', w: 1180, h: 760, route: 'models' },
   { name: 'config-system', file: 'config/config.html', w: 1180, h: 760, route: 'settings-system' },
+  { name: 'config-toolbar', file: 'config/config.html', w: 1180, h: 760, route: 'selection-toolbar' },
+  { name: 'config-local-search', file: 'config/config.html', w: 1180, h: 760, route: 'local-search' },
   { name: 'config-about', file: 'config/config.html', w: 1180, h: 760, route: 'about' },
   { name: 'search', file: 'search/search.html', w: 720, h: 520 },
   { name: 'recognition', file: 'recognition/recognition.html', w: 560, h: 480 },
