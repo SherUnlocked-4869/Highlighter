@@ -97,7 +97,7 @@ pub fn copy(barrier: &Barrier, mime: &str, bytes: &[u8]) -> Result<(), &'static 
         return Err("UNSUPPORTED");
     }
     let epoch = barrier.begin_local(Duration::from_millis(100))?;
-    let owned_sequence=std::cell::Cell::new(unsafe {GetClipboardSequenceNumber()});
+    let owned_sequence = std::cell::Cell::new(unsafe { GetClipboardSequenceNumber() });
     let result = (|| unsafe {
         let owner = Owner(
             CreateWindowExW(

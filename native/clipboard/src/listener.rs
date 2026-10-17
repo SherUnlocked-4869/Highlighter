@@ -41,6 +41,16 @@ struct Notice {
     generation: u64,
     barrier_epoch: u64,
 }
+struct Activity(Arc<State>);
+impl Drop for Activity {
+    fn drop(&mut self) {
+        *self
+            .0
+            .capture_started
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
 struct Context {
     state: Arc<State>,
     sender: mpsc::SyncSender<Notice>,
@@ -203,6 +213,7 @@ impl Monitor {
                     continue;
                 };
                 let started = Instant::now();
+                let _activity = Activity(worker_state.clone());
                 *worker_state
                     .capture_started
                     .lock()
@@ -236,10 +247,6 @@ impl Monitor {
                 worker_state
                     .max_capture_micros
                     .fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
-                *worker_state
-                    .capture_started
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = None;
                 if !current(&worker_state, &notice) || !permit.current() {
                     skip(&worker_state, "stale_configuration");
                     continue;
@@ -257,7 +264,22 @@ impl Monitor {
                             if let Err(code) =
                                 store.accept(snapshot.kind, snapshot.bytes, &snapshot.source)
                             {
-                                skip(&worker_state, code);
+                                let storage_error = code == "STORAGE_FAILED"
+                                    || code.starts_with("ATTACHMENT_")
+                                    || code == "STORAGE_FULL";
+                                if storage_error {
+                                    store.last_error = Some(code);
+                                }
+                                skip(
+                                    &worker_state,
+                                    if storage_error {
+                                        "storage_error"
+                                    } else if code.bytes().any(|b| b.is_ascii_uppercase()) {
+                                        "invalid_image"
+                                    } else {
+                                        code
+                                    },
+                                );
                                 continue;
                             }
                         }

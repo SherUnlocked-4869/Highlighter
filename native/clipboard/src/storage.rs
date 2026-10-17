@@ -113,6 +113,8 @@ pub struct Store {
     thumbnail_bytes: u64,
     last_calibration: Instant,
     last_maintenance: Instant,
+    maintenance_pending: bool,
+    can_compact: bool,
     pub last_error: Option<&'static str>,
 }
 
@@ -139,6 +141,28 @@ impl Store {
         if !root.is_absolute() || root.to_string_lossy().starts_with("\\\\") {
             return Err("UNSUPPORTED_PATH");
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            let drive: Vec<u16> = root
+                .ancestors()
+                .last()
+                .ok_or("UNSUPPORTED_PATH")?
+                .as_os_str()
+                .encode_wide()
+                .chain([0])
+                .collect();
+            // Removable, fixed and RAM disks are local. Also reject mapped
+            // network drives, which do not have a UNC-looking input path.
+            let kind = unsafe {
+                windows::Win32::Storage::FileSystem::GetDriveTypeW(windows::core::PCWSTR(
+                    drive.as_ptr(),
+                ))
+            };
+            if !matches!(kind, 2 | 3 | 6) {
+                return Err("UNSUPPORTED_PATH");
+            }
+        }
         safe_path(root)?;
         fs::create_dir_all(root).stored()?;
         for dir in ["attachments", "thumbnails", "staging"] {
@@ -164,6 +188,20 @@ impl Store {
         if integrity != "ok" {
             return Err("DATABASE_DAMAGED");
         }
+        if version == 0 {
+            let tables: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+                    [],
+                    |r| r.get(0),
+                )
+                .stored()?;
+            if tables != 0 {
+                return Err("UNSUPPORTED_SCHEMA");
+            }
+            db.execute_batch("PRAGMA auto_vacuum=INCREMENTAL")
+                .stored()?;
+        }
         db.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
             PRAGMA cache_size=-4096; PRAGMA mmap_size=0; PRAGMA wal_autocheckpoint=256;",
@@ -184,6 +222,10 @@ impl Store {
         }
         // Bound even one- and two-character LIKE scans. A retained set has <=5000
         // ordinary items; pinned items are additionally bounded by byte budgets.
+        let can_compact = db
+            .query_row("PRAGMA auto_vacuum", [], |r| r.get::<_, i32>(0))
+            .stored()?
+            == 2;
         let mut store = Self {
             db,
             root: root.to_path_buf(),
@@ -192,6 +234,8 @@ impl Store {
             thumbnail_bytes: 0,
             last_calibration: Instant::now(),
             last_maintenance: Instant::now(),
+            maintenance_pending: false,
+            can_compact,
             last_error: None,
         };
         store.recover()?;
@@ -474,7 +518,7 @@ impl Store {
             .stored()?;
         let gc: i64 = self.db.query_row("SELECT COALESCE(sum(byte_length),0) FROM payloads WHERE id IN (SELECT payload_id FROM gc_jobs)", [], |r| r.get(0)).stored()?;
         Ok(
-            json!({"datasetId":dataset,"revision":revision,"itemCount":count,"pinnedCount":pinned,"payloadBytes":bytes,"actualDiskBytes":self.disk_bytes,"pendingGcBytes":gc,"messageKey":self.last_error}),
+            json!({"datasetId":dataset,"revision":revision,"itemCount":count,"pinnedCount":pinned,"payloadBytes":bytes,"actualDiskBytes":self.disk_bytes,"pendingGcBytes":gc,"messageKey":self.last_error,"maintenancePending":self.maintenance_pending}),
         )
     }
     pub fn list(&self, filter: Filter) -> Result<Value> {
@@ -759,16 +803,14 @@ impl Store {
                     .get("includePinned")
                     .and_then(Value::as_bool)
                     .ok_or("INVALID_ARGUMENT")?;
-                let ids: Vec<String> = {
-                    let mut stmt = tx
-                        .prepare("SELECT id FROM items WHERE ?1 OR is_pinned=0")
-                        .stored()?;
-                    let rows = stmt.query_map([include_pinned], |r| r.get(0)).stored()?;
-                    rows.collect::<rusqlite::Result<_>>().stored()?
-                };
-                for id in ids {
-                    affected += delete(&tx, &id)?;
-                }
+                tx.execute("INSERT OR IGNORE INTO gc_jobs SELECT payload_id,0 FROM items WHERE ?1 OR is_pinned=0",[include_pinned]).stored()?;
+                tx.execute("DELETE FROM item_search WHERE id IN (SELECT id FROM items WHERE ?1 OR is_pinned=0)",[include_pinned]).stored()?;
+                affected = tx
+                    .execute(
+                        "DELETE FROM items WHERE ?1 OR is_pinned=0",
+                        [include_pinned],
+                    )
+                    .stored()?;
             }
             _ => return Err("UNSUPPORTED_METHOD"),
         }
@@ -784,6 +826,15 @@ impl Store {
         tx.execute("DELETE FROM operation_receipts WHERE id NOT IN (SELECT id FROM operation_receipts ORDER BY created_at DESC LIMIT 256) OR created_at<?1",[now()-24*3600*1000]).stored()?;
         tx.commit().stored()?;
         self.gc()?;
+        self.maintenance_pending = self
+            .db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM gc_jobs WHERE attempts=0)",
+                [],
+                |r| r.get(0),
+            )
+            .stored()?;
+        self.maintenance_pending |= self.needs_compaction()?;
         Ok(value)
     }
     pub fn checkpoint(&self) -> Result<()> {
@@ -795,12 +846,13 @@ impl Store {
         if self.last_calibration.elapsed() >= Duration::from_secs(300) {
             self.calibrate()?;
         }
-        if self.last_maintenance.elapsed() >= Duration::from_secs(600) {
+        if self.maintenance_pending || self.last_maintenance.elapsed() >= Duration::from_secs(600) {
             self.maintain()?;
         }
         Ok(())
     }
     pub fn maintain(&mut self) -> Result<()> {
+        let compacting = self.maintenance_pending;
         let tx = self.db.unchecked_transaction().stored()?;
         let cutoff = now() - i64::from(self.rules.retention_days) * 24 * 3600 * 1000;
         let ids: Vec<String> = {
@@ -819,16 +871,44 @@ impl Store {
         }
         tx.commit().stored()?;
         self.gc()?;
+        if self.can_compact {
+            self.db
+                .execute_batch("PRAGMA incremental_vacuum(128)")
+                .stored()?;
+        }
+        self.maintenance_pending = ids.len() == 50
+            || self
+                .db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM gc_jobs WHERE attempts=0)",
+                    [],
+                    |r| r.get(0),
+                )
+                .stored()?;
+        self.maintenance_pending |= self.needs_compaction()?;
         self.last_maintenance = Instant::now();
         // A passive checkpoint never waits on readers; physical calibration is
         // amortized and is forced near the limit.
         self.db
             .execute_batch("PRAGMA wal_checkpoint(PASSIVE)")
             .stored()?;
-        if self.disk_bytes + 32 * MIB >= self.rules.max_disk_mi_b * MIB {
+        if compacting && !self.maintenance_pending {
+            self.checkpoint()?;
+        }
+        if (compacting && !self.maintenance_pending)
+            || self.disk_bytes + 32 * MIB >= self.rules.max_disk_mi_b * MIB
+        {
             self.calibrate()?;
         }
         Ok(())
+    }
+    fn needs_compaction(&self) -> Result<bool> {
+        Ok(self.can_compact
+            && self
+                .db
+                .query_row("PRAGMA freelist_count", [], |r| r.get::<_, i64>(0))
+                .stored()?
+                > 256)
     }
     fn recover(&mut self) -> Result<()> {
         // Enumerate names once at startup, never on each clipboard notification.
@@ -863,6 +943,7 @@ impl Store {
         self.gc()
     }
     fn gc(&mut self) -> Result<()> {
+        let started = Instant::now();
         let ids: Vec<String> = {
             let mut stmt = self
                 .db
@@ -872,6 +953,9 @@ impl Store {
             rows.collect::<rusqlite::Result<_>>().stored()?
         };
         for hash in ids {
+            if started.elapsed() > Duration::from_millis(100) {
+                break;
+            }
             let referenced: bool = self
                 .db
                 .query_row(

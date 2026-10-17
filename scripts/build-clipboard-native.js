@@ -38,6 +38,7 @@ function build() {
   const output = path.join(nativeRoot, 'bin', 'HighlighterClipboard.exe')
   fs.mkdirSync(path.dirname(output), { recursive: true })
   fs.copyFileSync(path.join(nativeRoot, 'target', 'release', 'highlighter-clipboard.exe'), output)
+  fs.writeFileSync(path.join(nativeRoot, 'bin', 'build-info.json'), `${JSON.stringify({ protocolVersion: 1, nativeBuildId: buildId })}\n`)
   process.stdout.write(`${JSON.stringify({ output, buildId, sha256: crypto.createHash('sha256').update(fs.readFileSync(output)).digest('hex') })}\n`)
 }
 

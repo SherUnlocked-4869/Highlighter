@@ -81,7 +81,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     .map_err(|_| "INVALID_RULES")?;
                                 next.validate()?;
                                 if let Some(current) = &monitor {
-                                    current.invalidate();
+                                    current.set_rules(next.clone());
                                 }
                                 if let Some(store) = &store {
                                     store
