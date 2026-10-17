@@ -14,7 +14,7 @@ function renderLocalSearch() {
     <section class="section"><h2 class="section-title">${t('config.local-search.categories-section')}</h2><div class="card form-card" id="categoryEditor"></div>
       <div style="display:flex;gap:8px;margin-top:12px"><button class="button" id="addCategory">${t('config.local-search.add-category')}</button><button class="button" id="resetCategories">${t('config.local-search.reset-categories')}</button><button class="button primary" id="saveCategories">${t('config.local-search.save-categories')}</button></div>
     </section>
-    <button class="button primary" id="saveSearch" style="margin-top:16px">${t('config.local-search.save')}</button></div>`
+  </div>`
 
   const renderCategoryEditor = () => {
     const editor = document.getElementById('categoryEditor')
@@ -50,7 +50,14 @@ function renderLocalSearch() {
     renderCategoryEditor()
   }
 
-  document.getElementById('saveSearch').onclick = () => updateSettings({ search: { maxResults: Math.max(100, Math.min(2000, Number(document.getElementById('searchMaxResults').value) || 600)) } })
+  // P2: the result limit saves as soon as the field is committed (blur or Enter);
+  // the category editor above keeps its draft plus explicit save button.
+  const maxResultsInput = document.getElementById('searchMaxResults')
+  maxResultsInput.onchange = () => {
+    const clamped = Math.max(100, Math.min(2000, Number(maxResultsInput.value) || 600))
+    maxResultsInput.value = String(clamped)
+    updateSettings({ search: { maxResults: clamped } })
+  }
   document.getElementById('openSearchWindow').onclick = () => window.electronAPI.executeFunction('localSearch')
   document.getElementById('addCategory').onclick = () => {
     draft.push({ id: `custom-${Date.now()}`, label: t('config.local-search.new-category'), rule: 'ext:' })

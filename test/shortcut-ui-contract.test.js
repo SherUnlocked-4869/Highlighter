@@ -82,14 +82,14 @@ test('the settings page exposes the new capture rows through the shared update p
   assert.ok(config.includes("['screenshotSaveAs', 'config.function.screenshot-save-as', '../capture/icons/save.svg', 'config.function.screenshot-save-as-description']"))
   assert.ok(config.includes("['togglePinClickThrough', 'config.function.toggle-pin-click-through', '../capture/icons/pin.svg', 'config.function.toggle-pin-click-through-description']"))
 
-  // renderHotkeySettings flattens that table and pairs every entry with its
-  // stored accelerator, so the three rows above appear without a second list.
-  // D2-2（S14）：热键设置整体落在 routes/settings.js；只读该文件做边界断言，
-  // 这样"热键页长什么样"仍与它在哪个文件无关。
-  const settingsRoute = fs.readFileSync(path.join(__dirname, '..', 'config', 'routes', 'settings.js'), 'utf8')
-  const hotkeyRender = settingsRoute.slice(settingsRoute.indexOf('function renderHotkeySettings()'), settingsRoute.indexOf('function renderSystemSettings()'))
-  assert.ok(hotkeyRender.includes('Object.values(functionGroups).flat()'), 'the hotkey page flattens functionGroups')
-  assert.ok(hotkeyRender.includes("shortcutButton(name, settings.shortcuts[name] || '')"), 'every entry renders its stored hotkey')
+  // Since the settings IA reorg the flattened table lives in the quick-function
+  // page's "shortcuts" tab (routes/home.js); the old standalone hotkey route is
+  // gone. Read that file so the assertion still pins "the hotkey list is derived
+  // from functionGroups and renders each stored accelerator".
+  const homeRoute = fs.readFileSync(path.join(__dirname, '..', 'config', 'routes', 'home.js'), 'utf8')
+  const shortcutsTab = homeRoute.slice(homeRoute.indexOf("homeTab === 'shortcuts'"), homeRoute.indexOf('function bindShortcutRecorders()'))
+  assert.ok(shortcutsTab.includes('Object.values(functionGroups).flat()'), 'the shortcuts tab flattens functionGroups')
+  assert.ok(shortcutsTab.includes("shortcutButton(name, settings.shortcuts[name] || '')"), 'every entry renders its stored hotkey')
 
   // S7's handlers emit these two source values (function-router.js), and the
   // history source filter labels them through this map.

@@ -19,7 +19,8 @@ test('first startup renders navigation, empty history, About version, and shortc
   await expect(page.locator('#historyResults .empty')).toHaveText('没有符合条件的截图历史')
   await expect(page.locator('#historyLoadedCount')).toHaveText('0 项')
 
-  await navigate(page, 'settings-hotkeys', '热键设置')
+  await navigate(page, 'home', '快捷功能')
+  await page.locator('[data-home-tab="shortcuts"]').click()
   await expect(page.locator('[data-shortcut="screenshot"]')).toHaveText('F1')
 
   await navigate(page, 'about', '关于')
@@ -60,10 +61,11 @@ test('selection toolbar renderer crash destroys the dead BrowserWindow', async (
 
 test('settings persist through the real preload and authorized IPC surface', async ({ highlighter }) => {
   const { mainWindow: page } = highlighter
-  await navigate(page, 'appearance', '外观配色')
+  await navigate(page, 'settings-general', '通用')
   await page.locator('#theme').selectOption('dark')
   await page.locator('#mainColor').fill('#2563eb')
-  await page.getByRole('button', { name: '保存外观' }).click()
+  // Settings save on change: a blur commits the colour input.
+  await page.locator('#mainColor').blur()
   await expect(page.locator('#toast')).toHaveText('设置已保存')
 
   const persisted = await page.evaluate(() => window.electronAPI.getSettings())
@@ -71,7 +73,7 @@ test('settings persist through the real preload and authorized IPC surface', asy
   expect(persisted.mainColor).toBe('#2563eb')
 
   await navigate(page, 'home', '快捷功能')
-  await navigate(page, 'appearance', '外观配色')
+  await navigate(page, 'settings-general', '通用')
   await expect(page.locator('#theme')).toHaveValue('dark')
   await expect(page.locator('#mainColor')).toHaveValue('#2563eb')
   await expect(page.locator('body')).toHaveClass(/dark/)
@@ -80,7 +82,7 @@ test('settings persist through the real preload and authorized IPC surface', asy
 
 test('main-context dialog stubs support diagnostics and the close button hides cleanly', async ({ highlighter }) => {
   const { mainWindow: page, savePath } = highlighter
-  await navigate(page, 'settings-system', '系统设置')
+  await navigate(page, 'settings-system', '系统与数据')
   await page.getByRole('button', { name: '预览' }).click()
   await expect(page.locator('#diagnosticsPreview')).toBeVisible()
   await expect(page.locator('#diagnosticsPreview')).toContainText('"offline": true')
@@ -106,15 +108,12 @@ test('every settings route renders content after the D2-2 route split', async ({
     ['translation', '翻译', '#translateNow'],
     ['chat', 'AI 对话', '#sendChat'],
     ['history', '截图历史', '#historyResults'],
-    ['local-search', '本地搜索', '#saveSearch'],
-    ['appearance', '外观配色', '#saveAppearance'],
-    ['plugins', '插件', '.plugin-card'],
-    ['settings-general', '界面设置', '#saveGeneral'],
-    ['models', '模型', '#addModelProvider'],
-    ['settings-function', '功能设置', '#saveFunctions'],
     ['selection-toolbar', '划词工具', '#saveSelectionToolbar'],
-    ['settings-hotkeys', '热键设置', '.shortcut'],
-    ['settings-system', '系统设置', '#dataRoot'],
+    ['local-search', '本地搜索', '#searchStatus'],
+    ['settings-general', '通用', '#theme'],
+    ['settings-function', '截图与录制', '#nameTemplate'],
+    ['models', 'AI 与模型', '#addModelProvider'],
+    ['settings-system', '系统与数据', '#dataRoot'],
     ['about', '关于', '.about']
   ]
   for (const [route, title, selector] of routes) {

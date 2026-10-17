@@ -20,8 +20,8 @@ let currentRoute = 'home'
 // so a language switch takes effect without a reload.
 const routeTitles = {
   home: 'config.route.home', translation: 'config.route.translation', chat: 'config.route.chat', history: 'config.route.history',
-  appearance: 'config.route.appearance', plugins: 'config.route.plugins', 'settings-general': 'config.route.settings-general',
-  'settings-function': 'config.route.settings-function', 'settings-hotkeys': 'config.route.settings-hotkeys',
+  'settings-general': 'config.route.settings-general',
+  'settings-function': 'config.route.settings-function',
   models: 'config.route.models',
   'selection-toolbar': 'config.route.selection-toolbar',
   'local-search': 'config.route.local-search',
@@ -39,15 +39,12 @@ const routes = {
   translation: { key: 'renderTranslation' },
   chat: { key: 'renderChat' },
   history: { key: 'renderHistory' },
-  appearance: { key: 'renderAppearance' },
-  plugins: { key: 'renderPlugins' },
   'settings-general': { key: 'renderGeneralSettings' },
   models: { key: 'bootstrapModels' },
   'settings-function': { key: 'renderFunctionSettings' },
   'selection-toolbar': { key: 'renderSelectionToolbarSettings' },
   'local-search': { key: 'renderLocalSearch' },
   'clipboard-history': { key: 'renderClipboardSettings' },
-  'settings-hotkeys': { key: 'renderHotkeySettings' },
   'settings-system': { key: 'renderSystemSettings', fallbackMessage: 'config.error.read-data-root' },
   about: { key: 'renderAbout', fallbackMessage: 'config.error.read-update-status' }
 }
@@ -102,7 +99,7 @@ window.electronAPI.onGameModeChanged((enabled) => {
   settings = { ...settings, system: { ...settings.system, gameMode: enabled } }
   void refreshShortcutStatuses()
     .then(() => {
-      if (['home', 'settings-hotkeys', 'settings-system'].includes(currentRoute)) renderRoute()
+      if (['home', 'settings-system'].includes(currentRoute)) renderRoute()
     })
     .catch(() => {})
 })

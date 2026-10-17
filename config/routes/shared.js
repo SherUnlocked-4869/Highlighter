@@ -126,12 +126,12 @@ const statusRailCell = (label, value, tone = '') => {
 }
 
 // The rail answers "what can this app do right now?" — engine, model, hotkey
-// coverage and search index — without making the user open four settings pages.
-// Any source that is slow or outside the renderer simply degrades to a neutral
-// state; the rail must never block or throw.
+// coverage and search index — without making the user open several settings
+// pages. Any source that is slow or outside the renderer simply degrades to a
+// neutral state; the rail must never block or throw.
 async function refreshStatusRail() {
   if (!statusRail) return
-  const showOn = new Set(['home', 'settings-hotkeys', 'settings-function', 'models'])
+  const showOn = new Set(['home', 'settings-function', 'models'])
   if (!showOn.has(currentRoute)) {
     statusRail.hidden = true
     return

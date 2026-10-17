@@ -44,7 +44,7 @@ function loadedRouteFiles () {
 test('every dispatched route is registered and every registration is dispatched', () => {
   const dispatched = dispatchKeys()
   const registered = registeredKeys()
-  assert.ok(dispatched.length >= 14, `expected at least 14 routes, got ${dispatched.length}`)
+  assert.ok(dispatched.length >= 12, `expected at least 12 routes, got ${dispatched.length}`)
   // 逐条给出差集，失败时报出具体是哪个路由会静默 no-op。
   assert.deepEqual(
     [...new Set(dispatched)].filter((key) => !registered.includes(key)),

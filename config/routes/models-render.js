@@ -24,7 +24,7 @@ function providerEditorMarkup(provider) {
 }
 
 function renderModelsSubnav() {
-  return `<div class="models-subnav"><button class="${modelsTab === 'providers' ? 'active' : ''}" data-models-tab="providers">${t('config.models.tab-providers')}</button><button class="${modelsTab === 'features' ? 'active' : ''}" data-models-tab="features">${t('config.models.tab-features')}</button></div>`
+  return `<div class="models-subnav"><button class="${modelsTab === 'providers' ? 'active' : ''}" data-models-tab="providers">${t('config.models.tab-providers')}</button><button class="${modelsTab === 'features' ? 'active' : ''}" data-models-tab="features">${t('config.models.tab-features')}</button><button class="${modelsTab === 'defaults' ? 'active' : ''}" data-models-tab="defaults">${t('config.models.tab-defaults')}</button></div>`
 }
 
 function renderModelsProviderTab(providers) {
@@ -39,10 +39,43 @@ function renderModelsFeatureTab(providers) {
 }
 
 
+// The defaults tab absorbs the AI sampling parameters that used to sit on the
+// function-settings page. Every row saves on change, so the tab has no save button.
+function renderModelsDefaultsTab() {
+  const languageOptions = [['中文', 'config.language.zh'], ['英文', 'config.language.en'], ['日文', 'config.language.ja'], ['韩文', 'config.language.ko'], ['繁体中文', 'config.language.zh-hant']]
+    .map(([value, label]) => `<option value="${value}" ${settings.ai.targetLanguage === value ? 'selected' : ''}>${t(label)}</option>`)
+    .join('')
+  return `<div class="models-view"><div class="models-provider-toolbar"><div class="models-section-head"><h2>${t('config.models.tab-defaults')}</h2><p>${t('config.models.defaults-description')}</p></div></div><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.function-settings.ai-max-tokens')}</b></div><input id="aiMaxTokens" type="number" value="${settings.ai.maxTokens}"></div><div class="form-row"><div class="form-label"><b>Temperature</b></div><input id="aiTemperature" type="number" min="0" max="2" step="0.1" value="${settings.ai.temperature}"></div><div class="form-row"><div class="form-label"><b>${t('config.function-settings.ai-target-language')}</b></div><select id="aiTargetLanguage">${languageOptions}</select></div><div class="form-row"><div class="form-label"><small>${t('config.models.prompt-settings-link')}</small></div><button class="button" id="openPromptSettings">${t('config.route.selection-toolbar')}</button></div></div></div>`
+}
+
+function bindModelsDefaultsTab() {
+  document.getElementById('aiMaxTokens').onchange = (event) => updateSettings({ ai: { maxTokens: Number(event.target.value) } })
+  document.getElementById('aiTemperature').onchange = (event) => updateSettings({ ai: { temperature: Number(event.target.value) } })
+  document.getElementById('aiTargetLanguage').onchange = (event) => updateSettings({ ai: { targetLanguage: event.target.value } })
+  document.getElementById('openPromptSettings').onclick = () => navigate('selection-toolbar')
+}
+
+function bindModelsSubnav() {
+  document.querySelectorAll('[data-models-tab]').forEach((button) => {
+    button.onclick = () => {
+      const nextTab = button.dataset.modelsTab
+      if (nextTab === modelsTab) return
+      // Leaving the providers tab commits the open editors first (same contract as
+      // before); the defaults tab has no draft editor to commit.
+      if (modelsTab === 'providers' && !commitOpenProviderEditors()) return
+      modelsTab = nextTab
+      renderModels()
+    }
+  })
+}
+
 function renderModels() {
   const providers = settings.providers || []
-  if (!providers.length) {
-    view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), t('config.models.description'))}${renderModelsSubnav()}<div class="models-view"><div class="empty">${t('config.models.no-providers')}</div><button class="button primary" id="addFirstProvider">${t('config.models.add-first-provider')}</button></div></div>`
+  const description = providers.length ? t('config.models.description-managed') : t('config.models.description')
+  // The defaults tab stays reachable without a provider; only the provider-driven
+  // tabs fall back to the empty state.
+  if (!providers.length && modelsTab !== 'defaults') {
+    view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), description)}${renderModelsSubnav()}<div class="models-view"><div class="empty">${t('config.models.no-providers')}</div><button class="button primary" id="addFirstProvider">${t('config.models.add-first-provider')}</button></div></div>`
     document.getElementById('addFirstProvider').onclick = () => {
       const provider = { id: createModelProviderId(), name: t('config.models.new-provider'), baseUrl: '', hasApiKey: false, protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
       settings = { ...settings, providers: [provider] }
@@ -50,23 +83,20 @@ function renderModels() {
       modelsTab = 'providers'
       renderModels()
     }
+    bindModelsSubnav()
+    return
+  }
+  if (modelsTab === 'defaults') {
+    view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), description)}${renderModelsSubnav()}${renderModelsDefaultsTab()}</div>`
+    bindModelsSubnav()
+    bindModelsDefaultsTab()
     return
   }
   const content = modelsTab === 'features'
     ? renderModelsFeatureTab(providers)
     : renderModelsProviderTab(providers)
-  view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), t('config.models.description-managed'))}${renderModelsSubnav()}${content}</div>`
-
-  document.querySelectorAll('[data-models-tab]').forEach((button) => {
-    button.onclick = () => {
-      const nextTab = button.dataset.modelsTab
-      if (nextTab === modelsTab) return
-      if (modelsTab === 'providers' && !commitOpenProviderEditors()) return
-      modelsTab = nextTab
-      renderModels()
-    }
-  })
-
+  view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), description)}${renderModelsSubnav()}${content}</div>`
+  bindModelsSubnav()
   if (modelsTab === 'providers') {
     bindModelsProviderTab()
   } else {

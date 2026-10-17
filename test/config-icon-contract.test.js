@@ -24,7 +24,7 @@ test('main navigation and titlebar use local SVG icons', () => {
   const titlebarIcons = [...html.matchAll(/class="svg-icon" style="--icon:url\('(\.\.\/capture\/icons\/(?:line|close)\.svg)'\)"/g)]
     .map((match) => match[1])
 
-  assert.equal(navigationIcons.length, 14)
+  assert.equal(navigationIcons.length, 12)
   assert.deepEqual(titlebarIcons, ['../capture/icons/line.svg', '../capture/icons/close.svg'])
   for (const iconPath of [...navigationIcons, ...titlebarIcons]) assertIconExists(iconPath)
 })
@@ -33,13 +33,15 @@ test('quick functions and hotkey settings share SVG-backed function metadata', (
   const functionIcons = [...script.matchAll(/\['[^']+',\s*'[^']+',\s*'([^']+\.svg)',\s*'[^']*'\]/g)]
     .map((match) => match[1])
 
-  // 26 shipped entries plus the 2026-10-16 translation-proxy toggle. The exact
-  // count is deliberate: adding a quick function should be a visible decision.
-  assert.equal(functionIcons.length, 27)
+  // 27 shipped entries plus the 2026-10-16 translation-proxy toggle and the
+  // 2026-10-17 clipboard-history row. The exact count is deliberate: adding a
+  // quick function should be a visible decision.
+  assert.equal(functionIcons.length, 28)
   for (const iconPath of functionIcons) assertIconExists(iconPath)
   assert.match(script, /function iconMarkup\(iconPath\)/)
   assert.match(script, /renderHome\(\)[\s\S]*iconMarkup\(icon\)/)
-  assert.match(script, /renderHotkeySettings\(\)[\s\S]*iconMarkup\(icon\)/)
+  // The shortcuts tab (formerly its own hotkey page) renders the same table.
+  assert.match(script, /Object\.values\(functionGroups\)\.flat\(\)[\s\S]*iconMarkup\(icon\)/)
 })
 
 test('config SVG icons inherit their surrounding UI color', () => {

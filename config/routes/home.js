@@ -47,12 +47,18 @@ const functionGroups = {
 let homeTab = 'screenshot'
 
 function renderHome() {
-  const tabs = [['screenshot', 'config.group.screenshot'], ['ai', 'config.group.ai'], ['translation', 'config.group.translation'], ['video', 'config.group.video'], ['other', 'config.group.other']]
-  const rows = functionGroups[homeTab].map(([name, label, icon, description]) => {
-    const shortcut = settings.shortcuts[name] || ''
-    return `<div class="function-row" data-function="${name}"><span class="icon">${iconMarkup(icon)}</span><span class="label">${t(label)}<small class="desc">${t(description)}</small></span>${shortcutButton(name, shortcut)}</div>`
-  }).join('')
-  view.innerHTML = `<div class="page">${pageHeader(t('config.route.home'), t('config.home.description'))}<div class="tabs">${tabs.map(([key, label]) => `<button data-home-tab="${key}" class="${homeTab === key ? 'active' : ''}">${t(label)}</button>`).join('')}</div><section class="section"><h2 class="section-title">${t(tabs.find(([key]) => key === homeTab)[1])}</h2><div class="function-list">${rows}</div></section></div>`
+  const tabs = [['screenshot', 'config.group.screenshot'], ['ai', 'config.group.ai'], ['translation', 'config.group.translation'], ['video', 'config.group.video'], ['other', 'config.group.other'], ['shortcuts', 'config.home.tab-shortcuts']]
+  // The shortcuts tab absorbs the former hotkey settings page: one recorder row per
+  // function from the same table the quick-function tabs read. These rows carry no
+  // data-function attribute, so the click-to-execute handler below skips them.
+  const rows = homeTab === 'shortcuts'
+    ? Object.values(functionGroups).flat().map(([name, label, icon]) => `<div class="function-row"><span class="icon">${iconMarkup(icon)}</span><span class="label">${t(label)}</span>${shortcutButton(name, settings.shortcuts[name] || '')}</div>`).join('')
+    : functionGroups[homeTab].map(([name, label, icon, description]) => {
+      const shortcut = settings.shortcuts[name] || ''
+      return `<div class="function-row" data-function="${name}"><span class="icon">${iconMarkup(icon)}</span><span class="label">${t(label)}<small class="desc">${t(description)}</small></span>${shortcutButton(name, shortcut)}</div>`
+    }).join('')
+  const description = homeTab === 'shortcuts' ? t('config.settings-hotkeys.description') : t('config.home.description')
+  view.innerHTML = `<div class="page">${pageHeader(t('config.route.home'), description)}<div class="tabs">${tabs.map(([key, label]) => `<button data-home-tab="${key}" class="${homeTab === key ? 'active' : ''}">${t(label)}</button>`).join('')}</div><section class="section"><h2 class="section-title">${t(tabs.find(([key]) => key === homeTab)[1])}</h2><div class="function-list">${rows}</div></section></div>`
   document.querySelectorAll('[data-home-tab]').forEach((button) => button.onclick = () => { homeTab = button.dataset.homeTab; renderHome() })
   document.querySelectorAll('[data-function]').forEach((row) => row.onclick = async (event) => {
     if (event.target.closest('[data-shortcut]')) return
