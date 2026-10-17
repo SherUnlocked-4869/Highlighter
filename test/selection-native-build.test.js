@@ -12,6 +12,7 @@ test('selection-hook resolves to the reviewed source dependency and matching nat
   const SelectionHook = require('selection-hook')
   assert.match(sourceBuildId(), /^hl_[a-f0-9]{64}$/)
   assert.equal(SelectionHook.nativeBuildId, sourceBuildId(), 'Rebuild the addon after native/source configuration changes')
+  for (const pid of [0, -1, 0xffffffff, 1.5, NaN, Infinity, '123', null]) assert.equal(SelectionHook.allowSetForegroundWindow(pid), false)
   const hook = new SelectionHook()
   assert.equal(hook.isRunning(), false)
   assert.equal(hook.getClipboardCoordinatorDiagnostics().required, false)

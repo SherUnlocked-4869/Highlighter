@@ -39,6 +39,7 @@ function harness(releaseAfterMs = 0) {
     }
   })
   let prepare = async () => ({ copied: true, ticket: 'private-ticket' })
+  domain.service.allowPasteForeground = () => { assert.equal(win.visible, true); assert.equal(win.focused, true); calls.push('foreground-grant'); return true }
   let commit = async () => ({ copied: true, outcome: 'injected' })
   domain.service.command = async (method, args) => {
     calls.push(method)
@@ -97,7 +98,7 @@ test('paste captures before focus, copies before hiding, and keeps an immediate-
   const h = harness(); await h.open()
   const value = await h.paste()
   assert.deepEqual(value, { ok: true, result: { copied: true, outcome: 'injected', reason: undefined } })
-  assert.deepEqual(h.calls.filter((call) => call !== 'paste.clear'), ['paste.capture', 'show', 'paste.prepare', 'hide', 'paste.commit', 'destroy'])
+  assert.deepEqual(h.calls.filter((call) => call !== 'paste.clear'), ['paste.capture', 'show', 'paste.prepare', 'foreground-grant', 'hide', 'paste.commit', 'destroy'])
 })
 test('losing focus while preparing cancels input and never commits', async () => {
   const h = harness(); await h.open()
@@ -106,6 +107,7 @@ test('losing focus while preparing cancels input and never commits', async () =>
   complete({ copied: true, ticket: 'private-ticket' })
   assert.equal((await operation).result.outcome, 'copiedOnly')
   assert.equal(h.calls.includes('paste.commit'), false)
+  assert.equal(h.calls.includes('foreground-grant'), false)
   assert.equal(h.calls.includes('paste.cancel'), true)
 })
 test('extra target/key fields and concurrent clicks cannot request another paste', async () => {
@@ -128,4 +130,23 @@ test('paste timeout is unknown and never replays; only clipboard windows own the
   assert.equal(service.pending.size, 0)
   const policy = buildIpcPolicies(path.resolve(__dirname, '..')).get('clipboard:paste')
   assert.deepEqual(policy.pages.map((page) => page.role), ['clipboard'])
+})
+
+test('foreground permission uses only the live backend PID and rejects invalid or stopped children', { skip: process.platform !== 'win32' }, () => {
+  const SelectionHook = require('selection-hook')
+  const original = SelectionHook.allowSetForegroundWindow
+  const calls = []
+  const service = new ClipboardService({ executable: 'unused', directory: 'unused', getHook: () => null })
+  SelectionHook.allowSetForegroundWindow = (pid) => { calls.push(pid); return true }
+  try {
+    assert.equal(service.allowPasteForeground(), false)
+    service.child = { pid: 12345 }
+    assert.equal(service.allowPasteForeground(98765), true)
+    assert.deepEqual(calls, [12345])
+    service.stopping = true; assert.equal(service.allowPasteForeground(), false)
+    service.stopping = false; service.disposed = true; assert.equal(service.allowPasteForeground(), false)
+    service.disposed = false
+    for (const pid of [0, -1, 0xffffffff, NaN, 1.5]) { service.child = { pid }; assert.equal(service.allowPasteForeground(), false) }
+    assert.deepEqual(calls, [12345])
+  } finally { SelectionHook.allowSetForegroundWindow = original }
 })

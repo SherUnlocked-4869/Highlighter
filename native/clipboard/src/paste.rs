@@ -6,9 +6,10 @@ use crate::{
     storage::Store,
     writer::{self, PasteWrite},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::VecDeque,
     mem::size_of,
     sync::Mutex,
     thread,
@@ -68,11 +69,23 @@ struct Prepared {
     proof: PublicationProof,
     written: Instant,
 }
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PasteTrace {
+    foreground_request_succeeded: bool,
+    foreground_matches: bool,
+    focus_matches: bool,
+    keys_released: bool,
+    target_valid: bool,
+    outcome: String,
+    elapsed_micros: u64,
+}
 #[derive(Default)]
 pub struct PasteSession {
     panel: Option<(HWND, u32)>,
     target: Option<Target>,
     prepared: Option<Prepared>,
+    recent: VecDeque<PasteTrace>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -182,6 +195,9 @@ fn finish(store: &Mutex<Store>, id: &str, op: &str, value: Value) -> Result<Valu
 }
 
 impl PasteSession {
+    pub fn diagnostics(&self) -> Value {
+        json!({"recent":self.recent})
+    }
     pub fn clear(&mut self) {
         self.target = None;
         self.prepared = None;
@@ -294,7 +310,23 @@ impl PasteSession {
         let value = match barrier.begin_local(Duration::from_millis(100)) {
             Err(_) => copied_only("COORDINATION_BUSY"),
             Ok(epoch) => {
-                let result = inject(&prepared);
+                let started = Instant::now();
+                let mut trace = PasteTrace::default();
+                let result = inject(&prepared, &mut trace);
+                trace.elapsed_micros = started.elapsed().as_micros() as u64;
+                trace.outcome = match &result {
+                    Ok(value) => value
+                        .get("reason")
+                        .or_else(|| value.get("outcome"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown"),
+                    Err(code) => code,
+                }
+                .into();
+                if self.recent.len() == 16 {
+                    self.recent.pop_front();
+                }
+                self.recent.push_back(trace);
                 // This phase never writes: preserve the owned-copy baseline,
                 // allowing any intervening genuine clipboard change through.
                 barrier
@@ -307,7 +339,7 @@ impl PasteSession {
     }
 }
 
-fn inject(prepared: &Prepared) -> Result<Value, &'static str> {
+fn inject(prepared: &Prepared, trace: &mut PasteTrace) -> Result<Value, &'static str> {
     let target = &prepared.target;
     if prepared.written.elapsed() > Duration::from_secs(3) || !input_desktop() || !target.valid() {
         return Ok(copied_only("TARGET_UNAVAILABLE"));
@@ -330,7 +362,7 @@ fn inject(prepared: &Prepared) -> Result<Value, &'static str> {
     }
     if foreground != target.window {
         unsafe {
-            let _ = SetForegroundWindow(target.window);
+            trace.foreground_request_succeeded = SetForegroundWindow(target.window).as_bool();
         }
     }
     let deadline = Instant::now() + Duration::from_millis(300);
@@ -339,10 +371,21 @@ fn inject(prepared: &Prepared) -> Result<Value, &'static str> {
             return Ok(copied_only("CLIPBOARD_CHANGED"));
         }
         let foreground = unsafe { GetForegroundWindow() };
-        if foreground != target.window && foreground != prepared.panel {
+        trace.foreground_matches = foreground == target.window;
+        trace.focus_matches = focused_window(target.thread) == Some(target.focus);
+        trace.target_valid = target.valid();
+        trace.keys_released = released();
+        // SetForegroundWindow may acknowledge before the GUI thread finishes
+        // activation. An empty transition is not a different target. Keep the
+        // same deadline and cancel immediately for any actual third window.
+        if !foreground.0.is_null() && foreground != target.window && foreground != prepared.panel {
             return Ok(copied_only("FOCUS_CHANGED"));
         }
-        if target.focused() && released() {
+        if trace.foreground_matches
+            && trace.focus_matches
+            && trace.target_valid
+            && trace.keys_released
+        {
             break;
         }
         if Instant::now() >= deadline {

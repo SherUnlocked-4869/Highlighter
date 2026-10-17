@@ -132,7 +132,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
       let value = prepared
       if (prepared.ticket) {
         const unchanged = created === win && !created.isDestroyed() && created.isVisible() && created.isFocused() && presentation === ticket && !disposed && !isGameModeEnabled() && !isMigrationInProgress()
-        if (unchanged) { hide(); hiddenByPaste = true }
+        if (unchanged) { service.allowPasteForeground(); hide(); hiddenByPaste = true }
         value = await service.command(unchanged ? 'paste.commit' : 'paste.cancel', { ticket: prepared.ticket })
       }
       pasteFeedback = { outcome: value.outcome, reason: value.reason }

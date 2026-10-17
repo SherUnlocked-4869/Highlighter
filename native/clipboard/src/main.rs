@@ -175,6 +175,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         Ok(json!({"mime":mime,"byteLength":binary.len()}))
                     }
                     "paste.capture" => paste.capture(request.params.clone()),
+                    "paste.diagnostics" => Ok(paste.diagnostics()),
                     "paste.clear" => {
                         paste.clear();
                         Ok(json!({"cleared":true}))

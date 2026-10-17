@@ -21,6 +21,12 @@ class ClipboardService extends EventEmitter {
     this.pollTimer = null; this.retryTimer = null; this.retryCount = 0; this.unsubscribeHook = null
   }
   snapshot() { return structuredClone(this.status) }
+  allowPasteForeground() {
+    const child = this.child
+    if (process.platform !== 'win32' || !child || this.stopping || this.disposed || !Number.isInteger(child.pid) || child.pid <= 0 || child.pid >= 0xffffffff) return false
+    try { return require('selection-hook').allowSetForegroundWindow(child.pid) === true }
+    catch { return false }
+  }
   publish(patch) {
     this.status = { ...this.status, ...patch, enabled: this.settings?.enabled === true, userPaused: this.settings?.paused === true, pausedReasons: [...this.reasons] }
     this.emit('status', this.snapshot())

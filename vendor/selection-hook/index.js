@@ -33,6 +33,10 @@ class SelectionHook extends EventEmitter {
   static get nativeBuildId() {
     return nativeModule?.highlighterBuildId ?? null;
   }
+  static allowSetForegroundWindow(pid) {
+    if (!isWindows || !Number.isInteger(pid) || pid <= 0 || pid >= 0xffffffff) return false;
+    return nativeModule?.allowSetForegroundWindow?.(pid) === true;
+  }
 
   #instance = null;
   #running = false;

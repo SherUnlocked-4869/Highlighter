@@ -1895,6 +1895,18 @@ void SelectionHook::EnableDpiAwareness()
  */
 Napi::Object InitAll(Napi::Env env, Napi::Object exports)
 {
+    // Main-process only: never grant ASFW_ANY or delegate in the background.
+    exports.Set("allowSetForegroundWindow", Napi::Function::New(env, [](const Napi::CallbackInfo &info) -> Napi::Value {
+        if (info.Length() != 1 || !info[0].IsNumber()) return Napi::Boolean::New(info.Env(), false);
+        const double value = info[0].As<Napi::Number>().DoubleValue();
+        if (!(value > 0 && value < static_cast<double>(MAXDWORD))) return Napi::Boolean::New(info.Env(), false);
+        const DWORD pid = static_cast<DWORD>(value);
+        if (static_cast<double>(pid) != value) return Napi::Boolean::New(info.Env(), false);
+        DWORD foregroundPid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &foregroundPid);
+        if (foregroundPid != GetCurrentProcessId()) return Napi::Boolean::New(info.Env(), false);
+        return Napi::Boolean::New(info.Env(), AllowSetForegroundWindow(pid) != FALSE);
+    }));
     exports.Set("highlighterBuildId", Napi::String::New(env, HL_STRINGIFY(HIGHLIGHTER_SELECTION_BUILD_ID)));
     return SelectionHook::Init(env, exports);
 }

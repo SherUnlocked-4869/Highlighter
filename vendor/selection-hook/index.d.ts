@@ -176,6 +176,8 @@ export interface LinuxEnvInfo {
 declare class SelectionHook extends EventEmitter {
   /** Source identity embedded by Highlighter's reproducible native build. */
   static readonly nativeBuildId: string | null;
+  /** Main process only. Delegate foreground activation to a specific child. */
+  static allowSetForegroundWindow(pid: number): boolean;
   static SelectionMethod: {
     NONE: 0;
     UIA: 1;
