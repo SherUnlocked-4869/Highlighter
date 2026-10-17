@@ -27,6 +27,10 @@ function markInput() {
   lastInputAt.value = Date.now()
 }
 
+function clipboardCoordinatorDiagnostics() {
+  try { return hook?.getClipboardCoordinatorDiagnostics?.() || null } catch { return null }
+}
+
 function stopHook(reason = 'stop') {
   if (!hook) {
     send({ type: 'status', status: 'stopped', reason, hookRunning: false })
@@ -107,12 +111,28 @@ function updateOptions(options = {}) {
   }
 }
 
+async function configureClipboardCoordinator(message) {
+  const current = hook
+  const reply = (ok, code) => send({ type: 'clipboard-coordinator-ack', requestId: message.requestId, ok, code })
+  if (!current) { reply(false, 'HOST_NOT_RUNNING'); return }
+  try {
+    current.setClipboardCoordinator(message.endpoint)
+    const available = message.endpoint === null || await current.checkClipboardCoordinator()
+    reply(current === hook && available, current !== hook ? 'HOST_CHANGED' : available ? 'APPLIED' : 'COORDINATOR_UNAVAILABLE')
+  } catch (error) {
+    reply(false, error?.message === 'Clipboard coordinator requires idle selection worker' ? 'SELECTION_BUSY' : 'INVALID_COORDINATOR')
+  }
+}
+
 function handleMessage(raw) {
   const message = raw && typeof raw === 'object' && 'data' in raw && raw.data && typeof raw.data === 'object'
     ? raw.data
     : raw
   if (!message || typeof message !== 'object') return
   switch (message.type) {
+    case 'set-clipboard-coordinator':
+      void configureClipboardCoordinator(message)
+      break
     case 'start':
       startHook(message.options || {})
       break
@@ -129,6 +149,7 @@ function handleMessage(raw) {
           try { return !!hook.isRunning() } catch { return false }
         })(),
         lastInputAt: lastInputAt.value,
+        clipboardCoordinator: clipboardCoordinatorDiagnostics(),
         pid: process.pid
       })
       break

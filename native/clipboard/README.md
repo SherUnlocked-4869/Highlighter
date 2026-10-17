@@ -2,14 +2,16 @@
 
 This Windows-only Rust process is a development prerequisite. It is not started
 by Highlighter and does not provide a product history API yet. Initialize is
-disabled by default; its capabilities explicitly report `history: false` and
-`coordination: false`. Do not enable this prototype alongside selection fallback
-and treat the results as history: the transient transaction barrier is not built.
+disabled by default; its capabilities report `history: false`, `coordination:
+true`, `qualified: false`. The native lease/barrier is implemented, but isolated
+clipboard/application-matrix qualification is incomplete. Do not use this as
+product history.
 
 Build and validate from the repository root:
 
 ```powershell
 npm run build:clipboard
+npm run build:selection
 npm run test:clipboard:native
 cargo clippy --locked --manifest-path native/clipboard/Cargo.toml --all-targets -- -D warnings
 node --test test/clipboard-protocol.test.js test/clipboard-resource-series.test.js
@@ -46,3 +48,11 @@ station with the user's interactive clipboard. In the current execution context,
 CreateWindowStationW returned E_ACCESSDENIED; the capture integration case is
 therefore unverified. See `docs/performance/2026-10-17-clipboard-g0.md` for gate
 status and resource evidence. The product implementation starts only after G0.
+
+The optional coordinator uses a random logon-scoped local named pipe, pins the
+registered host process HANDLE and verifies peer PID. Only 128-byte metadata
+requests / 32-byte replies cross it. A lease drains active read permits before
+granting; orphaned leases remain blocked until the registered host has exited.
+Coordinated configuration, recovery and shutdown require capture to be paused.
+See `docs/performance/2026-10-17-clipboard-t03.md` for the wire format, limits,
+automated evidence and unresolved same-application delayed-publication cases.

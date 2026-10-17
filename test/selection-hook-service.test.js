@@ -49,6 +49,75 @@ class FakeHost extends EventEmitter {
   }
 }
 
+test('private coordinator credentials require an acknowledgement from the current host', async () => {
+  const { service, hosts } = createService()
+  service.start()
+  const host = hosts[0]
+  host.emitMessage({ type: 'ready', pid: 123 })
+  host.emitMessage({ type: 'status', status: 'started' })
+  assert.deepEqual(await service.configureClipboardCoordinator({ hostPid: 124 }), { ok: false, code: 'HOST_MISMATCH' })
+  const endpoint = { hostPid: 123, nonce: 'synthetic-private-value' }
+  const configured = service.configureClipboardCoordinator(endpoint)
+  const sent = host.lastMessage('set-clipboard-coordinator')
+  assert.equal(sent.endpoint, endpoint)
+  assert.equal(service.startOptions.clipboardCoordinator, undefined)
+  assert.doesNotMatch(JSON.stringify(service.getDiagnostics()), /synthetic-private-value/)
+  assert.deepEqual(await service.configureClipboardCoordinator(endpoint), { ok: false, code: 'REQUEST_PENDING' })
+  host.emitMessage({ type: 'clipboard-coordinator-ack', requestId: sent.requestId, ok: true, code: 'APPLIED' })
+  assert.deepEqual(await configured, { ok: true, code: 'APPLIED' })
+  service.dispose()
+})
+
+test('host changes reject pending configuration and stale callbacks cannot acknowledge the replacement', async () => {
+  const { service, hosts } = createService()
+  service.start()
+  const first = hosts[0]
+  first.emitMessage({ type: 'ready', pid: 123 })
+  first.emitMessage({ type: 'status', status: 'started' })
+  const oldCallback = first.messageListener
+  const pending = service.configureClipboardCoordinator({ hostPid: 123 })
+  const oldId = first.lastMessage('set-clipboard-coordinator').requestId
+  service.start()
+  // start() is idempotent while running; explicitly recreate to exercise ownership.
+  service.stopHost('fixture')
+  service.start()
+  assert.deepEqual(await pending, { ok: false, code: 'HOST_CHANGED' })
+  const second = hosts.at(-1)
+  second.emitMessage({ type: 'ready', pid: 456 })
+  second.emitMessage({ type: 'status', status: 'started' })
+  const replacement = service.configureClipboardCoordinator({ hostPid: 456 })
+  const currentId = second.lastMessage('set-clipboard-coordinator').requestId
+  oldCallback({ type: 'ready', pid: 123 })
+  oldCallback({ type: 'clipboard-coordinator-ack', requestId: currentId, ok: true, code: 'APPLIED' })
+  assert.equal(service.hostPid, 456)
+  assert.equal(service.pendingCoordinatorRequest.id, currentId)
+  second.emitMessage({ type: 'clipboard-coordinator-ack', requestId: oldId, ok: true, code: 'APPLIED' })
+  assert.equal(service.pendingCoordinatorRequest.id, currentId)
+  service.pendingCoordinatorRequest.timer.callback()
+  assert.deepEqual(await replacement, { ok: false, code: 'COORDINATOR_TIMEOUT' })
+  service.dispose()
+})
+
+test('native clipboard diagnostics expose only validated counters and reset across hosts', () => {
+  const { service, hosts } = createService()
+  service.start()
+  const counters = { required: true, leaseDenied: 1, backupRejected: 2, inputInterrupted: 3, ambiguousInterleaving: 4, restored: 5, restoreFailed: 6, nonce: 'private-credential' }
+  hosts[0].emitMessage({ type: 'pong', hookRunning: true, clipboardCoordinator: counters })
+  const result = service.getDiagnostics()
+  assert.equal(result.clipboardCoordinator.backupRejected, 2)
+  assert.doesNotMatch(JSON.stringify(result), /private-credential/)
+  result.clipboardCoordinator.backupRejected = 999
+  assert.equal(service.getDiagnostics().clipboardCoordinator.backupRejected, 2)
+  hosts[0].emitMessage({ type: 'pong', hookRunning: true, clipboardCoordinator: { ...counters, restored: -1 } })
+  assert.equal(service.getDiagnostics().clipboardCoordinator, null)
+  hosts[0].emitMessage({ type: 'pong', hookRunning: true, clipboardCoordinator: counters })
+  service.stopHost('fixture')
+  assert.equal(service.getDiagnostics().clipboardCoordinator, null)
+  service.start()
+  assert.equal(service.getDiagnostics().clipboardCoordinator, null)
+  service.dispose()
+})
+
 function createScheduler() {
   let nextId = 1
   let elapsed = 0

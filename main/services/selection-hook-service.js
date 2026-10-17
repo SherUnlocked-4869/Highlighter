@@ -1,6 +1,12 @@
 'use strict'
 
 const path = require('node:path')
+const COORDINATOR_COUNTERS = ['leaseDenied', 'backupRejected', 'inputInterrupted', 'ambiguousInterleaving', 'restored', 'restoreFailed']
+
+function coordinatorCounters(value) {
+  if (!value || typeof value !== 'object' || COORDINATOR_COUNTERS.some((key) => !Number.isSafeInteger(value[key]) || value[key] < 0)) return null
+  return { required: value.required === true, ...Object.fromEntries(COORDINATOR_COUNTERS.map((key) => [key, value[key]])) }
+}
 
 const DEFAULTS = {
   restartDelayMs: 1200,
@@ -44,6 +50,9 @@ class SelectionHookService {
     this.handlers = handlers
     this.log = log
     this.startOptions = { debug: false, enableClipboard: false, ...startOptions }
+    this.coordinatorRequestId = 0
+    this.pendingCoordinatorRequest = null
+    this.clipboardCoordinatorDiagnostics = null
     this.restartDelayMs = restartDelayMs
     this.retryDelayMs = retryDelayMs
     this.maxStartRetries = maxStartRetries
@@ -120,6 +129,7 @@ class SelectionHookService {
       hostReady: this.hostReady,
       hookReportedRunning: this.hookReportedRunning,
       hostPid: this.hostPid,
+      clipboardCoordinator: this.clipboardCoordinatorDiagnostics ? { ...this.clipboardCoordinatorDiagnostics } : null,
       hostRecreateCount: this.hostRecreateCount,
       heartbeatFailureCount: this.heartbeatFailureCount,
       consecutiveHeartbeatFailures: this.heartbeatFailures,
@@ -152,8 +162,8 @@ class SelectionHookService {
     this.host = host
     this.pendingStartReason = reason
     this.pendingStartAttempt = retryAttempt
-    this.unbindHost = host.onMessage((message) => this.handleHostMessage(message))
-    this.unbindHostExit = host.onExit((info) => this.handleHostExit(info))
+    this.unbindHost = host.onMessage((message) => { if (this.host === host) this.handleHostMessage(message) })
+    this.unbindHostExit = host.onExit((info) => { if (this.host === host) this.handleHostExit(info) })
 
     try {
       host.postMessage({ type: 'start', options: { ...this.startOptions } })
@@ -332,6 +342,8 @@ class SelectionHookService {
   }
 
   stopHost(reason = 'stop') {
+    this.finishCoordinatorRequest(false, 'HOST_CHANGED')
+    this.clipboardCoordinatorDiagnostics = null
     this.cancelHeartbeat()
     const host = this.host
     this.host = null
@@ -361,17 +373,24 @@ class SelectionHookService {
   handleHostMessage(message) {
     if (this.disposed || !message || typeof message !== 'object') return
     switch (message.type) {
+      case 'clipboard-coordinator-ack': {
+        const pending = this.pendingCoordinatorRequest
+        if (pending && pending.host === this.host && pending.id === message.requestId) this.finishCoordinatorRequest(message.ok === true, message.code)
+        break
+      }
       case 'ready':
         this.hostReady = true
+        if (Number.isSafeInteger(message.pid) && message.pid > 0) this.hostPid = message.pid
         break
       case 'pong':
+        this.clipboardCoordinatorDiagnostics = coordinatorCounters(message.clipboardCoordinator)
         this.heartbeatFailures = 0
         if (this.heartbeatTimeoutTimer) {
           this.clearTimer(this.heartbeatTimeoutTimer)
           this.heartbeatTimeoutTimer = null
         }
         this.hookReportedRunning = message.hookRunning === true
-        if (message.pid) this.hostPid = message.pid
+        if (Number.isSafeInteger(message.pid) && message.pid > 0) this.hostPid = message.pid
         if (message.lastInputAt) this.lastHookInputAt = message.lastInputAt
         this.armHeartbeat()
         break
@@ -390,6 +409,32 @@ class SelectionHookService {
       default:
         break
     }
+  }
+
+  // Volatile, private host channel only. The caller keeps capture paused until
+  // this acknowledgement; endpoint credentials are never cached for a new host.
+  configureClipboardCoordinator(endpoint) {
+    if (this.disposed || !this.host || !this.hostReady || !this.hookReportedRunning) return Promise.resolve({ ok: false, code: 'HOST_NOT_RUNNING' })
+    if (this.pendingCoordinatorRequest) return Promise.resolve({ ok: false, code: 'REQUEST_PENDING' })
+    if (endpoint !== null && (!endpoint || endpoint.hostPid !== this.hostPid)) return Promise.resolve({ ok: false, code: 'HOST_MISMATCH' })
+    return new Promise((resolve) => {
+      const id = ++this.coordinatorRequestId
+      const host = this.host
+      const timer = this.setTimer(() => this.finishCoordinatorRequest(false, 'COORDINATOR_TIMEOUT'), 500)
+      timer?.unref?.()
+      this.pendingCoordinatorRequest = { id, host, timer, resolve }
+      try { host.postMessage({ type: 'set-clipboard-coordinator', requestId: id, endpoint }) }
+      catch { this.finishCoordinatorRequest(false, 'HOST_UNAVAILABLE') }
+    })
+  }
+
+  finishCoordinatorRequest(ok, code) {
+    const pending = this.pendingCoordinatorRequest
+    if (!pending) return
+    this.pendingCoordinatorRequest = null
+    this.clearTimer(pending.timer)
+    const allowed = new Set(['APPLIED', 'HOST_CHANGED', 'HOST_NOT_RUNNING', 'SELECTION_BUSY', 'INVALID_COORDINATOR', 'COORDINATOR_UNAVAILABLE', 'COORDINATOR_TIMEOUT', 'HOST_UNAVAILABLE'])
+    pending.resolve({ ok: ok === true && code === 'APPLIED', code: allowed.has(code) ? code : 'COORDINATOR_UNAVAILABLE' })
   }
 
   handleHostStatus(message) {

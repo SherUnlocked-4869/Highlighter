@@ -11,7 +11,7 @@
 | T00 资源采集与基准冻结 | 进行中 | 新增进程树采样工具、统计单元测试；已采现有应用的非受控参考快照，受控 A/B 待补 |
 | T01 原生依赖可复现 | 已完成本机验证 | 固定 selection-hook 2.1.1 源码；空依赖目录重编译；Node 24.16.0 / Electron 43.2.0 加载相同指纹 |
 | T02 原生骨架 | 已实现，采集真机证据待补 | 受限双端帧协议、默认关闭、消息窗口/有限队列、暂停监听器反复启停、父管道关闭退出；隔离采集测试受环境权限阻止 |
-| T03 取词事务协调 | 待执行 | 第一次写入前的 native worker 租约；真实复制穿插和恢复保护 |
+| T03 取词事务协调 | 核心已实现，真机准入待完成 | [T03 执行记录](F:/workspace/Highlighter/docs/performance/2026-10-17-clipboard-t03.md)：认证管道/屏障、100 轮握手及合成交错、宿主退出保护；qualified 仍为 false |
 | T04 G0 验证收口 | 未通过 | 所有前置证据齐全前，不接产品面板或宣称资源预算达标 |
 
 ## 资源采集方法
@@ -44,7 +44,7 @@ node scripts/benchmark-clipboard.js --root-pid 3800 --duration-seconds 60 --inte
 
 ### T01 原生依赖
 
-`vendor/selection-hook/PROVENANCE.md` 记录上游 MIT 许可、tarball 摘要和本地差异。依赖锁定为 `file:vendor/selection-hook`，不再依赖 npm 包里的预编译二进制。当前只增加构建身份，没有改变取词算法。
+`vendor/selection-hook/PROVENANCE.md` 记录上游 MIT 许可、tarball 摘要和本地差异。依赖锁定为 `file:vendor/selection-hook`，不再依赖 npm 包里的预编译二进制。T01 提交只增加构建身份，没有改变取词算法；后续 T03 修改见单独执行记录。
 
 执行 `node scripts/verify-selection-source-build.js` 会在 `.tmp/clipboard-g0/selection-clean-*` 中复制不含 build/prebuild 的源文件，从仓库 lockfile 取出 addon 的精确依赖，用 `npm ci --ignore-scripts` 安装后显式编译，再由 Node 和 Electron 的 Node 宿主分别实例化与清理。两者均报告 `hl_1ba2fde105b98a81849a3bca958c317a4547282ef3e4da6594211bf816d46ce0`；Python 3.12.10、node-gyp 12.4.0、VS2022 17.14.37502.11、Windows x64。
 
@@ -54,7 +54,7 @@ node scripts/benchmark-clipboard.js --root-pid 3800 --duration-seconds 60 --inte
 
 ### T02 原生骨架与验证
 
-新增 `native/clipboard` Rust 工程，单独执行 `npm run build:clipboard` 构建 `native/clipboard/bin/HighlighterClipboard.exe`。没有接入应用启动、设置、托盘或 renderer。默认初始化不会创建监听器，不追读启动前的剪贴板；开发协议显式 configure 后才监听。当前 capability 为 `history:false, coordination:false`，因此不可作为正式历史功能使用。
+新增 `native/clipboard` Rust 工程，单独执行 `npm run build:clipboard` 构建 `native/clipboard/bin/HighlighterClipboard.exe`。没有接入应用启动、设置、托盘或 renderer。默认初始化不会创建监听器，不追读启动前的剪贴板；开发协议显式 configure 后才监听。T02 阶段 capability 为 `history:false, coordination:false`；T03 已增加协调协议，但仍保留 `history:false, qualified:false`，不可作为正式历史功能使用。
 
 `WM_CLIPBOARDUPDATE` 回调只放入序列号/配置世代，队列上限 64；采集线程在独立线程读取并拥有快照，暂时只累加计数后丢弃，无数据库或正文输出。检查隐私格式/文件格式后，才考虑 Unicode 文本、PNG、DIB/DIBV5；分配大小、尺寸、像素数先校验。图像目前只有格式头和边界校验，完整安全解码/原子附件存储仍未实现。
 
@@ -74,7 +74,7 @@ cargo test --locked --manifest-path native/clipboard/Cargo.toml --test isolated_
 
 不能用交互桌面的真实用户剪贴板代替隔离 fixture。上述失败发生在任何剪贴板写入之前。
 
-最新本机构建身份为 `hl_c5aea1f3054ce119b96886ed660a44070b24b187d8f60a6e539e30a65f4e736e`，Release exe 为 412,672 B，SHA-256 `e7cc3a748c72156095a07823fdba82c16fdf6704af022b13c68c08c5aa9f78d0`。这只是开发原型，不是发行包。停止超时会保留待停止状态并拒绝重新启用，不能在下一次 quiesce 中把尚未退出的采集线程当作已经停止。
+T02 阶段构建身份为 `hl_c5aea1f3054ce119b96886ed660a44070b24b187d8f60a6e539e30a65f4e736e`，Release exe 为 412,672 B，SHA-256 `e7cc3a748c72156095a07823fdba82c16fdf6704af022b13c68c08c5aa9f78d0`。这只是开发原型，不是发行包。停止超时会保留待停止状态并拒绝重新启用，不能在下一次 quiesce 中把尚未退出的采集线程当作已经停止。
 
 ### 原生骨架独立空闲采样
 
@@ -89,7 +89,7 @@ cargo test --locked --manifest-path native/clipboard/Cargo.toml --test isolated_
 
 ### 未关闭的准入项
 
-T03 仍是最高优先级：原生 worker 在第一次清空之前的认证租约、采集屏障、真实 Ctrl+C/Ctrl+X 穿插、同锁区序列检查和 orphaned 回收。当前上游 restore 路径仍会无条件恢复旧备份，且所有备份格式累计字节没有上限；在协调/备份预算验证前，不能启用正式记录或宣称内存问题已解决。
+T03 已补充认证租约、采集屏障、同锁区恢复检查和 orphaned 回收实现，备份已设为 64 个格式 / 64 MiB 上限。100 轮真实协议握手与 100 轮合成策略交错通过，但真实 Ctrl+C/Ctrl+X、系统锁、多格式恢复、延迟发布和宿主分阶段崩溃仍待真机验证。详情与资源参考见 [T03 记录](F:/workspace/Highlighter/docs/performance/2026-10-17-clipboard-t03.md)；不能把合成测试当作 G0 已通过。
 
 T00 受控整树 A/B、T04 文本/4K 真实采集与最小迁移 fixture 均待完成。G0 维持“未通过”，按原开发文档不提前进入 V1 面板/存储阶段。
 
