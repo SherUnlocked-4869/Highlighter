@@ -22,6 +22,7 @@ function createDataPaths(value) {
     // considerably more sensitive), and a directory of its own makes "delete my
     // saved conversations" a single, auditable operation.
     conversations: path.join(root, 'conversations'),
+    clipboard: path.join(root, 'clipboard'),
     cache: path.join(root, 'cache'),
     electronCache: path.join(root, 'cache', 'electron'),
     ocrCache: path.join(root, 'cache', 'ocr'),

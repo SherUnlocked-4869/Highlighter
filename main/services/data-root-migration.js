@@ -26,9 +26,10 @@ const {
 // Every top-level directory the app manages. A migration that rolls back has to
 // remove all of them, so a new one added to createDataPaths must be listed here
 // too or a failed migration would leave it behind in the target root.
-const MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'conversations', 'cache', 'runtime']
+const MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'conversations', 'clipboard', 'cache', 'runtime']
+const ADDITIONAL_PERSISTENT = ['conversations', 'clipboard']
 const MIGRATION_MARKER = '.migration.json'
-const MARKER_VERSION = 1
+const MARKER_VERSION = 2
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
 
 function createLegacySourcePaths(value) {
@@ -41,8 +42,10 @@ function createLegacySourcePaths(value) {
     configFile,
     logFile,
     history,
+    conversations: path.join(root, 'conversations'),
+    clipboard: path.join(root, 'clipboard'),
     cleanupFiles: [configFile, logFile],
-    cleanupDirectories: [history, path.join(root, 'temp', 'recordings')]
+    cleanupDirectories: [history, path.join(root, 'temp', 'recordings'), ...ADDITIONAL_PERSISTENT.map((name) => path.join(root, name))]
   }
 }
 
@@ -53,6 +56,8 @@ function createManagedSourcePaths(value) {
     configFile: path.join(paths.config, 'config.json'),
     logFile: path.join(paths.logs, 'app.log'),
     history: paths.history,
+    conversations: paths.conversations,
+    clipboard: paths.clipboard,
     cleanupFiles: [],
     cleanupDirectories: MANAGED_DIRECTORIES.map((name) => paths[name])
   }
@@ -176,7 +181,7 @@ async function assertTargetAvailable(target) {
 
 function validateMarkerSchema(marker, newRoot, migrationId = marker?.migrationId) {
   const root = path.resolve(newRoot)
-  if (!marker || marker.version !== MARKER_VERSION || marker.migrationId !== migrationId || marker.newRoot !== root) {
+  if (!marker || ![1, MARKER_VERSION].includes(marker.version) || marker.migrationId !== migrationId || marker.newRoot !== root) {
     throw new Error('迁移标记无效')
   }
   if (![0, 1].includes(marker.copiedConfigCount) || ![0, 1].includes(marker.copiedLogCount) ||
@@ -188,7 +193,7 @@ function validateMarkerSchema(marker, newRoot, migrationId = marker?.migrationId
   }
   let previousPath = null
   for (const entry of marker.historyManifest) {
-    if (!entry || typeof entry.path !== 'string' || !entry.path || entry.path.includes('\\') || entry.path.includes('\0') ||
+    if (!entry || typeof entry.path !== 'string' || !entry.path || entry.path.includes('\\') || entry.path.includes('\0') || entry.path.includes(':') ||
       path.posix.isAbsolute(entry.path) || path.posix.normalize(entry.path) !== entry.path ||
       entry.path.split('/').some((segment) => !segment || segment === '.' || segment === '..') ||
       !Number.isSafeInteger(entry.size) || entry.size < 0 || !isSha256(entry.sha256) ||
@@ -196,6 +201,10 @@ function validateMarkerSchema(marker, newRoot, migrationId = marker?.migrationId
       throw new Error('迁移标记无效')
     }
     previousPath = entry.path
+  }
+  if (marker.version === 2) {
+    if (!marker.persistentManifests || Object.keys(marker.persistentManifests).sort().join(',') !== [...ADDITIONAL_PERSISTENT].sort().join(',')) throw new Error('迁移持久区清单无效')
+    for (const manifest of Object.values(marker.persistentManifests)) validateFileManifest(manifest)
   }
   validatePendingSource(marker.source, root)
   if (marker.sourceIdentity !== null && (
@@ -205,6 +214,27 @@ function validateMarkerSchema(marker, newRoot, migrationId = marker?.migrationId
     typeof marker.sourceIdentity.birthtimeMs !== 'number'
   )) throw new Error('迁移标记无效')
   return marker
+}
+
+function validateFileManifest(manifest) {
+  if (!Array.isArray(manifest)) throw new Error('迁移持久区清单无效')
+  let previous = ''
+  for (const entry of manifest) {
+    if (!entry || typeof entry.path !== 'string' || !entry.path || entry.path.includes('\\') || entry.path.includes('\0') || entry.path.includes(':') || path.posix.normalize(entry.path) !== entry.path || path.posix.isAbsolute(entry.path) || entry.path.split('/').some((p) => !p || p === '.' || p === '..') || entry.path <= previous || !Number.isSafeInteger(entry.size) || entry.size < 0 || !isSha256(entry.sha256)) throw new Error('迁移持久区清单无效')
+    previous = entry.path
+  }
+}
+async function persistentManifest(directory, name) {
+  const all = await createHistoryManifest(directory)
+  return name === 'clipboard' ? all.filter((entry) => !entry.path.startsWith('thumbnails/') && !entry.path.startsWith('staging/')) : all
+}
+async function guardV1Cleanup(marker, pending) {
+  if (marker.version !== 1) return
+  for (const root of [pending.source.root, pending.quarantineRoot].filter(Boolean)) {
+    for (const name of ADDITIONAL_PERSISTENT) {
+      if ((await listFiles(path.join(root, name))).length) throw new Error('旧版迁移未校验会话或剪贴板数据，已保留源目录，请先恢复迁移')
+    }
+  }
 }
 
 async function operationExists(filePath, operations) {
@@ -359,6 +389,7 @@ async function migrateDataRoot({
   const targetLayout = createDataPaths(target.root)
   const targetSource = createManagedSourcePaths(target.root)
   const sourceManifest = validatePendingSource(source, target.root)
+  source = sourceManifest
   const sourceIdentity = await readSourceIdentity(sourceManifest.root)
   await archiveOrphanTarget(target.root)
   await assertTargetAvailable(targetLayout)
@@ -386,6 +417,15 @@ async function migrateDataRoot({
     }
     const copiedHistoryFiles = await listFiles(staging.history)
     if (copiedHistoryFiles.length !== historyFiles.length) throw new Error('截图历史迁移文件计数不一致')
+    if (JSON.stringify(await createHistoryManifest(source.history)) !== JSON.stringify(await createHistoryManifest(staging.history))) throw new Error('截图历史迁移校验失败')
+    const persistentManifests = {}
+    for (const name of ADDITIONAL_PERSISTENT) {
+      const expected = await persistentManifest(source[name], name)
+      for (const entry of expected) await invokeCopyFile(copyFile, path.join(source[name], entry.path), path.join(staging[name], entry.path))
+      const copied = await persistentManifest(staging[name], name)
+      if (JSON.stringify(expected) !== JSON.stringify(copied)) throw new Error(`持久数据迁移校验失败：${name}`)
+      persistentManifests[name] = copied
+    }
 
     let copiedConfigCount = 0
     if (await regularFileIfPresent(source.configFile)) {
@@ -410,7 +450,8 @@ async function migrateDataRoot({
       copiedHistoryCount: historyFiles.length,
       configSha256,
       logSha256,
-      historyManifest
+      historyManifest,
+      persistentManifests
     }
     const stagingMarker = path.join(staging.root, MIGRATION_MARKER)
     await atomicWriteJson(stagingMarker, marker)
@@ -418,12 +459,12 @@ async function migrateDataRoot({
     const stagingLayout = createDataPaths(staging.root)
     await renameTarget(stagingMarker, path.join(target.root, MIGRATION_MARKER))
     markerPublished = true
-    for (const name of ['config', 'logs', 'history']) await renameTarget(stagingLayout[name], targetLayout[name])
+    for (const name of ['config', 'logs', 'history', ...ADDITIONAL_PERSISTENT]) await renameTarget(stagingLayout[name], targetLayout[name])
     await ensureDataLayout(targetLayout)
     await fsp.rm(stagingRoot, { recursive: true, force: true })
 
     const pending = {
-      version: 1,
+      version: 2,
       migrationId,
       previousRoot: previousRoot ? path.resolve(previousRoot) : '',
       newRoot: path.resolve(target.root),
@@ -501,6 +542,10 @@ function validatePendingSource(source, activeRoot) {
     history: normalizedPath(source.history)
   }
   const candidates = [createLegacySourcePaths(root), createManagedSourcePaths(root)]
+  candidates.push(
+    { ...candidates[0], cleanupDirectories: [candidates[0].history, path.join(root, 'temp', 'recordings')] },
+    { ...candidates[1], cleanupDirectories: ['config', 'logs', 'history', 'conversations', 'cache', 'runtime'].map((name) => path.join(root, name)) }
+  )
   const match = candidates.find((candidate) => {
     const expectedFiles = normalizedPathList(candidate.cleanupFiles)
     const expectedDirectories = normalizedPathList(candidate.cleanupDirectories)
@@ -571,6 +616,27 @@ async function verifyAndFinalizeMigration({
     if (path.resolve(pending.newRoot) !== root) throw new Error('marker mismatch')
     const markerSource = validatePendingSource(marker.source, root)
     if (!sourceManifestsEqual(markerSource, pending.source)) throw new Error('source manifest mismatch')
+    await guardV1Cleanup(marker, pending)
+  } catch (error) {
+    throw verificationError(error)
+  }
+
+  try {
+    const active = createManagedSourcePaths(root)
+    const configStat = await regularFileIfPresent(active.configFile)
+    const configSha256 = configStat ? await sha256File(active.configFile) : null
+    if (configSha256 !== marker.configSha256) throw new Error('target config mismatch')
+    if (configStat) JSON.parse(await fsp.readFile(active.configFile, 'utf8'))
+    const logStat = await regularFileIfPresent(active.logFile)
+    const logSha256 = logStat ? await sha256File(active.logFile) : null
+    if (logSha256 !== marker.logSha256) throw new Error('target log mismatch')
+    const historyManifest = await createHistoryManifest(active.history)
+    if (JSON.stringify(historyManifest) !== JSON.stringify(marker.historyManifest)) throw new Error('history manifest mismatch')
+    if (marker.version === 2) {
+      for (const name of ADDITIONAL_PERSISTENT) {
+        if (JSON.stringify(await persistentManifest(active[name], name)) !== JSON.stringify(marker.persistentManifests[name])) throw new Error('persistent manifest mismatch')
+      }
+    }
   } catch (error) {
     throw verificationError(error)
   }
@@ -593,20 +659,6 @@ async function verifyAndFinalizeMigration({
     return { finalized: artifactErrors.length === 0, cleanupErrors: artifactErrors }
   }
 
-  try {
-    const active = createManagedSourcePaths(root)
-    const configStat = await regularFileIfPresent(active.configFile)
-    const configSha256 = configStat ? await sha256File(active.configFile) : null
-    if (configSha256 !== marker.configSha256) throw new Error('target config mismatch')
-    if (configStat) JSON.parse(await fsp.readFile(active.configFile, 'utf8'))
-    const logStat = await regularFileIfPresent(active.logFile)
-    const logSha256 = logStat ? await sha256File(active.logFile) : null
-    if (logSha256 !== marker.logSha256) throw new Error('target log mismatch')
-    const historyManifest = await createHistoryManifest(active.history)
-    if (JSON.stringify(historyManifest) !== JSON.stringify(marker.historyManifest)) throw new Error('history manifest mismatch')
-  } catch (error) {
-    throw verificationError(error)
-  }
 
   if (!pending.phase && marker.sourceIdentity !== null) {
     try {

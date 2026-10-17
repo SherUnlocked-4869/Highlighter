@@ -230,7 +230,8 @@ function createSelectionDomain(deps) {
         },
         startOptions: {
           debug: false,
-          enableClipboard: getSettings().selectionToolbar.clipboardFallback
+          enableClipboard: getSettings().selectionToolbar.clipboardFallback,
+          clipboardCoordinationRequired: getSettings().clipboard?.enabled === true
         },
         log
       })
@@ -559,6 +560,8 @@ function createSelectionDomain(deps) {
   return {
     ensureConversationStore,
     syncConversationStore,
+    quiesceConversations: () => conversationStore?.quiesce(),
+    resumeConversations: () => conversationStore?.resume(),
     hasConversation,
     restoreConversation,
     showOrRestoreConversation,

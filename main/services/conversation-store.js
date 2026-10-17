@@ -34,6 +34,8 @@ class ConversationStore {
     this.fs = fileSystem
     this.writeJson = writeJson
     this.log = log
+    this.quiescing = false
+    this.pendingWrites = new Set()
   }
 
   isEnabled() {
@@ -71,6 +73,7 @@ class ConversationStore {
   // Writes the snapshot and then enforces the retention cap. Deliberately does
   // not reject: a failed save must not break the conversation already on screen.
   async save(snapshot) {
+    if (this.quiescing) return false
     if (!this.isEnabled()) return false
     const savedAt = Number.isFinite(snapshot?.savedAt) ? snapshot.savedAt : Date.now()
     const value = { ...snapshot, savedAt, schemaVersion: SCHEMA_VERSION }
@@ -78,7 +81,9 @@ class ConversationStore {
       ? snapshot.id
       : `${savedAt}-${this.randomSuffix()}`
     try {
-      await this.writeJson(path.join(this.directory, `${key}.json`), value, fsp)
+      const pending = this.writeJson(path.join(this.directory, `${key}.json`), value, fsp)
+      this.pendingWrites.add(pending)
+      try { await pending } finally { this.pendingWrites.delete(pending) }
     } catch (error) {
       this.log('Failed to save selection conversation:', error.message || String(error))
       return false
@@ -88,6 +93,7 @@ class ConversationStore {
   }
 
   trim() {
+    if (this.quiescing) return 0
     const kept = this.entries()
     for (const entry of kept.slice(this.maxEntries)) {
       this.remove(entry.filePath)
@@ -96,6 +102,7 @@ class ConversationStore {
   }
 
   clear() {
+    if (this.quiescing) return 0
     let removed = 0
     for (const entry of this.entries()) {
       if (this.remove(entry.filePath)) removed += 1
@@ -116,6 +123,8 @@ class ConversationStore {
   randomSuffix() {
     return Math.random().toString(36).slice(2, 8)
   }
+  async quiesce() { this.quiescing = true; await Promise.allSettled([...this.pendingWrites]) }
+  resume() { this.quiescing = false }
 }
 
 module.exports = { ConversationStore, DEFAULT_MAX_ENTRIES, SCHEMA_VERSION }

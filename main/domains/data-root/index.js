@@ -38,6 +38,8 @@ function createDataRootDomain(deps) {
   } = deps
 
   async function stopManagedDataWriters() {
+    await deps.getClipboardDomain?.()?.quiesce()
+    await deps.selectionDomain?.quiesceConversations()
     const activeOcrService = ocrServiceRef.get()
     if (activeOcrService) {
       const inFlight = [...activeOcrService.inFlight.values()]
@@ -53,6 +55,8 @@ function createDataRootDomain(deps) {
   }
 
   function restoreManagedDataWriters(restartOcr) {
+    deps.selectionDomain?.resumeConversations()
+    deps.getClipboardDomain?.()?.resume().catch(() => {})
     if (!restartOcr) return
     getOcrService().ensureStarted().catch((error) => log('OCR restart failed:', error.message))
   }
@@ -77,7 +81,7 @@ function createDataRootDomain(deps) {
       defaultId: 1,
       cancelId: 0,
       message: '更改软件数据目录？',
-      detail: 'Highlighter 将迁移配置、日志、截图历史，并在迁移完成后重启。缓存和运行数据不会迁移。'
+      detail: 'Highlighter 将迁移配置、日志、截图历史、保存的会话与剪贴板历史，并在迁移完成后重启。缓存和运行数据不会迁移。'
     })
     if (confirmation.response !== 1) return { canceled: true }
     if (isMigrationInProgress() || fs.existsSync(dataRootContext.pendingPath)) throw new Error('已有未完成的数据目录迁移，不能开始新的迁移')
