@@ -38,7 +38,8 @@ const functionGroups = {
     ['openCaptureHistory', 'config.function.open-capture-history', 'icons/history.svg', 'config.function.open-capture-history-description'],
     ['screenshotQuickSave', 'config.function.screenshot-quick-save', '../capture/icons/save.svg', 'config.function.screenshot-quick-save-description'],
     ['screenshotSaveAs', 'config.function.screenshot-save-as', '../capture/icons/save.svg', 'config.function.screenshot-save-as-description'],
-    ['togglePinClickThrough', 'config.function.toggle-pin-click-through', '../capture/icons/pin.svg', 'config.function.toggle-pin-click-through-description']
+    ['togglePinClickThrough', 'config.function.toggle-pin-click-through', '../capture/icons/pin.svg', 'config.function.toggle-pin-click-through-description'],
+    ['toggleTranslationProxy', 'config.function.toggle-translation-proxy', 'icons/lightning.svg', 'config.function.toggle-translation-proxy-description']
   ]
 }
 

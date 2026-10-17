@@ -39,6 +39,7 @@ test('app and data-root IPC modules own their fixed channel surfaces', () => {
       'chooseDirectory',
       'openDataDirectory',
       'openSaveDirectory',
+      'getProxyStatus',
       'completeAi',
       'translateText'
     ])
@@ -56,6 +57,7 @@ test('app and data-root IPC modules own their fixed channel surfaces', () => {
     'dialog:choose-directory',
     'app:open-data-directory',
     'app:open-save-directory',
+    'app:get-proxy-status',
     'ai:complete',
     'ai:translate',
     'data-root:get',

@@ -29,6 +29,9 @@ function createFunctionRouter(deps) {
     // Injected as a getter because the pin domain is assembled after the
     // router; the click-through fallback entry (P0-6-T4) is its only consumer.
     getPinDomain,
+    // Same lazy-getter reason as getPinDomain: the proxy bridge controller is
+    // assembled after the router, and the tray keeps a direct reference of its own.
+    getProxyBridge,
     getSettings,
     persistHistory,
     assertGameModeDisabled,
@@ -127,6 +130,20 @@ function createFunctionRouter(deps) {
     async translation() {
       createMainWindow('translation')
       return true
+    },
+    // Shortcut/IPC entry for the tray's proxy checkbox. The controller owns the
+    // failure copy and the tray refresh, so this stays a two-line delegation.
+    // Game mode still refuses it (executeFunction asserts that above), which is
+    // fine: the tray entry is the always-available path, exactly like the
+    // click-through exit.
+    async toggleTranslationProxy() {
+      const bridge = typeof getProxyBridge === 'function' ? getProxyBridge() : null
+      if (!bridge) {
+        log('Translation proxy toggle unavailable: proxy bridge controller is missing')
+        return false
+      }
+      const status = await bridge.setEnabled(bridge.getStatus().running !== true)
+      return status.running === true
     },
     async chat() {
       createMainWindow('chat')

@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openDataDirectory: () => ipcRenderer.invoke('app:open-data-directory'),
   openSaveDirectory: () => ipcRenderer.invoke('app:open-save-directory'),
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
+  getProxyStatus: () => ipcRenderer.invoke('app:get-proxy-status'),
   getDisplayDiagnostics: () => ipcRenderer.invoke('app:get-display-diagnostics'),
   previewDiagnostics: () => ipcRenderer.invoke('diagnostics:preview'),
   exportDiagnostics: (includeCrashDumps = false) => ipcRenderer.invoke('diagnostics:export', { includeCrashDumps: includeCrashDumps === true }),
@@ -72,5 +73,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event, snapshot) => callback(snapshot)
     ipcRenderer.on('update:status', handler)
     return () => ipcRenderer.removeListener('update:status', handler)
+  },
+  // Main -> renderer push so an open translation-service card follows a tray
+  // toggle. The payload is a plain status object, never renderer input.
+  onProxyStatus: (callback) => {
+    const handler = (_event, status) => callback(status && typeof status === 'object' ? status : null)
+    ipcRenderer.on('proxy:status', handler)
+    return () => ipcRenderer.removeListener('proxy:status', handler)
   }
 })

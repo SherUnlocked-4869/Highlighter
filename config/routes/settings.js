@@ -55,7 +55,11 @@ async function renderSystemSettings() {
   const commonSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.common-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.auto-start')}</b></div>${switchMarkup(settings.system.autoStart, 'autoStart', 'system')}</div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.enable-tray')}</b></div>${switchMarkup(settings.system.enableTray, 'enableTray', 'system')}</div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.game-mode')}</b><small>${t('config.settings-system.game-mode-hint')}</small></div>${switchMarkup(settings.system.gameMode, 'gameMode', 'system')}</div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.run-log')}</b></div>${switchMarkup(settings.system.runLog, 'runLog', 'system')}</div></div></section>`
   const dataSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.data-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.data-root')}</b><small>${t('config.settings-system.data-root-hint')}</small></div><input id="dataRoot" type="text" readonly value="${escapeHtml(dataRoot.path)}"><button class="button" id="openDataRoot">${t('config.settings-system.open')}</button><button class="button" id="changeDataRoot">${t('config.settings-system.change')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.save-directory')}</b><small>${settings.screenshot.saveDirectory ? t('config.settings-system.save-directory-custom') : t('config.settings-system.save-directory-default')}</small></div><button class="button" id="openSave">${t('config.settings-system.open')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.history-directory')}</b><small>${t('config.settings-system.history-directory-hint')}</small></div><input id="historyDirectory" type="text" required value="${escapeHtml(historyDirectory)}"><button class="button" id="chooseHistoryDirectory">${t('config.settings-system.choose')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.clear-history')}</b><small>${t('config.settings-system.clear-history-hint')}</small></div><button class="button danger" id="clearData">${t('config.settings-system.clear')}</button></div></div></section>`
   const diagnosticsSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.diagnostics-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.preview-diagnostics')}</b><small>${t('config.settings-system.preview-diagnostics-hint')}</small></div><button class="button" id="previewDiagnostics">${t('config.settings-system.preview')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.export-diagnostics')}</b><small>${t('config.settings-system.export-diagnostics-hint')}</small></div><button class="button primary" id="exportDiagnostics">${t('config.settings-system.export-zip')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.include-crash-dumps')}</b><small>${t('config.settings-system.include-crash-dumps-hint')}</small></div><input id="includeCrashDumps" type="checkbox"></div><pre id="diagnosticsPreview" class="diagnostics-preview" hidden></pre></div></section>`
-  view.innerHTML = `<div class="page">${pageHeader(t('config.route.settings-system'), t('config.settings-system.description'))}${commonSettings}${dataSettings}${diagnosticsSettings}<button class="button danger" id="resetSettings">${t('config.settings-system.reset')}</button></div>`
+  // The proxy bridge card. Every value it writes is a `proxy.*` field, and the
+  // patch validator only accepts keys listed in DEFAULT_SETTINGS.
+  const proxyDirectoryRow = (id, label, hint, value, button) => `<div class="form-row"><div class="form-label"><b>${label}</b>${hint ? `<small>${hint}</small>` : ''}</div><input id="${id}" type="text" value="${escapeHtml(value || '')}">${button ? `<button class="button" id="${button}">${t('config.settings-system.choose')}</button>` : ''}</div>`
+  const proxySettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.proxy-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-status')}</b><small id="proxyStatusDetail">${t('config.settings-system.proxy-status-checking')}</small></div><span id="proxyStatus">${t('config.settings-system.proxy-status-checking')}</span><button class="button" id="toggleProxy">${t('config.settings-system.proxy-start')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-auto-start')}</b></div>${switchMarkup(settings.proxy.autoStart === true, 'autoStart', 'proxy')}</div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-port')}</b></div><input id="proxyPort" type="number" min="1" max="65535" value="${Number(settings.proxy.port) || 8080}"></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-host')}</b><small>${t('config.settings-system.proxy-host-hint')}</small></div><select id="proxyHost"><option value="127.0.0.1">127.0.0.1</option><option value="0.0.0.0">0.0.0.0</option></select></div>${proxyDirectoryRow('proxyRepoDirectory', t('config.settings-system.proxy-repo-directory'), t('config.settings-system.proxy-repo-directory-hint'), settings.proxy.repoDirectory, 'chooseProxyRepo')}${proxyDirectoryRow('proxyScriptPath', t('config.settings-system.proxy-script-path'), t('config.settings-system.proxy-script-path-hint'), settings.proxy.scriptPath, '')}<div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-python-path')}</b><small>${t('config.settings-system.proxy-python-path-hint')}</small></div><input id="proxyPythonPath" type="text" value="${escapeHtml(settings.proxy.pythonPath || '')}"></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-api-base')}</b><small>${t('config.settings-system.proxy-api-base-hint')}</small></div><input id="proxyApiBase" type="text" value="${escapeHtml(settings.proxy.apiBase || '')}"></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-keep-running')}</b><small>${t('config.settings-system.proxy-keep-running-hint')}</small></div>${switchMarkup(settings.proxy.keepRunningOnExit === true, 'keepRunningOnExit', 'proxy')}</div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-copy-config')}</b><small>${t('config.settings-system.proxy-copy-config-hint')}</small></div><button class="button" id="copyProxyConfig">${t('config.settings-system.proxy-copy')}</button></div></div></section>`
+  view.innerHTML = `<div class="page">${pageHeader(t('config.route.settings-system'), t('config.settings-system.description'))}${commonSettings}${proxySettings}${dataSettings}${diagnosticsSettings}<button class="button danger" id="resetSettings">${t('config.settings-system.reset')}</button></div>`
   bindSwitches()
   document.getElementById('previewDiagnostics').onclick = async () => {
     const button = document.getElementById('previewDiagnostics')
@@ -140,6 +144,70 @@ async function renderSystemSettings() {
     catch (error) { toast(error.message || t('config.settings-system.clear-history-failed')) }
   }
   document.getElementById('resetSettings').onclick = async () => { if (confirm(t('config.settings-system.confirm-reset'))) { settings = await window.electronAPI.resetSettings(); await refreshShortcutStatuses(); applyAppearance(); renderRoute(); toast(t('config.settings-system.reset-done')) } }
+
+  // --- Index-Translate proxy bridge -----------------------------------------
+  // The main process owns the lifecycle; this card only reads the status the
+  // bridge controller pushes (onProxyStatus) and writes `proxy.*` fields.
+  const proxyHostSelect = document.getElementById('proxyHost')
+  proxyHostSelect.value = settings.proxy.host === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1'
+  const proxyStatusLabel = document.getElementById('proxyStatus')
+  const proxyStatusDetail = document.getElementById('proxyStatusDetail')
+  const proxyToggle = document.getElementById('toggleProxy')
+  const renderProxyStatus = (status) => {
+    if (!status || !proxyStatusLabel || !proxyStatusLabel.isConnected) return
+    const state = status.busy
+      ? 'busy'
+      : (status.running ? (status.adopted ? 'running-adopted' : 'running') : (status.state === 'error' ? 'error' : 'idle'))
+    proxyStatusLabel.textContent = t(`config.settings-system.proxy-status-${state}`)
+    proxyStatusDetail.textContent = status.lastError || t('config.settings-system.proxy-endpoint', { url: status.endpoint })
+    if (!proxyToggle.isConnected) return
+    proxyToggle.textContent = status.running ? t('config.settings-system.proxy-stop') : t('config.settings-system.proxy-start')
+  }
+  const saveProxySettings = () => updateSettings({
+    proxy: {
+      port: Math.max(1, Math.min(65535, Number(document.getElementById('proxyPort').value) || 8080)),
+      host: proxyHostSelect.value,
+      repoDirectory: document.getElementById('proxyRepoDirectory').value.trim(),
+      scriptPath: document.getElementById('proxyScriptPath').value.trim(),
+      pythonPath: document.getElementById('proxyPythonPath').value.trim(),
+      apiBase: document.getElementById('proxyApiBase').value.trim()
+    }
+  }, t('config.settings-system.proxy-updated'))
+  window.electronAPI.getProxyStatus().then(renderProxyStatus).catch(() => {})
+  if (window.__proxyStatusUnsubscribe) window.__proxyStatusUnsubscribe()
+  window.__proxyStatusUnsubscribe = window.electronAPI.onProxyStatus(renderProxyStatus)
+  document.getElementById('proxyPort').onchange = saveProxySettings
+  document.getElementById('proxyPythonPath').onchange = saveProxySettings
+  document.getElementById('proxyApiBase').onchange = saveProxySettings
+  document.getElementById('proxyRepoDirectory').onchange = saveProxySettings
+  document.getElementById('proxyScriptPath').onchange = saveProxySettings
+  proxyHostSelect.onchange = saveProxySettings
+  document.getElementById('chooseProxyRepo').onclick = async () => {
+    const directory = await window.electronAPI.chooseDirectory()
+    if (!directory) return
+    document.getElementById('proxyRepoDirectory').value = directory
+    await saveProxySettings()
+  }
+  proxyToggle.onclick = async () => {
+    proxyToggle.disabled = true
+    try {
+      await window.electronAPI.executeFunction('toggleTranslationProxy')
+      renderProxyStatus(await window.electronAPI.getProxyStatus())
+    } catch (error) {
+      toast(errorMessage(error) || t('config.settings-system.proxy-toggle-failed'))
+    } finally {
+      if (proxyToggle.isConnected) proxyToggle.disabled = false
+    }
+  }
+  document.getElementById('copyProxyConfig').onclick = async () => {
+    try {
+      const status = await window.electronAPI.getProxyStatus()
+      await navigator.clipboard.writeText(t('config.settings-system.proxy-copy-template', { url: status.endpoint }))
+      toast(t('config.settings-system.proxy-config-copied'))
+    } catch {
+      toast(t('config.settings-system.proxy-copy-failed'))
+    }
+  }
 }
 
 // D2-2（S14）：登记到主壳 renderRoute() 的分派表（config.html 里本文件先于 config.js 加载）。

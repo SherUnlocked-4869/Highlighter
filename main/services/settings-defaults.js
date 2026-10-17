@@ -115,6 +115,28 @@ const DEFAULT_SETTINGS = {
     gameMode: false,
     updateChannel: 'stable'
   },
+  // Index-Translate proxy bridge (docs/proxy-bridge-tray-integration.md). This
+  // block IS the patch-validation template, so every field the settings page may
+  // write has to be listed here; an unlisted key is rejected outright.
+  // autoStart stays false so tests, CI and a plain `npm start` never spawn python.
+  proxy: {
+    autoStart: false,
+    port: 8080,
+    // Loopback only by default: the proxy relays to a public endpoint without
+    // authentication, so 0.0.0.0 would expose it to the whole LAN.
+    host: '127.0.0.1',
+    // Typically F:\workspace\Index-Translate; empty means "not configured yet"
+    // and the tray surfaces that instead of guessing a path.
+    repoDirectory: '',
+    // Overrides repoDirectory/inference/llm/call_api.py when set. Absolute only.
+    scriptPath: '',
+    // Empty means: try "py -3", then "python" (python3/python elsewhere).
+    pythonPath: '',
+    // Empty means the script's own default upstream (the public cloud endpoint).
+    apiBase: '',
+    // false keeps the proxy tied to Highlighter's lifetime.
+    keepRunningOnExit: false
+  },
   shortcuts: {
     screenshot: 'F1',
     screenshotDelay: '',
@@ -138,7 +160,8 @@ const DEFAULT_SETTINGS = {
     explainClipboard: 'Ctrl+Alt+E',
     screenshotQuickSave: '',
     screenshotSaveAs: '',
-    togglePinClickThrough: ''
+    togglePinClickThrough: '',
+    toggleTranslationProxy: ''
   }
 }
 

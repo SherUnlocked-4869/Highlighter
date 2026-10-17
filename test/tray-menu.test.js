@@ -8,7 +8,7 @@ const { t, registerLocales } = require('../main/services/i18n-bootstrap')
 registerLocales()
 const label = (key) => t(key)
 
-function createMenu(gameMode, { hasConversation = true } = {}) {
+function createMenu(gameMode, { hasConversation = true, translationProxy = null, setTranslationProxyEnabled } = {}) {
   const calls = []
   return {
     calls,
@@ -16,6 +16,8 @@ function createMenu(gameMode, { hasConversation = true } = {}) {
       gameMode,
       hasConversation,
       screenshotAccelerator: 'F1',
+      translationProxy,
+      setTranslationProxyEnabled,
       executeFunction: (name) => calls.push(['execute', name]),
       setGameModeEnabled: (enabled) => calls.push(['game-mode', enabled]),
       openHistory: () => calls.push(['history']),
@@ -88,4 +90,75 @@ test('tray menu refuses to build without a conversation handler', () => {
     quit: () => {}
   }
   assert.throws(() => buildTrayMenuTemplate(base), /showConversation/)
+})
+
+test('the proxy bridge entry is absent when the host does not own one', () => {
+  // Backwards compatibility: every caller and test that predates the proxy builds
+  // the template without the dependency, and a required argument would throw.
+  const { template } = createMenu(false)
+  assert.equal(template.some((item) => item.label === label('main.tray.translation-proxy')), false)
+  assert.equal(template.filter((item) => item.type === 'separator').length, 3)
+})
+
+test('the proxy bridge entry sits in its own group between search and game mode', () => {
+  const { template } = createMenu(false, {
+    translationProxy: { running: true, busy: false },
+    setTranslationProxyEnabled: () => {}
+  })
+  const index = template.findIndex((item) => item.label === label('main.tray.translation-proxy'))
+
+  assert.ok(index > 0, 'the entry exists')
+  assert.equal(template[index - 1].type, 'separator')
+  assert.equal(template[index + 1].type, 'separator')
+  assert.equal(template[index - 2].label, label('main.tray.local-search'))
+  assert.equal(template[index + 2].label, label('main.tray.game-mode'))
+  assert.equal(template.filter((item) => item.type === 'separator').length, 4)
+})
+
+test('the proxy bridge entry toggles the service and mirrors its state', () => {
+  const calls = []
+  const { template } = createMenu(false, {
+    translationProxy: { running: false, busy: false },
+    setTranslationProxyEnabled: (enabled) => calls.push(['proxy', enabled])
+  })
+  const entry = template.find((item) => item.label === label('main.tray.translation-proxy'))
+
+  assert.equal(entry.type, 'checkbox')
+  assert.equal(entry.checked, false)
+  assert.equal(entry.enabled, true)
+  entry.click()
+  assert.deepEqual(calls, [['proxy', true]])
+
+  const running = createMenu(false, {
+    translationProxy: { running: true, busy: false },
+    setTranslationProxyEnabled: (enabled) => calls.push(['proxy', enabled])
+  }).template.find((item) => item.label === label('main.tray.translation-proxy'))
+  assert.equal(running.checked, true)
+  running.click()
+  assert.deepEqual(calls, [['proxy', true], ['proxy', false]])
+})
+
+test('the proxy bridge entry is disabled while a transition is in flight and survives game mode', () => {
+  const busy = createMenu(false, {
+    translationProxy: { running: false, busy: true },
+    setTranslationProxyEnabled: () => {}
+  }).template.find((item) => item.label === label('main.tray.translation-proxy'))
+  assert.equal(busy.enabled, false)
+
+  // A local HTTP service cannot interfere with a game, so - unlike the capture
+  // entries - this one stays enabled in game mode.
+  const gameMode = createMenu(true, {
+    translationProxy: { running: true, busy: false },
+    setTranslationProxyEnabled: () => {}
+  }).template.find((item) => item.label === label('main.tray.translation-proxy'))
+  assert.equal(gameMode.enabled, true)
+  assert.equal(gameMode.checked, true)
+})
+
+test('the proxy bridge entry needs both the state and the handler', () => {
+  const stateOnly = createMenu(false, { translationProxy: { running: false, busy: false } })
+  assert.equal(stateOnly.template.some((item) => item.label === label('main.tray.translation-proxy')), false)
+
+  const handlerOnly = createMenu(false, { setTranslationProxyEnabled: () => {} })
+  assert.equal(handlerOnly.template.some((item) => item.label === label('main.tray.translation-proxy')), false)
 })

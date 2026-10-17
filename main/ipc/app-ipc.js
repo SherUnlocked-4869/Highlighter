@@ -8,6 +8,7 @@ function registerAppIpc({ ipcMain, controller }) {
   ipcMain.handle('dialog:choose-directory', () => controller.chooseDirectory())
   ipcMain.handle('app:open-data-directory', () => controller.openDataDirectory())
   ipcMain.handle('app:open-save-directory', () => controller.openSaveDirectory())
+  ipcMain.handle('app:get-proxy-status', () => controller.getProxyStatus())
   ipcMain.handle('ai:complete', (_event, { messages, options } = {}) => controller.completeAi(messages, options))
   ipcMain.handle('ai:translate', (_event, { text, sourceLanguage, targetLanguage } = {}) => (
     controller.translateText(text, sourceLanguage, targetLanguage)

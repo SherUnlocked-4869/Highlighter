@@ -33,7 +33,9 @@ test('quick functions and hotkey settings share SVG-backed function metadata', (
   const functionIcons = [...script.matchAll(/\['[^']+',\s*'[^']+',\s*'([^']+\.svg)',\s*'[^']*'\]/g)]
     .map((match) => match[1])
 
-  assert.equal(functionIcons.length, 26)
+  // 26 shipped entries plus the 2026-10-16 translation-proxy toggle. The exact
+  // count is deliberate: adding a quick function should be a visible decision.
+  assert.equal(functionIcons.length, 27)
   for (const iconPath of functionIcons) assertIconExists(iconPath)
   assert.match(script, /function iconMarkup\(iconPath\)/)
   assert.match(script, /renderHome\(\)[\s\S]*iconMarkup\(icon\)/)

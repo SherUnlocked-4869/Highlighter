@@ -15,7 +15,14 @@ const mainPath = path.join(root, 'main.js')
 // (§3.1) and the registerX Ipc controller wiring (§3.2). Cutting further would
 // mean the "incidental optimisation to hit a line count" the design lists as a
 // non-goal, so the remaining ~90 lines are registered as follow-up work instead.
-const MAIN_LINE_CEILING = 1300
+//
+// 2026-10-16: raised to 1330 for the Index-Translate proxy bridge (see
+// docs/proxy-bridge-tray-integration.md). The addition is assembly-only - one
+// require, one controller construction, a few tray-template fields, a tooltip
+// read, a quit dispose, a startup adoption pass and one IPC accessor - because
+// the state machine, the failure copy and the status broadcast live in
+// main/services/translation-proxy-service.js and proxy-bridge-controller.js.
+const MAIN_LINE_CEILING = 1330
 const REQUIRED_DOMAINS = [
   'pin',
   'capture',

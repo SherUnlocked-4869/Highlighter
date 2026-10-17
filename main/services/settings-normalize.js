@@ -14,6 +14,11 @@ const DEFAULT_AUDIO_GAIN = 1
 // else (hand-edited store, legacy value) falls back to the shipped default.
 const DEFAULT_ANNOTATION_COLOR = '#ff3b30'
 const HEX_COLOR = /^#[0-9a-f]{6}$/i
+// Index-Translate proxy bridge: a hand-edited store must not be able to hand the
+// service a port that cannot bind or an interface that is not loopback.
+const DEFAULT_PROXY_PORT = 8080
+const PROXY_HOSTS = new Set(['127.0.0.1', '0.0.0.0'])
+const DEFAULT_PROXY_HOST = '127.0.0.1'
 
 function normalizeLanguage(value) {
   return SUPPORTED_LANGUAGES.has(value) ? value : DEFAULT_LANGUAGE
@@ -33,6 +38,12 @@ function normalizeText(value) {
 
 function normalizeGain(value) {
   return Number.isFinite(value) ? value : DEFAULT_AUDIO_GAIN
+}
+
+function normalizePort(value) {
+  // Ports 1..65535 only. A value that cannot bind would surface much later as an
+  // opaque python traceback, so it falls back to the shipped default here.
+  return Number.isInteger(value) && value > 0 && value < 65536 ? value : DEFAULT_PROXY_PORT
 }
 
 function normalizeFrozenSettings(settings) {
@@ -55,6 +66,16 @@ function normalizeFrozenSettings(settings) {
   settings.shortcuts.screenshotQuickSave = normalizeText(settings.shortcuts.screenshotQuickSave)
   settings.shortcuts.screenshotSaveAs = normalizeText(settings.shortcuts.screenshotSaveAs)
   settings.shortcuts.togglePinClickThrough = normalizeText(settings.shortcuts.togglePinClickThrough)
+  settings.shortcuts.toggleTranslationProxy = normalizeText(settings.shortcuts.toggleTranslationProxy)
+  settings.proxy = { ...(settings.proxy || {}) }
+  settings.proxy.autoStart = normalizeToggle(settings.proxy.autoStart)
+  settings.proxy.keepRunningOnExit = normalizeToggle(settings.proxy.keepRunningOnExit)
+  settings.proxy.port = normalizePort(settings.proxy.port)
+  settings.proxy.host = PROXY_HOSTS.has(settings.proxy.host) ? settings.proxy.host : DEFAULT_PROXY_HOST
+  settings.proxy.repoDirectory = normalizeText(settings.proxy.repoDirectory)
+  settings.proxy.scriptPath = normalizeText(settings.proxy.scriptPath)
+  settings.proxy.pythonPath = normalizeText(settings.proxy.pythonPath)
+  settings.proxy.apiBase = normalizeText(settings.proxy.apiBase)
 }
 
 // Runtime settings normalization that used to live in the assembly layer

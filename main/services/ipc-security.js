@@ -24,6 +24,7 @@ const IPC_SURFACES = Object.freeze([
       'dialog:choose-directory',
       'app:open-data-directory',
       'app:open-save-directory',
+      'app:get-proxy-status',
       'ai:complete',
       'ai:translate',
       'data-root:get',

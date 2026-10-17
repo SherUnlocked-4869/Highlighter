@@ -212,6 +212,85 @@ test('the main process wires the pin domain click-through exit into the router a
   assert.match(main, /createFunctionRouter\(\{[\s\S]*getPinDomain/, 'the router can resolve the pin domain for the fallback shortcut')
   assert.match(main, /buildTrayMenuTemplate\(\{[\s\S]*exitClickThrough/, 'the tray entry calls the domain directly so it survives game mode')
 })
+test('the tray wires the Index-Translate proxy bridge through the optional menu entry', () => {
+  assert.match(
+    main,
+    /const proxyState = proxyBridgeController \? proxyBridgeController\.menuState\(settings\) : null/,
+    'the menu state reuses the settings snapshot the tray already read'
+  )
+  assert.match(
+    main,
+    /translationProxy: proxyState,[\s\S]*setTranslationProxyEnabled: \(enabled\) => proxyBridgeController\.setEnabled\(enabled\)/,
+    'the tray entry is wired in main.js'
+  )
+  assert.match(main, /createProxyBridgeController\(\{[\s\S]*createTrayIcon[\s\S]*getMainWindow/, 'the controller owns the tray refresh and the status push')
+  assert.match(main, /proxyBridgeController\.refresh\(\)\.finally\(\(\) => createTrayIcon\(\)\)/, 'startup adopts a leftover proxy')
+  assert.match(main, /proxyBridgeController\?\.startIfConfigured\(\)/, 'autostart stays opt-in')
+  assert.match(main, /if \(proxyBridgeController\) \{ proxyBridgeController\.dispose\(\); proxyBridgeController = null \}/, 'quitting kills the proxy')
+})
+
+test('the proxy settings group is part of the frozen validation template', () => {
+  assert.deepEqual(Object.keys(DEFAULT_SETTINGS.proxy).sort(), [
+    'apiBase',
+    'autoStart',
+    'host',
+    'keepRunningOnExit',
+    'port',
+    'pythonPath',
+    'repoDirectory',
+    'scriptPath'
+  ])
+  // Off by default: a plain `npm start`, a test run or CI must not spawn python.
+  assert.equal(DEFAULT_SETTINGS.proxy.autoStart, false)
+  assert.equal(DEFAULT_SETTINGS.proxy.keepRunningOnExit, false)
+  assert.equal(DEFAULT_SETTINGS.proxy.port, 8080)
+  // The handoff document's red line: loopback only unless the user says otherwise.
+  assert.equal(DEFAULT_SETTINGS.proxy.host, '127.0.0.1')
+
+  for (const patch of [
+    { proxy: { autoStart: true } },
+    { proxy: { keepRunningOnExit: true } },
+    { proxy: { port: 8088 } },
+    { proxy: { host: '0.0.0.0' } },
+    { proxy: { repoDirectory: 'F:\\workspace\\Index-Translate' } },
+    { proxy: { scriptPath: 'F:\\workspace\\Index-Translate\\inference\\llm\\call_api.py' } },
+    { proxy: { pythonPath: 'py' } },
+    { proxy: { apiBase: 'http://127.0.0.1:8000/v1' } }
+  ]) {
+    assert.doesNotThrow(() => assertSettingsPatch(patch, DEFAULT_SETTINGS), JSON.stringify(patch))
+  }
+  // Negative controls: the validator still rejects an unknown key or a wrong type.
+  assert.throws(() => assertSettingsPatch({ proxy: { notAFrozenKey: true } }, DEFAULT_SETTINGS), /不支持的设置项/)
+  assert.throws(() => assertSettingsPatch({ proxy: { port: '8080' } }, DEFAULT_SETTINGS), /类型无效/)
+})
+
+test('the proxy toggle is reachable from the hotkey page, the router and the settings card', () => {
+  assert.equal(DEFAULT_SETTINGS.shortcuts.toggleTranslationProxy, '')
+  assert.match(settingsDefaults, /toggleTranslationProxy: ''/)
+  assert.match(functionRouter, /async toggleTranslationProxy\(\) \{[\s\S]*getProxyBridge[\s\S]*setEnabled/)
+  assert.doesNotThrow(() => assertSettingsPatch({ shortcuts: { toggleTranslationProxy: 'Ctrl+Shift+9' } }, DEFAULT_SETTINGS))
+  assert.ok(config.includes("['toggleTranslationProxy', 'config.function.toggle-translation-proxy', 'icons/lightning.svg', 'config.function.toggle-translation-proxy-description']"))
+
+  // The card rides the shared switchMarkup/bindSwitches path for its two toggles
+  // and the frozen `proxy` group for the text rows.
+  assert.ok(config.includes("switchMarkup(settings.proxy.autoStart === true, 'autoStart', 'proxy')"))
+  assert.ok(config.includes("switchMarkup(settings.proxy.keepRunningOnExit === true, 'keepRunningOnExit', 'proxy')"))
+  assert.ok(config.includes('id="proxyPort"'))
+  assert.match(config, /await window\.electronAPI\.executeFunction\('toggleTranslationProxy'\)/)
+  assert.match(config, /window\.electronAPI\.onProxyStatus\(renderProxyStatus\)/)
+  assert.match(config, /navigator\.clipboard\.writeText\(t\('config\.settings-system\.proxy-copy-template'/)
+})
+
+test('the proxy status channel rides the existing main IPC surface', () => {
+  const ipcSecurity = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'ipc-security.js'), 'utf8')
+  const appIpc = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'app-ipc.js'), 'utf8')
+  assert.ok(ipcSecurity.includes("'app:get-proxy-status'"), 'the channel has a sender policy')
+  assert.match(appIpc, /ipcMain\.handle\('app:get-proxy-status', \(\) => controller\.getProxyStatus\(\)\)/)
+  assert.match(preload, /getProxyStatus: \(\) => ipcRenderer\.invoke\('app:get-proxy-status'\)/)
+  assert.match(preload, /onProxyStatus: \(callback\) =>/)
+  assert.match(main, /getProxyStatus: \(\) => proxyBridgeController\.getStatus\(\)/)
+})
+
 test('recording defers to the shared key rules and stored values are repaired', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.html'), 'utf8')
   const validation = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'settings-validation.js'), 'utf8')

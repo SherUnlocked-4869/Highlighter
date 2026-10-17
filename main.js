@@ -44,6 +44,7 @@ const { CAPTURE_PREFIX } = captureNaming
 const { registerHistoryIpc } = require('./main/ipc/history-ipc')
 const { ShortcutService } = require('./main/services/shortcut-service')
 const { buildTrayMenuTemplate } = require('./main/services/tray-menu')
+const { createProxyBridgeController } = require('./main/services/proxy-bridge-controller')
 const { registerShortcutIpc } = require('./main/ipc/shortcut-ipc')
 const { registerAppIpc } = require('./main/ipc/app-ipc')
 const { registerDiagnosticsIpc } = require('./main/ipc/diagnostics-ipc')
@@ -91,7 +92,7 @@ const { createFfmpegPathResolver } = require('./main/services/ffmpeg-path')
 const { createImageFileSaver, resolveSaveDirectory } = require('./main/services/image-file-save')
 const { createCursorProvider } = require('./main/services/cursor-provider')
 // P0-1-T6：主进程文案的 i18n 入口（加载 shared/locales/*.js 并提供 t/setLanguage）。
-const { setLanguage } = require('./main/services/i18n-bootstrap')
+const { setLanguage, t } = require('./main/services/i18n-bootstrap')
 const {
   migrateAiSettings,
   resolveAiAssignment
@@ -122,6 +123,7 @@ let historyService = null
 let diagnosticsService = null
 let updateService = null
 let sessionExitRecorded = false
+let proxyBridgeController = null
 
 function initializeStore() {
   if (store) return store
@@ -734,6 +736,9 @@ functionRouter = createFunctionRouter({
   // P0-6-T4: the click-through fallback resolves the pin domain lazily so a
   // recycled delegate cannot hold a stale reference.
   getPinDomain: () => pinDomain,
+  // Owned by the tray bridge controller: the shortcut shares the same toggle so
+  // both entry points send the user through the same failure copy.
+  getProxyBridge: () => proxyBridgeController,
   recordDomain,
   searchDomain,
   selectionDomain,
@@ -743,6 +748,17 @@ functionRouter = createFunctionRouter({
   persistHistory,
   assertGameModeDisabled,
   log
+})
+
+// The Index-Translate proxy bridge: the tray toggles it, the controller owns the
+// failure copy, the tray refresh and the status broadcast.
+proxyBridgeController = createProxyBridgeController({
+  getSettings,
+  log,
+  dialog,
+  t,
+  createTrayIcon,
+  getMainWindow: () => mainWindow
 })
 
 function positionAutomationWindow(win) {
@@ -822,10 +838,13 @@ function createTrayIcon() {
     tray.on('double-click', () => createMainWindow('home'))
   }
   const gameMode = isGameModeEnabled(settings)
-  tray.setToolTip(gameMode ? 'Highlighter（游戏模式）' : 'Highlighter')
+  const proxyState = proxyBridgeController ? proxyBridgeController.menuState(settings) : null
+  tray.setToolTip([gameMode ? 'Highlighter（游戏模式）' : 'Highlighter', proxyState?.running ? t('main.proxy.tooltip-running') : ''].filter(Boolean).join(' · '))
   tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate({
     gameMode,
     screenshotAccelerator: settings.shortcuts.screenshot,
+    translationProxy: proxyState,
+    setTranslationProxyEnabled: (enabled) => proxyBridgeController.setEnabled(enabled),
     executeFunction: (name) => functionRouter.executeFunction(name).catch((error) => log('Tray action failed:', name, error.message)),
     // P0-6-T4: a click-through pin swallows clicks, and game mode suspends both
     // the router and the global shortcuts, so this entry calls the domain
@@ -1024,6 +1043,7 @@ registerAppIpc({
     chooseDirectory,
     openDataDirectory: () => shell.openPath(activePaths?.root || app.getPath('userData')),
     openSaveDirectory: () => shell.openPath(resolveSaveDirectory(getSettings()) || app.getPath('pictures')),
+    getProxyStatus: () => proxyBridgeController.getStatus(),
     completeAi: (messages, options) => {
       const settings = getSettings()
       return aiClient.completeChat(
@@ -1227,6 +1247,11 @@ async function startApplication() {
     if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
     if (isWin) captureDomain.warmUpNativeDisplays()
     app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
+    // Adoption first (a proxy left by a crashed session must show as checked),
+    // then the opt-in autostart. Both are probe/opt-in driven, so the default
+    // configuration spawns nothing.
+    if (proxyBridgeController) proxyBridgeController.refresh().finally(() => createTrayIcon())
+    proxyBridgeController?.startIfConfigured()
   }
   if (e2eContext.enabled) selectionDomain.createToolbarWindow()
   deferUpdateServiceStart()
@@ -1291,6 +1316,7 @@ else {
     if (ocrService) { ocrService.stop(); ocrService = null }
     if (everythingService) { everythingService.stop(); everythingService = null }
     selectionDomain.disposeSelectionHook()
+    if (proxyBridgeController) { proxyBridgeController.dispose(); proxyBridgeController = null }
     if (tray) { tray.destroy(); tray = null }
   })
 }

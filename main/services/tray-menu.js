@@ -8,6 +8,13 @@ function buildTrayMenuTemplate({
   gameMode = false,
   screenshotAccelerator = '',
   hasConversation = false,
+  // { running, busy } for the Index-Translate proxy bridge, or null when the
+  // host does not own it. Deliberately optional: every existing caller and test
+  // builds the template without it, so a required dependency would throw where
+  // exitClickThrough below degrades instead. The entry disappears rather than
+  // rendering an unusable toggle.
+  translationProxy = null,
+  setTranslationProxyEnabled,
   executeFunction,
   setGameModeEnabled,
   openHistory,
@@ -35,6 +42,22 @@ function buildTrayMenuTemplate({
     ? exitClickThrough
     : run('togglePinClickThrough')
 
+  // The proxy bridge is a local HTTP service, not a screen surface, so it is
+  // deliberately NOT gated by game mode: a running game is no reason to lose the
+  // translation bridge, and toggling it cannot interfere with one.
+  const proxyEntry = translationProxy && typeof setTranslationProxyEnabled === 'function'
+    ? {
+        label: t('main.tray.translation-proxy'),
+        type: 'checkbox',
+        checked: translationProxy.running === true,
+        // While a start/stop is in flight the entry is disabled: a second click
+        // cannot be told apart from the first, and the template is a snapshot that
+        // main.js rebuilds once the service reports its new state.
+        enabled: translationProxy.busy !== true,
+        click: () => setTranslationProxyEnabled(translationProxy.running !== true)
+      }
+    : null
+
   return [
     { label: t('main.tray.screenshot'), accelerator: screenshotAccelerator || undefined, enabled: featureEnabled, click: run('screenshot') },
     { label: t('main.tray.screenshot-full-screen'), enabled: featureEnabled, click: run('screenshotFullScreen') },
@@ -42,6 +65,7 @@ function buildTrayMenuTemplate({
     { label: t('main.tray.pin-image'), enabled: featureEnabled, click: run('fixedContent') },
     { label: t('main.tray.video-record'), enabled: featureEnabled, click: run('videoRecord') },
     { label: t('main.tray.local-search'), enabled: featureEnabled, click: run('localSearch') },
+    ...(proxyEntry ? [{ type: 'separator' }, proxyEntry] : []),
     { type: 'separator' },
     {
       label: t('main.tray.game-mode'),
