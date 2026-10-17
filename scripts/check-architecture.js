@@ -30,6 +30,7 @@ const REQUIRED_DOMAINS = [
   'record',
   'recognition',
   'search',
+  'clipboard',
   'settings-effects',
   'selection',
   'data-root'

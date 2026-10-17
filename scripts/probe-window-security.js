@@ -57,6 +57,7 @@ const probeSettings = {
 const entries = [
   { name: 'config', page: ['config', 'config.html'], preload: 'preload.js', api: 'electronAPI', marker: 'renderHome' },
   { name: 'toolbar', page: ['toolbar', 'toolbar.html'], preload: 'preload-toolbar.js', api: 'toolbarAPI', marker: 'applyAppearance' },
+  { name: 'clipboard', page: ['clipboard', 'clipboard.html'], preload: 'preload-clipboard.js', api: 'clipboardAPI', marker: 'window.clipboardAPI.ready' },
   { name: 'capture', page: ['capture', 'capture.html'], preload: 'preload-capture.js', api: 'captureAPI', marker: 'resizeCanvas' },
   { name: 'long-overlay', page: ['long-capture', 'overlay.html'], preload: 'preload-long-overlay.js', api: 'longOverlayAPI', marker: 'localBounds' },
   { name: 'long-capture', page: ['long-capture', 'long-capture.html'], preload: 'preload-long-capture.js', api: 'longCaptureAPI', marker: 'setStatus' },

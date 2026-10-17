@@ -28,7 +28,7 @@
     "build:clipboard": "node scripts/build-clipboard-native.js",
     "build:selection": "node node_modules/node-gyp/bin/node-gyp.js rebuild --directory vendor/selection-hook",
     "test:clipboard:native": "node scripts/test-selection-clipboard-native.js && cargo test --locked --manifest-path native/clipboard/Cargo.toml && node --test test/clipboard-*.test.js test/selection-native-build.test.js",
-    "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr && npm run build:everything",
+    "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr && npm run build:everything && npm run build:selection && npm run build:clipboard",
     "check": "node scripts/check-js.js && npm run check:architecture && npm run check:i18n",
     "check:architecture": "node scripts/check-architecture.js",
     "check:i18n": "node scripts/check-i18n.js --max 606",
@@ -50,7 +50,8 @@
     },
     "asarUnpack": [
       "node_modules/screenshot-desktop/lib/win32/**/*",
-      "node_modules/ffmpeg-static/**/*"
+      "node_modules/ffmpeg-static/**/*",
+      "node_modules/selection-hook/build/Release/*.node"
     ],
     "extraResources": [
       {
@@ -80,6 +81,14 @@
           "Everything.exe",
           "Everything.ini"
         ]
+      },
+      {
+        "from": "native/clipboard/bin",
+        "to": "native/clipboard",
+        "filter": [
+          "HighlighterClipboard.exe",
+          "build-info.json"
+        ]
       }
     ],
     "files": [
@@ -93,6 +102,7 @@
       "preload-pin.js",
       "preload-recognition.js",
       "preload-search.js",
+      "preload-clipboard.js",
       "preload-record.js",
       "preload-record-frame.js",
       "deepseek.js",
@@ -106,6 +116,7 @@
       "pin/**/*",
       "recognition/**/*",
       "search/**/*",
+      "clipboard/**/*",
       "record/**/*",
       "shared/**/*",
       "node_modules/**/*"

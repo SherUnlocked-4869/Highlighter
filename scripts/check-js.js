@@ -6,6 +6,7 @@ const projectRoot = path.resolve(__dirname, '..')
 const sourceDirectories = [
   'action',
   'capture',
+  'clipboard',
   'config',
   'long-capture',
   'main',

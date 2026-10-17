@@ -86,6 +86,8 @@ async function probeRuntime() {
   const nativeFiles = {
     smartSelect: fileStatus(smartSelectPath),
     ocrSidecar: fileStatus(sidecarPath),
+    clipboardSidecar: fileStatus(path.join(projectRoot, 'native', 'clipboard', 'bin', 'HighlighterClipboard.exe')),
+    clipboardBuildInfo: fileStatus(path.join(projectRoot, 'native', 'clipboard', 'bin', 'build-info.json')),
     onnxRuntime: fileStatus(onnxRuntimePath),
     ffmpeg: fileStatus(ffmpegPath)
   }
@@ -93,6 +95,7 @@ async function probeRuntime() {
   const nativeRuntimeBuilt = nativeFiles.smartSelect.exists
     && nativeFiles.ocrSidecar.exists
     && nativeFiles.onnxRuntime.exists
+    && nativeFiles.clipboardSidecar.exists && nativeFiles.clipboardBuildInfo.exists
   let ocrFilesValidated = false
   if (nativeRuntimeBuilt) {
     const { OcrService } = require('../main/services/ocr-service')

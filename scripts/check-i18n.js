@@ -34,7 +34,7 @@ const LANGUAGES = ['zh-CN', 'en-US', 'zh-TW']
 // IPC surface 的 role）。原实现只允许**第一段**无连字符，会把整套 long-capture 键判为非法。
 const KEY_PATTERN = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/
 const CJK = /[\u4e00-\u9fff]/
-const SCAN_AREAS = ['config', 'capture', 'record', 'long-capture', 'action', 'search', 'recognition', 'toolbar', 'pin', 'main']
+const SCAN_AREAS = ['config', 'capture', 'clipboard', 'record', 'long-capture', 'action', 'search', 'recognition', 'toolbar', 'pin', 'main']
 const SCAN_EXTENSIONS = new Set(['.js', '.html', '.css'])
 const SKIP_DIRECTORIES = new Set(['node_modules', 'dist', 'coverage', 'test-results', '.git', '.tmp', 'target'])
 

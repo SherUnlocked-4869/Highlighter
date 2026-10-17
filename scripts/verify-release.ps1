@@ -58,6 +58,8 @@ $setup = Require-File (Join-Path $distPath $setupName) 'NSIS installer'
 $portable = Require-File (Join-Path $distPath $portableName) 'Portable executable'
 $blockmap = Require-File (Join-Path $distPath "$setupName.blockmap") 'NSIS blockmap'
 $mainExecutable = Require-File (Join-Path $distPath 'win-unpacked/Highlighter.exe') 'Packaged application executable'
+$null = Require-File (Join-Path $distPath 'win-unpacked/resources/native/clipboard/HighlighterClipboard.exe') 'Clipboard sidecar'
+$null = Require-File (Join-Path $distPath 'win-unpacked/resources/native/clipboard/build-info.json') 'Clipboard build identity'
 
 $manifests = @()
 if (-not $SkipManifest) {
