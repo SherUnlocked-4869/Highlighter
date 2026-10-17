@@ -84,6 +84,8 @@ class SelectionHookService {
     this.heartbeatFailureCount = 0
     this.lastRecreateReason = null
     this.hostPid = null
+    this.lifecycleListeners = new Set()
+    this.retiredHosts = new Set()
   }
 
   static createUtilityProcessHostFactory({ utilityProcess, hostPath }) {
@@ -95,7 +97,9 @@ class SelectionHookService {
         serviceName: 'highlighter-selection-hook',
         stdio: ['ignore', 'pipe', 'pipe']
       })
+      const exited = new Promise((resolve) => child.once('exit', resolve))
       return {
+        exited,
         postMessage(message) { child.postMessage(message) },
         onMessage(listener) {
           const wrapped = (data) => listener(data)
@@ -120,6 +124,20 @@ class SelectionHookService {
 
   isRunning() {
     return !!this.host && this.hostReady && this.hookReportedRunning
+  }
+
+  onLifecycle(listener) { this.lifecycleListeners.add(listener); return () => this.lifecycleListeners.delete(listener) }
+  notifyLifecycle() { for (const listener of this.lifecycleListeners) { try { listener(this.getDiagnostics()) } catch {} } }
+  async waitForRetiredHosts(timeoutMs = 5000) {
+    let timer
+    try {
+      await Promise.race([Promise.all([...this.retiredHosts]), new Promise((_, reject) => { timer = this.setTimer(() => reject(new Error('SELECTION_EXIT_TIMEOUT')), timeoutMs) })])
+    } finally { if (timer) this.clearTimer(timer) }
+  }
+  setClipboardCoordinationRequired(required) {
+    if (this.startOptions.clipboardCoordinationRequired === required) return
+    this.startOptions.clipboardCoordinationRequired = required
+    if (this.desiredRunning && this.host) this.forceHostRecreate('clipboard-coordination-change')
   }
 
   getDiagnostics() {
@@ -346,10 +364,15 @@ class SelectionHookService {
     this.clipboardCoordinatorDiagnostics = null
     this.cancelHeartbeat()
     const host = this.host
+    if (host?.exited) {
+      this.retiredHosts.add(host.exited)
+      host.exited.finally(() => this.retiredHosts.delete(host.exited))
+    }
     this.host = null
     this.hostReady = false
     this.hookReportedRunning = false
     this.hostPid = null
+    this.notifyLifecycle()
     this.pendingStartReason = null
     this.pendingStartAttempt = 0
     if (this.unbindHost) {
@@ -381,6 +404,7 @@ class SelectionHookService {
       case 'ready':
         this.hostReady = true
         if (Number.isSafeInteger(message.pid) && message.pid > 0) this.hostPid = message.pid
+        this.notifyLifecycle()
         break
       case 'pong':
         this.clipboardCoordinatorDiagnostics = coordinatorCounters(message.clipboardCoordinator)
@@ -446,6 +470,7 @@ class SelectionHookService {
       this.pendingStartReason = null
       this.log('Selection hook started:', reason)
       this.armHeartbeat()
+      this.notifyLifecycle()
       return
     }
     if (status === 'start-failed') {

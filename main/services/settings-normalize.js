@@ -3,6 +3,7 @@
 const { normalizeSelectionToolbar, normalizeToolbarThinking } = require('../../toolbar/toolbar-utils')
 const { normalizeAiSettings } = require('./ai-providers')
 const { resolveMainColor } = require('./appearance-migration')
+const { normalizeClipboardSettings } = require('./clipboard-settings')
 
 // P0 settings frozen in Wave 0 (2026-10-10). They are normalized here so a
 // hand-edited or legacy store cannot hand an unsupported language, a
@@ -47,6 +48,7 @@ function normalizePort(value) {
 }
 
 function normalizeFrozenSettings(settings) {
+  settings.clipboard = normalizeClipboardSettings(settings.clipboard)
   settings.language = normalizeLanguage(settings.language)
   settings.pinned = { ...(settings.pinned || {}) }
   settings.record = settings.record || {}

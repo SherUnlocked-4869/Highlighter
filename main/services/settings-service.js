@@ -1,5 +1,6 @@
 const { CredentialStore } = require('./credential-store')
 const { assertSettingsPatch } = require('./settings-validation')
+const { assertClipboardSettings } = require('./clipboard-settings')
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
@@ -137,6 +138,7 @@ class SettingsService {
 
   updateSettings(patch) {
     const validatedPatch = assertSettingsPatch(patch === undefined ? {} : patch, this.defaults)
+    if (validatedPatch.clipboard) assertClipboardSettings(mergeSettings(this.getSettings().clipboard, validatedPatch.clipboard))
     const preparedPatch = this.prepareCredentialPatch(validatedPatch)
     const deepseekApiKeyPatch = Array.isArray(validatedPatch.providers)
       ? validatedPatch.providers.find((provider) => provider?.id === 'deepseek' && Object.hasOwn(provider, 'apiKey'))?.apiKey

@@ -7,6 +7,7 @@ const {
 } = require('../../toolbar/toolbar-utils')
 const { DEFAULT_CATEGORIES: SEARCH_DEFAULT_CATEGORIES } = require('../../search/search-utils')
 const { createDefaultAssignments, createDefaultProviders } = require('./ai-providers')
+const { DEFAULT_CLIPBOARD } = require('./clipboard-settings')
 
 const DEFAULT_AI_PROVIDERS = createDefaultProviders()
 
@@ -15,6 +16,7 @@ const DEFAULT_AI_PROVIDERS = createDefaultProviders()
 // assembly layer.
 const DEFAULT_SETTINGS = {
   apiKey: '',
+  clipboard: { ...DEFAULT_CLIPBOARD, excludedApps: [] },
   providers: DEFAULT_AI_PROVIDERS,
   theme: 'system',
   mainColor: '#e5a44c',
@@ -156,6 +158,7 @@ const DEFAULT_SETTINGS = {
     toggleFixedContentVisibility: '',
     showOrHideMainWindow: '',
     openCaptureHistory: '',
+    openClipboardHistory: '',
     localSearch: 'Alt+F',
     explainClipboard: 'Ctrl+Alt+E',
     screenshotQuickSave: '',

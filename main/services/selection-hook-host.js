@@ -55,6 +55,10 @@ function startHook(options = {}) {
       hook = null
     }
     hook = new SelectionHook()
+    // Replacement hosts cannot use clipboard fallback before registration.
+    if (options.clipboardCoordinationRequired === true) {
+      try { hook.setClipboardCoordinator({}) } catch {}
+    }
     hook.on('text-selection', (data) => {
       markInput()
       send({ type: 'event', event: 'text-selection', data })
