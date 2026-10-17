@@ -109,6 +109,16 @@ test('IPC policy exactly covers every main-process registration', () => {
   ]
   const registrations = new Map()
   for (const file of sourceFiles) {
+    if (file === path.join(root, 'main', 'ipc', 'clipboard-ipc.js')) {
+      // This module prefixes names through a local handle() helper. Observe
+      // its real registrations so the inventory includes those channels too.
+      const add = (kind, channel) => {
+        assert.equal(registrations.has(channel), false, `duplicate registration: ${channel}`)
+        registrations.set(channel, kind)
+      }
+      require(file).registerClipboardIpc({ ipcMain: { handle: (channel) => add('handle', channel), on: (channel) => add('on', channel) }, domain: {} })
+      continue
+    }
     const source = fs.readFileSync(file, 'utf8')
     for (const match of source.matchAll(/(?:secureIpcMain|ipcMain)\.(handle|on)\('([^']+)'/g)) {
       assert.equal(registrations.has(match[2]), false, `duplicate registration: ${match[2]}`)
