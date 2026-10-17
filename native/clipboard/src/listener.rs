@@ -1,5 +1,6 @@
 //! Only bounded metadata is queued from the message callback. No clipboard
 //! reads, sleeps, filesystem access or stdout writes occur on that thread.
+use crate::barrier::Barrier;
 use crate::capture::read_snapshot;
 use crate::limits::Skip;
 use serde_json::{json, Value};
@@ -20,6 +21,7 @@ const STOP: u32 = WM_APP + 1;
 
 #[derive(Default)]
 struct State {
+    barrier: Arc<Barrier>,
     enabled: AtomicBool,
     generation: AtomicU64,
     last_notified: AtomicU32,
@@ -34,6 +36,7 @@ struct State {
 struct Notice {
     sequence: u32,
     generation: u64,
+    barrier_epoch: u64,
 }
 struct Context {
     state: Arc<State>,
@@ -57,6 +60,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         .try_send(Notice {
                             sequence,
                             generation: state.generation.load(Ordering::Acquire),
+                            barrier_epoch: state.barrier.notice_epoch(),
                         })
                         .is_ok()
                     {
@@ -83,7 +87,14 @@ pub struct Monitor {
 
 impl Monitor {
     pub fn start() -> Result<Self, &'static str> {
-        let state = Arc::new(State::default());
+        Self::start_with_barrier(Arc::new(Barrier::default()))
+    }
+
+    pub fn start_with_barrier(barrier: Arc<Barrier>) -> Result<Self, &'static str> {
+        let state = Arc::new(State {
+            barrier,
+            ..State::default()
+        });
         let (sender, receiver) = mpsc::sync_channel::<Notice>(64);
         let (ready, startup) = mpsc::sync_channel(1);
         let (listener_finished, listener_done) = mpsc::channel();
@@ -174,16 +185,23 @@ impl Monitor {
                     skip(&worker_state, "stale_configuration");
                     continue;
                 }
+                let Some(permit) = worker_state
+                    .barrier
+                    .try_read(notice.barrier_epoch, notice.sequence)
+                else {
+                    skip(&worker_state, "transient_barrier");
+                    continue;
+                };
                 let started = Instant::now();
                 let mut result = Err(Skip::Busy);
                 for delay in [0, 5, 15, 30] {
-                    if !current(&worker_state, &notice) {
+                    if !current(&worker_state, &notice) || !permit.current() {
                         break;
                     }
                     if delay != 0 {
                         thread::sleep(Duration::from_millis(delay));
                     }
-                    if !current(&worker_state, &notice) {
+                    if !current(&worker_state, &notice) || !permit.current() {
                         break;
                     }
                     result = read_snapshot(notice.sequence);
@@ -194,7 +212,7 @@ impl Monitor {
                 worker_state
                     .max_capture_micros
                     .fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
-                if !current(&worker_state, &notice) {
+                if !current(&worker_state, &notice) || !permit.current() {
                     skip(&worker_state, "stale_configuration");
                     continue;
                 }
@@ -231,9 +249,14 @@ impl Monitor {
         self.state.enabled.store(enabled, Ordering::Release);
     }
 
+    pub fn enabled(&self) -> bool {
+        self.state.enabled.load(Ordering::Acquire)
+    }
+
     pub fn status(&self) -> Value {
         json!({
             "enabled": self.state.enabled.load(Ordering::Acquire),
+            "coordinationPhase": format!("{:?}", self.state.barrier.phase()).to_lowercase(),
             "queued": self.state.queued.load(Ordering::Relaxed),
             "queueFull": self.state.queue_full.load(Ordering::Relaxed),
             "accepted": self.state.accepted.load(Ordering::Relaxed),

@@ -7,17 +7,31 @@ const { probe } = require('./probe-clipboard-native')
 
 async function run() {
   const args = process.argv.slice(2)
+  const forwarded = []
+  let mode
   for (let index = 0; index < args.length; index += 2) {
-    if (!['--duration-seconds', '--interval-ms', '--output'].includes(args[index])) throw new Error(`Invalid argument: ${args[index]}`)
+    if (args[index] === '--mode') {
+      if (mode || !['disabled', 'coordinator'].includes(args[index + 1])) throw new Error('Mode must be disabled or coordinator')
+      mode = args[index + 1]
+    } else {
+      if (!['--duration-seconds', '--interval-ms', '--output'].includes(args[index])) throw new Error(`Invalid argument: ${args[index]}`)
+      forwarded.push(args[index], args[index + 1])
+    }
   }
-  const options = parseArguments(['--root-pid', '1', '--label', 'native-prototype-disabled-no-listener', ...args])
+  mode ||= 'disabled'
+  const options = parseArguments(['--root-pid', '1', '--label', `native-prototype-${mode}-no-listener`, ...forwarded])
   if (fs.existsSync(options.output)) throw new Error('Output exists; refusing to overwrite')
   let report
   const identity = await probe({
     timeoutMs: options.durationSeconds * 1000 + 60000,
-    observe: async (pid, initialized) => {
+    observe: async (pid, initialized, request) => {
+      if (mode === 'coordinator') {
+        const started = await request('coordination.start', { hostPid: process.pid })
+        if (!started.ok) throw new Error(`Coordinator start failed: ${started.error?.code}`)
+      }
       report = await collect({ ...options, rootPid: pid })
-      report.observedState = { enabled: initialized.enabled, listenerStarted: false, capabilities: initialized.capabilities }
+      report.observedState = { enabled: initialized.enabled, listenerStarted: false, coordinatorRegistered: mode === 'coordinator', capabilities: initialized.capabilities }
+      if (mode === 'coordinator' && !(await request('coordination.stop')).ok) throw new Error('Coordinator did not stop')
     }
   })
   report.nativeBuildId = identity.buildId

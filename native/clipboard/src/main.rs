@@ -21,6 +21,8 @@ struct Request {
 #[cfg(windows)]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use highlighter_clipboard::listener::Monitor;
+    use highlighter_clipboard::{barrier::Barrier, coordinator::Coordinator};
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     let epoch = format!(
         "g0-{}-{}",
@@ -29,6 +31,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
     let mut initialized = false;
     let mut monitor: Option<Monitor> = None;
+    let barrier = Arc::new(Barrier::default());
+    let mut coordinator: Option<Coordinator> = None;
     let mut quiescing = false;
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
@@ -49,7 +53,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 initialized = true;
                 Ok(
                     json!({"protocolVersion":1,"phase":"g0", "nativeBuildId":option_env!("HL_CLIPBOARD_SOURCE_ID").unwrap_or("unidentified"),
-                    "capabilities":{"clipboardMonitor":true,"history":false,"coordination":false},"enabled":false}),
+                    "capabilities":{"clipboardMonitor":true,"history":false,"coordination":true,"qualified":false},"enabled":false}),
                 )
             }
         } else if !initialized || request.session_epoch.as_deref() != Some(&epoch) {
@@ -63,7 +67,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         request.params.get("enabled").and_then(Value::as_bool)
                     {
                         let started = if enabled && monitor.is_none() {
-                            Monitor::start().map(|current| {
+                            Monitor::start_with_barrier(barrier.clone()).map(|current| {
                                 monitor = Some(current);
                             })
                         } else {
@@ -83,11 +87,65 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .as_ref()
                     .map(Monitor::status)
                     .unwrap_or_else(|| json!({"enabled":false,"accepted":0}))),
+                "coordination.start" => {
+                    if monitor.as_ref().is_some_and(Monitor::enabled) {
+                        Err("CAPTURE_MUST_BE_PAUSED")
+                    } else if coordinator.is_some() || quiescing {
+                        Err("COORDINATION_BLOCKED")
+                    } else if let Some(pid) = request
+                        .params
+                        .get("hostPid")
+                        .and_then(Value::as_u64)
+                        .and_then(|pid| u32::try_from(pid).ok())
+                    {
+                        Coordinator::start(pid, barrier.clone()).map(|current| {
+                            let endpoint = current.endpoint();
+                            coordinator = Some(current);
+                            endpoint
+                        })
+                    } else {
+                        Err("INVALID_ARGUMENT")
+                    }
+                }
+                "coordination.status" => Ok(coordinator
+                    .as_ref()
+                    .map(Coordinator::status)
+                    .unwrap_or_else(|| json!({"phase":"unregistered"}))),
+                "coordination.recover" if monitor.as_ref().is_some_and(Monitor::enabled) => {
+                    Err("CAPTURE_MUST_BE_PAUSED")
+                }
+                "coordination.recover" => coordinator
+                    .as_ref()
+                    .ok_or("UNREGISTERED")
+                    .and_then(Coordinator::recover)
+                    .map(|()| json!({"recovered":true})),
+                "coordination.stop" => {
+                    let stopped = if monitor.as_ref().is_some_and(Monitor::enabled) {
+                        Err("CAPTURE_MUST_BE_PAUSED")
+                    } else {
+                        coordinator
+                            .as_mut()
+                            .map(Coordinator::stop)
+                            .unwrap_or(Ok(()))
+                    };
+                    stopped.map(|()| {
+                        coordinator = None;
+                        json!({"phase":"stopped"})
+                    })
+                }
                 "quiesce" => {
                     quiescing = true;
-                    let stopped = monitor.as_mut().map(Monitor::stop).unwrap_or(Ok(()));
+                    if let Some(current) = &monitor {
+                        current.configure(false);
+                    }
+                    let stopped = coordinator
+                        .as_mut()
+                        .map(Coordinator::stop)
+                        .unwrap_or(Ok(()))
+                        .and_then(|()| monitor.as_mut().map(Monitor::stop).unwrap_or(Ok(())));
                     stopped.map(|()| {
                         monitor = None;
+                        coordinator = None;
                         quiescing = false;
                         json!({"phase":"stopped"})
                     })
@@ -108,6 +166,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(mut current) = monitor {
         current.stop()?;
     }
+    barrier.close();
     Ok(())
 }
 
