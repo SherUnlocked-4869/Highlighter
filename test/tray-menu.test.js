@@ -106,13 +106,17 @@ test('the proxy bridge entry sits in its own group between search and game mode'
     setTranslationProxyEnabled: () => {}
   })
   const index = template.findIndex((item) => item.label === label('main.tray.translation-proxy'))
+  const searchIndex = template.findIndex((item) => item.label === label('main.tray.local-search'))
+  const gameModeIndex = template.findIndex((item) => item.label === label('main.tray.game-mode'))
 
   assert.ok(index > 0, 'the entry exists')
+  // Its own group: exactly one separator on each side, so it never looks like part
+  // of the capture list above it or the game-mode switch below it. Neighbours are
+  // not asserted by name - other features may add entries in between.
   assert.equal(template[index - 1].type, 'separator')
   assert.equal(template[index + 1].type, 'separator')
-  assert.equal(template[index - 2].label, label('main.tray.local-search'))
-  assert.equal(template[index + 2].label, label('main.tray.game-mode'))
-  assert.equal(template.filter((item) => item.type === 'separator').length, 4)
+  assert.ok(index > searchIndex, 'it comes after the capture/search group')
+  assert.ok(index < gameModeIndex, 'it comes before the game mode switch')
 })
 
 test('the proxy bridge entry toggles the service and mirrors its state', () => {

@@ -20,6 +20,9 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i
 const DEFAULT_PROXY_PORT = 8080
 const PROXY_HOSTS = new Set(['127.0.0.1', '0.0.0.0'])
 const DEFAULT_PROXY_HOST = '127.0.0.1'
+// Fields the script-based bridge used to persist. Removed from the template when
+// the relay moved in-process; deleted on read so old stores stop carrying them.
+const LEGACY_PROXY_KEYS = Object.freeze(['repoDirectory', 'scriptPath', 'pythonPath', 'keepRunningOnExit', 'mode'])
 
 function normalizeLanguage(value) {
   return SUPPORTED_LANGUAGES.has(value) ? value : DEFAULT_LANGUAGE
@@ -42,8 +45,8 @@ function normalizeGain(value) {
 }
 
 function normalizePort(value) {
-  // Ports 1..65535 only. A value that cannot bind would surface much later as an
-  // opaque python traceback, so it falls back to the shipped default here.
+  // Ports 1..65535 only. A value that cannot bind would surface as an opaque
+  // EADDRINUSE at toggle time, so it falls back to the shipped default here.
   return Number.isInteger(value) && value > 0 && value < 65536 ? value : DEFAULT_PROXY_PORT
 }
 
@@ -71,13 +74,13 @@ function normalizeFrozenSettings(settings) {
   settings.shortcuts.toggleTranslationProxy = normalizeText(settings.shortcuts.toggleTranslationProxy)
   settings.proxy = { ...(settings.proxy || {}) }
   settings.proxy.autoStart = normalizeToggle(settings.proxy.autoStart)
-  settings.proxy.keepRunningOnExit = normalizeToggle(settings.proxy.keepRunningOnExit)
   settings.proxy.port = normalizePort(settings.proxy.port)
   settings.proxy.host = PROXY_HOSTS.has(settings.proxy.host) ? settings.proxy.host : DEFAULT_PROXY_HOST
-  settings.proxy.repoDirectory = normalizeText(settings.proxy.repoDirectory)
-  settings.proxy.scriptPath = normalizeText(settings.proxy.scriptPath)
-  settings.proxy.pythonPath = normalizeText(settings.proxy.pythonPath)
   settings.proxy.apiBase = normalizeText(settings.proxy.apiBase)
+  // The bridge used to be an external Python script. Its path fields are gone
+  // from the settings template; drop them so a store carried over from that
+  // build does not keep dead keys around forever.
+  for (const legacyKey of LEGACY_PROXY_KEYS) delete settings.proxy[legacyKey]
 }
 
 // Runtime settings normalization that used to live in the assembly layer

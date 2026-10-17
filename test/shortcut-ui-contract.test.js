@@ -224,44 +224,43 @@ test('the tray wires the Index-Translate proxy bridge through the optional menu 
     'the tray entry is wired in main.js'
   )
   assert.match(main, /createProxyBridgeController\(\{[\s\S]*createTrayIcon[\s\S]*getMainWindow/, 'the controller owns the tray refresh and the status push')
-  assert.match(main, /proxyBridgeController\.refresh\(\)\.finally\(\(\) => createTrayIcon\(\)\)/, 'startup adopts a leftover proxy')
+  assert.match(main, /proxyBridgeController\.refresh\(\)\.finally\(\(\) => createTrayIcon\(\)\)/, 'startup reconciles the tray state')
   assert.match(main, /proxyBridgeController\?\.startIfConfigured\(\)/, 'autostart stays opt-in')
   assert.match(main, /if \(proxyBridgeController\) \{ proxyBridgeController\.dispose\(\); proxyBridgeController = null \}/, 'quitting kills the proxy')
 })
 
 test('the proxy settings group is part of the frozen validation template', () => {
+  // The bridge is an in-process relay: no interpreter, no script path, no child
+  // process to keep alive, so none of those may be configurable any more.
   assert.deepEqual(Object.keys(DEFAULT_SETTINGS.proxy).sort(), [
     'apiBase',
     'autoStart',
     'host',
-    'keepRunningOnExit',
-    'port',
-    'pythonPath',
-    'repoDirectory',
-    'scriptPath'
+    'port'
   ])
-  // Off by default: a plain `npm start`, a test run or CI must not spawn python.
+  // Off by default: a plain `npm start`, a test run or CI must not open a port.
   assert.equal(DEFAULT_SETTINGS.proxy.autoStart, false)
-  assert.equal(DEFAULT_SETTINGS.proxy.keepRunningOnExit, false)
   assert.equal(DEFAULT_SETTINGS.proxy.port, 8080)
   // The handoff document's red line: loopback only unless the user says otherwise.
   assert.equal(DEFAULT_SETTINGS.proxy.host, '127.0.0.1')
+  // Empty means the built-in cloud endpoint.
+  assert.equal(DEFAULT_SETTINGS.proxy.apiBase, '')
 
   for (const patch of [
     { proxy: { autoStart: true } },
-    { proxy: { keepRunningOnExit: true } },
     { proxy: { port: 8088 } },
     { proxy: { host: '0.0.0.0' } },
-    { proxy: { repoDirectory: 'F:\\workspace\\Index-Translate' } },
-    { proxy: { scriptPath: 'F:\\workspace\\Index-Translate\\inference\\llm\\call_api.py' } },
-    { proxy: { pythonPath: 'py' } },
     { proxy: { apiBase: 'http://127.0.0.1:8000/v1' } }
   ]) {
     assert.doesNotThrow(() => assertSettingsPatch(patch, DEFAULT_SETTINGS), JSON.stringify(patch))
   }
-  // Negative controls: the validator still rejects an unknown key or a wrong type.
+  // Negative controls: the validator still rejects an unknown key or a wrong type,
+  // and the fields the script-based bridge used to persist are now unknown.
   assert.throws(() => assertSettingsPatch({ proxy: { notAFrozenKey: true } }, DEFAULT_SETTINGS), /不支持的设置项/)
   assert.throws(() => assertSettingsPatch({ proxy: { port: '8080' } }, DEFAULT_SETTINGS), /类型无效/)
+  for (const legacyKey of ['repoDirectory', 'scriptPath', 'pythonPath', 'keepRunningOnExit']) {
+    assert.throws(() => assertSettingsPatch({ proxy: { [legacyKey]: '' } }, DEFAULT_SETTINGS), /不支持的设置项/, legacyKey)
+  }
 })
 
 test('the proxy toggle is reachable from the hotkey page, the router and the settings card', () => {
@@ -271,11 +270,15 @@ test('the proxy toggle is reachable from the hotkey page, the router and the set
   assert.doesNotThrow(() => assertSettingsPatch({ shortcuts: { toggleTranslationProxy: 'Ctrl+Shift+9' } }, DEFAULT_SETTINGS))
   assert.ok(config.includes("['toggleTranslationProxy', 'config.function.toggle-translation-proxy', 'icons/lightning.svg', 'config.function.toggle-translation-proxy-description']"))
 
-  // The card rides the shared switchMarkup/bindSwitches path for its two toggles
-  // and the frozen `proxy` group for the text rows.
+  // The card rides the shared switchMarkup/bindSwitches path for its switch and
+  // the frozen `proxy` group for the text rows.
   assert.ok(config.includes("switchMarkup(settings.proxy.autoStart === true, 'autoStart', 'proxy')"))
-  assert.ok(config.includes("switchMarkup(settings.proxy.keepRunningOnExit === true, 'keepRunningOnExit', 'proxy')"))
   assert.ok(config.includes('id="proxyPort"'))
+  assert.ok(config.includes('id="proxyApiBase"'))
+  // Rows that belonged to the python script must be gone, not just hidden.
+  for (const removed of ['proxyRepoDirectory', 'proxyScriptPath', 'proxyPythonPath', 'id="proxyKeepRunningOnExit"']) {
+    assert.equal(config.includes(removed), false, `${removed} should no longer be rendered`)
+  }
   assert.match(config, /await window\.electronAPI\.executeFunction\('toggleTranslationProxy'\)/)
   assert.match(config, /window\.electronAPI\.onProxyStatus\(renderProxyStatus\)/)
   assert.match(config, /navigator\.clipboard\.writeText\(t\('config\.settings-system\.proxy-copy-template'/)

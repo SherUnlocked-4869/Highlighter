@@ -89,6 +89,10 @@
           "HighlighterClipboard.exe",
           "build-info.json"
         ]
+      },
+      {
+        "from": "docs/third-party",
+        "to": "third-party"
       }
     ],
     "files": [

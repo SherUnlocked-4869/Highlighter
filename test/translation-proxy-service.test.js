@@ -1,497 +1,484 @@
 'use strict'
 
-// Unit tests for the Index-Translate proxy bridge lifecycle.
+// End-to-end tests for the in-process relay.
 //
-// Everything the service touches (spawn, execFile, the loopback probe, the clock)
-// is injected, so no test here starts python or binds a port. The probe is the
-// service's source of truth, which is why most cases are expressed as "what does
-// the port answer" rather than "which function was called". The fake port is
-// modelled by the harness: it comes up when a child spawns, goes down when the
-// tree is killed, and can be pinned up to exercise the failure paths.
+// No network and no python: the relay binds an ephemeral loopback port and talks
+// to a fake upstream that this file starts on another ephemeral port. That makes
+// the assertions about bytes on the wire (payload injection, header whitelist,
+// streaming) instead of about which helper was called.
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { EventEmitter } = require('node:events')
+const http = require('node:http')
 
 const {
   createTranslationProxyService,
   ERROR_CODES,
+  PROBE_MARKER,
+  DEFAULT_MODEL,
   DEFAULT_PORT
 } = require('../main/services/translation-proxy-service')
 
-// This test file is an absolute path to an existing regular file, which is all
-// assertScriptExists() asks for.
-const SCRIPT_PATH = __filename
+function createUpstream(handler) {
+  const requests = []
+  const server = http.createServer((req, res) => {
+    let body = ''
+    req.setEncoding('utf8')
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      const record = { method: req.method, url: req.url, headers: req.headers, body }
+      requests.push(record)
+      try {
+        handler(record, req, res)
+      } catch (error) {
+        res.writeHead(500, { 'content-type': 'text/plain' })
+        res.end(String(error && error.message))
+      }
+    })
+  })
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address()
+      resolve({
+        port,
+        baseUrl: `http://127.0.0.1:${port}`,
+        requests,
+        close: () => new Promise((done) => {
+          server.closeAllConnections?.()
+          server.close(done)
+        })
+      })
+    })
+  })
+}
 
-const NOT_LISTENING = { answering: false, isProxy: false }
-const PROXY_READY = { answering: true, isProxy: true }
-const OTHER_SERVER = { answering: true, isProxy: false }
-
-function createFakeChild({ pid = 4242 } = {}) {
-  const child = new EventEmitter()
-  child.pid = pid
-  child.killed = false
-  child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} })
-  child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} })
-  child.kill = () => {
-    child.killed = true
-    return true
-  }
-  return child
+function request(port, path, { method = 'GET', headers = {}, body = null, timeoutMs = 8000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const payload = body === null ? null : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body), 'utf8')
+    const options = {
+      host: '127.0.0.1',
+      port,
+      path,
+      method,
+      timeout: timeoutMs,
+      headers: payload ? { 'content-type': 'application/json', ...headers } : headers
+    }
+    const req = http.request(options, (res) => {
+      const chunks = []
+      res.on('data', (chunk) => chunks.push(chunk))
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        headers: res.headers,
+        body: Buffer.concat(chunks).toString('utf8')
+      }))
+      // A relayed stream can be aborted mid-flight (stop, client cancel); without
+      // this the promise would never settle and the test would hang.
+      res.on('aborted', () => reject(new Error('response aborted')))
+      res.on('error', reject)
+      res.on('close', () => {
+        if (!res.complete) reject(new Error('response closed before completion'))
+      })
+    })
+    req.on('timeout', () => req.destroy(new Error('client timeout')))
+    req.on('error', reject)
+    if (payload) req.write(payload)
+    req.end()
+  })
 }
 
 function createService(overrides = {}) {
-  const calls = { attempts: [], spawn: [], exec: [], execSync: [], signals: [], states: [] }
-  const children = []
-  let nowMs = 1000
-  // The fake port. `listening` starts as configured, comes up when a child really
-  // spawns, and goes down when the tree is killed - unless the test pins it up.
-  let listening = overrides.listening === true
-  let spawned = false
-  let otherServer = overrides.otherServer === true
-
-  const autoProbe = async () => {
-    if (!listening || (overrides.neverReady === true && spawned)) return NOT_LISTENING
-    return otherServer ? OTHER_SERVER : PROXY_READY
+  const transitions = []
+  const settings = {
+    proxy: {
+      port: 0,
+      host: '127.0.0.1',
+      apiBase: '',
+      ...(overrides.proxy || {})
+    }
   }
-  let probeImpl = overrides.probe || autoProbe
-
-  const proxySettings = {
-    port: DEFAULT_PORT,
-    host: '127.0.0.1',
-    scriptPath: SCRIPT_PATH,
-    ...(overrides.proxy || {})
-  }
-
-  function releasePort() {
-    if (overrides.stubborn !== true) listening = false
-  }
-
   const service = createTranslationProxyService({
-    getSettings: () => ({ proxy: proxySettings }),
+    getSettings: () => settings,
     log: () => {},
-    onChange: (status) => calls.states.push(status.state),
-    spawnFn: (command, args, options) => {
-      calls.attempts.push(command)
-      const forcedCode = (overrides.spawnFailures || {})[command]
-      if (forcedCode) {
-        const failed = new EventEmitter()
-        failed.pid = undefined
-        setImmediate(() => {
-          const error = new Error(`${command}: spawn failed`)
-          error.code = forcedCode
-          failed.emit('error', error)
-        })
-        return failed
-      }
-      const child = createFakeChild({ pid: overrides.pid })
-      calls.spawn.push({ command, args, options })
-      children.push(child)
-      spawned = true
-      listening = true
-      setImmediate(() => child.emit('spawn'))
-      return child
-    },
-    execFileFn: (command, args, options, callback) => {
-      calls.exec.push({ command, args: [...args] })
-      if (command === 'taskkill') releasePort()
-      if ((overrides.execFailures || []).includes(command)) {
-        setImmediate(() => callback(new Error(`${command}: exec failed`), ''))
-        return
-      }
-      const script = String(args[args.length - 1] || '')
-      let stdout = ''
-      if (script.includes('Get-NetTCPConnection')) stdout = String(overrides.listenerPid ?? '')
-      else if (script.includes('Get-CimInstance')) stdout = overrides.commandLine ?? 'python call_api.py --serve'
-      setImmediate(() => callback(null, stdout))
-    },
-    execFileSyncFn: (command, args, options) => {
-      calls.execSync.push({ command, args: [...args], options })
-      if (command === 'taskkill') releasePort()
-      return ''
-    },
-    probe: async (input) => probeImpl(input),
-    platform: overrides.platform || 'win32',
-    env: {},
-    killProcess: (pid) => {
-      calls.signals.push(pid)
-      releasePort()
-    },
-    delay: async (ms) => { nowMs += ms },
-    now: () => nowMs
+    onChange: (status) => transitions.push(status.state),
+    ...(overrides.deps || {})
   })
-
-  return {
-    service,
-    calls,
-    children,
-    proxySettings,
-    setProbe(fn) { probeImpl = fn },
-    setListening(value) { listening = value },
-    setOtherServer(value) { otherServer = value },
-    setSetting(patch) { Object.assign(proxySettings, patch) },
-    child: () => children[children.length - 1]
-  }
+  return { service, settings, transitions }
 }
 
-test('start launches python with the proxy arguments and reports running once the probe answers', async () => {
-  const h = createService()
+async function startRelay(overrides = {}) {
+  const harness = createService(overrides)
+  const status = await harness.service.start()
+  return { ...harness, status, port: status.port }
+}
 
-  const status = await h.service.start()
+test('start binds an ephemeral port and reports the address the tray shows', async (t) => {
+  const relay = await startRelay()
+  t.after(() => relay.service.dispose())
 
-  assert.equal(status.state, 'running')
-  assert.equal(status.running, true)
-  assert.equal(status.busy, false)
-  assert.equal(status.pid, 4242)
-  assert.equal(status.endpoint, 'http://127.0.0.1:8080/v1')
-  assert.equal(status.lastError, '')
-
-  assert.equal(h.calls.spawn.length, 1)
-  const [attempt] = h.calls.spawn
-  assert.equal(attempt.command, 'py')
-  // The candidate contributes its own prefix, so py -3 really is "-3 <script>".
-  assert.deepEqual(attempt.args, ['-3', SCRIPT_PATH, '--serve', '8080', '--host', '127.0.0.1'])
-  assert.deepEqual(attempt.options.stdio, ['ignore', 'pipe', 'pipe'])
-  assert.equal(attempt.options.windowsHide, true)
-  // The banner is UTF-8 but a Windows pipe defaults to the ANSI code page, so
-  // without this every logged line is mojibake.
-  assert.equal(attempt.options.env.PYTHONIOENCODING, 'utf-8')
-  assert.equal(attempt.options.env.PYTHONUNBUFFERED, '1')
-  assert.deepEqual(h.calls.states, ['starting', 'running'])
+  assert.equal(relay.status.state, 'running')
+  assert.equal(relay.status.running, true)
+  assert.equal(relay.status.busy, false)
+  assert.ok(relay.port > 0, 'the ephemeral port is reported back')
+  assert.equal(relay.status.endpoint, `http://127.0.0.1:${relay.port}/v1`)
+  // The relay lives in this process: there is no child pid and nothing to adopt.
+  assert.equal(relay.status.pid, null)
+  assert.equal(relay.status.adopted, false)
+  assert.equal(relay.status.lastError, '')
+  assert.deepEqual(relay.transitions, ['starting', 'running'])
 })
 
-test('start falls back to the next interpreter when the launcher is missing', async () => {
-  const h = createService({ spawnFailures: { py: 'ENOENT' } })
+test('GET / answers the readiness marker the probe and the plugin expect', async (t) => {
+  const relay = await startRelay()
+  t.after(() => relay.service.dispose())
 
-  await h.service.start()
-
-  assert.deepEqual(h.calls.attempts, ['py', 'python'])
-  assert.equal(h.calls.spawn.length, 1)
-  assert.equal(h.calls.spawn[0].command, 'python')
-  assert.deepEqual(h.calls.spawn[0].args, [SCRIPT_PATH, '--serve', '8080', '--host', '127.0.0.1'])
+  const response = await request(relay.port, '/')
+  assert.equal(response.status, 200)
+  assert.equal(response.body, PROBE_MARKER)
+  assert.match(response.headers['content-type'], /text\/plain/)
+  assert.equal(response.headers['access-control-allow-origin'], '*')
 })
 
-test('start reports python-missing when no candidate interpreter exists', async () => {
-  const h = createService({ spawnFailures: { py: 'ENOENT', python: 'ENOENT' } })
+test('GET /v1/models advertises only the model the public endpoint serves', async (t) => {
+  const relay = await startRelay()
+  t.after(() => relay.service.dispose())
 
-  await assert.rejects(h.service.start(), (error) => error.code === ERROR_CODES.pythonMissing)
-  assert.equal(h.service.getStatus().state, 'error')
-  assert.deepEqual(h.calls.attempts, ['py', 'python'])
-})
-
-test('start without a configured repository fails before spawning anything', async () => {
-  const h = createService({ proxy: { scriptPath: '', repoDirectory: '' } })
-
-  await assert.rejects(h.service.start(), (error) => error.code === ERROR_CODES.scriptMissing)
-  assert.match(h.service.getStatus().lastError, /repoDirectory/)
-  assert.equal(h.service.getStatus().state, 'error')
-  assert.deepEqual(h.calls.spawn, [])
-  assert.deepEqual(h.calls.attempts, [])
-})
-
-test('start rejects a relative script path instead of resolving it against the app cwd', async () => {
-  const h = createService({ proxy: { scriptPath: 'inference\\llm\\call_api.py' } })
-
-  await assert.rejects(h.service.start(), (error) => error.code === ERROR_CODES.scriptMissing)
-  assert.match(h.service.getStatus().lastError, /absolute/)
-})
-
-test('start reports a missing script with the path it actually checked', async () => {
-  const h = createService({ proxy: { scriptPath: 'F:\\nope\\call_api.py' } })
-
-  await assert.rejects(h.service.start(), (error) => error.code === ERROR_CODES.scriptMissing)
-  assert.match(h.service.getStatus().lastError, /F:\\nope\\call_api\.py/)
-})
-
-test('start resolves the script from the configured repository directory', async () => {
-  const fs = require('node:fs')
-  const os = require('node:os')
-  const path = require('node:path')
-  const repository = fs.mkdtempSync(path.join(os.tmpdir(), 'highlighter-proxy-repo-'))
-  const scriptDirectory = path.join(repository, 'inference', 'llm')
-  fs.mkdirSync(scriptDirectory, { recursive: true })
-  fs.writeFileSync(path.join(scriptDirectory, 'call_api.py'), '# placeholder\n')
-  try {
-    const h = createService({ proxy: { scriptPath: '', repoDirectory: repository } })
-
-    await h.service.start()
-
-    assert.equal(h.service.getStatus().running, true)
-    assert.equal(h.calls.spawn[0].args[1], path.join(scriptDirectory, 'call_api.py'))
-    // The probe runs from the repository root so the user can debug from the log.
-    assert.equal(h.calls.spawn[0].options.cwd, repository)
-  } finally {
-    fs.rmSync(repository, { recursive: true, force: true })
+  for (const path of ['/v1/models', '/models']) {
+    const response = await request(relay.port, path)
+    assert.equal(response.status, 200, path)
+    const payload = JSON.parse(response.body)
+    assert.equal(payload.object, 'list')
+    // The upstream script listed 2B/9B as well; those only exist on a self-hosted
+    // deployment and picking them used to fail with "model not found".
+    assert.deepEqual(payload.data, [{ id: DEFAULT_MODEL, object: 'model' }])
   }
 })
 
-test('start refuses a port that another program already answers', async () => {
-  const h = createService({ listening: true, otherServer: true })
+test('OPTIONS answers the browser preflight with the full CORS set', async (t) => {
+  const relay = await startRelay()
+  t.after(() => relay.service.dispose())
 
-  await assert.rejects(h.service.start(), (error) => error.code === ERROR_CODES.portInUse)
-  assert.equal(h.service.getStatus().state, 'error')
-  // Probing first is what keeps a second proxy instance from ever being spawned.
-  assert.deepEqual(h.calls.spawn, [])
+  const response = await request(relay.port, '/v1/chat/completions', { method: 'OPTIONS' })
+  assert.equal(response.status, 200)
+  assert.equal(response.headers['access-control-allow-origin'], '*')
+  assert.equal(response.headers['access-control-allow-methods'], 'GET, POST, OPTIONS')
+  assert.equal(response.headers['access-control-allow-headers'], '*')
+  assert.equal(response.headers['access-control-max-age'], '86400')
 })
 
-test('start adopts a proxy that is already listening instead of spawning a duplicate', async () => {
-  const h = createService({ listening: true, listenerPid: 777 })
+test('POST forwards the request and injects the translation defaults', async (t) => {
+  const upstream = await createUpstream((record, req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ choices: [{ message: { content: 'Hello, world.' } }] }))
+  })
+  t.after(() => upstream.close())
+  const relay = await startRelay({ proxy: { apiBase: `${upstream.baseUrl}/v1` } })
+  t.after(() => relay.service.dispose())
 
-  const status = await h.service.start()
+  const response = await request(relay.port, '/v1/chat/completions', {
+    method: 'POST',
+    body: { model: DEFAULT_MODEL, messages: [{ role: 'user', content: 'hi' }] }
+  })
 
-  assert.equal(status.state, 'running')
-  assert.equal(status.adopted, true)
-  assert.equal(status.pid, 777)
-  assert.deepEqual(h.calls.spawn, [])
+  assert.equal(response.status, 200)
+  assert.equal(response.headers['access-control-allow-origin'], '*')
+  assert.equal(JSON.parse(response.body).choices[0].message.content, 'Hello, world.')
+
+  assert.equal(upstream.requests.length, 1)
+  const forwarded = upstream.requests[0]
+  assert.equal(forwarded.method, 'POST')
+  assert.equal(forwarded.url, '/v1/chat/completions')
+  // Anti-CoT is the reason this bridge exists at all.
+  assert.equal(forwarded.headers['user-agent'], 'Index-Translate-Client/1.0')
+  const payload = JSON.parse(forwarded.body)
+  assert.equal(payload.chat_template_kwargs.enable_thinking, false)
+  assert.equal(payload.temperature, 0)
+  assert.equal(payload.model, DEFAULT_MODEL)
 })
 
-test('start fails when the child exits before the port answers, keeping the python output', async () => {
-  const h = createService({ neverReady: true })
-  h.setProbe(async () => {
-    const child = h.child()
-    if (child && !child.exited) {
-      child.exited = true
-      child.stderr.emit('data', 'Address already in use\n')
-      child.emit('exit', 1)
+test('an explicit thinking/temperature choice is never overridden', async (t) => {
+  const upstream = await createUpstream((record, req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{}')
+  })
+  t.after(() => upstream.close())
+  const relay = await startRelay({ proxy: { apiBase: `${upstream.baseUrl}/v1` } })
+  t.after(() => relay.service.dispose())
+
+  await request(relay.port, '/v1/chat/completions', {
+    method: 'POST',
+    body: {
+      model: DEFAULT_MODEL,
+      messages: [],
+      temperature: 0.7,
+      chat_template_kwargs: { enable_thinking: true, custom: 'kept' }
     }
-    return NOT_LISTENING
   })
 
-  await assert.rejects(h.service.start(), (error) => {
-    assert.equal(error.code, ERROR_CODES.childExited)
-    assert.match(error.message, /Address already in use/)
-    return true
+  const payload = JSON.parse(upstream.requests[0].body)
+  assert.equal(payload.temperature, 0.7)
+  assert.equal(payload.chat_template_kwargs.enable_thinking, true)
+  assert.equal(payload.chat_template_kwargs.custom, 'kept')
+})
+
+test('a non-JSON body is forwarded byte for byte', async (t) => {
+  const upstream = await createUpstream((record, req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{}')
   })
-  assert.equal(h.service.getStatus().state, 'error')
+  t.after(() => upstream.close())
+  const relay = await startRelay({ proxy: { apiBase: `${upstream.baseUrl}/v1` } })
+  t.after(() => relay.service.dispose())
+
+  const raw = 'not json at all'
+  const response = await request(relay.port, '/v1/completions', {
+    method: 'POST',
+    headers: { 'content-type': 'text/plain' },
+    body: raw
+  })
+
+  assert.equal(response.status, 200)
+  assert.equal(upstream.requests[0].body, raw)
 })
 
-test('start times out, kills the tree it started and reports the failure', async () => {
-  const h = createService({ neverReady: true })
+test('a streaming upstream reaches the client chunk by chunk', async (t) => {
+  const upstream = await createUpstream((record, req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write('data: first\n\n')
+    setTimeout(() => {
+      res.write('data: second\n\n')
+      setTimeout(() => {
+        res.write('data: third\n\n')
+        res.end()
+      }, 120)
+    }, 120)
+  })
+  t.after(() => upstream.close())
+  const relay = await startRelay({ proxy: { apiBase: `${upstream.baseUrl}/v1` } })
+  t.after(() => relay.service.dispose())
 
-  await assert.rejects(h.service.start(), (error) => error.code === ERROR_CODES.startTimeout)
+  const arrivals = []
+  const body = await new Promise((resolve, reject) => {
+    const payload = Buffer.from(JSON.stringify({ model: DEFAULT_MODEL, messages: [], stream: true }), 'utf8')
+    const req = http.request({
+      host: '127.0.0.1',
+      port: relay.port,
+      path: '/v1/chat/completions',
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': payload.length }
+    }, (res) => {
+      let text = ''
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => {
+        arrivals.push({ at: Date.now(), chunk })
+        text += chunk
+      })
+      res.on('end', () => resolve(text))
+    })
+    req.on('error', reject)
+    req.end(payload)
+  })
 
-  assert.equal(h.service.getStatus().state, 'error')
-  const taskkill = h.calls.exec.find((call) => call.command === 'taskkill')
-  assert.ok(taskkill, 'the half-started process is cleaned up')
-  assert.deepEqual(taskkill.args, ['/PID', '4242', '/T', '/F'])
+  assert.match(body, /data: first/)
+  assert.match(body, /data: third/)
+  // Three separate writes means the first chunk arrived well before the last one;
+  // a buffered relay would deliver them together.
+  assert.ok(arrivals.length >= 3, `expected >= 3 chunks, saw ${arrivals.length}`)
+  assert.ok(arrivals.at(-1).at - arrivals[0].at >= 100, 'the chunks were not streamed')
 })
 
-test('start is idempotent while a transition is in flight', async () => {
-  const h = createService()
+test('the upstream status and whitelisted headers are passed through', async (t) => {
+  const upstream = await createUpstream((record, req, res) => {
+    res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '7', 'set-cookie': 'secret=1' })
+    res.end(JSON.stringify({ error: 'rate limited' }))
+  })
+  t.after(() => upstream.close())
+  const relay = await startRelay({ proxy: { apiBase: `${upstream.baseUrl}/v1` } })
+  t.after(() => relay.service.dispose())
 
-  const first = h.service.start()
-  const second = h.service.start()
-  assert.equal(h.service.getStatus().busy, true)
-  await Promise.all([first, second])
+  const response = await request(relay.port, '/v1/chat/completions', {
+    method: 'POST',
+    body: { model: DEFAULT_MODEL, messages: [] }
+  })
 
-  assert.equal(h.calls.spawn.length, 1)
-  assert.equal(h.service.getStatus().running, true)
+  assert.equal(response.status, 429)
+  assert.equal(response.headers['retry-after'], '7')
+  assert.equal(response.headers['content-type'], 'application/json')
+  assert.equal(response.headers['access-control-allow-origin'], '*')
+  // A whitelist, not a passthrough: the upstream must not be able to set cookies
+  // for the page through this bridge.
+  assert.equal(response.headers['set-cookie'], undefined)
+  assert.equal(JSON.parse(response.body).error, 'rate limited')
 })
 
-test('stop kills the whole process tree and returns to idle once the port is free', async () => {
-  const h = createService()
+test('an unreachable upstream produces a 502 the page can read', async (t) => {
+  // Port 1 on loopback is not listening, so the connect is refused immediately.
+  const relay = await startRelay({ proxy: { apiBase: 'http://127.0.0.1:1/v1' } })
+  t.after(() => relay.service.dispose())
 
-  await h.service.start()
-  const status = await h.service.stop()
+  const response = await request(relay.port, '/v1/chat/completions', {
+    method: 'POST',
+    body: { model: DEFAULT_MODEL, messages: [] }
+  })
 
-  assert.equal(status.state, 'idle')
-  assert.equal(status.running, false)
-  assert.deepEqual(h.calls.states, ['starting', 'running', 'stopping', 'idle'])
-
-  const taskkill = h.calls.exec.filter((call) => call.command === 'taskkill')
-  assert.equal(taskkill.length, 1)
-  // /T is what stops the python process behind a py.exe launcher.
-  assert.deepEqual(taskkill[0].args, ['/PID', '4242', '/T', '/F'])
+  assert.equal(response.status, 502)
+  assert.equal(response.headers['access-control-allow-origin'], '*')
+  assert.ok(JSON.parse(response.body).error)
 })
 
-test('stop refuses to kill an adopted process that is not the proxy', async () => {
-  const h = createService({ listening: true, listenerPid: 999, commandLine: 'node unrelated-service.js' })
+test('unknown paths answer 404 with CORS so the page can read the error', async (t) => {
+  const relay = await startRelay()
+  t.after(() => relay.service.dispose())
 
-  await h.service.refresh()
-  assert.equal(h.service.getStatus().adopted, true)
+  const missing = await request(relay.port, '/v1/nope')
+  assert.equal(missing.status, 404)
+  assert.equal(missing.headers['access-control-allow-origin'], '*')
 
-  await assert.rejects(h.service.stop(), (error) => error.code === ERROR_CODES.killRefused)
-  assert.equal(h.calls.exec.some((call) => call.command === 'taskkill'), false)
-  // The port still answers, so the checkbox must stay honest about it.
-  assert.equal(h.service.getStatus().running, true)
-  assert.equal(h.service.getStatus().lastErrorCode, ERROR_CODES.killRefused)
+  const badPost = await request(relay.port, '/v1/embeddings', { method: 'POST', body: {} })
+  assert.equal(badPost.status, 404)
+  assert.equal(badPost.headers['access-control-allow-origin'], '*')
 })
 
-test('stop refuses an adopted process whose command line cannot be read', async () => {
-  const h = createService({ listening: true, listenerPid: 999, commandLine: '' })
+test('unsupported methods answer 405', async (t) => {
+  const relay = await startRelay()
+  t.after(() => relay.service.dispose())
 
-  await h.service.refresh()
-  await assert.rejects(h.service.stop(), (error) => error.code === ERROR_CODES.killRefused)
-  assert.equal(h.calls.exec.some((call) => call.command === 'taskkill'), false)
+  const response = await request(relay.port, '/v1/models', { method: 'DELETE' })
+  assert.equal(response.status, 405)
 })
 
-test('stop reports stop-timeout and keeps running when the port keeps answering', async () => {
-  const h = createService({ stubborn: true, listenerPid: 4242 })
+test('a trailing slash on the upstream base never produces a double slash', async (t) => {
+  const upstream = await createUpstream((record, req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{}')
+  })
+  t.after(() => upstream.close())
+  const relay = await startRelay({ proxy: { apiBase: `${upstream.baseUrl}/v1/` } })
+  t.after(() => relay.service.dispose())
 
-  await h.service.start()
-  await assert.rejects(h.service.stop(), (error) => error.code === ERROR_CODES.stopTimeout)
-
-  const status = h.service.getStatus()
-  assert.equal(status.running, true)
-  assert.equal(status.lastErrorCode, ERROR_CODES.stopTimeout)
-  assert.equal(status.pid, 4242)
+  await request(relay.port, '/v1/chat/completions', { method: 'POST', body: { messages: [] } })
+  assert.equal(upstream.requests[0].url, '/v1/chat/completions')
 })
 
-test('stop is a no-op when nothing is tracked and nothing listens', async () => {
-  const h = createService()
+test('a port that is already taken reports port-in-use instead of a raw EADDRINUSE', async (t) => {
+  const occupied = await createUpstream((record, req, res) => res.end())
+  t.after(() => occupied.close())
+  const { service } = createService({ proxy: { port: occupied.port } })
 
-  const status = await h.service.stop()
-
-  assert.equal(status.state, 'idle')
-  assert.deepEqual(h.calls.exec, [])
-  assert.deepEqual(h.calls.signals, [])
-})
-
-test('stop discovers and stops a proxy when no pid was tracked', async () => {
-  // Reached from the error state: an earlier start refused the port because
-  // another program held it, so nothing is tracked but the bridge is not idle.
-  const h = createService({ listening: true, otherServer: true, listenerPid: 616 })
-  await assert.rejects(h.service.start(), (error) => error.code === ERROR_CODES.portInUse)
-
-  // The port is now backed by something the guard accepts as the proxy.
-  h.setOtherServer(false)
-  await h.service.stop()
-
-  const taskkill = h.calls.exec.filter((call) => call.command === 'taskkill')
-  assert.deepEqual(taskkill[0].args, ['/PID', '616', '/T', '/F'])
-  assert.equal(h.service.getStatus().state, 'idle')
-})
-
-test('refresh adopts a leftover proxy and releases it when it disappears', async () => {
-  const h = createService({ listening: true, listenerPid: 555 })
-
-  await h.service.refresh()
-  assert.equal(h.service.getStatus().state, 'running')
-  assert.equal(h.service.getStatus().adopted, true)
-  assert.equal(h.service.getStatus().pid, 555)
-  assert.deepEqual(h.calls.states, ['running'])
-
-  h.setListening(false)
-  await h.service.refresh()
-  assert.equal(h.service.getStatus().state, 'idle')
-  assert.deepEqual(h.calls.states, ['running', 'idle'])
-})
-
-test('refresh leaves a running transition alone', async () => {
-  const h = createService()
-  const starting = h.service.start()
-  await h.service.refresh()
-  await starting
-  assert.equal(h.service.getStatus().running, true)
-})
-
-test('a proxy that dies while running flips the status instead of staying checked', async () => {
-  const h = createService()
-
-  await h.service.start()
-  h.setListening(false)
-  h.child().emit('exit', 2)
-
-  const status = h.service.getStatus()
+  await assert.rejects(service.start(), (error) => error.code === ERROR_CODES.portInUse)
+  const status = service.getStatus()
   assert.equal(status.state, 'error')
   assert.equal(status.running, false)
-  assert.equal(status.lastErrorCode, ERROR_CODES.childExited)
+  assert.equal(status.lastErrorCode, ERROR_CODES.portInUse)
+  assert.match(status.lastError, new RegExp(String(occupied.port)))
 })
 
-test('toggle starts when idle and stops when running', async () => {
-  const h = createService()
+test('an invalid upstream address fails at toggle time, not on the first translation', async () => {
+  const { service } = createService({ proxy: { apiBase: 'not-a-url' } })
 
-  assert.equal((await h.service.toggle()).running, true)
-  assert.equal((await h.service.toggle()).running, false)
-})
-
-test('dispose kills synchronously so quitting the app cannot leave an orphan', async () => {
-  const h = createService()
-  await h.service.start()
-
-  assert.equal(h.service.dispose(), true)
-  assert.equal(h.calls.execSync.length, 1)
-  assert.equal(h.calls.execSync[0].command, 'taskkill')
-  assert.deepEqual(h.calls.execSync[0].args, ['/PID', '4242', '/T', '/F'])
-  // Second call has nothing left to kill.
-  assert.equal(h.service.dispose(), false)
-})
-
-test('a non-Windows host stops with a signal instead of taskkill', async () => {
-  const h = createService({ platform: 'linux' })
-
-  await h.service.start()
-  await h.service.stop()
-
-  assert.deepEqual(h.calls.signals, [4242])
-  assert.equal(h.calls.exec.some((call) => call.command === 'taskkill'), false)
-})
-
-test('the apiBase and host settings reach the command line', async () => {
-  const h = createService({ proxy: { port: 8088, host: '0.0.0.0', apiBase: 'http://127.0.0.1:8000/v1' } })
-
-  await h.service.start()
-
-  assert.deepEqual(h.calls.spawn[0].args, [
-    '-3',
-    SCRIPT_PATH,
-    '--serve',
-    '8088',
-    '--host',
-    '0.0.0.0',
-    '--api-base',
-    'http://127.0.0.1:8000/v1'
-  ])
-  assert.equal(h.service.getStatus().endpoint, 'http://127.0.0.1:8088/v1')
-  assert.equal(h.service.getStatus().host, '0.0.0.0')
-})
-
-test('an invalid stored port falls back to the default instead of failing to bind', async () => {
-  const h = createService({ proxy: { port: 70000 } })
-
-  await h.service.start()
-
-  assert.equal(h.service.getStatus().port, DEFAULT_PORT)
-  assert.equal(h.calls.spawn[0].args.includes(String(DEFAULT_PORT)), true)
-})
-
-test('unexpected spawn failures are reported without trying another interpreter', async () => {
-  const h = createService({ spawnFailures: { py: 'EACCES' } })
-
-  await assert.rejects(h.service.start(), (error) => error.code === ERROR_CODES.spawnFailed)
-  assert.deepEqual(h.calls.attempts, ['py'])
-})
-
-test('the change listener fires for every observable transition and stays quiet otherwise', async () => {
-  const h = createService()
-
-  await h.service.start()
-  await h.service.stop()
-  assert.deepEqual(h.calls.states, ['starting', 'running', 'stopping', 'idle'])
-
-  // No state change, no rebuild: the tray is only rebuilt when it can differ.
-  await h.service.refresh()
-  assert.deepEqual(h.calls.states, ['starting', 'running', 'stopping', 'idle'])
-})
-
-test('a throwing change listener cannot break the state machine', async () => {
-  let clock = 1000
-  const service = createTranslationProxyService({
-    getSettings: () => ({ proxy: { scriptPath: SCRIPT_PATH } }),
-    log: () => {},
-    onChange: () => { throw new Error('listener exploded') },
-    spawnFn: () => {
-      const child = createFakeChild()
-      setImmediate(() => child.emit('spawn'))
-      return child
-    },
-    probe: async () => NOT_LISTENING,
-    platform: 'linux',
-    delay: async (ms) => { clock += ms },
-    now: () => clock
-  })
-
-  assert.equal(service.getStatus().state, 'idle')
-  await assert.rejects(service.start(), (error) => error.code === ERROR_CODES.startTimeout)
+  await assert.rejects(service.start(), (error) => error.code === ERROR_CODES.upstreamInvalid)
   assert.equal(service.getStatus().state, 'error')
+  assert.equal(service.getStatus().lastErrorCode, ERROR_CODES.upstreamInvalid)
+
+  const unsupported = createService({ proxy: { apiBase: 'ftp://example.com/v1' } })
+  await assert.rejects(unsupported.service.start(), (error) => error.code === ERROR_CODES.upstreamInvalid)
+})
+
+test('start is idempotent while the listener is being created', async (t) => {
+  const { service } = createService()
+
+  const first = service.start()
+  const second = service.start()
+  assert.equal(service.getStatus().busy, true)
+  const [a, b] = await Promise.all([first, second])
+  t.after(() => service.dispose())
+
+  assert.equal(a.port, b.port)
+  assert.equal(service.getStatus().running, true)
+})
+
+test('stop releases the port and the relay can be started again', async (t) => {
+  const { service } = createService()
+  const first = await service.start()
+  const port = first.port
+  t.after(() => service.dispose())
+
+  const stopped = await service.stop()
+  assert.equal(stopped.state, 'idle')
+  assert.equal(stopped.running, false)
+  await assert.rejects(request(port, '/'), /ECONNREFUSED/)
+
+  // Port reuse is the point: a stop/start cycle must not leave the socket behind.
+  const restarted = await service.start()
+  t.after(() => service.stop().catch(() => {}))
+  assert.equal(restarted.running, true)
+  const response = await request(restarted.port, '/')
+  assert.equal(response.body, PROBE_MARKER)
+})
+
+test('stop is a no-op when the relay is idle', async () => {
+  const { service } = createService()
+  const status = await service.stop()
+  assert.equal(status.state, 'idle')
+})
+
+test('dispose closes the listener synchronously for app quit', async () => {
+  const { service } = createService()
+  const status = await service.start()
+
+  assert.equal(service.dispose(), true)
+  assert.equal(service.dispose(), false)
+  await assert.rejects(request(status.port, '/'), /ECONNREFUSED/)
+})
+
+test('an oversized body is rejected with 413', async (t) => {
+  const relay = await startRelay({ deps: { maxBodyBytes: 64 } })
+  t.after(() => relay.service.dispose())
+
+  const response = await request(relay.port, '/v1/chat/completions', {
+    method: 'POST',
+    body: { messages: ['x'.repeat(200)] }
+  })
+  assert.equal(response.status, 413)
+})
+
+test('stop is not wedged by an in-flight streaming response', async (t) => {
+  const upstream = await createUpstream((record, req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write('data: first\n\n')
+    // Never ends on its own: only closeAllConnections can release it.
+  })
+  t.after(() => upstream.close())
+  const relay = await startRelay({ proxy: { apiBase: `${upstream.baseUrl}/v1` } })
+  t.after(() => relay.service.dispose())
+
+  const streaming = request(relay.port, '/v1/chat/completions', {
+    method: 'POST',
+    body: { model: DEFAULT_MODEL, messages: [], stream: true }
+  }).catch(() => null)
+  await new Promise((resolve) => setTimeout(resolve, 80))
+
+  const startedAt = Date.now()
+  const stopped = await relay.service.stop()
+  const elapsed = Date.now() - startedAt
+
+  assert.equal(stopped.state, 'idle')
+  assert.ok(elapsed < 2000, `stop took ${elapsed}ms, the open stream was not released`)
+  await streaming
+})
+
+test('getStatus accepts the settings snapshot the tray already read', async (t) => {
+  const { service } = createService()
+  t.after(() => service.dispose())
+
+  const status = service.getStatus({ proxy: { port: 9123, host: '0.0.0.0', apiBase: 'http://127.0.0.1:8000/v1' } })
+  assert.equal(status.port, 9123)
+  assert.equal(status.host, '0.0.0.0')
+  assert.equal(status.apiBase, 'http://127.0.0.1:8000/v1')
+  assert.equal(status.endpoint, 'http://127.0.0.1:9123/v1')
+})
+
+test('the settings default port is still 8080', () => {
+  assert.equal(DEFAULT_PORT, 8080)
+  const { service } = createService({ proxy: { port: 70000 } })
+  assert.equal(service.getStatus().port, DEFAULT_PORT)
 })

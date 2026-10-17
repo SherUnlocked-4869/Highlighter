@@ -1246,9 +1246,9 @@ async function startApplication() {
     if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
     if (isWin) captureDomain.warmUpNativeDisplays()
     app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
-    // Adoption first (a proxy left by a crashed session must show as checked),
-    // then the opt-in autostart. Both are probe/opt-in driven, so the default
-    // configuration spawns nothing.
+    // Reconcile the tray state first, then honour the opt-in autostart. Neither
+    // opens a socket unless the user asked for it, so the default configuration
+    // stays quiet.
     if (proxyBridgeController) proxyBridgeController.refresh().finally(() => createTrayIcon())
     proxyBridgeController?.startIfConfigured()
   }

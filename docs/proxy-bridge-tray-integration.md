@@ -144,6 +144,10 @@
 
 ### 4.1 新增 `main/services/translation-proxy-service.js`（核心，约 220 行）
 
+> ⚠️ **本节已被取代（2026-10-17）**：该服务已改为**进程内 Node 中继**，不再 spawn Python，
+> 也不再需要仓库目录/脚本路径/Python 解释器等设置。现行实现、决策与验证结果见
+> `docs/proxy-inprocess-relay-plan.md`；本节仅保留为历史设计记录。
+
 工厂函数 + 全依赖注入（照抄 `EverythingService` 的可测结构）。**新代码注释一律用英文**——`check-i18n` 会统计 `main/**` 的中文字面量（当前 606 上限），中文注释会顶到门禁。
 
 ```js

@@ -64,7 +64,7 @@ function createStubService(overrides = {}) {
 function createHarness({ settings = {}, service, window = null, dialog = null } = {}) {
   const calls = { tray: 0, dispatched: [], dialogs: [], logs: [] }
   const controller = createProxyBridgeController({
-    getSettings: () => ({ proxy: { autoStart: false, keepRunningOnExit: false, ...(settings.proxy || {}) }, ...settings }),
+    getSettings: () => ({ proxy: { autoStart: false, ...(settings.proxy || {}) }, ...settings }),
     log: (...args) => calls.logs.push(args),
     t,
     dialog: dialog || { showMessageBox: (options) => { calls.dialogs.push(options); return Promise.resolve() } },
@@ -134,7 +134,7 @@ test('setEnabled stops when the box is cleared', async () => {
 })
 
 test('a failed start is reported through the dialog and never rejects', async () => {
-  const error = Object.assign(new Error('Proxy script not found: F:\\nope\\call_api.py'), { code: 'script-missing' })
+  const error = Object.assign(new Error('Port 8080 is already in use'), { code: 'port-in-use' })
   const service = createStubService({ startError: error })
   const { controller, calls } = createHarness({ service })
 
@@ -145,17 +145,17 @@ test('a failed start is reported through the dialog and never rejects', async ()
   assert.equal(calls.dialogs[0].type, 'warning')
   assert.equal(calls.dialogs[0].message, t('main.proxy.toggle-failed'))
   // The localized guidance and the raw technical message both survive.
-  assert.match(calls.dialogs[0].detail, /call_api\.py/)
-  assert.match(calls.dialogs[0].detail, /F:\\nope/)
+  assert.match(calls.dialogs[0].detail, /8080/)
+  assert.match(calls.dialogs[0].detail, new RegExp(t('main.proxy.port-in-use')))
   assert.equal(calls.tray, 1)
 })
 
-test('every sidecar error code has its own localized copy', () => {
+test('every relay error code has its own localized copy', () => {
   for (const [code, key] of Object.entries(ERROR_KEYS)) {
     const value = t(key)
     assert.notEqual(value, key, `${code} has no copy for ${key}`)
   }
-  assert.equal(Object.keys(ERROR_KEYS).length, 8)
+  assert.equal(Object.keys(ERROR_KEYS).length, 3)
 })
 
 test('an unknown error code falls back to the generic copy', async () => {
@@ -182,11 +182,11 @@ test('the failure copy follows the interface language', async () => {
   const previous = 'zh-CN'
   setLanguage('en-US')
   try {
-    const service = createStubService({ startError: Object.assign(new Error('x'), { code: 'python-missing' }) })
+    const service = createStubService({ startError: Object.assign(new Error('x'), { code: 'listen-failed' }) })
     const { controller, calls } = createHarness({ service })
     await controller.setEnabled(true)
     assert.equal(calls.dialogs[0].message, 'The translation proxy could not be started or stopped')
-    assert.match(calls.dialogs[0].detail, /Python interpreter/)
+    assert.match(calls.dialogs[0].detail, /could not listen/)
   } finally {
     setLanguage(previous)
   }
@@ -214,14 +214,12 @@ test('startIfConfigured stays dormant unless the user opted in', async () => {
   assert.equal(enabled.calls.tray, 1)
 })
 
-test('dispose honours keepRunningOnExit', () => {
-  const kill = createHarness({ service: createStubService(), settings: { proxy: { keepRunningOnExit: false } } })
-  assert.equal(kill.controller.dispose(), true)
-  assert.equal(kill.controller.service.calls.dispose, 1)
-
-  const keep = createHarness({ service: createStubService(), settings: { proxy: { keepRunningOnExit: true } } })
-  assert.equal(keep.controller.dispose(), false)
-  assert.equal(keep.controller.service.calls.dispose, 0)
+test('dispose always closes the in-process relay', () => {
+  // The relay cannot outlive the app, so there is no "keep running" opt-out and
+  // nothing for the next launch to adopt.
+  const harness = createHarness({ service: createStubService() })
+  assert.equal(harness.controller.dispose(), true)
+  assert.equal(harness.controller.service.calls.dispose, 1)
 })
 
 test('broadcast pushes the status to the main window', () => {

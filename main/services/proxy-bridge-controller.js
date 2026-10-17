@@ -12,14 +12,9 @@ const { createTranslationProxyService } = require('./translation-proxy-service')
 // the copy lives in shared/locales/main.js, so this module carries no UI text of
 // its own (decision D6 + the check-i18n budget).
 const ERROR_KEYS = Object.freeze({
-  'script-missing': 'main.proxy.script-missing',
-  'python-missing': 'main.proxy.python-missing',
   'port-in-use': 'main.proxy.port-in-use',
-  'spawn-failed': 'main.proxy.spawn-failed',
-  'start-timeout': 'main.proxy.start-timeout',
-  'child-exited': 'main.proxy.child-exited',
-  'stop-timeout': 'main.proxy.stop-timeout',
-  'kill-refused': 'main.proxy.kill-refused'
+  'listen-failed': 'main.proxy.listen-failed',
+  'upstream-invalid': 'main.proxy.upstream-invalid'
 })
 
 function createProxyBridgeController(deps = {}) {
@@ -111,8 +106,8 @@ function createProxyBridgeController(deps = {}) {
       .finally(() => refreshTray())
   }
 
-  // Probe-only adoption pass: a proxy left behind by a crashed session must show
-  // up as checked instead of being reported as idle.
+  // Reconcile the reported state with the actual listener (the relay is
+  // in-process, so this only catches a server that died unexpectedly).
   function refresh() {
     return proxy.refresh().catch((error) => {
       log('Translation proxy refresh failed:', error.message)
@@ -121,16 +116,16 @@ function createProxyBridgeController(deps = {}) {
   }
 
   // Opt-in on purpose (settings.proxy.autoStart defaults to false), so a plain
-  // `npm start`, a test run or CI never spawns python behind the operator's back.
+  // `npm start`, a test run or CI never opens a listening socket behind the
+  // operator's back.
   function startIfConfigured() {
     if (getSettings()?.proxy?.autoStart !== true) return Promise.resolve(getStatus())
     return setEnabled(true)
   }
 
+  // The relay lives in this process, so quitting the app always closes it; there
+  // is nothing to opt out of and nothing to adopt on the next launch.
   function dispose() {
-    // keepRunningOnExit is an explicit opt-out of the kill. The next launch adopts
-    // whatever is still listening, so an orphan is visible rather than silent.
-    if (getSettings()?.proxy?.keepRunningOnExit === true) return false
     return proxy.dispose()
   }
 

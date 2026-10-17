@@ -1,22 +1,32 @@
 'use strict'
 
-// Lifecycle owner for the Index-Translate local proxy bridge
-// (`python inference/llm/call_api.py --serve`), toggled from the tray menu.
+// Owns the Index-Translate local bridge: an in-process OpenAI-compatible relay
+// in front of the public cloud endpoint.
 //
-// Contract: "toggle, then trust a probe". Every state transition is confirmed by
-// asking the loopback port, never by remembering a click, so a proxy left over
-// from a previous session (or started by hand) is adopted instead of duplicated.
+// Attribution (Apache-2.0, section 4(b)/(c)): the relay protocols here are
+// derived from `bilibili/Index-Translate` commit
+// 9aff74ca50c60873916f99269b10cd0d79237b4a, file `inference/llm/call_api.py`
+// (`run_proxy_server`). This file has been REWRITTEN for this application: it is
+// not the upstream source, and the behaviour that must match it is listed in
+// docs/proxy-inprocess-relay-plan.md §4. Licence text: docs/third-party/.
 //
-// Everything is injected (spawn / execFile / probe / clock) so node:test can
-// drive the whole state machine without starting python. The copy in this file is
-// diagnostics only - user-facing text lives in shared/locales/main.js, and
-// scripts/check-i18n.js counts CJK literals under main/, so this file stays
-// English on purpose.
+// History: this module used to spawn `python inference/llm/call_api.py --serve`.
+// That required a Python 3 install on the user's machine, plus a whole layer of
+// subprocess lifecycle code (interpreter probing, PYTHONIOENCODING, taskkill /T
+// /F, orphan adoption). The relay is small enough to live in this process, which
+// removes the dependency and every failure mode that came with it.
+//
+// Contract: `start()` resolves only once the socket is bound, so the tray
+// checkbox reflects a listener that really accepts connections. Everything is
+// injected so node:test can drive the relay without touching the network.
+//
+// Copy here is diagnostics only; user-facing text lives in shared/locales/main.js
+// (scripts/check-i18n.js counts CJK literals under main/, so this file is
+// English on purpose).
 
-const fs = require('node:fs')
 const http = require('node:http')
-const path = require('node:path')
-const { execFile, execFileSync, spawn } = require('node:child_process')
+const https = require('node:https')
+const { pipeline } = require('node:stream')
 
 const STATE = Object.freeze({
   idle: 'idle',
@@ -26,37 +36,48 @@ const STATE = Object.freeze({
   error: 'error'
 })
 
-// Stable codes the assembly layer maps onto localized copy. The messages that
-// travel with them stay technical (and English) because they also land in the log.
+// Stable codes the assembly layer maps onto localized copy (see
+// proxy-bridge-controller.js). The messages that travel with them stay technical
+// and English because they also land in the app log.
 const ERROR_CODES = Object.freeze({
-  scriptMissing: 'script-missing',
-  pythonMissing: 'python-missing',
   portInUse: 'port-in-use',
-  spawnFailed: 'spawn-failed',
-  startTimeout: 'start-timeout',
-  childExited: 'child-exited',
-  stopTimeout: 'stop-timeout',
-  killRefused: 'kill-refused'
+  listenFailed: 'listen-failed',
+  upstreamInvalid: 'upstream-invalid'
 })
 
-// call_api.py answers GET / with this exact body. It is the cheapest way to tell
-// "our proxy" from "some other program that happens to hold the port", and unlike
-// /v1/models it needs no JSON parsing.
+// The readiness body. Immersive Translate and the settings card both use
+// `GET /` as the cheapest "is the bridge alive" probe.
 const PROBE_MARKER = 'Index-Translate Proxy Ready'
-const SCRIPT_RELATIVE_PATH = path.join('inference', 'llm', 'call_api.py')
-// The command line a process must carry before an adopted pid may be killed.
-const SCRIPT_MARKER = 'call_api.py'
-
-const READY_TIMEOUT_MS = 20000
-const STOP_TIMEOUT_MS = 5000
-const POLL_INTERVAL_MS = 250
-const PROBE_TIMEOUT_MS = 800
-const COMMAND_TIMEOUT_MS = 10000
-const KILL_TIMEOUT_MS = 3000
-const STDERR_TAIL_LIMIT = 600
-
 const DEFAULT_PORT = 8080
-const DEFAULT_HOST = '127.0.0.1'
+const HOST_LOOPBACK = '127.0.0.1'
+const HOST_WILDCARD = '0.0.0.0'
+// This is the only model the public endpoint actually serves; the upstream
+// script also advertised 2B/9B, which only exist on a self-hosted deployment.
+const DEFAULT_MODEL = 'Index-Translate-35B-A3B'
+const DEFAULT_API_BASE = 'https://index-translate.bilibili.com/v1'
+const CLIENT_USER_AGENT = 'Index-Translate-Client/1.0'
+
+const UPSTREAM_TIMEOUT_MS = 120000
+const SERVER_CLOSE_TIMEOUT_MS = 2000
+const MAX_BODY_BYTES = 32 * 1024 * 1024
+
+// CORS is mandatory: the extension is a browser context calling loopback.
+const CORS_HEADERS = Object.freeze({
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST, OPTIONS',
+  'access-control-allow-headers': '*',
+  'access-control-max-age': '86400'
+})
+
+// Deliberately a whitelist: headers like set-cookie/server must never reach the
+// page, and content-encoding has to survive because the body is piped verbatim.
+const FORWARDED_RESPONSE_HEADERS = Object.freeze(['content-type', 'cache-control', 'content-encoding', 'retry-after'])
+
+const FORWARDED_ENDPOINTS = Object.freeze([
+  ['/chat/completions', '/chat/completions'],
+  ['/completions', '/completions'],
+  ['/responses', '/responses']
+])
 
 function createError(code, message) {
   const error = new Error(message)
@@ -64,23 +85,272 @@ function createError(code, message) {
   return error
 }
 
-// Loopback only: the proxy binds 127.0.0.1 unless the user explicitly asked for
-// 0.0.0.0, and 0.0.0.0 is not a valid destination anyway.
-function probeProxy({ port, timeoutMs = PROBE_TIMEOUT_MS }) {
-  return new Promise((resolve) => {
-    const request = http.get({ host: DEFAULT_HOST, port, path: '/', timeout: timeoutMs }, (response) => {
-      let body = ''
-      response.setEncoding('utf8')
-      response.on('data', (chunk) => { body += chunk })
-      response.on('end', () => resolve({
-        answering: true,
-        isProxy: response.statusCode === 200 && body.includes(PROBE_MARKER)
-      }))
+function resolvePathname(rawUrl) {
+  try {
+    return new URL(rawUrl || '/', 'http://127.0.0.1').pathname
+  } catch {
+    return '/'
+  }
+}
+
+// Mirrors the upstream proxy: the client must not have its endpoint silently
+// rewritten, so only the suffix is forwarded.
+function resolveForwardedEndpoint(rawUrl) {
+  const pathname = resolvePathname(rawUrl).replace(/\/+$/, '')
+  for (const [suffix, forwarded] of FORWARDED_ENDPOINTS) {
+    if (pathname.endsWith(suffix)) return forwarded
+  }
+  return null
+}
+
+// The whole reason this bridge exists: the model can emit chain-of-thought, and
+// web-page translation must not spend latency or tokens on it. Only fill in the
+// fields the client left open - an explicit choice is never overridden.
+function injectTranslationDefaults(body) {
+  if (!body || body.length === 0) return body
+  let payload
+  try {
+    payload = JSON.parse(body.toString('utf8'))
+  } catch {
+    return body
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return body
+  if (!payload.chat_template_kwargs || typeof payload.chat_template_kwargs !== 'object' || Array.isArray(payload.chat_template_kwargs)) {
+    payload.chat_template_kwargs = {}
+  }
+  if (!Object.hasOwn(payload.chat_template_kwargs, 'enable_thinking')) {
+    payload.chat_template_kwargs.enable_thinking = false
+  }
+  if (payload.temperature === undefined || payload.temperature === null) {
+    payload.temperature = 0
+  }
+  return Buffer.from(JSON.stringify(payload), 'utf8')
+}
+
+function readBody(req, limit = MAX_BODY_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let total = 0
+    let done = false
+    const fail = (error) => {
+      if (done) return
+      done = true
+      reject(error)
+    }
+    req.on('data', (chunk) => {
+      if (done) return
+      total += chunk.length
+      if (total > limit) {
+        fail(createError('body-too-large', `Request body exceeds ${limit} bytes`))
+        // Keep draining without buffering: destroying the request here would also
+        // kill the socket the 413 response still has to travel over.
+        req.resume()
+        return
+      }
+      chunks.push(chunk)
     })
-    request.on('timeout', () => request.destroy())
-    // ECONNREFUSED is the expected "down" answer, not a failure: the only
-    // interesting outcome is "something answered and said it is the proxy".
-    request.on('error', () => resolve({ answering: false, isProxy: false }))
+    req.on('end', () => {
+      if (done) return
+      done = true
+      resolve(Buffer.concat(chunks))
+    })
+    req.on('error', fail)
+  })
+}
+
+function sendBuffer(res, statusCode, contentType, body) {
+  if (res.writableEnded || res.destroyed) return false
+  res.writeHead(statusCode, {
+    ...CORS_HEADERS,
+    'content-type': contentType,
+    'content-length': String(body.length)
+  })
+  res.end(body)
+  return true
+}
+
+function sendJson(res, statusCode, payload) {
+  return sendBuffer(res, statusCode, 'application/json; charset=utf-8', Buffer.from(JSON.stringify(payload), 'utf8'))
+}
+
+function sendText(res, statusCode, text) {
+  return sendBuffer(res, statusCode, 'text/plain; charset=utf-8', Buffer.from(text, 'utf8'))
+}
+
+function buildUpstreamUrl(apiBase, upstreamPath) {
+  return new URL(String(apiBase).replace(/\/+$/, '') + upstreamPath)
+}
+
+function assertUpstreamBase(apiBase) {
+  let parsed
+  try {
+    parsed = new URL(apiBase)
+  } catch {
+    throw createError(ERROR_CODES.upstreamInvalid, `Invalid upstream API base: ${apiBase}`)
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw createError(ERROR_CODES.upstreamInvalid, `Unsupported upstream protocol: ${parsed.protocol}`)
+  }
+  return apiBase
+}
+
+function createRelayHandler({ getApiBase, log, maxBodyBytes = MAX_BODY_BYTES }) {
+  function handleForward(req, res) {
+    return (async () => {
+      const upstreamPath = resolveForwardedEndpoint(req.url)
+      if (!upstreamPath) {
+        sendJson(res, 404, { error: 'unsupported endpoint' })
+        return
+      }
+      let body
+      try {
+        body = await readBody(req, maxBodyBytes)
+      } catch (error) {
+        sendJson(res, error.code === 'body-too-large' ? 413 : 400, { error: error.message })
+        return
+      }
+      // The reason this bridge exists: suppress chain-of-thought unless the client
+      // asked for it. Applied per request, before anything leaves the machine.
+      body = injectTranslationDefaults(body)
+      let target
+      try {
+        target = buildUpstreamUrl(getApiBase(), upstreamPath)
+      } catch (error) {
+        log('Proxy upstream base invalid:', error.message)
+        sendJson(res, 502, { error: 'invalid upstream base' })
+        return
+      }
+      await forwardToUpstream({ req, res, target, body, log })
+    })().catch((error) => {
+      log('Proxy request failed:', error.message)
+      sendJson(res, 500, { error: 'internal relay error' })
+    })
+  }
+
+  return function handle(req, res) {
+    const method = req.method || 'GET'
+    if (method === 'OPTIONS') {
+      res.writeHead(200, { ...CORS_HEADERS, 'content-length': '0' })
+      res.end()
+      return
+    }
+    if (method === 'GET') {
+      const pathname = resolvePathname(req.url)
+      if (pathname === '/') {
+        sendText(res, 200, PROBE_MARKER)
+        return
+      }
+      if (pathname === '/v1/models' || pathname === '/models') {
+        sendJson(res, 200, { object: 'list', data: [{ id: DEFAULT_MODEL, object: 'model' }] })
+        return
+      }
+      sendJson(res, 404, { error: 'not found' })
+      return
+    }
+    if (method === 'POST') {
+      handleForward(req, res)
+      return
+    }
+    sendJson(res, 405, { error: 'method not allowed' })
+  }
+}
+
+function forwardToUpstream({ req, res, target, body, log }) {
+  return new Promise((resolve) => {
+    const client = target.protocol === 'https:' ? https : http
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+
+    const upstreamReq = client.request(target, {
+      method: 'POST',
+      timeout: UPSTREAM_TIMEOUT_MS,
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': CLIENT_USER_AGENT,
+        'content-length': String(body.length)
+      }
+    }, (upstreamRes) => {
+      const responseHeaders = { ...CORS_HEADERS, connection: 'close' }
+      for (const name of FORWARDED_RESPONSE_HEADERS) {
+        const value = upstreamRes.headers[name]
+        if (value !== undefined) responseHeaders[name] = value
+      }
+      try {
+        res.writeHead(upstreamRes.statusCode || 502, responseHeaders)
+      } catch (error) {
+        log('Proxy response header write failed:', error.message)
+        upstreamRes.destroy()
+        finish()
+        return
+      }
+      // pipeline carries backpressure through and destroys both sides on error,
+      // which matters for SSE: chunks must reach the page as they arrive.
+      pipeline(upstreamRes, res, (error) => {
+        if (error) log('Proxy stream failed:', error.message)
+        finish()
+      })
+    })
+
+    upstreamReq.on('timeout', () => {
+      upstreamReq.destroy(createError('upstream-timeout', 'Upstream request timed out'))
+    })
+    upstreamReq.on('error', (error) => {
+      log('Proxy upstream error:', error.message)
+      if (res.headersSent) res.destroy()
+      else sendJson(res, 502, { error: error.message || 'upstream request failed' })
+      finish()
+    })
+    // The page closed the tab mid-translation: do not keep the upstream stream alive.
+    res.on('close', () => {
+      if (!res.writableEnded) upstreamReq.destroy()
+    })
+    upstreamReq.end(body)
+  })
+}
+
+function listen(server, port, host) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const onError = (error) => {
+      if (settled) return
+      settled = true
+      server.removeListener('listening', onListening)
+      reject(error)
+    }
+    const onListening = () => {
+      if (settled) return
+      settled = true
+      server.removeListener('error', onError)
+      resolve()
+    }
+    server.once('error', onError)
+    server.once('listening', onListening)
+    server.listen(port, host)
+  })
+}
+
+function closeServer(server) {
+  return new Promise((resolve) => {
+    // Without this an open SSE response keeps the server alive forever and the
+    // toggle would hang on "stopping".
+    try { server.closeAllConnections?.() } catch {}
+    let settled = false
+    const settle = () => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+    try {
+      server.close(settle)
+    } catch {
+      settle()
+    }
+    const timer = setTimeout(settle, SERVER_CLOSE_TIMEOUT_MS)
+    timer.unref?.()
   })
 }
 
@@ -89,291 +359,47 @@ function createTranslationProxyService(deps = {}) {
     getSettings = () => ({}),
     log = () => {},
     onChange = () => {},
-    spawnFn = spawn,
-    execFileFn = execFile,
-    execFileSyncFn = execFileSync,
-    probe = probeProxy,
-    platform = process.platform,
-    env = process.env,
-    killProcess = (pid) => process.kill(pid),
-    delay = (ms) => new Promise((resolve) => { setTimeout(resolve, ms) }),
-    now = () => Date.now()
+    createServer = (handler) => http.createServer(handler),
+    now = () => Date.now(),
+    maxBodyBytes = MAX_BODY_BYTES
   } = deps
 
   let state = STATE.idle
-  let child = null
-  let childExit = null
-  let adoptedPid = null
+  let server = null
   let inFlight = null
-  let stopping = false
+  let boundPort = null
   let lastError = ''
   let lastErrorCode = ''
-  let stderrTail = ''
   let changedAt = now()
   let lastSignature = ''
 
-  // The override lets a caller that already holds the settings snapshot (the tray
-  // rebuilds on every action-window event) avoid a second SettingsService read,
-  // which decrypts stored credentials on each call.
   function proxySettings(override) {
     const raw = (override || getSettings() || {}).proxy || {}
-    const port = Number.isInteger(raw.port) && raw.port > 0 && raw.port < 65536 ? raw.port : DEFAULT_PORT
+    // 0 is accepted so tests can bind an ephemeral port; settings normalization
+    // never lets a stored value reach 0.
+    const port = Number.isInteger(raw.port) && raw.port >= 0 && raw.port < 65536 ? raw.port : DEFAULT_PORT
+    const apiBase = typeof raw.apiBase === 'string' && raw.apiBase.trim() ? raw.apiBase.trim() : DEFAULT_API_BASE
     return {
       port,
-      host: raw.host === '0.0.0.0' ? '0.0.0.0' : DEFAULT_HOST,
-      repoDirectory: typeof raw.repoDirectory === 'string' ? raw.repoDirectory.trim() : '',
-      scriptPath: typeof raw.scriptPath === 'string' ? raw.scriptPath.trim() : '',
-      pythonPath: typeof raw.pythonPath === 'string' ? raw.pythonPath.trim() : '',
-      apiBase: typeof raw.apiBase === 'string' ? raw.apiBase.trim() : ''
-    }
-  }
-
-  // Absolute paths only: a relative value (hand-edited store, wrong picker) would
-  // silently resolve against the app's working directory instead of the repo.
-  function resolveScriptPath(settings) {
-    if (settings.scriptPath) {
-      if (!path.isAbsolute(settings.scriptPath)) {
-        throw createError(ERROR_CODES.scriptMissing, `Proxy script path must be absolute: ${settings.scriptPath}`)
-      }
-      return settings.scriptPath
-    }
-    if (!settings.repoDirectory || !path.isAbsolute(settings.repoDirectory)) {
-      throw createError(ERROR_CODES.scriptMissing, 'Proxy repository directory is not configured (settings.proxy.repoDirectory)')
-    }
-    return path.join(settings.repoDirectory, SCRIPT_RELATIVE_PATH)
-  }
-
-  // Checked before spawning so the failure names the path that was actually
-  // looked at - "script gone" and "python gone" must not look alike.
-  function assertScriptExists(scriptPath) {
-    let stat = null
-    try {
-      stat = fs.statSync(scriptPath)
-    } catch {
-      stat = null
-    }
-    if (!stat || !stat.isFile()) {
-      throw createError(ERROR_CODES.scriptMissing, `Proxy script not found: ${scriptPath}`)
-    }
-    return scriptPath
-  }
-
-  function pythonCandidates(settings) {
-    if (settings.pythonPath) return [{ command: settings.pythonPath, args: [] }]
-    return platform === 'win32'
-      ? [{ command: 'py', args: ['-3'] }, { command: 'python', args: [] }]
-      : [{ command: 'python3', args: [] }, { command: 'python', args: [] }]
-  }
-
-  function runCommand(command, args) {
-    return new Promise((resolve, reject) => {
-      execFileFn(command, args, { windowsHide: true, timeout: COMMAND_TIMEOUT_MS }, (error, stdout) => {
-        if (error) reject(error)
-        else resolve(String(stdout || ''))
-      })
-    })
-  }
-
-  // Tries each interpreter until one really spawns. Node emits 'spawn' once the
-  // process exists, which is what separates "py -3 is not installed" (ENOENT, try
-  // the next candidate) from "the interpreter rejected the launch" (report it).
-  function spawnFirstAvailable(candidates, args, options) {
-    return new Promise((resolve, reject) => {
-      let index = 0
-      const attempt = () => {
-        if (index >= candidates.length) {
-          reject(createError(
-            ERROR_CODES.pythonMissing,
-            `No usable Python interpreter (tried: ${candidates.map((candidate) => candidate.command).join(', ')})`
-          ))
-          return
-        }
-        const candidate = candidates[index]
-        index += 1
-        let settled = false
-        let proc = null
-        try {
-          proc = spawnFn(candidate.command, [...candidate.args, ...args], options)
-        } catch (error) {
-          log('Proxy interpreter spawn failed:', candidate.command, error.message)
-          attempt()
-          return
-        }
-        proc.once('spawn', () => {
-          if (settled) return
-          settled = true
-          resolve({ proc, candidate })
-        })
-        proc.once('error', (error) => {
-          if (settled) return
-          settled = true
-          if (error.code === 'ENOENT') {
-            attempt()
-            return
-          }
-          reject(createError(ERROR_CODES.spawnFailed, `${candidate.command}: ${error.message}`))
-        })
-      }
-      attempt()
-    })
-  }
-
-  function attachChildLogging(proc) {
-    if (typeof proc.stderr?.setEncoding === 'function') {
-      proc.stderr.setEncoding('utf8')
-      proc.stderr.on('data', (chunk) => {
-        const text = String(chunk)
-        stderrTail = (stderrTail + text).slice(-STDERR_TAIL_LIMIT)
-        // call_api.py writes its access log to stderr, so this is informational.
-        const line = text.trim()
-        if (line) log('Translation proxy:', line)
-      })
-    }
-    if (typeof proc.stdout?.setEncoding === 'function') {
-      proc.stdout.setEncoding('utf8')
-      proc.stdout.on('data', (chunk) => {
-        const line = String(chunk).trim()
-        if (line) log('Translation proxy:', line)
-      })
-    }
-    proc.once('error', (error) => log('Translation proxy process error:', error.message))
-    proc.once('exit', (code, signal) => {
-      childExit = { code, signal }
-      if (proc !== child) return
-      child = null
-      // stop() and the readiness loop own their own transitions.
-      if (stopping || state === STATE.starting) return
-      if (state === STATE.running) {
-        setState(
-          STATE.error,
-          ERROR_CODES.childExited,
-          `Proxy process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`
-        )
-      }
-    })
-  }
-
-  async function awaitReady(port) {
-    const deadline = now() + READY_TIMEOUT_MS
-    for (;;) {
-      if (childExit) {
-        const tail = stderrTail ? `: ${stderrTail}` : ''
-        throw createError(
-          ERROR_CODES.childExited,
-          `Proxy process exited before becoming ready (code=${childExit.code ?? 'null'})${tail}`
-        )
-      }
-      const result = await probe({ port })
-      if (result.isProxy) return true
-      if (result.answering) {
-        throw createError(ERROR_CODES.portInUse, `Port ${port} is answered by another program, not the Index-Translate proxy`)
-      }
-      if (now() >= deadline) {
-        throw createError(ERROR_CODES.startTimeout, `Proxy did not answer http://127.0.0.1:${port}/ within ${READY_TIMEOUT_MS}ms`)
-      }
-      await delay(POLL_INTERVAL_MS)
-    }
-  }
-
-  async function awaitPortReleased(port) {
-    const deadline = now() + STOP_TIMEOUT_MS
-    for (;;) {
-      const result = await probe({ port })
-      if (!result.answering) return true
-      if (now() >= deadline) return false
-      await delay(POLL_INTERVAL_MS)
-    }
-  }
-
-  async function killTree(pid) {
-    if (!Number.isInteger(pid) || pid <= 0) return false
-    if (platform === 'win32') {
-      try {
-        // /T is mandatory: with a "py -3" launch the launcher is only the parent
-        // shell, and Windows has no process-group kill, so child.kill() would
-        // leave the real python process holding the port.
-        await runCommand('taskkill', ['/PID', String(pid), '/T', '/F'])
-        return true
-      } catch (error) {
-        log('Proxy taskkill failed, falling back to process.kill:', error.message)
-      }
-    }
-    try {
-      killProcess(pid)
-      return true
-    } catch (error) {
-      log('Proxy process.kill failed:', error.message)
-      return false
-    }
-  }
-
-  async function listenerPid(port) {
-    if (platform !== 'win32') return null
-    const script = `(Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess`
-    try {
-      const output = await runCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script])
-      const pid = Number(String(output).trim())
-      return Number.isInteger(pid) && pid > 0 ? pid : null
-    } catch (error) {
-      log('Proxy listener lookup failed:', error.message)
-      return null
-    }
-  }
-
-  async function commandLineOf(pid) {
-    if (platform !== 'win32') return ''
-    const script = `(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=${Number(pid)}").CommandLine`
-    try {
-      return String(await runCommand('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script])).trim()
-    } catch (error) {
-      log('Proxy command-line lookup failed:', error.message)
-      return ''
-    }
-  }
-
-  // An adopted process is somebody else's until proven otherwise, so the same
-  // guard everything-service.js uses for Everything applies here: only a command
-  // line that mentions call_api.py may be killed.
-  async function assertKillableAdopted(pid) {
-    const commandLine = await commandLineOf(pid)
-    if (!commandLine) {
-      throw createError(ERROR_CODES.killRefused, `Refusing to stop pid ${pid}: its command line could not be read`)
-    }
-    if (!commandLine.includes(SCRIPT_MARKER)) {
-      throw createError(ERROR_CODES.killRefused, `Refusing to stop pid ${pid}: it is not the Index-Translate proxy`)
-    }
-    return pid
-  }
-
-  async function discardChild() {
-    const proc = child
-    child = null
-    const pid = proc?.pid
-    if (Number.isInteger(pid) && pid > 0) {
-      await killTree(pid)
-      return
-    }
-    if (proc && typeof proc.kill === 'function') {
-      try {
-        proc.kill()
-      } catch (error) {
-        log('Proxy partial-spawn cleanup failed:', error.message)
-      }
+      host: raw.host === HOST_WILDCARD ? HOST_WILDCARD : HOST_LOOPBACK,
+      apiBase
     }
   }
 
   function getStatus(override) {
     const settings = proxySettings(override)
-    const pid = Number.isInteger(child?.pid) ? child.pid : adoptedPid
+    const port = boundPort === null ? settings.port : boundPort
     return {
       state,
       running: state === STATE.running,
       busy: state === STATE.starting || state === STATE.stopping,
-      adopted: state === STATE.running && child === null && adoptedPid !== null,
-      pid: Number.isInteger(pid) && pid > 0 ? pid : null,
-      port: settings.port,
+      adopted: false,
+      // The relay lives in this process; there is no child pid to report.
+      pid: null,
+      port,
       host: settings.host,
-      endpoint: `http://127.0.0.1:${settings.port}/v1`,
+      apiBase: settings.apiBase,
+      endpoint: `http://127.0.0.1:${port}/v1`,
       lastError,
       lastErrorCode,
       changedAt
@@ -381,7 +407,7 @@ function createTranslationProxyService(deps = {}) {
   }
 
   function signature() {
-    return [state, child?.pid ?? '', adoptedPid ?? '', lastErrorCode, lastError].join('|')
+    return [state, boundPort === null ? '' : String(boundPort), lastErrorCode, lastError].join('|')
   }
 
   // The tray template is a snapshot, so main.js rebuilds it from this callback.
@@ -412,46 +438,40 @@ function createTranslationProxyService(deps = {}) {
   }
 
   async function runStart() {
-    const settings = proxySettings()
-    childExit = null
-    stderrTail = ''
     setState(STATE.starting)
     try {
-      const scriptPath = assertScriptExists(resolveScriptPath(settings))
-      // Probe first: a proxy already on the port must be adopted rather than
-      // duplicated, otherwise the second instance only dies with EADDRINUSE and
-      // the toggle looks broken.
-      const existing = await probe({ port: settings.port })
-      if (existing.isProxy) {
-        child = null
-        adoptedPid = await listenerPid(settings.port)
-        setState(STATE.running)
-        return getStatus()
+      const settings = proxySettings()
+      assertUpstreamBase(settings.apiBase)
+      const instance = createServer(createRelayHandler({
+        // Read per request so an edited upstream applies without a restart.
+        getApiBase: () => proxySettings().apiBase,
+        log,
+        maxBodyBytes
+      }))
+      instance.on('error', (error) => {
+        log('Proxy relay server error:', error.message)
+        if (instance === server && state === STATE.running) {
+          setState(STATE.error, ERROR_CODES.listenFailed, error.message)
+        }
+      })
+      try {
+        await listen(instance, settings.port, settings.host)
+      } catch (error) {
+        const mapped = error.code === 'EADDRINUSE'
+          ? createError(ERROR_CODES.portInUse, `Port ${settings.port} is already in use`)
+          : createError(ERROR_CODES.listenFailed, `Cannot listen on ${settings.host}:${settings.port} (${error.code || error.message})`)
+        try { instance.close() } catch {}
+        throw mapped
       }
-      if (existing.answering) {
-        throw createError(ERROR_CODES.portInUse, `Port ${settings.port} is already answered by another program`)
-      }
-
-      const args = [scriptPath, '--serve', String(settings.port), '--host', settings.host]
-      if (settings.apiBase) args.push('--api-base', settings.apiBase)
-      const options = {
-        cwd: settings.repoDirectory && path.isAbsolute(settings.repoDirectory) ? settings.repoDirectory : path.dirname(scriptPath),
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // Without this the banner is encoded with the ANSI code page (measured
-        // cp936 here) even though the script itself is UTF-8, and every logged
-        // line turns into mojibake. `chcp` does not apply to a pipe.
-        env: { ...env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' }
-      }
-      const { proc } = await spawnFirstAvailable(pythonCandidates(settings), args, options)
-      child = proc
-      attachChildLogging(proc)
-      await awaitReady(settings.port)
+      server = instance
+      boundPort = instance.address()?.port ?? settings.port
       setState(STATE.running)
       return getStatus()
     } catch (error) {
-      await discardChild()
-      setState(STATE.error, error.code || '', error.message)
+      if (server) { try { server.close() } catch {} }
+      server = null
+      boundPort = null
+      setState(STATE.error, error.code || ERROR_CODES.listenFailed, error.message)
       throw error
     }
   }
@@ -464,50 +484,17 @@ function createTranslationProxyService(deps = {}) {
   }
 
   async function runStop() {
-    const settings = proxySettings()
-    stopping = true
+    const instance = server
+    server = null
+    boundPort = null
     setState(STATE.stopping)
     try {
-      const ownedPid = Number.isInteger(child?.pid) && child.pid > 0 ? child.pid : null
-      if (ownedPid !== null) {
-        await killTree(ownedPid)
-      } else {
-        const discovered = Number.isInteger(adoptedPid) && adoptedPid > 0
-          ? adoptedPid
-          : await listenerPid(settings.port)
-        if (discovered === null) {
-          child = null
-          adoptedPid = null
-          setState(STATE.idle)
-          return getStatus()
-        }
-        await assertKillableAdopted(discovered)
-        await killTree(discovered)
-      }
-      if (!await awaitPortReleased(settings.port)) {
-        throw createError(ERROR_CODES.stopTimeout, `Port ${settings.port} is still answering after the proxy was stopped`)
-      }
-      child = null
-      adoptedPid = null
-      childExit = null
+      if (instance) await closeServer(instance)
       setState(STATE.idle)
       return getStatus()
     } catch (error) {
-      // Re-probe instead of guessing: a refused or failed kill must leave the
-      // checkbox showing the truth so the user can simply try again.
-      const stillThere = await probe({ port: settings.port })
-      child = null
-      childExit = null
-      if (stillThere.isProxy) {
-        adoptedPid = await listenerPid(settings.port)
-        setState(STATE.running, error.code || '', error.message)
-      } else {
-        adoptedPid = null
-        setState(STATE.error, error.code || '', error.message)
-      }
+      setState(STATE.error, error.code || '', error.message)
       throw error
-    } finally {
-      stopping = false
     }
   }
 
@@ -515,54 +502,28 @@ function createTranslationProxyService(deps = {}) {
     return state === STATE.running ? stop() : start()
   }
 
-  // Probe-only: called once at startup so a proxy left running by a crashed
-  // session shows up as checked instead of being reported as idle.
+  // Probe-only reconciliation. There is no external process to adopt any more:
+  // the only meaningful question is whether our own listener is still alive.
   async function refresh() {
-    const settings = proxySettings()
-    if (inFlight || state === STATE.starting || state === STATE.stopping) return getStatus()
-    const result = await probe({ port: settings.port })
-    if (result.isProxy) {
-      if (state !== STATE.running) {
-        child = null
-        adoptedPid = await listenerPid(settings.port)
-        setState(STATE.running)
-      }
-      return getStatus()
-    }
-    if (state === STATE.running) {
-      child = null
-      adoptedPid = null
-      setState(STATE.idle)
+    if (inFlight) return getStatus()
+    if (state === STATE.running && (!server || server.listening === false)) {
+      server = null
+      boundPort = null
+      setState(STATE.error, ERROR_CODES.listenFailed, 'Relay server is no longer listening')
     }
     return getStatus()
   }
 
-  // Synchronous on purpose: app 'before-quit' cannot await, and a python process
-  // that outlives the app would hold the port until the next launch adopts it.
+  // Written for app 'before-quit', which cannot await: close the socket right now
+  // and let the process teardown reclaim the rest.
   function dispose() {
-    const pid = Number.isInteger(child?.pid) ? child.pid : adoptedPid
-    child = null
-    adoptedPid = null
-    if (!Number.isInteger(pid) || pid <= 0) return false
-    if (platform === 'win32') {
-      try {
-        execFileSyncFn('taskkill', ['/PID', String(pid), '/T', '/F'], {
-          windowsHide: true,
-          timeout: KILL_TIMEOUT_MS,
-          stdio: 'ignore'
-        })
-        return true
-      } catch (error) {
-        log('Proxy dispose taskkill failed:', error.message)
-      }
-    }
-    try {
-      killProcess(pid)
-      return true
-    } catch (error) {
-      log('Proxy dispose kill failed:', error.message)
-      return false
-    }
+    const instance = server
+    server = null
+    boundPort = null
+    if (!instance) return false
+    try { instance.closeAllConnections?.() } catch {}
+    try { instance.close() } catch {}
+    return true
   }
 
   return {
@@ -577,11 +538,12 @@ function createTranslationProxyService(deps = {}) {
 
 module.exports = {
   createTranslationProxyService,
-  probeProxy,
   STATE,
   ERROR_CODES,
-  DEFAULT_PORT,
-  DEFAULT_HOST,
   PROBE_MARKER,
-  SCRIPT_MARKER
+  DEFAULT_MODEL,
+  DEFAULT_PORT,
+  DEFAULT_HOST: HOST_LOOPBACK,
+  DEFAULT_API_BASE,
+  MAX_BODY_BYTES
 }

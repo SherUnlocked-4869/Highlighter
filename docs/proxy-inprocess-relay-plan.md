@@ -415,52 +415,92 @@ node .tmp/relay-e2e.js
 
 ---
 
-## 14. 待确认的决策点
+## 14. 决策结果（2026-10-17 已确认）
 
-| # | 决策 | 推荐 | 备选 |
-|---|---|---|---|
-| **D1** | 是否保留「外部脚本」模式 | **保留**（逃生舱，代码已存在，成本已付） | 彻底删除 Python 相关全部代码（少 ~480 行 + 29 用例，但断掉自救路径） |
-| **D2** | `/v1/models` 返回几个模型 | **只返回 35B-A3B**（修坑） | 照抄 3 个（与上游观感一致，但继续误导） |
-| **D3** | 旧 python 代理占用 8080 时 | **报 `port-in-use` 并提示可改端口** | 额外做"检测到旧代理"识别 + 一键切换/结束（+40 行与新的杀进程逻辑） |
-| **D4** | 监听地址默认 | **保持 `127.0.0.1`**，`0.0.0.0` 仅手动开启并警告 | 直接移除 `0.0.0.0` 选项 |
-| **D5** | 是否支持向上游透传 `Authorization` | **本阶段不做** | 加一个"上游 API Key"可选字段（指向付费/自建端点时需要） |
-| **D6** | 默认端口 | **仍 8080**（与沉浸式翻译既有配置一致） | 换个不冲突的端口（需用户同步改插件地址） |
-| **D7** | 脚本模式下无效的字段（`keepRunningOnExit` 等） | **灰显 + 提示** | 直接隐藏 |
+| # | 决策 | 结果 |
+|---|---|---|
+| **D1** | 是否保留「外部脚本」模式 | **彻底删除 Python 相关代码**（与推荐相反）。因此不再需要 facade 与双后端：`translation-proxy-service.js` 原地重写为内置中继 |
+| **D2** | `/v1/models` 返回几个模型 | **只返回 `Index-Translate-35B-A3B`** |
+| **D3** | 旧 python 代理占用 8080 时 | **报 `port-in-use` 并提示可改端口**（不做自动识别/杀进程） |
+| **D4** | 监听地址默认 | **保持 `127.0.0.1`**，`0.0.0.0` 仅手动开启并警告 |
+| **D5** | 是否支持向上游透传 `Authorization` | **本阶段不做** |
+| **D6** | 默认端口 | **仍 8080**，并保留用户自定义端口（`proxy.port`） |
+| **D7** | 无效字段灰显 + 提示 | D1 删除脚本模式后，这些字段已不存在 → **改为直接删除该行**；仅保留端口/监听地址的提示文案 |
+
+> D1 的连锁影响：`proxy` 设置组从 8 个字段收缩为 4 个（`autoStart` / `port` / `host` / `apiBase`），
+> 旧字段在 `settings-normalize.js` 里被显式剔除，避免老 store 永久携带死键。
 
 ---
 
-## 15. 附录
+## 15. 实施记录（2026-10-17 已完成）
 
-### 15.1 改动文件汇总（预估）
+### 15.1 实际改动
 
-| 文件 | 类型 | 行数 | 备注 |
-|---|---|---|---|
-| `main/services/proxy-contract.js` | 新增 | ~90 | 常量 + 错误码 + `probeProxy` |
-| `main/services/proxy-relay-backend.js` | 新增 | ~210 | 内置中继 |
-| `main/services/proxy-script-backend.js` | 迁移 | 587 | 现有实现，仅改工厂名与 require |
-| `main/services/translation-proxy-service.js` | 重写 | ~130 | facade |
-| `main/services/{settings-defaults,settings-normalize}.js` | 修改 | +15 | `mode` 字段 |
-| `config/routes/settings.js` | 修改 | +20 | 模式行 + 提示 |
-| `shared/locales/{config,main}.js` | 修改 | +24 | 8 键 × 3 语 |
-| `test/proxy-relay-backend.test.js` | 新增 | ~420 | 18 用例 |
-| `test/translation-proxy-service.test.js` | 新增（facade） | ~90 | 5 用例 |
-| `test/proxy-script-backend.test.js` | 改名 | 0 | 原 29 用例 |
-| `test/shortcut-ui-contract.test.js` | 修改 | +15 | 契约断言 |
+| 文件 | 改动 |
+|---|---|
+| `main/services/translation-proxy-service.js` | **重写**（587 → 约 540 行）：进程内 `node:http` 中继 + 状态机；零子进程 |
+| `main/services/proxy-bridge-controller.js` | 错误码映射收缩为 3 个；`dispose()` 去掉 `keepRunningOnExit` 分支 |
+| `main/services/settings-defaults.js` | `proxy` 组 8 → 4 字段 |
+| `main/services/settings-normalize.js` | 新字段归一化 + `LEGACY_PROXY_KEYS` 剔除 |
+| `config/routes/settings.js` | 删除仓库/脚本/Python/退出后运行四行，新增端口提示 |
+| `shared/locales/{main,config}.js` | 三语：删除 7+8 键，新增 `listen-failed` / `upstream-invalid` / `port-hint` |
+| `main.js` | 仅注释更新（装配结构不变） |
+| `test/translation-proxy-service.test.js` | 重写为 **23 个真实 HTTP 用例**（假上游 + 临时端口） |
+| `test/{proxy-bridge-controller,tray-menu,shortcut-ui-contract}.test.js` | 随接口收缩更新断言 |
 
-`main.js` / `tray-menu.js` / `proxy-bridge-controller.js` / `function-router.js` / `preload.js` / `ipc-security.js`：**不改**。
+`tray-menu.js` / `function-router.js` / `preload.js` / `ipc-security.js` / `app-ipc.js`：**未改**。
 
-### 15.2 与前置文档的关系
+### 15.2 开发中发现并修复的两个真问题
 
-`docs/proxy-bridge-tray-integration.md` 描述的托盘集成（菜单项、控制器、IPC、i18n、装机流程）**依然有效**；本文只替换它的 §4.1（服务实现）与 §15（实施记录）中的**后端**部分。落地后需在该文档加一条指针，说明 `translation-proxy-service.js` 已变为 facade、默认不再需要 Python。
+1. **`req.destroyed` 在请求体读完后为 `true`** —— 原来用它判断"客户端已断开"，导致**每个 POST 都没转发就提前返回**，客户端只能等到超时。改为只依赖 `res.on('close')` 判断。
+2. **`injectTranslationDefaults()` 写了但没调用** —— 反 CoT 注入是这座桥存在的理由，漏调用等于退化成裸转发。已补在 `readBody` 之后。
 
-### 15.3 上游来源与许可（重新分发时的义务）
+（两者都有对应用例守住：`POST forwards ... injects`、`streaming`、`oversized body`。）
+
+### 15.3 验证结果
+
+| 检查 | 结果 |
+|---|---|
+| `npm run check` | ✅ 333 文件语法；`main.js 1328/1330`；i18n 三语键集对称；CJK 仍 **605/606** |
+| `node --test test/translation-proxy-service.test.js` | ✅ **23/23** |
+| 单文件覆盖率 | ✅ 中继 **93.9%**、控制器 91.8%（行） |
+| 真实端到端（无 Python，真实云端） | ✅ `GET /` = `Index-Translate Proxy Ready`；`/v1/models` = 仅 35B-A3B；`OPTIONS` CORS 齐全；翻译返回 **`Hello, world. The weather is nice today.`**；`reasoning_tokens=0`（注入生效）；状态 `idle→starting→running→stopping→idle`；停止后端口立即释放 |
+| 全量 `npm test` | 1068 pass / 12 fail —— **12 个全部是另一会话 clipboard 改动的既有失败**，用 `git stash` 在 HEAD 上复测得到基线 **14 fail**（本次改动净修复 2 个：托盘分组断言、flake 的 native lease 用例），**未引入任何新失败** |
+
+### 15.4 迁移注意（升级瞬间就会遇到）
+
+升级前若**旧 python 代理还在跑**（它是旧版托盘开关启动的），8080 会被占住，新版第一次勾选会得到
+"端口已被其它程序占用"。处理方式：结束那个 `python.exe … call_api.py --serve` 进程，或在设置里改端口。
+这是 D3 的既定行为，不是缺陷。
+
+
+---
+
+## 16. 附录
+
+### 16.1 与原始方案的差异
+
+原方案假设保留脚本模式（facade + 双后端 + `proxy-contract.js` + `proxy-script-backend.js`）。
+D1 选择删除 Python 后，这些都**不需要**了：中继直接落在 `translation-proxy-service.js`，
+`main.js` / 托盘 / 控制器 / 路由 / IPC **零改动**，也不需要新增 `mode` 设置字段。
+
+### 16.2 与前置文档的关系
+
+`docs/proxy-bridge-tray-integration.md` 描述的托盘集成（菜单项、控制器、IPC、i18n、装机流程）**依然有效**；
+本文替换它的 §4.1（服务实现）与 §15（实施记录）中的**后端**部分：`translation-proxy-service.js`
+不再 spawn python，默认也不需要任何脚本路径配置。
+
+### 16.3 上游来源与许可（重新分发时的义务）
 
 - 项目：`github.com/bilibili/Index-Translate`，commit `9aff74ca50c60873916f99269b10cd0d79237b4a`
 - 许可：**Apache-2.0**，仓库内**无 NOTICE 文件**
 - 内置中继是该脚本 `run_proxy_server` 的**派生实现**，因此应：
-  1. 保留署名（在 `docs/` 或关于页写明"中继逻辑派生自 bilibili/Index-Translate，Apache-2.0"）；
-  2. 随包提供一份 Apache-2.0 文本（若同时保留脚本模式，则脚本模式本就需要它）；
-  3. 因我们**改写了**该文件，按 4(b) 在派生文件头部注明"派生自 … commit …，已改写"。
+  1. 保留署名 —— 已写入 `main/services/translation-proxy-service.js` 文件头（项目、commit、原文件、已改写）；
+  2. 随包提供一份 Apache-2.0 文本 —— 已放 `docs/third-party/LICENSE-Index-Translate.txt`；
+  3. 因我们**改写了**该文件，按 4(b) 在文件头注明"派生自 … commit …，已改写" —— 已完成。
+
+> 若要对外发版，`docs/` 默认不进安装包（`package.json` 的 `files` 不含 docs），
+> 需要把 `docs/third-party/` 一并加入 `extraResources` 或安装包内可见位置，才算满足 4(a)。
 
 > 注意：Highlighter 当前没有第三方声明区（`about.js` 无相关内容，`sbom.cdx.json` 只收 npm 依赖），所以这份署名要**手工安排**，不会自动出现。
 
