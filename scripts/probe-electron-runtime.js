@@ -26,6 +26,8 @@ function fileStatus(filePath) {
 
 async function probeRuntime() {
   const SelectionHook = require('selection-hook')
+  const expectedSelectionBuildId = require('../vendor/selection-hook/scripts/source-build-id').sourceBuildId()
+  if (SelectionHook.nativeBuildId !== expectedSelectionBuildId) throw new Error('Selection native build does not match its source')
   const selectionHook = new SelectionHook()
   const selectionHookRunning = selectionHook.isRunning()
   selectionHook.cleanup()

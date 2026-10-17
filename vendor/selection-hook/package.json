@@ -1,0 +1,68 @@
+{
+  "name": "selection-hook",
+  "version": "2.1.1-highlighter.1",
+  "description": "The first open-source library for cross-application text selection monitoring and global input event hooks. Works with Node.js and Electron.",
+  "author": "0xfullex",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xfullex/selection-hook.git"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "require": "./index.js",
+      "default": "./index.js"
+    }
+  },
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "rebuild": "node-gyp rebuild"
+  },
+  "keywords": [
+    "node",
+    "electron",
+    "text-selection",
+    "selected-text",
+    "selection",
+    "accessibility",
+    "cross-platform",
+    "napi",
+    "native",
+    "node-addon",
+    "mouse",
+    "keyboard",
+    "clipboard",
+    "input-events",
+    "input-hook",
+    "global-keyboard",
+    "global-mouse",
+    "keyboard-hook",
+    "mouse-hook",
+    "ui-automation",
+    "wayland",
+    "x11",
+    "windows",
+    "macos",
+    "linux"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "node-addon-api": "^8.4.0",
+    "node-gyp-build": "^4.8.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "gypfile": true,
+  "files": [
+    "src",
+    "scripts",
+    "index.js",
+    "index.d.ts",
+    "binding.gyp",
+    "LICENSE",
+    "PROVENANCE.md"
+  ]
+}

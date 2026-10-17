@@ -9,7 +9,7 @@
 | 任务 | 状态 | 证据 |
 |---|---|---|
 | T00 资源采集与基准冻结 | 进行中 | 新增进程树采样工具、统计单元测试；已采现有应用的非受控参考快照，受控 A/B 待补 |
-| T01 原生依赖可复现 | 待执行 | 固定 selection-hook 上游包、源码指纹与 Node/Electron 实际加载身份 |
+| T01 原生依赖可复现 | 已完成本机验证 | 固定 selection-hook 2.1.1 源码；空依赖目录重编译；Node 24.16.0 / Electron 43.2.0 加载相同指纹 |
 | T02 原生骨架 | 待执行 | 帧协议、无可见窗口监听、有限快照与退出清理 |
 | T03 取词事务协调 | 待执行 | 第一次写入前的 native worker 租约；真实复制穿插和恢复保护 |
 | T04 G0 验证收口 | 未通过 | 所有前置证据齐全前，不接产品面板或宣称资源预算达标 |
@@ -41,6 +41,18 @@ node scripts/benchmark-clipboard.js --root-pid 3800 --duration-seconds 60 --inte
 原始结果保存在忽略目录 `.tmp/clipboard-g0`。正式验收需补充隔离数据根、固定窗口/功能状态、OCR 释放期及匹配构建的 A/B；不能通过降低现有工具栏/会话能力来制造节省结果。
 
 ## 验证与剩余工作
+
+### T01 原生依赖
+
+`vendor/selection-hook/PROVENANCE.md` 记录上游 MIT 许可、tarball 摘要和本地差异。依赖锁定为 `file:vendor/selection-hook`，不再依赖 npm 包里的预编译二进制。当前只增加构建身份，没有改变取词算法。
+
+执行 `node scripts/verify-selection-source-build.js` 会在 `.tmp/clipboard-g0/selection-clean-*` 中复制不含 build/prebuild 的源文件，从仓库 lockfile 取出 addon 的精确依赖，用 `npm ci --ignore-scripts` 安装后显式编译，再由 Node 和 Electron 的 Node 宿主分别实例化与清理。两者均报告 `hl_1ba2fde105b98a81849a3bca958c317a4547282ef3e4da6594211bf816d46ce0`；Python 3.12.10、node-gyp 12.4.0、VS2022 17.14.37502.11、Windows x64。
+
+`node --test test/selection-native-build.test.js test/electron-runtime.test.js` 共 3 项通过；Electron 的正常 main 进程探针也校验源码指纹。构建身份不是发行二进制签名，完整安装包验证仍属于后续门禁。
+
+尝试整个项目的隔离 `npm ci --ignore-scripts` 时，现有 lockfile 的 `typedarray@https://registry.npmmirror.com/typedarray/-/typedarray-0.0.6.tgz` 被当前 npm 策略以 `EALLOWREMOTE` 拒绝。本次没有放宽 npm 安装策略，也没有修改该无关依赖；上面的 addon 独立干净安装已经通过，不能据此宣称整个项目的干净安装通过。
+
+### G0 后续
 
 资源统计单元测试覆盖后代归属、PID 重用、父退出、未知内存/CPU、累计 CPU 转换和参数限制。相关测试通过后再提交工具。
 
