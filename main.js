@@ -1309,7 +1309,7 @@ else {
     cursorProvider?.dispose()
   })
   app.on('before-quit', (event) => {
-    if (clipboardDomain && !clipboardDomain.service.disposed) {
+    if (clipboardDomain && !clipboardDomain.isShutdownComplete()) {
       event.preventDefault()
       clipboardDomain.dispose().catch((error) => log('Clipboard shutdown failed:', error.code || 'SHUTDOWN_FAILED')).finally(() => app.quit())
       return

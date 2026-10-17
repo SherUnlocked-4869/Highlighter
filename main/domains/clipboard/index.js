@@ -11,6 +11,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   let win = null; let generation = null; let releaseTimer = null; let panelSession = null
   let confirmationOpen = false; let readyToShow = false; let disposed = false
   let wantsVisible = false
+  let shutdownPromise = null; let shutdownComplete = false
   const tokens = new Map(); const clearTokens = new Map(); const powerListeners = []
   const ownsWindow = (target) => target != null && target === win
   function send(channel, value) { if (win && !win.isDestroyed() && win.isVisible()) win.webContents.send(channel, value) }
@@ -138,7 +139,14 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     notifyAppearance() { send('clipboard:init', appearance()) },
     async quiesce() { release(); await service.quiesce() },
     async resume() { await service.setReason('migration', false) },
-    async dispose() { disposed = true; release(); for (const [event, listener] of powerListeners) powerMonitor.removeListener(event, listener); await service.dispose() }
+    isShutdownComplete: () => shutdownComplete,
+    dispose() {
+      if (shutdownPromise) return shutdownPromise
+      disposed = true; release()
+      for (const [event, listener] of powerListeners) powerMonitor.removeListener(event, listener)
+      shutdownPromise = service.dispose().finally(() => { shutdownComplete = true })
+      return shutdownPromise
+    }
   }
 }
 module.exports = { createClipboardDomain }
