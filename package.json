@@ -119,7 +119,9 @@
       "clipboard/**/*",
       "record/**/*",
       "shared/**/*",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      "!node_modules/selection-hook/build/Release/obj/**/*",
+      "!node_modules/selection-hook/build/**/*.{exp,iobj,ipdb,lib,pdb,obj,tlog,log,recipe,sln,vcxproj,filters,gypi,props,targets}"
     ],
     "win": {
       "target": [
