@@ -202,6 +202,7 @@ impl Store {
     pub fn configure(&mut self, rules: Rules) -> Result<()> {
         rules.validate()?;
         self.rules = rules;
+        self.prune_thumbnails()?;
         self.maintain()?;
         Ok(())
     }
@@ -615,6 +616,13 @@ impl Store {
         } else {
             self.read_file(&hash, false, crate::limits::MAX_ENCODED_IMAGE_BYTES)?
         };
+        if thumbnail {
+            let (width, height) =
+                crate::limits::png_dimensions(&bytes).map_err(|_| "ATTACHMENT_DAMAGED")?;
+            if width > 240 || height > 240 {
+                return Err("ATTACHMENT_DAMAGED");
+            }
+        }
         if !thumbnail {
             let mut digest = Sha256::new();
             digest.update(b"highlighter-clipboard-payload-v1\0");
@@ -932,6 +940,34 @@ impl Store {
         self.disk_bytes = size;
         self.thumbnail_bytes = thumbnails;
         self.last_calibration = Instant::now();
+        Ok(())
+    }
+
+    fn prune_thumbnails(&mut self) -> Result<()> {
+        if self.thumbnail_bytes <= self.rules.max_thumbnail_mi_b * MIB {
+            return Ok(());
+        }
+        let directory = self.root.join("thumbnails");
+        safe_path(&directory)?;
+        let mut files = Vec::new();
+        for entry in fs::read_dir(directory).stored()? {
+            let path = entry.stored()?.path();
+            safe_path(&path)?;
+            let meta = fs::metadata(&path).stored()?;
+            if meta.is_file() {
+                files.push((meta.modified().ok(), path, meta.len()));
+            }
+        }
+        files.sort_by_key(|entry| entry.0);
+        for (_, path, length) in files {
+            if self.thumbnail_bytes <= self.rules.max_thumbnail_mi_b * MIB {
+                break;
+            }
+            if fs::remove_file(path).is_ok() {
+                self.thumbnail_bytes = self.thumbnail_bytes.saturating_sub(length);
+                self.disk_bytes = self.disk_bytes.saturating_sub(length);
+            }
+        }
         Ok(())
     }
 }

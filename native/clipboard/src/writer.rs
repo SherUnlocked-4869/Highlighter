@@ -97,6 +97,7 @@ pub fn copy(barrier: &Barrier, mime: &str, bytes: &[u8]) -> Result<(), &'static 
         return Err("UNSUPPORTED");
     }
     let epoch = barrier.begin_local(Duration::from_millis(100))?;
+    let owned_sequence=std::cell::Cell::new(unsafe {GetClipboardSequenceNumber()});
     let result = (|| unsafe {
         let owner = Owner(
             CreateWindowExW(
@@ -116,21 +117,22 @@ pub fn copy(barrier: &Barrier, mime: &str, bytes: &[u8]) -> Result<(), &'static 
             .map_err(|_| "COPY_FAILED")?,
         );
         OpenClipboard(Some(owner.0)).map_err(|_| "CLIPBOARD_BUSY")?;
-        struct Close;
-        impl Drop for Close {
+        struct Close<'a>(&'a std::cell::Cell<u32>);
+        impl Drop for Close<'_> {
             fn drop(&mut self) {
                 unsafe {
+                    self.0.set(GetClipboardSequenceNumber());
                     let _ = CloseClipboard();
                 }
             }
         }
-        let _close = Close;
+        let _close = Close(&owned_sequence);
         EmptyClipboard().map_err(|_| "COPY_FAILED")?;
         for (format, data) in formats {
             data.publish(format)?;
         }
         Ok(())
     })();
-    let ended = barrier.end(0, epoch, unsafe { GetClipboardSequenceNumber() });
+    let ended = barrier.end(0, epoch, owned_sequence.get());
     result.and(ended)
 }
