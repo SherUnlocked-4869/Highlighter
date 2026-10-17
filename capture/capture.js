@@ -175,6 +175,9 @@ let dpr = window.devicePixelRatio || 1
 let autoActionStarted = false
 let renderReadySent = false
 let renderReadyPending = false
+let renderReadyTimer = 0
+let renderReadyFrame = 0
+const FIRST_PAINT_MAX_WAIT_MS = 80
 let selectState = 'manual'
 let pointerDownPoint = null
 let smartCandidates = []
@@ -219,6 +222,7 @@ function serialMeta() {
 
 // 关窗（✕ / Esc）同样要回报已落过的序号，否则"落过就推进"会在取消路径上失效。
 function closeCaptureWindow() {
+  cancelRenderReady()
   window.captureAPI.close(serialNumber>initialSerialNumber?serialNumber:0)
 }
 
@@ -292,20 +296,42 @@ function drawBackground() {
   }
 }
 
-function reportRenderReady() {
-  if (renderReadySent || renderReadyPending || !image?.complete || !image.naturalWidth || !initData) return
+function captureImageReady() {
+  if (!image?.complete || !image.naturalWidth || !initData) return false
   const expected = initData.captureBounds || initData.displayBounds
-  if (expected && (Math.abs(innerWidth - expected.width) > 2 || Math.abs(innerHeight - expected.height) > 2)) return
+  return !expected || (Math.abs(innerWidth - expected.width) <= 2 && Math.abs(innerHeight - expected.height) <= 2)
+}
+
+function cancelRenderReady() {
+  clearTimeout(renderReadyTimer)
+  cancelAnimationFrame(renderReadyFrame)
+  renderReadyTimer = 0
+  renderReadyFrame = 0
+  renderReadyPending = false
+}
+
+function reportRenderReady() {
+  if (renderReadySent || renderReadyPending || !captureImageReady()) return
   renderReadyPending = true
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    if (renderReadySent || !image?.complete || !image.naturalWidth) {
-      renderReadyPending = false
-      return
+  const pendingImage = image
+  const finish = () => {
+    cancelRenderReady()
+    if (renderReadySent || image !== pendingImage || !captureImageReady()) return
+    // Hidden Windows compositors can deliver rAF only once a second even with
+    // backgroundThrottling disabled. Paint the mask before releasing the window
+    // so the timeout path cannot reveal an unpainted overlay.
+    if (renderRequest) {
+      cancelAnimationFrame(renderRequest)
+      renderRequest = 0
     }
+    renderOverlay()
     renderReadySent = true
-    renderReadyPending = false
     window.captureAPI.renderReady()
-  }))
+  }
+  renderReadyTimer = setTimeout(finish, FIRST_PAINT_MAX_WAIT_MS)
+  renderReadyFrame = requestAnimationFrame(() => {
+    renderReadyFrame = requestAnimationFrame(finish)
+  })
 }
 
 function maybeRunAutoAction() {
@@ -2118,6 +2144,7 @@ addEventListener('keydown',(event)=>{
 })
 
 window.captureAPI.onInit((data)=>{
+  cancelRenderReady()
   clearOcrResult();setProcessingState(null);initData=data; renderReadySent=false; renderReadyPending=false; selectState=data.smartSelect&&data.mode==='region'?'auto':'manual'; pointerDownPoint=null; smartCandidates=[]; smartCandidateLevel=0; document.documentElement.style.setProperty('--primary',data.settings.mainColor||'#e5a44c')
   resetAnnotationState()
   resetSerialNumber(data)
@@ -2138,7 +2165,7 @@ window.captureAPI.onInit((data)=>{
 
 function makeBlankCanvas(){const blank=document.createElement('canvas');blank.width=Math.max(1,innerWidth*dpr);blank.height=Math.max(1,innerHeight*dpr);const c=blank.getContext('2d');c.fillStyle='#fff';c.fillRect(0,0,blank.width,blank.height);return blank.toDataURL()}
 addEventListener('resize',resizeCanvas)
-addEventListener('beforeunload',()=>{if(renderRequest)cancelAnimationFrame(renderRequest);if(imageObjectUrl)URL.revokeObjectURL(imageObjectUrl)})
+addEventListener('beforeunload',()=>{cancelRenderReady();if(renderRequest)cancelAnimationFrame(renderRequest);if(imageObjectUrl)URL.revokeObjectURL(imageObjectUrl)})
 window.captureAPI.ready()
 
 // ---------- P0-1-T4 / S11: interface language ----------
