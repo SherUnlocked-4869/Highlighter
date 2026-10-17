@@ -299,6 +299,24 @@ class SelectionHook extends EventEmitter {
     }
   }
 
+  // Private main/host API. Credentials must never be persisted or sent to a renderer.
+  setClipboardCoordinator(endpoint) {
+    if (!this.#checkInstance()) throw new Error("Native selection instance unavailable");
+    if (process.platform !== "win32") throw new Error("Clipboard coordination requires Windows");
+    this.#instance.setClipboardCoordinator(endpoint);
+    return true;
+  }
+
+  checkClipboardCoordinator() {
+    if (!this.#checkInstance() || process.platform !== "win32") return Promise.resolve(false);
+    return this.#instance.checkClipboardCoordinator();
+  }
+
+  getClipboardCoordinatorDiagnostics() {
+    if (!this.#checkInstance() || process.platform !== "win32") return null;
+    return this.#instance.getClipboardCoordinatorDiagnostics();
+  }
+
   /**
    * Set clipboard mode and program list for text selection
    *

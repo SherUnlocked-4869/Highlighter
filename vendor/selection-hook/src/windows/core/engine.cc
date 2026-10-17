@@ -8,6 +8,7 @@
 #define WIN32_LEAN_AND_MEAN 1
 
 #include "engine.h"
+#include "../lib/clipboard_transaction.h"
 
 #include <oleacc.h>
 #include <windows.h>
@@ -676,7 +677,7 @@ bool SelectionEngine::SetTextRangeCoordinates(IUIAutomationTextRange *range, Tex
 /**
  * Last-resort retrieval using a saved clipboard and synthesized copy shortcuts.
  *
- * Every early exit after a non-empty backup must restore the user's clipboard.
+ * Restore only under a verified sequence/owner/input guard, using the same lock.
  */
 bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionInfo)
 {
@@ -748,22 +749,16 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
 
     // Preserve every backupable clipboard format, not only text. A fallback must be
     // transparent to users who have copied files, images, or rich content.
-    ClipboardBackup clipboardBackup;
-    if (!OpenClipboard(nullptr))
+    highlighter::ClipboardTransaction transaction(hwnd, config_->coordinator,
+        clipboardLockMode_ == ClipboardLockMode::InterruptibleWait, [this]() { return IsStopping(); });
+    if (!transaction.ready())
         return false;
-    BackupClipboard(clipboardBackup, true);
-    EmptyClipboard();
-    CloseClipboard();
 
     const auto restoreBackup = [&]()
     {
-        if (clipboardBackup.HasData())
-        {
-            RestoreClipboard(clipboardBackup);
-            // Restoration itself changes the sequence number. Publish this final value
-            // so the next gesture does not mistake our restore for a user's copy.
-            clipboardSequence_ = GetClipboardSequenceNumber();
-        }
+        transaction.complete();
+        // Publish the actual ending sequence, including a user copy we preserved.
+        clipboardSequence_ = GetClipboardSequenceNumber();
     };
 
     // Delay-list applications skip Ctrl+Insert and need extra settling time after Ctrl+C.
@@ -771,7 +766,7 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
                            IsInFilterList(selectionInfo.programName, config_->includeClipboardDelayRead);
     if (!delayRead)
     {
-        if (IsStopping() || ShouldKeyInterruptViaClipboard())
+        if (!transaction.ready() || IsStopping() || ShouldKeyInterruptViaClipboard())
         {
             restoreBackup();
             return false;
@@ -789,6 +784,7 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
             if (GetClipboardSequenceNumber() != clipboardSequence_)
             {
                 hasNewContent = true;
+                transaction.observe(GetClipboardSequenceNumber());
                 break;
             }
             if (!SleepInterruptibly(sleepInterval))
@@ -802,13 +798,13 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
                 restoreBackup();
                 return false;
             }
-            const bool readSuccess = ReadClipboard(selectionInfo.text);
+            const bool readSuccess = transaction.read(selectionInfo.text);
             restoreBackup();
             return readSuccess && !selectionInfo.text.empty();
         }
     }
 
-    if (IsStopping() || ShouldKeyInterruptViaClipboard())
+    if (!transaction.ready() || IsStopping() || ShouldKeyInterruptViaClipboard())
     {
         restoreBackup();
         return false;
@@ -825,6 +821,7 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
         if (GetClipboardSequenceNumber() != clipboardSequence_)
         {
             hasNewContent = true;
+            transaction.observe(GetClipboardSequenceNumber());
             break;
         }
         if (!SleepInterruptibly(sleepInterval))
@@ -850,7 +847,7 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
         return false;
     }
 
-    const bool readSuccess = ReadClipboard(selectionInfo.text);
+    const bool readSuccess = transaction.read(selectionInfo.text);
     restoreBackup();
     return readSuccess && !selectionInfo.text.empty();
 }
@@ -869,6 +866,7 @@ void SelectionEngine::SendCopyKey(CopyKeyType type) const
     const WORD keyCode = type == CopyKeyType::CtrlInsert ? VK_INSERT : 'C';
     std::vector<INPUT> inputs;
     INPUT input = {};
+    input.ki.dwExtraInfo = highlighter::InputTag();
     // Release modifiers that would change the meaning of Ctrl+Insert/C. Compatibility
     // behavior does not synthesize modifier key-down events afterward; changing this
     // requires physical modifier-state regression testing.

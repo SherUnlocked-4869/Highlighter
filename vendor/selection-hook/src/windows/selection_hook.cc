@@ -166,6 +166,9 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     void DisableMouseMoveEvent(const Napi::CallbackInfo &info);
     void EnableClipboard(const Napi::CallbackInfo &info);
     void DisableClipboard(const Napi::CallbackInfo &info);
+    void SetClipboardCoordinator(const Napi::CallbackInfo &info);
+    Napi::Value CheckClipboardCoordinator(const Napi::CallbackInfo &info);
+    Napi::Value GetClipboardCoordinatorDiagnostics(const Napi::CallbackInfo &info);
     void SetClipboardMode(const Napi::CallbackInfo &info);
     void SetGlobalFilterMode(const Napi::CallbackInfo &info);
     void SetFineTunedList(const Napi::CallbackInfo &info);
@@ -263,6 +266,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     // Passive mode disables automatic retrieval; getCurrentSelection() remains available.
     bool is_selection_passive_mode = false;
     bool is_enabled_clipboard = true;  // Enable by default
+    highlighter::CoordinatorConfig clipboard_coordinator;
     // Shared/revisioned because automatic and synchronous retrieval can now overlap.
     std::shared_ptr<ClipboardSequenceState> clipboard_sequence_state = std::make_shared<ClipboardSequenceState>();
 
@@ -472,6 +476,9 @@ Napi::Object SelectionHook::Init(Napi::Env env, Napi::Object exports)
                      InstanceMethod("disableMouseMoveEvent", &SelectionHook::DisableMouseMoveEvent),
                      InstanceMethod("enableClipboard", &SelectionHook::EnableClipboard),
                      InstanceMethod("disableClipboard", &SelectionHook::DisableClipboard),
+                     InstanceMethod("setClipboardCoordinator", &SelectionHook::SetClipboardCoordinator),
+                     InstanceMethod("checkClipboardCoordinator", &SelectionHook::CheckClipboardCoordinator),
+                     InstanceMethod("getClipboardCoordinatorDiagnostics", &SelectionHook::GetClipboardCoordinatorDiagnostics),
                      InstanceMethod("setClipboardMode", &SelectionHook::SetClipboardMode),
                      InstanceMethod("setGlobalFilterMode", &SelectionHook::SetGlobalFilterMode),
                      InstanceMethod("setFineTunedList", &SelectionHook::SetFineTunedList),
@@ -724,6 +731,78 @@ void SelectionHook::SetSelectionPassiveMode(const Napi::CallbackInfo &info)
 void SelectionHook::EnableClipboard(const Napi::CallbackInfo &info)
 {
     is_enabled_clipboard = true;
+}
+
+void SelectionHook::SetClipboardCoordinator(const Napi::CallbackInfo &info)
+{
+    if (IsRetrievalInFlight()) {
+        Napi::Error::New(info.Env(), "Clipboard coordinator requires idle selection worker").ThrowAsJavaScriptException();
+        return;
+    }
+    auto revision = clipboard_coordinator.revision;
+    const uint64_t nextRevision = revision->fetch_add(1, std::memory_order_acq_rel) + 1;
+    clipboard_coordinator = highlighter::CoordinatorConfig{};
+    clipboard_coordinator.revision = revision;
+    clipboard_coordinator.expectedRevision = nextRevision;
+    clipboard_coordinator.required = true;  // Invalid input must fail closed.
+    if (info.Length() == 1 && info[0].IsNull()) { clipboard_coordinator.required = false; return; }
+    const auto reject = [&]() { Napi::TypeError::New(info.Env(), "Invalid private clipboard coordinator").ThrowAsJavaScriptException(); };
+    if (info.Length() != 1 || !info[0].IsObject() || info[0].IsArray()) { reject(); return; }
+    auto object = info[0].As<Napi::Object>();
+    if (object.GetPropertyNames().Length() != 5) { reject(); return; }
+    for (const char *key : {"pipeName", "nonce", "hostEpoch"}) if (!object.Get(key).IsString()) { reject(); return; }
+    for (const char *key : {"hostPid", "serverPid"}) if (!object.Get(key).IsNumber()) { reject(); return; }
+    const double hostPid = object.Get("hostPid").As<Napi::Number>().DoubleValue();
+    const double serverPid = object.Get("serverPid").As<Napi::Number>().DoubleValue();
+    if (hostPid != GetCurrentProcessId() || serverPid < 1 || serverPid > MAXDWORD || std::floor(serverPid) != serverPid) { reject(); return; }
+    const auto pipe16 = object.Get("pipeName").As<Napi::String>().Utf16Value();
+    const std::wstring pipe(pipe16.begin(), pipe16.end());
+    const std::wstring prefix = L"\\\\.\\pipe\\Highlighter.Clipboard.";
+    if (pipe.size() != prefix.size()+64 || pipe.compare(0,prefix.size(),prefix) != 0 || pipe.find_first_not_of(L"0123456789abcdef", prefix.size()) != std::wstring::npos) { reject(); return; }
+    const auto decode = [](const std::string &text, std::array<BYTE,32> &bytes) {
+        if (text.size() != 64) return false;
+        const auto nibble = [](char c) -> int { return c >= '0' && c <= '9' ? c-'0' : c >= 'a' && c <= 'f' ? c-'a'+10 : -1; };
+        for (size_t i=0; i<32; ++i) { const int a=nibble(text[i*2]), b=nibble(text[i*2+1]); if (a<0 || b<0) return false; bytes[i]=static_cast<BYTE>((a<<4)|b); }
+        return true;
+    };
+    if (!decode(object.Get("nonce").As<Napi::String>().Utf8Value(), clipboard_coordinator.nonce)
+        || !decode(object.Get("hostEpoch").As<Napi::String>().Utf8Value(), clipboard_coordinator.hostEpoch)) { reject(); return; }
+    clipboard_coordinator.pipe = pipe;
+    clipboard_coordinator.serverPid = static_cast<DWORD>(serverPid);
+}
+
+Napi::Value SelectionHook::CheckClipboardCoordinator(const Napi::CallbackInfo &info)
+{
+    class HealthWorker : public Napi::AsyncWorker {
+      public:
+        HealthWorker(Napi::Env env, highlighter::CoordinatorConfig config) : Napi::AsyncWorker(env), deferred(Napi::Promise::Deferred::New(env)), config(std::move(config)) {}
+        void Execute() override {
+            if (!config.required) return;
+            highlighter::TransientLease lease(config, true);
+            available = lease.valid() && lease.finish({}, 2);
+        }
+        void OnOK() override { deferred.Resolve(Napi::Boolean::New(Env(), available && config.current())); }
+        void OnError(const Napi::Error &) override { deferred.Resolve(Napi::Boolean::New(Env(), false)); }
+        Napi::Promise promise() const { return deferred.Promise(); }
+      private:
+        Napi::Promise::Deferred deferred;
+        highlighter::CoordinatorConfig config;
+        bool available = false;
+    };
+    auto *worker = new HealthWorker(info.Env(), clipboard_coordinator);
+    auto promise = worker->promise();
+    worker->Queue();
+    return promise;
+}
+
+Napi::Value SelectionHook::GetClipboardCoordinatorDiagnostics(const Napi::CallbackInfo &info)
+{
+    auto result = Napi::Object::New(info.Env());
+    const auto values = highlighter::TransientDiagnostics();
+    const char *names[] = {"leaseDenied", "backupRejected", "inputInterrupted", "ambiguousInterleaving", "restored", "restoreFailed"};
+    for (size_t i=0; i<values.size(); ++i) result.Set(names[i], Napi::Number::New(info.Env(), static_cast<double>(values[i])));
+    result.Set("required", Napi::Boolean::New(info.Env(), clipboard_coordinator.required));
+    return result;
 }
 
 /**
@@ -1254,6 +1333,7 @@ SelectionConfigSnapshot SelectionHook::BuildSelectionConfigSnapshot(bool trigger
     // Copy every retrieval input at dispatch time. The MTA worker must not read mutable
     // vectors, cursors, or filter settings directly from the JS-owned instance.
     SelectionConfigSnapshot config;
+    config.coordinator = clipboard_coordinator;
     config.clipboardEnabled = is_enabled_clipboard;
     config.triggeredByUser = triggeredByUser;
     config.clipboardFilterMode = clipboard_filter_mode;
@@ -1748,6 +1828,8 @@ LRESULT CALLBACK SelectionHook::MouseHookCallback(int nCode, WPARAM wParam, LPAR
  */
 LRESULT CALLBACK SelectionHook::KeyboardHookCallback(int nCode, WPARAM wParam, LPARAM lParam)
 {
+    if (nCode == HC_ACTION && currentInstance)
+        highlighter::ObserveInput(*reinterpret_cast<KBDLLHOOKSTRUCT *>(lParam), wParam);
     if (nCode == HC_ACTION && currentInstance && !currentInstance->IsRetrievalInFlight())
     {
         KBDLLHOOKSTRUCT *pKeyInfo = (KBDLLHOOKSTRUCT *)lParam;

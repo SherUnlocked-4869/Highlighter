@@ -7,6 +7,7 @@
 
 #include <string>
 #include <vector>
+#include <functional>
 
 /**
  * A single clipboard format entry: format ID + raw data blob
@@ -57,4 +58,4 @@ bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened = false);
  * @param backup The backup to restore from
  * @return true if successful, false on failure
  */
-bool RestoreClipboard(const ClipboardBackup &backup);
+bool RestoreClipboard(const ClipboardBackup &backup, bool isClipboardOpened = false, const std::function<bool()> &mayWrite = {});

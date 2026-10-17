@@ -23,6 +23,7 @@ native/everything-search/target/
 vendor/selection-hook/build/
 native/clipboard/target/
 native/clipboard/bin/
+test/native/selection-clipboard/build/
 
 # 只读参考克隆（Snow Apps 对标分析用，见 docs/plans/2026-10-10-snow-apps-feature-gap-analysis.md）
 _repo_snow_apps/

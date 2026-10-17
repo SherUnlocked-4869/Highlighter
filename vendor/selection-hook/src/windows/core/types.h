@@ -22,6 +22,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include "../lib/transient.h"
 
 // How the mouse gesture identified a possible text selection.
 enum class SelectionDetectType
@@ -143,6 +144,7 @@ struct TextSelectionInfo
  */
 struct SelectionConfigSnapshot
 {
+    highlighter::CoordinatorConfig coordinator;
     bool clipboardEnabled = true;
     bool triggeredByUser = false;
     FilterMode clipboardFilterMode = FilterMode::Default;

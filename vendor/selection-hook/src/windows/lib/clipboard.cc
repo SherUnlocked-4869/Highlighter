@@ -8,6 +8,7 @@
 #include "clipboard.h"
 
 #include <vector>
+#include <cwchar>
 
 /**
  * Check if a clipboard format should be skipped during backup.
@@ -68,12 +69,15 @@ bool ReadClipboard(std::wstring &content, bool isClipboardOpened)
     if (hData)
     {
         // Handle Unicode text (most common)
-        wchar_t *pText = static_cast<wchar_t *>(GlobalLock(hData));
+        const SIZE_T size = GlobalSize(hData);
+        wchar_t *pText = size >= sizeof(wchar_t) && size <= 2 * 1024 * 1024 && size % sizeof(wchar_t) == 0
+            ? static_cast<wchar_t *>(GlobalLock(hData)) : nullptr;
         if (pText)
         {
-            content = pText;
-            GlobalUnlock(hData);
-            success = true;
+            struct UnlockGuard { HANDLE handle; ~UnlockGuard() { GlobalUnlock(handle); } } unlockGuard{hData};
+            const wchar_t *end = std::wmemchr(pText, L'\0', size / sizeof(wchar_t));
+            if (end) content.assign(pText, static_cast<size_t>(end - pText));
+            success = end != nullptr;
         }
     }
     else
@@ -82,19 +86,22 @@ bool ReadClipboard(std::wstring &content, bool isClipboardOpened)
         hData = GetClipboardData(CF_TEXT);
         if (hData)
         {
-            char *pText = static_cast<char *>(GlobalLock(hData));
+            const SIZE_T size = GlobalSize(hData);
+            char *pText = size > 0 && size <= 2 * 1024 * 1024 ? static_cast<char *>(GlobalLock(hData)) : nullptr;
             if (pText)
             {
+                struct UnlockGuard { HANDLE handle; ~UnlockGuard() { GlobalUnlock(handle); } } unlockGuard{hData};
                 // Convert ANSI text to wide string
-                int length = MultiByteToWideChar(CP_ACP, 0, pText, -1, nullptr, 0);
+                const char *end = static_cast<const char *>(memchr(pText, '\0', size));
+                const int sourceLength = end ? static_cast<int>(end - pText) : -1;
+                int length = sourceLength >= 0 ? MultiByteToWideChar(CP_ACP, 0, pText, sourceLength, nullptr, 0) : 0;
                 if (length > 0)
                 {
                     std::vector<wchar_t> buffer(length);
-                    MultiByteToWideChar(CP_ACP, 0, pText, -1, buffer.data(), length);
-                    content = buffer.data();
+                    MultiByteToWideChar(CP_ACP, 0, pText, sourceLength, buffer.data(), length);
+                    content.assign(buffer.data(), buffer.size());
                     success = true;
                 }
-                GlobalUnlock(hData);
             }
         }
     }
@@ -163,18 +170,31 @@ bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened)
     if (!isClipboardOpened && !OpenClipboard(nullptr))
         return false;
 
+    struct CloseGuard { bool close; ~CloseGuard() { if (close) CloseClipboard(); } } closeGuard{!isClipboardOpened};
+    constexpr SIZE_T maximumBackupBytes = 64 * 1024 * 1024;
+    SIZE_T remaining = maximumBackupBytes;
+    unsigned formats = 0;
+
     if (CountClipboardFormats() == 0)
     {
-        if (!isClipboardOpened)
-            CloseClipboard();
         return true;  // Success, but clipboard was empty
     }
 
     backup.isEmpty = false;
 
     UINT format = 0;
-    while ((format = EnumClipboardFormats(format)) != 0)
+    for (;;)
     {
+        SetLastError(ERROR_SUCCESS);
+        format = EnumClipboardFormats(format);
+        if (format == 0) break;
+        if (++formats > 64) return false;
+        // These cannot be copied losslessly as HGLOBAL. Abort before clearing,
+        // instead of discarding private or GDI-only data during fallback.
+        if ((format >= CF_PRIVATEFIRST && format <= CF_PRIVATELAST)
+            || (format >= CF_GDIOBJFIRST && format <= CF_GDIOBJLAST)
+            || format == CF_OWNERDISPLAY || format == CF_DSPTEXT || format == CF_DSPBITMAP
+            || format == CF_DSPMETAFILEPICT || format == CF_DSPENHMETAFILE) return false;
         if (IsSkippedFormat(format))
             continue;
 
@@ -182,49 +202,44 @@ bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened)
         if (format == CF_ENHMETAFILE)
         {
             HENHMETAFILE hEmf = static_cast<HENHMETAFILE>(GetClipboardData(CF_ENHMETAFILE));
-            if (!hEmf)
-                continue;
+            if (!hEmf) return false;
 
             UINT emfSize = GetEnhMetaFileBits(hEmf, 0, nullptr);
-            if (emfSize == 0)
-                continue;
+            if (emfSize == 0 || emfSize > remaining) return false;
 
             ClipboardFormatEntry entry;
             entry.format = CF_ENHMETAFILE;
             entry.dataSize = emfSize;
             entry.data.resize(emfSize);
-            GetEnhMetaFileBits(hEmf, emfSize, entry.data.data());
+            if (GetEnhMetaFileBits(hEmf, emfSize, entry.data.data()) != emfSize) return false;
+            remaining -= emfSize;
             backup.formats.push_back(std::move(entry));
             continue;
         }
 
         // Generic HGLOBAL path for all other formats
         HANDLE hData = GetClipboardData(format);
-        if (!hData)
-            continue;
+        if (!hData) return false;
 
         SIZE_T dataSize = GlobalSize(hData);
-        if (dataSize == 0)
-            continue;  // Non-HGLOBAL handle returns 0, safely skip
+        if (dataSize == 0 || dataSize > remaining) return false;
 
         void *pData = GlobalLock(hData);
-        if (!pData)
-            continue;
+        if (!pData) return false;
+
+        struct UnlockGuard { HANDLE handle; ~UnlockGuard() { GlobalUnlock(handle); } } unlockGuard{hData};
 
         ClipboardFormatEntry entry;
         entry.format = format;
         entry.dataSize = dataSize;
         entry.data.resize(dataSize);
         memcpy(entry.data.data(), pData, dataSize);
-        GlobalUnlock(hData);
+        remaining -= dataSize;
 
         backup.formats.push_back(std::move(entry));
     }
 
-    if (!isClipboardOpened)
-        CloseClipboard();
-
-    return true;
+    return GetLastError() == ERROR_SUCCESS && (backup.isEmpty || backup.HasData());
 }
 
 /**
@@ -233,54 +248,65 @@ bool BackupClipboard(ClipboardBackup &backup, bool isClipboardOpened)
  * CF_ENHMETAFILE is restored via SetEnhMetaFileBits.
  * On SetClipboardData failure, the allocated handle is freed by us.
  */
-bool RestoreClipboard(const ClipboardBackup &backup)
+bool RestoreClipboard(const ClipboardBackup &backup, bool isClipboardOpened, const std::function<bool()> &mayWrite)
 {
-    if (!backup.HasData())
-        return true;  // Nothing to restore
+    if (!backup.isEmpty && !backup.HasData()) return false;
 
-    if (!OpenClipboard(nullptr))
+    if (!isClipboardOpened && !OpenClipboard(nullptr))
         return false;
 
-    EmptyClipboard();
+    struct CloseGuard { bool close; ~CloseGuard() { if (close) CloseClipboard(); } } closeGuard{!isClipboardOpened};
+
+    if ((mayWrite && !mayWrite()) || !EmptyClipboard()) return false;
+    bool success = true;
+    DWORD ownedSequence = GetClipboardSequenceNumber();
 
     for (const auto &entry : backup.formats)
     {
+        if ((mayWrite && !mayWrite()) || GetClipboardSequenceNumber() != ownedSequence) return false;
         // CF_ENHMETAFILE uses HENHMETAFILE, not HGLOBAL
         if (entry.format == CF_ENHMETAFILE)
         {
             HENHMETAFILE hEmf = SetEnhMetaFileBits(static_cast<UINT>(entry.dataSize), entry.data.data());
             if (hEmf)
             {
+                if (mayWrite && !mayWrite()) { DeleteEnhMetaFile(hEmf); return false; }
                 if (SetClipboardData(CF_ENHMETAFILE, hEmf) == nullptr)
                 {
                     DeleteEnhMetaFile(hEmf);  // Not GlobalFree -- this is a GDI handle
+                    success = false;
                 }
             }
+            else success = false;
+            ownedSequence = GetClipboardSequenceNumber();
             continue;
         }
 
         // Generic HGLOBAL path
         HGLOBAL hData = GlobalAlloc(GMEM_MOVEABLE, entry.dataSize);
-        if (!hData)
-            continue;
+        if (!hData) { success = false; continue; }
 
         void *pDest = GlobalLock(hData);
         if (!pDest)
         {
             GlobalFree(hData);
+            success = false;
             continue;
         }
 
         memcpy(pDest, entry.data.data(), entry.dataSize);
         GlobalUnlock(hData);
 
+        if ((mayWrite && !mayWrite()) || GetClipboardSequenceNumber() != ownedSequence) { GlobalFree(hData); return false; }
+
         if (SetClipboardData(entry.format, hData) == nullptr)
         {
             GlobalFree(hData);  // On failure, we must free the handle ourselves
+            success = false;
         }
         // On success, system owns hData -- do NOT free
+        ownedSequence = GetClipboardSequenceNumber();
     }
 
-    CloseClipboard();
-    return true;
+    return success;
 }

@@ -337,6 +337,12 @@ declare class SelectionHook extends EventEmitter {
    */
   disableClipboard(): boolean;
 
+  /** Private host API; never persist credentials or expose them to a renderer. */
+  setClipboardCoordinator(endpoint: { pipeName: string; nonce: string; hostEpoch: string; hostPid: number; serverPid: number } | null): boolean;
+  /** Async native-worker handshake; never waits on the JavaScript thread. */
+  checkClipboardCoordinator(): Promise<boolean>;
+  getClipboardCoordinatorDiagnostics(): { required: boolean; leaseDenied: number; backupRejected: number; inputInterrupted: number; ambiguousInterleaving: number; restored: number; restoreFailed: number } | null;
+
   /**
    * Set clipboard mode and program list for text selection
    *

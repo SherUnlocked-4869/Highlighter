@@ -22,6 +22,8 @@
             "src/windows/lib/string_pool.cc",
             "src/windows/lib/utils.cc",
             "src/windows/lib/clipboard.cc",
+            "src/windows/lib/clipboard_transaction.cc",
+            "src/windows/lib/transient.cc",
             "src/windows/lib/keyboard.cc"
           ],
           "libraries": [ 

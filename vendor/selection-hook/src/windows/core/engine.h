@@ -110,8 +110,8 @@ class SelectionEngine
     TextRetrievalResult ClassifyAccessibleRole(IAccessible *accessible, const VARIANT &child);
 
     /**
-     * @warning This is a complete backup/copy/read/restore transaction. Every exit after
-     * a non-empty backup must restore it and update clipboardSequence_.
+     * @warning This is a complete backup/copy/read/guarded-restore transaction.
+     * Never overwrite a newer user copy; coordinated waits run only on the worker.
      */
     bool GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionInfo);
     bool ShouldProcessViaClipboard(const std::wstring &programName) const;
