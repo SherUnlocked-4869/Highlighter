@@ -1,8 +1,9 @@
 //! Only bounded metadata is queued from the message callback. No clipboard
 //! reads, sleeps, filesystem access or stdout writes occur on that thread.
 use crate::barrier::Barrier;
-use crate::capture::read_snapshot;
+use crate::capture::read_snapshot_with_rules;
 use crate::limits::Skip;
+use crate::storage::{Rules, Store};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -31,6 +32,8 @@ struct State {
     accepted_bytes: AtomicU64,
     max_capture_micros: AtomicU64,
     skipped: Mutex<BTreeMap<&'static str, u64>>,
+    rules: Mutex<Rules>,
+    capture_started: Mutex<Option<Instant>>,
 }
 
 struct Notice {
@@ -91,6 +94,13 @@ impl Monitor {
     }
 
     pub fn start_with_barrier(barrier: Arc<Barrier>) -> Result<Self, &'static str> {
+        Self::start_with_store(barrier, None)
+    }
+
+    pub fn start_with_store(
+        barrier: Arc<Barrier>,
+        store: Option<Arc<Mutex<Store>>>,
+    ) -> Result<Self, &'static str> {
         let state = Arc::new(State {
             barrier,
             ..State::default()
@@ -193,6 +203,15 @@ impl Monitor {
                     continue;
                 };
                 let started = Instant::now();
+                *worker_state
+                    .capture_started
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(started);
+                let rules = worker_state
+                    .rules
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
                 let mut result = Err(Skip::Busy);
                 for delay in [0, 5, 15, 30] {
                     if !current(&worker_state, &notice) || !permit.current() {
@@ -204,7 +223,12 @@ impl Monitor {
                     if !current(&worker_state, &notice) || !permit.current() {
                         break;
                     }
-                    result = read_snapshot(notice.sequence);
+                    result = read_snapshot_with_rules(
+                        notice.sequence,
+                        rules.capture_text,
+                        rules.capture_images,
+                        &rules.excluded_apps,
+                    );
                     if !matches!(result, Err(Skip::Busy)) {
                         break;
                     }
@@ -212,18 +236,35 @@ impl Monitor {
                 worker_state
                     .max_capture_micros
                     .fetch_max(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+                *worker_state
+                    .capture_started
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
                 if !current(&worker_state, &notice) || !permit.current() {
                     skip(&worker_state, "stale_configuration");
                     continue;
                 }
                 match result {
                     Ok(snapshot) => {
-                        // G0 explicitly does not persist or publish the payload.
-                        // The next storage task receives owned Snapshot values.
+                        let length = snapshot.bytes.len() as u64;
+                        if let Some(store) = &store {
+                            // A deletion invalidates generation before taking this
+                            // mutex. A snapshot cannot reappear after that delete.
+                            let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
+                            if !current(&worker_state, &notice) || !permit.current() {
+                                continue;
+                            }
+                            if let Err(code) =
+                                store.accept(snapshot.kind, snapshot.bytes, &snapshot.source)
+                            {
+                                skip(&worker_state, code);
+                                continue;
+                            }
+                        }
                         worker_state.accepted.fetch_add(1, Ordering::Relaxed);
                         worker_state
                             .accepted_bytes
-                            .fetch_add(snapshot.bytes.len() as u64, Ordering::Relaxed);
+                            .fetch_add(length, Ordering::Relaxed);
                     }
                     Err(reason) => skip(&worker_state, reason.code()),
                 }
@@ -249,12 +290,21 @@ impl Monitor {
         self.state.enabled.store(enabled, Ordering::Release);
     }
 
+    pub fn invalidate(&self) {
+        self.state.generation.fetch_add(1, Ordering::AcqRel);
+    }
+    pub fn set_rules(&self, rules: Rules) {
+        self.invalidate();
+        *self.state.rules.lock().unwrap_or_else(|e| e.into_inner()) = rules;
+    }
+
     pub fn enabled(&self) -> bool {
         self.state.enabled.load(Ordering::Acquire)
     }
 
     pub fn status(&self) -> Value {
         json!({
+            "captureBusyMs": self.state.capture_started.lock().unwrap_or_else(|e|e.into_inner()).map(|start|start.elapsed().as_millis() as u64).unwrap_or(0),
             "enabled": self.state.enabled.load(Ordering::Acquire),
             "coordinationPhase": format!("{:?}", self.state.barrier.phase()).to_lowercase(),
             "queued": self.state.queued.load(Ordering::Relaxed),

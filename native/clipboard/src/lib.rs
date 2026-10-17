@@ -3,7 +3,11 @@ pub mod barrier;
 pub mod capture;
 #[cfg(windows)]
 pub mod coordinator;
+pub mod images;
 pub mod limits;
 #[cfg(windows)]
 pub mod listener;
 pub mod protocol;
+pub mod storage;
+#[cfg(windows)]
+pub mod writer;

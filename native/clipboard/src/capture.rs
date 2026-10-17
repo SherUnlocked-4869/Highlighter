@@ -12,6 +12,7 @@ pub struct Snapshot {
     pub bytes: Vec<u8>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub source: String,
 }
 
 struct OpenGuard;
@@ -62,11 +63,24 @@ unsafe fn copy_global(
 }
 
 pub fn read_snapshot(expected_sequence: u32) -> Result<Snapshot, Skip> {
-    let (kind, bytes, image_size) = unsafe {
+    read_snapshot_with_rules(expected_sequence, true, true, &[])
+}
+
+pub fn read_snapshot_with_rules(
+    expected_sequence: u32,
+    text: bool,
+    images: bool,
+    excluded: &[String],
+) -> Result<Snapshot, Skip> {
+    let (kind, bytes, image_size, source) = unsafe {
         OpenClipboard(None).map_err(|_| Skip::Busy)?;
         let _open = OpenGuard;
         if GetClipboardSequenceNumber() != expected_sequence {
             return Err(Skip::Superseded);
+        }
+        let source = source_app();
+        if (!excluded.is_empty() && source.is_empty()) || excluded.contains(&source) {
+            return Err(Skip::Excluded);
         }
         for name in [
             "ExcludeClipboardContentFromMonitorProcessing",
@@ -96,12 +110,18 @@ pub fn read_snapshot(expected_sequence: u32) -> Result<Snapshot, Skip> {
             return Err(Skip::Unsupported);
         }
         let data = if IsClipboardFormatAvailable(13).is_ok() {
+            if !text {
+                return Err(Skip::Unsupported);
+            }
             (
                 "text",
                 copy_global(13, limits::MAX_TEXT_BYTES * 2 + 2, |_| Ok(()))?,
                 None,
             )
         } else {
+            if !images {
+                return Err(Skip::Unsupported);
+            }
             let png = named_format("PNG")?;
             if IsClipboardFormatAvailable(png).is_ok() {
                 let bytes = copy_global(png, limits::MAX_ENCODED_IMAGE_BYTES, |raw| {
@@ -128,7 +148,7 @@ pub fn read_snapshot(expected_sequence: u32) -> Result<Snapshot, Skip> {
         if GetClipboardSequenceNumber() != expected_sequence {
             return Err(Skip::Superseded);
         }
-        data
+        (data.0, data.1, data.2, source)
     };
     // The OpenGuard is already dropped. No clipboard lock is held while Rust
     // validates UTF-16 or creates the UTF-8 string.
@@ -146,5 +166,43 @@ pub fn read_snapshot(expected_sequence: u32) -> Result<Snapshot, Skip> {
         bytes,
         width: image_size.map(|s| s.0),
         height: image_size.map(|s| s.1),
+        source,
     })
+}
+
+unsafe fn source_app() -> String {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let Ok(owner) = GetClipboardOwner() else {
+        return String::new();
+    };
+    let mut pid = 0;
+    GetWindowThreadProcessId(owner, Some(&mut pid));
+    let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+        return String::new();
+    };
+    let mut buffer = vec![0u16; 32768];
+    let mut length = buffer.len() as u32;
+    let result = QueryFullProcessImageNameW(
+        process,
+        PROCESS_NAME_WIN32,
+        PWSTR(buffer.as_mut_ptr()),
+        &mut length,
+    );
+    let _ = CloseHandle(process);
+    if result.is_err() {
+        return String::new();
+    }
+    let full = String::from_utf16_lossy(&buffer[..length as usize]);
+    let name = full.rsplit(['\\', '/']).next().unwrap_or("").to_lowercase();
+    if crate::storage::valid_app(&name) {
+        name
+    } else {
+        String::new()
+    }
 }

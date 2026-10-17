@@ -76,19 +76,31 @@ impl Barrier {
     }
 
     pub fn begin(&self, tx: u64, timeout: Duration) -> Result<u64, &'static str> {
+        self.begin_inner(tx, timeout, false)
+    }
+
+    // Local history copies share the same exclusion barrier, but must not
+    // consume the independent host's monotonically increasing transaction IDs.
+    pub fn begin_local(&self, timeout: Duration) -> Result<u64, &'static str> {
+        self.begin_inner(0, timeout, true)
+    }
+
+    fn begin_inner(&self, tx: u64, timeout: Duration, local: bool) -> Result<u64, &'static str> {
         let deadline = Instant::now() + timeout;
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.phase != Phase::Idle {
             return Err("COORDINATION_BLOCKED");
         }
-        if tx == 0 || tx <= state.last_tx {
+        if !local && (tx == 0 || tx <= state.last_tx) {
             return Err("STALE_TRANSACTION");
         }
         state.phase = Phase::Pending;
         state.epoch += 1;
         self.published_epoch.store(state.epoch, Ordering::Release);
         state.tx = tx;
-        state.last_tx = tx;
+        if !local {
+            state.last_tx = tx;
+        }
         while state.readers != 0 {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
