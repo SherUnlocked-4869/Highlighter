@@ -10,7 +10,12 @@
 
 /* ---------- shell ---------- */
 *{box-sizing:border-box}
-html,body{width:100%;height:100%;margin:0;overflow:hidden;font-family:var(--font-ui);color:var(--text);background:transparent}
+/* The page paints the base surface itself instead of staying transparent: the
+   shell below cuts its own rounded corners, and a transparent page leaves those
+   four cut-outs to the native window backgroundColor. Keeping the painted base
+   equal to --bg makes the corners resolve to the same colour whatever the
+   native backdrop happens to be. */
+html,body{width:100%;height:100%;margin:0;overflow:hidden;font-family:var(--font-ui);color:var(--text);background:var(--bg)}
 button,input,select,textarea{font:inherit}
 .window-shell{width:100%;height:100%;display:flex;border:1px solid var(--line-2);border-radius:var(--radius-lg);overflow:hidden;background:var(--bg);box-shadow:var(--shadow-3)}
 .window-shell::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:var(--skin);background-size:cover;background-position:center;opacity:var(--skin-opacity)}

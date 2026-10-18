@@ -161,7 +161,7 @@ test('action lifecycle queues renderer messages, saves size, and handles blur an
   assert.equal(windows[0].options.height, 520)
   assert.equal(windows[0].options.minWidth, 320)
   assert.equal(windows[0].options.minHeight, 240)
-  assert.equal(windows[0].options.backgroundColor, '#121316')
+  assert.equal(windows[0].options.backgroundColor, '#121110')
 
   manager.queueActionMessage(action, 'action:start', { text: 'queued' })
   assert.deepEqual(action.webContents.messages, [])

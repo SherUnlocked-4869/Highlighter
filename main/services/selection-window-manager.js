@@ -1,4 +1,5 @@
 const path = require('path')
+const { windowBackdropColor, trackWindowBackdrop } = require('./window-backdrop')
 
 class SelectionWindowManager {
   constructor({
@@ -147,7 +148,6 @@ class SelectionWindowManager {
   }
 
   createActionWindow() {
-    const appearance = this.getAppearance()
     const size = this.getSettings().selectionToolbar.resultWindow
     const pagePath = path.join(this.rootDirectory, 'action', 'action.html')
     const win = this.createWindow(pagePath, {
@@ -157,9 +157,16 @@ class SelectionWindowManager {
       minHeight: this.actionMinHeight,
       title: 'Highlighter',
       autoHideMenuBar: true,
-      backgroundColor: appearance.resolvedTheme === 'dark' ? '#121316' : '#f5f5f5',
+      // The shared --bg token rather than a literal: this window is shown over
+      // arbitrary content, and the pre-Nightshift values (#121316 / #f5f5f5) were
+      // one step off the ladder.
+      backgroundColor: windowBackdropColor(this.getSettings(), this.nativeTheme),
       webPreferences: { preload: path.join(this.rootDirectory, 'preload-action.js') }
     })
+    // Opted in before any appearance broadcast can run: the registry is what the
+    // global theme-change repaint walks, so an untracked window would keep the
+    // previous theme's backdrop.
+    trackWindowBackdrop(win)
     win._isPinned = false
     win._actionRendererReady = false
     win._pendingActionMessages = []

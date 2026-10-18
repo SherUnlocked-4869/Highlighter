@@ -5,6 +5,7 @@ const { ClipboardService } = require('../../services/clipboard-service')
 const { registerClipboardIpc } = require('../../ipc/clipboard-ipc')
 const { t } = require('../../services/i18n-bootstrap')
 const { createPasteFeedback } = require('../../services/clipboard-paste-feedback')
+const { windowBackdropColor, trackWindowBackdrop } = require('../../services/window-backdrop')
 
 function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, session, dialog, powerMonitor, ipcMain, rootDirectory, directory, getSettings, updateSettings, getHook, createLocalWindow, positionAutomationWindow, isGameModeEnabled, isMigrationInProgress, automation = false }) {
   const executable = path.join(app.isPackaged ? process.resourcesPath : rootDirectory, 'native', 'clipboard', ...(app.isPackaged ? [] : ['bin']), 'HighlighterClipboard.exe')
@@ -102,11 +103,16 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     const page = path.join(rootDirectory, 'clipboard', 'clipboard.html')
     const area = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea
     const width = Math.min(480, area.width); const height = Math.min(640, area.height)
+    // Match the shared design-token base (--bg) before the first paint. The panel
+    // is the only window users open on top of arbitrary content; a light backdrop
+    // would flash white when the dark theme opens it.
+    const settings = getSettings()
     const created = createLocalWindow(page, { width, height, minWidth: Math.min(380, width), minHeight: Math.min(420, height),
       x: Math.round(area.x + (area.width - width) / 2), y: Math.round(area.y + (area.height - height) / 3),
-      frame: false, show: false, title: 'Highlighter', backgroundColor: '#f5f6f8',
+      frame: false, show: false, title: 'Highlighter', backgroundColor: windowBackdropColor(settings, nativeTheme),
       webPreferences: { preload: path.join(rootDirectory, 'preload-clipboard.js'), session: panelSession } })
     win = created
+    trackWindowBackdrop(created)
     positionAutomationWindow(created)
     created.on('blur', () => { if (!feedback.active && !confirmationOpen && created === win && created.isVisible()) hide() })
     created.on('closed', () => { if (created === win) release() })

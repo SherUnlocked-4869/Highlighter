@@ -58,6 +58,7 @@ const { registerSelectionIpc } = require('./main/ipc/selection-ipc')
 const { UpdateService } = require('./main/services/update-service')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createSecureWindow, isSafeExternalUrl } = require('./main/services/window-security')
+const { windowBackdropColor, trackWindowBackdrop, applyWindowBackdropToTracked } = require('./main/services/window-backdrop')
 const { name: applicationName } = require('./package.json')
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'highlighter-clipboard', privileges: { standard: true, secure: true, supportFetchAPI: false } }])
@@ -700,7 +701,8 @@ settingsEffects = createSettingsEffects({
   getUpdateService: () => updateService,
   ocrServiceRef,
   getOcrService,
-  broadcastActionAppearance: (settings) => selectionDomain.broadcastActionAppearance(settings),
+  // A theme change has to reach every tracked window's native backdrop, not only the main one.
+  broadcastActionAppearance: (settings) => { applyWindowBackdropToTracked(settings, nativeTheme); selectionDomain.broadcastActionAppearance(settings) },
   // P0-1-T2：语言切换广播到所有窗口（主→渲染；按方案 §2.2 不登记 IPC_SURFACES）。
   broadcastInterfaceLanguage: (language) => {
     // 主进程自己的文案（托盘/更新/状态）也要跟着切；托盘 label 在构建时求值，
@@ -813,12 +815,12 @@ function createMainWindow(route = 'home') {
     minHeight: 620,
     frame: false,
     title: 'Highlighter',
-    backgroundColor: '#f5f5f5',
+    backgroundColor: windowBackdropColor(getSettings(), nativeTheme),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js')
     }
   })
-  mainWindow = win
+  mainWindow = trackWindowBackdrop(win)
   win.loadFile(pagePath)
   win.once('ready-to-show', () => {
     if (mainWindow !== win || win.isDestroyed()) return
@@ -1292,7 +1294,7 @@ else {
   })
   nativeTheme.on('updated', () => {
     if (store) clipboardDomain?.notifyAppearance()
-    if (store && getSettings().theme === 'system') selectionDomain.broadcastActionAppearance()
+    if (store && getSettings().theme === 'system') { selectionDomain.broadcastActionAppearance(); applyWindowBackdropToTracked(getSettings(), nativeTheme) }
   })
   process.on('unhandledRejection', (reason) => log('Unhandled promise rejection:', reason))
   app.whenReady().then(startApplication).catch((error) => {

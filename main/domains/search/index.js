@@ -1,5 +1,7 @@
 'use strict'
 
+const { windowBackdropColor, trackWindowBackdrop } = require('../../services/window-backdrop')
+
 function createSearchDomain(deps) {
   const {
     path,
@@ -84,12 +86,14 @@ function createSearchDomain(deps) {
       frame: false,
       show: false,
       title: 'Highlighter 本地搜索',
-      backgroundColor: '#f5f6f8',
+      // The search shell cuts its own rounded corners, so the cut-outs show this
+      // native colour: the shared --bg token, like every other window.
+      backgroundColor: windowBackdropColor(getSettings(), nativeTheme),
       webPreferences: {
         preload: path.join(rootDirectory, 'preload-search.js')
       }
     })
-    searchWindow = win
+    searchWindow = trackWindowBackdrop(win)
     win._searchInit = getSearchWindowInitPayload()
     positionSearchWindow(win)
     win.loadFile(pagePath)

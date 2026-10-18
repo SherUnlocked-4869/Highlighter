@@ -19,7 +19,11 @@ const tokensCss = fs.readFileSync(path.join(root, 'shared', 'tokens.css'), 'utf8
 
 test('selection result windows receive and apply the configured appearance', () => {
   assert.match(manager, /getAppearance\(settings = this\.getSettings\(\)\)[\s\S]*this\.nativeTheme\.shouldUseDarkColors/)
-  assert.match(manager, /backgroundColor: appearance\.resolvedTheme === 'dark'/)
+  // The native backdrop comes from the shared helper (which resolves the same
+  // resolvedTheme) and the window is tracked there, so the global theme-change
+  // repaint reaches it at the same time as the renderer broadcast.
+  assert.match(manager, /backgroundColor: windowBackdropColor\(this\.getSettings\(\), this\.nativeTheme\)/)
+  assert.match(manager, /trackWindowBackdrop\(win\)/)
   assert.match(selectionDomain, /appearance: getActionAppearance\(\)/)
   assert.match(settingsEffects, /broadcastActionAppearance\(settings\)/)
   assert.match(main, /settingsEffects\.applyUpdate/)

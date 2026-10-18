@@ -1,5 +1,7 @@
 'use strict'
 
+const { windowBackdropColor, trackWindowBackdrop } = require('../../services/window-backdrop')
+
 function createRecognitionDomain(deps) {
   const {
     path,
@@ -32,18 +34,24 @@ function createRecognitionDomain(deps) {
       minHeight: isTable ? 440 : 320,
       frame: false,
       show: false,
-      backgroundColor: '#18181b',
+      // Painted before the first frame: the shared --bg token, so the window does
+      // not flash white and the rounded top bar cannot show a stale colour.
+      backgroundColor: windowBackdropColor(settings),
       title: isTable ? 'Highlighter 表格识别' : 'Highlighter 二维码识别',
       webPreferences: {
         preload: path.join(rootDirectory, 'preload-recognition.js')
       }
     })
+    trackWindowBackdrop(win)
     recognitionWindows.add(win)
     win._recognitionInit = {
       type,
       dataUrl,
       scaleFactor: Number(options.scaleFactor) || 1,
-      mainColor: settings.mainColor || '#e5a44c'
+      mainColor: settings.mainColor || '#e5a44c',
+      // The renderer toggles body.dark on this; without it an explicit light/dark
+      // setting was ignored and the result page followed the OS instead.
+      theme: settings.theme
     }
     win.loadFile(pagePath)
     win.on('closed', () => recognitionWindows.delete(win))
