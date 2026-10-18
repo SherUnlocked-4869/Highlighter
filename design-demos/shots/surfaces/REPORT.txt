@@ -1,0 +1,51 @@
+ok   config-home.light      1180x760 page=1180x760 nodes=181 rail=true errors=0
+ok   config-home.dark       1180x760 page=1180x760 nodes=181 rail=true errors=0
+ok   config-general.light   1180x760 page=1180x760 nodes=217 rail=false errors=0
+ok   config-general.dark    1180x760 page=1180x760 nodes=217 rail=false errors=0
+ok   config-function.light  1180x760 page=1180x760 nodes=175 rail=true errors=0
+ok   config-function.dark   1180x760 page=1180x760 nodes=175 rail=true errors=0
+ok   config-models.light    1180x760 page=1180x760 nodes=130 rail=true errors=0
+ok   config-models.dark     1180x760 page=1180x760 nodes=130 rail=true errors=0
+ok   config-system.light    1180x760 page=1180x760 nodes=175 rail=false errors=0
+ok   config-system.dark     1180x760 page=1180x760 nodes=175 rail=false errors=0
+ok   config-toolbar.light   1180x760 page=1180x760 nodes=262 rail=false errors=0
+ok   config-toolbar.dark    1180x760 page=1180x760 nodes=262 rail=false errors=0
+ok   config-local-search.light 1180x760 page=1180x760 nodes=141 rail=false errors=0
+ok   config-local-search.dark 1180x760 page=1180x760 nodes=141 rail=false errors=0
+ok   config-about.light     1180x760 page=1180x760 nodes=111 rail=false errors=0
+ok   config-about.dark      1180x760 page=1180x760 nodes=111 rail=false errors=0
+ok   search.light           720x520 page=720x520 nodes=38 rail=null errors=0
+ok   search.dark            720x520 page=720x520 nodes=38 rail=null errors=0
+ok   recognition.light      560x480 page=560x480 nodes=26 rail=null errors=0
+ok   recognition.dark       560x480 page=560x480 nodes=26 rail=null errors=0
+ok   action.light           380x320 page=380x320 nodes=37 rail=null errors=0
+ok   action.dark            380x320 page=380x320 nodes=37 rail=null errors=0
+ok   capture.light          900x620 page=900x620 nodes=188 rail=null errors=0
+ok   capture.dark           900x620 page=900x620 nodes=188 rail=null errors=0
+ok   record.light           780x400 page=780x400 nodes=56 rail=null errors=0
+ok   record.dark            780x400 page=780x400 nodes=56 rail=null errors=0
+ok   record-frame.light     420x260 page=420x260 nodes=3 rail=null errors=0
+ok   record-frame.dark      420x260 page=420x260 nodes=3 rail=null errors=0
+ok   toolbar.light          620x56 page=620x56 nodes=22 rail=null errors=0
+ok   toolbar.dark           620x56 page=620x56 nodes=22 rail=null errors=0
+ok   long-capture.light     420x560 page=420x560 nodes=56 rail=null errors=0
+ok   long-capture.dark      420x560 page=420x560 nodes=56 rail=null errors=0
+ok   pin.light              320x220 page=320x220 nodes=5 rail=null errors=0
+ok   pin.dark               320x220 page=320x220 nodes=5 rail=null errors=0
+ok   clipboard-list.light   480x640 page=480x640 nodes=95 rail=null errors=0
+      probe {"rows":6,"emptyHidden":true,"detailHidden":false,"detailRect":"479x262@348","selectedRect":"64@169-233/view179 scrollTop0","detailBadge":"TXT","detailMeta":"置顶 · 微信 · 10/18 11:32 · 114 B","detailText":"把这段关于暗色模式对比度的评审意见整","mediaHidden":true,"imageHidden":true,"imageSize":0,"feedbackHidden":true,"feedbackTone":null,"feedbackText":"","bodyClass":""}
+ok   clipboard-list.dark    480x640 page=480x640 nodes=95 rail=null errors=0
+ok   clipboard-image.light  480x640 page=480x640 nodes=95 rail=null errors=0
+      probe {"rows":6,"emptyHidden":true,"detailHidden":false,"detailRect":"479x275@334","selectedRect":"64@269-333/view165 scrollTop27","detailBadge":"IMG","detailMeta":"微信 · 10/18 11:25 · 418 KiB","detailText":"","mediaHidden":false,"imageHidden":false,"imageSize":"640x360","feedbackHidden":true,"feedbackTone":null,"feedbackText":"","bodyClass":""}
+ok   clipboard-image.dark   480x640 page=480x640 nodes=95 rail=null errors=0
+ok   clipboard-empty.light  480x640 page=480x640 nodes=58 rail=null errors=0
+      probe {"rows":0,"emptyHidden":false,"detailHidden":true,"detailRect":null,"selectedRect":null,"detailBadge":"","detailMeta":"","detailText":"","mediaHidden":true,"imageHidden":true,"imageSize":0,"feedbackHidden":true,"feedbackTone":null,"feedbackText":"","bodyClass":""}
+ok   clipboard-empty.dark   480x640 page=480x640 nodes=58 rail=null errors=0
+ok   clipboard-feedback.light 480x148 page=480x148 nodes=58 rail=null errors=0
+      probe {"rows":0,"emptyHidden":true,"detailHidden":true,"detailRect":null,"selectedRect":null,"detailBadge":"","detailMeta":"","detailText":"","mediaHidden":true,"imageHidden":true,"imageSize":0,"feedbackHidden":false,"feedbackTone":"ok","feedbackText":"已发送粘贴，请在目标应用查看。","bodyClass":"feedback-only"}
+ok   clipboard-feedback.dark 480x148 page=480x148 nodes=58 rail=null errors=0
+ok   clipboard-feedback-warn.light 480x148 page=480x148 nodes=58 rail=null errors=0
+      probe {"rows":0,"emptyHidden":true,"detailHidden":true,"detailRect":null,"selectedRect":null,"detailBadge":"","detailMeta":"","detailText":"","mediaHidden":true,"imageHidden":true,"imageSize":0,"feedbackHidden":false,"feedbackTone":"warn","feedbackText":"已复制，无法自动粘贴。请在目标输入框手动粘贴。","bodyClass":"feedback-only"}
+ok   clipboard-feedback-warn.dark 480x148 page=480x148 nodes=58 rail=null errors=0
+
+all surfaces render clean

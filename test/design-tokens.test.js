@@ -62,6 +62,7 @@ test('window stylesheets consume the shared tokens instead of private palettes',
     ['config/config.css', 'config window'],
     ['search/search.css', 'search window'],
     ['recognition/recognition.css', 'recognition window'],
+    ['clipboard/clipboard.css', 'clipboard panel'],
     ['action/action.css', 'selection assistant'],
     ['capture/capture.css', 'capture overlay'],
     ['long-capture/overlay.css', 'long-capture overlay']
@@ -96,7 +97,8 @@ test('core renderer shells load shared tokens before window CSS', () => {
     ['capture/capture.html', 'capture.css'],
     ['search/search.html', 'search.css'],
     ['record/record.html', 'record.css'],
-    ['action/action.html', 'action.css']
+    ['action/action.html', 'action.css'],
+    ['clipboard/clipboard.html', 'clipboard.css']
   ]) {
     const html = fs.readFileSync(path.join(root, page), 'utf8')
     const tokensIndex = html.indexOf('../shared/tokens.css')
@@ -131,6 +133,20 @@ test('recognition window follows the Nightshift result design', () => {
   assert.doesNotMatch(css, /#1677ff|#1890ff|rgba\(22,\s*135,\s*255/)
 })
 
+test('the clipboard panel consumes the shared palette and ships no private colours', () => {
+  // The Nightshift redesign deleted the window's old :root/:root.dark palette.
+  // A literal hex or a locally declared colour variable would ignore both the
+  // theme switch and the user-configured accent, so hold the file to tokens only.
+  const css = fs.readFileSync(path.join(root, 'clipboard/clipboard.css'), 'utf8')
+  assert.doesNotMatch(css, /:root\s*\{/, 'the clipboard panel must not declare a private :root palette')
+  assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}\b/, 'clipboard.css must not hardcode hex colours')
+  assert.doesNotMatch(css, /--[a-z0-9-]+\s*:\s*#/i, 'clipboard.css must not declare colour variables')
+  // It must actually consume the Nightshift surface ladder and type tokens.
+  for (const token of ['--bg', '--surface', '--surface-2', '--surface-3', '--primary', '--font-mono', '--font-display']) {
+    assert.match(css, new RegExp(`var\\(${token}\\)`), `clipboard.css consumes ${token}`)
+  }
+})
+
 test('history thumbnails use a clean surface plate, not a checkerboard', () => {
   const css = fs.readFileSync(path.join(root, 'config/config.css'), 'utf8')
   assert.match(css, /\.history-image\{[^}]*background:var\(--surface-2\)/)
@@ -155,7 +171,8 @@ test('no renderer ships an emoji glyph as an icon', () => {
   const files = [
     'action/action.html', 'action/action.js',
     'long-capture/long-capture.html',
-    'config/config.css'
+    'config/config.css',
+    'clipboard/clipboard.html', 'clipboard/clipboard.js', 'clipboard/clipboard.css'
   ]
   const pictographic = /\p{Extended_Pictographic}/u
   const withEmojiPresentation = /[\u{1F300}-\u{1FAFF}]|[\u2600-\u27BF]\uFE0F/u
@@ -170,7 +187,7 @@ test('every page whose stylesheet uses shared tokens links tokens.css', () => {
   // A window can reference var(--primary) in its CSS yet never load
   // shared/tokens.css — the declarations then silently resolve to nothing and
   // the element renders transparent. long-capture shipped exactly that bug.
-  const dirs = ['config', 'capture', 'search', 'action', 'record', 'long-capture', 'pin', 'toolbar', 'recognition']
+  const dirs = ['config', 'capture', 'search', 'action', 'record', 'long-capture', 'pin', 'toolbar', 'recognition', 'clipboard']
   const tokenUse = /var\(--(primary|primary-ink|primary-text|primary-soft|primary-line|bg|surface|surface-2|surface-3|line|line-2|ink|muted|faint|font-ui|font-mono|radius|ok|warn|danger)\b/
   for (const dir of dirs) {
     const dirPath = path.join(root, dir)
@@ -199,7 +216,8 @@ test('every icon referenced from CSS exists on disk', () => {
   const cssFiles = [
     'config/config.css', 'capture/capture.css', 'search/search.css',
     'action/action.css', 'recognition/recognition.css', 'long-capture/long-capture.css',
-    'long-capture/overlay.css', 'record/record.css', 'record/frame.css'
+    'long-capture/overlay.css', 'record/record.css', 'record/frame.css',
+    'clipboard/clipboard.css'
   ]
   const missing = []
   for (const cssFile of cssFiles) {
@@ -220,7 +238,8 @@ test('every icon referenced from renderer HTML exists on disk', () => {
   const pages = [
     'config/config.html', 'capture/capture.html', 'search/search.html',
     'action/action.html', 'recognition/recognition.html', 'long-capture/long-capture.html',
-    'long-capture/overlay.html', 'record/record.html', 'record/frame.html', 'toolbar/toolbar.html'
+    'long-capture/overlay.html', 'record/record.html', 'record/frame.html', 'toolbar/toolbar.html',
+    'clipboard/clipboard.html'
   ]
   const missing = []
   for (const page of pages) {

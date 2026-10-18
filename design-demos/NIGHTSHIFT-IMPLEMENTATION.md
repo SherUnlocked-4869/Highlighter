@@ -79,7 +79,7 @@ npx playwright test --config playwright.config.js           # 5 通过（真实 
 npm run check                                               # 语法 + 架构检查
 
 node design-demos/tools/token-check.mjs                     # token 契约 + 对比度实测
-node_modules/electron/dist/electron.exe design-demos/tools/capture-electron.js   # 34 个界面截图 + 错误/溢出检查
+node_modules/electron/dist/electron.exe design-demos/tools/capture-electron.js   # 44 个界面截图 + 错误/溢出检查
 node_modules/electron/dist/electron.exe design-demos/tools/check-nav.js          # 8 条路由的 active 状态
 ```
 

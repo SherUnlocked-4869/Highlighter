@@ -16,7 +16,10 @@ test('feedback clears history and invalidates an in-flight page without another 
   const classes = new Set()
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../clipboard/clipboard.js'), 'utf8'), {
     window: { clipboardAPI: api, addEventListener() {} }, document: { getElementById: get, createElement: element,
-      body: { classList: { add: (name) => classes.add(name), remove: (name) => classes.delete(name) } }, documentElement: { classList: { toggle() {} }, style: {} } },
+      // The Nightshift tokens scope their dark overrides to body.dark, so the
+      // renderer toggles the theme on <body>; the stub needs toggle() for that.
+      body: { classList: { add: (name) => classes.add(name), remove: (name) => classes.delete(name), toggle: (name, on) => { if (on) classes.add(name); else classes.delete(name) } } },
+      documentElement: { classList: { toggle() {} }, style: {} } },
     ResizeObserver: class { observe() {} }, setTimeout, clearTimeout, crypto: require('node:crypto').webcrypto,
     t: (key) => key, setLanguage() {}, applyTranslations() {}, currentLanguage: () => 'zh-CN'
   })

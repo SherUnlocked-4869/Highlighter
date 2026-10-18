@@ -13,9 +13,15 @@
 //
 // The IPC bridge is stubbed per surface: this is a layout/contrast capture, not
 // an end-to-end test. Real wiring is covered by e2e/.
+//
+// The clipboard panel needs one piece of real main-process wiring: its page CSP
+// is `img-src highlighter-clipboard:` only, so the image-detail surface can only
+// be captured by registering that scheme as privileged before app.whenReady
+// (mirroring main.js) and serving a deterministic PNG through protocol.handle()
+// once ready.
 const path = require('node:path')
 const fs = require('node:fs')
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, protocol, nativeImage } = require('electron')
 
 const ROOT = path.resolve(__dirname, '../..')
 const OUT = path.join(ROOT, 'design-demos', 'shots', 'surfaces')
@@ -50,6 +56,9 @@ const SETTINGS = {
   search: { useBundledEverything: true, matchPath: true, maxResults: 600, categories: [] },
   proxy: { autoStart: false, port: 8080, host: '127.0.0.1', apiBase: '' },
   system: { autoStart: true, enableTray: true, gameMode: false, runLog: true },
+  // Mirrors main/services/settings-defaults.js: config-function reads
+  // settings.pinned.clickThrough, and a missing nested group threw a TypeError.
+  pinned: { clickThrough: false },
   plugins: { ocr: true, translation: true, ai: true, video: true }
 }
 
@@ -73,7 +82,14 @@ const STUB_PRELUDE = `
     const list = __handlers[name] || []
     for (const fn of list) { try { fn(payload) } catch (e) { console.error(e) } }
   }
-  const __on = (name) => function (fn) { (__handlers[name] = __handlers[name] || []).push(fn) }
+  // Mirrors preload-*.js: subscribing returns an unsubscribe cleanup, which the
+  // renderers store and call on unload. Returning undefined tripped
+  // "cleanup is not a function" once a surface's document was replaced.
+  const __on = (name) => function (fn) {
+    const list = (__handlers[name] = __handlers[name] || [])
+    list.push(fn)
+    return () => { const at = list.indexOf(fn); if (at >= 0) list.splice(at, 1) }
+  }
 
   const __base = {
     getSettings: async () => __settings,
@@ -113,6 +129,97 @@ const STUB_PRELUDE = `
   window.__handlers = __handlers
 `
 
+// Clipboard panel fixtures. Timestamps are relative to the run so the metadata
+// line always reads like something copied minutes ago.
+const CLIP_NOW = Date.now()
+const CLIP_IMAGE_ID = 'c2d4e6f8-1a3b-4c5d-8e9f-0a1b2c3d4e5f'
+const CLIPBOARD_STATUS = {
+  enabled: true, userPaused: false, available: true, phase: 'running', pausedReasons: [],
+  datasetId: 'd1', revision: 12, itemCount: 42, pinnedCount: 3,
+  payloadBytes: 1048576, actualDiskBytes: 12976128, pendingGcBytes: 0
+}
+const CLIPBOARD_ITEMS = [
+  {
+    id: 'a1f0c2e4-5b6d-4f8a-9c1d-2e3f4a5b6c71', kind: 'text', isPinned: true,
+    previewText: '把这段关于暗色模式对比度的评审意见整理成一页要点，明早发给设计组。',
+    sourceDisplayName: '微信', lastCopiedAt: CLIP_NOW - 3 * 60e3, lastUsedAt: CLIP_NOW - 2 * 60e3, byteLength: 114
+  },
+  {
+    id: 'b2e1d3f5-6c7a-4b9e-8d0f-1a2b3c4d5e62', kind: 'url', isPinned: false,
+    previewText: 'https://github.com/highlighter-app/highlighter/pull/1287',
+    sourceDisplayName: 'Google Chrome', lastCopiedAt: CLIP_NOW - 8 * 60e3, lastUsedAt: CLIP_NOW - 6 * 60e3, byteLength: 62
+  },
+  {
+    id: CLIP_IMAGE_ID, kind: 'image', isPinned: false, previewText: 'Snipaste_2026-10-16_21-14-08.png',
+    sourceDisplayName: '微信', lastCopiedAt: CLIP_NOW - 11 * 60e3, lastUsedAt: CLIP_NOW - 9 * 60e3,
+    byteLength: 428032, width: 1280, height: 720
+  },
+  {
+    id: 'c3d2e4f6-7a8b-4c0d-9e1f-2a3b4c5d6e73', kind: 'text', isPinned: false,
+    previewText: 'npm run verify:all 通过后再合并 #1287，避免夜间回归。',
+    sourceDisplayName: 'Visual Studio Code', lastCopiedAt: CLIP_NOW - 20 * 60e3, lastUsedAt: CLIP_NOW - 18 * 60e3, byteLength: 78
+  },
+  {
+    id: 'd4e3f5a7-8b9c-4d1e-0f2a-3b4c5d6e7f84', kind: 'text', isPinned: false,
+    previewText: '小鹿：周五的评审改到 14:30，会议室 3F-北。',
+    sourceDisplayName: '微信', lastCopiedAt: CLIP_NOW - 35 * 60e3, lastUsedAt: CLIP_NOW - 35 * 60e3, byteLength: 69
+  },
+  {
+    id: 'e5f4a6b8-9cad-4e2f-1a3b-4c5d6e7f8a95', kind: 'url', isPinned: false,
+    previewText: 'https://developer.mozilla.org/zh-CN/docs/Web/CSS/color-scheme',
+    sourceDisplayName: 'Google Chrome', lastCopiedAt: CLIP_NOW - 50 * 60e3, lastUsedAt: CLIP_NOW - 41 * 60e3, byteLength: 66
+  }
+]
+const CLIPBOARD_DETAILS = {
+  'a1f0c2e4-5b6d-4f8a-9c1d-2e3f4a5b6c71': {
+    kind: 'text', truncated: false,
+    text: '把这段关于暗色模式对比度的评审意见整理成一页要点，明早发给设计组。\n\n1. 浮层保持固定暗色，不跟随主题；\n2. 正文对比度至少 4.5:1，次要文字 3:1；\n3. 强调色只保留一个，用户可配置；\n4. 空状态用图标 + 一句话，不要整块插画。\n\n结论：先做低风险的三处修正，下周再评估其余调整。'
+  },
+  'b2e1d3f5-6c7a-4b9e-8d0f-1a2b3c4d5e62': { kind: 'url', truncated: false, text: 'https://github.com/highlighter-app/highlighter/pull/1287' },
+  [CLIP_IMAGE_ID]: { kind: 'image', truncated: false, text: '' },
+  'c3d2e4f6-7a8b-4c0d-9e1f-2a3b4c5d6e73': { kind: 'text', truncated: false, text: 'npm run verify:all 通过后再合并 #1287，避免夜间回归。' },
+  'd4e3f5a7-8b9c-4d1e-0f2a-3b4c5d6e7f84': { kind: 'text', truncated: false, text: '小鹿：周五的评审改到 14:30，会议室 3F-北。' },
+  'e5f4a6b8-9cad-4e2f-1a3b-4c5d6e7f8a95': { kind: 'url', truncated: false, text: 'https://developer.mozilla.org/zh-CN/docs/Web/CSS/color-scheme' }
+}
+
+// Shared probe for the clipboard surfaces: prints the state that a static
+// screenshot alone cannot prove (detail sheet open, preview decoded, empty
+// state, feedback rendered) into REPORT.txt.
+const CLIP_PROBE = `(() => {
+  const text = document.getElementById('text')
+  const image = document.getElementById('image')
+  const media = document.getElementById('media')
+  const feedback = document.getElementById('feedback')
+  const feedbackText = document.getElementById('feedbackText')
+  const empty = document.getElementById('empty')
+  const detail = document.getElementById('detail')
+  const badge = document.getElementById('detailBadge')
+  const meta = document.getElementById('detailMeta')
+  return {
+    rows: document.querySelectorAll('#rows .row').length,
+    emptyHidden: empty ? empty.hidden : null,
+    detailHidden: detail ? detail.hidden : null,
+    detailRect: detail && !detail.hidden ? (() => { const r = detail.getBoundingClientRect(); return Math.round(r.width) + 'x' + Math.round(r.height) + '@' + Math.round(r.top) })() : null,
+    selectedRect: (() => {
+      const row = document.querySelector('#rows .row[aria-selected="true"]')
+      if (!row) return null
+      const r = row.getBoundingClientRect()
+      const list = document.getElementById('list')
+      return Math.round(r.height) + '@' + Math.round(r.top) + '-' + Math.round(r.bottom) + '/view' + Math.round(list.clientHeight) + ' scrollTop' + Math.round(list.scrollTop)
+    })(),
+    detailBadge: badge ? badge.textContent : null,
+    detailMeta: meta ? meta.textContent.slice(0, 40) : null,
+    detailText: text ? text.textContent.slice(0, 18) : null,
+    mediaHidden: media ? media.hidden : null,
+    imageHidden: image ? image.hidden : null,
+    imageSize: image && image.naturalWidth ? image.naturalWidth + 'x' + image.naturalHeight : 0,
+    feedbackHidden: feedback ? feedback.hidden : null,
+    feedbackTone: feedback ? feedback.getAttribute('data-tone') : null,
+    feedbackText: feedbackText ? feedbackText.textContent.slice(0, 30) : null,
+    bodyClass: document.body.className
+  }
+})()`
+
 const STUBS = {
   'config/config.html': `window.electronAPI = window.__makeBridge({ windowMinimize(){}, windowClose(){} })`,
   'search/search.html': `window.searchAPI = window.__makeBridge({
@@ -131,7 +238,27 @@ const STUBS = {
     })`,
   'long-capture/long-capture.html': `window.longCaptureAPI = window.__makeBridge({ onInit: window.__on('init') })`,
   'long-capture/overlay.html': `window.longOverlayAPI = window.__makeBridge({ onInit: window.__on('init') })`,
-  'pin/pin.html': `window.pinAPI = window.__makeBridge({ onInit: window.__on('init'), onUpdate: window.__on('update') })`
+  'pin/pin.html': `window.pinAPI = window.__makeBridge({ onInit: window.__on('init'), onUpdate: window.__on('update') })`,
+  // The clipboard renderer unwraps IPC results shaped { ok, result } for
+  // list/status/detail/preview, and listens for raw init/paste-result payloads.
+  'clipboard/clipboard.html': `
+    window.__hlClip = { status: ${JSON.stringify(CLIPBOARD_STATUS)}, imageId: ${JSON.stringify(CLIP_IMAGE_ID)} }
+    window.clipboardAPI = window.__makeBridge({
+      onInit: window.__on('init'), onStatus: window.__on('status'), onHistory: window.__on('history'),
+      onHidden: window.__on('hidden'), onPasteResult: window.__on('pasteResult'), onLanguage: window.__on('language'),
+      ready() {}, interactive() {}, close() {},
+      list: async () => ({ ok: true, result: window.__hlSurface.fixture === 'empty' ? { items: [], cursor: null } : { items: ${JSON.stringify(CLIPBOARD_ITEMS)}, cursor: null } }),
+      status: async () => ({ ok: true, result: ${JSON.stringify(CLIPBOARD_STATUS)} }),
+      detail: async (id) => ({ ok: true, result: ${JSON.stringify(CLIPBOARD_DETAILS)}[id] || { text: '', truncated: false, kind: 'text' } }),
+      preview: async (id) => ({ ok: true, result: { url: 'highlighter-clipboard://preview/' + id } }),
+      setPaused: async (paused) => ({ ok: true, result: Object.assign({}, ${JSON.stringify(CLIPBOARD_STATUS)}, { userPaused: paused }) }),
+      copy: async () => ({ ok: true, result: {} }),
+      paste: async () => ({ ok: true, result: { copied: true, outcome: 'copiedOnly' } }),
+      setPinned: async () => ({ ok: true, result: {} }),
+      delete: async () => ({ ok: true, result: {} }),
+      prepareClear: async () => ({ ok: true, result: { canceled: true } }),
+      commitClear: async () => ({ ok: true, result: {} })
+    })`
 }
 
 // Payloads that make each secondary window show its real content.
@@ -145,7 +272,18 @@ const EMIT = {
     appearance: { theme: 'system', mainColor: '#e5a44c' }, streamId: 'demo', type: 'translate',
     text: 'Ship a calmer capture tool for Windows — fewer chrome, more focus.'
   })`,
-  'toolbar/toolbar.html': `window.__fire('appearance', { theme: 'system', mainColor: '#e5a44c' }); window.__fire('selection', { appearance: { theme: 'system', mainColor: '#e5a44c' }, actions: [{ id: 'copy', label: '复制', icon: 'copy' }, { id: 'search', label: '搜索', icon: 'search' }, { id: 'translate', label: '翻译', icon: 'translate' }, { id: 'explain', label: '解释', icon: 'lightbulb' }, { id: 'open', label: '跳转', icon: 'box-arrow-up-right' }] })`
+  'toolbar/toolbar.html': `window.__fire('appearance', { theme: 'system', mainColor: '#e5a44c' }); window.__fire('selection', { appearance: { theme: 'system', mainColor: '#e5a44c' }, actions: [{ id: 'copy', label: '复制', icon: 'copy' }, { id: 'search', label: '搜索', icon: 'search' }, { id: 'translate', label: '翻译', icon: 'translate' }, { id: 'explain', label: '解释', icon: 'lightbulb' }, { id: 'open', label: '跳转', icon: 'box-arrow-up-right' }] })`,
+  // The paste-result payload is the full window appearance plus pasteFeedback,
+  // exactly what main/domains/clipboard sends through clipboard:paste-result.
+  'clipboard/clipboard.html': `(() => {
+    const appearance = { language: 'zh-CN', dark: false, mainColor: '#e5a44c', generation: 'stub-generation', status: window.__hlClip.status }
+    const fixture = window.__hlSurface.fixture
+    // Injected is the success outcome the design must carry; the warn variant is
+    // the copied-only fallback the main process normally shows this bar for.
+    if (fixture === 'feedback') window.__fire('pasteResult', Object.assign({}, appearance, { pasteFeedback: { outcome: 'injected' } }))
+    else if (fixture === 'feedback-warn') window.__fire('pasteResult', Object.assign({}, appearance, { pasteFeedback: { outcome: 'copiedOnly', reason: 'PASTE_UNAVAILABLE' } }))
+    else window.__fire('init', appearance)
+  })()`
 }
 
 const SURFACES = [
@@ -167,10 +305,82 @@ const SURFACES = [
   { name: 'record-frame', file: 'record/frame.html', w: 420, h: 260 },
   { name: 'toolbar', file: 'toolbar/toolbar.html', w: 620, h: 56 },
   { name: 'long-capture', file: 'long-capture/long-capture.html', w: 420, h: 560 },
-  { name: 'pin', file: 'pin/pin.html', w: 320, h: 220 }
+  { name: 'pin', file: 'pin/pin.html', w: 320, h: 220 },
+  // Clipboard panel: frameless 480x640 in the app; the paste-result fallback
+  // resizes the same window to 480x148 and switches the body to feedback-only.
+  // bg mirrors main/domains/clipboard's theme-aware window backgroundColor.
+  {
+    name: 'clipboard-list', file: 'clipboard/clipboard.html', w: 480, h: 640, fixture: 'list', probe: CLIP_PROBE, bg: { light: '#eeebe4', dark: '#121110' },
+    act: `(async () => { const row = document.querySelector('#rows .row'); if (row) row.click(); await new Promise((r) => setTimeout(r, 450)); return row ? 'row-clicked' : 'no-rows' })()`
+  },
+  {
+    name: 'clipboard-image', file: 'clipboard/clipboard.html', w: 480, h: 640, fixture: 'image', probe: CLIP_PROBE, bg: { light: '#eeebe4', dark: '#121110' },
+    act: `(async () => {
+      const row = document.getElementById('item-' + window.__hlClip.imageId)
+      if (row) row.click()
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 100))
+        const image = document.getElementById('image')
+        if (image && !image.hidden && image.complete && image.naturalWidth > 0) return 'image-loaded ' + image.naturalWidth + 'x' + image.naturalHeight
+      }
+      return 'image-pending'
+    })()`
+  },
+  { name: 'clipboard-empty', file: 'clipboard/clipboard.html', w: 480, h: 640, fixture: 'empty', probe: CLIP_PROBE, bg: { light: '#eeebe4', dark: '#121110' } },
+  { name: 'clipboard-feedback', file: 'clipboard/clipboard.html', w: 480, h: 148, fixture: 'feedback', probe: CLIP_PROBE, bg: { light: '#eeebe4', dark: '#121110' } },
+  { name: 'clipboard-feedback-warn', file: 'clipboard/clipboard.html', w: 480, h: 148, fixture: 'feedback-warn', probe: CLIP_PROBE, bg: { light: '#eeebe4', dark: '#121110' } }
 ]
 
+// Optional dev affordance: `electron capture-electron.js --only=clipboard` runs
+// one surface instead of all of them while iterating on a single window.
+const ONLY = (process.argv.find((arg) => arg.startsWith('--only=')) || '').slice('--only='.length)
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// Mirrors main.js: registerSchemesAsPrivileged must run before app.whenReady().
+protocol.registerSchemesAsPrivileged([{ scheme: 'highlighter-clipboard', privileges: { standard: true, secure: true, supportFetchAPI: false } }])
+
+// Deterministic 640x360 preview image for the clipboard image record: a light
+// document window over a dark desktop, drawn as raw BGRA and encoded by
+// nativeImage so repeated runs produce byte-identical screenshots.
+const PREVIEW_W = 640
+const PREVIEW_H = 360
+const buildPreviewPng = () => {
+  const buffer = Buffer.alloc(PREVIEW_W * PREVIEW_H * 4)
+  const pixel = (x, y, r, g, b) => {
+    if (x < 0 || y < 0 || x >= PREVIEW_W || y >= PREVIEW_H) return
+    const at = (y * PREVIEW_W + x) * 4
+    buffer[at] = b; buffer[at + 1] = g; buffer[at + 2] = r; buffer[at + 3] = 255
+  }
+  const fill = (x0, y0, x1, y1, r, g, b) => {
+    for (let y = Math.max(0, y0); y < Math.min(PREVIEW_H, y1); y++) for (let x = Math.max(0, x0); x < Math.min(PREVIEW_W, x1); x++) pixel(x, y, r, g, b)
+  }
+  for (let y = 0; y < PREVIEW_H; y++) {
+    const t = y / PREVIEW_H
+    fill(0, y, PREVIEW_W, y + 1, Math.round(30 + 14 * t), Math.round(34 + 16 * t), Math.round(42 + 20 * t))
+  }
+  fill(52, 32, 588, 328, 247, 248, 250)
+  fill(52, 32, 588, 68, 233, 236, 241)
+  fill(52, 68, 588, 69, 213, 217, 223)
+  for (let i = 0; i < 3; i++) fill(68 + i * 14, 46, 74 + i * 14, 52, 196, 201, 209)
+  fill(52, 69, 132, 328, 240, 242, 245)
+  fill(132, 69, 133, 328, 226, 230, 236)
+  for (let i = 0; i < 7; i++) fill(66, 86 + i * 32, 118, 92 + i * 32, 203, 208, 216)
+  fill(66, 86, 118, 92, 229, 164, 76)
+  fill(152, 88, 226, 100, 229, 164, 76)
+  fill(152, 112, 552, 118, 90, 96, 108)
+  fill(152, 128, 512, 134, 168, 174, 184)
+  fill(152, 144, 540, 150, 168, 174, 184)
+  fill(152, 176, 552, 270, 250, 238, 220)
+  fill(152, 176, 552, 177, 229, 164, 76)
+  fill(168, 192, 536, 198, 201, 190, 172)
+  fill(168, 208, 500, 214, 201, 190, 172)
+  fill(168, 224, 520, 230, 201, 190, 172)
+  fill(152, 288, 260, 300, 229, 164, 76)
+  fill(272, 288, 380, 300, 223, 226, 232)
+  return nativeImage.createFromBitmap(buffer, { width: PREVIEW_W, height: PREVIEW_H }).toPNG()
+}
+let previewPng = null
 
 app.disableHardwareAcceleration()
 const REPORT_PATH = path.join(OUT, 'REPORT.txt')
@@ -194,6 +404,19 @@ app.whenReady().then(async () => {
   fs.mkdirSync(stubDir, { recursive: true })
   const stubPath = path.join(stubDir, 'stub.js')
 
+  // Serves the deterministic preview PNG over the privileged clipboard scheme,
+  // mirroring main/domains/clipboard's protocol.handle on the panel session.
+  protocol.handle('highlighter-clipboard', (request) => {
+    try {
+      const url = new URL(request.url)
+      if (request.method === 'GET' && url.hostname === 'preview') {
+        previewPng = previewPng || buildPreviewPng()
+        return new Response(previewPng, { headers: { 'Content-Type': 'image/png', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store' } })
+      }
+    } catch {}
+    return new Response(null, { status: 404 })
+  })
+
   // A single window is reused for every surface. Creating one BrowserWindow per
   // capture fails on the second loadFile in Electron 43 (ERR_FAILED), and one
   // window also keeps the capture reproducible.
@@ -213,11 +436,18 @@ app.whenReady().then(async () => {
         preload: stubPath
       }
     })
+    // Hidden windows otherwise composite lazily: a DOM state changed by script
+    // (open inspector, decoded preview) can be live while capturePage still sees
+    // the previous frame. Keep the renderer producing frames.
+    win.webContents.setBackgroundThrottling(false)
     return win
   }
 
-  for (const s of SURFACES) {
-    fs.writeFileSync(stubPath, STUB_PRELUDE + (STUBS[s.file] || '') + `
+  for (const s of SURFACES.filter((surface) => !ONLY || surface.name.startsWith(ONLY))) {
+    // Per-surface facts are injected before the page stub so fixtures can branch
+    // on the surface being captured (e.g. the clipboard empty state).
+    const surfaceInfo = JSON.stringify({ name: s.name, fixture: s.fixture || '' })
+    fs.writeFileSync(stubPath, STUB_PRELUDE + `\n;window.__hlSurface = ${surfaceInfo}\n` + (STUBS[s.file] || '') + `
       ;window.__hlSetTheme = (t) => document.body.classList.toggle('dark', t === 'dark')
       ;window.__hlGoto = (r) => { const b = document.querySelector('.nav-item[data-route="' + r + '"]'); if (b) b.click() }
     `)
@@ -253,11 +483,30 @@ app.whenReady().then(async () => {
         }
         await sleep(500)
       }
-      if (EMIT[s.file]) {
-        await w.webContents.executeJavaScript(EMIT[s.file])
+      if (EMIT[s.file] || s.emit) {
+        await w.webContents.executeJavaScript(s.emit || EMIT[s.file])
         await sleep(700)
       }
+      // Surface-specific interaction (open the clipboard detail sheet, wait for
+      // the preview image to decode) runs before metrics so the capture and the
+      // reported numbers describe the same state. A hidden BrowserWindow commits
+      // frames lazily, so after the interaction wait two animation frames (with a
+      // timer fallback for a fully hidden document) and throw away one capture:
+      // without this the list capture raced the inspector paint and showed the
+      // bare list while the probe already reported detailHidden:false.
+      if (s.act) {
+        await w.webContents.executeJavaScript(s.act)
+        await w.webContents.executeJavaScript(`new Promise((resolve) => {
+          let settled = false
+          const finish = () => { if (!settled) { settled = true; resolve('painted') } }
+          requestAnimationFrame(() => requestAnimationFrame(finish))
+          setTimeout(finish, 900)
+        })`)
+        await w.webContents.capturePage()
+        await sleep(s.settle || 450)
+      }
 
+      const probe = s.probe ? await w.webContents.executeJavaScript(s.probe) : null
       const metrics = await w.webContents.executeJavaScript(`(() => ({
         scrollW: document.documentElement.scrollWidth,
         scrollH: document.documentElement.scrollHeight,
@@ -271,13 +520,18 @@ app.whenReady().then(async () => {
       // can still be mid-flight (or stuck at their start value) when the capture
       // is taken — which showed up as the sidebar's active highlight lagging one
       // route behind. Freezing transitions makes every capture deterministic.
-      await w.webContents.executeJavaScript(
-        `(() => { const s = document.createElement('style'); s.textContent = '*{transition:none !important;animation:none !important}'; document.head.appendChild(s); return 'frozen' })()`)
+      // Injected through webContents.insertCSS rather than a <style> element:
+      // the clipboard panel's CSP is style-src 'self', so DOM-injected styles
+      // would log a violation (and would be dropped).
+      await w.webContents.insertCSS('*{transition:none !important;animation:none !important}')
       await sleep(150)
 
       // Both themes come from the same load; only the class changes.
       for (const theme of ['light', 'dark']) {
         await w.webContents.executeJavaScript(`window.__hlSetTheme && window.__hlSetTheme(${JSON.stringify(theme)})`)
+        // The clipboard panel's real window backgroundColor is theme-aware; mirror
+        // it so any pixel the panel does not cover matches the app.
+        if (s.bg) w.setBackgroundColor(s.bg[theme])
         await sleep(350)
         const image = await w.webContents.capturePage()
         fs.writeFileSync(path.join(OUT, `${s.name}.${theme}.png`), image.toPNG())
@@ -286,6 +540,7 @@ app.whenReady().then(async () => {
         const over = row.scrollW > row.viewW
         lines.push(`${row.errors.length || over ? 'FAIL' : 'ok  '} ${row.name.padEnd(22)} ${row.viewW}x${row.viewH} page=${row.scrollW}x${row.scrollH} nodes=${row.nodes} rail=${row.railVisible} errors=${row.errors.length}${over ? ' OVERFLOW-X' : ''}`)
         row.errors.slice(0, 2).forEach((e) => lines.push(`      ! ${String(e).slice(0, 150)}`))
+        if (probe && theme === 'light') lines.push(`      probe ${JSON.stringify(probe)}`)
         writeReport(lines)
       }
     } catch (err) {

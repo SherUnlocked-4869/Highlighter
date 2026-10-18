@@ -3,6 +3,7 @@
   const tables = globalThis.__LOCALES = globalThis.__LOCALES || {}
   Object.assign(tables['zh-CN'] = tables['zh-CN'] || {}, {
   "clipboard.title": "剪贴板历史",
+  "clipboard.badge.local": "本地",
   "clipboard.close": "关闭",
   "clipboard.search": "搜索历史文本",
   "clipboard.kind": "类型",
@@ -33,6 +34,9 @@
   "clipboard.paste-canceled": "粘贴已取消：剪贴板内容已变化，请重新选择记录。",
   "clipboard.truncated": "详情仅显示前 64 KiB，复制时保留完整原文。",
   "clipboard.image-size": "图片 {width} × {height}",
+  "clipboard.count": "{count} 条",
+  "clipboard.pinned-count": "置顶 {count}",
+  "clipboard.result.eyebrow": "粘贴结果",
   "clipboard.runtime-paused": "因系统状态暂停",
   "clipboard.empty": "暂无匹配记录",
   "clipboard.failed": "操作失败，请刷新后重试。",
@@ -83,6 +87,7 @@
 })
   Object.assign(tables['en-US'] = tables['en-US'] || {}, {
   "clipboard.title": "Clipboard history",
+  "clipboard.badge.local": "LOCAL",
   "clipboard.close": "Close",
   "clipboard.search": "Search history text",
   "clipboard.kind": "Type",
@@ -113,6 +118,9 @@
   "clipboard.paste-canceled": "Paste canceled: the clipboard changed. Select the record again.",
   "clipboard.truncated": "Showing the first 64 KiB. Copy preserves the complete original.",
   "clipboard.image-size": "Image {width} × {height}",
+  "clipboard.count": "{count} records",
+  "clipboard.pinned-count": "{count} pinned",
+  "clipboard.result.eyebrow": "PASTE RESULT",
   "clipboard.runtime-paused": "Paused by system state",
   "clipboard.empty": "No matching records",
   "clipboard.failed": "Operation failed. Refresh and try again.",
@@ -163,6 +171,7 @@
 })
   Object.assign(tables['zh-TW'] = tables['zh-TW'] || {}, {
   "clipboard.title": "剪貼簿歷史",
+  "clipboard.badge.local": "本機",
   "clipboard.close": "關閉",
   "clipboard.search": "搜索歷史文字",
   "clipboard.kind": "类型",
@@ -193,6 +202,9 @@
   "clipboard.paste-canceled": "已取消貼上：剪貼簿內容已變更，請重新選擇記錄。",
   "clipboard.truncated": "详情僅顯示前 64 KiB，複製時保留完整原文。",
   "clipboard.image-size": "圖片 {width} × {height}",
+  "clipboard.count": "{count} 筆",
+  "clipboard.pinned-count": "置頂 {count}",
+  "clipboard.result.eyebrow": "貼上結果",
   "clipboard.runtime-paused": "因系統状態暫停",
   "clipboard.empty": "暂無匹配記錄",
   "clipboard.failed": "操作失败，請重新整理後重試。",

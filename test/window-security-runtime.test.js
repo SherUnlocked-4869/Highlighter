@@ -34,9 +34,12 @@ test('every remaining renderer loads under the locked Electron sandbox', { timeo
   assert.ok(line, `Window security probe did not return JSON.\nstdout:\n${result.stdout}`)
   const probe = JSON.parse(line.slice(resultPrefix.length))
 
+  // The probe covers every window (scripts/probe-window-security.js), including
+  // the clipboard panel. The expected list must follow that order exactly.
   assert.deepEqual(probe.windows.map((entry) => entry.name), [
     'config',
     'toolbar',
+    'clipboard',
     'capture',
     'long-overlay',
     'long-capture',
