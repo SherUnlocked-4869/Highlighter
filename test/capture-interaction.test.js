@@ -121,8 +121,9 @@ test('A2: a wheel burst trails its persistence and the step only runs when it is
   assert.match(script, /function cancelAnnotationWidthPersist\(\) \{[\s\S]{0,160}?clearTimeout\(widthPersistTimer\)/)
   // 新一次截图不得让上一张的写盘计时器落进这一次（与样式计时器同口径）。
   assert.match(script, /function resetAnnotationState\(\) \{[\s\S]{0,460}?cancelAnnotationWidthPersist\(\)/)
-  // 支持宽度的工具集合 = 除 select / blur / watermark 之外的全部。
-  assert.match(script, /const WIDTH_TOOLS = new Set\(\['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial'\]\)/)
+  // 支持宽度的工具集合 = 除 select / watermark 之外的全部。Brush plan（D2-B'）：blur 加入 ——
+  // 马赛克笔刷也有宽度，且它的宽度会被记忆（TOOL_STYLE_TOOLS），滚轮调宽不再是假功能。
+  assert.match(script, /const WIDTH_TOOLS = new Set\(\['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial', 'blur'\]\)/)
   assert.match(
     script,
     /function canStepAnnotationWidth\(\) \{[\s\S]{0,200}?if \(!selection \|\| selecting \|\| dragging \|\| resizing \|\| selectState === 'auto'\) return false[\s\S]{0,120}?return WIDTH_TOOLS\.has\(currentTool\) \|\| !!selectedAnnotationItem\(\)/

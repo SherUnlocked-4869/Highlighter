@@ -73,7 +73,9 @@ const {
   resolveToolStyles,
   textFontSize,
   serialRadius,
-  highlightWidth
+  highlightWidth,
+  blurBrushWidth,
+  MOSAIC_CELL
 } = window.annotationStyleUtils
 // P0-5 PR1：命中测试/选中框/快照深拷贝都走纯函数模块（屏幕 CSS 坐标，方案 §8.3）。
 // PR2 追加 translateAnnotation（生成位移副本）与 clampAnnotationToStage（边界 clamp）。
@@ -95,6 +97,10 @@ const {
   MAX_ANNOTATION_HISTORY,
   MAX_PEN_POINTS
 } = window.annotationGeometry
+// Brush plan (§3.1/§4): the freehand-stroke primitives. A separate destructure on purpose -
+// the block above is pinned verbatim (and its item order, MAX_PEN_POINTS last) by the
+// geometry contract tests, so new names must not be inserted into it.
+const { STROKE_TYPES, hasStrokePoints, strokeWidth, strokeBox } = window.annotationGeometry
 
 let initData = null
 let image = null
@@ -161,8 +167,17 @@ let recentAnnotationColors = []
 // A2: one wheel burst must not write the store per notch, so persistence trails.
 let widthPersistTimer = 0
 const WIDTH_PERSIST_DELAY = 500
-// A2: the tools whose stroke width is meaningful (all but select/blur/watermark).
-const WIDTH_TOOLS = new Set(['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial'])
+// A2: the tools whose stroke width is meaningful (all but select/watermark).
+// Brush plan (D2-B'): blur joined - the mosaic brush is a real width-bearing tool now, and
+// its width is remembered (TOOL_STYLE_TOOLS), so the wheel step survives the gesture.
+const WIDTH_TOOLS = new Set(['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial', 'blur'])
+// Brush plan (§3.3): the tools drawn as a freehand polyline. Everything below hangs off
+// this set plus "the item really carries points", so a legacy two-endpoint object keeps
+// rendering exactly what it rendered before.
+const STROKE_TOOL_SET = new Set(STROKE_TYPES)
+// Brush plan (§3.3, D5): the minimum distance between two sampled points, in CSS px. A
+// duplicate/jitter point buys nothing visually and only burns the MAX_PEN_POINTS budget.
+const STROKE_MIN_STEP = 1.5
 // B2-B5 (D9) + B4 (D7): the remembered style per tool, keyed by tool and holding only
 // the fields that tool owns. B4 persists it into screenshot.annotationStyles; every
 // lookup goes through resolveToolStyle, so a hand-edited store or a partially written
@@ -194,6 +209,18 @@ let imageObjectUrl = ''
 // 所以在 onInit 里建好；没带光标（开关关闭）时恒为 null。
 let cursorImage = null
 let pdfExporting = false
+// Mosaic patch cache (§5.2). One offscreen canvas per committed stroke, keyed by a
+// fingerprint of every input the patch depends on - NOT by object identity: translate,
+// resize and style edits all return brand-new objects, so an identity cache would happily
+// keep a patch of the old position. WeakMap so a dropped annotation takes its patch with
+// it. Active strokes are never cached (they change every frame).
+// Reassignable rather than const because WeakMap has no clear(): invalidating means
+// dropping the whole map, which is exactly what a new capture / undo / stage resize wants.
+let mosaicPatchCache = new WeakMap()
+// Total bytes the cache may hold (§5.2): past this the strokes render uncached, which is
+// slower but always correct.
+const MOSAIC_PATCH_BUDGET = 16 * 1024 * 1024
+let mosaicPatchBytes = 0
 
 // P0-7-T5：主进程确认窗口已显示后播一次快门音，受 screenshot.shutterSound 控制。
 // play() 在 CSP 拦截 / 自动播放被拒时会 reject，这里必须吞掉，否则渲染层报未处理拒绝。
@@ -282,6 +309,9 @@ function resizeCanvas() {
     selection = imageDisplayBounds()
   }
   drawBackground()
+  // Brush plan (§5.2): a stage or DPR change invalidates every cached mosaic patch (the
+  // device-pixel scale they were built with no longer holds).
+  invalidateMosaicPatches()
   render()
   maybeRunAutoAction()
   reportRenderReady()
@@ -393,6 +423,147 @@ function drawWatermark(context, item, scaleX, scaleY, offsetX, offsetY) {
   context.restore()
 }
 
+// ---------- Brush plan (docs/plans/2026-10-19-brush-highlight-mosaic-interaction-design.md) ----------
+
+// The polyline path every freehand stroke shares: round caps and joins, one moveTo then
+// lineTo per sample. `points` are already in the target coordinate space.
+// A single point traces a 0.01px segment on purpose - a zero-length subpath is not stroked
+// at all (§7.3), so without this a tap would paint nothing. record/annotation-utils.js:150
+// carries the same patch, and the pen branch below uses this helper too (D6).
+function traceStroke(context, points, lineWidth) {
+  context.lineCap = 'round'
+  context.lineJoin = 'round'
+  context.lineWidth = lineWidth
+  context.beginPath()
+  if (!points.length) return false
+  if (points.length === 1) {
+    context.moveTo(points[0].x, points[0].y)
+    context.lineTo(points[0].x + 0.01, points[0].y)
+    return true
+  }
+  points.forEach((point, index) => index ? context.lineTo(point.x, point.y) : context.moveTo(point.x, point.y))
+  return true
+}
+
+// Maps a stored point set (screen CSS px) into the drawing space of `context`, which is
+// whatever scaleX/scaleY/offset the caller applies - screen path 1:1, export path times
+// the export factor minus the selection origin.
+function offsetPoints(points, scaleX, scaleY, offsetX, offsetY) {
+  return points.map((point) => ({ x: (point.x - offsetX) * scaleX, y: (point.y - offsetY) * scaleY }))
+}
+
+// §5.6: target pixels per CSS px is the ONLY bridge between the three coordinate spaces.
+// On screen the stage context carries a devicePixelRatio transform and the callers pass
+// 1/1; on export the context is untransformed and the callers pass the export factor. So
+// the honest answer is "the factor the caller passed" times "what the context already
+// applies" - never a guess about which path this is. `widthScale` is the caller's factor.
+function contextPixelScale(context) {
+  let matrix = null
+  try { matrix = typeof context.getTransform === 'function' ? context.getTransform() : null } catch {}
+  if (!matrix) return 1
+  const scale = Math.max(Math.abs(Number(matrix.a) || 0), Math.abs(Number(matrix.d) || 0))
+  return Number.isFinite(scale) && scale > 0 ? scale : 1
+}
+
+function mosaicPatchKey(item, deviceScale) {
+  const box = strokeBox(item)
+  const points = item.points
+  const first = points[0]
+  const last = points[points.length - 1]
+  return [item.width, deviceScale, box.x, box.y, box.w, box.h, points.length, first.x, first.y, last.x, last.y].join('|')
+}
+
+// Drops every cached patch. Called from the invalidation points §5.2 lists (new capture,
+// undo/redo replacing the array, style/geometry writes, stage resize). The fingerprint
+// already covers content changes; this covers the canvases whose owner is gone.
+function invalidateMosaicPatches() {
+  mosaicPatchCache = new WeakMap()
+  mosaicPatchBytes = 0
+}
+// §3.2.2: the mosaic stroke = a pixelated layer of the *source image* masked by the
+// stroke's alpha. Three coordinate spaces meet here and must not be mixed (§5.6):
+//   · annotation points/bbox and MOSAIC_CELL are CSS px;
+//   · sourceImage is device px (naturalWidth/Height);
+//   · the offscreen patch canvas is device px too (its .width/.height always are).
+// `deviceScale` = device px per CSS px (devicePixelRatio on screen, the export factor on
+// export; see contextPixelScale). The final drawImage back onto the target stays in CSS
+// px, because the caller's context already carries the rest of the transform.
+function buildMosaicPatch(item, deviceScale, sourceImage) {
+  const cell = MOSAIC_CELL * deviceScale
+  const brush = blurBrushWidth(item.width) * deviceScale
+  const pad = brush / 2 + 2
+  const box = strokeBox(item)
+  // Snap the grid phase to the canvas origin, never to this stroke's own box: two
+  // neighbouring strokes would otherwise interleave two different phases and show
+  // "brick seams" where they overlap (§3.2.2, §7.2).
+  const left = Math.floor((box.x - pad) / MOSAIC_CELL) * MOSAIC_CELL
+  const top = Math.floor((box.y - pad) / MOSAIC_CELL) * MOSAIC_CELL
+  const cssW = Math.ceil((box.x + box.w + pad - left) / MOSAIC_CELL) * MOSAIC_CELL
+  const cssH = Math.ceil((box.y + box.h + pad - top) / MOSAIC_CELL) * MOSAIC_CELL
+  if (!(cssW > 1) || !(cssH > 1)) return null
+  const devW = Math.max(1, Math.round(cssW * deviceScale))
+  const devH = Math.max(1, Math.round(cssH * deviceScale))
+  const tinyW = Math.max(1, Math.round(devW / cell))
+  const tinyH = Math.max(1, Math.round(devH / cell))
+
+  const bounds = imageDisplayBounds()
+  const sourceScaleX = (sourceImage.naturalWidth || 1) / Math.max(1, bounds.w)
+  const sourceScaleY = (sourceImage.naturalHeight || 1) / Math.max(1, bounds.h)
+
+  const tiny = document.createElement('canvas')
+  tiny.width = tinyW; tiny.height = tinyH
+  const tinyCtx = tiny.getContext('2d')
+  tinyCtx.imageSmoothingEnabled = true
+  tinyCtx.drawImage(
+    sourceImage,
+    (left - bounds.x) * sourceScaleX, (top - bounds.y) * sourceScaleY, cssW * sourceScaleX, cssH * sourceScaleY,
+    0, 0, tinyW, tinyH
+  )
+
+  const patch = document.createElement('canvas')
+  patch.width = devW; patch.height = devH
+  const patchCtx = patch.getContext('2d')
+  patchCtx.imageSmoothingEnabled = false
+  patchCtx.drawImage(tiny, 0, 0, tinyW, tinyH, 0, 0, devW, devH)
+  patchCtx.imageSmoothingEnabled = true
+  // Intersect with the stroke: everything outside the brush must keep the source pixels.
+  patchCtx.globalCompositeOperation = 'destination-in'
+  patchCtx.strokeStyle = '#000'
+  traceStroke(
+    patchCtx,
+    item.points.map((point) => ({ x: (point.x - left) * deviceScale, y: (point.y - top) * deviceScale })),
+    brush
+  )
+  patchCtx.stroke()
+  patchCtx.globalCompositeOperation = 'source-over'
+  return { canvas: patch, left, top, w: cssW, h: cssH }
+}
+
+function drawMosaicStroke(context, item, scaleX, scaleY, offsetX, offsetY, sourceImage) {
+  const deviceScale = Math.max(scaleX, scaleY) * contextPixelScale(context)
+  const key = mosaicPatchKey(item, deviceScale)
+  const cached = mosaicPatchCache.get(item)
+  let patch = cached && cached.key === key ? cached.patch : null
+  if (!patch) {
+    patch = buildMosaicPatch(item, deviceScale, sourceImage)
+    if (!patch) return
+    // Committed annotations (they carry an id) are cached; the stroke being drawn right now
+    // is deliberately rebuilt every frame (§5.2), so a live gesture never pays the
+    // fingerprint bookkeeping and never pins a stale canvas.
+    const bytes = patch.canvas.width * patch.canvas.height * 4
+    if (item.id && bytes <= MOSAIC_PATCH_BUDGET) {
+      if (cached) mosaicPatchBytes -= cached.patch.canvas.width * cached.patch.canvas.height * 4
+      if (mosaicPatchBytes + bytes <= MOSAIC_PATCH_BUDGET) {
+        mosaicPatchCache.set(item, { key, patch })
+        mosaicPatchBytes += bytes
+      }
+    }
+  }
+  // Destination stays in the caller's units: transform by the same scale/offset the item's
+  // own x/y got, so the patch lands exactly where the stroke is.
+  context.drawImage(patch.canvas, (patch.left - offsetX) * scaleX, (patch.top - offsetY) * scaleY, patch.w * scaleX, patch.h * scaleY)
+}
+
 function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offsetY = 0, sourceImage = image) {
   const x = (item.x-offsetX)*scaleX, y = (item.y-offsetY)*scaleY
   const x2 = ((item.x2 ?? item.x)-offsetX)*scaleX, y2 = ((item.y2 ?? item.y)-offsetY)*scaleY
@@ -428,14 +599,37 @@ function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offs
   }
   if (item.type === 'line') { context.beginPath(); context.moveTo(x,y); context.lineTo(x2,y2); context.stroke() }
   if (item.type === 'arrow') drawArrow(context,x,y,x2,y2,width,item.startHead === true,item.endHead !== false)
-  if (item.type === 'pen') { context.beginPath(); item.points.forEach((point,index) => { const px=(point.x-offsetX)*scaleX, py=(point.y-offsetY)*scaleY; index?context.lineTo(px,py):context.moveTo(px,py) }); context.stroke() }
-  if (item.type === 'highlight') { context.globalAlpha=resolveAlpha(item.alpha); context.lineWidth=highlightWidth(baseWidth,widthScale); context.beginPath(); context.moveTo(x,y); context.lineTo(x2,y2); context.stroke() }
+  if (item.type === 'pen') {
+    // Brush plan (D6): the shared helper adds the 0.01px dot patch, so a single tap now
+    // paints a dot instead of nothing (the pre-D6 branch silently drew nothing).
+    traceStroke(context, offsetPoints(item.points, scaleX, scaleY, offsetX, offsetY), width)
+    context.stroke()
+  }
+  if (item.type === 'highlight') {
+    context.globalAlpha=resolveAlpha(item.alpha)
+    // Brush plan (§3.2.1): with points it is one round-capped polyline - the freehand
+    // marker the plan is about. Without points (every pre-change annotation) it stays the
+    // shipped moveTo/lineTo, byte for byte.
+    if (hasStrokePoints(item)) {
+      traceStroke(context, offsetPoints(item.points, scaleX, scaleY, offsetX, offsetY), highlightWidth(baseWidth,widthScale))
+    } else {
+      context.lineWidth=highlightWidth(baseWidth,widthScale)
+      context.beginPath(); context.moveTo(x,y); context.lineTo(x2,y2)
+    }
+    context.stroke()
+  }
   if (item.type === 'text') { context.font = `${item.bold === true ? 'bold ' : ''}${textFontSize(baseWidth,widthScale)}px -apple-system,"Microsoft YaHei",sans-serif`; context.textBaseline='top'; context.fillText(item.text,x,y) }
   if (item.type === 'serial') { const radius=serialRadius(baseWidth,widthScale); context.beginPath(); context.arc(x,y,radius,0,Math.PI*2); context.fill(); context.fillStyle='#fff'; context.font=`bold ${radius}px sans-serif`; context.textAlign='center'; context.textBaseline='middle'; context.fillText(String(item.number),x,y+1) }
   if (item.type === 'watermark') drawWatermark(context,item,scaleX,scaleY,offsetX,offsetY)
   if (item.type === 'blur' && sourceImage) {
+    // Brush plan (§3.2.2): with points the mosaic is the pixelated layer intersected with
+    // the stroke mask. Without points it stays the shipped rectangle resample.
+    if (hasStrokePoints(item)) {
+      drawMosaicStroke(context,item,scaleX,scaleY,offsetX,offsetY,sourceImage)
+    } else {
     const left=Math.min(x,x2), top=Math.min(y,y2), w=Math.abs(x2-x), h=Math.abs(y2-y)
     if (w>2&&h>2) { const tiny=document.createElement('canvas'); tiny.width=Math.max(1,Math.round(w/12)); tiny.height=Math.max(1,Math.round(h/12)); const t=tiny.getContext('2d'); const bounds=imageDisplayBounds(); const sourceScaleX=sourceImage.naturalWidth/bounds.w, sourceScaleY=sourceImage.naturalHeight/bounds.h; t.drawImage(sourceImage,(Math.min(item.x,item.x2)-bounds.x)*sourceScaleX,(Math.min(item.y,item.y2)-bounds.y)*sourceScaleY,Math.abs(item.x2-item.x)*sourceScaleX,Math.abs(item.y2-item.y)*sourceScaleY,0,0,tiny.width,tiny.height); context.imageSmoothingEnabled=false; context.drawImage(tiny,left,top,w,h); context.imageSmoothingEnabled=true }
+    }
   }
   context.restore()
 }
@@ -1154,6 +1348,8 @@ function restoreAnnotations(index) {
   cancelStyleCommit()
   historyIndex = Math.max(0, Math.min(annotationHistory.length - 1, index))
   annotations = cloneAnnotations(annotationHistory[historyIndex])
+  // Brush plan (§5.2): the restored objects are fresh clones, so every patch is stale.
+  invalidateMosaicPatches()
   syncSelectedAnnotation()
   render()
 }
@@ -1189,6 +1385,8 @@ function deleteSelectedAnnotation() {
   selectedIds = new Set()
   syncToolbarStyleFromSelection()
   snapshotAnnotations()
+  // Brush plan (§5.2): the deleted objects must not keep their patches alive.
+  invalidateMosaicPatches()
   render()
 }
 
@@ -1473,6 +1671,9 @@ function writeAnnotationStyles(targets, patch, fields, ownership) {
     annotations[index] = styled
     if (selectedAnnotation && selectedAnnotation.id === target.id) selectedAnnotation = styled
     changed = true
+    // Brush plan (§5.2): a new object means the width/colour a mosaic patch was built
+    // from may have changed; drop its cache entry with it.
+    mosaicPatchCache.delete(target)
   })
   if (changed) render()
   return changed
@@ -1548,6 +1749,8 @@ function resetAnnotationState() {
   annotationHistory = [[]]
   historyIndex = 0
   invalidateElementBarSize()
+  // Brush plan (§5.2): patches belong to the previous capture's annotation objects.
+  invalidateMosaicPatches()
 }
 
 function commitAnnotation(item) {
@@ -1666,6 +1869,52 @@ async function requestSmartSelection(point) {
   }finally{smartQueryRunning=false}
 }
 
+
+// ---------- Brush plan (§3.3): sampling a freehand stroke ----------
+
+// Appends the pointer samples between two events. `getCoalescedEvents()` is what makes a
+// fast flick a curve instead of a polygon: a high-refresh screen can otherwise deliver
+// samples 20-40px apart (§3.3). Browsers without it fall back to the event itself.
+function strokeSamples(event, point) {
+  let samples = null
+  try { samples = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : null } catch {}
+  if (!samples || !samples.length) return [point]
+  const collected = []
+  for (const sample of samples) {
+    const x = Number(sample.clientX)
+    const y = Number(sample.clientY)
+    if (Number.isFinite(x) && Number.isFinite(y)) collected.push({ x, y })
+  }
+  return collected.length ? collected : [point]
+}
+
+// One pointermove worth of samples. The bounding box (x2/y2) follows the LAST accepted
+// sample and the point set is filtered by STROKE_MIN_STEP, so joggle and duplicate events
+// do not burn the MAX_PEN_POINTS budget. The filter is deliberately brush-only: the pen
+// keeps the exact sampling it shipped with (§3.3, D5).
+function appendStrokePoint(point, event) {
+  const item = activeAnnotation
+  if (!item) return
+  const samples = STROKE_TOOL_SET.has(item.type) ? strokeSamples(event, point) : [point]
+  const last = samples[samples.length - 1]
+  item.x2 = last.x
+  item.y2 = last.y
+  if (!Array.isArray(item.points)) return
+  for (const sample of samples) {
+    if (item.points.length >= MAX_PEN_POINTS) return
+    const tail = item.points[item.points.length - 1]
+    if (tail && Math.hypot(sample.x - tail.x, sample.y - tail.y) < STROKE_MIN_STEP) continue
+    item.points.push({ x: sample.x, y: sample.y })
+  }
+}
+
+// pointermove self-heal (D7): settle the stroke so the ink stops following a pointer whose
+// button was released without a pointerup. Same rule as the other self-heals above it.
+function finishStrokeAnnotation() {
+  if (!activeAnnotation || activeAnnotation.type === 'watermark') return
+  commitAnnotation(activeAnnotation)
+}
+
 // A1 (D1): the right button is a quick-select + drag gesture in every tool
 // (Snow Shot's quick_selection). It never draws and never re-runs the region
 // selection, which is why it lives in front of every tool branch below.
@@ -1759,7 +2008,7 @@ canvas.addEventListener('pointerdown',(event)=>{
     if(target&&beginPenContinuation(target,point,event))return
   }
   activeAnnotation={type:currentTool,x:point.x,y:point.y,x2:point.x,y2:point.y,...style}
-  if (currentTool==='pen') activeAnnotation.points=[point]
+  if (STROKE_TOOL_SET.has(currentTool)) activeAnnotation.points=[{x:point.x,y:point.y}]
 })
 
 canvas.addEventListener('pointermove',(event)=>{
@@ -1795,9 +2044,14 @@ canvas.addEventListener('pointermove',(event)=>{
   if (dragging&&selection) { const dx=point.x-startPoint.x,dy=point.y-startPoint.y; selection.x=Math.max(0,Math.min(innerWidth-selection.w,selection.x+dx)); selection.y=Math.max(0,Math.min(innerHeight-selection.h,selection.y+dy)); startPoint=point; render(); return }
   // B6 wave 2: the marquee grows with the pointer and repaints itself (no frame).
   if (marquee) { updateMarquee(point); return }
-  if (activeAnnotation) { activeAnnotation.x2=point.x; activeAnnotation.y2=point.y; if(activeAnnotation.type==='pen'&&activeAnnotation.points.length<MAX_PEN_POINTS)activeAnnotation.points.push(point); render() }
+  // Brush plan (D7): a swallowed pointerup during a stroke leaves the ink following a
+  // button-less pointer. Same self-heal the three state-machine paths above already have;
+  // the stroke stays (it is dropped only on pointercancel), it just stops growing.
+  if (activeAnnotation && event.buttons === 0 && activeAnnotation.type !== 'watermark') { finishStrokeAnnotation(); updateSelectionCursor(point); return }
+  if (activeAnnotation) { appendStrokePoint(point, event); render() }
   else updateSelectionCursor(point)
 })
+
 
 canvas.addEventListener('pointerup',(event)=>{
   if(selectState==='auto'&&pointerDownPoint){const point=pointFromEvent(event);const moved=Math.hypot(point.x-pointerDownPoint.x,point.y-pointerDownPoint.y)>6;pointerDownPoint=null;if(moved){selectState='selected';selection=normalizeRect(startPoint,point);if(selection.w<3||selection.h<3)selection=null}else if(selection){selectState='selected'}tip.style.display='none';finishSelection();updateSelectionCursor(point);return}

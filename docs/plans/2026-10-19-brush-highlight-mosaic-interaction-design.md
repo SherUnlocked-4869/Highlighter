@@ -2,7 +2,7 @@
 
 - 日期：2026-10-18 / 2026-10-19（Asia/Hong_Kong）
 - 基线：`master` @ `4af7b84`（`package.json` 3.0.0，工作区仅一个未跟踪的分析文档）
-- 状态：**方案设计 + 可交互原型，尚未实施；本文不是验收记录。**
+- 状态：**已实施并实机验收通过（2026-10-19）；单测已补齐（见 §13）。**
 - 交付物：
   1. 本方案（数据模型 / 渲染 / 交互 / 命中 / 兼容 / 测试 / 排期 / 决策点）
   2. **可交互原型** `docs/plans/2026-10-19-brush-prototype.html`（双击即开，验证手感）
@@ -444,6 +444,13 @@ blur:
 
 → 单点补丁必须显式加 `+0.01`（或用 fill 圆，但那样与折线笔迹的端点形状不一致，不推荐）。
 
+> **实施期复验修正（2026-10-19，补单测时实测）**：在 **Electron 43 / Windows** 上重跑同一组写法，
+> `moveTo(p); lineTo(p)`（两点重合）**已经会落墨**（88 个像素被改），只有**纯 `moveTo(p)`**（不跟 lineTo）
+> 才是 0。也就是说 `+0.01` 在当前版本上是**跨版本保险而不是必需项**：
+> `record/annotation-utils.js:150` 的既有补丁与本次实现都保留它，但**单元测试不应钉 `+0.01` 这个字面量**
+> —— 否则它测的是"代码长这样"而不是"单击会落墨"。`test/capture-brush-stroke.test.js` 因此改为钉
+> "单点分支必须返回一条非空路径"，真窗口回归则钉"落笔中心像素必须改变"（见下）。
+
 同一条结论在**交付的原型**（`docs/plans/2026-10-19-brush-prototype.html`）上复验过一次，并且**先被自己的测试脚本误判过一次**（值得写进实施手册）：
 
 - 第一版取样点落在**空白纸面**上，两种工具"都没落墨"—— 实际是采样位置选错，不是渲染错误。
@@ -608,3 +615,83 @@ npm run check           # i18n --max 606（当前 588，只剩 18 行），且�
 | `.tmp/brush-poc/verify-prototype.js` | 原型的指针手势冒烟（真实 pointerdown/move/up 驱动） |
 
 > `.tmp/` 已被 `.gitignore` 忽略，探针不进版本库。**需要进仓库的只有四件**：本方案、可交互原型 HTML、原型截图、改造前后对比图。
+
+---
+
+## 13. 实施与测试记录（2026-10-19）
+
+### 13.1 落地范围
+
+按 §4 的改动清单逐文件实施，**未新增 IPC、未改 `preload-capture.js` / `main.js` / `record/**` / 任何用户可见文案**。
+
+| 文件 | 改动 |
+|---|---|
+| `capture/annotation-style.js` | 新增 `MOSAIC_CELL = 12`、`blurBrushWidth()`（18/24/48）；`TOOL_STYLE_TOOLS` 加入 `blur`（D2-B'） |
+| `capture/annotation-geometry.js` | 新增 `STROKE_TYPES` / `isStrokeType` / `hasStrokePoints` / `strokeWidth` / `strokeBox`；`annotationBounds` 分派、`hitTestAnnotation` 折线命中、`resizeAnnotationToBox` 笔迹分支 |
+| `capture/capture.js` | `STROKE_TOOL_SET` 采样骨架（coalesced + 1.5px 最小点距）、`traceStroke`/`offsetPoints` 共用折线、`buildMosaicPatch`/`drawMosaicStroke`（mask + 网格锚定 + 补丁缓存）、D6 单点补丁、D7 自愈、`WIDTH_TOOLS` 加 `blur` |
+| `main/services/settings-defaults.js` | `annotationStyles.blur` 模板块（D2-B'，模板即校验白名单） |
+
+### 13.2 决策落地
+
+| 决策 | 采用 |
+|---|---|
+| D1 马赛克笔刷宽度 | `max(18, width*6)` → 18/24/48 |
+| D2 粗细是否记忆 | **B'**（`WIDTH_TOOLS` + `TOOL_STYLE_TOOLS` + 设置模板同改） |
+| D3 像素块粒度 | 固定 `MOSAIC_CELL = 12` CSS px |
+| D4 端点续画 | 不支持（只有 `pen` 保留 B7 续画） |
+| D5 采样 | `getCoalescedEvents` + 1.5px 最小点距，**仅 highlight/blur** |
+| D6 pen 单击落墨 | 修（与笔刷共用 `traceStroke`） |
+| D7 pointerup 被吞自愈 | 修 |
+
+### 13.3 新增测试
+
+| 文件 | 内容 |
+|---|---|
+| `test/capture-annotation-style.test.js` | 追加 4 条：`MOSAIC_CELL` 常量化、`blurBrushWidth` 三档 + 缩放 + 非法入参回落、D2-B' 样式记忆块 |
+| `test/capture-annotation-geometry.test.js` | 追加 5 条：`STROKE_TYPES`/开关语义、`strokeWidth` 与绘制同源、`strokeBox` 与 `annotationBounds` 分派、折线命中（bbox 空角落空）、笔迹缩放/平移/clamp/深拷贝 |
+| `test/capture-brush-stroke.test.js`（新） | 13 条接线契约：采样骨架、`drawAnnotation` 两条新分支、D6/D7、补丁缓存指纹与失效点、§5.6 坐标纪律、D2-B' 接线 |
+| `test/capture-brush-render.test.js`（新） | 1 条真窗口像素回归（`show:false`，不占屏幕），断言见 §13.4 |
+
+同步修改的既有断言（均为方案 §6.2 预先列出的"条件红/必改"项）：`capture-interaction.test.js` 的 `WIDTH_TOOLS` 字面量、`capture-annotation-style.test.js` 的 `TOOL_STYLE_TOOLS`、`settings-validation.test.js` 的 `annotationStyles` 键集与 blur 接受性。
+
+### 13.4 真窗口像素回归的实测值（Electron 43 / Windows / dpr 1.5 / 源码位图 1.5×）
+
+| 断言 | 实测 |
+|---|---|
+| 马赛克**带内**改变像素数 | > 0（3300–6700 视内容） |
+| 马赛克**带外**改变像素数 | **0** |
+| 一个 mosaic 格内颜色种类 | **1** |
+| 两条重叠笔迹重叠带"砖缝"格数 | **0 / 48** |
+| 单击落点中心像素差（马赛克 / 高亮） | 384 / 128（均 > 0） |
+| 高亮笔迹 y 范围 | −9.3…+6 相对中轴，在 `±highlightWidth/2` 内 |
+| 高亮半透明（核心带"等于笔色"占比） | **0**（不透明时会到 0.67） |
+| 硬边位移（DPR 采样正确性） | **6 设备 px = 4 CSS px** < 12px 一格 |
+| 旧高亮（无 points） | 仍是一条直线带，80±8 → 420±8 |
+| 旧马赛克矩形 | 正常像素化 |
+| 折线命中 / bbox 空角 / 旧块中心 | true / false / true |
+| 包围盒含笔刷半宽 | 224×124 = 200+24 × 100+24 |
+
+### 13.5 突变验证（证明断言不是"假通过"）
+
+按 §5.7 的纪律，每条核心断言都做过**故意破坏实现**的验证 —— 断言必须失败：
+
+| 突变 | 结果 |
+|---|---|
+| mask `destination-in` → `source-over` | 捕获（带外 51306 像素） |
+| 采样漏乘 `sourceScaleX/S`（§5.6 的 DPR bug） | 捕获（硬边位移 54px） |
+| 网格相位改成按笔迹自身 bbox | 捕获（38/48 格出现砖缝） |
+| 单点分支退化成空路径 | 捕获（中心像素差 0） |
+| 高亮 `globalAlpha` 写成 1 | 捕获（solidRatio 0.67） |
+| 高亮折线退化成单段 | 捕获 |
+
+> 这条纪律抓到两个"看着绿、其实没测到"的断言：① 最初用 1:1 的源图做 DPR 检查，
+> `sourceScaleX` 恒为 1，删掉采样换算也不会红；② 最初只数"变了几像素"验单击落墨，
+> 抗锯齿痕迹能让 count > 0。两者都按 §5.7 的方式修正了取样口径。
+
+### 13.6 门禁
+
+- `npm run check`：语法 336 文件通过、architecture ok、i18n **TOTAL 588 不变**（新增测试与注释零 CJK 增量）
+- 变更前后全量对比：基线 1104 项 / 1095 通过 / 9 失败 → 现在 **1128 项 / 1119 通过 / 9 失败**
+  （+24 新增用例，失败数不变；9 项为既有的环境性失败：数据根迁移、release 双产物校验、selection-hook 原生模块、托盘 i18n、update effect id）
+- `capture/**` 相关的 13 个测试文件：**167/167 绿**
+

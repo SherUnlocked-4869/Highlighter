@@ -43,6 +43,12 @@
   const ALPHA_IDS = Object.freeze(Object.keys(ALPHA_PRESETS))
   // A translucent fill is drawn at the same opacity the highlight already used.
   const FILL_ALPHA = 0.28
+  // Brush-stroke plans (docs/plans/2026-10-19-brush-highlight-mosaic-interaction-design.md
+  // §3.2.2, decision D3): the mosaic pixel block is 12 CSS px. The renderer converts it to
+  // output pixels with `MOSAIC_CELL * scale`, where scale is target pixels per CSS px
+  // (devicePixelRatio on screen, the export factor in exportSelectionCanvas) - so the
+  // blocks stay visually the same size on a HiDPI screen and in an exported PNG.
+  const MOSAIC_CELL = 12
 
   // Which option fields each tool owns. Reading and writing per tool is what keeps
   // unrelated fields off an item (a pen must never carry a fill, a rect no alpha).
@@ -68,7 +74,9 @@
 
   // B4 (D7): the tools that own a remembered style. The settings template enumerates
   // exactly these, so this list is what keeps the store and the renderer in step.
-  const TOOL_STYLE_TOOLS = Object.freeze(['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial'])
+  // Brush plan (D2-B'): blur joined so the wheel's width step survives the gesture - a
+  // width the renderer honours but never remembers is a fake control (plan §3.6).
+  const TOOL_STYLE_TOOLS = Object.freeze(['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial', 'blur'])
   // Highlight shipped yellow (its own default colour), every other tool red.
   const TOOL_DEFAULT_COLORS = Object.freeze({ highlight: '#ffcc00' })
 
@@ -198,6 +206,13 @@
     return Math.max(14, resolveWidth(width) * scaleFactor(scale) * 4)
   }
 
+  // Brush plan (D1): the mosaic brush is wider than the highlighter - below ~18 CSS px a
+  // sub-two-cell brush no longer reads as "pixelated". Same three width presets as every
+  // other tool, so the wheel and the toolbar keep working without a fourth control.
+  function blurBrushWidth(width, scale) {
+    return Math.max(18, resolveWidth(width) * scaleFactor(scale) * 6)
+  }
+
   return {
     WIDTH_PRESETS,
     WIDTHS,
@@ -209,6 +224,7 @@
     RADIUS_PRESETS,
     ALPHA_PRESETS,
     FILL_ALPHA,
+    MOSAIC_CELL,
     TOOL_OPTION_FIELDS,
     DEFAULT_TOOL_OPTIONS,
     TOOL_STYLE_TOOLS,
@@ -227,6 +243,7 @@
     scaleFactor,
     textFontSize,
     serialRadius,
-    highlightWidth
+    highlightWidth,
+    blurBrushWidth
   }
 })

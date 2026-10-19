@@ -40,9 +40,46 @@
   const fontSize = typeof style.textFontSize === 'function' ? style.textFontSize : () => 20
   const serialRadius = typeof style.serialRadius === 'function' ? style.serialRadius : () => 12
   const markerWidth = typeof style.highlightWidth === 'function' ? style.highlightWidth : () => 16
+  // Brush plan (§3.1/§3.4): the mosaic brush needs the same source of truth for the
+  // stroke width the renderer uses, and the same switch ("has points") that decides
+  // whether highlight/blur are freehand strokes or the shipped two-endpoint shapes.
+  const brushWidth = typeof style.blurBrushWidth === 'function' ? style.blurBrushWidth : () => 24
   // B2 (D9): a filled rect/ellipse is clickable through its interior, so the hit test
   // needs the same fill resolution the renderer uses.
   const resolveFill = typeof style.resolveFill === 'function' ? style.resolveFill : () => 'none'
+
+  // Brush plan (§3.1): the kinds that became freehand strokes. Only an item that actually
+  // carries points takes the new branches - every legacy object (undo snapshots, a
+  // re-annotated pin from before this build) keeps the shipped behaviour byte for byte.
+  const STROKE_TYPES = Object.freeze(['highlight', 'blur'])
+
+  function isStrokeType(type) {
+    return STROKE_TYPES.includes(type)
+  }
+
+  // Is this the new freehand form? The single switch the whole change hangs on.
+  function hasStrokePoints(item) {
+    return !!item && isStrokeType(item.type) && Array.isArray(item.points) && item.points.length > 0
+  }
+
+  // Stroke width of a freehand highlight/blur, in screen CSS px - the same formula the
+  // renderer applies, so the selection box, the hit tolerance and the ink all agree.
+  function strokeWidth(item) {
+    if (!item || typeof item !== 'object') return 0
+    if (item.type === 'highlight') return markerWidth(item.width)
+    if (item.type === 'blur') return brushWidth(item.width)
+    return Math.max(1, numberOr(item.width, 4))
+  }
+
+  // Brush plan (§3.1): the tight point-set box grown by the brush half-width, so the
+  // selection outline hugs the ink instead of cutting the stroke's edge off. A
+  // pen keeps the tight box (its pre-existing contract).
+  function strokeBox(item) {
+    const box = penBox(item)
+    const half = strokeWidth(item) / 2
+    if (!(half > 0)) return box
+    return { x: box.x - half, y: box.y - half, w: box.w + half * 2, h: box.h + half * 2 }
+  }
 
   function numberOr(value, fallback) {
     const parsed = Number(value)
@@ -109,6 +146,10 @@
   function annotationBounds(item) {
     if (!item || typeof item !== 'object') return null
     if (item.type === 'pen') return penBox(item)
+    // Brush plan (§3.1): a freehand highlight/mosaic is a polyline, so its box is the
+    // point set grown by half the stroke - that is what the outline and the drag/clamp
+    // arithmetic must follow. An item without points falls through to the shipped path.
+    if (hasStrokePoints(item)) return strokeBox(item)
     const x = numberOr(item.x, 0)
     const y = numberOr(item.y, 0)
     // 序号以 2×radius 为方框（drawAnnotation 画的是半径 radius 的实心圆）。
@@ -232,6 +273,9 @@
   function hitTolerance(item) {
     const width = Math.max(1, numberOr(item?.width, 4))
     if (item?.type === 'highlight') return Math.max(DEFAULT_HIT_TOLERANCE, markerWidth(width) / 2)
+    // Brush plan (§3.4): a freehand mosaic is a thick polyline, so its grab band is half
+    // the brush - the same ratio highlight already used.
+    if (item?.type === 'blur' && hasStrokePoints(item)) return Math.max(DEFAULT_HIT_TOLERANCE, brushWidth(width) / 2)
     return Math.max(DEFAULT_HIT_TOLERANCE, width / 2)
   }
 
@@ -257,9 +301,18 @@
     // highlight 也是"粗线段"（markerWidth 决定粗细）：若落进 insideBox，斜向高亮的整个 bbox
     // 都会可点 —— 既吞掉其下元素的选中，又因 pointerdown 的"元素命中 > 拖选区"挡住拖选区，
     // 正是 rect/ellipse 用环带命中刻意规避的失效模式。
+    // Brush plan (§3.4): a freehand highlight/mosaic is hit along its polyline, never
+    // through its bbox - one diagonal mosaic stroke can cover half the stage, and a box
+    // test would swallow every selection underneath it.
     if (item.type === 'line' || item.type === 'arrow' || item.type === 'highlight') {
+      const points = hasStrokePoints(item) ? penPoints(item) : null
+      if (points) return nearPolyline(px, py, points, limit)
       const segment = endpoints(item)
       return pointToSegmentDistance(px, py, segment.x1, segment.y1, segment.x2, segment.y2) <= limit
+    }
+    if (item.type === 'blur') {
+      if (hasStrokePoints(item)) return nearPolyline(px, py, penPoints(item), limit)
+      return insideBox(px, py, box, limit)
     }
     if (item.type === 'pen') {
       const points = penPoints(item)
@@ -389,21 +442,11 @@
       return resized
     }
 
-    if (type === 'line' || type === 'arrow' || type === 'highlight') {
-      const from = mapPointToBox(numberOr(item.x, 0), numberOr(item.y, 0), source, target)
-      const to = mapPointToBox(
-        hasX2(item) ? Number(item.x2) : numberOr(item.x, 0),
-        hasY2(item) ? Number(item.y2) : numberOr(item.y, 0),
-        source,
-        target
-      )
-      const resized = Object.assign({}, item, { x: from.x, y: from.y })
-      if (hasX2(item)) resized.x2 = to.x
-      if (hasY2(item)) resized.y2 = to.y
-      return resized
-    }
-
-    if (type === 'pen') {
+    // Brush plan (§3.5): a freehand highlight/blur scales like a pen - every sample is
+    // mapped proportionally into the new box, so the stroke stretches instead of only
+    // moving its two endpoints. Must run BEFORE the line/arrow/highlight branch, which
+    // would otherwise swallow a point-carrying highlight.
+    if (type === 'pen' || hasStrokePoints(item)) {
       const resized = Object.assign({}, item)
       const from = mapPointToBox(numberOr(item.x, 0), numberOr(item.y, 0), source, target)
       const to = mapPointToBox(
@@ -422,6 +465,20 @@
           return { x: mapped.x, y: mapped.y }
         })
       }
+      return resized
+    }
+
+    if (type === 'line' || type === 'arrow' || type === 'highlight') {
+      const from = mapPointToBox(numberOr(item.x, 0), numberOr(item.y, 0), source, target)
+      const to = mapPointToBox(
+        hasX2(item) ? Number(item.x2) : numberOr(item.x, 0),
+        hasY2(item) ? Number(item.y2) : numberOr(item.y, 0),
+        source,
+        target
+      )
+      const resized = Object.assign({}, item, { x: from.x, y: from.y })
+      if (hasX2(item)) resized.x2 = to.x
+      if (hasY2(item)) resized.y2 = to.y
       return resized
     }
 
@@ -506,6 +563,12 @@
     DEFAULT_HIT_TOLERANCE,
     MIN_RESIZE_SIZE,
     MOVE_THRESHOLD,
+    // Brush plan (§3.1): the freehand-stroke primitives the renderer and its tests share.
+    STROKE_TYPES,
+    isStrokeType,
+    hasStrokePoints,
+    strokeWidth,
+    strokeBox,
     annotationBounds,
     hitTestAnnotation,
     findAnnotationAt,

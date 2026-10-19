@@ -58,7 +58,11 @@ const DEFAULT_SETTINGS = {
       pen: { color: '#ff3b30', width: 4 },
       highlight: { color: '#ffcc00', width: 4, alpha: 'medium' },
       text: { color: '#ff3b30', width: 4, bold: false },
-      serial: { color: '#ff3b30', width: 4 }
+      serial: { color: '#ff3b30', width: 4 },
+      // Brush plan (D2-B'): the mosaic brush remembers its own width, so the wheel's
+      // step survives the gesture. Template membership IS the validation whitelist, so
+      // this block and capture/annotation-style.js's TOOL_STYLE_TOOLS must ship together.
+      blur: { color: '#ff3b30', width: 4 }
     },
     captureCursor: false,
     shutterSound: true,

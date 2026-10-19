@@ -30,7 +30,9 @@ const {
   scaleFactor,
   textFontSize,
   serialRadius,
-  highlightWidth
+  highlightWidth,
+  blurBrushWidth,
+  MOSAIC_CELL
 } = require('../capture/annotation-style')
 
 test('the thickness whitelist is exactly the three shipped levels', () => {
@@ -64,7 +66,6 @@ test('export scaling multiplies the mapped size instead of the whitelist match',
   assert.equal(resolveWidth(6), 4)
   assert.equal(textFontSize(2, 3), 30)
 })
-
 test('a missing or nonsensical scale is ignored', () => {
   assert.equal(scaleFactor(undefined), 1)
   assert.equal(scaleFactor(0), 1)
@@ -216,7 +217,9 @@ test('DEFAULT_TOOL_OPTIONS matches the pre-B2 rendering for every tool', () => {
 // ---------- B4：per-tool 样式归一与整表输出（方案 D7） ----------
 
 test('B4: the remembered style table covers exactly the eight drawing tools', () => {
-  assert.deepEqual(TOOL_STYLE_TOOLS, ['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial'])
+  // Brush plan (D2-B'): blur joined the remembered table so its width step survives the
+  // gesture; the brush is the ninth memory key (the toolbars still show ten tools).
+  assert.deepEqual(TOOL_STYLE_TOOLS, ['rect', 'ellipse', 'arrow', 'line', 'pen', 'highlight', 'text', 'serial', 'blur'])
   // 高亮出厂是黄色（它自己的默认色），其余工具红。
   assert.deepEqual(TOOL_DEFAULT_COLORS, { highlight: '#ffcc00' })
 })
@@ -257,4 +260,55 @@ test('B4: resolveToolStyles always returns the full canonical map for persistenc
   const resolved = resolveToolStyles(source)
   resolved.pen.width = 2
   assert.deepEqual(source.pen, { color: '#111111', width: 8 })
+})
+
+// ---------- Brush plan：马赛克笔刷宽度与像素块口径（方案 §3.6 / D1 / D3） ----------
+
+test('brush plan (D3): MOSAIC_CELL is the 12 CSS px pixel-block edge', () => {
+  assert.equal(MOSAIC_CELL, 12)
+  // 常量而不是"写死在各分支里的字面量"：屏幕与导出两条路径共用同一口径（§3.2.2）。
+  assert.equal(typeof MOSAIC_CELL, 'number')
+  assert.ok(MOSAIC_CELL > 0)
+})
+
+test('brush plan (D1): blurBrushWidth maps the three presets to 18/24/48 with a 18px floor', () => {
+  assert.deepEqual([2, 4, 8].map((width) => blurBrushWidth(width)), [18, 24, 48])
+  // 下限 18 而不是高亮的 14：窄于两个像素块的笔刷看不出"像素化"（§3.6-2）。
+  assert.ok(blurBrushWidth(2) >= MOSAIC_CELL * 1.5, 'the brush must span at least ~2 mosaic cells')
+  // 非法/缺省入参回落到中档，与 resolveWidth 的归一保持一致。
+  assert.equal(blurBrushWidth(undefined), 24)
+  assert.equal(blurBrushWidth(null), 24)
+  assert.equal(blurBrushWidth('abc'), 24)
+  assert.equal(blurBrushWidth(NaN), 24)
+  assert.equal(blurBrushWidth(9), 24)
+  // 字符串数字走白名单匹配（滚轮/设置回读可能是字符串）。
+  assert.equal(blurBrushWidth('8'), 48)
+})
+
+test('brush plan (D1): blurBrushWidth scales for export like every other brush metric', () => {
+  // 导出时宽度与像素块必须同步乘 scale，否则 4K 屏上"笔刷变宽、像素块没变"（§3.2.2 / §7.4）。
+  assert.equal(blurBrushWidth(4, 1.5), 36)
+  assert.equal(blurBrushWidth(4, 2), 48)
+  assert.equal(blurBrushWidth(8, 2), 96)
+  // 下限在地板之上时才乘 scale：2 档的 18 本来就是地板，乘 1 仍是 18，乘 2 变 24。
+  assert.equal(blurBrushWidth(2, 1), 18)
+  assert.equal(blurBrushWidth(2, 2), 24)
+  // 非法 scale 退化为 1（与 scaleFactor 的既有契约一致）。
+  assert.equal(blurBrushWidth(4, 0), 24)
+  assert.equal(blurBrushWidth(4, -2), 24)
+  assert.equal(blurBrushWidth(4, undefined), 24)
+})
+
+test('brush plan (D2-B\'): blur carries a remembered style block so the wheel step survives', () => {
+  // 这是 D2-B' 的核心：只进 WIDTH_TOOLS 而不进 TOOL_STYLE_TOOLS 会造成"松手即丢"的假功能。
+  assert.ok(TOOL_STYLE_TOOLS.includes('blur'), 'blur must own a remembered style')
+  assert.deepEqual(resolveToolStyle('blur', undefined), { color: '#ff3b30', width: 4 })
+  assert.deepEqual(resolveToolStyle('blur', { color: '#1687ff', width: 8 }), { color: '#1687ff', width: 8 })
+  // 脏值逐字段降级，且 blur 不吃任何第二行选项（本期不加选项字段，§6.2-E）。
+  assert.deepEqual(resolveToolStyle('blur', { color: 'red', width: 5 }), { color: '#ff3b30', width: 4 })
+  assert.equal(TOOL_OPTION_FIELDS.blur, undefined, 'blur owns no second-row option field this release')
+  // 整表持久化时 blur 一定在场（漏了就整表写入被主进程拒绝，§3.6-3）。
+  const full = resolveToolStyles(undefined)
+  assert.ok(Object.hasOwn(full, 'blur'))
+  assert.deepEqual(full.blur, { color: '#ff3b30', width: 4 })
 })

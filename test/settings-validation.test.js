@@ -90,8 +90,10 @@ test('accepts the per-tool style block and rejects unlisted tools or fields (B4/
   // 否则 settings:update 会直接拒绝 —— 这是"主进程只校验类型、白名单在渲染端"的例外：
   // 结构（有哪些键）在主进程，取值（2/4/8、预设 id）在 capture/annotation-style.js。
   const defaults = DEFAULT_SETTINGS.screenshot.annotationStyles
-  assert.deepEqual(Object.keys(defaults).sort(), ['arrow', 'ellipse', 'highlight', 'line', 'pen', 'rect', 'serial', 'text'])
+  // Brush plan (D2-B'): blur is now a registered style tool (its width is remembered).
+  assert.deepEqual(Object.keys(defaults).sort(), ['arrow', 'blur', 'ellipse', 'highlight', 'line', 'pen', 'rect', 'serial', 'text'])
   assert.deepEqual(defaults.highlight, { color: '#ffcc00', width: 4, alpha: 'medium' })
+  assert.deepEqual(defaults.blur, { color: '#ff3b30', width: 4 })
   assert.equal(defaults.rect.fill, 'none')
 
   const patch = { screenshot: { annotationStyles: { rect: { fill: 'solid', dash: 'dashed', radius: 8 } } } }
@@ -101,8 +103,9 @@ test('accepts the per-tool style block and rejects unlisted tools or fields (B4/
     assertSettingsPatch({ screenshot: { annotationStyles: { pen: { width: 8 } } } }, DEFAULT_SETTINGS).screenshot.annotationStyles.pen.width,
     8
   )
-  // 未登记的工具 / 字段 / 错误类型一律拒绝。
-  assert.throws(() => assertSettingsPatch({ screenshot: { annotationStyles: { blur: { width: 4 } } } }, DEFAULT_SETTINGS), /不支持的设置项/)
+  // 未登记的工具 / 字段 / 错误类型一律拒绝（select / watermark 仍不在样式白名单里）。
+  assert.equal(assertSettingsPatch({ screenshot: { annotationStyles: { blur: { width: 8 } } } }, DEFAULT_SETTINGS).screenshot.annotationStyles.blur.width, 8)
+  assert.throws(() => assertSettingsPatch({ screenshot: { annotationStyles: { select: { width: 4 } } } }, DEFAULT_SETTINGS), /不支持的设置项/)
   assert.throws(() => assertSettingsPatch({ screenshot: { annotationStyles: { pen: { fill: 'solid' } } } }, DEFAULT_SETTINGS), /不支持的设置项/)
   assert.throws(() => assertSettingsPatch({ screenshot: { annotationStyles: { pen: { width: '8' } } } }, DEFAULT_SETTINGS), /类型无效/)
   assert.throws(() => assertSettingsPatch({ screenshot: { annotationStyles: { rect: { fill: 3 } } } }, DEFAULT_SETTINGS), /类型无效/)

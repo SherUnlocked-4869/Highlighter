@@ -23,9 +23,15 @@ const {
   resizeAnnotationToBox,
   reorderAnnotation,
   clampAnnotationToStage,
-  cloneAnnotations
+  cloneAnnotations,
+  // Brush plan (§3.1/§3.4): the freehand-stroke primitives.
+  STROKE_TYPES,
+  isStrokeType,
+  hasStrokePoints,
+  strokeWidth,
+  strokeBox
 } = require('../capture/annotation-geometry')
-const { textFontSize, serialRadius, highlightWidth } = require('../capture/annotation-style')
+const { textFontSize, serialRadius, highlightWidth, blurBrushWidth } = require('../capture/annotation-style')
 
 const root = path.join(__dirname, '..')
 const script = fs.readFileSync(path.join(root, 'capture', 'capture.js'), 'utf8')
@@ -958,4 +964,230 @@ test('A1: movedBeyondThreshold is strictly greater than the threshold and never 
   assert.equal(movedBeyondThreshold(start, { x: 100, y: 100 }, Number.NaN), false)
   // 入参绝不被修改。
   assert.deepEqual(start, { x: 100, y: 100 })
+})
+
+// ---------- Brush plan：笔迹化高亮 / 马赛克的纯函数层（方案 §3.1 / §3.4 / §3.5 / §6.1） ----------
+//
+// 本节的"零回归红线"（§6.2-B）：所有新行为都挂在"有 points"这个开关后面，所以每个
+// 用例都同时断言**有 points / 无 points 两条分支**——无 points 的那一半就是在钉住旧行为。
+
+test('brush plan: STROKE_TYPES is exactly highlight and blur, and "has points" is the single switch', () => {
+  assert.deepEqual(STROKE_TYPES, ['highlight', 'blur'])
+  assert.equal(isStrokeType('highlight'), true)
+  assert.equal(isStrokeType('blur'), true)
+  // pen 有自己的分支与续画语义，绝不进这支开关（§5.3 说明为什么不是"复用 pen 类型"）。
+  for (const type of ['pen', 'rect', 'ellipse', 'line', 'arrow', 'text', 'serial', 'watermark', 'select']) {
+    assert.equal(isStrokeType(type), false, `${type} is not a brush stroke`)
+  }
+  assert.equal(isStrokeType(undefined), false)
+  // 开关只看"类型对 + 真的有非空点集"：空数组 / 非数组 / 缺字段一律走旧分支。
+  assert.equal(hasStrokePoints({ type: 'highlight', points: [{ x: 1, y: 2 }] }), true)
+  assert.equal(hasStrokePoints({ type: 'blur', points: [{ x: 1, y: 2 }] }), true)
+  assert.equal(hasStrokePoints({ type: 'highlight', points: [] }), false)
+  assert.equal(hasStrokePoints({ type: 'highlight' }), false)
+  assert.equal(hasStrokePoints({ type: 'highlight', points: 'nope' }), false)
+  assert.equal(hasStrokePoints({ type: 'pen', points: [{ x: 1, y: 2 }] }), false)
+  assert.equal(hasStrokePoints({ type: 'rect', points: [{ x: 1, y: 2 }] }), false)
+  assert.equal(hasStrokePoints(null), false)
+  assert.equal(hasStrokePoints(undefined), false)
+})
+
+test('brush plan (§3.1): strokeWidth is the exact formula the renderer inks with', () => {
+  assert.equal(strokeWidth({ type: 'highlight', width: 4 }), highlightWidth(4))
+  assert.equal(strokeWidth({ type: 'blur', width: 4 }), blurBrushWidth(4))
+  // 逐档与绘制同源：改了映射表这里必须一起变（否则选中框和墨迹会错位）。
+  for (const width of [2, 4, 8]) {
+    assert.equal(strokeWidth({ type: 'highlight', width }), highlightWidth(width))
+    assert.equal(strokeWidth({ type: 'blur', width }), blurBrushWidth(width))
+  }
+  // 其它类型退化为自身线宽（>=1），空输入为 0 而不是 NaN。
+  assert.equal(strokeWidth({ type: 'pen', width: 4 }), 4)
+  assert.equal(strokeWidth({ type: 'pen', width: 0 }), 1)
+  assert.equal(strokeWidth(null), 0)
+})
+
+test('brush plan (§3.1): strokeBox grows the point-set box by half the brush, and annotationBounds dispatches on points', () => {
+  const highlight = { type: 'highlight', color: '#ffcc00', width: 4, points: [{ x: 100, y: 100 }, { x: 300, y: 150 }] }
+  // 紧包围盒是 (100,100)-(300,150)；按高亮笔宽 16 的一半（8）四向扩张。
+  assert.deepEqual(strokeBox(highlight), { x: 92, y: 92, w: 216, h: 66 })
+  assert.deepEqual(annotationBounds(highlight), strokeBox(highlight))
+
+  const blur = { type: 'blur', color: '#ff3b30', width: 4, points: [{ x: 100, y: 100 }, { x: 300, y: 150 }] }
+  // 马赛克笔宽 24 的一半（12）——与高亮不同的扩张量，证明走的是 blurBrushWidth。
+  // 点集紧包围盒是 200×50，四向各加 12 → 224×74（高度 50+24，不是笔宽本身）。
+  assert.deepEqual(strokeBox(blur), { x: 88, y: 88, w: 224, h: 74 })
+  assert.deepEqual(annotationBounds(blur), strokeBox(blur))
+
+  // 单点笔迹：penBox 的 w/h 为 0，扩张后是一个以该点为中心的正方形。
+  const dot = { type: 'blur', color: '#f00', width: 4, points: [{ x: 50, y: 50 }] }
+  assert.deepEqual(annotationBounds(dot), { x: 38, y: 38, w: 24, h: 24 })
+
+  // §6.2-B 红线：无 points 的旧对象两个函数都必须给出原来那份 bbox（逐字节不变）。
+  const legacyBlur = { type: 'blur', x: 0, y: 0, x2: 40, y2: 40, color: '#f00', width: 4 }
+  assert.deepEqual(annotationBounds(legacyBlur), { x: 0, y: 0, w: 40, h: 40 })
+  const legacyHighlight = { type: 'highlight', x: 20, y: 50, x2: 100, y2: 50, color: '#f00', width: 8 }
+  assert.deepEqual(annotationBounds(legacyHighlight), { x: 20, y: 50, w: 80, h: 0 })
+  // 单点扩张不会把反向端点（x2<x）的旧对象算错。
+  assert.deepEqual(
+    annotationBounds({ type: 'blur', x: 100, y: 80, x2: 10, y2: 20, color: '#f00', width: 4 }),
+    { x: 10, y: 20, w: 90, h: 60 }
+  )
+})
+
+test('brush plan (§3.4): a freehand stroke is hit along its polyline, while its bbox corners stay dead', () => {
+  // 斜向笔迹：对角线的 bbox 覆盖一大片，但只有轨迹本身可点。
+  const blur = { type: 'blur', color: '#f00', width: 4, points: [{ x: 100, y: 100 }, { x: 200, y: 150 }, { x: 300, y: 200 }] }
+  assert.equal(hitTestAnnotation(blur, { x: 200, y: 150 }), true, 'a sample on the stroke is a hit')
+  assert.equal(hitTestAnnotation(blur, { x: 150, y: 125 }), true, 'a point on the segment between samples is a hit')
+  // bbox 的两个空角（(100,200) 与 (300,100)）必须落空，否则会吞掉其下所有元素的选中。
+  assert.equal(hitTestAnnotation(blur, { x: 100, y: 200 }), false, 'the bbox corner is not part of the stroke')
+  assert.equal(hitTestAnnotation(blur, { x: 300, y: 100 }), false)
+  // 容差 = 笔刷半宽：blurBrushWidth(4)/2 = 12，所以 12px 内可点、13px 外不可点。
+  assert.equal(hitTestAnnotation(blur, { x: 100, y: 100 + 12 }), true, 'half the brush is inside the grab band')
+  assert.equal(hitTestAnnotation(blur, { x: 100, y: 100 + 20 }), false)
+
+  // 高亮同构：容差取 highlightWidth/2 = 8。
+  const highlight = { type: 'highlight', color: '#ffcc00', width: 4, points: [{ x: 0, y: 0 }, { x: 100, y: 100 }] }
+  assert.equal(hitTestAnnotation(highlight, { x: 50, y: 50 }), true)
+  assert.equal(hitTestAnnotation(highlight, { x: 50, y: 50 + 8 }), true)
+  assert.equal(hitTestAnnotation(highlight, { x: 50, y: 50 + 20 }), false)
+
+  // 单点笔迹：只有那个点附近可点。
+  const dot = { type: 'blur', color: '#f00', width: 4, points: [{ x: 500, y: 500 }] }
+  assert.equal(hitTestAnnotation(dot, { x: 505, y: 500 }), true)
+  assert.equal(hitTestAnnotation(dot, { x: 600, y: 500 }), false)
+
+  // §6.2-B 红线：无 points 的旧对象仍然按原来的规则命中（blur 整体可点、highlight 按线段）。
+  const legacyBlur = { type: 'blur', x: 0, y: 0, x2: 40, y2: 40, color: '#f00', width: 4 }
+  assert.equal(hitTestAnnotation(legacyBlur, { x: 20, y: 20 }), true, 'a legacy mosaic block stays fully clickable')
+  assert.equal(hitTestAnnotation(legacyBlur, { x: 400, y: 400 }), false)
+  const legacyMarker = { type: 'highlight', x: 0, y: 50, x2: 100, y2: 50, color: '#f00', width: 8 }
+  assert.equal(hitTestAnnotation(legacyMarker, { x: 50, y: 64 }), true)
+  assert.equal(hitTestAnnotation(legacyMarker, { x: 50, y: 80 }), false)
+
+  // findAnnotationAt 跟同一套判定：斜向笔迹的 bbox 空角不会挡住其下的元素。
+  // rect 是**空心**图形，只有描边环带可点 —— 所以取样点落在 rect 的左边框上（x=90），
+  // 而不是它的内部；否则这条断言会变成"矩形内部不可点"，测的就不是笔迹的失效模式了。
+  const below = { type: 'rect', x: 90, y: 90, x2: 310, y2: 210, color: '#0f0', width: 4 }
+  assert.equal(findAnnotationAt([below, blur], { x: 90, y: 200 }), below, 'the empty bbox corner falls through to the shape below')
+  assert.equal(findAnnotationAt([below, blur], { x: 200, y: 150 }), blur, 'the stroke itself wins on top')
+})
+
+test('brush plan (§3.5): resizing a freehand stroke maps every sample proportionally into the new box', () => {
+  const highlight = {
+    id: 1,
+    type: 'highlight',
+    x: 100,
+    y: 100,
+    x2: 200,
+    y2: 150,
+    color: '#ffcc00',
+    width: 4,
+    points: [{ x: 100, y: 100 }, { x: 150, y: 125 }, { x: 200, y: 150 }]
+  }
+  // source bbox = strokeBox(highlight) = (92,92,216,66)（含笔宽扩张）；目标盒子翻倍。
+  const source = annotationBounds(highlight)
+  const resized = resizeAnnotationToBox(highlight, { x: 0, y: 0, w: source.w * 2, h: source.h * 2 })
+  assert.notEqual(resized, highlight, 'always a fresh object')
+  assert.notEqual(resized.points, highlight.points, 'the point set is a new array')
+  assert.equal(resized.points.length, 3)
+  // 每个点都按"它在旧 bbox 里的相对位置"映射：首点落在扩张后 bbox 的同一相对位置
+  // （不是盒子角——bbbox 本身含了半笔宽，所以首点距边正好是半个笔宽的比例投影）。
+  const expectedFirst = {
+    x: ((100 - source.x) / source.w) * source.w * 2,
+    y: ((100 - source.y) / source.h) * source.h * 2
+  }
+  const expectedLast = {
+    x: ((200 - source.x) / source.w) * source.w * 2,
+    y: ((150 - source.y) / source.h) * source.h * 2
+  }
+  assert.deepEqual(resized.points[0], expectedFirst)
+  assert.deepEqual(resized.points[2], expectedLast)
+  // 中点仍在中间（等比映射，不是只搬两个端点）：三点共线且间隔等比。
+  const midExpected = {
+    x: ((150 - source.x) / source.w) * source.w * 2,
+    y: ((125 - source.y) / source.h) * source.h * 2
+  }
+  assert.deepEqual(resized.points[1], midExpected)
+  // 源对象原地不动（与 translateAnnotation / pen 分支同一契约）。
+  assert.deepEqual(highlight.points, [{ x: 100, y: 100 }, { x: 150, y: 125 }, { x: 200, y: 150 }])
+  assert.equal(highlight.x, 100)
+
+  // blur 走同一分支：点集被重映射，且 x/y 跟着新盒走。
+  const blur = { id: 2, type: 'blur', x: 0, y: 0, x2: 40, y2: 40, color: '#f00', width: 4, points: [{ x: 0, y: 0 }, { x: 40, y: 40 }] }
+  const blurSource = annotationBounds(blur)
+  const scaledBlur = resizeAnnotationToBox(blur, { x: 100, y: 200, w: blurSource.w, h: blurSource.h })
+  assert.equal(scaledBlur.points.length, 2)
+  assert.notEqual(scaledBlur.points, blur.points, 'the point set is always a new array')
+
+  // §6.2-B 红线：无 points 的旧对象继续走各自原有的分支。
+  assert.deepEqual(
+    resizeAnnotationToBox({ type: 'blur', x: 5, y: 5, x2: 15, y2: 25, color: '#f00', width: 4 }, { x: 0, y: 0, w: 30, h: 60 }),
+    { type: 'blur', x: 0, y: 0, x2: 30, y2: 60, color: '#f00', width: 4 },
+    'a legacy mosaic block still adopts the new box'
+  )
+  // 无 points 的高亮仍按端点相对位置映射（保持方向），不产出 points 字段。
+  const legacyScaled = resizeAnnotationToBox(
+    { type: 'highlight', x: 100, y: 100, x2: 0, y2: 0, color: '#f00', width: 4 },
+    { x: 200, y: 200, w: 100, h: 100 }
+  )
+  assert.deepEqual(legacyScaled, { type: 'highlight', x: 300, y: 300, x2: 200, y2: 200, color: '#f00', width: 4 })
+  assert.equal('points' in legacyScaled, false, 'a legacy highlight must not grow a point set')
+})
+
+test('brush plan (§3.1): a freehand stroke translates, clamps and deep-clones as one rigid body', () => {
+  const blur = {
+    id: 7,
+    type: 'blur',
+    x: 100,
+    y: 100,
+    x2: 300,
+    y2: 150,
+    color: '#ff3b30',
+    width: 4,
+    points: [{ x: 100, y: 100 }, { x: 300, y: 150 }]
+  }
+  // 平移：bbox 与点集一起动，源对象不动。
+  const moved = translateAnnotation(blur, 10, -20)
+  assert.deepEqual(moved.points, [{ x: 110, y: 80 }, { x: 310, y: 130 }])
+  assert.equal(moved.x, 110)
+  assert.notEqual(moved.points, blur.points)
+  assert.deepEqual(blur.points, [{ x: 100, y: 100 }, { x: 300, y: 150 }])
+  // bbox 与点集不漂移：平移后重算出来的 bounds 恰好是原 bounds 加同一个位移。
+  const before = annotationBounds(blur)
+  const after = annotationBounds(moved)
+  assert.deepEqual(after, { x: before.x + 10, y: before.y - 20, w: before.w, h: before.h })
+
+  // clamp：贴舞台边时整体回推，点集跟着走；退回后仍完整落在舞台内。
+  // bounds 含笔宽扩张（半笔 12），所以贴右边的点集 x=820 会被回推到 788 才能整体入界。
+  const pushed = clampAnnotationToStage({ ...blur, points: [{ x: 780, y: 10 }, { x: 820, y: 50 }], x: 780, y: 10, x2: 820, y2: 50 }, { w: 800, h: 600 })
+  const pushedBounds = annotationBounds(pushed)
+  assert.ok(pushedBounds.x >= 0 && pushedBounds.x + pushedBounds.w <= 800, 'the whole stroke stays inside the stage')
+  assert.ok(pushedBounds.y >= 0 && pushedBounds.y + pushedBounds.h <= 600)
+  // 回推量 = 800 - (820 + 12) = -32；纵向 (0,0) 已在上界内，只把越界的 10-12=-2 拉回 0。
+  assert.deepEqual(pushed.points, [{ x: 748, y: 12 }, { x: 788, y: 52 }])
+  assert.notEqual(pushed.points, blur.points)
+
+  // 深拷贝：快照之后改原对象，快照原地不动（撤销精确回退的前提）。
+  const snapshot = cloneAnnotations([blur])
+  assert.deepEqual(snapshot, [blur])
+  assert.notEqual(snapshot[0], blur)
+  assert.notEqual(snapshot[0].points, blur.points)
+  blur.points.push({ x: 999, y: 999 })
+  assert.equal(snapshot[0].points.length, 2)
+  // 点集封顶与 pen 同一条不变量（超出后截断，不抛错）。
+  const big = {
+    type: 'blur',
+    x: 0,
+    y: 0,
+    color: '#f00',
+    width: 4,
+    points: Array.from({ length: MAX_PEN_POINTS + 25 }, (_value, index) => ({ x: index, y: index }))
+  }
+  assert.equal(cloneAnnotations([big])[0].points.length, MAX_PEN_POINTS)
+  // highlight 也享受同一套深拷贝（不是只有 blur 特判）。
+  const marker = { type: 'highlight', x: 0, y: 0, color: '#ffcc00', width: 4, points: [{ x: 1, y: 2 }] }
+  const markerCopy = cloneAnnotations([marker])[0]
+  assert.notEqual(markerCopy.points, marker.points)
+  assert.deepEqual(markerCopy.points, [{ x: 1, y: 2 }])
 })
