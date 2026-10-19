@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>截图标注 · 高亮 / 马赛克「笔刷式涂抹」交互原型</title>
+<style>
+  :root {
+    --bg: #16161a;
+    --panel: rgba(28, 28, 33, .96);
+    --line: rgba(255, 255, 255, .12);
+    --text: #e8e8ea;
+    --dim: #9a9aa4;
+    --primary: #e5a44c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.5 -apple-system, "Microsoft YaHei", sans-serif; }
+  body { display: flex; flex-direction: column; }
+
+  header { padding: 14px 20px 10px; }
+  header h1 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  header p { margin: 0; color: var(--dim); font-size: 12px; }
+  header code { color: #d8b06a; }
+
+  .stage-wrap { flex: 1; display: flex; justify-content: center; align-items: center; padding: 10px 20px 20px; min-height: 0; }
+  .stage {
+    position: relative;
+    width: 100%;
+    max-width: 1080px;
+    height: 100%;
+    max-height: 640px;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, .55);
+    background: #fbfaf6;
+  }
+  #bg, #ink { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #ink { cursor: crosshair; touch-action: none; }
+  #ink.select { cursor: default; }
+
+  .hint {
+    position: absolute; left: 14px; bottom: 12px;
+    padding: 5px 10px; border-radius: 6px;
+    color: #cfcfd6; background: rgba(20, 20, 24, .82);
+    font-size: 11px; pointer-events: none;
+  }
+
+  .toolbar {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    bottom: -1px; display: none;
+    align-items: center; gap: 3px;
+    padding: 6px 8px; border-radius: 10px 10px 0 0;
+    background: var(--panel); border: 1px solid var(--line); border-bottom: 0;
+    box-shadow: 0 -8px 30px rgba(0, 0, 0, .45);
+  }
+  .toolbar.show { display: flex; }
+  .toolbar button {
+    height: 30px; min-width: 30px; padding: 0 8px;
+    border: 0; border-radius: 5px; color: #e8e8e8; background: transparent;
+    font: 12px/1 inherit; cursor: pointer;
+  }
+  .toolbar button:hover { background: rgba(255, 255, 255, .13); }
+  .toolbar button.active { color: #fff; background: rgba(255, 255, 255, .2); }
+  .toolbar .sep { width: 1px; height: 20px; margin: 0 4px; background: var(--line); }
+  .toolbar .ghost { color: var(--dim); }
+  .swatch { width: 14px; height: 14px; border-radius: 50%; display: inline-block; vertical-align: middle; box-shadow: 0 0 0 1px rgba(0,0,0,.25) inset; }
+
+  footer { display: flex; gap: 18px; flex-wrap: wrap; padding: 0 20px 16px; color: var(--dim); font-size: 12px; }
+  footer b { color: var(--text); font-weight: 500; }
+  kbd { padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,.1); color: #ddd; font: 11px/1.6 inherit; }
+  .note { color: #d8b06a; }
+</style>
+</head>
+<body>
+<header>
+  <h1>高亮 / 马赛克：笔刷式涂抹 · 交互原型</h1>
+  <p>这是<strong>方案文档 §3</strong> 的可点原型，用来验证手感；不是产品代码。<br>
+     用 <code>pointerdown → move → up</code> 画一笔；<b>单击</b>应落一个圆点；马赛克只改「涂黑的那一笔」，轨迹外像素一点不动。</p>
+</header>
+
+<div class="stage-wrap">
+  <div class="stage" id="stage">
+    <canvas id="bg"></canvas>
+    <canvas id="ink"></canvas>
+    <div class="toolbar" id="toolbar">
+      <button data-tool="select" title="选择（点选已画的标注）">选择</button>
+      <button data-tool="highlight" class="active" title="高亮：半透明马克笔">高亮</button>
+      <button data-tool="blur" title="马赛克：沿轨迹像素化">马赛克</button>
+      <button data-tool="pen" title="画笔（对照组）">画笔</button>
+      <span class="sep"></span>
+      <button data-width="2" title="细">细</button>
+      <button data-width="4" class="active" title="中">中</button>
+      <button data-width="8" title="粗">粗</button>
+      <span class="sep"></span>
+      <button id="undoBtn" title="撤销 Ctrl+Z">撤销</button>
+      <button id="clearBtn" class="ghost" title="清空">清空</button>
+    </div>
+    <div class="hint" id="hint">按住拖动开始涂抹</div>
+  </div>
+</div>
+
+<footer>
+  <span><b>工具：</b><kbd>1</kbd> 选择 <kbd>2</kbd> 高亮 <kbd>3</kbd> 马赛克 <kbd>4</kbd> 画笔</span>
+  <span><b>线宽：</b>滚轮 / 工具栏三档</span>
+  <span><b>撤销：</b><kbd>Ctrl</kbd>+<kbd>Z</kbd></span>
+  <span class="note">①② 是高亮笔迹；③④ 是马赛克笔迹（③ 为斜向涂抹，矩形工具做不到）</span>
+</footer>
+
+<script>
+'use strict'
+
+// ---------------------------------------------------------------------------
+// 舞台与两张画布：bg 是"截图背景"（静态），ink 是标注层（每帧整层重绘）
+// ---------------------------------------------------------------------------
+const stage = document.getElementById('stage')
+const bg = document.getElementById('bg')
+const ink = document.getElementById('ink')
+const bctx = bg.getContext('2d')
+const ictx = ink.getContext('2d')
+const toolbar = document.getElementById('toolbar')
+const hint = document.getElementById('hint')
+
+const MOSAIC_CELL = 12          // 方案 §3.2.2：像素块边长（CSS px）
+const WIDTH_PRESETS = [2, 4, 8]
+const STROKE_TOOLS = new Set(['highlight', 'blur', 'pen'])
+
+let dpr = window.devicePixelRatio || 1
+let tool = 'highlight'
+let width = 4
+let annotations = []            // { type, points, width, color, alpha, id }
+let active = null
+let selected = null
+let seq = 0
+let backgroundImage = null      // 马赛克要从"源图"采样 → 用离屏 canvas 保存原图
+
+// ---------------------------------------------------------------------------
+// 样式映射（与 annotation-style.js 的既有口径一致）
+// ---------------------------------------------------------------------------
+const highlightWidth = (w, scale = 1) => Math.max(14, w * scale * 4)     // 2→14, 4→16, 8→32
+const blurBrushWidth = (w, scale = 1) => Math.max(18, w * scale * 6)      // 2→18, 4→24, 8→48
+const penWidth = (w, scale = 1) => w * scale
+const strokeWidthOf = (item, scale = 1) => {
+  if (item.type === 'highlight') return highlightWidth(item.width, scale)
+  if (item.type === 'blur') return blurBrushWidth(item.width, scale)
+  return penWidth(item.width, scale)
+}
+
+// ---------------------------------------------------------------------------
+// 造一张"截图"：中英混排文档 + 色块，方便看高亮压字、马赛克盖字
+// ---------------------------------------------------------------------------
+function paintScreenshot() {
+  const W = stage.clientWidth, H = stage.clientHeight
+  bg.width = Math.round(W * dpr); bg.height = Math.round(H * dpr)
+  bg.style.width = W + 'px'; bg.style.height = H + 'px'
+  bctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  bctx.clearRect(0, 0, W, H)
+  bctx.fillStyle = '#fbfaf6'; bctx.fillRect(0, 0, W, H)
+
+  const pad = Math.round(W * 0.055)
+  const lines = [
+    '订单号：SN-20261018-0042',
+    '收件人：张伟   手机：138****6621',
+    '地址：浙江省杭州市西湖区文三路 90 号',
+    '商品：机械键盘 × 1   ¥ 699.00',
+    '备注：请在 18:00 前送达，谢谢！',
+    '银行卡号：6222 0202 0011 8834',
+    '有效期：09/28    CVV：771',
+    '签名：____________________'
+  ]
+  const lh = Math.max(26, Math.min(44, H / 13))
+  bctx.fillStyle = '#1f2a44'
+  bctx.font = `bold ${Math.round(lh * 0.44)}px "Microsoft YaHei", sans-serif`
+  lines.forEach((line, i) => bctx.fillText(line, pad, pad + 20 + i * lh))
+
+  // 英文段落（展示"压住半行字"的场景）
+  bctx.fillStyle = '#4a5570'
+  bctx.font = `${Math.round(lh * 0.36)}px "Segoe UI", sans-serif`
+  const en = 'The quick brown fox jumps over the lazy dog — keep this line private.'
+  bctx.fillText(en, pad, pad + 20 + lines.length * lh + lh * 0.4)
+
+  // 色块（看马赛克在小色块边缘的表现）
+  bctx.fillStyle = '#c0392b'
+  bctx.fillRect(W - pad - 120, H - pad - 86, 120, 86)
+  bctx.fillStyle = '#2c7a4b'
+  bctx.fillRect(pad, H - pad - 70, 96, 56)
+
+  // 保存一份原图供马赛克采样
+  backgroundImage = document.createElement('canvas')
+  backgroundImage.width = bg.width; backgroundImage.height = bg.height
+  backgroundImage.getContext('2d').drawImage(bg, 0, 0)
+
+  ink.width = Math.round(W * dpr); ink.height = Math.round(H * dpr)
+  ink.style.width = W + 'px'; ink.style.height = H + 'px'
+  render()
+}
+
+// ---------------------------------------------------------------------------
+// 绘制：一个入口，屏幕与"导出"共用（这里只有屏幕）
+// ---------------------------------------------------------------------------
+function tracePath(g, points, lineWidth) {
+  g.lineCap = 'round'
+  g.lineJoin = 'round'
+  g.lineWidth = lineWidth
+  g.beginPath()
+  if (!points.length) return false
+  if (points.length === 1) {
+    // 方案 §3.2.1/§7.3：零长度子路径不描边 → 补 0.01 才能单击落墨
+    g.moveTo(points[0].x, points[0].y)
+    g.lineTo(points[0].x + 0.01, points[0].y)
+    return true
+  }
+  points.forEach((p, i) => i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y))
+  return true
+}
+
+function drawHighlight(g, item, scale = 1) {
+  g.save()
+  g.globalAlpha = item.alpha ?? 0.28
+  g.strokeStyle = item.color
+  if (tracePath(g, item.points, highlightWidth(item.width, scale))) g.stroke()
+  g.restore()
+}
+
+function drawPen(g, item, scale = 1) {
+  g.save()
+  g.strokeStyle = item.color
+  if (tracePath(g, item.points, penWidth(item.width, scale))) g.stroke()
+  g.restore()
+}
+
+// 马赛克：像素化图层 ∩ 笔迹 alpha mask（方案 §3.2.2）
+//
+// 坐标陷阱（本原型踩过，方案 §5.6 记录）：标注点集是 **CSS px**，而
+// (a) 画布是 device px（`canvas.width = CSS × dpr`），
+// (b) `backgroundImage` 是 device px 快照。
+// 所以补丁内部一律用 device px 运算，最后一步再用 `drawImage(patch, left, top, w, h)`
+// （目标 w/h 是 CSS px，经 ictx 的 dpr 变换后与源 1:1）。用 CSS px 去采样 device px 的
+// 源图会取到偏移 dpr 倍的错误区域 —— 表现是"涂在这儿、像素块来自别处"。
+function drawMosaic(g, item, scale = 1) {
+  const dprScale = (g.canvas.width / Math.max(1, parseFloat(g.canvas.style.width) || g.canvas.width))
+  const pad = blurBrushWidth(item.width, scale) / 2 + 2
+  const cell = MOSAIC_CELL * scale
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of item.points) {
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y)
+  }
+  // 网格相位锚定画布原点（避免相邻笔迹出现"砖缝"）；以下都是 CSS px
+  const cssW = g.canvas.width / dprScale, cssH = g.canvas.height / dprScale
+  const left = Math.max(0, Math.floor((minX - pad) / cell) * cell)
+  const top = Math.max(0, Math.floor((minY - pad) / cell) * cell)
+  const right = Math.min(cssW, Math.ceil((maxX + pad) / cell) * cell)
+  const bottom = Math.min(cssH, Math.ceil((maxY + pad) / cell) * cell)
+  const cssBoxW = Math.round(right - left), cssBoxH = Math.round(bottom - top)
+  if (cssBoxW < 2 || cssBoxH < 2) return
+
+  // 设备像素下的补丁尺寸与块大小
+  const devBoxW = Math.max(1, Math.round(cssBoxW * dprScale))
+  const devBoxH = Math.max(1, Math.round(cssBoxH * dprScale))
+  const devCell = Math.max(1, cell * dprScale)
+
+  const tiny = document.createElement('canvas')
+  tiny.width = Math.max(1, Math.round(devBoxW / devCell))
+  tiny.height = Math.max(1, Math.round(devBoxH / devCell))
+  const t = tiny.getContext('2d')
+  t.imageSmoothingEnabled = true
+  // 从 device px 的源图采样（left/top 是 CSS px → 乘 dprScale）
+  t.drawImage(
+    backgroundImage,
+    Math.round(left * dprScale), Math.round(top * dprScale), devBoxW, devBoxH,
+    0, 0, tiny.width, tiny.height
+  )
+
+  const patch = document.createElement('canvas')
+  patch.width = devBoxW; patch.height = devBoxH
+  const p = patch.getContext('2d')
+  p.imageSmoothingEnabled = false
+  p.drawImage(tiny, 0, 0, tiny.width, tiny.height, 0, 0, devBoxW, devBoxH)
+  p.imageSmoothingEnabled = true
+  // 只保留笔迹覆盖的部分（点集同样换算到设备像素）
+  p.globalCompositeOperation = 'destination-in'
+  p.strokeStyle = '#000'
+  tracePath(
+    p,
+    item.points.map((pt) => ({ x: (pt.x - left) * dprScale, y: (pt.y - top) * dprScale })),
+    blurBrushWidth(item.width, scale) * dprScale
+  )
+  p.stroke()
+  p.globalCompositeOperation = 'source-over'
+
+  // 目标用 CSS px（经 ictx 的 dpr 变换 → 与补丁 1:1）
+  g.drawImage(patch, left, top, cssBoxW, cssBoxH)
+}
+
+function drawAnnotation(g, item, scale = 1) {
+  if (item.type === 'highlight') return drawHighlight(g, item, scale)
+  if (item.type === 'blur') return drawMosaic(g, item, scale)
+  if (item.type === 'pen') return drawPen(g, item, scale)
+}
+
+function render() {
+  const W = stage.clientWidth, H = stage.clientHeight
+  ictx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ictx.clearRect(0, 0, W, H)
+  for (const item of annotations) drawAnnotation(ictx, item)
+  if (active) drawAnnotation(ictx, active)
+  if (selected) drawSelection(ictx, selected)
+}
+
+// 选中虚线框 + 4 个角点：证明笔迹化之后仍可点选 / 拖动 / 缩放
+function strokeBounds(item) {
+  const pts = item.points
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of pts) {
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y)
+  }
+  const half = strokeWidthOf(item) / 2
+  return { x: minX - half, y: minY - half, w: maxX - minX + half * 2, h: maxY - minY + half * 2 }
+}
+
+function drawSelection(g, item) {
+  const b = strokeBounds(item)
+  g.save()
+  g.strokeStyle = '#36a3ff'; g.lineWidth = 1; g.setLineDash([5, 4])
+  g.strokeRect(Math.round(b.x) + .5, Math.round(b.y) + .5, Math.round(b.w), Math.round(b.h))
+  g.setLineDash([])
+  g.fillStyle = '#fff'; g.strokeStyle = '#36a3ff'
+  for (const [x, y] of [[b.x, b.y], [b.x + b.w, b.y], [b.x, b.y + b.h], [b.x + b.w, b.y + b.h]]) {
+    g.beginPath(); g.arc(x, y, 3.5, 0, Math.PI * 2); g.fill(); g.stroke()
+  }
+  g.restore()
+}
+
+// ---------------------------------------------------------------------------
+// 交互：pointerdown → move（含 coalesced）→ up，一次手势 = 一个标注
+// ---------------------------------------------------------------------------
+function pointOf(event) {
+  const rect = ink.getBoundingClientRect()
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top }
+}
+
+function distance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y) }
+
+function pushPoint(item, point) {
+  const last = item.points[item.points.length - 1]
+  if (last && distance(last, point) < 1.5) return false   // 最小点距过滤
+  item.points.push(point)
+  return true
+}
+
+ink.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return
+  const point = pointOf(event)
+  if (tool === 'select') {
+    selected = hitTest(point)
+    render()
+    return
+  }
+  selected = null
+  active = {
+    id: ++seq,
+    type: tool,
+    points: [point],
+    width,
+    color: tool === 'highlight' ? '#ffcc00' : '#ff3b30',
+    alpha: tool === 'highlight' ? 0.28 : 1
+  }
+  ink.setPointerCapture(event.pointerId)
+  render()
+})
+
+ink.addEventListener('pointermove', (event) => {
+  if (!active) return
+  const rect = ink.getBoundingClientRect()
+  // 方案 §3.3：优先 coalesced（两次事件之间的真实采样），退化到单点
+  const samples = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : []
+  const events = samples.length ? samples : [event]
+  let changed = false
+  for (const sample of events) {
+    changed = pushPoint(active, { x: sample.clientX - rect.left, y: sample.clientY - rect.top }) || changed
+  }
+  if (changed) render()
+})
+
+function finishStroke(event) {
+  if (!active) return
+  if (event && event.pointerId !== undefined) {
+    try { ink.releasePointerCapture(event.pointerId) } catch {}
+  }
+  annotations.push(active)
+  active = null
+  render()
+}
+
+ink.addEventListener('pointerup', finishStroke)
+ink.addEventListener('pointercancel', () => { active = null; render() })
+
+// 命中：折线逐段最短距离（与 annotation-geometry.js 的 nearPolyline 同构）
+function distanceToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1
+  const len2 = dx * dx + dy * dy
+  if (!len2) return Math.hypot(px - x1, py - y1)
+  let t = ((px - x1) * dx + (py - y1) * dy) / len2
+  t = Math.max(0, Math.min(1, t))
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+}
+
+function hitTest(point) {
+  for (let i = annotations.length - 1; i >= 0; i -= 1) {
+    const item = annotations[i]
+    const tol = Math.max(6, strokeWidthOf(item) / 2)
+    const pts = item.points
+    if (pts.length === 1) {
+      if (distance(pts[0], point) <= tol) return item
+      continue
+    }
+    for (let k = 1; k < pts.length; k += 1) {
+      if (distanceToSegment(point.x, point.y, pts[k - 1].x, pts[k - 1].y, pts[k].x, pts[k].y) <= tol) return item
+    }
+  }
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// 工具栏 / 快捷键
+// ---------------------------------------------------------------------------
+function setTool(next) {
+  tool = next
+  selected = null
+  toolbar.querySelectorAll('[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === next))
+  ink.classList.toggle('select', next === 'select')
+  hint.textContent = next === 'select'
+    ? '点击一条笔迹看它的包围盒与角点（验证可选中/可缩放）'
+    : next === 'blur' ? '按住拖动：只像素化"涂过的那一笔"，轨迹外不动'
+    : next === 'highlight' ? '按住拖动：跟着手走的一笔半透明马克笔' : '画笔（对照组）'
+  render()
+}
+
+function setWidth(next) {
+  width = Number(next)
+  toolbar.querySelectorAll('[data-width]').forEach((b) => b.classList.toggle('active', Number(b.dataset.width) === width))
+}
+
+toolbar.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)))
+toolbar.querySelectorAll('[data-width]').forEach((b) => b.addEventListener('click', () => setWidth(b.dataset.width)))
+document.getElementById('undoBtn').addEventListener('click', () => {
+  if (active) { active = null; render(); return }
+  annotations.pop()
+  selected = null
+  render()
+})
+document.getElementById('clearBtn').addEventListener('click', () => {
+  annotations = []; active = null; selected = null; seq = 0; render()
+})
+
+ink.addEventListener('wheel', (event) => {
+  if (tool === 'select') return
+  event.preventDefault()
+  const index = WIDTH_PRESETS.indexOf(width)
+  const next = Math.max(0, Math.min(WIDTH_PRESETS.length - 1, index + (event.deltaY < 0 ? 1 : -1)))
+  setWidth(WIDTH_PRESETS[next])
+}, { passive: false })
+
+addEventListener('keydown', (event) => {
+  if (event.ctrlKey && event.key.toLowerCase() === 'z') {
+    event.preventDefault()
+    document.getElementById('undoBtn').click()
+    return
+  }
+  const map = { '1': 'select', '2': 'highlight', '3': 'blur', '4': 'pen' }
+  if (map[event.key]) setTool(map[event.key])
+})
+
+// 响应式：窗口尺寸变化时重画背景（标注保留，坐标是 CSS px）
+let resizeTimer = 0
+addEventListener('resize', () => {
+  clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(() => {
+    const kept = annotations
+    paintScreenshot()
+    annotations = kept
+    render()
+  }, 120)
+})
+
+// ---------------------------------------------------------------------------
+// 首屏：画一张示例（一眼看出"改造前 vs 改造后"的区别）
+// ---------------------------------------------------------------------------
+function seed() {
+  const W = stage.clientWidth, H = stage.clientHeight
+  const pad = Math.round(W * 0.055)
+  const lh = Math.max(26, Math.min(44, H / 13))
+  const wave = (y0, amp, phase, x0, x1) => {
+    const pts = []
+    const n = 70
+    for (let i = 0; i <= n; i += 1) {
+      const t = i / n
+      pts.push({ x: x0 + t * (x1 - x0), y: y0 + Math.sin(t * Math.PI * 3 + phase) * amp })
+    }
+    return pts
+  }
+  // ① 高亮：跟着第 4 行字
+  annotations.push({
+    id: ++seq, type: 'highlight', width: 4, color: '#ffcc00', alpha: 0.28,
+    points: wave(pad + 20 + lh * 3 - lh * 0.14, lh * 0.06, 0.4, pad - 6, W - pad - 40)
+  })
+  // ② 高亮：第二笔，证明"多笔可叠加"
+  annotations.push({
+    id: ++seq, type: 'highlight', width: 4, color: '#ffcc00', alpha: 0.28,
+    points: wave(pad + 20 + lh * 4 - lh * 0.14, lh * 0.05, 1.7, pad - 6, W * 0.62)
+  })
+  // ③ 马赛克：斜向涂抹银行卡号（矩形工具做不到）
+  const cardY = pad + 20 + lh * 5 - lh * 0.26
+  const diagonal = []
+  for (let i = 0; i <= 60; i += 1) {
+    const t = i / 60
+    diagonal.push({ x: pad - 4 + t * (W * 0.52), y: cardY + t * lh * 0.92 + Math.sin(t * Math.PI * 3) * 5 })
+  }
+  annotations.push({ id: ++seq, type: 'blur', width: 4, color: '#ff3b30', points: diagonal })
+  // ④ 马赛克：横涂 CVV 行
+  annotations.push({
+    id: ++seq, type: 'blur', width: 2, color: '#ff3b30',
+    points: wave(pad + 20 + lh * 6 - lh * 0.24, 2, 2.4, pad - 4, W * 0.42)
+  })
+  // ⑤ 单击圆点（证明"点一下就落一个点"）
+  annotations.push({ id: ++seq, type: 'blur', width: 2, color: '#ff3b30', points: [{ x: W - pad - 180, y: H - pad - 150 }] })
+  annotations.push({ id: ++seq, type: 'highlight', width: 2, color: '#ffcc00', alpha: 0.28, points: [{ x: W - pad - 236, y: H - pad - 150 }] })
+  render()
+}
+
+function boot() {
+  dpr = window.devicePixelRatio || 1
+  paintScreenshot()
+  seed()
+  toolbar.classList.add('show')
+  setTool('highlight')
+}
+
+// 等布局稳定（stage 高度由 flex 决定）
+requestAnimationFrame(() => requestAnimationFrame(boot))
+</script>
+</body>
+</html>
