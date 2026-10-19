@@ -12,6 +12,8 @@ const qrText = document.getElementById('qrText')
 const actions = document.getElementById('actions')
 const format = document.getElementById('format')
 const openLink = document.getElementById('openLink')
+const exportExcel = document.getElementById('exportExcel')
+const exportPdf = document.getElementById('exportPdf')
 const copyButton = document.getElementById('copy')
 
 // P0-1-T5 (S12): `shared/i18n.js` is a classic script, so its `t`, `setLanguage`
@@ -23,6 +25,24 @@ let tableResult = null
 let qrResult = ''
 let activeUrl = ''
 let loadingKey = 'recognition.status.loading'
+// The summary line doubles as the status line for an export error, so the keys
+// that produced the current view are kept to restore it after the message.
+let summarySpec = { key: '', params: null }
+
+function setSummary(key, params) {
+  summarySpec = { key, params }
+  summary.textContent = t(key, params)
+}
+
+// A failed export reports on the summary line (same surface the open-link error
+// uses); the view's own copy returns after a few seconds instead of staying
+// replaced until the next render.
+function showTransientError(error) {
+  summary.textContent = t('recognition.error.export-failed', { detail: error?.message || String(error) })
+  setTimeout(() => {
+    if (summarySpec.key) setSummary(summarySpec.key, summarySpec.params)
+  }, 4000)
+}
 
 function setBadge(text, failed = false) {
   badge.textContent = text
@@ -59,15 +79,27 @@ function showError(error) {
   tableView.classList.add('hidden')
   qrView.classList.add('hidden')
   actions.classList.add('hidden')
+  exportExcel.classList.add('hidden')
+  exportPdf.classList.add('hidden')
+  // The error view owns the copy now; a pending export-error timer must not
+  // resurrect a summary from the previous result.
+  summarySpec = { key: '', params: null }
   setBadge(t('recognition.error.title'), true)
   errorText.textContent = error?.message || String(error)
   errorView.classList.remove('hidden')
 }
 
+// Export buttons live in the shared footer, so each renderer decides which of
+// them apply: Excel only exists for a recovered table, PDF exists for both.
+function setExportVisibility({ excel }) {
+  exportExcel.classList.toggle('hidden', !excel)
+  exportPdf.classList.remove('hidden')
+}
+
 function renderTable(result) {
   tableResult = result
   title.textContent = t('recognition.table.title')
-  summary.textContent = t('recognition.table.summary', { rows: result.rowCount, columns: result.columnCount })
+  setSummary('recognition.table.summary', { rows: result.rowCount, columns: result.columnCount })
   setBadge(t('recognition.badge.local-ocr'))
   const head = document.createElement('thead')
   const headRow = document.createElement('tr')
@@ -93,6 +125,7 @@ function renderTable(result) {
   errorView.classList.add('hidden')
   tableView.classList.remove('hidden')
   format.classList.remove('hidden')
+  setExportVisibility({ excel: true })
   actions.classList.remove('hidden')
 }
 
@@ -110,7 +143,7 @@ function renderQr(value) {
   tableResult = null
   activeUrl = parseHttpUrl(qrResult)
   title.textContent = t('recognition.qr.title')
-  summary.textContent = t(activeUrl ? 'recognition.qr.summary-link' : 'recognition.qr.summary-text')
+  setSummary(activeUrl ? 'recognition.qr.summary-link' : 'recognition.qr.summary-text')
   setBadge(t('recognition.badge.local-ocr'))
   qrText.value = qrResult
   copyButton.textContent = t('recognition.action.copy-content')
@@ -119,6 +152,7 @@ function renderQr(value) {
   tableView.classList.add('hidden')
   qrView.classList.remove('hidden')
   openLink.classList.toggle('hidden', !activeUrl)
+  setExportVisibility({ excel: false })
   actions.classList.remove('hidden')
   format.classList.add('hidden')
 }
@@ -241,6 +275,37 @@ openLink.onclick = async () => {
   } catch (error) {
     openLink.disabled = false
     summary.textContent = t('recognition.error.open-link', { detail: error?.message || String(error) })
+  }
+}
+
+// The handlers disable their own button while the save dialog is open: two
+// invocations would race two dialogs for the same file, and the main process has
+// no reason to de-duplicate them.
+exportExcel.onclick = async () => {
+  if (!tableResult || exportExcel.disabled) return
+  exportExcel.disabled = true
+  try {
+    await window.recognitionAPI.exportExcel(tableResult.rows, tableResult.merges)
+  } catch (error) {
+    showTransientError(error)
+  } finally {
+    exportExcel.disabled = false
+  }
+}
+exportPdf.onclick = async () => {
+  if (exportPdf.disabled) return
+  exportPdf.disabled = true
+  try {
+    // The window's content size is the print area: printToPDF has no access to
+    // anything the user cannot see, and the print stylesheet removes the chrome.
+    await window.recognitionAPI.exportPdf({
+      pxW: window.innerWidth || document.documentElement.clientWidth,
+      pxH: window.innerHeight || document.documentElement.clientHeight
+    })
+  } catch (error) {
+    showTransientError(error)
+  } finally {
+    exportPdf.disabled = false
   }
 }
 addEventListener('keydown', (event) => { if (event.key === 'Escape') window.recognitionAPI.close() })

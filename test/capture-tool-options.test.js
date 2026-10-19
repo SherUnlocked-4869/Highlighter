@@ -144,11 +144,18 @@ test('B2/B3/B5 (D9): every option group declares its owner tools and its preset 
 })
 
 test('B2/B3/B5: clicking an option writes the row tool memory and, when it matches, the selected item', () => {
-  assert.match(script, /toolOptions\.addEventListener\('click',\(event\)=>\{const button=event\.target\.closest\('\[data-annotation-option\]'\);if\(button\)setAnnotationOption\(button\.dataset\.annotationOption,button\.dataset\.annotationOptionValue\)\}\)/)
+  // 2026-10-19: the click hands the button itself over, because the boolean groups are
+  // toggles that must invert what they currently display (see TOGGLE_OPTION_KEYS).
+  assert.match(script, /toolOptions\.addEventListener\('click',\(event\)=>\{const button=event\.target\.closest\('\[data-annotation-option\]'\);if\(button\)setAnnotationOption\(button\.dataset\.annotationOption,button\.dataset\.annotationOptionValue,button\)\}\)/)
   assert.match(script, /const OPTION_VALUE_PARSERS = \{ radius: Number, startHead: \(value\) => value === 'true', endHead: \(value\) => value === 'true', bold: \(value\) => value === 'true' \}/)
+  // A toggle group inverts the state it DISPLAYS (aria-pressed is written from the same
+  // resolved options the next annotation uses), which is what makes "select, then
+  // unselect" reachable at all; a radio group keeps its declarative value.
+  assert.match(script, /const TOGGLE_OPTION_KEYS = new Set\(\['startHead', 'endHead', 'bold'\]\)/)
+  assert.match(script, /function resolveOptionClickValue\(key, rawValue, button\) \{[\s\S]{0,420}?const displayed = button\?\.getAttribute\?\.\('aria-pressed'\) === 'true'[\s\S]{0,120}?return !displayed/)
   assert.match(
     script,
-    /function setAnnotationOption\(key, rawValue\) \{[\s\S]{0,420}?const fields = TOOL_OPTION_FIELDS\[tool\]\s*if \(!fields \|\| !fields\.includes\(key\)\) return[\s\S]{0,420}?writeToolStyle\(tool, \{ \[key\]: value \}, true\)[\s\S]{0,260}?if \(item && item\.type === tool\) commitSelectedStyle\(\{ \[key\]: value \}\)/
+    /function setAnnotationOption\(key, rawValue, button\) \{[\s\S]{0,420}?const fields = TOOL_OPTION_FIELDS\[tool\]\s*if \(!fields \|\| !fields\.includes\(key\)\) return[\s\S]{0,420}?writeToolStyle\(tool, \{ \[key\]: value \}, true\)[\s\S]{0,260}?if \(item && item\.type === tool\) commitSelectedStyle\(\{ \[key\]: value \}\)/
   )
   assert.match(script, /function syncToolOptionControls\(\) \{[\s\S]{0,520}?String\(options\[key\]\) === button\.dataset\.annotationOptionValue[\s\S]{0,200}?button\.setAttribute\('aria-pressed', String\(active\)\)/)
   // 回显优先读选中项自己的选项（与 A4 同源：只改 UI，不压帧）。

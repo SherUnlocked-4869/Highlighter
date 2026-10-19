@@ -5,8 +5,16 @@ const {
   clampPinOpacity,
   computePinDisplaySize,
   getPixelAlignedPinSize,
-  normalizeSelectionBounds
+  getRotatedPinSize,
+  normalizePinRotation,
+  normalizePinZoomStep,
+  nextPinOpacity,
+  normalizeSelectionBounds,
+  clampPinBoundsToWorkArea,
+  boundsIntersectWorkArea
 } = require('./geometry')
+const { makeCaptureName } = require('../../services/capture-naming')
+const { exportWindowToPdf, savePdfBuffer } = require('../../services/pdf-export')
 
 function createPinDomain(deps) {
   const {
@@ -34,6 +42,25 @@ function createPinDomain(deps) {
   const MAX_PINNED = 20
   const pinWindows = new Set()
   let pinnedCount = 0
+
+  // pdf-export.js owns paper math, print options and the save dialog/file write;
+  // its Electron touch points are lazy (electron.dialog inside defaultShowSaveDialog,
+  // webContents.printToPDF inside defaultPrintToPdf) and injectable, so importing
+  // it here keeps the domain loadable in plain node. `deps.pdfExport` / `deps.printToPdf`
+  // / `deps.showSaveDialog` / `deps.writeFile` are the oracle for a test that wants
+  // to observe the export without Electron.
+  const pdfExport = deps.pdfExport || { exportWindowToPdf, savePdfBuffer }
+  const injectedPrintToPdf = typeof deps.printToPdf === 'function' ? deps.printToPdf : null
+  const injectedShowSaveDialog = typeof deps.showSaveDialog === 'function' ? deps.showSaveDialog : null
+  const injectedWriteFile = typeof deps.writeFile === 'function' ? deps.writeFile : null
+
+  // Display geometry reflow (P0, plan §9.2): the pin domain used to query screens
+  // only at creation/move time, so unplugging a monitor or changing the resolution
+  // left pins on dead coordinates. The listeners are attached lazily with the first
+  // pin window and removed when the last one closes; they are main-process globals
+  // either way, so no main.js dispose call is required.
+  const displayWatchers = []
+  let displayWatchersAttached = false
 
   function ownsWindow(win) {
     return pinWindows.has(win)
@@ -63,6 +90,129 @@ function createPinDomain(deps) {
     }
   }
 
+  function sendToRenderer(win, channel, payload) {
+    const contents = win?.webContents
+    if (!contents || (typeof contents.isDestroyed === 'function' && contents.isDestroyed())) return false
+    contents.send(channel, payload)
+    return true
+  }
+
+  // The window box is derived, never stored: the unrotated display size comes from
+  // the pinned pixels + zoom (long captures are additionally capped by the work
+  // area), and a quarter turn swaps the axes. Keeping one derivation means
+  // move/resize/rotate/display-reflow cannot drift apart.
+  function getPinWindowSize(data, { longCapture = data.longCapture, workAreaHeight } = {}) {
+    const sized = computePinDisplaySize({
+      baseWidth: data.baseWidth,
+      baseHeight: data.baseHeight,
+      zoom: data.zoom,
+      longCapture,
+      workAreaHeight
+    })
+    const rotated = getRotatedPinSize(sized.width, sized.height, data.rotation)
+    return { width: rotated.width, height: rotated.height, zoom: sized.zoom, rotation: rotated.rotation }
+  }
+
+  function getDisplays(matched) {
+    if (typeof screen?.getAllDisplays === 'function') {
+      try {
+        const displays = screen.getAllDisplays()
+        if (Array.isArray(displays) && displays.length) return displays
+      } catch {}
+    }
+    // A minimal screen fake (unit tests, a platform without display enumeration)
+    // still answers getDisplayMatching; treat that one display as the whole world
+    // so the reflow degrades to the clamping branch instead of doing nothing.
+    return matched ? [matched] : []
+  }
+
+  function getPrimaryDisplay() {
+    if (typeof screen?.getPrimaryDisplay === 'function') {
+      try {
+        const primary = screen.getPrimaryDisplay()
+        if (primary?.workArea) return primary
+      } catch {}
+    }
+    return getDisplays().find((display) => display?.workArea) || null
+  }
+
+  function centerOnWorkArea(size, workArea) {
+    return {
+      x: Math.round(workArea.x + (workArea.width - size.width) / 2),
+      y: Math.round(workArea.y + (workArea.height - size.height) / 2),
+      width: size.width,
+      height: size.height
+    }
+  }
+
+  // Display geometry reflow (P0, plan §9.2-①): re-places one pin after a display
+  // was added, removed, or had its resolution/scale changed. A pin whose box no
+  // longer intersects any display is treated as "its display vanished" and moves
+  // to the centre of the primary display; everything else is clamped into the
+  // matched work area so it cannot end up off-screen. `syncPinDisplayScale` runs
+  // afterwards for the DPI part (it is a no-op when the scale factor is unchanged).
+  function reflowPinWindow(win) {
+    if (!win || win.isDestroyed() || !win._pinData) return false
+    const data = win._pinData
+    const bounds = win.getBounds()
+    let matched = null
+    try {
+      matched = typeof screen?.getDisplayMatching === 'function' ? screen.getDisplayMatching(bounds) : null
+    } catch {
+      matched = null
+    }
+    const displays = getDisplays(matched)
+    const matching = displays.filter((display) => boundsIntersectWorkArea(bounds, display.workArea))
+    // A box that intersects no display no longer has a home: the display it lived
+    // on was unplugged or its work area shrank away. Move it to the primary centre.
+    const display = (matching.length && matched?.workArea) ? matched : (getPrimaryDisplay() || matched)
+    if (!display?.workArea) return false
+    const sized = getPinWindowSize(data, { workAreaHeight: display.workArea.height })
+    const target = matching.length
+      ? { x: bounds.x, y: bounds.y, width: sized.width, height: sized.height }
+      : centerOnWorkArea(sized, display.workArea)
+    data.zoom = sized.zoom
+    data.rotation = sized.rotation
+    // A drag in flight captured the old geometry: drop it instead of letting the
+    // next pointer move fight the reflow.
+    win._pinMove = null
+    win.setBounds(clampPinBoundsToWorkArea(target, display.workArea), false)
+    syncPinDisplayScale(win)
+    return true
+  }
+
+  function reflowPinWindows() {
+    let reflowed = 0
+    for (const win of [...pinWindows]) {
+      if (reflowPinWindow(win)) reflowed += 1
+    }
+    return reflowed
+  }
+
+  // The listeners are main-process globals: they die with the process, so main.js
+  // needs no dispose call. They are still attached lazily (first pin) and detached
+  // with the last pin, so an app that never pins anything installs nothing.
+  function attachPinDisplayWatchers() {
+    if (displayWatchersAttached || typeof screen?.on !== 'function') return false
+    const listener = () => reflowPinWindows()
+    for (const eventName of ['display-added', 'display-removed', 'display-metrics-changed']) {
+      screen.on(eventName, listener)
+      displayWatchers.push([eventName, listener])
+    }
+    displayWatchersAttached = true
+    return true
+  }
+
+  function detachPinDisplayWatchers() {
+    if (!displayWatchersAttached) return false
+    const listeners = displayWatchers.splice(0)
+    if (typeof screen?.removeListener === 'function') {
+      for (const [eventName, listener] of listeners) screen.removeListener(eventName, listener)
+    }
+    displayWatchersAttached = false
+    return true
+  }
+
   function syncPinDisplayScale(win) {
     if (!win || win.isDestroyed() || !win._pinData) return false
     const data = win._pinData
@@ -73,16 +223,16 @@ function createPinDomain(deps) {
     data.displayScaleFactor = aligned.scaleFactor
     data.baseWidth = aligned.width
     data.baseHeight = aligned.height
-    const sized = computePinDisplaySize({
-      baseWidth: data.baseWidth,
-      baseHeight: data.baseHeight,
-      zoom: data.zoom,
-      longCapture: data.longCapture,
-      workAreaHeight: display.workArea.height
-    })
+    const sized = getPinWindowSize(data, { workAreaHeight: display.workArea.height })
     data.zoom = sized.zoom
-    win.setBounds({ x: bounds.x, y: bounds.y, width: sized.width, height: sized.height }, false)
-    win.webContents.send('pin:zoom-changed', Math.round(data.zoom * 100))
+    data.rotation = sized.rotation
+    win.setBounds(clampPinBoundsToWorkArea({
+      x: bounds.x,
+      y: bounds.y,
+      width: sized.width,
+      height: sized.height
+    }, display.workArea), false)
+    sendToRenderer(win, 'pin:zoom-changed', Math.round(data.zoom * 100))
     return true
   }
 
@@ -139,6 +289,15 @@ function createPinDomain(deps) {
       // default state of a new pin; it is applied below, before the window is
       // ever shown, so a click-through pin does not swallow its first click.
       clickThrough: getSettings().pinned?.clickThrough === true,
+      // P1 (plan §9.1): one wheel notch scales by 1 + zoomStep (0.1 = the old
+      // hardcoded 1.1). Read once at creation: a live change would make an
+      // already-open pin jump. normalizePinZoomStep also covers a store written
+      // before the key existed (or a test fake that omits it).
+      zoomStep: normalizePinZoomStep(getSettings().pinned?.zoomStep),
+      // P1 (plan §9.3): quarter-turn rotation, rendered as a CSS transform and
+      // reflected in the window box by getRotatedPinSize. dataUrl is never
+      // re-encoded; the renderer rotates the same pixels.
+      rotation: 0,
       longCapture,
       pixelWidth: size.width,
       pixelHeight: size.height,
@@ -155,10 +314,12 @@ function createPinDomain(deps) {
     win.setBounds({ x, y, width, height }, false)
     pinWindows.add(win)
     pinnedCount++
+    attachPinDisplayWatchers()
     win.loadFile(pagePath)
     win.on('closed', () => {
       pinWindows.delete(win)
       pinnedCount = Math.max(0, pinnedCount - 1)
+      if (pinWindows.size === 0) detachPinDisplayWatchers()
     })
     return win
   }
@@ -171,11 +332,6 @@ function createPinDomain(deps) {
     const targetBounds = normalizeSelectionBounds(meta.selectionBounds) || currentBounds
     const display = screen.getDisplayMatching(targetBounds)
     const aligned = getPixelAlignedPinSize(size.width, size.height, display, meta.selectionBounds)
-    const nextBounds = {
-      ...targetBounds,
-      width: Math.max(1, Math.round(aligned.width)),
-      height: Math.max(1, Math.round(aligned.height))
-    }
     win._pinData = {
       ...win._pinData,
       dataUrl,
@@ -187,6 +343,15 @@ function createPinDomain(deps) {
       baseHeight: aligned.height,
       zoom: 1
     }
+    // Re-annotating replaces the pixels but keeps the pin's rotation (a rotated
+    // pin stays rotated); the window box then has to match the rotated box.
+    const sized = getPinWindowSize(win._pinData)
+    const nextBounds = clampPinBoundsToWorkArea({
+      x: targetBounds.x,
+      y: targetBounds.y,
+      width: sized.width,
+      height: sized.height
+    }, display.workArea)
     win.setBounds(nextBounds, false)
     win.setBounds(nextBounds, false)
     win.webContents.send('pin:update', win._pinData)
@@ -216,10 +381,46 @@ function createPinDomain(deps) {
   }
 
   function setPinOpacity(win, opacity) {
-    if (!win || win.isDestroyed()) return
+    if (!win || win.isDestroyed()) return false
     const nextOpacity = clampPinOpacity(opacity)
     if (win._pinData) win._pinData.opacity = nextOpacity
     win.setOpacity(nextOpacity)
+    // Main -> renderer receipt (like pin:click-through-changed, deliberately NOT
+    // in IPC_SURFACES): the wheel path and the context-menu radio items both land
+    // here, so the renderer's transient badge mirrors one authoritative value.
+    sendToRenderer(win, 'pin:opacity-changed', Math.round(nextOpacity * 100))
+    return nextOpacity
+  }
+
+  // Quarter-turn rotation: stores the normalised angle on _pinData, resizes the
+  // window to the rotated bounding box around its centre and tells the renderer
+  // to apply the CSS transform. The pixels (dataUrl) are never touched, so a
+  // rotated pin still copies/saves/recognises the original image.
+  // Long captures are excluded on purpose: they scroll (body.long-capture) and the
+  // 90°/270° frame in pin.css is a fixed-size absolutely-positioned overlay, so the
+  // combination would clip the strip. The context menu item is disabled for them.
+  function rotatePin(win, delta = 90) {
+    if (!win || win.isDestroyed() || !win._pinData) return 0
+    const data = win._pinData
+    if (data.longCapture) return Number(data.rotation) || 0
+    const bounds = win.getBounds()
+    const display = screen.getDisplayMatching(bounds)
+    const step = Number.isFinite(Number(delta)) && Number(delta) !== 0 ? Number(delta) : 90
+    const rotation = normalizePinRotation((Number(data.rotation) || 0) + step)
+    const sized = getPinWindowSize({ ...data, rotation }, { workAreaHeight: display.workArea.height })
+    // Rotate around the window centre: without this the box would grow to the
+    // right/down and visibly jump after the 90° turn.
+    const centerX = bounds.x + bounds.width / 2
+    const centerY = bounds.y + bounds.height / 2
+    data.rotation = sized.rotation
+    win.setBounds(clampPinBoundsToWorkArea({
+      x: Math.round(centerX - sized.width / 2),
+      y: Math.round(centerY - sized.height / 2),
+      width: sized.width,
+      height: sized.height
+    }, display.workArea), false)
+    sendToRenderer(win, 'pin:rotation-changed', sized.rotation)
+    return sized.rotation
   }
 
   // Click-through is an explicit boolean, never a flip: the renderer's radio
@@ -263,6 +464,44 @@ function createPinDomain(deps) {
       if (clearPinClickThrough(win)) exited += 1
     }
     return exited
+  }
+
+  // P0 (plan §0.3 #4 / §11.4): export the already-rendered pin window as a PDF.
+  // pdf-export.js is the single owner of paper math / print options / saving, so
+  // this function only chooses the content size and the file name. Following the
+  // capture path's shape keeps the printer dependency-injectable: in production
+  // the defaults inside pdf-export take over (electron.dialog, its own fs and
+  // webContents.printToPDF); a test can pass printToPdf/showSaveDialog/writeFile.
+  async function exportPinToPdf(win) {
+    if (!win || win.isDestroyed() || !win._pinData) return null
+    // These pins are frameless with `useContentSize: true`, so content bounds are
+    // the printed pixels (getContentBounds is the precise call; getBounds is the
+    // fallback for a test fake that only implements the latter).
+    const contentBounds = typeof win.getContentBounds === 'function'
+      ? win.getContentBounds()
+      : win.getBounds()
+    // WYSIWYG for the current zoom and rotation: the already-rendered window is
+    // printed at its current content box. pxW/pxH must be positive integers or
+    // computePaperOptions would fall back to the same window bounds anyway.
+    const options = {
+      pxW: Math.max(1, Math.round(contentBounds.width)),
+      pxH: Math.max(1, Math.round(contentBounds.height))
+    }
+    if (injectedPrintToPdf) options.printToPdf = injectedPrintToPdf
+    // A rotated pin's window box is the rotated bounding box, so printing the box
+    // keeps the on-screen orientation (the CSS transform is part of the render).
+    const pdfBuffer = await pdfExport.exportWindowToPdf(win, options)
+    const saveOptions = {
+      parentWindow: win,
+      // Same naming convention as a captured PNG so the PDF reads as part of the
+      // same capture (settings.screenshot.nameTemplate is honoured when set).
+      makeName: (prefix, ext) => makeCaptureName(prefix, ext, {
+        template: getSettings()?.screenshot?.nameTemplate
+      })
+    }
+    if (injectedShowSaveDialog) saveOptions.showSaveDialog = injectedShowSaveDialog
+    if (injectedWriteFile) saveOptions.writeFile = injectedWriteFile
+    return pdfExport.savePdfBuffer(pdfBuffer, saveOptions)
   }
 
   async function startPinReannotation(win, imageBounds = {}, autoAction = '') {
@@ -450,6 +689,17 @@ function createPinDomain(deps) {
           }
         },
         { type: 'separator' },
+        // P1 (plan §9.3): the rotation helpers were finished and unit-tested with
+        // no production caller. A quarter turn only changes the stored angle and
+        // the window box; the renderer applies the CSS transform to the same
+        // dataUrl (never re-encoded). Disabled for long captures: they scroll and
+        // the rotated frame in pin.css is a fixed-size overlay (see rotatePin).
+        {
+          label: '旋转 90°',
+          enabled: !win._pinData.longCapture,
+          click: () => rotatePin(win, 90)
+        },
+        { type: 'separator' },
         {
           label: '透明度',
           submenu: [1, 0.75, 0.5, 0.25].map((opacity) => ({
@@ -475,11 +725,29 @@ function createPinDomain(deps) {
         { type: 'separator' },
         { label: '复制', click: () => clipboard.writeImage(nativeImage.createFromDataURL(win._pinData.dataUrl)) },
         { label: '保存', click: () => saveDataUrl(win._pinData.dataUrl).catch((error) => log(error.message)) },
+        // P0 (plan §0.3 #4): exportWindowToPdf had unit tests and no production
+        // caller. Exporting the pin itself (not a re-render) keeps it WYSIWYG.
+        {
+          label: '导出 PDF…',
+          click: () => exportPinToPdf(win).catch((error) => log('Pin PDF export failed:', error.message))
+        },
         { type: 'separator' },
         { label: '关闭', click: () => { if (!win.isDestroyed()) win.close() } }
       ])
       menu.popup({ window: win })
     })
+    // Renderer-side entry points for the same operations. They exist so the wheel
+    // (set-opacity) and any future keyboard path do not have to round-trip through
+    // the context menu; the menu items above call the same domain functions.
+    // A minimal ipcMain fake (unit tests) only implements `on`; the real
+    // createSecureIpcMain always provides `handle`, which `pin:export-pdf`
+    // requires as a policy kind.
+    if (typeof ipcMain.handle === 'function') {
+      ipcMain.handle('pin:export-pdf', async (event) => {
+        const win = BrowserWindow.fromWebContents(event.sender)
+        return exportPinToPdf(win)
+      })
+    }
     ipcMain.on('pin:resize', (event, { factor } = {}) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win || !win._pinData?.zoomWithMouse) return
@@ -491,15 +759,38 @@ function createPinDomain(deps) {
       const currentZoom = Number(data.zoom) || 1
       const nextZoom = applyPinZoomFactor(currentZoom, factor)
       if (Math.abs(nextZoom - currentZoom) < 0.001) return
-      const sized = computePinDisplaySize({
-        baseWidth: data.baseWidth,
-        baseHeight: data.baseHeight,
-        zoom: nextZoom,
-        longCapture: false
-      })
-      data.zoom = nextZoom
-      win.setBounds({ x: bounds.x, y: bounds.y, width: sized.width, height: sized.height }, false)
-      win.webContents.send('pin:zoom-changed', Math.round(nextZoom * 100))
+      const display = screen.getDisplayMatching(bounds)
+      // Rotation survives zoom: the renderer keeps the CSS transform, so the
+      // window box has to keep the rotated bounding box (a zoomed 90° pin is
+      // tall, not wide).
+      const sized = getPinWindowSize({ ...data, zoom: nextZoom }, { workAreaHeight: display.workArea.height })
+      data.zoom = sized.zoom
+      win.setBounds(clampPinBoundsToWorkArea({
+        x: bounds.x,
+        y: bounds.y,
+        width: sized.width,
+        height: sized.height
+      }, display.workArea), false)
+      sendToRenderer(win, 'pin:zoom-changed', Math.round(sized.zoom * 100))
+    })
+    // Ctrl+wheel in the renderer (plan §9.2-②). A click-through pin cannot reach
+    // this handler: setIgnoreMouseEvents(true, { forward: true }) forwards mouse
+    // moves only, so the wheel never arrives (see pin/pin.js). The 0.05 step is
+    // shared with the context menu's 25/50/75/100 radio items.
+    ipcMain.on('pin:set-opacity', (event, direction) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (!win || !win._pinData) return
+      if (win._pinData.clickThrough === true) return
+      setPinOpacity(win, nextPinOpacity(win._pinData.opacity, direction))
+    })
+    // Quarter-turn rotation (plan §9.3). The dataUrl is untouched: the renderer
+    // draws the same pixels under a CSS transform, and only the window box (the
+    // rotated bounding box) changes here. The payload echoes the new angle so the
+    // renderer does not have to guess.
+    ipcMain.on('pin:rotate', (event, delta = 90) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (!win || !win._pinData) return
+      rotatePin(win, delta)
     })
     ipcMain.on('pin:move-start', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
@@ -548,12 +839,20 @@ function createPinDomain(deps) {
     revealPinWindow,
     bringPinToFront,
     setPinOpacity,
+    rotatePin,
+    exportPinToPdf,
     setPinClickThrough,
     exitAllClickThrough,
     startPinReannotation,
     pinFromCapture,
     togglePinVisibility,
-    syncPinDisplayScale
+    syncPinDisplayScale,
+    // Display-reflow internals, exposed for the Lead/diagnostics and for a future
+    // main.js dispose if one ever becomes free; main.js does not call them today
+    // (the listeners are process-global and die with the app).
+    reflowPinWindows,
+    attachPinDisplayWatchers,
+    detachPinDisplayWatchers
   }
 }
 

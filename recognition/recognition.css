@@ -212,6 +212,9 @@ main { min-height: 0; position: relative; overflow: hidden; }
 
 .actions select { margin-right: auto; min-width: 190px; outline: none; }
 .actions button:hover { background: var(--surface-3); border-color: var(--muted); }
+/* The export buttons stay disabled while their save dialog is open. */
+.actions button:disabled { opacity: .6; cursor: default; }
+.actions button:disabled:hover { background: var(--surface-2); border-color: var(--line-2); }
 .actions button.primary {
   border-color: var(--primary);
   background: var(--primary);
@@ -226,4 +229,51 @@ main { min-height: 0; position: relative; overflow: hidden; }
   .actions { padding-inline: 12px; }
   .actions select { min-width: 0; max-width: 52%; }
   .badge { display: none; }
+}
+
+/* ---------- print / "Export PDF" ----------
+ *
+ * exportWindowToPdf() prints this window as-is, so the print sheet drops the
+ * interactive chrome (action bar, close button) and the inner scroll viewport:
+ * without that, a table taller than the window would be clipped to one page and
+ * the PDF would carry a row of buttons. Colours stay as on screen (printBackground
+ * is on) so the export matches the result the user is looking at.
+ */
+@media print {
+  html, body {
+    height: auto;
+    overflow: visible;
+  }
+
+  body { display: block; }
+
+  .actions, .icon-button, .loading { display: none !important; }
+
+  main {
+    overflow: visible;
+    height: auto;
+  }
+
+  .table-view {
+    height: auto;
+    overflow: visible;
+    border-bottom: 0;
+  }
+
+  .table-view table { page-break-inside: auto; }
+  .table-view tr { page-break-inside: avoid; break-inside: avoid; }
+  .table-view thead { display: table-header-group; }
+  /* A disabled button is a UI state, not part of the document. */
+  .actions button:disabled { opacity: 1; }
+
+  .qr-view {
+    height: auto;
+    min-height: 0;
+  }
+
+  .qr-view textarea {
+    height: auto;
+    min-height: 320px;
+    overflow: visible;
+  }
 }

@@ -153,7 +153,9 @@ test('A4: undo/redo, deletion and region reset all repaint the toolbar from the 
   // 置 null 的路径回到全局默认色/宽度。
   assert.match(script, /function deleteSelectedAnnotation\(\) \{[\s\S]{0,360}?syncToolbarStyleFromSelection\(\)/)
   assert.match(script, /function clearAnnotationsForNewSelection\(\) \{[\s\S]{0,360}?syncToolbarStyleFromSelection\(\)/)
-  assert.match(script, /function setTool\(tool\) \{[\s\S]{0,200}?setSelectedAnnotation\(null\)/)
+  // 2026-10-19：换工具清选中，且 currentTool 先写入（回显以它为源；见 capture.js setTool 注释）。
+  assert.match(script, /function setTool\(tool\) \{[\s\S]{0,200}?currentTool=tool[\s\S]{0,400}?setSelectedAnnotation\(null\)/)
+  assert.match(script, /function setTool\(tool\) \{[\s\S]{0,700}?setSelectedAnnotation\(null\)/)
   assert.match(script, /else if\(selectedAnnotationItem\(\)\)setSelectedAnnotation\(null\);else closeCaptureWindow\(\)/)
   assert.match(script, /document\.getElementById\('elementDeselect'\)\.onclick=\(\)=>setSelectedAnnotation\(null\)/)
 })

@@ -2,11 +2,19 @@
 
 // P0-4 打印 / 导出 PDF（主进程侧）
 //
-// 三个入口 + 一个落盘助手：
-//   computePaperOptions({ pxW, pxH, dpi, mode })  纯函数纸张换算（含 200 英寸夹取，R8）
-//   exportPdfBuffer(imageBuffer, options)         离屏 capture/print.html → PDF Buffer
-//   exportWindowToPdf(win, options)               已渲染窗口（贴图 / 识别结果）直接导 PDF
-//   savePdfBuffer(pdfBuffer, options)             保存对话框 + 落盘
+// Four entry points + one save helper:
+//   computePaperOptions({ pxW, pxH, dpi, mode })  pure paper maths (200-inch ceiling, R8)
+//   exportPdfBuffer(imageBuffer, options)         single image -> offscreen capture/print.html -> PDF Buffer
+//   exportPagesToPdfBuffer(pages, options)        N images -> ONE printToPDF call producing N pages
+//   exportWindowToPdf(win, options)               already-rendered window (pin / recognition) -> PDF
+//   savePdfBuffer(pdfBuffer, options)             save dialog + write
+//
+// Multi-page (2026-10-19): capture/print.html's #pages container is filled with N
+// `.print-page` blocks (one <img> each, `break-after: page`), so a single
+// printToPDF call paginates through Chromium's paged media. Paper, orientation and
+// scale are still document-level and come from computePaperOptions applied to the
+// FIRST page; later pages are only fitted into that same printable box, never
+// given their own paper maths (see exportPagesToPdfBuffer).
 //
 // 所有 Electron 依赖都可注入（printToPdf / createPrintWindow / showSaveDialog / writeFile），
 // 因此本模块在纯 node 下可加载、可单测；主进程侧不注入时自动回落到 Electron 默认实现。
@@ -48,6 +56,12 @@ const DEFAULT_IMAGE_DPI = 96
 const MIN_PRINT_SCALE = 0.1
 const DEFAULT_EXPORT_TIMEOUT_MS = 30000
 const PRINT_IMAGE_ID = 'print-image'
+const PRINT_PAGES_ID = 'print-pages'
+const PRINT_PAGE_CLASS = 'print-page'
+const PRINT_MULTI_BODY_CLASS = 'print-multi'
+// History batch export is a user-driven selection; this cap keeps the hidden print
+// window's decoded-image memory bounded (a 4K PNG alone is ~33 MB once decoded).
+const MAX_PDF_PAGES = 50
 // Electron printToPDF 自定义纸张的单位（实测，见文件头）。
 const PAGE_SIZE_UNIT = 'inches'
 // 纸张换算以“整页可打印区”为口径，边距必须与之一致（否则 scale 会算大而被裁切）。
@@ -267,6 +281,70 @@ function buildImageInjectionScript({ dataUrl, width, height }) {
   })()`
 }
 
+// Multi-page export: the print page owns an empty #print-pages container. The main
+// process flips the document into "print-multi" mode (which hides the single-image
+// path and stacks the sheets) and appends one .print-page per image. Pages are
+// appended one at a time so the injected script never has to carry every data URL
+// at once: a 50-page batch of full-HD PNGs would otherwise be a quarter of a
+// gigabyte of JavaScript source in one executeJavaScript call.
+function buildPagesSetupScript({ pageWidth, pageHeight }) {
+  return `(() => {
+    const container = document.getElementById(${JSON.stringify(PRINT_PAGES_ID)})
+    if (!container) return Promise.reject(new Error('print.html is missing #${PRINT_PAGES_ID}'))
+    document.documentElement.classList.add(${JSON.stringify(PRINT_MULTI_BODY_CLASS)})
+    document.body.classList.add(${JSON.stringify(PRINT_MULTI_BODY_CLASS)})
+    container.textContent = ''
+    container.style.setProperty('--print-page-width', ${JSON.stringify(`${pageWidth}px`)})
+    container.style.setProperty('--print-page-height', ${JSON.stringify(`${pageHeight}px`)})
+    return true
+  })()`
+}
+
+function buildPageAppendScript({ dataUrl, width, height, last }) {
+  return `(() => {
+    const container = document.getElementById(${JSON.stringify(PRINT_PAGES_ID)})
+    if (!container) return Promise.reject(new Error('print.html is missing #${PRINT_PAGES_ID}'))
+    const sheet = document.createElement('div')
+    sheet.className = ${JSON.stringify(PRINT_PAGE_CLASS)}
+    if (${last ? 'true' : 'false'}) sheet.classList.add('print-page-last')
+    const img = document.createElement('img')
+    img.alt = ''
+    img.style.width = ${JSON.stringify(`${width}px`)}
+    img.style.height = ${JSON.stringify(`${height}px`)}
+    img.src = ${JSON.stringify(dataUrl)}
+    sheet.appendChild(img)
+    container.appendChild(sheet)
+    const decoded = typeof img.decode === 'function'
+      ? img.decode().catch(() => null)
+      : new Promise((resolve) => { img.onload = resolve; img.onerror = resolve })
+    return decoded.then(() => ({ width: img.naturalWidth || img.width, height: img.naturalHeight || img.height }))
+  })()`
+}
+
+// CSS pixel box of the printable area for the document paper. computePaperOptions
+// already reports the orientation-adjusted paper in microns, so A4 landscape and
+// custom "original" paper both resolve through the same conversion.
+function paperContentBoxCssPx(paper) {
+  return {
+    width: micronsToCssPx(paper.pageSizeMicrons.width),
+    height: micronsToCssPx(paper.pageSizeMicrons.height)
+  }
+}
+
+function resolvePageImage(page, fallbackDpi) {
+  const value = page && typeof page === 'object' ? page : {}
+  const buffer = Buffer.isBuffer(value.buffer) ? value.buffer : Buffer.from(value.buffer || '')
+  const dataUrl = typeof value.dataUrl === 'string' && value.dataUrl.startsWith('data:') ? value.dataUrl : ''
+  if (!buffer.length && !dataUrl) throw new Error('导出 PDF 的图片数据为空')
+  const size = resolveImageSize(buffer, { pxW: value.pxW, pxH: value.pxH })
+  return {
+    buffer,
+    dataUrl: dataUrl || `data:image/png;base64,${buffer.toString('base64')}`,
+    size,
+    dpi: finitePositive(value.dpi, finitePositive(fallbackDpi, DEFAULT_IMAGE_DPI))
+  }
+}
+
 function buildPrintOptions(paper, options = {}) {
   return {
     landscape: paper.landscape,
@@ -295,49 +373,16 @@ function withTimeout(promise, timeoutMs, onTimeout) {
   return Promise.race([promise, guard]).finally(() => clearTimeout(timer))
 }
 
-/**
- * 把图片缓冲区渲染成 PDF Bytes（离屏 capture/print.html + printToPDF）。
- *
- * @param {Buffer|Uint8Array} imageBuffer PNG 图片数据
- * @param {object} options
- *   createPrintWindow(pagePath, windowOptions)  建窗（默认 createSecureWindow + BrowserWindow）
- *   printToPdf(win, printOptions)               默认 win.webContents.printToPDF
- *   rootDirectory / printPagePath / preloadPath 页面与 preload 绝对路径
- *   pxW / pxH / dpi / mode                      纸张参数（见 computePaperOptions）
- *   dataUrl                                     直接复用渲染层已有的 data URL，省一次 base64
- *   timeoutMs / onClosed / log                  超时保护与窗口回收钩子
- * @returns {Promise<Buffer>} PDF 数据
- */
-async function exportPdfBuffer(imageBuffer, options = {}) {
-  const buffer = Buffer.isBuffer(imageBuffer) ? imageBuffer : Buffer.from(imageBuffer || '')
-  if (!buffer.length) throw new Error('导出 PDF 的图片数据为空')
-
+// The offscreen print window is shared by the single-page and multi-page paths so
+// that sizing, webPreferences, the activePrintWindows registration and the
+// closed-hook bookkeeping stay byte-for-byte identical between them.
+function openPrintWindow(options, windowSize) {
   const rootDirectory = options.rootDirectory || ROOT_DIRECTORY
   const pagePath = options.printPagePath || path.join(rootDirectory, 'capture', 'print.html')
   const preloadPath = options.preloadPath || path.join(rootDirectory, 'preload-capture.js')
-  const size = resolveImageSize(buffer, options)
-  const paper = computePaperOptions({
-    pxW: size.width,
-    pxH: size.height,
-    dpi: options.dpi,
-    mode: options.mode
-  })
   const createPrintWindow = typeof options.createPrintWindow === 'function'
     ? options.createPrintWindow
     : createDefaultPrintWindowFactory({ BrowserWindow: options.BrowserWindow, rootDirectory })
-  const printToPdf = typeof options.printToPdf === 'function' ? options.printToPdf : defaultPrintToPdf
-  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : DEFAULT_EXPORT_TIMEOUT_MS
-  const dataUrl = typeof options.dataUrl === 'string' && options.dataUrl.startsWith('data:')
-    ? options.dataUrl
-    : `data:image/png;base64,${buffer.toString('base64')}`
-  const intrinsicPx = {
-    width: Math.round(size.width / finitePositive(options.dpi, DEFAULT_IMAGE_DPI) * CSS_PX_PER_INCH),
-    height: Math.round(size.height / finitePositive(options.dpi, DEFAULT_IMAGE_DPI) * CSS_PX_PER_INCH)
-  }
-  const windowSize = {
-    width: Math.min(4096, Math.max(400, intrinsicPx.width)),
-    height: Math.min(4096, Math.max(400, intrinsicPx.height))
-  }
 
   const win = createPrintWindow(pagePath, {
     show: false,
@@ -360,6 +405,59 @@ async function exportPdfBuffer(imageBuffer, options = {}) {
     }
   })
   registerPrintWindow(win, { onClosed: options.onClosed, log: options.log })
+  return { win, pagePath }
+}
+
+function resolvePrintToPdf(options) {
+  return typeof options.printToPdf === 'function' ? options.printToPdf : defaultPrintToPdf
+}
+
+function resolveExportTimeout(options) {
+  return Number.isFinite(options.timeoutMs) ? options.timeoutMs : DEFAULT_EXPORT_TIMEOUT_MS
+}
+
+function clampWindowSize(intrinsicPx) {
+  return {
+    width: Math.min(4096, Math.max(400, Math.round(intrinsicPx.width))),
+    height: Math.min(4096, Math.max(400, Math.round(intrinsicPx.height)))
+  }
+}
+
+/**
+ * 把图片缓冲区渲染成 PDF Bytes（离屏 capture/print.html + printToPDF）。
+ *
+ * @param {Buffer|Uint8Array} imageBuffer PNG 图片数据
+ * @param {object} options
+ *   createPrintWindow(pagePath, windowOptions)  建窗（默认 createSecureWindow + BrowserWindow）
+ *   printToPdf(win, printOptions)               默认 win.webContents.printToPDF
+ *   rootDirectory / printPagePath / preloadPath 页面与 preload 绝对路径
+ *   pxW / pxH / dpi / mode                      纸张参数（见 computePaperOptions）
+ *   dataUrl                                     直接复用渲染层已有的 data URL，省一次 base64
+ *   timeoutMs / onClosed / log                  超时保护与窗口回收钩子
+ * @returns {Promise<Buffer>} PDF 数据
+ */
+async function exportPdfBuffer(imageBuffer, options = {}) {
+  const buffer = Buffer.isBuffer(imageBuffer) ? imageBuffer : Buffer.from(imageBuffer || '')
+  if (!buffer.length) throw new Error('导出 PDF 的图片数据为空')
+
+  const size = resolveImageSize(buffer, options)
+  const paper = computePaperOptions({
+    pxW: size.width,
+    pxH: size.height,
+    dpi: options.dpi,
+    mode: options.mode
+  })
+  const printToPdf = resolvePrintToPdf(options)
+  const timeoutMs = resolveExportTimeout(options)
+  const dataUrl = typeof options.dataUrl === 'string' && options.dataUrl.startsWith('data:')
+    ? options.dataUrl
+    : `data:image/png;base64,${buffer.toString('base64')}`
+  const intrinsicPx = {
+    width: Math.round(size.width / finitePositive(options.dpi, DEFAULT_IMAGE_DPI) * CSS_PX_PER_INCH),
+    height: Math.round(size.height / finitePositive(options.dpi, DEFAULT_IMAGE_DPI) * CSS_PX_PER_INCH)
+  }
+
+  const { win, pagePath } = openPrintWindow(options, clampWindowSize(intrinsicPx))
 
   try {
     await win.loadFile(pagePath)
@@ -373,6 +471,94 @@ async function exportPdfBuffer(imageBuffer, options = {}) {
     }))
     return await withTimeout(
       Promise.resolve(printToPdf(win, buildPrintOptions(paper, options))),
+      timeoutMs,
+      () => disposePrintWindow(win)
+    )
+  } finally {
+    disposePrintWindow(win)
+  }
+}
+
+/**
+ * Multi-page PDF: N images -> one printToPDF call producing N pages.
+ *
+ * Paper and orientation are document-level and come from the FIRST page, as the
+ * plan requires for a mixed batch; every page is then fitted independently into
+ * that one printable box, so a small capture is not shrunk by a huge sibling.
+ *
+ * printToPDF's `scale` stays at 1 for the whole document: per-page fitting happens
+ * by sizing each <img> in CSS px here, which is also why computePaperOptions is
+ * still the only place paper maths happens (the A4/original/clamp rules are
+ * reused as-is, and `paper.scale` is simply not applied twice).
+ *
+ * @param {Array<{ buffer?: Buffer|Uint8Array, dataUrl?: string, pxW?: number, pxH?: number, dpi?: number }>} pages
+ * @param {object} options same as exportPdfBuffer, plus:
+ *   dpi      fallback dpi for pages without their own
+ *   maxPages page cap (default MAX_PDF_PAGES)
+ * @returns {Promise<Buffer>} PDF bytes
+ */
+async function exportPagesToPdfBuffer(pages, options = {}) {
+  if (!Array.isArray(pages) || pages.length === 0) throw new Error('导出 PDF 的图片数据为空')
+  const maxPages = Number.isFinite(options.maxPages) && options.maxPages > 0
+    ? Math.floor(options.maxPages)
+    : MAX_PDF_PAGES
+  if (pages.length > maxPages) throw new Error(`单次最多导出 ${maxPages} 页 PDF`)
+
+  const resolvedPages = pages.map((page) => resolvePageImage(page, options.dpi))
+  const first = resolvedPages[0]
+  const paper = computePaperOptions({
+    pxW: first.size.width,
+    pxH: first.size.height,
+    dpi: first.dpi,
+    mode: options.mode
+  })
+  // The sheet is one printable box on the first page's paper, one CSS px short on
+  // each axis so Chromium's rounding cannot push a page onto a second sheet.
+  const printableBox = paperContentBoxCssPx(paper)
+  const sheetWidth = Math.max(1, Math.floor(printableBox.width) - 1)
+  const sheetHeight = Math.max(1, Math.floor(printableBox.height) - 1)
+
+  const pageFrames = resolvedPages.map((page) => {
+    const intrinsicWidth = page.size.width / page.dpi * CSS_PX_PER_INCH
+    const intrinsicHeight = page.size.height / page.dpi * CSS_PX_PER_INCH
+    // Per-page fit: never upscale, never exceed the shared printable box.
+    const fit = Math.min(1, sheetWidth / intrinsicWidth, sheetHeight / intrinsicHeight)
+    return {
+      dataUrl: page.dataUrl,
+      width: Math.max(1, Math.round(intrinsicWidth * fit)),
+      height: Math.max(1, Math.round(intrinsicHeight * fit))
+    }
+  })
+
+  const widest = pageFrames.reduce((max, frame) => Math.max(max, frame.width), sheetWidth)
+  const tallest = pageFrames.reduce((max, frame) => Math.max(max, frame.height), sheetHeight)
+  const printToPdf = resolvePrintToPdf(options)
+  const timeoutMs = resolveExportTimeout(options)
+  const { win, pagePath } = openPrintWindow(options, clampWindowSize({ width: widest, height: tallest }))
+
+  try {
+    await win.loadFile(pagePath)
+    await win.webContents.executeJavaScript(buildPagesSetupScript({
+      pageWidth: sheetWidth,
+      pageHeight: sheetHeight
+    }))
+    for (let index = 0; index < pageFrames.length; index++) {
+      const frame = pageFrames[index]
+      await win.webContents.executeJavaScript(buildPageAppendScript({
+        dataUrl: frame.dataUrl,
+        width: frame.width,
+        height: frame.height,
+        last: index === pageFrames.length - 1
+      }))
+    }
+    return await withTimeout(
+      Promise.resolve(printToPdf(win, buildPrintOptions(paper, {
+        ...options,
+        // Per-page fitting already happened in CSS px, so the document must not
+        // shrink the whole layout again (paper.scale describes the first page
+        // only). A caller-supplied printOptions.scale still wins.
+        printOptions: { scale: 1, ...(options.printOptions || {}) }
+      }))),
       timeoutMs,
       () => disposePrintWindow(win)
     )
@@ -448,15 +634,19 @@ module.exports = {
   DEFAULT_IMAGE_DPI,
   MAX_PAGE_INCHES,
   MAX_PAGE_MICRONS,
+  MAX_PDF_PAGES,
   MICRONS_PER_INCH,
   MIN_PAGE_INCHES,
   MIN_PAGE_MICRONS,
   PAGE_MODES,
   PAGE_SIZE_UNIT,
+  buildPageAppendScript,
+  buildPagesSetupScript,
   buildPdfFileName,
   buildPrintOptions,
   computePaperOptions,
   createDefaultPdfName,
+  exportPagesToPdfBuffer,
   exportPdfBuffer,
   exportWindowToPdf,
   getActivePrintWindowCount,

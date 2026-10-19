@@ -1,6 +1,7 @@
 const image = document.getElementById('image')
 const pixelImage = document.getElementById('pixelImage')
 const zoomBadge = document.getElementById('zoomBadge')
+const opacityBadge = document.getElementById('opacityBadge')
 const clickThroughTag = document.getElementById('clickThroughTag')
 let activeSurface = pixelImage
 let sourceImage = null
@@ -12,6 +13,7 @@ let pointerId = null
 let pressPoint = null
 let moveFrame = 0
 let zoomTimer = 0
+let opacityTimer = 0
 
 function setNativePixelMode(zoom) {
   pixelImage.classList.toggle('pixel-native', Math.abs(Number(zoom) - 1) < 0.001)
@@ -40,10 +42,35 @@ function showImageSurface(dataUrl, initial) {
   showSurface(image)
 }
 
+// Rotation is a pure CSS transform: the pinned dataUrl is never re-encoded, so a
+// rotated pin still copies/saves/recognises the original pixels. The main process
+// owns the angle (it has to resize the window to the rotated bounding box), and
+// pin.css turns the `data-rotation` attribute into the matching transform.
+function applyRotation(value) {
+  const degrees = Number(value)
+  const snapped = Number.isFinite(degrees) ? ((Math.round(degrees / 90) * 90 % 360) + 360) % 360 : 0
+  document.body.dataset.rotation = String(snapped)
+}
+
+// settings.pinned.zoomStep arrives in the pin payload (one wheel notch = 1 + step
+// instead of the old hardcoded 1.1). Mirrors the main-process clamp: a store
+// written before the key existed, or a non-numeric value, falls back to 10%.
+function wheelZoomFactor(zoomStep, zoomIn) {
+  const step = Number(zoomStep)
+  const bounded = Number.isFinite(step) && step >= 0.05 && step <= 0.5 ? step : 0.1
+  return zoomIn ? 1 + bounded : 1 / (1 + bounded)
+}
+
 function applyPinData(data, initial = false) {
   settings = data
   document.body.classList.toggle('long-capture', !!data.longCapture)
   if (typeof data.clickThrough === 'boolean') applyClickThrough(data.clickThrough)
+  if (data.rotation !== undefined) applyRotation(data.rotation)
+  // The badge is only shown while a change is in flight, but its text has to be
+  // right before the first receipt: a pin created at 50% must not flash "100%".
+  if (Number.isFinite(Number(data.opacity))) {
+    opacityBadge.textContent = `${Math.round(Number(data.opacity) * 100)}%`
+  }
   setNativePixelMode(data.zoom)
   if (data.longCapture) {
     sourceImage = null
@@ -74,6 +101,7 @@ function applyPinData(data, initial = false) {
 window.pinAPI.onInit((data) => applyPinData(data, true))
 window.pinAPI.onUpdate((data) => applyPinData(data))
 window.pinAPI.onClickThroughChanged((enabled) => applyClickThrough(enabled))
+window.pinAPI.onRotationChanged((rotation) => applyRotation(rotation))
 // A click-through pin receives forwarded mouse *moves* only (clicks and the wheel
 // are dropped), so hovering the reserved badge is the in-window way back — the
 // global shortcut and the tray item are the guaranteed fallback. mouseenter is
@@ -134,11 +162,25 @@ for (const surface of [image, pixelImage]) {
   })
 }
 
+// The wheel has two jobs: plain wheel zooms (settings.pinned.zoomStep per notch),
+// Ctrl+wheel changes opacity. Neither branch may call preventDefault before it has
+// decided to handle the event: a long capture is scrollable and keeps its wheel.
+// A click-through pin never receives this event at all:
+// setIgnoreMouseEvents(true, { forward: true }) forwards mouse moves only, never
+// the wheel, so opacity on a click-through pin stays reachable through the context
+// menu's 25/50/75/100 radio items and by leaving click-through first (corner badge
+// hover / the global cancel shortcut). That limitation is documented instead of
+// faked: a synthetic wheel cannot be delivered to a window that ignores the mouse.
 addEventListener('wheel', (event) => {
   if (clickThrough) return
+  if (event.ctrlKey) {
+    event.preventDefault()
+    window.pinAPI.adjustOpacity(event.deltaY < 0 ? 1 : -1)
+    return
+  }
   if (settings.longCapture || !settings.zoomWithMouse) return
   event.preventDefault()
-  window.pinAPI.resize(event.deltaY < 0 ? 1.1 : 1 / 1.1)
+  window.pinAPI.resize(wheelZoomFactor(settings.zoomStep, event.deltaY < 0))
 }, { passive: false })
 window.pinAPI.onZoomChanged((zoom) => {
   setNativePixelMode(Number(zoom) / 100)
@@ -146,6 +188,15 @@ window.pinAPI.onZoomChanged((zoom) => {
   zoomBadge.classList.add('show')
   clearTimeout(zoomTimer)
   zoomTimer = setTimeout(() => zoomBadge.classList.remove('show'), 550)
+})
+// Main-process receipt for the Ctrl+wheel opacity change (and the context-menu
+// radio items, which take the same path): the badge mirrors the authoritative
+// percentage instead of re-deriving it from a local step.
+window.pinAPI.onOpacityChanged((percent) => {
+  opacityBadge.textContent = `${percent}%`
+  opacityBadge.classList.add('show')
+  clearTimeout(opacityTimer)
+  opacityTimer = setTimeout(() => opacityBadge.classList.remove('show'), 550)
 })
 addEventListener('keydown', (event) => {
   if (event.key === 'Escape') window.pinAPI.close()

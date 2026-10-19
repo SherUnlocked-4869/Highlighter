@@ -634,8 +634,11 @@ test('pointerdown keeps the handles first and selects the topmost annotation bef
     pointerdownSource.indexOf('if(event.altKey)') < inRegionHitIndex,
     'Alt+drag bypasses the element hit test and falls through to moving the selection'
   )
-  // setTool 清选中（方案 §8.4）
-  assert.match(script, /function setTool\(tool\) \{[\s\S]{0,200}?setSelectedAnnotation\(null\)[\s\S]{0,60}?currentTool=tool/)
+  // setTool 清选中（方案 §8.4）。2026-10-19：currentTool 必须先于清选中写入，否则回显
+  // （syncToolbarStyleFromSelection 经 setSelectedAnnotation 触发）仍读到上一个工具的记忆色，
+  // 表现为"颜色选项与下一个画出的元素不一致"。两个 w 断言分别钉住"写入顺序"与"确实清了选中"。
+  assert.match(script, /function setTool\(tool\) \{[\s\S]{0,200}?currentTool=tool[\s\S]{0,400}?setSelectedAnnotation\(null\)/)
+  assert.match(script, /function setTool\(tool\) \{[\s\S]{0,700}?setSelectedAnnotation\(null\)/)
   // Esc 取消选中先于关窗；删除走选中项
   assert.match(script, /else if\(selectedAnnotationItem\(\)\)setSelectedAnnotation\(null\);else closeCaptureWindow\(\)/)
 })

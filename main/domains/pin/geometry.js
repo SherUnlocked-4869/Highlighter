@@ -2,6 +2,13 @@
 
 const PIN_ZOOM_MIN = 0.2
 const PIN_ZOOM_MAX = 3
+// settings.pinned.zoomStep (product decision: one wheel notch = 10% by default).
+// settings-normalize.js clamps the stored value, but a store written by an older
+// build (or a unit-test fake) may omit the key, so the pin domain routes it
+// through normalizePinZoomStep as well.
+const DEFAULT_PIN_ZOOM_STEP = 0.1
+const PIN_ZOOM_STEP_MIN = 0.05
+const PIN_ZOOM_STEP_MAX = 0.5
 const PIN_OPACITY_MIN = 0.25
 const PIN_OPACITY_MAX = 1
 const MIN_SCALE_FACTOR = 0.25
@@ -17,6 +24,26 @@ function applyPinZoomFactor(currentZoom, factor) {
 
 function clampPinOpacity(value) {
   return Math.max(PIN_OPACITY_MIN, Math.min(PIN_OPACITY_MAX, Number(value) || 1))
+}
+
+// One wheel notch scales by 1 + step (10% by default). Mirrors
+// settings-normalize.normalizePinZoomStep so the pin domain still behaves when a
+// caller hands it raw settings (unit-test fakes) or a store written before the
+// key existed: non-finite/non-positive falls back to the default, everything
+// else is clamped into the product range.
+function normalizePinZoomStep(value) {
+  const step = Number(value)
+  if (!Number.isFinite(step) || step <= 0) return DEFAULT_PIN_ZOOM_STEP
+  return Math.min(PIN_ZOOM_STEP_MAX, Math.max(PIN_ZOOM_STEP_MIN, Math.round(step * 100) / 100))
+}
+
+// One Ctrl+wheel notch changes opacity by 5 percentage points (0.05), the step
+// the context menu's 25/50/75/100 radio items already imply. The wheel handler in
+// pin/pin.js sends a direction (+1 wheel-up / -1 wheel-down); the clamp keeps the
+// value inside the product range even after many notches.
+function nextPinOpacity(current, direction, step = 0.05) {
+  const delta = Math.max(0.01, Number(step) || 0.05) * (Number(direction) < 0 ? -1 : 1)
+  return clampPinOpacity((Number(current) || 1) + delta)
 }
 
 function getPixelAlignedPinSize(pixelWidth, pixelHeight, display, preferredSize = null) {
@@ -92,6 +119,45 @@ function hitTestPinHotspot(point, hotspot, padding = 0) {
     y <= Math.max(top, top + height) + pad
 }
 
+// Display reflow (P0, plan §9.2-①): after a monitor is unplugged or its metrics
+// change, a pin can sit on coordinates that no longer exist. The domain clamps
+// the window box into the matched display's work area; a box that does not
+// intersect any work area at all is treated as "its display vanished" and is
+// re-centred on the primary display instead. This helper is the pure half.
+function clampPinBoundsToWorkArea(bounds, workArea) {
+  const area = workArea && Number.isFinite(Number(workArea.width)) && Number(workArea.width) > 0
+    ? workArea
+    : bounds
+  const areaX = Math.round(Number(area?.x) || 0)
+  const areaY = Math.round(Number(area?.y) || 0)
+  const areaWidth = Math.max(1, Math.round(Number(area?.width) || 1))
+  const areaHeight = Math.max(1, Math.round(Number(area?.height) || 1))
+  const width = Math.max(1, Math.min(Math.round(Number(bounds?.width) || 1), areaWidth))
+  const height = Math.max(1, Math.min(Math.round(Number(bounds?.height) || 1), areaHeight))
+  return {
+    x: Math.round(Math.max(areaX, Math.min(Number(bounds?.x) || 0, areaX + areaWidth - width))),
+    y: Math.round(Math.max(areaY, Math.min(Number(bounds?.y) || 0, areaY + areaHeight - height))),
+    width,
+    height
+  }
+}
+
+function boundsIntersectWorkArea(bounds, workArea) {
+  const left = Number(bounds?.x)
+  const top = Number(bounds?.y)
+  const width = Number(bounds?.width)
+  const height = Number(bounds?.height)
+  const areaLeft = Number(workArea?.x)
+  const areaTop = Number(workArea?.y)
+  const areaWidth = Number(workArea?.width)
+  const areaHeight = Number(workArea?.height)
+  if (![left, top, width, height, areaLeft, areaTop, areaWidth, areaHeight].every(Number.isFinite)) return false
+  return left < areaLeft + areaWidth &&
+    left + width > areaLeft &&
+    top < areaTop + areaHeight &&
+    top + height > areaTop
+}
+
 function computePinDisplaySize({ baseWidth, baseHeight, zoom, longCapture, workAreaHeight }) {
   const z = clampPinZoom(zoom)
   const width = Math.max(1, Math.round(Number(baseWidth) * z))
@@ -105,16 +171,23 @@ function computePinDisplaySize({ baseWidth, baseHeight, zoom, longCapture, workA
 module.exports = {
   PIN_ZOOM_MIN,
   PIN_ZOOM_MAX,
+  DEFAULT_PIN_ZOOM_STEP,
+  PIN_ZOOM_STEP_MIN,
+  PIN_ZOOM_STEP_MAX,
   PIN_OPACITY_MIN,
   PIN_OPACITY_MAX,
   MIN_SCALE_FACTOR,
   clampPinZoom,
   applyPinZoomFactor,
   clampPinOpacity,
+  normalizePinZoomStep,
+  nextPinOpacity,
   getPixelAlignedPinSize,
   normalizeSelectionBounds,
   getRotatedPinSize,
   normalizePinRotation,
+  clampPinBoundsToWorkArea,
+  boundsIntersectWorkArea,
   hitTestPinHotspot,
   computePinDisplaySize
 }

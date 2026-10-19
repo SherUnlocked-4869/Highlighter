@@ -34,11 +34,22 @@ test('pinned images omit the top-right copy save and close overlay', () => {
   assert.match(pinScript, /addEventListener\('contextmenu'/)
 })
 
-test('pinned image opacity is chosen from the context menu instead of an overlay slider', () => {
+test('pinned image opacity keeps the context-menu presets and adds ctrl+wheel without an overlay slider', () => {
+  // No overlay control ever comes back: the window has no slider and the renderer
+  // never calls a setOpacity API of its own (the main process owns the value).
   assert.doesNotMatch(pinMarkup, /type="range"/)
   assert.doesNotMatch(pinScript, /setOpacity/)
+  // main.js only wires the policy; the channel lives in the pin domain.
   assert.doesNotMatch(main, /pin:set-opacity/)
-  assert.doesNotMatch(pinDomainSource, /pin:set-opacity/)
+  // The P0 feature (2026-10-18 snow migration §9.2-②): the domain registers the
+  // Ctrl+wheel listener and the renderer's wheel handler sends a direction to it.
+  assert.match(pinDomainSource, /ipcMain\.on\('pin:set-opacity'/)
+  assert.match(pinDomainSource, /function setPinOpacity\(/)
+  assert.match(pinDomainSource, /nextPinOpacity\(win\._pinData\.opacity, direction\)/)
+  assert.match(pinScript, /addEventListener\('wheel'/)
+  assert.match(pinScript, /if \(event\.ctrlKey\)[\s\S]*window\.pinAPI\.adjustOpacity/)
+  assert.match(pinScript, /onOpacityChanged/)
+  // The menu presets stay: Ctrl+wheel is additive, not a replacement.
   assert.match(pinDomainSource, /label: '透明度',[\s\S]*submenu: \[1, 0\.75, 0\.5, 0\.25\]/)
   assert.match(pinDomainSource, /type: 'radio',[\s\S]*click: \(\) => setPinOpacity\(win, opacity\)/)
 })

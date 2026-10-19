@@ -1,6 +1,31 @@
 'use strict'
 
 const { windowBackdropColor, trackWindowBackdrop } = require('../../services/window-backdrop')
+const { buildXlsxBuffer } = require('../../services/table-workbook')
+const { exportWindowToPdf, savePdfBuffer } = require('../../services/pdf-export')
+const { CAPTURE_PREFIX, makeCaptureName } = require('../../services/capture-naming')
+const { resolveSaveDirectory } = require('../../services/image-file-save')
+const { t } = require('../../services/i18n-bootstrap')
+
+// Electron handles are resolved lazily so this module still loads (and its
+// controller can be unit-tested) outside the Electron main process. main.js does
+// not have to inject anything: pdf-export defaults printToPdf to
+// webContents.printToPDF and resolves the save dialog itself, and the Excel
+// dialog below falls back to electron's dialog the same way.
+function resolveDialog(deps) {
+  if (deps.dialog && typeof deps.dialog.showSaveDialog === 'function') return deps.dialog
+  try {
+    const electron = require('electron')
+    return electron && typeof electron.dialog?.showSaveDialog === 'function' ? electron.dialog : null
+  } catch {
+    return null
+  }
+}
+
+function resolveFileSystem(deps) {
+  if (deps.fs && typeof deps.fs.promises?.writeFile === 'function') return deps.fs
+  return require('node:fs')
+}
 
 function createRecognitionDomain(deps) {
   const {
@@ -19,6 +44,59 @@ function createRecognitionDomain(deps) {
 
   function ownsWindow(win) {
     return recognitionWindows.has(win)
+  }
+
+  // Shared sender check for every result-window channel: the window must be one
+  // this domain created. The IPC layer already restricts the page; this also
+  // catches a destroyed/stale window and keeps the handlers uniform.
+  function requireOwnedWindow(event) {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || !recognitionWindows.has(win)) throw new Error(t('recognition.error.invalid-window'))
+    return win
+  }
+
+  function settingsSnapshot() {
+    try {
+      return (typeof getSettings === 'function' && getSettings()) || {}
+    } catch {
+      return {}
+    }
+  }
+
+  // Recognition exports land where screenshots go (remembered directory first),
+  // so "Export Excel/PDF" does not reopen in an unrelated folder.
+  function defaultExportDirectory() {
+    try {
+      return resolveSaveDirectory(settingsSnapshot())
+    } catch {
+      return ''
+    }
+  }
+
+  // Same naming source as the screenshot/PDF paths, so a template configured for
+  // captures also labels a recognition export (`Highlighter_....xlsx`).
+  function exportName(extension) {
+    const template = settingsSnapshot()?.screenshot?.nameTemplate
+    return makeCaptureName(CAPTURE_PREFIX, extension, { template })
+  }
+
+  async function pickSavePath(win, { title, defaultName, filters }) {
+    const dialog = resolveDialog(deps)
+    if (!dialog) throw new Error(t('recognition.error.save-unavailable'))
+    const directory = defaultExportDirectory()
+    const options = {
+      title,
+      defaultPath: directory ? path.join(directory, defaultName) : defaultName,
+      filters
+    }
+    // The result window is the dialog's parent so the sheet is modal to it; a
+    // destroyed window would make showSaveDialog(parent, …) throw.
+    const usableParent = win && !(typeof win.isDestroyed === 'function' && win.isDestroyed())
+    const result = usableParent
+      ? await dialog.showSaveDialog(win, options)
+      : await dialog.showSaveDialog(options)
+    if (!result || result.canceled || !result.filePath) return null
+    return result.filePath
   }
 
   function createRecognitionWindow(type, dataUrl, options = {}) {
@@ -84,10 +162,64 @@ function createRecognitionDomain(deps) {
         return table
       },
       recognitionCopy: (event, value) => {
-        const win = BrowserWindow.fromWebContents(event.sender)
-        if (!win || !recognitionWindows.has(win)) throw new Error('无效的识别结果窗口')
+        requireOwnedWindow(event)
         clipboard.writeText(String(value || ''))
         return true
+      },
+      // Table recognition → real .xlsx (analysis plan §6.2①). The renderer sends
+      // back the rows it is displaying, so the exported workbook is exactly the
+      // table on screen; the table model comes from buildTableFromOcr
+      // ({ rows, rowCount, columnCount }), and `merges` stays optional.
+      recognitionExportExcel: async (event, payload = {}) => {
+        const win = requireOwnedWindow(event)
+        const rows = payload?.rows
+        if (!Array.isArray(rows) || !rows.length) throw new Error(t('recognition.error.empty-table'))
+        const buffer = buildXlsxBuffer(rows, {
+          merges: Array.isArray(payload?.merges) ? payload.merges : undefined,
+          sheetName: typeof payload?.sheetName === 'string' ? payload.sheetName : undefined
+        })
+        const filePath = await pickSavePath(win, {
+          title: t('recognition.dialog.export-excel-title'),
+          defaultName: exportName('xlsx'),
+          filters: [{ name: t('recognition.dialog.excel-filter'), extensions: ['xlsx'] }]
+        })
+        if (!filePath) return null
+        await resolveFileSystem(deps).promises.writeFile(filePath, buffer)
+        return filePath
+      },
+      // Result window → PDF (analysis plan §0.3 #4 / §12.1). printToPDF on the
+      // already-rendered window, then the shared save-dialog/write helper; the
+      // recognition.css print rules hide the action bar so the PDF is content only.
+      // Both helpers default to the real Electron dialog/fs, so production needs
+      // no extra wiring; `deps.dialog`/`deps.fs`/`deps.printToPdf` are test seams.
+      recognitionExportPdf: async (event, payload = {}) => {
+        const win = requireOwnedWindow(event)
+        const contentSize = typeof win.getContentSize === 'function' ? win.getContentSize() : null
+        const pxW = Number(payload?.pxW) || (Array.isArray(contentSize) ? contentSize[0] : 0)
+        const pxH = Number(payload?.pxH) || (Array.isArray(contentSize) ? contentSize[1] : 0)
+        const pdfBuffer = await exportWindowToPdf(win, {
+          pxW,
+          pxH,
+          ...(typeof deps.printToPdf === 'function' ? { printToPdf: deps.printToPdf } : {})
+        })
+        if (typeof deps.savePdfBuffer === 'function') {
+          return deps.savePdfBuffer(pdfBuffer, {
+            parentWindow: win,
+            directory: defaultExportDirectory(),
+            title: t('recognition.dialog.export-pdf-title')
+          })
+        }
+        const dialog = resolveDialog(deps)
+        return savePdfBuffer(pdfBuffer, {
+          parentWindow: win,
+          ...(dialog ? { dialog } : {}),
+          fs: resolveFileSystem(deps),
+          directory: defaultExportDirectory(),
+          // §17.5/§12.1: the PDF default name follows the same template source as
+          // screenshot saving (empty template = the legacy timestamp format).
+          makeName: (prefix, ext) => exportName(ext),
+          title: t('recognition.dialog.export-pdf-title')
+        })
       },
       recognitionClose: (event) => {
         const win = BrowserWindow.fromWebContents(event.sender)

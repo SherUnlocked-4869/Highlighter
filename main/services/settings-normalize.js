@@ -23,6 +23,40 @@ const DEFAULT_PROXY_HOST = '127.0.0.1'
 // Fields the script-based bridge used to persist. Removed from the template when
 // the relay moved in-process; deleted on read so old stores stop carrying them.
 const LEGACY_PROXY_KEYS = Object.freeze(['repoDirectory', 'scriptPath', 'pythonPath', 'keepRunningOnExit', 'mode'])
+// Dead settings (2026-10-18 snow migration §0.3 #5): these keys were rendered or
+// documented but had no consumer anywhere in the codebase, so the settings page
+// promised behaviour that never happened. They are gone from the template; the
+// delete pass stops a store written by an older build from carrying them forever
+// (electron-store keeps whatever was written, and the template check only runs on
+// the patch, never on the read).
+//   screenshot.saveFormat      - saves were always PNG; the key was never read
+//   ocr.modelWriteToMemory     - the sidecar always memory-maps its models
+//   record.captureCursor       - see RECORD_CURSOR_NOTE below
+//   fixedContent.autoResize    - pins always kept their pixel size
+//   fixedContent.autoOcr       - pins never auto-recognised
+//
+// RECORD_CURSOR_NOTE: `record.captureCursor` is not "implemented" by a switch -
+// Chromium's getDisplayMedia capturer decides whether the cursor is composited,
+// and its `cursor` constraint is only a hint the browser may ignore. Exposing a
+// toggle that may silently do nothing is worse than not exposing it, so the key
+// is removed (the setting had no consumer before either, so no behaviour
+// regresses for an existing user).
+const LEGACY_DEAD_KEYS = Object.freeze({
+  screenshot: Object.freeze(['saveFormat']),
+  ocr: Object.freeze(['modelWriteToMemory']),
+  record: Object.freeze(['captureCursor']),
+  fixedContent: Object.freeze(['autoResize', 'autoOcr'])
+})
+
+function dropLegacyDeadKeys(settings) {
+  for (const [group, keys] of Object.entries(LEGACY_DEAD_KEYS)) {
+    const block = settings[group]
+    if (!block || typeof block !== 'object') continue
+    for (const key of keys) {
+      if (Object.hasOwn(block, key)) delete block[key]
+    }
+  }
+}
 
 function normalizeLanguage(value) {
   return SUPPORTED_LANGUAGES.has(value) ? value : DEFAULT_LANGUAGE
@@ -44,6 +78,20 @@ function normalizeGain(value) {
   return Number.isFinite(value) ? value : DEFAULT_AUDIO_GAIN
 }
 
+// P1 (2026-10-18 snow migration §9.1): the pinned-image wheel step. A hand-edited
+// store could carry 0 (a wheel tick would then resize nothing) or 5 (one tick
+// would blow the image past the screen), so it is clamped into the range the
+// settings page offers and falls back to the historic 10% step.
+const DEFAULT_PIN_ZOOM_STEP = 0.1
+const MIN_PIN_ZOOM_STEP = 0.05
+const MAX_PIN_ZOOM_STEP = 0.5
+
+function normalizePinZoomStep(value) {
+  const step = Number(value)
+  if (!Number.isFinite(step) || step <= 0) return DEFAULT_PIN_ZOOM_STEP
+  return Math.min(MAX_PIN_ZOOM_STEP, Math.max(MIN_PIN_ZOOM_STEP, Math.round(step * 100) / 100))
+}
+
 function normalizePort(value) {
   // Ports 1..65535 only. A value that cannot bind would surface as an opaque
   // EADDRINUSE at toggle time, so it falls back to the shipped default here.
@@ -57,6 +105,7 @@ function normalizeFrozenSettings(settings) {
   settings.record = settings.record || {}
   settings.shortcuts = settings.shortcuts || {}
   settings.pinned.clickThrough = normalizeToggle(settings.pinned.clickThrough)
+  settings.pinned.zoomStep = normalizePinZoomStep(settings.pinned.zoomStep)
   settings.screenshot.captureCursor = normalizeToggle(settings.screenshot.captureCursor)
   settings.screenshot.shutterSound = normalizeToggle(settings.screenshot.shutterSound)
   settings.screenshot.keepSerialAcrossCaptures = normalizeToggle(settings.screenshot.keepSerialAcrossCaptures)
@@ -65,7 +114,6 @@ function normalizeFrozenSettings(settings) {
   settings.screenshot.annotationColor = normalizeHexColor(settings.screenshot.annotationColor, DEFAULT_ANNOTATION_COLOR)
   settings.record.audioSystem = normalizeToggle(settings.record.audioSystem)
   settings.record.audioMicrophone = normalizeToggle(settings.record.audioMicrophone)
-  settings.record.captureCursor = normalizeToggle(settings.record.captureCursor)
   settings.record.audioSystemGain = normalizeGain(settings.record.audioSystemGain)
   settings.record.audioMicrophoneGain = normalizeGain(settings.record.audioMicrophoneGain)
   settings.shortcuts.screenshotQuickSave = normalizeText(settings.shortcuts.screenshotQuickSave)
@@ -102,6 +150,7 @@ function createSettingsNormalizer({ defaultHistoryDirectory }) {
     normalized.system.gameMode = normalized.system.gameMode === true
     normalized.mainColor = resolveMainColor(normalized.mainColor)
     if (normalized.fixedContent && Object.hasOwn(normalized.fixedContent, 'autoSaveDirectory')) delete normalized.fixedContent.autoSaveDirectory
+    dropLegacyDeadKeys(normalized)
     normalizeFrozenSettings(normalized)
     return normalized
   }

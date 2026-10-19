@@ -57,6 +57,9 @@ function expectedDataPaths(root) {
     logs: path.join(absoluteRoot, 'logs'),
     history: path.join(absoluteRoot, 'history'),
     conversations: path.join(absoluteRoot, 'conversations'),
+    // The clipboard store joined the managed layout with the isolated history panel
+    // (commit e7c7752); it sits beside conversations at the root level.
+    clipboard: path.join(absoluteRoot, 'clipboard'),
     cache: path.join(absoluteRoot, 'cache'),
     electronCache: path.join(absoluteRoot, 'cache', 'electron'),
     ocrCache: path.join(absoluteRoot, 'cache', 'ocr'),

@@ -55,11 +55,35 @@ function buildChatCompletionRequest(config, messages, options = {}) {
   return applyChatThinking(request, config, options.thinking)
 }
 
+// The OpenAI Responses protocol takes typed content parts too, but it spells the
+// image part differently from chat-completions (`input_image` + `image_url` as a
+// plain string). Converting here is what makes one vision request work on both
+// protocols: chat keeps `content: [{type:'text'},{type:'image_url',{url}}]`, and
+// Responses gets `content: [{type:'input_text'},{type:'input_image'}]`.
+// 2026-10-18 snow migration §6.2②: the old unconditional String() here was the
+// hard blocker the plan named ("content coerced to String").
+function toResponsesContent(content) {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return String(content || '')
+  return content.map((part) => {
+    if (!part || typeof part !== 'object') return { type: 'input_text', text: String(part || '') }
+    if (part.type === 'text' || part.type === 'input_text') return { type: 'input_text', text: String(part.text || '') }
+    if (part.type === 'image_url' || part.type === 'input_image') {
+      const url = typeof part.image_url === 'string' ? part.image_url : (part.image_url?.url || part.image_url || '')
+      const image = { type: 'input_image', image_url: String(url || '') }
+      const detail = part.image_url?.detail || part.detail
+      if (detail === 'high' || detail === 'low' || detail === 'auto') image.detail = detail
+      return image
+    }
+    return { type: 'input_text', text: String(part.text || '') }
+  })
+}
+
 function buildResponsesMessages(messages) {
   const roles = new Set(['system', 'user', 'assistant', 'developer'])
   return (Array.isArray(messages) ? messages : []).map((message) => ({
     role: roles.has(message?.role) ? message.role : 'user',
-    content: typeof message?.content === 'string' ? message.content : String(message?.content || '')
+    content: toResponsesContent(message?.content)
   }))
 }
 
@@ -165,5 +189,6 @@ module.exports = {
   createAiProtocolAdapter,
   extractResponsesText,
   normalizeResponsesStream,
-  resolveThinkingLevel
+  resolveThinkingLevel,
+  toResponsesContent
 }

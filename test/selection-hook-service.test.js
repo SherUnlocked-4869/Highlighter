@@ -463,7 +463,10 @@ test('utility process host factory forks the host script', () => {
   const fakeUtilityProcess = {
     fork(modulePath, args, options) {
       calls.push({ modulePath, args, options })
+      // The factory wraps the child in `exited = new Promise((resolve) =>
+      // child.once('exit', resolve))`, so the fake needs once() as well as on().
       return {
+        once() {},
         postMessage() {},
         on() {},
         removeListener() {},

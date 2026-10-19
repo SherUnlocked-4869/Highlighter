@@ -21,6 +21,12 @@ function runPowerShell(script, args = [], env = process.env) {
 function createFakeRelease(version = '2.1.0-beta.0') {
   const dist = fs.mkdtempSync(path.join(os.tmpdir(), 'highlighter-release-gate-'))
   fs.mkdirSync(path.join(dist, 'win-unpacked'))
+  // The verifier also demands the packaged clipboard sidecar and its build identity
+  // (scripts/verify-release.ps1:61-62), so the fake release carries them too.
+  const clipboardDir = path.join(dist, 'win-unpacked', 'resources', 'native', 'clipboard')
+  fs.mkdirSync(clipboardDir, { recursive: true })
+  fs.writeFileSync(path.join(clipboardDir, 'HighlighterClipboard.exe'), 'sidecar')
+  fs.writeFileSync(path.join(clipboardDir, 'build-info.json'), JSON.stringify({ version }))
   fs.writeFileSync(path.join(dist, `Highlighter-Setup-${version}.exe`), 'setup')
   fs.writeFileSync(path.join(dist, `Highlighter-${version}-portable.exe`), 'portable')
   fs.writeFileSync(path.join(dist, `Highlighter-Setup-${version}.exe.blockmap`), 'blockmap')

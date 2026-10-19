@@ -139,6 +139,12 @@ html, body {
 /* B6 (D8): a multi-selection whose items disagree shows a split swatch instead of
    pretending one of the colours is the current one. */
 .color-wrap > button span.mixed { background: linear-gradient(135deg, #ff3b30 0 50%, #1687ff 50% 100%); }
+/* P1 (2026-10-18 snow migration section 6.2 item 2): the image-to-document trigger reuses the wrapper's
+   latch behaviour but not its round swatch, so its span goes back to the shared
+   toolbar-icon mask (the icon itself comes from --icon on the inline span). */
+.doc-convert-wrap > button span { width: 18px; height: 18px; border: 0; border-radius: 0; background: currentColor; box-shadow: none; -webkit-mask: var(--icon) center/contain no-repeat; mask: var(--icon) center/contain no-repeat; }
+.doc-convert-menu { min-width: 128px; }
+.doc-convert-menu > button { justify-content: flex-start; white-space: nowrap; }
 .color-palette {
   position: absolute;
   left: 0;

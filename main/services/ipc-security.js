@@ -39,6 +39,9 @@ const IPC_SURFACES = Object.freeze([
       'history:clear',
       'history:cleanup',
       'history:export',
+      // P0 (2026-10-18 snow migration §12.3): the history page's multi-select
+      // batch goes to one multi-page PDF instead of a copy per file.
+      'history:export-pdf',
       'history:copy',
       'history:edit',
       'history:open',
@@ -86,6 +89,9 @@ const IPC_SURFACES = Object.freeze([
       'capture:export-pdf',
       'capture:ocr',
       'capture:translate',
+      // P1 (2026-10-18 snow migration §6.2②): screenshot → Markdown/HTML through
+      // a vision-capable AI model.
+      'capture:convert-image',
       'settings:update'
     ],
     listeners: [
@@ -119,6 +125,9 @@ const IPC_SURFACES = Object.freeze([
   {
     role: 'pin',
     page: 'pin/pin.html',
+    // P1 (2026-10-18 snow migration): exporting the already-rendered pin window
+    // to PDF is a main-side print of *this window*, so it is an invoke.
+    handles: ['pin:export-pdf'],
     listeners: [
       'pin:ready',
       'pin:render-ready',
@@ -130,13 +139,26 @@ const IPC_SURFACES = Object.freeze([
       'pin:move-start',
       'pin:move',
       'pin:move-end',
-      'pin:set-click-through'
+      'pin:set-click-through',
+      // Ctrl+wheel opacity and the quarter-turn rotation request. Both are one-way
+      // fire-and-forget: the main process owns the window state and echoes it back
+      // through pin:update / pin:opacity-changed / pin:rotation-changed.
+      'pin:set-opacity',
+      'pin:rotate'
     ]
   },
   {
     role: 'recognition',
     page: 'recognition/recognition.html',
-    handles: ['shell:open-external', 'recognition:table', 'recognition:copy'],
+    handles: [
+      'shell:open-external',
+      'recognition:table',
+      'recognition:copy',
+      // P1 (2026-10-18 snow migration §6.2①): table -> real .xlsx workbook.
+      'recognition:export-excel',
+      // P0 white-pickup (§0.3 #4): the already-rendered result window -> PDF.
+      'recognition:export-pdf'
+    ],
     listeners: ['recognition:ready', 'recognition:close']
   },
   {

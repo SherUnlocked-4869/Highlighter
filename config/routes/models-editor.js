@@ -91,6 +91,20 @@ function providerDraftWithSecret(base, root) {
   return apiKey ? { ...safeBase, apiKey } : safeBase
 }
 
+// The model row editor only owns id/name; anything else the catalog carries has
+// to survive an edit. Before this, saving a provider silently dropped every
+// model's `capabilities` (tasks/reasoning/vision), so a vision model lost its
+// image support the first time the user pressed save.
+function mergeModelRow(baseModel, row) {
+  const id = row.querySelector('[data-model-id]')?.value.trim() || ''
+  if (!id) return { success: false, reason: 'id' }
+  const name = row.querySelector('[data-model-name]')?.value.trim() || id
+  const capabilities = baseModel?.capabilities
+  return capabilities && typeof capabilities === 'object'
+    ? { success: true, model: { ...baseModel, id, name } }
+    : { success: true, model: { id, name } }
+}
+
 function readProviderEditor(providerId) {
   const base = modelProviderById(providerId)
   const root = providerEditorRoot(providerId)
@@ -109,11 +123,12 @@ function readProviderEditor(providerId) {
   const models = []
   const ids = new Set()
   for (const row of root.querySelectorAll('.model-catalog-row[data-model-index]')) {
-    const id = row.querySelector('[data-model-id]')?.value.trim() || ''
-    if (!id) { toast(t('config.models.model-id-required')); return null }
-    if (ids.has(id)) { toast(t('config.models.model-id-duplicate', { id })); return null }
-    ids.add(id)
-    models.push({ id, name: row.querySelector('[data-model-name]')?.value.trim() || id })
+    const index = Number(row.dataset.modelIndex)
+    const merged = mergeModelRow(base.models?.[index], row)
+    if (!merged.success) { toast(t('config.models.model-id-required')); return null }
+    if (ids.has(merged.model.id)) { toast(t('config.models.model-id-duplicate', { id: merged.model.id })); return null }
+    ids.add(merged.model.id)
+    models.push(merged.model)
   }
   if (!models.length) { toast(t('config.models.need-one-model')); return null }
   return { ...providerDraftWithSecret(base, root), name, baseUrl, protocol, enabled, models }
@@ -125,9 +140,10 @@ function readProviderEditorDraft(providerId) {
   if (!base || !root) return base
   const models = []
   for (const row of root.querySelectorAll('.model-catalog-row[data-model-index]')) {
-    const id = row.querySelector('[data-model-id]')?.value.trim() || ''
-    const name = row.querySelector('[data-model-name]')?.value.trim() || id
-    models.push({ id, name })
+    const index = Number(row.dataset.modelIndex)
+    const merged = mergeModelRow(base.models?.[index], row)
+    if (!merged.success) continue
+    models.push(merged.model)
   }
   return {
     ...providerDraftWithSecret(base, root),

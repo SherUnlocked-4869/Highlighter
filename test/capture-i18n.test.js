@@ -91,6 +91,10 @@ const GOLDEN = {
   'capture.toolbar.save': '保存',
   'capture.toolbar.save-tip': '保存 Ctrl+S',
   'capture.toolbar.export-pdf': '导出 PDF',
+  // P1（2026-10-18 snow 迁移 §6.2②）：图片转文档入口与两种输出格式。
+  'capture.toolbar.convert-doc': '图片转文档',
+  'capture.toolbar.convert-markdown': '转为 Markdown',
+  'capture.toolbar.convert-html': '转为 HTML',
   'capture.toolbar.copy': '复制',
   'capture.toolbar.copy-tip': '复制 Enter',
   'capture.toolbar.close': '取消',

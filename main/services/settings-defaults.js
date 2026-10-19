@@ -34,7 +34,6 @@ const DEFAULT_SETTINGS = {
     fastSave: false,
     saveDirectory: '',
     historyDirectory: '',
-    saveFormat: 'png',
     historyEnabled: true,
     historyLimit: 200,
     doubleClickCopy: true,
@@ -75,7 +74,6 @@ const DEFAULT_SETTINGS = {
   ocr: {
     modelProfile: 'ppocr-v4-ch',
     hotStart: true,
-    modelWriteToMemory: false,
     detectAngle: false,
     minConfidence: 0.3,
     afterAction: 'none',
@@ -83,12 +81,14 @@ const DEFAULT_SETTINGS = {
   },
   fixedContent: {
     zoomWithMouse: true,
-    autoResize: true,
-    autoOcr: false,
     opacity: 1
   },
   pinned: {
-    clickThrough: false
+    clickThrough: false,
+    // P1 (2026-10-18 snow migration §9.1): the wheel step for a pinned image.
+    // 0.1 keeps the historic 1.1x factor; the pin domain reads it when a window is
+    // created, so changing it only affects new pins (a live pin would jump).
+    zoomStep: 0.1
   },
   record: {
     frameRate: 24,
@@ -96,8 +96,7 @@ const DEFAULT_SETTINGS = {
     audioSystem: true,
     audioMicrophone: false,
     audioSystemGain: 1,
-    audioMicrophoneGain: 1,
-    captureCursor: false
+    audioMicrophoneGain: 1
   },
   search: {
     matchPath: true,

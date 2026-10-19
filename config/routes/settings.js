@@ -249,6 +249,11 @@ function bindFunctionRecordTab() {
     recordDirectory.value = directory
     await updateSettings({ record: { saveDirectory: directory } })
   }
+  // P1 (2026-10-18 snow migration §9.1): the wheel step is stored as a fraction,
+  // while the row offers whole percent values; main-side normalization clamps it
+  // into 5%..50%, so a hand-edited store cannot make one notch resize by nothing.
+  const pinZoomStep = document.getElementById('pinZoomStep')
+  if (pinZoomStep) pinZoomStep.onchange = () => updateSettings({ pinned: { zoomStep: Number(pinZoomStep.value) / 100 } })
   bindSwitches()
 }
 
@@ -293,6 +298,8 @@ function renderFunctionSettings() {
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-microphone')}</b><small>${t('config.function-settings.record-microphone-hint')}</small></div>${switchMarkup(settings.record.audioMicrophone === true, 'audioMicrophone', 'record')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-directory')}</b></div><input id="recordDirectory" type="text" value="${escapeHtml(settings.record.saveDirectory || '')}"><button class="button" id="chooseRecordDirectory">${t('config.function-settings.choose')}</button></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.pin-click-through')}</b><small>${t('config.function-settings.pin-click-through-hint')}</small></div>${switchMarkup(settings.pinned.clickThrough, 'clickThrough', 'pinned')}</div>
+    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.pin-zoom-step')}</b><small>${t('config.function-settings.pin-zoom-step-hint')}</small></div><select id="pinZoomStep">${[5, 10, 15, 20, 25, 50].map((percent) => `<option value="${percent}" ${Math.round((Number(settings.pinned.zoomStep) || 0.1) * 100) === percent ? 'selected' : ''}>${t('config.function-settings.pin-zoom-step-value', { percent })}</option>`).join('')}</select></div>
+    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.pin-opacity')}</b><small>${t('config.function-settings.pin-opacity-hint')}</small></div></div>
   </div>`
   const tabContent = functionTab === 'ocr' ? ocrSettings : (functionTab === 'record' ? recordSettings : captureSettings)
   view.innerHTML = `<div class="page">${pageHeader(t('config.route.settings-function'), t('config.function-settings.description'))}${tabsMarkup}${tabContent}</div>`

@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld('captureAPI', {
   openRecognition: (type, imageBuffer, meta) => ipcRenderer.invoke('capture:open-recognition', { type, imageBuffer, meta }),
   ocr: (imageBuffer, options) => ipcRenderer.invoke('capture:ocr', { imageBuffer, ...options }),
   translate: (imageBuffer, options) => ipcRenderer.invoke('capture:translate', { imageBuffer, ...options }),
+  // P1 (2026-10-18 snow migration §6.2②): screenshot -> Markdown/HTML through the
+  // vision-capable chat model. The main process owns the save dialog and the file
+  // write, so the renderer only sends pixels plus the requested format.
+  convertImage: (imageBuffer, options) => ipcRenderer.invoke('capture:convert-image', { imageBuffer, ...options }),
   startRegionRecording: (selectionBounds, serial) => ipcRenderer.invoke('capture:start-region-recording', { selectionBounds, ...serial }),
   recordHistory: (imageBuffer, meta) => ipcRenderer.invoke('capture:record-history', { imageBuffer, meta }),
   exportPdf: (imageBuffer, meta, mode) => ipcRenderer.invoke('capture:export-pdf', { imageBuffer, meta, mode }),

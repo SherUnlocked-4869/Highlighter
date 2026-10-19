@@ -87,16 +87,37 @@ test('defines exact legacy and managed source cleanup boundaries', async (t) => 
     configFile: path.join(path.resolve(legacyRoot), 'config.json'),
     logFile: path.join(path.resolve(legacyRoot), 'app.log'),
     history: path.join(path.resolve(legacyRoot), 'capture-history'),
+    // The conversations and clipboard stores became persistent migrate targets after
+    // this boundary was first pinned (ADDITIONAL_PERSISTENT in data-root-migration.js),
+    // so they are part of both the source shape and the cleanup list.
+    conversations: path.join(path.resolve(legacyRoot), 'conversations'),
+    clipboard: path.join(path.resolve(legacyRoot), 'clipboard'),
     cleanupFiles: [path.join(path.resolve(legacyRoot), 'config.json'), path.join(path.resolve(legacyRoot), 'app.log')],
-    cleanupDirectories: [path.join(path.resolve(legacyRoot), 'capture-history'), path.join(path.resolve(legacyRoot), 'temp', 'recordings')]
+    cleanupDirectories: [
+      path.join(path.resolve(legacyRoot), 'capture-history'),
+      path.join(path.resolve(legacyRoot), 'temp', 'recordings'),
+      path.join(path.resolve(legacyRoot), 'conversations'),
+      path.join(path.resolve(legacyRoot), 'clipboard')
+    ]
   })
   assert.deepEqual(createManagedSourcePaths(managedRoot), {
     root: managedLayout.root,
     configFile: path.join(managedLayout.config, 'config.json'),
     logFile: path.join(managedLayout.logs, 'app.log'),
     history: managedLayout.history,
+    conversations: managedLayout.conversations,
+    clipboard: managedLayout.clipboard,
     cleanupFiles: [],
-    cleanupDirectories: [managedLayout.config, managedLayout.logs, managedLayout.history, managedLayout.conversations, managedLayout.cache, managedLayout.runtime]
+    // MANAGED_DIRECTORIES, in declaration order.
+    cleanupDirectories: [
+      managedLayout.config,
+      managedLayout.logs,
+      managedLayout.history,
+      managedLayout.conversations,
+      managedLayout.clipboard,
+      managedLayout.cache,
+      managedLayout.runtime
+    ]
   })
 })
 
@@ -155,7 +176,9 @@ test('migrates legacy config, log, and history transactionally', async (t) => {
   assert.equal(await exists(path.join(targetRoot, 'cache', 'recordings', 'cache.tmp')), false)
   assert.equal(await exists(path.join(portableDirectory, PENDING_NAME)), true)
   const marker = JSON.parse(await fsp.readFile(path.join(targetRoot, '.migration.json'), 'utf8'))
-  assert.equal(marker.version, 1)
+  // MARKER_VERSION moved to 2 when the conversations/clipboard stores became
+  // persistent migrate targets; verification still accepts v1 for old pending roots.
+  assert.equal(marker.version, 2)
   assert.equal(marker.newRoot, path.resolve(targetRoot))
   assert.deepEqual(marker.source, source)
   assert.equal(marker.copiedConfigCount, 1)
@@ -788,7 +811,17 @@ test('planned cleanup resumes when quarantine already has the recorded identity'
   assert.equal(await fsp.readFile(keepPath, 'utf8'), 'keep')
 })
 
-test('planned cleanup tolerates normal active data changes and resumes safely', async (t) => {
+test('planned cleanup resumes after a cleanup failure without touching source evidence', async (t) => {
+  // 2026-10-19: this test used to also rewrite the config/log/history inside the
+  // target between the two verify calls, asserting a resumed cleanup tolerated
+  // "normal active data changes". Commit 96e2bb6 ("verify migrated content
+  // integrity") deliberately tightened verification: ANY content change in a
+  // pending migration now fails with 数据目录迁移验证失败 (see "rejects migrated
+  // content changes without cleaning source"). The two expectations cannot both
+  // hold, so this test keeps the part that is still a real requirement - a failed
+  // cleanup is retried and completes, the unrelated file survives, and the source
+  // is only cleaned once verification passes - and leaves content tampering to the
+  // dedicated rejection test.
   const fixture = await migratedFixture(t)
   const keepPath = path.join(fixture.sourceRoot, 'keep.txt')
   await fsp.writeFile(keepPath, 'keep')
@@ -799,21 +832,23 @@ test('planned cleanup tolerates normal active data changes and resumes safely', 
   })
 
   assert.deepEqual(first, { finalized: false, cleanupErrors: ['access denied'] })
-  assert.equal(JSON.parse(await fsp.readFile(fixture.pendingPath, 'utf8')).phase, 'quarantine-planned')
+  const pending = JSON.parse(await fsp.readFile(fixture.pendingPath, 'utf8'))
+  assert.equal(pending.phase, 'quarantine-planned')
+  // The quarantine step already renamed the source away before the injected cleanup
+  // failure, so the entry files are gone from their original location while the
+  // unrelated file travelled with the quarantined directory. That is the state the
+  // resume has to cope with.
+  assert.equal(await exists(fixture.sourceRoot), false)
+  assert.equal(typeof pending.quarantineRoot, 'string')
+  assert.equal(await fsp.readFile(path.join(pending.quarantineRoot, 'keep.txt'), 'utf8'), 'keep')
 
-  await fsp.writeFile(fixture.target.configFile, '{"settings":{"theme":"dark"}}')
-  await fsp.appendFile(fixture.target.logFile, '\napplication started')
-  await fsp.writeFile(path.join(fixture.target.history, 'after-start.png'), 'new history')
-
+  // The second attempt runs against the untouched target and completes.
   assert.deepEqual(await verifyAndFinalizeMigration({ pendingPath: fixture.pendingPath, activeRoot: fixture.targetRoot }), {
     finalized: true,
     cleanupErrors: []
   })
   assert.equal(await exists(fixture.pendingPath), false)
   assert.equal(await exists(path.join(fixture.targetRoot, '.migration.json')), false)
-  assert.equal(JSON.parse(await fsp.readFile(fixture.target.configFile, 'utf8')).settings.theme, 'dark')
-  assert.match(await fsp.readFile(fixture.target.logFile, 'utf8'), /application started/)
-  assert.equal(await fsp.readFile(path.join(fixture.target.history, 'after-start.png'), 'utf8'), 'new history')
   assert.equal(await fsp.readFile(keepPath, 'utf8'), 'keep')
   assert.equal(await exists(fixture.source.configFile), false)
   assert.equal(await exists(fixture.source.logFile), false)

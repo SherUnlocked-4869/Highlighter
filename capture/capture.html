@@ -63,6 +63,16 @@
       <button id="table" data-i18n-title="capture.toolbar.table" data-i18n-aria-label="capture.toolbar.table"><span class="toolbar-icon" style="--icon:url('icons/table.svg')" aria-hidden="true"></span></button>
       <button id="ocr" data-i18n-title="capture.toolbar.ocr" data-i18n-aria-label="capture.toolbar.ocr"><span class="toolbar-icon" style="--icon:url('icons/ocr.svg')" aria-hidden="true"></span></button>
       <button id="translate" data-i18n-title="capture.toolbar.translate" data-i18n-aria-label="capture.toolbar.translate"><span class="toolbar-icon" style="--icon:url('icons/translate.svg')" aria-hidden="true"></span></button>
+      <!-- P1 (2026-10-18 snow migration section 6.2 item 2): screenshot -> Markdown/HTML through a
+           vision-capable AI model. The control is a small popover so one strip button
+           covers both formats without a second icon. -->
+      <div class="color-wrap doc-convert-wrap">
+        <button id="convertDoc" type="button" aria-haspopup="true" aria-expanded="false" data-i18n-title="capture.toolbar.convert-doc" data-i18n-aria-label="capture.toolbar.convert-doc"><span class="toolbar-icon" style="--icon:url('icons/doc-convert.svg')" aria-hidden="true"></span></button>
+        <div id="convertDocMenu" class="color-palette doc-convert-menu hidden" role="group" data-i18n-aria-label="capture.toolbar.convert-doc">
+          <button type="button" data-convert-output="markdown" data-i18n="capture.toolbar.convert-markdown"></button>
+          <button type="button" data-convert-output="html" data-i18n="capture.toolbar.convert-html"></button>
+        </div>
+      </div>
       <button id="record" data-i18n-title="capture.toolbar.record" data-i18n-aria-label="capture.toolbar.record"><span class="toolbar-icon" style="--icon:url('icons/record.svg')" aria-hidden="true"></span></button>
       <button id="pin" data-i18n-title="capture.toolbar.pin" data-i18n-aria-label="capture.toolbar.pin"><span class="toolbar-icon" style="--icon:url('icons/pin.svg')" aria-hidden="true"></span></button>
       <button id="save" data-i18n-title="capture.toolbar.save-tip" data-i18n-aria-label="capture.toolbar.save"><span class="toolbar-icon" style="--icon:url('icons/save.svg')" aria-hidden="true"></span></button>

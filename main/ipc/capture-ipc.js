@@ -29,6 +29,8 @@ function registerCaptureIpc({ ipcMain, controller }) {
   ipcMain.on('recognition:ready', controller.recognitionReady)
   ipcMain.handle('recognition:table', controller.recognitionTable)
   ipcMain.handle('recognition:copy', controller.recognitionCopy)
+  ipcMain.handle('recognition:export-excel', controller.recognitionExportExcel)
+  ipcMain.handle('recognition:export-pdf', controller.recognitionExportPdf)
   ipcMain.on('recognition:close', controller.recognitionClose)
 }
 

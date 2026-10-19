@@ -16,16 +16,19 @@
 
   add('zh-CN', {
     'pin.click-through.label': '穿透中 · 悬停退出',
-    'pin.click-through.title': '鼠标穿透中'
+    'pin.click-through.title': '鼠标穿透中',
+    'pin.opacity.title': '不透明度（Ctrl + 滚轮调整）'
   })
 
   add('en-US', {
     'pin.click-through.label': 'Click-through · hover to exit',
-    'pin.click-through.title': 'Click-through active'
+    'pin.click-through.title': 'Click-through active',
+    'pin.opacity.title': 'Opacity (Ctrl + wheel)'
   })
 
   add('zh-TW', {
     'pin.click-through.label': '穿透中 · 懸停退出',
-    'pin.click-through.title': '滑鼠穿透中'
+    'pin.click-through.title': '滑鼠穿透中',
+    'pin.opacity.title': '不透明度（Ctrl + 滾輪調整）'
   })
 })()

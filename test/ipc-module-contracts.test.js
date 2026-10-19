@@ -112,6 +112,8 @@ test('capture IPC module owns capture, long-capture, and recognition channels', 
       'recognitionReady',
       'recognitionTable',
       'recognitionCopy',
+      'recognitionExportExcel',
+      'recognitionExportPdf',
       'recognitionClose'
     ])
   })
@@ -145,7 +147,9 @@ test('capture IPC module owns capture, long-capture, and recognition channels', 
     'long-capture:set-selection-editing',
     'long-capture:finish',
     'recognition:table',
-    'recognition:copy'
+    'recognition:copy',
+    'recognition:export-excel',
+    'recognition:export-pdf'
   ])
 })
 
@@ -153,14 +157,15 @@ test('OCR IPC module owns status, recognition, and translation channels', () => 
   const ipcMain = createIpcMain()
   registerOcrIpc({
     ipcMain,
-    controller: createController(['ocrStatus', 'ocr', 'translate'])
+    controller: createController(['ocrStatus', 'ocr', 'translate', 'convertImage'])
   })
 
-  assert.deepEqual([...ipcMain.handlers.keys()], ['ocr:status', 'capture:ocr', 'capture:translate'])
+  assert.deepEqual([...ipcMain.handlers.keys()], ['ocr:status', 'capture:ocr', 'capture:translate', 'capture:convert-image'])
   assert.deepEqual([...ipcMain.listeners.keys()], [])
   assert.equal(ipcMain.handlers.get('ocr:status')().method, 'ocrStatus')
   assert.equal(ipcMain.handlers.get('capture:ocr')(null, 'x').method, 'ocr')
   assert.equal(ipcMain.handlers.get('capture:translate')(null, 'x').method, 'translate')
+  assert.equal(ipcMain.handlers.get('capture:convert-image')(null, 'x').method, 'convertImage')
 })
 
 test('selection IPC module owns the toolbar, stream, chat, and pin channels', () => {

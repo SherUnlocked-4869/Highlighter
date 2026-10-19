@@ -47,7 +47,9 @@ test('history IPC registers query, batch management, and file actions', async ()
     'history:copy',
     'history:edit',
     'history:open',
-    'history:copy-path'
+    'history:copy-path',
+    // P0 (2026-10-18 snow migration §12.3): multi-select batch -> one multi-page PDF.
+    'history:export-pdf'
   ])
   assert.deepEqual(ipcMain.handlers.get('history:list')(null, { query: 'test' }), [{ query: 'test' }])
   assert.equal(ipcMain.handlers.get('history:thumbnail')(null, '1'), 'thumbnail:1')

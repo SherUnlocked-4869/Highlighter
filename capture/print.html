@@ -14,6 +14,8 @@
        这里只保留零边距与“按固有像素绘制”的图片样式，避免与纸张换算重复缩放。 */
     @page { margin: 0 }
     html, body { margin: 0; padding: 0; background: #fff; height: 100%; }
+
+    /* ---- single-image path (unchanged behaviour) ------------------------- */
     /* Centre the sheet in both axes: a fixed-ratio A4 page letterboxes an
        off-ratio screenshot, and left/top alignment used to pile all of that
        leftover space on the right (real-device review, 2026-10-10). The scale is
@@ -29,9 +31,53 @@
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
+
+    /* ---- multi-page path -------------------------------------------------- */
+    /* The main process appends one .print-page per image and flips the document
+       into print-multi mode, so the single-image rules above cannot leak into the
+       batch layout. Each sheet is exactly one printable box; `break-after: page`
+       is what makes Chromium emit one PDF page per image. The last sheet
+       deliberately has no break, otherwise Chromium appends a blank trailing
+       page for the forced break.
+       print-multi is put on <html> as well as <body> because the single-image
+       path pins `html,body{height:100%}`; a 100%-height root would make the paged
+       content flow grow inside a fixed box instead of stacking sheets. */
+    #print-pages { display: none; }
+    html.print-multi, html.print-multi > body { height: auto; }
+    body.print-multi { display: block; height: auto; }
+    body.print-multi #print-image { display: none; }
+    body.print-multi #print-pages { display: block; }
+    body.print-multi .print-page {
+      box-sizing: border-box;
+      width: var(--print-page-width, 100%);
+      height: var(--print-page-height, 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      break-after: page;
+      page-break-after: always;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    body.print-multi .print-page.print-page-last {
+      break-after: auto;
+      page-break-after: auto;
+    }
+    body.print-multi .print-page img {
+      display: block;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      max-width: none;
+      max-height: none;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
   </style>
 </head>
 <body>
   <img id="print-image" alt="">
+  <div id="print-pages"></div>
 </body>
 </html>

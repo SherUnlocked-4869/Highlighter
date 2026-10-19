@@ -171,7 +171,24 @@ function bindModelsProviderTab() {
       const row = item.querySelector('.model-catalog-row')
       const modelId = row?.querySelector('[data-model-id]')?.value.trim() || provider.models?.[index]?.id || t('config.models.not-filled')
       const modelName = row?.querySelector('[data-model-name]')?.value.trim() || provider.models?.[index]?.name || '—'
-      panel.innerHTML = `<div class="model-detail-grid"><span>${t('config.models.model-id')}</span><b>${escapeHtml(modelId)}</b><span>${t('config.models.display-name')}</span><b>${escapeHtml(modelName)}</b><span>${t('config.models.owning-provider')}</span><b>${escapeHtml(provider.name)}</b><span>${t('config.models.api-protocol')}</span><b>${escapeHtml(provider.protocol || 'openai-chat')}</b><span>${t('config.models.api-url')}</span><b>${escapeHtml(provider.baseUrl || t('config.models.not-filled'))}</b></div>`
+      // Vision is a per-model capability that decides whether "Image to Markdown /
+      // HTML" can run on this model (2026-10-18 snow migration §6.2②). It is stored
+      // in the catalog, so it survives a save through mergeModelRow().
+      const visionEnabled = provider.models?.[index]?.capabilities?.vision === true
+      panel.innerHTML = `<div class="model-detail-grid"><span>${t('config.models.model-id')}</span><b>${escapeHtml(modelId)}</b><span>${t('config.models.display-name')}</span><b>${escapeHtml(modelName)}</b><span>${t('config.models.owning-provider')}</span><b>${escapeHtml(provider.name)}</b><span>${t('config.models.api-protocol')}</span><b>${escapeHtml(provider.protocol || 'openai-chat')}</b><span>${t('config.models.api-url')}</span><b>${escapeHtml(provider.baseUrl || t('config.models.not-filled'))}</b></div><div class="model-detail-grid model-detail-capabilities"><span>${t('config.models.supports-images')}</span><label class="switch ${visionEnabled ? 'on' : ''}" data-model-vision="${index}" role="switch" aria-checked="${visionEnabled}" tabindex="0" title="${t('config.models.supports-images-hint')}"></label><small>${t('config.models.supports-images-hint')}</small></div>`
+      panel.querySelector('[data-model-vision]')?.addEventListener('click', (event) => {
+        event.stopPropagation()
+        const target = event.currentTarget
+        const base = modelProviderById(providerId)
+        if (!base) return
+        const nextVision = base.models?.[index]?.capabilities?.vision !== true
+        const models = base.models.map((model, modelIndex) => modelIndex !== index
+          ? model
+          : { ...model, capabilities: { ...(model.capabilities || {}), vision: nextVision } })
+        settings = { ...settings, providers: settings.providers.map((item) => item.id === providerId ? { ...item, models } : item) }
+        target.classList.toggle('on', nextVision)
+        target.setAttribute('aria-checked', String(nextVision))
+      })
       const willOpen = panel.hidden
       panel.hidden = !panel.hidden
       button.classList.toggle('open', willOpen)

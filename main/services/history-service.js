@@ -408,22 +408,52 @@ class HistoryService {
     }
   }
 
+  /**
+   * Ordered export items for a selection (id -> existing file path).
+   *
+   * Walks the stored history exactly once, in history order, and keeps only the
+   * requested ids whose file is still readable. Ids that are not in the history at
+   * all are reported alongside the ones whose file vanished, so a batch exporter
+   * can tell the user how many entries were skipped instead of silently shrinking
+   * the batch. Shared with exportMany so the selection rules (normalizeHistoryIds,
+   * existence probe, history order) have a single definition.
+   */
+  selectExportItems(ids) {
+    const selected = new Set(normalizeHistoryIds(ids))
+    const items = []
+    const missingIds = []
+    for (const item of this.readHistory()) {
+      const id = String(item?.id || '')
+      if (!selected.has(id)) continue
+      selected.delete(id)
+      if (!item.filePath || !fs.existsSync(item.filePath)) {
+        missingIds.push(id)
+        continue
+      }
+      items.push({
+        id: item.id,
+        filePath: item.filePath,
+        width: Number(item.width) || 0,
+        height: Number(item.height) || 0,
+        longCapture: item.longCapture === true
+      })
+    }
+    missingIds.push(...selected)
+    return { items, missingIds }
+  }
+
   exportMany(ids, directory) {
     this.assertWritable()
-    const selected = new Set(normalizeHistoryIds(ids))
     const requestedDirectory = String(directory || '').trim()
     if (!requestedDirectory || !path.isAbsolute(requestedDirectory)) throw new Error('导出目录必须是绝对路径')
     const exportDirectory = path.resolve(requestedDirectory)
     fs.mkdirSync(exportDirectory, { recursive: true })
     const failures = []
     let exportedCount = 0
-    let missingCount = 0
-    for (const item of this.readHistory()) {
-      if (!selected.has(String(item?.id || ''))) continue
-      if (!item.filePath || !fs.existsSync(item.filePath)) {
-        missingCount++
-        continue
-      }
+    // Selection + existence accounting is shared with the PDF batch export; only
+    // the copy below is specific to "keep the original file name" exporting.
+    const { items, missingIds } = this.selectExportItems(ids)
+    for (const item of items) {
       const extension = path.extname(item.filePath)
       const baseName = path.basename(item.filePath, extension)
       let destination = path.join(exportDirectory, `${baseName}${extension}`)
@@ -441,7 +471,7 @@ class HistoryService {
     }
     return {
       exportedCount,
-      missingCount: missingCount + Math.max(0, selected.size - exportedCount - missingCount - failures.length),
+      missingCount: missingIds.length,
       failures,
       directory: exportDirectory
     }

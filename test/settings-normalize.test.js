@@ -99,7 +99,6 @@ test('the Wave 0 toggles are coerced to strict booleans', () => {
     settings.screenshot.keepSerialAcrossCaptures = 1
     settings.record.audioSystem = true
     settings.record.audioMicrophone = 'on'
-    settings.record.captureCursor = 0
     settings.pinned.clickThrough = 1
   }))
   assert.equal(normalized.screenshot.captureCursor, false)
@@ -107,7 +106,6 @@ test('the Wave 0 toggles are coerced to strict booleans', () => {
   assert.equal(normalized.screenshot.keepSerialAcrossCaptures, false)
   assert.equal(normalized.record.audioSystem, true)
   assert.equal(normalized.record.audioMicrophone, false)
-  assert.equal(normalized.record.captureCursor, false)
   assert.equal(normalized.pinned.clickThrough, false)
 })
 
@@ -156,7 +154,7 @@ test('a legacy store without the new domains still normalizes', () => {
     delete settings.record
     delete settings.shortcuts
   }))
-  assert.deepEqual(normalized.pinned, { clickThrough: false })
+  assert.deepEqual(normalized.pinned, { clickThrough: false, zoomStep: 0.1 })
   assert.equal(normalized.record.audioSystem, false)
   assert.equal(normalized.record.audioSystemGain, 1)
   assert.equal(normalized.shortcuts.screenshotSaveAs, '')

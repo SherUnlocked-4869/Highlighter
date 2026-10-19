@@ -11,10 +11,17 @@
 <script src="../shared/locales/pin.js"></script>
 <script src="../shared/i18n.js"></script>
 </head>
-<body>
+<body data-rotation="0">
+<!-- #rotor is the rotation frame (P1, plan §9.3): the main process already sized
+     the window to the rotated bounding box, so this wrapper only has to lay the
+     surface out at the pre-rotation size and rotate it. The badges stay outside
+     it so they remain upright. -->
+<div id="rotor">
 <img id="image" class="pin-surface hidden" draggable="false">
 <canvas id="pixelImage" class="pin-surface hidden"></canvas>
+</div>
 <div id="zoomBadge">100%</div>
+<div id="opacityBadge" data-i18n-title="pin.opacity.title" title="Opacity">100%</div>
 <div id="clickThroughTag" data-i18n="pin.click-through.label" data-i18n-title="pin.click-through.title" title="Click-through active">Click-through · hover to exit</div>
 <script src="pin.js"></script>
 </body>

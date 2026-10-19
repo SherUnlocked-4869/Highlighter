@@ -5,8 +5,17 @@ const {
 } = require('../../../toolbar/toolbar-utils')
 const {
   modelSupportsTask,
+  modelSupportsVision,
   normalizeModelCapabilities
 } = require('../ai-model-capabilities')
+// Vision (image → Markdown/HTML) support, 2026-10-18 snow migration §6.2②: the
+// request shape and the prompt live in their own module so the text pipelines
+// below never grow a second code path.
+const {
+  buildImageConversionMessages,
+  normalizeImageOutputFormat,
+  stripEnclosingFence
+} = require('../ai-image-conversion')
 const {
   buildChatStreamRequest,
   createAiProtocolAdapter
@@ -448,6 +457,44 @@ async function completeChat(provider, messages, options = {}) {
   })
 }
 
+// Image → Markdown/HTML (2026-10-18 snow migration §6.2②).
+//
+// `provider` is a resolved assignment ({...provider, model, apiKey}); the caller
+// checks vision capability *before* this runs (resolveAiAssignment can only
+// resolve text features, so the vision check is a separate guard). The model
+// must be declared vision-capable in the model catalog, otherwise the provider
+// answers with an opaque 400 that the user cannot act on.
+async function convertImage(provider, image, options = {}) {
+  const config = normalizeProviderInput(provider)
+  if (!config.enabled) throw new Error('该功能指定的模型供应商已禁用')
+  if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
+  if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
+  if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
+  if (!modelSupportsVision({ capabilities: config.capabilities })) {
+    throw new Error('当前模型未开启图像理解能力，请先在「模型」设置中为该模型勾选“支持图像”')
+  }
+  const output = normalizeImageOutputFormat(options.output)
+  const messages = buildImageConversionMessages({
+    dataUrl: image?.dataUrl,
+    base64: image?.base64,
+    format: image?.format,
+    output,
+    instruction: options.instruction
+  })
+  const requestOptions = { ...(options.requestOptions || {}) }
+  if (options.signal) requestOptions.signal = options.signal
+  const text = await withConnectionFallback(config, async (attempt) => {
+    return createAiProtocolAdapter(attempt, createClient(attempt, { timeoutMs: options.timeoutMs || 120000 }))
+      .complete(messages, { maxTokens: options.maxTokens || 4096, temperature: 0.1 }, requestOptions)
+  })
+  return {
+    format: output,
+    text: stripEnclosingFence(text, output),
+    model: config.model,
+    providerId: config.id
+  }
+}
+
 async function translateText(provider, text, sourceLanguage = 'auto', targetLanguage = '中文', options = {}) {
   const config = normalizeProviderInput(provider)
   const instruction = `你是专业翻译引擎。源语言：${sourceLanguage}；目标语言：${targetLanguage}。只输出译文，保持段落、列表和表格结构，不添加解释。`
@@ -610,6 +657,7 @@ module.exports = {
   createCustomStream,
   createFollowUpStream,
   completeChat,
+  convertImage,
   translateText,
   translateOcrTextBlocks,
   buildOcrTranslationBatchPrompt,

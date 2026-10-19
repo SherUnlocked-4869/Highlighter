@@ -92,6 +92,16 @@
     'main.ai.http-status': '连接失败：供应商返回 HTTP {status}',
     'main.ai.network': '连接失败：{detail}',
     'main.ai.fallback': '网络请求失败，请检查 API 地址',
+    // --- image -> document conversion (main/services/ai-document.js) ---
+    'main.ai-document.settings-unavailable': '设置尚未就绪',
+    'main.ai-document.no-vision-model': '没有可用的图像理解模型：请先在「模型」设置中为对话模型勾选“支持图像”',
+    'main.ai-document.empty-image': '没有可转换的图片数据',
+    'main.ai-document.empty-result': '模型没有返回可保存的内容',
+    'main.ai-document.save-title': '保存转换结果',
+    'main.ai-document.converted': '已保存到 {path}',
+    'main.ai-document.failed': '图像转换失败：{detail}',
+    'main.ai-document.markdown': '图片转 Markdown',
+    'main.ai-document.html': '图片转 HTML',
 
     // --- dialogs (main/services/function-router.js) ---
     'main.dialog.image-filter': '图片'
@@ -161,6 +171,16 @@
     'main.ai.http-status': 'Connection failed: the provider returned HTTP {status}',
     'main.ai.network': 'Connection failed: {detail}',
     'main.ai.fallback': 'the network request failed. Check the API address',
+    // --- image -> document conversion (main/services/ai-document.js) ---
+    'main.ai-document.settings-unavailable': 'Settings are not ready yet',
+    'main.ai-document.no-vision-model': 'No vision-capable model: enable “Supports images” for your chat model in the Model settings first',
+    'main.ai-document.empty-image': 'There is no image data to convert',
+    'main.ai-document.empty-result': 'The model returned nothing to save',
+    'main.ai-document.save-title': 'Save the converted document',
+    'main.ai-document.converted': 'Saved to {path}',
+    'main.ai-document.failed': 'Image conversion failed: {detail}',
+    'main.ai-document.markdown': 'Image to Markdown',
+    'main.ai-document.html': 'Image to HTML',
 
     // --- dialogs ---
     'main.dialog.image-filter': 'Images'
@@ -230,6 +250,16 @@
     'main.ai.http-status': '連線失敗：供應商傳回 HTTP {status}',
     'main.ai.network': '連線失敗：{detail}',
     'main.ai.fallback': '網路請求失敗，請檢查 API 位址',
+    // --- image -> document conversion (main/services/ai-document.js) ---
+    'main.ai-document.settings-unavailable': '設定尚未就緒',
+    'main.ai-document.no-vision-model': '沒有可用的圖像理解模型：請先在「模型」設定中為對話模型勾選「支援圖像」',
+    'main.ai-document.empty-image': '沒有可轉換的圖片資料',
+    'main.ai-document.empty-result': '模型沒有傳回可儲存的內容',
+    'main.ai-document.save-title': '儲存轉換結果',
+    'main.ai-document.converted': '已儲存到 {path}',
+    'main.ai-document.failed': '圖像轉換失敗：{detail}',
+    'main.ai-document.markdown': '圖片轉 Markdown',
+    'main.ai-document.html': '圖片轉 HTML',
 
     // --- dialogs ---
     'main.dialog.image-filter': '圖片'

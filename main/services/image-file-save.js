@@ -5,6 +5,7 @@ const path = require('node:path')
 const { ensureDirectory: ensureDirectoryDefault } = require('./fs-utils')
 const { imageDataToBuffer: imageDataToBufferDefault } = require('./image-buffer')
 const { CAPTURE_PREFIX, makeCaptureName: makeCaptureNameDefault } = require('./capture-naming')
+const { t } = require('./i18n-bootstrap')
 
 const SAVE_TITLE = '保存截图'
 const PNG_FILTER = Object.freeze({ name: 'PNG 图片', extensions: ['png'] })
@@ -26,6 +27,25 @@ function resolveSaveDirectory(settings, explicitDirectory = '') {
 function comparableDirectory(value) {
   const resolved = path.resolve(value)
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+// Default overwrite confirmation for the fast-save path. The dialog branch gets
+// Windows' own native "file exists, replace?" prompt; the fast branch writes
+// straight into the remembered directory, so without this it overwrites silently
+// (plan §12.3 ②). Button copy is locale-driven; the resolved index is what matters.
+// Returning null/undefined (a dismissed dialog) is treated as "do not overwrite".
+async function defaultConfirmOverwrite(dialog, filePath) {
+  if (!dialog || typeof dialog.showMessageBox !== 'function') return false
+  const { response } = await dialog.showMessageBox({
+    type: 'warning',
+    buttons: [t('config.save.overwrite-confirm'), t('config.save.overwrite-cancel')],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    message: t('config.save.overwrite-title'),
+    detail: t('config.save.overwrite-detail', { fileName: path.basename(String(filePath || '')) })
+  })
+  return response === 0
 }
 
 // Resolves the destination path of a saved image: fast-save writes straight into
@@ -66,6 +86,7 @@ function createImageFileSaver({
   makeCaptureName = makeCaptureNameDefault,
   imageDataToBuffer = imageDataToBufferDefault,
   rememberDirectory = () => {},
+  confirmOverwrite,
   log = () => {},
   resolveTarget
 } = {}) {
@@ -77,6 +98,12 @@ function createImageFileSaver({
   if (typeof makeCaptureName !== 'function') throw new TypeError('Image file saver requires makeCaptureName')
   if (typeof imageDataToBuffer !== 'function') throw new TypeError('Image file saver requires imageDataToBuffer')
   const resolveImageTarget = resolveTarget || createImageTargetResolver({ dialog, ensureDirectory, getPicturesDirectory })
+  // Injectable so the conflict branch is testable without a real dialog. The
+  // resolver call is deferred, so a saver constructed without a dialog (tests
+  // inject resolveTarget) only fails if a conflict is actually hit.
+  const confirmSaveOverwrite = typeof confirmOverwrite === 'function'
+    ? confirmOverwrite
+    : async (filePath) => defaultConfirmOverwrite(dialog, filePath)
 
   return async function saveImageBuffer(imageBuffer, options = {}) {
     const settings = getSettings()
@@ -99,6 +126,23 @@ function createImageFileSaver({
     })
     const filePath = await resolveImageTarget({ fast, directory: preferredDirectory, defaultName })
     if (!filePath) return null
+    // Conflict pre-check for the silent branch only: with a fast directory the
+    // write happens without any OS prompt (a template-less name that already
+    // exists, or a race between the probe and the write, used to be overwritten
+    // without a word - plan §12.3 ②). When `fast` was requested but no directory
+    // is configured the resolver falls back to the native save dialog, and Windows
+    // already asks there; confirming again would double-prompt.
+    if (fast && fastDirectory && fs.existsSync(filePath)) {
+      let overwrite = false
+      try {
+        overwrite = (await confirmSaveOverwrite(filePath)) === true
+      } catch (error) {
+        log('Unable to confirm the save overwrite:', error.message)
+        overwrite = false
+      }
+      // Same contract as a dismissed save dialog: nothing was written.
+      if (!overwrite) return null
+    }
     await fs.promises.writeFile(filePath, imageDataToBuffer(imageBuffer))
     const directory = path.dirname(filePath)
     // Only refresh the memory when it would actually change, so the common save
@@ -115,4 +159,11 @@ function createImageFileSaver({
   }
 }
 
-module.exports = { createImageTargetResolver, createImageFileSaver, resolveSaveDirectory, PNG_FILTER, SAVE_TITLE }
+module.exports = {
+  createImageTargetResolver,
+  createImageFileSaver,
+  defaultConfirmOverwrite,
+  resolveSaveDirectory,
+  PNG_FILTER,
+  SAVE_TITLE
+}

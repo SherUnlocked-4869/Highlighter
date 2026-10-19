@@ -12,7 +12,11 @@ const expectedIcons = [
   // 2026-10-15: the thickness picker and the option row became icon-only (the wording moved
   // to title/aria-label), so both groups are part of this ordered list now.
   'weight-thin', 'weight-medium', 'weight-thick',
-  'undo', 'redo', 'long-capture', 'qr', 'table', 'ocr', 'translate', 'record', 'pin', 'save', 'print',
+  'undo', 'redo', 'long-capture', 'qr', 'table', 'ocr', 'translate',
+  // P1 (2026-10-18 snow migration §6.2②): image -> Markdown/HTML trigger, directly after
+  // the translate button (both turn the picture into text).
+  'doc-convert',
+  'record', 'pin', 'save', 'print',
   'copy', 'close',
   'fill-outline', 'fill-translucent', 'fill-solid',
   'stroke-solid', 'stroke-dashed', 'stroke-dotted',

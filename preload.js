@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteHistory: (id) => ipcRenderer.invoke('history:delete', id),
   deleteHistoryMany: (ids) => ipcRenderer.invoke('history:delete-many', ids),
   exportHistory: (ids) => ipcRenderer.invoke('history:export', ids),
+  // Multi-page PDF batch export (one PDF page per selected capture).
+  exportHistoryPdf: (ids) => ipcRenderer.invoke('history:export-pdf', ids),
   cleanupHistory: () => ipcRenderer.invoke('history:cleanup'),
   copyHistory: (id) => ipcRenderer.invoke('history:copy', id),
   editHistory: (id) => ipcRenderer.invoke('history:edit', id),

@@ -40,7 +40,17 @@
     'recognition.action.copy': '复制',
     'recognition.action.copy-table': '复制表格',
     'recognition.action.copy-content': '复制内容',
-    'recognition.action.copied': '已复制'
+    'recognition.action.copied': '已复制',
+    // Export actions (table → .xlsx, result window → .pdf).
+    'recognition.action.export-excel': '导出 Excel',
+    'recognition.action.export-pdf': '导出 PDF',
+    'recognition.error.export-failed': '导出失败：{detail}',
+    'recognition.error.invalid-window': '无效的识别结果窗口',
+    'recognition.error.empty-table': '没有可导出的表格数据',
+    'recognition.error.save-unavailable': '无法打开保存对话框',
+    'recognition.dialog.export-excel-title': '导出 Excel',
+    'recognition.dialog.excel-filter': 'Excel 工作簿',
+    'recognition.dialog.export-pdf-title': '导出 PDF'
   })
 
   add('en-US', {
@@ -67,7 +77,17 @@
     'recognition.action.copy': 'Copy',
     'recognition.action.copy-table': 'Copy table',
     'recognition.action.copy-content': 'Copy content',
-    'recognition.action.copied': 'Copied'
+    'recognition.action.copied': 'Copied',
+    // Export actions (table → .xlsx, result window → .pdf).
+    'recognition.action.export-excel': 'Export Excel',
+    'recognition.action.export-pdf': 'Export PDF',
+    'recognition.error.export-failed': 'Export failed: {detail}',
+    'recognition.error.invalid-window': 'Invalid recognition result window',
+    'recognition.error.empty-table': 'There is no table data to export',
+    'recognition.error.save-unavailable': 'The save dialog is unavailable',
+    'recognition.dialog.export-excel-title': 'Export Excel',
+    'recognition.dialog.excel-filter': 'Excel workbook',
+    'recognition.dialog.export-pdf-title': 'Export PDF'
   })
 
   add('zh-TW', {
@@ -94,6 +114,16 @@
     'recognition.action.copy': '複製',
     'recognition.action.copy-table': '複製表格',
     'recognition.action.copy-content': '複製內容',
-    'recognition.action.copied': '已複製'
+    'recognition.action.copied': '已複製',
+    // Export actions (table → .xlsx, result window → .pdf).
+    'recognition.action.export-excel': '匯出 Excel',
+    'recognition.action.export-pdf': '匯出 PDF',
+    'recognition.error.export-failed': '匯出失敗：{detail}',
+    'recognition.error.invalid-window': '無效的辨識結果視窗',
+    'recognition.error.empty-table': '沒有可匯出的表格資料',
+    'recognition.error.save-unavailable': '無法開啟儲存對話方塊',
+    'recognition.dialog.export-excel-title': '匯出 Excel',
+    'recognition.dialog.excel-filter': 'Excel 活頁簿',
+    'recognition.dialog.export-pdf-title': '匯出 PDF'
   })
 })()

@@ -99,6 +99,10 @@ test('update effect ids are stable for contract tests', () => {
     'language',
     'language.tray',
     'search',
+    // The clipboard panel (commit e7c7752) added these two effects after the list
+    // was first written; the ids are part of the contract, so they are enumerated.
+    'clipboard',
+    'clipboard.appearance',
     'selectionToolbar.clipboardFallback',
     'selectionToolbar.conversation.persist'
   ])

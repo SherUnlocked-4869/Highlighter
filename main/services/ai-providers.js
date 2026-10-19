@@ -1,5 +1,6 @@
 const {
   modelSupportsTask,
+  modelSupportsVision,
   normalizeModelCapabilities,
   taskForFeature
 } = require('./ai-model-capabilities')
@@ -267,6 +268,20 @@ function resolveToolbarAiProvider(settings, actionId) {
   return resolveAiAssignment(settings, 'chat', { fallbackFeature: 'toolbar:explain' })
 }
 
+// Vision assignment (2026-10-18 snow migration §6.2②). There is no `vision`
+// feature in AI_FEATURES on purpose: image conversion is not a user-facing
+// "route", it is the chat assignment with an extra capability requirement. So
+// the same provider/model the user configured for chat is reused, and only the
+// capability gate differs - which also means no new settings schema and no new
+// row on the models page.
+function resolveVisionAiProvider(settings) {
+  const provider = resolveAiAssignment(settings, 'chat', { fallbackFeature: 'translation' })
+  if (!provider) return null
+  const model = provider.models?.find((item) => item.id === provider.model)
+  if (!modelSupportsVision(model)) return null
+  return provider
+}
+
 module.exports = {
   AI_FEATURES,
   AI_PROTOCOLS,
@@ -285,5 +300,6 @@ module.exports = {
   normalizeAiSettings,
   normalizeProviderModels,
   resolveAiAssignment,
-  resolveToolbarAiProvider
+  resolveToolbarAiProvider,
+  resolveVisionAiProvider
 }

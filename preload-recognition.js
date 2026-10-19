@@ -15,6 +15,11 @@ contextBridge.exposeInMainWorld('recognitionAPI', {
   },
   recognizeTable: (dataUrl, scaleFactor) => ipcRenderer.invoke('recognition:table', { dataUrl, scaleFactor }),
   copyText: (text) => ipcRenderer.invoke('recognition:copy', text),
+  // Table recognition → .xlsx (analysis plan §6.2①). The renderer sends the rows
+  // it is displaying back; `merges` is optional and only passed when known.
+  exportExcel: (rows, merges) => ipcRenderer.invoke('recognition:export-excel', { rows, merges }),
+  // Result window → .pdf through the already-rendered window (plan §0.3 #4).
+  exportPdf: (options) => ipcRenderer.invoke('recognition:export-pdf', options),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   close: () => ipcRenderer.send('recognition:close')
 })

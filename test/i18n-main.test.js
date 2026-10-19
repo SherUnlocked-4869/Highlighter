@@ -114,6 +114,10 @@ test('the tray menu resolves its 12 labels from the table instead of hard-coding
     t('main.tray.pin-image'),
     t('main.tray.video-record'),
     t('main.tray.local-search'),
+    // The clipboard-history entry (main/services/tray-menu.js:69) sits between the
+    // local-search and game-mode items; its label is the shared `clipboard.title`
+    // key rather than a main.tray one.
+    t('clipboard.title'),
     t('main.tray.game-mode'),
     t('main.tray.exit-all-click-through'),
     t('main.tray.show-selection-chat'),

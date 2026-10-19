@@ -4,6 +4,8 @@
 // controller so the OCR surface can be read, and tested, on its own. The
 // dependencies stay injected for the same reason: this module never reaches for
 // a global, so node:test can drive it with fakes.
+const { convertImageToDocument } = require('../services/ai-document')
+
 function createOcrIpcController({
   getSettings,
   getOcrService,
@@ -73,6 +75,25 @@ function createOcrIpcController({
           textBlocks: translatedBlocks
         }
       }
+    },
+
+    // Image → Markdown/HTML (2026-10-18 snow migration §6.2②).
+    //
+    // Lives on the OCR controller because it is the same kind of thing: take the
+    // PNG the capture window already encoded, hand it to a model, return text. It
+    // deliberately does NOT reuse the OCR sidecar even when a vision model is
+    // configured - the OCR path is local and deterministic, this one is an AI
+    // request that must be an explicit user action.
+    convertImage: async (_event, payload = {}) => {
+      const settings = getSettings()
+      const buffer = readImage(payload)
+      return convertImageToDocument(buffer, {
+        output: payload?.output,
+        settings,
+        convertImage: aiClient.convertImage,
+        directory: settings?.screenshot?.lastSaveDirectory || settings?.screenshot?.saveDirectory || '',
+        makeName: (extension) => `${payload?.baseName || 'Highlighter_convert'}.${extension}`
+      })
     }
   }
 }
@@ -83,6 +104,7 @@ function registerOcrIpc({ ipcMain, controller }) {
   ipcMain.handle('ocr:status', controller.ocrStatus)
   ipcMain.handle('capture:ocr', controller.ocr)
   ipcMain.handle('capture:translate', controller.translate)
+  ipcMain.handle('capture:convert-image', controller.convertImage)
 }
 
 module.exports = {

@@ -222,6 +222,41 @@ function createCaptureDomain(deps) {
       .catch((error) => log('Display discovery warm-up failed:', error))
   }
 
+  // §3.2② (Snow a7673a353): the Ctrl+A second level needs the union of every display in
+  // DIP, the same space as `captureBounds`, so the renderer can turn it into stage
+  // coordinates by one subtraction. Computed from the live display list at init time (a
+  // monitor plugged in while the window is open is the next capture's problem). A single
+  // display yields exactly that display's bounds, which is what makes the second level a
+  // no-op on single-monitor setups instead of a special case in the renderer.
+  function desktopBounds() {
+    // Unit-test fakes and platforms with a minimal screen stub only answer
+    // getDisplayMatching; "no display list" must degrade to "no second level", not to a
+    // noisy log line per capture.
+    if (typeof screen?.getAllDisplays !== 'function') return null
+    let displays = []
+    try {
+      displays = screen.getAllDisplays() || []
+    } catch (error) {
+      log('Display union unavailable:', error.message)
+      return null
+    }
+    if (!displays.length) return null
+    let left = Infinity
+    let top = Infinity
+    let right = -Infinity
+    let bottom = -Infinity
+    for (const display of displays) {
+      const bounds = display?.bounds
+      if (!bounds) continue
+      left = Math.min(left, bounds.x)
+      top = Math.min(top, bounds.y)
+      right = Math.max(right, bounds.x + bounds.width)
+      bottom = Math.max(bottom, bounds.y + bounds.height)
+    }
+    if (!Number.isFinite(left) || !Number.isFinite(top) || right <= left || bottom <= top) return null
+    return { x: left, y: top, width: right - left, height: bottom - top }
+  }
+
   function sendCaptureInit(win) {
     if (
       !win ||
@@ -388,6 +423,10 @@ function createCaptureDomain(deps) {
         source: options.source || 'region',
         displayBounds: display.bounds,
         captureBounds,
+        // §3.2②: the Ctrl+A second level expands the selection to this union. Bounds
+        // only - the capture image itself still covers just `captureBounds`, so the
+        // renderer must not promise cross-display content (see desktopSelectionBounds).
+        desktopBounds: desktopBounds(),
         imageBounds: options.imageBounds || null,
         scaleFactor: capture.scaleFactor,
         editPin: !!options.editPin,

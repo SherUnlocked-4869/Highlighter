@@ -1,9 +1,9 @@
 # 对标分析：Snow Apps（Snow Shot）v1.2.6 → v1.3.2 新增能力，及向 Highlighter v3.0.0 的迁移评估
 
-- 日期：2026-10-18
-- 性质：**只做分析，不做开发**。两个仓库均**未修改任何产品代码**，未跑构建/测试，未做 git 写操作
+- 日期：2026-10-18（分析）／2026-10-19（实施回填）
+- 性质：**分析 + 实施**。§0–§17 仍是 2026-10-18 的只读分析原文（未改动结论）；**§18 是本轮实际实施的落地记录**，逐项标注了"做了什么 / 落点 / 与分析的偏差 / 未做"
 - 对标对象：`F:\workspace\snow-apps`（Snow Shot，C++/Qt 6 + Rust）
-- 本项目：`F:\workspace\Highlighter`，`master @ 4af7b84`，`package.json` 版本 **3.0.0**
+- 本项目：`F:\workspace\Highlighter`，`package.json` 版本 **3.0.0**（实施基线 `master @ d9ad364`，2026-10-19）
 - 分析区间：`v1.2.6_snow-shot`（`ef47b48c6`，2026-10-10 11:36 +0800）→ `HEAD`（`881132435`，2026-10-18 20:01 +0800）
 - 上游节奏：**8.4 天 6 个发布标签**（v1.2.7 / 1.2.8 / 1.2.9 / 1.3.0 / 1.3.1 / 1.3.2），约 1.5 天一个
 - 关联文档（本文件不替代、只修正）：
@@ -13,6 +13,8 @@
 - 分域底稿：本轮分析由 5 路并行调研产出 5 份分域底稿（基线与许可证 719 行 / 截图与标注 510 行 / 新编辑器与外壳 590 行 / OCR·翻译·MCP 562 行 / 录屏·贴纸·平台 425 行）。它们是**一次性工作产物，未入库**（写在 `.tmp/snow-migration-analysis/`，该目录已被 `.gitignore` 忽略）。
 
 > ⚠️ **本文件是自包含的**：每条结论都带上游与本仓的 `file:line` 证据，§17 给出全部可复现命令——不依赖那 5 份底稿也能逐条复核。底稿只在需要看"某一项的完整推导过程"时有用；若要重建，按 §17 的命令重新跑一遍即可。
+>
+> 📌 **实施状态见 §18**：本轮按 §0.3 的 7 项 P0 ± 批 1/2/4 落地，`main.js`、门禁读数、新增 IPC 通道、新增文件、以及对分析中若干成本估算的实测偏差都记在那里。§1.4 的"当前值"和 §2 的实测结论仍然是**分析当时**的读数，实施后的新读数以 §18.6 为准。
 
 **读法建议**：先读 §0（结论摘要与 P0 清单）→ §14（批次路线）→ §13（合规前置）；需要逐项证据时再进对应章节。§15 列出与旧文档的冲突，引用旧文档前必看。
 
@@ -20,11 +22,11 @@
 
 | 角色 | 先看 |
 |---|---|
-| 产品/排期 | §0.2 判定分布 → §0.3 P0 清单 → §14 批次 → §14.2 做/缓/不做 |
-| 开发（截图/标注） | §3 选区与成品感 → §4 标注工具 → §1.3 已落地基线 |
-| 开发（录屏/贴纸） | §8 录屏 → §9 贴图 → §2 实测结论（V1/V3） |
-| 开发（识别/MCP） | §6 OCR → §7 MCP → §13 合规前置 |
-| 合规/发布 | §13 全文 → §1.4 门禁 → §12.2 外壳集成 |
+| 产品/排期 | §0.2 判定分布 → §0.3 P0 清单 → §14 批次 → §14.2 做/缓/不做 → **§18.1 已落地** |
+| 开发（截图/标注） | §3 选区与成品感 → §4 标注工具 → §1.3 已落地基线 → **§18.3** |
+| 开发（录屏/贴纸） | §8 录屏 → §9 贴图 → §2 实测结论（V1/V3）→ **§18.4** |
+| 开发（识别/MCP） | §6 OCR → §7 MCP → §13 合规前置 → **§18.5** |
+| 合规/发布 | §13 全文 → §1.4 门禁 → §12.2 外壳集成 → **§18.6 门禁新读数** |
 
 ---
 
@@ -66,16 +68,19 @@
 
 ### 0.3 最值得迁移的 7 项（P0，合计约 **9–9.5 人日**）
 
-| # | 项 | 为什么现在做 | 成本 | 域 |
-|---|---|---|---:|---|
-| 1 | **元素样式编辑回写"下次创建默认"** | 现有语义 **bug**：选中元素改成红色后，下一次画新矩形仍是旧颜色。Snow 专门用 308 行 `style.rs` 修它 | 1.0–1.5 | 标注 |
-| 2 | **多页 PDF（单次 `printToPDF` 出多页）** | Highlighter 已有 `print.html` + `printToPDF` 全套，只支持单图单页；改成"一个 HTML 放 N 张图 + 分页 CSS"即可 | 1.5 | 导出 |
-| 3 | **导出文件名冲突警告（含 `fastSave` 预检）** | `fastSave` 分支当前没有用户可见的覆盖提示 | 0.5 | 保存 |
-| 4 | **`exportWindowToPdf` 接线（贴图/识别结果导 PDF）** | 函数已写好且有单测，**生产零调用方**——纯白捡 | 0.5 | 导出 |
-| 5 | **死配置清理 / 接线** | `fixedContent.autoResize`、`autoOcr`、`record.captureCursor`、`screenshot.saveFormat`、`ocr.modelWriteToMemory` 五个键无消费者，设置页却在展示 | 0.5 | 卫生 |
-| 6 | **贴纸屏幕几何变化重排** | 拔掉显示器/改分辨率后贴纸会飘到屏幕外；Electron 侧只需监听 `display-metrics-changed` | 1.5 | 贴纸 |
-| 7 | **贴纸旋转接线 + 滚轮调透明度** | 旋转 helper 与单测都已存在（零生产调用）；滚轮透明度是贴纸最高频的调节动作 | 3.5 | 贴纸 |
-| | **合计** | 第 1–7 项相加 | **9.0–9.5** | — |
+> ✅ **实施状态（2026-10-19）：7 项全部落地，实测合计约 6.9 人日**（比估算省 2.1–2.6）。
+> 逐项落点与偏差见 §19.2；下面的成本列保留分析时的估算值。
+
+| # | 项 | 为什么现在做 | 成本 | 域 | 状态 |
+|---|---|---|---:|---|---|
+| 1 | **元素样式编辑回写"下次创建默认"** | 现有语义 **bug**：选中元素改成红色后，下一次画新矩形仍是旧颜色。Snow 专门用 308 行 `style.rs` 修它 | 1.0–1.5 | 标注 | ✅ 实测 0.6 |
+| 2 | **多页 PDF（单次 `printToPDF` 出多页）** | Highlighter 已有 `print.html` + `printToPDF` 全套，只支持单图单页；改成"一个 HTML 放 N 张图 + 分页 CSS"即可 | 1.5 | 导出 | ✅ 实测 1.8 |
+| 3 | **导出文件名冲突警告（含 `fastSave` 预检）** | `fastSave` 分支当前没有用户可见的覆盖提示 | 0.5 | 保存 | ✅ 实测 0.3 |
+| 4 | **`exportWindowToPdf` 接线（贴图/识别结果导 PDF）** | 函数已写好且有单测，**生产零调用方**——纯白捡 | 0.5 | 导出 | ✅ 实测 0.2 |
+| 5 | **死配置清理 / 接线** | `fixedContent.autoResize`、`autoOcr`、`record.captureCursor`、`screenshot.saveFormat`、`ocr.modelWriteToMemory` 五个键无消费者，设置页却在展示 | 0.5 | 卫生 | ✅ 实测 0.4（`record.captureCursor` 改为**删除**而非接线，见 §19.2 #5） |
+| 6 | **贴纸屏幕几何变化重排** | 拔掉显示器/改分辨率后贴纸会飘到屏幕外；Electron 侧只需监听 `display-metrics-changed` | 1.5 | 贴纸 | ✅ 实测 1.2 |
+| 7 | **贴纸旋转接线 + 滚轮调透明度** | 旋转 helper 与单测都已存在（零生产调用）；滚轮透明度是贴纸最高频的调节动作 | 3.5 | 贴纸 | ✅ 实测 2.4 |
+| | **合计** | 第 1–7 项相加 | **9.0–9.5** | — | **✅ 实测 6.9** |
 
 ### 0.4 明确不跟（约 47 项中的代表）
 
@@ -159,9 +164,13 @@
 | 覆盖率 | 85% / 60% / 90%（三档） | 有（历史 91–93%，未复跑） | 有 | `package.json` 的 `test:coverage:*` |
 | 依赖审计 | 0 未豁免 | 18 个失效豁免项 → 已知 exit 1 | 负 | `docs/plans/2026-10-15-capture-interaction-handoff.md:22` |
 
+> 🔄 **实施后读数（2026-10-19）**：`main.js` **1324/1330**（余 6 行）、i18n **585/606**（余 21 行，config 65 / capture 222 / record 4 / long-capture 3 / action 8 / toolbar 5 / main 278）、locale 对称 **1169 × 3**、测试文件 **144**。详见 §19.10。上表保留分析当时的读数以便对照。
+
 **两条会直接杀死方案的约束**：
 1. 任何新增装配**不得写进 `main.js`**，必须落 `main/domains/`、`main/services/`、`main/ipc/`，且需先腾挪行数配额；
 2. 扫描区（`config/capture/record/long-capture/action/search/recognition/toolbar/pin/main`）内**新增任何一行中文注释就会破 i18n 门禁**，新注释一律英文。
+
+> ✅ **实施验证**：这两条约束在本轮全部被执行。`main.js` 不但没长，还从 1330 降到 1324；新增 CJK 行数为 **0**（585 比分析时的 588 还少 3 行）。
 
 ### 1.5 Electron 43 + Canvas 2D 的工程边界（成本档位）
 
@@ -851,24 +860,28 @@ Qt 级自研渲染引擎（强绑 Qt6 + OpenCV）、桌面全局画布、原生�
 
 ### 14.1 批次划分
 
-| 批次 | 内容 | 人日 | 前置 |
-|---|---|---:|---|
-| **批 0：合规地基** | LICENSE + COPYRIGHT + `package.json` license + THIRD_PARTY_NOTICES + 打包白名单 + About 页告知 | **3–5** | 所有者拍板 B5 |
-| **批 1：白捡 + bug 级** | 样式回写默认 1.25 + 文件名冲突 0.5 + `exportWindowToPdf` 接线 0.5 + 死配置清理 0.5 + 托盘主题图标 1.0 | **3.75** | 无 |
-| **批 2：贴纸体验包** | 滚轮透明度 2.0 + 屏幕几何重排 1.5 + 旋转接线 1.5 + 缩放步进 0.5 | **5.5** | 无 |
-| **批 3：导出成品感** | 多页 PDF 1.5 + 选区圆角/阴影/背景不透明度 10–14 + Ctrl+A 二级 0.5 | **12–16** | 批 1（尺寸契约） |
-| **批 4：识别输出** | 表格导出 Excel 1.5 + 图片转 Markdown/HTML 2.0 + 原地翻译导出 1.5 | **5.0** | AI 多模态（含在 2.0 内） |
-| **批 5：录屏体验** | trim/变速 5–6 + 音轨图标 0.5 + 增益滑杆 1.5 + `captureCursor` 接线 1.0 | **8–9** | V1 已实测 |
-| **批 6：录屏格式** | GIF/APNG/WebP + 稀疏帧瘦身 | **6.0** | 批 5（共享编码参数面板） |
-| **批 7：选区与快捷键** | 选区历史浏览 4–6 + 窗口内快捷键 3–5 + 居中滚轮缩放 1.5 | **8.5–12.5** | 无 |
-| **批 8：外壳集成** | 右键菜单 3.0 + `--edit-with` 1.0 + 菜单开关/卸载 1.0 + 安装器 sidecar 1.5 | **6.5** | **`main.js` 行数腾挪** |
-| **批 9：标注工具（逐个立项）** | 放大镜 8–10 / 压感画笔 10–12 / 角度 8–12 / 聚光灯 8–12 / 气泡 18–25 | 逐个 | 无 |
-| **批 10：探路** | Collage MVP 3.0 + 长截图切分 1.5 + BMP 探针 0.5 | **5.0** | — |
-| **批 11：MCP** | 自研 Node 版 12 工具 | **10.0** | **批 0 必须先完成** |
-| **合计（批 0–8，建议本期）** | | **58–69** | — |
-| **批 9（若有预算再逐个立项）** | 批 9 中位 | **61.5**（区间 52–71） | — |
-| **批 10 + 批 11** | Collage MVP/切分/BMP 探针 + MCP | **15.0** | 批 0 完成后才可做 MCP |
-| **全部批次总计（如果全做）** | | **约 125–155** | — |
+> ✅ **实施状态（2026-10-19）**：本轮完成了 **批 1、批 2、批 3 的多页 PDF + Ctrl+A 二级、批 4 的表格 Excel + 图片转文档**，
+> 合计约 **12 人日**实际投入（估算 16.25–20.25）。批 0 / 5 / 6 / 7 / 8 / 9 / 10 / 11 **均未开始**，与 §14.2 的"做/缓/不做"一致。
+> 逐项状态见 §19。
+
+| 批次 | 内容 | 人日 | 前置 | 本轮 |
+|---|---|---:|---|---|
+| **批 0：合规地基** | LICENSE + COPYRIGHT + `package.json` license + THIRD_PARTY_NOTICES + 打包白名单 + About 页告知 | **3–5** | 所有者拍板 B5 | ⬜ 未做 |
+| **批 1：白捡 + bug 级** | 样式回写默认 1.25 + 文件名冲突 0.5 + `exportWindowToPdf` 接线 0.5 + 死配置清理 0.5 + 托盘主题图标 1.0 | **3.75** | 无 | ✅ 全部完成（实测 ≈2.0） |
+| **批 2：贴纸体验包** | 滚轮透明度 2.0 + 屏幕几何重排 1.5 + 旋转接线 1.5 + 缩放步进 0.5 | **5.5** | 无 | ✅ 全部完成（实测 ≈4.1） |
+| **批 3：导出成品感** | 多页 PDF 1.5 + 选区圆角/阴影/背景不透明度 10–14 + Ctrl+A 二级 0.5 | **12–16** | 批 1（尺寸契约） | 🟡 多页 PDF + Ctrl+A 二级完成；**选区圆角/阴影/背景不透明度未做** |
+| **批 4：识别输出** | 表格导出 Excel 1.5 + 图片转 Markdown/HTML 2.0 + 原地翻译导出 1.5 | **5.0** | AI 多模态（含在 2.0 内） | 🟡 前两项完成（图片转文档实测 2.6）；**原地翻译导出未做** |
+| **批 5：录屏体验** | trim/变速 5–6 + 音轨图标 0.5 + 增益滑杆 1.5 + `captureCursor` 接线 1.0 | **8–9** | V1 已实测 | ⬜ 未做（`captureCursor` 已按删除处理，见 §19.2 #5） |
+| **批 6：录屏格式** | GIF/APNG/WebP + 稀疏帧瘦身 | **6.0** | 批 5（共享编码参数面板） | ⬜ 未做 |
+| **批 7：选区与快捷键** | 选区历史浏览 4–6 + 窗口内快捷键 3–5 + 居中滚轮缩放 1.5 | **8.5–12.5** | 无 | ⬜ 未做 |
+| **批 8：外壳集成** | 右键菜单 3.0 + `--edit-with` 1.0 + 菜单开关/卸载 1.0 + 安装器 sidecar 1.5 | **6.5** | **`main.js` 行数腾挪** | ⬜ 未做（已腾出 6 行余量，但不足以装 `shell-integration`） |
+| **批 9：标注工具（逐个立项）** | 放大镜 8–10 / 压感画笔 10–12 / 角度 8–12 / 聚光灯 8–12 / 气泡 18–25 | 逐个 | 无 | ⬜ 未做 |
+| **批 10：探路** | Collage MVP 3.0 + 长截图切分 1.5 + BMP 探针 0.5 | **5.0** | — | ⬜ 未做 |
+| **批 11：MCP** | 自研 Node 版 12 工具 | **10.0** | **批 0 必须先完成** | ⬜ 未做 |
+| **合计（批 0–8，建议本期）** | | **58–69** | — | 🟡 本轮 ≈12 |
+| **批 9（若有预算再逐个立项）** | 批 9 中位 | **61.5**（区间 52–71） | — | ⬜ 未做 |
+| **批 10 + 批 11** | Collage MVP/切分/BMP 探针 + MCP | **15.0** | 批 0 完成后才可做 MCP | ⬜ 未做 |
+| **全部批次总计（如果全做）** | | **约 125–155** | — | 剩余 ≈113–143 |
 
 > 校验：
 > - 批 0–8 下限 = 3 + 3.75 + 5.5 + 12 + 5 + 8 + 6 + 8.5 + 6.5 = **58.25**；上限 = 5 + 3.75 + 5.5 + 16 + 5 + 9 + 6 + 12.5 + 6.5 = **69.25**。
@@ -878,12 +891,15 @@ Qt 级自研渲染引擎（强绑 Qt6 + OpenCV）、桌面全局画布、原生�
 
 ### 14.2 做 / 缓 / 不做
 
-| 结论 | 项 |
-|---|---|
-| **做（本期）** | 批 1–4（白捡 + bug + 贴纸体验 + 导出成品感 + 识别输出）；批 5/6（录屏，V1 已验证可行）；批 8 前先做 `main.js` 腾挪 |
-| **做（探路）** | Collage MVP（3d，带 3% 判据）、长截图切分导出（1.5d）、BMP 探针（0.5d） |
-| **缓** | MCP（等批 0）、标注工具逐个立项（放大镜/压感优先）、选区历史浏览（4–6d 但依赖历史 schema 扩展） |
-| **不做** | Collage 完整编辑器、Image Split 完整编辑器、任意形状选区、跨屏统一画布、工具行可拖动、OCR 运行时重写、Qt/Rust 级性能工程、macOS/ARM64/vcpkg/双版本 |
+> ✅ **实施状态（2026-10-19）**：**"做（本期）"里除录屏批 5/6 外全部落地**（批 1、批 2、批 3 的导出部分、批 4 的识别输出）。
+> "做（探路）"与"缓"的项一律未动。没有任何一项"不做"被偷偷做了。
+
+| 结论 | 项 | 本轮 |
+|---|---|---|
+| **做（本期）** | 批 1–4（白捡 + bug + 贴纸体验 + 导出成品感 + 识别输出）；批 5/6（录屏，V1 已验证可行）；批 8 前先做 `main.js` 腾挪 | ✅ 批 1/2 全做；批 3/4 部分做；⬜ 批 5/6 未做；✅ `main.js` 腾挪已完成（1324/1330，余 6 行） |
+| **做（探路）** | Collage MVP（3d，带 3% 判据）、长截图切分导出（1.5d）、BMP 探针（0.5d） | ⬜ 未做 |
+| **缓** | MCP（等批 0）、标注工具逐个立项（放大镜/压感优先）、选区历史浏览（4–6d 但依赖历史 schema 扩展） | ⬜ 未做 |
+| **不做** | Collage 完整编辑器、Image Split 完整编辑器、任意形状选区、跨屏统一画布、工具行可拖动、OCR 运行时重写、Qt/Rust 级性能工程、macOS/ARM64/vcpkg/双版本 | ✅ 一项未碰 |
 
 > **一句话排期建议**：**批 1 + 批 2 + 批 4（约 14.3 人日）先做一个版本**——这三批几乎全是"白捡 / 修 bug / 补接线"，风险最低、用户每天都能感知；验完再上批 3（导出成品感，10–14 人日）与批 5/6（录屏，14–15 人日）。
 
@@ -916,16 +932,24 @@ Qt 级自研渲染引擎（强绑 Qt6 + OpenCV）、桌面全局画布、原生�
 
 ## 16. 待验证项（不改变本文结论方向，但影响单项成本）
 
-| # | 项 | 影响 | 验证方式 |
-|---|---|---|---|
-| P1 | `nativeImage.createFromPath('*.bmp')` 在 Electron 43 是否可用 | BMP 导入 0.5d vs 1.0d | 写 10 行探针读一张 BMP → `isEmpty()` |
-| P2 | `printToPDF` 对 `page-break-after: always` 的分页支持 | 多页 PDF 1.5d vs 3d | `print.html` 放 3 张图 → 断言 PDF `/Type /Page` 计数 = 3 |
-| P3 | PNG 导出链路是否保留 alpha（`canvasPngBuffer` → `main` 写文件/剪贴板） | 选区背景不透明度 +2d | 导出带 alpha 的 PNG → 用 `sharp().metadata().hasAlpha` 校验 |
-| P4 | `PointerEvent.pressure` 在 Electron 43 + Windows 触控板/鼠标下的取值分布 | 压感画笔是否需要"模拟压力"兜底 | 真机探针记录 |
-| P5 | `getCoalescedEvents()` 在 capture 窗口（无焦点/`backgroundThrottling:false`）下是否可用 | 笔迹平滑降级路径 | 真机探针 |
-| P6 | `webUtils.getPathForFile`（Electron 32+ 已删除 `File.path`） | Collage 拖放导入必须走此 API | 写探针 |
-| P7 | V6 small vs V4 mobile 在**中文截图**上的准确率/速度 | 模型档位扩展是否立项 | 用现有 sidecar 跑 30 张 baseline 对比 |
-| P8 | `shared/shortcut-keys.js` 的 `isValidAccelerator` 是否支持 Enter 作为窗口内键 | 窗口内快捷键实现路径 | 读该模块 + 单测 |
+| # | 项 | 影响 | 验证方式 | 结论（2026-10-19） |
+|---|---|---|---|---|
+| P1 | `nativeImage.createFromPath('*.bmp')` 在 Electron 43 是否可用 | BMP 导入 0.5d vs 1.0d | 写 10 行探针读一张 BMP → `isEmpty()` | ⬜ 未验证（本轮未做 BMP） |
+| P2 | `printToPDF` 对 `page-break-after: always` 的分页支持 | 多页 PDF 1.5d vs 3d | `print.html` 放 3 张图 → 断言 PDF `/Type /Page` 计数 = 3 | ✅ **成立**。真实 Electron（隐藏窗口）3 图 → `/Type /Page` = 3，MediaBox 842.88×595.92（A4 横向），`activePrintWindowCount` 归 0。**额外发现**：末页必须重置 `break-after`，否则会多一张空白页（分析未提示） |
+| P3 | PNG 导出链路是否保留 alpha（`canvasPngBuffer` → `main` 写文件/剪贴板） | 选区背景不透明度 +2d | 导出带 alpha 的 PNG → 用 `sharp().metadata().hasAlpha` 校验 | ⬜ 未验证（选区背景未做，留待批 3 剩余项） |
+| P4 | `PointerEvent.pressure` 在 Electron 43 + Windows 触控板/鼠标下的取值分布 | 压感画笔是否需要"模拟压力"兜底 | 真机探针记录 | ⬜ 未验证（压感画笔未做） |
+| P5 | `getCoalescedEvents()` 在 capture 窗口（无焦点/`backgroundThrottling:false`）下是否可用 | 笔迹平滑降级路径 | 真机探针 | ⬜ 未验证 |
+| P6 | `webUtils.getPathForFile`（Electron 32+ 已删除 `File.path`） | Collage 拖放导入必须走此 API | 写探针 | ⬜ 未验证 |
+| P7 | V6 small vs V4 mobile 在**中文截图**上的准确率/速度 | 模型档位扩展是否立项 | 用现有 sidecar 跑 30 张 baseline 对比 | ⬜ 未验证 |
+| P8 | `shared/shortcut-keys.js` 的 `isValidAccelerator` 是否支持 Enter 作为窗口内键 | 窗口内快捷键实现路径 | 读该模块 + 单测 | ⬜ 未验证（窗口内快捷键未做） |
+
+> **新增的、分析时没列的验证项**（都已在本轮验证）：
+>
+> | # | 项 | 结论 |
+> |---|---|---|
+> | P9 | `PDF` 多页时 `printToPDF` 的 `scale` 是否逐页生效 | ❌ **不是**。`scale` 是文档级参数，只能设一次。因此按第一页算纸张、其余页在 CSS px 域内各自等比 fit，batch 的 `scale` 强制为 1（否则双重缩小） |
+> | P10 | `buildXlsxBuffer` 产出能否被真实 Excel 打开 | ✅ 是。6 个 part 全部 DEFLATED；openpyxl 与真实 Excel（headless COM）都能读：sheet 名、维度、合并区、文本格式前导零、emoji 均正确。WPS / LibreOffice 未验（本机没装） |
+> | P11 | 模型目录的 `capabilities` 能否在保存后存活 | ❌ **原本会丢**。`config/routes/models-editor.js` 保存供应商时只重建 `{id,name}`，把 `capabilities` 整个丢掉。已修（新增 `mergeModelRow()`），否则 `vision` 开关一点保存就消失 |
 
 ---
 
@@ -962,14 +986,15 @@ grep -n "stitch_selected_images" -A 4 snow_shot/src/storage/configurationschema.
 
 # ── Highlighter 现状 ────────────────────────────
 cd F:/workspace/Highlighter
-node scripts/check-architecture.js            # ok (main.js 1330 lines, ceiling 1330, domains 10)
-node scripts/check-i18n.js                    # TOTAL 588（--max 606）
+node scripts/check-architecture.js            # 分析时 ok (main.js 1330/1330)；实施后 1324/1330
+node scripts/check-i18n.js                    # 分析时 TOTAL 588；实施后 585（--max 606）
 ls LICENSE* COPYRIGHT* THIRD_PARTY_NOTICES.md 2>/dev/null   # 全不存在
 node -e "console.log('license' in require('./package.json'))"   # false
 grep -rn "collage\|imagesplit\|拼图\|分割" main/ config/ pin/ capture/   # 零命中
 grep -rn "HKCU\|SystemFileAssociations\|MultiSelectModel" --include=*.js . # 零命中
 grep -rn "display-metrics-changed" main/ main.js   # 只命中 selection/index.js:282
-grep -rn "exportWindowToPdf" --include=*.js . | grep -v node_modules | grep -v .tmp  # 只有定义+导出+测试
+grep -rn "exportWindowToPdf" --include=*.js . | grep -v node_modules | grep -v .tmp  # 分析时只有定义+导出+测试；实施后已有贴图/识别两个生产调用方
+grep -rn "display-metrics-changed" main/domains/pin/   # 实施后：贴纸显示几何重排已接线
 grep -rn "webContents.print(" --include='*.js' .    # 0（系统打印仍空白）
 FF=./node_modules/ffmpeg-static/ffmpeg.exe
 "$FF" -hide_banner -encoders | grep -Ei 'gif|apng|webp|x264|x265'
@@ -979,6 +1004,8 @@ FF=./node_modules/ffmpeg-static/ffmpeg.exe
 ---
 
 ## 18. 附：本次分析的方法与局限
+
+> 📌 本节是**分析轮**（2026-10-18）的方法与局限。实施轮（2026-10-19）的验证口径与残余风险见 §19.11。
 
 **方法**：5 路并行只读调研（截图/标注、新编辑器、OCR/识别、录屏/贴纸/平台、基线与许可），全部结论落到 `文件:行号` 双侧证据；Lead 负责交叉校验与 5 项实测（V1–V5）。
 
@@ -990,3 +1017,128 @@ FF=./node_modules/ffmpeg-static/ffmpeg.exe
 5. **判定计数按域独立统计** —— 各域项数含少量跨域重叠（贴纸相关 6 项在"新编辑器"与"录屏/贴纸"两域各出现一次），本文 §0.2 已给出去重口径，**不要**直接把各域项数相加；
 6. **5 个项目级假设已在 §2 用实测修正** —— 但仍有 §16 的 8 项待探针验证（BMP 解码、`printToPDF` 分页、PNG alpha、压感取值等），它们只影响单项成本，不改变整体结论方向。
 
+> 🔄 **实施后更新（2026-10-19）**：§16 的 P2（`printToPDF` 分页）**已实测成立**，并额外发现"末页须重置 `break-after`"这一分析未提示的坑；同时新增 P9–P11 三项分析时没列的验证项（`scale` 是文档级参数、`.xlsx` 能被真实 Excel 打开、模型 `capabilities` 原本会在保存时丢失）。其余 P1/P3–P8 仍未验证，见 §16 表内"结论"列。
+
+
+---
+
+## 19. 实施回填：2026-10-19 落地记录
+
+> 本节是**新增**的。§0–§18 的**结论与成本估算一字未改**，只在其上叠加了三类标注：
+> ① ✅/🟡/⬜ 状态列与"实测成本"（§0.3、§14.1、§14.2）；② 实施后门禁新读数（§1.4、§17）；③ §16 待验证项的结论回填。
+> 因此**引用 §0–§18 的估算值时要连同状态列一起看**，引用"现状"时一律以本节为准。
+> 记录口径：只记实际写进仓库的东西，包括与分析的偏差、以及分析时没预料到的坑。
+> 实施基线 `master @ d9ad364`（"feat(capture): turn highlight and mosaic into brush strokes"，2026-10-19）。
+
+### 19.1 一句话
+
+§0.3 的 **7 项 P0 全部落地**，外加批 1/2/4 的剩余项与两项分析未列但顺带完成的能力（图片转文档、主题化托盘图标已列但成本高估）。
+**未做**：MCP、选区圆角/阴影/背景不透明度、录屏 trim/GIF、Collage、长截图自动滚动、批 0 合规地基 —— 与 §14.2 的"做/缓/不做"一致，没有任何一项被降级成"假装做了"。
+
+### 19.2 §0.3 七项 P0 的落地状态
+
+| # | 项 | 状态 | 落点（实施后行号） | 与分析的偏差 |
+|---|---|---|---|---|
+| 1 | 元素样式编辑回写"下次创建默认" | ✅ | `capture/capture.js:1784` `writeSelectedStyleDefault()`；`commitSelectedStyle()` / `stageSelectedStyle()` 各接一处 | 分析说"1.0–1.5 人日"。实际的难点不在写回，而在**离散 vs 连续**两条路径的持久化纪律：取色器拖动 `input` 按鼠标频率触发，若沿用 `persist=true` 会变成每事件一次 `settings:update`。实现改为离散路径持久化、staged 路径只改内存（`change` 时才落盘），与既有"滚轮调线宽防抖"同一套纪律。成本 ≈ 0.6 人日 |
+| 2 | 多页 PDF（单次 `printToPDF`） | ✅ | `main/services/pdf-export.js:500` `exportPagesToPdfBuffer()`；`capture/print.html` `#pages`；`MAX_PDF_PAGES=50` | 分析估 1.5 人日。真实难点是 **`printToPDF` 的 `scale` 是文档级属性**：不能按页设，所以纸张/方向/scale 只按第一页算，后续页在 CSS px 域内各自等比适配（页内 fit 而非二次缩放），并把 batch 的 `scale` 强制为 1 避免双重缩小。另外末页必须重置 `break-after` 否则 Chromium 会多吐一张空白页。真实 Electron 探针：3 图 → `/Type /Page` 计数 = 3，`activePrintWindowCount` 归 0。成本 ≈ 1.8 人日（略高于估算） |
+| 3 | 导出文件名冲突警告（含 `fastSave` 预检） | ✅ | `main/services/image-file-save.js:37` `defaultConfirmOverwrite()`；冲突分支 `:135` | 分析估 0.5 人日。实现时补了一条分析没写的边界：`fast=true` 但**没有记忆目录**时 resolver 会退回原生保存对话框，Windows 已经自带覆盖确认，此时必须跳过预检否则会双弹窗。成本 ≈ 0.3 人日 |
+| 4 | `exportWindowToPdf` 接线（贴图/识别结果导 PDF） | ✅ | 贴纸 `main/domains/pin/index.js:475` `exportPinToPdf()`；识别 `main/domains/recognition/index.js:195` `recognitionExportPdf` | 分析估 0.5 人日。实测**零成本**：`pdf-export.js` 的 `printToPdf` / `dialog` / `fs` 全部是惰性默认实现，两个域直接 import 即可，`main.js` 一行都不用加。成本 ≈ 0.2 人日 |
+| 5 | 死配置清理 / 接线 | ✅ 清理 | `main/services/settings-defaults.js`（删 5 键）；`main/services/settings-normalize.js` `LEGACY_DEAD_KEYS` + `dropLegacyDeadKeys()` | 分析估 0.5 人日。**与分析有一处判断分歧**：分析把 `record.captureCursor` 归为"接线"，但 Chromium 的 `getDisplayMedia` 并不保证可供开关控制光标（`cursor` 只是 hint，可能被忽略）。给一个"勾了也可能没效果"的开关比不给更差，因此按**删除**处理，并在 normalize 里加了迁移删除（老 store 不会永久留死键）。`fixedContent.autoResize`/`autoOcr`/`ocr.modelWriteToMemory`/`screenshot.saveFormat` 同样删除。成本 ≈ 0.4 人日 |
+| 6 | 贴纸屏幕几何变化重排 | ✅ | `main/domains/pin/index.js:154` `reflowPinWindow()`、`:195` `attachPinDisplayWatchers()`；纯函数在 `main/domains/pin/geometry.js:127/145` | 分析估 1.5 人日。**关键约束是分析没写的：`main.js` 已到 1330 行硬顶**，不能加 `before-quit` dispose。实现改为「首个贴纸懒挂载 3 个 `screen.on` 监听、最后一个关闭时卸载」，监听器本身随进程消亡，`main.js` 零改动。成本 ≈ 1.2 人日 |
+| 7 | 贴纸旋转接线 + 滚轮调透明度 | ✅ | 旋转 `main/domains/pin/index.js:402` `rotatePin()`；透明度 `:780` `pin:set-opacity` | 分析估 3.5 人日（V4 修正后旋转 1.5 + 透明度 2.0）。实际 2.4 人日：旋转确实"白捡"（几何 helper 已有 27 条单测），但窗口包围盒要跟着交换宽高、且要处理长截图不可旋转（滚动内容无法 CSS 旋转）、旋转后 `syncPinDisplayScale` 必须 DPI 感知。透明度部分如分析所述，穿透态收不到 wheel，已如实注释未伪造。成本 ≈ 2.4 人日 |
+
+**合计实测 ≈ 6.9 人日**（分析估 9.0–9.5），主要省在 #4（零依赖接线）与 #7（helper 已成品）。
+
+### 19.3 截图 / 选区（批 3 与 §3.2②）
+
+| 项 | 状态 | 落点 | 说明 |
+|---|---|---|---|
+| Ctrl+A 二级（扩到全桌面） | ✅ | `capture/capture.js:293` `desktopSelectionBounds()`、`:328` `ctrlASelectionExpandsToDesktop()`；主进程 `main/domains/capture/index.js:231` `desktopBounds()` | 严格按分析"**只扩 bounds、不保证跨屏内容**"立项。单显示器时并集 == 当前屏 → 纯 no-op；重复按下在"本屏 / 全部屏"之间二选一（对齐 Snow 的 `expandToAllScreens` 语义）。**分析没预见的坑**：并集选区会让 `exportSelectionCanvas` 按并集比例画标注（3840 宽的并集上标注只有一半大小并带负原点位移），导出结果会花。修法是新增 `exportSelectionRect()`（`:2238`）把选区投影回被截图像：数值相同则**返回原对象引用**，保证所有既有流程逐像素不变；不同才在一次**同步**调用内临时替换 `selection` 并在 `finally` 还原（无 `await`，rAF 无法插入）。这条是本轮唯一一处"新功能差点破坏老功能"的地方 |
+| 选区圆角/阴影/背景不透明度 | ⬜ 未做 | — | 分析列为 P1（10–14 人日），但属批 3，本轮范围外 |
+| 选区历史浏览 / 比例锁 / 数值面板 | ⬜ 未做 | — | 同上（P1/P2） |
+
+### 19.4 贴图（§9 与批 2）
+
+| 项 | 状态 | 落点 | 说明 |
+|---|---|---|---|
+| 屏幕几何重排 | ✅ | 见 §19.2 #6 | 屏消失→主屏 workArea 居中；仍在→夹回 workArea；随后 `syncPinDisplayScale` 走 DPI |
+| 旋转接线 | ✅ | 见 §19.2 #7 | CSS transform + 窗口包围盒交换；`dataUrl` 从不重编码 |
+| Ctrl+滚轮透明度 | ✅ | `pin/pin.js` wheel 分支 → `pin:set-opacity` → `setPinOpacity` | ±0.05 每格，`clampPinOpacity` 夹 0.25–1，带瞬时百分比徽标；右键菜单 4 档预设保留 |
+| 缩放步进可配 | ✅ | `settings.pinned.zoomStep`（默认 0.1，夹 0.05–0.5）；设置页新增下拉 | 供 `main/domains/pin/geometry.js:34` `normalizePinZoomStep()` 与渲染层共用同一取值域 |
+| 贴纸导出 PDF | ✅ | 见 §19.2 #4 | 打印已渲染窗口本身，所见即所得 |
+| 动画贴纸 / 文本贴纸 / 收纳到顶部 | ⬜ 未做 | — | 与分析 §9.4 的"不跟/缓"一致；其中"动画贴纸"仍缺贴纸持久化前置 |
+
+### 19.5 识别 / AI 输出（批 4）
+
+| 项 | 状态 | 落点 | 说明 |
+|---|---|---|---|
+| 表格识别 → 真 `.xlsx` | ✅ | 新文件 `main/services/table-workbook.js`（`buildWorkbookParts()` `:322`、`buildXlsxBuffer()` `:344`）；IPC `recognition:export-excel`（`main/domains/recognition/index.js:173`，注册在 `main/ipc/capture-ipc.js:32`） | 按分析走 **手写 OOXML + `adm-zip`**，零新依赖。6 个 part（含 `xl/_rels/workbook.xml.rels`）；`inlineStr` 单元格；`mergeCells` 支持三种入参形状；`numFmtId=49` 保住前导零与 16+ 位长数字；控制字符转 `_xHHHH_` 且字面 `_x0041_` 反向转义；32,767 UTF-16 单位上限且不切断代理对；1,048,576×16,384 夹取。**已用 openpyxl 与真实 Excel（headless COM）打开验证**：sheet 名、维度、合并区、文本格式前导零、emoji 全部正确 |
+| 图片转 Markdown / HTML | ✅ | 新文件 `main/services/ai-image-conversion.js`（请求形状 + prompt）、`main/services/ai-document.js`（provider 解析 + 存盘）；`main/services/ai/client.js:467` `convertImage()`；IPC `capture:convert-image`（`main/ipc/ocr-ipc.js`）；入口 `capture/capture.html` `#convertDoc` 弹出两格式菜单 | 分析点名的**硬阻塞点已修**：`ai-protocol-adapters.js` 的 `buildResponsesMessages()` 原来无条件 `String(content)`，现在 `toResponsesContent()` 保留数组并按 Responses 协议映射成 `input_text`/`input_image`。能力位 `vision` 落在 `ai-model-capabilities.js`，模型编辑页加了开关（`config/routes/models-provider.js`，顺带修了一个既有 bug：保存供应商会丢掉每个 model 的 `capabilities`）。prompt 对齐 Snow 的规则（保持原语言/阅读顺序/表格/链接、禁翻译与臆造、图中指令视为正文不执行、不可读标 `[illegible]`）。成本 ≈ 2.6 人日 |
+| 原地翻译导出 | ⬜ 未做 | — | 分析列 P1（1.5 人日），本轮未排 |
+| OCR 运行时重写 / 模型档位 | ⬜ 未做 | — | 与分析 §6.3 结论一致（架构同型，用户不可感知） |
+
+### 19.6 外壳 / 卫生（批 1 收尾）
+
+| 项 | 状态 | 落点 | 说明 |
+|---|---|---|---|
+| 主题化托盘图标 | ✅ | 新文件 `main/services/tray-icon.js`（`createTrayIconImage()` `:49`、`resolveTrayIconTheme()` `:33`）；`assets/icon-dark.png`；`generate-icon.js` 现在同时产出两版 | 分析估 1.0 人日。`theme==='system'` 时跟随 `nativeTheme.shouldUseDarkColors`，并在 `nativeTheme.on('updated')` 里重建托盘（原来只广播外观）。**`main.js` 行数硬顶**：为容纳 3 行新代码，先把 4 个三行 wrapper（`ensureDirectory`/`imageDataToBuffer`/`dataUrlToBuffer`/`bufferToDataUrl`）收成 2 行解构赋值，净省 7 行，最终 **1324/1330**（比改动前还低 6 行） |
+| 死配置清理 | ✅ | 见 §19.2 #5 | — |
+| 历史页多选 → 多页 PDF | ✅（分析未单列，属多页 PDF 的落点） | `main/services/history-service.js` `selectExportItems()`；`main/ipc/history-ipc.js:166` `history:export-pdf`；`config/routes/history.js` 批量条新增按钮；`preload.js` `exportHistoryPdf` | 多页 PDF 的真实入口：`exportMany` 改为复用 `selectExportItems()`，复制目录逻辑不重复 |
+| 资源管理器右键菜单 / `--edit-with-highlighter` / 安装器 sidecar | ⬜ 未做 | — | 批 8，前置是 `main.js` 行数腾挪（已腾出 6 行但仍不够装一个 `shell-integration` 装配） |
+
+### 19.7 新增 IPC 通道（7 条，全部已进 `IPC_SURFACES` 策略）
+
+| 通道 | 方向 | role | 用途 |
+|---|---|---|---|
+| `capture:convert-image` | handle | capture | 截图 → Markdown/HTML |
+| `pin:set-opacity` | listener | pin | Ctrl+滚轮透明度 |
+| `pin:rotate` | listener | pin | 旋转 90° |
+| `pin:export-pdf` | handle | pin | 贴纸窗口导 PDF |
+| `recognition:export-excel` | handle | recognition | 表格 → `.xlsx` |
+| `recognition:export-pdf` | handle | recognition | 识别结果窗导 PDF |
+| `history:export-pdf` | handle | main | 历史多选 → 多页 PDF |
+
+另有 2 条**主 → 渲染**广播（`pin:opacity-changed`、`pin:rotation-changed`），按方案 §2.2 刻意**不进** `IPC_SURFACES`（与 `i18n:language`、`capture:init` 同类）。
+
+### 19.8 新增文件（6 个）
+
+| 文件 | 行数量级 | 职责 |
+|---|---|---|
+| `main/services/table-workbook.js` | ~360 | 纯 OOXML 工作簿写入器（无 Electron 依赖，可纯 node 单测） |
+| `main/services/ai-image-conversion.js` | ~160 | 多模态请求形状 + 转换 prompt + 围栏剥离 |
+| `main/services/ai-document.js` | ~120 | provider 解析 → AI 调用 → 保存对话框 → 落盘（依赖注入，可纯 node 测） |
+| `main/services/tray-icon.js` | ~90 | 托盘图标主题选择（资产选取 + 回退链） |
+| `assets/icon-dark.png` | 256×256 | 深色任务栏用的托盘图标（`generate-icon.js` 同步产出） |
+| `capture/icons/doc-convert.svg` | — | 图片转文档入口图标（已进图标序列契约测试） |
+
+### 19.9 偏离分析的三处判断（需要知悉）
+
+1. **`record.captureCursor` 由"接线"改为"删除"**（§19.2 #5）——理由见上：Chromium 不提供可靠的运行时开关，给一个可能无效的开关更差。
+2. **`main.js` 不是"加几行装配"，而是必须先腾挪**。分析 §1.4 已警告过这条，但低估了影响面：本轮所有新能力都被强制约束在 `main/domains/`、`main/services/`、`main/ipc/` 里，且 `pin` 的显示监听改成懒挂载以免需要在 `before-quit` 里 dispose。这个约束同时是好事：新代码没有一行长进装配层。
+3. **"图片转 Markdown/HTML"的成本被分析低估（2.0 → 2.6 人日）**。分析只算了 AI 层的 0.3+0.3+0.5+0.5+0.2+0.2=2.0，但漏了两件必要工作：① 保存对话框 + 默认文件名要复用 `capture-naming` 的模板（否则导出名与截图命名脱节）；② 模型目录必须能表达"这个模型支持图像"，而原实现**保存供应商时会把 `capabilities` 整个丢掉**——不修这个，`vision` 开关一点保存就消失。第 ② 项是既有 bug，本轮顺带修复。
+
+### 19.10 门禁读数（实施后，替换 §1.4 的"当前值"列）
+
+| 门禁 | 阈值 | 实施后 | 余量 | 证据 |
+|---|---|---:|---:|---|
+| `main.js` 行数 | **1330** | **1324** | **6 行** | `node scripts/check-architecture.js`（腾挪前 1330/1330） |
+| i18n 中文残留 | **606** | **585** | **21 行** | `node scripts/check-i18n.js --max 606`（基线 588；新增 CJK **0 行**，全部新增文案进 locale） |
+| locale 对称 | 3 语言等键 | **1169 × 3** | 对称差 0 | `node scripts/check-i18n.js` |
+| 新增 locale key | — | **36 个**（config 14 / main 9 / recognition 9 / capture 3 / pin 1） | — | 同上 |
+| `check-js` | — | 340 文件通过 | — | `node scripts/check-js.js` |
+| 单测 | — | **1128 项 / 1110 通过 / 18 失败** | 18 条与改动前 **HEAD 基线逐条一致** | `node --test test/*.test.js`；基线失败集在 `HEAD` 上复现（Electron 运行时/发布校验类环境失败，非本轮引入） |
+| 新增测试文件 | — | **0** | — | 按用户要求"优先开发，测试最后由用户判断" |
+| 既有测试断言调整 | — | **7 个文件**（新增契约登记，非放宽） | — | `test/` diff: +34/−12；每处都是"行为被有意改变或新通道/新图标需要登记" |
+
+### 19.11 未验证项（真机/环境）
+
+- **未跑 `npm test`**、**未启动 Electron 应用**（按用户要求，且避免占用前台）。功能正确性依据：静态门禁 + 既有单测回归 + 队友用隐藏窗口做的真实 Electron 探针（多页 PDF 分页、xlsx 打开、托盘/贴纸窗口行为），探针产物已删除。
+- `test/window-security-runtime.test.js` 在本 shell 因 `ELECTRON_RUN_AS_NODE=1` 失败；`env -u ELECTRON_RUN_AS_NODE` 下通过——环境问题，与本轮改动无关。
+- **未做真实设备的**：多显示器拔插（几何重排只有 fake-screen 单测级别验证）、笔/触控板压感（本轮未做压感画笔）、WPS/LibreOffice 打开 `.xlsx`（只验了 Excel 与 openpyxl）。
+
+### 19.12 下一步建议（按性价比）
+
+1. **补 3 处单测**（用户决定是否做）：多页 PDF 的分页数与末页无空白页、`buildWorkbookParts` 的 part 集合与转义、样式回写默认值的 mixed-selection 分支。
+2. **批 3 剩余**：选区圆角/阴影/背景不透明度（10–14 人日）——这是"成品感"最大的单点，且契约点已在分析 §3.3 列清（`selectionBounds` meta / PDF `pxW·pxH` / 剪贴板尺寸三处必须同步）。
+3. **批 8 外壳**：需先继续腾 `main.js` 行数（当前 6 行余量不足）。
+4. **MCP**：仍以批 0 合规地基为硬前置；本轮全为自研代码，未引入任何 GPL 代码，**合规状态没有因本轮变差**（现状仍是"已分发 GPL 的 ffmpeg / LGPL 的 libvips 但仓库零告知"，见 §13.3）。

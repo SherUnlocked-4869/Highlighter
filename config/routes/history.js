@@ -64,7 +64,7 @@ async function renderHistory() {
   const sourceOptions = sources.map((source) => `<option value="${escapeHtml(source)}">${escapeHtml(sourceLabels[source] ? t(sourceLabels[source]) : source)}</option>`).join('')
   const statsMarkup = `<div class="history-stats card"><div><b>${formatBytes(stats.totalBytes)}</b><span>${t('config.history.stats-space')}</span></div><div><b>${stats.availableCount}</b><span>${t('config.history.stats-available')}</span></div><div class="${stats.missingCount ? 'warning' : ''}"><b>${stats.missingCount}</b><span>${t('config.history.stats-missing')}</span></div><div class="${stats.orphanCount ? 'warning' : ''}"><b>${stats.orphanCount}</b><span>${t('config.history.stats-orphan', { size: formatBytes(stats.orphanBytes) })}</span></div></div>`
   const filtersMarkup = `<div class="history-filters card"><input class="input" id="historySearch" type="search" value="${escapeHtml(historyQuery)}" placeholder="${t('config.history.search-placeholder')}"><select id="historySource"><option value="">${t('config.history.all-sources')}</option>${sourceOptions}</select><span id="historyLoadedCount"></span></div>`
-  const batchMarkup = `<div class="history-batch card"><label><input type="checkbox" id="selectAllHistory"> ${t('config.history.select-all')}</label><span id="historySelectedCount">${t('config.history.selected-count', { count: 0 })}</span><button class="button" id="exportSelectedHistory" disabled>${t('config.history.export-selected')}</button><button class="button danger" id="deleteSelectedHistory" disabled>${t('config.history.delete-selected')}</button></div>`
+  const batchMarkup = `<div class="history-batch card"><label><input type="checkbox" id="selectAllHistory"> ${t('config.history.select-all')}</label><span id="historySelectedCount">${t('config.history.selected-count', { count: 0 })}</span><button class="button" id="exportSelectedHistory" disabled>${t('config.history.export-selected')}</button><button class="button" id="exportSelectedHistoryPdf" disabled>${t('config.history.export-pdf')}</button><button class="button danger" id="deleteSelectedHistory" disabled>${t('config.history.delete-selected')}</button></div>`
   container.insertAdjacentHTML('beforeend', `${statsMarkup}${filtersMarkup}${batchMarkup}<div id="historyResults"></div><div class="history-load-more"><button class="button" id="loadMoreHistory">${t('config.history.load-more')}</button></div>`)
 
   const searchInput = document.getElementById('historySearch')
@@ -72,6 +72,7 @@ async function renderHistory() {
   const selectAll = document.getElementById('selectAllHistory')
   const selectedCount = document.getElementById('historySelectedCount')
   const exportSelected = document.getElementById('exportSelectedHistory')
+  const exportSelectedPdf = document.getElementById('exportSelectedHistoryPdf')
   const deleteSelected = document.getElementById('deleteSelectedHistory')
   const loadedCount = document.getElementById('historyLoadedCount')
   const results = document.getElementById('historyResults')
@@ -80,6 +81,7 @@ async function renderHistory() {
     const count = historySelectedIds.size
     selectedCount.textContent = t('config.history.selected-count', { count })
     exportSelected.disabled = count === 0
+    exportSelectedPdf.disabled = count === 0
     deleteSelected.disabled = count === 0
     selectAll.checked = history.length > 0 && count === history.length
     selectAll.indeterminate = count > 0 && count < history.length
@@ -222,6 +224,21 @@ async function renderHistory() {
     if (result.canceled) return
     const suffix = result.failures?.length ? t('config.history.failure-suffix', { count: result.failures.length }) : ''
     toast(t('config.history.exported', { count: result.exportedCount, failures: suffix }))
+  }
+  // Batch PDF: the main process renders one PDF page per selected capture and asks
+  // for the destination itself, so this button follows the same cancel/failure
+  // reporting shape as the copy export above.
+  exportSelectedPdf.onclick = async () => {
+    let result
+    try {
+      result = await window.electronAPI.exportHistoryPdf([...historySelectedIds])
+    } catch (error) {
+      toast(error.message || t('config.history.export-pdf-failed'))
+      return
+    }
+    if (result.canceled) return
+    const suffix = result.failures?.length ? t('config.history.failure-suffix', { count: result.failures.length }) : ''
+    toast(t('config.history.export-pdf-done', { count: result.exportedCount, failures: suffix }))
   }
   deleteSelected.onclick = async () => {
     if (!confirm(t('config.history.confirm-delete-selected', { count: historySelectedIds.size }))) return

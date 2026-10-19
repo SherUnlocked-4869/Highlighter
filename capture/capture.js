@@ -20,6 +20,11 @@ const colorInput = document.getElementById('color')
 const colorPreview = document.getElementById('colorSwatch')
 const colorButton = document.getElementById('colorButton')
 const colorPalette = document.getElementById('colorPalette')
+// P1 (2026-10-18 snow migration section 6.2 item 2): the image-to-Markdown/HTML trigger and its
+// two-format popover. Both are static markup, so a missing element here is a build
+// error rather than a state to defend against.
+const convertDocButton = document.getElementById('convertDoc')
+const convertDocMenu = document.getElementById('convertDocMenu')
 const recentColorList = document.getElementById('recentColors')
 const lineWidthGroup = document.getElementById('widthGroup')
 const watermarkPanel = document.getElementById('watermarkPanel')
@@ -209,6 +214,10 @@ let imageObjectUrl = ''
 // 所以在 onInit 里建好；没带光标（开关关闭）时恒为 null。
 let cursorImage = null
 let pdfExporting = false
+// section 6.2 item 2: the format chosen from the image-to-document popover. Module state (not a
+// parameter) because the shared `performAction('convert')` path encodes the image
+// and only then asks for the format - keeping the two decisions in one place.
+let convertOutputFormat = 'markdown'
 // Mosaic patch cache (§5.2). One offscreen canvas per committed stroke, keyed by a
 // fingerprint of every input the patch depends on - NOT by object identity: translate,
 // resize and style edits all return brand-new objects, so an identity cache would happily
@@ -268,6 +277,87 @@ function imageDisplayBounds() {
   return bounds
     ? {x:Number(bounds.x)||0,y:Number(bounds.y)||0,w:Math.max(1,Number(bounds.width)||1),h:Math.max(1,Number(bounds.height)||1)}
     : {x:0,y:0,w:innerWidth,h:innerHeight}
+}
+
+// §3.2② (Snow a7673a353): Ctrl+A level 2. The capture window covers ONE display, so the
+// union of every display can only be expressed as a selection that reaches past the
+// stage. The main process ships the union as DIP `desktopBounds`; the stage's origin is
+// `captureBounds`, so subtracting it is the whole coordinate conversion (both values are
+// DIP, the same space innerWidth/innerHeight live in). Two guards keep the second level
+// out of editors whose "display" is not a screen: the pin re-annotate flow ships
+// imageBounds (a scaled image, not desktop pixels) and the blank canvas is not desktop
+// content. The scope is deliberately "bounds only": nothing here promises that a
+// non-active display's pixels are capturable, and the export path keeps clamping the
+// selection to the captured image (getSourcePixelRect), exactly the boundary the plan
+// locked down to keep this a P1 instead of a cross-display-canvas project.
+function desktopSelectionBounds() {
+  if (initData?.imageBounds) return null
+  if (['image', 'canvas'].includes(initData?.mode)) return null
+  const desktop = initData?.desktopBounds
+  if (!desktop) return null
+  const width = Number(desktop.width)
+  const height = Number(desktop.height)
+  if (!(width > 0) || !(height > 0)) return null
+  const origin = initData?.captureBounds || initData?.displayBounds || { x: 0, y: 0 }
+  return {
+    x: (Number(desktop.x) || 0) - (Number(origin.x) || 0),
+    y: (Number(desktop.y) || 0) - (Number(origin.y) || 0),
+    w: width,
+    h: height
+  }
+}
+
+// Integer DIP rects never agree exactly when a user hand-dragged a selection to the
+// screen edge, and the capture handshake itself allows a 2px size drift
+// (captureImageReady). The same tolerance decides "the selection covers this rectangle".
+const CTRL_A_COVER_TOLERANCE = 2
+
+function rectsNearlyEqual(a, b, tolerance = CTRL_A_COVER_TOLERANCE) {
+  if (!a || !b) return false
+  return Math.abs(a.x - b.x) <= tolerance && Math.abs(a.y - b.y) <= tolerance &&
+    Math.abs(a.w - b.w) <= tolerance && Math.abs(a.h - b.h) <= tolerance
+}
+
+// Should this Ctrl+A press be the SECOND level? It is when the selection already covers
+// the whole current display image AND the desktop union is genuinely larger (on a single
+// display the union equals the image, so the level collapses back to the shipped
+// behaviour with zero user-visible difference). The all-displays rectangle itself maps
+// back to the current display, so repeated presses make a two-way choice instead of
+// sticking at level 2 - the same "current screen OR all screens" pair Snow's
+// expandToAllScreens flag chooses between.
+function ctrlASelectionExpandsToDesktop() {
+  // The shipped key clears an active OCR result AND selects the display in one press;
+  // that press must keep exactly that meaning. Expanding on the same press would move a
+  // selection the user cannot see yet (the OCR overlay is on top of it), so the clear
+  // press stays level 1 and the next press can expand. Same for the pin re-annotate
+  // editor, which has no desktop at all (guard inside desktopSelectionBounds).
+  if (activeOcrResult) return false
+  if (!selection) return false
+  const desktop = desktopSelectionBounds()
+  if (!desktop) return false
+  const display = imageDisplayBounds()
+  if (rectsNearlyEqual(desktop, display)) return false
+  if (rectsNearlyEqual(selection, desktop)) return false
+  return rectsNearlyEqual(selection, display)
+}
+
+// §3.2②: the pixel consumers (copy/save/pdf/ocr) all read one captured image, which
+// still covers only the current display. A level-2 Ctrl+A selection reaches past it, so
+// the export intersects the two: the crop already clamps through getSourcePixelRect, and
+// this makes the ANNOTATION space use the same clamped rectangle - otherwise every
+// annotation would be drawn at the union scale (half size on a 3840-wide union) and
+// shifted by a negative origin, i.e. a corrupt copy instead of a simply narrower one.
+// Returns null when nothing of the selection is inside the image (nothing to export).
+// For any selection that already sits inside the image this returns the same numbers, so
+// every shipped flow keeps byte-identical output.
+function selectionInsideImage(rect, bounds) {
+  if (!rect || !bounds) return null
+  const left = Math.max(rect.x, bounds.x)
+  const top = Math.max(rect.y, bounds.y)
+  const right = Math.min(rect.x + rect.w, bounds.x + bounds.w)
+  const bottom = Math.min(rect.y + rect.h, bounds.y + bounds.h)
+  if (right - left < 1 || bottom - top < 1) return null
+  return { x: left, y: top, w: right - left, h: bottom - top }
 }
 
 function usesNativeBackgroundPixels() {
@@ -921,12 +1011,34 @@ function syncToolOptionsRow() {
 // what lets one delegated listener serve numbers, booleans and strings.
 const OPTION_VALUE_PARSERS = { radius: Number, startHead: (value) => value === 'true', endHead: (value) => value === 'true', bold: (value) => value === 'true' }
 
-function setAnnotationOption(key, rawValue) {
+// The boolean option groups are TOGGLES, not one-way switches: the same button states
+// "on", and pressing it again states "off". Their markup can only carry one value
+// (`data-annotation-option-value="true"`), so a click used to submit `true` forever and
+// the control could be turned on but never off (reported 2026-10-19: the arrow start/end
+// heads could not be deselected once picked; `text.bold` had the identical defect). The
+// flip reads the state the button is currently DISPLAYING - `aria-pressed` is written by
+// syncToolOptionControls from the same resolved options the next annotation will use -
+// so the click always inverts what the user sees, including after a selection change
+// re-pointed the echo.
+const TOGGLE_OPTION_KEYS = new Set(['startHead', 'endHead', 'bold'])
+
+// Every non-boolean option group is a radio-style pick among fixed values, so its
+// click keeps the declarative `data-annotation-option-value`; only toggles invert.
+function resolveOptionClickValue(key, rawValue, button) {
+  if (!TOGGLE_OPTION_KEYS.has(key)) {
+    const parse = OPTION_VALUE_PARSERS[key]
+    return parse ? parse(rawValue) : rawValue
+  }
+  // aria-pressed mirrors the resolved value; anything else means "not currently on".
+  const displayed = button?.getAttribute?.('aria-pressed') === 'true'
+  return !displayed
+}
+
+function setAnnotationOption(key, rawValue, button) {
   const tool = optionRowTool()
   const fields = TOOL_OPTION_FIELDS[tool]
   if (!fields || !fields.includes(key)) return
-  const parse = OPTION_VALUE_PARSERS[key]
-  const value = parse ? parse(rawValue) : rawValue
+  const value = resolveOptionClickValue(key, rawValue, button)
   writeToolStyle(tool, { [key]: value }, true)
   const item = selectedAnnotationItem()
   if (item && item.type === tool) commitSelectedStyle({ [key]: value })
@@ -980,10 +1092,19 @@ function positionOcrResultBar() {
   ocrResultBar.style.top=`${top}px`
 }
 
+// Switching the active tool. The two statements below are order-sensitive, and that
+// order is a bug fix (2026-10-19): the style echo (`syncToolbarStyleFromSelection`,
+// reached through setSelectedAnnotation) reads `currentTool` to pick the remembered
+// block it displays. Clearing the selection FIRST meant the echo still saw the
+// PREVIOUS tool, so the swatch showed one tool behind the one that would actually
+// draw: pick rect after a blue-rect session and the swatch said red while the next
+// rect was blue, then switch to ellipse and it showed blue while the next ellipse
+// was red. `currentTool` therefore moves ABOVE the selection clear - it is the state
+// the echo is a function of.
 function setTool(tool) {
+  currentTool=tool
   // 方案 §8.4：换工具即清选中，避免虚线框/浮动条挂在另一个工具上。
   setSelectedAnnotation(null)
-  currentTool=tool
   document.querySelectorAll('[data-tool]').forEach((button)=>button.classList.toggle('active',button.dataset.tool===tool))
   canvas.style.cursor=tool==='select'?(selection?'move':'crosshair'):'crosshair'
   if(tool==='watermark'){activeAnnotation=buildWatermarkAnnotation();render()}
@@ -1679,20 +1800,51 @@ function writeAnnotationStyles(targets, patch, fields, ownership) {
   return changed
 }
 
+// §4.4 (Snow 048583130): a style edit is ALSO a change of that tool's creation default.
+// Snow computes `next_default = default.merged(style, properties)` before it paints the
+// selected set, because editing the element only would leave the NEXT element the user
+// draws in the old style until they first deselect - a semantic inconsistency of an
+// existing feature, not a missing one. The owner is the tool the toolbar edits (the
+// selected element's own tool, else the active tool), and only the fields that tool
+// DECLARES are adopted, so a mixed selection can never teach a pen a fill or a rect an
+// alpha. The discrete setters already write their tool block before they commit, so this
+// adoption is a no-op for them; it exists for the continuous/staged path and for any
+// future caller that reaches a commit without a default write. A field that already
+// equals the remembered value is skipped instead of persisted again: one user action must
+// never push the whole settings map twice (the contract's single-writer shape).
+function writeSelectedStyleDefault(patch, persist) {
+  const tool = toolbarStyleTool()
+  if (!tool || !patch) return false
+  const current = resolveToolStyle(tool, toolStyles[tool])
+  const changed = Object.keys(patch).filter((key) => ownsAnnotationField(tool, key) && current[key] !== patch[key])
+  if (!changed.length) return false
+  const next = {}
+  changed.forEach((key) => { next[key] = patch[key] })
+  writeToolStyle(tool, next, persist)
+  return true
+}
+
 // 离散样式操作（线宽按钮）：立刻压一帧。若还有未收口的颜色改动，先把它单独收一帧 —— 两次
 // 用户操作不该挤进同一个撤销步（这正是"undo/redo 不串"）。
 function commitSelectedStyle(patch) {
   // 待收口的微调/样式先各自成帧，再压这次离散样式改动 —— 保证"一次用户操作一帧"。
   flushCoalescedEdits()
+  writeSelectedStyleDefault(patch, true)
   if (!applyStyleToSelectedAnnotation(patch)) return false
   snapshotAnnotations()
   render()
   return true
 }
 
+// §4.4: the picker drag is a user style edit even before it settles, so the tool's
+// creation default follows it in memory. Persistence deliberately stays on the `change`
+// path (setAnnotationColor(..., true)): a picker drag fires input at mouse rate, and a
+// trailing commit must not turn one gesture into one settings:update per event - the
+// same discipline as scheduleAnnotationWidthPersist for the wheel.
 // 连续样式操作（取色器 input）：应用即时可见，快照静默 STYLE_COMMIT_DELAY 毫秒后收口；
 // 取色器关闭时触发的 change 会立刻收口（见文件末尾的 colorInput 监听）。
 function stageSelectedStyle(patch) {
+  writeSelectedStyleDefault(patch, false)
   if (!applyStyleToSelectedAnnotation(patch)) return false
   styleDirty = true
   if (styleTimer) clearTimeout(styleTimer)
@@ -1825,6 +1977,9 @@ function syncWatermarkPanel() {
 }
 
 function finishSelection() {
+  // A tool strip that just moved must not leave the image-to-document popover floating
+  // over the new region (it is positioned from the old toolbar rect).
+  closeConvertDocMenu()
   render()
   if(selection&&initData?.autoAction&&!autoActionStarted){autoActionStarted=true;setTimeout(()=>performAction(initData.autoAction),80)}
 }
@@ -2102,6 +2257,36 @@ canvas.addEventListener('wheel',(event)=>{
 
 canvas.addEventListener('dblclick',()=>{ if(selection&&initData?.settings?.screenshot?.doubleClickCopy) performAction('copy') })
 
+// §3.2②: the pixel consumers (copy/save/pdf/ocr) all read ONE captured image, which
+// still covers only the current display. A level-2 Ctrl+A selection reaches past it by
+// design ("bounds only" - see desktopSelectionBounds), so every pixel path works on the
+// intersection. The crop already clamps inside getSourcePixelRect, but the annotation
+// transform inside exportSelectionCanvas reads the global `selection`; without this
+// projection every annotation would be drawn at the union scale (half size on a
+// 3840-wide union) and shifted by a negative origin, i.e. a corrupt copy instead of a
+// merely narrower one. Returns the SAME object when the selection already sits inside
+// the image, so every shipped flow is untouched.
+function exportSelectionRect() {
+  const projected = selectionInsideImage(selection, imageDisplayBounds())
+  if (!projected) return selection
+  const same = projected.x === selection.x && projected.y === selection.y &&
+    projected.w === selection.w && projected.h === selection.h
+  return same ? selection : projected
+}
+
+// The projection is applied around the one synchronous export call and swapped back
+// immediately: no await runs inside the window, and rAF cannot interleave, so no frame
+// ever observes the projected rectangle (the selection drawn on screen, handles
+// included, stays the all-displays one the user asked for). `rect` is passed in so the
+// caller can record the exact rectangle it exported into the consumer metadata.
+function exportSelectionCanvasForAction(includeAnnotations, rect = exportSelectionRect()) {
+  if (!selection) return null
+  if (rect === selection) return exportSelectionCanvas(includeAnnotations)
+  const raw = selection
+  selection = rect
+  try { return exportSelectionCanvas(includeAnnotations) } finally { selection = raw }
+}
+
 function exportSelectionCanvas(includeAnnotations = true) {
   if (!selection) return null
   const bounds=imageDisplayBounds()
@@ -2265,18 +2450,33 @@ async function performAction(action) {
   if(processingAction)return
   if(!selection)return
   const captureBounds=initData.captureBounds||initData.displayBounds||{x:0,y:0}
-  const selectionBounds={x:Math.round(captureBounds.x+selection.x),y:Math.round(captureBounds.y+selection.y),width:Math.max(1,Math.round(selection.w)),height:Math.max(1,Math.round(selection.h))}
+  // §3.2②: a level-2 Ctrl+A selection reaches past the captured display, so everything
+  // that turns the selection into pixels or screen coordinates uses its projection into
+  // the image. For every shipped selection `exportRect === selection`, so this is the
+  // historical value byte for byte; only the all-displays case narrows to what was
+  // actually captured (the alternative is metadata describing pixels that do not exist,
+  // which the pin window would then try to place).
+  const exportRect=exportSelectionRect()
+  const selectionBounds={x:Math.round(captureBounds.x+exportRect.x),y:Math.round(captureBounds.y+exportRect.y),width:Math.max(1,Math.round(exportRect.w)),height:Math.max(1,Math.round(exportRect.h))}
   if(action==='record'){
     try{await window.captureAPI.startRegionRecording(selectionBounds,serialMeta())}catch(error){alert(error.message||String(error))}
     return
   }
   if(action==='long'){
     if(annotations.length&&!confirm(t('capture.confirm.long-capture')))return
+    // Deliberately the raw selection: long capture is a single-display scroll session of
+    // its own, and the level-2 union is documented as "bounds only, no cross-display
+    // content", so it must not try to reinterpret the all-displays rectangle here.
     try{await window.captureAPI.startLongCapture({...selection},serialMeta())}catch(error){alert(error.message||String(error))}
     return
   }
-  const recognitionActions=['ocr','translate','table','qr']
-  const output=exportSelectionCanvas(!recognitionActions.includes(action)); if(!output)return
+  // Recognition and image-to-document actions feed the model the pixels of the image
+  // only, so they take the unannotated canvas; every other action is the
+  // user-facing picture and keeps the annotations.
+  const recognitionActions=['ocr','translate','table','qr','convert']
+  // §3.2②: a level-2 Ctrl+A selection reaches past the captured display; the export runs
+  // on its projection into the image (see exportSelectionCanvasForAction).
+  const output=exportSelectionCanvasForAction(!recognitionActions.includes(action),exportRect); if(!output)return
   const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds}
   try {
     const imageBuffer=await canvasPngBuffer(output)
@@ -2296,6 +2496,14 @@ async function performAction(action) {
       return
     }
     if(action==='pin'){await window.captureAPI.pin(imageBuffer,meta);closeCaptureWindow()}
+    if(action==='convert'){
+      // section 6.2 item 2: the main process owns the AI call, the save dialog and the file
+      // write, so the renderer just says which format it wants. A cancelled save
+      // is not an error and the capture window stays open (the user may retry).
+      try{await window.captureAPI.convertImage(imageBuffer,{output:convertOutputFormat})}
+      catch(error){alert(error.message||String(error))}
+      return
+    }
     if(['ocr','translate'].includes(action)&&!initData.editPin){await window.captureAPI.pinAndReannotate(imageBuffer,meta,action);return}
     if(action==='table'||action==='qr'){await window.captureAPI.openRecognition(action,imageBuffer,meta);return}
     if(action==='ocr'||action==='translate'){
@@ -2332,7 +2540,7 @@ document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListen
 lineWidthGroup.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-width]');if(button)setAnnotationWidth(button.dataset.annotationWidth,true)})
 // B2/B3/B5: one delegated listener for every option group (the key/value pair lives in
 // data attributes, so a new group needs no new wiring).
-toolOptions.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-option]');if(button)setAnnotationOption(button.dataset.annotationOption,button.dataset.annotationOptionValue)})
+toolOptions.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-option]');if(button)setAnnotationOption(button.dataset.annotationOption,button.dataset.annotationOptionValue,button)})
 // A3 (D3): the swatch button opens the popover; a preset click is a discrete
 // two-target edit (global default + selected item) and anything outside closes it.
 colorButton.addEventListener('click',(event)=>{event.stopPropagation();toggleColorPalette()})
@@ -2373,6 +2581,25 @@ document.getElementById('table').onclick=()=>performAction('table')
 document.getElementById('translate').onclick=()=>performAction('translate')
 document.getElementById('record').onclick=()=>performAction('record')
 document.getElementById('qr').onclick=()=>performAction('qr')
+// section 6.2 item 2: one trigger, two outputs. The popover follows the colour palette's
+// open/close contract (aria-expanded mirrors the state, an outside click closes it,
+// Escape closes it before the window closes - see the keydown handler).
+function openConvertDocMenu(){convertDocMenu.classList.remove('hidden');convertDocButton.setAttribute('aria-expanded','true')}
+function closeConvertDocMenu(){convertDocMenu.classList.add('hidden');convertDocButton.setAttribute('aria-expanded','false')}
+convertDocButton.onclick=(event)=>{event.stopPropagation();if(convertDocMenu.classList.contains('hidden'))openConvertDocMenu();else closeConvertDocMenu()}
+convertDocMenu.addEventListener('click',(event)=>{
+  const button=event.target.closest('[data-convert-output]')
+  if(!button)return
+  event.stopPropagation()
+  convertOutputFormat=button.dataset.convertOutput==='html'?'html':'markdown'
+  closeConvertDocMenu()
+  performAction('convert')
+})
+document.addEventListener('click',(event)=>{
+  if(convertDocMenu.classList.contains('hidden'))return
+  if(convertDocMenu.contains(event.target)||convertDocButton.contains(event.target))return
+  closeConvertDocMenu()
+})
 document.getElementById('close').onclick=()=>closeCaptureWindow()
 document.getElementById('resultClose').onclick=document.getElementById('resultDone').onclick=()=>resultPanel.classList.add('hidden')
 document.getElementById('resultCopy').onclick=async()=>{await navigator.clipboard.writeText(resultText.value);document.getElementById('resultCopy').textContent=t('capture.action.copied');setTimeout(()=>document.getElementById('resultCopy').textContent=t('capture.result.copy'),1000)}
@@ -2382,7 +2609,7 @@ ocrCopyAll.onclick=async()=>{if(!activeOcrResult)return;const text=activeOcrResu
 document.getElementById('ocrResultClose').onclick=clearOcrResult
 
 addEventListener('keydown',(event)=>{
-  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(!colorPalette.classList.contains('hidden'))closeColorPalette();else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else if(selectedAnnotationItem())setSelectedAnnotation(null);else closeCaptureWindow();return}
+  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(!convertDocMenu.classList.contains('hidden'))closeConvertDocMenu();else if(!colorPalette.classList.contains('hidden'))closeColorPalette();else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else if(selectedAnnotationItem())setSelectedAnnotation(null);else closeCaptureWindow();return}
   const focused=document.activeElement
   if(['INPUT','TEXTAREA','SELECT'].includes(focused?.tagName||''))return
   if(focused?.closest?.('#widthGroup'))return
@@ -2392,7 +2619,12 @@ addEventListener('keydown',(event)=>{
   if(event.key==='Enter'&&!event.ctrlKey&&!activeOcrResult&&resultPanel.classList.contains('hidden'))performAction('copy')
   if(event.ctrlKey&&event.key.toLowerCase()==='s'){event.preventDefault();performAction('save')}
   // P0-7-T6：Ctrl+A 选中当前显示器（imageDisplayBounds() 已按 imageBounds/displayBounds 解析）。
-  if(event.ctrlKey&&event.key.toLowerCase()==='a'&&!event.shiftKey&&!event.altKey){event.preventDefault();if(activeOcrResult)clearOcrResult();selection={...imageDisplayBounds()};selectState='selected';pointerDownPoint=null;tip.style.display='none';render()}
+  // §3.2②: the press where the selection already covers this display expands once to the
+  // desktop union (bounds only - see desktopSelectionBounds). The level-1 branch below is
+  // kept byte-identical, so a single-display capture, an editor with imageBounds or a
+  // desktop whose union equals the current display all fall straight through to it.
+  if(event.ctrlKey&&event.key.toLowerCase()==='a'&&!event.shiftKey&&!event.altKey&&ctrlASelectionExpandsToDesktop()){event.preventDefault();if(activeOcrResult)clearOcrResult();selection={...desktopSelectionBounds()};selectState='selected';pointerDownPoint=null;tip.style.display='none';render()}
+  else if(event.ctrlKey&&event.key.toLowerCase()==='a'&&!event.shiftKey&&!event.altKey){event.preventDefault();if(activeOcrResult)clearOcrResult();selection={...imageDisplayBounds()};selectState='selected';pointerDownPoint=null;tip.style.display='none';render()}
   if(event.ctrlKey&&event.key.toLowerCase()==='z'){event.preventDefault();document.getElementById('undo').click()}
   if(event.ctrlKey&&event.key.toLowerCase()==='y'){event.preventDefault();document.getElementById('redo').click()}
   if(event.key==='Delete'){event.preventDefault();deleteSelectedAnnotation()}

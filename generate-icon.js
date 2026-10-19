@@ -88,3 +88,18 @@ function crc32(buf) {
 
 writePNG(S, S, pixels, 'assets/icon.png')
 console.log('Icon generated: assets/icon.png', '256x256')
+
+// P1 (2026-10-18 snow migration §12.2): the tray needs a second, theme-aware
+// variant. On a dark Windows taskbar the blue disc is nearly invisible, so the
+// dark-theme asset keeps the same silhouette but lifts the fill and brightens
+// the rings (the light one is unchanged: it is also the packaged app icon and
+// the window icon, which must not change with the tray theme).
+const darkPixels = Buffer.from(pixels)
+for (let i = 0; i < darkPixels.length; i += 4) {
+  if (darkPixels[i + 3] === 0) continue
+  darkPixels[i] = Math.min(255, Math.round(darkPixels[i] * 0.92 + 34))
+  darkPixels[i + 1] = Math.min(255, Math.round(darkPixels[i + 1] * 0.92 + 30))
+  darkPixels[i + 2] = Math.min(255, Math.round(darkPixels[i + 2] * 0.92 + 22))
+}
+writePNG(S, S, darkPixels, 'assets/icon-dark.png')
+console.log('Icon generated: assets/icon-dark.png', '256x256')

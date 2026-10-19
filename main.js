@@ -44,6 +44,7 @@ const { CAPTURE_PREFIX } = captureNaming
 const { registerHistoryIpc } = require('./main/ipc/history-ipc')
 const { ShortcutService } = require('./main/services/shortcut-service')
 const { buildTrayMenuTemplate } = require('./main/services/tray-menu')
+const { createTrayIconImage } = require('./main/services/tray-icon')
 const { createProxyBridgeController } = require('./main/services/proxy-bridge-controller')
 const { registerShortcutIpc } = require('./main/ipc/shortcut-ipc')
 const { registerAppIpc } = require('./main/ipc/app-ipc')
@@ -480,21 +481,10 @@ const shortcutService = new ShortcutService({
   log
 })
 
-function ensureDirectory(directory) {
-  return ensureDirectorySync(directory)
-}
-
-function imageDataToBuffer(value) {
-  return imageBufferUtils.imageDataToBuffer(value)
-}
-
-function dataUrlToBuffer(dataUrl) {
-  return imageBufferUtils.dataUrlToBuffer(dataUrl)
-}
-
-function bufferToDataUrl(value) {
-  return imageBufferUtils.bufferToDataUrl(value)
-}
+// Thin delegations, declared once: main.js is at a hard line ceiling, and each of
+// these used to be a three-line wrapper around the very same function.
+const { imageDataToBuffer, dataUrlToBuffer, bufferToDataUrl } = imageBufferUtils
+const ensureDirectory = ensureDirectorySync
 
 // The extended signature is a pass-through: `ext` and `nameSettings` are read by
 // the module, and callers that omit them keep the legacy `*.png` shape. That is
@@ -845,16 +835,18 @@ function createTrayIcon() {
     if (tray) { tray.destroy(); tray = null }
     return
   }
+  // P1 (2026-10-18 snow migration §12.2): a dark taskbar needs the lighter asset;
+  // the choice (including "system" -> nativeTheme) lives in services/tray-icon.js.
+  const trayIcon = createTrayIconImage({ nativeImage, directory: path.join(__dirname, 'assets'), theme: settings.theme, systemPrefersDark: nativeTheme.shouldUseDarkColors })
   if (!tray) {
-    let icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'))
-    if (!icon || icon.isEmpty()) icon = nativeImage.createEmpty()
-    tray = new Tray(icon.resize({ width: 24, height: 24 }))
+    tray = new Tray(trayIcon.image)
     tray.on('click', () => {
       if (isGameModeEnabled()) return
       functionRouter.executeFunction('screenshot').catch((error) => log('Tray action failed:', error.message))
     })
     tray.on('double-click', () => createMainWindow('home'))
-  }
+  } else if (trayIcon.file !== tray._trayIconFile) tray.setImage(trayIcon.image)
+  tray._trayIconFile = trayIcon.file
   const gameMode = isGameModeEnabled(settings)
   const proxyState = proxyBridgeController ? proxyBridgeController.menuState(settings) : null
   tray.setToolTip([gameMode ? 'Highlighter（游戏模式）' : 'Highlighter', proxyState?.running ? t('main.proxy.tooltip-running') : ''].filter(Boolean).join(' · '))
@@ -1294,7 +1286,9 @@ else {
   })
   nativeTheme.on('updated', () => {
     if (store) clipboardDomain?.notifyAppearance()
-    if (store && getSettings().theme === 'system') { selectionDomain.broadcastActionAppearance(); applyWindowBackdropToTracked(getSettings(), nativeTheme) }
+    // The tray bitmap does not follow the OS on its own (Windows never recolours
+    // tray images), so a system appearance flip has to repaint it as well.
+    if (store && getSettings().theme === 'system') { selectionDomain.broadcastActionAppearance(); applyWindowBackdropToTracked(getSettings(), nativeTheme); createTrayIcon() }
   })
   process.on('unhandledRejection', (reason) => log('Unhandled promise rejection:', reason))
   app.whenReady().then(startApplication).catch((error) => {
