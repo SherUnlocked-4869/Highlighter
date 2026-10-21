@@ -7,12 +7,12 @@
   - TokenTracker `F:/workspace/TokenTracker` @ `v1.4.7-1-g148b758e`（MIT，Copyright (c) 2026 xiufengsun）。
 - 用户输入：截图（TokenTracker 深色「用量」页，2638×1589）+ 2026-10-20 口径修正——
   **统计对象是「本机 AI 编程 CLI 工具的日志用量」，与 TokenTracker 完全同口径；不是 Highlighter 自身 AI 调用的 token。**
-- 事实来源（同目录分析底稿，供复核）：
-  - `../../.tmp/usage-migration/01-tt-frontend.md`（TokenTracker 用量页前端/组件/数据契约）
-  - `../../.tmp/usage-migration/02-tt-data.md`（采集、统一事件模型、46 工具路径、指标口径、SQLite 模型）
-  - `../../.tmp/usage-migration/03-hl-arch.md`（Highlighter 架构、门禁、落点、扫描工程方案）
-  - `../../.tmp/usage-migration/04-hl-ai-usage.md`（Highlighter 自身 AI 调用 usage 现状，**本轮非目标**，作为未来扩展参考）
-  - `../../.tmp/usage-migration/05-parser-portability.md`（解析层移植规模/依赖/方案 A/B/C/工作量）
+- 事实来源（配套分析底稿，见 `docs/plans/usage-migration-analysis/`，供复核）：
+  - `usage-migration-analysis/01-tt-frontend.md`（TokenTracker 用量页前端/组件/数据契约）
+  - `usage-migration-analysis/02-tt-data.md`（采集、统一事件模型、46 工具路径、指标口径、SQLite 模型）
+  - `usage-migration-analysis/03-hl-arch.md`（Highlighter 架构、门禁、落点、扫描工程方案）
+  - `usage-migration-analysis/04-hl-ai-usage.md`（Highlighter 自身 AI 调用 usage 现状，**本轮非目标**，作为未来扩展参考）
+  - `usage-migration-analysis/05-parser-portability.md`（解析层移植规模/依赖/方案 A/B/C/工作量）
 
 ---
 
@@ -94,7 +94,7 @@ TokenTracker 的「用量」页由三层组成：
 - TokenTracker 的 3D 热力图（自绘等轴投影 SVG，约 3–4 人日）——建议砍掉，保留 2D。
 - 「研发性价比与交付成本」卡（依赖 `outcomes.jsonl` + git 归因）——不迁移。
 - 会话洞察/性能分析卡、分享图、设备筛选、订阅徽章——不迁移。
-- **Highlighter 自身 AI 调用的用量统计**——本轮不做，作为可选的后续能力（见 `04-hl-ai-usage.md`，届时需在 `main/services/ai-protocol-adapters.js` 截获 usage）。
+- **Highlighter 自身 AI 调用的用量统计**——本轮不做，作为可选的后续能力（见 `usage-migration-analysis/04-hl-ai-usage.md`，届时需在 `main/services/ai-protocol-adapters.js` 截获 usage）。
 
 ---
 
@@ -385,7 +385,7 @@ DashboardPage（1500 行，全部数据编排）
 
 ### 6.2 解析层 vendor 策略
 
-- 源：TokenTracker `src/lib/rollout.js` + 其 19 个直接/间接依赖（清单见 `05-parser-portability.md` §2.1），放进 **`main/vendor/tokentracker/`**。
+- 源：TokenTracker `src/lib/rollout.js` + 其 19 个直接/间接依赖（清单见 `usage-migration-analysis/05-parser-portability.md` §2.1），放进 **`main/vendor/tokentracker/`**。
 - 必改点（保持上游 diff 可追踪）：
   1. 删 `trae-db/trae-snapshot/trae-sqlite/trae-usage` 相关分支与 `wa-sqlite` 动态 import（首版放弃 Trae）；
   2. 删 `@mongodb-js/zstd` 回退分支，直接用 `zlib.zstdDecompressSync`（Electron Node 24.18）；
@@ -532,7 +532,7 @@ AI 用量                                      [覆盖状态] [刷新] [日][周
 
 ### 6.8 与 Highlighter 自身 AI 用量的关系
 
-- 本轮**不做**。若未来要做「本应用 AI 消耗」扩展：现有 AI 调用在 `main/services/ai-protocol-adapters.js` 丢弃 usage（流式未请求 `stream_options.include_usage`、非流只取文本），需按 `04-hl-ai-usage.md` 的 6 步最小改造接入 `usage-store`，事件 schema 与 CLI 用量分开（`source='highlighter'`），不要混入本页口径。
+- 本轮**不做**。若未来要做「本应用 AI 消耗」扩展：现有 AI 调用在 `main/services/ai-protocol-adapters.js` 丢弃 usage（流式未请求 `stream_options.include_usage`、非流只取文本），需按 `usage-migration-analysis/04-hl-ai-usage.md` 的 6 步最小改造接入 `usage-store`，事件 schema 与 CLI 用量分开（`source='highlighter'`），不要混入本页口径。
 - 两者可以共用本地存储与页面框架，但**数据来源与口径必须分别标注**，避免「TokenTracker 口径」被稀释。
 
 ---
@@ -666,7 +666,7 @@ P0 口径基线 ──► P1 引擎（解析/编排/存储） ──► P4 全�
 | Highlighter 门禁 | `Highlighter/scripts/check-architecture.js:25`、`scripts/check-i18n.js`、`package.json:14-17` |
 | Highlighter data-root/迁移 | `Highlighter/main/services/data-root.js:13-34,49-79`、`main/services/data-root-migration.js:25-30,405-462` |
 | 运行时能力实测 | `ELECTRON_RUN_AS_NODE=1 ./node_modules/electron/dist/electron.exe -e "…"`（Node 24.18.0 / node:sqlite / zstd） |
-| 完整底稿 | `.tmp/usage-migration/01-…05-*.md`（4 份分析原文） |
+| 完整底稿 | `docs/plans/usage-migration-analysis/01-…05-*.md`（5 份分析原文） |
 
 ---
 
