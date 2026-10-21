@@ -7,6 +7,7 @@ const {
   migrateDataRoot
 } = require('../../services/data-root-migration')
 const { quiesceAndMigrate } = require('../../services/managed-writer-coordinator')
+const { getActiveUsageFeature } = require('../../services/usage-runtime')
 const { relaunchApplication } = require('../../services/relaunch-application')
 
 // The data-root surface: first-run directory selection, recovery from an
@@ -38,6 +39,9 @@ function createDataRootDomain(deps) {
   } = deps
 
   async function stopManagedDataWriters() {
+    // Usage owns a WAL SQLite database under the managed root: checkpoint and close
+    // it before any file is copied so the migration cannot capture a torn database.
+    await getActiveUsageFeature()?.quiesce?.()
     await deps.getClipboardDomain?.()?.quiesce()
     await deps.selectionDomain?.quiesceConversations()
     const activeOcrService = ocrServiceRef.get()
@@ -55,6 +59,8 @@ function createDataRootDomain(deps) {
   }
 
   function restoreManagedDataWriters(restartOcr) {
+    // Reopen on the (unchanged) active root when a migration attempt was aborted.
+    getActiveUsageFeature()?.resume?.()
     deps.selectionDomain?.resumeConversations()
     deps.getClipboardDomain?.()?.resume().catch(() => {})
     if (!restartOcr) return
@@ -81,7 +87,7 @@ function createDataRootDomain(deps) {
       defaultId: 1,
       cancelId: 0,
       message: '更改软件数据目录？',
-      detail: 'Highlighter 将迁移配置、日志、截图历史、保存的会话与剪贴板历史，并在迁移完成后重启。缓存和运行数据不会迁移。'
+      detail: 'Highlighter 将迁移配置、日志、截图历史、保存的会话、剪贴板历史与用量数据，并在迁移完成后重启。缓存和运行数据不会迁移。'
     })
     if (confirmation.response !== 1) return { canceled: true }
     if (isMigrationInProgress() || fs.existsSync(dataRootContext.pendingPath)) throw new Error('已有未完成的数据目录迁移，不能开始新的迁移')

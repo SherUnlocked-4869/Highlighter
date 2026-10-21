@@ -115,6 +115,7 @@ test('defines exact legacy and managed source cleanup boundaries', async (t) => 
       managedLayout.history,
       managedLayout.conversations,
       managedLayout.clipboard,
+      managedLayout.usage,
       managedLayout.cache,
       managedLayout.runtime
     ]

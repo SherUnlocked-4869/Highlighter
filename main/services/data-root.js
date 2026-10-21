@@ -23,6 +23,10 @@ function createDataPaths(value) {
     // saved conversations" a single, auditable operation.
     conversations: path.join(root, 'conversations'),
     clipboard: path.join(root, 'clipboard'),
+    // Local CLI usage statistics: one SQLite database plus scan state. Managed as
+    // its own top-level directory so a data-root migration carries it and a
+    // "delete my usage data" action stays a single auditable directory.
+    usage: path.join(root, 'usage'),
     cache: path.join(root, 'cache'),
     electronCache: path.join(root, 'cache', 'electron'),
     ocrCache: path.join(root, 'cache', 'ocr'),

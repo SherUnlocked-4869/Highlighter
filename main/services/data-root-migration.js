@@ -26,7 +26,7 @@ const {
 // Every top-level directory the app manages. A migration that rolls back has to
 // remove all of them, so a new one added to createDataPaths must be listed here
 // too or a failed migration would leave it behind in the target root.
-const MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'conversations', 'clipboard', 'cache', 'runtime']
+const MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'conversations', 'clipboard', 'usage', 'cache', 'runtime']
 const ADDITIONAL_PERSISTENT = ['conversations', 'clipboard']
 const MIGRATION_MARKER = '.migration.json'
 const MARKER_VERSION = 2

@@ -1,0 +1,59 @@
+{
+  "enabled": true,
+  "scanning": false,
+  "scan": null,
+  "lastScanAt": "2026-10-21T03:10:00.000Z",
+  "lastError": null,
+  "dbBytes": 524288,
+  "retentionMonths": 24,
+  "sources": [
+    {
+      "source": "codex",
+      "label": "Codex",
+      "state": "ok",
+      "detected": true,
+      "readable": true,
+      "files": 300,
+      "lastScanAt": "2026-10-21T03:10:00.000Z",
+      "lastError": null,
+      "coverageStartAt": "2026-06-01T00:00:00Z",
+      "estimated": false
+    },
+    {
+      "source": "dsh",
+      "label": "DeepSeek Harness",
+      "state": "ok",
+      "detected": true,
+      "readable": true,
+      "files": 141,
+      "lastScanAt": "2026-10-21T03:10:00.000Z",
+      "lastError": null,
+      "coverageStartAt": "2026-07-01T00:00:00Z",
+      "estimated": false
+    },
+    {
+      "source": "opencode",
+      "label": "OpenCode",
+      "state": "empty",
+      "detected": true,
+      "readable": true,
+      "files": 0,
+      "lastScanAt": "2026-10-21T03:10:00.000Z",
+      "lastError": null,
+      "coverageStartAt": null,
+      "estimated": false
+    },
+    {
+      "source": "cursor",
+      "label": "Cursor",
+      "state": "unsupported",
+      "detected": false,
+      "readable": false,
+      "files": 0,
+      "lastScanAt": null,
+      "lastError": null,
+      "coverageStartAt": null,
+      "estimated": false
+    }
+  ]
+}

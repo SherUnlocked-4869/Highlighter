@@ -17,6 +17,9 @@ const DEFAULT_AI_PROVIDERS = createDefaultProviders()
 const DEFAULT_SETTINGS = {
   apiKey: '',
   clipboard: { ...DEFAULT_CLIPBOARD, excludedApps: [] },
+  // Local AI CLI usage statistics are opt-in: the page shows a consent card on
+  // first visit and only scans after the user explicitly enables it.
+  usage: { enabled: false },
   providers: DEFAULT_AI_PROVIDERS,
   theme: 'system',
   mainColor: '#e5a44c',

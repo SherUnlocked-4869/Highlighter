@@ -1,0 +1,31 @@
+{
+  "scope": "source",
+  "period": "month",
+  "from": "2026-10-01",
+  "to": "2026-10-21",
+  "tz": "Asia/Shanghai",
+  "totals": {
+    "billable_total_tokens": 18422310,
+    "total_tokens": 18422310,
+    "input_tokens": 2094000,
+    "output_tokens": 133000,
+    "cached_input_tokens": 16170000,
+    "cache_creation_input_tokens": 0,
+    "reasoning_output_tokens": 0,
+    "conversation_count": 412,
+    "total_cost_usd": null
+  },
+  "sources": [
+    { "source": "codex", "label": "Codex", "billable_total_tokens": 14200000, "sharePct": 77.08, "modelCount": 2, "conversationCount": 286, "total_cost_usd": null },
+    { "source": "dsh", "label": "DeepSeek Harness", "billable_total_tokens": 3000000, "sharePct": 16.29, "modelCount": 1, "conversationCount": 96, "total_cost_usd": null },
+    { "source": "opencode", "label": "OpenCode", "billable_total_tokens": 1222310, "sharePct": 6.63, "modelCount": 3, "conversationCount": 30, "total_cost_usd": null }
+  ],
+  "models": [
+    { "source": "codex", "model": "gpt-5.1-codex", "billable_total_tokens": 11800000, "sharePct": 64.05, "conversationCount": 220, "total_cost_usd": null, "pricing": "none" },
+    { "source": "dsh", "model": "deepseek-v4.1-flash", "billable_total_tokens": 3000000, "sharePct": 16.29, "conversationCount": 96, "total_cost_usd": null, "pricing": "none" },
+    { "source": "codex", "model": "gpt-5.1-codex-mini", "billable_total_tokens": 2400000, "sharePct": 13.03, "conversationCount": 66, "total_cost_usd": null, "pricing": "none" },
+    { "source": "opencode", "model": "claude-sonnet-4-5", "billable_total_tokens": 900000, "sharePct": 4.89, "conversationCount": 18, "total_cost_usd": null, "pricing": "none" },
+    { "source": "opencode", "model": "glm-4.6", "billable_total_tokens": 222310, "sharePct": 1.21, "conversationCount": 9, "total_cost_usd": null, "pricing": "none" },
+    { "source": "opencode", "model": "unknown", "billable_total_tokens": 100000, "sharePct": 0.54, "conversationCount": 3, "total_cost_usd": null, "pricing": "none" }
+  ]
+}

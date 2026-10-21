@@ -60,6 +60,9 @@ function expectedDataPaths(root) {
     // The clipboard store joined the managed layout with the isolated history panel
     // (commit e7c7752); it sits beside conversations at the root level.
     clipboard: path.join(absoluteRoot, 'clipboard'),
+    // Local CLI usage statistics live beside the other content types; the DB is
+    // WAL SQLite but the directory is copied as one managed group.
+    usage: path.join(absoluteRoot, 'usage'),
     cache: path.join(absoluteRoot, 'cache'),
     electronCache: path.join(absoluteRoot, 'cache', 'electron'),
     ocrCache: path.join(absoluteRoot, 'cache', 'ocr'),

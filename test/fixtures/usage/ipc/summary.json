@@ -1,0 +1,25 @@
+{
+  "period": "month",
+  "from": "2026-10-01",
+  "to": "2026-10-21",
+  "tz": "Asia/Shanghai",
+  "totals": {
+    "billable_total_tokens": 18422310,
+    "total_tokens": 18422310,
+    "input_tokens": 2094000,
+    "output_tokens": 133000,
+    "cached_input_tokens": 16170000,
+    "cache_creation_input_tokens": 0,
+    "reasoning_output_tokens": 0,
+    "conversation_count": 412,
+    "total_cost_usd": null,
+    "unpriced_tokens": 0
+  },
+  "rolling": {
+    "last7d": { "billable_total_tokens": 5102000, "conversation_count": 120 },
+    "last30d": { "billable_total_tokens": 18012000, "conversation_count": 400 },
+    "avgPerActiveDay": 692769,
+    "activeDays": 26
+  },
+  "pricing": { "mode": "none", "version": null }
+}

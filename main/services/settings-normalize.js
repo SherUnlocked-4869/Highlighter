@@ -100,6 +100,10 @@ function normalizePort(value) {
 
 function normalizeFrozenSettings(settings) {
   settings.clipboard = normalizeClipboardSettings(settings.clipboard)
+  // Opt-in usage statistics: a hand-edited store could carry a truthy string, so
+  // the toggle is coerced to a strict boolean like the other feature switches.
+  settings.usage = { ...(settings.usage || {}) }
+  settings.usage.enabled = normalizeToggle(settings.usage.enabled)
   settings.language = normalizeLanguage(settings.language)
   settings.pinned = { ...(settings.pinned || {}) }
   settings.record = settings.record || {}
