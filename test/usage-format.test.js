@@ -327,20 +327,71 @@ test('isChineseLanguage matches zh variants only', () => {
   assert.equal(format.isChineseLanguage(undefined), false)
 })
 
+test('formatTimezoneOffsetLabel renders UTC offsets and survives DST dates', () => {
+  assert.equal(format.formatTimezoneOffsetLabel('UTC', new Date('2026-03-16T00:00:00Z')), 'UTC+00:00')
+  assert.equal(format.formatTimezoneOffsetLabel('Asia/Shanghai', new Date('2026-03-16T00:00:00Z')), 'UTC+08:00')
+  assert.equal(format.formatTimezoneOffsetLabel('America/New_York', new Date('2026-01-15T12:00:00Z')), 'UTC-05:00')
+  assert.equal(format.formatTimezoneOffsetLabel('America/New_York', new Date('2026-07-15T12:00:00Z')), 'UTC-04:00')
+  // A missing / invalid zone degrades to UTC instead of throwing.
+  assert.equal(format.formatTimezoneOffsetLabel(undefined, new Date('2026-03-16T00:00:00Z')), 'UTC+00:00')
+  assert.equal(format.formatTimezoneOffsetLabel('Not/AZone', new Date('2026-03-16T00:00:00Z')), 'UTC')
+})
+
+test('bucketRowsByMonth aggregates daily rows by local month', () => {
+  const buckets = format.bucketRowsByMonth([
+    { day: '2026-01-31', billable_total_tokens: 100, input_tokens: 40, output_tokens: 10, cached_input_tokens: 50, conversation_count: 2 },
+    { day: '2026-02-01', billable_total_tokens: 200, input_tokens: 60, output_tokens: 20, cached_input_tokens: 120, conversation_count: 3 },
+    { day: '2026-02-20', billable_total_tokens: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, conversation_count: 0 },
+    { day: '2026-02-21', billable_total_tokens: 50, input_tokens: 25, output_tokens: 5, cached_input_tokens: 20, conversation_count: 1 },
+    { day: 'not-a-day', billable_total_tokens: 999 },
+    null
+  ])
+  assert.deepEqual(buckets, [
+    { month: '2026-01', input: 40, cache: 50, output: 10, tokens: 100, conversations: 2, activeDays: 1 },
+    { month: '2026-02', input: 85, cache: 140, output: 25, tokens: 250, conversations: 4, activeDays: 2 }
+  ])
+  assert.deepEqual(format.bucketRowsByMonth(undefined), [])
+})
+
+test('summarizeTrendRows finds the peak day and active-day average', () => {
+  const stats = format.summarizeTrendRows([
+    { day: '2026-03-02', billable_total_tokens: 100, conversation_count: 1 },
+    { day: '2026-03-01', billable_total_tokens: 300, conversation_count: 4 },
+    { day: '2026-03-03', billable_total_tokens: 0, conversation_count: 0 },
+    { day: '2026-03-04', billable_total_tokens: 200, conversation_count: 2 }
+  ])
+  assert.deepEqual(stats, {
+    tokens: 600,
+    conversations: 7,
+    activeDays: 3,
+    peakDay: '2026-03-01',
+    peakValue: 300,
+    avgPerActiveDay: 200,
+    dayCount: 4
+  })
+  // Empty / malformed input is a safe zero result.
+  assert.deepEqual(format.summarizeTrendRows(undefined), {
+    tokens: 0, conversations: 0, activeDays: 0, peakDay: '', peakValue: 0, avgPerActiveDay: 0, dayCount: 0
+  })
+})
+
 test('the UMD surface exposes exactly the helpers the page uses', () => {
   assert.deepEqual(Object.keys(format).sort(), [
     'CUSTOM_RANGE_MAX_SPAN_DAYS',
     'addDays',
+    'bucketRowsByMonth',
     'formatCompactToken',
     'formatFullToken',
     'formatRangeLabel',
     'formatSharePct',
+    'formatTimezoneOffsetLabel',
     'formatTooltip',
     'heatmapLevelClass',
     'heatmapMonthTicks',
     'isChineseLanguage',
     'layoutHeatmapWeeks',
     'projectModelShareRows',
+    'summarizeTrendRows',
     'toDayKey',
     'validateCustomRange'
   ])

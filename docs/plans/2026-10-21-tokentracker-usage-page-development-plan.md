@@ -94,7 +94,6 @@
 - **证据**：[`docs/plans/2026-10-21-usage-page-redesign/`](./2026-10-21-usage-page-redesign/)（01-before → 02–05-after → 06-tooltip + `final-metrics.json`）。
 
 ### 0.8 最终构建与验证（2026-10-21，UI 重构后）
-
 | 项 | 结果 |
 |---|---|
 | 分支 | 主仓 `D:\workspace\Highlighter` 的 **`feat/usage-page-release`**（`usage-page` 快进合并已包含 UI 重构；未 push） |
@@ -104,6 +103,14 @@
 | 引擎 sign-off | usage 测试 **102/102**、vendor smoke 93/93、聚合 oracle **26/26 PASS**、`--hl-db` 0 diff；asar 20/20 抽样文件与合并树字节一致（含 9 个 usage services、14 个 vendor 文件、redesigned usage.js/css）；native sidecars 全部解包 |
 | 截图证据 | 见 §0.7 目录（before/after/tooltip + metrics JSON） |
 | 已知边界 | 超密集 262,800 桶 heatmap p95 160–267 ms（2.6× plan 规模）；安装包未签名/未 bump 版本 |
+
+### 0.9 第二轮布局（v6，2026-10-21 用户二次反馈）
+
+用户基于截图继续调整：① TOKEN 总数卡过大 → 与模型占比卡同尺寸；② 活跃热力图过大 → 与使用趋势同尺寸 + 底部横向滚动条；③ 活跃热力图放到首行；④ 近7天/近30天/活跃日均/对话数 + 模型占比整合为一张卡；⑤ 使用趋势右下加全屏按钮，点击弹出趋势详情。
+
+实现：宽屏 3 行网格 **row1 活跃热力图 | 使用趋势、row2 模型占比整合卡 | TOKEN 总数卡、row3 每日明细**（≤1080 单列按 heatmap→trend→integrated→token→daily）；热力图 13px 格 + 固定周一星期栏 + 随滚动对齐的月份标签 + 左右箭头/细滚动条 + 图例，富 tooltip 保持；整合卡 = 4 个 KPI pills + 排名模型列表 + `开始使用`/`活跃天数` footer；TOKEN 卡 = 40px 数字 + 区间/活跃日 + 分段来源条/图例 + 紧凑来源行；趋势卡右下 expand 按钮 → 趋势详情弹窗（左侧绿点缀「趋势洞察」面板：TOKEN 总量/对话数/峰值日/活跃天数/自动洞察；右侧大图：30分钟/天/月 粒度、区间 chip、网格线、hover tooltip；Esc/backdrop/X 关闭 + focus trap + 焦点恢复 + 滚动锁）。顺手修复 D-R2-1：v6 重构误删 `usageHourClock()` 导致 30 分钟粒度图表恒为空（ReferenceError 被宽 catch 吞掉），已恢复并把 30m 数据映射移出静默 catch。
+
+验收（QA headless 7 组截图，frozen SHA 前后一致）：row1/row2 等高达 **0px**、最大水平死区 **18px**、token 卡 581px 非全宽、整合卡 KPI/排名/footer 齐备；热力图 scroller 829>507 且自动滚到最新、左右箭头可用；tooltip insideCard、5 行模型不裁切；弹窗结构 + Esc/backdrop/X 三路径关闭 + 焦点恢复，30 分钟=24 柱、月=2 桶、天=30 柱；页面单测 **68/68**，check-js 388 / i18n 585 / architecture 1327/1330 全绿。证据：[`07–13-after2-*`](./2026-10-21-usage-page-redesign/) + `round2-metrics.json`；用户参考图保留为同目录中文名 PNG。
 
 ---
 
@@ -829,3 +836,4 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | 2026-10-21 | **UI 重构（用户反馈）**：按 TokenTracker 参考重画用量页（响应式两栏/单栏、卡片体系/层级、热力图丰满 tooltip、紧凑明细、自定义 tab），并新增 headless 截图评审工具（隐藏窗口 `design-demos/usage-page-preview.html` + `scripts/usage-visual-preview.js`）；同步扩展 heatmap cell `models`/`conversation_count`（TT tooltip 口径）；heatmap 查询加 covering index + 按本地日聚合（plan-scale 87,840 桶 p95 68–103 ms；超密集 262,800 桶 p95 160–267 ms 作为已知边界接受）。截图与评审记录见设计回合报告 |
 | 2026-10-21 | **UI 重构验收**：before/after 各 8 张 headless 截图（908/1180/1440 × 明暗 + tooltip），QA 独立复核 D1–D4 全绿（tooltip insideCard/5 模型行不裁切、明细无半行、宽屏 18px 列间距、heatmap 居中）；页面单测 65/65、check-js 388 文件、i18n 585/606、architecture 1327/1330 全绿；证据归档 `docs/plans/2026-10-21-usage-page-redesign/` |
 | 2026-10-21 | **最终构建**：UI 重构合并到 `feat/usage-page-release` 并重建 NSIS 安装包（`dist-usage-page/Highlighter-Setup-4.0.0.exe`，144.9 MB，SHA256 `8f3cad10…79d`，含 SHA256SUMS/latest.yml/blockmap）；e2e **6/6**；引擎独立 sign-off（usage 102/102 + oracle 26/26 + `--hl-db` 0 diff + asar/安装包内容核对）全绿；安装包未签名、版本仍 4.0.0。详见 §0.8 |
+| 2026-10-21 | **第二轮布局 v6**：按用户二次反馈重排为「热力图｜趋势 / 整合卡｜TOKEN 卡 / 每日明细」3 行网格（≤1080 单列），热力图缩小并加横向滚动、KPI+模型占比整合、趋势卡加全屏详情弹窗（30分钟/天/月、洞察面板）；修复 D-R2-1（30m 图表恒空）。QA 7 组 headless 截图全绿（等高 0px、死区 18px、弹窗三路径关闭+焦点恢复、30m=24 柱），页面单测 68/68；证据见 §0.9 目录。安装包将在合并后重建 |

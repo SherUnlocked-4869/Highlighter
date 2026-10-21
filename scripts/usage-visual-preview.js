@@ -114,6 +114,11 @@ function parseArgs(argv) {
     lang: "zh-CN",
     compact: false,
     tooltip: false,
+    modal: false,
+    modalGranularities: null,
+    hourlyEmpty: false,
+    heatmapScroll: false,
+    dumpDom: false,
     fromGit: null,
     maxHeight: 6000,
     timeoutMs: 30000,
@@ -135,6 +140,11 @@ function parseArgs(argv) {
     else if (arg === "--lang") opts.lang = next();
     else if (arg === "--compact") opts.compact = true;
     else if (arg === "--tooltip") opts.tooltip = true;
+    else if (arg === "--modal") opts.modal = true;
+    else if (arg === "--modal-granularity") opts.modalGranularities = String(next()).split(",").map((item) => item.trim()).filter(Boolean);
+    else if (arg === "--hourly-empty") opts.hourlyEmpty = true;
+    else if (arg === "--heatmap-scroll") opts.heatmapScroll = true;
+    else if (arg === "--dump-dom") opts.dumpDom = true;
     else if (arg === "--from-git") opts.fromGit = next();
     else if (arg === "--max-height") opts.maxHeight = Number(next()) || opts.maxHeight;
     else if (arg === "--timeout") opts.timeoutMs = Number(next()) || opts.timeoutMs;
@@ -150,6 +160,15 @@ function parseArgs(argv) {
   if (!["zh-CN", "zh-TW", "en-US"].includes(opts.lang)) throw new Error(`unsupported --lang: ${opts.lang}`);
   if (!opts.widths && !opts.pageWidths) opts.widths = [1180, 1440];
   if (opts.widths && opts.pageWidths) throw new Error("use either --widths or --page-widths, not both");
+  if (opts.modalGranularities) opts.modal = true;
+  const modes = [opts.tooltip, opts.modal, opts.heatmapScroll].filter(Boolean).length;
+  if (modes > 1) throw new Error("use only one of --tooltip / --modal / --heatmap-scroll per run");
+  if (opts.modalGranularities) {
+    const allowed = ["30m", "day", "month"];
+    for (const granularity of opts.modalGranularities) {
+      if (!allowed.includes(granularity)) throw new Error(`unsupported --modal-granularity value: ${granularity} (expected 30m|day|month)`);
+    }
+  }
   return opts;
 }
 
@@ -242,9 +261,11 @@ const measureScript = `(() => {
   if (typeof window.__usagePreviewMeasure === 'function') return window.__usagePreviewMeasure();
   const page = document.querySelector('.usage-page');
   const view = document.getElementById('view');
-  const heatScroll = document.querySelector('[data-usage-heatmap-scroll]');
-  const heatGrid = document.querySelector('.usage-heatmap-grid');
-  const heatCells = heatGrid ? Array.from(heatGrid.querySelectorAll('.usage-heat-cell')) : [];
+  const heatScroll = document.querySelector('[data-usage-heatmap-scroll], .usage-heatmap-scroll');
+  const heatGrid = document.querySelector('.usage-heatmap-grid, .usage-heat-grid, .usage-heat-canvas');
+  const heatCells = (heatGrid || document.querySelector('#usageHeatmap, .usage-heatmap'))
+    ? Array.from((heatGrid || document.querySelector('#usageHeatmap, .usage-heatmap')).querySelectorAll('.usage-heat-cell, [data-usage-heat-day]'))
+    : [];
   const rect = (element) => {
     if (!element) return null;
     const r = element.getBoundingClientRect();
@@ -395,6 +416,430 @@ const tooltipStateScript = `(() => {
   };
 })()`;
 
+const layoutScript = `(() => {
+  const page = document.querySelector('.usage-page');
+  if (!page) return null;
+  const pageRect = page.getBoundingClientRect();
+  const all = Array.from(page.querySelectorAll('.usage-card, .card')).filter((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 150 && r.height > 50;
+  });
+  const top = all.filter((el) => !all.some((other) => other !== el && other.contains(el)));
+  const rectOf = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), right: Math.round(r.right), bottom: Math.round(r.bottom) };
+  };
+  const entries = top.map((el) => ({
+    tag: el.tagName.toLowerCase(),
+    id: el.id || null,
+    className: typeof el.className === 'string' ? el.className : '',
+    left: Math.round(el.getBoundingClientRect().left),
+    top: Math.round(el.getBoundingClientRect().top),
+    width: Math.round(el.getBoundingClientRect().width),
+    height: Math.round(el.getBoundingClientRect().height),
+    right: Math.round(el.getBoundingClientRect().right),
+    bottom: Math.round(el.getBoundingClientRect().bottom),
+    heading: (() => { const h = el.querySelector('h1,h2,h3,.usage-card-head h2'); return h ? h.textContent.trim() : null; })(),
+    hasModelRows: !!el.querySelector('.usage-model-row, .usage-model, .usage-integrated-row'),
+    hasKpis: !!el.querySelector('.usage-kpi, .usage-kpi-pill, [data-usage-kpi], .usage-pills, #usageKpis'),
+    hasFooter: /开始使用|活跃天数|first use|active days/i.test(el.textContent || ''),
+    hasTotal: !!el.querySelector('#usageTotal')
+  }));
+  entries.sort((a, b) => a.top - b.top || a.left - b.left);
+  const rows = [];
+  for (const entry of entries) {
+    const row = rows.find((item) => Math.abs(item.top - entry.top) <= 4);
+    if (row) row.cards.push(entry);
+    else rows.push({ top: entry.top, cards: [entry] });
+  }
+  rows.sort((a, b) => a.top - b.top);
+  rows.forEach((row) => row.cards.sort((a, b) => a.left - b.left));
+  const rowInfo = rows.map((row) => ({
+    top: row.top,
+    count: row.cards.length,
+    equalHeightDelta: row.cards.length > 1 ? Math.max(...row.cards.map((c) => c.height)) - Math.min(...row.cards.map((c) => c.height)) : null,
+    horizontalGaps: row.cards.slice(1).map((card, index) => card.left - (row.cards[index].left + row.cards[index].width)),
+    cards: row.cards.map((card) => ({ id: card.id, className: card.className, left: card.left, width: card.width, height: card.height, heading: card.heading }))
+  }));
+  const rowGaps = rows.slice(1).map((row, index) => {
+    const prev = rows[index];
+    const prevBottom = Math.max(...prev.cards.map((card) => card.top + card.height));
+    return row.top - prevBottom;
+  });
+  const findCard = (selectors) => {
+    for (const selector of selectors) {
+      const el = page.querySelector(selector);
+      if (el) return el;
+    }
+    return null;
+  };
+  const heat = findCard(['#usageHeatmap', '.usage-heatmap']);
+  const trend = findCard(['#usageTrend', '.usage-trend']);
+  const models = findCard(['.usage-integrated', '#usageBreakdown', '.usage-models']) || top.find((el) => el.hasModelRows);
+  const token = findCard(['.usage-token', '.usage-token-card', '.usage-hero', '#usageTokenCard']) || top.find((el) => el.hasTotal);
+  const daily = findCard(['.usage-daily', '.usage-daily-table']);
+  const heatRect = rectOf(heat);
+  const trendRect = rectOf(trend);
+  const modelsRect = rectOf(models);
+  const tokenRect = rectOf(token);
+  const dailyRect = rectOf(daily);
+  const gaps = [].concat(...rowInfo.map((row) => row.horizontalGaps), rowGaps.filter((gap) => Number.isFinite(gap)));
+  const maxDeadBand = gaps.length ? Math.max(...gaps) : 0;
+  return {
+    pageWidth: Math.round(pageRect.width),
+    viewportHeight: window.innerHeight,
+    cards: entries,
+    rows: rowInfo,
+    rowGaps,
+    rects: { heatmap: heatRect, trend: trendRect, models: modelsRect, token: tokenRect, daily: dailyRect },
+    checks: {
+      heatmapBeforeTrend: !!(heatRect && trendRect) && (heatRect.top < trendRect.top || (heatRect.top === trendRect.top && heatRect.left < trendRect.left)),
+      row1EqualHeights: !!(heatRect && trendRect) && Math.abs(heatRect.height - trendRect.height) <= 2,
+      row2EqualHeights: !!(modelsRect && tokenRect) && Math.abs(modelsRect.height - tokenRect.height) <= 2,
+      tokenCardNotFullWidth: !!(tokenRect) && tokenRect.width < pageRect.width * 0.9,
+      noWideDeadBands: maxDeadBand <= 40,
+      integratedCardHasKpis: !!(models) && !!models.querySelector('.usage-kpi, .usage-kpi-pill, [data-usage-kpi], .usage-pills, #usageKpis'),
+      integratedCardHasModelRows: !!(models) && !!models.querySelector('.usage-model-row, .usage-model, .usage-integrated-row'),
+      integratedCardHasFooter: !!(models) && /开始使用|活跃天数|first use|active days/i.test(models.textContent || ''),
+      dailyFullWidth: !!(dailyRect) && dailyRect.width > pageRect.width * 0.85
+    },
+    maxDeadBandPx: maxDeadBand
+  };
+})()`;
+
+const MODAL_OPEN_SCRIPT = `(() => {
+  const button = document.querySelector('[data-usage-trend-expand], .usage-trend-expand, [data-usage-expand-trend]');
+  if (!button) return { ok: false, reason: 'expand button not found' };
+  button.focus();
+  button.click();
+  return { ok: true, label: (button.getAttribute('aria-label') || button.textContent || '').trim(), disabled: !!button.disabled };
+})()`;
+
+const OVERLAY_HELPERS = `
+  const OVERLAY_SELECTORS = ['[data-usage-trend-modal]', '[data-usage-modal]', '.usage-trend-modal', '.usage-modal', '[role="dialog"]', 'dialog[open]', '.modal-overlay'];
+  const visibleOverlay = () => {
+    for (const selector of OVERLAY_SELECTORS) {
+      const el = Array.from(document.querySelectorAll(selector)).find((candidate) => {
+        const r = candidate.getBoundingClientRect();
+        const s = window.getComputedStyle(candidate);
+        return r.width > 200 && r.height > 200 && s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity) > 0;
+      });
+      if (el) return { el, selector };
+    }
+    return null;
+  };
+`;
+
+const MODAL_PROBE_SCRIPT = `(() => {${OVERLAY_HELPERS}
+  const found = visibleOverlay();
+  if (!found) return { open: false, reason: 'no visible modal overlay', overlayCandidateCounts: OVERLAY_SELECTORS.map((selector) => ({ selector, count: document.querySelectorAll(selector).length })) };
+  const overlay = found.el;
+  const r = overlay.getBoundingClientRect();
+  const text = (overlay.textContent || '').replace(/\\s+/g, ' ').trim();
+  const tabs = Array.from(overlay.querySelectorAll('[role="tab"], button')).map((button) => (button.textContent || '').trim()).filter(Boolean);
+  const granularityLabels = tabs.filter((label) => /30\\s*分钟|分钟|天|周|月|hour|day|week|month/i.test(label)).slice(0, 8);
+  const has = (selectors) => selectors.some((selector) => !!overlay.querySelector(selector));
+  return {
+    open: true,
+    overlaySelector: found.selector,
+    activeGranularity: (() => {
+      const active = Array.from(overlay.querySelectorAll('[data-usage-granularity]')).find(
+        (button) => button.getAttribute('aria-selected') === 'true' || button.classList.contains('is-active'),
+      );
+      return active ? active.getAttribute('data-usage-granularity') : null;
+    })(),
+    chartColumns: (() => {
+      const chartEl = overlay.querySelector('[data-usage-modal-chart]');
+      if (!chartEl) return 0;
+      return chartEl.querySelectorAll('[data-usage-modal-column], .usage-modal-col, .usage-trend-col').length;
+    })(),
+    chartEmptyText: (() => {
+      const chartEl = overlay.querySelector('[data-usage-modal-chart]');
+      const empty = chartEl ? chartEl.querySelector('.usage-modal-empty') : null;
+      return empty ? (empty.textContent || '').trim() : null;
+    })(),
+    overlayRect: { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) },
+    title: (() => { const t = overlay.querySelector('h1,h2,h3,.usage-modal-title'); return t ? t.textContent.trim() : null; })(),
+    hasLeftInsightPanel: has(['[data-usage-modal-insight]', '.usage-modal-insight', '.usage-trend-insight', '.usage-modal-side', '.usage-insight', '.usage-modal-left']),
+    hasRightChart: has(['[data-usage-modal-chart]', '.usage-modal-chart', '.usage-trend-detail-chart', 'canvas', 'svg', '.usage-trend-modal-chart']),
+    hasGranularityTabs: has(['[data-usage-granularity]', '.usage-modal-granularity', '.usage-granularity', '.usage-granularity-tabs', '.usage-modal-tabs', '[role="tablist"]']),
+    granularityLabels,
+    tabLabels: tabs.slice(0, 10),
+    hasCloseButton: has(['[data-usage-modal-close]', '.usage-modal-close', '.usage-modal-x', 'button[aria-label*="关闭"]', 'button[aria-label*="Close"]', 'button[title*="关闭"]', 'button[title*="Close"]']),
+    textLength: text.length,
+    textSample: text.slice(0, 400)
+  };
+})()`;
+
+const MODAL_STATE_SCRIPT = `(() => {${OVERLAY_HELPERS}
+  const found = visibleOverlay();
+  const trigger = document.querySelector('[data-usage-trend-expand], .usage-trend-expand, [data-usage-expand-trend]');
+  const active = document.activeElement;
+  return {
+    open: Boolean(found),
+    activeElement: active ? (active.tagName.toLowerCase() + (active.id ? '#' + active.id : '') + (typeof active.className === 'string' && active.className ? '.' + active.className.split(' ').filter(Boolean).join('.') : '')) : null,
+    focusRestored: Boolean(trigger && active === trigger)
+  };
+})()`;
+
+const MODAL_ESCAPE_SCRIPT = `(() => {
+  const options = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
+  document.dispatchEvent(new KeyboardEvent('keydown', options));
+  window.dispatchEvent(new KeyboardEvent('keydown', options));
+  return true;
+})()`;
+
+const MODAL_BACKDROP_SCRIPT = `(() => {${OVERLAY_HELPERS}
+  const found = visibleOverlay();
+  if (!found) return { ok: false, reason: 'not open' };
+  found.el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+  return { ok: true, selector: found.selector };
+})()`;
+
+const MODAL_CLOSE_BUTTON_SCRIPT = `(() => {${OVERLAY_HELPERS}
+  const found = visibleOverlay();
+  if (!found) return { ok: false, reason: 'not open' };
+  const overlay = found.el;
+  const selectors = ['[data-usage-modal-close]', '.usage-modal-close', '.usage-modal-x', 'button[aria-label*="关闭"]', 'button[aria-label*="Close"]', 'button[title*="关闭"]', 'button[title*="Close"]'];
+  for (const selector of selectors) {
+    const button = overlay.querySelector(selector);
+    if (button) { button.click(); return { ok: true, selector }; }
+  }
+  return { ok: false, reason: 'close button not found' };
+})()`;
+
+const HEATMAP_SCROLL_SCRIPT = `(() => {
+  const selectors = ['[data-usage-heatmap-scroll]', '.usage-heatmap-scroll', '.usage-heatmap-scroller', '.usage-heatmap-track'];
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (!el) continue;
+    const canScroll = el.scrollWidth > el.clientWidth + 1;
+    const before = { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, scrollLeft: el.scrollLeft };
+    el.scrollLeft = el.scrollWidth;
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return {
+      ok: true,
+      selector,
+      canScroll,
+      before,
+      after: { scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, scrollLeft: Math.round(el.scrollLeft) },
+      maxScrollLeft: Math.max(0, el.scrollWidth - el.clientWidth),
+      scrolledToNewest: el.scrollLeft >= el.scrollWidth - el.clientWidth - 2
+    };
+  }
+  return { ok: false, reason: 'heatmap scroller not found', candidates: selectors.map((selector) => ({ selector, count: document.querySelectorAll(selector).length })) };
+})()`;
+
+const HEATMAP_SCROLL_STATE_SCRIPT = `(() => {
+  const el = document.querySelector('[data-usage-heatmap-scroll], .usage-heatmap-scroll, .usage-heatmap-scroller, .usage-heatmap-track');
+  if (!el) return { ok: false, reason: 'heatmap scroller not found' };
+  return {
+    ok: true,
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+    scrollLeft: Math.round(el.scrollLeft),
+    maxScrollLeft: Math.max(0, el.scrollWidth - el.clientWidth),
+    scrolledToNewest: el.scrollLeft >= el.scrollWidth - el.clientWidth - 2
+  };
+})()`;
+
+const MODAL_GRANULARITY_CLICK_SCRIPT = `(() => {
+  const overlay = document.querySelector('[data-usage-trend-modal]') || document.querySelector('[role="dialog"]');
+  if (!overlay) return { ok: false, reason: 'modal not open' };
+  try {
+    if (!window.__qaHourlyWrapperInstalled && window.electronAPI && typeof window.electronAPI.usageHourly === 'function') {
+      window.__qaHourlyWrapperInstalled = true;
+      const originalHourly = window.electronAPI.usageHourly;
+      window.electronAPI.usageHourly = async function (query) {
+        try {
+          const result = await originalHourly(query);
+          window.__qaHourlySeen = {
+            query: query || null,
+            rows: result && Array.isArray(result.rows) ? result.rows.length : null,
+            resultKeys: result && typeof result === 'object' ? Object.keys(result) : null,
+            firstRow: result && Array.isArray(result.rows) && result.rows[0] ? Object.keys(result.rows[0]) : null
+          };
+          return result;
+        } catch (error) {
+          window.__qaHourlySeen = { query: query || null, error: error && error.message ? error.message : String(error) };
+          throw error;
+        }
+      };
+    }
+  } catch (_error) {}
+  try {
+    if (!window.__qaChartWrapperInstalled && typeof usageModalChartHtml === 'function') {
+      window.__qaChartWrapperInstalled = true;
+      window.__qaChartCalls = [];
+      const original = usageModalChartHtml;
+      window.usageModalChartHtml = function (series, emptyKey) {
+        try {
+          window.__qaChartCalls.push({ length: Array.isArray(series) ? series.length : null, emptyKey: emptyKey || null, at: Date.now() });
+        } catch (_error) {}
+        return original.apply(this, arguments);
+      };
+    }
+  } catch (_error) {}
+  const button = overlay.querySelector('[data-usage-granularity="' + (window.__qaGranularity || 'day') + '"]');
+  if (!button) return { ok: false, reason: 'granularity button not found', target: window.__qaGranularity };
+  button.click();
+  return { ok: true, target: window.__qaGranularity, active: button.getAttribute('aria-selected') };
+})()`;
+
+const MODAL_GRANULARITY_STATE_SCRIPT = `(async () => {
+  const overlay = document.querySelector('[data-usage-trend-modal]') || document.querySelector('[role="dialog"]');
+  if (!overlay) return { ok: false, reason: 'modal not open' };
+  const chart = overlay.querySelector('[data-usage-modal-chart]');
+  const tabs = Array.from(overlay.querySelectorAll('[data-usage-granularity]')).map((button) => ({
+    id: button.getAttribute('data-usage-granularity'),
+    active: button.getAttribute('aria-selected') === 'true' || button.classList.contains('is-active'),
+    label: (button.textContent || '').trim()
+  }));
+  const empty = chart ? chart.querySelector('.usage-modal-empty') : null;
+  let hourlyDebug = null;
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const hourly = await window.electronAPI.usageHourly({ day: today });
+    hourlyDebug = {
+      apiType: typeof window.electronAPI.usageHourly,
+      hasOptionalHelper: typeof window.usageHasOptionalApi === 'function' ? window.usageHasOptionalApi('usageHourly') : null,
+      rows: hourly && Array.isArray(hourly.rows) ? hourly.rows.length : null
+    };
+  } catch (error) {
+    hourlyDebug = { error: error && error.message ? error.message : String(error) };
+  }
+  hourlyDebug.mockCalls = window.__usagePreviewHourlyDebug || null;
+  hourlyDebug.chartCalls = window.__qaChartCalls || null;
+  hourlyDebug.hourlySeenByPage = window.__qaHourlySeen || null;
+  hourlyDebug.dashboardSummaryTo = (() => {
+    try { return typeof usageDashboardPayload !== 'undefined' && usageDashboardPayload && usageDashboardPayload.summary ? usageDashboardPayload.summary.to : null; } catch (_error) { return 'unavailable'; }
+  })();
+  hourlyDebug.modalDay = (() => {
+    try { return typeof usageModalDay === 'function' && typeof usageDashboardPayload !== 'undefined' ? usageModalDay(usageDashboardPayload) : null; } catch (_error) { return 'error'; }
+  })();
+  const columns = chart ? chart.querySelectorAll('.usage-modal-col, [data-usage-modal-col], .usage-trend-col').length : null;
+  return {
+    ok: true,
+    tabs,
+    activeGranularity: (tabs.find((tab) => tab.active) || {}).id || null,
+    chartText: chart ? (chart.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160) : null,
+    emptyText: empty ? (empty.textContent || '').replace(/\s+/g, ' ').trim() : null,
+    emptyVisible: Boolean(empty && empty.getBoundingClientRect().height > 0),
+    chartColumns: Number(columns) || 0,
+    hourlyDebug,
+    chartHtmlLength: chart ? chart.innerHTML.length : null,
+    axisText: (() => { const axis = overlay.querySelector('[data-usage-modal-axis]'); return axis ? (axis.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160) : null; })()
+  };
+})()`;
+
+async function captureModalGranularity(win, granularity) {
+  await win.webContents.executeJavaScript(`window.__qaGranularity = ${JSON.stringify(granularity)}`, true);
+  const click = await win.webContents.executeJavaScript(MODAL_GRANULARITY_CLICK_SCRIPT, true);
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  await win.webContents.capturePage();
+  try {
+    win.webContents.invalidate();
+  } catch (_error) {
+    // ignore
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const state = await win.webContents.executeJavaScript(MODAL_GRANULARITY_STATE_SCRIPT, true);
+  const hourlyRows = state && state.hourlyDebug && state.hourlyDebug.hourlySeenByPage
+    ? state.hourlyDebug.hourlySeenByPage.rows
+    : null;
+  const expectedColumns = typeof hourlyRows === "number" ? hourlyRows : null;
+  const silentReferenceError = Boolean(
+    granularity === "30m" && typeof hourlyRows === "number" && hourlyRows > 0 && (!state || state.chartColumns === 0 || state.emptyVisible),
+  );
+  return {
+    granularity,
+    click,
+    state,
+    hourlyRows,
+    expectedColumns,
+    chartColumnsMatchHourly: granularity === "30m" && typeof hourlyRows === "number" ? state.chartColumns === hourlyRows : null,
+    silentReferenceError,
+  };
+}
+
+const HEATMAP_ARROW_SCRIPT = `(async () => {
+  const el = document.querySelector('[data-usage-heatmap-scroll], .usage-heatmap-scroll');
+  if (!el) return { ok: false, reason: 'scroller not found' };
+  const previous = el.querySelector('[data-usage-heat-scroll="-1"]') || document.querySelector('[data-usage-heat-scroll="-1"]');
+  const next = el.querySelector('[data-usage-heat-scroll="1"]') || document.querySelector('[data-usage-heat-scroll="1"]');
+  if (!previous || !next) return { ok: false, reason: 'arrow buttons not found' };
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // Hidden windows do not tick smooth-scroll animations; emulate reduced motion
+  // so the page's arrow handler uses instant scrolling (its own branch).
+  const originalMatchMedia = window.matchMedia;
+  try {
+    window.matchMedia = function (query) {
+      if (typeof query === 'string' && query.indexOf('prefers-reduced-motion') >= 0) {
+        return { matches: true, media: query, addEventListener: function () {}, removeEventListener: function () {}, addListener: function () {}, removeListener: function () {} };
+      }
+      return originalMatchMedia.call(window, query);
+    };
+  } catch (_error) {}
+  el.scrollLeft = 0;
+  await wait(120);
+  const start = Math.round(el.scrollLeft);
+  next.click();
+  await wait(420);
+  const afterNext = Math.round(el.scrollLeft);
+  previous.click();
+  await wait(420);
+  const afterPrev = Math.round(el.scrollLeft);
+  try {
+    window.matchMedia = originalMatchMedia;
+  } catch (_error) {}
+  const style = window.getComputedStyle(el);
+  return {
+    ok: true,
+    hasPrevious: true,
+    hasNext: true,
+    start,
+    afterNext,
+    afterPrev,
+    nextScrolls: afterNext > start,
+    previousScrollsBack: afterPrev < afterNext,
+    scrollbarWidth: style.scrollbarWidth || null,
+    overflowX: style.overflowX
+  };
+})()`;
+
+async function runModalCloseTests(win) {
+  const results = [];
+  const paths = [
+    { path: 'escape', closeScript: MODAL_ESCAPE_SCRIPT },
+    { path: 'backdrop', closeScript: MODAL_BACKDROP_SCRIPT },
+    { path: 'close-button', closeScript: MODAL_CLOSE_BUTTON_SCRIPT }
+  ];
+  for (const entry of paths) {
+    const reopen = await win.webContents.executeJavaScript(MODAL_OPEN_SCRIPT, true);
+    await new Promise((resolve) => setTimeout(resolve, 220));
+    const opened = await win.webContents.executeJavaScript(MODAL_STATE_SCRIPT, true);
+    let closeAttempt = null;
+    try {
+      closeAttempt = await win.webContents.executeJavaScript(entry.closeScript, true);
+    } catch (error) {
+      closeAttempt = { ok: false, error: error && error.message ? error.message : String(error) };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 240));
+    const state = await win.webContents.executeJavaScript(MODAL_STATE_SCRIPT, true);
+    results.push({
+      path: entry.path,
+      reopenOk: Boolean(reopen && reopen.ok),
+      opened: Boolean(opened && opened.open),
+      closeAttempt,
+      closed: Boolean(state && !state.open),
+      focusRestored: Boolean(state && state.focusRestored),
+      activeElement: state ? state.activeElement : null
+    });
+  }
+  return results;
+}
+
 async function captureVariant({ previewPath, opts, target, theme }) {
   const pageMode = target.kind === "page";
   const query = {
@@ -402,6 +847,7 @@ async function captureVariant({ previewPath, opts, target, theme }) {
     period: opts.period,
     lang: opts.lang,
     ...(opts.compact ? { compact: "1" } : {}),
+    ...(opts.hourlyEmpty ? { emptyHourly: "1" } : {}),
   };
   const initialWidth = pageMode ? Math.round(target.width + SIDEBAR_WIDTH + VIEW_PADDING + 20) : target.width;
   const win = new BrowserWindow({
@@ -510,13 +956,91 @@ async function captureVariant({ previewPath, opts, target, theme }) {
       await new Promise((resolve) => setTimeout(resolve, 120));
     }
 
+    const layoutInfo = await win.webContents.executeJavaScript(layoutScript, true);
+    if (opts.dumpDom) {
+      process.stderr.write(
+        `  [dom] ${JSON.stringify((layoutInfo && layoutInfo.cards ? layoutInfo.cards : []).map((card) => ({ id: card.id, cls: card.className, top: card.top, w: card.width, h: card.height, heading: card.heading })))}\n`,
+      );
+    }
+
+    let modalInfo = null;
+    let modalCloseTests = null;
+    let heatmapScrollInfo = null;
+    if (opts.modal) {
+      const openAttempt = await win.webContents.executeJavaScript(MODAL_OPEN_SCRIPT, true);
+      await new Promise((resolve) => setTimeout(resolve, 260));
+      const probe = await win.webContents.executeJavaScript(MODAL_PROBE_SCRIPT, true);
+      // Same hidden-window repaint workaround as the tooltip capture.
+      await win.webContents.capturePage();
+      try {
+        win.webContents.invalidate();
+      } catch (_error) {
+        // ignore
+      }
+      await new Promise((resolve) => setTimeout(resolve, 220));
+      const probeAfterPaint = await win.webContents.executeJavaScript(MODAL_PROBE_SCRIPT, true);
+      modalInfo = { openAttempt, probe, probeAfterPaint, open: Boolean(probeAfterPaint && probeAfterPaint.open) };
+      if (modalInfo.open && Array.isArray(opts.modalGranularities) && opts.modalGranularities.length > 0) {
+        modalInfo.granularityCaptures = [];
+        for (const granularity of opts.modalGranularities) {
+          const capture = await captureModalGranularity(win, granularity);
+          const suffix = `-modal-${granularity}${opts.hourlyEmpty ? "-empty" : ""}.png`;
+          const targetFile = path.join(opts.out, `${opts.label}-${target.width}-${theme}${suffix}`);
+          const granularityImage = await win.webContents.capturePage();
+          fs.writeFileSync(targetFile, granularityImage.toPNG());
+          capture.file = targetFile;
+          capture.pixels = `${granularityImage.getSize().width}x${granularityImage.getSize().height}`;
+          modalInfo.granularityCaptures.push(capture);
+        }
+      }
+      measurement = await win.webContents.executeJavaScript(measureScript, true);
+    } else if (opts.heatmapScroll) {
+      const scrollAttempt = await win.webContents.executeJavaScript(HEATMAP_SCROLL_SCRIPT, true);
+      await new Promise((resolve) => setTimeout(resolve, 260));
+      await win.webContents.capturePage();
+      try {
+        win.webContents.invalidate();
+      } catch (_error) {
+        // ignore
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const afterPaint = await win.webContents.executeJavaScript(HEATMAP_SCROLL_STATE_SCRIPT, true);
+      const arrowChecks = await win.webContents.executeJavaScript(HEATMAP_ARROW_SCRIPT, true);
+      heatmapScrollInfo = { ...scrollAttempt, afterPaint, arrows: arrowChecks };
+      measurement = await win.webContents.executeJavaScript(measureScript, true);
+    }
+
     const image = await win.webContents.capturePage();
-    const suffix = opts.tooltip ? "-tooltip" : "";
+    // Granularity runs leave the modal on the last-clicked tab, so they must not
+    // overwrite the default-granularity `-modal.png` capture.
+    const modalSuffix = opts.modal
+      ? (Array.isArray(opts.modalGranularities) && opts.modalGranularities.length > 0 ? "-modal-base" : "-modal")
+      : null;
+    const suffix = modalSuffix || (opts.heatmapScroll ? "-heatmap-scroll" : opts.tooltip ? "-tooltip" : "");
     const fileName = `${opts.label}-${target.width}-${theme}${suffix}.png`;
     const filePath = path.join(opts.out, fileName);
     const png = image.toPNG();
     fs.writeFileSync(filePath, png);
     const size = image.getSize();
+
+    if (opts.modal) modalCloseTests = await runModalCloseTests(win);
+
+    let heatmapCardFile = null;
+    if (opts.heatmapScroll && layoutInfo && layoutInfo.rects && layoutInfo.rects.heatmap) {
+      try {
+        const rect = layoutInfo.rects.heatmap;
+        const cardImage = await win.webContents.capturePage({
+          x: Math.max(0, rect.left),
+          y: Math.max(0, rect.top),
+          width: Math.max(50, rect.width),
+          height: Math.max(50, rect.height),
+        });
+        heatmapCardFile = path.join(opts.out, `${opts.label}-${target.width}-${theme}-heatmap-card.png`);
+        fs.writeFileSync(heatmapCardFile, cardImage.toPNG());
+      } catch (_error) {
+        heatmapCardFile = null;
+      }
+    }
     const contentWidth = measurement && measurement.pageRect ? Math.round(measurement.pageRect.width) : null;
     const viewContentWidth = measurement && measurement.viewRect
       ? Math.round(Number(measurement.viewRect.width) - VIEW_PADDING)
@@ -540,6 +1064,11 @@ async function captureVariant({ previewPath, opts, target, theme }) {
       contentHeight: finalHeight,
       stats,
       tooltipInfo,
+      measuredLayout: layoutInfo,
+      modalInfo,
+      modalCloseTests,
+      heatmapScrollInfo,
+      heatmapCardFile,
       pageErrors,
       consoleErrors: consoleCapture.consoleErrors,
       consoleWarnings: consoleCapture.consoleWarnings,
@@ -601,6 +1130,41 @@ async function main(opts) {
         if ((variant.consoleWarnings || []).length > 0) {
           process.stdout.write(`       console warnings: ${variant.consoleWarnings.length}\n`);
         }
+        if (variant.measuredLayout) {
+          const checks = variant.measuredLayout.checks || {};
+          const rows = (variant.measuredLayout.rows || []).map((row) => `${row.count}@${row.top}`).join(",");
+          process.stdout.write(
+            `       layout rows=${variant.measuredLayout.rows.length} [${rows}] maxDeadBand=${variant.measuredLayout.maxDeadBandPx}px ` +
+              `heatmapFirst=${checks.heatmapBeforeTrend} row1Eq=${checks.row1EqualHeights} row2Eq=${checks.row2EqualHeights} ` +
+              `tokenNotFull=${checks.tokenCardNotFullWidth} integratedKpis=${checks.integratedCardHasKpis} ` +
+              `integratedModels=${checks.integratedCardHasModelRows} integratedFooter=${checks.integratedCardHasFooter} dailyFull=${checks.dailyFullWidth}\n`,
+          );
+        }
+        if (variant.modalInfo) {
+          const probe = variant.modalInfo.probeAfterPaint || variant.modalInfo.probe || {};
+          const closes = (variant.modalCloseTests || []).map((entry) => `${entry.path}:${entry.opened && entry.closed ? "ok" : "FAIL"}${entry.focusRestored ? "+focus" : ""}`).join(",");
+          process.stdout.write(
+            `       modal open=${variant.modalInfo.open} overlay=${probe.overlaySelector || "?"} defaultGranularity=${probe.activeGranularity} columns=${probe.chartColumns} ` +
+              `empty=${JSON.stringify(probe.chartEmptyText)} insight=${probe.hasLeftInsightPanel} chart=${probe.hasRightChart} ` +
+              `tabs=${probe.hasGranularityTabs} labels=${JSON.stringify(probe.granularityLabels || [])} closeBtn=${probe.hasCloseButton} closes=[${closes}]\n`,
+          );
+          for (const capture of variant.modalInfo.granularityCaptures || []) {
+            const state = capture.state || {};
+            process.stdout.write(
+              `       modal-granularity ${capture.granularity}: active=${state.activeGranularity} columns=${state.chartColumns} ` +
+                `hourlyRows=${capture.hourlyRows} match=${capture.chartColumnsMatchHourly} silentRefError=${capture.silentReferenceError} ` +
+                `empty=${JSON.stringify(state.emptyText)} file=${path.basename(capture.file || "")}\n`,
+            );
+          }
+        }
+        if (variant.heatmapScrollInfo) {
+          const info = variant.heatmapScrollInfo;
+          process.stdout.write(
+            `       heatmap-scroll selector=${info.selector || "?"} canScroll=${info.canScroll} scrollWidth=${info.before && info.before.scrollWidth} clientWidth=${info.before && info.before.clientWidth} ` +
+              `scrollLeft=${info.after && info.after.scrollLeft} max=${info.maxScrollLeft} newest=${info.scrolledToNewest} ` +
+              `arrows=${info.arrows && info.arrows.ok ? `next=${info.arrows.nextScrolls} prev=${info.arrows.previousScrollsBack}` : "missing"}\n`,
+          );
+        }
       }
     }
 
@@ -615,16 +1179,52 @@ async function main(opts) {
       lang: opts.lang,
       compact: opts.compact,
       tooltip: opts.tooltip,
+      modal: opts.modal,
+      modalGranularities: opts.modalGranularities,
+      hourlyEmpty: opts.hourlyEmpty,
+      heatmapScroll: opts.heatmapScroll,
       variants,
       windowsOpenAtEnd: windowsOpen,
       visibleWindows: variants.filter((variant) => variant.windowShown === true).length,
-      ok: variants.every(
-        (variant) =>
-          (variant.pageErrors || []).length === 0 &&
-          (variant.consoleErrors || []).length === 0 &&
-          (variant.loadFailures || []).length === 0 &&
-          (!opts.tooltip || (variant.tooltipInfo && variant.tooltipInfo.ok)),
-      ),
+      ok:
+        variants.every(
+          (variant) =>
+            (variant.pageErrors || []).length === 0 &&
+            (variant.consoleErrors || []).length === 0 &&
+            (variant.loadFailures || []).length === 0 &&
+            (!opts.tooltip || (variant.tooltipInfo && variant.tooltipInfo.ok)),
+        ) &&
+        (!opts.modal ||
+          variants.every(
+            (variant) =>
+              variant.modalInfo &&
+              variant.modalInfo.open &&
+              Array.isArray(variant.modalCloseTests) &&
+              variant.modalCloseTests.every((entry) => entry.opened && entry.closed && entry.focusRestored),
+          )) &&
+        (!opts.heatmapScroll ||
+          variants.every(
+            (variant) =>
+              variant.heatmapScrollInfo &&
+              variant.heatmapScrollInfo.ok &&
+              variant.heatmapScrollInfo.canScroll &&
+              variant.heatmapScrollInfo.scrolledToNewest,
+          )) &&
+        (!Array.isArray(opts.modalGranularities) || opts.modalGranularities.length === 0 ||
+          variants.every((variant) => {
+            const captures = (variant.modalInfo && variant.modalInfo.granularityCaptures) || [];
+            if (captures.length === 0) return false;
+            return captures.every((capture) => {
+              if (opts.hourlyEmpty) {
+                const state = capture.state || {};
+                return Boolean(state.emptyText) && Number(state.chartColumns) === 0;
+              }
+              if (capture.granularity === "30m") {
+                return capture.hourlyRows > 0 && Boolean(capture.chartColumnsMatchHourly) && !capture.silentReferenceError;
+              }
+              return Boolean(capture.state && capture.state.ok);
+            });
+          })),
     };
     process.stdout.write("\n");
     process.stdout.write(

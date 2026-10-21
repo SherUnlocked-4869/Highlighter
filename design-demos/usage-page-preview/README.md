@@ -94,3 +94,32 @@ card, hence the dead space — the 248px at the default-like 908 column is the
 quirk the redesign targets. A plain `--widths 1180` window measures
 `.usage-page` = **898** because of the ~10px scrollbar gutter (that is why the
 review uses `--page-widths`).
+
+## Round-2 modes (grid redesign + trend modal)
+
+The harness also supports the round-2 layout review:
+
+```bash
+# full page at fixed content widths
+... --page-widths 908,1180,1440 --themes light,dark --label round2
+
+# trend detail modal: clicks the page's real [data-usage-trend-expand] button,
+# waits for the overlay, captures it, then verifies Esc / backdrop / X close
+# paths and focus restore to the trigger
+... --page-widths 1180 --themes light,dark --label round2 --modal
+
+# heatmap tooltip (kept from round 1)
+... --page-widths 1180 --themes light,dark --label round2 --tooltip
+
+# heatmap compact-scroller state: scrolls the strip to the newest week, captures
+# the page plus a cropped heatmap-card PNG, and records scrollWidth/clientWidth/
+# scrollLeft/maxScrollLeft/scrolledToNewest
+... --page-widths 1180 --themes light,dark --label round2 --heatmap-scroll
+```
+
+Use `--dump-dom` to print the detected top-level card list (classes/ids/geometry)
+when the page markup changes. Every capture also reports `measuredLayout`:
+row grouping, card rects, equal-height deltas, dead-band widths, and the
+`heatmapBeforeTrend` / `row1EqualHeights` / `row2EqualHeights` /
+`tokenCardNotFullWidth` / `integratedCardHasKpis` / `integratedCardHasModelRows`
+/ `integratedCardHasFooter` / `dailyFullWidth` checks.

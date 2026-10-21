@@ -360,6 +360,90 @@
     }
   }
 
+  // --- trend-detail modal helpers -------------------------------------------
+  //
+  // "UTC+08:00" style label for the heatmap/modal header. Intl's longOffset name
+  // is "GMT+08:00"; normalise it to UTC notation. The date parameter keeps the
+  // helper testable across DST boundaries.
+  function formatTimezoneOffsetLabel(timeZone, date = new Date()) {
+    const zone = typeof timeZone === 'string' && timeZone ? timeZone : 'UTC'
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'longOffset' }).formatToParts(date)
+      const namePart = parts.find((part) => part.type === 'timeZoneName')
+      const raw = namePart ? namePart.value : ''
+      if (raw === 'GMT' || raw === 'UTC') return 'UTC+00:00'
+      const normalised = raw.replace(/^GMT/, 'UTC')
+      return /^UTC[+-]\d{2}:\d{2}$/.test(normalised) ? normalised : 'UTC'
+    } catch {
+      return 'UTC'
+    }
+  }
+
+  // Aggregate the daily rows into local-month buckets for the modal's month
+  // view (weeks are not offered; months are the coarse granularity the frozen
+  // contract can derive without another IPC channel).
+  function bucketRowsByMonth(rows) {
+    const buckets = new Map()
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const day = toDayKey(row && row.day)
+      if (!day) continue
+      const month = day.slice(0, 7)
+      const entry = buckets.get(month) || {
+        month,
+        input: 0,
+        cache: 0,
+        output: 0,
+        tokens: 0,
+        conversations: 0,
+        activeDays: 0
+      }
+      entry.input += normalizeHeatmapValue(row.input_tokens)
+      entry.cache += normalizeHeatmapValue(row.cached_input_tokens)
+      entry.output += normalizeHeatmapValue(row.output_tokens)
+      entry.tokens += normalizeHeatmapValue(row.billable_total_tokens)
+      entry.conversations += normalizeHeatmapValue(row.conversation_count)
+      if (normalizeHeatmapValue(row.billable_total_tokens) > 0 || normalizeHeatmapValue(row.conversation_count) > 0) {
+        entry.activeDays += 1
+      }
+      buckets.set(month, entry)
+    }
+    return [...buckets.values()].sort((a, b) => a.month.localeCompare(b.month))
+  }
+
+  // Aggregate stats used by the trend card and the detail modal: total, active
+  // days, average per active day and the peak day (highest billable total).
+  function summarizeTrendRows(rows) {
+    const list = (Array.isArray(rows) ? rows : [])
+      .filter((row) => row && typeof row.day === 'string')
+      .slice()
+      .sort((a, b) => String(a.day).localeCompare(String(b.day)))
+    let tokens = 0
+    let conversations = 0
+    let activeDays = 0
+    let peakDay = ''
+    let peakValue = 0
+    for (const row of list) {
+      const billable = normalizeHeatmapValue(row.billable_total_tokens ?? row.tokens)
+      const conversationCount = normalizeHeatmapValue(row.conversation_count)
+      tokens += billable
+      conversations += conversationCount
+      if (billable > 0 || conversationCount > 0) activeDays += 1
+      if (billable > peakValue) {
+        peakValue = billable
+        peakDay = toDayKey(row.day)
+      }
+    }
+    return {
+      tokens,
+      conversations,
+      activeDays,
+      peakDay,
+      peakValue,
+      avgPerActiveDay: activeDays > 0 ? Math.round(tokens / activeDays) : 0,
+      dayCount: list.length
+    }
+  }
+
   return {
     formatCompactToken,
     formatFullToken,
@@ -374,6 +458,9 @@
     heatmapLevelClass,
     layoutHeatmapWeeks,
     heatmapMonthTicks,
-    projectModelShareRows
+    projectModelShareRows,
+    formatTimezoneOffsetLabel,
+    bucketRowsByMonth,
+    summarizeTrendRows
   }
 })
