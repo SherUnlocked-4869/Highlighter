@@ -28,9 +28,10 @@
 // re-verify column names there before trusting a green run.
 
 const fs = require("node:fs");
+const net = require("node:net");
 const path = require("node:path");
 const zlib = require("node:zlib");
-const { execFileSync } = require("node:child_process");
+const { execFileSync, spawn } = require("node:child_process");
 
 const ROOT = path.resolve(__dirname, "..");
 const HOME_DIR = path.join(ROOT, "test", "fixtures", "usage", "home");
@@ -73,13 +74,53 @@ const INTEGER_COLUMNS = Object.keys(HL_COLUMN_BY_QUEUE_COLUMN);
 const HL_INTEGER_COLUMNS = Object.values(HL_COLUMN_BY_QUEUE_COLUMN);
 const SAMPLE_DIFF_LIMIT = 20;
 
-const HELP = `Usage oracle harness (TokenTracker CLI -> Highlighter usage.db)
+// ── Aggregation-level oracle (task-10) ─────────────────────────────────────
+// TokenTracker's own /functions/tokentracker-usage-* payloads are the oracle
+// for period ranges, local-day grouping, rolling windows, model breakdown and
+// heatmap levels. The tenant's bucket-level golden is queue-rows.json; these
+// files extend parity to the aggregation layer.
+const AGGREGATES_SCHEMA = "usage-oracle-aggregates-v1";
+const AGGREGATES_CAPTURE_SCHEMA = "hl-usage-aggregates-v1";
+const AGGREGATES_TZS = ["Asia/Shanghai", "UTC"];
+const AGGREGATES_PERIODS = ["day", "week", "month", "total"];
+const AGGREGATE_TT_VERSION = "1.4.7";
+// The four token columns the aggregation IPC contract must agree on (plan
+// section 2.6/2.7). total/billable/reasoning/conversation are compared too when
+// the Highlighter payload provides them.
+const AGGREGATE_REQUIRED_TOKEN_COLUMNS = [
+  "input_tokens",
+  "output_tokens",
+  "cached_input_tokens",
+  "cache_creation_input_tokens",
+];
+const AGGREGATE_ALL_TOKEN_COLUMNS = [
+  "input_tokens",
+  "output_tokens",
+  "cached_input_tokens",
+  "cache_creation_input_tokens",
+  "reasoning_output_tokens",
+  "total_tokens",
+  "billable_total_tokens",
+];
+const AGGREGATE_ENDPOINTS = {
+  summary: "/functions/tokentracker-usage-summary",
+  daily: "/functions/tokentracker-usage-daily",
+  breakdown: "/functions/tokentracker-usage-model-breakdown",
+  heatmap: "/functions/tokentracker-usage-heatmap",
+};
+const AGGREGATES_SERVE_READY_TIMEOUT_MS = 30000;
+const AGGREGATES_FETCH_TIMEOUT_MS = 30000;
+
+const HELP = `Usage oracle harness (TokenTracker CLI -> Highlighter usage.db / IPC payloads)
 
 USAGE
   node scripts/usage-oracle-check.js --build-fixtures
   node scripts/usage-oracle-check.js --tt-only --sync
   node scripts/usage-oracle-check.js --tt-only
   node scripts/usage-oracle-check.js --hl-db <path/to/usage.db>
+  node scripts/usage-oracle-check.js --tt-aggregates-only
+  node scripts/usage-oracle-check.js --aggregates <hl-aggregates.json>
+  node scripts/usage-oracle-check.js --self-test
 
 MODES
   --build-fixtures       Regenerate the sanitized fixture home (deterministic;
@@ -87,12 +128,30 @@ MODES
   --tt-only              Read the TokenTracker queue.jsonl and write the golden
                          files (queue-rows.json + summary.json). Replays the
                          append-only queue as LWW by source|model|hour_start.
-  --sync                 With --tt-only: run the TokenTracker CLI sync against
-                         the fixture home first (fully local; no device token).
+  --sync                 With --tt-only/--tt-aggregates-only: run the TokenTracker
+                         CLI sync against the fixture home first (fully local;
+                         no device token).
   --hl-db <path>         Diff a Highlighter usage.db against the golden files.
                          Zero tolerance on integer token columns; also compares
                          daily per-source and per-model sums. Exit 1 on any
                          mismatch, 2 on unusable input.
+  --tt-aggregates-only   Refresh the aggregation-level goldens
+                         (test/fixtures/usage/golden/aggregates-<tz>.json) from
+                         TT's own local HTTP API: sync the fixture home, start
+                         'tracker.js serve --no-open --no-sync' on a free
+                         loopback port with the fake home env, fetch summary/
+                         daily/model-breakdown/heatmap for Asia/Shanghai and UTC
+                         over day/week/month/total ranges, stop the server.
+  --aggregates <file>    Compare already-captured Highlighter payloads (the
+                         usage:summary/daily/breakdown/heatmap IPC responses,
+                         captured against the same fixture home) with the TT
+                         aggregation goldens. Exit 1 on any mismatch, 2 on
+                         unusable input. Capture-file schema is documented in
+                         test/fixtures/usage/golden/README.md and below.
+  --self-test            Run the aggregation comparator against synthetic
+                         payloads (PASS path, +1 token, missing source, shifted
+                         heatmap grid, cost-only drift). Exit 0 when all cases
+                         behave as expected.
 
 OPTIONS
   --home <dir>           Fixture home used as USERPROFILE (default:
@@ -101,20 +160,42 @@ OPTIONS
                          <home>/.tokentracker/tracker/queue.jsonl).
   --tt-cli <file>        TokenTracker CLI entry (default: env TT_ORACLE_CLI, then
                          ${DEFAULT_TT_CLI}).
-  --json                 Machine-readable report on stdout (diff mode).
+  --json                 Machine-readable report on stdout (diff modes).
   -h, --help             This help.
 
-ENVIRONMENT (oracle sync only)
-  USERPROFILE/HOME=<home>, DSH_HOME/CODEX_HOME/XDG_DATA_HOME/OPENCODE_HOME removed,
-  TOKENTRACKER_WSL_MODE=native-only, TOKENTRACKER_NO_TELEMETRY=1, DO_NOT_TRACK=1.
-  A fresh fake home has no device token, so TT sync cannot upload (upload is
-  gated on runtime.deviceToken && runtime.baseUrl in sync.js).
+HIGHIGHTER AGGREGATES CAPTURE FILE (--aggregates)
+  JSON object, one entry per IPC response captured on the SAME fixture home:
+    {
+      "schema": "hl-usage-aggregates-v1",
+      "captures": [
+        { "tz": "Asia/Shanghai", "view": "summary",   "period": "day",   "payload": <usage:summary response> },
+        { "tz": "Asia/Shanghai", "view": "daily",     "period": "day",   "payload": <usage:daily response> },
+        { "tz": "Asia/Shanghai", "view": "breakdown", "period": "day",   "payload": <usage:breakdown response> },
+        { "tz": "Asia/Shanghai", "view": "heatmap",   "period": "total", "payload": <usage:heatmap response> },
+        ... (four periods day/week/month/total for summary/daily/breakdown;
+             one heatmap entry per tz; repeat for "UTC")
+      ]
+    }
+  "response"/"data" are accepted instead of "payload", and a nested
+  { "<tz>": { "<view>": { "<period>": <payload> } } } map is accepted too.
+  Integer token columns and conversation_count are compared with zero
+  tolerance; heatmap compares the day/value/level cell set only (TT's week grid
+  first column drifts with the run date); sharePct is compared within 0.01
+  percentage points; cost fields (total_cost_usd / pricing) are ignored.
+
+ENVIRONMENT (TT sync / serve)
+  USERPROFILE/HOME=<home>, APPDATA/LOCALAPPDATA=<home>/AppData/**, DSH_HOME/
+  CODEX_HOME/XDG_DATA_HOME/OPENCODE_HOME removed, TOKENTRACKER_WSL_MODE=
+  native-only, TOKENTRACKER_NO_TELEMETRY=1, DO_NOT_TRACK=1. A fresh fake home
+  has no device token, so TT never uploads and never requires an account.
 
 REPRODUCE
   node scripts/usage-oracle-check.js --build-fixtures
   node scripts/usage-oracle-check.js --tt-only --sync
+  node scripts/usage-oracle-check.js --tt-aggregates-only
   # Highlighter side (once B1/B2 store exists):
   node scripts/usage-oracle-check.js --hl-db <dataRoot>/usage/usage.db
+  node scripts/usage-oracle-check.js --aggregates <captured-hl-payloads.json>
 
 NOTE ON --hl-db
   Expected Highlighter schema (frozen in plan section 2.5): table usage_bucket
@@ -143,6 +224,9 @@ function main(argv) {
   }
   try {
     if (opts.buildFixtures) return cmdBuildFixtures(opts);
+    if (opts.selfTest) return cmdAggregatesSelfTest(opts);
+    if (opts.ttAggregatesOnly) return cmdTtAggregatesOnly(opts);
+    if (opts.aggregates) return cmdAggregatesCompare(opts);
     if (opts.hlDb) return cmdDiff(opts);
     return cmdTtOnly(opts);
   } catch (error) {
@@ -158,6 +242,9 @@ function parseArgs(argv) {
     ttOnly: false,
     sync: false,
     json: false,
+    selfTest: false,
+    ttAggregatesOnly: false,
+    aggregates: null,
     home: HOME_DIR,
     queue: null,
     ttCli: null,
@@ -175,6 +262,9 @@ function parseArgs(argv) {
     else if (arg === "--tt-only") opts.ttOnly = true;
     else if (arg === "--sync") opts.sync = true;
     else if (arg === "--json") opts.json = true;
+    else if (arg === "--self-test") opts.selfTest = true;
+    else if (arg === "--tt-aggregates-only") opts.ttAggregatesOnly = true;
+    else if (arg === "--aggregates") opts.aggregates = path.resolve(next());
     else if (arg === "--home") opts.home = path.resolve(next());
     else if (arg === "--queue") opts.queue = path.resolve(next());
     else if (arg === "--tt-cli") opts.ttCli = path.resolve(next());
@@ -1091,4 +1181,1204 @@ function cmdDiff(opts) {
   return clean ? 0 : 1;
 }
 
-process.exitCode = main(process.argv.slice(2));
+// ── Aggregation-level oracle: TT local API capture ────────────────────────
+
+function tzFileSlug(tz) {
+  return tz.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+const TZ_DAY_FORMATTERS = new Map();
+function zonedDayKey(isoString, tz) {
+  const parsed = Date.parse(isoString);
+  if (!Number.isFinite(parsed)) return "";
+  let formatter = TZ_DAY_FORMATTERS.get(tz);
+  if (formatter === undefined) {
+    try {
+      formatter = new Intl.DateTimeFormat("en-CA", {
+        timeZone: tz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+    } catch (_error) {
+      formatter = null;
+    }
+    TZ_DAY_FORMATTERS.set(tz, formatter);
+  }
+  if (!formatter) return new Date(parsed).toISOString().slice(0, 10);
+  return formatter.format(new Date(parsed));
+}
+
+function addDays(dayKey, delta) {
+  const date = new Date(`${dayKey}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + delta);
+  return date.toISOString().slice(0, 10);
+}
+
+function mondayOf(dayKey) {
+  const date = new Date(`${dayKey}T00:00:00.000Z`);
+  const weekday = date.getUTCDay(); // 0 = Sunday
+  const offset = weekday === 0 ? -6 : 1 - weekday;
+  return addDays(dayKey, offset);
+}
+
+function lastDayOfMonth(dayKey) {
+  const date = new Date(`${dayKey}T00:00:00.000Z`);
+  const nextMonth = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1));
+  return addDays(nextMonth.toISOString().slice(0, 10), -1);
+}
+
+function periodRanges(rows, tz) {
+  const days = [...new Set(rows.map((row) => zonedDayKey(row.hour_start, tz)).filter(Boolean))].sort();
+  if (days.length === 0) throw new Error(`no queue days for tz ${tz}`);
+  const minDay = days[0];
+  const maxDay = days[days.length - 1];
+  const weekStart = mondayOf(maxDay);
+  return {
+    days,
+    ranges: {
+      day: { from: maxDay, to: maxDay },
+      week: { from: weekStart, to: addDays(weekStart, 6) },
+      month: { from: `${maxDay.slice(0, 7)}-01`, to: lastDayOfMonth(maxDay) },
+      total: { from: minDay, to: maxDay },
+    },
+  };
+}
+
+function freeTcpPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+async function startTtServe({ home, ttCli, port }) {
+  const args = [ttCli, "serve", "--no-open", "--no-sync", "--port", String(port)];
+  const display =
+    `USERPROFILE=${home} APPDATA=<home>/AppData/Roaming LOCALAPPDATA=<home>/AppData/Local ` +
+    `TOKENTRACKER_WSL_MODE=native-only TOKENTRACKER_NO_TELEMETRY=1 node ${args.join(" ")}`;
+  process.stdout.write(`$ ${display}\n`);
+  const state = { stdout: "", stderr: "", exited: false, exitCode: null };
+  const child = spawn(process.execPath, args, {
+    env: ttSyncEnv(home),
+    cwd: path.dirname(ttCli),
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  const capture = (key, chunk) => {
+    state[key] = (state[key] + String(chunk)).slice(-8000);
+  };
+  child.stdout?.on("data", (chunk) => capture("stdout", chunk));
+  child.stderr?.on("data", (chunk) => capture("stderr", chunk));
+  child.on("exit", (code) => {
+    state.exited = true;
+    state.exitCode = code;
+  });
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const deadline = Date.now() + AGGREGATES_SERVE_READY_TIMEOUT_MS;
+  let ready = false;
+  while (Date.now() < deadline) {
+    if (state.exited) {
+      throw new Error(
+        `TokenTracker serve exited before becoming ready (code ${state.exitCode}).\n` +
+          `stdout:\n${state.stdout}\nstderr:\n${state.stderr}`,
+      );
+    }
+    try {
+      const response = await fetch(`${baseUrl}/api/local-auth`, {
+        signal: AbortSignal.timeout(1000),
+      });
+      if (response.ok) {
+        ready = true;
+        break;
+      }
+    } catch (_error) {
+      // not up yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  if (!ready) {
+    try {
+      child.kill();
+    } catch (_error) {
+      // ignore
+    }
+    throw new Error(
+      `TokenTracker serve did not become ready in ${AGGREGATES_SERVE_READY_TIMEOUT_MS} ms.\n` +
+        `stdout:\n${state.stdout}\nstderr:\n${state.stderr}`,
+    );
+  }
+  return {
+    baseUrl,
+    display,
+    logs: () => ({ stdout: state.stdout.trim(), stderr: state.stderr.trim() }),
+    stop: async () => {
+      if (state.exited) return;
+      try {
+        child.kill();
+      } catch (_error) {
+        // ignore
+      }
+      const deadline = Date.now() + 5000;
+      while (!state.exited && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (!state.exited) {
+        try {
+          child.kill("SIGKILL");
+        } catch (_error) {
+          // ignore
+        }
+      }
+    },
+  };
+}
+
+async function fetchTtJson(server, pathname, query) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(query || {})) {
+    if (value === undefined || value === null || value === "") continue;
+    search.set(key, String(value));
+  }
+  const url = `${server.baseUrl}${pathname}${search.size > 0 ? `?${search}` : ""}`;
+  const response = await fetch(url, { signal: AbortSignal.timeout(AGGREGATES_FETCH_TIMEOUT_MS) });
+  const body = await response.text();
+  if (!response.ok) {
+    throw new Error(`TT API ${pathname} -> HTTP ${response.status}: ${body.slice(0, 600)}`);
+  }
+  try {
+    return JSON.parse(body);
+  } catch (_error) {
+    throw new Error(`TT API ${pathname} returned non-JSON: ${body.slice(0, 300)}`);
+  }
+}
+
+function pickIntTotals(sourceTotals) {
+  const totals = {};
+  for (const column of AGGREGATE_ALL_TOKEN_COLUMNS) totals[column] = toInt(sourceTotals?.[column]);
+  if (sourceTotals && sourceTotals.conversation_count !== undefined) {
+    totals.conversation_count = toInt(sourceTotals.conversation_count);
+  }
+  return totals;
+}
+
+function normalizeTtSummary(payload, range) {
+  const totals = pickIntTotals(payload?.totals);
+  totals.conversation_count = toInt(payload?.totals?.conversation_count);
+  let rolling = null;
+  if (payload?.rolling) {
+    const one = payload.rolling.last_7d || {};
+    const thirty = payload.rolling.last_30d || {};
+    rolling = {
+      // TT derives rolling from/to from the machine's current date, so only the
+      // stable counters are stored and compared.
+      last_7d: {
+        active_days: toInt(one.active_days),
+        totals: {
+          billable_total_tokens: toInt(one.totals?.billable_total_tokens),
+          conversation_count: toInt(one.totals?.conversation_count),
+        },
+      },
+      last_30d: {
+        active_days: toInt(thirty.active_days),
+        totals: {
+          billable_total_tokens: toInt(thirty.totals?.billable_total_tokens),
+          conversation_count: toInt(thirty.totals?.conversation_count),
+        },
+        avg_per_active_day: toInt(thirty.avg_per_active_day),
+      },
+    };
+  }
+  return { from: range.from, to: range.to, days: toInt(payload?.days), totals, rolling };
+}
+
+function normalizeTtDaily(payload, range) {
+  const rows = (Array.isArray(payload?.data) ? payload.data : [])
+    .map((row) => {
+      const out = { day: typeof row.day === "string" ? row.day : "" };
+      for (const column of AGGREGATE_ALL_TOKEN_COLUMNS) out[column] = toInt(row[column]);
+      out.conversation_count = toInt(row.conversation_count);
+      return out;
+    })
+    .filter((row) => row.day)
+    .sort((a, b) => a.day.localeCompare(b.day));
+  return { from: range.from, to: range.to, rows };
+}
+
+function normalizeTtBreakdown(payload, range) {
+  const sources = (Array.isArray(payload?.sources) ? payload.sources : [])
+    .map((source) => ({
+      source: String(source?.source || "unknown"),
+      source_scope: typeof source?.source_scope === "string" ? source.source_scope : null,
+      totals: pickIntTotals(source?.totals),
+      models: (Array.isArray(source?.models) ? source.models : [])
+        .map((model) => ({
+          model: String(model?.model || model?.model_id || "unknown"),
+          totals: pickIntTotals(model?.totals),
+        }))
+        .sort((a, b) => a.model.localeCompare(b.model)),
+    }))
+    .sort((a, b) => a.source.localeCompare(b.source));
+  return { from: range.from, to: range.to, sources };
+}
+
+function normalizeTtHeatmap(payload, weeks) {
+  const cells = [];
+  for (const week of Array.isArray(payload?.weeks) ? payload.weeks : []) {
+    for (const cell of Array.isArray(week) ? week : []) {
+      const billable = toInt(cell?.billable_total_tokens);
+      const total = toInt(cell?.total_tokens);
+      const level = toInt(cell?.level);
+      if (billable === 0 && total === 0 && level === 0) continue;
+      if (typeof cell?.day !== "string" || !cell.day) continue;
+      cells.push({
+        day: cell.day,
+        total_tokens: total,
+        billable_total_tokens: billable,
+        level,
+      });
+    }
+  }
+  cells.sort((a, b) => a.day.localeCompare(b.day));
+  return {
+    weeks,
+    week_starts_on: typeof payload?.week_starts_on === "string" ? payload.week_starts_on : null,
+    active_days: toInt(payload?.active_days),
+    streak_days: toInt(payload?.streak_days),
+    // Only cells with data are stored/compared: TT's 52-week grid starts
+    // relative to the server run date, so its column alignment drifts daily.
+    cells,
+  };
+}
+
+const AGGREGATE_PERIOD_DEFINITIONS = {
+  day: "the latest fixture local day that has usage",
+  week: "Monday-start 7-day week containing the latest fixture local day (TT dashboard uses Monday weeks)",
+  month: "calendar month containing the latest fixture local day",
+  total: "fixture span (first..latest fixture local day); bounded subset of TT's rolling 24-month total",
+};
+
+async function captureTtAggregates({ server, rows, tz, home, ttVersion }) {
+  const { days, ranges } = periodRanges(rows, tz);
+  const doc = {
+    schema: AGGREGATES_SCHEMA,
+    generator: "scripts/usage-oracle-check.js --tt-aggregates-only",
+    tt_version: ttVersion,
+    home: relToRoot(home),
+    tz,
+    row_count: rows.length,
+    local_days: days,
+    period_definitions: AGGREGATE_PERIOD_DEFINITIONS,
+    ranges,
+    summary: {},
+    daily: {},
+    breakdown: {},
+    heatmap: null,
+    notes: {
+      heatmap:
+        "TT grid starts 52 weeks before its run date (week_starts_on:'sun'); only data-bearing cells are stored and compared (day/value/level), grid alignment is ignored.",
+      cost: "total_cost_usd/pricing are out of scope for the usage page and are stripped.",
+      rolling:
+        "TT rolling 7/30d windows are relative to the machine's current date; only active_days/counters are stored.",
+      total_period: "bounded to the fixture span, not TT's rolling 24-month window.",
+    },
+  };
+  for (const period of AGGREGATES_PERIODS) {
+    const { from, to } = ranges[period];
+    const query = { from, to, tz };
+    doc.summary[period] = normalizeTtSummary(
+      await fetchTtJson(server, AGGREGATE_ENDPOINTS.summary, query),
+      { from, to },
+    );
+    doc.daily[period] = normalizeTtDaily(
+      await fetchTtJson(server, AGGREGATE_ENDPOINTS.daily, query),
+      { from, to },
+    );
+    doc.breakdown[period] = normalizeTtBreakdown(
+      await fetchTtJson(server, AGGREGATE_ENDPOINTS.breakdown, query),
+      { from, to },
+    );
+  }
+  doc.heatmap = normalizeTtHeatmap(
+    await fetchTtJson(server, AGGREGATE_ENDPOINTS.heatmap, { weeks: 52, tz }),
+    Number(doc.heatmap?.weeks) || 52,
+  );
+  return doc;
+}
+
+async function cmdTtAggregatesOnly(opts) {
+  const home = opts.home;
+  if (!fs.existsSync(home)) {
+    throw new Error(
+      `fixture home not found: ${home}\nRun: node scripts/usage-oracle-check.js --build-fixtures`,
+    );
+  }
+  const ttCli = resolveTtCli(opts);
+  const ttVersion = readTtVersion(ttCli);
+
+  // A deterministic aggregation capture needs a deterministic queue: run the
+  // same local-only TT sync as --tt-only --sync (fresh fake-home state).
+  runTtSync({ home, ttCli });
+  const queuePath = opts.queue || path.join(home, QUEUE_REL);
+  const { rows } = readQueueRows(queuePath);
+  if (rows.length === 0) throw new Error("fixture home produced no queue rows; cannot capture aggregates");
+
+  ensureDir(GOLDEN_DIR);
+  const port = await freeTcpPort();
+  const server = await startTtServe({ home, ttCli, port });
+  const written = [];
+  try {
+    for (const tz of AGGREGATES_TZS) {
+      const doc = await captureTtAggregates({ server, rows, tz, home, ttVersion });
+      const file = path.join(GOLDEN_DIR, `aggregates-${tzFileSlug(tz)}.json`);
+      writeJson(file, doc);
+      written.push({ file, tz, doc });
+    }
+    const logs = server.logs();
+    if (logs.stderr) process.stderr.write(`${logs.stderr}\n`);
+  } finally {
+    await server.stop();
+  }
+
+  process.stdout.write("\nAggregation goldens written:\n");
+  for (const entry of written) {
+    const cellCount = entry.doc.heatmap ? entry.doc.heatmap.cells.length : 0;
+    process.stdout.write(
+      `  ${relToRoot(entry.file)}  (tz=${entry.tz}, ${AGGREGATES_PERIODS.length} periods x 3 views, heatmap cells=${cellCount})\n`,
+    );
+  }
+  process.stdout.write(
+    `  ranges per tz: ${written
+      .map((entry) => `${entry.tz} day=${entry.doc.ranges.day.from} total=${entry.doc.ranges.total.from}..${entry.doc.ranges.total.to}`)
+      .join("; ")}\n`,
+  );
+  process.stdout.write("\nReproduce:\n");
+  process.stdout.write("  node scripts/usage-oracle-check.js --build-fixtures\n");
+  process.stdout.write("  node scripts/usage-oracle-check.js --tt-aggregates-only\n");
+  process.stdout.write("  node scripts/usage-oracle-check.js --self-test\n");
+  process.stdout.write(`  (TT serve command): ${server.display}\n`);
+  return 0;
+}
+
+// ── Aggregation-level oracle: comparator ───────────────────────────────────
+
+const AGGREGATE_VIEW_ALIASES = {
+  summary: "summary",
+  daily: "daily",
+  breakdown: "breakdown",
+  "model-breakdown": "breakdown",
+  model_breakdown: "breakdown",
+  modelbreakdown: "breakdown",
+  heatmap: "heatmap",
+};
+
+function normalizeViewName(view) {
+  const key = String(view || "").trim().toLowerCase();
+  return AGGREGATE_VIEW_ALIASES[key] || null;
+}
+
+function aggregateKey(tz, view, period) {
+  return `${tz}|${view}|${period}`;
+}
+
+function loadAggregateGoldens() {
+  if (!fs.existsSync(GOLDEN_DIR)) return [];
+  const files = fs
+    .readdirSync(GOLDEN_DIR)
+    .filter((name) => /^aggregates-.*\.json$/.test(name))
+    .sort();
+  return files.map((name) => {
+    const file = path.join(GOLDEN_DIR, name);
+    const doc = readJson(file, "aggregate golden");
+    if (!doc || doc.schema !== AGGREGATES_SCHEMA) {
+      throw new Error(`unexpected aggregate golden schema in ${name}: ${doc && doc.schema}`);
+    }
+    return { file, doc };
+  });
+}
+
+function extractAggregateCaptureEntries(capture) {
+  const entries = [];
+  const pushEntry = (entry, defaults = {}) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+    const view = normalizeViewName(entry.view || entry.kind || entry.channel);
+    const period = String(entry.period || "").trim().toLowerCase() || null;
+    const payload =
+      entry.payload !== undefined
+        ? entry.payload
+        : entry.response !== undefined
+          ? entry.response
+          : entry.body !== undefined
+            ? entry.body
+            : undefined;
+    const tz = entry.tz || entry.timezone || defaults.tz || null;
+    if (!view || !period || !tz || payload === undefined) return;
+    entries.push({ tz: String(tz), view, period, payload });
+  };
+  const pushNested = (node, defaults = {}) => {
+    if (!node || typeof node !== "object") return;
+    for (const tz of Object.keys(node)) {
+      const byTz = node[tz];
+      if (!byTz || typeof byTz !== "object") continue;
+      // { "<tz>": { "<view>": { "<period>": payload } } }
+      for (const view of Object.keys(byTz)) {
+        const canonicalView = normalizeViewName(view);
+        if (!canonicalView) continue;
+        const byPeriod = byTz[view];
+        if (!byPeriod || typeof byPeriod !== "object") continue;
+        for (const period of Object.keys(byPeriod)) {
+          if (canonicalView === "heatmap") {
+            pushEntry({ tz, view: canonicalView, period: "total", payload: byPeriod[period] });
+          } else {
+            pushEntry({ tz, view: canonicalView, period, payload: byPeriod[period] });
+          }
+        }
+      }
+      // { "<tz>": { captures: [...] } }
+      if (Array.isArray(byTz.captures)) {
+        for (const entry of byTz.captures) pushEntry(entry, { tz });
+      }
+    }
+  };
+
+  if (Array.isArray(capture)) {
+    for (const entry of capture) pushEntry(entry);
+    return entries;
+  }
+  if (!capture || typeof capture !== "object") return entries;
+  if (Array.isArray(capture.captures)) {
+    for (const entry of capture.captures) pushEntry(entry, { tz: capture.tz });
+    return entries;
+  }
+  if (capture.captures && typeof capture.captures === "object") {
+    pushNested(capture.captures, { tz: capture.tz });
+    return entries;
+  }
+  if (capture.results && typeof capture.results === "object") {
+    for (const entry of Object.values(capture.results)) {
+      if (entry && typeof entry === "object" && (entry.view || entry.kind)) pushEntry(entry, { tz: capture.tz });
+    }
+    if (entries.length > 0) return entries;
+    pushNested(capture.results, { tz: capture.tz });
+    return entries;
+  }
+  // Bare nested tz map.
+  pushNested(capture, { tz: capture.tz });
+  return entries;
+}
+
+function addIntDiff(diffs, context, path, expectedValue, actualValue) {
+  const expectedInt = toInt(expectedValue);
+  const actualInt = toInt(actualValue);
+  if (expectedInt !== actualInt) {
+    diffs.push({
+      ...context,
+      kind: "value_mismatch",
+      path,
+      expected: expectedInt,
+      actual: actualInt,
+    });
+  }
+}
+
+function isZeroAggregateRow(row) {
+  for (const column of AGGREGATE_ALL_TOKEN_COLUMNS) {
+    if (toInt(row?.[column]) !== 0) return false;
+  }
+  return toInt(row?.conversation_count) === 0;
+}
+
+function extractSummaryTotals(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  if (payload.totals && typeof payload.totals === "object") return payload.totals;
+  if (payload.summary && typeof payload.summary === "object") return payload.summary;
+  if (payload.data && typeof payload.data === "object" && payload.data.totals) return payload.data.totals;
+  if (Array.isArray(payload.rows) && payload.rows.length === 0) return {};
+  return null;
+}
+
+function diffAggregateSummary(expected, actualPayload, context) {
+  const diffs = [];
+  const totals = extractSummaryTotals(actualPayload);
+  if (!totals) {
+    diffs.push({ ...context, kind: "missing_payload_fields", path: "totals", message: "no totals object in Highlighter summary payload" });
+    return diffs;
+  }
+  for (const column of AGGREGATE_ALL_TOKEN_COLUMNS) {
+    addIntDiff(diffs, context, `totals.${column}`, expected.totals[column], totals[column]);
+  }
+  addIntDiff(
+    diffs,
+    context,
+    "totals.conversation_count",
+    expected.totals.conversation_count,
+    totals.conversation_count,
+  );
+  if (actualPayload && actualPayload.days !== undefined && expected.days !== undefined) {
+    addIntDiff(diffs, context, "days", expected.days, actualPayload.days);
+  }
+  const actualRolling = actualPayload && (actualPayload.rolling || (actualPayload.data && actualPayload.data.rolling));
+  if (expected.rolling && actualRolling) {
+    for (const window of ["last_7d", "last_30d"]) {
+      const expectedWindow = expected.rolling[window];
+      const actualWindow = actualRolling[window];
+      addIntDiff(diffs, context, `rolling.${window}.active_days`, expectedWindow.active_days, actualWindow?.active_days);
+      addIntDiff(
+        diffs,
+        context,
+        `rolling.${window}.totals.billable_total_tokens`,
+        expectedWindow.totals.billable_total_tokens,
+        actualWindow?.totals?.billable_total_tokens,
+      );
+      addIntDiff(
+        diffs,
+        context,
+        `rolling.${window}.totals.conversation_count`,
+        expectedWindow.totals.conversation_count,
+        actualWindow?.totals?.conversation_count,
+      );
+      if (window === "last_30d") {
+        addIntDiff(
+          diffs,
+          context,
+          "rolling.last_30d.avg_per_active_day",
+          expectedWindow.avg_per_active_day,
+          actualWindow?.avg_per_active_day,
+        );
+      }
+    }
+  }
+  return diffs;
+}
+
+function extractDailyRows(payload) {
+  if (!payload) return null;
+  const candidates = [
+    payload.data,
+    payload.rows,
+    payload.days,
+    payload.daily,
+    payload.data && payload.data.rows,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return null;
+}
+
+function diffAggregateDaily(expected, actualPayload, context) {
+  const diffs = [];
+  const actualRows = extractDailyRows(actualPayload);
+  if (!actualRows) {
+    diffs.push({ ...context, kind: "missing_payload_fields", path: "rows", message: "no daily rows array in Highlighter payload" });
+    return diffs;
+  }
+  const actualByDay = new Map();
+  for (const row of actualRows) {
+    const day = typeof row?.day === "string" ? row.day : typeof row?.date === "string" ? row.date : "";
+    if (day) actualByDay.set(day, row);
+  }
+  for (const expectedRow of expected.rows) {
+    const actualRow = actualByDay.get(expectedRow.day);
+    if (!actualRow) {
+      diffs.push({ ...context, kind: "missing_day", path: expectedRow.day });
+      continue;
+    }
+    for (const column of AGGREGATE_ALL_TOKEN_COLUMNS) {
+      addIntDiff(diffs, context, `day[${expectedRow.day}].${column}`, expectedRow[column], actualRow[column]);
+    }
+    addIntDiff(
+      diffs,
+      context,
+      `day[${expectedRow.day}].conversation_count`,
+      expectedRow.conversation_count,
+      actualRow.conversation_count,
+    );
+  }
+  const expectedDays = new Set(expected.rows.map((row) => row.day));
+  for (const [day, actualRow] of actualByDay) {
+    if (expectedDays.has(day)) continue;
+    // Highlighter daily payloads may zero-fill the requested range; extra
+    // all-zero days are not a parity failure.
+    if (!isZeroAggregateRow(actualRow)) {
+      diffs.push({ ...context, kind: "extra_day", path: day });
+    }
+  }
+  return diffs;
+}
+
+function extractBreakdownSources(payload) {
+  if (!payload) return null;
+  const direct = payload.sources || (payload.data && payload.data.sources) || (payload.breakdown && payload.breakdown.sources);
+  if (Array.isArray(direct)) return direct;
+  const models = payload.models || (payload.data && payload.data.models);
+  if (Array.isArray(models)) {
+    // Flat model list: group by source when the payload carries one.
+    const grouped = new Map();
+    for (const model of models) {
+      const source = String(model?.source || model?.sourceId || "unknown");
+      if (!grouped.has(source)) grouped.set(source, { source, models: [] });
+      grouped.get(source).models.push(model);
+    }
+    return [...grouped.values()];
+  }
+  return null;
+}
+
+function extractBreakdownTotals(node) {
+  if (!node || typeof node !== "object") return null;
+  if (node.totals && typeof node.totals === "object") return node.totals;
+  if (node.data && typeof node.data === "object" && node.data.totals) return node.data.totals;
+  return node;
+}
+
+function compareShare(diffs, context, path, expectedShare, actualNode) {
+  if (!actualNode || typeof actualNode !== "object") return;
+  const raw =
+    actualNode.sharePct !== undefined
+      ? actualNode.sharePct
+      : actualNode.share_pct !== undefined
+        ? actualNode.share_pct
+        : actualNode.share !== undefined
+          ? actualNode.share
+          : null;
+  if (raw === null || raw === undefined) return;
+  const actual = Number(raw);
+  if (!Number.isFinite(actual)) {
+    diffs.push({ ...context, kind: "bad_share_pct", path, actual: raw });
+    return;
+  }
+  if (Math.abs(actual - expectedShare) > 0.01) {
+    diffs.push({
+      ...context,
+      kind: "share_mismatch",
+      path,
+      expected: Number(expectedShare.toFixed(4)),
+      actual: Number(actual.toFixed(4)),
+    });
+  }
+}
+
+function diffAggregateBreakdown(expected, actualPayload, context) {
+  const diffs = [];
+  const actualSources = extractBreakdownSources(actualPayload);
+  if (!actualSources) {
+    diffs.push({ ...context, kind: "missing_payload_fields", path: "sources", message: "no sources array in Highlighter breakdown payload" });
+    return diffs;
+  }
+  const globalTotal = expected.sources.reduce((sum, source) => sum + toInt(source.totals.total_tokens), 0);
+  const actualBySource = new Map(actualSources.map((source) => [String(source?.source || "unknown"), source]));
+  for (const expectedSource of expected.sources) {
+    const actualSource = actualBySource.get(expectedSource.source);
+    if (!actualSource) {
+      diffs.push({ ...context, kind: "missing_source", path: expectedSource.source });
+      continue;
+    }
+    const actualTotals = extractBreakdownTotals(actualSource) || {};
+    for (const column of AGGREGATE_REQUIRED_TOKEN_COLUMNS) {
+      addIntDiff(
+        diffs,
+        context,
+        `source[${expectedSource.source}].totals.${column}`,
+        expectedSource.totals[column],
+        actualTotals[column],
+      );
+    }
+    for (const column of ["total_tokens", "billable_total_tokens", "reasoning_output_tokens"]) {
+      if (actualTotals[column] !== undefined) {
+        addIntDiff(
+          diffs,
+          context,
+          `source[${expectedSource.source}].totals.${column}`,
+          expectedSource.totals[column],
+          actualTotals[column],
+        );
+      }
+    }
+    if (actualTotals.conversation_count !== undefined) {
+      addIntDiff(
+        diffs,
+        context,
+        `source[${expectedSource.source}].totals.conversation_count`,
+        expectedSource.totals.conversation_count,
+        actualTotals.conversation_count,
+      );
+    }
+    if (globalTotal > 0) {
+      compareShare(
+        diffs,
+        context,
+        `source[${expectedSource.source}].sharePct`,
+        (toInt(expectedSource.totals.total_tokens) / globalTotal) * 100,
+        actualSource,
+      );
+    }
+    const actualModels = Array.isArray(actualSource.models) ? actualSource.models : [];
+    const actualModelsByKey = new Map(
+      actualModels.map((model) => [String(model?.model || model?.model_id || model?.id || "unknown"), model]),
+    );
+    for (const expectedModel of expectedSource.models) {
+      const actualModel = actualModelsByKey.get(expectedModel.model);
+      if (!actualModel) {
+        diffs.push({
+          ...context,
+          kind: "missing_model",
+          path: `${expectedSource.source}/${expectedModel.model}`,
+        });
+        continue;
+      }
+      const modelTotals = extractBreakdownTotals(actualModel) || {};
+      for (const column of AGGREGATE_REQUIRED_TOKEN_COLUMNS) {
+        addIntDiff(
+          diffs,
+          context,
+          `source[${expectedSource.source}].model[${expectedModel.model}].${column}`,
+          expectedModel.totals[column],
+          modelTotals[column],
+        );
+      }
+      if (actualModel && actualModel.sharePct !== undefined && globalTotal > 0) {
+        compareShare(
+          diffs,
+          context,
+          `source[${expectedSource.source}].model[${expectedModel.model}].sharePct`,
+          (toInt(expectedModel.totals.total_tokens) / globalTotal) * 100,
+          actualModel,
+        );
+      }
+    }
+    for (const [modelKey] of actualModelsByKey) {
+      if (!expectedSource.models.some((model) => model.model === modelKey)) {
+        diffs.push({ ...context, kind: "extra_model", path: `${expectedSource.source}/${modelKey}` });
+      }
+    }
+  }
+  const expectedSources = new Set(expected.sources.map((source) => source.source));
+  for (const [sourceKey] of actualBySource) {
+    if (expectedSources.has(sourceKey)) continue;
+    diffs.push({ ...context, kind: "extra_source", path: sourceKey });
+  }
+  return diffs;
+}
+
+function extractHeatmapCells(payload) {
+  if (!payload) return null;
+  const cells = [];
+  const weeks = payload.weeks;
+  if (Array.isArray(weeks) && weeks.some((week) => Array.isArray(week))) {
+    for (const week of weeks) {
+      if (!Array.isArray(week)) continue;
+      for (const cell of week) {
+        if (cell && typeof cell === "object") cells.push(cell);
+      }
+    }
+    return cells;
+  }
+  for (const candidate of [payload.cells, payload.data, payload.days, payload.rows]) {
+    if (Array.isArray(candidate)) {
+      for (const cell of candidate) {
+        if (cell && typeof cell === "object") cells.push(cell);
+      }
+      return cells;
+    }
+  }
+  return null;
+}
+
+function heatmapCellValue(cell) {
+  if (cell?.billable_total_tokens !== undefined) return toInt(cell.billable_total_tokens);
+  if (cell?.value !== undefined) return toInt(cell.value);
+  return toInt(cell?.total_tokens);
+}
+
+function diffAggregateHeatmap(expected, actualPayload, context) {
+  const diffs = [];
+  const cells = extractHeatmapCells(actualPayload);
+  if (!cells) {
+    diffs.push({ ...context, kind: "missing_payload_fields", path: "weeks", message: "no heatmap cells in Highlighter payload" });
+    return diffs;
+  }
+  const actualActive = new Map();
+  for (const cell of cells) {
+    const day = typeof cell?.day === "string" ? cell.day : "";
+    if (!day) continue;
+    const value = heatmapCellValue(cell);
+    const level = toInt(cell?.level);
+    if (value === 0 && level === 0) continue;
+    actualActive.set(day, { value, level });
+  }
+  for (const expectedCell of expected.cells) {
+    const actualCell = actualActive.get(expectedCell.day);
+    if (!actualCell) {
+      diffs.push({ ...context, kind: "missing_heatmap_day", path: expectedCell.day });
+      continue;
+    }
+    addIntDiff(
+      diffs,
+      context,
+      `heatmap[${expectedCell.day}].value`,
+      expectedCell.billable_total_tokens,
+      actualCell.value,
+    );
+    addIntDiff(diffs, context, `heatmap[${expectedCell.day}].level`, expectedCell.level, actualCell.level);
+  }
+  const expectedDays = new Set(expected.cells.map((cell) => cell.day));
+  for (const [day] of actualActive) {
+    if (!expectedDays.has(day)) {
+      diffs.push({ ...context, kind: "extra_heatmap_day", path: day });
+    }
+  }
+  if (actualPayload && actualPayload.active_days !== undefined && expected.active_days !== undefined) {
+    addIntDiff(diffs, context, "heatmap.active_days", expected.active_days, actualPayload.active_days);
+  }
+  return diffs;
+}
+
+function compareAggregateView(view, expected, actualPayload, context) {
+  if (view === "summary") return diffAggregateSummary(expected, actualPayload, context);
+  if (view === "daily") return diffAggregateDaily(expected, actualPayload, context);
+  if (view === "breakdown") return diffAggregateBreakdown(expected, actualPayload, context);
+  return diffAggregateHeatmap(expected, actualPayload, context);
+}
+
+function compareAggregates(goldens, capture) {
+  const expected = new Map();
+  for (const { doc } of goldens) {
+    for (const period of AGGREGATES_PERIODS) {
+      expected.set(aggregateKey(doc.tz, "summary", period), {
+        tz: doc.tz,
+        view: "summary",
+        period,
+        expected: doc.summary && doc.summary[period],
+      });
+      expected.set(aggregateKey(doc.tz, "daily", period), {
+        tz: doc.tz,
+        view: "daily",
+        period,
+        expected: doc.daily && doc.daily[period],
+      });
+      expected.set(aggregateKey(doc.tz, "breakdown", period), {
+        tz: doc.tz,
+        view: "breakdown",
+        period,
+        expected: doc.breakdown && doc.breakdown[period],
+      });
+    }
+    expected.set(aggregateKey(doc.tz, "heatmap", "total"), {
+      tz: doc.tz,
+      view: "heatmap",
+      period: "total",
+      expected: doc.heatmap,
+    });
+  }
+
+  const diffs = [];
+  const missingCandidates = [];
+  const actualMap = new Map();
+  for (const entry of extractAggregateCaptureEntries(capture)) {
+    actualMap.set(aggregateKey(entry.tz, entry.view, entry.period), entry);
+  }
+  const compared = [];
+  for (const [key, target] of expected) {
+    const actualEntry = actualMap.get(key);
+    if (!actualEntry) {
+      missingCandidates.push({ key, tz: target.tz, view: target.view, period: target.period });
+      continue;
+    }
+    actualMap.delete(key);
+    compared.push(key);
+    const context = { key, tz: target.tz, view: target.view, period: target.period };
+    diffs.push(...compareAggregateView(target.view, target.expected, actualEntry.payload, context));
+  }
+  const extraCandidates = [...actualMap.keys()];
+  const failureCount = diffs.length + missingCandidates.length + extraCandidates.length;
+  return {
+    expectedCount: expected.size,
+    comparedCount: compared.length,
+    diffs,
+    missingCandidates,
+    extraCandidates,
+    failureCount,
+    verdict: failureCount === 0 ? "PASS" : "FAIL",
+  };
+}
+
+function cmdAggregatesCompare(opts) {
+  const goldens = loadAggregateGoldens();
+  if (goldens.length === 0) {
+    throw new Error(
+      "no aggregation goldens found in test/fixtures/usage/golden/aggregates-*.json\n" +
+        "Run: node scripts/usage-oracle-check.js --tt-aggregates-only",
+    );
+  }
+  const capture = readJson(opts.aggregates, "Highlighter aggregates capture");
+  const entries = extractAggregateCaptureEntries(capture);
+  if (entries.length === 0) {
+    throw new Error(
+      "capture file has no usable entries; expected {schema:'hl-usage-aggregates-v1', captures:[{tz,view,period,payload}]} — see --help or test/fixtures/usage/golden/README.md",
+    );
+  }
+  const result = compareAggregates(goldens, capture);
+
+  const report = {
+    mode: "aggregates-compare",
+    golden_files: goldens.map((entry) => relToRoot(entry.file)),
+    capture_file: opts.aggregates,
+    capture_entries: entries.length,
+    expected_entries: result.expectedCount,
+    compared_entries: result.comparedCount,
+    diff_count: result.diffs.length,
+    missing_capture_entries: result.missingCandidates.slice(0, SAMPLE_DIFF_LIMIT),
+    extra_capture_entries: result.extraCandidates.slice(0, SAMPLE_DIFF_LIMIT),
+    sample_diffs: result.diffs.slice(0, SAMPLE_DIFF_LIMIT),
+    truncated:
+      result.diffs.length > SAMPLE_DIFF_LIMIT ||
+      result.missingCandidates.length > SAMPLE_DIFF_LIMIT ||
+      result.extraCandidates.length > SAMPLE_DIFF_LIMIT,
+    verdict: result.verdict,
+  };
+
+  if (opts.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    process.stdout.write("Aggregation oracle diff: Highlighter IPC payloads vs TokenTracker local API\n");
+    process.stdout.write(`  goldens: ${goldens.map((entry) => relToRoot(entry.file)).join(", ")}\n`);
+    process.stdout.write(`  capture: ${opts.aggregates} (${entries.length} entries)\n`);
+    process.stdout.write(
+      `  entries: ${result.comparedCount}/${result.expectedCount} compared; ` +
+        `${result.diffs.length} value diffs; ${result.missingCandidates.length} missing; ${result.extraCandidates.length} extra\n`,
+    );
+    for (const missing of result.missingCandidates.slice(0, SAMPLE_DIFF_LIMIT)) {
+      process.stdout.write(`  [missing] ${missing.key}\n`);
+    }
+    for (const extra of result.extraCandidates.slice(0, SAMPLE_DIFF_LIMIT)) {
+      process.stdout.write(`  [extra]   ${extra}\n`);
+    }
+    for (const diff of report.sample_diffs) {
+      if (diff.kind === "value_mismatch" || diff.kind === "share_mismatch") {
+        process.stdout.write(
+          `  [diff] ${diff.key} ${diff.path}: tt=${JSON.stringify(diff.expected)} hl=${JSON.stringify(diff.actual)}\n`,
+        );
+      } else {
+        process.stdout.write(`  [diff] ${diff.key} ${diff.kind} ${diff.path || ""}\n`);
+      }
+    }
+    if (report.truncated) {
+      process.stdout.write(`  (showing first ${SAMPLE_DIFF_LIMIT}; use --json for the full list)\n`);
+    }
+    process.stdout.write(`\nVerdict: ${result.verdict}\n`);
+    process.stdout.write(
+      "\nNotes: heatmap compares day/value/level cells only (TT grid alignment is ignored); " +
+        "total_cost_usd/pricing are out of scope.\n",
+    );
+    process.stdout.write("\nReproduce:\n");
+    process.stdout.write("  node scripts/usage-oracle-check.js --tt-aggregates-only\n");
+    process.stdout.write(`  node scripts/usage-oracle-check.js --aggregates ${opts.aggregates}\n`);
+  }
+  return result.verdict === "PASS" ? 0 : 1;
+}
+
+// ── Aggregation comparator self-test (synthetic PASS/FAIL cases) ───────────
+
+function buildSyntheticAggregateGolden(tz = "UTC") {
+  const totals = {
+    input_tokens: 1000,
+    output_tokens: 200,
+    cached_input_tokens: 300,
+    cache_creation_input_tokens: 40,
+    reasoning_output_tokens: 10,
+    total_tokens: 1550,
+    billable_total_tokens: 1550,
+    conversation_count: 2,
+  };
+  const day = "2026-03-14";
+  const source = {
+    source: "codex",
+    source_scope: "local",
+    totals: { ...totals, conversation_count: undefined },
+    models: [{ model: "gpt-5.4-codex", totals: { ...totals, conversation_count: undefined } }],
+  };
+  // Strip undefined conversation_count from breakdown (TT breakdown has none).
+  delete source.totals.conversation_count;
+  delete source.models[0].totals.conversation_count;
+  return {
+    tz,
+    summary: Object.fromEntries(
+      AGGREGATES_PERIODS.map((period) => [period, { from: day, to: day, days: 1, totals: { ...totals }, rolling: null }]),
+    ),
+    daily: Object.fromEntries(
+      AGGREGATES_PERIODS.map((period) => [period, { from: day, to: day, rows: [{ day, ...totals }] }]),
+    ),
+    breakdown: Object.fromEntries(
+      AGGREGATES_PERIODS.map((period) => [
+        period,
+        { from: day, to: day, sources: [{ ...source, totals: { ...source.totals }, models: [{ ...source.models[0], totals: { ...source.models[0].totals } }] }] },
+      ]),
+    ),
+    heatmap: {
+      weeks: 52,
+      week_starts_on: "sun",
+      active_days: 1,
+      streak_days: 0,
+      cells: [{ day, total_tokens: 1550, billable_total_tokens: 1550, level: 4 }],
+    },
+  };
+}
+
+function buildSyntheticCapture(golden) {
+  const captures = [];
+  for (const period of AGGREGATES_PERIODS) {
+    captures.push({
+      tz: golden.tz,
+      view: "summary",
+      period,
+      payload: JSON.parse(JSON.stringify(golden.summary[period])),
+    });
+    captures.push({
+      tz: golden.tz,
+      view: "daily",
+      period,
+      payload: { data: JSON.parse(JSON.stringify(golden.daily[period].rows)) },
+    });
+    captures.push({
+      tz: golden.tz,
+      view: "breakdown",
+      period,
+      payload: { sources: JSON.parse(JSON.stringify(golden.breakdown[period].sources)) },
+    });
+  }
+  captures.push({
+    tz: golden.tz,
+    view: "heatmap",
+    period: "total",
+    payload: {
+      weeks: [[...golden.heatmap.cells]],
+      active_days: golden.heatmap.active_days,
+    },
+  });
+  return { schema: AGGREGATES_CAPTURE_SCHEMA, captures };
+}
+
+function runSelfTestCase(name, golden, mutateCapture, expectVerdict) {
+  const capture = buildSyntheticCapture(golden);
+  if (typeof mutateCapture === "function") mutateCapture(capture);
+  const result = compareAggregates([{ file: "<synthetic>", doc: golden }], capture);
+  const passed = result.verdict === expectVerdict;
+  return { name, expected: expectVerdict, actual: result.verdict, failureCount: result.failureCount, passed };
+}
+
+function cmdAggregatesSelfTest() {
+  const golden = buildSyntheticAggregateGolden("UTC");
+  const cases = [];
+
+  cases.push(runSelfTestCase("exact-match", golden, null, "PASS"));
+  cases.push(
+    runSelfTestCase(
+      "plus-one-token",
+      golden,
+      (capture) => {
+        const entry = capture.captures.find((item) => item.view === "summary" && item.period === "day");
+        entry.payload.totals.input_tokens += 1;
+      },
+      "FAIL",
+    ),
+  );
+  cases.push(
+    runSelfTestCase(
+      "missing-source",
+      golden,
+      (capture) => {
+        const entry = capture.captures.find((item) => item.view === "breakdown" && item.period === "day");
+        entry.payload.sources = [];
+      },
+      "FAIL",
+    ),
+  );
+  cases.push(
+    runSelfTestCase(
+      "shifted-heatmap-grid",
+      golden,
+      (capture) => {
+        const entry = capture.captures.find((item) => item.view === "heatmap");
+        // Same active cell, different week/column alignment: must still pass.
+        entry.payload.weeks = [[], [], [{ ...entry.payload.weeks[0][0], day: entry.payload.weeks[0][0].day }]];
+      },
+      "PASS",
+    ),
+  );
+  cases.push(
+    runSelfTestCase(
+      "cost-only-drift",
+      golden,
+      (capture) => {
+        for (const entry of capture.captures) {
+          if (entry.payload && typeof entry.payload === "object") {
+            entry.payload.total_cost_usd = "999.000000";
+            entry.payload.pricing = { model: "fake", input: 1 };
+          }
+        }
+      },
+      "PASS",
+    ),
+  );
+  cases.push(
+    runSelfTestCase(
+      "zero-filled-extra-day",
+      golden,
+      (capture) => {
+        const entry = capture.captures.find((item) => item.view === "daily" && item.period === "week");
+        entry.payload.data.push({
+          day: "2026-03-15",
+          input_tokens: 0,
+          output_tokens: 0,
+          cached_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          reasoning_output_tokens: 0,
+          total_tokens: 0,
+          billable_total_tokens: 0,
+          conversation_count: 0,
+        });
+      },
+      "PASS",
+    ),
+  );
+  cases.push(
+    runSelfTestCase(
+      "missing-heatmap-day",
+      golden,
+      (capture) => {
+        const entry = capture.captures.find((item) => item.view === "heatmap");
+        entry.payload.weeks = [[]];
+      },
+      "FAIL",
+    ),
+  );
+
+  const failed = cases.filter((item) => !item.passed);
+  process.stdout.write("Aggregation comparator self-test (synthetic payloads):\n");
+  for (const item of cases) {
+    process.stdout.write(
+      `  ${item.passed ? "ok  " : "FAIL"} ${item.name}: expected ${item.expected}, got ${item.actual} (${item.failureCount} failures)\n`,
+    );
+  }
+  process.stdout.write(
+    `\n${cases.length - failed.length}/${cases.length} cases behaved as expected\n`,
+  );
+  return failed.length === 0 ? 0 : 1;
+}
+
+// main() is synchronous for most modes but the TT-serve capture mode is async,
+// so resolve a possibly-promise result before setting the process exit code.
+Promise.resolve()
+  .then(() => main(process.argv.slice(2)))
+  .then((code) => {
+    process.exitCode = typeof code === "number" ? code : 0;
+  })
+  .catch((error) => {
+    process.stderr.write(`error: ${error && error.stack ? error.stack : String(error)}\n`);
+    process.exitCode = 2;
+  });

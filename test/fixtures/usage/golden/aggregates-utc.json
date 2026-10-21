@@ -1,0 +1,675 @@
+{
+  "schema": "usage-oracle-aggregates-v1",
+  "generator": "scripts/usage-oracle-check.js --tt-aggregates-only",
+  "tt_version": "1.4.7",
+  "home": "test/fixtures/usage/home",
+  "tz": "UTC",
+  "row_count": 11,
+  "local_days": [
+    "2026-03-14",
+    "2026-03-15",
+    "2026-03-16"
+  ],
+  "period_definitions": {
+    "day": "the latest fixture local day that has usage",
+    "week": "Monday-start 7-day week containing the latest fixture local day (TT dashboard uses Monday weeks)",
+    "month": "calendar month containing the latest fixture local day",
+    "total": "fixture span (first..latest fixture local day); bounded subset of TT's rolling 24-month total"
+  },
+  "ranges": {
+    "day": {
+      "from": "2026-03-16",
+      "to": "2026-03-16"
+    },
+    "week": {
+      "from": "2026-03-16",
+      "to": "2026-03-22"
+    },
+    "month": {
+      "from": "2026-03-01",
+      "to": "2026-03-31"
+    },
+    "total": {
+      "from": "2026-03-14",
+      "to": "2026-03-16"
+    }
+  },
+  "summary": {
+    "day": {
+      "from": "2026-03-16",
+      "to": "2026-03-16",
+      "days": 1,
+      "totals": {
+        "input_tokens": 1000,
+        "output_tokens": 100,
+        "cached_input_tokens": 1000,
+        "cache_creation_input_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 2100,
+        "billable_total_tokens": 2100,
+        "conversation_count": 1
+      },
+      "rolling": {
+        "last_7d": {
+          "active_days": 0,
+          "totals": {
+            "billable_total_tokens": 0,
+            "conversation_count": 0
+          }
+        },
+        "last_30d": {
+          "active_days": 0,
+          "totals": {
+            "billable_total_tokens": 0,
+            "conversation_count": 0
+          },
+          "avg_per_active_day": 0
+        }
+      }
+    },
+    "week": {
+      "from": "2026-03-16",
+      "to": "2026-03-22",
+      "days": 1,
+      "totals": {
+        "input_tokens": 1000,
+        "output_tokens": 100,
+        "cached_input_tokens": 1000,
+        "cache_creation_input_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 2100,
+        "billable_total_tokens": 2100,
+        "conversation_count": 1
+      },
+      "rolling": {
+        "last_7d": {
+          "active_days": 0,
+          "totals": {
+            "billable_total_tokens": 0,
+            "conversation_count": 0
+          }
+        },
+        "last_30d": {
+          "active_days": 0,
+          "totals": {
+            "billable_total_tokens": 0,
+            "conversation_count": 0
+          },
+          "avg_per_active_day": 0
+        }
+      }
+    },
+    "month": {
+      "from": "2026-03-01",
+      "to": "2026-03-31",
+      "days": 3,
+      "totals": {
+        "input_tokens": 29600,
+        "output_tokens": 3650,
+        "cached_input_tokens": 18700,
+        "cache_creation_input_tokens": 350,
+        "reasoning_output_tokens": 490,
+        "total_tokens": 52590,
+        "billable_total_tokens": 52590,
+        "conversation_count": 12
+      },
+      "rolling": {
+        "last_7d": {
+          "active_days": 0,
+          "totals": {
+            "billable_total_tokens": 0,
+            "conversation_count": 0
+          }
+        },
+        "last_30d": {
+          "active_days": 0,
+          "totals": {
+            "billable_total_tokens": 0,
+            "conversation_count": 0
+          },
+          "avg_per_active_day": 0
+        }
+      }
+    },
+    "total": {
+      "from": "2026-03-14",
+      "to": "2026-03-16",
+      "days": 3,
+      "totals": {
+        "input_tokens": 29600,
+        "output_tokens": 3650,
+        "cached_input_tokens": 18700,
+        "cache_creation_input_tokens": 350,
+        "reasoning_output_tokens": 490,
+        "total_tokens": 52590,
+        "billable_total_tokens": 52590,
+        "conversation_count": 12
+      },
+      "rolling": {
+        "last_7d": {
+          "active_days": 0,
+          "totals": {
+            "billable_total_tokens": 0,
+            "conversation_count": 0
+          }
+        },
+        "last_30d": {
+          "active_days": 0,
+          "totals": {
+            "billable_total_tokens": 0,
+            "conversation_count": 0
+          },
+          "avg_per_active_day": 0
+        }
+      }
+    }
+  },
+  "daily": {
+    "day": {
+      "from": "2026-03-16",
+      "to": "2026-03-16",
+      "rows": [
+        {
+          "day": "2026-03-16",
+          "input_tokens": 1000,
+          "output_tokens": 100,
+          "cached_input_tokens": 1000,
+          "cache_creation_input_tokens": 0,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 2100,
+          "billable_total_tokens": 2100,
+          "conversation_count": 1
+        }
+      ]
+    },
+    "week": {
+      "from": "2026-03-16",
+      "to": "2026-03-22",
+      "rows": [
+        {
+          "day": "2026-03-16",
+          "input_tokens": 1000,
+          "output_tokens": 100,
+          "cached_input_tokens": 1000,
+          "cache_creation_input_tokens": 0,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 2100,
+          "billable_total_tokens": 2100,
+          "conversation_count": 1
+        }
+      ]
+    },
+    "month": {
+      "from": "2026-03-01",
+      "to": "2026-03-31",
+      "rows": [
+        {
+          "day": "2026-03-14",
+          "input_tokens": 17900,
+          "output_tokens": 2350,
+          "cached_input_tokens": 14100,
+          "cache_creation_input_tokens": 300,
+          "reasoning_output_tokens": 340,
+          "total_tokens": 34840,
+          "billable_total_tokens": 34840,
+          "conversation_count": 7
+        },
+        {
+          "day": "2026-03-15",
+          "input_tokens": 10700,
+          "output_tokens": 1200,
+          "cached_input_tokens": 3600,
+          "cache_creation_input_tokens": 50,
+          "reasoning_output_tokens": 150,
+          "total_tokens": 15650,
+          "billable_total_tokens": 15650,
+          "conversation_count": 4
+        },
+        {
+          "day": "2026-03-16",
+          "input_tokens": 1000,
+          "output_tokens": 100,
+          "cached_input_tokens": 1000,
+          "cache_creation_input_tokens": 0,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 2100,
+          "billable_total_tokens": 2100,
+          "conversation_count": 1
+        }
+      ]
+    },
+    "total": {
+      "from": "2026-03-14",
+      "to": "2026-03-16",
+      "rows": [
+        {
+          "day": "2026-03-14",
+          "input_tokens": 17900,
+          "output_tokens": 2350,
+          "cached_input_tokens": 14100,
+          "cache_creation_input_tokens": 300,
+          "reasoning_output_tokens": 340,
+          "total_tokens": 34840,
+          "billable_total_tokens": 34840,
+          "conversation_count": 7
+        },
+        {
+          "day": "2026-03-15",
+          "input_tokens": 10700,
+          "output_tokens": 1200,
+          "cached_input_tokens": 3600,
+          "cache_creation_input_tokens": 50,
+          "reasoning_output_tokens": 150,
+          "total_tokens": 15650,
+          "billable_total_tokens": 15650,
+          "conversation_count": 4
+        },
+        {
+          "day": "2026-03-16",
+          "input_tokens": 1000,
+          "output_tokens": 100,
+          "cached_input_tokens": 1000,
+          "cache_creation_input_tokens": 0,
+          "reasoning_output_tokens": 0,
+          "total_tokens": 2100,
+          "billable_total_tokens": 2100,
+          "conversation_count": 1
+        }
+      ]
+    }
+  },
+  "breakdown": {
+    "day": {
+      "from": "2026-03-16",
+      "to": "2026-03-16",
+      "sources": [
+        {
+          "source": "codex",
+          "source_scope": "local",
+          "totals": {
+            "input_tokens": 1000,
+            "output_tokens": 100,
+            "cached_input_tokens": 1000,
+            "cache_creation_input_tokens": 0,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 2100,
+            "billable_total_tokens": 2100
+          },
+          "models": [
+            {
+              "model": "gpt-5.4-mini",
+              "totals": {
+                "input_tokens": 1000,
+                "output_tokens": 100,
+                "cached_input_tokens": 1000,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 2100,
+                "billable_total_tokens": 2100
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "week": {
+      "from": "2026-03-16",
+      "to": "2026-03-22",
+      "sources": [
+        {
+          "source": "codex",
+          "source_scope": "local",
+          "totals": {
+            "input_tokens": 1000,
+            "output_tokens": 100,
+            "cached_input_tokens": 1000,
+            "cache_creation_input_tokens": 0,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 2100,
+            "billable_total_tokens": 2100
+          },
+          "models": [
+            {
+              "model": "gpt-5.4-mini",
+              "totals": {
+                "input_tokens": 1000,
+                "output_tokens": 100,
+                "cached_input_tokens": 1000,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 2100,
+                "billable_total_tokens": 2100
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "month": {
+      "from": "2026-03-01",
+      "to": "2026-03-31",
+      "sources": [
+        {
+          "source": "codex",
+          "source_scope": "local",
+          "totals": {
+            "input_tokens": 14000,
+            "output_tokens": 1250,
+            "cached_input_tokens": 15000,
+            "cache_creation_input_tokens": 0,
+            "reasoning_output_tokens": 200,
+            "total_tokens": 30250,
+            "billable_total_tokens": 30250
+          },
+          "models": [
+            {
+              "model": "gpt-5.2",
+              "totals": {
+                "input_tokens": 3000,
+                "output_tokens": 400,
+                "cached_input_tokens": 2000,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 5400,
+                "billable_total_tokens": 5400
+              }
+            },
+            {
+              "model": "gpt-5.4-codex",
+              "totals": {
+                "input_tokens": 7000,
+                "output_tokens": 550,
+                "cached_input_tokens": 9000,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 150,
+                "total_tokens": 16550,
+                "billable_total_tokens": 16550
+              }
+            },
+            {
+              "model": "gpt-5.4-mini",
+              "totals": {
+                "input_tokens": 4000,
+                "output_tokens": 300,
+                "cached_input_tokens": 4000,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 50,
+                "total_tokens": 8300,
+                "billable_total_tokens": 8300
+              }
+            }
+          ]
+        },
+        {
+          "source": "dsh",
+          "source_scope": "local",
+          "totals": {
+            "input_tokens": 9500,
+            "output_tokens": 1300,
+            "cached_input_tokens": 2000,
+            "cache_creation_input_tokens": 200,
+            "reasoning_output_tokens": 190,
+            "total_tokens": 13190,
+            "billable_total_tokens": 13190
+          },
+          "models": [
+            {
+              "model": "deepseek-v4.1-flash",
+              "totals": {
+                "input_tokens": 4500,
+                "output_tokens": 700,
+                "cached_input_tokens": 2000,
+                "cache_creation_input_tokens": 200,
+                "reasoning_output_tokens": 140,
+                "total_tokens": 7540,
+                "billable_total_tokens": 7540
+              }
+            },
+            {
+              "model": "deepseek-v4.1-pro",
+              "totals": {
+                "input_tokens": 5000,
+                "output_tokens": 600,
+                "cached_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 50,
+                "total_tokens": 5650,
+                "billable_total_tokens": 5650
+              }
+            }
+          ]
+        },
+        {
+          "source": "opencode",
+          "source_scope": "local",
+          "totals": {
+            "input_tokens": 6100,
+            "output_tokens": 1100,
+            "cached_input_tokens": 1700,
+            "cache_creation_input_tokens": 150,
+            "reasoning_output_tokens": 100,
+            "total_tokens": 9150,
+            "billable_total_tokens": 9150
+          },
+          "models": [
+            {
+              "model": "claude-sonnet-4-5",
+              "totals": {
+                "input_tokens": 2400,
+                "output_tokens": 500,
+                "cached_input_tokens": 800,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 3700,
+                "billable_total_tokens": 3700
+              }
+            },
+            {
+              "model": "deepseek-v4.1-flash",
+              "totals": {
+                "input_tokens": 2700,
+                "output_tokens": 400,
+                "cached_input_tokens": 600,
+                "cache_creation_input_tokens": 50,
+                "reasoning_output_tokens": 50,
+                "total_tokens": 3800,
+                "billable_total_tokens": 3800
+              }
+            },
+            {
+              "model": "glm-5",
+              "totals": {
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cached_input_tokens": 300,
+                "cache_creation_input_tokens": 100,
+                "reasoning_output_tokens": 50,
+                "total_tokens": 1650,
+                "billable_total_tokens": 1650
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "total": {
+      "from": "2026-03-14",
+      "to": "2026-03-16",
+      "sources": [
+        {
+          "source": "codex",
+          "source_scope": "local",
+          "totals": {
+            "input_tokens": 14000,
+            "output_tokens": 1250,
+            "cached_input_tokens": 15000,
+            "cache_creation_input_tokens": 0,
+            "reasoning_output_tokens": 200,
+            "total_tokens": 30250,
+            "billable_total_tokens": 30250
+          },
+          "models": [
+            {
+              "model": "gpt-5.2",
+              "totals": {
+                "input_tokens": 3000,
+                "output_tokens": 400,
+                "cached_input_tokens": 2000,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 5400,
+                "billable_total_tokens": 5400
+              }
+            },
+            {
+              "model": "gpt-5.4-codex",
+              "totals": {
+                "input_tokens": 7000,
+                "output_tokens": 550,
+                "cached_input_tokens": 9000,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 150,
+                "total_tokens": 16550,
+                "billable_total_tokens": 16550
+              }
+            },
+            {
+              "model": "gpt-5.4-mini",
+              "totals": {
+                "input_tokens": 4000,
+                "output_tokens": 300,
+                "cached_input_tokens": 4000,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 50,
+                "total_tokens": 8300,
+                "billable_total_tokens": 8300
+              }
+            }
+          ]
+        },
+        {
+          "source": "dsh",
+          "source_scope": "local",
+          "totals": {
+            "input_tokens": 9500,
+            "output_tokens": 1300,
+            "cached_input_tokens": 2000,
+            "cache_creation_input_tokens": 200,
+            "reasoning_output_tokens": 190,
+            "total_tokens": 13190,
+            "billable_total_tokens": 13190
+          },
+          "models": [
+            {
+              "model": "deepseek-v4.1-flash",
+              "totals": {
+                "input_tokens": 4500,
+                "output_tokens": 700,
+                "cached_input_tokens": 2000,
+                "cache_creation_input_tokens": 200,
+                "reasoning_output_tokens": 140,
+                "total_tokens": 7540,
+                "billable_total_tokens": 7540
+              }
+            },
+            {
+              "model": "deepseek-v4.1-pro",
+              "totals": {
+                "input_tokens": 5000,
+                "output_tokens": 600,
+                "cached_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 50,
+                "total_tokens": 5650,
+                "billable_total_tokens": 5650
+              }
+            }
+          ]
+        },
+        {
+          "source": "opencode",
+          "source_scope": "local",
+          "totals": {
+            "input_tokens": 6100,
+            "output_tokens": 1100,
+            "cached_input_tokens": 1700,
+            "cache_creation_input_tokens": 150,
+            "reasoning_output_tokens": 100,
+            "total_tokens": 9150,
+            "billable_total_tokens": 9150
+          },
+          "models": [
+            {
+              "model": "claude-sonnet-4-5",
+              "totals": {
+                "input_tokens": 2400,
+                "output_tokens": 500,
+                "cached_input_tokens": 800,
+                "cache_creation_input_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 3700,
+                "billable_total_tokens": 3700
+              }
+            },
+            {
+              "model": "deepseek-v4.1-flash",
+              "totals": {
+                "input_tokens": 2700,
+                "output_tokens": 400,
+                "cached_input_tokens": 600,
+                "cache_creation_input_tokens": 50,
+                "reasoning_output_tokens": 50,
+                "total_tokens": 3800,
+                "billable_total_tokens": 3800
+              }
+            },
+            {
+              "model": "glm-5",
+              "totals": {
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cached_input_tokens": 300,
+                "cache_creation_input_tokens": 100,
+                "reasoning_output_tokens": 50,
+                "total_tokens": 1650,
+                "billable_total_tokens": 1650
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "heatmap": {
+    "weeks": 52,
+    "week_starts_on": "sun",
+    "active_days": 3,
+    "streak_days": 0,
+    "cells": [
+      {
+        "day": "2026-03-14",
+        "total_tokens": 34840,
+        "billable_total_tokens": 34840,
+        "level": 4
+      },
+      {
+        "day": "2026-03-15",
+        "total_tokens": 15650,
+        "billable_total_tokens": 15650,
+        "level": 2
+      },
+      {
+        "day": "2026-03-16",
+        "total_tokens": 2100,
+        "billable_total_tokens": 2100,
+        "level": 1
+      }
+    ]
+  },
+  "notes": {
+    "heatmap": "TT grid starts 52 weeks before its run date (week_starts_on:'sun'); only data-bearing cells are stored and compared (day/value/level), grid alignment is ignored.",
+    "cost": "total_cost_usd/pricing are out of scope for the usage page and are stripped.",
+    "rolling": "TT rolling 7/30d windows are relative to the machine's current date; only active_days/counters are stored.",
+    "total_period": "bounded to the fixture span, not TT's rolling 24-month window."
+  }
+}
