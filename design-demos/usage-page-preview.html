@@ -1,0 +1,724 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' file:; style-src 'self' 'unsafe-inline' file:; img-src 'self' file: data: blob:; font-src 'self' file: data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Highlighter — usage page preview (dev)</title>
+  <!--
+    DEV-ONLY visual-review harness for the AI usage page. Not shipped:
+    design-demos/ is not part of electron-builder build.files.
+    It loads the real shared/tokens.css, config/config.css and the real
+    config/routes/usage.js inside a static copy of the settings-window shell,
+    and fakes window.electronAPI with dense deterministic payloads so the page
+    can be screenshotted without a visible window (scripts/usage-visual-preview.js).
+    See design-demos/usage-page-preview/README.md and the --from-git baseline
+    mode of the harness.
+  -->
+  <link rel="stylesheet" href="../shared/tokens.css">
+  <link rel="stylesheet" href="../config/config.css">
+  <style>
+    /* Capture mode: let the document grow to its full content height so the
+       hidden window can be resized to it and capturePage() grabs the whole
+       page. The app itself scrolls inside #view; horizontal metrics are
+       untouched. */
+    html, body { height: auto; min-height: 100%; overflow: visible; }
+    .window-shell { height: auto; min-height: 100vh; }
+    .workspace { min-height: 100vh; }
+    #view { overflow: visible; flex: 0 0 auto; }
+    .sidebar { min-height: 100vh; }
+    /* Deterministic rendering for screenshots. */
+    * { transition: none !important; animation: none !important; caret-color: transparent !important; }
+  </style>
+</head>
+<body>
+  <div class="window-shell">
+    <aside class="sidebar">
+      <div class="brand"><span>High</span>lighter</div>
+      <nav>
+        <button class="nav-item" data-route="home"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/lightning.svg')" aria-hidden="true"></i><span data-i18n="config.route.home"></span></button>
+        <div class="nav-group"><b data-i18n="config.nav.toolbox"></b></div>
+        <button class="nav-item" data-route="translation"><i class="svg-icon nav-icon" style="--icon:url('../capture/icons/translate.svg')" aria-hidden="true"></i><span data-i18n="config.route.translation"></span></button>
+        <button class="nav-item" data-route="chat"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/robot.svg')" aria-hidden="true"></i><span data-i18n="config.route.chat"></span></button>
+        <button class="nav-item" data-route="history"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/history.svg')" aria-hidden="true"></i><span data-i18n="config.route.history"></span></button>
+        <div class="nav-group"><b data-i18n="config.nav.tool-settings"></b></div>
+        <button class="nav-item" data-route="selection-toolbar"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/text-style.svg')" aria-hidden="true"></i><span data-i18n="config.route.selection-toolbar"></span></button>
+        <button class="nav-item" data-route="local-search"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/search.svg')" aria-hidden="true"></i><span data-i18n="config.route.local-search"></span></button>
+        <button class="nav-item" data-route="clipboard-history"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/history.svg')" aria-hidden="true"></i><span data-i18n="clipboard.title"></span></button>
+        <button class="nav-item active" data-route="usage"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/usage.svg')" aria-hidden="true"></i><span data-i18n="config.route.usage"></span></button>
+        <div class="nav-group"><b data-i18n="config.nav.settings"></b></div>
+        <button class="nav-item" data-route="settings-general"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/layout.svg')" aria-hidden="true"></i><span data-i18n="config.route.settings-general"></span></button>
+        <button class="nav-item" data-route="settings-function"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/settings.svg')" aria-hidden="true"></i><span data-i18n="config.route.settings-function"></span></button>
+        <button class="nav-item" data-route="models"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/model.svg')" aria-hidden="true"></i><span data-i18n="config.route.models"></span></button>
+        <button class="nav-item" data-route="settings-system"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/system.svg')" aria-hidden="true"></i><span data-i18n="config.route.settings-system"></span></button>
+        <button class="nav-item about-item" data-route="about"><i class="svg-icon nav-icon" style="--icon:url('../config/icons/info.svg')" aria-hidden="true"></i><span data-i18n="config.route.about"></span></button>
+      </nav>
+    </aside>
+    <section class="workspace">
+      <header class="titlebar">
+        <div id="pageTitle" data-i18n="config.route.usage"></div>
+        <div class="window-actions">
+          <button id="minimize" type="button" aria-label="minimize"><span class="svg-icon" style="--icon:url('../capture/icons/line.svg')" aria-hidden="true"></span></button>
+          <button id="close" type="button" aria-label="close"><span class="svg-icon" style="--icon:url('../capture/icons/close.svg')" aria-hidden="true"></span></button>
+        </div>
+      </header>
+      <div class="status-rail" id="statusRail" hidden></div>
+      <main id="view"></main>
+    </section>
+  </div>
+  <div id="toast" class="toast"></div>
+
+  <script>
+    // ── Mock data + window.electronAPI (defined BEFORE the real route script) ─
+    // Everything here is deterministic for a given run date so before/after
+    // screenshots are comparable. Payload shapes follow the frozen usage:* IPC
+    // contract (plan §2.7) as consumed by config/routes/usage.js.
+    (function () {
+      'use strict';
+      window.__usagePreviewErrors = [];
+      window.addEventListener('error', function (event) {
+        window.__usagePreviewErrors.push('pageerror: ' + (event && event.message ? event.message : String(event)));
+      });
+      window.addEventListener('unhandledrejection', function (event) {
+        var reason = event && event.reason;
+        window.__usagePreviewErrors.push('unhandledrejection: ' + (reason && reason.message ? reason.message : String(reason)));
+      });
+
+      var DAY_MS = 24 * 60 * 60 * 1000;
+      function pad(value) { return String(value).padStart(2, '0'); }
+      function dayKey(date) {
+        return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate());
+      }
+      function dateOffset(days) {
+        var date = new Date();
+        date.setHours(12, 0, 0, 0);
+        date.setDate(date.getDate() + days);
+        return date;
+      }
+      function isoStartOfDay(offsetDays) {
+        var date = dateOffset(offsetDays);
+        date.setHours(0, 0, 0, 0);
+        return date.toISOString();
+      }
+      function mulberry32(seed) {
+        var state = seed >>> 0;
+        return function () {
+          state = (state + 0x6d2b79f5) >>> 0;
+          var t = state;
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+      var random = mulberry32(20261021);
+
+      // 60-day daily series (oldest first, newest = today). Two months of dense
+      // history plus a few genuine zero days so the trend/table look real.
+      var DAILY = (function () {
+        var out = [];
+        for (var i = 0; i < 60; i += 1) {
+          var offset = i - 59;
+          var date = dateOffset(offset);
+          var weekday = date.getDay();
+          var weekend = weekday === 0 || weekday === 6;
+          var zero = random() < (weekend ? 0.34 : 0.09);
+          var weight = 0.35 + random() * 1.65 + (i / 59) * 0.45;
+          out.push({
+            day: dayKey(date),
+            weight: zero ? 0 : weight,
+            conversations: zero ? 0 : Math.max(1, Math.round(weight * (900 + random() * 1500)))
+          });
+        }
+        return out;
+      })();
+
+      var TOTAL_BILLABLE = 1090000000;
+      var WEIGHT_SUM = DAILY.reduce(function (sum, row) { return sum + row.weight; }, 0) || 1;
+      var UNIT = TOTAL_BILLABLE / WEIGHT_SUM;
+      DAILY.forEach(function (row) {
+        row.billable_total_tokens = Math.round(row.weight * UNIT);
+        row.input_tokens = Math.round(row.billable_total_tokens * 0.266);
+        row.hidden_cached = Math.round(row.billable_total_tokens * 0.697);
+        row.cache_creation_input_tokens = Math.round(row.billable_total_tokens * 0.0165);
+        row.output_tokens = Math.round(row.billable_total_tokens * 0.019);
+        row.reasoning_output_tokens = Math.round(row.billable_total_tokens * 0.001);
+        row.cached_input_tokens = row.hidden_cached;
+        row.total_tokens = row.input_tokens + row.output_tokens + row.cached_input_tokens + row.cache_creation_input_tokens + row.reasoning_output_tokens;
+        row.conversation_count = row.conversations;
+      });
+
+      function sumRows(rows) {
+        return rows.reduce(function (totals, row) {
+          totals.billable_total_tokens += row.billable_total_tokens;
+          totals.input_tokens += row.input_tokens;
+          totals.output_tokens += row.output_tokens;
+          totals.cached_input_tokens += row.cached_input_tokens;
+          totals.cache_creation_input_tokens += row.cache_creation_input_tokens;
+          totals.reasoning_output_tokens += row.reasoning_output_tokens;
+          totals.total_tokens += row.total_tokens;
+          totals.conversation_count += row.conversation_count;
+          return totals;
+        }, {
+          billable_total_tokens: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          cached_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          reasoning_output_tokens: 0,
+          total_tokens: 0,
+          conversation_count: 0
+        });
+      }
+
+      function lastN(n) { return DAILY.slice(Math.max(0, DAILY.length - n)); }
+      var last7 = sumRows(lastN(7));
+      var last30 = sumRows(lastN(30));
+      var allTotals = sumRows(DAILY);
+      var active30 = lastN(30).filter(function (row) { return row.billable_total_tokens > 0; }).length;
+
+      var SOURCE_SPECS = [
+        {
+          source: 'codex',
+          share: 0.58,
+          files: 312,
+          models: [
+            { model: 'gpt-5.4-codex', share: 0.47 },
+            { model: 'gpt-5.2', share: 0.32 },
+            { model: 'gpt-5.4-mini', share: 0.21 }
+          ]
+        },
+        {
+          source: 'dsh',
+          share: 0.27,
+          files: 141,
+          models: [
+            { model: 'deepseek-v4.1-flash', share: 0.62 },
+            { model: 'deepseek-v4.1-pro', share: 0.38 }
+          ]
+        },
+        {
+          source: 'opencode',
+          share: 0.15,
+          files: 1,
+          models: [
+            { model: 'claude-sonnet-4-5', share: 0.49 },
+            { model: 'glm-5', share: 0.3 },
+            { model: 'deepseek-v4.1-flash', share: 0.21 }
+          ]
+        }
+      ];
+      var MODEL_COUNT_TOTAL = SOURCE_SPECS.reduce(function (sum, spec) { return sum + spec.models.length; }, 0);
+      var MODEL_TOTAL = 1;
+      SOURCE_SPECS.forEach(function (spec) { spec.tokensShare = spec.share * MODEL_TOTAL; });
+
+      function breakdownFor(totals) {
+        var total = totals.billable_total_tokens || 1;
+        var sources = SOURCE_SPECS.map(function (spec) {
+          return {
+            source: spec.source,
+            billable_total_tokens: Math.round(total * spec.share),
+            sharePct: spec.share * 100,
+            conversationCount: Math.round(totals.conversation_count * spec.share),
+            modelCount: spec.models.length,
+            estimated: false
+          };
+        });
+        var models = [];
+        SOURCE_SPECS.forEach(function (spec) {
+          spec.models.forEach(function (model) {
+            models.push({
+              source: spec.source,
+              model: model.model,
+              billable_total_tokens: Math.round(total * spec.share * model.share),
+              sharePct: spec.share * model.share * 100,
+              conversationCount: Math.round(totals.conversation_count * spec.share * model.share),
+              estimated: false
+            });
+          });
+        });
+        models.sort(function (a, b) { return b.billable_total_tokens - a.billable_total_tokens; });
+        return { sources: sources, models: models };
+      }
+
+      function statusPayload() {
+        // Fixed wall clock (today 09:15 local) so repeated captures are
+        // pixel-identical; only the run date changes the mock.
+        var scannedAtDate = new Date();
+        scannedAtDate.setHours(9, 15, 0, 0);
+        var scannedAt = scannedAtDate.toISOString();
+        return {
+          enabled: true,
+          scanning: false,
+          scan: null,
+          lastScanAt: scannedAt,
+          lastError: '',
+          dbBytes: 4718592,
+          retentionMonths: 24,
+          sources: [
+            { source: 'codex', label: 'Codex', state: 'ok', detected: true, readable: true, files: 312, lastError: null, coverageStartAt: isoStartOfDay(-180), estimated: false, lastScanAt: scannedAt },
+            { source: 'dsh', label: 'DeepSeek Harness', state: 'ok', detected: true, readable: true, files: 141, lastError: null, coverageStartAt: isoStartOfDay(-120), estimated: false, lastScanAt: scannedAt },
+            { source: 'opencode', label: 'OpenCode', state: 'ok', detected: true, readable: true, files: 1, lastError: null, coverageStartAt: isoStartOfDay(-160), estimated: false, lastScanAt: scannedAt },
+            { source: 'cursor', label: 'Cursor', state: 'unsupported', detected: false, readable: false, files: 0, lastError: null, coverageStartAt: null, estimated: false, lastScanAt: null },
+            { source: 'trae', label: 'TRAE', state: 'unsupported', detected: false, readable: false, files: 0, lastError: null, coverageStartAt: null, estimated: false, lastScanAt: null }
+          ]
+        };
+      }
+
+      function summaryFor(period) {
+        var today = dayKey(new Date());
+        if (period === 'day') {
+          var dayTotals = sumRows(lastN(1));
+          return { period: 'day', from: today, to: today, days: 1, totals: dayTotals, rolling: rollingPayload() };
+        }
+        if (period === 'week') {
+          return { period: 'week', from: dayKey(dateOffset(-6)), to: today, days: 7, totals: last7, rolling: rollingPayload() };
+        }
+        if (period === 'custom') {
+          return { period: 'custom', from: dayKey(dateOffset(-29)), to: today, days: 30, totals: last30, rolling: rollingPayload() };
+        }
+        if (period === 'total') {
+          return { period: 'total', from: dayKey(dateOffset(-59)), to: today, days: 60, totals: allTotals, rolling: rollingPayload() };
+        }
+        return { period: 'month', from: dayKey(dateOffset(-29)), to: today, days: 30, totals: last30, rolling: rollingPayload() };
+      }
+      function rollingPayload() {
+        return {
+          last7d: { from: dayKey(dateOffset(-6)), to: dayKey(new Date()), billable_total_tokens: last7.billable_total_tokens, conversation_count: last7.conversation_count },
+          last30d: { from: dayKey(dateOffset(-29)), to: dayKey(new Date()), billable_total_tokens: last30.billable_total_tokens, conversation_count: last30.conversation_count },
+          avgPerActiveDay: active30 > 0 ? Math.round(last30.billable_total_tokens / active30) : 0,
+          activeDays: active30
+        };
+      }
+      function dailyFor(period) {
+        if (period === 'day') return { period: 'day', rows: lastN(1) };
+        if (period === 'week') return { period: 'week', rows: lastN(7) };
+        if (period === 'custom') return { period: 'custom', rows: lastN(30) };
+        if (period === 'total') return { period: 'total', rows: DAILY };
+        return { period: 'month', rows: lastN(30) };
+      }
+
+      // 52-week heatmap, Monday-first columns ending with the week containing
+      // today. Each cell carries the per-model split (models map) so a redesign
+      // can surface per-model detail in the tooltip.
+      function heatmapPayload() {
+        var weeks = [];
+        var today = new Date();
+        today.setHours(12, 0, 0, 0);
+        var monday = new Date(today);
+        var weekday = (monday.getDay() + 6) % 7;
+        monday.setDate(monday.getDate() - weekday - 51 * 7);
+        var activityByDay = {};
+        DAILY.forEach(function (row) { activityByDay[row.day] = row; });
+        for (var w = 0; w < 52; w += 1) {
+          var week = [];
+          for (var d = 0; d < 7; d += 1) {
+            var date = new Date(monday);
+            date.setDate(monday.getDate() + w * 7 + d);
+            var key = dayKey(date);
+            if (date.getTime() > today.getTime() + DAY_MS * 3) {
+              week.push(null);
+              continue;
+            }
+            var row = activityByDay[key];
+            var value = row ? row.billable_total_tokens : Math.round(Math.max(0, random() - 0.62) * 42000000);
+            var models = {};
+            if (value > 0) {
+              models['deepseek-v4.1-flash'] = Math.round(value * 0.34);
+              models['gpt-5.4-codex'] = Math.round(value * 0.3);
+              models['claude-sonnet-4-5'] = Math.round(value * 0.18);
+              models['gpt-5.2'] = Math.round(value * 0.1);
+              models['glm-5'] = Math.round(value * 0.08);
+            }
+            week.push({
+              day: key,
+              total_tokens: Math.round(value * 1.06),
+              value: value,
+              billable_total_tokens: value,
+              level: 0,
+              conversation_count: row ? row.conversation_count : Math.round(value / 24000),
+              models: models
+            });
+          }
+          weeks.push(week);
+        }
+        var max = 0;
+        weeks.forEach(function (week) {
+          week.forEach(function (cell) { if (cell && cell.value > max) max = cell.value; });
+        });
+        weeks.forEach(function (week) {
+          week.forEach(function (cell) {
+            if (!cell || max <= 0 || cell.value <= 0) { if (cell) cell.level = 0; return; }
+            var ratio = cell.value / max;
+            cell.level = ratio <= 0.25 ? 1 : ratio <= 0.5 ? 2 : ratio <= 0.75 ? 3 : 4;
+          });
+        });
+        var activeDays = 0;
+        weeks.forEach(function (week) {
+          week.forEach(function (cell) { if (cell && cell.value > 0) activeDays += 1; });
+        });
+        return { weeks: weeks, activeDays: activeDays, from: dayKey(monday), to: dayKey(today) };
+      }
+
+      function hourlyPayload() {
+        var today = dayKey(new Date());
+        var rows = [];
+        var weights = [0.2, 0.1, 0.1, 0.1, 0.2, 0.4, 0.9, 1.6, 2.4, 3.1, 3.4, 2.8, 2.1, 2.6, 3.3, 3.8, 3.1, 2.2, 1.4, 1.0, 0.8, 0.6, 0.4, 0.3];
+        var dayRow = DAILY[DAILY.length - 1];
+        var weightSum = weights.reduce(function (sum, value) { return sum + value; }, 0);
+        for (var hour = 0; hour < 24; hour += 1) {
+          var billable = Math.round((dayRow.billable_total_tokens || 0) * (weights[hour] / weightSum));
+          rows.push({
+            hour: today + 'T' + pad(hour) + ':00:00',
+            billable_total_tokens: billable,
+            input_tokens: Math.round(billable * 0.27),
+            output_tokens: Math.round(billable * 0.024),
+            cached_input_tokens: Math.round(billable * 0.69),
+            conversation_count: hour < 6 ? 0 : Math.max(0, Math.round(billable / 180000))
+          });
+        }
+        return { day: today, rows: rows };
+      }
+
+      var HEATMAP = heatmapPayload();
+      var HOURLY = hourlyPayload();
+      // Day used by the tooltip capture mode: the active cell with the richest
+      // per-model split (all active mock cells carry one; pick the busiest).
+      var RICH_DAY = (function () {
+        var best = null;
+        HEATMAP.weeks.forEach(function (week) {
+          week.forEach(function (cell) {
+            if (!cell || !cell.value || !cell.models) return;
+            var modelCount = Object.keys(cell.models).length;
+            if (!best || modelCount > best.modelCount || (modelCount === best.modelCount && cell.value > best.value)) {
+              best = { day: cell.day, value: cell.value, modelCount: modelCount };
+            }
+          });
+        });
+        return best ? best.day : null;
+      })();
+      window.__usagePreviewRichDay = RICH_DAY;
+      window.__usagePreviewMock = {
+        today: dayKey(new Date()),
+        sourceCount: SOURCE_SPECS.length,
+        modelCount: MODEL_COUNT_TOTAL,
+        dailyRows: DAILY.length,
+        heatmapWeeks: HEATMAP.weeks.length,
+        heatmapActiveDays: HEATMAP.activeDays,
+        richDay: RICH_DAY,
+        totals: {
+          billable_total_tokens: allTotals.billable_total_tokens,
+          conversation_count: allTotals.conversation_count
+        }
+      };
+
+      function payloadFor(period) {
+        var summary = summaryFor(period);
+        var breakdown = breakdownFor(summary.totals);
+        return {
+          status: statusPayload(),
+          summary: summary,
+          daily: dailyFor(period),
+          breakdown: breakdown,
+          trend: { rows: last30 },
+          heatmap: HEATMAP,
+          hourly: period === 'day' ? HOURLY : null
+        };
+      }
+
+      var settings = {
+        language: 'zh-CN',
+        theme: 'system',
+        usage: { enabled: true }
+      };
+      window.__usagePreviewSettings = settings;
+
+      function resolve(value) {
+        return new Promise(function (resolvePromise) {
+          setTimeout(function () { resolvePromise(value); }, 0);
+        });
+      }
+
+      window.electronAPI = {
+        usageStatus: function () { return resolve(statusPayload()); },
+        usageSummary: function (query) { return resolve(summaryFor((query && query.period) || 'month')); },
+        usageDaily: function (query) { return resolve(dailyFor((query && query.period) || 'month')); },
+        usageBreakdown: function (query) { return resolve(breakdownFor(summaryFor((query && query.period) || 'month').totals)); },
+        usageHeatmap: function () { return resolve(HEATMAP); },
+        usageHourly: function () { return resolve(HOURLY); },
+        usageRefresh: function () { return resolve({ started: true, reason: 'manual' }); },
+        usageClear: function () { return resolve({ ok: true }); },
+        onUsageScanProgress: function () { return function () {}; },
+        getSettings: function () { return resolve(settings); },
+        updateSettings: function () { return resolve(settings); },
+        windowMinimize: function () {},
+        windowClose: function () {},
+        onNavigate: function () { return function () {}; },
+        onGameModeChanged: function () { return function () {}; },
+        onHistoryChanged: function () { return function () {}; },
+        onUpdateStatus: function () { return function () {}; },
+        onInterfaceLanguage: function () { return function () {}; }
+      };
+    })();
+  </script>
+
+  <!-- Real locale tables + i18n (same order as config/config.html). -->
+  <script src="../shared/locales/zh-CN.js"></script>
+  <script src="../shared/locales/en-US.js"></script>
+  <script src="../shared/locales/zh-TW.js"></script>
+  <script src="../shared/locales/config.js"></script>
+  <script src="../shared/locales/toolbar.js"></script>
+  <script src="../shared/i18n.js"></script>
+  <!-- shared.js load-time dependencies (toolbar/search globals). -->
+  <script src="../search/search-utils.js"></script>
+  <script src="../toolbar/toolbar-action-meta.js"></script>
+  <!-- Real usage-format helpers + real route script (no config.js shell JS). -->
+  <script src="../shared/usage-format.js"></script>
+  <script src="../config/routes/shared.js"></script>
+  <script src="../config/routes/usage.js"></script>
+
+  <script>
+    // ── Static shell bootstrap (stand-in for config/config.js) ────────────────
+    (function () {
+      'use strict';
+      var params = new URLSearchParams(location.search);
+      var requestedTheme = params.get('theme') === 'dark' ? 'dark' : 'light';
+      var requestedPeriod = params.get('period');
+      var requestedLanguage = params.get('lang') === 'en-US' ? 'en-US' : params.get('lang') === 'zh-TW' ? 'zh-TW' : 'zh-CN';
+      var compact = params.get('compact') === '1';
+
+      // Globals the route/shared scripts read but config.js normally declares.
+      // They must live on `window` (the route/shared scripts are separate classic
+      // scripts resolving bare identifiers against the global object).
+      window.view = document.getElementById('view');
+      window.pageTitle = document.getElementById('pageTitle');
+      window.statusRail = document.getElementById('statusRail');
+      window.toastElement = document.getElementById('toast');
+      window.currentRoute = 'usage';
+      window.settings = window.__usagePreviewSettings;
+      var contentView = window.view;
+
+      if (typeof setLanguage === 'function') setLanguage(requestedLanguage);
+      if (typeof applyTranslations === 'function') applyTranslations();
+      document.body.classList.toggle('dark', requestedTheme === 'dark');
+      document.body.classList.toggle('compact', compact);
+      document.documentElement.dataset.language = requestedLanguage;
+      window.pageTitle.textContent = typeof t === 'function' ? t('config.route.usage') : 'AI usage';
+
+      function dashboardReady(period) {
+        var page = document.querySelector('.usage-page');
+        if (!page) return false;
+        var viewPeriod = page.querySelector('[data-usage-view]');
+        if (period && viewPeriod && viewPeriod.getAttribute('data-usage-view') !== period) return false;
+        return Boolean(page.querySelector('#usageKpis')) && Boolean(page.querySelector('#usageBreakdown'));
+      }
+
+      function waitFor(condition, timeoutMs) {
+        return new Promise(function (resolve, reject) {
+          var deadline = Date.now() + timeoutMs;
+          (function poll() {
+            if (condition()) return resolve(true);
+            if (Date.now() > deadline) return reject(new Error('preview render timed out'));
+            requestAnimationFrame(poll);
+          })();
+        });
+      }
+
+      function selectPeriod(period) {
+        if (!period || period === 'month') return Promise.resolve(false);
+        var button = document.querySelector('[data-usage-tab="' + period + '"]');
+        if (!button) return Promise.resolve(false);
+        button.click();
+        return waitFor(function () {
+          var page = document.querySelector('.usage-page');
+          var viewPeriod = page && page.querySelector('[data-usage-view]');
+          return Boolean(viewPeriod) && viewPeriod.getAttribute('data-usage-view') === period;
+        }, 15000).then(function () { return true; });
+      }
+
+      Promise.resolve(window.configRoutes.renderUsage())
+        .then(function () { return waitFor(function () { return dashboardReady(); }, 15000); })
+        .then(function () { return selectPeriod(requestedPeriod); })
+        .then(function () {
+          return Promise.all([
+            document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve(),
+            new Promise(function (resolve) { requestAnimationFrame(function () { requestAnimationFrame(resolve); }); })
+          ]);
+        })
+        .then(function () {
+          // Let delayed card rendering (heatmap/tooltip sizing) settle.
+          return new Promise(function (resolve) { setTimeout(resolve, 120); });
+        })
+        .then(function () {
+          var page = document.querySelector('.usage-page');
+          window.__usagePreviewMeasure = function () {
+            var page = document.querySelector('.usage-page');
+            var viewElement = document.getElementById('view');
+            var heatScroll = document.querySelector('[data-usage-heatmap-scroll]');
+            var heatGrid = document.querySelector('.usage-heatmap-grid');
+            var heatCells = heatGrid ? Array.prototype.slice.call(heatGrid.querySelectorAll('.usage-heat-cell')) : [];
+            var heatCard = document.querySelector('.usage-heatmap');
+            function rect(element) {
+              if (!element) return null;
+              var r = element.getBoundingClientRect();
+              return { left: r.left, top: r.top, width: r.width, height: r.height, right: r.right, bottom: r.bottom };
+            }
+            return {
+              windowInnerWidth: window.innerWidth,
+              viewClientWidth: viewElement ? viewElement.clientWidth : null,
+              viewRect: rect(viewElement),
+              pageWidth: page ? page.getBoundingClientRect().width : null,
+              pageRect: rect(page),
+              heatmapCardRect: rect(heatCard),
+              heatmapScrollClientWidth: heatScroll ? heatScroll.clientWidth : null,
+              heatmapScrollWidth: heatScroll ? heatScroll.scrollWidth : null,
+              tableMetrics: (function () {
+                var wrap = document.querySelector('.usage-daily .usage-table-wrap');
+                var rows = wrap ? Array.prototype.slice.call(wrap.querySelectorAll('tbody tr')) : [];
+                if (!wrap) return null;
+                var wr = wrap.getBoundingClientRect();
+                var visible = rows.filter(function (row) {
+                  var rr = row.getBoundingClientRect();
+                  return rr.top >= wr.top - 1 && rr.bottom <= wr.bottom + 1;
+                });
+                var lastPartial = rows.some(function (row) {
+                  var rr = row.getBoundingClientRect();
+                  return rr.top < wr.bottom - 1 && rr.bottom > wr.bottom + 1;
+                });
+                var fullyVisible = visible.slice().sort(function (a, b) { return a.getBoundingClientRect().top - b.getBoundingClientRect().top; });
+                var lastFullyVisible = fullyVisible.length > 0 ? fullyVisible[fullyVisible.length - 1] : null;
+                var lastBottom = lastFullyVisible ? lastFullyVisible.getBoundingClientRect().bottom : null;
+                var nextRow = rows.filter(function (row) { return row.getBoundingClientRect().top >= wr.bottom - 0.5; })[0] || null;
+                return {
+                  clientHeight: wrap.clientHeight,
+                  scrollHeight: wrap.scrollHeight,
+                  rows: rows.length,
+                  fullyVisibleRows: visible.length,
+                  lastRowCut: lastPartial,
+                  lastVisibleRowBottomGapPx: lastBottom === null ? null : Math.round(wr.bottom - lastBottom),
+                  nextRowTopGapPx: nextRow ? Math.round(nextRow.getBoundingClientRect().top - wr.bottom) : null
+                };
+              })(),
+              cardRects: {
+                main: rect(document.querySelector('.usage-main')),
+                models: rect(document.querySelector('#usageBreakdown')),
+                trend: rect(document.querySelector('.usage-trend')),
+                daily: rect(document.querySelector('.usage-daily')),
+                heatmap: rect(document.querySelector('#usageHeatmap')),
+                hero: rect(document.querySelector('.usage-hero')),
+                kpis: rect(document.querySelector('#usageKpis'))
+              },
+              heatmapContentWidth: heatCells.length > 0
+                ? Math.round(Math.max.apply(null, heatCells.map(function (c) { return c.getBoundingClientRect().right; })) - Math.min.apply(null, heatCells.map(function (c) { return c.getBoundingClientRect().left; })))
+                : null,
+              heatmapLeftDeadSpacePx: (function () {
+                if (!heatScroll || heatCells.length === 0) return null;
+                var leftMost = Math.min.apply(null, heatCells.map(function (c) { return c.getBoundingClientRect().left; }));
+                return Math.max(0, Math.round(leftMost - heatScroll.getBoundingClientRect().left));
+              })(),
+              heatmapDeadSpacePx: (function () {
+                if (!heatScroll || heatCells.length === 0) return null;
+                var rightMost = Math.max.apply(null, heatCells.map(function (c) { return c.getBoundingClientRect().right; }));
+                return Math.max(0, Math.round(heatScroll.getBoundingClientRect().right - rightMost));
+              })(),
+              heatmapMarginDeltaPx: (function () {
+                if (!heatScroll || heatCells.length === 0) return null;
+                var scrollRect = heatScroll.getBoundingClientRect();
+                var leftMost = Math.min.apply(null, heatCells.map(function (c) { return c.getBoundingClientRect().left; }));
+                var rightMost = Math.max.apply(null, heatCells.map(function (c) { return c.getBoundingClientRect().right; }));
+                return Math.round(Math.abs((leftMost - scrollRect.left) - (scrollRect.right - rightMost)));
+              })(),
+              documentHeight: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
+            };
+          };
+          window.__usagePreviewReady = true;
+          window.__usagePreviewStats = {
+            theme: requestedTheme,
+            language: requestedLanguage,
+            compact: compact,
+            period: requestedPeriod || 'month',
+            pageState: page ? page.getAttribute('data-usage-state') : null,
+            providerCards: document.querySelectorAll('.usage-provider').length,
+            providerAllText: (function () {
+              var all = document.querySelector('.usage-provider-all');
+              return all ? all.textContent.replace(/\s+/g, ' ').trim() : null;
+            })(),
+            sourceCards: document.querySelectorAll('.usage-source-card').length,
+            modelRows: document.querySelectorAll('.usage-model-row').length,
+            modelCountMock: window.__usagePreviewMock ? window.__usagePreviewMock.modelCount : null,
+            richDay: window.__usagePreviewMock ? window.__usagePreviewMock.richDay : null,
+            trendColumns: document.querySelectorAll('.usage-trend-col').length,
+            dailyRows: document.querySelectorAll('#usageDailyTable tbody tr').length,
+            heatmapCells: document.querySelectorAll('.usage-heat-cell:not(.usage-heat-empty):not(.is-empty)').length,
+            heatmapActiveCells: document.querySelectorAll('[data-usage-heat-day]').length,
+            heatmapAllCells: document.querySelectorAll('.usage-heat-cell').length,
+            hourlyBars: document.querySelectorAll('.usage-hourly-bar').length,
+            errors: window.__usagePreviewErrors.slice()
+          };
+          console.info('usage preview ready', JSON.stringify(window.__usagePreviewStats));
+        })
+        .catch(function (error) {
+          window.__usagePreviewErrors.push('bootstrap: ' + (error && error.message ? error.message : String(error)));
+          window.__usagePreviewMeasure = function () {
+            var page = document.querySelector('.usage-page');
+            var viewElement = document.getElementById('view');
+            var heatScroll = document.querySelector('[data-usage-heatmap-scroll]');
+            var heatGrid = document.querySelector('.usage-heatmap-grid');
+            var heatCells = heatGrid ? Array.prototype.slice.call(heatGrid.querySelectorAll('.usage-heat-cell')) : [];
+            var heatCard = document.querySelector('.usage-heatmap');
+            function rect(element) {
+              if (!element) return null;
+              var r = element.getBoundingClientRect();
+              return { left: r.left, top: r.top, width: r.width, height: r.height, right: r.right, bottom: r.bottom };
+            }
+            return {
+              windowInnerWidth: window.innerWidth,
+              viewClientWidth: viewElement ? viewElement.clientWidth : null,
+              viewRect: rect(viewElement),
+              pageWidth: page ? page.getBoundingClientRect().width : null,
+              pageRect: rect(page),
+              heatmapCardRect: rect(heatCard),
+              heatmapScrollClientWidth: heatScroll ? heatScroll.clientWidth : null,
+              heatmapScrollWidth: heatScroll ? heatScroll.scrollWidth : null,
+              tableMetrics: (function () {
+                var wrap = document.querySelector('.usage-daily .usage-table-wrap');
+                var rows = wrap ? Array.prototype.slice.call(wrap.querySelectorAll('tbody tr')) : [];
+                if (!wrap) return null;
+                var wr = wrap.getBoundingClientRect();
+                var visible = rows.filter(function (row) {
+                  var rr = row.getBoundingClientRect();
+                  return rr.top >= wr.top - 1 && rr.bottom <= wr.bottom + 1;
+                });
+                var lastPartial = rows.some(function (row) {
+                  var rr = row.getBoundingClientRect();
+                  return rr.top < wr.bottom - 1 && rr.bottom > wr.bottom + 1;
+                });
+                return { clientHeight: wrap.clientHeight, scrollHeight: wrap.scrollHeight, rows: rows.length, fullyVisibleRows: visible.length, lastRowCut: lastPartial };
+              })(),
+              cardRects: {
+                main: rect(document.querySelector('.usage-main')),
+                models: rect(document.querySelector('#usageBreakdown')),
+                trend: rect(document.querySelector('.usage-trend')),
+                daily: rect(document.querySelector('.usage-daily')),
+                heatmap: rect(document.querySelector('#usageHeatmap')),
+                hero: rect(document.querySelector('.usage-hero')),
+                kpis: rect(document.querySelector('#usageKpis'))
+              },
+              heatmapContentWidth: heatCells.length > 0
+                ? Math.round(Math.max.apply(null, heatCells.map(function (c) { return c.getBoundingClientRect().right; })) - Math.min.apply(null, heatCells.map(function (c) { return c.getBoundingClientRect().left; })))
+                : null,
+              heatmapDeadSpacePx: (function () {
+                if (!heatScroll || heatCells.length === 0) return null;
+                var rightMost = Math.max.apply(null, heatCells.map(function (c) { return c.getBoundingClientRect().right; }));
+                return Math.max(0, Math.round(heatScroll.getBoundingClientRect().right - rightMost));
+              })(),
+              documentHeight: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
+            };
+          };
+          window.__usagePreviewReady = true;
+          window.__usagePreviewStats = { error: String(error && error.message ? error.message : error), errors: window.__usagePreviewErrors.slice() };
+          console.error('usage preview failed', error);
+        });
+    })();
+  </script>
+</body>
+</html>
