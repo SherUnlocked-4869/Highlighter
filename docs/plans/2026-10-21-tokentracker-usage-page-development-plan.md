@@ -763,9 +763,9 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | # | 项 | 命令/方法 | 结果（待填） | 判定 |
 |---|---|---|---|---|
 | F1 | Electron 运行时 | `ELECTRON_RUN_AS_NODE=1 ./node_modules/electron/dist/electron.exe -e "…"` | Node v24.18.0；`node:sqlite` 可用；`zlib.zstdDecompressSync` 可用（2026-10-21 已实测） | ✅ 通过 |
-| F2 | `utilityProcess.fork` 加载 vendor 解析器 | 真实 Electron 开发运行，解析一个 codex/DSH fixture | fork() 0.21–0.41 ms；fork→worker 首条消息 **median 138 ms**（min 130；首次 spawn 196–596 ms）；worker Node v24.18.0 | ✅ 通过 |
+| F2 | `utilityProcess.fork` 加载 vendor 解析器 | 真实 Electron 开发运行，解析一个 codex/DSH fixture | fork() 0.21–0.41 ms；fork→worker 首条消息 **median 138 ms**（min 130；首次 spawn 196–596 ms）；**B1 真实 feature 路径：fork→ready 201 ms、首个空 codex 扫描往返 219 ms（含 945 KB vendored rollout 加载）**；worker Node v24.18.0 | ✅ 通过 |
 | F3 | 3 工具 state 一次性消息 | 主进程 → worker postMessage，记录 `structuredClone` 大小/耗时（含 ~20k 桶的真实形态） | 20k 行/6.04 MiB：**22.5/23.7 ms**；5/15/30 MB：29/61/121 ms（主→worker）与 26/57/115 ms（worker→主）；最大 31.16 MiB | ✅ 通过（无方向 >200 ms、<50 MB） |
-| F4 | 主进程单事务提交 | 2,000 行 upsert + 游标 + 状态 | **5.93 ms**（schema+2,000 行+scan_state 单事务；rows-only 4.53 ms；open+pragmas 11 ms） | ✅ 通过（<30 ms） |
+| F4 | 主进程单事务提交 | 2,000 行 upsert + 游标 + 状态 | **5.93 ms**（QA 探针）；**B1 真实 `commitScan` 5 次热运行 5.09–11.54 ms**（schema+2,000 行+deletes+cursor+status；rows-only 4.53 ms；open+pragmas 11 ms） | ✅ 通过（<30 ms） |
 | F5 | 打包冒烟 | `npm run build:win` 后安装版打开用量页扫 fixture home | 页面出数 / DB 生成：是/否 | 待测 |
 | F5* | worker 崩溃/取消/重启 | 真实 Electron：uncaught throw / kill / 重新 fork | 崩溃 exit 1 观测 1.46 ms；kill 2.2 ms；重启后首消息 137 ms | ✅ 通过 |
 | F6 | 本机冷扫（3 GB 日志） | 扫描 `%USERPROFILE%`，记录总时长/峰值内存/各工具耗时 | 总 __ s；峰值 __ MB；codex __ s / dsh __ s / opencode __ s | 待测（阈值 5 min） |
@@ -785,4 +785,5 @@ node --test test/usage-store.test.js test/usage-state.test.js
 |---|---|
 | 2026-10-21 | 初版：基于上游分析 + 本机复核，给出 S1–S6 细化决策、B0–B6 批次、41 项任务、8 通道 IPC 契约与验收清单 |
 | 2026-10-21 | **范围确认**：首版工具 = Codex/DSH/OpenCode（3 个）、不做金额、统计默认关闭+首次同意；据此重排 B1–B6 任务与工期（MVP 27–32 人日、本次完整交付 36–42 人日），B1 垂直切片工具改为 Codex，工具扩展与 pricing 移出本次交付 |
-| 2026-10-21 | **B0 实施记录**：B0-1 契约 mock 已落地（`test/fixtures/usage/ipc/`）；B0-2 vendor 闭包落地（14 文件，75 项 smoke 断言通过）；B0-4 oracle 基线完成（TT 1.4.7 本地跑通，11 桶 golden）；data-root/settings 的 `usage` 登记与开关已合入（见 F9 与 §4.1） |
+| 2026-10-21 | **B0 实施记录**：B0-1 契约 mock 已落地（`test/fixtures/usage/ipc/`）；B0-2 vendor 闭包落地（14 文件，93 项 smoke 断言通过）；B0-4 oracle 基线完成（TT 1.4.7 本地跑通，11 桶 golden）；data-root/settings 的 `usage` 登记与开关已合入（见 F9 与 §4.1） |
+| 2026-10-21 | **B0 gate 通过**：解析层 11/11 桶与 TT queue 完全一致（F10）；P0 spike 判定 S2/S3 可行（F2–F5*）；B1 核心引擎（store/state/time/tools/worker/feature/IPC + 48 tests）完成并接入 main.js/preload/ipc-security；codex 子集 4/4 桶与 golden 一致（F11 剩余 dsh/opencode 属 B2） |
