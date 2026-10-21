@@ -105,8 +105,7 @@ test('main-context dialog stubs support diagnostics and the close button hides c
 // D2-2/D2-3/D2-5（S14）：render 函数拆到 config/routes/*.js 后，每个路由都要真的
 // 能渲染。主壳的 renderRoute() 按 window.configRoutes 的 key 分派；漏挂一个文件或
 // key 拼错都会退化成"点开是空白页"，而 npm test（纯 Node）看不到真实渲染结果。
-test('every settings route renders content after the D2-2 route split', async ({ highlighter }) => {
-  const { mainWindow: page } = highlighter
+test('every settings route renders content after the D2-2 route split', async ({ highlighter }) => {  const { mainWindow: page } = highlighter
   const routes = [
     ['home', '快捷功能', '.function-row'],
     ['translation', '翻译', '#translateNow'],
@@ -118,12 +117,40 @@ test('every settings route renders content after the D2-2 route split', async ({
     ['settings-function', '截图与录制', '#nameTemplate'],
     ['models', 'AI 与模型', '#addModelProvider'],
     ['settings-system', '系统与数据', '#dataRoot'],
+    ['usage', '用量', '.usage-page'],
     ['about', '关于', '.about']
   ]
   for (const [route, title, selector] of routes) {
     await page.locator(`[data-route="${route}"]`).click()
     await expect(page.locator('#pageTitle')).toHaveText(title)
     await expect(page.locator(selector).first()).toBeVisible()
+  }
+  expect(await highlighter.getUnexpectedErrors()).toEqual([])
+})
+
+// B1/B4 integration: the usage page is opt-in, and once enabled it must scan the
+// committed fixture home end to end (worker -> SQLite -> IPC -> page) and render
+// the TokenTracker-parity numbers without touching the real user home.
+test('usage page guides opt-in and scans the fixture home end to end', async ({ highlighter }) => {
+  const { mainWindow: page } = highlighter
+  await navigate(page, 'usage', '用量')
+  await expect(page.locator('.usage-page')).toHaveAttribute('data-usage-state', 'disabled')
+  await expect(page.locator('[data-usage-enable]')).toBeVisible()
+
+  await page.locator('[data-usage-enable]').click()
+  // The scan runs in a utilityProcess; poll the real IPC until the fixture totals
+  // are committed (golden: 11 buckets / 52,590 billable across the three tools).
+  await expect.poll(async () => page.evaluate(async () => {
+    const summary = await window.electronAPI.usageSummary({ period: 'total', tz: 'Asia/Shanghai' })
+    return summary?.totals?.billable_total_tokens ?? -1
+  }), { timeout: 45_000 }).toBe(52_590)
+
+  await page.locator('[data-usage-tab="total"]').click()
+  await expect(page.locator('#usageTotal')).not.toHaveText('')
+  const status = await page.evaluate(() => window.electronAPI.usageStatus())
+  for (const source of ['codex', 'dsh', 'opencode']) {
+    const entry = status.sources.find((candidate) => candidate.source === source)
+    expect(entry?.state).toBe('ok')
   }
   expect(await highlighter.getUnexpectedErrors()).toEqual([])
 })

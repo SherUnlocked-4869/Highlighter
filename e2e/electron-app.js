@@ -23,7 +23,11 @@ async function launchHighlighter({ dataRoot, artifactsDir }) {
       ...process.env,
       HIGHLIGHTER_E2E: '1',
       HIGHLIGHTER_E2E_DATA_ROOT: dataRoot,
-      HIGHLIGHTER_E2E_FAKE_EVERYTHING: '1'
+      HIGHLIGHTER_E2E_FAKE_EVERYTHING: '1',
+      // The usage page only scans after the user enables it, but when a spec does
+      // enable it the scan must read the committed fixture home, never the real
+      // %USERPROFILE%. The feature honors this override before app.getPath().
+      HIGHLIGHTER_USAGE_HOME: path.join(projectRoot, 'test', 'fixtures', 'usage', 'home')
     }
   })
 
