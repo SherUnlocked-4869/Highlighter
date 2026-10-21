@@ -107,6 +107,8 @@ test('defines exact legacy and managed source cleanup boundaries', async (t) => 
     history: managedLayout.history,
     conversations: managedLayout.conversations,
     clipboard: managedLayout.clipboard,
+    // The usage SQLite DB travels with the other persistent directories.
+    usage: managedLayout.usage,
     cleanupFiles: [],
     // MANAGED_DIRECTORIES, in declaration order.
     cleanupDirectories: [

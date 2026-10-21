@@ -27,7 +27,7 @@ const {
 // remove all of them, so a new one added to createDataPaths must be listed here
 // too or a failed migration would leave it behind in the target root.
 const MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'conversations', 'clipboard', 'usage', 'cache', 'runtime']
-const ADDITIONAL_PERSISTENT = ['conversations', 'clipboard']
+const ADDITIONAL_PERSISTENT = ['conversations', 'clipboard', 'usage']
 const MIGRATION_MARKER = '.migration.json'
 const MARKER_VERSION = 2
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
@@ -45,7 +45,10 @@ function createLegacySourcePaths(value) {
     conversations: path.join(root, 'conversations'),
     clipboard: path.join(root, 'clipboard'),
     cleanupFiles: [configFile, logFile],
-    cleanupDirectories: [history, path.join(root, 'temp', 'recordings'), ...ADDITIONAL_PERSISTENT.map((name) => path.join(root, name))]
+    // The legacy layout predates the usage directory; keep the cleanup boundary
+    // exactly as it shipped for those roots. ADDITIONAL_PERSISTENT is only the
+    // managed-layout copy group (see createManagedSourcePaths).
+    cleanupDirectories: [history, path.join(root, 'temp', 'recordings'), path.join(root, 'conversations'), path.join(root, 'clipboard')]
   }
 }
 
@@ -58,6 +61,9 @@ function createManagedSourcePaths(value) {
     history: paths.history,
     conversations: paths.conversations,
     clipboard: paths.clipboard,
+    // The usage SQLite DB + scan state must travel with the other persistent
+    // directories; MANAGED_DIRECTORIES only covers rollback cleanup.
+    usage: paths.usage,
     cleanupFiles: [],
     cleanupDirectories: MANAGED_DIRECTORIES.map((name) => paths[name])
   }
@@ -420,6 +426,12 @@ async function migrateDataRoot({
     if (JSON.stringify(await createHistoryManifest(source.history)) !== JSON.stringify(await createHistoryManifest(staging.history))) throw new Error('截图历史迁移校验失败')
     const persistentManifests = {}
     for (const name of ADDITIONAL_PERSISTENT) {
+      // Legacy layouts predate the managed usage directory: nothing to copy, but
+      // the marker keeps the key so verification stays a symmetric set check.
+      if (typeof source[name] !== 'string') {
+        persistentManifests[name] = []
+        continue
+      }
       const expected = await persistentManifest(source[name], name)
       for (const entry of expected) await invokeCopyFile(copyFile, path.join(source[name], entry.path), path.join(staging[name], entry.path))
       const copied = await persistentManifest(staging[name], name)
