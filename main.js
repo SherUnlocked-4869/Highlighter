@@ -1178,6 +1178,9 @@ secureIpcMain.on('window:close', (event) => {
   selectionDomain.cancelStreamForWindow(win, 'window-hidden')
   win?.hide()
 })
+// Local AI CLI usage statistics (see docs/plans/2026-10-21-tokentracker-usage-page-development-plan.md):
+// one line because install() self-registers its IPC surface and data-root registry hook.
+require('./main/services/usage-feature').install({ ipcMain: secureIpcMain, app, getPaths: () => activePaths, getMainWindow: () => mainWindow, getSettings, log })
 secureIpcMain.assertComplete()
 async function startApplication() {
   if (dataRootContext.needsSelection) {

@@ -53,7 +53,11 @@ const IPC_SURFACES = Object.freeze([
       'coding-plan:create-provider',
       'shortcuts:status',
       'ocr:status',
-      'search:status', 'clipboard:status', 'clipboard:prepare-clear', 'clipboard:commit-clear'
+      'search:status', 'clipboard:status', 'clipboard:prepare-clear', 'clipboard:commit-clear',
+      // Local AI CLI usage statistics (settings window -> main, read-only). The
+      // scan-progress push is main -> renderer only, so it has no sender policy.
+      'usage:status', 'usage:refresh', 'usage:summary', 'usage:daily',
+      'usage:hourly', 'usage:breakdown', 'usage:heatmap', 'usage:clear'
     ],
     listeners: ['window:minimize', 'window:close']
   },

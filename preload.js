@@ -57,6 +57,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openUpdateDownloadPage: () => ipcRenderer.invoke('update:open-download-page'),
   getOcrStatus: () => ipcRenderer.invoke('ocr:status'),
   getSearchStatus: () => ipcRenderer.invoke('search:status'),
+  // Local AI CLI usage statistics (read-only; settings window -> main).
+  usageStatus: () => ipcRenderer.invoke('usage:status'),
+  usageRefresh: (payload) => ipcRenderer.invoke('usage:refresh', payload || {}),
+  usageSummary: (query) => ipcRenderer.invoke('usage:summary', query),
+  usageDaily: (query) => ipcRenderer.invoke('usage:daily', query),
+  usageHourly: (query) => ipcRenderer.invoke('usage:hourly', query),
+  usageBreakdown: (query) => ipcRenderer.invoke('usage:breakdown', query),
+  usageHeatmap: (query) => ipcRenderer.invoke('usage:heatmap', query),
+  usageClear: () => ipcRenderer.invoke('usage:clear'),
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowClose: () => ipcRenderer.send('window:close'),
   onNavigate: (callback) => {
@@ -85,5 +94,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event, status) => callback(status && typeof status === 'object' ? status : null)
     ipcRenderer.on('proxy:status', handler)
     return () => ipcRenderer.removeListener('proxy:status', handler)
+  },
+  // Local AI CLI scan progress (main -> renderer broadcast; renderer only listens,
+  // so the channel is intentionally absent from IPC_SURFACES).
+  onUsageScanProgress: (callback) => {
+    const handler = (_event, progress) => callback(progress && typeof progress === 'object' ? progress : null)
+    ipcRenderer.on('usage:scan-progress', handler)
+    return () => ipcRenderer.removeListener('usage:scan-progress', handler)
   }
 })
