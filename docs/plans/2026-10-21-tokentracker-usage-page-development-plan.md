@@ -63,7 +63,6 @@
 | TT 解析器外部依赖 | 0（删 zstd fallback） | 复核一致：闭包内唯一 npm 依赖是 `@mongodb-js/zstd`，且仅 lazy fallback（`rollout.js:13159,24098`） | 零新增运行依赖成立 |
 
 ### 0.5 已确认范围（2026-10-21）与本次交付边界
-
 | 决策 | 确认值 | 对方案的影响 |
 |---|---|---|
 | Q1 首版工具 | **Codex / DSH / OpenCode 三个** | 注册表 3 条；B1 垂直切片用 Codex（风险最高：420 MB/累计快照/zstd）；B2 补 DSH（70 MB/zstd 帧）与 OpenCode（754 MB DB）；工具扩展批次移出本次交付 |
@@ -516,6 +515,7 @@ B0-1 契约 ──┬─► B0-2 vendor ─► B0-3 spike ─► B1(engine) ─�
 
 - e2e：`e2e/highlighter.spec.js` 追加 usage 路由渲染；用 fixture home（`e2e` 启动参数注入或 `HIGHLIGHTER_USAGE_HOME`）避免扫真实 `%USERPROFILE%`；断言：未开启态 → 开启 → 扫描 → KPI/明细出现；周期切换后数值变化；空态/错误态（fixture 变体）各一条。
 - 打包：`npm run build:win` 后在安装版里启动 → 开用量页 → 扫描 fixture home → 断言 DB 生成且页面出数；记录 `node:sqlite`/`utilityProcess`/asar 路径结果。可复用 `scripts/probe-electron-runtime.js` 与 `test/electron-runtime.test.js` 的模式做开发期冒烟。
+  - **本会话限制**：worktree 无 native 预编译产物、本机受限会话里 Chromium 沙箱无法启动（14 个 Electron 探针测试同样在 master 基线复现失败，属环境限制），因此 F5 留给发布环境按清单执行；usage 侧需重点验证的点：`utilityProcess.fork(path.join(__dirname,'usage-scan-worker.js'))` 在 asar 内的路径、主进程 `node:sqlite` 在安装版可用、数据目录首次创建权限。
 - 数据目录：切到新目录 → 重启 → usage 历史仍在；切回 → 无脏目录（对照 `test/data-root-migration.test.js` 的清理断言）。
 
 ### 4.5 性能与资源验收（本机基线，B2-7/ B6-3 记录）
@@ -768,7 +768,7 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | F2 | `utilityProcess.fork` 加载 vendor 解析器 | 真实 Electron 开发运行，解析一个 codex/DSH fixture | fork() 0.21–0.41 ms；fork→worker 首条消息 **median 138 ms**（min 130；首次 spawn 196–596 ms）；**B1 真实 feature 路径：fork→ready 201 ms、首个空 codex 扫描往返 219 ms（含 945 KB vendored rollout 加载）**；worker Node v24.18.0 | ✅ 通过 |
 | F3 | 3 工具 state 一次性消息 | 主进程 → worker postMessage，记录 `structuredClone` 大小/耗时（含 ~20k 桶的真实形态） | 20k 行/6.04 MiB：**22.5/23.7 ms**；5/15/30 MB：29/61/121 ms（主→worker）与 26/57/115 ms（worker→主）；最大 31.16 MiB | ✅ 通过（无方向 >200 ms、<50 MB） |
 | F4 | 主进程单事务提交 | 2,000 行 upsert + 游标 + 状态 | **5.93 ms**（QA 探针）；**B1 真实 `commitScan` 5 次热运行 5.09–11.54 ms**（schema+2,000 行+deletes+cursor+status；rows-only 4.53 ms；open+pragmas 11 ms） | ✅ 通过（<30 ms） |
-| F5 | 打包冒烟 | `npm run build:win` 后安装版打开用量页扫 fixture home | 页面出数 / DB 生成：是/否 | 待测 |
+| F5 | 打包冒烟 | `npm run build:win` 后安装版打开用量页扫 fixture home | **本会话未执行**：worktree 缺 native 预编译产物（C#/Rust sidecar），`build:native` 依赖本机工具链；usage 功能本身零新增原生依赖（vendored JS + node:sqlite 内置 + utilityProcess 路径），风险集中在 asar 内 worker 路径 | 🟡 待发布环境执行（见 §4.4 发布清单） |
 | F5* | worker 崩溃/取消/重启 | 真实 Electron：uncaught throw / kill / 重新 fork | 崩溃 exit 1 观测 1.46 ms；kill 2.2 ms；重启后首消息 137 ms | ✅ 通过 |
 | F6 | 本机冷扫（3 GB 日志） | 扫描 `%USERPROFILE%`，记录总时长/峰值内存/各工具耗时 | 总 __ s；峰值 __ MB；codex __ s / dsh __ s / opencode __ s | 待测（阈值 5 min） |
 | F7 | 无变化增量扫描 | 连续两次扫描 | 第二次 __ ms；新增桶 __ 个 | 待测（阈值 1.5 s / 0 桶） |
