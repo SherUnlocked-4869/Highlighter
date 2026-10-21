@@ -462,8 +462,7 @@ B0-1 契约 ──┬─► B0-2 vendor ─► B0-3 spike ─► B1(engine) ─�
 
 | 里程碑 | Demo（给用户看） | 放行标准 |
 |---|---|---|
-| M0 | 终端里「Highlighter vs TokenTracker」逐桶/逐日对照表 | 3 工具 0 误差；P0 结论写入本文附录 |
-| M1 | 设置窗打开「用量」页，KPI/明细显示真实 Claude Code 数据（样式未收口） | 无崩溃；数据与 TT 一致 |
+| M0 | 终端里「Highlighter vs TokenTracker」逐桶/逐日对照表 | 3 工具 0 误差；P0 结论写入本文附录 || M1 | 设置窗打开「用量」页，KPI/明细显示真实 Claude Code 数据（样式未收口） | 无崩溃；数据与 TT 一致 |
 | M2 | 3 工具（Codex/DSH/OpenCode）覆盖状态 + 扫描进度 + 刷新；第二次打开秒开 | 增量/重写/取消/崩溃测试全绿 |
 | M3 | 完整主视图（默认窗口 + 最大化），亮暗主题 | §1.4 DoD 1–9 |
 | M4 | 热力图 + 日/周/月/总计/自定义（3 工具） | 与截图区块 90% 对应（除 3D/金额/项目） |
@@ -772,7 +771,8 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | F7 | 无变化增量扫描 | 连续两次扫描 | 第二次 __ ms；新增桶 __ 个 | 待测（阈值 1.5 s / 0 桶） |
 | F8 | 查询性能（24 个月） | 10 万桶合成数据，summary/daily/breakdown/heatmap 各 100 次 | P95：summary __ ms / daily __ ms / breakdown __ ms / heatmap __ ms | 待测（阈值 100 ms） |
 | F9 | **TT oracle 基线** | `node scripts/usage-oracle-check.js --tt-only --sync`（fixture home） | TT 1.4.7 本地跑通：9 文件 → 11 桶（codex 4 / dsh 3 / opencode 4），golden 已提交；两次运行 md5 一致 | ✅ 通过 |
-| F10 | **Highlighter vs oracle 对拍** | `node scripts/usage-oracle-check.js --hl-db <usage.db>`（同一 fixture home） | 不一致桶 __ 个；每日/来源/模型 diff __ 处 | 待测（目标 0） |
+| F10 | **解析层对拍（B0）** | vendored parser 以 sink 模式跑 fixture home，与 TT `queue.jsonl` 逐桶比较 | **11/11 桶一致、0 字段差异**（codex 4 / dsh 3 / opencode 4）；vendor smoke 93 断言通过 | ✅ 通过 |
+| F11 | **聚合层对拍（B1/B2）** | `node scripts/usage-oracle-check.js --hl-db <usage.db>`（同一 fixture home，扫完后） | 不一致桶 __ 个；每日/来源/模型 diff __ 处 | 待测（目标 0） |
 
 ---
 

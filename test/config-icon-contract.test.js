@@ -24,7 +24,9 @@ test('main navigation and titlebar use local SVG icons', () => {
   const titlebarIcons = [...html.matchAll(/class="svg-icon" style="--icon:url\('(\.\.\/capture\/icons\/(?:line|close)\.svg)'\)"/g)]
     .map((match) => match[1])
 
-  assert.equal(navigationIcons.length, 12)
+  // 12 routes + the AI usage page (2026-10-21, B4). The exact count is
+  // deliberate: adding a nav entry should be a visible decision.
+  assert.equal(navigationIcons.length, 13)
   assert.deepEqual(titlebarIcons, ['../capture/icons/line.svg', '../capture/icons/close.svg'])
   for (const iconPath of [...navigationIcons, ...titlebarIcons]) assertIconExists(iconPath)
 })
