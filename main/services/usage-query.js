@@ -20,6 +20,8 @@
 const usageTime = require('./usage-time')
 
 const RETENTION_MONTHS = usageTime.RETENTION_MONTHS
+// Hover card keeps the model list short; the page shows "moreModels" as "+N".
+const HEATMAP_MODEL_LIMIT = 8
 const SOURCE_LABELS = Object.freeze({
   codex: 'Codex',
   dsh: 'DeepSeek Harness',
@@ -424,7 +426,11 @@ function createUsageQuery({
       const toDay = usageTime.addDaysToDayKey(currentWeekStart, 6)
       const startBounds = usageTime.resolveDayBounds(fromDay, tz)
       const endBounds = usageTime.resolveDayBounds(toDay, tz)
-      const rows = store.getRangeHourlyTotals({
+      // One scan over the 52-week range: cells need both the day totals and the
+      // per (source, model) breakdown the TT-style hover card shows. The range is
+      // at most ~52 weeks of half-hour buckets, and the raw rows also feed the
+      // day folding below so there is no second pass.
+      const rows = store.getRangeRows({
         fromIso: new Date(startBounds.startUtcMs).toISOString(),
         toIso: new Date(endBounds.endUtcMs).toISOString()
       })
@@ -432,11 +438,18 @@ function createUsageQuery({
       for (const row of rows) {
         const day = zonedDayOf(row.hour_start, tz)
         if (day < fromDay || day > toDay) continue
-        const entry = byDay.get(day) || { billable_total_tokens: 0, total_tokens: 0, conversation_count: 0 }
+        let entry = byDay.get(day)
+        if (!entry) {
+          entry = { billable_total_tokens: 0, total_tokens: 0, conversation_count: 0, models: new Map() }
+          byDay.set(day, entry)
+        }
         entry.billable_total_tokens += Number(row.billable_total_tokens) || 0
         entry.total_tokens += Number(row.total_tokens) || 0
         entry.conversation_count += Number(row.conversation_count) || 0
-        byDay.set(day, entry)
+        const modelKey = `${row.source}\u0000${row.model}`
+        const modelEntry = entry.models.get(modelKey) || { model: row.model, source: row.source, total_tokens: 0 }
+        modelEntry.total_tokens += Number(row.total_tokens) || 0
+        entry.models.set(modelKey, modelEntry)
       }
       let max = 0
       for (const entry of byDay.values()) max = Math.max(max, entry.billable_total_tokens)
@@ -451,15 +464,31 @@ function createUsageQuery({
             continue
           }
           const entry = byDay.get(day) || { billable_total_tokens: 0, total_tokens: 0, conversation_count: 0 }
-          if (entry.billable_total_tokens > 0) activeDays += 1
-          cells.push({
+          const active = entry.billable_total_tokens > 0 // same predicate as activeDays
+          if (active) activeDays += 1
+          const cell = {
             day,
             value: entry.billable_total_tokens,
             billable_total_tokens: entry.billable_total_tokens,
             level: heatmapLevel(entry.billable_total_tokens, max),
             total_tokens: entry.total_tokens,
             conversation_count: entry.conversation_count
-          })
+          }
+          if (active && entry.models) {
+            const denominator = entry.total_tokens || entry.billable_total_tokens || 1
+            const allModels = [...entry.models.values()]
+              .map((modelEntry) => ({
+                model: modelEntry.model,
+                source: modelEntry.source,
+                total_tokens: modelEntry.total_tokens,
+                sharePct: Math.round((modelEntry.total_tokens / denominator) * 100)
+              }))
+              .sort((a, b) => b.total_tokens - a.total_tokens || a.model.localeCompare(b.model))
+            cell.models = allModels.slice(0, HEATMAP_MODEL_LIMIT)
+            const remaining = allModels.length - cell.models.length
+            if (remaining > 0) cell.moreModels = remaining
+          }
+          cells.push(cell)
         }
         grid.push(cells)
       }

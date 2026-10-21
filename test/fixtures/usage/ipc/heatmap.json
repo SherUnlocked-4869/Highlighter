@@ -7,22 +7,22 @@
   "max": 3282310,
   "weeks": [
     [
-      { "day": "2026-10-05", "value": 1700000, "level": 3, "total_tokens": 1700000, "conversation_count": 38 },
-      { "day": "2026-10-06", "value": 1420000, "level": 3, "total_tokens": 1420000, "conversation_count": 31 },
-      { "day": "2026-10-07", "value": 2050000, "level": 3, "total_tokens": 2050000, "conversation_count": 44 },
-      { "day": "2026-10-08", "value": 1880000, "level": 3, "total_tokens": 1880000, "conversation_count": 41 },
-      { "day": "2026-10-09", "value": 1330000, "level": 2, "total_tokens": 1330000, "conversation_count": 28 },
-      { "day": "2026-10-10", "value": 1610000, "level": 3, "total_tokens": 1610000, "conversation_count": 35 },
-      { "day": "2026-10-11", "value": 1440000, "level": 3, "total_tokens": 1440000, "conversation_count": 30 }
+      {"day":"2026-10-05","value":1700000,"level":3,"total_tokens":1700000,"conversation_count":38,"models":[{"model":"gpt-5.4-codex","source":"codex","total_tokens":1000000,"sharePct":59},{"model":"deepseek-v4.1-flash","source":"dsh","total_tokens":500000,"sharePct":29},{"model":"glm-5","source":"opencode","total_tokens":200000,"sharePct":12}]},
+      {"day":"2026-10-06","value":1420000,"level":3,"total_tokens":1420000,"conversation_count":31,"models":[{"model":"gpt-5.4-codex","source":"codex","total_tokens":900000,"sharePct":63},{"model":"glm-5","source":"opencode","total_tokens":520000,"sharePct":37}]},
+      {"day":"2026-10-07","value":2050000,"level":3,"total_tokens":2050000,"conversation_count":44,"models":[{"model":"gpt-5.4-codex","source":"codex","total_tokens":1300000,"sharePct":63},{"model":"deepseek-v4.1-flash","source":"dsh","total_tokens":500000,"sharePct":24},{"model":"glm-5","source":"opencode","total_tokens":250000,"sharePct":12}]},
+      {"day":"2026-10-08","value":1880000,"level":3,"total_tokens":1880000,"conversation_count":41,"models":[{"model":"gpt-5.4-codex","source":"codex","total_tokens":1200000,"sharePct":64},{"model":"deepseek-v4.1-flash","source":"dsh","total_tokens":480000,"sharePct":26},{"model":"glm-5","source":"opencode","total_tokens":200000,"sharePct":11}]},
+      {"day":"2026-10-09","value":1330000,"level":2,"total_tokens":1330000,"conversation_count":28,"models":[{"model":"gpt-5.4-codex","source":"codex","total_tokens":800000,"sharePct":60},{"model":"claude-sonnet-4-5","source":"opencode","total_tokens":530000,"sharePct":40}]},
+      {"day":"2026-10-10","value":1610000,"level":3,"total_tokens":1610000,"conversation_count":35,"models":[{"model":"gpt-5.4-codex","source":"codex","total_tokens":1000000,"sharePct":62},{"model":"deepseek-v4.1-pro","source":"dsh","total_tokens":400000,"sharePct":25},{"model":"glm-5","source":"opencode","total_tokens":210000,"sharePct":13}]},
+      {"day":"2026-10-11","value":1440000,"level":3,"total_tokens":1440000,"conversation_count":30,"models":[{"model":"gpt-5.4-codex","source":"codex","total_tokens":900000,"sharePct":63},{"model":"claude-sonnet-4-5","source":"opencode","total_tokens":540000,"sharePct":38}]}
     ],
     [
-      { "day": "2026-10-12", "value": 3282310, "level": 4, "total_tokens": 3282310, "conversation_count": 85 },
-      { "day": "2026-10-13", "value": 0, "level": 0, "total_tokens": 0, "conversation_count": 0 },
-      { "day": "2026-10-14", "value": 0, "level": 0, "total_tokens": 0, "conversation_count": 0 },
-      { "day": "2026-10-15", "value": 0, "level": 0, "total_tokens": 0, "conversation_count": 0 },
-      { "day": "2026-10-16", "value": 0, "level": 0, "total_tokens": 0, "conversation_count": 0 },
-      { "day": "2026-10-17", "value": 0, "level": 0, "total_tokens": 0, "conversation_count": 0 },
-      { "day": "2026-10-18", "value": 0, "level": 0, "total_tokens": 0, "conversation_count": 0 }
+      {"day":"2026-10-12","value":3282310,"level":4,"total_tokens":3282310,"conversation_count":85,"models":[{"model":"gpt-5.4-codex","source":"codex","total_tokens":2000000,"sharePct":61},{"model":"deepseek-v4.1-flash","source":"dsh","total_tokens":800000,"sharePct":24},{"model":"glm-5","source":"opencode","total_tokens":482310,"sharePct":15}]},
+      {"day":"2026-10-13","value":0,"level":0,"total_tokens":0,"conversation_count":0},
+      {"day":"2026-10-14","value":0,"level":0,"total_tokens":0,"conversation_count":0},
+      {"day":"2026-10-15","value":0,"level":0,"total_tokens":0,"conversation_count":0},
+      {"day":"2026-10-16","value":0,"level":0,"total_tokens":0,"conversation_count":0},
+      {"day":"2026-10-17","value":0,"level":0,"total_tokens":0,"conversation_count":0},
+      {"day":"2026-10-18","value":0,"level":0,"total_tokens":0,"conversation_count":0}
     ]
   ]
 }

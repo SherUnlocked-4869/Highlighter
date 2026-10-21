@@ -6,6 +6,7 @@ const path = require('node:path')
 
 const { createUsageQuery, createLruCache, heatmapLevel } = require('../main/services/usage-query')
 const { openUsageStore } = require('../main/services/usage-store')
+const usageTime = require('../main/services/usage-time')
 
 const FIXED_NOW = () => new Date('2026-10-21T03:00:00.000Z')
 const GOLDEN = JSON.parse(
@@ -224,6 +225,57 @@ test('query heatmap matches the Asia/Shanghai aggregate golden cells', (t) => {
   assert.equal(find('2026-03-15').level, 2)
   assert.equal(find('2026-03-16').value, 8300)
   assert.equal(find('2026-03-16').level, 1)
+
+  // Rich tooltip cell: per (source, model) tokens, integer share of the cell
+  // total, sorted desc; the cell keeps its TT-level conversation count.
+  const rich = find('2026-03-14')
+  const localDayRows = GOLDEN.filter((row) => usageTime.zonedDayKey(row.hour_start, 'Asia/Shanghai') === '2026-03-14')
+  const expectedModels = [...localDayRows.reduce((map, row) => {
+    const key = row.source + '|' + row.model
+    map.set(key, (map.get(key) || 0) + row.total_tokens)
+    return map
+  }, new Map())]
+    .map(([key, total]) => {
+      const [source, ...modelParts] = key.split('|')
+      return { source, model: modelParts.join('|'), total_tokens: total }
+    })
+    .sort((a, b) => b.total_tokens - a.total_tokens || a.model.localeCompare(b.model))
+    .map((entry) => ({
+      ...entry,
+      sharePct: Math.round((entry.total_tokens / rich.total_tokens) * 100)
+    }))
+  assert.deepEqual(rich.models, expectedModels)
+  assert.equal(rich.models.reduce((sum, model) => sum + model.total_tokens, 0), rich.total_tokens)
+  assert.equal(rich.models.every((model) => Number.isInteger(model.sharePct)), true)
+  assert.equal(rich.models.every((model) => typeof model.model === 'string' && typeof model.source === 'string'), true)
+  assert.equal(rich.conversation_count, localDayRows.reduce((sum, row) => sum + row.conversation_count, 0))
+  assert.equal(rich.moreModels, undefined)
+
+  // Non-active past days keep the plain cell; future days stay null.
+  assert.equal(find('2026-03-13').models, undefined)
+  assert.equal(find('2026-03-13').conversation_count, 0)
+  assert.ok(heatmap.weeks.flat().some((cell) => cell === null), 'days after today are null')
+})
+
+test('query heatmap caps the model breakdown at 8 and reports the remainder', (t) => {
+  const rows = []
+  for (let index = 0; index < 10; index += 1) {
+    rows.push(queueRow({
+      model: `model-${String(index).padStart(2, '0')}`,
+      hour_start: `2026-10-19T${String(index).padStart(2, '0')}:00:00.000Z`,
+      total_tokens: 100 * (10 - index),
+      billable_total_tokens: 100 * (10 - index),
+      conversation_count: 1
+    }))
+  }
+  const { query } = createHarness(t, { rows })
+  const heatmap = query.heatmap({ tz: 'UTC', weeks: 52 })
+  const cell = heatmap.weeks.flat().find((entry) => entry && entry.day === '2026-10-19')
+  assert.equal(cell.models.length, 8)
+  assert.equal(cell.moreModels, 2)
+  assert.equal(cell.models[0].model, 'model-00')
+  assert.equal(cell.models.every((model) => model.source === 'codex'), true)
+  assert.equal(cell.conversation_count, 10)
 })
 
 test('query heatmap is a 52x7 Monday-first grid with max-relative levels', (t) => {
