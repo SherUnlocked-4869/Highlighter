@@ -29,6 +29,7 @@
 
 const fs = require("node:fs");
 const net = require("node:net");
+const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
 const { execFileSync, spawn } = require("node:child_process");
@@ -124,24 +125,30 @@ USAGE
 
 MODES
   --build-fixtures       Regenerate the sanitized fixture home (deterministic;
-                         no real prompt/code content, only token counters).
-  --tt-only              Read the TokenTracker queue.jsonl and write the golden
-                         files (queue-rows.json + summary.json). Replays the
-                         append-only queue as LWW by source|model|hour_start.
+                         no real prompt/code content, only token counters). The
+                         home stays tool-logs-only; TT scratch is never written
+                         there.
+  --tt-only              Replay a TokenTracker queue.jsonl as LWW by
+                         source|model|hour_start and write the batch golden files
+                         (queue-rows.json + summary.json). Without --sync a
+                         --queue path is required (the queue lives outside the
+                         fixture home).
   --sync                 With --tt-only/--tt-aggregates-only: run the TokenTracker
-                         CLI sync against the fixture home first (fully local;
-                         no device token).
+                         CLI sync against an OUT-OF-REPO scratch copy of the
+                         fixture tool logs (fully local; no device token), then
+                         delete the scratch home.
   --hl-db <path>         Diff a Highlighter usage.db against the golden files.
                          Zero tolerance on integer token columns; also compares
                          daily per-source and per-model sums. Exit 1 on any
                          mismatch, 2 on unusable input.
   --tt-aggregates-only   Refresh the aggregation-level goldens
                          (test/fixtures/usage/golden/aggregates-<tz>.json) from
-                         TT's own local HTTP API: sync the fixture home, start
-                         'tracker.js serve --no-open --no-sync' on a free
-                         loopback port with the fake home env, fetch summary/
-                         daily/model-breakdown/heatmap for Asia/Shanghai and UTC
-                         over day/week/month/total ranges, stop the server.
+                         TT's own local HTTP API: sync an out-of-repo scratch
+                         home, start 'tracker.js serve --no-open --no-sync' on a
+                         free loopback port pointed at that scratch home, fetch
+                         summary/daily/model-breakdown/heatmap for Asia/Shanghai
+                         and UTC over day/week/month/total ranges, stop the
+                         server, delete the scratch home.
   --aggregates <file>    Compare already-captured Highlighter payloads (the
                          usage:summary/daily/breakdown/heatmap IPC responses,
                          captured against the same fixture home) with the TT
@@ -154,16 +161,30 @@ MODES
                          behave as expected.
 
 OPTIONS
-  --home <dir>           Fixture home used as USERPROFILE (default:
+  --home <dir>           Fixture home with the synthetic tool logs (default:
                          test/fixtures/usage/home).
-  --queue <file>         Override the TokenTracker queue.jsonl path (default:
-                         <home>/.tokentracker/tracker/queue.jsonl).
+  --queue <file>         Explicit TokenTracker queue.jsonl path for replay-only
+                         --tt-only (no --sync). TT scratch state never lives
+                         inside the fixture home, so there is no in-repo default.
   --tt-cli <file>        TokenTracker CLI entry (default: env TT_ORACLE_CLI, then
                          ${DEFAULT_TT_CLI}).
   --json                 Machine-readable report on stdout (diff modes).
   -h, --help             This help.
 
-HIGHIGHTER AGGREGATES CAPTURE FILE (--aggregates)
+SCRATCH HOME (TT hygiene)
+  TT never runs with USERPROFILE pointing at the committed fixture home, because
+  it writes `.tokentracker/` state (cursors, queue and transient .js/.cjs shims)
+  inside that home and repo gates such as scripts/check-js.js syntax-scan the
+  whole test/ tree. The harness copies only the tool-log entries (`.codex/`,
+  `.dsh/`, `.local/`, plus future `.claude/` etc.; it skips README.md,
+  .gitignore, AppData and .tokentracker) into
+  os.tmpdir()/hl-usage-oracle-home-<pid>-<rand> (override the base with
+  TT_ORACLE_SCRATCH_DIR; fallback is the _tt-oracle install dir), points
+  USERPROFILE/HOME/APPDATA/LOCALAPPDATA at it, and removes it in a finally
+  block. Any `.tokentracker/` found under the in-repo fixture home is warned
+  about and deleted defensively.
+
+HIGHLIGHTER AGGREGATES CAPTURE FILE (--aggregates)
   JSON object, one entry per IPC response captured on the SAME fixture home:
     {
       "schema": "hl-usage-aggregates-v1",
@@ -183,11 +204,12 @@ HIGHIGHTER AGGREGATES CAPTURE FILE (--aggregates)
   first column drifts with the run date); sharePct is compared within 0.01
   percentage points; cost fields (total_cost_usd / pricing) are ignored.
 
-ENVIRONMENT (TT sync / serve)
-  USERPROFILE/HOME=<home>, APPDATA/LOCALAPPDATA=<home>/AppData/**, DSH_HOME/
-  CODEX_HOME/XDG_DATA_HOME/OPENCODE_HOME removed, TOKENTRACKER_WSL_MODE=
-  native-only, TOKENTRACKER_NO_TELEMETRY=1, DO_NOT_TRACK=1. A fresh fake home
-  has no device token, so TT never uploads and never requires an account.
+ENVIRONMENT (TT sync / serve, applied to the out-of-repo scratch home)
+  USERPROFILE/HOME=<scratch home>, APPDATA/LOCALAPPDATA=<scratch home>/AppData/**,
+  DSH_HOME/CODEX_HOME/XDG_DATA_HOME/OPENCODE_HOME removed,
+  TOKENTRACKER_WSL_MODE=native-only, TOKENTRACKER_NO_TELEMETRY=1,
+  DO_NOT_TRACK=1. The scratch home has no device token, so TT never uploads and
+  never requires an account.
 
 REPRODUCE
   node scripts/usage-oracle-check.js --build-fixtures
@@ -344,6 +366,9 @@ function formatBytes(bytes) {
 // placeholder "fixture" so no real user text can leak into the repo.
 function buildFixtureHome(home) {
   const created = [];
+  // The committed fixture home is tool-logs-only. Remove any historical TT
+  // scratch dir so repo gates (scripts/check-js.js walks test/**) stay clean.
+  fs.rmSync(path.join(home, ".tokentracker"), { recursive: true, force: true });
 
   const record = (file, bytes) => created.push({ file: relToRoot(file), bytes });
 
@@ -713,7 +738,9 @@ function buildOpencodeDb(dbPath, record) {
 }
 
 function cmdBuildFixtures(opts) {
+  removeRepoScratchState(opts.home);
   const result = buildFixtureHome(opts.home);
+  removeRepoScratchState(opts.home);
   process.stdout.write("Fixture home rebuilt (synthetic; no real user text).\n");
   for (const entry of result.files) {
     process.stdout.write(`  ${formatBytes(entry.bytes).padStart(9)}  ${entry.file}\n`);
@@ -723,6 +750,7 @@ function cmdBuildFixtures(opts) {
     `Home size on disk (includes .gitignore): ${formatBytes(dirSizeBytes(opts.home))}\n`,
   );
   process.stdout.write(`Home: ${relToRoot(opts.home)}\n`);
+  process.stdout.write("Home contents: tool logs only (never .tokentracker/TT state).\n");
   process.stdout.write(`Golden dir: ${relToRoot(GOLDEN_DIR)}\n`);
   process.stdout.write(
     "\nNext:\n" +
@@ -755,6 +783,108 @@ function readTtVersion(ttCli) {
   } catch (_error) {
     return TT_VERSION;
   }
+}
+
+// ── Out-of-repo scratch home ───────────────────────────────────────────────
+// TokenTracker must NEVER run with USERPROFILE pointing at the committed
+// fixture home: it writes `.tokentracker/` state (cursors, queue, and transient
+// .js shims under tracker/app/bin) inside `<home>`, and repo gates such as
+// scripts/check-js.js syntax-scan the whole `test/` tree. So the tool logs
+// (`.codex/`, `.dsh/`, `.local/`, ...) are copied to a scratch home OUTSIDE the
+// repository, TT runs there, and the scratch home is deleted afterwards. The
+// in-repo fixture home stays tool-logs-only.
+const FIXTURE_HOME_NON_TOOL_ENTRIES = new Set([
+  ".gitignore",
+  "README.md",
+  ".tokentracker",
+  "AppData",
+]);
+
+function isInsideRepo(target) {
+  const relative = path.relative(ROOT, target);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function chooseScratchHomeDir() {
+  const bases = [];
+  if (process.env.TT_ORACLE_SCRATCH_DIR) bases.push(path.resolve(process.env.TT_ORACLE_SCRATCH_DIR));
+  bases.push(os.tmpdir());
+  // Fallback next to the one-time TT oracle install (outside this repo).
+  bases.push(path.dirname(path.dirname(path.dirname(path.dirname(DEFAULT_TT_CLI)))));
+  const tried = [];
+  for (const base of bases) {
+    const candidate = path.join(
+      base,
+      `hl-usage-oracle-home-${process.pid}-${Date.now().toString(36)}`,
+    );
+    if (isInsideRepo(candidate)) {
+      tried.push(`${candidate} (inside repo; refused)`);
+      continue;
+    }
+    try {
+      fs.mkdirSync(candidate, { recursive: true });
+      return candidate;
+    } catch (error) {
+      tried.push(`${candidate} (${error && error.code ? error.code : error})`);
+    }
+  }
+  throw new Error(
+    `cannot create a TokenTracker scratch home outside the repository. Tried:\n  ${tried.join("\n  ")}\n` +
+      "Set TT_ORACLE_SCRATCH_DIR to a writable directory outside the repo.",
+  );
+}
+
+function removeRepoScratchState(fixtureHome) {
+  const trackerDir = path.join(fixtureHome, ".tokentracker");
+  if (!fs.existsSync(trackerDir)) return false;
+  process.stderr.write(
+    `warning: found TokenTracker scratch data inside the in-repo fixture home (${relToRoot(trackerDir)}); ` +
+      "removing it because TT must run against an out-of-repo scratch copy.\n",
+  );
+  fs.rmSync(trackerDir, { recursive: true, force: true });
+  return true;
+}
+
+function createScratchHome(fixtureHome) {
+  removeRepoScratchState(fixtureHome);
+  const dir = chooseScratchHomeDir();
+  const copied = [];
+  try {
+    for (const entry of fs.readdirSync(fixtureHome, { withFileTypes: true })) {
+      if (FIXTURE_HOME_NON_TOOL_ENTRIES.has(entry.name)) continue;
+      const source = path.join(fixtureHome, entry.name);
+      const target = path.join(dir, entry.name);
+      fs.cpSync(source, target, { recursive: true });
+      copied.push(entry.name);
+    }
+    if (copied.length === 0) {
+      throw new Error(`fixture home has no tool-log entries to copy: ${fixtureHome}`);
+    }
+  } catch (error) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (_cleanupError) {
+      // ignore
+    }
+    throw error;
+  }
+  process.stdout.write(`$ scratch home (outside repo): ${dir}\n$ copied tool logs: ${copied.join(", ")}\n`);
+  return {
+    dir,
+    copied,
+    cleanup() {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+        process.stdout.write(`$ scratch home removed: ${dir}\n`);
+        return true;
+      } catch (error) {
+        process.stderr.write(
+          `warning: could not remove scratch home ${dir}: ${error && error.message ? error.message : error}\n`,
+        );
+        return false;
+      }
+    },
+  };
 }
 
 function ttSyncEnv(home) {
@@ -958,33 +1088,59 @@ function buildGolden(rows, meta) {
 }
 
 function cmdTtOnly(opts) {
-  const home = opts.home;
-  if (!fs.existsSync(home)) {
-    throw new Error(`fixture home not found: ${home}\nRun: node scripts/usage-oracle-check.js --build-fixtures`);
+  const fixtureHome = opts.home;
+  if (!fs.existsSync(fixtureHome)) {
+    throw new Error(`fixture home not found: ${fixtureHome}\nRun: node scripts/usage-oracle-check.js --build-fixtures`);
   }
 
   let ttCli = null;
   let ttVersion = TT_VERSION;
   let syncCommand = null;
+  let queuePath = null;
+  let scratch = null;
+
   if (opts.sync) {
     ttCli = resolveTtCli(opts);
     ttVersion = readTtVersion(ttCli);
-    const result = runTtSync({ home, ttCli });
-    syncCommand = result.command;
-  } else {
+    scratch = createScratchHome(fixtureHome);
     try {
-      ttCli = resolveTtCli(opts);
-      ttVersion = readTtVersion(ttCli);
-    } catch (_error) {
-      ttVersion = TT_VERSION; // replay-only still needs no CLI
+      const result = runTtSync({ home: scratch.dir, ttCli });
+      syncCommand = result.command;
+      queuePath = opts.queue || path.join(scratch.dir, QUEUE_REL);
+      writeGoldenFromQueue({ queuePath, fixtureHome, ttVersion, syncCommand });
+    } finally {
+      scratch.cleanup();
     }
+    return 0;
   }
 
-  const queuePath = opts.queue || path.join(home, QUEUE_REL);
-  process.stdout.write(`Reading queue: ${relToRoot(queuePath)}\n`);
+  // Replay-only: the queue is produced outside the repo, so require an
+  // explicit path. Never recreate `.tokentracker/` under the fixture home.
+  if (!opts.queue) {
+    throw new Error(
+      "no --queue given and --sync was not requested.\n" +
+        "TokenTracker scratch state must live outside the fixture home, so replay-only mode needs an explicit queue path:\n" +
+        "  node scripts/usage-oracle-check.js --tt-only --sync            # regenerate in an out-of-repo scratch home\n" +
+        "  node scripts/usage-oracle-check.js --tt-only --queue <path/to/queue.jsonl>",
+    );
+  }
+  queuePath = opts.queue;
+  try {
+    ttCli = resolveTtCli(opts);
+    ttVersion = readTtVersion(ttCli);
+  } catch (_error) {
+    ttVersion = TT_VERSION; // replay-only still needs no CLI
+  }
+  writeGoldenFromQueue({ queuePath, fixtureHome, ttVersion, syncCommand: null });
+  return 0;
+}
+
+function writeGoldenFromQueue({ queuePath, fixtureHome, ttVersion, syncCommand }) {
+  const displayQueue = isInsideRepo(queuePath) ? relToRoot(queuePath) : queuePath;
+  process.stdout.write(`Reading queue: ${displayQueue}\n`);
   const { rows, stats } = readQueueRows(queuePath);
 
-  const { rows: goldenRows, summary } = buildGolden(rows, { home, ttVersion });
+  const { rows: goldenRows, summary } = buildGolden(rows, { home: fixtureHome, ttVersion });
   const rowsFile = path.join(GOLDEN_DIR, GOLDEN_ROWS);
   const summaryFile = path.join(GOLDEN_DIR, GOLDEN_SUMMARY);
   writeJson(rowsFile, goldenRows);
@@ -1010,9 +1166,8 @@ function cmdTtOnly(opts) {
 
   process.stdout.write("\nReproduce:\n");
   process.stdout.write("  node scripts/usage-oracle-check.js --build-fixtures\n");
-  process.stdout.write(`  node scripts/usage-oracle-check.js --tt-only --sync\n`);
+  process.stdout.write("  node scripts/usage-oracle-check.js --tt-only --sync\n");
   if (syncCommand) process.stdout.write(`  (oracle sync command): ${syncCommand}\n`);
-  return 0;
 }
 
 // ── Diff Highlighter usage.db against golden ───────────────────────────────
@@ -1511,29 +1666,34 @@ async function captureTtAggregates({ server, rows, tz, home, ttVersion }) {
 }
 
 async function cmdTtAggregatesOnly(opts) {
-  const home = opts.home;
-  if (!fs.existsSync(home)) {
+  const fixtureHome = opts.home;
+  if (!fs.existsSync(fixtureHome)) {
     throw new Error(
-      `fixture home not found: ${home}\nRun: node scripts/usage-oracle-check.js --build-fixtures`,
+      `fixture home not found: ${fixtureHome}\nRun: node scripts/usage-oracle-check.js --build-fixtures`,
     );
   }
   const ttCli = resolveTtCli(opts);
   const ttVersion = readTtVersion(ttCli);
 
-  // A deterministic aggregation capture needs a deterministic queue: run the
-  // same local-only TT sync as --tt-only --sync (fresh fake-home state).
-  runTtSync({ home, ttCli });
-  const queuePath = opts.queue || path.join(home, QUEUE_REL);
-  const { rows } = readQueueRows(queuePath);
-  if (rows.length === 0) throw new Error("fixture home produced no queue rows; cannot capture aggregates");
-
-  ensureDir(GOLDEN_DIR);
-  const port = await freeTcpPort();
-  const server = await startTtServe({ home, ttCli, port });
+  // TT must never write `.tokentracker/` inside the committed fixture tree, so
+  // the tool logs are copied to a scratch home outside the repo for the whole
+  // sync+serve+capture cycle, and deleted in `finally`.
+  const scratch = createScratchHome(fixtureHome);
   const written = [];
+  let server = null;
   try {
+    // A deterministic aggregation capture needs a deterministic queue: run the
+    // same local-only TT sync as --tt-only --sync (fresh scratch-home state).
+    runTtSync({ home: scratch.dir, ttCli });
+    const queuePath = opts.queue || path.join(scratch.dir, QUEUE_REL);
+    const { rows } = readQueueRows(queuePath);
+    if (rows.length === 0) throw new Error("fixture home produced no queue rows; cannot capture aggregates");
+
+    ensureDir(GOLDEN_DIR);
+    const port = await freeTcpPort();
+    server = await startTtServe({ home: scratch.dir, ttCli, port });
     for (const tz of AGGREGATES_TZS) {
-      const doc = await captureTtAggregates({ server, rows, tz, home, ttVersion });
+      const doc = await captureTtAggregates({ server, rows, tz, home: fixtureHome, ttVersion });
       const file = path.join(GOLDEN_DIR, `aggregates-${tzFileSlug(tz)}.json`);
       writeJson(file, doc);
       written.push({ file, tz, doc });
@@ -1541,7 +1701,11 @@ async function cmdTtAggregatesOnly(opts) {
     const logs = server.logs();
     if (logs.stderr) process.stderr.write(`${logs.stderr}\n`);
   } finally {
-    await server.stop();
+    if (server) await server.stop();
+    scratch.cleanup();
+    // Belt and braces: if anything (or an older checkout) ran TT against the
+    // in-repo home, remove the scratch dir so repo gates stay clean.
+    removeRepoScratchState(fixtureHome);
   }
 
   process.stdout.write("\nAggregation goldens written:\n");
@@ -1556,11 +1720,14 @@ async function cmdTtAggregatesOnly(opts) {
       .map((entry) => `${entry.tz} day=${entry.doc.ranges.day.from} total=${entry.doc.ranges.total.from}..${entry.doc.ranges.total.to}`)
       .join("; ")}\n`,
   );
+  process.stdout.write(
+    `  scratch home used: ${scratch.dir} (removed); fixture home kept tool-logs-only\n`,
+  );
   process.stdout.write("\nReproduce:\n");
   process.stdout.write("  node scripts/usage-oracle-check.js --build-fixtures\n");
   process.stdout.write("  node scripts/usage-oracle-check.js --tt-aggregates-only\n");
   process.stdout.write("  node scripts/usage-oracle-check.js --self-test\n");
-  process.stdout.write(`  (TT serve command): ${server.display}\n`);
+  if (server) process.stdout.write(`  (TT serve command): ${server.display}\n`);
   return 0;
 }
 

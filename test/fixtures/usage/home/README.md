@@ -1,9 +1,12 @@
 # Usage oracle fixture home (`B0-4`)
 
-Sanitized, fully synthetic home directory used as `USERPROFILE` to generate the
-TokenTracker (TT) queue baseline that Highlighter's usage store is compared
-against. **No real prompt, response, code, path, session id or DB row is copied
-here** — every record is hand-built structural JSON carrying token counters only.
+Sanitized, fully synthetic tool-log tree used as the input home for the
+TokenTracker (TT) oracle. **The oracle never runs TT with `USERPROFILE` pointing
+here**: it copies the tool-log entries to a scratch home outside the repo,
+runs TT there, and deletes the scratch home afterwards, so this directory stays
+tool-logs-only. **No real prompt, response, code, path, session id or DB row is
+copied here** — every record is hand-built structural JSON carrying token
+counters only.
 
 - Size: **~34 KiB total** (`du -sh test/fixtures/usage/home` ≈ 36K); the real
   sources are ~1.2 GB (`~/.codex/sessions` 420 MB / `~/.dsh/sessions` 70 MB /
@@ -39,8 +42,11 @@ there; it is not committed.
 - Token numbers are synthetic round values chosen to exercise: cumulative
   snapshot diffing (Codex), cache read/write split, reasoning split, half-hour
   bucketing, UTC day boundary, v1↔v2 OpenCode generation, torn/malformed lines.
-- `.tokentracker/` (TT sync scratch: `queue.jsonl`, `cursors.json`, …) is
-  git-ignored; regenerate with `--sync`.
+- This directory is **tool-logs-only** (`.codex/`, `.dsh/`, `.local/`). No
+  `.tokentracker/` or other TT scratch state is ever written here: `.gitignore`
+  keeps `.tokentracker/` out of git and the harness defensively deletes it
+  (with a warning) because `scripts/check-js.js` syntax-scans all of `test/**`
+  and TT's transient `.js`/`.cjs` shims are not valid repo scripts.
 
 ## Regenerate + generate golden
 
@@ -55,7 +61,8 @@ node node_modules/tokentracker-cli/bin/tracker.js --version
 # 2) rebuild fixtures (deterministic, ~34 KiB)
 node scripts/usage-oracle-check.js --build-fixtures
 
-# 3) run TT sync against this fake home and write the golden baseline
+# 3) run TT sync in an OUT-OF-REPO scratch copy of these tool logs and write
+#    the golden baseline (the scratch home is deleted automatically)
 node scripts/usage-oracle-check.js --tt-only --sync
 #    => test/fixtures/usage/golden/queue-rows.json  (11 bucket rows)
 #    => test/fixtures/usage/golden/summary.json     (per-source/per-model daily sums)
@@ -76,9 +83,11 @@ Sync finished:
 Local-only guarantees of the oracle run (implemented in
 `scripts/usage-oracle-check.js`):
 
-- `USERPROFILE`/`HOME` → fixture home; `APPDATA`/`LOCALAPPDATA` → fixture home
-  subdirs (some TT resolvers read these directly and would otherwise parse the
-  real user tree).
+- `USERPROFILE`/`HOME` → out-of-repo scratch home (`os.tmpdir()`, override with
+  `TT_ORACLE_SCRATCH_DIR`); `APPDATA`/`LOCALAPPDATA` → scratch subdirs (some TT
+  resolvers read these directly and would otherwise parse the real user tree).
+  Only the tool-log entries are copied; the scratch home is removed in a
+  `finally` block.
 - `DSH_HOME`, `TOKENTRACKER_DSH_HOME`, `CODEX_HOME`, `XDG_DATA_HOME`,
   `OPENCODE_HOME`, device-token/env overrides removed.
 - `TOKENTRACKER_WSL_MODE=native-only` (no `wsl.exe` probe),
