@@ -93,6 +93,18 @@
 - **评审方式**：headless（`BrowserWindow({show:false})`）截图工具 `scripts/usage-visual-preview.js` + `design-demos/usage-page-preview.html`，固定页宽 908/1180/1440 × 明暗主题 + tooltip 态；before（HEAD）与 after 各 8 张，像素级确定性、0 pageerror/console error、0 可见窗口；QA 独立复核 D1–D4 全绿。
 - **证据**：[`docs/plans/2026-10-21-usage-page-redesign/`](./2026-10-21-usage-page-redesign/)（01-before → 02–05-after → 06-tooltip + `final-metrics.json`）。
 
+### 0.8 最终构建与验证（2026-10-21，UI 重构后）
+
+| 项 | 结果 |
+|---|---|
+| 分支 | 主仓 `D:\workspace\Highlighter` 的 **`feat/usage-page-release`**（`usage-page` 快进合并已包含 UI 重构；未 push） |
+| 安装包 | `dist-usage-page/Highlighter-Setup-4.0.0.exe` **144,925,253 B**；SHA256 `8f3cad104d50df5ad8adc41a03ce892d3193a7e8f476eca233af320629ced79d`；`.blockmap` / `latest.yml` / `SHA256SUMS.txt` 同目录 |
+| 版本/签名 | 4.0.0（未 bump）；**未签名 NotSigned**（本机无证书，发布前需签名） |
+| e2e | **6/6 通过（35.1 s）**，含 usage「未开启→同意→扫描 fixture home→52,590→3 源 ok」全链路（真实 Electron 窗口，用户批准；受限宿主用 `HIGHLIGHTER_E2E_NO_SANDBOX`/`..._DATA_ROOT_BASE`） |
+| 引擎 sign-off | usage 测试 **102/102**、vendor smoke 93/93、聚合 oracle **26/26 PASS**、`--hl-db` 0 diff；asar 20/20 抽样文件与合并树字节一致（含 9 个 usage services、14 个 vendor 文件、redesigned usage.js/css）；native sidecars 全部解包 |
+| 截图证据 | 见 §0.7 目录（before/after/tooltip + metrics JSON） |
+| 已知边界 | 超密集 262,800 桶 heatmap p95 160–267 ms（2.6× plan 规模）；安装包未签名/未 bump 版本 |
+
 ---
 
 ## 1. 目标、范围与完成定义
@@ -816,3 +828,4 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | 2026-10-21 | **B6/E2E 记录**：修复「数据目录迁移丢 usage DB」产品缺陷（`ADDITIONAL_PERSISTENT` + `createManagedSourcePaths` 暴露 usage，回归测试 7/7 硬断言，含回滚/保留/清除/诊断隐私）；真机 F6 首扫 15.7 s / F7 增量 0.5–1.0 s（dsh 占 80%，列为后续优化）；**Playwright e2e 6/6 通过**（含 usage「未开启→同意→扫描→52,590→3 源 ok」全链路）；受限宿主 e2e/探针 workaround 与打包冒烟限制记录在 §4.4/附录 F |
 | 2026-10-21 | **UI 重构（用户反馈）**：按 TokenTracker 参考重画用量页（响应式两栏/单栏、卡片体系/层级、热力图丰满 tooltip、紧凑明细、自定义 tab），并新增 headless 截图评审工具（隐藏窗口 `design-demos/usage-page-preview.html` + `scripts/usage-visual-preview.js`）；同步扩展 heatmap cell `models`/`conversation_count`（TT tooltip 口径）；heatmap 查询加 covering index + 按本地日聚合（plan-scale 87,840 桶 p95 68–103 ms；超密集 262,800 桶 p95 160–267 ms 作为已知边界接受）。截图与评审记录见设计回合报告 |
 | 2026-10-21 | **UI 重构验收**：before/after 各 8 张 headless 截图（908/1180/1440 × 明暗 + tooltip），QA 独立复核 D1–D4 全绿（tooltip insideCard/5 模型行不裁切、明细无半行、宽屏 18px 列间距、heatmap 居中）；页面单测 65/65、check-js 388 文件、i18n 585/606、architecture 1327/1330 全绿；证据归档 `docs/plans/2026-10-21-usage-page-redesign/` |
+| 2026-10-21 | **最终构建**：UI 重构合并到 `feat/usage-page-release` 并重建 NSIS 安装包（`dist-usage-page/Highlighter-Setup-4.0.0.exe`，144.9 MB，SHA256 `8f3cad10…79d`，含 SHA256SUMS/latest.yml/blockmap）；e2e **6/6**；引擎独立 sign-off（usage 102/102 + oracle 26/26 + `--hl-db` 0 diff + asar/安装包内容核对）全绿；安装包未签名、版本仍 4.0.0。详见 §0.8 |
