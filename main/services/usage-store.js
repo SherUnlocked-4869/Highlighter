@@ -86,6 +86,9 @@ CREATE TABLE IF NOT EXISTS usage_bucket (
 CREATE INDEX IF NOT EXISTS idx_usage_hour ON usage_bucket(hour_start);
 CREATE INDEX IF NOT EXISTS idx_usage_source_hour ON usage_bucket(source, hour_start);
 CREATE INDEX IF NOT EXISTS idx_usage_model_hour ON usage_bucket(model, hour_start);
+-- Heatmap reads 52 weeks of (hour, source, model, tokens): this covering index
+-- keeps the per-local-day grouped aggregation index-only.
+CREATE INDEX IF NOT EXISTS idx_usage_heat_cover ON usage_bucket(hour_start, source, model, total_tokens, billable_total_tokens, conversation_count);
 
 CREATE TABLE IF NOT EXISTS scan_state (
   key        TEXT PRIMARY KEY,
@@ -209,12 +212,23 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
   const db = new DatabaseSync(dbPath)
   let closed = false
 
+  function ensureHeatmapCoverIndex() {
+    // Idempotent: schema v1 databases created before this index was added must
+    // still get it without a user_version bump (index-only, no data migration).
+    try {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_usage_heat_cover ON usage_bucket(hour_start, source, model, total_tokens, billable_total_tokens, conversation_count)')
+    } catch (error) {
+      log('usage store: heatmap cover index unavailable: ' + (error && error.message ? error.message : String(error)))
+    }
+  }
+
   try {
     db.prepare('PRAGMA journal_mode = WAL').get()
     db.exec('PRAGMA synchronous = NORMAL')
     db.exec('PRAGMA busy_timeout = 3000')
     db.exec('PRAGMA foreign_keys = ON')
     ensureSchema(db)
+    ensureHeatmapCoverIndex()
   } catch (error) {
     try { db.close() } catch {}
     throw error
@@ -376,6 +390,54 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     return db
       .prepare(`SELECT ${dims.join(', ')}, ${sums.join(', ')} FROM usage_bucket ${where} GROUP BY ${dims.join(', ')} ORDER BY ${dims.join(', ')}`)
       .all(...params)
+  }
+
+  // Heatmap pre-aggregation: one grouped SELECT per local calendar day (365 max
+  // for a 52-week grid). Each branch streams its day's index range and returns
+  // only (day, source, model) totals, so callers get ~5k rows instead of the raw
+  // 52-week bucket rows. Day bounds come from usage-time's Intl/DST-safe
+  // resolveDayBounds, so timezone folding is exact.
+  function countRangeRows({ fromIso = null, toIso = null, limit = 100000 } = {}) {
+    assertOpen()
+    const filters = []
+    const params = []
+    if (typeof fromIso === 'string' && fromIso) {
+      filters.push('hour_start >= ?')
+      params.push(fromIso)
+    }
+    if (typeof toIso === 'string' && toIso) {
+      filters.push('hour_start < ?')
+      params.push(toIso)
+    }
+    const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
+    const cap = Number.isFinite(limit) && limit > 0 ? Math.trunc(limit) : 100000
+    const row = db
+      .prepare(`SELECT COUNT(*) AS count FROM (SELECT 1 FROM usage_bucket ${where} LIMIT ${cap + 1})`)
+      .get(...params)
+    return Number(row?.count) || 0
+  }
+
+  function getHeatmapDayModelTotals({ dayRanges = [] } = {}) {
+    assertOpen()
+    const ranges = (Array.isArray(dayRanges) ? dayRanges : []).filter((range) => {
+      if (!range || typeof range !== 'object') return false
+      if (typeof range.day !== 'string' || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(range.day)) return false
+      return Number.isFinite(Date.parse(range.startIso)) && Number.isFinite(Date.parse(range.endIso))
+    })
+    if (ranges.length === 0) return []
+    if (ranges.length > 400) throw new Error('usage heatmap day range is too large')
+    const branches = ranges.map((range) => {
+      const startIso = new Date(Date.parse(range.startIso)).toISOString()
+      const endIso = new Date(Date.parse(range.endIso)).toISOString()
+      return (
+        `SELECT '${range.day}' AS day, source AS source, model AS model, ` +
+        'COALESCE(SUM(total_tokens), 0) AS total_tokens, ' +
+        'COALESCE(SUM(billable_total_tokens), 0) AS billable_total_tokens, ' +
+        'COALESCE(SUM(conversation_count), 0) AS conversation_count ' +
+        `FROM usage_bucket INDEXED BY idx_usage_heat_cover WHERE hour_start >= '${startIso}' AND hour_start < '${endIso}' GROUP BY source, model`
+      )
+    })
+    return db.prepare(branches.join(' UNION ALL ')).all()
   }
 
   function countDistinctDays({ fromIso, toIso } = {}) {
@@ -574,7 +636,9 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     dbPath,
     loadCursors,
     loadBucketRows,
+    countRangeRows,
     getGroupedTotals,
+    getHeatmapDayModelTotals,
     getRangeHourlyTotals,
     getRangeRows,
     sumRange,

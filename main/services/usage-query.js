@@ -22,6 +22,11 @@ const usageTime = require('./usage-time')
 const RETENTION_MONTHS = usageTime.RETENTION_MONTHS
 // Hover card keeps the model list short; the page shows "moreModels" as "+N".
 const HEATMAP_MODEL_LIMIT = 8
+// In-memory grouping key separator for (source, model) pairs (never displayed).
+const MODEL_KEY_SEPARATOR = String.fromCharCode(0)
+// Below this many bucket rows in the 52-week window the heatmap folds raw rows
+// in JS (~ms); above it the store aggregates per local day inside SQLite.
+const HEATMAP_RAW_ROW_LIMIT = 25000
 const SOURCE_LABELS = Object.freeze({
   codex: 'Codex',
   dsh: 'DeepSeek Harness',
@@ -125,6 +130,22 @@ function dailyRowFromTotals(day, columns) {
     conversation_count: Number(columns.conversation_count) || 0,
     total_cost_usd: null
   }
+}
+
+// Local-day UTC bounds are Intl-heavy (~0.15 ms each) and repeat on every
+// heatmap refresh, so memoize them per (tz, day) across query instances. Bounded
+// because the process may see several timezones across app restarts in dev.
+const DAY_BOUNDS_MEMO_LIMIT = 4096
+const dayBoundsMemo = new Map()
+
+function dayBoundsFor(day, timeZone) {
+  const key = timeZone + '|' + day
+  let bounds = dayBoundsMemo.get(key)
+  if (bounds) return bounds
+  if (dayBoundsMemo.size >= DAY_BOUNDS_MEMO_LIMIT) dayBoundsMemo.clear()
+  bounds = usageTime.resolveDayBounds(day, timeZone)
+  dayBoundsMemo.set(key, bounds)
+  return bounds
 }
 
 function createLruCache({ maxEntries = 64, ttlMs = 60000, now = () => Date.now() } = {}) {
@@ -419,40 +440,70 @@ function createUsageQuery({
     const weeks = validated.weeks || 52
     return cached(`heatmap|${tz}|${weeks}`, () => {
       const store = getStore()
-      const today = usageTime.zonedDayKey(now(), tz)
-      const weekdayIndex = usageTime.zonedWeekdayIndex(now(), tz) // 0 = Monday
+      const nowDate = now()
+      const today = usageTime.zonedDayKey(nowDate, tz)
+      const weekdayIndex = usageTime.zonedWeekdayIndex(nowDate, tz) // 0 = Monday
       const currentWeekStart = usageTime.addDaysToDayKey(today, -weekdayIndex)
       const fromDay = usageTime.addDaysToDayKey(currentWeekStart, -(weeks - 1) * 7)
       const toDay = usageTime.addDaysToDayKey(currentWeekStart, 6)
-      const startBounds = usageTime.resolveDayBounds(fromDay, tz)
-      const endBounds = usageTime.resolveDayBounds(toDay, tz)
-      // One scan over the 52-week range: cells need both the day totals and the
-      // per (source, model) breakdown the TT-style hover card shows. The range is
-      // at most ~52 weeks of half-hour buckets, and the raw rows also feed the
-      // day folding below so there is no second pass.
-      const rows = store.getRangeRows({
-        fromIso: new Date(startBounds.startUtcMs).toISOString(),
-        toIso: new Date(endBounds.endUtcMs).toISOString()
-      })
-      const byDay = new Map()
-      for (const row of rows) {
-        const day = zonedDayOf(row.hour_start, tz)
-        if (day < fromDay || day > toDay) continue
-        let entry = byDay.get(day)
+      const observedWindowStart = dayBoundsFor(fromDay, tz)
+      const lastObservedDay = toDay < today ? toDay : today
+      const observedWindowEnd = dayBoundsFor(lastObservedDay, tz)
+      const windowFromIso = new Date(observedWindowStart.startUtcMs).toISOString()
+      const windowToIso = new Date(observedWindowEnd.endUtcMs).toISOString()
+
+      // Two shapes of history: a sparse one is cheaper to fold from raw rows
+      // (a couple of ms), while a dense 52-week range must be aggregated inside
+      // SQLite per local day or the JS side has to materialize 250k+ rows. The
+      // bounded count probe costs a few ms even when dense and stops early.
+      const rowCount = store.countRangeRows({ fromIso: windowFromIso, toIso: windowToIso, limit: HEATMAP_RAW_ROW_LIMIT })
+      const dayModels = new Map()
+      const addAggregate = (day, source, model, totals) => {
+        let entry = dayModels.get(day)
         if (!entry) {
           entry = { billable_total_tokens: 0, total_tokens: 0, conversation_count: 0, models: new Map() }
-          byDay.set(day, entry)
+          dayModels.set(day, entry)
         }
-        entry.billable_total_tokens += Number(row.billable_total_tokens) || 0
-        entry.total_tokens += Number(row.total_tokens) || 0
-        entry.conversation_count += Number(row.conversation_count) || 0
-        const modelKey = `${row.source}\u0000${row.model}`
-        const modelEntry = entry.models.get(modelKey) || { model: row.model, source: row.source, total_tokens: 0 }
-        modelEntry.total_tokens += Number(row.total_tokens) || 0
+        entry.billable_total_tokens += Number(totals.billable_total_tokens) || 0
+        entry.total_tokens += Number(totals.total_tokens) || 0
+        entry.conversation_count += Number(totals.conversation_count) || 0
+        const modelKey = source + MODEL_KEY_SEPARATOR + model
+        const modelEntry = entry.models.get(modelKey) || { model, source, total_tokens: 0 }
+        modelEntry.total_tokens += Number(totals.total_tokens) || 0
         entry.models.set(modelKey, modelEntry)
       }
+      const foldRawRows = (rows) => {
+        for (const row of rows) {
+          addAggregate(zonedDayOf(row.hour_start, tz), row.source, row.model, row)
+        }
+      }
+
+      if (rowCount > 0 && rowCount <= HEATMAP_RAW_ROW_LIMIT) {
+        foldRawRows(store.getRangeRows({ fromIso: windowFromIso, toIso: windowToIso }))
+      } else if (rowCount > HEATMAP_RAW_ROW_LIMIT) {
+        // Only past/today days can carry data; future cells stay null and are
+        // not queried. Day bounds come from usage-time (DST-safe), and each day
+        // is one grouped SQL branch so the result is (day, source, model) sums.
+        const dayRanges = []
+        let cursor = fromDay
+        let guard = 0
+        while (cursor <= lastObservedDay && guard < 400) {
+          const bounds = dayBoundsFor(cursor, tz)
+          dayRanges.push({
+            day: cursor,
+            startIso: new Date(bounds.startUtcMs).toISOString(),
+            endIso: new Date(bounds.endUtcMs).toISOString()
+          })
+          cursor = usageTime.addDaysToDayKey(cursor, 1)
+          guard += 1
+        }
+        for (const row of store.getHeatmapDayModelTotals({ dayRanges })) {
+          addAggregate(row.day, row.source, row.model, row)
+        }
+      }
+
       let max = 0
-      for (const entry of byDay.values()) max = Math.max(max, entry.billable_total_tokens)
+      for (const entry of dayModels.values()) max = Math.max(max, entry.billable_total_tokens)
       let activeDays = 0
       const grid = []
       for (let week = 0; week < weeks; week += 1) {
@@ -463,7 +514,7 @@ function createUsageQuery({
             cells.push(null)
             continue
           }
-          const entry = byDay.get(day) || { billable_total_tokens: 0, total_tokens: 0, conversation_count: 0 }
+          const entry = dayModels.get(day) || { billable_total_tokens: 0, total_tokens: 0, conversation_count: 0 }
           const active = entry.billable_total_tokens > 0 // same predicate as activeDays
           if (active) activeDays += 1
           const cell = {
