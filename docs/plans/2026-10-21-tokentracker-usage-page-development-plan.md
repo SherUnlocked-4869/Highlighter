@@ -1,7 +1,7 @@
 # 开发方案：在 Highlighter 内新增「AI 用量」页（TokenTracker 同口径）
 
 - 日期：2026-10-21
-- 状态：**开发方案（Q1–Q3 已确认，B0 实施中）**
+- 状态：**MVP 已交付（分支 `usage-page`，待发布环境打包冒烟与合并评审）**
 - 上游分析：[2026-10-21-tokentracker-usage-page-migration-analysis.md](./2026-10-21-tokentracker-usage-page-migration-analysis.md) + 底稿 [usage-migration-analysis/](./usage-migration-analysis/)
 - 基线（本机重新核对，路径以本机为准）：
   - Highlighter：`D:\workspace\Highlighter` @ `master` `9af4a31`（4.0.0；Electron 43.2.0 / Node 24.18.0）
@@ -73,6 +73,18 @@
 | 扫描方式 | 只读被动，不写 hook | 不变 |
 
 **本次交付 = B0–B6**：3 工具的完整主视图（B0–B4，MVP）+ 热力图/日视图/自定义（B5）+ 发布收尾（B6）。**不在本次交付**：金额、工具扩展（第 4–42 个）、项目/会话/云/3D/分享、WSL。
+
+### 0.6 实施结果（2026-10-21，分支 `usage-page`）
+
+| 项 | 结果 |
+|---|---|
+| 交付范围 | B0–B5 完成 + B6 除「安装包打包冒烟」外完成；MVP 全量功能可用（3 工具、主视图、热力图、日视图、自定义区间） |
+| 功能入口 | 设置窗侧栏「工具设置 → 用量」；默认关闭 + 首次同意；只读扫描 `~/.codex`/`~/.dsh`/`~/.local/share/opencode` |
+| 同口径证据 | 解析层 11/11 桶与 TT queue 完全一致；聚合层 26/26 条目 0 diff（summary/daily/breakdown/heatmap × 2 tz × 4 period）；tz 差异与 TT 一致 |
+| 性能 | 真机首扫 15.7 s（3 GB 日志，578 桶）；增量 0.5–1.0 s；查询 p95 summary ~44 ms / daily ~64–84 ms / heatmap ~2 ms / breakdown ~140–155 ms（冷） |
+| 质量门禁 | usage 单元测试 72/72；数据目录迁移/保留/清除 95/95；仓库 check（check-js/architecture/i18n）通过；新模块行覆盖 93.88%（≥85%）；Playwright e2e 6/6（含 usage 全链路）；`npm test` 仅 14 个 Electron 探针用例在受限宿主失败（master 基线同样失败，非本次改动） |
+| 未完成/后续 | 安装包打包冒烟（F5，需原生构建工具链）；breakdown 冷查询覆盖索引/rollup；dsh 冷扫优化（占首扫 80%）；真实上游日志格式漂移的季度回归 |
+| 主要提交 | `docs(plans)` 方案 → vendor 闭包 → oracle/fixture → 页面骨架 → 页面完整度 → B1/B2/B3 引擎 → 数据目录迁移修复 → e2e |
 
 ---
 
@@ -770,16 +782,17 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | F4 | 主进程单事务提交 | 2,000 行 upsert + 游标 + 状态 | **5.93 ms**（QA 探针）；**B1 真实 `commitScan` 5 次热运行 5.09–11.54 ms**（schema+2,000 行+deletes+cursor+status；rows-only 4.53 ms；open+pragmas 11 ms） | ✅ 通过（<30 ms） |
 | F5 | 打包冒烟 | `npm run build:win` 后安装版打开用量页扫 fixture home | **本会话未执行**：worktree 缺 native 预编译产物（C#/Rust sidecar），`build:native` 依赖本机工具链；usage 功能本身零新增原生依赖（vendored JS + node:sqlite 内置 + utilityProcess 路径），风险集中在 asar 内 worker 路径 | 🟡 待发布环境执行（见 §4.4 发布清单） |
 | F5* | worker 崩溃/取消/重启 | 真实 Electron：uncaught throw / kill / 重新 fork | 崩溃 exit 1 观测 1.46 ms；kill 2.2 ms；重启后首消息 137 ms | ✅ 通过 |
-| F6 | 本机冷扫（3 GB 日志） | 扫描 `%USERPROFILE%`，记录总时长/峰值内存/各工具耗时 | 总 __ s；峰值 __ MB；codex __ s / dsh __ s / opencode __ s | 待测（阈值 5 min） |
-| F7 | 无变化增量扫描 | 连续两次扫描 | 第二次 __ ms；新增桶 __ 个 | 待测（阈值 1.5 s / 0 桶） |
+| F6 | 本机冷扫（3 GB 日志） | 扫描 `%USERPROFILE%`，记录总时长/峰值内存/各工具耗时 | **首扫 15.70–15.76 s**（预算 5 min ✅）：codex ≈2.51 s、**dsh ≈12.79 s（80%，瓶颈）**、opencode ≈0.4 s；发现 300/145/1 文件，3 源 `ok`、无错误；落库 **578 桶**（codex 346 / dsh 136 / opencode 96），billable 3,766,123,731 / conversations 26,905；checkpoint 后 DB **3.62 MiB 且无 `-wal/-shm`**；主进程峰值 RSS **108 MB** | ✅ 通过（dsh 冷扫优化列为后续） |
+| F7 | 无变化增量扫描 | 连续两次扫描 | **503–1,013 ms（<1.5 s ✅）**；静态 fixture 用例证明 upserts=0/removed=0；真机因本会话自身 CLI 在写日志，表现为 0 个**新**桶 + 少量 LWW 值更新 | ✅ 通过 |
 | F8 | 查询性能（24 个月） | 10 万桶合成数据，summary/daily/breakdown/heatmap 各 100 次 | p95：summary 43.9–48.7 ms / daily 63.7–83.6 ms / heatmap ~2 ms / **breakdown 140–155 ms（冷查询，超 100 ms 预算）**；页面 60s/64 条 LRU 覆盖重复查询 | 🟡 基本达标（breakdown 冷查询待 B6 优化：覆盖索引/rollup） |
 | F9 | **TT oracle 基线** | `node scripts/usage-oracle-check.js --tt-only --sync`（fixture home） | TT 1.4.7 本地跑通：9 文件 → 11 桶（codex 4 / dsh 3 / opencode 4），golden 已提交；两次运行 md5 一致 | ✅ 通过 |
 | F10 | **解析层对拍（B0）** | vendored parser 以 sink 模式跑 fixture home，与 TT `queue.jsonl` 逐桶比较 | **11/11 桶一致、0 字段差异**（codex 4 / dsh 3 / opencode 4）；vendor smoke 93 断言通过 | ✅ 通过 |
 | F11 | **聚合层桶对拍（B1/B2）** | `node scripts/usage-oracle-check.js --hl-db <usage.db>`（同一 fixture home，3 工具扫完后） | **PASS：11/11 桶、0 字段差异；每日/来源/模型 sums 0 diff**；summary 合计 52,590 billable / 29,600 input / 18,700 cached / 350 cache_creation / 490 reasoning / 3,650 output / 12 conversations，与 golden 完全一致；二次无变化扫描 0 upsert / 31 ms；首扫 82 ms（进程内，真实 worker 冷启动 201 ms） | ✅ 通过 |
 | F12 | **TT 聚合 oracle 基线** | `node scripts/usage-oracle-check.js --tt-aggregates-only`（TT serve，2 tz × 4 period + heatmap） | 26 条目/2 文件，两次运行 md5 一致；`--self-test` 7/7；TT serve 端到端 1.64 s | ✅ 通过 |
 | F13 | **HL 聚合对拍（B3）** | 抓取 `usage:summary/daily/breakdown/heatmap` → `--aggregates <file>` | **PASS：26/26 条目、0 value diff、0 missing/extra**；summary month = 52,590 billable / 29,600 input / 18,700 cached / 350 cache_creation / 490 reasoning / 3,650 output / 12 conversations；heatmap golden cells（34,840/L4、9,450/L2、8,300/L1、active_days 3）一致；tz 差异（Shanghai day 8,300 vs UTC 2,100）一致 | ✅ 通过 |
+| F14 | **e2e（真实 Electron）** | `npx playwright test e2e/highlighter.spec.js`（受限宿主用 `HIGHLIGHTER_E2E_NO_SANDBOX=1` + `HIGHLIGHTER_E2E_DATA_ROOT_BASE=<checkout>/.tmp/e2e-data`） | **6/6 通过（34.6 s）**，含「未开启→同意→扫描 fixture home→52,590→3 源 ok」全链路；正常桌面/CI 无需上述 workaround | ✅ 通过 |
 
-> **Electron 探针环境备注（B0-3 实测）**：本会话的 DSH 宿主导出了 `ELECTRON_RUN_AS_NODE=1`，直接跑 `electron.exe script.js` 会被当成 Node（`app` undefined）；GUI/e2e/打包探针必须 `env -u ELECTRON_RUN_AS_NODE`。在受限 agent shell 里 Chromium 沙箱起不来，临时探针需 `--no-sandbox`（正常开发/用户环境不需要）；探针在所有情况下都不得创建可见窗口（本次 `browserWindowsCreated:0`）。
+> **Electron 探针环境备注（B0-3 实测）**：本会话的 DSH 宿主导出了 `ELECTRON_RUN_AS_NODE=1`，直接跑 `electron.exe script.js` 会被当成 Node（`app` undefined）；GUI/e2e/打包探针必须 `env -u ELECTRON_RUN_AS_NODE`。在受限 agent shell 里 Chromium 沙箱起不来，临时探针需 `--no-sandbox`（正常开发/用户环境不需要）；e2e 的对应 workaround 是环境变量 `HIGHLIGHTER_E2E_NO_SANDBOX=1` + `HIGHLIGHTER_E2E_DATA_ROOT_BASE=<checkout>/.tmp/e2e-data`（宿主禁止写 OS temp 时）。探针在所有情况下都不得创建可见窗口（本次 `browserWindowsCreated:0`）；e2e 运行已获用户批准（单显示器）。
 
 ---
 
@@ -793,3 +806,4 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | 2026-10-21 | **B0 gate 通过**：解析层 11/11 桶与 TT queue 完全一致（F10）；P0 spike 判定 S2/S3 可行（F2–F5*）；B1 核心引擎（store/state/time/tools/worker/feature/IPC + 48 tests）完成并接入 main.js/preload/ipc-security；codex 子集 4/4 桶与 golden 一致（F11 剩余 dsh/opencode 属 B2） |
 | 2026-10-21 | **B1/B2/B5 实施记录**：B2 三工具引擎完成（DSH/OpenCode 适配、collector 单飞/取消/崩溃恢复/进度/节流），修掉 hourly-state version 3 的重复计数 bug；**F11 PASS（11/11 桶、0 diff、二次扫描 0 桶）**；页面 B5 完成（52 周热力图/日视图小时/自定义区间）；e2e 注入 fixture home；聚合 oracle 首轮暴露 store 列名与 breakdown 结构 bug，engine 修复中（F13） |
 | 2026-10-21 | **B3 完成 / F13 PASS**：usage-query 独立模块（summary/daily/hourly/breakdown/heatmap + LRU + SQL 预聚合），修正 store 列名词汇（cache_creation/reasoning）与 breakdown 的 TT 兼容嵌套结构；**26/26 聚合条目 0 diff**；`usage:breakdown` 补 source/model 四列 token；`usage-time` DST/闰月/跨年用例；查询 p95 记录于 F8（breakdown 冷查询 140–155 ms 列为 B6 优化项） |
+| 2026-10-21 | **B6/E2E 记录**：修复「数据目录迁移丢 usage DB」产品缺陷（`ADDITIONAL_PERSISTENT` + `createManagedSourcePaths` 暴露 usage，回归测试 7/7 硬断言，含回滚/保留/清除/诊断隐私）；真机 F6 首扫 15.7 s / F7 增量 0.5–1.0 s（dsh 占 80%，列为后续优化）；**Playwright e2e 6/6 通过**（含 usage「未开启→同意→扫描→52,590→3 源 ok」全链路）；受限宿主 e2e/探针 workaround 与打包冒烟限制记录在 §4.4/附录 F |

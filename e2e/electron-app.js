@@ -12,12 +12,17 @@ async function launchHighlighter({ dataRoot, artifactsDir }) {
   if (!path.isAbsolute(dataRoot)) throw new Error('Highlighter E2E requires an absolute data root')
   const issues = []
   const savePath = path.join(dataRoot, 'diagnostics.zip')
+  // This development host is a confined session where Chromium's own sandbox
+  // cannot start. A normal desktop/CI shell keeps the sandbox on; the opt-in
+  // escape hatch below is never enabled by the product code.
+  const noSandbox = process.env.HIGHLIGHTER_E2E_NO_SANDBOX === '1'
+  const launchArgs = noSandbox ? ['--no-sandbox', projectRoot] : [projectRoot]
   const electronApp = await electron.launch({
     executablePath: electronPath,
-    args: [projectRoot],
+    args: launchArgs,
     cwd: projectRoot,
     artifactsDir,
-    chromiumSandbox: true,
+    chromiumSandbox: !noSandbox,
     timeout: 40_000,
     env: {
       ...process.env,

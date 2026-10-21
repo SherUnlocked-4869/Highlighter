@@ -6,7 +6,14 @@ const { launchHighlighter } = require('./electron-app')
 
 const test = base.test.extend({
   highlighter: async ({}, use, testInfo) => {
-    const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'highlighter-playwright-'))
+    // A normal desktop/CI shell can use the OS temp dir. Confined automation
+    // hosts may deny writes outside the repository; HIGHLIGHTER_E2E_DATA_ROOT_BASE
+    // lets such a run keep the throwaway data root inside the checkout.
+    const dataRootBase = process.env.HIGHLIGHTER_E2E_DATA_ROOT_BASE
+      ? path.resolve(process.env.HIGHLIGHTER_E2E_DATA_ROOT_BASE)
+      : os.tmpdir()
+    fs.mkdirSync(dataRootBase, { recursive: true })
+    const dataRoot = fs.mkdtempSync(path.join(dataRootBase, 'highlighter-playwright-'))
     const artifactsDir = testInfo.outputPath('electron-artifacts')
     fs.mkdirSync(artifactsDir, { recursive: true })
     const highlighter = await launchHighlighter({ dataRoot, artifactsDir })

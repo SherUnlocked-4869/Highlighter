@@ -71,8 +71,14 @@ function createUsageFeature(deps = {}) {
   function usageDir() {
     const paths = getPaths()
     const dir = paths?.usage
-    if (typeof dir !== 'string' || !dir) throw new Error('usage data directory is unavailable')
-    return dir
+    if (typeof dir === 'string' && dir) return dir
+    // Legacy profile (no managed data root selected yet) and the E2E harness keep
+    // no `paths` object; the other stores fall back to app.getPath('userData') in
+    // exactly this situation. Before a data-root migration the usage DB lives
+    // under the legacy userData; the migration copy group only covers managed
+    // roots, which is the documented pre-existing legacy boundary.
+    if (app && typeof app.getPath === 'function') return path.join(app.getPath('userData'), 'usage')
+    throw new Error('usage data directory is unavailable')
   }
 
   function ensureStore() {
