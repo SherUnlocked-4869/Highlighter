@@ -1,11 +1,13 @@
-// B4 (usage line): the "AI usage" settings-window route.
+// B4/B5 (usage line): the "AI usage" settings-window route.
 //
 // The page is a read-only instrument panel over the frozen `usage:*` IPC
 // contract (plan §2.7 / §2.8): status coverage strip, period tabs, KPI strip,
-// overview, source/model breakdown, 30-day trend and the daily table. The data
-// engine lands separately, so every IPC accessor is feature-probed here: a
-// missing engine renders a neutral "not connected" error state with a retry
-// button instead of demo data.
+// overview, source/model breakdown, 30-day trend, daily table and — B5
+// completeness — a 52-week heatmap, an hourly day view and a custom range
+// control. The data engine lands separately, so every IPC accessor is
+// feature-probed here: a missing engine renders a neutral "not connected" error
+// state with a retry button instead of demo data, and the optional B5 cards
+// (hourly/heatmap) are simply omitted when their channel is not there.
 //
 // Re-render safety follows history.js: renderUsage() can run again at any time
 // (period change, manual refresh, language hot switch) and async continuations
@@ -19,6 +21,7 @@
 const USAGE_DEFAULT_PERIOD = 'month'
 const USAGE_TREND_DAYS = 30
 const USAGE_MODEL_LIMIT = 8
+const USAGE_HEATMAP_WEEKS = 52
 
 // Period tabs in display order; labelKey resolves through t() on every render so
 // a language switch needs no reload.
@@ -70,8 +73,26 @@ const USAGE_CONSENT_POINTS = [
 // keep the accessor list here so the missing-engine path is one comparison.
 const USAGE_REQUIRED_METHODS = ['usageStatus', 'usageSummary', 'usageDaily', 'usageBreakdown', 'usageRefresh', 'usageClear']
 
+// B5 cards are progressive enhancement: their channels may arrive after the
+// required ones, so a missing method hides just that card (never the page).
+const USAGE_OPTIONAL_METHODS = ['usageHourly', 'usageHeatmap']
+
+// Localized message per custom-range validation failure (helper reasons, see
+// shared/usage-format.js validateCustomRange). Literals so the i18n checker can
+// resolve them against the config table.
+const USAGE_RANGE_REASON_KEYS = {
+  from: 'config.usage.range.invalid',
+  to: 'config.usage.range.invalid',
+  order: 'config.usage.range.order',
+  future: 'config.usage.range.future',
+  span: 'config.usage.range.span',
+  invalid: 'config.usage.range.invalid'
+}
+
 let usageRenderVersion = 0
 let usagePeriod = USAGE_DEFAULT_PERIOD
+let usageRange = { from: '', to: '' }
+let usagePeriodBeforeCustom = USAGE_DEFAULT_PERIOD
 let usageProgressUnsubscribe = null
 let usageRefreshPending = false
 
@@ -81,6 +102,39 @@ function usageHasApi(name) {
 
 function usageMissingMethods() {
   return USAGE_REQUIRED_METHODS.filter((name) => !usageHasApi(name))
+}
+
+function usageHasOptionalApi(name) {
+  return USAGE_OPTIONAL_METHODS.includes(name) && usageHasApi(name)
+}
+
+function usageToday() {
+  return window.usageFormat.toDayKey(new Date())
+}
+
+// Custom period is only entered through the range control, but a stale range can
+// survive a re-render/language switch; validate it before the IPC round trip and
+// fall back to the month tab with a toast (plan B5-3).
+function usageNormalizeRange() {
+  if (usagePeriod !== 'custom') return
+  const result = window.usageFormat.validateCustomRange(usageRange.from, usageRange.to, usageToday())
+  if (result.valid) {
+    usageRange = { from: result.from, to: result.to }
+    return
+  }
+  usagePeriod = 'month'
+  usageRange = { from: '', to: '' }
+  usageToast(t(USAGE_RANGE_REASON_KEYS[result.reason] || 'config.usage.range.invalid'))
+}
+
+// Every query channel takes the same {period, tz, from?, to?} shape; the custom
+// period is the only one that carries explicit bounds.
+function usageQueryParams() {
+  const tz = usageTimezone()
+  if (usagePeriod === 'custom') {
+    return { period: 'custom', tz, from: usageRange.from, to: usageRange.to }
+  }
+  return { period: usagePeriod, tz }
 }
 
 function usageIsCurrent(renderVersion) {
@@ -671,6 +725,149 @@ function usageTabsHtml() {
   return `<div class="tabs usage-tabs" role="tablist" aria-label="${escapeHtml(t('config.usage.tabs-label'))}">${buttons}</div>`
 }
 
+// --- B5: custom range control ------------------------------------------------
+
+// Two native date inputs (CSP-safe, no picker library) that feed
+// {period:'custom', from, to} into summary/daily/breakdown. The active range is
+// echoed by the overview's range label; invalid input is rejected in
+// usageApplyCustomRange() with the same validator the loading path uses.
+function usageRangeBarHtml() {
+  const format = window.usageFormat
+  const today = usageToday()
+  const defaultFrom = format.addDays(today, -(USAGE_TREND_DAYS - 1))
+  const from = usageRange.from || defaultFrom
+  const to = usageRange.to || today
+  const min = format.addDays(today, -format.CUSTOM_RANGE_MAX_SPAN_DAYS)
+  const active = usagePeriod === 'custom'
+  return `<div class="usage-range-bar${active ? ' active' : ''}" data-usage-range>
+    <span class="usage-range-name">${t('config.usage.range.label')}</span>
+    <label class="usage-range-field"><span>${t('config.usage.range.from')}</span><input class="usage-range-input" type="date" data-usage-range-from value="${escapeHtml(from)}" min="${escapeHtml(min)}" max="${escapeHtml(today)}"></label>
+    <label class="usage-range-field"><span>${t('config.usage.range.to')}</span><input class="usage-range-input" type="date" data-usage-range-to value="${escapeHtml(to)}" min="${escapeHtml(min)}" max="${escapeHtml(today)}"></label>
+    <button class="button" type="button" data-usage-range-apply>${t('config.usage.range.apply')}</button>
+    <button class="button" type="button" data-usage-range-reset>${t('config.usage.range.reset')}</button>
+  </div>`
+}
+
+// --- B5: 52-week activity heatmap -------------------------------------------
+
+function usageMonthLabel(monthKey) {
+  const parts = String(monthKey || '').split('-')
+  const year = Number(parts[0])
+  const month = Number(parts[1])
+  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) return String(monthKey || '')
+  try {
+    return new Intl.DateTimeFormat(usageIntlLocale(), { year: 'numeric', month: 'short' }).format(new Date(year, month - 1, 1))
+  } catch {
+    return String(monthKey || '')
+  }
+}
+
+function usageHeatmapLabel(cell) {
+  return window.usageFormat.formatTooltip({
+    title: cell.day,
+    rows: [
+      { label: t('config.usage.heatmap.billable'), value: cell.value },
+      { label: t('config.usage.heatmap.conversations'), value: cell.conversation_count }
+    ]
+  }).replace(/\n/g, '; ')
+}
+
+function usageHeatmapTooltipHtml(cell) {
+  const rows = [
+    { label: t('config.usage.heatmap.billable'), value: cell.value },
+    { label: t('config.usage.heatmap.conversations'), value: cell.conversation_count }
+  ]
+  return `<b class="usage-tooltip-title">${escapeHtml(cell.day)}</b>${rows.map((row) => `<span class="usage-tooltip-row"><i>${escapeHtml(row.label)}</i><b>${escapeHtml(usageFull(row.value))}</b></span>`).join('')}`
+}
+
+function usageHeatmapCellHtml(cell) {
+  if (!cell) return '<i class="usage-heat-cell usage-heat-empty" aria-hidden="true"></i>'
+  const levelClass = window.usageFormat.heatmapLevelClass(cell.level)
+  return `<i class="usage-heat-cell ${levelClass}" tabindex="0" role="img" data-usage-heat-day="${escapeHtml(cell.day)}" data-usage-heat-value="${cell.value}" data-usage-heat-conversations="${cell.conversation_count}" aria-label="${escapeHtml(usageHeatmapLabel(cell))}"></i>`
+}
+
+// The card is conditional on the channel, not on the data: a build without
+// usage:heatmap hides it entirely, while an available channel with no activity
+// still shows the empty card (the feature exists, there is just nothing yet).
+function usageHeatmapHtml(heatmap) {
+  if (!usageHasOptionalApi('usageHeatmap')) return ''
+  if (!heatmap) return ''
+  const model = window.usageFormat.layoutHeatmapWeeks(heatmap.weeks)
+  const activeDays = usageNumber(heatmap.activeDays)
+  const head = `<div class="usage-card-head">
+    <h2>${t('config.usage.heatmap.title')}</h2>
+    <span>${t('config.usage.heatmap.hint')} · ${t('config.usage.heatmap.active-days', { count: activeDays })}</span>
+  </div>`
+  if (model.columns.length === 0) {
+    return `<section class="card usage-heatmap" id="usageHeatmap">${head}<div class="usage-empty-text">${t('config.usage.heatmap.empty')}</div></section>`
+  }
+  const monthLabels = model.months.map((entry, index) => {
+    const next = model.months[index + 1] ? model.months[index + 1].index : model.columns.length
+    const span = Math.max(1, next - entry.index)
+    return `<span style="grid-column:${entry.index + 1} / span ${span}">${escapeHtml(usageMonthLabel(entry.month))}</span>`
+  }).join('')
+  const cells = model.columns.map((column) => column.map(usageHeatmapCellHtml).join('')).join('')
+  const legend = ['0', '1', '2', '3', '4'].map((level) => `<i class="usage-heat-swatch level-${level}" aria-hidden="true"></i>`).join('')
+  return `<section class="card usage-heatmap" id="usageHeatmap">
+    ${head}
+    <div class="usage-heatmap-chart" data-usage-heatmap>
+      <div class="usage-heatmap-scroll" data-usage-heatmap-scroll>
+        <div class="usage-heatmap-months" style="grid-template-columns:repeat(${model.columns.length},10px)">${monthLabels}</div>
+        <div class="usage-heatmap-grid">${cells}</div>
+      </div>
+      <div class="usage-tooltip" data-usage-heatmap-tooltip hidden></div>
+    </div>
+    <div class="usage-heatmap-legend">
+      <span>${t('config.usage.heatmap.less')}</span>${legend}<span>${t('config.usage.heatmap.more')}</span>
+    </div>
+  </section>`
+}
+
+// --- B5: hourly series for the day view -------------------------------------
+
+function usageHourlyLabel(row, clock) {
+  return window.usageFormat.formatTooltip({
+    title: clock || t('config.usage.hourly.title'),
+    rows: [
+      { label: t('config.usage.trend.total'), value: row && row.billable_total_tokens },
+      { label: t('config.usage.trend.input'), value: row && row.input_tokens },
+      { label: t('config.usage.trend.output'), value: row && row.output_tokens },
+      { label: t('config.usage.kpi.conversations'), value: row && row.conversation_count }
+    ]
+  }).replace(/\n/g, '; ')
+}
+
+function usageHourClock(value) {
+  const hour = String(value || '')
+  return hour.length >= 16 ? hour.slice(11, 16) : ''
+}
+
+function usageHourlyHtml(hourly) {
+  // Day view only, and only when the channel exists; the rest of the page keeps
+  // rendering the same way it did before B5.
+  if (usagePeriod !== 'day' || !usageHasOptionalApi('usageHourly') || !hourly) return ''
+  const rows = Array.isArray(hourly.rows) ? hourly.rows : []
+  const day = hourly.day || usageToday()
+  const head = `<div class="usage-card-head">
+    <h2>${t('config.usage.hourly.title')}</h2>
+    <span>${escapeHtml(day)} · ${t('config.usage.hourly.hint')}</span>
+  </div>`
+  if (rows.length === 0) {
+    return `<section class="card usage-hourly" id="usageHourly">${head}<div class="usage-empty-text">${t('config.usage.hourly.empty')}</div></section>`
+  }
+  const max = rows.reduce((value, row) => Math.max(value, usageNumber(row && row.billable_total_tokens)), 0)
+  const bars = rows.map((row) => {
+    const value = usageNumber(row && row.billable_total_tokens)
+    const height = max > 0 ? Math.max(2, Math.round((value / max) * 100)) : 2
+    const label = usageHourlyLabel(row, usageHourClock(row && row.hour))
+    return `<div class="usage-hourly-col" tabindex="0" role="img" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"><i class="usage-hourly-bar${value > 0 ? '' : ' is-empty'}" style="height:${height}%"></i></div>`
+  }).join('')
+  const firstHour = usageHourClock(rows[0] && rows[0].hour)
+  const lastHour = usageHourClock(rows[rows.length - 1] && rows[rows.length - 1].hour)
+  const axis = `<div class="usage-hourly-axis"><span>${escapeHtml(firstHour)}</span><span>${escapeHtml(lastHour)}</span></div>`
+  return `<section class="card usage-hourly" id="usageHourly">${head}<div class="usage-hourly-chart" data-usage-hourly>${bars}</div>${axis}</section>`
+}
+
 function usageRenderDashboard(renderVersion, payload) {
   if (!usageIsCurrent(renderVersion)) return
   const status = payload.status
@@ -688,15 +885,18 @@ function usageRenderDashboard(renderVersion, payload) {
     ${usageCoverageHtml(status)}
     ${usageStateBannerHtml(state)}
     ${usageTabsHtml()}
+    ${usageRangeBarHtml()}
     ${usageKpisHtml(summary)}
     <div class="usage-main" data-usage-view="${escapeHtml(usagePeriod)}">
       ${usageOverviewHtml(summary, sources)}
       ${usageBreakdownHtml(sources, models)}
       ${usageTrendHtml(daily, payload.trend)}
+      ${usageHourlyHtml(payload.hourly)}
       ${usageDailyTableHtml(dailyRows)}
     </div>
+    ${usageHeatmapHtml(payload.heatmap)}
   </div>`
-  usageBindDashboard(dailyRows, payload.trend)
+  usageBindDashboard(payload)
   usageSubscribeProgress()
 }
 
@@ -751,15 +951,29 @@ async function usageRenderRoute() {
     return
   }
 
-  const params = { period: usagePeriod, tz: usageTimezone() }
+  usageNormalizeRange()
+  const params = usageQueryParams()
+  // Optional B5 channels: rejections collapse to null so a missing/not-yet-
+  // implemented heatmap or hourly channel hides its card instead of failing the
+  // whole page (the required four channels keep the strict Promise.all below).
+  const heatmapRequest = usageHasOptionalApi('usageHeatmap')
+    ? window.electronAPI.usageHeatmap({ tz: params.tz, weeks: USAGE_HEATMAP_WEEKS }).catch(() => null)
+    : Promise.resolve(null)
+  const hourlyRequest = usagePeriod === 'day' && usageHasOptionalApi('usageHourly')
+    ? window.electronAPI.usageHourly({ day: usageToday(), tz: params.tz }).catch(() => null)
+    : Promise.resolve(null)
   let summary
   let daily
   let breakdown
+  let heatmap
+  let hourly
   try {
-    [summary, daily, breakdown] = await Promise.all([
+    [summary, daily, breakdown, heatmap, hourly] = await Promise.all([
       window.electronAPI.usageSummary(params),
       window.electronAPI.usageDaily(params),
-      window.electronAPI.usageBreakdown({ ...params, scope: 'source' })
+      window.electronAPI.usageBreakdown({ ...params, scope: 'source' }),
+      heatmapRequest,
+      hourlyRequest
     ])
   } catch (error) {
     if (usageIsCurrent(renderVersion)) usageRenderLoadError(renderVersion, status, error)
@@ -769,7 +983,7 @@ async function usageRenderRoute() {
 
   const trend = await usageLoadTrend(renderVersion)
   if (!usageIsCurrent(renderVersion)) return
-  usageRenderDashboard(renderVersion, { status, summary, daily, breakdown, trend })
+  usageRenderDashboard(renderVersion, { status, summary, daily, breakdown, trend, heatmap, hourly })
 }
 
 async function renderUsage() {
@@ -901,10 +1115,11 @@ function usageBindTrend(dailyRows, trend) {
   chart.addEventListener('mouseleave', hide)
 }
 
-function usageBindDashboard(dailyRows, trend) {
+function usageBindDashboard(payload) {
   usageBindRefresh()
   usageBindCoverageActions()
   usageBindRetry()
+  usageBindRangeBar()
   view.querySelectorAll('[data-usage-tab]').forEach((button) => {
     button.onclick = () => {
       const next = button.dataset.usageTab
@@ -913,7 +1128,94 @@ function usageBindDashboard(dailyRows, trend) {
       void renderUsage()
     }
   })
-  usageBindTrend(dailyRows, trend)
+  const dailyRows = payload && payload.daily && Array.isArray(payload.daily.rows) ? payload.daily.rows : []
+  usageBindTrend(dailyRows, payload ? payload.trend : null)
+  usageBindHeatmapTooltip()
+}
+
+function usageReadRangeInput(selector) {
+  const input = view.querySelector(selector)
+  return input && typeof input.value === 'string' ? input.value : ''
+}
+
+// Invalid input falls back to the month tab with a toast (plan B5-3); valid
+// input becomes {period:'custom', from, to} on the next query round.
+function usageApplyCustomRange() {
+  const result = window.usageFormat.validateCustomRange(
+    usageReadRangeInput('[data-usage-range-from]'),
+    usageReadRangeInput('[data-usage-range-to]'),
+    usageToday()
+  )
+  if (!result.valid) {
+    usageToast(t(USAGE_RANGE_REASON_KEYS[result.reason] || 'config.usage.range.invalid'))
+    usagePeriod = 'month'
+    usageRange = { from: '', to: '' }
+    void renderUsage()
+    return
+  }
+  if (usagePeriod !== 'custom') usagePeriodBeforeCustom = usagePeriod
+  usageRange = { from: result.from, to: result.to }
+  usagePeriod = 'custom'
+  usageToast(t('config.usage.range.applied'))
+  void renderUsage()
+}
+
+function usageResetCustomRange() {
+  usageRange = { from: '', to: '' }
+  usagePeriod = usagePeriodBeforeCustom || USAGE_DEFAULT_PERIOD
+  void renderUsage()
+}
+
+function usageBindRangeBar() {
+  const apply = view.querySelector('[data-usage-range-apply]')
+  if (apply) apply.onclick = () => usageApplyCustomRange()
+  const reset = view.querySelector('[data-usage-range-reset]')
+  if (reset) reset.onclick = () => usageResetCustomRange()
+}
+
+// The heatmap tooltip is positioned from the hovered cell's viewport rect, which
+// stays correct inside the horizontal scroller; horizontal flip keeps it inside
+// the chart near either edge. The scroller starts at the newest week.
+function usageBindHeatmapTooltip() {
+  const chart = view.querySelector('[data-usage-heatmap]')
+  const tooltip = view.querySelector('[data-usage-heatmap-tooltip]')
+  if (!chart || !tooltip) return
+  const hide = () => { tooltip.hidden = true }
+  chart.querySelectorAll('[data-usage-heat-day]').forEach((cell) => {
+    const show = () => {
+      const data = {
+        day: cell.dataset.usageHeatDay,
+        value: usageNumber(cell.dataset.usageHeatValue),
+        conversation_count: usageNumber(cell.dataset.usageHeatConversations)
+      }
+      tooltip.innerHTML = usageHeatmapTooltipHtml(data)
+      tooltip.hidden = false
+      const chartRect = chart.getBoundingClientRect()
+      const cellRect = cell.getBoundingClientRect()
+      const center = cellRect.left - chartRect.left + cellRect.width / 2
+      const tooltipWidth = tooltip.offsetWidth
+      const chartWidth = chart.clientWidth
+      let left = center
+      let flip = 'center'
+      if (center - tooltipWidth / 2 < 0) {
+        left = Math.max(0, cellRect.left - chartRect.left)
+        flip = 'left'
+      } else if (center + tooltipWidth / 2 > chartWidth) {
+        left = Math.min(chartWidth, cellRect.right - chartRect.left)
+        flip = 'right'
+      }
+      tooltip.dataset.flip = flip
+      tooltip.style.left = `${Math.round(left)}px`
+      tooltip.style.top = `${Math.max(2, cellRect.top - chartRect.top - tooltip.offsetHeight - 6)}px`
+    }
+    cell.addEventListener('mouseenter', show)
+    cell.addEventListener('focus', show)
+    cell.addEventListener('mouseleave', hide)
+    cell.addEventListener('blur', hide)
+  })
+  chart.addEventListener('mouseleave', hide)
+  const scroll = view.querySelector('[data-usage-heatmap-scroll]')
+  if (scroll && scroll.scrollWidth > scroll.clientWidth) scroll.scrollLeft = scroll.scrollWidth
 }
 
 function usageUnsubscribeProgress() {

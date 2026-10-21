@@ -767,7 +767,29 @@
     'config.usage.state.unsupported-title': '当前没有可统计的来源',
     'config.usage.state.unsupported-body': '仅支持本机可读取日志的工具；账号级工具（如 Cursor）不在统计范围内。',
     'config.usage.state.retry': '重试',
-    'config.usage.estimated-badge': '估算'
+    'config.usage.estimated-badge': '估算',
+    // B5 completeness: activity heatmap, hourly day view, custom range control.
+    'config.usage.heatmap.title': '活跃热力图',
+    'config.usage.heatmap.hint': '近 52 周每日 Token',
+    'config.usage.heatmap.active-days': '{count} 个活跃日',
+    'config.usage.heatmap.billable': '计费 Token',
+    'config.usage.heatmap.conversations': '对话数',
+    'config.usage.heatmap.less': '少',
+    'config.usage.heatmap.more': '多',
+    'config.usage.heatmap.empty': '近 52 周还没有活动',
+    'config.usage.hourly.title': '今日小时分布',
+    'config.usage.hourly.hint': '本地时间，每小时计费 Token',
+    'config.usage.hourly.empty': '今天还没有用量记录',
+    'config.usage.range.label': '自定义区间',
+    'config.usage.range.from': '开始日期',
+    'config.usage.range.to': '结束日期',
+    'config.usage.range.apply': '应用',
+    'config.usage.range.reset': '取消',
+    'config.usage.range.invalid': '请选择有效的开始与结束日期',
+    'config.usage.range.future': '不能选择未来日期',
+    'config.usage.range.order': '开始日期不能晚于结束日期',
+    'config.usage.range.span': '区间跨度不能超过 800 天',
+    'config.usage.range.applied': '已切换到自定义区间'
   })
 
   add('en-US', {
@@ -1505,7 +1527,29 @@
     'config.usage.state.unsupported-title': 'No measurable sources',
     'config.usage.state.unsupported-body': 'Only tools with local logs are measured; account-level tools such as Cursor are out of scope.',
     'config.usage.state.retry': 'Retry',
-    'config.usage.estimated-badge': 'Estimated'
+    'config.usage.estimated-badge': 'Estimated',
+    // B5 completeness: activity heatmap, hourly day view, custom range control.
+    'config.usage.heatmap.title': 'Activity heatmap',
+    'config.usage.heatmap.hint': 'Daily tokens over 52 weeks',
+    'config.usage.heatmap.active-days': '{count} active days',
+    'config.usage.heatmap.billable': 'Billable tokens',
+    'config.usage.heatmap.conversations': 'Conversations',
+    'config.usage.heatmap.less': 'Less',
+    'config.usage.heatmap.more': 'More',
+    'config.usage.heatmap.empty': 'No activity in the last 52 weeks',
+    'config.usage.hourly.title': 'Hourly breakdown',
+    'config.usage.hourly.hint': 'Local time, billable tokens per hour',
+    'config.usage.hourly.empty': 'No usage recorded today',
+    'config.usage.range.label': 'Custom range',
+    'config.usage.range.from': 'Start date',
+    'config.usage.range.to': 'End date',
+    'config.usage.range.apply': 'Apply',
+    'config.usage.range.reset': 'Cancel',
+    'config.usage.range.invalid': 'Pick a valid start and end date',
+    'config.usage.range.future': 'Future dates are not allowed',
+    'config.usage.range.order': 'The start date must not be after the end date',
+    'config.usage.range.span': 'The range cannot span more than 800 days',
+    'config.usage.range.applied': 'Custom range applied'
   })
 
   add('zh-TW', {
@@ -2243,6 +2287,28 @@
     'config.usage.state.unsupported-title': '目前沒有可統計的來源',
     'config.usage.state.unsupported-body': '僅支援本機可讀取日誌的工具；帳號級工具（如 Cursor）不在統計範圍內。',
     'config.usage.state.retry': '重試',
-    'config.usage.estimated-badge': '估算'
+    'config.usage.estimated-badge': '估算',
+    // B5 completeness: activity heatmap, hourly day view, custom range control.
+    'config.usage.heatmap.title': '活躍熱力圖',
+    'config.usage.heatmap.hint': '近 52 週每日 Token',
+    'config.usage.heatmap.active-days': '{count} 個活躍日',
+    'config.usage.heatmap.billable': '計費 Token',
+    'config.usage.heatmap.conversations': '對話數',
+    'config.usage.heatmap.less': '少',
+    'config.usage.heatmap.more': '多',
+    'config.usage.heatmap.empty': '近 52 週還沒有活動',
+    'config.usage.hourly.title': '今日小時分佈',
+    'config.usage.hourly.hint': '本地時間，每小時計費 Token',
+    'config.usage.hourly.empty': '今天還沒有用量記錄',
+    'config.usage.range.label': '自訂區間',
+    'config.usage.range.from': '開始日期',
+    'config.usage.range.to': '結束日期',
+    'config.usage.range.apply': '套用',
+    'config.usage.range.reset': '取消',
+    'config.usage.range.invalid': '請選擇有效的開始與結束日期',
+    'config.usage.range.future': '不能選擇未來日期',
+    'config.usage.range.order': '開始日期不能晚於結束日期',
+    'config.usage.range.span': '區間跨度不能超過 800 天',
+    'config.usage.range.applied': '已切換到自訂區間'
   })
 })()

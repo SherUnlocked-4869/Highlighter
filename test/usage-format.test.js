@@ -118,6 +118,101 @@ test('formatTooltip builds plain text with full grouped values', () => {
   assert.equal(format.formatTooltip({ title: '  2026-10-20  ' }), '2026-10-20')
 })
 
+test('heatmapLevelClass maps payload levels to the five CSS buckets', () => {
+  assert.equal(format.heatmapLevelClass(0), 'level-0')
+  assert.equal(format.heatmapLevelClass(1), 'level-1')
+  assert.equal(format.heatmapLevelClass(2), 'level-2')
+  assert.equal(format.heatmapLevelClass(3), 'level-3')
+  assert.equal(format.heatmapLevelClass(4), 'level-4')
+  // Out-of-range and malformed levels never paint a hot cell.
+  assert.equal(format.heatmapLevelClass(5), 'level-4')
+  assert.equal(format.heatmapLevelClass(-1), 'level-0')
+  assert.equal(format.heatmapLevelClass(2.6), 'level-3')
+  assert.equal(format.heatmapLevelClass('3'), 'level-3')
+  for (const value of [undefined, null, NaN, Infinity, 'x']) {
+    assert.equal(format.heatmapLevelClass(value), 'level-0', `level ${String(value)}`)
+  }
+})
+
+test('layoutHeatmapWeeks normalizes and pads the frozen heatmap payload', () => {
+  const fixture = require('./fixtures/usage/ipc/heatmap.json')
+  const model = format.layoutHeatmapWeeks(fixture.weeks)
+  assert.equal(model.columns.length, 2)
+  // Monday-first payload order is preserved, seven rows per column.
+  for (const column of model.columns) assert.equal(column.length, 7)
+  assert.equal(model.columns[0][0].day, '2026-10-05')
+  assert.equal(model.columns[0][0].value, 1700000)
+  assert.equal(model.columns[0][0].level, 3)
+  assert.equal(model.columns[1][6].day, '2026-10-18')
+  // Both columns are October 2026, so the tick row has exactly one label.
+  assert.deepEqual(model.months, [{ index: 0, month: '2026-10' }])
+})
+
+test('layoutHeatmapWeeks emits month ticks when the grid crosses a month', () => {
+  const cell = (day) => ({ day, value: 10, level: 1, total_tokens: 10, conversation_count: 1 })
+  const model = format.layoutHeatmapWeeks([
+    [cell('2026-09-28'), cell('2026-09-29'), cell('2026-09-30'), cell('2026-10-01'), cell('2026-10-02'), cell('2026-10-03'), cell('2026-10-04')],
+    [cell('2026-10-05'), cell('2026-10-06'), cell('2026-10-07'), cell('2026-10-08'), cell('2026-10-09'), cell('2026-10-10'), cell('2026-10-11')]
+  ])
+  // The tick is anchored on the first populated row (Monday) of each column.
+  assert.deepEqual(model.months, [
+    { index: 0, month: '2026-09' },
+    { index: 1, month: '2026-10' }
+  ])
+})
+
+test('layoutHeatmapWeeks pads short weeks and drops malformed cells', () => {
+  const model = format.layoutHeatmapWeeks([
+    [{ day: '2026-10-05', value: '123', level: 9, total_tokens: '9', conversation_count: '4' }],
+    null,
+    [null, { day: 'not-a-day', value: 5, level: 1 }, { day: '2026-10-13', value: -2, level: -1 }]
+  ])
+  assert.equal(model.columns.length, 3)
+  assert.equal(model.columns[0].length, 7)
+  assert.equal(model.columns[0][0].value, 123)
+  assert.equal(model.columns[0][0].level, 4)
+  assert.equal(model.columns[0][0].conversation_count, 4)
+  assert.deepEqual(model.columns[0].slice(1), [null, null, null, null, null, null])
+  assert.deepEqual(model.columns[1], [null, null, null, null, null, null, null])
+  // Invalid day cells are dropped; negative values clamp to 0.
+  assert.equal(model.columns[2][0], null)
+  assert.equal(model.columns[2][1], null)
+  assert.equal(model.columns[2][2].value, 0)
+  assert.equal(model.columns[2][2].level, 0)
+  // Only columns with an anchor produce a month tick; the all-null column is skipped.
+  assert.deepEqual(model.months, [{ index: 0, month: '2026-10' }])
+})
+
+test('layoutHeatmapWeeks tolerates a missing or malformed payload', () => {
+  for (const value of [undefined, null, {}, 'weeks', 42]) {
+    assert.deepEqual(format.layoutHeatmapWeeks(value), { columns: [], months: [] }, `payload ${String(value)}`)
+  }
+})
+
+test('validateCustomRange enforces order, future and the 800-day span', () => {
+  const today = '2026-10-21'
+  assert.deepEqual(format.validateCustomRange('2026-10-01', '2026-10-21', today), {
+    valid: true, reason: '', from: '2026-10-01', to: '2026-10-21'
+  })
+  // A single day is a valid custom range.
+  assert.equal(format.validateCustomRange(today, today, today).valid, true)
+  // Exactly 800 days is accepted; 801 is not (plan §2.7 validation matrix).
+  const from800 = format.addDays(today, -format.CUSTOM_RANGE_MAX_SPAN_DAYS)
+  const from801 = format.addDays(today, -(format.CUSTOM_RANGE_MAX_SPAN_DAYS + 1))
+  assert.equal(format.validateCustomRange(from800, today, today).valid, true)
+  assert.deepEqual(format.validateCustomRange(from801, today, today), { valid: false, reason: 'span', from: from801, to: today })
+  // Start after end.
+  assert.equal(format.validateCustomRange(today, '2026-10-20', today).reason, 'order')
+  // Future end date.
+  assert.equal(format.validateCustomRange(today, format.addDays(today, 1), today).reason, 'future')
+  // Malformed bounds name the offending side.
+  assert.deepEqual(format.validateCustomRange('2026-1-1', today, today), { valid: false, reason: 'from', from: '', to: today })
+  assert.equal(format.validateCustomRange('', today, today).reason, 'from')
+  assert.deepEqual(format.validateCustomRange(today, 'not-a-day', today), { valid: false, reason: 'to', from: today, to: '' })
+  // With no "today" reference the future check is skipped but the span still applies.
+  assert.equal(format.validateCustomRange('2026-10-01', '2026-10-21').valid, true)
+})
+
 test('toDayKey normalizes Date instances and day-key strings', () => {
   assert.equal(format.toDayKey(new Date(2026, 9, 21, 23, 30)), '2026-10-21')
   assert.equal(format.toDayKey('2026-10-21'), '2026-10-21')
@@ -151,13 +246,17 @@ test('isChineseLanguage matches zh variants only', () => {
 
 test('the UMD surface exposes exactly the helpers the page uses', () => {
   assert.deepEqual(Object.keys(format).sort(), [
+    'CUSTOM_RANGE_MAX_SPAN_DAYS',
     'addDays',
     'formatCompactToken',
     'formatFullToken',
     'formatRangeLabel',
     'formatSharePct',
     'formatTooltip',
+    'heatmapLevelClass',
     'isChineseLanguage',
-    'toDayKey'
+    'layoutHeatmapWeeks',
+    'toDayKey',
+    'validateCustomRange'
   ])
 })

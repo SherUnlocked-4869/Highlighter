@@ -174,6 +174,93 @@
     return lines.join('\n')
   }
 
+  // Custom-range contract (plan §2.7): from/to are 'YYYY-MM-DD', from <= to, no
+  // future day and at most 800 days of span. Both the date inputs and the route
+  // go through this one validator so the rule cannot drift between render paths.
+  const CUSTOM_RANGE_MAX_SPAN_DAYS = 800
+
+  function dayOrdinal(dayKey) {
+    const key = toDayKey(dayKey)
+    if (!key) return NaN
+    const [year, month, day] = key.split('-').map(Number)
+    // Date.UTC keeps the arithmetic free of DST shifts: a day is always 86400000 ms.
+    return Math.round(Date.UTC(year, month - 1, day) / 86400000)
+  }
+
+  function validateCustomRange(from, to, today) {
+    const start = toDayKey(from)
+    const end = toDayKey(to)
+    const todayKey = toDayKey(today)
+    if (!start) return { valid: false, reason: 'from', from: start, to: end }
+    if (!end) return { valid: false, reason: 'to', from: start, to: end }
+    if (start > end) return { valid: false, reason: 'order', from: start, to: end }
+    if (todayKey && end > todayKey) return { valid: false, reason: 'future', from: start, to: end }
+    const span = dayOrdinal(end) - dayOrdinal(start)
+    if (!Number.isFinite(span) || span > CUSTOM_RANGE_MAX_SPAN_DAYS) {
+      return { valid: false, reason: 'span', from: start, to: end }
+    }
+    return { valid: true, reason: '', from: start, to: end }
+  }
+
+  const HEATMAP_WEEK_LENGTH = 7
+
+  function normalizeHeatmapLevel(level) {
+    const number = Number(level)
+    return Number.isFinite(number) ? Math.min(4, Math.max(0, Math.round(number))) : 0
+  }
+
+  // CSS class for one heatmap cell. Level 0 is "no activity"; levels 1..4 are the
+  // max-relative buckets the query layer returns (plan §2.6). Bad input stays at
+  // level 0 so a malformed bucket can never paint a fake hot cell.
+  function heatmapLevelClass(level) {
+    return `level-${normalizeHeatmapLevel(level)}`
+  }
+
+  function normalizeHeatmapValue(value) {
+    const number = Number(value)
+    return Number.isFinite(number) && number > 0 ? number : 0
+  }
+
+  function normalizeHeatmapCell(cell) {
+    if (!cell || typeof cell !== 'object' || Array.isArray(cell)) return null
+    const day = toDayKey(cell.day)
+    if (!day) return null
+    return {
+      day,
+      value: normalizeHeatmapValue(cell.value),
+      level: normalizeHeatmapLevel(cell.level),
+      total_tokens: normalizeHeatmapValue(cell.total_tokens),
+      conversation_count: normalizeHeatmapValue(cell.conversation_count)
+    }
+  }
+
+  // Turns the IPC `weeks[][]` payload into a render model:
+  //   columns  one 7-cell (Monday..Sunday) array per week, padded with null;
+  //   months   [{ index, month: 'YYYY-MM' }] tick positions, one per new month.
+  // The query layer already returns Monday-first columns (plan §2.6 S5); this
+  // helper does not reorder, it only normalizes/pads, so a column/row mix-up in
+  // the payload cannot silently rotate the grid.
+  function layoutHeatmapWeeks(weeks) {
+    if (!Array.isArray(weeks)) return { columns: [], months: [] }
+    const columns = weeks.map((week) => {
+      const source = Array.isArray(week) ? week : []
+      const cells = []
+      for (let index = 0; index < HEATMAP_WEEK_LENGTH; index += 1) cells.push(normalizeHeatmapCell(source[index]))
+      return cells
+    })
+    const months = []
+    let lastMonth = ''
+    columns.forEach((cells, index) => {
+      const anchor = cells.find((cell) => cell !== null)
+      if (!anchor) return
+      const month = anchor.day.slice(0, 7)
+      if (month === lastMonth) return
+      months.push({ index, month })
+      lastMonth = month
+    })
+    return { columns, months }
+  }
+
   return {
     formatCompactToken,
     formatFullToken,
@@ -182,6 +269,10 @@
     formatTooltip,
     toDayKey,
     addDays,
-    isChineseLanguage
+    isChineseLanguage,
+    CUSTOM_RANGE_MAX_SPAN_DAYS,
+    validateCustomRange,
+    heatmapLevelClass,
+    layoutHeatmapWeeks
   }
 })
