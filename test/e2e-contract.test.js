@@ -16,7 +16,11 @@ test('renderer E2E uses a thin Playwright Electron adapter and isolated per-test
   assert.match(packageJson.scripts['test:e2e'], /playwright test/)
   assert.match(config, /workers: 1/)
   assert.match(adapter, /_electron: electron/)
-  assert.match(adapter, /chromiumSandbox: true/)
+  // The sandbox stays on by default; confined automation hosts can opt out for a
+  // single run (Chromium's sandbox cannot start there) and must keep the escape
+  // hatch explicit and env-gated rather than silently defaulting to off.
+  assert.match(adapter, /const noSandbox = process\.env\.HIGHLIGHTER_E2E_NO_SANDBOX === '1'/)
+  assert.match(adapter, /chromiumSandbox: !noSandbox/)
   assert.match(adapter, /dialog\.showOpenDialog = async/)
   assert.match(adapter, /dialog\.showSaveDialog = async/)
   assert.match(adapter, /dialog\.showMessageBox = async/)
@@ -25,6 +29,9 @@ test('renderer E2E uses a thin Playwright Electron adapter and isolated per-test
   assert.match(adapter, /child-process-gone/)
   assert.match(fixtures, /mkdtempSync/)
   assert.match(fixtures, /fs\.rmSync\(dataRoot/)
+  // Throwaway roots default to the OS temp dir but may be relocated inside the
+  // checkout when the automation host denies writes outside the repository.
+  assert.match(fixtures, /HIGHLIGHTER_E2E_DATA_ROOT_BASE/)
   assert.match(main, /configureE2eEnvironment\(\{ app \}\)[\s\S]*prepareDataRoot/)
   assert.match(main, /if \(!e2eContext\.enabled\) \{[\s\S]*createTrayIcon\(\)[\s\S]*initSelectionHook\(\)/)
 })
