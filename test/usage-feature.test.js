@@ -102,15 +102,14 @@ test('feature scans the fixture home through the worker and matches the codex go
   assert.equal(codex.files, 3)
   assert.equal(codex.coverageStartAt, '2026-03-14T00:00:00.000Z')
 
-  // Committed bucket rows must equal the TokenTracker golden codex slice.
+  // Committed bucket rows must equal the TokenTracker golden rows (3 tools).
   const { DatabaseSync } = require('node:sqlite')
   const db = new DatabaseSync(path.join(usageDir, 'usage.db'), { readOnly: true })
   const rows = db.prepare('SELECT * FROM usage_bucket ORDER BY source, hour_start, model').all()
   db.close()
-  const golden = GOLDEN.filter((row) => row.source === 'codex')
-  assert.equal(rows.length, golden.length)
+  assert.equal(rows.length, GOLDEN.length)
   const keyOf = (row) => `${row.source}|${row.model}|${row.hour_start}`
-  const goldenByKey = new Map(golden.map((row) => [keyOf(row), row]))
+  const goldenByKey = new Map(GOLDEN.map((row) => [keyOf(row), row]))
   for (const row of rows) {
     const expected = goldenByKey.get(keyOf(row))
     assert.ok(expected, `unexpected bucket ${keyOf(row)}`)
@@ -131,12 +130,12 @@ test('feature summary/daily/hourly/breakdown/heatmap honor local day ranges', as
   await waitForIdle(feature)
 
   const total = await ipcHandlers.get('usage:summary')(null, { period: 'total', tz: 'Asia/Shanghai' })
-  const codexBillable = GOLDEN.filter((row) => row.source === 'codex').reduce((sum, row) => sum + row.billable_total_tokens, 0)
+  const goldenBillable = GOLDEN.reduce((sum, row) => sum + row.billable_total_tokens, 0)
   assert.equal(total.period, 'total')
   assert.equal(total.from, '2024-11-01')
   assert.equal(total.to, '2026-10-21')
-  assert.equal(total.totals.billable_total_tokens, codexBillable)
-  assert.equal(total.totals.conversation_count, 5)
+  assert.equal(total.totals.billable_total_tokens, goldenBillable)
+  assert.equal(total.totals.conversation_count, 12)
   assert.equal(total.totals.total_cost_usd, null)
   assert.deepEqual(total.pricing, { mode: 'none', version: null })
   assert.equal(total.rolling.avgPerActiveDay, 0, 'fixture data is outside the rolling 30-day window')
@@ -144,7 +143,7 @@ test('feature summary/daily/hourly/breakdown/heatmap honor local day ranges', as
 
   const daily = await ipcHandlers.get('usage:daily')(null, { period: 'custom', tz: 'UTC', from: '2026-03-14', to: '2026-03-16' })
   assert.deepEqual(daily.rows.map((row) => row.day), ['2026-03-14', '2026-03-15', '2026-03-16'])
-  assert.equal(daily.rows[0].billable_total_tokens, 21950)
+  assert.equal(daily.rows[0].billable_total_tokens, 34840)
   assert.equal(daily.rows[2].billable_total_tokens, 2100)
 
   const future = await ipcHandlers.get('usage:daily')(null, { period: 'custom', tz: 'UTC', from: '2026-10-01', to: '2026-10-31' })
@@ -158,12 +157,11 @@ test('feature summary/daily/hourly/breakdown/heatmap honor local day ranges', as
   assert.equal(hourly.to, '2026-03-15T00:00:00.000Z')
 
   const breakdown = await ipcHandlers.get('usage:breakdown')(null, { period: 'custom', tz: 'UTC', from: '2026-03-14', to: '2026-03-16', scope: 'source' })
-  assert.equal(breakdown.sources.length, 1)
-  assert.equal(breakdown.sources[0].source, 'codex')
-  assert.equal(breakdown.sources[0].billable_total_tokens, codexBillable)
-  assert.equal(breakdown.sources[0].sharePct, 100)
-  assert.equal(breakdown.models.length, 3)
-  assert.equal(breakdown.models.reduce((sum, model) => sum + model.billable_total_tokens, 0), codexBillable)
+  assert.deepEqual(breakdown.sources.map((source) => source.source).sort(), ['codex', 'dsh', 'opencode'])
+  assert.equal(breakdown.sources.reduce((sum, source) => sum + source.billable_total_tokens, 0), goldenBillable)
+  assert.equal(breakdown.sources.reduce((sum, source) => sum + source.sharePct, 0), 100)
+  assert.equal(breakdown.models.length, 8)
+  assert.equal(breakdown.models.reduce((sum, model) => sum + model.billable_total_tokens, 0), goldenBillable)
 
   const heatmap = await ipcHandlers.get('usage:heatmap')(null, { tz: 'UTC', weeks: 52 })
   assert.equal(heatmap.weeks.length, 52)
@@ -171,7 +169,7 @@ test('feature summary/daily/hourly/breakdown/heatmap honor local day ranges', as
   assert.equal(heatmap.from, '2025-10-27', 'grid starts on a Monday')
   assert.equal(heatmap.to, '2026-10-25', 'last column ends on the current week Sunday')
   assert.equal(heatmap.activeDays, 3)
-  assert.ok(heatmap.max > 0)
+  assert.equal(heatmap.max, 34840)
   const futureCell = heatmap.weeks[51][5] // Saturday of the current week
   assert.equal(futureCell, null)
   const activeCell = heatmap.weeks.flat().find((cell) => cell && cell.day === '2026-03-14')

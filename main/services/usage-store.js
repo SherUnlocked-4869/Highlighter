@@ -31,6 +31,40 @@ const BUCKET_INTEGER_COLUMNS = Object.freeze([
   'conversation_count'
 ])
 
+// DB column -> parser/queue column. The query layer (usage-query.js) works in
+// the TokenTracker queue vocabulary, so every read helper aliases these back.
+const QUEUE_COLUMN_BY_BUCKET_COLUMN = Object.freeze({
+  cache_creation_tokens: 'cache_creation_input_tokens',
+  reasoning_tokens: 'reasoning_output_tokens'
+})
+
+function queueAlias(column) {
+  return QUEUE_COLUMN_BY_BUCKET_COLUMN[column] || column
+}
+
+const BUCKET_READ_SELECT = Object.freeze(
+  [
+    'source',
+    'model',
+    'hour_start',
+    'input_tokens',
+    'cached_input_tokens',
+    'cache_creation_tokens AS cache_creation_input_tokens',
+    'output_tokens',
+    'reasoning_tokens AS reasoning_output_tokens',
+    'total_tokens',
+    'billable_total_tokens',
+    'conversation_count',
+    'total_cost_usd',
+    'usage_precision',
+    'updated_at'
+  ].join(', ')
+)
+
+function sumSelectColumns(columns) {
+  return columns.map((column) => `COALESCE(SUM(${column}), 0) AS ${queueAlias(column)}`)
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS usage_bucket (
   source                 TEXT NOT NULL,
@@ -187,6 +221,9 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
   }
 
   const statements = createSchemaStatements(db)
+  // Monotonic in-process version for query-cache invalidation: every write that
+  // can change aggregate results bumps it (plan §2.6 LRU key includes dbVersion).
+  let dbVersion = 0
 
   function assertOpen() {
     if (closed) throw new Error('usage store is closed')
@@ -241,6 +278,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     const list = Array.isArray(sources)
       ? sources.filter((source) => typeof source === 'string' && source)
       : null
+    // DB-shaped rows: usage-state maps them to the parser's queue vocabulary.
     const sql = list && list.length > 0
       ? `SELECT * FROM usage_bucket WHERE source IN (${list.map(() => '?').join(', ')}) ORDER BY source, model, hour_start`
       : 'SELECT * FROM usage_bucket ORDER BY source, model, hour_start'
@@ -268,12 +306,12 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     }
     const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
     return db
-      .prepare(`SELECT * FROM usage_bucket ${where} ORDER BY hour_start, source, model`)
+      .prepare(`SELECT ${BUCKET_READ_SELECT} FROM usage_bucket ${where} ORDER BY hour_start, source, model`)
       .all(...params)
   }
 
   function sumRange({ fromIso, toIso, sources = null } = {}) {
-    const columns = BUCKET_INTEGER_COLUMNS.map((column) => `COALESCE(SUM(${column}), 0) AS ${column}`)
+    const columns = sumSelectColumns(BUCKET_INTEGER_COLUMNS)
     const filters = []
     const params = []
     if (typeof fromIso === 'string' && fromIso) {
@@ -294,8 +332,50 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
     const row = db.prepare(`SELECT ${columns.join(', ')} FROM usage_bucket ${where}`).get(...params) || {}
     const totals = {}
-    for (const column of BUCKET_INTEGER_COLUMNS) totals[column] = Number(row[column]) || 0
+    for (const column of BUCKET_INTEGER_COLUMNS) {
+      const alias = queueAlias(column)
+      totals[alias] = Number(row[alias]) || 0
+    }
     return totals
+  }
+
+  // SQL pre-aggregation helpers for the query layer (plan §2.6): fold rows per
+  // UTC hour (timezone mapping stays in JS) or per dimension tuple (breakdown)
+  // so a 100k-row range never crosses the process boundary row-by-row.
+  function rangeWhere({ fromIso, toIso } = {}) {
+    const filters = []
+    const params = []
+    if (typeof fromIso === 'string' && fromIso) {
+      filters.push('hour_start >= ?')
+      params.push(fromIso)
+    }
+    if (typeof toIso === 'string' && toIso) {
+      filters.push('hour_start < ?')
+      params.push(toIso)
+    }
+    return { where: filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '', params }
+  }
+
+  function getRangeHourlyTotals({ fromIso, toIso } = {}) {
+    assertOpen()
+    const sums = sumSelectColumns(BUCKET_INTEGER_COLUMNS)
+    const { where, params } = rangeWhere({ fromIso, toIso })
+    return db
+      .prepare(`SELECT hour_start, ${sums.join(', ')} FROM usage_bucket ${where} GROUP BY hour_start ORDER BY hour_start`)
+      .all(...params)
+  }
+
+  function getGroupedTotals({ fromIso, toIso, dimensions = ['source', 'model'] } = {}) {
+    assertOpen()
+    const dims = (Array.isArray(dimensions) ? dimensions : []).filter((dimension) =>
+      ['source', 'model'].includes(dimension)
+    )
+    if (dims.length === 0) throw new Error('usage store grouped totals require at least one dimension')
+    const sums = sumSelectColumns(BUCKET_INTEGER_COLUMNS)
+    const { where, params } = rangeWhere({ fromIso, toIso })
+    return db
+      .prepare(`SELECT ${dims.join(', ')}, ${sums.join(', ')} FROM usage_bucket ${where} GROUP BY ${dims.join(', ')} ORDER BY ${dims.join(', ')}`)
+      .all(...params)
   }
 
   function countDistinctDays({ fromIso, toIso } = {}) {
@@ -416,7 +496,12 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
         statements.deleteOlderThan.run(cutoff)
       }
     })
+    dbVersion += 1
     return { inserted }
+  }
+
+  function getDbVersion() {
+    return dbVersion
   }
 
   function getCoverageStart(source) {
@@ -433,6 +518,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     const cutoff = toIsoOrNull(cutoffIso)
     if (!cutoff) throw new Error('usage store retention cutoff must be an ISO timestamp')
     const result = statements.deleteOlderThan.run(cutoff)
+    if (result.changes) dbVersion += 1
     return Number(result.changes) || 0
   }
 
@@ -461,6 +547,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
       statements.clearSourceStatus.run()
       statements.clearAppMeta.run()
     })
+    dbVersion += 1
     if (vacuum) {
       try { db.exec('VACUUM') } catch {}
     }
@@ -487,6 +574,8 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     dbPath,
     loadCursors,
     loadBucketRows,
+    getGroupedTotals,
+    getRangeHourlyTotals,
     getRangeRows,
     sumRange,
     countDistinctDays,
@@ -498,6 +587,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     deleteOlderThan,
     countBuckets,
     getCoverageStart,
+    getDbVersion,
     getStats,
     clear,
     checkpoint,

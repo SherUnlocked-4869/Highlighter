@@ -90,12 +90,23 @@ async function main() {
     captures.push({ tz, view: 'heatmap', period: 'total', payload: await handlers.heatmap({ tz, weeks: 52 }) })
   }
 
+  // Non-comparator payloads used by the page's real-payload render check: the
+  // oracle comparator reads only `captures`, so these extras are ignored there.
+  const extras = {
+    status: await feature.getStatus(),
+    hourly: {}
+  }
+  for (const tz of TZS) {
+    extras.hourly[tz] = await handlers.hourly({ day: '2026-03-16', tz })
+  }
+
   const capture = {
     schema: 'hl-usage-aggregates-v1',
     generator: 'scripts/usage-capture-aggregates.js',
     fixture_home: path.relative(WORKTREE, fixtureHome).split(path.sep).join('/'),
     captured_at: new Date().toISOString(),
-    captures
+    captures,
+    extras
   }
   fs.writeFileSync(outputPath, `${JSON.stringify(capture, null, 2)}\n`, 'utf8')
   console.log(`USAGE CAPTURE OK entries=${captures.length} file=${outputPath}`)

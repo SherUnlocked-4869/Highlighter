@@ -84,7 +84,7 @@ test('bucketRowToTotals restores the parser token vocabulary', () => {
 test('buildHourlyState restores the vendored parser state shape', () => {
   const row = bucketRow()
   const state = buildHourlyState([row])
-  assert.equal(state.version, 1)
+  assert.equal(state.version, 3)
   assert.deepEqual(state.groupQueued, {})
   const key = bucketKey('codex', 'gpt-5.4-codex', '2026-03-14T01:00:00.000Z')
   const bucket = state.buckets[key]
@@ -98,7 +98,7 @@ test('buildHourlyState restores the vendored parser state shape', () => {
 })
 
 test('buildHourlyState skips malformed rows and tolerates non-arrays', () => {
-  assert.deepEqual(buildHourlyState(null), { version: 1, buckets: {}, groupQueued: {} })
+  assert.deepEqual(buildHourlyState(null), { version: 3, buckets: {}, groupQueued: {} })
   const state = buildHourlyState([null, {}, { source: 'codex', model: 'm' }, bucketRow()])
   assert.equal(Object.keys(state.buckets).length, 1)
 })

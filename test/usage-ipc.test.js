@@ -150,6 +150,40 @@ test('usage IPC clamps heatmap weeks and normalizes unknown timezones', async ()
   assert.equal(calls[2].args.weeks, 1)
 })
 
+test('usage IPC forwards the frozen contract fixture payloads unchanged', async () => {
+  const fixtureDir = path.join(__dirname, 'fixtures', 'usage', 'ipc')
+  const fixture = (name) => JSON.parse(fs.readFileSync(path.join(fixtureDir, name), 'utf8'))
+  const payloads = {
+    status: fixture('status.json'),
+    refresh: { started: true, scanId: 'scan-1' },
+    summary: fixture('summary.json'),
+    daily: fixture('daily.json'),
+    hourly: fixture('hourly.json'),
+    breakdown: fixture('breakdown.json'),
+    heatmap: fixture('heatmap.json'),
+    clear: { ok: true, clearedAt: '2026-10-21T03:10:00.000Z' }
+  }
+  const ipcMain = createIpcMain()
+  const handlers = {}
+  for (const [name, payload] of Object.entries(payloads)) handlers[name] = () => payload
+  registerUsageIpc({ ipcMain, handlers })
+
+  const calls = [
+    ['usage:status', []],
+    ['usage:refresh', [{ reason: 'page-open' }]],
+    ['usage:summary', [{ period: 'month', tz: 'Asia/Shanghai' }]],
+    ['usage:daily', [{ period: 'month', tz: 'Asia/Shanghai' }]],
+    ['usage:hourly', [{ day: '2026-10-20', tz: 'Asia/Shanghai' }]],
+    ['usage:breakdown', [{ period: 'month', tz: 'Asia/Shanghai', scope: 'source' }]],
+    ['usage:heatmap', [{ tz: 'Asia/Shanghai', weeks: 52 }]],
+    ['usage:clear', []]
+  ]
+  for (const [channel, args] of calls) {
+    const name = channel.replace('usage:', '')
+    assert.deepEqual(await ipcMain.handlers.get(channel)(null, ...args), payloads[name], channel)
+  }
+})
+
 test('usage IPC maps thrown non-Error values to usage: errors', async () => {
   const ipcMain = createIpcMain()
   const { handlers } = createHandlers({

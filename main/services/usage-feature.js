@@ -1,9 +1,11 @@
-// Usage feature composition root (B1).
+// Usage feature composition root.
 //
-// Owns the whole main-process usage pipeline for the first vertical slice:
-//   renderer -> usage-ipc -> feature handlers -> usage-store (SQLite)
-//                                -> usage-tools (file discovery)
-//                                -> utilityProcess worker (vendored parser)
+// Owns the main-process usage pipeline:
+//   renderer -> usage-ipc -> feature handlers -> usage-query (aggregation)
+//                                |                    -> usage-store (SQLite)
+//                                -> usage-collector (scan state machine)
+//                                     -> usage-tools (file discovery)
+//                                     -> utilityProcess worker (vendored parser)
 //
 // main.js assembles this with ONE line (plan §2.9 G1):
 //   require('./main/services/usage-feature').install({ ipcMain: secureIpcMain, app, getPaths, getMainWindow, getSettings, log })
@@ -18,101 +20,18 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const { setActiveUsageFeature } = require('./usage-runtime')
+const { createUsageCollector } = require('./usage-collector')
+const { createUsageQuery, heatmapLevel } = require('./usage-query')
 const { createUsageWorkerClient } = require('./usage-worker-client')
 const { openUsageStore, RETENTION_MONTHS } = require('./usage-store')
-const usageState = require('./usage-state')
-const usageTime = require('./usage-time')
 const tools = require('./usage-tools')
 const { registerUsageIpc, USAGE_PROGRESS_CHANNEL } = require('../ipc/usage-ipc')
 
-const DAY_MS = usageTime.DAY_MS
 const SOURCE_LABELS = Object.freeze({
   codex: 'Codex',
   dsh: 'DeepSeek Harness',
   opencode: 'OpenCode'
 })
-const SUMMARY_INTEGER_COLUMNS = Object.freeze([
-  'billable_total_tokens',
-  'total_tokens',
-  'input_tokens',
-  'output_tokens',
-  'cached_input_tokens',
-  'cache_creation_input_tokens',
-  'reasoning_output_tokens',
-  'conversation_count'
-])
-
-function toIso(value) {
-  const date = value instanceof Date ? value : new Date(value)
-  return date.toISOString()
-}
-
-function resolvedRangeToIso(resolved) {
-  return {
-    fromDay: resolved.fromDay,
-    toDay: resolved.toDay,
-    fromIso: new Date(resolved.startUtcMs).toISOString(),
-    toIso: new Date(resolved.endUtcMs).toISOString()
-  }
-}
-
-function emptyTotals() {
-  const totals = {}
-  for (const column of SUMMARY_INTEGER_COLUMNS) totals[column] = 0
-  return totals
-}
-
-function addTotals(target, source) {
-  for (const column of SUMMARY_INTEGER_COLUMNS) {
-    target[column] = (target[column] || 0) + (Number(source?.[column]) || 0)
-  }
-  return target
-}
-
-function sharePct(value, total) {
-  if (!total) return 0
-  return Math.round((value / total) * 10000) / 100
-}
-
-// Max-relative four-band level (plan §1.2 #10 / TT local-api.js max-relative):
-// 0 = no activity, 1..4 = <=25% / <=50% / <=75% / >75% of the range maximum.
-function heatmapLevel(value, max) {
-  if (!value || value <= 0 || !max || max <= 0) return 0
-  const ratio = value / max
-  if (ratio <= 0.25) return 1
-  if (ratio <= 0.5) return 2
-  if (ratio <= 0.75) return 3
-  return 4
-}
-
-function toTotalsPayload(columns) {
-  return {
-    billable_total_tokens: Number(columns.billable_total_tokens) || 0,
-    total_tokens: Number(columns.total_tokens) || 0,
-    input_tokens: Number(columns.input_tokens) || 0,
-    output_tokens: Number(columns.output_tokens) || 0,
-    cached_input_tokens: Number(columns.cached_input_tokens) || 0,
-    cache_creation_input_tokens: Number(columns.cache_creation_input_tokens) || 0,
-    reasoning_output_tokens: Number(columns.reasoning_output_tokens) || 0,
-    conversation_count: Number(columns.conversation_count) || 0,
-    total_cost_usd: null,
-    unpriced_tokens: 0
-  }
-}
-
-function dailyRowFromTotals(day, columns) {
-  return {
-    day,
-    total_tokens: Number(columns.total_tokens) || 0,
-    billable_total_tokens: Number(columns.billable_total_tokens) || 0,
-    input_tokens: Number(columns.input_tokens) || 0,
-    output_tokens: Number(columns.output_tokens) || 0,
-    cached_input_tokens: Number(columns.cached_input_tokens) || 0,
-    reasoning_output_tokens: Number(columns.reasoning_output_tokens) || 0,
-    conversation_count: Number(columns.conversation_count) || 0,
-    total_cost_usd: null
-  }
-}
 
 function createUsageFeature(deps = {}) {
   const {
@@ -132,13 +51,13 @@ function createUsageFeature(deps = {}) {
   let store = null
   let storePath = null
   let ownedWorkerClient = null
+  let collector = null
+  let query = null
   let lastError = null
-  let scanState = null
-  let scanSequence = 0
-  let lastProgressSentAt = 0
 
   function isoNow() {
-    return toIso(now())
+    const value = now()
+    return (value instanceof Date ? value : new Date(value)).toISOString()
   }
 
   function settingsEnabled() {
@@ -165,6 +84,7 @@ function createUsageFeature(deps = {}) {
     }
     store = openUsageStore({ dbPath: target, now, log })
     storePath = target
+    if (query) query.invalidate()
     return store
   }
 
@@ -191,37 +111,27 @@ function createUsageFeature(deps = {}) {
     }
   }
 
-  function progressPayload(overrides = {}) {
-    const scan = scanState || {}
-    const filesTotal = Number(overrides.filesTotal ?? scan.filesTotal) || 0
-    const filesDone = Number(overrides.filesDone ?? scan.filesDone) || 0
-    return {
-      scanId: scan.scanId || null,
-      phase: scan.phase || 'idle',
-      tool: scan.tool || null,
-      toolIndex: Number.isFinite(scan.toolIndex) ? scan.toolIndex : 0,
-      toolCount: Number.isFinite(scan.toolCount) ? scan.toolCount : 0,
-      filesDone,
-      filesTotal,
-      bytesRead: Number(scan.bytesRead) || 0,
-      buckets: Number(overrides.buckets ?? scan.buckets) || 0,
-      startedAt: scan.startedAt || null,
-      done: scan.done === true,
-      ...overrides
+  function ensureCollector() {
+    if (collector) return collector
+    collector = createUsageCollector({
+      getStore: ensureStore,
+      getWorkerClient,
+      getSettings,
+      getHomeContext: homeContext,
+      getUsageDir: usageDir,
+      tools,
+      log,
+      now,
+      onProgress: emitProgress
+    })
+    return collector
+  }
+
+  function ensureQuery() {
+    if (!query) {
+      query = createUsageQuery({ getStore: ensureStore, now, log })
     }
-  }
-
-  function publishProgress(overrides = {}, { force = false } = {}) {
-    const timestamp = Date.now()
-    if (!force && timestamp - lastProgressSentAt < 250) return
-    lastProgressSentAt = timestamp
-    emitProgress(progressPayload(overrides))
-  }
-
-  function rangeForPeriod({ period, from, to, tz }) {
-    return resolvedRangeToIso(
-      usageTime.resolveCalendarPeriod({ period, now: now(), timeZone: tz, from, to })
-    )
+    return query
   }
 
   function probeStatusFromStore(source, stored) {
@@ -254,8 +164,8 @@ function createUsageFeature(deps = {}) {
     const enabled = settingsEnabled()
     const status = {
       enabled,
-      scanning: Boolean(scanState && scanState.done !== true),
-      scan: scanState ? progressPayload() : null,
+      scanning: Boolean(collector && collector.isScanning()),
+      scan: collector ? collector.getScan() : null,
       lastScanAt: null,
       lastError,
       dbBytes: 0,
@@ -327,399 +237,16 @@ function createUsageFeature(deps = {}) {
     return status
   }
 
-  async function summary(validated = {}) {
-    const period = validated.period || 'month'
-    const tz = validated.tz || 'UTC'
-    const range = rangeForPeriod({ ...validated, period, tz })
-    const activeStore = ensureStore()
-    const totals = toTotalsPayload(activeStore.sumRange({ fromIso: range.fromIso, toIso: range.toIso }))
-    const current = now()
-    const last7Window = usageTime.resolveRollingWindow({ days: 7, now: current, timeZone: tz })
-    const last30Window = usageTime.resolveRollingWindow({ days: 30, now: current, timeZone: tz })
-    const last7 = activeStore.sumRange({
-      fromIso: new Date(last7Window.startUtcMs).toISOString(),
-      toIso: new Date(last7Window.endUtcMs).toISOString()
-    })
-    const last30 = activeStore.sumRange({
-      fromIso: new Date(last30Window.startUtcMs).toISOString(),
-      toIso: new Date(last30Window.endUtcMs).toISOString()
-    })
-    // Active days = local calendar days with observed usage inside last-30d
-    // (TokenTracker local-api.js counts observed days, not zero-filled rows).
-    const last30Rows = activeStore.getRangeRows({
-      fromIso: new Date(last30Window.startUtcMs).toISOString(),
-      toIso: new Date(last30Window.endUtcMs).toISOString()
-    })
-    const observedDays = new Set()
-    for (const row of last30Rows) {
-      if ((Number(row.billable_total_tokens) || 0) > 0 || (Number(row.conversation_count) || 0) > 0) {
-        observedDays.add(usageTime.zonedDayKey(row.hour_start, tz))
-      }
-    }
-    const activeDays = observedDays.size
-    const last30Billable = Number(last30.billable_total_tokens) || 0
-    return {
-      period,
-      from: range.fromDay,
-      to: range.toDay,
-      tz,
-      totals,
-      rolling: {
-        last7d: {
-          billable_total_tokens: Number(last7.billable_total_tokens) || 0,
-          conversation_count: Number(last7.conversation_count) || 0
-        },
-        last30d: {
-          billable_total_tokens: last30Billable,
-          conversation_count: Number(last30.conversation_count) || 0
-        },
-        avgPerActiveDay: activeDays > 0 ? Math.round(last30Billable / activeDays) : 0,
-        activeDays
-      },
-      pricing: { mode: 'none', version: null }
-    }
-  }
-
-  function rowsByZoneDay(rows, tz, range) {
-    const grouped = new Map()
-    for (const row of Array.isArray(rows) ? rows : []) {
-      const day = usageTime.zonedDayKey(row.hour_start, tz)
-      if (day < range.fromDay || day > range.toDay) continue
-      const bucket = grouped.get(day) || emptyTotals()
-      addTotals(bucket, row)
-      grouped.set(day, bucket)
-    }
-    return grouped
-  }
-
-  async function daily(validated = {}) {
-    const period = validated.period || 'month'
-    const tz = validated.tz || 'UTC'
-    const range = rangeForPeriod({ ...validated, period, tz })
-    const activeStore = ensureStore()
-    const rows = activeStore.getRangeRows({ fromIso: range.fromIso, toIso: range.toIso })
-    const grouped = rowsByZoneDay(rows, tz, range)
-    const out = []
-    // Do not fabricate future days: month/week ranges include days after today,
-    // and TT returns observed days only; zero-filling stops at local today.
-    const todayKey = usageTime.zonedDayKey(now(), tz)
-    const lastFillDay = range.toDay < todayKey ? range.toDay : todayKey
-    let cursor = range.fromDay
-    let guard = 0
-    while (cursor <= lastFillDay && guard < 4000) {
-      out.push(dailyRowFromTotals(cursor, grouped.get(cursor) || emptyTotals()))
-      cursor = usageTime.addDaysToDayKey(cursor, 1)
-      guard += 1
-    }
-    return { period, from: range.fromDay, to: range.toDay, tz, rows: out }
-  }
-
-  async function hourly(validated = {}) {
-    const tz = validated.tz || 'UTC'
-    const day = validated.day
-    const bounds = usageTime.resolveDayBounds(day, tz)
-    const range = resolvedRangeToIso({
-      fromDay: day,
-      toDay: day,
-      startUtcMs: bounds.startUtcMs,
-      endUtcMs: bounds.endUtcMs
-    })
-    const activeStore = ensureStore()
-    const rows = activeStore.getRangeRows({ fromIso: range.fromIso, toIso: range.toIso })
-    const buckets = Array.from({ length: 24 }, () => emptyTotals())
-    for (const row of rows) {
-      const hour = usageTime.zonedHour(row.hour_start, tz)
-      if (!Number.isFinite(hour) || hour < 0 || hour > 23) continue
-      addTotals(buckets[hour], row)
-    }
-    return {
-      day,
-      tz,
-      from: range.fromIso,
-      to: range.toIso,
-      rows: buckets.map((totals, hour) => ({
-        hour: `${day}T${String(hour).padStart(2, '0')}:00`,
-        billable_total_tokens: totals.billable_total_tokens,
-        total_tokens: totals.total_tokens,
-        input_tokens: totals.input_tokens,
-        output_tokens: totals.output_tokens,
-        conversation_count: totals.conversation_count,
-        total_cost_usd: null
-      }))
-    }
-  }
-
-  async function breakdown(validated = {}) {
-    const period = validated.period || 'month'
-    const tz = validated.tz || 'UTC'
-    const range = rangeForPeriod({ ...validated, period, tz })
-    const activeStore = ensureStore()
-    const rows = activeStore.getRangeRows({ fromIso: range.fromIso, toIso: range.toIso })
-    const totals = toTotalsPayload(activeStore.sumRange({ fromIso: range.fromIso, toIso: range.toIso }))
-    const sources = new Map()
-    const models = new Map()
-    for (const row of rows) {
-      const sourceEntry = sources.get(row.source) || {
-        source: row.source,
-        label: SOURCE_LABELS[row.source] || row.source,
-        billable_total_tokens: 0,
-        conversation_count: 0,
-        models: new Set(),
-        total_cost_usd: null
-      }
-      sourceEntry.billable_total_tokens += Number(row.billable_total_tokens) || 0
-      sourceEntry.conversation_count += Number(row.conversation_count) || 0
-      sourceEntry.models.add(row.model)
-      sources.set(row.source, sourceEntry)
-      const modelKey = `${row.source}\u0000${row.model}`
-      const modelEntry = models.get(modelKey) || {
-        source: row.source,
-        model: row.model,
-        billable_total_tokens: 0,
-        conversation_count: 0,
-        total_cost_usd: null,
-        pricing: 'none'
-      }
-      modelEntry.billable_total_tokens += Number(row.billable_total_tokens) || 0
-      modelEntry.conversation_count += Number(row.conversation_count) || 0
-      models.set(modelKey, modelEntry)
-    }
-    const totalBillable = totals.billable_total_tokens || 0
-    return {
-      scope: validated.scope || 'source',
-      period,
-      from: range.fromDay,
-      to: range.toDay,
-      tz,
-      totals,
-      sources: [...sources.values()]
-        .map((entry) => ({
-          source: entry.source,
-          label: entry.label,
-          billable_total_tokens: entry.billable_total_tokens,
-          sharePct: sharePct(entry.billable_total_tokens, totalBillable),
-          modelCount: entry.models.size,
-          conversationCount: entry.conversation_count,
-          total_cost_usd: null
-        }))
-        .sort((a, b) => b.billable_total_tokens - a.billable_total_tokens),
-      models: [...models.values()]
-        .map((entry) => ({
-          ...entry,
-          sharePct: sharePct(entry.billable_total_tokens, totalBillable)
-        }))
-        .sort((a, b) => b.billable_total_tokens - a.billable_total_tokens)
-    }
-  }
-
-  async function heatmap(validated = {}) {
-    const tz = validated.tz || 'UTC'
-    const weeks = validated.weeks || 52
-    const activeStore = ensureStore()
-    const today = usageTime.zonedDayKey(now(), tz)
-    const weekdayIndex = usageTime.zonedWeekdayIndex(now(), tz) // 0 = Monday
-    const currentWeekStart = usageTime.addDaysToDayKey(today, -weekdayIndex)
-    const fromDay = usageTime.addDaysToDayKey(currentWeekStart, -(weeks - 1) * 7)
-    const toDay = usageTime.addDaysToDayKey(currentWeekStart, 6)
-    const startBounds = usageTime.resolveDayBounds(fromDay, tz)
-    const endBounds = usageTime.resolveDayBounds(toDay, tz)
-    const rows = activeStore.getRangeRows({
-      fromIso: new Date(startBounds.startUtcMs).toISOString(),
-      toIso: new Date(endBounds.endUtcMs).toISOString()
-    })
-    const byDay = new Map()
-    for (const row of rows) {
-      const day = usageTime.zonedDayKey(row.hour_start, tz)
-      if (day < fromDay || day > toDay) continue
-      const entry = byDay.get(day) || { billable_total_tokens: 0, total_tokens: 0, conversation_count: 0 }
-      entry.billable_total_tokens += Number(row.billable_total_tokens) || 0
-      entry.total_tokens += Number(row.total_tokens) || 0
-      entry.conversation_count += Number(row.conversation_count) || 0
-      byDay.set(day, entry)
-    }
-    let max = 0
-    for (const entry of byDay.values()) max = Math.max(max, entry.billable_total_tokens)
-    let activeDays = 0
-    const grid = []
-    for (let week = 0; week < weeks; week += 1) {
-      const cells = []
-      for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
-        const day = usageTime.addDaysToDayKey(fromDay, week * 7 + dayIndex)
-        if (day > today) {
-          cells.push(null)
-          continue
-        }
-        const entry = byDay.get(day) || { billable_total_tokens: 0, total_tokens: 0, conversation_count: 0 }
-        if (entry.billable_total_tokens > 0) activeDays += 1
-        cells.push({
-          day,
-          value: entry.billable_total_tokens,
-          level: heatmapLevel(entry.billable_total_tokens, max),
-          total_tokens: entry.total_tokens,
-          conversation_count: entry.conversation_count
-        })
-      }
-      grid.push(cells)
-    }
-    return {
-      from: fromDay,
-      to: toDay,
-      tz,
-      weekStartsOn: 'mon',
-      activeDays,
-      max,
-      weeks: grid
-    }
-  }
-
   async function refresh(validated = {}) {
-    if (!settingsEnabled()) return { started: false, reason: 'disabled' }
-    if (scanState && scanState.done !== true) {
-      return { started: false, scanId: scanState.scanId }
-    }
-    scanSequence += 1
-    const scanId = `usage-scan-${Date.now()}-${scanSequence}`
-    const controller = {
-      scanId,
-      reason: validated.reason || 'manual',
-      startedAt: isoNow(),
-      phase: 'discovering',
-      tool: null,
-      toolIndex: 0,
-      toolCount: tools.listTools().length,
-      filesDone: 0,
-      filesTotal: 0,
-      bytesRead: 0,
-      buckets: 0,
-      done: false,
-      cancelled: false,
-      error: null
-    }
-    scanState = controller
-    publishProgress({}, { force: true })
-    runScan(controller)
-      .catch((error) => {
-        controller.error = error?.message || String(error)
-      })
-      .finally(() => {
-        controller.done = true
-        controller.phase = controller.cancelled ? 'cancelled' : controller.error ? 'error' : 'done'
-        publishProgress({}, { force: true })
-        if (scanState === controller) scanState = null
-      })
-    return { started: true, scanId }
-  }
-
-  async function runScan(controller) {
-    const activeStore = ensureStore()
-    const context = homeContext()
-    const registry = tools.listTools()
-    controller.toolCount = registry.length
-    let failures = 0
-    try {
-      for (let index = 0; index < registry.length; index += 1) {
-        const tool = registry[index]
-        if (controller.cancelled) break
-        controller.tool = tool.source
-        controller.toolIndex = index
-        controller.phase = 'discovering'
-        controller.filesDone = 0
-        controller.filesTotal = 0
-        publishProgress({}, { force: true })
-
-        let probe
-        try {
-          probe = await tool.probe(context)
-        } catch (error) {
-          failures += 1
-          lastError = error?.message || String(error)
-          activeStore.recordSourceStatus({
-            source: tool.source,
-            state: 'error',
-            detected: false,
-            readable: false,
-            files: 0,
-            lastScanAt: isoNow(),
-            lastError: lastError
-          })
-          continue
-        }
-        if (probe.state !== 'ok' || probe.files.length === 0) {
-          activeStore.recordSourceStatus(probeToStatus(probe, { scannedAt: isoNow() }))
-          continue
-        }
-
-        controller.phase = 'scanning'
-        controller.filesTotal = probe.files.length
-        publishProgress({}, { force: true })
-        try {
-          const committed = await scanProbe(activeStore, probe, controller, context)
-          controller.buckets += committed
-        } catch (error) {
-          failures += 1
-          lastError = error?.message || String(error)
-          activeStore.recordSourceStatus({
-            ...probeToStatus(probe, { scannedAt: isoNow() }),
-            state: 'error',
-            lastError
-          })
-        }
-        if (controller.cancelled) break
-      }
-      if (controller.cancelled) return
-      controller.phase = 'finalizing'
-      publishProgress({}, { force: true })
-      const finishedAt = isoNow()
-      activeStore.setAppMeta('lastScanAt', finishedAt)
-      if (failures > 0) activeStore.setAppMeta('lastError', lastError || 'scan failed')
-      else activeStore.setAppMeta('lastError', '')
-      lastError = failures > 0 ? lastError : null
-    } finally {
-      if (controller.done !== true) controller.done = true
-    }
-  }
-
-  async function scanProbe(activeStore, probe, controller, context) {
-    const source = probe.source
-    const previousRows = activeStore.loadBucketRows([source])
-    const cursors = activeStore.loadCursors(source) || {}
-    cursors.hourly = usageState.buildHourlyState(previousRows)
-    const queuePath = path.join(usageDir(), 'runtime', 'queue.jsonl')
-    const workerClient = getWorkerClient()
-    const result = await workerClient.scanTool(
-      { source, files: probe.files, cursors, queuePath },
-      {
-        onProgress: (progress) => {
-          controller.filesDone = Math.max(controller.filesDone, Number(progress?.index) || 0)
-          controller.filesTotal = Number(progress?.total) || controller.filesTotal
-          controller.buckets = Number(progress?.bucketsQueued) || controller.buckets
-          publishProgress()
-        }
-      }
-    )
-    const previousByKey = new Map(previousRows.map((row) => [usageState.bucketKeyForRow(row), row]))
-    const removed = (Array.isArray(result?.removed) ? result.removed : [])
-      .map((key) => previousByKey.get(key))
-      .filter(Boolean)
-    const upserts = Array.isArray(result?.upserts) ? result.upserts : []
-    const scannedAt = isoNow()
-    activeStore.commitScan({
-      source,
-      upserts,
-      removed,
-      cursors: result?.cursors && typeof result.cursors === 'object' ? result.cursors : cursors,
-      status: {
-        ...probeToStatus(probe, { scannedAt }),
-        state: 'ok',
-        coverageStartAt: probe.coverageStartAt || activeStore.getCoverageStart(source)
-      },
-      now: now()
-    })
-    return upserts.length
+    return ensureCollector().refresh(validated)
   }
 
   async function clear() {
-    if (scanState) scanState.cancelled = true
+    if (collector) {
+      try { collector.cancel('clear') } catch (_error) {}
+      try { collector.dispose() } catch (_error) {}
+      collector = null
+    }
     if (ownedWorkerClient) {
       try { ownedWorkerClient.dispose() } catch (_error) {}
       ownedWorkerClient = null
@@ -734,11 +261,15 @@ function createUsageFeature(deps = {}) {
     lastError = null
     const activeStore = ensureStore()
     activeStore.setAppMeta('lastError', '')
+    if (query) query.invalidate()
     return { ok: true, clearedAt: isoNow() }
   }
 
   function quiesce() {
-    if (scanState) scanState.cancelled = true
+    if (collector) {
+      try { collector.dispose() } catch (_error) {}
+      collector = null
+    }
     if (ownedWorkerClient) {
       try { ownedWorkerClient.dispose() } catch (_error) {}
       ownedWorkerClient = null
@@ -748,6 +279,7 @@ function createUsageFeature(deps = {}) {
       store = null
       storePath = null
     }
+    if (query) query.invalidate()
     return { ok: true }
   }
 
@@ -758,9 +290,10 @@ function createUsageFeature(deps = {}) {
   function getDiagnostics() {
     return {
       storeOpen: Boolean(store && store.isOpen()),
-      scanning: Boolean(scanState && scanState.done !== true),
-      scan: scanState ? progressPayload() : null,
+      scanning: Boolean(collector && collector.isScanning()),
+      scan: collector ? collector.getScan() : null,
       lastError,
+      queryCache: query ? query.getCacheStats() : null,
       worker: ownedWorkerClient ? ownedWorkerClient.getDiagnostics() : null
     }
   }
@@ -768,11 +301,11 @@ function createUsageFeature(deps = {}) {
   const handlers = {
     status: () => getStatus(),
     refresh,
-    summary,
-    daily,
-    hourly,
-    breakdown,
-    heatmap,
+    summary: (args) => ensureQuery().summary(args),
+    daily: (args) => ensureQuery().daily(args),
+    hourly: (args) => ensureQuery().hourly(args),
+    breakdown: (args) => ensureQuery().breakdown(args),
+    heatmap: (args) => ensureQuery().heatmap(args),
     clear
   }
 
@@ -783,8 +316,7 @@ function createUsageFeature(deps = {}) {
     handlers,
     quiesce,
     refresh,
-    resume,
-    scanProbe
+    resume
   }
 }
 

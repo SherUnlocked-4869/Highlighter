@@ -106,6 +106,11 @@ function bucketKeyForRow(row) {
 
 // Rebuild parser `hourlyState` from persisted bucket rows.
 //
+// `version: 3` is the current vendored state format: parsers keep the exact
+// `source|model|hour_start` keys and the `groupQueued` map. (Version < 2 is the
+// legacy format that re-keys every bucket to the "unknown" model — never use it
+// here, or per-model buckets would collapse.)
+//
 // `queuedKey` is seeded with the row's current totals key: the row is already
 // durable, so a parser that re-touches an unchanged bucket can skip re-emitting
 // it, while a changed bucket gets a different key and is emitted as a new LWW
@@ -126,7 +131,7 @@ function buildHourlyState(rows = []) {
     }
   }
   return {
-    version: 1,
+    version: 3,
     buckets,
     groupQueued: {}
   }

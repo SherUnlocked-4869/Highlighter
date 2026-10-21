@@ -9,8 +9,12 @@ const {
   UNSUPPORTED_TOOLS,
   coverageStartFromFiles,
   probeCodex,
+  probeDsh,
+  probeOpencode,
   resolveCodexRoot,
-  resolveHomeContext
+  resolveDshRoot,
+  resolveHomeContext,
+  resolveOpencodeDbPath
 } = require('../main/services/usage-tools')
 
 const FIXTURE_HOME = path.join(__dirname, 'fixtures', 'usage', 'home')
@@ -109,9 +113,71 @@ test('coverage start is derived from rollout file names', () => {
   assert.equal(coverageStartFromFiles(null), null)
 })
 
-test('registry exposes Codex as the B1 tool and lists unsupported account tools', () => {
-  assert.deepEqual(TOOLS.map((tool) => tool.source), ['codex'])
-  assert.equal(TOOLS[0].priority, 1)
+test('dsh probe finds the fixture-home zstd sessions', async (t) => {
+  const probe = await probeDsh({ homeDir: FIXTURE_HOME, explicitHome: true, env: {} })
+  assert.equal(probe.source, 'dsh')
+  assert.equal(probe.label, 'DeepSeek Harness')
+  assert.equal(probe.state, 'ok')
+  assert.equal(probe.detected, true)
+  assert.equal(probe.readable, true)
+  assert.equal(probe.fileCount, 2)
+  assert.equal(probe.files.every((file) => file.endsWith('.jsonl.zstd')), true)
+  assert.match(probe.coverageStartAt || '', /^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/)
+
+  const dir = tempDir(t)
+  assert.equal((await probeDsh({ homeDir: dir, explicitHome: true, env: {} })).state, 'absent')
+  fs.mkdirSync(path.join(dir, '.dsh'))
+  assert.equal((await probeDsh({ homeDir: dir, explicitHome: true, env: {} })).state, 'empty')
+})
+
+test('dsh probe honors DSH_HOME only when the home was not injected', async (t) => {
+  const dir = tempDir(t)
+  const fromEnv = await probeDsh({ homeDir: dir, explicitHome: false, env: { DSH_HOME: path.join(FIXTURE_HOME, '.dsh') } })
+  assert.equal(fromEnv.state, 'ok')
+  assert.equal(fromEnv.fileCount, 2)
+  assert.equal(resolveDshRoot({ homeDir: dir, explicitHome: true, env: { DSH_HOME: 'D:/elsewhere' } }), path.join(dir, '.dsh'))
+})
+
+test('opencode probe finds the fixture-home database', async (t) => {
+  const probe = await probeOpencode({ homeDir: FIXTURE_HOME, explicitHome: true, env: {} })
+  assert.equal(probe.source, 'opencode')
+  assert.equal(probe.label, 'OpenCode')
+  assert.equal(probe.state, 'ok')
+  assert.equal(probe.detected, true)
+  assert.equal(probe.readable, true)
+  assert.equal(probe.fileCount, 1)
+  assert.ok(probe.files[0].endsWith(path.join('opencode', 'opencode.db')))
+
+  const dir = tempDir(t)
+  assert.equal((await probeOpencode({ homeDir: dir, explicitHome: true, env: {} })).state, 'absent')
+  const unreadable = await probeOpencode({
+    homeDir: dir,
+    explicitHome: true,
+    env: {},
+    deps: {
+      statSync: () => {
+        const error = new Error('denied')
+        error.code = 'EACCES'
+        throw error
+      }
+    }
+  })
+  assert.equal(unreadable.state, 'unreadable')
+  assert.equal(unreadable.detected, true)
+  assert.match(unreadable.lastError, /EACCES/)
+})
+
+test('opencode probe honors XDG_DATA_HOME only when the home was not injected', async (t) => {
+  const dir = tempDir(t)
+  const xdg = path.join(FIXTURE_HOME, '.local', 'share')
+  const fromEnv = await probeOpencode({ homeDir: dir, explicitHome: false, env: { XDG_DATA_HOME: xdg } })
+  assert.equal(fromEnv.state, 'ok')
+  assert.equal(resolveOpencodeDbPath({ homeDir: dir, explicitHome: true, env: { XDG_DATA_HOME: xdg } }), path.join(dir, '.local', 'share', 'opencode', 'opencode.db'))
+})
+
+test('registry exposes the three first-release tools in scan order', () => {
+  assert.deepEqual(TOOLS.map((tool) => tool.source), ['codex', 'dsh', 'opencode'])
+  assert.deepEqual(TOOLS.map((tool) => tool.priority), [1, 2, 3])
   const sources = UNSUPPORTED_TOOLS.map((tool) => tool.source)
   assert.ok(sources.includes('cursor'))
   for (const tool of UNSUPPORTED_TOOLS) assert.equal(tool.state, 'unsupported')

@@ -120,6 +120,21 @@ test('resolveRollingWindow: local last-7/last-30 days ending today', () => {
   assert.equal(last30.endUtcMs, Date.parse('2026-10-21T04:00:00.000Z'))
 })
 
+test('resolveCalendarPeriod: leap month, week across a year boundary, total across a year boundary', () => {
+  const leapNow = new Date('2028-02-10T03:00:00.000Z')
+  const leapMonth = resolveCalendarPeriod({ period: 'month', now: leapNow, timeZone: 'UTC' })
+  assert.deepEqual([leapMonth.fromDay, leapMonth.toDay], ['2028-02-01', '2028-02-29'])
+
+  const yearEnd = new Date('2026-12-31T03:00:00.000Z') // Thursday
+  const week = resolveCalendarPeriod({ period: 'week', now: yearEnd, timeZone: 'UTC' })
+  assert.deepEqual([week.fromDay, week.toDay], ['2026-12-28', '2027-01-03'])
+
+  const newYear = new Date('2027-01-15T03:00:00.000Z')
+  const total = resolveCalendarPeriod({ period: 'total', now: newYear, timeZone: 'UTC' })
+  // 24 calendar months inclusive: February 2025 .. January 2027.
+  assert.deepEqual([total.fromDay, total.toDay], ['2025-02-01', '2027-01-15'])
+})
+
 test('zoned helpers: hour, weekday and day arithmetic', () => {
   assert.equal(zonedHour('2026-10-20T16:30:00.000Z', 'Asia/Shanghai'), 0)
   assert.equal(zonedWeekdayIndex('2026-10-21T03:00:00.000Z', 'Asia/Shanghai'), 2) // Wednesday
