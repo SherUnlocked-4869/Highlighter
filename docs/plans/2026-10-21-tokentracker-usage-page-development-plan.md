@@ -489,6 +489,8 @@ B0-1 契约 ──┬─► B0-2 vendor ─► B0-3 spike ─► B1(engine) ─�
 2. **Golden JSON（CI 默认）**：一次对拍通过后，把「预期桶行 + 预期 summary/daily/breakdown/heatmap」提交为 `test/fixtures/usage/golden/*.json`；CI 不需要 TT。
 3. **真实 home 只做计时/冒烟（不进 CI）**：在本机 3 GB 日志上记录冷扫/增量耗时与内存（B2-7），结果写回本文附录。
 
+**Fixture home 与 oracle 隔离要点（B0-4 实测）**：TT CLI 不只看 `~`，还会读 `%APPDATA%`/`%LOCALAPPDATA%`（首轮曾把本机 codebuddy/reasonix 行带进 queue）。因此 oracle harness 在跑 TT `sync` 时必须把 `USERPROFILE`、`HOME`、`APPDATA`、`LOCALAPPDATA` 全部重定向到 fixture home，`TOKENTRACKER_NO_TELEMETRY=1`，且不登录（无 device token → 上传自动跳过）。已落地：`scripts/usage-oracle-check.js --tt-only --sync`；fixture home `test/fixtures/usage/home/`（34 KiB，codex 4 行 / dsh 3 行 / opencode 4 行 = 11 个桶），golden 在 `test/fixtures/usage/golden/`。Highlighter 的 3 个适配器不依赖 `%APPDATA%`（codex=显式 sessions 目录、dsh=`DSH_HOME`/显式路径、opencode=显式 db 路径），fixture 测试应显式传路径，不依赖进程 home。
+
 **已知对拍注意点**：TT 的 heatmap 首列星期依赖运行日（§0.4）；对拍时只比 cell 的 `day/value/level` 集合，忽略网格列对齐。TT 的 `billable` 读取修复（cursor/antigravity）在 MVP 3 工具里不触发。
 
 ### 4.2 单测矩阵（`node --test`）
@@ -762,14 +764,15 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | # | 项 | 命令/方法 | 结果（待填） | 判定 |
 |---|---|---|---|---|
 | F1 | Electron 运行时 | `ELECTRON_RUN_AS_NODE=1 ./node_modules/electron/dist/electron.exe -e "…"` | Node v24.18.0；`node:sqlite` 可用；`zlib.zstdDecompressSync` 可用（2026-10-21 已实测） | ✅ 通过 |
-| F2 | `utilityProcess.fork` 加载 vendor 解析器 | 真实 Electron 开发运行，解析一个 claude fixture | 冷启动 __ ms；解析 __ 文件/__ 行 | 待测 |
-| F3 | 3 工具 state 一次性消息 | 主进程 → worker postMessage，记录 `structuredClone` 大小/耗时 | __ MB / __ ms | 待测（阈值 50 MB/200 ms） |
+| F2 | `utilityProcess.fork` 加载 vendor 解析器 | 真实 Electron 开发运行，解析一个 codex/DSH fixture | 冷启动 __ ms；解析 __ 文件/__ 行 | 待测 |
+| F3 | 3 工具 state 一次性消息 | 主进程 → worker postMessage，记录 `structuredClone` 大小/耗时（含 ~20k 桶的真实形态） | __ MB / __ ms | 待测（阈值 50 MB/200 ms） |
 | F4 | 主进程单事务提交 | 2,000 行 upsert + 游标 + 状态 | __ ms | 待测（阈值 30 ms） |
 | F5 | 打包冒烟 | `npm run build:win` 后安装版打开用量页扫 fixture home | 页面出数 / DB 生成：是/否 | 待测 |
-| F6 | 本机冷扫（3 GB 日志） | 扫描 `%USERPROFILE%`，记录总时长/峰值内存/各工具耗时 | 总 __ s；峰值 __ MB；claude __ s / codex __ s / dsh __ s / opencode __ s | 待测（阈值 5 min） |
+| F6 | 本机冷扫（3 GB 日志） | 扫描 `%USERPROFILE%`，记录总时长/峰值内存/各工具耗时 | 总 __ s；峰值 __ MB；codex __ s / dsh __ s / opencode __ s | 待测（阈值 5 min） |
 | F7 | 无变化增量扫描 | 连续两次扫描 | 第二次 __ ms；新增桶 __ 个 | 待测（阈值 1.5 s / 0 桶） |
 | F8 | 查询性能（24 个月） | 10 万桶合成数据，summary/daily/breakdown/heatmap 各 100 次 | P95：summary __ ms / daily __ ms / breakdown __ ms / heatmap __ ms | 待测（阈值 100 ms） |
-| F9 | TT oracle 对拍 | `node scripts/usage-oracle-check.js --home test/fixtures/usage/home` | 不一致桶 __ 个；每日/来源/模型 diff __ 处 | 待测（目标 0） |
+| F9 | **TT oracle 基线** | `node scripts/usage-oracle-check.js --tt-only --sync`（fixture home） | TT 1.4.7 本地跑通：9 文件 → 11 桶（codex 4 / dsh 3 / opencode 4），golden 已提交；两次运行 md5 一致 | ✅ 通过 |
+| F10 | **Highlighter vs oracle 对拍** | `node scripts/usage-oracle-check.js --hl-db <usage.db>`（同一 fixture home） | 不一致桶 __ 个；每日/来源/模型 diff __ 处 | 待测（目标 0） |
 
 ---
 
@@ -779,3 +782,4 @@ node --test test/usage-store.test.js test/usage-state.test.js
 |---|---|
 | 2026-10-21 | 初版：基于上游分析 + 本机复核，给出 S1–S6 细化决策、B0–B6 批次、41 项任务、8 通道 IPC 契约与验收清单 |
 | 2026-10-21 | **范围确认**：首版工具 = Codex/DSH/OpenCode（3 个）、不做金额、统计默认关闭+首次同意；据此重排 B1–B6 任务与工期（MVP 27–32 人日、本次完整交付 36–42 人日），B1 垂直切片工具改为 Codex，工具扩展与 pricing 移出本次交付 |
+| 2026-10-21 | **B0 实施记录**：B0-1 契约 mock 已落地（`test/fixtures/usage/ipc/`）；B0-2 vendor 闭包落地（14 文件，75 项 smoke 断言通过）；B0-4 oracle 基线完成（TT 1.4.7 本地跑通，11 桶 golden）；data-root/settings 的 `usage` 登记与开关已合入（见 F9 与 §4.1） |
