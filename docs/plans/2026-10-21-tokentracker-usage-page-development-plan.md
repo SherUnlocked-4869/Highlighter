@@ -86,6 +86,13 @@
 | 未完成/后续 | 安装包打包冒烟（F5，需原生构建工具链）；breakdown 冷查询覆盖索引/rollup；dsh 冷扫优化（占首扫 80%）；真实上游日志格式漂移的季度回归 |
 | 主要提交 | `docs(plans)` 方案 → vendor 闭包 → oracle/fixture → 页面骨架 → 页面完整度 → B1/B2/B3 引擎 → 数据目录迁移修复 → e2e |
 
+### 0.7 UI 重构（2026-10-21，用户截图对比反馈后）
+
+- **触发**：用户把 TokenTracker 用量页与 Highlighter 页并排对比，反馈「数据都有了，但页面 UI 设计不美观，热力图悬浮信息没有 TokenTracker 丰富」，要求参考 TT 页面设计改造。
+- **做法**：以 TT 截图 + Nightshift token 体系为上下文重画（不引图表库）：响应式布局（页宽 908 单栏 / 1180+ 两栏）、统一卡片体系与类型层级、hero 大字 + 来源占比 + provider 卡、模型占比排行、趋势图网格与三档主色、紧凑每日明细（精确行高滚动）、52 周热力图（周一起始、月份标签全量、canvas 1080 居中）+ **TT 级富 tooltip**（日期 / 等级 pill / 大数字 / 模型细分 token+% + 进度条 / 对话数，edge-clamp + 箭头）；KPI 卡内容垂直居中、share bar 100/58/30% 三档主色。
+- **评审方式**：headless（`BrowserWindow({show:false})`）截图工具 `scripts/usage-visual-preview.js` + `design-demos/usage-page-preview.html`，固定页宽 908/1180/1440 × 明暗主题 + tooltip 态；before（HEAD）与 after 各 8 张，像素级确定性、0 pageerror/console error、0 可见窗口；QA 独立复核 D1–D4 全绿。
+- **证据**：[`docs/plans/2026-10-21-usage-page-redesign/`](./2026-10-21-usage-page-redesign/)（01-before → 02–05-after → 06-tooltip + `final-metrics.json`）。
+
 ---
 
 ## 1. 目标、范围与完成定义
@@ -807,4 +814,5 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | 2026-10-21 | **B1/B2/B5 实施记录**：B2 三工具引擎完成（DSH/OpenCode 适配、collector 单飞/取消/崩溃恢复/进度/节流），修掉 hourly-state version 3 的重复计数 bug；**F11 PASS（11/11 桶、0 diff、二次扫描 0 桶）**；页面 B5 完成（52 周热力图/日视图小时/自定义区间）；e2e 注入 fixture home；聚合 oracle 首轮暴露 store 列名与 breakdown 结构 bug，engine 修复中（F13） |
 | 2026-10-21 | **B3 完成 / F13 PASS**：usage-query 独立模块（summary/daily/hourly/breakdown/heatmap + LRU + SQL 预聚合），修正 store 列名词汇（cache_creation/reasoning）与 breakdown 的 TT 兼容嵌套结构；**26/26 聚合条目 0 diff**；`usage:breakdown` 补 source/model 四列 token；`usage-time` DST/闰月/跨年用例；查询 p95 记录于 F8（breakdown 冷查询 140–155 ms 列为 B6 优化项） |
 | 2026-10-21 | **B6/E2E 记录**：修复「数据目录迁移丢 usage DB」产品缺陷（`ADDITIONAL_PERSISTENT` + `createManagedSourcePaths` 暴露 usage，回归测试 7/7 硬断言，含回滚/保留/清除/诊断隐私）；真机 F6 首扫 15.7 s / F7 增量 0.5–1.0 s（dsh 占 80%，列为后续优化）；**Playwright e2e 6/6 通过**（含 usage「未开启→同意→扫描→52,590→3 源 ok」全链路）；受限宿主 e2e/探针 workaround 与打包冒烟限制记录在 §4.4/附录 F |
-| 2026-10-21 | **UI 重构（用户反馈）**：按 TokenTracker 参考重画用量页（两栏布局/卡片体系/层级/热力图丰满 tooltip/紧凑明细/自定义 tab），并新增 headless 截图评审工具（隐藏窗口 `design-demos/usage-page-preview.html` + `scripts/usage-visual-preview.js`）；同步扩展 heatmap cell `models`/`conversation_count`（TT tooltip 口径）；heatmap 查询加 covering index + 按本地日聚合（plan-scale 87,840 桶 p95 68–103 ms；超密集 262,800 桶 p95 160–267 ms 作为已知边界接受）。截图与评审记录见设计回合报告 |
+| 2026-10-21 | **UI 重构（用户反馈）**：按 TokenTracker 参考重画用量页（响应式两栏/单栏、卡片体系/层级、热力图丰满 tooltip、紧凑明细、自定义 tab），并新增 headless 截图评审工具（隐藏窗口 `design-demos/usage-page-preview.html` + `scripts/usage-visual-preview.js`）；同步扩展 heatmap cell `models`/`conversation_count`（TT tooltip 口径）；heatmap 查询加 covering index + 按本地日聚合（plan-scale 87,840 桶 p95 68–103 ms；超密集 262,800 桶 p95 160–267 ms 作为已知边界接受）。截图与评审记录见设计回合报告 |
+| 2026-10-21 | **UI 重构验收**：before/after 各 8 张 headless 截图（908/1180/1440 × 明暗 + tooltip），QA 独立复核 D1–D4 全绿（tooltip insideCard/5 模型行不裁切、明细无半行、宽屏 18px 列间距、heatmap 居中）；页面单测 65/65、check-js 388 文件、i18n 585/606、architecture 1327/1330 全绿；证据归档 `docs/plans/2026-10-21-usage-page-redesign/` |

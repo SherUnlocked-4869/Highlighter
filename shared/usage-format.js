@@ -221,16 +221,56 @@
     return Number.isFinite(number) && number > 0 ? number : 0
   }
 
+  function normalizeSharePct(value) {
+    const number = Number(value)
+    if (!Number.isFinite(number)) return null
+    return Math.min(100, Math.max(0, number))
+  }
+
+  // The rich heatmap tooltip needs the per-day model split. The contract grows a
+  // `cell.models` array (task-15) but older payloads may only carry the TT-style
+  // `{ modelName: tokens }` map, or nothing at all; normalize both shapes so the
+  // page never depends on one engine revision. Rows come back sorted desc.
+  function normalizeHeatmapModels(models, totalTokens) {
+    const total = normalizeHeatmapValue(totalTokens)
+    let entries = []
+    if (Array.isArray(models)) {
+      entries = models.map((model) => {
+        if (!model || typeof model !== 'object') return null
+        const name = typeof model.model === 'string' ? model.model : ''
+        if (!name) return null
+        const tokens = normalizeHeatmapValue(model.total_tokens ?? model.value)
+        return {
+          model: name,
+          source: typeof model.source === 'string' ? model.source : '',
+          tokens,
+          sharePct: normalizeSharePct(model.sharePct) ?? (total > 0 ? (tokens / total) * 100 : 0)
+        }
+      })
+    } else if (models && typeof models === 'object') {
+      entries = Object.keys(models).map((name) => {
+        const tokens = normalizeHeatmapValue(models[name])
+        return { model: name, source: '', tokens, sharePct: total > 0 ? (tokens / total) * 100 : 0 }
+      })
+    }
+    return entries.filter(Boolean).sort((a, b) => b.tokens - a.tokens)
+  }
+
   function normalizeHeatmapCell(cell) {
     if (!cell || typeof cell !== 'object' || Array.isArray(cell)) return null
     const day = toDayKey(cell.day)
     if (!day) return null
+    const value = normalizeHeatmapValue(cell.value) || normalizeHeatmapValue(cell.billable_total_tokens)
     return {
       day,
-      value: normalizeHeatmapValue(cell.value),
+      value,
       level: normalizeHeatmapLevel(cell.level),
       total_tokens: normalizeHeatmapValue(cell.total_tokens),
-      conversation_count: normalizeHeatmapValue(cell.conversation_count)
+      conversation_count: normalizeHeatmapValue(cell.conversation_count),
+      models: normalizeHeatmapModels(cell.models, value),
+      // The query layer caps the per-day model list (8) and reports how many
+      // further models are hidden; the tooltip renders that as an overflow line.
+      moreModels: normalizeHeatmapValue(cell.moreModels)
     }
   }
 
@@ -261,6 +301,65 @@
     return { columns, months }
   }
 
+  // Month ticks for the heatmap header. The label row shares the week grid, so a
+  // label needs a few week columns to breathe; ticks closer than `minSpan` to the
+  // previous one are dropped (their month is visible through the previous span)
+  // instead of overlapping. Every span is measured to the next tick so the row
+  // covers all columns without flex gaps.
+  function heatmapMonthTicks(months, columnCount, minSpan = 4) {
+    const columns = Number.isInteger(columnCount) && columnCount > 0 ? columnCount : 0
+    if (!columns || !Array.isArray(months)) return []
+    const minimum = Number.isInteger(minSpan) && minSpan > 0 ? minSpan : 1
+    const picked = []
+    for (const entry of months) {
+      if (!entry || typeof entry !== 'object') continue
+      const index = Number(entry.index)
+      const month = typeof entry.month === 'string' ? entry.month : ''
+      if (!Number.isInteger(index) || index < 0 || index >= columns || !month) continue
+      const last = picked[picked.length - 1]
+      if (last && index - last.index < minimum) continue
+      picked.push({ index, month })
+    }
+    return picked.map((entry, index) => ({
+      index: entry.index,
+      month: entry.month,
+      span: (index + 1 < picked.length ? picked[index + 1].index : columns) - entry.index
+    }))
+  }
+
+  // Ranked model-share rows for the 模型占比 card: top N by billable tokens plus
+  // one aggregated "other models" row. Uses the flat breakdown `models[]` the
+  // page has always consumed; the TT-compatible nested fields are ignored here.
+  function projectModelShareRows(models, limit = 5) {
+    const max = Number.isInteger(limit) && limit > 0 ? limit : 5
+    const all = Array.isArray(models)
+      ? models
+          .filter((model) => model && typeof model === 'object')
+          .map((model) => ({
+            model: typeof model.model === 'string' ? model.model : '',
+            source: typeof model.source === 'string' ? model.source : '',
+            tokens: normalizeHeatmapValue(model.billable_total_tokens ?? model.total_tokens),
+            sharePct: normalizeSharePct(model.sharePct) ?? 0
+          }))
+          .filter((model) => model.model)
+      : []
+    const sorted = all.slice().sort((a, b) => b.tokens - a.tokens)
+    const top = sorted.slice(0, max)
+    const rest = sorted.slice(max)
+    const other = rest.length > 0
+      ? {
+          count: rest.length,
+          tokens: rest.reduce((sum, model) => sum + model.tokens, 0),
+          sharePct: Math.min(100, rest.reduce((sum, model) => sum + model.sharePct, 0))
+        }
+      : null
+    return {
+      top: top.map((model, index) => ({ ...model, rank: index + 1 })),
+      other,
+      totalTokens: sorted.reduce((sum, model) => sum + model.tokens, 0)
+    }
+  }
+
   return {
     formatCompactToken,
     formatFullToken,
@@ -273,6 +372,8 @@
     CUSTOM_RANGE_MAX_SPAN_DAYS,
     validateCustomRange,
     heatmapLevelClass,
-    layoutHeatmapWeeks
+    layoutHeatmapWeeks,
+    heatmapMonthTicks,
+    projectModelShareRows
   }
 })

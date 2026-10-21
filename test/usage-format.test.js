@@ -189,6 +189,89 @@ test('layoutHeatmapWeeks tolerates a missing or malformed payload', () => {
   }
 })
 
+test('layoutHeatmapWeeks normalizes per-day model splits for the rich tooltip', () => {
+  // Contract shape (task-15): models[] of {model, source, total_tokens, sharePct}.
+  const arrayCell = format.layoutHeatmapWeeks([[
+    {
+      day: '2026-10-19', value: 1000, level: 4, total_tokens: 1000, conversation_count: 3,
+      models: [
+        { model: 'gpt-5.1-codex', source: 'codex', total_tokens: 700, sharePct: 70 },
+        { model: 'deepseek-v4.1-flash', source: 'dsh', total_tokens: 300 }
+      ]
+    }
+  ]]).columns[0][0]
+  assert.deepEqual(arrayCell.models, [
+    { model: 'gpt-5.1-codex', source: 'codex', tokens: 700, sharePct: 70 },
+    // Missing sharePct is derived from the cell total (300 / 1000).
+    { model: 'deepseek-v4.1-flash', source: 'dsh', tokens: 300, sharePct: 30 }
+  ])
+  // TT legacy shape: a {modelName: tokens} map, no source/share fields.
+  const objectCell = format.layoutHeatmapWeeks([[
+    { day: '2026-10-19', value: 500, level: 2, total_tokens: 500, conversation_count: 1, models: { 'claude-sonnet-4-5': 500 } }
+  ]]).columns[0][0]
+  assert.deepEqual(objectCell.models, [{ model: 'claude-sonnet-4-5', source: '', tokens: 500, sharePct: 100 }])
+  // Missing / malformed models degrade to an empty list (tooltip hides the split).
+  for (const models of [undefined, null, [], 'nope', [null, { model: '' }]]) {
+    const cell = format.layoutHeatmapWeeks([[{ day: '2026-10-19', value: 1, level: 1, models }]]).columns[0][0]
+    assert.deepEqual(cell.models, [], `models ${JSON.stringify(models)}`)
+  }
+  // The engine reports models beyond its 8-row cap through `moreModels`.
+  const truncated = format.layoutHeatmapWeeks([[{ day: '2026-10-19', value: 900, level: 3, conversation_count: 4, moreModels: 3, models: [{ model: 'a', total_tokens: 900 }] }]]).columns[0][0]
+  assert.equal(truncated.moreModels, 3)
+  assert.deepEqual(truncated.models, [{ model: 'a', source: '', tokens: 900, sharePct: 100 }])
+  assert.equal(format.layoutHeatmapWeeks([[{ day: '2026-10-19', value: 1, level: 1 }]]).columns[0][0].moreModels, 0)
+  assert.equal(format.layoutHeatmapWeeks([[{ day: '2026-10-19', value: 1, level: 1, moreModels: 'x' }]]).columns[0][0].moreModels, 0)
+  // The normalized payload also accepts billable_total_tokens as the value alias.
+  const aliasCell = format.layoutHeatmapWeeks([[{ day: '2026-10-19', billable_total_tokens: 42, level: 1 }]]).columns[0][0]
+  assert.equal(aliasCell.value, 42)
+})
+
+test('heatmapMonthTicks keeps labels on the week grid without collisions', () => {
+  const months = [
+    { index: 0, month: '2025-11' },
+    { index: 2, month: '2025-12' },
+    { index: 5, month: '2026-01' },
+    { index: 9, month: '2026-02' }
+  ]
+  // minSpan 4 drops the December tick (2 weeks after November) and keeps January.
+  assert.deepEqual(format.heatmapMonthTicks(months, 14), [
+    { index: 0, month: '2025-11', span: 5 },
+    { index: 5, month: '2026-01', span: 4 },
+    { index: 9, month: '2026-02', span: 5 }
+  ])
+  // Spans always tile the whole grid up to the last column.
+  const ticks = format.heatmapMonthTicks(months, 14)
+  assert.equal(ticks[ticks.length - 1].index + ticks[ticks.length - 1].span, 14)
+  // minSpan 1 keeps every tick; the final month reaches the grid end.
+  assert.deepEqual(format.heatmapMonthTicks(months, 14, 1).map((tick) => tick.index), [0, 2, 5, 9])
+  // A tick outside the grid or without a month is ignored.
+  assert.deepEqual(format.heatmapMonthTicks([{ index: -1, month: 'x' }, { index: 20, month: 'y' }], 14), [])
+  // Degenerate inputs return no ticks instead of throwing.
+  for (const value of [undefined, null, [], 'months']) assert.deepEqual(format.heatmapMonthTicks(value, 14), [])
+  assert.deepEqual(format.heatmapMonthTicks(months, 0), [])
+})
+
+test('projectModelShareRows ranks models and aggregates the tail', () => {
+  const models = [
+    { model: 'a', source: 'codex', billable_total_tokens: 500, sharePct: 50 },
+    { model: 'b', source: 'dsh', billable_total_tokens: 300, sharePct: 30 },
+    { model: 'c', source: 'opencode', billable_total_tokens: 150, sharePct: 15 },
+    { model: 'd', source: 'opencode', billable_total_tokens: 40, sharePct: 4 },
+    { model: 'e', source: 'opencode', billable_total_tokens: 10, sharePct: 1 }
+  ]
+  const result = format.projectModelShareRows(models, 3)
+  assert.deepEqual(result.top.map((row) => [row.rank, row.model, row.tokens]), [[1, 'a', 500], [2, 'b', 300], [3, 'c', 150]])
+  assert.deepEqual(result.other, { count: 2, tokens: 50, sharePct: 5 })
+  assert.equal(result.totalTokens, 1000)
+  // Fewer models than the limit means no "other" row.
+  assert.equal(format.projectModelShareRows(models.slice(0, 2), 5).other, null)
+  // Malformed entries are dropped; missing numbers become 0 instead of NaN.
+  const messy = format.projectModelShareRows([null, { model: 'x' }, { model: '' }, { model: 'y', billable_total_tokens: '12' }], 2)
+  assert.deepEqual(messy.top.map((row) => [row.model, row.tokens]), [['y', 12], ['x', 0]])
+  // Empty / non-array input is a safe empty result.
+  assert.deepEqual(format.projectModelShareRows(undefined), { top: [], other: null, totalTokens: 0 })
+})
+
 test('validateCustomRange enforces order, future and the 800-day span', () => {
   const today = '2026-10-21'
   assert.deepEqual(format.validateCustomRange('2026-10-01', '2026-10-21', today), {
@@ -254,8 +337,10 @@ test('the UMD surface exposes exactly the helpers the page uses', () => {
     'formatSharePct',
     'formatTooltip',
     'heatmapLevelClass',
+    'heatmapMonthTicks',
     'isChineseLanguage',
     'layoutHeatmapWeeks',
+    'projectModelShareRows',
     'toDayKey',
     'validateCustomRange'
   ])
