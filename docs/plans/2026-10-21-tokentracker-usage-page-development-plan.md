@@ -308,7 +308,7 @@ CREATE TABLE IF NOT EXISTS app_meta     (key TEXT PRIMARY KEY, value TEXT NOT NU
 
 ### 2.7 IPC 契约（B0 冻结，页面/引擎并行开发的依据）
 
-8 个 handle + 1 个 listener，全部登记 `IPC_SURFACES.main`（`handles`）与 `listeners`，preload 一一对应。参数一律在主进程校验（`usage-ipc.js`）。
+8 个 handle 登记 `IPC_SURFACES.main.handles`，preload 一一对应；`usage:scan-progress` 是主→渲染广播，**不登记 `IPC_SURFACES`、不注册 `ipcMain.on`**（同 `app:navigate`/`history:changed` 惯例）。参数一律在主进程校验（`usage-ipc.js`），且 8 个 `ipcMain.handle('usage:*')` 必须写成字面量（`test/ipc-security.test.js` 用正则扫描注册）。
 
 | 通道 | 参数 | 返回 |
 |---|---|---|
@@ -320,7 +320,7 @@ CREATE TABLE IF NOT EXISTS app_meta     (key TEXT PRIMARY KEY, value TEXT NOT NU
 | `usage:breakdown` | `{period, tz, from?, to?, scope:'source'\|'model'}` | `{scope, from, to, totals, sources[], models[]}` |
 | `usage:heatmap` | `{tz, weeks?:52}` | `{from, to, weekStartsOn:'mon', weeks:[[{day,value,level,total_tokens,conversation_count}\|null]], activeDays, max}` |
 | `usage:clear` | — | `{ok:true, clearedAt}` |
-| `usage:scan-progress`（listener，主→渲染） | — | `{scanId, phase, tool, toolIndex, toolCount, filesDone, filesTotal, bytesRead, buckets, startedAt, done}`（≤4 次/秒节流） |
+| `usage:scan-progress`（推送，主→渲染） | — | `{scanId, phase, tool, toolIndex, toolCount, filesDone, filesTotal, bytesRead, buckets, startedAt, done}`（≤4 次/秒节流）。**不登记 `IPC_SURFACES`、不注册 `ipcMain.on`**：它是 `webContents.send` 广播，和 `app:navigate`/`history:changed` 同惯例；登记进 listeners 会让 `assertComplete()` 启动即抛 |
 
 **参数校验**：`period ∈ {day,week,month,total,custom}`（MVP 不含 custom，通道仍校验）；`tz` 用 `Intl.DateTimeFormat` 探测，非法回落 `UTC`；`from/to` 为 `YYYY-MM-DD` 且 `from<=to`、跨度 ≤800 天；`weeks` 1..52；所有字符串长度受限。**错误约定**：非法参数/查询失败 `throw Error('usage: ...')`（英文）→ invoke reject → 页面错误态 + 重试；扫描失败不 reject，写入 `source_status` 由 `usage:status` 暴露。
 
@@ -368,7 +368,7 @@ CREATE TABLE IF NOT EXISTS app_meta     (key TEXT PRIMARY KEY, value TEXT NOT NU
 | # | 门禁 | 现状/余量 | 本方案动作 |
 |---|---|---|---|
 | G1 | `main.js` ≤1330 行 | 1324（门禁口径），余 6 | **+1 行**：`require('./main/services/usage-feature').install({ ipcMain: secureIpcMain, app, getPaths: () => activePaths, getMainWindow: () => mainWindow, getSettings, log })`；插在 `secureIpcMain` 创建后、`assertComplete()` 前。若评审坚持常规模块结构可放宽到 2 行（require+call），仍在余量内 |
-| G2 | IPC 白名单 ↔ 注册精确对账 | `IPC_SURFACES.main.handles` 102 条 + 2 listeners | `handles` +8、`listeners` +1；`preload.js` +8 invoke +1 on；`main/ipc/usage-ipc.js` 走 `ipcMain.handle/on`；漏一启动即抛（`ipc-security.js:326-331`） |
+| G2 | IPC 白名单 ↔ 注册精确对账 | `IPC_SURFACES.main.handles` 102 条 + 2 listeners | `handles` +8、listeners 不变；`preload.js` +8 invoke +1 on（on 仅渲染侧监听）；`main/ipc/usage-ipc.js` 用**字面量** `ipcMain.handle('usage:*')` 写 8 行（policy 测试按正则扫描）；漏一启动即抛（`ipc-security.js:326-331`） |
 | G3 | data-root 目录/迁移 | `createDataPaths` 12 键；`MANAGED_DIRECTORIES` 7 项 | `createDataPaths` +`usage`；`MANAGED_DIRECTORIES` +`'usage'`；`test/data-root.test.js:52/114`、`test/data-root-migration.test.js:103-124` 同步；`stopManagedDataWriters()` 里加 `usageRuntime.quiesce()` |
 | G4 | 设置模板 | `DEFAULT_SETTINGS` 即校验白名单（`settings-validation.js:23-34`） | 加 `usage: { enabled: false }` + `settings-normalize.js` 布尔归一；不新增 retention 设置（常量 24 个月） |
 | G5 | i18n | CJK 未迁移行 585/606（余 21） | 新代码（`main/**`、`config/**`）注释/日志/抛错全英文；文案只进 `shared/locales/config.js`（不计入 CJK 余量） |
@@ -634,7 +634,7 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | `main/services/usage-time.js` | 新建：周期/本地日/DST/周起点（纯函数） |
 | `main/services/usage-query.js` | 新建：5 类聚合 + LRU + 缓存失效 |
 | `main/ipc/usage-ipc.js` | 新建：8 通道校验/错误映射（deps 签名注释照 `history-ipc.js`） |
-| `main/services/ipc-security.js` | `main.handles` +8；`listeners` +`usage:scan-progress` |
+| `main/services/ipc-security.js` | `main.handles` +8；**不新增 listeners**（`usage:scan-progress` 是主→渲染广播，不登记 `IPC_SURFACES`，否则 `assertComplete()` 抛错） |
 | `preload.js` | +8 个 invoke +1 个 `onUsageScanProgress`（返回取消订阅） |
 | `main.js` | **+1 行** install（见 G1）；不加其它行 |
 | `main/services/data-root.js` | `createDataPaths` +`usage` |
@@ -763,16 +763,19 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | # | 项 | 命令/方法 | 结果（待填） | 判定 |
 |---|---|---|---|---|
 | F1 | Electron 运行时 | `ELECTRON_RUN_AS_NODE=1 ./node_modules/electron/dist/electron.exe -e "…"` | Node v24.18.0；`node:sqlite` 可用；`zlib.zstdDecompressSync` 可用（2026-10-21 已实测） | ✅ 通过 |
-| F2 | `utilityProcess.fork` 加载 vendor 解析器 | 真实 Electron 开发运行，解析一个 codex/DSH fixture | 冷启动 __ ms；解析 __ 文件/__ 行 | 待测 |
-| F3 | 3 工具 state 一次性消息 | 主进程 → worker postMessage，记录 `structuredClone` 大小/耗时（含 ~20k 桶的真实形态） | __ MB / __ ms | 待测（阈值 50 MB/200 ms） |
-| F4 | 主进程单事务提交 | 2,000 行 upsert + 游标 + 状态 | __ ms | 待测（阈值 30 ms） |
+| F2 | `utilityProcess.fork` 加载 vendor 解析器 | 真实 Electron 开发运行，解析一个 codex/DSH fixture | fork() 0.21–0.41 ms；fork→worker 首条消息 **median 138 ms**（min 130；首次 spawn 196–596 ms）；worker Node v24.18.0 | ✅ 通过 |
+| F3 | 3 工具 state 一次性消息 | 主进程 → worker postMessage，记录 `structuredClone` 大小/耗时（含 ~20k 桶的真实形态） | 20k 行/6.04 MiB：**22.5/23.7 ms**；5/15/30 MB：29/61/121 ms（主→worker）与 26/57/115 ms（worker→主）；最大 31.16 MiB | ✅ 通过（无方向 >200 ms、<50 MB） |
+| F4 | 主进程单事务提交 | 2,000 行 upsert + 游标 + 状态 | **5.93 ms**（schema+2,000 行+scan_state 单事务；rows-only 4.53 ms；open+pragmas 11 ms） | ✅ 通过（<30 ms） |
 | F5 | 打包冒烟 | `npm run build:win` 后安装版打开用量页扫 fixture home | 页面出数 / DB 生成：是/否 | 待测 |
+| F5* | worker 崩溃/取消/重启 | 真实 Electron：uncaught throw / kill / 重新 fork | 崩溃 exit 1 观测 1.46 ms；kill 2.2 ms；重启后首消息 137 ms | ✅ 通过 |
 | F6 | 本机冷扫（3 GB 日志） | 扫描 `%USERPROFILE%`，记录总时长/峰值内存/各工具耗时 | 总 __ s；峰值 __ MB；codex __ s / dsh __ s / opencode __ s | 待测（阈值 5 min） |
 | F7 | 无变化增量扫描 | 连续两次扫描 | 第二次 __ ms；新增桶 __ 个 | 待测（阈值 1.5 s / 0 桶） |
 | F8 | 查询性能（24 个月） | 10 万桶合成数据，summary/daily/breakdown/heatmap 各 100 次 | P95：summary __ ms / daily __ ms / breakdown __ ms / heatmap __ ms | 待测（阈值 100 ms） |
 | F9 | **TT oracle 基线** | `node scripts/usage-oracle-check.js --tt-only --sync`（fixture home） | TT 1.4.7 本地跑通：9 文件 → 11 桶（codex 4 / dsh 3 / opencode 4），golden 已提交；两次运行 md5 一致 | ✅ 通过 |
 | F10 | **解析层对拍（B0）** | vendored parser 以 sink 模式跑 fixture home，与 TT `queue.jsonl` 逐桶比较 | **11/11 桶一致、0 字段差异**（codex 4 / dsh 3 / opencode 4）；vendor smoke 93 断言通过 | ✅ 通过 |
 | F11 | **聚合层对拍（B1/B2）** | `node scripts/usage-oracle-check.js --hl-db <usage.db>`（同一 fixture home，扫完后） | 不一致桶 __ 个；每日/来源/模型 diff __ 处 | 待测（目标 0） |
+
+> **Electron 探针环境备注（B0-3 实测）**：本会话的 DSH 宿主导出了 `ELECTRON_RUN_AS_NODE=1`，直接跑 `electron.exe script.js` 会被当成 Node（`app` undefined）；GUI/e2e/打包探针必须 `env -u ELECTRON_RUN_AS_NODE`。在受限 agent shell 里 Chromium 沙箱起不来，临时探针需 `--no-sandbox`（正常开发/用户环境不需要）；探针在所有情况下都不得创建可见窗口（本次 `browserWindowsCreated:0`）。
 
 ---
 

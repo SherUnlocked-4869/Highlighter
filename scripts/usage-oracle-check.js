@@ -117,9 +117,16 @@ REPRODUCE
   node scripts/usage-oracle-check.js --hl-db <dataRoot>/usage/usage.db
 
 NOTE ON --hl-db
-  The Highlighter usage_bucket schema is frozen in the plan but the store does
-  not exist yet, so a green diff proves the harness wiring, not the product.
-  Re-verify column names when B2 lands (TODO above).
+  Expected Highlighter schema (frozen in plan section 2.5): table usage_bucket
+  with TEXT source/model/hour_start and INTEGER input_tokens,
+  cached_input_tokens, cache_creation_tokens, output_tokens, reasoning_tokens,
+  total_tokens, billable_total_tokens, conversation_count. hour_start may be
+  'YYYY-MM-DDTHH:MM:00Z' or the TT-style '...:00.000Z' (both canonicalized).
+  Compared with zero tolerance: those 8 integer columns for every
+  (source,model,hour_start) bucket, plus per-source/day and per-model/day token
+  sums. NOT compared in v1: total_cost_usd (REAL, B6 pricing) and
+  usage_precision (TEXT). The store is built in B1/B2, so a green diff before
+  that only proves the harness wiring; re-verify column names when B2 lands.
 `;
 
 function main(argv) {
@@ -188,6 +195,16 @@ function toInt(value) {
   if (value === null || value === undefined) return 0;
   const number = Number(value);
   return Number.isFinite(number) ? Math.trunc(number) : 0;
+}
+
+// TT emits ISO strings with milliseconds (`2026-03-14T01:00:00.000Z`) while the
+// plan's SQL comment shows the minute form (`2026-03-14T01:00:00Z`). Normalize
+// both sides through Date so the bucket key comparison is format-independent.
+function canonicalHourStart(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return "";
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : text;
 }
 
 function ensureDir(dir) {
@@ -744,7 +761,7 @@ function readQueueRows(queuePath) {
     }
     const source = typeof raw.source === "string" ? raw.source.trim() : "";
     const model = typeof raw.model === "string" ? raw.model.trim() : "";
-    const hourStart = typeof raw.hour_start === "string" ? raw.hour_start.trim() : "";
+    const hourStart = canonicalHourStart(raw.hour_start);
     if (!source || !model || !hourStart) {
       skippedRows += 1;
       continue;
@@ -946,7 +963,11 @@ function cmdDiff(opts) {
     }
     const select = ["source", "model", "hour_start", ...HL_INTEGER_COLUMNS].join(", ");
     dbRows = db.prepare(`SELECT ${select} FROM usage_bucket`).all().map((row) => {
-      const normalized = { source: row.source, model: row.model, hour_start: row.hour_start };
+      const normalized = {
+        source: row.source,
+        model: row.model,
+        hour_start: canonicalHourStart(row.hour_start),
+      };
       // Normalize to the TT queue vocabulary so every downstream comparison is
       // column-name identical.
       for (const column of INTEGER_COLUMNS) {
