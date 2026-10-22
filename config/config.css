@@ -448,9 +448,10 @@ body.compact #view{padding:16px}
 
 /* ---------- AI usage (v6 layout round) ----------
    Compact dashboard: row1 heatmap | trend, row2 integrated model/stat card |
-   token total card, row3 daily detail full width. Single column below 1080px of
-   page content (container query, not a viewport media query). Nightshift tokens
-   only; one user accent. */
+   token total card, row3 daily detail full width. The paired grid is used at
+   every settings-window size (it collapses to one column only below 560px of
+   page content); the switch is a container query, not a viewport media query.
+   Nightshift tokens only; one user accent. */
 .usage-page{
   max-width:1180px;
   container-type:inline-size;
@@ -577,9 +578,15 @@ body.compact #view{padding:16px}
 .usage-range-cancel{padding:6px 12px;border-color:transparent;color:var(--muted);background:transparent;font-size:11.5px}
 .usage-range-cancel:hover{color:var(--text);background:var(--surface-2)}
 
-/* dashboard: single column <=1080 content, then the two-column reference grid */
+/* dashboard: one column only on genuinely narrow content, otherwise the paired
+   reference grid (heatmap | trend, integrated | token, daily full width) that
+   the maximized window shows. The default 1120x760 settings window leaves ~840px
+   of page content, so an un-maximized window now gets the same two-up rhythm
+   instead of stacking four stretched full-width cards.
+   560px is the floor: the smallest allowed window (min-width 880) still lands
+   above it, and below it two ~260px cards read worse than one column. */
 .usage-dashboard{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;align-items:stretch}
-@container usage (min-width:1080px){
+@container usage (min-width:560px){
   .usage-dashboard{
     grid-template-columns:repeat(2,minmax(0,1fr));
     grid-template-areas:
@@ -593,6 +600,8 @@ body.compact #view{padding:16px}
   .usage-token{grid-area:token}
   .usage-daily{grid-area:daily}
 }
+/* The interior tuning for the paired (but not full-width) cards lives at the end
+   of this section, after the component rules it overrides. */
 
 /* ---------- heatmap card (compact, horizontal scroller + arrows) ---------- */
 .usage-heatmap{display:flex;flex-direction:column;padding:18px 20px}
@@ -902,6 +911,37 @@ body.usage-modal-open #view{overflow:hidden}
 .usage-modal button:focus-visible,
 .usage-modal-col:focus-visible{outline:0;box-shadow:var(--focus-ring)}
 .usage-heat-cell:hover,.usage-heat-cell:focus-visible{box-shadow:0 0 0 2px var(--surface),0 0 0 3px var(--line-2)}
+
+/* Half-width cards (~250-540px of card content) need a tighter interior so
+   nothing collapses into an ellipsis: KPIs go 2x2, padding and the hero number
+   step down, the heatmap meta may clip instead of forcing the head wider. This
+   block must stay after the component rules above (same specificity). */
+@container usage (min-width:560px) and (max-width:1079px){
+  .usage-dashboard{gap:14px}
+  .usage-card{padding:15px 16px}
+  .usage-card-head{gap:8px}
+  .usage-card-head h2{font-size:14px}
+  .usage-kpi-pills{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .usage-kpi-pill{padding:8px 6px}
+  .usage-kpi-pill-value{font-size:18px}
+  .usage-token-number{font-size:30px}
+  .usage-trend-chart{height:132px}
+  .usage-heat-meta{max-width:62%;overflow:hidden;text-overflow:ellipsis}
+  .usage-table th,.usage-table td{padding:8px 10px}
+}
+/* Narrowest paired tier (~250-300px of card content): the model list can only
+   fit rank + name + share, so drop the source chip and step the type down one
+   notch instead of truncating every model name to "deepseek-…". */
+@container usage (min-width:560px) and (max-width:759px){
+  .usage-integrated-source{display:none}
+  .usage-integrated-name{font-size:11.5px}
+  .usage-integrated-pct{min-width:46px;font-size:11.5px}
+  .usage-trend-key{font-size:10px}
+  /* Too little width for title + meta on one line: give the meta its own row
+     (full text) instead of an ellipsis. */
+  .usage-heat-head{flex-wrap:wrap;gap:2px 8px}
+  .usage-heat-meta{max-width:none;flex:1 1 100%;text-align:left;white-space:normal}
+}
 
 /* compact mode */
 body.compact .usage-card{padding:14px 16px}

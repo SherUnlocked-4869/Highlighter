@@ -113,6 +113,20 @@
 
 验收（QA headless 7 组截图，frozen SHA 前后一致）：row1/row2 等高达 **0px**、最大水平死区 **18px**、token 卡 581px 非全宽、整合卡 KPI/排名/footer 齐备；热力图 scroller 829>507 且自动滚到最新、左右箭头可用；tooltip insideCard、5 行模型不裁切；弹窗结构 + Esc/backdrop/X 三路径关闭 + 焦点恢复，30 分钟=24 柱、月=2 桶、天=30 柱；页面单测 **68/68**，check-js 388 / i18n 585 / architecture 1327/1330 全绿。证据：[`07–13-after2-*`](./2026-10-21-usage-page-redesign/) + `round2-metrics.json`；用户参考图保留为同目录中文名 PNG。
 
+### 0.10 第三轮布局（v7「非全屏也成对」，2026-10-22 用户三次反馈）
+
+**反馈**：默认 1120×760 窗口（非全屏）下，除「每日明细」外四张卡各自独占一整行、被拉得过宽，观感远不如全屏；要求非全屏也按全屏那样「每两张一行，每日明细独占一行」。
+
+**原因**：v6 把两列网格的容器查询阈值定在 `.usage-page` 内容宽 **≥1080px**，而默认窗口的页面内容宽只有约 **838px**（1120 − 224 侧栏 − 48 内边距 − 滚动条），于是整页退化成单列；只有最大化（≥1372px 窗口）才回到两列。
+
+**改动**（只动表现层，不动契约/数据）：
+- **网格阈值 1080px → 560px**（`config/config.css` 的 `@container usage`）：默认窗口、以及最小允许窗口 880px（页面内容 634px）都走成对网格；`row1 热力图 | 趋势`、`row2 整合卡 | TOKEN 卡`、`row3 每日明细` 全宽，与全屏一致。560px 以下才回单列（当前窗口下限仍在其上，等于实际不会触发）。
+- **半宽卡内胆（560–1079px 容器）**：卡片内边距 18/20 → 15/16，KPI pills 由 4 列改 **2×2**，KPI 值 20 → 18px，TOKEN 大字 40 → 30px，趋势图高 150 → 132px，明细表单元格内边距 9/12 → 8/10，热力图 meta 允许省略号以免撑破标题行。
+- **最窄成对档（560–759px 容器）**：模型行只保留「名次 + 模型名 + 占比」，隐藏来源 chip，字号降到 11.5px（否则每个模型名都被截成 `deepseek-…`）；热力图标题与 meta 改为两行（meta 占整行、完整显示）。
+- 全屏档（≥1080px）所有尺寸**逐像素不变**；`config/routes/usage.js` 只更新了文件头的布局注释。
+
+**验收**（headless harness，0 pageerror / 0 console error / 0 可见窗口）：608/760/848/1080/1180 × 明暗共 10 组截图，行结构统一为 `2 / 2 / 1`，row1 与 row2 等高达 **0px**、最大水平死区 14px（半宽档）、18px（全屏档，与 v6 相同），`dailyFullWidth`/`tokenCardNotFullWidth` 全为 true；真实默认窗宽 `--widths 1120`（页面 838px）与最小窗宽 `--widths 880`（页面 634px）复跑同为成对布局；英文（en-US）、`body.compact`、热力图 tooltip（insideCard=true）、趋势详情弹窗（Esc/backdrop/X 三路径 + 焦点恢复 + 30m/天/月粒度）均不受影响。门禁：usage 单测 **105/105** 通过，`check-js` 388、`check-i18n` 585、`check-architecture` 1327/1330 全绿（`npm test` 的 13 个 Electron 运行时用例在本机受限宿主下依旧失败，与本次改动无关：`git stash` 后同 13 个用例同样失败）。安装包已用同一树重建：`dist-usage-page/Highlighter-Setup-4.0.0.exe` **144,948,393 B**，SHA256 `b6904b52…12ea0`，`SHA256SUMS.txt`/`latest.yml`/blockmap 同步刷新；asar 内 `config/config.css`、`config/routes/usage.js` 与工作树逐字节一致。证据：[`2026-10-22-usage-page-paired-layout/`](./2026-10-22-usage-page-paired-layout/)（`01-before-848-light` → `02-default-window-1120` / `03-min-window-880` / `04–08` 多页宽双主题 / `09–12` en-US、compact、tooltip、趋势弹窗 + `paired-layout-metrics.json`）。
+
 ---
 
 ## 1. 目标、范围与完成定义

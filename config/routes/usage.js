@@ -7,11 +7,10 @@
 // a single unified card system.
 //
 // Layout: page head -> slim coverage strip -> segmented period tabs (custom
-// date row appears only while the custom tab is selected) -> dashboard grid. At
-// default window widths the grid is one column; >=760px of page content puts the
-// model-share/trend pair side by side; >=1080px switches to a two-column TT-like
-// arrangement (left: KPI + model share + trend; right: hero + daily table;
-// heatmap and the day-view hourly card span the full width). The switch is a
+// date row appears only while the custom tab is selected) -> dashboard grid.
+// The grid is the paired arrangement at every window size the settings window
+// allows (heatmap | trend, integrated | token, daily detail full width); it only
+// falls back to a single column below 560px of page content. The switch is a
 // CONTAINER query on `.usage-page`, not a viewport media query, because the
 // settings window's content area is narrower than the viewport.
 //
