@@ -96,11 +96,12 @@
 ### 0.8 最终构建与验证（2026-10-21，UI 重构后）
 | 项 | 结果 |
 |---|---|
-| 分支 | 主仓 `D:\workspace\Highlighter` 的 **`feat/usage-page-release`**（`usage-page` 快进合并已包含 UI 重构；未 push） |
-| 安装包 | `dist-usage-page/Highlighter-Setup-4.0.0.exe` **144,925,253 B**；SHA256 `8f3cad104d50df5ad8adc41a03ce892d3193a7e8f476eca233af320629ced79d`；`.blockmap` / `latest.yml` / `SHA256SUMS.txt` 同目录 |
+| 分支 | 主仓 `D:\workspace\Highlighter` 的 **`feat/usage-page-release`**（`usage-page` 快进合并，含 UI 重构 + round-2 v6 布局 @ `c31cc44`；未 push） |
+| 安装包 | `dist-usage-page/Highlighter-Setup-4.0.0.exe` **144,898,766 B**；SHA256 `34027c612a28ce895de57e559ab3c8dfe02b32789aca16c6e56407ff8b95d06f`；`.blockmap`（151,509 B）/ `latest.yml`（sha512 与 exe 实测一致）/ `SHA256SUMS.txt` 同目录 |
 | 版本/签名 | 4.0.0（未 bump）；**未签名 NotSigned**（本机无证书，发布前需签名） |
-| e2e | **6/6 通过（35.1 s）**，含 usage「未开启→同意→扫描 fixture home→52,590→3 源 ok」全链路（真实 Electron 窗口，用户批准；受限宿主用 `HIGHLIGHTER_E2E_NO_SANDBOX`/`..._DATA_ROOT_BASE`） |
-| 引擎 sign-off | usage 测试 **102/102**、vendor smoke 93/93、聚合 oracle **26/26 PASS**、`--hl-db` 0 diff；asar 20/20 抽样文件与合并树字节一致（含 9 个 usage services、14 个 vendor 文件、redesigned usage.js/css）；native sidecars 全部解包 |
+| 构建备注 | 首次 round-2 打包因 `icon-tool` 子进程 OOM 失败（V8 NewSpace allocation）。已预生成多尺寸 `assets/icon.ico`（Pillow，16–256px），并将 `build.win.icon` / `build.nsis.installerIcon` 指向该 ICO，后续打包不再做 png→ico 转换；本次用同一 ICO 构建成功（app payload 未变，asar SHA256 与源码树逐文件一致） |
+| e2e | **6/6 通过（35.1 s）**；round-2 布局后复跑，含 usage「未开启→同意→扫描 fixture home→52,590→3 源 ok」全链路（真实 Electron 窗口，用户批准；受限宿主用 `HIGHLIGHTER_E2E_NO_SANDBOX`/`..._DATA_ROOT_BASE`） |
+| 引擎 sign-off | usage 测试 **105/105**、vendor smoke 93/93、聚合 oracle **26/26 PASS**、`--hl-db` 0 diff；round-2 asar 13/13 抽样文件与合并树 `c31cc44` 字节一致（含 9 个 usage services、14 个 vendor 文件、round-2 usage.js/css、modal 标记）；app.asar 15,765,218 B / 3,162 entries / SHA256 `8f10c040…b3d15`；native sidecars 全部解包；installer/blockmap/latest.yml 哈希与 `SHA256SUMS.txt` 一致 |
 | 截图证据 | 见 §0.7 目录（before/after/tooltip + metrics JSON） |
 | 已知边界 | 超密集 262,800 桶 heatmap p95 160–267 ms（2.6× plan 规模）；安装包未签名/未 bump 版本 |
 
@@ -837,3 +838,4 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | 2026-10-21 | **UI 重构验收**：before/after 各 8 张 headless 截图（908/1180/1440 × 明暗 + tooltip），QA 独立复核 D1–D4 全绿（tooltip insideCard/5 模型行不裁切、明细无半行、宽屏 18px 列间距、heatmap 居中）；页面单测 65/65、check-js 388 文件、i18n 585/606、architecture 1327/1330 全绿；证据归档 `docs/plans/2026-10-21-usage-page-redesign/` |
 | 2026-10-21 | **最终构建**：UI 重构合并到 `feat/usage-page-release` 并重建 NSIS 安装包（`dist-usage-page/Highlighter-Setup-4.0.0.exe`，144.9 MB，SHA256 `8f3cad10…79d`，含 SHA256SUMS/latest.yml/blockmap）；e2e **6/6**；引擎独立 sign-off（usage 102/102 + oracle 26/26 + `--hl-db` 0 diff + asar/安装包内容核对）全绿；安装包未签名、版本仍 4.0.0。详见 §0.8 |
 | 2026-10-21 | **第二轮布局 v6**：按用户二次反馈重排为「热力图｜趋势 / 整合卡｜TOKEN 卡 / 每日明细」3 行网格（≤1080 单列），热力图缩小并加横向滚动、KPI+模型占比整合、趋势卡加全屏详情弹窗（30分钟/天/月、洞察面板）；修复 D-R2-1（30m 图表恒空）。QA 7 组 headless 截图全绿（等高 0px、死区 18px、弹窗三路径关闭+焦点恢复、30m=24 柱），页面单测 68/68；证据见 §0.9 目录。安装包将在合并后重建 |
+| 2026-10-22 | **round-2 发布构建**：`feat/usage-page-release` @ `c31cc44` 合并后重建 NSIS setup（144,898,766 B，SHA256 `34027c61…d06f`，SHA256SUMS/latest.yml/blockmap 齐全）；首次因 icon-tool OOM 失败，改为预生成 `assets/icon.ico` 并更新 `package.json`（win.icon/nsis.installerIcon）后成功；e2e 复跑 **6/6**；engine 终检 PASS（usage 105/105、oracle 26/26、`--hl-db` 0 diff、asar 13/13 抽样一致、sidecars 解包）。详见 §0.8 |

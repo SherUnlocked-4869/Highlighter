@@ -142,10 +142,11 @@
           ]
         }
       ],
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.ico"
     },
     "nsis": {
       "include": "build/installer.nsh",
+      "installerIcon": "assets/icon.ico",
       "artifactName": "Highlighter-Setup-${version}.${ext}",
       "oneClick": false,
       "perMachine": false,
