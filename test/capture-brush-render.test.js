@@ -250,12 +250,20 @@ async function main () {
       var frame=window.__brush.frame(true);
       var scale=frame.exportScale;
       var cellDev=Math.round(MOSAIC_CELL*scale);
-      // 在重叠带里连续取样多格，统计"格内颜色种类 > 1"的格数。
+      // 只在**真正重叠的带**里取样。两笔中心线 y=300 / y=308，笔刷半径是
+      // blurBrushWidth(4)/2 = 12 CSS px，所以 a 覆盖 [288,312]、b 覆盖 [296,320]，
+      // 交集是 [296,312] —— 取样的格必须整格落在这条交集中，否则会取到"只有一笔"的
+      // 外沿，而外沿正是 destination-in 抗锯齿描边的过渡区：那里的半透明像素本就该
+      // 混出多种颜色，与相位无关。软件光栅化（CI runner 无 GPU，本机注入
+      // --disable-gpu 复现）边缘过渡更宽，旧取值 cy=295 会稳定收进这类误报。
+      var BAND_TOP=296, BAND_BOTTOM=312;
       var badCells=0, checkedCells=0;
       for(var cx=150; cx<430; cx+=MOSAIC_CELL){
         for(var cy=295; cy<313; cy+=MOSAIC_CELL){
           var baseX=Math.floor(cx*scale/cellDev)*cellDev;
           var baseY=Math.floor(cy*scale/cellDev)*cellDev;
+          // 整格（设备像素）必须完全落在重叠带内，两端换算回 CSS px 再判定。
+          if(baseY/scale < BAND_TOP || (baseY+cellDev)/scale > BAND_BOTTOM) continue;
           var colors={};
           var ok=true;
           for(var dy=4;dy<cellDev-4;dy++)for(var dx=4;dx<cellDev-4;dx++){
