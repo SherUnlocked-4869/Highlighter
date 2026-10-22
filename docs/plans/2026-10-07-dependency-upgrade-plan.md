@@ -269,20 +269,36 @@ CI（run 2026-10-22T06:33Z，`534fd82`）在 `npm run audit:dependencies` 失败
 
 ### 9.5 验证结果
 
-本机（受限会话，Chromium 沙箱无法启动，Electron 进程以退出码 `3` 立即退出）能跑的部分：
+**结论：本机全部跑通，1278/1278 通过，覆盖率与 fuses 门禁均通过。**
+
+一开始我把本机跑不起来误判成「受限会话无法运行 Electron」，并据此把 5 个门禁挂账为「需在有图形会话的机器补跑」——
+**那个判断是错的**，起因是两处环境配置而非 Electron 43.8.3：
+
+1. **`ELECTRON_RUN_AS_NODE=1` 残留在会话环境里**，会让 `electron.exe` 以纯 Node 身份启动，GUI 相关 probe 立刻
+   报 `app is undefined` / 以退出码 `3` 结束。清掉该变量即可。
+2. **electron 子进程无法写 `%LOCALAPPDATA%\Temp`**（父 Node 进程可以，被 spawn 的 Electron 不行，报 `EPERM`）。
+   仓库本来就为这种宿主留了口子：`HIGHLIGHTER_E2E_DATA_ROOT_BASE` 把 e2e 数据根放进仓库内，
+   这里把 `TMP`/`TEMP` 同样指到仓库内的临时目录即可。
+
+另外 `--no-sandbox` 必须放在**脚本路径之前**（放后面会被当成脚本参数，Electron 退回纯 Node 模式）。
+本机 Chromium 沙箱确实起不来，所以单元测试里 spawn 的 Electron 需要带 `--no-sandbox`；仓库已有
+`HIGHLIGHTER_E2E_NO_SANDBOX=1` 这个 env-gated 开关，但它只作用于 Playwright adapter，覆盖不到
+`test/*-runtime.test.js` 直接 `spawnSync` 的那些 probe，所以本机验证时用一个**不改仓库文件**的
+`NODE_OPTIONS=--require <hook>` 注入了该参数——这只是本机跑测的手段，不进入仓库。
 
 | 命令 | 结果 |
 |---|---|
 | `npm run audit:dependencies`（对 registry.npmjs.org） | ✅ **审计通过：22 个已豁免，0 个未豁免，0 个失效豁免项**（升级前是「1 个未豁免」） |
-| `npm run check` | ✅ 585 文件语法 + 架构门禁通过 |
-| `npm run check:version` | ✅ 4.0.0 |
-| `npm test` | 1277 用例中 1264 通过；13 个失败与**升级前逐条完全一致**（全部是 GUI probe 起不来），新增波动仅 1 个 CPU 计时用例，单独重跑即通过 |
+| `npm test` | ✅ **1278/1278 全绿，0 失败** |
+| `npm run test:coverage` | ✅ 通过：lines **91.59%**（门槛 85%）；三个子门禁 47/47、23/23、critical 全过 |
+| `npm run test:e2e`（Playwright，真实启动 43.8.3） | ✅ **7/7 通过**（41.6s）：首次启动/导航/空历史/快捷键、工具栏渲染崩溃清理、设置持久化+IPC、对话桩+关闭、路由渲染、usage 页扫描、本地搜索 |
 | `npm run test:long-capture` | ✅ passed |
-| `npm run test:coverage` | 覆盖率汇总 91.27% lines（>85% 门槛）；被 GUI probe 拖红的项同上 |
-| `@electron/fuses` 读 43.8.3 二进制 | ✅ fuse wire version 1 可读 |
+| `npm run check` / `check:version` | ✅ 585 文件语法 + 架构门禁 / 4.0.0 |
+| `npm run verify:fuses` | ✅ **8 项 fuse 全部符合预期**（实际 flip 43.8.3 二进制后校验，不只是「wire 可读」） |
+| 运行时探针（`probe-electron-runtime`） | ✅ `selection-hook` 与 `sharp` 在新 shell 下均正常加载，`nativeRuntimeBuilt: true`，显示器 1494×934 @ scaleFactor 1.5 |
 
-**必须在有图形会话的机器/CI 上补跑**（本机无法完成，不是"已通过"）：`npm run test:runtime`、`npm run test:e2e`、
-`npm run test:coverage`、`npm run verify:fuses`（需打包产物）、`npm run verify:package`，以及 §4 的真机清单。
+**仍未覆盖**：`npm run verify:package`（需要完整 electron-builder 打包产物 + 静默安装）以及 §4 的真机清单
+（透明窗口/贴图/录屏/OCR/热键/多显示器 DPI）。这些需要真实桌面交互，不在本轮验证范围内。
 
 ### 9.6 43.3 → 43.8 里需要重点回归的 Windows 行为
 
