@@ -66,3 +66,34 @@ as blocked without trying the above first.
 
 Scratch paths must live under `.tmp*/`, which is already gitignored; remove them
 before committing.
+
+## A local pass is not evidence the CI gate will pass
+
+The mirror image of the mistake above, and the one that actually bit: after the
+four traps are handled, `npm test` is 1278/1278 **green locally**, and CI still
+failed on exactly one test. Do not report "CI is fixed" from a local run alone.
+
+The specific case worth knowing, because it will mislead again:
+`test/capture-brush-render.test.js` (§6.3 grid-phase, "overlapping strokes must
+share one cell grid") passes here and on 43.2.0, but has **failed in every one of
+its six CI runs since it was introduced in `d9ad364`** (2026-10-19) — it has
+never once been green on a runner. The probe asserts pixel-exact seam-free
+mosaicking, and GitHub's Windows runner has no GPU, so the software rasteriser
+produces sub-pixel differences this host's hardware path does not.
+
+So when a gate is red in CI but green locally, establish which it is before
+changing anything:
+
+```bash
+gh run view <run-id> --log-failed | grep -E "✖|AssertionError"
+gh run view <run-id> --log | grep -E "brush plan §6.3"   # ✔ vs ✖ in that run
+```
+
+Check whether the failing test has *ever* passed on CI (`git log` the test file
+against the run list) — if it never has, the test or the CI environment is the
+bug, and it is not a regression from whatever you just changed. Say so plainly
+instead of claiming a green pipeline you cannot demonstrate.
+
+Note also that `git push` to `master` currently bypasses the required "Check and
+test" status check, so a push succeeding proves nothing about the gate.
+
