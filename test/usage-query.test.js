@@ -157,6 +157,262 @@ test('query breakdown groups by source/model with integer token share', (t) => {
   assert.equal(breakdown.models.reduce((sum, model) => sum + model.billable_total_tokens, 0), expectedBillable)
 })
 
+// ---- sources filter -------------------------------------------------------
+//
+// The page can restrict every view to a subset of the three AI tools. The
+// oracle is always "the same payload computed from only the selected golden
+// rows", which keeps these tests independent of the SQL implementation.
+
+const FILTER_COLUMNS = Object.freeze([
+  'billable_total_tokens',
+  'total_tokens',
+  'input_tokens',
+  'output_tokens',
+  'cached_input_tokens',
+  'cache_creation_input_tokens',
+  'reasoning_output_tokens',
+  'conversation_count'
+])
+
+function goldenRowsFor(sources) {
+  return sources ? GOLDEN.filter((row) => sources.includes(row.source)) : GOLDEN.slice()
+}
+
+function sumColumn(rows, column) {
+  return rows.reduce((sum, row) => sum + (Number(row[column]) || 0), 0)
+}
+
+function goldenTotalsFor(sources) {
+  const rows = goldenRowsFor(sources)
+  const totals = {}
+  for (const column of FILTER_COLUMNS) totals[column] = sumColumn(rows, column)
+  return totals
+}
+
+function goldenBillableByLocalDay(sources, tz) {
+  const byDay = new Map()
+  for (const row of goldenRowsFor(sources)) {
+    const day = usageTime.zonedDayKey(row.hour_start, tz)
+    byDay.set(day, (byDay.get(day) || 0) + row.billable_total_tokens)
+  }
+  return byDay
+}
+
+test('query summary filters range totals by sources', (t) => {
+  const { query } = createHarness(t)
+  const range = { period: 'custom', tz: 'Asia/Shanghai', from: '2026-03-01', to: '2026-03-31' }
+  const all = query.summary(range)
+  assert.equal(all.totals.billable_total_tokens, 52590)
+
+  const codex = query.summary({ ...range, sources: ['codex'] })
+  assert.equal(codex.totals.billable_total_tokens, 30250)
+  for (const column of FILTER_COLUMNS) {
+    assert.equal(codex.totals[column], goldenTotalsFor(['codex'])[column], `codex ${column}`)
+  }
+
+  const pair = query.summary({ ...range, sources: ['dsh', 'opencode'] })
+  const pairExpected = goldenTotalsFor(['dsh', 'opencode'])
+  assert.equal(pair.totals.billable_total_tokens, pairExpected.billable_total_tokens)
+  for (const column of FILTER_COLUMNS) assert.equal(pair.totals[column], pairExpected[column], `pair ${column}`)
+  // The filtered view is a strict subset: same range, fewer rows, smaller totals.
+  assert.ok(pair.totals.billable_total_tokens > 0 && pair.totals.billable_total_tokens < all.totals.billable_total_tokens)
+  assert.equal(
+    query.summary({ ...range, sources: ['codex'] }).totals.billable_total_tokens +
+      query.summary({ ...range, sources: ['dsh'] }).totals.billable_total_tokens +
+      query.summary({ ...range, sources: ['opencode'] }).totals.billable_total_tokens,
+    all.totals.billable_total_tokens,
+    'per-tool summaries partition the unfiltered total'
+  )
+})
+
+test('query summary rolling KPI and active days respect the sources filter', (t) => {
+  const rows = [
+    // 2026-10-20 12:00 Asia/Shanghai (inside last 7d)
+    queueRow({ source: 'codex', hour_start: '2026-10-20T04:00:00.000Z', billable_total_tokens: 100, conversation_count: 1 }),
+    // same local day, second tool
+    queueRow({ source: 'dsh', hour_start: '2026-10-20T04:00:00.000Z', billable_total_tokens: 200, conversation_count: 2 }),
+    // 2026-10-19 12:00 Asia/Shanghai (inside last 7d)
+    queueRow({ source: 'dsh', hour_start: '2026-10-19T04:00:00.000Z', billable_total_tokens: 50, conversation_count: 1 }),
+    // 2026-09-25 12:00 Asia/Shanghai (inside last 30d only)
+    queueRow({ source: 'opencode', hour_start: '2026-09-25T04:00:00.000Z', billable_total_tokens: 999, conversation_count: 3 })
+  ]
+  const { query } = createHarness(t, { rows })
+  const unfiltered = query.summary({ period: 'month', tz: 'Asia/Shanghai' })
+  assert.deepEqual(unfiltered.rolling.last7d, { billable_total_tokens: 350, conversation_count: 4 })
+  assert.deepEqual(unfiltered.rolling.last30d, { billable_total_tokens: 1349, conversation_count: 7 })
+  assert.equal(unfiltered.rolling.activeDays, 3)
+
+  const dshOnly = query.summary({ period: 'month', tz: 'Asia/Shanghai', sources: ['dsh'] })
+  assert.deepEqual(dshOnly.rolling.last7d, { billable_total_tokens: 250, conversation_count: 3 })
+  assert.deepEqual(dshOnly.rolling.last30d, { billable_total_tokens: 250, conversation_count: 3 })
+  assert.equal(dshOnly.rolling.activeDays, 2, 'only the two days with dsh rows stay active')
+  assert.equal(dshOnly.rolling.avgPerActiveDay, 125)
+  assert.equal(dshOnly.totals.billable_total_tokens, 250, 'October totals are filtered too')
+
+  const opencodeOnly = query.summary({ period: 'month', tz: 'Asia/Shanghai', sources: ['opencode'] })
+  assert.equal(opencodeOnly.totals.billable_total_tokens, 0, 'opencode has no October rows')
+  assert.equal(opencodeOnly.rolling.last7d.billable_total_tokens, 0)
+  assert.deepEqual(opencodeOnly.rolling.last30d, { billable_total_tokens: 999, conversation_count: 3 })
+  assert.equal(opencodeOnly.rolling.activeDays, 1)
+})
+
+test('query daily, hourly and breakdown match the golden rows of the selected tools', (t) => {
+  const { query } = createHarness(t)
+  const range = { period: 'custom', tz: 'Asia/Shanghai', from: '2026-03-01', to: '2026-03-31' }
+
+  const daily = query.daily({ ...range, sources: ['codex'] })
+  const expectedByDay = goldenBillableByLocalDay(['codex'], 'Asia/Shanghai')
+  for (const row of daily.rows) {
+    assert.equal(row.billable_total_tokens, expectedByDay.get(row.day) || 0, `codex ${row.day}`)
+  }
+  assert.equal(sumColumn(daily.rows, 'billable_total_tokens'), 30250)
+  assert.equal(daily.rows.find((row) => row.day === '2026-03-14').billable_total_tokens, 21950)
+  assert.equal(daily.rows.find((row) => row.day === '2026-03-15').billable_total_tokens, 0, 'dsh/opencode days are not counted')
+  assert.equal(daily.rows.find((row) => row.day === '2026-03-16').billable_total_tokens, 8300)
+
+  // 2026-03-14 Asia/Shanghai holds the two dsh rows of that local day
+  // (4900 + 2640); the third dsh row is on 2026-03-15 and must not leak in.
+  const hourly = query.hourly({ day: '2026-03-14', tz: 'Asia/Shanghai', sources: ['dsh'] })
+  assert.equal(sumColumn(hourly.rows, 'billable_total_tokens'), 4900 + 2640)
+  assert.equal(hourly.rows.reduce((sum, row) => sum + row.conversation_count, 0), 2)
+  assert.equal(sumColumn(hourly.rows, 'billable_total_tokens'), sumColumn(goldenRowsFor(['dsh']), 'billable_total_tokens') - 5650)
+
+  const breakdown = query.breakdown({ ...range, scope: 'source', sources: ['codex', 'opencode'] })
+  assert.deepEqual(breakdown.sources.map((entry) => entry.source).sort(), ['codex', 'opencode'])
+  assert.equal(breakdown.totals.billable_total_tokens, goldenTotalsFor(['codex', 'opencode']).billable_total_tokens)
+  assert.equal(breakdown.sources.reduce((sum, entry) => sum + entry.billable_total_tokens, 0), breakdown.totals.billable_total_tokens)
+  assert.equal(breakdown.models.every((model) => ['codex', 'opencode'].includes(model.source)), true)
+  assert.deepEqual(
+    breakdown.models.map((model) => `${model.source}|${model.model}`).sort(),
+    [...new Set(goldenRowsFor(['codex', 'opencode']).map((row) => `${row.source}|${row.model}`))].sort()
+  )
+  // Shares must be recomputed against the filtered total, not the global one.
+  const codexEntry = breakdown.sources.find((entry) => entry.source === 'codex')
+  assert.equal(codexEntry.sharePct, Math.round((30250 / (30250 + 9150)) * 10000) / 100)
+})
+
+test('query heatmap max, levels and active days are computed from the filtered rows', (t) => {
+  const { query } = createHarness(t)
+  const unfiltered = query.heatmap({ tz: 'Asia/Shanghai', weeks: 52 })
+  assert.equal(unfiltered.max, 34840)
+  assert.equal(unfiltered.activeDays, 3)
+
+  const codex = query.heatmap({ tz: 'Asia/Shanghai', weeks: 52, sources: ['codex'] })
+  assert.equal(codex.max, 21950, 'max shrinks with the filter')
+  assert.equal(codex.activeDays, 2, 'dsh-only day is no longer active')
+  const cells = codex.weeks.flat().filter(Boolean)
+  const find = (day) => cells.find((cell) => cell.day === day)
+  assert.equal(find('2026-03-14').value, 21950)
+  assert.equal(find('2026-03-14').level, 4)
+  assert.equal(find('2026-03-14').total_tokens, 21950)
+  assert.equal(find('2026-03-16').value, 8300)
+  assert.equal(find('2026-03-16').level, 2)
+  assert.equal(find('2026-03-15').value, 0)
+  assert.equal(find('2026-03-15').level, 0)
+  assert.equal(find('2026-03-15').models, undefined)
+  assert.equal(find('2026-03-14').models.every((model) => model.source === 'codex'), true)
+  assert.equal(find('2026-03-14').models.reduce((sum, model) => sum + model.total_tokens, 0), 21950)
+
+  const pair = query.heatmap({ tz: 'Asia/Shanghai', weeks: 52, sources: ['codex', 'dsh'] })
+  const expectedByDay = goldenBillableByLocalDay(['codex', 'dsh'], 'Asia/Shanghai')
+  assert.equal(pair.max, Math.max(...expectedByDay.values()))
+  assert.equal(pair.activeDays, expectedByDay.size)
+  for (const [day, value] of expectedByDay) assert.equal(pair.weeks.flat().find((cell) => cell && cell.day === day).value, value, day)
+})
+
+test('query treats the full source selection exactly like no filter', (t) => {
+  const { query } = createHarness(t, { cache: { maxEntries: 32 } })
+  const ALL = ['codex', 'dsh', 'opencode']
+  const range = { period: 'custom', tz: 'Asia/Shanghai', from: '2026-03-01', to: '2026-03-31' }
+  const hour = { day: '2026-03-14', tz: 'Asia/Shanghai' }
+  for (const sources of [ALL, [], null]) {
+    const label = JSON.stringify(sources)
+    assert.deepEqual(query.summary({ ...range, sources }), query.summary(range), `summary ${label}`)
+    assert.deepEqual(query.daily({ ...range, sources }), query.daily(range), `daily ${label}`)
+    assert.deepEqual(query.hourly({ ...hour, sources }), query.hourly(hour), `hourly ${label}`)
+    assert.deepEqual(
+      query.breakdown({ ...range, scope: 'model', sources }),
+      query.breakdown({ ...range, scope: 'model' }),
+      `breakdown ${label}`
+    )
+    assert.deepEqual(query.heatmap({ tz: 'Asia/Shanghai', weeks: 52, sources }), query.heatmap({ tz: 'Asia/Shanghai', weeks: 52 }), `heatmap ${label}`)
+  }
+})
+
+test('query cache keys keep different source filters apart', (t) => {
+  const { query } = createHarness(t, { cache: { maxEntries: 32 } })
+  const range = { period: 'custom', tz: 'Asia/Shanghai', from: '2026-03-01', to: '2026-03-31' }
+  const codex = query.summary({ ...range, sources: ['codex'] })
+  const codexAgain = query.summary({ ...range, sources: ['codex'] })
+  assert.equal(codexAgain, codex, 'repeat call with the same filter reuses the payload')
+  let stats = query.getCacheStats()
+  assert.equal(stats.misses, 1)
+  assert.equal(stats.hits, 1)
+
+  // Switching the tool selection must not return the previous selection's data.
+  const dsh = query.summary({ ...range, sources: ['dsh'] })
+  assert.equal(dsh.totals.billable_total_tokens, 13190)
+  assert.notEqual(dsh.totals.billable_total_tokens, codex.totals.billable_total_tokens)
+  stats = query.getCacheStats()
+  assert.equal(stats.misses, 2)
+
+  // The same set in another order is the same query: the key sorts the names so
+  // a reordered selection does not recompute a valid payload.
+  const reordered = query.summary({ ...range, sources: ['dsh', 'codex'] })
+  const reorderedAgain = query.summary({ ...range, sources: ['codex', 'dsh'] })
+  assert.equal(reorderedAgain, reordered)
+  stats = query.getCacheStats()
+  assert.equal(stats.misses, 3)
+  assert.equal(reorderedAgain.totals.billable_total_tokens, 30250 + 13190)
+})
+
+test('store heatmap per-day SQL branch binds the sources filter instead of interpolating it', (t) => {
+  const { store } = createHarness(t)
+  const bounds = usageTime.resolveDayBounds('2026-03-14', 'Asia/Shanghai')
+  const dayRanges = [
+    { day: '2026-03-14', startIso: new Date(bounds.startUtcMs).toISOString(), endIso: new Date(bounds.endUtcMs).toISOString() }
+  ]
+  const all = store.getHeatmapDayModelTotals({ dayRanges })
+  const codex = store.getHeatmapDayModelTotals({ dayRanges, sources: ['codex'] })
+  assert.equal(all.reduce((sum, row) => sum + row.billable_total_tokens, 0), 34840)
+  assert.equal(codex.reduce((sum, row) => sum + row.billable_total_tokens, 0), 21950)
+  assert.equal(codex.every((row) => row.source === 'codex'), true)
+  assert.equal(codex.every((row) => row.day === '2026-03-14'), true)
+  assert.equal(store.getHeatmapDayModelTotals({ dayRanges, sources: [] }).length, all.length, 'empty filter means all tools')
+  // A crafted value must be treated as data (no matching rows), never as SQL.
+  assert.deepEqual(store.getHeatmapDayModelTotals({ dayRanges, sources: ["codex' OR '1'='1"] }), [])
+
+  // Several day branches share one statement, so the bound parameters have to
+  // line up branch by branch; a mismatch would silently attribute one day's
+  // totals to another day's label.
+  const twoDays = ['2026-03-14', '2026-03-16'].map((day) => {
+    const dayBounds = usageTime.resolveDayBounds(day, 'Asia/Shanghai')
+    return {
+      day,
+      startIso: new Date(dayBounds.startUtcMs).toISOString(),
+      endIso: new Date(dayBounds.endUtcMs).toISOString()
+    }
+  })
+  const perDay = store.getHeatmapDayModelTotals({ dayRanges: twoDays, sources: ['dsh', 'opencode'] })
+  const totalFor = (day) => perDay.filter((row) => row.day === day).reduce((sum, row) => sum + row.billable_total_tokens, 0)
+  assert.equal(totalFor('2026-03-14'), 7540 + 5350)
+  assert.equal(totalFor('2026-03-16'), 0, 'no dsh/opencode rows on that local day')
+  assert.equal(perDay.every((row) => ['dsh', 'opencode'].includes(row.source)), true)
+
+  // The other range helpers share the same filter shape.
+  const fromIso = new Date(Date.parse('2026-03-14T00:00:00.000Z')).toISOString()
+  const toIso = new Date(Date.parse('2026-03-17T00:00:00.000Z')).toISOString()
+  assert.equal(
+    store.countRangeRows({ fromIso, toIso, sources: ['codex'] }),
+    GOLDEN.filter((row) => row.source === 'codex' && row.hour_start >= fromIso && row.hour_start < toIso).length
+  )
+  assert.equal(
+    store.getGroupedTotals({ fromIso, toIso, dimensions: ['source'], sources: ['codex'] })
+      .reduce((sum, row) => sum + row.billable_total_tokens, 0),
+    30250
+  )
+})
+
 test('query propagates cache_creation/reasoning and returns breakdown token totals', (t) => {
   const { query } = createHarness(t)
   const range = { period: 'custom', tz: 'Asia/Shanghai', from: '2026-03-01', to: '2026-03-31' }
@@ -390,7 +646,12 @@ test('query p95 stays inside the 100 ms budget on ~100k synthetic buckets', (t) 
     summary: () => query.summary({ period: 'total', tz: 'Asia/Shanghai' }),
     daily: () => query.daily({ period: 'total', tz: 'Asia/Shanghai' }),
     breakdown: () => query.breakdown({ period: 'total', tz: 'Asia/Shanghai', scope: 'model' }),
-    heatmap: () => query.heatmap({ tz: 'Asia/Shanghai', weeks: 52 })
+    heatmap: () => query.heatmap({ tz: 'Asia/Shanghai', weeks: 52 }),
+    // A tool filter only narrows the scanned range, so the page keeps its budget
+    // while one tool is deselected.
+    summaryCodex: () => query.summary({ period: 'total', tz: 'Asia/Shanghai', sources: ['codex'] }),
+    dailyCodex: () => query.daily({ period: 'total', tz: 'Asia/Shanghai', sources: ['codex'] }),
+    heatmapCodex: () => query.heatmap({ tz: 'Asia/Shanghai', weeks: 52, sources: ['codex'] })
   }
   const measured = {}
   for (const [name, run] of Object.entries(views)) {
@@ -415,6 +676,9 @@ test('query p95 stays inside the 100 ms budget on ~100k synthetic buckets', (t) 
   assert.ok(measured.daily < 150, `daily p95 ${measured.daily}ms`)
   assert.ok(measured.heatmap < 100, `heatmap p95 ${measured.heatmap}ms`)
   assert.ok(measured.breakdown < 300, `breakdown p95 ${measured.breakdown}ms`)
+  assert.ok(measured.summaryCodex < 100, `filtered summary p95 ${measured.summaryCodex}ms`)
+  assert.ok(measured.dailyCodex < 150, `filtered daily p95 ${measured.dailyCodex}ms`)
+  assert.ok(measured.heatmapCodex < 100, `filtered heatmap p95 ${measured.heatmapCodex}ms`)
   console.log(`[usage-query perf] rows=${ROWS} insert=${insertMs}ms p95(ms)=${JSON.stringify(measured)}`)
   assert.equal(store.countBuckets(), ROWS)
 })

@@ -37,6 +37,9 @@ const HANDLER_BY_CHANNEL = Object.freeze({
 
 const PERIODS = Object.freeze(['day', 'week', 'month', 'total', 'custom'])
 const BREAKDOWN_SCOPES = Object.freeze(['source', 'model'])
+// The tools the usage page can filter by. Kept in sync with usage-tools.js; the
+// filter never reaches SQLite without passing this whitelist check.
+const USAGE_SOURCES = Object.freeze(['codex', 'dsh', 'opencode'])
 const MAX_RANGE_DAYS = 800
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const MAX_TZ_LENGTH = 64
@@ -98,6 +101,33 @@ function normalizeRange(from, to) {
   return { from: fromDay, to: toDay }
 }
 
+// Returns `undefined` for "no filtering" and the deduplicated selection
+// otherwise. Treating both the empty array and the full set as `undefined` is
+// deliberate: the renderer's "all tools" state can arrive as either, and an
+// unfiltered query keeps the cheaper SQL path. Keeping the key out of the
+// returned object when there is nothing to filter also preserves the frozen
+// validated-args shape the IPC contract fixtures assert on.
+function normalizeSources(value) {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value)) throw usageError('sources must be an array')
+  const unique = []
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !USAGE_SOURCES.includes(entry)) {
+      throw usageError(`invalid source: ${String(entry)}`)
+    }
+    if (!unique.includes(entry)) unique.push(entry)
+  }
+  if (unique.length === 0 || unique.length === USAGE_SOURCES.length) return undefined
+  return unique
+}
+
+// Attaches the filter only when one survives normalization, so an unfiltered
+// call's validated args stay byte-identical to the pre-filter contract.
+function withSources(args, value) {
+  const sources = normalizeSources(value)
+  return sources ? { ...args, sources } : args
+}
+
 function normalizePeriodArgs(value, { allowCustom = false } = {}) {
   const args = asObject(value, 'args')
   const period = normalizePeriod(args.period)
@@ -105,7 +135,7 @@ function normalizePeriodArgs(value, { allowCustom = false } = {}) {
   const range = normalizeRange(args.from, args.to)
   if (period === 'custom' && !allowCustom) throw usageError('custom period is not supported here')
   if (period === 'custom' && (!range.from || !range.to)) throw usageError('custom period requires from and to')
-  return { period, tz, from: range.from, to: range.to }
+  return withSources({ period, tz, from: range.from, to: range.to }, args.sources)
 }
 
 function validateStatusArgs() {
@@ -139,7 +169,7 @@ function validateBreakdownArgs(value) {
 function validateHourlyArgs(value) {
   const args = asObject(value, 'args')
   const day = normalizeDay(args.day, 'day') || new Date().toISOString().slice(0, 10)
-  return { day, tz: normalizeTimezone(args.tz) }
+  return withSources({ day, tz: normalizeTimezone(args.tz) }, args.sources)
 }
 
 function validateHeatmapArgs(value) {
@@ -147,7 +177,7 @@ function validateHeatmapArgs(value) {
   let weeks = args.weeks === undefined ? 52 : args.weeks
   if (typeof weeks !== 'number' || !Number.isFinite(weeks)) throw usageError('weeks must be a number')
   weeks = Math.min(52, Math.max(1, Math.trunc(weeks)))
-  return { tz: normalizeTimezone(args.tz), weeks }
+  return withSources({ tz: normalizeTimezone(args.tz), weeks }, args.sources)
 }
 
 function validateClearArgs() {
@@ -206,6 +236,8 @@ module.exports = {
   PERIODS,
   USAGE_HANDLE_CHANNELS,
   USAGE_PROGRESS_CHANNEL,
+  USAGE_SOURCES,
+  normalizeSources,
   registerUsageIpc,
   usageError,
   validateBreakdownArgs,

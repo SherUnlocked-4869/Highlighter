@@ -13,9 +13,14 @@
 //   - heatmap: 52 weeks x 7, Monday first, future days null, level 0..4
 //     max-relative quarters.
 //
+// Every view accepts the optional `sources` tool filter and pushes it into the
+// store query instead of dropping rows in JS, so filtering can only shrink the
+// range a query touches.
+//
 // A small LRU (default 60 s, 64 entries) is keyed by
-// {view,period,tz,from,to,scope} + the store's in-process dbVersion, so it is
-// invalidated by the next commit/clear without cross-process coordination.
+// {view,period,tz,from,to,scope,sources} + the store's in-process dbVersion, so
+// it is invalidated by the next commit/clear without cross-process coordination
+// and a tool-filter toggle never reuses the previous selection's payload.
 
 const usageTime = require('./usage-time')
 
@@ -89,6 +94,20 @@ function addQueueTokens(target, source) {
 function sharePct(value, total) {
   if (!total) return 0
   return Math.round((value / total) * 10000) / 100
+}
+
+// Cache-key fragment for the optional source filter: without it a filtered and
+// an unfiltered view of the same range would share one LRU entry and the page
+// would show stale numbers after toggling a tool. Sorted so that the same
+// selection in a different order still hits the same entry.
+function sourcesKey(sources) {
+  return Array.isArray(sources) && sources.length > 0 ? `|src:${sources.slice().sort().join(',')}` : ''
+}
+
+// The store treats a missing/empty filter as "all sources", so normalize here
+// once instead of at every call site.
+function storeSources(sources) {
+  return Array.isArray(sources) && sources.length > 0 ? sources : null
 }
 
 // Max-relative four-band level (plan §1.2 #10): 0 = no activity,
@@ -264,24 +283,28 @@ function createUsageQuery({
   function summary(validated = {}) {
     const period = validated.period || 'month'
     const tz = validated.tz || 'UTC'
-    return cached(`summary|${period}|${tz}|${validated.from || ''}|${validated.to || ''}`, () => {
+    const sources = storeSources(validated.sources)
+    return cached(`summary|${period}|${tz}|${validated.from || ''}|${validated.to || ''}${sourcesKey(sources)}`, () => {
       const range = rangeForPeriod({ ...validated, period, tz })
       const store = getStore()
-      const totals = toTotalsPayload(store.sumRange({ fromIso: range.fromIso, toIso: range.toIso }))
+      const totals = toTotalsPayload(store.sumRange({ fromIso: range.fromIso, toIso: range.toIso, sources }))
       const current = now()
       const last7Window = usageTime.resolveRollingWindow({ days: 7, now: current, timeZone: tz })
       const last30Window = usageTime.resolveRollingWindow({ days: 30, now: current, timeZone: tz })
       const last7 = store.sumRange({
         fromIso: new Date(last7Window.startUtcMs).toISOString(),
-        toIso: new Date(last7Window.endUtcMs).toISOString()
+        toIso: new Date(last7Window.endUtcMs).toISOString(),
+        sources
       })
       const last30 = store.sumRange({
         fromIso: new Date(last30Window.startUtcMs).toISOString(),
-        toIso: new Date(last30Window.endUtcMs).toISOString()
+        toIso: new Date(last30Window.endUtcMs).toISOString(),
+        sources
       })
       const last30Rows = store.getRangeHourlyTotals({
         fromIso: new Date(last30Window.startUtcMs).toISOString(),
-        toIso: new Date(last30Window.endUtcMs).toISOString()
+        toIso: new Date(last30Window.endUtcMs).toISOString(),
+        sources
       })
       const observedDays = new Set()
       for (const row of last30Rows) {
@@ -317,10 +340,11 @@ function createUsageQuery({
   function daily(validated = {}) {
     const period = validated.period || 'month'
     const tz = validated.tz || 'UTC'
-    return cached(`daily|${period}|${tz}|${validated.from || ''}|${validated.to || ''}`, () => {
+    const sources = storeSources(validated.sources)
+    return cached(`daily|${period}|${tz}|${validated.from || ''}|${validated.to || ''}${sourcesKey(sources)}`, () => {
       const range = rangeForPeriod({ ...validated, period, tz })
       const store = getStore()
-      const rows = store.getRangeHourlyTotals({ fromIso: range.fromIso, toIso: range.toIso })
+      const rows = store.getRangeHourlyTotals({ fromIso: range.fromIso, toIso: range.toIso, sources })
       const grouped = rowsByZoneDay(rows, tz, range)
       const out = []
       const todayKey = usageTime.zonedDayKey(now(), tz)
@@ -339,12 +363,14 @@ function createUsageQuery({
   function hourly(validated = {}) {
     const tz = validated.tz || 'UTC'
     const day = validated.day
-    return cached(`hourly|${day}|${tz}`, () => {
+    const sources = storeSources(validated.sources)
+    return cached(`hourly|${day}|${tz}${sourcesKey(sources)}`, () => {
       const bounds = usageTime.resolveDayBounds(day, tz)
       const store = getStore()
       const rows = store.getRangeHourlyTotals({
         fromIso: new Date(bounds.startUtcMs).toISOString(),
-        toIso: new Date(bounds.endUtcMs).toISOString()
+        toIso: new Date(bounds.endUtcMs).toISOString(),
+        sources
       })
       const buckets = Array.from({ length: 24 }, () => emptyTotals())
       for (const row of rows) {
@@ -373,16 +399,18 @@ function createUsageQuery({
   function breakdown(validated = {}) {
     const period = validated.period || 'month'
     const tz = validated.tz || 'UTC'
+    const sourceFilter = storeSources(validated.sources)
     return cached(
-      `breakdown|${period}|${tz}|${validated.from || ''}|${validated.to || ''}|${validated.scope || 'source'}`,
+      `breakdown|${period}|${tz}|${validated.from || ''}|${validated.to || ''}|${validated.scope || 'source'}${sourcesKey(sourceFilter)}`,
       () => {
         const range = rangeForPeriod({ ...validated, period, tz })
         const store = getStore()
-        const totals = toTotalsPayload(store.sumRange({ fromIso: range.fromIso, toIso: range.toIso }))
+        const totals = toTotalsPayload(store.sumRange({ fromIso: range.fromIso, toIso: range.toIso, sources: sourceFilter }))
         const groupedRows = store.getGroupedTotals({
           fromIso: range.fromIso,
           toIso: range.toIso,
-          dimensions: ['source', 'model']
+          dimensions: ['source', 'model'],
+          sources: sourceFilter
         })
         const sources = new Map()
         const flatModels = []
@@ -438,7 +466,8 @@ function createUsageQuery({
   function heatmap(validated = {}) {
     const tz = validated.tz || 'UTC'
     const weeks = validated.weeks || 52
-    return cached(`heatmap|${tz}|${weeks}`, () => {
+    const sources = storeSources(validated.sources)
+    return cached(`heatmap|${tz}|${weeks}${sourcesKey(sources)}`, () => {
       const store = getStore()
       const nowDate = now()
       const today = usageTime.zonedDayKey(nowDate, tz)
@@ -456,7 +485,7 @@ function createUsageQuery({
       // (a couple of ms), while a dense 52-week range must be aggregated inside
       // SQLite per local day or the JS side has to materialize 250k+ rows. The
       // bounded count probe costs a few ms even when dense and stops early.
-      const rowCount = store.countRangeRows({ fromIso: windowFromIso, toIso: windowToIso, limit: HEATMAP_RAW_ROW_LIMIT })
+      const rowCount = store.countRangeRows({ fromIso: windowFromIso, toIso: windowToIso, limit: HEATMAP_RAW_ROW_LIMIT, sources })
       const dayModels = new Map()
       const addAggregate = (day, source, model, totals) => {
         let entry = dayModels.get(day)
@@ -479,7 +508,7 @@ function createUsageQuery({
       }
 
       if (rowCount > 0 && rowCount <= HEATMAP_RAW_ROW_LIMIT) {
-        foldRawRows(store.getRangeRows({ fromIso: windowFromIso, toIso: windowToIso }))
+        foldRawRows(store.getRangeRows({ fromIso: windowFromIso, toIso: windowToIso, sources }))
       } else if (rowCount > HEATMAP_RAW_ROW_LIMIT) {
         // Only past/today days can carry data; future cells stay null and are
         // not queried. Day bounds come from usage-time (DST-safe), and each day
@@ -497,7 +526,7 @@ function createUsageQuery({
           cursor = usageTime.addDaysToDayKey(cursor, 1)
           guard += 1
         }
-        for (const row of store.getHeatmapDayModelTotals({ dayRanges })) {
+        for (const row of store.getHeatmapDayModelTotals({ dayRanges, sources })) {
           addAggregate(row.day, row.source, row.model, row)
         }
       }

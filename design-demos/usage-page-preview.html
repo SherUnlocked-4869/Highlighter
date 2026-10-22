@@ -230,26 +230,90 @@
         if (!from || !to) return null;
         return { from: from, to: to };
       }
+      // AI-tool filter (the page sends `sources` only for a real subset). The mock
+      // scales every aggregate by the selected sources' share so a filtered page
+      // is visibly smaller than the unfiltered one, like the real query does.
+      var KNOWN_SOURCES = ['codex', 'dsh', 'opencode'];
+      function selectedSources(query) {
+        var list = query && Array.isArray(query.sources) ? query.sources : null;
+        if (!list) return null;
+        var picked = [];
+        for (var i = 0; i < list.length; i += 1) {
+          if (KNOWN_SOURCES.indexOf(list[i]) !== -1 && picked.indexOf(list[i]) === -1) picked.push(list[i]);
+        }
+        if (picked.length === 0 || picked.length === KNOWN_SOURCES.length) return null;
+        return picked;
+      }
+      function sourceShareOf(ids) {
+        if (!ids) return 1;
+        var share = 0;
+        for (var i = 0; i < ids.length; i += 1) {
+          var spec = SOURCE_SPECS.filter(function (entry) { return entry.source === ids[i]; })[0];
+          if (spec) share += spec.share;
+        }
+        return share;
+      }
+      function scaleRow(row, ratio) {
+        if (!ratio || ratio === 1) return row;
+        var copy = {};
+        for (var key in row) {
+          if (!Object.prototype.hasOwnProperty.call(row, key)) continue;
+          copy[key] = typeof row[key] === 'number' && key !== 'weight' ? Math.round(row[key] * ratio) : row[key];
+        }
+        return copy;
+      }
+      function scaledRows(rows, ratio) {
+        if (!rows || !ratio || ratio === 1) return rows;
+        return rows.map(function (row) { return scaleRow(row, ratio); });
+      }
+      function ratioFor(query) {
+        return sourceShareOf(selectedSources(query));
+      }
+
       function summaryForQuery(query) {
+        var ratio = ratioFor(query);
         var range = rangeFromQuery(query);
-        if (!range) return summaryFor((query && query.period) || 'month');
+        if (!range) {
+          var base = summaryFor((query && query.period) || 'month');
+          return ratio === 1 ? base : { ...base, totals: scaleRow(base.totals, ratio), rolling: scaledRolling(base.rolling, ratio) };
+        }
         var rows = rangeRowsFor(range.from, range.to);
-        if (!rows) return summaryFor((query && query.period) || 'month');
+        if (!rows) {
+          var fallback = summaryFor((query && query.period) || 'month');
+          return ratio === 1 ? fallback : { ...fallback, totals: scaleRow(fallback.totals, ratio), rolling: scaledRolling(fallback.rolling, ratio) };
+        }
         return {
           period: (query && query.period) || 'custom',
           from: range.from,
           to: range.to,
           days: rows.length,
-          totals: sumRows(rows),
-          rolling: rollingPayload()
+          totals: sumRows(scaledRows(rows, ratio)),
+          rolling: scaledRolling(rollingPayload(), ratio)
         };
       }
+      function scaledRolling(rolling, ratio) {
+        if (!rolling || ratio === 1) return rolling;
+        var copy = JSON.parse(JSON.stringify(rolling));
+        copy.last7d.billable_total_tokens = Math.round(copy.last7d.billable_total_tokens * ratio);
+        copy.last7d.conversation_count = Math.round(copy.last7d.conversation_count * ratio);
+        copy.last30d.billable_total_tokens = Math.round(copy.last30d.billable_total_tokens * ratio);
+        copy.last30d.conversation_count = Math.round(copy.last30d.conversation_count * ratio);
+        copy.avgPerActiveDay = Math.round(copy.avgPerActiveDay * ratio);
+        return copy;
+      }
       function dailyForQuery(query) {
+        var ratio = ratioFor(query);
         var range = rangeFromQuery(query);
-        if (!range) return dailyFor((query && query.period) || 'month');
+        if (!range) {
+          var base = dailyFor((query && query.period) || 'month');
+          return ratio === 1 ? base : { ...base, rows: scaledRows(base.rows, ratio) };
+        }
         var rows = rangeRowsFor(range.from, range.to);
-        if (!rows) return dailyFor((query && query.period) || 'month');
-        return { period: (query && query.period) || 'custom', from: range.from, to: range.to, rows: rows };
+        if (!rows) {
+          var fallback = dailyFor((query && query.period) || 'month');
+          return ratio === 1 ? fallback : { ...fallback, rows: scaledRows(fallback.rows, ratio) };
+        }
+        return { period: (query && query.period) || 'custom', from: range.from, to: range.to, rows: scaledRows(rows, ratio) };
       }
       function hourlyForQuery(query) {
         var day = query && typeof query.day === 'string' ? query.day.slice(0, 10) : '';
@@ -312,27 +376,33 @@
       var MODEL_TOTAL = 1;
       SOURCE_SPECS.forEach(function (spec) { spec.tokensShare = spec.share * MODEL_TOTAL; });
 
-      function breakdownFor(totals) {
+      function breakdownFor(totals, sourcesFilter) {
         var total = totals.billable_total_tokens || 1;
-        var sources = SOURCE_SPECS.map(function (spec) {
+        // A filtered query only reports the selected tools; their share is then
+        // relative to the filtered total (which is what the real breakdown does).
+        var specs = sourcesFilter
+          ? SOURCE_SPECS.filter(function (spec) { return sourcesFilter.indexOf(spec.source) !== -1; })
+          : SOURCE_SPECS;
+        var filterShare = specs.reduce(function (sum, spec) { return sum + spec.share; }, 0) || 1;
+        var sources = specs.map(function (spec) {
           return {
             source: spec.source,
-            billable_total_tokens: Math.round(total * spec.share),
-            sharePct: spec.share * 100,
-            conversationCount: Math.round(totals.conversation_count * spec.share),
+            billable_total_tokens: Math.round(total * (spec.share / filterShare)),
+            sharePct: (spec.share / filterShare) * 100,
+            conversationCount: Math.round(totals.conversation_count * (spec.share / filterShare)),
             modelCount: spec.models.length,
             estimated: false
           };
         });
         var models = [];
-        SOURCE_SPECS.forEach(function (spec) {
+        specs.forEach(function (spec) {
           spec.models.forEach(function (model) {
             models.push({
               source: spec.source,
               model: model.model,
-              billable_total_tokens: Math.round(total * spec.share * model.share),
-              sharePct: spec.share * model.share * 100,
-              conversationCount: Math.round(totals.conversation_count * spec.share * model.share),
+              billable_total_tokens: Math.round(total * (spec.share / filterShare) * model.share),
+              sharePct: (spec.share / filterShare) * model.share * 100,
+              conversationCount: Math.round(totals.conversation_count * (spec.share / filterShare) * model.share),
               estimated: false
             });
           });
@@ -485,6 +555,38 @@
       }
 
       var HEATMAP = heatmapPayload();
+      // Filtered heatmap: same grid shape, values scaled by the selected tools'
+      // share and levels recomputed max-relative (what the real query does).
+      function scaledHeatmap(ids) {
+        var ratio = sourceShareOf(ids);
+        if (!ids || ratio === 1) return HEATMAP;
+        var weeks = HEATMAP.weeks.map(function (week) {
+          return week.map(function (cell) {
+            if (!cell) return null;
+            var value = Math.round((cell.value || 0) * ratio);
+            var copy = JSON.parse(JSON.stringify(cell));
+            copy.value = value;
+            copy.billable_total_tokens = value;
+            copy.total_tokens = Math.round((cell.total_tokens || 0) * ratio);
+            copy.conversation_count = Math.round((cell.conversation_count || 0) * ratio);
+            var models = {};
+            Object.keys(cell.models || {}).forEach(function (model) { models[model] = Math.round(cell.models[model] * ratio); });
+            copy.models = models;
+            return copy;
+          });
+        });
+        var max = 0;
+        weeks.forEach(function (week) { week.forEach(function (cell) { if (cell && cell.value > max) max = cell.value; }); });
+        var activeDays = 0;
+        weeks.forEach(function (week) {
+          week.forEach(function (cell) {
+            if (!cell) return;
+            if (cell.value > 0) activeDays += 1;
+            cell.level = !max || cell.value <= 0 ? 0 : (cell.value / max <= 0.25 ? 1 : cell.value / max <= 0.5 ? 2 : cell.value / max <= 0.75 ? 3 : 4);
+          });
+        });
+        return { weeks: weeks, activeDays: activeDays, from: HEATMAP.from, to: HEATMAP.to };
+      }
       var HOURLY = hourlyPayload();
       // Day used by the tooltip capture mode: the active cell with the richest
       // per-model split (all active mock cells carry one; pick the busiest).
@@ -547,8 +649,8 @@
         usageStatus: function () { return resolve(statusPayload()); },
         usageSummary: function (query) { return resolve(summaryForQuery(query)); },
         usageDaily: function (query) { return resolve(dailyForQuery(query)); },
-        usageBreakdown: function (query) { return resolve(breakdownFor(summaryForQuery(query).totals)); },
-        usageHeatmap: function () { return resolve(HEATMAP); },
+        usageBreakdown: function (query) { return resolve(breakdownFor(summaryForQuery(query).totals, selectedSources(query))); },
+        usageHeatmap: function (query) { return resolve(scaledHeatmap(selectedSources(query))); },
         usageHourly: function (query) {
           var debug = { called: true, query: query || null, day: query && query.day, emptyFlag: !!window.__usagePreviewEmptyHourly, rows: null, error: null };
           try {
@@ -659,9 +761,56 @@
         }, 15000).then(function () { return true; });
       }
 
+      // AI-tool filter drivers (dev harness only). The chips are the page's real
+      // control, so a capture exercises the same handler path a user click does.
+      function activeFilters() {
+        return Array.prototype.slice.call(document.querySelectorAll('[data-usage-source-filter][aria-pressed="true"]'))
+          .map(function (chip) { return chip.getAttribute('data-usage-source-filter'); });
+      }
+      function filterSettled() {
+        var page = document.querySelector('.usage-page');
+        return Boolean(page) && page.getAttribute('data-usage-busy') !== 'true';
+      }
+      function applyFilter(ids) {
+        for (var i = 0; i < ids.length; i += 1) {
+          var chip = document.querySelector('[data-usage-source-filter="' + ids[i] + '"]');
+          if (!chip) return Promise.reject(new Error('filter chip not found: ' + ids[i]));
+          if (chip.getAttribute('aria-pressed') !== 'true') chip.click();
+        }
+        return waitFor(filterSettled, 15000)
+          .then(function () { return new Promise(function (resolve) { setTimeout(resolve, 160); }); })
+          .then(function () {
+            // The capture must not show the clicked chip's focus ring.
+            if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+            return activeFilters();
+          });
+      }
+      function clearFilter() {
+        var chip = document.querySelector('[data-usage-source-filter="all"]');
+        if (!chip) return Promise.resolve([]);
+        if (chip.getAttribute('aria-pressed') !== 'true') chip.click();
+        return waitFor(filterSettled, 15000)
+          .then(function () { return new Promise(function (resolve) { setTimeout(resolve, 160); }); })
+          .then(function () {
+            if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+            return activeFilters();
+          });
+      }
+      window.__usagePreviewApplyFilter = applyFilter;
+      window.__usagePreviewClearFilter = clearFilter;
+      window.__usagePreviewActiveFilters = activeFilters;
+
       Promise.resolve(window.configRoutes.renderUsage())
         .then(function () { return waitFor(function () { return dashboardReady(); }, 15000); })
         .then(function () { return selectPeriod(requestedPeriod); })
+        .then(function () {
+          // `filter` query param pre-selects chips for a filtered capture; the
+          // value is a comma list (codex,dsh) rendered through the real handlers.
+          var filterParam = params.get('filter');
+          if (!filterParam) return null;
+          var ids = filterParam.split(',').map(function (item) { return item.trim(); }).filter(Boolean);
+          return ids.length > 0 ? applyFilter(ids) : null;
+        })
         .then(function () {
           return Promise.all([
             document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve(),
@@ -760,6 +909,8 @@
             language: requestedLanguage,
             compact: compact,
             period: requestedPeriod || 'month',
+            activeFilters: activeFilters(),
+            filterChips: document.querySelectorAll('[data-usage-source-filter]').length,
             pageState: page ? page.getAttribute('data-usage-state') : null,
             providerCards: document.querySelectorAll('.usage-provider').length,
             providerAllText: (function () {

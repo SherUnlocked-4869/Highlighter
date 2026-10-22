@@ -127,6 +127,27 @@
 
 **验收**（headless harness，0 pageerror / 0 console error / 0 可见窗口）：608/760/848/1080/1180 × 明暗共 10 组截图，行结构统一为 `2 / 2 / 1`，row1 与 row2 等高达 **0px**、最大水平死区 14px（半宽档）、18px（全屏档，与 v6 相同），`dailyFullWidth`/`tokenCardNotFullWidth` 全为 true；真实默认窗宽 `--widths 1120`（页面 838px）与最小窗宽 `--widths 880`（页面 634px）复跑同为成对布局；英文（en-US）、`body.compact`、热力图 tooltip（insideCard=true）、趋势详情弹窗（Esc/backdrop/X 三路径 + 焦点恢复 + 30m/天/月粒度）均不受影响。门禁：usage 单测 **105/105** 通过，`check-js` 388、`check-i18n` 585、`check-architecture` 1327/1330 全绿（`npm test` 的 13 个 Electron 运行时用例在本机受限宿主下依旧失败，与本次改动无关：`git stash` 后同 13 个用例同样失败）。安装包已用同一树重建：`dist-usage-page/Highlighter-Setup-4.0.0.exe` **144,948,393 B**，SHA256 `b6904b52…12ea0`，`SHA256SUMS.txt`/`latest.yml`/blockmap 同步刷新；asar 内 `config/config.css`、`config/routes/usage.js` 与工作树逐字节一致。证据：[`2026-10-22-usage-page-paired-layout/`](./2026-10-22-usage-page-paired-layout/)（`01-before-848-light` → `02-default-window-1120` / `03-min-window-880` / `04–08` 多页宽双主题 / `09–12` en-US、compact、tooltip、趋势弹窗 + `paired-layout-metrics.json`）。
 
+### 0.11 第四轮交互（v8「不闪 + 精简头部 + AI 工具筛选」，2026-10-22 用户四次反馈）
+
+**反馈**：① 切换日 / 周 / 月时页面会闪一下，观感差；② 删除覆盖状态条里「Cursor 等账号级工具需要登录 API」的常驻提示；③ 顶部刷新按钮只保留图标，其下方的空白区域改放 **AI 工具筛选**（按当前统计范围展示 Codex / DeepSeek Harness / OpenCode，点一次选中、再点取消，全都不选即等同于全选，默认全选）。
+
+**① 闪烁的根因与修法**：切 tab 走 `renderUsage()` → `usageRenderRoute()`，而该函数第一件事就是 `usageRenderLoading()`，把整页 `view.innerHTML` 换成「正在加载…」卡片，等 IPC 回来再重建；即使查询命中 60s LRU（1–2 ms），也已经画过一帧空页。
+- 新增 `usageRerenderKeepingDashboard()` / `usageRenderRoute({keepDashboard:true})`：**周期、AI 工具筛选、自定义区间、手动刷新、清除数据**这五条用户操作路径都改走它。只有当页面上已有 dashboard 时（`usageKeepDashboardForSwap()`）才保留旧内容，否则仍走加载卡（首次进入 / 同意页 / 错误页没有可保留的东西）。
+- 保留期间只打 `data-usage-busy="true"`，CSS 把 `.usage-dashboard` 降到 `opacity:.55` 并给 120ms 过渡；不阻断指针事件，用户可以在请求回来前继续点。
+- 顺带修掉同类痛点：`innerHTML` 替换会丢滚动位置与焦点。新增 `usageCaptureViewState()` / `usageRestoreViewState()`，按 `#view.scrollTop` + 稳定选择器（`data-usage-tab` / `data-usage-source-filter` / `data-usage-sort`）恢复；滚动赋值同时补一帧 `requestAnimationFrame`，因为替换当帧的 `scrollHeight` 还是旧内容、会把值夹住。
+- 探针：harness 新增 `--switching`，逐帧采样整个切换过程。**改动前** `sawLoadingCard / sawLoadingState / sawMissingDashboard` 均为 `true`；**改动后**三者均 `false`、5 张卡全程在位、`scrollTop` 220 → 220。
+
+**② 提示语**：删除 `config/routes/usage.js` 里的 `<p class="usage-unsupported-note">`、`config.usage.coverage.cursor-note` 三语键、对应 CSS 规则。`config.usage.state.unsupported-body`（页面「无可统计来源」状态文案）保留 —— 那是状态不是常驻说明。
+
+**③ 头部与筛选**：
+- 刷新按钮改为纯图标（`config/icons/refresh.svg`，新画，与现有线性图标同族），34×32 网格居中，`aria-label` + `title` 承载「刷新」语义；状态横幅里的同款按钮仍是文字按钮（那里是错误/空态的行动指引）。
+- 工具行 `.usage-toolbar` 组成：周期分段控件（左）+ AI 工具筛选（右对齐，`margin-left:auto`）。筛选 = 一个「全部」复位 chip + 三个工具 chip，`aria-pressed` 表达选中；**一个都没选 = 全部**，所以「取消最后一个」自动回到全选，「全部」chip 只在全选时高亮。
+- 数据链路：`usageQueryParams()` 只在真的选了子集时才带 `sources`（全选时连键都不出现，老引擎与 store 的无过滤快路径都不受影响）；`sources` 覆盖 `summary / daily / breakdown / heatmap`，**趋势卡的 30 天窗口**与**弹窗的 30 分钟通道**也跟随，避免同页出现「KPI 是 Codex、趋势是全部」的自相矛盾。主进程侧同批实现（`normalizeSources`：`undefined`/`null`/`[]`/全选 → 不过滤且返回值无 `sources` 键；合法子集去重保序；非法值抛 `usage:` 错误），store 走 `source IN (...)` 参数化，query 的 LRU 键加 `|src:` 前缀。
+- 窄档：560–759px 时筛选行换到第二行并左对齐（不再贴右边），<660px 起隐藏「AI 工具」说明文字，让 4 个 chip 仍能单行；`check` 里新增 `sourceFilterInsidePage` / `toolbarNoOverflow` 两个布局断言。
+
+**验收**（headless，0 pageerror / 0 console error / 0 可见窗口）：608/700/848/1080/1180 × 明暗共 10 组，行结构仍 `2/2/1`、row1/row2 等高 0px、筛选行未溢出页面（`sourceFilterInsidePage` / `toolbarNoOverflow` 全 true，工具栏高度 848+ 时 38px 单行、608 时 70px 两行）；单选 Codex → 3.8亿 / Codex 100% / 3 个模型，加选 OpenCode → 4.8亿 / 79.5% + 20.5%，点「全部」→ 6.6亿 / 6 个模型；点已选 chip 取消 → 自动回全选（hover/焦点/滚动均保持）；英文、深色、趋势弹窗（30m=24 柱、三路径关闭 + 焦点恢复）不受影响。门禁：单测 **1264/1277**（13 个 Electron 运行时探针为本机受限宿主既有失败，`git stash` 后同样失败；本次新增 usage 数据层 11 例 + 页面控件契约 5 例，`node --test test/usage-*.test.js test/config-*.test.js` 126/126 全绿），`check-js` 389、`check-i18n` 1330 键三语对称、`check-architecture` 1327/1330 全绿。证据：[`2026-10-22-usage-page-controls/`](./2026-10-22-usage-page-controls/)（`00-before` / `01–04` 多页宽双主题 / `05–06` 单筛与多筛 / `07–08` 英文与深色筛选 / `09` 切换探针 + `controls-metrics.json`）。
+
+
 ---
 
 ## 1. 目标、范围与完成定义

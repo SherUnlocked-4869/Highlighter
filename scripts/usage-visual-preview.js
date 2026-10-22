@@ -118,6 +118,9 @@ function parseArgs(argv) {
     modalGranularities: null,
     hourlyEmpty: false,
     heatmapScroll: false,
+    sources: null,
+    filterClick: null,
+    switching: false,
     dumpDom: false,
     fromGit: null,
     maxHeight: 6000,
@@ -138,6 +141,9 @@ function parseArgs(argv) {
     else if (arg === "--label") opts.label = next();
     else if (arg === "--period") opts.period = next();
     else if (arg === "--lang") opts.lang = next();
+    else if (arg === "--sources") opts.sources = parseList(next(), "--sources").map((item) => item.trim()).filter(Boolean);
+    else if (arg === "--filter-click") opts.filterClick = parseList(next(), "--filter-click").map((item) => item.trim()).filter(Boolean);
+    else if (arg === "--switching") opts.switching = true;
     else if (arg === "--compact") opts.compact = true;
     else if (arg === "--tooltip") opts.tooltip = true;
     else if (arg === "--modal") opts.modal = true;
@@ -168,6 +174,24 @@ function parseArgs(argv) {
     for (const granularity of opts.modalGranularities) {
       if (!allowed.includes(granularity)) throw new Error(`unsupported --modal-granularity value: ${granularity} (expected 30m|day|month)`);
     }
+  }
+  const allowedSources = ["codex", "dsh", "opencode"];
+  if (opts.sources) {
+    for (const source of opts.sources) {
+      if (!allowedSources.includes(source)) throw new Error(`unsupported --sources value: ${source} (expected codex|dsh|opencode)`);
+    }
+    // Modes that replace the dashboard would hide the filter row; keep the
+    // combinations explicit instead of silently ignoring one of them.
+    if (opts.tooltip || opts.modal || opts.heatmapScroll) throw new Error("--sources cannot be combined with --tooltip/--modal/--heatmap-scroll");
+  }
+  if (opts.filterClick) {
+    for (const source of opts.filterClick) {
+      if (!allowedSources.includes(source) && source !== "all") {
+        throw new Error(`unsupported --filter-click value: ${source} (expected codex|dsh|opencode|all)`);
+      }
+    }
+    if (opts.sources) throw new Error("use either --sources or --filter-click, not both");
+    if (opts.modal || opts.heatmapScroll) throw new Error("--filter-click cannot be combined with --modal/--heatmap-scroll");
   }
   return opts;
 }
@@ -486,12 +510,30 @@ const layoutScript = `(() => {
   const dailyRect = rectOf(daily);
   const gaps = [].concat(...rowInfo.map((row) => row.horizontalGaps), rowGaps.filter((gap) => Number.isFinite(gap)));
   const maxDeadBand = gaps.length ? Math.max(...gaps) : 0;
+  // Toolbar fit (2026-10-22 filter row): the AI-tool chips must stay inside the
+  // page and on one line; an overflow here is invisible in the card geometry.
+  const toolbar = page.querySelector('.usage-toolbar');
+  const filter = page.querySelector('.usage-source-filter');
+  const toolbarRect = toolbar ? toolbar.getBoundingClientRect() : null;
+  const filterRect = filter ? filter.getBoundingClientRect() : null;
   return {
     pageWidth: Math.round(pageRect.width),
     viewportHeight: window.innerHeight,
     cards: entries,
     rows: rowInfo,
     rowGaps,
+    toolbar: toolbarRect ? {
+      height: Math.round(toolbarRect.height),
+      width: Math.round(toolbarRect.width),
+      scrollWidth: toolbar.scrollWidth,
+      clientWidth: toolbar.clientWidth
+    } : null,
+    sourceFilter: filterRect ? {
+      right: Math.round(filterRect.right),
+      width: Math.round(filterRect.width),
+      overflowsPage: Math.round(filterRect.right) > Math.round(pageRect.right) + 1,
+      chipCount: filter.querySelectorAll('[data-usage-source-filter]').length
+    } : null,
     rects: { heatmap: heatRect, trend: trendRect, models: modelsRect, token: tokenRect, daily: dailyRect },
     checks: {
       heatmapBeforeTrend: !!(heatRect && trendRect) && (heatRect.top < trendRect.top || (heatRect.top === trendRect.top && heatRect.left < trendRect.left)),
@@ -502,7 +544,9 @@ const layoutScript = `(() => {
       integratedCardHasKpis: !!(models) && !!models.querySelector('.usage-kpi, .usage-kpi-pill, [data-usage-kpi], .usage-pills, #usageKpis'),
       integratedCardHasModelRows: !!(models) && !!models.querySelector('.usage-model-row, .usage-model, .usage-integrated-row'),
       integratedCardHasFooter: !!(models) && /开始使用|活跃天数|first use|active days/i.test(models.textContent || ''),
-      dailyFullWidth: !!(dailyRect) && dailyRect.width > pageRect.width * 0.85
+      dailyFullWidth: !!(dailyRect) && dailyRect.width > pageRect.width * 0.85,
+      sourceFilterInsidePage: !filterRect || Math.round(filterRect.right) <= Math.round(pageRect.right) + 1,
+      toolbarNoOverflow: !toolbar || toolbar.scrollWidth <= toolbar.clientWidth + 1
     },
     maxDeadBandPx: maxDeadBand
   };
@@ -808,6 +852,130 @@ const HEATMAP_ARROW_SCRIPT = `(async () => {
   };
 })()`;
 
+// Period-switch flicker probe (2026-10-22 feedback): after clicking another tab
+// the page must never paint the full-page loading card and the previous
+// dashboard must stay mounted (dimmed at most) until the new payload lands.
+// Samples the DOM on every animation frame for the whole switch.
+const SWITCH_PROBE_SCRIPT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  const snapshot = () => {
+    const page = document.querySelector('.usage-page');
+    const view = document.getElementById('view');
+    return {
+      hasPage: !!page,
+      state: page ? page.getAttribute('data-usage-state') : null,
+      busy: page ? page.getAttribute('data-usage-busy') === 'true' : false,
+      hasDashboard: !!(page && page.querySelector('.usage-dashboard')),
+      cardCount: page ? page.querySelectorAll('.usage-dashboard > .usage-card').length : 0,
+      loadingCard: !!document.querySelector('.usage-loading'),
+      period: (() => {
+        const el = page && page.querySelector('[data-usage-view]');
+        return el ? el.getAttribute('data-usage-view') : null;
+      })(),
+      scrollTop: view ? view.scrollTop : null,
+      emptyCards: page ? page.querySelectorAll('.usage-dashboard > .usage-card:empty').length : 0,
+    };
+  };
+  const target = Array.from(document.querySelectorAll('[data-usage-tab]')).find(
+    (button) => button.getAttribute('data-usage-tab') !== 'month' && button.getAttribute('aria-selected') !== 'true',
+  );
+  if (!target) return { ok: false, reason: 'no other period tab found' };
+  const periodBefore = snapshot();
+  const samples = [];
+  let frames = 0;
+  target.click();
+  // Sample ~40 frames or until the new period is painted.
+  while (frames < 40) {
+    samples.push(snapshot());
+    if (samples[samples.length - 1].period && samples[samples.length - 1].period !== periodBefore.period && !samples[samples.length - 1].busy) break;
+    await frame();
+    frames += 1;
+  }
+  await wait(220);
+  const after = snapshot();
+  const sawLoadingCard = samples.some((sample) => sample.loadingCard);
+  const sawMissingDashboard = samples.some((sample) => sample.hasPage && !sample.hasDashboard);
+  const sawZeroCards = samples.some((sample) => sample.hasPage && sample.hasDashboard && sample.cardCount === 0);
+  const sawLoadingState = samples.some((sample) => sample.state === 'loading');
+  return {
+    ok: !sawLoadingCard && !sawMissingDashboard && !sawZeroCards && !sawLoadingState,
+    periodBefore: periodBefore.period,
+    periodAfter: after.period,
+    requested: target.getAttribute('data-usage-tab'),
+    framesSampled: samples.length,
+    sawLoadingCard,
+    sawLoadingState,
+    sawMissingDashboard,
+    sawZeroCards,
+    sawBusy: samples.some((sample) => sample.busy),
+    scrollTopBefore: periodBefore.scrollTop,
+    scrollTopAfter: after.scrollTop,
+    cardsBefore: periodBefore.cardCount,
+    cardsAfter: after.cardCount,
+  };
+})()`;
+
+// Focus + scroll hand-off across the same kind of in-place swap (filter chips
+// keep the period, so the content height — and therefore the scroll offset — is
+// directly comparable).
+const CONTROL_STATE_PROBE_SCRIPT = `(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  const view = document.getElementById('view');
+  if (!view) return { ok: false, reason: 'no #view' };
+  // The preview lets the document grow; force the app's real scrolling shape.
+  view.style.overflow = 'auto';
+  view.style.height = '380px';
+  view.style.flex = '0 0 380px';
+  await wait(120);
+  const chip = document.querySelector('[data-usage-source-filter="codex"]');
+  if (!chip) return { ok: false, reason: 'no filter chip' };
+  const readTotal = () => (document.querySelector('#usageTotal') || {}).textContent || '';
+  const baselineTotal = readTotal();
+  // Focus first (focus() legitimately scrolls the chip into view), then scroll:
+  // the captured offset must survive the in-place swap exactly.
+  chip.focus();
+  await frame();
+  view.scrollTop = 220;
+  await frame();
+  await frame();
+  const scrolled = view.scrollTop;
+  chip.click();
+  await wait(420);
+  const afterFilter = {
+    scrollTop: view.scrollTop,
+    max: Math.max(0, view.scrollHeight - view.clientHeight),
+    total: readTotal(),
+    focused: document.activeElement ? document.activeElement.getAttribute('data-usage-source-filter') : null,
+    active: (window.__usagePreviewActiveFilters ? window.__usagePreviewActiveFilters() : []),
+  };
+  // Clearing the filter must restore the unfiltered totals, so "no chip" really
+  // is the "all tools" state (requirement: click again to deselect).
+  const all = document.querySelector('[data-usage-source-filter="all"]');
+  if (all) all.click();
+  await wait(420);
+  const afterReset = {
+    scrollTop: view.scrollTop,
+    total: readTotal(),
+    active: (window.__usagePreviewActiveFilters ? window.__usagePreviewActiveFilters() : []),
+  };
+  return {
+    ok:
+      scrolled > 0 &&
+      afterFilter.scrollTop === scrolled &&
+      afterFilter.focused === 'codex' &&
+      afterFilter.total !== baselineTotal &&
+      afterReset.total === baselineTotal &&
+      afterReset.active.length === 1 &&
+      afterReset.active[0] === 'all',
+    baselineTotal,
+    scrolled,
+    afterFilter,
+    afterReset,
+  };
+})()`;
+
 async function runModalCloseTests(win) {
   const results = [];
   const paths = [
@@ -848,6 +1016,7 @@ async function captureVariant({ previewPath, opts, target, theme }) {
     lang: opts.lang,
     ...(opts.compact ? { compact: "1" } : {}),
     ...(opts.hourlyEmpty ? { emptyHourly: "1" } : {}),
+    ...(opts.sources ? { filter: opts.sources.join(",") } : {}),
   };
   const initialWidth = pageMode ? Math.round(target.width + SIDEBAR_WIDTH + VIEW_PADDING + 20) : target.width;
   const win = new BrowserWindow({
@@ -882,6 +1051,27 @@ async function captureVariant({ previewPath, opts, target, theme }) {
   try {
     await win.loadFile(previewPath, { query });
     await waitForReady(win, opts.timeoutMs);
+    // Post-load chip clicks: exercises the page's real filter handler instead of
+    // a pre-baked query, so a capture proves the interaction actually filters.
+    let filterClickInfo = null;
+    if (Array.isArray(opts.filterClick) && opts.filterClick.length > 0) {
+      filterClickInfo = { sequence: [], ok: true };
+      for (const chip of opts.filterClick) {
+        const before = await win.webContents.executeJavaScript("window.__usagePreviewActiveFilters ? window.__usagePreviewActiveFilters() : null", true);
+        const applied = await win.webContents.executeJavaScript(
+          `window.__usagePreviewApplyFilter ? window.__usagePreviewApplyFilter(${JSON.stringify([chip])}) : null`,
+          true,
+        );
+        const totals = await win.webContents.executeJavaScript(
+          "(() => { const el = document.querySelector('#usageTotal'); return el ? el.textContent.trim() : null; })()",
+          true,
+        );
+        filterClickInfo.sequence.push({ chip, before, applied, totalsText: totals });
+      }
+      // Repaint so the freshly swapped dashboard is what capturePage() sees.
+      await win.webContents.executeJavaScript("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))", true);
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    }
     const stats = await win.webContents.executeJavaScript("window.__usagePreviewStats || null", true);
     const pageErrors = await win.webContents.executeJavaScript("window.__usagePreviewErrors || []", true);
 
@@ -966,6 +1156,14 @@ async function captureVariant({ previewPath, opts, target, theme }) {
     let modalInfo = null;
     let modalCloseTests = null;
     let heatmapScrollInfo = null;
+    let switchInfo = null;
+    let controlStateInfo = null;
+    if (opts.switching) {
+      // Run the probe last so the page still ends on the switched period.
+      switchInfo = await win.webContents.executeJavaScript(SWITCH_PROBE_SCRIPT, true);
+      controlStateInfo = await win.webContents.executeJavaScript(CONTROL_STATE_PROBE_SCRIPT, true);
+      await new Promise((resolve) => setTimeout(resolve, 160));
+    }
     if (opts.modal) {
       const openAttempt = await win.webContents.executeJavaScript(MODAL_OPEN_SCRIPT, true);
       await new Promise((resolve) => setTimeout(resolve, 260));
@@ -1016,7 +1214,9 @@ async function captureVariant({ previewPath, opts, target, theme }) {
     const modalSuffix = opts.modal
       ? (Array.isArray(opts.modalGranularities) && opts.modalGranularities.length > 0 ? "-modal-base" : "-modal")
       : null;
-    const suffix = modalSuffix || (opts.heatmapScroll ? "-heatmap-scroll" : opts.tooltip ? "-tooltip" : "");
+    const suffix = modalSuffix || (opts.heatmapScroll ? "-heatmap-scroll" : opts.tooltip ? "-tooltip" : "")
+      + (Array.isArray(opts.filterClick) && opts.filterClick.length > 0 ? `-filter-${opts.filterClick.join("+")}` : "")
+      + (Array.isArray(opts.sources) && opts.sources.length > 0 ? `-filter-${opts.sources.join("+")}` : "");
     const fileName = `${opts.label}-${target.width}-${theme}${suffix}.png`;
     const filePath = path.join(opts.out, fileName);
     const png = image.toPNG();
@@ -1069,6 +1269,16 @@ async function captureVariant({ previewPath, opts, target, theme }) {
       modalCloseTests,
       heatmapScrollInfo,
       heatmapCardFile,
+      filterClickInfo,
+      switchInfo,
+      controlStateInfo,
+      // Read live (not from the bootstrap stats) so it reflects post-click state.
+      filterInfo: await win.webContents
+        .executeJavaScript(
+          "(() => ({ active: window.__usagePreviewActiveFilters ? window.__usagePreviewActiveFilters() : null, chips: document.querySelectorAll('[data-usage-source-filter]').length }))()",
+          true,
+        )
+        .catch(() => null),
       pageErrors,
       consoleErrors: consoleCapture.consoleErrors,
       consoleWarnings: consoleCapture.consoleWarnings,
@@ -1210,6 +1420,7 @@ async function main(opts) {
               variant.heatmapScrollInfo.canScroll &&
               variant.heatmapScrollInfo.scrolledToNewest,
           )) &&
+        (!opts.switching || (variants.every((variant) => variant.switchInfo && variant.switchInfo.ok && variant.controlStateInfo && variant.controlStateInfo.ok))) &&
         (!Array.isArray(opts.modalGranularities) || opts.modalGranularities.length === 0 ||
           variants.every((variant) => {
             const captures = (variant.modalInfo && variant.modalInfo.granularityCaptures) || [];

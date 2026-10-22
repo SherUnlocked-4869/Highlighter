@@ -6,6 +6,8 @@ const path = require('node:path')
 const {
   USAGE_HANDLE_CHANNELS,
   USAGE_PROGRESS_CHANNEL,
+  USAGE_SOURCES,
+  normalizeSources,
   registerUsageIpc
 } = require('../main/ipc/usage-ipc')
 
@@ -193,4 +195,81 @@ test('usage IPC maps thrown non-Error values to usage: errors', async () => {
   })
   registerUsageIpc({ ipcMain, handlers })
   await assert.rejects(ipcMain.handlers.get('usage:clear')(null), /usage: boom/)
+})
+
+test('normalizeSources collapses "no filter" inputs and rejects malformed ones', () => {
+  assert.deepEqual([...USAGE_SOURCES], ['codex', 'dsh', 'opencode'])
+  assert.equal(normalizeSources(undefined), undefined)
+  assert.equal(normalizeSources(null), undefined)
+  assert.equal(normalizeSources([]), undefined, 'an empty selection means every tool')
+  assert.equal(normalizeSources(['codex', 'dsh', 'opencode']), undefined, 'the full set means every tool')
+  assert.equal(normalizeSources(['dsh', 'codex', 'dsh', 'opencode', 'codex']), undefined)
+  assert.deepEqual(normalizeSources(['codex']), ['codex'])
+  assert.deepEqual(normalizeSources(['dsh', 'codex', 'dsh']), ['dsh', 'codex'], 'deduped, input order kept')
+  assert.throws(() => normalizeSources('codex'), /usage: sources must be an array/)
+  assert.throws(() => normalizeSources({ source: 'codex' }), /usage: sources must be an array/)
+  assert.throws(() => normalizeSources(['codex', 'claude-code']), /usage: invalid source: claude-code/)
+  assert.throws(() => normalizeSources([42]), /usage: invalid source: 42/)
+  assert.throws(() => normalizeSources(['']), /usage: invalid source:/)
+})
+
+test('usage IPC forwards a selective sources filter on all five query channels', async () => {
+  const ipcMain = createIpcMain()
+  const { handlers, calls } = createHandlers()
+  registerUsageIpc({ ipcMain, handlers })
+
+  await ipcMain.handlers.get('usage:summary')(null, { period: 'month', tz: 'UTC', sources: ['codex'] })
+  await ipcMain.handlers.get('usage:daily')(null, { period: 'month', sources: ['codex', 'opencode', 'codex'] })
+  await ipcMain.handlers.get('usage:hourly')(null, { day: '2026-10-20', sources: ['dsh'] })
+  await ipcMain.handlers.get('usage:breakdown')(null, { period: 'month', scope: 'model', sources: ['opencode'] })
+  await ipcMain.handlers.get('usage:heatmap')(null, { weeks: 12, sources: ['dsh', 'opencode'] })
+
+  assert.deepEqual(calls.map((call) => call.name), ['summary', 'daily', 'hourly', 'breakdown', 'heatmap'])
+  assert.deepEqual(calls[0].args.sources, ['codex'])
+  assert.deepEqual(calls[1].args.sources, ['codex', 'opencode'], 'duplicates collapse, order kept')
+  assert.deepEqual(calls[2].args.sources, ['dsh'])
+  assert.deepEqual(calls[3].args.sources, ['opencode'])
+  assert.equal(calls[3].args.scope, 'model', 'the filter rides along with the existing args')
+  assert.deepEqual(calls[4].args.sources, ['dsh', 'opencode'])
+  assert.equal(calls[4].args.weeks, 12)
+})
+
+test('usage IPC omits sources from validated args when nothing is filtered', async () => {
+  const ipcMain = createIpcMain()
+  const { handlers, calls } = createHandlers()
+  registerUsageIpc({ ipcMain, handlers })
+  const all = ['codex', 'dsh', 'opencode']
+
+  // The frozen validated-args shapes are asserted with deepEqual by the contract
+  // fixtures above, so "all tools selected" must stay identical to "no filter".
+  await ipcMain.handlers.get('usage:summary')(null, { period: 'month', tz: 'UTC', sources: all })
+  await ipcMain.handlers.get('usage:daily')(null, { period: 'month', tz: 'UTC', sources: [] })
+  await ipcMain.handlers.get('usage:hourly')(null, { day: '2026-10-20', tz: 'UTC', sources: all })
+  await ipcMain.handlers.get('usage:breakdown')(null, { period: 'month', tz: 'UTC', sources: [] })
+  await ipcMain.handlers.get('usage:heatmap')(null, { tz: 'UTC', weeks: 52, sources: all })
+
+  assert.deepEqual(calls[0].args, { period: 'month', tz: 'UTC', from: null, to: null })
+  assert.deepEqual(calls[1].args, { period: 'month', tz: 'UTC', from: null, to: null })
+  assert.deepEqual(calls[2].args, { day: '2026-10-20', tz: 'UTC' })
+  assert.deepEqual(calls[3].args, { period: 'month', tz: 'UTC', from: null, to: null, scope: 'source' })
+  assert.deepEqual(calls[4].args, { tz: 'UTC', weeks: 52 })
+  for (const call of calls) {
+    assert.equal(Object.prototype.hasOwnProperty.call(call.args, 'sources'), false, call.name)
+  }
+})
+
+test('usage IPC rejects malformed sources on every query channel', async () => {
+  const ipcMain = createIpcMain()
+  const { handlers } = createHandlers()
+  registerUsageIpc({ ipcMain, handlers })
+  const channels = ['usage:summary', 'usage:daily', 'usage:breakdown', 'usage:hourly', 'usage:heatmap']
+  for (const channel of channels) {
+    const handler = ipcMain.handlers.get(channel)
+    await assert.rejects(handler(null, { sources: 'codex' }), /usage: sources must be an array/, channel)
+    await assert.rejects(handler(null, { sources: ['claude-code'] }), /usage: invalid source: claude-code/, channel)
+    await assert.rejects(handler(null, { sources: ['codex', null] }), /usage: invalid source: null/, channel)
+  }
+  // status / refresh / clear never take a filter.
+  await ipcMain.handlers.get('usage:refresh')(null, { reason: 'manual', sources: ['codex'] })
+  await ipcMain.handlers.get('usage:clear')(null, { sources: ['claude-code'] })
 })

@@ -130,6 +130,9 @@ let usageRenderVersion = 0
 let usagePeriod = USAGE_DEFAULT_PERIOD
 let usageRange = { from: '', to: '' }
 let usagePeriodBeforeCustom = USAGE_DEFAULT_PERIOD
+// Selected AI tools for the filter row. Empty means "all tools" (default): the
+// query then omits `sources` entirely instead of enumerating the supported set.
+let usageSourceFilter = []
 let usageDailySort = 'desc'
 let usageDailyRowCache = []
 let usageProgressUnsubscribe = null
@@ -140,6 +143,9 @@ let usageTrendModal = null
 let usageTrendModalGranularity = 'day'
 let usageTrendModalCleanup = null
 let usageTrendModalRequest = 0
+// Monotonic counter for the "keep the old dashboard while re-querying" path.
+// A period/filter switch only swaps the dashboard in once new data lands.
+let usageSwapVersion = 0
 
 function usageHasApi(name) {
   return !!window.electronAPI && typeof window.electronAPI[name] === 'function'
@@ -185,10 +191,16 @@ function usageNormalizeRange() {
 // period is the only one that carries explicit bounds.
 function usageQueryParams() {
   const tz = usageTimezone()
+  // Only send `sources` when a real subset is selected: "all tools" must stay a
+  // key-free query so older engines and the store's unfiltered fast path both
+  // keep working.
+  const sources = usageSourceFilter.length > 0 ? usageSourceFilter.slice() : null
   if (usagePeriod === USAGE_CUSTOM_PERIOD) {
-    return { period: 'custom', tz, from: usageRange.from, to: usageRange.to }
+    return sources
+      ? { period: 'custom', tz, from: usageRange.from, to: usageRange.to, sources }
+      : { period: 'custom', tz, from: usageRange.from, to: usageRange.to }
   }
-  return { period: usagePeriod, tz }
+  return sources ? { period: usagePeriod, tz, sources } : { period: usagePeriod, tz }
 }
 
 function usageIsCurrent(renderVersion) {
@@ -348,11 +360,13 @@ function usageHeaderHtml(actionsHtml = '') {
   return pageHeader(t('config.route.usage'), t('config.usage.subtitle'), actions)
 }
 
-// Icon+text refresh action: the only extra glyph on the page is this action
-// affordance (no decorative icons anywhere else).
+// Icon-only refresh action: the label lives in the accessible name and the
+// native tooltip, so the header stays one line and the toolbar row below has
+// room for the source filter.
 function usageRefreshButtonHtml() {
-  const icon = typeof iconMarkup === 'function' ? iconMarkup('icons/history.svg') : ''
-  return `<button class="button usage-refresh-button" type="button" data-usage-refresh>${icon}<span>${t('config.usage.refresh')}</span></button>`
+  const label = escapeHtml(t('config.usage.refresh'))
+  const icon = typeof iconMarkup === 'function' ? iconMarkup('icons/refresh.svg') : ''
+  return `<button class="button usage-refresh-button" type="button" data-usage-refresh aria-label="${label}" title="${label}">${icon}</button>`
 }
 
 function usageStateCardHtml(state, title, body, actionsHtml = '') {
@@ -498,12 +512,13 @@ function usageCoverageHtml(status, options = {}) {
     </div>
     ${usageScanHtml(disabled ? null : status)}
     ${errorBanner}
-    <p class="usage-unsupported-note">${t('config.usage.coverage.cursor-note')}</p>
   </div>`
 }
 
 // ---------------------------------------------------------------------------
-// Toolbar: segmented tabs + custom range (only while the custom tab is active)
+// Toolbar: period tabs + AI-tool filter (+ custom range while that tab is
+// active). Every control sits on the same row so the row immediately under the
+// coverage strip is the page's single control band.
 // ---------------------------------------------------------------------------
 
 function usageTabsHtml() {
@@ -514,6 +529,28 @@ function usageTabsHtml() {
   return `<div class="usage-toolbar">
     <div class="usage-segmented" role="tablist" aria-label="${escapeHtml(t('config.usage.tabs-label'))}">${buttons}</div>
     ${usagePeriod === USAGE_CUSTOM_PERIOD ? usageCustomRangeHtml() : ''}
+    ${usageSourceFilterHtml()}
+  </div>`
+}
+
+// AI-tool multi-select: every chip toggles independently, and "no chip selected"
+// means "all tools" — the same thing the default state shows. The filter is a
+// view over the same query range, so it lives next to the period tabs.
+function usageSourceFilterHtml() {
+  const selected = new Set(usageSourceFilter)
+  const allSelected = usageSourceFilter.length === 0
+  const chips = USAGE_SUPPORTED_SOURCES.map((id) => {
+    const active = !allSelected && selected.has(id)
+    const label = t(USAGE_SOURCE_LABEL_KEYS[id])
+    const state = active ? 'true' : 'false'
+    return `<button class="usage-filter-chip${active ? ' is-active' : ''}" type="button" data-usage-source-filter="${id}" aria-pressed="${state}">
+      <i class="usage-filter-dot" aria-hidden="true"></i><span>${escapeHtml(label)}</span>
+    </button>`
+  }).join('')
+  const allChip = `<button class="usage-filter-chip usage-filter-chip-all${allSelected ? ' is-active' : ''}" type="button" data-usage-source-filter="all" aria-pressed="${allSelected ? 'true' : 'false'}">${escapeHtml(t('config.usage.filter.all'))}</button>`
+  return `<div class="usage-source-filter" role="group" aria-label="${escapeHtml(t('config.usage.filter.label'))}" data-usage-source-filter-group>
+    <span class="usage-filter-caption">${t('config.usage.filter.label')}</span>
+    ${allChip}${chips}
   </div>`
 }
 
@@ -1229,7 +1266,12 @@ async function usageRenderModalChart() {
     if (axisElement) axisElement.innerHTML = ''
     let hourly = null
     try {
-      hourly = await window.electronAPI.usageHourly({ day: usageModalDay(payload), tz: usageTimezone() })
+      // The modal is a reading of the same page, so the AI-tool filter applies
+      // here too; omitting it for an "all tools" selection keeps the query shape
+      // identical to older builds.
+      const hourlyQuery = { day: usageModalDay(payload), tz: usageTimezone() }
+      if (usageSourceFilter.length > 0) hourlyQuery.sources = usageSourceFilter.slice()
+      hourly = await window.electronAPI.usageHourly(hourlyQuery)
     } catch {
       // Only the IPC call is allowed to degrade to the empty state; programming
       // errors below must stay loud instead of silently emptying the chart.
@@ -1392,6 +1434,9 @@ function usageRenderDashboard(renderVersion, payload) {
   usageDailyRowCache = dailyRows
   usageDashboardPayload = payload
   const timezoneLabel = window.usageFormat.formatTimezoneOffsetLabel(usageTimezone())
+  // A re-query (period/filter/refresh) swaps the page in place; keep the reading
+  // position and keyboard focus so the swap is not a jump to the top.
+  const restore = usageCaptureViewState()
 
   view.innerHTML = `<div class="page usage-page" data-usage-state="${escapeHtml(state)}">
     ${usageHeaderHtml(usageRefreshButtonHtml())}
@@ -1408,23 +1453,63 @@ function usageRenderDashboard(renderVersion, payload) {
   </div>`
   usageBindDashboard(payload)
   usageSubscribeProgress()
+  usageRestoreViewState(restore)
 }
 
 // ---------------------------------------------------------------------------
 // Data loading
 // ---------------------------------------------------------------------------
 
-// The contract has no rolling daily channel, so the trend uses the custom
-// period range (plan §2.7 keeps `from`/`to` on every query). If a build does not
-// answer that call yet, the card falls back to the selected period's daily rows
-// instead of failing the whole page.
+// '#view' is the scroller (the page itself is height:auto inside it), so both
+// the scroll offset and the focused control need an explicit hand-off across a
+// re-render. Focus is restored by the same data attribute plus, for the daily
+// sort button, its stable selector.
+function usageCaptureViewState() {
+  const active = document.activeElement
+  const focusSelector = active && active.closest && active.closest('#view')
+    ? usageFocusSelector(active)
+    : ''
+  return { scrollTop: view.scrollTop || 0, focusSelector }
+}
+
+function usageFocusSelector(element) {
+  if (!element || element === document.body) return ''
+  for (const attribute of ['data-usage-tab', 'data-usage-source-filter', 'data-usage-sort']) {
+    const value = element.getAttribute && element.getAttribute(attribute)
+    if (value !== null && value !== undefined) return `[${attribute}="${String(value).replace(/"/g, '\\"')}"]`
+  }
+  return ''
+}
+
+function usageRestoreViewState(state) {
+  if (!state) return
+  const applyScroll = () => {
+    if (state.scrollTop > 0 && view.scrollTop !== state.scrollTop) view.scrollTop = state.scrollTop
+  }
+  // The new dashboard is not laid out yet on the line right after innerHTML, so
+  // its scrollHeight still describes the old content and clamps the assignment.
+  // Re-apply on the next frame, once the swap has real geometry.
+  applyScroll()
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(applyScroll)
+  if (!state.focusSelector) return
+  const target = view.querySelector(state.focusSelector)
+  if (target && typeof target.focus === 'function') target.focus({ preventScroll: true })
+}
+
+// The trend channel has no rolling window of its own, so it reuses the custom
+// period range (plan §2.7 keeps `from`/`to` on every query). The AI-tool filter
+// applies to it as well, otherwise the trend card would disagree with the KPI
+// row right next to it. If a build does not answer that call yet, the card falls
+// back to the selected period's daily rows instead of failing the whole page.
 async function usageLoadTrend(renderVersion) {
   const format = window.usageFormat
   const today = format.toDayKey(new Date())
   const from = format.addDays(today, -(USAGE_TREND_DAYS - 1))
   if (!today || !from) return null
+  const query = { period: 'custom', tz: usageTimezone(), from, to: today }
+  if (usageSourceFilter.length > 0) query.sources = usageSourceFilter.slice()
   try {
-    const result = await window.electronAPI.usageDaily({ period: 'custom', tz: usageTimezone(), from, to: today })
+    const result = await window.electronAPI.usageDaily(query)
     if (!usageIsCurrent(renderVersion)) return null
     return result && Array.isArray(result.rows) ? result : null
   } catch {
@@ -1432,8 +1517,9 @@ async function usageLoadTrend(renderVersion) {
   }
 }
 
-async function usageRenderRoute() {
+async function usageRenderRoute(options = {}) {
   const renderVersion = ++usageRenderVersion
+  const swapVersion = ++usageSwapVersion
   usageUnsubscribeProgress()
   usageClearHeatTooltip()
   usageCloseTrendModal(false)
@@ -1446,7 +1532,11 @@ async function usageRenderRoute() {
     return
   }
 
-  usageRenderLoading(renderVersion)
+  // Period/filter/refresh switches keep the current dashboard on screen and only
+  // mark it busy; blanking the page to a loading card for a 1-2 ms cache hit is
+  // what made the tabs flash. A first visit (or a full route re-entry) still gets
+  // the loading card because there is nothing to keep.
+  const keepCurrent = options.keepDashboard === true && usageKeepDashboardForSwap()
 
   let status
   try {
@@ -1470,8 +1560,13 @@ async function usageRenderRoute() {
   // the channel hides the card instead of failing the page (hourly is fetched
   // lazily only when the trend modal's 30-minute granularity is selected).
   const heatmapRequest = usageHasOptionalApi('usageHeatmap')
-    ? window.electronAPI.usageHeatmap({ tz: params.tz, weeks: USAGE_HEATMAP_WEEKS }).catch(() => null)
+    ? window.electronAPI.usageHeatmap({ tz: params.tz, weeks: USAGE_HEATMAP_WEEKS, ...(params.sources ? { sources: params.sources } : {}) }).catch(() => null)
     : Promise.resolve(null)
+  // Mark busy only once the request is actually in flight, and only when the old
+  // dashboard stayed mounted; a swap that resolves immediately then never paints
+  // the busy state at all.
+  if (!keepCurrent) usageRenderLoading(renderVersion)
+  else usageSetBusy(renderVersion, swapVersion, true)
   let summary
   let daily
   let breakdown
@@ -1484,7 +1579,9 @@ async function usageRenderRoute() {
       heatmapRequest
     ])
   } catch (error) {
-    if (usageIsCurrent(renderVersion)) usageRenderLoadError(renderVersion, status, error)
+    if (!usageIsCurrent(renderVersion)) return
+    if (keepCurrent) usageSetBusy(renderVersion, swapVersion, false)
+    usageRenderLoadError(renderVersion, status, error)
     return
   }
   if (!usageIsCurrent(renderVersion)) return
@@ -1494,12 +1591,41 @@ async function usageRenderRoute() {
   usageRenderDashboard(renderVersion, { status, summary, daily, breakdown, trend, heatmap })
 }
 
+// True when the visible page already has a dashboard whose markup can survive a
+// re-query untouched (same route, same shell). Consent/error/loading states have
+// no dashboard, so they always go through the full loading path.
+function usageKeepDashboardForSwap() {
+  const page = view.querySelector('.usage-page')
+  if (!page || page.dataset.usageState === 'loading') return false
+  return !!page.querySelector('.usage-dashboard')
+}
+
+function usageSetBusy(renderVersion, swapVersion, busy) {
+  if (!usageIsCurrent(renderVersion) || swapVersion !== usageSwapVersion) return
+  const page = view.querySelector('.usage-page')
+  if (!page) return
+  if (busy) page.dataset.usageBusy = 'true'
+  else delete page.dataset.usageBusy
+}
+
 async function renderUsage() {
   try {
     await usageRenderRoute()
   } catch (error) {
     // renderRoute() dispatches without awaiting, so a rejected render would be
     // an unhandled rejection in the renderer console. Keep the page honest.
+    if (currentRoute === 'usage') {
+      usageRenderStandaloneError(usageRenderVersion, t('config.usage.state.error-title'), usageErrorText(error) || t('config.usage.state.error-body'))
+    }
+  }
+}
+
+// User-initiated re-query (period tab, AI-tool filter, custom range): the old
+// dashboard stays mounted and readable until the new payload arrives.
+async function usageRerenderKeepingDashboard() {
+  try {
+    await usageRenderRoute({ keepDashboard: true })
+  } catch (error) {
     if (currentRoute === 'usage') {
       usageRenderStandaloneError(usageRenderVersion, t('config.usage.state.error-title'), usageErrorText(error) || t('config.usage.state.error-body'))
     }
@@ -1559,7 +1685,28 @@ function usageBindTabs() {
         if (!usageRange.from || !usageRange.to) usageRange = usageDefaultRange()
       }
       usagePeriod = next
-      void renderUsage()
+      void usageRerenderKeepingDashboard()
+    }
+  })
+}
+
+// AI-tool filter: each chip toggles on its own; the "all" chip clears the subset.
+// No chip selected is the same as "all", so the last deselected chip also lands
+// on the unfiltered query.
+function usageBindSourceFilter() {
+  view.querySelectorAll('[data-usage-source-filter]').forEach((button) => {
+    button.onclick = () => {
+      const id = button.dataset.usageSourceFilter
+      if (id === 'all') {
+        if (usageSourceFilter.length === 0) return
+        usageSourceFilter = []
+      } else {
+        if (!USAGE_SUPPORTED_SOURCES.includes(id)) return
+        const index = usageSourceFilter.indexOf(id)
+        if (index === -1) usageSourceFilter = [...usageSourceFilter, id]
+        else usageSourceFilter = usageSourceFilter.filter((item) => item !== id)
+      }
+      void usageRerenderKeepingDashboard()
     }
   })
 }
@@ -1581,20 +1728,20 @@ function usageApplyCustomRange() {
     usageToast(t(USAGE_RANGE_REASON_KEYS[result.reason] || 'config.usage.range.invalid'))
     usagePeriod = USAGE_DEFAULT_PERIOD
     usageRange = { from: '', to: '' }
-    void renderUsage()
+    void usageRerenderKeepingDashboard()
     return
   }
   if (usagePeriod !== USAGE_CUSTOM_PERIOD) usagePeriodBeforeCustom = usagePeriod
   usageRange = { from: result.from, to: result.to }
   usagePeriod = USAGE_CUSTOM_PERIOD
   usageToast(t('config.usage.range.applied'))
-  void renderUsage()
+  void usageRerenderKeepingDashboard()
 }
 
 function usageCancelCustomRange() {
   usageRange = { from: '', to: '' }
   usagePeriod = usagePeriodBeforeCustom || USAGE_DEFAULT_PERIOD
-  void renderUsage()
+  void usageRerenderKeepingDashboard()
 }
 
 function usageBindCustomRange() {
@@ -1761,7 +1908,7 @@ async function usageRefreshNow() {
   try {
     const result = await window.electronAPI.usageRefresh({ reason: 'manual' })
     usageToast(result && result.started === false ? t('config.usage.scan.already-running') : t('config.usage.scan.started'))
-    await renderUsage()
+    await usageRerenderKeepingDashboard()
   } catch (error) {
     usageToast(usageErrorText(error) || t('config.usage.scan.failed'))
     view.querySelectorAll('[data-usage-refresh]').forEach((button) => { button.disabled = false })
@@ -1775,7 +1922,7 @@ async function usageClearData() {
   try {
     await window.electronAPI.usageClear()
     usageToast(t('config.usage.clear-done'))
-    await renderUsage()
+    await usageRerenderKeepingDashboard()
   } catch (error) {
     usageToast(usageErrorText(error) || t('config.usage.clear-failed'))
   }
@@ -1807,6 +1954,7 @@ function usageBindDashboard(payload) {
   usageBindCoverageActions()
   usageBindRetry()
   usageBindTabs()
+  usageBindSourceFilter()
   usageBindCustomRange()
   usageBindDailySort()
   usageBindTrendExpand()

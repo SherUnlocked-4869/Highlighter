@@ -126,6 +126,14 @@ function toIsoOrNull(value) {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null
 }
 
+// Normalizes the optional `sources` query filter into a parameter list, or null
+// when the caller does not filter at all (undefined / empty selection).
+function sourceFilterList(sources) {
+  if (!Array.isArray(sources)) return null
+  const list = sources.filter((source) => typeof source === 'string' && source)
+  return list.length > 0 ? list : null
+}
+
 function truthyInteger(value) {
   return value ? 1 : 0
 }
@@ -356,7 +364,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
   // SQL pre-aggregation helpers for the query layer (plan §2.6): fold rows per
   // UTC hour (timezone mapping stays in JS) or per dimension tuple (breakdown)
   // so a 100k-row range never crosses the process boundary row-by-row.
-  function rangeWhere({ fromIso, toIso } = {}) {
+  function rangeWhere({ fromIso, toIso, sources = null } = {}) {
     const filters = []
     const params = []
     if (typeof fromIso === 'string' && fromIso) {
@@ -367,26 +375,31 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
       filters.push('hour_start < ?')
       params.push(toIso)
     }
+    const list = sourceFilterList(sources)
+    if (list) {
+      filters.push(`source IN (${list.map(() => '?').join(', ')})`)
+      params.push(...list)
+    }
     return { where: filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '', params }
   }
 
-  function getRangeHourlyTotals({ fromIso, toIso } = {}) {
+  function getRangeHourlyTotals({ fromIso, toIso, sources = null } = {}) {
     assertOpen()
     const sums = sumSelectColumns(BUCKET_INTEGER_COLUMNS)
-    const { where, params } = rangeWhere({ fromIso, toIso })
+    const { where, params } = rangeWhere({ fromIso, toIso, sources })
     return db
       .prepare(`SELECT hour_start, ${sums.join(', ')} FROM usage_bucket ${where} GROUP BY hour_start ORDER BY hour_start`)
       .all(...params)
   }
 
-  function getGroupedTotals({ fromIso, toIso, dimensions = ['source', 'model'] } = {}) {
+  function getGroupedTotals({ fromIso, toIso, dimensions = ['source', 'model'], sources = null } = {}) {
     assertOpen()
     const dims = (Array.isArray(dimensions) ? dimensions : []).filter((dimension) =>
       ['source', 'model'].includes(dimension)
     )
     if (dims.length === 0) throw new Error('usage store grouped totals require at least one dimension')
     const sums = sumSelectColumns(BUCKET_INTEGER_COLUMNS)
-    const { where, params } = rangeWhere({ fromIso, toIso })
+    const { where, params } = rangeWhere({ fromIso, toIso, sources })
     return db
       .prepare(`SELECT ${dims.join(', ')}, ${sums.join(', ')} FROM usage_bucket ${where} GROUP BY ${dims.join(', ')} ORDER BY ${dims.join(', ')}`)
       .all(...params)
@@ -397,7 +410,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
   // only (day, source, model) totals, so callers get ~5k rows instead of the raw
   // 52-week bucket rows. Day bounds come from usage-time's Intl/DST-safe
   // resolveDayBounds, so timezone folding is exact.
-  function countRangeRows({ fromIso = null, toIso = null, limit = 100000 } = {}) {
+  function countRangeRows({ fromIso = null, toIso = null, limit = 100000, sources = null } = {}) {
     assertOpen()
     const filters = []
     const params = []
@@ -409,6 +422,11 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
       filters.push('hour_start < ?')
       params.push(toIso)
     }
+    const list = sourceFilterList(sources)
+    if (list) {
+      filters.push(`source IN (${list.map(() => '?').join(', ')})`)
+      params.push(...list)
+    }
     const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
     const cap = Number.isFinite(limit) && limit > 0 ? Math.trunc(limit) : 100000
     const row = db
@@ -417,7 +435,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     return Number(row?.count) || 0
   }
 
-  function getHeatmapDayModelTotals({ dayRanges = [] } = {}) {
+  function getHeatmapDayModelTotals({ dayRanges = [], sources = null } = {}) {
     assertOpen()
     const ranges = (Array.isArray(dayRanges) ? dayRanges : []).filter((range) => {
       if (!range || typeof range !== 'object') return false
@@ -426,18 +444,27 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     })
     if (ranges.length === 0) return []
     if (ranges.length > 400) throw new Error('usage heatmap day range is too large')
+    const list = sourceFilterList(sources)
+    const sourceClause = list ? ` AND source IN (${list.map(() => '?').join(', ')})` : ''
+    // This statement is a UNION ALL of one grouped branch per local day, so it
+    // cannot be a single prepared shape. Every value is still bound except the
+    // day literal, which the filter above pins to YYYY-MM-DD (digits/dashes only)
+    // so it stays a safe SQL constant.
+    const params = []
     const branches = ranges.map((range) => {
       const startIso = new Date(Date.parse(range.startIso)).toISOString()
       const endIso = new Date(Date.parse(range.endIso)).toISOString()
+      params.push(startIso, endIso)
+      if (list) params.push(...list)
       return (
         `SELECT '${range.day}' AS day, source AS source, model AS model, ` +
         'COALESCE(SUM(total_tokens), 0) AS total_tokens, ' +
         'COALESCE(SUM(billable_total_tokens), 0) AS billable_total_tokens, ' +
         'COALESCE(SUM(conversation_count), 0) AS conversation_count ' +
-        `FROM usage_bucket INDEXED BY idx_usage_heat_cover WHERE hour_start >= '${startIso}' AND hour_start < '${endIso}' GROUP BY source, model`
+        `FROM usage_bucket INDEXED BY idx_usage_heat_cover WHERE hour_start >= ? AND hour_start < ?${sourceClause} GROUP BY source, model`
       )
     })
-    return db.prepare(branches.join(' UNION ALL ')).all()
+    return db.prepare(branches.join(' UNION ALL ')).all(...params)
   }
 
   function countDistinctDays({ fromIso, toIso } = {}) {

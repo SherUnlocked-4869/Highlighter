@@ -60,6 +60,12 @@ failure.
 --lang <lang>      zh-CN|zh-TW|en-US (default zh-CN)
 --page-widths a,b  target .usage-page content widths (mutually exclusive with --widths)
 --tooltip          open the heatmap tooltip before capture (file suffix -tooltip)
+--modal            open the trend detail modal, capture it, test all close paths
+--modal-granularity a,b  also capture these modal granularities (30m|day|month)
+--heatmap-scroll   scroll the heatmap to newest, capture page + card crop
+--sources a,b      render with these AI tools filtered (codex|dsh|opencode)
+--filter-click a,b click these filter chips after load (codex|dsh|opencode|all)
+--switching        probe period switches (no loading card) + filter/scroll state
 --compact          add body.compact (dense shell variant)
 --from-git <ref>   load page/CSS/helpers from <ref> (baseline mode)
 --max-height <px>  clamp for the full-page capture (default 6000)
@@ -122,4 +128,31 @@ when the page markup changes. Every capture also reports `measuredLayout`:
 row grouping, card rects, equal-height deltas, dead-band widths, and the
 `heatmapBeforeTrend` / `row1EqualHeights` / `row2EqualHeights` /
 `tokenCardNotFullWidth` / `integratedCardHasKpis` / `integratedCardHasModelRows`
-/ `integratedCardHasFooter` / `dailyFullWidth` checks.
+/ `integratedCardHasFooter` / `dailyFullWidth` checks, plus the toolbar fit
+(`toolbar` / `sourceFilter` geometry and the `sourceFilterInsidePage` /
+`toolbarNoOverflow` checks).
+
+## Round-4 modes (controls: no-flicker switch + AI-tool filter)
+
+```bash
+# filtered page: the mock scales every aggregate by the selected tools' share,
+# so a filtered shot is visibly smaller than the unfiltered one
+... --page-widths 848 --themes light,dark --label r4 --sources codex
+... --page-widths 848 --themes light --label r4 --sources codex,opencode
+
+# filter interaction: clicks the page's real chips after load (each click goes
+# through usageBindSourceFilter) and records the resulting filters + total
+... --page-widths 848 --label r4 --filter-click codex,opencode
+
+# no-flicker probe: clicks another period tab and samples the DOM every frame
+# (never a loading card, never a torn-down dashboard), then verifies that the
+# scroll offset and the focused filter chip survive the in-place swap and that
+# clearing the filter restores the unfiltered total
+... --page-widths 848 --label r4 --switching
+```
+
+`--sources` / `--filter-click` / `--switching` are mutually exclusive with the
+modal/tooltip/heatmap-scroll modes (those replace or crop the dashboard), and
+the harness fails the run (`exit 2`) when a switch probe reports the loading
+card, a missing dashboard, a lost scroll offset or a lost filter state.
+

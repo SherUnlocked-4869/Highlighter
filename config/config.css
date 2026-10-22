@@ -459,6 +459,13 @@ body.compact #view{padding:16px}
 }
 .usage-page .page-head{margin-bottom:16px}
 
+/* Re-query in flight (period tab / AI-tool filter / refresh). The previous
+   dashboard stays mounted and readable — no loading card, no page blank — and
+   just dims very slightly, so switching tabs reads as a data change instead of a
+   flash. `pointer-events` is left alone: the controls must stay usable so the
+   user can switch again before the first request lands. */
+.usage-page[data-usage-busy=true] .usage-dashboard{opacity:.55;transition:opacity .12s ease}
+
 /* card system */
 .usage-card{
   min-width:0;
@@ -491,9 +498,11 @@ body.compact #view{padding:16px}
 .usage-empty-text{padding:24px 8px;color:var(--muted);font-size:12px;text-align:center}
 .usage-divider{height:1px;margin:14px 0;background:var(--line)}
 
-/* header refresh + loading/state cards (unchanged from v5) */
-.usage-refresh-button{display:inline-flex;align-items:center;gap:7px;padding:8px 14px}
+/* header refresh (icon-only) + loading/state cards */
+.usage-refresh-button{display:grid;place-items:center;width:34px;height:32px;padding:0}
 .usage-refresh-button .svg-icon{width:14px;height:14px;opacity:.72}
+.usage-refresh-button:hover .svg-icon{opacity:1}
+.usage-refresh-button:disabled .svg-icon{opacity:.4}
 .usage-loading{display:grid;min-height:180px;place-items:center;color:var(--muted);font-size:12.5px}
 .usage-state-card{padding:28px;text-align:center}
 .usage-state-title{display:block;font-family:var(--font-display);font-size:17px;font-weight:600;letter-spacing:-.01em}
@@ -533,7 +542,6 @@ body.compact #view{padding:16px}
   padding:1px 6px;border:1px solid var(--primary-line);border-radius:var(--radius-pill);
   color:var(--primary-text);background:var(--primary-soft);font-style:normal;font-size:9.5px
 }
-.usage-unsupported-note{margin:8px 0 0;color:var(--faint);font-size:10.5px;line-height:1.5}
 .usage-scan{display:flex;align-items:center;gap:10px;margin-top:10px;color:var(--muted);font-size:11px}
 .usage-scan[hidden]{display:none}
 .usage-scan-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -553,7 +561,7 @@ body.compact #view{padding:16px}
 .usage-banner-error,.usage-banner-unreadable{border-color:color-mix(in srgb,var(--danger) 28%,var(--line));background:var(--danger-soft)}
 .usage-banner-scanning{border-color:var(--primary-line);background:var(--primary-soft)}
 
-/* toolbar: segmented tabs + custom range row (custom only) */
+/* toolbar: period tabs + AI-tool filter (+ custom range while that tab is on) */
 .usage-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px}
 .usage-segmented{
   display:inline-flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line);
@@ -566,6 +574,27 @@ body.compact #view{padding:16px}
 }
 .usage-segment:hover{color:var(--text);background:var(--surface-3)}
 .usage-segment.is-active{color:var(--text);border-color:var(--line-2);background:var(--surface);font-weight:600;box-shadow:var(--shadow-1)}
+
+/* AI-tool filter: a caption + one pill per supported tool. Sits on the same row
+   as the period tabs and right-aligns, so the control band stays one line until
+   the container gets narrow. */
+.usage-source-filter{
+  display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;
+  margin-left:auto;min-width:0
+}
+.usage-filter-caption{color:var(--faint);font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.usage-filter-chip{
+  display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 11px;
+  border:1px solid var(--line);border-radius:var(--radius-pill);
+  color:var(--muted);background:var(--surface);font-size:11.5px;cursor:pointer;
+  transition:background .14s,color .14s,border-color .14s
+}
+.usage-filter-chip:hover{color:var(--text);background:var(--surface-2);border-color:var(--line-2)}
+.usage-filter-chip.is-active{color:var(--primary-text);border-color:var(--primary-line);background:var(--primary-soft);font-weight:600}
+.usage-filter-chip-all{padding:0 12px}
+.usage-filter-dot{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:var(--line-2)}
+.usage-filter-chip.is-active .usage-filter-dot{background:var(--primary)}
+
 .usage-custom-range{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
 .usage-range-field{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:10.5px}
 .usage-range-input{
@@ -941,6 +970,18 @@ body.usage-modal-open #view{overflow:hidden}
      (full text) instead of an ellipsis. */
   .usage-heat-head{flex-wrap:wrap;gap:2px 8px}
   .usage-heat-meta{max-width:none;flex:1 1 100%;text-align:left;white-space:normal}
+  /* The period tabs + four filter chips no longer fit one line: the chips wrap
+     to their own row, left-aligned with the tabs (not glued to the right edge). */
+  .usage-toolbar{gap:8px;row-gap:8px}
+  .usage-source-filter{margin-left:0;flex:1 1 100%}
+}
+
+/* Narrowest tier: the filter row's caption is the first thing to go, so the
+   chips still have room to sit on one line next to nothing else. */
+@container usage (max-width:659px){
+  .usage-source-filter{margin-left:0;flex:1 1 100%;gap:5px}
+  .usage-filter-caption{display:none}
+  .usage-filter-chip{height:24px;padding:0 9px;font-size:11px}
 }
 
 /* compact mode */
