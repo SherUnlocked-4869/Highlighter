@@ -1,8 +1,13 @@
 # 依赖升级调研与计划（2026-10-07 审计红灯）
 
-- 状态：**调研完成，未执行任何升级**
+- 状态：**M3 已执行（electron 43.2.0 → 43.8.3），其余分期见 §9**
 - 触发：master 的 Windows CI 在 `Audit production and build dependencies` 步骤失败（`审计失败：26 个未豁免漏洞`）
 - 相关：[scripts/audit-dependencies.js](../../scripts/audit-dependencies.js)、[package.json](../../package.json)、[main/services/window-security.js](../../main/services/window-security.js)、[.github/workflows/windows-ci.yml](../../.github/workflows/windows-ci.yml)
+
+> **2026-10-22 更新**：CI 于 2026-10-22T06:33Z 再次红灯，这次不是锁文件漂移，而是上游新发布了
+> `GHSA-fw47-9c62-h3vw`（electron HID/USB 权限归因错误，43.7.0 修复）。按本文 M3 执行了升级，落点是
+> **43.8.3** 而不是早先推荐的 43.7.9 —— 见 §9.1 的两处修正。§0-§8 保留 2026-10-07 的原始判断不回改，
+> 以便对照当时的推理；最新结论以 §9 为准。
 
 ## 0. 结论摘要
 
@@ -218,3 +223,82 @@ npm test; npm run check        # 653 用例 + 语法/架构门禁
 | 12-18 | undici | GHSA-w293-vg96-wgc3 / GHSA-rfgv-xxqx-mfg5 / GHSA-rx4f-c7p8-82vq / GHSA-pmjh-fq2x-6v4x / GHSA-3xpg-4rpp-hhhm / GHSA-3wwx-pv8p-q78v / GHSA-2jfj-6hjv-fm6j | high×3, moderate×4 | 安装/构建链 |
 
 未进门禁的 6 条 low：dompurify GHSA-6688-9rhm-gjv2、GHSA-p98j-92pf-mc4p；undici GHSA-2gqq-gqf2-x968、GHSA-8436-99hf-9mmv、GHSA-r53p-7pc4-xj5r。其中 dompurify 建议在 M2 顺手升到 3.4.16。
+
+## 9. 2026-10-22 执行记录：M3 electron 43.2.0 → 43.8.3
+
+### 9.1 对 §0/§2.1 的两处修正
+
+| 本文早先的判断 | 实际（2026-10-22 核实） | 影响 |
+|---|---|---|
+| "43.x 线的最新版是 **43.7.9**" | 真正的最新 43.x 是 **43.8.3**（`dist-tags['43-x-y']`；`latest` 已是 45.0.0） | 落点改为 43.8.3 |
+| 升到 43.7.9 "一次覆盖全部 advisory" | **不够**：`GHSA-jr5w-w6x2-84p9`（eMudhra 中间 CA 失陷的 TLS 缓解）要求 **43.8.1+**。它是 repository-only advisory，**不在 GitHub Advisory DB、也不在 npm bulk 接口里**，所以 `npm audit` 升级前后都不会报它 | 43.7.9 会让 CI 变绿但仍缺 TFC 修复；43.8.3 才真正干净 |
+
+另外 §2.1 说"全仓库没有 `registerSchemesAsPrivileged`"也不准确：`main.js` 注册了 `highlighter-clipboard`，只是 `supportFetchAPI: false`，因此 `GHSA-j84w-jfhq-vhvj` 的触发前提确实不成立——结论对，理由要改。
+
+### 9.2 触发本次升级的 advisory
+
+CI（run 2026-10-22T06:33Z，`534fd82`）在 `npm run audit:dependencies` 失败，唯一阻塞项：
+
+- `electron` (moderate) **GHSA-fw47-9c62-h3vw** / CVE-2026-113800（5.4）——HID/USB 权限检查在 iframe 场景下归因到顶层 frame 的 origin。affected `>=43.0.0-alpha.1, <43.7.0`，patch 43.7.0 / 44.3.0 / 42.11.3。
+- 本仓库不满足触发前提：`navigator.hid` / `navigator.usb` / `select-hid-device` / `select-usb-device` / `allow="hid|usb"` 全仓库零命中，`setPermissionCheckHandler` 只有 [clipboard 面板](../../main/domains/clipboard/index.js#L101) 一处且**恒返回 false**（不是基于 origin 的判断），也不嵌入跨源 iframe。
+- 即便如此，**选择升级而不是加豁免**：门禁的意义是让"新的运行时漏洞"可见，而不是训练团队见到红灯就加一条 allowlist；且 §2.1 里 `GHSA-qmv3-fv6v-rmhq` 本就没有应用侧规避手段，必须靠升级。
+
+### 9.3 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| [package.json](../../package.json) | `devDependencies.electron` `43.2.0` → `43.8.3` |
+| [package-lock.json](../../package-lock.json) | 仅 electron 4 行（version/resolved/integrity）；依赖声明与 43.2.0 **完全相同**（`@electron/get ^5.0.0`、`@electron-internal/extract-zip ^1.0.1`、`@types/node ^24.9.0`），可传递依赖零变化 |
+| [scripts/audit-dependencies.js](../../scripts/audit-dependencies.js) | 删除 4 条 electron 豁免 + 删掉不再使用的 `RUNTIME_ELECTRON` 常量；补一段说明为什么这次是升级而不是豁免 |
+| [test/electron-runtime.test.js](../../test/electron-runtime.test.js) | pin 断言 43.2.0 → 43.8.3 |
+| [test/dependency-security.test.js](../../test/dependency-security.test.js) | 新增 "the Electron shell stays above every 43.x advisory floor"：`assertMinimumVersion('electron', '43.8.1')`，把「npm 看不见的那条 TLS advisory」也变成普通单测的硬约束 |
+
+**注意**：electron 一停止上报，allowlist 里那 4 条立刻变成「失效豁免项」，而门禁对 stale 是**同样判红**的
+（[audit-dependencies.js:118](../../scripts/audit-dependencies.js#L118)）。所以删条目必须和升级同一个 commit，本次已一并完成。
+
+### 9.4 引擎栈与 ABI（实测）
+
+| | Electron | Chromium | Node | V8 | modules / napi |
+|---|---|---|---|---|---|
+| 升级前 | 43.2.0 | 150.0.7871.129 | 24.18.0 | 15.0.1240245-electron.0 | 148 / 10 |
+| **升级后（实测）** | **43.8.3** | **150.0.7871.250** | **24.22.0** | 15.0.245.31-electron.0 | **148 / 10** |
+
+- 同 Chromium major、同 Node major、**ABI 仍为 148**，所以 §5.3 结论成立：`sharp` / `onnxruntime-node` / `selection-hook` 无需按 Electron ABI 重编。
+- `selection-hook` 是纯 N-API（`NAPI_VERSION=8`），本就与 V8 module ABI 解耦，实测随新 shell 正常加载。
+- CI 仍然会跑 `npm run build:native`（`prebuild:win` 前置），那是既有流程，不是本次升级新增的要求。
+
+### 9.5 验证结果
+
+本机（受限会话，Chromium 沙箱无法启动，Electron 进程以退出码 `3` 立即退出）能跑的部分：
+
+| 命令 | 结果 |
+|---|---|
+| `npm run audit:dependencies`（对 registry.npmjs.org） | ✅ **审计通过：22 个已豁免，0 个未豁免，0 个失效豁免项**（升级前是「1 个未豁免」） |
+| `npm run check` | ✅ 585 文件语法 + 架构门禁通过 |
+| `npm run check:version` | ✅ 4.0.0 |
+| `npm test` | 1277 用例中 1264 通过；13 个失败与**升级前逐条完全一致**（全部是 GUI probe 起不来），新增波动仅 1 个 CPU 计时用例，单独重跑即通过 |
+| `npm run test:long-capture` | ✅ passed |
+| `npm run test:coverage` | 覆盖率汇总 91.27% lines（>85% 门槛）；被 GUI probe 拖红的项同上 |
+| `@electron/fuses` 读 43.8.3 二进制 | ✅ fuse wire version 1 可读 |
+
+**必须在有图形会话的机器/CI 上补跑**（本机无法完成，不是"已通过"）：`npm run test:runtime`、`npm run test:e2e`、
+`npm run test:coverage`、`npm run verify:fuses`（需打包产物）、`npm run verify:package`，以及 §4 的真机清单。
+
+### 9.6 43.3 → 43.8 里需要重点回归的 Windows 行为
+
+按 release notes 里与本仓库功能面直接相关的条目挑选：
+
+1. **`ready-to-show` 不触发**（43.7.4 修 "some hidden windows on Windows"）——[main.js](../../main.js#L815) 的 `win.once('ready-to-show')` 正是调 `win.show()` 的地方；与 2026-10-07「窗口被显示但没上屏」同类。
+2. **`getUserMedia` + `chromeMediaSource:'desktop'`**（43.7.0 收紧 WebContents source id）——[record/record.js:387](../../record/record.js#L387) 的旧捕获兜底路径。
+3. **透明/无边框 + always-on-top 合成**（历史 DComp 事故面）。
+4. **ASAR 完整性 + fuses**（43.6.0 改了 Windows 上 asar 完整性校验失败的处理，本仓库 `enableEmbeddedAsarIntegrityValidation: true`）。
+5. **utilityProcess 承载 selection-hook**（43.5.0 / 43.7.6 / 43.8.0 连续修 utilityProcess 退出期消息/stdout 丢失）。
+6. **Window 尺寸在次级显示器不同 DPI 下的错乱**（43.3.0 #52501）与锚点/DPI 逻辑相关。
+7. **`execCommand('paste')` 需要用户激活**（43.7.0 #53701）——剪贴板粘贴链路值得点一遍。
+8. **旧数据兼容**：`safeStorage` 密文、`config.json`、`history/` 缩略图各启动验证一次。
+
+### 9.7 回滚
+
+只需把 [package.json](../../package.json) 的 electron pin 改回 `43.2.0`、`rm -rf node_modules/electron` 后
+`npm install`，并把 allowlist 4 条与 [test/electron-runtime.test.js](../../test/electron-runtime.test.js)、
+[dependency-security.test.js](../../test/dependency-security.test.js) 的新增断言一起还原（否则审计会因 stale 条目判红）。

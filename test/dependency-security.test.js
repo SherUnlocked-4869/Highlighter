@@ -92,3 +92,15 @@ test('native runtime and build dependencies stay on audited versions', () => {
   assertMinimumVersion('undici', '6.28.0')
   assertMinimumVersion('@xmldom/xmldom', '0.8.15')
 })
+
+// The Electron shell is the one dependency whose advisories move the audit gate
+// on their own schedule: upstream publishes against whatever 43.x we happen to
+// pin, and each one needs a specific patch version. Pinning the floor here means
+// a rollback to an older 43.x fails a plain unit test instead of only turning CI
+// red at the audit step. 43.8.1 is the floor set by GHSA-jr5w-w6x2-84p9, the TLS
+// advisory npm cannot see (repository-only, absent from the bulk endpoint);
+// 43.7.0 by GHSA-fw47-9c62-h3vw, and 43.4.1/43.5.0 by the four sandbox ones.
+test('the Electron shell stays above every 43.x advisory floor', () => {
+  assert.equal(packageJson.devDependencies.electron, '43.8.3')
+  assertMinimumVersion('electron', '43.8.1')
+})

@@ -23,25 +23,29 @@ const AUDIT_LEVELS = ['info', 'low', 'moderate', 'high', 'critical']
 // docs/plans/2026-10-07-dependency-upgrade-plan.md. Every entry states the
 // exposure and carries a review date; an entry that stops being reported still
 // fails the gate so the list cannot rot.
+//
+// 2026-10-22: the electron entries are gone. Electron went 43.2.0 -> 43.8.3,
+// which clears all five 43.x sandbox/permission/HID-USB advisories (highest
+// requirement was 43.7.0, plus the npm-invisible GHSA-jr5w-w6x2-84p9 TLS
+// mitigation that needs 43.8.1). The gate started failing on a brand new
+// advisory (GHSA-fw47-9c62-h3vw) rather than on the pin drifting, so the fix
+// was the upgrade the plan already scheduled, not another exemption.
 const REVIEW_BY = '2026-11-30'
 
 const BUILD_CHAIN_BRACE_EXPANSION =
   'Build/test toolchain only (electron-builder -> app-builder-lib -> @electron/asar, glob, temp, test-exclude); the DoS needs an attacker-controlled glob pattern, and every pattern expanded here is ours. Refresh the transitive minimatch line to brace-expansion 1.1.21+ / 2.1.7+ / 5.0.12+.'
 const BUILD_CHAIN_UNDICI =
   'Install/build only: node_modules/electron -> @electron/get, and node-gyp through @electron/rebuild. Dev dependencies are excluded from the packaged app, so no shipped code path reaches it. Refresh to undici 7.29.1+ (or 6.29.0+ on the 6.x line).'
-const RUNTIME_ELECTRON =
-  'Runtime shell pinned at 43.2.0; exposure is bounded by the app hardening (sandbox:true, webviewTag:false, setWindowOpenHandler deny, no custom protocol registration). Upgrade to the 43.x latest 43.7.9 is planned in docs/plans/2026-10-07-dependency-upgrade-plan.md.'
 
 const ALLOWLIST = new Map([
   // brace-expansion: 6 findings, 3 advisories, all on the build/test toolchain.
   ['brace-expansion|https://github.com/advisories/GHSA-6j4f-fj2g-mc7p', { reason: BUILD_CHAIN_BRACE_EXPANSION, reviewBy: REVIEW_BY }],
   ['brace-expansion|https://github.com/advisories/GHSA-qhr7-859c-m2p7', { reason: BUILD_CHAIN_BRACE_EXPANSION, reviewBy: REVIEW_BY }],
   ['brace-expansion|https://github.com/advisories/GHSA-q2hr-2g5m-vwhr', { reason: BUILD_CHAIN_BRACE_EXPANSION, reviewBy: REVIEW_BY }],
-  // electron: the four September 2026 sandbox/privilege advisories.
-  ['electron|https://github.com/advisories/GHSA-qmv3-fv6v-rmhq', { reason: `${RUNTIME_ELECTRON} This one has no workaround and needs 43.5.0+.`, reviewBy: REVIEW_BY }],
-  ['electron|https://github.com/advisories/GHSA-9qh4-3jw8-366w', { reason: `${RUNTIME_ELECTRON} Needs <webview> plus an unsandboxed embedder; this app locks sandbox:true and webviewTag:false.`, reviewBy: REVIEW_BY }],
-  ['electron|https://github.com/advisories/GHSA-gr2m-v5gq-v685', { reason: `${RUNTIME_ELECTRON} Mitigated by the setWindowOpenHandler deny every secure window installs.`, reviewBy: REVIEW_BY }],
-  ['electron|https://github.com/advisories/GHSA-j84w-jfhq-vhvj', { reason: `${RUNTIME_ELECTRON} Needs a custom scheme registered with supportFetchAPI but no corsEnabled; the app registers none.`, reviewBy: REVIEW_BY }],
+  // electron: no entries. The 43.2.0 pin carried five 43.x advisories
+  // (sandbox escape, webview worker Node integration, protocol cross-origin
+  // reads, preload code-cache poisoning, HID/USB origin attribution); 43.8.3
+  // clears all of them, so nothing about the shell is exempted any more.
   // fast-uri: production-reachable through electron-store's schema validation.
   ['fast-uri|https://github.com/advisories/GHSA-hrr3-gc8f-f4qj', { reason: 'Reachable only through ajv/ajv-formats schema validation (electron-store) and electron-builder. The advisory needs a case-sensitive host allow/deny decision on fast-uri output; the app makes none. Fix by pulling fast-uri 3.1.8+.', reviewBy: REVIEW_BY }],
   // http-cache-semantics: build-only download path.

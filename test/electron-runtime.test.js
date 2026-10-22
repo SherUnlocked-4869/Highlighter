@@ -12,7 +12,7 @@ const projectPackage = require('../package.json')
 const resultPrefix = 'HIGHLIGHTER_RUNTIME_PROBE='
 
 test('fresh installs explicitly provision the pinned Electron binary', () => {
-  assert.equal(projectPackage.devDependencies.electron, '43.2.0')
+  assert.equal(projectPackage.devDependencies.electron, '43.8.3')
   assert.equal(projectPackage.scripts.postinstall, 'install-electron --no')
 })
 
