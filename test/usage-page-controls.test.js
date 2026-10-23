@@ -84,6 +84,29 @@ test('the AI-tool filter reaches every query channel and stays a no-op for all',
   assert.match(usageSource, /usageHeatmap\(\{ tz: params\.tz, weeks: USAGE_HEATMAP_WEEKS, \.\.\.\(params\.sources \? \{ sources: params\.sources \} : \{\}\) \}\)/)
 })
 
+test('the heatmap month row shares the day grid column track (compact-safe)', () => {
+  // The month header is a second grid laid over the same week columns: it must
+  // step by exactly one cell track or the labels drift away from the days they
+  // name. Compact mode shrinks the cells, so a literal column size in EITHER
+  // row desyncs them (reported bug: at 11px cells the labels drifted 2px per
+  // column, ~98px over 52 weeks). Both rows must read one shared token instead.
+  assert.match(css, /\.usage-heat-canvas\{[^}]*--usage-heat-cell:[^;}]+/)
+  assert.match(css, /\.usage-heat-months\{[^}]*gap:var\(--usage-heat-gap\)/)
+  assert.match(css, /\.usage-heat-grid\{[^}]*grid-template-rows:repeat\(7,var\(--usage-heat-cell\)\)/)
+  assert.match(css, /\.usage-heat-grid\{[^}]*grid-template-columns:repeat\(var\(--usage-heat-weeks,52\),var\(--usage-heat-cell\)\)/)
+  assert.match(css, /\.usage-heat-cell\{[^}]*width:var\(--usage-heat-cell\);height:var\(--usage-heat-cell\)/)
+  // The inline month-row template in the renderer must use the same token.
+  assert.match(usageSource, /class="usage-heat-months" style="grid-template-columns:repeat\(\$\{model\.columns\.length\},var\(--usage-heat-cell\)\)"/)
+  // No literal pixel column sizes may creep back into either heatmap row.
+  for (const selector of ['.usage-heat-months{', '.usage-heat-grid{']) {
+    const rule = css.slice(css.indexOf(selector)).split('}')[0]
+    assert.doesNotMatch(rule, /\d+px\)/, `${selector} must not hardcode a column size`)
+  }
+  // Compact mode retunes the single token rather than re-declaring track sizes.
+  assert.match(css, /body\.compact \.usage-heat-canvas\{--usage-heat-cell:11px\}/)
+  assert.doesNotMatch(css, /body\.compact \.usage-heat-(grid|cell)\{[^}]*(width|grid-template)/)
+})
+
 test('the filter row degrades at narrow page widths instead of overflowing', () => {
   // Container queries only — the settings window's content column is narrower
   // than the viewport, so viewport media queries would be wrong here.

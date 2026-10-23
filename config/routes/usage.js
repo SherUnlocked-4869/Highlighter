@@ -974,7 +974,7 @@ function usageHeatmapHtml(heatmap, timezoneLabel) {
         <div class="usage-heat-weekdays" aria-hidden="true">${weekdayLabels}</div>
         <div class="usage-heat-scroll" data-usage-heatmap-scroll>
           <div class="usage-heat-canvas" style="--usage-heat-weeks:${model.columns.length}">
-            <div class="usage-heat-months" style="grid-template-columns:repeat(${model.columns.length},13px)">${monthLabels}</div>
+            <div class="usage-heat-months" style="grid-template-columns:repeat(${model.columns.length},var(--usage-heat-cell))">${monthLabels}</div>
             <div class="usage-heat-grid">${cells}</div>
           </div>
         </div>
