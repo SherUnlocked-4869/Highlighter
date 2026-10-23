@@ -32,20 +32,20 @@ ok   long-capture.light     420x560 page=420x560 nodes=56 rail=null errors=0
 ok   long-capture.dark      420x560 page=420x560 nodes=56 rail=null errors=0
 ok   pin.light              320x220 page=320x220 nodes=5 rail=null errors=0
 ok   pin.dark               320x220 page=320x220 nodes=5 rail=null errors=0
-ok   clipboard-list.light   480x640 page=480x640 nodes=95 rail=null errors=0
-      probe {"rows":6,"emptyHidden":true,"detailHidden":false,"detailRect":"479x262@348","selectedRect":"64@169-233/view179 scrollTop0","detailBadge":"TXT","detailMeta":"置顶 · 微信 · 10/18 11:32 · 114 B","detailText":"把这段关于暗色模式对比度的评审意见整","mediaHidden":true,"imageHidden":true,"imageSize":0,"feedbackHidden":true,"feedbackTone":null,"feedbackText":"","bodyClass":""}
-ok   clipboard-list.dark    480x640 page=480x640 nodes=95 rail=null errors=0
-ok   clipboard-image.light  480x640 page=480x640 nodes=95 rail=null errors=0
-      probe {"rows":6,"emptyHidden":true,"detailHidden":false,"detailRect":"479x275@334","selectedRect":"64@269-333/view165 scrollTop27","detailBadge":"IMG","detailMeta":"微信 · 10/18 11:25 · 418 KiB","detailText":"","mediaHidden":false,"imageHidden":false,"imageSize":"640x360","feedbackHidden":true,"feedbackTone":null,"feedbackText":"","bodyClass":""}
-ok   clipboard-image.dark   480x640 page=480x640 nodes=95 rail=null errors=0
-ok   clipboard-empty.light  480x640 page=480x640 nodes=58 rail=null errors=0
-      probe {"rows":0,"emptyHidden":false,"detailHidden":true,"detailRect":null,"selectedRect":null,"detailBadge":"","detailMeta":"","detailText":"","mediaHidden":true,"imageHidden":true,"imageSize":0,"feedbackHidden":true,"feedbackTone":null,"feedbackText":"","bodyClass":""}
-ok   clipboard-empty.dark   480x640 page=480x640 nodes=58 rail=null errors=0
-ok   clipboard-feedback.light 480x148 page=480x148 nodes=58 rail=null errors=0
-      probe {"rows":0,"emptyHidden":true,"detailHidden":true,"detailRect":null,"selectedRect":null,"detailBadge":"","detailMeta":"","detailText":"","mediaHidden":true,"imageHidden":true,"imageSize":0,"feedbackHidden":false,"feedbackTone":"ok","feedbackText":"已发送粘贴，请在目标应用查看。","bodyClass":"feedback-only"}
-ok   clipboard-feedback.dark 480x148 page=480x148 nodes=58 rail=null errors=0
-ok   clipboard-feedback-warn.light 480x148 page=480x148 nodes=58 rail=null errors=0
-      probe {"rows":0,"emptyHidden":true,"detailHidden":true,"detailRect":null,"selectedRect":null,"detailBadge":"","detailMeta":"","detailText":"","mediaHidden":true,"imageHidden":true,"imageSize":0,"feedbackHidden":false,"feedbackTone":"warn","feedbackText":"已复制，无法自动粘贴。请在目标输入框手动粘贴。","bodyClass":"feedback-only"}
-ok   clipboard-feedback-warn.dark 480x148 page=480x148 nodes=58 rail=null errors=0
+ok   clipboard-list.light   480x640 page=480x640 nodes=108 rail=null errors=0
+      probe {"textRows":5,"gridRows":2,"tiles":8,"tileRect":"107x92@305","tileStates":{"loading":0,"failed":0,"none":8},"tileImgsWithSrc":8,"tileImgsDecoded":8,"cols":"4","viewport":"426 scrollTop0","selected":"row 64@169-233","emptyHidden":true,"detailHidden":true,"detailBadge":"","detailMeta":"","detailText":"","feedbackHidden":true,"feedbackTone":null,"feedbackText":"","bodyClass":""}
+ok   clipboard-list.dark    480x640 page=480x640 nodes=108 rail=null errors=0
+ok   clipboard-image.light  480x640 page=480x640 nodes=108 rail=null errors=0
+      probe {"textRows":5,"gridRows":2,"tiles":8,"tileRect":"107x92@305","tileStates":{"loading":0,"failed":0,"none":8},"tileImgsWithSrc":8,"tileImgsDecoded":8,"cols":"4","viewport":"426 scrollTop0","selected":"tile 92@305-397","emptyHidden":true,"detailHidden":true,"detailBadge":"","detailMeta":"","detailText":"","feedbackHidden":true,"feedbackTone":null,"feedbackText":"","bodyClass":""}
+ok   clipboard-image.dark   480x640 page=480x640 nodes=108 rail=null errors=0
+ok   clipboard-empty.light  480x640 page=480x640 nodes=59 rail=null errors=0
+      probe {"textRows":0,"gridRows":0,"tiles":0,"tileRect":null,"tileStates":{"loading":0,"failed":0,"none":0},"tileImgsWithSrc":0,"tileImgsDecoded":0,"cols":"4","viewport":"426 scrollTop0","selected":null,"emptyHidden":false,"detailHidden":true,"detailBadge":"","detailMeta":"","detailText":"","feedbackHidden":true,"feedbackTone":null,"feedbackText":"","bodyClass":""}
+ok   clipboard-empty.dark   480x640 page=480x640 nodes=59 rail=null errors=0
+ok   clipboard-feedback.light 480x148 page=480x148 nodes=59 rail=null errors=0
+      probe {"textRows":0,"gridRows":0,"tiles":0,"tileRect":null,"tileStates":{"loading":0,"failed":0,"none":0},"tileImgsWithSrc":0,"tileImgsDecoded":0,"cols":null,"viewport":"0 scrollTop0","selected":null,"emptyHidden":true,"detailHidden":true,"detailBadge":"","detailMeta":"","detailText":"","feedbackHidden":false,"feedbackTone":"ok","feedbackText":"已发送粘贴，请在目标应用查看。","bodyClass":"feedback-only"}
+ok   clipboard-feedback.dark 480x148 page=480x148 nodes=59 rail=null errors=0
+ok   clipboard-feedback-warn.light 480x148 page=480x148 nodes=59 rail=null errors=0
+      probe {"textRows":0,"gridRows":0,"tiles":0,"tileRect":null,"tileStates":{"loading":0,"failed":0,"none":0},"tileImgsWithSrc":0,"tileImgsDecoded":0,"cols":null,"viewport":"0 scrollTop0","selected":null,"emptyHidden":true,"detailHidden":true,"detailBadge":"","detailMeta":"","detailText":"","feedbackHidden":false,"feedbackTone":"warn","feedbackText":"已复制，无法自动粘贴。请在目标输入框手动粘贴。","bodyClass":"feedback-only"}
+ok   clipboard-feedback-warn.dark 480x148 page=480x148 nodes=59 rail=null errors=0
 
 all surfaces render clean

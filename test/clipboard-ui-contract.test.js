@@ -74,6 +74,20 @@ test('every element id clipboard.js reads exists exactly once in the page', () =
   assert.deepEqual(contractIds.filter((id) => !IDS.includes(id)), [], 'the documented element-id contract stays intact')
 })
 
+test('the listbox owns its options directly: the #rows wrapper is presentational', () => {
+  // #list is the listbox and every .row/.grid-row it renders is an option. A
+  // bare <div id="rows"> between the two becomes a `generic` node in the real
+  // accessibility tree, so assistive tech sees exactly ONE child of the listbox
+  // and every option as a grandchild. role="presentation" flattens the wrapper
+  // and the options surface as direct children. Verified in a real Electron
+  // window (see test/clipboard-grid-runtime.test.js, which re-measures it).
+  assert.match(html, /<main id="list"[^>]*role="listbox"/)
+  assert.match(html, /<div id="rows" role="presentation"><\/div>/, '#rows must stay presentational or the option ownership breaks')
+  assert.equal([...html.matchAll(/id="rows"/g)].length, 1, '#rows is declared exactly once')
+  assert.equal([...html.matchAll(/role="presentation"/g)].length, 1,
+    'the only presentational node is the rows wrapper: the rows themselves own the option role')
+})
+
 test('every bridge call clipboard.js makes is exposed by its dedicated preload', () => {
   // The panel gets its own contextBridge surface; a method rename on either side
   // fails at the first invocation, not at load, so pin the pair together.
