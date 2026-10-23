@@ -52,8 +52,9 @@ const ALLOWLIST = new Map([
   ['http-cache-semantics|https://github.com/advisories/GHSA-ch52-4w7c-c8xp', { reason: 'Build only: electron-builder -> @electron/get -> got -> cacheable-request, used to download Electron binaries. The app runs no shared HTTP cache, so cross-user cache disclosure has no path.', reviewBy: REVIEW_BY }],
   // sharp: Windows-only app, and SVG is never decoded.
   ['sharp|https://github.com/advisories/GHSA-wq5f-xc86-pv6w', { reason: 'The advisory is a librsvg use-after-free that can reach RCE on glibc/Linux when decoding SVG. This app is Windows-only and only feeds PNG/JPEG to sharp for thumbnails. Upgrade to 0.35.5 is planned.', reviewBy: REVIEW_BY }],
-  // sprintf-js: no patched release exists at all.
-  ['sprintf-js|https://github.com/advisories/GHSA-hp3w-g68c-fv3c', { reason: 'No patched release exists (the advisory lists no first_patched_version). Dev/optional chain @electron/get -> global-agent -> roarr, and the format strings are ours. Only a chain change can remove it.', reviewBy: REVIEW_BY }],
+  // sprintf-js: dropped from this list 2026-10-23. npm stopped reporting
+  // GHSA-hp3w-g68c-fv3c for this tree, so the entry became a stale allowlist row
+  // and failed the gate itself. Re-add only if the advisory is reported again.
   // undici: install/build only, 10 findings across 8 advisories.
   ['undici|https://github.com/advisories/GHSA-w293-vg96-wgc3', { reason: BUILD_CHAIN_UNDICI, reviewBy: REVIEW_BY }],
   ['undici|https://github.com/advisories/GHSA-rfgv-xxqx-mfg5', { reason: BUILD_CHAIN_UNDICI, reviewBy: REVIEW_BY }],

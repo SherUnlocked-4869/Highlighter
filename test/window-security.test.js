@@ -125,7 +125,12 @@ test('action renderer uses a dedicated API, CSP, sanitizer, and packaged preload
   assert.match(actionHtml, /default-src 'none'/)
   assert.match(actionHtml, /node_modules\/dompurify\/dist\/purify\.min\.js/)
   assert.ok(packageJson.build.files.includes('preload-action.js'))
-  assert.equal(packageJson.dependencies.dompurify, '3.4.13')
+  // Pinned on purpose: the action window sanitizes AI output with this exact
+  // build, so a silent downgrade must fail here rather than ship. Bumped
+  // 3.4.13 -> 3.4.17 on 2026-10-23 to clear two advisories the audit gate
+  // rejects for <= 3.4.16 (GHSA-cg2g-xh64-v4q7 critical,
+  // GHSA-mrv2-3pqr-j5jr high).
+  assert.equal(packageJson.dependencies.dompurify, '3.4.17')
   assert.equal(packageJson.dependencies.showdown, undefined)
 })
 
