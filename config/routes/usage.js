@@ -22,9 +22,15 @@
 //
 // Re-render safety follows history.js: renderUsage() can run again at any time
 // (period change, refresh, language hot switch) and async continuations are
-// guarded by `currentRoute === 'usage'` plus a render version counter. No
-// document-level listeners: every handler is bound to an element this route
-// owns, and the single IPC subscription is dropped when the route is left.
+// guarded by `currentRoute === 'usage'` plus a render version counter. Every
+// handler is bound to an element this route owns; the one IPC subscription and
+// the auto-refresh timer/listeners are all dropped when the route is left.
+//
+// Data freshness (plan §2.2): entering the page asks the engine for an increment
+// scan (`page-open`), and while the page stays open it re-asks every
+// USAGE_AUTO_REFRESH_MS and on window focus / visibility return. The collector
+// owns the 5-minute floor, so all of these triggers share one throttle and a
+// focus storm cannot re-scan the disk.
 
 const USAGE_DEFAULT_PERIOD = 'month'
 const USAGE_TREND_DAYS = 30
@@ -106,6 +112,14 @@ const USAGE_CONSENT_POINTS = [
 const USAGE_REQUIRED_METHODS = ['usageStatus', 'usageSummary', 'usageDaily', 'usageBreakdown', 'usageRefresh', 'usageClear']
 const USAGE_OPTIONAL_METHODS = ['usageHourly', 'usageHeatmap']
 
+// Automatic freshness poll. The renderer asks faster than the engine's floor on
+// purpose: the collector is the single owner of the floor (5 min, see
+// usage-collector.js DEFAULT_SCAN_THROTTLE_MS), so its answer tells us when the
+// data actually moved. Polling exactly at the floor would drift a whole period
+// (a tick landing 200 ms early is throttled, then the next tick is 5 min later),
+// while polling faster than the floor converges to "a scan within the floor".
+const USAGE_AUTO_REFRESH_MS = 60 * 1000
+
 // Localized message per custom-range validation failure (helper reasons, see
 // shared/usage-format.js validateCustomRange).
 const USAGE_RANGE_REASON_KEYS = {
@@ -146,6 +160,16 @@ let usageTrendModalRequest = 0
 // Monotonic counter for the "keep the old dashboard while re-querying" path.
 // A period/filter switch only swaps the dashboard in once new data lands.
 let usageSwapVersion = 0
+// Auto-refresh lifecycle (see the header comment). `usageAutoRefreshTimer` is a
+// one-shot `setTimeout` chain, not `setInterval`: a slow engine answer must never
+// stack calls. `usageAutoRefreshListeners` holds the window/document handlers the
+// route added, so leaving the page can remove exactly those.
+let usageAutoRefreshTimer = null
+let usageAutoRefreshListeners = null
+let usageAutoRefreshInFlight = false
+// A scan can finish while the trend modal is open; re-rendering would tear the
+// modal down, so the refresh is deferred until the modal closes.
+let usageAutoRefreshRenderPending = false
 
 function usageHasApi(name) {
   return !!window.electronAPI && typeof window.electronAPI[name] === 'function'
@@ -264,6 +288,27 @@ function usageDateTime(value) {
   } catch {
     return date.toISOString()
   }
+}
+
+// "just now / 5 minutes ago / 3 hours ago / yesterday" for the coverage strip.
+// A bare timestamp makes a stale reading look like a fresh one; the relative form
+// is what tells the user whether they are looking at minutes or days. Returns ''
+// when the value is missing/invalid so callers can fall back to "not scanned yet".
+function usageRelativeTime(value, now = new Date()) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const seconds = Math.round((now.getTime() - date.getTime()) / 1000)
+  // A clock that jumped backwards must not render "in -3 minutes"; treat the
+  // future as "just now" and let the absolute timestamp carry the detail.
+  if (seconds < 60) return t('config.usage.coverage.relative-now')
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return t('config.usage.coverage.relative-minutes', { count: minutes })
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return t('config.usage.coverage.relative-hours', { count: hours })
+  const days = Math.round(hours / 24)
+  if (days === 1) return t('config.usage.coverage.relative-yesterday')
+  return t('config.usage.coverage.relative-days', { count: days })
 }
 
 // Locale date for the heatmap/trend tooltip headers (the rest of the page keeps
@@ -488,9 +533,14 @@ function usageCoverageHtml(status, options = {}) {
 
   let lastScan = ''
   if (!disabled) {
-    lastScan = status && status.lastScanAt
-      ? t('config.usage.coverage.last-scan', { time: usageDateTime(status.lastScanAt) })
-      : t('config.usage.coverage.never-scanned')
+    if (status && status.lastScanAt) {
+      const relative = usageRelativeTime(status.lastScanAt)
+      lastScan = relative
+        ? t('config.usage.coverage.last-scan-relative', { time: usageDateTime(status.lastScanAt), relative })
+        : t('config.usage.coverage.last-scan', { time: usageDateTime(status.lastScanAt) })
+    } else {
+      lastScan = t('config.usage.coverage.never-scanned')
+    }
   }
 
   const meta = []
@@ -1338,6 +1388,12 @@ function usageCloseTrendModal(restoreFocus = true) {
   const trigger = overlay._usageTrigger
   overlay.remove()
   if (restoreFocus && trigger && typeof trigger.focus === 'function' && trigger.isConnected) trigger.focus()
+  // A scan that finished while the modal was open could not repaint the page
+  // without destroying the overlay; the deferred repaint lands now that it is gone.
+  if (usageAutoRefreshRenderPending) {
+    usageAutoRefreshRenderPending = false
+    void usageRerenderKeepingDashboard()
+  }
 }
 
 function usageOpenTrendModal() {
@@ -1521,7 +1577,9 @@ async function usageRenderRoute(options = {}) {
   const renderVersion = ++usageRenderVersion
   const swapVersion = ++usageSwapVersion
   usageUnsubscribeProgress()
+  usageAutoRefreshStop()
   usageClearHeatTooltip()
+  usageAutoRefreshRenderPending = false
   usageCloseTrendModal(false)
   usageDashboardPayload = null
   usageRefreshPending = false
@@ -1553,6 +1611,14 @@ async function usageRenderRoute(options = {}) {
     usageRenderConsent(renderVersion, status)
     return
   }
+
+  // Freshness starts here, for every enabled entry into the page: the timer and
+  // the focus/visibility listeners are armed before the first query so a scan
+  // finishing mid-load still reaches the page. Only a real route entry triggers
+  // the initial `page-open` scan; an in-place re-query (period switch, manual
+  // refresh) must not ask for another scan.
+  usageAutoRefreshArm()
+  if (options.keepDashboard !== true) void usageAutoRefreshTick()
 
   usageNormalizeRange()
   const params = usageQueryParams()
@@ -1655,9 +1721,9 @@ function usageBindConsent() {
       enable.disabled = true
       try {
         await updateSettings({ usage: { enabled: true } }, '')
-        if (usageHasApi('usageRefresh')) {
-          await window.electronAPI.usageRefresh({ reason: 'page-open' }).catch(() => null)
-        }
+        // renderUsage() arms the auto-refresh lifecycle and fires the initial
+        // `page-open` scan for an enabled page, so the consent path must not
+        // trigger a second scan of its own.
         await renderUsage()
       } catch (error) {
         usageToast(t('config.usage.consent.enable-failed', { message: usageErrorText(error) }))
@@ -1975,6 +2041,103 @@ function usageUnsubscribeProgress() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Automatic refresh (plan §2.2: page-open increment + visible-window polling)
+// ---------------------------------------------------------------------------
+
+// True while the page is actually on screen. A minimized/occluded settings
+// window has no reason to wake the disk, and the visibility listener runs once
+// more on return, so skipping hidden ticks loses nothing.
+function usagePageVisible() {
+  return typeof document !== 'undefined' && document.visibilityState !== 'hidden'
+}
+
+function usageAutoRefreshSchedule() {
+  usageAutoRefreshStopTimer()
+  usageAutoRefreshTimer = setTimeout(() => {
+    usageAutoRefreshTimer = null
+    void usageAutoRefreshTick()
+  }, USAGE_AUTO_REFRESH_MS)
+}
+
+function usageAutoRefreshStopTimer() {
+  if (usageAutoRefreshTimer === null) return
+  clearTimeout(usageAutoRefreshTimer)
+  usageAutoRefreshTimer = null
+}
+
+// Dropping the listeners is what keeps a re-render from multiplying them: every
+// route entry and in-place re-query arms the probe again from a clean slate.
+function usageAutoRefreshStop() {
+  usageAutoRefreshStopTimer()
+  const listeners = usageAutoRefreshListeners
+  usageAutoRefreshListeners = null
+  if (!listeners) return
+  try {
+    window.removeEventListener('focus', listeners.focus)
+    document.removeEventListener('visibilitychange', listeners.visibility)
+  } catch {
+    // The window is tearing down; the listeners go with it.
+  }
+}
+
+function usageAutoRefreshArm() {
+  usageAutoRefreshStop()
+  usageAutoRefreshSchedule()
+  const focus = () => { void usageAutoRefreshTick() }
+  const visibility = () => {
+    if (!usagePageVisible()) return
+    void usageAutoRefreshTick()
+  }
+  usageAutoRefreshListeners = { focus, visibility }
+  window.addEventListener('focus', focus)
+  document.addEventListener('visibilitychange', visibility)
+}
+
+// Route-leave teardown, called from config.js navigate(): the settings window is
+// a single page that can sit on another route for hours, so nothing on this page
+// may keep ticking or listening once it is off screen.
+function usageDeactivate() {
+  usageAutoRefreshStop()
+  usageAutoRefreshRenderPending = false
+  usageUnsubscribeProgress()
+  usageDashboardPayload = null
+}
+
+// The single scan trigger behind page-open, the poll and the focus/visibility
+// listeners. The engine still owns the real floor (5 minutes, see
+// usage-collector.js): a throttled answer means the data on disk is recent
+// enough that repainting would be pure churn.
+//
+// A started scan repaints the page when its `done` progress push arrives, so this
+// function intentionally does not re-query anything itself.
+async function usageAutoRefreshTick() {
+  if (currentRoute !== 'usage') {
+    usageAutoRefreshStop()
+    return
+  }
+  if (!usageHasApi('usageRefresh')) return
+  if (!usagePageVisible()) {
+    usageAutoRefreshSchedule()
+    return
+  }
+  // One request in flight at a time: `usageRefresh` is cheap but a stalled IPC
+  // reply must not let ticks pile up behind it.
+  if (usageAutoRefreshInFlight) {
+    usageAutoRefreshSchedule()
+    return
+  }
+  usageAutoRefreshInFlight = true
+  try {
+    await window.electronAPI.usageRefresh({ reason: 'page-open' })
+  } catch {
+    // Disabled or engine gone: the page stays readable and the next tick retries.
+  } finally {
+    usageAutoRefreshInFlight = false
+    if (currentRoute === 'usage') usageAutoRefreshSchedule()
+  }
+}
+
 // Scan-progress pushes keep the coverage strip alive between renders. Leaving
 // the route drops the subscription so a finishing scan cannot repaint another
 // page; entering again re-subscribes from renderUsage().
@@ -2006,10 +2169,17 @@ function usageApplyProgress(progress) {
     if (text) text.textContent = usageScanText(progress)
     if (bar) bar.style.width = `${usageScanPercent(progress)}%`
   }
-  if (progress.done === true) {
-    usageRefreshPending = false
-    void renderUsage()
+  if (progress.done !== true) return
+  usageRefreshPending = false
+  // A background (auto) scan finishing must not blank the page back to the
+  // loading card the way a route entry does, and it must not tear down an open
+  // trend modal. Both are handled by the in-place path: repaint the mounted
+  // dashboard, or defer the repaint until the modal closes.
+  if (usageTrendModal) {
+    usageAutoRefreshRenderPending = true
+    return
   }
+  void usageRerenderKeepingDashboard()
 }
 
 window.configRoutes = window.configRoutes || {}

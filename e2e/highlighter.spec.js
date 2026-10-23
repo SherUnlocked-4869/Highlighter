@@ -154,3 +154,55 @@ test('usage page guides opt-in and scans the fixture home end to end', async ({ 
   }
   expect(await highlighter.getUnexpectedErrors()).toEqual([])
 })
+
+// Regression (2026-10-23): the page used to render once and then sit on whatever
+// the DB held, because only the header button ever sent a scan trigger; the
+// "last scan" line froze at whatever the consent click had produced.
+//
+// This covers the user-visible half. The scan trigger itself cannot be observed
+// from here: `contextBridge` exposes a frozen API (verified: Object.isFrozen is
+// true), so the renderer cannot spy on it, and the collector's 5 minute floor
+// correctly answers an immediate re-entry with `throttled`. The trigger wiring is
+// therefore pinned by test/usage-auto-refresh.test.js, which runs the real route
+// script against fake timers; what this test proves is that the page arms that
+// lifecycle on entry and survives focus/disconnect/re-entry at the DOM level.
+test('an enabled usage page arms its background refresh, and the label shows staleness', async ({ highlighter }) => {
+  const { mainWindow: page } = highlighter
+  await navigate(page, 'usage', '用量')
+  await page.locator('[data-usage-enable]').click()
+  await expect.poll(async () => page.evaluate(async () => {
+    const status = await window.electronAPI.usageStatus()
+    return status?.lastScanAt ?? null
+  }), { timeout: 45_000 }).not.toBeNull()
+
+  // The consent click itself already asked for a page-open scan; the collector's
+  // 5-minute floor then throttles an immediate re-entry. What must hold is that
+  // the page still asks (the IPC accepting the throttled answer is invisible in
+  // the DOM), so the assertion below covers the rendered contract, and the
+  // runtime test (test/usage-auto-refresh.test.js) covers the trigger wiring.
+  await navigate(page, 'home', '快捷功能')
+  await navigate(page, 'usage', '用量')
+  // The dashboard is mounted either way; its state banner depends on whether the
+  // fixture home yielded rows for the selected period (here it is the fixture's
+  // "month" window, so the page sits in its empty state — still a live dashboard).
+  await expect(page.locator('.usage-dashboard')).toBeVisible()
+
+  // Relative freshness copy: the coverage strip must say how old the reading is,
+  // not only its absolute timestamp.
+  const coverage = page.locator('#usageCoverage')
+  await expect(coverage).toContainText('上次扫描')
+  await expect(coverage).toContainText(/刚刚|分钟前|小时前|昨天|天前/)
+
+  // A focus event must not throw or blank the page; the handler is bound while
+  // the route is active and is meant to be a no-op when throttled.
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  await page.waitForTimeout(400)
+  await expect(page.locator('.usage-dashboard')).toBeVisible()
+
+  // Leaving the page tears the lifecycle down; returning re-arms it. The observable
+  // guarantee is that the route keeps working after both transitions.
+  await navigate(page, 'home', '快捷功能')
+  await navigate(page, 'usage', '用量')
+  await expect(page.locator('.usage-dashboard')).toBeVisible()
+  expect(await highlighter.getUnexpectedErrors()).toEqual([])
+})

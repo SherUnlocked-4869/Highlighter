@@ -62,6 +62,12 @@ function navigate(route) {
     historyThumbnailObserver?.disconnect()
     historyThumbnailObserver = null
   }
+  // The usage page owns an auto-refresh timer plus focus/visibility listeners and
+  // one IPC subscription; leaving the route must drop all three or a background
+  // scan keeps waking the disk behind an unrelated page.
+  if (currentRoute === 'usage' && route !== 'usage') {
+    if (typeof usageDeactivate === 'function') usageDeactivate()
+  }
   if (route === 'models' && currentRoute !== 'models') {
     modelsTab = 'providers'
     modelsExpandedProviderIds = new Set()
