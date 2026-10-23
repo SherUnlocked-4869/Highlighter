@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   close: () => ipcRenderer.send('clipboard:close'),
   list: (args) => ipcRenderer.invoke('clipboard:list', args),
   detail: (id) => ipcRenderer.invoke('clipboard:detail', { id }),
-  preview: (id) => ipcRenderer.invoke('clipboard:preview', { id }),
+  previews: (ids) => ipcRenderer.invoke('clipboard:previews', { ids }),
   copy: (id, operationId) => ipcRenderer.invoke('clipboard:copy', { id, operationId }),
   paste: (id, operationId) => ipcRenderer.invoke('clipboard:paste', { id, operationId }),
   setPinned: (id, pinned, operationId) => ipcRenderer.invoke('clipboard:set-pinned', { id, pinned, operationId }),

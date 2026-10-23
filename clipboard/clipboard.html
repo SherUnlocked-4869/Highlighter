@@ -35,31 +35,31 @@
       <button id="pinned" class="chip" type="button" data-i18n="clipboard.pinned" aria-pressed="false">Pinned</button>
     </nav>
     <button id="new" class="banner" type="button" hidden data-i18n="clipboard.new">New records — refresh</button>
-    <main id="list" tabindex="0" role="listbox" data-i18n-aria-label="clipboard.title">
-      <div id="rows"></div>
-      <div id="empty" class="empty" hidden><span class="empty-mark" aria-hidden="true"></span><p data-i18n="clipboard.empty">No matching records</p></div>
-    </main>
+    <div class="list-wrap">
+      <main id="list" tabindex="0" role="listbox" data-i18n-aria-label="clipboard.title">
+        <div id="rows"></div>
+        <div id="empty" class="empty" hidden><span class="empty-mark" aria-hidden="true"></span><p data-i18n="clipboard.empty">No matching records</p></div>
+      </main>
+      <section id="detail" class="detail" hidden role="region" data-i18n-aria-label="clipboard.title">
+        <div class="detail-head">
+          <span id="detailBadge" class="kind-badge" aria-hidden="true"></span>
+          <span id="detailMeta" class="detail-meta"></span>
+        </div>
+        <div class="detail-body">
+          <pre id="text"></pre>
+          <div id="media" class="detail-media" hidden><img id="image" alt=""></div>
+          <small id="truncated" class="truncated" hidden data-i18n="clipboard.truncated">Showing the first 64 KiB. Copy preserves the complete original.</small>
+        </div>
+      </section>
+    </div>
     <button id="more" class="more-button" type="button" hidden data-i18n="clipboard.more">Load next page</button>
-    <section id="detail" class="detail" hidden>
-      <div class="detail-head">
-        <span id="detailBadge" class="kind-badge" aria-hidden="true"></span>
-        <span id="detailMeta" class="detail-meta"></span>
-      </div>
-      <div class="detail-body">
-        <pre id="text"></pre>
-        <div id="media" class="detail-media" hidden><img id="image" alt=""></div>
-        <small id="truncated" class="truncated" hidden data-i18n="clipboard.truncated">Showing the first 64 KiB. Copy preserves the complete original.</small>
-      </div>
-      <div class="detail-actions">
-        <button id="copy" class="button primary" type="button" data-i18n="clipboard.copy" title="Enter">Copy</button>
-        <button id="paste" class="button" type="button" data-i18n="clipboard.paste" title="Ctrl+Enter">Paste</button>
-        <span class="actions-spacer" aria-hidden="true"></span>
-        <button id="pin" class="button" type="button"></button>
-        <button id="delete" class="button danger" type="button" data-i18n="clipboard.delete" title="Delete">Delete</button>
-      </div>
-    </section>
     <footer class="footer">
-      <span class="hint" data-i18n="clipboard.paste-hint">Paste into the input active before opening history</span>
+      <button id="copy" class="button primary" type="button" data-i18n="clipboard.copy" title="Enter">Copy</button>
+      <button id="paste" class="button" type="button" data-i18n="clipboard.paste" title="Ctrl+Enter">Paste</button>
+      <button id="view" class="button" type="button" data-i18n="clipboard.view-text" aria-expanded="false" aria-controls="detail" hidden>Show full text</button>
+      <span class="footer-spacer" aria-hidden="true"></span>
+      <button id="pin" class="button" type="button"></button>
+      <button id="delete" class="button danger" type="button" data-i18n="clipboard.delete" title="Delete">Delete</button>
       <button id="clear" class="quiet-button" type="button" data-i18n="clipboard.clear-ordinary">Clear unpinned</button>
     </footer>
     <div id="feedback" role="status" aria-live="polite" hidden>
@@ -69,5 +69,5 @@
       <span class="feedback-eyebrow" data-i18n="clipboard.result.eyebrow">Paste result</span>
     </div>
   </div>
-  <script src="../shared/locales/zh-CN.js"></script><script src="../shared/locales/en-US.js"></script><script src="../shared/locales/zh-TW.js"></script><script src="../shared/locales/clipboard.js"></script><script src="../shared/i18n.js"></script><script src="clipboard.js"></script>
+  <script src="../shared/locales/zh-CN.js"></script><script src="../shared/locales/en-US.js"></script><script src="../shared/locales/zh-TW.js"></script><script src="../shared/locales/clipboard.js"></script><script src="../shared/i18n.js"></script><script src="clipboard-layout.js"></script><script src="clipboard.js"></script>
 </body></html>

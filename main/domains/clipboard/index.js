@@ -6,6 +6,45 @@ const { registerClipboardIpc } = require('../../ipc/clipboard-ipc')
 const { t } = require('../../services/i18n-bootstrap')
 const { createPasteFeedback } = require('../../services/clipboard-paste-feedback')
 const { windowBackdropColor, trackWindowBackdrop } = require('../../services/window-backdrop')
+const { createThumbnailCache } = require('../../services/clipboard-thumbnail-cache')
+
+// One screen of tiles plus scroll-back and page margins. The limit must stay
+// below 16: ClipboardService.request() rejects with BACKPRESSURE once
+// `pending.size >= 16`, and it also has to leave slots for the 2 s status poll.
+const PREVIEW_CONCURRENCY = 8
+// Bounded token table per window. 128 = one visible screen (16) + one screen of
+// scroll-back + a page of rows + margin; the LRU entry cap uses the same value.
+const PREVIEW_TOKEN_LIMIT = 128
+// The URL is a capability, not a resource: visibility + owner + generation are
+// the real gates (see handleResource). The TTL is only a backstop; hide and
+// release still revoke everything.
+const PREVIEW_TTL_MS = 300000
+const PREVIEW_MAX_BYTES = 256 * 1024
+
+// Fixed-size worker pool. Every worker drains the same queue, so the number of
+// concurrent native calls never exceeds `limit`. Workers never reject: per-item
+// failures are values, because one broken id must not fail the whole batch.
+async function eachLimit(items, limit, worker) {
+  const results = new Array(items.length)
+  let cursor = 0
+  const drain = async () => {
+    while (cursor < items.length) {
+      const index = cursor++
+      results[index] = await worker(items[index], index)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, drain))
+  return results
+}
+
+// The contract enumerates exactly four per-item failures, so unexpected native
+// or transport errors collapse into UNSUPPORTED rather than leaking through.
+function previewFailure(error) {
+  const code = error?.code || error?.message
+  if (code === 'BACKPRESSURE') return 'BACKPRESSURE'
+  if (code === 'NOT_FOUND' || code === 'ATTACHMENT_MISSING') return 'NOT_FOUND'
+  return 'UNSUPPORTED'
+}
 
 function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, session, dialog, powerMonitor, ipcMain, rootDirectory, directory, getSettings, updateSettings, getHook, createLocalWindow, positionAutomationWindow, isGameModeEnabled, isMigrationInProgress, automation = false }) {
   const executable = path.join(app.isPackaged ? process.resourcesPath : rootDirectory, 'native', 'clipboard', ...(app.isPackaged ? [] : ['bin']), 'HighlighterClipboard.exe')
@@ -17,12 +56,37 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   let pasteInProgress = false; let releaseAfterPaste = false; let pasteFeedback = null
   let shutdownPromise = null; let shutdownComplete = false
   const tokens = new Map(); const clearTokens = new Map(); const powerListeners = []
+  const thumbnails = createThumbnailCache({ maxBytes: 8 * 1024 * 1024, maxEntries: PREVIEW_TOKEN_LIMIT })
+  // Bumped on every cache invalidation. An in-flight native read captured the
+  // epoch when it started; if the epoch moved, the read must not write its bytes
+  // back, otherwise a hide/history/delete invalidation would be undone by a
+  // response that was already on the wire.
+  let cacheEpoch = 0
+  function invalidateThumbnails() { cacheEpoch++; thumbnails.clear() }
   const feedback = createPasteFeedback({ getWindow: () => win, screen, expire: () => hide() })
   const ownsWindow = (target) => target != null && target === win
   function send(channel, value) { if (win && !win.isDestroyed() && win.isVisible()) win.webContents.send(channel, value) }
-  function revokePreviews() { tokens.clear() }
+  function panelVisible(event) {
+    if (!win) return false
+    if (typeof win.isDestroyed === 'function' && win.isDestroyed()) return false
+    if (win.isVisible() !== true) return false
+    if (!event?.sender) return true
+    return event.sender === win.webContents
+  }
+  function remember(key, token) {
+    // Insertion order is the eviction order: the oldest token goes first.
+    while (tokens.size >= PREVIEW_TOKEN_LIMIT) tokens.delete(tokens.keys().next().value)
+    tokens.set(key, token)
+  }
+  function revokePreviews() { tokens.clear(); invalidateThumbnails() }
   service.on('status', (value) => send('clipboard:status-changed', value))
-  service.on('history', (value) => { revokePreviews(); send('clipboard:history-changed', value) })
+  // Tokens are NOT cleared here: a new copy in another app must not blank every
+  // tile that is already on screen. The byte cache is cleared instead, because
+  // the native side prunes records by retention without a precise invalidation
+  // signal - without this, a deleted item's thumbnail would stay readable from
+  // cache. After the clear the next protocol hit goes back to native and a
+  // deleted id answers NOT_FOUND, which becomes a 404.
+  service.on('history', (value) => { invalidateThumbnails(); send('clipboard:history-changed', value) })
   function appearance() {
     const settings = getSettings()
     return { language: settings.language, dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors), mainColor: settings.mainColor, generation, status: service.snapshot() }
@@ -70,17 +134,38 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     created.show(); created.focus(); created.webContents.send('clipboard:init', appearance())
     pasteFeedback = null
   }
+  // Every pre-existing check stays here. The byte source changed (LRU first),
+  // but token, generation, TTL, visibility, owner, the post-await re-checks and
+  // the mime/length guards are unchanged - they are what keeps a capability URL
+  // from outliving the window that owns it.
   async function handleResource(request) {
     const fail = () => new Response(null, { status: 404 })
     let url
     try { url = new URL(request.url) } catch { return fail() }
     if (request.method !== 'GET' || url.hostname !== 'preview' || url.search || url.hash) return fail()
-    const token = tokens.get(url.pathname.slice(1))
+    const key = url.pathname.slice(1)
+    const token = tokens.get(key)
     if (!token || token.generation !== generation || token.expires < Date.now() || !win?.isVisible() || win.webContents.id !== token.owner) return fail()
     try {
-      const { bytes, value } = await service.command('thumbnail', { id: token.id })
-      if (!tokens.has(url.pathname.slice(1)) || token.generation !== generation || !win?.isVisible() || value.mime !== 'image/png' || value.byteLength !== bytes.length || bytes.length > 256 * 1024) return fail()
-      return new Response(bytes, { headers: { 'Content-Type': 'image/png', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'" } })
+      // The batch pipeline already read and cached these bytes, so a hit sends
+      // no RPC at all. A miss means the entry was evicted; read once from native
+      // and cache it again, and give up (404) if that read fails.
+      const epoch = cacheEpoch
+      let entry = thumbnails.get(token.id)
+      if (!entry) {
+        const { bytes, value } = await service.command('thumbnail', { id: token.id })
+        if (value?.mime !== 'image/png' || value?.byteLength !== bytes.length || bytes.length > PREVIEW_MAX_BYTES) return fail()
+        entry = { mime: value.mime, bytes }
+        // Re-check after the await BEFORE caching: the window may have hidden, the
+        // panel may have been released, the token may have expired, or a
+        // hide/history/delete may have invalidated the cache while the native read
+        // was in flight. Writing first and validating second would let a stale
+        // response repopulate a cache that had just been cleared.
+        if (!tokens.has(key) || token.generation !== generation || token.expires < Date.now() || !win?.isVisible() || win.webContents.id !== token.owner) return fail()
+        if (epoch === cacheEpoch) thumbnails.set(token.id, entry)
+      }
+      if (entry.mime !== 'image/png' || entry.bytes.length > PREVIEW_MAX_BYTES) return fail()
+      return new Response(entry.bytes, { headers: { 'Content-Type': 'image/png', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'" } })
     } catch { return fail() }
   }
   function show() {
@@ -157,12 +242,56 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     }
   }
   function interactive(event, token) { if (win && event.sender === win.webContents && token === generation) win._clipboardInteractiveAt = Date.now() }
-  function preview(event, id) {
-    if (!win || event.sender !== win.webContents || !win.isVisible()) throw new Error('WINDOW_NOT_VISIBLE')
-    revokePreviews()
-    const token = randomUUID()
-    tokens.set(token, { id, owner: event.sender.id, generation, expires: Date.now() + 60000 })
-    return { url: `highlighter-clipboard://preview/${token}` }
+  // Batch form of the old single-token preview(). Bytes are read here, in the
+  // main process, so per-item NOT_FOUND/UNSUPPORTED can be returned to the
+  // renderer immediately instead of surfacing as a silent <img> 404. It never
+  // throws for a per-item problem and never throws at all for a hidden window:
+  // a batch has to answer for every id it was given.
+  async function previews(event, ids) {
+    const owner = event?.sender?.id
+    const visible = panelVisible(event)
+    if (!visible) return ids.map((id) => ({ id, error: 'WINDOW_NOT_VISIBLE' }))
+    const unique = [...new Set(ids)]
+    const epoch = cacheEpoch
+    const reads = new Map()
+    const read = (id) => {
+      const cached = thumbnails.get(id)
+      if (cached) return Promise.resolve({ entry: cached })
+      if (!reads.has(id)) {
+        // No per-item timeout on purpose: ClipboardService's timeout path calls
+        // failChild() and kills the whole sidecar, so 5000 ms stays the only one.
+        reads.set(id, service.command('thumbnail', { id }).then(({ bytes, value }) => {
+          if (value?.mime !== 'image/png' || value?.byteLength !== bytes.length || bytes.length > PREVIEW_MAX_BYTES) return { error: 'UNSUPPORTED' }
+          // Re-check the cache epoch before writing: a hide/history/delete may
+          // have cleared the cache while this read was in flight, and caching the
+          // bytes afterwards would resurrect an entry the invalidation removed.
+          const entry = { mime: value.mime, bytes }
+          if (epoch === cacheEpoch) thumbnails.set(id, entry)
+          return { entry }
+        }).catch((error) => ({ error: previewFailure(error) })))
+      }
+      return reads.get(id)
+    }
+    const results = await eachLimit(unique, PREVIEW_CONCURRENCY, async (id) => {
+      if (!panelVisible(event)) return { id, error: 'WINDOW_NOT_VISIBLE' }
+      const { entry, error } = await read(id)
+      if (!entry) return { id, error: error || 'UNSUPPORTED' }
+      // A hide/release that landed while the read was in flight must not leak a
+      // usable URL: the token would point at a window that is already gone.
+      if (!panelVisible(event)) return { id, error: 'WINDOW_NOT_VISIBLE' }
+      const key = randomUUID()
+      remember(key, { id, owner, generation, expires: Date.now() + PREVIEW_TTL_MS })
+      return { id, url: `highlighter-clipboard://preview/${key}` }
+    })
+    // Detached native reads must not surface as unhandled rejections if the
+    // panel goes away mid-batch.
+    for (const pending of reads.values()) pending.catch(() => {})
+    // Return one entry per requested id, in the caller's order. Deduplicated ids
+    // were only read (and only signed) once, then mapped back; returning the
+    // deduplicated list instead would break the positional contract with the
+    // renderer, which pairs results to tiles by index.
+    const byId = new Map(results.map((entry) => [entry.id, entry]))
+    return ids.map((id) => byId.get(id) || { id, error: 'UNSUPPORTED' })
   }
   async function prepareClear(event, scope) {
     if (!['ordinary', 'all'].includes(scope)) throw new Error('INVALID_SCOPE')
@@ -201,9 +330,11 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     service.setReason('game-mode', isGameModeEnabled())
     applySettings()
   }
-  registerClipboardIpc({ ipcMain, service, domain: { ready, interactive, hide, paste, preview, revokePreviews, prepareClear, commitClear },
+  registerClipboardIpc({ ipcMain, service, domain: { ready, interactive, hide, paste, previews, revokePreviews, prepareClear, commitClear },
     setPaused: async (paused) => { if (isMigrationInProgress()) throw new Error('QUIESCING'); updateSettings({ clipboard: { paused } }); await applySettings(); return service.snapshot() } })
-  return { service, ownsWindow, show, hide, applySettings, start,
+  // `thumbnails` is exposed alongside `service`: both are seams for the unit
+  // tests, which replace the backend and assert on the byte cache directly.
+  return { service, thumbnails, ownsWindow, show, hide, applySettings, start,
     applyGameMode(enabled) { if (enabled) hide(); return service.setReason('game-mode', enabled) },
     notifyAppearance() { if (!feedback.active) send('clipboard:init', appearance()) },
     async quiesce() { release(); await service.quiesce() },
@@ -218,4 +349,4 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     }
   }
 }
-module.exports = { createClipboardDomain }
+module.exports = { createClipboardDomain, PREVIEW_CONCURRENCY, PREVIEW_TOKEN_LIMIT, PREVIEW_TTL_MS }

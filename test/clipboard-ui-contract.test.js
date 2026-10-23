@@ -153,18 +153,92 @@ test('the page keeps the locked clipboard CSP and stays inline-script/style free
   assert.doesNotMatch(css, /url\(/)
 })
 
-test('the virtual row pitch matches the .row height in the stylesheet', () => {
-  // Rows are absolutely positioned at index * rowHeight inside a spacer whose
-  // height is items.length * rowHeight. If the CSS height and the JS constant
-  // disagree, rows overlap or leave gaps as soon as the panel scrolls.
-  const scriptHeight = script.match(/const rowHeight = (\d+)/)
-  const cssHeight = css.match(/\.row\s*\{[^}]*?\bheight:\s*(\d+)px/)
-  assert.ok(scriptHeight, 'clipboard.js declares the virtual row height')
-  assert.ok(cssHeight, 'clipboard.css declares the .row height')
-  assert.equal(Number(scriptHeight[1]), Number(cssHeight[1]), 'rowHeight and .row must stay in lockstep')
-  assert.match(css, /\.row\s*\{[^}]*?position:\s*absolute/)
-  assert.ok(script.includes('${items.length * rowHeight}px'), 'the spacer follows the pitch')
-  assert.ok(script.includes('${index * rowHeight}px'), 'each row is positioned on the pitch')
+test('grid geometry has one source: CSS custom properties read by the renderer', () => {
+  // Mixed image/text rows have no single pitch, so the old "rowHeight constant
+  // equals .row height" lockstep is gone. The invariant that replaced it: every
+  // geometry value is declared once in the stylesheet, the renderer only reads
+  // it, and the spacer/row positions come from the layout model instead of
+  // index arithmetic.
+  const listBlock = css.match(/#list\s*\{[^}]*\}/)
+  assert.ok(listBlock, 'clipboard.css declares the #list styling block')
+  for (const variable of ['--row-h', '--cell-h', '--grid-gap', '--grid-pad-x', '--tile-target', '--tile-min']) {
+    assert.match(listBlock[0], new RegExp(`${variable}\\s*:\\s*\\d+(\\.\\d+)?px`), `${variable} is declared on #list`)
+  }
+  // Declared on #list, never on :root (the window must not own a private palette).
+  assert.doesNotMatch(css, /:root\s*\{/)
+  assert.match(css, /\.row\s*\{[^}]*?height:\s*var\(--row-h\)/, 'the text row consumes --row-h')
+  assert.match(css, /\.grid-row\s*\{[^}]*?height:\s*var\(--cell-h\)/, 'the image row consumes --cell-h')
+  assert.doesNotMatch(css, /\.row\s*\{[^}]*?height:\s*\d+px/, 'the text row no longer hardcodes its height')
+  // The retired dual-write: no script constant and no index arithmetic.
+  assert.doesNotMatch(script, /const rowHeight\s*=\s*\d+/)
+  assert.doesNotMatch(script, /index \* rowHeight/)
+  for (const variable of ['--row-h', '--cell-h', '--grid-gap', '--grid-pad-x', '--tile-target', '--tile-min']) {
+    assert.ok(script.includes(`getPropertyValue('${variable}')`) || script.includes(`'${variable}'`), `the renderer reads ${variable}`)
+  }
+  assert.ok(script.includes('${model.height}px'), 'the spacer follows the layout model')
+  assert.ok(script.includes('${row.y}px'), 'each row is positioned by the layout model')
+  // DPR is part of the metrics contract: without it a window moved to a display
+  // with another scale factor would keep the old column count.
+  assert.match(script, /devicePixelRatio/)
+})
+
+test('image records render as thumbnails only, with no visible copy', () => {
+  // The three requested behaviours, pinned: a thumbnail plate, no caption, and
+  // no detail sheet opened by selecting a row.
+  assert.match(script, /className = 'tile'/)
+  assert.match(script, /className = 'grid-row'/)
+  assert.match(script, /role', 'presentation'/)
+  // The tile is described for assistive tech, not painted with text.
+  assert.match(script, /setAttribute\('aria-label', imageLabel\(item\)\)/)
+  assert.doesNotMatch(script, /appendText\([^)]*'row-preview'[^)]*clipboard\.image-size/)
+  // No visible per-tile caption or metadata line.
+  const tileRenderer = script.slice(script.indexOf('function renderImageRow'), script.indexOf('function retryThumbnail'))
+  assert.doesNotMatch(tileRenderer, /appendText\(/)
+  assert.doesNotMatch(tileRenderer, /row-meta/)
+  assert.doesNotMatch(tileRenderer, /\.textContent\s*=/)
+  // Selection must not fetch a detail entry: that was the removed interaction.
+  const selectBody = script.slice(script.indexOf('async function select('), script.indexOf('async function openDetail'))
+  assert.doesNotMatch(selectBody, /api\.detail/)
+  assert.doesNotMatch(selectBody, /\$\('detail'\)\.hidden\s*=\s*false/)
+})
+
+test('thumbnail plates load through the batched capability protocol', () => {
+  // One call issues every token, so consecutive previews cannot revoke each
+  // other; and a failed load gets exactly one retry because hiding the panel
+  // revokes tokens and would otherwise leave a tile blank forever.
+  assert.match(script, /api\.previews\(/)
+  assert.doesNotMatch(script, /api\.preview\(/)
+  assert.match(script, /addEventListener\('error'/)
+  assert.match(script, /THUMB_RETRY_MS/)
+  assert.match(script, /data-state', 'failed'/)
+  assert.match(css, /\.tile\[data-state="failed"\]/)
+})
+
+test('the full-text sheet overlays the list instead of shrinking it', () => {
+  // The reported bug was that opening the sheet squeezed the history list and
+  // could not be undone. An absolutely positioned sheet never reflows #list.
+  assert.match(css, /\.list-wrap\s*\{[^}]*position:\s*relative/)
+  assert.match(css, /\.detail\s*\{[^}]*position:\s*absolute/)
+  assert.match(css, /\.detail\s*\{[^}]*bottom:\s*0/)
+  assert.doesNotMatch(css, /\.detail\s*\{[^}]*flex:\s*0 1 auto/)
+  // Superseded by the footer action row: the retired in-sheet action block.
+  assert.doesNotMatch(css, /\.detail-actions/)
+  // The sheet is closable: Escape closes the sheet before the panel.
+  assert.match(script, /if \(!\$\('detail'\)\.hidden\) \{ clearDetail\(\); return \}/)
+})
+
+test('record actions live in the footer so no selection is required to reach them', () => {
+  // Copy/Paste/Show-full-text/Pin/Delete used to sit inside the detail sheet,
+  // which only existed for the selected record. They are chrome now.
+  const footer = html.slice(html.indexOf('<footer'), html.indexOf('</footer>'))
+  for (const id of ['copy', 'paste', 'view', 'pin', 'delete', 'clear']) {
+    assert.match(footer, new RegExp(`id="${id}"`), `${id} lives in the footer`)
+  }
+  const detail = html.slice(html.indexOf('id="detail"'), html.indexOf('</section>', html.indexOf('id="detail"')))
+  for (const id of ['copy', 'paste', 'pin', 'delete']) {
+    assert.doesNotMatch(detail, new RegExp(`id="${id}"`), `${id} no longer lives inside #detail`)
+  }
+  assert.match(html, /id="view"[^>]*aria-expanded="false"[^>]*aria-controls="detail"/)
 })
 
 test('the panel speaks Nightshift: surface ladder, mono metadata, display title', () => {

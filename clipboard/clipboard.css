@@ -274,7 +274,19 @@ button, input, select { font: inherit; color: inherit; }
 
 /* ---------- list ---------- */
 
+/*
+ * Geometry lives here and nowhere else: clipboard.js reads these custom
+ * properties with getComputedStyle and asks clipboard-layout.js for the row
+ * model, so the pitch can never drift from the stylesheet. The DPR buckets
+ * shrink the cell height so a 240px native thumbnail is never upscaled.
+ */
 #list {
+  --row-h: 64px;
+  --cell-h: 92px;
+  --grid-gap: 8px;
+  --grid-pad-x: 10px;
+  --tile-target: 110px;
+  --tile-min: 72px;
   flex: 1;
   min-height: 72px;
   position: relative;
@@ -282,20 +294,35 @@ button, input, select { font: inherit; color: inherit; }
   overflow: auto;
   outline: none;
   background: var(--bg);
+  /* A reserved gutter keeps clientWidth stable; otherwise a scrollbar
+     appearing changes the column count, which changes the height, which
+     removes the scrollbar again. */
+  scrollbar-gutter: stable;
+}
+
+@media (min-resolution: 2.25dppx) { #list { --cell-h: 80px; } }
+@media (min-resolution: 2.5dppx) { #list { --cell-h: 64px; } }
+
+.list-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 72px;
+  display: flex;
+  flex-direction: column;
 }
 
 #rows { position: relative; }
 
 /*
- * Row layout mirrors a log line: a mono type stamp, one line of content and a
- * mono metadata line. rowHeight in clipboard.js must stay equal to this height
- * because rows are positioned absolutely.
+ * Text rows mirror a log line: a mono type stamp, one line of content and a
+ * mono metadata line. Image records are plates laid out in a grid row instead,
+ * and they carry no text at all.
  */
 .row {
   position: absolute;
   left: 0;
   right: 0;
-  height: 64px;
+  height: var(--row-h);
   display: flex;
   align-items: center;
   gap: 11px;
@@ -309,6 +336,72 @@ button, input, select { font: inherit; color: inherit; }
   cursor: default;
   transition: background .12s;
 }
+
+/* ---------- image grid ---------- */
+
+.grid-row {
+  position: absolute;
+  left: var(--grid-pad-x);
+  right: var(--grid-pad-x);
+  height: var(--cell-h);
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
+  gap: var(--grid-gap);
+}
+
+/* Clean plate: a transparent thumbnail sits on a solid surface step, never a
+   checkerboard, which reads as broken texture in dark mode. */
+.tile {
+  position: relative;
+  min-width: 0;
+  height: var(--cell-h);
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  cursor: default;
+  transition: background .12s;
+}
+
+.tile img { display: block; width: 100%; height: 100%; object-fit: contain; }
+
+.tile:hover { background: var(--surface-3); }
+
+/* The ring is drawn inside the plate so a tile clipped at the fold cannot
+   paint a selection marker over its neighbours. */
+.tile[aria-selected="true"] { box-shadow: inset 0 0 0 2px var(--primary); }
+
+/* Pinned state is a mark, not a caption: the grid carries no text. */
+.tile[data-pinned="true"]::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--primary-text);
+}
+
+.tile[data-state="loading"] { background: var(--surface-3); }
+
+/* Failed thumbnail: a neutral plate with a drawn cross, no text and no image
+   asset (the page CSP only allows the preview protocol for img-src). */
+.tile[data-state="failed"] { background: var(--surface-3); }
+
+.tile[data-state="failed"]::before,
+.tile[data-state="failed"]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 1px;
+  background: var(--line-2);
+}
+
+.tile[data-state="failed"]::before { transform: translate(-50%, -50%) rotate(45deg); }
+.tile[data-state="failed"]::after { transform: translate(-50%, -50%) rotate(-45deg); }
 
 .row:hover { background: var(--surface-2); }
 
@@ -435,16 +528,24 @@ button, input, select { font: inherit; color: inherit; }
 
 .empty p { margin: 0; font-size: 12px; }
 
-/* ---------- detail inspector ---------- */
+/* ---------- full-text sheet (overlay, on demand) ---------- */
 
+/* The sheet floats over the list instead of taking part in the flex column:
+   opening it must never resize the list, because a resize would re-anchor every
+   virtual row and remind the user of exactly the behaviour this replaced. */
 .detail {
-  flex: 0 1 auto;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  max-height: 62%;
   min-height: 0;
-  max-height: 46%;
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--line-2);
   background: var(--surface);
+  box-shadow: var(--shadow-2);
 }
 
 .detail-head {
@@ -511,18 +612,6 @@ button, input, select { font: inherit; color: inherit; }
   letter-spacing: .02em;
 }
 
-.detail-actions {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 18px;
-  border-top: 1px solid var(--line);
-  background: var(--surface);
-}
-
-.detail-actions .actions-spacer { flex: 1; }
-
 .button {
   height: 30px;
   padding: 0 13px;
@@ -559,32 +648,44 @@ button, input, select { font: inherit; color: inherit; }
   background: var(--danger-soft);
 }
 
-/* ---------- footer ---------- */
+/* ---------- footer: the record actions, always reachable ---------- */
 
 .footer {
   flex: 0 0 auto;
-  min-height: 30px;
+  min-height: 45px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 7px;
   padding: 0 12px 0 18px;
   border-top: 1px solid var(--line);
   background: var(--surface);
 }
 
-.footer .hint {
-  flex: 1;
+.footer-spacer { flex: 1; min-width: 0; }
+
+/*
+ * Six controls have to fit a 380 DIP window. Buttons may shrink and ellipsize
+ * (they keep their id and title, so nothing becomes unreachable), but they must
+ * never wrap: the footer height is part of the fixed chrome the layout model
+ * assumes. The Paste rule is declared AFTER .footer .button so its shrink
+ * behaviour wins: equal specificity (0,2,0) resolves by source order, and the
+ * earlier declaration here used to be silently overridden.
+ */
+.footer .quiet-button { flex: 0 0 auto; font-size: 10.5px; padding: 0 7px; }
+
+.footer .button {
+  flex: 0 1 auto;
   min-width: 0;
+  height: 28px;
+  padding: 0 10px;
   overflow: hidden;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: .02em;
+  font-size: 11.5px;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.footer .quiet-button { font-size: 10.5px; padding: 0 7px; }
+/* The paste hint used to live here as a text line. The footer is now a control
+   row, so the same copy is the Paste button's tooltip instead. */
+.footer #paste { flex: 0 1 auto; }
 
 /* ---------- paste result state (body.feedback-only) ---------- */
 
@@ -593,6 +694,7 @@ button, input, select { font: inherit; color: inherit; }
 .feedback-only .search-row,
 .feedback-only .chips,
 .feedback-only #new,
+.feedback-only .list-wrap,
 .feedback-only #list,
 .feedback-only #more,
 .feedback-only #detail,

@@ -5,6 +5,13 @@ function object(value, keys) {
   return value
 }
 function id(value) { if (typeof value !== 'string' || !UUID.test(value)) throw new Error('INVALID_ID'); return value }
+// Batch counterpart of id(): 1..64 entries, each a UUID, validated before any of
+// them reaches the native side. Deduplication happens in the domain, which owns
+// the result ordering contract.
+function ids(value) {
+  if (!Array.isArray(value) || !value.length || value.length > 64) throw new Error('INVALID_IDS')
+  return value.map(id)
+}
 function registerClipboardIpc({ ipcMain, service, domain, setPaused }) {
   const handle = (name, fn) => ipcMain.handle(`clipboard:${name}`, async (event, args) => {
     try { return { ok: true, result: await fn(event, args) } }
@@ -17,7 +24,7 @@ function registerClipboardIpc({ ipcMain, service, domain, setPaused }) {
     return service.command('list', args)
   })
   handle('detail', (_event, args) => { object(args, ['id']); return service.command('detail', { id: id(args.id) }) })
-  handle('preview', (event, args) => { object(args, ['id']); return domain.preview(event, id(args.id)) })
+  handle('previews', (event, args) => { object(args, ['ids']); return domain.previews(event, ids(args.ids)) })
   handle('copy', (_event, args) => { object(args, ['id', 'operationId']); return service.command('copy', { id: id(args.id), operationId: id(args.operationId) }) })
   handle('paste', (event, args) => { object(args, ['id', 'operationId']); return domain.paste(event, id(args.id), id(args.operationId)) })
   handle('set-pinned', (_event, args) => {
