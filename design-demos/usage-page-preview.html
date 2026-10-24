@@ -693,6 +693,11 @@
   <script src="../shared/locales/zh-TW.js"></script>
   <script src="../shared/locales/config.js"></script>
   <script src="../shared/locales/toolbar.js"></script>
+  <!-- The static shell draws the real sidebar, whose 12th nav item resolves
+       `clipboard.title`. config.html loads locales/clipboard.js for exactly this
+       reason (config/config.html:36); the harness was missing it, so that one
+       label rendered as a raw key. Preview-only fix. -->
+  <script src="../shared/locales/clipboard.js"></script>
   <script src="../shared/i18n.js"></script>
   <!-- shared.js load-time dependencies (toolbar/search globals). -->
   <script src="../search/search-utils.js"></script>

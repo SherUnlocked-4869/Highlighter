@@ -374,6 +374,10 @@ const SURFACES = [
   { name: 'config-system', file: 'config/config.html', w: 1180, h: 760, route: 'settings-system' },
   { name: 'config-toolbar', file: 'config/config.html', w: 1180, h: 760, route: 'selection-toolbar' },
   { name: 'config-local-search', file: 'config/config.html', w: 1180, h: 760, route: 'local-search' },
+  // AI usage dashboard. The route is read-only and feature-probes `usage:*` IPC;
+  // with no engine behind the stub it renders its own neutral 'not connected'
+  // state, which is an honest thing for a README to show and needs no fixture.
+  { name: 'config-usage', file: 'config/config.html', w: 1180, h: 760, route: 'usage' },
   { name: 'config-about', file: 'config/config.html', w: 1180, h: 760, route: 'about' },
   { name: 'search', file: 'search/search.html', w: 720, h: 520 },
   { name: 'recognition', file: 'recognition/recognition.html', w: 560, h: 480 },
