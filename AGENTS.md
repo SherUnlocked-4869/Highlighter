@@ -67,6 +67,25 @@ as blocked without trying the above first.
 Scratch paths must live under `.tmp*/`, which is already gitignored; remove them
 before committing.
 
+## One `npm test` failure is a known flake: the clipboard lease round
+
+`test/clipboard-coordination.test.js` → "native addon authenticates leases,
+finishes 100 rounds and rejects bad credentials" drives 100 synchronous lease
+round-trips through the native `selection-hook` addon and asserts on every one
+(`Lease round ${index}`). On a loaded machine a single round can miss its window
+and the assertion fails with `Lease round 98` (the index varies).
+
+Measured 2026-10-24 on this host: the test passes 4/4 alone and 3/4 within a full
+`npm test` run, reproducibly, with **no source change** in between. Before
+treating it as a regression from a change of yours, re-run it standalone twice:
+
+```bash
+npx node --test test/clipboard-coordination.test.js
+```
+
+If it passes standalone, it is the flake, not your diff. Do not "fix" it by
+loosening the assertion without understanding the timing budget.
+
 ## A local pass is not evidence the CI gate will pass
 
 The mirror image of the mistake above, and the one that actually bit: after the
