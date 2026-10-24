@@ -139,9 +139,23 @@ test('the action header re-renders in the active language after a language switc
 test('selection toolbar appearance avoids a clipped rectangular shadow', () => {
   const manager = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'selection-window-manager.js'), 'utf8')
   const toolbar = fs.readFileSync(path.join(__dirname, '..', 'toolbar', 'toolbar.html'), 'utf8')
+  const tokens = fs.readFileSync(path.join(__dirname, '..', 'shared', 'tokens.css'), 'utf8')
 
   assert.match(manager, /createToolbarWindow\(\)[\s\S]*?hasShadow: false/)
-  assert.match(toolbar, /\.toolbar \{[\s\S]*?box-shadow: inset/)
+  // The contract is "this strip must not carry an OUTER shadow", because the window
+  // is sized exactly to the element and would clip it into a rectangle. That used to
+  // be asserted as `box-shadow: inset` in the stylesheet itself; now the strip reads
+  // the shared --shadow-bevel token, so the assertion moved to the ACTUAL VALUE: the
+  // token must exist and must be inset-only in both themes.
+  assert.match(toolbar, /\.toolbar \{[\s\S]*?box-shadow: var\(--shadow-bevel\)/)
+  const bevels = tokens.match(/--shadow-bevel:[^;]+;/g) || []
+  assert.equal(bevels.length, 2, '--shadow-bevel is declared for both themes')
+  for (const declaration of bevels) {
+    const layers = declaration.replace('--shadow-bevel:', '').replace(';', '').split(/,(?![^(]*\))/)
+    for (const layer of layers) {
+      assert.match(layer.trim(), /^inset/, `every --shadow-bevel layer is inset-only, got: ${layer.trim()}`)
+    }
+  }
   assert.match(toolbar, /\.toolbar \{[\s\S]*?height: 40px/)
   assert.doesNotMatch(toolbar, /box-shadow: 0 4px 24px/)
 })

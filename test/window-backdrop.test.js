@@ -134,8 +134,18 @@ test('a theme change repaints every tracked window and only those', () => {
   assert.equal(trackedWindowCount(), before)
 })
 
-test('the main window is created with the resolved backdrop, not a literal', () => {
-  assert.match(mainSource, /backgroundColor: windowBackdropColor\(getSettings\(\), nativeTheme\)/)
+test('the main window takes the shared opaque backdrop, like the other windows', () => {
+  // The settings window is opaque again (2026-10-24, second pass): the translucent
+  // version it had for a day was rejected. The original intent of this guard still
+  // holds — no literal that drifts from the design system — so it asserts the shared
+  // helper and keeps the pre-Nightshift literal banned.
+  const createBlock = mainSource.slice(mainSource.indexOf('function createMainWindow'))
+  const options = createBlock.slice(0, createBlock.indexOf('webPreferences'))
+  assert.match(options, /backgroundColor:\s*windowBackdropColor\(getSettings\(\), nativeTheme\)/,
+    'the native backdrop comes from the shared helper')
+  assert.doesNotMatch(options, /backgroundColor:\s*'#00000000'/,
+    'the settings window is not a transparent window')
+  assert.doesNotMatch(options, /transparent:\s*true/, 'the settings window is opaque')
   assert.doesNotMatch(mainSource, /backgroundColor: '#f5f5f5'/, 'the pre-Nightshift literal must not come back')
 })
 
@@ -157,13 +167,21 @@ test('the backdrop is repainted on a settings update, a reset and an OS theme fl
   )
 })
 
-test('the config page paints the base surface so the corner cut-outs are opaque', () => {
-  // `background:transparent` left the four cut-outs of .window-shell to the
-  // native backdrop; the page now paints --bg itself.
-  assert.match(configCss, /html,body\{[^}]*background:var\(--bg\)/)
-  assert.doesNotMatch(configCss, /html,body\{[^}]*background:transparent/)
-  // The shell still owns the rounded card itself.
+test('the config page paints the theme background, so the corner cut-outs match it', () => {
+  // This guard used to require the opposite while the window was translucent: a
+  // transparent page let the native window colour show through. The window is
+  // opaque again (2026-10-24, second pass — the translucent version was rejected
+  // twice), so the page paints `--bg` itself and the native backdrop is only ever
+  // seen in the four corner cut-outs that `.window-shell`'s border-radius clips.
+  // If the page stopped painting, those cut-outs would still resolve correctly but
+  // the first frame would flash the native colour before the shell painted.
+  const cssCode = configCss.replace(/\/\*[\s\S]*?\*\//g, '')
+  assert.match(cssCode, /html,body\{[^}]*background:var\(--bg\)/)
+  assert.doesNotMatch(cssCode, /html,body\{[^}]*background:transparent/)
+  // The shell still owns the rounded card and fills the whole window: no frame
+  // margin, because an opaque window has an OS shadow and needs no inset.
   assert.match(configCss, /\.window-shell\{[^}]*border-radius:var\(--radius-lg\)/)
+  assert.match(configCss, /\.window-shell\{[^}]*inset:0\b/)
 })
 
 test('every window that owns a native backdrop takes it from the shared helper', () => {
@@ -185,8 +203,13 @@ test('every window that owns a native backdrop takes it from the shared helper',
     assert.doesNotMatch(source, /backgroundColor:\s*['"]#[0-9a-fA-F]{6}/, `${file} must not hardcode a backdrop colour`)
     assert.doesNotMatch(source, /backgroundColor:\s*[^,\n]*#(?:f5f5f5|f5f6f8|121316|18181b)/i, `${file} must not keep the pre-Nightshift literal`)
   }
-  // The main window is created in main.js, which tracks it at the same point.
-  assert.match(mainSource, /mainWindow = trackWindowBackdrop\(win\)/)
+  // main.js is an owner again (2026-10-24): the settings window is opaque after the
+  // translucent experiment was rejected twice, so it takes the shared backdrop and
+  // opts into the theme-change repaint like every other rounded-card window.
+  const mainCreate = mainSource.slice(mainSource.indexOf('function createMainWindow'))
+  assert.match(mainCreate.slice(0, mainCreate.indexOf('win.once(')),
+    /trackWindowBackdrop\(win\)/, 'the settings window is tracked')
+  assert.match(mainCreate, /backgroundColor: windowBackdropColor\(getSettings\(\), nativeTheme\)/)
 })
 
 test('the rounded-card windows are registered for the theme-change repaint', () => {
@@ -204,4 +227,66 @@ test('the recognition window tells its renderer which theme to paint', () => {
   // light/dark setting was ignored and the result page followed the OS instead.
   const domain = fs.readFileSync(path.join(root, 'main/domains/recognition/index.js'), 'utf8')
   assert.match(domain, /win\._recognitionInit = \{[\s\S]*theme: settings\.theme/)
+})
+
+// ── the settings window is opaque (2026-10-24, second pass) ─────────────────
+//
+// A translucent version was built first (transparent window, page-drawn shadow,
+// frame inset) and the user rejected it twice: "too clear, it hurts reading the
+// page", then "frosted is still too see-through — remove it, keep the main
+// interface consistent with the design draft". The prototype's glass face sits over
+// the prototype's DRAWN desk; a real window has the user's desktop behind it. So the
+// settings window is back on the same contract as every other opaque window: native
+// backdrop colour, OS shadow, page paints --bg and fills the window.
+//
+// These tests are the inverse of the ones that protected the translucent version.
+// They exist so a future edit cannot quietly reintroduce a transparency path — the
+// frame inset, the page-drawn window shadow and the "not tracked by the backdrop
+// module" exception all have to stay gone. `tokens` and `mainSource` already exist
+// at the top of this file; reuse them.
+test('the settings window is opaque and sized to its content', () => {
+  const createBlock = mainSource.slice(mainSource.indexOf('function createMainWindow'))
+  const options = createBlock.slice(0, createBlock.indexOf('webPreferences'))
+  assert.doesNotMatch(options, /transparent:\s*true/, 'the settings window is opaque')
+  assert.doesNotMatch(options, /hasShadow:\s*false/, 'the OS provides the shadow')
+  assert.doesNotMatch(options, /backgroundColor:\s*'#00000000'/, 'the native backdrop is not clear')
+  assert.match(options, /backgroundColor:\s*windowBackdropColor\(getSettings\(\), nativeTheme\)/,
+    'the native backdrop comes from the shared helper')
+  // Sized to its content, not grown by a frame inset for a page-drawn shadow.
+  assert.match(options, /width:\s*1120\b/)
+  assert.match(options, /height:\s*760\b/)
+  assert.match(options, /minWidth:\s*880\b/)
+  assert.match(options, /minHeight:\s*620\b/)
+})
+
+test('the transparent-window scaffolding is gone', () => {
+  // The frame inset, the page-drawn window shadow and the module constant that sized
+  // the window for them all belonged to the rejected design. Leaving any of them
+  // behind is how the "temporary" frame margin comes back.
+  const backdrop = require('../main/services/window-backdrop')
+  assert.equal(backdrop.MAIN_WINDOW_FRAME_INSET, undefined,
+    'the frame inset constant is gone')
+  assert.doesNotMatch(tokens, /--win-frame-inset/)
+  assert.doesNotMatch(tokens, /--win-shadow/)
+})
+
+test('the shell fills the window and paints --bg, not glass', () => {
+  const shellRule = configCss.slice(
+    configCss.indexOf('.window-shell{'),
+    configCss.indexOf('.window-shell::before'))
+  assert.match(shellRule, /inset:0\b/, 'the shell fills the window (no frame margin)')
+  assert.match(shellRule, /background:var\(--bg\)/, 'the shell paints the base surface')
+  assert.match(shellRule, /box-shadow:var\(--shadow-3\)/, 'depth comes from the shared ladder')
+  assert.doesNotMatch(shellRule, /backdrop-filter/, 'the shell is not a glass film')
+})
+
+test('the settings window is tracked by the opaque-backdrop module', () => {
+  // An opaque window must be in the registry: applyWindowBackdropToTracked is the
+  // only path that repaints the native colour on a theme flip, and skipping it is
+  // invisible until the user flips the theme and the four corner cut-outs keep the
+  // old colour.
+  const createBlock = mainSource.slice(mainSource.indexOf('function createMainWindow'))
+  const body = createBlock.slice(0, createBlock.indexOf('win.once('))
+  assert.match(body, /mainWindow = trackWindowBackdrop\(win\)/,
+    'the settings window is tracked by the opaque-backdrop module')
 })

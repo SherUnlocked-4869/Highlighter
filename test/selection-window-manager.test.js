@@ -161,7 +161,13 @@ test('action lifecycle queues renderer messages, saves size, and handles blur an
   assert.equal(windows[0].options.height, 520)
   assert.equal(windows[0].options.minWidth, 320)
   assert.equal(windows[0].options.minHeight, 240)
-  assert.equal(windows[0].options.backgroundColor, '#121110')
+  // Assert the CONTRACT, not a literal: the action window must take its backdrop
+  // from the shared module, so a palette change (Nightshift -> FILM, 2026-10-24)
+  // has exactly one place to move. Pinning the hex here made this test fail for a
+  // correct change, and it would have passed a hardcoded wrong colour just as
+  // happily.
+  const { WINDOW_BACKDROP } = require('../main/services/window-backdrop')
+  assert.equal(windows[0].options.backgroundColor, WINDOW_BACKDROP.dark)
 
   manager.queueActionMessage(action, 'action:start', { text: 'queued' })
   assert.deepEqual(action.webContents.messages, [])

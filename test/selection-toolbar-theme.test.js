@@ -77,7 +77,14 @@ test('selection toolbar uses the main interface palette and one text color', () 
   assert.match(toolbarHtml, /shared\/tokens\.css/)
   assert.doesNotMatch(toolbarHtml, /:root\s*\{[^}]*--bg:\s*#/, 'no private palette')
   assert.doesNotMatch(toolbarHtml, /body\.dark\s*\{/, 'theme switching lives in tokens.css')
-  assert.match(toolbarHtml, /\.toolbar \{[\s\S]*background: var\(--surface\)/)
+  // The strip is glass now (2026-10-24): its fill comes from the shared glass
+  // token rather than from an opaque surface step. The contract this test exists
+  // for is unchanged — every colour must come from tokens.css — so it asserts the
+  // token is consumed, and that the fill is not an opaque literal.
+  assert.match(toolbarHtml, /\.toolbar \{[\s\S]*background: var\(--glass-/)
+  assert.match(toolbarHtml, /\.toolbar \{[\s\S]*backdrop-filter: blur\(var\(--glass-blur-/)
+  const toolbarRule = toolbarHtml.slice(toolbarHtml.indexOf('.toolbar {'), toolbarHtml.indexOf('.toolbar .led'))
+  assert.doesNotMatch(toolbarRule, /background:\s*(#|rgb\()/, 'no opaque literal fill on the strip')
   assert.match(toolbarHtml, /\.toolbar \.btn \{[\s\S]*color: var\(--text\)/)
   assert.doesNotMatch(toolbarHtml, /\.btn-(?:copy|search|translate|explain|custom)\s*\{[^}]*color:/)
 })

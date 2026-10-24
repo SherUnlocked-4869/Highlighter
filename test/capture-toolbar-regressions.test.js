@@ -352,3 +352,40 @@ test('the tool default is normalised through the same resolver the shape uses', 
   sandbox.setAnnotationColor('not-a-colour', false)
   assert.match(state.toolStyles.rect.color, /^#[0-9a-f]{6}$/i)
 })
+
+// ── selection chrome follows the accent (2026-10-24) ───────────────────────────
+//
+// The region border and its eight resize handles used to be hardcoded literals:
+// the border was #36a3ff and the handle ring #e5a44c. The blue is the accent of
+// the theme this product replaced, so the border read as a second, unrelated
+// accent under the shipped amber; the handle ring stopped tracking the accent the
+// moment the user picked a different colour. Both now resolve through
+// selectedAccent(), which reads --primary.
+//
+// This is a source-level guard on purpose: the drawing calls live inside
+// renderOverlay(), which needs a real canvas. What matters for the contract is
+// that no drawing path reintroduces a literal accent.
+test('the region border and its handles resolve the accent instead of hardcoding it', () => {
+  // Strip comments before asserting on literals: this file documents the retired
+  // colour on purpose (so the next reader knows why it went), and a naive match
+  // counted the documentation as a usage.
+  const source = SCRIPT
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+  // No drawing call may carry the retired blue anywhere in the file.
+  assert.doesNotMatch(source, /#36a3ff/i, 'the retired theme blue is not used for any selection chrome')
+  // The region border and the handle ring must both go through the resolver.
+  const border = source.match(/ctx\.strokeStyle\s*=\s*selectedAccent\(\)/)
+  assert.ok(border, 'the region border resolves selectedAccent()')
+  // Scope to drawHandles() itself. Slicing to the next "\n}\n" ran past it into
+  // drawSelectedHandles(), whose fill legitimately IS the accent, and produced a
+  // confusing false failure. Anchor on the function's own closing brace.
+  const from = source.indexOf('function drawHandles()')
+  assert.ok(from >= 0, 'drawHandles() still exists')
+  const handleBody = source.slice(from, source.indexOf('\n}', from))
+  assert.match(handleBody, /strokeStyle\s*=\s*selectedAccent\(\)/, 'the resize handles resolve selectedAccent()')
+  // The white pad stays literal on purpose (it is a contrast pad against arbitrary
+  // screen content, not a theme colour); the ring may not carry any literal.
+  const ringLiterals = handleBody.match(/strokeStyle\s*=\s*'#[0-9a-f]{3,6}'/gi) || []
+  assert.equal(ringLiterals.length, 0, 'the handle ring carries no literal colour')
+})
