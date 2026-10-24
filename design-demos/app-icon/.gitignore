@@ -1,0 +1,12 @@
+# Design artefacts are source unless they are reproducible renders.
+#
+# The icon work kept every experiment (probe1–7, polarity, ablation, two-asset…)
+# because each one documents a hypothesis that was measured and rejected — that is
+# the reasoning behind the shipped icon, and it belongs in the repo. What does NOT
+# belong is the rasterised output: every PNG under out/ is regenerated from the
+# committed SVG masters by the scripts in tools/, and the ICO is repacked from
+# those PNGs by generate-icon.js.
+#
+# So: commit sources, docs and the raw reference assets; ignore the renders.
+out/
+.tmp/
