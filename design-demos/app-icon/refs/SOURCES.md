@@ -1,17 +1,20 @@
-# 应用图标参考板 · 取证记录（SOURCES）
+# 应用图标 · 取证记录（SOURCES）
 
-本次任务的产出物：
-- `design-demos/app-icon/refs/ref-board.png` —— 参考板（1600×892）
-- `design-demos/app-icon/refs/dark-taskbar-16-24px-proof.png` —— 深色任务栏小尺寸证据图（1600×763）
-- `design-demos/app-icon/refs/SOURCES.md` —— 本文件
-- `design-demos/app-icon/refs/raw/` —— 24 个官方原始图标文件
+> **本目录只保留文字记录，不再存放任何第三方图标文件。**
+>
+> 原始素材（从官方 exe / DMG / MSIX 提取的 24 个图标二进制）曾在 2026-10-24 的一次
+> 提交中随仓库公开，随后已从工作树删除。理由：设计取证时引用与直接分发他人的图标
+> 资源是两回事，后者涉及他人的版权与商标，不该出现在公开仓库里。
+>
+> 下文的来源 URL、取得方式、画面描述与实测数值**全部保留**——这些是可复核的结论，
+> 也是这次设计的依据。需要复核原件时，请按各条给出的官方来源自行获取。
 
-**只收集官方发布的原始图标文件，未重绘、未改色、未做美化**；下文每一条都附可复核的来源 URL 与取得方式。
+**本文件记录了未重绘、未改色的官方原件取证过程**；下文每一条都附可复核的来源 URL 与取得方式。
 
 - 采集时间：2026-10-24
 - 采集环境：Windows，从仓库根用 `node` + `node_modules/playwright`（Headless Chromium）渲染参考板
 - 覆盖：**7 家**同类产品（要求 5–7 家）+ 4 条平台规范 + 4 项未取得说明
-- 校验：`refs/raw/` 共 24 个文件，每个文件的大小/格式在下方「原始尺寸」列逐一核对过
+- 校验：原始取证时为 24 个文件，每个文件的大小/格式在下方「原始尺寸」列逐一核对过（文件现已删除）
 
 ---
 
@@ -65,7 +68,7 @@
 
 **方法**：把每个官方图标按 Lanczos 重采样到 16×16（任务栏/托盘 100% 缩放的真实绘制尺寸），逐像素与任务栏底色 `#14161a` 算 WCAG 对比度。**只统计 alpha ≥ 128 的不透明像素**——透明背景是合法设计（Snipaste 有 47% 是透明的），若把透明像素也算进「身体」会冤枉它。数值可复现：`.tmp-icon/ref/dark-legibility.mjs`。
 
-**可视证据**：`refs/dark-taskbar-16-24px-proof.png`（同一批图标叠在 `#14161a` 上，16px 与 24px 两排，**8× 最近邻放大、未插值**，像素保持诚实）。
+**可视证据**：当时生成过一张证据图（同一批图标叠在 `#14161a` 上，16px 与 24px 两排，8× 最近邻放大）；该图使用了第三方图标，**已随原件一并从仓库删除**，下表数值不受影响。
 
 | 名称 | 图标实体占比 | 实体中位对比度 | 过 3:1 面积 | 过 4.5:1 面积 | 内部边缘能量 | 融底面积(<2:1) |
 |------|-------------|---------------|------------|--------------|-------------|---------------|
@@ -214,68 +217,35 @@
 
 ---
 
-## 7. 文件清单
+## 7. 原件清单（已删除，仅记录曾经的取证范围）
 
-### `refs/raw/`（24 个文件，全部为官方原始文件或其无损提取帧）
+取证时曾保存 24 个官方原始文件或其无损提取帧（约 2.8 MB），**现已全部从仓库删除**。
+下表保留当时的文件名与尺寸，只用于说明「核对了哪些东西」，文件本身不再随仓库分发：
 
-```
-CleanShotX/
-  CleanShot_X_1024px.png      1024×1024  ← ref-board 使用的主图（.icns 提取）
-  CleanShot_X_512px.png        512×512
-  CleanShot_X_256px.png        256×256
-  CleanShot_X_128px.png        128×128
-  CleanShot_X_AppIcon.icns     官方原始 .icns（1.13 MB，保留以便复核）
-  CleanShotX_web_touchicon_180.png   官网 apple-touch-icon（180×180）
-  CleanShotX_web_favicon_32.png      官网 favicon@2x（32×32）
-Flameshot/
-  Flameshot_1024.png          1024×1024  ← ref-board 使用的主图
-  Flameshot.svg                  官方矢量原件
-PixPin/
-  PixPin_1024.png             1024×1024  ← ref-board 使用的主图
-PowerToys/
-  PowerToys_256.png            256×256   ← ref-board 使用的主图
-  PowerToys.ico                  官方原始 .ico（内含 16–256 共 8 档）
-ShareX/
-  ShareX_256.png               256×256   ← ref-board 使用的主图（.ico 提取）
-  ShareX_AppIcon.ico             官方原始 .ico
-  ShareX_Logo.png              256×256   （仓库内官方 logo，交叉核对用）
-Snipaste/
-  Snipaste_256.png             256×256   ← ref-board 使用的主图（exe 资源提取）
-  Snipaste_exe.ico               官方 exe 内提取重组出的 .ico
-  Snipaste_web_favicon.ico       官网原始 favicon（最大 128px）
-  Snipaste_favicon_128.png     128×128   （上述 favicon 的 128px 帧解码结果）
-  Snipaste_web_touchicon_60.png 60×60
-SnippingTool/
-  SnippingToolAppList.targetsize-256.png  256×256  ← ref-board 使用的主图
-  SnippingToolAppList.targetsize-48.png    48×48   （官方单独绘制帧）
-  SnippingToolAppList.targetsize-24.png    24×24   （官方单独绘制帧）
-  SnippingToolAppList.targetsize-16.png    16×16   （官方单独绘制帧）
-```
+| 厂商 | 曾核对的文件 | 尺寸/格式 | 官方获取方式 |
+|---|---|---|---|
+| CleanShot X | `CleanShot_X_{1024,512,256,128}px.png`、`CleanShot_X_AppIcon.icns`、官网 touch/favicon | 1024–32px；`.icns` 1.13 MB | 官方 DMG → `AppIcon.icns` |
+| Flameshot | `Flameshot_1024.png`、`Flameshot.svg` | 1024px + SVG | 官方 GitHub 仓库 |
+| PixPin | `PixPin_1024.png` | 1024px | 官网 logo |
+| PowerToys | `PowerToys_256.png`、`PowerToys.ico` | 256px；`.ico` 内含 8 档 | 官方 GitHub 仓库 |
+| ShareX | `ShareX_256.png`、`ShareX_AppIcon.ico`、`ShareX_Logo.png` | 256px；官方 `.ico` | 官方 GitHub 仓库 |
+| Snipaste | `Snipaste_256.png`、`Snipaste_exe.ico`、官网 favicon 系列 | 256px；`.ico` | 官方 win-x64 包 → PE `RT_GROUP_ICON` |
+| Snipping Tool | `SnippingToolAppList.targetsize-{16,24,48,256}.png` | 官方单独绘制的四档帧 | 本机官方 MSIX 包 |
 
-### `refs/ref-board.png`
-
-1600×892，白底 + 深底两条带，各 7 格。
-
-### `refs/dark-taskbar-16-24px-proof.png`
-
-1600×763，§3b 的可视证据：同样 7 个图标叠在 `#14161a`（深色任务栏）上，16px / 24px 两排，8× 最近邻放大，图上直接标了各家对比度。
+需要复核时请按上表自行从官方渠道获取；本文件第 1–6 节的来源 URL、画面描述与实测数值均不依赖这些文件。
 
 ---
 
 ## 8. 复现方式
 
-临时脚本都在 `.tmp-icon/ref/`（已 gitignore，收尾时已删除）：
+本节记录的是一次性取证脚本，都在 `.tmp-icon/ref/`（已 gitignore，收尾时已删除），
+**未随仓库分发**，且依赖第 7 节那批已删除的原件，因此无法原样复跑：
 
-- `board.mjs` —— Playwright 渲染 `ref-board.png`
+- `board.mjs` —— Playwright 渲染参考板
 - `dark-legibility.mjs` —— 深色任务栏对比度/边缘能量实测（§3b 的数值来源）
-- `dark-proof.mjs` —— 渲染 `dark-taskbar-16-24px-proof.png`
+- `dark-proof.mjs` —— 渲染深底证据图
 - `ico.mjs` —— 手写 ICO 解析器（枚举目录项；支持 PNG 帧与 32bpp/8bpp 调色板 DIB 解码）
-- `peicon.mjs` —— 从 PE 文件资源段提取 `RT_GROUP_ICON` 并重组为标准 `.ico`（Snipaste 的取法）
+- `peicon.mjs` —— 从 PE 文件资源段提取 `RT_GROUP_ICON` 并重组为标准 `.ico`
 
-```bash
-cd /f/workspace/Highlighter          # 必须在仓库根跑，否则 playwright 解析不到
-node .tmp-icon/ref/board.mjs            # 重新生成参考板
-node .tmp-icon/ref/dark-legibility.mjs  # 重跑深色任务栏实测
-node .tmp-icon/ref/dark-proof.mjs       # 重新生成深底证据图
-node .tmp-icon/ref/peicon.mjs <exe> <out.ico>   # 从任意 exe 提取应用图标
-```
+§3b 的实测结论（各厂商在深色任务栏上的对比度与融底面积）已完整写在正文里，
+不需要重新跑脚本即可引用；若要复算，按 §7 表格从官方渠道重新取得原件即可。

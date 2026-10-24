@@ -11,7 +11,7 @@
 | 可直接使用的图标 | [`out/final/ico/highlighter-A.ico`](out/final/ico/highlighter-A.ico) · [`-B`](out/final/ico/highlighter-B.ico) · [`-C`](out/final/ico/highlighter-C.ico) |
 | 矢量源（可无限缩放） | [`out/final/svg/A.svg`](out/final/svg/A.svg) · [`B.svg`](out/final/svg/B.svg) · [`C.svg`](out/final/svg/C.svg) |
 | 26px–256px 全尺寸 PNG | [`out/final/png/`](out/final/png/) |
-| 竞品取证与平台规范 | [`refs/SOURCES.md`](refs/SOURCES.md) · [`refs/ref-board.png`](refs/ref-board.png) |
+| 竞品取证与平台规范 | [`refs/SOURCES.md`](refs/SOURCES.md)（来源 URL 与实测结论；原件已删除，见该文开头说明） |
 
 **尚未替换 `assets/icon.ico`。** 方向未定，替换是选定后的单独一步（见文末「落地」）。
 

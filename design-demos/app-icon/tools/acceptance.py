@@ -76,7 +76,13 @@ def pass_fraction(path, size, theme_rgb):
 
 
 def competitor_baseline():
-    """Same measurement on the seven real shipping icons, as a reference band."""
+    """Same measurement on the seven real shipping icons, as a reference band.
+
+    The originals were removed from the repository on 2026-10-24 (they are third
+    parties' icon resources and this repo is public). When they are absent this
+    returns an empty list and the caller prints a note instead of a blank table,
+    so a missing reference band cannot be mistaken for a failed measurement.
+    """
     picks = {
         'Snipaste': 'Snipaste/*256*',
         'PixPin': 'PixPin/*1024*',
@@ -127,11 +133,16 @@ def main():
         if len(failures) < len(sizes):
             ok_any = True
 
-    print('reference band — the seven shipping icons from refs/raw at 16px:')
-    print(f"{'icon':<16}{'light':>9}{'dark':>8}")
-    print('-' * 33)
-    for name, light, dark in competitor_baseline():
-        print(f'{name:<16}{light * 100:>8.0f}%{dark * 100:>7.0f}%')
+    baseline = competitor_baseline()
+    if baseline:
+        print('reference band — the seven shipping icons from refs/raw at 16px:')
+        print(f"{'icon':<16}{'light':>9}{'dark':>8}")
+        print('-' * 33)
+        for name, light, dark in baseline:
+            print(f'{name:<16}{light * 100:>8.0f}%{dark * 100:>7.0f}%')
+    else:
+        print('reference band — skipped: refs/raw was removed from the repository')
+        print('  (third-party icon binaries; see design-demos/app-icon/refs/SOURCES.md)')
 
     with open(os.path.join(FINAL, 'acceptance.json'), 'w', encoding='utf-8') as fh:
         json.dump(summary, fh, ensure_ascii=False, indent=2)

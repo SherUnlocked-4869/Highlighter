@@ -16,7 +16,7 @@
 - 六格缩略图（含三个未选中的备选）：`shots/thumbs.png`
 - 六张方向卡：`directions.md`（单页版 `cards/`）
 - **真实产品窗口里的三个方向**：`shots/landing/`（30 张，见下）
-- 参考板：`refs/cleanshot-home.png`、`refs/things-home.png`、`refs/SOURCES.md`
+- 参考记录：`refs/SOURCES.md`（当时的截图已从仓库删除）
 
 ## 展示的三个方向
 
