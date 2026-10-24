@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · 2026 主题 · 评审台</title>
+<!--
+  评审台：三个方向并排评审。iframe 里是三个完整版原型（dir-1/2/3），各自
+  1600 宽、独立滚动。右边是每版的方向卡摘要与被砍掉的三个备选。
+  为什么用 iframe 而不是把三版拼进一页：每个方向都有自己的 data-theme、字体
+  栈与 @media 规则，拼进同一份文档会互相染指，评审时看到的就不是真实效果。
+-->
+<style>
+  :root{
+    --paper:#e9e9e6;
+    --ink:#16150f;
+    --muted:#6a685f;
+    --line:#cfcec6;
+    --mono:"Cascadia Mono","Consolas",monospace;
+    --ui:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+    --disp:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--paper);color:var(--ink);
+    font-family:var(--ui);font-size:14px;-webkit-font-smoothing:antialiased;font-synthesis:none}
+  body{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+
+  header{flex:0 0 auto;display:flex;align-items:center;gap:18px;padding:14px 22px;border-bottom:1px solid var(--line);background:#f4f4f1}
+  header h1{margin:0;font:600 16px/1.2 var(--disp);letter-spacing:-.01em}
+  header h1 i{font-style:normal;color:var(--muted);font-weight:400}
+  header .tag{font:400 11px/1 var(--mono);letter-spacing:.06em;color:var(--muted);
+    border:1px solid var(--line);border-radius:999px;padding:5px 10px;background:#fff}
+  header .sp{flex:1}
+  header a{color:var(--ink);font-size:12.5px;text-decoration:none;border-bottom:1px solid var(--line);padding-bottom:1px}
+  header a:hover{border-bottom-color:var(--ink)}
+
+  .tabs{display:flex;gap:3px;background:#fff;border:1px solid var(--line);border-radius:9px;padding:3px}
+  .tabs button{border:0;background:transparent;color:var(--muted);font:500 12.5px/1 var(--ui);
+    padding:8px 15px;border-radius:6px;cursor:pointer;white-space:nowrap;transition:background .14s,color .14s}
+  .tabs button:hover{background:#f0f0ec;color:var(--ink)}
+  .tabs button[aria-selected="true"]{background:var(--ink);color:#f7f7f4}
+
+  main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 388px}
+  /* The prototypes are 1600px-wide review boards. A 1200px stage would crop them,
+     so the iframe is laid out at its real 1600px width and scaled to fit — what
+     you see is the same document at a smaller size, not a reflowed one. The zoom
+     control switches between "whole board" and 100% (scroll to read). */
+  .stage{position:relative;min-width:0;background:#d9d9d5;overflow:hidden}
+  .stage .fit{position:absolute;top:0;left:0;transform-origin:0 0}
+  .stage .scrollable{overflow:auto}
+  .stage iframe{display:block;width:1600px;border:0;background:#fff}
+  .stage.narrow{overflow:auto}
+  .zoom{position:sticky;top:0;z-index:3;display:flex;justify-content:flex-end;padding:10px 14px 0;
+    pointer-events:none}
+  .zoom .grp{display:flex;gap:2px;padding:3px;border:1px solid var(--line);border-radius:7px;
+    background:rgba(255,255,255,.92);pointer-events:auto;box-shadow:0 2px 8px rgba(30,28,22,.10)}
+  .zoom button{border:0;background:transparent;color:var(--muted);font:500 12px/1 var(--ui);
+    padding:6px 10px;border-radius:5px;cursor:pointer}
+  .zoom button:hover{background:#f0f0ec;color:var(--ink)}
+  .zoom button[aria-pressed="true"]{background:var(--ink);color:#f7f7f4}
+
+  aside{min-width:0;border-left:1px solid var(--line);background:#f4f4f1;overflow:auto;padding:18px 20px 34px}
+  aside h2{margin:0 0 4px;font:600 15px/1.3 var(--disp)}
+  aside .src{font:400 11px/1.5 var(--mono);color:var(--muted);letter-spacing:.02em;margin:0 0 14px}
+  .kv{display:grid;grid-template-columns:74px minmax(0,1fr);gap:6px 10px;margin:0 0 16px;font-size:12.5px;line-height:1.65}
+  .kv dt{color:var(--muted);font-size:11.5px;padding-top:1px}
+  .kv dd{margin:0}
+  .kv dd b{font-weight:600}
+  .swatch{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:5px;
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,.18)}
+  .form{margin:0 0 18px;padding:11px 13px;border-left:2px solid var(--ink);background:#fff;font-size:12.5px;line-height:1.7}
+  .form b{display:block;font:600 10.5px/1 var(--mono);letter-spacing:.1em;color:var(--muted);margin-bottom:6px}
+  h3.sec{margin:22px 0 10px;font:600 11px/1 var(--mono);letter-spacing:.11em;color:var(--muted);text-transform:uppercase}
+  .alt{display:flex;gap:10px;padding:9px 0;border-top:1px solid var(--line);font-size:12.5px;line-height:1.6}
+  .alt b{flex:0 0 92px;font-weight:600}
+  .alt span{color:var(--muted)}
+  .landrow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 18px}
+  .landrow figure{margin:0}
+  .landrow img{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:4px;background:#fff}
+  .landrow figcaption{margin-top:4px;font-size:11.5px;color:var(--muted)}
+  .hint{margin-top:18px;font-size:12.5px;line-height:1.75;color:var(--muted)}
+  .hint code{font:400 11.5px/1 var(--mono);background:#fff;border:1px solid var(--line);border-radius:3px;padding:1px 4px}
+  @media(max-width:1180px){main{grid-template-columns:1fr}aside{border-left:0;border-top:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Highlighter · 2026 主题 <i>评审台</i></h1>
+  <span class="tag">4.1.2 · 高频三窗</span>
+  <div class="sp"></div>
+  <div class="tabs" role="tablist">
+    <button role="tab" data-i="0" aria-selected="true">A1 哑光器物</button>
+    <button role="tab" data-i="1" aria-selected="false">B1 浮层优先</button>
+    <button role="tab" data-i="2" aria-selected="false">C2 珐琅铭牌</button>
+  </div>
+  <a href="thumbs.html" target="_blank" rel="noopener">六格缩略图</a>
+  <a href="directions.md" target="_blank" rel="noopener">方向卡</a>
+</header>
+
+<main>
+  <div class="stage" id="stage">
+    <div class="zoom"><div class="grp">
+      <button id="zoomFit" aria-pressed="true">适宽</button>
+      <button id="zoomFull" aria-pressed="false">原始大小</button>
+    </div></div>
+    <div class="fit" id="fit">
+      <iframe id="frame" src="dir-1.html" title="方向原型"></iframe>
+    </div>
+  </div>
+
+  <aside id="panel">
+    <!-- filled by script -->
+  </aside>
+</main>
+
+<script>
+  const CARDS = [
+    {
+      file: 'dir-1.html',
+      name: 'A1 · 哑光器物 MATTE',
+      src: '最佳设计师 · 深泽直人（Naoto Fukasawa）/ without-thought 与材质诚实',
+      landing: '三个方向在真实窗口里都 30/30 表面通过、0 处新增低对比度文字。',
+      shots: [
+        ['matte-win-home-light.png', '主窗口 · 亮'],
+        ['matte-win-home-dark.png', '主窗口 · 暗'],
+        ['matte-capture-light.png', '截图浮层'],
+        ['matte-clipboard-dark.png', '剪贴板'],
+      ],
+      temp: '安静 · 克制',
+      light: '亮是阳极氧化冷银，暗是中性石墨',
+      key: '表面明度台阶 + 机加工接缝 + 细砂噪点，全站零发光',
+      borrow: '材料只说自己是材料；选中＝被压进面板，不是变亮；温度来自低反光表面与接缝阴影，不来自色相',
+      star: '程序化材质：SVG feTurbulence 细砂纹 + 4 档表面台阶 + 1px 接缝',
+      bold: '没有一个渐变按钮、没有一处发光；层级只由「明度 + 接缝 + 砂面」表达',
+      form: '截图动作都是物理手势（拉框 / 落笔 / 钉纸），所以当前工具做成凹槽里的一枚键帽，而不是高亮的文字标签。',
+      risk: '太安静时会被读成「旧版换了配色」——靠 4 档表面台阶与接缝方向把差别做实。',
+      swatches: [
+        ['#d3d6d9', '纸面 s3'], ['#bfc2c7', '面板 s1'], ['#828a93', '机身侧边'], ['#7e8388', '台面'], ['#15181b', '冷近黑刻字'], ['#e5a44c', '唯一印刷色']
+      ]
+    },
+    {
+      file: 'dir-2.html',
+      name: 'B1 · 浮层优先 FILM',
+      src: '现实参照 · CleanShot X（MTW，macOS 截图工具）· 2026-10-23 实拍官网',
+      landing: '玻璃在真实窗口里成立，因为浮层背后是真的屏幕内容。',
+      shots: [
+        ['film-win-home-light.png', '主窗口 · 亮'],
+        ['film-win-home-dark.png', '主窗口 · 暗'],
+        ['film-capture-light.png', '截图浮层'],
+        ['film-toolbar-light.png', '划词条'],
+      ],
+      temp: '中性 · 轻盈',
+      light: '亮：暖白磨砂玻璃',
+      key: '浮面高度 z0–z3 四档 + 双层阴影 + 暖玻璃，不用边框分级',
+      borrow: '浮层是主角，主窗口只做设置面；圆角 14–20px；正文高对比 + 极少元素',
+      star: '「假桌面」本身——玻璃必须有东西可透，否则会退化成一块灰',
+      bold: '把浮层当整套语言的语法：设置界面里的下拉/工具条/提示全部沿用同一套玻璃',
+      form: '这个工具 99% 的时间只有一块浮层（框选 + 工具条），主窗口一年开不了几次——把浮层做成主角是产品的界面真相。',
+      risk: '玻璃做砸的标志是「一切糊成一片灰」；必须用有内容的演示底 + 暖灰而不是冷蓝玻璃。',
+      swatches: [
+        ['#f7f3ec', '玻璃面'], ['#e9e4dc', '环境'], ['#d8d2c8', '环境深'], ['#1d1a16', '正文'], ['#e5a44c', '主操作']
+      ]
+    },
+    {
+      file: 'dir-3.html',
+      name: 'C2 · 珐琅铭牌 ENAMEL',
+      src: '秒数轮盘 · 东亚 6 号「香港街招」——只取刻字与牌面，不做霓虹',
+      landing: '暗色浮层与暖棕珐琅在真实窗口里最自洽——浮层本来就必须是暗的。',
+      shots: [
+        ['enamel-win-home-dark.png', '主窗口 · 暗'],
+        ['enamel-win-home-light.png', '主窗口 · 亮（日光版）'],
+        ['enamel-capture-dark.png', '截图浮层'],
+        ['enamel-clipboard-dark.png', '剪贴板'],
+      ],
+      temp: '大胆 · 有光',
+      light: '暗：深色珐琅（默认）/ 亮：暖白珐琅「日光版」',
+      key: '牌面 = 1px 奶白描边 + 内阴影 + 4–8px 圆角，全页共享一个左上光源',
+      borrow: '字刻在材料上不是浮在背景上；朱红只给「当前」；黄铜只做一次性引线',
+      star: '材料与光：近黑珐琅面板 + 奶白刻字 + 宋体正文',
+      bold: '一个效率工具敢用宋体做正文，因为界面被当成一块刻着字的牌，而不是一块屏幕',
+      form: '截图工具输出的是被装裱起来的图；历史、贴图、识别结果最后都变成一块贴在桌面上的牌子。',
+      risk: '最容易翻车成「复古皮肤」——几何必须保持现代（等距网格、等宽数字），只有字与牌面是旧的。',
+      swatches: [
+        ['#191410', '珐琅'], ['#2c2318', '点亮牌'], ['#f4e9d2', '刻字'], ['#c9a86e', '黄铜'], ['#c0392b', '朱红']
+      ]
+    }
+  ]
+
+  const frame = document.getElementById('frame')
+  const panel = document.getElementById('panel')
+  const tabs = [...document.querySelectorAll('.tabs button')]
+  const stage = document.getElementById('stage')
+  const fit = document.getElementById('fit')
+  const zoomFit = document.getElementById('zoomFit')
+  const zoomFull = document.getElementById('zoomFull')
+  const BOARD_W = 1600
+
+  // "适宽" scales the 1600-wide board to the stage width so type stays readable;
+  // the iframe itself keeps scrolling vertically (it is a real document). "原始大小"
+  // restores 1:1 and lets the stage scroll in both axes. Scaling to fit the whole
+  // 2800px-tall board at once would render its body text at ~7px — unreadable, and
+  // a review board you cannot read is not a review.
+  function layout() {
+    const fitMode = zoomFit.getAttribute('aria-pressed') === 'true'
+    const available = stage.clientWidth
+    const availableH = stage.clientHeight
+    if (!fitMode) {
+      fit.style.transform = 'none'
+      fit.style.position = 'relative'
+      fit.style.width = BOARD_W + 'px'
+      frame.style.height = Math.max(availableH - 20, 600) + 'px'
+      stage.style.overflow = 'auto'
+      return
+    }
+    const scale = Math.min(1, available / BOARD_W)
+    fit.style.width = BOARD_W + 'px'
+    const innerH = Math.max(availableH - 20, 600) / scale
+    frame.style.height = innerH + 'px'
+    fit.style.transform = `scale(${scale})`
+    fit.style.position = 'absolute'
+    stage.style.overflow = 'hidden'
+  }
+
+  function setZoom(mode) {
+    zoomFit.setAttribute('aria-pressed', String(mode === 'fit'))
+    zoomFull.setAttribute('aria-pressed', String(mode === 'full'))
+    layout()
+  }
+  zoomFit.addEventListener('click', () => setZoom('fit'))
+  zoomFull.addEventListener('click', () => setZoom('full'))
+  window.addEventListener('resize', layout)
+
+  function render(i) {
+    const c = CARDS[i]
+    tabs.forEach((b, k) => b.setAttribute('aria-selected', String(k === i)))
+    frame.src = c.file
+    layout()
+    panel.innerHTML = `
+      <h2>${c.name}</h2>
+      <p class="src">${c.src}</p>
+      <dl class="kv">
+        <dt>温度</dt><dd>${c.temp}</dd>
+        <dt>明暗</dt><dd>${c.light}</dd>
+        <dt>一套语言</dt><dd>${c.key}</dd>
+        <dt>借的规则</dt><dd>${c.borrow}</dd>
+        <dt>主角素材</dt><dd>${c.star}</dd>
+        <dt>胆量花在</dt><dd><b>${c.bold}</b></dd>
+        <dt>色板</dt><dd>${c.swatches.map(([hex, label]) =>
+          `<span class="swatch" style="background:${hex}"></span>${label} <code style="font:400 10.5px/1 var(--mono);color:#8a877c">${hex}</code>`).join('<br>')}</dd>
+      </dl>
+      <h3 class="sec">在真实产品窗口里长这样</h3>
+      <p class="hint" style="margin:0 0 8px">下面这些不是原型，是把方向的调色注入<b>真实 Electron 窗口</b>
+      （主设置窗 / 截图浮层 / 划词条 / 剪贴板）后截的图：${c.landing}</p>
+      <div class="landrow">${c.shots.map(([f, label]) =>
+        `<figure><a href="shots/landing/${f}" target="_blank" rel="noopener"><img src="shots/landing/${f}" alt="${label}" loading="lazy"></a><figcaption>${label}</figcaption></figure>`).join('')}</div>
+      <div class="form"><b>FORM 来自内容的哪里</b>${c.form}</div>
+      <div class="form" style="border-left-color:#b8382c"><b>它自己承认的风险</b>${c.risk}</div>
+      <h3 class="sec">未做完整版的三个备选</h3>
+      <div class="alt"><b>A2 一体成型</b><span>Apple unibody —— 倒角高光与连续曲面。与 A1 同属机加工表面，做法被 A1 吸收。</span></div>
+      <div class="alt"><b>B2 原生精修</b><span>Things 3 —— 纯排版、只有一个可点色。排印节奏被 B1 吸收。</span></div>
+      <div class="alt"><b>C1 斜切流光</b><span>秒数轮盘 14 号斜切渐变 —— 刻意过头的那一张：去掉斜切信息反而更清楚，用来标出边界。</span></div>
+      <p class="hint">
+        每版都是自包含单文件，双击可开：<code>dir-1.html</code> <code>dir-2.html</code> <code>dir-3.html</code>。
+        交互验收：<code>node tools/audit.mjs</code>。设计体检：<code>python scripts/design_lint.py check</code>。
+      </p>`
+  }
+
+  tabs.forEach((b) => b.addEventListener('click', () => render(Number(b.dataset.i))))
+  document.addEventListener('keydown', (e) => {
+    if (e.key === '1' || e.key === '2' || e.key === '3') render(Number(e.key) - 1)
+  })
+  render(0)
+  layout()
+</script>
+</body>
+</html>

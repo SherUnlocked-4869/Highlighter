@@ -1,0 +1,100 @@
+[
+  {
+    "key": "config-home",
+    "theme": "light",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\config-home-light.png",
+    "width": 1680,
+    "height": 1140
+  },
+  {
+    "key": "config-home",
+    "theme": "dark",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\config-home-dark.png",
+    "width": 1680,
+    "height": 1140
+  },
+  {
+    "key": "config-general",
+    "theme": "light",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\config-general-light.png",
+    "width": 1680,
+    "height": 1140
+  },
+  {
+    "key": "config-general",
+    "theme": "dark",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\config-general-dark.png",
+    "width": 1680,
+    "height": 1140
+  },
+  {
+    "key": "config-models",
+    "theme": "light",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\config-models-light.png",
+    "width": 1680,
+    "height": 1140
+  },
+  {
+    "key": "config-models",
+    "theme": "dark",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\config-models-dark.png",
+    "width": 1680,
+    "height": 1140
+  },
+  {
+    "key": "capture",
+    "theme": "light",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\capture-light.png",
+    "width": 1350,
+    "height": 930
+  },
+  {
+    "key": "capture",
+    "theme": "dark",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\capture-dark.png",
+    "width": 1350,
+    "height": 930
+  },
+  {
+    "key": "clipboard",
+    "theme": "light",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\clipboard-light.png",
+    "width": 720,
+    "height": 960
+  },
+  {
+    "key": "clipboard",
+    "theme": "dark",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\clipboard-dark.png",
+    "width": 720,
+    "height": 960
+  },
+  {
+    "key": "toolbar",
+    "theme": "light",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\toolbar-light.png",
+    "width": 930,
+    "height": 84
+  },
+  {
+    "key": "toolbar",
+    "theme": "dark",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\toolbar-dark.png",
+    "width": 930,
+    "height": 84
+  },
+  {
+    "key": "search",
+    "theme": "light",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\search-light.png",
+    "width": 1080,
+    "height": 780
+  },
+  {
+    "key": "search",
+    "theme": "dark",
+    "file": "F:\\workspace\\Highlighter\\design-demos\\theme-2026\\shots\\showcase\\search-dark.png",
+    "width": 1080,
+    "height": 780
+  }
+]

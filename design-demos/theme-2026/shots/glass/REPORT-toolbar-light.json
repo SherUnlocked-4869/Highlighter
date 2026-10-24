@@ -1,0 +1,26 @@
+{
+  "surface": "toolbar",
+  "theme": "light",
+  "size": "930x84",
+  "selectorBox": {
+    "x": 0,
+    "y": 0,
+    "w": 620,
+    "h": 40
+  },
+  "centre": {
+    "b": 215,
+    "g": 218,
+    "r": 219,
+    "a": 219
+  },
+  "corner": {
+    "b": 0,
+    "g": 0,
+    "r": 0,
+    "a": 0
+  },
+  "interiorTranslucent": true,
+  "cornerTransparent": true,
+  "errors": []
+}

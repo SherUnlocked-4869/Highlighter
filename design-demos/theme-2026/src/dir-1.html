@@ -1,0 +1,1331 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · A1 哑光器物 MATTE · dir-1</title>
+<!--
+  A1 MATTE · 深泽直人式「材质诚实」。
+
+  层级只用三样东西表达：
+    ① 4 档表面明度台阶（每档 L* 差 4.5）
+    ② 1px 机加工接缝（上亮下暗）+ 2px 凹槽
+    ③ 3–5% 的极细砂面（feTurbulence，两个方向：亮材质撒暗砂，暗材质撒亮砂）
+
+  不做：卡片外投影 / 发光 / 渐变按钮 / 描边叠描边。
+  「选中」= 被压进面板：明度降一档 + inset 1px 上暗下亮，不是变亮。
+  光源只有一个（左上），所以全页每个内阴影的亮面都在上、暗面都在下。
+-->
+<style>
+/*__ICON_SHEET__*/
+
+/* ═══════════════════════════════════════════════════════════════════
+   0 · 材质常量
+   ═══════════════════════════════════════════════════════════════════ */
+:root{
+  --ui:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --disp:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --num:"Bahnschrift","Segoe UI Variable Display","Segoe UI",sans-serif;
+  --mono:"Cascadia Mono","Consolas",ui-monospace,monospace;
+
+  /* 砂面：同一种砂，两个方向。data URI 里的 xmlns 把冒号编码掉，避免任何 http:// 字面量。 */
+  --grain-dk:url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'130'%20height%3D'130'%3E%3Cfilter%20id%3D'g'%20x%3D'0'%20y%3D'0'%20width%3D'100%25'%20height%3D'100%25'%20color-interpolation-filters%3D'sRGB'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'0.62'%20numOctaves%3D'3'%20stitchTiles%3D'stitch'%2F%3E%3CfeColorMatrix%20type%3D'matrix'%20values%3D'0%200%200%200%200%200%200%200%200%200%200%200%200%200%200%200.3333%200.3333%200.3334%200%200'%2F%3E%3CfeComponentTransfer%3E%3CfeFuncA%20type%3D'table'%20tableValues%3D'0%200%200%200%200%200%200.021%200.042%200.063%200.084%200.105%200.126%200.147%200.168%200.189%200.21'%2F%3E%3C%2FfeComponentTransfer%3E%3C%2Ffilter%3E%3Crect%20width%3D'130'%20height%3D'130'%20filter%3D'url(%23g)'%2F%3E%3C%2Fsvg%3E");
+  --grain-lt:url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'130'%20height%3D'130'%3E%3Cfilter%20id%3D'g'%20x%3D'0'%20y%3D'0'%20width%3D'100%25'%20height%3D'100%25'%20color-interpolation-filters%3D'sRGB'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'0.62'%20numOctaves%3D'3'%20stitchTiles%3D'stitch'%2F%3E%3CfeColorMatrix%20type%3D'matrix'%20values%3D'0%200%200%200%201%200%200%200%200%201%200%200%200%200%201%200.3333%200.3333%200.3334%200%200'%2F%3E%3CfeComponentTransfer%3E%3CfeFuncA%20type%3D'table'%20tableValues%3D'0%200%200%200%200%200%200.021%200.042%200.063%200.084%200.105%200.126%200.147%200.168%200.189%200.21'%2F%3E%3C%2FfeComponentTransfer%3E%3C%2Ffilter%3E%3Crect%20width%3D'130'%20height%3D'130'%20filter%3D'url(%23g)'%2F%3E%3C%2Fsvg%3E");
+
+  --r1:4px;--r2:6px;--r3:9px;
+
+  /* 评审板是一件「工作台面」，不是产品界面的一部分：冷中性灰 #8a8d8b（L* 58），
+     比窗口最浅的纸面（#f9f5f1）深 3.09:1，浅暖的哑光窗口压上去才立得住；
+     而且刻意避开暖灰（#c9c0af）与深灰（#55585a）两个邻居，横向比时不糊成一档。
+     板面本身也铺同款细砂（同一个 data URI），所以台子是哑光材料，不是一张纸。
+     台面上的字单独配不透明深色（#1c1e1d 5.0:1 / #22252a 4.58:1），不用 opacity。 */
+  --note:#0d1013; --note-2:#14181c;
+}
+
+/* ── 亮：暖中性哑光，不是白。内容纸面最亮 L*93，抬起面才到 L*97.5 ── */
+html[data-theme="light"]{
+  --bench:#7e8388; --bench-grain:var(--grain-dk); --grain:var(--grain-dk);
+  --s0:#b4b7bd; --s1:#bfc2c7; --s2:#c9ccd0; --s3:#d3d6d9; --press:#a9acb2;
+  --ink1:#15181b; --ink2:#3d4249; --ink-on-press:#101316;
+  --cut:rgba(22,28,36,.30); --lit:rgba(250,253,255,.92);
+  --edge:rgba(22,28,36,.38);
+  --line:rgba(22,28,36,.16);
+  --shade:rgba(22,28,36,.26);
+  --keycap:#d9dce0; --keycap-ink:#1b1f24; --keycap-cut:rgba(22,28,36,.36);
+  --sheen:rgba(250,253,255,.26);
+  --dot-off:#8d939b;
+}
+/* ── 暗：阳极氧化深灰，不是纯黑；不是反色，正文与台阶重新配过 ── */
+html[data-theme="dark"]{
+  --bench:#0d0f11; --bench-grain:var(--grain-lt); --grain:var(--grain-lt);
+  --note:#dfe2e6; --note-2:#cfd3d7;
+  --s0:#15171b; --s1:#1d2025; --s2:#262a2f; --s3:#2f3339; --press:#101216;
+  --ink1:#eef1f4; --ink2:#c3c8ce; --ink-on-press:#f5f7f9;
+  --cut:rgba(0,0,0,.58); --lit:rgba(216,232,255,.10);
+  --edge:rgba(0,0,0,.70);
+  --line:rgba(216,232,255,.08);
+  --shade:rgba(0,0,0,.40);
+  --keycap:#20242a; --keycap-ink:#dde1e6; --keycap-cut:rgba(0,0,0,.66);
+  --sheen:rgba(206,226,255,.055);
+  --dot-off:#5c626a;
+}
+/* ── 浮层永远暗（SPEC §2.3）：截图条 / 剪贴板 / 划词条。消费强调色与圆角，底色不跟主题 ── */
+:root{
+  --o0:#2a2928; --o1:#201f1e; --o2:#343231; --o3:#3e3c3b;
+  --o-ink1:#f2f0ef; --o-ink2:#d3d2d0;
+  --o-cut:rgba(0,0,0,.58); --o-lit:rgba(255,255,255,.11);
+  --o-edge:rgba(0,0,0,.72);
+  --o-grain:var(--grain-lt);
+  --grain:var(--grain-dk);
+}
+.ov{--s0:var(--o0);--s1:var(--o1);--s2:var(--o2);--s3:var(--o3);
+  --ink1:var(--o-ink1);--ink2:var(--o-ink2);--cut:var(--o-cut);--lit:var(--o-lit);
+  --shade:rgba(0,0,0,.4)}
+
+/* 强调色：用户可配置（settings.mainColor），默认 #e5a44c。
+   只出现三处：当前工具 / 主操作 / 状态点。
+   --on-acc、--acc-ink 由脚本按 oklch 亮度算（任意用户色都成立）。 */
+:root{--acc:#e5a44c;--acc-ink:#8d5200;--acc-ink-ov:#e5a44c;--on-acc:#241a0d;--mark:#ff3b30}
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+html{background:var(--bench)}
+body{
+  background-color:var(--bench);
+  background-image:linear-gradient(rgba(255,255,255,.028),rgba(255,255,255,0) 62%),var(--bench-grain);
+  color:var(--ink1);font-family:var(--ui);font-size:14px;line-height:1.5;
+  font-synthesis:none;-webkit-font-smoothing:antialiased;
+  transition:background-color 160ms ease-out,color 160ms ease-out;
+}
+i.ico{display:inline-block;flex:0 0 auto;width:18px;height:18px;background:currentColor;
+  -webkit-mask:var(--icon) center/contain no-repeat;mask:var(--icon) center/contain no-repeat}
+.num{font-family:var(--num);font-variant-numeric:tabular-nums;letter-spacing:.01em}
+.mono{font-family:var(--mono)}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;margin:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+
+/* ═══════════════════════════════════════════════════════════════════
+   1 · 评审板
+   ═══════════════════════════════════════════════════════════════════ */
+#board{width:1600px;margin:0 auto;padding:30px 0 54px;display:flex;flex-direction:column;
+  align-items:center;gap:30px}
+.board-head{width:1120px;display:flex;align-items:flex-end;justify-content:space-between;gap:28px}
+.board-head .t{font:600 15px/1.2 var(--disp);letter-spacing:-.01em;color:var(--note)}
+.board-head .s{font-size:14px;color:var(--note-2);margin-top:7px;max-width:720px;line-height:1.65}
+.board-head .tag{font:600 13px/1 var(--disp);color:var(--note);white-space:nowrap;padding-bottom:3px}
+
+.sect{width:1120px}
+.sect-head{display:flex;align-items:baseline;gap:10px;margin-bottom:11px}
+.sect-head .n{font:600 13px/1 var(--num);color:var(--note)}
+.sect-head .d{font-size:14px;color:var(--note-2)}
+.sect-head .r{margin-left:auto;font:13px/1.2 var(--mono);color:var(--note)}
+
+/* ═══════════════════════════════════════════════════════════════════
+   2 · 主窗口 1120 × 760（1:1）＝ 一台设备的面板
+   ═══════════════════════════════════════════════════════════════════ */
+#appWin{width:1120px;height:760px;display:flex;flex-direction:column;overflow:hidden;
+  border-radius:var(--r3);
+  background-color:var(--s1);
+  background-image:
+    radial-gradient(130% 78% at 6% -8%,var(--sheen),rgba(255,255,255,0) 62%),
+    var(--grain);
+  box-shadow:
+    0 0 0 1px var(--edge),
+    inset 0 1px 0 var(--lit),
+    0 26px 46px -30px rgba(30,24,16,.62),
+    0 6px 14px -10px rgba(30,24,16,.34);
+}
+/* 铭牌行 44px：字标 + 状态读数。下缘一条水平接缝＝分节。 */
+.nameplate{flex:0 0 44px;display:flex;align-items:center;padding-left:18px;
+  background-color:var(--s0);
+  background-image:radial-gradient(120% 200% at 0% 0%,var(--sheen),rgba(255,255,255,0) 58%),var(--grain);
+  box-shadow:inset 0 -1px 0 var(--cut),inset 0 1px 0 var(--lit)}
+.wordmark{display:flex;align-items:baseline;font-family:var(--disp);font-size:15.5px;
+  letter-spacing:-.015em;line-height:1;white-space:nowrap}
+.wordmark b{font-weight:700;color:var(--ink1)}
+.wordmark i{font-style:normal;font-weight:400;color:var(--ink2)}
+.wordmark .ver{margin-left:9px;padding:3px 5px;border-radius:2px;font:400 12px/1 var(--num);
+  color:var(--ink2);background:var(--s1);box-shadow:inset 0 0 0 1px var(--line)}
+/* 铭牌读数：机加工凹槽里的一行刻字 */
+.plate-read{display:flex;align-items:center;margin-left:26px;height:26px;border-radius:2px;
+  background:var(--s1);
+  box-shadow:inset 1px 1px 0 var(--shade),inset -1px -1px 0 var(--lit),inset 0 0 0 1px var(--line)}
+.plate-read .cell{display:flex;align-items:baseline;gap:6px;padding:0 11px;height:100%;
+  align-items:center;box-shadow:inset -1px 0 0 var(--cut)}
+.plate-read .cell:last-child{box-shadow:none}
+.plate-read .k{font-size:12px;color:var(--ink2);white-space:nowrap}
+.plate-read .v{font:500 12px/1 var(--num);color:var(--ink1);white-space:nowrap}
+.nameplate .spacer{flex:1}
+.wctl{display:flex;align-items:center;gap:3px;padding:0 11px}
+.wbtn{width:32px;height:26px;border-radius:2px;display:grid;place-items:center;color:var(--ink2);
+  background:var(--s1);box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--cut),0 1px 0 var(--cut);
+  transition:color 130ms ease-out,background-color 130ms ease-out,transform 110ms cubic-bezier(.2,.7,.3,1),
+             box-shadow 110ms cubic-bezier(.2,.7,.3,1)}
+.wbtn:hover{color:var(--ink1);background:var(--s3)}
+.wbtn:active{transform:translateY(1px);background:var(--press);
+  box-shadow:inset 0 1px 2px var(--cut),0 0 0 var(--cut)}
+.wbtn .ico{width:12px;height:12px}
+.wbtn.close:hover{color:#b23b2c}
+
+.shell{flex:1;min-height:0;display:flex}
+
+/* 侧面：整块深一档 + 一条垂直机加工接缝（垂直接缝＝分栏，水平接缝＝分节） */
+#navBox{flex:0 0 208px;display:flex;flex-direction:column;padding:12px 0 10px;min-height:0;
+  background-color:var(--s0);
+  background-image:linear-gradient(90deg,rgba(255,255,255,.14),rgba(255,255,255,0) 42%),var(--grain);
+  box-shadow:inset -1px 0 0 var(--cut),inset 1px 0 0 var(--lit)}
+html[data-theme="dark"] #navBox{background-image:linear-gradient(90deg,rgba(206,228,255,.055),rgba(255,255,255,0) 42%),var(--grain)}
+.nav-group{padding:0 10px}
+.nav-group + .nav-group{margin-top:15px}
+.nav-group > b{display:block;font:600 12px/1 var(--ui);color:var(--ink2);letter-spacing:.02em;
+  padding:0 10px 7px}
+.nav{position:relative;display:flex;align-items:center;gap:10px;width:100%;height:35px;padding:0 10px;
+  border-radius:var(--r1);color:var(--ink1);font-size:14px;text-align:left;
+  transition:background-color 130ms ease-out,box-shadow 130ms ease-out,color 130ms ease-out,
+             transform 110ms cubic-bezier(.2,.7,.3,1)}
+.nav .ico{width:17px;height:17px;opacity:.78}
+.nav .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nav:hover{background-color:var(--s1);
+  box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--cut),inset 1px 0 0 var(--lit),inset -1px 0 0 var(--cut)}
+.nav:hover .ico{opacity:1}
+/* 选中＝压进面板：降一档明度 + inset 上暗下亮 + 一道强调色刻线在机身边缘 */
+.nav.active{background-color:var(--press);color:var(--ink-on-press);font-weight:600;
+  box-shadow:inset 0 2px 3px var(--cut),inset 0 -1px 0 var(--lit)}
+.nav.active .ico{opacity:1}
+.nav.active::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;border-radius:2px;
+  background:var(--acc)}
+.nav:active{transform:translateY(1px)}
+#navBox .nav-foot{margin-top:auto;padding:11px 10px 0;
+  box-shadow:inset 0 1px 0 var(--cut),inset 0 2px 0 var(--lit)}
+#navBox .nav-foot .nav:hover{background:var(--s1)}
+
+.panel{flex:1;min-width:0;display:flex;flex-direction:column;background-color:var(--s1);
+  background-image:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,0) 200px),var(--grain);
+  color:var(--ink1)}
+html[data-theme="dark"] .panel{background-image:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,0) 200px),var(--grain)}
+
+#pTitleBar{flex:0 0 56px;display:flex;align-items:center;gap:13px;padding:0 22px;
+  box-shadow:inset 0 -1px 0 var(--cut)}
+#pTitle{margin:0;font:600 19px/1 var(--disp);letter-spacing:-.016em;color:var(--ink1);white-space:nowrap}
+.crumb{font:500 12px/1 var(--ui);color:var(--ink2);white-space:nowrap;padding-top:2px}
+#pTitleBar .spacer{flex:1}
+.icon-btn{height:30px;padding:0 11px;display:flex;align-items:center;gap:7px;border-radius:var(--r1);
+  font-size:13px;color:var(--ink1);background:var(--s2);
+  box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--cut),0 1px 0 var(--cut);
+  transition:background-color 130ms ease-out,transform 110ms cubic-bezier(.2,.7,.3,1),
+             box-shadow 110ms cubic-bezier(.2,.7,.3,1)}
+.icon-btn:hover{background:var(--s3)}
+.icon-btn:active{transform:translateY(1px);background:var(--press);
+  box-shadow:inset 0 1px 2px var(--cut),0 0 0 var(--cut)}
+.icon-btn .ico{width:15px;height:15px;opacity:.82}
+#themeToggle{min-width:106px;justify-content:center}
+
+/* 状态轨：4 格，嵌在面板上的一道浅槽里 */
+.status-rail{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,1fr);margin:0 22px 16px;
+  border-radius:2px;background:var(--s0);
+  box-shadow:inset 1px 1px 0 var(--shade),inset -1px -1px 0 var(--lit),inset 0 0 0 1px var(--line)}
+.status-rail .cell{display:flex;align-items:center;gap:8px;padding:8px 12px;min-width:0;
+  box-shadow:inset -1px 0 0 var(--cut)}
+.status-rail .cell:last-child{box-shadow:none}
+.status-rail .txt{min-width:0}
+.status-rail .k{display:block;font-size:12px;line-height:1.3;color:var(--ink2);white-space:nowrap}
+.status-rail .v{display:block;font:500 13px/1.3 var(--num);color:var(--ink1);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 状态点：强调色只出现在「当前工具 / 主操作 / 状态点」这三处 */
+.led{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--dot-off);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -1px 0 rgba(0,0,0,.25)}
+.led.ok{background:#3f7a63;box-shadow:inset 0 1px 0 rgba(230,246,240,.34),inset 0 -1px 0 rgba(0,0,0,.3)}
+html[data-theme="dark"] .led.ok{background:#57a486}
+.led.accent,.led.warn{background:var(--acc);box-shadow:inset 0 1px 0 rgba(255,255,255,.42),
+  inset 0 -1px 0 rgba(0,0,0,.22)}
+.led.warn{border-radius:1px}
+
+/* 页签：一排键帽。选中的被按下去（不是变亮，是凹的） */
+#tabs{flex:0 0 auto;display:flex;align-items:center;gap:4px;padding:0 22px 14px}
+.tab{position:relative;display:flex;align-items:center;gap:7px;height:31px;padding:0 12px;
+  border-radius:var(--r1);font-size:13px;color:var(--ink1);background:var(--s2);
+  box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--cut),0 1px 0 var(--cut);
+  transition:background-color 130ms ease-out,transform 110ms cubic-bezier(.2,.7,.3,1),
+             box-shadow 110ms cubic-bezier(.2,.7,.3,1)}
+.tab .n{font:500 12px/1 var(--num);color:var(--ink2);padding:2px 4px;border-radius:2px;
+  background:var(--s1);box-shadow:inset 0 0 0 1px var(--line)}
+.tab:hover{background:var(--s3)}
+.tab:active{transform:translateY(1px)}
+.tab.active{background:var(--press);font-weight:600;
+  box-shadow:inset 0 2px 3px var(--cut),inset 0 -1px 0 var(--lit)}
+.tab.active .n{background:var(--s1);box-shadow:none}
+
+#list{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:0 22px 20px;
+  scrollbar-width:thin;scrollbar-color:var(--press) transparent}
+#list::-webkit-scrollbar{width:10px}
+#list::-webkit-scrollbar-thumb{background:var(--press);border-radius:5px;
+  box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--cut)}
+.list-head{display:flex;align-items:baseline;gap:10px;padding:0 0 8px}
+.list-head .k{font:600 12px/1 var(--num);letter-spacing:.10em;color:var(--ink2)}
+.list-head .d{font-size:13px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.list-head .spacer{flex:1}
+.list-head .count{font:500 12px/1 var(--num);color:var(--ink2);white-space:nowrap}
+
+/* 列表行：纸面上的一行条目，只用一条横向接缝分节，没有卡片 */
+.item{position:relative;display:flex;align-items:center;gap:13px;min-height:48px;padding:4px 10px 4px 8px;
+  border-radius:var(--r1);box-shadow:inset 0 -1px 0 var(--line);
+  transition:background-color 130ms ease-out,box-shadow 130ms ease-out,
+             transform 110ms cubic-bezier(.2,.7,.3,1)}
+.item:hover{background:var(--s2);box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--cut)}
+.item.on{background:var(--s2);box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--cut)}
+.item:active{transform:translateY(1px)}
+.item .box{flex:0 0 32px;height:32px;border-radius:var(--r1);display:grid;place-items:center;
+  color:var(--ink2);background:var(--s0);
+  box-shadow:inset 1px 1px 0 var(--shade),inset -1px -1px 0 var(--lit),inset 0 0 0 1px var(--line)}
+.item .box .ico{width:16px;height:16px}
+.item.on .box{color:var(--ink1);background:var(--s3)}
+.item .body{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center}
+.item .name{font-size:14.5px;line-height:1.32;color:var(--ink1);font-weight:500;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item.on .name{font-weight:600}
+.item .desc{display:block;font-size:13px;line-height:1.32;color:var(--ink2);margin-top:2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 快捷键＝一枚键帽。未设置＝空槽位（虚线）；冲突＝警示 */
+.key{flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:3px;
+  min-width:62px;height:25px;padding:0 9px;border-radius:var(--r1);
+  font:500 12px/1 var(--num);letter-spacing:.02em;color:var(--keycap-ink);background:var(--keycap);
+  position:relative;
+  box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--keycap-cut),0 1px 0 var(--keycap-cut)}
+.key.slot{min-width:100px;color:var(--ink2);background:transparent;box-shadow:none;
+  border:1px dashed var(--cut);font:12px/1 var(--ui)}
+.key.conflict{color:#8d2413;background:#f0dcd8;font-family:var(--num);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.75),inset 0 0 0 1px rgba(141,36,19,.40),
+    0 0 0 2px rgba(141,36,19,.14)}
+html[data-theme="dark"] .key.conflict{color:#ffc4b2;background:#43221c;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.07),inset 0 0 0 1px rgba(255,150,120,.42),
+    0 0 0 2px rgba(255,150,120,.12)}
+/* 冲突标记：一道 2px 的短竖条（不是圆点，圆点会被读成数字 0） */
+.key .warn{width:2px;height:11px;border-radius:1px;background:currentColor;display:block}
+.key .warn::after{content:"";position:absolute}
+/* 开关：一块真的能拨的跷板 */
+.sw{flex:0 0 auto;width:40px;height:22px;border-radius:2px;background:var(--press);position:relative;
+  box-shadow:inset 0 2px 3px var(--cut),inset 0 -1px 0 var(--lit);transition:background-color 150ms ease-out}
+.sw i{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:1px;background:var(--s3);
+  box-shadow:0 1px 0 var(--cut),inset 0 1px 0 var(--lit);
+  transition:transform 190ms cubic-bezier(.3,.8,.2,1)}
+.sw[aria-checked="true"]{background:var(--acc);box-shadow:inset 0 2px 3px rgba(0,0,0,.26)}
+.sw[aria-checked="true"] i{transform:translateX(18px)}
+.meter{flex:0 0 190px;height:9px;border-radius:1px;background:var(--s0);overflow:hidden;
+  box-shadow:inset 1px 1px 0 var(--shade),inset -1px -1px 0 var(--lit),inset 0 0 0 1px var(--line)}
+.meter i{display:block;height:100%;background:var(--s3);border-right:2px solid var(--acc);
+  box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--cut)}
+
+/* ═══════════════════════════════════════════════════════════════════
+   3 · 截图浮层演示
+   ═══════════════════════════════════════════════════════════════════ */
+#captureDemo{position:relative;width:1120px;height:604px;border-radius:var(--r3);overflow:hidden;
+  background:var(--bench);
+  box-shadow:0 0 0 1px var(--edge),0 22px 40px -28px rgba(30,24,16,.6)}
+/* 假桌面：两块窗口 + 标题栏 + 正文。刻意做成偏冷的「别人的屏幕」，反衬暖中性浮层。 */
+.screen{position:absolute;inset:0;overflow:hidden;background-color:#87919d;
+  background-image:
+    radial-gradient(120% 95% at 14% 0%,#9aa5b1 0%,#87919d 44%,#6f7985 100%)}
+.screen::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background-image:var(--grain-dk);opacity:.8}
+.dwin{position:absolute;border-radius:5px;overflow:hidden;
+  box-shadow:0 0 0 1px rgba(18,24,32,.38),0 18px 30px -16px rgba(18,24,32,.55)}
+.dwin.a{left:48px;top:52px;width:590px;height:400px;background:#f6f3ed}
+.dwin.b{left:596px;top:262px;width:472px;height:296px;background:#1e242c}
+.dwin .bar{display:flex;align-items:center;gap:9px;height:33px;padding:0 12px}
+.dwin.a .bar{background:#e8e3d9;box-shadow:inset 0 -1px 0 #d1cabc}
+.dwin.b .bar{background:#282f37;box-shadow:inset 0 -1px 0 #12171c}
+.dwin .bar .dots{display:flex;gap:5px}
+.dwin .bar .dots i{width:9px;height:9px;border-radius:50%}
+.dwin .bar .dots i:nth-child(1){background:#d5a08f}
+.dwin .bar .dots i:nth-child(2){background:#d8c69c}
+.dwin .bar .dots i:nth-child(3){background:#a3bb9d}
+.dwin.b .bar .dots i{background:#46515c}
+.dwin .bar .ttl{font-size:12px;color:#33302b}
+.dwin.b .bar .ttl{color:#8e9caa}
+.dwin.a .paper{padding:20px 26px;display:flex;flex-direction:column;gap:10px}
+.dwin.a .paper .h{height:12px;border-radius:2px;background:#dcd3c3}
+.dwin.a .paper .ln{height:7px;border-radius:2px;background:#e5ded0}
+.dwin.a .paper .ln.s{width:62%}.dwin.a .paper .ln.m{width:82%}.dwin.a .paper .ln.l{width:96%}
+.dwin.a .paper .gap{height:6px}
+.dwin.a .paper .blk{height:78px;border-radius:3px;background:#e1d9c9;position:relative}
+.dwin.a .paper .blk::after{content:"";position:absolute;left:12px;top:12px;width:80px;height:8px;
+  border-radius:2px;background:#cdc2ae}
+.dwin.b .paper{padding:16px 22px;display:flex;flex-direction:column;gap:8px}
+.dwin.b .paper .h{height:10px;border-radius:2px;background:#3b4653}
+.dwin.b .paper .ln{height:6px;border-radius:2px;background:#313b46}
+.dwin.b .paper .ln.l{width:94%}.dwin.b .paper .ln.m{width:74%}
+.dwin.b .paper .code{margin-top:5px;height:104px;border-radius:3px;background:#161b21;
+  box-shadow:inset 0 0 0 1px #2a323b;padding:11px 13px;display:flex;flex-direction:column;gap:8px}
+.dwin.b .paper .code i{display:block;height:6px;border-radius:1px;background:#2f6f5e}
+.dwin.b .paper .code i:nth-child(2){width:70%;background:#586d8b}
+.dwin.b .paper .code i:nth-child(3){width:42%;background:#8a6749}
+.desk-mark{position:absolute;left:48px;top:20px;display:flex;align-items:center;gap:9px;
+  color:#eef2f6;font:500 12px/1 var(--num);padding:4px 8px;border-radius:2px;
+  background:rgba(20,24,30,.62);box-shadow:inset 0 0 0 1px rgba(255,255,255,.10)}
+
+/* 选区：真的压在桌面上；外面一圈压暗（box-shadow 的极大 spread），里面是原始内容 */
+.selection{position:absolute;left:150px;top:120px;width:700px;height:364px;border-radius:1px;
+  box-shadow:0 0 0 1px rgba(255,255,255,.85),0 0 0 4000px rgba(14,18,24,.44)}
+.selection .ruler{position:absolute;left:0;right:0;top:0;height:3px;
+  background-image:repeating-linear-gradient(90deg,rgba(255,255,255,.6) 0 1px,transparent 1px 40px)}
+.selection .ruler.v{left:0;top:0;bottom:0;right:auto;width:3px;height:auto;
+  background-image:repeating-linear-gradient(180deg,rgba(255,255,255,.6) 0 1px,transparent 1px 40px)}
+.hdl{position:absolute;width:10px;height:10px;border-radius:1px;background:#fbf8f3;
+  box-shadow:0 0 0 1px rgba(16,20,26,.66),inset 0 1px 0 #fff}
+.hdl.tl{left:-5px;top:-5px}.hdl.tr{right:-5px;top:-5px}
+.hdl.bl{left:-5px;bottom:-5px}.hdl.br{right:-5px;bottom:-5px}
+.selection .dim{position:absolute;left:50%;top:-2px;transform:translate(-50%,-100%);
+  display:flex;align-items:center;gap:8px;height:23px;padding:0 9px;border-radius:2px;
+  background:rgba(20,23,27,.92);color:#f2f0ef;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.16),0 0 0 1px rgba(0,0,0,.55);
+  font:500 12px/1 var(--num);letter-spacing:.03em;white-space:nowrap}
+.selection .dim .sep{width:1px;height:12px;background:rgba(255,255,255,.24)}
+.selection .dim .rt{color:#c8cdd3}
+
+/* 工具条：浮层，永远暗，两行。所有控件都是凹槽里的键帽。 */
+.capture-bar{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);
+  display:flex;flex-direction:column;padding:6px;border-radius:6px;
+  background-color:var(--o0);background-image:var(--o-grain);
+  box-shadow:0 0 0 1px var(--o-edge),inset 0 1px 0 var(--o-lit),inset 0 -1px 0 var(--o-cut),
+    0 18px 36px -16px rgba(0,0,0,.75),0 4px 10px -6px rgba(0,0,0,.6)}
+.cb-row{display:flex;align-items:center;gap:3px}
+.cb-row + .cb-row{margin-top:6px;padding-top:6px;
+  box-shadow:inset 0 1px 0 var(--o-lit),inset 0 2px 0 var(--o-cut)}
+.cb-well{display:flex;align-items:center;gap:2px;padding:3px;border-radius:3px;
+  background:var(--o1);box-shadow:inset 1px 1px 0 var(--o-cut),inset -1px -1px 0 var(--o-lit)}
+.cb-sep{flex:0 0 auto;width:1px;height:20px;background:var(--o-cut);box-shadow:1px 0 0 var(--o-lit);margin:0 4px}
+.cb-spacer{flex:1}
+
+.tool{position:relative;width:29px;height:29px;border-radius:3px;display:grid;place-items:center;
+  color:var(--o-ink2);background:transparent;
+  transition:background-color 130ms ease-out,color 130ms ease-out,
+             transform 110ms cubic-bezier(.2,.7,.3,1),box-shadow 110ms cubic-bezier(.2,.7,.3,1)}
+.tool .ico{width:16px;height:16px}
+.tool:hover{background:var(--o2);color:var(--o-ink1);
+  box-shadow:inset 0 1px 0 var(--o-lit),inset 0 -1px 0 var(--o-cut)}
+.tool:active{transform:translateY(1px);box-shadow:inset 0 1px 2px var(--o-cut)}
+/* 当前工具＝槽里被按下去的那一枚（强调色只在这一处 + 主操作 + 状态点出现） */
+.tool.active{color:var(--on-acc);background:var(--acc);
+  box-shadow:inset 0 2px 4px rgba(0,0,0,.32),inset 0 -1px 0 rgba(255,255,255,.24)}
+.tip{position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%) translateY(3px);
+  padding:4px 8px;border-radius:2px;background:#111312;color:#f2f0ef;font:12px/1.2 var(--ui);
+  white-space:nowrap;opacity:0;pointer-events:none;z-index:5;
+  box-shadow:0 0 0 1px rgba(0,0,0,.7),inset 0 1px 0 rgba(255,255,255,.12);
+  transition:opacity 120ms ease-out,transform 120ms ease-out}
+.tool:hover .tip,.act:hover .tip{opacity:1;transform:translateX(-50%) translateY(0)}
+.act{position:relative;width:29px;height:29px;border-radius:3px;display:grid;place-items:center;
+  color:var(--o-ink2);
+  transition:background-color 130ms ease-out,color 130ms ease-out,transform 110ms cubic-bezier(.2,.7,.3,1),
+             box-shadow 110ms cubic-bezier(.2,.7,.3,1)}
+.act .ico{width:16px;height:16px}
+.act:hover{background:var(--o2);color:var(--o-ink1);
+  box-shadow:inset 0 1px 0 var(--o-lit),inset 0 -1px 0 var(--o-cut)}
+.act:active{transform:translateY(1px);box-shadow:inset 0 1px 2px var(--o-cut)}
+.swatch-wrap{width:24px;height:24px;display:grid;place-items:center;border-radius:3px;
+  transition:background-color 130ms ease-out}
+.swatch{width:18px;height:18px;border-radius:2px;background:var(--c);
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.3);
+  transition:transform 120ms cubic-bezier(.3,.8,.2,1)}
+.swatch-wrap:hover{background:var(--o2)}
+.swatch-wrap.active{background:var(--o3);box-shadow:inset 0 2px 3px var(--o-cut),inset 0 -1px 0 var(--o-lit)}
+.swatch-wrap.active .swatch{transform:scale(.74);
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.6)}
+.width-btn{width:24px;height:24px;border-radius:3px;display:grid;place-items:center;color:var(--o-ink2);
+  font:500 12px/1 var(--num);
+  transition:background-color 130ms ease-out,color 130ms ease-out,transform 110ms cubic-bezier(.2,.7,.3,1),
+             box-shadow 110ms cubic-bezier(.2,.7,.3,1)}
+.width-btn .ico{width:15px;height:15px}
+.width-btn:hover{background:var(--o2);color:var(--o-ink1)}
+.width-btn:active{transform:translateY(1px)}
+.width-btn.active{color:var(--on-acc);background:var(--acc);font-weight:600;
+  box-shadow:inset 0 2px 3px rgba(0,0,0,.3)}
+/* 主操作：一枚实体按键。按下就下去，不发光。 */
+.btn-primary{height:30px;padding:0 12px;border-radius:3px;display:flex;align-items:center;gap:7px;
+  color:var(--on-acc);background:var(--acc);font-size:13.5px;font-weight:600;white-space:nowrap;flex:0 0 auto;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.34),inset 0 -2px 0 rgba(0,0,0,.26),0 1px 2px rgba(0,0,0,.5);
+  transition:transform 110ms cubic-bezier(.2,.7,.3,1),box-shadow 110ms cubic-bezier(.2,.7,.3,1),
+             filter 130ms ease-out}
+.btn-primary .ico{width:15px;height:15px}
+.btn-primary:hover{filter:brightness(1.05)}
+.btn-primary:active{transform:translateY(1px);
+  box-shadow:inset 0 3px 5px rgba(0,0,0,.32),inset 0 1px 0 rgba(255,255,255,.12),0 0 0 rgba(0,0,0,0)}
+.btn-cancel{height:30px;padding:0 10px;border-radius:3px;display:flex;align-items:center;gap:6px;
+  color:var(--o-ink2);font-size:13px;background:transparent;white-space:nowrap;flex:0 0 auto;
+  box-shadow:inset 0 0 0 1px var(--o-cut),inset 0 1px 0 var(--o-lit);
+  transition:background-color 130ms ease-out,color 130ms ease-out,transform 110ms cubic-bezier(.2,.7,.3,1),
+             box-shadow 110ms cubic-bezier(.2,.7,.3,1)}
+.btn-cancel .ico{width:14px;height:14px}
+.btn-cancel:hover{background:var(--o2);color:var(--o-ink1)}
+.btn-cancel:active{transform:translateY(1px);box-shadow:inset 0 1px 2px var(--o-cut)}
+/* 随工具切换的选项组（至少两组真的不同） */
+.tool-opts{display:flex;align-items:center;gap:3px;min-width:0;flex:0 1 auto;overflow:hidden}
+.optset{display:none;align-items:center;gap:3px}
+.optset.on{display:flex}
+.optset .hint{font-size:12px;color:var(--o-ink2);opacity:.85;padding:0 6px 0 3px;white-space:nowrap}
+
+/* ═══════════════════════════════════════════════════════════════════
+   4 · 剪贴板面板 480 × 640（固定暗色）
+   ═══════════════════════════════════════════════════════════════════ */
+#clipPanel{width:480px;height:640px;display:flex;flex-direction:column;overflow:hidden;flex:0 0 480px;
+  border-radius:8px;background-color:var(--o0);background-image:var(--o-grain);
+  box-shadow:0 0 0 1px var(--o-edge),inset 0 1px 0 var(--o-lit),
+    0 24px 46px -22px rgba(0,0,0,.75),0 5px 14px -8px rgba(0,0,0,.6);
+  color:var(--o-ink1);font-size:14px}
+.clip-top{flex:0 0 auto;padding:11px 12px 10px;display:flex;align-items:center;gap:9px;
+  box-shadow:inset 0 -1px 0 var(--o-cut),inset 0 1px 0 var(--o-lit)}
+.clip-word{display:flex;align-items:baseline;gap:7px;font-family:var(--disp);letter-spacing:-.01em}
+.clip-word b{font-weight:600;font-size:14px;color:var(--o-ink1)}
+.clip-word .sub{font:400 12px/1 var(--ui);color:var(--o-ink2)}
+.clip-top .spacer{flex:1}
+.led-txt{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--o-ink2);white-space:nowrap}
+.led-txt .dot{width:7px;height:7px;border-radius:50%;background:var(--acc);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.42),inset 0 -1px 0 rgba(0,0,0,.3)}
+.wdot{height:27px;padding:0 9px;border-radius:3px;display:flex;align-items:center;gap:6px;
+  font:12px/1 var(--num);color:var(--o-ink2);background:var(--o2);white-space:nowrap;
+  box-shadow:inset 0 1px 0 var(--o-lit),inset 0 -1px 0 var(--o-cut)}
+.wdot .ico{width:12px;height:12px}
+.clip-rail{flex:0 0 auto;display:grid;grid-template-columns:repeat(3,1fr);margin:9px 12px 10px;
+  border-radius:2px;background:var(--o1);
+  box-shadow:inset 1px 1px 0 var(--o-cut),inset -1px -1px 0 var(--o-lit)}
+.clip-rail .c{display:flex;align-items:center;padding:7px 9px;min-width:0;
+  box-shadow:inset -1px 0 0 var(--o-cut)}
+.clip-rail .c:last-child{box-shadow:none}
+.clip-rail .txt{display:flex;flex-direction:column;gap:1px;min-width:0}
+.clip-rail .k{display:block;font-size:12px;color:var(--o-ink2);line-height:1.2;white-space:nowrap}
+.clip-rail .v{display:block;font:500 12.5px/1.25 var(--num);color:var(--o-ink1);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.clip-search{flex:0 0 auto;margin:0 12px 9px;display:flex;align-items:center;gap:8px;height:33px;padding:0 10px;
+  border-radius:3px;background:var(--o1);
+  box-shadow:inset 1px 1px 0 var(--o-cut),inset -1px -1px 0 var(--o-lit)}
+.clip-search .ico{width:15px;height:15px;color:var(--o-ink2)}
+.clip-search input{flex:1;min-width:0;border:0;background:transparent;color:var(--o-ink1);
+  font:14px/1 var(--ui);outline:none;padding:0}
+.clip-search input::placeholder{color:var(--o-ink2);opacity:.8}
+.clip-search .sc{font:500 12px/1 var(--num);color:var(--o-ink2);white-space:nowrap}
+.clip-chips{flex:0 0 auto;display:flex;align-items:center;gap:5px;padding:0 12px 10px;flex-wrap:nowrap}
+.chip{height:28px;padding:0 10px;border-radius:3px;font-size:12.5px;color:var(--o-ink2);
+  background:var(--o2);white-space:nowrap;
+  box-shadow:inset 0 1px 0 var(--o-lit),inset 0 -1px 0 var(--o-cut);
+  transition:background-color 130ms ease-out,color 130ms ease-out,transform 110ms cubic-bezier(.2,.7,.3,1),
+             box-shadow 110ms cubic-bezier(.2,.7,.3,1)}
+.chip:hover{color:var(--o-ink1);background:var(--o3)}
+.chip:active{transform:translateY(1px)}
+.chip[aria-pressed="true"]{color:var(--o-ink1);background:var(--o1);font-weight:600;
+  box-shadow:inset 0 2px 3px var(--o-cut),inset 0 -1px 0 var(--o-lit)}
+.clip-chips .spacer{flex:1}
+#clipList{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:0 7px 12px;
+  scrollbar-width:thin;scrollbar-color:var(--o3) transparent}
+#clipList::-webkit-scrollbar{width:9px}
+#clipList::-webkit-scrollbar-thumb{background:var(--o3);border-radius:5px}
+.clip-row{position:relative;display:flex;gap:10px;padding:9px 10px;border-radius:3px;
+  box-shadow:inset 0 -1px 0 rgba(255,255,255,.055);cursor:pointer;
+  transition:background-color 130ms ease-out,box-shadow 130ms ease-out}
+.clip-row:hover{background:var(--o2);box-shadow:inset 0 1px 0 var(--o-lit),inset 0 -1px 0 var(--o-cut)}
+.clip-row[aria-selected="true"]{background:var(--o1);
+  box-shadow:inset 0 2px 3px var(--o-cut),inset 0 -1px 0 var(--o-lit)}
+.clip-row[aria-selected="true"]::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;
+  border-radius:2px;background:var(--acc)}
+.clip-row .lead{flex:0 0 13px;width:13px;height:13px;margin-top:3px;color:var(--o-ink2);opacity:.75}
+.clip-row .main{flex:1;min-width:0}
+.clip-row .meta{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--o-ink2);
+  line-height:1.3;margin-bottom:2px}
+.clip-row .meta .pin{width:10px;height:10px;color:var(--acc)}
+.clip-row .txt{font-size:14px;line-height:1.45;color:var(--o-ink1);margin:0;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.clip-row .txt.u{color:#a8cdf3;word-break:break-all}
+.clip-row .thumb-row{display:flex;align-items:center;gap:9px;margin-top:5px}
+.clip-row .thumb{flex:0 0 auto;width:70px;height:46px;border-radius:2px;overflow:hidden;position:relative;
+  background:#4a5a6b;box-shadow:inset 0 0 0 1px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.14)}
+.clip-row .thumb i{position:absolute;display:block}
+.clip-row .thumb .g1{left:0;right:0;top:0;height:57%;background:#6b7f93}
+.clip-row .thumb .g2{left:0;right:0;bottom:0;height:43%;background:#3d4b5a}
+.clip-row .thumb .sun{right:9px;top:7px;width:9px;height:9px;border-radius:50%;background:#e9d4ad;opacity:.92}
+.clip-row .thumb .hill{left:-6px;bottom:13px;width:54px;height:24px;background:#53687b;
+  transform:rotate(-11deg);border-radius:2px}
+.clip-row .thumb.b .g1{background:#7d6a5c}
+.clip-row .thumb.b .g2{background:#493e35}
+.clip-row .thumb.b .hill{background:#665749}
+.clip-row .size{font:12px/1 var(--num);color:var(--o-ink2)}
+.clip-row.is-hidden{display:none}
+.clip-foot{flex:0 0 auto;display:flex;align-items:center;gap:5px;padding:9px 12px;
+  box-shadow:inset 0 1px 0 var(--o-lit),inset 0 2px 0 var(--o-cut)}
+.clip-foot .spacer{flex:1}
+.fbtn{height:30px;padding:0 10px;border-radius:3px;display:flex;align-items:center;gap:6px;font-size:12.5px;
+  color:var(--o-ink2);background:var(--o2);white-space:nowrap;
+  box-shadow:inset 0 1px 0 var(--o-lit),inset 0 -1px 0 var(--o-cut);
+  transition:background-color 130ms ease-out,color 130ms ease-out,transform 110ms cubic-bezier(.2,.7,.3,1),
+             box-shadow 110ms cubic-bezier(.2,.7,.3,1)}
+.fbtn .ico{width:14px;height:14px}
+.fbtn:hover{color:var(--o-ink1);background:var(--o3)}
+.fbtn:active{transform:translateY(1px);box-shadow:inset 0 1px 2px var(--o-cut)}
+.fbtn.pry{color:var(--on-acc);background:var(--acc);font-weight:600;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.34),inset 0 -2px 0 rgba(0,0,0,.26)}
+.fbtn.pry:active{box-shadow:inset 0 2px 4px rgba(0,0,0,.32)}
+
+/* ═══════════════════════════════════════════════════════════════════
+   5 · 划词工具条 620 × 56
+   ═══════════════════════════════════════════════════════════════════ */
+#selBar{width:620px;height:56px;display:flex;align-items:center;padding:0 6px;border-radius:6px;
+  background-color:var(--o0);background-image:var(--o-grain);
+  box-shadow:0 0 0 1px var(--o-edge),inset 0 1px 0 var(--o-lit),inset 0 -1px 0 var(--o-cut),
+    0 18px 34px -18px rgba(0,0,0,.72),0 4px 9px -5px rgba(0,0,0,.55)}
+#selBar .led-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;margin:0 11px 0 8px;background:var(--acc);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.42),inset 0 -1px 0 rgba(0,0,0,.3)}
+#selBar .dw{flex:0 0 auto;width:1px;height:24px;background:var(--o-cut);
+  box-shadow:1px 0 0 var(--o-lit);margin:0 4px}
+.sel-btn{flex:1;height:44px;border-radius:3px;display:flex;align-items:center;justify-content:center;gap:7px;
+  color:var(--o-ink2);font-size:14px;white-space:nowrap;
+  transition:background-color 130ms ease-out,color 130ms ease-out,
+             transform 110ms cubic-bezier(.2,.7,.3,1),box-shadow 110ms cubic-bezier(.2,.7,.3,1)}
+.sel-btn .ico{width:16px;height:16px}
+.sel-btn:hover{background:var(--o2);color:var(--o-ink1);
+  box-shadow:inset 0 1px 0 var(--o-lit),inset 0 -1px 0 var(--o-cut)}
+.sel-btn:active{transform:translateY(1px);box-shadow:inset 0 1px 2px var(--o-cut)}
+.sel-btn.pry{flex:0 0 auto;padding:0 18px;color:var(--on-acc);background:var(--acc);font-weight:600;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.34),inset 0 -2px 0 rgba(0,0,0,.26)}
+.sel-btn.pry:active{box-shadow:inset 0 2px 4px rgba(0,0,0,.32)}
+
+/* 台阶对照：让评审看到「亮/暗不是反色」 */
+.rail-card{padding:14px 16px 15px;border-radius:var(--r2);background:var(--s1);
+  box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--cut),0 0 0 1px var(--edge)}
+.rail-card .ttl{font:600 14px/1.3 var(--disp);color:var(--ink1);margin-bottom:11px}
+.sw-row{display:flex;align-items:center;gap:0;margin-bottom:8px}
+.sw-row:last-child{margin-bottom:0}
+.sw-row > b{flex:0 0 26px;font:600 12px/1 var(--num);color:var(--ink2)}
+.sw-cell{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px}
+.sw-cell .chip-sw{width:100%;height:26px;box-shadow:inset 0 1px 0 var(--lit),0 0 0 1px var(--line)}
+.sw-cell .sw-k{font:500 12px/1 var(--num);color:var(--ink2)}
+
+/* ═══════════════════════════════════════════════════════════════════
+   6 · 动效演示台
+   ═══════════════════════════════════════════════════════════════════ */
+#motionStage{width:1120px;height:286px;position:relative;overflow:hidden;border-radius:var(--r3);
+  background-color:var(--s0);
+  background-image:radial-gradient(120% 150% at 4% 0%,var(--sheen),rgba(255,255,255,0) 58%),var(--grain);
+  box-shadow:0 0 0 1px var(--edge),inset 0 1px 0 var(--lit)}
+#motionStage .mgrid{position:absolute;inset:0;pointer-events:none;
+  background-image:repeating-linear-gradient(0deg,var(--line) 0 1px,transparent 1px 40px),
+                   repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px 40px)}
+#motionStage .note{position:absolute;left:18px;top:14px;display:flex;align-items:center;gap:9px;
+  font-size:14px;color:var(--ink2)}
+#motionStage .note .k{font:600 13px/1 var(--ui);color:var(--ink1)}
+#motionBtn{position:absolute;right:18px;top:11px;height:32px;padding:0 14px;border-radius:var(--r1);
+  display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink1);background:var(--s2);
+  box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--cut),0 1px 0 var(--cut);
+  transition:background-color 130ms ease-out,transform 110ms cubic-bezier(.2,.7,.3,1),
+             box-shadow 110ms cubic-bezier(.2,.7,.3,1)}
+#motionBtn .ico{width:14px;height:14px;opacity:.8}
+#motionBtn:hover{background:var(--s3)}
+#motionBtn:active{transform:translateY(1px);box-shadow:inset 0 1px 2px var(--cut),0 0 0 var(--cut)}
+.demo-wrap{position:absolute;left:40px;right:40px;top:54px;bottom:48px}
+.demo-sel{position:absolute;left:52px;top:8px;width:400px;height:132px;border-radius:1px;
+  background:var(--s1);box-shadow:0 0 0 1px var(--acc),inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--cut);
+  transform-origin:left center}
+.demo-sel .dimtag{position:absolute;left:0;top:calc(100% + 9px);padding:3px 8px;border-radius:2px;
+  background:var(--s3);color:var(--ink1);font:500 12px/1 var(--num);
+  box-shadow:0 0 0 1px var(--cut)}
+.demo-sel .dimtag .rt{color:var(--ink2);margin-left:7px}
+.demo-bar{position:absolute;left:52px;top:182px;display:flex;align-items:center;gap:3px;padding:6px;
+  border-radius:5px;background-color:var(--o0);background-image:var(--o-grain);
+  box-shadow:0 0 0 1px var(--o-edge),inset 0 1px 0 var(--o-lit),0 12px 24px -12px rgba(0,0,0,.65)}
+.demo-bar .dbtn{width:30px;height:30px;border-radius:3px;display:grid;place-items:center;color:var(--o-ink2)}
+.demo-bar .dbtn .ico{width:15px;height:15px}
+.demo-bar .dbtn.pry{color:var(--on-acc);background:var(--acc);
+  box-shadow:inset 0 2px 3px rgba(0,0,0,.28)}
+.demo-key{margin-left:12px;height:30px;padding:0 11px;border-radius:3px;display:grid;place-items:center;
+  font:500 12px/1 var(--num);color:var(--keycap-ink);background:var(--keycap);
+  box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--keycap-cut)}
+/* 初始（静止）态：选区收着、工具条半透明。点一次播一次，不循环。 */
+/* 静止帧就是「做完之后」的样子：选区拉满、工具条已就位。
+   点播放才回到 0 再演一遍——这样静态评审看到的是成品，不是半成品。 */
+#motionStage .demo-sel{opacity:1;transform:scaleX(1)}
+#motionStage .demo-bar{opacity:1;transform:translateY(0)}
+@keyframes selPull{
+  0%{transform:scaleX(0);opacity:.35}
+  100%{transform:scaleX(1);opacity:1}
+}
+@keyframes barRise{
+  0%{opacity:0;transform:translateY(8px)}
+  100%{opacity:1;transform:translateY(0)}
+}
+@keyframes keyTap{
+  0%{transform:translateY(0);box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--keycap-cut)}
+  20%{transform:translateY(1px);box-shadow:inset 0 2px 4px var(--keycap-cut),inset 0 -1px 0 transparent}
+  100%{transform:translateY(0);box-shadow:inset 0 1px 0 var(--lit),inset 0 -1px 0 var(--keycap-cut)}
+}
+@keyframes itemIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+#motionStage.is-playing .demo-sel{animation:selPull 260ms cubic-bezier(.22,.61,.36,1) both}
+#motionStage.is-playing .demo-bar{animation:barRise 220ms cubic-bezier(.16,1,.3,1) 180ms both}
+#motionStage.is-playing .demo-key{animation:keyTap 380ms cubic-bezier(.2,.7,.3,1) 620ms both}
+#motionStage .seq{position:absolute;right:18px;bottom:13px;display:flex;gap:16px;font:500 12px/1 var(--num);
+  color:var(--ink2)}
+#motionStage .seq span{display:flex;align-items:center;gap:6px;white-space:nowrap}
+#motionStage .seq b{width:5px;height:5px;border-radius:50%;background:var(--acc)}
+
+.foot{width:1120px;font-size:14px;line-height:1.75;color:var(--note-2)}
+.foot b{color:var(--note);font-weight:600}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;animation-delay:0ms !important;
+    animation-iteration-count:1 !important;transition-duration:.001ms !important}
+}
+</style>
+</head>
+<body>
+<div id="board">
+
+  <div class="board-head">
+    <div>
+      <div class="t">Highlighter 2026 主题重设计 — A1 哑光器物</div>
+      <div class="s">层级只用「4 档表面明度差 + 1px 机加工接缝 + 3–5% 极细砂面」表达。
+        没有卡片外投影、没有发光、没有渐变按钮；当前工具与主操作是凹槽里被按下去的一枚实体键。</div>
+    </div>
+    <div class="tag">Mat. dir-1</div>
+  </div>
+
+  <!-- ══════════ 1 主窗口 ══════════ -->
+  <section id="appWin" aria-label="主窗口 1120 × 760">
+    <div class="nameplate">
+      <div class="wordmark"><b>High</b><i>lighter</i><span class="ver">4.1.2</span></div>
+      <div class="plate-read">
+        <div class="cell"><span class="k">识别</span><span class="v">本地引擎</span></div>
+        <div class="cell"><span class="k">热键</span><span class="v" id="readHotkey">9 / 13</span></div>
+        <div class="cell"><span class="k">主题</span><span class="v" id="readTheme">亮</span></div>
+      </div>
+      <div class="spacer"></div>
+      <div class="wctl">
+        <button class="wbtn" aria-label="最小化"><i class="ico" style="--icon:var(--ico-line)"></i></button>
+        <button class="wbtn" aria-label="最大化"><i class="ico" style="--icon:var(--ico-fullscreen)"></i></button>
+        <button class="wbtn close" aria-label="关闭"><i class="ico" style="--icon:var(--ico-close)"></i></button>
+      </div>
+    </div>
+
+    <div class="shell">
+      <aside id="navBox" aria-label="侧栏"></aside>
+      <div class="panel">
+        <header id="pTitleBar">
+          <h1 id="pTitle">快捷功能</h1>
+          <span class="crumb" id="pCrumb">QUICK ACTIONS</span>
+          <span class="spacer"></span>
+          <button class="icon-btn" id="themeToggle" aria-label="切换亮 / 暗">
+            <i class="ico" id="themeIco" style="--icon:var(--ico-alpha-strong)"></i>
+            <span class="lab" id="themeLab">暗色</span>
+          </button>
+        </header>
+        <div class="status-rail" id="statusRail"></div>
+        <nav id="tabs" aria-label="快捷功能分类"></nav>
+        <main id="list"></main>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ 2 截图浮层演示 ══════════ -->
+  <div class="sect">
+    <div class="sect-head">
+      <span class="n">第 2 屏</span><span class="d">截图浮层：压在别人的屏幕内容之上，工具条两行 27 个控件 + 主操作 + 取消</span>
+      <span class="r">点任一工具，第一行左侧选项组会整组换掉</span>
+    </div>
+    <section id="captureDemo" aria-label="截图浮层演示">
+      <div class="screen">
+        <div class="desk-mark"><span>Desk.</span><span>1920 × 1080</span></div>
+        <div class="dwin a">
+          <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="ttl">季度回顾 — 文档</span></div>
+          <div class="paper">
+            <div class="h"></div><div class="gap"></div>
+            <div class="ln l"></div><div class="ln m"></div><div class="ln l"></div><div class="ln s"></div>
+            <div class="gap"></div><div class="blk"></div><div class="gap"></div>
+            <div class="ln l"></div><div class="ln m"></div><div class="ln s"></div>
+          </div>
+        </div>
+        <div class="dwin b">
+          <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="ttl">capture.js — 编辑器</span></div>
+          <div class="paper">
+            <div class="h"></div><div class="ln l"></div><div class="ln m"></div>
+            <div class="code"><i></i><i></i><i></i></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="selection" id="selection">
+        <div class="ruler"></div><div class="ruler v"></div>
+        <span class="hdl tl"></span><span class="hdl tr"></span>
+        <span class="hdl bl"></span><span class="hdl br"></span>
+        <div class="dim"><span class="num">1280 × 720</span><span class="sep"></span><span class="rt">16:9</span></div>
+      </div>
+
+      <div class="capture-bar" id="captureBar">
+        <div class="cb-row">
+          <div class="cb-well" id="toolWell"></div>
+          <div class="cb-sep"></div>
+          <div class="swatch-row cb-well" id="swatchRow"></div>
+          <div class="cb-sep"></div>
+          <div class="cb-well" id="widthWell"></div>
+        </div>
+        <div class="cb-row">
+          <div class="tool-opts" id="toolOpts">
+            <div class="optset on" data-opts="select"><span class="hint">拖动选区边缘或角点调整</span></div>
+            <div class="optset" data-opts="rect">
+              <span class="hint">描边</span>
+              <button class="width-btn" data-stroke="solid" aria-label="实线"><i class="ico" style="--icon:var(--ico-stroke-solid)"></i></button>
+              <button class="width-btn" data-stroke="dashed" aria-label="虚线"><i class="ico" style="--icon:var(--ico-stroke-dashed)"></i></button>
+              <button class="width-btn" data-stroke="dotted" aria-label="点线"><i class="ico" style="--icon:var(--ico-stroke-dotted)"></i></button>
+              <span class="cb-sep" style="height:16px"></span>
+              <button class="width-btn" data-fill="none" aria-label="无填充"><i class="ico" style="--icon:var(--ico-fill-outline)"></i></button>
+              <button class="width-btn" data-fill="solid" aria-label="实心填充"><i class="ico" style="--icon:var(--ico-fill-solid)"></i></button>
+              <button class="width-btn" data-fill="translucent" aria-label="半透明填充"><i class="ico" style="--icon:var(--ico-fill-translucent)"></i></button>
+            </div>
+            <div class="optset" data-opts="arrow">
+              <span class="hint">端点</span>
+              <button class="width-btn" data-head="none" aria-label="无箭头"><i class="ico" style="--icon:var(--ico-line)"></i></button>
+              <button class="width-btn" data-head="start" aria-label="起点箭头"><i class="ico" style="--icon:var(--ico-head-start)"></i></button>
+              <button class="width-btn" data-head="end" aria-label="终点箭头"><i class="ico" style="--icon:var(--ico-head-end)"></i></button>
+            </div>
+            <div class="optset" data-opts="text">
+              <span class="hint">字号</span>
+              <button class="width-btn" data-size="s" aria-label="小号">Aa</button>
+              <button class="width-btn" data-size="m" aria-label="中号">Aa</button>
+              <button class="width-btn" data-size="l" aria-label="大号">Aa</button>
+              <span class="cb-sep" style="height:16px"></span>
+              <button class="width-btn" data-bold aria-label="加粗"><i class="ico" style="--icon:var(--ico-bold)"></i></button>
+            </div>
+            <div class="optset" data-opts="blur">
+              <span class="hint">强度</span>
+              <button class="width-btn" data-blur="1" aria-label="弱"><i class="ico" style="--icon:var(--ico-alpha-light)"></i></button>
+              <button class="width-btn" data-blur="2" aria-label="中"><i class="ico" style="--icon:var(--ico-alpha-medium)"></i></button>
+              <button class="width-btn" data-blur="3" aria-label="强"><i class="ico" style="--icon:var(--ico-alpha-strong)"></i></button>
+            </div>
+            <div class="optset" data-opts="highlight">
+              <span class="hint">笔触</span>
+              <button class="width-btn" data-hl="1" aria-label="荧光"><i class="ico" style="--icon:var(--ico-highlight)"></i></button>
+              <button class="width-btn" data-hl="2" aria-label="半透明"><i class="ico" style="--icon:var(--ico-fill-translucent)"></i></button>
+            </div>
+          </div>
+          <div class="cb-sep"></div>
+          <div class="cb-well" id="actionWell"></div>
+          <div class="cb-spacer"></div>
+          <button class="btn-primary" id="copyBtn">
+            <i class="ico" style="--icon:var(--ico-copy)"></i><span>复制</span>
+          </button>
+          <button class="btn-cancel" id="cancelBtn">
+            <i class="ico" style="--icon:var(--ico-close)"></i><span>取消</span>
+          </button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ══════════ 3 剪贴板 + 4 划词条 ══════════ -->
+  <div class="sect">
+    <div class="sect-head">
+      <span class="n">第 3 屏</span><span class="d">剪贴板面板 480 × 640，固定暗色，可消费强调色与圆角</span>
+      <span class="r">分类芯片与搜索都真的过滤</span>
+    </div>
+    <div style="display:flex;gap:38px;align-items:flex-start">
+      <section id="clipPanel" aria-label="剪贴板面板">
+        <div class="clip-top">
+          <div class="clip-word"><b>剪贴板</b><span class="sub">剪贴板</span></div>
+          <div class="spacer"></div>
+          <div class="led-txt"><span class="dot"></span><span id="clipLed">运行中</span></div>
+          <div class="wdot"><i class="ico" style="--icon:var(--ico-pin)"></i><span id="clipCount">42 条</span></div>
+        </div>
+        <div class="clip-rail">
+          <div class="c"><span class="txt"><span class="k">状态</span><span class="v" id="clipState">运行中</span></span></div>
+          <div class="c"><span class="txt"><span class="k">修订</span><span class="v" id="clipRev">rev 12</span></span></div>
+          <div class="c"><span class="txt"><span class="k">筛选</span><span class="v" id="clipFilter">全部</span></span></div>
+        </div>
+        <div class="clip-search">
+          <i class="ico" style="--icon:var(--ico-search)"></i>
+          <input id="clipSearch" type="text" placeholder="搜索剪贴板内容…" aria-label="搜索剪贴板内容">
+          <span class="sc">Alt+S</span>
+        </div>
+        <div class="clip-chips" id="clipChips"></div>
+        <div id="clipList"></div>
+        <div class="clip-foot">
+          <button class="fbtn pry"><i class="ico" style="--icon:var(--ico-copy)"></i><span>复制</span></button>
+          <button class="fbtn"><i class="ico" style="--icon:var(--ico-doc-convert)"></i><span>粘贴</span></button>
+          <span class="spacer"></span>
+          <button class="fbtn"><i class="ico" style="--icon:var(--ico-pin)"></i><span>固定</span></button>
+          <button class="fbtn"><i class="ico" style="--icon:var(--ico-close)"></i><span>删除</span></button>
+        </div>
+      </section>
+
+      <div style="display:flex;flex-direction:column;gap:24px;flex:1;min-width:0;padding-top:2px">
+        <div>
+          <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">
+            <span class="sect-head" style="margin:0;display:contents">
+              <span class="n">第 4 屏</span><span class="d">划词工具条 620 × 56</span>
+            </span>
+          </div>
+          <section id="selBar" aria-label="划词工具条"></section>
+          <p style="margin:14px 0 0;font-size:14px;line-height:1.75;color:var(--note-2);max-width:600px">
+            选区出现时只给一个局部主操作：<b style="color:var(--note)">复制</b>。其余四个动作降低一级表面明度，
+            让「最常用」与「偶尔用」在台阶上就分开，而不是靠颜色跳出来。
+          </p>
+        </div>
+        <div class="rail-card">
+          <div class="ttl">表面台阶对照：亮与暗不是反色</div>
+          <div id="themeMatrix"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ 5 动效演示台 ══════════ -->
+  <div class="sect">
+    <div class="sect-head">
+      <span class="n">第 6 屏</span><span class="d">动效演示：点一次播一次，1.25s 内结束，不循环</span>
+      <span class="r">SPEC §4 时长与曲线</span>
+    </div>
+    <section id="motionStage" aria-label="动效演示台">
+      <div class="mgrid"></div>
+      <div class="note"><span class="k">编排</span><span>选区拉开 → 工具条上浮 8px → 键帽按下回弹</span></div>
+      <button id="motionBtn"><i class="ico" style="--icon:var(--ico-lightning)"></i><span>播放</span></button>
+      <div class="demo-wrap">
+        <div class="demo-sel"><div class="dimtag"><span>1280 × 720</span><span class="rt">16:9</span></div></div>
+        <div class="demo-bar">
+          <span class="dbtn"><i class="ico" style="--icon:var(--ico-select)"></i></span>
+          <span class="dbtn"><i class="ico" style="--icon:var(--ico-rect)"></i></span>
+          <span class="dbtn"><i class="ico" style="--icon:var(--ico-arrow)"></i></span>
+          <span class="dbtn"><i class="ico" style="--icon:var(--ico-text)"></i></span>
+          <span class="dbtn pry"><i class="ico" style="--icon:var(--ico-copy)"></i></span>
+          <span class="demo-key">Alt+A</span>
+        </div>
+      </div>
+      <div class="seq">
+        <span><b></b>0–260ms 选区</span>
+        <span><b></b>180–400ms 工具条</span>
+        <span><b></b>620–1000ms 键帽</span>
+      </div>
+    </section>
+  </div>
+
+  <p class="foot">
+    <b>form 来自内容的哪里：</b>截图工具的每个动作都对应一个物理手势——框选是在屏幕上拉一个框，标注是在图上落笔，贴图是把一块纸钉在桌上。
+    所以界面里所有「当前工具」都是凹槽里被按下去的一枚键；侧栏与面板的接缝是垂直的（分栏），内容分节是水平的浅槽（分节）。
+  </p>
+</div>
+
+<script>/*__CONTENT__*/</script>
+<script>
+(() => {
+  'use strict'
+  const HL = window.HL
+  const $ = (s, r = document) => r.querySelector(s)
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)]
+  const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n }
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+  /* ── 强调色 ──────────────────────────────────────────────────────
+     settings.mainColor 可配，运行时以 inline style 覆写 --acc。
+     ① 实心强调色上的文字：oklch L > .62 → 深字，否则浅字（任意用户色都成立）
+     ② 强调色当文字用：保持 a/b，把 L 推到与所在表面 ≥ 4.6:1             */
+  const hexToRgb = (h) => { const m = String(h).trim().replace(/^#/, '')
+    const f = m.length === 3 ? m.split('').map((c) => c + c).join('') : m
+    return [0, 2, 4].map((i) => parseInt(f.slice(i, i + 2), 16) || 0) }
+  const rgbToHex = (c) => '#' + c.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
+  const s2l = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4 }
+  const l2s = (v) => (v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055) * 255
+  const toOklab = (rgb) => {
+    const [r, g, b] = rgb.map(s2l)
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+    return [0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+      1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+      0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s]
+  }
+  const fromOklab = ([L, a, b]) => {
+    const l_ = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3
+    const m_ = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3
+    const s_ = (L - 0.0894841775 * a - 1.2914855480 * b) ** 3
+    return [4.0767416621 * l_ - 3.3077115913 * m_ + 0.2309699292 * s_,
+      -1.2684380046 * l_ + 2.6097574011 * m_ - 0.3413193965 * s_,
+      -0.0041960863 * l_ - 0.7034186147 * m_ + 1.7076147010 * s_]
+      .map((v) => Math.max(0, Math.min(255, l2s(Math.max(0, v)))))
+  }
+  const relLum = (rgb) => { const [r, g, b] = rgb.map(s2l); return 0.2126 * r + 0.7152 * g + 0.0722 * b }
+  const contrast = (a, b) => { const x = relLum(a), y = relLum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05) }
+  // 与 CSS 里四个台阶一一对应的实际值，只用于计算颜色，不用于绘制
+  const SURF = {
+    light: { s0: [180, 183, 189], s1: [191, 194, 199], s2: [201, 204, 208], s3: [211, 214, 217] },
+    dark: { s0: [21, 23, 27], s1: [29, 32, 37], s2: [38, 42, 47], s3: [47, 51, 57] },
+    overlay: { s0: [42, 41, 40], s1: [32, 31, 30], s2: [52, 50, 49] },
+  }
+  let accent = '#e5a44c'
+  const inkOnAccent = (rgb) => (toOklab(rgb)[0] > 0.62 ? '#241a0d' : '#fdfaf5')
+  const accentInkOn = (surface, rgb) => {
+    const lab = toOklab(rgb)
+    const lighten = relLum(surface) < 0.18
+    for (let d = 0; d <= 0.45; d += 0.004) {
+      const cand = fromOklab([lab[0] + (lighten ? d : -d), lab[1], lab[2]])
+      if (contrast(cand, surface) >= 4.6) return rgbToHex(cand)
+    }
+    return lighten ? '#f6d3a0' : '#7a4a10'
+  }
+  const applyAccent = () => {
+    const rgb = hexToRgb(accent)
+    const root = document.documentElement.style
+    const theme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
+    root.setProperty('--acc', accent)
+    root.setProperty('--on-acc', inkOnAccent(rgb))
+    root.setProperty('--acc-ink', accentInkOn(SURF[theme].s2, rgb))
+    root.setProperty('--acc-ink-ov', accentInkOn(SURF.overlay.s1, rgb))
+  }
+
+  /* ── 主题 ─────────────────────────────────────────────────────── */
+  const setTheme = (t) => {
+    document.documentElement.dataset.theme = t
+    const dark = t === 'dark'
+    $('#themeLab').textContent = dark ? '亮色' : '暗色'
+    $('#readTheme').textContent = dark ? '暗' : '亮'
+    $('#themeIco').style.setProperty('--icon', dark ? 'var(--ico-alpha-light)' : 'var(--ico-alpha-strong)')
+    applyAccent()
+  }
+  setTheme('light')
+  $('#themeToggle').addEventListener('click', () => {
+    setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark')
+  })
+
+  /* ── 侧栏：遍历 HL.nav（12 个路由 + 页脚关于 = 13） ─────────────── */
+  const navBox = $('#navBox')
+  const navBtn = (it, key) => {
+    const b = el('button', 'nav')
+    b.dataset.route = it.id
+    b.dataset.label = it.label
+    b.innerHTML = `<i class="ico" style="--icon:var(--ico-${esc(it.icon)})"></i><span class="lbl">${esc(it.label)}</span>`
+    if (it.id === 'home') b.classList.add('active')
+    return b
+  }
+  HL.nav.forEach((g) => {
+    const wrap = el('div', 'nav-group')
+    if (g.group) wrap.appendChild(el('b', null, esc(g.group)))
+    g.items.forEach((it) => wrap.appendChild(navBtn(it)))
+    navBox.appendChild(wrap)
+  })
+  {
+    const g = el('div', 'nav-group nav-foot')
+    g.appendChild(navBtn(HL.navFooter))
+    navBox.appendChild(g)
+  }
+
+  /* ── 状态轨：遍历 HL.rail ─────────────────────────────────────── */
+  HL.rail.forEach((r) => {
+    $('#statusRail').appendChild(el('div', 'cell',
+      `<span class="led ${esc(r.tone)}"></span><span class="txt"><span class="k">${esc(r.label)}</span>` +
+      `<span class="v">${esc(r.value)}</span></span>`))
+  })
+
+  /* ── 页签：遍历 HL.tabs ───────────────────────────────────────── */
+  const tabsBox = $('#tabs')
+  HL.tabs.forEach((t, i) => {
+    const b = el('button', 'tab' + (i === 0 ? ' active' : ''))
+    b.dataset.tab = t.id
+    b.innerHTML = `<span>${esc(t.label)}</span><span class="n num">${t.count}</span>`
+    tabsBox.appendChild(b)
+  })
+
+  /* ── 内容区 ───────────────────────────────────────────────────── */
+  const PAGES = {
+    home: HL.pages.home, history: HL.pages.history, usage: HL.pages.usage,
+    translation: { kicker: 'TRANSLATION', title: '翻译', desc: '自动检测源语言与自定义目标语言。' },
+    chat: { kicker: 'AI CHAT', title: 'AI 对话', desc: '使用已配置的模型进行多轮对话。' },
+    'selection-toolbar': { kicker: 'SELECTION', title: '划词工具', desc: '划选文本后出现的工具条与动作。' },
+    'local-search': { kicker: 'LOCAL SEARCH', title: '本地搜索', desc: '通过 Everything 索引本机文件。' },
+    'clipboard-history': { kicker: 'CLIPBOARD', title: '剪贴板历史', desc: '保留最近的复制记录，按类型归档。' },
+    'settings-general': { kicker: 'GENERAL', title: '通用', desc: '外观、启动与基础偏好。' },
+    'settings-function': { kicker: 'CAPTURE', title: '截图与录制', desc: '截图、标注与录制的默认行为。' },
+    models: { kicker: 'AI & MODELS', title: 'AI 与模型', desc: '本机 AI CLI 的接入与用量口径。' },
+    'settings-system': { kicker: 'SYSTEM', title: '系统与数据', desc: '存储位置、数据与更新。' },
+    about: { kicker: 'ABOUT', title: '关于', desc: '全部界面自绘 HTML，无网络字体。' },
+  }
+
+  const keyHtml = (f) => {
+    if (f.state === 'conflict') {
+      return `<span class="key num conflict"><span class="warn">!</span>${esc(f.key)}</span>`
+    }
+    return f.key ? `<span class="key num">${esc(f.key)}</span>` : `<span class="key slot">未设置</span>`
+  }
+  const rowFeature = (f) => `<div class="item${f.state === 'set' ? ' on' : ''}">
+    <span class="box"><i class="ico" style="--icon:var(--ico-${esc(f.icon)})"></i></span>
+    <span class="body"><span class="name">${esc(f.name)}</span><span class="desc">${esc(f.desc)}</span></span>
+    ${keyHtml(f)}</div>`
+
+  const listFor = (route, tab) => {
+    if (route === 'home') {
+      const items = HL.features[tab] || HL.features.shot
+      const t = HL.tabs.find((x) => x.id === tab) || HL.tabs[0]
+      return { head: t.label, sub: `共 ${items.length} 项，快捷键未设置的显示为空槽位`,
+        rows: items.map(rowFeature) }
+    }
+    if (route === 'history') {
+      const h = HL.history
+      return {
+        head: '截图历史',
+        sub: `${h.stats[0].value} 占用 · ${h.stats[1].label} ${h.stats[1].value} · ${h.stats[2].label} ${h.stats[2].value}`,
+        rows: h.items.map((it) => `<div class="item">
+          <span class="box"><i class="ico" style="--icon:var(--ico-screenshot)"></i></span>
+          <span class="body"><span class="name">${esc(it.source)}</span><span class="desc">${esc(it.time)} · ${esc(it.meta)}</span></span>
+          <span class="key num">${esc(it.meta.split(' · ').pop())}</span></div>`),
+      }
+    }
+    if (route === 'usage') {
+      const u = HL.usage
+      return {
+        head: 'Token 用量',
+        sub: `${u.kpis[0].label} ${u.kpis[0].value} · ${u.kpis[0].sub}`,
+        rows: u.sources.map((s) => `<div class="item on">
+          <span class="box"><i class="ico" style="--icon:var(--ico-usage)"></i></span>
+          <span class="body"><span class="name">${esc(s.name)}</span><span class="desc">${esc(s.value)} · 占 ${s.pct}%</span></span>
+          <span class="meter"><i style="width:${s.pct}%"></i></span></div>`),
+      }
+    }
+    const p = PAGES[route] || PAGES['settings-general']
+    let rows
+    if (route === 'clipboard-history') {
+      rows = HL.clipboard.items.map((it) => `<div class="item${it.pinned ? ' on' : ''}">
+        <span class="box"><i class="ico" style="--icon:var(--ico-${it.kind === 'image' ? 'screenshot' : it.kind === 'url' ? 'box-arrow-up-right' : 'text-style'})"></i></span>
+        <span class="body"><span class="name">${esc(it.source)}</span><span class="desc">${esc(it.text)}</span></span>
+        <span class="key slot">${esc(it.time)}</span></div>`)
+    } else if (route === 'translation' || route === 'local-search' || route === 'selection-toolbar') {
+      rows = HL.hotkeys.map((h) => `<div class="item${h.state === 'set' ? ' on' : ''}">
+        <span class="box"><i class="ico" style="--icon:var(--ico-${esc(h.icon)})"></i></span>
+        <span class="body"><span class="name">${esc(h.name)}</span><span class="desc">${esc(p.desc)}</span></span>
+        ${keyHtml(h)}</div>`)
+    } else if (route === 'chat' || route === 'models') {
+      rows = HL.usage.sources.map((s, i) => `<div class="item${i === 0 ? ' on' : ''}">
+        <span class="box"><i class="ico" style="--icon:var(--ico-robot)"></i></span>
+        <span class="body"><span class="name">${esc(s.name)}</span><span class="desc">${esc(s.value)} · 占 ${s.pct}%</span></span>
+        <span class="sw" role="switch" aria-checked="${i === 0}"><i></i></span></div>`)
+    } else {
+      const cfg = [['alpha-light', '外观与主题', p.desc], ['keyboard', '快捷键', '全局快捷键的录入位置。'],
+        ['system', '系统与数据', '存储位置、运行状态与更新。'], ['info', '关于', '版本 4.1.2。']]
+      rows = cfg.map(([ic, nm, ds], i) => `<div class="item${i === 0 ? ' on' : ''}">
+        <span class="box"><i class="ico" style="--icon:var(--ico-${ic})"></i></span>
+        <span class="body"><span class="name">${esc(nm)}</span><span class="desc">${esc(ds)}</span></span>
+        <span class="sw" role="switch" aria-checked="${i !== 1}"><i></i></span></div>`)
+    }
+    return { head: p.title, sub: p.desc, rows }
+  }
+
+  let curRoute = 'home'
+  let curTab = HL.tabs[0].id
+  const renderList = () => {
+    const { head, sub, rows } = listFor(curRoute, curTab)
+    $('#list').innerHTML = `<div class="list-head"><span class="k">${esc(head)}</span>` +
+      `<span class="d">${esc(sub)}</span><span class="spacer"></span>` +
+      `<span class="count">${rows.length} 项</span></div>${rows.join('')}`
+    $$('#list .item').forEach((n, i) => {
+      n.style.animation = `itemIn 200ms cubic-bezier(.22,.61,.36,1) ${Math.min(i * 18, 180)}ms both`
+    })
+  }
+
+  const setRoute = (route) => {
+    curRoute = route
+    const p = PAGES[route] || PAGES['settings-general']
+    $('#pTitle').textContent = p.title
+    $('#pCrumb').textContent = p.kicker
+    $$('#navBox .nav').forEach((n) => n.classList.toggle('active', n.dataset.route === route))
+    renderList()
+  }
+
+  navBox.addEventListener('click', (e) => {
+    const b = e.target.closest('.nav')
+    if (b) setRoute(b.dataset.route)
+  })
+  // 页签＝快捷功能分类。在别的路由上点页签＝跳回快捷功能并选中该分类（所以总能切到不同内容）。
+  tabsBox.addEventListener('click', (e) => {
+    const b = e.target.closest('.tab')
+    if (!b) return
+    curTab = b.dataset.tab
+    $$('#tabs .tab').forEach((t) => t.classList.toggle('active', t === b))
+    if (curRoute !== 'home') {
+      curRoute = 'home'
+      $$('#navBox .nav').forEach((n) => n.classList.toggle('active', n.dataset.route === 'home'))
+      $('#pTitle').textContent = PAGES.home.title
+      $('#pCrumb').textContent = PAGES.home.kicker
+    }
+    renderList()
+  })
+  $('#list').addEventListener('click', (e) => {
+    const sw = e.target.closest('.sw')
+    if (sw) { sw.setAttribute('aria-checked', sw.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); return }
+    const it = e.target.closest('.item')
+    if (it) $$('#list .item').forEach((n) => n.classList.toggle('on', n === it))
+  })
+  renderList()
+
+  /* ── 截图工具条 ───────────────────────────────────────────────── */
+  const cap = HL.capture
+  const toolWell = $('#toolWell'), actionWell = $('#actionWell')
+  const swatchRow = $('#swatchRow'), widthWell = $('#widthWell')
+  cap.tools.forEach((t, i) => {
+    const b = el('button', 'tool' + (i === 0 ? ' active' : ''))
+    b.dataset.tool = t.id
+    b.setAttribute('aria-pressed', i === 0 ? 'true' : 'false')
+    b.setAttribute('aria-label', t.label)
+    b.innerHTML = `<i class="ico" style="--icon:var(--ico-${esc(t.icon)})"></i><span class="tip">${esc(t.label)}</span>`
+    toolWell.appendChild(b)
+  })
+  cap.colors.forEach((c, i) => {
+    const w = el('button', 'swatch-wrap' + (i === 0 ? ' active' : ''))
+    w.dataset.color = c
+    w.setAttribute('aria-label', '颜色 ' + c)
+    w.innerHTML = `<span class="swatch" style="--c:${esc(c)}"></span>`
+    swatchRow.appendChild(w)
+  })
+  cap.widths.forEach((wd, i) => {
+    const b = el('button', 'width-btn' + (i === 1 ? ' active' : ''))
+    b.dataset.width = String(wd.value)
+    b.setAttribute('aria-label', wd.label)
+    b.innerHTML = `<i class="ico" style="--icon:var(--ico-${esc(wd.icon)})"></i>`
+    widthWell.appendChild(b)
+  })
+  cap.actions.forEach((a) => {
+    const b = el('button', 'act')
+    b.dataset.action = a.id
+    b.setAttribute('aria-label', a.label)
+    b.innerHTML = `<i class="ico" style="--icon:var(--ico-${esc(a.icon)})"></i><span class="tip">${esc(a.label)}</span>`
+    actionWell.appendChild(b)
+  })
+
+  const OPT_MAP = { select: 'select', rect: 'rect', ellipse: 'rect', arrow: 'arrow', line: 'arrow',
+    text: 'text', blur: 'blur', highlight: 'highlight' }
+  const TIPS = { select: '拖动选区边缘或角点调整', rect: '矩形标注', ellipse: '椭圆标注', arrow: '箭头标注',
+    line: '直线标注', pen: '画笔标注', highlight: '高亮标记', blur: '马赛克遮盖', text: '文字标注',
+    serial: '序号标记', watermark: '水印' }
+  const setTool = (id) => {
+    $$('.capture-bar .tool').forEach((b) => {
+      const on = b.dataset.tool === id
+      b.classList.toggle('active', on)
+      b.setAttribute('aria-pressed', on ? 'true' : 'false')
+    })
+    const want = OPT_MAP[id] || 'select'
+    $$('.optset').forEach((s) => s.classList.toggle('on', s.dataset.opts === want))
+    const tip = $('#toolOpts .optset.on .hint')
+    if (tip && TIPS[id]) tip.textContent = TIPS[id]
+  }
+  toolWell.addEventListener('click', (e) => {
+    const b = e.target.closest('.tool'); if (b) setTool(b.dataset.tool)
+  })
+  swatchRow.addEventListener('click', (e) => {
+    const b = e.target.closest('.swatch-wrap'); if (!b) return
+    $$('.swatch-wrap').forEach((n) => n.classList.toggle('active', n === b))
+    document.documentElement.style.setProperty('--mark', b.dataset.color)
+  })
+  widthWell.addEventListener('click', (e) => {
+    const b = e.target.closest('.width-btn'); if (!b) return
+    $$('#widthWell .width-btn').forEach((n) => n.classList.toggle('active', n === b))
+  })
+  $$('.optset').forEach((set) => {
+    set.addEventListener('click', (e) => {
+      const b = e.target.closest('.width-btn'); if (!b) return
+      const k = b.dataset.stroke ? 'stroke' : b.dataset.fill ? 'fill' : b.dataset.head ? 'head'
+        : b.dataset.size ? 'size' : b.dataset.blur ? 'blur' : b.dataset.hl ? 'hl' : b.dataset.bold ? 'bold' : null
+      if (!k) return
+      $$('.width-btn', set).filter((n) => k in n.dataset).forEach((n) => n.classList.toggle('active', n === b))
+    })
+  })
+  setTool(cap.tools[0].id)
+  $('#copyBtn').addEventListener('click', () => {
+    $('#copyBtn').animate([{ transform: 'translateY(0)' }, { transform: 'translateY(1px)' },
+      { transform: 'translateY(0)' }], { duration: 180, easing: 'cubic-bezier(.2,.7,.3,1)' })
+  })
+  $('#cancelBtn').addEventListener('click', () => setTool(cap.tools[0].id))
+
+  /* ── 剪贴板 ───────────────────────────────────────────────────── */
+  const cb = HL.clipboard
+  const chipsBox = $('#clipChips')
+  const KIND = ['text', 'url', 'image', 'file']
+  cb.chips.forEach((label, i) => {
+    const b = el('button', 'chip')
+    b.dataset.kind = i === 0 ? 'all' : KIND[i - 1]
+    b.dataset.label = label
+    b.setAttribute('aria-pressed', i === 0 ? 'true' : 'false')
+    b.textContent = label
+    chipsBox.appendChild(b)
+  })
+  chipsBox.appendChild(el('span', 'spacer'))
+
+  const KIND_ICO = { text: 'text-style', url: 'box-arrow-up-right', image: 'screenshot', file: 'folder-open' }
+  const clipList = $('#clipList')
+  cb.items.forEach((it, i) => {
+    const row = el('div', 'clip-row')
+    row.dataset.kind = it.kind
+    row.setAttribute('aria-selected', i === 0 ? 'true' : 'false')
+    const body = it.kind === 'image'
+      ? `<span class="txt">${esc(it.text)}</span>
+         <div class="thumb-row"><span class="thumb${i % 2 ? ' b' : ''}"><i class="g1"></i><i class="g2"></i><i class="sun"></i><i class="hill"></i></span>
+         <span class="size">${esc(it.size || '')}</span></div>`
+      : `<p class="txt${it.kind === 'url' ? ' u' : ''}">${esc(it.text)}</p>`
+    row.innerHTML =
+      `<i class="ico lead" style="--icon:var(--ico-${KIND_ICO[it.kind] || 'text-style'})"></i>
+       <div class="main"><div class="meta">${it.pinned ? `<i class="ico pin" style="--icon:var(--ico-pin)"></i>` : ''}` +
+      `${esc(it.source)}<span style="opacity:.55">·</span>${esc(it.time)}</div>${body}</div>`
+    clipList.appendChild(row)
+  })
+  clipList.addEventListener('click', (e) => {
+    const row = e.target.closest('.clip-row'); if (!row) return
+    $$('#clipList .clip-row').forEach((n) => n.setAttribute('aria-selected', n === row ? 'true' : 'false'))
+  })
+  let curKind = 'all'
+  const visibleRows = () => $$('#clipList .clip-row').filter((n) => !n.classList.contains('is-hidden'))
+  const refreshClipMeta = () => {
+    $('#clipFilter').textContent = curKind === 'all' ? '全部' : (cb.chips[KIND.indexOf(curKind) + 1] || '全部')
+    $('#clipCount').textContent = visibleRows().length + ' 条'
+  }
+  const applyFilter = () => {
+    const q = $('#clipSearch').value.trim().toLowerCase()
+    $$('#clipList .clip-row').forEach((n) => {
+      const hitKind = curKind === 'all' || n.dataset.kind === curKind
+      const hitText = !q || n.textContent.toLowerCase().includes(q)
+      n.classList.toggle('is-hidden', !(hitKind && hitText))
+    })
+    refreshClipMeta()
+  }
+  chipsBox.addEventListener('click', (e) => {
+    const b = e.target.closest('.chip'); if (!b) return
+    curKind = b.dataset.kind
+    $$('.chip').forEach((n) => n.setAttribute('aria-pressed', n === b ? 'true' : 'false'))
+    applyFilter()
+  })
+  $('#clipSearch').addEventListener('input', applyFilter)
+  applyFilter()
+
+  /* ── 划词工具条 ───────────────────────────────────────────────── */
+  const selBar = $('#selBar')
+  selBar.appendChild(el('span', 'led-dot'))
+  HL.selection.actions.forEach((a, i) => {
+    if (i === 1) selBar.appendChild(el('span', 'dw'))
+    const b = el('button', 'sel-btn' + (a.primary ? ' pry' : ''))
+    b.dataset.action = a.id
+    b.setAttribute('aria-label', a.label)
+    b.innerHTML = `<i class="ico" style="--icon:var(--ico-${esc(a.icon)})"></i><span>${esc(a.label)}</span>`
+    selBar.appendChild(b)
+  })
+
+  /* ── 台阶对照 ─────────────────────────────────────────────────── */
+  {
+    const rows = [
+      ['亮', ['#7e8388', '台面'], ['#b4b7bd', 's0'], ['#bfc2c7', 's1'], ['#c9ccd0', 's2'], ['#d3d6d9', 's3'], ['#a9acb2', '按下']],
+      ['暗', ['#0d0f11', '台面'], ['#15171b', 's0'], ['#1d2025', 's1'], ['#262a2f', 's2'], ['#2f3339', 's3'], ['#101216', '按下']],
+    ]
+    $('#themeMatrix').innerHTML = rows.map(([label, ...cells]) =>
+      `<div class="sw-row"><b>${label}</b>` +
+      cells.map(([c, k]) => `<div class="sw-cell"><span class="chip-sw" style="background:${c}"></span>` +
+        `<span class="sw-k">${k}</span></div>`).join('') + `</div>`).join('')
+  }
+
+  /* ── 动效演示台：一次播放，1.25s 后清掉 class ─────────────────── */
+  const stage = $('#motionStage')
+  let timer = 0
+  $('#motionBtn').addEventListener('click', () => {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    stage.classList.remove('is-playing')
+    void stage.offsetWidth
+    stage.classList.add('is-playing')
+    clearTimeout(timer)
+    timer = setTimeout(() => stage.classList.remove('is-playing'), 1250)
+  })
+})()
+</script>
+</body>
+</html>

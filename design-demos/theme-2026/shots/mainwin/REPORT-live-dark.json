@@ -1,0 +1,19 @@
+{
+  "theme": "dark",
+  "size": "1746x1206",
+  "cornerAlpha": 0,
+  "edgeAlpha": 20,
+  "interior": {
+    "r": 36,
+    "g": 33,
+    "b": 28,
+    "a": 255
+  },
+  "shellInset": "22px",
+  "shellBg": "rgba(36, 33, 28, 0.9)",
+  "shellFilter": "blur(40px) saturate(1.22)",
+  "shellShadow": "rgba(0, 0, 0, 0.44) 0px 1px 2px 0px, rgba(0, 0, 0, 0.5) 0px ",
+  "viewBg": "rgba(0, 0, 0, 0)",
+  "htmlBg": "rgba(0, 0, 0, 0)",
+  "errors": []
+}

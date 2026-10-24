@@ -1,0 +1,29 @@
+<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../shared/tokens.css">
+<style>
+  html,body{margin:0;height:100%;background:transparent;overflow:hidden;font:14px/1.5 "Segoe UI"}
+  .shell{position:absolute;inset:16px;border-radius:var(--radius-lg);overflow:hidden;
+    background:rgba(247,243,234,.72);
+    -webkit-backdrop-filter:blur(26px) saturate(1.22);
+    backdrop-filter:blur(26px) saturate(1.22);
+    box-shadow:var(--shadow-3);border:1px solid rgba(207,196,176,.8)}
+  .panel{position:absolute;left:24px;top:24px;right:24px;height:120px;border-radius:12px;
+    background:rgba(255,255,255,.42);
+    -webkit-backdrop-filter:blur(14px) saturate(1.1);
+    backdrop-filter:blur(14px) saturate(1.1);
+    box-shadow:var(--shadow-1)}
+  .row{position:absolute;left:24px;top:170px;right:24px;height:52px;border-radius:10px;
+    background:rgba(255,253,247,.62);
+    -webkit-backdrop-filter:blur(10px);
+    backdrop-filter:blur(10px)}
+  h1{position:absolute;left:44px;top:44px;margin:0;font-size:22px;color:var(--ink)}
+  p{position:absolute;left:44px;top:84px;margin:0;color:var(--muted)}
+  .tag{position:absolute;left:44px;top:196px;color:var(--ink)}
+</style></head>
+<body>
+  <div class="shell"><div class="panel"></div><div class="row"></div>
+    <h1>Glass probe · mica</h1>
+    <p>If the desktop shows through, the shell is translucent.</p>
+    <div class="tag">z1 shell .72 + blur 26 · z2 panel .42 + blur 14 · z3 row .62</div>
+  </div>
+</body></html>

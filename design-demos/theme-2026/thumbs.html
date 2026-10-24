@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter 2026 主题重设计：六格缩略图</title>
+<!--
+  六格缩略图：三套逻辑各两版。每格画的是该候选最关键的"材料与骨架"那一屏，
+  不是最终成品。细节可以省，但字体、配色、材质、骨架必须是真的。
+  看完这张图才决定哪三张做完整版（见 directions.md）。
+-->
+<style>
+  :root{
+    --paper:#f2f2ef;
+    --ink:#141414;
+    --mono:"Cascadia Mono","Consolas",monospace;
+    --ui:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+    --disp:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#dedede;color:#111;
+    font-family:var(--ui);font-synthesis:none;-webkit-font-smoothing:antialiased}
+  body{padding:26px 30px 34px}
+  .hd{display:flex;align-items:baseline;justify-content:space-between;gap:20px;max-width:1620px;margin:0 auto 20px}
+  .hd h1{margin:0;font:600 19px/1 var(--disp);letter-spacing:-.01em}
+  .hd p{margin:0;color:#4a4a4a;font-size:14px}
+  .grid{max-width:1620px;margin:0 auto;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px}
+  @media(max-width:1600px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .cell{background:#fff;border:1px solid #cfcfcf;border-radius:4px;overflow:hidden}
+  .cap{display:flex;align-items:center;gap:8px;padding:9px 12px 8px;border-bottom:1px solid #e2e2e2}
+  .cap b{font:600 14px/1.15 var(--disp)}
+  .cap .role{padding:3px 7px;border-radius:3px;background:#eaeae5;border:1px solid #dcdcd5}
+  .cap .who{font:400 12px/1.2 var(--ui);color:#4f4f4f}
+  .cap .meta{margin-left:auto;display:flex;gap:5px}
+  .cap .meta i{font:400 12px/1.2 var(--ui);font-style:normal;color:#4a4a4a;
+    padding:3px 7px;border-radius:3px;background:#f2f2ee;border:1px solid #dededa}
+  .stage{height:348px;position:relative;overflow:hidden}
+
+  /* ── shared mini window chrome ─────────────────────────────── */
+  .win{position:absolute;inset:14px 14px 0;display:flex;overflow:hidden}
+  .rail{flex:0 0 104px;padding:10px 8px;display:flex;flex-direction:column;gap:2px}
+  .rail b{font:600 12px/1 var(--disp);margin:0 3px 8px}
+  .rail i{display:flex;align-items:center;gap:5px;font:400 12px/1 var(--ui);font-style:normal;
+    padding:6px 7px;border-radius:3px;white-space:nowrap}
+  .rail i.on{font-weight:600}
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .top{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 11px}
+  .top h2{margin:0;font-size:14px;font-weight:600;letter-spacing:-.01em}
+  .top .sub{font:500 12px/1 var(--ui)}
+  .body{padding:0 11px 0;display:flex;flex-direction:column;gap:6px;min-height:0}
+  .row{display:flex;align-items:center;gap:8px;padding:7px 9px;font-size:12.5px}
+  .row .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .k{font:500 12px/1 var(--mono);padding:3px 6px;border-radius:2px;white-space:nowrap}
+
+  /* ══ A1 哑光器物 ══════════════════════════════════════════════ */
+  .a1 .stage{background:#dad9d4}
+  .a1 .win{background:#ecebe6;border-radius:6px 6px 0 0;
+    box-shadow:0 1px 0 #fff inset,0 -1px 0 rgba(0,0,0,.07) inset,0 8px 22px rgba(40,38,32,.16);
+    border:1px solid #c9c8c2}
+  .a1 .rail{background:#e2e1db;box-shadow:inset -1px 0 0 #cfcec8,inset 1px 0 0 #f3f2ee}
+  .a1 .rail i{color:#4a4842}
+  .a1 .rail b{color:#55524b}
+  .a1 .rail i.on{background:#ecebe6;color:#191917;box-shadow:inset 0 1px 2px rgba(0,0,0,.13),0 1px 0 #f7f6f2}
+  .a1 .main{background:#ecebe6}
+  .a1 .top{box-shadow:inset 0 -1px 0 #dbdad4}
+  .a1 .top h2{color:#1b1a18}
+  .a1 .top .sub{color:#46443e}
+  .a1 .row{background:#e7e6e0;border-radius:3px;box-shadow:inset 0 1px 0 #f6f5f1,inset 0 -1px 0 #d5d4cd;color:#232220}
+  .a1 .row .k{background:#dedcd5;color:#332f2b;box-shadow:inset 0 1px 0 #efeee9;font-size:12px}
+  .a1 .grain{position:absolute;inset:0;pointer-events:none;opacity:.5;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='90' height='90'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='90' height='90' filter='url(%23n)' opacity='.09'/%3E%3C/svg%3E")}
+
+  /* ══ A2 一体成型 ══════════════════════════════════════════════ */
+  .a2 .stage{background:linear-gradient(160deg,#c9ccd2,#a8adb6)}
+  .a2 .win{border-radius:10px;overflow:hidden;background:#eef0f3;
+    box-shadow:inset 0 1px 0 #fff,inset 0 -1px 0 rgba(0,0,0,.12),0 18px 34px rgba(30,34,42,.28),0 2px 6px rgba(30,34,42,.2)}
+  .a2 .rail{background:#e6e9ee;box-shadow:inset -1px 0 0 rgba(0,0,0,.06)}
+  .a2 .rail i{color:#4c5566}
+  .a2 .rail b{color:#4b5364}
+  .a2 .rail i.on{background:#dfe3ea;color:#1d2430;font-weight:600;box-shadow:inset 0 1px 2px rgba(20,28,44,.15)}
+  .a2 .main{background:#eef0f3}
+  .a2 .top h2{color:#1a212c}
+  .a2 .row{background:#f5f6f8;border-radius:6px;box-shadow:0 1px 0 #fff inset,0 0 0 1px rgba(22,30,44,.06)}
+  .a2 .row .k{background:#e4e8ee;color:#38414f}
+  .a2 .glint{position:absolute;left:0;right:0;top:0;height:44%;
+    background:linear-gradient(180deg,rgba(255,255,255,.7),rgba(255,255,255,0));pointer-events:none}
+
+  /* ══ B1 浮层优先 ══════════════════════════════════════════════ */
+  .b1 .stage{background:
+    radial-gradient(120% 90% at 20% 0%,#e9e4dc,#d8d2c8 60%,#cfc9be);}
+  .b1 .win{border-radius:12px 12px 0 0;overflow:visible;background:rgba(255,252,248,.86);
+    backdrop-filter:blur(18px) saturate(130%);
+    box-shadow:0 1px 0 rgba(255,255,255,.9) inset,0 0 0 1px rgba(60,50,38,.1),0 22px 44px rgba(60,50,38,.26),0 4px 10px rgba(60,50,38,.14)}
+  .b1 .rail{background:transparent}
+  .b1 .rail b{color:#4e463b}
+  .b2 .rail b{color:#525a68}
+  .b1 .rail i{color:#6c655b;border-radius:6px}
+  .b1 .rail i.on{background:rgba(255,255,255,.92);color:#1d1a16;font-weight:600;
+    box-shadow:0 1px 2px rgba(60,50,38,.16),0 6px 16px rgba(60,50,38,.10)}
+  .b1 .main{background:transparent}
+  .b1 .top h2{color:#1d1a16}
+  .b1 .top .sub{color:#4e463b}
+  .b2 .top .sub{color:#525a68}
+  .c1 .top .sub{color:#aeb8ca}
+  .a2 .top .sub{color:#414a5a}
+  .b1 .row{background:rgba(255,255,255,.7);border-radius:8px;color:#2a2620;
+    box-shadow:0 1px 2px rgba(60,50,38,.10),0 0 0 1px rgba(60,50,38,.06)}
+  .b1 .row .k{background:rgba(255,255,255,.95);color:#3d382f;box-shadow:0 0 0 1px rgba(60,50,38,.12),0 1px 0 rgba(60,50,38,.07)}
+  .b1 .flt{position:absolute;right:18px;bottom:16px;display:flex;gap:5px;padding:7px 8px;border-radius:11px;
+    background:rgba(30,28,26,.82);backdrop-filter:blur(16px) saturate(160%);
+    box-shadow:0 1px 0 rgba(255,255,255,.16) inset,0 10px 26px rgba(20,16,12,.4)}
+  .b1 .flt span{width:22px;height:22px;border-radius:6px;background:rgba(255,255,255,.14)}
+  .b1 .flt span.pry{background:#e5a44c}
+
+  /* ══ B2 原生精修 ══════════════════════════════════════════════ */
+  .b2 .stage{background:#eef0f4}
+  .b2 .win{inset:14px 14px 0;background:#fff;border-radius:9px 9px 0 0;
+    box-shadow:0 0 0 1px rgba(18,22,30,.08),0 12px 26px rgba(18,22,30,.10)}
+  .b2 .rail{background:#fff;padding-top:12px}
+  .b2 .rail i{color:#5f6673}
+  .b2 .rail i.on{color:#14171d;font-weight:600;background:#f4f6f9}
+  .b2 .main{background:#fff}
+  .b2 .top{padding:12px 12px 10px}
+  .b2 .top h2{font-size:15px;letter-spacing:-.02em;color:#14171d}
+  .b2 .row{padding:7px 4px 7px 0;background:transparent;border-radius:0;position:relative;color:#1d222b}
+  .b2 .row::after{content:"";position:absolute;left:20px;right:0;bottom:0;height:1px;background:#eceef2}
+  .b2 .row .dot{width:9px;height:9px;border-radius:3px;border:1.5px solid #9aa3b2;flex:0 0 9px}
+  .b2 .row .k{background:transparent;color:#5b6270;box-shadow:none;padding:0}
+  .b2 .add{position:absolute;right:20px;bottom:18px;width:26px;height:26px;border-radius:50%;
+    background:#2f7cf6;box-shadow:0 2px 6px rgba(47,124,246,.4),0 8px 20px rgba(47,124,246,.3);
+    display:grid;place-items:center;color:#fff;font:300 17px/1 var(--ui)}
+
+  /* ══ C1 斜切流光 ══════════════════════════════════════════════ */
+  .c1 .stage{background:#0b0d12}
+  .c1 .win{background:#12151d;border-radius:6px 6px 0 0;overflow:hidden;
+    box-shadow:0 0 0 1px rgba(255,255,255,.09),0 16px 36px rgba(0,0,0,.55)}
+  .c1 .rail{background:#0e1118;clip-path:polygon(0 0,100% 0,100% 78%,0 100%)}
+  .c1 .rail i{color:#8d95a6}
+  .c1 .rail i.on{background:#1b2230;color:#fff;font-weight:600}
+  .c1 .main{background:#12151d;clip-path:polygon(0 0,100% 0,100% 100%,0 92%)}
+  .c1 .top h2{color:#eef1f7}
+  .c1 .row{background:#181d27;border-radius:3px;color:#dfe4ee;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+  .c1 .row .k{background:#20283a;color:#a9b4c8}
+  .c1 .flow{position:absolute;left:-10%;right:-10%;top:-24%;height:56%;
+    background:conic-gradient(from 210deg at 30% 40%,#1d3f7a,#2b6f8f,#3f3b8c,#1d3f7a);
+    filter:blur(22px);opacity:.55;transform:skewY(-9deg)}
+
+  /* ══ C2 珐琅铭牌 ══════════════════════════════════════════════ */
+  .c2 .stage{background:
+    radial-gradient(90% 70% at 18% 0%,#221d19,#14100d 62%,#0e0b09);}
+  .c2 .win{inset:12px 12px 0;border-radius:7px 7px 0 0;
+    background:linear-gradient(178deg,#191410 0%,#120f0c 55%,#100d0a 100%);
+    box-shadow:0 0 0 1px #4a3a28,0 1px 0 rgba(255,225,180,.18) inset,0 20px 40px rgba(0,0,0,.6)}
+  .c2 .rail{padding-top:11px}
+  .c2 .rail b{color:#c9a86e;opacity:.85}
+  .c2 .rail i{color:#a89880;border-radius:2px;font-family:"Noto Serif SC","Songti SC",serif}
+  .c2 .rail i.on{background:linear-gradient(#2c2318,#201a13);color:#f3e6cd;
+    box-shadow:0 0 0 1px #6d5330,0 1px 0 rgba(255,230,190,.22) inset,0 0 22px rgba(200,150,70,.18)}
+  .c2 .top{box-shadow:inset 0 -1px 0 #3a2d1e}
+  .c2 .top h2{font-family:"Noto Serif SC","Songti SC",serif;font-weight:600;color:#f4e9d2}
+  .c2 .top .sub{color:#e2c894}
+  .c2 .plate{background:linear-gradient(180deg,rgba(255,235,200,.05),rgba(255,235,200,.012));
+    border-radius:3px;box-shadow:0 0 0 1px rgba(224,193,140,.34),0 1px 0 rgba(255,240,210,.12) inset,0 -1px 0 rgba(0,0,0,.5) inset;
+    padding:7px 9px;display:flex;flex-direction:column;gap:5px}
+  .c2 .prow{display:flex;align-items:baseline;gap:8px;font-size:12.5px;color:#f4ead4}
+  .c2 .prow .n{flex:1;font-family:"Noto Serif SC","Songti SC",serif}
+  .c2 .prow .k{font:500 12px/1 var(--mono);color:#f0cd93}
+  .c2 .redbar{position:absolute;left:0;top:0;bottom:0;width:2px;background:linear-gradient(#c0392b,#8e2419)}
+
+  .grid-note{max-width:1620px;margin:18px auto 0;color:#383838;font-size:14px;line-height:1.75}
+  .grid-note b{color:#111}
+</style>
+</head>
+<body>
+<div class="hd">
+  <h1>Highlighter 2026 主题重设计 · 六格缩略图</h1>
+  <p>三套逻辑各两版：每格是该候选的材料与骨架，选三张进入完整版</p>
+</div>
+
+<div class="grid">
+
+  <!-- ══════════ A1 ══════════ -->
+  <div class="cell a1">
+    <div class="cap"><b>A1 哑光器物</b><span class="role">最佳设计师</span><span class="who">深泽直人</span><span class="meta"><i>亮</i><i>细砂面</i></span></div>
+    <div class="stage">
+      <div class="win">
+        <div class="rail">
+          <b>HIGH·LIGHTER</b>
+          <i class="on">快捷功能</i><i>翻译</i><i>AI 对话</i><i>截图历史</i><i>划词工具</i><i>本地搜索</i><i>用量</i><i>通用</i>
+        </div>
+        <div class="main">
+          <div class="top"><h2>快捷功能</h2><span class="sub">9 / 13 已配置</span></div>
+          <div class="body">
+            <div class="row"><span class="n">截图</span><span class="k">Alt+A</span></div>
+            <div class="row"><span class="n">文本识别</span><span class="k">Alt+O</span></div>
+            <div class="row"><span class="n">固定到屏幕</span><span class="k">Alt+P</span></div>
+            <div class="row"><span class="n">延迟截图</span><span class="k">未设置</span></div>
+            <div class="row"><span class="n">长截图</span><span class="k">未设置</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="grain"></div>
+    </div>
+  </div>
+
+  <!-- ══════════ A2 ══════════ -->
+  <div class="cell a2">
+    <div class="cap"><b>A2 一体成型</b><span class="role">最佳设计师</span><span class="who">Apple unibody</span><span class="meta"><i>亮</i><i>倒角高光</i></span></div>
+    <div class="stage">
+      <div class="win">
+        <div class="rail">
+          <b>HIGH·LIGHTER</b>
+          <i class="on">快捷功能</i><i>翻译</i><i>AI 对话</i><i>截图历史</i><i>划词工具</i><i>本地搜索</i><i>用量</i><i>通用</i>
+        </div>
+        <div class="main">
+          <div class="top"><h2>快捷功能</h2><span class="sub">9 / 13</span></div>
+          <div class="body">
+            <div class="row"><span class="n">截图</span><span class="k">Alt+A</span></div>
+            <div class="row"><span class="n">文本识别</span><span class="k">Alt+O</span></div>
+            <div class="row"><span class="n">固定到屏幕</span><span class="k">Alt+P</span></div>
+            <div class="row"><span class="n">延迟截图</span><span class="k">未设置</span></div>
+            <div class="row"><span class="n">长截图</span><span class="k">未设置</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="glint"></div>
+    </div>
+  </div>
+
+  <!-- ══════════ B1 ══════════ -->
+  <div class="cell b1">
+    <div class="cap"><b>B1 浮层优先</b><span class="role">现实参照</span><span class="who">CleanShot X</span><span class="meta"><i>亮</i><i>磨砂玻璃</i></span></div>
+    <div class="stage">
+      <div class="win">
+        <div class="rail">
+          <b>HIGH·LIGHTER</b>
+          <i class="on">快捷功能</i><i>翻译</i><i>AI 对话</i><i>截图历史</i><i>划词工具</i><i>本地搜索</i><i>用量</i><i>通用</i>
+        </div>
+        <div class="main">
+          <div class="top"><h2>快捷功能</h2><span class="sub">9 / 13</span></div>
+          <div class="body">
+            <div class="row"><span class="n">截图</span><span class="k">Alt+A</span></div>
+            <div class="row"><span class="n">文本识别</span><span class="k">Alt+O</span></div>
+            <div class="row"><span class="n">固定到屏幕</span><span class="k">Alt+P</span></div>
+            <div class="row"><span class="n">延迟截图</span><span class="k">未设置</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="flt"><span></span><span></span><span></span><span class="pry"></span></div>
+    </div>
+  </div>
+
+  <!-- ══════════ B2 ══════════ -->
+  <div class="cell b2">
+    <div class="cap"><b>B2 原生精修</b><span class="role">现实参照</span><span class="who">Things 3</span><span class="meta"><i>亮</i><i>纯排版</i></span></div>
+    <div class="stage">
+      <div class="win">
+        <div class="rail">
+          <b>HIGH·LIGHTER</b>
+          <i class="on">快捷功能</i><i>翻译</i><i>AI 对话</i><i>截图历史</i><i>划词工具</i><i>本地搜索</i><i>用量</i><i>通用</i>
+        </div>
+        <div class="main">
+          <div class="top"><h2>快捷功能</h2></div>
+          <div class="body">
+            <div class="row"><span class="dot"></span><span class="n">截图</span><span class="k">Alt+A</span></div>
+            <div class="row"><span class="dot"></span><span class="n">文本识别</span><span class="k">Alt+O</span></div>
+            <div class="row"><span class="dot"></span><span class="n">固定到屏幕</span><span class="k">Alt+P</span></div>
+            <div class="row"><span class="dot"></span><span class="n">延迟截图</span><span class="k"></span></div>
+            <div class="row"><span class="dot"></span><span class="n">长截图</span><span class="k"></span></div>
+          </div>
+        </div>
+        <div class="add">+</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ C1 ══════════ -->
+  <div class="cell c1">
+    <div class="cap"><b>C1 斜切流光</b><span class="role">秒数轮盘 14 号</span><span class="who">斜切渐变</span><span class="meta"><i>暗</i><i>斜切</i></span></div>
+    <div class="stage">
+      <div class="win">
+        <div class="flow"></div>
+        <div class="rail" style="position:relative">
+          <b style="color:#b9c2d3">HIGH</b>
+          <i class="on">快捷功能</i><i>翻译</i><i>AI 对话</i><i>截图历史</i><i>划词工具</i><i>本地搜索</i>
+        </div>
+        <div class="main" style="position:relative">
+          <div class="top"><h2>快捷功能</h2><span class="sub">9 / 13</span></div>
+          <div class="body">
+            <div class="row"><span class="n">截图</span><span class="k">Alt+A</span></div>
+            <div class="row"><span class="n">文本识别</span><span class="k">Alt+O</span></div>
+            <div class="row"><span class="n">固定到屏幕</span><span class="k">Alt+P</span></div>
+            <div class="row"><span class="n">延迟截图</span><span class="k">未设置</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ C2 ══════════ -->
+  <div class="cell c2">
+    <div class="cap"><b>C2 珐琅铭牌</b><span class="role">秒数轮盘 6 号</span><span class="who">香港街招</span><span class="meta"><i>暗</i><i>珐琅</i></span></div>
+    <div class="stage">
+      <div class="win">
+        <div class="rail">
+          <b>HIGH·LIGHTER</b>
+          <i class="on">快捷功能</i><i>翻译</i><i>AI 对话</i><i>截图历史</i><i>划词工具</i><i>本地搜索</i><i>用量</i>
+        </div>
+        <div class="main" style="position:relative">
+          <div class="top"><h2>快捷功能</h2><span class="sub">9 / 13</span></div>
+          <div class="body">
+            <div class="plate" style="position:relative">
+              <div class="redbar"></div>
+              <div class="prow"><span class="n">截图</span><span class="k">Alt+A</span></div>
+              <div class="prow"><span class="n">文本识别</span><span class="k">Alt+O</span></div>
+              <div class="prow"><span class="n">固定到屏幕</span><span class="k">Alt+P</span></div>
+            </div>
+            <div class="plate" style="opacity:.72">
+              <div class="prow"><span class="n">延迟截图</span><span class="k">未设置</span></div>
+              <div class="prow"><span class="n">长截图</span><span class="k">未设置</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p class="grid-note">
+  <b>读这张图的方法：</b>六格用的是同一份内容（真实产品的 13 个路由与真实快捷键），差异只在材料与骨架。
+  上排两格问的是「这台软件像不像一件被做出来的器物」，中间两格问的是「换成成熟桌面软件的做法会更好吗」，
+  下排两格是轮盘把我带去的地方：C1 是刻意过头的那一张（去掉斜切信息反而更清楚），C2 只抽走了「刻字 + 牌面」，没有做霓虹。
+</p>
+</body>
+</html>

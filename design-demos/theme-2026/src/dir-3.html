@@ -1,0 +1,1350 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · 2026 主题 · C2 珐琅铭牌 ENAMEL</title>
+<!--
+  C2 · 珐琅铭牌 ENAMEL
+  ────────────────────────────────────────────────────────────────
+  来源：秒数轮盘·东亚区 6 号「香港街招与招牌」，只取三件事：
+    ① 字是刻/印在材料上的，不是浮在背景上的；
+    ② 每块信息有明确的牌面边界（一道奶白/黄铜描边 + 一道内阴影，像珐琅牌子的折边）；
+    ③ 高对比的暖白与近黑。
+  不做霓虹。光源只有一个：左上来。所有牌面的内阴影方向在 CSS token 里统一，
+  不允许任何一处自己写 box-shadow 的方向。
+  几何保持现代：8px 网格、等距数字、等宽快捷键、只做 4–8px 圆角；
+  只有「字」和「牌面」是旧的。这就是新旧之间的张力。
+  浮层（截图条 / 剪贴板 / 划词条）按 SPEC §2.3 永远是暗色：用 .on-enamel 局部重置 token。
+-->
+<style>
+/*__ICON_SHEET__*/
+
+/* ── 0. Tokens ──────────────────────────────────────────────────────────
+   强调色 --accent 是用户可配置的（settings.mainColor），默认 #e5a44c。
+   在这个方向里它的角色是「黄铜」：
+     · 原色只用于线、点、环（非文字），因为它可能偏暗/偏艳；
+     · 文字用 --brass-ink = 用户色向奶白提亮 52%（暗底）/ 向墨提亮 42%（亮底），
+       这样任何用户色都能保证 ≥4.5:1 的刻字对比度，同时看起来还是黄铜。 */
+:root{
+  --serif:"Noto Serif SC","Songti SC","SimSun",serif;   /* 宋体刻字 */
+  --ui:"Microsoft YaHei UI","DengXian","Segoe UI","Segoe UI Variable Text",sans-serif;
+  --mono:"Cascadia Mono","Consolas","Courier New",monospace;
+  --accent:#e5a44c;
+
+  /* SPEC §4 动效曲线，全页只从这里取 */
+  --c-press:cubic-bezier(.2,.7,.3,1);     /* 按压 90–120ms */
+  --c-hover:ease-out;                      /* 悬停/切换色 120–160ms */
+  --c-pop:cubic-bezier(.16,1,.3,1);        /* 浮层 180–220ms */
+  --c-page:cubic-bezier(.22,.61,.36,1);    /* 面板切换 220–280ms */
+  --c-ind:cubic-bezier(.3,.8,.2,1);        /* 指示器 180–240ms */
+
+  --r-win:10px; --r-plate:6px; --r-key:4px;
+  --board-w:1600px;
+}
+
+/* ── 1. 珐琅底：暗色（默认） ───────────────────────────────────────── */
+html[data-theme="dark"]{
+  /* 评审板底：深墨绿 —— 有明确色相的一块材料（OKLab 色度 0.048），不是中性近黑。
+     与产品窗口的暖棕珐琅冷／暖相对，牌面才像被「铆」在一块背板上。
+     第二层是一段很缓的黄铜斜光：整页因此不是一片均匀的暗，而是一块被照亮的板
+     （也让这块板与上一轮那版中性近底拉开）。 */
+  /* 评审板底：深展厅墙（#1E4438，OKLab 色度压到约一半）。
+     它必须退到产品界面后面：一块墙，不是一块品牌色。偏绿只是材料倾向，
+     不构成这套主题的第二色——主题的「活」色只有朱红与黄铜。
+     光是一层很缓的左上斜光；板上 ink 按这块底校过，最亮点处仍 ≥5:1。 */
+  --bg:#1E4438;
+  --bg-face:
+    linear-gradient(158deg,rgba(214,176,104,.09) 0%,rgba(206,164,92,.025) 24%,rgba(0,0,0,0) 54%,rgba(0,0,0,.16) 100%),
+    radial-gradient(118% 72% at 12% -6%,#2A5446 0%,#224C3E 48%,#173327 100%);
+  --stage:#173327;
+  /* 板上的四档字色：与产品窗口同一套墨，按板底（含最亮点）重新校到 ≥5:1 */
+  --board-ink0:#fdf6e6;
+  --board-ink1:#f4ead1;
+  --board-ink2:#e4d8b9;
+  --board-ink3:#d2c6a6;
+
+  --enamel:#171310;                       /* 主窗口底板（不透明，供对比度取样） */
+  --enamel-face:linear-gradient(180deg,rgba(255,240,214,.055) 0%,rgba(255,240,214,.012) 30%,rgba(0,0,0,.10) 74%,rgba(0,0,0,.24) 100%),
+               radial-gradient(116% 84% at 4% -14%,#2c241c 0%,rgba(44,36,28,0) 56%);
+  --nav-bg:#130f0c;
+  --nav-face:linear-gradient(180deg,rgba(255,240,214,.030),rgba(0,0,0,.12));
+
+  --plate-base:#1e1813;                   /* 牌面底（不透明：对比度取样的下限） */
+  --plate-face:linear-gradient(157deg,rgba(255,243,219,.070) 0%,rgba(255,243,219,.022) 44%,rgba(255,243,219,.008) 100%);
+  --plate-ring:rgba(238,214,172,.22);
+  --plate-ring-hi:rgba(240,214,168,.42);
+  /* 光源：左上。一条规则，全页所有牌面共用 —— inset 上/左=高光，下/右=阴影，外投影向右下。 */
+  --shadow-plate:inset 0 1px 0 rgba(255,246,226,.16),
+                 inset 1px 0 0 rgba(255,246,226,.07),
+                 inset 0 -1px 0 rgba(0,0,0,.50),
+                 inset -1px 0 0 rgba(0,0,0,.34),
+                 0 8px 18px -14px rgba(0,0,0,.9);
+  --shadow-lit:inset 0 1px 0 rgba(255,248,230,.24),
+               inset 1px 0 0 rgba(255,248,230,.11),
+               inset 0 -1px 0 rgba(0,0,0,.46),
+               inset -1px 0 0 rgba(0,0,0,.30),
+               0 0 0 1px rgba(232,186,116,.10),
+               0 10px 22px -14px rgba(0,0,0,.92);
+
+  --ink0:#f6ecd7;   /* 15.7:1 · 标题/当前项 */
+  --ink1:#e3d6ba;   /* 12.8:1 · 正文刻字 */
+  --ink2:#c8b795;   /*  9.3:1 · 次要正文 */
+  --ink3:#b0a184;   /*  7.3:1 · 标签/描述下限（提亮一档，暗底不凑近也读得清） */
+
+  --brass:var(--accent);
+  --brass-ink:color-mix(in srgb,var(--accent) 52%,#fbf1dc);
+  --key-line:rgba(232,186,116,.28);
+  --key-bg:rgba(232,186,116,.055);
+  --seal:#c0342a;
+  --seal-grad:linear-gradient(180deg,#cf4038,#982a21);
+  --hair:rgba(238,214,172,.13);
+  --hov:rgba(255,240,214,.055);
+  --engrave:0 .5px 0 rgba(0,0,0,.45),0 -.4px .2px rgba(255,247,228,.13);
+  --win-ring:rgba(238,214,172,.17);
+  --win-shadow:0 0 0 1px rgba(0,0,0,.55),0 26px 60px -28px rgba(0,0,0,.9),0 2px 0 rgba(255,244,222,.05) inset;
+  --grain:.5;
+  /* 板上（墨绿背板）的牌面：带一点冷调，才读得出是同一块板上的东西 */
+  --board-plate:#1C2622;
+  --board-plate-face:linear-gradient(157deg,rgba(226,242,230,.075),rgba(226,242,230,.024) 44%,rgba(226,242,230,.006));
+  --board-ring:rgba(206,226,208,.20);
+  --board-shadow:inset 0 1px 0 rgba(240,255,244,.16),inset 1px 0 0 rgba(240,255,244,.06),
+                 inset 0 -1px 0 rgba(0,0,0,.52),inset -1px 0 0 rgba(0,0,0,.34),
+                 0 8px 18px -14px rgba(0,0,0,.9);
+}
+
+/* ── 2. 珐琅底：亮色（日光版，不是反色） ───────────────────────────────
+   同一个语言在日光下的样子：底板是一张压了一层哑光的暖白珐琅，
+   牌面比底板更亮（paper on desk），刻字是深墨，折边仍然是「上亮下暗」。 */
+html[data-theme="light"]{
+  /* 日光板底：晒过太阳的亚麻灰绿（与暗色的「展厅墙」同一个材料，只是换了光） */
+  --bg:#DCDCCB;
+  --bg-face:radial-gradient(120% 80% at 8% -10%,#E8E8D8 0%,#DCDCCB 52%,#CFD0BD 100%);
+  --stage:#CFD0BD;
+  /* 板上字色：深墨，与板底最暗处也 ≥5:1 */
+  --board-ink0:#20241C;
+  --board-ink1:#2C3026;
+  --board-ink2:#454A3C;
+  --board-ink3:#515643;
+
+  --enamel:#efe7d6;
+  --enamel-face:linear-gradient(180deg,rgba(255,255,255,.55) 0%,rgba(255,255,255,.16) 30%,rgba(122,95,55,.05) 76%,rgba(110,84,46,.10) 100%),
+               radial-gradient(110% 80% at 2% -12%,rgba(255,253,246,.85) 0%,rgba(255,253,246,0) 58%);
+  --nav-bg:#e9dfcb;
+  --nav-face:linear-gradient(180deg,rgba(255,255,255,.55),rgba(122,95,55,.045));
+
+  --plate-base:#faf3e5;
+  --plate-face:linear-gradient(157deg,rgba(255,255,255,.78) 0%,rgba(255,253,246,.36) 44%,rgba(255,250,240,.10) 100%);
+  --plate-ring:rgba(94,72,40,.26);
+  --plate-ring-hi:rgba(120,88,40,.34);
+  --shadow-plate:inset 0 1px 0 rgba(255,255,255,.95),
+                 inset 1px 0 0 rgba(255,255,255,.60),
+                 inset 0 -1px 0 rgba(96,72,40,.15),
+                 inset -1px 0 0 rgba(96,72,40,.09),
+                 0 7px 16px -12px rgba(80,58,28,.55);
+  --shadow-lit:inset 0 1px 0 rgba(255,255,255,1),
+               inset 1px 0 0 rgba(255,255,255,.7),
+               inset 0 -1px 0 rgba(96,72,40,.16),
+               inset -1px 0 0 rgba(96,72,40,.09),
+               0 0 0 1px rgba(140,104,48,.12),
+               0 9px 20px -13px rgba(80,58,28,.58);
+
+  --ink0:#241a10;   /* 13.8:1 */
+  --ink1:#33271a;   /* 11.7:1 */
+  --ink2:#4e3f2d;   /*  8.2:1 */
+  --ink3:#63533d;   /*  6.0:1 · 标签/描述下限 */
+
+  --brass:var(--accent);
+  --brass-ink:color-mix(in srgb,var(--accent) 42%,#241708);
+  --key-line:rgba(120,88,40,.30);
+  --key-bg:rgba(255,252,244,.55);
+  --seal:#b0301f;
+  --seal-grad:linear-gradient(180deg,#bf3a2b,#8f2417);
+  --hair:rgba(94,72,40,.17);
+  --hov:rgba(255,255,255,.45);
+  --engrave:0 .5px 0 rgba(255,255,255,.9),0 -.4px 0 rgba(58,40,18,.10);
+  --win-ring:rgba(94,72,40,.22);
+  --win-shadow:0 0 0 1px rgba(94,72,40,.10),0 24px 54px -30px rgba(74,54,28,.55),0 2px 0 rgba(255,255,255,.6) inset;
+  --grain:.22;
+  /* 亮板底：晒过太阳的亚麻灰绿，有可辨色相，不是纯中性米白 */
+  --board-plate:#EEF0E4;
+  --board-plate-face:linear-gradient(157deg,rgba(255,255,255,.80),rgba(255,255,255,.40) 46%,rgba(255,255,255,.10));
+  --board-ring:rgba(52,74,58,.22);
+  --board-shadow:inset 0 1px 0 rgba(255,255,255,.92),inset 1px 0 0 rgba(255,255,255,.55),
+                 inset 0 -1px 0 rgba(52,74,58,.13),inset -1px 0 0 rgba(52,74,58,.08),
+                 0 7px 16px -12px rgba(46,66,50,.45);
+}
+
+/* ── 3. 浮层：永远暗色（SPEC §2.3）───────────────────────────────────
+   .on-enamel 在局部把 token 重置回暗色，浮层因此不吃主题。 */
+.on-enamel{
+  --ink0:#f6ecd7; --ink1:#e3d6ba; --ink2:#c8b795; --ink3:#b0a184;
+  --enamel:#141110; --enamel-face:linear-gradient(180deg,rgba(255,240,214,.06),rgba(0,0,0,.18));
+  --plate-base:#1e1813;
+  --plate-face:linear-gradient(157deg,rgba(255,243,219,.070),rgba(255,243,219,.022) 44%,rgba(255,243,219,.008));
+  --plate-ring:rgba(238,214,172,.22);
+  --shadow-plate:inset 0 1px 0 rgba(255,246,226,.16),inset 1px 0 0 rgba(255,246,226,.07),
+                 inset 0 -1px 0 rgba(0,0,0,.50),inset -1px 0 0 rgba(0,0,0,.34),
+                 0 8px 18px -14px rgba(0,0,0,.9);
+  --shadow-lit:inset 0 1px 0 rgba(255,248,230,.24),inset 1px 0 0 rgba(255,248,230,.11),
+               inset 0 -1px 0 rgba(0,0,0,.46),inset -1px 0 0 rgba(0,0,0,.30),
+               0 10px 22px -14px rgba(0,0,0,.92);
+  --brass-ink:color-mix(in srgb,var(--accent) 52%,#fbf1dc);
+  --key-line:rgba(232,186,116,.28); --key-bg:rgba(232,186,116,.055);
+  --seal:#c0342a; --seal-grad:linear-gradient(180deg,#cf4038,#982a21);
+  --hair:rgba(238,214,172,.13); --hov:rgba(255,240,214,.055);
+  --engrave:0 .5px 0 rgba(0,0,0,.45),0 -.4px .2px rgba(255,247,228,.13);
+  --win-ring:rgba(238,214,172,.17);
+  --grain:.5;
+}
+
+/* ── 4. Base ────────────────────────────────────────────────────────── */
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+figure{margin:0}
+body{
+  background-color:var(--bg);
+  background-image:var(--bg-face);
+  color:var(--ink1);
+  font-family:var(--ui);
+  font-size:14px;
+  font-synthesis:none;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  transition:background-color 240ms var(--c-hover);
+}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;
+  transition:transform 110ms var(--c-press),background-color 140ms var(--c-hover),
+             border-color 140ms var(--c-hover),color 140ms var(--c-hover),box-shadow 140ms var(--c-hover)}
+button:active{transform:translateY(1px)}
+:focus-visible{outline:1px solid var(--plate-ring-hi);outline-offset:2px}
+
+.ico{--isz:16px;display:block;flex:0 0 auto;width:var(--isz);height:var(--isz);
+  background-color:currentColor;
+  -webkit-mask:var(--icon) center/contain no-repeat;
+  mask:var(--icon) center/contain no-repeat}
+
+/* 刻字：0.4–0.5px 的上下描边模拟「字口」的暗边与高光，不用发光 */
+.engrave{text-shadow:var(--engrave)}
+
+/* ── 5. 评审板 ─────────────────────────────────────────────────────── */
+#board{position:relative;width:var(--board-w);margin:0 auto;padding:34px 0 64px;display:flex;
+  flex-direction:column;align-items:center;gap:30px}
+.bh{width:1120px;display:grid;grid-template-columns:minmax(0,1fr);
+  gap:0;align-items:start;padding-bottom:6px}
+/* 评审板上的字：与产品窗口共用墨色，但引线与编号在墨绿底上要用 --brass-ink 级亮度，
+   原色 --brass 只留给「点/线/环」这类非文字。 */
+.bh-k{font:400 14px/1.4 var(--ui);letter-spacing:.03em;color:var(--board-ink3)}
+.bh-num{font:400 14px/1 var(--mono);color:var(--brass-ink);letter-spacing:.04em}
+.bh-t{margin:10px 0 0;font:600 30px/1.1 var(--serif);color:var(--board-ink0);letter-spacing:.01em;
+  text-shadow:var(--engrave)}
+.bh-d{margin:11px 0 0;max-width:740px;font:400 14px/1.65 var(--ui);color:var(--board-ink2)}
+.bh-d b{color:var(--board-ink1);font-weight:600}
+/* 色板行：一条横向铭牌带，不与正文抢列宽；用板牌面的冷调 token，与产品窗口的暖棕珐琅分开 */
+.bh-sw{display:flex;flex-wrap:wrap;align-items:center;gap:8px 24px;margin-top:16px;
+  padding:11px 14px;border-radius:var(--r-plate);border:1px solid var(--board-ring);
+  background-color:var(--board-plate);background-image:var(--board-plate-face);
+  box-shadow:var(--board-shadow)}
+.bh-sw .row{display:flex;align-items:center;gap:9px;font:400 14px/1.3 var(--ui);color:var(--board-ink2);
+  letter-spacing:.02em;white-space:nowrap}
+.bh-sw .row i{width:12px;height:12px;border-radius:3px;box-shadow:inset 0 1px 0 rgba(255,255,255,.22),
+  inset 0 -1px 0 rgba(0,0,0,.45),0 0 0 1px rgba(0,0,0,.25)}
+.bh-sw .row em{font:400 14px/1.3 var(--ui);font-style:normal;color:var(--board-ink3);
+  letter-spacing:.02em;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.art{display:flex;flex-direction:column;gap:11px;position:relative;isolation:isolate;--frame:17px}
+/* 每块产品界面都被「装裱」在一块黄铜铭牌框里：这是 form 的直接表达 ——
+   截图工具的输出是一张被装裱起来的图，它的历史、贴图、识别结果最后都变成
+   贴在桌面上的一块牌子。框是板的结构，不是装饰：它同时是这块板唯一的暖色来源。
+   做法：产品窗口用 margin 外扩 11px 让出框宽度，框画在 ::before 的最底层，
+   产品窗口 z-index 压在它上面 —— 所以 1120×760 / 480×640 / 620×56 的尺寸不被挤压。 */
+.art > section{margin:var(--frame);position:relative;z-index:2;
+  border-radius:calc(var(--r-win) + var(--frame))}
+.art::before{content:"";position:absolute;pointer-events:none;z-index:0;
+  top:calc(var(--cap-h,24px) + var(--frame));
+  left:calc(-1 * var(--frame));right:calc(-1 * var(--frame));bottom:calc(-1 * var(--frame));
+  border-radius:calc(var(--r-win) + var(--frame));
+  background:linear-gradient(158deg,#D8AB62 0%,#BE8C46 20%,#9A6F32 50%,#7A5526 74%,#4E3818 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,248,222,.75),
+    inset 1px 0 0 rgba(255,248,222,.34),
+    inset 0 -1px 0 rgba(0,0,0,.62),
+    inset -1px 0 0 rgba(0,0,0,.40),
+    0 0 0 1px rgba(0,0,0,.5),
+    0 24px 44px -26px rgba(0,0,0,.95)}
+html[data-theme="light"] .art::before{
+  background:linear-gradient(158deg,#D8B77C 0%,#C39C5C 24%,#A8823F 58%,#8A6830 82%,#6E5122 100%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.62),inset 1px 0 0 rgba(255,255,255,.32),
+    inset 0 -1px 0 rgba(60,40,14,.4),inset -1px 0 0 rgba(60,40,14,.22),
+    0 0 0 1px rgba(90,66,26,.45),0 20px 36px -26px rgba(60,44,18,.6)}
+/* 图注下方一道黄铜引线：把 5 块界面钉在同一条骨架上（黄铜只做线，不做色块） */
+.art::after{content:"";position:absolute;left:-11px;right:-11px;top:21px;height:1px;z-index:1;
+  background:linear-gradient(90deg,color-mix(in srgb,var(--accent) 60%,transparent) 0%,
+    rgba(201,162,95,.22) 40%,rgba(201,162,95,.05) 100%)}
+.cap{display:flex;align-items:baseline;gap:12px;font:400 14px/1.4 var(--ui);letter-spacing:.01em;
+  color:var(--board-ink3)}
+.cap .num{font:400 14px/1 var(--mono);color:var(--brass-ink);letter-spacing:.04em}
+.cap .ttl{font:500 14px/1.4 var(--ui);color:var(--board-ink2);letter-spacing:.01em}
+.cap .meta{margin-left:auto;display:flex;align-items:center;color:var(--board-ink3);
+  font:400 14px/1.4 var(--ui)}
+.cap .meta span+span::before{content:"";display:inline-block;width:1px;height:9px;
+  background:var(--hair);margin:0 10px;vertical-align:-1px}
+
+/* 牌面：全页唯一的一套材质（光源方向写死在 token 里） */
+.plate{position:relative;border-radius:var(--r-plate);border:1px solid var(--plate-ring);
+  background-color:var(--plate-base);background-image:var(--plate-face);
+  box-shadow:var(--shadow-plate)}
+
+/* ── 6. 主窗口 ─────────────────────────────────────────────────────── */
+#appWin{position:relative;width:1120px;height:760px;display:grid;grid-template-columns:224px minmax(0,1fr);
+  grid-template-rows:46px minmax(0,1fr);overflow:hidden;border-radius:var(--r-win);
+  border:1px solid var(--win-ring);background-color:var(--enamel);background-image:var(--enamel-face);
+  box-shadow:var(--win-shadow);transition:background-color 240ms var(--c-hover)}
+#appWin::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:40;opacity:var(--grain);
+  background-image:radial-gradient(rgba(255,255,255,.5) .5px,transparent .6px),
+                   radial-gradient(rgba(0,0,0,.55) .5px,transparent .6px);
+  background-size:3px 3px,5px 5px;background-position:0 0,1px 2px;mix-blend-mode:overlay}
+
+/* 标题栏 */
+.winbar{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 8px 0 14px;
+  border-bottom:1px solid var(--hair);
+  background-image:linear-gradient(180deg,rgba(255,240,214,.05),rgba(0,0,0,.10))}
+.brand{font:600 17px/1 var(--serif);letter-spacing:.01em;text-shadow:var(--engrave)}
+.brand i{font-style:normal;color:var(--ink0)}
+.brand b{font-weight:600;color:var(--brass-ink)}
+.wtag{font:400 12px/1 var(--ui);color:var(--ink3);letter-spacing:.06em}
+.vline{width:1px;height:16px;background:var(--hair);flex:0 0 auto}
+.wspacer{flex:1}
+.wroute{display:flex;align-items:center;gap:7px;font:400 13px/1 var(--ui);color:var(--ink2);
+  letter-spacing:.04em;padding-right:4px}
+.wroute .dot{width:5px;height:5px;border-radius:50%;background:var(--brass);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent)}
+#themeToggle{display:flex;align-items:center;gap:8px;height:32px;padding:0 9px;border-radius:5px;
+  border:1px solid var(--plate-ring);background-color:var(--plate-base);background-image:var(--plate-face);
+  box-shadow:var(--shadow-plate);color:var(--ink2)}
+#themeToggle:hover{color:var(--ink0)}
+#themeToggle:hover .tt-dot{background:var(--brass-ink)}
+.tt-track{position:relative;width:26px;height:10px;border-radius:5px;border:1px solid var(--key-line);
+  background-color:rgba(0,0,0,.18)}
+.tt-dot{position:absolute;top:50%;left:0;width:8px;height:8px;border-radius:50%;background:var(--brass);
+  transform:translate(0,-50%);transition:transform 200ms var(--c-ind),background-color 140ms var(--c-hover);
+  box-shadow:0 1px 0 rgba(255,255,255,.18)}
+html[data-theme="light"] .tt-dot{transform:translate(16px,-50%)}
+.wincaps{display:flex;gap:2px}
+.capb{width:34px;height:32px;display:grid;place-items:center;border-radius:4px;color:var(--ink3)}
+.capb:hover{color:var(--ink0);background-color:var(--hov)}
+.capb.close:hover{color:#f6e4dd;background-color:rgba(192,52,42,.55)}
+
+/* 侧栏 */
+#navBox{display:flex;flex-direction:column;gap:2px;padding:10px 10px 12px;min-width:0;
+  border-right:1px solid rgba(0,0,0,.45);background-color:var(--nav-bg);background-image:var(--nav-face)}
+.nav-grp{display:flex;align-items:center;gap:8px;padding:15px 8px 6px;
+  font:500 12px/1 var(--ui);letter-spacing:.09em;color:var(--ink3)}
+.nav-grp::after{content:"";flex:1;height:1px;background:var(--hair)}
+.nav{position:relative;display:flex;align-items:center;gap:9px;height:36px;padding:0 9px;width:100%;
+  border-radius:5px;border:1px solid transparent;font:500 14px/1 var(--serif);color:var(--ink2);
+  text-align:left;letter-spacing:.01em;text-shadow:var(--engrave)}
+.nav .ico{color:var(--ink3);opacity:.85}
+.nav:hover{color:var(--ink1);background-color:var(--hov)}
+.nav:hover .ico{color:var(--ink2)}
+.nav.active{color:var(--ink0);background-color:var(--plate-base);
+  background-image:radial-gradient(130% 120% at 0% 0%,rgba(232,190,124,.17),rgba(232,190,124,.03) 58%,transparent 100%),
+                   var(--plate-face);
+  border-color:var(--plate-ring-hi);box-shadow:var(--shadow-lit)}
+.nav.active .ico{color:var(--brass);opacity:1}
+/* 朱红 ①：当前路由 = 一块牌被点亮，左沿一道 2px 朱红（像一块压字的印章边） */
+.nav.active::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:2px;
+  border-radius:0 2px 2px 0;background:var(--seal-grad);box-shadow:1px 0 0 rgba(0,0,0,.4)}
+.nav-foot{margin-top:auto;padding-top:12px;border-top:1px solid var(--hair);display:flex;
+  flex-direction:column;gap:6px}
+.ver{display:flex;align-items:center;gap:8px;padding:0 9px;font:400 12px/1 var(--mono);color:var(--ink3);
+  letter-spacing:.08em}
+.ver::after{content:"";flex:1;height:1px;background:var(--hair)}
+
+/* 内容区 */
+.main{position:relative;display:flex;flex-direction:column;min-width:0;padding:20px 26px 0;
+  box-shadow:inset 1px 0 0 rgba(255,244,222,.05)}
+.phead{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding-bottom:16px}
+.kicker{font:400 12px/1 var(--mono);letter-spacing:.26em;color:var(--brass-ink);text-transform:uppercase}
+.ptitle{margin:10px 0 0;font:600 27px/1.15 var(--serif);color:var(--ink0);letter-spacing:.015em;
+  text-shadow:var(--engrave)}
+.pdesc{margin:9px 0 0;max-width:560px;font:400 14px/1.55 var(--ui);color:var(--ink2)}
+.mini{flex:0 0 auto;padding:9px 13px 10px;min-width:104px}
+.mini-k{font:400 12px/1 var(--ui);letter-spacing:.1em;color:var(--ink3)}
+.mini-v{display:flex;align-items:baseline;gap:5px;margin-top:7px;font:400 12px/1 var(--mono);color:var(--ink3)}
+.mini-v b{font:500 17px/1 var(--mono);color:var(--ink1);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.mini-v span{opacity:.55}
+
+/* 页签：一排刻字键 */
+#tabs{display:flex;align-items:center;gap:5px;padding-bottom:14px;border-bottom:1px solid var(--hair)}
+.tab{position:relative;display:flex;align-items:center;gap:8px;height:34px;padding:0 13px;
+  border-radius:5px;border:1px solid transparent;font:500 14px/1 var(--serif);color:var(--ink3);
+  letter-spacing:.02em}
+.tab .n{font:400 12px/1 var(--mono);color:var(--ink3);opacity:.85;font-variant-numeric:tabular-nums}
+.tab:hover{color:var(--ink1);background-color:var(--hov)}
+.tab.active{color:var(--ink0);background-color:var(--plate-base);background-image:var(--plate-face);
+  border-color:var(--plate-ring);box-shadow:var(--shadow-plate)}
+.tab.active .n{color:var(--brass-ink);opacity:1}
+/* 朱红 ②：当前页签的底沿 */
+.tab.active::after{content:"";position:absolute;left:11px;right:11px;bottom:-1px;height:2px;
+  border-radius:1px;background:var(--seal-grad)}
+
+/* 条目：牌面拼贴 —— 节奏只有一种：单列列表 + 54px 行高 + 8px 网格。
+   11 项 × 54px = 594px，760 高的窗口内容区只有 ~475px，单列放不下，
+   所以按「一份列表顺序流进两块牌」处理：编号连续，两块牌高度不同，
+   但每一行、每一个数值都落在同一套网格上。 */
+.list-wrap{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
+#list{flex:1;min-height:0;padding:16px 6px 0 0;overflow-y:auto;overflow-x:hidden;
+  scrollbar-width:thin;scrollbar-color:var(--plate-ring) transparent}
+#list::-webkit-scrollbar{width:8px}
+#list::-webkit-scrollbar-thumb{background:var(--plate-ring);border-radius:4px}
+#list::-webkit-scrollbar-track{background:transparent}
+/* 折叠处的渐隐 + 一句实话：还有几项在下面。真实产品这里也是滚动的。 */
+.list-fade{position:absolute;left:0;right:0;bottom:0;height:44px;pointer-events:none;
+  display:flex;align-items:flex-end;justify-content:flex-end;padding:0 6px 7px;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--enamel) 0%,transparent) 0%,
+    color-mix(in srgb,var(--enamel) 88%,transparent) 58%,var(--enamel) 100%)}
+.list-fade b{display:none;font:400 12px/1 var(--ui);color:var(--ink2);letter-spacing:.02em;
+  padding:4px 8px 3px;border-radius:3px;border:1px solid var(--hair);
+  background-color:color-mix(in srgb,var(--enamel) 80%,#000)}
+html[data-theme="light"] .list-fade b{background-color:color-mix(in srgb,var(--plate-base) 82%,transparent)}
+.list-fade b.on{display:block}
+.lgrid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px;align-items:start}
+.plate.g{grid-column:span var(--span,12);display:flex;flex-direction:column;padding:10px 11px 12px}
+.ph{display:flex;align-items:center;gap:9px;padding:1px 3px 9px;border-bottom:1px solid var(--hair)}
+.ph .pt{font:500 13px/1 var(--serif);color:var(--ink2);letter-spacing:.02em;text-shadow:var(--engrave)}
+.ph .ln{flex:1;height:1px;background:var(--hair)}
+.ph .ct{font:400 12px/1 var(--ui);color:var(--ink3);letter-spacing:.02em;font-variant-numeric:tabular-nums}
+.rows{display:flex;flex-direction:column;flex:1}
+.pfoot{display:flex;align-items:center;gap:7px;margin-top:auto;padding:11px 4px 3px;
+  border-top:1px solid var(--hair);font:400 12px/1.4 var(--ui);color:var(--ink3);letter-spacing:.02em}
+.pfoot b{font:400 12px/1.4 var(--ui);color:var(--brass-ink);letter-spacing:.02em}
+.item{position:relative;display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;
+  gap:12px;height:54px;padding:0 6px 0 4px;border-radius:4px}
+.item+.item{box-shadow:inset 0 1px 0 var(--hair)}
+.item:hover{background-color:var(--hov)}
+.item .ico{--isz:18px;color:var(--ink3)}
+.item:hover .ico{color:var(--ink2)}
+.item .nm{display:block;font:500 15px/1.15 var(--serif);color:var(--ink1);letter-spacing:.01em;
+  text-shadow:var(--engrave)}
+.item .ds{display:block;margin-top:3px;font:400 12.5px/1.2 var(--ui);color:var(--ink3);
+  letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hk{display:inline-flex;align-items:center;gap:5px;padding:5px 8px 4px;border-radius:var(--r-key);
+  border:1px solid var(--key-line);background-color:var(--key-bg);
+  font:400 13px/1 var(--mono);letter-spacing:.05em;color:var(--brass-ink);
+  font-variant-numeric:tabular-nums;white-space:nowrap;text-shadow:none}
+.hk.unset{font:400 12px/1 var(--ui);letter-spacing:.04em;color:var(--ink3);border-color:var(--hair);
+  background-color:transparent}
+.hk.conflict{border-color:color-mix(in srgb,var(--accent) 42%,transparent)}
+.hk.conflict::after{content:"";width:4px;height:4px;border-radius:50%;
+  border:1px solid var(--brass-ink);opacity:.8}
+/* 主窗口里的宽铭牌：与左侧同一行高，只是整行铺开 */
+.plate.wide .item{height:54px}
+
+/* 状态轨：4 格仪表带 */
+.status-rail{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));height:72px;margin:0 -26px;
+  border-top:1px solid var(--hair);background-image:linear-gradient(180deg,rgba(0,0,0,.14),rgba(255,240,214,.02))}
+.status-rail .cell{position:relative;display:flex;flex-direction:column;justify-content:center;gap:6px;
+  padding:0 18px;min-width:0}
+.status-rail .cell+.cell{box-shadow:inset 1px 0 0 var(--hair)}
+.status-rail .cell::before{content:"";position:absolute;left:18px;top:0;width:12px;height:1px;
+  background:var(--brass);opacity:.7}
+.rail-k{display:flex;align-items:center;gap:7px;font:400 12px/1 var(--ui);letter-spacing:.09em;
+  color:var(--ink3)}
+.rail-k .tone{width:5px;height:5px;border-radius:50%;flex:0 0 auto}
+.tone.ok{background:var(--ink2)}
+.tone.accent{background:var(--brass);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 16%,transparent)}
+.tone.warn{background:transparent;border:1px solid var(--brass-ink);opacity:.85}
+.rail-v{font:500 14px/1 var(--ui);color:var(--ink1);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;letter-spacing:.01em;font-variant-numeric:tabular-nums}
+
+/* 概览数值：等宽数字，等距网格 */
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;margin-top:4px;
+  padding-top:10px}
+.kpi{display:flex;flex-direction:column;gap:6px;padding:10px 14px 10px 0;min-width:0}
+.kpi+.kpi{border-left:1px solid var(--hair);padding-left:16px}
+.kpi-v{font:500 22px/1 var(--mono);color:var(--ink0);font-variant-numeric:tabular-nums;
+  letter-spacing:.01em;text-shadow:var(--engrave)}
+.kpi-k{font:400 12px/1.3 var(--ui);color:var(--ink3);letter-spacing:.02em}
+/* 来源条：黄铜只做一条刻度线 */
+.bar-item{grid-template-columns:minmax(0,1fr) auto;height:auto;min-height:62px;padding:10px 6px 12px 4px;
+  align-items:center;column-gap:16px;row-gap:0}
+.bar-item .tx{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:0 12px}
+.bar-item .nm{grid-column:1;font-size:15px}
+.bar-item .bar{grid-column:1/-1;display:block;margin-top:9px;height:3px;border-radius:2px;
+  background-color:rgba(255,240,214,.10);overflow:hidden}
+.bar-item .bar i{display:block;height:100%;width:var(--pct);border-radius:2px;
+  background:linear-gradient(90deg,color-mix(in srgb,var(--accent) 70%,#7a5a2a),var(--brass));
+  transform-origin:left}
+.bar-item .hk{grid-row:1;grid-column:2;align-self:baseline}
+html[data-theme="light"] .bar-item .bar{background-color:rgba(94,72,40,.14)}
+
+/* 切换页签时的整组入场：220–280ms + 20ms stagger（SPEC §4 面板切换） */
+.lgrid.in .plate.g{animation:plateIn 260ms var(--c-page) both;animation-delay:calc(var(--i,0)*20ms)}
+@keyframes plateIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* ── 7. 截图浮层演示 ───────────────────────────────────────────────── */
+#captureDemo{position:relative;width:1120px;height:700px;overflow:hidden;border-radius:var(--r-win);
+  border:1px solid var(--win-ring);background-color:var(--stage);box-shadow:var(--win-shadow)}
+.screen{position:absolute;inset:0;background-color:#cfc7b6;
+  background-image:radial-gradient(120% 90% at 14% -6%,#e2dbca 0%,#cdc5b2 46%,#b8ae99 100%)}
+.screen .glow{position:absolute;left:-8%;top:-18%;width:70%;height:70%;border-radius:50%;
+  background:radial-gradient(circle,rgba(255,252,240,.55),rgba(255,252,240,0) 68%);filter:blur(6px)}
+.fw{position:absolute;border-radius:8px;overflow:hidden;border:1px solid rgba(60,50,36,.16)}
+.fw-a{left:64px;top:66px;width:520px;height:310px;background:#fbf8f1;
+  box-shadow:0 18px 40px -22px rgba(48,38,22,.5)}
+.fw-bar{display:flex;align-items:center;gap:6px;height:34px;padding:0 12px;background:#f1ece0;
+  border-bottom:1px solid rgba(60,50,36,.12)}
+.fw-bar .tl{width:9px;height:9px;border-radius:50%;background:rgba(60,50,36,.22)}
+.fw-body{padding:16px 18px;display:flex;flex-direction:column;gap:10px}
+.fw-ln{height:9px;border-radius:3px;background:rgba(60,50,36,.14)}
+.fw-tx{font:400 14px/1.55 var(--serif);color:#453a29}
+.fw-b{left:616px;top:250px;width:420px;height:250px;background:#1c1a17;border-color:rgba(0,0,0,.5);
+  box-shadow:0 20px 44px -22px rgba(30,24,16,.7)}
+.fw-b .fw-bar{background:#232019;border-bottom-color:rgba(255,240,214,.08)}
+.fw-b .fw-bar .tl{background:rgba(255,240,214,.18)}
+.fw-code{padding:14px 16px;display:flex;flex-direction:column;gap:9px;
+  font:400 12.5px/1.2 var(--mono);color:#c9c0ad;opacity:.9}
+.fw-code i{color:#8f9d76;font-style:normal;opacity:.85}
+/* 遮罩：选区外压暗（box-shadow 9999px 打洞），与真实浮层一致 */
+.selection{position:absolute;left:150px;top:96px;width:640px;height:340px;
+  box-shadow:0 0 0 9999px rgba(12,10,8,.60),inset 0 0 0 1px rgba(246,236,215,.72),
+             inset 0 0 0 2px rgba(232,186,116,.28)}
+.sel-h{position:absolute;width:11px;height:11px;border-radius:2px;background:#f8f0dd;
+  box-shadow:0 0 0 1px rgba(120,88,40,.55),0 1px 0 rgba(255,255,255,.6) inset}
+.sel-h.tl{left:-6px;top:-6px}.sel-h.tr{right:-6px;top:-6px}
+.sel-h.bl{left:-6px;bottom:-6px}.sel-h.br{right:-6px;bottom:-6px}
+.sel-badge{position:absolute;left:0;top:-30px;display:flex;align-items:center;gap:9px;
+  padding:6px 10px 5px;border-radius:var(--r-key);border:1px solid var(--plate-ring);
+  background-color:var(--plate-base);background-image:var(--plate-face);box-shadow:var(--shadow-plate);
+  font:400 12.5px/1 var(--mono);color:var(--ink1);letter-spacing:.04em;font-variant-numeric:tabular-nums}
+.sel-badge .r{color:var(--brass-ink)}
+.sel-badge .sep{width:1px;height:9px;background:var(--hair)}
+/* 工具条：浮层，永远暗色 */
+.bar-stack{position:absolute;left:50%;bottom:22px;transform:translateX(-50%);
+  display:flex;flex-direction:column;align-items:center;gap:8px;z-index:6}
+.capture-bar.on-enamel{display:flex;flex-direction:column;gap:5px;padding:8px 12px 9px;
+  border-radius:8px;border:1px solid var(--win-ring);
+  background-color:#141110;background-image:linear-gradient(180deg,rgba(255,240,214,.07),rgba(0,0,0,.22));
+  box-shadow:0 0 0 1px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,246,226,.14),
+             inset 0 -1px 0 rgba(0,0,0,.6),0 22px 44px -20px rgba(0,0,0,.85)}
+.bar-row{display:flex;align-items:center;justify-content:center;gap:3px}
+.bar-row+.bar-row{border-top:1px solid var(--hair);padding-top:6px}
+.vsep{width:1px;height:20px;background:var(--hair);margin:0 6px;flex:0 0 auto}
+.tool{position:relative;width:38px;height:38px;display:grid;place-items:center;border-radius:5px;
+  color:var(--ink3);border:1px solid transparent}
+.tool .ico{--isz:19px}
+.tool:hover{color:var(--ink0);background-color:var(--hov)}
+.tool.active{color:var(--ink0);background-color:var(--plate-base);background-image:var(--plate-face);
+  border-color:var(--plate-ring);box-shadow:var(--shadow-plate)}
+/* 选中的工具：底部一道黄铜刻线（黄铜只做「一次性的线」，不做状态色块） */
+.tool.active::after{content:"";position:absolute;left:9px;right:9px;bottom:3px;height:1px;
+  background:var(--brass);opacity:.9}
+.wbtn{width:36px;height:36px;display:grid;place-items:center;border-radius:5px;color:var(--ink3)}
+.wbtn .ico{--isz:18px}
+.wbtn:hover{color:var(--ink1);background-color:var(--hov)}
+.wbtn[aria-pressed="true"]{color:var(--ink0);background-color:var(--key-bg);
+  box-shadow:inset 0 0 0 1px var(--key-line)}
+.swatch{position:relative;width:24px;height:24px;border-radius:50%;flex:0 0 auto;margin:0 1px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.35),inset 0 -1px 2px rgba(0,0,0,.45),
+             0 0 0 1px rgba(0,0,0,.45)}
+.swatch[aria-pressed="true"]{box-shadow:inset 0 1px 0 rgba(255,255,255,.35),
+  inset 0 -1px 2px rgba(0,0,0,.45),0 0 0 1px var(--brass),0 0 0 3px rgba(232,186,116,.18)}
+.abtn{width:36px;height:36px;display:grid;place-items:center;border-radius:5px;color:var(--ink2)}
+.abtn .ico{--isz:18px}
+.abtn:hover{color:var(--ink0);background-color:var(--hov)}
+.pbtn{display:flex;align-items:center;gap:7px;height:36px;padding:0 13px;border-radius:5px;
+  border:1px solid rgba(255,240,214,.14);
+  background-color:color-mix(in srgb,var(--accent) 76%,#ffe9c9);
+  background-image:linear-gradient(180deg,rgba(255,255,255,.28),rgba(255,255,255,0) 55%);
+  color:#140d06;font:500 13px/1 var(--ui);letter-spacing:.02em;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 -1px 0 rgba(90,58,20,.35),
+             0 2px 6px -3px rgba(0,0,0,.8)}
+.pbtn .ico{--isz:16px}
+.pbtn:hover{background-color:color-mix(in srgb,var(--accent) 86%,#fff3dd)}
+.cbtn{width:36px;height:36px;display:grid;place-items:center;border-radius:5px;color:var(--ink2);
+  border:1px solid transparent}
+.cbtn .ico{--isz:18px}
+.cbtn:hover{color:var(--ink0);background-color:var(--hov);border-color:var(--hair)}
+/* 工具选项组：跟随当前工具切换（至少两组不同） */
+.options-row{display:flex;justify-content:center;width:100%}
+.tool-options.on-enamel{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:8px;
+  border:1px solid var(--win-ring);background-color:#141110;
+  background-image:linear-gradient(180deg,rgba(255,240,214,.05),rgba(0,0,0,.16));
+  box-shadow:0 0 0 1px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,246,226,.10),
+             0 16px 30px -18px rgba(0,0,0,.8)}
+.to-name{font:400 12px/1 var(--ui);letter-spacing:.1em;color:var(--ink2);padding-right:2px}
+.to-grp{display:flex;align-items:center;gap:2px;padding-left:9px;border-left:1px solid var(--hair)}
+.opt{width:30px;height:30px;display:grid;place-items:center;border-radius:4px;color:var(--ink3)}
+.opt .ico{--isz:16px}
+.opt:hover{color:var(--ink1);background-color:var(--hov)}
+.opt[aria-pressed="true"]{color:var(--ink0);background-color:var(--key-bg);
+  box-shadow:inset 0 0 0 1px var(--key-line)}
+
+/* ── 8. 剪贴板面板（480×640，永远暗色） ───────────────────────────── */
+#clipPanel{width:480px;height:640px;display:flex;flex-direction:column;overflow:hidden;
+  border-radius:var(--r-win);border:1px solid var(--win-ring);background-color:#141110;
+  background-image:linear-gradient(180deg,rgba(255,240,214,.055) 0%,rgba(255,240,214,.012) 32%,
+    rgba(0,0,0,.12) 76%,rgba(0,0,0,.26) 100%),radial-gradient(110% 70% at 2% -10%,#2a231b 0%,rgba(42,35,27,0) 56%);
+  box-shadow:var(--win-shadow);padding:14px 14px 0}
+.cp-head{display:flex;align-items:center;gap:9px;padding:0 2px 12px}
+.cp-led{width:6px;height:6px;border-radius:50%;background:var(--brass);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent)}
+.cp-st{font:400 12px/1 var(--ui);letter-spacing:.06em;color:var(--ink2)}
+.cp-met{margin-left:auto;display:flex;align-items:center;gap:8px;
+  font:400 12px/1 var(--ui);color:var(--ink3);letter-spacing:.02em}
+.cp-met .num{font:400 12px/1 var(--ui);color:var(--ink2);letter-spacing:.02em}
+.cp-met .rev{padding:3px 6px 2px;border-radius:3px;border:1px solid var(--hair);color:var(--ink3);
+  font:400 12px/1 var(--mono);letter-spacing:.03em;font-variant-numeric:tabular-nums}
+.chips{display:flex;gap:5px;padding-bottom:12px;border-bottom:1px solid var(--hair)}
+.chip{height:28px;padding:0 11px;display:flex;align-items:center;border-radius:4px;
+  border:1px solid transparent;font:400 12.5px/1 var(--ui);color:var(--ink3);letter-spacing:.02em}
+.chip:hover{color:var(--ink1);background-color:var(--hov)}
+.chip[aria-pressed="true"]{color:var(--ink0);background-color:var(--plate-base);
+  background-image:var(--plate-face);border-color:var(--plate-ring);box-shadow:var(--shadow-plate)}
+#clipList{flex:1;min-height:0;display:flex;flex-direction:column;gap:7px;padding:12px 0;overflow:hidden;
+  -webkit-mask-image:linear-gradient(180deg,#000 0%,#000 calc(100% - 26px),transparent 100%);
+  mask-image:linear-gradient(180deg,#000 0%,#000 calc(100% - 26px),transparent 100%)}
+.clip-row{position:relative;display:grid;grid-template-columns:34px minmax(0,1fr);gap:11px;
+  padding:10px 11px;border-radius:5px;border:1px solid var(--hair);
+  background-color:rgba(255,243,219,.022)}
+.clip-row:hover{border-color:var(--plate-ring);background-color:rgba(255,243,219,.05)}
+.clip-row .kd{display:grid;place-items:center;width:34px;height:34px;border-radius:4px;
+  border:1px solid var(--plate-ring);background-color:var(--plate-base);
+  background-image:var(--plate-face);box-shadow:var(--shadow-plate);color:var(--ink2)}
+.clip-row .kd .ico{--isz:16px}
+.clip-row[aria-selected="true"]{border-color:var(--plate-ring-hi);
+  background-color:var(--plate-base);
+  background-image:radial-gradient(120% 100% at 0% 0%,rgba(232,190,124,.12),rgba(232,190,124,.02) 60%,transparent),
+                   var(--plate-face);
+  box-shadow:var(--shadow-lit)}
+.clip-row[aria-selected="true"] .kd{color:var(--brass-ink)}
+/* 朱红 ③：剪贴板里「当前这一条」的落款边 */
+.clip-row[aria-selected="true"]::before{content:"";position:absolute;left:-1px;top:9px;bottom:9px;
+  width:2px;border-radius:0 2px 2px 0;background:var(--seal-grad)}
+.clip-row .tx{font:400 14px/1.4 var(--serif);color:var(--ink1);letter-spacing:.01em;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  text-shadow:var(--engrave)}
+.clip-row .mt{display:flex;align-items:center;gap:7px;margin-top:5px;
+  font:400 12px/1 var(--ui);color:var(--ink3);letter-spacing:.02em}
+.clip-row .mt .pin{width:5px;height:5px;border-radius:50%;background:var(--brass);opacity:.9}
+.clip-row .mt .sz{font-family:var(--mono);letter-spacing:.04em;font-variant-numeric:tabular-nums}
+.clip-row .mt .mt-time{position:relative;padding-left:11px;color:var(--ink3)}
+.clip-row .mt .mt-time::before{content:"";position:absolute;left:4px;top:50%;width:2px;height:2px;
+  border-radius:50%;background:var(--ink3);opacity:.7;transform:translateY(-50%)}
+/* 选中那条展开一段详情：真换行（white-space:pre-wrap），不是把 \n 印出来 */
+.clip-row .detail{grid-column:1/-1;margin-top:9px;padding-top:9px;
+  border-top:1px solid var(--hair);font:400 14px/1.65 var(--ui);color:var(--ink2);
+  white-space:pre-wrap;letter-spacing:.01em;
+  display:none;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
+.clip-row[aria-selected="true"] .detail{display:-webkit-box}
+.cp-empty{padding:26px 4px;font:400 13px/1.6 var(--ui);color:var(--ink3);text-align:center}
+.cp-acts{display:flex;align-items:center;gap:6px;padding:11px 0 13px;border-top:1px solid var(--hair)}
+.cp-act{height:32px;padding:0 12px;display:flex;align-items:center;gap:6px;border-radius:4px;
+  border:1px solid var(--hair);font:400 12.5px/1 var(--ui);color:var(--ink2);letter-spacing:.02em}
+.cp-act .ico{--isz:14px}
+.cp-act:hover{color:var(--ink0);border-color:var(--plate-ring);background-color:var(--hov)}
+.cp-act:last-child{margin-left:auto;color:var(--ink3)}
+
+/* ── 9. 划词工具条（620×56） ─────────────────────────────────────── */
+#selBar{width:620px;height:56px;display:flex;align-items:center;gap:9px;padding:0 8px 0 14px;
+  overflow:hidden;border-radius:8px;border:1px solid var(--win-ring);background-color:#141110;
+  background-image:linear-gradient(180deg,rgba(255,240,214,.06),rgba(0,0,0,.2));
+  box-shadow:0 0 0 1px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,246,226,.14),
+             inset 0 -1px 0 rgba(0,0,0,.6),0 20px 40px -22px rgba(0,0,0,.85)}
+.sb-led{width:6px;height:6px;border-radius:50%;background:var(--brass);flex:0 0 auto;
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent)}
+.sb-tx{flex:1;min-width:0;font:400 14px/1.2 var(--serif);color:var(--ink1);letter-spacing:.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:var(--engrave)}
+.sb-vsep{width:1px;height:22px;background:var(--hair);flex:0 0 auto;margin:0 2px}
+.sel-btn{display:flex;align-items:center;gap:6px;height:38px;padding:0 11px;border-radius:5px;
+  border:1px solid transparent;font:400 12.5px/1 var(--ui);color:var(--ink2);letter-spacing:.03em}
+.sel-btn .ico{--isz:16px}
+.sel-btn:hover{color:var(--ink0);background-color:var(--hov);border-color:var(--hair)}
+.sel-btn.primary{color:#140d06;border-color:rgba(255,240,214,.16);
+  background-color:color-mix(in srgb,var(--accent) 76%,#ffe9c9);
+  background-image:linear-gradient(180deg,rgba(255,255,255,.3),rgba(255,255,255,0) 58%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.5),inset 0 -1px 0 rgba(90,58,20,.3)}
+.sel-btn.primary:hover{color:#140d06;background-color:color-mix(in srgb,var(--accent) 88%,#fff5e2)}
+.sel-btn.primary .ico{color:#140d06}
+
+/* ── 10. 动效演示台 ───────────────────────────────────────────────── */
+#motionStage{width:1120px;padding:16px 18px 18px;border-radius:var(--r-win);
+  border:1px solid var(--plate-ring);background-color:var(--plate-base);
+  background-image:var(--plate-face);box-shadow:var(--shadow-plate);overflow:hidden}
+.ms-top{display:flex;align-items:center;gap:14px;padding-bottom:14px}
+.ms-k{font:400 12px/1.4 var(--ui);letter-spacing:.02em;color:var(--brass-ink)}
+.ms-note{font:400 12px/1.5 var(--ui);color:var(--ink3);letter-spacing:.02em}
+#motionBtn{margin-left:auto;display:flex;align-items:center;gap:8px;height:36px;padding:0 16px;
+  border-radius:5px;border:1px solid var(--plate-ring-hi);background-color:var(--plate-base);
+  background-image:var(--plate-face);box-shadow:var(--shadow-plate);
+  font:500 13px/1 var(--ui);color:var(--ink0);letter-spacing:.04em}
+#motionBtn:hover{box-shadow:var(--shadow-lit)}
+#motionBtn .ico{--isz:16px;color:var(--brass)}
+.m-plate{position:relative;padding:12px 14px 14px;border-radius:var(--r-plate);
+  border:1px solid var(--plate-ring);background-color:var(--plate-base);
+  background-image:var(--plate-face);box-shadow:var(--shadow-plate);overflow:hidden}
+.m-glow{position:absolute;inset:0;pointer-events:none;opacity:0;
+  background:radial-gradient(90% 130% at 6% 0%,rgba(232,186,116,.30),rgba(232,186,116,.06) 52%,transparent 78%),
+             linear-gradient(90deg,rgba(232,186,116,.10),transparent 62%)}
+.m-rows{position:relative;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 22px}
+.m-row{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:11px;
+  height:48px;padding:0 6px 0 4px;border-radius:4px}
+.m-row:nth-child(n+3){box-shadow:inset 0 1px 0 var(--hair)}
+.m-row .ico{--isz:17px;color:var(--ink3)}
+.m-nm{font:500 15px/1 var(--serif);color:var(--ink1);letter-spacing:.02em;text-shadow:var(--engrave);
+  display:flex;align-items:baseline}
+.m-nm .ch{display:inline-block;white-space:pre}
+.m-hk{font:400 13px/1 var(--mono);letter-spacing:.05em;color:var(--brass-ink);
+  padding:5px 8px 4px;border-radius:4px;border:1px solid var(--key-line);background-color:var(--key-bg);
+  font-variant-numeric:tabular-nums}
+/* 编排：0–180ms 牌面「亮起一次」（亮起用 cubic-bezier(.16,1,.3,1)），
+   180ms 起刻字从左到右 24ms stagger 显现，总长 ≤1.2s，只播一次（JS 1180ms 移除 class） */
+#motionStage.is-playing .m-glow{animation:plateLit 600ms var(--c-pop) both}
+#motionStage.is-playing .m-row{animation:rowRise 240ms var(--c-page) both;
+  animation-delay:calc(180ms + var(--ri,0)*60ms)}
+#motionStage.is-playing .ch{animation:chIn 200ms var(--c-page) both;
+  animation-delay:calc(180ms + var(--ri,0)*60ms + var(--ci,0)*24ms)}
+#motionStage.is-playing .m-hk{animation:chIn 180ms var(--c-page) both;
+  animation-delay:calc(200ms + var(--ri,0)*60ms)}
+@keyframes plateLit{
+  0%{opacity:0}30%{opacity:1}/* ← 0.18s 亮起 */62%{opacity:.5}100%{opacity:0}}
+@keyframes rowRise{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes chIn{from{opacity:0;transform:translateX(-2px)}to{opacity:1;transform:none}}
+
+/* ── 11. 降级 ─────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms!important;animation-delay:0ms!important;
+    animation-iteration-count:1!important;transition-duration:.001ms!important;
+    transition-delay:0ms!important;
+  }
+  #motionStage.is-playing .m-glow{opacity:0}
+}
+</style>
+</head>
+<body>
+<div id="board">
+
+  <header class="bh">
+    <div class="bh-k">方向 C2，珐琅铭牌</div>
+    <h1 class="bh-t">珐琅铭牌</h1>
+    <p class="bh-d">
+      每一块信息都是被铆在珐琅底板上的一块铭牌，字是刻进去的。<b>单镜头光从左上打过来</b>：
+      牌面的上沿与左沿吃光，下沿与右沿接影，全页只有这一套阴影。
+      只有两处颜色是「活」的——朱红标记「正在用的是这个」（全页 3 处），黄铜只用来划一次线、刻一次键位。
+    </p>
+    <div class="bh-sw">
+      <div class="row"><i style="background:#171310"></i><span>珐琅底</span><em>1800K</em></div>
+      <div class="row"><i style="background:#f6ecd7"></i><span>奶白刻字</span><em>#f6ecd7</em></div>
+      <div class="row"><i style="background:#c0342a"></i><span>朱红</span><em>#c0342a，3 处</em></div>
+      <div class="row"><i style="background:var(--accent)"></i><span>黄铜</span><em>accent，可配</em></div>
+    </div>
+  </header>
+
+  <!-- ① 主窗口 -->
+  <figure class="art">
+    <figcaption class="cap"><span class="num">01</span><span class="ttl">主窗口，暗色默认，1:1</span>
+      <span class="meta"><span>1120 × 760</span><span>自绘标题栏</span><span>224 侧栏</span><span>状态轨 4 格</span></span></figcaption>
+    <section id="appWin">
+      <div class="winbar">
+        <span class="brand"><i>High</i><b>lighter</b></span>
+        <span class="vline"></span>
+        <span class="wtag" id="winTag"></span>
+        <span class="wspacer"></span>
+        <span class="wroute"><span class="dot"></span><span id="pTitle">快捷功能</span></span>
+        <button id="themeToggle" aria-label="明暗切换" title="明暗切换" aria-pressed="true">
+          <i class="ico" style="--icon:var(--ico-palette)"></i>
+          <span class="tt-track"><span class="tt-dot"></span></span>
+        </button>
+        <span class="vline"></span>
+        <div class="wincaps">
+          <button class="capb" aria-label="最小化" title="最小化"><i class="ico" style="--icon:var(--ico-line)"></i></button>
+          <button class="capb" aria-label="最大化" title="最大化"><i class="ico" style="--icon:var(--ico-fullscreen)"></i></button>
+          <button class="capb close" aria-label="关闭" title="关闭"><i class="ico" style="--icon:var(--ico-close)"></i></button>
+        </div>
+      </div>
+
+      <aside id="navBox"></aside>
+
+      <div class="main">
+        <div class="phead">
+          <div>
+            <div class="kicker" id="pKicker">QUICK ACTIONS</div>
+            <h2 class="ptitle" id="pHead">快捷功能</h2>
+            <p class="pdesc" id="pDesc"></p>
+          </div>
+          <div class="plate mini">
+            <div class="mini-k" id="miniK">热键配置</div>
+            <div class="mini-v"><b id="miniA">9</b><span>/</span><b id="miniB">13</b></div>
+          </div>
+        </div>
+        <nav id="tabs" aria-label="快捷功能分类"></nav>
+        <div class="list-wrap">
+          <main id="list"></main>
+          <div class="list-fade"><b id="listHint"></b></div>
+        </div>
+        <div class="status-rail" id="rail"></div>
+      </div>
+    </section>
+  </figure>
+
+  <!-- ② 截图浮层 -->
+  <figure class="art">
+    <figcaption class="cap"><span class="num">02</span><span class="ttl">截图浮层，假桌面加选区与两行工具条</span>
+      <span class="meta"><span>27 控件</span><span>选项组跟随工具切换</span></span></figcaption>
+    <section id="captureDemo">
+      <div class="screen">
+        <div class="glow"></div>
+        <div class="fw fw-a">
+          <div class="fw-bar"><span class="tl"></span><span class="tl"></span><span class="tl"></span></div>
+          <div class="fw-body">
+            <div class="fw-tx" id="fakeDoc"></div>
+            <div class="fw-ln" style="width:74%"></div>
+            <div class="fw-ln" style="width:58%"></div>
+            <div class="fw-ln" style="width:66%"></div>
+          </div>
+        </div>
+        <div class="fw fw-b">
+          <div class="fw-bar"><span class="tl"></span><span class="tl"></span><span class="tl"></span></div>
+          <div class="fw-code">
+            <div>npm run verify:all</div>
+            <div><i>›</i> 通过后再合并 #1287</div>
+            <div style="width:62%"><span class="fw-ln" style="display:block;width:100%;background:rgba(255,240,214,.14)"></span></div>
+            <div style="width:44%"><span class="fw-ln" style="display:block;width:100%;background:rgba(255,240,214,.10)"></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="selection">
+        <span class="sel-h tl"></span><span class="sel-h tr"></span>
+        <span class="sel-h bl"></span><span class="sel-h br"></span>
+        <div class="sel-badge on-enamel">
+          <span id="selSize">1280 × 720</span><span class="sep"></span><span class="r" id="selRatio">16:9</span>
+        </div>
+      </div>
+
+      <div class="bar-stack">
+        <div class="capture-bar on-enamel" id="captureBar"></div>
+        <div class="tool-options on-enamel" id="toolOptions"></div>
+      </div>
+    </section>
+  </figure>
+
+  <!-- ③ 剪贴板面板 -->
+  <figure class="art">
+    <figcaption class="cap"><span class="num">03</span><span class="ttl">剪贴板面板，永远暗色</span>
+      <span class="meta"><span>480 × 640</span><span>无边框浮层</span></span></figcaption>
+    <section id="clipPanel" class="on-enamel">
+      <div class="cp-head">
+        <span class="cp-led"></span>
+        <span class="cp-st" id="cpLed"></span>
+        <span class="cp-met"><span class="num" id="cpCount"></span><span class="rev" id="cpRev"></span></span>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div id="clipList"></div>
+      <div class="cp-acts" id="cpActs"></div>
+    </section>
+  </figure>
+
+  <!-- ④ 划词工具条 -->
+  <figure class="art">
+    <figcaption class="cap"><span class="num">04</span><span class="ttl">划词工具条</span>
+      <span class="meta"><span>620 × 56</span><span>出现 180–220ms，位移 ≤8px</span></span></figcaption>
+    <section id="selBar" class="on-enamel"></section>
+  </figure>
+
+  <!-- ⑤ 动效演示台 -->
+  <figure class="art">
+    <figcaption class="cap"><span class="num">05</span><span class="ttl">动效编排，点一次播一遍</span>
+      <span class="meta"><span>0–180ms 亮牌</span><span>180ms 起 24ms stagger</span><span>总长 1.2s</span></span></figcaption>
+    <section id="motionStage">
+      <div class="ms-top">
+        <span class="ms-k">1.2 秒编排</span>
+        <span class="ms-note">牌面先亮一次，再由左至右把字刻上去；不循环，不弹跳。</span>
+        <button id="motionBtn"><i class="ico" style="--icon:var(--ico-lightning)"></i>播放</button>
+      </div>
+      <div class="m-plate">
+        <div class="m-glow"></div>
+        <div class="m-rows" id="motionRows"></div>
+      </div>
+    </section>
+  </figure>
+
+</div>
+
+<script>/*__CONTENT__*/</script>
+<script>
+(function(){
+  'use strict';
+  var HL = window.HL;
+  var $ = function(s, r){ return (r || document).querySelector(s) };
+  var $$ = function(s, r){ return Array.prototype.slice.call((r || document).querySelectorAll(s)) };
+  var esc = function(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c] }) };
+  var ico = function(n, size){
+    return '<i class="ico"' + (size ? ' style="--icon:var(--ico-' + n + ');--isz:' + size + 'px"' : ' style="--icon:var(--ico-' + n + ')"') + '></i>'
+  };
+
+  /* ── 页签 → 牌面分组 ──
+     节奏：单列列表（54px 行高）流进牌面，编号跨牌连续；
+     右侧永远是同一块「已配置」快捷键小牌（8px 网格上 8:4 分栏）。
+     牌面的长短不同，但行距、字号、编号字体全部一致 —— 不齐的是牌，不是字。 */
+  var LAYOUT = {
+    shot: { mainSpan: 8, seq: [0, 1, 2, 3, 4, 5], wide: [6, 7, 8, 9, 10] },
+    ai: { mainSpan: 12, seq: [0, 1, 2], wide: [] },
+    translation: { mainSpan: 12, seq: [0, 1], wide: [] },
+    record: { mainSpan: 12, seq: [0], wide: [] },
+    other: { mainSpan: 8, seq: [0, 1, 2], wide: [3, 4] }
+  };
+
+  /* ── ① 侧栏：14 条真实路由（home + 3 组 + 页脚「关于」） ── */
+  function navBtn(it, active){
+    return '<button class="nav' + (active ? ' active' : '') + '" data-route="' + it.id +
+      '" data-label="' + esc(it.label) + '">' + ico(it.icon) +
+      '<span class="lb">' + esc(it.label) + '</span></button>'
+  }
+  function renderNav(){
+    var html = '';
+    HL.nav.forEach(function(g){
+      if (g.group) html += '<div class="nav-grp">' + esc(g.group) + '</div>';
+      g.items.forEach(function(it){ html += navBtn(it, it.id === 'home') });
+    });
+    html += '<div class="nav-foot">' + navBtn(HL.navFooter, false) +
+      '<div class="ver">' + esc(HL.brand.version) + '</div></div>';
+    $('#navBox').innerHTML = html;
+  }
+
+  /* ── 标题 + 页头：路由切换 ── */
+  function applyRoute(route, label){
+    $('#pTitle').textContent = label;
+    var page = HL.pages[route];
+    $('#pKicker').textContent = page ? page.kicker : route.toUpperCase().replace(/-/g, ' ');
+    $('#pHead').textContent = label;
+    $('#pDesc').textContent = page ? page.desc : HL.brand.tag;
+  }
+
+  /* ── ② 页签 ── */
+  function renderTabs(){
+    $('#tabs').innerHTML = HL.tabs.map(function(t){
+      return '<button class="tab' + (t.id === 'shot' ? ' active' : '') + '" data-tab="' + t.id +
+        '">' + esc(t.label) + '<span class="n">' + t.count + '</span></button>'
+    }).join('');
+  }
+
+  /* ── ③ 条目：牌面里的刻字行 ── */
+  function keyHTML(f){
+    if (!f.key) return '<span class="hk unset">未设置</span>';
+    return '<span class="hk ' + f.state + '">' + esc(f.key) + '</span>'
+  }
+  function itemHTML(f, compact){
+    return '<div class="item" title="' + esc(f.name) + '">' + ico(f.icon) +
+      '<span class="tx"><span class="nm">' + esc(f.name) + '</span>' +
+      (compact ? '' : '<span class="ds">' + esc(f.desc) + '</span>') + '</span>' +
+      keyHTML(f) + '</div>'
+  }
+  /* 「已配置」牌面：只收内容里真的有键位的项，不编造 */
+  function hotkeyPlateHTML(title){
+    var rows = HL.hotkeys.filter(function(h){ return h.key });
+    return '<div class="ph"><span class="pt">' + esc(title) + '</span><span class="ln"></span>' +
+      '<span class="ct">' + rows.length + '</span></div>' +
+      '<div class="rows">' + rows.map(function(h){
+        return '<div class="item" title="' + esc(h.name) + '">' + ico(h.icon) +
+          '<span class="tx"><span class="nm">' + esc(h.name) + '</span></span>' +
+          keyHTML(h) + '</div>'
+      }).join('') + '</div>'
+  }
+  function renderList(tab, animate){
+    var feats = HL.features[tab] || [];
+    var L = LAYOUT[tab] || { mainSpan: 12, seq: feats.map(function(_, i){ return i }), wide: [] };
+    var tabMeta = HL.tabs.find(function(t){ return t.id === tab });
+    var label = tabMeta ? tabMeta.label : '';
+    var html = '<div class="lgrid' + (animate ? ' in' : '') + '">';
+
+    /* 主牌：单列，标题是这块牌的名字（不是装饰性编号） */
+    var mainRows = L.seq.map(function(i){ return feats[i] }).filter(Boolean);
+    html += '<div class="plate g" style="--span:' + L.mainSpan + ';--i:0">' +
+      '<div class="ph"><span class="pt">' + label + '</span><span class="ln"></span>' +
+      '<span class="ct">' + mainRows.length + '</span></div>' +
+      '<div class="rows">' + mainRows.map(function(f){ return itemHTML(f, false) }).join('') + '</div>' +
+      '</div>';
+
+    /* 「已配置」牌：与主牌并排，同一套行高 */
+    if (L.mainSpan < 12){
+      html += '<div class="plate g" style="--span:' + (12 - L.mainSpan) + ';--i:1">' +
+        hotkeyPlateHTML('已配置') + '</div>';
+    }
+
+    /* 宽牌：剩余项整行铺开 */
+    var wideRows = L.wide.map(function(i){ return feats[i] }).filter(Boolean);
+    if (wideRows.length){
+      html += '<div class="plate g wide" style="--span:12;--i:2">' +
+        '<div class="ph"><span class="pt">其他工具与识别</span><span class="ln"></span>' +
+        '<span class="ct">' + wideRows.length + '</span></div>' +
+        '<div class="rows">' + wideRows.map(function(f){ return itemHTML(f, true) }).join('') + '</div>' +
+        '</div>';
+    }
+    html += '</div>';
+    $('#list').innerHTML = html;
+    updateHint();
+  }
+
+  /* ── 路由自带内容的页（content.js 里真有数据的三个页） ──
+     history / usage 的数值全部来自 window.HL，不编造。 */
+  function statsPlate(stats, title){
+    return '<div class="plate g wide" style="--span:12;--i:0">' +
+      '<div class="ph"><span class="pt">' + esc(title) + '</span><span class="ln"></span>' +
+      '<span class="ct">' + stats.length + '</span></div>' +
+      '<div class="kpis">' + stats.map(function(s){
+        return '<div class="kpi"><span class="kpi-v">' + esc(s.value) + '</span>' +
+          '<span class="kpi-k">' + esc(s.label) + '</span></div>'
+      }).join('') + '</div></div>'
+  }
+  function renderHistory(){
+    var H = HL.history;
+    $('#list').innerHTML = '<div class="lgrid">' + statsPlate(H.stats, '库存概览') +
+      '<div class="plate g wide" style="--span:12;--i:1">' +
+      '<div class="ph"><span class="pt">最近的截图</span><span class="ln"></span>' +
+      '<span class="ct">' + H.items.length + '</span></div>' +
+      '<div class="rows">' + H.items.map(function(it){
+        return '<div class="item">' + ico('screenshot') +
+          '<span class="tx"><span class="nm">' + esc(it.source) + '</span>' +
+          '<span class="ds">' + esc(it.meta) + '</span></span>' +
+          '<span class="hk unset">' + esc(it.time) + '</span></div>'
+      }).join('') + '</div></div></div>';
+    updateHint();
+  }
+  function renderUsage(){
+    var U = HL.usage;
+    $('#list').innerHTML = '<div class="lgrid">' + statsPlate(U.kpis, '用量概览') +
+      '<div class="plate g wide" style="--span:12;--i:1">' +
+      '<div class="ph"><span class="pt">来源</span><span class="ln"></span>' +
+      '<span class="ct">' + U.sources.length + '</span></div>' +
+      '<div class="rows">' + U.sources.map(function(s){
+        return '<div class="item bar-item">' +
+          '<span class="tx"><span class="nm">' + esc(s.name) + '</span>' +
+          '<span class="bar"><i style="width:' + s.pct + '%"></i></span></span>' +
+          '<span class="hk">' + esc(s.value) + '</span></div>'
+      }).join('') + '</div></div></div>';
+    updateHint();
+  }
+  /* 其余路由：只放 content.js 里真有的东西 —— 本机快捷键 + 同组路由 */
+  function renderRoutePlate(route){
+    var group = null, items = [];
+    HL.nav.forEach(function(g){
+      g.items.forEach(function(it){ if (it.id === route) { group = g; items = g.items } })
+    });
+    var html = '<div class="lgrid"><div class="plate g" style="--span:12;--i:0">' +
+      hotkeyPlateHTML('本机快捷键') + '</div>';
+    if (items.length > 1){
+      html += '<div class="plate g wide" style="--span:12;--i:1">' +
+        '<div class="ph"><span class="pt">' + esc(group.group || '快捷功能') + '</span>' +
+        '<span class="ln"></span><span class="ct">' + items.length + '</span></div>' +
+        '<div class="rows">' + items.map(function(it){
+          return '<div class="item">' + ico(it.icon) +
+            '<span class="tx"><span class="nm">' + esc(it.label) + '</span></span></div>'
+        }).join('') + '</div></div>';
+    }
+    html += '</div>';
+    $('#list').innerHTML = html;
+    updateHint();
+  }
+  function renderRoute(){
+    if (state.route === 'home'){ renderList(state.tab, false); return }
+    if (state.route === 'history'){ renderHistory(); return }
+    if (state.route === 'usage'){ renderUsage(); return }
+    renderRoutePlate(state.route);
+  }
+  /* 滚动折叠处说一句实话：还剩几项在下面 */
+  function updateHint(){
+    var el = $('#list'), hint = $('#listHint');
+    var left = el.scrollHeight - el.scrollTop - el.clientHeight;
+    var hidden = 0;
+    if (left > 4){
+      var rows = $$('.plate.g .item', el), lr = el.getBoundingClientRect();
+      for (var i = 0; i < rows.length; i++){
+        if (rows[i].getBoundingClientRect().bottom > lr.bottom + 2) hidden++;
+      }
+    }
+    hint.textContent = hidden > 0 ? '↓ 还有 ' + hidden + ' 项' : '';
+    hint.classList.toggle('on', hidden > 0);
+  }
+
+  /* ── ④ 状态轨 ── */
+  function renderRail(){
+    $('#rail').innerHTML = HL.rail.map(function(c){
+      var mono = /[0-9]/.test(c.value);
+      return '<div class="cell"><span class="rail-k"><i class="tone ' + c.tone + '"></i>' +
+        esc(c.label) + '</span><span class="rail-v' + (mono ? ' mono' : '') + '">' +
+        esc(c.value) + '</span></div>'
+    }).join('');
+  }
+
+  /* ── ⑤ 截图工具条：两行共 27 个控件 ──
+     11 绘制工具 + 3 粗细 + 7 颜色 + 撤销/重做 + 识别/翻译 + 复制(主) + 取消 = 27 */
+  var TOOL_OPTS = {
+    select: [['select', 'radius-none', 'radius-large'], ['fill-outline', 'fill-solid', 'fill-translucent']],
+    rect: [['radius-none', 'radius-small', 'radius-large'], ['fill-outline', 'fill-solid', 'fill-translucent']],
+    ellipse: [['radius-none', 'radius-small', 'radius-large'], ['fill-outline', 'fill-solid', 'fill-translucent']],
+    arrow: [['stroke-solid', 'stroke-dashed', 'stroke-dotted'], ['head-start', 'head-end', 'line-tool']],
+    line: [['stroke-solid', 'stroke-dashed', 'stroke-dotted'], ['weight-thin', 'weight-medium', 'weight-thick']],
+    pen: [['weight-thin', 'weight-medium', 'weight-thick'], ['alpha-weak', 'alpha-medium', 'alpha-strong']],
+    highlight: [['alpha-weak', 'alpha-medium', 'alpha-strong'], ['weight-thin', 'weight-medium', 'weight-thick']],
+    blur: [['radius-none', 'radius-small', 'radius-large'], ['alpha-weak', 'alpha-medium', 'alpha-strong']],
+    text: [['bold', 'text-style', 'text-style-one'], ['alpha-weak', 'alpha-medium', 'alpha-strong']],
+    serial: [['serial', 'radius-none', 'radius-large'], ['alpha-weak', 'alpha-medium', 'alpha-strong']],
+    watermark: [['alpha-weak', 'alpha-medium', 'alpha-strong'], ['radius-none', 'radius-small', 'radius-large']]
+  };
+  var state = { route: 'home', tab: 'shot', tool: 'select', chip: 0, clipSel: 0, theme: 'dark' };
+
+  function renderCaptureBar(){
+    var C = HL.capture;
+    /* row1 = 11 个标注工具 + 分隔 + 3 档线宽 + 7 色 */
+    var row1 = C.tools.map(function(t){
+      return '<button class="tool' + (t.id === 'select' ? ' active' : '') + '" data-tool="' + t.id +
+        '" title="' + esc(t.label) + '" aria-label="' + esc(t.label) + '">' + ico(t.icon) + '</button>'
+    }).join('');
+    row1 += '<span class="vsep"></span>';
+    row1 += C.widths.map(function(w){
+      return '<button class="wbtn" data-w="' + w.value + '" title="' + esc(w.label) +
+        '" aria-label="' + esc(w.label) + '" aria-pressed="' + (w.value === 4) + '">' + ico(w.icon) + '</button>'
+    }).join('');
+    row1 += '<span class="vsep"></span>';
+    row1 += C.colors.map(function(c, i){
+      return '<button class="swatch" data-c="' + c + '" title="' + c + '" aria-label="' + c +
+        '" style="background-color:' + c + '" aria-pressed="' + (i === 0) + '"></button>'
+    }).join('');
+    /* row2 = 动作组（撤销/重做 + 8 个识别与产出）+ 主次动作（复制 / 取消） */
+    var row2 = '';
+    ['undo', 'redo'].forEach(function(a){
+      var it = C.actions.find(function(x){ return x.id === a });
+      row2 += '<button class="abtn" title="' + esc(it.label) + '" aria-label="' + esc(it.label) + '">' + ico(it.icon) + '</button>'
+    });
+    row2 += '<span class="vsep"></span>';
+    ['longCapture', 'qr', 'table', 'ocr', 'translate', 'convertDoc', 'record', 'pin'].forEach(function(a){
+      var it = C.actions.find(function(x){ return x.id === a });
+      row2 += '<button class="abtn" title="' + esc(it.label) + '" aria-label="' + esc(it.label) + '">' + ico(it.icon) + '</button>'
+    });
+    row2 += '<span class="vsep"></span>';
+    ['save', 'exportPdf'].forEach(function(a){
+      var it = C.actions.find(function(x){ return x.id === a });
+      row2 += '<button class="abtn" title="' + esc(it.label) + '" aria-label="' + esc(it.label) + '">' + ico(it.icon) + '</button>'
+    });
+    row2 += '<span class="vsep"></span>';
+    row2 += '<button class="pbtn" title="' + esc(C.primary.label) + '">' + ico(C.primary.icon) +
+      esc(C.primary.label) + '</button>';
+    row2 += '<button class="cbtn" title="' + esc(C.cancel.label) + '" aria-label="' + esc(C.cancel.label) + '">' +
+      ico(C.cancel.icon) + '</button>';
+    $('#captureBar').innerHTML = '<div class="bar-row">' + row1 + '</div><div class="bar-row">' + row2 + '</div>';
+  }
+
+  function renderToolOptions(toolId){
+    var tool = HL.capture.tools.find(function(t){ return t.id === toolId }) || HL.capture.tools[0];
+    var groups = TOOL_OPTS[tool.id] || TOOL_OPTS.select;
+    var html = '<span class="to-name">' + esc(tool.label) + '</span>';
+    groups.forEach(function(g){
+      html += '<span class="to-grp">' + g.map(function(n, i){
+        return '<button class="opt" aria-pressed="' + (i === 0) + '" aria-label="' + n + '" title="' + n +
+          '">' + ico(n) + '</button>'
+      }).join('') + '</span>';
+    });
+    $('#toolOptions').innerHTML = html;
+  }
+
+  /* ── ⑥ 剪贴板 ── */
+  var KIND_ICON = { text: 'text-style', url: 'box-arrow-up-right', image: 'preview', file: 'folder-open' };
+  function renderChips(){
+    $('#chips').innerHTML = HL.clipboard.chips.map(function(c, i){
+      return '<button class="chip" data-chip="' + i + '" aria-pressed="' + (i === state.chip) + '">' +
+        esc(c) + '</button>'
+    }).join('');
+  }
+  function renderClips(){
+    var all = HL.clipboard.items;
+    var kinds = ['all', 'text', 'url', 'image', 'file'];
+    var kind = kinds[state.chip];
+    var rows = all.map(function(it, i){ return { it: it, i: i } }).filter(function(x){
+      return kind === 'all' || x.it.kind === kind
+    });
+    if (!rows.length){
+      $('#clipList').innerHTML = '<div class="cp-empty">这一类还没有记录</div>';
+      return;
+    }
+    $('#clipList').innerHTML = rows.map(function(x){
+      var it = x.it, sel = x.i === state.clipSel;
+      return '<div class="clip-row" data-kind="' + it.kind + '" data-idx="' + x.i +
+        '" aria-selected="' + sel + '">' +
+        '<span class="kd">' + ico(KIND_ICON[it.kind] || 'text-style') + '</span>' +
+        '<span><span class="tx">' + esc(it.text) + '</span>' +
+        '<span class="mt">' + (it.pinned ? '<i class="pin"></i>' : '') +
+        '<span>' + esc(it.source) + '</span>' +
+        '<span class="mt-time">' + esc(it.time) + '</span>' +
+        (it.size ? '<span class="sz">' + esc(it.size) + '</span>' : '') +
+        '</span></span>' +
+        (sel && x.i === 0 ? '<span class="detail">' + esc(detailFor(x.i)) + '</span>' : '') +
+        '</div>'
+    }).join('');
+  }
+  function renderClipMeta(){
+    $('#cpLed').textContent = HL.clipboard.status.led;
+    $('#cpCount').textContent = HL.clipboard.status.count;
+    $('#cpRev').textContent = HL.clipboard.status.revision;
+    $('#cpActs').innerHTML = HL.clipboard.actions.map(function(a){
+      return '<button class="cp-act">' + esc(a) + '</button>'
+    }).join('');
+  }
+
+  /* 详情只在选中的那一条展开；首段与行摘要重复时去掉，不重复印字 */
+  function detailFor(idx){
+    var txt = HL.clipboard.detail || '';
+    var row = HL.clipboard.items[idx];
+    var lines = txt.split('\n');
+    if (row && lines[0] && lines[0].trim() === row.text.trim()) lines = lines.slice(1);
+    return lines.join('\n').replace(/^\n+/, '');
+  }
+  /* ── ⑦ 划词工具条 ── */
+  function renderSelBar(){
+    var S = HL.selection;
+    var html = '<span class="sb-led"></span><span class="sb-tx">' + esc(S.text) + '</span><span class="sb-vsep"></span>';
+    html += S.actions.map(function(a){
+      return '<button class="sel-btn' + (a.primary ? ' primary' : '') + '" data-action="' + a.id +
+        '" aria-label="' + esc(a.label) + '">' + ico(a.icon) + '<span>' + esc(a.label) + '</span></button>'
+    }).join('');
+    $('#selBar').innerHTML = html;
+  }
+
+  /* ── ⑧ 动效演示台：刻字从左到右 24ms stagger ── */
+  function renderMotion(){
+    var rows = HL.hotkeys.slice(0, 4);
+    $('#motionRows').innerHTML = rows.map(function(h, ri){
+      var chars = Array.from(h.name).map(function(ch, ci){
+        return '<span class="ch" style="--ci:' + ci + '">' + (ch === ' ' ? '&nbsp;' : esc(ch)) + '</span>'
+      }).join('');
+      return '<div class="m-row" style="--ri:' + ri + '">' + ico(h.icon) +
+        '<span class="m-nm">' + chars + '</span>' +
+        '<span class="m-hk">' + esc(h.key || '未设置') + '</span></div>'
+    }).join('');
+  }
+
+  /* ── 交互 ── */
+  function bind(){
+    /* 侧栏 */
+    $('#navBox').addEventListener('click', function(e){
+      var b = e.target.closest && e.target.closest('.nav');
+      if (!b) return;
+      $$('.nav', $('#navBox')).forEach(function(n){ n.classList.remove('active') });
+      b.classList.add('active');
+      state.route = b.dataset.route;
+      applyRoute(b.dataset.route, b.dataset.label);
+      renderRoute();
+    });
+
+    /* 页签只属于「快捷功能」：点页签等于回到首页的那组功能 */
+    $('#tabs').addEventListener('click', function(e){
+      var b = e.target.closest && e.target.closest('.tab');
+      if (!b) return;
+      $$('.tab', $('#tabs')).forEach(function(n){ n.classList.remove('active') });
+      b.classList.add('active');
+      state.tab = b.dataset.tab;
+      if (state.route !== 'home'){
+        state.route = 'home';
+        var home = $('#navBox .nav[data-route="home"]');
+        $$('.nav', $('#navBox')).forEach(function(n){ n.classList.remove('active') });
+        if (home){ home.classList.add('active'); applyRoute('home', home.dataset.label) }
+      }
+      renderList(state.tab, true);
+    });
+    $('#list').addEventListener('scroll', updateHint, { passive: true });
+
+    /* 明暗：同一套语言的日光版 */
+    $('#themeToggle').addEventListener('click', function(){
+      state.theme = state.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', state.theme);
+      this.setAttribute('aria-pressed', state.theme === 'dark' ? 'true' : 'false');
+    });
+
+    /* 工具：只留一个 .tool.active，并切换下方选项组 */
+    $('#captureBar').addEventListener('click', function(e){
+      var t = e.target.closest && e.target.closest('.tool');
+      if (t){
+        $$('.tool').forEach(function(n){ n.classList.remove('active') });
+        t.classList.add('active');
+        state.tool = t.dataset.tool;
+        renderToolOptions(state.tool);
+        return;
+      }
+      var w = e.target.closest && e.target.closest('.wbtn');
+      if (w){
+        $$('.wbtn').forEach(function(n){ n.setAttribute('aria-pressed', 'false') });
+        w.setAttribute('aria-pressed', 'true');
+        return;
+      }
+      var s = e.target.closest && e.target.closest('.swatch');
+      if (s){
+        $$('.swatch').forEach(function(n){ n.setAttribute('aria-pressed', 'false') });
+        s.setAttribute('aria-pressed', 'true');
+      }
+    });
+    $('#toolOptions').addEventListener('click', function(e){
+      var o = e.target.closest && e.target.closest('.opt');
+      if (!o) return;
+      var grp = o.parentElement;
+      $$('.opt', grp).forEach(function(n){ n.setAttribute('aria-pressed', 'false') });
+      o.setAttribute('aria-pressed', 'true');
+    });
+
+    /* 剪贴板：行选择 + 芯片过滤 */
+    $('#clipList').addEventListener('click', function(e){
+      var r = e.target.closest && e.target.closest('.clip-row');
+      if (!r) return;
+      state.clipSel = Number(r.dataset.idx);
+      $$('.clip-row', $('#clipList')).forEach(function(n){
+        n.setAttribute('aria-selected', String(Number(n.dataset.idx) === state.clipSel))
+      });
+    });
+    $('#chips').addEventListener('click', function(e){
+      var c = e.target.closest && e.target.closest('.chip');
+      if (!c) return;
+      state.chip = Number(c.dataset.chip);
+      $$('.chip').forEach(function(n){ n.setAttribute('aria-pressed', 'false') });
+      c.setAttribute('aria-pressed', 'true');
+      renderClips();
+    });
+
+    /* 动效：点一次播一遍，1180ms 后回到静止 */
+    var motionTimer = 0;
+    $('#motionBtn').addEventListener('click', function(){
+      var stage = $('#motionStage');
+      clearTimeout(motionTimer);
+      stage.classList.remove('is-playing');
+      void stage.offsetWidth;
+      stage.classList.add('is-playing');
+      motionTimer = setTimeout(function(){ stage.classList.remove('is-playing') }, 1180);
+    });
+  }
+
+  /* ── boot ── */
+  renderNav();
+  applyRoute('home', '快捷功能');
+  renderTabs();
+  renderList('shot', false);
+  renderRail();
+  renderCaptureBar();
+  renderToolOptions('select');
+  renderChips();
+  renderClips();
+  renderClipMeta();
+  renderSelBar();
+  renderMotion();
+  $('#winTag').textContent = HL.brand.tag.replace(/\s*·\s*/g, '、');
+  $('#pDesc').textContent = HL.pages.home.desc;
+  $('#selSize').textContent = HL.capture.region.w + ' × ' + HL.capture.region.h;
+  $('#selRatio').textContent = HL.capture.region.ratio;
+  $('#fakeDoc').textContent = HL.clipboard.detail.split(String.fromCharCode(10))[0];
+  $('#miniA').textContent = HL.rail[2].value.split('/')[0].trim();
+  $('#miniB').textContent = HL.rail[2].value.split('/')[1].trim();
+  $('#miniK').textContent = HL.rail[2].label;
+  bind();
+})();
+</script>
+</body>
+</html>
