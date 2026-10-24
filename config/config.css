@@ -10,19 +10,36 @@
 
 /* ---------- shell ---------- */
 *{box-sizing:border-box}
-/* The page paints the base surface itself instead of staying transparent: the
-   shell below cuts its own rounded corners, and a transparent page leaves those
-   four cut-outs to the native window backgroundColor. Keeping the painted base
-   equal to --bg makes the corners resolve to the same colour whatever the
-   native backdrop happens to be. */
+/* The page paints the base surface itself: the shell below cuts its own rounded
+   corners, and a transparent page would leave those four cut-outs to the native
+   window colour. Keeping the painted base equal to --bg makes the corners resolve
+   to the same colour whatever the native backdrop happens to be.
+
+   2026-10-24: this window is OPAQUE. A translucent version was built and rejected
+   twice by the user ("too clear", then "frosted is still too see-through — remove
+   it, match the design draft main interface"). The prototype's face is glass only
+   over the prototype's DRAWN desk; with the real desktop behind it, the same film
+   reads as too transparent. So the shipped window is solid: opaque page, native
+   backdrop colour, OS shadow. */
 html,body{width:100%;height:100%;margin:0;overflow:hidden;font-family:var(--font-ui);color:var(--text);background:var(--bg)}
 button,input,select,textarea{font:inherit}
-.window-shell{width:100%;height:100%;display:flex;border:1px solid var(--line-2);border-radius:var(--radius-lg);overflow:hidden;background:var(--bg);box-shadow:var(--shadow-3)}
+/* Positioning rather than width/height:100% + border: the 1px border used to be
+   added OUTSIDE the 100% box, so the shell was 1px larger than the viewport and the
+   bottom hairline was clipped to a half-pixel grey band. */
+.window-shell{position:absolute;inset:0;display:flex;border:1px solid var(--line-2);border-radius:var(--radius-lg);overflow:hidden;background:var(--bg);box-shadow:var(--shadow-3)}
+.window-shell::before{content:"";position:absolute;inset:0;z-index:0;pointer-events:none;background:
+  radial-gradient(78% 66% at 2% -6%, color-mix(in srgb, var(--primary) 6%, transparent), transparent 72%),
+  radial-gradient(72% 62% at 104% 102%, color-mix(in srgb, #6f7f52 4%, transparent), transparent 70%)}
 .window-shell::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:var(--skin);background-size:cover;background-position:center;opacity:var(--skin-opacity)}
 .sidebar,.workspace{position:relative;z-index:1}
 
 /* ---------- sidebar ---------- */
-.sidebar{width:224px;flex:0 0 224px;display:flex;flex-direction:column;background:color-mix(in srgb,var(--surface) 92%,transparent);border-right:1px solid var(--line)}
+/* The chassis side wall, as glass over the bench wash. --glass-1 is the step the
+   text sits on (including 13.5px nav labels) while still transmitting enough of the
+   in-window wash for the surface to read as a layer rather than as paint. The
+   hairline is --glass-line, not --line: a solid hairline over a blurred edge reads
+   harder than the material it is supposed to hold. */
+.sidebar{width:224px;flex:0 0 224px;display:flex;flex-direction:column;background:var(--glass-1);-webkit-backdrop-filter:blur(var(--glass-blur-1)) saturate(var(--glass-sat-1));backdrop-filter:blur(var(--glass-blur-1)) saturate(var(--glass-sat-1));border-right:1px solid var(--glass-line)}
 .brand{height:76px;display:flex;align-items:center;justify-content:center;gap:1px;font-family:var(--font-display);font-size:22px;font-weight:600;letter-spacing:-.01em;-webkit-app-region:drag;color:var(--text)}
 .brand span{color:var(--primary-text)}
 .sidebar nav{flex:1;overflow:auto;padding:6px 10px 12px}
@@ -36,7 +53,7 @@ button,input,select,textarea{font:inherit}
 
 /* ---------- workspace ---------- */
 .workspace{flex:1;min-width:0;display:flex;flex-direction:column}
-.titlebar{height:48px;display:flex;align-items:center;padding-left:24px;background:var(--surface);border-bottom:1px solid var(--line);font-size:14px;font-weight:600;-webkit-app-region:drag}
+.titlebar{height:48px;display:flex;align-items:center;padding-left:24px;background:var(--glass-1);-webkit-backdrop-filter:blur(var(--glass-blur-1)) saturate(var(--glass-sat-1));backdrop-filter:blur(var(--glass-blur-1)) saturate(var(--glass-sat-1));border-bottom:1px solid var(--glass-line);font-size:14px;font-weight:600;-webkit-app-region:drag}
 .titlebar>div:first-child{flex:1}
 .window-actions{height:100%;display:flex;-webkit-app-region:no-drag}
 .window-actions button{width:48px;border:0;color:var(--text-dim);background:transparent;font-size:18px;cursor:pointer;transition:background .13s,color .13s}
@@ -49,7 +66,7 @@ button,input,select,textarea{font:inherit}
    The signature detail of this language: a persistent instrument strip that
    reads out current capability. Kept on one line, dot separators only, no
    icons — the values are the content. */
-.status-rail{display:flex;align-items:center;gap:0;height:34px;padding:0 24px;background:var(--surface-2);border-bottom:1px solid var(--line);flex:0 0 auto;overflow:hidden}
+.status-rail{display:flex;align-items:center;gap:0;height:34px;padding:0 24px;background:var(--glass-1);-webkit-backdrop-filter:blur(var(--glass-blur-2)) saturate(var(--glass-sat-2));backdrop-filter:blur(var(--glass-blur-2)) saturate(var(--glass-sat-2));border-bottom:1px solid var(--glass-line);flex:0 0 auto;overflow:hidden}
 .status-rail[hidden]{display:none}
 .status-rail .cell{display:flex;align-items:center;gap:7px;padding-right:18px;margin-right:18px;border-right:1px solid var(--line);font-size:11.5px;color:var(--muted);white-space:nowrap;min-width:0}
 .status-rail .cell:last-child{border-right:0;padding-right:0;margin-right:0}
@@ -72,7 +89,18 @@ button,input,select,textarea{font:inherit}
 .section{margin-bottom:22px}
 .section-title{display:flex;align-items:center;justify-content:space-between;margin:0 0 12px;font-family:var(--font-display);font-size:17px;font-weight:600;letter-spacing:-.01em}
 .section-title small{color:var(--muted);font-size:12px;font-weight:400}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-lg);box-shadow:var(--shadow-1);transition:border-color .16s,box-shadow .16s}
+/* Cards are glass, not painted plates (2026-10-24).
+   The main window is an OPAQUE window — it cannot see the desktop, because
+   changing that would mean `transparent: true` plus giving up the native window
+   shadow and the backdrop contract. But `backdrop-filter` does not need the
+   desktop: it blurs whatever is composited behind the element INSIDE the window,
+   and behind a card is the --bg bench plus the window's own content. That is
+   enough for the material to read, and it is exactly the prototype's z2 layer.
+   The film is translucent enough to pass the bench's warmth through and opaque
+   enough to carry 14px body text (--glass-2 = .88 alpha).
+   `background` (not `background-color`) is deliberate: the card's tint is the
+   glass film while any inherited image painting stays intact. */
+.card{background:var(--glass-2);-webkit-backdrop-filter:blur(var(--glass-blur-2)) saturate(var(--glass-sat-2));backdrop-filter:blur(var(--glass-blur-2)) saturate(var(--glass-sat-2));border:1px solid var(--glass-line);border-radius:var(--radius-lg);box-shadow:var(--shadow-1),var(--glass-hi);transition:border-color .16s,box-shadow .16s}
 .empty{padding:70px 20px;text-align:center;color:var(--muted);font-size:13px}
 .empty::before{content:"";display:block;width:44px;height:44px;margin:0 auto 16px;background:var(--faint);opacity:.5;
   -webkit-mask:url('icons/folder-open.svg') center/contain no-repeat;mask:url('icons/folder-open.svg') center/contain no-repeat}
@@ -451,7 +479,7 @@ body.compact #view{padding:16px}
    token total card, row3 daily detail full width. The paired grid is used at
    every settings-window size (it collapses to one column only below 560px of
    page content); the switch is a container query, not a viewport media query.
-   Nightshift tokens only; one user accent. */
+   FILM tokens only; one user accent. */
 .usage-page{
   max-width:1180px;
   container-type:inline-size;

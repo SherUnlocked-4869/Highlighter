@@ -1,9 +1,18 @@
 /*
  * Highlighter · shared design tokens
  *
- * Single source of truth for the "Nightshift" language: warm charcoal
- * surfaces, one accent reserved for selection and primary action, and depth
- * expressed as a surface-elevation ladder rather than borders or glow.
+ * Single source of truth for the "FILM" language (direction B1 of the 2026
+ * re-theme, chosen 2026-10-24; prototype and rationale in
+ * design-demos/theme-2026/dir-2.html and cards/B1.md).
+ *
+ * What FILM is, in one paragraph: the product's real interface is the small
+ * floating strip that appears over your screen when you capture — the settings
+ * window is where you configure it, not where you live. So the language is a
+ * LADDER OF FLOATING SURFACES: every depth cue is built from the same four
+ * ingredients (a top inset highlight, a bottom inset shade, a tight contact
+ * shadow, a wide soft shadow), surfaces are warm rather than grey, and the
+ * accent is reserved for selection and the primary action. Depth is never
+ * expressed with borders or glow.
  *
  * Load order matters: this file must come before any window stylesheet, so
  * window CSS can consume these values instead of redefining them.
@@ -21,8 +30,10 @@
  *    body.dark — otherwise the light-mode value would leak into dark mode.
  *
  * Derived accent colors, so that any user-picked hue stays legible:
- *   --primary-ink   contrast-safe text ON a solid accent fill
- *   --primary-text  accent adjusted for use as foreground text on a surface
+ *   --primary-ink    contrast-safe text ON a solid accent fill
+ *   --primary-text   accent adjusted for use as foreground text on a surface
+ *                    (its lightness cap is --primary-text-l, so a palette with a
+ *                    darker surface can lower it without editing the formula)
  *
  * --primary-ink is black or white, chosen at an oklch lightness of 0.54. That
  * threshold is the measured optimum: sweeping 1008 hues and lightnesses, no
@@ -30,26 +41,37 @@
  * mid-tone fill (e.g. oklch(0.55 0.22 330)) cannot reach 4.5:1 against either
  * black or white — a property of the color space, not of this formula. Every
  * common brand accent tested clears 4.5:1. See design-demos/tools/.
+ *
+ * Readability is enforced, not assumed: test/design-tokens.test.js computes the
+ * WCAG ratio of every ink/surface pair in both themes and fails the build when a
+ * palette edit drops body or secondary text under 4.5:1.
  */
 
 :root {
   color-scheme: light;
 
-  /* ---- surfaces: base to raised. Depth comes from this ladder. ---- */
-  --bg: #eeebe4;
-  --surface: #fffefb;
-  --surface-2: #f6f3ed;
-  --surface-3: #ece8e0;
+  /* ---- surfaces: base to raised. Depth comes from this ladder. ----
+     FILM palette (direction B1, chosen 2026-10-24). Warm neutral, not grey:
+     the light end is a warm off-white paper, the base is a warm sand. Every value
+     was validated against the real renderer by
+     design-demos/theme-2026/tools/landing-preview.js — 30/30 surfaces, 0 new
+     low-contrast text nodes, across the settings window, capture overlay,
+     selection toolbar and clipboard panel. */
+  --bg: #ebe5d8;
+  --surface: #f7f3ea;
+  --surface-2: #fbf7ef;
+  --surface-3: #fffdf7;
 
-  /* ---- hairlines ---- */
-  --line: #e2ddd3;
-  --line-2: #cdc6ba;
+  /* ---- hairlines: warm, low-contrast. B1 expresses depth with shadow and
+     transparency, so these stay quiet — they are separators, not structure. --- */
+  --line: #e2d9c9;
+  --line-2: #cfc4b0;
 
   /* ---- ink ladder ---- */
-  --ink: #1b1815;
-  --ink-2: #4a453d;
-  --muted: #6d675e;
-  --faint: #9a938a;
+  --ink: #1d1a16;
+  --ink-2: #3c362d;
+  --muted: #453f32;
+  --faint: #544c3d;
 
   /* ---- accent ---- */
   --primary: #e5a44c;
@@ -63,8 +85,12 @@
   --mark-bg: transparent;
   --mark-fg: #b8382c;
 
-  /* ---- radii: derived from the one user-facing knob (settings.borderRadius) ---- */
-  --radius: 9px;
+  /* ---- radii: derived from the one user-facing knob (settings.borderRadius) ----
+     B1 asks for a softer, more "floatable" corner than Nightshift's 9px; 13px is
+     the direction's value and settings-defaults.js carries the same number, so a
+     fresh install lands here. The runtime inline style still wins for anyone who
+     moves the slider. */
+  --radius: 13px;
 
   /* ---- type ----
      No web fonts: the renderer CSP is font-src 'self' data:, and a desktop
@@ -76,10 +102,105 @@
   --font-display: "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace;
 
-  /* ---- elevation ---- */
-  --shadow-1: 0 1px 2px rgba(40, 32, 20, .06);
-  --shadow-2: 0 2px 6px rgba(40, 32, 20, .07), 0 14px 30px rgba(40, 32, 20, .07);
-  --shadow-3: 0 2px 8px rgba(40, 32, 20, .08), 0 26px 60px rgba(40, 32, 20, .12);
+  /* ---- elevation: the B1 signature -------------------------------------
+     Depth is a LADDER OF FLOATING SURFACES, not a set of borders. Each step is
+     built from the same four ingredients the direction card specifies:
+       1. a top inset highlight  (light catching the upper edge)
+       2. a bottom inset shade   (the surface's own thickness)
+       3. a tight contact shadow (the object touching what it sits on)
+       4. a wide soft shadow     (the object hovering above it)
+     Warm-tinted (52,38,20 rather than neutral black) because a neutral shadow on
+     a warm surface reads as dirt.
+
+     shadow-1 is deliberately SHALLOW. 28 rules in config.css combine a 1px border
+     with shadow-1, and in this language the border is the separation while the
+     shadow is a whisper of lift. A deeper step-1 (the first attempt used a 6/14
+     spread) turned the settings lists into stacks of blocks and lost the "light"
+     the direction is named for — checked against the real renderer, not guessed. */
+  --shadow-1: inset 0 1px 0 rgba(255,255,255,.8), 0 1px 1px rgba(52,38,20,.05), 0 2px 4px -2px rgba(52,38,20,.07);
+  --shadow-2: inset 0 1px 0 rgba(255,255,255,.92), 0 1px 3px rgba(52,38,20,.10), 0 8px 18px -8px rgba(52,38,20,.18);
+  --shadow-3: inset 0 1px 0 rgba(255,255,255,.95), inset 0 -1px 0 rgba(88,68,42,.07), 0 2px 3px rgba(52,38,20,.14), 0 18px 34px -14px rgba(52,38,20,.28), 0 50px 90px -40px rgba(52,38,20,.34);
+
+  /* ---- shadow-bevel: INSET ONLY ----------------------------------------
+     The transparency floaters (selection toolbar) are frameless windows sized
+     EXACTLY to the element with hasShadow:false, so any outer shadow is clipped
+     by the window bounds and renders as a rectangle. They need the "thickness"
+     half of the elevation language without the "hover" half, which is a
+     different thing from a shallower shadow — hence its own token rather than
+     picking a step off the ladder.
+     This is the same recipe as --shadow-1/2's inset ingredients, kept in step
+     with them on purpose. */
+  --shadow-bevel: inset 0 1px 0 rgba(255,255,255,.8), inset 0 -1px 0 rgba(88,68,42,.10);
+
+  /* ---- glass: the material this language is named for --------------------
+     FILM's premise is floating glass, not painted panels. The first landing
+     shipped the palette but dropped the material: every surface was an opaque
+     fill, so the delivered screenshots had none of the translucency the
+     direction was chosen for.
+
+     Transparency in Electron is WINDOW-level. A CSS backdrop-filter can only
+     blur what is already composited INSIDE the window, so it needs something to
+     blur: content behind it inside the same window. Windows created with
+     `transparent: true` (toolbar / pin / record / long-capture, plus anything
+     opt-in later) additionally see the desktop, which is what makes the reading
+     "glass over your screen" literal. The settings window is NOT one of them: a
+     translucent first version was rejected twice (see the FROSTED note below), so
+     it is opaque, and its chrome/cards use these films over the app's own bench
+     wash instead of over a desktop.
+
+     The recipe is three ingredients, always together — a translucent film, a
+     blur, and a saturation lift. Alpha without blur is a wash; blur without the
+     lift is grey. Values mirror the prototype's z-ladder so the shipped material
+     and the approved prototype are the same material.
+
+       --glass-1   window chrome (sidebar/titlebar/status rail; text sits on it)
+       --glass-2   panel/card     (cards over the in-window bench)
+       --glass-3   floating layer (the overlay over real screen content)
+
+     All three sit at ~.88-.90 alpha; the steps differ by blur radius and usage, not
+     by opacity (the names are role, not a transparency ranking).
+
+     --glass-blur-* is the blur radius, --glass-sat-* the saturation lift.
+     fallback: where the platform cannot composite translucency, the same
+     declarations still resolve — they just read as slightly milky fills rather
+     than as a broken layout, because the alpha is high enough to carry text. */
+  /* FROSTED, not clear. History, because this is where the numbers come from:
+     the first cut was clear glass (alpha .62-.76) during a brief experiment that
+     made the settings window itself translucent. It let the DESKTOP's shape
+     through — a window edge, a line of text — and reading the app on top of it
+     became work; with a dark window behind the card, --muted measured 3.85:1
+     (below the 4.5 bar) purely because the backdrop changed. The user rejected
+     that ("有点太透了，反而影响页面内容的识别"), then rejected the frosted
+     follow-up too, so the SHIPPED settings window is opaque and the face colours
+     are gone. What survives is the frosted recipe for the surfaces that still
+     have something real behind them: --glass-3 on the transparent selection
+     toolbar (the user's desktop), and --glass-1/2 over the app's own opaque bench
+     inside the settings window (the bench wash is the only thing they transmit).
+     So: high alpha (.88-.92) plus a large blur radius. At .88 the worst-case
+     secondary text measured 7.8:1 — the layer behind can no longer break
+     readability, while the surface still picks up the bench's warmth. */
+  --glass-1: rgba(247, 243, 234, .90);
+  --glass-2: rgba(255, 253, 247, .88);
+  --glass-3: rgba(255, 252, 245, .90);
+  --glass-blur-1: 40px;
+  --glass-blur-2: 32px;
+  --glass-blur-3: 36px;
+  --glass-sat-1: 1.22;
+  --glass-sat-2: 1.10;
+  --glass-sat-3: 1.18;
+  /* Text/edge hairlines that only exist because a translucent surface needs an
+     edge to end on; opaque borders read too hard over blurred content. */
+  --glass-line: rgba(207, 196, 176, .72);
+  --glass-hi: inset 0 1px 0 rgba(255, 255, 255, .78);
+  /* The settings window is opaque again (2026-10-24, second pass), so it uses the
+     OS shadow and native rounding like every other opaque window. The frame inset
+     and page-drawn window shadow that only existed for the translucent version are
+     gone; test/window-backdrop.test.js fails if either comes back. */
+  /* Controls sitting ON glass. These are tints, not opaque faces: a chip painted
+     from --surface-2 inside a glass strip reads as a patch stuck on the glass. */
+  --btn-face: rgba(255, 255, 255, .42);
+  --btn-face-hover: rgba(255, 255, 255, .66);
+  --btn-face-active: rgba(255, 255, 255, .80);
 
   /* ---- skin (user background image) ---- */
   --skin: none;
@@ -87,7 +208,12 @@
 
   /* derived + aliases (see rule 2 — repeated under body.dark) */
   --primary-ink: oklch(from var(--primary) clamp(0, (0.54 - l) * 1000, 1) 0 0);
-  --primary-text: oklch(from var(--primary) min(l, 0.48) c h);
+  /* --primary-text is accent-as-foreground. The shipped 0.48 ceiling is tuned for
+     a near-white surface; a mid-tone surface needs the accent much darker before it
+     reaches 4.5:1. The lightness cap is therefore a token, so a theme can lower it
+     without editing this formula. Keeping 0.48 preserves the current output. */
+  --primary-text-l: 0.48;
+  --primary-text: oklch(from var(--primary) min(l, var(--primary-text-l)) c h);
   --primary-soft: color-mix(in srgb, var(--primary) 13%, transparent);
   --primary-line: color-mix(in srgb, var(--primary) 40%, transparent);
   --ok-soft: color-mix(in srgb, var(--ok) 13%, transparent);
@@ -100,6 +226,31 @@
   --focus-ring: 0 0 0 3px var(--primary-soft);
   --inline-code: var(--primary-text);
   --reasoning-bg: var(--surface-2);
+
+  /* ---- material + motion slots (added 2026-10-24) ----------------------
+     These let a theme direction express "material" without inventing
+     window-local values. Every default is a no-op: the shipped look does not
+     move until a theme sets one.
+
+     --chrome   the "chassis side wall" (sidebar / titlebar). The window
+                stylesheets paint .sidebar and .card from the SAME --surface, so a
+                direction whose signature is "body one step darker than the panel"
+                could not be expressed at all. Defaults to --surface.
+     --grain    a background-image texture (fine sand, paper fibre, enamel).
+                `none` by default; a direction supplies a data: URI.
+     --grain-opacity  how strongly it reads; 0 keeps it invisible even when set.
+     Motion     one timing scale, so windows stop hardcoding their own durations
+                (they currently use a .13s-.22s spread with no shared curve). */
+  --chrome: var(--surface);
+  --grain: none;
+  --grain-opacity: 0;
+  --dur-press: 110ms;
+  --dur-hover: 150ms;
+  --dur-overlay: 200ms;
+  --dur-page: 260ms;
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ease-soft: cubic-bezier(.22, .61, .36, 1);
+  --ease-press: cubic-bezier(.2, .7, .3, 1);
 
   /* Compatibility aliases. Each window stylesheet previously declared its own
      palette under slightly different names; rather than rewrite several
@@ -117,19 +268,21 @@
 body.dark {
   color-scheme: dark;
 
-  /* warm charcoal, not blue-black: the ladder keeps a trace of the accent */
-  --bg: #121110;
-  --surface: #1c1a18;
-  --surface-2: #242220;
-  --surface-3: #2d2a27;
+  /* FILM dark: warm smoke, not black glass. The direction card is explicit that
+     this is "烟灰玻璃（不是黑玻璃）" — a neutral black would make the warm accent
+     read as a sticker on a void. */
+  --bg: #191713;
+  --surface: #24211c;
+  --surface-2: #2d2923;
+  --surface-3: #38332b;
 
-  --line: #332f2b;
+  --line: #3a352d;
   --line-2: #453f39;
 
-  --ink: #f1ece4;
-  --ink-2: #c6c0b5;
-  --muted: #8c8679;
-  --faint: #67615a;
+  --ink: #f4efe4;
+  --ink-2: #cfc7b8;
+  --muted: #d2cab4;
+  --faint: #c6bda6;
 
   --ok: #63b98a;
   --warn: #d9a94a;
@@ -137,9 +290,41 @@ body.dark {
 
   --mark-fg: #f0a08a;
 
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
-  --shadow-2: 0 2px 6px rgba(0, 0, 0, .45), 0 14px 30px rgba(0, 0, 0, .4);
-  --shadow-3: 0 2px 8px rgba(0, 0, 0, .5), 0 26px 60px rgba(0, 0, 0, .55);
+  /* Elevation ladder, dark end: the top inset highlight turns down to a whisper
+     (a bright line on dark reads as a hard edge) and the bottom inset shade takes
+     over the "thickness" role, exactly as the direction card describes.
+     shadow-1 stays shallow for the same reason as the light end: 28 rules pair a
+     1px border with it, and a deep step-1 turns a settings list into blocks. */
+  --shadow-1: inset 0 1px 0 rgba(255,255,255,.05), inset 0 -1px 0 rgba(0,0,0,.22), 0 1px 2px rgba(0,0,0,.22), 0 3px 7px -3px rgba(0,0,0,.34);
+  --shadow-2: inset 0 1px 0 rgba(255,255,255,.07), inset 0 -1px 0 rgba(0,0,0,.26), 0 1px 3px rgba(0,0,0,.3), 0 8px 18px -8px rgba(0,0,0,.42);
+  --shadow-3: inset 0 1px 0 rgba(255,255,255,.10), inset 0 -1px 0 rgba(0,0,0,.3), 0 2px 3px rgba(0,0,0,.4), 0 18px 34px -14px rgba(0,0,0,.5), 0 50px 90px -40px rgba(0,0,0,.55);
+
+  /* Inset-only bevel, dark end (see the note next to the light value). On a dark
+     surface the top hint turns down to a whisper and the bottom shade carries the
+     thickness, exactly as the elevation ladder above does. */
+  --shadow-bevel: inset 0 1px 0 rgba(255,255,255,.06), inset 0 -1px 0 rgba(0,0,0,.28);
+
+  /* Glass, dark end. Warm smoke rather than black glass (the direction card is
+     explicit): a neutral black film over a warm desktop reads as a hole, not as a
+     material. The same caveat as the light end applies: --glass-1/2 now sit over
+     the app's own opaque dark bench (the settings window is opaque), so they read
+     as layered surfaces rather than as translucent panels; only --glass-3 on the
+     floating toolbar sees the user's real screen. */
+  /* Dark frosted, kept at the values measured while the window itself was briefly
+     translucent: a dark film over a light backdrop needs MORE opacity than the
+     light end to stay frosted, because the contrast between film and backdrop is
+     what reveals detail. Measured at .90 the dark shell kept body ink at 8.6:1
+     over pure white, so a bright desktop could tint it without breaking it. */
+  --glass-1: rgba(36, 33, 28, .90);
+  --glass-2: rgba(45, 41, 35, .88);
+  --glass-3: rgba(28, 25, 21, .90);
+  --glass-line: rgba(255, 240, 214, .14);
+  --glass-hi: inset 0 1px 0 rgba(255, 246, 232, .10);
+  /* Controls on dark glass: a light FILM over the dark surface, not white paint
+     (white chips on dark glass look like holes punched through it). */
+  --btn-face: rgba(255, 246, 232, .08);
+  --btn-face-hover: rgba(255, 246, 232, .16);
+  --btn-face-active: rgba(255, 246, 232, .24);
 
   /* --primary is deliberately absent: it is owned by the runtime setting. */
   --primary-ink: oklch(from var(--primary) clamp(0, (0.54 - l) * 1000, 1) 0 0);
@@ -158,6 +343,21 @@ body.dark {
   --focus-ring: 0 0 0 3px var(--primary-soft);
   --inline-code: var(--primary-text);
   --reasoning-bg: var(--surface-2);
+
+  /* Material + motion slots, repeated here for the same reason every derived
+     token is (rule 2): a var()-composing custom property resolves where it is
+     declared, so --chrome: var(--surface) in :root would otherwise inherit the
+     LIGHT surface into dark mode. */
+  --chrome: var(--surface);
+  --grain: none;
+  --grain-opacity: 0;
+  --dur-press: 110ms;
+  --dur-hover: 150ms;
+  --dur-overlay: 200ms;
+  --dur-page: 260ms;
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ease-soft: cubic-bezier(.22, .61, .36, 1);
+  --ease-press: cubic-bezier(.2, .7, .3, 1);
 
   --panel: var(--surface);
   --panel-soft: var(--surface-2);

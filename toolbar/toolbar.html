@@ -16,21 +16,34 @@
 <script src="../shared/i18n.js"></script>
 <style>
   /*
-   * Selection toolbar · Nightshift “B · Status LED + Primary”.
+   * Selection toolbar · FILM “status LED + primary action”.
    *
-   * Frameless, transparent, sized exactly to the element with hasShadow:false,
-   * so outer box-shadow is clipped by the window bounds. Depth is an inset
-   * highlight/shade pair. One amber LED echoes the main-window status rail;
-   * the primary local action (copy) is a solid accent fill.
+   * This is the product's most-seen surface and the direction's whole premise:
+   * it FLOATS OVER YOUR SCREEN, so it is built as real glass — a translucent
+   * film, a blur of whatever is behind it, and a saturation lift. The window is
+   * created with `transparent: true` (main/services/selection-window-manager.js),
+   * so "behind it" includes the user's actual desktop, not just this document.
+   *
+   * Sizing: frameless, exactly the element, hasShadow:false. An OUTER box-shadow
+   * would therefore be clipped by the window bounds and render as a rectangle,
+   * which is why depth here is the inset-only --shadow-bevel. The translucent
+   * film needs a hairline to end on (--glass-line) because blurred content has no
+   * edge of its own.
+   *
+   * Fallback: if the platform cannot composite translucency the same declarations
+   * still render — they read as a milky fill rather than a broken strip, because
+   * the alpha is high enough to carry 12px text.
    */
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; background: transparent; overflow: hidden; user-select: none; }
   .toolbar {
     display: flex; align-items: center; justify-content: center; gap: 3px;
-    background: var(--surface);
-    border: 1px solid var(--line-2); border-radius: var(--radius-lg);
+    background: var(--glass-3);
+    -webkit-backdrop-filter: blur(var(--glass-blur-3)) saturate(var(--glass-sat-3));
+    backdrop-filter: blur(var(--glass-blur-3)) saturate(var(--glass-sat-3));
+    border: 1px solid var(--glass-line); border-radius: var(--radius-lg);
     padding: 4px 6px;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), inset 0 -1px 0 rgba(0, 0, 0, .12);
+    box-shadow: var(--shadow-bevel), var(--glass-hi);
     height: 40px; white-space: nowrap; width: 100%;
   }
   .toolbar .led {
@@ -39,18 +52,25 @@
     margin: 0 5px 0 2px;
   }
   .toolbar .sep { flex: 0 0 1px; width: 1px; height: 16px; background: var(--line); margin: 0 2px; }
+  /*
+   * Buttons are translucent too. An opaque chip inside a glass strip reads as a
+   * patch stuck on the glass — the strip's material has to continue through its
+   * contents, which is exactly the difference between "a glass panel" and "a
+   * panel with glass around the edges". Tints are white/orange mixes rather than
+   * surface steps so they compose with whatever is behind the window.
+   */
   .toolbar .btn {
     display: flex; align-items: center; justify-content: center; gap: 5px;
     flex: 1 1 62px; min-width: 62px; max-width: 126px; height: 30px; padding: 5px 10px;
     border: 1px solid transparent; border-radius: var(--radius-sm);
-    background: var(--surface-2); color: var(--text);
+    background: var(--btn-face); color: var(--text);
     font-size: 12px; font-weight: 500; cursor: pointer;
-    transition: background .14s, border-color .14s, color .14s;
+    transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
     font-family: var(--font-ui);
     outline: none; overflow: hidden; text-overflow: ellipsis; -webkit-app-region: no-drag;
   }
-  .toolbar .btn:hover { border-color: var(--line-2); background: var(--surface-3); color: var(--text); }
-  .toolbar .btn:active { background: var(--surface-3); }
+  .toolbar .btn:hover { border-color: var(--glass-line); background: var(--btn-face-hover); color: var(--text); }
+  .toolbar .btn:active { background: var(--btn-face-active); }
   /*
    * Icon role: a Bootstrap Icons asset painted through a mask, so the ink is
    * always currentColor and the primary button's inverted ink needs no

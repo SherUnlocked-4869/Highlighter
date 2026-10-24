@@ -3,8 +3,8 @@
 // The page is a read-only dashboard over the frozen `usage:*` IPC contract
 // (plan §2.7 / §2.8). This revision reworks the presentation around a calm,
 // high-density "instrument panel" that translates TokenTracker's dashboard
-// rhythm into Nightshift: warm surfaces, one user accent, monospace numbers and
-// a single unified card system.
+// rhythm into FILM (the 2026 theme): warm paper surfaces, one user accent,
+// monospace numbers and a single unified card system.
 //
 // Layout: page head -> slim coverage strip -> segmented period tabs (custom
 // date row appears only while the custom tab is selected) -> dashboard grid.

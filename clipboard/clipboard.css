@@ -2,11 +2,18 @@
  * Clipboard history panel.
  *
  * The palette, type, radii and elevation all come from shared/tokens.css; this
- * file is layout and component structure only. The language is Nightshift
- * (design-demos/c-nightshift.html): depth comes from the surface ladder
- * (--bg / --surface / --surface-2 / --surface-3) and hairlines, never from
- * per-element borders or glow, and --primary is reserved for the selection
- * marker, the primary action and a pinned record.
+ * file is layout and component structure only. The language is FILM (direction
+ * B1 of the 2026 re-theme, design-demos/theme-2026/dir-2.html): warm neutral
+ * surfaces, depth expressed as a LADDER OF FLOATING SURFACES
+ * (--bg / --surface / --surface-2 / --surface-3 plus the four-ingredient
+ * --shadow-* ladder: top inset highlight, bottom inset shade, tight contact
+ * shadow, wide soft shadow) rather than per-element borders or glow. --primary
+ * is reserved for the selection marker, the primary action and a pinned record.
+ *
+ * This panel FOLLOWS the app theme (main/domains/clipboard sends `dark` from
+ * settings.theme) even though it is a floating window — unlike the capture and
+ * record overlays, which are hardcoded dark because they sit over arbitrary
+ * screen content.
  *
  * Two window states share this page:
  *   - the history panel, 480x640 DIP (min 380x420);

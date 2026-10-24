@@ -23,7 +23,11 @@ const DEFAULT_SETTINGS = {
   providers: DEFAULT_AI_PROVIDERS,
   theme: 'system',
   mainColor: '#e5a44c',
-  borderRadius: 8,
+  // FILM (direction B1): the floating-surface language wants a softer corner than
+  // Nightshift's 8. Kept in step with --radius in shared/tokens.css, which this
+  // value overrides at runtime via an inline style on <html>. Existing installs
+  // keep whatever they had: a user who moved the slider chose that.
+  borderRadius: 13,
   compact: false,
   language: 'zh-CN',
   skinPath: '',

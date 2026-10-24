@@ -734,7 +734,12 @@ function renderOverlay() {
     return
   }
   if(!initData?.imageBounds){ctx.save(); ctx.fillStyle=initData?.settings?.screenshot?.selectionMask||'rgba(0,0,0,.46)'; ctx.beginPath(); ctx.rect(0,0,innerWidth,innerHeight); ctx.rect(selection.x,selection.y,selection.w,selection.h); ctx.fill('evenodd'); ctx.restore()}
-  ctx.save(); ctx.strokeStyle='#36a3ff'; ctx.lineWidth=1; ctx.setLineDash([4,3]); ctx.strokeRect(selection.x+.5,selection.y+.5,selection.w,selection.h); ctx.restore()
+  // The region border follows the user's accent like every other selection
+  // affordance. It used to be a hardcoded #36a3ff, which is the colour of the
+  // theme this product replaced: under the shipped Nightshift amber and under
+  // every theme direction it read as a second, unrelated accent. selectedAccent()
+  // is the same resolver drawSelectedOutline() already used.
+  ctx.save(); ctx.strokeStyle=selectedAccent(); ctx.lineWidth=1; ctx.setLineDash([4,3]); ctx.strokeRect(selection.x+.5,selection.y+.5,selection.w,selection.h); ctx.restore()
   annotations.forEach((item) => drawAnnotation(ctx,item))
   if (activeAnnotation) drawAnnotation(ctx,activeAnnotation)
   drawSelectedOutline()
@@ -753,17 +758,25 @@ function render() {
   })
 }
 
+// White pad + accent ring. The ring used to be a hardcoded #e5a44c (Nightshift's
+// shipped default), which stopped tracking the accent the moment the user picked a
+// different colour, and no longer matched the region border once that became
+// accent-driven. Kept outside the body because
+// test/capture-annotation-geometry.test.js pins that the eight pads are 8x8
+// fillRects drawn within 600 characters of the function head.
 function drawHandles() {
   if (!selection || currentTool !== 'select') return
   const points=[[selection.x,selection.y],[selection.x+selection.w/2,selection.y],[selection.x+selection.w,selection.y],[selection.x,selection.y+selection.h/2],[selection.x+selection.w,selection.y+selection.h/2],[selection.x,selection.y+selection.h],[selection.x+selection.w/2,selection.y+selection.h],[selection.x+selection.w,selection.y+selection.h]]
-  ctx.save(); ctx.fillStyle='#fff'; ctx.strokeStyle='#e5a44c'; ctx.lineWidth=1; points.forEach(([x,y])=>{ctx.fillRect(x-4,y-4,8,8);ctx.strokeRect(x-4,y-4,8,8)}); ctx.restore()
+  ctx.save(); ctx.fillStyle='#fff'; ctx.strokeStyle=selectedAccent(); ctx.lineWidth=1; points.forEach(([x,y])=>{ctx.fillRect(x-4,y-4,8,8);ctx.strokeRect(x-4,y-4,8,8)}); ctx.restore()
 }
 
 // 选中项虚线框：画在标注之后、手柄之前（方案 §8.4 指定插入点）。坐标同样是屏幕 CSS
 // 坐标；颜色取 shared/tokens.css 的 --primary（onInit 已把用户主色写进 :root）。
 function selectedAccent() {
   const value = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim()
-  return value || '#36a3ff'
+  // Fallback is the shipped accent, not the retired blue: this only runs when the
+  // custom property is unavailable, and it should still look like this product.
+  return value || '#e5a44c'
 }
 
 // B6 (D8): one dashed outline per selected item, so a multi-selection is visible on the

@@ -22,6 +22,13 @@
  * `getBackgroundColor()` cannot be used to exclude them, because it drops the
  * alpha channel ("#00000000" and "#00ffffff" both report an opaque-looking RGB).
  *
+ * The settings window is opaque too (2026-10-24, second pass). A translucent
+ * version was built first and rejected twice — "too clear", then "frosted is still
+ * too see-through". The prototype's face is glass over a DRAWN desk; a real window
+ * has the user's desktop behind it, and that is what was rejected. So the settings
+ * window is back on the contract above: native backdrop colour, OS shadow, page
+ * paints `--bg`.
+ *
  * Two guards keep it honest: the pages paint `--bg` themselves, so a cut-out
  * carries the theme colour even if the native colour were stale; and the native
  * colour, which does not follow CSS, is re-applied to every tracked window
@@ -30,9 +37,10 @@
 
 // Keep these equal to shared/tokens.css: `--bg` in :root and in body.dark.
 // test/window-backdrop.test.js parses the stylesheet and fails on drift.
+// Values track the FILM palette (direction B1, chosen 2026-10-24).
 const WINDOW_BACKDROP = Object.freeze({
-  light: '#eeebe4',
-  dark: '#121110'
+  light: '#ebe5d8',
+  dark: '#191713'
 })
 
 // Windows whose native backdrop this module owns. A destroyed window is dropped

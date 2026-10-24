@@ -798,6 +798,9 @@ function createMainWindow(route = 'home') {
     firstWindow: firstMainWindowReady
   })
   const pagePath = path.join(__dirname, 'config', 'config.html')
+  // Opaque: a translucent version was built and rejected twice. The prototype's
+  // glass face sits over a drawn desk; behind a real window is the user's desktop,
+  // which they rejected — see main/services/window-backdrop.js.
   const win = createLocalWindow(pagePath, {
     width: 1120,
     height: 760,
