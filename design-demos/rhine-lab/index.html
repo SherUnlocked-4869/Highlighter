@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · 莱茵生命风格 · 三方向评审台</title>
+<style>
+  :root{
+    --paper:#EAE5E1;--lift:#EDEBE4;--ink:#080A08;--ink2:#77756D;--line:#AAA59A;
+    --accent:#9B7247;--dark:#11181B;--dark2:#202A2F;--dark-ink:#E0E3DC;--dark-ink2:#A6B0B1;--dark-line:#536166;
+    --sans:"Microsoft YaHei","微软雅黑",system-ui,sans-serif;
+    --label:"DengXian","等线","Microsoft YaHei",sans-serif;
+    --mono:Consolas,"Cascadia Mono",monospace;--num:Bahnschrift,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;font-synthesis:none;line-break:strict}
+  body{background:#CFCAC2;font-family:var(--sans);color:#1B1815;padding:28px 34px 40px}
+  .top{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-bottom:20px}
+  .top h1{margin:0;font-family:var(--label);font-size:13px;font-weight:400;letter-spacing:.16em;text-transform:uppercase}
+  .top h1 b{display:block;margin-top:6px;font-family:var(--sans);font-size:24px;font-weight:600;letter-spacing:0;text-transform:none}
+  .top p{margin:0;max-width:640px;font-size:13px;line-height:1.8;color:#4A453D}
+  .tabs{display:flex;gap:0;border:1px solid #A9A49A;margin-bottom:14px;width:fit-content}
+  .tabs button{font-family:var(--sans);font-size:13px;padding:10px 20px;background:transparent;border:0;border-right:1px solid #A9A49A;cursor:pointer;color:#5C574F}
+  .tabs button:last-child{border-right:0}
+  .tabs button[aria-selected="true"]{background:#1B1815;color:#EDEBE4}
+  .tabs button span{font-family:var(--mono);font-size:10px;margin-right:8px;opacity:.7}
+  .stage{position:relative;width:1600px;max-width:100%;background:#B9B3A8;border:1px solid #A9A49A;box-shadow:0 24px 60px rgba(58,46,30,.22)}
+  .stage iframe{display:block;width:1600px;height:1000px;border:0;transform-origin:0 0}
+  .meta{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#A9A49A;border:1px solid #A9A49A;border-top:0}
+  .meta div{background:var(--lift);padding:11px 14px;font-size:12px;line-height:1.7;color:#4A453D}
+  .meta b{display:block;font-family:var(--label);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:#77756D;font-weight:400;margin-bottom:3px}
+  .hint{margin-top:12px;font-size:12px;color:#5C574F}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>HIGHLIGHTER · RHINE LAB UI REDESIGN<b>三方向评审台</b></h1>
+  <p>三个方向共用同一份内容模型（真实文案取自 4.1.2 源码）。点标签切换；每个方向都是独立单文件，双击 <code>dir-N.html</code> 也能单独打开。选定后我再把它落到 shared/tokens.css 与各窗口样式。</p>
+</div>
+<div class="tabs" role="tablist">
+  <button role="tab" aria-selected="true" data-src="dir-1.html"><span>A1</span>白室导视</button>
+  <button role="tab" aria-selected="false" data-src="dir-2.html"><span>B1</span>工作站</button>
+  <button role="tab" aria-selected="false" data-src="dir-3.html"><span>C2</span>观测环盘</button>
+</div>
+<div class="stage"><iframe id="frame" src="dir-1.html" title="方向预览"></iframe></div>
+<div class="meta" id="meta"></div>
+<div class="hint">键盘 <b>1</b> <b>2</b> <b>3</b> 切换。截图：<code>shots/dir-1.png</code> · <code>dir-2.png</code> · <code>dir-3.png</code>；六格缩略图：<code>shots/thumbs.png</code>。</div>
+<script>
+  var DATA = {
+    'dir-1.html': ['<b>来源</b>Otl Aicher / 慕尼黑 1972 奥运视觉系统', '<b>骨架</b>四格等分导视 + 巨标题 + 一条量出的线', '<b>主角素材</b>程序化几何原型图标', '<b>form</b>28 项能力天然落成截取/读取/固定/归档四个目的地'],
+    'dir-2.html': ['<b>来源</b>Ableton Live 12 / Berlin', '<b>骨架</b>左栏浏览器 + 双 lane 工作台 + 传输条', '<b>主角素材</b>真实功能清单与出厂热键比', '<b>form</b>13 路由里 5 个是功能页，它本来就是常开的并行工作台'],
+    'dir-3.html': ['<b>来源</b>杉浦康平信息曼荼罗 + 官方双环语法', '<b>骨架</b>同心环盘导航 + 竖排标题 + 四角 HUD', '<b>主角素材</b>纯 CSS/SVG 程序化几何', '<b>form</b>截图→识别→归档→再截图的真实动作闭环']
+  };
+  var frame = document.getElementById('frame'), meta = document.getElementById('meta');
+  function show(src){
+    frame.src = src;
+    meta.innerHTML = DATA[src].map(function(t){ return '<div>' + t + '</div>' }).join('');
+    [].forEach.call(document.querySelectorAll('.tabs button'), function(b){
+      b.setAttribute('aria-selected', b.dataset.src === src ? 'true' : 'false');
+    });
+  }
+  document.querySelector('.tabs').addEventListener('click', function(e){
+    var b = e.target.closest('button'); if (b) show(b.dataset.src);
+  });
+  window.addEventListener('keydown', function(e){
+    var map = {'1':'dir-1.html','2':'dir-2.html','3':'dir-3.html'};
+    if (map[e.key]) show(map[e.key]);
+  });
+  show('dir-1.html');
+</script>
+</body>
+</html>

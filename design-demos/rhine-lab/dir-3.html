@@ -1,0 +1,1181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<title>Highlighter · C2 观测环盘 · dir-3</title>
+<style>
+/* ============================================================
+   C2 · 观测环盘 / OBSERVATION RING
+   暗底观测室 token（brand-spec §2.3）· 零圆角 · 唯一强调色暖琥珀
+   环盘几何全部手算：SVG 圆弧路径 + 极坐标刻度 + 沿弧文字
+   无图片 / 无 canvas 库 / 无外部字体 / 无 CDN
+   ============================================================ */
+:root{
+  --stage:#090E10;
+  --bg:#11181B;
+  --panel:#202A2F;
+  --field:#2A363B;
+  --ink:#E0E3DC;
+  --ink2:#A6B0B1;
+  --ink3:#8E999C;
+  --line:#536166;
+  --line2:#2A363B;
+  --accent:#C5A16B;
+  --red:#9E2A1D;
+  --sans:"Microsoft YaHei","微软雅黑",system-ui,sans-serif;
+  --lbl:"DengXian","等线","Microsoft YaHei",sans-serif;
+  --num:"Bahnschrift","Microsoft YaHei","微软雅黑",sans-serif;
+  --mono:"Consolas","Cascadia Mono",monospace;
+  --ease:cubic-bezier(.16,1,.3,1);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:var(--stage)}
+body{
+  font-family:var(--sans);color:var(--ink);
+  font-variant-numeric:tabular-nums;
+  -webkit-font-smoothing:antialiased;font-synthesis:none;
+  line-break:strict;
+}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left}
+svg{display:block}
+::selection{background:var(--accent);color:var(--bg)}
+
+/* 英文小标：全大写 + .16em；中文一律不加字距 */
+.u{font-family:var(--lbl);font-style:normal;font-weight:400;letter-spacing:.16em;text-transform:uppercase}
+.u1{letter-spacing:.1em}
+
+.board{position:relative;width:1600px;height:1000px;background:var(--stage);overflow:hidden}
+
+/* ===================== 标题区 ===================== */
+.bhead{position:absolute;left:24px;top:20px;width:1552px;height:88px;display:flex;justify-content:space-between;align-items:flex-end}
+.kick{display:flex;align-items:center;gap:12px;height:16px}
+.kick .no{font-family:var(--num);font-size:12px;letter-spacing:.1em;color:var(--accent);border:1px solid var(--accent);padding:0 5px;line-height:15px}
+.kick .en{font-size:12px;color:var(--ink2)}
+.kick .src{font-size:12px;color:var(--ink3)}
+.b-title{margin:11px 0 0;font-family:var(--sans);font-size:38px;line-height:1;font-weight:400;color:var(--ink)}
+.b-lede{margin:13px 0 0;font-size:14px;line-height:1.35;color:var(--ink2)}
+.bdata{display:flex;align-items:baseline}
+.bdata .cell{display:flex;align-items:baseline;gap:8px;padding:0 20px;border-left:1px solid var(--line2)}
+.bdata .cell:first-child{border-left:0;padding-left:0}
+.bdata b{font-family:var(--num);font-size:22px;line-height:1;font-weight:400;color:var(--ink)}
+.bdata span{font-size:12px;color:var(--ink3);white-space:nowrap}
+
+/* ===================== 窗口外壳 ===================== */
+.win{position:absolute;background:var(--bg);border:1px solid var(--line)}
+.main{left:24px;top:120px;width:1120px;height:760px}
+.sat{left:1160px;width:416px}
+
+/* ===================== 主窗标题栏 ===================== */
+.mhead{position:absolute;left:0;top:0;width:100%;height:46px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 16px 0 20px}
+.mh-l{display:flex;align-items:center;gap:12px}
+.brandmark{width:44px;height:26px;color:var(--ink2);flex:none}
+.mh-name{font-size:14px;font-weight:600;letter-spacing:.01em;color:var(--ink)}
+.mh-sep{width:1px;height:14px;background:var(--line)}
+.mh-cn{font-size:12px;color:var(--ink2)}
+.mh-ver{font-family:var(--num);font-size:12px;color:var(--ink3);letter-spacing:.04em}
+.mh-r{display:flex;align-items:center;gap:16px}
+.mh-sess{font-size:12px;color:var(--ink2)}
+.wctl{display:flex;gap:10px;align-items:center}
+.wc{width:12px;height:12px;position:relative;display:block;border:1px solid var(--line)}
+.wc-min::after{content:"";position:absolute;left:3px;right:3px;top:5px;height:1px;background:var(--ink2)}
+.wc-close::before,.wc-close::after{content:"";position:absolute;left:2px;top:5px;width:7px;height:1px;background:var(--ink2)}
+.wc-close::before{transform:rotate(45deg)}
+.wc-close::after{transform:rotate(-45deg)}
+
+/* ===================== HUD ===================== */
+.hud{position:absolute;z-index:6}
+.hud-tl{left:34px;top:66px;width:290px}
+.hud-tr{right:30px;top:66px;width:306px;text-align:right}
+.hud-br{right:30px;bottom:64px;width:306px;text-align:right}
+.hk{font-size:12px;letter-spacing:0;color:var(--ink3)}
+.hv{font-size:14px;line-height:1.5;color:var(--ink);margin-top:5px}
+.dim{color:var(--ink2)}
+.hrow{display:flex;justify-content:flex-end;align-items:baseline;gap:10px;margin-top:7px}
+.hrow .rk{font-size:12px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hrow .rv{font-family:var(--num);font-size:14px;color:var(--ink);letter-spacing:.02em;white-space:nowrap}
+.hrow .rv.cn{font-family:var(--sans);letter-spacing:0}
+.fb{margin-top:11px;font-size:12px;line-height:1.5;color:var(--accent);min-height:18px}
+.hint{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:6px;font-size:12px;color:var(--ink3)}
+.kbd{font-family:var(--mono);font-size:12px;color:var(--ink2);border:1px solid var(--line);padding:1px 6px;line-height:14px;white-space:nowrap;flex:none}
+.hint .hk2{font-family:var(--lbl);font-size:12px;letter-spacing:.16em;color:var(--ink3);text-transform:uppercase}
+
+/* ===================== 竖排标题 ===================== */
+.vt{position:absolute;left:44px;top:186px;width:260px;height:250px;z-index:5}
+.vt-rule{position:absolute;left:0;top:8px;width:1px;height:172px;background:var(--line)}
+.vt-sq{position:absolute;left:-2px;top:1px;width:6px;height:6px;background:var(--ink2)}
+.vt-main{position:absolute;left:20px;top:8px;writing-mode:vertical-rl;font-family:var(--sans);font-size:26px;line-height:1.35;letter-spacing:.18em;color:var(--ink);white-space:nowrap}
+.vt-sub{position:absolute;left:66px;top:16px;writing-mode:vertical-rl;font-size:14px;line-height:1.4;letter-spacing:.2em;color:var(--ink3);white-space:nowrap}
+.vt-en{position:absolute;left:22px;top:196px;font-size:12px;color:var(--ink2);white-space:nowrap}
+.vt-spec{position:absolute;left:22px;top:220px;font-size:12px;line-height:1.7;color:var(--ink3);white-space:nowrap}
+
+/* ===================== 巨型计数 ===================== */
+.counter{position:absolute;left:34px;bottom:62px;z-index:6}
+.counter .cl{font-size:12px;color:var(--ink3)}
+.counter .cn{display:flex;align-items:baseline;gap:12px;margin-top:6px}
+.counter .num{font-family:var(--num);font-size:54px;line-height:.94;font-weight:400;color:var(--ink);letter-spacing:.02em}
+.counter .tot{font-family:var(--num);font-size:20px;color:var(--ink3);letter-spacing:.04em}
+.counter .rule{width:88px;height:1px;background:var(--line);margin-top:11px}
+
+/* ===================== 环盘 ===================== */
+.ringbox{position:absolute;left:340px;top:150px;width:440px;height:440px;z-index:4}
+#ring{width:440px;height:440px;overflow:visible}
+.ringcircle{fill:none;stroke:var(--line)}
+.bticks line{stroke:var(--line)}
+.bticks .minor{stroke-width:1}
+.bticks .major{stroke-width:2}
+.aticks{opacity:0;transition:opacity .4s var(--ease)}
+.aticks.on{opacity:1}
+.aticks line{stroke:var(--accent);stroke-width:2}
+.band{fill:var(--panel);stroke:var(--line);stroke-width:1;cursor:pointer;transition:fill .2s linear,stroke .2s linear}
+.band:not(.on):hover{fill:var(--field)}
+.band.on{fill:var(--accent);stroke:var(--accent)}
+.blbl{pointer-events:none}
+.blbl .en{font-family:var(--lbl);font-size:12px;letter-spacing:.16em;fill:var(--ink);text-transform:uppercase}
+.blbl .cn{font-family:var(--sans);font-size:14px;fill:var(--ink2)}
+.blbl.on .en{fill:#14201F}
+.blbl.on .cn{fill:#1B2A2E}
+.needle{transform-box:view-box;transform-origin:220px 220px;transform:rotate(0deg);transition:transform .46s var(--ease)}
+.arc{font-family:var(--lbl);font-size:12px;letter-spacing:.16em;fill:var(--ink2);text-transform:uppercase}
+.core-html{position:absolute;left:50%;top:50%;width:196px;height:196px;margin-left:-98px;margin-top:-98px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;text-align:center}
+.core-html .ci{font-size:12px;color:var(--ink3)}
+.core-html .cc{font-size:34px;line-height:1.14;color:var(--ink);margin-top:7px}
+.core-html .ce{font-size:12px;color:var(--accent);margin-top:8px}
+.core-html .cm{font-size:12px;color:var(--ink3);margin-top:9px}
+
+/* ===================== 详情面板 ===================== */
+.panel{position:absolute;left:788px;top:158px;width:302px;height:430px;background:var(--panel);border:1px solid var(--line);z-index:5;padding:15px 18px;overflow:hidden}
+.p-top{display:flex;justify-content:space-between;align-items:center;height:18px}
+.p-no{font-size:12px;color:var(--ink3)}
+.p-cur{font-size:12px;color:var(--accent);display:flex;align-items:center;gap:6px}
+.p-cur i{width:5px;height:5px;background:var(--accent);display:block;flex:none}
+.p-cn{font-size:30px;line-height:1.2;color:var(--ink);margin-top:10px}
+.p-en{font-size:12px;color:var(--accent);margin-top:3px}
+.p-rule{height:1px;background:var(--line);margin:12px 0}
+.p-desc{margin:0;font-size:14px;line-height:1.6;color:var(--ink2);min-height:60px}
+.p-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--line2)}
+.p-row{display:flex;align-items:center;gap:9px;height:30px;border-bottom:1px solid var(--line2);cursor:pointer;transition:background .16s linear}
+.p-row:hover{background:var(--field)}
+.p-row .mk{width:5px;height:5px;background:var(--ink3);flex:none}
+.p-row.sel .mk{background:var(--accent)}
+.p-row .nm{font-size:14px;color:var(--ink);flex:none;white-space:nowrap}
+.p-row .ps{font-size:12px;color:var(--ink3);margin-left:auto;white-space:nowrap}
+.p-foot{margin-top:11px}
+.p-flbl{font-size:12px;color:var(--ink3)}
+.p-fdesc{margin:4px 0 0;font-size:14px;line-height:1.45;color:var(--ink);min-height:38px}
+
+/* ===================== 轨道索引条 ===================== */
+.orbit{position:absolute;left:340px;top:610px;width:440px;height:64px;display:flex;border-top:1px solid var(--line);z-index:5}
+.ocell{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;border-left:1px solid var(--line2);transition:background .16s linear}
+.ocell:first-child{border-left:0}
+.ocell:hover{background:var(--panel)}
+.ocell .on2{font-family:var(--num);font-size:12px;letter-spacing:.08em;color:var(--ink3);transition:color .16s linear}
+.ocell .ocn{font-size:14px;color:var(--ink2);transition:color .16s linear}
+.ocell.on{box-shadow:inset 0 2px 0 var(--accent);background:var(--panel)}
+.ocell.on .on2{color:var(--accent)}
+.ocell.on .ocn{color:var(--ink)}
+
+/* ===================== 会话日志 ===================== */
+.log{position:absolute;left:44px;top:452px;width:262px;z-index:5}
+.log .lg-h{display:flex;align-items:baseline;gap:8px;border-bottom:1px solid var(--line);padding-bottom:7px}
+.log .lg-en{font-family:var(--lbl);font-size:12px;letter-spacing:.16em;color:var(--ink2);text-transform:uppercase}
+.log .lg-cn{font-size:12px;color:var(--ink3);margin-left:auto}
+.log .lg-r{display:flex;align-items:baseline;gap:10px;height:27px;border-bottom:1px solid var(--line2)}
+.log .lg-t{font-family:var(--num);font-size:12px;color:var(--ink3);letter-spacing:.04em;flex:none}
+.log .lg-n{font-size:14px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.log .lg-r.now .lg-t{color:var(--accent)}
+.log .lg-r.now .lg-n{color:var(--ink)}
+
+/* ===================== 主窗页脚 ===================== */
+.mfoot{position:absolute;left:0;bottom:0;width:100%;height:60px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 16px 0 20px}
+.mf-l{display:flex;align-items:center;gap:12px}
+.chip{display:flex;align-items:center;gap:7px;padding:4px 0;border-bottom:1px solid transparent;transition:border-color .16s linear}
+button.chip:hover{border-bottom-color:var(--line)}
+.chip .dot{width:5px;height:5px;background:var(--line);display:block;flex:none;transition:background .2s linear}
+.chip .dot.on{background:var(--ink2)}
+.chip .dot.warn{background:var(--accent)}
+.chip .en{font-family:var(--lbl);font-size:12px;letter-spacing:.1em;color:var(--ink2);white-space:nowrap}
+.chip .cn{font-size:12px;color:var(--ink3);white-space:nowrap}
+.mfd{width:1px;height:14px;background:var(--line2);flex:none}
+.mf-r{display:flex;align-items:center;gap:12px}
+.mf-seg{font-size:12px;color:var(--ink2);white-space:nowrap}
+.mf-time{font-family:var(--num);font-size:14px;color:var(--ink);letter-spacing:.05em}
+.mf-brand{font-family:var(--lbl);font-size:12px;letter-spacing:.16em;color:var(--ink3);white-space:nowrap;text-transform:uppercase}
+.mf-bar{width:25px;height:6px;background:var(--ink2);display:block;flex:none}
+
+/* ===================== 卫星 01：识别结果 ===================== */
+.ocr{top:120px;height:394px}
+.ohead{position:absolute;left:0;top:0;width:100%;height:42px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;padding:0 12px 0 16px}
+.ohead .t{font-size:14px;color:var(--ink);white-space:nowrap}
+.ohead .badge{font-size:12px;color:var(--ink2);border:1px solid var(--line);padding:1px 5px;line-height:15px;white-space:nowrap}
+.sp{flex:1}
+.ostat{font-size:12px;color:var(--ink3);white-space:nowrap}
+.ohead .conf{font-family:var(--num);font-size:14px;color:var(--accent);letter-spacing:.03em;width:34px;text-align:right}
+.x{width:16px;height:16px;position:relative;flex:none}
+.x::before,.x::after{content:"";position:absolute;left:1px;top:7px;width:14px;height:1px;background:var(--ink2)}
+.x::before{transform:rotate(45deg)}
+.x::after{transform:rotate(-45deg)}
+.tabs{position:absolute;left:0;top:42px;width:100%;height:36px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:24px;padding:0 16px}
+.tab{position:relative;font-size:12px;color:var(--ink2);height:36px;display:flex;align-items:center;gap:6px}
+.tab em{font-family:var(--lbl);font-style:normal;font-size:12px;letter-spacing:.16em;color:var(--ink3)}
+.tab.on{color:var(--ink)}
+.tab.on em{color:var(--accent)}
+.tab.on::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--accent)}
+.obody{position:absolute;left:0;top:78px;width:100%;height:228px;overflow:hidden}
+.osum{display:flex;justify-content:space-between;align-items:center;height:30px;padding:0 16px;font-size:12px;color:var(--ink3);border-bottom:1px solid var(--line2)}
+.osum b{font-family:var(--lbl);font-size:12px;font-weight:400;letter-spacing:0;color:var(--ink2);white-space:nowrap}
+.oblock{display:flex;align-items:center;gap:10px;height:49px;padding:0 16px;border-bottom:1px solid var(--line2);cursor:pointer;transition:background .16s linear}
+.oblock:hover{background:var(--panel)}
+.oblock.sel{background:var(--panel);box-shadow:inset 2px 0 0 var(--accent)}
+.oblock .txt{font-size:14px;line-height:1.28;color:var(--ink2);flex:1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-height:37px}
+.oblock.sel .txt{color:var(--ink)}
+.oblock .cf{font-family:var(--num);font-size:14px;color:var(--ink3);letter-spacing:.03em;flex:none}
+.oblock.sel .cf{color:var(--accent)}
+.otable{padding:0 16px}
+.otable .tr{display:flex;align-items:center;gap:10px;height:44px;border-bottom:1px solid var(--line2);font-size:14px;color:var(--ink2)}
+.otable .tr.hd{height:30px;font-size:12px;letter-spacing:.1em;color:var(--ink3)}
+.otable .tr span:first-child{flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.otable .tr span:last-child{font-family:var(--num);font-size:14px;color:var(--ink3);flex:none}
+.oqr{padding:14px 16px}
+.oqr .k{font-size:12px;color:var(--ink3)}
+.oqr .urlbox{margin-top:8px;font-size:14px;color:var(--ink);border:1px solid var(--line);padding:8px 10px;background:var(--panel);font-family:var(--mono);letter-spacing:0;text-transform:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.oqr .acts{display:flex;gap:10px;margin-top:12px}
+.ofoot{position:absolute;left:0;bottom:0;width:100%;height:88px;border-top:1px solid var(--line);padding:12px 16px}
+.frow{display:flex;align-items:center;gap:8px}
+.frow + .frow{margin-top:11px}
+.flbl{font-size:12px;color:var(--ink3);margin-right:2px;white-space:nowrap}
+.fmt{font-family:var(--lbl);font-size:12px;letter-spacing:0;color:var(--ink2);border:1px solid var(--line);padding:3px 8px;line-height:15px;transition:color .16s linear,border-color .16s linear,background .16s linear}
+.fmt:hover{color:var(--ink);border-color:var(--ink2)}
+.fmt.on{color:var(--bg);background:var(--accent);border-color:var(--accent)}
+.btn{font-size:12px;color:var(--ink2);border:1px solid var(--line);padding:5px 11px;line-height:15px;transition:color .16s linear,border-color .16s linear,background .16s linear}
+.btn:hover{color:var(--ink);border-color:var(--ink2)}
+.btn.solid{background:var(--accent);border-color:var(--accent);color:var(--bg);padding:5px 16px}
+.btn.solid:hover{background:#D2B07C;border-color:#D2B07C;color:var(--bg)}
+.btn:disabled{color:var(--ink3);background:var(--panel);border-color:var(--line2);cursor:default}
+.btn:disabled:hover{color:var(--ink3);border-color:var(--line2)}
+
+/* ===================== 系统板 ===================== */
+.sys{position:absolute;left:1160px;top:522px;width:416px;height:358px;background:var(--bg);border:1px solid var(--line);padding:13px 16px}
+.sh{display:flex;align-items:baseline;gap:8px;height:16px}
+.sh-en{font-family:var(--lbl);font-size:12px;letter-spacing:.16em;color:var(--ink2);text-transform:uppercase}
+.sh-cn{font-size:14px;color:var(--ink)}
+.srule{height:1px;background:var(--line);margin:10px 0 11px}
+.ssec{font-size:12px;color:var(--ink3);margin-bottom:8px}
+.ssec .u{color:var(--ink3)}
+.swatches{display:grid;grid-template-columns:repeat(4,1fr);gap:7px 4px;margin-bottom:11px}
+.sw{display:flex;align-items:center;gap:6px}
+.sw i{width:20px;height:20px;display:block;border:1px solid var(--line);flex:none}
+.sw span{font-family:var(--num);font-size:12px;color:var(--ink2);letter-spacing:.03em}
+.type{display:flex;flex-direction:column;gap:5px;margin-bottom:11px}
+.trow{display:flex;align-items:baseline;gap:10px;height:21px}
+.trow .ts{flex:1;white-space:nowrap;overflow:hidden}
+.ts-body{font-size:14px;color:var(--ink)}
+.ts-lbl{font-family:var(--lbl);font-size:12px;letter-spacing:.16em;color:var(--ink);text-transform:uppercase}
+.ts-num{font-family:var(--num);font-size:16px;color:var(--ink);letter-spacing:.05em}
+.trow .tk{font-size:12px;letter-spacing:0;color:var(--ink3);white-space:nowrap}
+.comps{display:flex;flex-direction:column;gap:9px}
+.crow{display:flex;align-items:center;gap:16px;height:26px}
+.cmp{display:flex;align-items:center;gap:7px}
+.cmp .cl{font-size:12px;color:var(--ink3);white-space:nowrap}
+.dot5{width:5px;height:5px;background:var(--ink2);display:block;flex:none}
+.keycap{font-family:var(--mono);font-size:12px;color:var(--ink2);background:var(--field);border:1px solid var(--line);padding:2px 6px;line-height:15px;white-space:nowrap}
+.redmark{width:5px;height:13px;background:var(--red);display:block;flex:none}
+.coil{width:22px;height:22px;display:block;color:var(--ink2);flex:none}
+.solid-btn{display:flex;align-items:center;gap:12px;background:var(--accent);color:var(--bg);padding:0 12px;height:26px}
+.solid-btn em{font-style:normal;font-size:12px}
+.solid-btn b{font-family:var(--lbl);font-weight:400;font-size:12px;letter-spacing:.16em}
+
+/* ===================== 卫星 02：录屏控制条 760×86 ===================== */
+.rec{left:24px;top:892px;width:760px;height:86px;display:flex;align-items:stretch}
+.rz{display:flex;align-items:center;border-right:1px solid var(--line2)}
+.rz:last-child{border-right:0}
+.rz-state{width:190px;flex-direction:column;align-items:flex-start;justify-content:center;gap:3px;padding:0 16px}
+.rs-top{display:flex;align-items:center;gap:7px}
+.rs-top .dot{width:6px;height:6px;background:var(--line);display:block;flex:none;transition:background .2s linear}
+.rs-top .dot.on{background:var(--accent)}
+.rs-top .st{font-size:12px;color:var(--ink2)}
+.rs-bot{display:flex;align-items:baseline;gap:10px}
+.rs-bot .tm{font-family:var(--num);font-size:24px;line-height:1;color:var(--ink);letter-spacing:.06em}
+.rs-bot .fps{font-family:var(--num);font-size:12px;color:var(--ink3);letter-spacing:.04em}
+.rs-note{font-size:12px;color:var(--ink3)}
+.rz-tools{gap:4px;width:214px;justify-content:flex-start;padding:0 6px}
+.tool{width:37px;height:58px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;border:1px solid transparent;transition:border-color .16s linear}
+.tool svg{width:18px;height:18px;stroke:var(--ink3);fill:none;stroke-width:1.4;stroke-linecap:butt;stroke-linejoin:miter;transition:stroke .16s linear}
+.tool span{font-size:12px;color:var(--ink3);line-height:1;transition:color .16s linear}
+.tool:hover{border-color:var(--line)}
+.tool:hover svg{stroke:var(--ink2)}
+.tool.on{border-color:var(--accent)}
+.tool.on svg{stroke:var(--accent)}
+.tool.on span{color:var(--accent)}
+.rz-ctrl{gap:8px;width:196px;padding:0 10px}
+.rz-meta{gap:10px;width:112px;padding:0 10px}
+.rz-meta .mp4{font-family:var(--num);font-size:18px;color:var(--ink);letter-spacing:.06em}
+.rz-meta .h264{font-size:12px;color:var(--ink3);line-height:1.4}
+.rz-close{width:48px;justify-content:center;padding:0}
+
+/* ===================== 板面注记 ===================== */
+.bnote{position:absolute;left:800px;top:892px;width:776px;height:86px;border-top:1px solid var(--line);padding-top:11px}
+.bnote .n1{margin:0;font-size:14px;line-height:1.45;color:var(--ink2)}
+.bnote .n2{margin:6px 0 0;font-size:14px;line-height:1.4;color:var(--ink3)}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition:none !important;animation:none !important}
+}
+</style>
+</head>
+<body>
+<div class="board" id="board">
+
+  <!-- ===================== 标题区 ===================== -->
+  <header class="bhead">
+    <div>
+      <div class="kick">
+        <span class="no">C2</span>
+        <b class="u en">OBSERVATION RING</b>
+        <span class="src"><b class="u u1">FORM</b> ／ 杉浦康平 信息曼荼罗</span>
+      </div>
+      <h1 class="b-title">观测环盘</h1>
+      <p class="b-lede">把四个能力放上同一个圆：截取、读取、归档、固定。方向键绕环，回车确认。</p>
+    </div>
+    <div class="bdata">
+      <div class="cell"><b>28</b><span>项功能</span></div>
+      <div class="cell"><b>12</b><span>个窗口</span></div>
+      <div class="cell"><b>13</b><span>条路由</span></div>
+      <div class="cell"><b>25</b><span>个快捷键</span></div>
+      <div class="cell"><b>4.1.2</b><span>版本</span></div>
+    </div>
+  </header>
+
+  <!-- ===================== 主窗 1120×760 ===================== -->
+  <section class="win main" id="mainWin" aria-label="Highlighter 主窗口示意">
+
+    <div class="mhead">
+      <div class="mh-l">
+        <svg class="brandmark" viewBox="0 0 44 26" aria-hidden="true">
+          <g fill="none" stroke="currentColor" stroke-width="1.2">
+            <path d="M17.6 13C14.2 9.6 11.2 5.6 7.4 5.6 3.7 5.6 1.2 8.5 1.2 13s2.6 7.4 6.2 7.4c3.8 0 6.8-4 10.2-7.4"/>
+            <path d="M18.6 13c3.4 3.4 6.4 7.4 10.2 7.4 3.6 0 6.2-2.9 6.2-7.4S32.5 5.6 28.8 5.6c-3.8 0-6.8 4-10.2 7.4"/>
+            <path d="M21 13h-8"/>
+          </g>
+          <g fill="none" stroke="currentColor" stroke-width="1">
+            <path d="M4.6 13h5.4M7.3 10.3v5.4M30.4 13h4.8"/>
+          </g>
+        </svg>
+        <b class="mh-name">Highlighter</b>
+        <span class="mh-sep"></span>
+        <span class="mh-cn">观测室</span>
+        <span class="mh-ver">v4.1.2</span>
+      </div>
+      <div class="mh-r">
+        <span class="mh-sess"><b class="u">SESSION 04</b></span>
+        <div class="wctl" aria-hidden="true"><i class="wc wc-min"></i><i class="wc wc-close"></i></div>
+      </div>
+    </div>
+
+    <!-- HUD 左上：模式 / 会话 -->
+    <div class="hud hud-tl">
+      <div class="hk"><b class="u">MODE</b> ／ 模式</div>
+      <div class="hv">OBSERVE <span class="dim">观测</span></div>
+      <div class="hk" style="margin-top:14px"><b class="u">SESSION</b> ／ 会话</div>
+      <div class="hv"><span id="hudSess">04</span> <span class="dim">／</span> <span id="hudClock">19:41:07</span></div>
+    </div>
+
+    <!-- HUD 右上：读数（随环盘同步） -->
+    <div class="hud hud-tr">
+      <div class="hk"><b class="u">READOUT</b> ／ 读数</div>
+      <div id="readRows"></div>
+    </div>
+
+    <!-- 竖排标题 -->
+    <div class="vt" aria-hidden="true">
+      <i class="vt-sq"></i>
+      <i class="vt-rule"></i>
+      <div class="vt-main">观测环盘</div>
+      <div class="vt-sub">屏幕观察站</div>
+      <div class="vt-en"><b class="u">OBSERVATION RING</b></div>
+      <div class="vt-spec">60 格刻度 ／ 04 段</div>
+    </div>
+
+    <!-- 环盘 -->
+    <div class="ringbox">
+      <svg id="ring" viewBox="0 0 440 440" width="440" height="440" role="group" aria-label="能力环盘导航"></svg>
+      <div class="core-html">
+        <div class="ci"><b class="u" id="coreIdx">SEGMENT 01</b></div>
+        <div class="cc" id="coreCn">截取</div>
+        <div class="ce"><b class="u" id="coreEn">CAPTURE</b></div>
+        <div class="cm" id="coreMeta">05 项能力</div>
+      </div>
+    </div>
+
+    <!-- 详情面板 -->
+    <aside class="panel" id="panel">
+      <div class="p-top">
+        <span class="p-no"><b class="u" id="pNo">SEGMENT 01 / 04</b></span>
+        <span class="p-cur"><i></i>当前</span>
+      </div>
+      <div class="p-cn" id="pCn">截取</div>
+      <div class="p-en"><b class="u" id="pEn">CAPTURE</b></div>
+      <div class="p-rule"></div>
+      <p class="p-desc" id="pDesc"></p>
+      <ul class="p-list" id="pList"></ul>
+      <div class="p-foot">
+        <div class="p-flbl"><b class="u">DESCRIPTION</b> ／ 说明</div>
+        <p class="p-fdesc" id="pFdesc"></p>
+      </div>
+    </aside>
+
+    <!-- HUD 左下：巨型计数 -->
+    <div class="counter">
+      <div class="cl"><b class="u">SEGMENT</b> ／ 段位</div>
+      <div class="cn"><span class="num" id="countNum">01</span><span class="tot">/ 04</span></div>
+      <div class="rule"></div>
+    </div>
+
+    <!-- 会话日志（真实热键与动作，随环盘切换插一条） -->
+    <div class="log">
+      <div class="lg-h"><span class="lg-en">SESSION LOG</span><span class="lg-cn">会话记录</span></div>
+      <div id="logRows"></div>
+    </div>
+
+    <!-- 环形轨道索引（与环盘同步、可点，由脚本按同一份段位数据生成） -->
+    <div class="orbit" id="orbit"></div>
+
+    <!-- HUD 右下：状态 -->
+    <div class="hud hud-br">
+      <div class="hk"><b class="u">STATE</b> ／ 状态</div>
+      <div class="hv" id="brState">会话已授权 <span class="dim">／ 12 个窗口</span></div>
+      <div class="fb" id="fbLine">环盘待命</div>
+      <div class="hint"><span class="kbd">← →</span><span>绕环切换</span><span class="hk2">ENTER</span><span>确认</span></div>
+    </div>
+
+    <!-- 页脚仪器状态行 -->
+    <div class="mfoot">
+      <div class="mf-l">
+        <button class="chip" id="chipEngine" type="button"><i class="dot on"></i><span class="en" id="chipEngineEn">LOCAL OCR</span><span class="cn" id="chipEngineCn">本地识别</span></button>
+        <i class="mfd"></i>
+        <button class="chip" id="chipHotkey" type="button"><i class="dot on" id="chipHotkeyDot"></i><span class="en">F1</span><span class="cn" id="chipHotkeyCn">快捷键已启用</span></button>
+        <i class="mfd"></i>
+        <button class="chip" id="chipClip" type="button"><i class="dot" id="chipClipDot"></i><span class="en">CLIPBOARD</span><span class="cn" id="chipClipCn">正在记录</span></button>
+      </div>
+      <div class="mf-r">
+        <span class="mf-seg"><b class="u" id="footSeg">SEGMENT 01</b><span id="footSegCn"> ／ 截取</span></span>
+        <i class="mfd"></i>
+        <span class="mf-time" id="clock">19:41:07</span>
+        <span class="mf-brand">POWERED BY HIGHLIGHTER</span>
+        <i class="mf-bar"></i>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 卫星 01：识别结果 ===================== -->
+  <section class="win sat ocr" id="ocrWin" aria-label="识别结果窗口示意">
+    <div class="ohead">
+      <span class="t">识别结果</span>
+      <span class="badge">本地 OCR</span>
+      <span class="sp"></span>
+      <span class="ostat" id="ocrStatus">已就绪</span>
+      <span class="conf" id="ocrConf">97%</span>
+      <i class="x" aria-hidden="true"></i>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab="text" type="button"><span>文本</span><em>TEXT</em></button>
+      <button class="tab" data-tab="table" type="button"><span>表格</span><em>TABLE</em></button>
+      <button class="tab" data-tab="qr" type="button"><span>二维码</span><em>QR</em></button>
+    </div>
+
+    <div class="obody" id="oBody"></div>
+
+    <div class="ofoot">
+      <div class="frow">
+        <span class="flbl">复制格式</span>
+        <button class="fmt on" data-fmt="TSV" type="button">TSV</button>
+        <button class="fmt" data-fmt="CSV" type="button">CSV</button>
+        <button class="fmt" data-fmt="MD" type="button">MD</button>
+      </div>
+      <div class="frow">
+        <button class="btn" id="btnExcel" type="button">导出 Excel</button>
+        <button class="btn" id="btnPdf" type="button">导出 PDF</button>
+        <button class="btn solid" id="btnCopy" type="button">复制</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 系统板 ===================== -->
+  <section class="sys" aria-label="系统板">
+    <div class="sh"><span class="sh-en">SYSTEM SPECIMEN</span><span class="sh-cn">系统板</span></div>
+    <div class="srule"></div>
+    <div class="ssec"><b class="u">TOKEN</b> ／ 暗底观测室</div>
+    <div class="swatches">
+      <div class="sw"><i style="background:#11181B"></i><span>11181B</span></div>
+      <div class="sw"><i style="background:#202A2F"></i><span>202A2F</span></div>
+      <div class="sw"><i style="background:#2A363B"></i><span>2A363B</span></div>
+      <div class="sw"><i style="background:#E0E3DC"></i><span>E0E3DC</span></div>
+      <div class="sw"><i style="background:#A6B0B1"></i><span>A6B0B1</span></div>
+      <div class="sw"><i style="background:#536166"></i><span>536166</span></div>
+      <div class="sw"><i style="background:#C5A16B"></i><span>C5A16B</span></div>
+      <div class="sw"><i style="background:#9E2A1D"></i><span>9E2A1D</span></div>
+    </div>
+    <div class="ssec"><b class="u">TYPE</b> ／ 字体</div>
+    <div class="type">
+      <div class="trow"><span class="ts ts-body">桌面截图与划词效率工具</span><span class="tk">正文 14 微软雅黑</span></div>
+      <div class="trow"><span class="ts ts-lbl">OBSERVATION</span><span class="tk">小标 12 等线 .16em</span></div>
+      <div class="trow"><span class="ts ts-num">1280 × 720</span><span class="tk">数字 16 Bahnschrift</span></div>
+    </div>
+    <div class="ssec"><b class="u">COMPONENT</b> ／ 组件</div>
+    <div class="comps">
+      <div class="crow">
+        <span class="cmp"><i class="dot5"></i><span class="cl">状态点 5×5</span></span>
+        <span class="cmp"><span class="keycap">F1</span><span class="keycap">Ctrl+Alt+E</span></span>
+        <span class="cmp"><i class="redmark"></i><span class="cl">扇区标记</span></span>
+      </div>
+      <div class="crow">
+        <span class="cmp">
+          <svg class="coil" viewBox="0 0 22 22" aria-hidden="true">
+            <circle cx="11" cy="11" r="9.3" fill="none" stroke="currentColor" stroke-width="1"/>
+            <g stroke="currentColor" stroke-width="1">
+              <path d="M11 1.7v4.6M11 15.7v4.6M1.7 11h4.6M15.7 11h4.6M4.2 4.2l3.2 3.2M14.6 14.6l3.2 3.2M17.8 4.2l-3.2 3.2M7.4 14.6l-3.2 3.2"/>
+            </g>
+            <circle cx="11" cy="11" r="3.1" fill="none" stroke="currentColor" stroke-width="1"/>
+          </svg>
+          <span class="cl">线圈 60 格</span>
+        </span>
+        <span class="cmp"><span class="solid-btn"><em>复制到剪贴板</em><b>COPY</b></span></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 卫星 02：录屏控制条 760×86 ===================== -->
+  <section class="win rec" id="recBar" aria-label="录屏控制条示意">
+    <div class="rz rz-state">
+      <div class="rs-top"><i class="dot" id="recDot"></i><span class="st" id="recState">区域已就绪</span></div>
+      <div class="rs-bot"><span class="tm" id="recTime">00:00</span><span class="fps">24 FPS</span></div>
+      <div class="rs-note" id="recNote">标注 ／ 指针</div>
+    </div>
+
+    <div class="rz rz-tools" id="recTools">
+      <button class="tool on" data-tool="指针" type="button">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 2.6 4 15.4 7.8 11.6 10.2 17 12.3 16.1 9.9 10.8 15.2 10.8Z"/></svg>
+        <span>指针</span>
+      </button>
+      <button class="tool" data-tool="画笔" type="button">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.6 16.4 4.4 12.6 13 4 16 7 7.4 15.6Z"/><path d="M11.6 5.4 14.6 8.4"/></svg>
+        <span>画笔</span>
+      </button>
+      <button class="tool" data-tool="矩形" type="button">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3.6" y="5.6" width="12.8" height="8.8"/></svg>
+        <span>矩形</span>
+      </button>
+      <button class="tool" data-tool="椭圆" type="button">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><ellipse cx="10" cy="10" rx="6.4" ry="4.4"/></svg>
+        <span>椭圆</span>
+      </button>
+      <button class="tool" data-tool="箭头" type="button">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.6 16.4 15.6 4.4"/><path d="M9.4 4.4h6.2v6.2"/></svg>
+        <span>箭头</span>
+      </button>
+    </div>
+
+    <div class="rz rz-ctrl">
+      <button class="btn solid" id="btnRecStart" type="button">开始</button>
+      <button class="btn" id="btnRecPause" type="button">暂停</button>
+      <button class="btn" id="btnRecStop" type="button">停止</button>
+    </div>
+
+    <div class="rz rz-meta">
+      <span class="mp4" id="recOut">MP4</span>
+      <span class="h264" id="recOutNote">H.264 无音轨</span>
+    </div>
+
+    <div class="rz rz-close">
+      <i class="wc wc-close" aria-hidden="true"></i>
+    </div>
+  </section>
+
+  <!-- ===================== 板面注记 ===================== -->
+  <div class="bnote">
+    <p class="n1">form 来自内容的哪里：截图 → 识别 → 归档 → 再截图，是产品真实的动作循环；环盘把这个环画成导航，而不是把 28 项功能排成一列。</p>
+    <p class="n2">示意 ／ 置信度与耗时为占位值 ／ 文案取自 Highlighter 4.1.2 源码</p>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* 文案全部取自 design-demos/rhine-lab/src/content.js 的真实字段 */
+  var SEG = [
+    {
+      no: '01', cn: '截取', en: 'CAPTURE',
+      desc: '从屏幕上取一块像素：框选、延迟、长截图、全屏与焦点窗口。',
+      items: [
+        { n: '截图', s: '截图浮层', d: '自由框选、智能标注与导出' },
+        { n: '延迟截图', s: '截图浮层', d: '倒计时后开始区域截图' },
+        { n: '长截图', s: '长截图窗口', d: '框选滚动区域并自动拼接' },
+        { n: '截取全屏', s: '截图浮层', d: '捕获鼠标所在显示器' },
+        { n: '当前焦点窗口', s: '截图浮层', d: '捕获当前活动窗口' }
+      ],
+      read: [
+        { en: 'SELECTION', cn: '选区', v: '1280 × 720' },
+        { en: 'MASK', cn: '遮罩', v: 'rgba(0,0,0,.46)' },
+        { en: 'HOTKEY', cn: '热键', v: 'F1' }
+      ]
+    },
+    {
+      no: '02', cn: '读取', en: 'RECOGNITION',
+      desc: '把像素读成文字与结构：本地 OCR、表格、二维码与识别后的翻译。',
+      items: [
+        { n: '文本识别', s: '截图浮层', d: '截图后提取中文、英文等文字' },
+        { n: '表格识别', s: '识别结果窗口', d: '恢复截图中的行列并复制到 Excel' },
+        { n: '二维码识别', s: '识别结果窗口', d: '扫描二维码内容或打开其中的链接' },
+        { n: '文本识别翻译', s: '截图浮层', d: 'OCR 后调用翻译服务' }
+      ],
+      read: [
+        { en: 'ENGINE', cn: '引擎', v: 'PaddleOCR v4 中英' },
+        { en: 'CONF', cn: '置信度', v: '≥ 0.30' },
+        { en: 'OUTPUT', cn: '输出', v: 'TSV ／ CSV' }
+      ]
+    },
+    {
+      no: '03', cn: '归档', en: 'ARCHIVE',
+      desc: '把取到的内容存进本机：历史回收、快存、另存与导出 PDF。',
+      items: [
+        { n: '截图历史', s: '主窗口', d: '回顾、复制和重新编辑截图' },
+        { n: '快速保存', s: '截图浮层', d: '完成选区后直接保存到上次的目录' },
+        { n: '另存为', s: '截图浮层', d: '完成选区后弹出保存对话框' },
+        { n: '打开图片目录', s: '资源管理器', d: '打开默认截图保存位置' }
+      ],
+      read: [
+        { en: 'LIMIT', cn: '上限', v: '200 张' },
+        { en: 'FORMAT', cn: '格式', v: 'PNG ／ PDF' },
+        { en: 'ROUTES', cn: '路由', v: '13 条' }
+      ]
+    },
+    {
+      no: '04', cn: '固定', en: 'PIN',
+      desc: '把结果钉在桌面最前方：贴图、批量显隐与点击穿透。',
+      items: [
+        { n: '固定到屏幕', s: '贴图窗口', d: '截图完成后直接贴到桌面' },
+        { n: '固定本地图片', s: '贴图窗口', d: '选择图片并固定到桌面' },
+        { n: '显示/隐藏所有贴图', s: '桌面贴图', d: '批量控制桌面贴图' },
+        { n: '取消全部穿透', s: '桌面贴图', d: '立即让所有贴图退出点击穿透状态' }
+      ],
+      read: [
+        { en: 'SCALE', cn: '缩放', v: '10% 每格' },
+        { en: 'OPACITY', cn: '透明', v: '25–100%' },
+        { en: 'MAX', cn: '上限', v: '工作区 55%' }
+      ]
+    }
+  ];
+
+  var BLOCKS = [
+    { t: 'Highlighter 是一款面向 Windows 的桌面截图与划词效率工具。', c: 0.97 },
+    { t: '本地 OCR，可识别中英文等文字内容。', c: 0.95 },
+    { t: '导出 H.264 MP4 文件；当前录制不包含音轨。', c: 0.93 },
+    { t: 'PaddleOCR v4 中英', c: 0.99 }
+  ];
+
+  var state = { seg: 0, tab: 'text', fmt: 'TSV', block: 0, tool: '指针', rec: 'ready', secs: 0 };
+
+  function $(id) { return document.getElementById(id); }
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  /* ================= 环盘几何（viewBox 440×440，圆心 220,220） =================
+     角度约定：0° = 右，90° = 下，-90° = 上（与 SVG 坐标一致） */
+  var NS = 'http://www.w3.org/2000/svg';
+  var CX = 220, CY = 220;
+  var R_TICK_OUT = 200, R_TICK_MINOR = 188, R_TICK_MAJOR = 184, R_TICK_ACTIVE = 172;
+  var R_ARC = 160, R_BAND_OUT = 148, R_BAND_IN = 106, R_INNER = 104, R_CORE = 96, R_BEZEL = 216;
+  var SEG_MID = [-90, 0, 90, 180], SEG_HALF = 41;
+  var LBL_R_EN = 137, LBL_R_CN = 120;
+
+  function mk(tag, attrs, parent) {
+    var n = document.createElementNS(NS, tag);
+    if (attrs) {
+      for (var k in attrs) {
+        if (Object.prototype.hasOwnProperty.call(attrs, k)) { n.setAttribute(k, attrs[k]); }
+      }
+    }
+    if (parent) { parent.appendChild(n); }
+    return n;
+  }
+  function radOf(d) { return d * Math.PI / 180; }
+  function px(r, a) { return CX + r * Math.cos(radOf(a)); }
+  function py(r, a) { return CY + r * Math.sin(radOf(a)); }
+  function f2(n) { return n.toFixed(2); }
+
+  function annulus(a0, a1, rO, rI) {
+    var large = (a1 - a0) > 180 ? 1 : 0;
+    return 'M' + f2(px(rO, a0)) + ' ' + f2(py(rO, a0)) +
+      'A' + rO + ' ' + rO + ' 0 ' + large + ' 1 ' + f2(px(rO, a1)) + ' ' + f2(py(rO, a1)) +
+      'L' + f2(px(rI, a1)) + ' ' + f2(py(rI, a1)) +
+      'A' + rI + ' ' + rI + ' 0 ' + large + ' 0 ' + f2(px(rI, a0)) + ' ' + f2(py(rI, a0)) + 'Z';
+  }
+
+  var ring = $('ring');
+  var bandEls = [], activeTickEls = [], labelEls = [], needleEl = null;
+
+  function buildRing() {
+    /* --- 外环 60 格刻度：360° / 60 = 每 6° 一格，正好铺满一整圈，无缺格 --- */
+    var TICK_START = -180, TICK_STEP = 6;
+    var base = mk('g', { 'class': 'bticks' }, ring);
+    for (var k = 0; k < 60; k++) {
+      var a = TICK_START + k * TICK_STEP;
+      var major = (k % 5 === 0);
+      var rIn = major ? R_TICK_MAJOR : R_TICK_MINOR;
+      mk('line', {
+        x1: f2(px(R_TICK_OUT, a)), y1: f2(py(R_TICK_OUT, a)),
+        x2: f2(px(rIn, a)), y2: f2(py(rIn, a)),
+        'class': major ? 'major' : 'minor'
+      }, base);
+    }
+
+    /* --- 当前扇区的加高刻度（每段一组，仅当前可见，400ms 过渡） --- */
+    var actWrap = mk('g', {}, ring);
+    for (var s = 0; s < 4; s++) {
+      var g = mk('g', { 'class': 'aticks' }, actWrap);
+      for (var k2 = 0; k2 < 60; k2++) {
+        var ang = TICK_START + k2 * TICK_STEP;
+        if (ang > SEG_MID[s] - SEG_HALF && ang < SEG_MID[s] + SEG_HALF) {
+          mk('line', {
+            x1: f2(px(R_TICK_OUT, ang)), y1: f2(py(R_TICK_OUT, ang)),
+            x2: f2(px(R_TICK_ACTIVE, ang)), y2: f2(py(R_TICK_ACTIVE, ang))
+          }, g);
+        }
+      }
+      activeTickEls.push(g);
+    }
+
+    /* --- 沿圆周排的文字：上半环真弧线（-158° → -22°，顺时针经过正上方） --- */
+    var a0 = -158, a1 = -22;
+    var arcD = 'M' + f2(px(R_ARC, a0)) + ' ' + f2(py(R_ARC, a0)) +
+      'A' + R_ARC + ' ' + R_ARC + ' 0 0 1 ' + f2(px(R_ARC, a1)) + ' ' + f2(py(R_ARC, a1));
+    var defs = mk('defs', {}, ring);
+    mk('path', { id: 'arcTop', d: arcD, fill: 'none' }, defs);
+    var arcText = mk('text', { 'class': 'arc' }, ring);
+    var tp = mk('textPath', { startOffset: '50%', 'text-anchor': 'middle' }, arcText);
+    tp.setAttribute('href', '#arcTop');
+    tp.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', '#arcTop');
+    tp.textContent = 'OBSERVATION RING';
+
+    /* --- 环 --- */
+    mk('circle', { cx: CX, cy: CY, r: R_BEZEL, 'class': 'ringcircle' }, ring);
+    mk('circle', { cx: CX, cy: CY, r: R_INNER, 'class': 'ringcircle' }, ring);
+    mk('circle', { cx: CX, cy: CY, r: R_CORE, fill: '#202A2F', stroke: '#536166', 'stroke-width': 1 }, ring);
+
+    /* --- 四个能力扇区（82°，角上留 8° 缝） --- */
+    for (var i = 0; i < 4; i++) {
+      var band = mk('path', {
+        d: annulus(SEG_MID[i] - SEG_HALF, SEG_MID[i] + SEG_HALF, R_BAND_OUT, R_BAND_IN),
+        'class': 'band',
+        'data-seg': String(i)
+      }, ring);
+      bandEls.push(band);
+    }
+
+    /* --- 段标签：上／右／下／左 各四分之一转，圆上永远可读 --- */
+    for (var j = 0; j < 4; j++) {
+      var mid = SEG_MID[j];
+      var rot = (mid === -90 || mid === 90) ? 0 : (mid === 0 ? 90 : -90);
+      var dx = (j === 1) ? 1 : ((j === 3) ? -1 : 0);
+      var dy = (j === 0) ? -1 : ((j === 2) ? 1 : 0);
+      var gEn = mk('g', {
+        'class': 'blbl',
+        transform: 'translate(' + (CX + dx * LBL_R_EN) + ',' + (CY + dy * LBL_R_EN) + ') rotate(' + rot + ')'
+      }, ring);
+      mk('text', { x: 0, y: 0, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'class': 'en' }, gEn)
+        .textContent = SEG[j].en;
+      var gCn = mk('g', {
+        'class': 'blbl',
+        transform: 'translate(' + (CX + dx * LBL_R_CN) + ',' + (CY + dy * LBL_R_CN) + ') rotate(' + rot + ')'
+      }, ring);
+      mk('text', { x: 0, y: 0, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'class': 'cn' }, gCn)
+        .textContent = SEG[j].cn;
+      labelEls.push([gEn, gCn]);
+    }
+
+    /* --- 指针：琥珀测针 + 朱红扇区标记，随选中段绕环旋转（460ms） --- */
+    needleEl = mk('g', { 'class': 'needle', id: 'needle' }, ring);
+    mk('rect', { x: CX - 1.5, y: CY - 217, width: 3, height: 19, fill: '#C5A16B' }, needleEl);
+    mk('rect', { x: CX - 6, y: CY - 199, width: 12, height: 2, fill: '#C5A16B' }, needleEl);
+    var redG = mk('g', { transform: 'rotate(' + (-SEG_HALF) + ' ' + CX + ' ' + CY + ')' }, needleEl);
+    mk('rect', { x: CX - 1, y: CY - 216, width: 2, height: 13, fill: '#9E2A1D' }, redG);
+
+    bandEls.forEach(function (b, idx) {
+      b.addEventListener('click', function () { setSeg(idx); });
+    });
+  }
+
+  /* ================= 渲染 ================= */
+  function render() {
+    var s = SEG[state.seg];
+
+    bandEls.forEach(function (b, i) {
+      if (i === state.seg) { b.classList.add('on'); } else { b.classList.remove('on'); }
+    });
+    activeTickEls.forEach(function (g, i) {
+      if (i === state.seg) { g.classList.add('on'); } else { g.classList.remove('on'); }
+    });
+    labelEls.forEach(function (pair, i) {
+      pair.forEach(function (g) {
+        if (i === state.seg) { g.classList.add('on'); } else { g.classList.remove('on'); }
+      });
+    });
+    if (needleEl) { needleEl.style.transform = 'rotate(' + (state.seg * 90) + 'deg)'; }
+
+    $('coreIdx').textContent = 'SEGMENT ' + s.no;
+    $('coreCn').textContent = s.cn;
+    $('coreEn').textContent = s.en;
+    $('coreMeta').textContent = pad2(s.items.length) + ' 项能力';
+
+    $('pNo').textContent = 'SEGMENT ' + s.no + ' / 04';
+    $('pCn').textContent = s.cn;
+    $('pEn').textContent = s.en;
+    $('pDesc').textContent = s.desc;
+
+    var list = $('pList');
+    list.textContent = '';
+    s.items.forEach(function (it, i) {
+      var li = document.createElement('li');
+      li.className = 'p-row' + (i === 0 ? ' sel' : '');
+      li.setAttribute('tabindex', '-1');
+      var m = document.createElement('i');
+      m.className = 'mk';
+      var nm = document.createElement('span');
+      nm.className = 'nm';
+      nm.textContent = it.n;
+      var sp = document.createElement('span');
+      sp.className = 'ps';
+      sp.textContent = it.s;
+      li.appendChild(m); li.appendChild(nm); li.appendChild(sp);
+      li.addEventListener('click', function () {
+        var rows = list.querySelectorAll('.p-row');
+        for (var r = 0; r < rows.length; r++) { rows[r].classList.remove('sel'); }
+        li.classList.add('sel');
+        $('pFdesc').textContent = it.d;
+        feedback('已选 ' + s.cn + ' ／ ' + it.n);
+      });
+      list.appendChild(li);
+    });
+    $('pFdesc').textContent = s.items[0].d;
+
+    var rows = $('readRows');
+    rows.textContent = '';
+    s.read.forEach(function (r) {
+      var d = document.createElement('div');
+      d.className = 'hrow';
+      var k = document.createElement('span');
+      k.className = 'rk';
+      var ke = document.createElement('b');
+      ke.className = 'u';
+      ke.textContent = r.en;
+      k.appendChild(ke);
+      k.appendChild(document.createTextNode(' ' + r.cn));
+      var v = document.createElement('span');
+      v.className = 'rv' + (/[\u4e00-\u9fa5]/.test(r.v) ? ' cn' : '');
+      v.textContent = r.v;
+      d.appendChild(k); d.appendChild(v);
+      rows.appendChild(d);
+    });
+
+    $('countNum').textContent = s.no;
+    $('footSeg').textContent = 'SEGMENT ' + s.no;
+    $('footSegCn').textContent = ' ／ ' + s.cn;
+    Array.prototype.forEach.call(document.querySelectorAll('.ocell'), function (c) {
+      if (Number(c.getAttribute('data-seg')) === state.seg) { c.classList.add('on'); } else { c.classList.remove('on'); }
+    });
+  }
+
+  function feedback(txt) { $('fbLine').textContent = txt; }
+
+  /* ---- 会话日志：真实热键／动作文本，最多 6 行 ---- */
+  var LOG = [
+    { t: '19:41:02', n: 'F1 截图 1280 × 720' },
+    { t: '19:41:04', n: '文本识别 04 处' },
+    { t: '19:41:06', n: '已复制 TSV 到剪贴板' },
+    { t: '19:41:07', n: '会话已授权' }
+  ];
+  function nowStr() {
+    var d = new Date();
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  }
+  function pushLog(text) {
+    LOG.push({ t: nowStr(), n: text });
+    if (LOG.length > 5) { LOG.shift(); }
+    renderLog();
+  }
+  function renderLog() {
+    var box = $('logRows');
+    box.textContent = '';
+    LOG.forEach(function (e, i) {
+      var r = document.createElement('div');
+      r.className = 'lg-r' + (i === LOG.length - 1 ? ' now' : '');
+      var t = document.createElement('span');
+      t.className = 'lg-t';
+      t.textContent = e.t;
+      var n = document.createElement('span');
+      n.className = 'lg-n';
+      n.textContent = e.n;
+      r.appendChild(t); r.appendChild(n);
+      box.appendChild(r);
+    });
+  }
+
+  /* ---- 环形轨道索引（4 段按钮，由 JS 生成，与环盘共用一份数据） ---- */
+  function buildOrbit() {
+    var wrap = $('orbit');
+    SEG.forEach(function (s, i) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ocell' + (i === 0 ? ' on' : '');
+      b.setAttribute('data-seg', String(i));
+      var no = document.createElement('span');
+      no.className = 'on2';
+      no.textContent = s.no;
+      var cn = document.createElement('span');
+      cn.className = 'ocn';
+      cn.textContent = s.cn;
+      b.appendChild(no); b.appendChild(cn);
+      b.addEventListener('click', function () { setSeg(i); });
+      wrap.appendChild(b);
+    });
+  }
+
+  function setSeg(i) {
+    var next = ((i % 4) + 4) % 4;
+    if (next === state.seg) { return; }
+    state.seg = next;
+    render();
+    feedback('已切到 SEGMENT ' + SEG[next].no + ' ／ ' + SEG[next].cn);
+    pushLog('绕环 → ' + SEG[next].cn + ' ' + SEG[next].en);
+  }
+
+  function confirmSeg() {
+    var s = SEG[state.seg];
+    $('brState').textContent = '段位已确认 ／ ' + s.cn + ' ' + s.en;
+    feedback('ENTER 确认 SEGMENT ' + s.no + ' ／ ' + s.cn + '，共 ' + pad2(s.items.length) + ' 项');
+    pushLog('确认 ' + s.cn + '，' + pad2(s.items.length) + ' 项');
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSeg(state.seg + 1);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSeg(state.seg - 1);
+    } else if (e.key === 'Enter') {
+      if (e.target && e.target.tagName === 'BUTTON') { return; }
+      confirmSeg();
+    }
+  });
+
+  /* ================= 卫星 01：识别结果 ================= */
+  function sumRow(left, right) {
+    var d = document.createElement('div');
+    d.className = 'osum';
+    var a = document.createElement('span');
+    a.textContent = left;
+    var b = document.createElement('b');
+    b.textContent = right;
+    d.appendChild(a); d.appendChild(b);
+    return d;
+  }
+
+  function renderOcr() {
+    var body = $('oBody');
+    body.textContent = '';
+    if (state.tab === 'text') {
+      body.appendChild(sumRow('识别到 04 处文本 ／ 1184 ms', '本地 OCR'));
+      BLOCKS.forEach(function (b, i) {
+        var d = document.createElement('div');
+        d.className = 'oblock' + (i === state.block ? ' sel' : '');
+        var t = document.createElement('span');
+        t.className = 'txt';
+        t.textContent = b.t;
+        var c = document.createElement('span');
+        c.className = 'cf';
+        c.textContent = Math.round(b.c * 100) + '%';
+        d.appendChild(t); d.appendChild(c);
+        d.addEventListener('click', function () {
+          state.block = i;
+          renderOcr();
+          $('ocrConf').textContent = Math.round(b.c * 100) + '%';
+          $('ocrStatus').textContent = '第 ' + pad2(i + 1) + ' 处';
+        });
+        body.appendChild(d);
+      });
+    } else if (state.tab === 'table') {
+      body.appendChild(sumRow('04 行 × 02 列 ／ 本地 OCR', 'TSV 4×2'));
+      var wrap = document.createElement('div');
+      wrap.className = 'otable';
+      var hd = document.createElement('div');
+      hd.className = 'tr hd';
+      var h1 = document.createElement('span'); h1.textContent = '文本';
+      var h2 = document.createElement('span'); h2.textContent = '置信度';
+      hd.appendChild(h1); hd.appendChild(h2);
+      wrap.appendChild(hd);
+      BLOCKS.forEach(function (b) {
+        var r = document.createElement('div');
+        r.className = 'tr';
+        var a = document.createElement('span'); a.textContent = b.t;
+        var c = document.createElement('span'); c.textContent = Math.round(b.c * 100) + '%';
+        r.appendChild(a); r.appendChild(c);
+        wrap.appendChild(r);
+      });
+      body.appendChild(wrap);
+    } else {
+      body.appendChild(sumRow('已识别链接 ／ 01 条', '本地解析'));
+      var q = document.createElement('div');
+      q.className = 'oqr';
+      var kk = document.createElement('div');
+      kk.className = 'k';
+      var kkEn = document.createElement('b');
+      kkEn.className = 'u';
+      kkEn.textContent = 'CONTENT';
+      kk.appendChild(kkEn);
+      kk.appendChild(document.createTextNode(' ／ 二维码内容'));
+      var u = document.createElement('div');
+      u.className = 'urlbox';
+      u.textContent = 'https://example.com';
+      var acts = document.createElement('div');
+      acts.className = 'acts';
+      var b1 = document.createElement('button');
+      b1.type = 'button'; b1.className = 'btn'; b1.textContent = '复制链接';
+      var b2 = document.createElement('button');
+      b2.type = 'button'; b2.className = 'btn'; b2.textContent = '打开链接';
+      b1.addEventListener('click', function () { $('ocrStatus').textContent = '链接已复制'; });
+      b2.addEventListener('click', function () { $('ocrStatus').textContent = '已在浏览器打开'; });
+      acts.appendChild(b1); acts.appendChild(b2);
+      q.appendChild(kk); q.appendChild(u); q.appendChild(acts);
+      body.appendChild(q);
+      $('ocrConf').textContent = '——';
+    }
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
+    t.addEventListener('click', function () {
+      Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (x) { x.classList.remove('on'); });
+      t.classList.add('on');
+      state.tab = t.getAttribute('data-tab');
+      if (state.tab === 'text') { $('ocrConf').textContent = Math.round(BLOCKS[state.block].c * 100) + '%'; }
+      renderOcr();
+      $('ocrStatus').textContent = '页签已切换';
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('.fmt'), function (f) {
+    f.addEventListener('click', function () {
+      Array.prototype.forEach.call(document.querySelectorAll('.fmt'), function (x) { x.classList.remove('on'); });
+      f.classList.add('on');
+      state.fmt = f.getAttribute('data-fmt');
+      $('ocrStatus').textContent = '格式 ' + state.fmt;
+    });
+  });
+
+  $('btnCopy').addEventListener('click', function () { $('ocrStatus').textContent = '已复制 ' + state.fmt; });
+  $('btnExcel').addEventListener('click', function () { $('ocrStatus').textContent = '已导出 Excel'; });
+  $('btnPdf').addEventListener('click', function () { $('ocrStatus').textContent = '已导出 PDF'; });
+
+  /* ================= 卫星 02：录屏控制条 ================= */
+  var recTimer = null;
+  var REC_STATE = { ready: '区域已就绪', rec: '正在录制', paused: '录制已暂停', done: '录制完成' };
+
+  function renderRec() {
+    $('recState').textContent = REC_STATE[state.rec];
+    if (state.rec === 'rec') { $('recDot').classList.add('on'); } else { $('recDot').classList.remove('on'); }
+    $('recTime').textContent = pad2(Math.floor(state.secs / 60)) + ':' + pad2(state.secs % 60);
+    $('btnRecStart').textContent = (state.rec === 'paused') ? '继续' : '开始';
+    $('recOut').textContent = (state.rec === 'done') ? '保存' : 'MP4';
+    $('recOutNote').textContent = (state.rec === 'done') ? 'H.264 生成完成' : 'H.264 无音轨';
+    $('btnRecPause').disabled = (state.rec !== 'rec');
+    $('btnRecStop').disabled = (state.rec !== 'rec' && state.rec !== 'paused');
+  }
+
+  function stopRecTimer() { if (recTimer) { clearInterval(recTimer); recTimer = null; } }
+
+  $('btnRecStart').addEventListener('click', function () {
+    if (state.rec === 'ready' || state.rec === 'paused') {
+      state.rec = 'rec';
+      stopRecTimer();
+      recTimer = setInterval(function () { state.secs += 1; renderRec(); }, 1000);
+      renderRec();
+    }
+  });
+  $('btnRecPause').addEventListener('click', function () {
+    if (state.rec === 'rec') { state.rec = 'paused'; stopRecTimer(); renderRec(); }
+  });
+  $('btnRecStop').addEventListener('click', function () {
+    if (state.rec === 'rec' || state.rec === 'paused') { state.rec = 'done'; stopRecTimer(); renderRec(); }
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('.tool'), function (t) {
+    t.addEventListener('click', function () {
+      Array.prototype.forEach.call(document.querySelectorAll('.tool'), function (x) { x.classList.remove('on'); });
+      t.classList.add('on');
+      state.tool = t.getAttribute('data-tool');
+      $('recNote').textContent = '标注 ／ ' + state.tool;
+    });
+  });
+
+  /* ================= 页脚状态点（状态词取自 content.js） ================= */
+  var ENGINE = [
+    { en: 'LOCAL OCR', cn: '本地识别' },
+    { en: 'AI 模型', cn: 'DeepSeek V4 Flash' }
+  ];
+  var HOTKEY = [
+    { cn: '快捷键已启用', on: true },
+    { cn: '快捷键未能注册', on: false }
+  ];
+  var CLIP = [
+    { cn: '正在记录', on: true },
+    { cn: '已暂停', on: false },
+    { cn: '已关闭', on: false }
+  ];
+  var ci = { engine: 0, hotkey: 0, clip: 0 };
+
+  $('chipEngine').addEventListener('click', function () {
+    ci.engine = (ci.engine + 1) % ENGINE.length;
+    var v = ENGINE[ci.engine];
+    $('chipEngineEn').textContent = v.en;
+    $('chipEngineCn').textContent = v.cn;
+    feedback('识别引擎切到 ' + v.cn);
+  });
+  $('chipHotkey').addEventListener('click', function () {
+    ci.hotkey = (ci.hotkey + 1) % HOTKEY.length;
+    var v = HOTKEY[ci.hotkey];
+    $('chipHotkeyCn').textContent = v.cn;
+    $('chipHotkeyDot').className = 'dot' + (v.on ? ' on' : ' warn');
+    $('brState').textContent = v.on ? '会话已授权 ／ 12 个窗口' : '热键未注册 ／ 请到设置检查';
+    feedback('F1 状态 ／ ' + v.cn);
+  });
+  $('chipClip').addEventListener('click', function () {
+    ci.clip = (ci.clip + 1) % CLIP.length;
+    var v = CLIP[ci.clip];
+    $('chipClipCn').textContent = v.cn;
+    $('chipClipDot').className = 'dot' + (v.on ? ' on' : '');
+    feedback('剪贴板历史 ／ ' + v.cn);
+  });
+
+  /* ================= 时钟 ================= */
+  function clock() {
+    var d = new Date();
+    var t = pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+    $('clock').textContent = t;
+    $('hudClock').textContent = t;
+  }
+
+  /* ================= 启动 ================= */
+  buildOrbit();
+  buildRing();
+  render();
+  renderOcr();
+  renderRec();
+  renderLog();
+  clock();
+  setInterval(clock, 1000);
+})();
+</script>
+</body>
+</html>

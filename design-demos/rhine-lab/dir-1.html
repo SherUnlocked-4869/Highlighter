@@ -1,0 +1,1426 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · A1 白室导视 · 完整版</title>
+<style>
+/* ============================================================
+   A1 · 白室导视 White Room Signage
+   token = brand-spec §2.3 亮底（白室终端）
+   0 圆角（全站 1 处真圆：固定区的圆+轴）
+   1px = 结构；2px 只给「当前所在」与重线
+   唯一强调色 暖铜 #9B7247 / 唯一警示 #F2B800（全页 1 处）
+   ============================================================ */
+:root{
+  --paper:#EAE5E1; --lift:#EDEBE4; --field:#E7E3D9; --sink:#E2DCD2;
+  --ink:#080A08; --ink2:#77756D; --ink3:#605E56; --body:#5A584E;
+  --line:#AAA59A; --line2:#C4BFB4; --strong:#20221D;
+  --accent:#9B7247; --accent-ink:#7A5530; --alert:#F2B800; --olive:#777B60;
+  --shadow:0 26px 95px #63513a20;
+  --shadow-s:0 10px 34px #63513a14;
+  --sans:"Microsoft YaHei","微软雅黑",system-ui,sans-serif;
+  --label:"DengXian","等线","Microsoft YaHei",sans-serif;
+  --num:"Bahnschrift","DIN Alternate",sans-serif;
+  --mono:"Consolas","Cascadia Mono",monospace;
+  --track:.14em;
+}
+*{box-sizing:border-box;margin:0;padding:0;border-radius:0;font-variant-numeric:tabular-nums}
+html,body{width:1600px;height:1000px;overflow:hidden;background:var(--paper)}
+body{
+  font-family:var(--sans);font-size:15px;line-height:1.6;color:var(--ink);
+  font-variant-numeric:tabular-nums;
+  -webkit-font-smoothing:antialiased;
+}
+button{font-family:inherit;color:inherit;background:none;border:0;cursor:pointer}
+ol,ul{list-style:none}
+a{color:inherit;text-decoration:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.num{font-family:var(--num);font-variant-numeric:tabular-nums}
+.lb{
+  font-family:var(--label);font-size:12px;line-height:1.15;font-weight:400;
+  letter-spacing:var(--track);text-transform:uppercase;color:var(--ink3);
+}
+.zh{font-family:var(--sans);font-size:12px;line-height:1.15;letter-spacing:0;color:var(--ink3)}
+.pair{display:inline-flex;align-items:baseline;gap:7px;white-space:nowrap}
+
+/* ---------- 展示板 ---------- */
+.board{width:1600px;height:1000px;padding:0 40px;display:flex;flex-direction:column;position:relative}
+
+/* ---- 标题区 ----
+   纵向节奏（底部安全边距 24px）：
+   10 + 48 bhead + 5 + 1 rule + 6 → b-main 70..830
+   8 + 116 sysboard → 838..954 ；6 + 16 bfoot → 960..976（1000 − 24） */
+.bhead{margin-top:10px;height:48px;display:flex;align-items:flex-start;gap:26px}
+.bh-l{display:flex;align-items:flex-start;gap:13px;flex:0 0 auto;padding-top:2px}
+.bh-a1{font-family:var(--num);font-size:34px;line-height:.9;color:var(--ink2);letter-spacing:.01em}
+.bh-nm b{display:block;font-size:16px;font-weight:700;line-height:1.25;letter-spacing:0}
+.bh-nm .lb{display:block;margin-top:5px}
+.bh-lede{
+  flex:0 1 560px;font-size:15px;line-height:1.72;color:var(--body);
+  padding-top:1px;margin-left:4px;
+}
+.bh-data{margin-left:auto;display:flex;align-items:flex-start;padding-top:1px}
+.bh-data>div{padding:0 18px;border-left:1px solid var(--line);min-width:112px}
+.bh-data>div:first-child{border-left:0;padding-left:0}
+.bh-data b{display:block;font-family:var(--num);font-size:16px;line-height:1.1;color:var(--ink)}
+.bh-data .pair{margin-top:5px}
+.b-rule{height:1px;background:var(--line);margin-top:5px;flex:0 0 1px}
+
+/* ---- 主区 ---- */
+.b-main{margin-top:6px;height:760px;flex:0 0 760px;display:grid;grid-template-columns:1120px 376px;gap:24px}
+
+/* ============================================================
+   主窗口 1120 × 760
+   ============================================================ */
+.win{
+  width:1120px;height:760px;background:var(--lift);border:1px solid var(--line);
+  box-shadow:var(--shadow);position:relative;display:flex;flex-direction:column;overflow:hidden;
+}
+.win-top{height:39px;flex:0 0 39px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 18px;gap:14px}
+.brandmark{display:flex;align-items:center;gap:8px}
+.brandmark i{width:10px;height:10px;border:1px solid var(--ink);position:relative;display:block;flex:0 0 10px}
+.brandmark i::after{content:"";position:absolute;inset:2px;background:var(--ink)}
+.brandmark b{font-family:var(--label);font-size:12px;font-weight:700;letter-spacing:var(--track);text-transform:uppercase;color:var(--ink)}
+.win-top .wt-sep{width:1px;height:14px;background:var(--line)}
+.win-top .wt-meta{font-family:var(--num);font-size:12px;color:var(--ink3);letter-spacing:.06em}
+.wctl{margin-left:auto;display:flex;border:1px solid var(--line)}
+.wctl button{width:26px;height:23px;display:flex;align-items:center;justify-content:center;color:var(--ink3)}
+.wctl button+button{border-left:1px solid var(--line)}
+.wctl button:hover{background:var(--field);color:var(--ink)}
+
+.win-body{flex:1;min-height:0;padding:0 36px;display:flex;flex-direction:column;position:relative}
+
+/* ---- 巨标题 ---- */
+.hero{padding-top:22px;display:flex;justify-content:space-between;gap:34px}
+.display{
+  font-family:var(--label);font-size:52px;line-height:.94;font-weight:400;
+  letter-spacing:-.005em;text-transform:uppercase;color:var(--ink);
+}
+.hero-r{width:426px;flex:0 0 426px;padding-top:2px}
+.hero-cn{font-size:16px;font-weight:700;line-height:1.3;color:var(--ink)}
+.hero-lede{font-size:15px;line-height:1.72;color:var(--body);margin-top:9px}
+.hero-cur{display:flex;align-items:center;gap:9px;margin-top:13px;padding-top:11px;border-top:1px solid var(--line2)}
+.hero-cur i{width:7px;height:7px;background:var(--accent);display:block;flex:0 0 7px}
+.hero-cur b{font-family:var(--num);font-size:15px;color:var(--ink);line-height:1}
+.hero-cur .zc{font-size:15px;color:var(--body)}
+
+/* ---- 量出来的 1px 线 ---- */
+.measure{position:relative;height:1px;background:var(--strong);margin-top:20px;
+  transform-origin:right center;transform:scaleX(0);
+  animation:measure-out 1.3s cubic-bezier(.22,1,.36,1) .1s forwards}
+.measure i{position:absolute;left:0;top:-2.5px;width:6px;height:6px;background:var(--strong);opacity:0;
+  animation:cap-in .26s linear .78s forwards}
+@keyframes measure-out{to{transform:scaleX(1)}}
+@keyframes cap-in{to{opacity:1}}
+
+/* ---- 四格等分功能区（就是导航） ---- */
+.zones{
+  flex:0 0 168px;height:168px;margin-top:18px;
+  display:grid;grid-template-columns:repeat(4,1fr);
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+}
+.zone{position:relative;padding:17px 18px 13px;display:flex;flex-direction:column;text-align:left;
+  background:transparent;transition:background 180ms linear}
+.zone+.zone{border-left:1px solid var(--line)}
+.zone:hover{background:#E9E4DB}
+.zone[aria-current="true"]{background:var(--sink)}
+.zone[aria-current="true"]::before{content:"";position:absolute;left:0;right:0;top:-1px;height:2px;background:var(--accent)}
+.zone .zn{position:absolute;right:18px;top:15px;font-family:var(--num);font-size:12px;color:var(--ink3);letter-spacing:.04em}
+.zone[aria-current="true"] .zn{color:var(--accent-ink)}
+.zone[aria-current="true"] .zc{color:var(--ink)}
+.zone .zc{font-size:16px;font-weight:700;line-height:1.25;color:var(--ink);margin-top:15px}
+.zone .ze{font-family:var(--label);font-size:12px;letter-spacing:var(--track);text-transform:uppercase;color:var(--ink3);margin-top:5px}
+.zone .zs{margin-top:auto;font-size:12px;color:var(--ink3);letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 几何原型图标：全部 CSS 方块/线条，1.5px 描边；颜色跟着「当前所在」走 */
+.glyph{width:30px;height:30px;position:relative;flex:0 0 30px;display:block;--g:var(--ink);--a:var(--ink)}
+.zone[aria-current="true"] .glyph{--g:var(--ink);--a:var(--accent)}
+.glyph::before,.glyph::after,.glyph>i{content:"";position:absolute;display:block}
+/* 01 截取 —— 方框（框选）+ 内框 */
+.g-cap::before{left:0;top:2px;width:30px;height:20px;border:1.5px solid var(--g)}
+.g-cap::after{left:9px;top:8px;width:10px;height:8px;border:1.5px solid var(--a)}
+.g-cap>i{left:0;top:26px;width:8px;height:1.5px;background:var(--g)}
+/* 02 读取 —— 竖线 + 横线组（文字行） */
+.g-ocr::before{left:0;top:5px;width:1.5px;height:22px;background:var(--g)}
+.g-ocr::after{left:7px;top:6px;width:23px;height:1.5px;background:var(--g);box-shadow:0 8px 0 var(--g),0 16px 0 var(--g)}
+.g-ocr>i{left:7px;top:6px;width:0;height:0}
+/* 03 固定 —— 圆 + 轴（全站唯一圆） */
+.g-pin::before{left:7px;top:1px;width:16px;height:16px;border:1.5px solid var(--a);border-radius:50%}
+.g-pin::after{left:14.25px;top:17px;width:1.5px;height:11px;background:var(--g)}
+.g-pin>i{left:9px;top:28px;width:12px;height:1.5px;background:var(--g)}
+/* 04 归档 —— 档案盒：外框 + 内部横层（与 02 的「文字行」区分开） */
+.g-hist::before{left:0;top:4px;width:28px;height:22px;border:1.5px solid var(--g)}
+.g-hist::after{left:4px;top:11px;width:20px;height:1.5px;background:var(--a);box-shadow:0 6px 0 var(--g)}
+.g-hist>i{left:0;top:0;width:0;height:0}
+
+/* ---- 功能区下方的「目的地内容」 ---- */
+.detail{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:1fr 372px}
+.dmain{display:flex;flex-direction:column;min-width:0;padding-right:28px}
+.dhead{flex:0 0 40px;height:40px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}
+.tabs{position:relative;display:flex;gap:26px;height:40px;align-items:center}
+.tab{display:flex;align-items:center;gap:6px;height:40px;color:var(--ink3);font-size:15px;letter-spacing:0}
+.tab .tn{font-family:var(--num);font-size:12px;color:var(--ink3)}
+.tab[aria-selected="true"]{color:var(--ink)}
+.tab[aria-selected="true"] .tn{color:var(--accent-ink)}
+.tab:hover{color:var(--ink)}
+.ind{position:absolute;left:0;bottom:-1px;width:1px;height:2px;background:var(--strong);
+  transform-origin:left center;transform:translateX(0) scaleX(1);
+  transition:transform 180ms cubic-bezier(.22,1,.36,1)}
+.dcount{display:flex;align-items:baseline;gap:7px}
+.dcount b{font-family:var(--num);font-size:15px;color:var(--ink);line-height:1}
+
+.rows{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.row{flex:1 1 0;min-height:0;display:flex;align-items:center;gap:12px;padding-right:4px;
+  border-bottom:1px solid var(--line2);cursor:pointer;position:relative;padding-left:0}
+.row:last-child{border-bottom:0}
+.row .rdot{width:6px;height:6px;background:transparent;flex:0 0 6px}
+.row .rn{font-family:var(--num);font-size:12px;color:var(--ink3);width:20px;flex:0 0 20px}
+.row .rt{font-size:16px;line-height:1.35;color:var(--body);flex:1 1 auto;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .rk{font-family:var(--num);font-size:12px;color:var(--ink3);border:1px solid var(--line);padding:1px 6px;line-height:1.5;white-space:nowrap}
+.row .rv{font-family:var(--num);font-size:12px;color:var(--ink3);white-space:nowrap}
+.row:hover{background:#E9E4DB}
+.row[aria-selected="true"]{background:var(--field)}
+.row[aria-selected="true"] .rdot{background:var(--accent)}
+.row[aria-selected="true"] .rt{color:var(--ink)}
+.row[aria-selected="true"] .rn{color:var(--ink)}
+
+.dside{border-left:1px solid var(--line);padding:15px 0 12px 28px;display:flex;flex-direction:column;min-width:0}
+.ds-name{font-size:16px;font-weight:700;line-height:1.3;color:var(--ink);margin-top:8px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ds-desc{font-size:15px;line-height:1.65;color:var(--body);margin-top:8px;height:76px;overflow:hidden}
+.ds-space{flex:1 1 auto;min-height:8px}
+.sw{display:flex;align-items:center;gap:10px;height:33px;width:100%;border-top:1px solid var(--line2);text-align:left}
+.sw .st{width:34px;height:16px;border:1px solid var(--line);position:relative;flex:0 0 34px;background:var(--paper);transition:border-color 180ms linear}
+.sw .st i{position:absolute;left:1px;top:1px;width:12px;height:12px;background:var(--ink3);display:block;
+  transition:transform 180ms cubic-bezier(.22,1,.36,1),background 180ms linear}
+.sw[aria-checked="true"] .st{border-color:var(--accent)}
+.sw[aria-checked="true"] .st i{transform:translateX(18px);background:var(--accent)}
+.sw .stl{font-size:15px;color:var(--body);line-height:1.2}
+.ds-field{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+  border-top:1px solid var(--line2);padding-top:11px;margin-top:11px}
+.ds-field dt{display:flex;flex-direction:column;gap:4px}
+.ds-field dd{font-size:15px;color:var(--body);margin:0;font-family:var(--num);text-align:right;line-height:1.3}
+
+/* ---- 页脚仪器状态行 ---- */
+.rail{flex:0 0 44px;height:44px;border-top:1px solid var(--line);display:flex;align-items:center;font-size:12px}
+.rail>div{display:flex;align-items:center;gap:8px;padding:0 16px;height:20px;border-left:1px solid var(--line2);white-space:nowrap}
+.rail>div:first-child{border-left:0;padding-left:0}
+.rail .dot{width:5px;height:5px;background:var(--olive);display:block;flex:0 0 5px}
+.rail .warn{width:6px;height:6px;background:var(--alert);display:block;flex:0 0 6px}
+.rail .rt2{font-size:12px;color:var(--ink3);letter-spacing:0}
+.rail .rnum{font-family:var(--num);font-size:12px;color:var(--ink)}
+.rail .rr{margin-left:auto;display:flex;gap:16px;align-items:center}
+.rail .rr>span{display:flex;align-items:baseline;gap:7px}
+
+/* ---- 窗口态遮罩（最小化 / 关闭） ---- */
+.win-veil{position:absolute;inset:39px 0 0;background:var(--lift);display:none;flex-direction:column;
+  align-items:flex-start;justify-content:center;padding:0 36px;z-index:6}
+.win.is-min .win-veil{display:flex}
+.win-veil .wl{font-family:var(--label);font-size:12px;letter-spacing:var(--track);text-transform:uppercase;color:var(--ink3)}
+.win-veil .wt{font-family:var(--label);font-size:40px;line-height:1;text-transform:uppercase;color:var(--ink);margin-top:14px}
+.win-veil .wb{margin-top:16px;font-size:15px;color:var(--body)}
+.win-veil button{margin-top:22px;height:34px;padding:0 16px;border:1px solid var(--ink);font-size:15px;color:var(--ink)}
+.win-veil button:hover{background:var(--ink);color:var(--lift)}
+
+/* ---- Toast ---- */
+.toast{position:absolute;left:50%;bottom:58px;transform:translateX(-50%) translateY(6px);
+  background:var(--lift);border:1px solid var(--ink);padding:8px 14px;font-size:15px;color:var(--ink);
+  opacity:0;pointer-events:none;transition:opacity 180ms linear,transform 180ms linear;z-index:9}
+.toast.is-on{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* ============================================================
+   卫星窗口
+   ============================================================ */
+.sats{height:760px;display:grid;grid-template-rows:288px 248px 200px;gap:12px}
+.sat{background:var(--lift);border:1px solid var(--line);box-shadow:var(--shadow-s);
+  display:flex;flex-direction:column;min-height:0;position:relative;overflow:hidden}
+.sat-top{height:29px;flex:0 0 29px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px;padding:0 10px}
+.sat-top .st-nm{font-size:15px;font-weight:700;line-height:1;color:var(--ink);letter-spacing:0}
+.sat-top .tag{font-family:var(--num);font-size:12px;color:var(--ink3);border:1px solid var(--line);padding:0 5px;line-height:15px}
+.sat-top .sat-meta{margin-left:auto;font-family:var(--num);font-size:12px;color:var(--ink3)}
+.sat-x{width:19px;height:19px;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--ink3);flex:0 0 19px}
+.sat-x:hover{background:var(--field);color:var(--ink)}
+.sat.is-off .sat-body{display:none}
+.sat .restore{display:none;flex:1;flex-direction:column;align-items:flex-start;justify-content:center;padding:0 14px}
+.sat.is-off .restore{display:flex}
+.restore .rl1{font-family:var(--label);font-size:12px;letter-spacing:var(--track);text-transform:uppercase;color:var(--ink3)}
+.restore .rl2{font-size:15px;color:var(--body);margin-top:8px}
+.restore button{margin-top:12px;height:28px;padding:0 12px;border:1px solid var(--ink);font-size:15px}
+
+/* ---- ① 截图浮层 ---- */
+.sat-body{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
+/* 被截取的屏幕内容：渐变 + 网格线诚实示意（方向卡：程序化制图，不冒充真实截图） */
+.stage{flex:1 1 auto;min-height:0;position:relative;overflow:hidden;background:#D9D2C6}
+.scr{position:absolute;inset:0;padding:11px 12px;display:flex;flex-direction:column;gap:5px;
+  background:
+    repeating-linear-gradient(0deg,rgba(122,110,92,.10) 0 1px,transparent 1px 22px),
+    repeating-linear-gradient(90deg,rgba(122,110,92,.085) 0 1px,transparent 1px 22px),
+    linear-gradient(168deg,#E4DFD4 0%,#D9D2C4 58%,#D2CABB 100%)}
+.scr .sb{height:7px;background:#C1B9A9}
+.scr .sb.d{background:#B4AB99}
+.scr .srow{display:flex;gap:5px}
+.scr .sq{height:16px;background:#CDC5B5;border:1px solid #B9B0A0}
+.sel{position:absolute;left:24px;top:20px;right:24px;bottom:20px;border:1px solid var(--accent);
+  box-shadow:0 0 0 9999px rgba(0,0,0,.46);background:#F5F2EC}
+.sel .selin{position:absolute;inset:0;padding:8px 9px;display:flex;flex-direction:column;gap:4px}
+.sel .si-h{height:11px;background:#E2DCD0;border-bottom:1px solid #D2CABA;margin:-8px -9px 3px;display:flex;align-items:center;padding:0 4px;gap:3px}
+.sel .si-h i{width:3px;height:3px;background:#B4AB9A;display:block}
+.sel .si-l{height:5px;background:#DCD5C7}
+.sel .si-b{flex:1;min-height:0;background:#E9E3D7;border:1px solid #D2CABA;margin-top:2px}
+.sel .h{position:absolute;width:7px;height:7px;background:var(--paper);border:1px solid var(--ink);cursor:nwse-resize;z-index:2}
+.sel .h.tl{left:-4px;top:-4px}.sel .h.tr{right:-4px;top:-4px}
+.sel .h.bl{left:-4px;bottom:-4px}.sel .h.br{right:-4px;bottom:-4px}
+/* 尺寸徽标在选区左上角内侧（content.js: sizeBadge「选区左上角显示 1280 × 720 式尺寸」） */
+.sel .sz{position:absolute;left:5px;top:5px;background:var(--paper);border:1px solid var(--ink);
+  font-family:var(--num);font-size:12px;line-height:15px;padding:0 5px;color:var(--ink);white-space:nowrap;z-index:3}
+.cap-tip{flex:0 0 18px;height:18px;border-top:1px solid var(--line);display:flex;align-items:center;padding:0 10px}
+.cap-tip .lb{font-size:12px}
+.tools{flex:0 0 36px;height:36px;border-top:1px solid var(--line);display:flex;align-items:center;gap:2px;padding:0 7px}
+.tl{width:25px;height:25px;display:flex;align-items:center;justify-content:center;color:var(--ink3);position:relative}
+.tl:hover{background:var(--field);color:var(--ink)}
+.tl[aria-pressed="true"]{background:var(--ink);color:var(--lift)}
+.tl[aria-pressed="true"]::after{content:"";position:absolute;left:0;right:0;bottom:-8px;height:2px;background:var(--accent)}
+.tsep{width:1px;height:16px;background:var(--line);margin:0 4px;flex:0 0 1px}
+.tl.primary{background:var(--ink);color:var(--lift);width:30px}
+.tl.primary:hover{color:#fff}
+.cap-opt{flex:0 0 24px;height:24px;border-top:1px solid var(--line);display:flex;align-items:center;gap:14px;padding:0 10px;font-size:12px;color:var(--ink3)}
+.cap-opt b{font-family:var(--num);font-size:12px;color:var(--ink);font-weight:400}
+
+/* ---- ② 识别结果：真实结构是「摘要条 + 只读文本域 + 出口」 ---- */
+.ocr-sum{flex:0 0 26px;height:26px;border-bottom:1px solid var(--line2);display:flex;align-items:center;gap:6px;
+  padding:0 10px;font-size:12px;color:var(--ink3);letter-spacing:0;white-space:nowrap}
+.ocr-sum b{font-family:var(--num);font-size:12px;color:var(--ink);font-weight:400}
+.ocr-sum .r{margin-left:auto;display:flex;align-items:center;gap:6px}
+.ocr-modes{flex:0 0 28px;height:28px;border-bottom:1px solid var(--line);display:flex;align-items:stretch;gap:0;padding:0 10px;position:relative}
+.ocr-modes button{height:28px;display:flex;align-items:center;gap:6px;font-size:15px;color:var(--ink3);padding:0 9px 0 0;margin-right:9px}
+.ocr-modes button .tn{font-family:var(--num);font-size:12px}
+.ocr-modes button[aria-selected="true"]{color:var(--ink)}
+.ocr-modes button[aria-selected="true"] .tn{color:var(--accent-ink)}
+.ocr-ind{position:absolute;bottom:-1px;left:0;width:1px;height:2px;background:var(--strong);
+  transform-origin:left center;transition:transform 180ms cubic-bezier(.22,1,.36,1)}
+.ocr-body{flex:1 1 auto;min-height:0;position:relative;overflow:hidden;display:flex}
+.ocr-area{flex:1 1 auto;min-width:0;min-height:0;padding:7px 9px 7px 10px;font-family:var(--sans);font-size:15px;line-height:1.58;
+  color:var(--body);overflow-y:auto;overflow-x:hidden;white-space:pre-wrap;word-break:break-word;scrollbar-width:thin;
+  scrollbar-color:var(--line) transparent}
+.ocr-area::-webkit-scrollbar{width:3px}
+.ocr-area::-webkit-scrollbar-track{background:transparent}
+.ocr-area::-webkit-scrollbar-thumb{background:var(--line);border-radius:0}
+.ocr-area .ln{display:block;padding:1px 4px;margin-left:-4px;border-left:2px solid transparent;cursor:pointer}
+.ocr-area .ln:hover{background:#E9E4DB}
+.ocr-area .ln[aria-selected="true"]{background:var(--field);border-left-color:var(--accent);color:var(--ink)}
+.ocr-area.is-tgt .ln{border-left-color:transparent;cursor:default}
+.ocr-area.is-tgt .ln:hover{background:transparent;border-left-color:transparent}
+.ocr-area .ln-en{color:var(--ink);margin-top:6px}
+.ocr-area .ln-pair{border-left-color:var(--line2);cursor:default}
+.ocr-side{flex:0 0 86px;border-left:1px solid var(--line2);display:flex;flex-direction:column}
+.ocr-side .oh{flex:0 0 18px;height:18px;border-bottom:1px solid var(--line2);display:flex;align-items:center;padding:0 7px}
+.ocr-side .ov{padding:6px 7px 0}
+.ocr-side .ov b{display:block;font-family:var(--num);font-size:30px;line-height:1.02;color:var(--ink);font-weight:400}
+.ocr-side .oc{padding:7px 7px 0}
+.ocr-side .oc .bar{height:3px;background:var(--line2);position:relative;margin-top:5px}
+.ocr-side .oc .bar i{position:absolute;left:0;top:0;height:3px;background:var(--accent);display:block}
+.ocr-side .oz{flex:1 1 auto}
+.ocr-foot{flex:0 0 34px;height:34px;border-top:1px solid var(--line);display:flex;align-items:center;gap:7px;padding:0 10px}
+.ocr-foot .fb{height:24px;padding:0 9px;border:1px solid var(--line);font-size:15px;color:var(--ink);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.ocr-foot .fb:hover{border-color:var(--ink)}
+.ocr-foot .fb.pri{background:var(--ink);color:var(--lift);border-color:var(--ink)}
+.ocr-foot .fb.pri:hover{background:#2C2F27}
+.ocr-foot .fb .k{font-family:var(--num);font-size:12px;color:inherit;opacity:.72}
+
+/* ---- ③ 贴图窗口 ---- */
+.pin-body{flex:1 1 auto;min-height:0;display:flex}
+.pin-stage{flex:1 1 auto;min-width:0;position:relative;overflow:hidden;background:#DCD5C9;display:flex;align-items:center;justify-content:center}
+.pin-img{width:170px;height:136px;background:#F3F0E8;border:1px solid var(--accent);overflow:hidden;transition:transform 320ms cubic-bezier(.22,1,.36,1);cursor:zoom-in;position:relative}
+.pin-img .pih{height:12px;background:#E4DED2;border-bottom:1px solid #D2CABA;display:flex;align-items:center;padding:0 5px;gap:3px}
+.pin-img .pih i{width:3px;height:3px;background:#B7AE9D;display:block}
+.pin-img .pib{padding:6px 6px 0;display:flex;flex-direction:column;gap:4px}
+.pin-img .pil{height:5px;background:#D6CFC0}
+.pin-img .pil.s{width:62%}
+.pin-img .pif{height:38px;background:#E7E1D5;border:1px solid #D2CABA;margin-top:2px}
+.pin-badges{position:absolute;left:7px;top:7px;display:flex;gap:4px;z-index:2}
+.pin-badges span{font-family:var(--num);font-size:12px;line-height:16px;padding:0 4px;background:var(--paper);border:1px solid var(--ink);color:var(--ink)}
+.pin-ref{position:absolute;right:8px;bottom:8px;font-family:var(--num);font-size:12px;color:var(--body);z-index:2}
+.pin-menu{flex:0 0 122px;border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.pin-menu .pm-h{flex:0 0 20px;height:20px;border-bottom:1px solid var(--line2);display:flex;align-items:center;padding:0 8px}
+.pin-menu button{flex:1 1 0;min-height:0;display:flex;align-items:center;justify-content:space-between;width:100%;padding:0 8px;font-size:15px;line-height:1;color:var(--body);text-align:left;border-bottom:1px solid #E1DCD1}
+.pin-menu button:last-child{border-bottom:0}
+.pin-menu button:hover{background:var(--field);color:var(--ink)}
+.pin-menu button[aria-checked="true"]{color:var(--ink)}
+.pin-menu button .mi{font-family:var(--num);font-size:12px;color:var(--ink3)}
+.pin-menu button .mk{width:4px;height:4px;background:transparent;display:block}
+.pin-menu button[aria-checked="true"] .mk{background:var(--accent)}
+.pin-foot{flex:0 0 24px;height:24px;border-top:1px solid var(--line);display:flex;align-items:center;padding:0 10px;font-size:12px;color:var(--ink3)}
+.pin-foot b{font-family:var(--num);font-size:12px;color:var(--ink);font-weight:400}
+
+/* ============================================================
+   系统板
+   ============================================================ */
+.sysboard{
+  margin-top:8px;height:116px;flex:0 0 116px;border-top:1px solid var(--line);padding-top:9px;
+  display:grid;grid-template-columns:666px 334px 180px 340px;
+}
+.sb-col{min-width:0;padding-left:24px}
+.sb-col:first-child{padding-left:0}
+.sb-col+.sb-col{border-left:1px solid var(--line2)}
+.sb-h{display:flex;align-items:baseline;gap:7px;height:14px}
+.sb-body{margin-top:8px}
+.sw-wrap{display:grid;grid-template-columns:repeat(5,1fr);gap:8px 10px}
+.swi{display:flex;align-items:center;gap:7px;min-width:0}
+.swi i{width:26px;height:26px;flex:0 0 26px;display:block;border:1px solid #00000024}
+.swi .swn{min-width:0}
+.swi .swh{display:block;font-family:var(--num);font-size:13px;line-height:1.3;color:var(--ink);letter-spacing:.01em}
+.swi .swt{display:block;font-size:12px;line-height:1.35;color:var(--body);letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tp-row{display:flex;align-items:baseline;gap:13px;height:27px}
+.tp-a{font-family:var(--label);font-size:31px;line-height:.9;color:var(--ink);text-transform:uppercase}
+.tp-cn{font-size:16px;color:var(--ink);line-height:1}
+.tp-en{font-family:var(--label);font-size:12px;letter-spacing:var(--track);text-transform:uppercase;color:var(--ink3)}
+.tp-line{display:flex;gap:12px;align-items:baseline;height:19px}
+.tp-line .lb{flex:0 0 30px}
+.tp-line .tpv{font-size:15px;color:var(--body);letter-spacing:0;white-space:nowrap;line-height:1.1}
+.rl{display:flex;align-items:center;gap:10px;height:20px}
+.rl i{display:block;flex:0 0 56px}
+.rl .r1{height:1px;background:var(--ink)}
+.rl .r2{height:2px;background:var(--ink)}
+.rl .r3{width:6px;height:6px;background:var(--ink);flex:0 0 6px}
+.rl .r4{width:14px;height:14px;border:1.5px solid var(--ink);flex:0 0 14px}
+.rl span{font-size:12px;color:var(--ink3);letter-spacing:0}
+.pt-row{display:flex;align-items:center;gap:14px;height:30px}
+.btn-solid{height:26px;padding:0 10px;background:#252820;color:#F0EEE5;font-size:15px;display:inline-flex;align-items:center;gap:8px;border:0}
+.btn-solid .lb{color:#BCBFB1;font-size:12px}
+.btn-solid:hover{background:#4B4A3B}
+.sw-mini{display:inline-flex;align-items:center;gap:6px}
+.sw-mini .st{width:30px;height:14px;border:1px solid var(--line);position:relative;background:var(--paper);display:block}
+.sw-mini .st i{position:absolute;left:1px;top:1px;width:10px;height:10px;background:var(--ink3);display:block}
+.sw-mini.on .st{border-color:var(--accent)}
+.sw-mini.on .st i{transform:translateX(16px);background:var(--accent)}
+.sw-mini em{font-style:normal;font-size:12px;color:var(--ink3);letter-spacing:0}
+kbd.k{font-family:var(--num);font-size:12px;line-height:16px;border:1px solid var(--line);padding:0 5px;color:var(--ink);background:var(--paper)}
+.tag-m{font-family:var(--num);font-size:12px;line-height:16px;border:1px solid var(--line);padding:0 5px;color:var(--ink3)}
+.pt-dot{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--ink3);letter-spacing:0}
+.pt-dot i{width:5px;height:5px;background:var(--olive);display:block}
+
+.bfoot{margin-top:6px;height:16px;flex:0 0 16px;display:flex;align-items:center;gap:14px;font-size:12px;color:var(--ink3)}
+.bfoot .ft-t{letter-spacing:0}
+.bfoot .bar-r{margin-left:auto;display:flex;align-items:center;gap:10px}
+.bfoot .solid-bar{width:24px;height:6px;background:var(--ink);display:block}
+
+/* ---- 动效：可被 prefers-reduced-motion 直落终态 ---- */
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+  .measure{transform:none}
+  .measure i{opacity:1}
+}
+</style>
+</head>
+<body>
+<div class="board" id="board">
+
+  <!-- ================= 标题区 ================= -->
+  <header class="bhead">
+    <div class="bh-l">
+      <span class="bh-a1">A1</span>
+      <div class="bh-nm">
+        <b>白室导视</b>
+        <span class="lb">White Room Signage</span>
+      </div>
+    </div>
+    <p class="bh-lede">28 项能力收进一块机场导视牌：四个目的地、一条从右向左量出来的线，只有当前所在有颜色。导视语法就是这款产品真实的导航结构。</p>
+    <div class="bh-data">
+      <div><b class="num">04</b><span class="pair"><span class="lb">Destinations</span><span class="zh">目的地</span></span></div>
+      <div><b class="num">28</b><span class="pair"><span class="lb">Functions</span><span class="zh">功能</span></span></div>
+      <div><b class="num">12</b><span class="pair"><span class="lb">Windows</span><span class="zh">窗口</span></span></div>
+      <div><b class="num">4.1.2</b><span class="pair"><span class="lb">Version</span><span class="zh">版本</span></span></div>
+    </div>
+  </header>
+  <div class="b-rule"></div>
+
+  <!-- ================= 主区 ================= -->
+  <main class="b-main">
+
+    <!-- ---------- 主窗口 1120×760 ---------- -->
+    <section class="win" id="mainWin" aria-label="Highlighter 主窗口 1120×760">
+      <div class="win-top">
+        <span class="brandmark"><i></i><b>Highlighter</b></span>
+        <span class="wt-sep"></span>
+        <span class="wt-meta">SCREEN OBSERVATION ／ 1120 × 760</span>
+        <div class="wctl">
+          <button type="button" id="btnMin" aria-label="最小化"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.25"><path d="M3.5 8h9"/></svg></button>
+          <button type="button" id="btnClose" aria-label="关闭"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.25"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+        </div>
+      </div>
+
+      <div class="win-body">
+        <div class="hero">
+          <div class="display" id="displayTitle">Screen<br>Observation</div>
+          <div class="hero-r">
+            <div class="hero-cn">白室导视 ／ 功能总览</div>
+            <p class="hero-lede">四个目的地就是导航：截取、读取、固定、归档。每个目的地一块地、一个几何原型、一个编号；其余全部让给留白与那一条线。</p>
+            <div class="hero-cur">
+              <i></i><span class="lb">Current</span>
+              <b id="curNum">01</b><span class="zc" id="curName">截取</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="measure" aria-hidden="true"><i></i></div>
+
+        <nav class="zones" id="zones" aria-label="四个功能区"></nav>
+
+        <section class="detail">
+          <div class="dmain">
+            <div class="dhead">
+              <div class="tabs" id="tabs" role="tablist"></div>
+              <div class="dcount"><b id="rowCount">07</b><span class="pair"><span class="lb">Items</span><span class="zh">条目</span></span></div>
+            </div>
+            <ol class="rows" id="rows"></ol>
+          </div>
+          <aside class="dside">
+            <span class="pair"><span class="lb">Selected</span><span class="zh">选中</span></span>
+            <div class="ds-name" id="dsName">截图</div>
+            <p class="ds-desc" id="dsDesc">自由框选、智能标注与导出；截图浮层内拖动选择区域，Esc 退出。</p>
+            <div class="ds-space"></div>
+            <div id="dsToggles"></div>
+            <dl class="ds-field">
+              <dt><span class="lb" id="dsFieldEn">Capture Mask</span><span class="zh" id="dsFieldCn">选区遮罩</span></dt>
+              <dd id="dsFieldVal">rgba(0,0,0,.46)</dd>
+            </dl>
+          </aside>
+        </section>
+
+        <footer class="rail">
+          <div><span class="dot"></span><span class="lb">System Ok</span><span class="rt2">系统就绪</span></div>
+          <div><span class="lb">Engine</span><span class="rt2">PaddleOCR v4 中英 ／ 本地</span></div>
+          <div><span class="warn"></span><span class="rt2">热键冲突 1 项</span></div>
+          <div><span class="lb">Keys</span><span class="rt2">F1 ／ Alt+F ／ Ctrl+Alt+E</span></div>
+          <div class="rr">
+            <span><span class="lb">Session</span><span class="rnum">04</span><span class="rnum">19:41:07</span></span>
+            <span><span class="rnum">08 OCT 2026</span></span>
+          </div>
+        </footer>
+      </div>
+
+      <div class="win-veil" id="winVeil">
+        <span class="wl" id="veilLb">Window Minimized</span>
+        <span class="wt" id="veilTitle">Minimized</span>
+        <div class="wb" id="veilBody">主窗口最小化到托盘；全局热键 F1 仍然有效。</div>
+        <button type="button" id="btnRestoreWin">还原主窗口</button>
+      </div>
+
+      <div class="toast" id="toast">已复制</div>
+    </section>
+
+    <!-- ---------- 卫星窗口 ---------- -->
+    <aside class="sats">
+
+      <!-- ① 截图浮层 -->
+      <section class="sat" id="satCap" aria-label="截图浮层">
+        <div class="sat-top">
+          <span class="st-nm">截图浮层</span>
+          <span class="lb">Capture Overlay</span>
+          <span class="sat-meta">1280 × 720</span>
+          <button class="sat-x" type="button" id="capX" aria-label="取消截图"><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.25"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+        </div>
+        <div class="sat-body">
+          <div class="stage">
+            <div class="scr">
+              <div class="sb d" style="width:52%"></div>
+              <div class="srow"><div class="sq" style="width:18%"></div><div class="sq" style="width:26%"></div><div class="sq" style="width:14%"></div></div>
+              <div class="sb" style="width:86%"></div>
+              <div class="sb" style="width:74%"></div>
+              <div class="sb d" style="width:64%"></div>
+              <div class="sb" style="width:80%"></div>
+              <div class="sb" style="width:58%"></div>
+              <div class="sb d" style="width:70%"></div>
+            </div>
+            <div class="sel" id="capSel">
+              <div class="selin">
+                <div class="si-h"><i></i><i></i><i></i></div>
+                <div class="si-l" style="width:64%"></div>
+                <div class="si-l" style="width:48%"></div>
+                <div class="si-b"></div>
+              </div>
+              <span class="sz" id="capSz">1280 × 720</span>
+              <i class="h tl"></i><i class="h tr"></i><i class="h bl"></i><i class="h br"></i>
+            </div>
+          </div>
+          <div class="cap-tip"><span class="lb">Drag To Select ／ Esc 退出</span></div>
+          <div class="tools" id="capTools"></div>
+          <div class="cap-opt">
+            <span>线宽 <b id="capW">中 4 PX</b></span>
+            <span>填充 <b>空心</b></span>
+            <span>线型 <b>实线</b></span>
+          </div>
+        </div>
+        <div class="restore">
+          <span class="rl1">Overlay Cancelled</span>
+          <div class="rl2">截图已取消，选区与标注未保存。</div>
+          <button type="button" id="capRestore">唤出截图 F1</button>
+        </div>
+      </section>
+
+      <!-- ② 识别结果 -->
+      <section class="sat" id="satOcr" aria-label="识别结果窗口">
+        <div class="sat-top">
+          <span class="st-nm">识别结果</span>
+          <span class="tag">本地 OCR</span>
+          <span class="sat-meta">820 × 620</span>
+          <button class="sat-x" type="button" id="ocrX" aria-label="关闭识别结果"><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.25"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+        </div>
+        <div class="sat-body">
+          <div class="ocr-sum">
+            <span>识别到 <b id="ocrCount">4</b> 处文本 ／ <b id="ocrMs">412</b> ms</span>
+          </div>
+          <div class="ocr-modes" id="ocrTabs" role="tablist">
+            <button type="button" role="tab" aria-selected="true" data-pane="src"><span class="tn">01</span>原文</button>
+            <button type="button" role="tab" aria-selected="false" data-pane="tgt"><span class="tn">02</span>译文</button>
+            <span class="ocr-ind" id="ocrInd"></span>
+          </div>
+          <div class="ocr-body">
+            <div class="ocr-area" id="ocrArea"></div>
+            <div class="ocr-side">
+              <div class="oh"><span class="lb">Block</span></div>
+              <div class="ov"><b id="ocrBlk">01</b></div>
+              <div class="oc"><span class="lb">Conf</span><div class="bar"><i id="ocrBar" style="width:97%"></i></div></div>
+              <div class="oz"></div>
+            </div>
+          </div>
+          <div class="ocr-foot">
+            <button type="button" class="fb pri" id="ocrCopy">复制全部<span class="k">Enter</span></button>
+            <button type="button" class="fb" id="ocrDone">完成</button>
+            <button type="button" class="fb" id="ocrPlain">纯文本</button>
+          </div>
+        </div>
+        <div class="restore">
+          <span class="rl1">Result Closed</span>
+          <div class="rl2">识别结果窗口已关闭，文本仍在剪贴板。</div>
+          <button type="button" id="ocrRestore">重新打开</button>
+        </div>
+      </section>
+
+      <!-- ③ 贴图窗口 -->
+      <section class="sat" id="satPin" aria-label="贴图窗口">
+        <div class="sat-top">
+          <span class="st-nm">贴图</span>
+          <span class="lb">Pin</span>
+          <span class="sat-meta">随图片内容</span>
+          <button class="sat-x" type="button" id="pinX" aria-label="关闭贴图"><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.25"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+        </div>
+        <div class="sat-body">
+          <div class="pin-body">
+            <div class="pin-stage">
+              <div class="pin-img" id="pinImg">
+                <div class="pih"><i></i><i></i><i></i></div>
+                <div class="pib">
+                  <div class="pil" style="width:70%"></div>
+                  <div class="pil s"></div>
+                  <div class="pil" style="width:52%"></div>
+                  <div class="pif"></div>
+                </div>
+              </div>
+              <div class="pin-badges"><span id="pinZoom">100%</span><span id="pinPass" hidden>穿透中</span></div>
+              <span class="pin-ref">1280 × 720</span>
+            </div>
+            <div class="pin-menu" id="pinMenu">
+              <div class="pm-h"><span class="lb">Menu</span></div>
+              <button type="button" data-act="remark" aria-checked="false"><span>重新标注</span><span class="mk"></span></button>
+              <button type="button" data-act="ocr" aria-checked="false"><span>文本识别</span><span class="mk"></span></button>
+              <button type="button" data-act="rotate" aria-checked="false"><span>旋转</span><span class="mi" id="pinDeg">0°</span></button>
+              <button type="button" data-act="pass" aria-checked="false"><span>点击穿透</span><span class="mk"></span></button>
+              <button type="button" data-act="close" aria-checked="false"><span>关闭</span><span class="mi">Esc</span></button>
+            </div>
+          </div>
+          <div class="pin-foot">滚轮缩放 每格 <b>10%</b> ／ Ctrl+滚轮 不透明度 <b>100%</b></div>
+        </div>
+        <div class="restore">
+          <span class="rl1">Pin Closed</span>
+          <div class="rl2">贴图已关闭，图片仍在截图历史里。</div>
+          <button type="button" id="pinRestore">重新贴图</button>
+        </div>
+      </section>
+
+    </aside>
+  </main>
+
+  <!-- ================= 系统板 ================= -->
+  <section class="sysboard" aria-label="系统板：色值 / 字体 / 线宽 / 组件">
+    <div class="sb-col">
+      <div class="sb-h"><span class="lb">Color</span><span class="zh">色值</span></div>
+      <div class="sb-body sw-wrap" id="swWrap"></div>
+    </div>
+    <div class="sb-col">
+      <div class="sb-h"><span class="lb">Type</span><span class="zh">字体分工</span></div>
+      <div class="sb-body">
+        <div class="tp-row"><span class="tp-a">Aa</span><span class="tp-cn">白室导视</span><span class="tp-en">Track 0.14em</span></div>
+        <div class="tp-line"><span class="lb">中文</span><span class="tpv">YaHei ／ 15–16 PX</span></div>
+        <div class="tp-line"><span class="lb">小标</span><span class="tpv">DengXian ／ 12 PX</span></div>
+        <div class="tp-line"><span class="lb">数字</span><span class="tpv">Bahnschrift</span></div>
+      </div>
+    </div>
+    <div class="sb-col">
+      <div class="sb-h"><span class="lb">Rule</span><span class="zh">线宽</span></div>
+      <div class="sb-body">
+        <div class="rl"><i class="r1"></i><span>1 PX 发丝</span></div>
+        <div class="rl"><i class="r2"></i><span>2 PX 重线</span></div>
+        <div class="rl"><i class="r3"></i><span>6 × 6 角标</span></div>
+        <div class="rl"><i class="r4"></i><span>1.5 PX 图标</span></div>
+      </div>
+    </div>
+    <div class="sb-col">
+      <div class="sb-h"><span class="lb">Parts</span><span class="zh">组件</span></div>
+      <div class="sb-body">
+        <div class="pt-row">
+          <button type="button" class="btn-solid" tabindex="-1"><span>复制</span><span class="lb">Enter</span></button>
+          <span class="sw-mini on"><span class="st"><i></i></span><em>ON</em></span>
+          <span class="sw-mini"><span class="st"><i></i></span><em>OFF</em></span>
+        </div>
+        <div class="pt-row">
+          <kbd class="k">F1</kbd><kbd class="k">Ctrl+Alt+E</kbd>
+          <span class="tag-m">本地 OCR</span>
+          <span class="pt-dot"><i></i>就绪</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="bfoot">
+    <span class="lb">Source</span>
+    <span class="ft-t">Otl Aicher ／ 1972 慕尼黑奥运视觉系统 ／ ERCO 企业系统 ／ 法兰克福机场导视</span>
+    <span class="bar-r"><span class="ft-t">HIGH LIGHTER 4.1.2 ／ 1600×1000 展示板 ／ 亮底方向</span><span class="solid-bar"></span></span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+     内容模型：以下文案逐字取自 design-demos/rhine-lab/src/content.js
+     （window.HC）。这里内联一份裁剪副本，保证单文件 file:// 直开。
+     ============================================================ */
+  var HC = {
+    meta: { name: 'Highlighter', version: '4.1.2', tagline: '桌面截图与划词效率工具' },
+    features: [
+      { name: '截图', desc: '自由框选、智能标注与导出' },
+      { name: '延迟截图', desc: '倒计时后开始区域截图' },
+      { name: '固定到屏幕', desc: '截图完成后直接贴到桌面' },
+      { name: '文本识别', desc: '截图后提取中文、英文等文字' },
+      { name: '表格识别', desc: '恢复截图中的行列并复制到 Excel' },
+      { name: '二维码识别', desc: '扫描二维码内容或打开其中的链接' },
+      { name: '文本识别翻译', desc: 'OCR 后调用翻译服务' },
+      { name: '复制到剪贴板', desc: '完成选区后立即复制' },
+      { name: '长截图', desc: '框选滚动区域并自动拼接' },
+      { name: '截取全屏', desc: '捕获鼠标所在显示器' },
+      { name: '当前焦点窗口', desc: '捕获当前活动窗口' },
+      { name: '打开 AI 对话', desc: '使用配置的 AI 模型进行多轮对话' },
+      { name: '打开翻译工具', desc: '支持自动检测与中英互译' },
+      { name: '视频录制', desc: '录制屏幕并导出 MP4 视频' },
+      { name: '本地搜索', desc: '使用 Everything 全盘搜索本地文件' },
+      { name: '剪贴板历史', desc: '本地保存文本、链接和静态图片。关闭后停止采集并保留历史。' },
+      { name: '固定本地图片', desc: '选择图片并固定到桌面' },
+      { name: '显示/隐藏所有贴图', desc: '批量控制桌面贴图' },
+      { name: '取消全部穿透', desc: '立即让所有贴图退出点击穿透状态' },
+      { name: '打开截图历史', desc: '回顾、复制和重新编辑截图' },
+      { name: '快速保存', desc: '完成选区后直接保存到上次的目录' },
+      { name: '另存为', desc: '完成选区后弹出保存对话框' }
+    ],
+    ocr: {
+      engine: 'PaddleOCR v4 中英',
+      blocks: [
+        { text: 'Highlighter 是一款面向 Windows 的桌面截图与划词效率工具。', confidence: 0.97 },
+        { text: '本地 OCR，可识别中英文等文字内容。', confidence: 0.95 },
+        { text: '导出 H.264 MP4 文件；当前录制不包含音轨。', confidence: 0.93 },
+        { text: 'PaddleOCR v4 中英', confidence: 0.99 }
+      ]
+    },
+    translate: {
+      direction: '中文→English',
+      source: '本机 AI CLI 的 Token 用量；只读日志，仅存计数，不上传任何内容',
+      result: 'Token usage from local AI CLIs. Logs are read-only and only counts are stored; nothing is uploaded.'
+    },
+    clipboard: {
+      rows: [
+        { app: 'WeChat', time: '10-23 09:41', preview: 'hello world', size: '11 B' },
+        { app: 'Chrome', time: '10-23 09:38', preview: 'https://example.com', size: '19 B' },
+        { app: 'Highlighter', time: '10-22 21:03', preview: 'Highlighter 是一款面向 Windows 的桌面截图与划词效率工具。', size: '86 B' },
+        { app: 'Snipper', time: '10-22 21:03', preview: '640 × 360', size: '1.2 KB' },
+        { app: 'Chrome', time: '10-22 20:15', preview: '本机 AI CLI 的 Token 用量；只读日志，仅存计数，不上传任何内容', size: '92 B' },
+        { app: 'Snipper', time: '10-22 18:47', preview: '1280 × 720', size: '2.4 KB' }
+      ]
+    },
+    search: {
+      sampleResults: [
+        { name: 'README.md', path: 'F:\\workspace\\Highlighter\\README.md', size: '8.8 KB' },
+        { name: 'package.json', path: 'F:\\workspace\\Highlighter\\package.json', size: '7.8 KB' },
+        { name: 'highlighter-full-features.html', path: 'docs\\architecture\\highlighter-full-features.html', size: '714.4 KB' },
+        { name: 'config.js', path: 'shared\\locales\\config.js', size: '172.1 KB' },
+        { name: 'capture.js', path: 'capture\\capture.js', size: '140.4 KB' }
+      ]
+    }
+  };
+
+  /* ---------------- 图标：全部内联 SVG，1.25px 描边 ---------------- */
+  function svg(d, size) {
+    var s = size || 15;
+    return '<svg viewBox="0 0 16 16" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" ' +
+      'stroke-width="1.25" stroke-linejoin="miter" aria-hidden="true">' + d + '</svg>';
+  }
+  var ICON = {
+    select: svg('<path d="M3 2l9.2 6.4-4.1.5 2.3 4.2-1.6.9-2.3-4.2L3 12.6z"/>'),
+    rect: svg('<rect x="2.5" y="3.5" width="11" height="9"/>'),
+    arrow: svg('<path d="M3 13L13 3M13 3H7.5M13 3v5.5"/>'),
+    pen: svg('<path d="M3.2 12.8l1.2-3.4 6.2-6.2 2.2 2.2-6.2 6.2z"/><path d="M9.4 4.4l2.2 2.2"/>'),
+    highlight: svg('<path d="M4 13h8.5"/><path d="M5.6 10.6l5.4-5.4 1.8 1.8-5.4 5.4z"/>'),
+    mosaic: svg('<rect x="2.5" y="2.5" width="5.5" height="5.5"/><rect x="8" y="8" width="5.5" height="5.5"/>'),
+    text: svg('<path d="M3 4h10M8 4v9M5.6 13h4.8"/>'),
+    serial: svg('<circle cx="8" cy="8" r="5.5"/><path d="M8 5.6v4.8"/>'),
+    ocr: svg('<path d="M2.5 5.5V2.5h3M10.5 2.5h3v3M13.5 10.5v3h-3M5.5 13.5h-3v-3"/><path d="M5 8h6"/>'),
+    translate: svg('<path d="M2.5 4h6.5M5.6 3v1.2c0 2.6-1.4 4.4-2.6 5.3M4.4 6.6c.9 1.6 2.4 2.5 3.7 2.9"/><path d="M9.4 13.4L11.7 7l2.3 6.4M10.3 11.6h2.9"/>'),
+    pin: svg('<path d="M6 2.5h4M8 2.5v4.2M4.4 6.7h7.2L10.5 9H5.5zM8 9v4.5"/>'),
+    save: svg('<path d="M3 3h9l1 1v9H3z"/><path d="M5.5 3v3.5h5V3M5 13v-4h6v4"/>'),
+    copy: svg('<path d="M5.5 2.5h8v8"/><path d="M2.5 5.5h8v8h-8z"/>'),
+    close: svg('<path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/>')
+  };
+
+  /* ---------------- 四个目的地（内容全部来自 HC） ----------------
+     count = content.js 里 28 项真实功能按目的地归类后的实数，合计 28：
+       截取 08（截图/延迟/复制/长截图/全屏/焦点窗口/录制/全屏画布）
+       读取 10（文本/表格/二维码/识别翻译/AI 对话/填入选中/解释剪贴板/翻译工具/翻译选中/翻译代理）
+       固定 04（固定到屏幕/固定本地图片/显示隐藏贴图/取消全部穿透）
+       归档 06（本地搜索/剪贴板历史/打开图片目录/截图历史/快速保存/另存为）
+     -------------------------------------------------------------- */
+  var ZONES = [
+    {
+      cn: '截取', en: 'Capture', glyph: 'g-cap', note: '先看', count: 8,
+      toggles: [{ l: '双击复制截图', on: true }, { l: '截图快门音', on: true }],
+      field: { en: 'Capture Mask', cn: '选区遮罩', v: 'rgba(0,0,0,.46)' },
+      tabs: [
+        {
+          cn: '区域截图',
+          rows: [
+            { t: '截图', k: 'F1', d: '自由框选、智能标注与导出；截图浮层内拖动选择区域，Esc 退出。' },
+            { t: '延迟截图', v: '3 秒', d: '倒计时后开始区域截图，延迟秒数可先输入（默认 3 秒）。' },
+            { t: '复制到剪贴板', k: 'Enter', d: '完成选区后立即复制；也可双击画布复制（可关闭）。' },
+            { t: '保存截图', k: 'Ctrl+S', d: '保存到上次使用的目录；另存为则弹出保存对话框。' },
+            { t: '文本识别', d: '截图后提取中文、英文等文字内容，走本地 PaddleOCR。' },
+            { t: '识别并翻译', d: 'OCR 后调用配置的翻译服务，原文与译文上下并置。' },
+            { t: '固定到屏幕', d: '截图完成后直接贴到桌面，可继续旋转与调透明度。' }
+          ]
+        },
+        {
+          cn: '长截图',
+          rows: [
+            { t: '纵向拼接', v: '默认', d: '框选滚动区域，自动采集并拼接；也支持横向。' },
+            { t: '裁前', v: '0 PX', d: '去掉拼接结果的上边缘像素，输入框旁带 px 单位。' },
+            { t: '裁后', v: '0 PX', d: '去掉拼接结果的下边缘像素。' },
+            { t: '匹配成功', v: '98%', d: '已记录起始画面，等待滚动；放慢滚动速度可提高匹配。' },
+            { t: '复制并关闭', k: 'Enter', d: '长截图控制窗内完成；Esc 取消长截图。' },
+            { t: '贴图', d: '把拼接结果直接贴到桌面，长图可以滚动查看。' },
+            { t: '保存', d: '导出为图片；快存则写入上次使用的目录。' }
+          ]
+        },
+        {
+          cn: '区域录制',
+          rows: [
+            { t: '区域录制', v: '24 FPS', d: '录制选区屏幕并导出 MP4；选区小于 16×16 时禁用。' },
+            { t: '开始', d: '状态「区域已就绪」，按开始后进入倒计时。' },
+            { t: '暂停', d: '录制已暂停；继续之后接续同一段视频。' },
+            { t: '停止', d: '进入录制预览，随后生成 MP4 文件。' },
+            { t: '系统声音', v: '开', d: '录制包含系统声音；不可用时降级为无声视频。' },
+            { t: '麦克风', v: '关', d: '默认关闭（隐私优先）；开启后与系统声音混音。' },
+            { t: '取消录制', v: '×', d: '放弃本次录制，不落盘。' }
+          ]
+        }
+      ]
+    },
+    {
+      cn: '读取', en: 'Recognition', glyph: 'g-ocr', note: '再取', count: 10,
+      toggles: [{ l: '文字方向检测', on: false }, { l: '复制后自动保存', on: false }],
+      field: { en: 'Ocr Model', cn: '识别模型', v: 'PaddleOCR v4 中英移动版' },
+      tabs: [
+        {
+          cn: '文本识别',
+          rows: [
+            { t: HC.ocr.blocks[0].text, v: '0.97', d: '本段文字取自 README 首段；置信度为示意值。' },
+            { t: HC.ocr.blocks[1].text, v: '0.95', d: 'PaddleOCR v4 在本机执行，图片本身不出这台电脑。' },
+            { t: HC.ocr.blocks[2].text, v: '0.93', d: 'README 该行已过期：代码里已有系统声音采集与混音。' },
+            { t: HC.ocr.blocks[3].text, v: '0.99', d: '识别模型名，取自设置页原文。' },
+            { t: '复制全部', k: 'Enter', d: '按纯文本或保留换行两种方式导出识别结果。' },
+            { t: '查看译文', d: '切换覆盖层显示原文或译文，逐块对照。' }
+          ]
+        },
+        {
+          cn: '表格识别',
+          rows: [
+            { t: '恢复行列', v: '4 × 6', d: '还原截图中的行列结构，直接复制到 Excel。' },
+            { t: '复制 TSV', d: '制表符分隔，粘贴到表格软件最稳。' },
+            { t: '复制 CSV', d: '逗号分隔，适合脚本与文本工具。' },
+            { t: '复制 Markdown', d: '生成管道表格，粘贴进文档即成型。' },
+            { t: '导出 Excel', d: '写出 xlsx 文件；格式在页脚里选。' },
+            { t: '导出 PDF', d: '按原版式打印，不重排。' }
+          ]
+        },
+        {
+          cn: '二维码识别',
+          rows: [
+            { t: 'https://github.com/SherUnlocked-4869/Highlighter', v: 'URL', d: '已识别链接；项目主页取自 package.json 的仓库地址。' },
+            { t: '打开链接', d: '用系统默认浏览器打开识别到的链接。' },
+            { t: '复制内容', d: '把链接文本写入剪贴板。' },
+            { t: '未识别到二维码', d: '识别失败时的空态文案（语言包原文）。' },
+            { t: '640 × 420', v: '窗口', d: '二维码结果窗口尺寸，最小可缩到 480 × 320。' }
+          ]
+        }
+      ]
+    },
+    {
+      cn: '固定', en: 'Pin', glyph: 'g-pin', note: '按住', count: 4,
+      toggles: [{ l: '点击穿透', on: false }, { l: '新贴图默认穿透', on: false }],
+      field: { en: 'Wheel Step', cn: '滚轮步进', v: '10%' },
+      tabs: [
+        {
+          cn: '桌面贴图',
+          rows: [
+            { t: '固定到屏幕', d: '截图完成后直接贴到桌面，窗口按图片内容自适应。' },
+            { t: '固定本地图片', d: '选择图片并固定到桌面。' },
+            { t: '显示/隐藏所有贴图', d: '批量控制桌面上的全部贴图。' },
+            { t: '取消全部穿透', d: '立即让所有贴图退出点击穿透状态。' },
+            { t: '重新标注', d: '在已固定的贴图上继续绘制。' },
+            { t: '关闭贴图', k: 'Esc', d: '贴图窗口内按 Esc 关闭；双击图片同样关闭。' }
+          ]
+        },
+        {
+          cn: '缩放与透明度',
+          rows: [
+            { t: '滚轮缩放', v: '10%', d: '贴图窗口内滚动滚轮缩放，默认每格 10%。' },
+            { t: '不透明度', v: '100%', d: '按住 Ctrl 滚动滚轮调整；徽标显示 550 ms。' },
+            { t: '旋转 90°', d: '窗口按旋转后的包围盒重新计算尺寸。' },
+            { t: '最大尺寸', v: '55%', d: '贴图不超过工作区的 55%。' },
+            { t: '长截图贴图', d: '拼接后的长图可以贴在桌面上滚动查看。' },
+            { t: '复制贴图', k: 'Ctrl+C', d: '贴图窗口内复制；也可在右键菜单里复制。' }
+          ]
+        },
+        {
+          cn: '右键菜单',
+          rows: [
+            { t: '重新标注', d: '回到截图浮层继续编辑这张图。' },
+            { t: '文本识别', d: '对贴图内容执行 OCR。' },
+            { t: '表格识别', d: '恢复表格结构并复制到 Excel。' },
+            { t: '二维码识别', d: '扫描贴图里的二维码。' },
+            { t: '透明度', v: '25–100%', d: '菜单里直接选四档，不打开二级面板。' },
+            { t: '导出 PDF', d: '按贴图当前方向打印。' }
+          ]
+        }
+      ]
+    },
+    {
+      cn: '归档', en: 'Archive', glyph: 'g-hist', note: '再存', count: 6,
+      toggles: [{ l: '记录截图历史', on: true }, { l: '启用剪贴板历史', on: false }],
+      field: { en: 'History Cap', cn: '历史上限', v: '200 项' },
+      tabs: [
+        {
+          cn: '截图历史',
+          rows: [
+            { t: '区域截图', v: '19:41', d: '1280 × 720 ／ 286.4 KB ／ 示意数据' },
+            { t: '长截图', v: '19:38', d: '1280 × 5040 ／ 7 段 ／ 示意数据' },
+            { t: '焦点窗口', v: '19:30', d: '1440 × 900 ／ 214.9 KB ／ 示意数据' },
+            { t: '历史编辑', v: '19:22', d: '980 × 640 ／ 182.3 KB ／ 示意数据' },
+            { t: '快速保存', v: '18:50', d: '1280 × 720 ／ 直接写入上次目录' },
+            { t: '清理失效项', d: '同时删除截图历史目录中已不存在的图片文件。' },
+            { t: '每页 40 项', v: '40', d: '加载更多按页追加；历史数量上限 200 项。' }
+          ]
+        },
+        {
+          cn: '剪贴板历史',
+          rows: HC.clipboard.rows.map(function (r) {
+            return { t: r.preview, v: r.size, d: r.app + ' ／ ' + r.time };
+          }).concat([
+            { t: '清空普通记录', d: '出厂默认关闭采集；关闭后停止采集并保留历史。' }
+          ])
+        },
+        {
+          cn: '本地搜索',
+          rows: HC.search.sampleResults.map(function (r) {
+            return { t: r.name, v: r.size, d: r.path };
+          }).concat([
+            { t: '已加载 5 ／ 共 5 条结果', d: 'Everything 语法如 ext:pdf 报告；单次结果上限 600 条。' }
+          ])
+        }
+      ]
+    }
+  ];
+
+  /* ---------------- 全局状态 ---------------- */
+  var state = { zone: 0, tab: 0, row: 0, toggle: {} };
+
+  var elZones = document.getElementById('zones');
+  var elTabs = document.getElementById('tabs');
+  var elRows = document.getElementById('rows');
+  var elRowCount = document.getElementById('rowCount');
+  var elDsName = document.getElementById('dsName');
+  var elDsDesc = document.getElementById('dsDesc');
+  var elDsToggles = document.getElementById('dsToggles');
+  var elDsFieldEn = document.getElementById('dsFieldEn');
+  var elDsFieldCn = document.getElementById('dsFieldCn');
+  var elDsFieldVal = document.getElementById('dsFieldVal');
+  var elCurNum = document.getElementById('curNum');
+  var elCurName = document.getElementById('curName');
+
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  /* ---------------- 四格导航 ---------------- */
+  function renderZones() {
+    var html = '';
+    for (var i = 0; i < ZONES.length; i++) {
+      var z = ZONES[i];
+      html += '<button type="button" class="zone" data-z="' + i + '" aria-current="' + (i === state.zone) + '">' +
+        '<span class="zn">' + pad2(i + 1) + '</span>' +
+        '<span class="glyph ' + z.glyph + '"><i></i></span>' +
+        '<span class="zc">' + z.cn + '</span>' +
+        '<span class="ze">' + z.en + '</span>' +
+        '<span class="zs">' + pad2(z.count) + ' 项／' + z.note + '</span>' +
+        '</button>';
+    }
+    elZones.innerHTML = html;
+  }
+
+  /* ---------------- 页签 ---------------- */
+  function renderTabs() {
+    var z = ZONES[state.zone];
+    var html = '';
+    for (var i = 0; i < z.tabs.length; i++) {
+      html += '<button type="button" class="tab" role="tab" data-t="' + i + '" aria-selected="' + (i === state.tab) + '">' +
+        '<span class="tn">' + pad2(i + 1) + '</span>' + z.tabs[i].cn + '</button>';
+    }
+    html += '<span class="ind" id="tabInd"></span>';
+    elTabs.innerHTML = html;
+    moveIndicator(elTabs, '#tabInd');
+  }
+
+  function moveIndicator(box, sel) {
+    var ind = box.querySelector(sel);
+    if (!ind) return;
+    var btn = box.querySelector('[aria-selected="true"]');
+    if (!btn) return;
+    var x = btn.offsetLeft;
+    var w = btn.offsetWidth;
+    ind.style.transform = 'translateX(' + x + 'px) scaleX(' + Math.max(w, 1) + ')';
+  }
+
+  /* ---------------- 行 ---------------- */
+  function renderRows() {
+    var z = ZONES[state.zone];
+    var t = z.tabs[state.tab];
+    var html = '';
+    for (var i = 0; i < t.rows.length; i++) {
+      var r = t.rows[i];
+      var right = '';
+      if (r.k) right = '<span class="rk">' + r.k + '</span>';
+      else if (r.v) right = '<span class="rv">' + r.v + '</span>';
+      html += '<li class="row" data-r="' + i + '" tabindex="0" aria-selected="' + (i === state.row) + '" title="' + escapeHtml(r.t) + '">' +
+        '<span class="rdot"></span>' +
+        '<span class="rn">' + pad2(i + 1) + '</span>' +
+        '<span class="rt">' + escapeHtml(r.t) + '</span>' + right +
+        '</li>';
+    }
+    elRows.innerHTML = html;
+    elRowCount.textContent = pad2(t.rows.length);
+    renderSide();
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c];
+    });
+  }
+
+  /* ---------------- 右侧：选中项 + 目的地开关 ---------------- */
+  function renderSide() {
+    var z = ZONES[state.zone];
+    var r = z.tabs[state.tab].rows[state.row] || z.tabs[state.tab].rows[0];
+    elDsName.textContent = r.t;
+    elDsName.title = r.t;
+    elDsDesc.textContent = r.d;
+
+    var html = '';
+    for (var i = 0; i < z.toggles.length; i++) {
+      var key = state.zone + ':' + i;
+      var on = key in state.toggle ? state.toggle[key] : z.toggles[i].on;
+      html += '<button type="button" class="sw" role="switch" aria-checked="' + on + '" data-sw="' + i + '">' +
+        '<span class="st"><i></i></span><span class="stl">' + z.toggles[i].l + '</span></button>';
+    }
+    elDsToggles.innerHTML = html;
+    elDsFieldEn.textContent = z.field.en;
+    elDsFieldCn.textContent = z.field.cn;
+    elDsFieldVal.textContent = z.field.v;
+  }
+
+  function setZone(i) {
+    if (i === state.zone) return;
+    state.zone = i;
+    state.tab = 0;
+    state.row = 0;
+    var z = ZONES[i];
+    elCurNum.textContent = pad2(i + 1);
+    elCurName.textContent = z.cn;
+    var zones = elZones.querySelectorAll('.zone');
+    for (var k = 0; k < zones.length; k++) {
+      zones[k].setAttribute('aria-current', String(Number(zones[k].getAttribute('data-z')) === i));
+    }
+    renderTabs();
+    renderRows();
+  }
+
+  function setTab(i) {
+    if (i === state.tab) return;
+    state.tab = i;
+    state.row = 0;
+    var tabs = elTabs.querySelectorAll('.tab');
+    for (var k = 0; k < tabs.length; k++) {
+      tabs[k].setAttribute('aria-selected', String(Number(tabs[k].getAttribute('data-t')) === i));
+    }
+    moveIndicator(elTabs, '#tabInd');
+    renderRows();
+  }
+
+  function setRow(i) {
+    if (i === state.row) return;
+    state.row = i;
+    var rows = elRows.querySelectorAll('.row');
+    for (var k = 0; k < rows.length; k++) {
+      rows[k].setAttribute('aria-selected', String(Number(rows[k].getAttribute('data-r')) === i));
+    }
+    renderSide();
+  }
+
+  elZones.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.zone') : null;
+    if (b) setZone(Number(b.getAttribute('data-z')));
+  });
+  elTabs.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.tab') : null;
+    if (b) setTab(Number(b.getAttribute('data-t')));
+  });
+  elRows.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.row') : null;
+    if (b) setRow(Number(b.getAttribute('data-r')));
+  });
+  elRows.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var b = e.target.closest ? e.target.closest('.row') : null;
+    if (b) { e.preventDefault(); setRow(Number(b.getAttribute('data-r'))); }
+  });
+  elDsToggles.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.sw') : null;
+    if (!b) return;
+    var i = Number(b.getAttribute('data-sw'));
+    var key = state.zone + ':' + i;
+    var on = b.getAttribute('aria-checked') === 'true';
+    state.toggle[key] = !on;
+    b.setAttribute('aria-checked', String(!on));
+  });
+
+  /* ---------------- 截图浮层工具栏 ---------------- */
+  var CAP_TOOLS = [
+    { id: 'select', icon: 'select' }, { id: 'rect', icon: 'rect' }, { id: 'arrow', icon: 'arrow' },
+    { id: 'pen', icon: 'pen' }, { id: 'highlight', icon: 'highlight' }, { id: 'mosaic', icon: 'mosaic' },
+    { id: 'text', icon: 'text' }, { id: 'serial', icon: 'serial' },
+    { sep: true },
+    { id: 'ocr', icon: 'ocr' }, { id: 'translate', icon: 'translate' },
+    { sep: true },
+    { id: 'pin', icon: 'pin' }, { id: 'save', icon: 'save' },
+    { sep: true },
+    { id: 'copy', icon: 'copy', primary: true }
+  ];
+  (function renderCapTools() {
+    var box = document.getElementById('capTools');
+    var html = '';
+    for (var i = 0; i < CAP_TOOLS.length; i++) {
+      var t = CAP_TOOLS[i];
+      if (t.sep) { html += '<span class="tsep"></span>'; continue; }
+      html += '<button type="button" class="tl' + (t.primary ? ' primary' : '') + '" data-tool="' + t.id + '" ' +
+        'title="' + t.id + '" aria-pressed="' + (t.id === 'select') + '">' + ICON[t.icon] + '</button>';
+    }
+    box.innerHTML = html;
+  })();
+
+  var capToolName = { select: '选择/调整', rect: '矩形', arrow: '箭头', pen: '画笔', highlight: '高亮', mosaic: '马赛克', text: '文字', serial: '序号', ocr: '文本识别', translate: '识别并翻译', pin: '固定到屏幕', save: '保存', copy: '复制' };
+
+  document.getElementById('capTools').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.tl') : null;
+    if (!b) return;
+    var id = b.getAttribute('data-tool');
+    var all = this.querySelectorAll('.tl');
+    for (var i = 0; i < all.length; i++) all[i].setAttribute('aria-pressed', 'false');
+    b.setAttribute('aria-pressed', 'true');
+    var w = document.getElementById('capW');
+    if (w) w.textContent = id === 'pen' ? '细 2 PX' : (id === 'highlight' ? '粗 8 PX' : '中 4 PX');
+    toast((capToolName[id] || id) + ' 已选中');
+  });
+
+  /* ---------------- 截图浮层：拖角点改选区 ---------------- */
+  (function capSelect() {
+    var sel = document.getElementById('capSel');
+    var stage = sel.parentNode;
+    var sz = document.getElementById('capSz');
+    var satMeta = document.querySelector('#satCap .sat-meta');
+    var dragging = false, start = null, box = null;
+    var CAP_SCALE = 4.2;        // 浮层是缩略示意：1 CSS px ≈ 4.2 真实像素
+    var RATIO = 16 / 9;         // 选区保持 1280 × 720 的真比例，不做任意长条
+
+    function setSize(w, h) {
+      var tw = Math.round(Math.max(1, w) * CAP_SCALE);
+      var th = Math.round(Math.max(1, h) * CAP_SCALE);
+      sz.textContent = tw + ' × ' + th;
+      if (satMeta) satMeta.textContent = tw + ' × ' + th;
+    }
+
+    function apply(w, h) {
+      var maxW = stage.clientWidth - 14, maxH = stage.clientHeight - 14;
+      // 拖动时以宽为准，高按 16:9 跟随（截图选区锁比例这一行为在浮层里很常见）
+      w = Math.max(70, Math.min(w, maxW));
+      h = Math.max(39, Math.min(h, maxH));
+      if (h > w / RATIO) h = w / RATIO; else w = h * RATIO;
+      sel.style.width = w + 'px';
+      sel.style.height = h + 'px';
+      sel.style.right = 'auto';
+      sel.style.bottom = 'auto';
+      setSize(w, h);
+    }
+
+    // 初始：在舞台里居中放一个真正的 16:9 选区（顶部留 22px 给尺寸徽标，避免遮挡）
+    (function seed() {
+      var sw = stage.clientWidth, sh = stage.clientHeight;
+      var topPad = 24, sidePad = 34, bottomPad = 14;
+      var w = Math.min(sw - sidePad * 2, (sh - topPad - bottomPad) * RATIO);
+      var h = w / RATIO;
+      sel.style.left = Math.round((sw - w) / 2) + 'px';
+      sel.style.top = Math.round(topPad + (sh - topPad - bottomPad - h) / 2) + 'px';
+      sel.style.width = w + 'px';
+      sel.style.height = h + 'px';
+      sel.style.right = 'auto';
+      sel.style.bottom = 'auto';
+      setSize(w, h);
+    })();
+
+    var corner = null;
+    sel.addEventListener('pointerdown', function (e) {
+      var t = e.target;
+      if (!t.classList || !t.classList.contains('h')) return;
+      e.preventDefault();
+      corner = t.classList.contains('tl') ? 'tl' : t.classList.contains('tr') ? 'tr' : t.classList.contains('bl') ? 'bl' : 'br';
+      dragging = true;
+      start = { x: e.clientX, y: e.clientY };
+      box = { w: sel.offsetWidth, h: sel.offsetHeight, l: sel.offsetLeft, t: sel.offsetTop };
+      t.setPointerCapture(e.pointerId);
+    });
+    sel.addEventListener('pointermove', function (e) {
+      if (!dragging) return;
+      var dx = e.clientX - start.x, dy = e.clientY - start.y;
+      var signX = corner === 'tl' || corner === 'bl' ? -1 : 1;
+      var signY = corner === 'tl' || corner === 'tr' ? -1 : 1;
+      if (signX < 0) sel.style.left = (box.l + dx) + 'px';
+      if (signY < 0) sel.style.top = (box.t + dy) + 'px';
+      apply(box.w + dx * signX, box.h + dy * signY);
+    });
+    sel.addEventListener('pointerup', function () {
+      if (dragging) toast('选区 ' + sz.textContent + ' PX');
+      dragging = false;
+    });
+    sel.addEventListener('pointercancel', function () { dragging = false; });
+
+    // 点击舞台空白处 = 重新框选（以点击点为左上角，按拖动距离给一个初始尺寸）
+    stage.addEventListener('click', function (e) {
+      if (sel.contains(e.target)) return;
+      var r = stage.getBoundingClientRect();
+      var px = e.clientX - r.left, py = e.clientY - r.top;
+      sel.style.left = Math.max(6, Math.min(px, r.width - 80)) + 'px';
+      sel.style.top = Math.max(24, Math.min(py, r.height - 60)) + 'px';
+      apply(r.width - px - 10, r.height - py - 10);
+      toast('已重新框选 ' + sz.textContent + ' PX');
+    });
+  })();
+  function bindSat(btnId, satId, restoreId) {
+    var btn = document.getElementById(btnId);
+    var sat = document.getElementById(satId);
+    var res = document.getElementById(restoreId);
+    if (btn && sat) btn.addEventListener('click', function () { sat.classList.add('is-off'); });
+    if (res && sat) res.addEventListener('click', function () { sat.classList.remove('is-off'); toast('窗口已重新打开'); });
+  }
+  bindSat('capX', 'satCap', 'capRestore');
+  bindSat('ocrX', 'satOcr', 'ocrRestore');
+  bindSat('pinX', 'satPin', 'pinRestore');
+
+  /* ---------------- 识别结果窗口 ----------------
+     真实形态（content.js / capture resultPanel + ocrOverlay）：
+     一段只读文本 + 摘要条（识别到 N 处文本 · ms）+ 原/译两态 + 复制全部。
+     所以这里不做「一行一条的块列表」，而是一段完整文本，块选择只做高亮定位。
+     ------------------------------------------------- */
+  (function renderOcr() {
+    var area = document.getElementById('ocrArea');
+    var blk = document.getElementById('ocrBlk');
+    var bar = document.getElementById('ocrBar');
+    var cur = 0;
+    var mode = 'src';
+
+    function paint() {
+      var html = '';
+      if (mode === 'tgt') {
+        /* 译文态只展示 content.js 里真实成对的一条双语对照（translate.source / translate.result
+           取自 config.usage.subtitle 的 zh-CN 与 en-US 两列）。
+           其余块没有可引用的真实译文，不编造英文，标为「本块译文待生成」。 */
+        html += '<span class="ln ln-pair">' + escapeHtml(HC.translate.source) + '</span>';
+        html += '<span class="ln ln-pair ln-en">' + escapeHtml(HC.translate.result) + '</span>';
+        area.innerHTML = html;
+        area.classList.add('is-tgt');
+        blk.textContent = '—';
+        bar.style.width = Math.round(HC.ocr.blocks[cur].confidence * 100) + '%';
+        return;
+      }
+      for (var i = 0; i < HC.ocr.blocks.length; i++) {
+        html += '<span class="ln" data-b="' + i + '" aria-selected="' + (i === cur) + '">' +
+          escapeHtml(HC.ocr.blocks[i].text) + '</span>';
+      }
+      area.innerHTML = html;
+      area.classList.remove('is-tgt');
+      blk.textContent = pad2(cur + 1);
+      bar.style.width = Math.round(HC.ocr.blocks[cur].confidence * 100) + '%';
+      var sel = area.querySelector('.ln[aria-selected="true"]');
+      if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+    }
+
+    paint();
+
+    area.addEventListener('click', function (e) {
+      var el = e.target.closest ? e.target.closest('.ln') : null;
+      if (!el) return;
+      cur = Number(el.getAttribute('data-b'));
+      paint();
+    });
+
+    var modes = document.getElementById('ocrTabs');
+    modes.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('button[data-pane]') : null;
+      if (!b) return;
+      var all = modes.querySelectorAll('button[data-pane]');
+      for (var i = 0; i < all.length; i++) all[i].setAttribute('aria-selected', String(all[i] === b));
+      mode = b.getAttribute('data-pane');
+      paint();
+      moveIndicator(modes, '#ocrInd');
+    });
+
+    document.getElementById('ocrCopy').addEventListener('click', function () {
+      toast('已复制 ' + HC.ocr.blocks.length + ' 处文本');
+    });
+    document.getElementById('ocrDone').addEventListener('click', function () {
+      document.getElementById('satOcr').classList.add('is-off');
+    });
+    document.getElementById('ocrPlain').addEventListener('click', function () {
+      mode = 'src';
+      var all = modes.querySelectorAll('button[data-pane]');
+      for (var i = 0; i < all.length; i++) all[i].setAttribute('aria-selected', String(all[i].getAttribute('data-pane') === 'src'));
+      area.classList.remove('is-tgt');
+      paint();
+      toast('纯文本模式');
+    });
+  })();
+
+  /* ---------------- 贴图窗口 ---------------- */
+  (function pinMenu() {
+    var menu = document.getElementById('pinMenu');
+    var zoom = document.getElementById('pinZoom');
+    var pass = document.getElementById('pinPass');
+    var img = document.getElementById('pinImg');
+    var deg = 0, zoomPct = 100;
+    menu.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('button[data-act]') : null;
+      if (!b) return;
+      var act = b.getAttribute('data-act');
+      if (act === 'close') { document.getElementById('satPin').classList.add('is-off'); return; }
+      if (act === 'pass') {
+        var on = b.getAttribute('aria-checked') === 'true';
+        b.setAttribute('aria-checked', String(!on));
+        pass.hidden = on;
+        toast(on ? '已退出点击穿透' : '已进入点击穿透');
+        return;
+      }
+      if (act === 'rotate') {
+        deg = (deg + 90) % 360;
+        document.getElementById('pinDeg').textContent = deg + '°';
+        img.style.transform = 'rotate(' + deg + 'deg)';
+        toast('旋转 ' + deg + '°');
+        return;
+      }
+      var all = menu.querySelectorAll('button[data-act]');
+      for (var i = 0; i < all.length; i++) all[i].setAttribute('aria-checked', String(all[i] === b));
+      toast(b.querySelector('span').textContent + ' 已展开');
+    });
+    document.getElementById('satPin').addEventListener('click', function (e) {
+      var chip = e.target.closest ? e.target.closest('.pin-img') : null;
+      if (!chip) return;
+      zoomPct = zoomPct >= 150 ? 100 : zoomPct + 10;
+      zoom.textContent = zoomPct + '%';
+    });
+  })();
+
+  /* ---------------- 主窗口 最小化 / 关闭 ---------------- */
+  (function winState() {
+    var win = document.getElementById('mainWin');
+    var veil = document.getElementById('winVeil');
+    var lb = document.getElementById('veilLb');
+    var tt = document.getElementById('veilTitle');
+    var bd = document.getElementById('veilBody');
+    document.getElementById('btnMin').addEventListener('click', function () {
+      lb.textContent = 'Window Minimized';
+      tt.textContent = 'Minimized';
+      bd.textContent = '主窗口最小化到托盘；全局热键 F1 仍然有效。';
+      win.classList.add('is-min');
+    });
+    document.getElementById('btnClose').addEventListener('click', function () {
+      lb.textContent = 'Session Closed';
+      tt.textContent = 'Closed';
+      bd.textContent = '主窗口已关闭；托盘图标与全局热键仍在运行。';
+      win.classList.add('is-min');
+    });
+    document.getElementById('btnRestoreWin').addEventListener('click', function () {
+      win.classList.remove('is-min');
+    });
+  })();
+
+  /* ---------------- Toast ---------------- */
+  var toastEl = document.getElementById('toast');
+  var toastTimer = 0;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('is-on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('is-on'); }, 1800);
+  }
+  window.__toast = toast;
+
+  /* ---------------- 系统板色值 ---------------- */
+  (function swatches() {
+    var list = [
+      ['#EAE5E1', '纸底 ／ PAPER'], ['#EDEBE4', '面板 ／ LIFT'], ['#E7E3D9', '输入 ／ FIELD'],
+      ['#080A08', '墨 ／ INK'], ['#5A584E', '正文 ／ BODY'], ['#605E56', '次墨 ／ MUTED'],
+      ['#AAA59A', '发丝 ／ LINE'], ['#9B7247', '强调 ／ ACCENT'], ['#F2B800', '警示 ／ ALERT'],
+      ['#777B60', '状态 ／ OLIVE']
+    ];
+    var html = '';
+    for (var i = 0; i < list.length; i++) {
+      html += '<div class="swi"><i style="background:' + list[i][0] + '"></i>' +
+        '<div class="swn"><b class="swh">' + list[i][0] + '</b><span class="swt">' + list[i][1] + '</span></div></div>';
+    }
+    document.getElementById('swWrap').innerHTML = html;
+  })();
+
+  /* ---------------- 启动 ---------------- */
+  renderZones();
+  renderTabs();
+  renderRows();
+  window.addEventListener('resize', function () {
+    moveIndicator(elTabs, '#tabInd');
+    moveIndicator(document.getElementById('ocrTabs'), '#ocrInd');
+  });})();
+</script>
+</body>
+</html>

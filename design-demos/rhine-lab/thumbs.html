@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Highlighter · 莱茵生命风格 · 六格缩略图</title>
+<style>
+  :root{
+    --paper:#EAE5E1; --lift:#EDEBE4; --ink:#080A08; --ink2:#77756D; --line:#AAA59A;
+    --accent:#9B7247; --alert:#F2B800;
+    --dark:#11181B; --dark-lift:#202A2F; --dark-ink:#E0E3DC; --dark-ink2:#A6B0B1; --dark-line:#536166; --dark-accent:#C5A16B;
+    --orange:#FF7A01;
+    --sans:"Microsoft YaHei","微软雅黑",system-ui,sans-serif;
+    --label:"DengXian","等线","Microsoft YaHei",sans-serif;
+    --mono:"Consolas","Cascadia Mono",monospace;
+    --num:"Bahnschrift","DIN Alternate",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#cfcac2;font-synthesis:none}
+  body{padding:34px 40px 44px;line-break:strict}
+  .head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:26px;color:#1b1815}
+  .head h1{margin:0;font-family:var(--label);font-size:15px;font-weight:400;letter-spacing:.15em;text-transform:uppercase}
+  .head h1 b{font-family:var(--sans);font-weight:600;font-size:26px;letter-spacing:0;display:block;margin-top:6px;text-transform:none}
+  .head p{margin:0;font-size:12px;color:#5c574f;max-width:560px;line-height:1.75}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:26px 24px}
+  .cell{background:#fff;box-shadow:0 18px 44px rgba(60,48,32,.18)}
+  .cap{display:flex;justify-content:space-between;align-items:baseline;padding:9px 2px 0}
+  .cap b{font-family:var(--sans);font-size:13px;font-weight:600;color:#1b1815}
+  .cap span{font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:#6d675e}
+  .shot{position:relative;height:300px;overflow:hidden}
+
+  /* ============ A1 白室导视 ============ */
+  .a1{background:radial-gradient(ellipse at 51% 48%,#E7E7E1 0%,#E3E1DC 76%,#E4DFDB 100%);color:var(--ink);padding:16px 18px;font-family:var(--sans)}
+  .a1 .brand{font-family:var(--label);font-size:10px;letter-spacing:.2em;display:flex;gap:9px;align-items:center}
+  .a1 .brand i{width:9px;height:9px;border:1px solid var(--ink);display:inline-block;position:relative}
+  .a1 .brand i::after{content:"";position:absolute;inset:2px;background:var(--ink)}
+  .a1 .brand b{font-family:var(--sans);font-size:11px;letter-spacing:.12em;font-weight:600}
+  .a1 .meta{position:absolute;right:18px;top:16px;font-family:var(--label);font-size:8px;letter-spacing:.16em;color:var(--ink2);text-align:right;line-height:1.9}
+  .a1 .title{margin-top:16px;display:flex;align-items:flex-end;gap:12px}
+  .a1 .title .big{font-size:38px;font-weight:400;line-height:.98;letter-spacing:-.01em}
+  .a1 .title .cn{font-family:var(--label);font-size:9px;letter-spacing:.14em;color:var(--ink2);padding-bottom:4px}
+  .a1 .rule{height:1px;background:#504B41;margin-top:12px;position:relative}
+  .a1 .rule i{position:absolute;left:0;top:-3px;width:6px;height:6px;background:#282A24}
+  .a1 .zones{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin-top:13px;background:var(--line)}
+  .a1 .zone{background:#EDEBE4;padding:9px 8px 8px;min-height:74px;position:relative}
+  .a1 .zone em{position:absolute;right:6px;top:5px;font-family:var(--mono);font-style:normal;font-size:7px;color:#9a938a}
+  .a1 .glyph{width:26px;height:26px;position:relative;margin-bottom:9px}
+  .a1 .glyph::before,.a1 .glyph::after{content:"";position:absolute;background:var(--ink)}
+  /* pictogram: frame + corner */
+  .a1 .g-capture::before{left:0;top:0;width:26px;height:18px;background:none;border:2px solid var(--ink)}
+  .a1 .g-capture::after{left:6px;top:5px;width:8px;height:8px;background:none;border:2px solid var(--accent)}
+  .a1 .g-ocr::before{left:0;top:3px;width:2px;height:20px}
+  .a1 .g-ocr::after{left:6px;top:3px;width:16px;height:2px;box-shadow:0 6px 0 var(--ink),0 12px 0 var(--ink)}
+  .a1 .g-pin::before{left:8px;top:0;width:10px;height:10px;background:none;border:2px solid var(--ink);border-radius:50%}
+  .a1 .g-pin::after{left:12px;top:11px;width:2px;height:14px}
+  .a1 .g-hist::before{left:0;top:0;width:2px;height:26px}
+  .a1 .g-hist::after{left:5px;top:0;width:14px;height:2px;box-shadow:0 7px 0 var(--ink),0 14px 0 var(--ink),0 21px 0 #b9b3a8}
+  .a1 .zone b{display:block;font-size:3px;font-weight:400;color:transparent;height:0}
+  .a1 .zone .nm{font-size:11px;font-weight:600;line-height:1.3}
+  .a1 .zone .en{font-family:var(--label);font-size:7px;letter-spacing:.14em;color:var(--ink2);margin-top:3px;text-transform:uppercase}
+  .a1 .foot{position:absolute;left:18px;right:18px;bottom:10px;display:flex;justify-content:space-between;font-family:var(--label);font-size:7px;letter-spacing:.14em;color:#78776E}
+
+  /* ============ A2 测量台 ============ */
+  .a2{background:#0A0B0A;color:#F2F3EF;padding:0;font-family:var(--mono);overflow:hidden}
+  .a2 .grid-bg{position:absolute;inset:0;background-image:linear-gradient(to right,rgba(242,243,239,.07) 1px,transparent 1px),linear-gradient(to bottom,rgba(242,243,239,.07) 1px,transparent 1px);background-size:20px 20px}
+  .a2 .topbar{position:absolute;left:0;right:0;top:0;height:22px;border-bottom:1px solid #2a2c29;display:flex;align-items:center;justify-content:space-between;padding:0 12px;font-size:7px;letter-spacing:.18em;color:#8d9089}
+  .a2 .topbar b{color:#F2F3EF;font-weight:400}
+  .a2 .frame{position:absolute;left:52px;top:52px;right:52px;bottom:62px;border:1px solid #4c4f4a}
+  .a2 .frame::before,.a2 .frame::after{content:"";position:absolute;width:9px;height:9px;border:1px solid #F2F3EF}
+  .a2 .frame::before{left:-5px;top:-5px}
+  .a2 .frame::after{right:-5px;bottom:-5px}
+  .a2 .cross-h{position:absolute;left:0;right:0;top:50%;height:1px;background:#2f322e}
+  .a2 .cross-v{position:absolute;top:0;bottom:0;left:50%;width:1px;background:#2f322e}
+  .a2 .spec{position:absolute;left:52px;top:52px;right:52px;bottom:62px;display:grid;place-content:center;text-align:left;padding-left:14px}
+  .a2 .spec .lbl{font-size:7px;letter-spacing:.2em;color:#8d9089}
+  .a2 .spec .dim{font-family:var(--num);font-size:46px;line-height:1;letter-spacing:-.01em;margin:4px 0 2px;font-variant-numeric:tabular-nums}
+  .a2 .spec .dim span{color:#6d716a;font-size:22px}
+  .a2 .spec .sub{font-size:7.5px;letter-spacing:.14em;color:#a8aba3}
+  .a2 .spec .sub em{color:var(--orange);font-style:normal}
+  .a2 .ticks{position:absolute;left:52px;right:52px;bottom:40px;height:12px;background:repeating-linear-gradient(to right,#6d716a 0 1px,transparent 1px 10px);opacity:.8}
+  .a2 .strip{position:absolute;left:0;right:0;bottom:0;height:26px;border-top:1px solid #2a2c29;display:flex;align-items:center;gap:14px;padding:0 12px;font-size:7px;letter-spacing:.1em;color:#8d9089}
+  .a2 .strip u{color:#F2F3EF;text-decoration:none}
+  .a2 .corner{position:absolute;right:14px;top:34px;text-align:right;font-size:7px;letter-spacing:.18em;color:#8d9089;line-height:2}
+  .a2 .corner b{display:block;font-family:var(--num);font-size:19px;color:#F2F3EF;letter-spacing:0}
+
+  /* ============ B1 工作站 ============ */
+  .b1{background:#D9D6CF;color:#22241F;font-family:var(--sans);padding:0}
+  .b1 .titlebar{height:26px;background:#C9C5BC;border-bottom:1px solid #A9A49A;display:flex;align-items:center;gap:0;padding:0 10px;font-family:var(--label);font-size:8px;letter-spacing:.16em;color:#3a3c35}
+  .b1 .titlebar b{font-family:var(--sans);font-size:10px;letter-spacing:.06em}
+  .b1 .titlebar .sp{flex:1}
+  .b1 .titlebar .badge{border:1px solid #A9A49A;padding:2px 6px;color:#5c5e55}
+  .b1 .body{position:absolute;inset:26px 0 0 0;display:flex}
+  .b1 .browser{width:112px;background:#CFCBC3;border-right:1px solid #A9A49A;padding:9px 0}
+  .b1 .browser .grp{font-family:var(--label);font-size:7px;letter-spacing:.18em;color:#6c6a60;padding:0 10px 5px}
+  .b1 .browser .row{height:19px;display:flex;align-items:center;gap:6px;padding:0 10px;font-size:9.5px;color:#3a3c35;border-left:2px solid transparent}
+  .b1 .browser .row i{width:8px;height:8px;border:1px solid #7d7a70;display:block}
+  .b1 .browser .row.on{background:#E6E3DB;border-left-color:var(--orange);font-weight:600}
+  .b1 .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .b1 .strip{height:20px;border-bottom:1px solid #A9A49A;display:flex;align-items:center;gap:10px;padding:0 10px;font-family:var(--label);font-size:7px;letter-spacing:.14em;color:#5c5e55}
+  .b1 .strip .seg{border:1px solid #A9A49A;padding:1px 5px}
+  .b1 .strip .seg.on{background:#22241F;color:#EDEBE4;border-color:#22241F}
+  .b1 .lanes{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#A9A49A;min-height:0}
+  .b1 .lane{background:#E6E3DB;padding:8px 9px;overflow:hidden}
+  .b1 .lane h4{margin:0 0 6px;font-family:var(--label);font-size:7px;letter-spacing:.16em;color:#6c6a60;font-weight:400;display:flex;justify-content:space-between}
+  .b1 .lane h4 u{text-decoration:none;color:#22241F}
+  .b1 .item{display:flex;align-items:center;gap:6px;height:17px;font-size:9px;color:#3a3c35;border-bottom:1px solid #D2CEC6}
+  .b1 .item .k{margin-left:auto;font-family:var(--mono);font-size:7px;color:#8a887e}
+  .b1 .item .dot{width:5px;height:5px;background:var(--orange)}
+  .b1 .fields{grid-column:1/-1;background:#E6E3DB;padding:8px 9px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .b1 .fld{border-top:1px solid #A9A49A;padding-top:5px}
+  .b1 .fld em{display:block;font-family:var(--label);font-style:normal;font-size:7px;letter-spacing:.14em;color:#6c6a60}
+  .b1 .fld b{font-family:var(--mono);font-size:11px;font-weight:400}
+  .b1 .transport{height:22px;background:#C9C5BC;border-top:1px solid #A9A49A;display:flex;align-items:center;gap:9px;padding:0 10px;font-family:var(--mono);font-size:7px;color:#4a4c44}
+  .b1 .transport .rec{width:6px;height:6px;background:var(--orange)}
+
+  /* ============ B2 取景器 ============ */
+  .b2{background:#0E1010;color:#EDEDE5;font-family:var(--sans)}
+  .b2 .canvas{position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 40%,#1b1f1e 0%,#0d0f0f 70%)}
+  .b2 .shotarea{position:absolute;left:26px;right:26px;top:24px;height:150px;border:1px solid rgba(255,122,1,.9);background:linear-gradient(160deg,#22282a,#161a1b)}
+  .b2 .shotarea .ghost{position:absolute;inset:0;background-image:repeating-linear-gradient(90deg,rgba(237,237,229,.06) 0 1px,transparent 1px 26px),repeating-linear-gradient(0deg,rgba(237,237,229,.06) 0 1px,transparent 1px 26px)}
+  .b2 .shotarea .c{position:absolute;width:8px;height:8px;background:#FF7A01}
+  .b2 .shotarea .c1{left:-1px;top:-1px}.b2 .shotarea .c2{right:-1px;top:-1px}.b2 .shotarea .c3{left:-1px;bottom:-1px}.b2 .shotarea .c4{right:-1px;bottom:-1px}
+  .b2 .dimtag{position:absolute;right:30px;top:180px;font-family:var(--mono);font-size:8px;letter-spacing:.12em;color:#c9c9c1}
+  .b2 .dimtag b{color:#FF7A01;font-weight:400}
+  .b2 .rail{position:absolute;left:0;right:0;bottom:0;height:94px;background:#131616;border-top:1px solid #2c3232;display:flex;padding:10px 14px;gap:16px}
+  .b2 .tools{display:flex;flex-direction:column;gap:0;border-right:1px solid #2c3232;padding-right:12px}
+  .b2 .tools .t{width:22px;height:20px;display:grid;place-items:center;border:1px solid transparent}
+  .b2 .tools .t.on{border-color:#FF7A01}
+  .b2 .tools .t i{display:block;width:10px;height:10px;border:1px solid #c9c9c1}
+  .b2 .tools .t.on i{border-color:#FF7A01;background:rgba(255,122,1,.25)}
+  .b2 .scales{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .b2 .scale{display:flex;flex-direction:column;justify-content:flex-end;gap:5px}
+  .b2 .scale .val{font-family:var(--mono);font-size:8px;letter-spacing:.1em;color:#a8aaa4;display:flex;justify-content:space-between}
+  .b2 .scale .val b{color:#EDEDE5;font-weight:400}
+  .b2 .scale .track{height:14px;position:relative;background:repeating-linear-gradient(to right,rgba(237,237,229,.42) 0 1px,transparent 1px 9px)}
+  .b2 .scale .track::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;background:#3a4040}
+  .b2 .scale .ptr{position:absolute;top:-3px;width:2px;height:20px;background:#FF7A01}
+  .b2 .exit{position:absolute;left:26px;top:8px;font-family:var(--mono);font-size:7px;letter-spacing:.16em;color:#8f918b}
+  .b2 .exit b{color:#FF7A01}
+
+  /* ============ C1 白盒 ============ */
+  .c1{background:#F5F3EE;color:#141310;font-family:var(--sans);padding:0}
+  .c1 .top{position:absolute;left:26px;right:26px;top:18px;display:flex;justify-content:space-between;align-items:baseline;font-family:var(--label);font-size:7.5px;letter-spacing:.2em;color:#8a8578}
+  .c1 .top b{font-family:var(--sans);font-size:9px;letter-spacing:.08em;color:#141310;font-weight:500}
+  .c1 .artifact{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);width:190px;height:118px;border:1px solid #D8D3C7;background:#FBFAF6;box-shadow:0 22px 50px rgba(96,78,52,.10)}
+  .c1 .artifact i{position:absolute;left:14px;top:13px;width:52px;height:1px;background:#C9C3B4}
+  .c1 .artifact u{position:absolute;left:14px;top:22px;width:96px;height:1px;background:#E4DFD3}
+  .c1 .artifact .no{position:absolute;left:14px;bottom:12px;font-family:var(--num);font-size:15px;letter-spacing:.02em;color:#2a2823}
+  .c1 .artifact img{display:none}
+  .c1 .artifact .backdrop{position:absolute;inset:26px 14px 30px 14px;background:linear-gradient(120deg,#EFEDE5,#E7E4DA)}
+  .c1 .line{position:absolute;left:26px;right:26px;top:74%;height:1px;background:#DCD7CA}
+  .c1 .caption{position:absolute;left:26px;top:76.5%;width:210px;font-size:8px;line-height:1.9;color:#5f5a4e}
+  .c1 .caption b{display:block;font-family:var(--label);font-size:7px;letter-spacing:.18em;color:#8a8578;margin-bottom:4px;font-weight:400}
+  .c1 .pull{position:absolute;right:26px;top:76%;text-align:right}
+  .c1 .pull .n{font-family:var(--num);font-size:34px;line-height:1;color:#141310;font-variant-numeric:tabular-nums}
+  .c1 .pull .t{font-family:var(--label);font-size:7px;letter-spacing:.18em;color:#8a8578;margin-top:5px}
+
+  /* ============ C2 环盘 ============ */
+  .c2{background:#0F0D0A;color:#E8E2D5;font-family:var(--sans);overflow:hidden}
+  .c2 .rings{position:absolute;left:50%;top:50%;width:250px;height:250px;transform:translate(-50%,-50%)}
+  .c2 .rings .r{position:absolute;border-radius:50%;border:1px solid #4a413399}
+  .c2 .r1{inset:0;border-color:#6a5c46}
+  .c2 .r2{inset:26px;border-color:#4a4133}
+  .c2 .r3{inset:56px;border-color:#4a4133}
+  .c2 .r4{inset:86px;border-color:#7a674a}
+  .c2 .core{position:absolute;inset:104px;border-radius:50%;border:6px solid #C5A16B;box-shadow:0 0 0 1px #6a5c46 inset}
+  .c2 .sector{position:absolute;inset:0;border-radius:50%;background:conic-gradient(from -90deg,transparent 0 12%,#9E2A1D 12% 13.2%,transparent 13.2% 30%,#9E2A1D 30% 31.2%,transparent 31.2% 52%,#9E2A1D 52% 53.2%,transparent 53.2% 72%,#9E2A1D 72% 73.2%,transparent 73.2% 100%);opacity:.85}
+  .c2 .tick{position:absolute;inset:-8px}
+  .c2 .lbl{position:absolute;font-family:var(--label);font-size:6.5px;letter-spacing:.16em;color:#B6AB95;text-transform:uppercase}
+  .c2 .l1{left:50%;top:-4px;transform:translateX(-50%)}
+  .c2 .l2{right:-16px;top:50%;transform:translateY(-50%) rotate(90deg)}
+  .c2 .l3{left:50%;bottom:-4px;transform:translateX(-50%)}
+  .c2 .l4{left:-14px;top:50%;transform:translateY(-50%) rotate(-90deg)}
+  .c2 .vtitle{position:absolute;right:14px;top:20px;writing-mode:vertical-rl;font-family:var(--sans);font-size:15px;letter-spacing:.24em;color:#E8E2D5}
+  .c2 .vsub{position:absolute;right:34px;top:22px;writing-mode:vertical-rl;font-family:var(--label);font-size:6.5px;letter-spacing:.2em;color:#8d8474}
+  .c2 .hud{position:absolute;left:16px;top:16px;font-family:var(--mono);font-size:6.5px;letter-spacing:.14em;color:#8d8474;line-height:2}
+  .c2 .hud b{color:#C5A16B;font-weight:400}
+  .c2 .foot{position:absolute;left:16px;right:16px;bottom:12px;display:flex;justify-content:space-between;font-family:var(--label);font-size:6.5px;letter-spacing:.16em;color:#7d7464}
+  .c2 .num{position:absolute;left:16px;bottom:28px;font-family:var(--num);font-size:30px;color:#E8E2D5;line-height:1}
+  .c2 .num em{font-style:normal;font-size:12px;color:#8d8474}
+</style>
+</head>
+<body>
+<div class="head">
+  <h1>Highlighter · 莱茵生命风格 · 六个候选<b>六格缩略图（480×300，真字体真配色真骨架）</b></h1>
+  <p>三套逻辑各出两版：最佳设计师（Aicher / 池田亮司）· 现实参照（Ableton Live / Halide）· 秒数轮盘（原研哉白盒 / 杉浦康平曼荼罗）。每格只画这个候选最关键的一屏。</p>
+</div>
+
+<div class="grid">
+  <!-- A1 -->
+  <div class="cell">
+    <div class="shot a1">
+      <div class="brand"><i></i><b>HIGHLIGHTER</b><span style="color:#77756D">SCREEN OBSERVATION</span></div>
+      <div class="meta">ACCESS LEVEL / 内部<br>SESSION 04 · 19:41:07</div>
+      <div class="title">
+        <div class="big">Screen<br>Observation</div>
+        <div class="cn">屏幕观察站 · 功能导视</div>
+      </div>
+      <div class="rule"><i></i></div>
+      <div class="zones">
+        <div class="zone"><em>01</em><div class="glyph g-capture"></div><div class="nm">截图与标注</div><div class="en">Capture</div></div>
+        <div class="zone"><em>02</em><div class="glyph g-ocr"></div><div class="nm">文本识别</div><div class="en">Recognition</div></div>
+        <div class="zone"><em>03</em><div class="glyph g-pin"></div><div class="nm">固定到屏幕</div><div class="en">Pin</div></div>
+        <div class="zone"><em>04</em><div class="glyph g-hist"></div><div class="nm">历史归档</div><div class="en">Archive</div></div>
+      </div>
+      <div class="foot"><span>● SYSTEM READY</span><span>识别引擎 PADDLEOCR V4 · 本地</span><span>4 / 5 ZONES</span></div>
+    </div>
+    <div class="cap"><b>A1 · 白室导视</b><span>OTL AICHER</span></div>
+  </div>
+
+  <!-- A2 -->
+  <div class="cell">
+    <div class="shot a2">
+      <div class="grid-bg"></div>
+      <div class="topbar"><span><b>HIGHLIGHTER</b> / MEASUREMENT</span><span>CAPTURE 0042 · LOCAL</span></div>
+      <div class="frame">
+        <div class="cross-h"></div><div class="cross-v"></div>
+        <div class="spec">
+          <div class="lbl">SELECTION / 选区</div>
+          <div class="dim">1280 × 720<span> px</span></div>
+          <div class="sub">X 0420 · Y 0180 · <em>RATIO 16:9</em></div>
+        </div>
+      </div>
+      <div class="ticks"></div>
+      <div class="corner">MODE<b>OCR</b>CONF<b>0.97</b></div>
+      <div class="strip"><span>DRAG TO SELECT</span><span>ENTER <u>COPY</u></span><span>CTRL+S <u>SAVE</u></span><span>ESC <u>EXIT</u></span></div>
+    </div>
+    <div class="cap"><b>A2 · 测量台</b><span>池田亮司 / DATAMATICS</span></div>
+  </div>
+
+  <!-- B1 -->
+  <div class="cell">
+    <div class="shot b1">
+      <div class="titlebar"><b>HIGHLIGHTER</b><span style="margin-left:10px">WORKSTATION</span><span class="sp"></span><span class="badge">4.1.2</span></div>
+      <div class="body">
+        <div class="browser">
+          <div class="grp">工具箱 / TOOLS</div>
+          <div class="row on"><i></i>快捷功能</div>
+          <div class="row"><i></i>翻译</div>
+          <div class="row"><i></i>AI 对话</div>
+          <div class="row"><i></i>截图历史</div>
+          <div class="grp" style="padding-top:8px">设置 / SETUP</div>
+          <div class="row"><i></i>通用</div>
+          <div class="row"><i></i>AI 与模型</div>
+        </div>
+        <div class="main">
+          <div class="strip"><span>VIEW</span><span class="seg on">LIST</span><span class="seg">GRID</span><span style="margin-left:auto">28 ITEMS</span></div>
+          <div class="lanes">
+            <div class="lane"><h4><span>截图 / CAPTURE</span><u>08</u></h4>
+              <div class="item"><span class="dot"></span>截图<span class="k">F1</span></div>
+              <div class="item">延迟截图<span class="k">—</span></div>
+              <div class="item">固定到屏幕<span class="k">—</span></div>
+              <div class="item">长截图<span class="k">—</span></div>
+            </div>
+            <div class="lane"><h4><span>识别 / READ</span><u>06</u></h4>
+              <div class="item"><span class="dot"></span>文本识别<span class="k">—</span></div>
+              <div class="item">表格识别<span class="k">—</span></div>
+              <div class="item">二维码识别<span class="k">—</span></div>
+              <div class="item">识别并翻译<span class="k">—</span></div>
+            </div>
+            <div class="fields">
+              <div class="fld"><em>ENGINE</em><b>PADDLE v4</b></div>
+              <div class="fld"><em>HOTKEYS</em><b>3 / 25</b></div>
+              <div class="fld"><em>SEARCH</em><b>READY</b></div>
+            </div>
+          </div>
+          <div class="transport"><span class="rec"></span><span>LOCAL · 本地</span><span>MODEL deepseek-v4</span><span style="margin-left:auto">SAVED 19:41</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><b>B1 · 工作站</b><span>ABLEBON LIVE 12</span></div>
+  </div>
+
+  <!-- B2 -->
+  <div class="cell">
+    <div class="shot b2">
+      <div class="canvas"></div>
+      <div class="exit"><b>◤</b> CAPTURE HUD · 26 TOOLS · LOCAL OCR</div>
+      <div class="shotarea"><div class="ghost"></div><i class="c c1"></i><i class="c c2"></i><i class="c c3"></i><i class="c c4"></i></div>
+      <div class="dimtag">1280 × 720 · <b>READY</b></div>
+      <div class="rail">
+        <div class="tools">
+          <div class="t on"><i></i></div><div class="t"><i></i></div><div class="t"><i></i></div>
+          <div class="t"><i></i></div><div class="t"><i></i></div>
+        </div>
+        <div class="scales">
+          <div class="scale"><div class="val"><span>WIDTH / 线宽</span><b>4 PX</b></div><div class="track"><div class="ptr" style="left:38%"></div></div></div>
+          <div class="scale"><div class="val"><span>ZOOM / 缩放</span><b>100%</b></div><div class="track"><div class="ptr" style="left:52%"></div></div></div>
+          <div class="scale"><div class="val"><span>CONF / 阈值</span><b>0.30</b></div><div class="track"><div class="ptr" style="left:22%"></div></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><b>B2 · 取景器</b><span>HALIDE MARK II</span></div>
+  </div>
+
+  <!-- C1 -->
+  <div class="cell">
+    <div class="shot c1">
+      <div class="top"><b>HIGHLIGHTER</b><span>白室 / WHITE ROOM · 19:41</span></div>
+      <div class="artifact">
+        <div class="backdrop"></div>
+        <i></i><u></u>
+        <div class="no">X-0042</div>
+      </div>
+      <div class="line"></div>
+      <div class="caption"><b>CAPTURE / 截图 0042</b>1280 × 720 · 2026-10-23 19:41<br>识别到 4 处文本 · 本地 OCR</div>
+      <div class="pull"><div class="n">042</div><div class="t">OF 200 ARCHIVED</div></div>
+    </div>
+    <div class="cap"><b>C1 · 白盒</b><span>原研哉 / KENYA HARA</span></div>
+  </div>
+
+  <!-- C2 -->
+  <div class="cell">
+    <div class="shot c2">
+      <div class="hud">RHINE-TYPE ARCHIVE<br>MODE <b>OBSERVE</b><br>SESSION 04 · 19:41:07</div>
+      <div class="vtitle">屏幕观察站</div>
+      <div class="vsub">SCREEN OBSERVATION TERMINAL</div>
+      <div class="rings">
+        <div class="sector"></div>
+        <div class="r r1"></div><div class="r r2"></div><div class="r r3"></div><div class="r r4"></div>
+        <div class="core"></div>
+        <div class="lbl l1">CAPTURE</div><div class="lbl l2">RECOGNITION</div><div class="lbl l3">ARCHIVE</div><div class="lbl l4">PIN</div>
+      </div>
+      <div class="num">04<em> / 05</em></div>
+      <div class="foot"><span>● SESSION AUTHORIZED</span><span>POWERED BY HIGHLIGHTER ——</span></div>
+    </div>
+    <div class="cap"><b>C2 · 环盘</b><span>杉浦康平 / MANDALA</span></div>
+  </div>
+</div>
+</body>
+</html>
