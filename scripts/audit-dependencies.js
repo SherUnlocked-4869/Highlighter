@@ -46,8 +46,10 @@ const ALLOWLIST = new Map([
   // (sandbox escape, webview worker Node integration, protocol cross-origin
   // reads, preload code-cache poisoning, HID/USB origin attribution); 43.8.3
   // clears all of them, so nothing about the shell is exempted any more.
-  // fast-uri: production-reachable through electron-store's schema validation.
-  ['fast-uri|https://github.com/advisories/GHSA-hrr3-gc8f-f4qj', { reason: 'Reachable only through ajv/ajv-formats schema validation (electron-store) and electron-builder. The advisory needs a case-sensitive host allow/deny decision on fast-uri output; the app makes none. Fix by pulling fast-uri 3.1.8+.', reviewBy: REVIEW_BY }],
+  // fast-uri: entry dropped 2026-10-24. package.json now pins fast-uri 3.1.9 via
+  // overrides, which is the version the advisory itself names as the fix, so npm
+  // stopped reporting it and the allowance became a stale row that failed the
+  // gate. Re-add only if a new advisory is reported for 3.1.9+.
   // http-cache-semantics: build-only download path.
   ['http-cache-semantics|https://github.com/advisories/GHSA-ch52-4w7c-c8xp', { reason: 'Build only: electron-builder -> @electron/get -> got -> cacheable-request, used to download Electron binaries. The app runs no shared HTTP cache, so cross-user cache disclosure has no path.', reviewBy: REVIEW_BY }],
   // sharp: Windows-only app, and SVG is never decoded.
@@ -55,14 +57,10 @@ const ALLOWLIST = new Map([
   // sprintf-js: dropped from this list 2026-10-23. npm stopped reporting
   // GHSA-hp3w-g68c-fv3c for this tree, so the entry became a stale allowlist row
   // and failed the gate itself. Re-add only if the advisory is reported again.
-  // undici: install/build only, 10 findings across 8 advisories.
-  ['undici|https://github.com/advisories/GHSA-w293-vg96-wgc3', { reason: BUILD_CHAIN_UNDICI, reviewBy: REVIEW_BY }],
-  ['undici|https://github.com/advisories/GHSA-rfgv-xxqx-mfg5', { reason: BUILD_CHAIN_UNDICI, reviewBy: REVIEW_BY }],
-  ['undici|https://github.com/advisories/GHSA-rx4f-c7p8-82vq', { reason: BUILD_CHAIN_UNDICI, reviewBy: REVIEW_BY }],
-  ['undici|https://github.com/advisories/GHSA-pmjh-fq2x-6v4x', { reason: BUILD_CHAIN_UNDICI, reviewBy: REVIEW_BY }],
-  ['undici|https://github.com/advisories/GHSA-3xpg-4rpp-hhhm', { reason: BUILD_CHAIN_UNDICI, reviewBy: REVIEW_BY }],
-  ['undici|https://github.com/advisories/GHSA-3wwx-pv8p-q78v', { reason: BUILD_CHAIN_UNDICI, reviewBy: REVIEW_BY }],
-  ['undici|https://github.com/advisories/GHSA-2jfj-6hjv-fm6j', { reason: BUILD_CHAIN_UNDICI, reviewBy: REVIEW_BY }]
+  // undici: entries dropped 2026-10-24. package.json pins undici 7.30.1 via
+  // overrides (node-gyp and @electron/get both resolve to it), clearing all eight
+  // advisories, so the allowances became stale rows that failed the gate. Re-add
+  // only if a new advisory is reported for 7.30.1+.
 ])
 
 function severityRank(value) {
