@@ -91,9 +91,12 @@ function showError(error) {
 
 // Export buttons live in the shared footer, so each renderer decides which of
 // them apply: Excel only exists for a recovered table, PDF exists for both.
+// Feature A: "save and open" is a table-only action, so it follows the Excel button.
 function setExportVisibility({ excel }) {
   exportExcel.classList.toggle('hidden', !excel)
   exportPdf.classList.remove('hidden')
+  const saveAndOpen = document.getElementById('saveAndOpen')
+  if (saveAndOpen) saveAndOpen.classList.toggle('hidden', !excel)
 }
 
 function renderTable(result) {
@@ -281,11 +284,56 @@ openLink.onclick = async () => {
 // The handlers disable their own button while the save dialog is open: two
 // invocations would race two dialogs for the same file, and the main process has
 // no reason to de-duplicate them.
+// Feature A (plan §4.1/§4.3 A3): the result bar. After a successful export the window shows
+// "open / address / open folder" for the file just written. The renderer only holds the receipt's
+// resultId - every filesystem decision stays in the main process (plan §4.2).
+const exportResultBar = window.exportResultBar
+  ? window.exportResultBar.createExportResultBar({
+      document,
+      translate: (key, params) => t(key, params),
+      getAction: (resultId, action) => window.recognitionAPI.exportAction(resultId, action),
+      log: (...args) => console.warn(...args)
+    })
+  : null
+
+// Main returns the receipt `{ status:'saved', resultId, fileName, kind }` on success, null when the
+// save dialog was cancelled, and throws on failure. Only a receipt shows a bar: a cancel must not
+// look like a successful export (plan §4.2: a cancel or a failure must never surface as a result).
+function showExportResult(result) {
+  if (!exportResultBar) return
+  if (result && typeof result === 'object' && result.status === 'saved') exportResultBar.show(result)
+}
+
+// "Save and open" for the table view (plan §4.1): write the .xlsx, then hand it to the OS default
+// application. A cancelled save opens nothing; a missing default app keeps the file and reports the
+// open failure - the two outcomes are reported separately, never as one total failure.
+const saveAndOpen = document.getElementById('saveAndOpen')
+if (saveAndOpen) {
+  saveAndOpen.onclick = async () => {
+    if (!tableResult || saveAndOpen.disabled) return
+    saveAndOpen.disabled = true
+    try {
+      const receipt = await window.recognitionAPI.exportExcel(tableResult.rows, tableResult.merges)
+      if (!receipt || receipt.status !== 'saved') return
+      const opened = await window.recognitionAPI.exportAction(receipt.resultId, 'open')
+      if (opened?.status === 'failed') {
+        // The file exists (the save succeeded); only the open failed.
+        showTransientError({ message: t('capture.export-result.open-failed') })
+        exportResultBar?.show(receipt)
+      }
+    } catch (error) {
+      showTransientError(error)
+    } finally {
+      saveAndOpen.disabled = false
+    }
+  }
+}
+
 exportExcel.onclick = async () => {
   if (!tableResult || exportExcel.disabled) return
   exportExcel.disabled = true
   try {
-    await window.recognitionAPI.exportExcel(tableResult.rows, tableResult.merges)
+    showExportResult(await window.recognitionAPI.exportExcel(tableResult.rows, tableResult.merges))
   } catch (error) {
     showTransientError(error)
   } finally {
@@ -298,10 +346,10 @@ exportPdf.onclick = async () => {
   try {
     // The window's content size is the print area: printToPDF has no access to
     // anything the user cannot see, and the print stylesheet removes the chrome.
-    await window.recognitionAPI.exportPdf({
+    showExportResult(await window.recognitionAPI.exportPdf({
       pxW: window.innerWidth || document.documentElement.clientWidth,
       pxH: window.innerHeight || document.documentElement.clientHeight
-    })
+    }))
   } catch (error) {
     showTransientError(error)
   } finally {

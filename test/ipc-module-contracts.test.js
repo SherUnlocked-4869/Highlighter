@@ -142,6 +142,12 @@ test('capture IPC module owns capture, long-capture, and recognition channels', 
     'capture:open-recognition',
     'capture:record-history',
     'capture:export-pdf',
+    // 批次 1（docs/plans/2026-10-25-history-reedit-batch0-contracts.md §12）：可编辑文档的
+    // 提交/状态/载入。新增通道必须同步注册表与角色 allowlist —— 更新这条顺序断言是契约
+    // 要求的一部分，不是为绕过它。
+    'capture:commit-document',
+    'capture:commit-status',
+    'capture:load-document',
     'long-capture:add-strip',
     'long-capture:set-trim',
     'long-capture:set-selection-editing',

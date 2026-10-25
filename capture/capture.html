@@ -12,8 +12,52 @@
   <canvas id="backgroundStage"></canvas>
   <canvas id="stage"></canvas>
   <div id="ocrOverlay" class="ocr-overlay hidden"></div>
+  <!-- Batch 1 (history-reedit-batch0-contracts.md §5.3): a frameless window still needs a
+       VISIBLE identity area. A native title cannot be read while the window has no frame,
+       so the name/version/dirty state lives here. Hidden for every non-document window. -->
+  <div id="documentInfo" class="document-info hidden">
+    <span id="documentInfoText"></span>
+    <span id="documentDirtyMark" class="document-dirty hidden" data-i18n-title="capture.document.dirty-tip">&#9679;</span>
+    <span id="documentSavingMark" class="document-saving hidden" data-i18n="capture.document.saving"></span>
+  </div>
   <div id="tip" data-i18n="capture.tip.drag"></div>
   <div id="sizeBadge"></div>
+  <!-- Feature B (docs/plans/2026-10-25-snow-apps-feature-development-plan.md §5.3/B3): width x
+       height entry, fixed ratio, "reuse last region" and the size-preset list. Hidden until the
+       user asks for it (#regionToggle), because the plan requires the common path to gain no extra
+       mandatory step. Every coordinate here is DIP: the main process resolves presets/last regions
+       and answers in DIP, which is the same space as this window's stage. -->
+  <div id="regionPanel" class="region-panel hidden">
+    <div class="region-row">
+      <label for="regionWidth" data-i18n="capture.region.width"></label>
+      <input id="regionWidth" type="number" min="1" step="1" data-i18n-aria-label="capture.region.width">
+      <span class="region-times">&times;</span>
+      <label for="regionHeight" data-i18n="capture.region.height"></label>
+      <input id="regionHeight" type="number" min="1" step="1" data-i18n-aria-label="capture.region.height">
+      <button id="regionApplySize" type="button" data-i18n="capture.region.apply-size"></button>
+    </div>
+    <!-- Feature B (plan §5.1): a fixed ratio only couples width and height; it must never rewrite the
+         document crop or move the region. Rendered as buttons rather than a native dropdown, for the
+         same reason the width toolbar is a three-button group (test/capture-annotation-width.test.js
+         pins that this file carries no native option elements). -->
+    <div class="region-row region-ratio-row" role="group" data-i18n-aria-label="capture.region.ratio">
+      <label data-i18n="capture.region.ratio"></label>
+      <button type="button" class="region-ratio active" data-region-ratio="free" aria-pressed="true" data-i18n="capture.region.ratio-free"></button>
+      <button type="button" class="region-ratio" data-region-ratio="16:9" aria-pressed="false">16:9</button>
+      <button type="button" class="region-ratio" data-region-ratio="16:10" aria-pressed="false">16:10</button>
+      <button type="button" class="region-ratio" data-region-ratio="4:3" aria-pressed="false">4:3</button>
+      <button type="button" class="region-ratio" data-region-ratio="1:1" aria-pressed="false">1:1</button>
+      <button type="button" class="region-ratio" data-region-ratio="9:16" aria-pressed="false">9:16</button>
+    </div>
+    <div class="region-row">
+      <button id="regionReuseLast" type="button" data-i18n="capture.region.reuse-last" data-i18n-title="capture.region.reuse-last-tip"></button>
+      <button id="regionSavePreset" type="button" data-i18n="capture.region.preset-save"></button>
+      <select id="regionPresets" data-i18n-aria-label="capture.region.presets"></select>
+      <button id="regionDeletePreset" type="button" data-i18n="capture.region.preset-delete"></button>
+    </div>
+    <div id="regionStatus" class="region-status hidden" role="status" aria-live="polite"></div>
+  </div>
+  <button id="regionToggle" class="region-toggle hidden" type="button" aria-haspopup="dialog" aria-expanded="false" data-i18n="capture.region.size"></button>
   <div id="toolbar" class="toolbar hidden">
     <!-- B1 (D5/D6): the strip is a column container. Row 1 keeps every control that
          shipped before, row 2 (#toolOptions) carries only the new per-tool options
@@ -165,9 +209,17 @@
   <script src="annotation-style.js"></script>
   <script src="selection-utils.js"></script>
   <script src="annotation-geometry.js"></script>
+  <!-- Batch 1 (history-reedit-batch0-contracts.md §2): the shared document contract -
+       coordinates, schema, content fingerprint and the viewport transforms. Same file the
+       main process requires, so both ends cannot drift. -->
+  <script src="../shared/capture-document.js"></script>
   <!-- P0-2（S9b）：光标落点的纯几何函数，与主进程 main/services/cursor-provider.js 共用同一份
        契约（UMD）。必须在 capture.js 之前加载，capture.js 里以 window.cursorGeometry 同步取用。 -->
   <script src="../shared/cursor-geometry.js"></script>
+  <!-- Feature A (plan §4.3/A3): the export result bar. A separate controller so the capture
+       controller does not grow another hundred lines; it mounts itself lazily on the first
+       successful export, so a window that never exports pays nothing. -->
+  <script src="export-result-bar.js"></script>
   <script src="capture.js"></script>
 </body>
 </html>

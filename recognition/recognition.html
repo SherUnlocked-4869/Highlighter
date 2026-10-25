@@ -43,12 +43,17 @@
     <button id="openLink" class="hidden" data-i18n="recognition.action.open-link">Open link</button>
     <!-- Table results only; recognition.js unhides it in renderTable(). -->
     <button id="exportExcel" class="hidden" data-i18n="recognition.action.export-excel" data-i18n-title="recognition.action.export-excel">Export Excel</button>
+    <!-- Feature A (plan §4.1): save the .xlsx and hand it to the default application in one step.
+         Visible only alongside #exportExcel (table results). -->
+    <button id="saveAndOpen" class="hidden" data-i18n="recognition.action.save-and-open">Save and open</button>
     <!-- Both result kinds: the rendered window is printed as-is. -->
     <button id="exportPdf" class="hidden" data-i18n="recognition.action.export-pdf" data-i18n-title="recognition.action.export-pdf">Export PDF</button>
     <button id="copy" class="primary" data-i18n="recognition.action.copy">Copy</button>
   </footer>
 
   <script src="../node_modules/jsqr/dist/jsQR.js"></script>
+  <!-- Feature A (plan §4.3/A3): the export result bar, shared with the capture window. -->
+  <script src="../capture/export-result-bar.js"></script>
   <script src="recognition.js"></script>
 </body>
 </html>

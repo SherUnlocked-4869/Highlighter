@@ -22,6 +22,13 @@ const path = require('node:path')
 const root = path.resolve(__dirname, '..')
 const html = fs.readFileSync(path.join(root, 'capture', 'capture.html'), 'utf8')
 const script = fs.readFileSync(path.join(root, 'capture', 'capture.js'), 'utf8')
+// Feature A (plan §4.3/A3): the export result bar is a second capture-window controller. Its copy is
+// resolved through t() at runtime like capture.js's, so the "no dead key / no missing golden entry"
+// checks must see its keys too - otherwise the bar could ship labels the locale table does not
+// carry, or (the failure this test exists for) leave a `capture.*` key in the table that no window
+// actually renders.
+const exportResultBarPath = path.join(root, 'capture', 'export-result-bar.js')
+const exportResultBar = require(exportResultBarPath)
 const LANGUAGES = ['zh-CN', 'en-US', 'zh-TW']
 // Exactly the locale files capture/capture.html loads, in load order.
 const WINDOW_LOCALE_FILES = ['zh-CN.js', 'en-US.js', 'zh-TW.js', 'capture.js']
@@ -201,14 +208,82 @@ const GOLDEN = {
   'capture.error.empty-image': '截图图片数据为空',
   'capture.error.encode-failed': '截图图片编码失败',
 
+  // Batch 1 (history-reedit-batch0-contracts.md §4/§7): editing an existing document.
+  'capture.document.info': '正在编辑：{name}（第 {version} 版）',
+  'capture.document.unnamed': '未命名截图',
+  'capture.document.dirty-tip': '有未保存的改动',
+  'capture.document.saving': '保存中…',
+  'capture.document.save-failed': '保存失败，改动仍保留在编辑器里，可以重试或另存为新记录。',
+  'capture.document.deleted': '这条记录已被删除，无法更新。可另存为新记录继续保留当前内容。',
+  'capture.document.conflict-save-copy': '这条记录已有更新版本。是否把当前内容另存为新记录？（取消则留在编辑器继续编辑）',
+  'capture.document.conflict-keep': '当前内容未保存为更新版本。可继续编辑，或另存为新记录。',
+  'capture.document.close-save': '有未保存的改动。保存并关闭吗？（取消可选择放弃或继续编辑）',
+  'capture.document.close-discard': '放弃这些未保存的改动并关闭？',
+
   // 复用公共表（shared/locales/{zh-CN,en-US,zh-TW}.js，S1 所有）而不是克隆一份。
   'common.button.cancel': '取消',
-  'common.button.delete': '删除'
+  'common.button.delete': '删除',
+
+  // Feature A (plan §4.1/§4.3 A3): the export result bar. These are new keys (not part of the
+  // pre-migration wording set), so the golden value is the shipped zh-CN string itself; the point of
+  // listing them is the reverse check - every capture.* key in the table must be rendered somewhere.
+  'capture.export-result.saved': { source: '已保存：${fileName}', params: { fileName: '${fileName}' } },
+  'capture.export-result.open': '打开',
+  'capture.export-result.copy-path': '地址',
+  'capture.export-result.reveal': '打开文件夹',
+  'capture.export-result.copied': '路径已复制',
+  'capture.export-result.pending': '处理中…',
+  'capture.export-result.open-failed': '文件已保存，但无法用默认应用打开。',
+  'capture.export-result.file-missing': '文件已不在原位置，可能已被移动或删除。',
+  'capture.export-result.expired': '这条导出结果已失效，请重新导出。',
+  'capture.export-result.action-failed': '文件已保存，但操作失败。',
+
+  // Feature B (plan §5.1/§5.3): region reuse + output-size presets. Rendered by capture.js's region
+  // panel and by the static markup above.
+  'capture.region.size': '尺寸',
+  'capture.region.width': '宽',
+  'capture.region.height': '高',
+  'capture.region.apply-size': '应用尺寸',
+  'capture.region.ratio': '比例',
+  'capture.region.ratio-free': '自由',
+  'capture.region.reuse-last': '复用上次区域',
+  'capture.region.reuse-last-tip': '恢复上次确认的区域和尺寸',
+  'capture.region.no-last': '还没有可复用的区域',
+  'capture.region.presets': '尺寸预设',
+  'capture.region.preset-save': '保存为预设',
+  'capture.region.preset-name': '预设名称',
+  'capture.region.preset-delete': '删除预设',
+  'capture.region.preset-empty': '还没有保存的预设',
+  'capture.region.preset-limit': { source: '预设数量已达上限（${max} 项）', params: { max: '${max}' } },
+  'capture.region.preset-invalid': '尺寸无效：宽高需为 16–10000 之间的整数',
+  'capture.region.preset-duplicate': '已有同名预设',
+  'capture.region.adjusted': '区域已调整',
+  'capture.region.clamped': { source: '区域超出当前屏幕，已调整为 ${width} × ${height}', params: { width: '${width}', height: '${height}' } },
+  'capture.region.display-changed': '原显示器布局已改变，区域已居中放置',
+  'capture.region.rect-outside-display': '部分区域超出当前屏幕，已裁剪'
 }
 
 const htmlKeys = [...html.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)].map((match) => match[1])
 const scriptKeys = [...script.matchAll(/\bt\('(capture\.[a-z0-9.-]+)'/g)].map((match) => match[1])
-const usedKeys = new Set([...htmlKeys, ...scriptKeys])
+// Feature B: the region panel reports outcomes through setRegionStatus('capture.…') - including
+// inside ternaries - instead of an inline t() call, because the same key is re-rendered on every
+// state change. Scan every quoted capture.* literal inside those calls so no key is misreported as
+// dead; the surrounding text is not markup, so a plain literal scan is exact here.
+function regionStatusKeysOf(source) {
+  const keys = new Set()
+  const callPattern = /setRegionStatus\(([\s\S]*?)\)\s*(?:\n|$)/g
+  for (const match of source.matchAll(callPattern)) {
+    for (const literal of match[1].matchAll(/'(capture\.[a-z0-9.-]+)'/g)) keys.add(literal[1])
+  }
+  return [...keys]
+}
+const regionStatusKeys = regionStatusKeysOf(script)
+// The export result bar resolves its labels through a translate() callback rather than a literal
+// `t('...')` in this file, so its key list is read from the module's own LOCALE_KEYS export instead
+// of a regex. That keeps the two in sync by construction: adding a label without listing its key in
+// LOCALE_KEYS leaves the key reported as dead by check ② below.
+const barKeys = Array.isArray(exportResultBar.LOCALE_KEYS) ? exportResultBar.LOCALE_KEYS : []
+const usedKeys = new Set([...htmlKeys, ...scriptKeys, ...regionStatusKeys, ...barKeys])
 
 test('capture.html loads the i18n runtime and the capture locale table before its controller', () => {
   const runtimeIndex = html.indexOf('<script src="../shared/i18n.js"></script>')

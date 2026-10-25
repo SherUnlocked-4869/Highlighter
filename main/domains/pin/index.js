@@ -15,6 +15,10 @@ const {
 } = require('./geometry')
 const { makeCaptureName } = require('../../services/capture-naming')
 const { exportWindowToPdf, savePdfBuffer } = require('../../services/pdf-export')
+// Shared with the history "continue editing" entry point; pure arithmetic, no Electron.
+// Keeping the compact-editor window box in one place is what stops the two re-edit
+// flows from drifting (test/capture-floating-placement.test.js pins the contract).
+const { resolveEditorLayout, scaleFactorFor } = require('../../../shared/editor-layout')
 
 function createPinDomain(deps) {
   const {
@@ -511,62 +515,34 @@ function createPinDomain(deps) {
       throw new Error('Capture factory is not ready')
     }
     const pinBounds = win.getBounds()
-    const editBounds = {
+    // The box the pinned image occupies on screen (DIP). `imageBounds` is the renderer's
+    // image rectangle inside the pin window, so this is pin-window origin + that offset.
+    const imageBox = {
       x: Math.round(pinBounds.x + (Number(imageBounds.x) || 0)),
       y: Math.round(pinBounds.y + (Number(imageBounds.y) || 0)),
       width: Math.max(1, Math.round(Number(imageBounds.width) || pinBounds.width)),
       height: Math.max(1, Math.round(Number(imageBounds.height) || pinBounds.height))
     }
     const imageSize = nativeImage.createFromDataURL(win._pinData.dataUrl).getSize()
-    // The editor always reserves a strip BELOW the image for the tool strip (and the OCR
-    // result bar), in every mode. The region capture shows its strip below the region, so
-    // a re-annotate editor that was exactly the size of the pinned image had nowhere to
-    // put it: the renderer fell back to clamping, which dropped the strip inside the top
-    // of the image and clipped it.
-    //
-    // The strip height is DERIVED, not guessed: the strip wraps when the window is
-    // narrower than the main row (capture/capture.css gives every icon button a 30px
-    // minimum plus 7px padding, so one row needs ROW_MIN_CONTENT px), and a wrapped row
-    // is taller. Guessing 100px here is what made the strip cover the image as soon as
-    // the rectangle tool added the options row to an already wrapped row.
-    // test/capture-floating-placement.test.js re-derives these numbers from
-    // capture.html/capture.css and fails when the UI outgrows them.
-    const ROW_MIN_CONTENT = 1040 // single-line minimum of the main row (measured 1019 today)
-    const STRIP_ROW_HEIGHT = 34 // 30px button + 3px row gap, rounded up
-    const OPTIONS_ROW_HEIGHT = 30
-    const STRIP_CHROME = 14 // 6px toolbar padding x2 + 1px borders x2
-    const STRIP_SLACK = 22 // 10px gap below the image + 6px viewport padding + 6px margin
-    // Wide enough that the main row stays on ONE line (like the region capture); the
-    // strip then only needs the two-row height.
-    const toolbarSpace = 1088
-    const workArea = screen.getDisplayMatching(editBounds).workArea
-    const width = Math.min(workArea.width, Math.max(toolbarSpace, Math.max(420, editBounds.width)))
-    const stripRows = Math.max(1, Math.ceil(ROW_MIN_CONTENT / Math.max(1, width - STRIP_CHROME)))
-    const actionSpace = stripRows * STRIP_ROW_HEIGHT + OPTIONS_ROW_HEIGHT + STRIP_CHROME + STRIP_SLACK
-    const scale = Math.min(
-      1,
-      workArea.width / editBounds.width,
-      Math.max(1, workArea.height - actionSpace) / editBounds.height
-    )
-    const imageWidth = Math.max(1, Math.round(editBounds.width * scale))
-    const imageHeight = Math.max(1, Math.round(editBounds.height * scale))
-    const height = Math.min(workArea.height, imageHeight + actionSpace)
-    const x = Math.round(Math.max(workArea.x, Math.min(
-      editBounds.x + (editBounds.width - width) / 2,
-      workArea.x + workArea.width - width
-    )))
-    const y = Math.round(Math.max(workArea.y, Math.min(
-      editBounds.y,
-      workArea.y + workArea.height - height
-    )))
-    const editorBounds = { x, y, width, height }
-    const editorImageBounds = {
-      x: Math.round((width - imageWidth) / 2),
-      y: 0,
-      width: imageWidth,
-      height: imageHeight
-    }
-    const sourceScaleFactor = Math.max(0.25, imageSize.width / imageWidth)
+    // The compact editor geometry lives in shared/editor-layout.js so the history
+    // "continue editing" entry (which opens on the current crop's source-pixel size)
+    // derives the exact same window box, reserved tool strip and image fit. The strip
+    // height is DERIVED from the width the toolbar will actually get, not guessed -
+    // see the constants comment in that file for the real-device failure that caused it.
+    const workArea = screen.getDisplayMatching(imageBox).workArea
+    const layout = resolveEditorLayout({
+      imageWidth: imageBox.width,
+      imageHeight: imageBox.height,
+      workArea,
+      // Pin's historical placement, preserved verbatim: the editor centres on the image
+      // box and aligns its top edge with the image's (vertical centring would move the
+      // window relative to the pin the user right-clicked).
+      anchor: { x: imageBox.x, y: imageBox.y }
+    })
+    const sourceScaleFactor = scaleFactorFor({
+      displayWidth: layout.imageWidth,
+      sourceWidth: imageSize.width
+    })
     win.hide()
     try {
       const captureWindow = await createCaptureWindow({
@@ -574,8 +550,8 @@ function createPinDomain(deps) {
         mode: 'image',
         autoAction,
         source: 'pin-reannotate',
-        windowBounds: editorBounds,
-        imageBounds: editorImageBounds,
+        windowBounds: layout.editorBounds,
+        imageBounds: layout.imageBounds,
         // The reserved strip sits outside the image, so the window must be transparent
         // in both modes - an opaque window would paint that strip in its background.
         transparent: true,

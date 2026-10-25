@@ -91,11 +91,33 @@ const IPC_SURFACES = Object.freeze([
       'capture:open-recognition',
       'capture:record-history',
       'capture:export-pdf',
+      // Batch 1: commit / status / load for editable documents
+      // (docs/plans/2026-10-25-history-reedit-batch0-contracts.md §12). Write access for these
+      // three channels does NOT come from the existing record-history grant: intent, session
+      // ownership, idempotency and atomic publish are all validated by captureDocumentService.
+      'capture:commit-document',
+      'capture:commit-status',
+      'capture:load-document',
       'capture:ocr',
       'capture:translate',
       // P1 (2026-10-18 snow migration §6.2②): screenshot → Markdown/HTML through
       // a vision-capable AI model.
       'capture:convert-image',
+      // Feature A (docs/plans/2026-10-25-snow-apps-feature-development-plan.md §4.2): perform a
+      // system action on an *already registered* export result. The payload is a resultId + an
+      // action name - never a path - so the main process keeps ownership of every filesystem
+      // decision. Ownership/expiry are re-checked by exportResultService on every call, which is
+      // why one shared channel is safe to expose to more than one role.
+      'export:perform-action',
+      // Feature B (plan §5.2): the capture overlay asks the main process to resolve "the last
+      // region" or "this preset" into a real rectangle. The overlay never submits desktop
+      // coordinates; the main process derives them from the confirmed display. The last-region
+      // *write* stays a domain-internal action (plan §5.2) - there is deliberately no channel
+      // that accepts one.
+      'region:resolve',
+      'region:get-preferences',
+      'region:save-preset',
+      'region:delete-preset',
       'settings:update'
     ],
     listeners: [
@@ -161,7 +183,10 @@ const IPC_SURFACES = Object.freeze([
       // P1 (2026-10-18 snow migration §6.2①): table -> real .xlsx workbook.
       'recognition:export-excel',
       // P0 white-pickup (§0.3 #4): the already-rendered result window -> PDF.
-      'recognition:export-pdf'
+      'recognition:export-pdf',
+      // Feature A (plan §4.1): the result bar's open / copy-address / open-folder actions. Same
+      // resultId-addressed contract as the capture window, so a result window cannot name a path.
+      'export:perform-action'
     ],
     listeners: ['recognition:ready', 'recognition:close']
   },

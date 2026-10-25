@@ -90,6 +90,45 @@ test('lists history by query and source', () => {
   })
 })
 
+test('§6.5.1 the list projects stable identity fields and a 1-based version without a legacy badge', () => {
+  withTempDirectory((directory) => {
+    const legacyPath = path.join(directory, '1.png')
+    const documentPath = path.join(directory, '2.png')
+    fs.writeFileSync(legacyPath, '1')
+    fs.writeFileSync(documentPath, '2')
+    const service = createService(directory, [
+      // A record written before documents existed: no documentId / revisionId / version.
+      { id: '1', filePath: legacyPath, source: 'region' },
+      // A document-backed record with a real revision and version.
+      { id: '2', documentId: 'document-b', revisionId: 'revision-3', version: 3, filePath: documentPath, source: 'history' }
+    ])
+    const items = service.list().items
+    assert.equal(items.length, 2)
+
+    // Legacy row: identity falls back to its own id, version is 1 (NOT 0/undefined, so the
+    // renderer's `version > 1` badge check can never fire on an old record).
+    assert.equal(items[0].id, '1')
+    assert.equal(items[0].documentId, '1')
+    assert.equal(items[0].revisionId, '')
+    assert.equal(items[0].version, 1)
+
+    // Document row: card identity is documentId, version is the human 1-based count, and
+    // head/revision agree.
+    assert.equal(items[1].documentId, 'document-b')
+    assert.equal(items[1].revisionId, 'revision-3')
+    assert.equal(items[1].headRevisionId, 'revision-3')
+    assert.equal(items[1].version, 3)
+
+    // Malformed version values degrade to 1 instead of producing NaN in the UI.
+    const malformed = createService(directory, [
+      { id: '3', filePath: documentPath, documentId: 'document-c', version: 'abc' }
+    ])
+    assert.equal(malformed.list().items[0].version, 1)
+    // The projection must not invent a thumbnail payload (pagination contract stays intact).
+    assert.equal(items.some((item) => 'thumbnail' in item), false)
+  })
+})
+
 test('paginates history metadata without embedding thumbnails', () => {
   withTempDirectory((directory) => {
     const history = ['1', '2', '3'].map((id) => {

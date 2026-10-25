@@ -43,6 +43,11 @@ const DEFAULT_SETTINGS = {
     historyDirectory: '',
     historyEnabled: true,
     historyLimit: 200,
+    // Batch 1 (docs/plans/2026-10-25-history-reedit-batch0-contracts.md §9): how many immutable
+    // revisions each document keeps. historyLimit still counts DOCUMENTS (repeated edits never
+    // push other screenshots out); this one counts REVISIONS. A document always keeps at least
+    // its head (floor of 1).
+    historyRevisionLimit: 20,
     doubleClickCopy: true,
     selectionMask: 'rgba(0,0,0,.46)',
     showColorPicker: true,
@@ -76,7 +81,23 @@ const DEFAULT_SETTINGS = {
     lastSaveDirectory: '',
     keepSerialAcrossCaptures: false,
     longCaptureDirection: 'vertical',
-    watermark: { content: '', opacity: 80, color: '#ffffff', spacing: 30, fontSize: 24, rotation: 30, dateSuffix: false }
+    watermark: { content: '', opacity: 80, color: '#ffffff', spacing: 30, fontSize: 24, rotation: 30, dateSuffix: false },
+    // Feature B (docs/plans/2026-10-25-snow-apps-feature-development-plan.md §5.1):
+    // reusable regions live here. presets are OUTPUT PIXEL sizes (e.g. 1920x1080);
+    // lastByMode[mode] is a LastRegion - a position+size on ONE display. They are
+    // deliberately separate: a preset survives a monitor change, a remembered region
+    // does not. The default literal must stay equal to
+    // shared/region-presets.js DEFAULT_REGION_PREFERENCES (test/settings-region-preferences.test.js).
+    // The template walk treats the two null leaves as "any value accepted"; strict
+    // domain validation for this subtree is supplied by settings-service through
+    // assertSettingsPatch's optional { domainValidators } hook (shared/region-presets
+    // assertRegionPreferencesPatch) - plan §5.2: the template validator must not
+    // mis-reject a missing lastByMode or an empty array.
+    regionPreferences: {
+      schemaVersion: 1,
+      lastByMode: { capture: null, record: null },
+      presets: []
+    }
   },
   ocr: {
     modelProfile: 'ppocr-v4-ch',

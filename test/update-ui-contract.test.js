@@ -9,6 +9,7 @@ const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
 const settingsDefaults = fs.readFileSync(path.join(root, 'main', 'services', 'settings-defaults.js'), 'utf8')
 const settingsNormalize = fs.readFileSync(path.join(root, 'main', 'services', 'settings-normalize.js'), 'utf8')
 const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
+const updateIpc = fs.readFileSync(path.join(root, 'main', 'ipc', 'update-ipc.js'), 'utf8')
 const config = readConfigSource()
 
 test('main process owns updater lifecycle, diagnostics, channel settings, and install gate', () => {
@@ -18,7 +19,11 @@ test('main process owns updater lifecycle, diagnostics, channel settings, and in
   assert.match(main, /getUpdateStatus: \(\) => updateService\?\.getStatus\(\)/)
   assert.match(main, /initializeDiagnostics\(\)[\s\S]*deferUpdateServiceStart\(\)/)
   assert.match(main, /function deferUpdateServiceStart\(\)[\s\S]*resolveUpdateService\(\)\.start\(\)/)
-  assert.match(main, /updateService: \{[\s\S]*resolveUpdateService\(\)\.getStatus\(\)/)
+  // The five fixed operations moved to main/ipc/update-ipc.js (main.js line
+  // budget); each still resolves the lazily created service through main.js's
+  // resolver, so the updater is not constructed until it is really needed.
+  assert.match(updateIpc, /getStatus: \(\) => service\(\)\.getStatus\(\)/)
+  assert.match(main, /updateService: createUpdateIpcController\(\{[\s\S]*getUpdateService: \(\) => resolveUpdateService\(\)/)
   assert.match(main, /app\.on\('will-quit',[\s\S]*updateService\?\.dispose\(\)/)
 })
 

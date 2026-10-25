@@ -11,6 +11,21 @@ const elementBack = document.getElementById('elementBack')
 // B6 (D8): the multi-selection counter on #elementBar.
 const elementCount = document.getElementById('elementCount')
 const sizeBadge = document.getElementById('sizeBadge')
+// Feature B (plan §5.3/B3): the region size / preset popover and its toggle.
+const regionPanel = document.getElementById('regionPanel')
+const regionToggle = document.getElementById('regionToggle')
+const regionWidthInput = document.getElementById('regionWidth')
+const regionHeightInput = document.getElementById('regionHeight')
+const regionApplySize = document.getElementById('regionApplySize')
+const regionReuseLast = document.getElementById('regionReuseLast')
+const regionSavePreset = document.getElementById('regionSavePreset')
+const regionPresets = document.getElementById('regionPresets')
+const regionDeletePreset = document.getElementById('regionDeletePreset')
+const regionStatus = document.getElementById('regionStatus')
+// Feature B: the ratio lock group. The active lock lives in a module variable rather than on a
+// <select>, because capture.html deliberately carries no native <option> elements.
+let regionRatioValue = 'free'
+const regionRatioButtons = Array.from(document.querySelectorAll('[data-region-ratio]'))
 const tip = document.getElementById('tip')
 const loading = document.getElementById('loading')
 const loadingText = loading.querySelector('b')
@@ -109,6 +124,12 @@ const { STROKE_TYPES, hasStrokePoints, strokeWidth, strokeBox } = window.annotat
 
 let initData = null
 let image = null
+// Batch 1 (docs/plans/2026-10-25-history-reedit-batch0-contracts.md §4/§7): when this window
+// was opened with `documentEditor`, it is editing a *document*, not taking a new screenshot.
+// Commit eligibility, dirty tracking and the close negotiation all hang off this being non-null.
+//   { sessionId, documentId, revisionId, version, legacy, storageFormat, degraded,
+//     document, crop, infoHeight, cleanFingerprint, dirty, saving, requestSeq }
+let documentEditor = null
 let selection = null
 let selecting = false
 let dragging = false
@@ -258,7 +279,11 @@ function serialMeta() {
 }
 
 // 关窗（✕ / Esc）同样要回报已落过的序号，否则"落过就推进"会在取消路径上失效。
+// Batch 1: a document-editor window negotiates before closing (contracts §7.3). Every exit
+// path funnels through requestCloseDocumentEditor() so "✕", Esc, and the native close all
+// behave the same; a plain capture window keeps the shipped behaviour byte for byte.
 function closeCaptureWindow() {
+  if (documentEditor) { requestCloseDocumentEditor(); return }
   cancelRenderReady()
   window.captureAPI.close(serialNumber>initialSerialNumber?serialNumber:0)
 }
@@ -413,6 +438,24 @@ function drawBackground() {
   backgroundCtx.clearRect(0,0,nativeBackground?backgroundCanvas.width:innerWidth,nativeBackground?backgroundCanvas.height:innerHeight)
   if (image) {
     if(nativeBackground){backgroundCtx.imageSmoothingEnabled=false;backgroundCtx.drawImage(image,0,0)}
+    else if (documentEditor) {
+      // Batch 1: a document editor loads the WHOLE base image but the window only reserves an
+      // area for the CROP - so the shipped `drawImage(image, bounds)` would squash the entire
+      // screenshot into the crop box while annotations are mapped crop->box, i.e. a visibly
+      // wrong backdrop that also disagrees with the exported result. Draw the crop region of
+      // the base image into the image area instead, which is exactly the export mapping
+      // (contracts §2.1: outX = sourceX - crop.x, then scaled by the viewport).
+      const bounds=imageDisplayBounds()
+      const crop=documentCrop()
+      const view=documentViewport()
+      const zoom=view?view.zoom:1
+      backgroundCtx.imageSmoothingEnabled=zoom!==1
+      backgroundCtx.drawImage(
+        image,
+        crop.x, crop.y, crop.w, crop.h,
+        bounds.x, bounds.y, crop.w*zoom, crop.h*zoom
+      )
+    }
     else{const bounds=imageDisplayBounds();backgroundCtx.drawImage(image,bounds.x,bounds.y,bounds.w,bounds.h)}
   }
 }
@@ -1091,6 +1134,7 @@ function updateFloatingUi() {
   const placement=toolbarPlacement()
   toolbar.style.left=`${placement.left}px`; toolbar.style.top=`${placement.top}px`; toolbar.classList.toggle('above',placement.above)
   syncWatermarkPanel()
+  syncRegionUi()
 }
 
 function positionOcrResultBar() {
@@ -1467,6 +1511,10 @@ function snapshotAnnotations() {
   annotationHistory.push(cloneAnnotations(annotations))
   if (annotationHistory.length > MAX_ANNOTATION_HISTORY) annotationHistory.splice(0, annotationHistory.length - MAX_ANNOTATION_HISTORY)
   historyIndex = annotationHistory.length - 1
+  // Batch 1: every committed content change funnels through here, so this is the one place
+  // that can keep `dirty` honest. Undo/redo also lands here via restoreAnnotations, which is
+  // exactly what makes "undo back to the baseline -> clean" work (§6.5.6).
+  if (documentEditor) refreshDocumentDirty()
 }
 
 // 把"已生效但未收口"的合并型编辑（方向键微调、取色器连续改色）各自压成独立一帧。
@@ -1485,6 +1533,10 @@ function restoreAnnotations(index) {
   // Brush plan (§5.2): the restored objects are fresh clones, so every patch is stale.
   invalidateMosaicPatches()
   syncSelectedAnnotation()
+  // Batch 1: undo/redo does not go through snapshotAnnotations (it moves historyIndex instead),
+  // so dirty has to be re-derived here too - that is what makes "undo back to the committed
+  // state" turn clean again (§6.5.6) instead of staying dirty forever.
+  if (documentEditor) refreshDocumentDirty()
   render()
 }
 
@@ -2341,6 +2393,309 @@ function canvasPngBuffer(sourceCanvas) {
   })
 }
 
+// ---------- Batch 1: editing a *document* rather than taking a screenshot ----------
+//
+// Design: docs/plans/2026-10-25-history-reedit-batch0-contracts.md §4 (commit protocol),
+// §7 (dirty + close negotiation). The contract module owns coordinates/schema/fingerprint;
+// this block only translates between "what the user sees" and "what a document is":
+//
+//   renderer annotations  = viewport CSS px (what annotation-geometry.js already speaks)
+//   document annotations  = base-image source px (what gets persisted)
+//
+// Every commit therefore converts exactly once, with the crop removed once in the export
+// path. Nothing here may reset `crop`, rewrite object coordinates, or create undo steps
+// when the window resizes or the DPI changes (contracts §2.1).
+function documentApi() { return window.captureDocument || null }
+
+function documentEditorActive() { return !!documentEditor }
+
+// Source-pixel size of the base image. Falls back to the loaded image, then the crop.
+function documentBaseSize() {
+  const base = documentEditor?.document?.baseImage
+  if (base && Number(base.width) > 0 && Number(base.height) > 0) {
+    return { width: Math.round(Number(base.width)), height: Math.round(Number(base.height)) }
+  }
+  return { width: image?.naturalWidth || 1, height: image?.naturalHeight || 1 }
+}
+
+function documentCrop() {
+  const crop = documentEditor?.crop
+  if (crop && Number(crop.w) > 0 && Number(crop.h) > 0) return crop
+  const size = documentBaseSize()
+  return { x: 0, y: 0, w: size.width, h: size.height }
+}
+
+// The viewport maps the *crop* into the image area the window reserved for it. zoom is
+// source-px -> CSS-px; offset centres the crop inside imageBounds. This is the only place
+// that builds it, and both directions come from the shared module so they stay inverses.
+function documentViewport() {
+  const api = documentApi()
+  if (!api) return null
+  const bounds = imageDisplayBounds()
+  const crop = documentCrop()
+  const view = api.fitViewport({
+    baseSize: documentBaseSize(),
+    crop,
+    bounds: { width: bounds.w, height: bounds.h }
+  })
+  // fitViewport centres the crop at (0,0); re-anchor into the window's image area.
+  return Object.assign({}, view, { offsetX: bounds.x + view.offsetX, offsetY: bounds.y + view.offsetY })
+}
+
+// Viewport-CSS annotations -> source-pixel annotations (what gets persisted).
+function annotationsToDocument() {
+  const api = documentApi()
+  const viewport = documentViewport()
+  if (!api || !viewport) return cloneAnnotations(annotations)
+  return api.annotationsFromViewport(annotations, viewport)
+}
+
+// Source-pixel annotations -> viewport CSS (what the renderer draws / hit-tests).
+function annotationsFromDocument(sourceAnnotations) {
+  const api = documentApi()
+  const viewport = documentViewport()
+  if (!api || !viewport) return cloneAnnotations(sourceAnnotations)
+  return api.annotationsToViewport(sourceAnnotations, viewport)
+}
+
+// Build the current document snapshot (source-pixel coordinates + real crop).
+function buildDocumentSnapshot() {
+  const api = documentApi()
+  if (!api) return null
+  const base = documentEditor?.document?.baseImage || {}
+  return api.normalizeDocument({
+    schemaVersion: api.SCHEMA_VERSION,
+    coordinateSpace: api.COORDINATE_SPACE,
+    // Identity is the main process's job; send it empty so the fingerprint can never be
+    // influenced by a stale id the renderer happens to hold.
+    documentId: '',
+    revisionId: '',
+    baseImage: {
+      // Placeholder asset id: the service rewrites it to the session's real base before
+      // fingerprinting (contracts §4 note on asset normalisation).
+      assetId: 'placeholder',
+      width: documentBaseSize().width,
+      height: documentBaseSize().height
+    },
+    crop: documentCrop(),
+    annotations: annotationsToDocument(),
+    captureAttachments: documentEditor?.document?.captureAttachments || { cursor: null },
+    captureMetadata: documentEditor?.document?.captureMetadata || { sourceScaleFactor: Number(initData?.scaleFactor) || 1 },
+    source: initData?.source || 'history'
+  })
+}
+
+function documentFingerprintNow() {
+  const api = documentApi()
+  if (!api) return ''
+  const snapshot = buildDocumentSnapshot()
+  return snapshot ? api.documentFingerprint(snapshot) : ''
+}
+
+// dirty = "content differs from the last successful commit". Viewport, selection and the
+// OCR panel deliberately do not participate (contracts §7.2).
+function refreshDocumentDirty() {
+  if (!documentEditor) return false
+  const fingerprint = documentFingerprintNow()
+  if (!fingerprint) return documentEditor.dirty === true
+  const dirty = documentEditor.cleanFingerprint ? fingerprint !== documentEditor.cleanFingerprint : true
+  if (dirty !== documentEditor.dirty) {
+    documentEditor.dirty = dirty
+    renderDocumentInfo()
+  }
+  return dirty
+}
+
+// The visible info area (contracts §5.3): "Editing: <name> (version N)" plus a dirty dot.
+// A native window title is not enough for a frameless window.
+function renderDocumentInfo() {
+  const bar = document.getElementById('documentInfo')
+  if (!bar) return
+  if (!documentEditor) { bar.classList.add('hidden'); return }
+  bar.classList.remove('hidden')
+  const version = Math.max(1, Number(documentEditor.version) || 1)
+  // Write into the text span, never into the bar itself: replacing bar.textContent would
+  // destroy the dirty dot and the saving label that live alongside it.
+  const text = document.getElementById('documentInfoText')
+  if (text) {
+    text.textContent = t('capture.document.info', {
+      name: documentEditor.documentName || t('capture.document.unnamed'),
+      version
+    })
+  }
+  const dirtyMark = document.getElementById('documentDirtyMark')
+  if (dirtyMark) dirtyMark.classList.toggle('hidden', documentEditor.dirty !== true)
+  const savingMark = document.getElementById('documentSavingMark')
+  if (savingMark) savingMark.classList.toggle('hidden', documentEditor.saving !== true)
+}
+
+// Restore a loaded document into the editor. This is a session swap, not an edit: the
+// annotation array is replaced wholesale and the undo stack is reset to a single frame
+// (contracts §6.1 A2 - "restore = new session + clear stack", never undoable to the
+// previous image).
+function restoreDocumentEditor(payload) {
+  const api = documentApi()
+  if (!payload) return
+  documentEditor = {
+    sessionId: String(payload.sessionId || ''),
+    documentId: String(payload.documentId || ''),
+    revisionId: String(payload.revisionId || ''),
+    version: Math.max(1, Number(payload.version) || 1),
+    legacy: payload.legacy === true,
+    storageFormat: payload.storageFormat || 'legacy-bitmap',
+    degraded: payload.degraded === true,
+    document: payload.document || null,
+    crop: payload.crop || null,
+    infoHeight: Number(payload.infoHeight) || 0,
+    documentName: String(payload.documentName || ''),
+    cleanFingerprint: '',
+    dirty: false,
+    saving: false,
+    requestSeq: 0
+  }
+  // Legacy flat records keep their pixels in the base image: no vector objects to restore,
+  // and the info bar says so instead of pretending the old arrows are editable (§6.7).
+  const sourceAnnotations = payload.legacy ? [] : (payload.document?.annotations || [])
+  annotations = api ? annotationsFromDocument(sourceAnnotations) : cloneAnnotations(sourceAnnotations)
+  // Re-number ids so the restored objects are addressable by the existing selection code;
+  // ids are session state and never part of the content fingerprint (§6.5.3).
+  annotationSeq = 0
+  for (const item of annotations) item.id = ++annotationSeq
+  selectedAnnotation = null
+  selectedIds = new Set()
+  // One "initial state" frame: Ctrl+Z right after opening is a no-op (§11.1).
+  annotationHistory = [cloneAnnotations(annotations)]
+  historyIndex = 0
+  invalidateMosaicPatches()
+  // The baseline for dirty is the content we just loaded, so opening is immediately clean.
+  documentEditor.cleanFingerprint = ''
+  documentEditor.cleanFingerprint = documentFingerprintNow()
+  documentEditor.dirty = false
+  renderDocumentInfo()
+  render()
+}
+
+// Encode the committed result for the current crop (source pixels, no resampling).
+// The result canvas is exactly crop-sized, which the service re-validates (§4).
+async function documentResultBuffer() {
+  const crop = documentCrop()
+  const output = document.createElement('canvas')
+  output.width = Math.max(1, crop.w)
+  output.height = Math.max(1, crop.h)
+  const out = output.getContext('2d')
+  out.imageSmoothingEnabled = false
+  // Base image slice: draw the crop region 1:1 (export subtracts the crop origin once).
+  out.drawImage(image, crop.x, crop.y, crop.w, crop.h, 0, 0, crop.w, crop.h)
+  // Annotations are stored in source px, so re-project them into export px for drawing.
+  const viewsForExport = annotationsToDocument()
+  for (const item of viewsForExport) drawAnnotation(out, item, 1, 1, crop.x, crop.y, image)
+  return canvasPngBuffer(output)
+}
+
+// Commit the frozen content state (contracts §4). One requestId per frozen snapshot:
+// a retry of the SAME requestId returns the same receipt instead of a new revision.
+async function commitDocumentEditor(intent = 'update') {
+  if (!documentEditor || !documentApi()) return { ok: false, status: 'failed', code: 'unavailable' }
+  if (documentEditor.saving) return { ok: false, status: 'failed', code: 'busy' }
+  const api = documentApi()
+  documentEditor.saving = true
+  renderDocumentInfo()
+  // Tell the user something is happening; the toolbar otherwise looks frozen during I/O.
+  document.body.classList.add('document-saving')
+  try {
+    // settle any coalesced micro-edits so the snapshot matches what is on screen
+    flushCoalescedEdits()
+    const snapshotDocument = buildDocumentSnapshot()
+    if (!snapshotDocument) return { ok: false, status: 'failed', code: 'invalid-document' }
+    const snapshot = api.serializeDocument(snapshotDocument)
+    const resultBuffer = await documentResultBuffer()
+    documentEditor.requestSeq += 1
+    const requestId = `req-${Date.now()}-${documentEditor.requestSeq}`
+    const response = await window.captureAPI.commitDocument({
+      sessionId: documentEditor.sessionId,
+      requestId,
+      intent,
+      expectedRevisionId: intent === 'update' ? documentEditor.revisionId : null,
+      snapshot,
+      resultBuffer
+    })
+    return handleCommitResponse(response, intent)
+  } catch (error) {
+    alert(error?.message || String(error))
+    return { ok: false, status: 'failed', code: 'request-failed', message: error?.message || String(error) }
+  } finally {
+    documentEditor.saving = false
+    document.body.classList.remove('document-saving')
+    renderDocumentInfo()
+  }
+}
+
+// Apply a commit result. Success -> accept the ids the main process assigned, then (and only
+// then) establish the clean baseline, so a temporary resource id can never look like dirty.
+function handleCommitResponse(response, intent) {
+  if (!response || typeof response !== 'object') {
+    alert(t('capture.document.save-failed'))
+    return { ok: false, status: 'failed', code: 'empty-response' }
+  }
+  if (response.status === 'committed' || response.status === 'unchanged') {
+    documentEditor.documentId = response.documentId || documentEditor.documentId
+    documentEditor.revisionId = response.headRevisionId || response.revisionId || documentEditor.revisionId
+    documentEditor.version = Math.max(1, Number(response.version) || documentEditor.version)
+    documentEditor.cleanFingerprint = documentFingerprintNow()
+    documentEditor.dirty = false
+    if (intent === 'save-copy') {
+      // "Save as new record" switches this session to the copy (§6.5.1): the next Ctrl+S
+      // must update the copy, not the original document.
+      documentEditor.version = 1
+    }
+    renderDocumentInfo()
+    return { ok: true, status: response.status }
+  }
+  if (response.status === 'conflict') {
+    // Never overwrite a newer revision silently: offer reload / save-copy, keep the work.
+    const copyNow = confirm(t('capture.document.conflict-save-copy'))
+    if (copyNow) return commitDocumentEditor('save-copy')
+    alert(t('capture.document.conflict-keep'))
+    return { ok: false, status: 'conflict' }
+  }
+  const code = response.code || 'failed'
+  alert(code === 'deleted' ? t('capture.document.deleted') : t('capture.document.save-failed'))
+  return { ok: false, status: 'failed', code }
+}
+
+// Unified close negotiation (contracts §7.3). dirty -> save / discard / keep editing.
+async function requestCloseDocumentEditor() {
+  if (!documentEditor) { cancelRenderReady(); window.captureAPI.close(0); return }
+  if (documentEditor.saving) return
+  refreshDocumentDirty()
+  if (!documentEditor.dirty) { finishDocumentClose(); return }
+  const choice = await askDocumentCloseChoice()
+  if (choice === 'save') {
+    const result = await commitDocumentEditor('update')
+    // Only close after a confirmed success; a failure keeps the window and the work.
+    if (result.ok) finishDocumentClose()
+    return
+  }
+  if (choice === 'discard') finishDocumentClose()
+  // 'keep' / dismissed: stay exactly where we are.
+}
+
+// Three-way prompt. window.confirm only offers two buttons, so the discard path asks a
+// second, explicit question; both are cancelled by Esc, which means "keep editing".
+function askDocumentCloseChoice() {
+  const save = confirm(t('capture.document.close-save'))
+  if (save) return 'save'
+  const discard = confirm(t('capture.document.close-discard'))
+  return discard ? 'discard' : 'keep'
+}
+
+function finishDocumentClose() {
+  const sessionId = documentEditor?.sessionId || ''
+  documentEditor = null
+  cancelRenderReady()
+  window.captureAPI.close({ sessionId, serialNumber: serialNumber > initialSerialNumber ? serialNumber : 0 })
+}
+
 function clearOcrResult() {
   activeOcrResult=null
   ocrOverlay.replaceChildren()
@@ -2629,6 +2984,16 @@ addEventListener('keydown',(event)=>{
   // P0-5 PR2：方向键微调选中元素（1px；Shift 10px）。方向键不与 Ctrl+A/Z/Y/S、Delete、
   // Enter、Esc 同键，Ctrl/Alt/Meta 组合在 nudgeSelectedAnnotation 里直接放行给下面的既有分支。
   if(nudgeSelectedAnnotation(event))return
+  // Batch 1 (contracts §6): in a document editor Ctrl+S commits the document instead of
+  // opening an external PNG save dialog, and Ctrl+Shift+S saves a copy as a new record.
+  // Every other capture window keeps the shipped Ctrl+S = "save image" behaviour.
+  if(event.ctrlKey&&event.key.toLowerCase()==='s'&&documentEditor){
+    event.preventDefault()
+    const intent=event.shiftKey?'save-copy':'update'
+    commitDocumentEditor(intent).then((result)=>{if(result.ok)refreshDocumentDirty()})
+    return
+  }
+  if(event.key==='Enter'&&!event.ctrlKey&&documentEditor){event.preventDefault();return}
   if(event.key==='Enter'&&!event.ctrlKey&&!activeOcrResult&&resultPanel.classList.contains('hidden'))performAction('copy')
   if(event.ctrlKey&&event.key.toLowerCase()==='s'){event.preventDefault();performAction('save')}
   // P0-7-T6：Ctrl+A 选中当前显示器（imageDisplayBounds() 已按 imageBounds/displayBounds 解析）。
@@ -2667,10 +3032,357 @@ window.captureAPI.onInit((data)=>{
   if(data.mode==='canvas')image.src=makeBlankCanvas()
   else if(data.imageBuffer){imageObjectUrl=URL.createObjectURL(new Blob([data.imageBuffer],{type:'image/png'}));image.src=imageObjectUrl}
   else window.captureAPI.renderError(t('capture.error.empty-image'))
+  // Batch 1: this window may be editing an existing document (history "continue editing").
+  // Restore it only after the image is decoded, because the viewport needs naturalWidth.
+  if(data.documentEditor){
+    const editorPayload=data.documentEditor
+    const previousOnload=image.onload
+    image.onload=(event)=>{previousOnload?previousOnload(event):null;restoreDocumentEditor(editorPayload)}
+  } else {
+    documentEditor=null
+    renderDocumentInfo()
+  }
 })
 
 function makeBlankCanvas(){const blank=document.createElement('canvas');blank.width=Math.max(1,innerWidth*dpr);blank.height=Math.max(1,innerHeight*dpr);const c=blank.getContext('2d');c.fillStyle='#fff';c.fillRect(0,0,blank.width,blank.height);return blank.toDataURL()}
+
+// ---------- Feature A (plan §4.1/§4.3 A3): the export result bar ----------
+// After a successful external export the overlay shows "open / address / open folder" for the file
+// that was just written. The renderer only ever holds the resultId; every system action is a main
+// process decision (plan §4.2). `capture/export-result-bar.js` owns the DOM and the messaging, so
+// this block is only the wiring: which exports produce a receipt, and which API it calls.
+const exportResultBar = window.exportResultBar
+  ? window.exportResultBar.createExportResultBar({
+      document,
+      translate: (key, params) => t(key, params),
+      getAction: (resultId, action) => window.captureAPI.exportAction(resultId, action),
+      log: (...args) => console.warn(...args)
+    })
+  : null
+
+// Main returns either the legacy path/null (older call sites) or the receipt `{ status:'saved',
+// resultId, fileName, kind }`. Only the receipt produces a bar: a cancelled save (null) and a
+// failure (thrown) must never look like a successful export (plan §4.2).
+function showExportResult(result) {
+  if (!exportResultBar) return
+  if (result && typeof result === 'object' && result.status === 'saved') exportResultBar.show(result)
+}
+
 addEventListener('resize',resizeCanvas)
+
+// ---------- Feature B (plan §5.1/§5.3 B3): region size entry + presets ----------
+// Coordinate rule (plan §5.1): this window and `selection` live in DIP. The main process resolves a
+// preset / the last region and answers in DIP as well (region-preferences converts pixel<->DIP per
+// axis), so nothing here converts scales - mixing display scaleFactor with the editor zoom is the
+// exact bug the plan forbids.
+//
+// Width/height are OUTPUT pixels, but the overlay draws DIP; the two agree 1:1 on a 100% display
+// and differ elsewhere. The panel therefore shows the DIP size of the current selection (what the
+// user sees) and, when a preset is applied, the main process has already accounted for the display
+// scale - the rect it returns is DIP, so it is applied directly.
+let regionPreferencesCache = null
+
+function setRegionStatus(key, params, isError) {
+  if (!regionStatus) return
+  regionStatus.textContent = key ? t(key, params) : ''
+  regionStatus.classList.toggle('hidden', !key)
+  regionStatus.classList.toggle('error', isError === true)
+}
+
+function positionRegionPanel() {
+  if (!regionPanel || regionPanel.classList.contains('hidden') || !selection) return
+  const rect = regionPanel.getBoundingClientRect()
+  let left = selection.x + selection.w - rect.width
+  let top = selection.y - rect.height - 10
+  if (top < 8) top = selection.y + selection.h + 10
+  left = Math.max(8, Math.min(left, innerWidth - rect.width - 8))
+  top = Math.max(8, Math.min(top, innerHeight - rect.height - 8))
+  regionPanel.style.left = `${left}px`
+  regionPanel.style.top = `${top}px`
+}
+
+// The toggle only appears once a selection exists; before that there is nothing to size (plan §5.3
+// keeps the common path unchanged: no selection, no extra controls).
+function syncRegionUi() {
+  if (!regionToggle) return
+  const available = !!selection && selection.w >= 2 && selection.h >= 2 &&
+    !activeOcrResult && !processingAction && !selecting && !dragging && !resizing &&
+    selectState !== 'auto' && !documentEditor
+  regionToggle.classList.toggle('available', available)
+  if (available) {
+    const rect = toolbar.classList.contains('hidden') ? null : toolbar.getBoundingClientRect()
+    const badge = { left: Math.max(4, selection.x), top: Math.max(4, selection.y - 27) }
+    regionToggle.style.left = `${rect ? rect.left : badge.left}px`
+    regionToggle.style.top = `${rect ? Math.max(8, rect.top - 30) : badge.top}px`
+  }
+  if (!available) closeRegionPanel()
+}
+
+function currentSelectionSize() {
+  return selection ? { width: Math.max(1, Math.round(selection.w)), height: Math.max(1, Math.round(selection.h)) } : null
+}
+
+function syncRegionInputs() {
+  const size = currentSelectionSize()
+  if (!size) return
+  if (regionWidthInput) regionWidthInput.value = String(size.width)
+  if (regionHeightInput) regionHeightInput.value = String(size.height)
+}
+
+function renderPresetOptions(preferences) {
+  if (!regionPresets) return
+  const presets = Array.isArray(preferences?.presets) ? preferences.presets : []
+  const previous = regionPresets.value
+  regionPresets.replaceChildren()
+  const placeholder = document.createElement('option')
+  placeholder.value = ''
+  placeholder.textContent = presets.length ? t('capture.region.presets') : t('capture.region.preset-empty')
+  regionPresets.appendChild(placeholder)
+  for (const preset of presets) {
+    const option = document.createElement('option')
+    option.value = preset.id
+    option.textContent = `${preset.name} (${preset.widthPx}×${preset.heightPx})`
+    regionPresets.appendChild(option)
+  }
+  if (previous && presets.some((preset) => preset.id === previous)) regionPresets.value = previous
+  if (regionDeletePreset) regionDeletePreset.disabled = !presets.length
+}
+
+async function refreshRegionPreferences() {
+  try {
+    const result = await window.captureAPI.regionGetPreferences()
+    regionPreferencesCache = result && result.ok ? result : null
+  } catch (error) {
+    regionPreferencesCache = null
+  }
+  renderPresetOptions(regionPreferencesCache)
+  if (regionReuseLast) regionReuseLast.disabled = !regionPreferencesCache?.lastAvailable?.capture
+  return regionPreferencesCache
+}
+
+// Applies a resolved DIP rect to the live selection. `adjusted` is reported, never swallowed: the
+// plan requires telling the user the region was adjusted instead of silently claiming the preset
+// was honoured.
+function applyRegionRect(result) {
+  if (!result || !result.ok || !result.rect) {
+    const code = result?.code || 'unresolved'
+    setRegionStatus(code === 'no-last-region' ? 'capture.region.no-last' : 'capture.region.preset-invalid', null, true)
+    return false
+  }
+  const bounds = imageDisplayBounds()
+  const rect = result.rect
+  const x = Math.max(bounds.x, Math.min(bounds.x + bounds.w - 1, Math.round(rect.x - (initData?.captureBounds?.x || 0))))
+  const y = Math.max(bounds.y, Math.min(bounds.y + bounds.h - 1, Math.round(rect.y - (initData?.captureBounds?.y || 0))))
+  const w = Math.max(1, Math.min(Math.round(rect.width), Math.round(bounds.x + bounds.w - x)))
+  const h = Math.max(1, Math.min(Math.round(rect.height), Math.round(bounds.y + bounds.h - y)))
+  // A geometry change to the region drops annotations exactly like a hand-redraw does (they are
+  // positioned in stage coordinates); asking first keeps that reversible.
+  if (annotations.length && !confirmDiscardAnnotations()) return false
+  selection = { x, y, w, h }
+  selectState = 'selected'
+  clearAnnotationsForNewSelection()
+  tip.style.display = 'none'
+  render()
+  syncRegionInputs()
+  const adjusted = Array.isArray(result.adjusted) ? result.adjusted : []
+  const clamped = adjusted.find((entry) => entry.code === 'clamped-to-screen')
+  if (clamped?.appliedPixelSize) {
+    setRegionStatus('capture.region.clamped', { width: clamped.appliedPixelSize.width, height: clamped.appliedPixelSize.height }, false)
+  } else if (adjusted.some((entry) => entry.code === 'rect-outside-display')) {
+    setRegionStatus('capture.region.rect-outside-display', null, false)
+  } else if (adjusted.some((entry) => entry.code === 'display-changed')) {
+    setRegionStatus('capture.region.display-changed', null, false)
+  } else if (adjusted.length) {
+    setRegionStatus('capture.region.adjusted', null, false)
+  } else {
+    setRegionStatus('', null, false)
+  }
+  return true
+}
+
+async function openRegionPanel() {
+  if (!regionPanel) return
+  regionPanel.classList.remove('hidden')
+  if (regionToggle) regionToggle.setAttribute('aria-expanded', 'true')
+  syncRegionInputs()
+  setRegionStatus('', null, false)
+  await refreshRegionPreferences()
+  positionRegionPanel()
+}
+
+function closeRegionPanel() {
+  if (!regionPanel) return
+  regionPanel.classList.add('hidden')
+  if (regionToggle) regionToggle.setAttribute('aria-expanded', 'false')
+}
+
+// Enter in the width/height fields applies the typed size. The size is clamped to the stage here
+// (the main process clamps to the *screen*): both limits are real, and the smaller one wins.
+function applyTypedRegionSize() {
+  const typedWidth = Math.round(Number(regionWidthInput?.value))
+  const typedHeight = Math.round(Number(regionHeightInput?.value))
+  if (!Number.isFinite(typedWidth) || !Number.isFinite(typedHeight) || typedWidth < 1 || typedHeight < 1) {
+    setRegionStatus('capture.region.preset-invalid', null, true)
+    return
+  }
+  // A locked ratio wins over the typed pair: the user asked for that relationship, so the height is
+  // derived rather than the input being rejected (plan §5.1: a fixed ratio only couples the size).
+  // It never touches the document crop - only the region being captured.
+  const ratio = parseRatio(regionRatioValue)
+  const width = typedWidth
+  const height = ratio ? Math.max(1, Math.round(typedWidth / ratio)) : typedHeight
+  const bounds = imageDisplayBounds()
+  const w = Math.max(1, Math.min(width, Math.round(bounds.w)))
+  const h = Math.max(1, Math.min(height, Math.round(bounds.h)))
+  // Preserve the region's top-left anchor (plan §5.1: a size lock keeps the drag anchor): the user
+  // is resizing, not moving, so the anchor must not jump to the centre.
+  const anchorX = selection ? Math.max(bounds.x, Math.min(selection.x, bounds.x + bounds.w - 1)) : bounds.x
+  const anchorY = selection ? Math.max(bounds.y, Math.min(selection.y, bounds.y + bounds.h - 1)) : bounds.y
+  if (annotations.length && !confirmDiscardAnnotations()) return
+  selection = {
+    x: Math.min(anchorX, bounds.x + bounds.w - w),
+    y: Math.min(anchorY, bounds.y + bounds.h - h),
+    w,
+    h
+  }
+  selectState = 'selected'
+  clearAnnotationsForNewSelection()
+  tip.style.display = 'none'
+  render()
+  syncRegionInputs()
+  positionRegionPanel()
+  setRegionStatus(w !== width || h !== height ? 'capture.region.clamped' : '', w !== width || h !== height ? { width: w, height: h } : null, false)
+}
+
+if (regionToggle) {
+  regionToggle.addEventListener('click', (event) => {
+    event.stopPropagation()
+    if (regionPanel.classList.contains('hidden')) openRegionPanel()
+    else closeRegionPanel()
+  })
+}
+if (regionApplySize) regionApplySize.addEventListener('click', applyTypedRegionSize)
+if (regionReuseLast) {
+  regionReuseLast.addEventListener('click', async () => {
+    try {
+      const result = await window.captureAPI.regionResolve({ mode: 'capture', last: true })
+      applyRegionRect(result)
+    } catch (error) {
+      setRegionStatus('capture.region.preset-invalid', null, true)
+    }
+  })
+}
+if (regionPresets) {
+  regionPresets.addEventListener('change', async () => {
+    const presetId = regionPresets.value
+    if (!presetId) return
+    try {
+      const result = await window.captureAPI.regionResolve({ mode: 'capture', presetId })
+      applyRegionRect(result)
+    } catch (error) {
+      setRegionStatus('capture.region.preset-invalid', null, true)
+    }
+  })
+}
+if (regionSavePreset) {
+  regionSavePreset.addEventListener('click', async () => {
+    const size = currentSelectionSize()
+    if (!size) return
+    const name = prompt(t('capture.region.preset-name'), `${size.width}×${size.height}`)
+    if (!name || !name.trim()) return
+    try {
+      const result = await window.captureAPI.regionSavePreset({ name: name.trim(), widthPx: size.width, heightPx: size.height })
+      if (result?.ok === false) {
+        // One direct call per code so the locale key is adjacent to the condition (and so the i18n
+        // contract test can see it as a literal).
+        if (result.code === 'limit-reached') {
+          setRegionStatus('capture.region.preset-limit', { max: regionPreferencesCache?.limits?.maxPresets || 20 }, true)
+        } else if (result.code === 'duplicate-name') {
+          setRegionStatus('capture.region.preset-duplicate', null, true)
+        } else {
+          setRegionStatus('capture.region.preset-invalid', null, true)
+        }
+        return
+      }
+      await refreshRegionPreferences()
+      if (result?.preset?.id && regionPresets) regionPresets.value = result.preset.id
+      setRegionStatus('', null, false)
+    } catch (error) {
+      setRegionStatus('capture.region.preset-invalid', null, true)
+    }
+  })
+}
+if (regionDeletePreset) {
+  regionDeletePreset.addEventListener('click', async () => {
+    const presetId = regionPresets?.value
+    if (!presetId) return
+    try {
+      const result = await window.captureAPI.regionDeletePreset(presetId)
+      if (result?.ok === false) { setRegionStatus('capture.region.preset-invalid', null, true); return }
+      await refreshRegionPreferences()
+      setRegionStatus('', null, false)
+    } catch (error) {
+      setRegionStatus('capture.region.preset-invalid', null, true)
+    }
+  })
+}
+// Feature B (plan §5.1): a fixed ratio couples width and height ONLY. It must never rewrite the
+// document crop or move the region, so this helper just derives the missing edge from the edited
+// one, keeping the region's top-left anchor intact.
+function parseRatio(value) {
+  if (typeof value !== 'string' || value === 'free') return null
+  const [width, height] = value.split(':').map((part) => Number(part))
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null
+  return width / height
+}
+
+// Recomputes the partner edge when the user edits one field under a locked ratio. `edited` says which
+// input the user is typing in, so the typing itself is never overridden mid-keystroke.
+function syncRatioPartner(edited) {
+  const ratio = parseRatio(regionRatioValue)
+  if (!ratio) return
+  const width = Math.round(Number(regionWidthInput?.value))
+  const height = Math.round(Number(regionHeightInput?.value))
+  if (edited === 'width' && Number.isFinite(width) && width > 0) {
+    if (regionHeightInput) regionHeightInput.value = String(Math.max(1, Math.round(width / ratio)))
+    return
+  }
+  if (edited === 'height' && Number.isFinite(height) && height > 0) {
+    if (regionWidthInput) regionWidthInput.value = String(Math.max(1, Math.round(height * ratio)))
+  }
+}
+
+// One delegated listener for the ratio group: the active lock is module state, and the pressed state
+// is the only UI echo. Switching to a locked ratio re-derives the height from the current width, so
+// the very next "apply" already satisfies the lock.
+for (const button of regionRatioButtons) {
+  button.addEventListener('click', () => {
+    regionRatioValue = button.dataset.regionRatio || 'free'
+    for (const other of regionRatioButtons) {
+      const active = other === button
+      other.classList.toggle('active', active)
+      other.setAttribute('aria-pressed', active ? 'true' : 'false')
+    }
+    syncRatioPartner('width')
+  })
+}
+// Typing in either field keeps a locked ratio satisfied; `input` (not `change`) so the partner edge
+// follows the caret rather than jumping only on blur.
+if (regionWidthInput) {
+  regionWidthInput.addEventListener('input', () => syncRatioPartner('width'))
+  regionWidthInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); applyTypedRegionSize() } })
+}
+if (regionHeightInput) {
+  regionHeightInput.addEventListener('input', () => syncRatioPartner('height'))
+  regionHeightInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); applyTypedRegionSize() } })
+}
+
+// Clicking elsewhere dismisses the popover, like the colour palette and the convert-doc menu.
+document.addEventListener('click', (event) => {
+  if (!regionPanel || regionPanel.classList.contains('hidden')) return
+  if (regionPanel.contains(event.target) || regionToggle?.contains(event.target)) return
+  closeRegionPanel()
+})
 addEventListener('beforeunload',()=>{cancelRenderReady();if(renderRequest)cancelAnimationFrame(renderRequest);if(imageObjectUrl)URL.revokeObjectURL(imageObjectUrl)})
 window.captureAPI.ready()
 

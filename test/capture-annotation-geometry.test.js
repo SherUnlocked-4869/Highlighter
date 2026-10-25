@@ -665,8 +665,16 @@ test('the element bar is a separate floating surface wired to delete/deselect, w
   assert.ok(html.indexOf('id="elementBar"') < html.indexOf('id="watermarkPanel"'), 'the bar sits right after the tool strip')
   // PR4：层级 ↑↓ 两个按钮插在删除与取消选中之间（工具栏不塞按钮，见方案 §8 风险⑦）。
   assert.match(html, /id="elementDelete"[\s\S]{0,200}?id="elementFront"[\s\S]{0,200}?id="elementBack"[\s\S]{0,200}?id="elementDeselect"/)
-  // 模块加载顺序：style → selection → geometry → capture
-  assert.match(html, /annotation-style\.js[\s\S]{0,200}?selection-utils\.js[\s\S]{0,200}?annotation-geometry\.js[\s\S]{0,200}?capture\.js/)
+  // 模块加载顺序：style → selection → geometry → shared document contract → capture
+  // (batch 1 added capture-document.js between the geometry helpers and the controller, because
+  // the controller reads window.captureDocument on load. The 600-char window covers the
+  // explanatory comment that documents that insertion.)
+  assert.match(html, /annotation-style\.js[\s\S]{0,200}?selection-utils\.js[\s\S]{0,200}?annotation-geometry\.js[\s\S]{0,600}?capture\.js/)
+  assert.ok(
+    html.indexOf('../shared/capture-document.js') > html.indexOf('annotation-geometry.js') &&
+    html.indexOf('../shared/capture-document.js') < html.indexOf('src="capture.js"'),
+    'the shared document contract must load after the geometry helpers and before capture.js'
+  )
   assert.match(
     script,
     /const \{[\s\S]{0,200}?annotationBounds,\s*findAnnotationAt,\s*translateAnnotation,\s*clampAnnotationToStage,\s*cloneAnnotations,\s*MAX_ANNOTATION_HISTORY,\s*MAX_PEN_POINTS\s*\} = window\.annotationGeometry/

@@ -43,6 +43,7 @@
     'recognition.action.copied': '已复制',
     // Export actions (table → .xlsx, result window → .pdf).
     'recognition.action.export-excel': '导出 Excel',
+    'recognition.action.save-and-open': '保存并打开',
     'recognition.action.export-pdf': '导出 PDF',
     'recognition.error.export-failed': '导出失败：{detail}',
     'recognition.error.invalid-window': '无效的识别结果窗口',
@@ -80,6 +81,7 @@
     'recognition.action.copied': 'Copied',
     // Export actions (table → .xlsx, result window → .pdf).
     'recognition.action.export-excel': 'Export Excel',
+    'recognition.action.save-and-open': 'Save and open',
     'recognition.action.export-pdf': 'Export PDF',
     'recognition.error.export-failed': 'Export failed: {detail}',
     'recognition.error.invalid-window': 'Invalid recognition result window',
@@ -117,6 +119,7 @@
     'recognition.action.copied': '已複製',
     // Export actions (table → .xlsx, result window → .pdf).
     'recognition.action.export-excel': '匯出 Excel',
+    'recognition.action.save-and-open': '儲存並開啟',
     'recognition.action.export-pdf': '匯出 PDF',
     'recognition.error.export-failed': '匯出失敗：{detail}',
     'recognition.error.invalid-window': '無效的辨識結果視窗',

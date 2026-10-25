@@ -15,6 +15,11 @@ const root = path.join(__dirname, '..')
 const script = fs.readFileSync(path.join(root, 'capture', 'capture.js'), 'utf8')
 const css = fs.readFileSync(path.join(root, 'capture', 'capture.css'), 'utf8')
 const pinDomain = fs.readFileSync(path.join(root, 'main/domains/pin/index.js'), 'utf8')
+// 2026-10-25（history「继续编辑」改造 §5.3 / §8.1）：紧凑编辑器的窗口算式与条带常数从
+// pin 域抽到了共用的纯函数模块，pin 与 history 两条重编辑入口都走它。下面的常数读取从
+// pin 源码改指向这里 —— 契约（常数与 UI 实测尺寸的关系）完全不变，只是换了归属文件。
+const editorLayoutSource = fs.readFileSync(path.join(root, 'shared', 'editor-layout.js'), 'utf8')
+const { resolveEditorLayout, EDITOR_LAYOUT_CONSTANTS } = require('../shared/editor-layout')
 
 const STRIP = { width: 880, height: 78 }
 const VIEWPORT = { width: 1493, height: 933 }
@@ -146,9 +151,13 @@ test('capture.js has exactly one placement rule, shared by the strip and the ele
 // ---------- 主进程预留条带：必须容得下"这个窗口宽度下工具栏实际会有多高" ----------
 
 function stripConstants() {
+  // The numbers live in shared/editor-layout.js now (pin and history share them), so the
+  // source contract is read there. Names are the historical pin ones, upper-cased; the
+  // pattern still requires a bare integer literal, which is what keeps a "just tweak it"
+  // edit visible as a contract change.
   const read = (name) => {
-    const match = pinDomain.match(new RegExp(`const ${name} = (\\d+)`))
-    assert.ok(match, `${name} must stay a named constant in the pin editor`)
+    const match = editorLayoutSource.match(new RegExp(`const ${name} = (\\d+)`))
+    assert.ok(match, `${name} must stay a named integer constant in shared/editor-layout.js`)
     return Number(match[1])
   }
   return {
@@ -157,7 +166,7 @@ function stripConstants() {
     optionsRow: read('OPTIONS_ROW_HEIGHT'),
     chrome: read('STRIP_CHROME'),
     slack: read('STRIP_SLACK'),
-    toolbarSpace: read('toolbarSpace')
+    toolbarSpace: read('TOOLBAR_SPACE')
   }
 }
 
@@ -222,15 +231,63 @@ test('the reserved strip is derived from the toolbar the window will actually sh
   assert.ok(stripFor(3) >= toolbarFor(3) + 16, `three-line strip ${stripFor(3)} must fit ${toolbarFor(3)} + gap + padding`)
 })
 
-test('the pin editor sizes the strip from the width it picks, for both re-annotate paths', () => {
-  assert.match(pinDomain, /const toolbarSpace = 1088/)
-  assert.match(pinDomain, /const stripRows = Math\.max\(1, Math\.ceil\(ROW_MIN_CONTENT \/ Math\.max\(1, width - STRIP_CHROME\)\)\)/)
-  assert.match(pinDomain, /const actionSpace = stripRows \* STRIP_ROW_HEIGHT \+ OPTIONS_ROW_HEIGHT \+ STRIP_CHROME \+ STRIP_SLACK/)
-  // width 必须先于 scale 算出（非循环依赖）：用 editBounds.width 而不是缩放后的 imageWidth。
-  const widthIndex = pinDomain.indexOf('const width = Math.min(workArea.width')
-  const actionIndex = pinDomain.indexOf('const actionSpace = stripRows')
-  const scaleIndex = pinDomain.indexOf('const scale = Math.min(')
-  assert.ok(widthIndex > 0 && actionIndex > widthIndex && scaleIndex > actionIndex, 'width -> strip -> scale order')
+test('the compact editor sizes the strip from the width it picks, for both re-edit entries', () => {
+  // 归属：算式已抽到 shared/editor-layout.js（history「继续编辑」复用同一份）。pin 只剩
+  // 委托，不再自带第二份算式 —— 这条断言钉的正是那个新意图。
+  assert.match(pinDomain, /resolveEditorLayout\(/)
+  assert.match(pinDomain, /scaleFactorFor\(/)
+  assert.doesNotMatch(pinDomain, /const stripRows = Math\.max/)
+  assert.doesNotMatch(pinDomain, /const ROW_MIN_CONTENT = \d+/)
+  // 常数与公式留在共享模块里，形状照旧可读（值另由 is-equivalent 测试钉死）。
+  assert.match(editorLayoutSource, /const TOOLBAR_SPACE = 1088/)
+  assert.match(editorLayoutSource, /const stripRows = Math\.max\(1, Math\.ceil\(ROW_MIN_CONTENT \/ Math\.max\(1, width - STRIP_CHROME\)\)\)/)
+  assert.match(editorLayoutSource, /const actionSpace = stripRows \* STRIP_ROW_HEIGHT \+ OPTIONS_ROW_HEIGHT \+ STRIP_CHROME \+ STRIP_SLACK/)
+
+  // 原来的"width 必须先于 scale 算出"是一条**源码顺序**断言。顺序本身不是契约，行为才是：
+  // 下面四条断言覆盖它想保护的东西，而且不依赖行号/书写顺序。
+  const { rowHeight, optionsRow, chrome, slack } = stripConstants()
+  const wide = { x: 0, y: 0, width: 1920, height: 1040 }
+  const narrow = { x: 0, y: 0, width: 1024, height: 728 }
+  const layoutIn = (workArea) => resolveEditorLayout({
+    imageWidth: 4000,
+    imageHeight: 3000,
+    workArea,
+    anchor: { x: workArea.x, y: workArea.y }
+  })
+  const wideLayout = layoutIn(wide)
+  const narrowLayout = layoutIn(narrow)
+
+  // ① 窗口宽度由工作区/下限/图片宽度推导，**不由缩放后的 imageWidth 反推**：
+  //    超宽图片被缩到多小都不会把窗口宽度带小，图像永远装得下。
+  for (const layout of [wideLayout, narrowLayout]) {
+    assert.ok(layout.imageBounds.width <= layout.editorBounds.width, 'image never wider than the window')
+    assert.equal(
+      layout.editorBounds.width,
+      Math.min(layout.workArea.width, Math.max(EDITOR_LAYOUT_CONSTANTS.TOOLBAR_SPACE, 4000)),
+      'width derives from the source width, not from the fitted image'
+    )
+  }
+  // ② 窄工作区真的把主行折成多行 → 动作区更高（这就是 stripRows 存在的理由）。
+  assert.ok(
+    narrowLayout.stripRows > wideLayout.stripRows,
+    `narrow work area must wrap the strip (${narrowLayout.stripRows} vs ${wideLayout.stripRows})`
+  )
+  assert.ok(narrowLayout.actionSpace > wideLayout.actionSpace, 'a wrapped strip reserves more height')
+  assert.equal(
+    narrowLayout.actionSpace,
+    narrowLayout.stripRows * rowHeight + optionsRow + chrome + slack,
+    'actionSpace = rows * rowHeight + optionsRow + chrome + slack'
+  )
+  // ③ ④ 缩放永不放大，窗口（含图像与条带）永远装得进工作区。
+  for (const layout of [wideLayout, narrowLayout]) {
+    assert.ok(layout.scale <= 1, 'scale never magnifies')
+    assert.ok(layout.editorBounds.height <= layout.workArea.height, 'height fits the work area')
+    assert.ok(layout.editorBounds.x >= layout.workArea.x, 'x inside the work area')
+    assert.ok(layout.editorBounds.y >= layout.workArea.y, 'y inside the work area')
+    assert.ok(layout.editorBounds.x + layout.editorBounds.width <= layout.workArea.x + layout.workArea.width)
+    assert.ok(layout.editorBounds.y + layout.editorBounds.height <= layout.workArea.y + layout.workArea.height)
+    assert.ok(layout.editorBounds.height - layout.imageBounds.height >= layout.stripRows * rowHeight + optionsRow + chrome)
+  }
   // 两条路径（普通重新标注与 OCR/翻译）共用同一段预留逻辑。
   assert.doesNotMatch(pinDomain, /isRecognitionEditor/)
   assert.match(pinDomain, /transparent: true,/)

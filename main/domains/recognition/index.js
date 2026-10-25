@@ -37,10 +37,34 @@ function createRecognitionDomain(deps) {
     getSettings,
     dataUrlToBuffer,
     recognizeWithPerformance,
-    buildTableFromOcr
+    buildTableFromOcr,
+    // Feature A (plan §4.2/A2): optional resolver for the export-result registry. Injected as a
+    // function because the service is created inside initializeStore(), after this domain is
+    // constructed. Absent -> the legacy "path or null" return is preserved unchanged.
+    getExportResultService = () => null
   } = deps
 
   const recognitionWindows = new Set()
+
+  function exportResultService() {
+    try {
+      return typeof getExportResultService === 'function' ? getExportResultService() : null
+    } catch {
+      return null
+    }
+  }
+
+  // Registers a file this domain just wrote and returns the plan §4.2 receipt for the renderer.
+  // A null path (cancelled dialog) stays null: a cancel must never look like a successful export.
+  // When the service is not wired, the raw path is returned so nothing regresses.
+  function registerExportResult(event, filePath, kind, source) {
+    if (!filePath) return null
+    const service = exportResultService()
+    if (!service) return filePath
+    const sender = event?.sender
+    const ownerId = sender && Number.isInteger(Number(sender.id)) ? `web-contents:${Number(sender.id)}` : null
+    return service.register({ filePath, kind, source, ownerId }) || filePath
+  }
 
   function ownsWindow(win) {
     return recognitionWindows.has(win)
@@ -185,7 +209,11 @@ function createRecognitionDomain(deps) {
         })
         if (!filePath) return null
         await resolveFileSystem(deps).promises.writeFile(filePath, buffer)
-        return filePath
+        // Feature A (plan §4.1/§4.2, task A2): hand the written file to the result registry so the
+        // result window can show the open / address / open-folder bar. Only `resultId` travels back
+        // to the renderer; the path stays here. A cancelled dialog returns early above and
+        // registers nothing, so a cancel never produces a bar.
+        return registerExportResult(event, filePath, 'xlsx', 'recognition-excel')
       },
       // Result window → PDF (analysis plan §0.3 #4 / §12.1). printToPDF on the
       // already-rendered window, then the shared save-dialog/write helper; the
@@ -203,14 +231,15 @@ function createRecognitionDomain(deps) {
           ...(typeof deps.printToPdf === 'function' ? { printToPdf: deps.printToPdf } : {})
         })
         if (typeof deps.savePdfBuffer === 'function') {
-          return deps.savePdfBuffer(pdfBuffer, {
+          const injectedPath = await deps.savePdfBuffer(pdfBuffer, {
             parentWindow: win,
             directory: defaultExportDirectory(),
             title: t('recognition.dialog.export-pdf-title')
           })
+          return registerExportResult(event, injectedPath, 'pdf', 'recognition-pdf')
         }
         const dialog = resolveDialog(deps)
-        return savePdfBuffer(pdfBuffer, {
+        const filePath = await savePdfBuffer(pdfBuffer, {
           parentWindow: win,
           ...(dialog ? { dialog } : {}),
           fs: resolveFileSystem(deps),
@@ -220,6 +249,7 @@ function createRecognitionDomain(deps) {
           makeName: (prefix, ext) => exportName(ext),
           title: t('recognition.dialog.export-pdf-title')
         })
+        return registerExportResult(event, filePath, 'pdf', 'recognition-pdf')
       },
       recognitionClose: (event) => {
         const win = BrowserWindow.fromWebContents(event.sender)

@@ -15,6 +15,13 @@ function registerCaptureIpc({ ipcMain, controller }) {
   ipcMain.handle('capture:open-recognition', controller.openRecognition)
   ipcMain.handle('capture:record-history', controller.recordHistory)
   ipcMain.handle('capture:export-pdf', controller.exportPdf)
+  // Batch 1 (docs/plans/2026-10-25-history-reedit-batch0-contracts.md §12): commit / status /
+  // load for editable documents. All three authorise under the same `capture` role; the real
+  // ownership check lives in captureDocumentService's session table, and the renderer sends only
+  // a sessionId - never a path or an asset id.
+  ipcMain.handle('capture:commit-document', controller.commitDocument)
+  ipcMain.handle('capture:commit-status', controller.commitStatus)
+  ipcMain.handle('capture:load-document', controller.loadDocument)
 
   ipcMain.on('long-capture:ready', controller.longReady)
   ipcMain.on('long-overlay:ready', controller.longOverlayReady)

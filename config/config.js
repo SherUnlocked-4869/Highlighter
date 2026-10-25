@@ -111,7 +111,11 @@ window.electronAPI.onGameModeChanged((enabled) => {
     })
     .catch(() => {})
 })
-window.electronAPI.onHistoryChanged(() => { if (currentRoute === 'history') renderHistory() })
+// B1.4 (history re-edit): a write used to rebuild the whole history page, which
+// reset pagination to page one, dropped the scroll offset and threw away the
+// thumbnail cache. The route now patches the list in place; entering the route
+// still goes through the full render (routes/history.js renderHistory).
+window.electronAPI.onHistoryChanged(() => { if (currentRoute === 'history') refreshHistoryOnChange() })
 window.electronAPI.onUpdateStatus((status) => {
   latestUpdateStatus = status
   // P3: the update card lives on the General settings page. Refresh only that

@@ -121,6 +121,9 @@ test('the tray menu resolves its 12 labels from the table instead of hard-coding
     t('main.tray.game-mode'),
     t('main.tray.exit-all-click-through'),
     t('main.tray.show-selection-chat'),
+    // Feature A (plan §4.1): the newest exported file. The entry is conditional on a live receipt
+    // (`recentExport`), and this template is built without one, so it is absent here - see the
+    // dedicated assertion below that the entry appears with a receipt and resolves its label.
     t('main.tray.capture-history'),
     t('main.tray.show-main-window'),
     t('main.tray.quit')
@@ -129,6 +132,29 @@ test('the tray menu resolves its 12 labels from the table instead of hard-coding
   // A missing key falls back to the key itself, so this catches an unmigrated
   // or misspelled label without duplicating the table here.
   assert.deepEqual(labels.filter((label) => label.startsWith('main.')), [])
+
+  // Feature A (plan §4.1/§4.3): with a live export receipt the tray gains exactly ONE extra entry,
+  // immediately before the capture-history item, and its label is the interpolated file name - the
+  // plan caps the tray at a single recent export so it cannot become a second history surface.
+  const withReceipt = buildTrayMenuTemplate({
+    executeFunction: () => {},
+    setGameModeEnabled: () => {},
+    openHistory: () => {},
+    openMainWindow: () => {},
+    showConversation: () => {},
+    quit: () => {},
+    recentExport: { resultId: 'r1', fileName: 'Highlighter_2026-10-25.png', kind: 'png' },
+    openRecentExport: () => {}
+  })
+  const receiptLabels = withReceipt.filter((item) => item.label).map((item) => item.label)
+  assert.equal(receiptLabels.length, labels.length + 1)
+  const recentIndex = receiptLabels.indexOf(withLanguage('zh-CN', () => t('main.tray.recent-export', { fileName: 'Highlighter_2026-10-25.png' })))
+  assert.ok(recentIndex > 0, 'the recent-export entry must render its interpolated label')
+  assert.equal(
+    receiptLabels[recentIndex + 1],
+    withLanguage('zh-CN', () => t('main.tray.capture-history')),
+    'the recent-export entry sits directly above capture-history'
+  )
 })
 
 test('every main.* key the migrated modules ask for exists in all three tables', () => {

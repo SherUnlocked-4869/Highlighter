@@ -40,6 +40,8 @@
     'main.tray.game-mode': '游戏模式',
     'main.tray.exit-all-click-through': '取消全部穿透',
     'main.tray.show-selection-chat': '显示划词对话',
+    // Feature A (plan §4.1): the newest exported file, when one is still live.
+    'main.tray.recent-export': '最近导出：{fileName}',
     'main.tray.capture-history': '截图历史',
     'main.tray.show-main-window': '显示主界面',
     'main.tray.quit': '退出',
@@ -104,7 +106,11 @@
     'main.ai-document.html': '图片转 HTML',
 
     // --- dialogs (main/services/function-router.js) ---
-    'main.dialog.image-filter': '图片'
+    'main.dialog.image-filter': '图片',
+
+    // --- diagnostics export dialog (main/ipc/diagnostics-ipc.js) ---
+    'main.diagnostics.export-title': '导出 Highlighter 诊断包',
+    'main.diagnostics.export-filter': 'ZIP 诊断包'
   })
 
   add('en-US', {
@@ -119,6 +125,7 @@
     'main.tray.game-mode': 'Game Mode',
     'main.tray.exit-all-click-through': 'Exit All Click-Through',
     'main.tray.show-selection-chat': 'Show Selection Chat',
+    'main.tray.recent-export': 'Recent export: {fileName}',
     'main.tray.capture-history': 'Capture History',
     'main.tray.show-main-window': 'Show Main Window',
     'main.tray.quit': 'Quit',
@@ -183,7 +190,11 @@
     'main.ai-document.html': 'Image to HTML',
 
     // --- dialogs ---
-    'main.dialog.image-filter': 'Images'
+    'main.dialog.image-filter': 'Images',
+
+    // --- diagnostics export dialog (main/ipc/diagnostics-ipc.js) ---
+    'main.diagnostics.export-title': 'Export a Highlighter diagnostics bundle',
+    'main.diagnostics.export-filter': 'ZIP diagnostics bundle'
   })
 
   add('zh-TW', {
@@ -198,6 +209,7 @@
     'main.tray.game-mode': '遊戲模式',
     'main.tray.exit-all-click-through': '取消全部穿透',
     'main.tray.show-selection-chat': '顯示劃詞對話',
+    'main.tray.recent-export': '最近匯出：{fileName}',
     'main.tray.capture-history': '截圖歷史',
     'main.tray.show-main-window': '顯示主介面',
     'main.tray.quit': '結束',
@@ -262,6 +274,10 @@
     'main.ai-document.html': '圖片轉 HTML',
 
     // --- dialogs ---
-    'main.dialog.image-filter': '圖片'
+    'main.dialog.image-filter': '圖片',
+
+    // --- diagnostics export dialog (main/ipc/diagnostics-ipc.js) ---
+    'main.diagnostics.export-title': '匯出 Highlighter 診斷包',
+    'main.diagnostics.export-filter': 'ZIP 診斷包'
   })
 })()

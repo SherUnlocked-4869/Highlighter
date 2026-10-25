@@ -13,11 +13,19 @@ const {
 const { resolveSaveDirectory } = require('../../services/image-file-save')
 // §17.5 的 PDF 默认名决定（S9a）：与截图保存共用同一套模板命名。
 const { makeCaptureName } = require('../../services/capture-naming')
+// Batch 1 (docs/plans/2026-10-25-history-reedit-batch0-contracts.md §4/§9.1 B1.1): the
+// compact-window geometry for history re-edit moved out of the pin domain into a shared pure
+// function, so the two no longer carry separate copies of the same arithmetic.
+const { resolveEditorLayout, scaleFactorFor } = require('../../../shared/editor-layout')
 
 const NATIVE_CAPTURE_TIMEOUT_MS = 5000
 // P0-2（S9b）：光标查询的兜底预算。provider 自身的查询超时是 350ms，比抓屏慢得多，
 // 这里再压一道硬预算，保证截图窗口不会被"取光标"拖住；超时按"不画"处理。
 const CURSOR_QUERY_BUDGET_MS = 120
+// Height of the info bar above the image when re-editing history (CSS px). The `.document-info`
+// block in capture/capture.css must fit the "editing: file name (version N)" line; the editor-UI
+// and floating-placement tests derive back from this value whether it is tall enough.
+const DOCUMENT_EDITOR_INFO_HEIGHT = 26
 
 function createCaptureDomain(deps) {
   const {
@@ -56,8 +64,52 @@ function createCaptureDomain(deps) {
     bufferToDataUrl,
     performanceMonitor,
     // P0-2（S9b）：可选注入。main.js 已注入；未注入时等价于"永远不画光标"。
-    cursorProvider
+    cursorProvider,
+    // Batch 1: the editable-document service (sessions, commit, load, result resolution).
+    // Passed as a RESOLVER function rather than an instance: the service depends on a
+    // historyService that only exists after initializeStore(), while the capture domain is
+    // constructed earlier. When it is not injected, every document channel answers with
+    // `unavailable` (unit tests can mock it).
+    getCaptureDocumentService = () => null,
+    // Entry point for broadcasting history:changed after a successful commit (injected by
+    // main.js; nothing is broadcast without it).
+    mainWindowBroadcast = null,
+    // Feature A (plan §4.2/A2): optional resolver for the export-result service. Injected as a
+    // function for the same reason as getCaptureDocumentService - the service is built inside
+    // initializeStore(), while this domain is constructed earlier. When it is absent the producers
+    // keep returning the legacy path/null shape (no result bar, nothing else changes).
+    getExportResultService = () => null
   } = deps
+
+  function exportResultService() {
+    try {
+      return typeof getExportResultService === 'function' ? getExportResultService() : null
+    } catch (error) {
+      log('Export result service unavailable:', error.message)
+      return null
+    }
+  }
+
+  // Wraps a legacy "path or null" producer into a plan §4.2 receipt. A null (cancelled dialog) stays
+  // null so a caller can never mistake a cancel for a successful export; when the service is absent
+  // the raw path is returned so an older host keeps working unchanged.
+  function registerExportResult(filePath, kind, source, event) {
+    if (!filePath) return null
+    const service = exportResultService()
+    if (!service) return filePath
+    const sender = event?.sender
+    const ownerId = sender && Number.isInteger(Number(sender.id)) ? `web-contents:${Number(sender.id)}` : null
+    return service.register({ filePath, kind, source, ownerId }) || filePath
+  }
+
+  function captureDocumentService() {
+    try {
+      return typeof getCaptureDocumentService === 'function' ? getCaptureDocumentService() : null
+    } catch (error) {
+      log('Capture document service unavailable:', error.message)
+      return null
+    }
+  }
 
   // P0-4：可选注入，便于单测 mock；主进程不注入时由 pdf-export 自解析 Electron 依赖，
   // 因此本特性不需要任何 main.js 接线（§2.2 规则 3）。
@@ -283,6 +335,99 @@ function createCaptureDomain(deps) {
     })
   }
 
+  // The compact editor for history "continue editing" (design §3.2 / §5.3 / §9.1 B1.1).
+  //
+  // Today that path just starts another region capture: no windowBounds means full screen,
+  // alwaysOnTop and a focus grab, and the image gets stretched into pixels. The pin domain
+  // already solved this once (`startPinReannotation`), so this reuses the same geometry
+  // (shared/editor-layout.js) instead of writing a second version of it.
+  //
+  // Only three things differ from pin, all of them because a history document has a crop:
+  //   1. The window is sized to the SOURCE-PIXEL size of the crop, not to the whole base image.
+  //   2. An info row (file name + version) is reserved above the image and counted into the
+  //      actionSpace height.
+  //   3. What is edited is a committed revision, so opening it must be able to commit back
+  //      (session binding + expectedRevisionId).
+  async function createDocumentEditorWindow(options = {}) {
+    const documentId = String(options.documentId || '')
+    if (!documentId) throw new Error('继续编辑需要文档 id')
+    const documentService = captureDocumentService()
+    const loaded = documentService
+      ? documentService.loadDocument(documentId, options.revisionId)
+      : { ok: false, code: 'unavailable' }
+    if (!loaded || !loaded.ok) {
+      throw new Error(loaded?.code === 'deleted' ? '该记录已不存在' : '无法打开该记录的编辑文档')
+    }
+    // A legacy flat image (no document) takes bitmap-only recovery: the full image becomes the
+    // base, with an empty vector list (§6.7).
+    const baseImagePath = loaded.baseImagePath || loaded.resultImagePath
+    if (!baseImagePath || !fs.existsSync(baseImagePath)) throw new Error('该记录的文件已丢失')
+    const imageBuffer = await fs.promises.readFile(baseImagePath)
+    const imageSize = readPngSize(imageBuffer)
+    if (!imageSize) throw new Error('底图无法解码')
+    // Edit area = the crop, in source pixels; a legacy image has no crop, so it is the whole image.
+    const crop = loaded.document?.crop || { x: 0, y: 0, w: imageSize.width, h: imageSize.height }
+    const workArea = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea
+    const layout = resolveEditorLayout({
+      imageWidth: crop.w,
+      imageHeight: crop.h,
+      workArea,
+      // The info row: file name + version + dirty marker. Its height comes from
+      // capture.css's `.document-info`, and the layout test checks this value is tall enough.
+      extraRows: 1,
+      extraRowHeight: DOCUMENT_EDITOR_INFO_HEIGHT
+    })
+    const sessionResult = documentService.beginSession({
+      documentId,
+      intent: 'update',
+      source: loaded.legacy ? 'history' : 'history',
+      windowId: null
+    })
+    if (!sessionResult.ok) throw new Error(sessionResult.code === 'deleted' ? '该记录已不存在' : '无法开始编辑会话')
+    let captureWindow = null
+    try {
+      captureWindow = await createCaptureWindow({
+        imageBuffer,
+        mode: 'image',
+        source: 'history',
+        windowBounds: layout.editorBounds,
+        imageBounds: layout.imageBounds,
+        // The info row sits outside the image, so the window must be transparent or that area
+        // would be painted as an opaque background.
+        transparent: true,
+        sourceScaleFactor: scaleFactorFor({ imageWidth: layout.imageWidth, sourceWidth: crop.w }),
+        // Re-edit load payload: document content + session + the commit intents that are allowed.
+        // Same shape as pin's `editPin`: it is how the renderer takes the "can commit" branch
+        // instead of the "new screenshot" one.
+        documentEditor: {
+          sessionId: sessionResult.session.sessionId,
+          documentId,
+          revisionId: loaded.revisionId || '',
+          version: loaded.version || 1,
+          // A legacy image can only gain new objects on top: its old annotations are pixels (§6.7).
+          legacy: loaded.legacy === true,
+          storageFormat: loaded.storageFormat || 'legacy-bitmap',
+          degraded: loaded.degraded === true,
+          document: loaded.document || null,
+          crop,
+          infoHeight: DOCUMENT_EDITOR_INFO_HEIGHT
+        }
+      })
+    } catch (error) {
+      documentService?.endSession(sessionResult.session.sessionId)
+      throw error
+    }
+    if (!captureWindow) {
+      documentService?.endSession(sessionResult.session.sessionId)
+      return null
+    }
+    captureWindow._documentEditorSessionId = sessionResult.session.sessionId
+    // Hide the launching window while editing and restore focus on close, mirroring pin's
+    // editingPinWindow. `hide()` is deliberately not used here: keeping the config window behind
+    // is an explicit design requirement (§2.1, "the config window stays behind and is not hidden").
+    return captureWindow
+  }
+
   async function createCaptureWindow(options = {}) {
     assertGameModeDisabled()
     const createSeq = ++captureCreateSeq
@@ -430,6 +575,10 @@ function createCaptureDomain(deps) {
         imageBounds: options.imageBounds || null,
         scaleFactor: capture.scaleFactor,
         editPin: !!options.editPin,
+        // Batch 1 (§6.5.4): the re-edit load payload. null means this session does not open a
+        // document at all (plain screenshot / pin re-annotation / blank canvas), and the renderer
+        // then keeps the original "new screenshot" semantics.
+        documentEditor: options.documentEditor || null,
         smartSelect: !!captureWindow._smartSelectContext,
         cursorPosition: (() => {
           const point = screen.getCursorScreenPoint()
@@ -473,6 +622,30 @@ function createCaptureDomain(deps) {
     return !!(currentCaptureWindow && !currentCaptureWindow.isDestroyed())
   }
 
+  // Entry point for history "continue editing"; main.js only wires it. Every failure becomes a
+  // structured return value, so the renderer no longer appears to do nothing when clicked
+  // (design §10 C10 / §11.1, "failures must be visible").
+  async function editHistoryDocument(item = {}) {
+    if (!item?.filePath || !fs.existsSync(item.filePath)) return { ok: false, code: 'file-missing' }
+    // Game mode: assertGameModeDisabled() throws, and the throw becomes a visible status instead
+    // of a silent unhandled rejection.
+    try {
+      assertGameModeDisabled()
+    } catch (error) {
+      return { ok: false, code: 'game-mode', message: error?.message || String(error) }
+    }
+    try {
+      const captureWindow = await createDocumentEditorWindow({
+        documentId: String(item.documentId || item.id || ''),
+        revisionId: item.revisionId || ''
+      })
+      return captureWindow ? { ok: true } : { ok: false, code: 'superseded' }
+    } catch (error) {
+      log('History document edit failed:', error?.message || String(error))
+      return { ok: false, code: error?.code || 'edit-failed', message: error?.message || String(error) }
+    }
+  }
+
   function createCaptureController() {
     return {
       ready: (event) => {
@@ -514,6 +687,41 @@ function createCaptureDomain(deps) {
         reportCaptureSerial(payload)
         const win = BrowserWindow.fromWebContents(event.sender)
         win?.close()
+      },
+      // The single commit entry point (batch-0 contract §4 / §12) and the only write path for an
+      // editable document. The renderer's payload carries just sessionId + requestId + intent +
+      // the frozen snapshot and result image; captureDocumentService generates and validates
+      // every document/asset id and path.
+      commitDocument: async (_event, payload = {}) => {
+        const documentService = captureDocumentService()
+        if (!documentService) return { ok: false, status: 'failed', code: 'unavailable', retryable: false }
+        const result = await documentService.commit(payload)
+        // Broadcast after success (§6.5.5 step 6): a failed notification does not affect the
+        // committed revision, and the client can still look the same result up by requestId.
+        if (result?.ok && result.status === 'committed' && typeof mainWindowBroadcast === 'function') {
+          try {
+            mainWindowBroadcast({ documentId: result.documentId, revisionId: result.revisionId, changeType: 'committed' })
+          } catch (error) {
+            log('Capture commit broadcast failed:', error.message)
+          }
+        }
+        return result
+      },
+      // Status lookup for a lost confirmation (§4.2): an expired request returns `expired` and is
+      // never silently re-executed.
+      commitStatus: (_event, payload = {}) => {
+        const documentService = captureDocumentService()
+        if (!documentService) return { ok: false, status: 'failed', code: 'unavailable' }
+        return documentService.commitStatus(payload)
+      },
+      // Editor document load: fetch the editable content by document id, or an explicit
+      // degradation signal (§6.5.7 / §10).
+      loadDocument: (_event, payload = {}) => {
+        const documentService = captureDocumentService()
+        if (!documentService) return { ok: false, code: 'unavailable' }
+        const documentId = String(payload?.documentId || '')
+        if (!documentId) return { ok: false, code: 'deleted' }
+        return documentService.loadDocument(documentId, payload?.revisionId)
       },
       startRegionRecording: async (event, { selectionBounds, serialNumber } = {}) => {
         // 录制/long 都会在算 meta 之前离开截图流程（渲染层提前 return），序号只能随调用载荷回来。
@@ -588,6 +796,10 @@ function createCaptureDomain(deps) {
             if (!buffer.length) throw new Error('截图图片数据为空')
             const filePath = await saveImageBuffer(buffer, { fast: !!fast })
             if (filePath) persistHistory(buffer, { ...meta, action: 'save' })
+            // A plain screenshot closes its window by design (plan §4.1 keeps the original
+            // close-on-save behaviour and must not trap the user in the overlay), so this receipt
+            // is not for an in-window bar - it is what the tray's "recent export" reads.
+            registerExportResult(filePath, 'png', 'capture-save', event)
           } catch (error) {
             log('Capture save failed:', error.message)
             dialog.showErrorBox('保存截图失败', error.message || String(error))
@@ -664,7 +876,7 @@ function createCaptureDomain(deps) {
           printToPdf,
           log
         })
-        return savePdfBuffer(pdfBuffer, {
+        const savedPdfPath = await savePdfBuffer(pdfBuffer, {
           parentWindow: parentWindow && !parentWindow.isDestroyed() ? parentWindow : null,
           dialog,
           fs,
@@ -672,12 +884,18 @@ function createCaptureDomain(deps) {
           // 与截图保存完全同源）。重名仍由保存对话框兜底，与改动前一致。
           makeName: (prefix, ext) => makeCaptureName(prefix, ext, { template: getSettings()?.screenshot?.nameTemplate })
         })
+        // Feature A (plan §4.2): register the file that was just written so the result bar can
+        // open/copy/reveal it by resultId. A cancelled dialog returns null from savePdfBuffer, and
+        // registering null is a no-op -> no bar appears for a cancel.
+        return registerExportResult(savedPdfPath, 'pdf', 'capture-pdf', event)
       }
     }
   }
 
   return {
     createCaptureWindow,
+    createDocumentEditorWindow,
+    editHistoryDocument,
     sendCaptureInit,
     revealCaptureWindow,
     createSmartSelectSession,

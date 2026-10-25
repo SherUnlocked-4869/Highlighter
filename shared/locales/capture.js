@@ -179,7 +179,42 @@
     // --- renderer-side failures surfaced through capture:render-error -------
     'capture.error.decode-failed': '截图图片解码失败',
     'capture.error.empty-image': '截图图片数据为空',
-    'capture.error.encode-failed': '截图图片编码失败'
+    'capture.error.encode-failed': '截图图片编码失败',
+    /* Batch 1 (history-reedit-batch0-contracts.md §4/§7): editing an existing document. */
+    'capture.document.info': '正在编辑：{name}（第 {version} 版）',
+    'capture.document.unnamed': '未命名截图',
+    'capture.document.dirty-tip': '有未保存的改动',
+    'capture.document.saving': '保存中…',
+    'capture.document.save-failed': '保存失败，改动仍保留在编辑器里，可以重试或另存为新记录。',
+    'capture.document.deleted': '这条记录已被删除，无法更新。可另存为新记录继续保留当前内容。',
+    'capture.document.conflict-save-copy': '这条记录已有更新版本。是否把当前内容另存为新记录？（取消则留在编辑器继续编辑）',
+    'capture.document.conflict-keep': '当前内容未保存为更新版本。可继续编辑，或另存为新记录。',
+    'capture.document.close-save': '有未保存的改动。保存并关闭吗？（取消可选择放弃或继续编辑）',
+    'capture.document.close-discard': '放弃这些未保存的改动并关闭？',
+
+
+    /* Feature B (plan §5.1/§5.3): region reuse and output-size presets in the capture overlay. */
+    'capture.region.size': '尺寸',
+    'capture.region.width': '宽',
+    'capture.region.height': '高',
+    'capture.region.apply-size': '应用尺寸',
+    'capture.region.ratio': '比例',
+    'capture.region.ratio-free': '自由',
+    'capture.region.reuse-last': '复用上次区域',
+    'capture.region.reuse-last-tip': '恢复上次确认的区域和尺寸',
+    'capture.region.no-last': '还没有可复用的区域',
+    'capture.region.presets': '尺寸预设',
+    'capture.region.preset-save': '保存为预设',
+    'capture.region.preset-name': '预设名称',
+    'capture.region.preset-delete': '删除预设',
+    'capture.region.preset-empty': '还没有保存的预设',
+    'capture.region.preset-limit': '预设数量已达上限（{max} 项）',
+    'capture.region.preset-invalid': '尺寸无效：宽高需为 16–10000 之间的整数',
+    'capture.region.preset-duplicate': '已有同名预设',
+    'capture.region.adjusted': '区域已调整',
+    'capture.region.clamped': '区域超出当前屏幕，已调整为 {width} × {height}',
+    'capture.region.display-changed': '原显示器布局已改变，区域已居中放置',
+    'capture.region.rect-outside-display': '部分区域超出当前屏幕，已裁剪',
   })
 
   add('en-US', {
@@ -318,7 +353,42 @@
 
     'capture.error.decode-failed': 'The capture image could not be decoded',
     'capture.error.empty-image': 'The capture image payload is empty',
-    'capture.error.encode-failed': 'The capture image could not be encoded'
+    'capture.error.encode-failed': 'The capture image could not be encoded',
+    /* Batch 1 (history-reedit-batch0-contracts.md §4/§7): editing an existing document. */
+    'capture.document.info': 'Editing: {name} (version {version})',
+    'capture.document.unnamed': 'Untitled capture',
+    'capture.document.dirty-tip': 'Unsaved changes',
+    'capture.document.saving': 'Saving…',
+    'capture.document.save-failed': 'Saving failed. Your changes are still in the editor; retry or save as a new record.',
+    'capture.document.deleted': 'This record was deleted and cannot be updated. Use "save as new record" to keep your work.',
+    'capture.document.conflict-save-copy': 'A newer version of this record exists. Save the current content as a new record? (Cancel to keep editing.)',
+    'capture.document.conflict-keep': 'The current content was not saved as a newer version. You can keep editing or save as a new record.',
+    'capture.document.close-save': 'You have unsaved changes. Save and close? (Cancel to choose discard or keep editing.)',
+    'capture.document.close-discard': 'Discard these unsaved changes and close?',
+
+
+    /* Feature B (plan §5.1/§5.3): region reuse and output-size presets. */
+    'capture.region.size': 'Size',
+    'capture.region.width': 'W',
+    'capture.region.height': 'H',
+    'capture.region.apply-size': 'Apply size',
+    'capture.region.ratio': 'Ratio',
+    'capture.region.ratio-free': 'Free',
+    'capture.region.reuse-last': 'Reuse last region',
+    'capture.region.reuse-last-tip': 'Restore the last confirmed region and its size',
+    'capture.region.no-last': 'No region has been remembered yet',
+    'capture.region.presets': 'Size presets',
+    'capture.region.preset-save': 'Save as preset',
+    'capture.region.preset-name': 'Preset name',
+    'capture.region.preset-delete': 'Delete preset',
+    'capture.region.preset-empty': 'No saved presets yet',
+    'capture.region.preset-limit': 'Preset limit reached ({max})',
+    'capture.region.preset-invalid': 'Invalid size: width and height must be integers between 16 and 10000',
+    'capture.region.preset-duplicate': 'A preset with that name already exists',
+    'capture.region.adjusted': 'Region adjusted',
+    'capture.region.clamped': 'The region was larger than this screen and is now {width} × {height}',
+    'capture.region.display-changed': 'The display layout changed, so the region is centred instead',
+    'capture.region.rect-outside-display': 'Part of the region was outside this screen and has been cropped',
   })
 
   add('zh-TW', {
@@ -457,6 +527,41 @@
 
     'capture.error.decode-failed': '截圖影像解碼失敗',
     'capture.error.empty-image': '截圖影像資料為空',
-    'capture.error.encode-failed': '截圖影像編碼失敗'
+    'capture.error.encode-failed': '截圖影像編碼失敗',
+    /* Batch 1 (history-reedit-batch0-contracts.md §4/§7): editing an existing document. */
+    'capture.document.info': '正在編輯：{name}（第 {version} 版）',
+    'capture.document.unnamed': '未命名截圖',
+    'capture.document.dirty-tip': '有未儲存的變更',
+    'capture.document.saving': '儲存中…',
+    'capture.document.save-failed': '儲存失敗，變更仍保留在編輯器裡，可以重試或另存為新記錄。',
+    'capture.document.deleted': '這筆記錄已被刪除，無法更新。可另存為新記錄繼續保留目前內容。',
+    'capture.document.conflict-save-copy': '這筆記錄已有更新版本。是否將目前內容另存為新記錄？（取消則留在編輯器繼續編輯）',
+    'capture.document.conflict-keep': '目前內容未儲存為更新版本。可繼續編輯，或另存為新記錄。',
+    'capture.document.close-save': '有未儲存的變更。儲存並關閉嗎？（取消可選擇放棄或繼續編輯）',
+    'capture.document.close-discard': '放棄這些未儲存的變更並關閉？',
+
+
+    /* Feature B (plan §5.1/§5.3): region reuse and output-size presets. */
+    'capture.region.size': '尺寸',
+    'capture.region.width': '寬',
+    'capture.region.height': '高',
+    'capture.region.apply-size': '套用尺寸',
+    'capture.region.ratio': '比例',
+    'capture.region.ratio-free': '自由',
+    'capture.region.reuse-last': '沿用上次區域',
+    'capture.region.reuse-last-tip': '還原上次確認的區域與尺寸',
+    'capture.region.no-last': '尚無可沿用的區域',
+    'capture.region.presets': '尺寸預設',
+    'capture.region.preset-save': '存為預設',
+    'capture.region.preset-name': '預設名稱',
+    'capture.region.preset-delete': '刪除預設',
+    'capture.region.preset-empty': '尚無已儲存的預設',
+    'capture.region.preset-limit': '預設數量已達上限（{max} 項）',
+    'capture.region.preset-invalid': '尺寸無效：寬高需為 16–10000 之間的整數',
+    'capture.region.preset-duplicate': '已有同名預設',
+    'capture.region.adjusted': '區域已調整',
+    'capture.region.clamped': '區域超出目前螢幕，已調整為 {width} × {height}',
+    'capture.region.display-changed': '原螢幕配置已改變，區域已置中',
+    'capture.region.rect-outside-display': '部分區域超出目前螢幕，已裁剪',
   })
 })()

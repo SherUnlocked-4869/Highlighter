@@ -29,5 +29,17 @@ Object.assign(globalThis.__LOCALES['zh-CN'] = globalThis.__LOCALES['zh-CN'] || {
   'common.label.error': '出错了',
   'common.language.zh': '简体中文',
   'common.language.en': 'English',
-  'common.language.zh-hant': '繁體中文'
+  'common.language.zh-hant': '繁體中文',
+  // Feature A (plan §4.1/§4.2): the export result bar, shared by the capture and recognition
+  // windows. It lives in the cross-window table because BOTH windows render it.
+  'capture.export-result.saved': '已保存：{fileName}',
+  'capture.export-result.open': '打开',
+  'capture.export-result.copy-path': '地址',
+  'capture.export-result.reveal': '打开文件夹',
+  'capture.export-result.copied': '路径已复制',
+  'capture.export-result.pending': '处理中…',
+  'capture.export-result.open-failed': '文件已保存，但无法用默认应用打开。',
+  'capture.export-result.file-missing': '文件已不在原位置，可能已被移动或删除。',
+  'capture.export-result.expired': '这条导出结果已失效，请重新导出。',
+  'capture.export-result.action-failed': '文件已保存，但操作失败。',
 })

@@ -16,6 +16,11 @@ function buildTrayMenuTemplate({
   // rendering an unusable toggle.
   translationProxy = null,
   setTranslationProxyEnabled,
+  // Feature A (plan §4.1): the newest live export receipt `{ resultId, fileName, kind }`, or null.
+  // Optional so every existing caller/test keeps building the template without it; the entry simply
+  // does not appear when there is nothing to open.
+  recentExport = null,
+  openRecentExport = null,
   executeFunction,
   setGameModeEnabled,
   openHistory,
@@ -83,6 +88,17 @@ function buildTrayMenuTemplate({
     // other way to bring it back (a new selection) discards the conversation.
     // Without this entry the preserved turns are unreachable.
     { label: t('main.tray.show-selection-chat'), visible: hasConversation === true, enabled: featureEnabled, click: showConversation },
+    // Feature A (plan §4.1/§4.3 A3): the most recent exported file, reachable after its window is
+    // gone (a plain screenshot closes on save). Exactly one entry, newest first - the plan caps the
+    // tray at a single recent item so this cannot become a second history surface. The entry is
+    // APPENDED only when there IS a live receipt: a `visible:false` item still occupies a slot in
+    // some platform menu implementations, and it would also keep the label list below honest.
+    ...(recentExport && typeof openRecentExport === 'function'
+      ? [{
+          label: t('main.tray.recent-export', { fileName: recentExport.fileName || '' }),
+          click: () => openRecentExport(recentExport)
+        }]
+      : []),
     { label: t('main.tray.capture-history'), click: openHistory },
     { label: t('main.tray.show-main-window'), click: openMainWindow },
     { type: 'separator' },

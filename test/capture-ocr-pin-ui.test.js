@@ -16,9 +16,14 @@ test('OCR result actions stay outside the selected image area', () => {
   const captureDomain = fs.readFileSync(path.join(root, 'main/domains/capture/index.js'), 'utf8')
   // 重新标注编辑器（普通右键重新标注与 OCR/翻译两条路径）统一在图像下方预留工具栏条带，
   // 且条带高度由"这个宽度下主行会折几行"推导（不是拍常数）。
-  assert.match(pinDomainSource, /const stripRows = Math\.max\(1, Math\.ceil\(ROW_MIN_CONTENT[\s\S]*const actionSpace = stripRows \* STRIP_ROW_HEIGHT \+ OPTIONS_ROW_HEIGHT \+ STRIP_CHROME \+ STRIP_SLACK/)
-  assert.match(pinDomainSource, /const editorImageBounds = \{[\s\S]{0,160}?y: 0,/)
-  assert.match(pinDomainSource, /windowBounds: editorBounds,[\s\S]*imageBounds: editorImageBounds,[\s\S]*transparent: true,/)
+  // 2026-10-25：该算式（含 stripRows / actionSpace 两行）已抽到 shared/editor-layout.js，
+  // pin 域改为调用 resolveEditorLayout()，history「继续编辑」复用同一份。
+  const editorLayoutSource = fs.readFileSync(path.join(root, 'shared', 'editor-layout.js'), 'utf8')
+  assert.match(editorLayoutSource, /const stripRows = Math\.max\(1, Math\.ceil\(ROW_MIN_CONTENT[\s\S]*const actionSpace = stripRows \* STRIP_ROW_HEIGHT \+ OPTIONS_ROW_HEIGHT \+ STRIP_CHROME \+ STRIP_SLACK/)
+  assert.match(pinDomainSource, /resolveEditorLayout\(\{/)
+  // 传给 createCaptureWindow 的四个字段必须来自同一个 layout（windowBounds/imageBounds
+  // 同源，否则窗口与图像的适配会各算一遍）。
+  assert.match(pinDomainSource, /windowBounds: layout\.editorBounds,[\s\S]{0,240}?imageBounds: layout\.imageBounds,[\s\S]{0,240}?transparent: true,/)
   assert.match(captureDomain, /const transparent = mode === 'canvas' \|\| !!options\.transparent[\s\S]*hasShadow: !transparent/)
   assert.match(captureScript, /function imageDisplayBounds\(\)[\s\S]*initData\?\.imageBounds/)
   assert.match(captureScript, /function positionOcrResultBar\(\)[\s\S]*selection\.y\+selection\.h\+10/)

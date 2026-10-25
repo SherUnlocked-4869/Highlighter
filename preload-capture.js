@@ -40,6 +40,23 @@ contextBridge.exposeInMainWorld('captureAPI', {
   startRegionRecording: (selectionBounds, serial) => ipcRenderer.invoke('capture:start-region-recording', { selectionBounds, ...serial }),
   recordHistory: (imageBuffer, meta) => ipcRenderer.invoke('capture:record-history', { imageBuffer, meta }),
   exportPdf: (imageBuffer, meta, mode) => ipcRenderer.invoke('capture:export-pdf', { imageBuffer, meta, mode }),
+  // 批次 1（docs/plans/2026-10-25-history-reedit-batch0-contracts.md §4）：可编辑文档的统一
+  // 提交入口。渲染层只传会话 + 幂等键 + 意图 + 冻结快照/结果图；文档与资源 id、路径、
+  // 归属全部由主进程决定。返回值至少区分 committed / unchanged / conflict / failed。
+  commitDocument: (payload) => ipcRenderer.invoke('capture:commit-document', payload),
+  // 确认丢失后按 requestId 查询回执（过期返回 expired，不会悄悄再执行一次）。
+  commitStatus: (payload) => ipcRenderer.invoke('capture:commit-status', payload),
+  // 编辑器载入可编辑文档（或在 doc 损坏时拿到明确的降级信号）。
+  loadDocument: (payload) => ipcRenderer.invoke('capture:load-document', payload),
+  // Feature A（docs/plans/2026-10-25-snow-apps-feature-development-plan.md §4.2）：结果条动作。
+  // 只传主进程刚登记的 resultId + 动作名；**不接受路径**，打开/定位/复制地址都在主进程做。
+  exportAction: (resultId, action) => ipcRenderer.invoke('export:perform-action', { resultId, action }),
+  // Feature B（同文档 §5.2）：尺寸预设与上次区域。渲染层提交的只有模式/预设 id，
+  // 桌面坐标一律由主进程按当前屏幕解析后下发（rect 是 DIP，正好是渲染层绘制用的空间）。
+  regionGetPreferences: () => ipcRenderer.invoke('region:get-preferences'),
+  regionResolve: (payload) => ipcRenderer.invoke('region:resolve', payload),
+  regionSavePreset: (payload) => ipcRenderer.invoke('region:save-preset', payload),
+  regionDeletePreset: (id) => ipcRenderer.invoke('region:delete-preset', { id }),
   saveWatermarkSettings: (watermark) => ipcRenderer.invoke('settings:update', { screenshot: { watermark } }),
   saveAnnotationWidth: (annotationWidth) => ipcRenderer.invoke('settings:update', { screenshot: { annotationWidth } }),
   // A3: the palette colour rides the same settings:update pipe as the width, so

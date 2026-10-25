@@ -1,8 +1,19 @@
 const { CredentialStore } = require('./credential-store')
 const { assertSettingsPatch } = require('./settings-validation')
 const { assertClipboardSettings } = require('./clipboard-settings')
+const { assertRegionPreferencesPatch, REGION_PREFERENCES_PATH } = require('../../shared/region-presets')
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+// Feature B (plan 2026-10-25 §5.2): the settings template can only check the SHAPE of
+// screenshot.regionPreferences (the default presets array is empty, and the null
+// lastByMode leaves accept anything). The real contract - id uniqueness, name length,
+// integer sizes, the pixel budget, the 20-preset cap - is domain logic, so it is
+// registered here as a per-path validator for the write path. Registration is
+// per-patch-path: a patch that never touches regionPreferences pays nothing.
+const REGION_DOMAIN_VALIDATORS = new Map([
+  [REGION_PREFERENCES_PATH, assertRegionPreferencesPatch]
+])
 
 function sameProviderEndpoint(left, right) {
   const normalize = (value) => String(value || '').trim().replace(/\/+$/, '')
@@ -137,7 +148,11 @@ class SettingsService {
   }
 
   updateSettings(patch) {
-    const validatedPatch = assertSettingsPatch(patch === undefined ? {} : patch, this.defaults)
+    const validatedPatch = assertSettingsPatch(
+      patch === undefined ? {} : patch,
+      this.defaults,
+      { domainValidators: REGION_DOMAIN_VALIDATORS }
+    )
     if (validatedPatch.clipboard) assertClipboardSettings(mergeSettings(this.getSettings().clipboard, validatedPatch.clipboard))
     const preparedPatch = this.prepareCredentialPatch(validatedPatch)
     const deepseekApiKeyPatch = Array.isArray(validatedPatch.providers)

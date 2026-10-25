@@ -10,6 +10,7 @@ const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8'
 const config = readConfigSource()
 const settingsIpc = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'settings-ipc.js'), 'utf8')
 const historyService = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'history-service.js'), 'utf8')
+const windowActions = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'window-actions.js'), 'utf8')
 
 function section(source, start, end) {
   const startIndex = source.indexOf(start)
@@ -43,7 +44,11 @@ test('portable named paths own history, logs, and service caches', () => {
   assert.match(main, /getLongCaptureTempRoot: \(\) => activePaths\?\.longCaptureCache \|\| app\.getPath\('temp'\)/)
   assert.doesNotMatch(main, /tempRoot: path\.join\(app\.getPath\('userData'\), 'temp', 'recordings'\)/)
   assert.match(main, /dataDirectory: activePaths\?\.root \|\| app\.getPath\('userData'\)/)
-  assert.match(main, /shell\.openPath\(activePaths\?\.root \|\| app\.getPath\('userData'\)\)/)
+  // "Open the data directory" moved into main/services/window-actions.js with the
+  // other shell actions (main.js line budget): main.js still owns which root is
+  // active, and the module performs the open on it.
+  assert.match(main, /getDataRoot: \(\) => activePaths\?\.root \|\| app\.getPath\('userData'\)/)
+  assert.match(windowActions, /shell\.openPath\(getDataRoot\(\)\)/)
 })
 
 test('first portable run selects a root, migrates legacy data, and never starts the app on cancel', () => {

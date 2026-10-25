@@ -9,6 +9,7 @@ const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
 const config = readConfigSource()
 const styles = fs.readFileSync(path.join(root, 'config', 'config.css'), 'utf8')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+const windowActions = fs.readFileSync(path.join(root, 'main', 'services', 'window-actions.js'), 'utf8')
 const naming = fs.readFileSync(path.join(root, 'main', 'services', 'capture-naming.js'), 'utf8')
 
 test('preload exposes fixed history management methods', () => {
@@ -101,7 +102,9 @@ test('history page confirms destructive cleanup and reports partial failures', (
 })
 
 test('main process owns the export directory picker', () => {
+  // The picker moved to main/services/window-actions.js (main.js line budget);
+  // the export flow still asks it for a screenshot-specific title.
   assert.match(main, /title: '选择截图导出目录'/)
-  assert.match(main, /properties: \['openDirectory', 'createDirectory'\]/)
+  assert.match(windowActions, /properties: \['openDirectory', 'createDirectory'\]/)
   assert.match(main, /exportMany: \(ids, directory\) => historyService\.exportMany\(ids, directory\)/)
 })

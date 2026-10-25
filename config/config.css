@@ -221,6 +221,16 @@ progress{accent-color:var(--primary)}
 .history-select input{width:16px;height:16px;accent-color:var(--primary);cursor:pointer}
 .history-load-more{display:flex;justify-content:center;padding:20px}
 .history-load-more .button{min-width:200px;border-radius:var(--radius-pill)}
+/* Revision badge (plan §6.5.1): only rendered when version > 1, so legacy rows and
+   first versions keep the meta line exactly as it was. `.history-meta` is a flex row,
+   so the badge needs `margin-left:auto` + a non-shrinking box; the dim mono run stays
+   the one element that ellipsises. `min-width:0` is the flex minimum-size override the
+   existing `.history-meta-sub` rule needs once a third item shares the row — without
+   it the nowrap run never shrinks below its min-content width. */
+.history-meta-sub{min-width:0}
+.history-version{flex:0 0 auto;margin-left:auto;padding:1px 6px;border:1px solid var(--line-2);border-radius:var(--radius-pill);color:var(--primary-text);background:var(--primary-soft);font-size:10.5px;font-variant-numeric:tabular-nums;letter-spacing:.02em;white-space:nowrap}
+/* Long captures have no edit button; the plate carries the reason as a tooltip. */
+.history-image[title]{cursor:help}
 
 /* ---------- plugins ---------- */
 .plugin-card{display:flex;align-items:center;gap:14px;padding:18px}

@@ -4,6 +4,7 @@ const { normalizeSelectionToolbar, normalizeToolbarThinking } = require('../../t
 const { normalizeAiSettings } = require('./ai-providers')
 const { resolveMainColor } = require('./appearance-migration')
 const { normalizeClipboardSettings } = require('./clipboard-settings')
+const { normalizeRegionPreferences } = require('../../shared/region-presets')
 
 // P0 settings frozen in Wave 0 (2026-10-10). They are normalized here so a
 // hand-edited or legacy store cannot hand an unsupported language, a
@@ -98,7 +99,7 @@ function normalizePort(value) {
   return Number.isInteger(value) && value > 0 && value < 65536 ? value : DEFAULT_PROXY_PORT
 }
 
-function normalizeFrozenSettings(settings) {
+function normalizeFrozenSettings(settings, log) {
   settings.clipboard = normalizeClipboardSettings(settings.clipboard)
   // Opt-in usage statistics: a hand-edited store could carry a truthy string, so
   // the toggle is coerced to a strict boolean like the other feature switches.
@@ -133,15 +134,35 @@ function normalizeFrozenSettings(settings) {
   // from the settings template; drop them so a store carried over from that
   // build does not keep dead keys around forever.
   for (const legacyKey of LEGACY_PROXY_KEYS) delete settings.proxy[legacyKey]
+  normalizeRegionPreferencesInPlace(settings, log)
+}
+
+// Feature B (plan 2026-10-25 §5.1/§5.2): a hand-edited or legacy store must never hand
+// a feature a NaN size, an unbounded presets array or duplicate ids. This is the READ
+// path, so it never throws: illegal items are dropped and the diagnostics are logged.
+// A store written before the feature existed has no key at all - that is legal and
+// normalizes to the shipped defaults, which is the migration case the template
+// validator used to mis-reject.
+function normalizeRegionPreferencesInPlace(settings, log) {
+  if (!settings.screenshot || typeof settings.screenshot !== 'object') settings.screenshot = {}
+  const { preferences, diagnostics } = normalizeRegionPreferences(settings.screenshot.regionPreferences)
+  settings.screenshot.regionPreferences = preferences
+  if (typeof log !== 'function') return
+  for (const item of diagnostics) {
+    log(`Settings normalization: regionPreferences ${item.code} at ${item.path || '<root>'} — ${item.message}`)
+  }
 }
 
 // Runtime settings normalization that used to live in the assembly layer
 // (main.js normalizeSettings). The resolved history directory is injected so
 // this module stays free of Electron/path state and is directly unit-testable.
-function createSettingsNormalizer({ defaultHistoryDirectory }) {
+// `log` is optional and additive (defaults to silence) so existing call sites and
+// tests keep their exact behaviour.
+function createSettingsNormalizer({ defaultHistoryDirectory, log } = {}) {
   if (typeof defaultHistoryDirectory !== 'string' || !defaultHistoryDirectory) {
     throw new TypeError('Settings normalization requires a resolved history directory')
   }
+  const report = typeof log === 'function' ? log : null
 
   return function normalizeSettings(settings) {
     const normalized = normalizeAiSettings(settings)
@@ -155,7 +176,7 @@ function createSettingsNormalizer({ defaultHistoryDirectory }) {
     normalized.mainColor = resolveMainColor(normalized.mainColor)
     if (normalized.fixedContent && Object.hasOwn(normalized.fixedContent, 'autoSaveDirectory')) delete normalized.fixedContent.autoSaveDirectory
     dropLegacyDeadKeys(normalized)
-    normalizeFrozenSettings(normalized)
+    normalizeFrozenSettings(normalized, report)
     return normalized
   }
 }

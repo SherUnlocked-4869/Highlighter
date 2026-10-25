@@ -60,6 +60,38 @@ html, body {
 }
 #sizeBadge { position: fixed; display: none; padding: 4px 8px; border-radius: var(--radius-sm); background: rgba(0, 0, 0, .76); color: #fff; font: 12px/1.4 var(--font-mono); pointer-events: none; }
 
+/* ---------- batch 1: document identity bar ----------
+ * Only shown when the window is editing an existing document (history "continue editing").
+ * It sits ABOVE the image area, and main/domains/capture/index.js reserves
+ * DOCUMENT_EDITOR_INFO_HEIGHT (26px) of window height for it via resolveEditorLayout's
+ * extraRows - so this block must never grow past that without updating that constant
+ * (test/capture-document-editor-ui.test.js pins the two together).
+ */
+.document-info {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  color: #fff;
+  background: rgba(25, 25, 28, .94);
+  font-size: 12px;
+  line-height: 26px;
+  white-space: nowrap;
+  overflow: hidden;
+  pointer-events: none;
+  border-bottom: 1px solid rgba(255, 255, 255, .1);
+}
+.document-info #documentInfoText { overflow: hidden; text-overflow: ellipsis; }
+.document-dirty { color: var(--primary); font-size: 10px; }
+.document-saving { color: rgba(255, 255, 255, .72); font-size: 11px; }
+body.document-saving #stage { cursor: progress; }
+
 .hidden { display: none !important; }
 
 /* ---------- floating tool strip ---------- */
@@ -326,3 +358,139 @@ body.processing #stage { pointer-events: none; }
 .loading span { width: 18px; height: 18px; border: 2px solid rgba(255, 255, 255, .25); border-top-color: #fff; border-radius: 50%; animation: spin .75s linear infinite; }
 .loading b { white-space: nowrap; font-size: 12px; font-weight: 500; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- feature A: export result bar (plan §4.1/§4.3) ----------
+ * Sits at the bottom of the overlay, OUTSIDE the selection, and is the only UI that survives an
+ * export. It never takes focus on show (the export must not pull the window forward) and it is
+ * dismissible. `pointer-events` stays on so the three actions are clickable in a window that is
+ * otherwise a full-screen canvas.
+ */
+.export-result-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(920px, calc(100vw - 32px));
+  padding: 8px 10px 8px 14px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: var(--radius);
+  color: #fff;
+  background: rgba(23, 23, 26, .97);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .45);
+}
+.export-result-name {
+  overflow: hidden;
+  max-width: 380px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.export-result-actions { display: flex; gap: 6px; }
+.export-result-actions button,
+.export-result-close {
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  background: rgba(255, 255, 255, .08);
+  font-size: 12px;
+  cursor: pointer;
+}
+.export-result-actions button:hover { background: rgba(255, 255, 255, .16); }
+.export-result-close {
+  padding: 2px 7px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 15px;
+  line-height: 1;
+}
+.export-result-status { font-size: 12px; opacity: .82; }
+.export-result-status.error { color: #ff8a80; opacity: 1; }
+
+/* ---------- feature B: region size + presets (plan §5.3) ----------
+ * A popover anchored above the toolbar rather than a permanent strip, so the common capture path
+ * gains no extra step and the overlay stays uncluttered until the user opens it.
+ */
+.region-toggle {
+  position: fixed;
+  z-index: 11;
+  display: none;
+  padding: 5px 9px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  background: rgba(23, 23, 26, .94);
+  font-size: 12px;
+  cursor: pointer;
+}
+.region-toggle.available { display: block; }
+.region-panel {
+  position: fixed;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 320px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: var(--radius);
+  color: #fff;
+  background: rgba(23, 23, 26, .97);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .45);
+}
+.region-row { display: flex; align-items: center; gap: 6px; }
+.region-row label { font-size: 12px; opacity: .8; }
+.region-row input[type="number"] {
+  width: 74px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  background: rgba(255, 255, 255, .08);
+  font: 12px/1.4 var(--font-mono);
+}
+.region-row select {
+  flex: 1;
+  min-width: 90px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  background: rgba(255, 255, 255, .08);
+  font-size: 12px;
+}
+.region-row button {
+  padding: 5px 9px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  background: rgba(255, 255, 255, .08);
+  font-size: 12px;
+  cursor: pointer;
+}
+.region-row button:hover { background: rgba(255, 255, 255, .16); }
+.region-times { opacity: .6; font-size: 12px; }
+.region-status { font-size: 12px; opacity: .82; }
+.region-status.error { color: #ff8a80; opacity: 1; }
+/* Feature B (plan §5.1): the fixed-ratio lock group. Buttons, not a native control, so the row keeps
+ * the same visual weight as the toolbar's three-button width group. */
+.region-ratio-row { flex-wrap: wrap; }
+.region-ratio-row button.region-ratio {
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: var(--radius-sm);
+  color: rgba(255, 255, 255, .82);
+  background: rgba(255, 255, 255, .06);
+  font: 11px/1.3 var(--font-mono);
+  cursor: pointer;
+}
+.region-ratio-row button.region-ratio:hover { background: rgba(255, 255, 255, .14); }
+.region-ratio-row button.region-ratio.active {
+  color: #fff;
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 26%, transparent);
+}

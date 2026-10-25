@@ -32,11 +32,17 @@ const { ManagedWriterCoordinator } = require('./main/services/managed-writer-coo
 const { createAppLogger } = require('./main/services/app-logger')
 const { PerformanceMonitor } = require('./main/services/performance-monitor')
 const { DiagnosticsService } = require('./main/services/diagnostics-service')
+const {
+  createComponentLister,
+  createInstallTypeResolver,
+  createSensitiveValueCollector
+} = require('./main/services/diagnostics-bootstrap')
 const { SettingsService } = require('./main/services/settings-service')
 const { DEFAULT_SETTINGS } = require('./main/services/settings-defaults')
 const { registerSettingsIpc } = require('./main/ipc/settings-ipc')
 const { createCodingPlanIpcController, registerCodingPlanIpc } = require('./main/ipc/coding-plan-ipc')
 const { HistoryService } = require('./main/services/history-service')
+const { createCaptureDocumentService } = require('./main/services/capture-document-service')
 const { ensureDirectory: ensureDirectorySync } = require('./main/services/fs-utils')
 const imageBufferUtils = require('./main/services/image-buffer')
 const captureNaming = require('./main/services/capture-naming')
@@ -48,17 +54,27 @@ const { createTrayIconImage } = require('./main/services/tray-icon')
 const { createProxyBridgeController } = require('./main/services/proxy-bridge-controller')
 const { registerShortcutIpc } = require('./main/ipc/shortcut-ipc')
 const { registerAppIpc } = require('./main/ipc/app-ipc')
-const { registerDiagnosticsIpc } = require('./main/ipc/diagnostics-ipc')
-const { registerUpdateIpc } = require('./main/ipc/update-ipc')
+const { createDiagnosticsIpcController, registerDiagnosticsIpc } = require('./main/ipc/diagnostics-ipc')
+const { registerUpdateIpc, createUpdateIpcController } = require('./main/ipc/update-ipc')
 const { registerDataRootIpc } = require('./main/ipc/data-root-ipc')
 const { registerCaptureIpc } = require('./main/ipc/capture-ipc')
+// Feature A (docs/plans/2026-10-25-snow-apps-feature-development-plan.md §4): every produced file
+// is registered once and afterwards addressed by resultId, so "open / copy address / reveal" never
+// becomes a generic open-any-path primitive. Feature B (§5): the region/preset channels; the
+// remembered-region *write* stays a domain-internal action, so there is no channel for it.
+const { registerExportIpc } = require('./main/ipc/export-ipc')
+const { createExportActionResultController } = require('./main/ipc/export-action-controller')
+const { registerRegionIpc } = require('./main/ipc/region-ipc')
+const { createRegionController } = require('./main/ipc/region-ipc-controller')
+const { createExportResultForApp, createRegionPreferencesForApp, registerExportFeatureIpc, registerRegionFeatureIpc } = require('./main/services/feature-services-bootstrap')
+const regionPresets = require('./shared/region-presets')
 const { createOcrIpcController, registerOcrIpc } = require('./main/ipc/ocr-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
 const { registerSearchIpc } = require('./main/ipc/search-ipc')
 const { registerSelectionIpc } = require('./main/ipc/selection-ipc')
 const { UpdateService } = require('./main/services/update-service')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
-const { createSecureWindow, isSafeExternalUrl } = require('./main/services/window-security')
+const { createSecureWindow } = require('./main/services/window-security')
 const { windowBackdropColor, trackWindowBackdrop, applyWindowBackdropToTracked } = require('./main/services/window-backdrop')
 const { name: applicationName } = require('./package.json')
 
@@ -94,7 +110,8 @@ const aiClient = require('./main/services/ai')
 const { createFunctionRouter } = require('./main/services/function-router')
 const { createSettingsNormalizer } = require('./main/services/settings-normalize')
 const { createFfmpegPathResolver } = require('./main/services/ffmpeg-path')
-const { createImageFileSaver, resolveSaveDirectory } = require('./main/services/image-file-save')
+const { createImageFileSaver } = require('./main/services/image-file-save')
+const { createWindowActions } = require('./main/services/window-actions')
 const { createCursorProvider } = require('./main/services/cursor-provider')
 // P0-1-T6：主进程文案的 i18n 入口（加载 shared/locales/*.js 并提供 t/setLanguage）。
 const { setLanguage, t } = require('./main/services/i18n-bootstrap')
@@ -124,11 +141,16 @@ crashReporter.start({
 
 let store = null
 let settingsService = null
-let historyService = null
+let historyService = null, captureDocumentService = null
 let diagnosticsService = null
 let updateService = null
 let sessionExitRecorded = false
 let proxyBridgeController = null
+// Feature A/B singletons. Both are created after the settings store exists (they read settings) and
+// are read lazily by the domains through the accessors below, so a capture window created during
+// startup cannot see a half-built service.
+let exportResultService = null
+let regionPreferences = null
 
 function initializeStore() {
   if (store) return store
@@ -169,6 +191,12 @@ function initializeStore() {
     },
     log
   })
+  captureDocumentService = createCaptureDocumentService({ historyService, getSettings, assertWritable: assertManagedDataWritable, log })
+  // Feature A/B services: construction lives in main/services/feature-services-bootstrap.js so the
+  // assembly layer stays within its line ceiling (see the module header for the two decisions that
+  // actually matter - the crypto preset id and the injected display provider).
+  exportResultService = createExportResultForApp({ path, fs, shell, clipboard, log })
+  regionPreferences = createRegionPreferencesForApp({ getSettings, settingsService, log, screen })
   selectionDomain.ensureConversationStore()
   return store
 }
@@ -304,30 +332,16 @@ function log(...args) {
   writeAppLog(...args)
 }
 
-function collectDiagnosticSensitiveValues() {
-  if (!store) return []
-  const settings = getSettings()
-  const values = [settings.apiKey]
-  function visit(value, keyPath = '') {
-    if (typeof value === 'string') {
-      if (/(api[-_]?key|authorization|password|secret|token|prompt)/i.test(keyPath)) values.push(value)
-      return
-    }
-    if (!value || typeof value !== 'object') return
-    for (const [nestedKey, nestedValue] of Object.entries(value)) {
-      visit(nestedValue, keyPath ? `${keyPath}.${nestedKey}` : nestedKey)
-    }
-  }
-  visit(settings)
-  return values.filter(Boolean)
-}
+const collectDiagnosticSensitiveValues = createSensitiveValueCollector({
+  getStore: () => store,
+  getSettings: () => getSettings()
+})
 
-function getInstallType() {
-  if (!app.isPackaged) return 'development'
-  if (dataRootContext.portable) return 'portable'
-  if (path.basename(path.dirname(process.execPath)).toLowerCase() === 'win-unpacked') return 'unpacked'
-  return 'nsis'
-}
+const getInstallType = createInstallTypeResolver({
+  app,
+  path,
+  isPortable: () => dataRootContext.portable
+})
 
 function getUpdateInstallReadiness() {
   if (dataRootMigrationInProgress) return { ok: false, reason: '数据目录正在迁移，请完成后重试。' }
@@ -381,18 +395,14 @@ function deferUpdateServiceStart() {
   timer.unref?.()
 }
 
-function getDiagnosticComponents() {
-  const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
-  let ffmpegPath = ''
-  let ffmpegVersion = ''
-  try { ffmpegPath = resolveFfmpegPath() } catch {}
-  try { ffmpegVersion = require('ffmpeg-static/package.json').version } catch {}
-  return [
-    { name: 'SmartSelect', path: path.join(resourceRoot, 'native', 'smart-select', 'SmartSelect.exe'), version: app.getVersion() },
-    { name: 'OCR sidecar', path: path.join(resourceRoot, 'native', 'ocr', 'HighlighterOcrSidecar.exe'), version: app.getVersion() },
-    { name: 'FFmpeg', path: ffmpegPath, version: ffmpegVersion }
-  ]
-}
+const getDiagnosticComponents = createComponentLister({
+  app,
+  path,
+  // Packaged builds carry the native sidecars beside process.resourcesPath; a
+  // development tree resolves them from the checkout, exactly as before.
+  getResourceRoot: () => (app.isPackaged ? process.resourcesPath : __dirname),
+  resolveFfmpegPath
+})
 
 function initializeDiagnostics() {
   if (diagnosticsService) return diagnosticsService
@@ -513,6 +523,16 @@ function createLocalWindow(pagePath, options) {
   })
 }
 
+// Shell and window actions that are pure delegation: the module owns the URL
+// safety re-check, the display snapshot and the pickers, so main.js only wires
+// the Electron handles. The two providers keep main.js's own expressions.
+const windowActions = createWindowActions({
+  app, shell, screen, desktopCapturer, dialog, isWin, getSettings, log,
+  getDataRoot: () => activePaths?.root || app.getPath('userData'),
+  isAutomationEnabled: () => e2eContext.enabled
+})
+const positionAutomationWindow = windowActions.positionAutomationWindow
+
 pinDomain = createPinDomain({
   BrowserWindow,
   clipboard,
@@ -571,7 +591,11 @@ captureDomain = createCaptureDomain({
   dataUrlToBuffer,
   bufferToDataUrl,
   performanceMonitor,
-  cursorProvider
+  cursorProvider,
+  getCaptureDocumentService: () => captureDocumentService,
+  // Feature A: the export-result registry is created inside initializeStore(), which runs after this
+  // domain. A resolver keeps the construction order free without a mutable injected object.
+  getExportResultService: () => exportResultService
 })
 
 longCaptureDomain = createLongCaptureDomain({
@@ -618,7 +642,10 @@ recordDomain = createRecordDomain({
   managedRecordingWriters,
   makeCaptureName,
   VIDEO_CAPTURE_PREFIX: captureNaming.VIDEO_CAPTURE_PREFIX,
-  performanceMonitor
+  performanceMonitor,
+  // Feature B (plan §5.1): the record domain remembers its own last region (a domain-internal write,
+  // not a channel). Resolver for the same construction-order reason as the other services.
+  getRegionPreferences: () => regionPreferences
 })
 
 recognitionDomain = createRecognitionDomain({
@@ -630,7 +657,9 @@ recognitionDomain = createRecognitionDomain({
   getSettings,
   dataUrlToBuffer,
   recognizeWithPerformance: (...args) => recognizeWithPerformance(...args),
-  buildTableFromOcr
+  buildTableFromOcr,
+  // Feature A: same lazy resolver as the capture domain (see above).
+  getExportResultService: () => exportResultService
 })
 
 searchDomain = createSearchDomain({
@@ -769,21 +798,6 @@ proxyBridgeController = createProxyBridgeController({
   getMainWindow: () => mainWindow
 })
 
-function positionAutomationWindow(win) {
-  if (!e2eContext.enabled || !win || win.isDestroyed()) return false
-  const primary = screen.getPrimaryDisplay()
-  const secondary = screen.getAllDisplays().find((display) => display.id !== primary.id)
-  if (!secondary) return false
-  const [width, height] = win.getSize()
-  const area = secondary.workArea
-  win.setPosition(
-    Math.round(area.x + Math.max(0, (area.width - width) / 2)),
-    Math.round(area.y + Math.max(0, (area.height - height) / 2)),
-    false
-  )
-  return true
-}
-
 function createMainWindow(route = 'home') {
   if (mainWindow && !mainWindow.isDestroyed()) {
     const startedAt = performance.now()
@@ -879,6 +893,21 @@ function createTrayIcon() {
     openMainWindow: () => createMainWindow('home'),
     hasConversation: selectionDomain.hasConversation(),
     showConversation: () => selectionDomain.showOrRestoreConversation(),
+    // Feature A (plan §4.1): the newest live export, so a file whose window is gone (a plain
+    // screenshot closes on save) is still reachable. The plan caps the tray at one entry; the
+    // service returns exactly that (latestFor() with no owner = newest live receipt).
+    recentExport: exportResultService ? exportResultService.latestFor() : null,
+    openRecentExport: (receipt) => {
+      if (!receipt?.resultId) return
+      // The tray is main-process internal (plan §4.2 does not disguise it as renderer IPC), so it
+      // may act on the newest receipt it was handed; the service still re-checks the file.
+      Promise.resolve(exportResultService?.perform({ resultId: receipt.resultId, action: 'open' }))
+        .then((result) => {
+          if (result?.status === 'failed') log('Tray recent export failed:', result.code)
+          createTrayIcon()
+        })
+        .catch((error) => log('Tray recent export failed:', error.message))
+    },
     quit: () => app.quit()
   })))
 }
@@ -988,41 +1017,11 @@ registerShortcutIpc({
 })
 
 function openExternal(value) {
-  if (!isSafeExternalUrl(value)) throw new Error('仅支持打开 HTTP 或 HTTPS 链接')
-  return shell.openExternal(new URL(String(value)).toString())
+  return windowActions.openExternal(value)
 }
 
-async function getDisplayDiagnostics() {
-  const displays = screen.getAllDisplays().map((display) => ({
-    id: display.id,
-    label: display.label,
-    bounds: display.bounds,
-    workArea: display.workArea,
-    size: display.size,
-    scaleFactor: display.scaleFactor,
-    rotation: display.rotation,
-    internal: display.internal,
-    physicalBounds: isWin ? screen.dipToScreenRect(null, display.bounds) : display.bounds
-  }))
-  const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 4096, height: 4096 } })
-  return {
-    cursor: screen.getCursorScreenPoint(),
-    displays,
-    sources: sources.map((source) => ({ id: source.id, displayId: source.display_id, name: source.name, thumbnailSize: source.thumbnail.getSize() }))
-  }
-}
+const { getDisplayDiagnostics, chooseDirectory, pickDirectory } = windowActions
 
-async function chooseDirectory() {
-  return pickDirectory()
-}
-
-async function pickDirectory(options = {}) {
-  const result = await dialog.showOpenDialog({
-    ...(options.title ? { title: options.title } : {}),
-    properties: ['openDirectory', 'createDirectory']
-  })
-  return result.canceled ? '' : result.filePaths[0]
-}
 registerAppIpc({
   ipcMain: secureIpcMain,
   controller: {
@@ -1036,8 +1035,8 @@ registerAppIpc({
     }),
     getDisplayDiagnostics,
     chooseDirectory,
-    openDataDirectory: () => shell.openPath(activePaths?.root || app.getPath('userData')),
-    openSaveDirectory: () => shell.openPath(resolveSaveDirectory(getSettings()) || app.getPath('pictures')),
+    openDataDirectory: windowActions.openDataDirectory,
+    openSaveDirectory: windowActions.openSaveDirectory,
     getProxyStatus: () => proxyBridgeController.getStatus(),
     completeAi: (messages, options) => {
       const settings = getSettings()
@@ -1061,35 +1060,20 @@ registerAppIpc({
 
 registerDiagnosticsIpc({
   ipcMain: secureIpcMain,
-  controller: {
-    preview: () => {
-      if (!diagnosticsService) throw new Error('诊断服务尚未就绪')
-      return diagnosticsService.preview()
-    },
-    export: async ({ includeCrashDumps = false } = {}) => {
-      if (!diagnosticsService) throw new Error('诊断服务尚未就绪')
-      const date = new Date().toISOString().slice(0, 10)
-      const result = await dialog.showSaveDialog(mainWindow, {
-        title: '导出 Highlighter 诊断包',
-        defaultPath: path.join(app.getPath('documents'), `Highlighter-Diagnostics-${date}.zip`),
-        filters: [{ name: 'ZIP 诊断包', extensions: ['zip'] }]
-      })
-      if (result.canceled || !result.filePath) return { canceled: true }
-      const exported = await diagnosticsService.exportZip(result.filePath, { includeCrashDumps })
-      return { canceled: false, ...exported }
-    }
-  }
+  controller: createDiagnosticsIpcController({
+    getDiagnosticsService: () => diagnosticsService,
+    getMainWindow: () => mainWindow,
+    dialog,
+    app,
+    path
+  })
 })
 
 registerUpdateIpc({
   ipcMain: secureIpcMain,
-  updateService: {
-    getStatus: () => resolveUpdateService().getStatus(),
-    check: (options) => resolveUpdateService().check(options),
-    download: () => resolveUpdateService().download(),
-    install: () => resolveUpdateService().install(),
-    openDownloadPage: () => resolveUpdateService().openDownloadPage()
-  }
+  updateService: createUpdateIpcController({
+    getUpdateService: () => resolveUpdateService()
+  })
 })
 
 registerDataRootIpc({
@@ -1120,11 +1104,7 @@ registerHistoryIpc({
     clipboard.writeImage(nativeImage.createFromPath(item.filePath))
     return true
   },
-  editItem: async (item) => {
-    if (!fs.existsSync(item.filePath)) return false
-    await captureDomain.createCaptureWindow({ imageBuffer: await fs.promises.readFile(item.filePath), mode: 'image', source: 'history' })
-    return true
-  },
+  editItem: (item) => captureDomain.editHistoryDocument(item),
   openItem: async (item) => {
     if (!fs.existsSync(item.filePath)) return false
     const error = await shell.openPath(item.filePath)
@@ -1147,6 +1127,12 @@ registerCaptureIpc({
     ...recognitionDomain.createRecognitionController()
   }
 })
+
+// Feature A/B IPC (plan §4.2/A2, §5.2/B2). Both wiring bodies live in
+// main/services/feature-services-bootstrap.js: main.js is at a hard line ceiling, and this is
+// assembly-only code (the ownership rules and the display mapping are in the modules themselves).
+registerExportFeatureIpc({ ipcMain: secureIpcMain, getExportResultService: () => exportResultService, BrowserWindow, log })
+registerRegionFeatureIpc({ ipcMain: secureIpcMain, getRegionPreferences: () => regionPreferences, limits: regionPresets.LIMITS, log })
 
 registerOcrIpc({
   ipcMain: secureIpcMain,

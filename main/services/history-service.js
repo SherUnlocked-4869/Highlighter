@@ -341,6 +341,25 @@ class HistoryService {
     return this.storeItem(item, limit)
   }
 
+  // Identity projection for the list (batch 1, history-reedit-batch0-contracts.md §6.5.1).
+  // Every card must carry a stable documentId, the current revisionId and a human version
+  // number, while `item.id` keeps its compatibility meaning (`id === documentId` during the
+  // compatibility period). Legacy rows written before documents existed have neither field,
+  // so they project to `documentId = id` and `version = 1` - that is what keeps old records
+  // rendering exactly as before instead of showing a noisy "version 1" badge.
+  toListItem(item) {
+    if (!item || typeof item !== 'object') return item
+    const documentId = String(item.documentId || item.id || '')
+    const version = Math.max(1, Math.round(Number(item.version) || 1))
+    return {
+      ...item,
+      documentId,
+      revisionId: String(item.revisionId || ''),
+      headRevisionId: String(item.headRevisionId || item.revisionId || ''),
+      version
+    }
+  }
+
   list(filterValue = {}) {
     const filter = normalizeHistoryFilter(filterValue)
     const matching = this.readHistory()
@@ -350,7 +369,7 @@ class HistoryService {
       ? matching.findIndex((item) => String(item.id) === filter.cursor)
       : -1
     const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
-    const items = matching.slice(start, start + filter.limit)
+    const items = matching.slice(start, start + filter.limit).map((item) => this.toListItem(item))
     const hasMore = start + items.length < matching.length
     return {
       items,

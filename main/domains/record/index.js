@@ -32,11 +32,79 @@ function createRecordDomain(deps) {
     managedRecordingWriters,
     makeCaptureName,
     VIDEO_CAPTURE_PREFIX,
-    performanceMonitor
+    performanceMonitor,
+    // Feature B (plan §5.1/§5.2): the remembered-region write is a DOMAIN-INTERNAL action, which is
+    // why it is injected here instead of exposed as a channel. A resolver, because the service is
+    // created inside initializeStore() after this domain.
+    getRegionPreferences = () => null
   } = deps
 
   let recordWindow = null
   let recordFrameWindow = null
+
+  // Records the region a recording actually started with (plan §5.1: the record-mode last region is
+  // updated when a recording successfully STARTS; a cancelled selection must not overwrite it).
+  // `selectionBounds` is Electron DIP window bounds - the DIP->pixel conversion is `region-preferences`'
+  // job (recordFromDisplaySelection), so it cannot be forgotten here. A missing display descriptor
+  // only means "no remembered region yet"; it must never break starting a recording.
+  // Builds the display descriptor `region-preferences` needs without assuming Electron's native-rect
+  // probe exists: `screen.dipToScreenRect` is the accurate source when available, and `scaleFactor`
+  // is the documented fallback (see main/ipc/region-ipc-controller.js describeDisplay).
+  function describeDisplayForRegion(display) {
+    const bounds = display?.bounds || {}
+    const boundsDip = {
+      x: Math.round(Number(bounds.x) || 0),
+      y: Math.round(Number(bounds.y) || 0),
+      width: Math.max(0, Math.round(Number(bounds.width) || 0)),
+      height: Math.max(0, Math.round(Number(bounds.height) || 0))
+    }
+    const scaleFactor = Number(display?.scaleFactor) || 1
+    let pixelSize = null
+    if (screen && typeof screen.dipToScreenRect === 'function') {
+      try {
+        const native = screen.dipToScreenRect(null, bounds)
+        const width = Math.round(Number(native?.width) || 0)
+        const height = Math.round(Number(native?.height) || 0)
+        if (width > 0 && height > 0) pixelSize = { width, height }
+      } catch {
+        pixelSize = null
+      }
+    }
+    if (!pixelSize) {
+      pixelSize = {
+        width: Math.max(1, Math.round(boundsDip.width * scaleFactor)),
+        height: Math.max(1, Math.round(boundsDip.height * scaleFactor))
+      }
+    }
+    return {
+      key: display?.id === undefined || display?.id === null ? `${boundsDip.x}:${boundsDip.y}` : String(display.id),
+      boundsDip,
+      pixelSize,
+      scaleFactor
+    }
+  }
+
+  function rememberRecordRegion(display, selectionBounds) {    let preferences
+    try {
+      preferences = typeof getRegionPreferences === 'function' ? getRegionPreferences() : null
+    } catch (error) {
+      log('Region preferences unavailable:', error?.message || error)
+      return
+    }
+    if (!preferences || typeof preferences.recordFromDisplaySelection !== 'function') return
+    try {
+      const result = preferences.recordFromDisplaySelection({
+        mode: 'record',
+        display: display || {},
+        selectionBounds
+      })
+      if (!result?.ok && result?.code !== 'selection-unusable') {
+        log('Remembered record region rejected:', result?.code || 'unknown')
+      }
+    } catch (error) {
+      log('Remembered record region failed:', error?.message || error)
+    }
+  }
 
   function isTaskActive() {
     return !!(recordWindow && !recordWindow.isDestroyed())
@@ -162,6 +230,11 @@ function createRecordDomain(deps) {
       sourceId: source.id,
       displayBounds: display.bounds,
       selectionBounds,
+      // Feature B (plan §5.1): the descriptor the remembered-region write needs (key + DIP bounds +
+      // measured pixel size). Captured at window creation, while `display` is in scope. Resolved
+      // defensively: a host without a native rect probe (tests, and any non-Windows platform where
+      // dipToScreenRect is unavailable) still gets a working descriptor from scaleFactor.
+      display: describeDisplayForRegion(display),
       frameRate,
       // P0-3-T2: the recorder renderer reads these four frozen keys to decide which audio
       // buses to request; the renderer falls back to the same defaults when they are absent.
@@ -300,6 +373,11 @@ function createRecordDomain(deps) {
         managedRecordingWriters.assertOpen()
         const session = await managedRecordingWriters.track(() => service.startSession())
         win._recordSessionId = session.id
+        // Plan §5.1: the record-mode last region is updated when a recording successfully STARTS, so
+        // a cancelled selection never overwrites it. `selectionBounds` on the window's init payload is
+        // Electron DIP; recordFromDisplaySelection owns the DIP->pixel conversion.
+        const init = win._recordInit || {}
+        if (init.selectionBounds) rememberRecordRegion(init.display, init.selectionBounds)
         return { id: session.id }
       },
       appendChunk: async (event, { sessionId, arrayBuffer } = {}) => {

@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('recognitionAPI', {
   exportExcel: (rows, merges) => ipcRenderer.invoke('recognition:export-excel', { rows, merges }),
   // Result window → .pdf through the already-rendered window (plan §0.3 #4).
   exportPdf: (options) => ipcRenderer.invoke('recognition:export-pdf', options),
+  // Feature A (docs/plans/2026-10-25-snow-apps-feature-development-plan.md §4.1): the result bar's
+  // open / copy-address / open-folder actions. Addressed by resultId - never by path.
+  exportAction: (resultId, action) => ipcRenderer.invoke('export:perform-action', { resultId, action }),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   close: () => ipcRenderer.send('recognition:close')
 })
