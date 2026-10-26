@@ -72,9 +72,8 @@ test('R0.4 the mask is applied BEFORE any scaling (it is painted at source resol
 
 test('R0.4 a plain capture window projects its annotations into export space before masking', () => {
   const forMask = sliceBetween(script, 'function annotationsForMask(rect)', 'function transformOccluder(')
-  // A document editor already stores source pixels; a plain capture window stores viewport CSS, so
-  // it must be projected with the SAME transform drawAnnotation uses (scale from getSourcePixelRect).
-  assert.match(forMask, /if \(documentEditor\) return \{ crop: documentCrop\(\), annotations: annotationsToDocument\(\), transform: null \}/)
+  // A plain capture window stores viewport CSS, so it must be projected with the SAME transform
+  // drawAnnotation uses (scale from getSourcePixelRect).
   assert.match(forMask, /const source = getSourcePixelRect\(rect, bounds, \{ width: image\.naturalWidth, height: image\.naturalHeight \}\)/)
   assert.match(forMask, /const scaleX = source\.width \/ Math\.max\(1, rect\.w\)/)
   // The crop handed to the planner is the export canvas itself (origin 0,0 at the canvas corner).
@@ -82,6 +81,65 @@ test('R0.4 a plain capture window projects its annotations into export space bef
   const transform = sliceBetween(script, 'function transformOccluder(occluder, transform)', 'function paintOcclusionPlan(')
   assert.match(transform, /x: \(rect\.x - offsetX\) \* scaleX/)
   assert.match(transform, /width: \(occluder\.width \|\| 0\) \* widthScale/)
+})
+
+// ---------- ② 遮罩的 crop 原点必须与识别画布一致（真实缺陷的回归） ----------
+//
+// 这条是**行为**断言。上一版只用正则钉住 `if (documentEditor) return { crop: documentCrop(), ... }`
+// 这行源码形状 —— 而正是那行在文档编辑器里把整个遮罩平移了 (-crop.x, -crop.y)：
+// 识别画布是**整张底图**（exportSelectionCanvas -> getSourcePixelRect 在文档模式返回全图），
+// 却让 planOcclusion 减掉 crop 原点。实测 crop=(100,80) 时用户打的马赛克只有 11.2% 被遮。
+//
+// 断言口径：**遮罩的 op 坐标必须落在它要遮的那个源像素位置上**，与 crop 原点无关。
+test('R0.4 the occlusion crop matches the canvas it is painted on, in BOTH window kinds', () => {
+  const maskApi = require('../shared/occlusion-mask')
+
+  // The plan's crop is the origin the ops are expressed against. Whatever it is, an op must cover the
+  // annotation's own source-pixel rectangle. This mirrors what capture.js must guarantee:
+  //   document editor -> canvas is the whole base, so crop origin is (0,0)
+  //   plain window    -> canvas is the export source rect, also origin (0,0)
+  // A plan built with a non-zero crop origin against a zero-origin canvas shifts every op.
+  const blur = { type: 'blur', x: 320, y: 280, x2: 520, y2: 380, width: 4 }
+  const occluders = maskApi.buildOccluders([blur])
+  const expected = maskApi.occluderBounds(occluders[0])
+
+  const canvasCrop = { x: 0, y: 0, w: 900, h: 700 }
+  const plan = maskApi.planOcclusion({ crop: canvasCrop, occluders })
+  assert.equal(plan.masked, true)
+  const op = plan.ops[0]
+  // The op must line up with the blur's own bounds once the (zero) crop origin is added back.
+  assert.equal(op.x + canvasCrop.x, expected.x, 'the mask op must land on the annotation, not offset from it')
+  assert.equal(op.y + canvasCrop.y, expected.y, 'the mask op must land on the annotation, not offset from it')
+  assert.ok(op.w >= expected.w - 1 && op.h >= expected.h - 1, 'the op must cover the whole occluder')
+
+  // Reverse control: the pre-fix document-editor plan used the CROP as the plan origin while painting
+  // on a whole-base canvas. Show that this shifts the op and leaves the secret readable, so the
+  // assertion above cannot pass vacuously.
+  const documentCropRect = { x: 100, y: 80, w: 640, h: 420 }
+  const buggy = maskApi.planOcclusion({ crop: documentCropRect, occluders })
+  const buggyOp = buggy.ops[0]
+  assert.notEqual(buggyOp.x, expected.x, 'the pre-fix crop origin must visibly shift the op')
+  const secret = { x: 320, y: 280, w: 200, h: 100 }
+  const overlapW = Math.max(0, Math.min(secret.x + secret.w, buggyOp.x + buggyOp.w) - Math.max(secret.x, buggyOp.x))
+  const overlapH = Math.max(0, Math.min(secret.y + secret.h, buggyOp.y + buggyOp.h) - Math.max(secret.y, buggyOp.y))
+  const coveredFraction = (overlapW * overlapH) / (secret.w * secret.h)
+  assert.ok(
+    coveredFraction < 0.5,
+    `the pre-fix origin must leave most of the secret exposed (covered ${(coveredFraction * 100).toFixed(1)}%), otherwise this test proves nothing`
+  )
+
+  // And the wiring: capture.js must give the document editor a whole-base crop, never documentCrop().
+  const forMask = sliceBetween(script, 'function annotationsForMask(rect)', 'function transformOccluder(')
+  assert.doesNotMatch(
+    forMask,
+    /if \(documentEditor\) return \{ crop: documentCrop\(\)/,
+    'the document editor must not hand the source-pixel crop to a whole-base canvas'
+  )
+  assert.match(
+    forMask,
+    /if \(documentEditor\) \{[\s\S]*?crop: \{ x: 0, y: 0,/,
+    'the document editor branch must use a zero-origin crop'
+  )
 })
 
 // ---------- ② 遮罩覆盖哪些像素（纯函数层，直接对 shared 模块） ----------

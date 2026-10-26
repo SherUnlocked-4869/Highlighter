@@ -2784,8 +2784,25 @@ function exportSelectionCanvasForAction(includeAnnotations, rect = exportSelecti
 // they are. A plain capture window stores them in viewport CSS, so they have to go through the same
 // projection `drawAnnotation` uses - doing it here (rather than drawing the mask in CSS space and
 // scaling the canvas afterwards) is what keeps the mask at source resolution.
+//
+// CROP RULE (critical defect found by review - do not "restore" documentCrop() here):
+// the plan's `crop` is the origin the op coordinates are expressed against, and the ops are painted
+// straight onto the canvas `exportSelectionCanvas` produced. In a document editor that canvas is the
+// WHOLE BASE IMAGE (selection = imageDisplayBounds() and the image is the full base, see
+// exportSelectionCanvas -> getSourcePixelRect), NOT the crop rectangle. `documentCrop()` therefore
+// must not be used as the plan crop: planOcclusion subtracts it from every op, so a crop origin of
+// (100,80) shifted the whole mask by (-100,-80) and the user's mosaic stayed readable.
+// The correct crop origin for this canvas is (0,0) at the full base size.
 function annotationsForMask(rect) {
-  if (documentEditor) return { crop: documentCrop(), annotations: annotationsToDocument(), transform: null }
+  if (documentEditor) {
+    // Whole-base canvas: origin 0,0, sized to the base image (not the crop).
+    const base = documentBaseSize()
+    return {
+      crop: { x: 0, y: 0, w: Math.max(1, Math.round(base.width)), h: Math.max(1, Math.round(base.height)) },
+      annotations: annotationsToDocument(),
+      transform: null
+    }
+  }
   const bounds = imageDisplayBounds()
   const source = getSourcePixelRect(rect, bounds, { width: image.naturalWidth, height: image.naturalHeight })
   const scaleX = source.width / Math.max(1, rect.w)
@@ -3034,7 +3051,10 @@ function ensureSampleBase() {
   if (!lensSampler) resetLensSampler()
   if (!lensSampler) return null
   const crop = documentEditor ? documentCrop() : { x: 0, y: 0, w: image.naturalWidth, h: image.naturalHeight }
-  const occluders = mask.buildOccluders(annotationsForSampling())
+  // NOTE: uses buildOccludersForSampling(), not the raw occluder builder - the raw one leaves the
+  // brush width un-scaled relative to what the painter actually drew. See the WIDTH RULE comment on
+  // annotationsForSampling().
+  const occluders = buildOccludersForSampling()
   const fingerprint = mask.maskFingerprint(occluders)
   const key = `${image.naturalWidth}x${image.naturalHeight}|${crop.x},${crop.y},${crop.w},${crop.h}|${fingerprint}`
   if (key === sampleBaseKey) return lensSampler
@@ -3067,6 +3087,17 @@ function ensureSampleBase() {
 // geometry, so the plain list is enough). A plain capture window stores viewport CSS, so each blur is
 // projected with the same scale/offset the lens uses - a mask painted in the wrong coordinate space
 // would leave the secret readable through the lens.
+//
+// WIDTH RULE (a real defect found by review - do not "simplify" this back):
+// the blur's stroke width must NOT be pre-multiplied by `widthScale` before the occluder builder sees
+// it. `shared/occlusion-mask.brushStrokeWidth()` quantises its input against the {2,4,8} preset table
+// and floors the result at 18, so feeding it `cssWidth * widthScale` makes any scale != 1 land
+// between presets and snap DOWN to the floor. The display path (`drawMosaicStroke` ->
+// `blurBrushWidth(item.width) * deviceScale`) quantises FIRST and scales AFTER, so a pre-scaled width
+// produces a mask narrower than the painted mosaic - up to 60 source px per side at preset 8 / 3x,
+// which is enough to expose whole glyphs the user covered. The recognition path already gets this
+// right because `transformOccluder` scales the already-quantised occluder. So: quantise first, scale
+// after, exactly like the painter.
 function annotationsForSampling() {
   if (documentEditor) return annotationsToDocument()
   const rect = selection ? exportSelectionRect() : null
@@ -3075,12 +3106,14 @@ function annotationsForSampling() {
   const source = getSourcePixelRect(rect, bounds, { width: image.naturalWidth, height: image.naturalHeight })
   const scaleX = source.width / Math.max(1, rect.w)
   const scaleY = source.height / Math.max(1, rect.h)
-  const widthScale = Math.max(scaleX, scaleY)
   return annotations.map((item) => {
     if (item?.type !== 'blur') return item
+    // Geometry is projected here; the WIDTH is left in CSS px so buildOccluders can quantise it
+    // against the preset table first. `widthScale` rides along and is applied by
+    // buildOccludersForSampling() below, i.e. after quantisation.
     const projected = {
       type: 'blur',
-      width: (Number(item.width) || 0) * widthScale,
+      width: item.width,
       color: item.color
     }
     if (Array.isArray(item.points) && item.points.length) {
@@ -3095,6 +3128,33 @@ function annotationsForSampling() {
     projected.x2 = projected.x + Math.abs((item.x2 ?? item.x) - item.x) * scaleX
     projected.y2 = projected.y + Math.abs((item.y2 ?? item.y) - item.y) * scaleY
     return projected
+  })
+}
+
+// Occluders for the lens sample base: quantise the brush width FIRST (via the occluder builder),
+// then scale it into source pixels - the same order the painter uses. Kept as a named function so
+// the ordering is one asserted thing rather than a property of inline code.
+//
+// The sample base is built from a crop that starts at `crop`, but `annotationsForSampling` projects
+// into BASE-IMAGE source pixels (it adds `source.x/y`), which is what `composeSampleBase` expects for
+// its occluders (it re-origins them relative to the crop itself). So only the WIDTH needs scaling
+// here; the coordinates are already final.
+function buildOccludersForSampling() {
+  const mask = window.occlusionMask
+  if (!mask) return []
+  const rect = documentEditor ? null : (selection ? exportSelectionRect() : null)
+  const widthScale = (() => {
+    if (documentEditor || !rect || !image) return 1
+    const bounds = imageDisplayBounds()
+    const source = getSourcePixelRect(rect, bounds, { width: image.naturalWidth, height: image.naturalHeight })
+    return Math.max(source.width / Math.max(1, rect.w), source.height / Math.max(1, rect.h))
+  })()
+  const occluders = mask.buildOccluders(annotationsForSampling())
+  if (!(widthScale > 0) || widthScale === 1) return occluders
+  // Scale the width AFTER quantisation, mirroring capture.js:639 (`blurBrushWidth(w) * deviceScale`).
+  return occluders.map((occluder) => {
+    if (occluder?.kind !== 'polyline') return occluder
+    return { ...occluder, width: (Number(occluder.width) || 0) * widthScale }
   })
 }
 
@@ -3125,15 +3185,29 @@ function magnifierLensCanvas(item) {
 
 // Feature D3: annotation space -> source pixels for the SAMPLER only.
 //
-// A document editor stores its annotations in source pixels already, so the object passes through.
-// A plain capture window stores them in viewport CSS (that is what drawAnnotation maps from), and the
-// sampler works on the source-resolution base image, so the same `getSourcePixelRect` projection the
-// export uses has to be applied to both nested rects and to the stroke width.
+// The sampler works on a SOURCE-RESOLUTION sample base, so whatever space `item` is in has to be
+// projected into base-image source pixels first. The space is decided by where the annotation list
+// came from, NOT by whether a document is open:
+//
+//   * a plain capture window stores its annotations in viewport CSS - projected with the same
+//     `getSourcePixelRect` mapping the export uses (this was the first defect, see handoff §6.1);
+//   * a document editor ALSO stores them in viewport CSS: `restoreDocumentEditor()` does
+//     `annotations = annotationsFromDocument(...)`, i.e. `annotationsToViewport`. The vector
+//     objects on disk are source pixels, but the LIVE array the painter and hit-tester use is
+//     viewport CSS - that is what `drawAnnotation(ctx, item)` expects.
+//
+// There used to be an `if (documentEditor) return magnifier` short-circuit here on the belief that a
+// document editor's live annotations were already source pixels. They are not, so the lens sampled
+// the viewport rect as if it were a source rect: with a zero-origin crop the offset is purely
+// `sourceRect * (1/zoom - 1)` which is hundreds of pixels at a fit-to-window zoom, and the lens then
+// magnified whatever happened to be over there (measured 541 px off, canvas came back all black).
+// The projection below is the identity when zoom === 1 and the offsets are 0, so removing the
+// short-circuit cannot hurt the case the short-circuit was trying to serve.
 function magnifierInSourceSpace(item) {
   const api = magnifierApi()
   if (!api || !item) return null
   const magnifier = api.normalizeMagnifier(item)
-  if (documentEditor) return magnifier
+  if (documentEditor) return magnifierFromViewportSpace(magnifier)
   if (!selection || !image) return null
   const rect = exportSelectionRect()
   const bounds = imageDisplayBounds()
@@ -3157,6 +3231,18 @@ function magnifierInSourceSpace(item) {
     stroke: { color: magnifier.stroke.color, widthPx: magnifier.stroke.widthPx * widthScale },
     connector: magnifier.connector
   })
+}
+
+// Viewport-CSS magnifier -> source pixels, for a DOCUMENT EDITOR. The shared module owns the exact
+// inverse of `magnifierToViewport` (used when the document was loaded), so both directions come from
+// one implementation and cannot drift. Re-normalizing the result is safe: `normalizeMagnifier` is a
+// fixed point for a value produced by its inverse.
+function magnifierFromViewportSpace(magnifier) {
+  const api = documentApi()
+  const viewport = documentViewport()
+  if (!api || !viewport || typeof api.annotationsFromViewport !== 'function') return magnifier
+  const [projected] = api.annotationsFromViewport([magnifier], viewport)
+  return projected ? magnifierApi().normalizeMagnifier(projected) : magnifier
 }
 
 // ---------- Feature C: finished-look state (plan §6.1/§6.2/§6.3) ----------
@@ -3611,18 +3697,40 @@ function restoreDocumentEditor(payload) {
 
 // Feature D3 (plan §7.1): drop (or shrink) magnifiers whose source rect left the crop. Runs inside
 // the load frame, so the result is what "opened" means - the undo stack starts from it.
+//
+// SPACE RULE (critical defect found by review - do not reintroduce the shortcut):
+// `clipToCrop` is defined in SOURCE pixels - its `crop` argument and the magnifier's `sourceRect` are
+// both document-space. But `annotations` here is the LIVE array, i.e. viewport CSS (the same array
+// `drawAnnotation` and the hit-tester consume). Passing a source-pixel crop to a viewport object
+// compared two different spaces: a perfectly legal lens was reported outside the crop and removed
+// outright (or shrunk), in the load frame, which is not undoable - so opening a record could destroy
+// objects the user never edited. The fix is to project to source space, clip there, and project back.
 function clipRestoredMagnifiers() {
   const api = magnifierApi()
   if (!api) return
   const crop = documentCrop()
+  const viewport = documentViewport()
+  const docApi = documentApi()
+  const toSource = (item) => {
+    if (!docApi || !viewport || typeof docApi.annotationsFromViewport !== 'function') return item
+    const [projected] = docApi.annotationsFromViewport([item], viewport)
+    return projected || item
+  }
+  const toViewport = (item) => {
+    if (!docApi || !viewport || typeof docApi.annotationsToViewport !== 'function') return item
+    const [projected] = docApi.annotationsToViewport([item], viewport)
+    return projected || item
+  }
   let changed = false
   const kept = []
   for (const item of annotations) {
     if (item.type !== 'magnifier') { kept.push(item); continue }
-    const clipped = api.clipToCrop(item, crop)
+    const clipped = api.clipToCrop(toSource(item), crop)
     if (!clipped.ok) { changed = true; continue }
     if (clipped.adjusted) changed = true
-    kept.push(clipped.magnifier)
+    // Back to viewport CSS, preserving the id (ids are session state, never part of the fingerprint).
+    const restored = toViewport(clipped.magnifier)
+    kept.push(item.id !== undefined ? Object.assign({}, restored, { id: item.id }) : restored)
   }
   if (!changed) return
   annotations = kept

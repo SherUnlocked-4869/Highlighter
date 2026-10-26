@@ -362,6 +362,12 @@ test('§7.2 a freehand blur masks the full stroke width (half-width plus round c
 test('§7.2 the mask brush width matches the renderer, so the mask is never narrower than the ink', () => {
   // 与 capture/annotation-style.js 的 blurBrushWidth 同源：两处必须给出同一个数，否则会出现
   // "屏幕上的马赛克比识别遮罩宽"的泄漏缝。
+  //
+  // 注意这条只覆盖 scale = 1（两边都不缩放时的纯公式等价）。**真正会出错的是缩放维度**：
+  // 先乘 widthScale 再量化 vs 先量化再乘 widthScale，在 scale != 1 上有 60 源像素/侧的差别。
+  // 那条断言在 test/capture-magnifier-ui.test.js 的
+  // "the lens mask width is never narrower than the mosaic the user actually sees"，
+  // 那条是行为断言且带反向对照。这里保留公式同源检查，不要误以为它已经覆盖缩放。
   const styleApi = require('../capture/annotation-style.js')
   for (const width of [2, 4, 8]) {
     assert.equal(occlusion.brushStrokeWidth(width), styleApi.blurBrushWidth(width))

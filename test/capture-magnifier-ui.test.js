@@ -115,7 +115,7 @@ test('§7.2 the lens samples the base image + an opaque blur mask, never the com
   // so handing them straight to a source-resolution sample base would paint the mask in the wrong
   // place and defeat it entirely (a real defect the runtime probe caught). `annotationsForSampling`
   // is the projection that makes the two agree; the document editor case passes through unchanged.
-  assert.match(base, /const occluders = mask\.buildOccluders\(annotationsForSampling\(\)\)/)
+  assert.match(base, /const occluders = buildOccludersForSampling\(\)/)
   const sampling = sliceBetween(script, 'function annotationsForSampling()', '// The sampled lens canvas')
   assert.match(sampling, /if \(documentEditor\) return annotationsToDocument\(\)/)
   assert.match(sampling, /const scaleX = source\.width \/ Math\.max\(1, rect\.w\)/)
@@ -250,7 +250,22 @@ test('§3.3 the per-document limit refuses a new lens instead of dropping an exi
 
 test('§7.1 loading removes out-of-crop magnifiers inside the load frame (not as an undoable edit)', () => {
   const clip = sliceBetween(script, 'function clipRestoredMagnifiers()', 'function restoreOutputStyleForDocument(')
-  assert.match(clip, /const clipped = api\.clipToCrop\(item, crop\)/)
+  // SPACE RULE (regression): `annotations` in the load frame is viewport CSS, but `clipToCrop` is
+  // defined in source pixels. Handing the source-pixel crop straight to a viewport object made a
+  // legal lens look out-of-crop and get shrunk or DELETED on open (not undoable). The clip must
+  // therefore project to source space first and back to viewport space afterwards.
+  assert.match(clip, /api\.clipToCrop\(toSource\(item\), crop\)/)
+  assert.doesNotMatch(
+    clip,
+    /api\.clipToCrop\(item, crop\)/,
+    'clipping a viewport-CSS object against a source-pixel crop deletes legal magnifiers on open'
+  )
+  // The projection helpers must use the shared viewport inverse/forward, so both directions agree.
+  assert.match(clip, /docApi\.annotationsFromViewport\(\[item\], viewport\)/)
+  assert.match(clip, /docApi\.annotationsToViewport\(\[item\], viewport\)/)
+  // ...and the viewport projection must actually be applied to the clipped result before it is kept.
+  assert.match(clip, /const restored = toViewport\(clipped\.magnifier\)/)
+  assert.match(clip, /kept\.push\(item\.id !== undefined \? Object\.assign\(\{\}, restored, \{ id: item\.id \}\) : restored\)/)
   assert.match(clip, /if \(!clipped\.ok\) \{ changed = true; continue \}/)
   // The load frame is rebuilt from the state AFTER the removal, so Ctrl+Z right after opening is a
   // no-op and cannot resurrect an object that samples pixels the document no longer has.
@@ -260,6 +275,53 @@ test('§7.1 loading removes out-of-crop magnifiers inside the load frame (not as
   // It runs inside the restore funnel.
   const restore = sliceBetween(script, 'function restoreDocumentEditor(payload)', 'function clipRestoredMagnifiers(')
   assert.match(restore, /clipRestoredMagnifiers\(\)/)
+
+  // Behaviour: a lens that IS inside the crop must survive the round trip unchanged, at a real
+  // fit-to-window zoom. This is the case the old code destroyed; asserting it numerically means the
+  // test fails if the projection is removed again, rather than only if a string changes.
+  const crop = { x: 100, y: 80, w: 640, h: 420 }
+  const baseSize = { width: 900, height: 700 }
+  const viewport = docApi.fitViewport({
+    baseSize,
+    crop,
+    bounds: { width: 640 * 0.75, height: 420 * 0.75 }
+  })
+  // A legal source-space lens: entirely inside the crop.
+  const sourceLens = magnifierApi.normalizeMagnifier({
+    sourceRect: { x: 140, y: 110, w: 120, h: 80 },
+    lensOrigin: { x: 300, y: 220 },
+    factor: 2,
+    stroke: { color: '#ff3b30', widthPx: 2 },
+    connector: 'none'
+  })
+  // Load frame: source -> viewport (what restoreDocumentEditor does).
+  const [live] = docApi.annotationsToViewport([sourceLens], viewport)
+  // Each item must be in viewport space (i.e. NOT already source pixels), which is exactly why the
+  // clip has to project. Guard against the test drifting into the "already source" assumption.
+  assert.notEqual(live.sourceRect.x, sourceLens.sourceRect.x, 'the live array must be viewport CSS at zoom != 1')
+  // The old bug: clip in source space using the viewport object.
+  const oldClipped = magnifierApi.clipToCrop(live, crop)
+  // The fix: project -> clip -> project back.
+  const [liveInSource] = docApi.annotationsFromViewport([live], viewport)
+  const fixedClipped = magnifierApi.clipToCrop(liveInSource, crop)
+  assert.equal(fixedClipped.ok, true, 'a lens inside the crop must never be removed')
+  assert.equal(fixedClipped.adjusted, false, 'a lens inside the crop must not be shrunk')
+  // And the surviving geometry matches the original source rect (round-trip is exact enough to be
+  // pixel-useful; the shared module quantises to 1/1000, so allow a sub-pixel tolerance).
+  const [restored] = docApi.annotationsToViewport([fixedClipped.magnifier], viewport)
+  const [roundTrip] = docApi.annotationsFromViewport([restored], viewport)
+  for (const axis of ['x', 'y', 'w', 'h']) {
+    assert.ok(
+      Math.abs(roundTrip.sourceRect[axis] - sourceLens.sourceRect[axis]) < 0.01,
+      `round trip must preserve sourceRect.${axis} (${roundTrip.sourceRect[axis]} vs ${sourceLens.sourceRect[axis]})`
+    )
+  }
+  // Document why the old call was wrong: at this zoom it reports the legal object as out of crop.
+  assert.equal(
+    oldClipped.adjusted || oldClipped.ok === false,
+    true,
+    'the pre-fix call must be visibly wrong at a non-1 zoom, otherwise this test cannot catch regressions'
+  )
 })
 
 test('§7.1 a gesture that is interrupted leaves no object and no frame', () => {
@@ -403,4 +465,105 @@ test('§7.3 the same document produces the same magnifier geometry on every exit
   assert.match(draw, /const lens = api\.lensRect\(magnifier\)/)
   assert.match(draw, /const left = mapX\(lens\.x\)/)
   assert.match(draw, /const top = mapY\(lens\.y\)/)
+})
+
+// ---------- ⑧ 遮罩宽度必须真的覆盖画出来的马赛克（真实缺陷的回归） ----------
+//
+// 这是一条**行为**断言，不是源码正则。它存在的理由：上一版只有
+// test/magnifier-geometry.test.js 的"同源"断言，而那条只在 scale = 1 下比较
+// brushStrokeWidth(w) === blurBrushWidth(w)，恰好绕过了唯一会出错的维度。
+//
+// 真实缺陷（2026-10-26 评审发现并修复）：annotationsForSampling() 曾把 CSS 预设宽度
+// **先乘 widthScale**，再交给 brushStrokeWidth() 量化到 {2,4,8} 预设表（并有 18px 下限）。
+// 于是任何非 1 的缩放都会落在预设之间、被吸到下限，镜头遮罩比画出来的马赛克窄 ——
+// preset 8 / 3× 时每侧窄 60 源像素，足以把用户盖住的整行字放大出来。
+// 绘制侧（blurBrushWidth(w) * deviceScale）是"先量化后缩放"，遮罩侧必须同序。
+test('§7.2 the lens mask width is never narrower than the mosaic the user actually sees', () => {
+  const styleApi = require('../capture/annotation-style.js')
+
+  // What the painter draws, in source pixels: capture.js:639
+  //   `const brush = blurBrushWidth(item.width) * deviceScale`
+  // For an export canvas deviceScale == max(scaleX, scaleY) == widthScale.
+  const paintedSourceWidth = (cssWidth, widthScale) => styleApi.blurBrushWidth(cssWidth) * widthScale
+
+  // What the sample base masks, after the fix: quantise FIRST (buildOccluders on the CSS width),
+  // scale the resulting width AFTER - the order capture.js buildOccludersForSampling() implements.
+  const maskedSourceWidth = (cssWidth, widthScale) => {
+    const occluder = maskApi.buildOccluders([{ type: 'blur', width: cssWidth, points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] }])[0]
+    return occluder.width * widthScale
+  }
+
+  // The scale column spans every real capture case: 1 (1:1), fractional HiDPI (1.25/1.5/1.75),
+  // integer HiDPI (2) and a zoomed viewport (2.5/3).
+  const failures = []
+  for (const cssWidth of [2, 4, 8]) {
+    for (const widthScale of [1, 1.25, 1.5, 1.75, 2, 2.5, 3]) {
+      const painted = paintedSourceWidth(cssWidth, widthScale)
+      const masked = maskedSourceWidth(cssWidth, widthScale)
+      if (masked + 1e-6 < painted) {
+        failures.push({ cssWidth, widthScale, painted, masked, shortPerSide: (painted - masked) / 2 })
+      }
+    }
+  }
+  assert.deepEqual(
+    failures,
+    [],
+    `the lens mask must cover the painted mosaic at every scale; short by ${JSON.stringify(failures)}`
+  )
+
+  // Reverse control: the PRE-FIX formula (scale the CSS width, then quantise) must FAIL this check.
+  // Without this, the assertions above would also pass if both sides were accidentally equal for a
+  // reason unrelated to the ordering, and the test could never regress.
+  const preFixMaskedWidth = (cssWidth, widthScale) => {
+    const projected = cssWidth * widthScale
+    return maskApi.buildOccluders([{ type: 'blur', width: projected, points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] }])[0].width
+  }
+  const preFixGap = paintedSourceWidth(8, 3) - preFixMaskedWidth(8, 3)
+  assert.ok(
+    preFixGap > 0,
+    `the pre-fix ordering must be detectably narrower, otherwise this test cannot catch a regression (gap ${preFixGap})`
+  )
+
+  // Wiring guard: the analysis above is only about the SHIPPED code if capture.js actually uses the
+  // quantise-then-scale helper for the sample base. Reverting the call site to the pre-fix
+  // `mask.buildOccluders(annotationsForSampling())` would leave the maths above passing while the
+  // product leaked again, so the call site is pinned separately.
+  const ensureBase = sliceBetween(script, 'function ensureSampleBase()', '// Annotations in SOURCE pixels')
+  assert.match(
+    ensureBase,
+    /const occluders = buildOccludersForSampling\(\)/,
+    'the sample base must use the quantise-then-scale occluder helper'
+  )
+  assert.doesNotMatch(
+    ensureBase,
+    /mask\.buildOccluders\(annotationsForSampling\(\)\)/,
+    'handing un-scaled-width occluders to the sample base is the pre-fix leak'
+  )
+  // And the helper must scale the already-quantised width, not the CSS preset value: the width
+  // multiplication has to appear AFTER buildOccluders in that function.
+  const helper = sliceBetween(script, 'function buildOccludersForSampling()', '// The sampled lens canvas')
+  const buildIndex = helper.indexOf('mask.buildOccluders(')
+  const scaleIndex = helper.indexOf('* widthScale')
+  assert.ok(buildIndex >= 0, 'the helper must call buildOccluders')
+  assert.ok(scaleIndex > buildIndex, 'the width must be scaled AFTER quantisation (that ordering is the fix)')
+  // It must leave `width` untouched in annotationsForSampling: scaling it there is what broke it.
+  // Both spellings of the bug are pinned, because the pre-fix code multiplied either by a local
+  // `widthScale` or by `Math.max(scaleX, scaleY)` before handing the width to the quantiser.
+  const sampling = sliceBetween(script, 'function annotationsForSampling()', 'function buildOccludersForSampling()')
+  assert.doesNotMatch(
+    sampling,
+    /width:\s*\(Number\(item\.width\) \|\| 0\)\s*\*\s*(widthScale|Math\.max\(scaleX, scaleY\))/,
+    'annotationsForSampling must not pre-scale the blur width (it quantises downstream)'
+  )
+  assert.doesNotMatch(
+    sampling,
+    /width:\s*[^,\n]*\*\s*(widthScale|Math\.max\(scaleX, scaleY\))/,
+    'any pre-scaled blur width in annotationsForSampling re-opens the mask-too-narrow leak'
+  )
+  // Positive control: the width must be handed over as the raw preset so the quantiser sees it.
+  assert.match(
+    sampling,
+    /width:\s*item\.width,/,
+    'annotationsForSampling must pass the un-scaled preset width to the occluder builder'
+  )
 })
