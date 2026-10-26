@@ -4348,7 +4348,10 @@ window.captureAPI.onInit((data)=>{
   // P0-2（S9b）：光标位图在这里预解码（每次 init 都重置，避免沿用上一张的光标）。
   // exportSelectionCanvas 是同步函数，贴图时只认"已解码"的光标，不能在里面等。
   if(data.cursor?.dataUrl){cursorImage=new Image();cursorImage.src=data.cursor.dataUrl}else cursorImage=null
-  image=new Image(); image.onload=()=>{if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError(t('capture.error.decode-failed'))
+  // W3 (memory plan §4.3): the Blob below owns its own copy of the PNG bytes, exports re-encode the
+  // canvas and commit only sends resultBuffer, so the decoded image no longer needs the shared init
+  // buffer. Clearing in this BASE onload (the documentEditor branch wraps it) covers both paths.
+  image=new Image(); image.onload=()=>{initData.imageBuffer=null;if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}if(data.mode==='fullscreen'||data.mode==='image'||data.mode==='canvas')tip.style.display='none';resizeCanvas();if(selectState==='auto'&&data.cursorPosition)requestSmartSelection(data.cursorPosition);maybeRunAutoAction()}; image.onerror=()=>window.captureAPI.renderError(t('capture.error.decode-failed'))
   if(data.mode==='canvas')image.src=makeBlankCanvas()
   else if(data.imageBuffer){imageObjectUrl=URL.createObjectURL(new Blob([data.imageBuffer],{type:'image/png'}));image.src=imageObjectUrl}
   else window.captureAPI.renderError(t('capture.error.empty-image'))

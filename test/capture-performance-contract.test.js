@@ -104,3 +104,34 @@ test('a resized canvas loses its transform, so the overlay must re-apply it (ari
     `with the transform the whole canvas is inked (got ${fractionWithTransform.toFixed(4)})`
   )
 })
+
+// W3 (memory plan §4.3): the initial screenshot PNG is delivered as `imageBuffer` on the shared
+// `initData` object and was only ever read once, to build the Blob that `image.src` decodes. Without
+// an explicit clear that PNG-sized ArrayBuffer stays reachable for the whole life of the capture
+// window. Exports are safe to drop it: export re-encodes the canvas, commit only sends resultBuffer
+// and history "continue editing" re-reads the file from disk. The clear must live in the BASE
+// `image.onload` because the documentEditor branch wraps that callback; pinning the wrapper instead
+// would leave the plain screenshot path unfixed.
+test('the capture renderer releases the initial PNG buffer once the image decodes (W3)', () => {
+  const onloadStart = capture.indexOf('image=new Image(); image.onload=()=>{')
+  const onloadEnd = capture.indexOf('image.onerror=', onloadStart)
+  assert.ok(onloadStart >= 0 && onloadEnd > onloadStart, 'the base image.onload must be present')
+  const onload = capture.slice(onloadStart, onloadEnd)
+  assert.match(
+    onload,
+    /initData\.imageBuffer=null/,
+    'the base image.onload must clear the shared init buffer so the PNG bytes can be collected'
+  )
+  // Guard the documented single-use contract: the buffer must still be consumed by the Blob that
+  // feeds image.src (the decode callback runs only after that Blob exists), so the only clear is
+  // the one inside the callback and not a stray synchronous wipe before the Blob is built.
+  assert.ok(
+    capture.indexOf("new Blob([data.imageBuffer]") >= 0,
+    'image.src must still be fed from the initial imageBuffer Blob'
+  )
+  assert.equal(
+    capture.split('initData.imageBuffer=null').length - 1,
+    1,
+    'the buffer must be cleared exactly once'
+  )
+})
