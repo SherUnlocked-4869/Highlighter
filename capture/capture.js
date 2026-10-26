@@ -862,7 +862,19 @@ function drawMagnifier(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offse
 }
 
 function renderOverlay() {
-  if (!image) return  ctx.setTransform(dpr,0,0,dpr,0,0)
+  // The DPR transform must be (re)established on EVERY frame, not just before an image exists.
+  //
+  // Resizing a canvas (`canvas.width = ...` in resizeCanvas) RESETS THE ENTIRE 2D CONTEXT STATE,
+  // transform included. The stage canvas is allocated at `innerWidth*dpr` physical pixels but every
+  // drawing call below is written in CSS pixels, so it depends on this transform being present.
+  // An earlier refactor folded the unconditional `setTransform` into the `!image` early-return,
+  // which left the normal capture path drawing at 1:1 physical pixels: on a 150% display the dim
+  // overlay / selection / annotations then only covered the top-left 1/1.5 of the window instead of
+  // the whole screen (observed on a real device: "the mask only covers the top-left corner").
+  // Keeping it unconditional also makes it idempotent - setTransform REPLACES the matrix rather than
+  // accumulating, so a frame that runs twice is still correct.
+  ctx.setTransform(dpr,0,0,dpr,0,0)
+  if (!image) return
   ctx.clearRect(0,0,innerWidth,innerHeight)
   if (!selection) {
     ctx.fillStyle = initData?.settings?.screenshot?.selectionMask || 'rgba(0,0,0,.46)'
