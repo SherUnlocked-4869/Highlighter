@@ -7,6 +7,7 @@ const { pathToFileURL } = require('node:url')
 
 const {
   LOCKED_WEB_PREFERENCES,
+  createLocalWindowFactory,
   createSecureWebPreferences,
   createSecureWindow,
   getSecureWindowRegistration,
@@ -107,6 +108,39 @@ test('secure window factory records the exact local page registration', () => {
   assert.equal(getSecureWindowRegistration(win.webContents).pagePath, path.normalize(actionPage).toLowerCase())
 })
 
+test('local window factory keeps the locked-factory contract and forwards blocked navigations', () => {
+  resetWindowRegistry()
+  const received = []
+  const blocked = []
+  class FakeBrowserWindow {
+    constructor(options) {
+      received.push(options)
+      this.webContents = new FakeWebContents()
+    }
+  }
+  const preload = path.join(root, 'preload-action.js')
+  const createLocalWindow = createLocalWindowFactory({
+    BrowserWindow: FakeBrowserWindow,
+    onBlocked: (entry) => blocked.push(entry)
+  })
+
+  const win = createLocalWindow(actionPage, { role: 'main', show: false, webPreferences: { preload } })
+  assert.ok(win instanceof FakeBrowserWindow)
+  assert.equal(received[0].show, false)
+  assert.equal(received[0].role, undefined, 'the factory must still strip registry metadata')
+  assert.equal(listWindows().length, 1)
+
+  const navigationEvent = { prevented: false, preventDefault() { this.prevented = true } }
+  win.webContents.emit('will-navigate', navigationEvent, 'https://example.com/private')
+  assert.equal(navigationEvent.prevented, true)
+  assert.deepEqual(blocked.map((entry) => entry.reason), ['blocked-navigation'])
+})
+
+test('local window factory validates its dependencies', () => {
+  assert.throws(() => createLocalWindowFactory({ BrowserWindow: null }), /BrowserWindow constructor is required/)
+  assert.throws(() => createLocalWindowFactory({ BrowserWindow: class {} , onBlocked: 'not-a-function' }), /onBlocked must be a function/)
+})
+
 test('secure window roles are registered but never forwarded to BrowserWindow', () => {
   resetWindowRegistry()
   const received = []
@@ -188,7 +222,10 @@ test('all application windows use the locked factory and deny network-capable pa
 
   assert.doesNotMatch(main, /new BrowserWindow\s*\(/)
   assert.equal((service.match(/new BrowserWindow\s*\(/g) || []).length, 1)
-  assert.match(main, /function createLocalWindow\(pagePath, options\)[\s\S]*createSecureWindow/)
+  // M2/W4: the wrapper lives in window-security now, so the "one locked factory"
+  // rule is asserted on the module that owns it plus the single binding in main.
+  assert.match(service, /function createLocalWindowFactory\([\s\S]*return createSecureWindow\(/)
+  assert.match(main, /const createLocalWindow = createLocalWindowFactory\(\{/)
   for (const segments of htmlFiles) {
     const html = fs.readFileSync(path.join(root, ...segments), 'utf8')
     assert.match(html, /Content-Security-Policy/, `${segments.join('/')} CSP`)

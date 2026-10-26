@@ -125,8 +125,20 @@ function getSecureWindowRegistration(webContents) {
     : null
 }
 
+// M2/W4: the assembly layer used to spell out this wrapper in main.js. It lives
+// here so main.js only binds the Electron handles once and the "every window goes
+// through the locked factory" rule stays testable from one module.
+function createLocalWindowFactory({ BrowserWindow, onBlocked = null }) {
+  if (typeof BrowserWindow !== 'function') throw new TypeError('BrowserWindow constructor is required')
+  if (onBlocked !== null && typeof onBlocked !== 'function') throw new TypeError('onBlocked must be a function')
+  return function createLocalWindow(pagePath, options = {}) {
+    return createSecureWindow({ BrowserWindow, pagePath, options, onBlocked })
+  }
+}
+
 module.exports = {
   LOCKED_WEB_PREFERENCES,
+  createLocalWindowFactory,
   createSecureWebPreferences,
   createSecureWindow,
   getSecureWindowRegistration,

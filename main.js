@@ -74,7 +74,7 @@ const { registerSearchIpc } = require('./main/ipc/search-ipc')
 const { registerSelectionIpc } = require('./main/ipc/selection-ipc')
 const { UpdateService } = require('./main/services/update-service')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
-const { createSecureWindow } = require('./main/services/window-security')
+const { createLocalWindowFactory } = require('./main/services/window-security')
 const { windowBackdropColor, trackWindowBackdrop, applyWindowBackdropToTracked } = require('./main/services/window-backdrop')
 const { name: applicationName } = require('./package.json')
 
@@ -523,14 +523,8 @@ async function persistHistoryFile(sourcePath, meta = {}) {
   return historyService.persistFile(sourcePath, meta)
 }
 
-function createLocalWindow(pagePath, options) {
-  return createSecureWindow({
-    BrowserWindow,
-    pagePath,
-    options,
-    onBlocked: ({ url, reason }) => log(`Window ${reason}:`, url)
-  })
-}
+// M2/W4: the wrapper moved into window-security so every window still goes through the one locked factory.
+const createLocalWindow = createLocalWindowFactory({ BrowserWindow, onBlocked: ({ url, reason }) => log(`Window ${reason}:`, url) })
 
 // Shell and window actions that are pure delegation: the module owns the URL
 // safety re-check, the display snapshot and the pickers, so main.js only wires
