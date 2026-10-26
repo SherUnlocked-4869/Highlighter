@@ -180,7 +180,20 @@ body.document-saving #stage { cursor: progress; }
 .color-palette {
   position: absolute;
   left: 0;
-  top: calc(100% + 6px);
+  /* Open UPWARD, above the strip's own top edge.
+   *
+   * The palette used to open downward (`top: calc(100% + 6px)`), i.e. just below the strip. When the
+   * strip is docked near the BOTTOM of the screen - which is where the placement rule puts it whenever
+   * the region sits low - the downward popup overlapped the strip itself and the buttons it covered
+   * became unclickable, because a positioned popup wins the hit test. Measured on a real device: with
+   * the strip at y=370..446 the palette opened at y=413..482, i.e. straight over the strip's lower half,
+   * and users reported "after picking a colour I can no longer select the pen/rect tools".
+   *
+   * Anchoring to the strip's top and growing upward keeps the popup outside the strip in the common
+   * case. `bottom: calc(100% + 6px)` with `top: auto` grows up; the strip is `flex-direction: column`
+   * so `100%` is still its own height. */
+  top: auto;
+  bottom: calc(100% + 8px);
   z-index: 7;
   display: flex;
   flex-direction: column;
@@ -193,6 +206,14 @@ body.document-saving #stage { cursor: progress; }
   background: rgba(25, 25, 28, .96);
   box-shadow: 0 10px 30px rgba(0, 0, 0, .4);
   backdrop-filter: blur(18px);
+}
+/* Fallback for a strip docked near the TOP of the screen, where there is no room above it: drop the
+ * popup below the strip instead. Toggled by capture.js `ensureColorPaletteOnScreen()`, which measures
+ * the live rect - the CSS default (above) is correct for the common bottom-docked case, so this only
+ * applies when above genuinely cannot fit. */
+.color-palette.below {
+  top: calc(100% + 8px);
+  bottom: auto;
 }
 .color-options { display: flex; gap: 4px; }
 /* These must stay after the shared .toolbar button rules above: same specificity,

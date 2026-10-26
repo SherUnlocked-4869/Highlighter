@@ -58,8 +58,17 @@ test('A3 (D3): the popover offers the recorder seven colours plus a custom slot 
 })
 
 test('A3 (D3): the palette CSS anchors the popover and separates hover from the latched state', () => {
-  assert.match(css, /\.color-palette \{[\s\S]{0,240}?position: absolute/)
-  assert.match(css, /\.color-palette \{[\s\S]{0,320}?max-width: calc\(100vw - 20px\)/)
+  // Slice the actual `.color-palette { ... }` block instead of matching a fixed character window: a
+  // window stops matching the moment a comment is added inside the rule (it did, when the upward
+  // anchor was introduced), which turns the assertion into a comment-length check.
+  const blockStart = css.indexOf('.color-palette {')
+  const blockEnd = css.indexOf('}', blockStart)
+  assert.ok(blockStart >= 0 && blockEnd > blockStart, 'the .color-palette rule must exist')
+  const paletteBlock = css.slice(blockStart, blockEnd)
+  assert.match(paletteBlock, /position: absolute/)
+  assert.match(paletteBlock, /max-width: calc\(100vw - 20px\)/)
+  // Anchored to the strip (which side is pinned by the regression test below).
+  assert.match(paletteBlock, /(top|bottom):\s*calc\(100% \+ \d+px\)/)
   assert.match(css, /\.color-options button,?\s*\.color-recent button \{[\s\S]{0,200}?background: var\(--swatch\)/)
   assert.match(css, /\.color-options button:hover[\s\S]{0,160}?border-color: rgba\(255, 255, 255, \.55\)/)
   assert.match(css, /\.color-options button\.active[\s\S]{0,200}?border-color: #fff/)
@@ -118,4 +127,52 @@ test('A3: the colour rides the existing settings:update pipe with no new IPC cha
     /saveAnnotationColor: \(annotationColor\) => ipcRenderer\.invoke\('settings:update', \{ screenshot: \{ annotationColor \} \}\)/
   )
   assert.match(preload, /saveAnnotationWidth: \(annotationWidth\) => ipcRenderer\.invoke\('settings:update'/)
+})
+
+// Regression from a real device: "after I click a colour the toolbar refreshes into the colour and
+// width pickers and I can no longer select a drawing tool (pen, rect, ...)".
+//
+// The palette is a positioned popover inside the strip. It used to open DOWNWARD
+// (`top: calc(100% + 6px)`), so whenever the strip was docked near the bottom of the screen - which is
+// exactly where the placement rule puts it when the region sits low - the popover landed on top of the
+// strip and its buttons. A positioned element wins the hit test, so the covered tools stopped responding
+// to clicks. Measured on the real device: strip 370..446, palette 413..482 (33px of overlap).
+//
+// The fix is to open UPWARD by default, with a measured flip back below only when there is no room above.
+test('A3 the colour palette opens above the strip so it never covers the tool buttons', () => {
+  // Slice ONLY the default `.color-palette { ... }` rule, so the `.below` fallback (which legitimately
+  // opens downward) cannot satisfy or trip the assertions.
+  const start = css.indexOf('.color-palette {')
+  const end = css.indexOf('}', start)
+  assert.ok(start >= 0 && end > start, 'the .color-palette rule must exist')
+  const defaultRule = css.slice(start, end)
+  // Above the strip: anchored to the strip's top edge, not below it.
+  assert.match(defaultRule, /bottom:\s*calc\(100% \+ \d+px\)/)
+  assert.match(defaultRule, /top:\s*auto/)
+  assert.doesNotMatch(
+    defaultRule,
+    /(^|\n)\s*top:\s*calc\(100% \+ \d+px\)/,
+    'opening downward by default is what covered the strip and made the tools unclickable'
+  )
+  // The escape hatch exists for a strip docked at the top of the screen, and it may open downward.
+  assert.match(css, /\.color-palette\.below\s*\{[^}]*top:\s*calc\(100% \+ \d+px\)/)
+  assert.match(css, /\.color-palette\.below\s*\{[^}]*bottom:\s*auto/)
+})
+
+test('A3 the palette visibility changes drop the cached strip rect and re-run placement', () => {
+  const open = script.slice(script.indexOf('function openColorPalette()'), script.indexOf('function closeColorPalette()'))
+  const close = script.slice(script.indexOf('function closeColorPalette()'), script.indexOf('function toggleColorPalette()'))
+  // Opening/closing changes the strip's painted height, so the cached rect must be invalidated or the
+  // placement rule keeps positioning the strip with the old size.
+  assert.match(open, /invalidateToolbarSize\(\)/)
+  assert.match(open, /invalidateToolbarSize\(\)[\s\S]*render\(\)/)
+  assert.match(close, /invalidateToolbarSize\(\)/)
+  // And the upward default has a measured escape hatch for a top-docked strip.
+  assert.match(open, /ensureColorPaletteOnScreen\(\)/)
+  const ensure = script.slice(script.indexOf('function ensureColorPaletteOnScreen()'), script.indexOf('function closeColorPalette()'))
+  assert.match(ensure, /roomAbove/)
+  assert.match(ensure, /roomBelow/)
+  assert.match(ensure, /classList\.toggle\('below'/)
+  // It must measure the LIVE rect, not a cached one (the cache is invalidated right before it).
+  assert.match(ensure, /toolbar\.getBoundingClientRect\(\)/)
 })

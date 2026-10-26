@@ -1366,11 +1366,41 @@ function openColorPalette() {
   renderRecentColors()
   colorPalette.classList.remove('hidden')
   colorButton.setAttribute('aria-expanded', 'true')
+  // The palette is ~69px tall and the strip's row is ~63px, so opening it makes the strip TALLER
+  // (measured: scrollHeight 75 -> 111). `toolbarSize` caches the strip rect and the placement rule
+  // uses it to decide where the strip goes; a stale rect leaves the extra row outside the position
+  // that was reserved for it, so the tools that wrapped out of the first row became unreachable.
+  // Every visibility change that can alter the strip's size must drop that cache (D6/R3 rule).
+  invalidateToolbarSize()
+  ensureColorPaletteOnScreen()
+  render()
+}
+
+// The palette opens UPWARD (see the CSS comment: opening downward covered the strip's own buttons
+// when the strip was docked near the bottom of the screen - "after picking a colour I can no longer
+// select the pen/rect tools"). Upward is right for a bottom-docked strip, but a strip near the TOP of
+// the screen has no room above it, so the palette would be clipped by the viewport instead.
+//
+// This flips the popup back below the strip only when there is genuinely no room above and there IS
+// room below. It measures the live rect, so it costs nothing when the CSS default is already correct.
+function ensureColorPaletteOnScreen() {
+  if (!colorPalette || colorPalette.classList.contains('hidden')) return
+  const stripRect = toolbar.getBoundingClientRect()
+  const paletteHeight = colorPalette.offsetHeight || 0
+  if (!paletteHeight) return
+  const gap = 8
+  const roomAbove = stripRect.top - gap
+  const roomBelow = innerHeight - stripRect.bottom - gap
+  // Prefer above; drop below only when above cannot fit and below can.
+  const flipBelow = roomAbove < paletteHeight && roomBelow >= paletteHeight
+  colorPalette.classList.toggle('below', flipBelow)
 }
 
 function closeColorPalette() {
   colorPalette.classList.add('hidden')
   colorButton.setAttribute('aria-expanded', 'false')
+  invalidateToolbarSize()
+  render()
 }
 
 function toggleColorPalette() {

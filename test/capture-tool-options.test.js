@@ -58,9 +58,27 @@ test('B1 (D6/R3): the toolbar size cache has exactly one invalidation helper wit
   assert.match(script, /function invalidateToolbarSize\(\) \{\s*toolbarSize = null\s*\}/)
   // 唯一写点：任何别处直接置 null 都会绕过失效纪律（R3 的"收敛为一个函数"）。
   assert.equal((script.match(/^\s+toolbarSize = null/gm) || []).length, 1, 'only invalidateToolbarSize() clears the cache')
-  // 调用点 = 定义 + resize + 第二行可见性/换族 + 方案 2 的宽度上限变化
-  // （applyToolbarWidthLimit 改了 max-width 就等于改了高度，必须走同一个失效点）。
-  assert.equal(script.match(/invalidateToolbarSize\(\)/g).length, 4, 'definition + resize + row change + width limit')
+  // 调用点 = 定义 + resize + 第二行可见性/换族 + 方案 2 的宽度上限变化 + 色板弹层开/关。
+  //
+  // 这条断言原来写的是"恰好 4 处"。计数约束不是行为约束：色板开关也会改变工具栏的绘制高度
+  // （它 ~69px，比行高 ~63px 还高），必须同样走这个失效点，于是合法的改动会让计数变红。
+  // 现在断言的是**真正的不变量**：这些会改变尺寸的位置每一个都必须调用失效函数。
+  for (const [label, anchor] of [
+    ['definition', 'function invalidateToolbarSize() {'],
+    ['resize', 'function resizeCanvas() {'],
+    ['row visibility', 'function syncToolOptionsRow() {'],
+    ['width limit', 'function applyToolbarWidthLimit() {'],
+    ['colour palette open', 'function openColorPalette() {'],
+    ['colour palette close', 'function closeColorPalette() {']
+  ]) {
+    const start = script.indexOf(anchor)
+    assert.ok(start > 0, `could not locate ${label} (${anchor})`)
+    // The helper's own body contains the assignment, not a call; skip it for the definition case.
+    const nextFunction = script.indexOf('\nfunction ', start + anchor.length)
+    const body = script.slice(start, nextFunction > start ? nextFunction : start + 4000)
+    if (label === 'definition') continue
+    assert.match(body, /invalidateToolbarSize\(\)/, `${label} must drop the cached strip rect`)
+  }
   assert.match(script, /function resizeCanvas\(\) \{[\s\S]{0,1200}?invalidateToolbarSize\(\)/)
   assert.match(script, /function syncToolOptionsRow\(\) \{[\s\S]{0,760}?invalidateToolbarSize\(\)\s*\n\s*render\(\)/)
   assert.match(script, /function applyToolbarWidthLimit\(\) \{[\s\S]{0,900}?invalidateToolbarSize\(\)/)
