@@ -122,6 +122,36 @@ test('recording controls expose and composite basic live annotation tools', () =
   assert.match(script, /async function finishRecording\(\)[\s\S]*setFrameState\('hidden'\)[\s\S]*stopMediaRecorder/)
 })
 
+// Regression from a real device: "after I click a colour, the toolbar shows colour and thickness
+// options and I can no longer select the pen / rectangle / ellipse tools".
+//
+// The palette was positioned `left:50%; top:50%; transform:translate(-50%,-50%)` inside
+// `.annotation-style-wrap` - a ~30px square button wrapper. A 350px-wide popup centred on a 30px
+// anchor overflows ~160px to EACH side, i.e. straight across the annotation tool buttons that sit
+// beside it. A positioned element wins the hit test, so every covered tool stopped responding.
+// Measured in the packaged window (760x86): the palette now sits at x=410..744, right of the last
+// tool, overlapping nothing.
+test('the annotation palette opens beside the tools so it never covers them', () => {
+  const html = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')
+  const style = fs.readFileSync(path.join(root, 'record', 'record.css'), 'utf8')
+  const paletteRule = /\.annotation-palette\{([^}]*)\}/.exec(style)
+  assert.ok(paletteRule, 'the .annotation-palette rule must exist')
+  const rule = paletteRule[1]
+  // Anchored to the RIGHT of its wrapper, not centred on it.
+  assert.match(rule, /left:calc\(100% \+ \d+px\)/, 'the palette must open to the side of the style button')
+  assert.doesNotMatch(rule, /left:50%/, 'centring a wide popup on a 30px button is what covered the tools')
+  assert.doesNotMatch(rule, /translate\(-50%/, 'a -50% X shift re-centres it back over the tools')
+  // It must still be vertically centred on the strip, and sized from its content.
+  assert.match(rule, /transform:translateY\(-50%\)/)
+  assert.match(rule, /width:auto/, 'a fixed 350px width is what forced the overlay in the first place')
+  // The style wrapper stays the positioning context for the popup.
+  assert.match(style, /\.annotation-style-wrap\{position:relative\}/)
+  // And the popup comes after the tool buttons in DOM order (so `left:100%` points at free space).
+  const toolsIndex = html.indexOf('data-annotation-tool="arrow"')
+  const wrapIndex = html.indexOf('annotation-style-wrap')
+  assert.ok(toolsIndex > 0 && wrapIndex > toolsIndex, 'the tools must precede the style wrapper')
+})
+
 test('region recording settings expose the frozen frame rates and audio sources', () => {
   const config = readConfigSource()
   const recordHtml = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')
