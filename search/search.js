@@ -35,6 +35,12 @@ const state = {
 
 const SEARCH_DEBOUNCE_MS = 60
 
+// W5 (M2): mirror the user's query state to the main process. The search window
+// is destroyed after being hidden for a minute and rebuilt on demand, so the
+// main process replays this snapshot into the new window. The 300ms debounce
+// keeps typing from spamming IPC and still lands long before the reclaim timer.
+const SAVE_STATE_DEBOUNCE_MS = 300
+
 function debounce(fn, delay) {
   let timer = null
   return (...args) => {
@@ -44,6 +50,25 @@ function debounce(fn, delay) {
 }
 
 const runSearchDebounced = debounce(() => runSearch(), SEARCH_DEBOUNCE_MS)
+
+function currentSearchState() {
+  return {
+    keyword: els.input.value,
+    categoryId: state.activeCategoryId,
+    sortMode: state.settings.sortMode,
+    matchPath: !!state.settings.matchPath
+  }
+}
+
+function saveSearchState() {
+  try {
+    searchAPI.saveState(currentSearchState())
+  } catch {
+    // A closing window must not surface an IPC error in the renderer.
+  }
+}
+
+const saveSearchStateDebounced = debounce(saveSearchState, SAVE_STATE_DEBOUNCE_MS)
 
 function applyAppearance(payload) {
   document.documentElement.style.setProperty('--primary', payload.mainColor || '#e5a44c')
@@ -62,6 +87,31 @@ function applySettings(searchSettings) {
   els.matchPath.checked = !!state.settings.matchPath
   renderSortOptions()
   renderTabs()
+}
+
+// W5: a rebuilt window starts from `restore` instead of the empty shell. Every
+// field is re-validated against the settings that were just loaded, and an
+// absent restore is a no-op (fresh launch behaviour is unchanged).
+function applyRestore(restore) {
+  if (!restore || typeof restore !== 'object') return
+  if (typeof restore.keyword === 'string' && restore.keyword.length <= 2048) {
+    els.input.value = restore.keyword
+    els.clear.hidden = !restore.keyword
+    state.keyword = restore.keyword
+  }
+  if (typeof restore.categoryId === 'string' && state.categories.some((category) => category.id === restore.categoryId)) {
+    state.activeCategoryId = restore.categoryId
+  }
+  if (typeof restore.sortMode === 'string' && window.searchUtils.SORT_OPTIONS.some(([value]) => value === restore.sortMode)) {
+    state.settings.sortMode = restore.sortMode
+  }
+  if (typeof restore.matchPath === 'boolean') {
+    state.settings.matchPath = restore.matchPath
+    els.matchPath.checked = restore.matchPath
+  }
+  renderTabs()
+  renderSortOptions()
+  if (restore.keyword) runSearch()
 }
 
 function renderSortOptions() {
@@ -289,6 +339,7 @@ function activateRow(index, { reveal = false } = {}) {
 els.input.addEventListener('input', () => {
   els.clear.hidden = !els.input.value
   runSearchDebounced()
+  saveSearchStateDebounced()
 })
 
 els.input.addEventListener('keydown', (event) => {
@@ -314,6 +365,7 @@ els.input.addEventListener('keydown', (event) => {
     const nextIndex = (currentIndex + (event.shiftKey ? -1 : 1) + state.categories.length) % state.categories.length
     state.activeCategoryId = state.categories[nextIndex]?.id || 'all'
     renderTabs()
+    saveSearchState()
     runSearch()
   }
 })
@@ -359,6 +411,7 @@ els.tabs.addEventListener('click', (event) => {
   if (!tab || tab.dataset.id === state.activeCategoryId) return
   state.activeCategoryId = tab.dataset.id
   renderTabs()
+  saveSearchState()
   runSearch()
 })
 
@@ -374,14 +427,20 @@ els.close.addEventListener('click', () => searchAPI.close())
 els.matchPath.addEventListener('change', () => {
   state.settings.matchPath = els.matchPath.checked
   searchAPI.savePrefs({ search: { matchPath: els.matchPath.checked } }).catch(() => {})
+  saveSearchState()
   runSearch()
 })
 
 els.sort.addEventListener('change', () => {
   state.settings.sortMode = els.sort.value
   searchAPI.savePrefs({ search: { sortMode: els.sort.value } }).catch(() => {})
+  saveSearchState()
   runSearch()
 })
+
+// A hide can happen before the debounce fires (blur closes the window), so flush
+// the mirror on blur as well; the reclaim itself is at least a minute away.
+window.addEventListener('blur', saveSearchState)
 
 // P0-1-T2/T5: the initial pass translates the markup; the broadcast subscription
 // re-renders everything the script owns (tabs, sort options, result rows, the
@@ -400,9 +459,17 @@ window.searchAPI.onInterfaceLanguage((language) => {
   updateEmptyState()
 })
 searchAPI.ready()
+// W5: only the first init of this renderer applies `restore` (a window that is
+// merely reshown gets a fresh init for appearance/settings, and replaying the
+// mirror then would clobber newer typing that has not reached the main process).
+let restoreApplied = false
 searchAPI.onInit((payload) => {
   applyAppearance(payload)
   applySettings(payload.search || {})
+  if (!restoreApplied) {
+    restoreApplied = true
+    applyRestore(payload.restore)
+  }
   els.input.focus()
   searchAPI.ensureReady().then(renderStatus).catch(() => searchAPI.getStatus().then(renderStatus).catch(() => {}))
 })

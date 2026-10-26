@@ -203,7 +203,7 @@ const IPC_SURFACES = Object.freeze([
       'search:file-icon',
       'settings:update'
     ],
-    listeners: ['search:ready', 'search:close']
+    listeners: ['search:ready', 'search:close', 'search:state']
   },
   {
     role: 'record',

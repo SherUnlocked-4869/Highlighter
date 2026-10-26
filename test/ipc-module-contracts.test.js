@@ -219,7 +219,10 @@ test('search IPC module owns query, state, and file action channels', () => {
       'copyPath',
       'getFileIcon',
       'ready',
-      'close'
+      'close',
+      // M2/W5: the renderer mirrors its query/state so a reclaimed window can be
+      // rebuilt in the same place; it is a listener (send-only, no reply).
+      'saveState'
     ])
   })
 
@@ -232,8 +235,9 @@ test('search IPC module owns query, state, and file action channels', () => {
     'search:copy-path',
     'search:file-icon'
   ])
-  assert.deepEqual([...ipcMain.listeners.keys()], ['search:ready', 'search:close'])
+  assert.deepEqual([...ipcMain.listeners.keys()], ['search:ready', 'search:close', 'search:state'])
   assert.equal(ipcMain.handlers.get('search:query')(null, { search: 'a' }).method, 'query')
+  assert.equal(ipcMain.listeners.get('search:state')(null, { keyword: 'a' }).method, 'saveState')
 })
 
 test('recording IPC module owns control and annotation channels', () => {

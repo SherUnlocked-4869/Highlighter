@@ -10,6 +10,10 @@ function registerSearchIpc({ ipcMain, controller }) {
   ipcMain.handle('search:file-icon', (event, payload) => controller.getFileIcon(event, payload))
   ipcMain.on('search:ready', (event) => controller.ready(event))
   ipcMain.on('search:close', (event) => controller.close(event))
+  // W5 (M2): one-way query-state mirror from the search renderer. Sender
+  // authorization is enforced by the secure IPC wrapper; the controller also
+  // re-checks that the sender is the search window.
+  ipcMain.on('search:state', (event, payload) => controller.saveState(event, payload))
 }
 
 module.exports = {

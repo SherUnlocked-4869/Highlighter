@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('searchAPI', {
     return () => ipcRenderer.removeListener('search:settings-changed', handler)
   },
   query: (payload) => ipcRenderer.invoke('search:query', payload),
+  // W5 (M2): the renderer mirrors the query/category/sort to the main process so
+  // a window reclaimed after being hidden can be rebuilt with the same query.
+  saveState: (state) => ipcRenderer.send('search:state', state),
   getStatus: () => ipcRenderer.invoke('search:status'),
   ensureReady: () => ipcRenderer.invoke('search:ensure-ready'),
   openPath: (path) => ipcRenderer.invoke('search:open-path', { path }),
