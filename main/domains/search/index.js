@@ -79,6 +79,7 @@ function createSearchDomain(deps) {
     }
     const pagePath = path.join(rootDirectory, 'search', 'search.html')
     const win = createLocalWindow(pagePath, {
+      role: 'search',
       width: 840,
       height: 620,
       minWidth: 620,

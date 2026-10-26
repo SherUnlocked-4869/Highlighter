@@ -196,6 +196,7 @@ function createRecordDomain(deps) {
     const framePagePath = path.join(rootDirectory, 'record', 'frame.html')
     const controlPagePath = path.join(rootDirectory, 'record', 'record.html')
     const frameWindow = createLocalWindow(framePagePath, {
+      role: 'record-frame',
       ...frameBounds,
       show: false,
       frame: false,
@@ -213,6 +214,7 @@ function createRecordDomain(deps) {
       }
     })
     const controlWindow = createLocalWindow(controlPagePath, {
+      role: 'record-control',
       ...controlBounds,
       show: false,
       frame: false,

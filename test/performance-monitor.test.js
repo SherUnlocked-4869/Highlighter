@@ -75,3 +75,58 @@ test('summarizes Electron process metrics in MiB by process type', () => {
     cpuPercent: 1.25
   })
 })
+
+test('snapshot keeps per-process detail and joins registry windows by pid', () => {
+  const metrics = [
+    {
+      pid: 100,
+      type: 'Browser',
+      name: 'Electron',
+      creationTime: 1700000000,
+      memory: { workingSetSize: 102400, privateBytes: 81920 },
+      cpu: { percentCPUUsage: 1.25 }
+    },
+    {
+      pid: 200,
+      type: 'Utility',
+      serviceName: 'highlighter-usage-scan',
+      creationTime: 1700000001,
+      memory: { workingSetSize: 20480, privateBytes: 4096 },
+      cpu: { percentCPUUsage: 0.5 }
+    }
+  ]
+  const windows = [{ role: 'main', feature: null, pid: 100, visible: true, workingSetMiB: 100 }]
+  const monitor = new PerformanceMonitor({
+    getAppMetrics: () => metrics,
+    getWindowRegistry: () => ({ snapshot: () => ({ generatedAt: 7, windowCount: 1, windows }) })
+  })
+
+  const entry = monitor.snapshot('memory-probe', { scenario: 'idle' })
+  assert.equal(entry.label, 'memory-probe')
+  assert.equal(entry.scenario, 'idle')
+  // Existing aggregate fields stay intact for compatibility.
+  assert.equal(entry.processCount, 2)
+  assert.equal(entry.byType.Browser.processCount, 1)
+  // New per-process detail keeps what the type buckets used to discard.
+  assert.equal(entry.processes.length, 2)
+  assert.equal(entry.processes[0].pid, 100)
+  assert.equal(entry.processes[0].name, 'Electron')
+  assert.equal(entry.processes[0].workingSetMiB, 100)
+  assert.equal(entry.processes[1].serviceName, 'highlighter-usage-scan')
+  // Windows carry the role → pid attribution getAppMetrics cannot provide.
+  assert.deepEqual(entry.windows, windows)
+})
+
+test('snapshot degrades to empty windows when the registry is unavailable', () => {
+  const failing = new PerformanceMonitor({
+    getAppMetrics: () => [],
+    getWindowRegistry: () => { throw new Error('no registry') }
+  })
+  const entry = failing.snapshot('empty')
+  assert.deepEqual(entry.windows, [])
+  assert.deepEqual(entry.processes, [])
+
+  const missing = new PerformanceMonitor({ getAppMetrics: () => [], getWindowRegistry: () => null })
+  assert.deepEqual(missing.snapshot('none').windows, [])
+  assert.equal(missing.snapshot('none').processCount, 0)
+})

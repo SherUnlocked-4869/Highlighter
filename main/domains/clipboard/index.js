@@ -192,7 +192,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     // is the only window users open on top of arbitrary content; a light backdrop
     // would flash white when the dark theme opens it.
     const settings = getSettings()
-    const created = createLocalWindow(page, { width, height, minWidth: Math.min(380, width), minHeight: Math.min(420, height),
+    const created = createLocalWindow(page, { role: 'clipboard-panel', width, height, minWidth: Math.min(380, width), minHeight: Math.min(420, height),
       x: Math.round(area.x + (area.width - width) / 2), y: Math.round(area.y + (area.height - height) / 3),
       frame: false, show: false, title: 'Highlighter', backgroundColor: windowBackdropColor(settings, nativeTheme),
       webPreferences: { preload: path.join(rootDirectory, 'preload-clipboard.js'), session: panelSession } })

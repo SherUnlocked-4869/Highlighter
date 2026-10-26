@@ -1,4 +1,8 @@
 const { performance } = require('node:perf_hooks')
+const {
+  getWindowRegistry: getDefaultWindowRegistry,
+  normalizeProcessMetric
+} = require('./window-registry')
 
 function round(value, digits = 2) {
   const number = Number(value)
@@ -56,11 +60,16 @@ class PerformanceMonitor {
   constructor({
     logger,
     now = () => performance.now(),
-    getAppMetrics = () => []
+    getAppMetrics = () => [],
+    // The window registry is the only source of role→pid attribution (M0a);
+    // the default resolves the same singleton window-security registers into,
+    // so main.js needs no extra wiring. A plain-node test may inject a fake.
+    getWindowRegistry = getDefaultWindowRegistry
   } = {}) {
     this.logger = logger
     this.now = now
     this.getAppMetrics = getAppMetrics
+    this.getWindowRegistry = getWindowRegistry
   }
 
   begin(name, details = {}) {
@@ -121,9 +130,22 @@ class PerformanceMonitor {
     } catch {
       metrics = []
     }
+    const processMetrics = Array.isArray(metrics) ? metrics : []
+    let windows = []
+    try {
+      const registry = typeof this.getWindowRegistry === 'function' ? this.getWindowRegistry() : null
+      const windowSnapshot = registry && typeof registry.snapshot === 'function' ? registry.snapshot() : null
+      if (windowSnapshot && Array.isArray(windowSnapshot.windows)) windows = windowSnapshot.windows
+    } catch {
+      windows = []
+    }
     const entry = {
       label: String(label || 'snapshot'),
-      ...summarizeAppMetrics(metrics),
+      ...summarizeAppMetrics(processMetrics),
+      // Per-process detail keeps pid/name/serviceName, which the type buckets
+      // drop; `windows` adds the role→pid attribution getAppMetrics cannot give.
+      processes: processMetrics.map(normalizeProcessMetric),
+      windows,
       ...(details && typeof details === 'object' ? details : {})
     }
     this.logger?.event?.('performance-snapshot', entry)

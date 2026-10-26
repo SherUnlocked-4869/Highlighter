@@ -266,6 +266,7 @@ function createPinDomain(deps) {
     const y = selectionBounds?.y ?? Math.round(Math.min(display.workArea.y + display.workArea.height - height, Math.max(display.workArea.y, cursor.y - 30)))
     const pagePath = path.join(rootDirectory, 'pin', 'pin.html')
     const win = createLocalWindow(pagePath, {
+      role: `pin:${pinnedCount + 1}`,
       width: Math.min(width, 200),
       height: Math.min(height, 160),
       x: display.bounds.x,

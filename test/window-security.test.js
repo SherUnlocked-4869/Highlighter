@@ -14,6 +14,7 @@ const {
   isAllowedLocalUrl,
   isSafeExternalUrl
 } = require('../main/services/window-security')
+const { listWindows, reset: resetWindowRegistry } = require('../main/services/window-registry')
 
 const root = path.resolve(__dirname, '..')
 const actionPage = path.join(root, 'action', 'action.html')
@@ -104,6 +105,41 @@ test('secure window factory records the exact local page registration', () => {
   assert.equal(receivedOptions.webPreferences.sandbox, true)
   assert.equal(getSecureWindowRegistration(win.webContents).window, win)
   assert.equal(getSecureWindowRegistration(win.webContents).pagePath, path.normalize(actionPage).toLowerCase())
+})
+
+test('secure window roles are registered but never forwarded to BrowserWindow', () => {
+  resetWindowRegistry()
+  const received = []
+  class FakeBrowserWindow {
+    constructor(options) {
+      received.push(options)
+      this.webContents = new FakeWebContents()
+    }
+  }
+  const preload = path.join(root, 'preload-action.js')
+
+  createSecureWindow({
+    BrowserWindow: FakeBrowserWindow,
+    pagePath: actionPage,
+    options: { role: 'main', feature: 'primary', show: false, webPreferences: { preload } }
+  })
+  assert.equal(received[0].show, false)
+  assert.equal(received[0].role, undefined, 'role is registry metadata, not a BrowserWindow option')
+  assert.equal(received[0].feature, undefined, 'feature is registry metadata, not a BrowserWindow option')
+  const registered = listWindows()
+  assert.equal(registered.length, 1)
+  assert.equal(registered[0].role, 'main')
+  assert.equal(registered[0].feature, 'primary')
+  assert.equal(registered[0].pid, null, 'a fake window without getOSProcessId degrades to null')
+
+  // A role-less window stays fully secured and tracked, but is not registered.
+  createSecureWindow({
+    BrowserWindow: FakeBrowserWindow,
+    pagePath: actionPage,
+    options: { show: false, webPreferences: { preload } }
+  })
+  assert.equal(listWindows().length, 1)
+  resetWindowRegistry()
 })
 
 test('action renderer uses a dedicated API, CSP, sanitizer, and packaged preload', () => {

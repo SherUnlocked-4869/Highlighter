@@ -129,6 +129,7 @@ function createLongCaptureDomain(deps) {
     const overlayPagePath = path.join(rootDirectory, 'long-capture', 'overlay.html')
     const controllerPagePath = path.join(rootDirectory, 'long-capture', 'long-capture.html')
     const overlayWindow = createLocalWindow(overlayPagePath, {
+      role: 'long-capture-overlay',
       ...display.bounds,
       frame: false,
       transparent: true,
@@ -146,6 +147,7 @@ function createLongCaptureDomain(deps) {
     })
     const controllerBounds = placeLongCaptureController(display, selectionBounds)
     const controllerWindow = createLocalWindow(controllerPagePath, {
+      role: 'long-capture-controller',
       ...controllerBounds,
       frame: false,
       transparent: true,

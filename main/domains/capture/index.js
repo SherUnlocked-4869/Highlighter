@@ -487,6 +487,7 @@ function createCaptureDomain(deps) {
     const transparent = mode === 'canvas' || !!options.transparent
     const pagePath = path.join(rootDirectory, 'capture', 'capture.html')
     const captureWindow = createLocalWindow(pagePath, {
+      role: 'capture-editor',
       x: captureBounds.x,
       y: captureBounds.y,
       width: Math.min(captureBounds.width, 800),

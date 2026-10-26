@@ -828,6 +828,7 @@ function createMainWindow(route = 'home') {
   // glass face sits over a drawn desk; behind a real window is the user's desktop,
   // which they rejected — see main/services/window-backdrop.js.
   const win = createLocalWindow(pagePath, {
+    role: 'main',
     width: 1120,
     height: 760,
     minWidth: 880,

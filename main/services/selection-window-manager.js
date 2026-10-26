@@ -110,6 +110,7 @@ class SelectionWindowManager {
     if (this.toolbarWindow) this.destroyUnavailableWindow(this.toolbarWindow, 'toolbar', 'failed health check')
     const pagePath = path.join(this.rootDirectory, 'toolbar', 'toolbar.html')
     const win = this.createWindow(pagePath, {
+      role: 'selection-toolbar',
       width: this.toolbarWidth,
       height: this.toolbarHeight,
       frame: false,
@@ -151,6 +152,7 @@ class SelectionWindowManager {
     const size = this.getSettings().selectionToolbar.resultWindow
     const pagePath = path.join(this.rootDirectory, 'action', 'action.html')
     const win = this.createWindow(pagePath, {
+      role: `selection-result:${this.actionWindows.length + 1}`,
       width: size.width,
       height: size.height,
       minWidth: this.actionMinWidth,

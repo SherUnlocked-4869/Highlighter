@@ -1,5 +1,6 @@
 const path = require('path')
 const { fileURLToPath } = require('url')
+const { registerWindow } = require('./window-registry')
 
 const LOCKED_WEB_PREFERENCES = Object.freeze({
   contextIsolation: true,
@@ -102,7 +103,9 @@ function installWindowSecurity(win, { allowedFilePaths, onBlocked } = {}) {
 function createSecureWindow({ BrowserWindow, pagePath, options = {}, onBlocked }) {
   if (typeof BrowserWindow !== 'function') throw new TypeError('BrowserWindow constructor is required')
   if (!normalizeAllowedPath(pagePath)) throw new TypeError('An absolute local page path is required')
-  const { webPreferences = {}, ...windowOptions } = options
+  // role/feature are registry metadata for the memory snapshot (M0a); they must
+  // never reach BrowserWindow, which ignores unknown options silently.
+  const { role, feature, webPreferences = {}, ...windowOptions } = options
   const win = new BrowserWindow({
     ...windowOptions,
     webPreferences: createSecureWebPreferences(webPreferences)
@@ -112,6 +115,7 @@ function createSecureWindow({ BrowserWindow, pagePath, options = {}, onBlocked }
     window: win,
     pagePath: normalizeAllowedPath(pagePath)
   })
+  if (role) registerWindow(role, win, { feature })
   return win
 }
 
