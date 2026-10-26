@@ -65,6 +65,16 @@ test('autoStart, channel, appearance, search, and clipboard effects fire indepen
   assert.deepEqual(calls.map((c) => c.name), ['login', 'channel', 'appearance', 'search', 'clipboard'])
 })
 
+test('autoStart login item carries the start-to-tray marker (W6a)', () => {
+  const { domain, calls } = createHarness()
+  domain.applyUpdate(
+    { system: { autoStart: true } },
+    { system: { autoStart: true, gameMode: false }, selectionToolbar: {}, ocr: {} }
+  )
+  const login = calls.find((entry) => entry.name === 'login')
+  assert.deepEqual(login.args[0], { openAtLogin: true, args: ['--start-to-tray'] })
+})
+
 test('OCR disable stops the sidecar and enable hot-starts only when configured', async () => {
   const off = createHarness()
   off.domain.applyUpdate({ plugins: { ocr: false } }, { system: {}, selectionToolbar: {}, ocr: {} })

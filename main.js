@@ -1229,7 +1229,9 @@ async function startApplication() {
   // P0-1-T6：主进程文案要先按设置里的语言生效，再建托盘（label 在构建时求值）。
   setLanguage(getSettings().language)
   selectionDomain.syncConversationStore()
-  createMainWindow('home')
+  const { isStartToTrayLaunch, loginItemSettings } = require('./main/services/tray-only-launch')
+  const startToTray = isStartToTrayLaunch(process.argv, { e2e: e2eContext.enabled })
+  if (!startToTray) createMainWindow('home')
   if (!e2eContext.enabled) {
     createTrayIcon()
     selectionDomain.createToolbarWindow()
@@ -1239,7 +1241,7 @@ async function startApplication() {
     clipboardDomain.start()
     if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
     if (isWin) captureDomain.warmUpNativeDisplays()
-    app.setLoginItemSettings({ openAtLogin: !!getSettings().system.autoStart })
+    app.setLoginItemSettings(loginItemSettings(getSettings().system.autoStart))
     // Reconcile the tray state first, then honour the opt-in autostart. Neither
     // opens a socket unless the user asked for it, so the default configuration
     // stays quiet.

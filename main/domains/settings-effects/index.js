@@ -1,5 +1,7 @@
 'use strict'
 
+const { loginItemSettings } = require('../../services/tray-only-launch')
+
 function createSettingsEffects(deps) {
   const {
     app,
@@ -26,7 +28,7 @@ function createSettingsEffects(deps) {
     {
       id: 'system.autoStart',
       when: (patch) => patch.system?.autoStart !== undefined,
-      run: (_patch, settings) => app.setLoginItemSettings({ openAtLogin: !!settings.system.autoStart })
+      run: (_patch, settings) => app.setLoginItemSettings(loginItemSettings(settings.system.autoStart))
     },
     {
       id: 'system.gameMode',
