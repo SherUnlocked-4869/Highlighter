@@ -69,7 +69,27 @@
   // 这 6 行保持 `const NAME = <纯数字>` 的字面形状：那个测试按名从本文件正则读取，
   // 值一变就要红了。（改名/改成表达式都会让测试读不到，等于静默松掉契约。）
   // ---------------------------------------------------------------------------
-  const ROW_MIN_CONTENT = 1040 // 主行单行的最小内容宽度（实测 1019，留余量）
+  // Main-row single-line minimum content width.
+  //
+  // 1040 was measured against the 11-tool strip ("实测 1019，留余量"). Feature C added the
+  // finished-look toggle and feature D added the magnifier tool, so the recomputed value is 1044.
+  //
+  // Bumping it is the correct fix (NOT relaxing the test): this number decides how many strip rows
+  // the main process reserves, and a strip that folds into two rows while only one row was reserved
+  // pushes the toolbar back inside the image - the real-device defect the header describes.
+  //
+  // It cannot simply be raised arbitrarily, though. `stripRows = ceil(ROW_MIN_CONTENT / (width -
+  // STRIP_CHROME))`, and the narrowest standard window is TOOLBAR_SPACE (1088), i.e. 1074 content
+  // px. A value above 1074 makes every narrow window reserve TWO rows while it still renders one -
+  // wasting STRIP_ROW_HEIGHT. So the invariant is:
+  //
+  //     measured <= ROW_MIN_CONTENT <= TOOLBAR_SPACE - STRIP_CHROME
+  //     (1044 <= 1064 <= 1074)
+  //
+  // 20px of headroom is what remains. The next tool that needs more must raise TOOLBAR_SPACE too,
+  // and that is a deliberate size decision rather than a silent one: at 1044 + 33 = 1077 the row
+  // would already fold.
+  const ROW_MIN_CONTENT = 1064 // 主行单行的最小内容宽度（实测 1044，留 20px 余量）
   const STRIP_ROW_HEIGHT = 34 // 30px 按钮 + 3px 行间距，向上取整
   const OPTIONS_ROW_HEIGHT = 30
   const STRIP_CHROME = 14 // 6px 工具条内边距 ×2 + 1px 边框 ×2

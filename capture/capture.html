@@ -58,6 +58,40 @@
     <div id="regionStatus" class="region-status hidden" role="status" aria-live="polite"></div>
   </div>
   <button id="regionToggle" class="region-toggle hidden" type="button" aria-haspopup="dialog" aria-expanded="false" data-i18n="capture.region.size"></button>
+  <!-- Feature C (plan §6.1/§6.3): the finished-look panel. Same popover contract as the region
+       panel - hidden until the user asks for it, so a common screenshot gains no mandatory step.
+       The three presets are plain latched buttons (aria-pressed) rather than a native <select>,
+       matching every other choice group in this window; each parameter row is one range/colour
+       input plus its live value. The preview is painted by the shared compositor, never by CSS
+       box-shadow/border-radius, so the panel shows the pixels the export will actually contain. -->
+  <div id="outputStylePanel" class="output-style-panel hidden" role="group" data-i18n-aria-label="capture.output.title">
+    <div class="output-style-head">
+      <strong data-i18n="capture.output.title"></strong>
+      <span id="outputStyleSize" class="output-style-size hidden"></span>
+    </div>
+    <div class="output-style-presets" role="group" data-i18n-aria-label="capture.output.presets">
+      <button type="button" class="output-preset active" data-output-preset="original" aria-pressed="true" data-i18n="capture.output.preset-original"></button>
+      <button type="button" class="output-preset" data-output-preset="card-light" aria-pressed="false" data-i18n="capture.output.preset-card-light"></button>
+      <button type="button" class="output-preset" data-output-preset="card-dark" aria-pressed="false" data-i18n="capture.output.preset-card-dark"></button>
+    </div>
+    <canvas id="outputStylePreview" class="output-style-preview" width="240" height="140"></canvas>
+    <div class="output-style-row"><label for="outputPadding" data-i18n="capture.output.padding"></label><input id="outputPadding" type="range" min="0" max="512" step="1" value="0"><span id="outputPaddingValue">0px</span></div>
+    <div class="output-style-row"><label for="outputCornerRadius" data-i18n="capture.output.corner-radius"></label><input id="outputCornerRadius" type="range" min="0" max="512" step="1" value="0"><span id="outputCornerRadiusValue">0px</span></div>
+    <div class="output-style-row"><label for="outputBackgroundColor" data-i18n="capture.output.background"></label><input id="outputBackgroundColor" type="color" value="#ffffff"></div>
+    <div class="output-style-row"><label for="outputBackgroundAlpha" data-i18n="capture.output.background-alpha"></label><input id="outputBackgroundAlpha" type="range" min="0" max="100" step="1" value="100"><span id="outputBackgroundAlphaValue">100%</span></div>
+    <div class="output-style-row"><label for="outputBorderWidth" data-i18n="capture.output.border-width"></label><input id="outputBorderWidth" type="range" min="0" max="64" step="1" value="0"><span id="outputBorderWidthValue">0px</span></div>
+    <div class="output-style-row"><label for="outputBorderColor" data-i18n="capture.output.border-color"></label><input id="outputBorderColor" type="color" value="#e0e0e3"></div>
+    <div class="output-style-row output-style-toggle-row">
+      <label for="outputShadowEnabled" data-i18n="capture.output.shadow"></label>
+      <label class="output-style-checkbox"><input id="outputShadowEnabled" type="checkbox"><span data-i18n="capture.output.shadow-enabled"></span></label>
+    </div>
+    <div class="output-style-row"><label for="outputShadowBlur" data-i18n="capture.output.shadow-blur"></label><input id="outputShadowBlur" type="range" min="0" max="256" step="1" value="0"><span id="outputShadowBlurValue">0px</span></div>
+    <div class="output-style-row"><label for="outputShadowOffsetX" data-i18n="capture.output.shadow-offset-x"></label><input id="outputShadowOffsetX" type="range" min="-256" max="256" step="1" value="0"><span id="outputShadowOffsetXValue">0px</span></div>
+    <div class="output-style-row"><label for="outputShadowOffsetY" data-i18n="capture.output.shadow-offset-y"></label><input id="outputShadowOffsetY" type="range" min="-256" max="256" step="1" value="0"><span id="outputShadowOffsetYValue">0px</span></div>
+    <div class="output-style-row"><label for="outputShadowColor" data-i18n="capture.output.shadow-color"></label><input id="outputShadowColor" type="color" value="#000000"></div>
+    <div class="output-style-row"><label for="outputShadowAlpha" data-i18n="capture.output.shadow-alpha"></label><input id="outputShadowAlpha" type="range" min="0" max="100" step="1" value="24"><span id="outputShadowAlphaValue">24%</span></div>
+    <div id="outputStyleStatus" class="output-style-status hidden" role="status" aria-live="polite"></div>
+  </div>
   <div id="toolbar" class="toolbar hidden">
     <!-- B1 (D5/D6): the strip is a column container. Row 1 keeps every control that
          shipped before, row 2 (#toolOptions) carries only the new per-tool options
@@ -75,6 +109,10 @@
         <button data-tool="text" data-i18n-title="capture.toolbar.text" data-i18n-aria-label="capture.toolbar.text"><span class="toolbar-icon" style="--icon:url('icons/text.svg')" aria-hidden="true"></span></button>
         <button data-tool="serial" data-i18n-title="capture.toolbar.serial" data-i18n-aria-label="capture.toolbar.serial"><span class="toolbar-icon" style="--icon:url('icons/serial.svg')" aria-hidden="true"></span></button>
         <button data-tool="watermark" data-i18n-title="capture.toolbar.watermark" data-i18n-aria-label="capture.toolbar.watermark"><span class="toolbar-icon" style="--icon:url('icons/watermark.svg')" aria-hidden="true"></span></button>
+        <!-- Feature D3 (plan §7.1): the magnifier. It lives in the drawing tool group because the
+             gesture is a drag like every other shape (drag the source area, then the lens follows),
+             not an action on the whole region. -->
+        <button data-tool="magnifier" data-i18n-title="capture.toolbar.magnifier" data-i18n-aria-label="capture.toolbar.magnifier"><span class="toolbar-icon" style="--icon:url('icons/magnifier.svg')" aria-hidden="true"></span></button>
       </div>
       <div class="divider"></div>
       <div class="color-wrap">
@@ -121,6 +159,11 @@
       <button id="pin" data-i18n-title="capture.toolbar.pin" data-i18n-aria-label="capture.toolbar.pin"><span class="toolbar-icon" style="--icon:url('icons/pin.svg')" aria-hidden="true"></span></button>
       <button id="save" data-i18n-title="capture.toolbar.save-tip" data-i18n-aria-label="capture.toolbar.save"><span class="toolbar-icon" style="--icon:url('icons/save.svg')" aria-hidden="true"></span></button>
       <button id="exportPdf" data-i18n-title="capture.toolbar.export-pdf" data-i18n-aria-label="capture.toolbar.export-pdf"><span class="toolbar-icon" style="--icon:url('icons/print.svg')" aria-hidden="true"></span></button>
+      <!-- Feature C (plan §6.1): one strip button opens the finished-look panel. It is a button
+           rather than a permanent row so the common capture path gains no mandatory step. The
+           strip's measured single-row width still fits (977px + one 31px button + gap <= the
+           1040px ROW_MIN_CONTENT the layout reserves). -->
+      <button id="outputStyleToggle" type="button" aria-haspopup="dialog" aria-expanded="false" data-i18n-title="capture.output.title" data-i18n-aria-label="capture.output.title"><span class="toolbar-icon" style="--icon:url('icons/output-style.svg')" aria-hidden="true"></span></button>
       <button id="copy" class="primary" data-i18n-title="capture.toolbar.copy-tip" data-i18n-aria-label="capture.toolbar.copy"><span class="toolbar-icon" style="--icon:url('icons/copy.svg')" aria-hidden="true"></span></button>
       <button id="close" data-i18n-title="capture.toolbar.close-tip" data-i18n-aria-label="capture.toolbar.close"><span class="toolbar-icon" style="--icon:url('icons/close.svg')" aria-hidden="true"></span></button>
     </div>
@@ -166,8 +209,7 @@
     <button id="elementBack" data-i18n-title="capture.element.back-tip" data-i18n-aria-label="capture.element.back-aria" data-i18n="capture.element.back"></button>
     <button id="elementDeselect" data-i18n-title="capture.element.deselect-tip" data-i18n-aria-label="capture.element.deselect" data-i18n="capture.element.deselect"></button>
   </div>
-  <div id="watermarkPanel" class="watermark-panel hidden">
-    <div class="watermark-row"><label for="watermarkContent" data-i18n="capture.watermark.content"></label><input id="watermarkContent" type="text" data-i18n-placeholder="capture.watermark.content-placeholder" maxlength="200"></div>
+  <div id="watermarkPanel" class="watermark-panel hidden">    <div class="watermark-row"><label for="watermarkContent" data-i18n="capture.watermark.content"></label><input id="watermarkContent" type="text" data-i18n-placeholder="capture.watermark.content-placeholder" maxlength="200"></div>
     <div class="watermark-row watermark-check-row">
       <label for="watermarkDateSuffix" data-i18n="capture.watermark.date"></label>
       <label class="watermark-checkbox" data-i18n-title="capture.watermark.date-tip">
@@ -181,6 +223,26 @@
     <div class="watermark-row"><label for="watermarkFontSize" data-i18n="capture.watermark.font-size"></label><input id="watermarkFontSize" type="number" min="8" max="200" step="1" value="24"><span>px</span></div>
     <div class="watermark-row"><label for="watermarkRotation" data-i18n="capture.watermark.rotation"></label><input id="watermarkRotation" type="number" min="-180" max="180" step="1" value="30"><span>°</span></div>
     <div class="watermark-actions"><button id="watermarkCancel" data-i18n="common.button.cancel"></button><button id="watermarkApply" class="primary" data-i18n="capture.watermark.apply"></button></div>
+  </div>
+  <!-- Feature D3 (plan §7.1): the magnifier's attributes. A separate floating panel like the
+       watermark one, and deliberately NOT part of #toolOptions: that row is a projection of the
+       active tool's data-option-tools declaration, and the magnifier is not a tool option. It shows
+       while the magnifier tool is active or a magnifier is selected, so a user who just drew one can
+       still change its factor without reselecting the tool. -->
+  <div id="magnifierPanel" class="magnifier-panel hidden">
+    <div class="magnifier-row magnifier-factor-row" role="group" data-i18n-aria-label="capture.magnifier.factor">
+      <label data-i18n="capture.magnifier.factor"></label>
+      <button type="button" class="magnifier-factor active" data-magnifier-factor="2" aria-pressed="true">2&times;</button>
+      <button type="button" class="magnifier-factor" data-magnifier-factor="3" aria-pressed="false">3&times;</button>
+      <button type="button" class="magnifier-factor" data-magnifier-factor="4" aria-pressed="false">4&times;</button>
+    </div>
+    <div class="magnifier-row"><label for="magnifierStrokeWidth" data-i18n="capture.magnifier.border"></label><input id="magnifierStrokeWidth" type="range" min="1" max="24" step="1" value="2"><span id="magnifierStrokeWidthValue">2px</span></div>
+    <div class="magnifier-row magnifier-connector-row" role="group" data-i18n-aria-label="capture.magnifier.connector">
+      <label data-i18n="capture.magnifier.connector"></label>
+      <button type="button" class="magnifier-connector active" data-magnifier-connector="none" aria-pressed="true" data-i18n="capture.magnifier.connector-none"></button>
+      <button type="button" class="magnifier-connector" data-magnifier-connector="line" aria-pressed="false" data-i18n="capture.magnifier.connector-line"></button>
+    </div>
+    <div id="magnifierStatus" class="magnifier-status hidden" role="status" aria-live="polite"></div>
   </div>
   <div id="resultPanel" class="result-panel hidden">
     <div class="result-head"><strong id="resultTitle" data-i18n="capture.result.title"></strong><button id="resultClose">×</button></div>
@@ -209,10 +271,24 @@
   <script src="annotation-style.js"></script>
   <script src="selection-utils.js"></script>
   <script src="annotation-geometry.js"></script>
+  <!-- Feature C/D (plan §6.2/§7.1/§7.2): the shared contracts the document model needs.
+       ALL of them must load before ../shared/capture-document.js - that file consumes all
+       three at load time and fails loudly rather than validating with missing rules. -->
+  <script src="../shared/capture-output-style.js"></script>
+  <script src="../shared/magnifier-geometry.js"></script>
+  <script src="../shared/occlusion-mask.js"></script>
   <!-- Batch 1 (history-reedit-batch0-contracts.md §2): the shared document contract -
        coordinates, schema, content fingerprint and the viewport transforms. Same file the
        main process requires, so both ends cannot drift. -->
   <script src="../shared/capture-document.js"></script>
+  <!-- Feature C (plan §6.1): the DOM-side compositor. The editor preview and every export
+       exit call the same function, so what the user sees is what gets written (a CSS-only
+       shadow is explicitly forbidden as the export basis). -->
+  <script src="output-compositor.js"></script>
+  <!-- Feature D2 (plan §7.2): the lens sample base + its byte-budgeted cache. Loaded from
+       capture/ rather than shared/ because it needs a real canvas factory; it consumes the
+       magnifier model and the occlusion plan above, so it must come after both. -->
+  <script src="magnifier-sampler.js"></script>
   <!-- P0-2（S9b）：光标落点的纯几何函数，与主进程 main/services/cursor-provider.js 共用同一份
        契约（UMD）。必须在 capture.js 之前加载，capture.js 里以 window.cursorGeometry 同步取用。 -->
   <script src="../shared/cursor-geometry.js"></script>
@@ -220,6 +296,9 @@
        controller does not grow another hundred lines; it mounts itself lazily on the first
        successful export, so a window that never exports pays nothing. -->
   <script src="export-result-bar.js"></script>
+  <!-- Feature C: the finished-look panel controller (presets, sliders, coalesced undo frames).
+       Kept out of capture.js so the wiring there stays a couple of calls. -->
+  <script src="output-style-panel.js"></script>
   <script src="capture.js"></script>
 </body>
 </html>

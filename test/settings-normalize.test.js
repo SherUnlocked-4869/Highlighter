@@ -148,6 +148,27 @@ test('the annotation colour is normalised to a lower-case #rrggbb or the default
   assert.equal(DEFAULT_SETTINGS.screenshot.annotationColor, '#ff3b30')
 })
 
+// Feature C (plan §6.2): the finished-look preset is the ONLY style preference that persists.
+// Anything the read path cannot resolve - a hand-edited store, a removed preset, a non-string -
+// has to fall back to "original" (effects off) instead of reaching the capture window as an id
+// that resolves to nothing.
+test('the outputStylePreset collapses to a known preset id, defaulting to original (feature C)', () => {
+  const { PRESET_IDS } = require('../shared/capture-output-style')
+  const kept = normalizeWith(makeSettings((settings) => { settings.screenshot.outputStylePreset = 'card-dark' }))
+  const light = normalizeWith(makeSettings((settings) => { settings.screenshot.outputStylePreset = 'card-light' }))
+  const unknown = normalizeWith(makeSettings((settings) => { settings.screenshot.outputStylePreset = 'card-neon' }))
+  const wrongType = normalizeWith(makeSettings((settings) => { settings.screenshot.outputStylePreset = 42 }))
+  const missing = normalizeWith(makeSettings((settings) => { delete settings.screenshot.outputStylePreset }))
+  const blank = normalizeWith(makeSettings((settings) => { settings.screenshot.outputStylePreset = '' }))
+  assert.deepEqual(PRESET_IDS, ['original', 'card-light', 'card-dark'])
+  assert.equal(kept.screenshot.outputStylePreset, 'card-dark')
+  assert.equal(light.screenshot.outputStylePreset, 'card-light')
+  for (const [label, normalized] of [['unknown', unknown], ['wrong type', wrongType], ['missing', missing], ['blank', blank]]) {
+    assert.equal(normalized.screenshot.outputStylePreset, 'original', `${label} must fall back to original`)
+  }
+  assert.equal(DEFAULT_SETTINGS.screenshot.outputStylePreset, 'original')
+})
+
 test('a legacy store without the new domains still normalizes', () => {
   const normalized = normalizeWith(makeSettings((settings) => {
     delete settings.pinned

@@ -47,7 +47,9 @@ test('A1 (D1): the right button quick-selects or deselects, and can never draw o
   // 命中 → 选中 + 进入 pendingMove（与左键体内拖动同构）。
   assert.match(quickSelectSource, /const hit = findAnnotationAt\(annotations, point\)/)
   // B6（D8）：shift+右键是"加选"（右键是拿起即拖的手势，绝不从集合里移除）。
-  assert.match(quickSelectSource, /if \(hit\) \{\s*\/\/[\s\S]{0,200}?if \(event\.shiftKey\) addSelectedAnnotation\(hit\)\s*else setSelectedAnnotation\(hit\)\s*beginPendingMove\(hit, point, event\)\s*return\s*\}/)
+  // Feature D3: the press also names which half of a magnifier it grabbed, so the move state can
+  // translate the right part. The pick/select/move/return sequence is unchanged.
+  assert.match(quickSelectSource, /if \(hit\) \{\s*\/\/[\s\S]{0,260}?if \(event\.shiftKey\) addSelectedAnnotation\(hit\)\s*else setSelectedAnnotation\(hit\)\s*beginPendingMove\(hit, point, event, magnifierPartAt\(hit, point\)\)\s*return\s*\}/)
   // 未命中：select 工具取消选中；绘图工具 no-op。
   assert.match(quickSelectSource, /if \(currentTool === 'select'\) setSelectedAnnotation\(null\)/)
   assert.match(quickSelectSource, /if \(selectState === 'auto'\) return/)
@@ -74,8 +76,10 @@ test('A1 (T3): the element-bar hint documents the right-drag in all three langua
 })
 
 test('A1 (D2): a press only becomes a move once it crosses MOVE_THRESHOLD, and a click pushes no frame', () => {
-  const beginSource = sliceBetween(script, 'function beginPendingMove(item, point, event)', '// 拖动中：从 origin')
-  assert.match(beginSource, /pendingMove = \{ id: item\.id, origin: item, start: \{ x: point\.x, y: point\.y \}, thresholdPassed: false \}/)
+  const beginSource = sliceBetween(script, 'function beginPendingMove(item, point, event', '// 拖动中：从 origin')
+  // Feature D3 adds the optional `part` (which half of a magnifier is being dragged); the shipped
+  // fields are unchanged, and `thresholdPassed: false` still starts every gesture below the threshold.
+  assert.match(beginSource, /pendingMove = \{ id: item\.id, origin: item, start: \{ x: point\.x, y: point\.y \}, thresholdPassed: false(, part)? \}/)
   assert.match(beginSource, /try \{ canvas\.setPointerCapture\(event\.pointerId\) \} catch \{\}/)
   // 未过阈值绝不翻译对象（因此不得压帧、不得抖动）。
   assert.match(
@@ -86,10 +90,13 @@ test('A1 (D2): a press only becomes a move once it crosses MOVE_THRESHOLD, and a
   assert.match(script, /function finishMoveAnnotation\(\) \{[\s\S]{0,240}?if \(!state\.thresholdPassed\) \{ render\(\); return \}/)
   // pointercancel 仍然回滚原对象（阈值分支不改变这条语义）。
   assert.match(script, /function cancelMoveAnnotation\(\) \{[\s\S]{0,200}?const state = pendingMove/)
-  // 三个入口复用同一个创建点：左键体内、右键快选、选区外命中。
-  assert.equal(script.match(/beginPendingMove\(/g).length, 4, 'one definition + three call sites')
+  // Every gesture that can move an object goes through the ONE creation point: left-click body,
+  // right-button quick select, out-of-region hit, and (feature D3) the in-region hit that names a
+  // magnifier half. The count is asserted as "one definition plus the call sites", so a new gesture
+  // is a visible number change here rather than a silent fourth state machine.
+  assert.equal(script.match(/beginPendingMove\(/g).length, 5, 'one definition + four call sites')
   // B6（D8）：体内拖动覆盖任意选中项；shift 落在已选中项上改为减选。
-  assert.match(pointerdownSource, /if\(bodyItem\)\{beginPendingMove\(bodyItem,point,event\);return\}/)
+  assert.match(pointerdownSource, /if\(bodyItem\)\{beginPendingMove\(bodyItem,point,event,magnifierPartAt\(bodyItem,point\)\);return\}/)
 })
 
 // ---------- A2：滚轮调笔画粗细 ----------

@@ -64,5 +64,11 @@ contextBridge.exposeInMainWorld('captureAPI', {
   saveAnnotationColor: (annotationColor) => ipcRenderer.invoke('settings:update', { screenshot: { annotationColor } }),
   // B4: the whole per-tool style map is submitted at once (settings:update deep-merges,
   // so a partial write could otherwise leave one tool's block stale).
-  saveAnnotationStyles: (annotationStyles) => ipcRenderer.invoke('settings:update', { screenshot: { annotationStyles } })
+  saveAnnotationStyles: (annotationStyles) => ipcRenderer.invoke('settings:update', { screenshot: { annotationStyles } }),
+  // Feature C (docs/plans/2026-10-25-snow-apps-feature-development-plan.md §6.2): ONLY the chosen
+  // preset id is persisted. It is a UI preference - the produced pixels are decided by the
+  // document's own `outputStyle` - so the manually adjusted padding/radius/shadow deliberately do
+  // not follow the user across captures. Same `settings:update` pipe and same validation template
+  // as the width/colour/style writes above, so no new channel and no ipc-security entry.
+  saveOutputStylePreset: (outputStylePreset) => ipcRenderer.invoke('settings:update', { screenshot: { outputStylePreset } })
 })

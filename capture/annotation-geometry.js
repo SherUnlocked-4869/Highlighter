@@ -7,14 +7,21 @@
 // 除几何外本模块还承载 PR1 的深拷贝原语 cloneAnnotations()：快照栈必须把 pen 点集
 // 真正拷开，否则"撤销后仍然指向同一个数组"。放在这里而不是新建
 // capture/annotation-history.js，是因为 PR1 的注册写作用域只登记了本文件（方案 §8.4）。
-(function exposeAnnotationGeometry(root, factory) {
+;(function exposeAnnotationGeometry(root, factory) {
   const styleApi = (typeof module === 'object' && module.exports)
     ? require('./annotation-style.js')
     : (root ? root.annotationStyleUtils : null)
-  const api = factory(styleApi || {})
+  // Feature D (§7.1/§7.3): the magnifier is the first annotation whose geometry is NESTED
+  // (source rect + lens rect derived from a factor). Its primitives live in shared/ because the
+  // document contract needs them too; this file consumes them instead of re-deriving them, so
+  // "what the selection box covers" and "what gets saved" can never disagree.
+  const magnifierApi = (typeof module === 'object' && module.exports)
+    ? require('../shared/magnifier-geometry.js')
+    : (root ? root.magnifierGeometry : null)
+  const api = factory(styleApi || {}, magnifierApi || null)
   if (typeof module === 'object' && module.exports) module.exports = api
   else root.annotationGeometry = api
-})(typeof globalThis === 'object' ? globalThis : window, (style) => {
+})(typeof globalThis === 'object' ? globalThis : window, (style, magnifierApi) => {
   // 快照栈上限（方案 §8.2）与 pen 点集上限（与 record/annotation-utils.js 的
   // MAX_PEN_POINTS 取同值 10000，避免两个标注体系给出不同的容量口径）。
   const MAX_ANNOTATION_HISTORY = 60
@@ -145,6 +152,10 @@
 
   function annotationBounds(item) {
     if (!item || typeof item !== 'object') return null
+    // Feature D (§7.1): a magnifier's box is source rect ∪ lens rect (the lens size is derived
+    // from the factor, never persisted). Delegated so the renderer's outline, the drag clamp and
+    // the exporter's cut test all use one definition.
+    if (item.type === 'magnifier' && magnifierApi) return magnifierApi.magnifierBounds(item)
     if (item.type === 'pen') return penBox(item)
     // Brush plan (§3.1): a freehand highlight/mosaic is a polyline, so its box is the
     // point set grown by half the stroke - that is what the outline and the drag/clamp
@@ -287,6 +298,15 @@
     if (!Number.isFinite(px) || !Number.isFinite(py)) return false
     const forced = Number(tolerance)
     const limit = Number.isFinite(forced) ? Math.max(0, forced) : hitTolerance(item)
+    // Feature D (§7.1): the magnifier is grabbable at its source rect, at the lens (which wins
+    // when they overlap, because the lens is drawn on top) and along its connector. The whole
+    // union box is deliberately NOT clickable - the union can span half the stage, and a box
+    // test would swallow every selection underneath it (the same failure mode the rect ring
+    // test exists to avoid).
+    if (item.type === 'magnifier') {
+      if (!magnifierApi) return false
+      return magnifierApi.hitTestMagnifier(item, { x: px, y: py }, limit) !== null
+    }
     const box = annotationBounds(item)
     if (!box) return false
     // B2 (D9): an outline-only shape keeps the ring test (its interior stays free for
@@ -337,6 +357,12 @@
   // PR2 拖动用：返回新对象，绝不改原对象（pen 点集也换新数组）。
   function translateAnnotation(item, dx, dy) {
     if (!item || typeof item !== 'object') return null
+    // Feature D (§7.1): a magnifier moves BOTH halves by the same delta - its two rectangles are
+    // in the same coordinate system, so a whole-object drag must not shift only one of them.
+    if (item.type === 'magnifier' && magnifierApi) {
+      const moved = magnifierApi.translateMagnifier(item, dx, dy)
+      return item.id !== undefined ? Object.assign({}, moved, { id: item.id }) : moved
+    }
     const offsetX = numberOr(dx, 0)
     const offsetY = numberOr(dy, 0)
     const moved = Object.assign({}, item, {
@@ -420,6 +446,25 @@
     const source = annotationBounds(item)
     if (!source) return null
     const type = item.type
+
+    // Feature D (§7.1): a magnifier is NOT resized like a flat box. Scaling the union box would
+    // stretch the lens independently of its factor and desynchronise lens size from sourceRect
+    // (exactly the "contradictory persisted lens size" the plan forbids). Instead the SOURCE RECT
+    // takes the new box and the lens keeps its centre with a size derived from the new source
+    // rect and the unchanged factor. Rotation is not supported, so nothing else applies.
+    if (type === 'magnifier' && magnifierApi) {
+      const magnifier = magnifierApi.normalizeMagnifier(item)
+      const resized = Object.assign({}, magnifier, {
+        sourceRect: { x: target.x, y: target.y, w: target.w, h: target.h },
+        lensOrigin: (() => {
+          const center = magnifierApi.lensCenter(magnifier)
+          const width = target.w * magnifier.factor
+          const height = target.h * magnifier.factor
+          return { x: center.x - width / 2, y: center.y - height / 2 }
+        })()
+      })
+      return item.id !== undefined ? Object.assign({}, resized, { id: item.id }) : resized
+    }
 
     if (type === 'watermark') {
       return Object.assign({}, item, { x: target.x, y: target.y, w: target.w, h: target.h })
@@ -578,6 +623,10 @@
     resizeAnnotationToBox,
     reorderAnnotation,
     clampAnnotationToStage,
-    cloneAnnotations
+    cloneAnnotations,
+    // Feature D (§7.1): the magnifier primitives the renderer and the tests share. Re-exported
+    // rather than re-implemented so a renderer that already has this module loaded never needs a
+    // second global.
+    magnifier: magnifierApi
   }
 })

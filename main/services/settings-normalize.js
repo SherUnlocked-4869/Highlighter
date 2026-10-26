@@ -16,6 +16,13 @@ const DEFAULT_AUDIO_GAIN = 1
 // else (hand-edited store, legacy value) falls back to the shipped default.
 const DEFAULT_ANNOTATION_COLOR = '#ff3b30'
 const HEX_COLOR = /^#[0-9a-f]{6}$/i
+// Feature C (plan §6.2): the finished-look preset id is UI preference only. Valid ids come from
+// shared/capture-output-style.js; importing them here keeps the settings read path and the
+// capture window from drifting apart (a typo in either place would otherwise persist a preset
+// that resolves to nothing).
+const OUTPUT_STYLE_PRESET_IDS = require('../../shared/capture-output-style').PRESET_IDS
+// A disabled style is the shipped default and the only preset whose geometry equals v1.
+const DEFAULT_OUTPUT_STYLE_PRESET = 'original'
 // Index-Translate proxy bridge: a hand-edited store must not be able to hand the
 // service a port that cannot bind or an interface that is not loopback.
 const DEFAULT_PROXY_PORT = 8080
@@ -65,6 +72,13 @@ function normalizeLanguage(value) {
 
 function normalizeHexColor(value, fallback) {
   return typeof value === 'string' && HEX_COLOR.test(value.trim()) ? value.trim().toLowerCase() : fallback
+}
+
+// Feature C (plan §6.2): only a known preset id survives the read path. A hand-edited store or a
+// preset removed from shared/capture-output-style.js falls back to "original" (= effects off)
+// rather than handing the capture window an id that resolves to nothing.
+function normalizeOutputStylePreset(value) {
+  return OUTPUT_STYLE_PRESET_IDS.includes(value) ? value : DEFAULT_OUTPUT_STYLE_PRESET
 }
 
 function normalizeToggle(value) {
@@ -117,6 +131,7 @@ function normalizeFrozenSettings(settings, log) {
   settings.screenshot.nameTemplate = normalizeText(settings.screenshot.nameTemplate)
   settings.screenshot.lastSaveDirectory = normalizeText(settings.screenshot.lastSaveDirectory)
   settings.screenshot.annotationColor = normalizeHexColor(settings.screenshot.annotationColor, DEFAULT_ANNOTATION_COLOR)
+  settings.screenshot.outputStylePreset = normalizeOutputStylePreset(settings.screenshot.outputStylePreset)
   settings.record.audioSystem = normalizeToggle(settings.record.audioSystem)
   settings.record.audioMicrophone = normalizeToggle(settings.record.audioMicrophone)
   settings.record.audioSystemGain = normalizeGain(settings.record.audioSystemGain)

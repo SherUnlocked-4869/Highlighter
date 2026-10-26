@@ -97,7 +97,15 @@ const DEFAULT_SETTINGS = {
       schemaVersion: 1,
       lastByMode: { capture: null, record: null },
       presets: []
-    }
+    },
+    // Feature C (docs/plans/2026-10-25-snow-apps-feature-development-plan.md §6.2): the LAST
+    // CHOSEN finished-look preset. Deliberately a preset id and not a full outputStyle object:
+    // plan §6.2 says "presetId 只是 UI 偏好，产物由完整解析参数决定", so the style parameters a
+    // user tweaks belong to the document (its own outputStyle field) and only the choice of
+    // preset is remembered across screenshots. This block IS the patch-validation template, so
+    // the key has to be enumerated here; shared/capture-output-style.js is the source of the
+    // valid ids and settings-normalize falls back to 'original' for anything else.
+    outputStylePreset: 'original'
   },
   ocr: {
     modelProfile: 'ppocr-v4-ch',

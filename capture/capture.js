@@ -21,7 +21,20 @@ const regionReuseLast = document.getElementById('regionReuseLast')
 const regionSavePreset = document.getElementById('regionSavePreset')
 const regionPresets = document.getElementById('regionPresets')
 const regionDeletePreset = document.getElementById('regionDeletePreset')
+// Feature D3: the magnifier attribute panel. One delegated listener per control kind, mirroring the
+// declaration in capture.html; the panel shows while the tool is active or a magnifier is selected.
+const magnifierPanel = document.getElementById('magnifierPanel')
+const magnifierStatusEl = document.getElementById('magnifierStatus')
+const magnifierStrokeWidthInput = document.getElementById('magnifierStrokeWidth')
+const magnifierStrokeWidthValue = document.getElementById('magnifierStrokeWidthValue')
+const magnifierFactorButtons = Array.from(document.querySelectorAll('[data-magnifier-factor]'))
+const magnifierConnectorButtons = Array.from(document.querySelectorAll('[data-magnifier-connector]'))
 const regionStatus = document.getElementById('regionStatus')
+// Feature C (plan §6.1/§6.3): the finished-look panel and its strip toggle. Both are static
+// markup, so a missing element here is a build error rather than a state to defend against.
+const outputStylePanelRoot = document.getElementById('outputStylePanel')
+const outputStylePreviewCanvas = document.getElementById('outputStylePreview')
+const outputStyleStatusEl = document.getElementById('outputStyleStatus')
 // Feature B: the ratio lock group. The active lock lives in a module variable rather than on a
 // <select>, because capture.html deliberately carries no native <option> elements.
 let regionRatioValue = 'free'
@@ -754,6 +767,11 @@ function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offs
   if (item.type === 'text') { context.font = `${item.bold === true ? 'bold ' : ''}${textFontSize(baseWidth,widthScale)}px -apple-system,"Microsoft YaHei",sans-serif`; context.textBaseline='top'; context.fillText(item.text,x,y) }
   if (item.type === 'serial') { const radius=serialRadius(baseWidth,widthScale); context.beginPath(); context.arc(x,y,radius,0,Math.PI*2); context.fill(); context.fillStyle='#fff'; context.font=`bold ${radius}px sans-serif`; context.textAlign='center'; context.textBaseline='middle'; context.fillText(String(item.number),x,y+1) }
   if (item.type === 'watermark') drawWatermark(context,item,scaleX,scaleY,offsetX,offsetY)
+  // Feature D3 (plan §7.1): the magnifier. It has NO flat x/y - its geometry is a nested source rect
+  // plus a lens origin, both in the SAME space as every other annotation (viewport CSS on the
+  // overlay, source pixels in the export), so the very same offset/scale arguments map it correctly
+  // in both places. That is what makes "what the user sees" and "what gets written" one code path.
+  if (item.type === 'magnifier') drawMagnifier(context, item, scaleX, scaleY, offsetX, offsetY)
   if (item.type === 'blur' && sourceImage) {
     // Brush plan (§3.2.2): with points the mosaic is the pixelated layer intersected with
     // the stroke mask. Without points it stays the shipped rectangle resample.
@@ -767,9 +785,84 @@ function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offs
   context.restore()
 }
 
+// Feature D3 (plan §7.1): the magnifier's painter.
+//
+// The nested geometry is normalised by shared/magnifier-geometry.js, so this function only converts
+// it into the target space and paints. Two rules it must keep:
+//
+//   * the LENS CONTENT comes from the sampler (base image + opaque blur mask), never from the
+//     composed canvas - otherwise a lens could magnify a blur away (§7.2);
+//   * the lens is clipped to the region like every other annotation, so a lens hanging over the
+//     edge is cut, not expanded into a bigger base image (§7.1).
+//
+// `scaleX/scaleY/offsetX/offsetY` are the same arguments every other pen/rect branch receives, so
+// the overlay (viewport CSS) and the export (source pixels) share this one implementation.
+function drawMagnifier(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offsetY = 0) {
+  const api = magnifierApi()
+  if (!api) return
+  const magnifier = api.normalizeMagnifier(item)
+  const mapX = (value) => (value - offsetX) * scaleX
+  const mapY = (value) => (value - offsetY) * scaleY
+  const widthScale = Math.max(scaleX, scaleY)
+  const source = magnifier.sourceRect
+  const lens = api.lensRect(magnifier)
+  const left = mapX(lens.x)
+  const top = mapY(lens.y)
+  const right = mapX(lens.x + lens.w)
+  const bottom = mapY(lens.y + lens.h)
+  const lensWidth = right - left
+  const lensHeight = bottom - top
+  const strokeWidth = Math.max(1, magnifier.stroke.widthPx * widthScale)
+  // A degenerate lens has nothing to show and nothing to frame.
+  if (!(lensWidth > 0.5) || !(lensHeight > 0.5)) return
+
+  context.save()
+  // Everything the lens paints stays inside it: a lens over the region edge is cut, exactly like a
+  // rect blur is.
+  context.beginPath()
+  context.rect(left, top, lensWidth, lensHeight)
+  context.clip()
+  const sampled = magnifierLensCanvas(item)
+  if (sampled && sampled.width > 0 && sampled.height > 0) {
+    context.imageSmoothingEnabled = true
+    context.drawImage(sampled, left, top, lensWidth, lensHeight)
+  } else {
+    // No sampler (missing module / impossible plan): a neutral fill is the honest render. Drawing
+    // the composed stage here would be the leak §7.2 exists to prevent.
+    context.fillStyle = 'rgba(0,0,0,.06)'
+    context.fillRect(left, top, lensWidth, lensHeight)
+  }
+  context.restore()
+
+  // Frame: same colour/width the annotation carries, drawn after the content so it stays visible.
+  context.save()
+  context.strokeStyle = magnifier.stroke.color
+  context.lineWidth = strokeWidth
+  context.strokeRect(left, top, lensWidth, lensHeight)
+  // A source marker makes it obvious WHERE the lens is reading from - without it a lens floating
+  // over unrelated content is ambiguous. Dashed and thin so it never competes with the picture.
+  context.setLineDash([Math.max(3, strokeWidth * 2), Math.max(2, strokeWidth)])
+  context.lineWidth = Math.max(1, strokeWidth / 2)
+  context.strokeRect(mapX(source.x), mapY(source.y), source.w * scaleX, source.h * scaleY)
+  context.restore()
+
+  if (magnifier.connector === 'line') {
+    const from = api.sourceCenter(magnifier)
+    const to = api.lensCenter(magnifier)
+    context.save()
+    context.strokeStyle = magnifier.stroke.color
+    context.lineWidth = Math.max(1, strokeWidth / 2)
+    context.setLineDash([Math.max(4, strokeWidth * 2), Math.max(2, strokeWidth)])
+    context.beginPath()
+    context.moveTo(mapX(from.x), mapY(from.y))
+    context.lineTo(mapX(to.x), mapY(to.y))
+    context.stroke()
+    context.restore()
+  }
+}
+
 function renderOverlay() {
-  if (!image) return
-  ctx.setTransform(dpr,0,0,dpr,0,0)
+  if (!image) return  ctx.setTransform(dpr,0,0,dpr,0,0)
   ctx.clearRect(0,0,innerWidth,innerHeight)
   if (!selection) {
     ctx.fillStyle = initData?.settings?.screenshot?.selectionMask || 'rgba(0,0,0,.46)'
@@ -1121,12 +1214,13 @@ function updateFloatingUi() {
   // the cached strip rect (the element bar avoids that rect below).
   applyToolbarWidthLimit()
   updateElementBar()
-  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); return }
+  syncOutputStyleUi()
+  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); syncMagnifierPanel(); return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16
   const hideSizeBadge=['ocr','translate'].includes(processingAction)||!!activeOcrResult||['ocr','translate'].includes(initData?.autoAction)
   sizeBadge.style.display=hideSizeBadge?'none':'block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
-  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); return }
-  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); return }
+  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); syncMagnifierPanel(); return }
+  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); syncMagnifierPanel(); return }
   toolbar.classList.remove('hidden')
   // D6 + the pin re-annotate fix: below the region when it fits, above it when only that
   // fits, otherwise docked inside hugging the region's bottom - never clipped, and never
@@ -1134,6 +1228,7 @@ function updateFloatingUi() {
   const placement=toolbarPlacement()
   toolbar.style.left=`${placement.left}px`; toolbar.style.top=`${placement.top}px`; toolbar.classList.toggle('above',placement.above)
   syncWatermarkPanel()
+  syncMagnifierPanel()
   syncRegionUi()
 }
 
@@ -1166,9 +1261,14 @@ function setTool(tool) {
   canvas.style.cursor=tool==='select'?(selection?'move':'crosshair'):'crosshair'
   if(tool==='watermark'){activeAnnotation=buildWatermarkAnnotation();render()}
   else if(activeAnnotation?.type==='watermark'){activeAnnotation=null;render()}
+  // Feature D3: switching away from the magnifier tool drops a draft that never settled (it has no
+  // committed object, so there is nothing to undo - same rule as an interrupted stroke).
+  if(tool!=='magnifier'&&magnifierBuild){magnifierBuild=null;magnifierDrag=null;activeAnnotation=null;render()}
+  if(tool==='magnifier')setMagnifierStatus('',null,false)
   // B1: the second row follows the tool (and, once B2-B5 land, also the selection).
   syncToolOptionsRow()
   syncWatermarkPanel()
+  syncMagnifierPanel()
 }
 
 // A1/A4: one place paints the toolbar's width and colour controls, so the
@@ -1501,20 +1601,43 @@ function setSelectedAnnotation(item) {
   selectedIds = item ? new Set([item.id]) : new Set()
   syncToolbarStyleFromSelection()
   render()
+  // Feature D3/D4: the magnifier panel is gated on "the tool is active OR a magnifier is selected",
+  // so a selection change has to re-evaluate it - otherwise selecting a lens with the select tool
+  // never reveals its factor/connector controls. Kept AFTER render() so the shipped echo path
+  // (style echo -> render) is byte-identical, and it is a pure UI visibility toggle: it never edits
+  // an object, so it cannot reach the undo or commit paths.
+  syncMagnifierPanel()
 }
 
 // 提交一帧快照：截断 redo 分支 → 深拷贝当前 annotations → 上限 60 条（丢最旧的一条）。
 // 注意：这里**不再**取消待收口的微调/样式帧 —— 那会把两次用户操作合并进同一帧（Ctrl+Z 一次退两步）。
 // 每个"用户动作"路径在压帧前先调 flushCoalescedEdits()，让待收口的合并型编辑各自独立成帧。
 function snapshotAnnotations() {
-  annotationHistory.length = historyIndex + 1
+  const base = historyIndex + 1
+  annotationHistory.length = base
   annotationHistory.push(cloneAnnotations(annotations))
-  if (annotationHistory.length > MAX_ANNOTATION_HISTORY) annotationHistory.splice(0, annotationHistory.length - MAX_ANNOTATION_HISTORY)
+  let dropped = 0
+  if (annotationHistory.length > MAX_ANNOTATION_HISTORY) {
+    dropped = annotationHistory.length - MAX_ANNOTATION_HISTORY
+    annotationHistory.splice(0, dropped)
+  }
   historyIndex = annotationHistory.length - 1
+  pushOutputStyleFrame(base - dropped)
   // Batch 1: every committed content change funnels through here, so this is the one place
   // that can keep `dirty` honest. Undo/redo also lands here via restoreAnnotations, which is
   // exactly what makes "undo back to the baseline -> clean" work (§6.5.6).
   if (documentEditor) refreshDocumentDirty()
+}
+
+// Feature C (plan §6.3): advance the finished-look timeline with the SAME structural edits the
+// annotation stack just made (see capture/output-style-panel.js createStyleFrames), so
+// `frameAt(historyIndex)` is the style that was current at that undo step. `base` is the pre-push
+// length and `dropped` the overflow trim; without both, an overflowed stack would shift every
+// style one step out of phase and Ctrl+Z would restore the wrong card.
+function pushOutputStyleFrame(index) {
+  if (!outputStyleController) return
+  outputStyleController.truncateFrames(index)
+  outputStyleController.pushFrame()
 }
 
 // 把"已生效但未收口"的合并型编辑（方向键微调、取色器连续改色）各自压成独立一帧。
@@ -1538,6 +1661,18 @@ function restoreAnnotations(index) {
   // state" turn clean again (§6.5.6) instead of staying dirty forever.
   if (documentEditor) refreshDocumentDirty()
   render()
+  // Feature C (§6.3): the style rides the same undo step, so "undo back to original" is a normal
+  // Ctrl+Z and a redo restores the card. Placed last so the annotation path above stays identical.
+  restoreOutputStyleFrame()
+}
+
+// Moves the session's style to the frame recorded at the restored undo index. `restoreFrame` does
+// NOT push a frame - this is a restore of the same user action, not a new edit.
+function restoreOutputStyleFrame() {
+  if (!outputStyleController) return
+  outputStyleController.restoreFrame(outputStyleController.frameAt(historyIndex))
+  outputStylePanel?.syncControls()
+  renderOutputStylePreview()
 }
 
 function undoAnnotations() {
@@ -1614,9 +1749,14 @@ function pointInAnnotationBounds(item, point) {
 // A1 (D2): the press that may become a move. thresholdPassed flips on the first
 // pointermove past MOVE_THRESHOLD; until then nothing is translated, so a plain
 // click on an element neither jitters it nor pushes an undo frame.
-function beginPendingMove(item, point, event) {
+//
+// Feature D3: `part` says which half of a magnifier the gesture is dragging ('lens' / 'source' /
+// 'connector'), decided once at press time by shared/magnifier-geometry.hitTestMagnifier(). It is
+// fixed for the whole gesture on purpose - re-testing on every move would let a lens dragged over
+// its own source rect switch halves mid-drag.
+function beginPendingMove(item, point, event, part = '') {
   if (!item) return
-  pendingMove = { id: item.id, origin: item, start: { x: point.x, y: point.y }, thresholdPassed: false }
+  pendingMove = { id: item.id, origin: item, start: { x: point.x, y: point.y }, thresholdPassed: false, part }
   try { canvas.setPointerCapture(event.pointerId) } catch {}
   render()
 }
@@ -1631,8 +1771,10 @@ function moveAnnotationTo(point) {
   }
   const index = annotations.findIndex((item) => item.id === state.id)
   if (index < 0) return
+  const dx = point.x - state.start.x
+  const dy = point.y - state.start.y
   const moved = clampAnnotationToStage(
-    translateAnnotation(state.origin, point.x - state.start.x, point.y - state.start.y),
+    state.part ? moveMagnifierPart(state.origin, state.part, dx, dy) : translateAnnotation(state.origin, dx, dy),
     stageRect()
   )
   if (!moved) return
@@ -1641,7 +1783,30 @@ function moveAnnotationTo(point) {
   render()
 }
 
+// Feature D3: move ONE half of a magnifier. The shared module owns each translation, so a lens drag
+// can never accidentally move the source rect (they are separate objects the user can place
+// independently, §7.1) and a whole-object drag moves both by the same delta.
+function moveMagnifierPart(item, part, dx, dy) {
+  const api = magnifierApi()
+  if (!api || item?.type !== 'magnifier') return translateAnnotation(item, dx, dy)
+  if (part === 'lens') return api.translateLens(item, dx, dy)
+  if (part === 'source') return api.translateSource(item, dx, dy)
+  return api.translateMagnifier(item, dx, dy)
+}
+
+// Feature D3: "did this gesture actually move it?" A magnifier has no flat x/y, so the historical
+// `item.x !== origin.x` test would always be false and a lens drag would never push an undo frame -
+// a silent "the edit is not undoable" bug. Compare the nested geometry instead.
 function annotationWasMoved(item, origin) {
+  if (!item || !origin) return false
+  if (item.type === 'magnifier' || origin.type === 'magnifier') {
+    const api = magnifierApi()
+    if (!api) return false
+    const left = api.normalizeMagnifier(item)
+    const right = api.normalizeMagnifier(origin)
+    return left.sourceRect.x !== right.sourceRect.x || left.sourceRect.y !== right.sourceRect.y ||
+      left.lensOrigin.x !== right.lensOrigin.x || left.lensOrigin.y !== right.lensOrigin.y
+  }
   return item.x !== origin.x || item.y !== origin.y
 }
 
@@ -1968,6 +2133,17 @@ function resetAnnotationState() {
   invalidateElementBarSize()
   // Brush plan (§5.2): patches belong to the previous capture's annotation objects.
   invalidateMosaicPatches()
+  // Feature C: a new capture gets a new style session (fresh timeline + the persisted preset), so
+  // the previous screenshot's card can never leak into this one's undo history.
+  resetOutputStyleState()
+  // Feature D3: the in-progress magnifier gesture and the sample cache belong to the previous image.
+  magnifierBuild = null
+  magnifierDrag = null
+  magnifierFactor = 2
+  magnifierConnector = 'none'
+  releaseLensSampler()
+  if (magnifierPanel) magnifierPanel.classList.add('hidden')
+  setMagnifierStatus('', null, false)
 }
 
 function commitAnnotation(item) {
@@ -2041,8 +2217,75 @@ function syncWatermarkPanel() {
   watermarkPanel.style.top = `${Math.round(top)}px`
 }
 
-function finishSelection() {
-  // A tool strip that just moved must not leave the image-to-document popover floating
+// Feature D3 (plan §7.1): the magnifier attribute panel. It is a sibling of the watermark panel
+// rather than a tool-option group: #toolOptions is a projection of `data-option-tools`, and the
+// magnifier's factor/connector are properties of the OBJECT, not of the next stroke.
+//
+// Visibility rule: the magnifier tool is active, or a magnifier is selected (so editing one after
+// switching back to the select tool does not require re-picking the tool).
+function magnifierPanelVisible() {
+  if (!selection || toolbar.classList.contains('hidden')) return false
+  if (activeOcrResult || processingAction) return false
+  if (selectState === 'auto' || selecting || dragging || resizing) return false
+  return currentTool === 'magnifier' || !!selectedMagnifier()
+}
+
+function setMagnifierStatus(key, params, isError) {
+  if (!magnifierStatusEl) return
+  magnifierStatusEl.textContent = key ? t(key, params) : ''
+  magnifierStatusEl.classList.toggle('hidden', !key)
+  magnifierStatusEl.classList.toggle('error', isError === true)
+}
+
+function syncMagnifierPanel() {
+  if (!magnifierPanel) return
+  const visible = magnifierPanelVisible()
+  magnifierPanel.classList.toggle('hidden', !visible)
+  if (!visible) return
+  const item = selectedMagnifier()
+  const factor = item ? item.factor : magnifierFactor
+  const connector = item ? item.connector : magnifierConnector
+  const width = item ? item.stroke.widthPx : Math.max(1, Math.round(annotationWidth))
+  for (const button of magnifierFactorButtons) {
+    const active = Number(button.dataset.magnifierFactor) === factor
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+  }
+  for (const button of magnifierConnectorButtons) {
+    const active = button.dataset.magnifierConnector === connector
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+  }
+  if (magnifierStrokeWidthInput && document.activeElement !== magnifierStrokeWidthInput) {
+    magnifierStrokeWidthInput.value = String(width)
+  }
+  if (magnifierStrokeWidthValue) magnifierStrokeWidthValue.textContent = `${width}px`
+  const barRect = toolbar.getBoundingClientRect()
+  const panelRect = magnifierPanel.getBoundingClientRect()
+  const left = Math.max(6, Math.min(barRect.left, innerWidth - panelRect.width - 6))
+  let top = barRect.bottom + 6
+  if (top + panelRect.height > innerHeight - 6) top = Math.max(6, barRect.top - panelRect.height - 6)
+  magnifierPanel.style.left = `${Math.round(left)}px`
+  magnifierPanel.style.top = `${Math.round(top)}px`
+}
+
+// A factor/connector click while a magnifier is selected edits THAT object in one undo frame; with
+// nothing selected it only changes the default for the next one (no frame - nothing was edited).
+function chooseMagnifierFactor(factor) {
+  const api = magnifierApi()
+  if (!api) return
+  magnifierFactor = api.normalizeMagnifier({ factor }).factor
+  if (selectedMagnifier()) editSelectedMagnifier({ factor: magnifierFactor })
+  else { syncMagnifierPanel(); setMagnifierStatus('', null, false) }
+}
+
+function chooseMagnifierConnector(connector) {
+  magnifierConnector = connector === 'line' ? 'line' : 'none'
+  if (selectedMagnifier()) editSelectedMagnifier({ connector: magnifierConnector })
+  else { syncMagnifierPanel(); setMagnifierStatus('', null, false) }
+}
+
+function finishSelection() {  // A tool strip that just moved must not leave the image-to-document popover floating
   // over the new region (it is positioned from the old toolbar rect).
   closeConvertDocMenu()
   render()
@@ -2146,10 +2389,27 @@ function quickSelectAnnotation(event, point) {
     // on the item it grabbed (a right press never removes anything from the set).
     if (event.shiftKey) addSelectedAnnotation(hit)
     else setSelectedAnnotation(hit)
-    beginPendingMove(hit, point, event)
+    beginPendingMove(hit, point, event, magnifierPartAt(hit, point))
     return
   }
   if (currentTool === 'select') setSelectedAnnotation(null)
+}
+
+// Feature D3 (plan §7.1): which half of a magnifier a press grabbed.
+//
+// The shared hit test owns the geometry (lens wins over source when they overlap, because the lens
+// is drawn on top). A connector press drags the LENS: the connector belongs to the lens side (it is
+// drawn from the source's centre to the lens's centre), so grabbing the line and having the source
+// slide instead would feel like the wrong half moved.
+function magnifierPartAt(item, point) {
+  const api = magnifierApi()
+  if (!api || item?.type !== 'magnifier') return ''
+  const zoom = documentEditor && documentViewport() ? documentViewport().zoom : 1
+  // The tolerance is a viewport-CSS constant, so it has to be divided by the zoom before it means
+  // anything in the annotation's own space.
+  const part = api.hitTestMagnifier(item, point, FRAME_HIT_TOLERANCE / Math.max(1e-6, zoom))
+  if (part === 'connector') return 'lens'
+  return part || ''
 }
 
 canvas.addEventListener('pointerdown',(event)=>{
@@ -2202,13 +2462,18 @@ canvas.addEventListener('pointerdown',(event)=>{
     // removes it from the selection instead of starting a move (the standard toggle).
     const bodyItem=selectedAnnotations().find((entry)=>pointInAnnotationBounds(entry,point))
     if(bodyItem&&event.shiftKey){toggleSelectedAnnotation(bodyItem);updateSelectionCursor(point);return}
-    if(bodyItem){beginPendingMove(bodyItem,point,event);return}
+    if(bodyItem){beginPendingMove(bodyItem,point,event,magnifierPartAt(bodyItem,point));return}
     // PR1 元素命中（逆序取最上层）→ 选中；未命中才退回"拖选区"。
     const hit=findAnnotationAt(annotations,point)
     if(hit){
       // B6 (D8): shift+click toggles the hit item in or out of the selection.
       if(event.shiftKey){toggleSelectedAnnotation(hit);updateSelectionCursor(point);return}
-      setSelectedAnnotation(hit);updateSelectionCursor(point);return
+      setSelectedAnnotation(hit)
+      // Feature D3: a magnifier is grabbed by one of its halves, so the press that just selected it
+      // also starts the move it asked for (a plain click stays a click thanks to the threshold).
+      const part=magnifierPartAt(hit,point)
+      if(part){beginPendingMove(hit,point,event,part);return}
+      updateSelectionCursor(point);return
     }
     // B6 wave 2 (D8): shift on empty space starts a marquee instead of moving the
     // region - it must run BEFORE the deselect below, because the marquee adds to the
@@ -2222,6 +2487,10 @@ canvas.addEventListener('pointerdown',(event)=>{
   const style=annotationStyle()
   if (currentTool==='text') { const text=prompt(t('capture.input.text')); if(text)commitAnnotation({type:'text',x:point.x,y:point.y,text,...style}); return }
   if (currentTool==='serial') { commitAnnotation({type:'serial',x:point.x,y:point.y,number:serialNumber++,...style}); return }
+  // Feature D3 (§7.1): the magnifier gesture is "drag the source area first". The lens is positioned
+  // by createFromSourceRect() at pointerup - once, from the final rect - so it cannot jitter around
+  // while the user is still shaping the source area. `magnifierBuild` carries the press origin.
+  if (currentTool==='magnifier') { magnifierBuild={start:point,current:point}; activeAnnotation=buildMagnifierDraft(point); magnifierDrag='source'; try{canvas.setPointerCapture(event.pointerId)}catch{}; render(); return }
   // B7 (D11): a pen press on either endpoint of the topmost stroke continues it.
   if (currentTool==='pen') {
     const target=penContinuationTarget(annotations,point,PEN_CONTINUATION_DISTANCE)
@@ -2230,6 +2499,112 @@ canvas.addEventListener('pointerdown',(event)=>{
   activeAnnotation={type:currentTool,x:point.x,y:point.y,x2:point.x,y2:point.y,...style}
   if (STROKE_TOOL_SET.has(currentTool)) activeAnnotation.points=[{x:point.x,y:point.y}]
 })
+
+// Feature D3 (plan §7.1): the magnifier gesture.
+//
+// Two phases, and the split is deliberate:
+//   * while dragging, the DRAFT only tracks the source rect (`magnifierBuild`), so the picture the
+//     user is framing follows the pointer and nothing else moves;
+//   * at pointerup, `createFromSourceRect` positions the lens once from the FINAL rect, so the lens
+//     does not jump around during the drag (a lens that re-derives its origin from the gap on every
+//     pointermove visibly shivers when the drag reverses direction).
+//
+// The lens itself is drawn at its default offset while dragging (right/below the source, flipping
+// when it would leave the region), because a user needs to SEE where the lens will land before
+// releasing - a draft with no lens would look like the tool did nothing.
+function buildMagnifierDraft(point) {
+  const api = magnifierApi()
+  const build = magnifierBuild
+  if (!api || !build) return null
+  const rect = normalizeRect(build.start, point)
+  const created = api.createFromSourceRect(
+    { x: rect.x, y: rect.y, w: rect.w, h: rect.h },
+    { factor: magnifierFactor, crop: magnifierCropForLens(), stroke: magnifierStrokeStyle(), connector: magnifierConnector }
+  )
+  // A source rect smaller than the legal minimum cannot become a magnifier; show nothing rather than
+  // a degenerate object the user would have to undo.
+  if (!created) return null
+  return Object.assign({ id: -1 }, created)
+}
+
+// The lens must be bounded by the exported content, not by the window: in a document editor that is
+// the document crop; in a plain capture window it is the selection's pixel rect expressed in the
+// window's own CSS space (which is what the annotations live in).
+function magnifierCropForLens() {
+  if (documentEditor) return documentCrop()
+  if (!selection) return null
+  return { x: selection.x, y: selection.y, w: selection.w, h: selection.h }
+}
+
+function magnifierStrokeStyle() {
+  return { color: annotationColor, widthPx: Math.max(1, Math.round(annotationWidth)) }
+}
+
+// Commit the pending magnifier draft as one undo frame. Returns true when something was committed.
+function commitMagnifierDraft() {
+  const api = magnifierApi()
+  const draft = activeAnnotation
+  const build = magnifierBuild
+  magnifierBuild = null
+  magnifierDrag = null
+  activeAnnotation = null
+  if (!api || !draft || !build) { render(); return false }
+  if (magnifierCount() >= api.MAX_PER_DOCUMENT) {
+    // §3.3 budget: refuse rather than silently drop the oldest lens. The message names the limit.
+    setMagnifierStatus('capture.magnifier.limit', { max: api.MAX_PER_DOCUMENT }, true)
+    render()
+    return false
+  }
+  // Re-derive from the final rect so the stored object is exactly what createFromSourceRect says it
+  // should be (the draft's lens is a preview placement, not the committed one).
+  const final = api.createFromSourceRect(
+    { x: draft.sourceRect.x, y: draft.sourceRect.y, w: draft.sourceRect.w, h: draft.sourceRect.h },
+    { factor: draft.factor, crop: magnifierCropForLens(), stroke: draft.stroke, connector: draft.connector }
+  )
+  if (!final) { render(); return false }
+  commitAnnotation(final)
+  setMagnifierStatus('', null, false)
+  syncMagnifierPanel()
+  return true
+}
+
+function magnifierCount() {
+  return annotations.filter((item) => item?.type === 'magnifier').length
+}
+
+// Feature D3: which magnifier (if any) the attribute panel is editing - the selected one.
+function selectedMagnifier() {
+  const item = selectedAnnotationItem()
+  return item && item.type === 'magnifier' ? item : null
+}
+
+// Apply a change to the selected magnifier as ONE undo frame. The shared module owns each operation
+// (withFactor keeps the lens centre, clipToCrop keeps it inside the region), so this only picks one.
+function editSelectedMagnifier(patch) {
+  const api = magnifierApi()
+  const item = selectedMagnifier()
+  if (!api || !item) return false
+  let next = item
+  if (patch.factor !== undefined) next = api.withFactor(next, patch.factor)
+  if (patch.stroke) next = Object.assign({}, next, { stroke: Object.assign({}, next.stroke, patch.stroke) })
+  if (patch.connector !== undefined) next = Object.assign({}, next, { connector: patch.connector })
+  const index = annotations.indexOf(item)
+  if (index < 0) return false
+  // Keep the id: it is the only link the selection set has to the new object.
+  const committed = Object.assign({}, next, { id: item.id })
+  const clipped = api.clipToCrop(committed, magnifierCropForLens())
+  if (!clipped.ok) {
+    setMagnifierStatus('capture.magnifier.outside', null, true)
+    return false
+  }
+  flushCoalescedEdits()
+  annotations[index] = clipped.magnifier
+  selectedAnnotation = clipped.magnifier
+  snapshotAnnotations()
+  render()
+  syncMagnifierPanel()
+  return true
+}
 
 canvas.addEventListener('pointermove',(event)=>{
   const point=pointFromEvent(event)
@@ -2256,6 +2631,9 @@ canvas.addEventListener('pointermove',(event)=>{
   // B6 wave 2 self-heal: a swallowed pointerup during a marquee also settles it
   // (the current point is the final corner).
   if (marquee&&event.buttons===0) { finishMarquee(point); updateSelectionCursor(point); return }
+  // Feature D3: the magnifier draft follows the pointer by re-deriving the SOURCE rect only. The lens
+  // is placed once at commit time (see buildMagnifierDraft) so it cannot shiver mid-drag.
+  if (magnifierBuild) { magnifierBuild.current=point; activeAnnotation=buildMagnifierDraft(point); render(); return }
   if (selecting) { selection=normalizeRect(startPoint,point); render(); return }
   if (resizing&&selection) { selection=resizeSelection(resizing.initial,resizing.handle,point,{width:innerWidth,height:innerHeight}); updateSelectionCursor(point); render(); return }
   if (pendingMove) { moveAnnotationTo(point); return }
@@ -2281,6 +2659,8 @@ canvas.addEventListener('pointerup',(event)=>{
   if(resizingAnnotation){finishResizeAnnotation();updateSelectionCursor(pointFromEvent(event));return}
   if(marquee){const point=pointFromEvent(event);finishMarquee(point);updateSelectionCursor(point);return}
   if(dragging){dragging=false;render();updateSelectionCursor(pointFromEvent(event));return}
+  // Feature D3: the magnifier draft commits from its FINAL rect (lens placed once, §7.1).
+  if(magnifierBuild){commitMagnifierDraft();updateSelectionCursor(pointFromEvent(event));return}
   if(activeAnnotation&&activeAnnotation.type!=='watermark')commitAnnotation(activeAnnotation)
 })
 
@@ -2294,6 +2674,10 @@ canvas.addEventListener('pointercancel',()=>{
   restoreContinuedPen()
   // B6 wave 2: an interrupted marquee edits nothing (no frame).
   cancelMarquee()
+  // Feature D3: an interrupted magnifier draft is discarded, exactly like a stroke that never
+  // settled - the gesture produced no object and therefore no frame.
+  magnifierBuild=null
+  magnifierDrag=null
   activeAnnotation=currentTool==='watermark'?buildWatermarkAnnotation():null
   render()
 })
@@ -2339,17 +2723,200 @@ function exportSelectionRect() {
   return same ? selection : projected
 }
 
+// Feature C (plan §6.1/§6.3): the ONE finished-look entry point for every pixel consumer.
+// `composeOutputCanvas` returns null in original mode, in which case the caller keeps the content
+// canvas it already had - that is what makes "original is pixel-identical to v1" a property of the
+// code path rather than a promise. An over-budget result is reported, never silently scaled: the
+// export falls back to the original and the user is told (plan §3.3 "boundaries must be visible").
+function composeFinishedOutput(contentCanvas, outputStyle) {
+  const compositor = window.captureOutputCompositor
+  if (!contentCanvas || !compositor) return null
+  try {
+    return compositor.composeOutputCanvas({ contentCanvas, outputStyle })
+  } catch (error) {
+    if (error?.code === 'output-too-large') {
+      setOutputStyleStatus('capture.output.too-large', { width: error.width, height: error.height }, true)
+    }
+    return null
+  }
+}
+
 // The projection is applied around the one synchronous export call and swapped back
 // immediately: no await runs inside the window, and rAF cannot interleave, so no frame
 // ever observes the projected rectangle (the selection drawn on screen, handles
 // included, stays the all-displays one the user asked for). `rect` is passed in so the
 // caller can record the exact rectangle it exported into the consumer metadata.
-function exportSelectionCanvasForAction(includeAnnotations, rect = exportSelectionRect()) {
+//
+// Feature C: `options.compose` is an EXPLICIT dimension of its own, never inferred from the action
+// and never folded into `includeAnnotations`. The two answer different questions - "may the model
+// see my arrows?" and "may the model see a card frame?" - and R0.4 added a THIRD one (`mask`, below)
+// for the same reason: one shared boolean would have made each new dimension impossible to add.
+// Defaults: annotations follow the shipped behaviour; composition and masking both stay OFF for
+// anything that does not explicitly ask for them.
+//
+// R0.4 (contracts §8, plan §2): the recognition entries previously received the raw crop, so
+// anything the user had covered with a mosaic was still handed to the model as readable pixels.
+// `options.mask` applies the occlusion plan to the SAME canvas, at source resolution and before
+// anything is scaled - masking after scaling would leave the interpolation halo of the un-masked
+// pixels outside the blur rect, which is exactly the leak the mask exists to prevent.
+function exportSelectionCanvasForAction(includeAnnotations, rect = exportSelectionRect(), options = {}) {
+  const compose = options.compose === true
+  const mask = options.mask === true
   if (!selection) return null
-  if (rect === selection) return exportSelectionCanvas(includeAnnotations)
+  const finish = (content) => {
+    if (!content) return content
+    // A `null` from the occlusion step means "there is a blur to protect but the mask could not be
+    // computed". Returning the content anyway would hand the model the very pixels the user covered,
+    // so the whole export fails instead (see applyRecognitionOcclusion's fail-closed note).
+    const masked = mask ? applyRecognitionOcclusion(content, rect) : content
+    if (mask && !masked) return null
+    return compose ? (composeFinishedOutput(masked, currentOutputStyle()) || masked) : masked
+  }
+  if (rect === selection) return finish(exportSelectionCanvas(includeAnnotations))
   const raw = selection
   selection = rect
-  try { return exportSelectionCanvas(includeAnnotations) } finally { selection = raw }
+  try { return finish(exportSelectionCanvas(includeAnnotations)) } finally { selection = raw }
+}
+
+// Annotations in the source-pixel space of the EXPORT canvas, for the occlusion plan only.
+//
+// A document editor already stores its annotations in source pixels, so the plan can use them as
+// they are. A plain capture window stores them in viewport CSS, so they have to go through the same
+// projection `drawAnnotation` uses - doing it here (rather than drawing the mask in CSS space and
+// scaling the canvas afterwards) is what keeps the mask at source resolution.
+function annotationsForMask(rect) {
+  if (documentEditor) return { crop: documentCrop(), annotations: annotationsToDocument(), transform: null }
+  const bounds = imageDisplayBounds()
+  const source = getSourcePixelRect(rect, bounds, { width: image.naturalWidth, height: image.naturalHeight })
+  const scaleX = source.width / Math.max(1, rect.w)
+  const scaleY = source.height / Math.max(1, rect.h)
+  return {
+    crop: { x: 0, y: 0, w: source.width, h: source.height },
+    annotations,
+    transform: { scaleX, scaleY, offsetX: rect.x, offsetY: rect.y }
+  }
+}
+
+// One occluder, moved from its annotation's coordinate space into the export canvas. The stroke
+// width scales by the larger axis, exactly like drawAnnotation's widthScale, so a mosaic stroke
+// covers the same relative band it covers on screen. `margin` stays as-is: it is a pixel budget for
+// anti-aliasing at the final resolution, not a document length.
+function transformOccluder(occluder, transform) {
+  if (!occluder || !transform) return occluder
+  const { scaleX, scaleY, offsetX, offsetY } = transform
+  const widthScale = Math.max(scaleX, scaleY)
+  if (occluder.kind === 'rect') {
+    const rect = occluder.rect || {}
+    return {
+      kind: 'rect',
+      rect: {
+        x: (rect.x - offsetX) * scaleX,
+        y: (rect.y - offsetY) * scaleY,
+        w: rect.w * scaleX,
+        h: rect.h * scaleY
+      },
+      margin: occluder.margin
+    }
+  }
+  if (occluder.kind === 'polyline') {
+    return {
+      kind: 'polyline',
+      points: (occluder.points || []).map((point) => ({
+        x: (point.x - offsetX) * scaleX,
+        y: (point.y - offsetY) * scaleY
+      })),
+      width: (occluder.width || 0) * widthScale
+    }
+  }
+  return occluder
+}
+
+// Paints the occlusion plan onto the recognition canvas: opaque black, rounded caps, no blending.
+// The plan's coordinates are already relative to the crop, i.e. exactly this canvas's pixels.
+function paintOcclusionPlan(context, plan) {
+  const mask = window.occlusionMask
+  if (!context || !plan || !mask) return false
+  context.save()
+  context.globalAlpha = mask.MASK_ALPHA
+  context.fillStyle = mask.MASK_COLOR
+  context.strokeStyle = mask.MASK_COLOR
+  context.lineCap = 'round'
+  context.lineJoin = 'round'
+  for (const op of plan.ops) {
+    if (op.kind === 'rect') {
+      context.fillRect(op.x, op.y, Math.max(1, op.w), Math.max(1, op.h))
+      continue
+    }
+    if (op.kind === 'polyline' && op.points.length) {
+      context.lineWidth = Math.max(1, op.width)
+      context.beginPath()
+      context.moveTo(op.points[0].x, op.points[0].y)
+      for (let index = 1; index < op.points.length; index += 1) {
+        context.lineTo(op.points[index].x, op.points[index].y)
+      }
+      // A single-point stroke draws nothing, so give it a dot (same patch as traceStroke).
+      if (op.points.length === 1) context.lineTo(op.points[0].x + 0.01, op.points[0].y)
+      context.stroke()
+    }
+  }
+  context.restore()
+  return true
+}
+
+// R0.4: the recognition input. Base crop + opaque mask over every blur that still exists in the
+// document; NO ordinary annotations, NO finished-look frame, NO cursor. Returns the same canvas it
+// was given (it is a fresh one per export, so mutating it can never touch the edit base image).
+//
+// FAIL-CLOSED, including the degenerate cases. An earlier version returned the untouched canvas when
+// `window.occlusionMask` was missing, when the canvas had no 2D context, or when `image` was not
+// loaded. Each of those is a state where the mask CANNOT be computed - and "cannot compute the
+// mask" must never mean "send the model the pixels the user covered". The only acceptable outcomes
+// are (a) a correct mask, or (b) an unusable canvas the caller cannot send at all. (b) is returned
+// as `null` and the caller aborts the action: the user sees "recognition failed" instead of having
+// the secret read, which is strictly the better failure.
+function applyRecognitionOcclusion(contentCanvas, rect) {
+  if (!contentCanvas) return null
+  // Nothing to protect: no blur object was ever drawn, so there is no secret to mask and the
+  // shipped behaviour is correct. This is the ONLY branch allowed to skip the mask.
+  if (!hasOccludableBlur(rect)) return contentCanvas
+  const context = typeof contentCanvas.getContext === 'function' ? contentCanvas.getContext('2d') : null
+  const mask = window.occlusionMask
+  if (!mask || !context || !image) {
+    // There IS a blur to protect but its geometry cannot be computed or painted. Refuse.
+    return null
+  }
+  let plan
+  try {
+    const input = annotationsForMask(rect)
+    const occluders = mask.buildOccluders(input.annotations)
+    const transformed = input.transform ? occluders.map((occluder) => transformOccluder(occluder, input.transform)) : occluders
+    plan = mask.planOcclusion({ crop: input.crop, occluders: transformed })
+  } catch (error) {
+    // A mask that cannot be planned must not silently fall back to sending unmasked pixels: the
+    // whole point of R0.4 is that a blur is never readable by a model. Cover the whole input.
+    plan = { masked: true, ops: [{ kind: 'rect', x: 0, y: 0, w: contentCanvas.width, h: contentCanvas.height }] }
+  }
+  // `masked === false` while a blur exists means the plan found nothing to cover - that is a
+  // geometry bug, not an absence of secrets. Cover everything rather than trust it.
+  if (!plan.masked) {
+    plan = { masked: true, ops: [{ kind: 'rect', x: 0, y: 0, w: contentCanvas.width, h: contentCanvas.height }] }
+  }
+  paintOcclusionPlan(context, plan)
+  return contentCanvas
+}
+
+// Does the current document/selection actually contain a blur object? Cheap structural test, used
+// only to decide whether the occlusion path is required at all (see the fail-closed note above).
+// A failure to even enumerate the annotations counts as "there may be something to protect".
+function hasOccludableBlur(rect) {
+  let annotationsList
+  try {
+    annotationsList = annotationsForMask(rect).annotations
+  } catch (error) {
+    return true
+  }
+  if (!Array.isArray(annotationsList)) return true
+  return annotationsList.some((item) => item?.type === 'blur')
 }
 
 function exportSelectionCanvas(includeAnnotations = true) {
@@ -2391,6 +2958,455 @@ function canvasPngBuffer(sourceCanvas) {
       blob.arrayBuffer().then(resolve, reject)
     }, 'image/png')
   })
+}
+
+// ---------- Feature D2/D3: the magnifier (plan §7.1/§7.2) ----------
+//
+// The magnifier is the first annotation whose geometry is NESTED (a source rect plus a lens origin,
+// with the lens SIZE derived from the factor) and the first one that reads pixels from elsewhere in
+// the image. Both of those live in shared modules:
+//
+//   shared/magnifier-geometry.js  - normalize/lensRect/withFactor/hitTest/clip
+//   capture/magnifier-sampler.js  - the sample base + the byte-budgeted cache
+//   shared/occlusion-mask.js      - the opaque mask the sample base must carry
+//
+// This block only owns the SESSION: the sampler instance, its cache lifetime, and the "which part
+// of the gesture is dragging" state. Nothing here re-derives geometry.
+function magnifierApi() { return window.magnifierGeometry || null }
+function magnifierSamplerApi() { return window.magnifierSampler || null }
+
+// One sampler per editor session. It is recreated on every init and released on close, which is what
+// keeps the 32 MiB sample cache from outliving the document it belongs to (§7.2).
+let lensSampler = null
+// The sampler's identity depends on (base image, crop, blur set). `sampleBaseKey` remembers what the
+// current base was built from so a style/annotation edit that does not touch those does not rebuild.
+let sampleBaseKey = ''
+// The part of a magnifier a drag is moving: 'lens' | 'source' | 'connector'.
+let magnifierDrag = null
+// Feature D3 state: the in-progress magnifier gesture, and the attribute defaults a new magnifier
+// takes (factor / connector) - window-session state, never persisted (they are the same class of
+// preference as the annotation colour, which is why they live here and not in the settings block).
+let magnifierBuild = null
+let magnifierFactor = 2
+let magnifierConnector = 'none'
+// Viewport-CSS tolerance for grabbing a magnifier's frame. It is a screen-space constant (a frame is
+// thin at any zoom), so the call sites convert it into the annotation's own units.
+const FRAME_HIT_TOLERANCE = 4
+
+function resetLensSampler() {
+  const sampler = magnifierSamplerApi()
+  if (!sampler) return
+  lensSampler = sampler.createLensSampler({
+    createCanvas: (width, height) => {
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(width))
+      canvas.height = Math.max(1, Math.round(height))
+      return canvas
+    }
+  })
+  sampleBaseKey = ''
+}
+
+// Release the cache when the session ends (editor close, new init). Explicit rather than relying on
+// GC: §7.2 asks for the cache to be released when the editor closes, and a 32 MiB backing store is
+// exactly the kind of thing a GC is allowed to keep around for a long time.
+function releaseLensSampler() {
+  if (lensSampler) lensSampler.reset()
+  lensSampler = null
+  sampleBaseKey = ''
+  magnifierDrag = null
+}
+
+// The base the lens samples from: the crop of the BASE IMAGE with every blur still in the document
+// painted opaque, at source resolution (§7.2 "mask before scaling"). Ordinary annotations and the
+// finished-look frame are deliberately absent - a lens must never show a card frame or an arrow that
+// is not part of the picture it is magnifying.
+//
+// COORDINATE RULE (the bug this comment exists for): composeSampleBase works in source pixels, so the
+// occluders it receives must be in source pixels too. A document editor's annotations already are. A
+// plain capture window's annotations are viewport CSS, so they have to go through the SAME projection
+// the lens rect uses - handing CSS-space masks to a source-pixel canvas paints them at the wrong
+// place, which silently defeats the privacy mask (the lens would show the un-masked secret).
+function ensureSampleBase() {
+  const sampler = magnifierSamplerApi()
+  const mask = window.occlusionMask
+  if (!sampler || !mask || !image) return null
+  if (!lensSampler) resetLensSampler()
+  if (!lensSampler) return null
+  const crop = documentEditor ? documentCrop() : { x: 0, y: 0, w: image.naturalWidth, h: image.naturalHeight }
+  const occluders = mask.buildOccluders(annotationsForSampling())
+  const fingerprint = mask.maskFingerprint(occluders)
+  const key = `${image.naturalWidth}x${image.naturalHeight}|${crop.x},${crop.y},${crop.w},${crop.h}|${fingerprint}`
+  if (key === sampleBaseKey) return lensSampler
+  let composed = null
+  try {
+    composed = sampler.composeSampleBase({
+      baseImage: image,
+      crop,
+      occluders,
+      createCanvas: (width, height) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round(width))
+        canvas.height = Math.max(1, Math.round(height))
+        return canvas
+      }
+    })
+  } catch (error) {
+    return null
+  }
+  lensSampler.reset()
+  lensSampler.adoptSampleBase({ canvas: composed.canvas, fingerprint: key })
+  sampleBaseKey = key
+  return lensSampler
+}
+
+// Annotations in SOURCE pixels, for the lens sample base's occlusion plan.
+//
+// A document editor stores source pixels already, so this is just the document projection (which also
+// drops every non-magnifier's flat fields for the sheet, but the occluder builder only reads type +
+// geometry, so the plain list is enough). A plain capture window stores viewport CSS, so each blur is
+// projected with the same scale/offset the lens uses - a mask painted in the wrong coordinate space
+// would leave the secret readable through the lens.
+function annotationsForSampling() {
+  if (documentEditor) return annotationsToDocument()
+  const rect = selection ? exportSelectionRect() : null
+  if (!rect || !image) return []
+  const bounds = imageDisplayBounds()
+  const source = getSourcePixelRect(rect, bounds, { width: image.naturalWidth, height: image.naturalHeight })
+  const scaleX = source.width / Math.max(1, rect.w)
+  const scaleY = source.height / Math.max(1, rect.h)
+  const widthScale = Math.max(scaleX, scaleY)
+  return annotations.map((item) => {
+    if (item?.type !== 'blur') return item
+    const projected = {
+      type: 'blur',
+      width: (Number(item.width) || 0) * widthScale,
+      color: item.color
+    }
+    if (Array.isArray(item.points) && item.points.length) {
+      projected.points = item.points.map((point) => ({
+        x: source.x + (point.x - rect.x) * scaleX,
+        y: source.y + (point.y - rect.y) * scaleY
+      }))
+      return projected
+    }
+    projected.x = source.x + (Math.min(item.x, item.x2 ?? item.x) - rect.x) * scaleX
+    projected.y = source.y + (Math.min(item.y, item.y2 ?? item.y) - rect.y) * scaleY
+    projected.x2 = projected.x + Math.abs((item.x2 ?? item.x) - item.x) * scaleX
+    projected.y2 = projected.y + Math.abs((item.y2 ?? item.y) - item.y) * scaleY
+    return projected
+  })
+}
+
+// The sampled lens canvas for one magnifier, or null when sampling is impossible. Null means the
+// caller draws the frame only, which is still a correct (if less useful) render - never a wrong one.
+//
+// The magnifier handed in is in ANNOTATION space: viewport CSS in a plain capture window, source
+// pixels in a document editor. The sample base is always source pixels, so a plain window has to be
+// projected first - sampling the CSS rect directly would read the wrong part of the image (a 1.5x
+// HiDPI capture would be off by a third of the region).
+function magnifierLensCanvas(item) {
+  const sampler = ensureSampleBase()
+  if (!sampler) return null
+  const projected = magnifierInSourceSpace(item)
+  if (!projected) return null
+  const crop = documentEditor ? documentCrop() : { x: 0, y: 0, w: image?.naturalWidth || 1, h: image?.naturalHeight || 1 }
+  try {
+    return sampler.sample({
+      baseImageId: `${image?.naturalWidth || 0}x${image?.naturalHeight || 0}`,
+      crop,
+      maskFingerprint: sampleBaseKey,
+      magnifier: projected
+    })
+  } catch (error) {
+    return null
+  }
+}
+
+// Feature D3: annotation space -> source pixels for the SAMPLER only.
+//
+// A document editor stores its annotations in source pixels already, so the object passes through.
+// A plain capture window stores them in viewport CSS (that is what drawAnnotation maps from), and the
+// sampler works on the source-resolution base image, so the same `getSourcePixelRect` projection the
+// export uses has to be applied to both nested rects and to the stroke width.
+function magnifierInSourceSpace(item) {
+  const api = magnifierApi()
+  if (!api || !item) return null
+  const magnifier = api.normalizeMagnifier(item)
+  if (documentEditor) return magnifier
+  if (!selection || !image) return null
+  const rect = exportSelectionRect()
+  const bounds = imageDisplayBounds()
+  const source = getSourcePixelRect(rect, bounds, { width: image.naturalWidth, height: image.naturalHeight })
+  const scaleX = source.width / Math.max(1, rect.w)
+  const scaleY = source.height / Math.max(1, rect.h)
+  const widthScale = Math.max(scaleX, scaleY)
+  // `source.x/y` is the crop origin the sample base is built from; subtracting it here puts the
+  // result in the same space sampleMagnifier expects (base-image source pixels).
+  const toX = (value) => source.x + (value - rect.x) * scaleX
+  const toY = (value) => source.y + (value - rect.y) * scaleY
+  return api.normalizeMagnifier({
+    sourceRect: {
+      x: toX(magnifier.sourceRect.x),
+      y: toY(magnifier.sourceRect.y),
+      w: magnifier.sourceRect.w * scaleX,
+      h: magnifier.sourceRect.h * scaleY
+    },
+    lensOrigin: { x: toX(magnifier.lensOrigin.x), y: toY(magnifier.lensOrigin.y) },
+    factor: magnifier.factor,
+    stroke: { color: magnifier.stroke.color, widthPx: magnifier.stroke.widthPx * widthScale },
+    connector: magnifier.connector
+  })
+}
+
+// ---------- Feature C: finished-look state (plan §6.1/§6.2/§6.3) ----------
+//
+// One style object drives three things: the live preview (primitive painted by the shared
+// compositor), the document snapshot (`buildDocumentSnapshot`), and the exported pixels
+// (`composeFinishedOutput`). Nothing here approximates geometry - every number ultimately comes
+// from `shared/capture-output-style.js`, which the main process uses for the same decision.
+//
+// The preset ID is UI preference only (§6.2): it is persisted so the next capture starts from it,
+// but it never enters the document. A document's own `outputStyle` is the product truth.
+let outputStyleController = null
+let outputStylePanel = null
+// Content size the preview was last painted for. syncOutputStyleUi() runs every frame, so the
+// preview must only be repainted when the content rect actually changed.
+let outputStylePreviewSignature = ''
+
+function outputStyleApi() { return window.captureOutputStyle || null }
+function outputCompositorApi() { return window.captureOutputCompositor || null }
+
+// The style to use for a screenshot window that is NOT editing a document. Such a window has no
+// document to carry a style, so it reads the persisted preset preference - and only the preset:
+// hand-tuned parameters deliberately do not leak from one screenshot to the next (§6.2 "presetId
+// is UI preference; the product is decided by the fully resolved parameters").
+//
+// Image/canvas modes are excluded on purpose. Those are re-annotation editors (pin re-annotate, and
+// the history editor falls in here too but has a document), and their base bitmap may already BE a
+// composed result: applying the persisted card on top of it would stack a second frame, which §6.3
+// forbids ("repeated saves and pin re-edits must not accumulate frames"). They therefore start in
+// original mode and only compose when the user explicitly picks a preset in this session.
+function preferredOutputStylePreset() {
+  const api = outputStyleApi()
+  if (!api) return 'original'
+  if (['image', 'canvas'].includes(initData?.mode)) return 'original'
+  const stored = initData?.settings?.screenshot?.outputStylePreset
+  return api.PRESET_IDS.includes(stored) ? stored : 'original'
+}
+
+// The style the CURRENT session is producing. Inside a document editor the document owns it, so
+// reopening a record shows the card it was saved with; a plain capture window starts from the
+// persisted preset. Always normalized, so a hand-edited store cannot inject a bad shape.
+function currentOutputStyle() {
+  const api = outputStyleApi()
+  if (!api) return null
+  if (outputStyleController) return outputStyleController.getStyle()
+  return api.presetStyle(preferredOutputStylePreset())
+}
+
+function setOutputStyleStatus(key, params, isError) {
+  if (outputStylePanel) outputStylePanel.setStatus(key, params, isError)
+  else if (outputStyleStatusEl) {
+    outputStyleStatusEl.textContent = key ? t(key, params) : ''
+    outputStyleStatusEl.classList.toggle('hidden', !key)
+    outputStyleStatusEl.classList.toggle('error', isError === true)
+  }
+}
+
+// The panel is anchored to the strip and only meaningful once there is something to frame, so it
+// closes with the same rule that hides the strip. The toggle itself lives ON the strip (it is
+// hidden with it by updateFloatingUi), so there is no separate floating affordance to place.
+//
+// Called from updateFloatingUi(), i.e. on every rendered frame - so it must not repaint the
+// preview unconditionally. The size hint and the preview both depend on the content rect, so the
+// repaint is keyed off that rect instead of the frame.
+function syncOutputStyleUi() {
+  if (!outputStylePanel) return
+  const available = !!selection && selection.w >= 8 && selection.h >= 8 &&
+    !activeOcrResult && !processingAction && !selecting && !dragging && !resizing &&
+    selectState !== 'auto' && !toolbar.classList.contains('hidden')
+  if (!available) {
+    outputStylePanel.close()
+    return
+  }
+  const size = outputContentSize()
+  const signature = size ? `${size.width}x${size.height}` : ''
+  if (signature !== outputStylePreviewSignature) {
+    outputStylePreviewSignature = signature
+    outputStylePanel.syncControls()
+    renderOutputStylePreview()
+  }
+  if (outputStylePanel.isOpen()) outputStylePanel.position()
+}
+
+// Content-layer width/height for the current session, in source pixels. A document editor works on
+// its crop; a plain capture window works on the selection's pixel rect (the same rect the export
+// uses), so the size hint and the real result agree.
+function outputContentSize() {
+  if (documentEditor) {
+    const crop = documentCrop()
+    return { width: Math.max(1, Math.round(crop.w)), height: Math.max(1, Math.round(crop.h)) }
+  }
+  if (!selection || !image) return null
+  const rect = exportSelectionRect()
+  const source = getSourcePixelRect(rect, imageDisplayBounds(), { width: image.naturalWidth, height: image.naturalHeight })
+  return { width: Math.max(1, source.width), height: Math.max(1, source.height) }
+}
+
+function outputStyleGeometry(style) {
+  const api = outputStyleApi()
+  const size = outputContentSize()
+  if (!api || !size) return null
+  return api.resolveOutputGeometry({
+    contentWidth: size.width,
+    contentHeight: size.height,
+    outputStyle: style || currentOutputStyle()
+  })
+}
+
+// The panel's live preview. It is the SHARED compositor's output drawn into a small canvas, not a
+// CSS approximation: plan §6.1 forbids a CSS-only shadow precisely because it would let the
+// preview and the export disagree. The content layer is a scaled-down copy of what would be
+// exported (base crop + annotations + cursor), so the preview shows the real composition.
+function renderOutputStylePreview() {
+  const canvasEl = outputStylePreviewCanvas
+  const compositor = outputCompositorApi()
+  if (!canvasEl || !compositor || !image) return
+  const size = outputContentSize()
+  if (!size) return
+  const style = currentOutputStyle()
+  if (!style || !style.enabled) {
+    // Original mode has no decoration to preview; the panel shows an empty frame rather than a
+    // misleading miniature (the size hint still reports the crop size).
+    const ctx = canvasEl.getContext('2d')
+    if (ctx) ctx.clearRect(0, 0, canvasEl.width, canvasEl.height)
+    return
+  }
+  const content = previewContentCanvas(size)
+  if (!content) return
+  const box = previewBox(canvasEl, style, size)
+  let composed = null
+  try {
+    composed = compositor.composeOutputCanvas({ contentCanvas: content, outputStyle: style, scale: box.scale })
+  } catch (error) {
+    composed = null
+  }
+  const ctx = canvasEl.getContext('2d')
+  if (!ctx) return
+  ctx.clearRect(0, 0, canvasEl.width, canvasEl.height)
+  if (composed) ctx.drawImage(composed, box.left, box.top)
+}
+
+// Scale that fits the composed result into the preview canvas (letterboxed, never upscaled past 1
+// so a tiny selection is not blown up into a blurry block).
+function previewBox(canvasEl, style, size) {
+  const api = outputStyleApi()
+  const availableWidth = Math.max(32, (canvasEl.width || 240) - 2)
+  const availableHeight = Math.max(32, (canvasEl.height || 140) - 2)
+  const geometry = api.resolveOutputGeometry({
+    contentWidth: size.width,
+    contentHeight: size.height,
+    outputStyle: style
+  })
+  const scale = Math.max(1e-4, Math.min(1, availableWidth / geometry.width, availableHeight / geometry.height))
+  return {
+    scale,
+    left: Math.round((canvasEl.width - geometry.width * scale) / 2),
+    top: Math.round((canvasEl.height - geometry.height * scale) / 2)
+  }
+}
+
+// Scaled content layer for the preview: the SAME draw calls the export makes, at preview scale, so
+// a difference between preview and export can only come from the compositor (which is shared).
+function previewContentCanvas(size) {
+  if (!image || !size) return null
+  const canvasEl = previewContentCanvas.cache || (previewContentCanvas.cache = document.createElement('canvas'))
+  canvasEl.width = Math.max(1, size.width)
+  canvasEl.height = Math.max(1, size.height)
+  const ctx = canvasEl.getContext('2d')
+  if (!ctx) return null
+  ctx.clearRect(0, 0, canvasEl.width, canvasEl.height)
+  ctx.imageSmoothingEnabled = true
+  if (documentEditor) {
+    const crop = documentCrop()
+    ctx.drawImage(image, crop.x, crop.y, crop.w, crop.h, 0, 0, size.width, size.height)
+    const scaleX = size.width / Math.max(1, crop.w)
+    const scaleY = size.height / Math.max(1, crop.h)
+    for (const item of annotationsToDocument()) drawAnnotation(ctx, item, scaleX, scaleY, crop.x * scaleX, crop.y * scaleY, image)
+  } else {
+    const rect = exportSelectionRect()
+    const source = getSourcePixelRect(rect, imageDisplayBounds(), { width: image.naturalWidth, height: image.naturalHeight })
+    ctx.drawImage(image, source.x, source.y, source.width, source.height, 0, 0, size.width, size.height)
+    const scaleX = size.width / Math.max(1, rect.w)
+    const scaleY = size.height / Math.max(1, rect.h)
+    for (const item of annotations) drawAnnotation(ctx, item, scaleX, scaleY, rect.x, rect.y, image)
+  }
+  return canvasEl
+}
+
+// Rebuild the panel for the current session. `initialStyle` is the document's own style when a
+// record is reopened, or the persisted preset for a fresh capture.
+function mountOutputStylePanelFor(initialStyle, initialPresetId) {
+  if (!outputStylePanelRoot || !outputStyleApi() || !window.outputStylePanel) return null
+  outputStyleController = window.outputStylePanel.createOutputStyleController({
+    styleApi: outputStyleApi(),
+    initialStyle,
+    initialPresetId,
+    onPreview: () => { renderOutputStylePreview() },
+    onCommit: () => { commitOutputStyleGesture() },
+    onPreset: (presetId) => {
+      // Only the preset choice persists (plan §6.2); the parameters belong to the document. The
+      // call is guarded because the preload method may not exist in an older window build.
+      try { window.captureAPI.saveOutputStylePreset?.(presetId) } catch (error) { /* best effort */ }
+    }
+  })
+  outputStylePanel = window.outputStylePanel.mountOutputStylePanel({
+    document,
+    styleApi: outputStyleApi(),
+    controller: outputStyleController,
+    translate: (key, params) => t(key, params),
+    getGeometry: (style) => outputStyleGeometry(style),
+    // The panel's preview is painted by the shared compositor, never by CSS, and nothing else
+    // repaints it just because the panel became visible.
+    onOpen: () => renderOutputStylePreview(),
+    getAnchor: () => {
+      const rect = toolbar.classList.contains('hidden') ? null : toolbar.getBoundingClientRect()
+      return {
+        left: rect ? rect.left : 8,
+        top: rect ? rect.top : 8,
+        width: rect ? rect.width : 0,
+        height: rect ? rect.height : 0,
+        viewportWidth: innerWidth,
+        viewportHeight: innerHeight
+      }
+    },
+    log: (...args) => console.warn(...args)
+  })
+  renderOutputStylePreview()
+  return outputStylePanel
+}
+
+// A style gesture (preset click or one completed slider drag) is ONE undo step (§6.3). It goes
+// through the same snapshot funnel the annotations use, so every window has a single Ctrl+Z
+// timeline: the frame captures both the annotation array (unchanged) and the new style, and undo
+// restores both. That is what makes "restore the original picture" itself undoable - it is a
+// regular edit here, not a reset.
+function commitOutputStyleGesture() {
+  snapshotAnnotations()
+  renderOutputStylePreview()
+}
+
+// Fresh style session for a new capture. Runs from resetAnnotationState(), i.e. before any image is
+// decoded, so the panel exists but reports nothing until outputContentSize() has a selection.
+function resetOutputStyleState() {
+  const api = outputStyleApi()
+  outputStyleController = null
+  outputStylePanel = null
+  outputStylePreviewSignature = ''
+  if (!api || !window.outputStylePanel) return
+  const presetId = preferredOutputStylePreset()
+  mountOutputStylePanelFor(api.presetStyle(presetId), presetId)
 }
 
 // ---------- Batch 1: editing a *document* rather than taking a screenshot ----------
@@ -2481,6 +3497,10 @@ function buildDocumentSnapshot() {
     annotations: annotationsToDocument(),
     captureAttachments: documentEditor?.document?.captureAttachments || { cursor: null },
     captureMetadata: documentEditor?.document?.captureMetadata || { sourceScaleFactor: Number(initData?.scaleFactor) || 1 },
+    // Feature C (plan §6.2): the style is part of the document's CONTENT (it participates in the
+    // content fingerprint), so changing padding/radius/shadow is a real revision. The contract
+    // layer normalizes it, so a partial object from the UI cannot produce an invalid document.
+    outputStyle: currentOutputStyle() || undefined,
     source: initData?.source || 'history'
   })
 }
@@ -2567,6 +3587,20 @@ function restoreDocumentEditor(payload) {
   annotationHistory = [cloneAnnotations(annotations)]
   historyIndex = 0
   invalidateMosaicPatches()
+  // Feature C (plan §6.3): a reopen shows the card the record was saved with, and the undo stack
+  // starts at that style - so Ctrl+Z right after opening cannot walk back to a style the record
+  // never had. `legacy` records are forced to original by the contract layer (their bitmap may
+  // already carry baked-in decoration, and adding a frame would stack a second one).
+  restoreOutputStyleForDocument(payload)
+  // Feature D3: a reopened record may hold magnifiers whose source rect falls outside the crop
+  // (removed by an earlier version, or a corrupted document). §7.1 requires such an object to be
+  // REMOVED, not clamped - keeping a lens that samples cut-off pixels would paint back content the
+  // user deleted. The removal happens in the load frame, not as an undoable edit: opening is not an
+  // edit, and undoing it must not resurrect an out-of-bounds object.
+  clipRestoredMagnifiers()
+  // Feature D4: the panel and the next-lens defaults follow what the document actually holds.
+  adoptMagnifierDefaultsFromDocument()
+  syncMagnifierPanel()
   // The baseline for dirty is the content we just loaded, so opening is immediately clean.
   documentEditor.cleanFingerprint = ''
   documentEditor.cleanFingerprint = documentFingerprintNow()
@@ -2575,8 +3609,94 @@ function restoreDocumentEditor(payload) {
   render()
 }
 
+// Feature D3 (plan §7.1): drop (or shrink) magnifiers whose source rect left the crop. Runs inside
+// the load frame, so the result is what "opened" means - the undo stack starts from it.
+function clipRestoredMagnifiers() {
+  const api = magnifierApi()
+  if (!api) return
+  const crop = documentCrop()
+  let changed = false
+  const kept = []
+  for (const item of annotations) {
+    if (item.type !== 'magnifier') { kept.push(item); continue }
+    const clipped = api.clipToCrop(item, crop)
+    if (!clipped.ok) { changed = true; continue }
+    if (clipped.adjusted) changed = true
+    kept.push(clipped.magnifier)
+  }
+  if (!changed) return
+  annotations = kept
+  // The load frame is the state AFTER the removal, so rebuild it (and re-seed the ids so the
+  // selection code can still address the objects).
+  annotationSeq = 0
+  for (const item of annotations) item.id = ++annotationSeq
+  annotationHistory = [cloneAnnotations(annotations)]
+  historyIndex = 0
+  selectedAnnotation = null
+  selectedIds = new Set()
+  invalidateMosaicPatches()
+  // The sample base depends on the blur set, which the removal does not touch - but the magnifier
+  // set did change, so cached lens samples for the removed objects are dropped.
+  ensureSampleBase()
+}
+
+// Feature D4 (plan §7.3): a reopened record shows its lenses with the attributes they were saved
+// with, so the panel is a faithful echo of the selected object (syncMagnifierPanel reads it). This
+// also seeds the DEFAULTS for the next magnifier from the last one in the document, so drawing a
+// second lens does not silently snap back to 2x/no-connector after a reload.
+function adoptMagnifierDefaultsFromDocument() {
+  const api = magnifierApi()
+  if (!api) return
+  const lenses = annotations.filter((item) => item?.type === 'magnifier')
+  if (!lenses.length) {
+    magnifierFactor = 2
+    magnifierConnector = 'none'
+    return
+  }
+  const last = api.normalizeMagnifier(lenses[lenses.length - 1])
+  magnifierFactor = last.factor
+  magnifierConnector = last.connector
+  // A saved stroke width is a good default for the next lens (same reasoning as the annotation
+  // colour: the user's last choice should not be thrown away by a reload).
+  annotationWidth = Math.max(1, Math.min(24, Math.round(last.stroke.widthPx)))
+}
+
+// Feature C: install the session's style controller from a loaded document.
+//
+// The document's own `outputStyle` is the product truth (§6.2): a reopened record must look the way
+// it was saved, not the way the last unrelated capture looked. The preset id is derived back from
+// the parameters so the panel's buttons show something honest - a style that matches no preset
+// simply leaves every preset button unpressed (there is no "custom" preset to invent).
+function restoreOutputStyleForDocument(payload) {
+  const api = outputStyleApi()
+  if (!api) return
+  const document = payload?.document && typeof payload.document === 'object' ? payload.document : null
+  const style = api.normalizeOutputStyle(document?.outputStyle)
+  const presetId = matchOutputStylePreset(style)
+  mountOutputStylePanelFor(style, presetId)
+  if (outputStyleController) outputStyleController.resetFrames(style)
+}
+
+// Which preset (if any) the given parameters equal exactly. Returns 'original' for a disabled
+// style; an enabled style that matches no preset returns '' so no button claims to be active.
+function matchOutputStylePreset(style) {
+  const api = outputStyleApi()
+  if (!api) return 'original'
+  if (!api.isOutputStyleEnabled(style)) return 'original'
+  for (const presetId of api.PRESET_IDS) {
+    if (presetId === 'original') continue
+    if (api.outputStyleEquals(api.presetStyle(presetId), style)) return presetId
+  }
+  return ''
+}
+
 // Encode the committed result for the current crop (source pixels, no resampling).
-// The result canvas is exactly crop-sized, which the service re-validates (§4).
+//
+// Feature C (plan §6.1/§6.3): the content layer is rebuilt from the BASE IMAGE + annotations every
+// time and then handed to the shared compositor. It deliberately never reads the previous result
+// PNG - that is what stops repeated saves and pin re-edits from stacking a second frame.
+// In original mode the compositor returns null and this exact crop-sized canvas is the result, so
+// a v1-shaped document keeps writing byte-identical pixels (the service re-validates the size).
 async function documentResultBuffer() {
   const crop = documentCrop()
   const output = document.createElement('canvas')
@@ -2589,7 +3709,8 @@ async function documentResultBuffer() {
   // Annotations are stored in source px, so re-project them into export px for drawing.
   const viewsForExport = annotationsToDocument()
   for (const item of viewsForExport) drawAnnotation(out, item, 1, 1, crop.x, crop.y, image)
-  return canvasPngBuffer(output)
+  const composed = composeFinishedOutput(output, currentOutputStyle())
+  return canvasPngBuffer(composed || output)
 }
 
 // Commit the frozen content state (contracts §4). One requestId per frozen snapshot:
@@ -2842,9 +3963,25 @@ async function performAction(action) {
   // only, so they take the unannotated canvas; every other action is the
   // user-facing picture and keeps the annotations.
   const recognitionActions=['ocr','translate','table','qr','convert']
+  // Feature C (plan §6.1) + R0.4 (contracts §8): the three switches are INDEPENDENT, never inferred
+  // from the action and never folded into each other.
+  //   includeAnnotations - may the consumer see my arrows/boxes/text?
+  //   compose            - may the consumer see a finished-look frame?
+  //   mask               - must the model be prevented from reading what I covered?
+  // A recognition entry is `false / false / true`; every user-facing export is `true / true / false`.
+  const pixelOnlyActions = recognitionActions.includes(action)
+  const composedActions = !pixelOnlyActions
+  const maskedActions = pixelOnlyActions
   // §3.2②: a level-2 Ctrl+A selection reaches past the captured display; the export runs
   // on its projection into the image (see exportSelectionCanvasForAction).
-  const output=exportSelectionCanvasForAction(!recognitionActions.includes(action),exportRect); if(!output)return
+  const output=exportSelectionCanvasForAction(!pixelOnlyActions,exportRect,{ compose: composedActions, mask: maskedActions })
+  if(!output){
+    // R0.4 fail-closed: a recognition action refuses to run when the occlusion mask could not be
+    // computed. Saying nothing would look like a dead button, so report it - and never fall back to
+    // sending the unmasked image, which is the failure this whole path exists to prevent.
+    if(maskedActions&&hasOccludableBlur(exportRect))alert(t('capture.ocr.mask-unavailable'))
+    return
+  }
   const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds}
   try {
     const imageBuffer=await canvasPngBuffer(output)
@@ -2932,6 +4069,39 @@ watermarkApplyButton.addEventListener('click',()=>{
   setTool('select')
 })
 document.getElementById('watermarkCancel').onclick=()=>setTool('select')
+// Feature D3 (plan §7.1): the magnifier panel's listeners. The factor and connector groups are
+// latched buttons (aria-pressed), the border width is a slider that coalesces like every other
+// annotation style: live preview on `input`, ONE undo frame on `change`/`pointerup`.
+if (magnifierPanel) {
+  magnifierPanel.addEventListener('click', (event) => {
+    const factorButton = event.target?.closest?.('[data-magnifier-factor]')
+    if (factorButton) { event.stopPropagation(); chooseMagnifierFactor(Number(factorButton.dataset.magnifierFactor)); return }
+    const connectorButton = event.target?.closest?.('[data-magnifier-connector]')
+    if (connectorButton) { event.stopPropagation(); chooseMagnifierConnector(connectorButton.dataset.magnifierConnector) }
+  })
+}
+if (magnifierStrokeWidthInput) {
+  const previewStrokeWidth = () => {
+    const value = Math.max(1, Math.min(24, Math.round(Number(magnifierStrokeWidthInput.value) || 1)))
+    if (magnifierStrokeWidthValue) magnifierStrokeWidthValue.textContent = `${value}px`
+    const item = selectedMagnifier()
+    if (!item) return
+    const index = annotations.indexOf(item)
+    if (index < 0) return
+    // Live preview without a frame; the `change` handler below commits exactly one.
+    annotations[index] = Object.assign({}, item, { stroke: Object.assign({}, item.stroke, { widthPx: value }) })
+    selectedAnnotation = annotations[index]
+    render()
+  }
+  magnifierStrokeWidthInput.addEventListener('input', previewStrokeWidth)
+  const commitStrokeWidth = () => {
+    const value = Math.max(1, Math.min(24, Math.round(Number(magnifierStrokeWidthInput.value) || 1)))
+    if (selectedMagnifier()) editSelectedMagnifier({ stroke: { widthPx: value } })
+    else { annotationWidth = value; syncMagnifierPanel() }
+  }
+  magnifierStrokeWidthInput.addEventListener('change', commitStrokeWidth)
+  magnifierStrokeWidthInput.addEventListener('pointerup', commitStrokeWidth)
+}
 document.getElementById('undo').onclick=()=>undoAnnotations()
 document.getElementById('redo').onclick=()=>redoAnnotations()
 document.getElementById('elementDelete').onclick=()=>deleteSelectedAnnotation()

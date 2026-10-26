@@ -29,6 +29,12 @@ const script = fs.readFileSync(path.join(root, 'capture', 'capture.js'), 'utf8')
 // actually renders.
 const exportResultBarPath = path.join(root, 'capture', 'export-result-bar.js')
 const exportResultBar = require(exportResultBarPath)
+// Feature C (plan §6.1): the finished-look panel is a THIRD capture-window controller and owns its
+// own label table for the same reason - otherwise the panel could ship a preset label the locale
+// table does not carry. It resolves copy through a `translate` callback, so its keys come from the
+// module's own LOCALE_KEYS export rather than from a literal scan of capture.js.
+const outputStylePanelPath = path.join(root, 'capture', 'output-style-panel.js')
+const outputStylePanel = require(outputStylePanelPath)
 const LANGUAGES = ['zh-CN', 'en-US', 'zh-TW']
 // Exactly the locale files capture/capture.html loads, in load order.
 const WINDOW_LOCALE_FILES = ['zh-CN.js', 'en-US.js', 'zh-TW.js', 'capture.js']
@@ -178,6 +184,9 @@ const GOLDEN = {
   'capture.result.copy': '复制文本',
   'capture.result.done': '完成',
   'capture.ocr.summary': '识别完成',
+  // R0.4 (contracts §8): recognition is refused when the privacy mask cannot be built, so the user
+  // needs to know why nothing happened. This is a NEW key, not a migration of an existing literal.
+  'capture.ocr.mask-unavailable': '遮罩无法生成，已取消识别以保护隐私。请删除马赛克后重试。',
   'capture.ocr.show-source': '查看原文',
   'capture.ocr.show-translation': '查看译文',
   'capture.ocr.plain-text': '纯文本',
@@ -260,7 +269,40 @@ const GOLDEN = {
   'capture.region.adjusted': '区域已调整',
   'capture.region.clamped': { source: '区域超出当前屏幕，已调整为 ${width} × ${height}', params: { width: '${width}', height: '${height}' } },
   'capture.region.display-changed': '原显示器布局已改变，区域已居中放置',
-  'capture.region.rect-outside-display': '部分区域超出当前屏幕，已裁剪'
+  'capture.region.rect-outside-display': '部分区域超出当前屏幕，已裁剪',
+
+  // Feature C (plan §6.1/§6.2): the finished-look presets and their adjustable parameters. Rendered
+  // by the static markup above and by capture/output-style-panel.js's LOCALE_KEYS.
+  'capture.output.title': '成品样式',
+  'capture.output.presets': '成品预设',
+  'capture.output.preset-original': '原图',
+  'capture.output.preset-card-light': '浅色卡片',
+  'capture.output.preset-card-dark': '深色卡片',
+  'capture.output.padding': '留白',
+  'capture.output.background': '背景色',
+  'capture.output.background-alpha': '背景不透明度',
+  'capture.output.corner-radius': '圆角',
+  'capture.output.border-width': '边框',
+  'capture.output.border-color': '边框颜色',
+  'capture.output.shadow': '阴影',
+  'capture.output.shadow-enabled': '启用阴影',
+  'capture.output.shadow-blur': '模糊',
+  'capture.output.shadow-offset-x': '水平偏移',
+  'capture.output.shadow-offset-y': '垂直偏移',
+  'capture.output.shadow-color': '阴影颜色',
+  'capture.output.shadow-alpha': '阴影不透明度',
+  'capture.output.size': { source: '成品尺寸 ${size.width} × ${size.height}', params: { width: '${size.width}', height: '${size.height}' } },
+  'capture.output.too-large': { source: '成品尺寸超出上限，已回到原图（${error.width} × ${error.height}）', params: { width: '${error.width}', height: '${error.height}' } },
+
+  // Feature D3 (plan §7.1): the magnifier tool and its attribute panel.
+  'capture.toolbar.magnifier': '放大镜',
+  'capture.magnifier.factor': '倍率',
+  'capture.magnifier.border': '边框',
+  'capture.magnifier.connector': '引线',
+  'capture.magnifier.connector-none': '无',
+  'capture.magnifier.connector-line': '连线',
+  'capture.magnifier.limit': { source: '每张图最多 ${api.MAX_PER_DOCUMENT} 个放大镜', params: { max: '${api.MAX_PER_DOCUMENT}' } },
+  'capture.magnifier.outside': '放大镜超出选区，无法放在这里'
 }
 
 const htmlKeys = [...html.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)].map((match) => match[1])
@@ -283,7 +325,19 @@ const regionStatusKeys = regionStatusKeysOf(script)
 // of a regex. That keeps the two in sync by construction: adding a label without listing its key in
 // LOCALE_KEYS leaves the key reported as dead by check ② below.
 const barKeys = Array.isArray(exportResultBar.LOCALE_KEYS) ? exportResultBar.LOCALE_KEYS : []
-const usedKeys = new Set([...htmlKeys, ...scriptKeys, ...regionStatusKeys, ...barKeys])
+// Feature C: same mechanism for the finished-look panel (see the require above).
+const panelKeys = Array.isArray(outputStylePanel.LOCALE_KEYS) ? outputStylePanel.LOCALE_KEYS : []
+// Feature D3: the magnifier panel reports the per-document limit / out-of-region refusal through the
+// same "status key" indirection, so it needs the same literal scan or its keys go unreported.
+function magnifierStatusKeysOf(source) {
+  const keys = new Set()
+  const callPattern = /setMagnifierStatus\(([\s\S]*?)\)\s*(?:\n|$)/g
+  for (const match of source.matchAll(callPattern)) {
+    for (const literal of match[1].matchAll(/'(capture\.[a-z0-9.-]+)'/g)) keys.add(literal[1])
+  }
+  return [...keys]
+}
+const usedKeys = new Set([...htmlKeys, ...scriptKeys, ...regionStatusKeys, ...magnifierStatusKeysOf(script), ...barKeys, ...panelKeys])
 
 test('capture.html loads the i18n runtime and the capture locale table before its controller', () => {
   const runtimeIndex = html.indexOf('<script src="../shared/i18n.js"></script>')

@@ -608,7 +608,14 @@ test('pointerdown keeps the handles first and selects the topmost annotation bef
   assert.match(pointerdownSource, /const hit=findAnnotationAt\(annotations,point\)/)
   // B6（D8）：shift+命中 = 加选/减选，普通命中仍是"选中并更新光标"（不进入 move）。
   assert.match(pointerdownSource, /if\(event\.shiftKey\)\{toggleSelectedAnnotation\(hit\);updateSelectionCursor\(point\);return\}/)
-  assert.match(pointerdownSource, /setSelectedAnnotation\(hit\);updateSelectionCursor\(point\);return/)
+  // Feature D3: a magnifier asks for one of its halves at press time, so the plain-hit branch is
+  // "select, then move if the item named a part" rather than the unconditional select+cursor pair.
+  // The contract this pins is unchanged: a hit selects the item and never falls through to moving
+  // the region; D3 only adds an OPTIONAL move for the objects that have a grabbable part.
+  assert.match(pointerdownSource, /setSelectedAnnotation\(hit\)/)
+  assert.match(pointerdownSource, /const part=magnifierPartAt\(hit,point\)/)
+  assert.match(pointerdownSource, /if\(part\)\{beginPendingMove\(hit,point,event,part\);return\}/)
+  assert.match(pointerdownSource, /updateSelectionCursor\(point\);return/)
   // A5（D10）后 pointerdown 里有两处命中测试：选区外那一处在前（元素被拖出选区仍可选），
   // 选区内的既有优先级不动 —— 所以下面的顺序断言一律对准**选区内**那一处。
   const inRegionHit = 'const hit=findAnnotationAt(annotations,point)'
@@ -667,9 +674,25 @@ test('the element bar is a separate floating surface wired to delete/deselect, w
   assert.match(html, /id="elementDelete"[\s\S]{0,200}?id="elementFront"[\s\S]{0,200}?id="elementBack"[\s\S]{0,200}?id="elementDeselect"/)
   // 模块加载顺序：style → selection → geometry → shared document contract → capture
   // (batch 1 added capture-document.js between the geometry helpers and the controller, because
-  // the controller reads window.captureDocument on load. The 600-char window covers the
-  // explanatory comment that documents that insertion.)
-  assert.match(html, /annotation-style\.js[\s\S]{0,200}?selection-utils\.js[\s\S]{0,200}?annotation-geometry\.js[\s\S]{0,600}?capture\.js/)
+  // the controller reads window.captureDocument on load. Feature C added its own two scripts in
+  // the same gap - the shared output-style contract, which capture-document.js requires at load
+  // time, and the compositor the controller and the exports share - plus the D-era shared modules
+  // capture-document.js consumes. The contract asserted here is ORDER (helpers and every shared
+  // dependency before the controller), so the window is expressed as a segment scan rather than a
+  // fixed character budget that any legitimate insertion would break.)
+  assert.match(html, /annotation-style\.js[\s\S]{0,200}?selection-utils\.js[\s\S]{0,200}?annotation-geometry\.js/)
+  const afterGeometry = html.slice(html.indexOf('annotation-geometry.js'))
+  const afterDocument = afterGeometry.slice(afterGeometry.indexOf('../shared/capture-document.js'))
+  assert.ok(
+    afterDocument.indexOf('src="output-compositor.js"') >= 0 &&
+    afterDocument.indexOf('src="output-compositor.js"') < afterDocument.indexOf('src="capture.js"'),
+    'the compositor must load after the document contract and before the controller'
+  )
+  assert.ok(
+    afterDocument.indexOf('src="output-style-panel.js"') >= 0 &&
+    afterDocument.indexOf('src="output-style-panel.js"') < afterDocument.indexOf('src="capture.js"'),
+    'the finished-look controller must load before capture.js'
+  )
   assert.ok(
     html.indexOf('../shared/capture-document.js') > html.indexOf('annotation-geometry.js') &&
     html.indexOf('../shared/capture-document.js') < html.indexOf('src="capture.js"'),
@@ -709,7 +732,10 @@ test('PR2: pointerdown starts an element-body move inside the selected bounds, b
   )
   // B6（D8）：体内拖动现在覆盖**任意选中项**（shift 落在已选中项上则改为减选）。
   assert.match(pointerdownSource, /const bodyItem=selectedAnnotations\(\)\.find\(\(entry\)=>pointInAnnotationBounds\(entry,point\)\)/)
-  assert.match(pointerdownSource, /if\(bodyItem\)\{beginPendingMove\(bodyItem,point,event\);return\}/)
+  // Feature D3: the body press forwards which half of a magnifier was grabbed (empty for every other
+  // type), so the move state can translate the right part. The invariant is unchanged - a body press
+  // starts a move and returns before the hit test.
+  assert.match(pointerdownSource, /if\(bodyItem\)\{beginPendingMove\(bodyItem,point,event,magnifierPartAt\(bodyItem,point\)\);return\}/)
   assert.ok(
     pointerdownSource.indexOf('if (resizeHandle)') < bodyIndex,
     'the selection handle keeps priority over the element-body move'
@@ -718,7 +744,11 @@ test('PR2: pointerdown starts an element-body move inside the selected bounds, b
 })
 
 test('PR2: a drag produces exactly one snapshot on pointerup, only when it actually moved', () => {
-  assert.match(script, /function moveAnnotationTo\(point\) \{[\s\S]{0,520}?translateAnnotation\(state\.origin, point\.x - state\.start\.x, point\.y - state\.start\.y\)/)
+  // Feature D3: the delta is computed once and then handed to either the plain translation or the
+  // magnifier's per-part move. Pinning the shared `dx/dy` derivation keeps "one delta, one rule" and
+  // stays agnostic about which half a magnifier is dragging.
+  assert.match(script, /function moveAnnotationTo\(point\) \{[\s\S]{0,900}?const dx = point\.x - state\.start\.x/)
+  assert.match(script, /function moveAnnotationTo\(point\) \{[\s\S]{0,1300}?state\.part \? moveMagnifierPart\(state\.origin, state\.part, dx, dy\) : translateAnnotation\(state\.origin, dx, dy\)/)
   assert.match(script, /function moveAnnotationTo\(point\) \{[\s\S]{0,700}?clampAnnotationToStage\(/)
   assert.match(script, /function finishMoveAnnotation\(\) \{[\s\S]{0,340}?if \(current && annotationWasMoved\(current, state\.origin\)\) \{ flushCoalescedEdits\(\); snapshotAnnotations\(\) \}/)
   assert.match(script, /function cancelMoveAnnotation\(\) \{[\s\S]{0,460}?annotations\[index\] = state\.origin/)
@@ -730,7 +760,7 @@ test('PR2: a drag produces exactly one snapshot on pointerup, only when it actua
   assert.match(pointermoveSource, /if \(pendingMove&&event\.buttons===0\) \{ finishMoveAnnotation\(\); updateSelectionCursor\(point\); return \}/)
   // A1（D2）：拖动交互态只有一个创建点（beginPendingMove），而它被左键体内/右键快选/选区外命中三处复用。
   assert.equal(script.match(/pendingMove = \{/g).length, 1, 'only one arm creates the move state')
-  assert.match(script, /function beginPendingMove\(item, point, event\) \{[\s\S]{0,220}?pendingMove = \{ id: item\.id, origin: item, start: \{ x: point\.x, y: point\.y \}, thresholdPassed: false \}/)
+  assert.match(script, /function beginPendingMove\(item, point, event(, part = '')?\) \{[\s\S]{0,260}?pendingMove = \{ id: item\.id, origin: item, start: \{ x: point\.x, y: point\.y \}, thresholdPassed: false/)
 })
 
 test('PR2: arrow keys nudge 1px (Shift 10px) and merge into a single undo frame', () => {

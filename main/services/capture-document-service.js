@@ -398,15 +398,24 @@ class CaptureDocumentService {
     if (!resultBuffer.length) return { ok: false, status: 'failed', code: 'empty-result', retryable: false }
     const resultSize = this.readPngSize(resultBuffer)
     const { crop } = parsed.document
-    if (!resultSize || resultSize.width !== crop.w || resultSize.height !== crop.h) {
-      // The result image size must equal `crop` (§6.5.4: the renderer's result has to come from
-      // the same frozen content state).
+    // Result size contract (§6.5.4 as extended by feature C §6.2).
+    //
+    // v1/v2-with-disabled-style: the result is exactly the crop (the historical rule, and it stays
+    // byte-for-byte identical for documents that add no decoration - `resolveOutputGeometry`
+    // returns the crop dimensions for a disabled style by construction).
+    // v2-with-effects: the result is the COMPOSITED size - card + padding + finite shadow bleed.
+    // Both cases go through the same shared resolver, so the renderer and this validator cannot
+    // drift: the renderer sizes its canvas with it, this checks the bytes against it.
+    const expected = documentApi.resolveOutputGeometry(parsed.document)
+    if (!resultSize || resultSize.width !== expected.width || resultSize.height !== expected.height) {
       return {
         ok: false,
         status: 'failed',
         code: 'result-size-mismatch',
         retryable: false,
-        expected: { width: crop.w, height: crop.h },
+        expected: { width: expected.width, height: expected.height },
+        crop: { width: crop.w, height: crop.h },
+        outputStyleEnabled: parsed.document.outputStyle?.enabled === true,
         actual: resultSize
       }
     }

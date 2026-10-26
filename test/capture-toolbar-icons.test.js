@@ -9,6 +9,9 @@ const css = fs.readFileSync(path.join(root, 'capture', 'capture.css'), 'utf8')
 
 const expectedIcons = [
   'select', 'rect', 'ellipse', 'arrow', 'line-tool', 'pen', 'highlight', 'mosaic', 'text', 'serial', 'watermark',
+  // Feature D3 (plan §7.1): the magnifier sits after the watermark - both are drawing tools that
+  // produce an annotation object, and the group order is the order the tools appear on the strip.
+  'magnifier',
   // 2026-10-15: the thickness picker and the option row became icon-only (the wording moved
   // to title/aria-label), so both groups are part of this ordered list now.
   'weight-thin', 'weight-medium', 'weight-thick',
@@ -17,6 +20,10 @@ const expectedIcons = [
   // the translate button (both turn the picture into text).
   'doc-convert',
   'record', 'pin', 'save', 'print',
+  // Feature C (plan §6.1): the finished-look panel toggle, directly after export-PDF
+  // (both are "what the product looks like" actions, and it keeps the strip's measured
+  // single-row width inside ROW_MIN_CONTENT).
+  'output-style',
   'copy', 'close',
   'fill-outline', 'fill-translucent', 'fill-solid',
   'stroke-solid', 'stroke-dashed', 'stroke-dotted',

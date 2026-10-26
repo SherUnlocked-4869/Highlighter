@@ -163,8 +163,10 @@ test('§6.5.1 documentId and revisionId are separate identities and never collid
 // ---------- §6.5.3 文档格式与载入校验 ----------
 
 test('§6.5.3 the documented example document validates and round trips through bytes', () => {
+  // v2 (feature C §6.2): the example carries the output style, because in v2 the style is
+  // CONTENT - a document without it has no defined result geometry.
   const example = {
-    schemaVersion: 1,
+    schemaVersion: doc.SCHEMA_VERSION,
     coordinateSpace: 'source-pixel',
     documentId: 'document-a',
     revisionId: 'revision-2',
@@ -176,6 +178,7 @@ test('§6.5.3 the documented example document validates and round trips through 
     ],
     captureAttachments: { cursor: null },
     captureMetadata: { sourceScaleFactor: 2 },
+    outputStyle: { enabled: false },
     view: { zoomMultiplier: 1, centerX: 1320, centerY: 880 },
     source: 'region',
     createdAt: 1792886400000
@@ -342,9 +345,11 @@ test('§6.7 a legacy flat PNG is upgraded lazily to a full-crop editable documen
 
 test('§6.7 the loader never invents fields for an unknown future schema', () => {
   // 未知版本只给显式降级信号，不返回"猜出来的"文档。
-  const result = doc.parseDocument(JSON.stringify({ schemaVersion: 2, baseImage: BASE, annotations: [] }))
+  // 99 而不是 3：C 交付 v2，D 还会交付 v3，只有"远超当前"的版本号才永远代表"未来"。
+  const futureVersion = doc.SCHEMA_VERSION + 97
+  const result = doc.parseDocument(JSON.stringify({ schemaVersion: futureVersion, baseImage: BASE, annotations: [] }))
   assert.equal(result.ok, false)
   assert.equal(result.code, 'unsupported-schema')
   assert.equal(result.document, undefined)
-  assert.equal(doc.migrateDocument({ schemaVersion: 2 }), null)
+  assert.equal(doc.migrateDocument({ schemaVersion: futureVersion }), null)
 })

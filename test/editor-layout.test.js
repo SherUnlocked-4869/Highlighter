@@ -461,12 +461,28 @@ test('scaleFactorFor accepts the layout output directly', () => {
 // ---------------------------------------------------------------------------
 
 test('the strip constants are the historical pin values, frozen and exported', () => {
-  assert.equal(EDITOR_LAYOUT_CONSTANTS.ROW_MIN_CONTENT, 1040)
+  // ROW_MIN_CONTENT 2026-10-25: 1040 -> 1064. Feature C added the finished-look toggle and
+  // feature D the magnifier tool, so capture-floating-placement.test.js now measures the main row
+  // at 1044. The upper bound is NOT free: stripRows = ceil(ROW_MIN_CONTENT / (width -
+  // STRIP_CHROME)) must stay 1 at the narrowest standard window (TOOLBAR_SPACE), i.e. 1074. The
+  // invariant measured <= ROW_MIN_CONTENT <= TOOLBAR_SPACE - STRIP_CHROME is asserted by the
+  // measured-width test; this line freezes the chosen value.
+  assert.equal(EDITOR_LAYOUT_CONSTANTS.ROW_MIN_CONTENT, 1064)
   assert.equal(EDITOR_LAYOUT_CONSTANTS.STRIP_ROW_HEIGHT, 34)
   assert.equal(EDITOR_LAYOUT_CONSTANTS.OPTIONS_ROW_HEIGHT, 30)
   assert.equal(EDITOR_LAYOUT_CONSTANTS.STRIP_CHROME, 14)
   assert.equal(EDITOR_LAYOUT_CONSTANTS.STRIP_SLACK, 22)
   assert.equal(EDITOR_LAYOUT_CONSTANTS.TOOLBAR_SPACE, 1088)
+  // The row reservation must stay single-row on a standard window: reserving two rows for a
+  // one-row strip wastes 34px, and reserving one row for a two-row strip pushes the toolbar back
+  // inside the image (the real-device defect the module header describes). Guarding the derivation
+  // here means a future constant bump fails immediately instead of silently folding the strip.
+  assert.equal(
+    Math.ceil(EDITOR_LAYOUT_CONSTANTS.ROW_MIN_CONTENT /
+      (EDITOR_LAYOUT_CONSTANTS.TOOLBAR_SPACE - EDITOR_LAYOUT_CONSTANTS.STRIP_CHROME)),
+    1,
+    'the standard window must reserve exactly one strip row'
+  )
   assert.equal(MINIMUM_EDITOR_WIDTH, 420)
   assert.equal(MINIMUM_SOURCE_SCALE_FACTOR, 0.25)
   assert.ok(Object.isFrozen(EDITOR_LAYOUT_CONSTANTS), 'the constants object is frozen')
@@ -477,7 +493,7 @@ test('the strip constants are the historical pin values, frozen and exported', (
   }, TypeError)
   // 非严格模式下静默失败也必须保持原值。
   EDITOR_LAYOUT_CONSTANTS.ROW_MIN_CONTENT = 1
-  assert.equal(EDITOR_LAYOUT_CONSTANTS.ROW_MIN_CONTENT, 1040)
+  assert.equal(EDITOR_LAYOUT_CONSTANTS.ROW_MIN_CONTENT, 1064)
   // 单行条带 = 1 行 + 选项行 + chrome + slack，与 pin 的 actionSpace 公式一致。
   const oneRow = EDITOR_LAYOUT_CONSTANTS.STRIP_ROW_HEIGHT + EDITOR_LAYOUT_CONSTANTS.OPTIONS_ROW_HEIGHT +
     EDITOR_LAYOUT_CONSTANTS.STRIP_CHROME + EDITOR_LAYOUT_CONSTANTS.STRIP_SLACK

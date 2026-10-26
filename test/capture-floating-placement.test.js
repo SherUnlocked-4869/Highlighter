@@ -132,10 +132,20 @@ test('placement is deterministic, integer and never returns negative coordinates
 
 test('capture.js has exactly one placement rule, shared by the strip and the element bar', () => {
   assert.match(script, /function toolbarPlacement\(\) \{[\s\S]{0,520}?resolveFloatingPlacement\(\{\s*anchor: selection,/)
-  assert.match(
-    script,
-    /function updateFloatingUi\(\) \{[\s\S]{0,1400}?const placement=toolbarPlacement\(\)\s*toolbar\.style\.left=`\$\{placement\.left\}px`; toolbar\.style\.top=`\$\{placement\.top\}px`; toolbar\.classList\.toggle\('above',placement\.above\)/
+  // ORDER, not a character budget: the placement must be computed inside updateFloatingUi and applied
+  // three lines later. A magic window here goes stale every time a new panel is synced from this
+  // function (feature C added one, feature D3 added another), which produces a red that looks
+  // unrelated to the change that caused it. Slicing the function and asserting the sequence pins the
+  // same invariant without a fragile length.
+  const floating = script.slice(
+    script.indexOf('function updateFloatingUi()'),
+    script.indexOf('function positionOcrResultBar()')
   )
+  const placeIndex = floating.indexOf('const placement=toolbarPlacement()')
+  const applyIndex = floating.indexOf("toolbar.style.left=`${placement.left}px`")
+  assert.ok(placeIndex >= 0, 'updateFloatingUi must compute the strip placement')
+  assert.ok(applyIndex > placeIndex, 'the placement must be applied right after it is computed')
+  assert.match(floating, /toolbar\.classList\.toggle\('above',placement\.above\)/)
   assert.match(script, /const toolbarPlace = resolveFloatingPlacement\(\{\s*anchor: selection,/)
   // 旧的"夹到视图顶部"回退必须从工具栏/元素条这两处消失（它正是把工具栏塞进图像内侧
   // 顶部的元凶）；positionOcrResultBar 是另一条独立的 OCR 结果条，保持原公式。

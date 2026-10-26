@@ -71,7 +71,18 @@ test('B1 (D6): placement measures the whole container and latches the above-the-
   // 收敛到纯函数（selection-utils.resolveFloatingPlacement，见 capture-floating-placement.test.js）。
   assert.match(script, /function toolbarPlacement\(\) \{[\s\S]{0,260}?toolbarSize \|\| \(toolbarSize = toolbar\.getBoundingClientRect\(\)\)/)
   assert.match(script, /function toolbarPlacement\(\) \{[\s\S]{0,520}?resolveFloatingPlacement\(\{[\s\S]{0,220}?anchor: selection,/)
-  assert.match(script, /function updateFloatingUi\(\) \{[\s\S]{0,1400}?const placement=toolbarPlacement\(\)/)
+  // A character window is a magic number that turns red whenever unrelated code is inserted
+  // between the two anchors (feature C/D inserted ~1800 chars and broke the old {0,1400}).
+  // What this assertion MEANS is "updateFloatingUi computes the strip placement itself", so
+  // slice the function body by its neighbouring function definitions and search inside it.
+  const floatingStart = script.indexOf('function updateFloatingUi() {')
+  const floatingEnd = script.indexOf('function positionOcrResultBar() {')
+  assert.ok(floatingStart > 0 && floatingEnd > floatingStart, 'could not locate the updateFloatingUi() body')
+  const floatingBody = script.slice(floatingStart, floatingEnd)
+  assert.ok(
+    floatingBody.indexOf('const placement=toolbarPlacement()') > 0,
+    'updateFloatingUi must compute the strip placement inside its own body'
+  )
   assert.match(script, /toolbar\.classList\.toggle\('above',placement\.above\)/)
   // 元素条避让读同一个缓存 + 同一套落位（两条浮层不再各算一遍）。
   assert.match(script, /const toolbarRect = toolbarSize \|\| \(toolbarSize = toolbar\.getBoundingClientRect\(\)\)/)
@@ -87,8 +98,11 @@ test('B1/B2: the options row is a projection of the tool that owns options right
     /function optionRowTool\(\) \{\s*const item = selectedAnnotationItem\(\)\s*if \(item && TOOL_OPTION_FIELDS\[item\.type\]\) return item\.type\s*return TOOL_OPTION_FIELDS\[currentTool\] \? currentTool : ''\s*\}/
   )
   assert.match(script, /function syncToolOptionsRow\(\) \{[\s\S]{0,520}?toolOptions\.classList\.toggle\('hidden', !rowVisible\)/)
-  // 工具切换与选中变化都会重摆第二行。
-  assert.match(script, /function setTool\(tool\) \{[\s\S]{0,760}?syncToolOptionsRow\(\)/)
+  // 工具切换与选中变化都会重摆第二行。用函数切片而不是字符窗口：feature C/D3 各自往 setTool
+  // 里加了一次面板同步，字符窗口会随之假红（和 updateFloatingUi 那条同一个教训）。
+  const setToolSource = script.slice(script.indexOf('function setTool(tool)'), script.indexOf('// A1/A4: one place paints'))
+  assert.ok(setToolSource.length > 0, 'setTool must be present')
+  assert.match(setToolSource, /^function setTool\(tool\) \{[\s\S]*?syncToolOptionsRow\(\)/)
   assert.match(script, /function syncToolbarStyleFromSelection\(\) \{[\s\S]{0,700}?syncToolOptionsRow\(\)/)
 })
 
