@@ -72,19 +72,85 @@
     <div class="video-stage">
       <video id="preview" controls playsinline></video>
     </div>
+    <section id="trimPanel" class="trim-panel" data-i18n-aria-label="record.trim.title" aria-label="Trim and export">
+      <div class="trim-head">
+        <strong data-i18n="record.trim.title">Trim and export</strong>
+        <span id="trimDuration" class="trim-duration">00:00</span>
+        <span id="trimSelection" class="trim-selection"></span>
+      </div>
+      <div class="trim-rail">
+        <label class="trim-point trim-point-start">
+          <span data-i18n="record.trim.start">Start time</span>
+          <input id="trimStartRange" class="trim-slider" type="range" min="0" max="0" step="10" value="0" data-i18n-aria-label="record.trim.start" aria-label="Start time">
+          <input id="trimStartInput" class="trim-time" type="text" inputmode="decimal" value="00:00.0" data-i18n-aria-label="record.trim.start" aria-label="Start time">
+        </label>
+        <label class="trim-point trim-point-end">
+          <span data-i18n="record.trim.end">End time</span>
+          <input id="trimEndRange" class="trim-slider" type="range" min="0" max="0" step="10" value="0" data-i18n-aria-label="record.trim.end" aria-label="End time">
+          <input id="trimEndInput" class="trim-time" type="text" inputmode="decimal" value="00:00.0" data-i18n-aria-label="record.trim.end" aria-label="End time">
+        </label>
+        <button id="trimPlayRange" class="trim-play" type="button" data-i18n="record.trim.play-range">Play selection</button>
+        <button id="trimReset" class="trim-reset" type="button" data-i18n-title="record.trim.stop-range" data-i18n-aria-label="record.trim.stop-range" title="Stop playback" aria-label="Stop playback">⟲</button>
+      </div>
+      <div class="trim-options">
+        <label class="trim-option">
+          <span data-i18n="record.trim.format">Export format</span>
+          <select id="trimFormat" class="trim-select">
+            <option value="mp4" data-i18n="record.trim.format.mp4">MP4 video</option>
+            <option value="gif" data-i18n="record.trim.format.gif">GIF animation</option>
+          </select>
+        </label>
+        <label class="trim-option trim-gif-only">
+          <span data-i18n="record.trim.gif-size">GIF long edge</span>
+          <select id="trimGifEdge" class="trim-select">
+            <option value="1280">1280</option>
+            <option value="960">960</option>
+            <option value="640">640</option>
+            <option value="480">480</option>
+          </select>
+        </label>
+        <label class="trim-option trim-gif-only">
+          <span data-i18n="record.trim.gif-fps">GIF frame rate</span>
+          <select id="trimGifFps" class="trim-select">
+            <option value="10">10 FPS</option>
+            <option value="15" selected>15 FPS</option>
+            <option value="20">20 FPS</option>
+          </select>
+        </label>
+        <span id="trimGifMeta" class="trim-gif-meta trim-gif-only"></span>
+        <span class="trim-gif-meta trim-gif-only" data-i18n="record.trim.gif-no-audio">GIF has no sound</span>
+      </div>
+      <div id="trimProgress" class="trim-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+        <i id="trimProgressBar"></i>
+      </div>
+    </section>
+    <div id="recordResultBar" class="record-result-bar" role="status" aria-live="polite" hidden>
+      <span id="recordResultName" class="record-result-name"></span>
+      <span class="record-result-actions">
+        <button id="recordResultOpen" type="button" data-i18n="capture.export-result.open">Open</button>
+        <button id="recordResultCopy" type="button" data-i18n="capture.export-result.copy-path">Address</button>
+        <button id="recordResultReveal" type="button" data-i18n="capture.export-result.reveal">Open folder</button>
+      </span>
+      <span id="recordResultStatus" class="record-result-status" hidden></span>
+      <button id="recordResultClose" class="record-result-dismiss" type="button" data-i18n-title="record.preview.close" data-i18n-aria-label="record.preview.close" title="Close preview" aria-label="Close preview">×</button>
+    </div>
     <div class="preview-feedback" aria-live="polite">
       <span id="recordError"></span>
       <span id="saveProgress"></span>
     </div>
     <footer class="preview-actions">
       <button id="rerecord" type="button" data-i18n="record.preview.rerecord">Record again</button>
-      <button id="saveMp4" class="primary" type="button" data-i18n="record.preview.save-mp4">Save MP4</button>
+      <button id="saveMp4" type="button" data-i18n="record.preview.save-mp4">Save MP4</button>
+      <button id="trimExport" class="primary" type="button" data-i18n="record.trim.export">Export</button>
     </footer>
   </section>
 
+  <script src="../shared/recording-export-options.js"></script>
   <script src="annotation-utils.js"></script>
   <script src="recording-utils.js"></script>
   <script src="audio-mixer.js"></script>
+  <script src="trim-controller.js"></script>
+  <script src="trim-view.js"></script>
   <script src="record.js"></script>
 </body>
 </html>

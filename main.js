@@ -66,7 +66,7 @@ const { registerExportIpc } = require('./main/ipc/export-ipc')
 const { createExportActionResultController } = require('./main/ipc/export-action-controller')
 const { registerRegionIpc } = require('./main/ipc/region-ipc')
 const { createRegionController } = require('./main/ipc/region-ipc-controller')
-const { createExportResultForApp, createRegionPreferencesForApp, registerExportFeatureIpc, registerRegionFeatureIpc } = require('./main/services/feature-services-bootstrap')
+const { createExportResultForApp, createRecordingExportRef, createRegionPreferencesForApp, registerExportFeatureIpc, registerRecordingExportFeatureIpc, registerRegionFeatureIpc } = require('./main/services/feature-services-bootstrap')
 const regionPresets = require('./shared/region-presets')
 const { createOcrIpcController, registerOcrIpc } = require('./main/ipc/ocr-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
@@ -288,6 +288,9 @@ function getRecordingService() {
   })
   return recordingService
 }
+
+// Feature E (plan §8.1/§8.3): lazy export queue handle; both collaborators are created later.
+const recordingExportRef = createRecordingExportRef({ getRecordingService: () => getRecordingService(), getFfmpegPath: resolveFfmpegPath, writerCoordinator: managedRecordingWriters, getExportResultService: () => exportResultService, log })
 
 function getSettings() {
   return settingsService.getSettings()
@@ -643,6 +646,9 @@ recordDomain = createRecordDomain({
   makeCaptureName,
   VIDEO_CAPTURE_PREFIX: captureNaming.VIDEO_CAPTURE_PREFIX,
   performanceMonitor,
+  // Feature E (plan §8.1-§8.4): export queue + feature-A registrar for the result bar.
+  getRecordingExportService: () => recordingExportRef.get(),
+  getExportResultService: () => exportResultService,
   // Feature B (plan §5.1): the record domain remembers its own last region (a domain-internal write,
   // not a channel). Resolver for the same construction-order reason as the other services.
   getRegionPreferences: () => regionPreferences
@@ -1155,6 +1161,7 @@ registerRecordingIpc({
   ipcMain: secureIpcMain,
   controller: recordDomain.createRecordingController()
 })
+registerRecordingExportFeatureIpc({ ipcMain: secureIpcMain, controller: recordDomain.createRecordingController() })
 
 
 registerSelectionIpc({

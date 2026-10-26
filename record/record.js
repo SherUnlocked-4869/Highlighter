@@ -103,6 +103,9 @@ let annotationColor = '#ff3b30'
 let annotationWidth = 4
 let annotationSnapshot = clearAnnotationSnapshot()
 let annotationResetVersion = 0
+// Feature E (plan §8.2/§8.3): trim preview + MP4/GIF export. trimView owns the DOM and
+// delegates every decision to record/trim-controller.js; this file only opens/closes it.
+let trimView = null
 
 function formatDuration(milliseconds) {
   const seconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000))
@@ -229,6 +232,14 @@ function setState(nextState) {
 }
 
 function reportError(error) {
+  // record/trim-view.js reports failures as keys too, so the view never carries a sentence.
+  if (error?.i18nKey) {
+    const message = t(error.i18nKey)
+    errorElement.textContent = message
+    statusLabel.textContent = message
+    statusLabel.title = message
+    return
+  }
   // recording-utils.js reports failures as keys plus data so it can run headless.
   const key = error?.i18nParams ? error.message : ''
   const message = key
@@ -656,6 +667,25 @@ async function beginRecording() {
   }
 }
 
+function ensureTrimView() {
+  if (trimView || !window.recordTrimView) return trimView
+  trimView = window.recordTrimView.createTrimView({
+    api: window.recordAPI,
+    translate: (key, params) => t(key, params),
+    reportError,
+    clearFeedback,
+    setStatusText: (message, detail) => {
+      // The view's status line shares the preview feedback row with the legacy save progress, so
+      // "exporting" never overwrites a real error and vice versa.
+      if (detail) saveProgressElement.textContent = detail
+      if (message) saveProgressElement.textContent = message
+      else if (!detail) saveProgressElement.textContent = ''
+    },
+    log: (...args) => console.warn('[record-trim]', ...args)
+  })
+  return trimView
+}
+
 async function finishRecording() {
   if (busy || !['recording', 'paused'].includes(state)) return
   setBusy(true)
@@ -676,11 +706,16 @@ async function finishRecording() {
   await window.recordAPI.resizePreview()
   controlView.hidden = true
   previewView.hidden = false
-  previewDuration.textContent = formatDuration(durationMs)
   disposePreviewProbe()
   preview.src = result.previewUrl
   disposePreviewProbe = primeSeekablePreview(preview)
   preview.load()
+  // Feature E (plan §8.1): the renderer duration is a CROSS-CHECK only - the view probes the file
+  // and shows the real length (or reports why it cannot). setBusy(false) runs after the attach so
+  // the probe cannot be interleaved with a second stop press.
+  const view = ensureTrimView()
+  if (view) await view.attach({ id: sessionId, previewUrl: result.previewUrl }, durationMs)
+  previewDuration.textContent = view ? view.displayDuration(durationMs) : formatDuration(durationMs)
   setBusy(false)
 }
 
@@ -748,8 +783,11 @@ async function saveMp4() {
       setBusy(false)
       return
     }
+    // Feature E (plan §8.2/§8.3): a successful save no longer ends the preview. The source stays
+    // alive so the user can trim differently and export again; closing is an explicit action.
     state = transitionRecordingState(state, 'saved')
-    window.recordAPI.close()
+    setBusy(false)
+    saveProgressElement.textContent = t('record.save.progress', { percent: 100 })
   } catch (error) {
     setState(transitionRecordingState(state, 'save-failed'))
     setBusy(false)
@@ -770,6 +808,7 @@ async function rerecord() {
     return
   }
   try {
+    trimView?.teardown()
     sessionId = null
     disposePreviewProbe()
     disposePreviewProbe = () => {}
@@ -798,7 +837,15 @@ stopButton.addEventListener('click', () => finishRecording().catch(failRecording
 cancelButton.addEventListener('click', () => cancelRecording().catch(failRecording))
 saveButton.addEventListener('click', saveMp4)
 rerecordButton.addEventListener('click', rerecord)
-closePreviewButton.addEventListener('click', () => window.recordAPI.close())
+closePreviewButton.addEventListener('click', () => {
+    // Feature E (plan §8.3): closing the preview is what ends the SOURCE session. The domain keeps
+    // the directory while an export still holds a reference, so a background encode is not broken.
+    const closing = sessionId
+    trimView?.teardown()
+    sessionId = null
+    if (closing) window.recordAPI.closePreview(closing).catch(() => {})
+    window.recordAPI.close()
+  })
 
 annotationToolButtons.forEach((button) => button.addEventListener('click', () => {
   if (!annotationEnabled()) return
@@ -830,6 +877,7 @@ document.addEventListener('click', (event) => {
   if (!annotationPalette.contains(event.target) && event.target !== annotationStyleButton) annotationPalette.hidden = true
 })
 
+window.recordAPI.onExportProgress((task) => trimView?.handleTask(task))
 window.recordAPI.onSaveProgress((percent) => {
   saveProgressElement.textContent = t('record.save.progress', {
     percent: Math.max(0, Math.min(100, Number(percent) || 0))
@@ -877,6 +925,7 @@ window.recordAPI.onInterfaceLanguage((language) => {
   applyTranslations()
   setState(state)
   renderAudioIndicator()
+  trimView?.retranslate()
 })
 
 addEventListener('beforeunload', () => {

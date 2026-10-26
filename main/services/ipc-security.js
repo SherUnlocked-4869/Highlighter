@@ -213,11 +213,28 @@ const IPC_SURFACES = Object.freeze([
       'record:start-session',
       'record:append-chunk',
       'record:finish-session',
+      // Legacy MP4 save. Kept until every production caller has migrated to `record:export`
+      // (plan §8.3); it no longer deletes the recording session.
       'record:save-mp4',
       'record:cancel-session',
       'record:set-frame-state',
       'record:resize-preview',
-      'record:restart'
+      'record:restart',
+      // Feature E (plan §8.3): trim + MP4/GIF export. The renderer submits a range and a
+      // format only — the source path comes from the session, the target path from a
+      // main-process save dialog — so these channels cannot be used as a generic file
+      // writer. Ownership is re-checked per call against the record window's session id.
+      'record:probe-session',
+      'record:export',
+      // Status/cancel are taskId-addressed and owner-checked by recording-export-service.js,
+      // which is why one shared `record:export-status` is enough to recover a lost receipt.
+      'record:export-status',
+      'record:cancel-export',
+      'record:close-preview',
+      // Feature A (plan §4.1/§4.2): the recorder shows the same result bar after an export as
+      // the capture and recognition windows. The payload is a resultId + action name, never a
+      // path, so the shared channel is safe to expose to this role as well.
+      'export:perform-action'
     ],
     listeners: ['record:ready', 'record:performance', 'record:close']
   },

@@ -12,9 +12,12 @@
 const crypto = require('node:crypto')
 const { createExportResultService } = require('./export-result-service')
 const { createRegionPreferences } = require('./region-preferences')
+const { createMediaProbe } = require('./recording-probe')
+const { createRecordingExportService } = require('./recording-export-service')
 const { createDisplayProvider, createRegionController } = require('../ipc/region-ipc-controller')
 const { createExportActionResultController } = require('../ipc/export-action-controller')
 const { registerExportIpc } = require('../ipc/export-ipc')
+const { registerRecordingExportIpc } = require('../ipc/recording-export-ipc')
 const { registerRegionIpc } = require('../ipc/region-ipc')
 
 // Feature A: the export-result registry. It owns no timers and no files - it registers metadata for
@@ -88,9 +91,98 @@ function registerRegionFeatureIpc({ ipcMain, getRegionPreferences, limits, log =
   return true
 }
 
+// Feature E (plan §8.1/§8.3): the media probe and the export task queue. Both are process-wide
+// (one encoder at a time per plan §3.3), and both take injected collaborators so the whole state
+// machine is testable in plain node:
+//   * `getRecordingService` is a RESOLVER because the recording service is created lazily on the
+//     first recording and replaced on data-root migration;
+//   * `registerResult` is the feature-A registrar, so a finished export yields exactly the
+//     `{ status:'saved', resultId, fileName, kind }` receipt the result bar already understands;
+//   * `writerCoordinator` is the existing managedRecordingWriters instance, which is what makes
+//     app exit and data-root migration wait for a background encode (plan §8.3).
+function createRecordingExportForApp({
+  getRecordingService,
+  getFfmpegPath,
+  writerCoordinator,
+  getExportResultService,
+  spawnProcess,
+  log = () => {}
+}) {
+  if (typeof getRecordingService !== 'function') {
+    throw new TypeError('Recording export bootstrap requires a getRecordingService resolver')
+  }
+  if (typeof getFfmpegPath !== 'function') {
+    throw new TypeError('Recording export bootstrap requires a getFfmpegPath resolver')
+  }
+  return createRecordingExportService({
+    getRecordingService,
+    writerCoordinator,
+    spawnProcess,
+    log,
+    // The probe resolves the SAME packaged-aware ffmpeg path as the encoder, lazily: probing
+    // must not force the recording service into existence (plan §8.1's E0 requirement that the
+    // export path reuse createFfmpegPathResolver rather than requiring ffmpeg-static directly).
+    probe: createMediaProbe({ getFfmpegPath, spawnProcess, log }),
+    registerResult: (payload) => getExportResultService?.()?.register(payload) || null
+  })
+}
+
+// Feature E (plan §8.1/§8.3): a LAZY handle for the media probe + export task queue. main.js is
+// at a hard line ceiling, so the assembly-side shape is one line and the construction lives here.
+// Laziness matters twice: the queue resolves the recording service (created on the first
+// recording) and the feature-A registrar (created inside initializeStore()) at CALL time, and a
+// process that never exports never constructs either.
+//
+//   const recordingExportRef = createRecordingExportRef({ getRecordingService, getFfmpegPath,
+//     writerCoordinator, getExportResultService, log })
+//   deps.getRecordingExportService: () => recordingExportRef.get()
+function createRecordingExportRef({
+  getRecordingService,
+  getFfmpegPath,
+  writerCoordinator,
+  getExportResultService,
+  spawnProcess,
+  log = () => {}
+}) {
+  if (typeof getRecordingService !== 'function') {
+    throw new TypeError('Recording export bootstrap requires a getRecordingService resolver')
+  }
+  if (typeof getFfmpegPath !== 'function') {
+    throw new TypeError('Recording export bootstrap requires a getFfmpegPath resolver')
+  }
+  let service = null
+  return {
+    get() {
+      if (service) return service
+      service = createRecordingExportForApp({
+        getRecordingService,
+        getFfmpegPath,
+        writerCoordinator,
+        getExportResultService,
+        spawnProcess,
+        log
+      })
+      return service
+    },
+    peek: () => service,
+    reset: () => { service = null }
+  }
+}
+
+// Feature E IPC (plan §8.3): the three export channels. The controller methods live in the record
+// domain because they need window/session ownership; this only registers them.
+function registerRecordingExportFeatureIpc({ ipcMain, controller }) {
+  if (!controller) throw new TypeError('Recording export feature IPC requires the record controller')
+  registerRecordingExportIpc({ ipcMain, controller })
+  return true
+}
+
 module.exports = {
   createExportResultForApp,
-  createRegionPreferencesForApp,
+  createRecordingExportForApp,
+  createRecordingExportRef,
   registerExportFeatureIpc,
-  registerRegionFeatureIpc
+  registerRecordingExportFeatureIpc,
+  registerRegionFeatureIpc,
+  createRegionPreferencesForApp
 }

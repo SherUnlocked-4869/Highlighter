@@ -33,6 +33,11 @@ function createRecordDomain(deps) {
     makeCaptureName,
     VIDEO_CAPTURE_PREFIX,
     performanceMonitor,
+    // Feature E (plan §8.1-§8.4): the export task service and the export-result registrar.
+    // Both are resolvers for the construction-order reason the other feature services use:
+    // they are created inside initializeStore()/lazily, after this domain.
+    getRecordingExportService = () => null,
+    getExportResultService = () => null,
     // Feature B (plan §5.1/§5.2): the remembered-region write is a DOMAIN-INTERNAL action, which is
     // why it is injected here instead of exposed as a channel. A resolver, because the service is
     // created inside initializeStore() after this domain.
@@ -326,6 +331,61 @@ function createRecordDomain(deps) {
     return sessionId
   }
 
+  // Feature A integration (plan §4.2): the same receipt shape the capture/recognition result
+  // bars consume, so the recorder reuses main/services/export-result-service.js unchanged.
+  function exportResultRegistrar() {
+    try {
+      const service = typeof getExportResultService === 'function' ? getExportResultService() : null
+      if (!service || typeof service.register !== 'function') return null
+      return (payload) => service.register(payload)
+    } catch (error) {
+      log('Export result service unavailable:', error?.message || error)
+      return null
+    }
+  }
+
+  // Feature E (plan §8.3): the owner id for an export task is the sending WebContents id, the
+  // same derivation main/ipc/export-action-controller.js uses for feature A receipts. It is
+  // stable for the window's contents, cannot be chosen by a renderer, and the result bar's
+  // `export:perform-action` check compares exactly this string.
+  function exportOwnerId(sender) {
+    const contentsId = Number(sender?.id)
+    if (!Number.isInteger(contentsId) || contentsId <= 0) return ''
+    return `web-contents:${contentsId}`
+  }
+
+  function requireExportService() {
+    const service = typeof getRecordingExportService === 'function' ? getRecordingExportService() : null
+    if (!service || typeof service.submit !== 'function') throw new Error('录屏导出服务不可用')
+    return service
+  }
+
+  function exportExtension(format) {
+    return format === 'gif' ? 'gif' : 'mp4'
+  }
+
+  // The save dialog is main-process owned (plan §8.3: "the renderer does not submit source or
+  // target paths"). The target is frozen by the export service right after this resolves.
+  async function chooseExportTarget(win, { format, defaultName, defaultDirectory }) {
+    const extension = exportExtension(format)
+    const directory = defaultDirectory || app.getPath('videos')
+    let result
+    win.setAlwaysOnTop(false)
+    try {
+      result = await dialog.showSaveDialog(win, {
+        title: format === 'gif' ? '保存 GIF 录屏' : '保存 MP4 录屏',
+        defaultPath: path.join(directory, defaultName.replace(/\.[^.]*$/, `.${extension}`)),
+        filters: format === 'gif'
+          ? [{ name: 'GIF 动图', extensions: ['gif'] }]
+          : [{ name: 'MP4 视频', extensions: ['mp4'] }]
+      })
+    } finally {
+      if (!win.isDestroyed()) win.setAlwaysOnTop(true, 'screen-saver')
+    }
+    if (result.canceled || !result.filePath) return null
+    return path.resolve(result.filePath)
+  }
+
   function createRecordingController() {
     return {
       ready: (event) => {
@@ -422,9 +482,108 @@ function createRecordDomain(deps) {
           win.webContents.send('record:save-progress', percent)
         }, { audio: !!(settings.record.audioSystem || settings.record.audioMicrophone) }))
         if (!win.isDestroyed()) win.webContents.send('record:save-progress', 100)
-        win._recordSessionId = null
-        await managedRecordingWriters.track(service.cleanupSession(sessionId))
+        // Feature E (plan §8.3): the legacy channel keeps its `'' | path` return so every
+        // existing caller stays correct, but it no longer deletes the source. The recording
+        // session (and its window) stay alive; closing the preview is what cleans up.
         return outputPath
+      },
+      // Feature E2: probe the sealed source for the preview UI. Returns the real duration,
+      // dimensions and audio-track presence; `crossCheckMs` is the renderer's own estimate and
+      // can only make the probe REFUSE (plan §8.1), never override the file.
+      probeSession: async (event, { sessionId, durationMs } = {}) => {
+        const win = requireRecordSender(event)
+        requireRecordSession(win, sessionId)
+        const service = getRecordingService()
+        const result = await managedRecordingWriters.track(
+          service.probeSession(sessionId, { crossCheckMs: Number(durationMs) || null }),
+          { allowBlocked: true }
+        )
+        if (!result?.ok) return { ok: false, code: result?.code || 'probe-failed' }
+        const metadata = result.metadata
+        return {
+          ok: true,
+          metadata: {
+            durationMs: metadata.durationMs,
+            startMs: metadata.startMs,
+            durationSource: metadata.durationSource,
+            timebase: metadata.timebase,
+            video: metadata.video,
+            audio: metadata.audio
+          }
+        }
+      },
+      exportRecording: async (event, payload = {}) => {
+        assertManagedDataWritable()
+        const win = requireRecordSender(event)
+        const source = payload && typeof payload === 'object' ? payload : {}
+        const { sessionId, requestId, request } = source
+        requireRecordSession(win, sessionId)
+        const service = requireExportService()
+        const ownerId = exportOwnerId(event.sender)
+        if (!ownerId) return { status: 'failed', code: 'invalid-owner' }
+        // One in-flight export per window is enforced by the service's queue limits, but the
+        // UI also disables re-submission; both are needed because a renderer bug must not be
+        // able to flood the encoder.
+        const settings = getSettings()
+        const directory = settings.record.saveDirectory || app.getPath('videos')
+        const format = request?.format === 'gif' ? 'gif' : 'mp4'
+        const targetPath = await chooseExportTarget(win, {
+          format,
+          defaultName: makeCaptureName(VIDEO_CAPTURE_PREFIX),
+          defaultDirectory: directory
+        })
+        // Cancelled save dialog: no task is created at all (plan §8.3).
+        if (!targetPath) return { status: 'cancelled' }
+        assertManagedDataWritable()
+        const submitted = await service.submit({
+          sessionId,
+          requestId,
+          request,
+          ownerId,
+          targetPath,
+          onEvent: (task) => {
+            // Push to the SAME window that started the task; a destroyed window stops receiving
+            // (there is nothing left to render and the export continues in the main process).
+            if (win.isDestroyed()) return
+            win.webContents.send('record:export-progress', task)
+          }
+        })
+        if (!submitted?.ok) return { status: 'failed', code: submitted?.code || 'export-failed' }
+        return { status: 'accepted', task: submitted.task }
+      },
+      exportStatus: (event, payload = {}) => {
+        const win = requireRecordSender(event)
+        const source = payload && typeof payload === 'object' ? payload : {}
+        const service = requireExportService()
+        const ownerId = exportOwnerId(event.sender)
+        if (!ownerId) return { ok: false, code: 'invalid-owner' }
+        if (source.sessionId) requireRecordSession(win, source.sessionId)
+        return service.status({
+          taskId: source.taskId,
+          sessionId: source.sessionId,
+          requestId: source.requestId,
+          ownerId
+        })
+      },
+      cancelExport: async (event, payload = {}) => {
+        const win = requireRecordSender(event)
+        const source = payload && typeof payload === 'object' ? payload : {}
+        const service = requireExportService()
+        const ownerId = exportOwnerId(event.sender)
+        if (!ownerId) return { ok: false, code: 'invalid-owner' }
+        if (source.sessionId) requireRecordSession(win, source.sessionId)
+        return service.cancel({ taskId: source.taskId, ownerId })
+      },
+      // Feature E1: closing the preview ends the SOURCE session. An export that still holds a
+      // reference keeps the file alive; the last release removes the directory (plan §8.3).
+      closePreview: async (event, { sessionId } = {}) => {
+        assertManagedDataWritable()
+        const win = requireRecordSender(event)
+        requireRecordSession(win, sessionId)
+        win._recordSessionId = null
+        const service = getRecordingService()
+        await managedRecordingWriters.track(service.cleanupSession(sessionId))
+        return true
       },
       cancelSession: async (event, { sessionId } = {}) => {
         assertManagedDataWritable()
@@ -488,6 +647,14 @@ function createRecordDomain(deps) {
   }
 
   async function shutdown() {
+    // Feature E (plan §8.4): cancel and reap export tasks FIRST. A running ffmpeg holds a
+    // source reference, so removing the session directory before the child exits would leave
+    // an encoder writing into a deleted path; disposing the export service cancels the tasks
+    // and waits (bounded) for the children to be gone.
+    const exportService = typeof getRecordingExportService === 'function' ? getRecordingExportService() : null
+    if (exportService && typeof exportService.dispose === 'function') {
+      await exportService.dispose().catch((error) => log('Recording export shutdown failed:', error?.message || error))
+    }
     const activeService = typeof peekRecordingService === 'function'
       ? peekRecordingService()
       : null

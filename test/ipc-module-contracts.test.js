@@ -9,6 +9,7 @@ const { registerDataRootIpc } = require('../main/ipc/data-root-ipc')
 const { registerDiagnosticsIpc } = require('../main/ipc/diagnostics-ipc')
 const { registerOcrIpc } = require('../main/ipc/ocr-ipc')
 const { registerRecordingIpc } = require('../main/ipc/recording-ipc')
+const { registerRecordingExportIpc } = require('../main/ipc/recording-export-ipc')
 const { registerSearchIpc } = require('../main/ipc/search-ipc')
 const { registerSelectionIpc } = require('../main/ipc/selection-ipc')
 
@@ -253,6 +254,8 @@ test('recording IPC module owns control and annotation channels', () => {
       'setFrameState',
       'resizePreview',
       'restart',
+      'probeSession',
+      'closePreview',
       'close'
     ])
   })
@@ -273,8 +276,34 @@ test('recording IPC module owns control and annotation channels', () => {
     'record:cancel-session',
     'record:set-frame-state',
     'record:resize-preview',
-    'record:restart'
+    'record:restart',
+    // Feature E (plan §8.1/§8.3): probe the sealed source and close the preview session.
+    'record:probe-session',
+    'record:close-preview'
   ])
+})
+
+test('recording export IPC owns exactly the three trim/export invoke channels (feature E)', () => {
+  const ipcMain = createIpcMain()
+  registerRecordingExportIpc({
+    ipcMain,
+    controller: createController(['exportRecording', 'exportStatus', 'cancelExport'])
+  })
+
+  // `record:export-progress` is a main -> renderer push, so it must NOT appear here: a policy
+  // entry for it would make secureIpcMain.assertComplete() demand a registration that a push
+  // channel never has.
+  assert.deepEqual([...ipcMain.handlers.keys()], [
+    'record:export',
+    'record:export-status',
+    'record:cancel-export'
+  ])
+  assert.deepEqual([...ipcMain.listeners.keys()], [])
+  assert.equal(ipcMain.handlers.get('record:export')(null, { sessionId: 's' }).method, 'exportRecording')
+  assert.equal(ipcMain.handlers.get('record:export-status')(null, { taskId: 't' }).method, 'exportStatus')
+  assert.equal(ipcMain.handlers.get('record:cancel-export')(null, { taskId: 't' }).method, 'cancelExport')
+  assert.throws(() => registerRecordingExportIpc({ ipcMain: null, controller: {} }), /Recording export IPC requires/)
+  assert.throws(() => registerRecordingExportIpc({ ipcMain: createIpcMain(), controller: null }), /Recording export IPC requires/)
 })
 
 test('coding plan IPC owns one provider-creation channel and gates writes', async () => {
@@ -328,4 +357,14 @@ test('main process delegates migrated IPC channels without registering them dire
   ]) {
     assert.match(main, new RegExp(`${registration}\\(\\{`))
   }
+})
+
+test('recording export channels are registered through the bootstrap, not inline in main.js', () => {
+  const root = path.join(__dirname, '..')
+  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  // The record domain owns window/session ownership, so main.js only asks the bootstrap to
+  // register the three export channels with the record controller it already created.
+  assert.match(main, /registerRecordingExportFeatureIpc\(\{ ipcMain: secureIpcMain, controller: recordDomain\.createRecordingController\(\) \}\)/)
+  assert.doesNotMatch(main, /secureIpcMain\.handle\('record:export/)
+  assert.match(main, /createRecordingExportRef\(\{/)
 })

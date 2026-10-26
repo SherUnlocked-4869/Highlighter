@@ -14,6 +14,10 @@ function registerRecordingIpc({ ipcMain, controller }) {
   ipcMain.handle('record:set-frame-state', controller.setFrameState)
   ipcMain.handle('record:resize-preview', controller.resizePreview)
   ipcMain.handle('record:restart', controller.restart)
+  // Feature E (plan §8.3): probe the sealed source, trim + export, query and cancel a task,
+  // and close the preview (which is what releases the source session).
+  ipcMain.handle('record:probe-session', controller.probeSession)
+  ipcMain.handle('record:close-preview', controller.closePreview)
   ipcMain.on('record:close', controller.close)
 }
 
