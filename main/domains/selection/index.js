@@ -62,6 +62,12 @@ function createSelectionDomain(deps) {
     isGameModeEnabled,
     shouldFilterApp,
     conversationsDirectory,
+    // Only used to drive the window manager's idle reclaimer from node:test; the
+    // production callers rely on the manager defaults (120s, real timers).
+    actionWindowReleaseMs,
+    setTimer,
+    clearTimer,
+    now,
     log
   } = deps
 
@@ -77,6 +83,10 @@ function createSelectionDomain(deps) {
   let currentStreamController = null
   let streamSeq = 0
   const actionConversations = new Map()
+  // M2/W7: the snapshot of a conversation whose unpinned window was reclaimed
+  // while hidden. Keyed by the window it came from so two hidden windows cannot
+  // overwrite each other; the tray restores the newest one.
+  const reclaimedConversations = new Map()
   let conversationStore = null
   let processing = false
   const selectionEventDiagnostics = new Set()
@@ -97,8 +107,52 @@ function createSelectionDomain(deps) {
     else conversationStore.clear()
   }
 
+  function newestReclaimedConversation() {
+    let newest = null
+    for (const snapshot of reclaimedConversations.values()) {
+      if (!newest || (Number(snapshot?.savedAt) || 0) >= (Number(newest?.savedAt) || 0)) newest = snapshot
+    }
+    return newest
+  }
+
+  function clearReclaimedConversations(reason) {
+    if (!reclaimedConversations.size) return false
+    reclaimedConversations.clear()
+    log('Selection reclaimed conversation dropped:', reason)
+    return true
+  }
+
+  // Called by the window manager BEFORE it destroys an idle hidden window. The
+  // snapshot is exactly what `prepareRestoredConversation` consumes, so the tray
+  // can rebuild the thread later; returning false keeps the window alive (never
+  // lose a conversation to a failed snapshot).
+  function onActionWindowReclaim(win) {
+    const conversation = actionConversations.get(win)
+    if (!conversation) return true
+    let snapshot
+    try {
+      snapshot = conversation.serialize()
+    } catch (error) {
+      log('Selection conversation snapshot failed; keeping the window:', error?.message || String(error))
+      return false
+    }
+    actionConversations.delete(win)
+    reclaimedConversations.set(win, snapshot)
+    createTrayIcon()
+    return true
+  }
+
+  function isActionWindowReclaimable(win) {
+    // An in-flight round owns the surface even though blur already cancelled the
+    // stream: do not race the destroyed window against that cancellation.
+    if (currentStreamController?.win === win) return false
+    return true
+  }
+
   function hasConversation() {
-    return !!windowManager?.getActionWindow() || !!conversationStore?.latest()
+    return !!windowManager?.getActionWindow()
+      || reclaimedConversations.size > 0
+      || !!conversationStore?.latest()
   }
 
   // Brings back the newest saved conversation. Nothing streams, so the transcript
@@ -136,10 +190,13 @@ function createSelectionDomain(deps) {
 
   function showOrRestoreConversation() {
     if (windowManager.showActionWindow()) return true
-    const snapshot = conversationStore?.latest()
+    // The opt-in persisted thread is preferred when it exists; otherwise the
+    // snapshot captured while the idle window was reclaimed is the only copy.
+    const snapshot = conversationStore?.latest() || newestReclaimedConversation()
     if (!snapshot) return false
     const win = getOrCreateActionWindow()
     if (!restoreConversation(win, snapshot)) return false
+    clearReclaimedConversations('restored')
     win.show()
     win.focus()
     return true
@@ -157,6 +214,12 @@ function createSelectionDomain(deps) {
     actionMinWidth: ACTION_WINDOW_MIN_WIDTH,
     actionMinHeight: ACTION_WINDOW_MIN_HEIGHT,
     sizeSaveDelayMs: ACTION_WINDOW_SIZE_SAVE_DELAY_MS,
+    actionWindowReleaseMs,
+    isActionWindowReclaimable: (win) => isActionWindowReclaimable(win),
+    onActionWindowReclaim: (win) => onActionWindowReclaim(win),
+    setTimer,
+    clearTimer,
+    now,
     onActionWindowClosed: (win, { wasPinned }) => {
       if (wasPinned) getPinDomain().releasePinnedSlot()
       actionConversations.delete(win)
@@ -480,6 +543,9 @@ function createSelectionDomain(deps) {
       createMainWindow('models')
       return false
     }
+    // A new round starts a new thread: a snapshot left by a reclaimed window must
+    // never be offered afterwards as if it were this round's history.
+    clearReclaimedConversations('new-round')
     const win = getOrCreateActionWindow()
     const controller = createToolbarStreamController(win)
     const conversation = new ActionConversation({

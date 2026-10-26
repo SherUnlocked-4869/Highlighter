@@ -409,3 +409,70 @@ test('display changes, a restarted GPU process and game mode recycle the toolbar
     'display listeners are removed with the hook'
   )
 })
+
+// --- M2/W7 reclaimed action window: snapshot capture + restore --------------
+
+function createFakeTimers() {
+  const timers = new Map()
+  let nextId = 1
+  return {
+    timers,
+    setTimer(callback, delay) {
+      const id = nextId
+      nextId += 1
+      timers.set(id, { callback, delay })
+      return id
+    },
+    clearTimer(id) { timers.delete(id) },
+    fire(delay) {
+      const entry = [...timers.entries()].find(([, timer]) => timer.delay === delay)
+      assert.ok(entry, `expected a ${delay}ms timer`)
+      timers.delete(entry[0])
+      entry[1].callback()
+    }
+  }
+}
+
+const ACTION_WINDOW_RELEASE_MS = 120000
+
+test('a reclaimed action window keeps its conversation and the tray restores it once', () => {
+  const clock = createFakeTimers()
+  const { domain, state } = createHarness({ setTimer: clock.setTimer, clearTimer: clock.clearTimer })
+  const win = domain.getOrCreateActionWindow()
+  const snapshot = {
+    id: 'restored_abc123',
+    actionId: 'explain',
+    actionLabel: '解释',
+    source: 'hello world',
+    firstResult: 'hi there',
+    history: []
+  }
+  assert.equal(domain.restoreConversation(win, snapshot), true, 'the harness can seed a live conversation')
+
+  win.visible = true
+  win.emit('blur')
+  assert.equal(win.visible, false, 'blur still only hides the unpinned window')
+  assert.equal(domain.hasConversation(), true, 'the hidden conversation keeps the tray entry')
+
+  clock.fire(ACTION_WINDOW_RELEASE_MS)
+  assert.equal(win.destroyed, true, 'the idle window is destroyed')
+  assert.equal(domain.getActionWindow(), null)
+  assert.equal(domain.hasConversation(), true, 'the snapshot alone keeps the tray entry')
+  assert.ok(state.trayRefreshes >= 1)
+
+  // The tray entry brings it back from the domain-level snapshot: no live window,
+  // no persisted store (persist:false) — the reclaimed snapshot is the only copy.
+  assert.equal(domain.showOrRestoreConversation(), true)
+  const restored = state.windows.at(-1)
+  assert.notEqual(restored, win)
+  assert.equal(restored.visible, true)
+  const channels = restored._pendingActionMessages.map(([channel]) => channel)
+  assert.equal(channels[0], 'action:start', 'the restored renderer starts a fresh round')
+  assert.ok(channels.includes('stream:data'), 'the first result is replayed')
+  assert.ok(channels.includes('stream:done'), 'the replayed round is marked finished')
+
+  // Consumed exactly once: closing the restored window leaves nothing to restore.
+  restored.destroy()
+  assert.equal(domain.hasConversation(), false)
+  assert.equal(domain.showOrRestoreConversation(), false)
+})

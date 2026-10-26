@@ -1,4 +1,5 @@
 const path = require('path')
+const { createIdleReclaimer } = require('./idle-reclaimer')
 const { windowBackdropColor, trackWindowBackdrop } = require('./window-backdrop')
 
 class SelectionWindowManager {
@@ -16,6 +17,14 @@ class SelectionWindowManager {
     sizeSaveDelayMs,
     onActionWindowClosed = () => {},
     onActionWindowBlur = () => {},
+    // M2/W7: the unpinned action window is only hidden on blur, so without a
+    // reclaimer its renderer lives until the app quits. After this long hidden it
+    // is destroyed; 0 keeps the pre-M2 "hide and keep warm" behaviour. The domain
+    // hooks below let it preserve the conversation first and veto a reclaim while
+    // something still owns the window (a streaming round).
+    actionWindowReleaseMs = 120000,
+    isActionWindowReclaimable = () => true,
+    onActionWindowReclaim = () => {},
     log = () => {},
     setTimer = setTimeout,
     clearTimer = clearTimeout,
@@ -41,6 +50,10 @@ class SelectionWindowManager {
     this.sizeSaveDelayMs = sizeSaveDelayMs
     this.onActionWindowClosed = onActionWindowClosed
     this.onActionWindowBlur = onActionWindowBlur
+    this.actionWindowReleaseMs = Number(actionWindowReleaseMs) > 0 ? Number(actionWindowReleaseMs) : 0
+    this.isActionWindowReclaimable = isActionWindowReclaimable
+    this.onActionWindowReclaim = onActionWindowReclaim
+    this.actionReclaimers = new Map()
     this.log = log
     this.setTimer = setTimer
     this.clearTimer = clearTimer
@@ -148,6 +161,68 @@ class SelectionWindowManager {
     return win
   }
 
+  // The predicates are re-checked when the timer fires, not when it is armed: a
+  // window that became visible/pinned again, crashed, or is still owned by the
+  // domain must never be destroyed by a stale timer.
+  shouldReclaimActionWindow(win) {
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed())) return false
+    if (win._isPinned === true) return false
+    if (typeof win.isVisible === 'function' && win.isVisible() === true) return false
+    if (!this.isWindowHealthy(win)) return false
+    try {
+      return this.isActionWindowReclaimable(win) === true
+    } catch (error) {
+      this.log('Selection action window reclaim predicate failed:', error.message || String(error))
+      return false
+    }
+  }
+
+  // The domain gets the last chance to preserve state (the conversation snapshot)
+  // BEFORE the window is destroyed; `false` means "not now" and the timer is
+  // disarmed so the window is kept and a later blur can arm it again.
+  reclaimActionWindow(win) {
+    const reclaimer = this.actionReclaimers.get(win)
+    let allowed = false
+    try {
+      allowed = this.onActionWindowReclaim(win) !== false
+    } catch (error) {
+      this.log('Selection action window reclaim handler failed:', error.message || String(error))
+      allowed = false
+    }
+    if (!allowed) {
+      reclaimer?.disarm('reclaim-refused')
+      return false
+    }
+    this.log('Selection action window reclaimed after idle; destroying it:', {
+      pinned: win._isPinned === true,
+      releaseMs: this.actionWindowReleaseMs
+    })
+    try {
+      win.destroy()
+      return true
+    } catch (error) {
+      this.log('Failed to reclaim selection action window:', error.message || String(error))
+      reclaimer?.disarm('destroy-failed')
+      return false
+    }
+  }
+
+  armActionWindowReclaim(win) {
+    return this.actionReclaimers.get(win)?.arm() || false
+  }
+
+  disarmActionWindowReclaim(win, reason = 'manual') {
+    return this.actionReclaimers.get(win)?.disarm(reason) || false
+  }
+
+  disposeActionWindowReclaim(win) {
+    const reclaimer = this.actionReclaimers.get(win)
+    if (!reclaimer) return false
+    reclaimer.dispose()
+    this.actionReclaimers.delete(win)
+    return true
+  }
+
   createActionWindow() {
     const size = this.getSettings().selectionToolbar.resultWindow
     const pagePath = path.join(this.rootDirectory, 'action', 'action.html')
@@ -172,11 +247,22 @@ class SelectionWindowManager {
     win._isPinned = false
     win._actionRendererReady = false
     win._pendingActionMessages = []
+    this.actionReclaimers.set(win, createIdleReclaimer({
+      name: `selection-action-window:${this.actionWindows.length + 1}`,
+      timeoutMs: this.actionWindowReleaseMs,
+      shouldReclaim: () => this.shouldReclaimActionWindow(win),
+      onReclaim: () => this.reclaimActionWindow(win),
+      setTimer: this.setTimer,
+      clearTimer: this.clearTimer,
+      now: this.now,
+      log: (...args) => this.log(...args)
+    }))
     win.webContents.once('did-finish-load', () => this.flushActionMessages(win))
     win.on('resize', () => this.scheduleActionWindowSizeSave(win))
     win.on('close', () => this.flushActionWindowSizeSave(win))
     this.actionWindows.push(win)
     win.on('closed', () => {
+      this.disposeActionWindowReclaim(win)
       this.clearTimer(win._actionWindowSizeSaveTimer)
       win._actionWindowSizeSaveTimer = null
       const index = this.actionWindows.indexOf(win)
@@ -189,7 +275,12 @@ class SelectionWindowManager {
       this.onActionWindowBlur(win)
       this.flushActionWindowSizeSave(win)
       win.hide()
+      // Only a hidden, unpinned window is reclaimable; show/focus disarm below.
+      this.armActionWindowReclaim(win)
     })
+    const disarmReclaim = () => this.disarmActionWindowReclaim(win, 'shown')
+    win.on('show', disarmReclaim)
+    win.on('focus', disarmReclaim)
     this.actionWindow = win
     this.loadWindow(win, pagePath, 'action')
     return win

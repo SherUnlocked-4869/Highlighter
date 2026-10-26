@@ -429,3 +429,127 @@ test('a signal the manager cannot read is not treated as a failure', () => {
   assert.equal(manager.getToolbarPresentationReport().actualSize, null)
   assert.equal(windows.length, 1, 'no rebuild without proof of failure')
 })
+
+// --- M2/W7 idle reclaim of the unpinned action window -----------------------
+
+const ACTION_WINDOW_RELEASE_MS = 120000
+
+function reclaimTimers(timers) {
+  return [...timers.entries()].filter(([, timer]) => timer.delay === ACTION_WINDOW_RELEASE_MS)
+}
+
+// A fired timer no longer exists on a real event loop; the fake map keeps it, so
+// drop it before invoking to keep "is anything still armed?" assertions honest.
+function fireReclaimTimer(timers) {
+  const entry = reclaimTimers(timers)[0]
+  assert.ok(entry, `expected a ${ACTION_WINDOW_RELEASE_MS}ms reclaim timer`)
+  timers.delete(entry[0])
+  entry[1].callback()
+}
+
+test('an unpinned action window is reclaimed 120s after blur, but a show disarms it', () => {
+  const events = []
+  const { manager, closedActions, timers } = createHarness({
+    onActionWindowReclaim: (win) => { events.push(['reclaim', win]) }
+  })
+  const action = manager.getOrCreateActionWindow()
+  action.on('closed', () => events.push(['closed', action]))
+
+  action.visible = true
+  action.emit('blur')
+  assert.equal(action.visible, false, 'blur still hides the unpinned window exactly as before')
+  assert.equal(reclaimTimers(timers).length, 1, 'hiding arms the reclaim timer')
+
+  // Coming back before the deadline keeps the warm window.
+  action.visible = true
+  action.emit('show')
+  assert.equal(reclaimTimers(timers).length, 0, 'show/focus disarms the pending reclaim')
+  assert.equal(action.destroyed, false)
+
+  // The next hide arms a fresh one, and this time it fires.
+  action.emit('blur')
+  assert.equal(action.visible, false)
+  fireReclaimTimer(timers)
+  assert.equal(action.destroyed, true)
+  assert.deepEqual(events.map(([kind]) => kind), ['reclaim', 'closed'], 'the reclaim callback runs before destroy')
+  assert.deepEqual(closedActions, [[action, { wasPinned: false }]], 'closed cleanup still runs exactly once')
+  assert.equal(manager.ownsActionWindow(action), false)
+  assert.equal(manager.getActionWindow(), null)
+
+  const replacement = manager.getOrCreateActionWindow()
+  assert.notEqual(replacement, action, 'a window can be created after a reclaim')
+  assert.equal(replacement.destroyed, false)
+  assert.equal(manager.ownsActionWindow(replacement), true)
+})
+
+test('a pinned action window and a disabled release timeout are never reclaimed', () => {
+  const { manager, timers } = createHarness()
+  const pinned = manager.createActionWindow()
+  pinned._isPinned = true
+  pinned.visible = true
+  pinned.emit('blur')
+  assert.equal(pinned.visible, true, 'a pinned window still does not hide on blur')
+  assert.equal(reclaimTimers(timers).length, 0, 'nothing is armed for a pinned window')
+  assert.equal(manager.shouldReclaimActionWindow(pinned), false)
+
+  const disabled = createHarness({ actionWindowReleaseMs: 0 })
+  const lazy = disabled.manager.getOrCreateActionWindow()
+  lazy.visible = true
+  lazy.emit('blur')
+  assert.equal(lazy.visible, false, 'hiding semantics are unchanged when reclaiming is off')
+  assert.equal(reclaimTimers(disabled.timers).length, 0, 'timeout 0 disables reclaiming entirely')
+  assert.equal(lazy.destroyed, false)
+})
+
+test('a reclaim the domain still owns is skipped once and never retried', () => {
+  let reclaimCalls = 0
+  const { manager, logs, timers } = createHarness({
+    isActionWindowReclaimable: () => false,
+    onActionWindowReclaim: () => { reclaimCalls += 1; return true }
+  })
+  const action = manager.getOrCreateActionWindow()
+  action.visible = true
+  action.emit('blur')
+
+  fireReclaimTimer(timers)
+  assert.equal(action.destroyed, false, 'the blocked window is kept')
+  assert.equal(reclaimCalls, 0, 'the domain callback is never the one deciding')
+  assert.equal(reclaimTimers(timers).length, 0, 'a skipped fire is not retried')
+  assert.ok(logs.some(([message]) => message === 'reclaim-skipped'))
+})
+
+test('a reclaim the domain refuses with false is skipped without destroying the window', () => {
+  let reclaimCalls = 0
+  const { manager, timers } = createHarness({
+    onActionWindowReclaim: () => { reclaimCalls += 1; return false }
+  })
+  const action = manager.getOrCreateActionWindow()
+  action.visible = true
+  action.emit('blur')
+
+  fireReclaimTimer(timers)
+  assert.equal(reclaimCalls, 1)
+  assert.equal(action.destroyed, false, 'refusing the reclaim keeps the conversation alive')
+  assert.equal(manager.disarmActionWindowReclaim(action), false, 'the timer was consumed, not left armed')
+})
+
+test('closing a hidden window disposes its reclaim timer so a stale fire is inert', () => {
+  let reclaimCalls = 0
+  const { manager, timers } = createHarness({
+    onActionWindowReclaim: () => { reclaimCalls += 1; return true }
+  })
+  const action = manager.getOrCreateActionWindow()
+  action.visible = true
+  action.emit('blur')
+  const entry = reclaimTimers(timers)[0]
+  assert.ok(entry)
+
+  // The window goes away for another reason (user close, crash, rebuild) while a
+  // reclaim is pending: the timer must be dropped with it.
+  action.destroy()
+  assert.equal(timers.has(entry[0]), false, 'the pending reclaim timer is cleared')
+  entry[1].callback()
+  assert.equal(reclaimCalls, 0, 'a stale timer cannot act on a destroyed window')
+  assert.equal(manager.ownsActionWindow(action), false)
+})
+
