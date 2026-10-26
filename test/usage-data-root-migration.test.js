@@ -274,7 +274,11 @@ test('feature diagnostics expose no user paths or prompt-like content', async (t
     'scan',
     'scanning',
     'storeOpen',
-    'worker'
+    'worker',
+    // The worker idle exit (memory plan M1/W2) reports its configured timeout on
+    // the diagnostics surface so the memory snapshot can explain a missing worker
+    // process. It is a number, so the privacy assertions above stay meaningful.
+    'workerIdleTimeoutMs'
   ])
   assert.equal(diagnostics.lastError, null)
   assert.equal(diagnostics.scan, null)

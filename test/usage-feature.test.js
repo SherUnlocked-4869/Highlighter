@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const { install, heatmapLevel } = require('../main/services/usage-feature')
+const { USAGE_WORKER_IDLE_MS, createUsageFeature, install, heatmapLevel } = require('../main/services/usage-feature')
 const { runScan: workerRunScan } = require('../main/usage-scan-worker')
 const { setActiveUsageFeature } = require('../main/services/usage-runtime')
 
@@ -210,4 +210,27 @@ test('feature quiesce closes the store and resume is lazy', async (t) => {
   const status = await ipcHandlers.get('usage:status')(null)
   assert.equal(status.enabled, true)
   assert.equal(feature.getDiagnostics().storeOpen, true)
+})
+
+test('feature passes the usage worker idle timeout to the owned client', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hl-usage-idle-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const deps = {
+    getPaths: () => ({ usage: path.join(root, 'usage') }),
+    getSettings: () => ({ usage: { enabled: true } }),
+    log: () => {}
+  }
+  const defaults = createUsageFeature(deps)
+  try {
+    assert.equal(USAGE_WORKER_IDLE_MS, 120000)
+    assert.equal(defaults.getDiagnostics().workerIdleTimeoutMs, 120000)
+  } finally {
+    defaults.quiesce()
+  }
+  const overridden = createUsageFeature({ ...deps, workerIdleTimeoutMs: 25 })
+  try {
+    assert.equal(overridden.getDiagnostics().workerIdleTimeoutMs, 25)
+  } finally {
+    overridden.quiesce()
+  }
 })

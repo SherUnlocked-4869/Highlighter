@@ -33,6 +33,11 @@ const SOURCE_LABELS = Object.freeze({
   opencode: 'OpenCode'
 })
 
+// The usage scan worker is forked lazily on the first scan; once the last
+// request settles it is kept warm for this long, then killed so an idle app does
+// not hold a utility process (M1 memory plan §4.2).
+const USAGE_WORKER_IDLE_MS = 2 * 60 * 1000
+
 function createUsageFeature(deps = {}) {
   const {
     app = null,
@@ -43,7 +48,8 @@ function createUsageFeature(deps = {}) {
     homeDir = null,
     now = () => new Date(),
     env = process.env,
-    workerClient: injectedWorkerClient = null
+    workerClient: injectedWorkerClient = null,
+    workerIdleTimeoutMs = USAGE_WORKER_IDLE_MS
   } = deps
 
   if (typeof getPaths !== 'function') throw new TypeError('usage feature requires getPaths()')
@@ -96,7 +102,9 @@ function createUsageFeature(deps = {}) {
 
   function getWorkerClient() {
     if (injectedWorkerClient) return injectedWorkerClient
-    if (!ownedWorkerClient) ownedWorkerClient = createUsageWorkerClient({ log })
+    if (!ownedWorkerClient) {
+      ownedWorkerClient = createUsageWorkerClient({ idleTimeoutMs: workerIdleTimeoutMs, log })
+    }
     return ownedWorkerClient
   }
 
@@ -300,7 +308,8 @@ function createUsageFeature(deps = {}) {
       scan: collector ? collector.getScan() : null,
       lastError,
       queryCache: query ? query.getCacheStats() : null,
-      worker: ownedWorkerClient ? ownedWorkerClient.getDiagnostics() : null
+      worker: ownedWorkerClient ? ownedWorkerClient.getDiagnostics() : null,
+      workerIdleTimeoutMs
     }
   }
 
@@ -334,6 +343,7 @@ function install(deps = {}) {
 }
 
 module.exports = {
+  USAGE_WORKER_IDLE_MS,
   createUsageFeature,
   heatmapLevel,
   install
