@@ -787,12 +787,33 @@ async function saveMp4() {
     // alive so the user can trim differently and export again; closing is an explicit action.
     state = transitionRecordingState(state, 'saved')
     setBusy(false)
-    saveProgressElement.textContent = t('record.save.progress', { percent: 100 })
+    // A successful save used to leave the progress line reading "Generating MP4 · 100%" with no
+    // confirmation and no change to the window - users reported "it looks like nothing happened,
+    // and I had to close it myself". Say plainly that it finished, keep the preview open on
+    // purpose, and name the file that now exists.
+    const fileName = String(outputPath).split(/[\\/]/).pop() || String(outputPath)
+    saveProgressElement.textContent = t('record.save.succeeded', { name: fileName })
+    showSavedResultBar(fileName)
   } catch (error) {
     setState(transitionRecordingState(state, 'save-failed'))
     setBusy(false)
     reportError(error)
   }
+}
+
+// A confirmation line in the preview footer after a successful save. Deliberately does NOT close the
+// window (plan §8.3: the source stays alive so the user can trim/export again); it only makes the
+// success visible and names the file, which is what was missing on the real device.
+function showSavedResultBar(fileName) {
+  const bar = document.getElementById('recordResultBar')
+  const status = document.getElementById('recordResultStatus')
+  const name = document.getElementById('recordResultName')
+  if (name) name.textContent = fileName
+  if (status) {
+    status.textContent = t('record.save.succeeded', { name: fileName })
+    status.hidden = false
+  }
+  if (bar) bar.hidden = false
 }
 
 async function rerecord() {

@@ -129,6 +129,32 @@ test('record.js opens/closes the trim view without owning the range state', () =
   assert.match(saveMp4, /setBusy\(false\)/)
 })
 
+// Regression from a real device: "after saving the MP4 there is no obvious success message and the
+// window does not close, so I have to close it myself".
+//
+// The save path DID succeed, but all it did was leave the progress line reading
+// "Generating MP4 · 100%" - visually identical to still-working - with no confirmation and no path.
+// Keeping the preview open is CORRECT (plan §8.3: the source must survive so the user can trim and
+// export again), so the fix is a real confirmation, not an auto-close.
+test('a successful MP4 save tells the user it worked instead of leaving the progress line at 100%', () => {
+  const script = read('record/record.js')
+  const saveMp4 = script.slice(script.indexOf('async function saveMp4'), script.indexOf('async function rerecord'))
+  // A named confirmation, not the progress wording.
+  assert.match(saveMp4, /record\.save\.succeeded/, 'the save must report a success message')
+  assert.match(saveMp4, /showSavedResultBar\(/)
+  // The confirmation must carry the file name so the user knows what was written.
+  assert.match(saveMp4, /split\(\/\[\\\\\/\]\/\)\.pop\(\)|fileName/)
+  // Still no auto-close: the source stays alive on purpose, and closing remains explicit.
+  assert.doesNotMatch(saveMp4, /window\.recordAPI\.close\(\)/)
+  assert.doesNotMatch(saveMp4, /closePreview\(\)/)
+  // The helper writes the visible status element rather than a hidden one.
+  const helper = script.slice(script.indexOf('function showSavedResultBar'), script.indexOf('async function rerecord'))
+  assert.ok(helper.length > 0, 'showSavedResultBar must exist')
+  assert.match(helper, /recordResultBar/)
+  assert.match(helper, /recordResultStatus/)
+  assert.match(helper, /hidden = false/)
+})
+
 // ---------------------------------------------------------------------------
 // the view over a fake DOM
 // ---------------------------------------------------------------------------
@@ -523,6 +549,13 @@ test('every export error code maps to a locale key that all three tables define'
     for (const language of ['zh-CN', 'en-US', 'zh-TW']) {
       assert.equal(typeof tables[language][key], 'string', `${language} is missing the advertised key ${key}`)
     }
+  }
+  // The successful-save confirmation (added after a real-device report that a finished save showed
+  // no message at all) must exist in every language and interpolate the file name.
+  for (const language of ['zh-CN', 'en-US', 'zh-TW']) {
+    const message = tables[language]['record.save.succeeded']
+    assert.equal(typeof message, 'string', `${language} must define record.save.succeeded`)
+    assert.match(message, /\{name\}/, `${language} must interpolate the file name`)
   }
 })
 
