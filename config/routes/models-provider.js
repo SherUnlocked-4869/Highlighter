@@ -2,12 +2,24 @@
 // 路由 models：供应商面板的事件绑定。
 
 function bindModelsProviderTab() {
+  // M2/W6b: touching an open provider editor is a draft. Two reasons keep the
+  // main process conservative: the DOM draft dies with the route (cleared on
+  // navigate), while in-memory provider mutations survive until save persists
+  // them, so only the save button clears that reason.
+  const markModelsEditorDraft = () => window.setConfigDirty?.('models-provider-editor', true)
+  const markModelsSettingsDraft = () => window.setConfigDirty?.('models-provider-settings', true)
+  document.querySelectorAll('[data-provider-editor]').forEach((editor) => {
+    editor.addEventListener('input', markModelsEditorDraft)
+    editor.addEventListener('change', markModelsEditorDraft)
+    editor.querySelectorAll('button, .switch').forEach((control) => control.addEventListener('click', markModelsSettingsDraft))
+  })
   document.querySelectorAll('[data-expand-provider]').forEach((head) => {
     head.onclick = () => {
       const providerId = head.dataset.expandProvider
       if (!commitOpenProviderEditors({ tolerant: true })) return
       if (modelsExpandedProviderIds.has(providerId)) modelsExpandedProviderIds.delete(providerId)
       else modelsExpandedProviderIds.add(providerId)
+      window.setConfigDirty?.('models-provider-editor', modelsExpandedProviderIds.size > 0)
       renderModels()
     }
     head.onkeydown = (event) => {
@@ -19,6 +31,8 @@ function bindModelsProviderTab() {
     const provider = { id: createModelProviderId(), name: t('config.models.new-provider'), baseUrl: '', hasApiKey: false, protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
     settings = { ...settings, providers: [...settings.providers, provider] }
     modelsExpandedProviderIds = new Set([provider.id])
+    window.setConfigDirty?.('models-provider-editor', true)
+    window.setConfigDirty?.('models-provider-settings', true)
     renderModels()
     providerEditorRoot(provider.id)?.querySelector('[data-provider-name]')?.focus()
   })
@@ -217,6 +231,8 @@ function bindModelsProviderTab() {
         ai: { schemaVersion: 2, assignments: settings.ai?.assignments || [] }
       }, t('config.models.providers-saved'))
       renderModels()
+      window.setConfigDirty?.('models-provider-editor', false)
+      window.setConfigDirty?.('models-provider-settings', false)
     } catch (error) {
       toast(error.message || t('config.models.providers-save-failed'))
     }

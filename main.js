@@ -30,6 +30,7 @@ const {
 } = require('./main/services/data-root-migration')
 const { ManagedWriterCoordinator } = require('./main/services/managed-writer-coordinator')
 const { createAppLogger } = require('./main/services/app-logger')
+const { createMainWindowReclaim } = require('./main/services/main-window-reclaimer')
 const { PerformanceMonitor } = require('./main/services/performance-monitor')
 const { DiagnosticsService } = require('./main/services/diagnostics-service')
 const {
@@ -494,6 +495,8 @@ const secureIpcMain = createSecureIpcMain({
   }
 })
 
+const mainWindowReclaim = createMainWindowReclaim({ ipcMain: secureIpcMain, getWindow: () => mainWindow, log, isBusy: () => dataRootMigrationInProgress === true || recordDomain?.isTaskActive?.() === true || captureDomain?.isTaskActive?.() === true || longCaptureDomain?.isTaskActive?.() === true })
+
 const shortcutService = new ShortcutService({
   globalShortcut,
   executeFunction: (name) => functionRouter.executeFunction(name),
@@ -805,6 +808,7 @@ proxyBridgeController = createProxyBridgeController({
 })
 
 function createMainWindow(route = 'home') {
+  route = mainWindowReclaim.resolveInitialRoute(route)
   if (mainWindow && !mainWindow.isDestroyed()) {
     const startedAt = performance.now()
     mainWindow.show()
@@ -1173,7 +1177,7 @@ secureIpcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(eve
 secureIpcMain.on('window:close', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   selectionDomain.cancelStreamForWindow(win, 'window-hidden')
-  win?.hide()
+  win?.hide(); if (win) mainWindowReclaim.arm()
 })
 // Local AI CLI usage statistics (see docs/plans/2026-10-21-tokentracker-usage-page-development-plan.md):
 // one line because install() self-registers its IPC surface and data-root registry hook.

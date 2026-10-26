@@ -59,7 +59,7 @@ const IPC_SURFACES = Object.freeze([
       'usage:status', 'usage:refresh', 'usage:summary', 'usage:daily',
       'usage:hourly', 'usage:breakdown', 'usage:heatmap', 'usage:clear'
     ],
-    listeners: ['window:minimize', 'window:close']
+    listeners: ['window:minimize', 'window:close', 'window:renderer-state']
   },
   {
     role: 'clipboard',

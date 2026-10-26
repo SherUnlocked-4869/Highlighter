@@ -16,6 +16,36 @@ window.configRoutes = window.configRoutes || {}
 let settings = null
 let currentRoute = 'home'
 
+// M2/W6b: the main process may destroy this hidden window's renderer after five
+// minutes. It only does that for a SAFE route with no draft, so every
+// draft-capable editor has to report itself here. A report that never arrives
+// leaves the previous (clean) state in place, and the reclaim route list itself
+// excludes every page that owns an editor.
+const configDirtyReasons = new Set()
+// Reasons that die with the route: their DOM draft is discarded on navigation.
+const ROUTE_DRAFT_REASONS = { 'local-search': ['local-search-categories'], models: ['models-provider-editor'] }
+function reportWindowState() {
+  try {
+    window.electronAPI?.reportWindowState?.({
+      route: currentRoute,
+      dirty: configDirtyReasons.size > 0,
+      dirtyReason: [...configDirtyReasons].join(',')
+    })
+  } catch { /* no preload (plain node checks): nothing to report */ }
+}
+// Reason-scoped on purpose: one editor turning clean must not mask another one
+// that is still dirty.
+function setConfigDirty(reason, dirty) {
+  if (typeof reason !== 'string' || !reason) return false
+  const before = configDirtyReasons.size
+  if (dirty === true) configDirtyReasons.add(reason)
+  else configDirtyReasons.delete(reason)
+  const changed = before !== configDirtyReasons.size
+  if (changed) reportWindowState()
+  return changed
+}
+window.setConfigDirty = setConfigDirty
+
 // P0-1-T3 (S1, batch C): the titles are locale KEYS, resolved on every navigation
 // so a language switch takes effect without a reload.
 const routeTitles = {
@@ -58,6 +88,7 @@ const CONFIG_ROUTE_KEYS = Object.keys(routes)
 window.configRouteKeys = CONFIG_ROUTE_KEYS
 
 function navigate(route) {
+  for (const reason of ROUTE_DRAFT_REASONS[currentRoute] || []) setConfigDirty(reason, false)
   if (currentRoute === 'history' && route !== 'history') {
     historyThumbnailObserver?.disconnect()
     historyThumbnailObserver = null
@@ -73,6 +104,7 @@ function navigate(route) {
     modelsExpandedProviderIds = new Set()
   }
   currentRoute = route || 'home'
+  reportWindowState()
   const titleKey = routeTitles[currentRoute]
   pageTitle.textContent = titleKey ? t(titleKey) : 'Highlighter'
   document.querySelectorAll('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.route === currentRoute))

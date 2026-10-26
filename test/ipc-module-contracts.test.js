@@ -12,6 +12,9 @@ const { registerRecordingIpc } = require('../main/ipc/recording-ipc')
 const { registerRecordingExportIpc } = require('../main/ipc/recording-export-ipc')
 const { registerSearchIpc } = require('../main/ipc/search-ipc')
 const { registerSelectionIpc } = require('../main/ipc/selection-ipc')
+const { IPC_SURFACES } = require('../main/services/ipc-security')
+const { createRendererWindowState, RENDERER_ROUTES, SAFE_ROUTES } = require('../main/services/main-window-reclaimer')
+const { registerWindowReclaimIpc } = require('../main/ipc/window-reclaim-ipc')
 
 function createIpcMain() {
   const handlers = new Map()
@@ -371,4 +374,36 @@ test('recording export channels are registered through the bootstrap, not inline
   assert.match(main, /registerRecordingExportFeatureIpc\(\{ ipcMain: secureIpcMain, controller: recordDomain\.createRecordingController\(\) \}\)/)
   assert.doesNotMatch(main, /secureIpcMain\.handle\('record:export/)
   assert.match(main, /createRecordingExportRef\(\{/)
+})
+
+test('main role exposes the renderer window-state listener and no reply channel', () => {
+  const mainSurface = IPC_SURFACES.find((surface) => surface.role === 'main')
+  assert.ok(mainSurface.listeners.includes('window:renderer-state'))
+  assert.equal(mainSurface.handles.includes('window:renderer-state'), false)
+})
+
+test('window reclaim IPC validates the sender, route whitelist and dirty flag', () => {
+  const ipcMain = createIpcMain()
+  const state = createRendererWindowState({ now: () => 1000 })
+  const webContents = { id: 'main' }
+  const win = { isDestroyed: () => false, webContents }
+  const registration = registerWindowReclaimIpc({ ipcMain, state, getMainWindow: () => win })
+
+  assert.equal(registration.channel, 'window:renderer-state')
+  const listener = ipcMain.listeners.get('window:renderer-state')
+  assert.equal(listener({ sender: webContents }, { route: 'history', dirty: true, dirtyReason: 'draft' }), true)
+  assert.deepEqual(state.get(), { route: 'history', dirty: true, dirtyReason: 'draft', updatedAt: 1000 })
+
+  // A non-main sender, an unknown route, a non-boolean dirty flag and a null
+  // payload are all dropped without touching the recorded state.
+  assert.equal(listener({ sender: { id: 'other' } }, { route: 'home', dirty: false }), false)
+  assert.equal(listener({ sender: webContents }, { route: 'not-a-route', dirty: false }), false)
+  assert.equal(listener({ sender: webContents }, { route: 'history', dirty: 'yes' }), false)
+  assert.equal(listener({ sender: webContents }, null), false)
+  assert.deepEqual(state.get(), { route: 'history', dirty: true, dirtyReason: 'draft', updatedAt: 1000 })
+
+  // The set the reclaimer may destroy on is a strict subset of the reportable one.
+  assert.ok(SAFE_ROUTES.every((route) => RENDERER_ROUTES.includes(route)))
+  assert.ok(SAFE_ROUTES.length < RENDERER_ROUTES.length)
+  assert.throws(() => registerWindowReclaimIpc({}), /Window reclaim IPC requires/)
 })

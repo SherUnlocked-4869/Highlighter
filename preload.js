@@ -68,6 +68,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   usageClear: () => ipcRenderer.invoke('usage:clear'),
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowClose: () => ipcRenderer.send('window:close'),
+  // M2/W6b: one-way report so the main process can reclaim a hidden, clean main
+  // window; the payload is re-validated there (route whitelist + boolean dirty).
+  reportWindowState: (state) => {
+    const source = state && typeof state === 'object' ? state : {}
+    ipcRenderer.send('window:renderer-state', {
+      route: source.route,
+      dirty: source.dirty === true,
+      dirtyReason: typeof source.dirtyReason === 'string' ? source.dirtyReason : ''
+    })
+  },
   onNavigate: (callback) => {
     const handler = (_event, route) => callback(route)
     ipcRenderer.on('app:navigate', handler)

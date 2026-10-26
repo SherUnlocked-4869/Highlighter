@@ -2,6 +2,7 @@
 // 路由 local-search（本地搜索）。
 
 function renderLocalSearch() {
+  window.setConfigDirty?.('local-search-categories', false)
   const draft = (settings.search.categories || []).map((category) => ({ ...category }))
   view.innerHTML = `<div class="page">${pageHeader(t('config.route.local-search'), t('config.local-search.description'))}
     <section class="section"><h2 class="section-title">${t('config.local-search.search-section')}</h2><div class="card form-card">
@@ -22,10 +23,12 @@ function renderLocalSearch() {
     editor.querySelectorAll('.category-delete').forEach((button) => {
       button.onclick = () => {
         draft.splice(Number(button.dataset.index), 1)
+        window.setConfigDirty?.('local-search-categories', true)
         renderCategoryEditor()
       }
     })
     editor.querySelectorAll('input').forEach((input) => {
+      input.oninput = () => window.setConfigDirty?.('local-search-categories', true)
       input.onchange = () => {
         const row = input.closest('.form-row')
         const index = Number(row?.dataset.index)
@@ -48,6 +51,7 @@ function renderLocalSearch() {
     await updateSettings({ search: { categories: cleaned } }, t('config.local-search.categories-saved'))
     draft.splice(0, draft.length, ...cleaned.map((category) => ({ ...category })))
     renderCategoryEditor()
+    window.setConfigDirty?.('local-search-categories', false)
   }
 
   // P2: the result limit saves as soon as the field is committed (blur or Enter);
@@ -61,12 +65,14 @@ function renderLocalSearch() {
   document.getElementById('openSearchWindow').onclick = () => window.electronAPI.executeFunction('localSearch')
   document.getElementById('addCategory').onclick = () => {
     draft.push({ id: `custom-${Date.now()}`, label: t('config.local-search.new-category'), rule: 'ext:' })
+    window.setConfigDirty?.('local-search-categories', true)
     renderCategoryEditor()
   }
   document.getElementById('resetCategories').onclick = async () => {
     await updateSettings({ search: { categories: SEARCH_DEFAULT_CATEGORIES.map((category) => ({ ...category })) } }, t('config.local-search.categories-restored'))
     draft.splice(0, draft.length, ...SEARCH_DEFAULT_CATEGORIES.map((category) => ({ ...category })))
     renderCategoryEditor()
+    window.setConfigDirty?.('local-search-categories', false)
   }
   document.getElementById('saveCategories').onclick = () => saveCategories()
 
