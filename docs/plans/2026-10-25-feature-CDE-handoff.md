@@ -1,304 +1,337 @@
-# C / D / E 批次接手文档（2026-10-25）
+# C / D / E 批次接手文档（2026-10-26 重写）
 
-> 本文是**给接手者的第一份文件**：先读这里，再读三份功能交接文档。
-> 对应主文档：`docs/plans/2026-10-25-snow-apps-feature-development-plan.md`（§1.2 / §1.3 是本轮的官方记录）。
+> **这是给接手者的第一份文件。** 旧的 2026-10-25 版本已被本轮重写：它在一天内膨胀到 713 行、
+> 章节编号混乱（1–9 之后突然出现 13.2–13.7），并且**多处结论已被实测推翻**。
+> 本文只保留**当前仍然成立**的事实。历史演进见 §9。
 >
-> **状态一句话**：C（成品预设）、D（放大镜 + R0.4 识别遮罩）、E（录屏裁剪与 MP4/GIF 导出）
-> 三批代码已全部落地，本地门禁全绿；**工作区未提交**；**未做 CI / 安装包 / 实机验证**；
-> **代码评审未完成**（Codex 子智能体进程异常退出，无产出，见 §7）。
+> 主文档：`docs/plans/2026-10-25-snow-apps-feature-development-plan.md`（§1.2 / §1.3）
+> 三份评审：`docs/reviews/2026-10-26-cde-{privacy,export,lead}-review.md`
+> 性能样本：`docs/plans/2026-10-26-cde-performance-samples.md`
 
 ---
 
-## 1. 当前仓库状态（接手第一件事）
+## 0. 一句话状态
+
+C/D/E 三批功能**已提交并推送**（`46bada2` / `608b808` / `ee08225`），CI 绿。
+本轮（2026-10-26）做了**对抗式代码评审 + 10 个缺陷修复 + 1 个实机回归修复 + 4 轮安装包重建**。
+**当前工作区有 30 项未提交改动**（24 修改 + 6 新增：13 个源码文件 + 10 个测试文件 + 版本号 2 项
++ 本交接文档 + 4 份新文档 + 2 个性能探针），对应已构建的 **4.1.6 安装包**（16:50 构建）。
+
+**本地门禁全绿**：`npm test` 1829/1829、`npm run check` exit 0。
+**实机验证未完成**：最后一次修复（§2.1 的 FIX-A / FIX-B）**还没有经过用户实机确认**——这是接手后第一件事。
+
+---
+
+## 1. 仓库与产物当前状态（接手第一件事）
 
 ```
-分支/基线：HEAD = c20f5ba（未提交的历史编辑改造已在 HEAD 里）
-版本号    ：4.1.5（`npm run check:version` 通过）
-改动      ：34 个文件修改（+3208 / -139），29 个新增文件，全部**未暂存、未提交**
+分支/基线 : master，HEAD = ee08225（CI run 40251315269 成功，tests 1812 / fail 0 / skipped 6）
+版本号    : 4.1.6（package.json + package-lock.json，npm run check:version 通过）
+未提交    : 24 modified + 6 untracked = 30 项（见 §8 文件清单）
+diff 规模 : 24 files changed, +1475 / -298
+产物      : dist/Highlighter-Setup-4.1.6.exe   149,941,611 B（16:50）
+            dist/Highlighter-4.1.6-portable.exe 149,654,164 B
+            latest.yml / SHA256SUMS.txt 均已与产物交叉核对
 ```
 
-### 1.1 本地门禁（2026-10-25 23:44 实测）
+### 1.1 门禁（2026-10-26 16:5x 实测）
 
 ```bash
-cd F:\workspace\Highlighter
-env -u ELECTRON_RUN_AS_NODE npm test
-#   干净跑：ℹ tests 1810   ℹ pass 1810   ℹ fail 0   ℹ duration_ms 22109
-#   负载下偶发：ℹ pass 1809   ℹ fail 1（唯一失败是下面的已知 lease flake）
+# 必需：env -u ELECTRON_RUN_AS_NODE（根 AGENTS.md 陷阱 1）
+env -u ELECTRON_RUN_AS_NODE \
+  TMP="D:/workspace/Highlighter/.tmp-t" TEMP="D:/workspace/Highlighter/.tmp-t" \
+  HIGHLIGHTER_E2E_DATA_ROOT_BASE="D:/workspace/Highlighter/.tmp-t" \
+  NODE_OPTIONS="--require D:/workspace/.highlighter-spawn-hook.js" \
+  npm test
+#   → ℹ tests 1829   ℹ pass 1829   ℹ fail 0
 
 npm run check
-#   Syntax check passed for 445 JavaScript files
-#   architecture-check: ok (main.js 1323 lines, ceiling 1330, domains 10)
-#   i18n: locale keys zh-CN/en-US/zh-TW = 1460 / symmetric diff ok / key shape ok
-#         data-i18n 295 used, 0 missing / TOTAL 592 (--max 606，未抬高)
+#   → Syntax check passed for 447 JavaScript files
+#     architecture-check: ok (main.js 1329 lines, ceiling 1330, domains 10)   ← 只剩 1 行余量
+#     i18n locale keys 三语 1463 / symmetric diff ok / TOTAL 592 (--max 606)
 ```
 
-**`env -u ELECTRON_RUN_AS_NODE` 是必须的**（根 `AGENTS.md` 陷阱 1）：不清掉它，Electron 会以纯 Node
-启动，所有真机探针假失败。本轮有 **6 个**真 Electron 探针，其中 3 个是本轮新增（见 §5）。
+`NODE_OPTIONS` 里的 spawn hook 是临时文件（**仓库外**，不提交），作用见根 `AGENTS.md` 陷阱 2。
 
-**已知 flake**：`test/clipboard-coordination.test.js` 的 lease 100 轮。全量负载下偶发 1 例失败
-（实测出现过 `Lease round 2`、`Lease round 98`），单独复跑 4 次均 4/4 通过。按根 `AGENTS.md`
-判定为环境 flake，**不是本轮 diff 引入**，不要去"修"它。
+### 1.2 已知的**假失败**（不要去"修"）
 
-### 1.2 工作区里还有什么
-
-- `.tmp/`、`.tmp-probe/`：探针留下的临时根，已被 `.gitignore` 的 `.tmp*/` 覆盖，git status 干净。
-  提交前可删，也可以留着。
-- 无其他未跟踪垃圾文件。
+| 现象 | 判定 |
+|---|---|
+| `test/clipboard-coordination.test.js` 的 lease 100 轮偶发失败 | 已知环境 flake，单跑 4/4 通过。**不是 diff 引入** |
+| `test/usage-query.test.js` 两个 p95 预算用例在**全量并发**时超时 | 本机有多个高 CPU 进程（msedgewebview2 / DeepSeek-Harness 自身）抢占。**单独跑 20/20 通过**。不是回归 |
+| `test/capture-first-paint.test.js`、`clipboard-grid-runtime` 在全量时偶发超时 | 同上，负载型 flake，单跑通过 |
 
 ---
 
-## 2. 本轮交付了什么（按功能）
+## 2. 本轮交付的 10 个缺陷修复（按"用户能否感知"排序）
 
-### C：截图成品预设（schema v2 → 实际落到 v3）
+> 全部已修复并配回归测试。**每条都验证过"回退修复 → 测试失败"**，避免假测试。
 
-用户可见：工具栏多一个成品样式按钮 → 打开面板 → 三个预设（原图 / 浅色卡片 / 深色卡片）+
-可调节留白、背景色与不透明度、圆角、边框宽度与颜色、阴影（开关 / 模糊 / 偏移 / 颜色 / 不透明度）。
+### 2.1 用户实机报的 4 个（最优先，别处文档没有）
 
-关键设计：
-- **预览与导出共用同一个合成函数**（`capture/output-compositor.js` 的 `composeOutputCanvas`）。
-  plan 明令禁止把 CSS 阴影当导出依据 —— 所以面板里那点 CSS 只负责面板 chrome 与棋盘格底。
-- **原图模式几何与旧版逐像素相同**：`enabled === false` 时宽高 = crop、offset 恒 0，
-  其它参数**完全不参与**。这是 v1 提交校验继续成立的前提。
-- **只有一个几何入口** `planOutputComposite` / `resolveOutputGeometry`（`shared/capture-output-style.js`），
-  渲染层预览、渲染层导出、主进程提交校验三处都调它，不可能给出不同答案。
-- **参数进内容指纹**：改留白就是改内容，会 dirty、会写新 revision；仅切换预览缩放不会。
-- 一次滑块拖动 = **一个**撤销步骤；"恢复原图"走普通编辑路径，所以**可撤销**。
-- **不累计叠加外框**：结果图只从"底图 + 标注"重建，全程不读上一版 result PNG。
+| ID | 严重度 | 现象 | 真实根因 | 修复位置 |
+|---|---|---|---|---|
+| **FIX-A** | **严重** | 录制后**只能保存 MP4，导出按钮永远不可用**，红字"无法读取录制文件信息" | `main.js` 的 `getRecordingService()` 构造 `RecordingService` 时**从来没传 `probe`** → 每次 `probeSession()` 返回 `probe-unavailable` | `main.js` + `feature-services-bootstrap.js` |
+| **FIX-B** | 高 | **录制时点颜色后，无法再选画笔/矩形/椭圆/箭头** | `record.css` 的 `.annotation-palette` 用 `left:50%; translate(-50%,-50%)`，而定位锚点只有 30×30px。350px 宽的浮层居中 → 左右各溢出 160px，**压在旁边所有工具按钮上**，定位元素赢命中测试 | `record/record.css` |
+| **FIX-C** | 高 | 截图蒙层**只覆盖左上角**，不铺满整屏 | `resizeCanvas()` 给 `canvas.width` 赋值会**重置 2D transform**；`46bada2` 把 `renderOverlay()` 的 `setTransform` 折进了 `!image` 早退分支 → 正常截图路径按 1:1 物理像素绘制，150% 缩放下只盖 1/1.5（≈44.4% 面积） | `capture/capture.js` |
+| **FIX-D** | 中 | 保存 MP4 后**没有成功提示**、窗口不关 | 成功后只把进度行留在"正在生成 MP4 · 100%"，与"还在跑"视觉上无区别。（**不自动关窗是对的**：plan §8.3 要求源录制保留以便再导出） | `record/record.js` + 三语键 |
 
-### D：局部放大镜（schema v3）+ R0.4 识别隐私遮罩
+**FIX-A 的铁证**（同一份 39s 真实规格文件 vp9+opus / 1494×934 / `-live` 无索引）：
 
-用户可见：工具条多一个放大镜工具 → 在图上框一个源区 → 自动在右下角放镜头（可拖动、可换倍率
-2×/3×/4×、可调边框宽度、可开关引线）。源区与镜头可**分别**拖动，一次手势一次撤销，每文档最多 8 个。
+```
+WITHOUT probe → {"ok":false,"code":"probe-unavailable"}     ← 生产代码一直是这个
+WITH probe    → OK durationMs=39001 source=demux
+```
 
-**R0.4 是独立 P0 修复，必须先理解它**：在此之前，**所有识别入口（OCR / 翻译 / 表格 / QR / 转文档）
-都在直接把未遮罩的像素送给模型** —— 用户打了马赛克的内容会被读到。现在：
-- `shared/occlusion-mask.js` 计算"哪些像素必须被遮住"（源像素空间、纯函数）；
-- `capture/capture.js` 的 `applyRecognitionOcclusion` 在**任何缩放之前**把它们涂成不透明黑；
-- 三个开关**互相独立、全部默认 false**：`includeAnnotations`（要不要普通标注）、
-  `compose`（要不要成品外框）、`mask`（要不要遮挡）。
-  识别 = `false / false / true`；用户出口 = `true / true / false`；
-- **fail-closed**：遮罩计划算不出来时把整个输入涂黑，绝不回退成"未遮罩图"。
+**为什么 FIX-A 能躲过 1825 个测试**：`recording-service.test.js` 的 11 个用例**全部**用
+`new RecordingService({ tempRoot, ffmpegPath })`——**没人传 probe，也从没人调用 `probeSession`**。
+装配点与 probe 路径是双重空白。
 
-放大镜的隐私核心：镜头**只**从"底图 + blur 遮罩"合成的采样底图取样，不读屏幕像素、不读合成画布。
-移动镜头位置**不**重新采样；改源区 / 改 blur / 改 crop / 换底图必须失效。缓存 32 MiB **按字节**
-计费 + LRU，关闭编辑器释放。
+### 2.2 评审发现的 7 个（隐私 4 + 导出 3，另修 E-07/E-10/E-13）
 
-### E：录屏头尾裁剪与 MP4/GIF 导出
+隐私（`docs/reviews/2026-10-26-cde-privacy-review.md`）：
 
-用户可见：停止录制后进入预览 → 头尾两个裁剪点（可输入时间、可拖动）→ 选 MP4 或 GIF
-（GIF 显示尺寸/帧率/预计帧数）→ 导出 → 显示结果条（打开 / 复制地址 / 打开文件夹）。
-**导出成功后源文件保留**，可以改范围再导出。
-
-关键设计：
-- **探测不用 ffprobe**（应用只捆绑 `ffmpeg-static`）：同一份 ffmpeg 三段式 —— 头部（不解码）→
-  无 duration 时只解复用（`-c copy -f null -`）→ 仍不可靠就**明确失败**，绝不返回猜测时长。
-  实测 2s / 30s / 120s 样本都是 ~42ms，**无 O(时长) 代价**。
-- **会话与导出任务分离**：会话 `capturing → finalizing → ready → closing → closed`；
-  任务 `queued → running → publishing → succeeded`，取消 `cancelling → cancelled`。
-  导出服务只持有源的**引用租约**（`acquireSource` / `releaseSource`），绝不删源 ——
-  旧 `transcode → cleanupSession` 正是那个 bug。
-- **发布协议**：写目标同目录的唯一临时文件 → 用探测器校验（可解码 / 容器编解码 / 尺寸 / 时长 / 音轨）
-  → 再次比对目标快照 → 原子 rename。失败只删本任务临时文件，**不删用户原有目标**。
-- **取消仲裁**：发布点之前取消 → 不替换目标；已发布 → 晚到的取消**不删除成品、不改报 cancelled**。
-- 裁剪用 `-ss` + `trim` 滤镜**解码裁剪**，不用 `-c copy` 冒充精确裁剪。
-
----
-
-## 3. 新增/改动的文件地图（按"你想改什么"索引）
-
-### 想改成品样式（C）
-| 文件 | 作用 |
-|---|---|
-| `shared/capture-output-style.js` | **唯一**的默认值、校验、预设、几何。改预设数值/上限改这里 |
-| `capture/output-compositor.js` | 实际画像素（圆角裁切 → 背景板 → 阴影 → 边框 → 留白） |
-| `capture/output-style-panel.js` | 面板 UI 控制器（预设切换、滑块手势合并、撤销帧） |
-| `capture/capture.js` | 只接线：`currentOutputStyle` / `composeFinishedOutput` / 导出路径 |
-| `main/services/settings-defaults.js` | `screenshot.outputStylePreset`（**只存预设 id**） |
-
-### 想改放大镜或识别遮罩（D / R0.4）
-| 文件 | 作用 |
-|---|---|
-| `shared/magnifier-geometry.js` | 放大镜对象模型、镜头尺寸推导、裁剪相交、缓存键 |
-| `shared/occlusion-mask.js` | **隐私边界**：谁必须被遮、遮多大 |
-| `capture/magnifier-sampler.js` | 采样底图合成、缓存、镜头采样 |
-| `capture/annotation-geometry.js` | magnifier 的 bounds / hit / translate / resize 全部委托给上面 |
-| `shared/capture-document.js` | schema v3、`magnifier` 校验、嵌套视口投影、`resolveOcclusionPlan` |
-| `capture/capture.js` | `applyRecognitionOcclusion`（识别）、`ensureSampleBase`（镜头）、三开关 |
-
-### 想改录屏导出（E）
-| 文件 | 作用 |
-|---|---|
-| `main/services/recording-probe.js` | 媒体探测（三段式） |
-| `main/services/recording-export-service.js` | 任务队列、argv、进度、临时文件、校验、原子发布、取消仲裁 |
-| `shared/recording-export-options.js` | 主/渲染共用的状态表、范围与 GIF 预算、argv 构建 |
-| `main/services/recording-service.js` | 会话状态机 + 源引用计数（**导出不再删源**） |
-| `record/trim-controller.js` / `record/trim-view.js` | 裁剪 UI 的状态机 / DOM 层 |
-| `main/ipc/recording-export-ipc.js` | `record:export` / `-status` / `-cancel-export` |
-
-### 文档层
-| 文件 | 作用 |
-|---|---|
-| `shared/capture-document.js` | 文档契约：schema v1→v2→v3 迁移链、内容指纹、嵌套投影 |
-
----
-
-## 4. 必须知道的硬约束（改之前先看）
-
-1. **`main.js` ≤ 1330 行**（`scripts/check-architecture.js` 硬门禁，不能抬高上限）。
-   当前 1323 行 —— **只剩 7 行**。任何新装配都要进 `main/services/*-bootstrap.js`。
-2. **i18n `--max 606`**（`scripts/check-i18n.js`）。当前 TOTAL 592，其中 `capture` 域 222、`main` 域 285。
-   **`capture/**` 与 `record/**` 下的注释必须是英文** —— 中文字符会被计入 CJK 预算。
-   `shared/**`、`main/**`、`test/**` 不在扫描范围，可以写中文。
-3. **`capture/capture.html` 的 `<script>` 顺序是硬约束**：
-   ```
-   ../shared/capture-output-style.js
-   ../shared/magnifier-geometry.js
-   ../shared/occlusion-mask.js
-   ../shared/capture-document.js      ← 加载期就消费上面三个，缺一个整个窗口起不来
-   output-compositor.js
-   magnifier-sampler.js
-   ../shared/cursor-geometry.js
-   export-result-bar.js
-   output-style-panel.js
-   capture.js
-   ```
-   `test/capture-script-loading.test.js` 逐条钉住。**少了 script 不是功能降级，是整个截图窗口抛异常**。
-4. **IPC 每个新通道要同时改 4 处**：`main/services/ipc-security.js`（policy）、`main/ipc/*` 注册、
-   对应 preload、`test/ipc-module-contracts.test.js` + `test/ipc-security.test.js`。
-   `secureIpcMain.assertComplete()` 会强制通道完整性。
-5. **`shared/editor-layout.js` 的 `ROW_MIN_CONTENT = 1064`** 有一个双向约束：
-   `measured(1044) ≤ ROW_MIN_CONTENT ≤ TOOLBAR_SPACE - STRIP_CHROME (1074)`。
-   低于 1044 主行折行把工具栏推回图像内；高于 1074 每个窄窗口白预留 34px。
-   **加第 13 个工具按钮必须同时抬 `TOOLBAR_SPACE`**，那是尺寸决策不是静默改动。
-6. **schema v3**：`magnifier` 是第一个嵌套几何标注，`annotationsToViewport` / `annotationsFromViewport`
-   有独立分支。不要用扁平 `x/y/x2/y2` 的通用逻辑去处理它。
-
----
-
-## 5. 测试地图（按"我想验证什么"索引）
-
-### 真机探针（真实 Electron，最贵也最可信）
-| 文件 | 覆盖 | 耗时 |
+| ID | 严重度 | 缺陷 |
 |---|---|---|
-| `test/occlusion-recognition-runtime.test.js` | R0.4：**逐像素**证明识别帧被遮罩、且遮罩不外溢、普通标注不进识别输入 | ~2.1s |
-| `test/magnifier-runtime.test.js` | D2：镜头内容正确、**blur 区内的镜头拿到的是遮罩而非原文**、缓存失效、跨缩放 | ~0.9s |
-| `test/magnifier-reedit-runtime.test.js` | D4：载入 → 选中 → 改倍率 → Ctrl+S 提交 → 再载入，全链路 | ~2.2s |
-| `test/capture-document-editor-runtime.test.js`（既有） | 文档编辑器恢复 / 提交 / dirty 协商 | ~30s |
-| `test/capture-renderer-runtime.test.js`（既有） | 截图渲染层基础 | — |
-| `test/diagnostics-runtime.test.js`（既有） | 诊断窗口 | — |
+| **F1** | critical | 文档编辑器的**识别遮罩画在整张底图上，却减了 crop 原点** → crop=(100,80) 时遮罩偏移 (−100,−80)，用户马赛克只有 **11.2% 被遮，88.8% 明文进模型** |
+| **F2** | critical | `magnifierInSourceSpace` 在文档编辑器里 `return magnifier`，但活动数组其实是**视口 CSS** → 镜头采样偏移 **541 px**，实测镜头画布全黑 |
+| **F3** | high | `clipRestoredMagnifiers` 用源像素 crop 判视口对象 → 合法镜头**打开时被裁小或删除**，且不进撤销栈 |
+| **F4** | high | 镜头遮罩宽度"先缩放后量化"，比实际画的马赛克窄（preset 8 @ 3× **每侧窄 60 源像素**） |
 
-### 纯函数契约
-| 文件 | 例数 | 覆盖 |
+导出（`docs/reviews/2026-10-26-cde-export-review.md`）：
+
+| ID | 严重度 | 缺陷 |
 |---|---|---|
-| `test/capture-output-style.test.js` | 27 | 三预设、原图等价、几何统一、预算、合成调用顺序、校验/归一化、指纹、迁移链 |
-| `test/magnifier-geometry.test.js` | 36 | 倍率/源区拒绝、镜头尺寸推导、裁剪相交、缓存键、**视口往返精度**、对象预算 |
-| `test/magnifier-sampler.test.js` | 15 | 遮罩顺序、缓存失效规则、字节预算、LRU、释放 |
-| `test/occlusion-recognition-wiring.test.js` | 11 | 三开关独立、显示态不解除保护、遮罩不污染底图 |
-| `test/capture-output-style-ui.test.js` | 29 | 面板状态机、滑块一步撤销、重开不叠加外框、设置字段 |
-| `test/capture-magnifier-ui.test.js` | 20 | 工具手势、三分支拖动、撤销帧、上限、回显 |
-| `test/recording-export.test.js` | 41 | 探测解析 + 真实媒体、范围/GIF/argv、会话生命周期、**真实编码导出**、取消仲裁、发布故障注入 |
-| `test/recording-trim-ui.test.js` | 12 | 裁剪面板契约、错误码三语覆盖 |
-| `test/capture-script-loading.test.js` | 5 | `<script>` 顺序与 UMD 全局名对齐 |
+| **E-01** | critical | 导出按钮兼作取消按钮，却在任务运行时 `disabled` → **用户完全无法取消导出**（实测 60s GIF 跑满 22.6s / 74MB） |
+| **E-02** | critical | `verify()` 期间到达的取消被**吞掉**并报成 `verify-failed` |
+| **E-03** | critical | `submit()` 不拒绝"目标 == 源文件" → 用裁剪结果**覆盖唯一的源录制**还报成功 |
+
+顺手修：**E-07**（准入竞争：5 个并发提交本应只收 3 个；取消的等待者不去队列 → 假 `rate-limited`）、
+**E-10**（`publish-in-progress` 不再标红）、**E-13**（新增 `record.trim.cancelling` 三语键）。
 
 ---
 
-## 6. 实现期发现并修复的真实缺陷（值得读，都是"手测很难发现"的类型）
+## 3. 修改的文件地图（按"你想改什么"索引）
 
-这三条是按严重度排的，**都只有真机探针或仔细的往返推理才能发现**：
-
-1. **【隐私，严重】普通截图窗口的镜头采样遮罩坐标空间错误。**
-   `ensureSampleBase()` 把**视口 CSS** 的 annotations 直接喂给源像素空间的 `buildOccluders()`。
-   结果遮罩画在错误位置 —— **镜头会把马赛克盖住的内容原样放大出来**，正是 §7.2 要防的那件事。
-   修复：新增 `annotationsForSampling()` / `magnifierInSourceSpace()`，按 `getSourcePixelRect` 投影。
-   **纯静态测试永远发现不了**，是 `magnifier-runtime` 的逐像素探针抓到的。
-
-2. **【精度】`stroke.widthPx` 的视口往返丢值。**
-   `normalizeMagnifier` 曾把宽度四舍五入成整数**并**夹到 `MIN_STROKE_PX`。两个独立来源：
-   `3 × 0.5 = 1.5 → 2`，除回去得 4；`1px` 描边在 zoom 0.5 时是 0.5 **视口**像素，被抬到 1 后除回去变 2。
-   每次重开/缩放累加。
-   修复：量化到 1/1000（防浮点噪声让指纹抖动）+ **不做范围夹取**（范围归 `validateMagnifier`，因为
-   normalize 同时服务文档空间与视口空间）。验证：9 个 zoom × 7 个宽度 = 63 组合零漂移。
-
-3. **【可用性】选中放大镜不显示属性面板**，用户无法改倍率。
-   `setSelectedAnnotation()` 不调 `syncMagnifierPanel()`。
-
-另有三条中低severity：
-- `annotationWasMoved` 对嵌套对象永远判"没动" → 镜头拖动**永不压撤销帧**（静默丢撤销步骤）。
-- `clampRound(value, min, max)` 用 `minimum` 当缺失值回落 → 阴影偏移"未提供"变 **-256px** 硬偏移。
-- `<label data-i18n>` 包住子元素会被 `applyTranslations()` 的 `textContent` 抹掉（checkbox 直接消失）。
-
----
-
-## 7. 未完成 / 未验证清单（**接手后优先补这些**）
-
-### 7.1 代码评审 —— **未完成**
-Codex 子智能体被派去做对抗式评审，结果**进程异常退出（exit code 3221225786），无任何产出**。
-所以本轮**没有第三方代码评审结论**。建议接手后：
-1. 优先人工审 §6 里那 3 条已修缺陷的**修复本身**是否引入新问题；
-2. 重点审隐私路径：`applyRecognitionOcclusion` 的 fail-closed 分支、`annotationsForSampling` /
-   `magnifierInSourceSpace` 的坐标投影、`ensureSampleBase` 的缓存键；
-3. 审 E 的取消仲裁与发布协议（并发路径最难靠单测覆盖）；
-4. 审 schema 迁移链是否对旧数据真的无损。
-
-### 7.2 三账分离（按 plan §10.3，不得合并记账）
-| 项 | 状态 |
+| 想改什么 | 文件 |
 |---|---|
-| 本地门禁 | ✅ 1810/1810 + `npm run check` exit 0 |
-| CI 通过 | ⬜ **未验证**（未推送、未触发） |
-| 安装包通过 | ⬜ **C/D/E 代码不在任何已构建产物里**（`dist/` 里是 4.1.5，只含 A/B）；需重新构建 |
-| 实机通过 | ⬜ **未验证** |
+| 录制导出不可用（FIX-A） | `main.js`（`getRecordingService`）、`main/services/feature-services-bootstrap.js`（`createRecordingMediaProbe`） |
+| 录制标注工具栏（FIX-B） | `record/record.css`（`.annotation-palette`）、`record/record.html` |
+| 截图蒙层/DPR（FIX-C） | `capture/capture.js`（`renderOverlay`）、`capture/capture.css` |
+| 保存成功提示（FIX-D） | `record/record.js`（`saveMp4` / `showSavedResultBar`）、`shared/locales/record.js` |
+| 识别遮罩（F1） | `capture/capture.js`（`annotationsForMask`） |
+| 放大镜采样（F2/F4） | `capture/capture.js`（`magnifierInSourceSpace` / `buildOccludersForSampling` / `annotationsForSampling`） |
+| 镜头载入裁剪（F3） | `capture/capture.js`（`clipRestoredMagnifiers`） |
+| 导出取消/发布（E-01/02/03/07） | `main/services/recording-export-service.js`、`record/trim-view.js` |
+| 媒体探测容差 | `main/services/recording-probe.js` |
+| 成品预设（C） | `shared/capture-output-style.js`、`capture/output-compositor.js`、`capture/output-style-panel.js` |
+| 放大镜几何/缓存（D） | `shared/magnifier-geometry.js`、`capture/magnifier-sampler.js` |
+| 文档契约 v1→v3 | `shared/capture-document.js` |
 
-### 7.3 实机矩阵（全部未跑）
-副屏 / 混合 DPI（100% / 150% / 200%）/ 屏幕拔插与重排 / 硬件与软件光栅差异 /
+---
+
+## 4. **接手后第一件事：实机验证 FIX-A / FIX-B**
+
+这两条是最后一轮才修好的，**尚未经过用户实机确认**。装 `dist/Highlighter-Setup-4.1.6.exe`
+（16:50 构建那份）后验证：
+
+1. **FIX-A**：录一段（**不要暂停**）→ 停止 → 裁剪面板应显示真实时长、**导出按钮可用**、能导出 MP4/GIF。
+   - 若仍失败，看 `D:\documet\highlighter\logs\app.log` 搜 `record probe failed:`——
+     本轮已给失败路径加日志（原先错误码只回给渲染层，日志里查不到）。
+2. **FIX-B**：录制中点颜色 → 色板应出现在工具按钮**右侧**（不再盖住画笔/矩形），能继续切工具。
+3. **FIX-C**：150% 缩放下截图 → 蒙层铺满整屏。
+4. **FIX-D**：保存 MP4 → 有成功提示且带文件名（窗口仍不自动关，这是设计）。
+
+---
+
+## 5. 必须知道的硬约束（改之前先看）
+
+1. **`main.js` ≤ 1330 行**（`scripts/check-architecture.js` 硬门禁，不能抬高）。
+   当前 **1329 行 —— 只剩 1 行**（注意：`wc -l` 会少算 1，因为文件末尾无换行；以 check 输出为准）。
+   任何新装配都要进 `main/services/*-bootstrap.js`。
+2. **i18n `--max 606`**。当前 TOTAL 592。**`capture/**` 与 `record/**` 下的注释必须是英文**
+   （中文字符计入 CJK 预算）；`shared/**`、`main/**`、`test/**` 不受限。
+3. **`capture/capture.html` 的 `<script>` 顺序是硬约束**（`test/capture-script-loading.test.js` 逐条钉住）：
+   `capture-output-style` → `magnifier-geometry` → `occlusion-mask` → `capture-document`（加载期消费前三个）
+   → `output-compositor` → `magnifier-sampler` → `cursor-geometry` → `export-result-bar`
+   → `output-style-panel` → `capture.js`。少一个不是降级，是**整个窗口抛异常**。
+4. **IPC 每个新通道要同时改 4 处**：`ipc-security.js`（policy）、`main/ipc/*` 注册、preload、
+   `test/ipc-module-contracts.test.js` + `test/ipc-security.test.js`。`assertComplete()` 强制完整。
+5. **`shared/editor-layout.js` 的 `ROW_MIN_CONTENT = 1064`** 有双向约束
+   （`measured ≤ ROW_MIN_CONTENT ≤ TOOLBAR_SPACE - STRIP_CHROME`）。加第 13 个工具按钮必须同时抬 `TOOLBAR_SPACE`。
+6. **同一功能在两个窗口有两套实现**：截图窗口（`capture/`）与录制窗口（`record/`）的工具栏/CSS/JS
+   **完全独立**。改之前先确认用户报的是哪一个——本轮 FIX-B 就因为改错窗口而白修一轮。
+
+---
+
+## 6. 测试地图（按"我想验证什么"索引）
+
+### 本轮新增的回归测试（都验证过"回退即失败"）
+
+| 测试 | 钉住什么 |
+|---|---|
+| `recording-service.test.js`：`the production recording-service wiring supplies a media probe (main.js)` | **main.js 的 `new RecordingService({...})` 必须含 `probe:`**（FIX-A） |
+| `recording-service.test.js`：`a service built without a probe reports probe-unavailable` | 无 probe 时的显式行为 |
+| `recording-ui-contract.test.js`：`the annotation palette opens beside the tools so it never covers them` | 色板不得 `left:50%` / `translate(-50%`（FIX-B） |
+| `capture-performance-contract.test.js`：两条 | `setTransform` 必须在 `!image` 早退**之前** + 无 transform 覆盖率恒为 `1/dpr²`（FIX-C） |
+| `recording-trim-ui.test.js`：`a successful MP4 save tells the user it worked` | 成功提示 + 不自动关窗（FIX-D） |
+| `recording-trim-ui.test.js`：`a running export can actually be cancelled...` | 用**遵守 disabled** 的点击模拟（E-01） |
+| `recording-export.test.js`：`a cancel that lands during verification...` | 闸门式探针（E-02） |
+| `recording-export.test.js`：`submitting the recording itself as the export target is refused` | 源字节不变 + 大小写变体也被拒（E-03） |
+| `recording-export.test.js`：`concurrent submits cannot over-admit...` | 5 并发只收 3 + 取消等待者释放槽位（E-07） |
+| `occlusion-recognition-wiring.test.js`：遮罩 crop 一致性 | 含反向对照（F1） |
+| `capture-magnifier-ui.test.js`：遮罩宽度 / 载入裁剪 | 21 组预设×缩放 + 反向对照（F4/F3） |
+
+### 真机探针（真实 Electron 像素级，最贵最可信）
+
+`test/occlusion-recognition-runtime.test.js`（R0.4）、`test/magnifier-runtime.test.js`（D2）、
+`test/magnifier-reedit-runtime.test.js`（D4）、`test/capture-document-editor-runtime.test.js`、
+`test/capture-renderer-runtime.test.js`、`test/diagnostics-runtime.test.js`。
+本轮全部重跑通过（三条隐私探针 3/3）。
+
+### 性能探针（本轮新增，只读测量，不作门禁）
+
+`scripts/probe-cde-performance.js`（C/D，真实 Electron + canvas）、
+`scripts/probe-cde-export-performance.js`（E，真实 ffmpeg）。
+结果见 `docs/plans/2026-10-26-cde-performance-samples.md`。
+
+---
+
+## 7. **未完成清单**（按优先级，别当成已完成）
+
+### 7.1 实机验证（最高优先）
+见 §4。**FIX-A / FIX-B / FIX-C / FIX-D 都还没被用户确认**。
+
+### 7.2 评审中**未修**的发现
+
+隐私（`docs/reviews/2026-10-26-cde-privacy-review.md` §6.1）：
+
+| ID | 严重度 | 问题 | 为什么没修 |
+|---|---|---|---|
+| **F5** | medium | `normalizeRect` 的 `MIN_SOURCE_EDGE_PX=4` 地板在**两个坐标空间**都生效 → **2099/2856 组文档往返改变内容指纹**，破坏"打开不变脏"；漂移值仍能通过 `validateMagnifier` | 会改变**已落盘数据**的读取结果，需先定存量兼容策略。**未修项里最高优先** |
+| **F6** | medium | 采样缓存键用 `${naturalWidth}x${naturalHeight}` 当底图身份 → **同尺寸不同图碰撞**（pin 重标注/同尺寸 A→B 命中旧缓存） | 键碰撞 CONFIRMED，端到端触发 SUSPECTED；改用 `initData.baseImage.sha256` |
+| **F7** | medium | crop 外有 blur 时 plan 裁剪掉所有 op → fail-closed 全画布涂黑（隐私安全但可用性差） | F1 修好后症状缓解；"crop 外 blur 视为无需遮"需产品确认 |
+| **F8/F9** | low | `sampleMagnifier` 源矩形不 clamp；`ensureSampleBase` 的 catch 不清缓存键 | 低风险 |
+
+导出（`docs/reviews/2026-10-26-cde-export-review.md`）：
+
+| ID | 严重度 | 问题 |
+|---|---|---|
+| **E-04** | high | `dispose()` 不等待处于 `publish()` 的任务就返回，任务随后仍会发布；`before-quit` 不 `preventDefault` |
+| **E-05** | high | 快照复查 → rename 之间有 TOCTOU（已证明可被竞争写入覆盖并报成功）。**建议记为已知限制并改 §8.4 措辞**，不要假装已修 |
+| **E-06** | high | `export-timeout` 可能残留 0 字节 `.part`（3 次实测 2 次）；且该错误码到不了渲染层（报成 `encode-failed`） |
+| **E-08** | high | 被 `writerCoordinator` 拒绝的任务**已经拉起 ffmpeg** 才报失败 |
+| E-09/E-11/E-12/E-14/E-15 | medium/low | receipt 为 null 时误报失败；音频短于选区时校验拒绝有效 MP4；`verify` 不查容器/编解码；`tempPathFor` 可能超 `MAX_PATH`；深探测 512KiB 上限 |
+
+### 7.3 结构性问题（评审者的重要观察）
+
+> **`resolveOcclusionPlan` 与 `clipMagnifiersToCrop` 在 `shared/capture-document.js` 里零生产调用方。**
+> 渲染层的两条隐私路径各自独立构建 plan，主进程那份"权威" plan 从未被使用。
+> **这是 F1/F2 能同时存在的结构性原因**：没有单一入口，两处就各错各的。
+> 本轮只修了行为，没合入口——**建议下一轮优先合并**，否则同类坐标错配会以别的形式回来。
+
+### 7.4 实机矩阵（**本机做不了**）
+
+副屏 / 混合 DPI（100%/150%/200%）/ 屏幕拔插与重排 / 硬件与软件光栅差异 /
 真实录制端到端 / >10min 长录制 / 磁盘故障 / 系统退出时仍有导出任务。
 
-### 7.4 性能样本（**完全没有采集**）
-- C：4K 图 + 深色卡片（阴影 bleed 48px）的预览重绘与导出耗时。
-- D：4K 图 + 8 个镜头的采样缓存峰值内存、预览重绘耗时。
-- E：Electron 全进程 + ffmpeg 子进程峰值内存/CPU、临时磁盘峰值、结束后回落。
-- **全部无 p50/p95**。plan §10.2 要求固定机器/屏幕/样本数，本批未做。
+**本机限制**：只有一块屏（DISPLAY1 1493×933），"副屏""拔插"在本机**无法**验证，必须换机器。
+150% 分支已由性能探针（DPR 1.5）间接覆盖；100%/200% 未覆盖。
 
-### 7.5 功能层的已知缺口
-- **真实识别模型端到端未验证**：只验证了"送给模型的像素"（这是 plan §8 指定的口径），
-  没跑真实 OCR/翻译/表格/QR 服务。
-- **D3 镜头的视觉质量未验证**：探针用合成色块，只证明"采对了区域"与"遮罩有效"，
-  没验证真实文字/图片在 3×/4× 下的可读性。
-- **"重新裁剪"手势不做**（有意）：现有编辑器没有改 crop 的入口。`clipMagnifiersToCrop` 只在
-  **载入时**做一次防御，被移除对象落在**载入帧**、不可撤销（撤销不能把越界对象变回来）。
-  若要新增，必须先定义它如何影响 crop、标注坐标系与 revision 语义。
-- **旧 `record:save-mp4` 仍保留**（已安全：不删源、不关窗、不清 `_recordSessionId`，
-  `record/record.js` 里 Save MP4 与新的 Export 两个按钮并存）。删除旧入口是 plan §8.3 的后续步骤。
-- **AAC 编码延迟与 VFR 容差**来自推理（1 源帧 + AAC priming），未实测；
-  当前用 `max(250ms, 5%)`（GIF +200ms）。
+### 7.5 性能样本（已补，但未达 plan §10.2 完整口径）
 
----
+摘要（软件光栅、DPR 1.5、单机单次）：
 
-## 8. 下一步建议（按优先级）
+| 项 | p50 | p95 |
+|---|---:|---:|
+| C：4K 深色卡片导出（9.53 MP） | 15.5 ms | 18.1 ms |
+| C：4K 面板预览重绘 | 1.2 ms | 2.0 ms |
+| C：原图模式 | 0 ms（无该代码路径） | 0 ms |
+| D：采样底图冷构建（4K+8 blur） | 8.1 ms | 8.5 ms（5 样本，非统计 p95） |
+| D：镜头拖动（缓存命中） | 0 ms | 0.1 ms |
+| D：缓存字节预算 | 28.13 / 32 MiB，10 条目淘汰 7 | — |
+| E：MP4 30s | 1809 ms 墙钟，ffmpeg 峰值 346 MiB | 单次，无 p95 |
+| E：GIF 10s | 2621 ms 墙钟，ffmpeg 峰值 441 MiB | 单次，无 p95 |
 
-1. **人工代码评审**（§7.1）。特别是隐私路径与 E 的并发路径。
-2. **重跑覆盖率门禁**：`npm run test:coverage:loaded`（A/B 轮 92.03%，C/D/E 后**未重跑**；
-   本轮实测单次 91.97% ≥ 85%，但被 lease flake 打断过，建议干净跑一次）。
-3. **真机矩阵**（§7.3）—— 这是"看起来能跑"与"真的能用"的区别所在。
-4. **性能采样**（§7.4），补 p50/p95。
-5. **重新出安装包**并验证 C/D/E 代码确实在产物里（解包 `app.asar` 搜
-   `composeOutputCanvas` / `MAX_MAGNIFIERS` / `record:export`）。
-6. **提交边界**（plan §11.1）：C / D / E 应分成**独立提交**，不要把 A–E 揉成一次。
-   注意工作区里 `shared/capture-document.js` 同时承载 C 的 v2 与 D 的 v3、
-   `capture/capture.js` 同时承载 C 与 D —— 这两处是 C/D 的**共享文件**，
-   若要拆提交，需按 §11.1 的"涉及既有共享文件时先协调改动归属"处理，
-   或接受 C+D 合并为一个提交（E 可以完全独立）。
+**仍缺**：Electron 全进程内存/CPU、首次打开时间、整窗口交互帧、结束后回落、>10min 长录制。
+
+### 7.6 功能层已知缺口
+
+- **真实识别模型端到端未验证**（只验证了"送给模型的像素"，这是 plan §8 指定口径）。
+- **D3 镜头视觉质量未验证**（探针用合成色块，没验证真实文字在 3×/4× 下可读性）。
+- **"重新裁剪"手势不做**（有意）：crop 在载入时固定，`clipMagnifiersToCrop` 只在载入时防御一次。
+- **旧 `record:save-mp4` 仍保留**（已安全：不删源、不关窗）。删除是 plan §8.3 后续步骤。
 
 ---
 
-## 9. 相关文档索引
+## 8. 未提交改动清单（30 项）
+
+**修改（24）**：
+```
+capture/capture.css              capture/capture.js
+main.js                          main/domains/record/index.js
+main/services/feature-services-bootstrap.js
+main/services/recording-export-service.js
+main/services/recording-probe.js
+package.json                     package-lock.json
+record/record.css                record/record.js       record/trim-view.js
+shared/locales/record.js
+docs/plans/2026-10-25-feature-CDE-handoff.md   （被本次重写覆盖）
+test/capture-color-palette.test.js       test/capture-magnifier-ui.test.js
+test/capture-performance-contract.test.js test/capture-tool-options.test.js
+test/magnifier-geometry.test.js          test/occlusion-recognition-wiring.test.js
+test/recording-export.test.js            test/recording-service.test.js
+test/recording-trim-ui.test.js           test/recording-ui-contract.test.js
+```
+
+**新增（6）**：
+```
+docs/plans/2026-10-26-cde-performance-samples.md
+docs/reviews/2026-10-26-cde-privacy-review.md
+docs/reviews/2026-10-26-cde-export-review.md
+docs/reviews/2026-10-26-cde-lead-review.md
+scripts/probe-cde-performance.js
+scripts/probe-cde-export-performance.js
+```
+
+**按交接文档 §11.1「不擅自提交」——本轮没有创建任何 git 提交。**
+提交时建议按缺陷分组（隐私 F1–F4 / 导出 E / 实机 FIX-A–D），不要揉成一次。
+
+---
+
+## 9. 本轮方法论教训（**最值得读的部分**）
+
+1. **"测试全绿"不等于"用户路径被覆盖"。** FIX-A 的根因是 `main.js` 的一行装配代码，
+   而所有测试都绕开装配、直接 `new` 服务并省略 probe。**装配点必须有测试。**
+2. **同一功能在两个窗口有两套实现，修之前先确认用户说的是哪一个。**
+   FIX-B 第一轮我改了截图窗口（`capture/`），用户报的是录制窗口（`record/`）——白修一轮，
+   且因为测试绿了而误以为成功。
+3. **"能 A 不能 B"的不对称是最快的定位线索。** "能保存 MP4 但不能导出" → 两者唯一区别是
+   probe → 直接指向 probe 装配，而不用去查探测算法。我先前查了暂停容差、DPR、缓存，
+   方向全错，浪费了两轮。
+4. **静默 return 的错误码是调试黑洞。** `probe-unavailable` 不写日志，导致 3168 条 app.log
+   里零线索。已给失败路径加日志。
+5. **纯正则断言钉不住行为。** `occlusion-recognition-wiring.test.js` 的
+   `assert.match(..., /mask\.buildOccluders\(input\.annotations\)/)` 匹配的**正是那行有 bug 的代码**；
+   `capture-magnifier-ui.test.js` 同样用正则。两处都在 F1/F2 存在时继续通过。
+6. **测试 double 忽略 `disabled` 会让"按钮不可点"永久隐身。** `FakeElement.dispatch` 直接调监听器，
+   所以 E-01（取消按钮永远 disable）在 1810 个绿测试下存活很久。
+7. **字符窗口/计数型断言会因无关改动假红。** 本轮修了两处：
+   `invalidateToolbarSize()` 原本硬编码"恰好 4 次"、色板测试用 `[\s\S]{0,320}` 断言行序。
+   都改成了语义断言。
+
+---
+
+## 10. 文档索引
 
 | 文档 | 内容 |
 |---|---|
-| `docs/plans/2026-10-25-snow-apps-feature-development-plan.md` | 主方案。§1.2 / §1.3 是本轮官方记录，§6–§8 有"实施结果"块 |
-| `docs/plans/2026-10-25-feature-C-handoff.md` | C 的逐项交接（含契约形状、几何规则、缺陷记录） |
-| `docs/plans/2026-10-25-feature-D-handoff.md` | D + R0.4 的逐项交接（含隐私边界、缓存规则、像素证据） |
-| `docs/plans/2026-10-25-feature-E-handoff.md` | E 的逐项交接（含真实媒体样本、耗时、取消实测） |
-| `docs/plans/2026-10-25-feature-A-handoff.md` / `-B-handoff.md` | 上一批（A/B）的交接 |
-| `docs/plans/2026-10-25-history-reedit-batch0-contracts.md` | 文档/提交/坐标的冻结契约。§8 是识别遮罩规则 |
-| `docs/plans/2026-10-25-feature-r0-baseline.md` | R0 基线（含 R0.4 当时的"未落地"结论） |
-| `AGENTS.md`（仓库根） | **跑门禁前必读**：四个环境陷阱 + 两个已知 flake 的判定流程 |
+| `docs/plans/2026-10-25-snow-apps-feature-development-plan.md` | 主方案（§6 C / §7 D / §8 E / §10 验收 / §11 提交边界） |
+| **`docs/reviews/2026-10-26-cde-lead-review.md`** | **本轮修复记录 + 仍未修清单（接手先读 §6）** |
+| `docs/reviews/2026-10-26-cde-privacy-review.md` | 隐私路径对抗式评审（F1–F11，含"已验证正确"清单，别重复查） |
+| `docs/reviews/2026-10-26-cde-export-review.md` | 导出路径对抗式评审（E-01–E-15，真实 ffmpeg 探针） |
+| `docs/plans/2026-10-26-cde-performance-samples.md` | 性能样本 |
+| `docs/plans/2026-10-25-feature-{C,D,E}-handoff.md` | 逐项交接（契约形状、几何规则、缺陷记录） |
+| `docs/plans/2026-10-25-history-reedit-batch0-contracts.md` | 文档/提交/坐标冻结契约。**§8 是识别遮罩规则** |
+| `docs/plans/2026-10-25-feature-r0-baseline.md` | R0 基线 |
+| `AGENTS.md`（仓库根） | **跑门禁前必读**：四个环境陷阱 + 两个已知 flake 判定 |
