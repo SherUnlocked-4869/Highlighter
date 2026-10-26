@@ -494,11 +494,24 @@ function createRecordDomain(deps) {
         const win = requireRecordSender(event)
         requireRecordSession(win, sessionId)
         const service = getRecordingService()
-        const result = await managedRecordingWriters.track(
-          service.probeSession(sessionId, { crossCheckMs: Number(durationMs) || null }),
-          { allowBlocked: true }
-        )
-        if (!result?.ok) return { ok: false, code: result?.code || 'probe-failed' }
+        let result
+        try {
+          result = await managedRecordingWriters.track(
+            service.probeSession(sessionId, { crossCheckMs: Number(durationMs) || null }),
+            { allowBlocked: true }
+          )
+        } catch (error) {
+          log('record probe threw:', error?.message || String(error))
+          throw error
+        }
+        if (!result?.ok) {
+          // The trim panel is this channel's only caller and a failure disables the entire
+          // trim/export feature while "Save MP4" keeps working (it never probes). Record the reason
+          // so a field report of "00:00.0, export unavailable" can be diagnosed from app.log -
+          // previously the code was returned to the renderer and never logged anywhere.
+          log('record probe failed:', result?.code || 'probe-failed', JSON.stringify(result?.detail || null))
+          return { ok: false, code: result?.code || 'probe-failed' }
+        }
         const metadata = result.metadata
         return {
           ok: true,

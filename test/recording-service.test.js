@@ -145,3 +145,50 @@ test('cleanup removes only the selected session directory', async (t) => {
   await fs.access(second.directory)
   await service.dispose()
 })
+
+// Regression from a real device: "after recording I can Save MP4, but the trim panel says the
+// recording file could not be read (00:00.0) and the Export button never enables".
+//
+// Root cause: the media probe was only ever wired into the EXPORT queue. The RecordingService was
+// constructed in main.js WITHOUT a `probe`, so every `probeSession()` returned `probe-unavailable`.
+// `transcode()` (Save MP4) never probes, which is exactly why saving kept working while trimming did
+// not - an asymmetry no existing test could see, because EVERY test constructed the service without a
+// probe and never called probeSession at all.
+test('a service built without a probe reports probe-unavailable instead of a guessed duration', async (t) => {
+  const root = await createRoot(t)
+  const service = new RecordingService({ tempRoot: root, ffmpegPath: 'ffmpeg' })
+  t.after(() => service.dispose())
+  const session = await service.startSession()
+  await service.appendChunk(session.id, Buffer.from('webm'))
+  await service.finishSession(session.id)
+  // The failure must be explicit and distinguishable - never a fabricated zero/guessed duration.
+  assert.deepEqual(await service.probeSession(session.id, { crossCheckMs: 1000 }), { ok: false, code: 'probe-unavailable' })
+})
+
+test('the production recording-service wiring supplies a media probe (main.js)', () => {
+  // main.js is the only place that decides what the shipping RecordingService gets. A missing probe
+  // there silently disables the whole trim/export feature while everything else keeps working, so the
+  // wiring itself is asserted rather than trusted.
+  const mainSource = require('node:fs').readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  const start = mainSource.indexOf('function getRecordingService()')
+  assert.ok(start > 0, 'getRecordingService() must exist')
+  const end = mainSource.indexOf('\n}', start)
+  const body = mainSource.slice(start, end)
+  assert.match(body, /new RecordingService\(\{/, 'the service must be constructed there')
+  assert.match(
+    body,
+    /probe:\s*createRecordingMediaProbe\(/,
+    'the production RecordingService must be given the media probe, or probeSession() always fails'
+  )
+  // And the factory must be imported from the bootstrap module that owns probe construction.
+  const importMatch = /const \{([^}]*)\} = require\('\.\/main\/services\/feature-services-bootstrap'\)/.exec(mainSource)
+  assert.ok(importMatch, 'main.js must import from feature-services-bootstrap')
+  assert.match(importMatch[1], /createRecordingMediaProbe/, 'the probe factory must be in that import list')
+})
+
+test('the probe factory builds a real MediaProbe usable by the recording service', () => {
+  const { createRecordingMediaProbe } = require('../main/services/feature-services-bootstrap')
+  assert.equal(typeof createRecordingMediaProbe, 'function')
+  const probe = createRecordingMediaProbe({ getFfmpegPath: () => 'ffmpeg', log: () => {} })
+  assert.equal(typeof probe.probe, 'function', 'the factory must return something with probe()')
+})

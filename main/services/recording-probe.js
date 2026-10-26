@@ -48,6 +48,12 @@ const DEEP_TIMEOUT_MS = 120000
 // this much before we stop and ask the user instead of exporting a wrong span.
 const CROSS_CHECK_TOLERANCE_RATIO = 0.25
 const CROSS_CHECK_MIN_TOLERANCE_MS = 1000
+// Floor for the SHORT side of the cross-check. The wall clock may legitimately exceed the media
+// timeline by an unbounded amount (a user can pause for as long as they like), so the short side is
+// NOT scaled by the renderer's estimate - only a file too short to be a usable recording is rejected.
+// 500 ms is below LIMITS.MIN_RANGE_MS (the shortest exportable span), so anything shorter could not
+// be exported anyway.
+const CROSS_CHECK_MIN_DURATION_MS = 500
 const MAX_STDERR_BYTES = 512 * 1024
 
 // `Duration: 00:00:02.01` (a duration), not `start: -0.007000`.
@@ -257,10 +263,18 @@ class MediaProbe {
 
   // Full probe. Resolves `{ ok: true, metadata }` or `{ ok: false, code }`.
   //
-  // `crossCheckMs` is the renderer's own duration estimate. It is NEVER used as the
-  // result; it can only turn a successful probe into `renderer-duration-disagrees`, which
-  // the UI surfaces as "the file may be unreadable, re-record" instead of exporting a
-  // span the file cannot honour.
+  // `crossCheckMs` is the renderer's own duration estimate. It is NEVER used as the result; it can
+  // only turn a successful probe into `renderer-duration-disagrees`, which the UI surfaces as "the
+  // file may be unreadable, re-record" instead of exporting a span the file cannot honour.
+  //
+  // SUSPENDED-PAUSE RULE (real-device defect, do not tighten the tolerance back):
+  // the renderer's estimate is WALL-CLOCK time (`record.js` elapsedTime()), but pauses produce no
+  // media time at all - MediaRecorder.pause() stops the media timeline while the wall clock keeps
+  // running. A user who pauses for 2 s inside a 5 s take gets a 3 s file, i.e. a 40% divergence that
+  // has nothing to do with file health. `crossCheckMs` may therefore legitimately be LONGER than the
+  // media duration, so the upper side of the window has to tolerate the whole wall-clock span; only
+  // a file that claims to be LONGER than the wall clock is suspicious (that is impossible for a
+  // recording of that session). The lower bound is kept so a truncated/zero-length file still fails.
   async probe(filePath, { crossCheckMs = null } = {}) {
     if (typeof filePath !== 'string' || !filePath.trim()) return { ok: false, code: 'invalid-media-path' }
     const header = await this.probeHeader(filePath)
@@ -287,9 +301,26 @@ class MediaProbe {
     const crossCheck = Number(crossCheckMs)
     if (Number.isFinite(crossCheck) && crossCheck > 0) {
       const tolerance = Math.max(CROSS_CHECK_MIN_TOLERANCE_MS, crossCheck * CROSS_CHECK_TOLERANCE_RATIO)
-      if (Math.abs(parsed.durationMs - crossCheck) > tolerance) {
+      // Asymmetric window (see the SUSPENDED-PAUSE RULE above):
+      //
+      //   * file LONGER than the wall clock -> hard disagreement. A recording cannot contain more
+      //     media time than the session ran, so this really is a different/foreign file.
+      //   * file SHORTER than the wall clock -> legitimate, with NO proportional lower bound. A pause
+      //     makes the wall clock arbitrarily longer than the media timeline and there is no upper
+      //     bound on how long a user may pause, so scaling the floor by `crossCheck` would reject long
+      //     pauses exactly like the bug this replaces. The only thing worth rejecting is a file too
+      //     short to be a usable recording at all, expressed as an ABSOLUTE floor.
+      const tooLong = parsed.durationMs > crossCheck + tolerance
+      const implausiblyShort = parsed.durationMs < CROSS_CHECK_MIN_DURATION_MS
+      if (tooLong || implausiblyShort) {
         this.log('Media probe disagrees with the renderer duration:', parsed.durationMs, crossCheck)
         return { ok: false, code: 'renderer-duration-disagrees', detail: { probeMs: parsed.durationMs, rendererMs: Math.round(crossCheck) } }
+      }
+      if (parsed.durationMs < crossCheck - tolerance) {
+        // Not a failure: the wall clock ran longer than the media timeline, which is exactly what a
+        // pause (or a dropped-frame stretch) looks like. Logged so a surprising export length can be
+        // traced back to the recording rather than looking like a probe bug.
+        this.log('Media probe is shorter than the wall clock (pause or dropped frames):', parsed.durationMs, crossCheck)
       }
     }
 
@@ -324,6 +355,7 @@ function createMediaProbe(options) {
 
 module.exports = {
   CROSS_CHECK_MIN_TOLERANCE_MS,
+  CROSS_CHECK_MIN_DURATION_MS,
   CROSS_CHECK_TOLERANCE_RATIO,
   MediaProbe,
   createMediaProbe,

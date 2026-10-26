@@ -181,6 +181,10 @@ module.exports = {
   createExportResultForApp,
   createRecordingExportForApp,
   createRecordingExportRef,
+  // The media probe is shared by TWO services: the export queue (to verify a finished encode) and
+  // the recording service (to describe the sealed source for the trim UI). It is exported so main.js
+  // can hand the SAME construction to the recording service - see the note in getRecordingService().
+  createRecordingMediaProbe: ({ getFfmpegPath, spawnProcess = undefined, log = () => {} }) => createMediaProbe({ getFfmpegPath, spawnProcess, log }),
   registerExportFeatureIpc,
   registerRecordingExportFeatureIpc,
   registerRegionFeatureIpc,

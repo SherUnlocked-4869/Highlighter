@@ -478,7 +478,20 @@
       receipt = null
       hideResultBar()
       hideProgress()
-      const probed = await api.probeSession(sessionId, estimatedDurationMs)
+      let probed
+      try {
+        probed = await api.probeSession(sessionId, estimatedDurationMs)
+      } catch (error) {
+        // A thrown probe (rather than an ok:false) used to escape as an unhandled rejection from
+        // stopRecording, leaving the panel blank with no explanation. Name it in the log first.
+        log('attach: probeSession threw:', error && error.message ? error.message : String(error))
+        throw error
+      }
+      if (!probed?.ok) {
+        // One line, once per failed attach: the probe is the single reason the whole trim/export
+        // feature is unavailable, so its code must be recoverable from a user's log dump.
+        log('attach: probe failed:', probed?.code || 'probe-failed')
+      }
       if (!probed?.ok) {
         controller = null
         if (elements.panel) elements.panel.hidden = false

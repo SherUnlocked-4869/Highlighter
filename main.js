@@ -66,7 +66,7 @@ const { registerExportIpc } = require('./main/ipc/export-ipc')
 const { createExportActionResultController } = require('./main/ipc/export-action-controller')
 const { registerRegionIpc } = require('./main/ipc/region-ipc')
 const { createRegionController } = require('./main/ipc/region-ipc-controller')
-const { createExportResultForApp, createRecordingExportRef, createRegionPreferencesForApp, registerExportFeatureIpc, registerRecordingExportFeatureIpc, registerRegionFeatureIpc } = require('./main/services/feature-services-bootstrap')
+const { createExportResultForApp, createRecordingExportRef, createRecordingMediaProbe, createRegionPreferencesForApp, registerExportFeatureIpc, registerRecordingExportFeatureIpc, registerRegionFeatureIpc } = require('./main/services/feature-services-bootstrap')
 const regionPresets = require('./shared/region-presets')
 const { createOcrIpcController, registerOcrIpc } = require('./main/ipc/ocr-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
@@ -284,6 +284,12 @@ function getRecordingService() {
   recordingService = new RecordingService({
     tempRoot: activePaths?.recordingCache || path.join(app.getPath('userData'), 'temp', 'recordings'),
     ffmpegPath: resolveFfmpegPath(),
+    // The trim UI's ONLY source of truth for the recording's length. Without a probe the service
+    // reports `probe-unavailable` for every recording, the trim panel shows 00:00.0 and the export
+    // button never enables - while "Save MP4" keeps working, because it uses transcode() and never
+    // probes. That asymmetry ("I can save but not export") was the real-device report; the probe was
+    // only ever wired into the export queue, never into this service.
+    probe: createRecordingMediaProbe({ getFfmpegPath: resolveFfmpegPath, log }),
     log
   })
   return recordingService

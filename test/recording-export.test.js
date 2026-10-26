@@ -207,11 +207,53 @@ test('the probe fails explicitly for a missing file, an empty file and a bad ren
 
   // The renderer duration is a cross-check: a wild disagreement is refused rather than trusted.
   const audioPath = makeWebmSample(scratch.pathFor('audio.webm'), { withAudio: true })
-  const refused = await probe.probe(audioPath, { crossCheckMs: 30000 })
+  const okDuration = (await probe.probe(audioPath)).metadata.durationMs
+  // A file LONGER than the wall clock cannot be this session's recording -> refused.
+  const refused = await probe.probe(audioPath, { crossCheckMs: Math.max(1, Math.round(okDuration / 4)) })
   assert.equal(refused.ok, false)
   assert.equal(refused.code, 'renderer-duration-disagrees')
   // A close one is accepted (the tolerance is documented, not "exact").
-  assert.equal((await probe.probe(audioPath, { crossCheckMs: 2400 })).ok, true)
+  assert.equal((await probe.probe(audioPath, { crossCheckMs: Math.round(okDuration * 1.1) })).ok, true)
+})
+
+// Regression from a real device: "the export button is unavailable and the panel says the recording
+// file could not be read".
+//
+// The renderer sends its WALL-CLOCK duration (`record.js` elapsedTime()), but pausing produces no
+// media time at all - MediaRecorder.pause() freezes the media timeline while the clock keeps running.
+// A user who paused for 2 s inside a 5 s take produced a 3 s file, a 40% shortfall, and the symmetric
+// tolerance (`Math.abs(...) > max(1s, 25%)`) rejected a perfectly healthy recording: export disabled,
+// "re-record" shown, and the whole trimmed-export feature unreachable for anyone who ever paused.
+//
+// The window is now asymmetric: shorter than the wall clock is legal (that is what a pause looks
+// like), longer than the wall clock is still a hard disagreement.
+test('a paused take whose media time is shorter than the wall clock still passes the cross-check', { skip: !ffmpegAvailable && 'ffmpeg-static is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const probe = createMediaProbe({ ffmpegPath })
+  // ~2 s of media.
+  const samplePath = makeWebmSample(scratch.pathFor('paused.webm'), { withAudio: false })
+  const media = await probe.probe(samplePath)
+  assert.equal(media.ok, true, 'the fixture itself must probe cleanly')
+  const mediaMs = media.metadata.durationMs
+
+  // The paused-take shape: the wall clock ran much longer than the media timeline. A pause of any
+  // length must not invalidate the file - the old symmetric window refused this.
+  for (const wallMs of [mediaMs + 2000, mediaMs + 10000, Math.round(mediaMs * 3)]) {
+    const accepted = await probe.probe(samplePath, { crossCheckMs: wallMs })
+    assert.equal(
+      accepted.ok,
+      true,
+      `a file SHORTER than the wall clock must be accepted (media ${mediaMs} ms, wall ${wallMs} ms)`
+    )
+    assert.equal(accepted.metadata.durationMs, mediaMs, 'the media duration is the result, never the wall clock')
+  }
+
+  // The reverse direction is still refused: a file cannot contain more media time than the session
+  // ran, so that really is a foreign/damaged file rather than a paused take.
+  const tooLong = await probe.probe(samplePath, { crossCheckMs: Math.max(1, Math.round(mediaMs / 4)) })
+  assert.equal(tooLong.ok, false, 'a file far LONGER than the wall clock is still a disagreement')
+  assert.equal(tooLong.code, 'renderer-duration-disagrees')
 })
 
 test('probe without a resolvable ffmpeg path fails instead of fabricating metadata', async () => {
