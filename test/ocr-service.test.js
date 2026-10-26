@@ -95,6 +95,88 @@ test('does not stop while an OCR request is active', async () => {
   assert.equal(stopCount, 0)
 })
 
+test('a hot start that never recognizes still arms the idle stop', async () => {
+  const service = createService(10)
+  let stopCount = 0
+  service.stop = () => { stopCount += 1 }
+  service.start = async () => {
+    service.process = { killed: false }
+    service.ready = true
+  }
+
+  await service.ensureStarted()
+  assert.equal(stopCount, 0, 'the service is warm until the idle timeout elapses')
+  await delay(40)
+
+  assert.equal(stopCount, 1, 'hot-start-only path is now reclaimed')
+})
+
+test('a busy idle timer re-arms instead of losing the sidecar', async () => {
+  const service = createService(10)
+  let stopCount = 0
+  service.stop = () => { stopCount += 1 }
+  service.inFlight.set('active', Promise.resolve())
+
+  service.scheduleIdleStop()
+  await delay(35)
+  assert.equal(stopCount, 0)
+  assert.notEqual(service.idleTimer, null, 'the timer keeps re-arming while busy')
+
+  service.inFlight.clear()
+  await delay(25)
+  assert.equal(stopCount, 1, 'the next quiet window reclaims the sidecar')
+})
+
+test('stop rejects pending requests immediately with OCR_STOPPED', async () => {
+  const service = createService(0)
+  const writes = []
+  service.process = {
+    killed: false,
+    stdin: { write: (line, callback) => { writes.push(line); if (callback) callback() } },
+    kill: () => {}
+  }
+  service.ready = true
+
+  const request = service.request({ action: 'recognize' }, 120000)
+  assert.equal(service.pending.size, 1)
+
+  service.stop()
+
+  await assert.rejects(request, (error) => error.code === 'OCR_STOPPED' && /已停止/.test(error.message))
+  assert.equal(service.pending.size, 0)
+  assert.equal(service.idleTimer, null)
+  assert.equal(service.ready, false)
+  assert.ok(writes.some((line) => /"action":"shutdown"/.test(line)))
+})
+
+test('setIdleTimeoutMs reschedules an armed timer and ignores invalid values', async () => {
+  const service = createService(1000)
+  let stopCount = 0
+  service.stop = () => { stopCount += 1 }
+
+  service.scheduleIdleStop()
+  assert.equal(service.setIdleTimeoutMs(10), 10)
+  await delay(30)
+  assert.equal(stopCount, 1)
+
+  assert.equal(service.setIdleTimeoutMs(-1), 10)
+  assert.equal(service.setIdleTimeoutMs('nope'), 10)
+})
+
+test('stopIfIdle leaves an active recognition running', () => {
+  const service = createService(0)
+  let stopCount = 0
+  service.stop = () => { stopCount += 1 }
+  service.pending.set('active', { timer: null, resolve() {}, reject() {} })
+
+  assert.equal(service.stopIfIdle(), false)
+  assert.equal(stopCount, 0)
+
+  service.pending.clear()
+  assert.equal(service.stopIfIdle(), true)
+  assert.equal(stopCount, 1)
+})
+
 test('an old sidecar exit cannot clear a replacement process', () => {
   const service = createService()
   const oldProcess = {}

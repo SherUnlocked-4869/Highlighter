@@ -78,9 +78,43 @@ class OcrService {
     }
   }
 
+  // "Busy" means a started sidecar must not be reclaimed: a request is either
+  // queued (pending) or being produced (inFlight). The idle timer and the
+  // settings effects share this predicate so a shutdown can never race a
+  // recognition that is already in progress.
+  isBusy() {
+    return this.pending.size > 0 || this.inFlight.size > 0
+  }
+
+  setIdleTimeoutMs(value) {
+    const next = Number(value)
+    if (!Number.isFinite(next) || next < 0) return this.idleTimeoutMs
+    this.idleTimeoutMs = next
+    if (this.idleTimer) this.scheduleIdleStop()
+    return this.idleTimeoutMs
+  }
+
+  // Deferred by one macrotask on purpose: recognizeUncached() calls
+  // ensureStarted() before it registers inFlight, so arming the timer
+  // synchronously here would let a very short idle timeout stop the sidecar
+  // between the await and the first request. By the time this runs the caller
+  // has registered its work (or has finished and scheduled its own timer).
+  armIdleStopIfIdle() {
+    const arm = () => {
+      if (this.stopping || this.isBusy()) return
+      if (!this.process || this.process.killed || !this.ready) return
+      this.scheduleIdleStop()
+    }
+    const immediate = setImmediate(arm)
+    if (immediate && typeof immediate.unref === 'function') immediate.unref()
+  }
+
   async ensureStarted() {
     this.clearIdleTimer()
-    if (this.process && !this.process.killed && this.ready) return
+    if (this.process && !this.process.killed && this.ready) {
+      this.armIdleStopIfIdle()
+      return
+    }
     if (this.startPromise) return this.startPromise
     this.startPromise = this.start()
     try {
@@ -88,6 +122,9 @@ class OcrService {
     } finally {
       this.startPromise = null
     }
+    // A hot start that never recognizes is exactly the leak this timer closes:
+    // the previous implementation only armed the timer from recognize().
+    this.armIdleStopIfIdle()
   }
 
   start() {
@@ -194,12 +231,29 @@ class OcrService {
 
   scheduleIdleStop() {
     this.clearIdleTimer()
+    if (this.stopping) return
     if (this.idleTimeoutMs <= 0) return
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null
-      if (this.pending.size === 0 && this.inFlight.size === 0) this.stop()
+      // Re-arm instead of dropping the timer: work that started after the last
+      // arming keeps the sidecar alive, and its own recognize() finally will arm
+      // again. Without the re-arm a busy period would leave the sidecar warm
+      // forever, which is the original leak in a different shape.
+      if (this.isBusy()) {
+        this.scheduleIdleStop()
+        return
+      }
+      this.stop()
     }, this.idleTimeoutMs)
     this.idleTimer.unref?.()
+  }
+
+  // Settings turn the hot-start preference off: only stop a service that is
+  // idle. An active recognition owns the sidecar until it settles.
+  stopIfIdle() {
+    if (this.isBusy()) return false
+    this.stop()
+    return true
   }
 
   request(payload, timeoutMs = 120000) {
@@ -275,6 +329,17 @@ class OcrService {
   stop() {
     this.clearIdleTimer()
     this.stopping = true
+    // Reject in-flight requests immediately instead of leaving them to the
+    // per-request 120 s timeout: migration and quit paths await these promises,
+    // and the old behaviour let a stop() (process=null) hide the exit event
+    // behind the handleExit guard, freezing the caller for two minutes.
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer)
+      const error = new Error('OCR 引擎已停止')
+      error.code = 'OCR_STOPPED'
+      pending.reject(error)
+    }
+    this.pending.clear()
     if (this.process && !this.process.killed) {
       try { this.process.stdin.write(`${JSON.stringify({ action: 'shutdown' })}\n`) } catch {}
       const child = this.process

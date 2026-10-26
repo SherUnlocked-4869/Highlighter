@@ -57,8 +57,28 @@ function createSettingsEffects(deps) {
     },
     {
       id: 'plugins.ocr.hotStart',
-      when: (patch, settings) => patch.plugins?.ocr === true && !!settings.ocr?.hotStart,
-      run: () => getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
+      // Enabling the OCR plugin, or flipping the hot-start preference on its own,
+      // has to reach the live service. The old gate only matched
+      // `plugins.ocr === true`, so changing `ocr.hotStart` alone did nothing.
+      when: (patch) => patch.plugins?.ocr === true || patch.ocr?.hotStart !== undefined,
+      run: (patch, settings) => {
+        const enabled = settings.plugins?.ocr !== false
+        if (enabled && settings.ocr?.hotStart !== false) {
+          getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
+          return
+        }
+        // Turning prewarming off must not kill an active recognition; only an
+        // idle service is stopped (see OcrService#stopIfIdle).
+        if (patch.ocr?.hotStart === false) ocrServiceRef.get()?.stopIfIdle()
+      }
+    },
+    {
+      id: 'ocr.idleTimeoutMs',
+      // The service snapshots idleTimeoutMs at construction, so a settings change
+      // has to reach the live instance or the new value only applies after a
+      // restart. Invalid values are ignored by setIdleTimeoutMs itself.
+      when: (patch) => patch.ocr?.idleTimeoutMs !== undefined,
+      run: (_patch, settings) => ocrServiceRef.get()?.setIdleTimeoutMs(settings.ocr?.idleTimeoutMs)
     },
     {
       id: 'appearance',

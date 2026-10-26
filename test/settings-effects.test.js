@@ -6,7 +6,14 @@ const { createSettingsEffects } = require('../main/domains/settings-effects')
 function createHarness() {
   const calls = []
   const record = (name) => (...args) => { calls.push({ name, args }) }
-  const ocr = { stopped: false, stop() { this.stopped = true } }
+  const ocr = {
+    stopped: false,
+    stopIdleCalls: 0,
+    idleTimeouts: [],
+    stop() { this.stopped = true },
+    stopIfIdle() { this.stopIdleCalls += 1; this.stop(); return true },
+    setIdleTimeoutMs(value) { this.idleTimeouts.push(value) }
+  }
   const domain = createSettingsEffects({
     app: { setLoginItemSettings: record('login') },
     registerShortcuts: record('shortcuts'),
@@ -74,6 +81,24 @@ test('OCR disable stops the sidecar and enable hot-starts only when configured',
   assert.deepEqual(cold.calls.map((c) => c.name), [])
 })
 
+test('turning hot-start off stops the idle OCR service only', () => {
+  const { domain, ocr } = createHarness()
+  domain.applyUpdate(
+    { ocr: { hotStart: false } },
+    { plugins: { ocr: true }, system: {}, selectionToolbar: {}, ocr: { hotStart: false, idleTimeoutMs: 300000 } }
+  )
+  assert.equal(ocr.stopIdleCalls, 1)
+})
+
+test('OCR idle timeout changes reach the live service', () => {
+  const { domain, ocr } = createHarness()
+  domain.applyUpdate(
+    { ocr: { idleTimeoutMs: 60000 } },
+    { plugins: { ocr: true }, system: {}, selectionToolbar: {}, ocr: { hotStart: true, idleTimeoutMs: 60000 } }
+  )
+  assert.deepEqual(ocr.idleTimeouts, [60000])
+})
+
 test('reset reapplies the documented effect set', () => {
   const { domain, calls } = createHarness()
   domain.applyReset({
@@ -95,6 +120,7 @@ test('update effect ids are stable for contract tests', () => {
     'system.updateChannel',
     'plugins.ocr.off',
     'plugins.ocr.hotStart',
+    'ocr.idleTimeoutMs',
     'appearance',
     'language',
     'language.tray',
