@@ -134,6 +134,9 @@ class RecordingExportService {
     this.requests = new Map()
     this.activeCount = 0
     this.queued = []
+    // Admission slots taken by submit() calls that are still doing their pre-flight awaits. Without
+    // this, N concurrent callers all pass the limit check before any of them reserves a place.
+    this.reservedSlots = 0
     this.shuttingDown = false
   }
 
@@ -212,6 +215,23 @@ class RecordingExportService {
       return { ok: false, code: 'session-not-found' }
     }
 
+    // A target that IS the recording's own source would be replaced by the trimmed output: the
+    // publish rename sits in the target's directory and happily overwrites it, so a user who picks
+    // the `.webm` in the save dialog would lose the only copy of the recording AND get a success
+    // toast. Refuse before any temp file exists. (The save dialog is main-process owned, so this is
+    // a rare navigation, but the consequence is unrecoverable - and §8.4's promise is that an export
+    // never damages the source.)
+    const sessionSource = (() => {
+      try {
+        return session.inputPath ? this.path.resolve(session.inputPath) : ''
+      } catch (error) {
+        return ''
+      }
+    })()
+    if (sessionSource && this.samePath(absoluteTarget, sessionSource)) {
+      return { ok: false, code: 'target-unavailable', detail: 'target-is-source' }
+    }
+
     // The range is validated against the PROBE, never against the renderer's duration
     // (plan §8.1). A session that was never probed is probed now.
     let metadata = session.metadata
@@ -235,9 +255,19 @@ class RecordingExportService {
     }
 
     // Queue guard rails (plan §3.3): one encoder, at most two waiting.
-    if (this.activeCount >= this.limits.MAX_ACTIVE_TASKS && this.queued.length >= this.limits.MAX_QUEUED_TASKS) {
+    //
+    // RESERVE-THEN-AWAIT: this check happens BEFORE any await below, so N concurrent submit() calls
+    // all observe the same counts and all pass - five double-clicks were admitted where the plan
+    // allows three. A synchronous reservation therefore counts as an outstanding admission until it
+    // becomes a real queue entry, and the budget is the TOTAL outstanding work: one running plus two
+    // waiting. (Checking "active" and "waiting" separately double-counted the reservation, which
+    // admitted only two.)
+    const outstanding = this.activeCount + this.queued.length + this.reservedSlots
+    if (outstanding >= this.limits.MAX_ACTIVE_TASKS + this.limits.MAX_QUEUED_TASKS) {
       return { ok: false, code: 'rate-limited' }
     }
+    this.reservedSlots += 1
+    const releaseSlot = () => { this.reservedSlots = Math.max(0, this.reservedSlots - 1) }
 
     const extension = normalized.value.format === 'gif' ? '.gif' : '.mp4'
     let tempPath
@@ -250,6 +280,7 @@ class RecordingExportService {
       await handle.close()
       await this.fs.rm(tempPath, { force: true })
     } catch (error) {
+      releaseSlot()
       this.log('Recording export target is not writable:', error?.message || error)
       return { ok: false, code: 'target-unavailable' }
     }
@@ -282,6 +313,9 @@ class RecordingExportService {
     }
     this.tasks.set(task.taskId, task)
     if (requestKey) this.requests.set(requestKey, task.taskId)
+    // The reservation has become a real queue entry, so release the placeholder before enqueueing
+    // (enqueue -> pump() may start the task synchronously and would otherwise double-count).
+    releaseSlot()
     // Emit `queued` BEFORE the queue runs: pump() may start the task synchronously, and a caller
     // that renders from `onEvent` must see the task's first state, not its second one.
     this.emit(task)
@@ -291,7 +325,20 @@ class RecordingExportService {
 
   requestKey(ownerId, sessionId, requestId) {
     if (!requestId) return ''
-    return `${ownerId || '-'}\u0000${String(sessionId || '')}\u0000${String(requestId)}`
+    return `${ownerId || '-'}\u0000${String(sessionId || '')}\u0000${String(requestId || '')}`
+  }
+
+  // Case-insensitive on Windows/macOS, case-sensitive elsewhere: two names that differ only by case
+  // are the SAME file on a default NTFS volume, so a plain string compare would miss
+  // `capture.webm` vs `Capture.webm` in the "target is the source" guard.
+  samePath(left, right) {
+    const a = String(left || '')
+    const b = String(right || '')
+    if (!a || !b) return false
+    const caseInsensitive = this.path.sep === '\\' || process.platform === 'darwin'
+    return caseInsensitive
+      ? a.toLowerCase() === b.toLowerCase()
+      : a === b
   }
 
   // A unique sibling of the target, sharing its extension so ffmpeg picks the right muxer.
@@ -380,6 +427,14 @@ class RecordingExportService {
         return this.finishCancelled(task)
       }
       const verified = await this.verify(task)
+      // Cancel checkpoint BEFORE the failure branch: `verify` is awaited, so a cancel can land
+      // inside it (and cancelTask has already answered {ok:true, state:'cancelling'}). Consulting
+      // cancelRequested only on the success path meant such a cancel was swallowed and reported as
+      // `verify-failed` - a contradictory pair of outcomes for one user action, with the wrong cause.
+      if (task.cancelRequested || task.state === 'cancelling') {
+        if (task.state !== 'cancelling') this.transition(task, 'cancel')
+        return this.finishCancelled(task)
+      }
       if (!verified.ok) {
         // Clean up BEFORE reporting the terminal state: a caller that observes `failed` must also
         // observe that our `.part` file is gone, otherwise every failed attempt looks like a leak
@@ -389,8 +444,8 @@ class RecordingExportService {
         return
       }
       // Cancel checkpoint: verification is done but nothing has been replaced yet, so a
-      // cancel that arrived during verification still wins (plan §8.4 "before the publish
-      // point"). The check and the transition below are synchronous, so there is no window
+      // cancel that arrived between the check above and here still wins (plan §8.4 "before the
+      // publish point"). The check and the transition below are synchronous, so there is no window
       // between them.
       if (task.cancelRequested || task.state === 'cancelling') {
         if (task.state !== 'cancelling') this.transition(task, 'cancel')
@@ -616,6 +671,10 @@ class RecordingExportService {
     if (task.state === 'queued') {
       this.transition(task, 'cancel')
       this.transition(task, 'cancelled')
+      // Drop the id from the waiting list NOW, not on the next pump(): pump() only runs when a task
+      // completes, so a cancelled waiter used to occupy a queue slot for the whole duration of the
+      // running encode and made the next legitimate submit fail with a spurious `rate-limited`.
+      this.queued = this.queued.filter((id) => id !== task.taskId)
       this.emit(task)
       return { ok: true, state: task.state, task: this.toPublicTask(task) }
     }
@@ -635,6 +694,10 @@ class RecordingExportService {
     await this.cleanupTemp(task)
     if (task.state === 'cancelling') this.transition(task, 'cancelled')
     task.progress = 0
+    // A cancelled task must not carry the code of whatever was in flight when the user aborted:
+    // the terminal outcome is "the user stopped this", not "verification failed". Leaving a stale
+    // `error` made the renderer's error path render for a task it had just been told was cancelling.
+    task.error = null
     this.emit(task)
     return true
   }

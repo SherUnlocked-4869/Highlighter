@@ -242,9 +242,23 @@
         elements.gifMeta.classList.toggle('invalid', !budget.ok)
       }
       if (elements.exportButton) {
-        elements.exportButton.disabled = !state.canExport
+        // The same button is Export when idle and Cancel while a task runs, so it must stay
+        // clickable in BOTH of those states. Disabling it on `!canExport` alone made the only cancel
+        // affordance unreachable: `canExport` is false for exactly the `submitting`/`active` phases
+        // where `canCancel` becomes true, so the user could start a long encode and then not stop it.
+        // Enabled = "this button has an action right now" (export OR cancel), not "export is allowed".
+        elements.exportButton.disabled = !state.canExport && !state.canCancel
         elements.exportButton.textContent = state.phase === 'active'
-          ? translate(state.task?.state === 'publishing' ? 'record.trim.finishing' : 'record.trim.exporting')
+          ? translate(
+            state.task?.state === 'publishing'
+              ? 'record.trim.finishing'
+              : state.task?.state === 'cancelling'
+                // A cancel round-trips through the main process (kill the child, clean up the temp
+                // file), which takes long enough that leaving the label on "exporting" reads as
+                // "my cancel did nothing". Name the state the task is actually in.
+                ? 'record.trim.cancelling'
+                : 'record.trim.exporting'
+          )
           : translate('record.trim.export')
         // While a task runs the same button is the cancel action (the frozen controls make a
         // second export impossible), so its tooltip has to say so.
@@ -358,8 +372,9 @@
       })
       if (answer?.code === 'publish-in-progress') {
         // The publish point has passed: keep showing the task and say why (plan §8.4). This is a
-        // status line, not an error the user caused.
-        setResultStatus('record.error.export-publish-in-progress', true)
+        // status line, not an error the user caused - styling it red told the user they had done
+        // something wrong when they had simply lost a race against a finishing export.
+        setResultStatus('record.error.export-publish-in-progress', false)
         return answer
       }
       render()

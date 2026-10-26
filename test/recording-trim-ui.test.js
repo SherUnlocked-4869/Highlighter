@@ -420,6 +420,92 @@ test('a probe failure disables export and reports why instead of exporting a gue
   view.teardown()
 })
 
+// Regression (E-01, found by adversarial review): the export button doubles as the CANCEL control
+// while a task runs, but `render()` disabled it on `!canExport` - and `canExport` is false for
+// exactly the `submitting`/`active` phases where `canCancel` becomes true. So the only cancel
+// affordance in the UI was permanently greyed out and a running export could not be stopped at all.
+//
+// This test exists because the shipped harness could not see it: `FakeElement.dispatch` invokes the
+// listeners directly, so a `disabled` button still "clicks". A real browser dispatches no click on a
+// disabled control, so the assertion here has to model that. `dispatchClick` below refuses to fire
+// when `disabled` is true, which is the behaviour difference that hid the bug.
+test('a running export can actually be cancelled from the one button the UI offers', async (t) => {
+  const documentHarness = installFakeDocument()
+  t.after(() => documentHarness.restore())
+  const { createTrimView } = loadView()
+
+  const api = makeBridge()
+  const view = createTrimView({ api, translate: (key) => key })
+  await view.attach({ id: 'session-1' }, 10000)
+
+  // Start an export; the bridge answers `accepted` + a running task, so the view enters `active`.
+  await view.exportSelection()
+  const controller = view.getController()
+  const state = controller.state()
+  assert.equal(state.busy, true, 'the export must be running for this test to mean anything')
+  assert.equal(state.canCancel, true, 'a running task must offer cancel')
+  assert.equal(state.canExport, false, 'a second export must not be allowed while one runs')
+
+  const button = documentHarness.elements.get('trimExport')
+  // The button must be CLICKABLE in this phase. `canExport` alone is the wrong predicate: the same
+  // control is the cancel action now.
+  assert.equal(
+    button.disabled,
+    false,
+    'the cancel control must not be disabled while the task it cancels is running'
+  )
+  assert.equal(button.dataset.action, 'cancel', 'the button advertises the cancel action')
+
+  // Click it the way a browser would: a disabled control dispatches nothing, so honour that flag
+  // rather than calling the listeners directly (the weakness in `FakeElement.dispatch`).
+  const cancelsBefore = api.calls.cancel.length
+  const dispatchesClick = button.disabled !== true
+  if (dispatchesClick) button.dispatch('click')
+  await new Promise((resolve) => setImmediate(resolve))
+
+  assert.equal(
+    dispatchesClick,
+    true,
+    'the user gesture must reach the handler at all (this is exactly what the bug prevented)'
+  )
+  assert.equal(
+    api.calls.cancel.length,
+    cancelsBefore + 1,
+    'clicking the button while a task runs must call cancelExport'
+  )
+  assert.equal(api.calls.cancel[api.calls.cancel.length - 1].taskId, 'task-1', 'it must cancel THIS task')
+  view.teardown()
+})
+
+test('the cancel control is enabled for every state that has an action', async (t) => {
+  const documentHarness = installFakeDocument()
+  t.after(() => documentHarness.restore())
+  const { createTrimView } = loadView()
+
+  // Idle and exportable: enabled, and it is the export action.
+  const idle = createTrimView({ api: makeBridge(), translate: (key) => key })
+  await idle.attach({ id: 'session-1' }, 10000)
+  const idleButton = documentHarness.elements.get('trimExport')
+  assert.equal(idleButton.disabled, false, 'an exportable idle state keeps the button live')
+  assert.equal(idleButton.dataset.action, 'export')
+  idle.teardown()
+
+  // Running: still enabled, now the cancel action. (The controller clamps its own range, so an
+  // idle-but-invalid state is not reachable through the public setters - which is why the bug was
+  // specifically about the ACTIVE phase, not about validation.)
+  const running = createTrimView({ api: makeBridge(), translate: (key) => key })
+  await running.attach({ id: 'session-1' }, 10000)
+  await running.exportSelection()
+  const runningState = running.getController().state()
+  assert.equal(runningState.busy, true)
+  assert.equal(runningState.canCancel, true)
+  assert.equal(runningState.canExport, false)
+  const runningButton = documentHarness.elements.get('trimExport')
+  assert.equal(runningButton.disabled, false, 'the cancel affordance must be live while running')
+  assert.equal(runningButton.dataset.action, 'cancel')
+  running.teardown()
+})
+
 test('every export error code maps to a locale key that all three tables define', () => {
   globalThis.__LOCALES = {}
   require('../shared/locales/record.js')

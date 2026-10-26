@@ -736,6 +736,127 @@ test('a failed verification keeps the old target and reports verify-failed', asy
   assert.equal(fs.readFileSync(target, 'utf8'), 'KEEP-ME')
 })
 
+// Regression (E-02, found by adversarial review): `verify()` is awaited, so a cancel can land
+// inside it - and cancelTask has already answered `{ok:true, state:'cancelling'}`. The failure
+// branch returned BEFORE the cancel checkpoint, so the task settled as `verify-failed` and the user
+// saw an encoding error for an export they themselves aborted. Two contradictory outcomes for one
+// action, with the wrong cause attributed.
+test('a cancel that lands during verification is reported as cancelled, not verify-failed', async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const { recordingService, session } = await seedSession(scratch)
+  const target = scratch.pathFor('cancelled-during-verify.mp4')
+  fs.writeFileSync(target, 'KEEP-ME')
+
+  // A probe that stalls inside `verify()` and then FAILS: this is the shape that used to swallow
+  // the cancel. The cancellation has to be delivered while `verify()` is in flight. The first call
+  // is the verification pass on the temp file (stall + fail); any earlier call still behaves
+  // normally, so the encode/metadata stages are unaffected.
+  let releaseVerify = null
+  const verifyGate = new Promise((resolve) => { releaseVerify = resolve })
+  // Signals that the gated verification pass has actually been entered, so the test can cancel at
+  // the right moment instead of racing the encode.
+  const verifyGateReached = { value: false }
+  const normalProbe = makeStubProbe({ video: { width: 640, height: 480, frameRate: 10 } })
+  const slowFailingProbe = {
+    async probe(filePath) {
+      // Only the temp-file verification pass is gated: it is the one that runs after the encode.
+      if (String(filePath).includes('.part')) {
+        verifyGateReached.value = true
+        await verifyGate
+        return { ok: false, code: 'decode-failed' }
+      }
+      return normalProbe.probe(filePath)
+    }
+  }
+  const exporter = createRecordingExportService({
+    getRecordingService: () => recordingService,
+    probe: slowFailingProbe,
+    spawnProcess: makeFakeFfmpeg({ code: 0, bytes: 'x' }).spawn,
+    log: () => {}
+  })
+  t.after(async () => { await exporter.dispose(); await recordingService.dispose() })
+
+  const submitted = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'cancel-during-verify',
+    request: { format: 'mp4', range: { startMs: 0, endMs: 400 } },
+    targetPath: target
+  })
+  assert.equal(submitted.ok, true)
+
+  // Wait until the task is actually parked INSIDE verify(): the gated probe is only reached on the
+  // temp-file pass, which happens after the encode. Cancelling before that would exercise the
+  // encode-phase checkpoint instead of the verify-phase one, which is the bug being pinned.
+  const verifyStarted = Date.now()
+  while (!verifyGateReached.value) {
+    assert.ok(Date.now() - verifyStarted < 10000, 'verification was never reached')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  // The task must still be non-terminal (running) at this point - i.e. the cancel really can land
+  // during verification rather than after the task already settled.
+  const midState = exporter.status({ taskId: submitted.task.taskId }).task
+  assert.equal(midState.state, 'running', 'the task must still be running while verification is parked')
+
+  // Cancel while verify() is parked. The cancel must be accepted (the task is past encode, not yet
+  // publishing) - that acceptance is what makes the old outcome contradictory.
+  const cancelled = await exporter.cancel({ taskId: submitted.task.taskId })
+  assert.equal(cancelled.ok, true, 'a cancel before the publish point must be accepted')
+  assert.equal(cancelled.state, 'cancelling')
+
+  // Let the failing verification finish: it must NOT override the cancel.
+  releaseVerify()
+  const settled = await waitForTerminal(exporter, submitted.task.taskId)
+  assert.equal(
+    settled.state,
+    'cancelled',
+    `a cancel during verification must win over the verification failure (got ${settled.state}/${settled.error?.code})`
+  )
+  assert.equal(settled.error, undefined, 'a cancelled task must not carry a failure code')
+  assert.equal(fs.readFileSync(target, 'utf8'), 'KEEP-ME', 'the pre-existing target is untouched')
+})
+
+// Regression (E-03, found by adversarial review): nothing compared the chosen target with the
+// recording's own source file. Saving to `session.inputPath` made the publish rename replace the
+// only copy of the recording with the trimmed result, while reporting `succeeded`.
+test('submitting the recording itself as the export target is refused before anything is written', async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const { recordingService, session } = await seedSession(scratch)
+  const sourcePath = session.inputPath
+  const before = fs.readFileSync(sourcePath)
+
+  const exporter = createRecordingExportService({
+    getRecordingService: () => recordingService,
+    probe: makeStubProbe({ video: { width: 640, height: 480, frameRate: 10 } }),
+    spawnProcess: makeFakeFfmpeg({ code: 0, bytes: 'x' }).spawn,
+    log: () => {}
+  })
+  t.after(async () => { await exporter.dispose(); await recordingService.dispose() })
+
+  const submitted = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'target-is-source',
+    request: { format: 'mp4', range: { startMs: 0, endMs: 400 } },
+    targetPath: sourcePath
+  })
+  assert.equal(submitted.ok, false, 'the recording must never be its own export target')
+  assert.equal(submitted.code, 'target-unavailable')
+  assert.deepEqual(fs.readFileSync(sourcePath), before, 'the source bytes must be untouched')
+  assert.equal(exporter.list().length, 0, 'no task may be created for a refused target')
+
+  // Case-only differences are the same file on a default NTFS volume, so the guard must fold case.
+  const caseVariant = path.join(path.dirname(sourcePath), path.basename(sourcePath).toUpperCase())
+  const second = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'target-is-source-case',
+    request: { format: 'mp4', range: { startMs: 0, endMs: 400 } },
+    targetPath: caseVariant
+  })
+  assert.equal(second.ok, false, 'a case-only variant of the source is still the source')
+  assert.equal(second.code, 'target-unavailable')
+})
+
 // Regression found by the E4 real-media evidence run: verification used to report `failed` while
 // leaving its own `.part` file next to the user's target, so every failed attempt looked like a
 // leak to an immediate directory listing. The failed state must also mean 'no stray file'.
@@ -906,6 +1027,76 @@ test('the queue admits one encoder and two waiting tasks, and replays a matching
   await exporter.cancel({ taskId: third.task.taskId })
   await waitForTerminal(exporter, second.task.taskId, 10000)
   await waitForTerminal(exporter, third.task.taskId, 10000)
+})
+
+// Regression (E-07, found by adversarial review), two independent defects in the admission layer:
+//
+//  1. The limit was checked BEFORE the first `await` in submit(), so N concurrent callers all saw
+//     the same counts and all passed - five clicks were admitted where plan §3.3 allows one running
+//     plus two waiting. The check has to reserve synchronously before yielding.
+//  2. A cancelled WAITER stayed in `this.queued` until the next pump(), i.e. for the whole duration
+//     of the running encode. `queued.length` therefore counted dead entries and the next legitimate
+//     submit was refused with a spurious `rate-limited`.
+test('concurrent submits cannot over-admit, and cancelling a waiter frees its queue slot', async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const { recordingService, session } = await seedSession(scratch)
+  // A hanging encoder keeps the first task `running` for the whole test.
+  const fake = makeFakeFfmpeg({ hang: true })
+  const exporter = createRecordingExportService({
+    getRecordingService: () => recordingService,
+    probe: makeStubProbe(),
+    spawnProcess: fake.spawn,
+    log: () => {}
+  })
+  t.after(async () => { await exporter.dispose(); await recordingService.dispose() })
+
+  const request = { format: 'mp4', range: { startMs: 0, endMs: 400 } }
+  // Fire five submits WITHOUT awaiting between them: this is the double-click / impatient-user
+  // shape that used to slip past the guard. All five are started before any of them reserves.
+  const inFlight = []
+  for (let index = 0; index < 5; index += 1) {
+    inFlight.push(exporter.submit({
+      sessionId: session.id,
+      requestId: `burst-${index}`,
+      request,
+      targetPath: scratch.pathFor(`burst-${index}.mp4`)
+    }))
+  }
+  const answers = await Promise.all(inFlight)
+  const accepted = answers.filter((answer) => answer.ok)
+  assert.equal(accepted.length, 3, `plan §3.3 admits one running plus two waiting (got ${accepted.length} of 5)`)
+  assert.equal(
+    answers.filter((answer) => !answer.ok && answer.code === 'rate-limited').length,
+    2,
+    'the overflow must be refused with rate-limited, not silently queued'
+  )
+  const running = accepted.filter((answer) => answer.task.state === 'running')
+  const waiting = accepted.filter((answer) => answer.task.state === 'queued')
+  assert.equal(running.length, 1, 'exactly one encoder')
+  assert.equal(waiting.length, 2, 'exactly two waiting')
+
+  // Cancel both waiters. Their slots must be freed IMMEDIATELY - not when the hanging encode ends
+  // (which is never, in this test).
+  for (const task of waiting) {
+    const cancelled = await exporter.cancel({ taskId: task.task.taskId })
+    assert.equal(cancelled.ok, true)
+    assert.equal(cancelled.state, 'cancelled')
+  }
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(exporter.queued.length, 0, 'cancelled waiters must leave the queue at once')
+
+  // With both waiting slots free, a fresh submit is admitted instead of refused.
+  const fresh = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'after-cancel',
+    request,
+    targetPath: scratch.pathFor('after-cancel.mp4')
+  })
+  assert.equal(fresh.ok, true, 'a free waiting slot must admit a new export, not report rate-limited')
+  assert.equal(fresh.task.state, 'queued')
+
+  await exporter.cancel({ taskId: running[0].task.taskId })
 })
 
 test('an export is refused before queueing when the range, the GIF budget or the target is bad', async (t) => {
