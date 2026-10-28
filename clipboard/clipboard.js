@@ -13,7 +13,7 @@ let renderedWindow = { first: -1, last: -1, cols: -1, language: '' }
 let animationFrame = 0
 // Mono type stamps are instrument labels, not translated copy: they keep the
 // same three-letter shape in every language.
-const KIND_BADGE = { text: 'TXT', url: 'URL', image: 'IMG' }
+const KIND_BADGE = { text: 'TXT', url: 'URL', image: 'IMG', files: 'FIL' }
 const PHASE_TONE = { running: 'ok', starting: 'warn', paused: 'warn', error: 'danger', disabled: 'off', stopped: 'off' }
 const actionButtons = ['copy', 'paste', 'view', 'pin', 'delete']
 // Fallbacks only: the values that matter live in clipboard.css as custom
@@ -165,6 +165,12 @@ function syncSelection() {
   else $('list').removeAttribute('aria-activedescendant')
 }
 function optionId(item) { return `item-${item.id}` }
+// A files record is a text row whose preview is the first file name (the native
+// snapshot stores every path but previews the first basename), so the meta line
+// carries how many paths the record holds. A single file needs no count.
+function fileCountLabel(item) {
+  return item.kind === 'files' && item.fileCount > 1 ? t('clipboard.file-count', { count: item.fileCount }) : ''
+}
 function renderTextRow(row) {
   const item = items[row.items[0]]; const node = document.createElement('button')
   node.className = 'row'; node.type = 'button'; node.id = optionId(item)
@@ -174,7 +180,7 @@ function renderTextRow(row) {
   appendText(main, 'row-preview', String(item.previewText ?? ''))
   const meta = document.createElement('span'); meta.className = 'row-meta'
   if (item.isPinned) appendText(meta, 'pin', t('clipboard.pinned'))
-  appendText(meta, 'row-meta-value', [item.sourceDisplayName, formatTime(Math.max(item.lastCopiedAt || 0, item.lastUsedAt || 0)), formatBytes(item.byteLength)].filter(Boolean).join(' · '))
+  appendText(meta, 'row-meta-value', [fileCountLabel(item), item.sourceDisplayName, formatTime(Math.max(item.lastCopiedAt || 0, item.lastUsedAt || 0)), formatBytes(item.byteLength)].filter(Boolean).join(' · '))
   main.append(meta)
   const badge = document.createElement('span')
   badge.className = 'kind-badge'; badge.textContent = KIND_BADGE[item.kind] || KIND_BADGE.text; badge.setAttribute('aria-hidden', 'true')

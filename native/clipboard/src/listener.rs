@@ -296,6 +296,7 @@ impl Monitor {
                         notice.sequence,
                         rules.capture_text,
                         rules.capture_images,
+                        rules.capture_files,
                         &rules.excluded_apps,
                     );
                     if !matches!(result, Err(Skip::Busy)) {

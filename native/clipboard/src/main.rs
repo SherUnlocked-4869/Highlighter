@@ -64,7 +64,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     initialized = true;
                     Ok(
                         json!({"protocolVersion":1,"phase":if store.is_some(){"v1-candidate"}else{"g0"}, "nativeBuildId":option_env!("HL_CLIPBOARD_SOURCE_ID").unwrap_or("unidentified"),
-                    "capabilities":{"clipboardMonitor":true,"history":store.is_some(),"coordination":true,"qualified":false},"enabled":false}),
+                    "capabilities":{"clipboardMonitor":true,"history":store.is_some(),"coordination":true,"fileList":true,"qualified":false},"enabled":false}),
                     )
                 }
             } else if !initialized || request.session_epoch.as_deref() != Some(&epoch) {

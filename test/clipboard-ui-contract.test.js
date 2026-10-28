@@ -20,6 +20,8 @@ const css = fs.readFileSync(path.join(root, 'clipboard', 'clipboard.css'), 'utf8
 const script = fs.readFileSync(path.join(root, 'clipboard', 'clipboard.js'), 'utf8')
 const preload = fs.readFileSync(path.join(root, 'preload-clipboard.js'), 'utf8')
 const domain = fs.readFileSync(path.join(root, 'main', 'domains', 'clipboard', 'index.js'), 'utf8')
+const ipc = fs.readFileSync(path.join(root, 'main', 'ipc', 'clipboard-ipc.js'), 'utf8')
+const settingsRoute = fs.readFileSync(path.join(root, 'config', 'routes', 'clipboard.js'), 'utf8')
 
 const IDS = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1])
 
@@ -103,10 +105,11 @@ test('every bridge call clipboard.js makes is exposed by its dedicated preload',
 
 test('the kind filter is a chip group whose pressed state is the selection', () => {
   // The redesign replaced the <select> with a chip row: one filter is always
-  // pressed, and the pressed chip is the selected kind. The four values are the
-  // backend's kind contract, not decoration.
+  // pressed, and the pressed chip is the selected kind. The five values are the
+  // backend's kind contract, not decoration - files is the V2 file-list kind and
+  // the last chip, so the order stays All / Text / Links / Images / Files.
   const kinds = [...html.matchAll(/<button[^>]*class="chip"[^>]*data-kind="([^"]*)"/g)].map((match) => match[1])
-  assert.deepEqual(kinds, ['', 'text', 'url', 'image'])
+  assert.deepEqual(kinds, ['', 'text', 'url', 'image', 'files'])
   assert.match(html, /data-kind=""[^>]*aria-pressed="true"/)
   const pressed = html.match(/aria-pressed="true"/g) || []
   assert.equal(pressed.length, 1, 'exactly one filter is pressed on open')
@@ -228,6 +231,45 @@ test('thumbnail plates load through the batched capability protocol', () => {
   assert.match(css, /\.tile\[data-state="failed"\]/)
 })
 
+test('the files kind is wired end to end: badge, row count, IPC filter, settings', () => {
+  // V2 (docs/plans/2026-10-27-clipboard-file-list-design.md §3.6-3.7): a copied
+  // file list is its own record kind. It renders as a text row whose preview is
+  // the first file name, stamped FIL, with a count when the record holds more
+  // than one path. The list IPC has to accept the filter value, otherwise the
+  // new chip would be answered with INVALID_FILTER.
+  assert.match(html, /data-kind="files"[^>]*data-i18n="clipboard\.files"/)
+
+  // Badges are instrument labels: the same three-letter shape in every language.
+  const badgeBlock = script.match(/const KIND_BADGE = \{([^}]*)\}/)
+  assert.ok(badgeBlock, 'KIND_BADGE declares the type stamps')
+  for (const [kind, badge] of [['text', 'TXT'], ['url', 'URL'], ['image', 'IMG'], ['files', 'FIL']]) {
+    assert.match(badgeBlock[1], new RegExp(`\\b${kind}: '${badge}'`), `${kind} keeps its three-letter stamp`)
+  }
+
+  // The row meta shows the file count only above one path; the string is
+  // parameterized, so a translation that drops {count} would read wrong.
+  assert.match(script, /item\.kind === 'files' && item\.fileCount > 1/)
+  assert.match(script, /t\('clipboard\.file-count', \{ count: item\.fileCount \}\)/)
+  assert.match(script, /clipboard\.file-count/)
+
+  // files records are text rows, never thumbnail plates: only image rows go to
+  // the grid renderer and only images are batched into preview requests. The
+  // detail sheet is the text view for every non-image kind (one path per line).
+  assert.match(script, /row\.type === 'images' \? renderImageRow\(row\) : renderTextRow\(row\)/)
+  assert.match(script, /if \(!item \|\| item\.kind !== 'image'\) continue/)
+  assert.match(script, /if \(!item \|\| item\.kind === 'image'\) return false/)
+  assert.match(script, /!selected \|\| selectedItem\(\)\?\.kind === 'image'/)
+
+  // The main-process filter whitelist is the other half of the chip contract.
+  const whitelist = ipc.match(/!\[([^\]]*)\]\.includes\(args\.kind\)/)
+  assert.ok(whitelist, 'clipboard:list validates the kind against a whitelist')
+  assert.deepEqual([...whitelist[1].matchAll(/'([^']*)'/g)].map((match) => match[1]), ['', 'text', 'url', 'image', 'files'],
+    'every kind a chip can send is accepted by the list IPC')
+
+  // Settings page: files capture is a first-class toggle with the V2 label.
+  assert.match(settingsRoute, /\['captureFiles', 'clipboard\.capture-files'\]/)
+})
+
 test('the full-text sheet overlays the list instead of shrinking it', () => {
   // The reported bug was that opening the sheet squeezed the history list and
   // could not be undone. An absolutely positioned sheet never reflows #list.
@@ -315,7 +357,22 @@ test('every clipboard key the panel uses resolves in all three locale tables', (
   for (const language of languages) {
     assert.match(tables[language]['clipboard.count'], /\{count\}/)
     assert.match(tables[language]['clipboard.pinned-count'], /\{count\}/)
+    assert.match(tables[language]['clipboard.file-count'], /\{count\}/)
   }
+  // V2 (file list): the new copy is symmetric and states the privacy boundary
+  // the design makes binding - the record holds paths, the file is never read.
+  for (const key of ['clipboard.files', 'clipboard.capture-files', 'clipboard.file-count']) {
+    for (const language of languages) assert.ok(Object.hasOwn(tables[language], key), `${key} exists in ${language}`)
+  }
+  for (const language of languages) {
+    assert.match(tables[language]['clipboard.description'], /路径|路徑|paths?/i, `${language} description mentions file paths`)
+    assert.match(tables[language]['clipboard.privacy'], /路径|路徑|paths?/i, `${language} privacy mentions file paths`)
+    assert.match(tables[language]['clipboard.search'], /文件|檔案|file/i, `${language} search mentions file names`)
+  }
+  assert.match(tables['en-US']['clipboard.description'], /never read/i)
+  assert.match(tables['en-US']['clipboard.privacy'], /never read/i)
+  assert.match(tables['zh-CN']['clipboard.privacy'], /不读取文件内容/)
+  assert.match(tables['zh-TW']['clipboard.privacy'], /不讀取檔案內容/)
   // Every status phase the renderer can label has a key in every table.
   const phaseBlock = script.match(/const PHASE_TONE = \{([^}]*)\}/)
   assert.ok(phaseBlock, 'PHASE_TONE declares the status phases')

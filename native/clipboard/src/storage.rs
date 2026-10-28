@@ -37,6 +37,10 @@ pub fn valid_id(id: &str) -> bool {
 pub struct Rules {
     pub capture_text: bool,
     pub capture_images: bool,
+    // Parent builds predating the files feature do not send the switch yet; a
+    // missing field must mean the shipped default, not INVALID_RULES.
+    #[serde(default = "capture_files_default")]
+    pub capture_files: bool,
     pub history_limit: u32,
     pub retention_days: u32,
     pub max_payload_mi_b: u64,
@@ -44,11 +48,15 @@ pub struct Rules {
     pub max_thumbnail_mi_b: u64,
     pub excluded_apps: Vec<String>,
 }
+fn capture_files_default() -> bool {
+    true
+}
 impl Default for Rules {
     fn default() -> Self {
         Self {
             capture_text: true,
             capture_images: true,
+            capture_files: true,
             history_limit: 500,
             retention_days: 30,
             max_payload_mi_b: 256,
@@ -136,6 +144,25 @@ fn safe_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// v1 only allows text/url/image. SQLite cannot alter a CHECK constraint, so the
+/// rows are copied into a rebuilt `items` table in a single transaction. The DDL
+/// below must stay token-identical to `schema-v2.sql`; the migration test compares
+/// both stores' normalized `sqlite_master` to catch drift.
+const MIGRATE_V1_TO_V2: &str = "
+DROP INDEX items_order;
+DROP INDEX items_kind;
+ALTER TABLE items RENAME TO items_v1;
+CREATE TABLE items(id TEXT PRIMARY KEY,payload_id TEXT NOT NULL UNIQUE REFERENCES payloads(id),kind TEXT NOT NULL CHECK(kind IN ('text','url','image','files')),
+ preview TEXT NOT NULL,source TEXT NOT NULL,created_at INTEGER NOT NULL,last_copied_at INTEGER NOT NULL,last_used_at INTEGER NOT NULL DEFAULT 0,sort_at INTEGER NOT NULL,
+ is_pinned INTEGER NOT NULL DEFAULT 0 CHECK(is_pinned IN (0,1)),pinned_order INTEGER NOT NULL DEFAULT 0,copy_count INTEGER NOT NULL DEFAULT 1,use_count INTEGER NOT NULL DEFAULT 0);
+INSERT INTO items(id,payload_id,kind,preview,source,created_at,last_copied_at,last_used_at,sort_at,is_pinned,pinned_order,copy_count,use_count)
+ SELECT id,payload_id,kind,preview,source,created_at,last_copied_at,last_used_at,sort_at,is_pinned,pinned_order,copy_count,use_count FROM items_v1;
+DROP TABLE items_v1;
+CREATE INDEX items_order ON items(is_pinned DESC,pinned_order DESC,sort_at DESC,id DESC);
+CREATE INDEX items_kind ON items(kind,sort_at DESC,id DESC);
+PRAGMA user_version=2;
+";
+
 impl Store {
     pub fn open(root: &Path) -> Result<Self> {
         if !root.is_absolute() || root.to_string_lossy().starts_with("\\\\") {
@@ -179,7 +206,7 @@ impl Store {
         let version: u32 = db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .stored()?;
-        if version > 1 {
+        if version > 2 {
             return Err("SCHEMA_TOO_NEW");
         }
         let integrity: String = db
@@ -211,13 +238,18 @@ impl Store {
         db.execute_batch("CREATE VIRTUAL TABLE temp.fts_capability USING fts5(value,tokenize='trigram'); DROP TABLE temp.fts_capability;").stored()?;
         if version == 0 {
             let tx = db.unchecked_transaction().stored()?;
-            tx.execute_batch(include_str!("schema-v1.sql")).stored()?;
+            tx.execute_batch(include_str!("schema-v2.sql")).stored()?;
             tx.execute(
                 "INSERT INTO metadata VALUES(1,?1,0,?2)",
                 params![Uuid::new_v4().to_string(), now()],
             )
             .stored()?;
-            tx.execute_batch("PRAGMA user_version=1").stored()?;
+            tx.execute_batch("PRAGMA user_version=2").stored()?;
+            tx.commit().stored()?;
+        } else if version == 1 {
+            // One transaction: a failure leaves a readable v1 store for the next start.
+            let tx = db.unchecked_transaction().stored()?;
+            tx.execute_batch(MIGRATE_V1_TO_V2).stored()?;
             tx.commit().stored()?;
         }
         // Bound even one- and two-character LIKE scans. A retained set has <=5000
@@ -332,11 +364,12 @@ impl Store {
             return Err("excluded");
         }
         if (kind == "text" && !self.rules.capture_text)
-            || (kind != "text" && !self.rules.capture_images)
+            || (kind == "files" && !self.rules.capture_files)
+            || (!matches!(kind, "text" | "files") && !self.rules.capture_images)
         {
             return Err("unsupported");
         }
-        let (kind, body, data, thumb, width, height) = if kind == "text" {
+        let (kind, body, data, thumb, width, height, preview) = if kind == "text" {
             if bytes.len() > crate::limits::MAX_TEXT_BYTES {
                 return Err("oversized");
             }
@@ -347,6 +380,7 @@ impl Store {
             let trimmed = text.trim();
             let url = !trimmed.contains(char::is_whitespace)
                 && (trimmed.starts_with("https://") || trimmed.starts_with("http://"));
+            let preview = text.chars().take(500).collect();
             (
                 if url { "url" } else { "text" },
                 Some(text),
@@ -354,6 +388,24 @@ impl Store {
                 Vec::new(),
                 0,
                 0,
+                preview,
+            )
+        } else if kind == "files" {
+            // A file copy stores only the validated path list: file contents are
+            // never opened, decoded or dereferenced.
+            let paths = crate::limits::decode_file_list(&bytes).map_err(|skip| skip.code())?;
+            let preview = match paths.first() {
+                Some(path) => crate::limits::file_preview(path),
+                None => String::new(),
+            };
+            (
+                "files",
+                Some(paths.join("\n")),
+                Vec::new(),
+                Vec::new(),
+                0,
+                0,
+                preview,
             )
         } else {
             // At most one input (<=64MiB), bitmap (<=64MiB), compressed result
@@ -366,10 +418,13 @@ impl Store {
                 image.thumbnail,
                 image.width,
                 image.height,
+                String::new(),
             )
         };
         let original = body.as_ref().map(|s| s.as_bytes()).unwrap_or(&data);
-        let mime = if body.is_some() {
+        let mime = if kind == "files" {
+            crate::limits::FILES_MIME
+        } else if body.is_some() {
             "text/plain;charset=utf-8"
         } else {
             "image/png"
@@ -448,7 +503,6 @@ impl Store {
             self.publish(&hash, &thumb, true)?;
         }
         let stamp = now();
-        let preview: String = body.as_deref().unwrap_or("").chars().take(500).collect();
         let tx = self.db.unchecked_transaction().stored()?;
         tx.execute("INSERT OR IGNORE INTO payloads(id,mime,byte_length,text_body,width,height) VALUES(?1,?2,?3,?4,?5,?6)", params![hash,mime,byte_length as i64,body,width,height]).stored()?;
         let existing: Option<String> = tx
@@ -523,7 +577,7 @@ impl Store {
     }
     pub fn list(&self, filter: Filter) -> Result<Value> {
         if filter.search.chars().count() > 200
-            || !["", "text", "url", "image"].contains(&filter.kind.as_str())
+            || !["", "text", "url", "image", "files"].contains(&filter.kind.as_str())
         {
             return Err("INVALID_FILTER");
         }
@@ -564,7 +618,8 @@ impl Store {
             "i.id IN (SELECT id FROM item_search WHERE text LIKE ?3 ESCAPE '\\')"
         };
         let cursor = filter.cursor;
-        let sql = format!("SELECT i.id,i.kind,i.preview,i.source,i.created_at,i.last_copied_at,i.last_used_at,i.is_pinned,p.width,p.height,p.byte_length,i.pinned_order,i.sort_at
+        let sql = format!("SELECT i.id,i.kind,i.preview,i.source,i.created_at,i.last_copied_at,i.last_used_at,i.is_pinned,p.width,p.height,p.byte_length,i.pinned_order,i.sort_at,
+            CASE WHEN i.kind='files' THEN COALESCE(1+length(p.text_body)-length(replace(p.text_body,char(10),'')),0) ELSE 0 END
             FROM items i JOIN payloads p ON p.id=i.payload_id WHERE (?1='' OR i.kind=?1) AND (?2=0 OR i.is_pinned=1) AND {search_clause}
             AND (?4=0 OR (i.is_pinned,i.pinned_order,i.sort_at,i.id)<(?5,?6,?7,?8))
             ORDER BY i.is_pinned DESC,i.pinned_order DESC,i.sort_at DESC,i.id DESC LIMIT ?9");
@@ -611,7 +666,7 @@ impl Store {
                 });
                 values.push(json!({"id":id,"kind":r.get::<_,String>(1).stored()?,"previewText":r.get::<_,String>(2).stored()?,"sourceDisplayName":r.get::<_,String>(3).stored()?,
                     "createdAt":r.get::<_,i64>(4).stored()?,"lastCopiedAt":r.get::<_,i64>(5).stored()?,"lastUsedAt":r.get::<_,i64>(6).stored()?,"isPinned":pinned==1,
-                    "width":r.get::<_,u32>(8).stored()?,"height":r.get::<_,u32>(9).stored()?,"byteLength":r.get::<_,i64>(10).stored()?,"availability":"available"}));
+                    "width":r.get::<_,u32>(8).stored()?,"height":r.get::<_,u32>(9).stored()?,"byteLength":r.get::<_,i64>(10).stored()?,"fileCount":r.get::<_,i64>(13).stored()?,"availability":"available"}));
             }
             Ok(
                 json!({"items":values,"cursor":if more {last}else{None},"datasetId":dataset,"revision":revision}),
