@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 
 const { createSettingsNormalizer } = require('../main/services/settings-normalize')
 const { DEFAULT_SETTINGS } = require('../main/services/settings-defaults')
+const { DEFAULT_CLIPBOARD, nativeRules } = require('../main/services/clipboard-settings')
 const { normalizeSelectionToolbar, normalizeToolbarThinking } = require('../toolbar/toolbar-utils')
 const { NIGHTSHIFT_AMBER } = require('../main/services/appearance-migration')
 
@@ -179,4 +180,59 @@ test('a legacy store without the new domains still normalizes', () => {
   assert.equal(normalized.record.audioSystem, false)
   assert.equal(normalized.record.audioSystemGain, 1)
   assert.equal(normalized.shortcuts.screenshotSaveAs, '')
+})
+
+// V2 file list (docs/plans/2026-10-27-clipboard-file-list-design.md §3.6). The
+// captureFiles switch is newer than the installed stores: a stored clipboard
+// block that predates it must be back-filled from the defaults instead of
+// failing the assertion and resetting the whole block (which would disable
+// recording and throw away the user's limits and exclusions).
+test('a legacy clipboard block without captureFiles keeps the user choices', () => {
+  const legacy = makeSettings((settings) => {
+    // Exactly the block an older build wrote: no captureFiles key.
+    settings.clipboard = {
+      enabled: true,
+      paused: false,
+      captureText: true,
+      captureImages: false,
+      historyLimit: 900,
+      retentionDays: 7,
+      maxPayloadMiB: 128,
+      maxDiskMiB: 256,
+      maxThumbnailMiB: 32,
+      releaseAfterMs: 300000,
+      excludedApps: ['keepass.exe'],
+      // A key the current build does not know. It used to survive the read path
+      // and would then be forwarded to the native rules (which reject unknown
+      // fields), so normalization has to drop it.
+      legacyField: 'stale'
+    }
+  })
+  const { clipboard } = normalizeWith(legacy)
+  assert.equal(clipboard.captureFiles, true, 'the new switch is back-filled from the defaults')
+  assert.equal(clipboard.enabled, true, 'the missing key does not reset the block')
+  assert.equal(clipboard.paused, false)
+  assert.equal(clipboard.captureText, true)
+  assert.equal(clipboard.captureImages, false, 'a disabled capture kind survives')
+  assert.equal(clipboard.historyLimit, 900)
+  assert.equal(clipboard.retentionDays, 7)
+  assert.equal(clipboard.maxPayloadMiB, 128)
+  assert.equal(clipboard.maxDiskMiB, 256)
+  assert.equal(clipboard.maxThumbnailMiB, 32)
+  assert.equal(clipboard.releaseAfterMs, 300000)
+  assert.deepEqual(clipboard.excludedApps, ['keepass.exe'])
+  assert.equal(Object.hasOwn(clipboard, 'legacyField'), false, 'unknown keys never reach the native rules')
+})
+
+test('nativeRules passes captureFiles through and strips the JS-only fields', () => {
+  const rules = nativeRules({ ...DEFAULT_CLIPBOARD, enabled: true, paused: true, releaseAfterMs: 0, captureFiles: false })
+  assert.equal(rules.captureFiles, false, 'the capture switch is part of the native rule set')
+  assert.equal(rules.captureText, true)
+  assert.equal(rules.captureImages, true)
+  assert.deepEqual(rules.excludedApps, [])
+  for (const key of ['enabled', 'paused', 'releaseAfterMs']) {
+    assert.equal(Object.hasOwn(rules, key), false, `${key} stays in the JS layer`)
+  }
+  // The shipped default is on, so existing users get file capture without opting in.
+  assert.equal(DEFAULT_CLIPBOARD.captureFiles, true)
 })

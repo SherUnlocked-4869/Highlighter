@@ -20,7 +20,7 @@ function registerClipboardIpc({ ipcMain, service, domain, setPaused }) {
   handle('status', () => service.snapshot())
   handle('list', async (_event, args) => {
     object(args, ['search', 'kind', 'pinnedOnly', 'cursor', 'limit'])
-    if (typeof args.search !== 'string' || [...args.search].length > 200 || !['', 'text', 'url', 'image'].includes(args.kind) || typeof args.pinnedOnly !== 'boolean' || (args.limit !== undefined && (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 100)) || JSON.stringify(args.cursor || null).length > 2048) throw new Error('INVALID_FILTER')
+    if (typeof args.search !== 'string' || [...args.search].length > 200 || !['', 'text', 'url', 'image', 'files'].includes(args.kind) || typeof args.pinnedOnly !== 'boolean' || (args.limit !== undefined && (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 100)) || JSON.stringify(args.cursor || null).length > 2048) throw new Error('INVALID_FILTER')
     return service.command('list', args)
   })
   handle('detail', (_event, args) => { object(args, ['id']); return service.command('detail', { id: id(args.id) }) })

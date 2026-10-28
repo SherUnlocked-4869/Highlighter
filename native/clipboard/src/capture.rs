@@ -1,5 +1,5 @@
 //! Clipboard handles are borrowed only inside OpenClipboard/CloseClipboard.
-//! Every returned payload owns its bytes; text decoding happens after close.
+//! Every returned payload owns its bytes; text and file-list decoding happen after close.
 use crate::limits::{self, Skip};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HGLOBAL;
@@ -63,13 +63,14 @@ unsafe fn copy_global(
 }
 
 pub fn read_snapshot(expected_sequence: u32) -> Result<Snapshot, Skip> {
-    read_snapshot_with_rules(expected_sequence, true, true, &[])
+    read_snapshot_with_rules(expected_sequence, true, true, true, &[])
 }
 
 pub fn read_snapshot_with_rules(
     expected_sequence: u32,
     text: bool,
     images: bool,
+    files: bool,
     excluded: &[String],
 ) -> Result<Snapshot, Skip> {
     let (kind, bytes, image_size, source) = unsafe {
@@ -104,12 +105,16 @@ pub fn read_snapshot_with_rules(
                 return Err(Skip::Private);
             }
         }
-        // File copies are not bitmaps: Explorer's preview icon must not become
-        // an image history record. File lists are outside the G0 capability.
-        if IsClipboardFormatAvailable(15).is_ok() {
-            return Err(Skip::Unsupported);
-        }
-        let data = if IsClipboardFormatAvailable(13).is_ok() {
+        // File copies are not bitmaps: Explorer may attach a preview icon to the
+        // same copy, but the file list is recorded as paths only and must win over
+        // text/image. A disabled capture switch keeps the V1 behaviour.
+        let data = if IsClipboardFormatAvailable(15).is_ok() {
+            if !files {
+                return Err(Skip::Unsupported);
+            }
+            let raw = copy_global(15, limits::MAX_HDROP_BYTES, |_| Ok(()))?;
+            ("files", raw, None)
+        } else if IsClipboardFormatAvailable(13).is_ok() {
             if !text {
                 return Err(Skip::Unsupported);
             }
@@ -158,6 +163,9 @@ pub fn read_snapshot_with_rules(
             return Err(Skip::Unsupported);
         }
         text.into_bytes()
+    } else if kind == "files" {
+        // Path validation and de-duplication also happen here, after close.
+        limits::parse_dropfiles(&bytes)?.join("\n").into_bytes()
     } else {
         bytes
     };

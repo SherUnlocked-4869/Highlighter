@@ -150,6 +150,18 @@ fn copy(
             .flat_map(u16::to_le_bytes)
             .collect();
         formats.push((13, Global::new(&unicode)?));
+    } else if mime == crate::limits::FILES_MIME {
+        // Re-validate the body before publishing: an invalid list never becomes a
+        // partial clipboard file list. Only paths are written, never file contents.
+        let paths = crate::limits::decode_file_list(bytes).map_err(|_| "UNSUPPORTED")?;
+        let dropfiles = crate::limits::encode_dropfiles(&paths).map_err(|_| "UNSUPPORTED")?;
+        formats.push((15, Global::new(&dropfiles)?));
+        // CF_HDROP alone makes Explorer offer "Cut" in some targets; the registered
+        // drop effect pins the pasted operation to a copy.
+        formats.push((
+            named_format("Preferred DropEffect").map_err(|_| "COPY_FAILED")?,
+            Global::new(&1u32.to_le_bytes())?,
+        ));
     } else if mime == "image/png" {
         let mut reader =
             image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
@@ -288,6 +300,8 @@ unsafe fn verify_formats(
         count += 1;
         let derived = if mime.starts_with("text/plain") {
             [1, 7, 16].contains(&format)
+        } else if mime == crate::limits::FILES_MIME {
+            [15].contains(&format)
         } else {
             [2, 8, 9].contains(&format)
         };

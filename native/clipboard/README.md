@@ -34,9 +34,13 @@ lossless record of every clipboard mutation. Capture/stop failures are reported,
 not converted into successful quiescence.
 
 Current capture support: CF_UNICODETEXT, registered PNG, 24/32-bit uncompressed
-DIB/DIBV5. Text preserves whitespace. Privacy flags and CF_HDROP are checked
-first. Allocated source sizes and bitmap dimensions are validated before copying;
-storage performs a bounded full decode after the clipboard lock is released.
+DIB/DIBV5, and CF_HDROP file lists (paths only: no file content is read, at most
+64 paths and a 64 KiB descriptor). Text preserves whitespace. Privacy flags are
+checked first. CF_HDROP is captured as its own `files` record ahead of
+text/images, so Explorer's preview icon can never become an image record; with
+`captureFiles` off the whole event is skipped. Allocated source sizes and bitmap
+dimensions are validated before copying; storage performs a bounded full decode
+after the clipboard lock is released.
 
 The ordinary lifecycle test starts only **paused** listeners and never reads or
 writes clipboard payloads. The actual capture integration test is opt-in and
@@ -64,7 +68,9 @@ Explicit history paste is implemented separately in `src/paste.rs`. The parent
 captures a private foreground target before showing history, prepares a complete
 owned copy, hides the panel, then consumes a single-use commit ticket. It verifies
 the original live process/window/focus, input desktop, released modifiers and
-clipboard sequence before one Ctrl+V batch. No idle hook/polling thread, automatic
+clipboard sequence before one Ctrl+V batch. A `files` record publishes CF_HDROP
+plus `Preferred DropEffect = copy` (paths are re-validated; file content is never
+read), so it pastes back as a file copy. No idle hook/polling thread, automatic
 retry, elevation or clipboard restoration is added. An inserted input batch is
 not proof that the target consumed the clipboard. See
 `docs/performance/2026-10-17-clipboard-active-paste.md` for limits and pending

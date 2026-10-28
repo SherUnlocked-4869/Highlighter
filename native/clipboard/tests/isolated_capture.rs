@@ -1,7 +1,7 @@
 //! This test changes only the clipboard of a private, non-interactive window
 //! station. Failure to create that isolation aborts before any clipboard write.
 #![cfg(windows)]
-use highlighter_clipboard::capture::{named_format, read_snapshot};
+use highlighter_clipboard::capture::{named_format, read_snapshot, read_snapshot_with_rules};
 use highlighter_clipboard::limits::Skip;
 use highlighter_clipboard::listener::Monitor;
 use std::time::{Duration, Instant};
@@ -109,8 +109,27 @@ fn capture_and_restart_on_private_window_station() {
             );
             assert_eq!(read_snapshot(sequence).unwrap_err(), Skip::Private);
         }
+        // A malformed CF_HDROP descriptor stays a skip even with files enabled.
         let sequence = publish(owner, &[(13, &bytes), (15, &[0; 24])]);
         assert_eq!(read_snapshot(sequence).unwrap_err(), Skip::Unsupported);
+        // A valid wide file list becomes a path-only `files` snapshot and wins over
+        // the text format that an Explorer-like copy may also publish.
+        let paths = [
+            "C:\\合成\\a.txt".to_string(),
+            "D:\\dir\\b.png".to_string(),
+        ];
+        let dropfiles = highlighter_clipboard::limits::encode_dropfiles(&paths).unwrap();
+        let sequence = publish(owner, &[(13, &bytes), (15, dropfiles.as_slice())]);
+        let snapshot = read_snapshot(sequence).unwrap();
+        assert_eq!(snapshot.kind, "files");
+        assert_eq!(snapshot.bytes, paths.join("\n").as_bytes());
+        assert_eq!((snapshot.width, snapshot.height), (None, None));
+        // Disabling file capture keeps CF_HDROP unsupported for a valid list too.
+        let sequence = publish(owner, &[(15, dropfiles.as_slice())]);
+        assert_eq!(
+            read_snapshot_with_rules(sequence, true, true, false, &[]).unwrap_err(),
+            Skip::Unsupported
+        );
 
         for _ in 0..3 {
             let mut monitor = Monitor::start().unwrap();

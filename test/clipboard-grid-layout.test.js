@@ -49,7 +49,10 @@ const FIXTURES = [
   { name: 'image, text, image', items: kinds(['image', 'text', 'image']) },
   { name: 'text block, image block, text block', items: kinds(['text', 'text', 'image', 'image', 'image', 'text']) },
   { name: 'alternating', items: kinds(['image', 'text', 'image', 'text', 'image']) },
-  { name: 'grid wider than cols', items: kinds(['image', 'image', 'image', 'image', 'image', 'image', 'image']) }
+  { name: 'grid wider than cols', items: kinds(['image', 'image', 'image', 'image', 'image', 'image', 'image']) },
+  // V2 file list: files is a text-shaped record, so it must not become a cell.
+  { name: 'files only', items: kinds(['files', 'files', 'files']) },
+  { name: 'files mixed with text and images', items: kinds(['text', 'files', 'image', 'files', 'text', 'image', 'image', 'files']) }
 ]
 
 // --- 1. coverage: itemRow/itemCol is a permutation of [0, n) -----------------
@@ -205,6 +208,33 @@ test('group 4: images only share rows with images, text rows hold one cell', () 
       }
     }
   }
+})
+
+// --- 4b. files records are text rows (V2 file list) -------------------------
+
+test('group 4b: files records lay out as text rows and never as grid cells', () => {
+  // V2 (docs/plans/2026-10-27-clipboard-file-list-design.md §3.7): a copied file
+  // list is a text-shaped record - the layout only special-cases `image`, and
+  // this pins that it stays that way. A files record must sit on its own text
+  // row with the legacy row geometry, even when it is surrounded by images.
+  const m = { ...METRICS, cols: 4 }
+  const mixed = kinds(['files', 'image', 'files', 'image', 'image', 'files', 'text', 'files', 'files'])
+  const model = layout(mixed, m)
+
+  mixed.forEach((item, index) => {
+    if (item.kind !== 'files') return
+    const row = model.rows[model.itemRow[index]]
+    assert.equal(row.type, 'row', `file ${index} sits on a text row`)
+    assert.deepEqual(row.items, [index], `file ${index} holds exactly one cell`)
+    assert.equal(model.itemCol[index], 0, `file ${index} starts at column 0`)
+    assert.equal(row.h, m.rowH, `file ${index} uses the text row height`)
+  })
+
+  // The whole geometry is unchanged: a file record occupies exactly the space a
+  // text/url record would, so mixing files into a history must not move a single
+  // existing row (and therefore must not change the image grid positions either).
+  const asText = kinds(['text', 'image', 'text', 'image', 'image', 'text', 'url', 'text', 'text'])
+  assert.deepEqual(layout(mixed, m), layout(asText, m))
 })
 
 // --- 5. no trailing whitespace, no overlap ----------------------------------
