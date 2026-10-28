@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-usage-page/
 *.log
 crash.log
 __pycache__/
@@ -10,6 +11,7 @@ native/ocr/HighlighterOcrSidecar.exe
 native/ocr/OcrSidecar.exe
 native/ocr/*.dll
 .worktrees/
+.agents/
 .tmp*/
 .reasonix/
 .zcode/
