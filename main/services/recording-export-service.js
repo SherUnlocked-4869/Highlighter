@@ -72,6 +72,8 @@ const EXPORT_ERROR_CODES = Object.freeze([
   'invalid-video-option',
   'fps-above-source',
   'empty-selection',
+  // R5 demo-rendering validation (contract §3.2).
+  'invalid-demo-option',
   'gif-too-long',
   'gif-invalid-fps',
   'gif-invalid-edge',
@@ -94,6 +96,18 @@ function randomTaskId() {
   return `record-export-${crypto.randomUUID()}`
 }
 
+// '#rrggbb' -> { r, g, b }; the demo style validator already guarantees the format, this only
+// converts it for sharp's composite/create inputs.
+function hexToRgb(value) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!/^#[0-9a-f]{6}$/i.test(text)) return { r: 15, g: 17, b: 21 }
+  return {
+    r: parseInt(text.slice(1, 3), 16),
+    g: parseInt(text.slice(3, 5), 16),
+    b: parseInt(text.slice(5, 7), 16)
+  }
+}
+
 class RecordingExportService {
   constructor({
     getRecordingService,
@@ -107,7 +121,10 @@ class RecordingExportService {
     log = () => {},
     createTaskId = randomTaskId,
     limits = LIMITS,
-    timeouts = {}
+    timeouts = {},
+    // R5 demo rendering: sharp is loaded lazily (never for a plain R4 export) and injectable
+    // so a unit test can prove the asset pipeline without spawning the native rasteriser.
+    sharp: sharpImpl = null
   } = {}) {
     if (typeof getRecordingService !== 'function') {
       throw new TypeError('Recording export service requires a recording service resolver')
@@ -128,6 +145,7 @@ class RecordingExportService {
     this.now = now
     this.log = typeof log === 'function' ? log : () => {}
     this.createTaskId = createTaskId
+    this.sharp = sharpImpl
     // Merge, never replace: a caller that overrides one limit (tests, a future setting) must not
     // silently disable the others - an undefined MAX_ACTIVE_TASKS would make the queue never run.
     this.limits = { ...LIMITS, ...(limits && typeof limits === 'object' ? limits : {}) }
@@ -480,14 +498,22 @@ class RecordingExportService {
 
   // ---------- encode ----------
 
-  encode(task, lease) {
+  async encode(task, lease) {
+    // R5 §3.3: the demo look/camera plan needs raster assets (background/mask/ripple) before
+    // the graph can name them. They live beside the temp file and are removed by the same
+    // cleanup discipline. A plain R4 export never touches sharp.
+    let demoAssets = null
+    if (task.request.demo && task.request.demo.rendered === true) {
+      demoAssets = await this.buildDemoAssets(task)
+    }
     // The normalised request is the single source of truth for the assembly (§4.3). Spread
-    // it so segments/video/hasAudio reach buildExportArgs exactly as the UI was validated
-    // against; only the main-process-owned paths are added here.
+    // it so segments/video/demo/hasAudio reach buildExportArgs exactly as the UI was
+    // validated against; only the main-process-owned paths/assets are added here.
     const { args } = buildExportArgs({
       ...task.request,
       inputPath: lease.inputPath,
-      outputPath: task.tempPath
+      outputPath: task.tempPath,
+      demoAssets
     })
     const spanMs = Number(task.request.totalDurationMs) || 0
 
@@ -573,10 +599,16 @@ class RecordingExportService {
     const metadata = probed.metadata
     const expected = task.request
     if (!metadata.video) return { ok: false, code: 'no-video-track' }
-    // Expected output dimensions: the video options' computed width/height for mp4/webm
-    // (source size on the copy path, never-upscaled preset otherwise), gif dimensions for GIF.
-    const expectedWidth = expected.format === 'gif' ? expected.gif?.width : expected.video?.width
-    const expectedHeight = expected.format === 'gif' ? expected.gif?.height : expected.video?.height
+    // Expected output dimensions: R5 demo films are the resolved CANVAS size; otherwise the
+    // video options' computed width/height for mp4/webm (source size on the copy path, never-
+    // upscaled preset otherwise), gif dimensions for GIF.
+    const demo = expected.demo && expected.demo.rendered === true ? expected.demo : null
+    const expectedWidth = expected.format === 'gif'
+      ? expected.gif?.width
+      : demo ? demo.canvasWidth : expected.video?.width
+    const expectedHeight = expected.format === 'gif'
+      ? expected.gif?.height
+      : demo ? demo.canvasHeight : expected.video?.height
     if (expectedWidth && metadata.video.width !== expectedWidth) {
       return { ok: false, code: `unexpected-width:${metadata.video.width}` }
     }
@@ -631,6 +663,8 @@ class RecordingExportService {
     task.progress = 100
     task.receipt = this.makeReceipt(task)
     this.emit(task)
+    // A published export no longer needs its raster assets; the temp file itself was renamed.
+    await this.cleanupDemoAssets(task)
   }
 
   // The plan §4.2 receipt, reused verbatim so the result bar and the tray work unchanged.
@@ -718,14 +752,122 @@ class RecordingExportService {
   // Only ever the task's own temp file. The target path is never touched by a cancel or a
   // failure (plan §8.4).
   async cleanupTemp(task) {
-    if (!task.tempPath) return false
-    try {
-      await this.fs.rm(task.tempPath, { force: true })
-      return true
-    } catch (error) {
-      this.log('Recording export temp cleanup failed:', error?.message || error)
-      return false
+    let removed = false
+    if (task.tempPath) {
+      try {
+        await this.fs.rm(task.tempPath, { force: true })
+        removed = true
+      } catch (error) {
+        this.log('Recording export temp cleanup failed:', error?.message || error)
+      }
     }
+    await this.cleanupDemoAssets(task)
+    return removed
+  }
+
+  // Removes the raster assets generated for a demo render (background/mask/ripple). Separate
+  // from cleanupTemp so the publish success path (temp renamed away) still clears them.
+  async cleanupDemoAssets(task) {
+    const assets = task?.demoAssets
+    if (!assets) return false
+    task.demoAssets = null
+    const targets = [assets.bgPath, assets.maskPath, assets.ripplePath].filter((target) => typeof target === 'string' && target)
+    for (const target of targets) {
+      try {
+        await this.fs.rm(target, { force: true })
+      } catch (error) {
+        this.log('Recording demo asset cleanup failed:', error?.message || error)
+      }
+    }
+    return targets.length > 0
+  }
+
+  // ---------- R5 demo raster assets ----------
+
+  async loadSharp() {
+    if (this.sharp) return this.sharp
+    try {
+      const sharp = require('sharp')
+      this.sharp = sharp
+      return sharp
+    } catch (error) {
+      throw new Error(`demo-renderer-unavailable: ${error?.message || error}`)
+    }
+  }
+
+  // Builds bg.png / mask.png / ripple.png beside the task's temp file. Asset names are derived
+  // from the unique temp basename so two concurrent exports can never collide. Everything is
+  // tracked on task.demoAssets so cleanupTemp/publish remove it.
+  async buildDemoAssets(task) {
+    const demo = task.request.demo
+    const sharp = await this.loadSharp()
+    const directory = this.path.dirname(task.tempPath)
+    const base = this.path.basename(task.tempPath)
+    const assets = { bgPath: '', maskPath: '', ripplePath: '' }
+    task.demoAssets = assets
+    const contentWidth = Math.round(Number(demo.contentWidth) || 0)
+    const contentHeight = Math.round(Number(demo.contentHeight) || 0)
+    const canvasWidth = Math.round(Number(demo.canvasWidth) || 0)
+    const canvasHeight = Math.round(Number(demo.canvasHeight) || 0)
+    const radiusPx = Math.max(0, Math.round(Number(demo.radiusPx) || 0))
+    const offsetX = Math.max(0, Math.round((canvasWidth - contentWidth) / 2))
+    const offsetY = Math.max(0, Math.round((canvasHeight - contentHeight) / 2))
+    const needsCanvas = canvasWidth > contentWidth || canvasHeight > contentHeight || radiusPx > 0
+    const background = hexToRgb(demo.style?.background)
+
+    if (needsCanvas) {
+      const bgPath = this.path.join(directory, `${base}.bg.png`)
+      assets.bgPath = bgPath
+      const baseImage = sharp({
+        create: { width: canvasWidth, height: canvasHeight, channels: 4, background: { ...background, alpha: 1 } }
+      })
+      const layers = []
+      if (demo.style?.shadow === true && (canvasWidth > contentWidth || canvasHeight > contentHeight)) {
+        // Soft black rounded rectangle behind the content area. Rasterise the SVG, blur it, and
+        // composite slightly offset so the shadow reads as depth instead of a hard frame.
+        const shadowSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${contentWidth}" height="${contentHeight}">` +
+          `<rect x="0" y="0" width="${contentWidth}" height="${contentHeight}" rx="${radiusPx}" fill="#000000" fill-opacity="0.55"/></svg>`
+        const sigma = Math.max(4, Math.round(contentWidth * 0.008))
+        const shadow = await sharp(Buffer.from(shadowSvg)).blur(sigma).png().toBuffer()
+        const shadowOffset = Math.max(2, Math.round(contentWidth * 0.004))
+        layers.push({
+          input: shadow,
+          left: Math.max(0, Math.min(canvasWidth - 1, offsetX + shadowOffset)),
+          top: Math.max(0, Math.min(canvasHeight - 1, offsetY + shadowOffset)),
+          blend: 'over'
+        })
+      }
+      let pipeline = baseImage
+      if (layers.length) pipeline = sharp(await pipeline.png().toBuffer()).composite(layers)
+      await pipeline.png().toFile(bgPath)
+
+      if (radiusPx > 0) {
+        const maskPath = this.path.join(directory, `${base}.mask.png`)
+        assets.maskPath = maskPath
+        // alphamerge reads the second input's GRAYSCALE as alpha: white = opaque content.
+        const maskSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${contentWidth}" height="${contentHeight}">` +
+          `<rect width="100%" height="100%" fill="#000000"/>` +
+          `<rect x="0" y="0" width="${contentWidth}" height="${contentHeight}" rx="${radiusPx}" fill="#ffffff"/></svg>`
+        await sharp(Buffer.from(maskSvg)).png().toFile(maskPath)
+      }
+    }
+
+    if (demo.style?.ripples === true && Array.isArray(demo.clicks) && demo.clicks.length) {
+      const ripplePath = this.path.join(directory, `${base}.ripple.png`)
+      assets.ripplePath = ripplePath
+      // Soft white ring: transparent centre/outer edge, bright band around 0.78 of the radius.
+      // The filter graph scales it per frame, so one asset serves every click.
+      const size = 56
+      const rippleSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}">` +
+        '<defs><radialGradient id="ring">' +
+        '<stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>' +
+        '<stop offset="0.78" stop-color="#ffffff" stop-opacity="0.92"/>' +
+        '<stop offset="1" stop-color="#ffffff" stop-opacity="0"/>' +
+        '</radialGradient></defs>' +
+        `<circle cx="${size / 2}" cy="${size / 2}" r="${size / 2}" fill="url(#ring)"/></svg>`
+      await sharp(Buffer.from(rippleSvg)).png().toFile(ripplePath)
+    }
+    return assets
   }
 
   // ---------- status ----------

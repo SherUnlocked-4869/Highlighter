@@ -583,3 +583,93 @@ test('a concurrent checkpoint cannot overwrite a draft revision', async (t) => {
   assert.equal(project.recovery.committedByteOffset, 4096)
   assert.equal(project.recovery.lastChunkSequence, 3)
 })
+
+// ---------------------------------------------------------------------------
+// R5 event track (contract §2.2/§2.3)
+// ---------------------------------------------------------------------------
+
+test('writeEventTrack round-trips a bounded events.json track', async (t) => {
+  const context = await createContext(t)
+  const { directory } = await context.service.createProject({})
+
+  const written = await context.service.writeEventTrack('project-1', {
+    durationMs: 5000,
+    sampledAtHz: 20,
+    pointer: [
+      { tMs: 100, x: 0.5, y: 0.5 },
+      { tMs: 160, x: 0.51, y: 0.5 },
+      { tMs: 9000, x: 0.9, y: 0.9 }, // beyond duration -> dropped
+      { tMs: 'junk', x: 0, y: 0 }
+    ],
+    clicks: [
+      { tMs: 1200, x: 0.21, y: 0.32, button: 0 },
+      { tMs: 1300, x: 0.21, y: 0.32, button: 7 } // invalid button -> dropped
+    ],
+    truncated: false
+  })
+  assert.equal(written.ok, true)
+  assert.equal(written.track.schemaVersion, 1)
+  assert.deepEqual(written.track.pointer, [
+    { tMs: 100, x: 0.5, y: 0.5 },
+    { tMs: 160, x: 0.51, y: 0.5 }
+  ])
+  assert.deepEqual(written.track.clicks, [{ tMs: 1200, x: 0.21, y: 0.32, button: 0 }])
+
+  const file = path.join(directory, 'events.json')
+  const onDisk = JSON.parse(await fs.readFile(file, 'utf8'))
+  assert.deepEqual(onDisk, written.track)
+  assert.deepEqual((await fs.readdir(directory)).sort(), ['events.json', 'project.json'])
+
+  const read = await context.service.readEventTrack('project-1')
+  assert.deepEqual(read, written.track)
+})
+
+test('readEventTrack never throws and drops invalid or missing files', async (t) => {
+  const context = await createContext(t)
+  const { directory } = await context.service.createProject({})
+  const file = path.join(directory, 'events.json')
+
+  assert.equal(await context.service.readEventTrack('project-1'), null, 'no file yet')
+  assert.equal(await context.service.readEventTrack('missing'), null)
+  assert.equal(await context.service.readEventTrack('../escape'), null)
+
+  await fs.writeFile(file, 'not json')
+  assert.equal(await context.service.readEventTrack('project-1'), null)
+
+  await fs.writeFile(file, JSON.stringify([1, 2, 3]))
+  assert.equal(await context.service.readEventTrack('project-1'), null)
+
+  // A shape-valid file is normalised on read (clamps, caps, drops junk).
+  await fs.writeFile(file, JSON.stringify({
+    durationMs: 2000,
+    pointer: [{ tMs: 10, x: 2, y: -1 }, { tMs: 20, x: 0.1, y: 0.1 }],
+    clicks: [{ tMs: 500, x: 0.5, y: 0.5, button: 1 }]
+  }))
+  const read = await context.service.readEventTrack('project-1')
+  assert.equal(read.schemaVersion, 1)
+  assert.deepEqual(read.pointer, [{ tMs: 10, x: 1, y: 0 }, { tMs: 20, x: 0.1, y: 0.1 }])
+  assert.deepEqual(read.clicks, [{ tMs: 500, x: 0.5, y: 0.5, button: 1 }])
+})
+
+test('writeEventTrack bounds oversized tracks and refuses unknown projects without creating dirs', async (t) => {
+  const context = await createContext(t)
+  const { directory } = await context.service.createProject({})
+
+  const pointer = Array.from({ length: 20010 }, (_value, index) => ({ tMs: index * 10, x: 0.5, y: 0.5 + (index % 2) * 0.01 }))
+  const clicks = Array.from({ length: 2500 }, (_value, index) => ({ tMs: index, x: 0.4, y: 0.4, button: 0 }))
+  const written = await context.service.writeEventTrack('project-1', { durationMs: 1000000, pointer, clicks })
+  assert.equal(written.ok, true)
+  assert.equal(written.track.pointer.length, 20000)
+  assert.equal(written.track.clicks.length, 2000)
+  assert.equal(written.track.truncated, true)
+
+  const missing = await context.service.writeEventTrack('unknown-project', { durationMs: 1000, pointer: [], clicks: [] })
+  assert.deepEqual(missing, { ok: false, code: 'not-found' })
+  assert.equal(await exists(path.join(context.root, 'unknown-project')), false, 'the writer must never create a project directory')
+  assert.equal((await context.service.writeEventTrack('../escape', {})).ok, false)
+
+  // deleteProject removes the event track with the directory (already covered for projects,
+  // asserted here so an events file cannot survive a project delete).
+  assert.deepEqual(await context.service.deleteProject('project-1'), { ok: true })
+  assert.equal(await exists(directory), false)
+})

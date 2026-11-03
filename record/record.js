@@ -124,6 +124,12 @@ let chunkFailureAcknowledged = false
 let startedAt = 0
 let pausedAt = 0
 let pausedTotal = 0
+// R5 §2.2 event-track clock: wall clock of MediaRecorder.start() and the wall-clock pause spans.
+// The main process maps the pointer track's wall timestamps to media time with these, so paused
+// time can never be counted as recorded media time.
+let mediaStartedAtWall = 0
+let pausedIntervals = []
+let pauseStartedAtWall = 0
 let clockTimer = 0
 let countdownVersion = 0
 let stateVersion = 0
@@ -169,6 +175,27 @@ function elapsedTime() {
   if (!startedAt) return 0
   const activePause = pausedAt ? Date.now() - pausedAt : 0
   return Math.max(0, Date.now() - startedAt - pausedTotal - activePause)
+}
+
+// R5 §2.2 pause spans: every path that stops/starts the MediaRecorder timeline (button, adopted
+// tray command, chunk failure) keeps the wall-clock span in sync, so the event-track mapping can
+// exclude paused time regardless of how the take was paused.
+function openPauseSpan(at = Date.now()) {
+  if (!pauseStartedAtWall) pauseStartedAtWall = at
+}
+
+function closePauseSpan(at = Date.now()) {
+  if (!pauseStartedAtWall) return
+  pausedIntervals.push({ startWall: pauseStartedAtWall, endWall: at })
+  pauseStartedAtWall = 0
+}
+
+// The frozen finish-session timing payload (contract §2.2). A take finished while paused closes its
+// open span here: the media timeline never advances during a pause.
+function finishTiming() {
+  const intervals = pausedIntervals.map((interval) => ({ startWall: interval.startWall, endWall: interval.endWall }))
+  if (pauseStartedAtWall) intervals.push({ startWall: pauseStartedAtWall, endWall: Date.now() })
+  return { mediaStartedAtWall, pausedIntervals: intervals }
 }
 
 function renderClock() {
@@ -415,9 +442,11 @@ function adoptMainState(mainState, options = {}) {
   if (nextState === 'paused' && recorder?.state === 'recording') {
     try { recorder.pause() } catch {}
     stopCompositeLoop()
+    openPauseSpan()
   } else if (nextState === 'recording' && recorder?.state === 'paused') {
     try { recorder.resume() } catch {}
     startCompositeLoop()
+    closePauseSpan()
   }
   // Baseline the clock on main's elapsed time so a reconciled bar shows the real duration.
   startedAt = Date.now() - nextElapsed
@@ -1208,6 +1237,7 @@ function failChunkStream(error) {
     try { recorder.pause() } catch {}
     stopCompositeLoop()
     pausedAt = Date.now()
+    openPauseSpan(pausedAt)
     setState(transitionRecordingState('recording', 'error'))
     setFrameState('paused')
   }
@@ -1228,6 +1258,11 @@ async function startRecorder(fromState) {
   recorder.addEventListener('dataavailable', handleDataAvailable)
   recorder.addEventListener('error', handleRecorderError)
   startCompositeLoop()
+  // R5 §2.2: the media timeline starts here, not at the first chunk. Captured BEFORE start() so a
+  // synchronous first dataavailable can never be stamped later than the clock.
+  mediaStartedAtWall = Date.now()
+  pausedIntervals = []
+  pauseStartedAtWall = 0
   recorder.start(1000)
   startedAt = Date.now()
   pausedAt = 0
@@ -1340,7 +1375,7 @@ async function finishRecording() {
   }
   let result = null
   try {
-    result = await window.recordAPI.finishSession(sessionId)
+    result = await window.recordAPI.finishSession(sessionId, finishTiming())
   } catch (error) {
     setState(transitionRecordingState('finalizing', 'failed'))
     setBusy(false)
@@ -1421,6 +1456,7 @@ function pauseRecording() {
   recorder.pause()
   stopCompositeLoop()
   pausedAt = Date.now()
+  openPauseSpan(pausedAt)
   setState(transitionRecordingState('recording', 'pause'))
   setFrameState('paused')
   return { ok: true, state: snapshotState() }
@@ -1435,6 +1471,7 @@ function resumeRecording() {
   recorder.resume()
   startCompositeLoop()
   pausedTotal += Date.now() - pausedAt
+  closePauseSpan()
   pausedAt = 0
   setState(transitionRecordingState('paused', 'resume'))
   setFrameState('recording')

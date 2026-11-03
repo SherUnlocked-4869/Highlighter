@@ -36,6 +36,9 @@ contextBridge.exposeInMainWorld('recordEditorAPI', {
   reveal: (projectId) => ipcRenderer.invoke('record-editor:reveal', { projectId }),
   // Re-derives project/sourceUrl/metadata from disk: recovery-banner retry and conflict reload.
   reload: (projectId) => ipcRenderer.invoke('record-editor:reload', { projectId }),
+  // R5 §2.2: the project's event track (zoom suggestions / click ripples). Data only - the renderer
+  // never learns a path, and `track: null` means "no event track, manual zoom only".
+  events: (projectId) => ipcRenderer.invoke('record-editor:events', { projectId }),
   back: () => ipcRenderer.invoke('record-editor:back'),
   closeWindow: () => ipcRenderer.send('record-editor:close'),
   windowAction: (action) => ipcRenderer.send('record-editor:window', { action }),

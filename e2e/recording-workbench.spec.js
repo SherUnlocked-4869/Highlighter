@@ -123,6 +123,114 @@ async function waitForEditorReady(page) {
   await expect.poll(() => renderedDurationMs(page), { timeout: 60_000 }).toBeGreaterThan(0)
 }
 
+
+// ---------------------------------------------------------------------------
+// R5 demo-finishing helpers: seed a real project (video + draft + event track)
+// and measure exported frames pixel-wise so "styled/zoomed/rippled" is proven
+// on the actual FFmpeg output rather than inferred from the request payload.
+// ---------------------------------------------------------------------------
+const sharp = require('sharp')
+
+async function seedDemoProject(dataRoot, { style, zooms, events = null }) {
+  const { createRecordingProjectService } = require('../main/services/recording-project-service')
+  const { atomicWriteJson } = require('../main/services/data-root')
+  const root = path.join(dataRoot, 'recordings')
+  fs.mkdirSync(root, { recursive: true })
+  const service = createRecordingProjectService({ root, atomicWriteJson })
+  const created = await service.createProject({
+    mode: 'display',
+    captureConfig: {
+      target: {
+        mode: 'display', displayId: 'e2e-demo', displayName: 'E2E DEMO',
+        boundsDip: { x: 0, y: 0, width: 320, height: 240 },
+        pixelSize: { width: 320, height: 240 }, scaleFactor: 1
+      },
+      frameRate: 10, quality: 'standard', countdown: 0,
+      audio: { system: true, microphone: false, microphoneDeviceId: '', systemGain: 1, microphoneGain: 1 }
+    }
+  })
+  const videoPath = path.join(created.directory, 'capture.webm')
+  const fixture = spawnSync(FFMPEG_PATH, [
+    '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'color=c=black:s=320x240:r=10',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
+    '-t', '3', '-vf', 'drawbox=x=136:y=96:w=48:h=48:color=red:t=fill',
+    '-c:v', 'libvpx', '-c:a', 'libopus', '-y', videoPath
+  ], { encoding: 'utf8', timeout: 30000, windowsHide: true })
+  if (fixture.status !== 0) throw new Error(`demo fixture failed: ${fixture.stderr}`)
+  const sealed = await service.sealProject(created.project.id, {
+    metadata: {
+      durationMs: 3000, startMs: 0, durationSource: 'container', timebase: 1000,
+      video: { width: 320, height: 240, frameRate: 10 },
+      audio: { tracks: 1, codec: 'opus' }
+    },
+    captureOutcome: { video: true, audio: { system: true, microphone: false }, warnings: [] }
+  })
+  if (!sealed?.ok) throw new Error(`demo seal failed: ${sealed?.code}`)
+  const draft = await service.updateDraft(created.project.id, {
+    expectedRevision: 1,
+    edit: {
+      keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 },
+      style, zoomSegments: zooms
+    }
+  })
+  if (!draft?.ok) throw new Error(`demo draft failed: ${draft?.code}`)
+  if (events) {
+    if (typeof service.writeEventTrack !== 'function') throw new Error('project service has no writeEventTrack')
+    await service.writeEventTrack(created.project.id, events)
+  }
+  await service.dispose()
+  return created.project.id
+}
+
+function extractFrame(filePath, atMs, outPath) {
+  const result = spawnSync(FFMPEG_PATH, [
+    '-loglevel', 'error', '-ss', (atMs / 1000).toFixed(3), '-i', filePath,
+    '-frames:v', '1', '-y', outPath
+  ], { encoding: 'utf8', timeout: 30000, windowsHide: true })
+  if (result.status !== 0 || !fs.existsSync(outPath)) throw new Error(`frame extract failed at ${atMs}ms: ${result.stderr}`)
+}
+
+async function frameStats(pngPath) {
+  const { data, info } = await sharp(pngPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  const { width, height } = info
+  let red = 0
+  let white = 0
+  let bright = 0
+  let background = 0
+  let redMinX = width
+  let redMaxX = -1
+  let redMinY = height
+  let redMaxY = -1
+  const isRed = (r, g, b) => r > 140 && g < 90 && b < 90
+  const isWhite = (r, g, b) => r > 225 && g > 225 && b > 225
+  const isBg = (r, g, b) => Math.abs(r - 10) <= 10 && Math.abs(g - 37) <= 10 && Math.abs(b - 64) <= 10
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4
+      const r = data[offset]
+      const g = data[offset + 1]
+      const b = data[offset + 2]
+      if (isRed(r, g, b)) {
+        red += 1
+        if (x < redMinX) redMinX = x
+        if (x > redMaxX) redMaxX = x
+        if (y < redMinY) redMinY = y
+        if (y > redMaxY) redMaxY = y
+      }
+      if (isWhite(r, g, b)) white += 1
+      if (r > 120 && Math.abs(r - g) < 30 && Math.abs(g - b) < 30) bright += 1
+      if (isBg(r, g, b)) background += 1
+    }
+  }
+  const cornerOffset = (2 * width + 2) * 4
+  const corner = [data[cornerOffset], data[cornerOffset + 1], data[cornerOffset + 2]]
+  return {
+    width, height, red, white, bright, background, corner,
+    redBox: redMaxX >= redMinX ? { width: redMaxX - redMinX + 1, height: redMaxY - redMinY + 1 } : null
+  }
+}
+
 test.describe('recording workbench', () => {
   test('records, trims, exports, keeps the draft, and survives an app restart', { timeout: 240_000 }, async ({}, testInfo) => {
     const dataRoot = createDataRoot()
@@ -422,4 +530,100 @@ test.describe('recording workbench', () => {
       fs.rmSync(dataRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }
   })
+  // ---------------------------------------------------------------------------
+  // R5: demo finishing (style + zoom + click ripple) proven on exported frames
+  // ---------------------------------------------------------------------------
+  test('demo finishing: style, zoom and click ripple reach the exported frames', { timeout: 240_000 }, async ({}, testInfo) => {
+    const dataRoot = createDataRoot()
+    const artifactsDir = testInfo.outputPath('electron-artifacts')
+    fs.mkdirSync(artifactsDir, { recursive: true })
+    const exported = path.join(dataRoot, 'exports', 'demo.mp4')
+    fs.mkdirSync(path.dirname(exported), { recursive: true })
+    const style = { enabled: true, background: '#0a2540', padding: 0.1, radius: 16, shadow: false, ripples: true }
+    const zooms = [{ id: 'zoom-1', startMs: 800, endMs: 2200, scale: 2, focusX: 0.5, focusY: 0.5, easing: 'linear' }]
+    const events = { durationMs: 3000, pointer: [], clicks: [{ tMs: 1500, x: 0.5, y: 0.5, button: 0 }] }
+    const projectId = await seedDemoProject(dataRoot, { style, zooms, events })
+    const highlighter = await launchHighlighter({
+      dataRoot,
+      artifactsDir,
+      extraEnv: { HIGHLIGHTER_E2E_FAKE_CAPTURE: '1' },
+      savePaths: [exported]
+    })
+    try {
+      const workbench = await openWorkbench(highlighter)
+      const card = workbench.locator('[data-testid="record-card"]').first()
+      await card.waitFor({ state: 'visible', timeout: 30_000 })
+      await card.locator('[data-testid="card-edit"]').click()
+      const editor = await highlighter.waitForWindow('/record/editor.html', 30_000)
+      await waitForEditorReady(editor)
+
+      // The seeded draft is restored and the event track reached the editor.
+      await expect(editor.locator('#demo-enabled')).toBeChecked()
+      await expect(editor.locator('#demo-ripples')).toBeChecked()
+      await expect(editor.locator('#demo-preview-frame')).toBeVisible()
+      await expect.poll(async () => editor.locator('#zoom-list [data-testid="zoom-item"], #zoom-list .zoom-item, #zoom-list li').count(), { timeout: 20_000 }).toBeGreaterThan(0)
+      await editor.waitForFunction(() => {
+        const status = document.querySelector('#events-status')
+        return !!status && /\d/.test(status.textContent || '')
+      }, null, { timeout: 20_000 })
+
+      await editor.locator('#export-button').click()
+      await editor.locator('#result-bar').waitFor({ state: 'visible', timeout: 150_000 })
+      expect(fs.existsSync(exported)).toBe(true)
+      const meta = probeVideo(exported)
+      // 320x240 content + 10% padding -> 400x300 canvas (even dimensions).
+      expect(meta.width).toBe(400)
+      expect(meta.height).toBe(300)
+
+      const frameDir = testInfo.outputPath('frames')
+      fs.mkdirSync(frameDir, { recursive: true })
+      const zoomedPng = path.join(frameDir, 'zoom.png')
+      const ripplePng = path.join(frameDir, 'ripple.png')
+      const plainPng = path.join(frameDir, 'plain.png')
+      extractFrame(exported, 1000, zoomedPng)
+      extractFrame(exported, 1700, ripplePng)
+      extractFrame(exported, 2750, plainPng)
+      const zoomed = await frameStats(zoomedPng)
+      const rippled = await frameStats(ripplePng)
+      const plain = await frameStats(plainPng)
+
+      // Style: padding leaves the configured background colour at the outer corner,
+      // and a meaningful share of the canvas is background (padding + shadow-free border).
+      // YUV 4:2:0 rounding shifts the RGB background by a couple of levels.
+      const near = (actual, expected, tolerance = 8) => actual.every((value, index) => Math.abs(value - expected[index]) <= tolerance)
+      expect(near(zoomed.corner, [10, 37, 64])).toBe(true)
+      expect(zoomed.background).toBeGreaterThan(zoomed.width * zoomed.height * 0.05)
+
+      // Zoom: the 48x48 red square grows while the zoom segment is active...
+      expect(zoomed.redBox).toBeTruthy()
+      expect(plain.redBox).toBeTruthy()
+      expect(zoomed.redBox.width).toBeGreaterThan(plain.redBox.width + 10)
+      expect(zoomed.red).toBeGreaterThan(plain.red * 1.8)
+
+      // Ripple: click at 1500ms paints a bright ring at the centre, gone by 2750ms.
+      expect(rippled.bright).toBeGreaterThan(plain.bright + 40)
+      expect(plain.bright).toBeLessThan(40)
+
+      await testInfo.attach('demo-exported-frame.png', { path: zoomedPng })
+      expect(projectId.length).toBeGreaterThan(0)
+
+      // Closing and reopening keeps the demo draft (style + source-time zooms) main-side.
+      await editor.locator('#window-close').click()
+      await expect.poll(() => highlighter.pagesMatching('/record/editor.html').length, { timeout: 20_000 }).toBe(0)
+      const reopenedCard = workbench.locator('[data-testid="record-card"]').first()
+      await reopenedCard.waitFor({ state: 'visible', timeout: 30_000 })
+      await reopenedCard.locator('[data-testid="card-edit"]').click()
+      const reopened = await highlighter.waitForWindow('/record/editor.html', 30_000)
+      await waitForEditorReady(reopened)
+      await expect(reopened.locator('#demo-enabled')).toBeChecked()
+      await expect(reopened.locator('#demo-ripples')).toBeChecked()
+      await expect.poll(async () => reopened.locator('#zoom-list [data-testid="zoom-item"], #zoom-list .zoom-item, #zoom-list li').count(), { timeout: 20_000 }).toBeGreaterThan(0)
+
+      expect(hardErrors(await highlighter.getUnexpectedErrors())).toEqual([])
+    } finally {
+      await highlighter.close()
+      fs.rmSync(dataRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
+  })
+
 })

@@ -51,7 +51,14 @@ function projectPayload(id, name, width, height, durationMs, frameRate = 30) {
         probedAt: 0
       },
       captureOutcome: { video: true, audio: { system: false, microphone: false }, warnings: [] },
-      edit: { revision: 1, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } },
+      edit: {
+        revision: 1,
+        keepRanges: [],
+        format: 'mp4',
+        gif: { edge: 1280, fps: 15 },
+        style: { enabled: true, background: '#1e1e1e', padding: 0.1, radius: 10, shadow: true, ripples: false },
+        zoomSegments: [{ id: 'probe-zoom', startMs: 1000, endMs: 2400, scale: 2, focusX: 0.4, focusY: 0.6, easing: 'ease-in-out' }]
+      },
       exports: [],
       recovery: { committedByteOffset: 0, lastChunkSequence: 0, cleanStop: true, errorCode: '' }
     },
@@ -106,6 +113,31 @@ async function measure(win) {
         return { id, disabled: node ? node.disabled : null }
       }),
       emptyHintHidden: document.getElementById('empty-selection-hint').hidden,
+      demoLoaded: typeof window.recordingDemo === 'object' && !!window.recordingDemo,
+      demoFrame: rect('#demo-preview-frame'),
+      demoCanvasBox: rect('#demo-canvas'),
+      demoFrameState: (() => {
+        const frame = document.getElementById('demo-preview-frame')
+        return {
+          demo: frame.dataset.demo || '',
+          aspectRatio: frame.style.aspectRatio || '',
+          padding: frame.style.padding || '',
+          background: frame.style.background || '',
+          canvasRadius: document.getElementById('demo-canvas').style.borderRadius || ''
+        }
+      })(),
+      demoControls: {
+        enabled: document.getElementById('demo-enabled').checked,
+        enabledDisabled: document.getElementById('demo-enabled').disabled,
+        background: document.getElementById('demo-background').value,
+        padding: document.getElementById('demo-padding').value,
+        radius: document.getElementById('demo-radius').value,
+        shadow: document.getElementById('demo-shadow').checked,
+        ripplesDisabled: document.getElementById('demo-ripples').disabled,
+        eventsStatus: document.getElementById('events-status').textContent,
+        zoomItems: document.querySelectorAll('[data-testid="zoom-item"]').length,
+        zoomAddDisabled: document.getElementById('zoom-add').disabled
+      },
       saveState: document.getElementById('save-state').textContent,
       name: document.getElementById('source-name').textContent,
       errors: document.getElementById('error-text').textContent,

@@ -51,6 +51,9 @@ function registerRecordingEditorIpc({ ipcMain, controller }) {
   // Additive (approved 2026-11-03): re-probe the source and re-derive the file URL so the
   // recovery banner can retry and a revision-conflict can reload in place.
   ipcMain.handle('record-editor:reload', controller.editorReload)
+  // R5 (docs/plans/2026-11-03-recording-r5-contracts.md §2.2): the project's event track for zoom
+  // suggestions and click ripples. Data only - the answer never contains a path.
+  ipcMain.handle('record-editor:events', controller.editorEvents)
 }
 
 module.exports = {

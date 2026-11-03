@@ -240,7 +240,11 @@ function createRecordingChoices(state) {
     audioSystem: config.audioSystem !== false,
     audioMicrophone: config.audioMicrophone === true,
     audioMicrophoneDeviceId: typeof config.audioMicrophoneDeviceId === 'string' ? config.audioMicrophoneDeviceId : '',
-    saveDirectory: typeof config.saveDirectory === 'string' ? config.saveDirectory : ''
+    saveDirectory: typeof config.saveDirectory === 'string' ? config.saveDirectory : '',
+    // R5 (contract §5): a session-only opt-in. It is deliberately NOT read from
+    // settings or the workbench state, so every route visit starts with the mouse
+    // event track off and only the current recording can turn it on.
+    demoEnhance: false
   }
 }
 
@@ -259,7 +263,10 @@ function buildRecordingStartPayload(choices) {
     audioSystem: choices ? choices.audioSystem !== false : true,
     audioMicrophone: choices ? choices.audioMicrophone === true : false,
     audioMicrophoneDeviceId: choices && typeof choices.audioMicrophoneDeviceId === 'string' ? choices.audioMicrophoneDeviceId : '',
-    saveDirectory: choices && typeof choices.saveDirectory === 'string' ? choices.saveDirectory : ''
+    saveDirectory: choices && typeof choices.saveDirectory === 'string' ? choices.saveDirectory : '',
+    // R5 §5: sent for every mode; the main process only starts the pointer event
+    // track for display/region (window captures have no reliable content bounds).
+    demoEnhance: choices ? choices.demoEnhance === true : false
   }
   const payload = { mode, config }
   if (displayId) payload.displayId = displayId
@@ -471,11 +478,15 @@ function recordingParamsSectionMarkup(choices) {
     const label = seconds === 0 ? t('recording.workbench.countdown-off') : t('recording.workbench.countdown-seconds', { seconds })
     return `<option value="${seconds}" data-testid="countdown-${seconds}"${choices.countdown === seconds ? ' selected' : ''}>${label}</option>`
   }).join('')
+  // R5 (contract §5): per-recording "presenter enhancements" opt-in. The copy is
+  // deliberately explicit about scope (mouse events only, no keyboard content) and
+  // about it applying to this recording only — the value is never persisted.
+  const demoEnhance = `<div class="card form-card" style="margin-top:14px"><div class="form-row"><div class="form-label"><b>${t('recording.workbench.demo-enhance')}</b><small>${t('recording.workbench.demo-enhance-hint')}</small></div>${recordingSwitchMarkup(choices.demoEnhance, 'demoEnhance', 'demo-enhance', t('recording.workbench.demo-enhance'))}</div></div>`
   return `<section class="section"><h2 class="section-title">${t('recording.workbench.params-section')}</h2><div class="card form-card rec-params">
     <label class="rec-field"><b>${t('recording.workbench.frame-rate')}</b><select data-recording-frame-rate data-testid="frame-rate-select">${RECORDING_FRAME_RATES.map(frameRateOption).join('')}<optgroup label="${t('recording.workbench.frame-rate-advanced')}">${RECORDING_LEGACY_FRAME_RATES.map(frameRateOption).join('')}</optgroup></select><small>${t('recording.workbench.frame-rate-hint')}</small></label>
     <label class="rec-field"><b>${t('recording.workbench.quality')}</b><select data-recording-quality data-testid="quality-select">${qualityOptions}</select></label>
     <label class="rec-field"><b>${t('recording.workbench.countdown')}</b><select data-recording-countdown data-testid="countdown-select">${countdownOptions}</select><small>${t('recording.workbench.countdown-hint')}</small></label>
-  </div></section>`
+  </div>${demoEnhance}</section>`
 }
 
 function recordingStorageSectionMarkup(choices) {
@@ -732,7 +743,7 @@ function selectRecordingDisplay(displayId) {
 
 function toggleRecordingSwitch(name) {
   if (!recordingWorkbenchChoices) return
-  if (name !== 'audioSystem' && name !== 'audioMicrophone') return
+  if (name !== 'audioSystem' && name !== 'audioMicrophone' && name !== 'demoEnhance') return
   recordingWorkbenchChoices[name] = recordingWorkbenchChoices[name] !== true
   renderRecordingSections()
 }

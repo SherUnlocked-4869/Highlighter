@@ -392,3 +392,53 @@ test('the module loads as a classic browser script and installs one global', () 
   const browserSummary = sandbox.recordingProjectSchema.projectSummary(fixture())
   assert.equal(browserSummary.durationMs, 2010)
 })
+
+// ---------------------------------------------------------------------------
+// R5 demo fields on the draft (contract §4.1)
+// ---------------------------------------------------------------------------
+
+test('edit.style and edit.zoomSegments are explicitly normalised (R5)', () => {
+  const demo = require('../shared/recording-demo')
+  // An R4 manifest has neither field: it reads as the disabled defaults, not as junk.
+  const legacy = schema.normalizeProject(fixture())
+  assert.deepEqual(legacy.edit.style, demo.normalizeDemoStyle(undefined))
+  assert.deepEqual(legacy.edit.style, { ...demo.DEMO_DEFAULTS })
+  assert.deepEqual(legacy.edit.zoomSegments, [])
+
+  // An opaque style object is coerced field by field instead of being persisted verbatim.
+  const withStyle = schema.normalizeProject(fixture({
+    edit: {
+      revision: 2,
+      keepRanges: [],
+      style: { enabled: true, background: '#ABC', padding: 0.5, radius: 99, shadow: 'yes', vendored: { x: 1 } },
+      zoomSegments: [
+        { id: 'z1', startMs: 1000, endMs: 2200, scale: 9, focusX: 2, focusY: -1, easing: 'nope' },
+        { id: 'short', startMs: 0, endMs: 300, scale: 2 },
+        { id: 'z2', startMs: 5000, endMs: 6200, scale: 1.5, focusX: 0.25, focusY: 0.75, easing: 'linear' }
+      ]
+    }
+  }))
+  assert.deepEqual(withStyle.edit.style, {
+    enabled: true,
+    background: '#aabbcc',
+    padding: 0.2,
+    radius: 24,
+    shadow: false,
+    ripples: false
+  })
+  assert.deepEqual(withStyle.edit.zoomSegments, [
+    { id: 'z1', startMs: 1000, endMs: 2200, scale: 3, focusX: 1, focusY: 0, easing: 'ease-in-out' },
+    { id: 'z2', startMs: 5000, endMs: 6200, scale: 1.5, focusX: 0.25, focusY: 0.75, easing: 'linear' }
+  ])
+  // The normalised draft is still a valid manifest and round-trips idempotently.
+  assert.deepEqual(schema.validateProject(withStyle).errors, [])
+  assert.deepEqual(schema.normalizeProject(withStyle), withStyle)
+  // ProjectPublic carries the explicit fields to the editor.
+  assert.deepEqual(schema.projectPublic(withStyle).edit.style, withStyle.edit.style)
+  assert.deepEqual(schema.projectPublic(withStyle).edit.zoomSegments, withStyle.edit.zoomSegments)
+
+  // A rounded canvas radius survives an old manifest that only has the R4 opaque shape.
+  const opaque = schema.normalizeProject(fixture({ edit: { revision: 1, keepRanges: [], style: { enabled: true, padding: 0.1, radius: 16 } } }))
+  assert.equal(opaque.edit.style.enabled, true)
+  assert.equal(opaque.edit.style.radius, 16)
+})

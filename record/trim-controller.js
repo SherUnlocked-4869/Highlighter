@@ -40,10 +40,16 @@
   const timeline = typeof module === 'object' && module.exports
     ? require('./editor-timeline')
     : root.recordEditorTimeline
-  const api = factory(options, timeline)
+  // W12 owns shared/recording-demo.js (style/zoom/ripple maths shared with the exporter).
+  // It may be mid-landing in a parallel stream; the controller falls back to an identical
+  // local implementation only until the module exists, and always prefers the shared one.
+  const demo = typeof module === 'object' && module.exports
+    ? (() => { try { return require('../shared/recording-demo') } catch { return null } })()
+    : root.recordingDemo
+  const api = factory(options, timeline, demo)
   if (typeof module === 'object' && module.exports) module.exports = api
   else root.recordTrimController = api
-})(typeof globalThis === 'object' ? globalThis : this, (options, timeline) => {
+})(typeof globalThis === 'object' ? globalThis : this, (options, timeline, sharedDemo) => {
   const {
     GIF_FRAME_RATES,
     LIMITS,
@@ -52,6 +58,36 @@
     normalizeGifOptions,
     normalizeRange
   } = options
+
+  // W12 owns shared/recording-demo.js. If the script tag/require is missing the editor
+  // degrades visibly instead of crashing: defaults only, no style rendering, no zoom.
+  function createMissingDemoModule() {
+    const defaults = Object.freeze({ enabled: false, background: '#0f1115', padding: 0.08, radius: 12, shadow: true, ripples: false })
+    return {
+      BACKGROUND_PRESETS: Object.freeze(['#0f1115', '#1e1e1e', '#f5f2ea', '#0a2540']),
+      DEMO_DEFAULTS: defaults,
+      RIPPLE_LIMITS: Object.freeze({ maxClicks: 30, durationMs: 600, basePx: 28, growPx: 96 }),
+      STYLE_LIMITS: Object.freeze({ paddingMin: 0, paddingMax: 0.2, radiusMin: 0, radiusMax: 24 }),
+      ZOOM_LIMITS: Object.freeze({ maxSegments: 8, minDurationMs: 600, scaleMin: 1.25, scaleMax: 3, rampMs: 300 }),
+      evaluateZoomAt: () => ({ scale: 1, focusX: 0.5, focusY: 0.5 }),
+      mapDemoToOutput: () => ({ style: { ...defaults }, zooms: [], clicks: [] }),
+      normalizeClickTrack: () => ({ durationMs: 0, sampledAtHz: 20, pointer: [], clicks: [], truncated: false }),
+      normalizeDemoStyle: (value) => ({ ...defaults, enabled: value && value.enabled === true }),
+      normalizeZoomSegments: () => [],
+      resolveDemoCanvas: ({ sourceWidth, sourceHeight }) => ({
+        contentWidth: Math.max(0, Math.round(Number(sourceWidth) || 0)),
+        contentHeight: Math.max(0, Math.round(Number(sourceHeight) || 0)),
+        canvasWidth: Math.max(0, Math.round(Number(sourceWidth) || 0)),
+        canvasHeight: Math.max(0, Math.round(Number(sourceHeight) || 0)),
+        paddingPx: 0,
+        radiusPx: 0
+      }),
+      suggestZoomSegments: () => [],
+      zoomExpression: () => ({ z: '1', x: '0', y: '0' })
+    }
+  }
+
+  const demoApi = sharedDemo || createMissingDemoModule()
 
   const TERMINAL_STATES = Object.freeze(['succeeded', 'failed', 'cancelled'])
   const EXPORT_FORMATS = Object.freeze(['mp4', 'gif', 'webm'])
@@ -255,6 +291,13 @@
       // Export-panel video options. Contract §7.5: NOT persisted in the draft; a reopened
       // editor starts at source/standard/source.
       video: { resolution: 'source', quality: 'standard', fps: 'source' },
+      // R5 demo parameters. Zooms are SOURCE-time; clicks come from the event track and
+      // are only exported when style.ripples is on. Neither is burned into the source.
+      demo: { style: demoApi.normalizeDemoStyle(null), zooms: [] },
+      eventTrack: null,
+      eventsState: { loaded: false, available: false, degraded: '', clickCount: 0, pointerCount: 0, truncated: false },
+      ignoredSuggestions: [],
+      suggestions: [],
       // Session playback window `{startMs,endMs}`; project playback `{mode:'kept',fromMs}`.
       playing: null,
       playheadMs: 0,
@@ -479,6 +522,15 @@
         gifBudget: gif,
         video: { ...model.video },
         videoBudget: videoBudgetResult,
+        demo: {
+          style: { ...model.demo.style },
+          zooms: model.demo.zooms.map((zoom) => ({ ...zoom })),
+          canAddZoom: canAddZoom(),
+          maxZooms: demoApi.ZOOM_LIMITS.maxSegments,
+          events: { ...model.eventsState },
+          suggestions: model.suggestions.map((suggestion) => ({ ...suggestion })),
+          canvas: demoCanvas()
+        },
         videoOptions: {
           resolutions: timeline.availableResolutions(model.metadata.video.width, model.metadata.video.height),
           frameRates: timeline.availableFrameRates(model.metadata.video.frameRate),
@@ -836,6 +888,293 @@
       return { action: 'none', toMs: position }
     }
 
+    // ---------- demo model (R5 style / zoom / ripples / suggestions) ----------
+
+    function markDemoEdited(reason) {
+      markDraftEdited()
+      notify({ reason })
+    }
+
+    function demoDuration() {
+      return model.metadata.durationMs
+    }
+
+    // Source-time selection the demo values are mapped through (materialised; an empty list
+    // means the user deleted every segment, so there is no output content at all).
+    function demoSelection() {
+      return model.segments.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs }))
+    }
+
+    function demoCanvas() {
+      const video = model.metadata.video
+      const result = demoApi.resolveDemoCanvas({
+        sourceWidth: video.width,
+        sourceHeight: video.height,
+        resolution: model.video.resolution,
+        style: model.demo.style
+      })
+      // W12 currently wraps the value as {ok,value}; accept either shape so a change on
+      // either side cannot blank the preview frame.
+      if (result && result.ok === false) {
+        return { contentWidth: 0, contentHeight: 0, canvasWidth: 0, canvasHeight: 0, paddingPx: 0, radiusPx: 0 }
+      }
+      return result && result.value ? result.value : result
+    }
+
+    // Source media time -> output (edited/concat) time; null when the position was deleted.
+    function outputTimeFor(sourceMs) {
+      if (!(demoDuration() > 0) || model.segments.length === 0) return null
+      return timeline.sourceToEdited(model.segments, sourceMs, demoDuration())
+    }
+
+    function mappedZoomsOutput() {
+      return demoApi.mapDemoToOutput(
+        { style: model.demo.style, zooms: model.demo.zooms, clicks: [] },
+        demoSelection()
+      ).zooms
+    }
+
+    function mappedClicksOutput() {
+      if (!model.eventTrack || model.eventTrack.clicks.length === 0) return []
+      return demoApi.mapDemoToOutput(
+        { style: model.demo.style, zooms: [], clicks: model.eventTrack.clicks },
+        demoSelection()
+      ).clicks
+    }
+
+    // Preview zoom at a SOURCE position: map to output time, then evaluate the shared ramp.
+    function previewZoomAt(sourceMs) {
+      const outputMs = outputTimeFor(sourceMs)
+      if (outputMs === null) return { scale: 1, focusX: 0.5, focusY: 0.5, active: false }
+      const zooms = mappedZoomsOutput()
+      if (zooms.length === 0) return { scale: 1, focusX: 0.5, focusY: 0.5, active: false }
+      if (typeof demoApi.evaluateZoomAt === 'function') {
+        const value = demoApi.evaluateZoomAt(zooms, outputMs) || {}
+        const scale = Math.max(1, Math.min(demoApi.ZOOM_LIMITS.scaleMax, Number(value.scale) || 1))
+        return {
+          scale,
+          focusX: Math.max(0, Math.min(1, Number(value.focusX))),
+          focusY: Math.max(0, Math.min(1, Number(value.focusY))),
+          active: scale > 1.0001
+        }
+      }
+      return { scale: 1, focusX: 0.5, focusY: 0.5, active: false }
+    }
+
+    function recomputeSuggestions() {
+      if (!model.eventTrack || model.segments.length === 0 || !(demoDuration() > 0)) {
+        model.suggestions = []
+        return
+      }
+      let suggestions = []
+      try {
+        suggestions = demoApi.suggestZoomSegments({
+          track: model.eventTrack,
+          durationMs: demoDuration(),
+          outputSegments: demoSelection()
+        }) || []
+      } catch (error) {
+        log('demo: suggestZoomSegments failed:', error?.message || error)
+        suggestions = []
+      }
+      model.suggestions = suggestions.filter((suggestion) => !model.ignoredSuggestions.includes(suggestion.id))
+    }
+
+    function applyEventTrack(track, { degraded = '' } = {}) {
+      if (track && typeof track === 'object') {
+        try {
+          model.eventTrack = demoApi.normalizeClickTrack(track)
+          model.eventsState = {
+            loaded: true,
+            available: model.eventTrack.clicks.length > 0 || model.eventTrack.pointer.length > 0,
+            degraded: '',
+            clickCount: model.eventTrack.clicks.length,
+            pointerCount: model.eventTrack.pointer.length,
+            truncated: model.eventTrack.truncated === true
+          }
+        } catch (error) {
+          log('demo: invalid event track:', error?.message || error)
+          model.eventTrack = null
+          model.eventsState = { loaded: true, available: false, degraded: degraded || 'invalid', clickCount: 0, pointerCount: 0, truncated: false }
+        }
+      } else {
+        model.eventTrack = null
+        model.eventsState = {
+          loaded: true,
+          available: false,
+          degraded: degraded || '',
+          clickCount: 0,
+          pointerCount: 0,
+          truncated: false
+        }
+      }
+      // Ripples need clicks; without an event track the switch must not pretend to work.
+      if ((!model.eventTrack || model.eventTrack.clicks.length === 0) && model.demo.style.ripples) {
+        model.demo.style = demoApi.normalizeDemoStyle({ ...model.demo.style, ripples: false })
+        markDemoEdited('demo-style')
+      }
+      recomputeSuggestions()
+      notify({ reason: 'events-loaded' })
+      return true
+    }
+
+    function setDemoStylePatch(patch, reason = 'demo-style') {
+      if (isFrozen()) return false
+      const next = demoApi.normalizeDemoStyle({ ...model.demo.style, ...patch })
+      if (JSON.stringify(next) === JSON.stringify(model.demo.style)) return false
+      model.demo.style = next
+      markDemoEdited(reason)
+      return true
+    }
+
+    function setDemoEnabled(value) {
+      return setDemoStylePatch({ enabled: value === true })
+    }
+
+    function setDemoBackground(color) {
+      return setDemoStylePatch({ background: color }, 'demo-style')
+    }
+
+    function setDemoPaddingPercent(percent) {
+      const number = Number(percent)
+      if (!Number.isFinite(number)) return false
+      return setDemoStylePatch({ padding: number / 100 }, 'demo-style')
+    }
+
+    function setDemoRadius(radiusPx) {
+      const number = Number(radiusPx)
+      if (!Number.isFinite(number)) return false
+      return setDemoStylePatch({ radius: number }, 'demo-style')
+    }
+
+    function setDemoShadow(value) {
+      return setDemoStylePatch({ shadow: value === true })
+    }
+
+    function setDemoRipples(value) {
+      if (value === true) {
+        if (!model.eventTrack || model.eventTrack.clicks.length === 0) return false
+        return setDemoStylePatch({ ripples: true })
+      }
+      return setDemoStylePatch({ ripples: false })
+    }
+
+    function resetDemo() {
+      if (isFrozen()) return false
+      model.demo = { style: demoApi.normalizeDemoStyle(null), zooms: [] }
+      model.ignoredSuggestions = []
+      recomputeSuggestions()
+      markDemoEdited('demo-reset')
+      return true
+    }
+
+    function canAddZoom() {
+      if (isFrozen() || !model.projectId) return false
+      if (!(demoDuration() >= demoApi.ZOOM_LIMITS.minDurationMs)) return false
+      if (model.demo.zooms.length >= demoApi.ZOOM_LIMITS.maxSegments) return false
+      return true
+    }
+
+    // Add a 2.0x zoom starting at the playhead, clamped into the media and around the
+    // existing (non-overlapping) zoom segments. A zoom segment lasts at least 1.2 s.
+    function addZoomAt(sourceMs) {
+      if (!canAddZoom()) return false
+      const duration = demoDuration()
+      const minDuration = 1200
+      let startMs = Math.max(0, Math.min(Math.round(Number(sourceMs) || 0), duration - minDuration))
+      // Skip past any segment the new zoom would overlap; adjacency stays legal.
+      for (const zoom of model.demo.zooms) {
+        if (startMs < zoom.endMs && startMs + minDuration > zoom.startMs) startMs = zoom.endMs
+      }
+      startMs = Math.max(0, Math.min(startMs, duration - minDuration))
+      let endMs = Math.min(duration, startMs + minDuration)
+      const next = model.demo.zooms.find((zoom) => zoom.startMs >= startMs && zoom.startMs < endMs)
+      if (next) endMs = next.startMs
+      if (endMs - startMs < demoApi.ZOOM_LIMITS.minDurationMs) return false
+      const zoom = {
+        id: 'zoom-' + (model.demo.zooms.length + 1) + '-' + Math.round(now()),
+        startMs,
+        endMs,
+        scale: 2,
+        focusX: 0.5,
+        focusY: 0.5,
+        easing: 'ease-in-out'
+      }
+      const nextZooms = demoApi.normalizeZoomSegments([...model.demo.zooms, zoom])
+      if (nextZooms.length === model.demo.zooms.length) return false
+      model.demo.zooms = nextZooms
+      markDemoEdited('demo-zoom')
+      return true
+    }
+
+    function updateZoom(index, patch) {
+      if (isFrozen()) return false
+      const position = Math.round(Number(index))
+      if (!Number.isInteger(position) || position < 0 || position >= model.demo.zooms.length) return false
+      const next = model.demo.zooms.map((zoom, zoomIndex) => (
+        zoomIndex === position ? { ...zoom, ...patch } : zoom
+      ))
+      const normalized = demoApi.normalizeZoomSegments(next)
+      if (normalized.length !== model.demo.zooms.length) return false
+      model.demo.zooms = normalized
+      markDemoEdited('demo-zoom')
+      return true
+    }
+
+    function updateZoomScale(index, scale) {
+      return updateZoom(index, { scale: Number(scale) })
+    }
+
+    function updateZoomFocus(index, focusX, focusY) {
+      const x = Number(focusX)
+      const y = Number(focusY)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return false
+      return updateZoom(index, { focusX: x, focusY: y })
+    }
+
+    function deleteZoom(index) {
+      if (isFrozen()) return false
+      const position = Math.round(Number(index))
+      if (!Number.isInteger(position) || position < 0 || position >= model.demo.zooms.length) return false
+      model.demo.zooms = model.demo.zooms.filter((_zoom, zoomIndex) => zoomIndex !== position)
+      markDemoEdited('demo-zoom')
+      return true
+    }
+
+    function addSuggestion(index) {
+      if (isFrozen()) return false
+      const position = Math.round(Number(index))
+      if (!Number.isInteger(position) || position < 0 || position >= model.suggestions.length) return false
+      const suggestion = model.suggestions[position]
+      if (model.demo.zooms.length >= demoApi.ZOOM_LIMITS.maxSegments) return false
+      const zoom = {
+        id: 'zoom-suggest-' + (model.demo.zooms.length + 1),
+        startMs: suggestion.startMs,
+        endMs: suggestion.endMs,
+        scale: suggestion.scale,
+        focusX: suggestion.focusX,
+        focusY: suggestion.focusY,
+        easing: 'ease-in-out'
+      }
+      const normalized = demoApi.normalizeZoomSegments([...model.demo.zooms, zoom])
+      if (normalized.length === model.demo.zooms.length) return false
+      model.demo.zooms = normalized
+      model.ignoredSuggestions = model.ignoredSuggestions.concat(suggestion.id)
+      recomputeSuggestions()
+      markDemoEdited('demo-suggestion')
+      return true
+    }
+
+    function ignoreSuggestion(index) {
+      if (isFrozen()) return false
+      const position = Math.round(Number(index))
+      if (!Number.isInteger(position) || position < 0 || position >= model.suggestions.length) return false
+      model.ignoredSuggestions = model.ignoredSuggestions.concat(model.suggestions[position].id)
+      recomputeSuggestions()
+      notify({ reason: 'demo-suggestion' })
+      return true
+    }
+
     // ---------- project draft (editor mode) ----------
 
     // The edit object the project service persists (R1 schema): `keepRanges: []` means "whole
@@ -855,7 +1194,10 @@
         revision: model.revision,
         keepRanges,
         format: model.format,
-        gif: { edge: model.gif.maxEdgePx, fps: model.gif.fps }
+        gif: { edge: model.gif.maxEdgePx, fps: model.gif.fps },
+        // R5 contract §4.1: style and SOURCE-time zoom segments ride the same CAS draft.
+        style: { ...model.demo.style },
+        zoomSegments: model.demo.zooms.map((zoom) => ({ ...zoom }))
       }
     }
 
@@ -916,7 +1258,13 @@
       if (GIF_FRAME_RATES.includes(fps)) model.gif.fps = fps
 
       model.video = { resolution: 'source', quality: 'standard', fps: 'source' }
+      model.demo = {
+        style: demoApi.normalizeDemoStyle(edit.style),
+        zooms: demoApi.normalizeZoomSegments(edit.zoomSegments)
+      }
+      model.ignoredSuggestions = []
       syncRange()
+      recomputeSuggestions()
       history = []
       future = []
       pendingSnapshot = null
@@ -1023,6 +1371,32 @@
           resolution: model.video.resolution,
           quality: model.video.quality,
           fps: model.video.fps
+        }
+        // R5 contract §3.2: demo is source-time data; the main process maps it to output
+        // time. Clicks are included only when ripples are on (and a track exists).
+        const zoomPayload = model.demo.zooms.map((zoom) => ({
+          id: zoom.id,
+          startMs: zoom.startMs,
+          endMs: zoom.endMs,
+          scale: zoom.scale,
+          focusX: zoom.focusX,
+          focusY: zoom.focusY,
+          easing: zoom.easing
+        }))
+        const clickPayload = model.demo.style.ripples && model.eventTrack
+          ? model.eventTrack.clicks.map((click) => ({
+            tMs: click.tMs,
+            x: click.x,
+            y: click.y,
+            button: click.button
+          }))
+          : []
+        if (model.demo.style.enabled || zoomPayload.length > 0 || clickPayload.length > 0) {
+          request.demo = {
+            style: { ...model.demo.style },
+            zooms: zoomPayload,
+            clicks: clickPayload
+          }
         }
       }
       return request
@@ -1191,6 +1565,34 @@
       canRedo,
       canSplitAt,
       canDeleteAt,
+      // demo style / zoom / ripples / suggestions (R5)
+      DEMO_LIMITS: Object.freeze({
+        RIPPLE: demoApi.RIPPLE_LIMITS,
+        STYLE: demoApi.STYLE_LIMITS,
+        ZOOM: demoApi.ZOOM_LIMITS,
+        BACKGROUND_PRESETS: demoApi.BACKGROUND_PRESETS
+      }),
+      addSuggestion,
+      addZoomAt,
+      applyEventTrack,
+      canAddZoom,
+      deleteZoom,
+      demoCanvas,
+      ignoreSuggestion,
+      mappedClicksOutput,
+      mappedZoomsOutput,
+      outputTimeFor,
+      previewZoomAt,
+      resetDemo,
+      setDemoBackground,
+      setDemoEnabled,
+      setDemoPaddingPercent,
+      setDemoRadius,
+      setDemoRipples,
+      setDemoShadow,
+      updateZoom,
+      updateZoomFocus,
+      updateZoomScale,
       // format
       setFormat,
       setGifFps,

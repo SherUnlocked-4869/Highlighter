@@ -498,7 +498,8 @@ test('choices and the start payload follow the frozen §9.1 shape', async () => 
     audioSystem: true,
     audioMicrophone: false,
     audioMicrophoneDeviceId: '',
-    saveDirectory: 'D:/Videos'
+    saveDirectory: 'D:/Videos',
+    demoEnhance: false
   })
 
   harness.run(`window.__testState = ${JSON.stringify(workbenchState({ config: workbenchConfig({ mode: 'region' }) }))}`)
@@ -610,7 +611,8 @@ test('start sends the frozen payload and switches to the region entry', async ()
       audioSystem: true,
       audioMicrophone: false,
       audioMicrophoneDeviceId: '',
-      saveDirectory: 'D:/Videos'
+      saveDirectory: 'D:/Videos',
+      demoEnhance: false
     }
   })
 
@@ -787,7 +789,8 @@ test('window choices and the start payload follow the frozen §2.1 shape', async
     audioSystem: true,
     audioMicrophone: false,
     audioMicrophoneDeviceId: '',
-    saveDirectory: 'D:/Videos'
+    saveDirectory: 'D:/Videos',
+    demoEnhance: false
   })
 })
 
@@ -844,7 +847,8 @@ test('window mode lists recordable windows, selects one and sends the token payl
       audioSystem: true,
       audioMicrophone: false,
       audioMicrophoneDeviceId: '',
-      saveDirectory: 'D:/Videos'
+      saveDirectory: 'D:/Videos',
+      demoEnhance: false
     }
   })
   assert.equal(Object.hasOwn(calls.start[0], 'displayId'), false)
@@ -968,6 +972,120 @@ test('window start failures map the frozen codes back to localized copy', async 
   assert.equal(calls.start.length, 2)
   assert.equal(calls.start[0].mode, 'window')
   assert.equal(calls.start[0].windowToken, 'window-token-1')
+})
+
+// Loads the REAL preload.js in a vm sandbox so the payload sanitizer is exercised
+// as behaviour: the frozen start payload must survive it with every field intact.
+function loadPreloadApi() {
+  const invocations = []
+  const exposed = {}
+  const sandbox = {
+    console,
+    require: (name) => {
+      if (name !== 'electron') throw new Error(`unexpected require ${name}`)
+      return {
+        contextBridge: { exposeInMainWorld: (key, api) => { exposed[key] = api } },
+        ipcRenderer: {
+          invoke: (channel, payload) => { invocations.push({ channel, payload }); return Promise.resolve({ ok: true }) },
+          send: () => {},
+          on: () => {},
+          removeListener: () => {}
+        }
+      }
+    },
+    module: { exports: {} },
+    exports: {}
+  }
+  vm.createContext(sandbox)
+  vm.runInContext(preloadSource, sandbox, { filename: 'preload.js' })
+  return { api: exposed.electronAPI, invocations }
+}
+
+test('preload workbenchStart forwards the demo switch in the frozen config shape', () => {
+  const { api, invocations } = loadPreloadApi()
+  const baseConfig = {
+    mode: 'display',
+    displayId: 'display-1',
+    frameRate: 30,
+    quality: 'high',
+    countdown: 3,
+    audioSystem: true,
+    audioMicrophone: false,
+    audioMicrophoneDeviceId: '',
+    saveDirectory: 'D:/Videos',
+    demoEnhance: true
+  }
+  api.workbenchStart({ mode: 'display', displayId: 'display-1', config: baseConfig })
+  assert.equal(invocations[0].channel, 'record:workbench-start')
+  assert.equal(invocations[0].payload.config.demoEnhance, true, 'the whitelist must not drop the boolean')
+  assert.equal(invocations[0].payload.displayId, 'display-1')
+  assert.deepEqual(plain(invocations[0].payload.config), baseConfig, 'every frozen config field survives the sanitizer')
+
+  // Window mode forwards the token AND the boolean (the main process gates capture).
+  api.workbenchStart({ mode: 'window', windowToken: 'token-1', config: { ...baseConfig, mode: 'window', displayId: '' } })
+  assert.equal(invocations[1].payload.windowToken, 'token-1')
+  assert.equal(invocations[1].payload.config.demoEnhance, true)
+
+  // A missing / non-boolean value falls back to false; unrelated input is dropped.
+  api.workbenchStart({ mode: 'region', config: { demoEnhance: 'yes', unexpected: 'drop me' } })
+  assert.equal(invocations[2].payload.config.demoEnhance, false)
+  assert.equal(Object.hasOwn(invocations[2].payload.config, 'unexpected'), false)
+  api.workbenchStart({ mode: 'region' })
+  assert.equal(invocations[3].payload.config.demoEnhance, false)
+})
+
+test('demo enhance is a session-only opt-in carried by every mode payload', async () => {
+  // R5 §5: default off, one-line scope hint, and the boolean travels on
+  // config.demoEnhance for display, region AND window (the main process gates the
+  // pointer track: display/region only, window mode never collects).
+  assert.match(preloadSource, /demoEnhance: config\.demoEnhance === true/, 'the preload sanitizer forwards the boolean')
+  assert.match(routeSource, /demoEnhance: choices \? choices\.demoEnhance === true : false/, 'the start payload carries the per-recording value')
+
+  const { api, calls } = createApi(workbenchState())
+  const harness = createHarness({ electronAPI: api })
+  harness.run('renderRecording()')
+  await harness.settle()
+
+  const demoSwitches = () => queryAll(harness.dom, '[data-testid="demo-enhance"]')
+  assert.equal(demoSwitches().length, 1, 'the recording parameters expose one demo-enhance switch')
+  assert.equal(demoSwitches()[0].attrs['aria-checked'], 'false', 'the switch is off by default')
+  assert.equal(harness.dom.view.innerHTML.includes('\u6f14\u793a\u589e\u5f3a'), true, 'the row has its localized label')
+  assert.match(harness.dom.view.innerHTML, /\u8bb0\u5f55\u9f20\u6807\u79fb\u52a8\u4e0e\u70b9\u51fb/, 'the hint says what is recorded')
+  assert.match(harness.dom.view.innerHTML, /\u4e0d\u8bb0\u5f55\u952e\u76d8\u5185\u5bb9/, 'the hint states the keyboard exclusion')
+  assert.match(harness.dom.view.innerHTML, /\u4ec5\u672c\u6b21\u5f55\u5236\u751f\u6548/, 'the hint states the session-only scope')
+
+  // Toggling is immediate and only affects the next start payload.
+  demoSwitches()[0].onclick()
+  assert.equal(demoSwitches()[0].attrs['aria-checked'], 'true')
+
+  const startAndRead = async (expectedIndex) => {
+    click(harness.dom, '[data-testid="start-recording"]')
+    await harness.settle()
+    return calls.start[expectedIndex]
+  }
+
+  const displayStart = await startAndRead(0)
+  assert.equal(displayStart.mode, 'display')
+  assert.equal(displayStart.config.demoEnhance, true, 'display mode forwards the opt-in')
+
+  click(harness.dom, '[data-testid="mode-region"]')
+  const regionStart = await startAndRead(1)
+  assert.equal(regionStart.mode, 'region')
+  assert.equal(regionStart.config.demoEnhance, true, 'region mode forwards the opt-in')
+
+  click(harness.dom, '[data-testid="mode-window"]')
+  await harness.settle()
+  queryAll(harness.dom, '[data-testid="window-option"]')[0].onclick()
+  const windowStart = await startAndRead(2)
+  assert.equal(windowStart.mode, 'window')
+  assert.equal(windowStart.config.demoEnhance, true, 'window mode still carries the boolean (the main process gates collection)')
+
+  // "Applies to this recording only": re-entering the workbench starts opt-out.
+  harness.run('renderRecording()')
+  await harness.settle()
+  assert.equal(demoSwitches()[0].attrs['aria-checked'], 'false', 'a new workbench visit resets the switch')
+  const resetStart = await startAndRead(3)
+  assert.equal(resetStart.config.demoEnhance, false)
 })
 
 test('records filter and mode labels cover window recordings', async () => {

@@ -74,7 +74,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
         audioSystem: config.audioSystem === true,
         audioMicrophone: config.audioMicrophone === true,
         audioMicrophoneDeviceId: text(config.audioMicrophoneDeviceId),
-        saveDirectory: text(config.saveDirectory)
+        saveDirectory: text(config.saveDirectory),
+        // R5 §5: the presenter-enhancement opt-in is a per-recording boolean; the
+        // main process starts the pointer track only when it is true and the mode
+        // is display/region. Whitelisting it here keeps this payload sanitizer from
+        // silently dropping the field.
+        demoEnhance: config.demoEnhance === true
       }
     })
   },

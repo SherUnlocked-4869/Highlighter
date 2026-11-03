@@ -63,8 +63,15 @@
 
     <main class="editor-body">
       <section class="stage-column">
-        <div class="video-stage">
-          <video id="preview-video" playsinline preload="metadata"></video>
+        <div id="video-stage" class="video-stage">
+          <!-- R5 parity frame: background/margins/radius/shadow use the same style values as
+               the exporter; the canvas aspect ratio comes from shared/recording-demo.js. -->
+          <div id="demo-preview-frame" class="demo-preview-frame" data-demo="off">
+            <div id="demo-canvas" class="demo-canvas">
+              <video id="preview-video" playsinline preload="metadata"></video>
+              <div id="ripple-layer" class="ripple-layer" aria-hidden="true"></div>
+            </div>
+          </div>
         </div>
         <section class="timeline-panel">
           <div class="timeline-head">
@@ -155,6 +162,58 @@
           <p class="export-hint" data-i18n="recording.editor.hint">Export uses the current selection; the source is kept so you can export again.</p>
         </section>
 
+        <section class="demo-card">
+          <div class="demo-card-head">
+            <h2 data-i18n="recording.editor.demo-title">Presentation</h2>
+            <button id="demo-reset" class="action-button" type="button" data-i18n="recording.editor.demo-reset">Reset</button>
+          </div>
+          <label class="demo-toggle">
+            <input id="demo-enabled" type="checkbox">
+            <span data-i18n="recording.editor.demo-enabled">Background frame</span>
+          </label>
+          <div class="demo-grid">
+            <label class="field demo-background-field">
+              <span data-i18n="recording.editor.demo-background">Background</span>
+              <div class="demo-inline">
+                <select id="demo-background" class="select"></select>
+                <input id="demo-background-custom" class="demo-color" type="color" value="#0f1115">
+              </div>
+            </label>
+            <label class="field">
+              <span data-i18n="recording.editor.demo-padding">Padding</span>
+              <input id="demo-padding" class="demo-range" type="range" min="0" max="20" step="1" value="8">
+              <b id="demo-padding-value" class="demo-value">8%</b>
+            </label>
+            <label class="field">
+              <span data-i18n="recording.editor.demo-radius">Corner radius</span>
+              <input id="demo-radius" class="demo-range" type="range" min="0" max="24" step="1" value="12">
+              <b id="demo-radius-value" class="demo-value">12</b>
+            </label>
+            <label class="demo-toggle">
+              <input id="demo-shadow" type="checkbox" checked>
+              <span data-i18n="recording.editor.demo-shadow">Shadow</span>
+            </label>
+            <label class="demo-toggle">
+              <input id="demo-ripples" type="checkbox">
+              <span data-i18n="recording.editor.demo-ripples">Click ripples</span>
+            </label>
+          </div>
+          <p id="events-status" class="events-status" role="status" aria-live="polite"></p>
+          <div class="zoom-block">
+            <div class="zoom-head">
+              <span data-i18n="recording.editor.zoom-title">Zooms</span>
+              <button id="zoom-add" class="action-button" type="button" data-i18n="recording.editor.zoom-add">Add zoom at playhead</button>
+            </div>
+            <div id="zoom-list" class="zoom-list"></div>
+          </div>
+          <div class="zoom-block">
+            <div class="zoom-head">
+              <span data-i18n="recording.editor.zoom-suggestions-title">Suggestions</span>
+            </div>
+            <div id="zoom-suggestions" class="zoom-suggestions"></div>
+          </div>
+        </section>
+
         <section id="result-bar" class="result-bar" role="status" hidden>
           <span id="result-name" class="result-name"></span>
           <span id="result-kind" class="result-kind" hidden></span>
@@ -174,6 +233,8 @@
   </div>
 
   <script src="../shared/recording-export-options.js"></script>
+  <!-- W12 shared demo maths (style/zoom/ripple evaluation shared with the exporter). -->
+  <script src="../shared/recording-demo.js"></script>
   <script src="editor-timeline.js"></script>
   <script src="trim-controller.js"></script>
   <script src="editor.js"></script>

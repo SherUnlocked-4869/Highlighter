@@ -188,8 +188,10 @@ test('the renderer sequences chunks, checks ACKs and refuses to fake a healthy t
   assert.match(script, /record\.notice\.chunk-failed-retry/)
   assert.match(script, /transitionRecordingState\('recording', 'error'\)/)
   // Stopping waits for every pending chunk before main is asked to seal the project.
+  // R5 adds the wall-clock timing payload as the second argument, so match the call
+  // prefix rather than the full no-arg form.
   const flushIndex = script.indexOf('await appendQueue.catch')
-  const finishIndex = script.indexOf('window.recordAPI.finishSession(sessionId)')
+  const finishIndex = script.indexOf('window.recordAPI.finishSession(sessionId')
   assert.ok(flushIndex > 0, 'finish must await the append queue')
   assert.ok(finishIndex > flushIndex, 'finish-session must run after the append queue flushes')
 })
@@ -255,10 +257,82 @@ test('preload exposes the new command/state/chunk channels and keeps the legacy 
   assert.match(preload, /onStateChanged: \(callback\) => subscribe\('record:state-changed'/)
   assert.match(preload, /onSourceLost: \(callback\) => subscribe\('record:source-lost'/)
   assert.match(preload, /appendChunk: \(sessionId, arrayBuffer, sequence, bytes\)/)
+  assert.match(preload, /finishSession: \(sessionId, timing\) =>/)
   // Retained channels (contract §9.2: keep the old surface; no new UI entry).
   for (const method of ['ready:', 'onInit:', 'setFrameState:', 'setAnnotationCommand:', 'reportPerformance:', 'close:']) {
     assert.match(preload, new RegExp(method))
   }
+})
+
+// R5 demo-enhancement timing: preload must forward the control bar's wall-clock capture
+// timing on record:finish-session. The bridge is a classic preload (not require-able in
+// Node), so extract the shipped arrow and execute it against a fake ipcRenderer.
+function extractPreloadFinishSession(ipcRenderer) {
+  const marker = 'finishSession: (sessionId, timing) =>'
+  const start = preload.indexOf(marker)
+  assert.ok(start >= 0, 'preload-record.js must expose finishSession(sessionId, timing)')
+  const paramsStart = start + 'finishSession: '.length
+  const payloadStart = preload.indexOf('{', paramsStart)
+  assert.ok(payloadStart > paramsStart, 'finishSession must build an object payload')
+  let depth = 0
+  let payloadEnd = -1
+  for (let index = payloadStart; index < preload.length; index += 1) {
+    if (preload[index] === '{') depth += 1
+    else if (preload[index] === '}') {
+      depth -= 1
+      if (depth === 0) {
+        payloadEnd = index + 1
+        break
+      }
+    }
+  }
+  assert.ok(payloadEnd > payloadStart, 'could not extract the finishSession payload')
+  // The invoke call's closing parenthesis follows the payload object.
+  const expression = preload.slice(paramsStart, payloadEnd + 1).trim()
+  return vm.runInNewContext(`(${expression})`, { ipcRenderer })
+}
+
+test('finishSession forwards the R5 wall-clock timing payload verbatim', async () => {
+  const calls = []
+  const finishSession = extractPreloadFinishSession({
+    invoke: (channel, payload) => {
+      calls.push({ channel, payload })
+      return Promise.resolve({ ok: true, projectId: 'project-1' })
+    }
+  })
+  assert.equal(typeof finishSession, 'function')
+  // Objects built inside the vm realm have a different prototype; compare their JSON form.
+  const lastCall = () => JSON.parse(JSON.stringify(calls.at(-1)))
+
+  // Pre-R5 call shape stays byte-compatible: no timing means no extra keys at all.
+  await finishSession('session-1')
+  assert.deepEqual(lastCall(), { channel: 'record:finish-session', payload: { sessionId: 'session-1' } })
+
+  // The frozen R5 shape reaches the domain unchanged, including interval order/values.
+  const timing = {
+    mediaStartedAtWall: 1_730_000_000_123,
+    pausedIntervals: [{ startWall: 1_730_000_001_000, endWall: 1_730_000_002_500 }]
+  }
+  await finishSession('session-2', timing)
+  assert.deepEqual(lastCall(), {
+    channel: 'record:finish-session',
+    payload: {
+      sessionId: 'session-2',
+      mediaStartedAtWall: 1_730_000_000_123,
+      pausedIntervals: [{ startWall: 1_730_000_001_000, endWall: 1_730_000_002_500 }]
+    }
+  })
+
+  // Junk timing degrades to a zero start and no pauses instead of crashing the bridge.
+  await finishSession('session-3', { mediaStartedAtWall: 'nope', pausedIntervals: 'bad' })
+  assert.deepEqual(lastCall(), {
+    channel: 'record:finish-session',
+    payload: { sessionId: 'session-3', mediaStartedAtWall: 0, pausedIntervals: [] }
+  })
+  await finishSession('session-4', null)
+  assert.deepEqual(lastCall(), { channel: 'record:finish-session', payload: { sessionId: 'session-4' } })
+  await finishSession('session-5', 'timing')
+  assert.deepEqual(lastCall(), { channel: 'record:finish-session', payload: { sessionId: 'session-5' } })
 })
 
 test('the renderer pulls a reconciled state on boot and subscribes to the post-command echo', () => {

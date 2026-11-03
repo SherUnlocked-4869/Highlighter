@@ -275,6 +275,10 @@ const IPC_SURFACES = Object.freeze([
       'record-editor:reveal',
       'record-editor:back',
       'record-editor:reload',
+      // R5 (docs/plans/2026-11-03-recording-r5-contracts.md §2.2): the project's event track.
+      // Owner-checked like every other editor channel; the payload is a projectId only and the
+      // answer carries data, never a path.
+      'record-editor:events',
       // Feature A receipt actions, same resultId-addressed contract as the other result bars.
       'export:perform-action'
     ],

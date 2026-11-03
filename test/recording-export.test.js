@@ -447,7 +447,7 @@ test('export request normalisation rejects a renderer-supplied path or a missing
     request: { format: 'mp4', range: { startMs: 1, endMs: 2 }, targetPath: 'C:/evil.mp4', argv: ['-i'] }
   })
   assert.equal(ok.ok, true)
-  assert.deepEqual(Object.keys(ok.value).sort(), ['format', 'gif', 'range', 'requestId', 'segments', 'sessionId', 'video'].sort())
+  assert.deepEqual(Object.keys(ok.value).sort(), ['demo', 'format', 'gif', 'range', 'requestId', 'segments', 'sessionId', 'video'].sort())
   assert.equal('targetPath' in ok.value, false, 'a renderer path must never survive normalisation')
   const v2 = toExportRequest({
     sessionId: 's',
@@ -1777,4 +1777,490 @@ test('frame-rate and quality tiers reach the real encoder', { skip: !ffmpegAvail
   })
   assert.equal(rejected.ok, false)
   assert.equal(rejected.code, 'fps-above-source')
+})
+
+// ---------------------------------------------------------------------------
+// R5 demo rendering (contract §3): normalised demo shape, ffmpeg graph, real frame assertions
+// ---------------------------------------------------------------------------
+
+const sharpModule = (() => {
+  try {
+    return require('sharp')
+  } catch {
+    return null
+  }
+})()
+const demoRenderingAvailable = ffmpegAvailable && !!sharpModule
+
+function makeStaticWebmSample(targetPath, { lavfi = 'smptebars=size=640x360:rate=10:duration=3', withAudio = true, seconds = 3 } = {}) {
+  if (!ffmpegAvailable) return null
+  const args = ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', lavfi]
+  if (withAudio) args.push('-f', 'lavfi', '-i', `sine=frequency=440:duration=${seconds}`)
+  args.push('-c:v', 'libvpx', '-b:v', '300k')
+  if (withAudio) args.push('-c:a', 'libopus', '-shortest')
+  else args.push('-an')
+  args.push('-y', targetPath)
+  const result = spawnSync(ffmpegPath, args, { encoding: 'utf8', timeout: 60000, windowsHide: true })
+  assert.equal(result.status, 0, `Unable to build the static WebM fixture.\n${result.stderr}`)
+  return targetPath
+}
+
+async function seedStaticSession(recordingService, fixturePath) {
+  const session = await recordingService.startSession()
+  await recordingService.appendChunk(session.id, fs.readFileSync(fixturePath))
+  await recordingService.finishSession(session.id)
+  const probed = await recordingService.probeSession(session.id)
+  assert.equal(probed.ok, true)
+  return session
+}
+
+// Extracts one frame at `seconds` and exposes raw pixels. Frames are small (canvas <= 800px) so
+// reading them with sharp is cheap and avoids a PNG parser dependency.
+async function extractFramePixels(filePath, seconds, scratch, name) {
+  const framePath = scratch.pathFor(`${name}.png`)
+  const result = spawnSync(ffmpegPath, [
+    '-hide_banner', '-loglevel', 'error', '-ss', String(seconds), '-i', filePath,
+    '-frames:v', '1', '-y', framePath
+  ], { encoding: 'utf8', windowsHide: true, timeout: 60000 })
+  assert.equal(result.status, 0, `Unable to extract the frame.\n${result.stderr}`)
+  const { data, info } = await sharpModule(framePath).raw().toBuffer({ resolveWithObject: true })
+  const pixel = (x, y) => {
+    const offset = (Math.round(y) * info.width + Math.round(x)) * info.channels
+    return [data[offset], data[offset + 1], data[offset + 2]]
+  }
+  const luminance = (x, y) => {
+    const [r, g, b] = pixel(x, y)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+  }
+  return { width: info.width, height: info.height, channels: info.channels, pixel, luminance }
+}
+
+function colorDistance(left, right) {
+  return Math.abs(left[0] - right[0]) + Math.abs(left[1] - right[1]) + Math.abs(left[2] - right[2])
+}
+
+test('request.demo is normalised to an output-time plan and canvas expected shape', () => {
+  const metadata = { durationMs: 5000, video: { width: 1920, height: 1080, frameRate: 30 }, audio: { exists: true } }
+  const withoutDemo = normalizeExportRequest({
+    format: 'mp4', segments: [{ startMs: 0, endMs: 2000 }]
+  }, metadata)
+  assert.equal(withoutDemo.value.demo, null, 'no demo request -> R4 output')
+
+  const withDemo = normalizeExportRequest({
+    format: 'mp4',
+    segments: [{ startMs: 0, endMs: 2000 }, { startMs: 2500, endMs: 4000 }],
+    video: { resolution: '720p', quality: 'high', fps: 30 },
+    demo: {
+      style: { enabled: true, background: '#f5f2ea', padding: 0.1, radius: 16, shadow: true, ripples: true },
+      zooms: [{ startMs: 1000, endMs: 2200, scale: 2, focusX: 0.5, focusY: 0.5 }],
+      clicks: [
+        { tMs: 1500, x: 0.3, y: 0.4, button: 0 },
+        { tMs: 2800, x: 0.6, y: 0.5, button: 0 }
+      ]
+    }
+  }, metadata)
+  assert.equal(withDemo.ok, true)
+  const demoValue = withDemo.value.demo
+  assert.equal(demoValue.rendered, true)
+  assert.deepEqual(demoValue.style, {
+    enabled: true, background: '#f5f2ea', padding: 0.1, radius: 16, shadow: true, ripples: true
+  })
+  // Source-time plan mapped through the kept ranges: the zoom is truncated at the cut, the
+  // second click is shifted left by the deleted gap.
+  assert.deepEqual(demoValue.zooms, [
+    { startMs: 1000, endMs: 2000, scale: 2, focusX: 0.5, focusY: 0.5, easing: 'ease-in-out' }
+  ])
+  assert.deepEqual(demoValue.clicks, [
+    { tMs: 1500, x: 0.3, y: 0.4, button: 0 },
+    { tMs: 2300, x: 0.6, y: 0.5, button: 0 }
+  ])
+  // 1280x720 content + 10% padding -> 1600x900 canvas.
+  assert.deepEqual(
+    [demoValue.contentWidth, demoValue.contentHeight, demoValue.canvasWidth, demoValue.canvasHeight, demoValue.paddingPx],
+    [1280, 720, 1600, 900, 160]
+  )
+  // The enhanced pipeline always re-encodes (no WebM copy fast path).
+  const webm = normalizeExportRequest({ format: 'webm', demo: { style: { enabled: true, padding: 0.1 } } }, metadata)
+  assert.equal(webm.value.video.copy, false)
+
+  // GIF ignores demo (documented R5 interpretation: no canvas pipeline for the GIF budget).
+  const gif = normalizeExportRequest({
+    format: 'gif', gif: { edge: 1280, fps: 15 }, demo: { style: { enabled: true, padding: 0.1 } }
+  }, metadata)
+  assert.equal(gif.ok, true)
+  assert.equal(gif.value.demo, null)
+
+  // Style disabled + no zooms/ripples is R4-equivalent (demo stays null).
+  const inert = normalizeExportRequest({
+    format: 'mp4', demo: { style: { enabled: false }, zooms: [], clicks: [] }
+  }, metadata)
+  assert.equal(inert.value.demo, null)
+  // Ripples off: a clicks array is not rendered on its own.
+  const ripplesOff = normalizeExportRequest({
+    format: 'mp4', demo: { style: { enabled: false, ripples: false }, clicks: [{ tMs: 100, x: 0.5, y: 0.5 }] }
+  }, metadata)
+  assert.equal(ripplesOff.value.demo, null)
+})
+
+test('illegal demo payloads are refused with invalid-demo-option', () => {
+  const metadata = { durationMs: 5000, video: { width: 320, height: 240, frameRate: 10 }, audio: { exists: true } }
+  const cases = [
+    'not-an-object',
+    { style: [] },
+    { zooms: 'nope' },
+    { clicks: {} },
+    { style: { enabled: true, padding: 0.1 }, zooms: {} }
+  ]
+  for (const demo of cases) {
+    assert.equal(normalizeExportRequest({ format: 'mp4', demo }, metadata).code, 'invalid-demo-option', JSON.stringify(demo))
+  }
+  // A demo look that cannot be resolved (no source dimensions) is refused, never guessed.
+  assert.equal(normalizeExportRequest(
+    { format: 'mp4', demo: { style: { enabled: true, padding: 0.1 } } },
+    { durationMs: 1000, video: {}, audio: { exists: false } }
+  ).code, 'invalid-demo-option')
+})
+
+test('the demo request signature covers the style/camera plan', () => {
+  const base = {
+    format: 'mp4',
+    segments: [{ startMs: 0, endMs: 2000 }],
+    video: { resolution: 'source', quality: 'standard', fps: 'source' }
+  }
+  const normalizedBase = normalizeExportRequest({ ...base, demo: { style: { enabled: true, padding: 0.1 } } }, {
+    durationMs: 5000, video: { width: 640, height: 360, frameRate: 10 }, audio: { exists: true }
+  }).value
+  const normalizedSame = normalizeExportRequest({ ...base, demo: { style: { enabled: true, padding: 0.1 } } }, {
+    durationMs: 5000, video: { width: 640, height: 360, frameRate: 10 }, audio: { exists: true }
+  }).value
+  assert.equal(requestSignature(normalizedBase), requestSignature(normalizedSame))
+  const otherStyle = normalizeExportRequest({
+    ...base,
+    demo: { style: { enabled: true, padding: 0.2 }, zooms: [{ startMs: 0, endMs: 800, scale: 2 }] }
+  }, { durationMs: 5000, video: { width: 640, height: 360, frameRate: 10 }, audio: { exists: true } }).value
+  assert.notEqual(requestSignature(normalizedBase), requestSignature(otherStyle))
+})
+
+test('buildExportArgs renders the demo chain and keeps the R4 path untouched otherwise', () => {
+  const metadata = { durationMs: 5000, video: { width: 640, height: 360, frameRate: 10 }, audio: { exists: true } }
+  const normalized = normalizeExportRequest({
+    format: 'mp4',
+    segments: [{ startMs: 0, endMs: 2000 }],
+    video: { resolution: 'source', quality: 'standard', fps: 'source' },
+    demo: {
+      style: { enabled: true, background: '#0f1115', padding: 0.1, radius: 16, shadow: true, ripples: true },
+      zooms: [{ startMs: 500, endMs: 1500, scale: 2, focusX: 0.5, focusY: 0.5, easing: 'linear' }],
+      clicks: [{ tMs: 1000, x: 0.4, y: 0.5, button: 0 }]
+    }
+  }, metadata).value
+  const assets = { bgPath: '/tmp/task.bg.png', maskPath: '/tmp/task.mask.png', ripplePath: '/tmp/task.ripple.png' }
+  const built = buildExportArgs({ ...normalized, inputPath: 'in.webm', outputPath: 'out.mp4', demoAssets: assets })
+  assert.deepEqual(built.expected, {
+    format: 'mp4',
+    durationMs: 2000,
+    width: 800,
+    height: 450,
+    hasAudio: true,
+    fps: 10,
+    demoRendered: true,
+    contentWidth: 640,
+    contentHeight: 360
+  })
+  const args = built.args
+  const graph = args[args.indexOf('-filter_complex') + 1]
+  // Documented order: concat -> scale content -> ripple -> zoompan -> alphamerge -> overlay bg.
+  assert.match(graph, /\[outv\]scale=640:360:flags=lanczos\[scaled\]/)
+  assert.match(graph, /scale=w='96\*\(0\.35\+0\.65\*min\(1,max\(0,\(t-1\.000000\)\/0\.6\)\)\)'/)
+  assert.match(graph, /overlay=x='0\.4000\*W-w\/2':y='0\.5000\*H-h\/2':enable='between\(t,1\.000000,1\.600000\)'/)
+  assert.match(graph, /zoompan=z='if\(lt\(on\/10,/, 'render frame rate is the source fps')
+  assert.match(graph, /\[.*\]\[2:v\]alphamerge\[canvasMasked\]/)
+  assert.match(graph, /\[1:v\]\[canvasMasked\]overlay=x=80:y=45:format=auto:shortest=1\[demoCanvas\]/)
+  assert.match(graph, /\[demoCanvas\]format=yuv420p\[demoOut\]/)
+  assert.equal(args[args.indexOf('-map') + 1], '[demoOut]')
+  // Asset inputs are looped, fps-locked and BOUNDED so ffmpeg terminates.
+  assert.deepEqual(args.slice(args.indexOf('-i', args.indexOf('-i') + 1) - 6, args.indexOf('-i', args.indexOf('-i') + 1) + 2),
+    ['-loop', '1', '-framerate', '10', '-t', '2.000000', '-i', assets.bgPath])
+  // Audio branch is unchanged by the demo rendering.
+  assert.deepEqual(args.slice(args.indexOf('-map', args.indexOf('-map') + 1), args.indexOf('-c:v')), [
+    '-map', '[outa]', '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-ac', '2'
+  ])
+
+  // A plain R4 request and an inert-demo request must build byte-identical argv/expected.
+  const plain = normalizeExportRequest({
+    format: 'mp4', segments: [{ startMs: 0, endMs: 2000 }], video: { resolution: 'source', quality: 'standard', fps: 'source' }
+  }, metadata).value
+  const plainBuilt = buildExportArgs({ ...plain, inputPath: 'in.webm', outputPath: 'out.mp4' })
+  const inertDemo = normalizeExportRequest({
+    format: 'mp4',
+    segments: [{ startMs: 0, endMs: 2000 }],
+    video: { resolution: 'source', quality: 'standard', fps: 'source' },
+    demo: { style: { enabled: false }, zooms: [], clicks: [] }
+  }, metadata).value
+  const inertBuilt = buildExportArgs({ ...inertDemo, inputPath: 'in.webm', outputPath: 'out.mp4' })
+  assert.deepEqual(inertBuilt, plainBuilt, 'non-demo output stays R4-equivalent')
+  assert.equal('demoRendered' in plainBuilt.expected, false)
+})
+
+test('a demo look renders the canvas: padding, rounded corners and background pixels', { skip: !demoRenderingAvailable && 'ffmpeg-static/sharp is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const fixture = makeStaticWebmSample(scratch.pathFor('static.webm'), { withAudio: true })
+  const probe = createMediaProbe({ ffmpegPath })
+  const { recordingService, exporter } = makeExportHarness({ scratch, probe })
+  t.after(async () => { await exporter.dispose(); await recordingService.dispose() })
+  const session = await seedStaticSession(recordingService, fixture)
+
+  const target = scratch.pathFor('out/demo.mp4')
+  const submitted = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'demo-style',
+    request: {
+      format: 'mp4',
+      segments: [{ startMs: 0, endMs: 1200 }, { startMs: 2000, endMs: 3000 }],
+      video: { resolution: 'source', quality: 'standard', fps: 'source' },
+      demo: {
+        style: { enabled: true, background: '#f5f2ea', padding: 0.1, radius: 16, shadow: false, ripples: false },
+        zooms: [],
+        clicks: []
+      }
+    },
+    targetPath: target
+  })
+  assert.equal(submitted.ok, true, JSON.stringify(submitted))
+  const settled = await waitForTerminal(exporter, submitted.task.taskId)
+  assert.equal(settled.state, 'succeeded', JSON.stringify(settled.error || null))
+
+  const published = await probe.probe(target)
+  assert.equal(published.ok, true)
+  // 640x360 content at 10% padding -> 800x450 canvas (contract §3.3 expected dims).
+  assert.deepEqual([published.metadata.video.width, published.metadata.video.height], [800, 450])
+  assert.equal(published.metadata.audio.exists, true)
+  assert.ok(Math.abs(published.metadata.durationMs - 2200) <= durationToleranceMs(2200, { segments: 2, sourceFps: 10 }))
+  // Canvas assets do not leak beside the published file.
+  assert.deepEqual((await fsp.readdir(path.dirname(target))).filter((name) => name !== path.basename(target)), [])
+
+  const frame = await extractFramePixels(target, 1.0, scratch, 'style')
+  assert.deepEqual([frame.width, frame.height], [800, 450])
+  const background = [0xf5, 0xf2, 0xea]
+  assert.ok(colorDistance(frame.pixel(2, 2), background) <= 8, `top-left corner is the background: ${frame.pixel(2, 2)}`)
+  assert.ok(colorDistance(frame.pixel(797, 447), background) <= 8, 'bottom-right corner is the background')
+  assert.ok(colorDistance(frame.pixel(400, 225), background) > 40, `content centre differs from the background: ${frame.pixel(400, 225)}`)
+})
+
+test('rounded corners clip the content to the background while an R4 export keeps its corners', { skip: !demoRenderingAvailable && 'ffmpeg-static/sharp is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const fixture = makeStaticWebmSample(scratch.pathFor('static.webm'), { withAudio: false })
+  const probe = createMediaProbe({ ffmpegPath })
+  const { recordingService, exporter } = makeExportHarness({ scratch, probe })
+  t.after(async () => { await exporter.dispose(); await recordingService.dispose() })
+  const session = await seedStaticSession(recordingService, fixture)
+  // A light background survives the yuv420p round-trip precisely; near-black quantises too coarsely
+  // for an exact corner-pixel assertion.
+  const background = [0xf5, 0xf2, 0xea]
+
+  const render = async (requestId, demo, name) => {
+    const target = scratch.pathFor(`out/${name}.mp4`)
+    const task = await exporter.submit({
+      sessionId: session.id,
+      requestId,
+      request: { format: 'mp4', segments: [{ startMs: 0, endMs: 1000 }], video: { resolution: 'source', quality: 'standard', fps: 'source' }, ...(demo ? { demo } : {}) },
+      targetPath: target
+    })
+    assert.equal(task.ok, true, JSON.stringify(task))
+    const terminal = await waitForTerminal(exporter, task.task.taskId)
+    assert.equal(terminal.state, 'succeeded', JSON.stringify(terminal.error || null))
+    return target
+  }
+
+  // 10% padding gives a real background frame; the rounded mask then decides whether the
+  // CONTENT corner pixels show the background or the content.
+  const rounded = await render('demo-radius', {
+    style: { enabled: true, background: '#f5f2ea', padding: 0.1, radius: 24, shadow: false, ripples: false },
+    zooms: [],
+    clicks: []
+  }, 'rounded')
+  const plain = await render('demo-none', null, 'plain')
+  const roundedFrame = await extractFramePixels(rounded, 0.5, scratch, 'rounded-frame')
+  const plainFrame = await extractFramePixels(plain, 0.5, scratch, 'plain-frame')
+  assert.deepEqual([roundedFrame.width, roundedFrame.height], [800, 450])
+  // Canvas corner (outside the content box) is the background.
+  assert.ok(colorDistance(roundedFrame.pixel(2, 2), background) <= 12, `canvas corner shows the background: ${roundedFrame.pixel(2, 2)}`)
+  // The content box starts at (80, 45); its 2 px corner is cut away by the 12 px radius.
+  assert.ok(colorDistance(roundedFrame.pixel(81, 46), background) <= 12, `rounded content corner shows the background: ${roundedFrame.pixel(81, 46)}`)
+  // A point well inside the radius is content, not background.
+  assert.ok(colorDistance(roundedFrame.pixel(114, 79), background) > 40, 'content inside the corner radius is untouched')
+  assert.ok(colorDistance(roundedFrame.pixel(400, 225), background) > 40, 'content centre is untouched')
+  // The same content coordinates in an R4 export (no mask) are content at the corner.
+  assert.ok(colorDistance(plainFrame.pixel(1, 1), background) > 40, 'the R4 export keeps its square content corner')
+})
+
+test('a zoom segment visibly magnifies the frame around its focus', { skip: !demoRenderingAvailable && 'ffmpeg-static/sharp is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const fixture = makeStaticWebmSample(scratch.pathFor('static.webm'), { withAudio: false })
+  const probe = createMediaProbe({ ffmpegPath })
+  const { recordingService, exporter } = makeExportHarness({ scratch, probe })
+  t.after(async () => { await exporter.dispose(); await recordingService.dispose() })
+  const session = await seedStaticSession(recordingService, fixture)
+
+  const render = async (requestId, demo, name) => {
+    const target = scratch.pathFor(`out/${name}.mp4`)
+    const task = await exporter.submit({
+      sessionId: session.id,
+      requestId,
+      request: { format: 'mp4', segments: [{ startMs: 0, endMs: 3000 }], video: { resolution: 'source', quality: 'standard', fps: 'source' }, ...(demo ? { demo } : {}) },
+      targetPath: target
+    })
+    assert.equal(task.ok, true)
+    const terminal = await waitForTerminal(exporter, task.task.taskId)
+    assert.equal(terminal.state, 'succeeded', JSON.stringify(terminal.error || null))
+    return target
+  }
+
+  const zoomed = await render('demo-zoom', {
+    style: { enabled: false },
+    zooms: [{ startMs: 600, endMs: 1800, scale: 2, focusX: 0.5, focusY: 0.5, easing: 'linear' }],
+    clicks: []
+  }, 'zoomed')
+  const plain = await render('demo-zoom-none', null, 'zoom-plain')
+  const zoomedProbe = await probe.probe(zoomed)
+  assert.deepEqual([zoomedProbe.metadata.video.width, zoomedProbe.metadata.video.height], [640, 360], 'zoom keeps the source frame size')
+  const zoomedFrame = await extractFramePixels(zoomed, 1.2, scratch, 'zoomed-frame')
+  const plainFrame = await extractFramePixels(plain, 1.2, scratch, 'plain-zoom-frame')
+
+  // A 2x centre zoom shows the CENTRE half of the plain frame: downscaling the zoomed frame by 2
+  // must match the plain frame's centre crop, which is only true if the content was magnified.
+  const zoomedPng = scratch.pathFor('zoomed-frame.png')
+  const plainPng = scratch.pathFor('plain-zoom-frame.png')
+  const downscaled = await sharpModule(zoomedPng).resize(320, 180, { fit: 'fill' }).raw().toBuffer({ resolveWithObject: true })
+  const centreCrop = await sharpModule(plainPng).extract({ left: 160, top: 90, width: 320, height: 180 }).raw().toBuffer({ resolveWithObject: true })
+  let difference = 0
+  const pixels = Math.min(downscaled.data.length, centreCrop.data.length)
+  for (let index = 0; index < pixels; index += 1) difference += Math.abs(downscaled.data[index] - centreCrop.data[index])
+  const meanDifference = difference / pixels
+  assert.ok(meanDifference <= 14, `zoomed frame (downscaled) should match the plain centre crop, mean diff ${meanDifference}`)
+  // And it must NOT simply be the plain full frame rescaled (which would mean no zoom was applied).
+  const plainFull = await sharpModule(plainPng).resize(320, 180, { fit: 'fill' }).raw().toBuffer({ resolveWithObject: true })
+  let plainDifference = 0
+  for (let index = 0; index < pixels; index += 1) plainDifference += Math.abs(downscaled.data[index] - plainFull.data[index])
+  assert.ok(plainDifference / pixels > 20, 'the zoomed content differs from the unmagnified full frame')
+})
+
+test('a click ripple is visible at its output time and disappears afterwards', { skip: !demoRenderingAvailable && 'ffmpeg-static/sharp is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  // A dark static capture makes the white ripple ring unambiguous.
+  const fixture = makeStaticWebmSample(scratch.pathFor('dark.webm'), {
+    lavfi: 'color=c=0x203040:size=640x360:rate=10:duration=3',
+    withAudio: false
+  })
+  const probe = createMediaProbe({ ffmpegPath })
+  const { recordingService, exporter } = makeExportHarness({ scratch, probe })
+  t.after(async () => { await exporter.dispose(); await recordingService.dispose() })
+  const session = await seedStaticSession(recordingService, fixture)
+
+  const render = async (requestId, demo, name) => {
+    const target = scratch.pathFor(`out/${name}.mp4`)
+    const task = await exporter.submit({
+      sessionId: session.id,
+      requestId,
+      request: { format: 'mp4', segments: [{ startMs: 0, endMs: 3000 }], video: { resolution: 'source', quality: 'standard', fps: 'source' }, ...(demo ? { demo } : {}) },
+      targetPath: target
+    })
+    assert.equal(task.ok, true)
+    const terminal = await waitForTerminal(exporter, task.task.taskId)
+    assert.equal(terminal.state, 'succeeded', JSON.stringify(terminal.error || null))
+    return target
+  }
+
+  const ripple = await render('demo-ripple', {
+    style: { enabled: false, ripples: true },
+    zooms: [],
+    clicks: [{ tMs: 1000, x: 0.5, y: 0.5, button: 0 }]
+  }, 'ripple')
+  const plain = await render('demo-ripple-none', null, 'ripple-plain')
+
+  const maxLuminanceNear = (frame, cx, cy, radius) => {
+    let best = 0
+    for (let y = Math.max(0, cy - radius); y < Math.min(frame.height, cy + radius); y += 2) {
+      for (let x = Math.max(0, cx - radius); x < Math.min(frame.width, cx + radius); x += 2) {
+        best = Math.max(best, frame.luminance(x, y))
+      }
+    }
+    return best
+  }
+
+  const duringRipple = await extractFramePixels(ripple, 1.2, scratch, 'ripple-on')
+  const plainDuring = await extractFramePixels(plain, 1.2, scratch, 'ripple-off')
+  assert.ok(maxLuminanceNear(duringRipple, 320, 180, 70) >= 150,
+    `the white ring must light up near the click (${maxLuminanceNear(duringRipple, 320, 180, 70)})`)
+  assert.ok(maxLuminanceNear(plainDuring, 320, 180, 70) <= 110,
+    'the same frame without ripples stays dark')
+
+  // 600 ms window: at 2.2 s the ripple is gone again.
+  const afterRipple = await extractFramePixels(ripple, 2.2, scratch, 'ripple-after')
+  assert.ok(maxLuminanceNear(afterRipple, 320, 180, 70) <= 110, 'the ripple is disabled after its window')
+
+  // Ripple disabled while clicks are present: no enhanced pipeline and no bright ring.
+  const disabledRipple = await render('demo-ripple-disabled', {
+    style: { enabled: false, ripples: false },
+    zooms: [],
+    clicks: [{ tMs: 1000, x: 0.5, y: 0.5, button: 0 }]
+  }, 'ripple-disabled')
+  const disabledFrame = await extractFramePixels(disabledRipple, 1.2, scratch, 'ripple-disabled-frame')
+  assert.ok(maxLuminanceNear(disabledFrame, 320, 180, 70) <= 110, 'ripples=false ignores clicks')
+})
+
+test('the export service refuses an illegal demo payload and cleans demo assets on failure', { skip: !sharpModule && 'sharp is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const { recordingService, session } = await seedSession(scratch)
+
+  // 1) A malformed demo plan is refused before a task exists.
+  const invalid = createRecordingExportService({
+    getRecordingService: () => recordingService,
+    probe: makeStubProbe(),
+    spawnProcess: makeFakeFfmpeg().spawn,
+    log: () => {}
+  })
+  t.after(() => invalid.dispose())
+  const rejected = await invalid.submit({
+    sessionId: session.id,
+    requestId: 'demo-invalid',
+    request: { format: 'mp4', range: { startMs: 0, endMs: 400 }, demo: { style: [] } },
+    targetPath: scratch.pathFor('invalid.mp4')
+  })
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.code, 'invalid-demo-option')
+
+  // 2) When the encode fails, the generated bg/mask/ripple assets are removed with the temp file.
+  const exporter = createRecordingExportService({
+    getRecordingService: () => recordingService,
+    probe: makeStubProbe({ video: { width: 640, height: 360, frameRate: 10 } }),
+    spawnProcess: makeFakeFfmpeg({ code: 1, bytes: 'partial' }).spawn,
+    log: () => {}
+  })
+  t.after(() => exporter.dispose())
+  const target = scratch.pathFor('out/demo-failure.mp4')
+  const submitted = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'demo-failure',
+    request: {
+      format: 'mp4',
+      range: { startMs: 0, endMs: 400 },
+      demo: {
+        style: { enabled: true, background: '#f5f2ea', padding: 0.1, radius: 16, shadow: true, ripples: true },
+        zooms: [],
+        clicks: [{ tMs: 100, x: 0.5, y: 0.5, button: 0 }]
+      }
+    },
+    targetPath: target
+  })
+  assert.equal(submitted.ok, true, JSON.stringify(submitted))
+  const settled = await waitForTerminal(exporter, submitted.task.taskId)
+  assert.equal(settled.state, 'failed')
+  assert.equal(settled.error.code, 'encode-failed')
+  const leftovers = (await fsp.readdir(path.dirname(target))).filter((name) => name !== path.basename(target))
+  assert.deepEqual(leftovers, [], 'demo raster assets must not survive a failed export')
 })

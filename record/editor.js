@@ -43,7 +43,9 @@
     'source-name', 'source-name-input', 'save-state',
     'reveal-source', 'rerecord', 'back-to-records', 'export-button',
     'export-progress', 'export-progress-bar',
+    'video-stage',
     'preview-video',
+    'demo-preview-frame',
     'recovery-banner', 'recovery-message', 'recovery-retry', 'recovery-reveal',
     'draft-conflict', 'draft-conflict-message', 'draft-reload',
     'timeline', 'timeline-track', 'timeline-selection', 'timeline-segments', 'timeline-playhead',
@@ -53,20 +55,24 @@
     'split-at-playhead', 'delete-segment', 'reset-edits', 'undo-edit', 'redo-edit',
     'export-format', 'gif-edge', 'gif-fps', 'gif-budget',
     'export-resolution', 'export-quality', 'export-fps', 'export-output-size',
+    'demo-canvas', 'ripple-layer',
+    'demo-enabled', 'demo-background', 'demo-background-custom',
+    'demo-padding', 'demo-padding-value', 'demo-radius', 'demo-radius-value',
+    'demo-shadow', 'demo-ripples', 'demo-reset', 'events-status',
+    'zoom-add', 'zoom-list', 'zoom-suggestions',
     'result-bar', 'result-name', 'result-kind', 'result-open', 'result-address', 'result-reveal',
     'result-status', 'result-dismiss',
     'cancel-export', 'error-text'
   ])
 
-  // Reasons emitted by the trim controller that represent a USER EDIT and therefore need an
-  // autosave. Playback, task progress and project reloads must not write a draft.
   // Reasons emitted by the trim controller that represent a committed USER EDIT and therefore
   // need an autosave. Drag moves are transient until commitEdit() emits 'edit-committed';
   // playback, export progress and project reloads must not write a draft.
   const EDIT_REASONS = new Set([
     'start', 'end', 'reset', 'format', 'gif-fps', 'gif-size',
     'split', 'delete-segment', 'reset-edits', 'boundary', 'junction',
-    'edit-committed', 'undo', 'redo'
+    'edit-committed', 'undo', 'redo',
+    'demo-style', 'demo-zoom', 'demo-reset', 'demo-suggestion'
   ])
   // Autosave debounce. Contract §11: <= 500 ms.
   const SAVE_DEBOUNCE_MS = 400
@@ -171,6 +177,11 @@
     // unavailable). Render recomputes `error-text` from fatal > export error > this, so a
     // transient controller state cannot silently wipe a message the user still needs.
     let manualErrorKey = ''
+    // R5: event-track load generation (a reload wins over an older in-flight load), focus
+    // picking target, and the last OUTPUT time ripples were evaluated for.
+    let eventsLoadId = 0
+    let pickingZoomIndex = null
+    let lastPlaybackOutputMs = null
 
     function body() {
       return documentRef && documentRef.body ? documentRef.body : null
@@ -345,7 +356,10 @@
       scrubDragging = false
       removeDragListeners()
       if (isRecoveryBlocked()) setSaveState('unavailable')
+      pickingZoomIndex = null
+      resetRippleClock()
       render()
+      loadEvents()
       return true
     }
 
@@ -726,6 +740,414 @@
       }
     }
 
+    // ---------- R5 demo rendering ----------
+
+    function demoLimits() {
+      return controller && controller.DEMO_LIMITS ? controller.DEMO_LIMITS : null
+    }
+
+    function backgroundPresetEntries(style) {
+      const limits = demoLimits()
+      const presets = limits ? limits.BACKGROUND_PRESETS : []
+      const entries = presets.map((color) => ({
+        value: color,
+        label: translate(BACKGROUND_LABEL_KEYS[color] || 'recording.editor.background.custom')
+      }))
+      const current = style && typeof style.background === 'string' ? style.background.toLowerCase() : ''
+      if (current && !presets.includes(current)) {
+        entries.push({ value: 'custom', label: translate('recording.editor.background.custom') })
+      } else {
+        entries.push({ value: 'custom', label: translate('recording.editor.background.custom') })
+      }
+      return entries
+    }
+
+    const BACKGROUND_LABEL_KEYS = {
+      '#0f1115': 'recording.editor.background.dark',
+      '#1e1e1e': 'recording.editor.background.slate',
+      '#f5f2ea': 'recording.editor.background.paper',
+      '#0a2540': 'recording.editor.background.brand'
+    }
+
+    function eventsStatusText(demo) {
+      const events = demo && demo.events ? demo.events : null
+      if (!events) return ''
+      if (events.degraded) return translate('recording.editor.events-status.degraded')
+      if (!events.available) return translate('recording.editor.events-status.none')
+      const base = translate('recording.editor.events-status.track', {
+        clicks: events.clickCount,
+        pointer: events.pointerCount
+      })
+      return events.truncated ? base + ' · ' + translate('recording.editor.events-status.truncated') : base
+    }
+
+    function renderPreviewFrame(snapshot) {
+      const frame = element('demo-preview-frame')
+      const canvas = element('demo-canvas')
+      const player = element('preview-video')
+      if (!frame || !canvas || !player) return
+      const style = snapshot && snapshot.demo ? snapshot.demo.style : null
+      const demoCanvas = snapshot && snapshot.demo ? snapshot.demo.canvas : null
+      const source = snapshot ? snapshot.metadata.video : (metadata ? metadata.video : { width: 0, height: 0 })
+      const enabled = !!(style && style.enabled && demoCanvas && demoCanvas.canvasWidth > 0)
+      frame.dataset.demo = enabled ? 'on' : 'off'
+      // Fit the output-canvas aspect ratio inside the stage in real pixels. A CSS-only
+      // aspect-ratio box cannot satisfy max-width AND max-height at every window size.
+      const stage = element('video-stage')
+      const stageRect = stage && typeof stage.getBoundingClientRect === 'function' ? stage.getBoundingClientRect() : null
+      const canvasWidth = enabled ? demoCanvas.canvasWidth : (source && source.width > 0 ? source.width : 0)
+      const canvasHeight = enabled ? demoCanvas.canvasHeight : (source && source.height > 0 ? source.height : 0)
+      if (stageRect && stageRect.width > 0 && stageRect.height > 0 && canvasWidth > 0 && canvasHeight > 0) {
+        const fit = Math.min(stageRect.width / canvasWidth, stageRect.height / canvasHeight)
+        const paddingPx = enabled && demoCanvas ? Math.max(0, Number(demoCanvas.paddingPx) || 0) : 0
+        frame.style.width = Math.max(1, Math.floor(canvasWidth * fit)) + 'px'
+        frame.style.height = Math.max(1, Math.floor(canvasHeight * fit)) + 'px'
+        // The inner content box is the output content area; sizing it explicitly avoids a
+        // percentage-height flex ambiguity at very short stage heights (narrow windows).
+        const contentBox = element('demo-canvas')
+        if (contentBox) {
+          contentBox.style.width = Math.max(1, Math.floor((canvasWidth - paddingPx * 2) * fit)) + 'px'
+          contentBox.style.height = Math.max(1, Math.floor((canvasHeight - paddingPx * 2) * fit)) + 'px'
+        }
+      } else {
+        frame.style.width = '100%'
+        frame.style.height = '100%'
+        const contentBox = element('demo-canvas')
+        if (contentBox) {
+          contentBox.style.width = '100%'
+          contentBox.style.height = '100%'
+        }
+      }
+      if (enabled) {
+        frame.style.aspectRatio = demoCanvas.canvasWidth + ' / ' + demoCanvas.canvasHeight
+        frame.style.background = style.background
+        const paddingPercent = demoCanvas.paddingPx > 0 ? (demoCanvas.paddingPx / demoCanvas.canvasWidth) * 100 : 0
+        frame.style.padding = paddingPercent.toFixed(3) + '%'
+        frame.classList.toggle('demo-shadow', style.shadow === true)
+        canvas.style.borderRadius = Math.max(0, Math.round(Number(demoCanvas.radiusPx) || 0)) + 'px'
+      } else {
+        frame.style.padding = '0'
+        frame.style.background = 'transparent'
+        frame.style.aspectRatio = source && source.width > 0 && source.height > 0
+          ? source.width + ' / ' + source.height
+          : ''
+        frame.classList.remove('demo-shadow')
+        canvas.style.borderRadius = '0px'
+      }
+      // Zoom is evaluated at the source playhead and mapped to output time by the controller.
+      let zoom = { scale: 1, focusX: 0.5, focusY: 0.5 }
+      if (controller && snapshot) {
+        try {
+          zoom = controller.previewZoomAt(mediaMs())
+        } catch (error) {
+          log('editor: previewZoomAt failed:', error?.message || error)
+        }
+      }
+      const scale = Number(zoom.scale) || 1
+      player.style.transformOrigin = ((Number(zoom.focusX) || 0.5) * 100).toFixed(2) + '% ' + ((Number(zoom.focusY) || 0.5) * 100).toFixed(2) + '%'
+      player.style.transform = scale > 1.0001 ? 'scale(' + scale.toFixed(4) + ')' : 'none'
+    }
+
+    function renderDemoControls(snapshot, editable, blocked) {
+      const demo = snapshot && snapshot.demo ? snapshot.demo : null
+      const style = demo ? demo.style : null
+      const events = demo ? demo.events : { available: false, degraded: '', clickCount: 0, pointerCount: 0, truncated: false }
+      const busy = !!snapshot && (snapshot.phase === 'submitting' || snapshot.phase === 'active')
+      const gifFormat = snapshot ? snapshot.format === 'gif' : false
+      // Contract/p1: the demo engine renders mp4/webm only; GIF ignores demo, so the panel is
+      // visibly disabled instead of silently dropping the user's settings.
+      const demoEditable = !!(editable && !busy && !blocked && snapshot && !gifFormat)
+      const disabled = !demoEditable
+
+      if (elements['events-status']) {
+        const status = element('events-status')
+        status.textContent = snapshot ? eventsStatusText(demo) : ''
+        status.classList.toggle('warning', !!(snapshot && (events.degraded || !events.available)))
+      }
+      if (elements['demo-enabled']) {
+        const toggle = element('demo-enabled')
+        toggle.checked = !!(style && style.enabled)
+        toggle.disabled = disabled
+      }
+      if (elements['demo-padding']) {
+        const range = element('demo-padding')
+        range.value = String(Math.round(((style ? style.padding : 0.08) * 100)))
+        range.disabled = disabled
+        if (elements['demo-padding-value']) element('demo-padding-value').textContent = range.value + '%'
+      }
+      if (elements['demo-radius']) {
+        const range = element('demo-radius')
+        range.value = String(Math.round(style ? style.radius : 12))
+        range.disabled = disabled
+        if (elements['demo-radius-value']) element('demo-radius-value').textContent = range.value
+      }
+      if (elements['demo-shadow']) {
+        element('demo-shadow').checked = !!(style && style.shadow)
+        element('demo-shadow').disabled = disabled
+      }
+      if (elements['demo-ripples']) {
+        const ripples = element('demo-ripples')
+        ripples.checked = !!(style && style.ripples)
+        ripples.disabled = disabled || !events.available
+      }
+      if (elements['demo-reset']) element('demo-reset').disabled = disabled
+      if (elements['demo-background']) {
+        const select = element('demo-background')
+        const current = style ? String(style.background || '').toLowerCase() : ''
+        const presetMatch = Object.keys(BACKGROUND_LABEL_KEYS).includes(current)
+        const entries = backgroundPresetEntries(style)
+        setSelectOptions(select, entries, presetMatch ? current : 'custom', disabled)
+        if (elements['demo-background-custom']) {
+          const custom = element('demo-background-custom')
+          custom.value = /^#[0-9a-f]{6}$/i.test(current) ? current : '#0f1115'
+          custom.hidden = presetMatch
+          custom.disabled = disabled
+        }
+      }
+      if (elements['zoom-add']) {
+        element('zoom-add').disabled = disabled || !(demo && demo.canAddZoom)
+      }
+      renderZoomList(demo, disabled)
+      renderSuggestions(demo, disabled)
+      if (gifFormat && elements['events-status'] && snapshot) {
+        element('events-status').textContent = translate('recording.editor.demo-gif-disabled')
+        element('events-status').classList.add('warning')
+      }
+    }
+
+    function renderZoomList(demo, disabled) {
+      const container = element('zoom-list')
+      if (!container) return
+      clearContainer(container)
+      const zooms = demo && Array.isArray(demo.zooms) ? demo.zooms : []
+      if (zooms.length === 0) {
+        const empty = createNode('p', 'zoom-empty')
+        if (empty) empty.textContent = translate('recording.editor.zoom-empty')
+        if (empty) container.appendChild(empty)
+        return
+      }
+      zooms.forEach((zoom, index) => {
+        const row = createNode('div', 'zoom-item' + (pickingZoomIndex === index ? ' picking' : ''))
+        if (!row) return
+        row.dataset.testid = 'zoom-item'
+        row.dataset.index = String(index)
+        const head = createNode('div', 'zoom-item-head')
+        const time = createNode('span', 'zoom-item-time')
+        if (time) {
+          time.textContent = translate('recording.editor.zoom-item-time', {
+            start: timelineModule.formatClock(zoom.startMs),
+            end: timelineModule.formatClock(zoom.endMs),
+            scale: Number(zoom.scale).toFixed(2)
+          })
+        }
+        const actions = createNode('div', 'zoom-item-actions')
+        const focusButton = createNode('button')
+        if (focusButton) {
+          focusButton.type = 'button'
+          focusButton.dataset.testid = 'zoom-item-focus'
+          focusButton.textContent = pickingZoomIndex === index
+            ? translate('recording.editor.zoom-focus-picking')
+            : translate('recording.editor.zoom-focus')
+          focusButton.disabled = disabled
+          focusButton.addEventListener('click', () => startPickingZoom(index))
+        }
+        const deleteButton = createNode('button')
+        if (deleteButton) {
+          deleteButton.type = 'button'
+          deleteButton.dataset.testid = 'zoom-item-delete'
+          deleteButton.textContent = translate('recording.editor.zoom-delete')
+          deleteButton.disabled = disabled
+          deleteButton.addEventListener('click', () => {
+            if (controller && controller.deleteZoom(index)) render()
+          })
+        }
+        if (actions) {
+          if (focusButton) actions.appendChild(focusButton)
+          if (deleteButton) actions.appendChild(deleteButton)
+        }
+        if (head) {
+          if (time) head.appendChild(time)
+          if (actions) head.appendChild(actions)
+          row.appendChild(head)
+        }
+        const scaleRow = createNode('div', 'zoom-scale-row')
+        const scaleLabel = createNode('span')
+        if (scaleLabel) scaleLabel.textContent = translate('recording.editor.zoom-scale')
+        const scaleInput = createNode('input', 'demo-range')
+        if (scaleInput) {
+          scaleInput.type = 'range'
+          scaleInput.min = '125'
+          scaleInput.max = '300'
+          scaleInput.step = '5'
+          scaleInput.value = String(Math.round((Number(zoom.scale) || 1.25) * 100))
+          scaleInput.dataset.testid = 'zoom-item-scale'
+          scaleInput.disabled = disabled
+          scaleInput.addEventListener('change', () => {
+            if (controller && controller.updateZoomScale(index, Number(scaleInput.value) / 100)) render()
+          })
+        }
+        const scaleValue = createNode('b', 'demo-value')
+        if (scaleValue) scaleValue.textContent = (Number(zoom.scale) || 1.25).toFixed(2) + '\u00d7'
+        if (scaleRow) {
+          if (scaleLabel) scaleRow.appendChild(scaleLabel)
+          if (scaleInput) scaleRow.appendChild(scaleInput)
+          if (scaleValue) scaleRow.appendChild(scaleValue)
+          row.appendChild(scaleRow)
+        }
+        container.appendChild(row)
+      })
+    }
+
+    function renderSuggestions(demo, disabled) {
+      const container = element('zoom-suggestions')
+      if (!container) return
+      clearContainer(container)
+      const suggestions = demo && Array.isArray(demo.suggestions) ? demo.suggestions : []
+      suggestions.forEach((suggestion, index) => {
+        const row = createNode('div', 'zoom-suggestion')
+        if (!row) return
+        row.dataset.testid = 'zoom-suggestion'
+        row.dataset.index = String(index)
+        const head = createNode('div', 'zoom-suggestion-head')
+        const reason = createNode('span', 'zoom-suggestion-reason')
+        if (reason) {
+          reason.textContent = suggestion.reason === 'clicks'
+            ? translate('recording.editor.zoom-suggestion-clicks', { count: 2 })
+            : translate('recording.editor.zoom-suggestion-dwell')
+          const timeText = timelineModule.formatClock(suggestion.startMs) + ' – ' + timelineModule.formatClock(suggestion.endMs)
+          reason.textContent = reason.textContent + ' · ' + timeText
+        }
+        const actions = createNode('div', 'zoom-suggestion-actions')
+        const addButton = createNode('button')
+        if (addButton) {
+          addButton.type = 'button'
+          addButton.dataset.testid = 'zoom-suggestion-add'
+          addButton.textContent = translate('recording.editor.zoom-suggestion-add')
+          addButton.disabled = disabled
+          addButton.addEventListener('click', () => {
+            if (controller && controller.addSuggestion(index)) render()
+          })
+        }
+        const ignoreButton = createNode('button')
+        if (ignoreButton) {
+          ignoreButton.type = 'button'
+          ignoreButton.dataset.testid = 'zoom-suggestion-ignore'
+          ignoreButton.textContent = translate('recording.editor.zoom-suggestion-ignore')
+          ignoreButton.disabled = disabled
+          ignoreButton.addEventListener('click', () => {
+            if (controller && controller.ignoreSuggestion(index)) render()
+          })
+        }
+        if (actions) {
+          if (addButton) actions.appendChild(addButton)
+          if (ignoreButton) actions.appendChild(ignoreButton)
+        }
+        if (head) {
+          if (reason) head.appendChild(reason)
+          if (actions) head.appendChild(actions)
+          row.appendChild(head)
+        }
+        container.appendChild(row)
+      })
+    }
+
+    // ---------- R5 event track loading ----------
+
+    async function loadEvents() {
+      if (!controller || !project) return { ok: false }
+      const generation = ++eventsLoadId
+      if (typeof api?.events !== 'function') {
+        controller.applyEventTrack(null, { degraded: 'bridge-missing' })
+        render()
+        return { ok: false, code: 'bridge-missing' }
+      }
+      let answer
+      try {
+        answer = await api.events(project.id)
+      } catch (error) {
+        log('editor: events failed:', error?.message || error)
+        answer = { ok: false, code: 'events-unavailable' }
+      }
+      if (generation !== eventsLoadId || !controller) return { ok: false }
+      if (answer && answer.ok === true) controller.applyEventTrack(answer.track || null)
+      else controller.applyEventTrack(null, { degraded: answer?.code || 'events-unavailable' })
+      render()
+      return answer || { ok: false }
+    }
+
+    // ---------- R5 preview interactions ----------
+
+    function startPickingZoom(index) {
+      if (!canEdit()) return false
+      pickingZoomIndex = index
+      render()
+      return true
+    }
+
+    function cancelPickingZoom() {
+      if (pickingZoomIndex === null) return false
+      pickingZoomIndex = null
+      render()
+      return true
+    }
+
+    function applyPickedFocus(event) {
+      if (pickingZoomIndex === null || !controller || !event) return false
+      const player = element('preview-video')
+      if (!player || typeof player.getBoundingClientRect !== 'function') return false
+      const rect = player.getBoundingClientRect()
+      if (!(rect.width > 0) || !(rect.height > 0)) return false
+      const x = Math.max(0, Math.min(1, (Number(event.clientX) - rect.left) / rect.width))
+      const y = Math.max(0, Math.min(1, (Number(event.clientY) - rect.top) / rect.height))
+      const index = pickingZoomIndex
+      pickingZoomIndex = null
+      controller.updateZoomFocus(index, x, y)
+      render()
+      return true
+    }
+
+    function spawnRipple(click) {
+      const layer = element('ripple-layer')
+      if (!layer) return
+      const node = createNode('i', 'click-ripple')
+      if (!node) return
+      node.style.left = (Number(click.x) * 100).toFixed(3) + '%'
+      node.style.top = (Number(click.y) * 100).toFixed(3) + '%'
+      layer.appendChild(node)
+      timers.setTimeout(() => {
+        if (node.parentNode && typeof node.parentNode.removeChild === 'function') node.parentNode.removeChild(node)
+      }, 700)
+    }
+
+    // Ripple preview is a playback effect: clicks fire once when the clock crosses their
+    // OUTPUT time. Scrubbing backwards re-arms them; paused seeks never fire.
+    function maybeSpawnRipples(sourceMs) {
+      if (!controller) return
+      const snapshot = state()
+      if (!snapshot || !snapshot.playing || !snapshot.demo.style.ripples) {
+        lastPlaybackOutputMs = null
+        return
+      }
+      const outputMs = controller.outputTimeFor(sourceMs)
+      if (outputMs === null) {
+        lastPlaybackOutputMs = null
+        return
+      }
+      if (lastPlaybackOutputMs === null || outputMs < lastPlaybackOutputMs) {
+        lastPlaybackOutputMs = outputMs
+        return
+      }
+      const clicks = controller.mappedClicksOutput()
+      for (const click of clicks) {
+        if (click.tMs > lastPlaybackOutputMs && click.tMs <= outputMs) spawnRipple(click)
+      }
+      lastPlaybackOutputMs = outputMs
+    }
+
+    function resetRippleClock() {
+      lastPlaybackOutputMs = null
+    }
+
     function isTypingTarget(target) {
       if (!target) return false
       const tag = String(target.tagName || '').toUpperCase()
@@ -820,6 +1242,8 @@
       }
       renderExportPanel(snapshot, editable)
 
+      renderPreviewFrame(snapshot)
+      renderDemoControls(snapshot, editable, blocked)
       renderProgress(snapshot)
       renderResultBar(snapshot)
       renderExportButton(snapshot, blocked)
@@ -1006,6 +1430,7 @@
     }
 
     function playTick() {
+      if (controller) maybeSpawnRipples(mediaMs())
       if (!controller) {
         stopPlayTimer()
         return
@@ -1038,6 +1463,7 @@
 
     function startRangePlayback() {
       if (!controller) return false
+      resetRippleClock()
       const snapshot = controller.state()
       const fromMs = mediaMs()
       const started = snapshot.projectId
@@ -1052,6 +1478,12 @@
         return false
       }
       player.currentTime = Math.max(0, started.startMs) / 1000
+      // Arm the ripple clock at the first played OUTPUT position so a click between the
+      // start and the first polling tick still fires exactly once.
+      if (controller) {
+        const startOutputMs = controller.outputTimeFor(started.startMs)
+        lastPlaybackOutputMs = startOutputMs === null ? null : startOutputMs
+      }
       stopPlayTimer()
       playTimer = timers.setInterval(playTick, RANGE_PLAY_POLL_MS)
       const playing = player.play?.()
@@ -1073,6 +1505,7 @@
     }
 
     function seekTo(milliseconds) {
+      resetRippleClock()
       const player = video()
       const duration = state()?.durationMs || 0
       if (!player || !(duration > 0)) return
@@ -1508,6 +1941,11 @@
       // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y (and the Cmd variants). Never intercepted while a text
       // field or select is focused, so the user can still undo their typing.
       on(windowRef, 'keydown', (event) => {
+        if (event && event.key === 'Escape' && pickingZoomIndex !== null) {
+          cancelPickingZoom()
+          if (typeof event.preventDefault === 'function') event.preventDefault()
+          return
+        }
         if (!event || !(event.ctrlKey || event.metaKey)) return
         if (isTypingTarget(event.target) || isTypingTarget(documentRef?.activeElement)) return
         const key = String(event.key || '').toLowerCase()
@@ -1519,6 +1957,60 @@
           render()
         }
       })
+
+      // R5 demo controls.
+      on(element('demo-enabled'), 'change', () => {
+        controller?.setDemoEnabled(element('demo-enabled').checked)
+        render()
+      })
+      on(element('demo-background'), 'change', () => {
+        const value = element('demo-background').value
+        if (value === 'custom') {
+          const custom = element('demo-background-custom')
+          if (custom) {
+            custom.hidden = false
+            if (typeof custom.focus === 'function') custom.focus()
+            controller?.setDemoBackground(custom.value)
+          }
+        } else {
+          controller?.setDemoBackground(value)
+        }
+        render()
+      })
+      on(element('demo-background-custom'), 'input', () => {
+        const custom = element('demo-background-custom')
+        if (custom && !custom.hidden) controller?.setDemoBackground(custom.value)
+        render()
+      })
+      on(element('demo-padding'), 'input', () => {
+        controller?.setDemoPaddingPercent(Number(element('demo-padding').value))
+        render()
+      })
+      on(element('demo-radius'), 'input', () => {
+        controller?.setDemoRadius(Number(element('demo-radius').value))
+        render()
+      })
+      on(element('demo-shadow'), 'change', () => {
+        controller?.setDemoShadow(element('demo-shadow').checked)
+        render()
+      })
+      on(element('demo-ripples'), 'change', () => {
+        const enabled = element('demo-ripples').checked
+        if (controller?.setDemoRipples(enabled) === false && enabled) {
+          showError('recording.editor.events-status.none')
+        }
+        render()
+      })
+      on(element('demo-reset'), 'click', () => {
+        controller?.resetDemo()
+        pickingZoomIndex = null
+        render()
+      })
+      on(element('zoom-add'), 'click', () => {
+        if (controller?.addZoomAt(mediaMs())) render()
+      })
+      on(element('demo-canvas'), 'click', (event) => applyPickedFocus(event))
+      on(element('preview-video'), 'click', (event) => applyPickedFocus(event))
 
       const player = element('preview-video')
       on(player, 'timeupdate', () => updatePlayhead())
@@ -1549,6 +2041,7 @@
         stopRangePlayback()
       })
       on(player, 'loadedmetadata', () => updatePlayhead())
+      on(windowRef, 'resize', () => { render() })
       on(windowRef, 'pagehide', () => {
         // Contract §11: flush the draft before the window goes away. The IPC promise may not
         // settle after the renderer is destroyed, so this is best-effort by design.
@@ -1610,6 +2103,10 @@
       getMetadata: () => metadata,
       getRecovery: () => ({ ...recovery }),
       getFatalCode: () => fatalCode,
+      loadEvents,
+      startPickingZoom,
+      cancelPickingZoom,
+      getPickingZoomIndex: () => pickingZoomIndex,
       isRecoveryVisible: () => !!element('recovery-banner') && !element('recovery-banner').hidden,
       isDraftConflictVisible: () => !!element('draft-conflict') && !element('draft-conflict').hidden,
       elements
@@ -1654,7 +2151,6 @@
     } catch (error) {
       // A renderer exception must never leave a window with no content; the fatal banner is
       // rendered by boot when possible, and this log is the diagnostic.
-      if (root.console && typeof root.console.error === 'function') root.console.error('recording editor boot failed', error)
     }
   }
 

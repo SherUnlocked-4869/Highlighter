@@ -71,6 +71,12 @@ test('the recording editor keeps video, timeline and the export action on screen
   assert.ok(line, `Recording editor layout probe returned no JSON.\nstdout:\n${result.stdout}`)
   const probe = JSON.parse(line.slice(resultPrefix.length))
 
+  const evenPx = (value) => Math.max(2, Math.round(value / 2) * 2)
+  const canvasAspectOf = (output) => {
+    const match = /^(\d+) \u00d7 (\d+)/.exec(String(output || ''))
+    if (!match) return ""
+    return evenPx(Number(match[1]) / 0.8) + " / " + evenPx(Number(match[2]) / 0.8)
+  }
   for (const layout of [probe.wideLandscape, probe.wideSquare, probe.narrowLandscape]) {
     const label = `layout ${JSON.stringify(layout.viewport)}`
     const viewport = layout.viewport
@@ -135,6 +141,24 @@ test('the recording editor keeps video, timeline and the export action on screen
     for (const control of layout.editControls) {
       assert.equal(typeof control.disabled, 'boolean', `${label}: #${control.id} is a real control`)
     }
+    // R5 presentation preview: the shared demo module is loaded, the frame uses the
+    // resolved canvas aspect/margins and the demo controls render their persisted values.
+    assert.equal(layout.demoLoaded, true, `${label}: shared/recording-demo.js is loaded`)
+    assert.equal(layout.demoFrameState.demo, 'on', `${label}: enabled style paints the demo frame`)
+    assert.equal(layout.demoFrameState.aspectRatio, canvasAspectOf(layout.exportOutputSize), `${label}: canvas aspect comes from resolveDemoCanvas`)
+    assert.equal(Math.round(parseFloat(layout.demoFrameState.padding)), 10, `${label}: padding follows the style`)
+    assert.ok(layout.demoFrameState.background, `${label}: background colour is applied`)
+    assert.ok(parseFloat(layout.demoFrameState.canvasRadius) > 0, `${label}: corner radius is applied`)
+    assert.ok(layout.demoFrame.width > 0 && layout.demoFrame.height > 0, `${label}: the demo frame has a box`)
+    assert.equal(layout.demoControls.enabled, true, `${label}: style toggle reflects the draft`)
+    assert.equal(layout.demoControls.padding, '10', `${label}: padding slider matches the style`)
+    assert.equal(layout.demoControls.radius, '10', `${label}: radius slider matches the style`)
+    assert.equal(layout.demoControls.shadow, true, `${label}: shadow checkbox matches the style`)
+    assert.ok(layout.demoControls.background, `${label}: background select has a value`)
+    assert.ok(layout.demoControls.eventsStatus, `${label}: event-track status is shown`)
+    assert.equal(layout.demoControls.ripplesDisabled, true, `${label}: ripples need an event track`)
+    assert.equal(layout.demoControls.zoomItems, 1, `${label}: the persisted zoom segment is listed`)
+    assert.equal(layout.demoControls.zoomAddDisabled, false, `${label}: more zooms can be added`)
   }
   // Aspect ratios drive the output-size line: 4:3 source for both wide/at-minimum window,
   // 1:1 after the square fixture is loaded.

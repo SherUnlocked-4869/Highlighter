@@ -40,6 +40,7 @@ const fsp = require('node:fs/promises')
 const path = require('node:path')
 const { atomicWriteJson } = require('./data-root')
 const schema = require('../../shared/recording-project-schema')
+const demo = require('../../shared/recording-demo')
 
 // A checkpoint write is coalesced until either this much media was appended or this
 // much wall time passed since the last durable write (contract §6). The byte floor is
@@ -48,6 +49,10 @@ const CHECKPOINT_MIN_INTERVAL_MS = 1000
 const CHECKPOINT_MIN_BYTES = 4 * 1024 * 1024
 const DEFAULT_LIST_LIMIT = 20
 const MAX_LIST_LIMIT = 200
+// R5 contract §2.2/§2.3: the pointer/click event track lives beside project.json inside the
+// project directory. It is written once at capture finish and only read by the editor.
+const EVENT_TRACK_FILE = 'events.json'
+const EVENT_TRACK_SCHEMA_VERSION = 1
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value)
@@ -629,6 +634,67 @@ class RecordingProjectService {
         return { ok: false, code: 'delete-failed' }
       }
     })
+  }
+
+  // ---------------- event track (R5 contract §2) ----------------
+
+  // Writes `<projectDir>/events.json` atomically. The track is bounded/normalised here (the
+  // capture side is already bounded, this is the read/write contract of §2.3) and an unknown
+  // project is a clean `not-found` - this method NEVER creates a directory and never throws.
+  async writeEventTrack(projectId, track) {
+    const id = String(projectId || '')
+    if (!schema.isValidProjectId(id)) return { ok: false, code: 'invalid-id' }
+    return this._withLock(id, async () => {
+      const project = await this._getProject(id)
+      if (!project) return { ok: false, code: 'not-found' }
+      const normalized = demo.normalizeClickTrack(track)
+      const payload = {
+        schemaVersion: EVENT_TRACK_SCHEMA_VERSION,
+        durationMs: normalized.durationMs,
+        sampledAtHz: normalized.sampledAtHz,
+        pointer: normalized.pointer,
+        clicks: normalized.clicks,
+        truncated: normalized.truncated === true
+      }
+      try {
+        await this.atomicWriteJson(this.path.join(this.projectDirectory(id), EVENT_TRACK_FILE), payload)
+      } catch (error) {
+        this.log('Recording event track write failed:', id, error?.message || error)
+        return { ok: false, code: 'write-failed' }
+      }
+      return { ok: true, track: payload }
+    })
+  }
+
+  // Reads and normalises events.json. Missing/unreadable/invalid -> null (never throws), which
+  // is exactly what the editor's `record-editor:events` channel reports as "no event track".
+  async readEventTrack(projectId) {
+    const id = String(projectId || '')
+    if (!schema.isValidProjectId(id)) return null
+    let text
+    try {
+      text = await this.fs.readFile(this.path.join(this.projectDirectory(id), EVENT_TRACK_FILE), 'utf8')
+    } catch (error) {
+      if (error?.code !== 'ENOENT') this.log('Recording event track read failed:', id, error?.message || error)
+      return null
+    }
+    let parsed
+    try {
+      parsed = JSON.parse(text)
+    } catch (error) {
+      this.log('Recording event track is not valid JSON:', id, error?.message || error)
+      return null
+    }
+    if (!isPlainObject(parsed)) return null
+    const normalized = demo.normalizeClickTrack(parsed)
+    return {
+      schemaVersion: EVENT_TRACK_SCHEMA_VERSION,
+      durationMs: normalized.durationMs,
+      sampledAtHz: normalized.sampledAtHz,
+      pointer: normalized.pointer,
+      clicks: normalized.clicks,
+      truncated: normalized.truncated === true
+    }
   }
 
   summaryOf(project) {

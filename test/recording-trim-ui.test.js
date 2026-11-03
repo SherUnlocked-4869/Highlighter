@@ -46,6 +46,12 @@ test('the editor markup carries the one-track timeline, precise inputs, GIF opti
     // Export settings moved into the editor's right panel.
     'export-format', 'gif-edge', 'gif-fps', 'gif-budget',
     'export-resolution', 'export-quality', 'export-fps', 'export-output-size',
+    // R5 presentation preview + controls.
+    'video-stage', 'preview-video', 'demo-preview-frame', 'demo-canvas', 'ripple-layer',
+    'demo-enabled', 'demo-background', 'demo-background-custom',
+    'demo-padding', 'demo-padding-value', 'demo-radius', 'demo-radius-value',
+    'demo-shadow', 'demo-ripples', 'demo-reset', 'events-status',
+    'zoom-add', 'zoom-list', 'zoom-suggestions',
     // One export action, its progress and cancel controls.
     'export-button', 'export-progress', 'export-progress-bar', 'cancel-export',
     // Feature-A result bar: open / address / reveal, dismiss, and a status line.
@@ -76,7 +82,7 @@ test('the editor markup carries the one-track timeline, precise inputs, GIF opti
     assert.match(html, new RegExp('data-testid="' + testid + '"'), 'editor.html exposes data-testid=' + testid)
   }
   // The scripts load in dependency order: shared options -> controller -> timeline -> editor.
-  assert.match(html, /shared\/recording-export-options\.js[\s\S]*editor-timeline\.js[\s\S]*trim-controller\.js[\s\S]*editor\.js/)
+  assert.match(html, /shared\/recording-export-options\.js[\s\S]*shared\/recording-demo\.js[\s\S]*editor-timeline\.js[\s\S]*trim-controller\.js[\s\S]*editor\.js/)
   // The editor does not load the recorder's script model.
   assert.doesNotMatch(html, /src="record\.js"/)
 })
@@ -89,6 +95,13 @@ test('the editor panel styles both formats without inline styles and keeps GIF r
   assert.match(css, /\.timeline-segment/)
   assert.match(css, /\.timeline-boundary/)
   assert.match(css, /\.timeline-ops/)
+  assert.match(css, /\.demo-preview-frame/)
+  assert.match(css, /\.demo-canvas/)
+  assert.match(css, /\.demo-card/)
+  assert.match(css, /\.zoom-item/)
+  assert.match(css, /\.click-ripple/)
+  assert.match(css, /@keyframes demo-ripple/)
+  assert.match(css, /transition: transform 300ms ease/)
   assert.match(css, /\.video-fields/)
   assert.match(css, /\.export-panel/)
   assert.match(css, /\.result-bar/)
@@ -326,6 +339,92 @@ test('the editor files add no untranslated Chinese copy (i18n gate stays clear)'
     })
   }
   assert.deepEqual(offenders, [], 'editor UI copy must live in shared/locales/recording-editor.js')
+})
+
+// Integration guard (W12/W13): the exact demo request the editor emits must be accepted by the
+// frozen shared normaliser, which maps source time -> output time and computes the canvas.
+test('the editor demo request is accepted by the shared R5 normaliser (mp4/webm, GIF ignored)', async () => {
+  const exportOptions = require('../shared/recording-export-options')
+  const project = {
+    id: 'project-1',
+    media: { durationMs: 4000, video: { width: 1280, height: 720 }, audio: { tracks: 1 } },
+    edit: {
+      revision: 2,
+      keepRanges: [{ id: 'keep-1', startMs: 0, endMs: 2000 }, { id: 'keep-2', startMs: 3000, endMs: 4000 }],
+      format: 'mp4',
+      gif: { edge: 1280, fps: 15 },
+      style: { enabled: true, background: '#1e1e1e', padding: 0.1, radius: 10, shadow: true, ripples: false },
+      zoomSegments: [{ id: 'z1', startMs: 800, endMs: 1800, scale: 2, focusX: 0.4, focusY: 0.6, easing: 'ease-in-out' }]
+    },
+    recovery: { cleanStop: true, errorCode: '' }
+  }
+  const metadata = { durationMs: 4000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 1 } }
+  const controller = require('../record/trim-controller').createRecordTrimController({
+    projectId: project.id,
+    project,
+    metadata,
+    translate: (key) => key,
+    available: true
+  })
+  controller.applyEventTrack({
+    durationMs: 4000,
+    sampledAtHz: 20,
+    pointer: [],
+    clicks: [{ tMs: 1200, x: 0.51, y: 0.33, button: 0 }],
+    truncated: false
+  })
+  assert.equal(controller.setDemoRipples(true), true)
+  let request = null
+  await controller.startExport({
+    submit: async (payload) => {
+      request = payload.request
+      return { status: 'accepted', task: { taskId: 'task-1', state: 'running' } }
+    }
+  })
+  const normalized = exportOptions.normalizeExportRequest(request, metadata)
+  assert.equal(normalized.ok, true, normalized.code)
+  const demo = normalized.value.demo
+  assert.equal(demo.rendered, true)
+  // 1280x720 content with 10% padding -> 1600x900 canvas (same numbers as the preview frame).
+  assert.deepEqual([demo.canvasWidth, demo.canvasHeight, demo.paddingPx], [1600, 900, 160])
+  // Source-time zoom inside the first kept piece stays at output time 800..1800.
+  assert.deepEqual(demo.zooms.map((zoom) => ({ startMs: zoom.startMs, endMs: zoom.endMs })), [{ startMs: 800, endMs: 1800 }])
+  assert.deepEqual(demo.clicks.map((click) => click.tMs), [1200])
+  assert.equal(normalized.value.video.width, 1280)
+  assert.equal(normalized.value.video.height, 720)
+
+  // GIF ignores the demo plan: the editor omits it and the normaliser reports demo:null.
+  controller.applyTask({ taskId: 'task-1', state: 'cancelled' })
+  controller.resetAfterExport()
+  assert.equal(controller.setFormat('gif'), true)
+  await controller.startExport({
+    submit: async (payload) => {
+      request = payload.request
+      return { status: 'accepted', task: { taskId: 'task-2', state: 'running' } }
+    }
+  })
+  assert.equal(request.demo, undefined)
+  const gifNormalized = exportOptions.normalizeExportRequest(request, metadata)
+  assert.equal(gifNormalized.ok, true, gifNormalized.code)
+  assert.equal(gifNormalized.value.demo, null)
+
+  // Defaults stay R4-exact: no demo plan at all.
+  const bare = require('../record/trim-controller').createRecordTrimController({
+    projectId: 'project-2',
+    project: { ...project, id: 'project-2', edit: { ...project.edit, keepRanges: [], style: null, zoomSegments: [] } },
+    metadata,
+    translate: (key) => key,
+    available: true
+  })
+  let bareRequest = null
+  await bare.startExport({
+    submit: async (payload) => {
+      bareRequest = payload.request
+      return { status: 'accepted', task: { taskId: 'task-3', state: 'running' } }
+    }
+  })
+  assert.equal(bareRequest.demo, undefined)
+  assert.equal(exportOptions.normalizeExportRequest(bareRequest, metadata).value.demo, null)
 })
 
 // The timeline module is unit-testable on its own; a quick sanity check here proves the

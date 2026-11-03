@@ -197,7 +197,8 @@ test('recording workbench/editor surfaces keep the roles separated', () => {
     'record-editor:rerecord',
     'record-editor:reveal',
     'record-editor:back',
-    'record-editor:reload'
+    'record-editor:reload',
+    'record-editor:events'
   ]) {
     assert.deepEqual(rolesOf(channel), ['record-editor'], `${channel} belongs to the editor only`)
   }

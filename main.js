@@ -668,7 +668,8 @@ recordDomain = createRecordDomain({
   getRecordingProjectService: () => recordingProjectRef.get(),
   // R2/R3 (contracts §10): the few assembly-side collaborators the workbench/editor need. One
   // resolver keeps main.js under its line ceiling; every member is optional in the domain.
-  getRecordingWorkbench: () => ({ shell, updateSettings: (patch) => settingsService.updateSettings(patch), createMainWindow: (route) => createMainWindow(route), backdropColor: () => windowBackdropColor(getSettings(), nativeTheme), createRegionSelection: (...args) => captureDomain.createCaptureWindow(...args), positionAutomationWindow, refreshTray: () => createTrayIcon() })
+  getRecordingWorkbench: () => ({ shell, updateSettings: (patch) => settingsService.updateSettings(patch), createMainWindow: (route) => createMainWindow(route), backdropColor: () => windowBackdropColor(getSettings(), nativeTheme), createRegionSelection: (...args) => captureDomain.createCaptureWindow(...args), positionAutomationWindow, refreshTray: () => createTrayIcon() }),
+  utilityProcess // R5 §2.1: the event-track hook runs in its own utility process (like the selection hook)
 })
 
 recognitionDomain = createRecognitionDomain({

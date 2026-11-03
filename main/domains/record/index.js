@@ -35,6 +35,11 @@ const WINDOW_MIN_SIZE_PX = 120
 const WINDOW_TOKEN_TTL_MS = 120 * 1000
 const WINDOW_TOKEN_LIMIT = 64
 const WINDOW_SOURCE_POLL_MS = 2000
+// R5 event track (contract §2.1/§2.3): the buffers are bounded inside the pointer-track service;
+// these are the same ceilings re-applied when projecting to events.json.
+const EVENT_TRACK_SAMPLED_HZ = 20
+const EVENT_POINTER_LIMIT = 20000
+const EVENT_CLICK_LIMIT = 2000
 // Measurement box for a window source thumbnail. Window sources carry no size of their own, so the
 // frozen canvas size is measured from the thumbnail Electron returns for this box (a window larger
 // than the box is reported clamped; a window that cannot be measured reports 0 and the renderer
@@ -106,7 +111,13 @@ function createRecordDomain(deps) {
     // R4 test seams (contract §2.2 source-lost polling): the production values are the constants
     // above; a unit test injects short ones instead of patching global timers.
     windowSourcePollMs = WINDOW_SOURCE_POLL_MS,
-    windowTokenTtlMs = WINDOW_TOKEN_TTL_MS
+    windowTokenTtlMs = WINDOW_TOKEN_TTL_MS,
+    // R5 §2.1: Electron's utilityProcess handle, injected like the selection hook service receives
+    // it. The pointer track host is a separate utility process, never the Electron main process.
+    utilityProcess = null,
+    // R5 test seam: a test injects a fake track service; production builds it lazily from
+    // `utilityProcess` on the first demo-enhanced recording.
+    getPointerTrackService = null
   } = deps
 
   let recordWindow = null
@@ -128,6 +139,10 @@ function createRecordDomain(deps) {
   // richer probe result while the recording is still in this process; after a restart the field is
   // 0 and the editor offers only `source` (contract §5).
   const probedMetadataByProject = new Map()
+  // R5 event track: lazily created service plus the currently collecting session. The service is one
+  // process-wide instance (one hook), used only while a demo-enhanced capture runs.
+  let pointerTrackService = null
+  let activeEventTrack = null
 
   let workbench = {}
   try {
@@ -559,6 +574,9 @@ function createRecordDomain(deps) {
     if (control) refreshTray()
     // R4 §2.2: the window-source watch must never outlive the control bar.
     stopWindowSourceWatch(control)
+    // R5 §2.2: so must the pointer track (an abandoned/closed take discards it; the finish path
+    // already stopped and wrote it before this runs).
+    await stopEventTrack().catch((error) => log('Pointer track stop failed:', error?.message || error))
     await abandonProjectCapture(control, 'closed').catch((error) => log('Recording project abandon failed:', error?.message))
     await cleanupRecordSession(control, service, allowBlockedCleanup).catch((error) => log('Recording cleanup failed:', error.message))
     restoreRecordFramePassthrough(frame)
@@ -639,6 +657,9 @@ function createRecordDomain(deps) {
       frameRate: value.frameRate,
       quality: value.quality,
       countdown: value.countdown,
+      // R5 §2.2/§5: session-only "demo enhance" switch (never persisted to settings). It travels on
+      // the frozen workbench config object; the domain gates event collection on it.
+      demoEnhance: value.demoEnhance === true,
       audio: nested
         ? {
             system: nested.system,
@@ -677,6 +698,9 @@ function createRecordDomain(deps) {
       frameRate: normalizeFrameRate(pickValue(provided.frameRate, stored.frameRate)),
       quality: normalizeQuality(pickValue(provided.quality, stored.quality)),
       countdown: normalizeCountdown(pickValue(provided.countdown, stored.countdown)),
+      // R5 §2.2: default off; the workbench switch is session-only, so there is no settings
+      // fallback to consult.
+      demoEnhance: provided.demoEnhance === true,
       audio: {
         system: pickValue(audio.system, stored.audioSystem) !== false,
         microphone: pickValue(audio.microphone, stored.audioMicrophone) === true,
@@ -742,6 +766,218 @@ function createRecordDomain(deps) {
     let y = selectionBounds.y + selectionBounds.height + 12
     if (y > maxY) y = selectionBounds.y - height - 12
     return { x, y: Math.max(minY, Math.min(maxY, Math.round(y))), width, height }
+  }
+
+  // ---------------------------------------------------------------- event track (R5 §2)
+
+  // The pointer track service is created lazily (an install that never records never spawns a
+  // utility process) and only receives Electron's `utilityProcess` handle through the injected
+  // dependency, exactly like the selection hook service receives it.
+  function pointerTrackServiceOrNull() {
+    if (typeof getPointerTrackService === 'function') {
+      try {
+        const injected = getPointerTrackService()
+        if (injected && typeof injected.start === 'function') return injected
+      } catch (error) {
+        log('Pointer track service resolver failed:', error?.message || error)
+      }
+      return null
+    }
+    if (pointerTrackService) return pointerTrackService
+    if (!utilityProcess || typeof utilityProcess.fork !== 'function') return null
+    try {
+      const pointerTrack = require('../../services/pointer-track-service')
+      pointerTrackService = pointerTrack.createPointerTrackService({
+        createHost: pointerTrack.createPointerUtilityProcessHostFactory({
+          utilityProcess,
+          hostPath: pointerTrack.defaultPointerHostPath()
+        }),
+        log
+      })
+      return pointerTrackService
+    } catch (error) {
+      log('Pointer track service unavailable:', error?.message || error)
+      return null
+    }
+  }
+
+  // The captured source-content region in DIP, for normalizing pointer coordinates. Display mode
+  // uses the display bounds, region mode the selection rectangle (contract §2.2).
+  function eventContentRegion(win) {
+    const init = win?._recordInit || {}
+    const display = init.display || {}
+    const scaleFactor = Number(display.scaleFactor) > 0 ? Number(display.scaleFactor) : 1
+    const bounds = win?._recordMode === 'region'
+      ? (init.selectionBounds || {})
+      : (display.boundsDip || init.displayBounds || {})
+    return {
+      left: Number(bounds.x) || 0,
+      top: Number(bounds.y) || 0,
+      width: Math.max(0, Number(bounds.width) || 0),
+      height: Math.max(0, Number(bounds.height) || 0),
+      scaleFactor
+    }
+  }
+
+  function screenToDipPoint(point, scaleFactor) {
+    if (screen && typeof screen.screenToDipPoint === 'function') {
+      try {
+        const dip = screen.screenToDipPoint({ x: point.x, y: point.y })
+        const x = Number(dip?.x)
+        const y = Number(dip?.y)
+        if (Number.isFinite(x) && Number.isFinite(y)) return { x, y }
+      } catch {}
+    }
+    const scale = Number(scaleFactor) > 0 ? Number(scaleFactor) : 1
+    return { x: point.x / scale, y: point.y / scale }
+  }
+
+  // Contract §2.3: normalized 0-1 with 3 decimals; a point outside the captured content region is
+  // dropped (a mismatched display/scale can otherwise produce plausible-looking garbage).
+  function normalizeEventPoint(point, region) {
+    if (!(region.width > 0) || !(region.height > 0)) return null
+    const dip = screenToDipPoint(point, region.scaleFactor)
+    const rawX = (dip.x - region.left) / region.width
+    const rawY = (dip.y - region.top) / region.height
+    if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) return null
+    if (rawX < 0 || rawX > 1 || rawY < 0 || rawY > 1) return null
+    return {
+      x: Math.round(Math.min(1, Math.max(0, rawX)) * 1000) / 1000,
+      y: Math.round(Math.min(1, Math.max(0, rawY)) * 1000) / 1000
+    }
+  }
+
+  function sanitizePausedIntervals(value) {
+    if (!Array.isArray(value)) return []
+    const intervals = []
+    for (const entry of value.slice(0, 1000)) {
+      const startWall = Number(entry?.startWall)
+      const endWall = Number(entry?.endWall)
+      if (!Number.isFinite(startWall) || !Number.isFinite(endWall) || endWall < startWall) continue
+      intervals.push({ startWall, endWall })
+    }
+    intervals.sort((left, right) => left.startWall - right.startWall)
+    return intervals
+  }
+
+  // Total pause duration that had ELAPSED at `at` (contract §2.2: mediaMs = at - start - paused so
+  // far). Overlapping renderer intervals are clamped so a buggy payload cannot over-subtract.
+  function pausedMsAt(intervals, at) {
+    let total = 0
+    let coveredUntil = -Infinity
+    for (const interval of intervals) {
+      if (interval.startWall > at) break
+      const start = Math.max(interval.startWall, coveredUntil)
+      if (start >= at) break
+      total += Math.min(interval.endWall, at) - start
+      coveredUntil = Math.max(coveredUntil, interval.endWall)
+    }
+    return total
+  }
+
+  // Builds the frozen events.json v1 payload (contract §2.3) from raw wall-clock buffers. Returns
+  // null when the mapping inputs are unusable (never invent times or coordinates).
+  function buildEventTrack(win, rawResults, timing = {}) {
+    const results = rawResults && typeof rawResults === 'object' ? rawResults : {}
+    const durationMs = Math.max(0, Math.round(Number(timing.durationMs) || 0))
+    const mediaStartedAtWall = Number(timing.mediaStartedAtWall)
+    if (!Number.isFinite(mediaStartedAtWall) || durationMs <= 0) return null
+    const region = eventContentRegion(win)
+    if (!(region.width > 0) || !(region.height > 0)) return null
+    const pausedIntervals = sanitizePausedIntervals(timing.pausedIntervals)
+    const toMediaMs = (at) => Math.round(at - mediaStartedAtWall - pausedMsAt(pausedIntervals, at))
+    const pointer = []
+    for (const entry of Array.isArray(results.pointer) ? results.pointer : []) {
+      const tMs = toMediaMs(Number(entry?.at))
+      if (!Number.isFinite(tMs) || tMs < 0 || tMs > durationMs) continue
+      const point = normalizeEventPoint(entry, region)
+      if (!point) continue
+      pointer.push({ tMs, x: point.x, y: point.y })
+    }
+    pointer.sort((left, right) => left.tMs - right.tMs)
+    // Contract §2.3: time-ascending and consecutive identical coordinates deduped.
+    const keptPointer = []
+    for (const entry of pointer) {
+      const previous = keptPointer[keptPointer.length - 1]
+      if (previous && previous.x === entry.x && previous.y === entry.y) continue
+      keptPointer.push(entry)
+    }
+    const clicks = []
+    for (const entry of Array.isArray(results.clicks) ? results.clicks : []) {
+      const button = Number(entry?.button)
+      if (button !== 0 && button !== 1 && button !== 2) continue
+      const tMs = toMediaMs(Number(entry?.at))
+      if (!Number.isFinite(tMs) || tMs < 0 || tMs > durationMs) continue
+      const point = normalizeEventPoint(entry, region)
+      if (!point) continue
+      clicks.push({ tMs, x: point.x, y: point.y, button })
+    }
+    clicks.sort((left, right) => left.tMs - right.tMs)
+    const truncated = results.truncated === true || keptPointer.length > EVENT_POINTER_LIMIT || clicks.length > EVENT_CLICK_LIMIT
+    return {
+      schemaVersion: 1,
+      durationMs,
+      sampledAtHz: EVENT_TRACK_SAMPLED_HZ,
+      pointer: keptPointer.slice(-EVENT_POINTER_LIMIT),
+      clicks: clicks.slice(-EVENT_CLICK_LIMIT),
+      truncated
+    }
+  }
+
+  // Contract §2.2: the switch is opt-in and display/region only. Window recordings have no stable
+  // screen bounds for their content, so they never collect (contract §2.2/§7.1).
+  function shouldCollectEventTrack(win) {
+    const config = win?._recordCaptureConfig || {}
+    if (config.demoEnhance !== true) return false
+    const mode = config.target?.mode || win?._recordMode
+    return mode === 'display' || mode === 'region'
+  }
+
+  function startEventTrack(win) {
+    stopEventTrack().catch(() => {})
+    if (!shouldCollectEventTrack(win)) return false
+    const service = pointerTrackServiceOrNull()
+    if (!service) {
+      log('Pointer track service unavailable; recording continues without an event track')
+      return false
+    }
+    try {
+      if (service.start() !== true) return false
+    } catch (error) {
+      log('Pointer track start failed:', error?.message || error)
+      return false
+    }
+    activeEventTrack = { service }
+    return true
+  }
+
+  async function stopEventTrack({ discard = true } = {}) {
+    const active = activeEventTrack
+    activeEventTrack = null
+    if (!active) return null
+    let results = null
+    try {
+      results = await active.service.stop()
+    } catch (error) {
+      log('Pointer track stop failed:', error?.message || error)
+      return null
+    }
+    return discard ? null : { results }
+  }
+
+  function writeEventTrack(projectId, track) {
+    const service = projectServiceOrNull()
+    if (!service || typeof service.writeEventTrack !== 'function') {
+      log('Recording event track write unavailable:', projectId)
+      return Promise.resolve(false)
+    }
+    return Promise.resolve(service.writeEventTrack(projectId, track)).then(
+      () => true,
+      (error) => {
+        log('Recording event track write failed:', projectId, error?.message || error)
+        return false
+      }
+    )
   }
 
   // ---------------------------------------------------------------- window sources (R4 §2)
@@ -1080,7 +1316,10 @@ function createRecordDomain(deps) {
       frameRate,
       quality: config.quality,
       countdown: config.countdown,
-      audio: { ...config.audio }
+      audio: { ...config.audio },
+      // R5 §2.2: the session-only demo switch (never written to the manifest/settings). Consumed by
+      // the record:start-session gate that starts the pointer track.
+      demoEnhance: config.demoEnhance === true
     }
     controlWindow._recordInit = {
       // R2 contract shape (contracts §9.2). `sessionId`/`projectId` are filled in later: the
@@ -1157,6 +1396,8 @@ function createRecordDomain(deps) {
       // 注销共享 session 上的 display-media handler：否则窗口关闭后它仍存活并指向旧 display。
       try { recordSession.setDisplayMediaRequestHandler(null) } catch (error) { log('Display media handler cleanup failed:', error.message) }
       stopWindowSourceWatch(controlWindow)
+      // R5 §2.2: a closed control bar can never finish, so its event track host must not outlive it.
+      stopEventTrack().catch((error) => log('Pointer track stop failed:', error?.message || error))
       cleanupRecordSession(controlWindow).catch((error) => log('Recording cleanup failed:', error.message))
       abandonProjectCapture(controlWindow, 'closed').catch((error) => log('Recording project abandon failed:', error.message))
       if (recordWindow === controlWindow) recordWindow = null
@@ -1650,6 +1891,11 @@ function createRecordDomain(deps) {
           rememberRecordRegion(init.display, init.selectionBounds)
           rememberCaptureConfig(win)
         }
+        // R5 §2.2: collection is opt-in, display/region only, and independent from the recorder (a
+        // failed track never affects the capture). Events collected before MediaRecorder.start()
+        // map to negative media time at finish and are dropped there.
+        win._recordStartedAtWall = Date.now()
+        startEventTrack(win)
         return { id: session.id, projectId: created.project.id }
       },
       // Contract §10.5: the ACK is the chunk's ordering result; the durable checkpoint is written
@@ -1721,7 +1967,7 @@ function createRecordDomain(deps) {
       // close the control bar. The project (not the session) owns the source afterwards, so the
       // session is DETACHED rather than cleaned (a cleanup would only drop it from the table for a
       // project-owned directory, but detaching makes the ownership transfer explicit).
-      finishSession: async (event, { sessionId } = {}) => {
+      finishSession: async (event, { sessionId, mediaStartedAtWall, pausedIntervals } = {}) => {
         assertManagedDataWritable()
         const win = requireRecordSender(event)
         requireRecordSession(win, sessionId)
@@ -1738,6 +1984,7 @@ function createRecordDomain(deps) {
         if (!projectId || !projectService) {
           // Legacy/no-persistence fallback: the sealed session stays readable for the legacy
           // channels, but there is no project to hand to an editor.
+          await stopEventTrack()
           return { ok: true, projectId: '', legacy: true, bytesWritten: Number(descriptor?.bytesWritten) || 0 }
         }
         let probed = { ok: false, code: 'probe-failed' }
@@ -1767,6 +2014,23 @@ function createRecordDomain(deps) {
         else service.cleanupSession(sessionId).catch(() => {})
         win._recordSessionId = ''
         win._recordProjectId = ''
+        // R5 §2.2: map the wall-clock pointer track to media time and persist events.json. The
+        // renderer supplies the MediaRecorder start wall clock and the pause intervals; the probed
+        // duration is the only authority for the upper bound. A missing/failed track is log-only and
+        // never fails the recording.
+        const trackTiming = {
+          mediaStartedAtWall: Number.isFinite(Number(mediaStartedAtWall))
+            ? Number(mediaStartedAtWall)
+            : Number(win._recordStartedAtWall),
+          pausedIntervals,
+          durationMs: probed?.ok ? Number(probed.metadata?.durationMs) || 0 : 0
+        }
+        const collected = await stopEventTrack({ discard: false })
+        if (collected) {
+          const track = buildEventTrack(win, collected.results, trackTiming)
+          if (track) await writeEventTrack(projectId, track)
+          else log('Recording event track skipped: unusable timing or content region')
+        }
         const opened = await openEditor(projectId).catch((error) => {
           log('Recording editor open failed:', projectId, error?.message || error)
           return { ok: false, code: 'editor-failed' }
@@ -1927,6 +2191,8 @@ function createRecordDomain(deps) {
         const win = requireRecordSender(event)
         requireRecordSession(win, sessionId)
         win._recordSessionId = ''
+        // R5 §2.2: an abandoned take discards its event track (the project is deleted below).
+        await stopEventTrack()
         const projectId = text(win._recordProjectId)
         win._recordProjectId = ''
         const service = getRecordingService()
@@ -1977,6 +2243,7 @@ function createRecordDomain(deps) {
         assertManagedDataWritable()
         const win = requireRecordSender(event)
         if (sessionId) requireRecordSession(win, sessionId)
+        await stopEventTrack()
         await abandonProjectCapture(win, 'restarted')
         await cleanupRecordSession(win, getRecordingService())
         win.setBounds(win._recordControlBounds, false)
@@ -2253,15 +2520,18 @@ function createRecordDomain(deps) {
         if (!targetPath) return { status: 'cancelled' }
         assertManagedDataWritable()
         const editRevision = Math.max(1, Math.round(Number(project.edit?.revision) || 1))
-        // R4 §4.1/§5: forward the frozen request keys VERBATIM - the export service owns
+        // R4 §4.1/§5 + R5 §3.2: forward the frozen request keys VERBATIM - the export service owns
         // normalization and validation (`range` vs `segments` ambiguity, segment limits, resolution
-        // and fps rules). The domain only chooses the format and freezes the target, so dropping
-        // segments/video here would silently export the whole source at source quality.
+        // and fps rules, demo style/zoom/click mapping). The domain only chooses the format and
+        // freezes the target, so dropping segments/video/demo here would silently export the whole
+        // source at source quality with no demo rendering.
         const forwardedRequest = { format }
         if (Array.isArray(request.segments)) forwardedRequest.segments = request.segments
         if (request.range && typeof request.range === 'object' && !Array.isArray(request.range)) forwardedRequest.range = request.range
         if (request.gif && typeof request.gif === 'object' && !Array.isArray(request.gif)) forwardedRequest.gif = request.gif
         if (request.video && typeof request.video === 'object' && !Array.isArray(request.video)) forwardedRequest.video = request.video
+        // R5 §3.2: the demo look/camera plan (style + source-time zooms + clicks for ripples).
+        if (request.demo && typeof request.demo === 'object' && !Array.isArray(request.demo)) forwardedRequest.demo = request.demo
         const submitted = await exportService.submit({
           sessionId: attached.session.id,
           requestId,
@@ -2381,6 +2651,26 @@ function createRecordDomain(deps) {
         if (!payload) return { ok: false, code: 'source-unavailable' }
         win._recordEditorInit = payload
         return { ok: true, ...payload }
+      },
+      // R5 §2.2: the editor's event track (zoom suggestions / click ripples). Data only - the
+      // read goes through the project service, so no path is ever derived in the renderer. A
+      // missing reader (an older persistence service) answers `track: null`, which the editor
+      // already treats as "no event track, manual zoom only" (§4.2/§7.1).
+      editorEvents: async (event, { projectId } = {}) => {
+        const win = requireEditorSender(event)
+        const id = requireEditorProject(win, projectId)
+        const service = projectServiceOrNull()
+        if (!service) return { ok: false, code: 'project-service-unavailable' }
+        // Contract §2.2: an unknown project answers a code; a known project without a track answers
+        // `track: null` (window-mode take, demoEnhance off, or the atomic write failed).
+        const project = await getProject(id)
+        if (!project) return { ok: false, code: 'not-found' }
+        if (typeof service.readEventTrack !== 'function') return { ok: true, track: null }
+        const track = await Promise.resolve(service.readEventTrack(id)).catch((error) => {
+          log('Recording event track read failed:', id, error?.message || error)
+          return null
+        })
+        return { ok: true, track: track && typeof track === 'object' ? track : null }
       }
     }
     return control
@@ -2398,12 +2688,24 @@ function createRecordDomain(deps) {
         endMs: Math.max(0, Math.round(Number(range?.endMs) || 0))
       }))
     }
-    if (edit.format === 'mp4' || edit.format === 'gif') sanitized.format = edit.format
+    if (edit.format === 'mp4' || edit.format === 'gif' || edit.format === 'webm') sanitized.format = edit.format
     if (edit.gif && typeof edit.gif === 'object' && !Array.isArray(edit.gif)) {
       sanitized.gif = {
         edge: Math.max(0, Math.round(Number(edit.gif.edge) || 0)),
         fps: Math.max(0, Math.round(Number(edit.gif.fps) || 0))
       }
+    }
+    // R5 §4.1: the demo look and the SOURCE-TIME zoom segments live in the draft
+    // (`edit.style` / `edit.zoomSegments`). The project schema normalizes both through
+    // shared/recording-demo.js (style defaults, zoom limits/overlap/easing), so the domain only
+    // bounds the accepted shape - dropping them here makes a webm/demo edit revert on reload.
+    if (edit.style && typeof edit.style === 'object' && !Array.isArray(edit.style)) {
+      sanitized.style = edit.style
+    }
+    if (Array.isArray(edit.zoomSegments)) {
+      // The schema clamps to the frozen 8-segment maximum; the slice keeps a runaway renderer from
+      // pushing an unbounded array over IPC into a CAS manifest write.
+      sanitized.zoomSegments = edit.zoomSegments.slice(0, 8)
     }
     return sanitized
   }
@@ -2443,6 +2745,13 @@ function createRecordDomain(deps) {
     if (exportService && typeof exportService.dispose === 'function') {
       await exportService.dispose().catch((error) => log('Recording export shutdown failed:', error?.message || error))
     }
+    // R5 §2.2: the event track host is a utility process; stop it (discard) and dispose the service
+    // so no child or timer outlives the app.
+    await stopEventTrack().catch((error) => log('Pointer track stop failed:', error?.message || error))
+    if (pointerTrackService && typeof pointerTrackService.dispose === 'function') {
+      try { pointerTrackService.dispose() } catch (error) { log('Pointer track dispose failed:', error?.message || error) }
+    }
+    pointerTrackService = null
     const activeService = typeof peekRecordingService === 'function'
       ? peekRecordingService()
       : null

@@ -449,6 +449,7 @@ function makeProject(overrides = {}) {
 
 function createProjectServiceStub(overrides = {}) {
   const projects = new Map()
+  const eventTracks = new Map()
   const calls = []
   const record = (name, ...args) => { calls.push([name, ...args]) }
   let sequence = 0
@@ -525,6 +526,17 @@ function createProjectServiceStub(overrides = {}) {
       if (overrides.deleteAnswer) return overrides.deleteAnswer
       projects.delete(String(projectId))
       return { ok: true }
+    },
+    writeEventTrack: async (projectId, track) => {
+      record('writeEventTrack', projectId, track)
+      if (!projects.has(String(projectId))) return { ok: false, code: 'not-found' }
+      eventTracks.set(String(projectId), JSON.parse(JSON.stringify(track)))
+      return { ok: true }
+    },
+    readEventTrack: async (projectId) => {
+      record('readEventTrack', projectId)
+      const track = eventTracks.get(String(projectId))
+      return track ? JSON.parse(JSON.stringify(track)) : null
     },
     summaryOf: (project) => ({ id: project.id, name: project.name, state: project.state }),
     publicProject: (project) => ({
@@ -725,11 +737,32 @@ function createProjectHarness(overrides = {}) {
   const desktopCalls = []
   const saveDialogs = []
   let contentsId = 0
-  const display = { id: 1, label: 'DISPLAY1', scaleFactor: 1, bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } }
+  const display = {
+    id: 1,
+    label: 'DISPLAY1',
+    scaleFactor: Number(overrides.displayScaleFactor) > 0 ? Number(overrides.displayScaleFactor) : 1,
+    bounds: { x: 0, y: 0, width: 800, height: 600 },
+    workArea: { x: 0, y: 0, width: 800, height: 600 }
+  }
   const secondDisplay = { id: 2, label: 'DISPLAY2', scaleFactor: 2, bounds: { x: 800, y: 0, width: 1600, height: 900 }, workArea: { x: 800, y: 0, width: 1600, height: 900 } }
   const projectService = overrides.projectService || createProjectServiceStub(overrides.projectServiceOverrides)
   const recordingService = overrides.recordingService || createRecordingServiceStub(overrides.recordingServiceOverrides)
   const exportService = overrides.exportService || createExportServiceStub()
+  // R5 event track: fake track service proving the lifecycle the domain drives; the real service is
+  // covered by test/pointer-track-service.test.js.
+  const pointerCalls = []
+  let pointerResults = overrides.pointerResults || { sampledAtHz: 20, pointer: [], clicks: [], truncated: false }
+  const pointerService = overrides.pointerService || {
+    start() {
+      pointerCalls.push('start')
+      return overrides.pointerStartFails === true ? false : true
+    },
+    async stop() {
+      pointerCalls.push('stop')
+      return JSON.parse(JSON.stringify(pointerResults))
+    },
+    dispose() { pointerCalls.push('dispose') }
+  }
   let dialogResult = overrides.dialogResult || { canceled: true }
 
   const domain = createRecordDomain({
@@ -757,7 +790,12 @@ function createProjectHarness(overrides = {}) {
       getCursorScreenPoint: () => ({ x: 1, y: 2 }),
       getDisplayNearestPoint: () => display,
       getDisplayMatching: () => display,
-      dipToScreenRect: () => ({ x: 0, y: 0, width: 800, height: 600 })
+      dipToScreenRect: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+      // R5 §2.2: identity by default (DIP == physical in the harness); a test omits it to prove the
+      // scaleFactor fallback.
+      screenToDipPoint: overrides.screenToDipPoint === undefined
+        ? (point) => ({ x: point.x, y: point.y })
+        : overrides.screenToDipPoint
     },
     dialog: {
       // Capture the native save-dialog options so a test can assert the frozen format mapping
@@ -833,6 +871,7 @@ function createProjectHarness(overrides = {}) {
     getExportResultService: () => null,
     getRegionPreferences: () => null,
     getRecordingProjectService: () => projectService,
+    getPointerTrackService: () => (overrides.noPointerService === true ? null : pointerService),
     getRecordingWorkbench: () => ({
       shell: { showItemInFolder: (target) => shellCalls.push(target) },
       updateSettings: (patch) => {
@@ -870,6 +909,10 @@ function createProjectHarness(overrides = {}) {
     ownWindowTitles,
     desktopCalls,
     saveDialogs,
+    pointerCalls,
+    get pointerResults() { return pointerResults },
+    setPointerResults: (value) => { pointerResults = value },
+    pointerService,
     projectService,
     recordingService,
     exportService,
@@ -1951,4 +1994,353 @@ test('R4: editorExport rejects an unknown format before any dialog or task', asy
   assert.deepEqual(answer, { status: 'failed', code: 'unsupported-format' })
   assert.equal(harness.saveDialogs.length, 0, 'no save dialog for an unsupported format')
   assert.equal(harness.exportService.submitted.length, 0)
+})
+
+// --------------------------------------------------------------------------------------------
+// R5 (docs/plans/2026-11-03-recording-r5-contracts.md §2): event track capture, main-process half.
+// The pointer-track-service unit tests cover the host lifecycle; these tests cover the domain:
+// gating, wall-clock -> media-time mapping (pause exclusion), coordinate normalization, atomic
+// write, discard paths and the editor IPC.
+// --------------------------------------------------------------------------------------------
+
+function finishTimingPayload(mediaStartedAtWall, pausedIntervals = []) {
+  return { mediaStartedAtWall, pausedIntervals }
+}
+
+test('R5: demoEnhance + display mode starts the pointer track and writes events.json on finish', async () => {
+  const harness = createProjectHarness({
+    pointerResults: {
+      sampledAtHz: 20,
+      pointer: [
+        { x: 400, y: 300, at: 1_001_000 },
+        { x: 410, y: 310, at: 1_001_050 }
+      ],
+      clicks: [{ x: 410, y: 310, button: 0, at: 1_001_100 }],
+      truncated: false
+    }
+  })
+  const control = await harness.domain.createRecordWindow({
+    mode: 'display',
+    capture: { frameRate: 30, demoEnhance: true }
+  })
+  assert.equal(control._recordCaptureConfig.demoEnhance, true, 'the session-only switch is stored on the window config')
+  const session = await harness.controller.startSession(harness.eventFor(control))
+  assert.deepEqual(harness.pointerCalls, ['start'], 'collection starts with the capture session')
+
+  const finished = await harness.controller.finishSession(
+    harness.eventFor(control),
+    { sessionId: session.id, ...finishTimingPayload(1_000_000, []) }
+  )
+  assert.equal(finished.ok, true)
+  assert.deepEqual(harness.pointerCalls, ['start', 'stop'])
+
+  const write = harness.projectService.calls.find(([name]) => name === 'writeEventTrack')
+  assert.ok(write, 'the track is persisted after the probe gives the media duration')
+  assert.equal(write[1], 'project-1')
+  const track = write[2]
+  assert.equal(track.schemaVersion, 1)
+  assert.equal(track.durationMs, 5000, 'duration comes from the probe, not the renderer clock')
+  assert.equal(track.sampledAtHz, 20)
+  assert.deepEqual(track.pointer, [
+    { tMs: 1000, x: 0.5, y: 0.5 },
+    { tMs: 1050, x: 0.513, y: 0.517 }
+  ])
+  assert.deepEqual(track.clicks, [{ tMs: 1100, x: 0.513, y: 0.517, button: 0 }])
+  assert.equal(track.truncated, false)
+
+  // The editor can read the same track through the owner-checked IPC.
+  const editor = harness.editorWindow()
+  assert.ok(editor)
+  const answer = await harness.controller.editorEvents(harness.eventFor(editor), { projectId: 'project-1' })
+  assert.equal(answer.ok, true)
+  assert.deepEqual(answer.track, track)
+})
+
+test('R5: no event track without demoEnhance or in window mode', async () => {
+  // Default off.
+  const off = createProjectHarness()
+  const offControl = await off.domain.createRecordWindow({ mode: 'display' })
+  const offSession = await off.controller.startSession(off.eventFor(offControl))
+  await off.controller.finishSession(off.eventFor(offControl), { sessionId: offSession.id, ...finishTimingPayload(Date.now()) })
+  assert.deepEqual(off.pointerCalls, [], 'no hook process when the switch is off')
+  assert.equal(off.projectService.calls.some(([name]) => name === 'writeEventTrack'), false)
+
+  // Window mode never collects (contract §2.2/§7.1): window sources have no stable screen bounds.
+  const windowHarness = createProjectHarness({ windowSources: [windowSource('window:901', 'Target', 1280, 720)] })
+  const token = (await windowHarness.controller.workbenchWindows()).windows[0].token
+  await windowHarness.controller.workbenchStart(null, {
+    mode: 'window',
+    windowToken: token,
+    config: { demoEnhance: true }
+  })
+  const windowControl = windowHarness.controlWindow()
+  assert.equal(windowControl._recordCaptureConfig.demoEnhance, true, 'the switch reaches the config even for window mode')
+  const windowSession = await windowHarness.controller.startSession(windowHarness.eventFor(windowControl))
+  await windowHarness.controller.finishSession(windowHarness.eventFor(windowControl), { sessionId: windowSession.id, ...finishTimingPayload(Date.now()) })
+  assert.deepEqual(windowHarness.pointerCalls, [], 'window recordings never start the pointer track')
+  assert.equal(windowHarness.projectService.calls.some(([name]) => name === 'writeEventTrack'), false)
+})
+
+test('R5: wall clock maps to media time and paused intervals are excluded', async () => {
+  const base = 2_000_000
+  const harness = createProjectHarness({
+    pointerResults: {
+      sampledAtHz: 20,
+      pointer: [
+        { x: 400, y: 300, at: base + 1000 },
+        // During the pause: media time is frozen at the pause start.
+        { x: 410, y: 310, at: base + 3000 },
+        { x: 420, y: 320, at: base + 5000 },
+        { x: 430, y: 330, at: base - 500 },
+        { x: 440, y: 340, at: base + 9000 },
+        { x: 500, y: 400, at: base + 5050 }
+      ],
+      clicks: [
+        { x: 400, y: 300, button: 0, at: base + 1500 },
+        { x: 400, y: 300, button: 5, at: base + 1600 }
+      ],
+      truncated: false
+    }
+  })
+  const control = await harness.domain.createRecordWindow({ mode: 'display', capture: { demoEnhance: true } })
+  const session = await harness.controller.startSession(harness.eventFor(control))
+  await harness.controller.finishSession(harness.eventFor(control), {
+    sessionId: session.id,
+    ...finishTimingPayload(base, [{ startWall: base + 2000, endWall: base + 4000 }])
+  })
+  const track = harness.projectService.calls.find(([name]) => name === 'writeEventTrack')[2]
+  // base-500 is before the media start -> dropped; base+9000 maps to 7000ms > probed 5000 -> dropped.
+  assert.deepEqual(track.pointer.map((entry) => entry.tMs), [1000, 2000, 3000, 3050])
+  assert.deepEqual(track.pointer[1], { tMs: 2000, x: 0.513, y: 0.517 }, 'the paused-time event freezes at the pause start')
+  assert.deepEqual(track.clicks, [{ tMs: 1500, x: 0.5, y: 0.5, button: 0 }], 'button 5 is not a legal click button')
+})
+
+test('R5: pointer coordinates normalize to the captured content region and outside points drop', async () => {
+  const base = 3_000_000
+  const harness = createProjectHarness({
+    pointerResults: {
+      sampledAtHz: 20,
+      pointer: [
+        { x: 100, y: 50, at: base + 100 },   // display bounds 0,0,800x600
+        { x: 100, y: 50, at: base + 150 },   // consecutive duplicate coordinate -> deduped
+        { x: 800, y: 600, at: base + 200 },  // exact bottom-right edge clamps to 1,1
+        { x: 900, y: 300, at: base + 300 },  // outside the content region -> dropped
+        { x: 790, y: 590, at: base + 500 }
+      ],
+      clicks: [],
+      truncated: false
+    }
+  })
+  const control = await harness.domain.createRecordWindow({ mode: 'display', capture: { demoEnhance: true } })
+  const session = await harness.controller.startSession(harness.eventFor(control))
+  await harness.controller.finishSession(harness.eventFor(control), { sessionId: session.id, ...finishTimingPayload(base) })
+  const track = harness.projectService.calls.find(([name]) => name === 'writeEventTrack')[2]
+  assert.deepEqual(track.pointer, [
+    { tMs: 100, x: 0.125, y: 0.083 },
+    { tMs: 200, x: 1, y: 1 },
+    { tMs: 500, x: 0.988, y: 0.983 }
+  ])
+})
+
+test('R5: region recordings normalize against the selection rectangle', async () => {
+  const base = 4_000_000
+  const harness = createProjectHarness({
+    pointerResults: {
+      sampledAtHz: 20,
+      pointer: [
+        { x: 300, y: 200, at: base + 100 },
+        { x: 50, y: 50, at: base + 200 }
+      ],
+      clicks: [],
+      truncated: false
+    }
+  })
+  const control = await harness.domain.createRecordWindow({
+    mode: 'region',
+    display: harness.display,
+    selectionBounds: { x: 100, y: 50, width: 400, height: 300 },
+    capture: { demoEnhance: true }
+  })
+  const session = await harness.controller.startSession(harness.eventFor(control))
+  await harness.controller.finishSession(harness.eventFor(control), { sessionId: session.id, ...finishTimingPayload(base) })
+  const track = harness.projectService.calls.find(([name]) => name === 'writeEventTrack')[2]
+  assert.deepEqual(track.pointer, [{ tMs: 100, x: 0.5, y: 0.5 }], 'outside-selection points are dropped')
+})
+
+test('R5: without screenToDipPoint the scaleFactor fallback converts physical pixels', async () => {
+  const base = 5_000_000
+  const harness = createProjectHarness({
+    screenToDipPoint: null,
+    displayScaleFactor: 2,
+    pointerResults: {
+      sampledAtHz: 20,
+      pointer: [{ x: 800, y: 600, at: base + 100 }],
+      clicks: [],
+      truncated: false
+    }
+  })
+  const control = await harness.domain.createRecordWindow({ mode: 'display', capture: { demoEnhance: true } })
+  const session = await harness.controller.startSession(harness.eventFor(control))
+  await harness.controller.finishSession(harness.eventFor(control), { sessionId: session.id, ...finishTimingPayload(base) })
+  const track = harness.projectService.calls.find(([name]) => name === 'writeEventTrack')[2]
+  assert.deepEqual(track.pointer, [{ tMs: 100, x: 0.5, y: 0.5 }], 'physical 800x600 at 200% maps to DIP 400x300')
+})
+
+test('R5: abandon/close stops collection; a write failure never fails the recording', async () => {
+  // Cancel discards without writing.
+  const cancelling = createProjectHarness()
+  const cancelControl = await cancelling.domain.createRecordWindow({ mode: 'display', capture: { demoEnhance: true } })
+  const cancelSession = await cancelling.controller.startSession(cancelling.eventFor(cancelControl))
+  await cancelling.controller.cancelSession(cancelling.eventFor(cancelControl), { sessionId: cancelSession.id })
+  assert.deepEqual(cancelling.pointerCalls, ['start', 'stop'])
+  assert.equal(cancelling.projectService.calls.some(([name]) => name === 'writeEventTrack'), false)
+
+  // Closing the control bar stops the host too.
+  const closing = createProjectHarness()
+  const closeControl = await closing.domain.createRecordWindow({ mode: 'display', capture: { demoEnhance: true } })
+  await closing.controller.startSession(closing.eventFor(closeControl))
+  closeControl.close()
+  await closing.tick()
+  assert.ok(closing.pointerCalls.includes('stop'), 'a closed bar releases the hook process')
+
+  // A failing events.json write is logged only: the take finishes and the editor opens.
+  const failing = createProjectHarness({
+    projectService: {
+      ...createProjectServiceStub(),
+      writeEventTrack: async () => { throw new Error('disk full') }
+    }
+  })
+  const failControl = await failing.domain.createRecordWindow({ mode: 'display', capture: { demoEnhance: true } })
+  const failSession = await failing.controller.startSession(failing.eventFor(failControl))
+  const finished = await failing.controller.finishSession(failing.eventFor(failControl), { sessionId: failSession.id, ...finishTimingPayload(Date.now()) })
+  assert.equal(finished.ok, true)
+  assert.ok(failing.editorWindow(), 'the editor still opens after a track write failure')
+})
+
+test('R5: record-editor:events is owner-checked and degrades to track null / not-found', async () => {
+  const harness = createProjectHarness()
+  harness.projectService.projects.set('project-1', makeProject({ id: 'project-1', state: 'ready' }))
+  await harness.domain.openEditor('project-1')
+  const editor = harness.editorWindow()
+
+  // No events.json for this project -> null, not an error (manual zoom only).
+  assert.deepEqual(await harness.controller.editorEvents(harness.eventFor(editor), { projectId: 'project-1' }), { ok: true, track: null })
+
+  // A stored track is returned as data only.
+  const track = {
+    schemaVersion: 1,
+    durationMs: 5000,
+    sampledAtHz: 20,
+    pointer: [{ tMs: 100, x: 0.5, y: 0.5 }],
+    clicks: [{ tMs: 200, x: 0.5, y: 0.5, button: 0 }],
+    truncated: false
+  }
+  await harness.projectService.writeEventTrack('project-1', track)
+  const answer = await harness.controller.editorEvents(harness.eventFor(editor), { projectId: 'project-1' })
+  assert.equal(answer.ok, true)
+  assert.deepEqual(answer.track, track)
+  assert.doesNotMatch(JSON.stringify(answer), /recordings[\\/]/, 'no path in the answer')
+
+  // A project this editor window does not own is refused before any read.
+  await assert.rejects(
+    () => harness.controller.editorEvents(harness.eventFor(editor), { projectId: 'project-other' }),
+    /does not belong/
+  )
+
+  // A deleted manifest under an open editor answers the frozen code.
+  harness.projectService.projects.delete('project-1')
+  assert.deepEqual(await harness.controller.editorEvents(harness.eventFor(editor), { projectId: 'project-1' }), { ok: false, code: 'not-found' })
+
+  // An older persistence service without a reader degrades to track null.
+  const legacy = createProjectHarness({
+    projectService: {
+      ...createProjectServiceStub(),
+      readEventTrack: undefined
+    }
+  })
+  legacy.projectService.projects.set('project-2', makeProject({ id: 'project-2', state: 'ready' }))
+  await legacy.domain.openEditor('project-2')
+  assert.deepEqual(
+    await legacy.controller.editorEvents(legacy.eventFor(legacy.editorWindow()), { projectId: 'project-2' }),
+    { ok: true, track: null }
+  )
+})
+
+test('R5: editorExport forwards the demo look/camera plan verbatim (W12 normalizes it)', async () => {
+  const harness = createProjectHarness()
+  harness.projectService.projects.set('project-1', makeProject({ id: 'project-1', state: 'ready', name: 'Demo' }))
+  await harness.domain.openEditor('project-1')
+  const editor = harness.editorWindow()
+  harness.setDialogResult({ canceled: false, filePath: path.resolve('tmp', 'demo.mp4') })
+  const demo = {
+    style: { enabled: true, background: '#0f1115', padding: 0.08, radius: 12, shadow: true, ripples: true },
+    zooms: [{ id: 'zoom-1', startMs: 0, endMs: 1200, scale: 2, focusX: 0.5, focusY: 0.5, easing: 'ease-in-out' }],
+    clicks: [{ tMs: 400, x: 0.5, y: 0.5, button: 0 }]
+  }
+  const answer = await harness.controller.editorExport(harness.eventFor(editor), {
+    projectId: 'project-1',
+    requestId: 'req-demo',
+    request: { format: 'mp4', segments: [{ startMs: 0, endMs: 5000 }], demo }
+  })
+  assert.equal(answer.status, 'accepted')
+  assert.deepEqual(harness.exportService.submitted.at(-1).request, {
+    format: 'mp4',
+    segments: [{ startMs: 0, endMs: 5000 }],
+    demo
+  })
+
+  // A request without demo stays byte-identical to R4 (the service renders the plain path).
+  const plain = await harness.controller.editorExport(harness.eventFor(editor), {
+    projectId: 'project-1',
+    requestId: 'req-plain',
+    request: { format: 'mp4', range: { startMs: 0, endMs: 5000 } }
+  })
+  assert.equal(plain.status, 'accepted')
+  assert.deepEqual(harness.exportService.submitted.at(-1).request, { format: 'mp4', range: { startMs: 0, endMs: 5000 } })
+})
+
+test('R5: the draft CAS keeps the webm format and forwards style/zoomSegments (source-time)', async () => {
+  const harness = createProjectHarness()
+  harness.projectService.projects.set('project-1', makeProject({ id: 'project-1', state: 'ready' }))
+  await harness.domain.openEditor('project-1')
+  const editor = harness.editorWindow()
+  const style = { enabled: true, background: '#1e1e1e', padding: 0.12, radius: 20, shadow: true, ripples: true }
+  const zooms = Array.from({ length: 10 }, (_, index) => ({
+    id: `zoom-${index + 1}`,
+    startMs: index * 1000,
+    endMs: index * 1000 + 800,
+    scale: 2,
+    focusX: 0.5,
+    focusY: 0.5,
+    easing: 'ease-in-out'
+  }))
+  const saved = await harness.controller.editorSaveDraft(harness.eventFor(editor), {
+    projectId: 'project-1',
+    expectedRevision: 1,
+    edit: {
+      revision: 99, // a renderer-supplied revision must never win over CAS
+      format: 'webm',
+      keepRanges: [{ id: 'keep-1', startMs: 100, endMs: 900 }],
+      gif: { edge: 1280, fps: 15 },
+      style,
+      zoomSegments: zooms,
+      extra: 'stripped'
+    }
+  })
+  assert.deepEqual(saved, { ok: true, revision: 2 })
+  const update = harness.projectService.calls.find(([name]) => name === 'updateDraft')
+  const edit = update[2].edit
+  assert.equal(edit.format, 'webm', 'a webm selection survives the CAS write (R4 regression)')
+  assert.deepEqual(edit.style, style)
+  assert.equal(edit.zoomSegments.length, 8, 'the frozen 8-segment maximum is enforced at the boundary')
+  assert.equal(edit.zoomSegments[0].startMs, 0)
+  assert.equal(edit.revision, undefined, 'the renderer never supplies the revision')
+  assert.equal(edit.extra, undefined, 'unknown fields are stripped')
+
+  // The saved draft is what a reload sees: webm format + demo parameters survive the round-trip.
+  const reloaded = await harness.controller.editorReload(harness.eventFor(editor), { projectId: 'project-1' })
+  assert.equal(reloaded.ok, true)
+  assert.equal(reloaded.project.edit.format, 'webm')
+  assert.deepEqual(reloaded.project.edit.style, style)
+  assert.equal(reloaded.project.edit.zoomSegments.length, 8)
 })

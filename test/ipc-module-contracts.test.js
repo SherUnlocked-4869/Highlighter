@@ -356,7 +356,8 @@ test('recording workbench and editor IPC modules own their documented channel su
       'editorRerecord',
       'editorReveal',
       'editorBack',
-      'editorReload'
+      'editorReload',
+      'editorEvents'
     ])
   })
   assert.deepEqual([...editorIpc.handlers.keys()], [
@@ -369,7 +370,9 @@ test('recording workbench and editor IPC modules own their documented channel su
     'record-editor:reveal',
     'record-editor:back',
     // Additive (approved 2026-11-03, contract §9.3): recovery retry + revision-conflict reload.
-    'record-editor:reload'
+    'record-editor:reload',
+    // R5 §2.2: the project event track (data only, no paths).
+    'record-editor:events'
   ])
   assert.deepEqual([...editorIpc.listeners.keys()], [
     'record-editor:ready',
@@ -381,6 +384,7 @@ test('recording workbench and editor IPC modules own their documented channel su
   assert.equal(editorIpc.handlers.has('record-editor:init'), false)
   assert.equal(editorIpc.handlers.has('record:export-progress'), false)
   assert.equal(editorIpc.handlers.get('record-editor:reload')(null, { projectId: 'p' }).method, 'editorReload')
+  assert.equal(editorIpc.handlers.get('record-editor:events')(null, { projectId: 'p' }).method, 'editorEvents')
 
   assert.throws(() => registerRecordingWorkbenchIpc({ ipcMain: null, controller: {} }), /Recording workbench IPC requires/)
   assert.throws(() => registerRecordingWorkbenchIpc({ ipcMain: createIpcMain(), controller: null }), /Recording workbench IPC requires/)

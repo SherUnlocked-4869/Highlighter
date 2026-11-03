@@ -41,7 +41,20 @@ contextBridge.exposeInMainWorld('recordAPI', {
     sequence,
     bytes
   }),
-  finishSession: (sessionId) => ipcRenderer.invoke('record:finish-session', { sessionId }),
+  // R5 demo-enhancement timing (event track): the control bar forwards the wall-clock
+  // capture timing verbatim so the main process can map event wall time onto media time.
+  // `mediaStartedAtWall` is Date.now() at MediaRecorder.start(); `pausedIntervals` are
+  // wall-clock spans [{ startWall, endWall }]. Omitted entirely when the renderer has no
+  // timing, keeping the pre-R5 payload (`{ sessionId }`) byte-compatible.
+  finishSession: (sessionId, timing) => ipcRenderer.invoke('record:finish-session', {
+    sessionId,
+    ...(timing && typeof timing === 'object'
+      ? {
+          mediaStartedAtWall: Number(timing.mediaStartedAtWall) || 0,
+          pausedIntervals: Array.isArray(timing.pausedIntervals) ? timing.pausedIntervals : []
+        }
+      : {})
+  }),
   cancelSession: (sessionId) => ipcRenderer.invoke('record:cancel-session', { sessionId }),
   // Retained legacy channels (contract §9.2: kept so old callers do not break; the
   // control bar itself has no UI entry for them any more).

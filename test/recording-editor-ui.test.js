@@ -248,7 +248,9 @@ test('a project-addressed controller loads the persisted draft, saves it with re
     revision: 3,
     keepRanges: [{ id: 'keep-1', startMs: 2000, endMs: 3000 }],
     format: 'gif',
-    gif: { edge: 960, fps: 10 }
+    gif: { edge: 960, fps: 10 },
+    style: { enabled: false, background: '#0f1115', padding: 0.08, radius: 12, shadow: true, ripples: false },
+    zoomSegments: []
   })
 
   const saved = []
@@ -661,7 +663,7 @@ function initPayload(overrides = {}) {
 }
 
 function createFakeApi(options = {}) {
-  const calls = { ready: 0, saveDraft: [], export: [], status: [], cancel: [], action: [], reload: [], rename: [], reveal: [], rerecord: [], back: [], window: [] }
+  const calls = { ready: 0, saveDraft: [], export: [], status: [], cancel: [], action: [], reload: [], rename: [], reveal: [], rerecord: [], back: [], window: [], events: [] }
   const initHandlers = []
   const progressHandlers = []
   const languageHandlers = []
@@ -708,6 +710,17 @@ function createFakeApi(options = {}) {
     rerecord: async (projectId) => { calls.rerecord.push(projectId); return { ok: true } },
     back: async () => { calls.back.push(true); return { ok: true } },
     windowAction: (action) => { calls.window.push(action) }
+  }
+  // record-editor:events (p2). `options.events === false` simulates a bridge that has not
+  // landed yet; a function lets a test inject a custom channel.
+  if (options.events !== false) {
+    api.events = typeof options.events === 'function'
+      ? options.events
+      : async (projectId) => {
+        calls.events.push(projectId)
+        if (options.eventsAnswer) return options.eventsAnswer(projectId)
+        return { ok: true, track: null }
+      }
   }
   return {
     api,
@@ -1114,7 +1127,7 @@ test('kept playback skips removed gaps and pauses at the last kept end', (t) => 
     project: projectEdit({
       edit: {
         revision: 1,
-        keepRanges: [{ id: 'keep-1', startMs: 0, endMs: 1000 }, { id: 'keep-2', startMs: 3000, endMs: 4000 }],
+        keepRanges: [{ id: 'keep-1', startMs: 0, endMs: 2000 }, { id: 'keep-2', startMs: 3000, endMs: 4000 }],
         format: 'mp4',
         gif: { edge: 1280, fps: 15 }
       }
@@ -1123,11 +1136,11 @@ test('kept playback skips removed gaps and pauses at the last kept end', (t) => 
   }))
   const controller = view.getController()
   // Starting inside the removed gap jumps forward to the next kept start.
-  const started = controller.startKeptPlayback(2000)
+  const started = controller.startKeptPlayback(2500)
   assert.deepEqual({ startMs: started.startMs, endMs: started.endMs }, { startMs: 3000, endMs: 4000 })
   assert.equal(controller.reportTime(3500).action, 'none')
   // A clock that lands in the gap asks the video element to seek over it.
-  assert.deepEqual(controller.reportTime(1500), { action: 'seek', toMs: 3000 })
+  assert.deepEqual(controller.reportTime(2500), { action: 'seek', toMs: 3000 })
   // The last kept end pauses playback there (never on deleted tail content).
   assert.deepEqual(controller.reportTime(4000), { action: 'pause', toMs: 4000 })
   assert.equal(controller.state().playing, null)
@@ -1177,6 +1190,11 @@ test('the R4 export panel hides unsupported resolutions/frame rates and shows th
   elements.get('export-format').value = 'gif'
   elements.get('export-format').dispatch('change')
   assert.equal(harness.document.body.dataset.format, 'gif')
+  // The demo engine renders mp4/webm only; GIF disables the presentation panel instead of
+  // silently dropping the settings.
+  assert.equal(elements.get('demo-enabled').disabled, true)
+  assert.equal(elements.get('demo-padding').disabled, true)
+  assert.equal(elements.get('zoom-add').disabled, true)
   assert.equal(elements.get('export-resolution').disabled, true)
   assert.ok(elements.get('export-output-size').textContent.includes('"size":"1280 × 720"'))
 })
@@ -1202,6 +1220,348 @@ test('deleting every segment disables export and shows the empty-selection hint'
   assert.match(elements.get('error-text').textContent, /recording\.editor\.(timeline\.empty|error\.)/)
 })
 
+function demoProject(overrides = {}) {
+  return projectEdit({
+    edit: {
+      revision: 2,
+      keepRanges: [],
+      format: 'mp4',
+      gif: { edge: 1280, fps: 15 },
+      ...overrides
+    }
+  })
+}
+
+function demoMetadata(overrides = {}) {
+  return {
+    durationMs: 4000,
+    video: { width: 1280, height: 720, frameRate: 30 },
+    audio: { tracks: 0 },
+    ...overrides
+  }
+}
+
+async function settleEvents() {
+  await new Promise((resolve) => setImmediate(resolve))
+  await new Promise((resolve) => setImmediate(resolve))
+}
+
+test('the controller normalises demo style and round-trips source-time zooms through the draft', async () => {
+  const controller = projectController(demoProject({
+    style: { enabled: true, background: '#ABCDEF', padding: 0.3, radius: 99, shadow: false, ripples: false },
+    zoomSegments: [{ id: 'z1', startMs: 500, endMs: 1700, scale: 5, focusX: 1.4, focusY: -0.2, easing: 'bogus' }]
+  }), { metadata: demoMetadata() })
+  const state = controller.state()
+  assert.deepEqual(state.demo.style, {
+    enabled: true,
+    background: '#abcdef',
+    padding: 0.2,
+    radius: 24,
+    shadow: false,
+    ripples: false
+  })
+  assert.equal(state.demo.zooms.length, 1)
+  assert.deepEqual(
+    { id: state.demo.zooms[0].id, scale: state.demo.zooms[0].scale, focusX: state.demo.zooms[0].focusX, focusY: state.demo.zooms[0].focusY, easing: state.demo.zooms[0].easing },
+    { id: 'z1', scale: 3, focusX: 1, focusY: 0, easing: 'ease-in-out' }
+  )
+  // Draft persists edit.style + source-time edit.zoomSegments (R5 contract §4.1).
+  const draft = controller.buildDraftEdit()
+  assert.equal(draft.style.enabled, true)
+  assert.equal(draft.style.padding, 0.2)
+  assert.deepEqual(draft.zoomSegments[0], state.demo.zooms[0])
+
+  // Style setters go through the shared normaliser and mark the draft dirty.
+  assert.equal(controller.setDemoPaddingPercent(5), true)
+  assert.equal(controller.state().demo.style.padding, 0.05)
+  assert.equal(controller.setDemoRadius(18), true)
+  assert.equal(controller.state().demo.style.radius, 18)
+  assert.equal(controller.setDemoRadius(40), true)
+  assert.equal(controller.state().demo.style.radius, 24)
+  assert.equal(controller.setDemoBackground('#123456'), true)
+  assert.equal(controller.state().demo.style.background, '#123456')
+  assert.equal(controller.setDemoShadow(true), true)
+  assert.equal(controller.state().draft.dirty, true)
+  // Reset returns every demo parameter to the defaults.
+  assert.equal(controller.resetDemo(), true)
+  assert.deepEqual(controller.state().demo.style, {
+    enabled: false,
+    background: '#0f1115',
+    padding: 0.08,
+    radius: 12,
+    shadow: true,
+    ripples: false
+  })
+  assert.deepEqual(controller.state().demo.zooms, [])
+})
+
+test('zoom add/scale/focus/delete obey the media bounds and the 8-segment limit', () => {
+  const controller = projectController(demoProject(), { metadata: demoMetadata({ durationMs: 20000 }) })
+  // Adding near the media end clamps the segment inside the recording (>= 1.2 s).
+  assert.equal(controller.addZoomAt(19900), true)
+  const nearEnd = controller.state().demo.zooms[0]
+  assert.ok(nearEnd.endMs <= 20000)
+  assert.ok(nearEnd.startMs >= 20000 - 1200)
+  assert.ok(nearEnd.endMs - nearEnd.startMs >= 1200)
+  assert.equal(nearEnd.scale, 2)
+  assert.deepEqual([nearEnd.focusX, nearEnd.focusY], [0.5, 0.5])
+  controller.deleteZoom(0)
+  // Fill the stack, then refuse the ninth segment.
+  for (let index = 0; index < 8; index += 1) {
+    assert.equal(controller.addZoomAt(index * 1200), true, 'zoom ' + index)
+  }
+  assert.equal(controller.state().demo.zooms.length, 8)
+  assert.equal(controller.state().demo.canAddZoom, false)
+  assert.equal(controller.addZoomAt(0), false)
+  // Scale and focus clamp to the contract limits.
+  assert.equal(controller.updateZoomScale(0, 9), true)
+  assert.equal(controller.state().demo.zooms[0].scale, 3)
+  assert.equal(controller.updateZoomFocus(0, 0.25, 0.75), true)
+  assert.deepEqual([controller.state().demo.zooms[0].focusX, controller.state().demo.zooms[0].focusY], [0.25, 0.75])
+  assert.equal(controller.deleteZoom(0), true)
+  assert.equal(controller.state().demo.zooms.length, 7)
+  assert.equal(controller.deleteZoom(99), false)
+})
+
+test('preview zoom maps source time to output time and never renders over deleted content', () => {
+  const controller = projectController(projectEdit({
+    edit: {
+      revision: 2,
+      keepRanges: [{ id: 'keep-1', startMs: 0, endMs: 2000 }, { id: 'keep-2', startMs: 3000, endMs: 4000 }],
+      format: 'mp4',
+      gif: { edge: 1280, fps: 15 },
+      style: { enabled: false },
+      zoomSegments: [{ id: 'z1', startMs: 800, endMs: 1800, scale: 2, focusX: 0.4, focusY: 0.6, easing: 'linear' }]
+    }
+  }), { metadata: demoMetadata() })
+  // The source zoom lives inside the first kept piece [0,2000] -> output [800,1800].
+  const mapped = controller.mappedZoomsOutput()
+  assert.deepEqual(mapped.map((zoom) => ({ startMs: zoom.startMs, endMs: zoom.endMs })), [{ startMs: 800, endMs: 1800 }])
+  // Ramp-in means a partial scale just after the zoom starts; a deleted position renders 1x.
+  const inside = controller.previewZoomAt(900)
+  assert.ok(inside.scale > 1 && inside.scale < 2)
+  assert.deepEqual([inside.focusX, inside.focusY], [0.4, 0.6])
+  const deletedGap = controller.previewZoomAt(2000)
+  assert.equal(deletedGap.scale, 1)
+  assert.equal(controller.outputTimeFor(2000), null)
+  assert.equal(controller.outputTimeFor(3500), 2500)
+})
+
+test('an event track enables ripples and deterministic zoom suggestions, and degrades visibly without one', async (t) => {
+  const track = {
+    schemaVersion: 1,
+    durationMs: 4000,
+    sampledAtHz: 20,
+    pointer: [
+      { tMs: 0, x: 0.5, y: 0.5 },
+      { tMs: 500, x: 0.5, y: 0.5 },
+      { tMs: 1400, x: 0.5, y: 0.5 },
+      { tMs: 2000, x: 0.5, y: 0.5 }
+    ],
+    clicks: [
+      { tMs: 1000, x: 0.5, y: 0.5, button: 0 },
+      { tMs: 1500, x: 0.52, y: 0.5, button: 0 }
+    ],
+    truncated: false
+  }
+  const fake = createFakeApi({ eventsAnswer: () => ({ ok: true, track }) })
+  const { view, harness } = bootView({ api: fake.api })
+  view.applyInit(initPayload({
+    project: demoProject({ style: { enabled: true } }),
+    metadata: demoMetadata()
+  }))
+  await settleEvents()
+  const controller = view.getController()
+  assert.equal(fake.calls.events.length, 1)
+  assert.equal(fake.calls.events[0], 'project-1')
+  assert.equal(controller.state().demo.events.clickCount, 2)
+  assert.equal(controller.state().demo.canAddZoom, true)
+  assert.ok(controller.state().demo.suggestions.length >= 1, 'clicks/dwell produce suggestions')
+  assert.equal(harness.elements.get('demo-ripples').disabled, false)
+  assert.match(harness.elements.get('events-status').textContent, /recording\.editor\.events-status\.track/)
+  // The suggestion list is rendered with add/ignore controls; adding creates a zoom.
+  const suggestions = harness.elements.get('zoom-suggestions').children
+  assert.ok(suggestions.length >= 1)
+  const addButton = suggestions[0].children[0].children[1].children[0]
+  const before = controller.state().demo.zooms.length
+  addButton.dispatch('click')
+  assert.equal(controller.state().demo.zooms.length, before + 1)
+  // Ripples can only be switched on with a click track.
+  assert.equal(controller.setDemoRipples(true), true)
+  assert.equal(controller.state().demo.style.ripples, true)
+
+  // Degradation: no bridge method at all -> visible warning, ripples disabled, manual zooms.
+  const missing = createFakeApi({ events: false })
+  const degraded = bootView({ api: missing.api })
+  degraded.view.applyInit(initPayload({ project: demoProject(), metadata: demoMetadata() }))
+  await settleEvents()
+  assert.match(degraded.harness.elements.get('events-status').textContent, /recording\.editor\.events-status\.degraded/)
+  assert.equal(degraded.harness.elements.get('demo-ripples').disabled, true)
+  assert.equal(degraded.view.getController().state().demo.events.available, false)
+  assert.equal(degraded.view.getController().addZoomAt(1000), true, 'manual zoom works without events')
+})
+
+test('the export request carries source-time demo data only when active, for mp4/webm only', async () => {
+  const controller = projectController(demoProject({
+    style: { enabled: true, background: '#1e1e1e', padding: 0.1, radius: 10, shadow: true, ripples: false },
+    zoomSegments: [{ id: 'z1', startMs: 1000, endMs: 2400, scale: 2, focusX: 0.4, focusY: 0.6, easing: 'ease-in-out' }]
+  }), { metadata: demoMetadata() })
+  controller.applyEventTrack({
+    durationMs: 4000,
+    sampledAtHz: 20,
+    pointer: [],
+    clicks: [{ tMs: 1200, x: 0.51, y: 0.33, button: 0 }, { tMs: 2600, x: 0.2, y: 0.2, button: 0 }],
+    truncated: false
+  })
+  assert.equal(controller.setDemoRipples(true), true)
+  const requests = []
+  await controller.startExport({ submit: async ({ request, requestId }) => { requests.push(request); return { status: 'accepted', task: { taskId: 't1', state: 'running' } } } })
+  const demo = requests[0].demo
+  assert.ok(demo, 'demo payload present')
+  assert.equal(demo.style.ripples, true)
+  assert.deepEqual(demo.zooms, [{ id: 'z1', startMs: 1000, endMs: 2400, scale: 2, focusX: 0.4, focusY: 0.6, easing: 'ease-in-out' }])
+  assert.deepEqual(demo.clicks.map((click) => click.tMs), [1200, 2600])
+  assert.equal(demo.rendered, undefined, 'the renderer never sends rendered/canvas fields')
+  controller.applyTask({ taskId: 't1', state: 'cancelled' })
+  controller.resetAfterExport()
+
+  // Ripples off -> no clicks; style/zooms still present.
+  assert.equal(controller.setDemoRipples(false), true)
+  await controller.startExport({ submit: async ({ request }) => { requests.push(request); return { status: 'accepted', task: { taskId: 't2', state: 'running' } } } })
+  assert.deepEqual(requests[1].demo.clicks, [])
+  controller.applyTask({ taskId: 't2', state: 'cancelled' })
+  controller.resetAfterExport()
+
+  // GIF ignores demo: the UI disables the panel and the request stays R4-shaped.
+  assert.equal(controller.setFormat('gif'), true)
+  await controller.startExport({ submit: async ({ request }) => { requests.push(request); return { status: 'accepted', task: { taskId: 't3', state: 'running' } } } })
+  assert.equal(requests[2].demo, undefined)
+  controller.applyTask({ taskId: 't3', state: 'cancelled' })
+
+  // Defaults (frame off, no zooms, no clicks) also omit demo entirely.
+  const bare = projectController(demoProject(), { metadata: demoMetadata() })
+  const bareRequests = []
+  await bare.startExport({ submit: async ({ request }) => { bareRequests.push(request); return { status: 'accepted', task: { taskId: 't4', state: 'running' } } } })
+  assert.equal(bareRequests[0].demo, undefined)
+})
+
+test('the preview frame mirrors the resolved canvas and applies the mapped zoom transform', (t) => {
+  const fake = createFakeApi()
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(initPayload({
+    project: demoProject({
+      style: { enabled: true, background: '#123456', padding: 0.1, radius: 10, shadow: true },
+      zoomSegments: [{ id: 'z1', startMs: 1000, endMs: 2200, scale: 2, focusX: 0.4, focusY: 0.6, easing: 'lineardummy' }]
+    }),
+    metadata: demoMetadata()
+  }))
+  const elements = harness.elements
+  const frame = elements.get('demo-preview-frame')
+  // style.radius 10, padding 10%: 1280x720 content -> 1600x900 canvas.
+  assert.equal(frame.dataset.demo, 'on')
+  assert.equal(frame.style.aspectRatio, '1600 / 900')
+  assert.equal(frame.style.background, '#123456')
+  assert.equal(frame.style.padding, '10.000%')
+  assert.equal(elements.get('demo-canvas').style.borderRadius, '10px')
+  // No zoom before the segment; 2x with the segment's focus origin inside it.
+  assert.equal(elements.get('preview-video').style.transform, 'none')
+  elements.get('preview-video').currentTime = 1.5
+  view.render()
+  assert.match(elements.get('preview-video').style.transform, /^scale\(2/)
+  assert.equal(elements.get('preview-video').style.transformOrigin, '40.00% 60.00%')
+  elements.get('preview-video').currentTime = 3
+  view.render()
+  assert.equal(elements.get('preview-video').style.transform, 'none')
+  // Disabling the style collapses the frame back to the source aspect, no background/padding.
+  elements.get('demo-enabled').checked = false
+  elements.get('demo-enabled').dispatch('change')
+  assert.equal(frame.dataset.demo, 'off')
+  assert.equal(frame.style.padding, '0')
+  assert.equal(frame.style.background, 'transparent')
+})
+
+test('focus picking writes normalised preview coordinates and Escape cancels', (t) => {
+  const fake = createFakeApi()
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(initPayload({
+    project: demoProject({
+      style: { enabled: true },
+      zoomSegments: [{ id: 'z1', startMs: 1000, endMs: 2200, scale: 2, focusX: 0.5, focusY: 0.5, easing: 'ease-in-out' }]
+    }),
+    metadata: demoMetadata()
+  }))
+  const player = harness.elements.get('preview-video')
+  player.rect = { left: 100, top: 50, right: 900, bottom: 500, width: 800, height: 450 }
+  assert.equal(view.startPickingZoom(0), true)
+  assert.equal(view.getPickingZoomIndex(), 0)
+  player.dispatch('click', { clientX: 300, clientY: 275 })
+  const zoom = view.getController().state().demo.zooms[0]
+  assert.equal(zoom.focusX, 0.25)
+  assert.equal(zoom.focusY, 0.5)
+  assert.equal(view.getPickingZoomIndex(), null)
+  // Escape cancels an active pick.
+  view.startPickingZoom(0)
+  harness.window.dispatch('keydown', { key: 'Escape' })
+  assert.equal(view.getPickingZoomIndex(), null)
+})
+
+test('demo controls freeze while an export runs and re-enable after it ends', async (t) => {
+  const fake = createFakeApi()
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(initPayload({
+    project: demoProject({ style: { enabled: true } }),
+    metadata: demoMetadata()
+  }))
+  await settleEvents()
+  await view.exportSelection()
+  const elements = harness.elements
+  assert.equal(view.getController().state().busy, true)
+  assert.equal(elements.get('demo-enabled').disabled, true)
+  assert.equal(elements.get('demo-padding').disabled, true)
+  assert.equal(elements.get('demo-radius').disabled, true)
+  assert.equal(elements.get('demo-shadow').disabled, true)
+  assert.equal(elements.get('demo-ripples').disabled, true)
+  assert.equal(elements.get('zoom-add').disabled, true)
+  assert.equal(elements.get('demo-reset').disabled, true)
+  view.handleTask({ taskId: 'task-1', state: 'cancelled' })
+  assert.equal(elements.get('demo-enabled').disabled, false)
+  assert.equal(elements.get('demo-padding').disabled, false)
+})
+
+test('click ripples animate at their output time during playback', async (t) => {
+  const fake = createFakeApi({
+    eventsAnswer: () => ({
+      ok: true,
+      track: {
+        durationMs: 4000,
+        sampledAtHz: 20,
+        pointer: [],
+        clicks: [{ tMs: 150, x: 0.5, y: 0.5, button: 0 }],
+        truncated: false
+      }
+    })
+  })
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(initPayload({
+    project: demoProject({ style: { enabled: true } }),
+    metadata: demoMetadata()
+  }))
+  await settleEvents()
+  const controller = view.getController()
+  assert.equal(controller.setDemoRipples(true), true)
+  view.render()
+  const player = harness.elements.get('preview-video')
+  assert.equal(view.startRangePlayback(), true)
+  player.currentTime = 0.3
+  await new Promise((resolve) => setTimeout(resolve, 160))
+  assert.ok(harness.elements.get('ripple-layer').children.length >= 1, 'a ripple animates after the click time')
+  view.stopRangePlayback()
+})
+
 // ---------------------------------------------------------------------------
 // 4. markup, IPC surface and i18n contract
 // ---------------------------------------------------------------------------
@@ -1223,6 +1583,11 @@ test('editor.html exposes the stable E2E ids plus the R4 segment and export cont
     // Export panel + progress + result bar (feature-A receipt)
     'export-format', 'gif-edge', 'gif-fps', 'gif-budget',
     'export-resolution', 'export-quality', 'export-fps', 'export-output-size',
+    // R5 presentation preview + controls (W13).
+    'video-stage', 'demo-preview-frame', 'demo-canvas', 'ripple-layer',
+    'demo-enabled', 'demo-background', 'demo-background-custom', 'demo-padding',
+    'demo-radius', 'demo-shadow', 'demo-ripples', 'demo-reset', 'events-status',
+    'zoom-add', 'zoom-list', 'zoom-suggestions',
     'export-progress', 'cancel-export', 'result-bar', 'result-open', 'result-reveal'
   ]) {
     assert.match(html, new RegExp('id="' + id + '"'), 'editor.html exposes #' + id)
@@ -1381,3 +1746,4 @@ test('the editor files add no untranslated Chinese copy (i18n gate stays clear)'
   }
   assert.deepEqual(offenders, [], 'editor UI copy must live in shared/locales/recording-editor.js')
 })
+

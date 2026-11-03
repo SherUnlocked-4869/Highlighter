@@ -82,6 +82,21 @@
     return !!value && typeof value === 'object' && !Array.isArray(value)
   }
 
+  // R5 §4.1: edit.style / edit.zoomSegments are owned by shared/recording-demo.js. The lookup is
+  // lazy so this module stays loadable on its own (a window that has not loaded the demo script
+  // yet still parses a manifest - style simply reads as disabled defaults).
+  function demoModule() {
+    try {
+      if (typeof module === 'object' && module.exports && typeof require === 'function') {
+        return require('./recording-demo')
+      }
+    } catch {
+      // Fall through to the window global.
+    }
+    const scope = typeof globalThis === 'object' ? globalThis : null
+    return scope && scope.recordingDemo ? scope.recordingDemo : null
+  }
+
   function numberOr(value, fallback) {
     const number = Number(value)
     return Number.isFinite(number) ? number : fallback
@@ -353,15 +368,19 @@
 
   function normalizeEdit(value, durationMs = 0) {
     const edit = isPlainObject(value) ? value : {}
+    const demo = demoModule()
     return {
       revision: positiveInteger(edit.revision, 1),
       keepRanges: normalizeKeepRanges(edit.keepRanges, durationMs),
       format: EXPORT_FORMATS.includes(edit.format) ? edit.format : 'mp4',
       gif: normalizeGifOptions(edit.gif),
-      // Reserved for later batches (upstream plan §5.3); normalized to legal empty
-      // arrays now so a manifest written by a newer batch is never dropped whole.
-      style: isPlainObject(edit.style) ? JSON.parse(JSON.stringify(edit.style)) : null,
-      zoomSegments: Array.isArray(edit.zoomSegments) ? JSON.parse(JSON.stringify(edit.zoomSegments)) : [],
+      // R5 §4.1: demo look and camera segments are explicit fields now. An old manifest
+      // without `style` reads as the disabled DEMO_DEFAULTS; an unknown/opaque style object is
+      // coerced field by field instead of being persisted verbatim.
+      style: demo ? demo.normalizeDemoStyle(edit.style) : null,
+      zoomSegments: demo
+        ? demo.normalizeZoomSegments(edit.zoomSegments)
+        : (Array.isArray(edit.zoomSegments) ? JSON.parse(JSON.stringify(edit.zoomSegments)) : []),
       audioGainSegments: normalizeAudioGainSegments(edit.audioGainSegments)
     }
   }
