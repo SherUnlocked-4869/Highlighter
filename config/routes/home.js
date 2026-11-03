@@ -25,7 +25,16 @@ const functionGroups = {
     ['translationSelectText', 'config.function.translation-select-text', 'icons/translation.svg', 'config.function.translation-select-text-description']
   ],
   video: [
-    ['videoRecord', 'config.function.video-record', '../capture/icons/record.svg', 'config.function.video-record-description']
+    ['videoRecord', 'config.function.video-record', '../capture/icons/record.svg', 'config.function.video-record-description'],
+    // Recording workbench (W4): the studio itself plus the three quick-entry
+    // commands the recording domain exposes. Listing them here feeds both the
+    // video tab and the shortcuts tab, so the five new record commands have a
+    // recorder row without a second table.
+    ['openRecording', 'config.function.open-recording', '../capture/icons/record.svg', 'config.function.open-recording-description'],
+    ['recordRegion', 'config.function.record-region', '../capture/icons/select.svg', 'config.function.record-region-description'],
+    ['recordFullscreen', 'config.function.record-fullscreen', '../capture/icons/record.svg', 'config.function.record-fullscreen-description'],
+    ['recordPauseResume', 'config.function.record-pause-resume', 'icons/timer.svg', 'config.function.record-pause-resume-description'],
+    ['recordFinish', 'config.function.record-finish', '../capture/icons/save.svg', 'config.function.record-finish-description']
   ],
   search: [
     ['localSearch', 'config.function.local-search', 'icons/search.svg', 'config.function.local-search-description']

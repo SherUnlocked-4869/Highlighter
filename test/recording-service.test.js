@@ -192,3 +192,179 @@ test('the probe factory builds a real MediaProbe usable by the recording service
   const probe = createRecordingMediaProbe({ getFfmpegPath: () => 'ffmpeg', log: () => {} })
   assert.equal(typeof probe.probe, 'function', 'the factory must return something with probe()')
 })
+
+// ---------------------------------------------------------------------------
+// R1 recording workbench: persistent-project sessions and chunk sequencing
+// (docs/plans/2026-11-03-recording-r1-r3-contracts.md §5).
+// ---------------------------------------------------------------------------
+
+test('startSession({directory}) writes into the project directory and never deletes it', async (t) => {
+  const root = await createRoot(t)
+  const projectDirectory = path.join(root, 'recordings', 'project-1')
+  const service = new RecordingService({ tempRoot: path.join(root, 'temp'), ffmpegPath: 'ffmpeg' })
+  t.after(() => service.dispose())
+
+  const session = await service.startSession({ directory: projectDirectory, projectId: 'project-1' })
+  assert.equal(session.directory, path.resolve(projectDirectory))
+  assert.equal(session.inputPath, path.join(path.resolve(projectDirectory), 'capture.webm'))
+  const live = service.peekSession(session.id)
+  assert.equal(live.ownedDirectory, false)
+  assert.equal(live.projectId, 'project-1')
+
+  await service.appendChunk(session.id, Buffer.from('webm'))
+  const finished = await service.finishSession(session.id)
+  assert.equal(finished.bytesWritten, 4)
+
+  assert.equal(await service.cleanupSession(session.id), true)
+  // The session is gone from the table, but the directory belongs to the project:
+  // only recording-project-service may delete it.
+  assert.equal(service.peekSession(session.id), null)
+  assert.equal(await fs.readFile(session.inputPath, 'utf8'), 'webm')
+})
+
+test('registerPersistedSession attaches an existing source without owning it', async (t) => {
+  const root = await createRoot(t)
+  const directory = path.join(root, 'recordings', 'kept')
+  const inputPath = path.join(directory, 'capture.webm')
+  await fs.mkdir(directory, { recursive: true })
+  await fs.writeFile(inputPath, 'persisted-media')
+  const service = new RecordingService({ tempRoot: path.join(root, 'temp'), ffmpegPath: 'ffmpeg' })
+  t.after(() => service.dispose())
+
+  const session = await service.registerPersistedSession({
+    id: 'project-kept',
+    directory,
+    inputPath,
+    metadata: { durationMs: 2010 },
+    projectId: 'kept'
+  })
+  assert.equal(session.state, 'ready')
+  assert.equal(session.ownedDirectory, false)
+  assert.equal(session.bytesWritten, 'persisted-media'.length)
+  assert.equal(session.projectId, 'kept')
+  assert.equal(session.references, 0)
+  assert.equal(session.metadata.durationMs, 2010)
+  // Idempotent: a second attach returns the live session object.
+  assert.equal(await service.registerPersistedSession({ id: 'project-kept', directory, projectId: 'kept' }), session)
+
+  await service.dispose()
+  assert.equal(await fs.readFile(inputPath, 'utf8'), 'persisted-media')
+})
+
+test('registerPersistedSession keeps the source inside the session directory', async (t) => {
+  const root = await createRoot(t)
+  const directory = path.join(root, 'recordings', 'guarded')
+  await fs.mkdir(directory, { recursive: true })
+  const service = new RecordingService({ tempRoot: path.join(root, 'temp'), ffmpegPath: 'ffmpeg' })
+  t.after(() => service.dispose())
+
+  await assert.rejects(
+    () => service.registerPersistedSession({
+      id: 'project-guarded',
+      directory,
+      inputPath: path.join(root, 'outside.webm')
+    }),
+    /inside its session directory/
+  )
+  await assert.rejects(() => service.registerPersistedSession({ id: '', directory }), /needs an id/)
+  await assert.rejects(() => service.registerPersistedSession({ id: 'x', directory: '' }), /needs a directory/)
+})
+
+test('detachSession releases the session without deleting anything', async (t) => {
+  const root = await createRoot(t)
+  const directory = path.join(root, 'recordings', 'detached')
+  const service = new RecordingService({ tempRoot: path.join(root, 'temp'), ffmpegPath: 'ffmpeg' })
+  t.after(() => service.dispose())
+  const session = await service.startSession({ directory, projectId: 'detached' })
+  await service.appendChunk(session.id, Buffer.from('webm'))
+  await service.finishSession(session.id)
+
+  assert.equal(service.detachSession(session.id), true)
+  assert.equal(service.peekSession(session.id), null)
+  assert.equal(service.detachSession(session.id), false)
+  assert.equal(await fs.readFile(session.inputPath, 'utf8'), 'webm')
+})
+
+test('project-owned sessions are detached after the last export reference releases', async (t) => {
+  const root = await createRoot(t)
+  const directory = path.join(root, 'recordings', 'referenced')
+  const inputPath = path.join(directory, 'capture.webm')
+  await fs.mkdir(directory, { recursive: true })
+  await fs.writeFile(inputPath, 'media-bytes')
+  const service = new RecordingService({ tempRoot: path.join(root, 'temp'), ffmpegPath: 'ffmpeg' })
+  t.after(() => service.dispose())
+  await service.registerPersistedSession({
+    id: 'project-referenced',
+    directory,
+    inputPath,
+    metadata: { durationMs: 1 }
+  })
+
+  const lease = service.acquireSource('project-referenced')
+  const deferred = await service.cleanupSession('project-referenced')
+  assert.equal(deferred, false, 'an export still reads the source')
+  assert.equal(service.stateOf('project-referenced'), 'closing')
+  assert.equal(await fs.readFile(inputPath, 'utf8'), 'media-bytes')
+
+  assert.equal(lease.release(), 0)
+  await new Promise((resolve) => setImmediate(resolve))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(service.peekSession('project-referenced'), null)
+  assert.equal(await fs.readFile(inputPath, 'utf8'), 'media-bytes')
+})
+
+test('sequenced append chunks are replay-idempotent and gap-strict', async (t) => {
+  const root = await createRoot(t)
+  const service = new RecordingService({ tempRoot: path.join(root, 'temp'), ffmpegPath: 'ffmpeg' })
+  t.after(() => service.dispose())
+  const session = await service.startSession({ directory: path.join(root, 'recordings', 'sequenced'), projectId: 'sequenced' })
+
+  assert.deepEqual(await service.appendChunk(session.id, Buffer.from('one'), { sequence: 1 }), {
+    committedBytes: 3,
+    sequence: 1,
+    lastChunkSequence: 1
+  })
+  assert.deepEqual(await service.appendChunk(session.id, Buffer.from('two'), { sequence: 2 }), {
+    committedBytes: 6,
+    sequence: 2,
+    lastChunkSequence: 2
+  })
+
+  // A lost ACK retried with an already accepted sequence must not write twice.
+  assert.deepEqual(await service.appendChunk(session.id, Buffer.from('one'), { sequence: 1 }), {
+    committedBytes: 6,
+    sequence: 1,
+    lastChunkSequence: 2
+  })
+  assert.equal(await fs.readFile(session.inputPath, 'utf8'), 'onetwo')
+
+  // A skipped sequence is refused before anything is written.
+  await assert.rejects(
+    () => service.appendChunk(session.id, Buffer.from('four'), { sequence: 4 }),
+    (error) => {
+      assert.equal(error.code, 'sequence-gap')
+      assert.equal(error.expected, 3)
+      assert.equal(error.received, 4)
+      return true
+    }
+  )
+  assert.equal(await fs.readFile(session.inputPath, 'utf8'), 'onetwo')
+  assert.equal(service.peekSession(session.id).lastChunkSequence, 2)
+
+  await assert.rejects(
+    () => service.appendChunk(session.id, Buffer.from('bad'), { sequence: 0 }),
+    (error) => error.code === 'invalid-sequence'
+  )
+
+  // The legacy unsequenced append path still works after sequenced chunks (compat).
+  assert.deepEqual(await service.appendChunk(session.id, Buffer.from('three')), {
+    committedBytes: 11,
+    sequence: null,
+    lastChunkSequence: 2
+  })
+  assert.equal(await fs.readFile(session.inputPath, 'utf8'), 'onetwothree')
+
+  const finished = await service.finishSession(session.id)
+  assert.equal(finished.bytesWritten, 11)
+  assert.equal(finished.projectId, 'sequenced')
+})

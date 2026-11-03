@@ -26,11 +26,32 @@ const {
 // Every top-level directory the app manages. A migration that rolls back has to
 // remove all of them, so a new one added to createDataPaths must be listed here
 // too or a failed migration would leave it behind in the target root.
-const MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'conversations', 'clipboard', 'usage', 'cache', 'runtime']
-const ADDITIONAL_PERSISTENT = ['conversations', 'clipboard', 'usage']
+// `recordings` joined in marker v3 (recording workbench R1): persistent projects are
+// user content and must travel with the data root, not stay in a cache.
+const MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'conversations', 'clipboard', 'usage', 'recordings', 'cache', 'runtime']
+const ADDITIONAL_PERSISTENT = ['conversations', 'clipboard', 'usage', 'recordings']
+// The persistent groups that existed before v3. Kept separately so a v2 marker (or a
+// v2 pending source written by the previous build) is still accepted: those markers
+// have no `recordings` key at all and must be treated as an empty list, otherwise a
+// crash before the upgrade would leave an unrecoverable pending migration.
+const PREVIOUS_PERSISTENT = ['conversations', 'clipboard', 'usage']
+const PREVIOUS_MANAGED_DIRECTORIES = ['config', 'logs', 'history', 'conversations', 'clipboard', 'usage', 'cache', 'runtime']
 const MIGRATION_MARKER = '.migration.json'
-const MARKER_VERSION = 2
+// v3 added the persistent `recordings/` group to the copy set and the rollback
+// cleanup set. Verification accepts v2 (and v1) markers for migrations that crashed
+// before the upgrade; see validateMarkerSchema.
+const MARKER_VERSION = 3
+const PREVIOUS_MARKER_VERSION = 2
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
+
+// Persistent groups a marker of `version` must describe. A v2 marker has no way to
+// describe recordings, so it verifies only the groups it knows about.
+function persistentNamesForVersion(version) {
+  return version >= MARKER_VERSION ? ADDITIONAL_PERSISTENT : PREVIOUS_PERSISTENT
+}
+
+// v1 markers carry no persistent group; v2 the pre-recordings groups; v3 everything.
+const SUPPORTED_MARKER_VERSIONS = [1, PREVIOUS_MARKER_VERSION, MARKER_VERSION]
 
 function createLegacySourcePaths(value) {
   const root = path.resolve(value)
@@ -64,6 +85,8 @@ function createManagedSourcePaths(value) {
     // The usage SQLite DB + scan state must travel with the other persistent
     // directories; MANAGED_DIRECTORIES only covers rollback cleanup.
     usage: paths.usage,
+    // Persistent recording projects (capture.webm + project.json per project).
+    recordings: paths.recordings,
     cleanupFiles: [],
     cleanupDirectories: MANAGED_DIRECTORIES.map((name) => paths[name])
   }
@@ -187,7 +210,7 @@ async function assertTargetAvailable(target) {
 
 function validateMarkerSchema(marker, newRoot, migrationId = marker?.migrationId) {
   const root = path.resolve(newRoot)
-  if (!marker || ![1, MARKER_VERSION].includes(marker.version) || marker.migrationId !== migrationId || marker.newRoot !== root) {
+  if (!marker || !SUPPORTED_MARKER_VERSIONS.includes(marker.version) || marker.migrationId !== migrationId || marker.newRoot !== root) {
     throw new Error('迁移标记无效')
   }
   if (![0, 1].includes(marker.copiedConfigCount) || ![0, 1].includes(marker.copiedLogCount) ||
@@ -208,8 +231,13 @@ function validateMarkerSchema(marker, newRoot, migrationId = marker?.migrationId
     }
     previousPath = entry.path
   }
-  if (marker.version === 2) {
-    if (!marker.persistentManifests || Object.keys(marker.persistentManifests).sort().join(',') !== [...ADDITIONAL_PERSISTENT].sort().join(',')) throw new Error('迁移持久区清单无效')
+  if (marker.version >= PREVIOUS_MARKER_VERSION) {
+    // A v2 marker written by the previous build has no `recordings` key. Requiring it
+    // here would reject a migration that crashed before the upgrade and strand the
+    // pending locator, so the expected key set is version-dependent: v2 checks the
+    // three groups it could have written, v3 checks all four.
+    const names = persistentNamesForVersion(marker.version)
+    if (!marker.persistentManifests || Object.keys(marker.persistentManifests).sort().join(',') !== [...names].sort().join(',')) throw new Error('迁移持久区清单无效')
     for (const manifest of Object.values(marker.persistentManifests)) validateFileManifest(manifest)
   }
   validatePendingSource(marker.source, root)
@@ -556,6 +584,10 @@ function validatePendingSource(source, activeRoot) {
   const candidates = [createLegacySourcePaths(root), createManagedSourcePaths(root)]
   candidates.push(
     { ...candidates[0], cleanupDirectories: [candidates[0].history, path.join(root, 'temp', 'recordings')] },
+    // Managed source from marker v2 (before the recordings group existed). A pending
+    // migration written by the previous build must still validate after an upgrade.
+    { ...candidates[1], cleanupDirectories: PREVIOUS_MANAGED_DIRECTORIES.map((name) => path.join(root, name)) },
+    // Oldest managed source, from before clipboard/usage joined the manual layout.
     { ...candidates[1], cleanupDirectories: ['config', 'logs', 'history', 'conversations', 'cache', 'runtime'].map((name) => path.join(root, name)) }
   )
   const match = candidates.find((candidate) => {
@@ -644,8 +676,10 @@ async function verifyAndFinalizeMigration({
     if (logSha256 !== marker.logSha256) throw new Error('target log mismatch')
     const historyManifest = await createHistoryManifest(active.history)
     if (JSON.stringify(historyManifest) !== JSON.stringify(marker.historyManifest)) throw new Error('history manifest mismatch')
-    if (marker.version === 2) {
-      for (const name of ADDITIONAL_PERSISTENT) {
+    if (marker.version >= PREVIOUS_MARKER_VERSION) {
+      // Version-scoped names: a v2 marker cannot describe recordings, so recordings is
+      // simply not verified for it (contract §2 backward tolerance).
+      for (const name of persistentNamesForVersion(marker.version)) {
         if (JSON.stringify(await persistentManifest(active[name], name)) !== JSON.stringify(marker.persistentManifests[name])) throw new Error('persistent manifest mismatch')
       }
     }

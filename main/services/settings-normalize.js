@@ -5,6 +5,7 @@ const { normalizeAiSettings } = require('./ai-providers')
 const { resolveMainColor } = require('./appearance-migration')
 const { normalizeClipboardSettings } = require('./clipboard-settings')
 const { normalizeRegionPreferences } = require('../../shared/region-presets')
+const { normalizeQuality, normalizeCountdown } = require('../../shared/recording-quality')
 
 // P0 settings frozen in Wave 0 (2026-10-10). They are normalized here so a
 // hand-edited or legacy store cannot hand an unsupported language, a
@@ -113,6 +114,30 @@ function normalizePort(value) {
   return Number.isInteger(value) && value > 0 && value < 65536 ? value : DEFAULT_PROXY_PORT
 }
 
+// R2 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §3): the recording workbench
+// parameters. A hand-edited store must never hand the workbench an unknown quality id, an
+// unsupported countdown or a mode that no source adapter implements; the enums live in
+// shared/recording-quality.js so the main process and the recorder renderer cannot drift.
+const RECORD_MODES = new Set(['display', 'region'])
+const DEFAULT_RECORD_MODE = 'display'
+const MICROPHONE_DEVICE_ID_LIMIT = 256
+const DISPLAY_ID_LIMIT = 128
+
+function normalizeRecordMode(value) {
+  return RECORD_MODES.has(value) ? value : DEFAULT_RECORD_MODE
+}
+
+// The five R2 shortcut entries have no default accelerator (they stay empty until the user
+// records one), but a hand-edited store could still put a non-string there. Trimmed text only;
+// the accelerator FORMAT is checked by the write path and by ShortcutService.
+const RECORD_SHORTCUT_KEYS = Object.freeze([
+  'openRecording',
+  'recordRegion',
+  'recordFullscreen',
+  'recordPauseResume',
+  'recordFinish'
+])
+
 function normalizeFrozenSettings(settings, log) {
   settings.clipboard = normalizeClipboardSettings(settings.clipboard)
   // Opt-in usage statistics: a hand-edited store could carry a truthy string, so
@@ -136,6 +161,12 @@ function normalizeFrozenSettings(settings, log) {
   settings.record.audioMicrophone = normalizeToggle(settings.record.audioMicrophone)
   settings.record.audioSystemGain = normalizeGain(settings.record.audioSystemGain)
   settings.record.audioMicrophoneGain = normalizeGain(settings.record.audioMicrophoneGain)
+  settings.record.quality = normalizeQuality(settings.record.quality)
+  settings.record.countdown = normalizeCountdown(settings.record.countdown)
+  settings.record.lastMode = normalizeRecordMode(settings.record.lastMode)
+  settings.record.audioMicrophoneDeviceId = normalizeText(settings.record.audioMicrophoneDeviceId).slice(0, MICROPHONE_DEVICE_ID_LIMIT)
+  settings.record.lastDisplayId = normalizeText(settings.record.lastDisplayId).slice(0, DISPLAY_ID_LIMIT)
+  for (const key of RECORD_SHORTCUT_KEYS) settings.shortcuts[key] = normalizeText(settings.shortcuts[key])
   settings.shortcuts.screenshotQuickSave = normalizeText(settings.shortcuts.screenshotQuickSave)
   settings.shortcuts.screenshotSaveAs = normalizeText(settings.shortcuts.screenshotSaveAs)
   settings.shortcuts.togglePinClickThrough = normalizeText(settings.shortcuts.togglePinClickThrough)

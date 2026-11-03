@@ -109,6 +109,8 @@ test('defines exact legacy and managed source cleanup boundaries', async (t) => 
     clipboard: managedLayout.clipboard,
     // The usage SQLite DB travels with the other persistent directories.
     usage: managedLayout.usage,
+    // Persistent recording projects travel as a managed group too (marker v3).
+    recordings: managedLayout.recordings,
     cleanupFiles: [],
     // MANAGED_DIRECTORIES, in declaration order.
     cleanupDirectories: [
@@ -118,6 +120,7 @@ test('defines exact legacy and managed source cleanup boundaries', async (t) => 
       managedLayout.conversations,
       managedLayout.clipboard,
       managedLayout.usage,
+      managedLayout.recordings,
       managedLayout.cache,
       managedLayout.runtime
     ]
@@ -179,9 +182,10 @@ test('migrates legacy config, log, and history transactionally', async (t) => {
   assert.equal(await exists(path.join(targetRoot, 'cache', 'recordings', 'cache.tmp')), false)
   assert.equal(await exists(path.join(portableDirectory, PENDING_NAME)), true)
   const marker = JSON.parse(await fsp.readFile(path.join(targetRoot, '.migration.json'), 'utf8'))
-  // MARKER_VERSION moved to 2 when the conversations/clipboard stores became
-  // persistent migrate targets; verification still accepts v1 for old pending roots.
-  assert.equal(marker.version, 2)
+  // MARKER_VERSION moved to 3 when persistent recording projects joined the copy
+  // set; verification still accepts v1/v2 for roots whose migration crashed before
+  // the upgrade.
+  assert.equal(marker.version, 3)
   assert.equal(marker.newRoot, path.resolve(targetRoot))
   assert.deepEqual(marker.source, source)
   assert.equal(marker.copiedConfigCount, 1)
@@ -194,6 +198,14 @@ test('migrates legacy config, log, and history transactionally', async (t) => {
     { path: 'one.png', size: 3 }
   ])
   for (const entry of marker.historyManifest) assert.match(entry.sha256, /^[a-f0-9]{64}$/)
+  // A legacy root has no recordings directory; the marker records an empty list, not
+  // an error (contract §2).
+  assert.deepEqual(marker.persistentManifests, {
+    conversations: [],
+    clipboard: [],
+    usage: [],
+    recordings: []
+  })
   assert.equal(marker.sourceIdentity.type, 'directory')
   assert.equal(typeof marker.sourceIdentity.dev, 'string')
   assert.equal(typeof marker.sourceIdentity.ino, 'string')
@@ -1325,4 +1337,127 @@ test('cleanupManagedSource settles every removal and returns rejection messages'
   assert.equal(await exists(source.configFile), true)
   assert.equal(await exists(source.logFile), false)
   assert.equal(await exists(source.history), false)
+})
+
+// ---------------------------------------------------------------------------
+// Recording workbench R1: persistent `recordings/` group (contract §2).
+// ---------------------------------------------------------------------------
+
+test('migrates persistent recording projects and verifies their file manifest', async (t) => {
+  const parent = await temporaryRoot(t)
+  const sourceRoot = path.join(parent, 'source')
+  const targetRoot = path.join(parent, 'target')
+  const portableDirectory = path.join(parent, 'portable')
+  const source = createManagedSourcePaths(sourceRoot)
+  await ensureDataLayout(createDataPaths(sourceRoot))
+  await fsp.mkdir(portableDirectory)
+  const projectDirectory = path.join(source.recordings, 'project-a')
+  await fsp.mkdir(projectDirectory, { recursive: true })
+  await writeJson(path.join(projectDirectory, 'project.json'), { schemaVersion: 1, id: 'project-a' })
+  await fsp.writeFile(path.join(projectDirectory, 'capture.webm'), 'webm-bytes')
+  await fsp.writeFile(source.logFile, 'log')
+
+  await migrateDataRoot({
+    source,
+    target: createDataPaths(targetRoot),
+    portableDirectory,
+    previousRoot: sourceRoot
+  })
+
+  assert.equal(
+    await fsp.readFile(path.join(targetRoot, 'recordings', 'project-a', 'capture.webm'), 'utf8'),
+    'webm-bytes'
+  )
+  assert.deepEqual(JSON.parse(await fsp.readFile(path.join(targetRoot, 'recordings', 'project-a', 'project.json'), 'utf8')), {
+    schemaVersion: 1,
+    id: 'project-a'
+  })
+  const marker = JSON.parse(await fsp.readFile(path.join(targetRoot, '.migration.json'), 'utf8'))
+  assert.equal(marker.version, 3)
+  assert.deepEqual(marker.persistentManifests.recordings.map((entry) => entry.path), [
+    'project-a/capture.webm',
+    'project-a/project.json'
+  ])
+
+  // Verification must include the recordings manifest; a clean copy finalizes.
+  assert.deepEqual(
+    await verifyAndFinalizeMigration({
+      pendingPath: path.join(portableDirectory, PENDING_NAME),
+      activeRoot: targetRoot
+    }),
+    { finalized: true, cleanupErrors: [] }
+  )
+})
+
+test('verification rejects a tampered recordings manifest', async (t) => {
+  const parent = await temporaryRoot(t)
+  const sourceRoot = path.join(parent, 'source')
+  const targetRoot = path.join(parent, 'target')
+  const portableDirectory = path.join(parent, 'portable')
+  const source = createManagedSourcePaths(sourceRoot)
+  await ensureDataLayout(createDataPaths(sourceRoot))
+  await fsp.mkdir(portableDirectory)
+  const projectDirectory = path.join(source.recordings, 'project-a')
+  await fsp.mkdir(projectDirectory, { recursive: true })
+  await fsp.writeFile(path.join(projectDirectory, 'capture.webm'), 'webm-bytes')
+  await fsp.writeFile(source.logFile, 'log')
+  await migrateDataRoot({
+    source,
+    target: createDataPaths(targetRoot),
+    portableDirectory,
+    previousRoot: sourceRoot
+  })
+
+  // Same size, different bytes: only the sha256 manifest can catch this.
+  await fsp.writeFile(path.join(targetRoot, 'recordings', 'project-a', 'capture.webm'), 'WEBM-BYTES')
+  await assert.rejects(
+    verifyAndFinalizeMigration({
+      pendingPath: path.join(portableDirectory, PENDING_NAME),
+      activeRoot: targetRoot
+    }),
+    /数据目录迁移验证失败/
+  )
+  assert.equal(await fsp.readFile(path.join(sourceRoot, 'recordings', 'project-a', 'capture.webm'), 'utf8'), 'webm-bytes')
+})
+
+test('a v2 pending migration verifies after recordings joined the managed layout', async (t) => {
+  // Emulate a custom-root migration started by the previous build: marker v2 and a
+  // pending source whose cleanup list predates the recordings directory. The upgrade
+  // must finish that migration instead of refusing the marker (contract §2).
+  const parent = await temporaryRoot(t)
+  const sourceRoot = path.join(parent, 'source')
+  const targetRoot = path.join(parent, 'target')
+  const portableDirectory = path.join(parent, 'portable')
+  const source = createManagedSourcePaths(sourceRoot)
+  await ensureDataLayout(createDataPaths(sourceRoot))
+  await fsp.mkdir(portableDirectory)
+  await fsp.writeFile(source.logFile, 'log')
+  await migrateDataRoot({
+    source,
+    target: createDataPaths(targetRoot),
+    portableDirectory,
+    previousRoot: sourceRoot
+  })
+
+  const v2ManagedDirectories = ['config', 'logs', 'history', 'conversations', 'clipboard', 'usage', 'cache', 'runtime']
+    .map((name) => path.join(sourceRoot, name))
+  const markerPath = path.join(targetRoot, '.migration.json')
+  const pendingPath = path.join(portableDirectory, PENDING_NAME)
+  const marker = JSON.parse(await fsp.readFile(markerPath, 'utf8'))
+  const pending = JSON.parse(await fsp.readFile(pendingPath, 'utf8'))
+  marker.version = 2
+  delete marker.persistentManifests.recordings
+  marker.source.cleanupDirectories = v2ManagedDirectories
+  delete marker.source.recordings
+  pending.source.cleanupDirectories = v2ManagedDirectories
+  delete pending.source.recordings
+  await writeJson(markerPath, marker)
+  await writeJson(pendingPath, pending)
+
+  assert.deepEqual(
+    await verifyAndFinalizeMigration({ pendingPath, activeRoot: targetRoot }),
+    { finalized: true, cleanupErrors: [] }
+  )
+  assert.equal(await exists(path.join(targetRoot, '.migration.json')), false)
+  assert.equal(await exists(pendingPath), false)
 })

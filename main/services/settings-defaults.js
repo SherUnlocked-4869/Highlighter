@@ -132,7 +132,17 @@ const DEFAULT_SETTINGS = {
     audioSystem: true,
     audioMicrophone: false,
     audioSystemGain: 1,
-    audioMicrophoneGain: 1
+    audioMicrophoneGain: 1,
+    // R2 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §3): the recording workbench
+    // parameters. Appended AFTER the legacy keys on purpose - a store written by an older build
+    // keeps every value it already has, and these five are filled from the default. quality,
+    // countdown and lastMode are enums: settings-normalize repairs them on read and
+    // settings-validation rejects an illegal value on the write path.
+    quality: 'standard',
+    countdown: 3,
+    audioMicrophoneDeviceId: '',
+    lastMode: 'display',
+    lastDisplayId: ''
   },
   search: {
     matchPath: true,
@@ -197,7 +207,16 @@ const DEFAULT_SETTINGS = {
     screenshotQuickSave: '',
     screenshotSaveAs: '',
     togglePinClickThrough: '',
-    toggleTranslationProxy: ''
+    toggleTranslationProxy: '',
+    // R2 (§3): the recording workbench and the live-control-bar entries. All empty by default:
+    // a fresh install must not take over a combination the user already relies on. `videoRecord`
+    // above keeps its frozen "fullscreen quick start" meaning; `recordFullscreen` is the same
+    // action reachable from the new workbench naming.
+    openRecording: '',
+    recordRegion: '',
+    recordFullscreen: '',
+    recordPauseResume: '',
+    recordFinish: ''
   }
 }
 

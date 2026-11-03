@@ -109,6 +109,7 @@
       "preload-clipboard.js",
       "preload-record.js",
       "preload-record-frame.js",
+      "preload-record-editor.js",
       "deepseek.js",
       "main/**/*",
       "assets/**/*",

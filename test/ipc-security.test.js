@@ -150,6 +150,67 @@ test('IPC policy exactly covers every main-process registration', () => {
   assert.equal(registrations.has('debug:text-received'), false)
 })
 
+// R1-R3 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §8/§9): the workbench, the control bar
+// and the editor are three different roles on purpose. The workbench may start a capture and manage
+// records but never append chunks or write a draft; the control bar owns the source write; the
+// editor owns draft/export for one project. A shared channel (export:perform-action) is
+// resultId-addressed, which is why it is allowed on more than one role.
+test('recording workbench/editor surfaces keep the roles separated', () => {
+  const root = path.resolve(__dirname, '..')
+  const policies = buildIpcPolicies(root)
+  const rolesOf = (channel) => policies.get(channel)?.pages.map((page) => page.role) || []
+
+  for (const channel of [
+    'record:workbench-state',
+    'record:workbench-start',
+    'record:workbench-focus',
+    'record:project-list',
+    'record:project-open',
+    'record:project-rename',
+    'record:project-delete',
+    'record:project-reveal'
+  ]) {
+    assert.deepEqual(rolesOf(channel), ['main'], `${channel} belongs to the workbench only`)
+    assert.equal(policies.get(channel).kind, 'handle', `${channel} is an invoke`)
+  }
+
+  // Live control-bar state: an invoke fallback plus two renderer -> main listeners.
+  assert.deepEqual(rolesOf('record:get-state'), ['record'], 'the control bar owns its state pull')
+  assert.equal(policies.get('record:get-state').kind, 'handle')
+  assert.deepEqual(rolesOf('record:state'), ['record'])
+  assert.deepEqual(rolesOf('record:command-result'), ['record'])
+  assert.equal(policies.get('record:state').kind, 'on')
+  assert.equal(policies.get('record:command-result').kind, 'on')
+
+  for (const channel of [
+    'record-editor:ready',
+    'record-editor:close',
+    'record-editor:window',
+    'record-editor:save-draft',
+    'record-editor:export',
+    'record-editor:export-status',
+    'record-editor:cancel-export',
+    'record-editor:rename',
+    'record-editor:rerecord',
+    'record-editor:reveal',
+    'record-editor:back',
+    'record-editor:reload'
+  ]) {
+    assert.deepEqual(rolesOf(channel), ['record-editor'], `${channel} belongs to the editor only`)
+  }
+  assert.equal(policies.get('record-editor:save-draft').kind, 'handle')
+  assert.equal(policies.get('record-editor:window').kind, 'on')
+  // The editor may not drive the capture: no chunk append, no start-session.
+  assert.equal(policies.has('record-editor:start-session'), false)
+  assert.deepEqual(rolesOf('export:perform-action'), ['capture', 'recognition', 'record', 'record-editor'])
+
+  // Main -> renderer pushes never get a sender policy (a policy would make assertComplete() demand a
+  // registration that a push channel never has).
+  for (const channel of ['record:command', 'record:state-changed', 'record:init', 'record:export-progress', 'record-editor:init']) {
+    assert.equal(policies.has(channel), false, `${channel} is a push channel`)
+  }
+})
+
 test('pin click-through registers one explicit on-channel and keeps the receipt off IPC_SURFACES', () => {
   const root = path.resolve(__dirname, '..')
   const policies = buildIpcPolicies(root)
@@ -179,6 +240,7 @@ test('every renderer-to-main preload channel has a matching page policy', () => 
     ['preload-search.js', 'search'],
     ['preload-clipboard.js', 'clipboard'],
     ['preload-record.js', 'record'],
+    ['preload-record-editor.js', 'record-editor'],
     ['preload-record-frame.js', 'record-frame']
   ])
 

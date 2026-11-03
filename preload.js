@@ -45,6 +45,53 @@ contextBridge.exposeInMainWorld('electronAPI', {
   chooseDirectory: () => ipcRenderer.invoke('dialog:choose-directory'),
   openDataDirectory: () => ipcRenderer.invoke('app:open-data-directory'),
   openSaveDirectory: () => ipcRenderer.invoke('app:open-save-directory'),
+  // Recording workbench (W4): the frozen §9.1 `main`-role channels. The renderer
+  // may list/start/focus and manage recording records only; it never sends a
+  // source or output path, and the main process re-validates every field anyway.
+  // Project summaries returned through these channels are path-free by contract.
+  workbenchState: () => ipcRenderer.invoke('record:workbench-state'),
+  workbenchStart: (request) => {
+    const source = request && typeof request === 'object' ? request : {}
+    const mode = source.mode === 'region' ? 'region' : 'display'
+    const displayId = typeof source.displayId === 'string' ? source.displayId : ''
+    const config = source.config && typeof source.config === 'object' ? source.config : {}
+    const text = (value) => (typeof value === 'string' ? value : '')
+    return ipcRenderer.invoke('record:workbench-start', {
+      mode,
+      ...(displayId ? { displayId } : {}),
+      config: {
+        mode,
+        displayId,
+        frameRate: Number(config.frameRate) || 0,
+        quality: text(config.quality),
+        countdown: Number(config.countdown) || 0,
+        audioSystem: config.audioSystem === true,
+        audioMicrophone: config.audioMicrophone === true,
+        audioMicrophoneDeviceId: text(config.audioMicrophoneDeviceId),
+        saveDirectory: text(config.saveDirectory)
+      }
+    })
+  },
+  workbenchFocus: () => ipcRenderer.invoke('record:workbench-focus'),
+  projectList: (query) => {
+    const source = query && typeof query === 'object' ? query : {}
+    const offset = Math.max(0, Math.trunc(Number(source.offset) || 0))
+    const limit = Math.min(100, Math.max(1, Math.trunc(Number(source.limit) || 20)))
+    return ipcRenderer.invoke('record:project-list', { offset, limit })
+  },
+  projectOpen: (projectId) => ipcRenderer.invoke('record:project-open', {
+    projectId: typeof projectId === 'string' ? projectId : ''
+  }),
+  projectRename: (projectId, name) => ipcRenderer.invoke('record:project-rename', {
+    projectId: typeof projectId === 'string' ? projectId : '',
+    name: typeof name === 'string' ? name : ''
+  }),
+  projectDelete: (projectId) => ipcRenderer.invoke('record:project-delete', {
+    projectId: typeof projectId === 'string' ? projectId : ''
+  }),
+  projectReveal: (projectId) => ipcRenderer.invoke('record:project-reveal', {
+    projectId: typeof projectId === 'string' ? projectId : ''
+  }),
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   getProxyStatus: () => ipcRenderer.invoke('app:get-proxy-status'),
   getDisplayDiagnostics: () => ipcRenderer.invoke('app:get-display-diagnostics'),

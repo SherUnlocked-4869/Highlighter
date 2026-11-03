@@ -6,9 +6,11 @@ const {
   AUDIO_NOTICES,
   AUDIO_SAMPLE_RATE,
   MAX_GAIN,
+  MIN_GAIN,
   createAudioMix,
   createGainPlan,
   describeAudioOutcome,
+  microphoneConstraints,
   normalizeGain
 } = require('../record/audio-mixer')
 const { buildFfmpegArgs } = require('../record/recording-utils')
@@ -25,7 +27,7 @@ function createStream(tracks = [createAudioTrack()]) {
 }
 
 function createFakeAudioContext(options = {}) {
-  const created = { destinations: [], gains: [], sources: [] }
+  const created = { destinations: [], gains: [], sources: [], analysers: [] }
   const context = {
     state: options.state || 'running',
     resumed: 0,
@@ -40,6 +42,22 @@ function createFakeAudioContext(options = {}) {
       }
       created.gains.push(node)
       return node
+    },
+    createAnalyser() {
+      if (options.analyserThrows) throw new Error('analyser failed')
+      const analyser = {
+        fftSize: 1024,
+        level: options.level === undefined ? 0.5 : options.level,
+        connected: [],
+        disconnected: false,
+        connect(target) { analyser.connected.push(target) },
+        getFloatTimeDomainData(target) {
+          for (let index = 0; index < target.length; index++) target[index] = analyser.level
+        },
+        disconnect() { analyser.disconnected = true }
+      }
+      created.analysers.push(analyser)
+      return analyser
     },
     createMediaStreamSource(stream) {
       if (options.sourceThrows) throw new Error('source failed')
@@ -305,4 +323,116 @@ test('keeps the MediaRecorder audio bitrate in sync with the ffmpeg audio argume
   assert.equal(args[args.indexOf('-b:a') + 1], `${AUDIO_BITS_PER_SECOND / 1000}k`)
   assert.equal(args[args.indexOf('-ar') + 1], String(AUDIO_SAMPLE_RATE))
   assert.equal(args[args.indexOf('-ac') + 1], String(AUDIO_CHANNEL_COUNT))
+})
+
+// ---------------------------------------------------------------------------
+// R2 in-recording controls (contract §12): live bus gain, microphone mute and a
+// level readback. These are the controls behind the compact bar's volume sliders
+// and mute button, so they are exercised as behaviour rather than source strings.
+// ---------------------------------------------------------------------------
+
+test('mutes only the microphone bus and restores its remembered gain', () => {
+  const fake = createFakeAudioContext()
+  const mix = createAudioMix({
+    AudioContextClass: fake.AudioContextClass,
+    systemStream: createStream(),
+    micStream: createStream([createAudioTrack('mic-1')]),
+    plan: createGainPlan({ systemGain: 1, micGain: 0.8 })
+  })
+  const [, systemGain, micGain] = fake.created.gains
+  assert.equal(micGain.gain.value, 0.8)
+
+  assert.equal(mix.isMicrophoneMuted(), false)
+  assert.equal(mix.setMicrophoneMuted(true), true)
+  assert.equal(mix.isMicrophoneMuted(), true)
+  // The microphone node is silent while the system bus keeps its exact gain.
+  assert.equal(micGain.gain.value, 0)
+  assert.equal(systemGain.gain.value, 1)
+  assert.equal(mix.getBusGain('microphone'), 0.8)
+
+  // Moving the slider while muted remembers the target but must stay silent.
+  assert.equal(mix.setBusGain('microphone', 1.5), 1.5)
+  assert.equal(micGain.gain.value, 0)
+  assert.equal(mix.getBusGain('microphone'), 1.5)
+
+  assert.equal(mix.setMicrophoneMuted(false), false)
+  assert.equal(mix.isMicrophoneMuted(), false)
+  assert.equal(micGain.gain.value, 1.5)
+  assert.equal(systemGain.gain.value, 1)
+})
+
+test('applies live bus gains and reads the microphone level', () => {
+  const fake = createFakeAudioContext({ level: 0.5 })
+  const mix = createAudioMix({
+    AudioContextClass: fake.AudioContextClass,
+    systemStream: createStream(),
+    micStream: createStream([createAudioTrack('mic-1')]),
+    plan: createGainPlan({ systemGain: 1, micGain: 1 })
+  })
+  const [, systemGain, micGain] = fake.created.gains
+  assert.equal(fake.created.analysers.length, 2)
+
+  assert.equal(mix.setBusGain('system', 0.25), 0.25)
+  assert.equal(systemGain.gain.value, 0.25)
+  assert.equal(mix.setBusGain('microphone', 2), 2)
+  assert.equal(micGain.gain.value, 2)
+  assert.equal(mix.getBusGain('system'), 0.25)
+  assert.equal(mix.getBusGain('unknown'), 0)
+
+  // Clamped exactly like the gain plan, so a tampered slider cannot exceed the ceiling.
+  assert.equal(mix.setBusGain('system', 99), MAX_GAIN)
+  assert.equal(mix.setBusGain('system', -2), MIN_GAIN)
+  // RMS of a constant 0.5 signal is 0.5.
+  assert.equal(mix.getLevel('microphone'), 0.5)
+  assert.equal(mix.getLevel('system'), 0.5)
+  assert.equal(mix.getLevel('unknown'), 0)
+
+  mix.dispose()
+  assert.equal(fake.created.analysers[0].disconnected, true)
+  assert.equal(fake.created.analysers[1].disconnected, true)
+})
+
+test('degrades level readback when the context has no analyser', () => {
+  const fake = createFakeAudioContext({ analyserThrows: true })
+  const mix = createAudioMix({
+    AudioContextClass: fake.AudioContextClass,
+    systemStream: createStream()
+  })
+  assert.equal(mix.active, true)
+  assert.equal(fake.created.analysers.length, 0)
+  assert.equal(mix.getLevel('system'), 0)
+  // The graph still reaches the destination with the analyser missing.
+  assert.equal(fake.created.sources[0].connected[0], fake.created.gains[1])
+})
+
+test('the silent mix tolerates every control call instead of throwing', () => {
+  const silent = createAudioMix({
+    AudioContextClass: null,
+    systemStream: createStream()
+  })
+  assert.equal(silent.active, false)
+  assert.equal(silent.setBusGain('system', 1), 0)
+  assert.equal(silent.getBusGain('system'), 0)
+  assert.equal(silent.setMicrophoneMuted(true), false)
+  assert.equal(silent.isMicrophoneMuted(), false)
+  assert.equal(silent.getLevel('microphone'), 0)
+  silent.dispose()
+})
+
+test('requests an exact microphone device only when one was chosen', () => {
+  assert.deepEqual(microphoneConstraints(), {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: false
+  })
+  assert.deepEqual(microphoneConstraints(null), {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: false
+  })
+  // The trimmed selection becomes an `exact` constraint so Chromium cannot substitute
+  // a different input; the empty string means "system default" and adds no key.
+  assert.deepEqual(microphoneConstraints({ deviceId: '  device-1  ' }).deviceId, { exact: 'device-1' })
+  assert.equal(Object.hasOwn(microphoneConstraints({ deviceId: '   ' }), 'deviceId'), false)
+  assert.equal(Object.hasOwn(microphoneConstraints({ deviceId: 7 }), 'deviceId'), false)
 })

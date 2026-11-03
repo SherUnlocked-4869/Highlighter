@@ -50,6 +50,7 @@ window.setConfigDirty = setConfigDirty
 // so a language switch takes effect without a reload.
 const routeTitles = {
   home: 'config.route.home', translation: 'config.route.translation', chat: 'config.route.chat', history: 'config.route.history',
+  recording: 'config.route.recording',
   'settings-general': 'config.route.settings-general',
   'settings-function': 'config.route.settings-function',
   models: 'config.route.models',
@@ -70,6 +71,11 @@ const routes = {
   translation: { key: 'renderTranslation' },
   chat: { key: 'renderChat' },
   history: { key: 'renderHistory' },
+  // W4: the recording workbench. The route renders its shell synchronously and
+  // fills in from `record:workbench-state`; fallbackMessage covers a synchronous
+  // render failure so the settings window still shows a toast instead of going
+  // blank while the main-process half is being updated.
+  recording: { key: 'renderRecording', fallbackMessage: 'recording.workbench.load-failed' },
   'settings-general': { key: 'renderGeneralSettings' },
   models: { key: 'bootstrapModels' },
   'settings-function': { key: 'renderFunctionSettings' },
@@ -98,6 +104,12 @@ function navigate(route) {
   // scan keeps waking the disk behind an unrelated page.
   if (currentRoute === 'usage' && route !== 'usage') {
     if (typeof usageDeactivate === 'function') usageDeactivate()
+  }
+  // The recording workbench polls `record:workbench-state` while it is open (the
+  // active-recording banner and the recent list follow the main process). Leaving
+  // the route must stop that timer, not leave it waking a hidden window.
+  if (currentRoute === 'recording' && route !== 'recording') {
+    if (typeof recordingDeactivate === 'function') recordingDeactivate()
   }
   if (route === 'models' && currentRoute !== 'models') {
     modelsTab = 'providers'

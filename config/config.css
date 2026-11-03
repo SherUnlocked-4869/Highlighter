@@ -1071,3 +1071,92 @@ body.dark .usage-modal-gridlines i{opacity:.5}
   .usage-trend-col:hover .usage-trend-stack{filter:none}
   .usage-heat-scroll{scroll-behavior:auto}
 }
+
+/* ---------- recording workbench (W4) ----------
+   The workbench lives inside the ordinary settings page, so it only composes the
+   existing surface ladder and type tokens: no new palette, no new elevation.
+   The live banner is the one place allowed to signal danger, because "a capture
+   is running" is exactly the state --danger already means. */
+.rec-mode-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.rec-mode-card{display:flex;align-items:flex-start;gap:12px;padding:16px;border:1px solid var(--line);border-radius:var(--radius-lg);color:var(--text);background:var(--surface);cursor:pointer;text-align:left;transition:background .15s,border-color .15s,box-shadow .15s}
+.rec-mode-card:hover{background:var(--surface-2);border-color:var(--line-2)}
+.rec-mode-card.active{border-color:var(--primary);background:var(--primary-soft);box-shadow:0 0 0 1px var(--primary)}
+.rec-mode-icon{flex:0 0 auto;width:34px;height:34px;display:grid;place-items:center;border-radius:var(--radius-sm);color:var(--text-dim);background:var(--surface-2)}
+.rec-mode-card.active .rec-mode-icon{color:var(--primary-text);background:var(--surface)}
+.rec-mode-body{display:flex;flex-direction:column;gap:4px;min-width:0}
+.rec-mode-body b{font-size:14.5px;font-weight:600}
+.rec-mode-body small{color:var(--muted);font-size:12px;line-height:1.55}
+.rec-target-card{padding:16px 18px}
+.rec-note{margin:0;color:var(--muted);font-size:12.5px;line-height:1.65}
+.rec-display-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:12px}
+.rec-display{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:12px 14px;border:1px solid var(--line);border-radius:var(--radius);color:var(--text);background:var(--surface);cursor:pointer;text-align:left;transition:background .15s,border-color .15s}
+.rec-display:hover{background:var(--surface-2);border-color:var(--line-2)}
+.rec-display.active{border-color:var(--primary);background:var(--primary-soft);box-shadow:0 0 0 1px var(--primary)}
+.rec-display-name{flex:1 1 100%;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rec-display-meta{flex:1 1 100%;color:var(--muted);font-family:var(--font-mono);font-size:11px;letter-spacing:.02em}
+.rec-badge{padding:1px 7px;border:1px solid var(--line-2);border-radius:var(--radius-pill);color:var(--muted);background:var(--surface-2);font-size:10.5px;white-space:nowrap}
+.rec-badge.accent{color:var(--primary-text);border-color:var(--primary-line);background:var(--primary-soft)}
+.rec-warning{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;padding:10px 12px;border-radius:var(--radius-sm);color:var(--warn);background:var(--warn-soft);font-size:12px;line-height:1.6}
+.rec-warning-actions{display:flex;flex:0 0 auto;gap:8px}
+.rec-warning-actions .button{padding:6px 10px;font-size:12px}
+.rec-params{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px 18px;padding:16px 18px}
+.rec-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.rec-field>b{font-size:13px;font-weight:500}
+.rec-field>select{min-width:0;padding:8px 10px;border:1px solid var(--line-2);border-radius:var(--radius-sm);outline:0;color:var(--text);background:var(--surface-2)}
+.rec-field>select:focus{border-color:var(--primary);box-shadow:var(--focus-ring)}
+.rec-field>small{color:var(--muted);font-size:11.5px;line-height:1.5}
+.rec-start{min-width:170px;white-space:nowrap}
+.rec-live-banner{display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px 14px;border:1px solid color-mix(in srgb,var(--danger) 38%,var(--line));border-radius:var(--radius-lg);background:var(--danger-soft);font-size:13px}
+.rec-live-dot{width:8px;height:8px;flex:0 0 8px;border-radius:50%;background:var(--danger);box-shadow:0 0 0 3px color-mix(in srgb,var(--danger) 22%,transparent);animation:rec-live-pulse 1.6s ease-in-out infinite}
+.rec-live-banner b{font-weight:600}
+.rec-live-status{color:var(--muted);font-family:var(--font-mono);font-size:12px;letter-spacing:.02em}
+.rec-live-muted{padding:1px 7px;border:1px solid color-mix(in srgb,var(--danger) 40%,var(--line));border-radius:var(--radius-pill);color:var(--danger);font-size:10.5px;letter-spacing:.06em}
+.rec-live-banner .button{margin-left:auto;padding:6px 12px;font-size:12.5px}
+@keyframes rec-live-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.rec-error{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:16px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--danger) 30%,var(--line));border-radius:var(--radius-lg);background:var(--danger-soft)}
+.rec-error-body{display:flex;flex-direction:column;gap:4px;min-width:0}
+.rec-error-body b{font-size:13.5px}
+.rec-error-body small{color:var(--muted);font-size:12px;line-height:1.55}
+.rec-records-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.rec-records-toolbar .tabs{margin:0}
+.rec-filter{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
+.rec-filter select{padding:7px 9px;border:1px solid var(--line-2);border-radius:var(--radius-sm);color:var(--text);background:var(--surface-2)}
+.rec-records-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+.rec-card{display:flex;flex-direction:column;gap:8px;padding:14px 16px}
+.rec-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.rec-card-name{min-width:0;overflow:hidden;font-size:14px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.rec-state{flex:0 0 auto;padding:1px 7px;border:1px solid var(--line-2);border-radius:var(--radius-pill);color:var(--muted);background:var(--surface-2);font-size:10.5px;white-space:nowrap}
+.rec-state.state-ready{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 42%,var(--line));background:var(--ok-soft)}
+.rec-state.state-recoverable{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 42%,var(--line));background:var(--warn-soft)}
+.rec-state.state-capturing{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 42%,var(--line));background:var(--danger-soft)}
+.rec-card-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;color:var(--muted);font-size:11.5px;font-family:var(--font-mono);letter-spacing:.02em}
+.rec-card-detail{color:var(--text-dim);font-size:12px;line-height:1.6}
+.rec-card-hint{margin:2px 0 0;padding:8px 10px;border-radius:var(--radius-sm);color:var(--warn);background:var(--warn-soft);font-size:11.5px;line-height:1.6}
+.rec-card-export{color:var(--primary-text);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rec-card-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:auto;padding-top:4px}
+.rec-card-actions .button{flex:1 1 auto;padding:6px 8px;font-size:12px;white-space:nowrap}
+.rec-delete:hover{border-color:var(--danger);color:var(--danger);background:var(--danger-soft)}
+.rec-records-total{margin-top:12px;color:var(--muted);font-size:11.5px}
+.rec-records-more{display:flex;justify-content:center;padding:16px 0 0}
+.rec-records-state{padding:36px 20px;text-align:center;color:var(--muted);font-size:12.5px}
+.rec-records-state::before{content:"";display:block;width:32px;height:32px;margin:0 auto 12px;background:var(--faint);opacity:.5;
+  -webkit-mask:url('icons/history.svg') center/contain no-repeat;mask:url('icons/history.svg') center/contain no-repeat}
+@media(max-width:900px){
+  .rec-mode-cards{grid-template-columns:1fr}
+  .rec-params{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .rec-records-grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
+  .rec-records-toolbar{flex-wrap:wrap}
+}
+@media(max-width:700px){
+  .rec-params{grid-template-columns:1fr}
+  .rec-live-banner{flex-wrap:wrap}
+  .rec-live-banner .button{margin-left:0}
+  .rec-warning{flex-direction:column;align-items:flex-start}
+}
+body.compact .rec-mode-card{padding:12px}
+body.compact .rec-params{padding:12px 14px;gap:12px}
+body.compact .rec-card{padding:11px 12px}
+@media(prefers-reduced-motion:reduce){
+  .rec-live-dot{animation:none}
+  .rec-mode-card,.rec-display{transition:none}
+}

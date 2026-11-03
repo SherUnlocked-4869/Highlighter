@@ -194,9 +194,11 @@ test('recording cache operations are tracked until they settle before migration'
   for (const operation of ['appendChunk', 'finishSession', 'transcode']) {
     assert.match(recordDomain, new RegExp(`managedRecordingWriters\\.track\\([^)]*${operation}`))
   }
-  assert.match(recordDomain, /managedRecordingWriters\.track\(\(\) => service\.startSession\(\)/)
+  // R1: the session is started inside the persistent project directory, so the call
+  // takes an options object instead of being a bare `startSession()`.
+  assert.match(recordDomain, /managedRecordingWriters\.track\(\(\) => service\.startSession\(\{/)
   assert.match(recordDomain, /function cleanupRecordSession\(win, service = null, allowBlocked = false\)[\s\S]*managedRecordingWriters\.track\(\(\) => activeService\.cleanupSession[\s\S]*\{ allowBlocked \}/)
   const change = section(dataRootDomain, 'async function changeDataRoot()', 'async function chooseInitialDataRoot()')
   assert.match(change, /quiesceAndMigrate\(\{[\s\S]*coordinator: managedRecordingWriters[\s\S]*stopWriters: stopManagedDataWriters[\s\S]*migrate:/)
-  assert.match(recordDomain, /await cleanupRecordSession\(win, service\)[\s\S]*managedRecordingWriters\.assertOpen\(\)[\s\S]*managedRecordingWriters\.track\(\(\) => service\.startSession\(\)\)/)
+  assert.match(recordDomain, /await cleanupRecordSession\(win, service\)[\s\S]*managedRecordingWriters\.assertOpen\(\)[\s\S]*managedRecordingWriters\.track\(\(\) => service\.startSession\(\{/)
 })

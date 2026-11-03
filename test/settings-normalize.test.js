@@ -236,3 +236,44 @@ test('nativeRules passes captureFiles through and strips the JS-only fields', ()
   // The shipped default is on, so existing users get file capture without opting in.
   assert.equal(DEFAULT_CLIPBOARD.captureFiles, true)
 })
+
+// R2 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §3): the recording workbench parameters are
+// repaired on READ, and the five new shortcut entries are trimmed text. A hand-edited store must
+// never hand the workbench an unknown quality id, an unsupported countdown, a mode no source
+// adapter implements or a device id that would be forwarded to getUserMedia unbounded.
+test('the R2 recording workbench parameters are normalized on read', () => {
+  const normalized = normalizeWith(makeSettings((settings) => {
+    settings.record.quality = 'insane'
+    settings.record.countdown = 7
+    settings.record.lastMode = 'window'
+    settings.record.audioMicrophoneDeviceId = `  ${'d'.repeat(300)}  `
+    settings.record.lastDisplayId = 42
+    settings.shortcuts.openRecording = '  Ctrl+Shift+R  '
+    settings.shortcuts.recordRegion = 'Ctrl+Alt+R'
+    settings.shortcuts.recordFullscreen = 5
+    settings.shortcuts.recordPauseResume = null
+    settings.shortcuts.recordFinish = ''
+  }))
+  assert.equal(normalized.record.quality, 'standard', 'an unknown quality falls back to the shipped default')
+  assert.equal(normalized.record.countdown, 3, 'an unsupported countdown falls back to 3s')
+  assert.equal(normalized.record.lastMode, 'display', 'an unknown mode falls back to display')
+  assert.equal(normalized.record.audioMicrophoneDeviceId.length, 256, 'the device id is trimmed and bounded')
+  assert.equal(normalized.record.lastDisplayId, '', 'a non-string display id normalizes to empty (cursor screen)')
+  assert.equal(normalized.shortcuts.openRecording, 'Ctrl+Shift+R')
+  assert.equal(normalized.shortcuts.recordRegion, 'Ctrl+Alt+R')
+  assert.equal(normalized.shortcuts.recordFullscreen, '', 'a non-string accelerator normalizes to disabled')
+  assert.equal(normalized.shortcuts.recordPauseResume, '')
+})
+
+test('the shipped R2 recording defaults stay frozen', () => {
+  assert.equal(DEFAULT_SETTINGS.record.quality, 'standard')
+  assert.equal(DEFAULT_SETTINGS.record.countdown, 3)
+  assert.equal(DEFAULT_SETTINGS.record.audioMicrophoneDeviceId, '')
+  assert.equal(DEFAULT_SETTINGS.record.lastMode, 'display')
+  assert.equal(DEFAULT_SETTINGS.record.lastDisplayId, '')
+  // A new install must not steal a combination the user relies on: every recording entry starts
+  // disabled, exactly like the other recent shortcut additions.
+  for (const key of ['openRecording', 'recordRegion', 'recordFullscreen', 'recordPauseResume', 'recordFinish']) {
+    assert.equal(DEFAULT_SETTINGS.shortcuts[key], '', key)
+  }
+})

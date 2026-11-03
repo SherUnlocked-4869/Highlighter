@@ -57,7 +57,19 @@ const IPC_SURFACES = Object.freeze([
       // Local AI CLI usage statistics (settings window -> main, read-only). The
       // scan-progress push is main -> renderer only, so it has no sender policy.
       'usage:status', 'usage:refresh', 'usage:summary', 'usage:daily',
-      'usage:hourly', 'usage:breakdown', 'usage:heatmap', 'usage:clear'
+      'usage:hourly', 'usage:breakdown', 'usage:heatmap', 'usage:clear',
+      // R1-R3 recording workbench (docs/plans/2026-11-03-recording-r1-r3-contracts.md §8/§9.1):
+      // the main window may read the workbench state, start a recording and manage the recording
+      // records. It NEVER learns a source/target path: `record:project-reveal` and the export
+      // target are resolved by the main process from the project id / save dialog.
+      'record:workbench-state',
+      'record:workbench-start',
+      'record:workbench-focus',
+      'record:project-list',
+      'record:project-open',
+      'record:project-rename',
+      'record:project-delete',
+      'record:project-reveal'
     ],
     listeners: ['window:minimize', 'window:close', 'window:renderer-state']
   },
@@ -234,9 +246,35 @@ const IPC_SURFACES = Object.freeze([
       // Feature A (plan §4.1/§4.2): the recorder shows the same result bar after an export as
       // the capture and recognition windows. The payload is a resultId + action name, never a
       // path, so the shared channel is safe to expose to this role as well.
+      'export:perform-action',
+      // R2 (contracts §9.2): the control bar reports its own authoritative state and the result
+      // of a main-process-initiated command (tray / global shortcut). `record:get-state` is the
+      // pull fallback for a lost push; the pushes themselves (`record:command`,
+      // `record:state-changed`) are main -> renderer and therefore have no sender policy.
+      'record:get-state'
+    ],
+    listeners: ['record:ready', 'record:performance', 'record:close', 'record:state', 'record:command-result']
+  },
+  {
+    // R3 (contracts §8/§9.3): the standalone editor window. It owns draft writes and export
+    // submission for ONE project, and it never receives a path it could act on: `sourceUrl` and
+    // the export target are derived by the main process.
+    role: 'record-editor',
+    page: 'record/editor.html',
+    handles: [
+      'record-editor:save-draft',
+      'record-editor:export',
+      'record-editor:export-status',
+      'record-editor:cancel-export',
+      'record-editor:rename',
+      'record-editor:rerecord',
+      'record-editor:reveal',
+      'record-editor:back',
+      'record-editor:reload',
+      // Feature A receipt actions, same resultId-addressed contract as the other result bars.
       'export:perform-action'
     ],
-    listeners: ['record:ready', 'record:performance', 'record:close']
+    listeners: ['record-editor:ready', 'record-editor:close', 'record-editor:window']
   },
   {
     role: 'record-frame',

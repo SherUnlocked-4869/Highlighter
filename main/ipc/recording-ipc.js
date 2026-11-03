@@ -19,6 +19,12 @@ function registerRecordingIpc({ ipcMain, controller }) {
   ipcMain.handle('record:probe-session', controller.probeSession)
   ipcMain.handle('record:close-preview', controller.closePreview)
   ipcMain.on('record:close', controller.close)
+  // R2 (contracts §9.2): the live-control-bar state channel. `record:get-state` is the pull
+  // fallback for a lost push, `record:state` is the renderer's authoritative state report and
+  // `record:command-result` closes the loop for a tray/shortcut command.
+  ipcMain.handle('record:get-state', controller.getState)
+  ipcMain.on('record:state', controller.state)
+  ipcMain.on('record:command-result', controller.commandResult)
 }
 
 module.exports = {

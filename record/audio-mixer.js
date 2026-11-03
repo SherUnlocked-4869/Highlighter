@@ -6,6 +6,11 @@
  * `getDisplayMedia` loopback) and the optional microphone stream are summed here and
  * appended to the canvas stream before `MediaRecorder` starts.
  *
+ * R2 (contract §12) extends it with the in-recording controls the compact bar needs:
+ * a per-bus gain setter, an independent microphone mute that never touches the system
+ * bus, and a cheap RMS level readback for the microphone indicator. Every method is a
+ * no-op on the degraded (silent) mix, so the renderer never has to branch on `active`.
+ *
  * Everything in this module is pure or injectable: `AudioContext` is supplied by the
  * caller so the gain graph can be asserted in `test/audio-mixer.test.js` with a fake
  * context, and the module also runs as a plain `<script>` in `record/record.html`
@@ -21,11 +26,34 @@
   // Settings validation only checks that a gain is a number, so the mixer clamps
   // defensively instead of trusting the stored value.
   const MAX_GAIN = 4
+  // The <input type="range"> in the control bar exposes 0..MAX_GAIN of travel; the
+  // default value keeps unity gain for a normal take.
+  const MIN_GAIN = 0
+  const LEVEL_ANALYSER_FFT_SIZE = 1024
 
   function normalizeGain(value, fallback = DEFAULT_GAIN) {
     const parsed = Number(value)
     if (!Number.isFinite(parsed)) return fallback
-    return Math.min(MAX_GAIN, Math.max(0, parsed))
+    return Math.min(MAX_GAIN, Math.max(MIN_GAIN, parsed))
+  }
+
+  /**
+   * Microphone acquisition constraints. The workbench stores the chosen input device
+   * (`record.audioMicrophoneDeviceId`, '' = system default); an explicit device is
+   * requested with `exact` so Chromium cannot silently substitute another input.
+   * The caller falls back to the default device (and tells the user) when `exact`
+   * cannot be satisfied.
+   */
+  function microphoneConstraints(options = {}) {
+    const source = options && typeof options === 'object' ? options : {}
+    const constraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: false
+    }
+    const deviceId = typeof source.deviceId === 'string' ? source.deviceId.trim() : ''
+    if (deviceId) constraints.deviceId = { exact: deviceId }
+    return constraints
   }
 
   /**
@@ -109,8 +137,42 @@
       tracks: [],
       warning,
       async resume() { return 'closed' },
+      setBusGain() { return 0 },
+      getBusGain() { return 0 },
+      setMicrophoneMuted() { return false },
+      isMicrophoneMuted() { return false },
+      getLevel() { return 0 },
       dispose() {}
     }
+  }
+
+  // RMS over the analyser window, clamped to 0..1. A mixer without an analyser
+  // (old Chromium or the fake test context) reports 0 rather than fabricating a level.
+  function readAnalyserLevel(analyser, scratch) {
+    if (!analyser) return 0
+    const length = Number(analyser.fftSize) > 0 ? Number(analyser.fftSize) : LEVEL_ANALYSER_FFT_SIZE
+    try {
+      if (typeof analyser.getFloatTimeDomainData === 'function') {
+        if (!scratch.float || scratch.float.length !== length) scratch.float = new Float32Array(length)
+        analyser.getFloatTimeDomainData(scratch.float)
+        let sum = 0
+        for (let index = 0; index < scratch.float.length; index++) sum += scratch.float[index] * scratch.float[index]
+        return Math.min(1, Math.round(Math.sqrt(sum / Math.max(1, scratch.float.length)) * 1000) / 1000)
+      }
+      if (typeof analyser.getByteTimeDomainData === 'function') {
+        if (!scratch.bytes || scratch.bytes.length !== length) scratch.bytes = new Uint8Array(length)
+        analyser.getByteTimeDomainData(scratch.bytes)
+        let sum = 0
+        for (let index = 0; index < scratch.bytes.length; index++) {
+          const value = (scratch.bytes[index] - 128) / 128
+          sum += value * value
+        }
+        return Math.min(1, Math.round(Math.sqrt(sum / Math.max(1, scratch.bytes.length)) * 1000) / 1000)
+      }
+    } catch {
+      return 0
+    }
+    return 0
   }
 
   /**
@@ -162,6 +224,7 @@
     let master = null
     let destination = null
     const nodes = []
+    let microphoneMuted = false
     try {
       master = context.createGain()
       master.gain.value = plan.masterGain
@@ -171,9 +234,22 @@
         const node = context.createMediaStreamSource(bus.stream)
         const gainNode = context.createGain()
         gainNode.gain.value = bus.gain
-        node.connect(gainNode)
+        // The analyser only feeds the level readback; it sits before the gain node so
+        // muting the bus does not hide the fact that the microphone is still live.
+        let analyser = null
+        if (typeof context.createAnalyser === 'function') {
+          try {
+            analyser = context.createAnalyser()
+            analyser.fftSize = LEVEL_ANALYSER_FFT_SIZE
+            node.connect(analyser)
+            analyser.connect(gainNode)
+          } catch {
+            analyser = null
+          }
+        }
+        if (!analyser) node.connect(gainNode)
         gainNode.connect(master)
-        nodes.push({ role: bus.role, source: node, gainNode })
+        nodes.push({ role: bus.role, source: node, gainNode, analyser, gain: bus.gain })
       }
       const stream = destination.stream
       const tracks = audioTracks(stream)
@@ -183,6 +259,31 @@
         disconnectAll(nodes, master, destination, context)
         return createSilentMix(warning)
       }
+      const scratch = {}
+      const busEntry = (role) => nodes.find((entry) => entry.role === role) || null
+
+      function setBusGain(role, value) {
+        const entry = busEntry(role)
+        if (!entry) return 0
+        const gain = normalizeGain(value)
+        entry.gain = gain
+        // A muted microphone keeps its target gain for the unmute, but the live node
+        // stays at 0 so the recording really is silent.
+        if (!(role === 'microphone' && microphoneMuted)) entry.gainNode.gain.value = gain
+        return gain
+      }
+
+      function setMicrophoneMuted(muted) {
+        const entry = busEntry('microphone')
+        if (!entry) {
+          microphoneMuted = false
+          return false
+        }
+        microphoneMuted = muted === true
+        entry.gainNode.gain.value = microphoneMuted ? 0 : entry.gain
+        return microphoneMuted
+      }
+
       return {
         active: true,
         context,
@@ -202,6 +303,19 @@
           }
           return context.state || 'running'
         },
+        setBusGain,
+        getBusGain(role) {
+          const entry = busEntry(role)
+          return entry ? entry.gain : 0
+        },
+        setMicrophoneMuted,
+        isMicrophoneMuted() {
+          return microphoneMuted
+        },
+        getLevel(role) {
+          const entry = busEntry(role)
+          return entry ? readAnalyserLevel(entry.analyser, scratch) : 0
+        },
         dispose() {
           disconnectAll(nodes, master, destination, context)
         }
@@ -217,6 +331,7 @@
   function disconnectAll(nodes, master, destination, context) {
     for (const node of nodes) {
       try { node.source.disconnect() } catch {}
+      try { node.analyser?.disconnect?.() } catch {}
       try { node.gainNode.disconnect() } catch {}
     }
     try { master?.disconnect?.() } catch {}
@@ -230,9 +345,11 @@
     AUDIO_NOTICES,
     AUDIO_SAMPLE_RATE,
     MAX_GAIN,
+    MIN_GAIN,
     createAudioMix,
     createGainPlan,
     describeAudioOutcome,
+    microphoneConstraints,
     normalizeGain
   }
 

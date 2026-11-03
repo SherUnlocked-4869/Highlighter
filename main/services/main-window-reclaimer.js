@@ -28,6 +28,10 @@ const RENDERER_ROUTES = Object.freeze([
   'translation',
   'chat',
   'history',
+  // W4 recording workbench: deliberately NOT on SAFE_ROUTES (the route owns the
+  // in-progress capture choices), but it must stay restorable so a hidden window
+  // reopens where the user left it instead of silently falling back to home.
+  'recording',
   'settings-general',
   'models',
   'settings-function',

@@ -165,13 +165,21 @@
     return list.find((source) => String(source.display_id) === String(displayId)) || list[0] || null
   }
 
+  // Control-bar state machine (contract §12): the capture session moves
+  // idle -> preparing -> countdown -> recording <-> paused -> finalizing, with a
+  // `stopped` holding state when finalizing failed (finish can be retried) and a
+  // terminal `finished` state once the main process has sealed the project.
+  // Countdown 0 skips `countdown` via preparing -> recording. `error` pauses a live
+  // recording when a chunk write fails; it never pretends the take is still healthy.
   const TRANSITIONS = Object.freeze({
-    idle: Object.freeze({ start: 'countdown', cancel: 'cancelled' }),
+    idle: Object.freeze({ start: 'preparing' }),
+    preparing: Object.freeze({ ready: 'countdown', record: 'recording', cancel: 'idle', fail: 'idle' }),
     countdown: Object.freeze({ 'countdown-finished': 'recording', cancel: 'idle' }),
-    recording: Object.freeze({ pause: 'paused', stop: 'preview', cancel: 'cancelled' }),
-    paused: Object.freeze({ resume: 'recording', stop: 'preview', cancel: 'cancelled' }),
-    preview: Object.freeze({ save: 'saving', rerecord: 'countdown', cancel: 'cancelled' }),
-    saving: Object.freeze({ saved: 'saved', 'save-failed': 'preview' })
+    recording: Object.freeze({ pause: 'paused', stop: 'finalizing', error: 'paused', cancel: 'idle' }),
+    paused: Object.freeze({ resume: 'recording', stop: 'finalizing', error: 'paused', cancel: 'idle' }),
+    finalizing: Object.freeze({ finished: 'finished', failed: 'stopped' }),
+    stopped: Object.freeze({ stop: 'finalizing', cancel: 'idle' }),
+    finished: Object.freeze({ cancel: 'idle' })
   })
 
   // P0-1-T5 (S12): the message is an i18n key and the values travel as data — this
@@ -185,6 +193,226 @@
       throw error
     }
     return next
+  }
+
+  // `record:state` wire statuses (contract §9.2). UI-only states either map onto the
+  // closest wire value (a failed finish is still "not recording") or return '' so the
+  // renderer reports nothing for them.
+  const REPORT_STATUS = Object.freeze({
+    preparing: 'preparing',
+    countdown: 'countdown',
+    recording: 'recording',
+    paused: 'paused',
+    stopped: 'paused',
+    finalizing: 'finalizing'
+  })
+
+  function reportStatusFor(state) {
+    return REPORT_STATUS[state] || ''
+  }
+
+  // Reverse map for adopting a state the main process pushed (contract §9.2): the wire
+  // only knows the five live statuses, the bar also has idle/finished/stopped local ones.
+  const WIRE_STATE = Object.freeze({
+    preparing: 'preparing',
+    countdown: 'countdown',
+    recording: 'recording',
+    paused: 'paused',
+    finalizing: 'finalizing'
+  })
+  // A lost tray/shortcut command is repaired from the echo of the command's effect: only
+  // the pause/resume pair is a command echo the bar can adopt without fighting its own
+  // countdown/finalizing transitions.
+  const COMMAND_ECHO_STATUSES = Object.freeze(['recording', 'paused'])
+  // Boot reconciliation may restore any state in which main still owns a live capture.
+  const RECONCILE_STATUSES = Object.freeze(['recording', 'paused', 'finalizing'])
+
+  function localStateForWireStatus(status) {
+    return WIRE_STATE[status] || ''
+  }
+
+  // Version guard for a main-process state push (record:state-changed) or a boot pull
+  // (record:get-state). A push is usable only when:
+  //   * it carries a real status and a NEWER stateVersion than the bar (stale echoes are
+  //     ignored, so the local state machine is never rolled back);
+  //   * the bar is not busy / mid-transition (preparing/countdown/finalizing are locally
+  //     driven and must not be overwritten);
+  //   * it is a command echo (local and wire status are the live pause/resume pair) or a
+  //     boot reconciliation (the bar is still idle but main believes a capture exists).
+  function shouldAdoptMainState(options = {}) {
+    const source = options && typeof options === 'object' ? options : {}
+    const mainState = source.mainState && typeof source.mainState === 'object' ? source.mainState : null
+    if (!mainState) return false
+    const wireStatus = typeof mainState.status === 'string' ? mainState.status : ''
+    if (!localStateForWireStatus(wireStatus)) return false
+    const nextVersion = Number(mainState.stateVersion)
+    if (!Number.isInteger(nextVersion) || nextVersion < 1) return false
+    const localVersion = Math.round(Number(source.localStateVersion) || 0)
+    if (!Number.isFinite(localVersion) || nextVersion <= localVersion) return false
+    const localState = typeof source.localState === 'string' ? source.localState : ''
+    if (source.reconciliation === true) {
+      // "The renderer is idle but main still holds a capture": restore the bar's view.
+      return localState === 'idle' && RECONCILE_STATUSES.includes(wireStatus)
+    }
+    if (source.busy === true) return false
+    return COMMAND_ECHO_STATUSES.includes(localState) && COMMAND_ECHO_STATUSES.includes(wireStatus)
+  }
+
+  function formatDuration(milliseconds) {
+    const seconds = Math.max(0, Math.floor(finite(milliseconds) / 1000))
+    return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+  }
+
+  // Chunk sequences start at 1 and are strictly increasing (contract §5). The ACK
+  // carries the main process' last accepted sequence; the renderer treats a gap as a
+  // fatal write failure (paused + surfaced error) instead of continuing to pretend.
+  function classifyChunkAck(ack = {}) {
+    const source = ack && typeof ack === 'object' ? ack : {}
+    const sent = Number(source.sequence)
+    const acked = Number(source.lastChunkSequence)
+    if (!Number.isInteger(sent) || sent < 1) return 'invalid'
+    if (!Number.isInteger(acked) || acked < 0) return 'invalid'
+    if (acked >= sent) return 'duplicate'
+    if (acked === sent - 1) return 'ok'
+    return 'gap'
+  }
+
+  let requestCounter = 0
+
+  // Local command ids for button presses; pushed (tray/shortcut) commands carry a
+  // main-process id instead. Uniqueness only has to hold for one control-bar lifetime.
+  function createRequestId(prefix = 'local') {
+    requestCounter += 1
+    return `${prefix}-${Date.now().toString(36)}-${requestCounter.toString(36)}`
+  }
+
+  // Command arbitration (contract §9.2): every command - button, tray or shortcut -
+  // lands on one dispatcher. A repeated requestId returns the first result, so a
+  // double key-press cannot toggle pause twice; handlers own the state checks and
+  // return `{ ok, state, code }`.
+  function createCommandDispatcher(options = {}) {
+    const source = options && typeof options === 'object' ? options : {}
+    const handlers = source.handlers && typeof source.handlers === 'object' ? source.handlers : {}
+    const maxRemembered = Number.isInteger(source.maxRemembered) && source.maxRemembered > 0
+      ? source.maxRemembered
+      : 64
+    const remembered = new Map()
+
+    function remember(requestId, result) {
+      remembered.set(requestId, result)
+      if (remembered.size > maxRemembered) {
+        const oldest = remembered.keys().next().value
+        if (oldest !== undefined) remembered.delete(oldest)
+      }
+      return result
+    }
+
+    function dispatch(request = {}) {
+      const payload = request && typeof request === 'object' ? request : {}
+      const requestId = typeof payload.requestId === 'string' ? payload.requestId : ''
+      const command = typeof payload.command === 'string' ? payload.command : ''
+      if (!requestId) return Promise.resolve({ ok: false, code: 'invalid-request' })
+      if (remembered.has(requestId)) return remembered.get(requestId)
+      const handler = handlers[command]
+      if (typeof handler !== 'function') {
+        return remember(requestId, Promise.resolve({ ok: false, code: 'unsupported-command' }))
+      }
+      let result
+      try {
+        result = Promise.resolve(handler(payload.value, command, payload))
+      } catch (error) {
+        result = Promise.resolve({ ok: false, code: 'command-failed', detail: String(error?.message || error) })
+      }
+      const normalized = result.then(
+        (value) => (value && typeof value === 'object' ? value : { ok: true }),
+        () => ({ ok: false, code: 'command-failed' })
+      )
+      return remember(requestId, normalized)
+    }
+
+    return { dispatch, has: (requestId) => remembered.has(requestId), size: () => remembered.size }
+  }
+
+  function isRecordObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value)
+  }
+
+  function normalizeBounds(value) {
+    const source = isRecordObject(value) ? value : {}
+    return {
+      x: Math.round(finite(source.x)),
+      y: Math.round(finite(source.y)),
+      width: Math.max(0, Math.round(finite(source.width))),
+      height: Math.max(0, Math.round(finite(source.height)))
+    }
+  }
+
+  function text(value, fallback = '') {
+    const trimmed = typeof value === 'string' ? value.trim() : ''
+    return trimmed || fallback
+  }
+
+  // Normalized `record:init` payload (contract §9.2). `record.js` owns the DOM, so
+  // the shape read here is the one place the control bar can be wrong about its own
+  // configuration; it also accepts the pre-R2 payload (flat audio keys / displayBounds)
+  // while the main process and this renderer land in separate workstreams. New fields
+  // always win over the legacy fallbacks.
+  function resolveRecordInit(data = {}) {
+    const raw = isRecordObject(data) ? data : {}
+    const display = isRecordObject(raw.display) ? raw.display : null
+    const legacyBounds = normalizeBounds(raw.displayBounds)
+    const displayBounds = display && isRecordObject(display.boundsDip)
+      ? normalizeBounds(display.boundsDip)
+      : legacyBounds
+    const pixelSize = display && isRecordObject(display.pixelSize)
+      ? {
+          width: Math.max(0, Math.round(finite(display.pixelSize.width))),
+          height: Math.max(0, Math.round(finite(display.pixelSize.height)))
+        }
+      : null
+    const audio = isRecordObject(raw.audio)
+      ? {
+          system: raw.audio.system !== false,
+          microphone: raw.audio.microphone === true,
+          microphoneDeviceId: text(raw.audio.microphoneDeviceId),
+          systemGain: raw.audio.systemGain,
+          microphoneGain: raw.audio.microphoneGain
+        }
+      : {
+          system: raw.audioSystem !== false,
+          microphone: raw.audioMicrophone === true,
+          microphoneDeviceId: text(raw.audioMicrophoneDeviceId),
+          systemGain: raw.audioSystemGain,
+          microphoneGain: raw.audioMicrophoneGain
+        }
+    return {
+      sessionId: text(raw.sessionId),
+      projectId: text(raw.projectId),
+      mode: text(raw.mode, 'display'),
+      display: display
+        ? {
+            id: text(display.id),
+            name: text(display.name),
+            boundsDip: displayBounds,
+            pixelSize,
+            scaleFactor: Number(display.scaleFactor) > 0 ? Number(display.scaleFactor) : 1
+          }
+        : null,
+      displayBounds,
+      selectionBounds: isRecordObject(raw.selectionBounds)
+        ? normalizeBounds(raw.selectionBounds)
+        : displayBounds,
+      sourceId: text(raw.sourceId),
+      frameRate: normalizeFrameRate(raw.frameRate),
+      quality: text(raw.quality),
+      countdownSeconds: raw.countdownSeconds !== undefined
+        ? raw.countdownSeconds
+        : (raw.countdown !== undefined ? raw.countdown : 3),
+      // E2E-only synthetic capture source (contract §13.5). The main process sets this
+      // only from HIGHLIGHTER_E2E_FAKE_CAPTURE=1; a renderer cannot enable it itself.
+      fakeCapture: raw.fakeCapture === true,
+      audio
+    }
   }
 
   // Audio defaults mirror the frozen record settings contract: system sound on, AAC 160 kbps
@@ -251,11 +479,19 @@
     calculateFrameBounds,
     calculateRecordControlSize,
     calculateTranscodeProgress,
+    classifyChunkAck,
+    createCommandDispatcher,
     createFramePacer,
+    createRequestId,
+    formatDuration,
+    localStateForWireStatus,
     normalizeFrameRate,
     normalizeSelectionBounds,
     pickDesktopSource,
     primeSeekablePreview,
+    reportStatusFor,
+    resolveRecordInit,
+    shouldAdoptMainState,
     transitionRecordingState
   }
 

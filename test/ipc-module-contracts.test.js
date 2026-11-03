@@ -10,6 +10,7 @@ const { registerDiagnosticsIpc } = require('../main/ipc/diagnostics-ipc')
 const { registerOcrIpc } = require('../main/ipc/ocr-ipc')
 const { registerRecordingIpc } = require('../main/ipc/recording-ipc')
 const { registerRecordingExportIpc } = require('../main/ipc/recording-export-ipc')
+const { registerRecordingWorkbenchIpc, registerRecordingEditorIpc } = require('../main/ipc/recording-workbench-ipc')
 const { registerSearchIpc } = require('../main/ipc/search-ipc')
 const { registerSelectionIpc } = require('../main/ipc/selection-ipc')
 const { IPC_SURFACES } = require('../main/services/ipc-security')
@@ -243,7 +244,7 @@ test('search IPC module owns query, state, and file action channels', () => {
   assert.equal(ipcMain.listeners.get('search:state')(null, { keyword: 'a' }).method, 'saveState')
 })
 
-test('recording IPC module owns control and annotation channels', () => {
+test('recording IPC module owns control, annotation and live-state channels', () => {
   const ipcMain = createIpcMain()
   registerRecordingIpc({
     ipcMain,
@@ -263,7 +264,11 @@ test('recording IPC module owns control and annotation channels', () => {
       'restart',
       'probeSession',
       'closePreview',
-      'close'
+      'close',
+      // R2 (contracts §9.2): the live-control state channel.
+      'getState',
+      'state',
+      'commandResult'
     ])
   })
 
@@ -272,7 +277,12 @@ test('recording IPC module owns control and annotation channels', () => {
     'record-frame:ready',
     'record-frame:snapshot',
     'record:performance',
-    'record:close'
+    'record:close',
+    // R2 (contracts §9.2): the renderer's authoritative state report and the result of a
+    // tray/shortcut command. `record:command` / `record:state-changed` are main -> renderer pushes
+    // and therefore deliberately have no registration here.
+    'record:state',
+    'record:command-result'
   ])
   assert.deepEqual([...ipcMain.handlers.keys()], [
     'record:set-annotation-command',
@@ -286,8 +296,92 @@ test('recording IPC module owns control and annotation channels', () => {
     'record:restart',
     // Feature E (plan §8.1/§8.3): probe the sealed source and close the preview session.
     'record:probe-session',
-    'record:close-preview'
+    'record:close-preview',
+    // R2 (contracts §9.2): pull fallback for a lost state push.
+    'record:get-state'
   ])
+  assert.equal(ipcMain.handlers.get('record:get-state')().method, 'getState')
+  assert.equal(ipcMain.listeners.get('record:state')(null, { status: 'recording' }).method, 'state')
+  assert.equal(ipcMain.listeners.get('record:command-result')(null, { requestId: 'r' }).method, 'commandResult')
+})
+
+test('recording workbench and editor IPC modules own their documented channel surfaces', () => {
+  // R2/R3 (contracts §8/§9.1/§9.3): the workbench channels belong to the main role, the editor
+  // channels to the record-editor role. Both registrars are separate so neither page can reach the
+  // other's surface.
+  const workbenchIpc = createIpcMain()
+  registerRecordingWorkbenchIpc({
+    ipcMain: workbenchIpc,
+    controller: createController([
+      'workbenchState',
+      'workbenchStart',
+      'workbenchFocus',
+      'projectList',
+      'projectOpen',
+      'projectRename',
+      'projectDelete',
+      'projectReveal'
+    ])
+  })
+  assert.deepEqual([...workbenchIpc.handlers.keys()], [
+    'record:workbench-state',
+    'record:workbench-start',
+    'record:workbench-focus',
+    'record:project-list',
+    'record:project-open',
+    'record:project-rename',
+    'record:project-delete',
+    'record:project-reveal'
+  ])
+  assert.deepEqual([...workbenchIpc.listeners.keys()], [])
+  assert.equal(workbenchIpc.handlers.get('record:workbench-state')().method, 'workbenchState')
+  assert.equal(workbenchIpc.handlers.get('record:project-delete')(null, { projectId: 'p' }).method, 'projectDelete')
+
+  const editorIpc = createIpcMain()
+  registerRecordingEditorIpc({
+    ipcMain: editorIpc,
+    controller: createController([
+      'editorReady',
+      'editorClose',
+      'editorWindow',
+      'editorSaveDraft',
+      'editorExport',
+      'editorExportStatus',
+      'editorCancelExport',
+      'editorRename',
+      'editorRerecord',
+      'editorReveal',
+      'editorBack',
+      'editorReload'
+    ])
+  })
+  assert.deepEqual([...editorIpc.handlers.keys()], [
+    'record-editor:save-draft',
+    'record-editor:export',
+    'record-editor:export-status',
+    'record-editor:cancel-export',
+    'record-editor:rename',
+    'record-editor:rerecord',
+    'record-editor:reveal',
+    'record-editor:back',
+    // Additive (approved 2026-11-03, contract §9.3): recovery retry + revision-conflict reload.
+    'record-editor:reload'
+  ])
+  assert.deepEqual([...editorIpc.listeners.keys()], [
+    'record-editor:ready',
+    'record-editor:close',
+    'record-editor:window'
+  ])
+  // `record-editor:init` and `record:export-progress` are main -> renderer pushes, so neither may
+  // appear here (a policy entry would make secureIpcMain.assertComplete demand a registration).
+  assert.equal(editorIpc.handlers.has('record-editor:init'), false)
+  assert.equal(editorIpc.handlers.has('record:export-progress'), false)
+  assert.equal(editorIpc.handlers.get('record-editor:reload')(null, { projectId: 'p' }).method, 'editorReload')
+
+  assert.throws(() => registerRecordingWorkbenchIpc({ ipcMain: null, controller: {} }), /Recording workbench IPC requires/)
+  assert.throws(() => registerRecordingWorkbenchIpc({ ipcMain: createIpcMain(), controller: null }), /Recording workbench IPC requires/)
+  assert.throws(() => registerRecordingEditorIpc({ ipcMain: null, controller: {} }), /Recording editor IPC requires/)
+  assert.throws(() => registerRecordingEditorIpc({ ipcMain: createIpcMain(), controller: null }), /Recording editor IPC requires/)
 })
 
 test('recording export IPC owns exactly the three trim/export invoke channels (feature E)', () => {
@@ -344,6 +438,7 @@ test('main process delegates migrated IPC channels without registering them dire
     'recognition:',
     'record:',
     'record-frame:',
+    'record-editor:',
     'search:',
     'data-root:',
     'ocr:',
@@ -359,6 +454,8 @@ test('main process delegates migrated IPC channels without registering them dire
     'registerCaptureIpc',
     'registerOcrIpc',
     'registerRecordingIpc',
+    'registerRecordingWorkbenchIpc',
+    'registerRecordingEditorIpc',
     'registerSearchIpc',
     'registerSelectionIpc'
   ]) {
@@ -370,10 +467,18 @@ test('recording export channels are registered through the bootstrap, not inline
   const root = path.join(__dirname, '..')
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
   // The record domain owns window/session ownership, so main.js only asks the bootstrap to
-  // register the three export channels with the record controller it already created.
-  assert.match(main, /registerRecordingExportFeatureIpc\(\{ ipcMain: secureIpcMain, controller: recordDomain\.createRecordingController\(\) \}\)/)
+  // register the three export channels with the record controller it already created. One
+  // controller instance is shared by every recording surface (contract §9/§10).
+  assert.match(main, /const recordController = recordDomain\.createRecordingController\(\)/)
+  assert.match(main, /registerRecordingExportFeatureIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
+  assert.match(main, /registerRecordingIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
+  assert.match(main, /registerRecordingWorkbenchIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
+  assert.match(main, /registerRecordingEditorIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
   assert.doesNotMatch(main, /secureIpcMain\.handle\('record:export/)
   assert.match(main, /createRecordingExportRef\(\{/)
+  // R1 (contracts §6/§7): the persistent project service is a lazy ref, never constructed inline.
+  assert.match(main, /createRecordingProjectRef\(\{/)
+  assert.match(main, /getRecordingProjectService: \(\) => recordingProjectRef\.get\(\)/)
 })
 
 test('main role exposes the renderer window-state listener and no reply channel', () => {

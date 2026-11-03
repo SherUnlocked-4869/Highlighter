@@ -60,6 +60,9 @@ function expectedDataPaths(root) {
     // The clipboard store joined the managed layout with the isolated history panel
     // (commit e7c7752); it sits beside conversations at the root level.
     clipboard: path.join(absoluteRoot, 'clipboard'),
+    // Persistent recording projects (recording workbench R1) are user content: they
+    // live beside the other content types and must never be treated as a cache.
+    recordings: path.join(absoluteRoot, 'recordings'),
     // Local CLI usage statistics live beside the other content types; the DB is
     // WAL SQLite but the directory is copied as one managed group.
     usage: path.join(absoluteRoot, 'usage'),
@@ -119,6 +122,20 @@ test('creates the exact documented managed data layout', async (t) => {
   assert.deepEqual(paths, expectedDataPaths(root))
   assert.equal(await ensureDataLayout(paths), paths)
   await assertDirectories(paths)
+})
+
+test('keeps persistent recordings out of the cache tree', async (t) => {
+  const parent = await temporaryRoot(t)
+  const root = path.join(parent, 'selected')
+  const paths = createDataPaths(root)
+
+  assert.equal(paths.recordings, path.join(path.resolve(root), 'recordings'))
+  assert.equal(isNestedPath(paths.root, paths.recordings), true)
+  // A recording project is user content, not a cache: it must never be inside cache/.
+  assert.equal(isNestedPath(paths.cache, paths.recordings), false)
+  assert.equal(isNestedPath(paths.recordingCache, paths.recordings), false)
+  await ensureDataLayout(paths)
+  assert.equal((await fsp.stat(paths.recordings)).isDirectory(), true)
 })
 
 test('creates the managed data layout synchronously', async (t) => {

@@ -24,9 +24,10 @@ test('main navigation and titlebar use local SVG icons', () => {
   const titlebarIcons = [...html.matchAll(/class="svg-icon" style="--icon:url\('(\.\.\/capture\/icons\/(?:line|close)\.svg)'\)"/g)]
     .map((match) => match[1])
 
-  // 12 routes + the AI usage page (2026-10-21, B4). The exact count is
-  // deliberate: adding a nav entry should be a visible decision.
-  assert.equal(navigationIcons.length, 13)
+  // 12 routes + the AI usage page (2026-10-21, B4) + the recording workbench
+  // (2026-11-03, W4). The exact count is deliberate: adding a nav entry should be
+  // a visible decision.
+  assert.equal(navigationIcons.length, 14)
   assert.deepEqual(titlebarIcons, ['../capture/icons/line.svg', '../capture/icons/close.svg'])
   for (const iconPath of [...navigationIcons, ...titlebarIcons]) assertIconExists(iconPath)
 })
@@ -36,9 +37,11 @@ test('quick functions and hotkey settings share SVG-backed function metadata', (
     .map((match) => match[1])
 
   // 27 shipped entries plus the 2026-10-16 translation-proxy toggle and the
-  // 2026-10-17 clipboard-history row. The exact count is deliberate: adding a
+  // 2026-10-17 clipboard-history row, plus the five recording commands added with
+  // the W4 recording workbench (openRecording / recordRegion / recordFullscreen /
+  // recordPauseResume / recordFinish). The exact count is deliberate: adding a
   // quick function should be a visible decision.
-  assert.equal(functionIcons.length, 28)
+  assert.equal(functionIcons.length, 33)
   for (const iconPath of functionIcons) assertIconExists(iconPath)
   assert.match(script, /function iconMarkup\(iconPath\)/)
   assert.match(script, /renderHome\(\)[\s\S]*iconMarkup\(icon\)/)

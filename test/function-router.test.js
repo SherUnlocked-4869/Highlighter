@@ -19,7 +19,11 @@ function createHarness(overrides = {}) {
     log: [],
     hiddenToolbar: 0,
     aiActions: [],
-    clickThroughExits: 0
+    clickThroughExits: 0,
+    recordingWorkbench: 0,
+    regionRecordings: 0,
+    pauseResumes: 0,
+    finishes: 0
   }
   const mainWindow = { destroyed: false, visible: true, isDestroyed: () => mainWindow.destroyed, isVisible: () => mainWindow.visible, hide: () => { mainWindow.visible = false } }
   const pinDomain = overrides.pinDomain || {
@@ -48,8 +52,13 @@ function createHarness(overrides = {}) {
       captureFocusedWindow: () => { calls.captureFocusedWindow += 1; return Promise.resolve('data:image/png;base64,AAA') }
     },
     pinDomain,
-    recordDomain: {
-      createRecordWindow: (options) => { calls.record.push(options); return Promise.resolve() }
+    recordDomain: overrides.recordDomain || {
+      createRecordWindow: (options) => { calls.record.push(options); return Promise.resolve() },
+      // R2 (contracts §4.1): the recording workbench / quick-start / live-control entries.
+      openRecordingWorkbench: () => { calls.recordingWorkbench += 1; return true },
+      startRegionRecording: () => { calls.regionRecordings += 1; return Promise.resolve(true) },
+      pauseResumeActive: () => { calls.pauseResumes += 1; return true },
+      finishActive: () => { calls.finishes += 1; return true }
     },
     searchDomain: { createSearchWindow: () => { calls.searchWindows += 1 } },
     selectionDomain: {
@@ -182,6 +191,39 @@ test('record, pin, search, folder and window routes land on their domains', asyn
   assert.deepEqual(calls.routes, ['history', 'translation', 'chat', 'home'])
 })
 
+// R2 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §4.1/§4.2): the workbench, the two quick
+// start entries and the live-control entries. All five are FROZEN shortcut keys (contract §3), so
+// the router has to dispatch every one of them; `videoRecord` keeps its fullscreen meaning.
+test('recording entries dispatch through the record domain', async () => {
+  const { router, calls } = createHarness()
+
+  assert.equal(await router.executeFunction('openRecording'), true)
+  assert.equal(calls.recordingWorkbench, 1)
+
+  assert.equal(await router.executeFunction('recordRegion'), true)
+  assert.equal(calls.regionRecordings, 1)
+
+  assert.equal(await router.executeFunction('recordFullscreen'), true)
+  assert.equal(calls.record.at(-1).mode, 'display')
+  assert.deepEqual(calls.record.at(-1).selectionBounds, { x: 0, y: 0, width: 1920, height: 1080 })
+
+  assert.equal(await router.executeFunction('recordPauseResume'), true)
+  assert.equal(await router.executeFunction('recordFinish'), true)
+  assert.equal(calls.pauseResumes, 1)
+  assert.equal(calls.finishes, 1)
+})
+
+test('recording entries land on the workbench window and degrade without the domain surface', async () => {
+  // A bare domain (no workbench helper) still opens the new recording route, and the live-control
+  // entries answer `false` instead of throwing inside a global-shortcut callback.
+  const { router, calls } = createHarness({ recordDomain: { createRecordWindow: () => Promise.resolve() } })
+  assert.equal(await router.executeFunction('openRecording'), true)
+  assert.deepEqual(calls.routes, ['recording'])
+  assert.equal(await router.executeFunction('recordPauseResume'), false)
+  assert.equal(await router.executeFunction('recordFinish'), false)
+  assert.equal(await router.executeFunction('recordRegion'), false)
+})
+
 test('opening the save folder follows the remembered directory', async () => {
   const { router, calls } = createHarness({
     settings: { screenshot: { saveDirectory: 'C:/configured', lastSaveDirectory: 'C:/remembered' } }
@@ -215,4 +257,17 @@ test('the router advertises every feature name it dispatches', () => {
   assert.ok(names.includes('screenshotSaveAs'))
   assert.ok(names.includes('togglePinClickThrough'))
   assert.equal(new Set(names).size, names.length)
+})
+
+test('every frozen recording shortcut key has a router entry', () => {
+  // R2 (contracts §3): `shortcuts` gained five recording entries. ShortcutService calls
+  // executeFunction(name) for ANY non-empty shortcut key, so a missing entry would surface as
+  // "unknown feature" inside a global-shortcut callback.
+  const { DEFAULT_SETTINGS } = require('../main/services/settings-defaults')
+  const { router } = createHarness()
+  const names = new Set(router.functionNames())
+  for (const key of ['openRecording', 'recordRegion', 'recordFullscreen', 'recordPauseResume', 'recordFinish', 'videoRecord']) {
+    assert.ok(Object.hasOwn(DEFAULT_SETTINGS.shortcuts, key), `settings-defaults declares ${key}`)
+    assert.ok(names.has(key), `the router dispatches ${key}`)
+  }
 })

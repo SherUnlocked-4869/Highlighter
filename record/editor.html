@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; media-src 'self' blob: file:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <!-- P0-1-T5 (S12): the markup carries the English fallback; shared/i18n.js is applied
+       synchronously at load, so a zh-CN window renders the Chinese copy on the first frame. -->
+  <title data-i18n="recording.editor.title">Highlighter recording editor</title>
+  <link rel="stylesheet" href="../shared/tokens.css">
+  <link rel="stylesheet" href="editor.css">
+  <script src="../shared/locales/zh-CN.js"></script>
+  <script src="../shared/locales/en-US.js"></script>
+  <script src="../shared/locales/zh-TW.js"></script>
+  <!-- The editor reuses the feature-E export error keys and the feature-A result-bar copy. -->
+  <script src="../shared/locales/record.js"></script>
+  <script src="../shared/locales/recording-editor.js"></script>
+  <script src="../shared/i18n.js"></script>
+</head>
+<body>
+  <div id="editor-root" class="editor-root">
+    <!-- Frameless window: this bar is the drag region, the two buttons are the OS controls. -->
+    <header id="titlebar" class="titlebar">
+      <div class="titlebar-brand">
+        <i class="brand-mark" aria-hidden="true"></i>
+        <span data-i18n="recording.editor.title">Highlighter recording editor</span>
+      </div>
+      <div class="titlebar-window-actions">
+        <button id="window-minimize" class="titlebar-button" type="button" data-i18n-title="recording.editor.window-minimize" data-i18n-aria-label="recording.editor.window-minimize" title="Minimize" aria-label="Minimize">–</button>
+        <button id="window-close" class="titlebar-button titlebar-close" type="button" data-i18n-title="recording.editor.window-close" data-i18n-aria-label="recording.editor.window-close" title="Close editor" aria-label="Close editor">×</button>
+      </div>
+    </header>
+
+    <header class="editor-header">
+      <div class="editor-identity">
+        <button id="source-name" class="source-name" type="button" data-i18n-title="recording.editor.rename" title="Rename">Recording</button>
+        <input id="source-name-input" class="source-name-input" type="text" maxlength="120" hidden>
+        <span id="save-state" class="save-state" role="status" aria-live="polite"></span>
+      </div>
+      <div class="editor-header-actions">
+        <button id="reveal-source" class="action-button" type="button" data-i18n="recording.editor.reveal">Open source folder</button>
+        <button id="rerecord" class="action-button" type="button" data-i18n="recording.editor.rerecord">Record again</button>
+        <button id="back-to-records" class="action-button" type="button" data-i18n="recording.editor.back">Back to recordings</button>
+        <button id="export-button" class="primary" type="button" data-i18n="recording.editor.export">Export</button>
+      </div>
+    </header>
+
+    <div id="export-progress" class="export-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-i18n-aria-label="recording.editor.progress" aria-label="Export progress" hidden>
+      <i id="export-progress-bar"></i>
+    </div>
+
+    <div id="recovery-banner" class="recovery-banner" role="alert" hidden>
+      <strong data-i18n="recording.editor.recovery.title">This recording needs recovery</strong>
+      <span id="recovery-message"></span>
+      <button id="recovery-retry" class="action-button" type="button" data-i18n="recording.editor.recovery.retry">Retry reading</button>
+      <button id="recovery-reveal" class="action-button" type="button" data-i18n="recording.editor.recovery.reveal">Open source folder</button>
+    </div>
+
+    <div id="draft-conflict" class="draft-conflict" role="alert" hidden>
+      <span id="draft-conflict-message" data-i18n="recording.editor.draft-conflict.message">The draft version changed and the project was reloaded. Check the selection and continue.</span>
+      <button id="draft-reload" class="action-button" type="button" data-i18n="recording.editor.draft-conflict.reload">Reload</button>
+    </div>
+
+    <main class="editor-body">
+      <section class="stage-column">
+        <div class="video-stage">
+          <video id="preview-video" playsinline preload="metadata"></video>
+        </div>
+        <section class="timeline-panel">
+          <div class="timeline-head">
+            <span id="timeline-duration" class="timeline-duration"></span>
+            <span id="range-selection" class="range-selection"></span>
+          </div>
+          <div id="timeline" class="timeline" role="group" data-i18n-aria-label="recording.editor.timeline.track" aria-label="Trim timeline">
+            <div id="timeline-track" class="timeline-track">
+              <div id="timeline-selection" class="timeline-selection"></div>
+              <div id="timeline-playhead" class="timeline-playhead"></div>
+              <button id="handle-start" class="timeline-handle timeline-handle-start" type="button" role="slider" tabindex="0" data-i18n-aria-label="recording.editor.timeline.handle-start" aria-label="Start handle"></button>
+              <button id="handle-end" class="timeline-handle timeline-handle-end" type="button" role="slider" tabindex="0" data-i18n-aria-label="recording.editor.timeline.handle-end" aria-label="End handle"></button>
+            </div>
+          </div>
+          <div class="timeline-controls">
+            <label class="time-field">
+              <span data-i18n="recording.editor.timeline.start">Start time</span>
+              <input id="range-start-input" class="time-input" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" value="00:00.0">
+            </label>
+            <label class="time-field">
+              <span data-i18n="recording.editor.timeline.end">End time</span>
+              <input id="range-end-input" class="time-input" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" value="00:00.0">
+            </label>
+            <button id="play-range" class="action-button" type="button" data-i18n="recording.editor.timeline.play">Play selection</button>
+            <button id="reset-range" class="action-button" type="button" data-i18n="recording.editor.timeline.full-range">Full range</button>
+          </div>
+        </section>
+      </section>
+
+      <aside class="export-panel">
+        <section class="export-card">
+          <h2 data-i18n="recording.editor.export-title">Export settings</h2>
+          <label class="field">
+            <span data-i18n="recording.editor.format">Format</span>
+            <select id="export-format" class="select">
+              <option value="mp4" data-i18n="recording.editor.format.mp4">MP4 video</option>
+              <option value="gif" data-i18n="recording.editor.format.gif">GIF animation</option>
+            </select>
+          </label>
+          <div class="gif-fields">
+            <label class="field">
+              <span data-i18n="recording.editor.gif-edge">GIF long edge</span>
+              <select id="gif-edge" class="select">
+                <option value="1280">1280</option>
+                <option value="960">960</option>
+                <option value="640">640</option>
+                <option value="480">480</option>
+              </select>
+            </label>
+            <label class="field">
+              <span data-i18n="recording.editor.gif-fps">GIF frame rate</span>
+              <select id="gif-fps" class="select">
+                <option value="10">10 FPS</option>
+                <option value="15" selected>15 FPS</option>
+                <option value="20">20 FPS</option>
+              </select>
+            </label>
+          </div>
+          <p id="gif-budget" class="gif-meta"></p>
+          <p class="gif-meta gif-note" data-i18n="recording.editor.gif-no-audio">GIF has no sound</p>
+          <div class="size-row">
+            <span data-i18n="recording.editor.final-size">Output size</span>
+            <strong id="export-final-size"></strong>
+          </div>
+          <p class="export-hint" data-i18n="recording.editor.hint">Export uses the current selection; the source is kept so you can export again.</p>
+        </section>
+
+        <section id="result-bar" class="result-bar" role="status" hidden>
+          <span id="result-name" class="result-name"></span>
+          <div class="result-actions">
+            <button id="result-open" type="button" data-i18n="capture.export-result.open">Open</button>
+            <button id="result-address" type="button" data-i18n="capture.export-result.copy-path">Address</button>
+            <button id="result-reveal" type="button" data-i18n="capture.export-result.reveal">Open folder</button>
+          </div>
+          <span id="result-status" class="result-status" role="status" aria-live="polite"></span>
+          <button id="result-dismiss" class="result-dismiss" type="button" data-i18n-title="recording.editor.result-dismiss" data-i18n-aria-label="recording.editor.result-dismiss" title="Dismiss result bar" aria-label="Dismiss result bar">×</button>
+        </section>
+
+        <button id="cancel-export" class="cancel-export" type="button" data-i18n="recording.editor.cancel-export" hidden>Cancel export</button>
+        <p id="error-text" class="error-text" role="alert" aria-live="assertive"></p>
+      </aside>
+    </main>
+  </div>
+
+  <script src="../shared/recording-export-options.js"></script>
+  <script src="trim-controller.js"></script>
+  <script src="editor-timeline.js"></script>
+  <script src="editor.js"></script>
+</body>
+</html>

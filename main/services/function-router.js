@@ -88,6 +88,31 @@ function createFunctionRouter(deps) {
       await recordDomain.createRecordWindow({ display, selectionBounds: display.bounds })
       return true
     },
+    // R2 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §4.1): the regular recording entry is
+    // the workbench (home card / tray). `videoRecord` keeps its frozen "fullscreen quick start"
+    // meaning and `recordFullscreen` is the same action under the workbench naming.
+    async openRecording() {
+      if (typeof recordDomain.openRecordingWorkbench === 'function' && recordDomain.openRecordingWorkbench() === true) return true
+      createMainWindow('recording')
+      return true
+    },
+    async recordRegion() {
+      if (typeof recordDomain.startRegionRecording !== 'function') return false
+      const result = await recordDomain.startRegionRecording()
+      // R3 (contracts §10.1): the quick entry answers `{ ok, focused }` (or the legacy boolean), so
+      // a repeat entry that focused the running capture counts as success.
+      return result === true || result?.ok === true
+    },
+    async recordFullscreen() {
+      const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+      await recordDomain.createRecordWindow({ display, mode: 'display', selectionBounds: display.bounds })
+      return true
+    },
+    // Live-control entries: the same command arbitration the control bar buttons use, so a tray
+    // click and a keyboard shortcut cannot disagree. Both are idempotent no-ops when nothing is
+    // recording (and degrade to false on a domain that does not expose them yet).
+    recordPauseResume: () => (typeof recordDomain.pauseResumeActive === 'function' ? recordDomain.pauseResumeActive() === true : false),
+    recordFinish: () => (typeof recordDomain.finishActive === 'function' ? recordDomain.finishActive() === true : false),
     fullScreenDraw: () => createCapture({ mode: 'canvas', source: 'canvas' }),
     async toggleFixedContentVisibility() {
       pinDomain.togglePinVisibility()

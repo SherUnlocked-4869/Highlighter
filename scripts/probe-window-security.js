@@ -64,7 +64,11 @@ const entries = [
   { name: 'pin', page: ['pin', 'pin.html'], preload: 'preload-pin.js', api: 'pinAPI', marker: 'applyPinData' },
   { name: 'recognition', page: ['recognition', 'recognition.html'], preload: 'preload-recognition.js', api: 'recognitionAPI', marker: 'renderQr' },
   { name: 'record-frame', page: ['record', 'frame.html'], preload: 'preload-record-frame.js', api: 'recordFrameAPI', marker: 'render' },
-  { name: 'record', page: ['record', 'record.html'], preload: 'preload-record.js', api: 'recordAPI', marker: 'setState' }
+  { name: 'record', page: ['record', 'record.html'], preload: 'preload-record.js', api: 'recordAPI', marker: 'setState' },
+  // R3 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §8/§11): the standalone editor window.
+  // Its boot assigns the whole view API object to `window.recordingEditor`, so the marker is an
+  // object; test/window-security-runtime.test.js accepts that for this entry only.
+  { name: 'record-editor', page: ['record', 'editor.html'], preload: 'preload-record-editor.js', api: 'recordEditorAPI', marker: 'recordingEditor' }
 ]
 
 function registerProbeIpc() {

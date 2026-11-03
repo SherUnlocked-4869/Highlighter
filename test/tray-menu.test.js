@@ -8,7 +8,7 @@ const { t, registerLocales } = require('../main/services/i18n-bootstrap')
 registerLocales()
 const label = (key) => t(key)
 
-function createMenu(gameMode, { hasConversation = true, translationProxy = null, setTranslationProxyEnabled } = {}) {
+function createMenu(gameMode, { hasConversation = true, translationProxy = null, setTranslationProxyEnabled } = {}, recording = null) {
   const calls = []
   return {
     calls,
@@ -18,6 +18,7 @@ function createMenu(gameMode, { hasConversation = true, translationProxy = null,
       screenshotAccelerator: 'F1',
       translationProxy,
       setTranslationProxyEnabled,
+      recording,
       executeFunction: (name) => calls.push(['execute', name]),
       setGameModeEnabled: (enabled) => calls.push(['game-mode', enabled]),
       openHistory: () => calls.push(['history']),
@@ -48,7 +49,8 @@ test('tray menu disables summon actions and can turn game mode off', () => {
     'main.tray.screenshot-full-screen',
     'main.tray.screenshot-focused-window',
     'main.tray.pin-image',
-    'main.tray.video-record',
+    // R2 (contracts §4.1): the regular recording entry is now the workbench.
+    'main.tray.recording-workbench',
     'main.tray.local-search'
   ].map(label)
   for (const entry of featureLabels) {
@@ -59,6 +61,60 @@ test('tray menu disables summon actions and can turn game mode off', () => {
   assert.equal(toggle.checked, true)
   toggle.click()
   assert.deepEqual(calls, [['game-mode', false]])
+})
+
+test('the tray recording entry opens the workbench and keeps the fullscreen quick start out of the menu', () => {
+  // Without a recording domain the entry falls back to the router name, exactly like the other
+  // summon entries.
+  const viaRouter = createMenu(false)
+  const entry = viaRouter.template.find((item) => item.label === label('main.tray.recording-workbench'))
+  assert.ok(entry, 'the workbench entry exists')
+  entry.click()
+  assert.deepEqual(viaRouter.calls, [['execute', 'openRecording']])
+  assert.equal(viaRouter.template.some((item) => item.label === label('main.tray.video-record')), false)
+
+  // With a recording domain the entry calls the domain directly (no router round-trip).
+  const calls = []
+  const direct = createMenu(false, {}, { openWorkbench: () => calls.push(['open']) })
+  direct.template.find((item) => item.label === label('main.tray.recording-workbench')).click()
+  assert.deepEqual(calls, [['open']])
+})
+
+test('tray menu exposes pause/finish only while a recording is active', () => {
+  const idle = createMenu(false, {}, { active: null })
+  assert.equal(idle.template.some((item) => item.label === label('main.tray.recording-pause')), false)
+  assert.equal(idle.template.some((item) => item.label === label('main.tray.recording-finish')), false)
+
+  const calls = []
+  const recording = {
+    active: { status: 'recording', elapsedMs: 1200, microphoneMuted: false },
+    pauseResume: () => calls.push(['pause-resume']),
+    finish: () => calls.push(['finish'])
+  }
+  const active = createMenu(false, {}, recording)
+  const pause = active.template.find((item) => item.label === label('main.tray.recording-pause'))
+  assert.ok(pause, 'a recording session offers pause')
+  assert.equal(pause.enabled, true)
+  const finish = active.template.find((item) => item.label === label('main.tray.recording-finish'))
+  assert.ok(finish, 'a recording session offers finish')
+  pause.click()
+  finish.click()
+  assert.deepEqual(calls, [['pause-resume'], ['finish']])
+  // The live entries sit in their own group: a separator on each side separates them from the
+  // summon list above and the local-search entry below.
+  const pauseIndex = active.template.indexOf(pause)
+  assert.equal(active.template[pauseIndex - 1].type, 'separator')
+
+  const paused = createMenu(false, {}, { active: { status: 'paused' } })
+  assert.ok(paused.template.find((item) => item.label === label('main.tray.recording-resume')), 'a paused capture offers resume')
+  assert.equal(paused.template.some((item) => item.label === label('main.tray.recording-pause')), false)
+})
+
+test('tray live recording entries fall back to the router names', () => {
+  const menu = createMenu(false, {}, { active: { status: 'paused' } })
+  menu.template.find((item) => item.label === label('main.tray.recording-resume')).click()
+  menu.template.find((item) => item.label === label('main.tray.recording-finish')).click()
+  assert.deepEqual(menu.calls, [['execute', 'recordPauseResume'], ['execute', 'recordFinish']])
 })
 
 test('tray menu only offers the result window while a conversation is alive', () => {

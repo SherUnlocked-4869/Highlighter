@@ -1,13 +1,21 @@
 'use strict'
 
-// Trim + export controller for the recording preview (feature E3, plan §8.2/§8.3:
-// docs/plans/2026-10-25-snow-apps-feature-development-plan.md).
+// Trim + export controller shared by the recording preview (feature E3, plan §8.2/§8.3:
+// docs/plans/2026-10-25-snow-apps-feature-development-plan.md) and the standalone recording
+// editor (R1-R3 contract §9.3/§11: `record/editor.js`).
 //
-// This module owns the PREVIEW STATE, not the DOM: it is loaded by record.html as a classic
+// This module owns the EDIT STATE, not the DOM: it is loaded by record/editor.html as a classic
 // script (`window.recordTrimController`) and required by node tests, but every DOM mutation is
 // a callback the page supplies. That keeps the decisions that actually matter - the half-open
 // range, range playback, format/GIF budget, submission freeze, cancel arbitration, the result
-// bar receipt - testable without a browser, and keeps record.js's diff small.
+// bar receipt, draft revision CAS - testable without a browser.
+//
+// Two addressing modes:
+//   * session mode (`sessionId`): the old preview window, export goes to `record:export`.
+//   * project mode (`projectId` + `project`, added for the editor): the project is the durable
+//     identity, export goes to `record-editor:export`, and the edit is autosaved through
+//     `updateDraft` with an expectedRevision CAS. A revision conflict is reported as state,
+//     never silently overwritten; the page reloads the project.
 //
 // Contract notes:
 //   * The range is `[startMs, endMs)` in SOURCE milliseconds, validated by the SAME
@@ -159,15 +167,21 @@
   }
 
   function createRecordTrimController({
-    sessionId,
-    metadata,
+    sessionId = '',
+    projectId = '',
+    project = null,
+    metadata = null,
+    revision = 0,
+    available = null,
     translate = (key) => key,
     api = null,
     render = {},
     now = () => Date.now(),
     log = () => {}
   } = {}) {
-    if (!sessionId) throw new TypeError('Record trim controller requires a session id')
+    const hasSession = typeof sessionId === 'string' && sessionId.length > 0
+    const hasProject = typeof projectId === 'string' && projectId.length > 0
+    if (!hasSession && !hasProject) throw new TypeError('Record trim controller requires a session or project id')
     const durationMs = Math.max(0, Math.round(finiteNumber(metadata?.durationMs) || 0))
     const video = metadata?.video || {}
     const notify = (patch) => {
@@ -177,7 +191,11 @@
     }
 
     const model = {
-      sessionId,
+      sessionId: hasSession ? sessionId : '',
+      projectId: hasProject ? projectId : '',
+      revision: Math.max(0, Math.round(finiteNumber(revision) || 0)),
+      // Project mode starts closed for recovery until the page says the source is usable.
+      available: available === null ? true : available === true,
       metadata: {
         durationMs,
         startMs: Math.round(finiteNumber(metadata?.startMs) || 0),
@@ -199,18 +217,33 @@
       // status poll/replay of the same attempt keeps its key (plan §8.3).
       requestId: '',
       // The range/format actually submitted. The UI shows the frozen snapshot, so moving a
-      // slider during an encode cannot make the displayed numbers disagree with the file.
+      // handle during an encode cannot make the displayed numbers disagree with the file.
       frozen: null,
       // True once the user has moved a trim point: the default full range is replaced.
-      edited: false
+      edited: false,
+      // Draft autosave (editor mode only): the project revision the next save compare-and-
+      // swaps against, plus the visible status the header renders.
+      draftDirty: false,
+      draftSaving: false,
+      draftConflict: false,
+      draftError: null
     }
+    // Bumped on every user edit; a save only clears `draftDirty` when no edit landed while
+    // the transport was in flight (otherwise the next debounce must still run).
+    let draftEpoch = 0
+    // Seed the live edit from the project's persisted draft on construction, so the first
+    // paint already shows the saved trim points and the next CAS compares against its revision.
+    if (project && typeof project === 'object') applyEdit(project.edit)
 
     function state() {
       const range = model.range
       const gif = gifBudget()
-      return {
-        sessionId: model.sessionId,
-        durationMs: model.metadata.durationMs,
+    return {
+      sessionId: model.sessionId,
+      projectId: model.projectId,
+      revision: model.revision,
+      available: model.available,
+      durationMs: model.metadata.durationMs,
         metadata: { ...model.metadata },
         range: { ...range },
         selectionMs: Math.max(0, range.endMs - range.startMs),
@@ -224,6 +257,15 @@
         receipt: model.receipt ? { ...model.receipt } : null,
         error: model.error ? { ...model.error } : null,
         frozen: model.frozen ? { ...model.frozen } : null,
+        // Editor mode: the autosave status the header renders and the page schedules saves
+        // from. `conflict` means a save was refused because another window wrote first.
+        draft: {
+          dirty: model.draftDirty,
+          saving: model.draftSaving,
+          conflict: model.draftConflict,
+          revision: model.revision
+        },
+        draftError: model.draftError ? { ...model.draftError } : null,
         canExport: canExport(),
         canCancel: canCancel(),
         busy: model.phase === 'submitting' || model.phase === 'active',
@@ -286,14 +328,38 @@
 
     function canExport() {
       if (model.phase === 'submitting' || model.phase === 'active') return false
+      // Project mode: a recoverable/unreadable source has no trustworthy duration, so export
+      // stays disabled instead of offering a fake span (contract §11 recovery rule).
+      if (!model.available) return false
       if (!model.metadata.durationMs) return false
       if (!rangeIsValid()) return false
       if (model.format === 'gif' && !gifBudget().ok) return false
       return true
     }
 
+    // The page toggles this when the project's recovery state changes (ready <-> recoverable).
+    // A recovery state never invents a duration: the export gate is simply closed.
+    function setAvailable(value, detail = '') {
+      const next = value === true
+      if (model.available === next) return false
+      model.available = next
+      model.availableDetail = typeof detail === 'string' ? detail : ''
+      notify({ reason: 'availability' })
+      return true
+    }
+
     function canCancel() {
       return model.phase === 'active' && model.task?.state !== 'publishing'
+    }
+
+    // ---------- draft autosave (project mode) ----------
+
+    // Every user edit bumps the epoch so a save that was in flight when the next edit landed
+    // cannot clear the dirty flag of the newer state.
+    function markDraftEdited() {
+      if (!model.projectId) return
+      draftEpoch += 1
+      model.draftDirty = true
     }
 
     // ---------- trim points ----------
@@ -309,6 +375,7 @@
       const startMs = Math.max(0, Math.min(Math.round(parsed), maxStart, model.metadata.durationMs))
       model.range.startMs = startMs
       model.edited = true
+      markDraftEdited()
       notify({ reason: 'start' })
       return true
     }
@@ -321,6 +388,7 @@
       const endMs = Math.max(minEnd, Math.min(Math.round(parsed), model.metadata.durationMs))
       model.range.endMs = endMs
       model.edited = true
+      markDraftEdited()
       notify({ reason: 'end' })
       return true
     }
@@ -329,6 +397,7 @@
       if (isFrozen()) return false
       model.range = { startMs: 0, endMs: model.metadata.durationMs }
       model.edited = false
+      markDraftEdited()
       notify({ reason: 'reset' })
       return true
     }
@@ -343,6 +412,7 @@
       if (isFrozen()) return false
       if (format !== 'mp4' && format !== 'gif') return false
       model.format = format
+      markDraftEdited()
       notify({ reason: 'format' })
       return true
     }
@@ -351,6 +421,7 @@
       if (isFrozen()) return false
       if (!GIF_FRAME_RATES.includes(Number(fps))) return false
       model.gif.fps = Number(fps)
+      markDraftEdited()
       notify({ reason: 'gif-fps' })
       return true
     }
@@ -360,6 +431,7 @@
       const value = Math.round(finiteNumber(edgePx) ?? 0)
       if (!(value >= LIMITS.GIF_MIN_EDGE_PX) || value > LIMITS.GIF_MAX_EDGE_PX) return false
       model.gif.maxEdgePx = value
+      markDraftEdited()
       notify({ reason: 'gif-size' })
       return true
     }
@@ -418,7 +490,151 @@
       return { action: 'none', toMs: position }
     }
 
-    // ---------- submit ----------
+    // ---------- project draft (editor mode) ----------
+
+    // The edit object the project service persists (contract §7): a full-range selection is
+    // stored as an empty keepRanges array ("whole recording"), an edited one as the single
+    // half-open range. `gif` uses the schema's `edge` name, not the export request's
+    // `maxEdgePx`, because that is what `updateDraft` writes into project.json.
+    function buildDraftEdit() {
+      const keepRanges = model.edited && model.metadata.durationMs > 0
+        ? [{ id: 'keep-1', startMs: model.range.startMs, endMs: model.range.endMs }]
+        : []
+      return {
+        revision: model.revision,
+        keepRanges,
+        format: model.format,
+        gif: { edge: model.gif.maxEdgePx, fps: model.gif.fps }
+      }
+    }
+
+    function applyMetadata(next) {
+      const nextVideo = next?.video || {}
+      const nextAudio = next?.audio || {}
+      model.metadata = {
+        durationMs: Math.max(0, Math.round(finiteNumber(next?.durationMs) || 0)),
+        startMs: Math.round(finiteNumber(next?.startMs) || 0),
+        video: {
+          width: Math.round(finiteNumber(nextVideo.width) || 0),
+          height: Math.round(finiteNumber(nextVideo.height) || 0),
+          frameRate: finiteNumber(nextVideo.frameRate) || 0
+        },
+        // The editor gets the probe shape `{ tracks }` from `record-editor:init.metadata`;
+        // the trim UI only needs the boolean the export options normaliser uses.
+        audio: { exists: nextAudio.exists === true || Math.round(finiteNumber(nextAudio.tracks) || 0) > 0 }
+      }
+      const checked = normalizeRange(model.range, model.metadata.durationMs)
+      if (checked.ok) {
+        model.range = { startMs: checked.value.startMs, endMs: checked.value.endMs }
+      } else {
+        model.range = { startMs: 0, endMs: model.metadata.durationMs }
+        model.edited = false
+      }
+    }
+
+    // Load the persisted edit into the live state. Called for the first `record-editor:init`
+    // and again after a revision conflict / recovery retry, so it must be idempotent and must
+    // not leave stale dirty/conflict flags behind.
+    function applyEdit(edit) {
+      if (!edit || typeof edit !== 'object' || Array.isArray(edit)) return false
+      const projectRevision = Math.round(finiteNumber(edit.revision))
+      if (projectRevision !== null && projectRevision >= 0) model.revision = projectRevision
+
+      const keepRanges = Array.isArray(edit.keepRanges) ? edit.keepRanges : []
+      let range = { startMs: 0, endMs: model.metadata.durationMs }
+      if (keepRanges.length > 0) {
+        const first = keepRanges[0] || {}
+        const candidate = {
+          startMs: Math.round(finiteNumber(first.startMs) || 0),
+          endMs: Math.round(finiteNumber(first.endMs) || 0)
+        }
+        const checked = normalizeRange(candidate, model.metadata.durationMs)
+        if (checked.ok) range = { startMs: checked.value.startMs, endMs: checked.value.endMs }
+        else log('draft: ignoring an invalid keep range from the project:', checked.code)
+        // Contract §0: multi-range editing is out of this round; the first range is the
+        // closest meaningful projection rather than a crash on a future project shape.
+        if (keepRanges.length > 1) log('draft: multi-range edit is not supported yet; using the first range')
+      }
+
+      if (edit.format === 'gif' || edit.format === 'mp4') model.format = edit.format
+      const gif = edit.gif && typeof edit.gif === 'object' ? edit.gif : {}
+      const edge = Math.round(finiteNumber(gif.edge ?? gif.maxEdgePx) ?? LIMITS.GIF_MAX_EDGE_PX)
+      if (edge >= LIMITS.GIF_MIN_EDGE_PX && edge <= LIMITS.GIF_MAX_EDGE_PX) model.gif.maxEdgePx = edge
+      const fps = Math.round(finiteNumber(gif.fps) ?? 0)
+      if (GIF_FRAME_RATES.includes(fps)) model.gif.fps = fps
+
+      model.range = range
+      model.edited = keepRanges.length > 0
+      model.draftDirty = false
+      model.draftSaving = false
+      model.draftConflict = false
+      model.draftError = null
+      draftEpoch = 0
+      return true
+    }
+
+    // Merge a freshly loaded ProjectPublic into the controller. `options.metadata` is the
+    // init payload's probe result (duration/video/audio); `options.available` closes the
+    // export gate for a recoverable project.
+    function applyProject(nextProject, options = {}) {
+      if (!nextProject || typeof nextProject !== 'object') return false
+      if (options.metadata) applyMetadata(options.metadata)
+      applyEdit(nextProject.edit)
+      if (options.available !== undefined) model.available = options.available === true
+      notify({ reason: 'project' })
+      return true
+    }
+
+    // One CAS save attempt. The page supplies the transport; a missing browser bridge is
+    // reported as a code (not thrown) so the editor can render "autosave unavailable".
+    async function saveDraft({ save } = {}) {
+      if (!model.projectId) return { ok: false, code: 'draft-unavailable' }
+      if (typeof save !== 'function') return { ok: false, code: 'draft-transport-missing' }
+      if (!model.metadata.durationMs) return { ok: false, code: 'draft-unavailable' }
+      if (!model.draftDirty || model.draftSaving) return { ok: true, skipped: true, revision: model.revision }
+      const epoch = draftEpoch
+      const edit = buildDraftEdit()
+      model.draftSaving = true
+      model.draftError = null
+      notify({ reason: 'draft-saving' })
+      let answer
+      try {
+        answer = await save({ projectId: model.projectId, expectedRevision: model.revision, edit })
+      } catch (error) {
+        model.draftSaving = false
+        model.draftError = { code: 'save-failed', detail: error?.message || String(error) }
+        notify({ reason: 'draft-failed' })
+        return { ok: false, code: 'save-failed' }
+      }
+      model.draftSaving = false
+      if (answer?.ok) {
+        const nextRevision = Math.floor(finiteNumber(answer.revision) ?? model.revision)
+        if (nextRevision >= 0) model.revision = nextRevision
+        // Only clear the flag when no edit landed while the transport was in flight; a
+        // newer state still owes the server a save.
+        if (draftEpoch === epoch) {
+          model.draftDirty = false
+          model.draftConflict = false
+        }
+        model.draftError = null
+        notify({ reason: 'draft-saved' })
+        return { ok: true, skipped: false, revision: model.revision }
+      }
+      model.draftConflict = answer?.code === 'revision-conflict'
+      model.draftError = { code: answer?.code || 'save-failed' }
+      notify({ reason: model.draftConflict ? 'draft-conflict' : 'draft-failed' })
+      return answer || { ok: false, code: 'save-failed' }
+    }
+
+    function draftState() {
+      return {
+        dirty: model.draftDirty,
+        saving: model.draftSaving,
+        conflict: model.draftConflict,
+        revision: model.revision,
+        error: model.draftError ? { ...model.draftError } : null
+      }
+    }    // ---------- submit ----------
 
     function buildRequest() {
       const request = {
@@ -438,9 +654,11 @@
     async function startExport({ submit } = {}) {
       if (typeof submit !== 'function') throw new TypeError('Trim controller requires a submit transport')
       if (!canExport()) {
-        const reason = !model.metadata.durationMs
-          ? 'duration-unavailable'
-          : (model.format === 'gif' ? (gifBudget().code || 'invalid-range') : 'invalid-range')
+        const reason = !model.available
+          ? 'probe-failed'
+          : !model.metadata.durationMs
+            ? 'duration-unavailable'
+            : (model.format === 'gif' ? (gifBudget().code || 'invalid-range') : 'invalid-range')
         model.error = { code: reason }
         notify({ reason: 'export-rejected' })
         return { status: 'failed', code: reason }
@@ -449,7 +667,7 @@
       model.receipt = null
       model.task = null
       model.phase = 'submitting'
-      model.requestId = `${model.sessionId.slice(0, 8)}-${Math.round(now())}-${Math.round(Math.random() * 1e6)}`
+      model.requestId = `${(model.projectId || model.sessionId).slice(0, 8)}-${Math.round(now())}-${Math.round(Math.random() * 1e6)}`
       model.frozen = {
         range: { ...model.range },
         format: model.format,
@@ -559,6 +777,12 @@
       formatClock,
       parseTimeInput,
       errorKey,
+      // project / availability (editor mode)
+      applyProject,
+      buildDraftEdit,
+      draftState,
+      saveDraft,
+      setAvailable,
       // trim
       setStart,
       setEnd,

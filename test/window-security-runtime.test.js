@@ -35,7 +35,8 @@ test('every remaining renderer loads under the locked Electron sandbox', { timeo
   const probe = JSON.parse(line.slice(resultPrefix.length))
 
   // The probe covers every window (scripts/probe-window-security.js), including
-  // the clipboard panel. The expected list must follow that order exactly.
+  // the clipboard panel and the standalone recording editor. The expected list must follow
+  // that order exactly.
   assert.deepEqual(probe.windows.map((entry) => entry.name), [
     'config',
     'toolbar',
@@ -46,13 +47,17 @@ test('every remaining renderer loads under the locked Electron sandbox', { timeo
     'pin',
     'recognition',
     'record-frame',
-    'record'
+    'record',
+    'record-editor'
   ])
   for (const entry of probe.windows) {
     assert.equal(entry.state.apiType, 'object', `${entry.name} preload bridge`)
     assert.equal(entry.state.requireType, 'undefined', `${entry.name} require isolation`)
     assert.equal(entry.state.processType, 'undefined', `${entry.name} process isolation`)
-    assert.equal(entry.state.markerType, 'function', `${entry.name} renderer script`)
+    // Every other renderer exposes one global function as its boot marker; the editor's boot
+    // assigns the whole view API object instead (see the probe's entry comment).
+    const expectedMarkerType = entry.name === 'record-editor' ? 'object' : 'function'
+    assert.equal(entry.state.markerType, expectedMarkerType, `${entry.name} renderer script`)
     assert.match(entry.state.csp, /default-src 'none'/, `${entry.name} CSP default`)
     assert.match(entry.state.csp, /connect-src 'none'/, `${entry.name} CSP network`)
     assert.equal(entry.state.inlineScriptCount, 0, `${entry.name} inline scripts`)

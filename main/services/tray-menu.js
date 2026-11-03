@@ -21,6 +21,12 @@ function buildTrayMenuTemplate({
   // does not appear when there is nothing to open.
   recentExport = null,
   openRecentExport = null,
+  // R2 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §4.1/§4.2): the recording workbench entry
+  // and, while a capture is active, the live pause/finish entries. `recording` is
+  // `{ active, openWorkbench?, pauseResume?, finish? }` or null (the default for every caller that
+  // has no recording domain). Handlers are optional: the entries fall back to `executeFunction`
+  // names, which is the same arbitration the control bar buttons use.
+  recording = null,
   executeFunction,
   setGameModeEnabled,
   openHistory,
@@ -64,12 +70,39 @@ function buildTrayMenuTemplate({
       }
     : null
 
+  // R2: the live recording entries. They exist only while a capture is running, and they are
+  // append-only (no separator churn in the frozen no-recording menu shape).
+  const recordingInfo = recording && typeof recording === 'object' ? recording : null
+  const activeRecording = recordingInfo?.active && typeof recordingInfo.active === 'object' ? recordingInfo.active : null
+  const liveRecordingEntries = activeRecording && (activeRecording.status === 'recording' || activeRecording.status === 'paused')
+    ? [
+        { type: 'separator' },
+        {
+          label: activeRecording.status === 'paused' ? t('main.tray.recording-resume') : t('main.tray.recording-pause'),
+          enabled: featureEnabled,
+          click: typeof recordingInfo.pauseResume === 'function' ? recordingInfo.pauseResume : run('recordPauseResume')
+        },
+        {
+          label: t('main.tray.recording-finish'),
+          enabled: featureEnabled,
+          click: typeof recordingInfo.finish === 'function' ? recordingInfo.finish : run('recordFinish')
+        }
+      ]
+    : []
+
   return [
     { label: t('main.tray.screenshot'), accelerator: screenshotAccelerator || undefined, enabled: featureEnabled, click: run('screenshot') },
     { label: t('main.tray.screenshot-full-screen'), enabled: featureEnabled, click: run('screenshotFullScreen') },
     { label: t('main.tray.screenshot-focused-window'), enabled: featureEnabled, click: run('screenshotFocusedWindow') },
     { label: t('main.tray.pin-image'), enabled: featureEnabled, click: run('fixedContent') },
-    { label: t('main.tray.video-record'), enabled: featureEnabled, click: run('videoRecord') },
+    // R2 (contracts §4.1): the regular recording entry is the workbench; the fullscreen quick start
+    // stays reachable through its own command / shortcut (`recordFullscreen`, legacy `videoRecord`).
+    {
+      label: t('main.tray.recording-workbench'),
+      enabled: featureEnabled,
+      click: recordingInfo && typeof recordingInfo.openWorkbench === 'function' ? recordingInfo.openWorkbench : run('openRecording')
+    },
+    ...liveRecordingEntries,
     { label: t('main.tray.local-search'), enabled: featureEnabled, click: run('localSearch') },
     { label: t('clipboard.title'), enabled: featureEnabled && clipboardEnabled, click: run('openClipboardHistory') },
     ...(proxyEntry ? [{ type: 'separator' }, proxyEntry] : []),

@@ -133,7 +133,7 @@ test('a dirty renderer report blocks the reclaim even on a safe route', () => {
 test('settings-like routes are not reclaimed even when the renderer reports clean', () => {
   const unsafe = RENDERER_ROUTES.filter((route) => !SAFE_ROUTES.includes(route))
   assert.ok(unsafe.length > 0)
-  for (const route of ['settings-general', 'models', 'local-search', 'settings-system', 'selection-toolbar', 'clipboard-history']) {
+  for (const route of ['settings-general', 'models', 'local-search', 'settings-system', 'selection-toolbar', 'clipboard-history', 'recording']) {
     const { clock, win, reclaimer, state } = createHarness()
     state.set({ route, dirty: false })
     reclaimer.arm()

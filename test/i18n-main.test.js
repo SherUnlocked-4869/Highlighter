@@ -112,7 +112,9 @@ test('the tray menu resolves its 12 labels from the table instead of hard-coding
     t('main.tray.screenshot-full-screen'),
     t('main.tray.screenshot-focused-window'),
     t('main.tray.pin-image'),
-    t('main.tray.video-record'),
+    // R2 (contracts §4.1): the regular recording entry is the workbench; the fullscreen quick
+    // start keeps its own command (`recordFullscreen` / legacy `videoRecord`) but has no menu row.
+    t('main.tray.recording-workbench'),
     t('main.tray.local-search'),
     // The clipboard-history entry (main/services/tray-menu.js:69) sits between the
     // local-search and game-mode items; its label is the shared `clipboard.title`

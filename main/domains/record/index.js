@@ -1,5 +1,7 @@
 'use strict'
 
+const crypto = require('node:crypto')
+const { pathToFileURL } = require('node:url')
 const {
   calculateFrameBounds,
   calculateRecordControlSize,
@@ -12,6 +14,41 @@ const {
   sanitizeAnnotationCommand,
   sanitizeAnnotationSnapshot
 } = require('../../../record/annotation-utils')
+const { normalizeQuality, normalizeCountdown } = require('../../../shared/recording-quality')
+
+const RECORD_MODES = Object.freeze(['display', 'region'])
+const DEFAULT_RECORD_MODE = 'display'
+const DEFAULT_STATE = Object.freeze({ status: 'preparing', elapsedMs: 0, microphoneMuted: false, stateVersion: 0 })
+const ACTIVE_STATUSES = Object.freeze(['preparing', 'countdown', 'recording', 'paused', 'finalizing'])
+const TEXT_LIMIT = 128
+const MICROPHONE_DEVICE_ID_LIMIT = 256
+// A command's result is only useful until the next few commands land; the cap keeps a long
+// recording from growing a request table for every tray click.
+const COMMAND_HISTORY_LIMIT = 64
+const EDITOR_WINDOW = Object.freeze({ width: 1120, height: 760, minWidth: 820, minHeight: 600 })
+const PROJECT_LIST_LIMIT_MAX = 100
+const TERMINAL_TASK_STATES = Object.freeze(['succeeded', 'failed', 'cancelled'])
+
+// Lazily-constructed handle for the R1 persistence service (main/services/recording-project-service.js,
+// owned by the W1 workstream). A ref, not an instance, because main.js is at a hard line ceiling and
+// because an install that never records must never construct the service. `require` is inside get()
+// so this module still loads when the persistence file is absent: every call site then degrades to a
+// `project-service-unavailable` code instead of failing at startup.
+function createRecordingProjectRef({ root, log = () => {} }) {
+  let service = null
+  return {
+    root: typeof root === 'string' ? root : '',
+    get() {
+      if (service) return service
+      const { createRecordingProjectService } = require('../../services/recording-project-service')
+      const { atomicWriteJson } = require('../../services/data-root')
+      service = createRecordingProjectService({ root, atomicWriteJson, log })
+      return service
+    },
+    peek: () => service,
+    reset: () => { service = null }
+  }
+}
 
 function createRecordDomain(deps) {
   const {
@@ -41,11 +78,40 @@ function createRecordDomain(deps) {
     // Feature B (plan §5.1/§5.2): the remembered-region write is a DOMAIN-INTERNAL action, which is
     // why it is injected here instead of exposed as a channel. A resolver, because the service is
     // created inside initializeStore() after this domain.
-    getRegionPreferences = () => null
+    getRegionPreferences = () => null,
+    // R1/R2 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §5/§10): the persistent recording
+    // project service. Resolver because the W1 service is created lazily and reset after a data-root
+    // migration; `null` here means "persistence unavailable" and every channel degrades to a code.
+    getRecordingProjectService = () => null,
+    // R2/R3 assembly collaborators (one resolver so main.js stays under its line ceiling):
+    //   shell                 opening the material folder (editor "reveal")
+    //   updateSettings        remembering the last valid capture configuration
+    //   createMainWindow      back-to-workbench navigation
+    //   backdropColor         the opaque native colour of the editor window
+    //   createRegionSelection the capture overlay the region workbench entry reuses
+    //   positionAutomationWindow  automation windows are placed on the secondary display
+    getRecordingWorkbench = () => null
   } = deps
 
   let recordWindow = null
   let recordFrameWindow = null
+  // projectId -> editor BrowserWindow. The editor owns a project LEASE: while an editor window is
+  // open the project cannot be deleted (contract §4.4: an editing reference blocks immediate delete).
+  const editorWindows = new Map()
+  // Capture configuration chosen by the workbench for the region flow, plus the mode that selection
+  // implies. The capture overlay returns only a rectangle, so the workbench's just-picked parameters
+  // travel through this one-shot slot that createRecordWindow() consumes. The timestamp bounds how
+  // long a cancelled overlay can leak its config into an unrelated later capture.
+  let pendingRegionCapture = null
+  const REGION_PENDING_TTL_MS = 5 * 60 * 1000
+
+  let workbench = {}
+  try {
+    workbench = (typeof getRecordingWorkbench === 'function' ? getRecordingWorkbench() : null) || {}
+  } catch (error) {
+    log('Recording workbench collaborators unavailable:', error?.message || error)
+    workbench = {}
+  }
 
   // Records the region a recording actually started with (plan §5.1: the record-mode last region is
   // updated when a recording successfully STARTS; a cancelled selection must not overwrite it).
@@ -111,6 +177,192 @@ function createRecordDomain(deps) {
     }
   }
 
+  function text(value) {
+    return typeof value === 'string' ? value.trim() : ''
+  }
+
+  // A project name is user-editable and only has control characters stripped, so it can contain
+  // characters a file name cannot (or that would silently create a subdirectory in the save
+  // dialog's default path). The export dialog suggests this stem; the user still owns the path.
+  function safeFileStem(value, fallback = 'Recording') {
+    const stem = text(value).replace(/[\\/:*?"<>|]+/g, '_').replace(/^\.+/, '').slice(0, 120)
+    return stem || fallback
+  }
+
+  // The tray template is a snapshot: main.js rebuilds it from the workbench to show/hide the live
+  // pause/finish entries. Only a status-bucket change needs a rebuild (a timer tick does not).
+  function refreshTray() {
+    const refresh = workbench.refreshTray
+    if (typeof refresh !== 'function') return false
+    try {
+      refresh()
+      return true
+    } catch (error) {
+      log('Recording tray refresh failed:', error?.message || error)
+      return false
+    }
+  }
+
+  function roundedGain(value) {
+    const gain = Number(value)
+    return Number.isFinite(gain) ? Math.min(4, Math.max(0, gain)) : 1
+  }
+
+  function finiteOr(value, fallback) {
+    const number = Number(value)
+    return Number.isFinite(number) ? number : fallback
+  }
+
+  // ---------------------------------------------------------------- recording project service
+
+  function projectServiceOrNull() {
+    try {
+      const service = typeof getRecordingProjectService === 'function' ? getRecordingProjectService() : null
+      return service && typeof service.createProject === 'function' ? service : null
+    } catch (error) {
+      log('Recording project service unavailable:', error?.message || error)
+      return null
+    }
+  }
+
+  function requireProjectService() {
+    const service = projectServiceOrNull()
+    if (!service) {
+      const error = new Error('Recording project service is unavailable')
+      error.code = 'project-service-unavailable'
+      throw error
+    }
+    return service
+  }
+
+  async function getProject(projectId) {
+    const service = projectServiceOrNull()
+    const id = text(projectId)
+    if (!service || !id) return null
+    try {
+      return await service.getProject(id)
+    } catch (error) {
+      log('Recording project read failed:', id, error?.message || error)
+      return null
+    }
+  }
+
+  // The session that currently holds a project's source, if one is attached. The recording service
+  // is never forced into existence here: an install that only browses the record list must not spawn
+  // the encoder/ffmpeg collaborators.
+  function findSessionForProject(projectId) {
+    const service = typeof peekRecordingService === 'function' ? peekRecordingService() : null
+    const id = text(projectId)
+    if (!service || !service.sessions || !id) return null
+    for (const session of service.sessions.values()) {
+      if (session?.projectId === id) return session
+    }
+    return null
+  }
+
+  // Probe metadata reconstructed from the manifest, so an editor/export session does not have to
+  // re-run ffmpeg just to describe a file the probe already described at seal time.
+  function probeMetadataFromProject(project) {
+    const media = project?.media || {}
+    const durationMs = Number(media.durationMs)
+    if (!(durationMs > 0)) return null
+    const tracks = Number(media.audio?.tracks) || 0
+    return {
+      durationMs,
+      startMs: 0,
+      durationSource: 'container',
+      video: {
+        codec: '',
+        width: Number(media.video?.width) || 0,
+        height: Number(media.video?.height) || 0,
+        frameRate: Number(project?.captureConfig?.frameRate) || 0
+      },
+      audio: { exists: tracks > 0, codec: tracks > 0 ? text(media.audio?.codec) : '', sampleRate: 0, channels: 0 },
+      timebase: 'ms-media-timeline'
+    }
+  }
+
+  // Attaches a persistent project source to the recording service so exports can acquire it. The
+  // session id IS the project id: one project has at most one live source, and the id is already a
+  // validated directory name (contract §7). registerPersistedSession is idempotent.
+  async function ensureProjectSession(project) {
+    const projectService = requireProjectService()
+    const projectId = String(project?.id || '')
+    if (!projectId) return null
+    const directory = projectService.projectDirectory(projectId)
+    if (!directory) return null
+    const sourcePath = await projectService.sourcePathOf(projectId)
+    if (!sourcePath) return null
+    const recordingService = getRecordingService()
+    const metadata = probeMetadataFromProject(project)
+    let session = findSessionForProject(projectId)
+    if (session && session.state === 'closing') {
+      // A previous editor closed while an export still held its lease, so the service left this
+      // entry in `closing` until that release. A re-opened editor needs a usable handle now: drop
+      // the closing entry (project-owned directories are never deleted here) and re-register.
+      if (typeof recordingService.detachSession === 'function') recordingService.detachSession(projectId)
+      session = null
+    }
+    if (!session) {
+      session = await managedRecordingWriters.track(() => recordingService.registerPersistedSession({
+        id: projectId,
+        directory,
+        inputPath: sourcePath,
+        metadata,
+        projectId
+      }))
+    } else if (!session.metadata && metadata) {
+      session.metadata = metadata
+    }
+    return { session, sourcePath, recordingService, directory }
+  }
+
+  // Contract §10 "closing the window only releases resources": once the editor window is gone, the
+  // project's persisted session is DETACHED from the RecordingService table (its directory belongs
+  // to the project and is never removed here). An export that still holds a lease keeps the entry
+  // until its last release, so the file cannot be pulled out from under ffmpeg.
+  function releaseProjectSession(projectId) {
+    const id = text(projectId)
+    if (!id) return false
+    // Another window for the same project still holds the lease.
+    if (editorWindowForProject(id)) return false
+    const service = typeof peekRecordingService === 'function' ? peekRecordingService() : null
+    if (!service) return false
+    const session = findSessionForProject(id)
+    if (!session) return false
+    const references = Number(session.references) || 0
+    if (references > 0 && typeof service.cleanupSession === 'function') {
+      // cleanupSession on a project-owned session transitions it to `closing` and defers the table
+      // removal to the last releaseSource(). No directory is deleted.
+      Promise.resolve(service.cleanupSession(id)).catch((error) => {
+        log('Recording project session release failed:', id, error?.message || error)
+      })
+      return false
+    }
+    // A QUEUED export has not acquired its reference yet: detaching now would make its
+    // acquireSource() fail when it starts. Leave the entry for the task's terminal event, which
+    // calls this function again once nothing is left to read.
+    if (projectExportInFlight(id)) return false
+    if (typeof service.detachSession === 'function' && service.detachSession(id)) return true
+    return false
+  }
+
+  function captureOutcomeOf(win, metadata) {
+    const audio = win?._recordCaptureConfig?.audio || {}
+    const hasAudioTrack = metadata?.audio?.exists === true
+    const durationMs = Number(metadata?.durationMs) || 0
+    return {
+      video: durationMs > 0 && Number(metadata?.video?.width) > 0,
+      audio: {
+        system: audio.system === true && hasAudioTrack,
+        microphone: audio.microphone === true && hasAudioTrack
+      },
+      warnings: []
+    }
+  }
+
+  // ---------------------------------------------------------------- shared window/state helpers
+
   function isTaskActive() {
     return !!(recordWindow && !recordWindow.isDestroyed())
   }
@@ -121,6 +373,123 @@ function createRecordDomain(deps) {
 
   function ownsFrameWindow(win) {
     return win != null && win === recordFrameWindow && win._recordOwner === recordWindow
+  }
+
+  function ownsEditorWindow(win) {
+    if (!win) return false
+    for (const candidate of editorWindows.values()) {
+      if (candidate === win) return true
+    }
+    return false
+  }
+
+  function editorWindowForProject(projectId) {
+    const win = editorWindows.get(String(projectId || ''))
+    return win && !win.isDestroyed() ? win : null
+  }
+
+  function closeEditorWindow(projectId) {
+    const id = String(projectId || '')
+    const win = editorWindows.get(id)
+    editorWindows.delete(id)
+    if (win && !win.isDestroyed()) win.close()
+    return !!win
+  }
+
+  function normalizeRecordState(value, previous = DEFAULT_STATE) {
+    const state = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+    const status = ACTIVE_STATUSES.includes(state.status) ? state.status : previous.status
+    return {
+      status,
+      elapsedMs: Math.max(0, Math.round(finiteOr(state.elapsedMs, previous.elapsedMs))),
+      microphoneMuted: state.microphoneMuted === true,
+      stateVersion: Math.max(0, Math.round(finiteOr(state.stateVersion, previous.stateVersion)))
+    }
+  }
+
+  function updateRecordState(win, value) {
+    if (!win || win.isDestroyed()) return null
+    const previous = win._recordState || DEFAULT_STATE
+    const next = normalizeRecordState(value, previous)
+    // A late push from an older command must not roll the bar (or the tray) back.
+    if (next.stateVersion < previous.stateVersion) return previous
+    win._recordState = next
+    // The tray shows a pause/finish group only while a capture is live, and the pause entry flips
+    // to "resume" when the capture pauses. Rebuild on a status change while either side is live;
+    // a plain elapsed-time tick needs no rebuild.
+    const wasLive = previous.status === 'recording' || previous.status === 'paused'
+    const isLive = next.status === 'recording' || next.status === 'paused'
+    if ((wasLive || isLive) && previous.status !== next.status) refreshTray()
+    return next
+  }
+
+  function activeRecordingState() {
+    const control = recordWindow
+    if (!control || control.isDestroyed()) return null
+    const state = control._recordState || DEFAULT_STATE
+    return {
+      mode: RECORD_MODES.includes(control._recordMode) ? control._recordMode : DEFAULT_RECORD_MODE,
+      status: state.status,
+      elapsedMs: state.elapsedMs,
+      microphoneMuted: state.microphoneMuted === true
+    }
+  }
+
+  function issueCommand(control, command, value) {
+    if (!control || control.isDestroyed()) return false
+    const requestId = crypto.randomUUID()
+    const requests = control._recordCommands || (control._recordCommands = new Map())
+    requests.set(requestId, { command, value, status: 'pending', at: Date.now() })
+    while (requests.size > COMMAND_HISTORY_LIMIT) requests.delete(requests.keys().next().value)
+    control.webContents.send('record:command', { requestId, command, value })
+    // No state echo here: the cached state is still the PRE-command one. commandResult() pushes
+    // the POST-command state instead (contract §9.2), which is what the renderer's version guard
+    // can adopt to repair a lost command push.
+    return true
+  }
+
+  function pauseResumeActive() {
+    const control = recordWindow
+    if (!control || control.isDestroyed()) return false
+    const status = (control._recordState || DEFAULT_STATE).status
+    if (status === 'recording') return issueCommand(control, 'pause')
+    if (status === 'paused') return issueCommand(control, 'resume')
+    return false
+  }
+
+  function finishActive() {
+    const control = recordWindow
+    if (!control || control.isDestroyed()) return false
+    const status = (control._recordState || DEFAULT_STATE).status
+    // `stop` is idempotent in the renderer's applyCommand; refusing while finalizing keeps the tray
+    // from queueing a second stop for a capture that is already being sealed.
+    if (status !== 'recording' && status !== 'paused') return false
+    return issueCommand(control, 'stop')
+  }
+
+  function focusActive() {
+    const control = recordWindow
+    if (!control || control.isDestroyed()) return false
+    try {
+      if (typeof control.isMinimized === 'function' && control.isMinimized()) control.restore()
+      control.show()
+      control.focus()
+    } catch (error) {
+      log('Recording control focus failed:', error?.message || error)
+    }
+    return true
+  }
+
+  function openRecordingWorkbench() {
+    const create = workbench.createMainWindow
+    if (typeof create !== 'function') return false
+    try {
+      create('recording')
+      return true
+    } catch (error) {
+      log('Recording workbench open failed:', error?.message || error)
+      return false
+    }
   }
 
   async function cleanupRecordSession(win, service = null, allowBlocked = false) {
@@ -137,15 +506,190 @@ function createRecordDomain(deps) {
     return true
   }
 
+  // Marks a project whose capture is still `capturing` as recoverable before its window goes away.
+  // The project service's listProjects() does the same lazily on the next start; doing it here means
+  // the record list is honest immediately (an interrupted capture, not a "busy" one). A project that
+  // was already sealed is untouched: its state is `ready`/`recoverable` and must not be downgraded.
+  async function abandonProjectCapture(win, reason) {
+    const projectId = text(win?._recordProjectId)
+    if (win) win._recordProjectId = ''
+    if (!projectId) return false
+    const service = projectServiceOrNull()
+    if (!service) return false
+    try {
+      const project = await service.getProject(projectId)
+      if (!project || project.state !== 'capturing') return false
+      await service.markRecoverable(projectId, reason || 'interrupted')
+      return true
+    } catch (error) {
+      log('Recording project abandon failed:', projectId, error?.message || error)
+      return false
+    }
+  }
+
   async function closeRecordFlow(service = null, allowBlockedCleanup = false) {
     const control = recordWindow
     const frame = recordFrameWindow
     if (recordWindow === control) recordWindow = null
     if (recordFrameWindow === frame) recordFrameWindow = null
+    if (control) refreshTray()
+    await abandonProjectCapture(control, 'closed').catch((error) => log('Recording project abandon failed:', error?.message))
     await cleanupRecordSession(control, service, allowBlockedCleanup).catch((error) => log('Recording cleanup failed:', error.message))
     restoreRecordFramePassthrough(frame)
     if (control && !control.isDestroyed()) control.close()
     if (frame && !frame.isDestroyed()) frame.close()
+  }
+
+  // ---------------------------------------------------------------- capture target/config
+
+  function displayNameOf(display) {
+    const label = text(display?.label)
+    if (label) return label.slice(0, TEXT_LIMIT)
+    let displays = []
+    try {
+      displays = screen.getAllDisplays() || []
+    } catch {
+      displays = []
+    }
+    const index = displays.findIndex((candidate) => String(candidate?.id) === String(display?.id))
+    return `DISPLAY${index >= 0 ? index + 1 : 1}`
+  }
+
+  function resolveDisplay(displayId) {
+    let displays = []
+    try {
+      displays = screen.getAllDisplays() || []
+    } catch {
+      displays = []
+    }
+    const wanted = text(displayId)
+    if (wanted) {
+      const found = displays.find((display) => String(display?.id) === wanted)
+      if (found) return found
+    }
+    try {
+      return screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+    } catch {
+      return screen.getPrimaryDisplay()
+    }
+  }
+
+  // Contract §7 captureConfig.target: the frozen description of what was captured. Region mode
+  // records the SELECTION rectangle (the user's chosen area), display mode the whole screen.
+  function describeCaptureTarget(display, mode, selectionBounds) {
+    const descriptor = describeDisplayForRegion(display)
+    const scaleFactor = descriptor.scaleFactor
+    const boundsDip = mode === 'region'
+      ? {
+          x: Math.round(Number(selectionBounds?.x) || 0),
+          y: Math.round(Number(selectionBounds?.y) || 0),
+          width: Math.max(0, Math.round(Number(selectionBounds?.width) || 0)),
+          height: Math.max(0, Math.round(Number(selectionBounds?.height) || 0))
+        }
+      : descriptor.boundsDip
+    const pixelSize = mode === 'region'
+      ? {
+          width: Math.max(1, Math.round(boundsDip.width * scaleFactor)),
+          height: Math.max(1, Math.round(boundsDip.height * scaleFactor))
+        }
+      : descriptor.pixelSize
+    return {
+      mode,
+      displayId: String(display?.id ?? ''),
+      displayName: displayNameOf(display),
+      boundsDip,
+      pixelSize,
+      scaleFactor
+    }
+  }
+
+  // The workbench sends its flat config object; accept both the flat shape (contract §9.1
+  // `config`) and the frozen nested captureConfig shape (§7) so the control bar and the workbench
+  // cannot disagree about where a value lives.
+  function readCapturePayload(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+    const nested = value.audio && typeof value.audio === 'object' && !Array.isArray(value.audio) ? value.audio : null
+    return {
+      frameRate: value.frameRate,
+      quality: value.quality,
+      countdown: value.countdown,
+      audio: nested
+        ? {
+            system: nested.system,
+            microphone: nested.microphone,
+            microphoneDeviceId: nested.microphoneDeviceId,
+            systemGain: nested.systemGain,
+            microphoneGain: nested.microphoneGain
+          }
+        : {
+            system: value.audioSystem,
+            microphone: value.audioMicrophone,
+            microphoneDeviceId: value.audioMicrophoneDeviceId,
+            systemGain: value.audioSystemGain,
+            microphoneGain: value.audioMicrophoneGain
+          }
+    }
+  }
+
+  function pickValue(candidate, fallback) {
+    return candidate === undefined || candidate === null || candidate === '' ? fallback : candidate
+  }
+
+  // Contract §10.2: workbench override > persisted settings > shipped defaults, normalized on every
+  // axis (an out-of-range frame rate, an unknown quality id or a bogus gain can never reach the
+  // recorder or the project manifest).
+  function resolveCaptureConfig(options = {}) {
+    const settings = getSettings() || {}
+    const stored = settings.record || {}
+    const provided = readCapturePayload(options.capture) || {}
+    const audio = provided.audio || {}
+    const mode = RECORD_MODES.includes(options.mode)
+      ? options.mode
+      : (RECORD_MODES.includes(stored.lastMode) ? stored.lastMode : DEFAULT_RECORD_MODE)
+    return {
+      mode,
+      frameRate: normalizeFrameRate(pickValue(provided.frameRate, stored.frameRate)),
+      quality: normalizeQuality(pickValue(provided.quality, stored.quality)),
+      countdown: normalizeCountdown(pickValue(provided.countdown, stored.countdown)),
+      audio: {
+        system: pickValue(audio.system, stored.audioSystem) !== false,
+        microphone: pickValue(audio.microphone, stored.audioMicrophone) === true,
+        microphoneDeviceId: text(pickValue(audio.microphoneDeviceId, stored.audioMicrophoneDeviceId)).slice(0, MICROPHONE_DEVICE_ID_LIMIT),
+        systemGain: roundedGain(pickValue(audio.systemGain, stored.audioSystemGain)),
+        microphoneGain: roundedGain(pickValue(audio.microphoneGain, stored.audioMicrophoneGain))
+      }
+    }
+  }
+
+  function updateSettingsSafe(patch) {
+    const update = workbench.updateSettings
+    if (typeof update !== 'function') return false
+    try {
+      update(patch)
+      return true
+    } catch (error) {
+      log('Recording settings update failed:', error?.message || error)
+      return false
+    }
+  }
+
+  // Contract §4.1: remember the last VALID configuration. Written at start, from the values that
+  // actually started a capture - never from a control the user moved but never used.
+  function rememberCaptureConfig(win) {
+    const config = win?._recordCaptureConfig
+    if (!config) return false
+    return updateSettingsSafe({
+      record: {
+        lastMode: config.target.mode,
+        lastDisplayId: config.target.displayId,
+        frameRate: config.frameRate,
+        quality: config.quality,
+        countdown: config.countdown,
+        audioSystem: config.audio.system,
+        audioMicrophone: config.audio.microphone,
+        audioMicrophoneDeviceId: config.audio.microphoneDeviceId
+      }
+    })
   }
 
   async function getDesktopSource(display) {
@@ -174,9 +718,28 @@ function createRecordDomain(deps) {
     return { x, y: Math.max(minY, Math.min(maxY, Math.round(y))), width, height }
   }
 
+  // ---------------------------------------------------------------- control bar window
+
   async function createRecordWindow(options = {}) {
     assertGameModeDisabled()
+    // Repeat-entry arbitration (contract §10.1): a second "start recording" while a control window
+    // is alive focuses that window instead of silently destroying the capture in progress.
+    if (recordWindow && !recordWindow.isDestroyed()) {
+      focusActive()
+      return recordWindow
+    }
     await closeRecordFlow()
+    const pending = pendingRegionCapture
+    pendingRegionCapture = null
+    // A stale slot (the user cancelled the region overlay) must not turn a later capture into the
+    // workbench's last region configuration.
+    const pendingRegion = pending && Date.now() - pending.at < REGION_PENDING_TTL_MS ? pending : null
+    const providedCapture = options.capture || pendingRegion?.capture || null
+    const config = resolveCaptureConfig({
+      ...options,
+      mode: options.mode || pendingRegion?.mode,
+      capture: providedCapture
+    })
     const requestedBounds = options.selectionBounds && {
       x: Math.round(Number(options.selectionBounds.x)),
       y: Math.round(Number(options.selectionBounds.y)),
@@ -185,11 +748,12 @@ function createRecordDomain(deps) {
     }
     const display = options.display || (requestedBounds
       ? screen.getDisplayMatching(requestedBounds)
-      : screen.getDisplayNearestPoint(screen.getCursorScreenPoint()))
+      : resolveDisplay(options.displayId))
     const selectionBounds = normalizeSelectionBounds(requestedBounds || display.bounds, display.bounds)
     const source = await getDesktopSource(display)
-    const frameRate = normalizeFrameRate(getSettings().record.frameRate)
-    const recordSettings = getSettings().record
+    const target = describeCaptureTarget(display, config.mode, selectionBounds)
+    const displayDescriptor = { id: String(display.id), name: target.displayName, ...describeDisplayForRegion(display) }
+    const frameRate = config.frameRate
     const frameBounds = calculateFrameBounds(selectionBounds, 2)
     const controlBounds = getRecordControlBounds(selectionBounds, display.workArea)
 
@@ -233,22 +797,40 @@ function createRecordDomain(deps) {
     controlWindow._recordControlBounds = controlBounds
     controlWindow._recordFrameState = 'idle'
     controlWindow._recordAnnotationCommand = sanitizeAnnotationCommand({})
+    controlWindow._recordMode = config.mode
+    controlWindow._recordProjectId = ''
+    controlWindow._recordSessionId = ''
+    controlWindow._recordState = { ...DEFAULT_STATE }
+    controlWindow._recordCommands = new Map()
+    controlWindow._recordCaptureConfig = {
+      target,
+      frameRate,
+      quality: config.quality,
+      countdown: config.countdown,
+      audio: { ...config.audio }
+    }
     controlWindow._recordInit = {
+      // R2 contract shape (contracts §9.2). `sessionId`/`projectId` are filled in later: the
+      // control bar is created BEFORE a capture session exists.
+      sessionId: '',
+      projectId: '',
+      mode: config.mode,
+      display: displayDescriptor,
+      selectionBounds,
+      frameRate,
+      quality: config.quality,
+      countdownSeconds: config.countdown,
+      audio: { ...config.audio },
+      // E2E-only synthetic capture source (contract §13.5). Only the main-process environment can
+      // set this; no renderer-writable field can turn it on.
+      fakeCapture: process.env.HIGHLIGHTER_E2E_FAKE_CAPTURE === '1',
+      // Legacy flat keys (P0-3-T2) kept so an older recorder build keeps working unchanged.
       sourceId: source.id,
       displayBounds: display.bounds,
-      selectionBounds,
-      // Feature B (plan §5.1): the descriptor the remembered-region write needs (key + DIP bounds +
-      // measured pixel size). Captured at window creation, while `display` is in scope. Resolved
-      // defensively: a host without a native rect probe (tests, and any non-Windows platform where
-      // dipToScreenRect is unavailable) still gets a working descriptor from scaleFactor.
-      display: describeDisplayForRegion(display),
-      frameRate,
-      // P0-3-T2: the recorder renderer reads these four frozen keys to decide which audio
-      // buses to request; the renderer falls back to the same defaults when they are absent.
-      audioSystem: recordSettings.audioSystem,
-      audioMicrophone: recordSettings.audioMicrophone,
-      audioSystemGain: recordSettings.audioSystemGain,
-      audioMicrophoneGain: recordSettings.audioMicrophoneGain
+      audioSystem: config.audio.system,
+      audioMicrophone: config.audio.microphone,
+      audioSystemGain: config.audio.systemGain,
+      audioMicrophoneGain: config.audio.microphoneGain
     }
 
     // P0-3-T2: the renderer acquires the desktop through getDisplayMedia, which Electron
@@ -283,6 +865,7 @@ function createRecordDomain(deps) {
       // 注销共享 session 上的 display-media handler：否则窗口关闭后它仍存活并指向旧 display。
       try { recordSession.setDisplayMediaRequestHandler(null) } catch (error) { log('Display media handler cleanup failed:', error.message) }
       cleanupRecordSession(controlWindow).catch((error) => log('Recording cleanup failed:', error.message))
+      abandonProjectCapture(controlWindow, 'closed').catch((error) => log('Recording project abandon failed:', error.message))
       if (recordWindow === controlWindow) recordWindow = null
       if (recordFrameWindow?._recordOwner === controlWindow) {
         const ownedFrame = recordFrameWindow
@@ -299,6 +882,7 @@ function createRecordDomain(deps) {
     ])
     frameWindow.showInactive()
     controlWindow.show()
+    log('Recording window created:', { mode: config.mode, displayId: target.displayId, frameRate, quality: config.quality, countdown: config.countdown })
     return controlWindow
   }
 
@@ -314,6 +898,18 @@ function createRecordDomain(deps) {
       throw new Error('无效的录制标注窗口')
     }
     return frame
+  }
+
+  function requireEditorSender(event) {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || win.isDestroyed() || !ownsEditorWindow(win)) throw new Error('Invalid recording editor window')
+    return win
+  }
+
+  function requireEditorProject(win, projectId) {
+    const id = text(projectId)
+    if (!id || win._recordProjectId !== id) throw new Error('Recording project does not belong to this editor')
+    return id
   }
 
   function sendRecordAnnotationCommand(control, payload = {}) {
@@ -332,6 +928,8 @@ function createRecordDomain(deps) {
     if (!sessionId || win._recordSessionId !== sessionId) throw new Error('录制会话不匹配')
     return sessionId
   }
+
+  // ---------------------------------------------------------------- export plumbing
 
   // Feature A integration (plan §4.2): the same receipt shape the capture/recognition result
   // bars consume, so the recorder reuses main/services/export-result-service.js unchanged.
@@ -362,17 +960,29 @@ function createRecordDomain(deps) {
     return service
   }
 
+  function optionalExportService() {
+    try {
+      const service = typeof getRecordingExportService === 'function' ? getRecordingExportService() : null
+      return service && typeof service.submit === 'function' ? service : null
+    } catch (error) {
+      log('Recording export service unavailable:', error?.message || error)
+      return null
+    }
+  }
+
   function exportExtension(format) {
     return format === 'gif' ? 'gif' : 'mp4'
   }
 
   // The save dialog is main-process owned (plan §8.3: "the renderer does not submit source or
   // target paths"). The target is frozen by the export service right after this resolves.
-  async function chooseExportTarget(win, { format, defaultName, defaultDirectory }) {
+  // `alwaysOnTop:false` is for the editor window, which is a normal window and must not be
+  // promoted to the screen-saver layer to survive its own dialog.
+  async function chooseExportTarget(win, { format, defaultName, defaultDirectory, alwaysOnTop = true }) {
     const extension = exportExtension(format)
     const directory = defaultDirectory || app.getPath('videos')
     let result
-    win.setAlwaysOnTop(false)
+    if (alwaysOnTop) win.setAlwaysOnTop(false)
     try {
       result = await dialog.showSaveDialog(win, {
         title: format === 'gif' ? '保存 GIF 录屏' : '保存 MP4 录屏',
@@ -382,14 +992,257 @@ function createRecordDomain(deps) {
           : [{ name: 'MP4 视频', extensions: ['mp4'] }]
       })
     } finally {
-      if (!win.isDestroyed()) win.setAlwaysOnTop(true, 'screen-saver')
+      if (alwaysOnTop && !win.isDestroyed()) win.setAlwaysOnTop(true, 'screen-saver')
     }
     if (result.canceled || !result.filePath) return null
     return path.resolve(result.filePath)
   }
 
-  function createRecordingController() {
+  function recordProjectExport(projectId, task, format, targetPath, editRevision) {
+    const service = projectServiceOrNull()
+    if (!service || typeof service.appendExport !== 'function') return
+    const fileName = text(task?.receipt?.fileName) || path.basename(String(targetPath || ''))
+    service.appendExport(projectId, {
+      exportId: task?.taskId || '',
+      format,
+      fileName,
+      exportedAt: Date.now(),
+      editRevision,
+      // Main-process only; the persistence projection drops it (contract §7).
+      targetPath
+    }).catch((error) => log('Recording export record failed:', projectId, error?.message || error))
+  }
+
+  // ---------------------------------------------------------------- editor window
+
+  function editorBackdropColor() {
+    const resolve = workbench.backdropColor
+    if (typeof resolve !== 'function') return '#1e1e1e'
+    try {
+      return resolve() || '#1e1e1e'
+    } catch (error) {
+      log('Recording editor backdrop unavailable:', error?.message || error)
+      return '#1e1e1e'
+    }
+  }
+
+  function positionEditorWindow(win) {
+    try {
+      if (typeof win.center === 'function') win.center()
+    } catch {}
+    const position = workbench.positionAutomationWindow
+    if (typeof position !== 'function') return false
+    try {
+      return position(win) === true
+    } catch (error) {
+      log('Recording editor positioning failed:', error?.message || error)
+      return false
+    }
+  }
+
+  async function editorInitPayload(project) {
+    const service = requireProjectService()
+    const sourcePath = await service.sourcePathOf(project.id)
+    if (!sourcePath) return null
+    const media = project.media || {}
     return {
+      project: service.publicProject(project),
+      // The ONLY path form a renderer may receive (contract §9.3): a derived file URL.
+      sourceUrl: pathToFileURL(sourcePath).href,
+      metadata: {
+        durationMs: Math.max(0, Math.round(Number(media.durationMs) || 0)),
+        video: { width: Math.max(0, Math.round(Number(media.video?.width) || 0)), height: Math.max(0, Math.round(Number(media.video?.height) || 0)) },
+        audio: { tracks: Math.max(0, Math.round(Number(media.audio?.tracks) || 0)) }
+      },
+      recovery: {
+        state: project.state === 'ready' ? 'ready' : 'recoverable',
+        errorCode: text(project.recovery?.errorCode)
+      }
+    }
+  }
+
+  // Recovery attempt (contract §10): re-probe the sealed source; a usable file joins the records
+  // as `ready`, an unusable one is marked recoverable and the editor still opens read-only.
+  async function attemptProjectRecovery(project) {
+    const service = requireProjectService()
+    let attached
+    try {
+      attached = await ensureProjectSession(project)
+    } catch (error) {
+      log('Recording recovery attach failed:', project.id, error?.message || error)
+      return null
+    }
+    if (!attached) return null
+    let probed
+    try {
+      probed = await attached.recordingService.probeSession(project.id, { force: true })
+    } catch (error) {
+      log('Recording recovery probe failed:', project.id, error?.message || error)
+      probed = { ok: false, code: 'probe-failed' }
+    }
+    if (!probed?.ok) {
+      await service.markRecoverable(project.id, probed?.code || 'probe-failed').catch(() => {})
+      return null
+    }
+    const marked = await service.markReady(project.id, {
+      fileName: project.source?.fileName || '',
+      metadata: probed.metadata
+    }).catch((error) => {
+      log('Recording recovery markReady failed:', project.id, error?.message || error)
+      return null
+    })
+    return marked?.ok ? marked.project : null
+  }
+
+  function createEditorWindow(project, initPayload) {
+    const projectId = String(project.id)
+    const editorPagePath = path.join(rootDirectory, 'record', 'editor.html')
+    let win
+    try {
+      win = createLocalWindow(editorPagePath, {
+        role: 'record-editor',
+        ...EDITOR_WINDOW,
+        show: false,
+        frame: false,
+        resizable: true,
+        maximizable: true,
+        backgroundColor: editorBackdropColor(),
+        webPreferences: {
+          preload: path.join(rootDirectory, 'preload-record-editor.js'),
+          backgroundThrottling: false
+        }
+      })
+    } catch (error) {
+      log('Recording editor window creation failed:', error?.message || error)
+      return { ok: false, code: 'window-create-failed' }
+    }
+    editorWindows.set(projectId, win)
+    win._recordProjectId = projectId
+    win._recordEditorInit = initPayload
+    win.on('closed', () => {
+      if (editorWindows.get(projectId) === win) editorWindows.delete(projectId)
+      // D1 (contract §10 "closing the window only releases resources"): the editor's project lease
+      // is released here, so opening many records does not grow the RecordingService table forever.
+      releaseProjectSession(projectId)
+    })
+    win.once('ready-to-show', () => {
+      if (win.isDestroyed()) return
+      positionEditorWindow(win)
+      win.show()
+      win.focus()
+    })
+    win.loadFile(editorPagePath)
+    return { ok: true }
+  }
+
+  // Contract §10 openEditor(): reuse/focus, `capturing` is busy, `recoverable` gets one recovery
+  // attempt, and the source is attached to the recording service so an export can acquire it.
+  async function openEditor(projectId) {
+    const id = text(projectId)
+    if (!id) return { ok: false, code: 'not-found' }
+    const existing = editorWindowForProject(id)
+    if (existing) {
+      try {
+        existing.show()
+        existing.focus()
+      } catch (error) {
+        log('Recording editor focus failed:', error?.message || error)
+      }
+      return { ok: true }
+    }
+    if (!projectServiceOrNull()) return { ok: false, code: 'project-service-unavailable' }
+    let project = await getProject(id)
+    if (!project) return { ok: false, code: 'not-found' }
+    if (project.state === 'capturing') return { ok: false, code: 'project-busy' }
+    if (project.state !== 'ready' && project.state !== 'recoverable') return { ok: false, code: 'not-editable' }
+    if (project.state === 'recoverable') project = (await attemptProjectRecovery(project)) || project
+    const initPayload = await editorInitPayload(project).catch((error) => {
+      log('Recording editor init failed:', id, error?.message || error)
+      return null
+    })
+    if (!initPayload) return { ok: false, code: 'source-unavailable' }
+    // Attach the source so an export submitted from this window can acquire it immediately.
+    await ensureProjectSession(project).catch((error) => log('Recording project attach failed:', id, error?.message || error))
+    return createEditorWindow(project, initPayload)
+  }
+
+  // ---------------------------------------------------------------- workbench
+
+  function listWorkbenchDisplays() {
+    let displays = []
+    let primary = null
+    try {
+      displays = screen.getAllDisplays() || []
+    } catch {
+      displays = []
+    }
+    try {
+      primary = screen.getPrimaryDisplay()
+    } catch {
+      primary = null
+    }
+    return displays.map((display, index) => {
+      const descriptor = describeDisplayForRegion(display)
+      const width = descriptor.pixelSize.width
+      const height = descriptor.pixelSize.height
+      return {
+        id: String(display?.id ?? ''),
+        name: displayNameOf(display),
+        width,
+        height,
+        scaleFactor: Number(display?.scaleFactor) || 1,
+        primary: primary?.id === display?.id,
+        // Flat, translation-free label (numbers + the multiplication sign). The workbench may
+        // render its own i18n label from the fields above; this one is for compact lists.
+        label: `${index + 1} · ${width}×${height}`
+      }
+    })
+  }
+
+  function workbenchConfig() {
+    const settings = getSettings() || {}
+    const record = settings.record || {}
+    return {
+      mode: RECORD_MODES.includes(record.lastMode) ? record.lastMode : DEFAULT_RECORD_MODE,
+      displayId: text(record.lastDisplayId),
+      frameRate: normalizeFrameRate(record.frameRate),
+      quality: normalizeQuality(record.quality),
+      countdown: normalizeCountdown(record.countdown),
+      audioSystem: record.audioSystem !== false,
+      audioMicrophone: record.audioMicrophone === true,
+      audioMicrophoneDeviceId: text(record.audioMicrophoneDeviceId),
+      saveDirectory: text(record.saveDirectory)
+    }
+  }
+
+  function recentProjects(limit = 8) {
+    const service = projectServiceOrNull()
+    if (!service) return []
+    return service.listProjects({ offset: 0, limit })
+      .then((listed) => (Array.isArray(listed?.items) ? listed.items : []))
+      .catch((error) => {
+        log('Recording project listing failed:', error?.message || error)
+        return []
+      })
+  }
+
+  function projectExportInFlight(projectId) {
+    const exportService = optionalExportService()
+    if (!exportService || typeof exportService.list !== 'function') return false
+    const session = findSessionForProject(projectId)
+    if (!session) return false
+    try {
+      return exportService.list().some((task) => task?.sessionId === session.id && !TERMINAL_TASK_STATES.includes(task?.state))
+    } catch (error) {
+      log('Recording export listing failed:', error?.message || error)
+      return false
+    }
+  }
+
+  // ---------------------------------------------------------------- domain controllers
+
+  function createRecordingController() {
+    const control = {
       ready: (event) => {
         const win = BrowserWindow.fromWebContents(event.sender)
         if (win === recordWindow && win?._recordInit) event.sender.send('record:init', win._recordInit)
@@ -400,10 +1253,10 @@ function createRecordDomain(deps) {
       },
       frameSnapshot: (event, snapshot = {}) => {
         const frame = requireRecordFrameSender(event)
-        const control = frame._recordOwner
-        const bounds = control._recordInit.selectionBounds
+        const controlWindow = frame._recordOwner
+        const bounds = controlWindow._recordInit.selectionBounds
         const clean = sanitizeAnnotationSnapshot(snapshot, { width: bounds.width, height: bounds.height })
-        control.webContents.send('record:annotation-snapshot', clean)
+        controlWindow.webContents.send('record:annotation-snapshot', clean)
       },
       performance: (event, metrics = {}) => {
         requireRecordSender(event)
@@ -424,38 +1277,172 @@ function createRecordDomain(deps) {
         performanceMonitor.snapshot('record-compositor', { targetFrameRate, scheduler })
       },
       setAnnotationCommand: (event, command = {}) => {
-        const control = requireRecordSender(event)
-        return sendRecordAnnotationCommand(control, command)
+        const controlWindow = requireRecordSender(event)
+        return sendRecordAnnotationCommand(controlWindow, command)
       },
+      // Contract §10.4: create the persistent project first, then write the session's chunks
+      // straight into the project directory. A project is the durable owner of the source; the
+      // session is only the writer handle.
       startSession: async (event) => {
         assertManagedDataWritable()
         const win = requireRecordSender(event)
         const service = getRecordingService()
         await cleanupRecordSession(win, service)
         managedRecordingWriters.assertOpen()
-        const session = await managedRecordingWriters.track(() => service.startSession())
+        const projectService = requireProjectService()
+        const captureConfig = win._recordCaptureConfig || { target: {}, frameRate: 24, quality: 'standard', countdown: 3, audio: {} }
+        const projectName = String(makeCaptureName(VIDEO_CAPTURE_PREFIX) || 'Recording').replace(/\.[^.]+$/, '')
+        const created = await projectService.createProject({
+          mode: captureConfig.target?.mode || DEFAULT_RECORD_MODE,
+          captureConfig,
+          name: projectName
+        })
+        let session
+        try {
+          session = await managedRecordingWriters.track(() => service.startSession({
+            directory: created.directory,
+            projectId: created.project.id
+          }))
+        } catch (error) {
+          // Nothing was recorded: do not leave a half-created project behind.
+          await projectService.deleteProject(created.project.id).catch(() => {})
+          win._recordProjectId = ''
+          throw error
+        }
         win._recordSessionId = session.id
+        win._recordProjectId = created.project.id
         // Plan §5.1: the record-mode last region is updated when a recording successfully STARTS, so
         // a cancelled selection never overwrites it. `selectionBounds` on the window's init payload is
         // Electron DIP; recordFromDisplaySelection owns the DIP->pixel conversion.
         const init = win._recordInit || {}
-        if (init.selectionBounds) rememberRecordRegion(init.display, init.selectionBounds)
-        return { id: session.id }
+        if (init.selectionBounds) {
+          rememberRecordRegion(init.display, init.selectionBounds)
+          rememberCaptureConfig(win)
+        }
+        return { id: session.id, projectId: created.project.id }
       },
-      appendChunk: async (event, { sessionId, arrayBuffer } = {}) => {
+      // Contract §10.5: the ACK is the chunk's ordering result; the durable checkpoint is written
+      // separately and never blocks the ACK.
+      //
+      // The sequence is MANDATORY on this channel (contract §9.2/§12: it is what makes replay and
+      // gap detection possible). It is forwarded UNCOERCED so the service rejects an invalid value
+      // instead of the domain silently disabling gap detection by downgrading it to the legacy
+      // unsequenced append. A gap/invalid sequence is an ORDERING result, so it RESOLVES with a
+      // code: Electron drops custom properties on a rejected invoke, and the renderer's localized
+      // gap notice is driven by the ACK's `lastChunkSequence`/`code`, not by a thrown error.
+      appendChunk: async (event, { sessionId, arrayBuffer, sequence } = {}) => {
         assertManagedDataWritable()
         const win = requireRecordSender(event)
         requireRecordSession(win, sessionId)
         const service = getRecordingService()
-        await managedRecordingWriters.track(service.appendChunk(sessionId, Buffer.from(arrayBuffer || [])))
-        return true
+        const chunk = Buffer.from(arrayBuffer || [])
+        const chunkSequence = sequence === undefined ? null : sequence
+        // The legacy unsequenced append of the SERVICE stays available to its other callers, but the
+        // control-bar channel requires a sequence: accepting a chunk without one would disable gap
+        // detection for the whole take without any signal.
+        if (chunkSequence === null) {
+          const session = typeof service.peekSession === 'function' ? service.peekSession(sessionId) : null
+          return {
+            committedBytes: Number(session?.bytesWritten) || 0,
+            sequence: null,
+            lastChunkSequence: Number(session?.lastChunkSequence) || 0,
+            code: 'invalid-sequence',
+            expected: (Number(session?.lastChunkSequence) || 0) + 1,
+            received: null
+          }
+        }
+        let ack
+        try {
+          ack = await managedRecordingWriters.track(service.appendChunk(sessionId, chunk, { sequence: chunkSequence }))
+        } catch (error) {
+          if (error?.code === 'sequence-gap' || error?.code === 'invalid-sequence') {
+            const session = typeof service.peekSession === 'function' ? service.peekSession(sessionId) : null
+            const numericSequence = Number(chunkSequence)
+            const lastAccepted = Number(session?.lastChunkSequence) || 0
+            return {
+              committedBytes: Number(session?.bytesWritten) || 0,
+              sequence: Number.isSafeInteger(numericSequence) ? numericSequence : null,
+              lastChunkSequence: lastAccepted,
+              code: error.code,
+              // The gap error carries the expected next sequence; an invalid value has no such field,
+              // so the next expected sequence is derived from the session state for both codes.
+              expected: Number.isSafeInteger(Number(error.expected)) ? Number(error.expected) : lastAccepted + 1,
+              received: error.received === undefined ? (sequence === undefined ? null : sequence) : error.received
+            }
+          }
+          // A write failure is a real failure: keep rejecting so the renderer's chunk-failure path
+          // (pause + visible error) still runs.
+          throw error
+        }
+        const committedBytes = Number(ack?.committedBytes) || chunk.length
+        const lastChunkSequence = Number(ack?.lastChunkSequence) || 0
+        const projectId = text(win._recordProjectId)
+        const projectService = projectId ? projectServiceOrNull() : null
+        if (projectService && typeof projectService.checkpoint === 'function') {
+          // Throttled inside the project service; a lost checkpoint only costs recovery precision,
+          // so a failure is logged and never fails the recording.
+          projectService.checkpoint(projectId, { committedByteOffset: committedBytes, lastChunkSequence })
+            .catch((error) => log('Recording checkpoint failed:', projectId, error?.message || error))
+        }
+        return { committedBytes, sequence: Number(chunkSequence), lastChunkSequence }
       },
+      // Contract §10.6: finish the session -> probe -> seal the project -> open the editor ->
+      // close the control bar. The project (not the session) owns the source afterwards, so the
+      // session is DETACHED rather than cleaned (a cleanup would only drop it from the table for a
+      // project-owned directory, but detaching makes the ownership transfer explicit).
       finishSession: async (event, { sessionId } = {}) => {
         assertManagedDataWritable()
         const win = requireRecordSender(event)
         requireRecordSession(win, sessionId)
         const service = getRecordingService()
-        return managedRecordingWriters.track(service.finishSession(sessionId))
+        const projectId = text(win._recordProjectId)
+        const projectService = projectId ? projectServiceOrNull() : null
+        let descriptor
+        try {
+          descriptor = await managedRecordingWriters.track(service.finishSession(sessionId))
+        } catch (error) {
+          log('Recording finish failed:', error?.message || String(error))
+          return { ok: false, code: error?.code || 'finish-failed' }
+        }
+        if (!projectId || !projectService) {
+          // Legacy/no-persistence fallback: the sealed session stays readable for the legacy
+          // channels, but there is no project to hand to an editor.
+          return { ok: true, projectId: '', legacy: true, bytesWritten: Number(descriptor?.bytesWritten) || 0 }
+        }
+        let probed = { ok: false, code: 'probe-failed' }
+        try {
+          probed = await managedRecordingWriters.track(service.probeSession(sessionId), { allowBlocked: true })
+        } catch (error) {
+          log('Recording probe threw:', error?.message || String(error))
+        }
+        if (!probed?.ok) log('record probe failed:', probed?.code || 'probe-failed')
+        const sealed = await projectService.sealProject(projectId, {
+          metadata: probed?.ok ? probed.metadata : null,
+          captureOutcome: captureOutcomeOf(win, probed?.ok ? probed.metadata : null)
+        }).catch((error) => {
+          log('Recording seal failed:', projectId, error?.message || error)
+          return { ok: false, code: 'seal-failed' }
+        })
+        if (!sealed?.ok && sealed?.code !== 'probe-failed') {
+          // The manifest itself could not be written. The sealed session is still on disk and
+          // finishSession is idempotent, so the bar can retry or abandon.
+          return { ok: false, code: sealed?.code || 'seal-failed' }
+        }
+        if (typeof service.detachSession === 'function') service.detachSession(sessionId)
+        else service.cleanupSession(sessionId).catch(() => {})
+        win._recordSessionId = ''
+        win._recordProjectId = ''
+        const opened = await openEditor(projectId).catch((error) => {
+          log('Recording editor open failed:', projectId, error?.message || error)
+          return { ok: false, code: 'editor-failed' }
+        })
+        if (!opened?.ok) log('Recording editor did not open:', projectId, opened?.code || 'unknown')
+        // Close the bar AFTER this invoke's reply is queued: closing it inline would destroy the
+        // sender before the renderer could observe the success.
+        setImmediate(() => {
+          closeRecordFlow(null, true).catch((error) => log('Recording close failed:', error?.message || error))
+        })
+        return { ok: true, projectId, recovered: sealed?.ok !== true }
       },
       saveMp4: async (event, { sessionId, durationMs } = {}) => {
         assertManagedDataWritable()
@@ -604,17 +1591,31 @@ function createRecordDomain(deps) {
         assertManagedDataWritable()
         const win = requireRecordSender(event)
         requireRecordSession(win, sessionId)
-        win._recordSessionId = null
+        win._recordSessionId = ''
+        const projectId = text(win._recordProjectId)
+        win._recordProjectId = ''
         const service = getRecordingService()
         await managedRecordingWriters.track(service.cleanupSession(sessionId))
-        return true
+        if (projectId) {
+          const projectService = projectServiceOrNull()
+          if (projectService) {
+            // "Abandon this take": the project (its directory and partial source) is deleted, not
+            // left as a recoverable record the user explicitly discarded.
+            await projectService.deleteProject(projectId).catch((error) => {
+              log('Recording project delete failed:', projectId, error?.message || error)
+            })
+          }
+        }
+        // Contract §9.2: `{ ok: true }` (the renderer awaits the invoke; a bare boolean was the
+        // pre-R2 shape and is not part of the frozen contract).
+        return { ok: true }
       },
       setFrameState: (event, state = 'idle') => {
-        const control = requireRecordSender(event)
+        const controlWindow = requireRecordSender(event)
         const frame = recordFrameWindow
         if (!frame || frame.isDestroyed()) return false
-        control._recordFrameState = ['recording', 'paused'].includes(state) ? state : 'idle'
-        sendRecordAnnotationCommand(control)
+        controlWindow._recordFrameState = ['recording', 'paused'].includes(state) ? state : 'idle'
+        sendRecordAnnotationCommand(controlWindow)
         if (state === 'hidden') {
           restoreRecordFramePassthrough(frame)
           frame.hide()
@@ -641,6 +1642,7 @@ function createRecordDomain(deps) {
         assertManagedDataWritable()
         const win = requireRecordSender(event)
         if (sessionId) requireRecordSession(win, sessionId)
+        await abandonProjectCapture(win, 'restarted')
         await cleanupRecordSession(win, getRecordingService())
         win.setBounds(win._recordControlBounds, false)
         if (recordFrameWindow && !recordFrameWindow.isDestroyed()) {
@@ -657,11 +1659,411 @@ function createRecordDomain(deps) {
         const win = BrowserWindow.fromWebContents(event.sender)
         if (win !== recordWindow) return
         closeRecordFlow().catch((error) => log('Recording close failed:', error.message))
+      },
+      // R2 (contracts §9.2): the pull fallback for a lost `record:state-changed` push.
+      getState: (event) => {
+        const win = requireRecordSender(event)
+        return { ...(win._recordState || DEFAULT_STATE) }
+      },
+      // R2 (contracts §9.2): the renderer's authoritative state report. Ownership is checked
+      // softly: a finalizing session may already have cleared the window's session handle, and a
+      // stale push must never surface as an IPC error in the renderer.
+      state: (event, payload = {}) => {
+        const win = requireRecordSender(event)
+        const sessionId = text(payload.sessionId)
+        if (sessionId && win._recordSessionId && sessionId !== win._recordSessionId) return win._recordState || DEFAULT_STATE
+        return updateRecordState(win, payload) || DEFAULT_STATE
+      },
+      // R2 (contracts §9.2): closes the loop for a tray/shortcut command. A failed command is
+      // logged so a field report of "the tray pause did nothing" is diagnosable.
+      commandResult: (event, payload = {}) => {
+        const win = requireRecordSender(event)
+        const requestId = text(payload.requestId)
+        const requests = win._recordCommands
+        if (requestId && requests && requests.has(requestId)) {
+          const request = requests.get(requestId)
+          request.status = payload.ok === true ? 'ok' : 'failed'
+          request.code = text(payload.code)
+          request.finishedAt = Date.now()
+        }
+        if (payload.state) updateRecordState(win, payload.state)
+        // Push the POST-command cached state (contract §9.2): the renderer's version guard adopts
+        // a newer version and ignores a stale/equal one, so this repairs a lost command/state push
+        // without ever rolling the bar back.
+        if (win._recordState && !win.isDestroyed()) win.webContents.send('record:state-changed', win._recordState)
+        if (payload.ok !== true) log('Recording command refused:', text(payload.code) || 'unknown')
+        return true
+      },
+
+      // ------------------------------------------------------------ workbench (main window)
+      workbenchState: async () => {
+        const recent = await recentProjects(8)
+        return {
+          config: workbenchConfig(),
+          displays: listWorkbenchDisplays(),
+          active: activeRecordingState(),
+          recent
+        }
+      },
+      workbenchStart: async (_event, payload = {}) => {
+        assertGameModeDisabled()
+        assertManagedDataWritable()
+        // Contract §10.1: a second entry never replaces the capture in progress.
+        if (isTaskActive()) {
+          focusActive()
+          return { ok: true, focused: true }
+        }
+        const requestedMode = payload && typeof payload === 'object' ? payload.mode : ''
+        const config = payload && typeof payload === 'object' ? payload.config : null
+        const mode = RECORD_MODES.includes(requestedMode) ? requestedMode : workbenchConfig().mode
+        const payloadCapture = readCapturePayload(config)
+        if (mode === 'region') {
+          const openSelection = workbench.createRegionSelection
+          if (typeof openSelection !== 'function') return { ok: false, code: 'region-unavailable' }
+          // The overlay returns only a rectangle; the workbench's just-picked parameters travel
+          // through the one-shot slot createRecordWindow() consumes, together with the region mode
+          // (the overlay itself calls createRecordWindow without a mode).
+          pendingRegionCapture = { capture: payloadCapture, mode: 'region', at: Date.now() }
+          try {
+            await openSelection({ mode: 'region', source: 'recording-workbench' })
+          } catch (error) {
+            pendingRegionCapture = null
+            log('Recording region selection failed:', error?.message || error)
+            return { ok: false, code: 'selection-failed' }
+          }
+          return { ok: true }
+        }
+        try {
+          await createRecordWindow({ display: resolveDisplay(payload?.displayId), mode, capture: payloadCapture })
+        } catch (error) {
+          log('Recording start failed:', error?.message || error)
+          return { ok: false, code: 'start-failed' }
+        }
+        return { ok: true }
+      },
+      workbenchFocus: () => {
+        // Contract §9.1: bring the control bar forward while a capture is running.
+        const focused = focusActive()
+        return { ok: focused }
+      },
+      projectList: async (_event, payload = {}) => {
+        const service = projectServiceOrNull()
+        if (!service) return { items: [], total: 0, offset: 0, limit: 0, code: 'project-service-unavailable' }
+        const offset = Math.max(0, Math.trunc(Number(payload?.offset) || 0))
+        const limit = Math.min(PROJECT_LIST_LIMIT_MAX, Math.max(1, Math.trunc(Number(payload?.limit) || 20)))
+        const listed = await service.listProjects({ offset, limit }).catch((error) => {
+          log('Recording project listing failed:', error?.message || error)
+          return null
+        })
+        if (!listed) return { items: [], total: 0, offset, limit, code: 'list-failed' }
+        return {
+          items: Array.isArray(listed.items) ? listed.items : [],
+          total: Number(listed.total) || 0,
+          offset: Number(listed.offset) || offset,
+          limit: Number(listed.limit) || limit
+        }
+      },
+      projectOpen: async (_event, { projectId } = {}) => {
+        const project = await getProject(projectId)
+        if (!project) return { ok: false, code: 'not-found' }
+        // Contract §9.1: a capture still in progress is busy; a recoverable project MAY open.
+        if (project.state === 'capturing') return { ok: false, code: 'project-busy' }
+        return openEditor(project.id)
+      },
+      projectRename: async (_event, { projectId, name } = {}) => {
+        const service = projectServiceOrNull()
+        if (!service) return { ok: false, code: 'project-service-unavailable' }
+        const result = await service.renameProject(text(projectId), name).catch((error) => {
+          log('Recording project rename failed:', error?.message || error)
+          return { ok: false, code: 'rename-failed' }
+        })
+        if (!result?.ok) return { ok: false, code: result?.code || 'rename-failed' }
+        return { ok: true, project: service.summaryOf(result.project) }
+      },
+      projectDelete: async (_event, { projectId } = {}) => {
+        const service = projectServiceOrNull()
+        if (!service) return { ok: false, code: 'project-service-unavailable' }
+        const project = await getProject(projectId)
+        if (!project) return { ok: false, code: 'not-found' }
+        if (project.state === 'capturing') return { ok: false, code: 'busy' }
+        // Contract §4.4: an open editor is an editing lease and a running export still reads the
+        // source, so neither may be pulled out from under the user.
+        if (editorWindowForProject(project.id)) return { ok: false, code: 'busy' }
+        if (projectExportInFlight(project.id)) return { ok: false, code: 'busy' }
+        const session = findSessionForProject(project.id)
+        if (session) {
+          await managedRecordingWriters.track(() => getRecordingService().cleanupSession(session.id), { allowBlocked: true })
+            .catch((error) => log('Recording session release failed:', error?.message || error))
+        }
+        const deleted = await service.deleteProject(project.id).catch((error) => {
+          log('Recording project delete failed:', project.id, error?.message || error)
+          return { ok: false, code: 'delete-failed' }
+        })
+        return deleted?.ok ? { ok: true } : { ok: false, code: deleted?.code || 'delete-failed' }
+      },
+      projectReveal: async (_event, { projectId } = {}) => {
+        const service = projectServiceOrNull()
+        if (!service) return { ok: false, code: 'project-service-unavailable' }
+        // Main-process owned path: the renderer names a project id, never a directory.
+        const sourcePath = await service.sourcePathOf(text(projectId)).catch(() => '')
+        if (!sourcePath) return { ok: false, code: 'not-found' }
+        if (typeof workbench.shell?.showItemInFolder !== 'function') return { ok: false, code: 'unavailable' }
+        workbench.shell.showItemInFolder(sourcePath)
+        return { ok: true }
+      },
+
+      // ------------------------------------------------------------ editor (record-editor window)
+      editorReady: (event) => {
+        const win = requireEditorSender(event)
+        if (win._recordEditorInit) event.sender.send('record-editor:init', win._recordEditorInit)
+      },
+      editorClose: (event) => {
+        const win = BrowserWindow.fromWebContents(event.sender)
+        if (!win || win.isDestroyed() || !ownsEditorWindow(win)) return
+        win.close()
+      },
+      editorWindow: (event, payload = {}) => {
+        const win = BrowserWindow.fromWebContents(event.sender)
+        if (!win || win.isDestroyed() || !ownsEditorWindow(win)) return false
+        const action = text(payload?.action)
+        if (action === 'minimize') win.minimize()
+        else if (action === 'close') win.close()
+        return true
+      },
+      // Contract §9.3: compare-and-set draft write. A stale expectedRevision never overwrites a
+      // newer editor's work; the rejection carries the current project so the editor can reload.
+      editorSaveDraft: async (event, { projectId, expectedRevision, edit } = {}) => {
+        const win = requireEditorSender(event)
+        const id = requireEditorProject(win, projectId)
+        const service = requireProjectService()
+        const result = await service.updateDraft(id, {
+          expectedRevision: Number(expectedRevision),
+          edit: sanitizeDraftEdit(edit)
+        }).catch((error) => {
+          log('Recording draft save failed:', id, error?.message || error)
+          return { ok: false, code: 'save-failed' }
+        })
+        if (result?.ok) return { ok: true, revision: result.revision }
+        if (result?.code === 'revision-conflict') {
+          const current = await getProject(id)
+          return {
+            ok: false,
+            code: 'revision-conflict',
+            revision: Number(result.revision) || Number(current?.edit?.revision) || 0,
+            project: current ? service.publicProject(current) : null
+          }
+        }
+        return { ok: false, code: result?.code || 'save-failed' }
+      },
+      // Contract §9.3: the ONE export entry point. The target path comes from a main-process save
+      // dialog and the request carries a range/format only - no path can be smuggled in.
+      editorExport: async (event, payload = {}) => {
+        assertManagedDataWritable()
+        const win = requireEditorSender(event)
+        const id = requireEditorProject(win, payload.projectId)
+        const requestId = text(payload.requestId).slice(0, 128)
+        if (!requestId) return { status: 'failed', code: 'invalid-request' }
+        const request = payload.request && typeof payload.request === 'object' && !Array.isArray(payload.request) ? payload.request : {}
+        const format = request.format === 'gif' ? 'gif' : (request.format === 'mp4' ? 'mp4' : '')
+        if (!format) return { status: 'failed', code: 'unsupported-format' }
+        const service = projectServiceOrNull()
+        if (!service) return { status: 'failed', code: 'project-service-unavailable' }
+        const project = await getProject(id)
+        if (!project) return { status: 'failed', code: 'not-found' }
+        // Contract §4.3/§11: a recoverable project must not export - there is no verified duration
+        // to honour, and a fake success would be worse than a visible error.
+        if (project.state !== 'ready') return { status: 'failed', code: 'not-ready' }
+        const exportService = requireExportService()
+        const ownerId = exportOwnerId(event.sender)
+        if (!ownerId) return { status: 'failed', code: 'invalid-owner' }
+        const attached = await ensureProjectSession(project).catch((error) => {
+          log('Recording project attach failed:', id, error?.message || error)
+          return null
+        })
+        if (!attached) return { status: 'failed', code: 'source-unavailable' }
+        const settings = getSettings()
+        const targetPath = await chooseExportTarget(win, {
+          format,
+          defaultName: safeFileStem(project.name) || 'Recording',
+          defaultDirectory: settings.record.saveDirectory || app.getPath('videos'),
+          alwaysOnTop: false
+        })
+        if (!targetPath) return { status: 'cancelled' }
+        assertManagedDataWritable()
+        const editRevision = Math.max(1, Math.round(Number(project.edit?.revision) || 1))
+        const submitted = await exportService.submit({
+          sessionId: attached.session.id,
+          requestId,
+          request: { format, range: request.range, gif: request.gif },
+          ownerId,
+          targetPath,
+          onEvent: (task) => {
+            if (!win.isDestroyed()) win.webContents.send('record:export-progress', task)
+            if (task?.state === 'succeeded') recordProjectExport(id, task, format, targetPath, editRevision)
+            // A terminal task is the last reader of the source: if the editor window was closed
+            // while it ran, this is when the deferred session detach can finally happen.
+            if (TERMINAL_TASK_STATES.includes(task?.state)) releaseProjectSession(id)
+          }
+        })
+        if (!submitted?.ok) return { status: 'failed', code: submitted?.code || 'export-failed' }
+        return { status: 'accepted', task: submitted.task }
+      },
+      // Contract §9.3: task lookup by (taskId | requestId | projectId), owner-scoped so one
+      // editor window cannot read another window's export.
+      editorExportStatus: async (event, payload = {}) => {
+        const win = requireEditorSender(event)
+        const exportService = requireExportService()
+        const ownerId = exportOwnerId(event.sender)
+        if (!ownerId) return { ok: false, code: 'invalid-owner' }
+        let sessionId = ''
+        const projectId = text(payload?.projectId)
+        if (projectId) {
+          const id = requireEditorProject(win, projectId)
+          sessionId = findSessionForProject(id)?.id || ''
+        }
+        return exportService.status({
+          taskId: text(payload?.taskId),
+          sessionId,
+          requestId: text(payload?.requestId),
+          ownerId
+        })
+      },
+      editorCancelExport: async (event, payload = {}) => {
+        requireEditorSender(event)
+        const exportService = requireExportService()
+        const ownerId = exportOwnerId(event.sender)
+        if (!ownerId) return { ok: false, code: 'invalid-owner' }
+        return exportService.cancel({ taskId: text(payload?.taskId), ownerId })
+      },
+      editorRename: async (event, { projectId, name } = {}) => {
+        const win = requireEditorSender(event)
+        const id = requireEditorProject(win, projectId)
+        const service = requireProjectService()
+        const result = await service.renameProject(id, name).catch((error) => {
+          log('Recording rename failed:', id, error?.message || error)
+          return { ok: false, code: 'rename-failed' }
+        })
+        if (!result?.ok) return { ok: false, code: result?.code || 'rename-failed' }
+        return { ok: true, project: service.summaryOf(result.project) }
+      },
+      // Contract §9.3: create a NEW take with the same capture configuration; the old project is
+      // untouched (its source stays in the records).
+      editorRerecord: async (event, { projectId } = {}) => {
+        assertGameModeDisabled()
+        const win = requireEditorSender(event)
+        const id = requireEditorProject(win, projectId)
+        const project = await getProject(id)
+        if (!project) return { ok: false, code: 'not-found' }
+        const capture = project.captureConfig || {}
+        const target = capture.target || {}
+        closeEditorWindow(id)
+        try {
+          if (project.mode === 'region' && Number(target.boundsDip?.width) > 0) {
+            await createRecordWindow({
+              display: resolveDisplay(target.displayId),
+              mode: 'region',
+              selectionBounds: target.boundsDip,
+              capture
+            })
+          } else {
+            await createRecordWindow({ display: resolveDisplay(target.displayId), mode: 'display', capture })
+          }
+        } catch (error) {
+          log('Recording re-record failed:', id, error?.message || error)
+          return { ok: false, code: 'create-failed' }
+        }
+        return { ok: true }
+      },
+      editorReveal: async (event, { projectId } = {}) => {
+        const win = requireEditorSender(event)
+        const id = requireEditorProject(win, projectId)
+        const service = requireProjectService()
+        const sourcePath = await service.sourcePathOf(id).catch(() => '')
+        if (!sourcePath) return { ok: false, code: 'not-found' }
+        if (typeof workbench.shell?.showItemInFolder !== 'function') return { ok: false, code: 'unavailable' }
+        workbench.shell.showItemInFolder(sourcePath)
+        return { ok: true }
+      },
+      // Contract §11: closing the editor only closes the window (the draft is already saved by the
+      // renderer's debounce/flush); the workbench is brought back in front.
+      editorBack: (event) => {
+        const win = requireEditorSender(event)
+        const projectId = text(win._recordProjectId)
+        if (projectId) closeEditorWindow(projectId)
+        openRecordingWorkbench()
+        return { ok: true }
+      },
+      // Additive (approved 2026-11-03): re-probe the source and re-derive the file URL. Serves the
+      // recovery banner's "retry" and the draft revision-conflict reload.
+      editorReload: async (event, { projectId } = {}) => {
+        const win = requireEditorSender(event)
+        const id = requireEditorProject(win, projectId)
+        const service = requireProjectService()
+        let project = await getProject(id)
+        if (!project) return { ok: false, code: 'not-found' }
+        if (project.state === 'capturing') return { ok: false, code: 'project-busy' }
+        if (project.state === 'recoverable') project = (await attemptProjectRecovery(project)) || project
+        const payload = await editorInitPayload(project).catch((error) => {
+          log('Recording editor reload failed:', id, error?.message || error)
+          return null
+        })
+        if (!payload) return { ok: false, code: 'source-unavailable' }
+        win._recordEditorInit = payload
+        return { ok: true, ...payload }
       }
+    }
+    return control
+  }
+
+  // Shape-only sanitising for a draft write: the schema/draft normalizer owns the real rules, but
+  // the main process must never accept an arbitrary object tree from a renderer and persist it.
+  function sanitizeDraftEdit(value) {
+    const edit = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+    const sanitized = {}
+    if (Array.isArray(edit.keepRanges)) {
+      sanitized.keepRanges = edit.keepRanges.slice(0, 64).map((range) => ({
+        id: text(range?.id).slice(0, 64),
+        startMs: Math.max(0, Math.round(Number(range?.startMs) || 0)),
+        endMs: Math.max(0, Math.round(Number(range?.endMs) || 0))
+      }))
+    }
+    if (edit.format === 'mp4' || edit.format === 'gif') sanitized.format = edit.format
+    if (edit.gif && typeof edit.gif === 'object' && !Array.isArray(edit.gif)) {
+      sanitized.gif = {
+        edge: Math.max(0, Math.round(Number(edit.gif.edge) || 0)),
+        fps: Math.max(0, Math.round(Number(edit.gif.fps) || 0))
+      }
+    }
+    return sanitized
+  }
+
+  // Quick "record a region now" entry (contract §4.1 shortcut entries): opens the capture overlay
+  // with the persisted capture configuration. The overlay calls createRecordWindow() itself once a
+  // rectangle is confirmed, so nothing is recorded until the user picks an area.
+  //
+  // Repeat-entry arbitration (contract §10.1): while a capture is already active the quick entry
+  // must NOT open a selection overlay - createRecordWindow() would discard the picked rectangle
+  // because the active control bar wins. Focus the running bar and answer like workbenchStart does.
+  function startRegionRecording() {
+    if (isTaskActive()) {
+      focusActive()
+      return Promise.resolve({ ok: true, focused: true })
+    }
+    const openSelection = workbench.createRegionSelection
+    if (typeof openSelection !== 'function') return Promise.resolve({ ok: false, code: 'region-unavailable' })
+    try {
+      return Promise.resolve(openSelection({ mode: 'region', source: 'record-quick-region' }))
+        .then(() => ({ ok: true }), (error) => {
+          log('Recording region selection failed:', error?.message || error)
+          return { ok: false, code: 'selection-failed' }
+        })
+    } catch (error) {
+      log('Recording region selection failed:', error?.message || error)
+      return Promise.resolve({ ok: false, code: 'selection-failed' })
     }
   }
 
-  async function shutdown() {
+  async function disposeRecordingResources() {
     // Feature E (plan §8.4): cancel and reap export tasks FIRST. A running ffmpeg holds a
     // source reference, so removing the session directory before the child exits would leave
     // an encoder writing into a deleted path; disposing the export service cancels the tasks
@@ -674,22 +2076,56 @@ function createRecordDomain(deps) {
       ? peekRecordingService()
       : null
     await closeRecordFlow(activeService, true)
+    for (const projectId of [...editorWindows.keys()]) closeEditorWindow(projectId)
+    // Flush every throttled project checkpoint BEFORE the sessions are released: a manifest
+    // write after `dispose()` would point at a source the session no longer tracks.
+    const projectService = projectServiceOrNull()
+    if (projectService && typeof projectService.dispose === 'function') {
+      await projectService.dispose().catch((error) => log('Recording project shutdown failed:', error?.message || error))
+    }
     if (activeService) await activeService.dispose()
+  }
+
+  // `timeoutMs` is the exit path's bounded wait (plan R1 "exit safety", contract §10): app quit
+  // needs the checkpoint flush and the ffmpeg reaping, but a wedged child must not hang the app.
+  // A timed-out call resolves `{ timedOut: true }` while the cleanup keeps running in the
+  // background; the migration path calls this WITHOUT a timeout and awaits it fully.
+  function shutdown({ timeoutMs = 0 } = {}) {
+    const run = disposeRecordingResources()
+    const cap = Math.max(0, Math.round(Number(timeoutMs) || 0))
+    if (!cap) return run
+    run.catch((error) => log('Recording shutdown failed:', error?.message || error))
+    return Promise.race([
+      run.then(() => ({ ok: true, timedOut: false })),
+      new Promise((resolve) => {
+        const timer = setTimeout(() => resolve({ ok: false, timedOut: true }), cap)
+        timer.unref?.()
+      })
+    ])
   }
 
   return {
     isTaskActive,
     ownsControlWindow,
     ownsFrameWindow,
+    ownsEditorWindow,
     createRecordWindow,
     cleanupRecordSession,
     closeRecordFlow,
     restoreRecordFramePassthrough,
     createRecordingController,
+    openEditor,
+    openRecordingWorkbench,
+    startRegionRecording,
+    getActiveState: () => activeRecordingState(),
+    pauseResumeActive,
+    finishActive,
+    focusActive,
     shutdown
   }
 }
 
 module.exports = {
-  createRecordDomain
+  createRecordDomain,
+  createRecordingProjectRef
 }

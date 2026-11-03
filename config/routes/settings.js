@@ -238,16 +238,82 @@ function bindFunctionOcrTab() {
   bindSwitches()
 }
 
+// Recording settings are the DEFAULTS a new capture starts from; the per-capture
+// choices (mode, target, temporary audio/quality overrides) live in the recording
+// workbench (config/routes/recording.js). Keeping the split explicit is what stops
+// this page from growing a second, divergent recording form.
+const RECORD_QUALITY_LABEL_KEYS = {
+  standard: 'config.function-settings.record-quality-standard',
+  high: 'config.function-settings.record-quality-high',
+  ultra: 'config.function-settings.record-quality-ultra'
+}
+
+function recordDefaultCountdownLabel(seconds) {
+  const value = Number(seconds)
+  if (value === 0) return t('config.function-settings.record-countdown-off')
+  return t('config.function-settings.record-countdown-seconds', { seconds: value })
+}
+
+function writeRecordingDefault(patch) {
+  // The record defaults are validated by the main process; a rejected key (for
+  // example while a newer build has not landed the default yet) must surface as a
+  // toast instead of an unhandled rejection.
+  return updateSettings({ record: patch }).catch((error) => toast(errorMessage(error) || t('config.function-settings.record-settings-failed')))
+}
+
+async function populateRecordMicrophoneDevices(select) {
+  const fallback = `<option value="">${t('config.function-settings.record-microphone-default')}</option>`
+  const saved = typeof settings.record.audioMicrophoneDeviceId === 'string' ? settings.record.audioMicrophoneDeviceId : ''
+  let options = ''
+  try {
+    const devices = await navigator.mediaDevices?.enumerateDevices?.() || []
+    const seen = new Set()
+    let index = 0
+    for (const device of devices) {
+      if (!device || device.kind !== 'audioinput') continue
+      const id = typeof device.deviceId === 'string' ? device.deviceId : ''
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      index += 1
+      const label = typeof device.label === 'string' && device.label
+        ? device.label
+        : `${t('config.function-settings.record-microphone-device')} ${index}`
+      options += `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`
+    }
+    if (saved && !seen.has(saved)) options += `<option value="${escapeHtml(saved)}">${escapeHtml(saved)}</option>`
+  } catch {
+    // Device enumeration can be unavailable without media permission; the saved
+    // id still has to be selectable so the row does not silently drop it.
+    if (saved) options = `<option value="${escapeHtml(saved)}">${escapeHtml(saved)}</option>`
+  }
+  if (!select.isConnected) return
+  select.innerHTML = fallback + options
+  select.value = saved
+}
+
 function bindFunctionRecordTab() {
   const frameRate = document.getElementById('frameRate')
-  frameRate.onchange = () => updateSettings({ record: { frameRate: Number(frameRate.value) } })
+  frameRate.onchange = () => writeRecordingDefault({ frameRate: Number(frameRate.value) })
+  const recordQuality = document.getElementById('recordQuality')
+  if (recordQuality) recordQuality.onchange = () => writeRecordingDefault({ quality: recordQuality.value })
+  const recordCountdown = document.getElementById('recordCountdown')
+  if (recordCountdown) recordCountdown.onchange = () => writeRecordingDefault({ countdown: Number(recordCountdown.value) })
+  const recordMicDevice = document.getElementById('recordMicDevice')
+  if (recordMicDevice) {
+    recordMicDevice.onchange = () => writeRecordingDefault({ audioMicrophoneDeviceId: recordMicDevice.value })
+    void populateRecordMicrophoneDevices(recordMicDevice)
+  }
   const recordDirectory = document.getElementById('recordDirectory')
-  recordDirectory.onchange = () => updateSettings({ record: { saveDirectory: recordDirectory.value.trim() } })
+  recordDirectory.onchange = () => writeRecordingDefault({ saveDirectory: recordDirectory.value.trim() })
   document.getElementById('chooseRecordDirectory').onclick = async () => {
     const directory = await window.electronAPI.chooseDirectory()
     if (!directory) return
     recordDirectory.value = directory
-    await updateSettings({ record: { saveDirectory: directory } })
+    await writeRecordingDefault({ saveDirectory: directory })
+  }
+  const openRecordingData = document.getElementById('openRecordingData')
+  if (openRecordingData) {
+    openRecordingData.onclick = () => window.electronAPI.openDataRoot().catch((error) => toast(errorMessage(error) || t('config.function-settings.record-open-data-failed')))
   }
   // P1 (2026-10-18 snow migration §9.1): the wheel step is stored as a fraction,
   // while the row offers whole percent values; main-side normalization clamps it
@@ -260,6 +326,10 @@ function bindFunctionRecordTab() {
 function renderFunctionSettings() {
   const supportedFrameRates = [5, 16, 24, 30, 60]
   const selectedFrameRate = supportedFrameRates.includes(Number(settings.record.frameRate)) ? Number(settings.record.frameRate) : 24
+  // Quality/countdown/device defaults were frozen with the recording workbench
+  // (contract §3); a store written before that still renders the frozen default.
+  const selectedRecordQuality = Object.hasOwn(RECORD_QUALITY_LABEL_KEYS, settings.record.quality) ? settings.record.quality : 'standard'
+  const selectedRecordCountdown = [0, 3, 5].includes(Number(settings.record.countdown)) ? Number(settings.record.countdown) : 3
   const tabs = [
     ['capture', 'config.function-settings.output-section'],
     ['ocr', 'config.function-settings.ocr-section'],
@@ -292,15 +362,25 @@ function renderFunctionSettings() {
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.ocr-min-confidence')}</b><small>${t('config.function-settings.ocr-min-confidence-hint')}</small></div><input id="ocrMinConfidence" type="number" min="0" max="1" step="0.05" value="${settings.ocr.minConfidence}"></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.ocr-after-action')}</b></div><select id="ocrAfterAction"><option value="none">${t('config.function-settings.ocr-after-show')}</option><option value="copy">${t('config.function-settings.ocr-after-copy')}</option><option value="copy-and-close">${t('config.function-settings.ocr-after-copy-close')}</option></select></div>
   </div>`
+  // Two cards: the DEFAULTS the workbench starts from, then storage/data. Every
+  // per-capture choice (mode, target, temporary overrides, per-recording device)
+  // lives in the recording workbench instead of being duplicated here.
   const recordSettings = `<div class="card form-card">
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-frame-rate')}</b><small>${t('config.function-settings.record-frame-rate-hint')}</small></div><select id="frameRate">${supportedFrameRates.map((value) => `<option value="${value}">${value} FPS</option>`).join('')}</select></div>
+    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-quality')}</b><small>${t('config.function-settings.record-quality-hint')}</small></div><select id="recordQuality">${Object.entries(RECORD_QUALITY_LABEL_KEYS).map(([value, labelKey]) => `<option value="${value}" ${selectedRecordQuality === value ? 'selected' : ''}>${t(labelKey)}</option>`).join('')}</select></div>
+    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-countdown')}</b><small>${t('config.function-settings.record-countdown-hint')}</small></div><select id="recordCountdown">${[0, 3, 5].map((value) => `<option value="${value}" ${selectedRecordCountdown === value ? 'selected' : ''}>${recordDefaultCountdownLabel(value)}</option>`).join('')}</select></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-audio-system')}</b><small>${t('config.function-settings.record-audio-system-hint')}</small></div>${switchMarkup(settings.record.audioSystem !== false, 'audioSystem', 'record')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-microphone')}</b><small>${t('config.function-settings.record-microphone-hint')}</small></div>${switchMarkup(settings.record.audioMicrophone === true, 'audioMicrophone', 'record')}</div>
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-directory')}</b></div><input id="recordDirectory" type="text" value="${escapeHtml(settings.record.saveDirectory || '')}"><button class="button" id="chooseRecordDirectory">${t('config.function-settings.choose')}</button></div>
+    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-microphone-device')}</b><small>${t('config.function-settings.record-microphone-device-hint')}</small></div><select id="recordMicDevice"><option value="">${t('config.function-settings.record-microphone-default')}</option></select></div>
+  </div>
+  <div class="card form-card" style="margin-top:14px">
+    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-directory')}</b><small>${t('config.function-settings.record-directory-hint')}</small></div><input id="recordDirectory" type="text" value="${escapeHtml(settings.record.saveDirectory || '')}"><button class="button" id="chooseRecordDirectory">${t('config.function-settings.choose')}</button></div>
+    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-storage-section')}</b></div><button class="button" id="openRecordingData">${t('config.function-settings.record-open-data')}</button></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.pin-click-through')}</b><small>${t('config.function-settings.pin-click-through-hint')}</small></div>${switchMarkup(settings.pinned.clickThrough, 'clickThrough', 'pinned')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.pin-zoom-step')}</b><small>${t('config.function-settings.pin-zoom-step-hint')}</small></div><select id="pinZoomStep">${[5, 10, 15, 20, 25, 50].map((percent) => `<option value="${percent}" ${Math.round((Number(settings.pinned.zoomStep) || 0.1) * 100) === percent ? 'selected' : ''}>${t('config.function-settings.pin-zoom-step-value', { percent })}</option>`).join('')}</select></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.pin-opacity')}</b><small>${t('config.function-settings.pin-opacity-hint')}</small></div></div>
-  </div>`
+  </div>
+  <small class="section-note">${t('config.function-settings.record-defaults-hint')}</small>`
   const tabContent = functionTab === 'ocr' ? ocrSettings : (functionTab === 'record' ? recordSettings : captureSettings)
   view.innerHTML = `<div class="page">${pageHeader(t('config.route.settings-function'), t('config.function-settings.description'))}${tabsMarkup}${tabContent}</div>`
 

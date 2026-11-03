@@ -17,140 +17,98 @@
   <script src="../shared/locales/record.js"></script>
   <script src="../shared/i18n.js"></script>
 </head>
-<body data-state="idle">
-  <section id="controlView" class="control-view">
+<body data-state="idle" data-more="false">
+  <!-- R2 compact control bar (contract §12): status dot + elapsed time, the
+       mic mute (only when a mic was captured), pause/resume, finish and the
+       "more" overflow. The preview/trim/save-MP4 surface now lives in the
+       separate record-editor window and is not rendered here. -->
+  <section id="controlView" class="control-view" data-testid="control-bar">
     <div class="status-cluster">
       <i class="status-dot" aria-hidden="true"></i>
       <div class="status-copy">
-        <strong id="time">00:00</strong>
-        <span id="statusLabel" data-i18n="record.status.idle">Area ready</span>
+        <strong id="time" data-testid="timer">00:00</strong>
+        <span id="statusLabel" data-testid="status-label" data-i18n="record.status.idle">Area ready</span>
       </div>
     </div>
+    <strong id="countdown" class="countdown" data-testid="countdown" hidden></strong>
     <span id="fps" class="fps">24 FPS</span>
-    <strong id="countdown" class="countdown" hidden></strong>
-    <div id="annotationTools" class="annotation-tools" data-i18n-aria-label="record.annotation.tools" aria-label="Recording annotation tools">
-      <button class="annotation-tool active" data-annotation-tool="pointer" type="button" data-i18n-title="record.annotation.tool.pointer" data-i18n-aria-label="record.annotation.tool.pointer" title="Pointer" aria-label="Pointer" disabled>↖</button>
-      <button class="annotation-tool" data-annotation-tool="pen" type="button" data-i18n-title="record.annotation.tool.pen" data-i18n-aria-label="record.annotation.tool.pen" title="Pen" aria-label="Pen" disabled>✎</button>
-      <button class="annotation-tool" data-annotation-tool="rect" type="button" data-i18n-title="record.annotation.tool.rect" data-i18n-aria-label="record.annotation.tool.rect" title="Rectangle" aria-label="Rectangle" disabled>□</button>
-      <button class="annotation-tool" data-annotation-tool="ellipse" type="button" data-i18n-title="record.annotation.tool.ellipse" data-i18n-aria-label="record.annotation.tool.ellipse" title="Ellipse" aria-label="Ellipse" disabled>○</button>
-      <button class="annotation-tool" data-annotation-tool="arrow" type="button" data-i18n-title="record.annotation.tool.arrow" data-i18n-aria-label="record.annotation.tool.arrow" title="Arrow" aria-label="Arrow" disabled>↗</button>
-      <div class="annotation-style-wrap">
-        <button id="annotationStyle" class="annotation-style" type="button" data-i18n-title="record.annotation.style" data-i18n-aria-label="record.annotation.style" title="Colour and thickness" aria-label="Colour and thickness" disabled><i id="annotationSwatch"></i><b id="annotationWidthMark">4</b></button>
-        <div id="annotationPalette" class="annotation-palette" hidden>
-          <div class="color-options" data-i18n-aria-label="record.annotation.colors" aria-label="Annotation colours">
-            <button data-annotation-color="#ff3b30" type="button" data-i18n-title="record.annotation.color.red" title="Red" style="--swatch:#ff3b30"></button>
-            <button data-annotation-color="#ff9500" type="button" data-i18n-title="record.annotation.color.orange" title="Orange" style="--swatch:#ff9500"></button>
-            <button data-annotation-color="#ffcc00" type="button" data-i18n-title="record.annotation.color.yellow" title="Yellow" style="--swatch:#ffcc00"></button>
-            <button data-annotation-color="#34c759" type="button" data-i18n-title="record.annotation.color.green" title="Green" style="--swatch:#34c759"></button>
-            <button data-annotation-color="#1687ff" type="button" data-i18n-title="record.annotation.color.blue" title="Blue" style="--swatch:#1687ff"></button>
-            <button data-annotation-color="#111111" type="button" data-i18n-title="record.annotation.color.black" title="Black" style="--swatch:#111111"></button>
-            <button data-annotation-color="#ffffff" type="button" data-i18n-title="record.annotation.color.white" title="White" style="--swatch:#ffffff"></button>
-          </div>
-          <div class="width-options" data-i18n-aria-label="record.annotation.widths" aria-label="Annotation thickness">
-            <button data-annotation-width="2" type="button" data-i18n="record.annotation.width.thin">Thin</button>
-            <button data-annotation-width="4" type="button" data-i18n="record.annotation.width.medium">Medium</button>
-            <button data-annotation-width="7" type="button" data-i18n="record.annotation.width.thick">Thick</button>
+    <button id="micMute" class="mic-button" data-testid="mic-mute" type="button" data-i18n-title="record.control.mic-mute" data-i18n-aria-label="record.control.mic-mute" title="Mute mic" aria-label="Mute mic" aria-pressed="false" hidden>
+      <svg class="mic-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path class="mic-body" d="M8 1.8a1.7 1.7 0 0 1 1.7 1.7v4.6a1.7 1.7 0 0 1-3.4 0V3.5A1.7 1.7 0 0 1 8 1.8Z"/>
+        <path class="mic-stand" d="M4.5 7.4a3.5 3.5 0 0 0 7 0M8 10.9v2.3"/>
+        <path class="mic-slash" d="M3 13.4 13 2.6"/>
+      </svg>
+    </button>
+    <div class="control-actions">
+      <button id="start" class="primary" data-testid="start-record" type="button" data-i18n="record.control.start">Start</button>
+      <button id="pause" data-testid="pause-resume" type="button" data-i18n="record.control.pause" hidden>Pause</button>
+      <button id="stop" class="finish" data-testid="finish-record" type="button" data-i18n="record.control.finish" hidden>Finish</button>
+      <button id="cancel" class="icon-button countdown-cancel" type="button" data-i18n-title="record.control.cancel-recording" data-i18n-aria-label="record.control.cancel-recording" title="Cancel recording" aria-label="Cancel recording" hidden>×</button>
+      <button id="moreToggle" class="icon-button" data-testid="more-toggle" type="button" data-i18n-title="record.control.more" data-i18n-aria-label="record.control.more" title="More options" aria-label="More options" aria-expanded="false" hidden>⋯</button>
+      <button id="closeBar" class="icon-button" type="button" data-i18n-title="record.control.close-bar" data-i18n-aria-label="record.control.close-bar" title="Close recording bar" aria-label="Close recording bar">×</button>
+    </div>
+
+    <div id="morePanel" class="more-panel" data-testid="more-panel" hidden>
+      <button id="moreBack" class="icon-button more-back" type="button" data-i18n-title="record.control.more-back" data-i18n-aria-label="record.control.more-back" title="Back to controls" aria-label="Back to controls">←</button>
+      <div id="annotationTools" class="annotation-tools" data-testid="annotation-tools" data-i18n-aria-label="record.annotation.tools" aria-label="Recording annotation tools">
+        <button class="annotation-tool active" data-annotation-tool="pointer" type="button" data-i18n-title="record.annotation.tool.pointer" data-i18n-aria-label="record.annotation.tool.pointer" title="Pointer" aria-label="Pointer" disabled>↖</button>
+        <button class="annotation-tool" data-annotation-tool="pen" type="button" data-i18n-title="record.annotation.tool.pen" data-i18n-aria-label="record.annotation.tool.pen" title="Pen" aria-label="Pen" disabled>✎</button>
+        <button class="annotation-tool" data-annotation-tool="rect" type="button" data-i18n-title="record.annotation.tool.rect" data-i18n-aria-label="record.annotation.tool.rect" title="Rectangle" aria-label="Rectangle" disabled>□</button>
+        <button class="annotation-tool" data-annotation-tool="ellipse" type="button" data-i18n-title="record.annotation.tool.ellipse" data-i18n-aria-label="record.annotation.tool.ellipse" title="Ellipse" aria-label="Ellipse" disabled>○</button>
+        <button class="annotation-tool" data-annotation-tool="arrow" type="button" data-i18n-title="record.annotation.tool.arrow" data-i18n-aria-label="record.annotation.tool.arrow" title="Arrow" aria-label="Arrow" disabled>↗</button>
+        <div class="annotation-style-wrap">
+          <button id="annotationStyle" class="annotation-style" type="button" data-i18n-title="record.annotation.style" data-i18n-aria-label="record.annotation.style" title="Colour and thickness" aria-label="Colour and thickness" disabled><i id="annotationSwatch"></i><b id="annotationWidthMark">4</b></button>
+          <div id="annotationPalette" class="annotation-palette" hidden>
+            <div class="color-options" data-i18n-aria-label="record.annotation.colors" aria-label="Annotation colours">
+              <button data-annotation-color="#ff3b30" type="button" data-i18n-title="record.annotation.color.red" title="Red" style="--swatch:#ff3b30"></button>
+              <button data-annotation-color="#ff9500" type="button" data-i18n-title="record.annotation.color.orange" title="Orange" style="--swatch:#ff9500"></button>
+              <button data-annotation-color="#ffcc00" type="button" data-i18n-title="record.annotation.color.yellow" title="Yellow" style="--swatch:#ffcc00"></button>
+              <button data-annotation-color="#34c759" type="button" data-i18n-title="record.annotation.color.green" title="Green" style="--swatch:#34c759"></button>
+              <button data-annotation-color="#1687ff" type="button" data-i18n-title="record.annotation.color.blue" title="Blue" style="--swatch:#1687ff"></button>
+              <button data-annotation-color="#111111" type="button" data-i18n-title="record.annotation.color.black" title="Black" style="--swatch:#111111"></button>
+              <button data-annotation-color="#ffffff" type="button" data-i18n-title="record.annotation.color.white" title="White" style="--swatch:#ffffff"></button>
+            </div>
+            <div class="width-options" data-i18n-aria-label="record.annotation.widths" aria-label="Annotation thickness">
+              <button data-annotation-width="2" type="button" data-i18n="record.annotation.width.thin">Thin</button>
+              <button data-annotation-width="4" type="button" data-i18n="record.annotation.width.medium">Medium</button>
+              <button data-annotation-width="7" type="button" data-i18n="record.annotation.width.thick">Thick</button>
+            </div>
           </div>
         </div>
+        <button id="annotationUndo" class="annotation-tool" type="button" data-i18n-title="record.annotation.undo" data-i18n-aria-label="record.annotation.undo" title="Undo annotation" aria-label="Undo annotation" disabled>↶</button>
+        <button id="annotationClear" class="annotation-tool" type="button" data-i18n-title="record.annotation.clear" data-i18n-aria-label="record.annotation.clear" title="Clear all annotations" aria-label="Clear all annotations" disabled>×</button>
       </div>
-      <button id="annotationUndo" class="annotation-tool" type="button" data-i18n-title="record.annotation.undo" data-i18n-aria-label="record.annotation.undo" title="Undo annotation" aria-label="Undo annotation" disabled>↶</button>
-      <button id="annotationClear" class="annotation-tool" type="button" data-i18n-title="record.annotation.clear" data-i18n-aria-label="record.annotation.clear" title="Clear all annotations" aria-label="Clear all annotations" disabled>×</button>
+      <div id="volumeGroup" class="volume-group" hidden>
+        <label class="volume-row">
+          <span data-i18n="record.volume.system">System volume</span>
+          <input id="volumeSystem" type="range" min="0" max="4" step="0.05" value="1" data-i18n-aria-label="record.volume.system" aria-label="System volume">
+        </label>
+        <label id="volumeMicRow" class="volume-row" hidden>
+          <span data-i18n="record.volume.mic">Mic volume</span>
+          <input id="volumeMic" type="range" min="0" max="4" step="0.05" value="1" data-i18n-aria-label="record.volume.mic" aria-label="Mic volume">
+        </label>
+      </div>
+      <div class="more-actions">
+        <button id="abandon" class="danger" data-testid="abandon-record" type="button" data-i18n="record.control.abandon">Discard recording</button>
+      </div>
+      <div id="discardConfirm" class="discard-confirm" hidden>
+        <strong data-i18n="record.confirm.discard.title">Discard this recording?</strong>
+        <span class="discard-detail" data-i18n="record.confirm.discard.detail">The recorded part is deleted and cannot be recovered.</span>
+        <button id="discardConfirmYes" class="danger" data-testid="abandon-confirm" type="button" data-i18n="record.confirm.discard.confirm">Discard recording</button>
+        <button id="discardConfirmNo" type="button" data-i18n="record.confirm.discard.cancel">Keep recording</button>
+      </div>
     </div>
-    <div class="control-actions">
-      <button id="start" class="primary" type="button" data-i18n="record.control.start">Start</button>
-      <button id="pause" type="button" data-i18n="record.control.pause" hidden>Pause</button>
-      <button id="stop" class="danger" type="button" data-i18n="record.control.stop" hidden>Stop</button>
-      <button id="cancel" class="icon-button" type="button" data-i18n-title="record.control.cancel-recording" data-i18n-aria-label="record.control.cancel-recording" title="Cancel recording" aria-label="Cancel recording">×</button>
+
+    <div class="bar-feedback" aria-live="polite">
+      <span id="recordError" class="bar-error" data-testid="error-text"></span>
+      <span id="saveProgress" class="bar-progress"></span>
     </div>
   </section>
 
-  <section id="previewView" class="preview-view" hidden>
-    <header class="preview-head">
-      <div><strong data-i18n="record.preview.title">Recording preview</strong><span id="previewDuration">00:00</span></div>
-      <button id="closePreview" class="icon-button" type="button" data-i18n-title="record.preview.close" data-i18n-aria-label="record.preview.close" title="Close preview" aria-label="Close preview">×</button>
-    </header>
-    <div class="video-stage">
-      <video id="preview" controls playsinline></video>
-    </div>
-    <section id="trimPanel" class="trim-panel" data-i18n-aria-label="record.trim.title" aria-label="Trim and export">
-      <div class="trim-head">
-        <strong data-i18n="record.trim.title">Trim and export</strong>
-        <span id="trimDuration" class="trim-duration">00:00</span>
-        <span id="trimSelection" class="trim-selection"></span>
-      </div>
-      <div class="trim-rail">
-        <label class="trim-point trim-point-start">
-          <span data-i18n="record.trim.start">Start time</span>
-          <input id="trimStartRange" class="trim-slider" type="range" min="0" max="0" step="10" value="0" data-i18n-aria-label="record.trim.start" aria-label="Start time">
-          <input id="trimStartInput" class="trim-time" type="text" inputmode="decimal" value="00:00.0" data-i18n-aria-label="record.trim.start" aria-label="Start time">
-        </label>
-        <label class="trim-point trim-point-end">
-          <span data-i18n="record.trim.end">End time</span>
-          <input id="trimEndRange" class="trim-slider" type="range" min="0" max="0" step="10" value="0" data-i18n-aria-label="record.trim.end" aria-label="End time">
-          <input id="trimEndInput" class="trim-time" type="text" inputmode="decimal" value="00:00.0" data-i18n-aria-label="record.trim.end" aria-label="End time">
-        </label>
-        <button id="trimPlayRange" class="trim-play" type="button" data-i18n="record.trim.play-range">Play selection</button>
-        <button id="trimReset" class="trim-reset" type="button" data-i18n-title="record.trim.stop-range" data-i18n-aria-label="record.trim.stop-range" title="Stop playback" aria-label="Stop playback">⟲</button>
-      </div>
-      <div class="trim-options">
-        <label class="trim-option">
-          <span data-i18n="record.trim.format">Export format</span>
-          <select id="trimFormat" class="trim-select">
-            <option value="mp4" data-i18n="record.trim.format.mp4">MP4 video</option>
-            <option value="gif" data-i18n="record.trim.format.gif">GIF animation</option>
-          </select>
-        </label>
-        <label class="trim-option trim-gif-only">
-          <span data-i18n="record.trim.gif-size">GIF long edge</span>
-          <select id="trimGifEdge" class="trim-select">
-            <option value="1280">1280</option>
-            <option value="960">960</option>
-            <option value="640">640</option>
-            <option value="480">480</option>
-          </select>
-        </label>
-        <label class="trim-option trim-gif-only">
-          <span data-i18n="record.trim.gif-fps">GIF frame rate</span>
-          <select id="trimGifFps" class="trim-select">
-            <option value="10">10 FPS</option>
-            <option value="15" selected>15 FPS</option>
-            <option value="20">20 FPS</option>
-          </select>
-        </label>
-        <span id="trimGifMeta" class="trim-gif-meta trim-gif-only"></span>
-        <span class="trim-gif-meta trim-gif-only" data-i18n="record.trim.gif-no-audio">GIF has no sound</span>
-      </div>
-      <div id="trimProgress" class="trim-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
-        <i id="trimProgressBar"></i>
-      </div>
-    </section>
-    <div id="recordResultBar" class="record-result-bar" role="status" aria-live="polite" hidden>
-      <span id="recordResultName" class="record-result-name"></span>
-      <span class="record-result-actions">
-        <button id="recordResultOpen" type="button" data-i18n="capture.export-result.open">Open</button>
-        <button id="recordResultCopy" type="button" data-i18n="capture.export-result.copy-path">Address</button>
-        <button id="recordResultReveal" type="button" data-i18n="capture.export-result.reveal">Open folder</button>
-      </span>
-      <span id="recordResultStatus" class="record-result-status" hidden></span>
-      <button id="recordResultClose" class="record-result-dismiss" type="button" data-i18n-title="record.preview.close" data-i18n-aria-label="record.preview.close" title="Close preview" aria-label="Close preview">×</button>
-    </div>
-    <div class="preview-feedback" aria-live="polite">
-      <span id="recordError"></span>
-      <span id="saveProgress"></span>
-    </div>
-    <footer class="preview-actions">
-      <button id="rerecord" type="button" data-i18n="record.preview.rerecord">Record again</button>
-      <button id="saveMp4" type="button" data-i18n="record.preview.save-mp4">Save MP4</button>
-      <button id="trimExport" class="primary" type="button" data-i18n="record.trim.export">Export</button>
-    </footer>
-  </section>
-
-  <script src="../shared/recording-export-options.js"></script>
+  <script src="../shared/recording-quality.js"></script>
   <script src="annotation-utils.js"></script>
   <script src="recording-utils.js"></script>
   <script src="audio-mixer.js"></script>
-  <script src="trim-controller.js"></script>
-  <script src="trim-view.js"></script>
   <script src="record.js"></script>
 </body>
 </html>

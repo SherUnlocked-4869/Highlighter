@@ -6,11 +6,15 @@ const {
   calculateRecordControlSize,
   calculateTranscodeProgress,
   calculateCropRect,
+  classifyChunkAck,
   createFramePacer,
+  formatDuration,
   normalizeFrameRate,
   normalizeSelectionBounds,
   pickDesktopSource,
   primeSeekablePreview,
+  reportStatusFor,
+  resolveRecordInit,
   transitionRecordingState
 } = require('../record/recording-utils')
 
@@ -124,13 +128,24 @@ test('selects the desktop source matching the display id', () => {
 })
 
 test('accepts only declared recording state transitions', () => {
-  assert.equal(transitionRecordingState('idle', 'start'), 'countdown')
+  // R2 control-bar lifecycle (contract §12): preparing/countdown are real states
+  // now, and finalizing can either finish or fall back to a retryable stopped state.
+  assert.equal(transitionRecordingState('idle', 'start'), 'preparing')
+  assert.equal(transitionRecordingState('preparing', 'ready'), 'countdown')
+  assert.equal(transitionRecordingState('preparing', 'record'), 'recording')
+  assert.equal(transitionRecordingState('preparing', 'fail'), 'idle')
   assert.equal(transitionRecordingState('countdown', 'countdown-finished'), 'recording')
+  assert.equal(transitionRecordingState('countdown', 'cancel'), 'idle')
   assert.equal(transitionRecordingState('recording', 'pause'), 'paused')
   assert.equal(transitionRecordingState('paused', 'resume'), 'recording')
-  assert.equal(transitionRecordingState('recording', 'stop'), 'preview')
-  assert.equal(transitionRecordingState('preview', 'save'), 'saving')
-  assert.equal(transitionRecordingState('saving', 'save-failed'), 'preview')
+  assert.equal(transitionRecordingState('recording', 'stop'), 'finalizing')
+  assert.equal(transitionRecordingState('paused', 'stop'), 'finalizing')
+  assert.equal(transitionRecordingState('recording', 'error'), 'paused')
+  assert.equal(transitionRecordingState('recording', 'cancel'), 'idle')
+  assert.equal(transitionRecordingState('finalizing', 'finished'), 'finished')
+  assert.equal(transitionRecordingState('finalizing', 'failed'), 'stopped')
+  assert.equal(transitionRecordingState('stopped', 'stop'), 'finalizing')
+  assert.equal(transitionRecordingState('stopped', 'cancel'), 'idle')
   // P0-1-T5 (S12): the message is an i18n key plus data, because this module also
   // runs under Node with no locale table loaded.
   assert.throws(
@@ -140,6 +155,111 @@ test('accepts only declared recording state transitions', () => {
       && error.i18nParams.to === 'pause'
   )
 })
+
+test('classifies every chunk ACK outcome the renderer must distinguish', () => {
+  // The main process ACKs the last accepted sequence (contract §5). Only "last + 1"
+  // is healthy; a duplicate is a safe replay and a gap is a fatal write failure.
+  assert.equal(classifyChunkAck({ sequence: 1, lastChunkSequence: 0 }), 'ok')
+  assert.equal(classifyChunkAck({ sequence: 3, lastChunkSequence: 2 }), 'ok')
+  assert.equal(classifyChunkAck({ sequence: 3, lastChunkSequence: 3 }), 'duplicate')
+  assert.equal(classifyChunkAck({ sequence: 3, lastChunkSequence: 4 }), 'duplicate')
+  assert.equal(classifyChunkAck({ sequence: 3, lastChunkSequence: 1 }), 'gap')
+  assert.equal(classifyChunkAck({ sequence: 0, lastChunkSequence: 0 }), 'invalid')
+  assert.equal(classifyChunkAck({ sequence: 2, lastChunkSequence: -1 }), 'invalid')
+  assert.equal(classifyChunkAck({ sequence: 2 }), 'invalid')
+  assert.equal(classifyChunkAck(null), 'invalid')
+})
+
+test('resolves the record:init payload and keeps the pre-R2 payload working', () => {
+  const current = resolveRecordInit({
+    sessionId: 'session-1',
+    projectId: 'project-1',
+    mode: 'display',
+    display: {
+      id: '2528732444',
+      name: 'DISPLAY2',
+      boundsDip: { x: 0, y: 0, width: 1920, height: 1080 },
+      pixelSize: { width: 1920, height: 1080 },
+      scaleFactor: 1
+    },
+    selectionBounds: { x: 100, y: 50, width: 641, height: 361 },
+    frameRate: 60,
+    quality: 'high',
+    countdownSeconds: 5,
+    fakeCapture: true,
+    audio: { system: true, microphone: true, microphoneDeviceId: 'device-1', systemGain: 0.5, microphoneGain: 2 }
+  })
+  assert.equal(current.sessionId, 'session-1')
+  assert.equal(current.projectId, 'project-1')
+  assert.equal(current.display.id, '2528732444')
+  assert.deepEqual(current.displayBounds, { x: 0, y: 0, width: 1920, height: 1080 })
+  assert.deepEqual(current.display.pixelSize, { width: 1920, height: 1080 })
+  assert.deepEqual(current.selectionBounds, { x: 100, y: 50, width: 641, height: 361 })
+  assert.equal(current.frameRate, 60)
+  assert.equal(current.quality, 'high')
+  assert.equal(current.countdownSeconds, 5)
+  assert.equal(current.fakeCapture, true)
+  assert.deepEqual(current.audio, {
+    system: true,
+    microphone: true,
+    microphoneDeviceId: 'device-1',
+    systemGain: 0.5,
+    microphoneGain: 2
+  })
+
+  // The pre-R2 init carried flat audio keys and displayBounds instead of display.
+  const legacy = resolveRecordInit({
+    sourceId: 'screen:1',
+    displayBounds: { x: -1920, y: 0, width: 1920, height: 1080 },
+    selectionBounds: { x: -1900, y: 20, width: 640, height: 361 },
+    frameRate: 30,
+    audioSystem: false,
+    audioMicrophone: true,
+    audioSystemGain: 1,
+    audioMicrophoneGain: 0.25
+  })
+  assert.equal(legacy.sourceId, 'screen:1')
+  assert.deepEqual(legacy.displayBounds, { x: -1920, y: 0, width: 1920, height: 1080 })
+  assert.deepEqual(legacy.audio, {
+    system: false,
+    microphone: true,
+    microphoneDeviceId: '',
+    systemGain: 1,
+    microphoneGain: 0.25
+  })
+  assert.equal(legacy.quality, '')
+  assert.equal(legacy.countdownSeconds, 3)
+  assert.equal(legacy.fakeCapture, false)
+  assert.equal(legacy.frameRate, 30)
+
+  // An empty payload must still normalize to a usable, defaulted shape.
+  const empty = resolveRecordInit()
+  assert.equal(empty.mode, 'display')
+  assert.equal(empty.frameRate, 24)
+  assert.deepEqual(empty.selectionBounds, { x: 0, y: 0, width: 0, height: 0 })
+  assert.equal(empty.audio.system, true)
+  assert.equal(empty.audio.microphone, false)
+})
+
+test('formats the control-bar timer and maps UI states to wire statuses', () => {
+  assert.equal(formatDuration(0), '00:00')
+  assert.equal(formatDuration(999), '00:00')
+  assert.equal(formatDuration(12_400), '00:12')
+  assert.equal(formatDuration(3_661_000), '61:01')
+  assert.equal(formatDuration(-5), '00:00')
+  // Contract §9.2: only these five status values travel to the main process. A
+  // failed finish keeps reporting "paused" (capture really is not running).
+  assert.equal(reportStatusFor('preparing'), 'preparing')
+  assert.equal(reportStatusFor('countdown'), 'countdown')
+  assert.equal(reportStatusFor('recording'), 'recording')
+  assert.equal(reportStatusFor('paused'), 'paused')
+  assert.equal(reportStatusFor('stopped'), 'paused')
+  assert.equal(reportStatusFor('finalizing'), 'finalizing')
+  assert.equal(reportStatusFor('idle'), '')
+  assert.equal(reportStatusFor('finished'), '')
+  assert.equal(reportStatusFor('nonsense'), '')
+})
+
 
 test('builds silent H.264 fast-start MP4 arguments by default', () => {
   const args = buildFfmpegArgs('input.webm', 'output.mp4')

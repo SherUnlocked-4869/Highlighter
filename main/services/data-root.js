@@ -23,6 +23,11 @@ function createDataPaths(value) {
     // saved conversations" a single, auditable operation.
     conversations: path.join(root, 'conversations'),
     clipboard: path.join(root, 'clipboard'),
+    // Persistent recording projects (recording workbench R1): one directory per
+    // recording holding capture.webm plus project.json. This is USER CONTENT, not a
+    // cache - cleanup paths must never treat it like `recordingCache`, and deleting a
+    // recording is an explicit project action.
+    recordings: path.join(root, 'recordings'),
     // Local CLI usage statistics: one SQLite database plus scan state. Managed as
     // its own top-level directory so a data-root migration carries it and a
     // "delete my usage data" action stays a single auditable directory.

@@ -8,10 +8,17 @@ function formatConsoleMessage(message) {
   try { return `${message.type()}: ${message.text()}` } catch { return String(message || '') }
 }
 
-async function launchHighlighter({ dataRoot, artifactsDir }) {
+async function launchHighlighter({ dataRoot, artifactsDir, extraEnv = {}, savePaths = [] }) {
   if (!path.isAbsolute(dataRoot)) throw new Error('Highlighter E2E requires an absolute data root')
+  if (extraEnv && typeof extraEnv !== 'object') throw new Error('Highlighter E2E extraEnv must be an object')
   const issues = []
   const savePath = path.join(dataRoot, 'diagnostics.zip')
+  // Extra save-dialog targets, consumed in order. An empty queue keeps the historical
+  // diagnostics.zip fallback, so every existing spec is unaffected. The recording spec
+  // queues `<dataRoot>/exports/recording-N.mp4` entries before clicking Export.
+  const initialSavePaths = Array.isArray(savePaths)
+    ? savePaths.filter((item) => typeof item === 'string' && path.isAbsolute(item))
+    : []
   // This development host is a confined session where Chromium's own sandbox
   // cannot start. A normal desktop/CI shell keeps the sandbox on; the opt-in
   // escape hatch below is never enabled by the product code.
@@ -29,6 +36,10 @@ async function launchHighlighter({ dataRoot, artifactsDir }) {
       HIGHLIGHTER_E2E: '1',
       HIGHLIGHTER_E2E_DATA_ROOT: dataRoot,
       HIGHLIGHTER_E2E_FAKE_EVERYTHING: '1',
+      // The recording spec opts into the main-process synthetic capture source for the
+      // same reason the sandbox is disabled: this automation host cannot initialise DXGI
+      // desktop duplication, so a real getDisplayMedia stream always fails here.
+      ...extraEnv,
       // The usage page only scans after the user enables it, but when a spec does
       // enable it the scan must read the committed fixture home, never the real
       // %USERPROFILE%. The feature honors this override before app.getPath().
@@ -38,6 +49,7 @@ async function launchHighlighter({ dataRoot, artifactsDir }) {
 
   await electronApp.evaluate(({ app, dialog }, options) => {
     globalThis.__highlighterE2eProcessFailures = []
+    globalThis.__highlighterE2eSaveQueue = options.savePaths.slice()
     app.on('render-process-gone', (_event, webContents, details) => {
       globalThis.__highlighterE2eProcessFailures.push({
         type: 'renderer',
@@ -54,9 +66,12 @@ async function launchHighlighter({ dataRoot, artifactsDir }) {
       })
     })
     dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] })
-    dialog.showSaveDialog = async () => ({ canceled: false, filePath: options.savePath })
+    dialog.showSaveDialog = async () => {
+      const next = globalThis.__highlighterE2eSaveQueue.shift()
+      return { canceled: false, filePath: next || options.savePath }
+    }
     dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false })
-  }, { savePath })
+  }, { savePath, savePaths: initialSavePaths })
 
   const attachPage = (page) => {
     if (page.__highlighterIssueCaptureAttached) return
@@ -89,11 +104,36 @@ async function launchHighlighter({ dataRoot, artifactsDir }) {
   // 首页真正渲染出内容（.function-row 由 renderHome 生成）才证明整条链路已就绪。
   await mainWindow.locator('#view .function-row').first().waitFor({ state: 'visible', timeout: 30_000 })
 
+  const pagesMatching = (urlFragment) => electronApp.windows().filter((page) => page.url().includes(urlFragment))
+
+  // Waits for a window whose URL contains `urlFragment`, attaches the issue capture, and
+  // returns the Playwright page. Used by the recording spec for the control bar window and
+  // the editor window, both of which are created on demand.
+  async function waitForWindow(urlFragment, timeout = 30_000) {
+    const existing = pagesMatching(urlFragment)
+    const page = existing.length
+      ? existing[existing.length - 1]
+      : await electronApp.waitForEvent('window', {
+          predicate: (candidate) => candidate.url().includes(urlFragment),
+          timeout
+        })
+    attachPage(page)
+    return page
+  }
+
   return {
     electronApp,
     mainWindow,
     dataRoot,
     savePath,
+    pagesMatching,
+    waitForWindow,
+    async queueSavePaths(paths) {
+      const absolute = (Array.isArray(paths) ? paths : []).filter((item) => typeof item === 'string' && path.isAbsolute(item))
+      await electronApp.evaluate((_electron, next) => {
+        globalThis.__highlighterE2eSaveQueue.push(...next)
+      }, absolute)
+    },
     async getUnexpectedErrors() {
       const processFailures = await electronApp.evaluate(() => globalThis.__highlighterE2eProcessFailures || [])
       return [...issues, ...processFailures]

@@ -71,6 +71,9 @@ const { createExportResultForApp, createRecordingExportRef, createRecordingMedia
 const regionPresets = require('./shared/region-presets')
 const { createOcrIpcController, registerOcrIpc } = require('./main/ipc/ocr-ipc')
 const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
+// R2/R3 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §8/§9): the workbench/records channels
+// (main role) and the standalone editor channels (record-editor role).
+const { registerRecordingWorkbenchIpc, registerRecordingEditorIpc } = require('./main/ipc/recording-workbench-ipc')
 const { registerSearchIpc } = require('./main/ipc/search-ipc')
 const { registerSelectionIpc } = require('./main/ipc/selection-ipc')
 const { UpdateService } = require('./main/services/update-service')
@@ -99,7 +102,7 @@ const { buildTableFromOcr } = require('./capture/recognition-utils')
 const { createPinDomain } = require('./main/domains/pin')
 const { createCaptureDomain } = require('./main/domains/capture')
 const { createLongCaptureDomain } = require('./main/domains/long-capture')
-const { createRecordDomain } = require('./main/domains/record')
+const { createRecordDomain, createRecordingProjectRef } = require('./main/domains/record')
 const { createRecognitionDomain } = require('./main/domains/recognition')
 const { createSearchDomain } = require('./main/domains/search')
 const { createClipboardDomain } = require('./main/domains/clipboard')
@@ -146,6 +149,8 @@ let historyService = null, captureDocumentService = null
 let diagnosticsService = null
 let updateService = null
 let sessionExitRecorded = false
+// R1 (plan §5.2 exit safety): one-shot guard for the bounded recording shutdown awaited below.
+let recordingShutdownComplete = false
 let proxyBridgeController = null
 // Feature A/B singletons. Both are created after the settings store exists (they read settings) and
 // are read lazily by the domains through the accessors below, so a capture window created during
@@ -298,6 +303,9 @@ function getRecordingService() {
 
 // Feature E (plan §8.1/§8.3): lazy export queue handle; both collaborators are created later.
 const recordingExportRef = createRecordingExportRef({ getRecordingService: () => getRecordingService(), getFfmpegPath: resolveFfmpegPath, writerCoordinator: managedRecordingWriters, getExportResultService: () => exportResultService, log })
+// R1 (contracts §6/§7): lazy handle for the persistent recording-project service. Its root is the
+// managed `recordings/` directory (never a cache); the domain degrades to a code if it is unavailable.
+const recordingProjectRef = createRecordingProjectRef({ root: activePaths?.recordings || path.join(app.getPath('userData'), 'recordings'), log })
 
 function getSettings() {
   return settingsService.getSettings()
@@ -477,6 +485,7 @@ function authorizeIpcRole(role, win) {
   if (role === 'search') return searchDomain?.ownsWindow(win) === true
   if (role === 'record') return recordDomain?.ownsControlWindow(win) === true
   if (role === 'record-frame') return recordDomain?.ownsFrameWindow(win) === true
+  if (role === 'record-editor') return recordDomain?.ownsEditorWindow(win) === true
   return false
 }
 
@@ -654,7 +663,12 @@ recordDomain = createRecordDomain({
   getExportResultService: () => exportResultService,
   // Feature B (plan §5.1): the record domain remembers its own last region (a domain-internal write,
   // not a channel). Resolver for the same construction-order reason as the other services.
-  getRegionPreferences: () => regionPreferences
+  getRegionPreferences: () => regionPreferences,
+  // R1 (contracts §6): persistent projects. Resolver like the export queue: created on first use.
+  getRecordingProjectService: () => recordingProjectRef.get(),
+  // R2/R3 (contracts §10): the few assembly-side collaborators the workbench/editor need. One
+  // resolver keeps main.js under its line ceiling; every member is optional in the domain.
+  getRecordingWorkbench: () => ({ shell, updateSettings: (patch) => settingsService.updateSettings(patch), createMainWindow: (route) => createMainWindow(route), backdropColor: () => windowBackdropColor(getSettings(), nativeTheme), createRegionSelection: (...args) => captureDomain.createCaptureWindow(...args), positionAutomationWindow, refreshTray: () => createTrayIcon() })
 })
 
 recognitionDomain = createRecognitionDomain({
@@ -868,10 +882,7 @@ function createTrayIcon() {
   const trayIcon = createTrayIconImage({ nativeImage, directory: path.join(__dirname, 'assets'), theme: settings.theme, systemPrefersDark: nativeTheme.shouldUseDarkColors })
   if (!tray) {
     tray = new Tray(trayIcon.image)
-    tray.on('click', () => {
-      if (isGameModeEnabled()) return
-      functionRouter.executeFunction('screenshot').catch((error) => log('Tray action failed:', error.message))
-    })
+    tray.on('click', () => { if (!isGameModeEnabled()) functionRouter.executeFunction('screenshot').catch((error) => log('Tray action failed:', error.message)) })
     tray.on('double-click', () => createMainWindow('home'))
   } else if (trayIcon.file !== tray._trayIconFile) tray.setImage(trayIcon.image)
   tray._trayIconFile = trayIcon.file
@@ -884,22 +895,11 @@ function createTrayIcon() {
     translationProxy: proxyState,
     setTranslationProxyEnabled: (enabled) => proxyBridgeController.setEnabled(enabled),
     executeFunction: (name) => functionRouter.executeFunction(name).catch((error) => log('Tray action failed:', name, error.message)),
-    // P0-6-T4: a click-through pin swallows clicks, and game mode suspends both
-    // the router and the global shortcuts, so this entry calls the domain
-    // directly - it is the only recovery path that survives game mode.
-    exitClickThrough: () => {
-      const exited = pinDomain.exitAllClickThrough()
-      log('Click-through exit:', exited)
-      return exited
-    },
-    setGameModeEnabled: (enabled) => {
-      try {
-        setGameModeEnabled(enabled)
-      } catch (error) {
-        log('Game mode update failed:', error.message)
-        createTrayIcon()
-      }
-    },
+    // P0-6-T4: a click-through pin swallows clicks, and game mode suspends both the router and the
+    // global shortcuts, so this entry calls the domain directly - the only recovery path that
+    // survives game mode.
+    exitClickThrough: () => { const exited = pinDomain.exitAllClickThrough(); log('Click-through exit:', exited); return exited },
+    setGameModeEnabled: (enabled) => { try { setGameModeEnabled(enabled) } catch (error) { log('Game mode update failed:', error.message); createTrayIcon() } },
     openHistory: () => createMainWindow('history'),
     openMainWindow: () => createMainWindow('home'),
     hasConversation: selectionDomain.hasConversation(),
@@ -908,17 +908,9 @@ function createTrayIcon() {
     // screenshot closes on save) is still reachable. The plan caps the tray at one entry; the
     // service returns exactly that (latestFor() with no owner = newest live receipt).
     recentExport: exportResultService ? exportResultService.latestFor() : null,
-    openRecentExport: (receipt) => {
-      if (!receipt?.resultId) return
-      // The tray is main-process internal (plan §4.2 does not disguise it as renderer IPC), so it
-      // may act on the newest receipt it was handed; the service still re-checks the file.
-      Promise.resolve(exportResultService?.perform({ resultId: receipt.resultId, action: 'open' }))
-        .then((result) => {
-          if (result?.status === 'failed') log('Tray recent export failed:', result.code)
-          createTrayIcon()
-        })
-        .catch((error) => log('Tray recent export failed:', error.message))
-    },
+    // R2 (contracts §4.1/§4.2): the workbench entry and the live pause/finish entries.
+    recording: { active: recordDomain.getActiveState(), openWorkbench: () => recordDomain.openRecordingWorkbench(), pauseResume: () => recordDomain.pauseResumeActive(), finish: () => recordDomain.finishActive() },
+    openRecentExport: (receipt) => { if (!receipt?.resultId) return; Promise.resolve(exportResultService?.perform({ resultId: receipt.resultId, action: 'open' })).then((result) => { if (result?.status === 'failed') log('Tray recent export failed:', result.code); createTrayIcon() }).catch((error) => log('Tray recent export failed:', error.message)) },
     quit: () => app.quit()
   })))
 }
@@ -933,9 +925,7 @@ const saveImageBuffer = createImageFileSaver({
   log
 })
 
-async function saveDataUrl(dataUrl, options = {}) {
-  return saveImageBuffer(dataUrlToBuffer(dataUrl), options)
-}
+async function saveDataUrl(dataUrl, options = {}) { return saveImageBuffer(dataUrlToBuffer(dataUrl), options) }
 
 function getEverythingService() {
   if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
@@ -1162,12 +1152,11 @@ registerSearchIpc({
   controller: searchDomain.createSearchController()
 })
 
-registerRecordingIpc({
-  ipcMain: secureIpcMain,
-  controller: recordDomain.createRecordingController()
-})
-registerRecordingExportFeatureIpc({ ipcMain: secureIpcMain, controller: recordDomain.createRecordingController() })
-
+const recordController = recordDomain.createRecordingController()
+registerRecordingIpc({ ipcMain: secureIpcMain, controller: recordController })
+registerRecordingExportFeatureIpc({ ipcMain: secureIpcMain, controller: recordController })
+registerRecordingWorkbenchIpc({ ipcMain: secureIpcMain, controller: recordController })
+registerRecordingEditorIpc({ ipcMain: secureIpcMain, controller: recordController })
 
 registerSelectionIpc({
   ipcMain: secureIpcMain,
@@ -1316,9 +1305,16 @@ else {
       clipboardDomain.dispose().catch((error) => log('Clipboard shutdown failed:', error.code || 'SHUTDOWN_FAILED')).finally(() => app.quit())
       return
     }
-    recordDomain.shutdown()
-      .catch((error) => log('Recording shutdown failed:', error.message))
-      .finally(() => { recordingService = null })
+    // R1 (plan §5.2 exit safety): the recording shutdown is AWAITED but bounded. It flushes the
+    // throttled project checkpoint and reaps export children, so quitting immediately can cut both
+    // off; the 3s cap keeps a wedged child from hanging the app. The second before-quit pass runs
+    // the remaining dispositions below.
+    if (!recordingShutdownComplete) {
+      event.preventDefault()
+      recordingShutdownComplete = true
+      recordDomain.shutdown({ timeoutMs: 3000 }).catch((error) => log('Recording shutdown failed:', error.message)).finally(() => { recordingService = null; app.quit() })
+      return
+    }
     longCaptureDomain.closeLongCapture()
     if (ocrService) { ocrService.stop(); ocrService = null }
     if (everythingService) { everythingService.stop(); everythingService = null }

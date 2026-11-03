@@ -29,7 +29,12 @@ test('main process wires protected region recording windows', () => {
   assert.match(recordingIpc, /record:finish-session/)
   assert.match(recordingIpc, /record:save-mp4/)
   assert.match(main, /registerCaptureIpc\(\{[\s\S]*captureDomain\.createCaptureController\(\)/)
-  assert.match(main, /registerRecordingIpc\(\{[\s\S]*recordDomain\.createRecordingController\(\)/)
+  // R2/R3 (contracts §9/§10): ONE controller instance from the record domain is registered for all
+  // four recording surfaces (control bar, legacy export channels, workbench and editor).
+  assert.match(main, /const recordController = recordDomain\.createRecordingController\(\)/)
+  assert.match(main, /registerRecordingIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
+  assert.match(main, /registerRecordingWorkbenchIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
+  assert.match(main, /registerRecordingEditorIpc\(\{ ipcMain: secureIpcMain, controller: recordController \}\)/)
   assert.match(recordPreload, /startSession:/)
   assert.match(recordPreload, /appendChunk:/)
   assert.match(framePreload, /record-frame:state/)
@@ -80,22 +85,34 @@ test('main process securely routes annotation commands and snapshots', () => {
   assert.match(recordingIpc, /record:performance/)
 })
 
-test('recording UI contains control and preview states', () => {
+// R2/R3 (contracts §12): the control bar is a compact live surface. The preview/trim/save-MP4
+// states that used to live in the same window MOVED to the standalone editor window (W5), so the
+// intent "the recording UI has a control state AND a preview state" is kept by asserting both
+// halves exist in their owners: the bar is control-only, and the editor page is the preview
+// surface. Detailed editor assertions live in test/recording-editor-ui.test.js (W5).
+test('the control bar stays control-only and the preview lives in the editor window', () => {
   const html = fs.readFileSync(path.join(root, 'record', 'record.html'), 'utf8')
   const style = fs.readFileSync(path.join(root, 'record', 'record.css'), 'utf8')
   const script = fs.readFileSync(path.join(root, 'record', 'record.js'), 'utf8')
-  for (const id of ['controlView', 'countdown', 'start', 'pause', 'stop', 'previewView', 'preview', 'saveMp4', 'rerecord']) {
+  for (const id of ['controlView', 'countdown', 'start', 'pause', 'stop']) {
     assert.match(html, new RegExp(`id="${id}"`))
   }
+  // Contract §12: the preview view and its save-MP4 entry are deleted from the control bar.
+  assert.doesNotMatch(html, /id="previewView"/, 'the preview moved to the editor window')
+  assert.doesNotMatch(html, /id="saveMp4"/, 'the duplicate save entry is gone')
   assert.match(script, /canvas\.captureStream\(frameRate\)/)
   assert.match(script, /requestVideoFrameCallback/)
   assert.match(script, /createFramePacer\(frameRate\)/)
   assert.match(script, /video\/webm/)
   assert.match(script, /appendChunk/)
   assert.match(script, /transitionRecordingState/)
-  assert.match(script, /primeSeekablePreview\(preview\)/)
-  assert.match(style, /\.video-stage\{[^}]*position:relative[^}]*overflow:hidden/)
-  assert.match(style, /\.video-stage video\{[^}]*position:absolute[^}]*inset:14px/)
+  // The editor window is the new preview surface: the page exists, the main process creates it
+  // with the editor preload, and the preview CSS moved out of the control bar's stylesheet.
+  // Detailed editor assertions live in test/recording-editor-ui.test.js (W5).
+  assert.equal(fs.existsSync(path.join(root, 'record', 'editor.html')), true)
+  assert.equal(fs.existsSync(path.join(root, 'record', 'editor.css')), true)
+  assert.match(fs.readFileSync(path.join(root, 'main', 'domains', 'record', 'index.js'), 'utf8'), /preload-record-editor\.js/)
+  assert.doesNotMatch(style, /\.video-stage\b/, 'the preview stage moved to the editor stylesheet')
 })
 
 test('recording controls expose and composite basic live annotation tools', () => {
@@ -185,7 +202,11 @@ test('region recording settings expose the frozen frame rates and audio sources'
   assert.match(recordScript, /record\.error\.desktop-video-unreadable/)
   assert.match(recordScript, /record\.error\.record-failed/)
   assert.match(recordScript, /cancelButton\.disabled/)
-  assert.match(recordScript, /async function rerecord\(\)[\s\S]*catch \(error\) \{[\s\S]*cancelSession\(sessionId\)/)
+  // R2 (contracts §12): the preview/rerecord pair is gone from the control bar. "Discard this take"
+  // replaced it: the confirmation cancels the session (which deletes the project) before returning
+  // the bar to idle, and a failed cancel must never leave the UI claiming the take is gone.
+  assert.match(recordScript, /async function confirmDiscard\(\)[\s\S]*?await window\.recordAPI\.cancelSession\(sessionId\)[\s\S]*?setState\(transitionRecordingState\(state, 'cancel'\)\)/)
+  assert.doesNotMatch(recordScript, /async function rerecord\(\)/, 'the rerecord preview flow moved to the editor')
   assert.match(main, /createFfmpegPathResolver/)
   assert.match(ffmpegResolver, /未找到 MP4 编码组件/)
 })
@@ -229,8 +250,10 @@ test('the audio notice is stored as a key and rendered in the active language', 
     recordScript,
     /function setAudioNotice\(key, params = null\) \{[\s\S]*?if \(nextKey === audioNoticeKey && sameAudioNoticeParams\(audioNoticeParams, nextParams\)\) return[\s\S]*?renderStatus\(\)/
   )
-  // 句子只在渲染期构造，形状与改动前一致（`${label} · ${notice}` / title = notice）。
-  assert.match(recordScript, /const notice = audioNoticeKey \? t\(audioNoticeKey, audioNoticeParams\) : ''/)
+  // 句子只在渲染期构造，形状与改动前一致（`${label} · ${notice}` / title = notice）。R2 在它前面
+  // 加了一层失败提示优先级：write/finish 的失败优先于音频降级提示，两者仍然都是"键"，由当前语言
+  // 在 renderStatus() 里现译。
+  assert.match(recordScript, /const notice = failureNotice\s*\n?\s*\? t\(failureNotice\.key, failureNotice\.params\)\s*\n?\s*: \(audioNoticeKey \? t\(audioNoticeKey, audioNoticeParams\) : ''\)/)
   assert.match(recordScript, /statusLabel\.textContent = notice \? `\$\{label\} · \$\{notice\}` : label/)
   assert.match(recordScript, /if \(notice\) statusLabel\.title = notice/)
   // 降级告警转成 {key, params} 描述符，原始 detail 只作为插值参数出入。

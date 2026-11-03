@@ -1,4 +1,5 @@
 const { isValidAccelerator } = require('../../shared/shortcut-keys')
+const { QUALITY_LEVELS, COUNTDOWN_OPTIONS } = require('../../shared/recording-quality')
 
 const MAX_PATCH_BYTES = 256 * 1024
 const MAX_ARRAY_ITEMS = 100
@@ -7,9 +8,31 @@ const STRING_LIMITS = new Map([
   ['apiKey', 512],
   ['customCss', 128 * 1024],
   ['selectionToolbar.prompts.translate', 6000],
-  ['selectionToolbar.prompts.explain', 6000]
+  ['selectionToolbar.prompts.explain', 6000],
+  // R2 (contracts §3): user-controlled text that is not a path and not free-form copy.
+  ['record.audioMicrophoneDeviceId', 256],
+  ['record.lastDisplayId', 128]
 ])
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+// R2 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §3): enum settings cannot be checked by
+// the template walk, because the template only knows the TYPE of `'standard'` / `3` /
+// `'display'`. Without these, an illegal value would be persisted and silently repaired on read,
+// which is exactly the "only normalized at read time" gap the contract forbids. They are merged
+// UNDER the caller-supplied `domainValidators` map (a caller may still override a path) and live
+// here instead of settings-service.js so the write gate needs no new wiring in that module.
+const RECORD_MODES = Object.freeze(['display', 'region'])
+const RECORD_ENUM_VALIDATORS = new Map([
+  ['record.quality', (value) => {
+    if (!QUALITY_LEVELS.includes(value)) throw new RangeError('Unsupported setting value: record.quality')
+  }],
+  ['record.countdown', (value) => {
+    if (!COUNTDOWN_OPTIONS.includes(value)) throw new RangeError('Unsupported setting value: record.countdown')
+  }],
+  ['record.lastMode', (value) => {
+    if (!RECORD_MODES.includes(value)) throw new RangeError('Unsupported setting value: record.lastMode')
+  }]
+])
 
 function isPlainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
@@ -34,16 +57,15 @@ function isPlainObject(value) {
 // not descend into it (the domain validator is responsible for unknown keys there, which
 // is what makes a hand-written region-presets validator stricter, not looser).
 function domainValidatorFor(domainValidators, path) {
-  if (!domainValidators || !path) return null
-  if (typeof domainValidators.get === 'function') {
+  if (!path) return null
+  if (domainValidators && typeof domainValidators.get === 'function') {
     const validator = domainValidators.get(path)
-    return typeof validator === 'function' ? validator : null
-  }
-  if (typeof domainValidators === 'object' && Object.hasOwn(domainValidators, path)) {
+    if (typeof validator === 'function') return validator
+  } else if (domainValidators && typeof domainValidators === 'object' && Object.hasOwn(domainValidators, path)) {
     const validator = domainValidators[path]
-    return typeof validator === 'function' ? validator : null
+    if (typeof validator === 'function') return validator
   }
-  return null
+  return RECORD_ENUM_VALIDATORS.get(path) || null
 }
 
 function assertValue(value, template, path, domainValidators) {

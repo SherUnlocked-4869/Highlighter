@@ -215,3 +215,49 @@ test('validation stays type-only: an out-of-range language is a normalizer conce
   assert.equal(assertSettingsPatch(patch, DEFAULT_SETTINGS).language, 'fr')
 })
 
+
+// R2 (docs/plans/2026-11-03-recording-r1-r3-contracts.md §3): quality / countdown / lastMode are
+// enums whose template leaf only proves the TYPE. The write path must reject an illegal value
+// instead of persisting it and repairing it on read.
+test('the R2 recording enums are rejected on the write path', () => {
+  assert.equal(assertSettingsPatch({ record: { quality: 'ultra' } }, DEFAULT_SETTINGS).record.quality, 'ultra')
+  assert.equal(assertSettingsPatch({ record: { countdown: 0 } }, DEFAULT_SETTINGS).record.countdown, 0)
+  assert.equal(assertSettingsPatch({ record: { countdown: 5 } }, DEFAULT_SETTINGS).record.countdown, 5)
+  assert.equal(assertSettingsPatch({ record: { lastMode: 'region' } }, DEFAULT_SETTINGS).record.lastMode, 'region')
+
+  const rejected = [
+    [{ record: { quality: 'insane' } }, /record\.quality/],
+    [{ record: { quality: 4 } }, /record\.quality/],
+    [{ record: { countdown: 2 } }, /record\.countdown/],
+    [{ record: { countdown: '3' } }, /record\.countdown/],
+    [{ record: { lastMode: 'window' } }, /record\.lastMode/],
+    [{ record: { lastMode: true } }, /record\.lastMode/]
+  ]
+  for (const [patch, message] of rejected) {
+    assert.throws(() => assertSettingsPatch(patch, DEFAULT_SETTINGS), message, JSON.stringify(patch))
+  }
+})
+
+test('a caller-supplied domain validator still wins for the R2 enum paths', () => {
+  // The built-ins are merged UNDER the caller's map (the region-presets hook must keep working
+  // unchanged); a caller may therefore replace the whole contract for a path.
+  const seen = []
+  const domainValidators = new Map([['record.quality', (value) => { seen.push(value) }]])
+  assertSettingsPatch({ record: { quality: 'anything' } }, DEFAULT_SETTINGS, { domainValidators })
+  assert.deepEqual(seen, ['anything'])
+})
+
+test('the R2 recording text fields are length-bounded', () => {
+  assert.equal(
+    assertSettingsPatch({ record: { audioMicrophoneDeviceId: 'device-1' } }, DEFAULT_SETTINGS).record.audioMicrophoneDeviceId,
+    'device-1'
+  )
+  assert.throws(
+    () => assertSettingsPatch({ record: { audioMicrophoneDeviceId: 'x'.repeat(257) } }, DEFAULT_SETTINGS),
+    /内容过长/
+  )
+  assert.throws(
+    () => assertSettingsPatch({ record: { lastDisplayId: 'x'.repeat(129) } }, DEFAULT_SETTINGS),
+    /内容过长/
+  )
+})
