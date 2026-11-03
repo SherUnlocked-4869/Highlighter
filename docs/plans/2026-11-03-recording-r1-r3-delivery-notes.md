@@ -216,7 +216,7 @@ UI 目检截图（本会话 `.tmp-record/evidence/`，未入库）：工作台�
 | E2E（Playwright + 真实 Electron） | **12/12 passed (1.8m)**：截图/设置/搜索等既有 8 条 + 录屏 4 条（R3 主闭环/重启找回、R4 窗口模式、R4 多段+WebM/720p、R5 演示成片含关闭重开草稿保留）；R5 用例对导出成片抽帧做像素断言 |
 | 静态门禁 | `check-js` 483 文件通过；`check-architecture` main.js 1327/1330；`check-i18n --max 606` 595/606、三语对称、344 个 data-i18n 键 0 缺失、扫描区新增中文 0 行（main 288 中的 +1 为 WebM 保存对话框标题，与既有保存对话框一致） |
 | 覆盖率 | R4 时实测及门槛通过（loaded 92.11% / native per-file / critical 93.57%）；R5 新增代码未单独重跑覆盖率门禁（本轮按交付要求以功能/E2E 验证为主） |
-| 打包 | 使用 `electron-builder.local-fuses.cjs` 重新构建 NSIS Setup + portable（未签名）；fuses 校验通过、`--no-sandbox` 启动探针通过、打包版 CDP smoke 覆盖工作台/窗口列表/编辑器（含 R5 演示控件） |
+| 打包 | 使用 `electron-builder.local-fuses.cjs` 重新构建 NSIS Setup + portable（含 R1–R5，未签名）：Setup `150,098,577 B` / `FA48099A9666752FD1EB8B61CA02637D7B8B571E0CFFF35E29FE2BDE342D5B9C`，portable `149,811,181 B` / `6270C00D90D84CB4FB30C93BFB2B0AF43BE8495A9FB5B9C247BAF9AEEC0CFE3B`；fuses 校验通过、`--no-sandbox` 启动探针通过、打包版 CDP smoke 覆盖工作台/窗口列表/编辑器；asar 自动解包 sharp 原生库（`@img/sharp-win32-x64`），R5 演示导出所用 sharp 在打包环境仍可加载（与既有 screenshot-desktop/selection-hook 同机制） |
 
 ### 交付边界
 
