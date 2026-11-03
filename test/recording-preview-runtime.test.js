@@ -35,7 +35,8 @@ function createVideoFixture(filePath, size) {
 }
 
 function ratioOf(value) {
-  const match = /^(\d+) \u00d7 (\d+)$/.exec(String(value || ''))
+  // The R4 output line is "<W> × <H> · <kept duration>"; the ratio only needs the first two.
+  const match = /^(\d+) \u00d7 (\d+)/.exec(String(value || ''))
   if (!match) return null
   return Number(match[1]) / Number(match[2])
 }
@@ -105,10 +106,15 @@ test('the recording editor keeps video, timeline and the export action on screen
       layout.handleStart.left + layout.handleStart.width / 2 < layout.handleEnd.left + layout.handleEnd.width / 2,
       `${label}: start handle is left of the end handle`
     )
-    assert.ok(layout.selection.width >= layout.track.width - 2, `${label}: the default selection is the full range`)
-    // A ready project must not show the recovery banner or an error.
+    // R4 multi-segment timeline: the default edit is one kept block spanning the track, with
+    // the two outer handles; no boundary grips exist until the user splits the recording.
+    assert.ok(Array.isArray(layout.segmentBlocks) && layout.segmentBlocks.length === 1, `${label}: one kept segment by default`)
+    assert.equal(layout.boundaryCount, 0, `${label}: no inner boundary before a split`)
+    assert.ok(layout.segmentBlocks[0].width >= layout.track.width - 2, `${label}: the default kept block is the full range`)
+    // A ready project must not show the recovery banner, an error, or the empty-selection hint.
     assert.equal(layout.recoveryHidden, true, `${label}: ready project has no recovery banner`)
     assert.equal(layout.recoveryVisible, false, `${label}: recovery banner is hidden`)
+    assert.equal(layout.emptyHintHidden, true, `${label}: no empty-selection hint for a valid edit`)
     assert.equal(layout.errors, '', `${label}: no error text for a ready project`)
     assert.equal(layout.bodyFormat, 'mp4', `${label}: MP4 export settings are active by default`)
     assert.match(layout.saveState, /\S/, `${label}: autosave status is rendered`)
@@ -117,13 +123,23 @@ test('the recording editor keeps video, timeline and the export action on screen
     assert.ok(layout.i18nChecked > 15, `${label}: the editor has translatable static markup`)
     assert.deepEqual(layout.i18nMismatches, [], `${label}: every static data-i18n node is translated`)
     assert.equal(layout.language, 'zh-CN', `${label}: the probe window uses the default language`)
-    // The export panel shows the real final dimensions, not a placeholder.
-    assert.ok(ratioOf(layout.exportFinalSize) !== null, `${label}: final size is rendered as W x H`)
+    // The export panel shows the real final dimensions (plus kept duration), not a placeholder.
+    assert.ok(ratioOf(layout.exportOutputSize) !== null, `${label}: output size is rendered as W x H`)
+    // R4 §5 hide-above-source rule: 640x480 footage cannot offer 1080p/720p/480p caps above
+    // its own long edge (854/1280/1920 > 640), so only "source" is selectable; the 30 fps
+    // source offers exactly source/30 (never 60).
+    assert.deepEqual(layout.exportResolutionOptions, ['source'], `${label}: no upscale presets are offered`)
+    assert.deepEqual(layout.exportFpsOptions, ['source', '30'], `${label}: fps above the source is hidden`)
+    // The R4 edit controls are real buttons (disabled is fine for the default full-range
+    // edit, but they must exist and report a boolean disabled state).
+    for (const control of layout.editControls) {
+      assert.equal(typeof control.disabled, 'boolean', `${label}: #${control.id} is a real control`)
+    }
   }
-  // Aspect ratios drive the final-size line: 4:3 source for both wide/at-minimum window,
+  // Aspect ratios drive the output-size line: 4:3 source for both wide/at-minimum window,
   // 1:1 after the square fixture is loaded.
-  assert.ok(Math.abs(ratioOf(probe.wideLandscape.exportFinalSize) - 640 / 480) < 0.01)
-  assert.ok(Math.abs(ratioOf(probe.wideSquare.exportFinalSize) - 480 / 480) < 0.01)
+  assert.ok(Math.abs(ratioOf(probe.wideLandscape.exportOutputSize) - 640 / 480) < 0.01)
+  assert.ok(Math.abs(ratioOf(probe.wideSquare.exportOutputSize) - 480 / 480) < 0.01)
   // The minimum supported width is a real state the window can be resized to (minWidth is
   // 820 in the terminal contract) and then still shows the export action.
   assert.ok(probe.narrowLandscape.viewport.width >= 800 && probe.narrowLandscape.viewport.width <= 900)

@@ -25,6 +25,7 @@ const recordingQuality = window.recordingQuality
 const controlView = document.getElementById('controlView')
 const timeElement = document.getElementById('time')
 const statusLabel = document.getElementById('statusLabel')
+const windowTitleElement = document.getElementById('windowTitle')
 const fpsElement = document.getElementById('fps')
 const countdownElement = document.getElementById('countdown')
 const startButton = document.getElementById('start')
@@ -46,6 +47,7 @@ const volumeSystem = document.getElementById('volumeSystem')
 const volumeMic = document.getElementById('volumeMic')
 const errorElement = document.getElementById('recordError')
 const saveProgressElement = document.getElementById('saveProgress')
+const annotationToolsElement = document.getElementById('annotationTools')
 const annotationStyleButton = document.getElementById('annotationStyle')
 const annotationPalette = document.getElementById('annotationPalette')
 const annotationSwatch = document.getElementById('annotationSwatch')
@@ -136,6 +138,17 @@ let annotationResetVersion = 0
 let fakeCapture = false
 const fakeCaptureStops = []
 const fakeAudioNodes = []
+// R4 window mode (contract §2.2/§2.4). `captureMode` is 'window' only when the main
+// process bound the display-media handler to a window source; display/region keep the
+// existing screen-crop path. `windowPixelSize` is the FROZEN output canvas size - the
+// captured window may be moved/resized afterwards, the encoding size never changes.
+let captureMode = 'display'
+let windowCaptureTitle = ''
+let windowPixelSize = null
+let annotationAllowed = true
+let watchedVideoTrack = null
+let sourceLostHandled = false
+let sourceHiddenWarning = false
 
 // P0-1-T5 (S12): the table holds i18n keys, not sentences, so a language switch
 // re-renders the current state without restarting the recording.
@@ -149,6 +162,8 @@ const STATUS_LABELS = {
   finished: 'record.status.finished',
   stopped: 'record.status.stopped'
 }
+// Window captures are not "area ready": the bar names the target window instead.
+const WINDOW_IDLE_STATUS = 'record.status.window-idle'
 
 function elapsedTime() {
   if (!startedAt) return 0
@@ -199,7 +214,7 @@ function noteAudioWarning(warning) {
 // write/finish failure takes precedence over the degradation notice.
 function renderStatus() {
   statusLabel.removeAttribute('title')
-  const key = STATUS_LABELS[state]
+  const key = captureMode === 'window' && state === 'idle' ? WINDOW_IDLE_STATUS : STATUS_LABELS[state]
   if (!key) return
   const label = t(key)
   const notice = failureNotice
@@ -207,6 +222,23 @@ function renderStatus() {
     : (audioNoticeKey ? t(audioNoticeKey, audioNoticeParams) : '')
   statusLabel.textContent = notice ? `${label} · ${notice}` : label
   if (notice) statusLabel.title = notice
+}
+
+// Window mode names the captured window in the status area (truncated by CSS); the full
+// title stays available as the tooltip / accessible label.
+function renderWindowTitle() {
+  const visible = captureMode === 'window' && windowCaptureTitle !== ''
+  windowTitleElement.hidden = !visible
+  if (!visible) {
+    windowTitleElement.textContent = ''
+    windowTitleElement.removeAttribute('title')
+    windowTitleElement.removeAttribute('aria-label')
+    return
+  }
+  const label = t('record.window.target-label', { title: windowCaptureTitle })
+  windowTitleElement.textContent = windowCaptureTitle
+  windowTitleElement.title = label
+  windowTitleElement.setAttribute('aria-label', label)
 }
 
 function describeError(error) {
@@ -253,6 +285,13 @@ function reportState() {
   })
 }
 
+// The annotation frame window only exists in display/region mode (contract §2.2), so frame
+// state IPC is skipped entirely for window captures instead of failing against a missing window.
+function setFrameState(frameState) {
+  if (captureMode === 'window') return Promise.resolve(true)
+  return window.recordAPI.setFrameState(frameState).catch(() => {})
+}
+
 function setBusy(value) {
   busy = !!value
   renderControls()
@@ -263,6 +302,13 @@ function annotationEnabled() {
 }
 
 function renderAnnotationControls() {
+  // R4: window captures have no frame overlay window, so the entrance is not shown and
+  // no annotation command is ever sent (main sets annotation:false in that mode).
+  annotationToolsElement.hidden = !annotationAllowed
+  if (!annotationAllowed) {
+    annotationPalette.hidden = true
+    return
+  }
   const enabled = annotationEnabled()
   annotationToolButtons.forEach((button) => {
     button.disabled = !enabled
@@ -300,6 +346,9 @@ function renderMicState() {
 
 function renderControls() {
   const recordingLike = ['recording', 'paused'].includes(state)
+  document.body.dataset.mode = captureMode
+  document.body.dataset.annotation = annotationAllowed ? 'on' : 'off'
+  renderWindowTitle()
   startButton.hidden = state !== 'idle'
   closeBarButton.hidden = state !== 'idle'
   pauseButton.hidden = !recordingLike
@@ -423,6 +472,7 @@ function toggleMorePanel() {
 }
 
 function sendAnnotationCommand(action = '') {
+  if (!annotationAllowed) return Promise.resolve(true)
   return window.recordAPI.setAnnotationCommand({
     tool: annotationTool,
     color: annotationColor,
@@ -437,10 +487,12 @@ async function resetAnnotations() {
   annotationTool = 'pointer'
   annotationResetVersion++
   renderAnnotationControls()
+  if (!annotationAllowed) return
   await sendAnnotationCommand('reset')
 }
 
 function stopSource() {
+  unwatchSourceTracks()
   disposeFakeCapture()
   stopCompositeLoop()
   reportCompositorPerformance()
@@ -469,15 +521,163 @@ function disposeFakeCapture() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// R4 window mode: frozen canvas + contain fit, target invalidation (contract §2.2/§2.4)
+// ---------------------------------------------------------------------------
+
+// Pure 'contain' fit: scale the captured frame into the frozen canvas without changing the
+// aspect ratio and centre it, leaving black bars on the two spare sides. Integer output keeps
+// the canvas dimensions/edges exact; the compositor fills the canvas black first.
+function fitContainRect(frameWidth, frameHeight, canvasWidth, canvasHeight) {
+  const frameW = Math.max(1, Math.round(Number(frameWidth) || 0))
+  const frameH = Math.max(1, Math.round(Number(frameHeight) || 0))
+  const canvasW = Math.max(1, Math.round(Number(canvasWidth) || 0))
+  const canvasH = Math.max(1, Math.round(Number(canvasHeight) || 0))
+  const scale = Math.min(canvasW / frameW, canvasH / frameH)
+  const width = Math.max(1, Math.min(canvasW, Math.round(frameW * scale)))
+  const height = Math.max(1, Math.min(canvasH, Math.round(frameH * scale)))
+  return {
+    x: Math.round((canvasW - width) / 2),
+    y: Math.round((canvasH - height) / 2),
+    width,
+    height,
+    scale
+  }
+}
+
+// Frozen window-mode output size: init.window.pixelSize is authoritative, with the control
+// bar's display pixel size and 1280x720 as defensive fallbacks (contract §2.2).
+function normalizeWindowPixelSize(size) {
+  const width = Math.max(0, Math.round(Number(size?.width) || 0))
+  const height = Math.max(0, Math.round(Number(size?.height) || 0))
+  if (width >= 2 && height >= 2) return { width, height }
+  const fallback = initData?.display?.pixelSize
+  if (fallback?.width >= 2 && fallback?.height >= 2) {
+    return { width: Math.round(fallback.width), height: Math.round(fallback.height) }
+  }
+  return { width: 1280, height: 720 }
+}
+
+// Aspect stage used by annotation snapshots: display mode keeps the DIP selection space
+// (the frame overlay draws in DIP), window mode uses the frozen canvas pixels.
+function annotationStageSize() {
+  if (captureMode === 'window') {
+    return { width: canvas?.width || 1, height: canvas?.height || 1 }
+  }
+  return {
+    width: initData?.selectionBounds?.width || 1,
+    height: initData?.selectionBounds?.height || 1
+  }
+}
+
+function addTrackListener(track, type, handler) {
+  try { track.addEventListener(type, handler) } catch {}
+}
+
+function watchSourceTracks() {
+  unwatchSourceTracks()
+  if (captureMode !== 'window') return
+  const track = desktopStream?.getVideoTracks?.()[0]
+  if (!track) return
+  watchedVideoTrack = track
+  // The main process polls the window source as well; a track that ends here means no more
+  // frames will arrive, which is the same invalidation from the renderer's point of view.
+  addTrackListener(track, 'ended', handleVideoTrackEnded)
+  addTrackListener(track, 'mute', handleVideoTrackMute)
+  addTrackListener(track, 'unmute', handleVideoTrackUnmute)
+}
+
+function unwatchSourceTracks() {
+  if (!watchedVideoTrack) return
+  try {
+    watchedVideoTrack.removeEventListener('ended', handleVideoTrackEnded)
+    watchedVideoTrack.removeEventListener('mute', handleVideoTrackMute)
+    watchedVideoTrack.removeEventListener('unmute', handleVideoTrackUnmute)
+  } catch {}
+  watchedVideoTrack = null
+}
+
+function handleVideoTrackEnded() {
+  handleSourceLost({ reason: 'closed' })
+}
+
+// Minimized / occluded windows make Chromium mute the captured track (best effort, contract
+// §2.2/§7.2). Pause the take and surface the warning; unmuting only clears the warning - the
+// user decides when to resume.
+function handleVideoTrackMute() {
+  if (captureMode !== 'window') return
+  if (state === 'recording') pauseRecording()
+  if (['recording', 'paused', 'preparing', 'countdown'].includes(state)) {
+    sourceHiddenWarning = true
+    setFailureNotice('record.warning.source-hidden')
+    errorElement.textContent = t('record.warning.source-hidden')
+  }
+}
+
+function handleVideoTrackUnmute() {
+  if (captureMode !== 'window' || !sourceHiddenWarning) return
+  sourceHiddenWarning = false
+  if (failureNotice?.key === 'record.warning.source-hidden') setFailureNotice('')
+  if (errorElement.textContent === t('record.warning.source-hidden')) errorElement.textContent = ''
+}
+
+// Target invalidation: keep what was captured. While a take is live this is the normal
+// finish path (flush every pending chunk, then let main seal the project); during
+// preparation/countdown there is nothing to keep, so the bar returns to ready.
+function handleSourceLost(payload = {}) {
+  if (sourceLostHandled) return
+  const reason = typeof payload?.reason === 'string' && payload.reason ? payload.reason : 'closed'
+  if (['recording', 'paused'].includes(state) && sessionId) {
+    sourceLostHandled = true
+    setFailureNotice('record.warning.source-lost')
+    finishRecording().catch((error) => reportError(error))
+    return
+  }
+  if (['preparing', 'countdown'].includes(state)) {
+    sourceLostHandled = true
+    abortPreparingSource()
+    return
+  }
+  sourceLostHandled = true
+  if (reason) {
+    setFailureNotice('record.warning.source-lost')
+    errorElement.textContent = t('record.warning.source-lost')
+  }
+}
+
+async function abortPreparingSource() {
+  countdownVersion += 1
+  clearInterval(clockTimer)
+  try {
+    if (recorder && recorder.state !== 'inactive') recorder.stop()
+  } catch {}
+  recorder = null
+  stopSource()
+  setBusy(false)
+  setState('idle')
+  setFailureNotice('record.warning.source-lost')
+  errorElement.textContent = t('record.warning.source-lost')
+  await setFrameState('idle')
+}
+
 function renderCompositeFrame(timestamp = performance.now(), force = false) {
   if (!canvas || !sourceVideo || !framePacer.shouldDraw(timestamp, force)) return false
   const context = canvas._recordContext
-  const crop = canvas._recordCrop
-  context.drawImage(sourceVideo, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.width, crop.height)
-  drawAnnotationSnapshot(context, annotationSnapshot, {
-    width: initData.selectionBounds.width,
-    height: initData.selectionBounds.height
-  })
+  if (canvas._recordFit) {
+    // Window mode: frozen output canvas, frame letter-boxed ('contain') into it.
+    const fit = canvas._recordFit
+    context.fillStyle = '#000000'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+    context.drawImage(
+      sourceVideo,
+      0, 0, sourceVideo.videoWidth, sourceVideo.videoHeight,
+      fit.x, fit.y, fit.width, fit.height
+    )
+  } else {
+    const crop = canvas._recordCrop
+    context.drawImage(sourceVideo, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.width, crop.height)
+  }
+  if (annotationAllowed) drawAnnotationSnapshot(context, annotationSnapshot, annotationStageSize())
   return true
 }
 
@@ -565,6 +765,28 @@ function desktopVideoConstraints() {
 }
 
 async function acquireDesktopStream() {
+  // R4 window mode (contract §2.4): the main-process display-media handler is bound to the
+  // selected WINDOW source, so no display/source-id constraint and no screen crop applies.
+  // The same handler still attaches loopback audio when asked (system mix, not window-only
+  // audio - the copy must never claim otherwise).
+  if (captureMode === 'window') {
+    const failures = []
+    if (typeof navigator.mediaDevices?.getDisplayMedia === 'function') {
+      if (audioRequest.system) {
+        try {
+          return await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+        } catch (error) {
+          failures.push(error)
+        }
+      }
+      try {
+        return await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    throw failures[0] || new Error(t('record.error.desktop-capture-failed', { detail: '' }))
+  }
   const failures = []
   if (typeof navigator.mediaDevices?.getDisplayMedia === 'function') {
     // Electron only grants this through `session.setDisplayMediaRequestHandler`; the source
@@ -616,9 +838,20 @@ async function acquireDesktopStream() {
 // cannot enable it, and every other code path below (compositing, annotations,
 // MediaRecorder, chunk ACK, pause, finish) is byte-for-byte the real one.
 // ---------------------------------------------------------------------------
+function fakeSourceSize() {
+  if (captureMode === 'window' && windowPixelSize) {
+    return { width: windowPixelSize.width, height: windowPixelSize.height }
+  }
+  return {
+    width: Math.max(2, Math.round(initData.display?.pixelSize?.width || initData.displayBounds.width || 1280)),
+    height: Math.max(2, Math.round(initData.display?.pixelSize?.height || initData.displayBounds.height || 720))
+  }
+}
+
 function createFakeDesktopStream() {
-  const width = Math.max(2, Math.round(initData.display?.pixelSize?.width || initData.displayBounds.width || 1280))
-  const height = Math.max(2, Math.round(initData.display?.pixelSize?.height || initData.displayBounds.height || 720))
+  const size = fakeSourceSize()
+  const width = size.width
+  const height = size.height
   const surface = document.createElement('canvas')
   surface.width = width
   surface.height = height
@@ -828,16 +1061,33 @@ async function prepareSource() {
     sourceVideo.srcObject = desktopStream
     await waitForMetadata(sourceVideo)
     await sourceVideo.play()
+    // A source lost while the devices were still starting must not keep preparing.
+    if (!desktopStream || state !== 'preparing') {
+      stopSource()
+      return
+    }
+    watchSourceTracks()
 
-    const crop = calculateCropRect(
-      { width: sourceVideo.videoWidth, height: sourceVideo.videoHeight },
-      initData.displayBounds,
-      initData.selectionBounds
-    )
     canvas = document.createElement('canvas')
-    canvas.width = crop.width
-    canvas.height = crop.height
-    canvas._recordCrop = crop
+    if (captureMode === 'window') {
+      // R4 window mode (contract §2.2): frozen output size from init.window.pixelSize; the
+      // captured frames are letter-boxed into it, so a later window resize cannot change
+      // the encoded resolution. Even dimensions keep the H.264/VP9 export path valid.
+      const width = Math.max(2, Math.round(windowPixelSize?.width || 0))
+      const height = Math.max(2, Math.round(windowPixelSize?.height || 0))
+      canvas.width = Math.max(2, width - (width % 2))
+      canvas.height = Math.max(2, height - (height % 2))
+      canvas._recordFit = fitContainRect(sourceVideo.videoWidth, sourceVideo.videoHeight, canvas.width, canvas.height)
+    } else {
+      const crop = calculateCropRect(
+        { width: sourceVideo.videoWidth, height: sourceVideo.videoHeight },
+        initData.displayBounds,
+        initData.selectionBounds
+      )
+      canvas.width = crop.width
+      canvas.height = crop.height
+      canvas._recordCrop = crop
+    }
     canvas._recordContext = canvas.getContext('2d', { alpha: false })
     framePacer = createFramePacer(frameRate)
     compositorActiveDurationMs = 0
@@ -959,7 +1209,7 @@ function failChunkStream(error) {
     stopCompositeLoop()
     pausedAt = Date.now()
     setState(transitionRecordingState('recording', 'error'))
-    window.recordAPI.setFrameState('paused').catch(() => {})
+    setFrameState('paused')
   }
 }
 
@@ -986,7 +1236,12 @@ async function startRecorder(fromState) {
   clockTimer = setInterval(renderClock, 250)
   renderClock()
   setState(transitionRecordingState(fromState, fromState === 'countdown' ? 'countdown-finished' : 'record'))
-  await window.recordAPI.setFrameState('recording').catch(() => {})
+  await setFrameState('recording')
+  if (sourceLostHandled) {
+    // The target vanished while the session was starting: keep what was captured and ask
+    // main to seal it instead of recording against a dead track.
+    finishRecording().catch((error) => reportError(error))
+  }
 }
 
 async function stopMediaRecorder() {
@@ -1001,8 +1256,10 @@ async function runCountdown() {
   const version = ++countdownVersion
   setBusy(true)
   clearFeedback()
+  sourceLostHandled = false
+  sourceHiddenWarning = false
   await resetAnnotations()
-  await window.recordAPI.setFrameState('idle').catch(() => {})
+  await setFrameState('idle')
   setState(transitionRecordingState('idle', 'start'))
   try {
     await prepareSource()
@@ -1063,7 +1320,7 @@ async function finishRecording() {
   // acknowledgement required by contract §12 - the first press only surfaces the risk.
   if (state === 'stopped') chunkFailureAcknowledged = true
   setBusy(true)
-  await window.recordAPI.setFrameState('hidden').catch(() => {})
+  await setFrameState('hidden')
   if (state !== 'stopped') {
     stopCompositeLoop()
     await stopMediaRecorder().catch(() => {})
@@ -1116,14 +1373,14 @@ async function cancelRecording() {
   stopSource()
   setState(transitionRecordingState(state, 'cancel'))
   setBusy(false)
-  await window.recordAPI.setFrameState('idle').catch(() => {})
+  await setFrameState('idle')
 }
 
 async function confirmDiscard() {
   if (busy || !sessionId) return
   setBusy(true)
   discardConfirm.hidden = true
-  await window.recordAPI.setFrameState('hidden').catch(() => {})
+  await setFrameState('hidden')
   stopCompositeLoop()
   await stopMediaRecorder().catch(() => {})
   await appendQueue.catch(() => {})
@@ -1147,7 +1404,7 @@ async function confirmDiscard() {
   timeElement.textContent = '00:00'
   setState(transitionRecordingState(state, 'cancel'))
   setBusy(false)
-  await window.recordAPI.setFrameState('idle').catch(() => {})
+  await setFrameState('idle')
 }
 
 function openDiscardConfirm() {
@@ -1165,7 +1422,7 @@ function pauseRecording() {
   stopCompositeLoop()
   pausedAt = Date.now()
   setState(transitionRecordingState('recording', 'pause'))
-  window.recordAPI.setFrameState('paused').catch(() => {})
+  setFrameState('paused')
   return { ok: true, state: snapshotState() }
 }
 
@@ -1180,7 +1437,7 @@ function resumeRecording() {
   pausedTotal += Date.now() - pausedAt
   pausedAt = 0
   setState(transitionRecordingState('paused', 'resume'))
-  window.recordAPI.setFrameState('recording').catch(() => {})
+  setFrameState('recording')
   return { ok: true, state: snapshotState() }
 }
 
@@ -1298,20 +1555,39 @@ window.recordAPI.onStateChanged((mainState) => {
   }
 })
 window.recordAPI.onAnnotationSnapshot((snapshot) => {
-  if (!initData) return
-  annotationSnapshot = sanitizeAnnotationSnapshot(snapshot, {
-    width: initData.selectionBounds.width,
-    height: initData.selectionBounds.height
-  })
+  if (!initData || !annotationAllowed) return
+  annotationSnapshot = sanitizeAnnotationSnapshot(snapshot, annotationStageSize())
   renderAnnotationControls()
   requestCompositeFrame()
 })
+// R4 window mode invalidation push (contract §2.2): main polls the bound window source while
+// this control window is alive and pushes once when the target disappears.
+if (typeof window.recordAPI.onSourceLost === 'function') {
+  window.recordAPI.onSourceLost((payload) => {
+    try {
+      handleSourceLost(payload)
+    } catch {
+      // A malformed invalidation push must never break the live bar.
+    }
+  })
+}
 window.recordAPI.onInit((data) => {
   initData = resolveRecordInit(data)
   frameRate = initData.frameRate
   quality = recordingQuality.normalizeQuality(initData.quality)
   countdownSeconds = recordingQuality.normalizeCountdown(initData.countdownSeconds)
   fakeCapture = initData.fakeCapture === true
+  captureMode = initData.mode === 'window' ? 'window' : 'display'
+  const windowInfo = data && typeof data.window === 'object' ? data.window : null
+  windowPixelSize = captureMode === 'window' ? normalizeWindowPixelSize(windowInfo?.pixelSize) : null
+  windowCaptureTitle = captureMode === 'window' && typeof windowInfo?.title === 'string'
+    ? windowInfo.title.trim()
+    : ''
+  // Window captures have no frame overlay window (contract §2.2), so annotations are off;
+  // display/region recordings keep them unless main explicitly disables them.
+  annotationAllowed = captureMode === 'window' ? data.annotation === true : data.annotation !== false
+  sourceLostHandled = false
+  sourceHiddenWarning = false
   audioRequest = {
     system: initData.audio.system !== false,
     microphone: initData.audio.microphone === true,
@@ -1324,7 +1600,19 @@ window.recordAPI.onInit((data) => {
     ? t('record.audio.contains')
     : t('record.audio.contains-none')
   setState('idle')
-  window.recordAPI.setFrameState('idle').catch(() => {})
+  setFrameState('idle')
+  if (fakeCapture) {
+    // E2E-only (same gate as the synthetic capture source): lets the runtime probe drive
+    // the window-mode invalidation paths that would need a real target window otherwise.
+    window.__recordDebug = {
+      fitContainRect,
+      emitVideoTrackEvent: (type) => {
+        const track = watchedVideoTrack || desktopStream?.getVideoTracks?.()[0]
+        if (track && typeof track.dispatchEvent === 'function') track.dispatchEvent(new Event(String(type)))
+      },
+      sourceLost: (reason) => handleSourceLost({ reason: typeof reason === 'string' ? reason : 'closed' })
+    }
+  }
   // Best-effort: main may still own a capture this (reloaded) bar should show.
   reconcileStateFromMain().catch(() => {})
 })
@@ -1342,6 +1630,11 @@ window.recordAPI.onInterfaceLanguage((language) => {
   setState(state)
   renderAudioIndicator()
   renderMicState()
+  // The hidden-window warning is rendered from a key, so a language switch re-resolves it.
+  if (sourceHiddenWarning) errorElement.textContent = t('record.warning.source-hidden')
+  else if (sourceLostHandled && failureNotice?.key === 'record.warning.source-lost') {
+    errorElement.textContent = t('record.warning.source-lost')
+  }
 })
 
 addEventListener('beforeunload', () => {

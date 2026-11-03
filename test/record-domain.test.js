@@ -530,6 +530,7 @@ function createProjectServiceStub(overrides = {}) {
     publicProject: (project) => ({
       id: project.id,
       name: project.name,
+      mode: project.mode,
       state: project.state,
       edit: project.edit,
       media: project.media,
@@ -717,6 +718,12 @@ function createProjectHarness(overrides = {}) {
   const routes = []
   const shellCalls = []
   const trayRefreshes = []
+  // R4 window-source test doubles: the mutable list lets a test make a window vanish between the
+  // workbench list call and the source watch, and desktopCalls proves what was (not) enumerated.
+  const windowSources = Array.isArray(overrides.windowSources) ? overrides.windowSources : []
+  const ownWindowTitles = Array.isArray(overrides.ownWindowTitles) ? overrides.ownWindowTitles : []
+  const desktopCalls = []
+  const saveDialogs = []
   let contentsId = 0
   const display = { id: 1, label: 'DISPLAY1', scaleFactor: 1, bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } }
   const secondDisplay = { id: 2, label: 'DISPLAY2', scaleFactor: 2, bounds: { x: 800, y: 0, width: 1600, height: 900 }, workArea: { x: 800, y: 0, width: 1600, height: 900 } }
@@ -727,7 +734,22 @@ function createProjectHarness(overrides = {}) {
 
   const domain = createRecordDomain({
     app: { getPath: (name) => path.resolve('tmp', name) },
-    desktopCapturer: { getSources: async () => [{ id: 'screen:1', display_id: '1', thumbnail: { isEmpty: () => false } }] },
+    desktopCapturer: {
+      getSources: async (request = {}) => {
+        const types = Array.isArray(request.types) ? request.types : []
+        desktopCalls.push({ types: [...types], thumbnailSize: request.thumbnailSize || null })
+        if (types.includes('window')) {
+          if (overrides.windowEnumerationError === true) throw new Error('window enumeration blocked')
+          return windowSources.map((entry) => ({
+            id: entry.id,
+            name: entry.name,
+            appName: entry.appName || '',
+            thumbnail: { isEmpty: () => false, getSize: () => ({ width: entry.width || 0, height: entry.height || 0 }) }
+          }))
+        }
+        return [{ id: 'screen:1', display_id: '1', thumbnail: { isEmpty: () => false } }]
+      }
+    },
     path,
     screen: {
       getAllDisplays: () => [display, secondDisplay],
@@ -737,8 +759,18 @@ function createProjectHarness(overrides = {}) {
       getDisplayMatching: () => display,
       dipToScreenRect: () => ({ x: 0, y: 0, width: 800, height: 600 })
     },
-    dialog: { showSaveDialog: async () => dialogResult },
-    BrowserWindow: { fromWebContents: (contents) => windowsByContents.get(contents) || null },
+    dialog: {
+      // Capture the native save-dialog options so a test can assert the frozen format mapping
+      // (extension, filter, title) without a real dialog.
+      showSaveDialog: async (...args) => {
+        saveDialogs.push(args[1] || null)
+        return dialogResult
+      }
+    },
+    BrowserWindow: {
+      fromWebContents: (contents) => windowsByContents.get(contents) || null,
+      getAllWindows: () => ownWindowTitles.map((title) => ({ getTitle: () => title, isDestroyed: () => false }))
+    },
     rootDirectory: root,
     createLocalWindow: (pagePath, options = {}) => {
       const closedListeners = []
@@ -812,7 +844,10 @@ function createProjectHarness(overrides = {}) {
       createRegionSelection: (options) => { regionSelections.push(options); return Promise.resolve({}) },
       positionAutomationWindow: () => false,
       refreshTray: () => trayRefreshes.push(Date.now())
-    })
+    }),
+    // R4 test seams: short intervals instead of patching global timers.
+    ...(overrides.windowSourcePollMs ? { windowSourcePollMs: overrides.windowSourcePollMs } : {}),
+    ...(overrides.windowTokenTtlMs ? { windowTokenTtlMs: overrides.windowTokenTtlMs } : {})
   })
 
   const controller = domain.createRecordingController()
@@ -831,6 +866,10 @@ function createProjectHarness(overrides = {}) {
     routes,
     shellCalls,
     trayRefreshes,
+    windowSources,
+    ownWindowTitles,
+    desktopCalls,
+    saveDialogs,
     projectService,
     recordingService,
     exportService,
@@ -1535,4 +1574,381 @@ test('R1: shutdown accepts a bounded timeout for the app-exit path and still ord
   })
   assert.deepEqual(await normal.domain.shutdown({ timeoutMs: 3000 }), { ok: true, timedOut: false })
   assert.deepEqual(order, ['export', 'project', 'recording'])
+})
+
+// --------------------------------------------------------------------------------------------
+// R4 (docs/plans/2026-11-03-recording-r4-contracts.md §2): window recording, main-process half.
+// A fake desktopCapturer backs these tests: the token registry, the window-mode control window,
+// the display-media binding, the source-lost watch and the editor metadata are all driven through
+// the domain's controller surface.
+// --------------------------------------------------------------------------------------------
+
+const { calculateRecordControlSize } = require('../record/recording-utils')
+
+function windowSource(id, name, width, height, appName = '') {
+  return { id, name, width, height, appName }
+}
+
+test('R4: the recordable-window list filters own/empty/tiny/duplicate windows and exposes tokens only', async () => {
+  const harness = createProjectHarness({
+    ownWindowTitles: ['Highlighter'],
+    windowSources: [
+      windowSource('window:101', 'Visual Studio Code', 1440, 900, 'Visual Studio Code'),
+      windowSource('window:102', 'Highlighter', 1120, 760),
+      windowSource('window:103', '', 800, 600),
+      windowSource('window:104', 'Tiny panel', 100, 80),
+      windowSource('window:101', 'Visual Studio Code (duplicate)', 1440, 900),
+      windowSource('window:105', 'Unmeasurable window', 0, 0)
+    ]
+  })
+  const answer = await harness.controller.workbenchWindows()
+  assert.equal(answer.ok, true)
+  assert.deepEqual(
+    answer.windows.map((entry) => [entry.title, entry.width, entry.height]),
+    [
+      ['Visual Studio Code', 1440, 900],
+      // A window whose size could not be measured is kept with 0x0 (contract §2.1: "measurement
+      // failed" is not "too small"); the workbench shows its title only.
+      ['Unmeasurable window', 0, 0]
+    ]
+  )
+  for (const entry of answer.windows) {
+    assert.deepEqual(Object.keys(entry).sort(), ['appName', 'height', 'title', 'token', 'width'])
+    assert.match(entry.token, /^[0-9a-f-]{36}$/, 'the token is an opaque uuid')
+  }
+  assert.equal(answer.windows[0].appName, 'Visual Studio Code')
+  // The desktopCapturer source id must never leave the main process.
+  assert.doesNotMatch(JSON.stringify(answer), /window:10\d/, 'no source id in the payload')
+  // The list measured window sources (the frozen WindowEntry carries sizes).
+  assert.equal(harness.desktopCalls.at(-1).types.includes('window'), true)
+
+  // The enumeration failing is a clean error code, not a crash.
+  const failing = createProjectHarness({ windowEnumerationError: true })
+  assert.deepEqual(await failing.controller.workbenchWindows(), { ok: false, code: 'window-enumeration-failed' })
+})
+
+test('R4: window tokens are single-use, expire and are superseded by a refresh (contract §2.1)', async () => {
+  const harness = createProjectHarness({
+    windowSources: [windowSource('window:201', 'Target window', 1280, 720)],
+    windowTokenTtlMs: 40
+  })
+  const listed = await harness.controller.workbenchWindows()
+  const token = listed.windows[0].token
+
+  // A token that never existed is unavailable.
+  assert.deepEqual(
+    await harness.controller.workbenchStart(null, { mode: 'window', windowToken: 'not-a-token' }),
+    { ok: false, code: 'window-unavailable' }
+  )
+  // Missing token is its own frozen code.
+  assert.deepEqual(
+    await harness.controller.workbenchStart(null, { mode: 'window' }),
+    { ok: false, code: 'window-required' }
+  )
+
+  // Successful start consumes the token.
+  assert.deepEqual(await harness.controller.workbenchStart(null, { mode: 'window', windowToken: token }), { ok: true })
+  const control = harness.controlWindow()
+  assert.ok(control)
+  assert.equal(harness.controlWindow()._recordMode, 'window')
+  assert.deepEqual(
+    await harness.controller.workbenchStart(null, { mode: 'window', windowToken: token }),
+    { ok: true, focused: true },
+    'the repeat entry focuses the running capture before token validation'
+  )
+
+  // Expiry: a fresh list, wait past the TTL, then start.
+  const expiring = createProjectHarness({
+    windowSources: [windowSource('window:202', 'Expiring window', 1280, 720)],
+    windowTokenTtlMs: 20
+  })
+  const expiringToken = (await expiring.controller.workbenchWindows()).windows[0].token
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.deepEqual(
+    await expiring.controller.workbenchStart(null, { mode: 'window', windowToken: expiringToken }),
+    { ok: false, code: 'window-unavailable' }
+  )
+  assert.equal(expiring.controlWindow(), null, 'a failed token never creates a recording window')
+
+  // A refresh supersedes the previous list's unused tokens.
+  const refreshed = createProjectHarness({ windowSources: [windowSource('window:203', 'Refresh target', 1280, 720)] })
+  const firstToken = (await refreshed.controller.workbenchWindows()).windows[0].token
+  await refreshed.controller.workbenchWindows()
+  assert.deepEqual(
+    await refreshed.controller.workbenchStart(null, { mode: 'window', windowToken: firstToken }),
+    { ok: false, code: 'window-unavailable' },
+    'refreshing the list invalidates the superseded tokens'
+  )
+})
+
+test('R4: start-time window validation surfaces window-unavailable and window-too-small', async () => {
+  const harness = createProjectHarness({ windowSources: [windowSource('window:301', 'Big window', 1600, 900)] })
+  const token = (await harness.controller.workbenchWindows()).windows[0].token
+  // The window disappeared between listing and starting.
+  harness.windowSources.splice(0, harness.windowSources.length)
+  assert.deepEqual(
+    await harness.controller.workbenchStart(null, { mode: 'window', windowToken: token }),
+    { ok: false, code: 'window-unavailable' }
+  )
+  assert.equal(harness.controlWindow(), null)
+
+  // The window shrank below the frozen minimum between listing and starting.
+  const shrinking = createProjectHarness({ windowSources: [windowSource('window:302', 'Shrinking window', 1600, 900)] })
+  const shrinkToken = (await shrinking.controller.workbenchWindows()).windows[0].token
+  shrinking.windowSources[0].width = 90
+  shrinking.windowSources[0].height = 70
+  assert.deepEqual(
+    await shrinking.controller.workbenchStart(null, { mode: 'window', windowToken: shrinkToken }),
+    { ok: false, code: 'window-too-small' }
+  )
+  assert.equal(shrinking.controlWindow(), null)
+})
+
+test('R4: window mode creates a frame-less bottom-centred control bar with the frozen init fields', async () => {
+  const harness = createProjectHarness({
+    windowSources: [windowSource('window:401', 'Meeting notes', 1600, 900, 'Notepad')],
+    ownWindowTitles: ['Highlighter']
+  })
+  const token = (await harness.controller.workbenchWindows()).windows[0].token
+  const started = await harness.controller.workbenchStart(null, {
+    mode: 'window',
+    windowToken: token,
+    config: { frameRate: 30, quality: 'high', countdown: 0, audioSystem: true, audioMicrophone: false }
+  })
+  assert.deepEqual(started, { ok: true })
+
+  // Window mode has NO annotation frame window (contract §2.2).
+  assert.equal(harness.windows.filter((win) => win.role === 'record-frame').length, 0)
+  const control = harness.controlWindow()
+  assert.ok(control)
+  const init = control._recordInit
+  assert.equal(init.mode, 'window')
+  assert.equal(init.annotation, false)
+  assert.deepEqual(init.window, { title: 'Meeting notes', pixelSize: { width: 1600, height: 900 } })
+  assert.equal(init.frameRate, 30)
+  assert.equal(init.quality, 'high')
+  assert.equal(init.countdownSeconds, 0)
+  assert.equal(init.sourceId, '', 'a window source id must never reach the renderer')
+  assert.deepEqual(init.selectionBounds, { x: 0, y: 0, width: 800, height: 600 }, 'the control-bar display work area')
+  assert.equal(init.display.id, '1')
+  // captureConfig target: window mode with the window title as display name (contract §2.2).
+  assert.equal(control._recordCaptureConfig.target.mode, 'window')
+  assert.equal(control._recordCaptureConfig.target.displayName, 'Meeting notes')
+  assert.deepEqual(control._recordCaptureConfig.target.pixelSize, { width: 1600, height: 900 })
+
+  // Control bar: bottom-centre of the work area with a 12px margin.
+  const expectedSize = calculateRecordControlSize({ x: 0, y: 0, width: 800, height: 600 })
+  assert.equal(control.options.width, expectedSize.width)
+  assert.equal(control.options.height, expectedSize.height)
+  assert.equal(control.options.x, Math.round((800 - expectedSize.width) / 2))
+  assert.equal(control.options.y, 600 - expectedSize.height - 12)
+})
+
+test('R4: the display-media handler serves the bound window source and keeps the frame check', async () => {
+  const harness = createProjectHarness({ windowSources: [windowSource('window:501', 'Bound window', 1280, 720)] })
+  const token = (await harness.controller.workbenchWindows()).windows[0].token
+  await harness.controller.workbenchStart(null, { mode: 'window', windowToken: token })
+  const control = harness.controlWindow()
+  assert.equal(typeof control.displayMediaHandler, 'function')
+
+  const ownFrame = await new Promise((resolve) => {
+    control.displayMediaHandler({
+      frame: control.webContents.mainFrame,
+      videoRequested: true,
+      audioRequested: false
+    }, resolve)
+  })
+  assert.equal(ownFrame.video.id, 'window:501', 'the handler binds the selected window source')
+  assert.equal('audio' in ownFrame, false, 'no audio track when the renderer did not ask for one')
+
+  const withAudio = await new Promise((resolve) => {
+    control.displayMediaHandler({
+      frame: control.webContents.mainFrame,
+      videoRequested: true,
+      audioRequested: true
+    }, resolve)
+  })
+  assert.equal(withAudio.video.id, 'window:501')
+  assert.equal(withAudio.audio, process.platform === 'win32' ? 'loopback' : undefined)
+
+  const foreignFrame = await new Promise((resolve) => {
+    control.displayMediaHandler({ frame: { id: 'some-other-frame' }, videoRequested: true }, resolve)
+  })
+  assert.deepEqual(foreignFrame, {}, 'another frame must not receive the window source')
+
+  const noVideo = await new Promise((resolve) => {
+    control.displayMediaHandler({ frame: control.webContents.mainFrame, videoRequested: false, audioRequested: true }, resolve)
+  })
+  assert.deepEqual(noVideo, {})
+
+  // Window mode never falls back to enumerating screens for the handler.
+  const windowCalls = harness.desktopCalls.filter((call) => call.types.includes('screen'))
+  assert.equal(windowCalls.length, 0, 'window mode does not enumerate desktop sources')
+})
+
+test('R4: the source-lost watch pushes once when the bound window disappears and then stops', async () => {
+  const harness = createProjectHarness({
+    windowSources: [windowSource('window:601', 'Closing window', 1280, 720)],
+    windowSourcePollMs: 15
+  })
+  const token = (await harness.controller.workbenchWindows()).windows[0].token
+  await harness.controller.workbenchStart(null, { mode: 'window', windowToken: token })
+  const control = harness.controlWindow()
+
+  // Alive: no push.
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(harness.sent.filter((entry) => entry.channel === 'record:source-lost').length, 0)
+
+  // The target window closes.
+  harness.windowSources.splice(0, harness.windowSources.length)
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  const lost = harness.sent.filter((entry) => entry.channel === 'record:source-lost')
+  assert.equal(lost.length, 1, 'exactly one source-lost push')
+  assert.deepEqual(lost[0].payload, { reason: 'closed' })
+  assert.equal(lost[0].window, control, 'pushed to the window-mode control bar')
+
+  // The watch stopped: no further enumerations and no repeated push.
+  const callsAfterPush = harness.desktopCalls.length
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.equal(harness.sent.filter((entry) => entry.channel === 'record:source-lost').length, 1)
+  assert.equal(harness.desktopCalls.length, callsAfterPush, 'the watch stops after reporting the loss')
+})
+
+test('R4: closing the window-mode control bar clears the source watch (no leaks)', async () => {
+  const harness = createProjectHarness({
+    windowSources: [windowSource('window:701', 'Watched window', 1280, 720)],
+    windowSourcePollMs: 15
+  })
+  const token = (await harness.controller.workbenchWindows()).windows[0].token
+  await harness.controller.workbenchStart(null, { mode: 'window', windowToken: token })
+  const control = harness.controlWindow()
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  control.close()
+  assert.equal(control._recordSourceWatch, null, 'the control window owns no live watch')
+  const callsAfterClose = harness.desktopCalls.length
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.equal(harness.desktopCalls.length, callsAfterClose, 'a closed control bar never polls again')
+})
+
+test('R4: a window-mode take seals as a window project and hands the editor the probed frame rate', async () => {
+  const harness = createProjectHarness({ windowSources: [windowSource('window:801', 'Presented window', 1600, 900)] })
+  const token = (await harness.controller.workbenchWindows()).windows[0].token
+  await harness.controller.workbenchStart(null, { mode: 'window', windowToken: token })
+  const control = harness.controlWindow()
+  const session = await harness.controller.startSession(harness.eventFor(control))
+  await harness.controller.appendChunk(harness.eventFor(control), {
+    sessionId: session.id,
+    arrayBuffer: Buffer.from('frame'),
+    sequence: 1
+  })
+  const finished = await harness.controller.finishSession(harness.eventFor(control), { sessionId: session.id })
+  assert.equal(finished.ok, true)
+  assert.equal(finished.projectId, 'project-1')
+
+  // The project records the window as its capture target (contract §2.2).
+  const createCall = harness.projectService.calls.find(([name]) => name === 'createProject')
+  assert.equal(createCall[1].mode, 'window')
+  assert.equal(createCall[1].captureConfig.target.mode, 'window')
+  assert.equal(createCall[1].captureConfig.target.displayName, 'Presented window')
+
+  // The editor receives the probed frame rate so it can offer fps options (R4 §6).
+  const editor = harness.editorWindow()
+  assert.ok(editor)
+  assert.equal(editor._recordEditorInit.metadata.video.frameRate, 30)
+  assert.equal(editor._recordEditorInit.metadata.video.width, 800)
+  assert.equal(editor._recordEditorInit.metadata.audio.codec, 'opus')
+  assert.equal(editor._recordEditorInit.project.mode, 'window')
+})
+
+test('R4: after a restart the editor metadata keeps frameRate 0 (manifest has no frame rate)', async () => {
+  const harness = createProjectHarness()
+  harness.projectService.projects.set('project-restart', makeProject({ id: 'project-restart', state: 'ready' }))
+  assert.deepEqual(await harness.domain.openEditor('project-restart'), { ok: true })
+  const editor = harness.editorWindow()
+  assert.equal(editor._recordEditorInit.metadata.video.frameRate, 0, 'unknown frame rate only offers `source`')
+  assert.equal(editor._recordEditorInit.metadata.video.width, 800)
+  assert.equal(editor._recordEditorInit.metadata.audio.codec, 'opus', 'the codec survives in the manifest')
+})
+
+// --------------------------------------------------------------------------------------------
+// W6b (R4 §4.1/§4.4/§5): the editor export request must reach the new export pipeline intact.
+// --------------------------------------------------------------------------------------------
+
+test('R4: editorExport forwards webm + segments + video and maps the save dialog to .webm', async () => {
+  const harness = createProjectHarness()
+  harness.projectService.projects.set('project-1', makeProject({ id: 'project-1', state: 'ready', name: 'Demo' }))
+  await harness.domain.openEditor('project-1')
+  const editor = harness.editorWindow()
+  harness.setDialogResult({ canceled: false, filePath: path.resolve('tmp', 'demo.webm') })
+
+  const segments = [
+    { startMs: 0, endMs: 1000 },
+    { startMs: 2000, endMs: 3000 }
+  ]
+  const video = { longEdge: 1080, quality: 'high', fps: 30 }
+  const answer = await harness.controller.editorExport(harness.eventFor(editor), {
+    projectId: 'project-1',
+    requestId: 'req-webm',
+    request: { format: 'webm', segments, video }
+  })
+  assert.equal(answer.status, 'accepted')
+
+  // The request reaches the service with the R4 keys intact (nothing dropped, nothing invented).
+  const submitted = harness.exportService.submitted.at(-1)
+  assert.deepEqual(submitted.request, { format: 'webm', segments, video })
+  // The main process freezes the target; the save dialog suggested a .webm name/filter.
+  assert.match(submitted.targetPath, /demo\.webm$/)
+  const dialog = harness.saveDialogs.at(-1)
+  assert.match(dialog.defaultPath, /\.webm$/)
+  assert.deepEqual(dialog.filters, [{ name: 'WebM 视频', extensions: ['webm'] }])
+  assert.match(dialog.title, /WebM/)
+
+  // The finished export is recorded on the project with the webm format.
+  await harness.tick()
+  const appended = harness.projectService.calls.find(([name]) => name === 'appendExport')
+  assert.ok(appended)
+  assert.equal(appended[2].format, 'webm')
+})
+
+test('R4: editorExport keeps the legacy range path and forwards multi-segment mp4 requests', async () => {
+  const harness = createProjectHarness()
+  harness.projectService.projects.set('project-1', makeProject({ id: 'project-1', state: 'ready', name: 'Demo' }))
+  await harness.domain.openEditor('project-1')
+  const editor = harness.editorWindow()
+  harness.setDialogResult({ canceled: false, filePath: path.resolve('tmp', 'demo.mp4') })
+
+  // Old editor callers: `range` only, no segments/video.
+  const legacy = await harness.controller.editorExport(harness.eventFor(editor), {
+    projectId: 'project-1',
+    requestId: 'req-legacy',
+    request: { format: 'mp4', range: { startMs: 0, endMs: 5000 } }
+  })
+  assert.equal(legacy.status, 'accepted')
+  assert.deepEqual(harness.exportService.submitted.at(-1).request, { format: 'mp4', range: { startMs: 0, endMs: 5000 } })
+
+  // R4 multi-segment + video options.
+  const segments = [{ startMs: 0, endMs: 1200 }, { startMs: 1800, endMs: 4000 }]
+  const video = { longEdge: 720, quality: 'standard', fps: 'source' }
+  const multi = await harness.controller.editorExport(harness.eventFor(editor), {
+    projectId: 'project-1',
+    requestId: 'req-multi',
+    request: { format: 'mp4', segments, video }
+  })
+  assert.equal(multi.status, 'accepted')
+  assert.deepEqual(harness.exportService.submitted.at(-1).request, { format: 'mp4', segments, video })
+})
+
+test('R4: editorExport rejects an unknown format before any dialog or task', async () => {
+  const harness = createProjectHarness()
+  harness.projectService.projects.set('project-1', makeProject({ id: 'project-1', state: 'ready' }))
+  await harness.domain.openEditor('project-1')
+  const editor = harness.editorWindow()
+  const answer = await harness.controller.editorExport(harness.eventFor(editor), {
+    projectId: 'project-1',
+    requestId: 'req-mov',
+    request: { format: 'mov', range: { startMs: 0, endMs: 1000 } }
+  })
+  assert.deepEqual(answer, { status: 'failed', code: 'unsupported-format' })
+  assert.equal(harness.saveDialogs.length, 0, 'no save dialog for an unsupported format')
+  assert.equal(harness.exportService.submitted.length, 0)
 })

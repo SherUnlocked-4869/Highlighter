@@ -46,19 +46,28 @@
     'preview-video',
     'recovery-banner', 'recovery-message', 'recovery-retry', 'recovery-reveal',
     'draft-conflict', 'draft-conflict-message', 'draft-reload',
-    'timeline', 'timeline-track', 'timeline-selection', 'timeline-playhead',
+    'timeline', 'timeline-track', 'timeline-selection', 'timeline-segments', 'timeline-playhead',
     'handle-start', 'handle-end',
-    'timeline-duration', 'range-selection',
-    'range-start-input', 'range-end-input', 'play-range', 'reset-range',
-    'export-format', 'gif-edge', 'gif-fps', 'gif-budget', 'export-final-size',
-    'result-bar', 'result-name', 'result-open', 'result-address', 'result-reveal',
+    'timeline-duration', 'range-selection', 'empty-selection-hint',
+    'range-start-input', 'range-end-input', 'play-range',
+    'split-at-playhead', 'delete-segment', 'reset-edits', 'undo-edit', 'redo-edit',
+    'export-format', 'gif-edge', 'gif-fps', 'gif-budget',
+    'export-resolution', 'export-quality', 'export-fps', 'export-output-size',
+    'result-bar', 'result-name', 'result-kind', 'result-open', 'result-address', 'result-reveal',
     'result-status', 'result-dismiss',
     'cancel-export', 'error-text'
   ])
 
   // Reasons emitted by the trim controller that represent a USER EDIT and therefore need an
   // autosave. Playback, task progress and project reloads must not write a draft.
-  const EDIT_REASONS = new Set(['start', 'end', 'reset', 'format', 'gif-fps', 'gif-size'])
+  // Reasons emitted by the trim controller that represent a committed USER EDIT and therefore
+  // need an autosave. Drag moves are transient until commitEdit() emits 'edit-committed';
+  // playback, export progress and project reloads must not write a draft.
+  const EDIT_REASONS = new Set([
+    'start', 'end', 'reset', 'format', 'gif-fps', 'gif-size',
+    'split', 'delete-segment', 'reset-edits', 'boundary', 'junction',
+    'edit-committed', 'undo', 'redo'
+  ])
   // Autosave debounce. Contract §11: <= 500 ms.
   const SAVE_DEBOUNCE_MS = 400
   // Status polling covers a dropped `record:export-progress` push (contract §9.3 allows a
@@ -146,6 +155,7 @@
     let sourceUrl = ''
     let fatalCode = ''
     let dragging = null
+    let scrubDragging = false
     let dragListeners = null
     let saveTimer = 0
     let savePromise = null
@@ -331,6 +341,9 @@
         if (typeof video.load === 'function') video.load()
       }
       if (elements['source-name']) elements['source-name'].textContent = project.name || ''
+      dragging = null
+      scrubDragging = false
+      removeDragListeners()
       if (isRecoveryBlocked()) setSaveState('unavailable')
       render()
       return true
@@ -503,6 +516,223 @@
       return true
     }
 
+
+    // ---------- R4 timeline + export panel rendering ----------
+
+    function clearContainer(container) {
+      if (!container || typeof container.removeChild !== 'function') return
+      while (container.firstChild) container.removeChild(container.firstChild)
+    }
+
+    function createNode(tagName, className) {
+      if (!documentRef || typeof documentRef.createElement !== 'function') return null
+      const node = documentRef.createElement(tagName)
+      if (!node) return null
+      if (className) node.className = className
+      return node
+    }
+
+    // Percentage geometry for a source-time value on the full-duration track.
+    function percentOf(milliseconds, durationMs) {
+      return timelineModule.msToPercent(milliseconds, durationMs)
+    }
+
+    // Build one boundary grip descriptor -> DOM node. Boundary kinds:
+    //   outer-start / outer-end : the static #handle-start / #handle-end elements
+    //   junction               : a shared split point between ADJACENT segments; dragging it
+    //                            moves both edges so the cut stays a cut
+    //   edge                   : one segment edge with a gap on the other side
+    function boundaryDescriptorLabel(descriptor) {
+      if (descriptor.kind === 'junction') {
+        return translate('recording.editor.timeline.junction')
+      }
+      if (descriptor.kind === 'outer-start' || (descriptor.kind === 'edge' && descriptor.edge === 'start')) {
+        return translate('recording.editor.timeline.handle-start')
+      }
+      return translate('recording.editor.timeline.handle-end')
+    }
+
+    function renderTimelineSegments(snapshot, durationMs, editable) {
+      const container = element('timeline-segments')
+      if (!container) return
+      clearContainer(container)
+      const segments = snapshot && Array.isArray(snapshot.segments) ? snapshot.segments : []
+      const staticStart = element('handle-start')
+      const staticEnd = element('handle-end')
+      const visible = durationMs > 0 && segments.length > 0
+      if (staticStart) {
+        staticStart.hidden = !visible
+        staticStart.disabled = !editable
+      }
+      if (staticEnd) {
+        staticEnd.hidden = !visible
+        staticEnd.disabled = !editable
+      }
+      if (!visible) return
+      for (let index = 0; index < segments.length; index += 1) {
+        const segment = segments[index]
+        const previous = segments[index - 1] || null
+        const next = segments[index + 1] || null
+        const block = createNode('div', 'timeline-segment')
+        if (block) {
+          block.dataset.index = String(index)
+          block.dataset.testid = 'segment-block'
+          block.style.left = percentOf(segment.startMs, durationMs) + '%'
+          block.style.width = percentOf(segment.endMs - segment.startMs, durationMs) + '%'
+          block.setAttribute('aria-hidden', 'true')
+          container.appendChild(block)
+        }
+        const grips = []
+        if (index === 0) {
+          if (staticStart) staticStart.style.left = percentOf(segment.startMs, durationMs) + '%'
+        } else if (previous && previous.endMs === segment.startMs) {
+          grips.push({ kind: 'junction', index })
+        } else {
+          grips.push({ kind: 'edge', index, edge: 'start' })
+        }
+        if (index === segments.length - 1) {
+          if (staticEnd) staticEnd.style.left = percentOf(segment.endMs, durationMs) + '%'
+        } else if (next && next.startMs === segment.endMs) {
+          // Adjacent pair: the junction grip is rendered by the right-hand segment.
+        } else {
+          grips.push({ kind: 'edge', index, edge: 'end' })
+        }
+        for (const descriptor of grips) {
+          const positionMs = descriptor.kind === 'junction'
+            ? segments[descriptor.index].startMs
+            : (descriptor.edge === 'start'
+              ? segments[descriptor.index].startMs
+              : segments[descriptor.index].endMs)
+          const grip = createNode('button', 'timeline-boundary')
+          if (!grip) continue
+          grip.type = 'button'
+          grip.dataset.kind = descriptor.kind
+          if (descriptor.index !== undefined) grip.dataset.index = String(descriptor.index)
+          if (descriptor.edge) grip.dataset.edge = descriptor.edge
+          grip.dataset.testid = descriptor.kind === 'junction' ? 'segment-junction' : 'segment-edge'
+          grip.style.left = percentOf(positionMs, durationMs) + '%'
+          grip.setAttribute('aria-label', boundaryDescriptorLabel(descriptor))
+          grip.disabled = !editable
+          grip.addEventListener('pointerdown', (event) => beginBoundaryDrag(descriptor, event))
+          grip.addEventListener('keydown', (event) => nudgeBoundary(descriptor, event))
+          container.appendChild(grip)
+        }
+      }
+      // The legacy single-selection backing element stays hidden; kept blocks are authoritative.
+      if (element('timeline-selection')) element('timeline-selection').hidden = true
+    }
+
+    function setSelectOptions(select, entries, currentValue, disabled) {
+      if (!select) return
+      clearContainer(select)
+      for (const entry of entries) {
+        const option = createNode('option')
+        if (!option) continue
+        option.value = String(entry.value)
+        option.textContent = entry.label
+        option.disabled = entry.disabled === true
+        if (String(entry.value) === String(currentValue)) option.selected = true
+        select.appendChild(option)
+      }
+      select.value = String(currentValue)
+      select.disabled = disabled
+    }
+
+    function renderExportPanel(snapshot, editable) {
+      const format = snapshot ? snapshot.format : 'mp4'
+      const videoFormat = format !== 'gif'
+      const video = snapshot ? snapshot.video : { resolution: 'source', quality: 'standard', fps: 'source' }
+      const optionsList = snapshot ? snapshot.videoOptions : { resolutions: ['source'], frameRates: ['source'], qualities: ['standard', 'high', 'ultra'] }
+      const resolutionLabels = {
+        source: translate('recording.editor.resolution.source'),
+        '1080p': translate('recording.editor.resolution.p1080'),
+        '720p': translate('recording.editor.resolution.p720'),
+        '480p': translate('recording.editor.resolution.p480')
+      }
+      const qualityLabels = {
+        standard: translate('recording.editor.quality.standard'),
+        high: translate('recording.editor.quality.high'),
+        ultra: translate('recording.editor.quality.ultra')
+      }
+      const fpsLabels = {
+        source: translate('recording.editor.fps.source'),
+        '30': '30 FPS',
+        '60': '60 FPS'
+      }
+      setSelectOptions(
+        element('export-resolution'),
+        optionsList.resolutions.map((value) => ({ value, label: resolutionLabels[value] || value })),
+        video.resolution,
+        !editable || !videoFormat
+      )
+      setSelectOptions(
+        element('export-quality'),
+        optionsList.qualities.map((value) => ({ value, label: qualityLabels[value] || value })),
+        video.quality,
+        !editable || !videoFormat
+      )
+      setSelectOptions(
+        element('export-fps'),
+        optionsList.frameRates.map((value) => ({ value, label: fpsLabels[String(value)] || String(value) })),
+        String(video.fps),
+        !editable || !videoFormat
+      )
+
+      const output = element('export-output-size')
+      if (output) {
+        let size = ''
+        if (snapshot && metadata) {
+          const source = metadata.video
+          if (format === 'gif' && source.width > 0 && source.height > 0) {
+            const dimensions = options.computeGifDimensions({
+              width: source.width,
+              height: source.height,
+              maxEdgePx: snapshot.gif.maxEdgePx
+            })
+            if (dimensions.ok) size = dimensions.value.width + ' \u00d7 ' + dimensions.value.height
+          } else if (snapshot.videoBudget && snapshot.videoBudget.ok && snapshot.videoBudget.value
+            && snapshot.videoBudget.value.width > 0 && snapshot.videoBudget.value.height > 0) {
+            const budget = snapshot.videoBudget.value
+            size = budget.width + ' \u00d7 ' + budget.height
+          }
+        }
+        output.textContent = size
+          ? translate('recording.editor.output-value', {
+            size,
+            duration: timelineModule.formatClock(snapshot.keptMs)
+          })
+          : ''
+      }
+
+      const emptyHint = element('empty-selection-hint')
+      if (emptyHint) emptyHint.hidden = !(snapshot && snapshot.emptySelection)
+    }
+
+    function renderEditControls(snapshot, editable) {
+      const playheadMs = mediaMs()
+      const hasContent = !!snapshot && snapshot.segments.length > 0
+      const canSplit = !!controller && editable && controller.canSplitAt(playheadMs)
+      const canDelete = !!controller && editable && controller.canDeleteAt(playheadMs)
+      if (element('split-at-playhead')) element('split-at-playhead').disabled = !canSplit
+      if (element('delete-segment')) element('delete-segment').disabled = !canDelete
+      if (element('undo-edit')) element('undo-edit').disabled = !(snapshot && snapshot.undo) || !editable
+      if (element('redo-edit')) element('redo-edit').disabled = !(snapshot && snapshot.redo) || !editable
+      if (element('reset-edits')) element('reset-edits').disabled = !(editable && snapshot && snapshot.edited)
+      if (element('play-range')) {
+        element('play-range').disabled = !hasContent || !(snapshot && snapshot.durationMs > 0) || isBusy()
+        element('play-range').textContent = translate(snapshot && snapshot.playing
+          ? 'recording.editor.timeline.stop'
+          : 'recording.editor.timeline.play-kept')
+      }
+    }
+
+    function isTypingTarget(target) {
+      if (!target) return false
+      const tag = String(target.tagName || '').toUpperCase()
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+      return target.isContentEditable === true
+    }
+
     function render() {
       if (!booted) return
       const snapshot = state()
@@ -529,9 +759,10 @@
       }
 
       const durationMs = snapshot ? snapshot.durationMs : (metadata ? metadata.durationMs : 0)
+      const segments = snapshot && Array.isArray(snapshot.segments) ? snapshot.segments : []
       const range = snapshot ? snapshot.range : { startMs: 0, endMs: 0 }
-      const geometry = timelineModule.rangeGeometry(range, durationMs)
       const clock = timelineModule.formatClock
+      const keptMs = snapshot ? snapshot.keptMs : 0
 
       if (elements['timeline-duration']) {
         elements['timeline-duration'].textContent = durationMs > 0
@@ -539,48 +770,29 @@
           : ''
       }
       if (elements['range-selection']) {
-        elements['range-selection'].textContent = durationMs > 0 && snapshot
-          ? translate('recording.editor.timeline.selection', {
-            start: clock(range.startMs),
-            end: clock(range.endMs),
-            duration: clock(Math.max(0, range.endMs - range.startMs))
+        // R4 contract §3.3: the statistic is kept vs source length, not a single range.
+        elements['range-selection'].textContent = snapshot && durationMs > 0
+          ? translate('recording.editor.timeline.kept', {
+            kept: clock(keptMs),
+            duration: clock(durationMs)
           })
-          : translate('recording.editor.timeline.min-range', { duration: clock(timelineModule.MIN_RANGE_MS) })
+          : ''
       }
-      if (elements['timeline-selection']) {
-        elements['timeline-selection'].style.left = `${geometry.startPercent}%`
-        elements['timeline-selection'].style.width = `${geometry.widthPercent}%`
-      }
-      for (const handle of ['start', 'end']) {
-        const handleElement = element(`handle-${handle}`)
-        if (!handleElement) continue
-        handleElement.style.left = `${handle === 'start' ? geometry.startPercent : geometry.endPercent}%`
-        handleElement.disabled = !editable
-        handleElement.setAttribute('aria-valuemin', '0')
-        handleElement.setAttribute('aria-valuemax', String(durationMs))
-        handleElement.setAttribute('aria-valuenow', String(handle === 'start' ? geometry.startMs : geometry.endMs))
-        handleElement.setAttribute('aria-valuetext', clock(handle === 'start' ? geometry.startMs : geometry.endMs))
-      }
+      renderTimelineSegments(snapshot, durationMs, editable)
+      renderEditControls(snapshot, editable)
       updatePlayhead()
 
-      const focused = documentRef && typeof documentRef.getElementById === 'function' ? documentRef.activeElement : null
+      const focused = documentRef ? documentRef.activeElement : null
       if (elements['range-start-input']) {
         const input = elements['range-start-input']
-        input.disabled = !editable
+        input.disabled = !editable || segments.length === 0
         if (input !== focused) input.value = clock(range.startMs)
       }
       if (elements['range-end-input']) {
         const input = elements['range-end-input']
-        input.disabled = !editable
+        input.disabled = !editable || segments.length === 0
         if (input !== focused) input.value = clock(range.endMs)
       }
-      if (elements['play-range']) {
-        elements['play-range'].disabled = blocked || !snapshot || !snapshot.durationMs || isBusy()
-        elements['play-range'].textContent = translate(snapshot?.playing
-          ? 'recording.editor.timeline.stop'
-          : 'recording.editor.timeline.play')
-      }
-      if (elements['reset-range']) elements['reset-range'].disabled = !editable
 
       const format = snapshot ? snapshot.format : 'mp4'
       if (elements['export-format']) {
@@ -589,15 +801,15 @@
       }
       if (elements['gif-edge']) {
         elements['gif-edge'].value = String(snapshot?.gif.maxEdgePx ?? timelineModule.LIMITS.GIF_MAX_EDGE_PX)
-        elements['gif-edge'].disabled = !editable
+        elements['gif-edge'].disabled = !editable || format !== 'gif'
       }
       if (elements['gif-fps']) {
         elements['gif-fps'].value = String(snapshot?.gif.fps ?? GIF_FRAME_RATES[1])
-        elements['gif-fps'].disabled = !editable
+        elements['gif-fps'].disabled = !editable || format !== 'gif'
       }
       if (elements['gif-budget']) {
         let text = ''
-        if (snapshot && durationMs > 0) {
+        if (snapshot && durationMs > 0 && !snapshot.emptySelection) {
           const budget = snapshot.gifBudget
           text = budget.ok
             ? translate('recording.editor.gif-frames', { frames: budget.frames })
@@ -606,23 +818,7 @@
         }
         elements['gif-budget'].textContent = text
       }
-      if (elements['export-final-size']) {
-        let size = ''
-        if (snapshot && metadata) {
-          const source = metadata.video
-          if (format === 'gif' && source.width > 0 && source.height > 0) {
-            const dimensions = options.computeGifDimensions({
-              width: source.width,
-              height: source.height,
-              maxEdgePx: snapshot.gif.maxEdgePx
-            })
-            if (dimensions.ok) size = `${dimensions.value.width} \u00d7 ${dimensions.value.height}`
-          } else if (source.width > 0 && source.height > 0) {
-            size = `${source.width} \u00d7 ${source.height}`
-          }
-        }
-        elements['export-final-size'].textContent = size
-      }
+      renderExportPanel(snapshot, editable)
 
       renderProgress(snapshot)
       renderResultBar(snapshot)
@@ -708,6 +904,18 @@
         elements['result-name'].textContent = translate('capture.export-result.saved', {
           fileName: String(receipt.fileName || '')
         })
+      }
+      const kindElement = element('result-kind')
+      if (kindElement) {
+        const kindKeys = {
+          mp4: 'recording.editor.result.kind.mp4',
+          gif: 'recording.editor.result.kind.gif',
+          webm: 'recording.editor.result.kind.webm'
+        }
+        const kind = typeof receipt.kind === 'string' ? receipt.kind : ''
+        const kindKey = kindKeys[kind]
+        kindElement.textContent = kindKey ? translate(kindKey) : ''
+        kindElement.hidden = !kindElement.textContent
       }
       setResultStatus('', false)
       if (elements['result-bar']) elements['result-bar'].hidden = false
@@ -811,7 +1019,11 @@
       if (decision.action === 'pause') {
         video()?.pause?.()
         const player = video()
-        if (player) player.currentTime = Math.max(0, snapshot.range.endMs) / 1000
+        // Land on the last kept frame, not on a removed tail.
+        const landingMs = snapshot.playing && Number.isFinite(snapshot.playing.endMs)
+          ? snapshot.playing.endMs
+          : decision.toMs
+        if (player) player.currentTime = Math.max(0, landingMs) / 1000
         stopPlayTimer()
         updatePlayhead()
         render()
@@ -826,14 +1038,24 @@
 
     function startRangePlayback() {
       if (!controller) return false
-      const range = controller.playRange()
+      const snapshot = controller.state()
+      const fromMs = mediaMs()
+      const started = snapshot.projectId
+        ? controller.startKeptPlayback(fromMs)
+        : controller.playRange()
       const player = video()
-      if (!range || !player) return false
-      player.currentTime = Math.max(0, range.startMs) / 1000
+      if (!started || !player) {
+        if (snapshot.projectId && snapshot.segments.length === 0) {
+          showError('recording.editor.timeline.empty')
+          render()
+        }
+        return false
+      }
+      player.currentTime = Math.max(0, started.startMs) / 1000
       stopPlayTimer()
       playTimer = timers.setInterval(playTick, RANGE_PLAY_POLL_MS)
-      const started = player.play?.()
-      if (started && typeof started.catch === 'function') started.catch(() => {})
+      const playing = player.play?.()
+      if (playing && typeof playing.catch === 'function') playing.catch(() => {})
       render()
       return true
     }
@@ -869,18 +1091,43 @@
       return { left: Number(rect.left) || 0, width: Number(rect.width) || 0 }
     }
 
-    function beginHandleDrag(handle, event) {
+    function descriptorValueMs(descriptor) {
+      const segments = state()?.segments || []
+      if (segments.length === 0) return 0
+      if (descriptor.kind === 'outer-start') return segments[0].startMs
+      if (descriptor.kind === 'outer-end') return segments[segments.length - 1].endMs
+      const segment = segments[descriptor.index]
+      if (!segment) return 0
+      if (descriptor.kind === 'junction') return segment.startMs
+      return descriptor.edge === 'start' ? segment.startMs : segment.endMs
+    }
+
+    // Push a descriptor's target time through the controller. The timeline helpers clamp it
+    // against the neighbours, so a drag can never overlap another segment.
+    function applyDescriptorTarget(descriptor, targetMs) {
+      const segments = state()?.segments || []
+      if (!controller || segments.length === 0) return false
+      if (descriptor.kind === 'outer-start') return controller.moveBoundary(0, 'start', targetMs)
+      if (descriptor.kind === 'outer-end') return controller.moveBoundary(segments.length - 1, 'end', targetMs)
+      if (descriptor.kind === 'junction') return controller.moveJunction(descriptor.index, targetMs)
+      return controller.moveBoundary(descriptor.index, descriptor.edge, targetMs)
+    }
+
+    function beginBoundaryDrag(descriptor, event) {
       if (!canEdit() || !controller) return false
       if (event && typeof event === 'object' && typeof event.button === 'number' && event.button !== 0) return false
       if (event && typeof event.preventDefault === 'function') event.preventDefault()
       if (event && typeof event.stopPropagation === 'function') event.stopPropagation()
-      dragging = { handle }
-      const handleElement = element(`handle-${handle}`)
-      if (handleElement && event && typeof event.pointerId === 'number' && typeof handleElement.setPointerCapture === 'function') {
-        try { handleElement.setPointerCapture(event.pointerId) } catch { /* not capturable in every context */ }
-      }
+      // One drag = one undo entry: snapshot at pointerdown, commit at pointerup.
+      controller.beginEdit()
+      dragging = { ...descriptor }
       addDragListeners()
       return true
+    }
+
+    // Kept for the R3 static handles/tests: #handle-start and #handle-end are the outer edges.
+    function beginHandleDrag(handle, event) {
+      return beginBoundaryDrag(handle === 'start' ? { kind: 'outer-start' } : { kind: 'outer-end' }, event)
     }
 
     function addDragListeners() {
@@ -906,43 +1153,46 @@
     }
 
     function dragMove(event) {
-      if (!dragging || !controller || !event) return
+      if (!controller || !event) return
       const milliseconds = timelineModule.pointerToMs(event.clientX, trackRect(), state()?.durationMs || 0)
-      if (dragging.handle === 'start') controller.setStart(milliseconds)
-      else controller.setEnd(milliseconds)
+      // The playhead is draggable too; it never edits the kept segments (contract §3.3).
+      if (scrubDragging) {
+        seekTo(milliseconds)
+        return
+      }
+      if (!dragging) return
+      applyDescriptorTarget(dragging, milliseconds)
     }
 
     function endHandleDrag() {
+      if (dragging && controller) controller.commitEdit()
       dragging = null
+      scrubDragging = false
       removeDragListeners()
     }
 
-    function nudgeHandle(handle, event) {
+    function nudgeBoundary(descriptor, event) {
       if (!canEdit() || !controller || !event) return false
       const key = event.key
       const duration = state()?.durationMs || 0
-      if (key === 'ArrowLeft' || key === 'ArrowRight') {
+      if (key !== 'ArrowLeft' && key !== 'ArrowRight' && key !== 'Home' && key !== 'End') return false
+      let targetMs
+      if (key === 'Home') targetMs = 0
+      else if (key === 'End') targetMs = duration
+      else {
         const step = timelineModule.keyboardStep(event)
-        const delta = key === 'ArrowLeft' ? -step : step
-        const next = timelineModule.nudgeHandle(state().range, handle, delta, duration)
-        if (!next) return false
-        if (handle === 'start') controller.setStart(next.startMs)
-        else controller.setEnd(next.endMs)
-        if (typeof event.preventDefault === 'function') event.preventDefault()
-        return true
+        targetMs = descriptorValueMs(descriptor) + (key === 'ArrowLeft' ? -step : step)
       }
-      if (key === 'Home') {
-        if (handle === 'start') controller.setStart(0)
-        else if (controller.state().range.startMs > 0) controller.setEnd(controller.state().range.startMs)
-        else controller.setEnd(timelineModule.MIN_RANGE_MS)
-      } else if (key === 'End') {
-        if (handle === 'start') controller.setStart(duration)
-        else controller.setEnd(duration)
-      } else {
-        return false
-      }
+      controller.beginEdit()
+      const changed = applyDescriptorTarget(descriptor, targetMs)
+      if (changed) controller.commitEdit()
+      else controller.cancelEdit()
       if (typeof event.preventDefault === 'function') event.preventDefault()
-      return true
+      return changed
+    }
+
+    function nudgeHandle(handle, event) {
+      return nudgeBoundary(handle === 'start' ? { kind: 'outer-start' } : { kind: 'outer-end' }, event)
     }
 
     // ---------- export ----------
@@ -959,9 +1209,15 @@
       else if (snapshot.phase === 'failed') controller.prepareRetry()
       hideResultBar()
       clearError()
+      if (snapshot.emptySelection) {
+        // Contract §5: an empty selection is refused in the renderer and never reaches IPC.
+        showError('recording.editor.error.empty-selection')
+        render()
+        return { status: 'failed', code: 'empty-selection' }
+      }
       if (!snapshot.canExport) {
-        // The controller refuses a submit without a valid source/range. Do not fake an export
-        // attempt: report why the gate is closed and leave the source untouched.
+        // The controller refuses a submit without a valid source/range. Do not fake an
+        // export attempt: report why the gate is closed and leave the source untouched.
         showError(snapshot.available
           ? errorKey(snapshot.format === 'gif' ? (snapshot.gifBudget.code || 'invalid-request') : 'invalid-request')
           : 'recording.editor.error.export-not-ready')
@@ -1166,12 +1422,14 @@
       on(element('handle-end'), 'pointerdown', (event) => beginHandleDrag('end', event))
       on(element('handle-start'), 'keydown', (event) => nudgeHandle('start', event))
       on(element('handle-end'), 'keydown', (event) => nudgeHandle('end', event))
-      // Clicking the track scrubs the PLAYHEAD only. Moving the playhead never edits the trim
-      // points (R3 plan §4.3); only the handles and the precise inputs do.
+      // Clicking the track scrubs the PLAYHEAD only. Moving the playhead never edits the
+      // segments (R4 contract §3.3); only boundary grips and the precise inputs do.
       on(track, 'pointerdown', (event) => {
-        if (dragging) return
+        if (dragging || scrubDragging) return
         if (event && typeof event.preventDefault === 'function') event.preventDefault()
         seekTo(timelineModule.pointerToMs(event?.clientX, trackRect(), state()?.durationMs || 0))
+        scrubDragging = true
+        addDragListeners()
         render()
       })
       on(element('range-start-input'), 'change', () => {
@@ -1183,9 +1441,20 @@
         render()
       })
       on(element('play-range'), 'click', () => toggleRangePlayback())
-      on(element('reset-range'), 'click', () => {
-        controller?.resetRange()
-        render()
+      on(element('split-at-playhead'), 'click', () => {
+        if (controller?.splitAt(mediaMs())) render()
+      })
+      on(element('delete-segment'), 'click', () => {
+        if (controller?.deleteSegmentAt(mediaMs())) render()
+      })
+      on(element('reset-edits'), 'click', () => {
+        if (controller?.resetEdits()) render()
+      })
+      on(element('undo-edit'), 'click', () => {
+        if (controller?.undoEdit()) render()
+      })
+      on(element('redo-edit'), 'click', () => {
+        if (controller?.redoEdit()) render()
       })
       on(element('export-format'), 'change', () => {
         controller?.setFormat(element('export-format').value)
@@ -1197,6 +1466,18 @@
       })
       on(element('gif-fps'), 'change', () => {
         controller?.setGifFps(Number(element('gif-fps').value))
+        render()
+      })
+      on(element('export-resolution'), 'change', () => {
+        controller?.setVideoResolution(element('export-resolution').value)
+        render()
+      })
+      on(element('export-quality'), 'change', () => {
+        controller?.setVideoQuality(element('export-quality').value)
+        render()
+      })
+      on(element('export-fps'), 'change', () => {
+        controller?.setVideoFps(element('export-fps').value)
         render()
       })
       on(element('export-button'), 'click', () => { runSafely(exportSelection()) })
@@ -1224,12 +1505,30 @@
       })
       on(element('source-name-input'), 'blur', () => { runSafely(commitRename()) })
 
+      // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y (and the Cmd variants). Never intercepted while a text
+      // field or select is focused, so the user can still undo their typing.
+      on(windowRef, 'keydown', (event) => {
+        if (!event || !(event.ctrlKey || event.metaKey)) return
+        if (isTypingTarget(event.target) || isTypingTarget(documentRef?.activeElement)) return
+        const key = String(event.key || '').toLowerCase()
+        const handled = (key === 'z' && event.shiftKey)
+          ? controller?.redoEdit()
+          : (key === 'z' ? controller?.undoEdit() : (key === 'y' ? controller?.redoEdit() : false))
+        if (handled) {
+          if (typeof event.preventDefault === 'function') event.preventDefault()
+          render()
+        }
+      })
+
       const player = element('preview-video')
       on(player, 'timeupdate', () => updatePlayhead())
       on(player, 'seeking', () => updatePlayhead())
       on(player, 'play', () => {
         const snapshot = state()
         if (!snapshot || !snapshot.playing) return
+        // Kept playback is driven by the controller's interval; a user-initiated play outside
+        // it is left alone.
+        if (snapshot.playing.mode === 'kept') return
         if (mediaMs() < snapshot.playing.startMs || mediaMs() >= snapshot.playing.endMs) {
           stopRangePlayback()
         }
@@ -1237,6 +1536,15 @@
       on(player, 'pause', () => {
         const snapshot = state()
         if (!snapshot?.playing) return
+        if (snapshot.playing.mode === 'kept') {
+          // A pause before the last kept end means the user stopped playback; at/after it the
+          // controller has already ended playback by itself.
+          const segments = snapshot.segments
+          const lastEnd = segments.length > 0 ? segments[segments.length - 1].endMs : 0
+          if (mediaMs() >= lastEnd) return
+          stopRangePlayback()
+          return
+        }
         if (mediaMs() >= snapshot.playing.endMs) return
         stopRangePlayback()
       })
@@ -1247,6 +1555,7 @@
         if (controller && controller.state().draft.dirty) flushDraft()
       })
     }
+
 
     function destroy() {
       if (destroyed) return

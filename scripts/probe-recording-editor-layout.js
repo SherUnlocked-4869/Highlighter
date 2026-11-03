@@ -25,7 +25,7 @@ app.commandLine.appendSwitch('force-device-scale-factor', '1.5')
 const userDataRoot = path.join(os.tmpdir(), `highlighter-editor-probe-${Date.now()}`)
 app.setPath('userData', userDataRoot)
 
-function projectPayload(id, name, width, height, durationMs) {
+function projectPayload(id, name, width, height, durationMs, frameRate = 30) {
   return {
     project: {
       schemaVersion: 1,
@@ -56,7 +56,7 @@ function projectPayload(id, name, width, height, durationMs) {
       recovery: { committedByteOffset: 0, lastChunkSequence: 0, cleanStop: true, errorCode: '' }
     },
     sourceUrl: '',
-    metadata: { durationMs, video: { width, height }, audio: { tracks: 0 } },
+    metadata: { durationMs, video: { width, height, frameRate }, audio: { tracks: 0 } },
     recovery: { state: 'ready', errorCode: '' }
   }
 }
@@ -85,6 +85,11 @@ async function measure(win) {
       panel: rect('.timeline-panel'),
       track: rect('#timeline-track'),
       selection: rect('#timeline-selection'),
+      segmentBlocks: [...document.querySelectorAll('.timeline-segment')].map((node) => {
+        const box = node.getBoundingClientRect()
+        return { left: box.left, width: box.width, index: node.dataset.index || '' }
+      }),
+      boundaryCount: document.querySelectorAll('.timeline-boundary').length,
       handleStart: rect('#handle-start'),
       handleEnd: rect('#handle-end'),
       timeline: rect('#timeline'),
@@ -93,7 +98,14 @@ async function measure(win) {
       exportHitTarget: hit ? (hit.id || hit.className || '') : '',
       recoveryHidden: document.getElementById('recovery-banner').hidden,
       recoveryVisible: !document.getElementById('recovery-banner').hidden,
-      exportFinalSize: document.getElementById('export-final-size').textContent,
+      exportOutputSize: document.getElementById('export-output-size').textContent,
+      exportResolutionOptions: [...document.getElementById('export-resolution').options].map((option) => option.value),
+      exportFpsOptions: [...document.getElementById('export-fps').options].map((option) => option.value),
+      editControls: ['split-at-playhead', 'delete-segment', 'undo-edit', 'redo-edit', 'reset-edits'].map((id) => {
+        const node = document.getElementById(id)
+        return { id, disabled: node ? node.disabled : null }
+      }),
+      emptyHintHidden: document.getElementById('empty-selection-hint').hidden,
       saveState: document.getElementById('save-state').textContent,
       name: document.getElementById('source-name').textContent,
       errors: document.getElementById('error-text').textContent,

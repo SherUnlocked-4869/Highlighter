@@ -65,6 +65,10 @@ const IPC_SURFACES = Object.freeze([
       'record:workbench-state',
       'record:workbench-start',
       'record:workbench-focus',
+      // R4 (docs/plans/2026-11-03-recording-r4-contracts.md §2.1): the recordable-window list. The
+      // payload is empty and the answer carries opaque single-use tokens only - the workbench never
+      // learns a desktopCapturer source id.
+      'record:workbench-windows',
       'record:project-list',
       'record:project-open',
       'record:project-rename',

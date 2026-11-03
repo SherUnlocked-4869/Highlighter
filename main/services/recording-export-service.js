@@ -65,6 +65,13 @@ const EXPORT_ERROR_CODES = Object.freeze([
   'range-out-of-bounds',
   'invalid-range',
   'range-too-short',
+  // R4 export v2 (contract §4.1): multi-segment selection + video option validation.
+  'ambiguous-selection',
+  'too-many-segments',
+  'overlapping-segments',
+  'invalid-video-option',
+  'fps-above-source',
+  'empty-selection',
   'gif-too-long',
   'gif-invalid-fps',
   'gif-invalid-edge',
@@ -269,7 +276,9 @@ class RecordingExportService {
     this.reservedSlots += 1
     const releaseSlot = () => { this.reservedSlots = Math.max(0, this.reservedSlots - 1) }
 
-    const extension = normalized.value.format === 'gif' ? '.gif' : '.mp4'
+    const extension = normalized.value.format === 'gif'
+      ? '.gif'
+      : normalized.value.format === 'webm' ? '.webm' : '.mp4'
     let tempPath
     try {
       tempPath = this.tempPathFor(absoluteTarget, extension)
@@ -472,17 +481,15 @@ class RecordingExportService {
   // ---------- encode ----------
 
   encode(task, lease) {
+    // The normalised request is the single source of truth for the assembly (§4.3). Spread
+    // it so segments/video/hasAudio reach buildExportArgs exactly as the UI was validated
+    // against; only the main-process-owned paths are added here.
     const { args } = buildExportArgs({
+      ...task.request,
       inputPath: lease.inputPath,
-      outputPath: task.tempPath,
-      format: task.request.format,
-      range: task.request.range,
-      gif: task.request.gif,
-      hasAudio: task.request.hasAudio,
-      sourceWidth: task.request.sourceWidth,
-      sourceHeight: task.request.sourceHeight
+      outputPath: task.tempPath
     })
-    const spanMs = task.request.range.durationMs
+    const spanMs = Number(task.request.totalDurationMs) || 0
 
     return new Promise((resolve, reject) => {
       let settled = false
@@ -566,17 +573,23 @@ class RecordingExportService {
     const metadata = probed.metadata
     const expected = task.request
     if (!metadata.video) return { ok: false, code: 'no-video-track' }
-    // MP4 keeps the source size; GIF is scaled to the computed dimensions.
-    const expectedWidth = expected.format === 'gif' ? expected.gif?.width : expected.sourceWidth
-    const expectedHeight = expected.format === 'gif' ? expected.gif?.height : expected.sourceHeight
+    // Expected output dimensions: the video options' computed width/height for mp4/webm
+    // (source size on the copy path, never-upscaled preset otherwise), gif dimensions for GIF.
+    const expectedWidth = expected.format === 'gif' ? expected.gif?.width : expected.video?.width
+    const expectedHeight = expected.format === 'gif' ? expected.gif?.height : expected.video?.height
     if (expectedWidth && metadata.video.width !== expectedWidth) {
       return { ok: false, code: `unexpected-width:${metadata.video.width}` }
     }
     if (expectedHeight && metadata.video.height !== expectedHeight) {
       return { ok: false, code: `unexpected-height:${metadata.video.height}` }
     }
-    const tolerance = durationToleranceMs(expected.range.durationMs, { isGif: expected.format === 'gif' })
-    if (Math.abs(metadata.durationMs - expected.range.durationMs) > tolerance) {
+    const expectedDurationMs = Number(expected.totalDurationMs) || 0
+    const tolerance = durationToleranceMs(expectedDurationMs, {
+      isGif: expected.format === 'gif',
+      segments: Array.isArray(expected.segments) ? expected.segments.length : 1,
+      sourceFps: expected.sourceFrameRate
+    })
+    if (Math.abs(metadata.durationMs - expectedDurationMs) > tolerance) {
       return { ok: false, code: `unexpected-duration:${metadata.durationMs}` }
     }
     const hasAudio = metadata.audio?.exists === true

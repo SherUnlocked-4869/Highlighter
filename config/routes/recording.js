@@ -1,17 +1,21 @@
-// W4 (recording workbench): the main window's `recording` route.
+// W4/R4 (recording workbench): the main window's `recording` route.
 //
-// Scope (docs/plans/2026-11-03-recording-r1-r3-contracts.md §8/§9.1): the
-// workbench and the recording records list live INSIDE the ordinary settings
-// window, so no new window, preload or navigation is introduced. The renderer is
-// only allowed to read the frozen `record:workbench-*` / `record:project-*`
-// channels; the main process owns every source path, output path and encoder
-// detail. Project summaries are path-free by contract, so nothing here builds or
-// displays a filesystem path.
+// Scope (docs/plans/2026-11-03-recording-r1-r3-contracts.md §8/§9.1, extended by
+// docs/plans/2026-11-03-recording-r4-contracts.md §2.3): the workbench and the
+// recording records list live INSIDE the ordinary settings window, so no new
+// window, preload or navigation is introduced. The renderer is only allowed to
+// read the frozen `record:workbench-*` / `record:project-*` channels; the main
+// process owns every source path/output path/encoder detail. Project summaries are
+// path-free by contract, so nothing here builds or displays a filesystem path.
 //
-// Degradation rule: this route must never take the settings window down. While
-// the main-process half is missing (it lands in a parallel stream) every call
-// fails with a visible inline state + retry, and every action is guarded by a
-// `typeof` check instead of throwing an unhandled rejection.
+// R4 adds the window-capture picker. A window row is a single-use opaque token
+// (`record:workbench-windows`), never a desktopCapturer source id; the token is
+// handed back verbatim on start and the main process re-validates/consumes it.
+//
+// Degradation rule: this route must never take the settings window down. While a
+// main-process half is missing every call fails with a visible inline state +
+// retry, and every action is guarded by a `typeof` check instead of throwing an
+// unhandled rejection.
 //
 // i18n: all copy comes from shared/locales/recording.js through t(); this file
 // stays CJK-free because config/** is inside the check-i18n CJK scan.
@@ -33,7 +37,8 @@ const RECORDING_QUALITY_LABEL_KEYS = Object.freeze({
 })
 const RECORDING_MODE_LABEL_KEYS = Object.freeze({
   display: 'recording.records.mode-display',
-  region: 'recording.records.mode-region'
+  region: 'recording.records.mode-region',
+  window: 'recording.records.mode-window'
 })
 const RECORDING_STATE_LABEL_KEYS = Object.freeze({
   ready: 'recording.records.state-ready',
@@ -52,7 +57,11 @@ const RECORDING_ERROR_LABEL_KEYS = Object.freeze({
   busy: 'recording.workbench.start-busy',
   'project-busy': 'recording.records.project-busy',
   'display-unavailable': 'recording.workbench.display-missing',
-  'not-found': 'recording.records.open-not-found'
+  'not-found': 'recording.records.open-not-found',
+  // R4 window-capture start validation (contract §2.1).
+  'window-required': 'recording.workbench.window-required',
+  'window-unavailable': 'recording.workbench.window-unavailable',
+  'window-too-small': 'recording.workbench.window-too-small'
 })
 
 // --- route state -------------------------------------------------------------
@@ -61,6 +70,12 @@ let recordingWorkbenchError = false
 let recordingWorkbenchChoices = null
 let recordingWorkbenchDevices = []
 let recordingWorkbenchDeviceError = false
+// R4 window targets. The token list is short-lived (single use, 120s TTL on the
+// main process) and is only fetched on demand: entering window mode or pressing
+// refresh, never on a timer.
+let recordingWorkbenchWindows = []
+let recordingWorkbenchWindowsLoading = false
+let recordingWorkbenchWindowsError = false
 let recordingWorkbenchTab = 'recent'
 let recordingWorkbenchFilter = 'all'
 let recordingWorkbenchAll = { items: [], total: 0, offset: 0, limit: RECORDING_RECORDS_PAGE_SIZE, loaded: false, loading: false, error: false }
@@ -172,14 +187,53 @@ function resolveRecordingDisplay(displays, displayId) {
   return { displayId: '', missing: Boolean(wanted) }
 }
 
+// A window row only ever carries an opaque token, never a source id. The list is
+// normalized defensively (dedupe, string token required) because it crosses IPC.
+function normalizeRecordingWindows(value) {
+  const list = Array.isArray(value) ? value : []
+  const seen = new Set()
+  const windows = []
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') continue
+    const token = typeof entry.token === 'string' ? entry.token : ''
+    if (!token || seen.has(token)) continue
+    seen.add(token)
+    windows.push({
+      token,
+      title: typeof entry.title === 'string' && entry.title ? entry.title : t('recording.workbench.window-untitled'),
+      appName: typeof entry.appName === 'string' ? entry.appName : '',
+      width: Math.max(0, Math.round(Number(entry.width) || 0)),
+      height: Math.max(0, Math.round(Number(entry.height) || 0))
+    })
+  }
+  return windows
+}
+
+function recordingWindowSizeText(entry) {
+  const width = Number(entry && entry.width) || 0
+  const height = Number(entry && entry.height) || 0
+  // A window whose size could not be measured shows its title only (contract §2.3).
+  if (width <= 0 || height <= 0) return ''
+  return `${width}\u00d7${height}`
+}
+
+function selectedRecordingWindow(choices) {
+  if (!choices || typeof choices.windowToken !== 'string' || !choices.windowToken) return null
+  return recordingWorkbenchWindows.find((entry) => entry.token === choices.windowToken) || null
+}
+
 function createRecordingChoices(state) {
   const config = state && typeof state.config === 'object' && state.config ? state.config : {}
   const displays = state && Array.isArray(state.displays) ? state.displays : []
   const resolved = resolveRecordingDisplay(displays, config.displayId)
+  const mode = config.mode === 'region' ? 'region' : (config.mode === 'window' ? 'window' : 'display')
   return {
-    mode: config.mode === 'region' ? 'region' : 'display',
+    mode,
     displayId: resolved.displayId,
     displayMissing: resolved.missing,
+    // The window token is never remembered from settings: a token is single-use and
+    // expires after 120s, so a stale one would only produce window-unavailable.
+    windowToken: '',
     frameRate: normalizeRecordingFrameRate(config.frameRate),
     quality: normalizeRecordingQuality(config.quality),
     countdown: normalizeRecordingCountdown(config.countdown),
@@ -191,8 +245,11 @@ function createRecordingChoices(state) {
 }
 
 function buildRecordingStartPayload(choices) {
-  const mode = choices && choices.mode === 'region' ? 'region' : 'display'
-  const displayId = mode === 'display' && typeof choices.displayId === 'string' ? choices.displayId : ''
+  const mode = choices && choices.mode === 'window'
+    ? 'window'
+    : (choices && choices.mode === 'region' ? 'region' : 'display')
+  const displayId = mode === 'display' && choices && typeof choices.displayId === 'string' ? choices.displayId : ''
+  const windowToken = mode === 'window' && choices && typeof choices.windowToken === 'string' ? choices.windowToken : ''
   const config = {
     mode,
     displayId,
@@ -206,12 +263,15 @@ function buildRecordingStartPayload(choices) {
   }
   const payload = { mode, config }
   if (displayId) payload.displayId = displayId
+  // Contract §2.1: the renderer hands the token back verbatim; never a source id.
+  if (windowToken) payload.windowToken = windowToken
   return payload
 }
 
 function recordingStartBlocker(choices, state) {
   if (state && state.active && typeof state.active === 'object') return 'active'
   if (!choices) return 'missing'
+  if (choices.mode === 'window') return choices.windowToken ? '' : 'window-required'
   if (choices.mode === 'display' && !choices.displayId) return 'display-required'
   return ''
 }
@@ -299,10 +359,13 @@ function recordingStartButtonMarkup(choices) {
   const disabled = recordingWorkbenchBusy || Boolean(blocker) || recordingWorkbenchError || !recordingWorkbenchState
   const label = recordingWorkbenchBusy
     ? t('recording.workbench.starting')
-    : (choices && choices.mode === 'region' ? t('recording.workbench.start-region') : t('recording.workbench.start-display'))
+    : (choices && choices.mode === 'region'
+        ? t('recording.workbench.start-region')
+        : (choices && choices.mode === 'window' ? t('recording.workbench.start-window') : t('recording.workbench.start-display')))
   let title = ''
   if (blocker === 'active') title = t('recording.workbench.start-busy')
   else if (blocker === 'display-required') title = t('recording.workbench.display-missing')
+  else if (blocker === 'window-required') title = t('recording.workbench.window-required')
   return `<button type="button" class="button primary rec-start" id="recordingStartButton" data-recording-start data-testid="start-recording" title="${escapeHtml(title)}" ${disabled ? 'disabled' : ''}>${label}</button>`
 }
 
@@ -311,11 +374,17 @@ function recordingModeSectionMarkup(choices) {
     const active = choices.mode === mode
     return `<button type="button" class="rec-mode-card${active ? ' active' : ''}" data-recording-mode="${mode}" data-testid="${testId}" aria-pressed="${active ? 'true' : 'false'}"><span class="rec-mode-icon">${iconMarkup(icon)}</span><span class="rec-mode-body"><b>${t(titleKey)}</b><small>${t(hintKey)}</small></span></button>`
   }
-  return `<section class="section"><h2 class="section-title">${t('recording.workbench.modes-section')}</h2><div class="rec-mode-cards">${card('region', '../capture/icons/select.svg', 'recording.workbench.mode-region', 'recording.workbench.mode-region-hint', 'mode-region')}${card('display', 'icons/fullscreen.svg', 'recording.workbench.mode-display', 'recording.workbench.mode-display-hint', 'mode-display')}</div></section>`
+  // `.grid` (auto-fill) keeps three mode cards on one row on a wide window and
+  // reflows to one column on a narrow one without touching the shared stylesheet.
+  return `<section class="section"><h2 class="section-title">${t('recording.workbench.modes-section')}</h2><div class="grid">${card('region', '../capture/icons/select.svg', 'recording.workbench.mode-region', 'recording.workbench.mode-region-hint', 'mode-region')}${card('display', 'icons/fullscreen.svg', 'recording.workbench.mode-display', 'recording.workbench.mode-display-hint', 'mode-display')}${card('window', 'icons/layout.svg', 'recording.workbench.mode-window', 'recording.workbench.mode-window-hint', 'mode-window')}</div></section>`
 }
 
 function recordingTargetSectionMarkup(choices) {
   const displays = recordingWorkbenchState && Array.isArray(recordingWorkbenchState.displays) ? recordingWorkbenchState.displays : []
+  const title = `<h2 class="section-title">${t('recording.workbench.target-section')}</h2>`
+  if (choices.mode === 'window') {
+    return `<section class="section">${title}<div class="card rec-target-card">${recordingWindowTargetMarkup(choices)}</div></section>`
+  }
   const intro = choices.mode === 'region'
     ? t('recording.workbench.target-region-note')
     : t('recording.workbench.target-display-note')
@@ -326,7 +395,37 @@ function recordingTargetSectionMarkup(choices) {
   const options = choices.mode === 'display' && displays.length
     ? `<div class="rec-display-list">${displays.map((display) => recordingDisplayOptionMarkup(display, choices)).join('')}</div>`
     : ''
-  return `<section class="section"><h2 class="section-title">${t('recording.workbench.target-section')}</h2><div class="card rec-target-card"><p class="rec-note">${intro}</p>${empty}${options}${missing}</div></section>`
+  return `<section class="section">${title}<div class="card rec-target-card"><p class="rec-note">${intro}</p>${empty}${options}${missing}</div></section>`
+}
+
+// R4 window picker (contract §2.3): manual refresh only, explicit selection, and a
+// degraded state for each failure mode. Rows carry the opaque token, never a
+// desktopCapturer source id.
+function recordingWindowTargetMarkup(choices) {
+  const toolbar = `<div class="rec-records-toolbar"><small class="rec-note">${t('recording.workbench.window-refresh-hint')}</small><button type="button" class="button" data-recording-window-refresh data-testid="window-refresh">${t('recording.workbench.window-refresh')}</button></div>`
+  let body = ''
+  if (recordingWorkbenchWindowsLoading) {
+    body = `<div class="rec-records-state" data-testid="window-loading">${t('recording.workbench.window-loading')}</div>`
+  } else if (recordingWorkbenchWindowsError) {
+    body = `<div class="rec-error" data-testid="window-error"><div class="rec-error-body"><b>${t('recording.workbench.window-error')}</b><small>${t('recording.workbench.window-refresh-hint')}</small></div><button type="button" class="button" data-recording-window-retry data-testid="window-retry">${t('recording.workbench.retry')}</button></div>`
+  } else if (!recordingWorkbenchWindows.length) {
+    body = `<div class="empty" data-testid="window-empty">${t('recording.workbench.window-empty')}</div>`
+  } else {
+    body = `<div class="rec-display-list">${recordingWorkbenchWindows.map((entry) => recordingWindowOptionMarkup(entry, choices)).join('')}</div>`
+  }
+  return `<p class="rec-note">${t('recording.workbench.target-window-note')}</p>${toolbar}${body}`
+}
+
+function recordingWindowOptionMarkup(entry, choices) {
+  const token = entry && typeof entry.token === 'string' ? entry.token : ''
+  if (!token) return ''
+  const selected = choices.windowToken === token
+  const size = recordingWindowSizeText(entry)
+  const appName = entry.appName && entry.appName !== entry.title ? entry.appName : ''
+  const meta = [size, appName].filter(Boolean).join(' \u00b7 ')
+  const metaMarkup = meta ? `<small class="rec-display-meta">${escapeHtml(meta)}</small>` : ''
+  const badge = selected ? `<span class="rec-badge accent">${t('recording.workbench.display-selected')}</span>` : ''
+  return `<button type="button" class="rec-display${selected ? ' active' : ''}" data-recording-window="${escapeHtml(token)}" data-window-token="${escapeHtml(token)}" data-testid="window-option" aria-pressed="${selected ? 'true' : 'false'}" title="${escapeHtml(entry.title)}"><span class="rec-display-name">${escapeHtml(entry.title)}</span>${badge}${metaMarkup}</button>`
 }
 
 function recordingDisplayOptionMarkup(display, choices) {
@@ -428,8 +527,12 @@ function recordingRecordsMarkup() {
 
 function recordingRecordsSectionMarkup() {
   const tab = (key, testId, label) => `<button type="button" class="${recordingWorkbenchTab === key ? 'active' : ''}" data-recording-tab="${key}" data-testid="${testId}">${label}</button>`
-  const filters = [['all', 'recording.records.filter-all'], ['display', 'recording.records.filter-display'], ['region', 'recording.records.filter-region']]
-    .map(([value, key]) => `<option value="${value}"${recordingWorkbenchFilter === value ? ' selected' : ''}>${t(key)}</option>`).join('')
+  const filters = [
+    ['all', 'recording.records.filter-all', 'records-filter-all'],
+    ['display', 'recording.records.filter-display', 'records-filter-display'],
+    ['region', 'recording.records.filter-region', 'records-filter-region'],
+    ['window', 'recording.records.filter-window', 'records-filter-window']
+  ].map(([value, key, testId]) => `<option value="${value}" data-testid="${testId}"${recordingWorkbenchFilter === value ? ' selected' : ''}>${t(key)}</option>`).join('')
   return `<section class="section" id="recordingRecordsSection"><h2 class="section-title">${t('recording.workbench.records-section')}<small>${t('recording.workbench.hint')}</small></h2><div class="rec-records-toolbar"><div class="tabs">${tab('recent', 'records-tab-recent', t('recording.records.tab-recent'))}${tab('all', 'records-tab-all', t('recording.records.tab-all'))}</div><label class="rec-filter"><span>${t('recording.records.filter-label')}</span><select data-recording-filter data-testid="records-filter">${filters}</select></label></div><div id="recordingRecordsHost">${recordingRecordsMarkup()}</div></section>`
 }
 
@@ -448,7 +551,9 @@ function updateRecordingStartButton() {
   button.disabled = disabled
   button.textContent = recordingWorkbenchBusy
     ? t('recording.workbench.starting')
-    : (choices && choices.mode === 'region' ? t('recording.workbench.start-region') : t('recording.workbench.start-display'))
+    : (choices && choices.mode === 'region'
+        ? t('recording.workbench.start-region')
+        : (choices && choices.mode === 'window' ? t('recording.workbench.start-window') : t('recording.workbench.start-display')))
 }
 
 function bindRecordingBanner() {
@@ -495,6 +600,13 @@ function bindRecordingWorkbench() {
   document.querySelectorAll('[data-recording-display]').forEach((button) => {
     button.onclick = () => selectRecordingDisplay(button.dataset.recordingDisplay)
   })
+  document.querySelectorAll('[data-recording-window]').forEach((button) => {
+    button.onclick = () => selectRecordingWindow(button.dataset.recordingWindow)
+  })
+  const windowRefresh = document.querySelector('[data-recording-window-refresh]')
+  if (windowRefresh) windowRefresh.onclick = () => { void refreshRecordingWindows() }
+  const windowRetry = document.querySelector('[data-recording-window-retry]')
+  if (windowRetry) windowRetry.onclick = () => { void refreshRecordingWindows() }
   document.querySelectorAll('[data-recording-switch]').forEach((button) => {
     button.onclick = () => toggleRecordingSwitch(button.dataset.recordingSwitch)
   })
@@ -548,7 +660,8 @@ function bindRecordingWorkbench() {
   const filter = document.querySelector('[data-recording-filter]')
   if (filter) {
     filter.onchange = () => {
-      recordingWorkbenchFilter = filter.value === 'region' || filter.value === 'display' ? filter.value : 'all'
+      const value = filter.value
+      recordingWorkbenchFilter = value === 'region' || value === 'display' || value === 'window' ? value : 'all'
       renderRecordingRecordsHost()
     }
   }
@@ -574,6 +687,9 @@ function renderRecording() {
   renderRecordingSections()
   void initialiseRecordingWorkbench()
   if (recordingWorkbenchTab === 'all') void loadRecordingProjectPage({ offset: 0 })
+  // Window tokens expire after 120s: entering the workbench in window mode always
+  // fetches a fresh list instead of reusing tokens from the previous visit.
+  if (recordingWorkbenchChoices.mode === 'window') void refreshRecordingWindows()
 }
 
 function retryRecordingWorkbench() {
@@ -584,9 +700,26 @@ function retryRecordingWorkbench() {
 
 function selectRecordingMode(mode) {
   if (!recordingWorkbenchChoices) return
-  const next = mode === 'region' ? 'region' : 'display'
+  const next = mode === 'region' ? 'region' : (mode === 'window' ? 'window' : 'display')
   if (recordingWorkbenchChoices.mode === next) return
   recordingWorkbenchChoices.mode = next
+  // The target pickers are mutually exclusive (contract §2.3): leaving a mode drops
+  // its selection so a hidden display id or a stale/single-use window token can never
+  // leak into the next start payload.
+  if (next !== 'display') {
+    recordingWorkbenchChoices.displayId = ''
+    recordingWorkbenchChoices.displayMissing = false
+  }
+  if (next !== 'window') recordingWorkbenchChoices.windowToken = ''
+  renderRecordingSections()
+  // Entering window mode fetches the list once; there is no background refresh timer.
+  if (next === 'window') void refreshRecordingWindows()
+}
+
+function selectRecordingWindow(token) {
+  if (!recordingWorkbenchChoices || typeof token !== 'string' || !token) return
+  if (!recordingWorkbenchWindows.some((entry) => entry.token === token)) return
+  recordingWorkbenchChoices.windowToken = token
   renderRecordingSections()
 }
 
@@ -630,8 +763,12 @@ async function pollRecordingWorkbench() {
     if (firstLoad) recordingWorkbenchChoices = createRecordingChoices(state)
     else if (!recordingWorkbenchChoices) recordingWorkbenchChoices = createRecordingChoices(state)
     if (currentRoute !== 'recording') return
-    if (firstLoad) renderRecordingSections()
-    else updateRecordingLiveRegions()
+    if (firstLoad) {
+      renderRecordingSections()
+      // A persisted window mode only becomes known after this first read; the list
+      // itself is still fetched on demand (never on the poll timer).
+      if (recordingWorkbenchChoices.mode === 'window' && !recordingWorkbenchWindowsLoading) void refreshRecordingWindows()
+    } else updateRecordingLiveRegions()
   } catch {
     recordingWorkbenchError = true
     recordingWorkbenchState = null
@@ -667,6 +804,31 @@ async function refreshRecordingMicrophoneDevices() {
   recordingWorkbenchDevices = devices
   recordingWorkbenchDeviceError = failed
   if (currentRoute === 'recording') renderRecordingSections()
+}
+
+async function refreshRecordingWindows() {
+  if (recordingWorkbenchWindowsLoading) return
+  recordingWorkbenchWindowsLoading = true
+  recordingWorkbenchWindowsError = false
+  if (currentRoute === 'recording') renderRecordingSections()
+  try {
+    if (!recordingChannelAvailable('workbenchWindows')) throw new Error('workbench-windows-unavailable')
+    const result = await window.electronAPI.workbenchWindows()
+    if (!result || result.ok === false) throw new Error('workbench-windows-failed')
+    recordingWorkbenchWindows = normalizeRecordingWindows(result.windows)
+    // Tokens are single-use and expire: a refresh that no longer lists the selected
+    // window must drop the selection instead of starting a dead target.
+    if (recordingWorkbenchChoices && recordingWorkbenchChoices.windowToken && !selectedRecordingWindow(recordingWorkbenchChoices)) {
+      recordingWorkbenchChoices.windowToken = ''
+    }
+  } catch {
+    recordingWorkbenchWindowsError = true
+    recordingWorkbenchWindows = []
+    if (recordingWorkbenchChoices) recordingWorkbenchChoices.windowToken = ''
+  } finally {
+    recordingWorkbenchWindowsLoading = false
+    if (currentRoute === 'recording') renderRecordingSections()
+  }
 }
 
 async function initialiseRecordingWorkbench() {
@@ -709,6 +871,10 @@ async function startRecordingFromWorkbench() {
     toast(t('recording.workbench.display-missing'))
     return
   }
+  if (blocker === 'window-required') {
+    toast(t('recording.workbench.window-required'))
+    return
+  }
   if (recordingWorkbenchError || !recordingChannelAvailable('workbenchStart')) {
     toast(t('recording.workbench.load-failed-hint'))
     return
@@ -718,10 +884,17 @@ async function startRecordingFromWorkbench() {
   try {
     const result = await window.electronAPI.workbenchStart(buildRecordingStartPayload(choices))
     if (result && result.ok === false) {
-      toast(recordingErrorText(result.code, 'recording.workbench.start-failed'))
+      const code = typeof result.code === 'string' ? result.code : ''
+      toast(recordingErrorText(code, 'recording.workbench.start-failed'))
+      // A rejected window token is consumed/expired on the main process; refetch the
+      // list so the user can pick a target again instead of retrying a dead token.
+      if (code === 'window-required' || code === 'window-unavailable' || code === 'window-too-small') {
+        void refreshRecordingWindows()
+      }
       return
     }
     if (result && result.focused === true) toast(t('recording.workbench.started-focused'))
+    else if (choices.mode === 'window') toast(t('recording.workbench.started-window'))
     else toast(choices.mode === 'region' ? t('recording.workbench.started-region') : t('recording.workbench.started-display'))
     await pollRecordingWorkbench()
   } catch {

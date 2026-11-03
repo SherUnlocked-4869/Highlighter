@@ -90,6 +90,113 @@ test('the timeline validates ranges with the exact exporter rules (normalizeRang
   assert.equal(timeline.parseTimeInput(''), null)
 })
 
+test('R4 multi-segment helpers normalise, split, delete and map source<->edited time', () => {
+  const duration = 10000
+  // Sort, drop invalid/short/overlapping, allow adjacency, cap at 20 segments.
+  assert.deepEqual(
+    timeline.normalizeSegments([
+      { startMs: 5000, endMs: 7000 },
+      { startMs: 1000, endMs: 3000 },
+      { startMs: 2000, endMs: 4000 },
+      { startMs: 3000, endMs: 3100 },
+      { startMs: 100, endMs: 150 },
+      { startMs: -1, endMs: 500 },
+      { startMs: 9000, endMs: 12000 }
+    ], duration),
+    [{ startMs: 1000, endMs: 3000 }, { startMs: 3000, endMs: 3100 }, { startMs: 5000, endMs: 7000 }]
+  )
+  const many = Array.from({ length: 25 }, (_value, index) => ({ startMs: index * 300, endMs: index * 300 + 200 }))
+  assert.equal(timeline.normalizeSegments(many, duration).length, timeline.MAX_SEGMENTS)
+  // Whole-recording equivalence: [] and a single covering range are both "full".
+  assert.equal(timeline.isFullRange([], duration), true)
+  assert.equal(timeline.isFullRange([{ startMs: 0, endMs: duration }], duration), true)
+  assert.equal(timeline.isFullRange([{ startMs: 1000, endMs: 3000 }], duration), false)
+  // Split only strictly inside a kept segment, with both halves >= MIN_RANGE_MS.
+  assert.deepEqual(
+    timeline.splitAt([], 4000, duration),
+    [{ startMs: 0, endMs: 4000 }, { startMs: 4000, endMs: duration }]
+  )
+  assert.equal(timeline.splitAt([], 0, duration).length, 1, 'the media start is not a split point')
+  assert.equal(timeline.splitAt([{ startMs: 1000, endMs: 3000 }], 1050, duration).length, 1)
+  // The 20-segment schema limit is enforced by the split helper itself.
+  const atCap = Array.from({ length: timeline.MAX_SEGMENTS }, (_v, index) => ({ startMs: index * 300, endMs: index * 300 + 200 }))
+  assert.equal(timeline.splitAt(atCap, 100, duration).length, timeline.MAX_SEGMENTS)
+  // Delete the containing segment; deleting the only segment is the explicit "no content" state.
+  assert.deepEqual(
+    timeline.deleteSegmentAt([{ startMs: 0, endMs: 4000 }, { startMs: 6000, endMs: 10000 }], 1000, duration),
+    [{ startMs: 6000, endMs: 10000 }]
+  )
+  assert.deepEqual(timeline.deleteSegmentAt([{ startMs: 0, endMs: 4000 }], 1000, duration), [])
+  const segments = [{ startMs: 1000, endMs: 3000 }, { startMs: 5000, endMs: 7000 }]
+  // Source -> edited mapping; deleted gaps return null (the playback skip signal).
+  assert.equal(timeline.sourceToEdited(segments, 1500, duration), 500)
+  assert.equal(timeline.sourceToEdited(segments, 5500, duration), 2500)
+  assert.equal(timeline.sourceToEdited(segments, 4000, duration), null)
+  assert.equal(timeline.sourceToEdited(segments, 8000, duration), null)
+  assert.equal(timeline.editedToSource(segments, 500, duration), 1500)
+  assert.equal(timeline.editedToSource(segments, 2500, duration), 5500)
+  assert.equal(timeline.editedToSource(segments, 4000, duration), 7000)
+  assert.equal(timeline.totalKeptMs(segments, duration), 4000)
+  assert.equal(timeline.totalKeptMs([], duration), duration)
+  assert.equal(timeline.segmentAt(segments, 2000, duration), 0)
+  assert.equal(timeline.segmentAt(segments, 6500, duration), 1)
+  assert.equal(timeline.segmentAt(segments, 4000, duration), -1)
+  assert.equal(timeline.nextKeptStart(segments, 1500, duration), 5000)
+  assert.equal(timeline.nextKeptStart(segments, 7000, duration), null)
+})
+
+test('R4 boundary and junction drags are neighbour-aware and never create overlaps', () => {
+  const duration = 10000
+  const segments = [{ startMs: 1000, endMs: 3000 }, { startMs: 5000, endMs: 7000 }]
+  assert.deepEqual(timeline.moveBoundary(segments, 0, 'start', 0, duration), [{ startMs: 0, endMs: 3000 }, { startMs: 5000, endMs: 7000 }])
+  assert.deepEqual(timeline.moveBoundary(segments, 0, 'start', 9000, duration), [{ startMs: 2900, endMs: 3000 }, { startMs: 5000, endMs: 7000 }])
+  assert.deepEqual(timeline.moveBoundary(segments, 0, 'end', 9000, duration), [{ startMs: 1000, endMs: 5000 }, { startMs: 5000, endMs: 7000 }])
+  assert.deepEqual(timeline.moveBoundary(segments, 1, 'start', 2000, duration), [{ startMs: 1000, endMs: 3000 }, { startMs: 3000, endMs: 7000 }])
+  assert.deepEqual(timeline.moveBoundary(segments, 1, 'start', 3500, duration), [{ startMs: 1000, endMs: 3000 }, { startMs: 3500, endMs: 7000 }])
+  assert.deepEqual(timeline.moveBoundary(segments, 1, 'end', 12000, duration), [{ startMs: 1000, endMs: 3000 }, { startMs: 5000, endMs: duration }])
+  assert.deepEqual(timeline.moveBoundary(segments, 7, 'end', 9000, duration), segments, 'an unknown index is ignored')
+  // A junction moves both adjacent edges: the cut stays a cut.
+  const adjacent = [{ startMs: 0, endMs: 4000 }, { startMs: 4000, endMs: 8000 }]
+  assert.deepEqual(timeline.moveJunction(adjacent, 1, 5000, duration), [{ startMs: 0, endMs: 5000 }, { startMs: 5000, endMs: 8000 }])
+  assert.deepEqual(timeline.moveJunction(adjacent, 1, 100, duration), [{ startMs: 0, endMs: 100 }, { startMs: 100, endMs: 8000 }])
+  assert.deepEqual(timeline.moveJunction(adjacent, 1, 7900, duration), [{ startMs: 0, endMs: 7900 }, { startMs: 7900, endMs: 8000 }])
+  // Non-adjacent segments have no junction to drag.
+  assert.deepEqual(timeline.moveJunction(segments, 1, 4000, duration), segments)
+})
+
+test('R4 video export options never upscale and never offer a frame rate above the source', () => {
+  // Resolution presets are long-edge caps: hide a preset when its cap exceeds the source edge.
+  assert.deepEqual(timeline.availableResolutions(1920, 1080), ['source', '1080p', '720p', '480p'])
+  assert.deepEqual(timeline.availableResolutions(1280, 720), ['source', '720p', '480p'])
+  assert.deepEqual(timeline.availableResolutions(640, 480), ['source'])
+  assert.deepEqual(timeline.availableResolutions(0, 0), ['source'])
+  // Frame rates: unknown only source; 24 only source; 30 offers 30; 60 offers both.
+  assert.deepEqual(timeline.availableFrameRates(0), ['source'])
+  assert.deepEqual(timeline.availableFrameRates(undefined), ['source'])
+  assert.deepEqual(timeline.availableFrameRates(24), ['source'])
+  assert.deepEqual(timeline.availableFrameRates(30), ['source', '30'])
+  assert.deepEqual(timeline.availableFrameRates(60), ['source', '30', '60'])
+  // Output size mirrors the exporter: even dimensions, aspect preserved, never upscaled.
+  assert.deepEqual(timeline.computeVideoOutput({ sourceWidth: 1920, sourceHeight: 1080, resolution: '1080p' }).value.width, 1920)
+  const hd = timeline.computeVideoOutput({ sourceWidth: 1920, sourceHeight: 1080, resolution: '720p' }).value
+  assert.deepEqual([hd.width, hd.height], [1280, 720])
+  const sd = timeline.computeVideoOutput({ sourceWidth: 1280, sourceHeight: 720, resolution: '480p' }).value
+  assert.deepEqual([sd.width, sd.height], [854, 480])
+  const source = timeline.computeVideoOutput({ sourceWidth: 640, sourceHeight: 480, resolution: '1080p' }).value
+  assert.deepEqual([source.width, source.height], [640, 480], 'a preset above the source does not upscale')
+  // Request-level normalisation: defaults, and fps-above-source is rejected.
+  const defaults = timeline.normalizeVideoOptions({}, { sourceWidth: 1280, sourceHeight: 720, sourceFrameRate: 30 })
+  assert.equal(defaults.ok, true)
+  assert.deepEqual(
+    { resolution: defaults.value.resolution, quality: defaults.value.quality, fps: defaults.value.fps, fpsValue: defaults.value.fpsValue, width: defaults.value.width, height: defaults.value.height },
+    { resolution: 'source', quality: 'standard', fps: 'source', fpsValue: 30, width: 1280, height: 720 }
+  )
+  assert.equal(timeline.normalizeVideoOptions({ fps: 60 }, { sourceWidth: 1280, sourceHeight: 720, sourceFrameRate: 30 }).code, 'fps-above-source')
+  assert.equal(timeline.normalizeVideoOptions({ fps: 30 }, { sourceWidth: 1280, sourceHeight: 720, sourceFrameRate: 24 }).code, 'fps-above-source')
+  assert.equal(timeline.normalizeVideoOptions({ resolution: '4k' }, { sourceWidth: 1280, sourceHeight: 720 }).code, 'invalid-video-option')
+  assert.equal(timeline.normalizeVideoOptions({ quality: 'best' }, { sourceWidth: 1280, sourceHeight: 720 }).code, 'invalid-video-option')
+})
+
 // ---------------------------------------------------------------------------
 // 2. project-mode controller: draft CAS + export freeze/retry + recovery gate
 // ---------------------------------------------------------------------------
@@ -205,9 +312,12 @@ test('export freezes the controls, retries with a new request, and only success 
   })
   assert.equal(accepted.status, 'accepted')
   assert.equal(requests.length, 1)
-  // The request carries the selection/format only - never a path or argv.
-  assert.deepEqual(Object.keys(requests[0].request).sort(), ['format', 'range'])
-  assert.deepEqual(requests[0].request.range, { startMs: 0, endMs: 4000 })
+  // R4 contract §4.1: a whole-recording selection OMITS segments and sends video options for
+  // mp4/webm; only ids/ranges/options cross IPC, never a path or argv.
+  assert.deepEqual(Object.keys(requests[0].request).sort(), ['format', 'video'])
+  assert.deepEqual(requests[0].request.video, { resolution: 'source', quality: 'standard', fps: 'source' })
+  assert.equal(requests[0].request.range, undefined)
+  assert.equal(requests[0].request.segments, undefined)
   // Frozen: no range/format edits while the task runs.
   assert.equal(controller.setStart(500), false)
   assert.equal(controller.setFormat('gif'), false)
@@ -240,7 +350,7 @@ test('export freezes the controls, retries with a new request, and only success 
   assert.equal(retry.status, 'failed')
   assert.equal(requests.length, 2)
   assert.notEqual(requests[1].requestId, requests[0].requestId)
-  assert.deepEqual(requests[1].request.range, { startMs: 1000, endMs: 4000 })
+  assert.deepEqual(requests[1].request.segments, [{ startMs: 1000, endMs: 4000 }])
 })
 
 test('a recoverable project disables export instead of offering a fake duration', async () => {
@@ -266,6 +376,120 @@ test('a recoverable project disables export instead of offering a fake duration'
   assert.equal(controller.state().range.endMs, 3000)
 })
 
+test('a project controller edits a segment list with undo/redo, boundaries and an empty state', async () => {
+  const project = projectEdit({
+    edit: {
+      revision: 2,
+      keepRanges: [{ id: 'keep-1', startMs: 1000, endMs: 3000 }, { id: 'keep-2', startMs: 5000, endMs: 7000 }],
+      format: 'mp4',
+      gif: { edge: 1280, fps: 15 }
+    }
+  })
+  const metadata = { durationMs: 10000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 1 } }
+  const controller = projectController(project, { metadata })
+  const initial = controller.state()
+  assert.deepEqual(initial.segments, [{ startMs: 1000, endMs: 3000 }, { startMs: 5000, endMs: 7000 }])
+  assert.equal(initial.keptMs, 4000)
+  assert.equal(initial.edited, true)
+  assert.equal(initial.undo, false)
+  assert.deepEqual(initial.videoOptions.resolutions, ['source', '720p', '480p'])
+  assert.deepEqual(initial.videoOptions.frameRates, ['source', '30'])
+  // Split a kept segment, then undo/redo the edit.
+  assert.equal(controller.splitAt(2000), true)
+  assert.equal(controller.state().segments.length, 3)
+  assert.equal(controller.state().undo, true)
+  assert.equal(controller.undoEdit(), true)
+  assert.equal(controller.state().segments.length, 2)
+  assert.equal(controller.state().redo, true)
+  assert.equal(controller.redoEdit(), true)
+  assert.equal(controller.state().segments.length, 3)
+  // Delete the segment under the playhead; an empty selection is explicit and unexportable.
+  assert.equal(controller.deleteSegmentAt(5500), true)
+  assert.equal(controller.state().segments.length, 2)
+  assert.equal(controller.canDeleteAt(4000), false, 'a removed gap has no segment to delete')
+  // Boundary drag grouped by beginEdit/commitEdit is ONE undo entry.
+  const beforeDrag = controller.state().segments
+  const dirtyBeforeDrag = controller.state().draft.dirty
+  assert.equal(controller.beginEdit(), true)
+  assert.equal(controller.moveBoundary(0, 'start', 500), true)
+  assert.equal(controller.moveBoundary(0, 'start', 200), true)
+  assert.equal(controller.state().draft.dirty, dirtyBeforeDrag, 'transient drag moves do not dirty the draft')
+  assert.equal(controller.commitEdit(), true)
+  assert.equal(controller.state().draft.dirty, true)
+  assert.equal(controller.undoEdit(), true)
+  assert.deepEqual(controller.state().segments, beforeDrag)
+  // Deleting every segment leaves [] (no content) and closes the export gate.
+  const single = projectController(projectEdit({ edit: { revision: 1, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } } }), { metadata })
+  assert.deepEqual(single.state().segments, [{ startMs: 0, endMs: 10000 }])
+  assert.equal(single.deleteSegmentAt(5000), true)
+  assert.deepEqual(single.state().segments, [])
+  assert.equal(single.state().emptySelection, true)
+  assert.equal(single.state().canExport, false)
+  let submitted = 0
+  const answer = await single.startExport({ submit: async () => { submitted += 1; return { status: 'accepted', task: { taskId: 't', state: 'running' } } } })
+  assert.equal(submitted, 0, 'an empty selection never reaches IPC')
+  assert.equal(answer.code, 'empty-selection')
+  assert.deepEqual(single.buildDraftEdit().keepRanges, [], 'the schema cannot persist an empty selection; the session still refuses to export')
+})
+
+function finishFakeExport(controller, taskId, fileName, kind) {
+  controller.applyTask({ taskId, state: 'succeeded', progress: 100, receipt: { status: 'saved', resultId: 'result-' + kind, fileName, kind } })
+  return controller.resetAfterExport()
+}
+
+test('a multi-segment export request follows R4 contract §4.1 (segments/video/gif shapes)', async () => {
+  const project = projectEdit({
+    edit: {
+      revision: 2,
+      keepRanges: [{ id: 'keep-1', startMs: 1000, endMs: 3000 }, { id: 'keep-2', startMs: 5000, endMs: 7000 }],
+      format: 'mp4',
+      gif: { edge: 1280, fps: 15 }
+    }
+  })
+  const metadata = { durationMs: 10000, video: { width: 1920, height: 1080, frameRate: 60 }, audio: { tracks: 1 } }
+  const controller = projectController(project, { metadata })
+  const requests = []
+  const submit = async ({ requestId, request }) => {
+    requests.push({ requestId, request })
+    return { status: 'accepted', task: { taskId: 'task-1', state: 'running' } }
+  }
+  // MP4 with explicit segments + video options the user picked in the panel.
+  assert.equal(controller.setVideoResolution('720p'), true)
+  assert.equal(controller.setVideoQuality('high'), true)
+  assert.equal(controller.setVideoFps(60), true)
+  await controller.startExport({ submit })
+  const mp4 = requests[0].request
+  assert.deepEqual(Object.keys(mp4).sort(), ['format', 'segments', 'video'])
+  assert.deepEqual(mp4.segments, [{ startMs: 1000, endMs: 3000 }, { startMs: 5000, endMs: 7000 }])
+  assert.deepEqual(mp4.video, { resolution: '720p', quality: 'high', fps: 60 })
+  finishFakeExport(controller, 'task-1', 'clip.mp4', 'mp4')
+
+  // WebM keeps the same video option shape (the copy fast-path is decided main-side).
+  assert.equal(controller.setFormat('webm'), true)
+  await controller.startExport({ submit })
+  const webm = requests[1].request
+  assert.equal(webm.format, 'webm')
+  assert.deepEqual(Object.keys(webm).sort(), ['format', 'segments', 'video'])
+  finishFakeExport(controller, 'task-1', 'clip.webm', 'webm')
+
+  // GIF ignores "video" and uses the frozen {edge,fps} budget.
+  assert.equal(controller.setFormat('gif'), true)
+  assert.equal(controller.setGifMaxEdge(960), true)
+  await controller.startExport({ submit })
+  const gif = requests[2].request
+  assert.deepEqual(Object.keys(gif).sort(), ['format', 'gif', 'segments'])
+  assert.deepEqual(gif.gif, { edge: 960, fps: 15 })
+  finishFakeExport(controller, 'task-1', 'clip.gif', 'gif')
+
+  // Whole recording: segments are omitted (= full), and mp4/webm still carry video options.
+  const whole = projectController(projectEdit({ edit: { revision: 1, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } } }), { metadata })
+  const wholeRequests = []
+  await whole.startExport({ submit: async ({ requestId, request }) => { wholeRequests.push(request); return { status: 'accepted', task: { taskId: 't2', state: 'running' } } } })
+  assert.deepEqual(Object.keys(wholeRequests[0]).sort(), ['format', 'video'])
+  assert.equal(wholeRequests[0].segments, undefined)
+  assert.equal(whole.buildDraftEdit().keepRanges.length, 0)
+})
+
 // ---------------------------------------------------------------------------
 // 3. editor view over a fake DOM
 // ---------------------------------------------------------------------------
@@ -287,6 +511,9 @@ class FakeElement {
     this.rect = { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }
     this.listeners = new Map()
     this.attributes = new Map()
+    this.children = []
+    this.firstChild = null
+    this.parentNode = null
     this.classList = {
       _set: new Set(),
       add: (name) => this.classList._set.add(name),
@@ -314,6 +541,25 @@ class FakeElement {
 
   dispatch(type, event = {}) {
     for (const handler of this.listeners.get(type) || []) handler({ type, target: this, ...event })
+  }
+
+  appendChild(child) {
+    this.children.push(child)
+    child.parentNode = this
+    this.firstChild = this.children[0]
+    return child
+  }
+
+  removeChild(child) {
+    const index = this.children.indexOf(child)
+    if (index >= 0) this.children.splice(index, 1)
+    if (child) child.parentNode = null
+    this.firstChild = this.children[0] || null
+    return child
+  }
+
+  get options() {
+    return this.children
   }
 
   setAttribute(name, value) {
@@ -374,7 +620,14 @@ class FakeWindow {
 function installFakeDom() {
   const elements = new Map()
   for (const id of editorModule.ELEMENT_IDS) {
-    const element = new FakeElement(id === 'preview-video' ? 'video' : 'div')
+    const tag = id === 'preview-video'
+      ? 'video'
+      : (id.endsWith('-input')
+        ? 'input'
+        : (id === 'export-format' || id === 'gif-edge' || id === 'gif-fps' || id === 'export-resolution' || id === 'export-quality' || id === 'export-fps'
+          ? 'select'
+          : 'div'))
+    const element = new FakeElement(tag)
     element.id = id
     elements.set(id, element)
   }
@@ -385,7 +638,8 @@ function installFakeDom() {
     body,
     documentElement: new FakeElement('html'),
     activeElement: null,
-    getElementById: (id) => elements.get(id) || null
+    getElementById: (id) => elements.get(id) || null,
+    createElement: (tagName) => new FakeElement(tagName)
   }
   const windowRef = new FakeWindow()
   return { elements, document: documentRef, window: windowRef }
@@ -475,31 +729,44 @@ function exportRequestKeys(request) {
   return Object.keys(request || {}).sort()
 }
 
-test('the editor renders init data: real duration, persisted trim, export state, autosave status', (t) => {
+test('the editor renders init data: kept blocks, duration statistic, export options and autosave status', (t) => {
   const fake = createFakeApi()
-  const { view, harness } = bootView({ api: fake.api })
+  // Params-aware translator so the rendered numbers are inspectable.
+  const harness = installFakeDom()
+  const view = editorModule.createEditorView({
+    api: fake.api,
+    document: harness.document,
+    window: harness.window,
+    translate: (key, params) => (params ? key + ':' + JSON.stringify(params) : key)
+  })
+  view.boot()
   t.after(() => view.destroy())
   assert.equal(fake.calls.ready, 1, 'the window announces ready once')
   assert.equal(view.applyInit(initPayload()), true)
 
   const elements = harness.elements
   assert.equal(elements.get('source-name').textContent, 'ScreenRecording_2026-11-03')
-  assert.equal(elements.get('timeline-duration').textContent, 'recording.editor.timeline.duration')
-  assert.match(elements.get('range-selection').textContent, /recording\.editor\.timeline\.selection/)
+  assert.match(elements.get('timeline-duration').textContent, /^recording.editor.timeline.duration:/)
+  assert.match(elements.get('range-selection').textContent, /^recording.editor.timeline.kept:/)
+  assert.match(elements.get('range-selection').textContent, /"kept":"00:02.0"/)
   assert.equal(elements.get('range-start-input').value, '00:01.0')
   assert.equal(elements.get('range-end-input').value, '00:03.0')
+  // The persisted edit is a multi-capable segment list; the one saved range renders as one
+  // kept block plus the two outer handles.
+  assert.equal(elements.get('timeline-segments').children.filter((node) => node.className === 'timeline-segment').length, 1)
+  assert.match(elements.get('handle-start').style.left, /^25/)
+  assert.match(elements.get('handle-end').style.left, /^75/)
   // The controller's persisted format/GIF cap drive the panel.
   assert.equal(elements.get('export-format').value, 'gif')
   assert.equal(elements.get('gif-edge').value, '960')
   assert.equal(elements.get('gif-fps').value, '10')
-  assert.match(elements.get('gif-budget').textContent, /recording\.editor\.gif-frames/)
-  assert.equal(elements.get('export-final-size').textContent, '960 \u00d7 540')
-  // Handle positions reflect the persisted half-open range, and export is available.
-  assert.match(elements.get('handle-start').style.left, /^25/)
-  assert.match(elements.get('handle-end').style.left, /^75/)
+  assert.match(elements.get('gif-budget').textContent, /recording.editor.gif-frames/)
+  assert.match(elements.get('export-output-size').textContent, /^recording.editor.output-value:/)
+  assert.ok(elements.get('export-output-size').textContent.includes('"size":"960 × 540"'))
   assert.equal(elements.get('export-button').disabled, false)
   assert.equal(elements.get('cancel-export').hidden, true)
   assert.equal(elements.get('recovery-banner').hidden, true)
+  assert.equal(elements.get('empty-selection-hint').hidden, true)
   assert.equal(elements.get('result-bar').hidden, true)
   assert.equal(elements.get('save-state').dataset.state, 'saved')
   // The preview source is the file URL the main process derived; no path is fabricated here.
@@ -582,6 +849,13 @@ test('handle drag and keyboard edits the range; clicking the track only moves th
   assert.equal(harness.elements.get('preview-video').currentTime, 2)
   assert.deepEqual(controller.state().range, { startMs: 2900, endMs: 3900 })
   assert.match(harness.elements.get('timeline-playhead').style.left, /^50/)
+  // Dragging on the track moves the playhead (75% here) and still leaves the segments alone.
+  harness.elements.get('timeline-track').dispatch('pointerdown', { clientX: 500, preventDefault() {} })
+  harness.window.dispatch('pointermove', { clientX: 700 })
+  harness.window.dispatch('pointerup', {})
+  assert.equal(harness.elements.get('preview-video').currentTime, 3)
+  assert.deepEqual(controller.state().range, { startMs: 2900, endMs: 3900 })
+  assert.match(harness.elements.get('timeline-playhead').style.left, /^75/)
 })
 
 test('export submits one frozen project request, shows progress, and only a receipt fills the result bar', async (t) => {
@@ -600,7 +874,7 @@ test('export submits one frozen project request, shows progress, and only a rece
   assert.equal(fake.calls.export[0].projectId, 'project-1')
   assert.equal(fake.calls.export[0].requestId.length > 0, true)
   // Only the frozen request shape crosses IPC: no path, no argv.
-  assert.deepEqual(exportRequestKeys(fake.calls.export[0].request), ['format', 'range'])
+  assert.deepEqual(exportRequestKeys(fake.calls.export[0].request), ['format', 'video'])
   assert.equal(elements.get('result-bar').hidden, true, 'no result bar before a receipt')
 
   // Progress arrives; before publish nothing claims 100%.
@@ -769,11 +1043,170 @@ test('without the preload bridge the window degrades visibly instead of crashing
   assert.equal(view.getController(), null)
 })
 
+test('the editor renders kept blocks and wires split/delete/undo/redo/reset over the fake DOM', (t) => {
+  const fake = createFakeApi()
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(initPayload({
+    project: projectEdit({ edit: { revision: 1, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } } }),
+    metadata: { durationMs: 4000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  }))
+  const elements = harness.elements
+  const blocks = () => elements.get('timeline-segments').children.filter((node) => node.className === 'timeline-segment')
+
+  assert.equal(blocks().length, 1, 'a whole-recording edit renders one kept block')
+  assert.equal(elements.get('timeline-segments').children.filter((node) => node.className === 'timeline-boundary').length, 0)
+  // Split at the playhead (2 s) -> two kept blocks joined by one junction grip.
+  elements.get('preview-video').currentTime = 2
+  elements.get('split-at-playhead').dispatch('click')
+  assert.equal(blocks().length, 2)
+  assert.equal(elements.get('timeline-segments').children.filter((node) => node.className === 'timeline-boundary').length, 1)
+  assert.equal(elements.get('split-at-playhead').disabled, true, 'a boundary is not splittable')
+  // Delete the segment under the playhead -> one block remains.
+  elements.get('preview-video').currentTime = 2.5
+  elements.get('delete-segment').dispatch('click')
+  assert.equal(blocks().length, 1)
+  assert.deepEqual(view.getController().state().segments, [{ startMs: 0, endMs: 2000 }])
+  // Undo / redo the delete.
+  elements.get('undo-edit').dispatch('click')
+  assert.equal(blocks().length, 2)
+  elements.get('redo-edit').dispatch('click')
+  assert.equal(blocks().length, 1)
+  // Restore the full range.
+  elements.get('reset-edits').dispatch('click')
+  assert.equal(blocks().length, 1)
+  assert.deepEqual(view.getController().state().segments, [{ startMs: 0, endMs: 4000 }])
+  assert.equal(view.getController().state().edited, false)
+  // The kept statistic reports kept vs source length.
+  assert.match(elements.get('range-selection').textContent, /recording\.editor\.timeline\.kept/)
+})
+
+test('Ctrl+Z / Ctrl+Y undo and redo edits, but never while a text field is focused', (t) => {
+  const fake = createFakeApi()
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(initPayload({
+    project: projectEdit({ edit: { revision: 1, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } } }),
+    metadata: { durationMs: 4000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  }))
+  const controller = view.getController()
+  const blocks = () => harness.elements.get('timeline-segments').children.filter((node) => node.className === 'timeline-segment')
+  controller.splitAt(2000)
+  view.render()
+  assert.equal(blocks().length, 2)
+  harness.window.dispatch('keydown', { key: 'z', ctrlKey: true })
+  assert.equal(controller.state().segments.length, 1, 'Ctrl+Z undoes the split')
+  harness.window.dispatch('keydown', { key: 'y', ctrlKey: true })
+  assert.equal(controller.state().segments.length, 2, 'Ctrl+Y redoes it')
+  // While typing (input focused) the shortcut belongs to the field, not the timeline.
+  harness.document.activeElement = harness.elements.get('range-start-input')
+  const before = controller.state().segments.length
+  harness.window.dispatch('keydown', { key: 'z', ctrlKey: true, target: harness.elements.get('range-start-input') })
+  assert.equal(controller.state().segments.length, before, 'typing undo is not intercepted')
+  harness.document.activeElement = null
+})
+
+test('kept playback skips removed gaps and pauses at the last kept end', (t) => {
+  const fake = createFakeApi()
+  const { view } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(initPayload({
+    project: projectEdit({
+      edit: {
+        revision: 1,
+        keepRanges: [{ id: 'keep-1', startMs: 0, endMs: 1000 }, { id: 'keep-2', startMs: 3000, endMs: 4000 }],
+        format: 'mp4',
+        gif: { edge: 1280, fps: 15 }
+      }
+    }),
+    metadata: { durationMs: 4000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  }))
+  const controller = view.getController()
+  // Starting inside the removed gap jumps forward to the next kept start.
+  const started = controller.startKeptPlayback(2000)
+  assert.deepEqual({ startMs: started.startMs, endMs: started.endMs }, { startMs: 3000, endMs: 4000 })
+  assert.equal(controller.reportTime(3500).action, 'none')
+  // A clock that lands in the gap asks the video element to seek over it.
+  assert.deepEqual(controller.reportTime(1500), { action: 'seek', toMs: 3000 })
+  // The last kept end pauses playback there (never on deleted tail content).
+  assert.deepEqual(controller.reportTime(4000), { action: 'pause', toMs: 4000 })
+  assert.equal(controller.state().playing, null)
+  // Unplayable when everything is deleted.
+  // A playhead after the last kept end has nothing to play.
+  assert.equal(controller.startKeptPlayback(5000), null)
+  controller.deleteSegmentAt(100)
+  controller.deleteSegmentAt(3500)
+  assert.equal(controller.state().segments.length, 0)
+  assert.equal(controller.startKeptPlayback(0), null)
+})
+
+test('the R4 export panel hides unsupported resolutions/frame rates and shows the shared output size', (t) => {
+  const fake = createFakeApi()
+  const harness = installFakeDom()
+  const view = editorModule.createEditorView({
+    api: fake.api,
+    document: harness.document,
+    window: harness.window,
+    translate: (key, params) => (params ? key + ':' + JSON.stringify(params) : key)
+  })
+  view.boot()
+  t.after(() => view.destroy())
+  view.applyInit(initPayload({
+    project: projectEdit({ edit: { revision: 1, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } } }),
+    metadata: { durationMs: 4000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  }))
+  const elements = harness.elements
+  const optionValues = (id) => elements.get(id).children.map((option) => option.value)
+  // 1280x720 source: 1080p (cap 1920) would upscale, so it is not offered; 30 fps source
+  // offers exactly source + 30 (never 60).
+  assert.deepEqual(optionValues('export-resolution'), ['source', '720p', '480p'])
+  assert.deepEqual(optionValues('export-quality'), ['standard', 'high', 'ultra'])
+  assert.deepEqual(optionValues('export-fps'), ['source', '30'])
+  assert.ok(elements.get('export-output-size').textContent.includes('"size":"1280 × 720"'))
+  // Choosing 480p updates the same shared computation to the capped size (and kept duration).
+  elements.get('export-resolution').value = '480p'
+  elements.get('export-resolution').dispatch('change')
+  assert.equal(view.getController().state().video.resolution, '480p')
+  assert.ok(elements.get('export-output-size').textContent.includes('"size":"854 × 480"'))
+  assert.ok(elements.get('export-output-size').textContent.includes('"duration":"00:04.0"'))
+  // Switching to GIF hides the video rows and shows the GIF budget; WebM keeps video options.
+  elements.get('export-format').value = 'webm'
+  elements.get('export-format').dispatch('change')
+  assert.equal(view.getController().state().format, 'webm')
+  assert.equal(harness.document.body.dataset.format, 'webm')
+  elements.get('export-format').value = 'gif'
+  elements.get('export-format').dispatch('change')
+  assert.equal(harness.document.body.dataset.format, 'gif')
+  assert.equal(elements.get('export-resolution').disabled, true)
+  assert.ok(elements.get('export-output-size').textContent.includes('"size":"1280 × 720"'))
+})
+
+test('deleting every segment disables export and shows the empty-selection hint', (t) => {
+  const fake = createFakeApi()
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(initPayload({
+    project: projectEdit({ edit: { revision: 1, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } } }),
+    metadata: { durationMs: 4000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  }))
+  const elements = harness.elements
+  elements.get('preview-video').currentTime = 1
+  elements.get('delete-segment').dispatch('click')
+  assert.equal(view.getController().state().segments.length, 0)
+  assert.equal(elements.get('empty-selection-hint').hidden, false)
+  assert.equal(elements.get('export-button').disabled, true)
+  assert.equal(elements.get('play-range').disabled, true)
+  // Clicking Export must not reach IPC with an empty selection.
+  elements.get('export-button').dispatch('click')
+  assert.equal(fake.calls.export.length, 0)
+  assert.match(elements.get('error-text').textContent, /recording\.editor\.(timeline\.empty|error\.)/)
+})
+
 // ---------------------------------------------------------------------------
 // 4. markup, IPC surface and i18n contract
 // ---------------------------------------------------------------------------
 
-test('editor.html exposes the stable E2E ids, the frameless titlebar and one export action', () => {
+test('editor.html exposes the stable E2E ids plus the R4 segment and export controls', () => {
   const html = read('record/editor.html')
   for (const id of [
     // Window + header
@@ -781,27 +1214,34 @@ test('editor.html exposes the stable E2E ids, the frameless titlebar and one exp
     'back-to-records', 'export-button',
     // Preview + recovery
     'preview-video', 'recovery-banner', 'recovery-retry', 'error-text',
-    // Timeline: one track, two handles, precise inputs, play selection
-    'timeline', 'timeline-track', 'handle-start', 'handle-end',
+    // Multi-segment timeline: kept blocks, two outer handles, precise inputs, kept playback
+    'timeline', 'timeline-track', 'timeline-segments', 'timeline-playhead',
+    'handle-start', 'handle-end', 'empty-selection-hint',
     'range-start-input', 'range-end-input', 'play-range', 'range-selection',
+    // R4 edit operations (real <button>s; stable data-testid values)
+    'split-at-playhead', 'delete-segment', 'reset-edits', 'undo-edit', 'redo-edit',
     // Export panel + progress + result bar (feature-A receipt)
-    'export-format', 'gif-edge', 'gif-fps', 'export-progress', 'cancel-export',
-    'result-bar', 'result-open', 'result-reveal'
+    'export-format', 'gif-edge', 'gif-fps', 'gif-budget',
+    'export-resolution', 'export-quality', 'export-fps', 'export-output-size',
+    'export-progress', 'cancel-export', 'result-bar', 'result-open', 'result-reveal'
   ]) {
-    assert.match(html, new RegExp(`id="${id}"`), `editor.html exposes #${id}`)
+    assert.match(html, new RegExp('id="' + id + '"'), 'editor.html exposes #' + id)
   }
-  // Both precise inputs are real text fields; the handles are keyboard-focusable controls.
+  for (const testid of ['split-at-playhead', 'delete-segment', 'reset-edits', 'undo-edit', 'redo-edit']) {
+    assert.match(html, new RegExp('data-testid="' + testid + '"'), 'editor.html exposes data-testid=' + testid)
+  }
+  // Both precise inputs are real text fields; the outer handles are keyboard-focusable controls.
   assert.match(html, /id="range-start-input"[^>]*type="text"/)
   assert.match(html, /id="range-end-input"[^>]*type="text"/)
   assert.match(html, /id="handle-start"[^>]*type="button"[^>]*role="slider"/)
   assert.match(html, /id="handle-end"[^>]*type="button"[^>]*role="slider"/)
-  // The format options and GIF-only controls are present; the old Save MP4 entry is gone
-  // because export is the single save action.
+  // R4 formats: mp4/gif/webm in one single export action; the old Save MP4 entry is gone.
   assert.match(html, /<option value="mp4"/)
   assert.match(html, /<option value="gif"/)
-  for (const fps of timeline.GIF_FRAME_RATES) assert.match(html, new RegExp(`<option value="${fps}"`))
+  assert.match(html, /<option value="webm"/)
+  for (const fps of timeline.GIF_FRAME_RATES) assert.match(html, new RegExp('<option value="' + fps + '"'))
   assert.doesNotMatch(html, /id="saveMp4"/)
-  assert.doesNotMatch(html, /id="rerecord"[\s\S]*?id="rerecord"/, 'there is exactly one rerecord control')
+  assert.equal((html.match(/id="rerecord"/g) || []).length, 1, 'there is exactly one rerecord control')
   // Frameless window: the titlebar is the drag region and its controls opt out.
   const editorCss = read('record/editor.css')
   assert.ok(editorCss.includes('.titlebar {'), 'the titlebar is styled')
@@ -809,9 +1249,9 @@ test('editor.html exposes the stable E2E ids, the frameless titlebar and one exp
   // The page CSP allows same-origin file: media for the persistent source, mirroring record.html.
   assert.match(html, /media-src 'self' blob: file:/)
   assert.doesNotMatch(html, /style="[^"]*"/, 'no inline style attributes in the editor markup')
-  // Script order: shared export options before the controller/timeline, editor last.
-  assert.match(html, /shared\/recording-export-options\.js[\s\S]*trim-controller\.js[\s\S]*editor-timeline\.js[\s\S]*editor\.js/)
-  assert.doesNotMatch(html, /src="record\.js"/, 'the editor does not load the recorder script')
+  // Script order: shared options -> timeline math -> controller -> editor view.
+  assert.match(html, /shared\/recording-export-options.js[\s\S]*editor-timeline.js[\s\S]*trim-controller.js[\s\S]*editor.js/)
+  assert.doesNotMatch(html, /src="record.js"/, 'the editor does not load the recorder script')
 })
 
 test('editor.css lays out the stage/panel/timeline and adapts below 980px without inline styles', () => {
@@ -890,7 +1330,7 @@ test('every export error code maps to a locale key defined for all three languag
   const tables = globalThis.__LOCALES
   for (const code of EXPORT_ERROR_CODES) {
     const key = trimController.errorKey(code)
-    assert.match(key, /^record\.error\./, `${code} must map to a locale key`)
+    assert.match(key, /^(record|recording)\.(error|editor)\./, `${code} must map to a locale key`)
     for (const language of ['zh-CN', 'en-US', 'zh-TW']) {
       assert.equal(typeof tables[language][key], 'string', `${language} is missing ${key} (code ${code})`)
     }

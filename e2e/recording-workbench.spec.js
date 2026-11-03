@@ -46,6 +46,44 @@ function probeDurationMs(filePath) {
   return Math.round((Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])) * 1000)
 }
 
+// Full ffmpeg -i description of a produced file: duration, codec and pixel dimensions.
+// The publish verification only proves the file is decodable; the spec additionally checks
+// that the R4 export options actually reached the encoder (scale/fps/codec).
+function probeVideo(filePath) {
+  const result = spawnSync(FFMPEG_PATH, ['-hide_banner', '-i', filePath], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 20_000
+  })
+  const text = `${result.stderr || ''}\n${result.stdout || ''}`
+  const duration = text.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/)
+  const codec = text.match(/Video:\s*([a-z0-9_-]+)/i)
+  const size = text.match(/(\d{2,5})x(\d{2,5})/)
+  return {
+    durationMs: duration
+      ? Math.round((Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3])) * 1000)
+      : null,
+    codec: codec ? codec[1].toLowerCase() : '',
+    width: size ? Number(size[1]) : 0,
+    height: size ? Number(size[2]) : 0,
+    hasAudio: /Audio:\s*[a-z0-9_-]+/i.test(text)
+  }
+}
+
+// `#range-selection` renders the kept statistics as clocks ("kept ... source ..."). The
+// editor translates the sentence, so positions are what the spec reads, not the wording.
+function parseClockList(text) {
+  const matches = String(text || '').match(/\d{1,2}:\d{2}(?:\.\d)?/g) || []
+  return matches.map((value) => parseClockMs(value))
+}
+
+function parseClockMs(value) {
+  const match = String(value || '').match(/^(\d+):(\d{2})(?:\.(\d))?$/)
+  if (!match) return 0
+  const tenths = match[3] ? Number(match[3]) : 0
+  return (Number(match[1]) * 60 + Number(match[2])) * 1000 + tenths * 100
+}
+
 async function openWorkbench(highlighter) {
   const page = highlighter.mainWindow
   await page.locator('[data-route="recording"]').click()
@@ -209,6 +247,176 @@ test.describe('recording workbench', () => {
         body: Buffer.from(JSON.stringify(softErrors, null, 2)),
         contentType: 'application/json'
       })
+    } finally {
+      await highlighter.close()
+      fs.rmSync(dataRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
+  })
+
+  // ---------------------------------------------------------------------------
+  // R4: window recording (workbench picker -> window-bound capture -> editor)
+  // ---------------------------------------------------------------------------
+  test('window mode records the selected window target', { timeout: 180_000 }, async ({}, testInfo) => {
+    const dataRoot = createDataRoot()
+    const artifactsDir = testInfo.outputPath('electron-artifacts')
+    fs.mkdirSync(artifactsDir, { recursive: true })
+    const highlighter = await launchHighlighter({
+      dataRoot,
+      artifactsDir,
+      extraEnv: { HIGHLIGHTER_E2E_FAKE_CAPTURE: '1' }
+    })
+    try {
+      // The host cannot capture the screen, and the window picker reads the real desktop. Stub the
+      // main process enumeration with one deterministic WINDOW source so the picker and the
+      // window-bound recording path can be exercised without touching the user's desktop.
+      await highlighter.electronApp.evaluate(({ desktopCapturer }) => {
+        const windowSource = {
+          id: 'window:4242:0',
+          name: 'E2E Target Window',
+          display_id: '',
+          thumbnail: { isEmpty: () => false, getSize: () => ({ width: 1280, height: 720 }) }
+        }
+        const screenSource = {
+          id: 'screen:0:0',
+          name: 'DISPLAY1',
+          display_id: '999',
+          thumbnail: { isEmpty: () => false, getSize: () => ({ width: 2240, height: 1400 }) }
+        }
+        desktopCapturer.getSources = async (options = {}) => {
+          const types = Array.isArray(options.types) ? options.types : ['screen']
+          if (types.includes('window')) return [windowSource]
+          return [screenSource]
+        }
+      })
+
+      const workbench = await openWorkbench(highlighter)
+      await workbench.locator('[data-testid="mode-window"]').click()
+      const option = workbench.locator('[data-testid="window-option"]').first()
+      await option.waitFor({ state: 'visible', timeout: 20_000 })
+      await expect(option).toHaveAttribute('data-window-token', /.+/)
+      await option.click()
+      await expect(workbench.locator('[data-testid="start-recording"]')).toBeEnabled()
+      await workbench.locator('[data-testid="countdown-select"]').selectOption('0')
+      await workbench.locator('[data-testid="start-recording"]').click()
+
+      const control = await highlighter.waitForWindow('/record/record.html')
+      await control.locator('[data-testid="control-bar"]').waitFor({ state: 'visible', timeout: 20_000 })
+      // Window mode: no on-screen annotation overlay, and the target title is visible.
+      await expect(control.locator('body')).toHaveAttribute('data-annotation', 'off')
+      await expect(control.locator('[data-testid="annotation-tools"]')).toBeHidden()
+      await expect(control.locator('#windowTitle')).toContainText('E2E Target Window')
+      await control.locator('[data-testid="start-record"]').click()
+      await control.waitForFunction(() => document.body.dataset.state === 'recording', { timeout: 40_000 })
+      await control.waitForTimeout(1600)
+      await testInfo.attach('window-control-bar.png', { body: await control.screenshot(), contentType: 'image/png' })
+      await control.locator('[data-testid="finish-record"]').click()
+
+      const editor = await highlighter.waitForWindow('/record/editor.html', 60_000)
+      await waitForEditorReady(editor)
+      expect(await renderedDurationMs(editor)).toBeGreaterThan(1000)
+      await editor.locator('#window-close').click()
+      await expect.poll(() => highlighter.pagesMatching('/record/editor.html').length, { timeout: 20_000 }).toBe(0)
+
+      // The project mode must persist as 'window': the workbench filter only keeps window takes.
+      const card = workbench.locator('[data-testid="record-card"]').first()
+      await card.waitFor({ state: 'visible', timeout: 30_000 })
+      await workbench.locator('[data-testid="records-filter"]').selectOption('window')
+      await expect(workbench.locator('[data-testid="record-card"]')).toHaveCount(1)
+      await workbench.locator('[data-testid="records-filter"]').selectOption('display')
+      await expect(workbench.locator('[data-testid="record-card"]')).toHaveCount(0)
+
+      expect(hardErrors(await highlighter.getUnexpectedErrors())).toEqual([])
+    } finally {
+      await highlighter.close()
+      fs.rmSync(dataRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
+  })
+
+  // ---------------------------------------------------------------------------
+  // R4: multi-segment editing + WebM / downscaled MP4 export
+  // ---------------------------------------------------------------------------
+  test('multi-segment trim, undo/redo, and WebM + downscaled MP4 export', { timeout: 240_000 }, async ({}, testInfo) => {
+    const dataRoot = createDataRoot()
+    const exportDir = path.join(dataRoot, 'exports')
+    fs.mkdirSync(exportDir, { recursive: true })
+    const editedWebm = path.join(exportDir, 'edited.webm')
+    const scaledMp4 = path.join(exportDir, 'scaled.mp4')
+    const artifactsDir = testInfo.outputPath('electron-artifacts')
+    fs.mkdirSync(artifactsDir, { recursive: true })
+    const highlighter = await launchHighlighter({
+      dataRoot,
+      artifactsDir,
+      extraEnv: { HIGHLIGHTER_E2E_FAKE_CAPTURE: '1' },
+      savePaths: [editedWebm, scaledMp4]
+    })
+    try {
+      const workbench = await openWorkbench(highlighter)
+      await workbench.locator('[data-testid="mode-display"]').click()
+      await workbench.locator('[data-testid="display-option"]').first().click()
+      await workbench.locator('[data-testid="countdown-select"]').selectOption('0')
+      await workbench.locator('[data-testid="start-recording"]').click()
+
+      const control = await highlighter.waitForWindow('/record/record.html')
+      await control.locator('[data-testid="control-bar"]').waitFor({ state: 'visible', timeout: 20_000 })
+      await control.locator('[data-testid="start-record"]').click()
+      await control.waitForFunction(() => document.body.dataset.state === 'recording', { timeout: 40_000 })
+      await control.waitForTimeout(3400)
+      await control.locator('[data-testid="finish-record"]').click()
+
+      const editor = await highlighter.waitForWindow('/record/editor.html', 60_000)
+      await waitForEditorReady(editor)
+      const sourceDurationMs = await renderedDurationMs(editor)
+      expect(sourceDurationMs).toBeGreaterThan(2500)
+
+      // Scrub to ~40%, split there, delete the segment containing the playhead.
+      const trackBox = await editor.locator('#timeline-track').boundingBox()
+      expect(trackBox).toBeTruthy()
+      await editor.mouse.click(trackBox.x + trackBox.width * 0.4, trackBox.y + trackBox.height / 2)
+      await editor.locator('#split-at-playhead').click()
+      const afterSplit = parseClockList(await editor.locator('#range-selection').textContent())
+      expect(afterSplit[0]).toBeGreaterThan(0)
+      await editor.locator('#delete-segment').click()
+      const afterDelete = parseClockList(await editor.locator('#range-selection').textContent())
+      const keptMs = afterDelete[0]
+      expect(keptMs).toBeGreaterThan(400)
+      expect(keptMs).toBeLessThan(sourceDurationMs * 0.75)
+
+      // Undo restores the removed segment; redo removes it again.
+      await editor.locator('#undo-edit').click()
+      const afterUndo = parseClockList(await editor.locator('#range-selection').textContent())
+      expect(afterUndo[0]).toBeGreaterThan(keptMs + 200)
+      await editor.locator('#redo-edit').click()
+      const afterRedo = parseClockList(await editor.locator('#range-selection').textContent())
+      expect(afterRedo[0]).toBe(keptMs)
+      await expect(editor.locator('#export-output-size')).toContainText(/\d+\s*[×x]\s*\d+/)
+
+      // ---- WebM export of the edited (non-full-range) take ----
+      await editor.locator('#export-format').selectOption('webm')
+      await editor.locator('#export-button').click()
+      await editor.locator('#result-bar').waitFor({ state: 'visible', timeout: 150_000 })
+      expect(fs.existsSync(editedWebm)).toBe(true)
+      const webm = probeVideo(editedWebm)
+      expect(webm.codec).toBe('vp9')
+      expect(webm.width).toBeGreaterThan(0)
+      expect(Math.abs(webm.durationMs - keptMs)).toBeLessThan(800)
+      await editor.locator('#result-dismiss').click()
+
+      // ---- Full-range MP4 downscaled to the 720p long-edge preset ----
+      await editor.locator('#reset-edits').click()
+      await editor.locator('#export-format').selectOption('mp4')
+      await editor.locator('#export-resolution').selectOption('720p')
+      await editor.locator('#export-quality').selectOption('high')
+      await editor.locator('#export-button').click()
+      await editor.locator('#result-bar').waitFor({ state: 'visible', timeout: 150_000 })
+      expect(fs.existsSync(scaledMp4)).toBe(true)
+      const mp4 = probeVideo(scaledMp4)
+      // 2240x1400 source, 720p long-edge cap 1280 -> 1280x800 (even dimensions, never upscaled).
+      expect(mp4.width).toBe(1280)
+      expect(mp4.height).toBe(800)
+      expect(Math.abs(mp4.durationMs - sourceDurationMs)).toBeLessThan(1200)
+      await testInfo.attach('multi-segment-editor.png', { body: await editor.screenshot(), contentType: 'image/png' })
+
+      expect(hardErrors(await highlighter.getUnexpectedErrors())).toEqual([])
     } finally {
       await highlighter.close()
       fs.rmSync(dataRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })

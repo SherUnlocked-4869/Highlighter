@@ -307,8 +307,20 @@ function plain(value) {
   return value === undefined ? value : JSON.parse(JSON.stringify(value))
 }
 
-function createApi(state, { listResult = { items: [], total: 0, offset: 0, limit: 20 }, renameProject = null } = {}) {
-  const calls = { start: [], focus: [], list: [], open: [], rename: [], del: [], reveal: [] }
+// R4 window-capture fixtures. A window row is an opaque token plus display fields;
+// width/height 0 models a source whose size could not be measured.
+const WINDOW_ENTRIES = [
+  { token: 'window-token-1', title: 'Visual Studio Code', appName: 'Visual Studio Code', width: 1920, height: 1080 },
+  { token: 'window-token-2', title: 'Untitled paint', appName: '', width: 0, height: 0 }
+]
+
+function createApi(state, {
+  listResult = { items: [], total: 0, offset: 0, limit: 20 },
+  renameProject = null,
+  windows = WINDOW_ENTRIES,
+  workbenchWindows = null
+} = {}) {
+  const calls = { start: [], focus: [], list: [], open: [], rename: [], del: [], reveal: [], windows: [] }
   const api = {
     workbenchState: async () => (typeof state === 'function' ? state() : state),
     workbenchStart: async (payload) => { calls.start.push(plain(payload)); return { ok: true } },
@@ -321,7 +333,12 @@ function createApi(state, { listResult = { items: [], total: 0, offset: 0, limit
       return renameProject(projectId, name)
     },
     projectDelete: async (projectId) => { calls.del.push(projectId); return { ok: true } },
-    projectReveal: async (projectId) => { calls.reveal.push(projectId); return { ok: true } }
+    projectReveal: async (projectId) => { calls.reveal.push(projectId); return { ok: true } },
+    workbenchWindows: async () => {
+      calls.windows.push(true)
+      if (typeof workbenchWindows === 'function') return workbenchWindows()
+      return { ok: true, windows }
+    }
   }
   return { api, calls }
 }
@@ -353,21 +370,24 @@ test('config.html wires the nav entry, the locale table, the quality module and 
   assert.ok(htmlSource.indexOf('shared/recording-quality.js') < route, 'quality allow-lists load before the workbench route')
 })
 
-test('preload exposes exactly the eight frozen workbench/project channels', () => {
+test('preload exposes the frozen workbench/project channels without inventing new ones', () => {
   const channels = [...preloadSource.matchAll(/ipcRenderer\.invoke\('(record:(?:workbench|project)-[a-z-]+)'/g)].map((match) => match[1])
-  assert.deepEqual(
-    channels.slice().sort(),
-    [
-      'record:project-delete',
-      'record:project-list',
-      'record:project-open',
-      'record:project-rename',
-      'record:project-reveal',
-      'record:workbench-focus',
-      'record:workbench-start',
-      'record:workbench-state'
-    ]
-  )
+  const core = [
+    'record:project-delete',
+    'record:project-list',
+    'record:project-open',
+    'record:project-rename',
+    'record:project-reveal',
+    'record:workbench-focus',
+    'record:workbench-start',
+    'record:workbench-state'
+  ]
+  // R4 adds exactly one channel (W6 owns preload.js); accept it when it has landed
+  // and reject anything beyond the frozen nine so the renderer contract stays pinned.
+  const allowed = new Set([...core, 'record:workbench-windows'])
+  for (const channel of channels) assert.ok(allowed.has(channel), `unexpected preload channel ${channel}`)
+  for (const channel of core) assert.ok(channels.includes(channel), `preload exposes ${channel}`)
+  assert.ok(channels.length === core.length || channels.length === core.length + 1, `unexpected channel count ${channels.length}`)
   // The workbench half of the preload must not accept paths or a desktop source.
   const block = preloadSource.slice(preloadSource.indexOf('workbenchState:'))
   assert.doesNotMatch(block, /sourcePath|targetPath|filePath|ffmpeg|desktopSource/i)
@@ -511,6 +531,10 @@ test('the workbench renders modes, an explicit display target and the frozen opt
   assert.match(html, /data-workbench-mode="display"/)
   assert.match(html, /data-testid="mode-region"/)
   assert.match(html, /data-testid="mode-display"/)
+  // R4: the third mode card exists and the region/display-only placeholder rule is
+  // preserved — every card is a real, selectable mode.
+  assert.match(html, /data-testid="mode-window"/)
+  assert.equal((html.match(/class="rec-mode-card/g) || []).length, 3, 'exactly three mode cards')
   assert.equal((html.match(/data-testid="display-option"/g) || []).length, 2, 'every display is listed')
   assert.match(html, /data-display-id="2528732444"/)
   assert.match(html, /data-display-id="111"/)
@@ -713,6 +737,262 @@ test('a microphone that is enabled but unavailable offers re-select and continue
   click(harness.dom, '[data-recording-continue-without]')
   assert.doesNotMatch(harness.dom.view.innerHTML, /data-testid="audio-warning"/)
   assert.equal(queryAll(harness.dom, '[data-testid="audio-microphone"]')[0].attrs['aria-checked'], 'false')
+})
+
+// --- behaviour: R4 window capture -------------------------------------------
+
+test('window choices and the start payload follow the frozen §2.1 shape', async () => {
+  const harness = createHarness({ electronAPI: createApi(workbenchState()).api })
+
+  // Normalisation: duplicate/invalid tokens dropped, missing title gets locale copy,
+  // negative/unknown sizes become "not measured".
+  harness.run(`window.__rawWindows = ${JSON.stringify([
+    { token: 'a', title: 'Editor', appName: 'Code', width: 1920, height: 1080 },
+    { token: 'a', title: 'duplicate', width: 10, height: 10 },
+    { token: '', title: 'no token', width: 10, height: 10 },
+    { token: 'b', title: '', width: -4, height: 0 }
+  ])}`)
+  const windows = JSON.parse(harness.run('JSON.stringify(normalizeRecordingWindows(window.__rawWindows))'))
+  assert.deepEqual(windows, [
+    { token: 'a', title: 'Editor', appName: 'Code', width: 1920, height: 1080 },
+    { token: 'b', title: '\u672a\u547d\u540d\u7a97\u53e3', appName: '', width: 0, height: 0 }
+  ])
+  assert.equal(harness.run('recordingWindowSizeText({ width: 1920, height: 1080 })'), '1920\u00d71080')
+  assert.equal(harness.run('recordingWindowSizeText({ width: 0, height: 1080 })'), '')
+  assert.equal(harness.run('recordingModeLabel("window")'), '\u7a97\u53e3')
+
+  // Choices accept the window mode (persisted lastMode may be extended by W6) and
+  // never remember a token: tokens are single-use and expire after 120s.
+  harness.run(`window.__windowState = ${JSON.stringify(workbenchState({ config: workbenchConfig({ mode: 'window' }) }))}`)
+  const choices = JSON.parse(harness.run('JSON.stringify(createRecordingChoices(window.__windowState))'))
+  assert.equal(choices.mode, 'window')
+  assert.equal(choices.windowToken, '')
+  harness.run('window.__windowChoices = createRecordingChoices(window.__windowState)')
+  assert.equal(harness.run('recordingStartBlocker(window.__windowChoices, null)'), 'window-required')
+
+  const payload = JSON.parse(harness.run(`(() => {
+    const next = createRecordingChoices(window.__windowState)
+    next.windowToken = 'token-9'
+    return JSON.stringify(buildRecordingStartPayload(next))
+  })()`))
+  assert.equal(payload.mode, 'window')
+  assert.equal(payload.windowToken, 'token-9')
+  assert.equal(Object.hasOwn(payload, 'displayId'), false)
+  assert.deepEqual(payload.config, {
+    mode: 'window',
+    displayId: '',
+    frameRate: 30,
+    quality: 'high',
+    countdown: 3,
+    audioSystem: true,
+    audioMicrophone: false,
+    audioMicrophoneDeviceId: '',
+    saveDirectory: 'D:/Videos'
+  })
+})
+
+test('window mode lists recordable windows, selects one and sends the token payload', async () => {
+  const { api, calls } = createApi(workbenchState())
+  const harness = createHarness({ electronAPI: api })
+  harness.run('renderRecording()')
+  await harness.settle()
+  assert.equal(calls.windows.length, 0, 'no window list is fetched on a display-mode entry')
+
+  click(harness.dom, '[data-testid="mode-window"]')
+  await harness.settle()
+  assert.match(harness.dom.view.innerHTML, /data-workbench-mode="window"/)
+  assert.match(harness.dom.view.innerHTML, /data-testid="window-refresh"/)
+  assert.ok(calls.windows.length >= 1, 'entering window mode fetches record:workbench-windows')
+  assert.match(harness.dom.view.innerHTML, /data-testid="start-recording"[^>]*>\u5f00\u59cb\u7a97\u53e3\u5f55\u5236/)
+
+  const options = queryAll(harness.dom, '[data-testid="window-option"]')
+  assert.equal(options.length, 2)
+  assert.deepEqual(options.map((option) => option.attrs['data-window-token']), ['window-token-1', 'window-token-2'])
+  assert.equal(options[0].attrs['aria-pressed'], 'false')
+  assert.match(harness.dom.view.innerHTML, /Visual Studio Code/)
+  assert.match(harness.dom.view.innerHTML, /1920\u00d71080/, 'measured windows show their pixel size')
+  // A window with unknown size shows its title only (contract §2.3).
+  const unknownSize = harness.dom.view.innerHTML.match(/<button[^>]*data-window-token="window-token-2"[^>]*>([\s\S]*?)<\/button>/)
+  assert.ok(unknownSize, 'the zero-size window row is rendered')
+  assert.doesNotMatch(unknownSize[1], /\u00d7/, 'a zero-size window omits the size text')
+
+  // Without a selection the start button is blocked with the window-required copy.
+  const start = harness.dom.document.getElementById('recordingStartButton')
+  assert.equal(start.disabled, true)
+  assert.match(harness.dom.view.innerHTML, /title="\u8bf7\u9009\u62e9\u8981\u5f55\u5236\u7684\u7a97\u53e3"/)
+  start.onclick()
+  await harness.settle()
+  assert.equal(calls.start.length, 0, 'window-required never reaches record:workbench-start')
+  assert.ok(harness.toasts.some((message) => message.includes('\u8bf7\u9009\u62e9\u8981\u5f55\u5236\u7684\u7a97\u53e3')))
+
+  // Selecting a row is explicit and enables start; the payload carries the token.
+  options[0].onclick()
+  assert.match(harness.dom.view.innerHTML, /data-window-token="window-token-1"[^>]*aria-pressed="true"/)
+  assert.equal(harness.dom.document.getElementById('recordingStartButton').disabled, false)
+  click(harness.dom, '[data-testid="start-recording"]')
+  await harness.settle()
+  assert.equal(calls.start.length, 1)
+  assert.deepEqual(calls.start[0], {
+    mode: 'window',
+    windowToken: 'window-token-1',
+    config: {
+      mode: 'window',
+      displayId: '',
+      frameRate: 30,
+      quality: 'high',
+      countdown: 3,
+      audioSystem: true,
+      audioMicrophone: false,
+      audioMicrophoneDeviceId: '',
+      saveDirectory: 'D:/Videos'
+    }
+  })
+  assert.equal(Object.hasOwn(calls.start[0], 'displayId'), false)
+  assert.ok(harness.toasts.some((message) => message.includes('\u6b63\u5728\u51c6\u5907\u7a97\u53e3\u5f55\u5236')), 'window start announces the preparing state')
+
+  // Refresh is manual and re-fetches the list through the same IPC.
+  const before = calls.windows.length
+  click(harness.dom, '[data-testid="window-refresh"]')
+  await harness.settle()
+  assert.equal(calls.windows.length, before + 1)
+})
+
+test('window list loading, empty and error states degrade with a retry', async () => {
+  // Loading: the first paint after entering window mode must show window-loading.
+  const { api } = createApi(workbenchState())
+  let releaseWindows = null
+  api.workbenchWindows = () => new Promise((resolve) => { releaseWindows = resolve })
+  const loadingHarness = createHarness({ electronAPI: api })
+  loadingHarness.run('renderRecording()')
+  await loadingHarness.settle()
+  click(loadingHarness.dom, '[data-testid="mode-window"]')
+  assert.match(loadingHarness.dom.view.innerHTML, /data-testid="window-loading"/)
+  assert.doesNotMatch(loadingHarness.dom.view.innerHTML, /data-testid="window-empty"/)
+  releaseWindows({ ok: true, windows: WINDOW_ENTRIES })
+  await loadingHarness.settle()
+  assert.doesNotMatch(loadingHarness.dom.view.innerHTML, /data-testid="window-loading"/)
+  assert.equal(queryAll(loadingHarness.dom, '[data-testid="window-option"]').length, 2)
+
+  // Empty: no recordable windows at all is an explicit empty state, not an error.
+  const { api: emptyApi } = createApi(workbenchState(), { windows: [] })
+  const emptyHarness = createHarness({ electronAPI: emptyApi })
+  emptyHarness.run('renderRecording()')
+  await emptyHarness.settle()
+  click(emptyHarness.dom, '[data-testid="mode-window"]')
+  await emptyHarness.settle()
+  assert.match(emptyHarness.dom.view.innerHTML, /data-testid="window-empty"/)
+  assert.equal(queryAll(emptyHarness.dom, '[data-testid="window-option"]').length, 0)
+  assert.equal(emptyHarness.dom.document.getElementById('recordingStartButton').disabled, true)
+
+  // Error: a missing/failing channel shows window-error + retry, and retry recovers.
+  const { api: errorApi } = createApi(workbenchState())
+  errorApi.workbenchWindows = async () => { throw new Error('No handler registered') }
+  const errorHarness = createHarness({ electronAPI: errorApi })
+  errorHarness.run('renderRecording()')
+  await errorHarness.settle()
+  click(errorHarness.dom, '[data-testid="mode-window"]')
+  await errorHarness.settle()
+  assert.match(errorHarness.dom.view.innerHTML, /data-testid="window-error"/)
+  assert.match(errorHarness.dom.view.innerHTML, /data-testid="window-retry"/)
+  assert.equal(errorHarness.dom.document.getElementById('recordingStartButton').disabled, true)
+  delete errorApi.workbenchWindows
+  click(errorHarness.dom, '[data-testid="window-retry"]')
+  await errorHarness.settle()
+  assert.match(errorHarness.dom.view.innerHTML, /data-testid="window-error"/, 'a missing channel still degrades, never throws')
+
+  errorApi.workbenchWindows = async () => ({ ok: true, windows: WINDOW_ENTRIES })
+  click(errorHarness.dom, '[data-testid="window-retry"]')
+  await errorHarness.settle()
+  assert.doesNotMatch(errorHarness.dom.view.innerHTML, /data-testid="window-error"/)
+  assert.equal(queryAll(errorHarness.dom, '[data-testid="window-option"]').length, 2)
+})
+
+test('window target selection is mutually exclusive with the display target', async () => {
+  const { api, calls } = createApi(workbenchState())
+  const harness = createHarness({ electronAPI: api })
+  harness.run('renderRecording()')
+  await harness.settle()
+  const selectedDisplays = () => queryAll(harness.dom, '[data-testid="display-option"]').filter((element) => element.attrs['aria-pressed'] === 'true')
+  assert.equal(selectedDisplays().length, 1, 'display mode starts with its saved target selected')
+
+  click(harness.dom, '[data-testid="mode-window"]')
+  await harness.settle()
+  const selectedWindows = () => queryAll(harness.dom, '[data-testid="window-option"]').filter((element) => element.attrs['aria-pressed'] === 'true')
+  assert.equal(selectedWindows().length, 0, 'switching to window mode clears the display target')
+  queryAll(harness.dom, '[data-testid="window-option"]')[0].onclick()
+  assert.equal(selectedWindows().length, 1)
+  assert.equal(harness.dom.document.getElementById('recordingStartButton').disabled, false)
+
+  click(harness.dom, '[data-testid="mode-display"]')
+  await harness.settle()
+  assert.equal(selectedDisplays().length, 0, 'switching back to display clears the window token')
+  assert.equal(harness.dom.document.getElementById('recordingStartButton').disabled, true, 'a stale target never starts implicitly')
+
+  click(harness.dom, '[data-testid="mode-window"]')
+  await harness.settle()
+  assert.equal(selectedWindows().length, 0, 're-entering window mode starts unselected (tokens are single-use)')
+  // A refresh that no longer lists the selected window also drops the selection.
+  queryAll(harness.dom, '[data-testid="window-option"]')[0].onclick()
+  assert.equal(selectedWindows().length, 1)
+  const nextWindows = [WINDOW_ENTRIES[1]]
+  api.workbenchWindows = async () => ({ ok: true, windows: nextWindows })
+  click(harness.dom, '[data-testid="window-refresh"]')
+  await harness.settle()
+  assert.equal(selectedWindows().length, 0, 'a vanished token is cleared by refresh')
+  assert.equal(harness.dom.document.getElementById('recordingStartButton').disabled, true)
+  assert.ok(calls.windows.length >= 2)
+})
+
+test('window start failures map the frozen codes back to localized copy', async () => {
+  const { api, calls } = createApi(workbenchState())
+  const harness = createHarness({ electronAPI: api })
+  harness.run('renderRecording()')
+  await harness.settle()
+  click(harness.dom, '[data-testid="mode-window"]')
+  await harness.settle()
+  queryAll(harness.dom, '[data-testid="window-option"]')[0].onclick()
+
+  for (const [code, copy] of [
+    ['window-unavailable', '\u8bf7\u5237\u65b0\u540e\u91cd\u65b0\u9009\u62e9'],
+    ['window-too-small', '\u7a97\u53e3\u592a\u5c0f']
+  ]) {
+    api.workbenchStart = async (payload) => { calls.start.push(plain(payload)); return { ok: false, code } }
+    const before = calls.windows.length
+    click(harness.dom, '[data-testid="start-recording"]')
+    await harness.settle()
+    assert.ok(harness.toasts.some((message) => message.includes(copy)), `${code} is explained in the active language`)
+    assert.ok(calls.windows.length > before, `${code} triggers a window-list refresh for re-selection`)
+    // Re-select after the rejected attempt (the refresh may have cleared it).
+    if (queryAll(harness.dom, '[data-testid="window-option"]').length) queryAll(harness.dom, '[data-testid="window-option"]')[0].onclick()
+  }
+  assert.equal(calls.start.length, 2)
+  assert.equal(calls.start[0].mode, 'window')
+  assert.equal(calls.start[0].windowToken, 'window-token-1')
+})
+
+test('records filter and mode labels cover window recordings', async () => {
+  const windowProject = projectSummary({ id: 'project-window', name: 'WindowRecording_demo', mode: 'window', width: 1280, height: 720 })
+  const { api } = createApi(workbenchState({ recent: [projectSummary(), windowProject] }))
+  const harness = createHarness({ electronAPI: api })
+  harness.run('renderRecording()')
+  await harness.settle()
+
+  assert.match(harness.dom.view.innerHTML, /data-testid="records-filter-window"/)
+  const filterOptions = queryAll(harness.dom, '[data-testid="records-filter-window"]')
+  assert.equal(filterOptions.length, 1)
+  assert.equal(filterOptions[0].tagName, 'option')
+  assert.equal(filterOptions[0].attrs.value, 'window')
+  // A window project is labelled as a window, not as a display recording.
+  assert.match(harness.dom.view.innerHTML, /\u7a97\u53e3 \u00b7 1280\u00d7720/, 'window mode label is used in the card detail')
+
+  const filter = queryAll(harness.dom, '[data-testid="records-filter"]')[0]
+  filter.value = 'window'
+  filter.onchange()
+  // The filter redraws only #recordingRecordsHost, so read it directly (the fake
+  // DOM does not remove the previous children from the outer page string).
+  const host = harness.dom.document.getElementById('recordingRecordsHost')
+  assert.equal((host.innerHTML.match(/data-testid="record-card"/g) || []).length, 1)
+  assert.match(host.innerHTML, /data-project-id="project-window"/)
 })
 
 test('the workbench styles stay on the shared token ladder', () => {

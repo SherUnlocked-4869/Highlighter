@@ -53,8 +53,14 @@
   const PROJECT_STATES = Object.freeze(['capturing', 'ready', 'recoverable', 'deleting', 'deleted'])
   // States in which an editor may still open the project (capturing is busy).
   const EDITABLE_STATES = Object.freeze(['ready', 'recoverable'])
-  const PROJECT_MODES = Object.freeze(['display', 'region'])
-  const EXPORT_FORMATS = Object.freeze(['mp4', 'gif'])
+  // R4 §2.2/§4.4: capture modes gained 'window'. 'region' stays in the enum so an R1-R3
+  // manifest (project.mode AND captureConfig.target.mode) keeps reading/writing unchanged -
+  // the addition is additive and does NOT bump schemaVersion.
+  const PROJECT_MODES = Object.freeze(['display', 'region', 'window'])
+  // R4 contract §4.4: 'webm' is an export format too (edit.format and exports[].format).
+  // No schemaVersion bump: existing manifests keep their values and the new enum member is
+  // additive, so an R1-R3 project reads/writes unchanged.
+  const EXPORT_FORMATS = Object.freeze(['mp4', 'gif', 'webm'])
   // Mirrors QUALITY_LEVELS in shared/recording-quality.js (frozen contract §4).
   // Duplicated instead of required so this module stays a dependency-free classic
   // script; a mismatch would be caught by the contract test that reads both files.

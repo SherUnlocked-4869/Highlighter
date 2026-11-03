@@ -10,6 +10,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const vm = require('node:vm')
 const {
   createCommandDispatcher,
   createRequestId,
@@ -31,7 +32,7 @@ const preload = read('preload-record.js')
 
 test('the control bar exposes the compact structure and the E2E test hooks', () => {
   for (const id of [
-    'controlView', 'time', 'statusLabel', 'fps', 'countdown',
+    'controlView', 'time', 'statusLabel', 'windowTitle', 'fps', 'countdown',
     'micMute', 'start', 'pause', 'stop', 'cancel',
     'moreToggle', 'morePanel', 'moreBack', 'abandon',
     'discardConfirm', 'discardConfirmYes', 'discardConfirmNo',
@@ -45,7 +46,7 @@ test('the control bar exposes the compact structure and the E2E test hooks', () 
   for (const testId of [
     'control-bar', 'timer', 'status-label', 'start-record', 'pause-resume',
     'finish-record', 'mic-mute', 'more-toggle', 'more-panel', 'abandon-record',
-    'annotation-tools', 'countdown', 'error-text'
+    'annotation-tools', 'countdown', 'error-text', 'window-title'
   ]) {
     assert.match(html, new RegExp(`data-testid="${testId}"`), `record.html exposes data-testid=${testId}`)
   }
@@ -239,6 +240,7 @@ test('preload exposes the new command/state/chunk channels and keeps the legacy 
     'record:state-changed',
     'record:command-result',
     'record:get-state',
+    'record:source-lost',
     'record:append-chunk',
     'record:finish-session',
     'record:cancel-session',
@@ -251,6 +253,7 @@ test('preload exposes the new command/state/chunk channels and keeps the legacy 
   assert.match(preload, /reportCommandResult: \(result\)/)
   assert.match(preload, /getState: \(\) => ipcRenderer\.invoke\('record:get-state'/)
   assert.match(preload, /onStateChanged: \(callback\) => subscribe\('record:state-changed'/)
+  assert.match(preload, /onSourceLost: \(callback\) => subscribe\('record:source-lost'/)
   assert.match(preload, /appendChunk: \(sessionId, arrayBuffer, sequence, bytes\)/)
   // Retained channels (contract §9.2: keep the old surface; no new UI entry).
   for (const method of ['ready:', 'onInit:', 'setFrameState:', 'setAnnotationCommand:', 'reportPerformance:', 'close:']) {
@@ -461,3 +464,162 @@ test('local request ids are unique and prefixed for the log trail', () => {
   for (const id of ids) assert.match(id, /^button-[a-z0-9]+-[a-z0-9]+$/)
   assert.match(createRequestId(), /^local-/)
 })
+
+// ---------------------------------------------------------------------------
+// R4 window mode (contract §2.2/§2.4)
+// ---------------------------------------------------------------------------
+
+// The module is a classic <script> (not require-able), so the shipped pure helper is
+// extracted from its source and executed for real: this tests the implementation that
+// ships, not a copy, without touching the W8-owned recording-utils module.
+function extractFunction(name) {
+  const marker = `function ${name}(`
+  const start = script.indexOf(marker)
+  assert.ok(start >= 0, `record.js must define ${name}`)
+  let depth = 0
+  let end = -1
+  for (let index = script.indexOf('{', start); index < script.length; index += 1) {
+    if (script[index] === '{') depth += 1
+    else if (script[index] === '}') {
+      depth -= 1
+      if (depth === 0) {
+        end = index + 1
+        break
+      }
+    }
+  }
+  assert.ok(end > start, `could not extract ${name}`)
+  return script.slice(start, end)
+}
+
+const fitContainRect = vm.runInNewContext(`(${extractFunction('fitContainRect')})`)
+
+test('contain-fit maths letterboxes the frozen canvas without changing the aspect ratio', () => {
+  const same = fitContainRect(1920, 1080, 1280, 720)
+  assert.deepEqual({ x: same.x, y: same.y, width: same.width, height: same.height }, { x: 0, y: 0, width: 1280, height: 720 })
+  assert.ok(Math.abs(same.scale - 2 / 3) < 1e-9)
+
+  // 16:9 source in a square canvas -> top/bottom bars.
+  const square = fitContainRect(1920, 1080, 640, 640)
+  assert.deepEqual({ x: square.x, y: square.y, width: square.width, height: square.height }, { x: 0, y: 140, width: 640, height: 360 })
+
+  // 4:3 source in a 16:9 canvas -> left/right bars.
+  const sides = fitContainRect(640, 480, 1280, 720)
+  assert.deepEqual({ x: sides.x, y: sides.y, width: sides.width, height: sides.height }, { x: 160, y: 0, width: 960, height: 720 })
+
+  // Tall window into a wide canvas -> centred with bars on both sides.
+  const tall = fitContainRect(720, 1600, 1280, 720)
+  assert.deepEqual({ x: tall.x, y: tall.y, width: tall.width, height: tall.height }, { x: 478, y: 0, width: 324, height: 720 })
+
+  // Degenerate inputs stay safe (never a zero-size or NaN draw). The helper runs in a
+  // separate vm realm, so compare its fields instead of the object identity.
+  const plain = (fit) => ({ x: fit.x, y: fit.y, width: fit.width, height: fit.height, scale: fit.scale })
+  assert.deepEqual(plain(fitContainRect(0, 0, 0, 0)), { x: 0, y: 0, width: 1, height: 1, scale: 1 })
+  // A junk frame size collapses to 1x1, which simply scales up inside the canvas.
+  assert.deepEqual(plain(fitContainRect(Number.NaN, 'x', 100, 50)), { x: 25, y: 0, width: 50, height: 50, scale: 50 })
+
+  // Invariants across aspect ratios: one axis fills exactly, the other is centred with
+  // integer edges, and the draw never leaves the canvas.
+  const cases = [
+    [1920, 1080, 1280, 720], [1280, 720, 640, 640], [800, 600, 1920, 1080],
+    [100, 100, 1920, 1080], [1366, 768, 1000, 1000], [3840, 2160, 1920, 1080],
+    [300, 1000, 900, 300], [1918, 1078, 1280, 720]
+  ]
+  for (const [frameW, frameH, canvasW, canvasH] of cases) {
+    const fit = fitContainRect(frameW, frameH, canvasW, canvasH)
+    assert.ok(fit.width >= 1 && fit.height >= 1)
+    assert.ok(fit.width <= canvasW && fit.height <= canvasH, `${frameW}x${frameH} into ${canvasW}x${canvasH}`)
+    assert.ok(fit.x >= 0 && fit.y >= 0)
+    assert.ok(Math.abs(fit.x * 2 + fit.width - canvasW) <= 1, 'horizontal centring')
+    assert.ok(Math.abs(fit.y * 2 + fit.height - canvasH) <= 1, 'vertical centring')
+    assert.ok(fit.width === canvasW || fit.height === canvasH, 'contain must fill one axis')
+    assert.ok(Math.abs((fit.width / fit.height) - (frameW / frameH)) < 0.01, 'aspect ratio preserved')
+  }
+})
+
+test('window mode has its own acquisition branch and a frozen contain canvas', () => {
+  assert.match(script, /let captureMode = 'display'/)
+  assert.match(script, /captureMode = initData\.mode === 'window' \? 'window' : 'display'/)
+  // Window mode asks the main-process handler for the bound window track only: no
+  // display constraints and no legacy desktop-source fallback.
+  assert.match(script, /captureMode === 'window'[\s\S]{0,900}getDisplayMedia\(\{ video: true, audio: true \}\)/)
+  assert.match(script, /captureMode === 'window'[\s\S]{0,900}getDisplayMedia\(\{ video: true, audio: false \}\)/)
+  assert.match(script, /captureMode === 'window'[\s\S]{0,1600}throw failures\[0\]/)
+  // Frozen output size from init.window.pixelSize, frames fitted with 'contain'.
+  assert.match(script, /normalizeWindowPixelSize\(windowInfo\?\.pixelSize\)/)
+  assert.match(script, /canvas\.width = Math\.max\(2, width - \(width % 2\)\)/)
+  assert.match(script, /canvas\._recordFit = fitContainRect\(sourceVideo\.videoWidth, sourceVideo\.videoHeight, canvas\.width, canvas\.height\)/)
+  assert.match(script, /context\.fillStyle = '#000000'/)
+  // Display/region keep the existing crop path untouched.
+  assert.match(script, /canvas\._recordCrop = crop/)
+  assert.match(script, /calculateCropRect\(/)
+})
+
+test('window mode shows the target window title and skips the frame overlay IPC', () => {
+  assert.match(html, /id="windowTitle"[^>]*data-testid="window-title"/)
+  assert.match(html, /data-mode="display"/)
+  assert.match(html, /data-annotation="on"/)
+  assert.match(script, /record\.status\.window-idle/)
+  assert.match(script, /renderWindowTitle\(\)/)
+  assert.match(script, /record\.window\.target-label/)
+  assert.match(script, /document\.body\.dataset\.mode = captureMode/)
+  // Window captures never create the annotation frame window, so its IPC is skipped.
+  assert.match(script, /function setFrameState\(frameState\) \{[\s\S]*?captureMode === 'window'[\s\S]*?Promise\.resolve\(true\)/)
+  assert.match(script, /setFrameState\('hidden'\)/)
+  assert.match(css, /\.status-copy \.window-title\{[^}]*text-overflow:ellipsis/)
+})
+
+test('annotation === false hides the entrance and blocks annotation output', () => {
+  assert.match(script, /annotationAllowed = captureMode === 'window' \? data\.annotation === true : data\.annotation !== false/)
+  assert.match(script, /annotationToolsElement\.hidden = !annotationAllowed/)
+  assert.match(script, /document\.body\.dataset\.annotation = annotationAllowed \? 'on' : 'off'/)
+  assert.match(script, /if \(!annotationAllowed\) return Promise\.resolve\(true\)/)
+  assert.match(script, /if \(!annotationAllowed\) return\n  await sendAnnotationCommand\('reset'\)/)
+  assert.match(script, /if \(annotationAllowed\) drawAnnotationSnapshot\(context/)
+  // A snapshot that arrives after the mode is known must not draw or queue a frame.
+  assert.match(script, /if \(!initData \|\| !annotationAllowed\) return/)
+  assert.match(css, /body\[data-annotation="off"\] #annotationTools\{display:none!important\}/)
+})
+
+test('a lost or ended window source keeps the recording and seals it', () => {
+  assert.match(script, /function handleSourceLost\(payload = \{\}\)/)
+  assert.match(script, /sourceLostHandled/)
+  // Live take -> the normal finish path (flush + finish-session) keeps the content.
+  assert.match(script, /\['recording', 'paused'\]\.includes\(state\) && sessionId[\s\S]{0,400}finishRecording\(\)\.catch/)
+  // Preparation/countdown -> back to ready, nothing to keep.
+  assert.match(script, /function abortPreparingSource\(\)/)
+  assert.match(script, /\['preparing', 'countdown'\]\.includes\(state\)[\s\S]{0,120}abortPreparingSource\(\)/)
+  assert.match(script, /record\.warning\.source-lost/)
+  // Renderer-side detection: video track ended is the same invalidation as the push.
+  assert.match(script, /function handleVideoTrackEnded\(\) \{\n  handleSourceLost\(\{ reason: 'closed' \}\)/)
+  assert.match(script, /addTrackListener\(track, 'ended', handleVideoTrackEnded\)/)
+  // Watch/unwatch mirrors the acquisition lifetime.
+  assert.match(script, /function watchSourceTracks\(\)/)
+  assert.match(script, /function unwatchSourceTracks\(\)/)
+  assert.match(script, /function stopSource\(\) \{\n  unwatchSourceTracks\(\)/)
+  assert.match(script, /watchSourceTracks\(\)/)
+})
+
+test('a muted (hidden/minimized) window pauses the take; unmute only clears the warning', () => {
+  assert.match(script, /function handleVideoTrackMute\(\)/)
+  assert.match(script, /function handleVideoTrackUnmute\(\)/)
+  assert.match(script, /state === 'recording'\) pauseRecording\(\)/)
+  assert.match(script, /sourceHiddenWarning = true/)
+  assert.match(script, /setFailureNotice\('record\.warning\.source-hidden'\)/)
+  assert.match(script, /errorElement\.textContent = t\('record\.warning\.source-hidden'\)/)
+  // Unmute only clears the warning; it never resumes on the user's behalf.
+  assert.match(script, /function handleVideoTrackUnmute\(\) \{[\s\S]*?sourceHiddenWarning = false[\s\S]*?\}/)
+  assert.doesNotMatch(
+    script.slice(script.indexOf('function handleVideoTrackUnmute'), script.indexOf('function handleSourceLost')),
+    /resumeRecording|recorder\.resume|startCompositeLoop/
+  )
+  // The warning copy is a locale key in all three languages.
+  require('../shared/locales/record')
+  for (const language of ['zh-CN', 'en-US', 'zh-TW']) {
+    assert.equal(typeof globalThis.__LOCALES[language]['record.warning.source-hidden'], 'string')
+    assert.equal(typeof globalThis.__LOCALES[language]['record.warning.source-lost'], 'string')
+    assert.equal(typeof globalThis.__LOCALES[language]['record.status.window-idle'], 'string')
+    assert.equal(typeof globalThis.__LOCALES[language]['record.window.target-label'], 'string')
+  }
+})
+

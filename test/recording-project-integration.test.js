@@ -425,6 +425,68 @@ test('restart flow: persisted project exports, draft survives reopen, delete kee
     ])
     assert.equal(JSON.stringify(publicAfterExport).includes(exportTarget), false)
 
+    // 4b) R4 contract §4: a multi-segment export and a full-range WebM stream copy from the
+    //     SAME persisted project (no re-record needed).
+    const segmentsTarget = scratch.pathFor('exports/segments.mp4')
+    const segmentsTask = await exporter.submit({
+      sessionId: projectId,
+      requestId: 'integration-export-segments',
+      request: {
+        format: 'mp4',
+        segments: [{ startMs: 0, endMs: 600 }, { startMs: 1200, endMs: 1800 }, { startMs: 2400, endMs: 2900 }],
+        video: { resolution: 'source', quality: 'standard', fps: 'source' }
+      },
+      targetPath: segmentsTarget,
+      ownerId: 'integration-test'
+    })
+    assert.equal(segmentsTask.ok, true, JSON.stringify(segmentsTask))
+    const segmentsSettled = await waitForTerminal(exporter, segmentsTask.task.taskId, 'integration-test')
+    assert.equal(segmentsSettled.state, 'succeeded', JSON.stringify(segmentsSettled.error || null))
+    const segmentsProbe = await probe.probe(segmentsTarget)
+    assert.equal(segmentsProbe.ok, true)
+    assert.ok(
+      Math.abs(segmentsProbe.metadata.durationMs - 1700) <= durationToleranceMs(1700, { segments: 3, sourceFps: FIXTURE_RATE }),
+      `multi-segment project export duration ${segmentsProbe.metadata.durationMs} should be about 1700 ms`
+    )
+    assert.deepEqual([segmentsProbe.metadata.video.width, segmentsProbe.metadata.video.height], [FIXTURE_WIDTH, FIXTURE_HEIGHT])
+    assert.equal(segmentsProbe.metadata.audio.exists, true)
+
+    const sourceProbe = await probe.probe(sourcePath)
+    assert.equal(sourceProbe.ok, true)
+    const copyTarget = scratch.pathFor('exports/copy.webm')
+    const copyTask = await exporter.submit({
+      sessionId: projectId,
+      requestId: 'integration-export-webm-copy',
+      request: { format: 'webm' },
+      targetPath: copyTarget,
+      ownerId: 'integration-test'
+    })
+    assert.equal(copyTask.ok, true, JSON.stringify(copyTask))
+    const copySettled = await waitForTerminal(exporter, copyTask.task.taskId, 'integration-test')
+    assert.equal(copySettled.state, 'succeeded', JSON.stringify(copySettled.error || null))
+    assert.equal(copySettled.receipt.kind, 'webm')
+    const copyProbe = await probe.probe(copyTarget)
+    assert.equal(copyProbe.ok, true)
+    assert.equal(copyProbe.metadata.video.codec, sourceProbe.metadata.video.codec, 'full-range WebM export is a stream copy')
+    assert.ok(Math.abs(copyProbe.metadata.durationMs - sourceProbe.metadata.durationMs) <= 250)
+
+    // The WebM export record is accepted by the project schema and stays path-free in projections.
+    const recordedWebm = await projectService.appendExport(projectId, {
+      exportId: copySettled.taskId,
+      format: 'webm',
+      fileName: 'copy.webm',
+      exportedAt: Date.now(),
+      editRevision: reopenedProject.edit.revision,
+      targetPath: copyTarget
+    })
+    assert.equal(recordedWebm.ok, true)
+    assert.equal(recordedWebm.project.exports.length, 2)
+    const publicAfterWebm = projectService.publicProject(recordedWebm.project)
+    assert.equal(publicAfterWebm.exportCount, 2)
+    assert.equal(publicAfterWebm.lastExport.format, 'webm')
+    assert.equal(publicAfterWebm.exports.some((entry) => entry.format === 'webm'), true)
+    assert.equal(JSON.stringify(publicAfterWebm).includes(scratch.directory), false)
+
     // 5) draft CAS: a stale revision loses, then the accepted draft survives a re-open.
     const draft = await projectService.updateDraft(projectId, {
       expectedRevision: 1,

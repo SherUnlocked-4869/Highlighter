@@ -17,17 +17,21 @@
   <script src="../shared/locales/record.js"></script>
   <script src="../shared/i18n.js"></script>
 </head>
-<body data-state="idle" data-more="false">
+<body data-state="idle" data-more="false" data-mode="display" data-annotation="on">
   <!-- R2 compact control bar (contract §12): status dot + elapsed time, the
        mic mute (only when a mic was captured), pause/resume, finish and the
        "more" overflow. The preview/trim/save-MP4 surface now lives in the
-       separate record-editor window and is not rendered here. -->
+       separate record-editor window and is not rendered here.
+       R4 (contract §2.4): in window mode the status area also shows the target
+       window title and the annotation entrance is hidden (main sets
+       annotation:false for window captures). -->
   <section id="controlView" class="control-view" data-testid="control-bar">
     <div class="status-cluster">
       <i class="status-dot" aria-hidden="true"></i>
       <div class="status-copy">
         <strong id="time" data-testid="timer">00:00</strong>
         <span id="statusLabel" data-testid="status-label" data-i18n="record.status.idle">Area ready</span>
+        <span id="windowTitle" class="window-title" data-testid="window-title" hidden></span>
       </div>
     </div>
     <strong id="countdown" class="countdown" data-testid="countdown" hidden></strong>

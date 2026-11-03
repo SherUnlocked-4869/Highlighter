@@ -40,15 +40,17 @@ test('the editor markup carries the one-track timeline, precise inputs, GIF opti
     'timeline', 'timeline-track', 'timeline-selection', 'timeline-playhead',
     'handle-start', 'handle-end',
     // Precise time inputs and the play-selection / full-range controls.
-    'range-start-input', 'range-end-input', 'range-selection',
-    'play-range', 'reset-range',
+    'timeline-segments', 'empty-selection-hint',
+    'range-start-input', 'range-end-input', 'range-selection', 'play-range',
+    'split-at-playhead', 'delete-segment', 'undo-edit', 'redo-edit', 'reset-edits',
     // Export settings moved into the editor's right panel.
-    'export-format', 'gif-edge', 'gif-fps', 'gif-budget', 'export-final-size',
+    'export-format', 'gif-edge', 'gif-fps', 'gif-budget',
+    'export-resolution', 'export-quality', 'export-fps', 'export-output-size',
     // One export action, its progress and cancel controls.
     'export-button', 'export-progress', 'export-progress-bar', 'cancel-export',
     // Feature-A result bar: open / address / reveal, dismiss, and a status line.
     'result-bar', 'result-name', 'result-open', 'result-address',
-    'result-reveal', 'result-status', 'result-dismiss'
+    'result-reveal', 'result-status', 'result-dismiss', 'result-kind'
   ]) {
     assert.match(html, new RegExp(`id="${id}"`), `editor.html exposes #${id}`)
   }
@@ -61,6 +63,7 @@ test('the editor markup carries the one-track timeline, precise inputs, GIF opti
   // GIF is offered with its two budget controls and an explicit "no audio" note.
   assert.match(html, /<option value="gif"/)
   assert.match(html, /<option value="mp4"/)
+  assert.match(html, /<option value="webm"/)
   for (const fps of GIF_FRAME_RATES) assert.match(html, new RegExp(`<option value="${fps}"`))
   assert.match(html, /recording\.editor\.gif-no-audio/)
   // The legacy MP4 button and the old two-format export entry are gone: Export is the only
@@ -68,8 +71,12 @@ test('the editor markup carries the one-track timeline, precise inputs, GIF opti
   assert.doesNotMatch(html, /id="saveMp4"/)
   assert.doesNotMatch(html, /id="trimStartRange"/)
   assert.doesNotMatch(html, /id="trimEndRange"/)
+  // R4: the five edit operations are real buttons with stable data-testid values.
+  for (const testid of ['split-at-playhead', 'delete-segment', 'reset-edits', 'undo-edit', 'redo-edit']) {
+    assert.match(html, new RegExp('data-testid="' + testid + '"'), 'editor.html exposes data-testid=' + testid)
+  }
   // The scripts load in dependency order: shared options -> controller -> timeline -> editor.
-  assert.match(html, /shared\/recording-export-options\.js[\s\S]*trim-controller\.js[\s\S]*editor-timeline\.js[\s\S]*editor\.js/)
+  assert.match(html, /shared\/recording-export-options\.js[\s\S]*editor-timeline\.js[\s\S]*trim-controller\.js[\s\S]*editor\.js/)
   // The editor does not load the recorder's script model.
   assert.doesNotMatch(html, /src="record\.js"/)
 })
@@ -79,11 +86,17 @@ test('the editor panel styles both formats without inline styles and keeps GIF r
   assert.match(css, /\.timeline-track/)
   assert.match(css, /\.timeline-selection/)
   assert.match(css, /\.timeline-handle/)
+  assert.match(css, /\.timeline-segment/)
+  assert.match(css, /\.timeline-boundary/)
+  assert.match(css, /\.timeline-ops/)
+  assert.match(css, /\.video-fields/)
   assert.match(css, /\.export-panel/)
   assert.match(css, /\.result-bar/)
   // The GIF-only rows are hidden by a data-attribute selector the view sets; no inline style
   // is written from JavaScript for static layout (CSP-safe).
   assert.match(css, /body\[data-format="mp4"\] \.gif-fields/)
+  assert.match(css, /body\[data-format="webm"\] \.gif-fields/)
+  assert.match(css, /body\[data-format="gif"\] \.video-fields/)
   // The panel adapts on narrow windows instead of forcing a fixed two-column width.
   assert.match(css, /@media \(max-width: 980px\)/)
   // The markup itself carries no inline styles.
@@ -227,7 +240,8 @@ test('the shared controller still clamps a session range, freezes a submit and r
   // Frozen while the task runs; the same control is the cancel action in that phase.
   assert.equal(controller.setStart(0), false)
   assert.equal(controller.state().canCancel, true)
-  assert.equal(controller.state().frozen.range.endMs, 3000)
+  assert.deepEqual(controller.state().frozen.segments, [{ startMs: 1000, endMs: 3000 }])
+  assert.equal(controller.state().frozen.keptMs, 2000)
 
   // Cancel round-trips and then a retry after failure mints a NEW requestId.
   const cancelled = await controller.cancelExport({
@@ -273,7 +287,7 @@ test('every export error code maps to a locale key that all three tables define'
   const tables = globalThis.__LOCALES
   for (const code of EXPORT_ERROR_CODES) {
     const key = errorKey(code)
-    assert.match(key, /^record\.error\./, `${code} must map to a locale key`)
+    assert.ok(key.startsWith('record.error.') || key.startsWith('recording.editor.error.'), `${code} must map to a locale key`)
     for (const language of ['zh-CN', 'en-US', 'zh-TW']) {
       assert.equal(typeof tables[language][key], 'string', `${language} is missing ${key} (code ${code})`)
     }

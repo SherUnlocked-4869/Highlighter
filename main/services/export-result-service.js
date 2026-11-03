@@ -33,13 +33,16 @@ const crypto = require('node:crypto')
 const defaultFs = require('node:fs')
 const defaultPath = require('node:path')
 
-const EXPORT_KINDS = Object.freeze(['png', 'pdf', 'xlsx', 'mp4', 'gif'])
+const EXPORT_KINDS = Object.freeze(['png', 'pdf', 'xlsx', 'mp4', 'gif', 'webm'])
 const EXPORT_EXTENSIONS = Object.freeze({
   png: '.png',
   pdf: '.pdf',
   xlsx: '.xlsx',
   mp4: '.mp4',
-  gif: '.gif'
+  gif: '.gif',
+  // R4 contract §4.4: the recorder can publish WebM; the result bar / tray treat it exactly
+  // like mp4 (open / copy address / reveal), only the extension differs.
+  webm: '.webm'
 })
 const EXPORT_ACTIONS = Object.freeze(['open', 'copy-path', 'reveal'])
 // Plan §3.3: the registry is metadata only - 50 entries, 15 minutes each, tray shows the newest.

@@ -166,7 +166,11 @@
     'record.notice.chunk-failed-retry': '部分录制数据可能未写入；再次点击完成将保留已写入的部分',
     'record.notice.finish-failed': '无法完成录制：{detail}',
     'record.error.session-start-failed': '无法开始录制会话',
-    'record.audio.warning.microphone-device-fallback': '所选麦克风不可用，已改用默认麦克风：{detail}'
+    'record.audio.warning.microphone-device-fallback': '所选麦克风不可用，已改用默认麦克风：{detail}',
+    'record.status.window-idle': '窗口已就绪',
+    'record.window.target-label': '录制的窗口：{title}',
+    'record.warning.source-hidden': '窗口已最小化或不可见，录制已暂停',
+    'record.warning.source-lost': '录制的窗口已不可用'
   })
 
   add('en-US', {
@@ -313,7 +317,11 @@
     'record.notice.chunk-failed-retry': 'Part of the recording may not have been written; click finish again to keep the written part',
     'record.notice.finish-failed': 'The recording could not be finished: {detail}',
     'record.error.session-start-failed': 'The recording session could not be started',
-    'record.audio.warning.microphone-device-fallback': 'The selected microphone is unavailable; using the default microphone: {detail}'
+    'record.audio.warning.microphone-device-fallback': 'The selected microphone is unavailable; using the default microphone: {detail}',
+    'record.status.window-idle': 'Window ready',
+    'record.window.target-label': 'Recording window: {title}',
+    'record.warning.source-hidden': 'The window is minimized or hidden; recording paused',
+    'record.warning.source-lost': 'The recorded window is no longer available'
   })
 
   add('zh-TW', {
@@ -460,6 +468,10 @@
     'record.notice.chunk-failed-retry': '部分錄影資料可能未寫入；再次點擊完成將保留已寫入的部分',
     'record.notice.finish-failed': '無法完成錄影：{detail}',
     'record.error.session-start-failed': '無法開始錄影工作階段',
-    'record.audio.warning.microphone-device-fallback': '所選麥克風無法使用，已改用預設麥克風：{detail}'
+    'record.audio.warning.microphone-device-fallback': '所選麥克風無法使用，已改用預設麥克風：{detail}',
+    'record.status.window-idle': '視窗已就緒',
+    'record.window.target-label': '錄製的視窗：{title}',
+    'record.warning.source-hidden': '視窗已最小化或不可見，錄影已暫停',
+    'record.warning.source-lost': '錄製的視窗已無法使用'
   })
 })()

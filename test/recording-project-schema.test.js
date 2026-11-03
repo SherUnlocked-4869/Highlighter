@@ -90,9 +90,9 @@ test('exports the frozen schema constants', () => {
   assert.equal(schema.SCHEMA_VERSION, 1)
   assert.equal(schema.PROJECT_FILE_NAME, 'project.json')
   assert.equal(schema.SOURCE_FILE_NAME, 'capture.webm')
-  assert.deepEqual([...schema.PROJECT_MODES], ['display', 'region'])
+  assert.deepEqual([...schema.PROJECT_MODES], ['display', 'region', 'window'])
   assert.deepEqual([...schema.PROJECT_STATES], ['capturing', 'ready', 'recoverable', 'deleting', 'deleted'])
-  assert.deepEqual([...schema.EXPORT_FORMATS], ['mp4', 'gif'])
+  assert.deepEqual([...schema.EXPORT_FORMATS], ['mp4', 'gif', 'webm'])
   assert.equal(schema.NAME_MAX_LENGTH, 120)
 })
 
@@ -125,6 +125,31 @@ test('normalizes the frozen manifest example without changing legal values', () 
   assert.deepEqual(schema.normalizeProject(project), project)
 })
 
+test('window mode (R4) round-trips while old display/region manifests stay valid', () => {
+  // The record domain passes mode:'window' for a window capture (§2.2); the schema must keep it.
+  const windowProject = schema.normalizeProject(fixture({
+    mode: 'window',
+    captureConfig: {
+      target: { mode: 'window', displayId: '', displayName: 'Visual Studio Code', boundsDip: {}, pixelSize: {}, scaleFactor: 1 },
+      frameRate: 30,
+      quality: 'standard',
+      countdown: 3,
+      audio: { system: true, microphone: false, microphoneDeviceId: '', systemGain: 1, microphoneGain: 1 }
+    }
+  }))
+  assert.equal(windowProject.mode, 'window')
+  assert.equal(windowProject.captureConfig.target.mode, 'window')
+  assert.equal(schema.projectSummary(windowProject).mode, 'window')
+  assert.deepEqual(schema.validateProject(fixture({ mode: 'window' })), { ok: true, errors: [] })
+  // R1-R3 manifests are untouched by the additive enum member.
+  for (const mode of ['display', 'region']) {
+    assert.equal(schema.normalizeProject(fixture({ mode })).mode, mode)
+    assert.deepEqual(schema.validateProject(fixture({ mode })), { ok: true, errors: [] })
+  }
+  // An unknown mode still falls back to 'display' instead of being persisted.
+  assert.equal(schema.normalizeProject(fixture({ mode: 'camera' })).mode, 'display')
+})
+
 test('normalization never throws and repairs junk manifests into safe defaults', () => {
   for (const input of [null, undefined, 42, 'x', [], {}]) {
     const project = schema.normalizeProject(input)
@@ -144,7 +169,7 @@ test('normalization never throws and repairs junk manifests into safe defaults',
 test('normalization applies enums, limits and integer rules', () => {
   const project = schema.normalizeProject(fixture({
     state: 'exploded',
-    mode: 'window',
+    mode: 'camera',
     name: `  ${'n'.repeat(200)}  `,
     captureConfig: { frameRate: 999, quality: 'cinema', countdown: 7 },
     media: { durationMs: -4.6, video: { width: -1, height: 10.4 }, audio: { tracks: 99 } },
@@ -231,18 +256,23 @@ test('mediaFromMetadata converts a real probe result and rejects a failed probe'
 })
 
 test('normalizeEdit clamps gif/format options and preserves partial drafts', () => {
-  const edit = schema.normalizeEdit({
+  // R4: 'webm' is a legal edit/export format now (additive enum member, no schema bump).
+  const webm = schema.normalizeEdit({
     revision: 7,
     keepRanges: [],
     format: 'webm',
     gif: { edge: 9000, fps: 13 }
   }, 1000)
-  assert.equal(edit.revision, 7)
-  assert.equal(edit.format, 'mp4')
-  assert.equal(edit.gif.edge, 1280)
-  assert.equal(edit.gif.fps, 15)
+  assert.equal(webm.revision, 7)
+  assert.equal(webm.format, 'webm')
+  assert.equal(webm.gif.edge, 1280)
+  assert.equal(webm.gif.fps, 15)
 
-  const second = schema.normalizeEdit({ revision: 8, format: 'gif', gif: { edge: 640, fps: 20 } }, 0)
+  // An unknown format is still clamped to the safe default instead of being persisted.
+  const unknown = schema.normalizeEdit({ revision: 8, format: 'avi' }, 0)
+  assert.equal(unknown.format, 'mp4')
+
+  const second = schema.normalizeEdit({ revision: 9, format: 'gif', gif: { edge: 640, fps: 20 } }, 0)
   assert.equal(second.format, 'gif')
   assert.equal(second.gif.edge, 640)
   assert.equal(second.gif.fps, 20)
@@ -315,12 +345,16 @@ test('ProjectPublic exposes editor data but never a path', () => {
 
 test('validateProject reports structural problems it will not repair silently', () => {
   assert.deepEqual(schema.validateProject(fixture()), { ok: true, errors: [] })
+  const webmRecord = fixture({ exports: [{ exportId: 'task-webm-1', format: 'webm', fileName: 'out.webm', exportedAt: 1, editRevision: 2 }] })
+  assert.deepEqual(schema.validateProject(webmRecord), { ok: true, errors: [] })
+  assert.equal(schema.projectSummary(webmRecord).lastExport.format, 'webm')
+  assert.equal(schema.projectPublic(webmRecord).exports[0].format, 'webm')
   assert.equal(schema.validateProject(null).ok, false)
 
   const cases = [
     [{ schemaVersion: 2 }, 'unsupported-schema-version'],
     [{ id: '../../escape' }, 'invalid-id'],
-    [{ mode: 'window' }, 'invalid-mode'],
+    [{ mode: 'camera' }, 'invalid-mode'],
     [{ state: 'exploded' }, 'invalid-state'],
     [{ name: '' }, 'invalid-name'],
     [{ source: { fileName: 'sub/capture.webm' } }, 'invalid-source-file-name'],
@@ -328,7 +362,7 @@ test('validateProject reports structural problems it will not repair silently', 
     [{ edit: { revision: 0, keepRanges: [] } }, 'invalid-edit-revision'],
     [{ edit: { revision: 1, keepRanges: [{ startMs: 10, endMs: 5 }] } }, 'invalid-keep-range'],
     [{ edit: { revision: 1, keepRanges: [{ startMs: 0, endMs: 9999 }] } }, 'keep-range-out-of-bounds'],
-    [{ exports: [{ exportId: 't1', format: 'webm' }] }, 'invalid-export-format'],
+    [{ exports: [{ exportId: 't1', format: 'avi' }] }, 'invalid-export-format'],
     [{ recovery: { committedByteOffset: 0, lastChunkSequence: 0, cleanStop: 'yes' } }, 'invalid-clean-stop']
   ]
   for (const [patch, expected] of cases) {

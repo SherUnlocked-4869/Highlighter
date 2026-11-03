@@ -164,6 +164,9 @@ test('recording workbench/editor surfaces keep the roles separated', () => {
     'record:workbench-state',
     'record:workbench-start',
     'record:workbench-focus',
+    // R4 §2.1: the recordable-window list is a workbench-only invoke whose answer carries opaque
+    // single-use tokens, never a desktopCapturer source id.
+    'record:workbench-windows',
     'record:project-list',
     'record:project-open',
     'record:project-rename',

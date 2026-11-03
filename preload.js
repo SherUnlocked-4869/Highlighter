@@ -50,15 +50,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // source or output path, and the main process re-validates every field anyway.
   // Project summaries returned through these channels are path-free by contract.
   workbenchState: () => ipcRenderer.invoke('record:workbench-state'),
+  // R4 (docs/plans/2026-11-03-recording-r4-contracts.md §2.1): the recordable-window list. The
+  // answer carries opaque single-use tokens only; a desktopCapturer source id never reaches a page.
+  workbenchWindows: () => ipcRenderer.invoke('record:workbench-windows'),
   workbenchStart: (request) => {
     const source = request && typeof request === 'object' ? request : {}
-    const mode = source.mode === 'region' ? 'region' : 'display'
+    const mode = source.mode === 'region' ? 'region' : (source.mode === 'window' ? 'window' : 'display')
     const displayId = typeof source.displayId === 'string' ? source.displayId : ''
+    // R4 §2.1: the opaque token is echoed verbatim; the main process resolves it (and re-validates).
+    const windowToken = typeof source.windowToken === 'string' ? source.windowToken : ''
     const config = source.config && typeof source.config === 'object' ? source.config : {}
     const text = (value) => (typeof value === 'string' ? value : '')
     return ipcRenderer.invoke('record:workbench-start', {
       mode,
       ...(displayId ? { displayId } : {}),
+      ...(windowToken ? { windowToken } : {}),
       config: {
         mode,
         displayId,

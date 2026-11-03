@@ -316,6 +316,7 @@ test('recording workbench and editor IPC modules own their documented channel su
       'workbenchState',
       'workbenchStart',
       'workbenchFocus',
+      'workbenchWindows',
       'projectList',
       'projectOpen',
       'projectRename',
@@ -327,6 +328,8 @@ test('recording workbench and editor IPC modules own their documented channel su
     'record:workbench-state',
     'record:workbench-start',
     'record:workbench-focus',
+    // R4 (docs/plans/2026-11-03-recording-r4-contracts.md §2.1): the recordable-window list.
+    'record:workbench-windows',
     'record:project-list',
     'record:project-open',
     'record:project-rename',
@@ -335,6 +338,7 @@ test('recording workbench and editor IPC modules own their documented channel su
   ])
   assert.deepEqual([...workbenchIpc.listeners.keys()], [])
   assert.equal(workbenchIpc.handlers.get('record:workbench-state')().method, 'workbenchState')
+  assert.equal(workbenchIpc.handlers.get('record:workbench-windows')().method, 'workbenchWindows')
   assert.equal(workbenchIpc.handlers.get('record:project-delete')(null, { projectId: 'p' }).method, 'projectDelete')
 
   const editorIpc = createIpcMain()

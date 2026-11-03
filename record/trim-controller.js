@@ -1,45 +1,49 @@
 'use strict'
 
-// Trim + export controller shared by the recording preview (feature E3, plan §8.2/§8.3:
-// docs/plans/2026-10-25-snow-apps-feature-development-plan.md) and the standalone recording
-// editor (R1-R3 contract §9.3/§11: `record/editor.js`).
+// Trim + export controller shared by the recording preview (feature E3) and the standalone
+// recording editor (R1-R3 contract §9.3/§11; R4 contract §3/§4/§5).
 //
 // This module owns the EDIT STATE, not the DOM: it is loaded by record/editor.html as a classic
 // script (`window.recordTrimController`) and required by node tests, but every DOM mutation is
-// a callback the page supplies. That keeps the decisions that actually matter - the half-open
-// range, range playback, format/GIF budget, submission freeze, cancel arbitration, the result
-// bar receipt, draft revision CAS - testable without a browser.
+// a callback the page supplies. That keeps the decisions that actually matter - multi-segment
+// edits, undo/redo, range playback, format/GIF/video budgets, submission freeze, cancel
+// arbitration, the result bar receipt, draft revision CAS - testable without a browser.
 //
 // Two addressing modes:
-//   * session mode (`sessionId`): the old preview window, export goes to `record:export`.
-//   * project mode (`projectId` + `project`, added for the editor): the project is the durable
-//     identity, export goes to `record-editor:export`, and the edit is autosaved through
-//     `updateDraft` with an expectedRevision CAS. A revision conflict is reported as state,
-//     never silently overwritten; the page reloads the project.
+//   * session mode (`sessionId`): the old preview window, single `range`, export goes to
+//     `record:export` with the legacy `range` field.
+//   * project mode (`projectId` + `project`, used by the editor): the project is the durable
+//     identity, `segments[]` is authoritative, export goes to `record-editor:export` with the
+//     R4 request shape (`segments` omitted for a whole-recording selection, `video` options for
+//     mp4/webm), and the edit is autosaved through `updateDraft` with an expectedRevision CAS.
+//     A revision conflict is reported as state, never silently overwritten.
 //
 // Contract notes:
-//   * The range is `[startMs, endMs)` in SOURCE milliseconds, validated by the SAME
-//     shared/recording-export-options.js the main process uses, so the UI cannot offer a
-//     selection the server will reject.
-//   * Playback: `playRange()` seeks to start and drives the <video>; when it reaches the end it
-//     pauses. Scrubbing the playhead NEVER changes the trim points (plan §8.2).
-//   * Export freeze: once a request is accepted, the range/format/GIF controls are frozen until
-//     the task reaches a terminal state. A retry after failure re-reads the current controls,
-//     but a retry of the SAME request keeps the same requestId so the server can replay it
-//     instead of encoding twice (plan §8.3 "same requestId + same parameters reuses the task").
-//   * Cancel: the button becomes "finishing" once the task reaches `publishing`, because after
-//     that point the target may already have been replaced (plan §8.4).
-//   * A published task shows a result bar fed by `{ status:'saved', resultId, fileName, kind }`,
-//     exactly the feature-A receipt. A cancelled or failed task never produces one.
-
-;(function initRecordTrimController(root, factory) {
+//   * Every kept range is `[startMs, endMs)` in SOURCE milliseconds. The controller always
+//     materialises "whole recording" as `[{0,duration}]`; an EMPTY `segments` array is the
+//     explicit "user deleted everything" state (export disabled). The schema-shaped
+//     `keepRanges: []` = whole rule is applied at the draft boundary.
+//   * Undo/redo stacks hold segment snapshots (limit 50). A drag wraps many transient boundary
+//     updates in one snapshot via beginEdit()/commitEdit().
+//   * Playback skips removed gaps and pauses at the last kept end; scrubbing the playhead never
+//     changes the segments.
+//   * Export freeze: once a request is accepted, edits/format/GIF/video controls are frozen
+//     until the task reaches a terminal state. A retry re-reads the current controls, but a
+//     replay of the SAME request keeps the same requestId (plan §8.3).
+//   * A published task shows a result bar fed by `{ status:'saved', resultId, fileName, kind }`;
+//     a cancelled or failed task never produces one.
+;
+(function initRecordTrimController(root, factory) {
   const options = typeof module === 'object' && module.exports
     ? require('../shared/recording-export-options')
     : root.recordingExportOptions
-  const api = factory(options)
+  const timeline = typeof module === 'object' && module.exports
+    ? require('./editor-timeline')
+    : root.recordEditorTimeline
+  const api = factory(options, timeline)
   if (typeof module === 'object' && module.exports) module.exports = api
   else root.recordTrimController = api
-})(typeof globalThis === 'object' ? globalThis : this, (options) => {
+})(typeof globalThis === 'object' ? globalThis : this, (options, timeline) => {
   const {
     GIF_FRAME_RATES,
     LIMITS,
@@ -50,9 +54,13 @@
   } = options
 
   const TERMINAL_STATES = Object.freeze(['succeeded', 'failed', 'cancelled'])
+  const EXPORT_FORMATS = Object.freeze(['mp4', 'gif', 'webm'])
+  const HISTORY_LIMIT = 50
 
   // Locale keys this module resolves at runtime. The record UI contract test feeds this list
-  // into its three-language check, so a new message cannot ship untranslated.
+  // into its three-language check, so a new message cannot ship untranslated. R4 editor keys
+  // live in shared/locales/recording-editor.js; the legacy record.* keys stay for the session
+  // surface and the shared error-code table.
   const LOCALE_KEYS = Object.freeze([
     'record.trim.title',
     'record.trim.start',
@@ -98,11 +106,35 @@
     'record.error.export-publish-in-progress',
     'record.error.export-invalid-request',
     'record.error.export-task-not-found',
-    'record.error.export-codec-missing'
+    'record.error.export-codec-missing',
+    // R4 editor-only messages (shared/locales/recording-editor.js)
+    'recording.editor.timeline.kept',
+    'recording.editor.timeline.empty',
+    'recording.editor.format.webm',
+    'recording.editor.resolution',
+    'recording.editor.resolution.source',
+    'recording.editor.resolution.p1080',
+    'recording.editor.resolution.p720',
+    'recording.editor.resolution.p480',
+    'recording.editor.quality',
+    'recording.editor.quality.standard',
+    'recording.editor.quality.high',
+    'recording.editor.quality.ultra',
+    'recording.editor.fps',
+    'recording.editor.fps.source',
+    'recording.editor.output-size',
+    'recording.editor.output-value',
+    'recording.editor.result.kind.webm',
+    'recording.editor.error.empty-selection',
+    'recording.editor.error.invalid-video-option',
+    'recording.editor.error.fps-above-source',
+    'recording.editor.error.too-many-segments',
+    'recording.editor.error.overlapping-segments',
+    'recording.editor.error.ambiguous-selection'
   ])
 
-  // Stable code -> locale key. Every code recording-export-service.js can return has an entry;
-  // an unknown code falls back to the generic failure message rather than showing a raw token.
+  // Stable code -> locale key. Every code the export service can return has an entry; an
+  // unknown code falls back to the generic failure message rather than showing a raw token.
   const ERROR_KEYS = Object.freeze({
     'target-unavailable': 'record.error.export-target-unavailable',
     'range-out-of-bounds': 'record.error.export-range-out-of-bounds',
@@ -130,7 +162,14 @@
     'unsupported-format': 'record.error.export-invalid-request',
     'task-not-found': 'record.error.export-task-not-found',
     'invalid-owner': 'record.error.export-invalid-request',
-    'export-timeout': 'record.error.export-encode-failed'
+    'export-timeout': 'record.error.export-encode-failed',
+    // R4 contract §4.1 validation codes
+    'empty-selection': 'recording.editor.error.empty-selection',
+    'invalid-video-option': 'recording.editor.error.invalid-video-option',
+    'fps-above-source': 'recording.editor.error.fps-above-source',
+    'too-many-segments': 'recording.editor.error.too-many-segments',
+    'overlapping-segments': 'recording.editor.error.overlapping-segments',
+    'ambiguous-selection': 'recording.editor.error.ambiguous-selection'
   })
 
   function errorKey(code) {
@@ -199,13 +238,24 @@
       metadata: {
         durationMs,
         startMs: Math.round(finiteNumber(metadata?.startMs) || 0),
-        video: { width: Math.round(finiteNumber(video.width) || 0), height: Math.round(finiteNumber(video.height) || 0), frameRate: finiteNumber(video.frameRate) || 0 },
+        video: {
+          width: Math.round(finiteNumber(video.width) || 0),
+          height: Math.round(finiteNumber(video.height) || 0),
+          frameRate: finiteNumber(video.frameRate) || 0
+        },
         audio: { exists: metadata?.audio?.exists === true }
       },
+      // Legacy single range (session mode) AND the derived outer range in project mode.
       range: { startMs: 0, endMs: durationMs },
+      // Project mode's authoritative edit. Materialised: [] only when the user deleted
+      // everything (explicit "no content", never "whole recording").
+      segments: [],
       format: 'mp4',
       gif: { fps: GIF_FRAME_RATES[1], maxEdgePx: LIMITS.GIF_MAX_EDGE_PX, loop: true },
-      // Playback window: `null` means "not range playing".
+      // Export-panel video options. Contract §7.5: NOT persisted in the draft; a reopened
+      // editor starts at source/standard/source.
+      video: { resolution: 'source', quality: 'standard', fps: 'source' },
+      // Session playback window `{startMs,endMs}`; project playback `{mode:'kept',fromMs}`.
       playing: null,
       playheadMs: 0,
       // Export phase: idle -> submitting -> active -> succeeded | failed | cancelled
@@ -216,11 +266,8 @@
       // requestId is minted per ATTEMPT so a retry after a failure is a new request, while a
       // status poll/replay of the same attempt keeps its key (plan §8.3).
       requestId: '',
-      // The range/format actually submitted. The UI shows the frozen snapshot, so moving a
-      // handle during an encode cannot make the displayed numbers disagree with the file.
+      // The segments/format actually submitted, shown frozen while the encode runs.
       frozen: null,
-      // True once the user has moved a trim point: the default full range is replaced.
-      edited: false,
       // Draft autosave (editor mode only): the project revision the next save compare-and-
       // swaps against, plus the visible status the header renders.
       draftDirty: false,
@@ -228,35 +275,230 @@
       draftConflict: false,
       draftError: null
     }
-    // Bumped on every user edit; a save only clears `draftDirty` when no edit landed while
-    // the transport was in flight (otherwise the next debounce must still run).
+    // Bumped on every user edit; a save only clears `draftDirty` when no edit landed while the
+    // transport was in flight (otherwise the next debounce must still run).
     let draftEpoch = 0
-    // Seed the live edit from the project's persisted draft on construction, so the first
-    // paint already shows the saved trim points and the next CAS compares against its revision.
+    // Undo/redo stacks of segment snapshots, plus the in-flight drag snapshot.
+    let history = []
+    let future = []
+    let pendingSnapshot = null
+
+    // Materialise the initial edit: a project seeds from its saved keepRanges, a session starts
+    // with the whole recording kept (session mode does not use segments for export).
     if (project && typeof project === 'object') applyEdit(project.edit)
+    else model.segments = materializedFull()
+
+    function materializedFull() {
+      if (!(model.metadata.durationMs > 0)) return []
+      return [{ startMs: 0, endMs: model.metadata.durationMs }]
+    }
+
+    function isFullSelection() {
+      if (model.segments.length === 0) return false
+      return timeline.isFullRange(model.segments, model.metadata.durationMs)
+    }
+
+    function syncRange() {
+      if (model.segments.length > 0) {
+        model.range = {
+          startMs: model.segments[0].startMs,
+          endMs: model.segments[model.segments.length - 1].endMs
+        }
+      } else {
+        model.range = { startMs: 0, endMs: 0 }
+      }
+    }
+
+    function keptMs() {
+      if (model.segments.length === 0) return 0
+      return timeline.totalKeptMs(model.segments, model.metadata.durationMs)
+    }
+
+    function lastKeptEnd() {
+      return model.segments.length > 0 ? model.segments[model.segments.length - 1].endMs : 0
+    }
+
+    function snapshotSegments() {
+      return timeline.copySegments(model.segments)
+    }
+
+    function pushHistory() {
+      history.push(snapshotSegments())
+      if (history.length > HISTORY_LIMIT) history.shift()
+      future = []
+    }
+
+    function canUndo() {
+      return history.length > 0 && !isFrozen()
+    }
+
+    function canRedo() {
+      return future.length > 0 && !isFrozen()
+    }
+
+    // Begin a multi-step interaction (one drag). The stack is only advanced on commit, so the
+    // whole drag undoes as one user action.
+    function beginEdit() {
+      if (isFrozen() || pendingSnapshot) return false
+      pendingSnapshot = snapshotSegments()
+      return true
+    }
+
+    function commitEdit() {
+      if (!pendingSnapshot) return false
+      const before = pendingSnapshot
+      pendingSnapshot = null
+      if (timeline.segmentsEqual(before, model.segments)) {
+        notify({ reason: 'edit-unchanged' })
+        return false
+      }
+      history.push(before)
+      if (history.length > HISTORY_LIMIT) history.shift()
+      future = []
+      markDraftEdited()
+      notify({ reason: 'edit-committed' })
+      return true
+    }
+
+    function cancelEdit() {
+      if (!pendingSnapshot) return false
+      model.segments = pendingSnapshot
+      pendingSnapshot = null
+      syncRange()
+      notify({ reason: 'edit-cancelled' })
+      return true
+    }
+
+    function applySegments(nextSegments, { reason = 'segments', historyMode = 'auto' } = {}) {
+      if (isFrozen()) return false
+      const normalized = timeline.copySegments(nextSegments)
+      if (timeline.segmentsEqual(normalized, model.segments)) return false
+      if (historyMode === 'auto') pushHistory()
+      model.segments = normalized
+      syncRange()
+      if (historyMode !== 'transient') markDraftEdited()
+      notify({ reason })
+      return true
+    }
+
+    function splitAt(atMs) {
+      if (isFrozen()) return false
+      const next = timeline.splitAt(model.segments, atMs, model.metadata.durationMs)
+      return applySegments(next, { reason: 'split' })
+    }
+
+    function deleteSegmentAt(atMs) {
+      if (isFrozen()) return false
+      const next = timeline.deleteSegmentAt(model.segments, atMs, model.metadata.durationMs)
+      return applySegments(next, { reason: 'delete-segment' })
+    }
+
+    function resetEdits() {
+      if (isFrozen() || isFullSelection()) return false
+      return applySegments(materializedFull(), { reason: 'reset-edits' })
+    }
+
+    // Boundary drag entry points. While beginEdit() is active the moves are transient (the
+    // drag is one undo entry); a direct call (keyboard/nudge) records its own entry.
+    function moveBoundary(index, edge, targetMs) {
+      if (isFrozen()) return false
+      const next = timeline.moveBoundary(model.segments, index, edge, targetMs, model.metadata.durationMs)
+      return applySegments(next, {
+        reason: 'boundary',
+        historyMode: pendingSnapshot ? 'transient' : 'auto'
+      })
+    }
+
+    function moveJunction(index, targetMs) {
+      if (isFrozen()) return false
+      const next = timeline.moveJunction(model.segments, index, targetMs, model.metadata.durationMs)
+      return applySegments(next, {
+        reason: 'junction',
+        historyMode: pendingSnapshot ? 'transient' : 'auto'
+      })
+    }
+
+    function undoEdit() {
+      if (!canUndo()) return false
+      future.push(snapshotSegments())
+      model.segments = history.pop()
+      syncRange()
+      markDraftEdited()
+      notify({ reason: 'undo' })
+      return true
+    }
+
+    function redoEdit() {
+      if (!canRedo()) return false
+      history.push(snapshotSegments())
+      model.segments = future.pop()
+      syncRange()
+      markDraftEdited()
+      notify({ reason: 'redo' })
+      return true
+    }
+
+    function canSplitAt(atMs) {
+      if (isFrozen() || !(model.metadata.durationMs > 0) || model.segments.length === 0) return false
+      const next = timeline.splitAt(model.segments, atMs, model.metadata.durationMs)
+      return !timeline.segmentsEqual(next, model.segments)
+    }
+
+    function canDeleteAt(atMs) {
+      if (isFrozen() || !(model.metadata.durationMs > 0)) return false
+      return timeline.segmentAt(model.segments, atMs, model.metadata.durationMs) >= 0
+    }
 
     function state() {
-      const range = model.range
       const gif = gifBudget()
-    return {
-      sessionId: model.sessionId,
-      projectId: model.projectId,
-      revision: model.revision,
-      available: model.available,
-      durationMs: model.metadata.durationMs,
+      const videoBudgetResult = videoBudget()
+      return {
+        sessionId: model.sessionId,
+        projectId: model.projectId,
+        revision: model.revision,
+        available: model.available,
+        durationMs: model.metadata.durationMs,
         metadata: { ...model.metadata },
-        range: { ...range },
-        selectionMs: Math.max(0, range.endMs - range.startMs),
+        // Legacy single-range projection (first kept start .. last kept end) for tests and for
+        // any consumer that still reads `range`; `segments` is authoritative in project mode.
+        range: { ...model.range },
+        // Session mode keeps the legacy single range authoritative; project mode uses the
+        // materialised segment list.
+        segments: model.projectId
+          ? model.segments.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs }))
+          : [{ startMs: model.range.startMs, endMs: model.range.endMs }],
+        keptMs: model.projectId ? keptMs() : Math.max(0, model.range.endMs - model.range.startMs),
+        totalKeptMs: model.projectId ? keptMs() : Math.max(0, model.range.endMs - model.range.startMs),
+        emptySelection: model.projectId && model.segments.length === 0,
+        edited: model.projectId ? !isFullSelection() : model.edited,
+        undo: model.projectId ? canUndo() : false,
+        redo: model.projectId ? canRedo() : false,
+        selectionMs: model.projectId ? keptMs() : Math.max(0, model.range.endMs - model.range.startMs),
         format: model.format,
         gif: { ...model.gif },
         gifBudget: gif,
+        video: { ...model.video },
+        videoBudget: videoBudgetResult,
+        videoOptions: {
+          resolutions: timeline.availableResolutions(model.metadata.video.width, model.metadata.video.height),
+          frameRates: timeline.availableFrameRates(model.metadata.video.frameRate),
+          qualities: [...timeline.QUALITY_LEVELS]
+        },
         playing: model.playing ? { ...model.playing } : null,
         playheadMs: model.playheadMs,
         phase: model.phase,
         task: model.task ? { ...model.task } : null,
         receipt: model.receipt ? { ...model.receipt } : null,
         error: model.error ? { ...model.error } : null,
-        frozen: model.frozen ? { ...model.frozen } : null,
+        frozen: model.frozen
+          ? {
+            segments: model.frozen.segments.map((segment) => ({ ...segment })),
+            format: model.frozen.format,
+            gif: model.frozen.gif ? { ...model.frozen.gif } : null,
+            video: model.frozen.video ? { ...model.frozen.video } : null,
+            keptMs: model.frozen.keptMs
+          }
+          : null,
         // Editor mode: the autosave status the header renders and the page schedules saves
         // from. `conflict` means a save was refused because another window wrote first.
         draft: {
@@ -276,14 +518,14 @@
     }
 
     function labels() {
-      const range = model.frozen?.range || model.range
+      const range = model.frozen ? model.range : model.range
       const gif = gifBudget()
       return {
         title: translate('record.trim.title'),
         selection: translate('record.trim.selection', {
           start: formatClock(range.startMs),
           end: formatClock(range.endMs),
-          duration: formatClock(Math.max(0, range.endMs - range.startMs))
+          duration: formatClock(Math.max(0, model.projectId ? keptMs() : range.endMs - range.startMs))
         }),
         duration: translate('record.trim.duration', { duration: formatClock(model.metadata.durationMs) }),
         formatMp4: translate('record.trim.format.mp4'),
@@ -296,10 +538,12 @@
       }
     }
 
-    // The GIF budget for the CURRENT selection, resolved with the shared validator so the
-    // number shown is the number the server will accept.
+    // The GIF budget for the CURRENT kept content. A deleted-everything state has no duration,
+    // which is exactly how normalizeGifOptions reports "cannot export".
     function gifBudget() {
-      const selectionMs = Math.max(0, model.range.endMs - model.range.startMs)
+      const selectionMs = model.projectId
+        ? keptMs()
+        : Math.max(0, model.range.endMs - model.range.startMs)
       const dimensions = computeGifDimensions({
         width: model.metadata.video.width,
         height: model.metadata.video.height,
@@ -322,18 +566,45 @@
       }
     }
 
+    // The mp4/webm output size and fps the exporter will produce, computed here from the same
+    // shared options so the panel's "final W x H" cannot disagree with the file.
+    function videoBudget() {
+      if (model.format === 'gif') return { ok: true, value: null }
+      // W8 owns the authoritative normaliser (copy fast-path, error codes, dimensions); the
+      // local timeline helper is the identical fallback used until that module lands.
+      if (typeof options.normalizeVideoOptions === 'function') {
+        return options.normalizeVideoOptions(
+          model.video,
+          { video: { ...model.metadata.video }, audio: { ...model.metadata.audio } },
+          model.format,
+          isFullSelection()
+        )
+      }
+      return timeline.normalizeVideoOptions(model.video, {
+        sourceWidth: model.metadata.video.width,
+        sourceHeight: model.metadata.video.height,
+        sourceFrameRate: model.metadata.video.frameRate
+      })
+    }
+
     function rangeIsValid() {
+      if (model.projectId) return model.segments.length > 0
       return normalizeRange(model.range, model.metadata.durationMs).ok
     }
 
     function canExport() {
       if (model.phase === 'submitting' || model.phase === 'active') return false
       // Project mode: a recoverable/unreadable source has no trustworthy duration, so export
-      // stays disabled instead of offering a fake span (contract §11 recovery rule).
+      // stays disabled instead of offering a fake span (R3 contract §11 recovery rule).
       if (!model.available) return false
       if (!model.metadata.durationMs) return false
       if (!rangeIsValid()) return false
-      if (model.format === 'gif' && !gifBudget().ok) return false
+      if (model.projectId && model.segments.length === 0) return false
+      if (model.format === 'gif') {
+        if (!gifBudget().ok) return false
+      } else if (!videoBudget().ok) {
+        return false
+      }
       return true
     }
 
@@ -362,15 +633,16 @@
       model.draftDirty = true
     }
 
-    // ---------- trim points ----------
+    // ---------- legacy trim points (session API; project delegates to boundaries) ----------
 
-    // Setting a trim point never produces an invalid range: a start at/after the end is pushed
-    // back by MIN_RANGE_MS (and vice versa), clamped to the media. The UI then shows a valid
-    // selection instead of a disabled export button the user cannot explain.
     function setStart(valueMs) {
       if (isFrozen()) return false
       const parsed = parseTimeInput(valueMs)
       if (parsed === null) return false
+      if (model.projectId) {
+        if (model.segments.length === 0) return false
+        return moveBoundary(0, 'start', parsed)
+      }
       const maxStart = Math.max(0, model.range.endMs - LIMITS.MIN_RANGE_MS)
       const startMs = Math.max(0, Math.min(Math.round(parsed), maxStart, model.metadata.durationMs))
       model.range.startMs = startMs
@@ -384,6 +656,10 @@
       if (isFrozen()) return false
       const parsed = parseTimeInput(valueMs)
       if (parsed === null) return false
+      if (model.projectId) {
+        if (model.segments.length === 0) return false
+        return moveBoundary(model.segments.length - 1, 'end', parsed)
+      }
       const minEnd = Math.min(model.metadata.durationMs, model.range.startMs + LIMITS.MIN_RANGE_MS)
       const endMs = Math.max(minEnd, Math.min(Math.round(parsed), model.metadata.durationMs))
       model.range.endMs = endMs
@@ -395,6 +671,7 @@
 
     function resetRange() {
       if (isFrozen()) return false
+      if (model.projectId) return resetEdits()
       model.range = { startMs: 0, endMs: model.metadata.durationMs }
       model.edited = false
       markDraftEdited()
@@ -406,11 +683,11 @@
       return model.phase === 'submitting' || model.phase === 'active'
     }
 
-    // ---------- format ----------
+    // ---------- format + video options ----------
 
     function setFormat(format) {
       if (isFrozen()) return false
-      if (format !== 'mp4' && format !== 'gif') return false
+      if (!EXPORT_FORMATS.includes(format)) return false
       model.format = format
       markDraftEdited()
       notify({ reason: 'format' })
@@ -436,12 +713,43 @@
       return true
     }
 
-    // ---------- range playback ----------
+    function setVideoOption(patch) {
+      if (isFrozen()) return false
+      const candidate = { ...model.video, ...patch }
+      const normalized = timeline.normalizeVideoOptions(candidate, {
+        sourceWidth: model.metadata.video.width,
+        sourceHeight: model.metadata.video.height,
+        sourceFrameRate: model.metadata.video.frameRate
+      })
+      if (!normalized.ok) return false
+      model.video = {
+        resolution: normalized.value.resolution,
+        quality: normalized.value.quality,
+        fps: normalized.value.fps
+      }
+      // Contract §7.5: export parameters are UI state, not draft state.
+      notify({ reason: 'video-option' })
+      return true
+    }
 
-    // Called by the page when the user presses play. Returns the range the <video> must honour,
-    // or null when the current playhead is outside the selection (in which case the page seeks
-    // to start first). Scrubbing never edits the trim points (plan §8.2).
+    function setVideoResolution(resolution) {
+      return setVideoOption({ resolution })
+    }
+
+    function setVideoQuality(quality) {
+      return setVideoOption({ quality })
+    }
+
+    function setVideoFps(fps) {
+      const value = fps === 'source' ? 'source' : Number(fps)
+      return setVideoOption({ fps: value })
+    }
+
+    // ---------- playback ----------
+
+    // Session mode: the old single-range playback. Kept exactly for the session API/tests.
     function playRange() {
+      if (model.projectId) return startKeptPlayback(model.playheadMs)
       if (!model.metadata.durationMs || !rangeIsValid()) return null
       const startMs = model.range.startMs
       const endMs = model.range.endMs
@@ -449,6 +757,25 @@
       model.playheadMs = startMs
       notify({ reason: 'play-range' })
       return { ...model.playing }
+    }
+
+    // Project mode: play the kept content starting at/after the playhead, skipping removed
+    // gaps. Returns the first kept source position to seek to, or null when nothing remains.
+    function startKeptPlayback(fromSourceMs = model.playheadMs) {
+      if (model.projectId && (model.segments.length === 0 || !(model.metadata.durationMs > 0))) return null
+      const candidate = Math.max(0, Math.round(finiteNumber(fromSourceMs) ?? 0))
+      let startMs
+      if (timeline.segmentAt(model.segments, candidate, model.metadata.durationMs) >= 0) {
+        startMs = candidate
+      } else {
+        const next = timeline.nextKeptStart(model.segments, candidate, model.metadata.durationMs)
+        if (next === null) return null
+        startMs = next
+      }
+      model.playing = { mode: 'kept', fromMs: startMs, totalMs: keptMs() }
+      model.playheadMs = startMs
+      notify({ reason: 'play-kept' })
+      return { startMs, endMs: lastKeptEnd(), totalMs: keptMs() }
     }
 
     function stopRangePlayback() {
@@ -464,11 +791,11 @@
       const position = Math.max(0, Math.round(finiteNumber(positionMs) || 0))
       if (fromUser) {
         model.playheadMs = position
-        // A user scrub during range playback ends the range: the playhead is now wherever the
-        // user put it, and the trim points must not follow it.
-        if (model.playing && (position < model.playing.startMs || position >= model.playing.endMs)) {
+        // A user scrub during playback ends the range: the playhead is now wherever the user
+        // put it, and the segments must not follow it.
+        if (model.playing) {
           model.playing = null
-          notify({ reason: 'scrub-outside-range' })
+          notify({ reason: 'scrub' })
         }
         return { action: 'none', toMs: position }
       }
@@ -477,14 +804,33 @@
         notify({ reason: 'time' })
         return { action: 'none', toMs: position }
       }
+      if (model.playing.mode === 'kept') {
+        const lastEnd = lastKeptEnd()
+        if (position >= lastEnd || model.segments.length === 0) {
+          model.playing = null
+          notify({ reason: 'kept-end' })
+          return { action: 'pause', toMs: lastEnd }
+        }
+        if (timeline.segmentAt(model.segments, position, model.metadata.durationMs) >= 0) {
+          return { action: 'none', toMs: position }
+        }
+        // In a removed gap: jump to the next kept start instead of playing deleted content.
+        const next = timeline.nextKeptStart(model.segments, position, model.metadata.durationMs)
+        if (next === null) {
+          model.playing = null
+          notify({ reason: 'kept-end' })
+          return { action: 'pause', toMs: lastEnd }
+        }
+        return { action: 'seek', toMs: next }
+      }
+      // Session single-range playback (unchanged R3 semantics).
       if (position >= model.playing.endMs) {
         model.playing = null
         notify({ reason: 'range-end' })
         return { action: 'pause', toMs: model.range.endMs }
       }
       if (position < model.playing.startMs) {
-        // Seeking landed before the range (a codec keyframe boundary): ask for a re-seek rather
-        // than playing the head the user trimmed away.
+        // A codec keyframe boundary: ask for a re-seek rather than playing the trimmed head.
         return { action: 'seek', toMs: model.playing.startMs }
       }
       return { action: 'none', toMs: position }
@@ -492,14 +838,19 @@
 
     // ---------- project draft (editor mode) ----------
 
-    // The edit object the project service persists (contract §7): a full-range selection is
-    // stored as an empty keepRanges array ("whole recording"), an edited one as the single
-    // half-open range. `gif` uses the schema's `edge` name, not the export request's
-    // `maxEdgePx`, because that is what `updateDraft` writes into project.json.
+    // The edit object the project service persists (R1 schema): `keepRanges: []` means "whole
+    // recording", otherwise 1-20 ordered half-open ranges. LIMITATION: the schema cannot express
+    // "the user deleted everything", so a zero-segment edit is saved as [] (reopens as whole);
+    // the current session still refuses to export it. `gif` uses the schema's `edge` name.
     function buildDraftEdit() {
-      const keepRanges = model.edited && model.metadata.durationMs > 0
-        ? [{ id: 'keep-1', startMs: model.range.startMs, endMs: model.range.endMs }]
-        : []
+      let keepRanges = []
+      if (model.metadata.durationMs > 0 && model.segments.length > 0 && !isFullSelection()) {
+        keepRanges = model.segments.map((segment, index) => ({
+          id: `keep-${index + 1}`,
+          startMs: segment.startMs,
+          endMs: segment.endMs
+        }))
+      }
       return {
         revision: model.revision,
         keepRanges,
@@ -523,48 +874,52 @@
         // the trim UI only needs the boolean the export options normaliser uses.
         audio: { exists: nextAudio.exists === true || Math.round(finiteNumber(nextAudio.tracks) || 0) > 0 }
       }
-      const checked = normalizeRange(model.range, model.metadata.durationMs)
-      if (checked.ok) {
-        model.range = { startMs: checked.value.startMs, endMs: checked.value.endMs }
+      if (model.metadata.durationMs > 0) {
+        if (model.segments.length === 0) {
+          model.segments = []
+        } else {
+          const normalized = timeline.normalizeSegments(model.segments, model.metadata.durationMs)
+          model.segments = normalized.length > 0 ? normalized : materializedFull()
+        }
       } else {
-        model.range = { startMs: 0, endMs: model.metadata.durationMs }
-        model.edited = false
+        model.segments = []
       }
+      syncRange()
     }
 
     // Load the persisted edit into the live state. Called for the first `record-editor:init`
     // and again after a revision conflict / recovery retry, so it must be idempotent and must
-    // not leave stale dirty/conflict flags behind.
+    // not leave stale dirty/conflict/history flags behind.
     function applyEdit(edit) {
       if (!edit || typeof edit !== 'object' || Array.isArray(edit)) return false
       const projectRevision = Math.round(finiteNumber(edit.revision))
       if (projectRevision !== null && projectRevision >= 0) model.revision = projectRevision
 
       const keepRanges = Array.isArray(edit.keepRanges) ? edit.keepRanges : []
-      let range = { startMs: 0, endMs: model.metadata.durationMs }
-      if (keepRanges.length > 0) {
-        const first = keepRanges[0] || {}
-        const candidate = {
-          startMs: Math.round(finiteNumber(first.startMs) || 0),
-          endMs: Math.round(finiteNumber(first.endMs) || 0)
+      if (model.metadata.durationMs > 0 && keepRanges.length > 0) {
+        const normalized = timeline.normalizeSegments(keepRanges, model.metadata.durationMs)
+        if (normalized.length > 0) {
+          model.segments = normalized
+        } else {
+          log('draft: ignoring invalid keepRanges from the project; falling back to the full range')
+          model.segments = materializedFull()
         }
-        const checked = normalizeRange(candidate, model.metadata.durationMs)
-        if (checked.ok) range = { startMs: checked.value.startMs, endMs: checked.value.endMs }
-        else log('draft: ignoring an invalid keep range from the project:', checked.code)
-        // Contract §0: multi-range editing is out of this round; the first range is the
-        // closest meaningful projection rather than a crash on a future project shape.
-        if (keepRanges.length > 1) log('draft: multi-range edit is not supported yet; using the first range')
+      } else {
+        model.segments = materializedFull()
       }
 
-      if (edit.format === 'gif' || edit.format === 'mp4') model.format = edit.format
+      if (EXPORT_FORMATS.includes(edit.format)) model.format = edit.format
       const gif = edit.gif && typeof edit.gif === 'object' ? edit.gif : {}
       const edge = Math.round(finiteNumber(gif.edge ?? gif.maxEdgePx) ?? LIMITS.GIF_MAX_EDGE_PX)
       if (edge >= LIMITS.GIF_MIN_EDGE_PX && edge <= LIMITS.GIF_MAX_EDGE_PX) model.gif.maxEdgePx = edge
       const fps = Math.round(finiteNumber(gif.fps) ?? 0)
       if (GIF_FRAME_RATES.includes(fps)) model.gif.fps = fps
 
-      model.range = range
-      model.edited = keepRanges.length > 0
+      model.video = { resolution: 'source', quality: 'standard', fps: 'source' }
+      syncRange()
+      history = []
+      future = []
+      pendingSnapshot = null
       model.draftDirty = false
       model.draftSaving = false
       model.draftConflict = false
@@ -634,17 +989,41 @@
         revision: model.revision,
         error: model.draftError ? { ...model.draftError } : null
       }
-    }    // ---------- submit ----------
+    }
+
+    // ---------- submit ----------
 
     function buildRequest() {
-      const request = {
-        format: model.format,
-        range: { startMs: model.range.startMs, endMs: model.range.endMs }
+      // Session mode keeps the legacy single-range request shape (`range`), because the old
+      // record:export channel is frozen there and still used by the session tests.
+      if (!model.projectId) {
+        const request = {
+          format: model.format,
+          range: { startMs: model.range.startMs, endMs: model.range.endMs }
+        }
+        if (model.format === 'gif') {
+          request.gif = { maxEdgePx: model.gif.maxEdgePx, fps: model.gif.fps, loop: true }
+        }
+        return request
       }
-      // `maxEdgePx` is the CAP the user picked; the service recomputes the exact even output
-      // size from the source dimensions, so the request never carries a derived width/height.
+      // R4 contract §4.1: `segments` omitted = whole recording; never send `range` alongside it
+      // (that would be ambiguous-selection). GIF sends its own budget; mp4/webm send video
+      // options so the main process freezes them with the request.
+      const request = { format: model.format }
+      if (model.segments.length > 0 && !isFullSelection()) {
+        request.segments = model.segments.map((segment) => ({
+          startMs: segment.startMs,
+          endMs: segment.endMs
+        }))
+      }
       if (model.format === 'gif') {
-        request.gif = { maxEdgePx: model.gif.maxEdgePx, fps: model.gif.fps, loop: true }
+        request.gif = { edge: model.gif.maxEdgePx, fps: model.gif.fps }
+      } else {
+        request.video = {
+          resolution: model.video.resolution,
+          quality: model.video.quality,
+          fps: model.video.fps
+        }
       }
       return request
     }
@@ -654,11 +1033,15 @@
     async function startExport({ submit } = {}) {
       if (typeof submit !== 'function') throw new TypeError('Trim controller requires a submit transport')
       if (!canExport()) {
-        const reason = !model.available
-          ? 'probe-failed'
-          : !model.metadata.durationMs
-            ? 'duration-unavailable'
-            : (model.format === 'gif' ? (gifBudget().code || 'invalid-range') : 'invalid-range')
+        const reason = model.projectId && model.segments.length === 0
+          ? 'empty-selection'
+          : !model.available
+            ? 'probe-failed'
+            : !model.metadata.durationMs
+              ? 'duration-unavailable'
+              : model.format === 'gif'
+                ? (gifBudget().code || 'invalid-range')
+                : (videoBudget().code || 'invalid-range')
         model.error = { code: reason }
         notify({ reason: 'export-rejected' })
         return { status: 'failed', code: reason }
@@ -669,9 +1052,13 @@
       model.phase = 'submitting'
       model.requestId = `${(model.projectId || model.sessionId).slice(0, 8)}-${Math.round(now())}-${Math.round(Math.random() * 1e6)}`
       model.frozen = {
-        range: { ...model.range },
+        segments: model.projectId
+          ? snapshotSegments()
+          : [{ startMs: model.range.startMs, endMs: model.range.endMs }],
         format: model.format,
-        gif: model.format === 'gif' ? { ...model.gif } : null
+        gif: model.format === 'gif' ? { ...model.gif } : null,
+        video: model.format === 'gif' ? null : { ...model.video },
+        keptMs: model.projectId ? keptMs() : Math.max(0, model.range.endMs - model.range.startMs)
       }
       notify({ reason: 'submitting' })
       let answer
@@ -774,6 +1161,8 @@
       // reads
       state,
       gifBudget,
+      videoBudget,
+      keptMs,
       formatClock,
       parseTimeInput,
       errorKey,
@@ -783,16 +1172,35 @@
       draftState,
       saveDraft,
       setAvailable,
-      // trim
+      // legacy single-range trim (session API; project delegates to outer boundaries)
       setStart,
       setEnd,
       resetRange,
+      // multi-segment edits + undo/redo (project mode)
+      splitAt,
+      deleteSegmentAt,
+      resetEdits,
+      moveBoundary,
+      moveJunction,
+      beginEdit,
+      commitEdit,
+      cancelEdit,
+      undoEdit,
+      redoEdit,
+      canUndo,
+      canRedo,
+      canSplitAt,
+      canDeleteAt,
       // format
       setFormat,
       setGifFps,
       setGifMaxEdge,
+      setVideoResolution,
+      setVideoQuality,
+      setVideoFps,
       // playback
       playRange,
+      startKeptPlayback,
       stopRangePlayback,
       reportTime,
       // export
@@ -808,7 +1216,9 @@
 
   return {
     ERROR_KEYS,
+    EXPORT_FORMATS,
     GIF_FRAME_RATES,
+    HISTORY_LIMIT,
     LOCALE_KEYS,
     LIMITS,
     TERMINAL_STATES,

@@ -91,14 +91,15 @@ function makeService(options = {}) {
 // ---------------------------------------------------------------------------
 
 test('module exposes the frozen kind/action vocabulary and plan §3.3 defaults', () => {
-  assert.deepEqual([...EXPORT_KINDS], ['png', 'pdf', 'xlsx', 'mp4', 'gif'])
+  assert.deepEqual([...EXPORT_KINDS], ['png', 'pdf', 'xlsx', 'mp4', 'gif', 'webm'])
   assert.deepEqual([...EXPORT_ACTIONS], ['open', 'copy-path', 'reveal'])
   assert.deepEqual({ ...EXPORT_EXTENSIONS }, {
     png: '.png',
     pdf: '.pdf',
     xlsx: '.xlsx',
     mp4: '.mp4',
-    gif: '.gif'
+    gif: '.gif',
+    webm: '.webm'
   })
   assert.equal(DEFAULT_MAX_ENTRIES, 50)
   assert.equal(DEFAULT_TTL_MS, 15 * 60 * 1000)

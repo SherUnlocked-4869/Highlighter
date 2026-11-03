@@ -269,3 +269,23 @@ test('the audio notice is stored as a key and rendered in the active language', 
   assert.match(broadcast[0], /setLanguage\(language\)\s*\n\s*applyTranslations\(\)\s*\n\s*setState\(state\)/)
   assert.match(recordScript, /function setState\(nextState\) \{[\s\S]*?renderStatus\(\)/)
 })
+
+// R4 (docs/plans/2026-11-03-recording-r4-contracts.md §2): window recording adds one workbench
+// channel, one source-lost push and a frame-less control-bar mode. These are wiring assertions
+// only - the behaviour lives in test/record-domain.test.js.
+test('window recording wires the recordable-window channel and the source-lost push', () => {
+  const workbenchIpc = fs.readFileSync(path.join(root, 'main', 'ipc', 'recording-workbench-ipc.js'), 'utf8')
+  const security = fs.readFileSync(path.join(root, 'main', 'services', 'ipc-security.js'), 'utf8')
+  const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
+  const recordDomain = fs.readFileSync(path.join(root, 'main/domains/record/index.js'), 'utf8')
+
+  assert.match(workbenchIpc, /ipcMain\.handle\('record:workbench-windows', controller\.workbenchWindows\)/)
+  assert.match(security, /'record:workbench-windows'/, 'the main role owns the window-list channel')
+  assert.match(preload, /ipcRenderer\.invoke\('record:workbench-windows'\)/)
+  assert.match(preload, /windowToken/, 'the preload echoes the opaque window token')
+  assert.match(recordDomain, /record:source-lost/)
+  assert.match(recordDomain, /annotation: false/)
+  assert.match(recordDomain, /describeWindowCaptureTarget/)
+  // The window source id must never be serialised into the init payload's legacy field.
+  assert.match(recordDomain, /sourceId: source \? source\.id : ''/)
+})

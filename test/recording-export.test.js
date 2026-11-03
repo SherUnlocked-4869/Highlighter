@@ -326,72 +326,104 @@ test('GIF budget enforces plan §3.3 and never upscales a small recording', () =
   assert.equal(computeGifDimensions({ width: 0, height: 0 }).code, 'invalid-source-size')
 })
 
-test('MP4 argv trims with a real filter graph and maps audio only when the source has it', () => {
+test('MP4 argv cuts every kept segment exactly, concatenates them and maps audio only when present', () => {
+  const video = { resolution: 'source', quality: 'standard', fps: 'source', width: 320, height: 240, fpsValue: 0, copy: false }
   const withAudio = buildExportArgs({
     inputPath: 'in.webm',
     outputPath: 'out.mp4',
     format: 'mp4',
-    range: { startMs: 500, endMs: 1500 },
+    segments: [{ startMs: 0, endMs: 600 }, { startMs: 1200, endMs: 1800 }],
+    totalDurationMs: 1200,
     hasAudio: true,
     sourceWidth: 320,
-    sourceHeight: 240
+    sourceHeight: 240,
+    video
   })
-  const withAudioArgs = withAudio.args
-  assert.ok(withAudioArgs.includes('-filter_complex'))
-  const graph = withAudioArgs[withAudioArgs.indexOf('-filter_complex') + 1]
-  assert.match(graph, /\[0:v\]trim=start=0\.500000:end=1\.500000,setpts=PTS-STARTPTS\[v\]/)
-  assert.match(graph, /\[0:a\]atrim=start=0\.500000:end=1\.500000,asetpts=PTS-STARTPTS\[a\]/)
-  assert.equal(withAudioArgs.includes('-c'), false, 'no stream copy: a non-keyframe cut must be decoded')
-  assert.equal(withAudioArgs[withAudioArgs.indexOf('-c:v') + 1], 'libx264')
-  assert.equal(withAudioArgs[withAudioArgs.indexOf('-map') + 1], '[v]')
-  assert.equal(withAudioArgs.filter((value) => value === '-map').length, 2, 'audio is mapped as well')
-  assert.match(graph, /\[0:a\]/, 'the audio is cut over the same source interval')
-  assert.deepEqual(withAudio.expected, { format: 'mp4', durationMs: 1000, width: 320, height: 240, hasAudio: true })
+  const args = withAudio.args
+  // One input per segment: input seek + duration, then the exact filter trim.
+  assert.equal(args.filter((value) => value === '-i').length, 2, 'one decoded input per kept segment')
+  assert.deepEqual(args.slice(0, 7), ['-hide_banner', '-nostdin', '-ss', '0.000000', '-t', '0.600000', '-i'])
+  const graph = args[args.indexOf('-filter_complex') + 1]
+  assert.match(graph, /\[0:v\]trim=start=0\.000000:end=0\.600000,setpts=PTS-STARTPTS\[v0\]/)
+  assert.match(graph, /\[1:v\]trim=start=1\.200000:end=1\.800000,setpts=PTS-STARTPTS\[v1\]/)
+  assert.match(graph, /\[0:a\]atrim=start=0\.000000:end=0\.600000,asetpts=PTS-STARTPTS,aresample=48000\[a0\]/)
+  assert.match(graph, /\[v0\]\[a0\]\[v1\]\[a1\]concat=n=2:v=1:a=1\[outv\]\[outa\]/, 'A/V stay aligned across the concat')
+  assert.equal(args.includes('-c'), false, 'no stream copy: a non-keyframe cut must be decoded')
+  assert.equal(args[args.indexOf('-c:v') + 1], 'libx264')
+  assert.equal(args[args.indexOf('-preset') + 1], 'veryfast')
+  assert.equal(args[args.indexOf('-pix_fmt') + 1], 'yuv420p')
+  assert.deepEqual(args.filter((value, index) => args[index - 1] === '-map'), ['[outv]', '[outa]'])
+  assert.deepEqual(withAudio.expected, { format: 'mp4', durationMs: 1200, width: 320, height: 240, hasAudio: true, fps: 0 })
 
-  const silent = buildExportArgs({
-    inputPath: 'in.webm',
-    outputPath: 'out.mp4',
-    format: 'mp4',
-    range: { startMs: 0, endMs: 1000 },
-    hasAudio: false,
-    sourceWidth: 320,
-    sourceHeight: 240
-  })
-  assert.ok(silent.args.includes('-an'), 'a silent recording must not gain an audio track')
-  assert.equal(silent.args.some((value) => value === '[a]'), false)
+  // Quality tiers map to the frozen CRF table (§4.3).
+  const base = {
+    inputPath: 'in.webm', outputPath: 'out.mp4', format: 'mp4',
+    segments: [{ startMs: 0, endMs: 1000 }], hasAudio: false, sourceWidth: 320, sourceHeight: 240
+  }
+  for (const pair of [['standard', '28'], ['high', '23'], ['ultra', '18']]) {
+    const built = buildExportArgs({ ...base, video: { ...video, quality: pair[0] } })
+    assert.equal(built.args[built.args.indexOf('-crf') + 1], pair[1], `mp4 ${pair[0]} CRF`)
+  }
+
+  // A silent single segment still uses the same concat graph (N=1 included) and gains no audio.
+  const silent = buildExportArgs(base)
+  const silentGraph = silent.args[silent.args.indexOf('-filter_complex') + 1]
+  assert.match(silentGraph, /concat=n=1:v=1:a=0\[outv\]/)
+  assert.ok(silent.args.includes('-an'))
+  assert.equal(silent.args.some((value) => value === '[outa]'), false)
   assert.equal(silent.args[0], '-hide_banner')
-  // No shell metacharacters, no user-supplied flags: the argv is a fixed whitelist.
-  assert.equal(silent.args.every((value) => typeof value === 'string'), true)
+
+  // Legacy `range` callers (the performance probe and R1-R3 tests) still get one segment.
+  const legacy = buildExportArgs({
+    inputPath: 'in.webm', outputPath: 'out.mp4', format: 'mp4',
+    range: { startMs: 500, endMs: 1500 }, hasAudio: false, sourceWidth: 320, sourceHeight: 240
+  })
+  assert.match(legacy.args[legacy.args.indexOf('-filter_complex') + 1], /trim=start=0\.500000:end=1\.500000/)
 })
 
-test('GIF argv generates and applies a palette in one bounded pass and drops audio', () => {
+test('GIF argv concatenates the kept segments then applies one palette pass and drops audio', () => {
   const { args, expected } = buildExportArgs({
     inputPath: 'in.webm',
     outputPath: 'out.gif',
     format: 'gif',
-    range: { startMs: 0, endMs: 2000 },
-    gif: { fps: 15, width: 320, height: 240, maxEdgePx: 1280, loop: true },
+    segments: [{ startMs: 0, endMs: 1000 }, { startMs: 1500, endMs: 2000 }],
+    totalDurationMs: 1500,
+    gif: { edge: 1280, fps: 15, width: 320, height: 240, maxEdgePx: 1280, loop: true },
     hasAudio: true
   })
   const graph = args[args.indexOf('-filter_complex') + 1]
+  assert.match(graph, /\[0:v\]trim=start=0\.000000:end=1\.000000/)
+  assert.match(graph, /\[1:v\]trim=start=1\.500000:end=2\.000000/)
+  assert.match(graph, /concat=n=2:v=1:a=0\[outv\]/)
+  assert.match(graph, /\[outv\]fps=15,scale=320:240:flags=lanczos,split\[gifA\]\[gifB\]/)
   assert.match(graph, /palettegen/)
   assert.match(graph, /paletteuse/)
-  assert.match(graph, /fps=15/)
-  assert.match(graph, /scale=320:240/)
-  assert.match(graph, /trim=start=0\.000000:end=2\.000000/)
   assert.equal(graph.includes('[0:a]'), false, 'GIF carries no audio')
-  assert.equal(args[args.indexOf('-an') + 1] === undefined || true, true)
   assert.ok(args.includes('-an'))
   assert.equal(args[args.indexOf('-loop') + 1], '0', 'GIF loops forever (plan §3.3)')
-  assert.deepEqual(expected, { format: 'gif', durationMs: 2000, width: 320, height: 240, hasAudio: false, fps: 15 })
-  assert.throws(() => buildExportArgs({ inputPath: 'a', outputPath: 'b', format: 'webp', range: { startMs: 0, endMs: 1 } }), /unsupported format/)
+  assert.deepEqual(expected, { format: 'gif', durationMs: 1500, width: 320, height: 240, hasAudio: false, fps: 15 })
+  assert.throws(() => buildExportArgs({ inputPath: 'a', outputPath: 'b', format: 'webp', segments: [{ startMs: 0, endMs: 1000 }] }), /unsupported format/)
 })
 
 test('request signature distinguishes parameters so a replay can be detected as a mismatch', () => {
-  const base = { format: 'mp4', range: { startMs: 0, endMs: 1000 } }
-  assert.equal(requestSignature(base), requestSignature({ ...base, range: { startMs: 0, endMs: 1000 } }))
-  assert.notEqual(requestSignature(base), requestSignature({ ...base, range: { startMs: 0, endMs: 1001 } }))
-  assert.notEqual(requestSignature(base), requestSignature({ ...base, format: 'gif', gif: { maxEdgePx: 1280, fps: 15 } }))
+  const base = {
+    format: 'mp4',
+    segments: [{ startMs: 0, endMs: 1000 }],
+    video: { resolution: 'source', quality: 'standard', fps: 'source' }
+  }
+  assert.equal(requestSignature(base), requestSignature({ ...base }))
+  assert.notEqual(requestSignature(base), requestSignature({ ...base, segments: [{ startMs: 0, endMs: 1001 }] }))
+  assert.notEqual(requestSignature(base), requestSignature({ ...base, segments: [{ startMs: 0, endMs: 900 }, { startMs: 950, endMs: 1000 }] }))
+  // R4 §4.4: the video options are part of the frozen request, so they must be in the key.
+  assert.notEqual(requestSignature(base), requestSignature({ ...base, video: { resolution: '720p', quality: 'standard', fps: 'source' } }))
+  assert.notEqual(requestSignature(base), requestSignature({ ...base, video: { resolution: 'source', quality: 'high', fps: 'source' } }))
+  assert.notEqual(requestSignature(base), requestSignature({ ...base, video: { resolution: 'source', quality: 'standard', fps: 30 } }))
+  assert.notEqual(requestSignature(base), requestSignature({ ...base, format: 'webm' }))
+  assert.notEqual(requestSignature(base), requestSignature({ ...base, format: 'gif', gif: { edge: 1280, fps: 15 } }))
+  // Legacy range callers keep a stable signature of their own.
+  const legacy = { format: 'mp4', range: { startMs: 0, endMs: 1000 } }
+  assert.equal(requestSignature(legacy), requestSignature({ format: 'mp4', range: { startMs: 0, endMs: 1000 } }))
+  assert.notEqual(requestSignature(legacy), requestSignature({ format: 'mp4', range: { startMs: 0, endMs: 1001 } }))
 })
 
 test('session and task transition tables refuse illegal edges', () => {
@@ -415,24 +447,45 @@ test('export request normalisation rejects a renderer-supplied path or a missing
     request: { format: 'mp4', range: { startMs: 1, endMs: 2 }, targetPath: 'C:/evil.mp4', argv: ['-i'] }
   })
   assert.equal(ok.ok, true)
-  assert.deepEqual(Object.keys(ok.value).sort(), ['format', 'gif', 'range', 'requestId', 'sessionId'].sort())
+  assert.deepEqual(Object.keys(ok.value).sort(), ['format', 'gif', 'range', 'requestId', 'segments', 'sessionId', 'video'].sort())
   assert.equal('targetPath' in ok.value, false, 'a renderer path must never survive normalisation')
+  const v2 = toExportRequest({
+    sessionId: 's',
+    requestId: 'r',
+    request: { format: 'webm', segments: [{ startMs: 0, endMs: 500 }], video: { resolution: '720p', quality: 'high', fps: 30 } }
+  })
+  assert.deepEqual(v2.value.segments, [{ startMs: 0, endMs: 500 }])
+  assert.deepEqual(v2.value.video, { resolution: '720p', quality: 'high', fps: 30 })
+  assert.equal(v2.value.range, null)
 })
 
-test('normalizeExportRequest combines range, format and GIF budget against probed metadata', () => {
+test('normalizeExportRequest combines the legacy range, format and GIF budget against probed metadata', () => {
   const metadata = { durationMs: 5000, video: { width: 320, height: 240, frameRate: 10 }, audio: { exists: true } }
   const mp4 = normalizeExportRequest({ format: 'mp4', range: { startMs: 0, endMs: 2000 } }, metadata)
   assert.equal(mp4.ok, true)
   assert.equal(mp4.value.hasAudio, true)
   assert.equal(mp4.value.gif, null)
+  assert.deepEqual(mp4.value.segments, [{ startMs: 0, endMs: 2000 }])
+  assert.equal(mp4.value.totalDurationMs, 2000)
+  assert.deepEqual(mp4.value.video, {
+    resolution: 'source', quality: 'standard', fps: 'source', width: 320, height: 240, fpsValue: 10, copy: false
+  })
+  assert.equal(mp4.value.sourceFrameRate, 10)
   const gif = normalizeExportRequest({ format: 'gif', range: { startMs: 0, endMs: 2000 }, gif: { fps: 10, maxEdgePx: 1280, loop: true } }, metadata)
   assert.equal(gif.ok, true)
   assert.equal(gif.value.hasAudio, false, 'GIF never carries audio')
   assert.equal(gif.value.gif.frames, 20)
+  // `edge`/`maxEdgePx` are the OUTPUT long edge: a 320px source is never upscaled to 1280.
+  assert.equal(gif.value.gif.edge, 320)
+  assert.equal(gif.value.video, null)
   assert.equal(normalizeExportRequest({ format: 'gif', range: { startMs: 0, endMs: 2000 }, gif: { fps: 10, loop: false } }, metadata).code, 'gif-loop-required')
   // Omitting `loop` is not a rejection: looping is the only supported GIF behaviour, so the
   // normaliser fills it in and the caller cannot accidentally produce a one-shot GIF.
   assert.equal(normalizeExportRequest({ format: 'gif', range: { startMs: 0, endMs: 2000 }, gif: { fps: 10 } }, metadata).ok, true)
+  // A full-range single selection is canonicalised so the empty-selection and range forms agree.
+  const whole = normalizeExportRequest({ format: 'webm', range: { startMs: 0, endMs: 5000 } }, metadata)
+  assert.deepEqual(whole.value.segments, [{ startMs: 0, endMs: 5000 }])
+  assert.equal(whole.value.video.copy, true, 'full-range source/source WebM is a stream copy')
 })
 
 // ---------------------------------------------------------------------------
@@ -1054,6 +1107,22 @@ test('the queue admits one encoder and two waiting tasks, and replays a matching
     sessionId: session.id, requestId: 'queue-1', request: { ...request, range: { startMs: 0, endMs: 600 } }, targetPath: scratch.pathFor('1.mp4')
   })
   assert.equal(mismatch.code, 'request-mismatch')
+  // R4 §4.4: segments AND video options are part of the request signature, so reusing a
+  // requestId with a different multi-segment selection or different video options is a mismatch.
+  const segmentsMismatch = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'queue-1',
+    request: { format: 'mp4', segments: [{ startMs: 0, endMs: 400 }, { startMs: 600, endMs: 900 }] },
+    targetPath: scratch.pathFor('1.mp4')
+  })
+  assert.equal(segmentsMismatch.code, 'request-mismatch')
+  const videoMismatch = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'queue-1',
+    request: { format: 'webm', segments: [{ startMs: 0, endMs: 400 }], video: { resolution: 'source', quality: 'high', fps: 'source' } },
+    targetPath: scratch.pathFor('1.webm')
+  })
+  assert.equal(videoMismatch.code, 'request-mismatch')
 
   const second = await exporter.submit({ sessionId: session.id, requestId: 'queue-2', request, targetPath: scratch.pathFor('2.mp4') })
   const third = await exporter.submit({ sessionId: session.id, requestId: 'queue-3', request, targetPath: scratch.pathFor('3.mp4') })
@@ -1361,11 +1430,14 @@ test('submitting freezes the controls and a lost receipt is recoverable by task 
   const frozen = trim.state()
   assert.equal(frozen.busy, true)
   assert.equal(frozen.canExport, false)
-  assert.deepEqual(frozen.frozen.range, { startMs: 1000, endMs: 4000 })
+  // R4: the frozen snapshot records the kept segments/format/video, not the legacy range.
+  assert.deepEqual(frozen.frozen.segments, [{ startMs: 1000, endMs: 4000 }])
+  assert.equal(frozen.frozen.format, 'mp4')
+  assert.equal(frozen.frozen.keptMs, 3000)
   // Moving a control during the encode does not change what was submitted.
   assert.equal(trim.setStart(5000), false)
   assert.equal(trim.setFormat('gif'), false)
-  assert.deepEqual(trim.state().frozen.range, { startMs: 1000, endMs: 4000 })
+  assert.equal(trim.state().frozen.keptMs, 3000)
 
   // The progress push advances the bar but never reports 100 before publish.
   trim.applyTask({ taskId: 'task-1', state: 'running', progress: 44 })
@@ -1456,21 +1528,253 @@ test('after a successful export the source and range are kept so the user can ex
   assert.equal(trim.state().receipt, null)
 })
 
-test('every export error code the UI can receive has a three-language message', () => {
+test('every export error code the UI can receive maps to a locale key that record.js defines', () => {
   // The service's frozen vocabulary and the controller's map must not drift: an unmapped code
-  // would surface as a raw token in the preview.
+  // would surface as a raw token in the preview. R4 added codes that the EDITOR maps in its own
+  // `recording.editor.error.*` namespace (W9 owns that table and its own completeness test), so
+  // this test checks the mapping for every code and the tables for the legacy record namespace.
   for (const code of EXPORT_ERROR_CODES) {
     const key = errorKey(code)
-    assert.match(key, /^record\.error\./, `${code} maps to a locale key`)
+    assert.equal(typeof key, 'string', `${code} maps to a locale key`)
+    assert.ok(key.length > 0, `${code} maps to a non-empty key`)
   }
   assert.equal(errorKey('something-new'), 'record.error.export-failed')
   globalThis.__LOCALES = {}
   require('../shared/locales/record.js')
   const tables = globalThis.__LOCALES
-  for (const language of ['zh-CN', 'en-US', 'zh-TW']) {
-    for (const key of LOCALE_KEYS) {
-      assert.equal(typeof tables[language][key], 'string', `${language} is missing ${key}`)
-      assert.notEqual(tables[language][key], '', `${language} has an empty ${key}`)
+  for (const code of EXPORT_ERROR_CODES) {
+    const key = errorKey(code)
+    if (!key.startsWith('record.error.')) continue
+    for (const language of ['zh-CN', 'en-US', 'zh-TW']) {
+      assert.equal(typeof tables[language][key], 'string', `${language} is missing ${key} (code ${code})`)
     }
   }
+  // The controller's full advertised key list (including the editor-only
+  // `recording.editor.*` table) is asserted by W9's own trim-controller test, which loads the
+  // editor locale too; this test keeps its R1-R3 responsibility: every code maps, and every
+  // legacy `record.error.*` code has its three-language message.
+})
+
+// ---------------------------------------------------------------------------
+// R4 export pipeline v2 with the REAL encoder (contract §4.3/§6)
+// ---------------------------------------------------------------------------
+
+test('a three-segment MP4 export concatenates the kept spans and verifies their sum', { skip: !ffmpegAvailable && 'ffmpeg-static is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const source = makeWebmSample(scratch.pathFor('source.webm'), { withAudio: true, seconds: 3, size: '320x240', rate: 10 })
+  const probe = createMediaProbe({ ffmpegPath })
+  const { recordingService, exporter, registrations } = makeExportHarness({ scratch, probe })
+  t.after(async () => { await exporter.dispose(); await recordingService.dispose() })
+
+  const session = await recordingService.startSession()
+  await recordingService.appendChunk(session.id, fs.readFileSync(source))
+  await recordingService.finishSession(session.id)
+  const probed = await recordingService.probeSession(session.id)
+  assert.equal(probed.ok, true)
+  const sourceFps = probed.metadata.video.frameRate
+  assert.equal(sourceFps, 10)
+
+  const segments = [{ startMs: 0, endMs: 600 }, { startMs: 1200, endMs: 1800 }, { startMs: 2400, endMs: 2900 }]
+  const total = 600 + 600 + 500
+  const target = scratch.pathFor('out/multi.mp4')
+  const submitted = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'multi-segment-mp4',
+    request: { format: 'mp4', segments, video: { resolution: 'source', quality: 'standard', fps: 'source' } },
+    targetPath: target,
+    ownerId: 'web-contents:r4'
+  })
+  assert.equal(submitted.ok, true, JSON.stringify(submitted))
+  const settled = await waitForTerminal(exporter, submitted.task.taskId, 120000, 'web-contents:r4')
+  assert.equal(settled.state, 'succeeded', JSON.stringify(settled.error || null))
+  assert.equal(settled.receipt.kind, 'mp4')
+  assert.equal(registrations.length, 1)
+
+  const published = await probe.probe(target)
+  assert.equal(published.ok, true)
+  assert.deepEqual([published.metadata.video.width, published.metadata.video.height], [320, 240])
+  assert.equal(published.metadata.audio.exists, true, 'the mixed audio track survives the concat')
+  assert.ok(
+    Math.abs(published.metadata.durationMs - total) <= durationToleranceMs(total, { segments: segments.length, sourceFps }),
+    `multi-segment duration ${published.metadata.durationMs} is within tolerance of ${total}`
+  )
+
+  // The legacy single-range form still works from the same session (R1-R3 compatibility).
+  const rangeTarget = scratch.pathFor('out/range.mp4')
+  const rangeTask = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'legacy-range-compat',
+    request: { format: 'mp4', range: { startMs: 1200, endMs: 1800 } },
+    targetPath: rangeTarget,
+    ownerId: 'web-contents:r4'
+  })
+  assert.equal(rangeTask.ok, true)
+  assert.equal((await waitForTerminal(exporter, rangeTask.task.taskId, 120000, 'web-contents:r4')).state, 'succeeded')
+  const rangeProbe = await probe.probe(rangeTarget)
+  assert.equal(rangeProbe.ok, true)
+  assert.ok(Math.abs(rangeProbe.metadata.durationMs - 600) <= durationToleranceMs(600, { segments: 1, sourceFps }))
+})
+
+test('a full-range WebM export is a stream copy while an edited WebM is re-encoded', { skip: !ffmpegAvailable && 'ffmpeg-static is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const source = makeWebmSample(scratch.pathFor('source.webm'), { withAudio: true, seconds: 3, size: '320x240', rate: 10 })
+  const probe = createMediaProbe({ ffmpegPath })
+  const sourceProbe = await probe.probe(source)
+  assert.equal(sourceProbe.ok, true)
+  const sourceCodec = sourceProbe.metadata.video.codec
+  assert.equal(sourceCodec, 'vp8', 'the fixture is VP8; the re-encode below must produce VP9')
+
+  const { recordingService, exporter, registrations } = makeExportHarness({ scratch, probe })
+  t.after(async () => { await exporter.dispose(); await recordingService.dispose() })
+  const session = await recordingService.startSession()
+  await recordingService.appendChunk(session.id, fs.readFileSync(source))
+  await recordingService.finishSession(session.id)
+  await recordingService.probeSession(session.id)
+
+  // No selected range + source resolution/fps => remux, no re-encode.
+  const copyTarget = scratch.pathFor('out/copy.webm')
+  const copyTask = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'webm-copy',
+    request: { format: 'webm' },
+    targetPath: copyTarget,
+    ownerId: 'web-contents:r4'
+  })
+  assert.equal(copyTask.ok, true, JSON.stringify(copyTask))
+  const copied = await waitForTerminal(exporter, copyTask.task.taskId, 120000, 'web-contents:r4')
+  assert.equal(copied.state, 'succeeded', JSON.stringify(copied.error || null))
+  assert.equal(copied.receipt.kind, 'webm')
+  const copyProbe = await probe.probe(copyTarget)
+  assert.equal(copyProbe.ok, true)
+  assert.equal(copyProbe.metadata.video.codec, sourceCodec, 'stream copy keeps the source codec (no re-encode)')
+  assert.deepEqual([copyProbe.metadata.video.width, copyProbe.metadata.video.height], [320, 240])
+  assert.equal(copyProbe.metadata.audio.exists, true)
+  assert.ok(Math.abs(copyProbe.metadata.durationMs - sourceProbe.metadata.durationMs) <= 250)
+
+  // A trimmed WebM must re-encode (VP9 + Opus) and honour the selection.
+  const trimmedTarget = scratch.pathFor('out/trimmed.webm')
+  const trimTask = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'webm-reencode',
+    request: { format: 'webm', segments: [{ startMs: 600, endMs: 1600 }], video: { resolution: 'source', quality: 'standard', fps: 'source' } },
+    targetPath: trimmedTarget,
+    ownerId: 'web-contents:r4'
+  })
+  assert.equal(trimTask.ok, true)
+  const trimmed = await waitForTerminal(exporter, trimTask.task.taskId, 120000, 'web-contents:r4')
+  assert.equal(trimmed.state, 'succeeded', JSON.stringify(trimmed.error || null))
+  const trimProbe = await probe.probe(trimmedTarget)
+  assert.equal(trimProbe.ok, true)
+  assert.equal(trimProbe.metadata.video.codec, 'vp9', 'an edited WebM is re-encoded with VP9')
+  assert.ok(Math.abs(trimProbe.metadata.durationMs - 1000) <= durationToleranceMs(1000, { segments: 1, sourceFps: 10 }))
+  assert.equal(trimProbe.metadata.audio.exists, true)
+  assert.equal(registrations.filter((entry) => entry.kind === 'webm').length, 2)
+})
+
+test('resolution presets downscale the real output and never upscale a small source', { skip: !ffmpegAvailable && 'ffmpeg-static is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const probe = createMediaProbe({ ffmpegPath })
+  const { recordingService, exporter } = makeExportHarness({ scratch, probe })
+  t.after(async () => { await exporter.dispose(); await recordingService.dispose() })
+
+  // 1280x720 source, 480p preset: long edge capped at 854 -> 854x480.
+  const medium = makeWebmSample(scratch.pathFor('medium.webm'), { withAudio: true, seconds: 2, size: '1280x720', rate: 30 })
+  const mediumSession = await recordingService.startSession()
+  await recordingService.appendChunk(mediumSession.id, fs.readFileSync(medium))
+  await recordingService.finishSession(mediumSession.id)
+  await recordingService.probeSession(mediumSession.id)
+  const downscaledTarget = scratch.pathFor('out/480p.mp4')
+  const downscaled = await exporter.submit({
+    sessionId: mediumSession.id,
+    requestId: 'downscale-480p',
+    request: { format: 'mp4', segments: [{ startMs: 300, endMs: 1300 }], video: { resolution: '480p', quality: 'high', fps: 30 } },
+    targetPath: downscaledTarget
+  })
+  assert.equal(downscaled.ok, true)
+  assert.equal((await waitForTerminal(exporter, downscaled.task.taskId)).state, 'succeeded')
+  const downscaledProbe = await probe.probe(downscaledTarget)
+  assert.equal(downscaledProbe.ok, true)
+  assert.deepEqual([downscaledProbe.metadata.video.width, downscaledProbe.metadata.video.height], [854, 480])
+
+  // 320x240 source, 720p preset: the capture is smaller than the cap, so it stays 320x240.
+  const small = makeWebmSample(scratch.pathFor('small.webm'), { withAudio: false, seconds: 2, size: '320x240', rate: 10 })
+  const smallSession = await recordingService.startSession()
+  await recordingService.appendChunk(smallSession.id, fs.readFileSync(small))
+  await recordingService.finishSession(smallSession.id)
+  await recordingService.probeSession(smallSession.id)
+  const noUpscaleTarget = scratch.pathFor('out/720p-small.mp4')
+  const noUpscale = await exporter.submit({
+    sessionId: smallSession.id,
+    requestId: 'never-upscale',
+    request: { format: 'mp4', segments: [{ startMs: 0, endMs: 1000 }], video: { resolution: '720p', quality: 'standard', fps: 'source' } },
+    targetPath: noUpscaleTarget
+  })
+  assert.equal(noUpscale.ok, true)
+  assert.equal((await waitForTerminal(exporter, noUpscale.task.taskId)).state, 'succeeded')
+  const noUpscaleProbe = await probe.probe(noUpscaleTarget)
+  assert.deepEqual([noUpscaleProbe.metadata.video.width, noUpscaleProbe.metadata.video.height], [320, 240])
+})
+
+test('frame-rate and quality tiers reach the real encoder', { skip: !ffmpegAvailable && 'ffmpeg-static is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const probe = createMediaProbe({ ffmpegPath })
+  const { recordingService, exporter } = makeExportHarness({ scratch, probe })
+  t.after(async () => { await exporter.dispose(); await recordingService.dispose() })
+
+  // 60fps source: 30fps is offered and reaches the encoder; 60fps on a 30fps source is refused.
+  const fast = makeWebmSample(scratch.pathFor('fast.webm'), { withAudio: false, seconds: 2, size: '640x360', rate: 60 })
+  const session = await recordingService.startSession()
+  await recordingService.appendChunk(session.id, fs.readFileSync(fast))
+  await recordingService.finishSession(session.id)
+  await recordingService.probeSession(session.id)
+
+  const fpsTarget = scratch.pathFor('out/fps30.mp4')
+  const fpsTask = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'fps-30-from-60',
+    request: { format: 'mp4', segments: [{ startMs: 0, endMs: 1000 }], video: { resolution: 'source', quality: 'standard', fps: 30 } },
+    targetPath: fpsTarget
+  })
+  assert.equal(fpsTask.ok, true, JSON.stringify(fpsTask))
+  assert.equal((await waitForTerminal(exporter, fpsTask.task.taskId)).state, 'succeeded')
+  const fpsProbe = await probe.probe(fpsTarget)
+  assert.equal(fpsProbe.ok, true)
+  assert.ok(fpsProbe.metadata.video.frameRate >= 29 && fpsProbe.metadata.video.frameRate <= 31,
+    `output frame rate ${fpsProbe.metadata.video.frameRate} should be 30`)
+
+  // Quality tiers: same content/selection, lower CRF must not produce a smaller file.
+  const sizes = {}
+  for (const quality of ['standard', 'ultra']) {
+    const target = scratch.pathFor(`out/quality-${quality}.mp4`)
+    const task = await exporter.submit({
+      sessionId: session.id,
+      requestId: `quality-${quality}`,
+      request: { format: 'mp4', segments: [{ startMs: 0, endMs: 800 }], video: { resolution: 'source', quality, fps: 'source' } },
+      targetPath: target
+    })
+    assert.equal(task.ok, true)
+    assert.equal((await waitForTerminal(exporter, task.task.taskId)).state, 'succeeded')
+    sizes[quality] = fs.statSync(target).size
+    assert.ok(sizes[quality] > 0)
+  }
+  assert.ok(sizes.ultra >= sizes.standard, `ultra (${sizes.ultra}) should not be smaller than standard (${sizes.standard})`)
+
+  // 60 > 30fps source: refused by the normaliser before any encode (contract §4.2).
+  const slow = makeWebmSample(scratch.pathFor('slow.webm'), { withAudio: false, seconds: 1, size: '320x240', rate: 30 })
+  const slowSession = await recordingService.startSession()
+  await recordingService.appendChunk(slowSession.id, fs.readFileSync(slow))
+  await recordingService.finishSession(slowSession.id)
+  await recordingService.probeSession(slowSession.id)
+  const rejected = await exporter.submit({
+    sessionId: slowSession.id,
+    requestId: 'fps-above-source',
+    request: { format: 'mp4', segments: [{ startMs: 0, endMs: 600 }], video: { fps: 60 } },
+    targetPath: scratch.pathFor('out/fps60.mp4')
+  })
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.code, 'fps-above-source')
 })

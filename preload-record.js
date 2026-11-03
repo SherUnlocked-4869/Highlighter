@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld('recordAPI', {
   // post-command echo main broadcasts so a lost command cannot leave the bar stale.
   getState: () => ipcRenderer.invoke('record:get-state', {}),
   onStateChanged: (callback) => subscribe('record:state-changed', callback),
+  // R4 window mode (contract §2.2): main polls the bound window source while the control
+  // bar is alive and pushes this once when it disappears (closed). Payload: { reason }.
+  onSourceLost: (callback) => subscribe('record:source-lost', callback),
   startSession: () => ipcRenderer.invoke('record:start-session'),
   // `sequence` starts at 1 and is strictly increasing; `bytes` is the Blob size the
   // ACK is checked against. Duplicate/old sequences are idempotent in the main process.

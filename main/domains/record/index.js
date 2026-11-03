@@ -16,7 +16,7 @@ const {
 } = require('../../../record/annotation-utils')
 const { normalizeQuality, normalizeCountdown } = require('../../../shared/recording-quality')
 
-const RECORD_MODES = Object.freeze(['display', 'region'])
+const RECORD_MODES = Object.freeze(['display', 'region', 'window'])
 const DEFAULT_RECORD_MODE = 'display'
 const DEFAULT_STATE = Object.freeze({ status: 'preparing', elapsedMs: 0, microphoneMuted: false, stateVersion: 0 })
 const ACTIVE_STATUSES = Object.freeze(['preparing', 'countdown', 'recording', 'paused', 'finalizing'])
@@ -28,6 +28,18 @@ const COMMAND_HISTORY_LIMIT = 64
 const EDITOR_WINDOW = Object.freeze({ width: 1120, height: 760, minWidth: 820, minHeight: 600 })
 const PROJECT_LIST_LIMIT_MAX = 100
 const TERMINAL_TASK_STATES = Object.freeze(['succeeded', 'failed', 'cancelled'])
+// R4 window recording (docs/plans/2026-11-03-recording-r4-contracts.md §2.1/§2.2). A window source is
+// only ever handed to the renderer as an opaque single-use token; the main process keeps the
+// mapping to the desktopCapturer source id, which never leaves this process.
+const WINDOW_MIN_SIZE_PX = 120
+const WINDOW_TOKEN_TTL_MS = 120 * 1000
+const WINDOW_TOKEN_LIMIT = 64
+const WINDOW_SOURCE_POLL_MS = 2000
+// Measurement box for a window source thumbnail. Window sources carry no size of their own, so the
+// frozen canvas size is measured from the thumbnail Electron returns for this box (a window larger
+// than the box is reported clamped; a window that cannot be measured reports 0 and the renderer
+// falls back to its own video settings, then to 1280x720 - contract §2.2).
+const WINDOW_MEASURE_BOX = Object.freeze({ width: 1920, height: 1080 })
 
 // Lazily-constructed handle for the R1 persistence service (main/services/recording-project-service.js,
 // owned by the W1 workstream). A ref, not an instance, because main.js is at a hard line ceiling and
@@ -90,7 +102,11 @@ function createRecordDomain(deps) {
     //   backdropColor         the opaque native colour of the editor window
     //   createRegionSelection the capture overlay the region workbench entry reuses
     //   positionAutomationWindow  automation windows are placed on the secondary display
-    getRecordingWorkbench = () => null
+    getRecordingWorkbench = () => null,
+    // R4 test seams (contract §2.2 source-lost polling): the production values are the constants
+    // above; a unit test injects short ones instead of patching global timers.
+    windowSourcePollMs = WINDOW_SOURCE_POLL_MS,
+    windowTokenTtlMs = WINDOW_TOKEN_TTL_MS
   } = deps
 
   let recordWindow = null
@@ -104,6 +120,14 @@ function createRecordDomain(deps) {
   // long a cancelled overlay can leak its config into an unrelated later capture.
   let pendingRegionCapture = null
   const REGION_PENDING_TTL_MS = 5 * 60 * 1000
+  // token -> { sourceId, title, appName, width, height, expiresAt, used }. The source id is the
+  // secret this registry protects: it never appears in a channel payload.
+  const windowSourceTokens = new Map()
+  // projectId -> probe metadata kept only in memory (frameRate / audio codec). The manifest keeps
+  // width/height/audio-tracks but no frame rate (R1 schema, unchanged in R4), so the editor gets the
+  // richer probe result while the recording is still in this process; after a restart the field is
+  // 0 and the editor offers only `source` (contract §5).
+  const probedMetadataByProject = new Map()
 
   let workbench = {}
   try {
@@ -294,7 +318,7 @@ function createRecordDomain(deps) {
     const sourcePath = await projectService.sourcePathOf(projectId)
     if (!sourcePath) return null
     const recordingService = getRecordingService()
-    const metadata = probeMetadataFromProject(project)
+    const metadata = probedMetadataByProject.get(projectId) || probeMetadataFromProject(project)
     let session = findSessionForProject(projectId)
     if (session && session.state === 'closing') {
       // A previous editor closed while an export still held its lease, so the service left this
@@ -533,6 +557,8 @@ function createRecordDomain(deps) {
     if (recordWindow === control) recordWindow = null
     if (recordFrameWindow === frame) recordFrameWindow = null
     if (control) refreshTray()
+    // R4 §2.2: the window-source watch must never outlive the control bar.
+    stopWindowSourceWatch(control)
     await abandonProjectCapture(control, 'closed').catch((error) => log('Recording project abandon failed:', error?.message))
     await cleanupRecordSession(control, service, allowBlockedCleanup).catch((error) => log('Recording cleanup failed:', error.message))
     restoreRecordFramePassthrough(frame)
@@ -718,6 +744,234 @@ function createRecordDomain(deps) {
     return { x, y: Math.max(minY, Math.min(maxY, Math.round(y))), width, height }
   }
 
+  // ---------------------------------------------------------------- window sources (R4 §2)
+
+  // The bottom-centre control bar of a window recording (contract §2.2). Window mode has no
+  // selection rectangle to hang the bar under, so it sits at the bottom edge of the cursor display
+  // with a 12px margin.
+  function getWindowControlBounds(workArea) {
+    const { width, height } = calculateRecordControlSize(workArea)
+    const maxX = workArea.x + workArea.width - width
+    const maxY = workArea.y + workArea.height - height
+    const x = Math.round(workArea.x + (workArea.width - width) / 2)
+    return {
+      x: Math.max(workArea.x, Math.min(maxX, x)),
+      y: Math.max(workArea.y, Math.min(maxY, workArea.y + workArea.height - height - 12)),
+      width,
+      height
+    }
+  }
+
+  function measureWindowPixels(source) {
+    try {
+      const thumbnail = source?.thumbnail
+      const size = thumbnail && typeof thumbnail.getSize === 'function' ? thumbnail.getSize() : null
+      return {
+        width: Math.max(0, Math.round(Number(size?.width) || 0)),
+        height: Math.max(0, Math.round(Number(size?.height) || 0))
+      }
+    } catch {
+      return { width: 0, height: 0 }
+    }
+  }
+
+  // The highlighter's own windows must never be offered as recording targets (a window recording its
+  // own workbench/editor is a feedback loop). Exact title match, as frozen in §2.1.
+  function ownWindowTitles() {
+    const titles = new Set()
+    try {
+      const all = typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : []
+      for (const win of Array.isArray(all) ? all : []) {
+        if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed())) continue
+        const title = typeof win.getTitle === 'function' ? win.getTitle() : ''
+        if (typeof title === 'string' && title.trim()) titles.add(title.trim())
+      }
+    } catch (error) {
+      log('Own window title enumeration failed:', error?.message || error)
+    }
+    return titles
+  }
+
+  function pruneWindowSourceTokens(now = Date.now()) {
+    for (const [token, entry] of windowSourceTokens) {
+      if (!entry || entry.expiresAt <= now) windowSourceTokens.delete(token)
+    }
+  }
+
+  // Window sources carry no size of their own; the thumbnail Electron returns for the measure box is
+  // the only measurement available (contract §2.1: "from the source thumbnail/info; 0 when it cannot
+  // be measured"). An empty thumbnail (minimized/uncapturable window) reports 0 rather than
+  // inventing a size.
+  async function enumerateWindowSources({ measure = true } = {}) {
+    if (!desktopCapturer || typeof desktopCapturer.getSources !== 'function') return null
+    try {
+      return await desktopCapturer.getSources({
+        types: ['window'],
+        thumbnailSize: measure
+          ? { width: WINDOW_MEASURE_BOX.width, height: WINDOW_MEASURE_BOX.height }
+          : { width: 0, height: 0 }
+      })
+    } catch (error) {
+      log('Window source enumeration failed:', error?.message || error)
+      return null
+    }
+  }
+
+  async function listRecordableWindows() {
+    const sources = await enumerateWindowSources()
+    if (!sources) return { ok: false, code: 'window-enumeration-failed' }
+    // Refresh semantics: a token from a previous list is superseded by the new list. Only expired
+    // entries are pruned otherwise, so dropping the unused ones here is what keeps the registry at
+    // the frozen 64-entry ceiling across repeated refreshes.
+    pruneWindowSourceTokens()
+    for (const [token, entry] of windowSourceTokens) {
+      if (!entry.used) windowSourceTokens.delete(token)
+    }
+    const ownTitles = ownWindowTitles()
+    const seenSources = new Set()
+    const windows = []
+    for (const source of Array.isArray(sources) ? sources : []) {
+      if (windows.length >= WINDOW_TOKEN_LIMIT) break
+      const sourceId = typeof source?.id === 'string' ? source.id : ''
+      const title = text(source?.name)
+      if (!sourceId || !title) continue
+      if (seenSources.has(sourceId)) continue
+      if (ownTitles.has(title)) continue
+      const pixels = measureWindowPixels(source)
+      // A measured window smaller than the frozen minimum is not a useful target. An UNMEASURED one
+      // (0x0) is kept: "measurement failed" is not "too small" (§2.1).
+      if (pixels.width > 0 && pixels.height > 0 && (pixels.width < WINDOW_MIN_SIZE_PX || pixels.height < WINDOW_MIN_SIZE_PX)) continue
+      seenSources.add(sourceId)
+      const token = crypto.randomUUID()
+      windowSourceTokens.set(token, {
+        sourceId,
+        title,
+        appName: text(source?.appName),
+        width: pixels.width,
+        height: pixels.height,
+        expiresAt: Date.now() + Math.max(1, Number(windowTokenTtlMs) || WINDOW_TOKEN_TTL_MS),
+        used: false
+      })
+      windows.push({
+        token,
+        title,
+        appName: text(source?.appName),
+        width: pixels.width,
+        height: pixels.height
+      })
+    }
+    return { ok: true, windows }
+  }
+
+  // Token -> live window source. The token is consumed BEFORE the recording window is created, but
+  // marked used only after the window exists (§2.1), so a failed start can be retried.
+  async function resolveWindowSource(windowToken) {
+    const token = text(windowToken)
+    if (!token) {
+      const error = new Error('Recording window token is required')
+      error.code = 'window-required'
+      throw error
+    }
+    pruneWindowSourceTokens()
+    const entry = windowSourceTokens.get(token)
+    if (!entry || entry.used) {
+      const error = new Error('Recording window source is unavailable')
+      error.code = 'window-unavailable'
+      throw error
+    }
+    const sources = await enumerateWindowSources()
+    if (!sources) {
+      const error = new Error('Recording window source enumeration failed')
+      error.code = 'window-unavailable'
+      throw error
+    }
+    const source = (Array.isArray(sources) ? sources : []).find((candidate) => typeof candidate?.id === 'string' && candidate.id === entry.sourceId)
+    if (!source) {
+      windowSourceTokens.delete(token)
+      const error = new Error('Recording window source is gone')
+      error.code = 'window-unavailable'
+      throw error
+    }
+    const pixels = measureWindowPixels(source)
+    const width = pixels.width || entry.width
+    const height = pixels.height || entry.height
+    if (width > 0 && height > 0 && (width < WINDOW_MIN_SIZE_PX || height < WINDOW_MIN_SIZE_PX)) {
+      windowSourceTokens.delete(token)
+      const error = new Error('Recording window is too small')
+      error.code = 'window-too-small'
+      throw error
+    }
+    return {
+      token,
+      source,
+      sourceId: entry.sourceId,
+      title: text(source?.name) || entry.title,
+      // Frozen output canvas size. 0x0 means "could not measure here": the renderer completes the
+      // frozen chain with `video.getSettings()`, then 1280x720 (§2.2).
+      pixelSize: { width, height }
+    }
+  }
+
+  function markWindowTokenUsed(token) {
+    const entry = windowSourceTokens.get(text(token))
+    if (entry) entry.used = true
+  }
+
+  function describeWindowCaptureTarget(binding) {
+    const width = Math.max(0, Math.round(Number(binding.pixelSize?.width) || 0))
+    const height = Math.max(0, Math.round(Number(binding.pixelSize?.height) || 0))
+    return {
+      mode: 'window',
+      // A window is not bound to a display; the control bar's display is reported separately in the
+      // init payload. The frozen manifest target keeps the window title as its display name (§2.2).
+      displayId: '',
+      displayName: binding.title,
+      boundsDip: { x: 0, y: 0, width, height },
+      pixelSize: { width, height },
+      scaleFactor: 1
+    }
+  }
+
+  // Contract §2.2 target-loss detection: while the window-mode control window is alive, re-enumerate
+  // window sources every 2s. A vanished bound source pushes `record:source-lost` exactly once and
+  // stops the watch; the renderer then finishes (recording/paused) or returns to ready.
+  function stopWindowSourceWatch(control) {
+    const timer = control?._recordSourceWatch
+    if (!timer) return false
+    clearInterval(timer)
+    control._recordSourceWatch = null
+    return true
+  }
+
+  function startWindowSourceWatch(control, binding) {
+    if (!control || !binding?.sourceId) return false
+    stopWindowSourceWatch(control)
+    const interval = Math.max(1, Number(windowSourcePollMs) || WINDOW_SOURCE_POLL_MS)
+    let inFlight = false
+    const timer = setInterval(async () => {
+      if (!control || (typeof control.isDestroyed === 'function' && control.isDestroyed())) {
+        stopWindowSourceWatch(control)
+        return
+      }
+      if (inFlight) return
+      inFlight = true
+      try {
+        const sources = await enumerateWindowSources({ measure: false })
+        if (!sources) return
+        const alive = (Array.isArray(sources) ? sources : []).some((source) => source?.id === binding.sourceId)
+        if (alive) return
+        stopWindowSourceWatch(control)
+        if (!control.isDestroyed()) control.webContents.send('record:source-lost', { reason: 'closed' })
+        log('Recording window source closed:', binding.title || binding.sourceId)
+      } finally {
+        inFlight = false
+      }
+    }, interval)
+    timer.unref?.()
+    control._recordSourceWatch = timer
+    return true
+  }
+
   // ---------------------------------------------------------------- control bar window
 
   async function createRecordWindow(options = {}) {
@@ -746,20 +1000,38 @@ function createRecordDomain(deps) {
       width: Math.round(Number(options.selectionBounds.width)),
       height: Math.round(Number(options.selectionBounds.height))
     }
-    const display = options.display || (requestedBounds
-      ? screen.getDisplayMatching(requestedBounds)
-      : resolveDisplay(options.displayId))
-    const selectionBounds = normalizeSelectionBounds(requestedBounds || display.bounds, display.bounds)
-    const source = await getDesktopSource(display)
-    const target = describeCaptureTarget(display, config.mode, selectionBounds)
-    const displayDescriptor = { id: String(display.id), name: target.displayName, ...describeDisplayForRegion(display) }
+    const windowMode = config.mode === 'window'
+    // R4 §2.2: resolve the opaque token BEFORE any window exists. A failure here is an error code
+    // the workbench surfaces (window-required / window-unavailable / window-too-small); the token is
+    // marked used only after the control window was created successfully.
+    const windowBinding = windowMode ? await resolveWindowSource(options.windowToken) : null
+    // Window mode has no selection rectangle and is not bound to a display: the control bar sits at
+    // the bottom of the display under the cursor and `selectionBounds` only feeds its positioning.
+    const display = windowMode
+      ? resolveDisplay(options.displayId)
+      : (options.display || (requestedBounds ? screen.getDisplayMatching(requestedBounds) : resolveDisplay(options.displayId)))
+    const selectionBounds = windowMode
+      ? {
+          x: Math.round(display.workArea.x),
+          y: Math.round(display.workArea.y),
+          width: Math.round(display.workArea.width),
+          height: Math.round(display.workArea.height)
+        }
+      : normalizeSelectionBounds(requestedBounds || display.bounds, display.bounds)
+    const source = windowMode ? null : await getDesktopSource(display)
+    const target = windowMode
+      ? describeWindowCaptureTarget(windowBinding)
+      : describeCaptureTarget(display, config.mode, selectionBounds)
+    const displayDescriptor = { id: String(display.id), name: displayNameOf(display), ...describeDisplayForRegion(display) }
     const frameRate = config.frameRate
-    const frameBounds = calculateFrameBounds(selectionBounds, 2)
-    const controlBounds = getRecordControlBounds(selectionBounds, display.workArea)
+    const frameBounds = windowMode ? null : calculateFrameBounds(selectionBounds, 2)
+    const controlBounds = windowMode ? getWindowControlBounds(display.workArea) : getRecordControlBounds(selectionBounds, display.workArea)
 
     const framePagePath = path.join(rootDirectory, 'record', 'frame.html')
     const controlPagePath = path.join(rootDirectory, 'record', 'record.html')
-    const frameWindow = createLocalWindow(framePagePath, {
+    // Window mode deliberately creates NO frame annotation window: a screen-space annotation layer
+    // over a window source would be misaligned the moment the window moves or scales (§2.2).
+    const frameWindow = windowMode ? null : createLocalWindow(framePagePath, {
       role: 'record-frame',
       ...frameBounds,
       show: false,
@@ -793,11 +1065,12 @@ function createRecordDomain(deps) {
     })
     recordFrameWindow = frameWindow
     recordWindow = controlWindow
-    frameWindow._recordOwner = controlWindow
+    if (frameWindow) frameWindow._recordOwner = controlWindow
     controlWindow._recordControlBounds = controlBounds
     controlWindow._recordFrameState = 'idle'
     controlWindow._recordAnnotationCommand = sanitizeAnnotationCommand({})
     controlWindow._recordMode = config.mode
+    controlWindow._recordWindowBinding = windowBinding
     controlWindow._recordProjectId = ''
     controlWindow._recordSessionId = ''
     controlWindow._recordState = { ...DEFAULT_STATE }
@@ -821,11 +1094,24 @@ function createRecordDomain(deps) {
       quality: config.quality,
       countdownSeconds: config.countdown,
       audio: { ...config.audio },
+      // R4 §2.2 window-mode increments: the renderer must not offer annotation (no frame layer) and
+      // freezes its output canvas to the measured window pixels.
+      ...(windowMode
+        ? {
+            annotation: false,
+            window: {
+              title: windowBinding.title,
+              pixelSize: { width: windowBinding.pixelSize.width, height: windowBinding.pixelSize.height }
+            }
+          }
+        : {}),
       // E2E-only synthetic capture source (contract §13.5). Only the main-process environment can
       // set this; no renderer-writable field can turn it on.
       fakeCapture: process.env.HIGHLIGHTER_E2E_FAKE_CAPTURE === '1',
-      // Legacy flat keys (P0-3-T2) kept so an older recorder build keeps working unchanged.
-      sourceId: source.id,
+      // Legacy flat keys (P0-3-T2) kept so an older recorder build keeps working unchanged. In
+      // window mode the desktop source id is intentionally absent: a window source id must never
+      // reach a renderer (§2.1), and the bound source is served by the display-media handler.
+      sourceId: source ? source.id : '',
       displayBounds: display.bounds,
       audioSystem: config.audio.system,
       audioMicrophone: config.audio.microphone,
@@ -834,10 +1120,10 @@ function createRecordDomain(deps) {
     }
 
     // P0-3-T2: the renderer acquires the desktop through getDisplayMedia, which Electron
-    // only grants from this handler. getDisplayMedia cannot pin a source by deviceId, so the
-    // display is selected here with the same pickDesktopSource the legacy path used; the
-    // system-audio track is offered only when the renderer actually asked for audio, which
-    // is what keeps the "system sound off" contract (settings-defaults.js:71) honest.
+    // only grants from this handler. Window mode serves the BOUND window source (§2.2); display and
+    // region mode keep pinning the display with pickDesktopSource. The system-audio track is offered
+    // only when the renderer actually asked for audio, which is what keeps the "system sound off"
+    // contract (settings-defaults.js:71) honest. System audio is the system MIX, also for windows.
     const recordSession = controlWindow.webContents.session
     recordSession.setDisplayMediaRequestHandler(async (request, callback) => {
       try {
@@ -845,11 +1131,16 @@ function createRecordDomain(deps) {
         // 任何渲染进程（含将来新增的窗口）调用 getDisplayMedia 都能拿到屏幕 + loopback 音频。
         if (request.frame && request.frame !== controlWindow.webContents.mainFrame) return callback({})
         if (!request.videoRequested) return callback({})
-        const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } })
-        const target = pickDesktopSource(sources, display.id)
-        if (!target) return callback({})
+        let video = null
+        if (windowMode) {
+          video = windowBinding.source
+        } else {
+          const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } })
+          video = pickDesktopSource(sources, display.id)
+        }
+        if (!video) return callback({})
         const audio = request.audioRequested && process.platform === 'win32' ? 'loopback' : undefined
-        callback(audio ? { video: target, audio } : { video: target })
+        callback(audio ? { video, audio } : { video })
       } catch (error) {
         log('Display media request failed:', error.message)
         callback({})
@@ -857,13 +1148,15 @@ function createRecordDomain(deps) {
     })
 
     for (const win of [frameWindow, controlWindow]) {
+      if (!win) continue
       win.setAlwaysOnTop(true, 'screen-saver')
       win.setContentProtection(true)
     }
-    restoreRecordFramePassthrough(frameWindow)
+    if (frameWindow) restoreRecordFramePassthrough(frameWindow)
     controlWindow.on('closed', () => {
       // 注销共享 session 上的 display-media handler：否则窗口关闭后它仍存活并指向旧 display。
       try { recordSession.setDisplayMediaRequestHandler(null) } catch (error) { log('Display media handler cleanup failed:', error.message) }
+      stopWindowSourceWatch(controlWindow)
       cleanupRecordSession(controlWindow).catch((error) => log('Recording cleanup failed:', error.message))
       abandonProjectCapture(controlWindow, 'closed').catch((error) => log('Recording project abandon failed:', error.message))
       if (recordWindow === controlWindow) recordWindow = null
@@ -873,16 +1166,30 @@ function createRecordDomain(deps) {
         if (!ownedFrame.isDestroyed()) ownedFrame.close()
       }
     })
-    frameWindow.on('closed', () => {
-      if (recordFrameWindow === frameWindow) recordFrameWindow = null
-    })
+    if (frameWindow) {
+      frameWindow.on('closed', () => {
+        if (recordFrameWindow === frameWindow) recordFrameWindow = null
+      })
+    }
     await Promise.all([
-      frameWindow.loadFile(framePagePath),
+      frameWindow ? frameWindow.loadFile(framePagePath) : Promise.resolve(),
       controlWindow.loadFile(controlPagePath)
     ])
-    frameWindow.showInactive()
+    if (frameWindow) frameWindow.showInactive()
     controlWindow.show()
-    log('Recording window created:', { mode: config.mode, displayId: target.displayId, frameRate, quality: config.quality, countdown: config.countdown })
+    if (windowMode) {
+      // The window source token is single-use from here on: the recording window exists (§2.1).
+      markWindowTokenUsed(windowBinding.token)
+      startWindowSourceWatch(controlWindow, windowBinding)
+    }
+    log('Recording window created:', {
+      mode: config.mode,
+      displayId: windowMode ? '' : target.displayId,
+      windowTitle: windowMode ? windowBinding.title : '',
+      frameRate,
+      quality: config.quality,
+      countdown: config.countdown
+    })
     return controlWindow
   }
 
@@ -971,7 +1278,15 @@ function createRecordDomain(deps) {
   }
 
   function exportExtension(format) {
-    return format === 'gif' ? 'gif' : 'mp4'
+    return format === 'gif' ? 'gif' : (format === 'webm' ? 'webm' : 'mp4')
+  }
+
+  // `defaultName` may or may not already carry an extension (the legacy channel passes a capture
+  // name, the editor passes the project's display name), so the suggested file always ends with the
+  // format's own extension instead of inheriting whatever the name happened to have.
+  function withExportExtension(name, extension) {
+    const stem = text(name).replace(/\.[^.]*$/, '') || 'Recording'
+    return `${stem}.${extension}`
   }
 
   // The save dialog is main-process owned (plan §8.3: "the renderer does not submit source or
@@ -985,11 +1300,15 @@ function createRecordDomain(deps) {
     if (alwaysOnTop) win.setAlwaysOnTop(false)
     try {
       result = await dialog.showSaveDialog(win, {
-        title: format === 'gif' ? '保存 GIF 录屏' : '保存 MP4 录屏',
-        defaultPath: path.join(directory, defaultName.replace(/\.[^.]*$/, `.${extension}`)),
+        // R4 §4.4: WebM joins the two legacy formats; its title/filter copy follows the same
+        // main-process dialog convention as the existing GIF/MP4 branches.
+        title: format === 'gif' ? '保存 GIF 录屏' : (format === 'webm' ? '保存 WebM 录屏' : '保存 MP4 录屏'),
+        defaultPath: path.join(directory, withExportExtension(defaultName, extension)),
         filters: format === 'gif'
           ? [{ name: 'GIF 动图', extensions: ['gif'] }]
-          : [{ name: 'MP4 视频', extensions: ['mp4'] }]
+          : (format === 'webm'
+            ? [{ name: 'WebM 视频', extensions: ['webm'] }]
+            : [{ name: 'MP4 视频', extensions: ['mp4'] }])
       })
     } finally {
       if (alwaysOnTop && !win.isDestroyed()) win.setAlwaysOnTop(true, 'screen-saver')
@@ -1045,14 +1364,25 @@ function createRecordDomain(deps) {
     const sourcePath = await service.sourcePathOf(project.id)
     if (!sourcePath) return null
     const media = project.media || {}
+    // R4 §6: the editor needs the source frame rate to offer fps options. The manifest does not keep
+    // it (R1 schema unchanged), so the in-process probe stash is the only source; 0 means unknown and
+    // the editor offers `source` only.
+    const probed = probedMetadataByProject.get(project.id) || null
     return {
       project: service.publicProject(project),
       // The ONLY path form a renderer may receive (contract §9.3): a derived file URL.
       sourceUrl: pathToFileURL(sourcePath).href,
       metadata: {
         durationMs: Math.max(0, Math.round(Number(media.durationMs) || 0)),
-        video: { width: Math.max(0, Math.round(Number(media.video?.width) || 0)), height: Math.max(0, Math.round(Number(media.video?.height) || 0)) },
-        audio: { tracks: Math.max(0, Math.round(Number(media.audio?.tracks) || 0)) }
+        video: {
+          width: Math.max(0, Math.round(Number(media.video?.width) || 0)),
+          height: Math.max(0, Math.round(Number(media.video?.height) || 0)),
+          frameRate: Math.max(0, Math.round(Number(probed?.video?.frameRate) || 0))
+        },
+        audio: {
+          tracks: Math.max(0, Math.round(Number(media.audio?.tracks) || 0)),
+          codec: text(media.audio?.codec) || text(probed?.audio?.codec)
+        }
       },
       recovery: {
         state: project.state === 'ready' ? 'ready' : 'recoverable',
@@ -1084,6 +1414,7 @@ function createRecordDomain(deps) {
       await service.markRecoverable(project.id, probed?.code || 'probe-failed').catch(() => {})
       return null
     }
+    if (probed.metadata) probedMetadataByProject.set(project.id, probed.metadata)
     const marked = await service.markReady(project.id, {
       fileName: project.source?.fileName || '',
       metadata: probed.metadata
@@ -1416,6 +1747,10 @@ function createRecordDomain(deps) {
           log('Recording probe threw:', error?.message || String(error))
         }
         if (!probed?.ok) log('record probe failed:', probed?.code || 'probe-failed')
+        // Keep the richer probe result (frameRate / audio codec) for this process: the R1 manifest
+        // stores only size/audio-track-count, and the editor needs the frame rate to offer the fps
+        // options (R4 §5). After a restart the field is 0 and only `source` is offered.
+        if (probed?.ok && probed.metadata) probedMetadataByProject.set(projectId, probed.metadata)
         const sealed = await projectService.sealProject(projectId, {
           metadata: probed?.ok ? probed.metadata : null,
           captureOutcome: captureOutcomeOf(win, probed?.ok ? probed.metadata : null)
@@ -1705,6 +2040,9 @@ function createRecordDomain(deps) {
           recent
         }
       },
+      // R4 §2.1: the recordable-window list. Tokens are opaque, single-use and short-lived; the
+      // desktopCapturer source id never appears in the payload.
+      workbenchWindows: async () => listRecordableWindows(),
       workbenchStart: async (_event, payload = {}) => {
         assertGameModeDisabled()
         assertManagedDataWritable()
@@ -1717,6 +2055,27 @@ function createRecordDomain(deps) {
         const config = payload && typeof payload === 'object' ? payload.config : null
         const mode = RECORD_MODES.includes(requestedMode) ? requestedMode : workbenchConfig().mode
         const payloadCapture = readCapturePayload(config)
+        if (mode === 'window') {
+          // R4 §2.1 start-time validation codes. A missing token is the workbench's own guard
+          // (the Start button is disabled), the other two come from the main-process registry.
+          const windowToken = text(payload?.windowToken)
+          if (!windowToken) return { ok: false, code: 'window-required' }
+          try {
+            await createRecordWindow({
+              mode: 'window',
+              windowToken,
+              displayId: text(payload?.displayId),
+              capture: payloadCapture
+            })
+          } catch (error) {
+            const code = error?.code === 'window-unavailable' || error?.code === 'window-too-small'
+              ? error.code
+              : 'start-failed'
+            log('Recording window start failed:', code, error?.message || error)
+            return { ok: false, code }
+          }
+          return { ok: true }
+        }
         if (mode === 'region') {
           const openSelection = workbench.createRegionSelection
           if (typeof openSelection !== 'function') return { ok: false, code: 'region-unavailable' }
@@ -1799,6 +2158,8 @@ function createRecordDomain(deps) {
           log('Recording project delete failed:', project.id, error?.message || error)
           return { ok: false, code: 'delete-failed' }
         })
+        // The in-process probe stash dies with the project (no manifest to describe any more).
+        if (deleted?.ok) probedMetadataByProject.delete(project.id)
         return deleted?.ok ? { ok: true } : { ok: false, code: deleted?.code || 'delete-failed' }
       },
       projectReveal: async (_event, { projectId } = {}) => {
@@ -1864,7 +2225,8 @@ function createRecordDomain(deps) {
         const requestId = text(payload.requestId).slice(0, 128)
         if (!requestId) return { status: 'failed', code: 'invalid-request' }
         const request = payload.request && typeof payload.request === 'object' && !Array.isArray(payload.request) ? payload.request : {}
-        const format = request.format === 'gif' ? 'gif' : (request.format === 'mp4' ? 'mp4' : '')
+        // R4 §4.1: WebM is the third export format; the editor no longer maps it to MP4.
+        const format = request.format === 'gif' ? 'gif' : (request.format === 'mp4' ? 'mp4' : (request.format === 'webm' ? 'webm' : ''))
         if (!format) return { status: 'failed', code: 'unsupported-format' }
         const service = projectServiceOrNull()
         if (!service) return { status: 'failed', code: 'project-service-unavailable' }
@@ -1891,10 +2253,19 @@ function createRecordDomain(deps) {
         if (!targetPath) return { status: 'cancelled' }
         assertManagedDataWritable()
         const editRevision = Math.max(1, Math.round(Number(project.edit?.revision) || 1))
+        // R4 §4.1/§5: forward the frozen request keys VERBATIM - the export service owns
+        // normalization and validation (`range` vs `segments` ambiguity, segment limits, resolution
+        // and fps rules). The domain only chooses the format and freezes the target, so dropping
+        // segments/video here would silently export the whole source at source quality.
+        const forwardedRequest = { format }
+        if (Array.isArray(request.segments)) forwardedRequest.segments = request.segments
+        if (request.range && typeof request.range === 'object' && !Array.isArray(request.range)) forwardedRequest.range = request.range
+        if (request.gif && typeof request.gif === 'object' && !Array.isArray(request.gif)) forwardedRequest.gif = request.gif
+        if (request.video && typeof request.video === 'object' && !Array.isArray(request.video)) forwardedRequest.video = request.video
         const submitted = await exportService.submit({
           sessionId: attached.session.id,
           requestId,
-          request: { format, range: request.range, gif: request.gif },
+          request: forwardedRequest,
           ownerId,
           targetPath,
           onEvent: (task) => {

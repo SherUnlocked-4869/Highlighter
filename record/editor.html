@@ -73,7 +73,8 @@
           </div>
           <div id="timeline" class="timeline" role="group" data-i18n-aria-label="recording.editor.timeline.track" aria-label="Trim timeline">
             <div id="timeline-track" class="timeline-track">
-              <div id="timeline-selection" class="timeline-selection"></div>
+              <div id="timeline-selection" class="timeline-selection" hidden></div>
+              <div id="timeline-segments" class="timeline-segments"></div>
               <div id="timeline-playhead" class="timeline-playhead"></div>
               <button id="handle-start" class="timeline-handle timeline-handle-start" type="button" role="slider" tabindex="0" data-i18n-aria-label="recording.editor.timeline.handle-start" aria-label="Start handle"></button>
               <button id="handle-end" class="timeline-handle timeline-handle-end" type="button" role="slider" tabindex="0" data-i18n-aria-label="recording.editor.timeline.handle-end" aria-label="End handle"></button>
@@ -88,8 +89,15 @@
               <span data-i18n="recording.editor.timeline.end">End time</span>
               <input id="range-end-input" class="time-input" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" value="00:00.0">
             </label>
-            <button id="play-range" class="action-button" type="button" data-i18n="recording.editor.timeline.play">Play selection</button>
-            <button id="reset-range" class="action-button" type="button" data-i18n="recording.editor.timeline.full-range">Full range</button>
+            <button id="play-range" class="action-button" type="button" data-i18n="recording.editor.timeline.play-kept">Play kept content</button>
+          </div>
+          <div class="timeline-ops">
+            <button id="split-at-playhead" class="action-button" type="button" data-testid="split-at-playhead" data-i18n="recording.editor.timeline.split">Split at playhead</button>
+            <button id="delete-segment" class="action-button" type="button" data-testid="delete-segment" data-i18n="recording.editor.timeline.delete-segment">Delete segment</button>
+            <button id="undo-edit" class="action-button" type="button" data-testid="undo-edit" data-i18n="recording.editor.timeline.undo">Undo</button>
+            <button id="redo-edit" class="action-button" type="button" data-testid="redo-edit" data-i18n="recording.editor.timeline.redo">Redo</button>
+            <button id="reset-edits" class="action-button" type="button" data-testid="reset-edits" data-i18n="recording.editor.timeline.reset">Full range</button>
+            <span id="empty-selection-hint" class="timeline-hint" data-i18n="recording.editor.timeline.empty" hidden>Everything was deleted; restore the full range to export.</span>
           </div>
         </section>
       </section>
@@ -102,8 +110,23 @@
             <select id="export-format" class="select">
               <option value="mp4" data-i18n="recording.editor.format.mp4">MP4 video</option>
               <option value="gif" data-i18n="recording.editor.format.gif">GIF animation</option>
+              <option value="webm" data-i18n="recording.editor.format.webm">WebM video</option>
             </select>
           </label>
+          <div class="video-fields">
+            <label class="field">
+              <span data-i18n="recording.editor.resolution">Resolution</span>
+              <select id="export-resolution" class="select"></select>
+            </label>
+            <label class="field">
+              <span data-i18n="recording.editor.quality">Quality</span>
+              <select id="export-quality" class="select"></select>
+            </label>
+            <label class="field">
+              <span data-i18n="recording.editor.fps">Frame rate</span>
+              <select id="export-fps" class="select"></select>
+            </label>
+          </div>
           <div class="gif-fields">
             <label class="field">
               <span data-i18n="recording.editor.gif-edge">GIF long edge</span>
@@ -126,14 +149,15 @@
           <p id="gif-budget" class="gif-meta"></p>
           <p class="gif-meta gif-note" data-i18n="recording.editor.gif-no-audio">GIF has no sound</p>
           <div class="size-row">
-            <span data-i18n="recording.editor.final-size">Output size</span>
-            <strong id="export-final-size"></strong>
+            <span data-i18n="recording.editor.output-size">Output size</span>
+            <strong id="export-output-size"></strong>
           </div>
           <p class="export-hint" data-i18n="recording.editor.hint">Export uses the current selection; the source is kept so you can export again.</p>
         </section>
 
         <section id="result-bar" class="result-bar" role="status" hidden>
           <span id="result-name" class="result-name"></span>
+          <span id="result-kind" class="result-kind" hidden></span>
           <div class="result-actions">
             <button id="result-open" type="button" data-i18n="capture.export-result.open">Open</button>
             <button id="result-address" type="button" data-i18n="capture.export-result.copy-path">Address</button>
@@ -150,8 +174,8 @@
   </div>
 
   <script src="../shared/recording-export-options.js"></script>
-  <script src="trim-controller.js"></script>
   <script src="editor-timeline.js"></script>
+  <script src="trim-controller.js"></script>
   <script src="editor.js"></script>
 </body>
 </html>

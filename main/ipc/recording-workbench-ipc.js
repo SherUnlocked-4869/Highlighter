@@ -24,6 +24,9 @@ function registerRecordingWorkbenchIpc({ ipcMain, controller }) {
   ipcMain.handle('record:workbench-state', controller.workbenchState)
   ipcMain.handle('record:workbench-start', controller.workbenchStart)
   ipcMain.handle('record:workbench-focus', controller.workbenchFocus)
+  // R4 (docs/plans/2026-11-03-recording-r4-contracts.md §2.1): the recordable-window list. The
+  // renderer only ever receives opaque single-use tokens, never a desktopCapturer source id.
+  ipcMain.handle('record:workbench-windows', controller.workbenchWindows)
   ipcMain.handle('record:project-list', controller.projectList)
   ipcMain.handle('record:project-open', controller.projectOpen)
   ipcMain.handle('record:project-rename', controller.projectRename)
