@@ -637,8 +637,11 @@ class RecordingExportService {
     try {
       current = await this.snapshotTarget(task.targetPath)
     } catch (error) {
-      this.fail(task, 'publish-failed', error?.message)
+      // Cleanup before the terminal report, exactly like the verify-failed branch in runTask():
+      // `fail` emits synchronously, so reporting first let an event handler (or a status poll)
+      // observe `failed` while our `.part` file and raster assets were still on disk.
       await this.cleanupTemp(task)
+      this.fail(task, 'publish-failed', error?.message)
       return
     }
     const frozen = task.targetSnapshot
@@ -646,8 +649,8 @@ class RecordingExportService {
       current.size === frozen.size &&
       current.mtimeMs === frozen.mtimeMs
     if (!unchanged) {
-      this.fail(task, 'target-changed', 'the target was modified while the export ran')
       await this.cleanupTemp(task)
+      this.fail(task, 'target-changed', 'the target was modified while the export ran')
       return
     }
     try {
@@ -655,16 +658,18 @@ class RecordingExportService {
       // a failure here must leave the previous file readable (plan §8.4).
       await this.fs.rename(task.tempPath, task.targetPath)
     } catch (error) {
-      this.fail(task, 'publish-failed', error?.message)
       await this.cleanupTemp(task)
+      this.fail(task, 'publish-failed', error?.message)
       return
     }
+    // A published export no longer needs its raster assets; the temp file itself was renamed.
+    // Removed BEFORE the success is announced, for the same reason the failure path waits: the
+    // state a caller observes must never imply files that are still on disk.
+    await this.cleanupDemoAssets(task)
     this.transition(task, 'succeed')
     task.progress = 100
     task.receipt = this.makeReceipt(task)
     this.emit(task)
-    // A published export no longer needs its raster assets; the temp file itself was renamed.
-    await this.cleanupDemoAssets(task)
   }
 
   // The plan §4.2 receipt, reused verbatim so the result bar and the tray work unchanged.
@@ -751,7 +756,24 @@ class RecordingExportService {
 
   // Only ever the task's own temp file. The target path is never touched by a cancel or a
   // failure (plan §8.4).
-  async cleanupTemp(task) {
+  //
+  // One deletion per task, shared by everyone who asks for it. A failed encode reaches this
+  // method twice: the settle handler removes the file so a stray `.part` never survives, then
+  // runTask's catch removes it again before it reports `failed`. The second call used to
+  // short-circuit on work the first had already claimed by nulling `task.demoAssets`, so it
+  // resolved while that first call was still deleting. `failed` was reported, an immediate
+  // directory listing found `.mask.png`/`.ripple.png` still on disk, and the same test passed
+  // on a fast disk and failed on the slower CI runner. Sharing the in-flight promise makes the
+  // caller that reports the terminal state wait for the files to actually go.
+  cleanupTemp(task) {
+    if (!task) return Promise.resolve(false)
+    if (!task.cleanupPromise) {
+      task.cleanupPromise = this.removeTempAndAssets(task).finally(() => { task.cleanupPromise = null })
+    }
+    return task.cleanupPromise
+  }
+
+  async removeTempAndAssets(task) {
     let removed = false
     if (task.tempPath) {
       try {
@@ -770,7 +792,6 @@ class RecordingExportService {
   async cleanupDemoAssets(task) {
     const assets = task?.demoAssets
     if (!assets) return false
-    task.demoAssets = null
     const targets = [assets.bgPath, assets.maskPath, assets.ripplePath].filter((target) => typeof target === 'string' && target)
     for (const target of targets) {
       try {
@@ -779,6 +800,9 @@ class RecordingExportService {
         this.log('Recording demo asset cleanup failed:', error?.message || error)
       }
     }
+    // Cleared only once the deletions have finished. Clearing it up-front is what let an
+    // overlapping cleanup see "nothing to do" and resolve while these files were still on disk.
+    if (task.demoAssets === assets) task.demoAssets = null
     return targets.length > 0
   }
 

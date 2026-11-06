@@ -2264,3 +2264,66 @@ test('the export service refuses an illegal demo payload and cleans demo assets 
   const leftovers = (await fsp.readdir(path.dirname(target))).filter((name) => name !== path.basename(target))
   assert.deepEqual(leftovers, [], 'demo raster assets must not survive a failed export')
 })
+
+// The test above was red on CI but green locally: both the encode-failure path in `encode()`
+// and the catch in `runTask()` clean the same task up, and the two cleanups used to race. The
+// first one to reach `cleanupDemoAssets` nulls `task.demoAssets`, so the second returned while
+// the first was still deleting: `failed` was reported, the caller listed the directory, and the
+// raster files were still there. Which of the two wins is a matter of threadpool timing, so the
+// leak only showed up on the slower runner.
+//
+// `fs.rm` here is SERIALISED and the raster deletions are slow, which makes that ordering
+// deterministic instead of a coin flip: the first cleanup always claims the assets, and the
+// second always overtakes its deletions. Nothing about wall-clock speed decides the outcome.
+test('a failed demo export reports `failed` only after its raster assets are gone', { skip: !sharpModule && 'sharp is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const { recordingService, session } = await seedSession(scratch)
+
+  const rasterRmDelays = []
+  let rmQueue = Promise.resolve()
+  const queuedFs = Object.create(fsp)
+  queuedFs.rm = (target, options) => {
+    const isRaster = /\.(bg|mask|ripple)\.png$/.test(String(target))
+    if (isRaster) rasterRmDelays.push(String(target))
+    const run = rmQueue.then(async () => {
+      if (isRaster) await new Promise((resolve) => setTimeout(resolve, 40))
+      return fsp.rm(target, options)
+    })
+    rmQueue = run.then(() => {}, () => {})
+    return run
+  }
+
+  const exporter = createRecordingExportService({
+    getRecordingService: () => recordingService,
+    probe: makeStubProbe({ video: { width: 640, height: 360, frameRate: 10 } }),
+    spawnProcess: makeFakeFfmpeg({ code: 1, bytes: 'partial' }).spawn,
+    fs: queuedFs,
+    log: () => {}
+  })
+  t.after(() => exporter.dispose())
+
+  const target = scratch.pathFor('out/demo-slow-cleanup.mp4')
+  const submitted = await exporter.submit({
+    sessionId: session.id,
+    requestId: 'demo-slow-cleanup',
+    request: {
+      format: 'mp4',
+      range: { startMs: 0, endMs: 400 },
+      demo: {
+        style: { enabled: true, background: '#f5f2ea', padding: 0.1, radius: 16, shadow: true, ripples: true },
+        zooms: [],
+        clicks: [{ tMs: 100, x: 0.5, y: 0.5, button: 0 }]
+      }
+    },
+    targetPath: target
+  })
+  assert.equal(submitted.ok, true, JSON.stringify(submitted))
+  const settled = await waitForTerminal(exporter, submitted.task.taskId)
+  assert.equal(settled.state, 'failed')
+  assert.equal(settled.error.code, 'encode-failed')
+  // Terminal state is readable, and the raster assets it implies are gone in the same breath.
+  assert.deepEqual(rasterRmDelays.length > 0, true, 'the demo plan really did produce raster assets')
+  const leftovers = (await fsp.readdir(path.dirname(target))).filter((name) => name !== path.basename(target))
+  assert.deepEqual(leftovers, [], 'the failed state must not be observable while raster cleanup is in flight')
+})
