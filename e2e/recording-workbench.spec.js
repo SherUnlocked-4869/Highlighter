@@ -509,18 +509,40 @@ test.describe('recording workbench', () => {
       expect(Math.abs(webm.durationMs - keptMs)).toBeLessThan(800)
       await editor.locator('#result-dismiss').click()
 
-      // ---- Full-range MP4 downscaled to the 720p long-edge preset ----
+      // ---- Full-range MP4 downscaled to the largest preset the source allows ----
+      // Which presets exist is source-dependent by design: `availableResolutions` hides every
+      // cap above the capture's long edge so a preset can never upscale. The synthetic capture
+      // is the display's pixel size, so a 1024x768 CI runner offers only 480p while a 2240x1400
+      // dev display offers all three. Hard-coding '720p' therefore asserted the developer's
+      // screen rather than the product, and failed on the runner with "did not find some
+      // options". Take the largest preset actually on offer and derive the expected frame from
+      // the observed source size.
       await editor.locator('#reset-edits').click()
       await editor.locator('#export-format').selectOption('mp4')
-      await editor.locator('#export-resolution').selectOption('720p')
+      const offered = await editor.locator('#export-resolution option')
+        .evaluateAll((nodes) => nodes.map((node) => node.value))
+      // The R4 long-edge caps (contract §5), kept literal here so a product change is caught
+      // instead of silently followed.
+      const PRESET_CAPS = { '1080p': 1920, '720p': 1280, '480p': 854 }
+      const preset = offered.find((value) => value !== 'source')
+      expect(preset, `no downscale preset offered for ${webm.width}x${webm.height}: ${JSON.stringify(offered)}`).toBeTruthy()
+      const cap = PRESET_CAPS[preset]
+      const sourceLongEdge = Math.max(webm.width, webm.height)
+      // The preset is only offered because it does not exceed the source: it downscales.
+      expect(cap).toBeLessThanOrEqual(sourceLongEdge)
+      await editor.locator('#export-resolution').selectOption(preset)
       await editor.locator('#export-quality').selectOption('high')
       await editor.locator('#export-button').click()
       await editor.locator('#result-bar').waitFor({ state: 'visible', timeout: 150_000 })
       expect(fs.existsSync(scaledMp4)).toBe(true)
       const mp4 = probeVideo(scaledMp4)
-      // 2240x1400 source, 720p long-edge cap 1280 -> 1280x800 (even dimensions, never upscaled).
-      expect(mp4.width).toBe(1280)
-      expect(mp4.height).toBe(800)
+      // The long edge lands exactly on the preset cap, the aspect is kept and both dimensions
+      // stay even - a real downscale of the source we actually recorded, never an upscale.
+      expect(Math.max(mp4.width, mp4.height)).toBe(cap)
+      expect(Math.max(mp4.width, mp4.height)).toBeLessThanOrEqual(sourceLongEdge)
+      expect(mp4.width % 2).toBe(0)
+      expect(mp4.height % 2).toBe(0)
+      expect(mp4.width / mp4.height).toBeCloseTo(webm.width / webm.height, 1)
       expect(Math.abs(mp4.durationMs - sourceDurationMs)).toBeLessThan(1200)
       await testInfo.attach('multi-segment-editor.png', { body: await editor.screenshot(), contentType: 'image/png' })
 
