@@ -30,38 +30,26 @@ const AUDIT_LEVELS = ['info', 'low', 'moderate', 'high', 'critical']
 // mitigation that needs 43.8.1). The gate started failing on a brand new
 // advisory (GHSA-fw47-9c62-h3vw) rather than on the pin drifting, so the fix
 // was the upgrade the plan already scheduled, not another exemption.
-const REVIEW_BY = '2026-11-30'
+//
+// 2026-11-06: the list is EMPTY, and that is the intended steady state. Two new
+// moderate advisories (glob GHSA-3g3m-2fjr-6pw4, vulnerable 9.0.0-14.0.1;
+// minimatch GHSA-g3hv-75wg-m249, vulnerable 7.0.0-<11.0.1) plus the stale
+// http-cache-semantics row turned the gate red on 5 consecutive runs, which in
+// turn skipped every test step behind it. Fixed upstream-style instead of by
+// exemption, following the electron precedent above:
+//   * `overrides.minimatch = ^11.0.1` - the offenders were the dev toolchain
+//     (app-builder-lib, dir-compare, test-exclude); npm's nested override did
+//     not take on dir-compare's copy, so the override is global. glob 7.2.3
+//     (the copy @electron/asar and rimraf use) keeps working: it calls
+//     minimatch's function and Minimatch-class API, which v11 still exports.
+//   * `overrides["test-exclude"].glob = ^14.0.2` - c8's coverage glob was the
+//     only glob node inside the vulnerable range (glob 7.2.3 is below 9.0.0).
+//   * `sharp 0.35.4 -> 0.35.5` - the patch the old sharp entry was waiting for.
+// That also pulled brace-expansion 1.1.18 -> 5.0.12, which cleared the three
+// brace-expansion advisories, so their rows are gone too. Re-add a row (with a
+// reason and a review date) only for a finding that cannot be upgraded away.
+const ALLOWLIST = new Map([])
 
-const BUILD_CHAIN_BRACE_EXPANSION =
-  'Build/test toolchain only (electron-builder -> app-builder-lib -> @electron/asar, glob, temp, test-exclude); the DoS needs an attacker-controlled glob pattern, and every pattern expanded here is ours. Refresh the transitive minimatch line to brace-expansion 1.1.21+ / 2.1.7+ / 5.0.12+.'
-const BUILD_CHAIN_UNDICI =
-  'Install/build only: node_modules/electron -> @electron/get, and node-gyp through @electron/rebuild. Dev dependencies are excluded from the packaged app, so no shipped code path reaches it. Refresh to undici 7.29.1+ (or 6.29.0+ on the 6.x line).'
-
-const ALLOWLIST = new Map([
-  // brace-expansion: 6 findings, 3 advisories, all on the build/test toolchain.
-  ['brace-expansion|https://github.com/advisories/GHSA-6j4f-fj2g-mc7p', { reason: BUILD_CHAIN_BRACE_EXPANSION, reviewBy: REVIEW_BY }],
-  ['brace-expansion|https://github.com/advisories/GHSA-qhr7-859c-m2p7', { reason: BUILD_CHAIN_BRACE_EXPANSION, reviewBy: REVIEW_BY }],
-  ['brace-expansion|https://github.com/advisories/GHSA-q2hr-2g5m-vwhr', { reason: BUILD_CHAIN_BRACE_EXPANSION, reviewBy: REVIEW_BY }],
-  // electron: no entries. The 43.2.0 pin carried five 43.x advisories
-  // (sandbox escape, webview worker Node integration, protocol cross-origin
-  // reads, preload code-cache poisoning, HID/USB origin attribution); 43.8.3
-  // clears all of them, so nothing about the shell is exempted any more.
-  // fast-uri: entry dropped 2026-10-24. package.json now pins fast-uri 3.1.9 via
-  // overrides, which is the version the advisory itself names as the fix, so npm
-  // stopped reporting it and the allowance became a stale row that failed the
-  // gate. Re-add only if a new advisory is reported for 3.1.9+.
-  // http-cache-semantics: build-only download path.
-  ['http-cache-semantics|https://github.com/advisories/GHSA-ch52-4w7c-c8xp', { reason: 'Build only: electron-builder -> @electron/get -> got -> cacheable-request, used to download Electron binaries. The app runs no shared HTTP cache, so cross-user cache disclosure has no path.', reviewBy: REVIEW_BY }],
-  // sharp: Windows-only app, and SVG is never decoded.
-  ['sharp|https://github.com/advisories/GHSA-wq5f-xc86-pv6w', { reason: 'The advisory is a librsvg use-after-free that can reach RCE on glibc/Linux when decoding SVG. This app is Windows-only and only feeds PNG/JPEG to sharp for thumbnails. Upgrade to 0.35.5 is planned.', reviewBy: REVIEW_BY }],
-  // sprintf-js: dropped from this list 2026-10-23. npm stopped reporting
-  // GHSA-hp3w-g68c-fv3c for this tree, so the entry became a stale allowlist row
-  // and failed the gate itself. Re-add only if the advisory is reported again.
-  // undici: entries dropped 2026-10-24. package.json pins undici 7.30.1 via
-  // overrides (node-gyp and @electron/get both resolve to it), clearing all eight
-  // advisories, so the allowances became stale rows that failed the gate. Re-add
-  // only if a new advisory is reported for 7.30.1+.
-])
 
 function severityRank(value) {
   const index = AUDIT_LEVELS.indexOf(String(value || '').toLowerCase())

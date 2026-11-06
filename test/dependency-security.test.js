@@ -36,6 +36,20 @@ function assertMinimumVersion(name, minimum) {
   }
 }
 
+// Some advisories only cover part of a package's history: glob's AbortSignal
+// advisory starts at 9.0.0, so the 7.2.3 copy @electron/asar and rimraf use is
+// NOT affected even though it is the oldest one in the tree. A minimum-version
+// floor cannot express "below 9 is fine, 9..14.0.1 is not", so these advisories
+// assert the vulnerable window is empty instead. Both windows are cleared by the
+// overrides/minimatch + overrides/test-exclude.glob entries in package.json; if
+// someone drops those overrides, this fails as a plain unit test rather than
+// only at the audit step.
+function versionsInRange(name, lowInclusive, highInclusive) {
+  return resolvedVersions(name).filter((version) => (
+    compareVersions(version, lowInclusive) >= 0 && compareVersions(version, highInclusive) <= 0
+  )).map((version) => `${name}@${version}`)
+}
+
 test('dependency audit is a required CI and release gate', () => {
   assert.equal(packageJson.scripts['audit:dependencies'], 'node scripts/audit-dependencies.js')
   const ci = fs.readFileSync(path.join(root, '.github', 'workflows', 'windows-ci.yml'), 'utf8')
@@ -75,14 +89,23 @@ test('dependency audit allowlist is explicit, reasoned, and time-boxed', () => {
 })
 
 test('native runtime and build dependencies stay on audited versions', () => {
-  // 0.35.4 patches the libheif advisories (GHSA-rgj7-g3m4-5g8c) that fail the
-  // moderate audit gate; it is a patch bump inside the previous ^0.35.3 range.
-  assert.equal(packageJson.dependencies.sharp, '0.35.4')
+  // 0.35.5 is the patch GHSA-wq5f-xc86-pv6w names (librsvg use-after-free when
+  // decoding SVG); 0.35.4 cleared the earlier libheif advisories
+  // (GHSA-rgj7-g3m4-5g8c). Both are patch bumps inside the ^0.35 range.
+  assert.equal(packageJson.dependencies.sharp, '0.35.5')
   assert.equal(packageJson.devDependencies['@electron/rebuild'], '4.2.0')
   assert.equal(packageJson.devDependencies['onnxruntime-node'], '1.27.0')
   // 0.6.1 is the first version outside both adm-zip advisory ranges
   // (GHSA-vwc7-r8mq-g2x9 <=0.6.0 and GHSA-7q85-xj36-vmfc <0.6.1).
   assert.equal(packageJson.overrides['onnxruntime-node']['adm-zip'], '0.6.1')
+
+  // The two 2026-10-30 moderates that turned CI red for five runs. Their windows
+  // are cast in versionsInRange() rather than as minimums because the packages
+  // are also present at versions old enough to predate the advisory.
+  assert.deepEqual(versionsInRange('glob', '9.0.0', '14.0.1'), [], 'glob GHSA-3g3m-2fjr-6pw4 window must stay empty')
+  assert.deepEqual(versionsInRange('minimatch', '7.0.0', '11.0.0'), [], 'minimatch GHSA-g3hv-75wg-m249 window (< 11.0.1) must stay empty')
+  assert.equal(packageJson.overrides.minimatch, '^11.0.1')
+  assert.equal(packageJson.overrides['test-exclude'].glob, '^14.0.2')
 
   assertMinimumVersion('adm-zip', '0.6.1')
   assertMinimumVersion('brace-expansion', '1.1.18')

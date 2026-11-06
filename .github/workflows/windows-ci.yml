@@ -30,9 +30,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit production and build dependencies
-        run: npm run audit:dependencies
-
       - name: Check JavaScript syntax
         run: npm run check
 
@@ -50,6 +47,13 @@ jobs:
 
       - name: Run long capture regression tests
         run: npm run test:long-capture
+
+      # Deliberately last: a dependency advisory must not mask test results. Five
+      # consecutive runs (2026-11-03 .. 2026-11-06) failed here first and skipped
+      # every test step behind it, so CI stayed red for days without anyone
+      # learning whether the tests still passed.
+      - name: Audit production and build dependencies
+        run: npm run audit:dependencies
 
   package:
     name: Build hardened unsigned candidate

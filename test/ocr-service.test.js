@@ -59,6 +59,21 @@ function createService(idleTimeoutMs = 10) {
   })
 }
 
+// "The timer fired" is the behaviour under test; "it fired inside a fixed sleep"
+// is not. A 10 ms idle timer needs a 40 ms budget at rest, but a loaded full-suite
+// run (and the 2-core CI runner) can starve that process past the budget while the
+// timer is still pending, which turned this into a load-dependent failure. Poll
+// with a generous deadline instead, then assert the exact count so the assertion
+// itself has not been loosened.
+async function waitFor(predicate, timeoutMs = 2000, stepMs = 5) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return true
+    await delay(stepMs)
+  }
+  return predicate()
+}
+
 test('stops the OCR sidecar after the idle timeout', async () => {
   const service = createService()
   let stopCount = 0
@@ -106,9 +121,9 @@ test('a hot start that never recognizes still arms the idle stop', async () => {
 
   await service.ensureStarted()
   assert.equal(stopCount, 0, 'the service is warm until the idle timeout elapses')
-  await delay(40)
-
-  assert.equal(stopCount, 1, 'hot-start-only path is now reclaimed')
+  assert.ok(await waitFor(() => stopCount > 0), 'hot-start-only path is now reclaimed')
+  await delay(5)
+  assert.equal(stopCount, 1, 'the reclaimed sidecar is stopped exactly once')
 })
 
 test('a busy idle timer re-arms instead of losing the sidecar', async () => {
