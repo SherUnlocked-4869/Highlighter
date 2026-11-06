@@ -88,6 +88,39 @@ test('formatSharePct clamps to 0..100 and trims trailing zeros', () => {
   assert.equal(format.formatSharePct(12.345, 9), '12.3%')
 })
 
+test('cacheHitRate is the cached share of every prompt token', () => {
+  // Codex / DeepSeek-Harness shape: no cache writes, so the denominator is the
+  // visible 输入 + 缓存读 pair.
+  assert.equal(format.cacheHitRate({ input_tokens: 100, cached_input_tokens: 300 }), 75)
+  assert.equal(format.cacheHitRate({ input_tokens: 0, cached_input_tokens: 300 }), 100)
+  assert.equal(format.cacheHitRate({ input_tokens: 300, cached_input_tokens: 0 }), 0)
+  // A cache write is a prompt token that missed: without it in the denominator a
+  // first turn that only wrote the cache would score a perfect hit rate.
+  assert.equal(format.cacheHitRate({ input_tokens: 100, cached_input_tokens: 100, cache_creation_input_tokens: 200 }), 25)
+  // A day that sent no prompt at all has no rate to report (the table renders
+  // "—" instead of a fabricated 0%).
+  assert.equal(format.cacheHitRate({ input_tokens: 0, cached_input_tokens: 0, cache_creation_input_tokens: 0 }), null)
+  assert.equal(format.cacheHitRate({ output_tokens: 900, conversation_count: 3 }), null)
+  // Corrupt rows and non-rows behave like an empty day, never NaN.
+  for (const value of [undefined, null, 'abc', 42, []]) {
+    assert.equal(format.cacheHitRate(value), null, `cacheHitRate ${String(value)}`)
+  }
+  assert.equal(format.cacheHitRate({ input_tokens: -5, cached_input_tokens: 50 }), 100)
+})
+
+test('promptTokens is the denominator the hit rate divides by', () => {
+  // Same three columns as cacheHitRate, so the table's title and its percentage
+  // can never disagree about what "prompt tokens" means.
+  assert.equal(format.promptTokens({ input_tokens: 100, cached_input_tokens: 300 }), 400)
+  assert.equal(format.promptTokens({ input_tokens: 100, cached_input_tokens: 100, cache_creation_input_tokens: 200 }), 400)
+  assert.equal(format.promptTokens({ output_tokens: 900 }), 0)
+  // Negative / non-finite columns cannot shrink the denominator below what is real.
+  assert.equal(format.promptTokens({ input_tokens: -100, cached_input_tokens: 50, cache_creation_input_tokens: NaN }), 50)
+  for (const value of [undefined, null, 'abc', 42]) {
+    assert.equal(format.promptTokens(value), 0, `promptTokens ${String(value)}`)
+  }
+})
+
 test('formatRangeLabel renders the inclusive day range', () => {
   assert.equal(format.formatRangeLabel('month', '2026-10-01', '2026-10-21'), '2026-10-01 – 2026-10-21')
   assert.equal(format.formatRangeLabel('total', '2024-10-22', '2026-10-21'), '2024-10-22 – 2026-10-21')
@@ -380,6 +413,7 @@ test('the UMD surface exposes exactly the helpers the page uses', () => {
     'CUSTOM_RANGE_MAX_SPAN_DAYS',
     'addDays',
     'bucketRowsByMonth',
+    'cacheHitRate',
     'formatCompactToken',
     'formatFullToken',
     'formatRangeLabel',
@@ -391,6 +425,7 @@ test('the UMD surface exposes exactly the helpers the page uses', () => {
     'isChineseLanguage',
     'layoutHeatmapWeeks',
     'projectModelShareRows',
+    'promptTokens',
     'summarizeTrendRows',
     'toDayKey',
     'validateCustomRange'

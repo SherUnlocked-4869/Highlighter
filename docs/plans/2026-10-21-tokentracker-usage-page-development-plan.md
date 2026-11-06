@@ -162,7 +162,7 @@
 4. **总览大字**：区间内 `billable_total_tokens` 大字 + 全量 tooltip + 区间说明 + 来源分段占比条。
 5. **来源/模型占比**：来源卡网格（全部 + 各 CLI + 模型数）+ 模型 Top N 细条列表。
 6. **近 30 天趋势**：自绘堆叠柱（输入/缓存/输出），hover tooltip。
-7. **每日明细表**：日期 / 总计(billable) / 输入 / 输出 / 缓存读 / 推理 / 对话数；数字右对齐 mono；表头 sticky。
+7. **每日明细表**：日期 / 总计(billable) / 输入 / 输出 / 缓存读 / 缓存命中率（缓存读 ÷ 提示 Token）/ 对话数；数字右对齐 mono；表头 sticky。
 8. **状态**：加载骨架、空态（未检测到工具 + 说明）、错误态（banner + 重试）、未开启态（首次同意卡）、扫描中态（进度 + 可继续浏览已有数据）。
 
 **关键产品原则**：页面永远诚实展示「哪些工具能统计、哪些不能、为什么」；Cursor 明确标注「需账号 API，本机不可统计」。
@@ -175,11 +175,11 @@
 | 2 | 总 TOKEN = `billable_total_tokens` | 汇总/排序一律用 `billable_total_tokens`；仅在未来引入 Cursor/Antigravity 的读取修复时才回退 `total_tokens`（MVP 3 工具不触发） | KPI/大字/明细「总计」 | store + query 单测；oracle |
 | 3 | 输入 = 非缓存输入 | parser 保证；`input_tokens` 列 | 明细「输入」 | 3 工具 fixture 断言 |
 | 4 | 缓存读/写分开 | `cached_input_tokens` / `cache_creation_tokens` 两列 | 明细只显示 cache read（同 TT）；区间汇总两列都进 totals | 同上 |
-| 5 | 推理单列 | `reasoning_tokens` 列；不重复计费（MVP 无成本） | 明细「推理」 | 同上 |
+| 5 | 推理单列 | `reasoning_tokens` 列；不重复计费（MVP 无成本） | 落库保留、不再单列展示（2026-11-06 换成缓存命中率） | 同上 |
 | 6 | 成本 = 5 列 × 单价 | **已确认不做**；`summary.totals.total_cost_usd=null`，页面无美元行；未来若做需 vendor pricing + 查询时重算并标「估算」 | 总览第二行（未来） | 未来专项 oracle（token 整数一致、金额 ±0.01） |
 | 7 | 对话数 = 解析事件数 | `conversation_count` 汇总 | KPI 第 4 格 | fixture 断言事件数 |
 | 8 | 周期定义 | `usage-time.resolvePeriodRange()` 逐行复刻 TT `date-range.ts`；周=周一起 7 天；月=自然月；总计=最近 24 个月；自定义=B5 | tabs + 区间文案 | `usage-time.test.js` 边界/跨年/跨 DST |
-| 9 | 每日明细列 | `usage:daily` 返回 7 个字段（不含 cache write/cost） | 明细表列定义 | 契约 fixture + e2e 列断言 |
+| 9 | 每日明细列 | `usage:daily` 每行 10 个字段（含 cache write 与 `total_cost_usd: null`）；「缓存命中率」由页面派生：`缓存读 ÷ (输入 + 缓存写 + 缓存读)` | 明细表列定义 | 契约 fixture + `test/usage-daily-table.test.js` 渲染断言 |
 | 10 | 热力图 52×7，level 相对四档 | `usage:heatmap` 做 max-relative 四档（≤25/50/75%）；B5 | 热力图（B5） | `usage-query.test.js` level 用例 |
 | 11 | 趋势「预测」仅为视觉插值 | MVP 只画实测柱；B5 加缺失/未来桶的线性插值 + 0.98 衰减并标半透明 | 趋势（B5 细化） | 插值纯函数单测（B5） |
 | 12 | 滚动 7/30 天 | `usage:summary` 返回 `rolling.last7d/last30d/avgPerActiveDay/activeDays` | KPI 前三格 | `usage-query.test.js` 滚动窗口用例 |
@@ -876,3 +876,5 @@ node --test test/usage-store.test.js test/usage-state.test.js
 | 2026-10-22 | **round-2 发布构建**：`feat/usage-page-release` @ `c31cc44` 合并后重建 NSIS setup（144,898,766 B，SHA256 `34027c61…d06f`，SHA256SUMS/latest.yml/blockmap 齐全）；首次因 icon-tool OOM 失败，改为预生成 `assets/icon.ico` 并更新 `package.json`（win.icon/nsis.installerIcon）后成功；e2e 复跑 **6/6**；engine 终检 PASS（usage 105/105、oracle 26/26、`--hl-db` 0 diff、asar 13/13 抽样一致、sidecars 解包）。详见 §0.8 |
 | 2026-10-23 | **自动刷新补齐（用户反馈「没自动刷新过」）**：确认 §2.2 的「页面打开时增量扫描」与 B5 的「可见时 5 分钟定时 + focus 触发」**从未实现**——生产代码只有 consent 点击与手动按钮两处 `usage:refresh`，collector 的 5 分钟 `page-open` 节流因此是死代码。修复：`usageRenderRoute()` 在 enabled 时 arm 生命周期并发首次 `page-open`；60 s `setTimeout` 链 + `window focus` + `visibilitychange` 共用一个单飞触发器（真实下限仍由 collector 5 分钟拥有）；`navigate()` 离路由调 `usageDeactivate()` 全量拆除；扫描完成改为原地重绘（弹窗开着时挂起）；consent 不再重复触发。另新增相对时间文案（「上次扫描 …（3 小时前）」）。门禁：`npm run check` ✅、新增 `test/usage-auto-refresh.test.js` 7/7 ✅、`npm test` 1348/1349（唯一红 `capture-first-paint` 在干净树同样偶发）、e2e 8/8 ✅。证据：[`2026-10-23-usage-auto-refresh/`](./2026-10-23-usage-auto-refresh/) |
 | 2026-10-23 | **4.1.2 发布构建**：`electron-builder.local-fuses.cjs` 产出 NSIS + portable（`dist/Highlighter-Setup-4.1.2.exe` 149,606,787 B / `Highlighter-4.1.2-portable.exe` 149,352,750 B，SHA256SUMS、latest.yml、blockmap、SBOM 齐全）；8 项 fuses 全绿、打包入口 `main/packaged-entry.js` 双产物启动探针 exit 0、asar 与工作树逐字节一致、`verify-release.ps1` 通过。**同时修掉一个真实缺陷**：`node_modules` 停留在 2026-08-10，`dompurify` 实际是 3.4.13（lockfile 要求 3.4.17，`d08554b` 之后未重装），首次打包打进旧版；`npm ci` 后包内为 3.4.17。门禁：单测 1349/1349、e2e 8/8。详见 [`2026-10-23-usage-auto-refresh/`](./2026-10-23-usage-auto-refresh/) |
+| 2026-11-06 | **每日明细列调整（用户反馈）**：`推理` 列在本机数据上逐日恒为 0，且在 MVP 里不参与任何合计（无成本口径；Codex 的 reasoning 是 `output` 子集），故按用户要求原地换成 **缓存命中率** = `缓存读 ÷ (输入 + 缓存写 + 缓存读)`——分母含缓存写入，否则一次只写不读的首轮会显示 100% 命中。列序不变（日期/总计/输入/输出/缓存读/缓存命中率/对话数）；没有提示 Token 的日子显示「—」而不是伪造的 0%；单元格 `title` 同时给出 缓存读/缓存写/提示 Token 三个绝对数（明细表本身不展示 cache write，缺了它表内可见的 输入+缓存读 会对不上百分比）。实现：新增 `usageFormat.cacheHitRate()` / `usageFormat.promptTokens()` 纯函数、`usageCacheHitCell()` 渲染器，`usage:daily` 契约与 `reasoning_tokens` 落库均不变（仅不再展示）；`推理` 三语键移除、新增 `cache-hit` / `cache-hit-detail`。测试：新增 `test/usage-daily-table.test.js`（真实 `config/routes/usage.js` + 真实 zh-CN/三语表渲染断言：表头顺序、派生百分比、写入口径、无提示 Token 的「—」、空区间 7 列、reasoning 值不外泄）。门禁：`npm run check` ✅（check-js 484 文件、i18n 595/606、架构 1327/1330）、`npm test` 2187/2187 ✅、headless 预览 608/848 宽 0 pageerror / 0 可见窗口、最窄档表格无横向溢出（zh-CN 与 en-US 均实测） |
+| 2026-11-06 | **4.2.0 本机构建（含每日明细列调整）**：`npx electron-builder --config electron-builder.local-fuses.cjs --win nsis portable --x64 --publish never` 产出 `dist/Highlighter-Setup-4.2.0.exe`（150,099,322 B，SHA256 `05093D44…16A845`）与 `dist/Highlighter-4.2.0-portable.exe`（149,811,903 B，SHA256 `F265DA53…BA8B13`），blockmap / `latest.yml` / `sbom.cdx.json`（CycloneDX 4.2.0，377 组件）/ `SHA256SUMS.txt` 齐全；`latest.yml` 的 sha512 与 Setup 实测一致。校验：fuses 8 项全绿；app.asar 内 `config/routes/usage.js`、三语 `cache-hit` 文案、`usage-format` 的 `cacheHitRate`/`promptTokens` 均在包内（10/10 断言）；两个产物的启动探针在本机需加 `--no-sandbox` 才 exit 0（宿主无 Chromium 沙箱，见 AGENTS.md 已知环境限制；正常桌面/CI 用仓库脚本原样通过）。**未签名**（本地产物线，`forceCodeSigning:false`），安装/覆盖升级验收仍需在隔离环境进行 |

@@ -113,6 +113,33 @@
     return `${text}%`
   }
 
+  // Prompt tokens for one day/row: every token the model received as prompt —
+  // uncached input, cache writes and cache reads. It is the denominator of
+  // cacheHitRate() and is exported on its own so the table can show the counters
+  // behind the percentage without re-deriving them (one definition, so a
+  // tooltip can never disagree with the number next to it).
+  function promptTokens(row) {
+    const source = row && typeof row === 'object' ? row : {}
+    return normalizeToken(source.cached_input_tokens) +
+      normalizeToken(source.input_tokens) +
+      normalizeToken(source.cache_creation_input_tokens)
+  }
+
+  // Share of one day's prompt tokens that the provider served from its prompt
+  // cache: 0..100, or null when the day sent no prompt tokens at all (the table
+  // renders that as "—": 0% would claim a measured all-miss day that never
+  // happened).
+  //
+  // A cache write counts as a miss, so a write-heavy first turn cannot read as a
+  // 100% hit. Codex has no cache-write column at all (it reports a single cached
+  // read and subtracts it from the prompt, `rollout.js:5223`), so its rate
+  // collapses to the familiar cache-read / (input + cache-read).
+  function cacheHitRate(row) {
+    const prompt = promptTokens(row)
+    if (prompt <= 0) return null
+    return (normalizeToken(row && row.cached_input_tokens) / prompt) * 100
+  }
+
   function isChineseLanguage(language) {
     return /^zh(-|$)/i.test(String(language || ''))
   }
@@ -448,6 +475,8 @@
     formatCompactToken,
     formatFullToken,
     formatSharePct,
+    cacheHitRate,
+    promptTokens,
     formatRangeLabel,
     formatTooltip,
     toDayKey,

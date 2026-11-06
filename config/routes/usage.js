@@ -854,6 +854,23 @@ function usageTableCell(value, compact, blank = false) {
   return `<td class="num" title="${escapeHtml(usageFull(number))}">${escapeHtml(text)}</td>`
 }
 
+// Cache hit rate cell: the share of the day's prompt tokens that the provider
+// already had cached (definition in shared/usage-format.js). A day with no
+// prompt at all is blank like the other columns rather than a misleading 0%;
+// the title carries all three counters behind the percentage (read / write /
+// prompt), because the row itself cannot show cache writes — without the write
+// term a write-heavy day would look like the row's numbers do not add up.
+function usageCacheHitCell(row, blank = false) {
+  const rate = window.usageFormat.cacheHitRate(row)
+  if (blank || rate === null) return '<td class="num">—</td>'
+  const title = t('config.usage.table.cache-hit-detail', {
+    read: usageFull(usageNumber(row && row.cached_input_tokens)),
+    write: usageFull(usageNumber(row && row.cache_creation_input_tokens)),
+    prompt: usageFull(window.usageFormat.promptTokens(row))
+  })
+  return `<td class="num" title="${escapeHtml(title)}">${escapeHtml(usageShare(rate))}</td>`
+}
+
 function usageSortDailyRows(rows, direction) {
   const sorted = rows
     .filter((row) => row && typeof row.day === 'string')
@@ -877,7 +894,7 @@ function usageDailyRowsHtml(rows, direction) {
         ${usageTableCell(row.input_tokens, true, empty)}
         ${usageTableCell(row.output_tokens, true, empty)}
         ${usageTableCell(row.cached_input_tokens, true, empty)}
-        ${usageTableCell(row.reasoning_output_tokens, true, empty)}
+        ${usageCacheHitCell(row, empty)}
         ${usageTableCell(row.conversation_count, false, empty)}
       </tr>`
   }).join('')
@@ -893,7 +910,7 @@ function usageDailyTableHtml(rows) {
     ['config.usage.table.input', 'num'],
     ['config.usage.table.output', 'num'],
     ['config.usage.table.cache-read', 'num'],
-    ['config.usage.table.reasoning', 'num'],
+    ['config.usage.table.cache-hit', 'num'],
     ['config.usage.table.conversations', 'num']
   ].map(([key, className], index) => {
     if (index === 0) {

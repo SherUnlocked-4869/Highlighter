@@ -142,6 +142,9 @@
         row.hidden_cached = Math.round(row.billable_total_tokens * 0.697);
         row.cache_creation_input_tokens = Math.round(row.billable_total_tokens * 0.0165);
         row.output_tokens = Math.round(row.billable_total_tokens * 0.019);
+        // The live `usage:daily` payload still carries reasoning tokens even
+        // though no column shows them (2026-11-06); keeping the field here makes
+        // the preview prove the page ignores it rather than assume it does.
         row.reasoning_output_tokens = Math.round(row.billable_total_tokens * 0.001);
         row.cached_input_tokens = row.hidden_cached;
         row.total_tokens = row.input_tokens + row.output_tokens + row.cached_input_tokens + row.cache_creation_input_tokens + row.reasoning_output_tokens;
