@@ -19,7 +19,12 @@ const {
 } = require('../record/recording-utils')
 
 const root = path.join(__dirname, '..')
-const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8')
+// Normalise line endings: these contract tests match exact source text, including
+// the '\n' inside multi-line patterns. This checkout has core.autocrlf=true and no
+// .gitattributes, so a fresh Windows CI checkout hands over CRLF and those patterns
+// silently stop matching - which is how the two assertions below stayed red on CI
+// after the R5 commit without ever failing locally.
+const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8').replace(/\r\n/g, '\n')
 
 const html = read('record/record.html')
 const css = read('record/record.css')
