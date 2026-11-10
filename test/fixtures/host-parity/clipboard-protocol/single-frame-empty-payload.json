@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "caseId": "clipboard-protocol/single-frame-empty-payload",
+  "format": "clipboard-protocol.v1",
+  "source": [
+    "shared/clipboard-protocol.js"
+  ],
+  "expect": "valid",
+  "kind": "valid",
+  "chunks": [
+    "FQAAAAEQAAAAeyJ0eXBlIjoiaGVsbG8ifQ=="
+  ],
+  "expectedFrames": [
+    {
+      "header": {
+        "type": "hello"
+      },
+      "payloadBase64": ""
+    }
+  ],
+  "expectedError": null
+}

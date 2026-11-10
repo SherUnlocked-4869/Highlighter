@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "caseId": "clipboard-protocol/invalid-kind-byte",
+  "format": "clipboard-protocol.v1",
+  "source": [
+    "shared/clipboard-protocol.js"
+  ],
+  "expect": "invalid",
+  "kind": "invalid",
+  "chunks": [
+    "FQAAAAMQAAAAeyJ0eXBlIjoiaGVsbG8ifQ=="
+  ],
+  "reason": "invalid-frame",
+  "expectedError": "invalid-frame",
+  "failAt": "feed"
+}

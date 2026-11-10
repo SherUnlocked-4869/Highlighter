@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "caseId": "clipboard-protocol/single-frame-with-payload",
+  "format": "clipboard-protocol.v1",
+  "source": [
+    "shared/clipboard-protocol.js"
+  ],
+  "expect": "valid",
+  "kind": "valid",
+  "chunks": [
+    "MwAAAAIcAAAAeyJ0eXBlIjoiZGF0YSIsInNlcXVlbmNlIjoxfWZpeHR1cmUtcGF5bG9hZC12MQ=="
+  ],
+  "expectedFrames": [
+    {
+      "header": {
+        "type": "data",
+        "sequence": 1
+      },
+      "payloadBase64": "Zml4dHVyZS1wYXlsb2FkLXYx"
+    }
+  ],
+  "expectedError": null
+}

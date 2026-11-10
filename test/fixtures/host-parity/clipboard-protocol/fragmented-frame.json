@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "caseId": "clipboard-protocol/fragmented-frame",
+  "format": "clipboard-protocol.v1",
+  "source": [
+    "shared/clipboard-protocol.js"
+  ],
+  "expect": "valid",
+  "kind": "valid",
+  "chunks": [
+    "MwAAAAI=",
+    "HAAAAHsidHk=",
+    "cGUiOiJkYXRhIiwic2VxdWVuY2UiOjF9Zml4dHVyZS1wYXlsb2FkLXYx"
+  ],
+  "expectedFrames": [
+    {
+      "header": {
+        "type": "data",
+        "sequence": 1
+      },
+      "payloadBase64": "Zml4dHVyZS1wYXlsb2FkLXYx"
+    }
+  ],
+  "expectedError": null
+}

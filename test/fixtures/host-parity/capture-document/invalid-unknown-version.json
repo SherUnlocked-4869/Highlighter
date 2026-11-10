@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "caseId": "capture-document/invalid-unknown-version",
+  "format": "capture-document.v3",
+  "source": [
+    "shared/capture-document.js",
+    "shared/capture-output-style.js",
+    "shared/magnifier-geometry.js"
+  ],
+  "expect": "invalid",
+  "input": {
+    "schemaVersion": 99,
+    "documentId": "fixture-doc-001"
+  },
+  "reason": "unsupported-schema",
+  "errors": [
+    "unsupported-schema"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "caseId": "clipboard-protocol/multi-frame-single-feed",
+  "format": "clipboard-protocol.v1",
+  "source": [
+    "shared/clipboard-protocol.js"
+  ],
+  "expect": "valid",
+  "kind": "valid",
+  "chunks": [
+    "FQAAAAEQAAAAeyJ0eXBlIjoiaGVsbG8ifTMAAAACHAAAAHsidHlwZSI6ImRhdGEiLCJzZXF1ZW5jZSI6MX1maXh0dXJlLXBheWxvYWQtdjE="
+  ],
+  "expectedFrames": [
+    {
+      "header": {
+        "type": "hello"
+      },
+      "payloadBase64": ""
+    },
+    {
+      "header": {
+        "type": "data",
+        "sequence": 1
+      },
+      "payloadBase64": "Zml4dHVyZS1wYXlsb2FkLXYx"
+    }
+  ],
+  "expectedError": null
+}

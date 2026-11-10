@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "caseId": "recording-export-options/normalize-multi-segment",
+  "format": "recording-export-options.v1",
+  "source": [
+    "shared/recording-export-options.js"
+  ],
+  "expect": "valid",
+  "kind": "normalize",
+  "request": {
+    "format": "mp4",
+    "segments": [
+      {
+        "startMs": 1000,
+        "endMs": 2000
+      },
+      {
+        "startMs": 3000,
+        "endMs": 3500
+      }
+    ],
+    "video": {
+      "resolution": "720p",
+      "quality": "high",
+      "fps": "source"
+    }
+  },
+  "metadata": {
+    "durationMs": 5000,
+    "video": {
+      "width": 1920,
+      "height": 1080,
+      "frameRate": 30
+    },
+    "audio": {
+      "exists": true
+    }
+  },
+  "expected": {
+    "format": "mp4",
+    "segments": [
+      {
+        "startMs": 1000,
+        "endMs": 2000
+      },
+      {
+        "startMs": 3000,
+        "endMs": 3500
+      }
+    ],
+    "totalDurationMs": 1500,
+    "gif": null,
+    "hasAudio": true,
+    "video": {
+      "resolution": "720p",
+      "quality": "high",
+      "fps": "source",
+      "width": 1280,
+      "height": 720,
+      "fpsValue": 30,
+      "copy": false
+    },
+    "demo": null,
+    "sourceWidth": 1920,
+    "sourceHeight": 1080,
+    "sourceFrameRate": 30
+  }
+}

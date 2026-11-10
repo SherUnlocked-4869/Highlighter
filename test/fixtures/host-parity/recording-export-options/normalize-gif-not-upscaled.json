@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "caseId": "recording-export-options/normalize-gif-not-upscaled",
+  "format": "recording-export-options.v1",
+  "source": [
+    "shared/recording-export-options.js"
+  ],
+  "expect": "valid",
+  "kind": "normalize",
+  "request": {
+    "format": "gif",
+    "gif": {
+      "edge": 1280,
+      "fps": 15
+    }
+  },
+  "metadata": {
+    "durationMs": 8000,
+    "video": {
+      "width": 640,
+      "height": 360,
+      "frameRate": 30
+    },
+    "audio": {
+      "exists": false
+    }
+  },
+  "expected": {
+    "format": "gif",
+    "segments": [
+      {
+        "startMs": 0,
+        "endMs": 8000
+      }
+    ],
+    "totalDurationMs": 8000,
+    "gif": {
+      "edge": 640,
+      "maxEdgePx": 640,
+      "fps": 15,
+      "loop": true,
+      "width": 640,
+      "height": 360,
+      "frames": 120
+    },
+    "hasAudio": false,
+    "video": null,
+    "demo": null,
+    "sourceWidth": 640,
+    "sourceHeight": 360,
+    "sourceFrameRate": 30
+  }
+}

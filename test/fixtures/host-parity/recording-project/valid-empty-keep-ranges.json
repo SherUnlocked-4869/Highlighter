@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "caseId": "recording-project/valid-empty-keep-ranges",
+  "format": "recording-project.v1",
+  "source": [
+    "shared/recording-project-schema.js"
+  ],
+  "expect": "valid",
+  "project": {
+    "schemaVersion": 1,
+    "id": "fixture-project-001",
+    "createdAt": 1731000000000,
+    "updatedAt": 1731000010000,
+    "name": "Fixture Recording 001",
+    "mode": "display",
+    "state": "ready",
+    "captureConfig": {
+      "target": {
+        "mode": "display",
+        "displayId": "fixture-display-001",
+        "displayName": "Fixture Display",
+        "boundsDip": {
+          "x": 0,
+          "y": 0,
+          "width": 1920,
+          "height": 1080
+        },
+        "pixelSize": {
+          "width": 1920,
+          "height": 1080
+        },
+        "scaleFactor": 1
+      },
+      "frameRate": 30,
+      "quality": "standard",
+      "countdown": 3,
+      "audio": {
+        "system": true,
+        "microphone": false,
+        "microphoneDeviceId": "",
+        "systemGain": 1,
+        "microphoneGain": 1
+      }
+    },
+    "source": {
+      "assetId": "fixture-capture-001",
+      "fileName": "capture.webm",
+      "mediaKind": "video",
+      "mimeType": "video/webm",
+      "bytes": 4096
+    },
+    "media": {
+      "durationMs": 5000,
+      "video": {
+        "width": 1920,
+        "height": 1080
+      },
+      "audio": {
+        "tracks": 1,
+        "codec": "opus"
+      },
+      "timebase": 1000,
+      "probedAt": 1731000000000
+    },
+    "captureOutcome": {
+      "video": true,
+      "audio": {
+        "system": true,
+        "microphone": false
+      },
+      "warnings": []
+    },
+    "edit": {
+      "revision": 3,
+      "keepRanges": [],
+      "format": "mp4",
+      "gif": {
+        "edge": 1280,
+        "fps": 15
+      },
+      "style": {
+        "enabled": false,
+        "background": "#0f1115",
+        "padding": 0.08,
+        "radius": 12,
+        "shadow": true,
+        "ripples": false
+      },
+      "zoomSegments": [],
+      "audioGainSegments": []
+    },
+    "exports": [],
+    "recovery": {
+      "committedByteOffset": 4096,
+      "lastChunkSequence": 8,
+      "cleanStop": true,
+      "errorCode": ""
+    }
+  },
+  "invariants": {
+    "schemaVersion": 1,
+    "projectId": "fixture-project-001",
+    "keepRanges": []
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "caseId": "clipboard-protocol/truncated-finish",
+  "format": "clipboard-protocol.v1",
+  "source": [
+    "shared/clipboard-protocol.js"
+  ],
+  "expect": "invalid",
+  "kind": "invalid",
+  "chunks": [
+    "MwAAAAIcAAAAeyJ0eXBlIjoiZGF0YSIsInNlcXVlbmNlIjoxfWZpeHR1cmUtcGF5bG9hZC12"
+  ],
+  "reason": "invalid-frame",
+  "expectedError": "invalid-frame",
+  "failAt": "finish"
+}

@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "caseId": "recording-export-options/normalize-gif-clamped",
+  "format": "recording-export-options.v1",
+  "source": [
+    "shared/recording-export-options.js"
+  ],
+  "expect": "valid",
+  "kind": "normalize",
+  "request": {
+    "format": "gif",
+    "gif": {
+      "edge": 1280,
+      "fps": 15
+    }
+  },
+  "metadata": {
+    "durationMs": 5000,
+    "video": {
+      "width": 1920,
+      "height": 1080,
+      "frameRate": 30
+    },
+    "audio": {
+      "exists": true
+    }
+  },
+  "expected": {
+    "format": "gif",
+    "segments": [
+      {
+        "startMs": 0,
+        "endMs": 5000
+      }
+    ],
+    "totalDurationMs": 5000,
+    "gif": {
+      "edge": 1280,
+      "maxEdgePx": 1280,
+      "fps": 15,
+      "loop": true,
+      "width": 1280,
+      "height": 720,
+      "frames": 75
+    },
+    "hasAudio": false,
+    "video": null,
+    "demo": null,
+    "sourceWidth": 1920,
+    "sourceHeight": 1080,
+    "sourceFrameRate": 30
+  }
+}

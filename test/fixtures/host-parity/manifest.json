@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 1,
+  "generator": "scripts/rust/generate-host-fixtures.js",
+  "groups": [
+    {
+      "id": "capture-document",
+      "format": "capture-document.v3",
+      "generatedFrom": [
+        "shared/capture-document.js",
+        "shared/capture-output-style.js",
+        "shared/magnifier-geometry.js"
+      ],
+      "cases": [
+        {
+          "id": "invalid-missing-base-image",
+          "file": "capture-document/invalid-missing-base-image.json",
+          "sha256": "7817c8db7e51d5b1b284703c25e48c7aa43a1b3d65ee3a43c0a5c6a060e64dad"
+        },
+        {
+          "id": "invalid-unknown-version",
+          "file": "capture-document/invalid-unknown-version.json",
+          "sha256": "c805b6a8ef8cf166bb621f124fba88c590e08e78e52ae30b395f0ad96ba8052b"
+        },
+        {
+          "id": "v2-upgraded",
+          "file": "capture-document/v2-upgraded.json",
+          "sha256": "d9a6492d718ae257f05200c1ae582c42e82051db708d246798701792304eaa27"
+        },
+        {
+          "id": "v3-card-light",
+          "file": "capture-document/v3-card-light.json",
+          "sha256": "be1d401d2ccc5ad13c539d11b1bbe4610738cbc9dc2acf7f07d497b338a2f08f"
+        },
+        {
+          "id": "v3-plain",
+          "file": "capture-document/v3-plain.json",
+          "sha256": "df4f50f759f817b30d8873f06e2d6b28a1bbf6e6b14dfb92adef57ca2b195e0c"
+        }
+      ]
+    },
+    {
+      "id": "clipboard-protocol",
+      "format": "clipboard-protocol.v1",
+      "generatedFrom": [
+        "shared/clipboard-protocol.js"
+      ],
+      "cases": [
+        {
+          "id": "fragmented-frame",
+          "file": "clipboard-protocol/fragmented-frame.json",
+          "sha256": "40de496dd9a46b0f8058a84578bc16b719378fda70e0c185bdd3d2d53d512777"
+        },
+        {
+          "id": "header-invalid-json",
+          "file": "clipboard-protocol/header-invalid-json.json",
+          "sha256": "c9cef6d0b101caf8850ba4f4da0d9935913b8f259fd6ab53df6fce514eb21fbd"
+        },
+        {
+          "id": "header-not-an-object",
+          "file": "clipboard-protocol/header-not-an-object.json",
+          "sha256": "a6ce62580880aa37c34eb3df236ff865a339e411856957bfc9edaf3ec4806e95"
+        },
+        {
+          "id": "header-too-large",
+          "file": "clipboard-protocol/header-too-large.json",
+          "sha256": "cb6bafc550fbc4a5afa3a6962dcf2c9ff7b456644cab2cd4eb5db624a18c1114"
+        },
+        {
+          "id": "invalid-kind-byte",
+          "file": "clipboard-protocol/invalid-kind-byte.json",
+          "sha256": "ad757c9ac23718c69b544c2ebb6976808e2b6341af7ea5b2c24b08c916217cee"
+        },
+        {
+          "id": "multi-frame-single-feed",
+          "file": "clipboard-protocol/multi-frame-single-feed.json",
+          "sha256": "c0b567ea482eae461695e5d9d461a00fa97485f8b068a67bd7bf8bceeb531400"
+        },
+        {
+          "id": "payload-too-large",
+          "file": "clipboard-protocol/payload-too-large.json",
+          "sha256": "f1982013049b0aeb867170038f1ea9e7aecee300c2054ac69bc80b85472e2c1b"
+        },
+        {
+          "id": "single-frame-empty-payload",
+          "file": "clipboard-protocol/single-frame-empty-payload.json",
+          "sha256": "546d25fc9dc6b883ad5aa4835dabe8b4abb5ab0be1dfa97942c67d46d928333c"
+        },
+        {
+          "id": "single-frame-with-payload",
+          "file": "clipboard-protocol/single-frame-with-payload.json",
+          "sha256": "2a825ae1bcd4690e4f4126023f39447eca3c06048c3864342acabde2054170d2"
+        },
+        {
+          "id": "size-less-than-minimum",
+          "file": "clipboard-protocol/size-less-than-minimum.json",
+          "sha256": "6447a5f0c5f7e07f3ac24118afbb510403eb79e74ca5fb6e2946a471d265a261"
+        },
+        {
+          "id": "size-over-max-frame",
+          "file": "clipboard-protocol/size-over-max-frame.json",
+          "sha256": "dd2045d0f1835dda01c72edb516dbec5a23f39361bcc1e0dffccdd84efacd03e"
+        },
+        {
+          "id": "truncated-finish",
+          "file": "clipboard-protocol/truncated-finish.json",
+          "sha256": "e3570890fcf1597e46e40498f790c5751dbe471928acb256c7ce30e3742823b1"
+        }
+      ]
+    },
+    {
+      "id": "recording-export-options",
+      "format": "recording-export-options.v1",
+      "generatedFrom": [
+        "shared/recording-export-options.js"
+      ],
+      "cases": [
+        {
+          "id": "gif-too-long",
+          "file": "recording-export-options/gif-too-long.json",
+          "sha256": "f19ae01832b6d18a274b16e1095d3f4e57ead1f5a05607d2ddef2e02b8219e91"
+        },
+        {
+          "id": "limits",
+          "file": "recording-export-options/limits.json",
+          "sha256": "71c54c8e4e54cf8c94ea2b998e8336ed458ed3fd98ee791fa8aea2bfdd42305e"
+        },
+        {
+          "id": "normalize-gif-clamped",
+          "file": "recording-export-options/normalize-gif-clamped.json",
+          "sha256": "e673c2c681f3ff494b7b4c3f6acdf3bb810d6dabe7504fcc1624defa550a139f"
+        },
+        {
+          "id": "normalize-gif-not-upscaled",
+          "file": "recording-export-options/normalize-gif-not-upscaled.json",
+          "sha256": "3cd286aaa49ef7e3b826d63e7ec7fcf2b617975ca5a06b6162464afafe1b3a4e"
+        },
+        {
+          "id": "normalize-multi-segment",
+          "file": "recording-export-options/normalize-multi-segment.json",
+          "sha256": "e1d68df9a2367b192f364e6e93c22c741f1ab18cab104d7ded79bf605d2b228c"
+        }
+      ]
+    },
+    {
+      "id": "recording-project",
+      "format": "recording-project.v1",
+      "generatedFrom": [
+        "shared/recording-project-schema.js"
+      ],
+      "cases": [
+        {
+          "id": "invalid-overlapping-ranges",
+          "file": "recording-project/invalid-overlapping-ranges.json",
+          "sha256": "05654292fc66b9e28f9cbcb5a474f28222ce8681fc0fd90ec6bb2b498a8feca7"
+        },
+        {
+          "id": "invalid-schema-and-source",
+          "file": "recording-project/invalid-schema-and-source.json",
+          "sha256": "a9b4231df3879e6dffe3468694da520ab85d6037159db2cb273722fc33012943"
+        },
+        {
+          "id": "valid-empty-keep-ranges",
+          "file": "recording-project/valid-empty-keep-ranges.json",
+          "sha256": "c9139df807112c40d62d5fca3cf3640a69ab2ec767c7456b9b01d97e66af9e42"
+        },
+        {
+          "id": "valid-full",
+          "file": "recording-project/valid-full.json",
+          "sha256": "24e8c48fec7ddae642d1c595aa7c93ede9e96caf8d62626432c9576b988a3592"
+        }
+      ]
+    },
+    {
+      "id": "settings",
+      "format": "settings.normalize.v1",
+      "generatedFrom": [
+        "main/services/settings-normalize.js",
+        "main/services/settings-defaults.js"
+      ],
+      "cases": [
+        {
+          "id": "normalize-defaults-overrides",
+          "file": "settings/normalize-defaults-overrides.json",
+          "sha256": "a68d5936df1a7c51357a4c2436833111310ab4362ffffba48182227a75a27e39"
+        },
+        {
+          "id": "normalize-legacy-autosave-dropped",
+          "file": "settings/normalize-legacy-autosave-dropped.json",
+          "sha256": "4d3b3e210cf8e4b15b077fb38e771ab4bcec0a11a5d3fc6dd375d3de2246acd9"
+        }
+      ]
+    }
+  ]
+}
