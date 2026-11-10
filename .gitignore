@@ -33,3 +33,9 @@ _repo_snow_apps/
 # Rust 改造 workspace（见 docs/plans/rust-migration/contract-format.md）
 rust-app/target/
 rust-app/**/target/
+
+# R0 原型独立工程构建缓存（rust-app/prototypes/<name>/ 各自独立 Cargo 工程）
+rust-app/prototypes/*/target/
+# 钩子提取原型构建产物
+native/selection-helper/build/
+native/selection-helper/bin/
