@@ -130,15 +130,17 @@
 | R0-01 基线、功能开关/数据集/硬件、入口盘点 | **部分完成**（本文件 + 功能矩阵为唯一交付） | `docs/plans/rust-migration/feature-parity.md`、`docs/plans/rust-migration/r0-baseline.md` | 本轮未跑全量测试/性能；§9.2 的性能目标阈值未冻结（计划要求第一次对照运行前冻结）；真机矩阵未执行 |
 | R0-02 13 preload/API、IPC 角色、schema、服务协议、资源限制提取 | **完成（最终验收通过，见 r0-report.md）** | 规格：`docs/plans/rust-migration/contract-format.md`；产物：[`contracts/host/host-contracts.json`](../../../contracts/host/host-contracts.json)（110,493 B）、`test/fixtures/host-parity/`（`manifest.json` + 5 组 28 case）、`scripts/rust/extract-host-contracts.js`、`scripts/rust/generate-host-fixtures.js`、`test/host-contracts.test.js`（19 tests）、`docs/plans/rust-migration/host-contract-inventory.md` | `--check` 两个均 exit 0、Node 测试 19/19、Rust 双端对照 12 + 5 cases 通过；剩余：`capture:record-history` 死通道与 `capture/print.html` 非角色窗口需 R1 决策（inventory/feature-parity 已登记） |
 | R0-03 Tauri 托盘/无窗口启动、副屏截图浮层、Canvas 最小编辑保存 | **原型完成（编译/自检通过；真机视觉矩阵未验证）** | [`docs/plans/rust-migration/r0-window-prototype.md`](r0-window-prototype.md)、`rust-app/src-tauri/`（tauri 2.12.5）；`--self-test` 两次 PASS、退出码 0；副屏 `(3840,-170)`、`dpr=1.25`、ready=1/init 恰好 1 次；虚拟桌面截图证据在 `.tmp-r0/` | 托盘/主窗口/单实例未做（R1-02）；100%/200% DPI 真机视觉、首帧白闪、单屏拒绝路径、鼠标穿透/焦点均未验证；应用命令默认不受 capability ACL 约束的缺口见原型文档 §5 |
-| R0-04 去 N-API 钩子小样 + 既有 Rust 剪贴板联调 | **未开始** | 现有源码：`vendor/selection-hook/src/windows/selection_hook.cc`、`main/services/selection-hook-host.js:1`、`native/clipboard/` | 选词/回退复制/lease/前台授权/错误目标拒绝/崩溃恢复均未演示 |
-| R0-05 WebView 媒体路径验证（失败则原生采集最小闭环） | **未开始** | 现有链路源码：`main/domains/record/index.js:1367`、`record/record.js:803`、`record/audio-mixer.js` | 全屏/区域/窗口、双音源、暂停/继续、可播放原片、源目标变化、30 分钟时钟样例均未验证 |
-| R0-06 v3 文档/v1 项目/合成凭据导入、图片/视频资源桥、PDF 样例 | **未开始**（只有合同格式与部分夹具） | 规格：`contract-format.md`；夹具雏形：`test/fixtures/host-parity/` | 每项"成功/失败/恢复"用例、输出安全边界、后端选型 ADR 均未产出 |
+| R0-04 去 N-API 钩子小样 + 既有 Rust 剪贴板联调 | **原型完成（真实选词已验证；联调未做）** | [r0-hook-extraction.md](r0-hook-extraction.md)、[ADR-0002](adr/0002-hook-extraction.md)、`native/selection-helper/` | 浏览器/Office/资源管理器/管理员窗口、真实卡死恢复、lease required=true、与 `native/clipboard` 联调未验证 |
+| R0-05 WebView 媒体路径验证（失败则原生采集最小闭环） | **两路 spike 完成（后端选型待 G0）** | [r0-media-webview.md](r0-media-webview.md)、[r0-media-native.md](r0-media-native.md)、[ADR-0001](adr/0001-media-backend.md) | WebView2 无法程序指定源/loopback；原生 GDI+WASAPI 可行下限成立，WGC 本机被拒；30 分钟/双音源/暂停续录/同条件对照未验证 |
+| R0-06 v3 文档/v1 项目/合成凭据导入、图片/视频资源桥、PDF 样例 | **大部分完成（安装烟测未做）** | [r0-credential-migration.md](r0-credential-migration.md)、[r0-pdf-spike.md](r0-pdf-spike.md)、[r0-resource-channel.md](r0-resource-channel.md)、`test/fixtures/host-parity/` | 凭据/PDF/资源通道小样与 ADR 已产出；产品真实 print.html 批量/长图、图片视频资源桥真实链路、安装烟测未做 |
 | R0-07 NSIS 测试包、WebView2 有/无/离线、首轮性能对照 | **未开始** | 仅现有脚本：`scripts/verify-release.ps1`、`scripts/collect-hardware-evidence.ps1`、`scripts/verify-hardware-matrix.js`；`docs/releases/evidence/` **不存在** | 未构建测试包；未做 WebView2 环境矩阵；未做性能对照；工具链/Runtime/驱动未固定；不能以 Debug 数据下性能结论 |
-| **G0 架构可行** | **未通过（未提交 G0 报告）** | 见 §4 决策登记（全部"待验证"） | 三条高风险链路（窗口/钩子/媒体）+ 数据/凭据/PDF/资源通道小样 + 版本矩阵 + 修正估算均缺 |
+| **G0 架构可行** | **未通过（有进展）** | 三条高风险链路与五项决策已有实测证据（见 §4 与 [r0-g0-report.md](r0-g0-report.md)）；G0 报告草案已产出但未放行 | 缺 R0-07 版本矩阵/性能、长时媒体、真机 DPI 矩阵、测试驱动/最低系统决策、修正估算 |
 
 ## 4. G0 决策登记（七项）
 
-> 规则（计划 §2/§7）：每项记录备选、当前证据、失败分支、建议、未解决限制；**没有实测的标"待验证"，本文件不代结论**。七项当前状态全部为 **待验证**。
+> 规则（计划 §2/§7）：每项记录备选、当前证据、失败分支、建议、未解决限制；**没有实测的标"待验证"，本文件不代结论**。
+> 2026-11-10 晚补充：媒体/钩子/PDF/凭据/资源通道五项已有 spike 实测证据，ADR 状态为"候选（未冻结）"；
+> 测试驱动与最低系统两项仍未评估。逐项证据见 [adr/README.md](adr/README.md) 与 [r0-g0-report.md](r0-g0-report.md)。
 
 ### 4.1 媒体后端（决定 R5 采集与导出）
 
@@ -245,7 +247,7 @@
 
 - **未执行**：产品单测/E2E/覆盖率/长截图/静态门禁/fuses/打包/硬件矩阵/性能对照（完整命令清单见 §2 末尾）。
 - **未执行**：任何真机或可见窗口验证（本机副屏、多 DPI、RDP、休眠、真实音频设备）。
-- **已补测（本分支最终）**：Rust workspace 107 tests 通过、`check-rust-app.ps1` OK；R0-03 Tauri 原型编译/自检通过并有截图证据（详见 [r0-report.md](r0-report.md)）。真机视觉/DPI 矩阵、安装包与性能对照仍未执行。
+- **已补测（本分支最终）**：Rust workspace 107 tests 通过、`check-rust-app.ps1` OK；R0-03 Tauri 原型编译/自检通过并有截图证据；R0-04 钩子 helper 真实选词、R0-05 媒体两路 spike、R0-06 凭据/PDF/资源通道均有实测（详见 [r0-report.md](r0-report.md) §11 与 [r0-g0-report.md](r0-g0-report.md)）。真机视觉/DPI 矩阵、安装包与性能对照仍未执行。
 - **未验证**：§4 七项决策全部为"待验证"；§5 五类缺陷/缺口未关闭；G0～G4 全部未通过。
 - **版本一致性提醒**：本文所有数值是 2026-11-10 本机一次采样的结果；换机器/换 Runtime/换电源方案后不能直接复用为性能基线。性能对照还要求固定 Release 构建、GPU 驱动、数据集、功能开关与回收等待时间（计划 §9.2），这些本轮均未固定。
 

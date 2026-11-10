@@ -1,0 +1,41 @@
+# R0-06 Tauri 2 原型：WebView2 PDF 打印 + 二进制资源通道（图片/视频/Range/24MB 传输对照）。
+#
+# 这是**独立的小型 Cargo workspace**（下面的空 `[workspace]` 表就是为此），
+# 刻意不并入 `rust-app/Cargo.toml` 的成员列表，也不改主 workspace 的 Cargo.toml/Cargo.lock：
+# R0 的原型允许随时删除/重做，不能把试验依赖带进正式 workspace（计划 §7 提交建议）。
+#
+# 构建/运行（在仓库根目录执行）：
+#   CARGO_TARGET_DIR=rust-app/target cargo run --manifest-path rust-app/prototypes/webview-pdf-resource/Cargo.toml -- --pdf
+#   CARGO_TARGET_DIR=rust-app/target cargo run --manifest-path rust-app/prototypes/webview-pdf-resource/Cargo.toml -- --resource
+#
+# `CARGO_TARGET_DIR` 让本原型复用主 workspace 已编译的 tauri/wry/webview2-com 依赖；
+# 不设置时会落到 `rust-app/prototypes/*/target/`（.gitignore 已覆盖）。
+[package]
+name = "highlighter-r0-pdf-resource"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+publish = false
+description = "R0-06 WebView2 PrintToPdfStream + binary resource channel prototype (not a production host)"
+
+# 独立 workspace：本目录不是 rust-app/ workspace 的成员。
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Windows 下 WebView2 COM 绑定（与 tauri 2.12.5 / wry 0.57.2 使用的版本一致）。
+webview2-com = "0.39.1"
+# 直接读取 PrintToPdfStream 交付的 IStream 需要 windows crate 的 COM 类型；
+# 版本必须与 webview2-com 0.39.1 的 windows 依赖一致（0.62）。
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com"] }
+# 不可猜测资源 ID 的随机源（不引入 rand 全家桶）。
+getrandom = "0.3"
+
+[features]
+# Tauri 模板约定；本原型用 `cargo run` 直接跑，不发布安装包。
+custom-protocol = ["tauri/custom-protocol"]

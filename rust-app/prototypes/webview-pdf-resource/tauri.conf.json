@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Highlighter R0-06 PDF/Resource Prototype",
+  "version": "0.1.0",
+  "identifier": "dev.highlighter.r0.pdf-resource-prototype",
+  "build": {
+    "frontendDist": "prototype-ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://media.localhost; media-src 'self' blob: http://media.localhost; connect-src 'self' ipc: http://ipc.localhost http://media.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": [
+      "icons/icon.ico"
+    ]
+  }
+}

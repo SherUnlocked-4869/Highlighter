@@ -39,3 +39,5 @@ rust-app/prototypes/*/target/
 # 钩子提取原型构建产物
 native/selection-helper/build/
 native/selection-helper/bin/
+# Tauri 原型 tauri-build 生成的 ACL/capability schema（不入库）
+rust-app/prototypes/*/gen/

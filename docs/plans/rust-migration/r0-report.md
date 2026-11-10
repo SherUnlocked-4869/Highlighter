@@ -22,9 +22,9 @@
 | R0-01 基线、功能开关/数据集/硬件、入口盘点 | **部分完成** | [r0-baseline.md](r0-baseline.md)、[feature-parity.md](feature-parity.md)；13 角色核对表、F-01～F-20、D-01～D-20 | 性能对照与真机矩阵未执行；§9.2 阈值未冻结 |
 | R0-02 13 preload/API、IPC 角色、schema、服务协议、资源限制 | **完成** | [host-contract-inventory.md](host-contract-inventory.md)、`contracts/host/host-contracts.json`、`test/fixtures/host-parity/`（28 case）、[contract-format.md](contract-format.md) | `capture:record-history` 死通道、`capture/print.html` 非角色窗口留 R1 决策 |
 | R0-03 Tauri 托盘/无窗口启动、副屏截图浮层、Canvas 最小编辑保存 | **原型完成（真机视觉矩阵未验证）** | [r0-window-prototype.md](r0-window-prototype.md)、`rust-app/src-tauri/`；`--self-test` 2× PASS | 托盘/主窗口/单实例未做；100/200% DPI 视觉、白闪、单屏拒绝、鼠标穿透未验证 |
-| R0-04 去 N-API 钩子小样 + Rust 剪贴板联调 | **未开始** | 现有源码：`vendor/selection-hook/`、`main/services/selection-hook-host.js`、`native/clipboard/` | 选词/回退复制/lease/前台授权/崩溃恢复均未演示 |
-| R0-05 WebView 媒体路径验证（失败则原生采集闭环） | **未开始（最高风险）** | `main/domains/record/index.js:1367`、`record/record.js:803`；本机无 DXGI 桌面复制 | 全屏/区域/窗口、双音源、暂停、30 分钟时钟均未验证 |
-| R0-06 v3 文档/v1 项目/合成凭据导入、图片/视频资源桥、PDF 样例 | **未开始（仅文档/项目夹具）** | `test/fixtures/host-parity/capture-document/`、`recording-project/` | 凭据、PDF、图片/视频资源桥与"成功/失败/恢复"用例未做 |
+| R0-04 去 N-API 钩子小样 + Rust 剪贴板联调 | **原型完成（真实选词已验证；与 Rust 剪贴板联调未做）** | [r0-hook-extraction.md](r0-hook-extraction.md)、[ADR-0002](adr/0002-hook-extraction.md)、`native/selection-helper/` | 浏览器/Office/资源管理器/管理员窗口矩阵、真实卡死恢复、lease required=true、Rust 剪贴板联调未验证 |
+| R0-05 WebView 媒体路径验证（失败则原生采集闭环） | **两路 spike 完成（后端选型仍待 G0）** | [r0-media-webview.md](r0-media-webview.md)、[r0-media-native.md](r0-media-native.md)、[ADR-0001](adr/0001-media-backend.md) | WebView2 无法程序指定源/loopback；原生 GDI+WASAPI 可行下限成立但 WGC 本机被拒；30 分钟/双音源/暂停续录/两路同条件对照未验证 |
+| R0-06 v3 文档/v1 项目/合成凭据导入、图片/视频资源桥、PDF 样例 | **大部分完成（安装烟测未做）** | [r0-credential-migration.md](r0-credential-migration.md)、[r0-pdf-spike.md](r0-pdf-spike.md)、[r0-resource-channel.md](r0-resource-channel.md)、`test/fixtures/host-parity/` | 凭据双向实测、PDF 双后端对照、资源通道 Range/鉴权均完成；产品真实 print.html 批量/长图、图片视频资源桥真实链路、安装烟测未做 |
 | R0-07 NSIS 测试包、WebView2 有/无/离线、首轮性能对照 | **未开始** | 现有脚本 `scripts/verify-release.ps1` 等；`docs/releases/evidence/` 不存在 | 未建包、未做 Runtime 矩阵与性能对照；工具链/Runtime 未冻结 |
 
 ## 3. 提交清单
@@ -38,6 +38,9 @@
 | `04ff372` | 隔离 Rust workspace（6 crates + 检查脚本，92 tests） |
 | `3dc82cb` | 计划状态/README/首批清单回写 |
 | 本报告提交 | Tauri R0-03 原型（`rust-app/src-tauri/`，15 tests）、r0-window-prototype 文档、本报告与 `r0-baseline.md`/`rust-app/README.md` 更新 |
+| `e401a6f` | R0-06 合成凭据跨语言验证（OSCrypt v10 + Local State DPAPI key + AES-GCM 双向实测）+ ADR-0004 |
+| `985c6b6` | R0-04 独立 C++ selection helper（真实选词验证）+ r0-hook-extraction + ADR-0002 |
+| 本批次提交 | R0-05a/R0-05b 媒体两路 spike（`rust-app/prototypes/webview-media/`、`native-capture/`）、R0-06 PDF/资源通道（`rust-app/prototypes/webview-pdf-resource/`、`scripts/rust/probe-electron-pdf.js`）、ADR-0001/0003/0005、r0-g0-report 草案 |
 
 ## 4. 验证命令与结果（Lead 在本分支实际运行）
 
@@ -68,6 +71,17 @@ check-rust-app: OK (fmt, clippy, test --locked)                                 
 
 $ highlighter-r0-window.exe --self-test --hold-ms 5000
 [PASS] r0-03 self-test: secondary_monitor_index=1 negative_y=true ready/init_once ok dpr=1.25 canvas_dpr_ok=true   # exit 0（2 次运行均 PASS）
+```
+
+本轮 spike 追加验证（全部实际运行）：
+
+```text
+$ cargo test --manifest-path rust-app/prototypes/webview-pdf-resource/Cargo.toml --locked
+15 passed / 0 failed
+$ cargo fmt --check / cargo clippy -D warnings（四个原型 crate：native-capture / webview-media / webview-pdf-resource / credential-probe）
+全部通过
+$ node --check scripts/rust/probe-electron-pdf.js scripts/rust/probe-safestorage.js
+通过
 ```
 
 **未执行（不得视为通过）**：完整 `npm test`（1278 项）、`test:e2e`、覆盖率、打包/`verify:package`、
@@ -130,22 +144,38 @@ $ highlighter-r0-window.exe --self-test --hold-ms 5000
 
 | 门禁 | 状态 | 说明 |
 |---|---|---|
-| G0 架构可行 | **未通过** | 三条高风险链路仅窗口原型有实测；媒体/钩子未做；G0 决策报告未产出，七项决策全部待验证 |
+| G0 架构可行 | **未通过（有进展）** | 三条高风险链路均有实测证据（窗口/钩子/媒体两路）；五项决策（媒体/钩子/PDF/凭据/资源）为"候选"；缺 R0-07 版本矩阵与性能、长时媒体、真机 DPI 矩阵、修正估算；G0 报告草案见 [r0-g0-report.md](r0-g0-report.md) |
 | G1 平台可用 | **未通过** | R1 未开始 |
 | G2 日常功能对齐 | **未通过** | R3～R7 未开始 |
 | G3 运行环境去 Node | **未通过** | 本分支未验证运行依赖清单/进程树 |
 | G4 可发布 | **未通过** | 无安装包/升级/回退/真机证据 |
 
-## 10. 下一轮建议（详版见 r0-baseline.md §6）
+## 10. 下一轮建议（详版见 [r0-g0-report.md](r0-g0-report.md) §5）
 
-1. 补 R0-03 真机矩阵（100/150/200% DPI、负坐标/拔插、白闪录像）并冻结 R3 坐标基线；
-2. 做 R0-05 媒体最小闭环（WebView 路径 vs 原生采集 spike），这是 G0 与估算的第一决定项；
-3. 做 R0-04 钩子提取小样（独立 helper + 现有 Rust 剪贴板联调）；
-4. 做 R0-06 合成凭据/PDF/图片视频资源通道小样与 ADR；
-5. 做 R0-07 NSIS 测试包 + WebView2 矩阵 + 首轮进程树/Private Bytes 对照（固定 Release、电源方案）；
-6. 以上至少 R0-03/R0-04/R0-05 有实测结论后，再产出 G0 决策报告并重估 R1～R8。
+1. R0-07：NSIS 测试包 + WebView2 有/无/离线矩阵 + 首轮 Release 性能/进程树对照（固定电源方案）；
+2. R0-05 收尾：两路同条件对照（§9.2）+ 30 分钟双音源/暂停续录 + WGC 打包身份实测；
+3. R0-04 收尾：浏览器/Office/资源管理器/管理员窗口矩阵 + 真实卡死恢复 + lease required=true + 与 `native/clipboard` 联调；
+4. R0-03 收尾：需要用户参与完成 100/150/200% DPI 与单屏/多屏视觉矩阵（可见窗口放副屏）；
+5. R0-06 收尾：产品真实 `capture/print.html` 批量/长图 PDF、图片视频资源桥真实链路、安装烟测；
+6. 测试驱动 ADR-0006 与最低系统 ADR-0007 的实测与版本冻结；
+7. 汇总修正估算与门禁结论，形成正式 G0 报告并重估 R1～R8（媒体后端改为原生采集候选后 R5 工时要重估）。
 
-## 11. 已知限制
+## 11. R0 追加批次（2026-11-10 晚，三条高风险链路 + 数据/资源/PDF/凭据）
+
+本批次补齐计划 §7 R0-04/R0-05/R0-06 的证据，全部为独立原型，**未接入产品入口**：
+
+| 任务 | 结果摘要 | 证据 |
+|---|---|---|
+| R0-04 钩子提取 | `native/selection-helper/`：vendor 2,590 行零改动复用；替换唯一 N-API 绑定 530 行；clean build 6.4s；真实选词验证（Notepad UIA 双击/拖选、WinForms 剪贴板回退 140ms）；成本：产品化 18–29 人日 | [r0-hook-extraction.md](r0-hook-extraction.md)、[ADR-0002](adr/0002-hook-extraction.md) |
+| R0-05a WebView2 媒体 | 必弹选源 UI；`ScreenCaptureStarting` 无指定源方法（`SetHandled` 不抑制 UI）；loopback 无法程序控制；MediaRecorder canvas webm 闭环通过；结论：WebView2 不能作唯一后端 | [r0-media-webview.md](r0-media-webview.md) |
+| R0-05b 原生媒体 | GDI 10s@30fps 1440×2560：301/301 帧、0 丢帧、p95 37.92ms；ffmpeg 管道 418 MiB/s、CPU≈1.45 核；WASAPI loopback 10s 精确字节；A/V mux 通过（end_skew -44.33ms）；WGC 本机 `E_ACCESSDENIED`（代码完整但无成功证据） | [r0-media-native.md](r0-media-native.md) |
+| R0-06 PDF | WebView2 `PrintToPdfStream` vs Electron `printToPDF`：页数/文字/字体/透明逐项等价，MediaBox 差 0.96pt，纸张单位=英寸被证实；二进制不等价 | [r0-pdf-spike.md](r0-pdf-spike.md)、[ADR-0003](adr/0003-pdf-backend.md) |
+| R0-06 资源通道 | command 二进制 vs 自定义协议：Range/206/416、seek、TTL/撤销/遍历拒绝、20/20 自检；`UriSchemeContext::webview_label()` 窗口归属可行（label 级）；20MiB 无 Base64 膨胀 | [r0-resource-channel.md](r0-resource-channel.md)、[ADR-0005](adr/0005-binary-resource-transport.md) |
+| R0-06 凭据 | Electron 43 safeStorage = `v10` + AES-256-GCM，key 在 `Local State`（DPAPI 包装 32B）；Rust 解密 Electron 密文与反向加密均通过；裸 DPAPI 失败（负对照） | [r0-credential-migration.md](r0-credential-migration.md)、[ADR-0004](adr/0004-credential-migration.md) |
+
+G0 汇总草案（未通过）见 [r0-g0-report.md](r0-g0-report.md)；ADR 索引见 [adr/README.md](adr/README.md)。
+
+## 12. 已知限制
 
 - 本分支所有合同/夹具是 **R0 证据，不是生产合同**；生产协议冻结在 R1。
 - 环境：`ELECTRON_RUN_AS_NODE=1` 仍设置（Electron 探针需清除，见 AGENTS）；本机 `TMP/TEMP`
