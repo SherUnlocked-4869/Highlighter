@@ -1,0 +1,28 @@
+# Highlighter Rust 迁移：R0 隔离 workspace。
+#
+# 这里是**新增**的独立工程，不替换现有 Electron 构建入口（计划 §3.1/R1-01）。
+# 现有 native/* 各自保留独立 Cargo 工程与锁文件，不在 R0 并入本 workspace。
+[workspace]
+resolver = "2"
+members = [
+  "crates/contracts",
+  "crates/core",
+  "crates/storage",
+  "crates/service-host",
+  "crates/media",
+  "crates/windows-platform",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+publish = false
+
+[workspace.dependencies]
+# 运行时依赖保持最小：R0 只做合同解析、协议/存储/几何原语，不引入宿主 GUI、
+# SQLite 或异步运行时。后续批次按计划 §3.2 的依赖方向逐项加入。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 首次构建下载依赖的版本在 Cargo.lock 中冻结（提交到仓库）。

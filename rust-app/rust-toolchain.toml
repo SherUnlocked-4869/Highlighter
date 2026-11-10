@@ -1,0 +1,5 @@
+# R0 固定实际验证过的工具链（计划 §3.1）。不要用 "stable"：R0 的证据必须可复现。
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

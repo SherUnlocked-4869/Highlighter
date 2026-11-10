@@ -1,0 +1,18 @@
+[package]
+name = "highlighter-service-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "R0 sidecar protocol primitives: clipboard frame codec (shared/clipboard-protocol.js parity)"
+
+[dependencies]
+serde_json.workspace = true
+
+[dev-dependencies]
+# 仅测试用：夹具里的 chunk/payload 是 base64（contract-format.md §4.3）。
+base64 = "0.22"
+# 仅测试用：解析夹具 JSON（serde 属性/derive）。
+serde.workspace = true
+# 仅测试用：定位仓库根与夹具目录，复用 contracts 的路径逻辑。
+highlighter-contracts = { path = "../contracts" }

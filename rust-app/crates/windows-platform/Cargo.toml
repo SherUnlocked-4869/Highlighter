@@ -1,0 +1,10 @@
+[package]
+name = "highlighter-windows-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "R0 Windows platform primitives: DIP/physical-pixel conversion and monitor geometry"
+
+[dependencies]
+# R0 是叶子 crate：只做纯几何/DPI 算术，不链接 Win32（R3 再引入 windows-sys 并写 ADR）。
