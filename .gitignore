@@ -29,3 +29,7 @@ test/native/selection-clipboard/build/
 
 # 只读参考克隆（Snow Apps 对标分析用，见 docs/plans/2026-10-10-snow-apps-feature-gap-analysis.md）
 _repo_snow_apps/
+
+# Rust 改造 workspace（见 docs/plans/rust-migration/contract-format.md）
+rust-app/target/
+rust-app/**/target/
