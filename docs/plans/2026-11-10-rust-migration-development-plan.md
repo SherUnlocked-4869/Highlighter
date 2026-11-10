@@ -1,6 +1,6 @@
 # Highlighter Rust 改造方案与开发计划
 
-日期：2026-11-10。状态：**开发计划草案；所有实现批次均未开始**。
+日期：2026-11-10。状态：**R0 进行中**（分支 `codex/rust-r0-baseline-contracts`：R0-01/R0-02 已落地，R0-03 原型见 [r0-window-prototype.md](rust-migration/r0-window-prototype.md)，R0-04～R0-07 未开始，G0 未通过；进展与证据见 [r0-report.md](rust-migration/r0-report.md)）。
 
 依据：[Rust 迁移可行性调研](../research/2026-11-10-rust-migration-feasibility.md)。源码基线：`3df712976fdeeef1f1dce47a81995cfabdee8ee9`，Highlighter 4.2.0 / Electron 43.8.3。本次仅编写计划，不代表已完成架构选型验证、产品改造或真机验收。
 
@@ -235,7 +235,7 @@ type OperationError = {
 
 | 批次 | 交付目标 | 主要前置 | 工程人周 | 状态 |
 |---|---|---|---:|---|
-| R0 | 风险原型、基线、接口盘点及选型决策 | 当前源码 | 4～6 | 未开始 |
+| R0 | 风险原型、基线、接口盘点及选型决策 | 当前源码 | 4～6 | 进行中：R0-01/R0-02 已落地，R0-03 原型，R0-04～07 未开始；G0 未通过 |
 | R1 | Rust 宿主、窗口、权限、bridge、CI 骨架 | G0 | 3～5 | 未开始 |
 | R2 | 存储与数据根、设置、已有 Rust 服务、搜索/识别接入 | R1 合同 | 4～6 | 未开始 |
 | R3 | 划词、剪贴板、焦点与智能选区协作 | R1、R2 | 4～7 | 未开始 |
@@ -490,11 +490,11 @@ Electron 兼容期继续遵守 [`AGENTS.md`](../../AGENTS.md)：清理 `ELECTRON
 
 下一轮若开始实施，首批只完成以下 R0 任务，不直接改造全部产品：
 
-- [ ] 固定源码/Release/设备与副屏，完成 R0-01 基线及功能矩阵。
-- [ ] 冻结 API/角色/数据与错误语义清单，建立跨语言 fixtures。
-- [ ] 建立隔离 workspace、数据根与资源打包白名单。
-- [ ] 完成透明窗口/截图、钩子/回贴、媒体采集三类原型。
-- [ ] 补齐文档/项目/凭据/PDF/视频资源小样和安装烟测。
-- [ ] 输出 G0 决策报告，再调整 R1～R8 范围和排期。
+- [x] 固定源码/Release/设备与副屏，完成 R0-01 基线及功能矩阵（`r0-baseline.md` / `feature-parity.md`；性能对照与真机矩阵未执行）。
+- [x] 冻结 API/角色/数据与错误语义清单，建立跨语言 fixtures（`contracts/host/host-contracts.json` + `test/fixtures/host-parity/`，Rust 双端对照测试通过）。
+- [x] 建立隔离 workspace、数据根与资源打包白名单（`rust-app/`、`scripts/rust/`；数据根仅 Rust locator 原型，未接入产品数据）。
+- [ ] 完成透明窗口/截图、钩子/回贴、媒体采集三类原型（仅有透明窗口/截图原型，见 `rust-migration/r0-window-prototype.md`；钩子/回贴、媒体采集未开始）。
+- [ ] 补齐文档/项目/凭据/PDF/视频资源小样和安装烟测（文档/项目夹具已冻结；凭据、PDF、视频资源与安装烟测未做）。
+- [ ] 输出 G0 决策报告，再调整 R1～R8 范围和排期（未输出；七项决策全部"待验证"，见 `r0-baseline.md` §4）。
 
 每批交付报告至少包括：基线与提交、任务 ID、合同变化、测试命令/结果与 CI 链接、设备/Runtime、资源数据、制品哈希、未关闭问题及回退方式。本文与上一份调研仍是文档成果，不能充当上述证据。
