@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "kind": "highlighter.frontend-resources",
+  "purpose": "Tauri 前端资源白名单（计划 §3.1）：只允许收集现有页面、shared、图标和 host bridge 到受控输出目录；禁止 main/、preload、测试、用户数据、native/ 或整个 node_modules 被无差别嵌入。开发临时输出必须落在 .tmp*/ 下，正式产物只写入专属输出目录，不能覆盖 Electron 候选包。",
+  "outputs": {
+    "defaultOutDir": ".tmp-rust-frontend",
+    "releaseOutDir": "rust-app/dist/frontend",
+    "manifestName": "frontend-manifest.json"
+  },
+  "sources": [
+    {
+      "id": "shared",
+      "role": "shared",
+      "root": "shared",
+      "allowExtensions": [".js", ".json"]
+    },
+    {
+      "id": "assets",
+      "role": "assets",
+      "root": "assets",
+      "allowExtensions": [".png", ".ico", ".wav"]
+    },
+    {
+      "id": "config",
+      "role": "page",
+      "root": "config",
+      "allowExtensions": [".html", ".js", ".css", ".svg"]
+    },
+    {
+      "id": "capture",
+      "role": "page",
+      "root": "capture",
+      "allowExtensions": [".html", ".js", ".css", ".svg"]
+    },
+    {
+      "id": "clipboard",
+      "role": "page",
+      "root": "clipboard",
+      "allowExtensions": [".html", ".js", ".css", ".svg"]
+    },
+    {
+      "id": "action",
+      "role": "page",
+      "root": "action",
+      "allowExtensions": [".html", ".js", ".css", ".svg"]
+    },
+    {
+      "id": "toolbar",
+      "role": "page",
+      "root": "toolbar",
+      "allowExtensions": [".html", ".js", ".css", ".svg"]
+    },
+    {
+      "id": "pin",
+      "role": "page",
+      "root": "pin",
+      "allowExtensions": [".html", ".js", ".css", ".svg"]
+    },
+    {
+      "id": "long-capture",
+      "role": "page",
+      "root": "long-capture",
+      "allowExtensions": [".html", ".js", ".css", ".svg"]
+    },
+    {
+      "id": "recognition",
+      "role": "page",
+      "root": "recognition",
+      "allowExtensions": [".html", ".js", ".css", ".svg"]
+    },
+    {
+      "id": "search",
+      "role": "page",
+      "root": "search",
+      "allowExtensions": [".html", ".js", ".css", ".svg"]
+    },
+    {
+      "id": "record",
+      "role": "page",
+      "root": "record",
+      "allowExtensions": [".html", ".js", ".css", ".svg"]
+    }
+  ],
+  "exclude": [
+    "config/release-hardware-matrix.json",
+    "**/*.test.js",
+    "**/*.map",
+    "**/*.md",
+    "**/*.log",
+    "**/.DS_Store"
+  ],
+  "forbiddenRoots": [
+    "main",
+    "test",
+    "tests",
+    "e2e",
+    "native",
+    "node_modules",
+    "vendor",
+    "dist",
+    "coverage",
+    "docs",
+    "scripts",
+    ".github",
+    "design-demos",
+    "_repo_snow_apps"
+  ],
+  "forbiddenPathSegments": [
+    "node_modules",
+    "preload",
+    "test",
+    "tests",
+    "e2e",
+    "native",
+    "vendor",
+    "dist",
+    "coverage"
+  ],
+  "deniedExtensions": [".exe", ".dll", ".node", ".msi", ".ps1", ".bat", ".cmd", ".cjs", ".mjs", ".wasm"],
+  "maxFileBytes": 8388608,
+  "maxFiles": 5000
+}
