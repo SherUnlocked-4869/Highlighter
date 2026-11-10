@@ -13,7 +13,7 @@
 | [feature-parity.md](feature-parity.md) | R0-01 功能矩阵：13 角色核对 + F-01～F-20 功能域 + D-01～D-20 缺陷/未验证证据 | 已完成（文档） |
 | [r0-baseline.md](r0-baseline.md) | R0-01 实测基线：版本/环境/显示器、R0-01～07 状态、G0 七项决策登记（全部待验证）、R1 切片建议 | 已完成（文档） |
 | [host-contract-inventory.md](host-contract-inventory.md) | R0-02 合同盘点与差异清单：13 角色、knownGaps、§9.1 限制、§5.1 schema、错误码 | 已完成 |
-| [r0-window-prototype.md](r0-window-prototype.md) | R0-03 Tauri 透明窗口/截图浮层原型：构建、自检、人工验收步骤与未验证项 | 见该文档 |
+| [r0-window-prototype.md](r0-window-prototype.md) | R0-03 Tauri 透明窗口/截图浮层原型：构建、自检、人工验收步骤与未验证项 | 原型完成：编译/自检 PASS（副屏截图证据），100/200% DPI 等真机视觉未验证 |
 | [r0-report.md](r0-report.md) | 本分支 R0 实施报告：交付矩阵、验证命令与结果、缺口、门禁状态、下一轮建议 | **最终状态以本文件为准** |
 
 机器可读产物与代码：

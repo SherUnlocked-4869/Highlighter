@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "prototype-overlay",
+  "description": "R0-03 overlay prototype: 唯一授予前端的是事件监听（接收 prototype:init）。注意应用 invoke_handler 命令默认不受本文件约束（原型的已知隔离缺口，见 docs/plans/rust-migration/r0-window-prototype.md）。",
+  "local": true,
+  "windows": ["prototype-overlay"],
+  "permissions": ["core:event:allow-listen"]
+}

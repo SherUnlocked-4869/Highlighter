@@ -12,7 +12,7 @@
 | 项 | 实测值 | 获取方式 |
 |---|---|---|
 | 产品源码基线 | `3df712976fdeeef1f1dce47a81995cfabdee8ee9`（存在且为 commit；与计划声明一致，是 4.2.0 之后最后一个产品提交） | `git rev-parse 3df7129` / `git cat-file -t` / `git log --oneline` |
-| 本分支 HEAD | `82c0b414b8ad310467335fa0a768efd33891d9fd`，分支 `codex/rust-r0-baseline-contracts` | `git rev-parse HEAD`、`git branch --show-current` |
+| 本分支 HEAD | 写作时为 `82c0b414b8ad310467335fa0a768efd33891d9fd`（分支 `codex/rust-r0-baseline-contracts`）；R0 最终实现提交见 `git log --oneline` 与 [r0-report.md](r0-report.md) | `git rev-parse HEAD`、`git branch --show-current` |
 | HEAD 相对产品源码 | 4 files changed, 1185 insertions(+), 30 deletions(-)，仅 3 份文档 + `.gitignore` 行尾变化 | `git diff --stat 3df7129..HEAD` |
 | 应用版本 | `highlighter-snowshot` `4.2.0` | `package.json:3`、`node -p "require('./package.json').version"` |
 | Electron | `43.8.3`（devDependency 与 `node_modules/electron/package.json` 一致） | `node -p "require('./node_modules/electron/package.json').version"`、`package.json:183` |
@@ -44,12 +44,18 @@
 | `\\.\DISPLAY1` | 是 | `(0,0)-(3840,2160)`，3840×2160 | 3840×2112 | 144 dpi（150%） |
 | `\\.\DISPLAY2` | 否 | `(4608,-204)-(6336,2868)`，1728×3072（竖屏） | 1728×3024 | 144 dpi（150%） |
 
+> **R0-03 更正（2026-11-10，per-monitor DPI aware 的 Tauri 进程实测）**：副屏实际为
+> `(3840,-170)`、物理 `1440×2560`、**125%**（120 dpi），主屏 150%，即本机是**混合 DPI**，
+> 不是"两屏均 150%"。上表 `(4608,-204)/1728×3072/150%` 是 SetProcessDPIAware 进程读数，
+> 已被 Windows DPI 虚拟化放大；R0-03 自检的真实窗口位置是 `(3840,-170)`，并有虚拟桌面
+> 截图为证。R3 必须用 per-monitor DPI aware v2 进程重新冻结基线，上表仅作取数方法对照保留。
+
 交叉核对与结论：
 
-1. 非 DPI-aware 进程读到的逻辑值：主屏 2560×1440、副屏 1152×2048 @ 坐标 `(3072,-136)`，正好是物理值 ÷1.5，说明该进程被 DPI 虚拟化。**记录基线时必须同时写清取数方式，否则会把 150% 缩放误读成 100%。**
-2. 本机有 **2 块活动显示器**，均为 150% 缩放；副屏为竖屏且 **Y 坐标为负（-204）**。**本机不构成"混合 DPI"矩阵**（没有两块不同缩放比例的屏），R0-03/R4 的混合 DPI 结论不能只用本机证明。
-3. `Win32_DesktopMonitor` 列出 3 个监视器条目（其中 2 个 `Default Monitor`，与物理屏不一一对应），不能作为显示器数量依据；以 `EnumDisplayMonitors` 为准。
-4. 按仓库 `AGENTS.md:3-4`，所有可见测试窗口默认放副屏（`\\.\DISPLAY2`，竖屏 1728×3072）；本文件涉及的真机验证本轮均未执行。
+1. 取数方式会改变结果：非 DPI-aware 进程读主屏 2560×1440、副屏 1152×2048；SetProcessDPIAware 进程读 1728×3072；per-monitor v2 进程（Tauri/R0-03）读 1440×2560@125%。**记录基线必须写清进程 DPI 感知级别，否则会把缩放误读。**
+2. 本机有 **2 块活动显示器**；主屏 150%、副屏 125%，副屏为竖屏且 **Y 坐标为负**（R0-03 实测 `-170`）。本机可作一次混合 DPI 抽样，但拔插/重排/三屏矩阵仍未验证。
+3. `Win32_DesktopMonitor` 列出 3 个监视器条目（其中 2 个 `Default Monitor`，与物理屏不一一对应），不能作为显示器数量依据；以 `EnumDisplayMonitors`/Tauri monitor API 为准。
+4. 按仓库 `AGENTS.md:3-4`，所有可见测试窗口默认放副屏（`\\.\DISPLAY2`）；R0-03 `--self-test` 已按此只在副屏显示并截图核对，其余真机验证本轮未执行。
 
 ### 1.4 会话/构建/依赖状态（影响测试与 R0 复现）
 
@@ -64,7 +70,7 @@
 | OCR 模型 | `ocr/models/ppocr-v4-ch/`：`ch_PP-OCRv4_det_mobile.onnx`、`ch_PP-OCRv4_rec_mobile.onnx`、`ch_ppocr_mobile_v2.0_cls_mobile.onnx` + `model.json` | `find . -name "*.onnx"`；与 `native/ocr` 的 sidecar 配合 |
 | ffmpeg | `node_modules/ffmpeg-static/ffmpeg.exe` 82,797,568 B 已安装 | 录屏导出测试中"真实 ffmpeg"用例的前提（否则 skip） |
 | 打包产物 | `dist/` 下有历史打包目录（含 `win-unpacked`） | **本轮未重新构建**；不得作为本次基线或发布证据 |
-| 工作区状态 | 有未跟踪的并行 R0 产出：`contracts/`、`rust-app/`、`scripts/rust/extract-host-contracts.js`、`scripts/rust/generate-host-fixtures.js`、`scripts/rust/check-rust-app.ps1`、`test/fixtures/host-parity/`、`test/host-contracts.test.js`、`docs/plans/rust-migration/host-contract-inventory.md`、本文件与 `feature-parity.md` | `git status --porcelain`。Lead 统一提交；本文件不执行 git 写操作 |
+| 工作区状态 | 本节写于并行产出收口前；R0 产物最终均已由 Lead 提交（分支 `codex/rust-r0-baseline-contracts`，见 `git log` 与 [r0-report.md](r0-report.md)）；原型运行证据在 gitignore 的 `.tmp-r0/`，不提交 | `git status --porcelain`、`git log --oneline` |
 
 ### 1.5 功能开关默认值（R0-01 "功能开关"证据）
 
@@ -122,8 +128,8 @@
 | 任务 | 状态 | 证据路径（实际存在性已核对） | 缺口 |
 |---|---|---|---|
 | R0-01 基线、功能开关/数据集/硬件、入口盘点 | **部分完成**（本文件 + 功能矩阵为唯一交付） | `docs/plans/rust-migration/feature-parity.md`、`docs/plans/rust-migration/r0-baseline.md` | 本轮未跑全量测试/性能；§9.2 的性能目标阈值未冻结（计划要求第一次对照运行前冻结）；真机矩阵未执行 |
-| R0-02 13 preload/API、IPC 角色、schema、服务协议、资源限制提取 | **部分完成（并行产出，写作时基本在途）** | 规格：`docs/plans/rust-migration/contract-format.md`；已落地（写作时逐项 `ls` 核对）：`contracts/host/host-contracts.json`（110,493 B）、`test/fixtures/host-parity/`（`manifest.json` + 5 组，29 个文件）、`scripts/rust/extract-host-contracts.js`、`scripts/rust/generate-host-fixtures.js`、`test/host-contracts.test.js`、`docs/plans/rust-migration/host-contract-inventory.md`（201 行） | 差异清单已登记 `capture/print.html` 离屏打印窗口（`knownGaps: auxiliary-window-not-in-ipc-surfaces`）与 `toolbar.onSelection` 聚合通道；**未登记** `capture:record-history` 死通道（见 `feature-parity.md` §3 补充）；`node scripts/rust/*.js --check`、`node --test test/host-contracts.test.js`、`cargo test --manifest-path rust-app/Cargo.toml --locked`、`npm run check` 均未在本会话运行；**以最终提交与验收命令结果核对，不得以"文件存在"代替通过** |
-| R0-03 Tauri 托盘/无窗口启动、副屏截图浮层、Canvas 最小编辑保存 | **未开始**（仅有 `rust-app/` workspace 骨架与 `scripts/rust/check-rust-app.ps1` 作为前置，**无 `src-tauri` 原型**） | `rust-app/Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml`、`rust-app/README.md`、`scripts/rust/check-rust-app.ps1`（均为并行产出）；无原型文档 | 100/150/200% DPI、负坐标、首帧/焦点/退出、整个 WebView2 进程组均未验证；未启动过任何 Tauri 窗口 |
+| R0-02 13 preload/API、IPC 角色、schema、服务协议、资源限制提取 | **完成（最终验收通过，见 r0-report.md）** | 规格：`docs/plans/rust-migration/contract-format.md`；产物：[`contracts/host/host-contracts.json`](../../../contracts/host/host-contracts.json)（110,493 B）、`test/fixtures/host-parity/`（`manifest.json` + 5 组 28 case）、`scripts/rust/extract-host-contracts.js`、`scripts/rust/generate-host-fixtures.js`、`test/host-contracts.test.js`（19 tests）、`docs/plans/rust-migration/host-contract-inventory.md` | `--check` 两个均 exit 0、Node 测试 19/19、Rust 双端对照 12 + 5 cases 通过；剩余：`capture:record-history` 死通道与 `capture/print.html` 非角色窗口需 R1 决策（inventory/feature-parity 已登记） |
+| R0-03 Tauri 托盘/无窗口启动、副屏截图浮层、Canvas 最小编辑保存 | **原型完成（编译/自检通过；真机视觉矩阵未验证）** | [`docs/plans/rust-migration/r0-window-prototype.md`](r0-window-prototype.md)、`rust-app/src-tauri/`（tauri 2.12.5）；`--self-test` 两次 PASS、退出码 0；副屏 `(3840,-170)`、`dpr=1.25`、ready=1/init 恰好 1 次；虚拟桌面截图证据在 `.tmp-r0/` | 托盘/主窗口/单实例未做（R1-02）；100%/200% DPI 真机视觉、首帧白闪、单屏拒绝路径、鼠标穿透/焦点均未验证；应用命令默认不受 capability ACL 约束的缺口见原型文档 §5 |
 | R0-04 去 N-API 钩子小样 + 既有 Rust 剪贴板联调 | **未开始** | 现有源码：`vendor/selection-hook/src/windows/selection_hook.cc`、`main/services/selection-hook-host.js:1`、`native/clipboard/` | 选词/回退复制/lease/前台授权/错误目标拒绝/崩溃恢复均未演示 |
 | R0-05 WebView 媒体路径验证（失败则原生采集最小闭环） | **未开始** | 现有链路源码：`main/domains/record/index.js:1367`、`record/record.js:803`、`record/audio-mixer.js` | 全屏/区域/窗口、双音源、暂停/继续、可播放原片、源目标变化、30 分钟时钟样例均未验证 |
 | R0-06 v3 文档/v1 项目/合成凭据导入、图片/视频资源桥、PDF 样例 | **未开始**（只有合同格式与部分夹具） | 规格：`contract-format.md`；夹具雏形：`test/fixtures/host-parity/` | 每项"成功/失败/恢复"用例、输出安全边界、后端选型 ADR 均未产出 |
@@ -239,7 +245,7 @@
 
 - **未执行**：产品单测/E2E/覆盖率/长截图/静态门禁/fuses/打包/硬件矩阵/性能对照（完整命令清单见 §2 末尾）。
 - **未执行**：任何真机或可见窗口验证（本机副屏、多 DPI、RDP、休眠、真实音频设备）。
-- **未执行**：Rust/Tauri 构建、运行、探针（本分支只有 `rust-app/` 骨架与合同/夹具并行产物）。
+- **已补测（本分支最终）**：Rust workspace 107 tests 通过、`check-rust-app.ps1` OK；R0-03 Tauri 原型编译/自检通过并有截图证据（详见 [r0-report.md](r0-report.md)）。真机视觉/DPI 矩阵、安装包与性能对照仍未执行。
 - **未验证**：§4 七项决策全部为"待验证"；§5 五类缺陷/缺口未关闭；G0～G4 全部未通过。
 - **版本一致性提醒**：本文所有数值是 2026-11-10 本机一次采样的结果；换机器/换 Runtime/换电源方案后不能直接复用为性能基线。性能对照还要求固定 Release 构建、GPU 驱动、数据集、功能开关与回收等待时间（计划 §9.2），这些本轮均未固定。
 

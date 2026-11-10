@@ -11,6 +11,7 @@ members = [
   "crates/service-host",
   "crates/media",
   "crates/windows-platform",
+  "src-tauri",
 ]
 
 [workspace.package]
