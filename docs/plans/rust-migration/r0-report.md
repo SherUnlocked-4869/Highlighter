@@ -7,8 +7,9 @@
 
 ## 1. 结论摘要
 
-- 计划 §12 首批 6 项：第 1、2 项完成；第 3 项完成（数据根仅有 Rust **locator 原型**，未接入产品数据）；
-  第 4 项只做了窗口原型（钩子/回贴、媒体采集未开始）；第 5、6 项未完成。
+- 计划 §12 首批 6 项：第 1、2、3 项完成（数据根仅有 Rust **locator 原型**，未接入产品数据）；
+  第 4 项三类原型（窗口/钩子/媒体）均已有实测证据；第 5 项大部分完成（安装烟测与产品真实链路未做）；
+  第 6 项 G0 报告草案已产出（[r0-g0-report.md](r0-g0-report.md)），但 **G0 未通过**。
 - 可复跑的 R0 产出：宿主合同 + 28 个跨语言夹具（Node↔Rust 双端严格对照）、6 crate 的 Rust
   workspace（107 tests）、Tauri 2 透明浮层原型（编译/自检 PASS、副屏截图证据）、前端资源打包白名单。
 - **G0 未通过**：七项决策（媒体后端/钩子边界/最低系统 Runtime/资源传输/PDF/凭据/测试驱动）
@@ -40,7 +41,7 @@
 | 本报告提交 | Tauri R0-03 原型（`rust-app/src-tauri/`，15 tests）、r0-window-prototype 文档、本报告与 `r0-baseline.md`/`rust-app/README.md` 更新 |
 | `e401a6f` | R0-06 合成凭据跨语言验证（OSCrypt v10 + Local State DPAPI key + AES-GCM 双向实测）+ ADR-0004 |
 | `985c6b6` | R0-04 独立 C++ selection helper（真实选词验证）+ r0-hook-extraction + ADR-0002 |
-| 本批次提交 | R0-05a/R0-05b 媒体两路 spike（`rust-app/prototypes/webview-media/`、`native-capture/`）、R0-06 PDF/资源通道（`rust-app/prototypes/webview-pdf-resource/`、`scripts/rust/probe-electron-pdf.js`）、ADR-0001/0003/0005、r0-g0-report 草案 |
+| `9c1ef8c` | R0-05a/R0-05b 媒体两路 spike（`rust-app/prototypes/webview-media/`、`native-capture/`）、R0-06 PDF/资源通道（`rust-app/prototypes/webview-pdf-resource/`、`scripts/rust/probe-electron-pdf.js`）、ADR-0001/0003/0005、r0-g0-report 草案 |
 
 ## 4. 验证命令与结果（Lead 在本分支实际运行）
 
