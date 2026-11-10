@@ -55,6 +55,11 @@ function fileBytes(relativePath) {
   return fs.readFileSync(path.join(ROOT, ...relativePath.split('/')))
 }
 
+// 夹具以 LF 入库；CI 的 Windows checkout 可能转成 CRLF，sha256 校验按规范化文本计算。
+function normalizeText(value) {
+  return value.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+}
+
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex')
 }
@@ -319,8 +324,8 @@ test('fixture manifest hashes match the case files', () => {
       const relative = `${FIXTURES_REL}/${entry.file}`
       listed.push(relative)
       const bytes = fileBytes(relative)
-      assert.equal(sha256(bytes), entry.sha256, `${relative} sha256 does not match the manifest`)
-      const parsed = JSON.parse(bytes.toString('utf8'))
+      assert.equal(sha256(Buffer.from(normalizeText(bytes.toString('utf8')), 'utf8')), entry.sha256, `${relative} sha256 does not match the manifest`)
+      const parsed = JSON.parse(normalizeText(bytes.toString('utf8')))
       assert.equal(parsed.schemaVersion, 1)
       assert.equal(parsed.caseId, `${group.id}/${entry.id}`)
       assert.equal(parsed.format, group.format)

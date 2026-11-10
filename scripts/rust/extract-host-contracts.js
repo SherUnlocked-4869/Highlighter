@@ -242,8 +242,14 @@ function absolute(relativePath) {
   return path.join(ROOT, ...relativePath.split('/'))
 }
 
+// 生成的合同必须与 Windows/macOS checkout 的行尾无关：CRLF 会改变字节级 --check 与
+// sha256 结果（CI 的 windows runner 会做 autocrlf 转换），因此所有文本读取统一归一化。
+function normalizeText(value) {
+  return value.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+}
+
 function readSource(relativePath) {
-  return fs.readFileSync(absolute(relativePath), 'utf8')
+  return normalizeText(fs.readFileSync(absolute(relativePath), 'utf8'))
 }
 
 function fileExists(relativePath) {
@@ -465,7 +471,7 @@ function buildChannelTestIndex() {
     .sort(compareStrings)
   const contents = files.map((name) => ({
     file: `test/${name}`,
-    text: fs.readFileSync(path.join(testDirectory, name), 'utf8')
+    text: normalizeText(fs.readFileSync(path.join(testDirectory, name), 'utf8'))
   }))
   return function testsForChannel(channel) {
     const needles = [`'${channel}'`, `"${channel}"`, `\`${channel}\``]
@@ -586,7 +592,7 @@ function findAuxiliaryWindows(registeredPages, roleNames) {
   const found = new Map()
   for (const file of sources) {
     const relative = relativeFromRoot(file)
-    const source = fs.readFileSync(file, 'utf8')
+    const source = normalizeText(fs.readFileSync(file, 'utf8'))
     const preloadRefs = []
     const preloadPattern = /preload(?:-([a-z0-9-]+))?\.js/g
     let preloadMatch = preloadPattern.exec(source)
@@ -913,7 +919,7 @@ function runCli(argv) {
     return 0
   }
 
-  const expected = fs.existsSync(OUTPUT_PATH) ? fs.readFileSync(OUTPUT_PATH, 'utf8') : null
+  const expected = fs.existsSync(OUTPUT_PATH) ? normalizeText(fs.readFileSync(OUTPUT_PATH, 'utf8')) : null
   if (expected === null) {
     process.stderr.write(`missing ${OUTPUT_REL}; run --write\n`)
     return 1

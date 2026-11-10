@@ -55,6 +55,12 @@ function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex')
 }
 
+// --check 与 manifest sha256 按 LF 规范化后的文本计算，避免 Windows checkout 的
+// autocrlf 把已提交的 LF 夹具转成 CRLF 后出现假失败。
+function normalizeText(value) {
+  return value.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+}
+
 function caseShell(format, caseId, source, expect) {
   return {
     schemaVersion: FIXTURES_SCHEMA_VERSION,
@@ -789,7 +795,7 @@ function runCli(argv) {
       failures += 1
       continue
     }
-    const actual = fs.readFileSync(target, 'utf8')
+    const actual = normalizeText(fs.readFileSync(target, 'utf8'))
     if (actual === expected) continue
     failures += 1
     process.stderr.write(`stale ${relative}; run --write\n`)
