@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "caseId": "clipboard-protocol/size-less-than-minimum",
+  "format": "clipboard-protocol.v1",
+  "source": [
+    "shared/clipboard-protocol.js"
+  ],
+  "expect": "invalid",
+  "kind": "invalid",
+  "chunks": [
+    "BAAAAA=="
+  ],
+  "reason": "invalid-frame",
+  "expectedError": "invalid-frame",
+  "failAt": "feed"
+}

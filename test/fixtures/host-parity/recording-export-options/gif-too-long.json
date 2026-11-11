@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "caseId": "recording-export-options/gif-too-long",
+  "format": "recording-export-options.v1",
+  "source": [
+    "shared/recording-export-options.js"
+  ],
+  "expect": "invalid",
+  "kind": "normalize",
+  "request": {
+    "format": "gif",
+    "gif": {
+      "edge": 1280,
+      "fps": 15
+    }
+  },
+  "metadata": {
+    "durationMs": 61000,
+    "video": {
+      "width": 1920,
+      "height": 1080,
+      "frameRate": 30
+    },
+    "audio": {
+      "exists": false
+    }
+  },
+  "reason": "gif-too-long"
+}

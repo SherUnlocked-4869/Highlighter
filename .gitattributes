@@ -1,0 +1,4 @@
+# R0 合同/夹具做字节级 --check 与 sha256 校验：固定 LF，避免 Windows checkout 的
+# core.autocrlf 转换造成 CI 假失败（见 docs/plans/rust-migration/contract-format.md §2）。
+contracts/host/host-contracts.json text eol=lf
+test/fixtures/host-parity/** text eol=lf

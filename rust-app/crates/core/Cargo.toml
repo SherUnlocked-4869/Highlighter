@@ -1,0 +1,10 @@
+[package]
+name = "highlighter-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "R0 core prototypes: operation registry with window instance, generation, cancellation and cleanup"
+
+[dependencies]
+highlighter-contracts = { path = "../contracts" }

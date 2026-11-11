@@ -1,0 +1,44 @@
+# R0-05a：WebView2 屏幕采集 / MediaRecorder 能力原型（独立 Cargo 工程）。
+#
+# 这不是生产宿主。只回答计划 §2 D05 / §7 R0-05 的问题：
+#   1. WebView2 的 getDisplayMedia 是否弹原生选源 UI、无手势时的真实错误；
+#   2. ICoreWebView2ScreenCaptureStarting 事件能否"程序指定源/跳过选源"（文档+实测）；
+#   3. getDisplayMedia({audio:true}) 能否拿到系统音频（loopback）轨；
+#   4. MediaRecorder 录 webm → 宿主写盘 → ffmpeg 解析的闭环是否可播放；
+#   5. 透明浮层窗口下采集是否受窗口/焦点影响。
+#
+# 空 `[workspace]` 表 = 独立工程，避免被并入 `rust-app/Cargo.toml` 的父 workspace
+# （父 workspace 成员固定为 crates/* 与 src-tauri；见 rust-app/README.md）。
+# 本工程自带 Cargo.lock，不要改主 workspace 的 Cargo.toml/Cargo.lock。
+[workspace]
+
+[package]
+name = "highlighter-r0-media-webview"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+publish = false
+description = "R0-05a WebView2 screen-capture / MediaRecorder capability prototype (not a production host)"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# 版本与主 workspace 的 rust-app/Cargo.lock 对齐：tauri 2.12.5 / wry 0.57.2 /
+# webview2-com 0.39.1 / windows 0.62.2。webview2-com 是直接依赖，只为调用
+# ICoreWebView2_27::add_ScreenCaptureStarting 与 ICoreWebView2_16/Tauri 控制器的属主窗口类型。
+tauri = { version = "2" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+webview2-com = "0.39"
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Threading",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[features]
+# Tauri 模板约定：未配置 devUrl 时用于嵌入 frontendDist。R0 用 `cargo build`（debug）跑。
+custom-protocol = ["tauri/custom-protocol"]

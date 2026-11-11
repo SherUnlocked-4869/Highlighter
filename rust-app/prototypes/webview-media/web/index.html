@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Highlighter R0-05a media webview prototype</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #101418;
+        --panel: #161c22;
+        --text: #d8dee6;
+        --muted: #8b98a5;
+        --accent: #4fc3f7;
+        --warn: #ffb74d;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        color: var(--text);
+        font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      }
+      body {
+        background: var(--bg);
+      }
+      /* 透明浮层窗口（media-overlay）：页面背景保持透明，只留文字和边框。 */
+      body.overlay {
+        background: transparent;
+        border: 2px solid var(--accent);
+        box-sizing: border-box;
+        color: #fff;
+        text-shadow: 0 1px 2px #000;
+      }
+      main {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        box-sizing: border-box;
+        padding: 18px 22px;
+        gap: 12px;
+      }
+      header h1 {
+        margin: 0 0 6px;
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--accent);
+      }
+      header p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+        max-width: 78ch;
+      }
+      dl.state {
+        display: grid;
+        grid-template-columns: 130px 1fr;
+        gap: 2px 10px;
+        margin: 0;
+        font-size: 13px;
+      }
+      dl.state dt {
+        color: var(--muted);
+      }
+      dl.state dd {
+        margin: 0;
+        word-break: break-all;
+      }
+      pre#log {
+        flex: 1;
+        margin: 0;
+        overflow: auto;
+        background: var(--panel);
+        border: 1px solid #26303a;
+        border-radius: 6px;
+        padding: 10px 12px;
+        font-family: Consolas, "Cascadia Mono", monospace;
+        font-size: 12px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+      }
+      body.overlay pre#log {
+        background: rgba(0, 0, 0, 0.55);
+        border-color: rgba(255, 255, 255, 0.25);
+      }
+      #phase {
+        font-weight: 600;
+        color: var(--warn);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>R0-05a WebView2 媒体能力原型（测试页，非产品 UI）</h1>
+        <p>
+          自动化探测 getDisplayMedia / ScreenCaptureStarting / 系统音频 loopback /
+          MediaRecorder webm 闭环。宿主会在窗口客户区中心注入一次真实 OS 点击作为
+          trusted user activation；页面中心区域没有可交互控件。
+        </p>
+      </header>
+      <dl class="state">
+        <dt>窗口标签</dt>
+        <dd id="win-label">…</dd>
+        <dt>SCS 模式</dt>
+        <dd id="scs-mode">…</dd>
+        <dt>阶段</dt>
+        <dd id="phase">boot</dd>
+      </dl>
+      <pre id="log"></pre>
+    </main>
+    <script src="main.js"></script>
+  </body>
+</html>

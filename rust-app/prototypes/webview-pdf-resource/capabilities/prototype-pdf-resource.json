@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "prototype-pdf-resource",
+  "description": "R0-06 prototype: 前端只被授予事件监听；应用 invoke_handler 命令默认不受本文件约束（原型已知隔离缺口）。窗口归属在命令入口与自定义协议处理器内用 webview label 校验，见 docs/plans/rust-migration/r0-resource-channel.md。",
+  "local": true,
+  "windows": ["pdf-primary", "pdf-csspage", "media-a", "media-b"],
+  "permissions": ["core:event:allow-listen"]
+}

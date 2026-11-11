@@ -1,0 +1,703 @@
+{
+  "schemaVersion": 1,
+  "caseId": "settings/normalize-legacy-autosave-dropped",
+  "format": "settings.normalize.v1",
+  "source": [
+    "main/services/settings-normalize.js",
+    "main/services/settings-defaults.js"
+  ],
+  "expect": "valid",
+  "kind": "normalize",
+  "input": {
+    "apiKey": "",
+    "clipboard": {
+      "enabled": false,
+      "paused": false,
+      "captureText": true,
+      "captureImages": true,
+      "captureFiles": true,
+      "historyLimit": 500,
+      "retentionDays": 30,
+      "maxPayloadMiB": 256,
+      "maxDiskMiB": 384,
+      "maxThumbnailMiB": 64,
+      "releaseAfterMs": 60000,
+      "excludedApps": []
+    },
+    "usage": {
+      "enabled": false
+    },
+    "providers": [
+      {
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "baseUrl": "https://api.deepseek.com",
+        "apiKey": "",
+        "protocol": "openai-chat",
+        "enabled": true,
+        "builtin": true,
+        "models": [
+          {
+            "id": "deepseek-v4-flash",
+            "name": "DeepSeek V4 Flash"
+          }
+        ]
+      }
+    ],
+    "theme": "system",
+    "mainColor": "#e5a44c",
+    "borderRadius": 13,
+    "compact": false,
+    "language": "zh-CN",
+    "skinPath": "",
+    "skinOpacity": 18,
+    "customCss": "",
+    "selectionToolbar": {
+      "enabled": true,
+      "clipboardFallback": false,
+      "buttons": {
+        "copy": true,
+        "search": true,
+        "translate": true,
+        "explain": true
+      },
+      "order": [
+        "copy",
+        "search",
+        "translate",
+        "explain",
+        "open"
+      ],
+      "prompts": {
+        "translate": "你是一个专业的翻译助手。请按照设置的语言方向翻译用户输入的文本，只输出翻译结果，不要添加任何额外说明或解释。",
+        "explain": "你是一个知识渊博的解说专家。请对用户提供的文本进行深入分析和解读：\n\n### 核心要点\n先用一句话概括核心内容。\n\n### 详细解释\n对文本中的关键概念、术语、背景进行详细解释，帮助用户全面理解。如果涉及专业知识，请进行通俗易懂的说明。\n\n### 延伸知识\n补充相关的背景信息、实际应用场景或有趣的引申知识点。\n\n请使用中文回答，内容充实但不冗长，层次分明。"
+      },
+      "customActions": [],
+      "searchEngine": "bing",
+      "translateLanguages": {
+        "source": "auto",
+        "target": "中文"
+      },
+      "conversation": {
+        "enabled": true,
+        "maxFollowUpTurns": 10,
+        "persist": false
+      },
+      "resultWindow": {
+        "width": 550,
+        "height": 560
+      }
+    },
+    "toolbarThinking": {
+      "translate": "off",
+      "explain": "high"
+    },
+    "plugins": {
+      "ocr": true,
+      "translation": true,
+      "ai": true,
+      "video": true
+    },
+    "screenshot": {
+      "autoSaveOnCopy": false,
+      "fastSave": false,
+      "saveDirectory": "",
+      "historyDirectory": "",
+      "historyEnabled": true,
+      "historyLimit": 200,
+      "historyRevisionLimit": 20,
+      "doubleClickCopy": true,
+      "selectionMask": "rgba(0,0,0,.46)",
+      "showColorPicker": true,
+      "annotationWidth": 4,
+      "annotationColor": "#ff3b30",
+      "annotationStyles": {
+        "rect": {
+          "color": "#ff3b30",
+          "width": 4,
+          "fill": "none",
+          "dash": "solid",
+          "radius": 0
+        },
+        "ellipse": {
+          "color": "#ff3b30",
+          "width": 4,
+          "fill": "none",
+          "dash": "solid"
+        },
+        "arrow": {
+          "color": "#ff3b30",
+          "width": 4,
+          "dash": "solid",
+          "startHead": false,
+          "endHead": true
+        },
+        "line": {
+          "color": "#ff3b30",
+          "width": 4,
+          "dash": "solid"
+        },
+        "pen": {
+          "color": "#ff3b30",
+          "width": 4
+        },
+        "highlight": {
+          "color": "#ffcc00",
+          "width": 4,
+          "alpha": "medium"
+        },
+        "text": {
+          "color": "#ff3b30",
+          "width": 4,
+          "bold": false
+        },
+        "serial": {
+          "color": "#ff3b30",
+          "width": 4
+        },
+        "blur": {
+          "color": "#ff3b30",
+          "width": 4
+        }
+      },
+      "captureCursor": false,
+      "shutterSound": true,
+      "nameTemplate": "",
+      "lastSaveDirectory": "",
+      "keepSerialAcrossCaptures": false,
+      "longCaptureDirection": "vertical",
+      "watermark": {
+        "content": "",
+        "opacity": 80,
+        "color": "#ffffff",
+        "spacing": 30,
+        "fontSize": 24,
+        "rotation": 30,
+        "dateSuffix": false
+      },
+      "regionPreferences": {
+        "schemaVersion": 1,
+        "lastByMode": {
+          "capture": null,
+          "record": null
+        },
+        "presets": []
+      },
+      "outputStylePreset": "original"
+    },
+    "ocr": {
+      "modelProfile": "ppocr-v4-ch",
+      "hotStart": true,
+      "detectAngle": false,
+      "minConfidence": 0.3,
+      "afterAction": "none",
+      "idleTimeoutMs": 300000
+    },
+    "fixedContent": {
+      "autoSaveDirectory": "legacy-fixture-directory"
+    },
+    "pinned": {
+      "clickThrough": false,
+      "zoomStep": 0.1
+    },
+    "record": {
+      "frameRate": 24,
+      "saveDirectory": "",
+      "audioSystem": true,
+      "audioMicrophone": false,
+      "audioSystemGain": 1,
+      "audioMicrophoneGain": 1,
+      "quality": "standard",
+      "countdown": 3,
+      "audioMicrophoneDeviceId": "",
+      "lastMode": "display",
+      "lastDisplayId": ""
+    },
+    "search": {
+      "matchPath": true,
+      "maxResults": 600,
+      "pageSize": 30,
+      "sortMode": "modified-desc",
+      "useBundledEverything": true,
+      "categories": [
+        {
+          "id": "all",
+          "label": "search.category.all",
+          "rule": ""
+        },
+        {
+          "id": "folder",
+          "label": "search.category.folder",
+          "rule": "folder:"
+        },
+        {
+          "id": "excel",
+          "label": "EXCEL",
+          "rule": "ext:xls;xlsx;xlsm;csv"
+        },
+        {
+          "id": "word",
+          "label": "WORD",
+          "rule": "ext:doc;docx;rtf"
+        },
+        {
+          "id": "ppt",
+          "label": "PPT",
+          "rule": "ext:ppt;pptx"
+        },
+        {
+          "id": "pdf",
+          "label": "PDF",
+          "rule": "ext:pdf"
+        },
+        {
+          "id": "image",
+          "label": "search.category.image",
+          "rule": "ext:jpg;jpeg;png;gif;webp;bmp;svg;ico"
+        },
+        {
+          "id": "video",
+          "label": "search.category.video",
+          "rule": "ext:mp4;mkv;avi;mov;wmv;flv;webm"
+        },
+        {
+          "id": "audio",
+          "label": "search.category.audio",
+          "rule": "ext:mp3;wav;flac;aac;ogg;m4a"
+        },
+        {
+          "id": "archive",
+          "label": "search.category.archive",
+          "rule": "ext:zip;rar;7z;tar;gz;iso"
+        }
+      ]
+    },
+    "ai": {
+      "schemaVersion": 2,
+      "maxTokens": 4096,
+      "temperature": 0.7,
+      "targetLanguage": "中文",
+      "assignments": [
+        {
+          "feature": "chat",
+          "providerId": "deepseek",
+          "model": "deepseek-v4-flash"
+        },
+        {
+          "feature": "translation",
+          "providerId": "deepseek",
+          "model": "deepseek-v4-flash"
+        },
+        {
+          "feature": "ocr-translate",
+          "providerId": "deepseek",
+          "model": "deepseek-v4-flash"
+        },
+        {
+          "feature": "toolbar:translate",
+          "providerId": "deepseek",
+          "model": "deepseek-v4-flash"
+        },
+        {
+          "feature": "toolbar:explain",
+          "providerId": "deepseek",
+          "model": "deepseek-v4-flash"
+        }
+      ]
+    },
+    "system": {
+      "autoStart": true,
+      "runLog": true,
+      "enableTray": true,
+      "gameMode": false,
+      "updateChannel": "stable"
+    },
+    "proxy": {
+      "autoStart": false,
+      "port": 8080,
+      "host": "127.0.0.1",
+      "apiBase": ""
+    },
+    "shortcuts": {
+      "screenshot": "F1",
+      "screenshotDelay": "",
+      "screenshotFixed": "",
+      "screenshotOcr": "",
+      "screenshotTable": "",
+      "screenshotQr": "",
+      "screenshotOcrTranslate": "",
+      "screenshotCopy": "",
+      "screenshotFullScreen": "",
+      "screenshotFocusedWindow": "",
+      "screenshotLong": "",
+      "translationSelectText": "",
+      "chatSelectText": "",
+      "videoRecord": "",
+      "fullScreenDraw": "",
+      "toggleFixedContentVisibility": "",
+      "showOrHideMainWindow": "",
+      "openCaptureHistory": "",
+      "openClipboardHistory": "",
+      "localSearch": "Alt+F",
+      "explainClipboard": "Ctrl+Alt+E",
+      "screenshotQuickSave": "",
+      "screenshotSaveAs": "",
+      "togglePinClickThrough": "",
+      "toggleTranslationProxy": "",
+      "openRecording": "",
+      "recordRegion": "",
+      "recordFullscreen": "",
+      "recordPauseResume": "",
+      "recordFinish": ""
+    }
+  },
+  "expected": {
+    "apiKey": "",
+    "clipboard": {
+      "enabled": false,
+      "paused": false,
+      "captureText": true,
+      "captureImages": true,
+      "captureFiles": true,
+      "historyLimit": 500,
+      "retentionDays": 30,
+      "maxPayloadMiB": 256,
+      "maxDiskMiB": 384,
+      "maxThumbnailMiB": 64,
+      "releaseAfterMs": 60000,
+      "excludedApps": []
+    },
+    "usage": {
+      "enabled": false
+    },
+    "providers": [
+      {
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "baseUrl": "https://api.deepseek.com",
+        "apiKey": "",
+        "protocol": "openai-chat",
+        "enabled": true,
+        "builtin": true,
+        "models": [
+          {
+            "id": "deepseek-v4-flash",
+            "name": "DeepSeek V4 Flash",
+            "capabilities": {
+              "tasks": [
+                "chat",
+                "translation",
+                "explain"
+              ],
+              "reasoning": "deepseek"
+            }
+          }
+        ]
+      }
+    ],
+    "theme": "system",
+    "mainColor": "#e5a44c",
+    "borderRadius": 13,
+    "compact": false,
+    "language": "zh-CN",
+    "skinPath": "",
+    "skinOpacity": 18,
+    "customCss": "",
+    "selectionToolbar": {
+      "enabled": true,
+      "clipboardFallback": false,
+      "buttons": {
+        "copy": true,
+        "search": true,
+        "translate": true,
+        "explain": true
+      },
+      "order": [
+        "copy",
+        "search",
+        "translate",
+        "explain",
+        "open"
+      ],
+      "prompts": {
+        "translate": "你是一个专业的翻译助手。请按照设置的语言方向翻译用户输入的文本，只输出翻译结果，不要添加任何额外说明或解释。",
+        "explain": "你是一个知识渊博的解说专家。请对用户提供的文本进行深入分析和解读：\n\n### 核心要点\n先用一句话概括核心内容。\n\n### 详细解释\n对文本中的关键概念、术语、背景进行详细解释，帮助用户全面理解。如果涉及专业知识，请进行通俗易懂的说明。\n\n### 延伸知识\n补充相关的背景信息、实际应用场景或有趣的引申知识点。\n\n请使用中文回答，内容充实但不冗长，层次分明。"
+      },
+      "customActions": [],
+      "searchEngine": "bing",
+      "translateLanguages": {
+        "source": "auto",
+        "target": "中文"
+      },
+      "conversation": {
+        "enabled": true,
+        "maxFollowUpTurns": 10,
+        "persist": false
+      },
+      "resultWindow": {
+        "width": 550,
+        "height": 560
+      }
+    },
+    "toolbarThinking": {
+      "translate": "off",
+      "explain": "high"
+    },
+    "plugins": {
+      "ocr": true,
+      "translation": true,
+      "ai": true,
+      "video": true
+    },
+    "screenshot": {
+      "autoSaveOnCopy": false,
+      "fastSave": false,
+      "saveDirectory": "",
+      "historyDirectory": "legacy-fixture-directory",
+      "historyEnabled": true,
+      "historyLimit": 200,
+      "historyRevisionLimit": 20,
+      "doubleClickCopy": true,
+      "selectionMask": "rgba(0,0,0,.46)",
+      "showColorPicker": true,
+      "annotationWidth": 4,
+      "annotationColor": "#ff3b30",
+      "annotationStyles": {
+        "rect": {
+          "color": "#ff3b30",
+          "width": 4,
+          "fill": "none",
+          "dash": "solid",
+          "radius": 0
+        },
+        "ellipse": {
+          "color": "#ff3b30",
+          "width": 4,
+          "fill": "none",
+          "dash": "solid"
+        },
+        "arrow": {
+          "color": "#ff3b30",
+          "width": 4,
+          "dash": "solid",
+          "startHead": false,
+          "endHead": true
+        },
+        "line": {
+          "color": "#ff3b30",
+          "width": 4,
+          "dash": "solid"
+        },
+        "pen": {
+          "color": "#ff3b30",
+          "width": 4
+        },
+        "highlight": {
+          "color": "#ffcc00",
+          "width": 4,
+          "alpha": "medium"
+        },
+        "text": {
+          "color": "#ff3b30",
+          "width": 4,
+          "bold": false
+        },
+        "serial": {
+          "color": "#ff3b30",
+          "width": 4
+        },
+        "blur": {
+          "color": "#ff3b30",
+          "width": 4
+        }
+      },
+      "captureCursor": false,
+      "shutterSound": true,
+      "nameTemplate": "",
+      "lastSaveDirectory": "",
+      "keepSerialAcrossCaptures": false,
+      "longCaptureDirection": "vertical",
+      "watermark": {
+        "content": "",
+        "opacity": 80,
+        "color": "#ffffff",
+        "spacing": 30,
+        "fontSize": 24,
+        "rotation": 30,
+        "dateSuffix": false
+      },
+      "regionPreferences": {
+        "schemaVersion": 1,
+        "lastByMode": {
+          "capture": null,
+          "record": null
+        },
+        "presets": []
+      },
+      "outputStylePreset": "original"
+    },
+    "ocr": {
+      "modelProfile": "ppocr-v4-ch",
+      "hotStart": true,
+      "detectAngle": false,
+      "minConfidence": 0.3,
+      "afterAction": "none",
+      "idleTimeoutMs": 300000
+    },
+    "fixedContent": {},
+    "pinned": {
+      "clickThrough": false,
+      "zoomStep": 0.1
+    },
+    "record": {
+      "frameRate": 24,
+      "saveDirectory": "",
+      "audioSystem": true,
+      "audioMicrophone": false,
+      "audioSystemGain": 1,
+      "audioMicrophoneGain": 1,
+      "quality": "standard",
+      "countdown": 3,
+      "audioMicrophoneDeviceId": "",
+      "lastMode": "display",
+      "lastDisplayId": ""
+    },
+    "search": {
+      "matchPath": true,
+      "maxResults": 600,
+      "pageSize": 30,
+      "sortMode": "modified-desc",
+      "useBundledEverything": true,
+      "categories": [
+        {
+          "id": "all",
+          "label": "search.category.all",
+          "rule": ""
+        },
+        {
+          "id": "folder",
+          "label": "search.category.folder",
+          "rule": "folder:"
+        },
+        {
+          "id": "excel",
+          "label": "EXCEL",
+          "rule": "ext:xls;xlsx;xlsm;csv"
+        },
+        {
+          "id": "word",
+          "label": "WORD",
+          "rule": "ext:doc;docx;rtf"
+        },
+        {
+          "id": "ppt",
+          "label": "PPT",
+          "rule": "ext:ppt;pptx"
+        },
+        {
+          "id": "pdf",
+          "label": "PDF",
+          "rule": "ext:pdf"
+        },
+        {
+          "id": "image",
+          "label": "search.category.image",
+          "rule": "ext:jpg;jpeg;png;gif;webp;bmp;svg;ico"
+        },
+        {
+          "id": "video",
+          "label": "search.category.video",
+          "rule": "ext:mp4;mkv;avi;mov;wmv;flv;webm"
+        },
+        {
+          "id": "audio",
+          "label": "search.category.audio",
+          "rule": "ext:mp3;wav;flac;aac;ogg;m4a"
+        },
+        {
+          "id": "archive",
+          "label": "search.category.archive",
+          "rule": "ext:zip;rar;7z;tar;gz;iso"
+        }
+      ]
+    },
+    "ai": {
+      "schemaVersion": 2,
+      "maxTokens": 4096,
+      "temperature": 0.7,
+      "targetLanguage": "中文",
+      "assignments": [
+        {
+          "feature": "chat",
+          "providerId": "deepseek",
+          "model": "deepseek-v4-flash"
+        },
+        {
+          "feature": "translation",
+          "providerId": "deepseek",
+          "model": "deepseek-v4-flash"
+        },
+        {
+          "feature": "ocr-translate",
+          "providerId": "deepseek",
+          "model": "deepseek-v4-flash"
+        },
+        {
+          "feature": "toolbar:translate",
+          "providerId": "deepseek",
+          "model": "deepseek-v4-flash"
+        },
+        {
+          "feature": "toolbar:explain",
+          "providerId": "deepseek",
+          "model": "deepseek-v4-flash"
+        }
+      ]
+    },
+    "system": {
+      "autoStart": true,
+      "runLog": true,
+      "enableTray": true,
+      "gameMode": false,
+      "updateChannel": "stable"
+    },
+    "proxy": {
+      "autoStart": false,
+      "port": 8080,
+      "host": "127.0.0.1",
+      "apiBase": ""
+    },
+    "shortcuts": {
+      "screenshot": "F1",
+      "screenshotDelay": "",
+      "screenshotFixed": "",
+      "screenshotOcr": "",
+      "screenshotTable": "",
+      "screenshotQr": "",
+      "screenshotOcrTranslate": "",
+      "screenshotCopy": "",
+      "screenshotFullScreen": "",
+      "screenshotFocusedWindow": "",
+      "screenshotLong": "",
+      "translationSelectText": "",
+      "chatSelectText": "",
+      "videoRecord": "",
+      "fullScreenDraw": "",
+      "toggleFixedContentVisibility": "",
+      "showOrHideMainWindow": "",
+      "openCaptureHistory": "",
+      "openClipboardHistory": "",
+      "localSearch": "Alt+F",
+      "explainClipboard": "Ctrl+Alt+E",
+      "screenshotQuickSave": "",
+      "screenshotSaveAs": "",
+      "togglePinClickThrough": "",
+      "toggleTranslationProxy": "",
+      "openRecording": "",
+      "recordRegion": "",
+      "recordFullscreen": "",
+      "recordPauseResume": "",
+      "recordFinish": ""
+    }
+  }
+}

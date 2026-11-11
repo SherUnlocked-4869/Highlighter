@@ -1,0 +1,15 @@
+[package]
+name = "highlighter-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "R0 media contracts: recording export limits, segment/GIF validation and R5 backend skeletons"
+
+[dependencies]
+# R0 运行时故意零依赖：只做纯类型与校验，不引入编码/采集库。
+
+[dev-dependencies]
+# 仅夹具对照测试使用：解析 Node 生成的 JSON。
+serde.workspace = true
+serde_json.workspace = true

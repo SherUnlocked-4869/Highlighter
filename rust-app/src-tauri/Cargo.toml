@@ -1,0 +1,32 @@
+# R0-03 Tauri 2 透明窗口/截图浮层最小原型（不是生产宿主）。
+#
+# 本 crate 只做计划 §7 R0-03 的风险验证：透明浮层、副屏/负坐标定位、DPI 与
+# ready/init 握手。正式宿主、权限映射与业务命令属于 R1。
+#
+# Windows 构建说明：tauri-build 会用 Windows SDK 的 rc.exe 编译资源文件，并要求存在
+# 一个 .ico（这里用仓库 `assets/icon.ico` 的副本 `icons/icon.ico`，仅用于应用/窗口资源，
+# 不代表本原型要发布安装包）。
+[package]
+name = "highlighter-r0-window"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "R0-03 Tauri 2 transparent window / screenshot overlay prototype (not a production host)"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+highlighter-windows-platform = { path = "../crates/windows-platform" }
+
+# 说明：这里刻意不启用 tauri 的 tray-icon / dialog / shell / fs 特性；原型的最小
+# capability 只放 `core:event:allow-listen`。应用命令（invoke_handler）默认不受
+# capability ACL 约束，这是文档中登记的原型隔离缺口（计划 §4.3）。
+[features]
+# Tauri 模板约定：生产构建/未配置 devUrl 时启用，把 frontendDist 嵌入二进制。
+# R0 用 `cargo run` 直接跑（不带该特性也会嵌入静态资源，见 tauri-codegen 逻辑）。
+custom-protocol = ["tauri/custom-protocol"]

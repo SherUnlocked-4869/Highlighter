@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "caseId": "clipboard-protocol/header-invalid-json",
+  "format": "clipboard-protocol.v1",
+  "source": [
+    "shared/clipboard-protocol.js"
+  ],
+  "expect": "invalid",
+  "kind": "invalid",
+  "chunks": [
+    "DQAAAAEIAAAAbm90LWpzb24="
+  ],
+  "reason": "invalid-frame",
+  "expectedError": "invalid-frame",
+  "failAt": "feed"
+}

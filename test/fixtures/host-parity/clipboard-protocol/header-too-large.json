@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "caseId": "clipboard-protocol/header-too-large",
+  "format": "clipboard-protocol.v1",
+  "source": [
+    "shared/clipboard-protocol.js"
+  ],
+  "expect": "invalid",
+  "kind": "invalid",
+  "chunks": [
+    "BQAIAAEBAAgA"
+  ],
+  "reason": "invalid-frame",
+  "expectedError": "invalid-frame",
+  "failAt": "feed"
+}

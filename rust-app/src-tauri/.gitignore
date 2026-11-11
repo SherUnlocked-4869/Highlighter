@@ -1,0 +1,2 @@
+# tauri-build 生成的 ACL/capability schema（每次构建重建，不入库）。
+/gen/schemas/

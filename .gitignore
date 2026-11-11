@@ -29,3 +29,15 @@ test/native/selection-clipboard/build/
 
 # 只读参考克隆（Snow Apps 对标分析用，见 docs/plans/2026-10-10-snow-apps-feature-gap-analysis.md）
 _repo_snow_apps/
+
+# Rust 改造 workspace（见 docs/plans/rust-migration/contract-format.md）
+rust-app/target/
+rust-app/**/target/
+
+# R0 原型独立工程构建缓存（rust-app/prototypes/<name>/ 各自独立 Cargo 工程）
+rust-app/prototypes/*/target/
+# 钩子提取原型构建产物
+native/selection-helper/build/
+native/selection-helper/bin/
+# Tauri 原型 tauri-build 生成的 ACL/capability schema（不入库）
+rust-app/prototypes/*/gen/

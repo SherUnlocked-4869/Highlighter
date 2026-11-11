@@ -1,0 +1,384 @@
+# R0 基线记录（r0-baseline）
+
+日期：2026-11-10（Asia/Hong_Kong）。状态：**R0 证据文档（草案）**。
+上位文档：[Rust 改造方案与开发计划](../2026-11-10-rust-migration-development-plan.md)（下称"计划"）§1/§4.1/§5/§6/§7/§9.1/§11/§12、[可行性调研](../../research/2026-11-10-rust-migration-feasibility.md)、[R0 合同格式](contract-format.md)。配套功能矩阵：[feature-parity.md](feature-parity.md)。
+
+**门禁声明：本文件不构成任何 gate 已通过的证据。G0～G4 全部未通过。R0 只登记本分支实际完成的部分（截至本文件写作时：R0-01 文档、R0-02 合同/夹具的并行产物在途），真机/性能/安装包验证一律"未执行"。**
+
+> **2026-11-11 续作说明**：R0 续作会话运行在**另一台机器**（用户已确认以当前机器为准，见 §9）。
+> 本文件 §1～§7 的机器数值/时序属于原机（F: 盘、Ryzen 7 9850X3D、双屏混 DPI），**不得**当作当前机器或性能基线复用；
+> 当前机器的环境事实与续作轮证据索引见 §9。所有跨机器数值不可直接比较。
+
+## 1. 基线版本与环境（本轮实测）
+
+### 1.1 源码与版本
+
+| 项 | 实测值 | 获取方式 |
+|---|---|---|
+| 产品源码基线 | `3df712976fdeeef1f1dce47a81995cfabdee8ee9`（存在且为 commit；与计划声明一致，是 4.2.0 之后最后一个产品提交） | `git rev-parse 3df7129` / `git cat-file -t` / `git log --oneline` |
+| 本分支 HEAD | 写作时为 `82c0b414b8ad310467335fa0a768efd33891d9fd`（分支 `codex/rust-r0-baseline-contracts`）；R0 最终实现提交见 `git log --oneline` 与 [r0-report.md](r0-report.md) | `git rev-parse HEAD`、`git branch --show-current` |
+| HEAD 相对产品源码 | 4 files changed, 1185 insertions(+), 30 deletions(-)，仅 3 份文档 + `.gitignore` 行尾变化 | `git diff --stat 3df7129..HEAD` |
+| 应用版本 | `highlighter-snowshot` `4.2.0` | `package.json:3`、`node -p "require('./package.json').version"` |
+| Electron | `43.8.3`（devDependency 与 `node_modules/electron/package.json` 一致） | `node -p "require('./node_modules/electron/package.json').version"`、`package.json:183` |
+| Node / npm | `v24.22.1` / `12.1.0` | `node --version`、`npm --version` |
+| git | `2.56.0.windows.4.niugit` | `git --version` |
+| rustc | `1.97.1 (8bab26f4f 2026-07-14)` | `rustc --version` |
+| cargo | `1.97.1 (c980f4866 2026-06-30)` | `cargo --version` |
+| WebView2 Runtime | `157.0.4341.42`（名称 `Microsoft Edge WebView2 Runtime`） | `HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}` 的 `pv`/`name` |
+| 实测时间 | 2026-11-10 约 22:00–22:20（Asia/Hong_Kong） | 本节各命令执行时间 |
+
+### 1.2 操作系统与硬件
+
+| 项 | 实测值 | 获取方式 |
+|---|---|---|
+| OS 标识 | `Microsoft Windows 11 专业版`，Version `10.0.26300`，Build `26300`，`64-bit` | `Get-CimInstance Win32_OperatingSystem` |
+| OS build（含 UBR） | `26300.9711`；注册表 `DisplayVersion=26H2`、`ProductName=Windows 10 Pro`（Windows 11 上保留的兼容字符串，不能据此判为 Win10） | `HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion` 的 `CurrentBuild.UBR`/`DisplayVersion`/`ProductName` |
+| CPU | `AMD Ryzen 7 9850X3D 8-Core Processor`，8 核 / 16 逻辑核，MaxClockSpeed 4700 MHz | `Get-CimInstance Win32_Processor` |
+| 内存 | `50,627,760,128` B（约 47.2 GiB）；采样时可用 `32,184,373,248` B（约 30.0 GiB） | `Win32_OperatingSystem.TotalVisibleMemorySize/FreePhysicalMemory × 1024` |
+| GPU | ① `NVIDIA GeForce RTX 5070 Ti`，驱动 `32.0.16.1742`，模式 `3840 x 2160 @ 160 Hz`；② `AMD Radeon(TM) Graphics`（核显），驱动 `32.0.21042.62`，模式 `2560 x 1440 @ 144 Hz`；③ `GameViewer Virtual Display Adapter`，驱动 `15.6.5.199`，无当前模式 | `Get-CimInstance Win32_VideoController` |
+| 电源方案 | `平衡`（`381b4222-f694-41f0-9685-ff5bb260df2e`）——**未固定**，R0-07 性能对照前必须冻结 | `powercfg /getactivescheme` |
+| 磁盘 | C: 已用 166.8 / 剩余 32.2 GB；D: 345 / 407.5 GB；E: 590.9 / 3135.1 GB；**F:（仓库所在）40.9 / 913 GB** | `Get-PSDrive -PSProvider FileSystem` |
+
+### 1.3 显示器与 DPI（本轮实测，含方法说明）
+
+方法：PowerShell 先 `SetProcessDPIAware()`，再用 `EnumDisplayMonitors` + `GetMonitorInfoW` + `GetDpiForMonitor`（user32/shcore）读取物理像素与 DPI；另用 `[System.Windows.Forms.Screen]`（非 DPI-aware，读逻辑像素）交叉核对。
+
+| 显示器 | 主屏 | 物理桌面坐标/尺寸 | 工作区 | DPI |
+|---|---|---|---|---|
+| `\\.\DISPLAY1` | 是 | `(0,0)-(3840,2160)`，3840×2160 | 3840×2112 | 144 dpi（150%） |
+| `\\.\DISPLAY2` | 否 | `(4608,-204)-(6336,2868)`，1728×3072（竖屏） | 1728×3024 | 144 dpi（150%） |
+
+> **R0-03 更正（2026-11-10，per-monitor DPI aware 的 Tauri 进程实测）**：副屏实际为
+> `(3840,-170)`、物理 `1440×2560`、**125%**（120 dpi），主屏 150%，即本机是**混合 DPI**，
+> 不是"两屏均 150%"。上表 `(4608,-204)/1728×3072/150%` 是 SetProcessDPIAware 进程读数，
+> 已被 Windows DPI 虚拟化放大；R0-03 自检的真实窗口位置是 `(3840,-170)`，并有虚拟桌面
+> 截图为证。R3 必须用 per-monitor DPI aware v2 进程重新冻结基线，上表仅作取数方法对照保留。
+
+交叉核对与结论：
+
+1. 取数方式会改变结果：非 DPI-aware 进程读主屏 2560×1440、副屏 1152×2048；SetProcessDPIAware 进程读 1728×3072；per-monitor v2 进程（Tauri/R0-03）读 1440×2560@125%。**记录基线必须写清进程 DPI 感知级别，否则会把缩放误读。**
+2. 本机有 **2 块活动显示器**；主屏 150%、副屏 125%，副屏为竖屏且 **Y 坐标为负**（R0-03 实测 `-170`）。本机可作一次混合 DPI 抽样，但拔插/重排/三屏矩阵仍未验证。
+3. `Win32_DesktopMonitor` 列出 3 个监视器条目（其中 2 个 `Default Monitor`，与物理屏不一一对应），不能作为显示器数量依据；以 `EnumDisplayMonitors`/Tauri monitor API 为准。
+4. 按仓库 `AGENTS.md:3-4`，所有可见测试窗口默认放副屏（`\\.\DISPLAY2`）；R0-03 `--self-test` 已按此只在副屏显示并截图核对，其余真机验证本轮未执行。
+
+### 1.4 会话/构建/依赖状态（影响测试与 R0 复现）
+
+| 项 | 实测值 | 说明 |
+|---|---|---|
+| `ELECTRON_RUN_AS_NODE` | **`1`（已设置）** | AGENTS.md 陷阱 1：必须 `env -u ELECTRON_RUN_AS_NODE` 才能启动 Electron 探针 |
+| `NODE_OPTIONS` | 未设置 | 直接跑 `test/*-runtime.test.js` 时需要自备 `--require` spawn hook（AGENTS.md 陷阱 2） |
+| `TMP` / `TEMP` | `C:\Users\MSN\AppData\Local\Temp`（仓库外） | AGENTS.md 陷阱 3：spawned Electron 子进程写该目录会 EPERM，需改到 `.tmp*/` |
+| npm registry | `https://registry.npmjs.org`；`.npmrc` 为 0 字节 | **与 AGENTS.md:42-47 记录的 npmmirror 不一致**（该记录已过时/环境已改）。本机 `npm audit` 是否仍复现空结果需在 R0-07/CI 验证，不得沿用旧结论 |
+| Electron 安装 | `node_modules/electron` 43.8.3 已安装 | `npm test` 前置 |
+| 原生组件 | `vendor/selection-hook/build/Release/selection-hook.node` 316,416 B；`native/clipboard/bin/HighlighterClipboard.exe` 2,868,736 B；`native/ocr/HighlighterOcrSidecar.exe` 2,673,152 B + `onnxruntime.dll`；`native/everything-search/bin/HighlighterEverything.exe` 343,552 B；`native/smart-select/SmartSelect.exe` 13,312 B | `ls -la`。SmartSelect 由系统 .NET Framework 4.0 `csc.exe` 编译（`native/smart-select/build.ps1:3-19`），依赖 Windows 自带 .NET Framework，无需 .NET 自包含运行时 |
+| OCR 模型 | `ocr/models/ppocr-v4-ch/`：`ch_PP-OCRv4_det_mobile.onnx`、`ch_PP-OCRv4_rec_mobile.onnx`、`ch_ppocr_mobile_v2.0_cls_mobile.onnx` + `model.json` | `find . -name "*.onnx"`；与 `native/ocr` 的 sidecar 配合 |
+| ffmpeg | `node_modules/ffmpeg-static/ffmpeg.exe` 82,797,568 B 已安装 | 录屏导出测试中"真实 ffmpeg"用例的前提（否则 skip） |
+| 打包产物 | `dist/` 下有历史打包目录（含 `win-unpacked`） | **本轮未重新构建**；不得作为本次基线或发布证据 |
+| 工作区状态 | 本节写于并行产出收口前；R0 产物最终均已由 Lead 提交（分支 `codex/rust-r0-baseline-contracts`，见 `git log` 与 [r0-report.md](r0-report.md)）；原型运行证据在 gitignore 的 `.tmp-r0/`，不提交 | `git status --porcelain`、`git log --oneline` |
+
+### 1.5 功能开关默认值（R0-01 "功能开关"证据）
+
+| 开关 | 默认 | 证据 |
+|---|---|---|
+| OCR / 翻译 / AI / 录制模块 | 全部 `true` | `main/services/settings-defaults.js:38` `plugins:{ocr:true,translation:true,ai:true,video:true}` |
+| 用量统计 | `false`（首次访问需显式同意） | `main/services/settings-defaults.js:22` |
+| 剪贴板历史 | `false`（默认关闭） | `main/services/clipboard-settings.js:2` |
+| 开机自启 | `true`（直接进托盘，README:133） | `settings-defaults.js:163` |
+| 游戏模式 | `false` | `settings-defaults.js:166` |
+| 翻译代理（本地 relay） | `autoStart:false`（不自动开端口） | `settings-defaults.js:175-176` |
+| 划词工具栏 | `enabled:true` | `toolbar/toolbar-utils.js:46` |
+| 划词会话持久化 | `enabled:true, persist:false`（不默认写盘） | `toolbar/toolbar-utils.js:30` |
+| 全局快捷键默认值 | `F1`=截图、`Alt+F`=本地搜索、`Ctrl+Alt+E`=解释剪贴板；其余为空 | `settings-defaults.js:185-232` |
+
+### 1.6 候选数据集/夹具（R0-01 "数据集"）
+
+| 数据集 | 内容 | 状态 |
+|---|---|---|
+| `test/fixtures/host-parity/` | R0-02 合成跨语言夹具：`manifest.json` + 分组 `capture-document`、`clipboard-protocol`、`recording-export-options`、`recording-project`、`settings`（本轮实测 29 个文件；具体 case 数以最终 manifest 为准） | 写作时已出现（并行产出），生成/校验命令尚未在本会话运行 |
+| `test/fixtures/usage/` | 用量扫描 golden/home/ipc 夹具（20 个文件） | 已有 |
+| `ocr/models/ppocr-v4-ch/` | 3 个 ONNX 模型 + `model.json` | 已有 |
+| `docs/performance/2026-09-09-long-capture-corpus.md` | 长截图语料/匹配样本记录 | 已有（历史） |
+| 录屏 | E2E 使用主进程合成采集源（`CHANGELOG.md:67`），无固定真实媒体语料 | 仅供功能链路，不是真机媒体数据集 |
+| 真实用户数据 | **禁止**作为夹具/迁移测试输入（可行性调研 §7） | — |
+
+## 2. 本轮实测命令与输出（可复核）
+
+| # | 命令（摘要） | 输出/结论 |
+|---:|---|---|
+| 1 | `git rev-parse HEAD` | `82c0b414b8ad310467335fa0a768efd33891d9fd` |
+| 2 | `git cat-file -t 3df712976fdeeef1f1dce47a81995cfabdee8ee9` | `commit`；`git diff --stat 3df7129..HEAD` = 4 files, +1185/−30 |
+| 3 | `node -p require('./package.json').version` | `4.2.0` |
+| 4 | `node -p require('./node_modules/electron/package.json').version` | `43.8.3` |
+| 5 | `node --version` / `npm --version` | `v24.22.1` / `12.1.0` |
+| 6 | `rustc --version` / `cargo --version` | `1.97.1 (8bab26f4f 2026-07-14)` / `1.97.1 (c980f4866 2026-06-30)` |
+| 7 | 读 WebView2 注册表 `pv` | `157.0.4341.42` |
+| 8 | `Get-CimInstance Win32_OperatingSystem` | Win11 专业版 / 10.0.26300 / build 26300 / 64-bit |
+| 9 | 读 `CurrentVersion` 注册表 | `DisplayVersion=26H2`、`CurrentBuild+UBR=26300.9711`、`ProductName=Windows 10 Pro` |
+| 10 | `Get-CimInstance Win32_Processor` | AMD Ryzen 7 9850X3D，8C/16T，4700 MHz |
+| 11 | `Win32_OperatingSystem` 内存字段 ×1024 | 50,627,760,128 B（可用 32,184,373,248 B） |
+| 12 | `Get-CimInstance Win32_VideoController` | 3 个适配器（RTX 5070 Ti / AMD 核显 / GameViewer 虚拟显示），见 §1.2 |
+| 13 | DPI-aware `EnumDisplayMonitors`+`GetDpiForMonitor` | 2 块屏，均 150%，副屏负 Y 坐标，见 §1.3 |
+| 14 | `powercfg /getactivescheme` | 平衡（未冻结） |
+| 15 | `Get-PSDrive` | F: 剩余 913 GB，见 §1.2 |
+| 16 | `npm config get registry` | `https://registry.npmjs.org`（`.npmrc` 0 字节） |
+| 17 | `git status --porcelain` | 并行 R0-02/R0-03 产出未跟踪，见 §1.4 |
+| 18 | `node -e "require('./main/services/ipc-security').IPC_SURFACES"` | 13 个角色，role/page/handles/listeners 见 `feature-parity.md` §1 |
+| 19 | `ls -la` 原生组件；`find . -name "*.onnx"`；`ls test/fixtures/host-parity` | 见 §1.4/§1.6 |
+
+**未运行的基线命令**（不得写成通过）：`npm test`、`npm run test:e2e`、`npm run test:coverage`、`npm run test:long-capture`、`npm run check`、`npm run check:version`、`npm run verify:fuses`、`npm run verify:package`、`npm run verify:hardware`、`npm run audit:dependencies`、`bench:performance`、`memory-snapshot.js`、任何 Rust/Tauri 构建或探针。
+
+## 3. R0-01～R0-07 任务状态（截至本文件写作时）
+
+| 任务 | 状态 | 证据路径（实际存在性已核对） | 缺口 |
+|---|---|---|---|
+| R0-01 基线、功能开关/数据集/硬件、入口盘点 | **部分完成**（本文件 + 功能矩阵为唯一交付） | `docs/plans/rust-migration/feature-parity.md`、`docs/plans/rust-migration/r0-baseline.md` | 本轮未跑全量测试/性能；§9.2 的性能目标阈值未冻结（计划要求第一次对照运行前冻结）；真机矩阵未执行 |
+| R0-02 13 preload/API、IPC 角色、schema、服务协议、资源限制提取 | **完成（最终验收通过，见 r0-report.md）** | 规格：`docs/plans/rust-migration/contract-format.md`；产物：[`contracts/host/host-contracts.json`](../../../contracts/host/host-contracts.json)（110,493 B）、`test/fixtures/host-parity/`（`manifest.json` + 5 组 28 case）、`scripts/rust/extract-host-contracts.js`、`scripts/rust/generate-host-fixtures.js`、`test/host-contracts.test.js`（19 tests）、`docs/plans/rust-migration/host-contract-inventory.md` | `--check` 两个均 exit 0、Node 测试 19/19、Rust 双端对照 12 + 5 cases 通过；剩余：`capture:record-history` 死通道与 `capture/print.html` 非角色窗口需 R1 决策（inventory/feature-parity 已登记） |
+| R0-03 Tauri 托盘/无窗口启动、副屏截图浮层、Canvas 最小编辑保存 | **原型完成（编译/自检通过；真机视觉矩阵未验证）** | [`docs/plans/rust-migration/r0-window-prototype.md`](r0-window-prototype.md)、`rust-app/src-tauri/`（tauri 2.12.5）；`--self-test` 两次 PASS、退出码 0；副屏 `(3840,-170)`、`dpr=1.25`、ready=1/init 恰好 1 次；虚拟桌面截图证据在 `.tmp-r0/` | 托盘/主窗口/单实例未做（R1-02）；100%/200% DPI 真机视觉、首帧白闪、单屏拒绝路径、鼠标穿透/焦点均未验证；应用命令默认不受 capability ACL 约束的缺口见原型文档 §5 |
+| R0-04 去 N-API 钩子小样 + 既有 Rust 剪贴板联调 | **原型完成（真实选词已验证；联调未做）** | [r0-hook-extraction.md](r0-hook-extraction.md)、[ADR-0002](adr/0002-hook-extraction.md)、`native/selection-helper/` | 浏览器/Office/资源管理器/管理员窗口、真实卡死恢复、lease required=true、与 `native/clipboard` 联调未验证 |
+| R0-05 WebView 媒体路径验证（失败则原生采集最小闭环） | **两路 spike 完成（后端选型待 G0）** | [r0-media-webview.md](r0-media-webview.md)、[r0-media-native.md](r0-media-native.md)、[ADR-0001](adr/0001-media-backend.md) | WebView2 无法程序指定源/loopback；原生 GDI+WASAPI 可行下限成立，WGC 本机被拒；30 分钟/双音源/暂停续录/同条件对照未验证 |
+| R0-06 v3 文档/v1 项目/合成凭据导入、图片/视频资源桥、PDF 样例 | **大部分完成（安装烟测未做）** | [r0-credential-migration.md](r0-credential-migration.md)、[r0-pdf-spike.md](r0-pdf-spike.md)、[r0-resource-channel.md](r0-resource-channel.md)、`test/fixtures/host-parity/` | 凭据/PDF/资源通道小样与 ADR 已产出；产品真实 print.html 批量/长图、图片视频资源桥真实链路、安装烟测未做 |
+| R0-07 NSIS 测试包、WebView2 有/无/离线、首轮性能对照 | **未开始** | 仅现有脚本：`scripts/verify-release.ps1`、`scripts/collect-hardware-evidence.ps1`、`scripts/verify-hardware-matrix.js`；`docs/releases/evidence/` **不存在** | 未构建测试包；未做 WebView2 环境矩阵；未做性能对照；工具链/Runtime/驱动未固定；不能以 Debug 数据下性能结论 |
+| **G0 架构可行** | **未通过（有进展）** | 三条高风险链路与五项决策已有实测证据（见 §4 与 [r0-g0-report.md](r0-g0-report.md)）；G0 报告草案已产出但未放行 | 缺 R0-07 版本矩阵/性能、长时媒体、真机 DPI 矩阵、测试驱动/最低系统决策、修正估算 |
+
+## 4. G0 决策登记（七项）
+
+> 规则（计划 §2/§7）：每项记录备选、当前证据、失败分支、建议、未解决限制；**没有实测的标"待验证"，本文件不代结论**。
+> 2026-11-10 晚补充：媒体/钩子/PDF/凭据/资源通道五项已有 spike 实测证据，ADR 状态为"候选（未冻结）"；
+> 测试驱动与最低系统两项仍未评估。逐项证据见 [adr/README.md](adr/README.md) 与 [r0-g0-report.md](r0-g0-report.md)。
+
+### 4.1 媒体后端（决定 R5 采集与导出）
+
+- **备选**：A. 保留 WebView（WebView2 + 现有 Canvas/MediaRecorder，宿主提供等价"指定源 + loopback"绑定）；B. Rust 原生媒体后端（WGC/DXGI 视频 + WASAPI 系统回环/麦克风 + 混音/时钟/编码，Media Foundation 或 FFmpeg）；C. 混合（WebView 采集 + 原生音频）。
+- **当前证据**：现有链路 `main/domains/record/index.js:1367` 用 `session.setDisplayMediaRequestHandler` 绑定指定源与 `loopback`；`record/record.js:803`/`:820` 调 `getDisplayMedia`；`record/audio-mixer.js:1` 用 Web Audio 混音 `canvas.captureStream()` 与麦克风。可行性调研 §6.2 明确：WebView2 的 `ScreenCaptureStarting` 只描述权限/取消，**不能证明**指定源、无二次选择框、系统声音 loopback 等价。计划 D05 要求 R0 决定，R0-05 未执行。
+- **失败分支**：WebView 分支出现二次选源/目标漂移、无 loopback、时间漂移、编码或分辨率不兼容 → 转原生采集并重估 R5（计划风险台账首行；媒体后端若必须重写，工时可超出 38～63 人周区间）。
+- **建议**：**待验证**。R0-05 先做 A 的最小闭环（全屏/区域/窗口、系统声+麦克风、暂停/继续、可播放原片、源目标变化、30 分钟时钟样例）与 B 的可行性 spike；在此之前不冻结后端、不承诺 Tauri/WebView2 录屏能力。
+- **未解决限制**：目标设备音频设备/驱动矩阵；WebView2 Runtime 版本差异；同一媒体时钟与暂停语义；真实长录写入背压；E2E 合成采集源不能替代。
+
+### 4.2 钩子提取边界（划词/回贴，决定 R3）
+
+- **备选**：① 从现有 C++ 核心提取独立 EXE 或稳定 C ABI（保留 COM/UIA 进程隔离）；② 以行为夹具为依据改写为 Rust Windows 服务；③ Node sidecar 短期兼容（不满足"运行环境去 Node"终态，需独立退出计划）。
+- **当前证据**：`vendor/selection-hook/src/windows/selection_hook.cc:151`（`SelectionHook` N-API 包装；UIA/钩子核心在 `core/`）；`main/services/selection-hook-host.js:1`（utility process 承载，卡死可回收）；`main/services/pointer-hook-host.js:1`（鼠标事件轨独立 host，不订阅文本/剪贴板/键盘）；`test/selection-hook-host.test.js`、`test/selection-hook-service.test.js`、`test/selection-native-build.test.js`、`scripts/verify-selection-source-build.js`；调研 §6.3 明确 Rust 不能把现有 `.node` 当普通 DLL 直接调用；计划 D04 要求 R0-04 小样。
+- **失败分支**：提取成本高于重写且跨应用行为夹具不完备 → 选 ②；若改写后出现 COM 卡死/焦点回归/错误目标注入 → 保留隔离 helper 且不牺牲正确性（计划 §12 风险台账）。
+- **建议**：**待验证**。先做 ① 的提取边界小样（选词、回退复制、lease、前台授权、错误目标拒绝、崩溃恢复），同时用现有单测和真机记录量化行为面；未实测前不选"提取"或"重写"。
+- **未解决限制**：没有登记浏览器/编辑器/Office/资源管理器具体版本的行为夹具库；UIAutomation 的 COM 线程模型与 Tauri 事件循环/窗口线程交互未验证；回贴的"结果未知"边界仍存在（`docs/performance/2026-10-17-clipboard-active-paste.md:37`：SendInput 与前台切换之间存在极短竞态，不能声称彻底消除）。
+
+### 4.3 最低系统 / WebView2 Runtime 下限（决定安装与发布，R1/R8）
+
+- **备选**：Windows 10 1809/1903/20H2/22H2 与 Windows 11 的取舍；WebView2 Evergreen Runtime / Fixed Version / 离线安装包；对旧系统保留替代后端。
+- **当前证据**：README 只声明"Windows 10 或 Windows 11 / x64"（`README.md:145-146`）；`config/release-hardware-matrix.json` 要求 `windows-10-22h2-nsis-lifecycle`、`windows-11-current-full-smoke`、100/125/150/200% DPI、混合 DPI 负坐标、休眠/锁屏、RDP、NSIS/portable；`docs/releases/HARDWARE_ACCEPTANCE.md:52-55` 明确 GitHub hosted runner 不提供这些证据；本机 WebView2 157.0.4341.42、OS build 26300。调研 §6.1 指出 WGC `CreateForWindow` 最低要求 Windows 10 1903，若选该路径必须冻结最低 build 或保留替代后端。
+- **失败分支**：若 WGC/WebView2 无法覆盖旧系统 → 提高最低系统版本（必须显式兼容决策，计划 §1 禁止未经决策默默提高 README 要求），或保留替代采集/渲染后端并计入成本。
+- **建议**：**待验证**。R0-07 用真实测试机 + WebView2 有/无/离线矩阵冻结最低 Windows build 与 Runtime 下限；在此之前 README 现状保持不变。
+- **未解决限制**：目标用户 Windows 10 占比与升级路径未知；WebView2 Fixed Version 的体积、更新责任与 EOL 风险未评估；Windows 10 22H2 的官方支持状态与产品声明之间的兼容决策未在仓库记录。
+
+### 4.4 二进制资源传输（图片/视频/大对象，决定 R1/R4/R5 资源通道）
+
+- **备选**：A. command 返回 JSON/base64（实现简单，但大图/视频膨胀内存并重复过 JSON）；B. 自定义协议/asset protocol（需处理 CSP、Range/seek、取消、路径遍历）；C. 后端分配不可猜测的资源 ID + 二进制响应/受限 URI（计划 §4.3 倾向）；D. 每窗口独立通道 + 归属校验。
+- **当前证据**：计划 §4.3 要求：控制消息与大二进制分离、资源 ID 限定生命周期/尺寸/类型/归属/释放、图片不重复 Base64、视频不走全局 JSON 事件；若自定义协议无法可靠识别调用窗口，不能伪造"已按窗口鉴权"，敏感内容改走 command 二进制响应。现有实现：`main/services/image-buffer.js`（PNG data URL）、`main/services/clipboard-thumbnail-cache.js`（8 MiB/128 条双阈值）、`shared/clipboard-protocol.js:5-7`（1 MiB/512 KiB/256 KiB）、历史缩略图 token 机制（`docs/plans/2026-10-22-clipboard-image-thumbnail-grid-design.md` §5/§8）、`main/services/window-security.js`（CSP/导航限制）。
+- **失败分支**：自定义协议无法做窗口归属鉴权或 Range/seek 不可靠 → 敏感内容走 command 二进制响应（计划 §4.3 明确允许，但要记录能力/性能代价）；不得退回"任意路径/任意 URL"的通用加载器（计划 §4.3 禁止）。
+- **建议**：**待验证**。R0-06 做小样对比 command 二进制响应 vs 自定义协议（含 Range/seek/CSP/路径遍历/取消/窗口归属），选定后写 ADR；不在 R0 前预设。
+- **未解决限制**：Tauri 2 的 response/asset 能力与 WebView2 版本关系未实测；长视频 seek 性能未测；窗口归属鉴权在自定义协议下的可行边界未验证；大资源释放时机（窗口销毁/重建）未验证。
+
+### 4.5 PDF 后端（决定 R4-07）
+
+- **备选**：A. WebView2 打印（`PrintToPDF`/WebView2 print API）；B. 原生 Rust PDF 生成（需自行处理分页、纸型、中文字体嵌入、透明度/表格）；C. 保留 Chromium/Electron 临时 sidecar（违反 D08 终态，仅应急）；D. 系统打印/第三方（不满足自动保存与批量导出）。
+- **当前证据**：现有实现 `main/services/pdf-export.js:5-14`（单图/多页走离屏 `capture/print.html` + `printToPDF`）、`:381-402`（隐藏打印窗口复用 `preload-capture.js`，不在 IPC_SURFACES）、`:23`/`:55`（注释记录实测：`pageSize` 单位为英寸、`scale` 值域 [0.1,2]）；多页用一次 `printToPDF` 分页（`:483+`）；`test/pdf-export.test.js`/`pdf-export-multipage.test.js` 用注入 fake 窗口，不启动真实 Electron；调研 §6.5 要求适配而非假定 Rust 图像库可替代全部打印。
+- **失败分支**：WebView2 打印不支持自定义纸张/多页/无头打印，或字体/分页与现有产物不一致 → 转原生 PDF 并重估 R4-07（中文字体嵌入与许可是主要成本）；不得只用图片库拼 PDF 冒充文字可搜索/表格输出。
+- **建议**：**待验证**。R0-06 做单图 + 多页 PDF 样例（中文、纸张、分页、透明度、表格），与当前 Electron 产物对照尺寸/分页/文字；未实测前不选。
+- **未解决限制**：中文字体嵌入与许可/体积；PDF 文字与表格的可搜索性；与现有 `print.html` 几何规则的逐像素等价；打印窗口与主应用资源隔离。
+
+### 4.6 凭据迁移格式（决定 R2/R8）
+
+- **备选**：A. 由旧版 Electron 一次性受控转存到新加密格式（计划 §5.3 倾向）；B. 直接读取 Electron `safeStorage` 密文并用 Rust DPAPI 解密；C. 放弃解密，保留原密文与数据，要求用户重新填写（不静默清空）。
+- **当前证据**：`main/services/credential-store.js`：`credentials.apiKey`/`credentials.providerApiKeys` 存 `safeStorage` 密文的 Base64（`:43-48`、`:72-85`）；`isEncryptionAvailable()` 决定读写（`:12-19`），加密不可用时写入返回 `false`、读取回退 legacy 明文配置（`:26-29`、`:58-67`）。可行性调研 §7（`docs/research/2026-11-10-rust-migration-feasibility.md:240`、`:248`）明确：不能假定换成任意 Rust DPAPI 库就能直接解密 Electron 密文；转存须在同一用户安全上下文，禁止明文写迁移 JSON/日志/命令行；计划 §5.3 第 5 条使用合成凭据先验证。
+- **失败分支**：B 解密失败或格式变化 → 保留密文 + 要求重填（C），迁移报告列出未迁移凭据；**不得静默清空**，不得把明文落到磁盘中间件/日志/命令行。
+- **建议**：**待验证**。R0-06 用合成凭据验证 A（旧版受控转存）与 B（同用户上下文）可行性；夹具只允许合成密钥。
+- **未解决限制**：无真实密钥可测；多用户/漫游配置文件/权限提升场景；Electron `safeStorage` 的 app-scope 是否使跨程序解密不可行；迁移中断后的凭据一致性。
+
+### 4.7 测试驱动与版本（决定 R1/R5/R8 的桌面 E2E）
+
+- **备选**：A. WebdriverIO + `tauri-driver`（Tauri 官方 WebDriver 路径）；B. Playwright/CDP 驱动 WebView2 + 宿主侧探针；C. 自研 harness（spawn 宿主 + IPC 探针）；D. 只做单测/契约测试 + 真机清单（无桌面自动化）。
+- **当前证据**：现有 E2E 是 Playwright Electron 适配（`e2e/electron-app.js`、`playwright.config.js`），无法直接启动 Tauri；调研 §12/计划 §10 要求 R0 从官方 WebDriver 路径选定并锁版本，渲染器 mock 不能替代真实 Tauri 启动；`main/services/e2e-bootstrap.js` 已有 E2E 环境变量/隔离数据根约定；本机 Windows 11 + WebView2 157.0.4341.42，Chromium sandbox 在受限宿主下无法启动（AGENTS.md §1-2）。
+- **失败分支**：`tauri-driver` 在 Windows/WebView2 下不稳定或不支持多窗口/透明窗口 → 退回 B/C，但必须保留"真实 Tauri 启动"证据；测试端点/驱动只进测试构建，生产包必须证明不含（计划 §10）。
+- **建议**：**待验证**。R0-03 同时做 `tauri-driver` 最小 probe（启动/窗口/ready-init 顺序/关闭/崩溃恢复）与现有 Playwright 方案的能力对照，锁定版本并写入工具链/CI；不预设。
+- **未解决限制**：`tauri-driver` 对 WebView2 版本、透明窗口、多窗口、托盘、文件对话框的支持边界；CI runner 无 GPU 的渲染差异（AGENTS.md:95-101 已有先例）；真机矩阵仍需人工证据（`docs/releases/HARDWARE_ACCEPTANCE.md`）。
+
+## 5. 基线已知缺陷摘要
+
+完整清单与证据见 [feature-parity.md §3](feature-parity.md)（D-01～D-20）。G0 判断最相关的五类：
+
+1. **CI 从未通过的渲染测试**（D-01）：`test/capture-brush-render.test.js` §6.3 网格相位用例自引入起 6 次 CI 全红，本地因硬件光栅通过（`AGENTS.md:95-101`）。
+2. **真实桌面链路没有被自动化证明**（D-02/D-03/D-09/D-10/D-15）：截图浮层、贴图、剪贴板、划词、OCR、AI 无桌面 E2E；真实抓屏断言默认关闭；真实剪贴板受私有 Window Station 限制；真实录屏/音频/长录未验证；硬件证据目录为空。
+3. **录屏是最高风险域**（D-15）：开发机无 DXGI、E2E 用合成采集源；窗口录制无录中标注、最小化尽力暂停；30 分钟/双音源/音画漂移未验证；崩溃恢复不承诺；事件轨 20Hz、±1 帧对齐。
+4. **数据/格式语义只到规格层**（D-07/D-08/D-17）：v3 文档/录屏项目/剪贴板 v2/用量 v1 的 Rust 对齐需要 R0-02 夹具 + 逐字段双端对照（夹具已落地但尚未运行对照）；electron-store 在 EXDEV 回退非原子写；PDF 由 Chromium 打印决定。
+5. **发布链未验证**（D-20）：无签名产物、`verify:package` 需真实桌面、安装/升级/回退/WebView2 有/无均未执行。
+
+## 6. 下一轮建议（R1 候选切片 + R0 补证优先级）
+
+### 6.1 前置约束
+
+- **R1 正式放行必须以 G0 通过为前提**（计划 §7 R1 前置 = G0）。G0 未通过前，允许做"不依赖产品行为、不接真实数据"的合同/工具链/测试驱动准备（R0 范围内），但不得开始业务迁移，也不得创建"看起来完成"的空入口。
+- R0-03～R0-07 中至少 R0-03（窗口/DPI）、R0-05（媒体）、R0-04（钩子）三项高风险链路必须先有实测结论，G0 才有讨论基础。
+- 本文件写作时并行任务（R0-02 合同/夹具、Rust workspace 骨架）尚未收口；R1 切片以其最终提交结果为准。
+
+### 6.2 G0 通过前可做的准备切片（不改变产品行为）
+
+| 切片 | 内容 | 依赖 | 边界 |
+|---|---|---|---|
+| S0-1 合同收口 | 完成 `contracts/host/host-contracts.json` + 夹具生成/校验；登记 `capture/print.html` 隐藏窗口、`capture:record-history` 死通道、历史双索引；把 `feature-parity.md` §1 与合同逐项对齐 | R0-02 | 只读现有源码，不改生产代码 |
+| S0-2 Rust 工具链/CI 骨架 | 固定 rust 1.97.1（`rust-toolchain.toml`）、workspace 锁文件、`cargo fmt/clippy/test`、依赖方向检查、资源白名单审计；不触碰现有 Electron 构建 | R0-02 合同存在 | 只加 `rust-app/` 与 `scripts/rust/` |
+| S0-3 测试驱动探针 | `tauri-driver` 最小启动/窗口/关闭 probe + 版本冻结；与 Playwright 方案做能力对照；生产包不含测试端点 | rust-app 可编译 | 只编入测试构建 |
+| S0-4 数据/凭据/PDF/资源通道小样（R0-06） | 合成数据上的"成功/失败/恢复"各一例；输出安全边界与选型 ADR | S0-1 | 只读/隔离根，不碰真实用户数据 |
+| S0-5 安装适配性探针（R0-07 部分） | WebView2 有/无/离线环境清单、NSIS 测试包、首轮进程树/Private Bytes 对照（固定电源方案与 Release 构建） | R0-03/R0-05 | 未签候选包必须标注 `NotSigned`；不以 Debug 数据下性能结论 |
+
+### 6.3 G0 通过后的 R1 首批切片（建议顺序）
+
+1. **R1-a 宿主编排最小化**：Tauri 2 应用壳 + 单实例 + 托盘按需启动 + 窗口角色注册（实例 generation）+ ready/init 握手 + 日志脱敏；只接 `main` 角色的只读命令（如 `settings:get`、`app:get-info`、`update:status`），在隔离数据根下运行。
+2. **R1-b 权限映射**：把 13 个角色在 `IPC_SURFACES` 的 handles/listeners 映射为 Tauri 应用命令权限 + capability；`capture/print.html` 是非角色窗口，显式排除、不开放任何角色能力；在命令入口二次校验窗口角色/资源归属（计划 §4.3：不能只加 capability 文件就宣称隔离）。
+3. **R1-c bridge facade 双宿主对照**：先挑 2 个低风险角色（`main` 只读、`record-frame` 事件/订阅型），按现有 preload 的 `invoke`/`send`/`subscribe` 三种调用模式建 facade fixture，对比两个宿主返回结构；不迁移业务。
+4. **R1-d 任务/生命周期基座**：OperationRef/registry（窗口实例 + generation + 取消 + 清理）、关窗/隐藏/退出区分、资源回收与日志脱敏；对应 G1 的"初始化/回收/取消"证据。
+5. **R1-e 桌面 E2E 接入**：按 R0 选定的驱动把"启动→窗口→ready/init→关闭"纳入 CI；测试端点仅测试构建。
+6. **依赖顺序**：R1-a → R1-b → R1-c；R1-d/e 可与 c 并行。每片独立提交，接口变化由单一责任人汇总（计划 §11）。
+
+### 6.4 R0 收尾优先级（G0 前）
+
+1. R0-03 浮层/截图/DPI（同时服务 R4 与 G0 第一条链路）。
+2. R0-05 媒体采集（最高风险，结论直接决定路线与估算）。
+3. R0-04 钩子提取小样（决定 R3 成本）。
+4. R0-06 数据/凭据/PDF/资源通道（决定 R2/R4 合同与安全边界）。
+5. R0-07 安装/性能（决定 G0 的版本矩阵与收益判断）。
+
+## 7. 本轮未执行 / 未验证（不得当作已通过）
+
+- **未执行**：产品单测/E2E/覆盖率/长截图/静态门禁/fuses/打包/硬件矩阵/性能对照（完整命令清单见 §2 末尾）。
+- **未执行**：任何真机或可见窗口验证（本机副屏、多 DPI、RDP、休眠、真实音频设备）。
+- **已补测（本分支最终）**：Rust workspace 107 tests 通过、`check-rust-app.ps1` OK；R0-03 Tauri 原型编译/自检通过并有截图证据；R0-04 钩子 helper 真实选词、R0-05 媒体两路 spike、R0-06 凭据/PDF/资源通道均有实测（详见 [r0-report.md](r0-report.md) §11 与 [r0-g0-report.md](r0-g0-report.md)）。真机视觉/DPI 矩阵、安装包与性能对照仍未执行。
+- **未验证**：§4 七项决策全部为"待验证"；§5 五类缺陷/缺口未关闭；G0～G4 全部未通过。
+- **版本一致性提醒**：本文所有数值是 2026-11-10 本机一次采样的结果；换机器/换 Runtime/换电源方案后不能直接复用为性能基线。性能对照还要求固定 Release 构建、GPU 驱动、数据集、功能开关与回收等待时间（计划 §9.2），这些本轮均未固定。
+
+## 8. 维护约定
+
+1. 任何新的 R0 实测结论（真机、性能、安装、方案选型）必须回写本文件对应栏目，并在 `feature-parity.md` 更新相关功能行的"基线缺陷/未验证"证据。
+2. 决策登记从"待验证"变为"已选定"时，必须同时写清：实测条件、失败分支验证结果、剩余限制、责任批次与退出验收（计划 §2 要求）。不得只写结论。
+3. 本文件不修改生产代码、不执行 git 写操作；提交由 Lead 统一处理。
+## 9. 2026-11-11 续作：运行主机变更（当前环境事实）
+
+### 9.1 变更说明
+
+R0 交接历史快照（[handoff.md](handoff.md) §8）记录的是原机器：F: 盘仓库、AMD Ryzen 7 9850X3D（8C/16T）、
+47.2 GiB RAM、RTX 5070 Ti + AMD 核显、主屏 3840×2160@150% + 副屏 1440×2560@125%（负 Y 原点）、
+WebView2 157.0.4341.42、Node 24.22.1 / npm 12.1.0。续作会话实际运行在**另一台机器**（下表），
+用户已确认：**以当前机器为准**做 R0-07/ADR 证据，文档必须标注机器差异，原机数据保留但标注不可比。
+
+| 项 | 当前机器实测值（2026-11-11 12:48 +08:00） | 与原机差异 |
+|---|---|---|
+| 主机 / 用户 / 会话 | SHERUNLOCK02 / 24532 / 会话 1（交互式） | 原机 MSN 用户、仓库在 F: |
+| OS | Windows 11 家庭版 中文版，10.0.26300，UBR 26300.9974，DisplayVersion 26H2（ProductName 兼容字符串仍为 Windows 10 Home China） | 原机 Win11 专业版 26300.9711 |
+| CPU | 13th Gen Intel Core i5-13500H，12 核 / 16 逻辑核，MaxClockSpeed 2600 MHz | 原机 Ryzen 7 9850X3D 8C/16T |
+| 内存 | 16,907,100,160 B（约 15.75 GiB） | 原机约 47.2 GiB |
+| GPU | ① Intel Iris Xe Graphics，驱动 31.0.101.4032，2240×1400@60；② GameViewer Virtual Display Adapter，驱动 15.6.5.199；③ Honor Virtual Display Device，驱动 1.0.23.3 | 原机 RTX 5070 Ti + AMD 核显（本机**无独显**） |
+| 显示器 | **仅 1 块**：DISPLAY1 主屏，物理 (0,0)-(2240,1400)，工作区 2240×1352，144 dpi（**150%**），per-monitor DPI aware 枚举 | 原机双屏、混合 DPI、副屏负 Y；本机**无副屏** |
+| 电源 | 当前方案 = 平衡（381b4222-f694-41f0-9685-ff5bb260df2e）；电池状态 2（接交流电），电量 99% | 原机同样未固定电源方案 |
+| 磁盘 | D:（仓库）剩余约 201.1 GiB；C: 剩余约 15.4 GiB（C: 较紧，构建目标目录保持在 D:） | 原机仓库在 F:（剩余 913 GB） |
+| WebView2 Runtime | 157.0.4341.46（安装目录同时存在 157.0.4341.42 与 157.0.4341.46） | 原机 157.0.4341.42 |
+| Rust | rustc/cargo 1.97.1 (8bab26f4f / c980f4866)；CARGO_HOME=D:\DevCache\cargo | 与原机一致（工具链固定） |
+| Node / npm | Node v24.15.0 / npm 11.17.0；npm registry https://registry.npmmirror.com | 原机 24.22.1 / 12.1.0、官方 registry |
+| Electron / 产品 | Electron 43.8.3，highlighter-snowshot 4.2.0 | 与原机一致 |
+| git | 2.51.2.windows.1 | 原机 2.56.0 |
+| 会话环境陷阱 | ELECTRON_RUN_AS_NODE=1 仍设置（Electron 探针需清除）；TMP/TEMP 在 C:\Users\24532\AppData\Local\Temp（Electron 子进程写临时目录需指向 .tmp*/） | 与 AGENTS.md 陷阱一致，需按四类陷阱处理 |
+
+### 9.2 对 R0 证据口径的影响
+
+1. **性能数值不可跨机器比较**：原机 §1.2/§1.3 与 2026-11-10 的性能/DPI 观察均为原机样本；
+   本机首轮性能对照必须在本机重新取样，并记录 Release 构建、电源方案、显示状态、GPU 驱动与 Runtime 版本。
+2. **副屏/负坐标链路本机不可复现**：本机只有主屏，R0-03 的副屏覆盖、负坐标放置无法在本机重跑；
+   本机可实测的是**单屏拒绝路径**（不创建可见窗口 + 退出码 2），以及测试开关下的主屏建窗链路
+   （见 [r0-window-prototype.md](r0-window-prototype.md) 续作节）。这**不能**替代 G0 要求的 100/150/200% DPI 与副屏矩阵。
+3. **版本矩阵**：本机 WebView2 为 157.0.4341.46（非原机 .42），R0-07 的 Runtime 版本记录以本机为准；
+   完整"WebView2 有/无/离线"矩阵仍需真实测试机/隔离环境，本机只能做安装包模式对照与缺失模拟。
+4. **无独显**：本机 Intel Iris Xe 核显，媒体验证（WGC/GDI/编码）与原机（RTX 5070 Ti）的 GPU 结论不可互相复用；
+   本机适合做"无独显/集显"样本，反而补充了原机没有的硬件维度。
+
+### 9.3 续作轮证据索引（随本轮提交补齐）
+
+| 证据 | 文档 | 说明 |
+|---|---|---|
+| R0-07 安装包 / WebView2 分发模式 / 缺失 Runtime 行为 | [r0-installation-matrix.md](r0-installation-matrix.md)（本轮新增） | 本机 Tauri Release NSIS 测试包与模式对照；**手动交互安装→启动→卸载链路已实测通过**（2026-11-11）；静默安装与完整环境矩阵仍待验证/需真实测试机 |
+| R0-07 首轮性能 / 进程树对照 | [r0-performance-baseline.md](r0-performance-baseline.md)（本轮新增） | 本机 Release/生产构建条件、固定电源方案；跨机器不可比 |
+| ADR-0006 桌面测试驱动 | [r0-test-driver.md](r0-test-driver.md)、[ADR-0006](adr/0006-desktop-test-driver.md)（本轮新增） | tauri-driver/msedgedriver 版本与最小 WebDriver 探针 |
+| ADR-0007 最低 Windows / WebView2 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md)、[ADR-0007](adr/0007-minimum-windows-runtime.md)（本轮新增） | 官方支持矩阵调研 + 待真实测试机矩阵 |
+
+> 本节只登记环境与口径；门禁结论仍以 [r0-g0-report.md](r0-g0-report.md) 为准，G0 未通过。
+
+### 9.4 2026-11-11 晚：运行主机**回到原机**（第三段环境事实）
+
+#### 9.4.1 三段机器时间线（不要再混用数据）
+
+| 阶段 | 主机 / 用户 | 仓库 | 显示器 / GPU | 该阶段产出的证据 |
+|---|---|---|---|---|
+| ① 2026-11-10 | SHERUNLOCK / MSN | `F:\workspace\Highlighter` | 双屏 4K@150% + 1440×2560@125% 负 Y；RTX 5070 Ti | 本文档 §1–§8、R0-03 §7 基线、R0-05 初版 |
+| ② 2026-11-11 白天/晚 | SHERUNLOCK02 / 24532 | `D:\workspace\Highlighter` | 单屏 2240×1400@150%；Intel Iris Xe（无独显） | §9.1–§9.3、R0-04 矩阵、R0-05 扩展、R0-06 PDF 产品页、R0-07 安装/性能、ADR-0006/0007 |
+| ③ 2026-11-11 晚 21:00 起（本轮） | **SHERUNLOCK / MSN**（回到 ① 的机器） | `F:\workspace\Highlighter` | **双屏**：主屏 3840×2160@150%（dpi 144）原点 (0,0)；副屏竖屏 1440×2560@125%（dpi 120）原点 **(3840, −170)**；**RTX 5070 Ti 独显** + AMD 核显 + GameViewer 虚拟显示适配器 | 本文档 §9.4、[r0-window-prototype.md](r0-window-prototype.md) §12、[r0-media-native.md](r0-media-native.md) §4.16、[r0-hook-extraction.md](r0-hook-extraction.md) §4.15 |
+
+#### 9.4.2 本机环境事实（2026-11-11 21:12–21:45 实测）
+
+| 项 | 值 | 与阶段 ② 的差异 |
+|---|---|---|
+| 主机 / 用户 / 会话 | `SHERUNLOCK` / `MSN` / 会话 1（交互式） | 阶段 ② 为 SHERUNLOCK02 / 24532 |
+| OS | Windows 11 **专业版**，10.0.26300，UBR **9711**，DisplayVersion 26H2 | 阶段 ② 为家庭版中文版 UBR 26300.9974 |
+| CPU | AMD Ryzen 7 9850X3D，8 核 / 16 线程 | 阶段 ② i5-13500H 12C/16T |
+| 内存 | 49,441,172 KB（**约 47.15 GiB**） | 阶段 ② 约 15.75 GiB |
+| GPU | **NVIDIA RTX 5070 Ti**（驱动 32.0.16.1742）+ AMD Radeon 核显（32.0.21042.62）+ GameViewer Virtual Display Adapter（15.6.5.199） | 阶段 ② 仅 Intel Iris Xe，**无独显** |
+| 显示器 | 2 块：`DISPLAY1` 3840×2160@**150%** 主屏；`DISPLAY2` **竖屏 1440×2560@125%**，物理原点 (3840, −170)（负 Y），虚拟桌面 5280×2560 | 阶段 ② 仅 1 块 2240×1400@150% |
+| WebView2 Runtime | 157.0.4341.46（per-machine） | 相同（阶段 ② 曾记录安装目录同时有 .42/.46） |
+| 浏览器 / Office | Chrome 157.0.8103.40 / Edge 157.0.4341.46 / Office **16.0.20527.20150**（Word+Excel） | 阶段 ② Office LTSC 16.0.17932.20104 |
+| Rust | rustc/cargo 1.97.1（`rust-app/rust-toolchain.toml` 固定，`rustup` 另有 stable 但未参与构建） | 相同 |
+| Node / npm | Node **v24.22.1** / npm **12.1.0**；registry = **registry.npmjs.org** | 阶段 ② v24.15.0 / 11.17.0 / npmmirror |
+| git | 2.56.0.windows.4（`core.autocrlf` 见 §9.4.3） | 阶段 ② 2.51.2 |
+| 磁盘 | F:（仓库）剩余约 904 GiB；C: 剩余约 31.1 GiB | 阶段 ② D:（仓库）约 201 GiB / C: 约 15.4 GiB |
+| 电源 | 平衡（381b4222-f694-41f0-9685-ff5bb260df2e），未切高性能 | 相同 |
+| 会话环境 | `ELECTRON_RUN_AS_NODE=1` **仍设置**；`TMP`/`TEMP`=`C:\Users\MSN\AppData\Local\Temp`（C: 仍够用，本轮未出现 EPERM） | 与 AGENTS.md 四类陷阱一致 |
+| 完整性标签 | **本轮接手时为 Low（二次复现），已修复为 Medium**（见 §9.4.3） | 阶段 ② 也曾修复（61,767 文件） |
+
+#### 9.4.3 迁移到本机时踩到的两个“假故障”（已处理）
+
+1. **行尾 / `core.autocrlf` 未设置 → 56 个文件“全行修改”**：接手时 `git status` 显示 56 个文件、
+   1.9 万行改动，`git diff --numstat` 显示每个文件“增=删=行数”。逐字节核对：HEAD blob 为 LF，
+   工作区文件为 CRLF（`i/lf w/crlf` 973 个文件）。原因是从阶段 ② 的机器拷回工作区后，本机 git 的
+   `core.autocrlf` 未设置（`git config --get core.autocrlf` 为空）。**修复**：`git config core.autocrlf true`
+   （仓库既有约定，handoff §6.8/§7.4），`git status` 立即干净，**没有任何真实改动被覆盖**。
+   教训：换机器接手时先看 `git ls-files --eol` 的 `i/lf w/crlf` 统计与 `core.autocrlf`，
+   否则会把行尾差异当成未提交改动，或误以为上一轮工作丢失。
+2. **工作区完整性标签再次是 Low（与 §8.4 同缺陷）**：把 `C:\Windows\System32\whoami.exe` 复制进工作区运行，
+   输出 `Low Mandatory Level (S-1-16-4096)` → 工作区内 exe 全部以 Low IL 运行（静默安装/WGC/SendInput 类
+   “环境级失败”会立刻复现）。本轮修复（2026-11-11 21:22–21:27，用户批准）：
+   - 直接 `icacls /setintegritylevel (OI)(CI)M /T` **会失败**（7533 个目录 `Access is denied`）：
+     改标签需要对象上的 `WRITE_OWNER`，属主只有隐式 `READ_CONTROL`+`WRITE_DAC`；
+   - 可行做法：先 `icacls <root> /grant "*<user-SID>:(WO)" /T /C /Q`（`(WO)` 必须带括号），
+     再 `/setintegritylevel (OI)(CI)M /T /C /Q`，最后 `icacls <root> /remove:g "*<user-SID>" /T /C /Q` 回收；
+   - 另删除 `Everyone` 的 DENY ACE 与能力 SID ACE（根 ACL；`/remove:d Everyone` + .NET `Set-Acl`）；
+   - 复验：工作区内 whoami 副本 → `Medium (S-1-16-8192)`；`rust-app/target` 下 exe 标签 Medium；
+     native-capture 自报 `[env] process integrity level = Medium(0x2000)`；R0-03 自检 4 次 PASS。
+   - 取证：`.tmp-r0-acl/acl-repair*.log`（gitignore）。
+
+#### 9.4.4 本轮门禁（本机）
+
+| 门禁 | 结果 |
+|---|---|
+| `node scripts/rust/extract-host-contracts.js --check` | exit 0（13 角色 / 257 方法 / 110,493 字节） |
+| `node scripts/rust/generate-host-fixtures.js --check` | exit 0（28 case + manifest） |
+| `node --test test/host-contracts.test.js` | 19 pass / 0 fail |
+| `node scripts/rust/collect-frontend-resources.js --check` | OK 191 files / 2,430,229 字节 |
+| `node --test test/frontend-resource-whitelist.test.js` | 9 pass / 0 fail |
+| `npm run check` | 通过（**494** JS 文件 / architecture ok / i18n ok；阶段 ② 记录为 489，差异来自阶段 ① 遗留的 gitignore 脚本目录被一并扫描，未改动产品代码） |
+| `scripts/rust/check-rust-app.ps1` | 通过（fmt + clippy + test --locked，全绿） |
+| `cargo fmt/clippy/test`（`rust-app/prototypes/native-capture`） | 通过（本轮改动后复跑；clippy `-D warnings` 0 warning） |
+
+#### 9.4.5 本轮证据索引
+
+| 证据 | 文档 | 说明 |
+|---|---|---|
+| R0-03 双屏/负坐标/混合 DPI 复验 | [r0-window-prototype.md](r0-window-prototype.md) §12 | 4 次自检 PASS（`dpr=1.25`、`negative_y=true`、`exit 0`）、副屏截图对照、主屏无窗、`--monitor 0` 负样本 exit 2、无残留 |
+| R0-05 WGC 原机复验 + HMONITOR 缺陷修复 | [r0-media-native.md](r0-media-native.md) §4.16 | 双屏逐屏 WGC 可用；竖屏 30/60 fps 满帧；4K@30 未满帧、**4K@60 不可持续** |
+| R0-04 选词矩阵原机复跑 | [r0-hook-extraction.md](r0-hook-extraction.md) §4.15 | 双屏（窗口自动落副屏）+ 新版 Office；逐行结果与笔记本差异 |
+
+> 本节只登记环境与口径；门禁结论仍以 [r0-g0-report.md](r0-g0-report.md) 为准，**G0 未通过**。

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN" data-page="resource-a">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>R0-06 资源通道自检 · media-a</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #1b2430; color: #e8eef5; font-family: Consolas, "Microsoft YaHei", monospace; }
+    h1 { font-size: 15px; margin: 8px 12px; color: #79b8ff; }
+    .row { display: flex; gap: 12px; padding: 0 12px; align-items: flex-start; flex-wrap: wrap; }
+    .media { background: #101820; border: 1px solid #2c3e50; padding: 8px; }
+    .media h2 { font-size: 12px; margin: 0 0 6px; color: #9fb3c8; }
+    img { display: block; width: 240px; height: 132px; border: 1px solid #2c3e50; }
+    video { display: block; width: 480px; height: 270px; background: #000; border: 1px solid #2c3e50; }
+    #log { margin: 8px 12px; padding: 8px; background: #0b1117; border: 1px solid #2c3e50; font-size: 11px; line-height: 1.45; white-space: pre-wrap; min-height: 120px; }
+  </style>
+  <script src="resource-a.js" defer></script>
+</head>
+<body>
+  <h1>R0-06 二进制资源通道自检 · 窗口 media-a（协议 media:// ↔ http://media.localhost）</h1>
+  <div class="row">
+    <div class="media">
+      <h2>图片（协议）</h2>
+      <img id="image-protocol" alt="protocol image" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+    </div>
+    <div class="media">
+      <h2>视频（协议，支持 Range/seek）</h2>
+      <video id="video-protocol" muted playsinline controls crossorigin="anonymous"></video>
+    </div>
+    <div class="media">
+      <h2>视频（command 二进制 → Blob）</h2>
+      <video id="video-command" muted playsinline controls></video>
+    </div>
+    <div class="media">
+      <h2>视频取帧（画布）</h2>
+      <canvas id="frame" width="240" height="135"></canvas>
+    </div>
+  </div>
+  <pre id="log">等待自检脚本运行…</pre>
+</body>
+</html>

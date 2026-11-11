@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Highlighter R0 Window Prototype",
+  "version": "0.1.0",
+  "identifier": "dev.highlighter.r0.window-prototype",
+  "build": {
+    "frontendDist": "prototype-ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "publisher": "Highlighter R0 (test build, not for release)",
+    "shortDescription": "R0-07 NSIS test package for the R0-03 window prototype",
+    "longDescription": "R0-07 installation/distribution probe for the R0-03 Tauri transparent-window prototype. Not a production build entry and not signed.",
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": { "installMode": "currentUser" }
+    }
+  }
+}

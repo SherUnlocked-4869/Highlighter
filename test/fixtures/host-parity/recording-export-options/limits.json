@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "caseId": "recording-export-options/limits",
+  "format": "recording-export-options.v1",
+  "source": [
+    "shared/recording-export-options.js"
+  ],
+  "expect": "valid",
+  "kind": "limits",
+  "expectedLimits": {
+    "queue": {
+      "maxConcurrentEncodes": 1,
+      "maxPending": 2
+    },
+    "gif": {
+      "maxDurationMs": 60000,
+      "maxLongEdgePx": 1280,
+      "maxFrames": 1200,
+      "fps": [
+        10,
+        15,
+        20
+      ]
+    },
+    "segments": {
+      "maxSegments": 20,
+      "maxSegmentMs": 100
+    }
+  }
+}

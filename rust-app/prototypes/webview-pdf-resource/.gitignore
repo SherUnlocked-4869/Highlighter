@@ -1,0 +1,4 @@
+# tauri-build 每次构建生成的 ACL/capability schema（不入库）。
+/gen/schemas/
+# 未使用共享 CARGO_TARGET_DIR 时的本地构建缓存。
+/target/

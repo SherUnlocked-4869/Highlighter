@@ -1,0 +1,3741 @@
+{
+  "schemaVersion": 1,
+  "kind": "highlighter.host-contracts",
+  "status": "r0-draft",
+  "baseline": {
+    "appVersion": "4.2.0",
+    "gitCommit": "3df712976fdeeef1f1dce47a81995cfabdee8ee9",
+    "electron": "43.8.3",
+    "node": "24.22.1"
+  },
+  "roles": [
+    {
+      "role": "action",
+      "page": "action/action.html",
+      "preload": "preload-action.js",
+      "globalObject": "actionAPI",
+      "methods": [
+        {
+          "name": "askQuestion",
+          "kind": "send",
+          "channel": "chat:ask",
+          "call": "(streamId, question, replaceLast = false)",
+          "returns": "void",
+          "source": "preload-action.js:91",
+          "tests": [
+            "test/action-security-runtime.test.js",
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "cancelStream",
+          "kind": "send",
+          "channel": "stream:cancel",
+          "call": "(streamId)",
+          "returns": "void",
+          "source": "preload-action.js:89",
+          "tests": [
+            "test/action-security-runtime.test.js",
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "copyConversation",
+          "kind": "invoke",
+          "channel": "chat:copy",
+          "call": "(text)",
+          "returns": "Promise<unknown>",
+          "source": "preload-action.js:99",
+          "tests": [
+            "test/action-security-runtime.test.js",
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "finishStream",
+          "kind": "send",
+          "channel": "stream:finish",
+          "call": "(streamId)",
+          "returns": "void",
+          "source": "preload-action.js:90",
+          "tests": [
+            "test/action-security-runtime.test.js",
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "onActionAppearance",
+          "kind": "subscribe",
+          "channel": "action:appearance",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-action.js:74",
+          "tests": [
+            "test/selection-window-manager.test.js"
+          ]
+        },
+        {
+          "name": "onActionStart",
+          "kind": "subscribe",
+          "channel": "action:start",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-action.js:73",
+          "tests": [
+            "test/selection-domain.test.js",
+            "test/selection-window-manager.test.js"
+          ]
+        },
+        {
+          "name": "onChatTurn",
+          "kind": "subscribe",
+          "channel": "chat:turn",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-action.js:84",
+          "tests": [
+            "test/action-conversation.test.js"
+          ]
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-action.js:68",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "onPinDenied",
+          "kind": "subscribe",
+          "channel": "window:pin-denied",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-action.js:106",
+          "tests": []
+        },
+        {
+          "name": "onStreamData",
+          "kind": "subscribe",
+          "channel": "stream:data",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-action.js:75",
+          "tests": [
+            "test/action-conversation-stream.test.js",
+            "test/action-conversation.test.js",
+            "test/selection-domain.test.js",
+            "test/selection-window-manager.test.js"
+          ]
+        },
+        {
+          "name": "onStreamDone",
+          "kind": "subscribe",
+          "channel": "stream:done",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-action.js:77",
+          "tests": [
+            "test/action-conversation-stream.test.js",
+            "test/action-conversation.test.js",
+            "test/selection-domain.test.js"
+          ]
+        },
+        {
+          "name": "onStreamError",
+          "kind": "subscribe",
+          "channel": "stream:error",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-action.js:78",
+          "tests": [
+            "test/action-conversation-stream.test.js",
+            "test/toolbar-stream-session.test.js"
+          ]
+        },
+        {
+          "name": "onStreamReasoning",
+          "kind": "subscribe",
+          "channel": "stream:reasoning",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-action.js:76",
+          "tests": [
+            "test/action-conversation-stream.test.js"
+          ]
+        },
+        {
+          "name": "openExternal",
+          "kind": "invoke",
+          "channel": "shell:open-external",
+          "call": "(value)",
+          "returns": "Promise<unknown>",
+          "source": "preload-action.js:109",
+          "tests": [
+            "test/action-security-runtime.test.js",
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js"
+          ]
+        },
+        {
+          "name": "togglePin",
+          "kind": "send",
+          "channel": "window:toggle-pin",
+          "call": "(pinned)",
+          "returns": "void",
+          "source": "preload-action.js:105",
+          "tests": [
+            "test/action-security-runtime.test.js",
+            "test/ipc-module-contracts.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [
+          "chat:copy",
+          "shell:open-external"
+        ],
+        "listeners": [
+          "chat:ask",
+          "stream:cancel",
+          "stream:finish",
+          "window:toggle-pin"
+        ],
+        "receives": [
+          "action:appearance",
+          "action:start",
+          "chat:turn",
+          "i18n:language",
+          "stream:data",
+          "stream:done",
+          "stream:error",
+          "stream:reasoning",
+          "window:pin-denied"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "capture",
+      "page": "capture/capture.html",
+      "preload": "preload-capture.js",
+      "globalObject": "captureAPI",
+      "methods": [
+        {
+          "name": "close",
+          "kind": "send",
+          "channel": "capture:close",
+          "call": "(serialNumber)",
+          "returns": "void",
+          "source": "preload-capture.js:24",
+          "tests": [
+            "test/capture-brush-render.test.js",
+            "test/capture-document-editor-runtime.test.js",
+            "test/capture-renderer-runtime.test.js",
+            "test/ipc-module-contracts.test.js",
+            "test/magnifier-reedit-runtime.test.js",
+            "test/magnifier-runtime.test.js",
+            "test/occlusion-recognition-runtime.test.js"
+          ]
+        },
+        {
+          "name": "commitDocument",
+          "kind": "invoke",
+          "channel": "capture:commit-document",
+          "call": "(payload)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:46",
+          "tests": [
+            "test/capture-document-editor-runtime.test.js",
+            "test/capture-document-editor-ui.test.js",
+            "test/ipc-module-contracts.test.js",
+            "test/magnifier-reedit-runtime.test.js"
+          ]
+        },
+        {
+          "name": "commitStatus",
+          "kind": "invoke",
+          "channel": "capture:commit-status",
+          "call": "(payload)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:48",
+          "tests": [
+            "test/capture-document-editor-runtime.test.js",
+            "test/capture-document-editor-ui.test.js",
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "convertImage",
+          "kind": "invoke",
+          "channel": "capture:convert-image",
+          "call": "(imageBuffer, options)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:39",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "copy",
+          "kind": "invoke",
+          "channel": "capture:copy",
+          "call": "(imageBuffer, meta)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:29",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js"
+          ]
+        },
+        {
+          "name": "exportAction",
+          "kind": "invoke",
+          "channel": "export:perform-action",
+          "call": "(resultId, action)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:53",
+          "tests": [
+            "test/export-result-service.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "exportPdf",
+          "kind": "invoke",
+          "channel": "capture:export-pdf",
+          "call": "(imageBuffer, meta, mode)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:42",
+          "tests": [
+            "test/capture-brush-render.test.js",
+            "test/capture-export-pdf-ui.test.js",
+            "test/capture-renderer-runtime.test.js",
+            "test/ipc-module-contracts.test.js",
+            "test/magnifier-reedit-runtime.test.js",
+            "test/magnifier-runtime.test.js",
+            "test/occlusion-recognition-runtime.test.js"
+          ]
+        },
+        {
+          "name": "loadDocument",
+          "kind": "invoke",
+          "channel": "capture:load-document",
+          "call": "(payload)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:50",
+          "tests": [
+            "test/capture-document-editor-runtime.test.js",
+            "test/capture-document-editor-ui.test.js",
+            "test/ipc-module-contracts.test.js",
+            "test/magnifier-reedit-runtime.test.js"
+          ]
+        },
+        {
+          "name": "ocr",
+          "kind": "invoke",
+          "channel": "capture:ocr",
+          "call": "(imageBuffer, options)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:34",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "onInit",
+          "kind": "subscribe",
+          "channel": "capture:init",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-capture.js:11",
+          "tests": [
+            "test/capture-brush-render.test.js",
+            "test/capture-document-editor-runtime.test.js",
+            "test/capture-first-paint.test.js",
+            "test/capture-init-handshake.test.js",
+            "test/capture-renderer-runtime.test.js",
+            "test/magnifier-reedit-runtime.test.js",
+            "test/magnifier-runtime.test.js",
+            "test/occlusion-recognition-runtime.test.js"
+          ]
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-capture.js:5",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "onShown",
+          "kind": "subscribe",
+          "channel": "capture:shown",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-capture.js:16",
+          "tests": [
+            "test/capture-domain.test.js",
+            "test/capture-renderer-runtime.test.js"
+          ]
+        },
+        {
+          "name": "openRecognition",
+          "kind": "invoke",
+          "channel": "capture:open-recognition",
+          "call": "(type, imageBuffer, meta)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:33",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "pin",
+          "kind": "invoke",
+          "channel": "capture:pin",
+          "call": "(imageBuffer, meta)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:31",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "pinAndReannotate",
+          "kind": "invoke",
+          "channel": "capture:pin-reannotate",
+          "call": "(imageBuffer, meta, action)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:32",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "ready",
+          "kind": "send",
+          "channel": "capture:ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-capture.js:10",
+          "tests": [
+            "test/capture-brush-render.test.js",
+            "test/capture-document-editor-runtime.test.js",
+            "test/capture-first-paint.test.js",
+            "test/capture-init-handshake.test.js",
+            "test/capture-renderer-runtime.test.js",
+            "test/ipc-module-contracts.test.js",
+            "test/magnifier-reedit-runtime.test.js",
+            "test/magnifier-runtime.test.js",
+            "test/occlusion-recognition-runtime.test.js"
+          ]
+        },
+        {
+          "name": "recordHistory",
+          "kind": "invoke",
+          "channel": "capture:record-history",
+          "call": "(imageBuffer, meta)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:41",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "regionDeletePreset",
+          "kind": "invoke",
+          "channel": "region:delete-preset",
+          "call": "(id)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:59",
+          "tests": []
+        },
+        {
+          "name": "regionGetPreferences",
+          "kind": "invoke",
+          "channel": "region:get-preferences",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:56",
+          "tests": []
+        },
+        {
+          "name": "regionResolve",
+          "kind": "invoke",
+          "channel": "region:resolve",
+          "call": "(payload)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:57",
+          "tests": []
+        },
+        {
+          "name": "regionSavePreset",
+          "kind": "invoke",
+          "channel": "region:save-preset",
+          "call": "(payload)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:58",
+          "tests": []
+        },
+        {
+          "name": "renderError",
+          "kind": "send",
+          "channel": "capture:render-error",
+          "call": "(message)",
+          "returns": "void",
+          "source": "preload-capture.js:22",
+          "tests": [
+            "test/capture-brush-render.test.js",
+            "test/capture-document-editor-runtime.test.js",
+            "test/capture-first-paint.test.js",
+            "test/capture-renderer-runtime.test.js",
+            "test/ipc-module-contracts.test.js",
+            "test/magnifier-reedit-runtime.test.js",
+            "test/magnifier-runtime.test.js",
+            "test/occlusion-recognition-runtime.test.js"
+          ]
+        },
+        {
+          "name": "renderReady",
+          "kind": "send",
+          "channel": "capture:render-ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-capture.js:21",
+          "tests": [
+            "test/capture-brush-render.test.js",
+            "test/capture-document-editor-runtime.test.js",
+            "test/capture-first-paint.test.js",
+            "test/capture-renderer-runtime.test.js",
+            "test/ipc-module-contracts.test.js",
+            "test/magnifier-reedit-runtime.test.js",
+            "test/magnifier-runtime.test.js",
+            "test/occlusion-recognition-runtime.test.js"
+          ]
+        },
+        {
+          "name": "save",
+          "kind": "send",
+          "channel": "capture:save",
+          "call": "(imageBuffer, meta, fast)",
+          "returns": "void",
+          "source": "preload-capture.js:30",
+          "tests": [
+            "test/capture-brush-render.test.js",
+            "test/capture-renderer-runtime.test.js",
+            "test/ipc-module-contracts.test.js",
+            "test/magnifier-reedit-runtime.test.js",
+            "test/magnifier-runtime.test.js",
+            "test/occlusion-recognition-runtime.test.js"
+          ]
+        },
+        {
+          "name": "saveAnnotationColor",
+          "kind": "invoke",
+          "channel": "settings:update",
+          "call": "(annotationColor)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:64",
+          "tests": [
+            "test/capture-color-palette.test.js",
+            "test/capture-tool-styles.test.js",
+            "test/settings-ipc.test.js"
+          ]
+        },
+        {
+          "name": "saveAnnotationStyles",
+          "kind": "invoke",
+          "channel": "settings:update",
+          "call": "(annotationStyles)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:67",
+          "tests": [
+            "test/capture-color-palette.test.js",
+            "test/capture-tool-styles.test.js",
+            "test/settings-ipc.test.js"
+          ]
+        },
+        {
+          "name": "saveAnnotationWidth",
+          "kind": "invoke",
+          "channel": "settings:update",
+          "call": "(annotationWidth)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:61",
+          "tests": [
+            "test/capture-color-palette.test.js",
+            "test/capture-tool-styles.test.js",
+            "test/settings-ipc.test.js"
+          ]
+        },
+        {
+          "name": "saveOutputStylePreset",
+          "kind": "invoke",
+          "channel": "settings:update",
+          "call": "(outputStylePreset)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:73",
+          "tests": [
+            "test/capture-color-palette.test.js",
+            "test/capture-tool-styles.test.js",
+            "test/settings-ipc.test.js"
+          ]
+        },
+        {
+          "name": "saveWatermarkSettings",
+          "kind": "invoke",
+          "channel": "settings:update",
+          "call": "(watermark)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:60",
+          "tests": [
+            "test/capture-color-palette.test.js",
+            "test/capture-tool-styles.test.js",
+            "test/settings-ipc.test.js"
+          ]
+        },
+        {
+          "name": "smartSelectAt",
+          "kind": "invoke",
+          "channel": "capture:smart-select",
+          "call": "(point)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:28",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "startLongCapture",
+          "kind": "invoke",
+          "channel": "capture:start-long",
+          "call": "(selection, serial)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:27",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "startRegionRecording",
+          "kind": "invoke",
+          "channel": "capture:start-region-recording",
+          "call": "(selectionBounds, serial)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:40",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "translate",
+          "kind": "invoke",
+          "channel": "capture:translate",
+          "call": "(imageBuffer, options)",
+          "returns": "Promise<unknown>",
+          "source": "preload-capture.js:35",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [
+          "capture:commit-document",
+          "capture:commit-status",
+          "capture:convert-image",
+          "capture:copy",
+          "capture:export-pdf",
+          "capture:load-document",
+          "capture:ocr",
+          "capture:open-recognition",
+          "capture:pin",
+          "capture:pin-reannotate",
+          "capture:record-history",
+          "capture:smart-select",
+          "capture:start-long",
+          "capture:start-region-recording",
+          "capture:translate",
+          "export:perform-action",
+          "region:delete-preset",
+          "region:get-preferences",
+          "region:resolve",
+          "region:save-preset",
+          "settings:update"
+        ],
+        "listeners": [
+          "capture:close",
+          "capture:ready",
+          "capture:render-error",
+          "capture:render-ready",
+          "capture:save"
+        ],
+        "receives": [
+          "capture:init",
+          "capture:shown",
+          "i18n:language"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "clipboard",
+      "page": "clipboard/clipboard.html",
+      "preload": "preload-clipboard.js",
+      "globalObject": "clipboardAPI",
+      "methods": [
+        {
+          "name": "close",
+          "kind": "send",
+          "channel": "clipboard:close",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-clipboard.js:10",
+          "tests": []
+        },
+        {
+          "name": "commitClear",
+          "kind": "invoke",
+          "channel": "clipboard:commit-clear",
+          "call": "(token, operationId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-clipboard.js:19",
+          "tests": []
+        },
+        {
+          "name": "copy",
+          "kind": "invoke",
+          "channel": "clipboard:copy",
+          "call": "(id, operationId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-clipboard.js:14",
+          "tests": []
+        },
+        {
+          "name": "delete",
+          "kind": "invoke",
+          "channel": "clipboard:delete",
+          "call": "(ids, operationId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-clipboard.js:17",
+          "tests": [
+            "test/clipboard-preview-batch.test.js"
+          ]
+        },
+        {
+          "name": "detail",
+          "kind": "invoke",
+          "channel": "clipboard:detail",
+          "call": "(id)",
+          "returns": "Promise<unknown>",
+          "source": "preload-clipboard.js:12",
+          "tests": []
+        },
+        {
+          "name": "interactive",
+          "kind": "send",
+          "channel": "clipboard:interactive",
+          "call": "(generation)",
+          "returns": "void",
+          "source": "preload-clipboard.js:9",
+          "tests": []
+        },
+        {
+          "name": "list",
+          "kind": "invoke",
+          "channel": "clipboard:list",
+          "call": "(args)",
+          "returns": "Promise<unknown>",
+          "source": "preload-clipboard.js:11",
+          "tests": []
+        },
+        {
+          "name": "onHidden",
+          "kind": "subscribe",
+          "channel": "clipboard:hidden",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-clipboard.js:25",
+          "tests": [
+            "test/clipboard-paste.test.js"
+          ]
+        },
+        {
+          "name": "onHistory",
+          "kind": "subscribe",
+          "channel": "clipboard:history-changed",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-clipboard.js:24",
+          "tests": [
+            "test/clipboard-preview-batch.test.js"
+          ]
+        },
+        {
+          "name": "onInit",
+          "kind": "subscribe",
+          "channel": "clipboard:init",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-clipboard.js:22",
+          "tests": [
+            "test/clipboard-paste.test.js"
+          ]
+        },
+        {
+          "name": "onLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-clipboard.js:27",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "onPasteResult",
+          "kind": "subscribe",
+          "channel": "clipboard:paste-result",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-clipboard.js:26",
+          "tests": [
+            "test/clipboard-paste.test.js"
+          ]
+        },
+        {
+          "name": "onStatus",
+          "kind": "subscribe",
+          "channel": "clipboard:status-changed",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-clipboard.js:23",
+          "tests": []
+        },
+        {
+          "name": "paste",
+          "kind": "invoke",
+          "channel": "clipboard:paste",
+          "call": "(id, operationId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-clipboard.js:15",
+          "tests": [
+            "test/clipboard-paste.test.js"
+          ]
+        },
+        {
+          "name": "prepareClear",
+          "kind": "invoke",
+          "channel": "clipboard:prepare-clear",
+          "call": "(scope)",
+          "returns": "Promise<unknown>",
+          "source": "preload-clipboard.js:18",
+          "tests": []
+        },
+        {
+          "name": "previews",
+          "kind": "invoke",
+          "channel": "clipboard:previews",
+          "call": "(ids)",
+          "returns": "Promise<unknown>",
+          "source": "preload-clipboard.js:13",
+          "tests": [
+            "test/clipboard-preview-batch.test.js"
+          ]
+        },
+        {
+          "name": "ready",
+          "kind": "send",
+          "channel": "clipboard:ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-clipboard.js:8",
+          "tests": [
+            "test/clipboard-paste.test.js",
+            "test/clipboard-preview-batch.test.js"
+          ]
+        },
+        {
+          "name": "setPaused",
+          "kind": "invoke",
+          "channel": "clipboard:set-paused",
+          "call": "(paused)",
+          "returns": "Promise<unknown>",
+          "source": "preload-clipboard.js:21",
+          "tests": []
+        },
+        {
+          "name": "setPinned",
+          "kind": "invoke",
+          "channel": "clipboard:set-pinned",
+          "call": "(id, pinned, operationId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-clipboard.js:16",
+          "tests": []
+        },
+        {
+          "name": "status",
+          "kind": "invoke",
+          "channel": "clipboard:status",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload-clipboard.js:20",
+          "tests": []
+        }
+      ],
+      "surface": {
+        "handles": [
+          "clipboard:commit-clear",
+          "clipboard:copy",
+          "clipboard:delete",
+          "clipboard:detail",
+          "clipboard:list",
+          "clipboard:paste",
+          "clipboard:prepare-clear",
+          "clipboard:previews",
+          "clipboard:set-paused",
+          "clipboard:set-pinned",
+          "clipboard:status"
+        ],
+        "listeners": [
+          "clipboard:close",
+          "clipboard:interactive",
+          "clipboard:ready"
+        ],
+        "receives": [
+          "clipboard:hidden",
+          "clipboard:history-changed",
+          "clipboard:init",
+          "clipboard:paste-result",
+          "clipboard:status-changed",
+          "i18n:language"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "long-capture",
+      "page": "long-capture/long-capture.html",
+      "preload": "preload-long-capture.js",
+      "globalObject": "longCaptureAPI",
+      "methods": [
+        {
+          "name": "addStrip",
+          "kind": "invoke",
+          "channel": "long-capture:add-strip",
+          "call": "(arrayBuffer, metadata)",
+          "returns": "Promise<unknown>",
+          "source": "preload-long-capture.js:16",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "close",
+          "kind": "send",
+          "channel": "long-capture:close",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-long-capture.js:26",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "finish",
+          "kind": "invoke",
+          "channel": "long-capture:finish",
+          "call": "(action, fast)",
+          "returns": "Promise<unknown>",
+          "source": "preload-long-capture.js:24",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "onInit",
+          "kind": "subscribe",
+          "channel": "long-capture:init",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-long-capture.js:11",
+          "tests": []
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-long-capture.js:5",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "onSelectionUpdated",
+          "kind": "subscribe",
+          "channel": "long-capture:selection-updated",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-long-capture.js:19",
+          "tests": []
+        },
+        {
+          "name": "ready",
+          "kind": "send",
+          "channel": "long-capture:ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-long-capture.js:10",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "setOverlayActive",
+          "kind": "send",
+          "channel": "long-capture:overlay-active",
+          "call": "(active)",
+          "returns": "void",
+          "source": "preload-long-capture.js:25",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "setSelectionEditing",
+          "kind": "invoke",
+          "channel": "long-capture:set-selection-editing",
+          "call": "(enabled, axis, hasContent)",
+          "returns": "Promise<unknown>",
+          "source": "preload-long-capture.js:18",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "setTrim",
+          "kind": "invoke",
+          "channel": "long-capture:set-trim",
+          "call": "(start, end)",
+          "returns": "Promise<unknown>",
+          "source": "preload-long-capture.js:17",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [
+          "long-capture:add-strip",
+          "long-capture:finish",
+          "long-capture:set-selection-editing",
+          "long-capture:set-trim"
+        ],
+        "listeners": [
+          "long-capture:close",
+          "long-capture:overlay-active",
+          "long-capture:ready"
+        ],
+        "receives": [
+          "i18n:language",
+          "long-capture:init",
+          "long-capture:selection-updated"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "long-overlay",
+      "page": "long-capture/overlay.html",
+      "preload": "preload-long-overlay.js",
+      "globalObject": "longOverlayAPI",
+      "methods": [
+        {
+          "name": "onActiveChanged",
+          "kind": "subscribe",
+          "channel": "long-overlay:active",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-long-overlay.js:16",
+          "tests": []
+        },
+        {
+          "name": "onEditingChanged",
+          "kind": "subscribe",
+          "channel": "long-overlay:editing",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-long-overlay.js:21",
+          "tests": []
+        },
+        {
+          "name": "onInit",
+          "kind": "subscribe",
+          "channel": "long-overlay:init",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-long-overlay.js:11",
+          "tests": []
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-long-overlay.js:5",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "ready",
+          "kind": "send",
+          "channel": "long-overlay:ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-long-overlay.js:10",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "updateBounds",
+          "kind": "send",
+          "channel": "long-overlay:bounds-changed",
+          "call": "(bounds)",
+          "returns": "void",
+          "source": "preload-long-overlay.js:26",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [],
+        "listeners": [
+          "long-overlay:bounds-changed",
+          "long-overlay:ready"
+        ],
+        "receives": [
+          "i18n:language",
+          "long-overlay:active",
+          "long-overlay:editing",
+          "long-overlay:init"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "main",
+      "page": "config/config.html",
+      "preload": "preload.js",
+      "globalObject": "electronAPI",
+      "methods": [
+        {
+          "name": "changeDataRoot",
+          "kind": "invoke",
+          "channel": "data-root:change",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:25",
+          "tests": [
+            "test/data-root-ui-contract.test.js",
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "checkForUpdates",
+          "kind": "invoke",
+          "channel": "update:check",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:112",
+          "tests": [
+            "test/update-ipc.test.js",
+            "test/update-ui-contract.test.js"
+          ]
+        },
+        {
+          "name": "chooseDirectory",
+          "kind": "invoke",
+          "channel": "dialog:choose-directory",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:45",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "cleanupHistory",
+          "kind": "invoke",
+          "channel": "history:cleanup",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:37",
+          "tests": [
+            "test/history-ipc.test.js",
+            "test/history-management-ui.test.js"
+          ]
+        },
+        {
+          "name": "clearHistory",
+          "kind": "invoke",
+          "channel": "history:clear",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:42",
+          "tests": [
+            "test/history-ipc.test.js"
+          ]
+        },
+        {
+          "name": "commitClipboardClear",
+          "kind": "invoke",
+          "channel": "clipboard:commit-clear",
+          "call": "(token, operationId)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:6",
+          "tests": []
+        },
+        {
+          "name": "copyHistory",
+          "kind": "invoke",
+          "channel": "history:copy",
+          "call": "(id)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:38",
+          "tests": [
+            "test/history-ipc.test.js"
+          ]
+        },
+        {
+          "name": "copyHistoryPath",
+          "kind": "invoke",
+          "channel": "history:copy-path",
+          "call": "(id)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:41",
+          "tests": [
+            "test/history-ipc.test.js",
+            "test/history-management-ui.test.js"
+          ]
+        },
+        {
+          "name": "createCodingPlanProvider",
+          "kind": "invoke",
+          "channel": "coding-plan:create-provider",
+          "call": "(input)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:16",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/model-config-ui-contract.test.js"
+          ]
+        },
+        {
+          "name": "deleteHistory",
+          "kind": "invoke",
+          "channel": "history:delete",
+          "call": "(id)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:32",
+          "tests": [
+            "test/history-ipc.test.js"
+          ]
+        },
+        {
+          "name": "deleteHistoryMany",
+          "kind": "invoke",
+          "channel": "history:delete-many",
+          "call": "(ids)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:33",
+          "tests": [
+            "test/history-ipc.test.js",
+            "test/history-management-ui.test.js"
+          ]
+        },
+        {
+          "name": "downloadUpdate",
+          "kind": "invoke",
+          "channel": "update:download",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:113",
+          "tests": [
+            "test/update-ipc.test.js",
+            "test/update-ui-contract.test.js"
+          ]
+        },
+        {
+          "name": "editHistory",
+          "kind": "invoke",
+          "channel": "history:edit",
+          "call": "(id)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:39",
+          "tests": [
+            "test/history-ipc.test.js",
+            "test/history-reedit-ui.test.js"
+          ]
+        },
+        {
+          "name": "executeFunction",
+          "kind": "invoke",
+          "channel": "app:execute-function",
+          "call": "(name, payload)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:27",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "exportDiagnostics",
+          "kind": "invoke",
+          "channel": "diagnostics:export",
+          "call": "(includeCrashDumps = false)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:110",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "exportHistory",
+          "kind": "invoke",
+          "channel": "history:export",
+          "call": "(ids)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:34",
+          "tests": [
+            "test/history-ipc.test.js",
+            "test/history-management-ui.test.js"
+          ]
+        },
+        {
+          "name": "exportHistoryPdf",
+          "kind": "invoke",
+          "channel": "history:export-pdf",
+          "call": "(ids)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:36",
+          "tests": [
+            "test/history-ipc.test.js"
+          ]
+        },
+        {
+          "name": "fetchProviderModels",
+          "kind": "invoke",
+          "channel": "config:test-connection",
+          "call": "(provider)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:15",
+          "tests": [
+            "test/model-config-ui-contract.test.js",
+            "test/settings-ipc.test.js"
+          ]
+        },
+        {
+          "name": "getAppInfo",
+          "kind": "invoke",
+          "channel": "app:get-info",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:106",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "getClipboardStatus",
+          "kind": "invoke",
+          "channel": "clipboard:status",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:4",
+          "tests": []
+        },
+        {
+          "name": "getDataRoot",
+          "kind": "invoke",
+          "channel": "data-root:get",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:24",
+          "tests": [
+            "test/data-root-ui-contract.test.js",
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "getDisplayDiagnostics",
+          "kind": "invoke",
+          "channel": "app:get-display-diagnostics",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:108",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "getHistory",
+          "kind": "invoke",
+          "channel": "history:list",
+          "call": "(filter)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:28",
+          "tests": [
+            "test/history-ipc.test.js"
+          ]
+        },
+        {
+          "name": "getHistorySources",
+          "kind": "invoke",
+          "channel": "history:sources",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:30",
+          "tests": [
+            "test/history-ipc.test.js"
+          ]
+        },
+        {
+          "name": "getHistoryStats",
+          "kind": "invoke",
+          "channel": "history:stats",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:31",
+          "tests": [
+            "test/history-ipc.test.js",
+            "test/history-management-ui.test.js"
+          ]
+        },
+        {
+          "name": "getHistoryThumbnail",
+          "kind": "invoke",
+          "channel": "history:thumbnail",
+          "call": "(id)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:29",
+          "tests": [
+            "test/history-ipc.test.js",
+            "test/history-management-ui.test.js"
+          ]
+        },
+        {
+          "name": "getOcrStatus",
+          "kind": "invoke",
+          "channel": "ocr:status",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:116",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "getProxyStatus",
+          "kind": "invoke",
+          "channel": "app:get-proxy-status",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:107",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/shortcut-ui-contract.test.js"
+          ]
+        },
+        {
+          "name": "getSearchStatus",
+          "kind": "invoke",
+          "channel": "search:status",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:117",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "getSettings",
+          "kind": "invoke",
+          "channel": "settings:get",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:20",
+          "tests": [
+            "test/ipc-security.test.js",
+            "test/settings-ipc.test.js"
+          ]
+        },
+        {
+          "name": "getShortcutStatuses",
+          "kind": "invoke",
+          "channel": "shortcuts:status",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:23",
+          "tests": [
+            "test/shortcut-ipc.test.js",
+            "test/shortcut-ui-contract.test.js"
+          ]
+        },
+        {
+          "name": "getUpdateStatus",
+          "kind": "invoke",
+          "channel": "update:status",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:111",
+          "tests": [
+            "test/update-ipc.test.js",
+            "test/update-ui-contract.test.js"
+          ]
+        },
+        {
+          "name": "installUpdate",
+          "kind": "invoke",
+          "channel": "update:install",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:114",
+          "tests": [
+            "test/update-ipc.test.js",
+            "test/update-ui-contract.test.js"
+          ]
+        },
+        {
+          "name": "onGameModeChanged",
+          "kind": "subscribe",
+          "channel": "app:game-mode-changed",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload.js:144",
+          "tests": [
+            "test/game-mode-contract.test.js"
+          ]
+        },
+        {
+          "name": "onHistoryChanged",
+          "kind": "subscribe",
+          "channel": "history:changed",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload.js:149",
+          "tests": []
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload.js:8",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "onNavigate",
+          "kind": "subscribe",
+          "channel": "app:navigate",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload.js:139",
+          "tests": []
+        },
+        {
+          "name": "onProxyStatus",
+          "kind": "subscribe",
+          "channel": "proxy:status",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload.js:161",
+          "tests": [
+            "test/proxy-bridge-controller.test.js"
+          ]
+        },
+        {
+          "name": "onUpdateStatus",
+          "kind": "subscribe",
+          "channel": "update:status",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload.js:154",
+          "tests": [
+            "test/update-ipc.test.js",
+            "test/update-ui-contract.test.js"
+          ]
+        },
+        {
+          "name": "onUsageScanProgress",
+          "kind": "subscribe",
+          "channel": "usage:scan-progress",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload.js:168",
+          "tests": [
+            "test/usage-ipc.test.js"
+          ]
+        },
+        {
+          "name": "openDataDirectory",
+          "kind": "invoke",
+          "channel": "app:open-data-directory",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:46",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "openDataRoot",
+          "kind": "invoke",
+          "channel": "data-root:open",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:26",
+          "tests": [
+            "test/data-root-ui-contract.test.js",
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "openExternal",
+          "kind": "invoke",
+          "channel": "shell:open-external",
+          "call": "(url)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:17",
+          "tests": [
+            "test/action-security-runtime.test.js",
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js"
+          ]
+        },
+        {
+          "name": "openHistory",
+          "kind": "invoke",
+          "channel": "history:open",
+          "call": "(id)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:40",
+          "tests": [
+            "test/history-ipc.test.js",
+            "test/history-management-ui.test.js"
+          ]
+        },
+        {
+          "name": "openSaveDirectory",
+          "kind": "invoke",
+          "channel": "app:open-save-directory",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:47",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "openUpdateDownloadPage",
+          "kind": "invoke",
+          "channel": "update:open-download-page",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:115",
+          "tests": [
+            "test/update-ipc.test.js",
+            "test/update-ui-contract.test.js"
+          ]
+        },
+        {
+          "name": "prepareClipboardClear",
+          "kind": "invoke",
+          "channel": "clipboard:prepare-clear",
+          "call": "(scope)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:5",
+          "tests": []
+        },
+        {
+          "name": "previewDiagnostics",
+          "kind": "invoke",
+          "channel": "diagnostics:preview",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:109",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "projectDelete",
+          "kind": "invoke",
+          "channel": "record:project-delete",
+          "call": "(projectId)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:100",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-workbench-ui.test.js"
+          ]
+        },
+        {
+          "name": "projectList",
+          "kind": "invoke",
+          "channel": "record:project-list",
+          "call": "(query)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:87",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-workbench-ui.test.js"
+          ]
+        },
+        {
+          "name": "projectOpen",
+          "kind": "invoke",
+          "channel": "record:project-open",
+          "call": "(projectId)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:93",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-workbench-ui.test.js"
+          ]
+        },
+        {
+          "name": "projectRename",
+          "kind": "invoke",
+          "channel": "record:project-rename",
+          "call": "(projectId, name)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:96",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-workbench-ui.test.js"
+          ]
+        },
+        {
+          "name": "projectReveal",
+          "kind": "invoke",
+          "channel": "record:project-reveal",
+          "call": "(projectId)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:103",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-workbench-ui.test.js"
+          ]
+        },
+        {
+          "name": "reportWindowState",
+          "kind": "send",
+          "channel": "window:renderer-state",
+          "call": "(state)",
+          "returns": "void",
+          "source": "preload.js:131",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/main-window-reclaimer.test.js"
+          ]
+        },
+        {
+          "name": "requestAi",
+          "kind": "invoke",
+          "channel": "ai:complete",
+          "call": "(messages, options)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:43",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "resetSettings",
+          "kind": "invoke",
+          "channel": "settings:reset",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:22",
+          "tests": [
+            "test/settings-ipc.test.js"
+          ]
+        },
+        {
+          "name": "testConnection",
+          "kind": "invoke",
+          "channel": "config:test-connection",
+          "call": "(apiKey)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:14",
+          "tests": [
+            "test/model-config-ui-contract.test.js",
+            "test/settings-ipc.test.js"
+          ]
+        },
+        {
+          "name": "translateText",
+          "kind": "invoke",
+          "channel": "ai:translate",
+          "call": "(text, sourceLanguage, targetLanguage)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:44",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "updateSettings",
+          "kind": "invoke",
+          "channel": "settings:update",
+          "call": "(patch)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:21",
+          "tests": [
+            "test/capture-color-palette.test.js",
+            "test/capture-tool-styles.test.js",
+            "test/settings-ipc.test.js"
+          ]
+        },
+        {
+          "name": "usageBreakdown",
+          "kind": "invoke",
+          "channel": "usage:breakdown",
+          "call": "(query)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:124",
+          "tests": [
+            "test/usage-feature.test.js",
+            "test/usage-ipc.test.js"
+          ]
+        },
+        {
+          "name": "usageClear",
+          "kind": "invoke",
+          "channel": "usage:clear",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:126",
+          "tests": [
+            "test/usage-feature.test.js",
+            "test/usage-ipc.test.js"
+          ]
+        },
+        {
+          "name": "usageDaily",
+          "kind": "invoke",
+          "channel": "usage:daily",
+          "call": "(query)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:122",
+          "tests": [
+            "test/usage-feature.test.js",
+            "test/usage-ipc.test.js"
+          ]
+        },
+        {
+          "name": "usageHeatmap",
+          "kind": "invoke",
+          "channel": "usage:heatmap",
+          "call": "(query)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:125",
+          "tests": [
+            "test/usage-feature.test.js",
+            "test/usage-ipc.test.js"
+          ]
+        },
+        {
+          "name": "usageHourly",
+          "kind": "invoke",
+          "channel": "usage:hourly",
+          "call": "(query)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:123",
+          "tests": [
+            "test/usage-feature.test.js",
+            "test/usage-ipc.test.js"
+          ]
+        },
+        {
+          "name": "usageRefresh",
+          "kind": "invoke",
+          "channel": "usage:refresh",
+          "call": "(payload)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:120",
+          "tests": [
+            "test/usage-feature.test.js",
+            "test/usage-ipc.test.js"
+          ]
+        },
+        {
+          "name": "usageStatus",
+          "kind": "invoke",
+          "channel": "usage:status",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:119",
+          "tests": [
+            "test/usage-feature.test.js",
+            "test/usage-ipc.test.js"
+          ]
+        },
+        {
+          "name": "usageSummary",
+          "kind": "invoke",
+          "channel": "usage:summary",
+          "call": "(query)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:121",
+          "tests": [
+            "test/usage-feature.test.js",
+            "test/usage-ipc.test.js"
+          ]
+        },
+        {
+          "name": "windowClose",
+          "kind": "send",
+          "channel": "window:close",
+          "call": "()",
+          "returns": "void",
+          "source": "preload.js:128",
+          "tests": [
+            "test/architecture-gate.test.js"
+          ]
+        },
+        {
+          "name": "windowMinimize",
+          "kind": "send",
+          "channel": "window:minimize",
+          "call": "()",
+          "returns": "void",
+          "source": "preload.js:127",
+          "tests": [
+            "test/architecture-gate.test.js"
+          ]
+        },
+        {
+          "name": "workbenchFocus",
+          "kind": "invoke",
+          "channel": "record:workbench-focus",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:86",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-workbench-ui.test.js"
+          ]
+        },
+        {
+          "name": "workbenchStart",
+          "kind": "invoke",
+          "channel": "record:workbench-start",
+          "call": "(request)",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:56",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-workbench-ui.test.js"
+          ]
+        },
+        {
+          "name": "workbenchState",
+          "kind": "invoke",
+          "channel": "record:workbench-state",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:52",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-workbench-ui.test.js"
+          ]
+        },
+        {
+          "name": "workbenchWindows",
+          "kind": "invoke",
+          "channel": "record:workbench-windows",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload.js:55",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-ui-contract.test.js",
+            "test/recording-workbench-ui.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [
+          "ai:complete",
+          "ai:translate",
+          "app:execute-function",
+          "app:get-display-diagnostics",
+          "app:get-info",
+          "app:get-proxy-status",
+          "app:open-data-directory",
+          "app:open-save-directory",
+          "clipboard:commit-clear",
+          "clipboard:prepare-clear",
+          "clipboard:status",
+          "coding-plan:create-provider",
+          "config:test-connection",
+          "data-root:change",
+          "data-root:get",
+          "data-root:open",
+          "diagnostics:export",
+          "diagnostics:preview",
+          "dialog:choose-directory",
+          "history:cleanup",
+          "history:clear",
+          "history:copy",
+          "history:copy-path",
+          "history:delete",
+          "history:delete-many",
+          "history:edit",
+          "history:export",
+          "history:export-pdf",
+          "history:list",
+          "history:open",
+          "history:sources",
+          "history:stats",
+          "history:thumbnail",
+          "ocr:status",
+          "record:project-delete",
+          "record:project-list",
+          "record:project-open",
+          "record:project-rename",
+          "record:project-reveal",
+          "record:workbench-focus",
+          "record:workbench-start",
+          "record:workbench-state",
+          "record:workbench-windows",
+          "search:status",
+          "settings:get",
+          "settings:reset",
+          "settings:update",
+          "shell:open-external",
+          "shortcuts:status",
+          "update:check",
+          "update:download",
+          "update:install",
+          "update:open-download-page",
+          "update:status",
+          "usage:breakdown",
+          "usage:clear",
+          "usage:daily",
+          "usage:heatmap",
+          "usage:hourly",
+          "usage:refresh",
+          "usage:status",
+          "usage:summary"
+        ],
+        "listeners": [
+          "window:close",
+          "window:minimize",
+          "window:renderer-state"
+        ],
+        "receives": [
+          "app:game-mode-changed",
+          "app:navigate",
+          "history:changed",
+          "i18n:language",
+          "proxy:status",
+          "update:status",
+          "usage:scan-progress"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "pin",
+      "page": "pin/pin.html",
+      "preload": "preload-pin.js",
+      "globalObject": "pinAPI",
+      "methods": [
+        {
+          "name": "adjustOpacity",
+          "kind": "send",
+          "channel": "pin:set-opacity",
+          "call": "(direction)",
+          "returns": "void",
+          "source": "preload-pin.js:30",
+          "tests": [
+            "test/capture-ocr-pin-ui.test.js"
+          ]
+        },
+        {
+          "name": "beginMove",
+          "kind": "send",
+          "channel": "pin:move-start",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-pin.js:43",
+          "tests": [
+            "test/pin-domain.test.js"
+          ]
+        },
+        {
+          "name": "close",
+          "kind": "send",
+          "channel": "pin:close",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-pin.js:22",
+          "tests": [
+            "test/pin-domain.test.js"
+          ]
+        },
+        {
+          "name": "contextMenu",
+          "kind": "send",
+          "channel": "pin:context-menu",
+          "call": "(imageBounds)",
+          "returns": "void",
+          "source": "preload-pin.js:25",
+          "tests": [
+            "test/pin-domain.test.js"
+          ]
+        },
+        {
+          "name": "copy",
+          "kind": "send",
+          "channel": "pin:copy",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-pin.js:23",
+          "tests": [
+            "test/pin-domain.test.js"
+          ]
+        },
+        {
+          "name": "endMove",
+          "kind": "send",
+          "channel": "pin:move-end",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-pin.js:45",
+          "tests": [
+            "test/pin-domain.test.js"
+          ]
+        },
+        {
+          "name": "exportPdf",
+          "kind": "invoke",
+          "channel": "pin:export-pdf",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload-pin.js:42",
+          "tests": []
+        },
+        {
+          "name": "move",
+          "kind": "send",
+          "channel": "pin:move",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-pin.js:44",
+          "tests": [
+            "test/pin-domain.test.js"
+          ]
+        },
+        {
+          "name": "onClickThroughChanged",
+          "kind": "subscribe",
+          "channel": "pin:click-through-changed",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-pin.js:62",
+          "tests": [
+            "test/ipc-security.test.js",
+            "test/pin-domain.test.js"
+          ]
+        },
+        {
+          "name": "onInit",
+          "kind": "subscribe",
+          "channel": "pin:init",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-pin.js:12",
+          "tests": []
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-pin.js:5",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "onOpacityChanged",
+          "kind": "subscribe",
+          "channel": "pin:opacity-changed",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-pin.js:52",
+          "tests": []
+        },
+        {
+          "name": "onRotationChanged",
+          "kind": "subscribe",
+          "channel": "pin:rotation-changed",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-pin.js:35",
+          "tests": []
+        },
+        {
+          "name": "onUpdate",
+          "kind": "subscribe",
+          "channel": "pin:update",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-pin.js:17",
+          "tests": []
+        },
+        {
+          "name": "onZoomChanged",
+          "kind": "subscribe",
+          "channel": "pin:zoom-changed",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-pin.js:46",
+          "tests": []
+        },
+        {
+          "name": "ready",
+          "kind": "send",
+          "channel": "pin:ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-pin.js:10",
+          "tests": [
+            "test/pin-domain.test.js"
+          ]
+        },
+        {
+          "name": "renderReady",
+          "kind": "send",
+          "channel": "pin:render-ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-pin.js:11",
+          "tests": [
+            "test/pin-domain.test.js"
+          ]
+        },
+        {
+          "name": "resize",
+          "kind": "send",
+          "channel": "pin:resize",
+          "call": "(factor)",
+          "returns": "void",
+          "source": "preload-pin.js:26",
+          "tests": [
+            "test/pin-domain.test.js"
+          ]
+        },
+        {
+          "name": "rotate",
+          "kind": "send",
+          "channel": "pin:rotate",
+          "call": "(delta = 90)",
+          "returns": "void",
+          "source": "preload-pin.js:34",
+          "tests": []
+        },
+        {
+          "name": "save",
+          "kind": "send",
+          "channel": "pin:save",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-pin.js:24",
+          "tests": [
+            "test/pin-domain.test.js"
+          ]
+        },
+        {
+          "name": "setClickThrough",
+          "kind": "send",
+          "channel": "pin:set-click-through",
+          "call": "(enabled)",
+          "returns": "void",
+          "source": "preload-pin.js:59",
+          "tests": [
+            "test/ipc-security.test.js",
+            "test/pin-domain.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [
+          "pin:export-pdf"
+        ],
+        "listeners": [
+          "pin:close",
+          "pin:context-menu",
+          "pin:copy",
+          "pin:move",
+          "pin:move-end",
+          "pin:move-start",
+          "pin:ready",
+          "pin:render-ready",
+          "pin:resize",
+          "pin:rotate",
+          "pin:save",
+          "pin:set-click-through",
+          "pin:set-opacity"
+        ],
+        "receives": [
+          "i18n:language",
+          "pin:click-through-changed",
+          "pin:init",
+          "pin:opacity-changed",
+          "pin:rotation-changed",
+          "pin:update",
+          "pin:zoom-changed"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "recognition",
+      "page": "recognition/recognition.html",
+      "preload": "preload-recognition.js",
+      "globalObject": "recognitionAPI",
+      "methods": [
+        {
+          "name": "close",
+          "kind": "send",
+          "channel": "recognition:close",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-recognition.js:27",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "copyText",
+          "kind": "invoke",
+          "channel": "recognition:copy",
+          "call": "(text)",
+          "returns": "Promise<unknown>",
+          "source": "preload-recognition.js:17",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "exportAction",
+          "kind": "invoke",
+          "channel": "export:perform-action",
+          "call": "(resultId, action)",
+          "returns": "Promise<unknown>",
+          "source": "preload-recognition.js:25",
+          "tests": [
+            "test/export-result-service.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "exportExcel",
+          "kind": "invoke",
+          "channel": "recognition:export-excel",
+          "call": "(rows, merges)",
+          "returns": "Promise<unknown>",
+          "source": "preload-recognition.js:20",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "exportPdf",
+          "kind": "invoke",
+          "channel": "recognition:export-pdf",
+          "call": "(options)",
+          "returns": "Promise<unknown>",
+          "source": "preload-recognition.js:22",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "onInit",
+          "kind": "subscribe",
+          "channel": "recognition:init",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-recognition.js:11",
+          "tests": []
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-recognition.js:5",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "openExternal",
+          "kind": "invoke",
+          "channel": "shell:open-external",
+          "call": "(url)",
+          "returns": "Promise<unknown>",
+          "source": "preload-recognition.js:26",
+          "tests": [
+            "test/action-security-runtime.test.js",
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js"
+          ]
+        },
+        {
+          "name": "ready",
+          "kind": "send",
+          "channel": "recognition:ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-recognition.js:10",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "recognizeTable",
+          "kind": "invoke",
+          "channel": "recognition:table",
+          "call": "(dataUrl, scaleFactor)",
+          "returns": "Promise<unknown>",
+          "source": "preload-recognition.js:16",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [
+          "export:perform-action",
+          "recognition:copy",
+          "recognition:export-excel",
+          "recognition:export-pdf",
+          "recognition:table",
+          "shell:open-external"
+        ],
+        "listeners": [
+          "recognition:close",
+          "recognition:ready"
+        ],
+        "receives": [
+          "i18n:language",
+          "recognition:init"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "record",
+      "page": "record/record.html",
+      "preload": "preload-record.js",
+      "globalObject": "recordAPI",
+      "methods": [
+        {
+          "name": "appendChunk",
+          "kind": "invoke",
+          "channel": "record:append-chunk",
+          "call": "(sessionId, arrayBuffer, sequence, bytes)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:38",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/record-control-bar.test.js"
+          ]
+        },
+        {
+          "name": "cancelExport",
+          "kind": "invoke",
+          "channel": "record:cancel-export",
+          "call": "(query)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:65",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "cancelSession",
+          "kind": "invoke",
+          "channel": "record:cancel-session",
+          "call": "(sessionId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:58",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/record-control-bar.test.js"
+          ]
+        },
+        {
+          "name": "close",
+          "kind": "send",
+          "channel": "record:close",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-record.js:81",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "closePreview",
+          "kind": "invoke",
+          "channel": "record:close-preview",
+          "call": "(sessionId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:66",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "exportAction",
+          "kind": "invoke",
+          "channel": "export:perform-action",
+          "call": "(resultId, action)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:73",
+          "tests": [
+            "test/export-result-service.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "exportRecording",
+          "kind": "invoke",
+          "channel": "record:export",
+          "call": "(sessionId, requestId, request)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:63",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "exportStatus",
+          "kind": "invoke",
+          "channel": "record:export-status",
+          "call": "(query)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:64",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "finishSession",
+          "kind": "invoke",
+          "channel": "record:finish-session",
+          "call": "(sessionId, timing)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:49",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/record-control-bar.test.js"
+          ]
+        },
+        {
+          "name": "getState",
+          "kind": "invoke",
+          "channel": "record:get-state",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:30",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/record-control-bar.test.js"
+          ]
+        },
+        {
+          "name": "onAnnotationSnapshot",
+          "kind": "subscribe",
+          "channel": "record:annotation-snapshot",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record.js:79",
+          "tests": []
+        },
+        {
+          "name": "onCommand",
+          "kind": "subscribe",
+          "channel": "record:command",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record.js:25",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/record-control-bar.test.js",
+            "test/record-domain.test.js"
+          ]
+        },
+        {
+          "name": "onExportProgress",
+          "kind": "subscribe",
+          "channel": "record:export-progress",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record.js:67",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/record-domain.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "onInit",
+          "kind": "subscribe",
+          "channel": "record:init",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record.js:22",
+          "tests": [
+            "test/ipc-security.test.js"
+          ]
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record.js:16",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "onSaveProgress",
+          "kind": "subscribe",
+          "channel": "record:save-progress",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record.js:78",
+          "tests": []
+        },
+        {
+          "name": "onSourceLost",
+          "kind": "subscribe",
+          "channel": "record:source-lost",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record.js:34",
+          "tests": [
+            "test/record-control-bar.test.js",
+            "test/record-domain.test.js"
+          ]
+        },
+        {
+          "name": "onStateChanged",
+          "kind": "subscribe",
+          "channel": "record:state-changed",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record.js:31",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/record-control-bar.test.js",
+            "test/record-domain.test.js"
+          ]
+        },
+        {
+          "name": "probeSession",
+          "kind": "invoke",
+          "channel": "record:probe-session",
+          "call": "(sessionId, durationMs)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:62",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "ready",
+          "kind": "send",
+          "channel": "record:ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-record.js:21",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "reportCommandResult",
+          "kind": "send",
+          "channel": "record:command-result",
+          "call": "(result)",
+          "returns": "void",
+          "source": "preload-record.js:27",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/record-control-bar.test.js"
+          ]
+        },
+        {
+          "name": "reportPerformance",
+          "kind": "send",
+          "channel": "record:performance",
+          "call": "(details)",
+          "returns": "void",
+          "source": "preload-record.js:80",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "reportState",
+          "kind": "send",
+          "channel": "record:state",
+          "call": "(state)",
+          "returns": "void",
+          "source": "preload-record.js:26",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/record-control-bar.test.js"
+          ]
+        },
+        {
+          "name": "resizePreview",
+          "kind": "invoke",
+          "channel": "record:resize-preview",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:76",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "restart",
+          "kind": "invoke",
+          "channel": "record:restart",
+          "call": "(sessionId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:77",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "saveMp4",
+          "kind": "invoke",
+          "channel": "record:save-mp4",
+          "call": "(sessionId, durationMs)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:61",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "setAnnotationCommand",
+          "kind": "invoke",
+          "channel": "record:set-annotation-command",
+          "call": "(command)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:75",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "setFrameState",
+          "kind": "invoke",
+          "channel": "record:set-frame-state",
+          "call": "(state)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:74",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "startSession",
+          "kind": "invoke",
+          "channel": "record:start-session",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload-record.js:35",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/record-control-bar.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [
+          "export:perform-action",
+          "record:append-chunk",
+          "record:cancel-export",
+          "record:cancel-session",
+          "record:close-preview",
+          "record:export",
+          "record:export-status",
+          "record:finish-session",
+          "record:get-state",
+          "record:probe-session",
+          "record:resize-preview",
+          "record:restart",
+          "record:save-mp4",
+          "record:set-annotation-command",
+          "record:set-frame-state",
+          "record:start-session"
+        ],
+        "listeners": [
+          "record:close",
+          "record:command-result",
+          "record:performance",
+          "record:ready",
+          "record:state"
+        ],
+        "receives": [
+          "i18n:language",
+          "record:annotation-snapshot",
+          "record:command",
+          "record:export-progress",
+          "record:init",
+          "record:save-progress",
+          "record:source-lost",
+          "record:state-changed"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "record-editor",
+      "page": "record/editor.html",
+      "preload": "preload-record-editor.js",
+      "globalObject": "recordEditorAPI",
+      "methods": [
+        {
+          "name": "back",
+          "kind": "invoke",
+          "channel": "record-editor:back",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload-record-editor.js:42",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "cancelExport",
+          "kind": "invoke",
+          "channel": "record-editor:cancel-export",
+          "call": "(query)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record-editor.js:33",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "closeWindow",
+          "kind": "send",
+          "channel": "record-editor:close",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-record-editor.js:43",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "events",
+          "kind": "invoke",
+          "channel": "record-editor:events",
+          "call": "(projectId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record-editor.js:41",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js"
+          ]
+        },
+        {
+          "name": "exportAction",
+          "kind": "invoke",
+          "channel": "export:perform-action",
+          "call": "(resultId, action)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record-editor.js:45",
+          "tests": [
+            "test/export-result-service.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "exportProject",
+          "kind": "invoke",
+          "channel": "record-editor:export",
+          "call": "(projectId, requestId, request)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record-editor.js:31",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "exportStatus",
+          "kind": "invoke",
+          "channel": "record-editor:export-status",
+          "call": "(query)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record-editor.js:32",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "onExportProgress",
+          "kind": "subscribe",
+          "channel": "record:export-progress",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record-editor.js:46",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/record-domain.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "onInit",
+          "kind": "subscribe",
+          "channel": "record-editor:init",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record-editor.js:25",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/record-domain.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record-editor.js:19",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "ready",
+          "kind": "send",
+          "channel": "record-editor:ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-record-editor.js:24",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "reload",
+          "kind": "invoke",
+          "channel": "record-editor:reload",
+          "call": "(projectId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record-editor.js:38",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "renameProject",
+          "kind": "invoke",
+          "channel": "record-editor:rename",
+          "call": "(projectId, name)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record-editor.js:34",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "rerecord",
+          "kind": "invoke",
+          "channel": "record-editor:rerecord",
+          "call": "(projectId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record-editor.js:35",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "reveal",
+          "kind": "invoke",
+          "channel": "record-editor:reveal",
+          "call": "(projectId)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record-editor.js:36",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "saveDraft",
+          "kind": "invoke",
+          "channel": "record-editor:save-draft",
+          "call": "(projectId, expectedRevision, edit)",
+          "returns": "Promise<unknown>",
+          "source": "preload-record-editor.js:30",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        },
+        {
+          "name": "windowAction",
+          "kind": "send",
+          "channel": "record-editor:window",
+          "call": "(action)",
+          "returns": "void",
+          "source": "preload-record-editor.js:44",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js",
+            "test/recording-editor-ui.test.js",
+            "test/recording-trim-ui.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [
+          "export:perform-action",
+          "record-editor:back",
+          "record-editor:cancel-export",
+          "record-editor:events",
+          "record-editor:export",
+          "record-editor:export-status",
+          "record-editor:reload",
+          "record-editor:rename",
+          "record-editor:rerecord",
+          "record-editor:reveal",
+          "record-editor:save-draft"
+        ],
+        "listeners": [
+          "record-editor:close",
+          "record-editor:ready",
+          "record-editor:window"
+        ],
+        "receives": [
+          "i18n:language",
+          "record-editor:init",
+          "record:export-progress"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "record-frame",
+      "page": "record/frame.html",
+      "preload": "preload-record-frame.js",
+      "globalObject": "recordFrameAPI",
+      "methods": [
+        {
+          "name": "onCommand",
+          "kind": "subscribe",
+          "channel": "record-frame:command",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record-frame.js:16",
+          "tests": []
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record-frame.js:5",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "onState",
+          "kind": "subscribe",
+          "channel": "record-frame:state",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-record-frame.js:11",
+          "tests": []
+        },
+        {
+          "name": "ready",
+          "kind": "send",
+          "channel": "record-frame:ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-record-frame.js:10",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "submitSnapshot",
+          "kind": "send",
+          "channel": "record-frame:snapshot",
+          "call": "(snapshot)",
+          "returns": "void",
+          "source": "preload-record-frame.js:21",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [],
+        "listeners": [
+          "record-frame:ready",
+          "record-frame:snapshot"
+        ],
+        "receives": [
+          "i18n:language",
+          "record-frame:command",
+          "record-frame:state"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "search",
+      "page": "search/search.html",
+      "preload": "preload-search.js",
+      "globalObject": "searchAPI",
+      "methods": [
+        {
+          "name": "close",
+          "kind": "send",
+          "channel": "search:close",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-search.js:11",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "copyPath",
+          "kind": "invoke",
+          "channel": "search:copy-path",
+          "call": "(path)",
+          "returns": "Promise<unknown>",
+          "source": "preload-search.js:35",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "ensureReady",
+          "kind": "invoke",
+          "channel": "search:ensure-ready",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload-search.js:32",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "getFileIcon",
+          "kind": "invoke",
+          "channel": "search:file-icon",
+          "call": "(path)",
+          "returns": "Promise<unknown>",
+          "source": "preload-search.js:36",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "getStatus",
+          "kind": "invoke",
+          "channel": "search:status",
+          "call": "()",
+          "returns": "Promise<unknown>",
+          "source": "preload-search.js:31",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "onInit",
+          "kind": "subscribe",
+          "channel": "search:init",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-search.js:12",
+          "tests": [
+            "test/search-domain.test.js"
+          ]
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-search.js:5",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        },
+        {
+          "name": "onSettingsChanged",
+          "kind": "subscribe",
+          "channel": "search:settings-changed",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-search.js:22",
+          "tests": []
+        },
+        {
+          "name": "onStatusChanged",
+          "kind": "subscribe",
+          "channel": "search:status-changed",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-search.js:17",
+          "tests": []
+        },
+        {
+          "name": "openPath",
+          "kind": "invoke",
+          "channel": "search:open-path",
+          "call": "(path)",
+          "returns": "Promise<unknown>",
+          "source": "preload-search.js:33",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "query",
+          "kind": "invoke",
+          "channel": "search:query",
+          "call": "(payload)",
+          "returns": "Promise<unknown>",
+          "source": "preload-search.js:27",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "ready",
+          "kind": "send",
+          "channel": "search:ready",
+          "call": "()",
+          "returns": "void",
+          "source": "preload-search.js:10",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "revealPath",
+          "kind": "invoke",
+          "channel": "search:reveal-path",
+          "call": "(path)",
+          "returns": "Promise<unknown>",
+          "source": "preload-search.js:34",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        },
+        {
+          "name": "savePrefs",
+          "kind": "invoke",
+          "channel": "settings:update",
+          "call": "(patch)",
+          "returns": "Promise<unknown>",
+          "source": "preload-search.js:37",
+          "tests": [
+            "test/capture-color-palette.test.js",
+            "test/capture-tool-styles.test.js",
+            "test/settings-ipc.test.js"
+          ]
+        },
+        {
+          "name": "saveState",
+          "kind": "send",
+          "channel": "search:state",
+          "call": "(state)",
+          "returns": "void",
+          "source": "preload-search.js:30",
+          "tests": [
+            "test/ipc-module-contracts.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [
+          "search:copy-path",
+          "search:ensure-ready",
+          "search:file-icon",
+          "search:open-path",
+          "search:query",
+          "search:reveal-path",
+          "search:status",
+          "settings:update"
+        ],
+        "listeners": [
+          "search:close",
+          "search:ready",
+          "search:state"
+        ],
+        "receives": [
+          "i18n:language",
+          "search:init",
+          "search:settings-changed",
+          "search:status-changed"
+        ]
+      },
+      "knownGaps": []
+    },
+    {
+      "role": "toolbar",
+      "page": "toolbar/toolbar.html",
+      "preload": "preload-toolbar.js",
+      "globalObject": "toolbarAPI",
+      "methods": [
+        {
+          "name": "action",
+          "kind": "send",
+          "channel": "toolbar:action",
+          "call": "(action)",
+          "returns": "void",
+          "source": "preload-toolbar.js:23",
+          "tests": [
+            "test/ipc-module-contracts.test.js",
+            "test/ipc-security.test.js"
+          ]
+        },
+        {
+          "name": "onAppearance",
+          "kind": "subscribe",
+          "channel": "toolbar:appearance",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-toolbar.js:22",
+          "tests": [
+            "test/selection-toolbar-theme.test.js",
+            "test/selection-window-manager.test.js"
+          ]
+        },
+        {
+          "name": "onInterfaceLanguage",
+          "kind": "subscribe",
+          "channel": "i18n:language",
+          "call": "(callback)",
+          "returns": "unsubscribe function",
+          "source": "preload-toolbar.js:16",
+          "tests": [
+            "test/i18n-hot-switch-runtime.test.js",
+            "test/i18n.test.js"
+          ]
+        }
+      ],
+      "surface": {
+        "handles": [],
+        "listeners": [
+          "toolbar:action"
+        ],
+        "receives": [
+          "i18n:language",
+          "selection:text",
+          "toolbar:appearance"
+        ]
+      },
+      "knownGaps": [
+        {
+          "kind": "method-not-resolved",
+          "role": "toolbar",
+          "method": "onSelection",
+          "source": "preload-toolbar.js:21",
+          "reason": "no IPC channel observed when the method was called with synthetic arguments"
+        },
+        {
+          "kind": "module-level-subscription",
+          "role": "toolbar",
+          "channel": "selection:text",
+          "source": "preload-toolbar.js:6",
+          "reason": "the subscription is registered while the preload module body runs, so it is not attributable to one exposed method"
+        }
+      ]
+    }
+  ],
+  "errorCodes": [
+    {
+      "code": "blocked-navigation",
+      "source": "main/services/window-security.js:87",
+      "direction": "block",
+      "meaning": "navigation to a non-allowed local URL was prevented"
+    },
+    {
+      "code": "blocked-webview",
+      "source": "main/services/window-security.js:94",
+      "direction": "block",
+      "meaning": "a webview attachment was prevented"
+    },
+    {
+      "code": "blocked-window-open",
+      "source": "main/services/window-security.js:97",
+      "direction": "block",
+      "meaning": "window.open was denied"
+    },
+    {
+      "code": "invalid-window-owner",
+      "source": "main/services/ipc-security.js:357",
+      "direction": "deny",
+      "meaning": "the sender does not belong to the registered BrowserWindow"
+    },
+    {
+      "code": "missing-or-destroyed-sender",
+      "source": "main/services/ipc-security.js:346",
+      "direction": "deny",
+      "meaning": "the IPC sender is missing or already destroyed"
+    },
+    {
+      "code": "non-top-level-frame",
+      "source": "main/services/ipc-security.js:350",
+      "direction": "deny",
+      "meaning": "the IPC message did not come from the sender main frame"
+    },
+    {
+      "code": "page-not-allowed",
+      "source": "main/services/ipc-security.js:365",
+      "direction": "deny",
+      "meaning": "the registered page path has no IPC policy for this channel"
+    },
+    {
+      "code": "sender-url-mismatch",
+      "source": "main/services/ipc-security.js:361",
+      "direction": "deny",
+      "meaning": "the sender URL is not the registered local page"
+    },
+    {
+      "code": "unregistered-window",
+      "source": "main/services/ipc-security.js:353",
+      "direction": "deny",
+      "meaning": "the sender window was not registered by createSecureWindow"
+    },
+    {
+      "code": "window-owner-mismatch",
+      "source": "main/services/ipc-security.js:369",
+      "direction": "deny",
+      "meaning": "authorizeRole denied this window for the channel role"
+    }
+  ],
+  "resourceLimits": [
+    {
+      "id": "capture.commit-receipts",
+      "value": {
+        "maxReceiptsPerDocument": 32
+      },
+      "source": "main/services/capture-document-service.js",
+      "symbols": [
+        "MAX_RECEIPTS_PER_DOCUMENT"
+      ],
+      "extraction": "module"
+    },
+    {
+      "id": "clipboard.protocol",
+      "value": {
+        "maxFrameBytes": 1048576,
+        "maxHeaderBytes": 524288,
+        "maxPayloadChunkBytes": 262144
+      },
+      "source": "shared/clipboard-protocol.js",
+      "symbols": [
+        "MAX_FRAME",
+        "MAX_HEADER",
+        "MAX_CHUNK"
+      ],
+      "extraction": "module"
+    },
+    {
+      "id": "clipboard.thumbnail-cache",
+      "value": {
+        "maxBytes": 8388608,
+        "maxEntries": 128
+      },
+      "source": "main/services/clipboard-thumbnail-cache.js",
+      "symbols": [
+        "DEFAULT_MAX_BYTES",
+        "DEFAULT_MAX_ENTRIES"
+      ],
+      "extraction": "module"
+    },
+    {
+      "id": "long-capture",
+      "value": {
+        "maxLongEdgePx": 200000,
+        "maxPixels": 200000000
+      },
+      "source": "main/services/long-capture-session.js",
+      "symbols": [
+        "MAX_LONG_EDGE",
+        "MAX_PIXELS"
+      ],
+      "extraction": "module"
+    },
+    {
+      "id": "recording.event-track",
+      "value": {
+        "maxPointerEvents": 20000,
+        "maxClickEvents": 2000
+      },
+      "source": "shared/recording-demo.js",
+      "symbols": [
+        "POINTER_LIMIT",
+        "CLICKS_LIMIT"
+      ],
+      "extraction": "module"
+    },
+    {
+      "id": "recording.export-queue",
+      "value": {
+        "maxConcurrentEncodes": 1,
+        "maxPending": 2
+      },
+      "source": "shared/recording-export-options.js",
+      "symbols": [
+        "LIMITS.MAX_ACTIVE_TASKS",
+        "LIMITS.MAX_QUEUED_TASKS"
+      ],
+      "extraction": "module"
+    },
+    {
+      "id": "recording.gif",
+      "value": {
+        "maxDurationMs": 60000,
+        "maxLongEdgePx": 1280,
+        "maxFrames": 1200,
+        "fps": [
+          10,
+          15,
+          20
+        ]
+      },
+      "source": "shared/recording-export-options.js",
+      "symbols": [
+        "LIMITS.GIF_MAX_DURATION_MS",
+        "LIMITS.GIF_MAX_EDGE_PX",
+        "LIMITS.GIF_MAX_FRAMES",
+        "GIF_FRAME_RATES"
+      ],
+      "extraction": "module"
+    },
+    {
+      "id": "recording.segments",
+      "value": {
+        "maxSegments": 20,
+        "maxSegmentMs": 100
+      },
+      "source": "shared/recording-export-options.js",
+      "symbols": [
+        "LIMITS.MAX_SEGMENTS",
+        "LIMITS.MIN_SEGMENT_MS"
+      ],
+      "extraction": "module"
+    }
+  ],
+  "sharedSchemas": [
+    {
+      "document": "capture-document",
+      "path": "shared/capture-document.js",
+      "version": 3,
+      "versionSymbol": "SCHEMA_VERSION",
+      "extraction": "module",
+      "tests": [
+        "test/capture-document.test.js",
+        "test/capture-document-service.test.js"
+      ]
+    },
+    {
+      "document": "clipboard-db",
+      "path": "native/clipboard/src/storage.rs",
+      "version": 2,
+      "versionSymbol": "PRAGMA user_version",
+      "extraction": "module",
+      "userVersion": 2,
+      "schemaPath": "native/clipboard/src/schema-v2.sql",
+      "tests": [
+        "native/clipboard/tests/schema_migration.rs",
+        "test/clipboard-protocol.test.js"
+      ]
+    },
+    {
+      "document": "data-root-marker",
+      "path": "main/services/data-root-migration.js",
+      "version": 3,
+      "versionSymbol": "MARKER_VERSION",
+      "extraction": "static",
+      "tests": [
+        "test/data-root-migration.test.js"
+      ]
+    },
+    {
+      "document": "recording-project",
+      "path": "shared/recording-project-schema.js",
+      "version": 1,
+      "versionSymbol": "SCHEMA_VERSION",
+      "extraction": "module",
+      "tests": [
+        "test/recording-project-schema.test.js"
+      ]
+    },
+    {
+      "document": "settings-normalize",
+      "path": "main/services/settings-normalize.js",
+      "version": null,
+      "versionSymbol": null,
+      "extraction": "module",
+      "normalizeSymbol": "createSettingsNormalizer",
+      "tests": [
+        "test/settings-normalize.test.js"
+      ]
+    },
+    {
+      "document": "usage-db",
+      "path": "main/services/usage-store.js",
+      "version": 1,
+      "versionSymbol": "SCHEMA_VERSION",
+      "extraction": "module",
+      "userVersion": 1,
+      "tests": [
+        "test/usage-store.test.js"
+      ]
+    }
+  ],
+  "knownGaps": [
+    {
+      "kind": "auxiliary-window-not-in-ipc-surfaces",
+      "page": "capture/print.html",
+      "basenames": [
+        "print.html"
+      ],
+      "roles": [
+        "capture"
+      ],
+      "sources": [
+        "main/services/pdf-export.js:381"
+      ],
+      "reason": "the preload page is not registered in IPC_SURFACES, so every IPC channel from it is denied by page-not-allowed"
+    }
+  ]
+}
