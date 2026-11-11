@@ -267,7 +267,77 @@ R0-04/R0-05/R0-06 真机收尾 / 100/150/200% DPI 视觉矩阵。**G0 仍未通�
    Installer Language），因为 tauri-cli 2.12.4 的 NSIS 模板只在“删除应用数据”勾选为 1 时清理该键；R8-02 需决定
    是否改为无条件清理/让静默卸载默认勾选，测试机验收时应把该键纳入清理检查。
 
+> **2026-11-11 收尾轮产品决策**：上述第 1 条已由产品负责人（用户）确认——撤回计划 §9.2 的“内存下降约 25%”收益目标，
+> 接受“架构迁移不承诺内存下降”，G0 按其他收益重估；T1 改为非回归守卫（候选 ≤145.09 MB），T2 待 R1 冻结等价里程碑后再判定。
+> 记录见 [r0-performance-baseline.md](r0-performance-baseline.md) §10 与 [r0-g0-report.md](r0-g0-report.md) §8。
+> **本文件 §13.4 第 2～6 条状态不变**；G0 仍未通过。
+
 ### 13.5 提交
 
 本轮全部改动（代码/脚本/文档）由 Lead 统一提交；提交说明包含“改变了什么、为什么、如何验证、剩余限制”
 （计划 §11）。提交哈希见 `git log --oneline` 中本轮的 `feat(rust): ... R0-07 ...` 提交。
+
+## 14. 2026-11-11 晚间收尾轮（ACL 缺陷修复 + R0-04/05/06/07 收尾证据）
+
+### 14.1 范围与边界
+
+- 未开始 R1～R7 业务迁移；未改产品代码（`main/`、`preload*.js`、`shared/`、`capture/`、`package.json`/锁、CI 工作流）；
+  改动限于 `rust-app/prototypes/`、`native/selection-helper/`、`scripts/rust/`、`docs/plans/rust-migration/`。
+- 用户授权/决策（本轮）：可见窗口与屏幕采集不限时长；一次性计划任务复跑安装器；**工作区 ACL/完整性标签修复**；
+  性能收益重估（撤回计划 §9.2 的 -25% 内存目标，见 [r0-performance-baseline.md](r0-performance-baseline.md) §10）；
+  PR #5 本轮不合并；真机/VM 矩阵稍后安排。
+- 运行环境：`SHERUNLOCK02`（Win11 26300.9974 26H2、i5-13500H、15.7 GiB、Intel Iris Xe、单屏 2240×1400@150%、
+  WebView2 157.0.4341.46、Electron 43.8.3；另有 Chrome 157 / Edge / Office LTSC 2024）。
+
+### 14.2 评测环境缺陷：工作区 Low 完整性标签（本轮最重要发现）
+
+- **现象**：静默 `setup.exe /S` exit 0 但不落盘；WGC `E_ACCESSDENIED`；真实 SendInput/UIA 选词矩阵大面积失败；
+  spawned Electron 子进程写 `%LOCALAPPDATA%\Temp` EPERM——此前均登记为“受限宿主/环境级”。
+- **根因**：`D:\workspace\Highlighter` 根目录带有此前 DSH workspace-write 沙箱遗留的强制完整性标签
+  `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`（另有 `Everyone:(CI)(DENY)(DC)` 与能力 SID），
+  继承到整个工作区；Windows 按镜像文件标签封顶进程 IL → 工作区内 exe（安装包/helper/原型）以 **Low IL** 运行，
+  受 No-Write-Up/UIPI 限制。
+- **修复**（2026-11-11 19:55–20:00，用户批准后 Lead 执行）：`icacls` 设 Medium（**61,767 个文件**）、
+  移除 Everyone DENY 与能力 SID（后者 icacls 无法解析时用 .NET `Set-Acl`）；
+  验证：工作区内复制 `whoami.exe` 运行显示 `S-1-16-8192`（Medium）；`rust-app/target` 下 exe 标签 Medium。
+- **复验**：静默安装完整链路、WGC、选词真机矩阵均恢复正常/通过；PDF 双后端确认复跑 0 差异；
+  R0-03 窗口自检与 ADR-0006 WebDriver 探针复跑 PASS。详见 [r0-g0-report.md](r0-g0-report.md) §8.4/§9。
+- **风险**：若再次使用 workspace-write 沙箱会话，标签可能被重新写入；handoff §3/§7 已登记检查与修复命令。
+
+### 14.3 交付物
+
+| 工作流 | 交付 | 状态 |
+|---|---|---|
+| R0-04 钩子真机矩阵 | 新增 `native/selection-helper/test/real-selection-matrix.ps1`、`run-selection-matrix.ps1`；matrix **10 行 9 PASS**（Notepad/Chrome 默认+force-a11y/Edge 默认+force-a11y/Word/Excel 含 clipboard/资源管理器双击）；管理员窗口 UIPI 负样本；卡死恢复（进程级通过、真实 provider 卡死未复现）；lease 协议级互通 PASS（helper↔native/clipboard 仍标未联调）；[r0-hook-extraction.md](r0-hook-extraction.md) §4.9–§4.14、[ADR-0002](adr/0002-hook-extraction.md) | 完成（单机范围） |
+| R0-05 原生媒体收尾 | 新增 pause/sync/testwin/window/env 模块与 `run-long-sample.ps1`；30 分钟 GDI 时钟样例 + 10 分钟 Medium IL 干净样例（1800/600 s、缺槽 0、有效 30 fps、A/V end_skew −32.67/−33.67 ms、峰值 Private 1,219.6/1,217.0 MB）；暂停/继续、双音源、区域/窗口/源目标变化；**WGC 更正确认可用**（Medium IL，10s@30fps 采集、全量解码 0；修复 surface→texture 读取 bug）；[r0-media-native.md](r0-media-native.md) §4.1/§4.11–§4.15、[ADR-0001](adr/0001-media-backend.md) | 完成（单机范围，WGC 能力边界待真机） |
+| R0-06 PDF 产品真实页 | 新增 `scripts/rust/pdf-product-cases.js`、`probe-electron-product-pdf.js`、`analyze-product-pdfs.py`、`pdf_product.rs`（`--pdf-product`）；7 用例 + 2 产品函数对照双后端 PASS（单图 A4 竖/横、DPR 负对照、20000/30000px→200in 夹取、批量 5/50 页；MediaBox 差 ≤0.96pt、无空白尾页）；ACL 修复后确认复跑 0 差异；[r0-pdf-spike.md](r0-pdf-spike.md) §8、[ADR-0003](adr/0003-pdf-backend.md) | 完成（单机范围） |
+| R0-07 安装收尾 | 静默安装“不落盘”根因定位 + ACL 修复后完整链路复跑通过（工作区原件 exit 0/770 ms、产物/注册项/快捷方式正确、四场景一致、卸载 exit 0/565 ms 清理干净；遗留 publisher 键待 R8-02）；[r0-installation-matrix.md](r0-installation-matrix.md) §6.2/§6.4/§9/§10/§12 | 完成（单机范围） |
+| ADR-0006 测试驱动 | ACL 修复后 WebDriver 全流程复跑 exit 0（session/handles/execute/actions/screenshot/delete/负样本）；[r0-test-driver.md](r0-test-driver.md) §12 | 候选 A1，本机复跑通过 |
+| 性能/G0 重估 | 产品决策登记（撤回 -25% 目标；T1 改非回归守卫候选 ≤145.09 MB；T2 待 R1 冻结等价里程碑）；[r0-performance-baseline.md](r0-performance-baseline.md) §10、[r0-g0-report.md](r0-g0-report.md) §8/§9 | 决策已登记；正式 G0 待真机矩阵与修正估算 |
+
+### 14.4 验证命令与结果（Lead 本轮实际运行）
+
+```text
+node scripts/rust/extract-host-contracts.js --check      # up to date (13 roles, 257 methods)  exit 0
+node scripts/rust/generate-host-fixtures.js --check     # manifest + 28 cases up to date      exit 0
+node --test test/host-contracts.test.js                 # 19 pass / 0 fail                   exit 0
+node scripts/rust/collect-frontend-resources.js --check # OK 191 files                        exit 0
+node --test test/frontend-resource-whitelist.test.js    # 9 pass / 0 fail                     exit 0
+npm run check                                           # 489 JS files / architecture / i18n  exit 0
+powershell -File scripts/rust/check-rust-app.ps1        # OK (fmt, clippy, test --locked)     exit 0
+cargo fmt/clippy/test --manifest-path rust-app/prototypes/native-capture/Cargo.toml           # 全绿
+cargo fmt/clippy/test --manifest-path rust-app/prototypes/webview-pdf-resource/Cargo.toml     # 21 passed
+native/selection-helper/build.ps1 -Clean -SelfTest                                            # PASS
+node --check scripts/rust/pdf-product-cases.js scripts/rust/probe-electron-product-pdf.js     # exit 0
+git -c core.whitespace=cr-at-eol diff --check                                                 # clean
+```
+
+**未执行**：完整 `npm test`/`test:e2e`/覆盖率/`verify:package`/CI；真实测试机矩阵；
+R0-05 WGC 打包身份/同意/其它 Windows；R0-04 真实 provider 卡死/管理员正向样本；
+R0-06 缺字体/旧 Runtime；R0-07 UAC/SmartScreen 体验与 WebView2 多版本矩阵。
+
+### 14.5 未完成/后续
+
+与 [r0-g0-report.md](r0-g0-report.md) §9.2 一致：真实测试机/VM 矩阵（最高优先）、WGC 收尾、R0-04 剩余项、
+R0-06 资源桥与缺字体、安装多版本矩阵与遗留键决策、ADR-0006/0007 收尾、**修正估算 + 正式 G0 报告**。
+**G0 仍未通过，R1～R7 不得开始。**
