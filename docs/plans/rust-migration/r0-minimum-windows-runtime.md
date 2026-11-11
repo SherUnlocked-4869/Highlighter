@@ -55,7 +55,7 @@
 | R0 §4.3 决策登记 | 备选、当前证据、失败分支、建议、未解决限制均登记；明确"README 现状保持不变，待 R0-07 真机矩阵冻结" | [r0-baseline.md §4.3](r0-baseline.md) | 本文件是该节的展开，不改变其"待验证"状态 |
 | 计划 §1 约束 | "最低 Windows build、WebView2 Runtime 下限及媒体后端在 R0 验证后冻结；**不能未经兼容决策默默提高 README 中的系统要求**。" | [计划 §1:21](../2026-11-10-rust-migration-development-plan.md) | 候选 A 也属于"明确收紧 README 下限"，必须产品决策 |
 | R8-02 验收 | "正式 NSIS/便携制品、WebView2 离线/在线策略、资源清单和 DLL/模型加载"；验收"无开发环境依赖；**不只验证本机已安装 Runtime 的情况**" | [计划 §7 R8-02:381](../2026-11-10-rust-migration-development-plan.md) | 安装策略必须覆盖 Runtime 缺失/离线/旧版，见 §7 |
-| G0 门禁 | 必备证据含"版本矩阵（Windows/WebView2 有/无/离线）"；当前登记"**未做**（R0-07）" | [r0-g0-report.md §1](r0-g0-report.md)、[handoff.md §5](handoff.md) | 本文件不补实测，只定义矩阵计划与候选；G0 仍缺该项 |
+| G0 门禁 | 必备证据含"版本矩阵（Windows/WebView2 有/无/离线）"；当前登记"**未做**（R0-07）" | [r0-g0-report.md §1](r0-g0-report.md)、[handoff.md](handoff.md)（历史快照 §5） | 本文件不补实测，只定义矩阵计划与候选；G0 仍缺该项 |
 
 ### 2.2 技术事实（官方来源；抓取日期 2026-11-11）
 

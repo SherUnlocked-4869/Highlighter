@@ -1,17 +1,232 @@
-# Rust 迁移 R0 交接文档
+# Rust 迁移 R0 交接文档（2026-11-11 收尾版）
+
+- 日期：2026-11-11 16:20（Asia/Hong_Kong）。本文件是**新会话的唯一入口**。
+- 状态：**R0 部分完成；G0 未通过；R1 未开始**（计划 §8：G0 通过才放行 R1～R7）。
+- 分支：`codex/rust-r0-baseline-contracts`，HEAD `93f0031`（已推送 origin）。PR #5 仍为 R0 证据批次。
+- 运行机器已更换：当前为 `SHERUNLOCK02`（见 §3）；2026-11-10 原机（Ryzen 7 9850X3D / RTX 5070 Ti / 双屏 / F: 盘）数据不可与当前机器混用。
+- 阅读顺序：§1 最新状态 → §2 接手顺序 → §3 环境 → §4 文档索引 → §5 未决问题 → §6 复现命令 → §7 陷阱 → §8 历史快照。
+
+## 1. 最新状态（2026-11-11 收尾）
+
+### 1.1 分支 / 提交 / PR
+
+| 项 | 值 |
+|---|---|
+| 仓库 | https://github.com/SherUnlocked-4869/Highlighter.git |
+| 分支 | `codex/rust-r0-baseline-contracts`，与 origin 同步；HEAD `93f0031` |
+| 基线产品源码 | `3df7129`（4.2.0 / Electron 43.8.3）；分支未落后 master（观察值，本轮未 fetch 复核） |
+| PR | #5（base `master` @ `3df7129`）：https://github.com/SherUnlocked-4869/Highlighter/pull/5 ，OPEN |
+| CI | **本轮未等待/触发 CI**（按用户要求）；本地门禁结果见 §6。不要仅凭本地通过宣称 CI 通过（AGENTS.md 有专门提醒）。 |
+| 提交 | 相对基线共 17 个提交（原 13 + 交接文档 `7c45a7b` + 本轮 3 个）；17 个提交合计 190 文件 +56,620/−29 |
+| 本轮新增 | `533b4c4`（R0-07 安装/性能证据 + ADR-0006/0007 候选）、`ee12374`（手动安装实测）、`93f0031`（卸载实测 + 遗留键登记）；合计 29 文件 +3,353/−60 |
+| 产品代码 | **未改** `main/`、`preload*.js`、`shared/`、`package.json`、现有 Electron 构建入口/CI；所有改动在 `rust-app/` 原型、`scripts/rust/`、文档 |
+
+### 1.2 R0 完成度
+
+| 任务 | 状态 | 证据/入口 |
+|---|---|---|
+| R0-01 基线/矩阵 | 部分完成（性能对照本轮补上；真机矩阵未做） | [r0-baseline.md](r0-baseline.md)、[feature-parity.md](feature-parity.md)、[r0-performance-baseline.md](r0-performance-baseline.md) |
+| R0-02 合同/夹具 | 完成（13 角色 / 257 方法 / 28 夹具 / 19 tests） | `contracts/host/`、`test/fixtures/host-parity/` |
+| R0-03 窗口原型 | 原型完成（含单屏拒绝路径实测）；100/150/200% DPI、副屏/负坐标、白闪、鼠标穿透未验证 | [r0-window-prototype.md](r0-window-prototype.md)（§11 本轮新增） |
+| R0-04 钩子 | 原型完成（真实选词）；真机应用矩阵/卡死恢复/native clipboard 联调未做 | [r0-hook-extraction.md](r0-hook-extraction.md)、[ADR-0002](adr/0002-hook-extraction.md) |
+| R0-05 媒体 | 两路 spike 完成；长时/双音源/暂停续录/同条件对照/WGC 打包身份未做 | [r0-media-webview.md](r0-media-webview.md)、[r0-media-native.md](r0-media-native.md)、[ADR-0001](adr/0001-media-backend.md) |
+| R0-06 数据/凭据/PDF/资源通道 | 大部分完成；**安装→启动→卸载已在本机实测通过**；产品真实 print.html/批量/长图、图片视频资源桥真实链路未做 | [r0-credential-migration.md](r0-credential-migration.md)、[r0-pdf-spike.md](r0-pdf-spike.md)、[r0-resource-channel.md](r0-resource-channel.md)、[r0-installation-matrix.md](r0-installation-matrix.md) §6 |
+| R0-07 安装/版本/性能 | **部分完成（仅本机）**：三 NSIS 包/WebView2 五模式/缺失 Runtime 行为/两轮性能对照/手动安装卸载通过；**静默 /S 安装在本机受限会话阻塞**（环境级）、WebView2 多版本/无 Runtime/离线矩阵、fixedRuntime、修正估算未做 | [r0-installation-matrix.md](r0-installation-matrix.md)、[r0-performance-baseline.md](r0-performance-baseline.md) |
+| ADR-0001～0005 | 候选，未冻结（G0 前不冻结） | [adr/README.md](adr/README.md) |
+| ADR-0006 测试驱动 | 候选 A1（tauri-driver 2.1.0 + 精确匹配 msedgedriver，本机实测全流程），未冻结 | [r0-test-driver.md](r0-test-driver.md)、[adr/0006-desktop-test-driver.md](adr/0006-desktop-test-driver.md) |
+| ADR-0007 最低系统 | 候选 A+D（Win10 22H2 x64 + Win11 x64、WebView2 Evergreen 默认 + 离线单独制品），未冻结 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md)、[adr/0007-minimum-windows-runtime.md](adr/0007-minimum-windows-runtime.md) |
+| **G0** | **未通过**；R1 不得开始 | [r0-g0-report.md](r0-g0-report.md)（§7 为本轮更新） |
+
+### 1.3 必须带走的判断（本轮修正/新增）
+
+1. **性能收益不成立**：同形态最小壳对照（两轮共 6 次 Electron / 7 次 Tauri；Release、固定电源方案、单屏 150%），Tauri 相对 Electron 的 Private Bytes 为 **+5.2%（217.25 vs 228.64 MB，区间重叠）**、Working Set +5.8%、进程数 **4→7**、启动 **+18.4%**；产品 Electron 托盘空闲基线 **131.90 MB**。计划 §9.2 的“托盘空闲 Private Bytes 下降约 25%”**不能靠替换宿主达成**；G0 必须显式重估收益或走失败分支。T1～T3 阈值已冻结、T4 媒体阈值未冻结（见 [r0-performance-baseline.md](r0-performance-baseline.md) §6）。
+2. **安装链路（手动）已通过**：用户手动交互安装到自定义目录 `D:\Program Files\Highlighter R0 Window Prototype`，目录/文件哈希/HKCU 卸载键/开始菜单快捷方式正确；已安装 exe 四场景（无开关 exit 2；ALLOW_PRIMARY=1 PASS；缺失 WebView2 → 阻塞对话框后 exit 2）符合预期；`uninstall.exe /S` 退出码 0，目录/卸载键/快捷方式清理干净。
+3. **静默安装仍阻塞（环境级）**：本机受限会话 `setup.exe /S` exit 0 但不落盘；同版本 NSIS 最小对照安装器同样复现 → 需真实桌面会话/VM 复测，不要绕过安全机制。
+4. **卸载遗留键（R8-02 决策项）**：静默 `/S` 卸载保留 `HKCU\Software\<publisher>\<product>`（安装路径 + Installer Language），因 tauri-cli 2.12.4 NSIS 模板只在“删除应用数据”勾选时清理。
+5. **缺失 WebView2 的失败形态**：加载器弹阻塞式 `#32770` 对话框，点确定后 Tauri 报错退出（应用 exit 2；PDF 探针 exit 3）→ 产品必须在创建窗口前检测 Runtime 并给原生引导（托盘/自启动尤其危险）。
+6. **测试驱动**：tauri-driver 2.1.0 + **与 WebView2 Runtime 精确同版本**的 msedgedriver（本机 157.0.4341.46）可用；CI runner 的 Runtime 随镜像更新 → 需运行时解析版本；launch 模式无主进程通道、应用 stdout 不落盘，R1 需要应用侧结构化日志/测试钩子。
+7. **最低系统候选**：Win10 22H2 上 Edge/WebView2 官方更新至少到 2028-10（不要求 ESU），但 Win10 OS 已于 2025-10-14 EOL；README 从“Windows 10 或 11”收紧到“Win10 22H2 或更新”**必须产品决策**（计划 §1 禁止默默提高）。
+8. **机器已更换**：当前 `SHERUNLOCK02`（i5-13500H / 15.7 GiB / Intel Iris Xe 无独显 / 单屏 2240×1400@150% / WebView2 157.0.4341.46）；原机数据不可比；本机无副屏，可见测试窗口需用户许可（本轮已获许可）。
+
+### 1.4 仍未完成（G0 放行前必须闭环，按优先级）
+
+1. **真实测试机/VM 矩阵**（最高优先，多个 R0 任务共用）：Win10 22H2 + Win11、WebView2 无/旧版/离线、100/125/150/200% DPI 与副屏/负坐标、独显 GPU；GitHub hosted runner 不能替代（`docs/releases/HARDWARE_ACCEPTANCE.md`）。
+2. **R0-05 长时媒体**：30 分钟/双音源/暂停续录/源目标变化、两路同条件对照、WGC 打包身份实测、媒体阈值 T4 冻结（R5 开工前，不晚于 G2）。
+3. **R0-04 真机矩阵**：浏览器/编辑器/Office/资源管理器/管理员窗口、真实卡死恢复、lease required=true、与 `native/clipboard` 联调。
+4. **R0-06 收尾**：产品真实 `capture/print.html` 批量/长图 PDF、图片视频资源桥真实链路。
+5. **安装收尾**：(a) 静默安装环境根因（真实桌面会话/VM）；(b) 卸载遗留键清理决策（R8-02）。
+6. **ADR-0006/0007 收尾**：CI runner/版本不匹配/多窗口/托盘/混合 DPI/长时稳定性；ADR-0007 真机矩阵与 README 产品决策。
+7. **修正估算 + 正式 G0 报告**：含 §1.3 第 1 条的性能预期重估和 R5 媒体后端重估（计划 §11 的 38～63 人周不得沿用）。
+
+## 2. 接手顺序（新会话建议）
+
+1. 先跑 §6 的快速验证（JS 合同/夹具/白名单 + Rust 门禁，约 1–2 分钟），确认工作区与本地环境。
+2. 读 §1.3/§1.4、[r0-g0-report.md](r0-g0-report.md) §7、[r0-installation-matrix.md](r0-installation-matrix.md) §6、[r0-performance-baseline.md](r0-performance-baseline.md) §6/§8。
+3. **先与用户确认可用测试资源**（真机/VM、Win10、副屏、可见窗口许可）；本机单屏只能覆盖“Win11 + 单屏 150% + 核显”。
+4. 按 §1.4 优先级推进；**G0 通过前不要开始 R1～R7 业务迁移**（计划 §7/§8）。
+5. 冻结 ADR-0006/0007 候选与 README 兼容性（需产品批准），再重估 R5/总量并出正式 G0 报告。
+
+**工作边界（必须遵守，来自计划 §8）**：
+
+- 不改 `main/`、`preload*.js`、`shared/`、`native/ocr|clipboard|everything-search`、`package.json`/锁文件、现有 Electron 构建入口/CI 工作流（Rust CI 属 R1）。
+- 原型不接入产品入口；R0 证据不进 `main`。
+- 不读取真实用户凭据/设置；合成数据/合成凭据；不把密钥/密文写进仓库或日志。
+- ADR/报告中的“候选/待验证”在 G0 前不得改成“已选定”；新证据回写 r0-report/r0-g0-report/对应 ADR 变更记录。
+- 可见测试窗口默认副屏；本机无副屏需先征得用户同意（本轮已获同意）。
+- 提交说明写清“改变了什么/为什么/如何验证/剩余限制”（计划 §11）。
+
+## 3. 当前机器与环境事实（2026-11-11）
+
+| 项 | 值 |
+|---|---|
+| 主机/用户 | `SHERUNLOCK02` / `24532`，交互式会话 1 |
+| OS | Windows 11 家庭版 26300.9974（26H2） |
+| CPU/RAM | i5-13500H 12C/16T；15.75 GiB |
+| GPU/显示 | Intel Iris Xe（驱动 31.0.101.4032）无独显；单屏 2240×1400@150%（1493×933 DIP），无副屏 |
+| WebView2 | 157.0.4341.46（per-machine） |
+| Electron/产品 | Electron 43.8.3 / Highlighter 4.2.0 |
+| Rust | rustc/cargo 1.97.1（`rust-app/rust-toolchain.toml` 固定），CARGO_HOME=`D:\DevCache\cargo` |
+| Node/npm | 24.15.0 / 11.17.0（registry=npmmirror） |
+| 仓库/磁盘 | `D:\workspace\Highlighter`；D: 剩余约 201 GiB，C: 约 15 GiB（C: 较紧） |
+| 电源 | 默认平衡；性能测量时脚本临时切高性能并恢复 |
+
+完整采集（含原机对比）见 [r0-baseline.md](r0-baseline.md) §9。
+
+## 4. 文档与证据索引
+
+### 4.1 核心入口
+
+| 文档 | 内容 |
+|---|---|
+| [r0-g0-report.md](r0-g0-report.md) | **G0 决策报告**：七项决策状态、G0 缺口、本轮 §7 更新 |
+| [r0-report.md](r0-report.md) | R0 实施报告（最终状态）；§13 为本轮明细 |
+| [r0-baseline.md](r0-baseline.md) | 基线/任务状态/G0 决策登记；§9 当前机器环境 |
+| [adr/README.md](adr/README.md) | ADR 索引（0001～0007，全部候选/未冻结） |
+| [README.md](README.md) | 本目录索引（含本轮新增文档） |
+
+### 4.2 本轮新增证据文档
+
+| 文档 | 结论 |
+|---|---|
+| [r0-installation-matrix.md](r0-installation-matrix.md) | NSIS 三模式测试包、WebView2 五模式对照、缺失 Runtime 行为、版本冻结、**手动安装→启动→卸载实测**（§6.1/§6.4） |
+| [r0-performance-baseline.md](r0-performance-baseline.md) | 两轮性能/进程树对照、产品基线、T1～T3 阈值冻结、T4 未冻结、限制 |
+| [r0-test-driver.md](r0-test-driver.md) | ADR-0006 证据：tauri-driver/msedgedriver 版本冻结、6 次真实 session、能力边界、CI 计划 |
+| [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md) | ADR-0007 调研：官方支持矩阵、候选 A～D、真机矩阵计划 |
+| [adr/0006-desktop-test-driver.md](adr/0006-desktop-test-driver.md)、[adr/0007-minimum-windows-runtime.md](adr/0007-minimum-windows-runtime.md) | 本轮新增 ADR（候选/待验证） |
+| [r0-window-prototype.md](r0-window-prototype.md) §11 | 单屏拒绝路径实测 + 测试开关登记 |
+
+### 4.3 机器可读产物与工具
+
+- 合同/夹具：`contracts/host/host-contracts.json`、`test/fixtures/host-parity/`、`test/host-contracts.test.js`。
+- Rust workspace：`rust-app/`（6 crates + `src-tauri` 原型；当前 107 tests）。
+- 测量脚本：`scripts/rust/measure-resources.ps1`、`scripts/rust/measure-r0-07-performance.ps1`。
+- 测试驱动：`scripts/rust/probe-tauri-webdriver.js`、`scripts/rust/run-tauri-webdriver-probe.ps1`。
+- 安装取证：`.tmp-r07/install/verify-manual-install.ps1`（scratch，不在 git）。
+- 其他原型：`rust-app/prototypes/{native-capture,webview-media,webview-pdf-resource,credential-probe}`、`native/selection-helper/`。
+
+### 4.4 证据目录约定
+
+- `.tmp-r0/`、`.tmp-r07/` 等全部 **gitignore**，不提交；文档内记录命令 + 关键输出 + 哈希。
+- 当前机器上本轮证据仍在 `.tmp-r07/{driver,install,perf,window,env,runtime-researcher}/`；若被清理，按 §6 命令重跑重建。
+- 不要提交真实日志/大文件/凭据；`.tmp*` 在提交前确认已 ignore。
+
+## 5. 未决问题（需要用户/产品决策）
+
+1. **性能预期重估**：计划 §9.2 “托盘空闲 Private Bytes -25%” 未获证据支持；是重设收益目标、接受“架构迁移不承诺内存收益”，还是按计划 §8 失败分支回到 Electron 增量 Rust 化？
+2. **最低系统/README**：是否将 README 从“Windows 10 或 Windows 11”收紧为“Windows 10 22H2 或更新”（计划 §1 要求显式兼容决策）；Win10 继续支持到何时、是否提供 Fixed Version 渠道（ADR-0007 候选 A+D）。
+3. **钩子维护面**：是否接受保留 C++ selection helper（提取方案，18–29 人日）并登记退出计划，还是要求纯 Rust 重写（ADR-0002）。
+4. **测试驱动路线**：确认 ADR-0006 候选 A1（tauri-driver + 精确匹配 msedgedriver）作为 R1-e 主路线；是否评估 `@wdio/tauri-service`（A2）与 CDP 回退（B）。
+5. **卸载遗留键清理**：静默卸载是否改为无条件清理 `HKCU\Software\<publisher>\<product>`（R8-02）。
+6. **PR #5**：是否先合并本轮 R0 证据批次（不改产品代码），再在 master 上继续；CI 本轮未等待。
+7. **测试资源**：能否提供/安排 Win10 22H2 真机或干净 VM、双屏/多 DPI、独显机器用于 §1.4 第 1 项。
+
+## 6. 复现/验证命令（本机实测过；仓库根目录，Windows PowerShell）
+
+### 6.1 快速门禁（约 1–2 分钟）
+
+```powershell
+node scripts/rust/extract-host-contracts.js --check        # exit 0
+node scripts/rust/generate-host-fixtures.js --check        # exit 0
+node --test test/host-contracts.test.js                    # 19 pass
+node scripts/rust/collect-frontend-resources.js --check    # exit 0
+node --test test/frontend-resource-whitelist.test.js       # 9 pass
+npm run check                                              # 489 JS files / architecture / i18n
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rust/check-rust-app.ps1   # fmt+clippy+test --locked（107 tests）
+```
+
+### 6.2 R0-03 窗口自检（无副屏时默认拒绝建窗，是安全路径）
+
+```powershell
+cargo build --manifest-path rust-app/Cargo.toml -p highlighter-r0-window --locked
+.\rust-app\target\debug\highlighter-r0-window.exe --self-test      # 单屏无开关：exit 2，不建窗
+$env:HIGHLIGHTER_R0_ALLOW_PRIMARY='1'   # 测试专用（默认关闭；日志明示“非副屏验证”）
+.\rust-app\target\debug\highlighter-r0-window.exe --self-test --hold-ms 2000
+Remove-Item Env:HIGHLIGHTER_R0_ALLOW_PRIMARY
+```
+
+### 6.3 WebDriver 探针（ADR-0006）
+
+```powershell
+# 前置：tauri-driver（cargo install）与 msedgedriver（与 WebView2 Runtime 完全同版本）
+powershell -File scripts/rust/run-tauri-webdriver-probe.ps1 -NativeDriver .tmp-r07\driver\msedgedriver\157.0.4341.46\msedgedriver.exe -AllowPrimaryScreen
+```
+
+### 6.4 性能/进程树对照（约 6 分钟；临时切高性能并恢复；会出现全屏透明窗口）
+
+```powershell
+powershell -File scripts/rust/measure-r0-07-performance.ps1 -Runs 3 -IdleSec 20 -IncludeProduct -OutDir .tmp-r07/perf/results-clean
+```
+
+### 6.5 安装包构建（仅 R0-07 测试包，不是产品构建入口；必须在 rust-app 下执行）
+
+```powershell
+cd rust-app
+npx --yes @tauri-apps/cli@2 build --no-bundle --ci
+npx --yes @tauri-apps/cli@2 bundle --bundles nsis --ci        # downloadBootstrapper
+# 其它 WebView2 模式：--config <embedBootstrapper.json|offlineInstaller.json>
+```
+
+### 6.6 安装/卸载取证（scratch 脚本；路径按实际安装目录调整）
+
+```powershell
+pwsh -File .tmp-r07\install\verify-manual-install.ps1                       # 安装后取证
+pwsh -File .tmp-r07\install\verify-manual-install.ps1 -Uninstall            # 卸载取证
+```
+
+### 6.7 本机已知陷阱（命令前必读）
+
+- Electron 探针：`env -u ELECTRON_RUN_AS_NODE`、`--no-sandbox` 在脚本路径之前、`TMP/TEMP` 指向 `.tmp*/`。
+- 产品 E2E 隔离：`HIGHLIGHTER_E2E=1` + `HIGHLIGHTER_E2E_DATA_ROOT`（详见 `e2e/electron-app.js`）。
+- 完整 `npm test`/`test:e2e` 需 AGENTS.md 的四类陷阱处理；本轮未跑（不声称 CI/E2E 通过）。
+
+## 7. 环境陷阱与经验（累计）
+
+1. **PowerShell 5.1 + UTF-8 无 BOM 脚本**：中文注释行尾多字节字符会被 GBK 代码页误解析并吞掉换行，导致 `param` 块出现莫名 `Unexpected token ')'`。仓库新脚本统一 UTF-8 **with BOM**（或纯 ASCII 注释）。
+2. **Tauri CLI 会改写 Cargo.toml**：`tauri-cli 2.12.4` 在 build/bundle 时把 `tauri = { version = "2" }` 写成 `{ version = "2", features = [] }`（无功能影响，已登记）；且**必须在 `rust-app/` 下执行**，在仓库根执行会误把 `prototypes/webview-media` 当 Tauri 项目并改写其 Cargo.toml（已还原过）。
+3. **Windows checkout/行尾**：合同与夹具做字节级 sha256 校验，`.gitattributes` 固定 LF；新增字节级校验必须考虑行尾。
+4. **受限宿主 Electron**：`ELECTRON_RUN_AS_NODE=1` 导致 `app is undefined`；Chromium sandbox 在该宿主常无法启动需 `--no-sandbox`（且必须在脚本路径前）；spawned Electron 子进程写 `%LOCALAPPDATA%\Temp` 会 EPERM → `TMP/TEMP` 指向 `.tmp*/`。
+5. **WebView2 缺失/损坏**：加载器弹阻塞式 `#32770` 对话框并挂起，不是产品可控错误；CI/自动化必须预装并校验 Runtime。
+6. **msedgedriver 必须与 WebView2 Runtime 精确同版本**；runner 镜像更新会导致版本漂移，需运行时解析（`https://msedgedriver.microsoft.com/<pv>/edgedriver_win64.zip`）。
+7. **未签名包**：经 ShellExecute 双击会弹“打开文件 - 安全警告”；自动化用 CreateProcess（`UseShellExecute=false`）。
+8. **NSIS 安装包不可逐字节复现**（时间戳/临时路径）；发布需记录签名后的最终 sha256。
+9. **可见窗口只放副屏**；本机单屏需先问用户（本轮已获许可）。无副屏时 R0-03 原型安全拒绝建窗（exit 2）。
+10. **npm registry 随机器的差异**：本轮机器为 npmmirror（与 AGENTS.md 一致），2026-11-10 原机为官方 registry；`npm audit` 空结果先排查 registry（AGENTS 陷阱 4）。租约测试偶发失败先独立复跑（AGENTS 说明）。
+11. **采样方差**：最小壳内存/启动对照轮间波动可达 ±8%，单次瞬时值不可当结论；阈值用均值/区间并记录电源方案、Runtime、内核版本（Electron 43=Chromium 150，WebView2 157 内核不同）。
+
+## 8. 历史记录：2026-11-10 交接快照
+
+> 以下是原 handoff.md 的 §0～§11 全文（标题层级已降一级，内容未改；其中的“当前状态/机器/未完成清单”已被本文件 §1～§5 取代）。
+> 仍有效的内容：§7 环境陷阱（已并入本文件 §7）、§8 工作边界（已并入 §2）；§11 文档地图已被 §4 取代。
+## Rust 迁移 R0 交接文档
 
 日期：2026-11-11。交接对象：接手 Rust 迁移的下一名工程师/Agent。
 状态：**R0 部分完成；G0 未通过；R1 未开始（计划 §8 要求 G0 通过后才放行）**。
 
-> **2026-11-11 续作轮更新**：本轮已在**另一台机器**（SHERUNLOCK02，见 §12.1）完成 R0-07 本机部分、
-> ADR-0006/0007 与首轮性能基线；§0～§11 描述的是 2026-11-10 交接时的状态，最新进展、阻塞项与
-> 接手顺序以 §12 为准。
->
 > 先读这份文档，再按 §9 的顺序接手；不要只看 PR 标题就认为 R0 已完成。
 > 所有"候选/待验证"结论以 [adr/README.md](adr/README.md) 与 [r0-g0-report.md](r0-g0-report.md) 为准，
 > 文档中的"未验证"项不得改写成已验证。
 
-## 0. TL;DR
+### 0. TL;DR
 
 - 分支 `codex/rust-r0-baseline-contracts` 已推送，PR **#5**（base `master` @ `3df7129`）：
   https://github.com/SherUnlocked-4869/Highlighter/pull/5 。PR 只含 R0 证据/原型/文档/测试，**未改产品代码**。
@@ -21,7 +236,7 @@
   真机 100/150/200% DPI 矩阵、测试驱动 ADR-0006、最低系统 ADR-0007、修正估算与正式 G0 报告。
 - 下一步建议：先做 R0-07 与 R0-05 长时收尾 → 补真机矩阵 → 出正式 G0 报告；**G0 通过前不要开始 R1 业务迁移**。
 
-## 1. 仓库/分支/PR 状态
+### 1. 仓库/分支/PR 状态
 
 | 项 | 值 |
 |---|---|
@@ -54,7 +269,7 @@ CI 说明：PR 创建后 GitHub 未立即触发 `pull_request` CI，曾手动 di
 Windows checkout 的 CRLF 与字节级夹具校验冲突，已由 `27dfb63` 修复（规范化 + `.gitattributes` 固定 LF）。
 最近观察 PR 的 `mergeStateStatus=CLEAN`。**本轮按用户要求不再等待/触发 CI**；如需复核请到 PR 页面看 checks。
 
-## 2. 环境事实（复现前必读）
+### 2. 环境事实（复现前必读）
 
 | 项 | 值 |
 |---|---|
@@ -67,7 +282,7 @@ Windows checkout 的 CRLF 与字节级夹具校验冲突，已由 `27dfb63` 修�
 | 原生构建 | MSVC Build Tools 2022：`D:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`（用 vswhere 找 vcvars64） |
 | 其他 | `ELECTRON_RUN_AS_NODE=1` 仍在环境里（Electron 探针需 `env -u`）；`TMP/TEMP` 在仓库外（Electron 子进程写临时目录会 EPERM，需指向 `.tmp*/`）；npm registry 为官方 npm（AGENTS 中 npmmirror 记录已过时） |
 
-## 3. 已交付内容索引（R0 任务 → 证据）
+### 3. 已交付内容索引（R0 任务 → 证据）
 
 | 任务 | 交付 | 状态 | 证据/入口 |
 |---|---|---|---|
@@ -83,7 +298,7 @@ Windows checkout 的 CRLF 与字节级夹具校验冲突，已由 `27dfb63` 修�
 | R0-07 安装/性能 | — | **未开始** | 见 §5 |
 | 汇总 | G0 报告草案 | 未通过 | [r0-g0-report.md](r0-g0-report.md)、[r0-report.md](r0-report.md) |
 
-## 4. 关键候选决策（详见 ADR，G0 前不冻结）
+### 4. 关键候选决策（详见 ADR，G0 前不冻结）
 
 1. **媒体后端（ADR-0001）**：建议混合 C——视频/系统音频由原生层采集（WGC 优先，GDI 回退需明确风险），
    WebView 只做 UI/合成/编码（canvas + MediaRecorder 已验证）。WebView2 无法等价 Electron 的
@@ -97,7 +312,7 @@ Windows checkout 的 CRLF 与字节级夹具校验冲突，已由 `27dfb63` 修�
    label 级归属≠角色权限，R1-04 仍要做命令/资源权限映射。
 6. ADR-0006 测试驱动、ADR-0007 最低系统：**待验证**，见 [adr/README.md](adr/README.md)。
 
-## 5. 未完成与 G0 缺口（放行前必须闭环）
+### 5. 未完成与 G0 缺口（放行前必须闭环）
 
 | # | 事项 | 说明/阻塞 |
 |---|---|---|
@@ -112,7 +327,7 @@ Windows checkout 的 CRLF 与字节级夹具校验冲突，已由 `27dfb63` 修�
 
 G0 报告草案：[r0-g0-report.md](r0-g0-report.md) §5 有逐项收尾清单。
 
-## 6. 复现/验证命令（本分支实测通过）
+### 6. 复现/验证命令（本分支实测通过）
 
 ```bash
 # JS/合同/白名单
@@ -147,7 +362,7 @@ scripts/rust/probe-safestorage.js（同上；--decrypt 方向）
 `--no-sandbox` 位置、TMP/TEMP 指向 `.tmp*/`、spawn hook），本轮未执行；CI 的 quality job 曾在
 手动 dispatch 中全绿（但按用户要求本轮不再等待 CI）。
 
-## 7. 环境陷阱与经验（避免重复踩坑）
+### 7. 环境陷阱与经验（避免重复踩坑）
 
 1. **CI CRLF 陷阱**：Windows checkout 可能把 LF 转 CRLF，破坏夹具 sha256 与 `--check`。已用
    `.gitattributes`（`contracts/host/host-contracts.json`、`test/fixtures/host-parity/**` 固定 `eol=lf`）
@@ -164,7 +379,7 @@ scripts/rust/probe-safestorage.js（同上；--decrypt 方向）
 7. **原型工程约定**：`rust-app/prototypes/<name>/` 各自独立 Cargo 工程（`Cargo.toml` 内空 `[workspace]`），
    不要并入主 workspace；`rust-app/target` 与各原型 `target/`、`gen/` 均已 gitignore。
 
-## 8. 工作边界（接手时必须遵守）
+### 8. 工作边界（接手时必须遵守）
 
 - 不改 `main/`、`preload*.js`、`shared/` 生产代码；本分支所有原型不接入产品入口。
 - 不改 `native/ocr`、`native/clipboard`、`native/everything-search` 现有独立 Cargo 工程（各自锁文件）。
@@ -175,7 +390,7 @@ scripts/rust/probe-safestorage.js（同上；--decrypt 方向）
   [r0-g0-report.md](r0-g0-report.md) 与对应 ADR 的变更记录。
 - 提交说明写清"改变了什么、为什么、如何验证、剩余限制"（计划 §11）。
 
-## 9. 建议的接手顺序
+### 9. 建议的接手顺序
 
 1. 跑 §6 的快速验证（约 1–2 分钟），确认分支状态与本地环境。
 2. 读 [r0-g0-report.md](r0-g0-report.md) §5 与 [adr/README.md](adr/README.md)，确认下一步优先级。
@@ -185,7 +400,7 @@ scripts/rust/probe-safestorage.js（同上；--decrypt 方向）
 5. 补齐 ADR-0006/0007，汇总修正估算，出正式 G0 报告；G0 通过后再按
    [r0-baseline.md](r0-baseline.md) §6.3 的 R1-a～e 切片开始 R1。
 
-## 10. 未决问题（需要用户/产品决策）
+### 10. 未决问题（需要用户/产品决策）
 
 1. 是否接受"媒体后端改为原生采集 + WebView 合成/编码"候选，并据此重估 R5（计划总量 38–63 人周需更新）。
 2. 是否接受"钩子保留 C++ helper 维护面"（需登记退出计划），还是要求纯 Rust 重写（成本更高）。
@@ -193,7 +408,7 @@ scripts/rust/probe-safestorage.js（同上；--decrypt 方向）
 4. R0-07 完整矩阵需要真实测试机或用户桌面会话；本机只能做部分。
 5. PR #5 是否先合并（R0 证据批次、不改产品代码）；合并后 R0 剩余工作可在新分支继续。
 
-## 11. 相关文档/目录地图
+### 11. 相关文档/目录地图
 
 ```text
 docs/plans/rust-migration/
@@ -223,68 +438,3 @@ rust-app/                    # 主隔离 workspace（6 crates + src-tauri R0-03 
 rust-app/prototypes/         # 独立原型：native-capture / webview-media / webview-pdf-resource / credential-probe
 native/selection-helper/     # R0-04 独立 C++ helper
 ```
-## 12. 2026-11-11 续作轮交接（最新状态）
-
-### 12.1 运行主机已变更（必读）
-
-本轮起在 **`SHERUNLOCK02`** 上继续：Windows 11 家庭版 26300.9974、i5-13500H（12C/16T）、15.75 GiB RAM、
-Intel Iris Xe 核显（**无独显**）、**单屏** 2240×1400@150%（无副屏）、WebView2 **157.0.4341.46**、
-Electron 43.8.3、Node 24.15.0 / npm 11.17.0（registry=npmmirror）、仓库在 `D:\workspace\Highlighter`、
-`CARGO_HOME=D:\DevCache\cargo`。用户已确认：**以当前机器为准**做 R0-07/ADR 证据。
-
-→ §2 的原机（F: 盘、Ryzen 7 9850X3D、RTX 5070 Ti、双屏混 DPI、WebView2 .42）数值/结论**不可**与本轮混用；
-完整环境事实见 [r0-baseline.md](r0-baseline.md) §9。
-
-### 12.2 本轮完成（证据以对应文档为准）
-
-| 项 | 结果 | 文档 |
-|---|---|---|
-| R0-07 安装/分发（部分） | 三种 NSIS 测试包：download 1.92 MiB / embed 3.63 MiB / offline 209.61 MiB，均 `NotSigned`；WebView2 五种安装模式语义与体积实测；缺失 Runtime 时 WebView2 加载器弹**阻塞对话框**（探针 exit 3 / 应用 exit 2）；**用户手动交互安装→启动链路实测通过**（自定义目录、文件哈希一致、HKCU 卸载键、快捷方式、已安装 exe 四场景）；**静默卸载实测通过**（目录/卸载键/快捷方式清理，遗留键已记录）；tauri CLI 2.12.4 / NSIS 3.13 / 版本冻结 | [r0-installation-matrix.md](r0-installation-matrix.md) §6 |
-| R0-07 性能/进程树（首轮） | 两轮取样（每场景 3 次 × 20 s + 新 profile 探针）：Tauri 最小壳对 Electron 最小壳 Private Bytes **+5.2%（区间重叠）**、WS +5.8%、进程 4→7、启动 +18.4%；产品 Electron 主窗口 189.48 MB / 托盘空闲 **131.90 MB**；孤儿进程 0；T1～T3 阈值冻结、T4 未冻结 | [r0-performance-baseline.md](r0-performance-baseline.md) |
-| ADR-0006 桌面 E2E（候选） | tauri-driver 2.1.0 + msedgedriver 157.0.4341.46（与 Runtime 精确匹配）驱动真实 Tauri：new session/handles/execute+IPC/W3C 点击/ready 握手/截图/close/crash/负样本全部实测；CI runner 等未验证 | [r0-test-driver.md](r0-test-driver.md)、[ADR-0006](adr/0006-desktop-test-driver.md) |
-| ADR-0007 最低系统（候选） | 候选 A+D：Win10 22H2 x64 + Win11 x64、WebView2 Evergreen 默认 + 离线单独制品；Win10 22H2 上 Edge/WebView2 官方更新至少到 2028-10（OS 已于 2025-10-14 EOL）；README 收紧需产品决策 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md)、[ADR-0007](adr/0007-minimum-windows-runtime.md) |
-| R0-03 单屏路径 | 无副屏 → 拒绝建窗、exit 2、无残留；测试专用开关 `HIGHLIGHTER_R0_ALLOW_PRIMARY=1`（默认关闭，日志明示非副屏验证）；Release 同样生效 | [r0-window-prototype.md](r0-window-prototype.md) §11 |
-| 工具 | `scripts/rust/measure-resources.ps1`、`scripts/rust/measure-r0-07-performance.ps1`（PS 5.1/7 可运行，UTF-8 with BOM）；`scripts/rust/probe-tauri-webdriver.js`、`run-tauri-webdriver-probe.ps1` | 同上 |
-
-### 12.3 本轮未完成 / 阻塞（G0 仍未通过）
-
-1. **安装/卸载收尾**：手动交互安装→启动**与静默卸载**均已实测通过（2026-11-11，见安装矩阵 §6.1/§6.4）；剩余两项：
-   (a) **卸载遗留键清理决策**：静默 `/S` 卸载保留了 `HKCU\Software\<publisher>\<product>`（安装路径 + Installer Language），
-   因 Tauri NSIS 模板只在“删除应用数据”勾选时才清理；R8-02 需决定是否无条件清理。
-   (b) **自动静默安装 `setup.exe /S` 在本机受限会话 exit 0 不落盘**（同版本 NSIS 最小安装器对照亦复现，
-   判定为环境级；未签名包经 ShellExecute 会弹“打开文件 - 安全警告”）。需真实桌面会话/VM 复测，不要绕过安全机制。
-2. WebView2 多版本/无 Runtime/离线/旧版真实机器矩阵（ADR-0007 依赖）；fixedRuntime 仅评估未实测。
-3. R0-05 长时收尾（30 分钟/双音源/暂停续录/两路同条件对照/§9.2 媒体阈值 T4）——本机无独显、WGC 被拒，需真机。
-4. R0-04 真机矩阵（浏览器/Office/资源管理器/管理员窗口、卡死恢复、`native/clipboard` 联调）。
-5. R0-03 100/150/200% DPI、副屏/负坐标、首帧白闪、鼠标穿透/焦点（本机单屏，需用户参与或双屏机器）。
-6. R0-06 产品真实 `capture/print.html` 批量/长图 PDF、图片视频资源桥真实链路。
-7. ADR-0006 的 CI runner/版本不匹配/多窗口/托盘/混合 DPI/长时稳定性；ADR-0007 的真机矩阵与 README 产品决策。
-8. **修正估算与正式 G0 报告**；且 §9.2 的“Private Bytes 下降约 25%”未获本轮证据支持，
-   必须在 G0 显式重估或走失败分支（计划 §8）。
-
-### 12.4 建议的接手顺序（更新 §9）
-
-1. 先跑 §6 的 JS 合同/白名单检查与 `scripts/rust/check-rust-app.ps1`（本机实测均通过，约 1–2 分钟）。
-2. 读 [r0-g0-report.md](r0-g0-report.md) §7（本轮新增）与 [r0-installation-matrix.md](r0-installation-matrix.md) §6，
-   确认 G0 缺口；**先处理卸载遗留键的清理决策与静默安装的环境级阻塞**（安装→启动→卸载主链路已实测通过）。
-3. 与用户确认真机矩阵的可用性（Win10 22H2、无 WebView2、离线、双屏/多 DPI、独显），逐项补测；
-   本机只能做“无独显/单屏 150%/Win11”样本。
-4. 冻结 ADR-0006/0007 的候选结论（需产品批准 README 兼容性收紧）并重估 R5（媒体后端）与总量。
-5. 汇总修正估算与 G0 报告；G0 通过前仍不得开始 R1～R7 业务迁移（计划 §7/§8）。
-
-### 12.5 新增环境陷阱（本机实测）
-
-1. **PowerShell 5.1 + UTF-8 无 BOM 脚本**：中文注释行尾的多字节字符会被 GBK 代码页误解析并**吞掉换行**，
-   导致 `param` 块解析失败（与内容无关的 `Unexpected token ')'`）。仓库脚本统一要求 **UTF-8 with BOM**，
-   或纯 ASCII 注释；本轮新增脚本已带 BOM（`measure-resources.ps1`、`measure-r0-07-performance.ps1`）。
-2. **Tauri CLI 会改写 Cargo.toml**：`tauri-cli 2.12.4` 在 build/bundle 时把 `tauri = { version = "2" }`
-   写成 `{ version = "2", features = [] }`；且**必须在 `rust-app/` 下执行**，在仓库根执行会把
-   `rust-app/prototypes/webview-media` 误当 Tauri 项目并改写其 Cargo.toml（本轮已还原）。
-3. Electron 探针仍需 `env -u ELECTRON_RUN_AS_NODE`、`--no-sandbox` 在脚本路径之前、`TMP/TEMP` 指向 `.tmp*/`；
-   产品基线可用 `HIGHLIGHTER_E2E=1` + `HIGHLIGHTER_E2E_DATA_ROOT` 隔离数据根运行（本轮性能基线即如此）。
-4. 可见测试窗口：本机只有一块屏，用户已明确允许短暂可见窗口；不要在没有许可时长时间/反复弹窗。
-
-### 12.6 分支与提交
-
-分支仍为 `codex/rust-r0-baseline-contracts`；本轮改动（R0-07 打包配置、测试开关、脚本、文档）由 Lead 统一提交，
-提交说明含“改变了什么/为什么/如何验证/剩余限制”。PR #5 的合并决策仍属未决（见 §10 第 5 项）。
