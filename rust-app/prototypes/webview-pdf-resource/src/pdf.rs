@@ -295,10 +295,10 @@ impl PdfState {
 }
 
 /// 打印完成后交回后台线程的数据。
-struct PrintPayload {
-    bytes: Vec<u8>,
-    settings_readback: serde_json::Value,
-    interface_probe: serde_json::Value,
+pub struct PrintPayload {
+    pub bytes: Vec<u8>,
+    pub settings_readback: serde_json::Value,
+    pub interface_probe: serde_json::Value,
 }
 
 /// 从完成回调交付的 IStream 读取全部字节。
@@ -601,6 +601,24 @@ unsafe fn start_legacy_print_to_pdf(
     if let Err(error) = core7.PrintToPdf(PCWSTR(wide_path.as_ptr()), &settings, &handler) {
         let _ = tx.send(Err(format!("PrintToPdf 调用失败: {error}")));
     }
+}
+
+/// 对已就绪窗口执行一次 `PrintToPdfStream`，返回 PDF 字节/读回设置/接口探测。
+///
+/// 产品真实页模式（`--pdf-product`，见 `pdf_product.rs`）复用本函数：设置来自 manifest 的
+/// 产品参数，窗口由调用方负责创建/导航/等待 DOM 就绪。
+pub fn print_with_stream(window: &WebviewWindow, spec: PrintSpec) -> Result<PrintPayload, String> {
+    let (tx, rx) = mpsc::channel::<Result<PrintPayload, String>>();
+    window
+        .with_webview(move |webview| {
+            // SAFETY: with_webview 保证闭包在 WebView2 UI 线程执行。
+            unsafe {
+                start_stream_print(&webview, spec, tx);
+            }
+        })
+        .map_err(|error| format!("with_webview 调度失败: {error}"))?;
+    rx.recv_timeout(PRINT_TIMEOUT)
+        .map_err(|error| format!("等待打印完成超时/通道断开: {error}"))?
 }
 
 /// 打印一个用例：后台线程等待主线程的 COM 完成回调。

@@ -99,9 +99,17 @@ Write-Host "  vcvars64  : $vcvars"
 
 # Import the vcvars64 environment (PATH/INCLUDE/LIB) through a temporary .cmd: cmd /c
 # quoting around a quoted path with spaces is fragile when passed through an argument array.
+#
+# VSINSTALLDIR must carry its trailing backslash for the VsDevCmd extension
+# (vsdevcmd\ext\vcvars.bat builds "%VSINSTALLDIR%VC\..."). This session inherits
+# VSINSTALLDIR without the slash, which makes vcvars64.bat print
+# `Could not find directory "D:\VS2026VC\"` and silently leave cl.exe off PATH.
+# Pin it to the vswhere-resolved install (with slash) so the import is deterministic.
 $vcvarsImport = Join-Path $objDir 'vcvars-import.cmd'
+$vcvarsInstallDir = "$vsInstallPath\"
 $vcvarsImportLines = @(
     '@echo off',
+    ('set "VSINSTALLDIR={0}"' -f $vcvarsInstallDir),
     ('call "{0}" >nul 2>&1' -f $vcvars),
     'if errorlevel 1 exit /b 1',
     'set'

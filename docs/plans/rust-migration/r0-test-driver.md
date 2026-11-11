@@ -490,6 +490,7 @@ Tauri 没有 Electron 主进程，**不能复用这条启动路径**；tauri-dri
 | 2026-11-11 | 新增测试专用开关 `HIGHLIGHTER_R0_ALLOW_PRIMARY=1`（cli.rs/monitors.rs/main.rs）并登记；debug/release 行为验证；单测 17 passed | `cargo test -p highlighter-r0-window --locked`；§4.1 |
 | 2026-11-11 | 新增探针脚本 `scripts/rust/probe-tauri-webdriver.js` 与一键 `run-tauri-webdriver-probe.ps1`（含清理） | §5；SHA256 见附录 |
 | 2026-11-11 | 补跑质量门禁：`cargo clippy -p highlighter-r0-window --all-targets -- -D warnings`（0 warning）、`cargo fmt -p highlighter-r0-window -- --check`、`cargo test -p highlighter-r0-window --locked`（17 passed）、`scripts/rust/check-rust-app.ps1`（fmt+clippy+test 全 workspace OK）全部通过 | 本段；命令可在仓库根复跑 |
+| 2026-11-11 20:05 | **工作区 Low 完整性标签缺陷修复后复跑**（handoff/g0 §8.4）：`run-tauri-webdriver-probe.ps1 -NativeDriver …157.0.4341.46… -AllowPrimaryScreen` **exit 0**，session/handles/execute(document.title/page state)/host_list_monitors(1 display 150%)/W3C click/ready 轮询/screenshot(102,740 B, sha256 19a6fe3d…)/delete session/负样本全部通过；`browserVersion=157.0.4341.46`。本文 §11 未验证清单不变（CI runner/版本不匹配/多窗口/托盘/混合 DPI/长时稳定性仍未验证） | `.tmp-r07/driver/webdriver-ci/`（本机，gitignore） |
 
 ## 附录 A：证据文件与哈希（2026-11-11）
 

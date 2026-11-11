@@ -1,7 +1,7 @@
 # R0-07 安装/分发矩阵（NSIS 测试包 + WebView2 模式）
 
 日期：2026-11-11（Asia/Hong_Kong）。分支 `codex/rust-r0-baseline-contracts`，基线 HEAD `7c45a7b`（本文件写作时工作区另有 R0-07 打包配置、driver-spike 测试开关等未提交改动，由 Lead 统一提交）。
-状态：**R0 证据文档（手动交互安装→启动→卸载链路已实测通过；自动静默安装在本机受限会话阻塞；其余未验证项见 §10）**。上位文档：
+状态：**R0 证据文档（手动交互安装→启动→卸载链路已实测通过；自动静默安装“不落盘”根因已定位，环境修复后已复验通过；其余未验证项见 §10）**。上位文档：
 [Rust 改造方案与开发计划](../2026-11-10-rust-migration-development-plan.md) §7 R0-07、§8 G0 版本矩阵、§9.2；
 [R0-03 窗口原型](r0-window-prototype.md)；[R0 G0 报告（草案）](r0-g0-report.md)；[rust-app/README.md](../../../rust-app/README.md)。
 
@@ -46,6 +46,14 @@
 | Tauri CLI | `tauri-cli 2.12.4`（`npx --yes @tauri-apps/cli@2 --version`；下载到 npm 缓存，未写入仓库） | 命令输出 |
 | NSIS 工具链 | **v3.13**，由 tauri-bundler 首次打包时从 GitHub 下载到 `%LOCALAPPDATA%\tauri\NSIS`；`nsis_tauri_utils` v0.5.3 | bundle 日志 + `makensis.exe /VERSION` |
 | 本地 NSIS（对照，未使用） | `D:\tools\nsis\makensis.exe` 也是 v3.13；本矩阵未用它绕过 bundler | `makensis /VERSION` |
+
+> **环境事实（2026-11-11 17:40 新增、19:4x 已修复，静默安装根因相关）**：`D:\workspace\Highlighter` 根目录曾带有
+> DSH workspace-write 沙箱遗留的**强制完整性标签 `Low Mandatory Level:(OI)(CI)(NW)`**（另有
+> `Everyone:(CI)(DENY)(DC)` 与能力 SID `S-1-4-1070570333-856284178:(OI)(CI)(W,D,DC)`）。标签继承到整个
+> 工作区子树，工作区内所有 exe（含本任务安装包）创建进程时被 Windows 封顶为 Low IL，无法写入
+> `%LOCALAPPDATA%`/`%TEMP%`/HKCU 等 Medium 位置——这是 §6.2 静默安装“不落盘”的根因，**不是**登录会话、
+> 计划任务、作业对象或 UAC/Defender 问题。**2026-11-11 19:4x Lead 已执行修复**（全树 Low→Medium、移除
+> DENY/能力 SID ACE），修复后工作区 exe 均为 Medium，§6.2 已用工作区原件复跑成功。
 
 Cargo.lock（`rust-app/Cargo.lock`，未改动）中与本矩阵相关的版本：
 
@@ -170,7 +178,7 @@ Tauri 2 的 `bundle.windows.webviewInstallMode` 支持 5 种模式（官方对�
   `{"type":"fixedRuntime","path":"<目录>"}`；安装包预计增加约 180 MB；应用不再跟随系统 Runtime 自动安全更新，
   必须自建 Runtime 更新与漏洞响应流程。除非产品明确要求“离线 + 固定 Runtime 版本”，否则不建议作为默认策略（R8-02 决策项）。
 
-## 6. 安装/卸载烟测（**手动交互安装→启动→卸载已通过；自动静默安装阻塞**）
+## 6. 安装/卸载烟测（**手动交互安装→启动→卸载已通过；自动静默安装“不落盘”根因已定位**）
 
 计划链路：`setup.exe /S`（per-user，不提权）→ 核对 `%LOCALAPPDATA%\Highlighter R0 Window Prototype` 文件清单、
 HKCU Uninstall 注册项、开始菜单快捷方式 → 运行已安装 exe `--self-test`（单屏无 env 预期 exit 2；
@@ -207,33 +215,99 @@ stdout/stderr 见同目录 `manual-installed-*.out.txt`）：
 → 与 release exe 的应用级探针结果一致（§7），证明**安装后的二进制与构建产物同源、启动与失败路径正常**；
 同时说明：缺失 WebView2 时安装版应用同样是“加载器阻塞对话框 → Tauri 启动失败 exit 2”。
 
-### 6.2 自动静默安装：失败/阻塞证据（本机受限会话）
+### 6.2 自动静默安装“不落盘”：根因已定位（2026-11-11 17:40，修正此前“会话/作业对象隔离”假设）
 
-1. **未签名安装包经 ShellExecute 启动会弹阻塞式安全警告**：用 `Start-Process`（ShellExecute）启动安装包时，
-   出现 `#32770` 对话框“打开文件 - 安全警告”（无发布者），进程等待人工确认；自动化必须改用 CreateProcess
-   （`.NET ProcessStartInfo.UseShellExecute=false` 或 `&` 调用）。该现象对最终用户双击安装同样是风险 → 发布必须签名（R8-02）。
-2. **静默安装不落盘（未解决）**：CreateProcess 直接执行 `setup.exe /S`，**退出码 0、耗时 144 ms，但**：
-   - `%LOCALAPPDATA%\Highlighter R0 Window Prototype` 不存在；
-   - `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall` 无本产品键；
-   - 开始菜单无 `Highlighter R0 Window Prototype.lnk`；无 `uninstall.exe`。
-   用 `/S /D=<无空格临时路径>` 重复，结果相同。被动模式 `/P` 进程挂起（线程 `WaitReason=UserRequest`，
-   MainWindowHandle 标题为 `Highlighter R0 Window Prototype Setup`，但无可枚举可见窗口），已终止。
-3. 已排除：安装包路径带空格/参数未传入（`/D=` 无空格路径同样无落盘）；安装包 payload 损坏（7z 可完整提取应用 exe 与插件）。
-   仍待验证的候选原因：WebView2 段提前 `Abort`（静默 Abort 退出码为 0）、NSISdl/网络路径、Restart Manager 运行中检查、
-   currentUser 安装模式/权限上下文。**下一步**：用 `cmd /c` 捕获 NSIS 静默 Abort 的 AttachConsole 输出、
-   用 embedBootstrapper/offlineInstaller 产物对照、交互模式观察向导页，定位后重跑完整链路。
+> 本节**推翻**旧版结论（旧版判断为“本机受限会话/环境级隔离，需真实桌面会话复测”）。完整实验记录与原始证据见
+> `.tmp-r07/install/rootcause/ROOTCAUSE.md`、`probe-*.log/json`、`evidence-*.txt`；可复跑脚本同目录。
 
-4. **交互式向导可以正常显示**（说明安装包本身可运行）：直接启动安装包（无参数）后 3 s 内出现可见向导窗口
-   `#32770` “Highlighter R0 Window Prototype Setup”；UIA 读到 “Choose Install Location” 页，目标目录
-   `C:\Users\24532\AppData\Local\Highlighter R0 Window Prototype`、`Space required: 8.5 MB`。
-   自动化点击 “Next >” 未完成：NSIS MUI 的按钮在 UIA 中暴露为 `ControlType.Pane`（无 InvokePattern），本轮时间窗内
-   未完成自动点击安装，随后关闭向导（未绕过安全机制、未改系统设置）。
-5. **对照实验（排除安装包 payload 缺陷）**：用同一 NSIS 3.13 现场编译一个最小 per-user 安装器
-   （`RequestExecutionLevel user`、`InstallDir "$LOCALAPPDATA\R07MinimalNsisTest5"`、写文件+注册表+卸载器），
-   `/S` 运行同样“退出码 0 但目录/注册表均未创建”；说明本机**当前受限会话**下 NSIS 安装器无法完成落盘
-   （环境/系统级限制），不是本安装包特有的缺陷。证据：`.tmp-r07/install/nsis-min-test/`、
-   `.tmp-r07/install/logs/child-groups.txt`（子进程完整性级别 = Medium Mandatory Level，排除 Low IL 解释）。
-   > 未继续深挖/绕过（Lead 明确要求：不得为了通过而绕过安全提示或修改系统安全设置）；完整安装链路需真实桌面会话复测。
+**根因**：`D:\workspace\Highlighter` 根目录带有 DSH workspace-write 沙箱遗留的**强制完整性标签
+`Low Mandatory Level:(OI)(CI)(NW)`**（另有 `Everyone:(CI)(DENY)(DC)` 与能力 SID
+`S-1-4-1070570333-856284178:(OI)(CI)(W,D,DC)`）。标签随目录继承到工作区所有 exe（含本任务全部安装包与最小
+NSIS 对照包）。Windows 在创建进程时把进程完整性级别封顶为**不高于其镜像文件的完整性标签**：工作区内 exe
+无论由哪个会话/进程启动，都是 Low IL（S-1-16-4096）。Low 进程受 **No-Write-Up** 约束，不能写 Medium 位置
+（`%LOCALAPPDATA%`、`%TEMP%`、HKCU、`D:\Program Files` 等）；NSIS 静默模式忽略逐文件失败并正常退出 0，
+于是表现为“exit 0、数百 ms、目录/HKCU/快捷方式全无”。**与登录会话、计划任务、作业对象、UAC、Defender 无关。**
+
+**直接证据（2026-11-11 17:33 采集）**：
+
+- `icacls "D:\workspace\Highlighter"`：`Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`；安装包 exe：
+  `Mandatory Label\Low Mandatory Level:(I)(NW)`（完整输出见 `rootcause/evidence-icacls.txt`）。
+- suspended-create（进程尚未执行用户代码）读 token：工作区原件 `S-1-16-4096`（Low）；同字节副本复制到
+  `%TEMP%` 后 `S-1-16-8192`（Medium）⇒ 不是 NSIS 自降权，而是镜像标签封顶。
+- 非静默（page-less）最小 NSIS 从工作区启动时卡在 `#32770` 对话框：
+  `Error opening file for writing: C:\Users\24532\AppData\Local\R07T6Install\payload.txt`
+  （Low→Medium 写失败的直观证据）；`/S` 静默模式则吞掉错误并退出 0。
+- 旧 `logs/child-groups.txt` 的“Medium”结论不具代表性：那是 System32 签名程序（如 whoami.exe）的 token，
+  不是安装包子进程。
+
+**对照实验（同一安装包字节，仅完整性标签不同）**：
+
+| 上下文 | 安装包 | 进程 IL（创建时） | 结果 |
+|---|---|---|---|
+| 当前会话（CreateProcess `/S`） | 工作区原件（sha256 `DDB4C403…374`） | **Low** | exit 0 / 630 ms / **无落盘**（复现旧现象） |
+| 交互桌面一次性计划任务（Interactive+Limited） | 工作区原件 | Low | exit 0 / 476 ms / **无落盘**（复现；任务本身不是原因） |
+| 当前会话 | **`%TEMP%\R0Probe\final-setup.exe` 同字节副本** | **Medium** | exit 0 / 469 ms / **安装成功**：目录 2 文件（exe sha256 `36AE37CC…3ADB` 与包内一致）、HKCU Uninstall 键、开始菜单快捷方式 |
+| 交互桌面一次性计划任务 | 同 `%TEMP%` 副本 | Medium | exit 0 / 731 ms / **安装成功**（lastTaskResult=0；任务已删除） |
+| 当前会话 | 最小 NSIS `minimal-setup5.exe`（工作区） | Low | exit 0 / 387 ms / 无落盘 |
+| 当前会话 / 交互计划任务 | 最小 NSIS `%TEMP%` 副本 | Medium | exit 0 / 500 ms、867 ms / 安装成功（`%LOCALAPPDATA%\R07MinimalNsisTest5` + HKCU 键） |
+
+**已安装 exe 四场景复核（2026-11-11 17:37，交互计划任务用 Medium-IL 副本安装后）**：无 env exit 2
+（`secondary-monitor-required`）；`ALLOW_PRIMARY=1` exit 0（`[PASS] … dpr=1.5`，ready/init 各一次）；
+空 Runtime 目录（无 env）exit 2；空 Runtime 目录 + `ALLOW_PRIMARY=1` → 加载器 `#32770` Error 对话框
+（319 ms 发现、347 ms 自动关闭）→ exit 2。均与 §6.1 一致。
+
+**旧证据的重新解释/保留**：
+
+1. 未签名包经 ShellExecute 启动弹“打开文件 - 安全警告”仍成立：自动化必须用 CreateProcess
+   （`.NET ProcessStartInfo.UseShellExecute=false`）；最终用户双击安装有同样风险 → 发布必须签名（R8-02）。
+2. 交互式向导可正常显示仍成立（与 Low 标签不矛盾：向导阶段尚未写 `%LOCALAPPDATA%`；用户此前手动安装成功
+   最可能因为使用了工作区外的安装包副本——原始路径未记录，无法回溯确认）。
+3. 旧 §6.2 中“`/P` 被动模式挂起”“`/D=` 无空格路径”等观察保留为历史记录，不再作为根因论据。
+
+**ACL 修复后复跑（2026-11-11 19:47，问题关闭）**：
+
+Lead 于 2026-11-11 19:4x 执行修复：`icacls "D:\workspace\Highlighter" /setintegritylevel (OI)(CI)M /T /C`
+覆盖工作区全树 61,767 个文件，并移除 `Everyone:(CI)(DENY)(DC)` 与能力 SID ACE。修复后复核：
+
+- `icacls "D:\workspace\Highlighter"`：`Mandatory Label\Medium Mandatory Level:(OI)(CI)(NW)`（Low 标签已消除）；
+  安装包 exe、`rust-app/target/release/highlighter-r0-window.exe`、README.md 等均为 `Medium Mandatory Level`。
+- **工作区原件**安装包（sha256 `DDB4C403…374`，未复制到工作区外）suspended-create token：
+  `IntegritySid=S-1-16-8192`（Medium；修复前为 `S-1-16-4096` Low）。
+- **使用工作区原件** CreateProcess `/S`（2026-11-11 19:47）：退出码 **0**、**770 ms**、安装进程 token
+  `S-1-16-8192`（Medium）；安装目录 2 文件（exe sha256 `36AE37CC…3ADB` 与包内一致、`uninstall.exe`
+  79,288 B）、HKCU Uninstall 键（DisplayVersion 0.1.0 / EstimatedSize 8796）、开始菜单快捷方式全部出现。
+- 已安装 exe 四场景：无 env exit 2；`ALLOW_PRIMARY=1` exit 0（`[PASS] … dpr=1.5`）；空 Runtime 目录
+  （无 env）exit 2；空 Runtime 目录 + `ALLOW_PRIMARY=1` → 加载器 `#32770` Error 对话框（274 ms 发现、
+  293 ms 自动关闭）→ exit 2。与 §6.1 一致。
+- `uninstall.exe /S`：exit 0 / 565 ms；安装目录、HKCU 卸载键、开始菜单快捷方式全部清理、无残留进程；
+  遗留 `HKCU\Software\Highlighter R0 (test build, not for release)\Highlighter R0 Window Prototype`
+  （default=安装路径）为 Tauri NSIS 模板既定行为（R8-02 决策项）。
+- 现场：计划任务 0、%TEMP% 无新 `ns*.tmp`、应用进程 0。
+
+→ **“静默 `/S` 不落盘”关闭为“环境缺陷（工作区完整性标签）已修复并复验”**；不再需要从工作区外副本运行
+安装烟测。**下文“从工作区外副本运行”保留为历史/回退说明**：仅当再次检测到“工作区内 exe 为 Low IL”
+（例如又使用了 workspace-write 会话）时才需要。
+证据：`rootcause/probe-postfix-full.log/json`、`scenario-postfix-full-*.out/err.txt`、
+`rootcause/probe-postfix-uninstall.log/json`、`rootcause/evidence-acl-fix-verified.txt`。
+
+**环境修复（2026-11-11 19:4x 已由 Lead 执行并验证；命令保留为回退/复检用）**：在 danger-full-access 会话中
+
+```powershell
+icacls "D:\workspace\Highlighter" /setintegritylevel (OI)(CI)M /T /C
+icacls "D:\workspace\Highlighter" /remove:d Everyone /T /C
+icacls "D:\workspace\Highlighter" /remove "S-1-4-1070570333-856284178" /T /C
+```
+
+第 1 条为关键；修复前已在隔离子目录 `.tmp-r07/install/rootcause/il-test` 实测有效（执行后同一 exe 的
+suspended-create token 由 Low 变 Medium、`%LOCALAPPDATA%` 写入恢复 OK；验证后该目录已删除）。
+**回退/复检**：若再次出现 Low 标签（例如又使用 workspace-write 沙箱会话），安装/启动烟测可临时把 exe
+复制到工作区外普通目录（如 `%TEMP%\<probe>\`）运行并记录副本 sha256，同时按 `icacls` 输出复检标签。
+另：该标签可能同源影响其它“受限宿主”类结论（handoff §7 陷阱 3/4、ADR-0001 WGC 等）；本轮未复跑这些
+环境级检查，**不得写成已解决**。
+
+**复跑命令**：见 `rootcause/ROOTCAUSE.md` §4（`probe-silent-install.ps1` 基线/对照、`run-scheduled-probe.ps1`
+一次性交互计划任务并自动删除、`probe-uninstall.ps1` 卸载、`cleanup-probe.ps1` 清理）。
+
 
 ### 6.3 已确认的安装包内容（非安装结果）
 
@@ -268,15 +342,25 @@ stdout/stderr 见同目录 `manual-installed-*.out.txt`）：
    为操作系统托管的应用列表备份，不是安装器写入；不视为卸载器缺陷。
 4. 原型把 WebView2 用户数据目录**编译期固定**到构建机路径（`rust-app/target/r0-window-webview2-data`），
    卸载不会删除它（也不应删除仓库构建目录）；R1/R8 必须改为 per-user 数据根并按策略清理（安装矩阵 §1/§11）。
+5. **2026-11-11 17:39 复测**（§6.2 中由交互计划任务从 Medium-IL 副本重建的安装）：`uninstall.exe /S` exit 0 /
+   715 ms，安装目录、HKCU 卸载键、开始菜单快捷方式全部清理、无残留进程；遗留 publisher 键仍存在
+   （本次仅记录到 default=安装路径）。与上表结论一致。
+6. **2026-11-11 19:48 ACL 修复后复验**（工作区原件安装，未复制）：`uninstall.exe /S` exit 0 / 565 ms，
+   安装目录、HKCU 卸载键、开始菜单快捷方式全部清理、无残留进程；遗留 publisher 键仅 default=安装路径。
+   与上表结论一致。
 
-### 6.5 待补（未验证）
+### 6.5 待补/待决策
 
-- 安装过程中 UAC/SmartScreen 提示的真实用户体验（用户未确认，保持“未记录”）。
-- 自动静默安装不落盘的环境级根因（§6.2；用同版本 NSIS 最小安装器对照亦复现，需真实桌面会话复测，不在本轮绕过安全机制）。
-- 跨机器安装（安装包内 exe 的 WebView2 数据目录编译期固定构建机路径，见 §1）。
-- 安装过程中 UAC/SmartScreen 提示的真实用户体验（用户记忆不清则保持“未记录”）。
-- 自动静默安装不落盘的环境级根因（§6.2；用同版本 NSIS 最小安装器对照亦复现，需真实桌面会话复测，不在本轮绕过安全机制）。
-- 跨机器安装（安装包内 exe 的 WebView2 数据目录编译期固定构建机路径，见 §1）。
+- [x] **静默 `/S` 不落盘的环境根因**（§6.2，2026-11-11 17:40）：工作区 Low 完整性标签 → 工作区内 exe 以
+  Low IL 运行 → No-Write-Up 阻止写 `%LOCALAPPDATA%`/HKCU；与登录会话/计划任务/UAC/Defender 无关；
+  同字节副本在工作区外可正常静默安装（当前会话 + 交互桌面计划任务），最小 NSIS 对照一致。
+- [x] **工作区 ACL/完整性标签清理与复跑**（2026-11-11 19:4x Lead 执行、19:47 复跑）：全树 61,767 文件
+  Low→Medium、移除 DENY/能力 SID ACE；工作区原件静默安装 exit 0/770 ms 成功、四场景与卸载清理均通过（§6.2）。
+- [ ] 若后续再次使用 workspace-write 沙箱会话，复检工作区标签是否被重新写入（回退方案见 §6.2）。
+- [ ] 安装过程 UAC/SmartScreen 提示的真实用户体验（仍未记录；CreateProcess 路径无 UAC）。
+- [ ] 跨机器安装（安装包内 exe 的 WebView2 数据目录编译期固定构建机路径，见 §1）。
+- [ ] 清理标签后复跑 handoff §7 与 ADR-0001 中“受限宿主”相关环境级结论（Electron sandbox/TMP 写入/WGC 等）；
+  本轮不把这些结论改写成已解决（仅提示可能同源）。
 
 ## 7. 缺失 WebView2 Runtime 的行为（同栈探针实测）
 
@@ -343,7 +427,13 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
    用户确认后 `uninstall.exe /S` 退出码 0（60 ms），安装目录、HKCU 卸载键、开始菜单快捷方式均删除、无残留进程。
    **已知遗留**：静默卸载会保留 `HKCU\Software\<publisher>\<product>`（安装路径 + Installer Language）——
    这是 tauri-cli 2.12.4 NSIS 模板“仅在勾选删除应用数据时才清理”的既定行为（§6.4），R8-02 需决策是否改为无条件清理。
-   **自动静默安装在本机受限会话仍不落盘**（§6.2，同版本 NSIS 最小安装器对照亦复现，判定为环境级，需真实桌面会话）。
+   **自动静默安装“不落盘”根因已定位**（§6.2，2026-11-11 17:40）：工作区被 DSH workspace-write 沙箱遗留
+   `Low Mandatory Level` 完整性标签 → 工作区内 exe 以 Low IL 运行 → No-Write-Up 阻止写 `%LOCALAPPDATA%`/HKCU；
+   **与登录会话/计划任务/UAC/Defender 无关**。同一字节副本（sha256 `DDB4C403…374`）在工作区外目录、由当前
+   会话与交互桌面一次性计划任务静默安装均成功，安装产物与 §6.1 一致；最小 NSIS 对照同样“工作区失败/副本成功”。
+   **2026-11-11 19:4x Lead 修复工作区完整性标签（全树 Low→Medium）后，19:47 用工作区原件（未复制）复跑：
+   静默安装 exit 0 / 770 ms 成功（安装进程 token=Medium）、四场景与 `uninstall.exe /S` 清理全部符合预期
+   → 问题关闭为“环境缺陷已修复并复验”**；旧“从工作区外副本运行”仅保留为回退说明。
 4. 缺失 WebView2 的失败行为已实测（同栈探针 + release exe 应用级探针）：加载器阻塞对话框 + 探针退出码 3 / 应用退出码 2；
    产品必须做启动前检测与引导。
 5. fixedRuntime 仅完成文档评估（成本/更新责任），未实测。
@@ -354,8 +444,12 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
 
 - [x] 手动交互安装的目录/注册项/快捷方式/已安装 exe 启动与缺失 WebView2 行为（§6.1，2026-11-11 实测）。
 - [x] **卸载链路**：`uninstall.exe /S` 退出码 0，安装目录/HKCU 卸载键/开始菜单快捷方式均清理、无残留进程（§6.4，2026-11-11 实测）。
+- [x] **自动静默安装“不落盘”环境根因与修复复验**（§6.2）：2026-11-11 17:40 定位为工作区 Low 完整性标签
+  → 工作区内 exe 以 Low IL 运行 → No-Write-Up；19:4x Lead 修复工作区标签（61,767 文件 Low→Medium、移除
+  DENY/能力 SID ACE）后，19:47 用工作区原件复跑：静默安装 exit 0/770 ms 成功、四场景与卸载清理符合预期。
+- [x] 工作区 ACL/完整性标签清理的执行与清理后复跑（§6.2，2026-11-11 19:4x/19:47；已远离“需从工作区外副本”的限制）。
+- [ ] 若后续再次使用 workspace-write 沙箱会话，复检工作区标签是否被重新写入（回退方案见 §6.2）。
 - [ ] 卸载后 `HKCU\Software\<publisher>\<product>` 遗留键的清理决策（Tauri NSIS 模板仅在勾选删除应用数据时清理；R8-02 决策，§6.4）。
-- [ ] 自动静默安装在本机受限会话不落盘的环境级根因（§6.2；最小安装器对照同样复现；需真实桌面会话，不在本轮绕过安全机制）。
 - [ ] 安装过程 UAC/SmartScreen 的真实用户体验记录（待用户补充）。
 - [ ] fixedRuntime 实测（下载固定版本 cab、配置、安装体积、运行时是否生效、更新策略）。
 - [ ] skip 模式行为（预期：安装包不处理 Runtime，缺失时应用不可用）。
@@ -405,8 +499,18 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
 | `verify-manual-install.ps1` | 可复跑的安装后取证脚本（Lead 编写，scratch；含 `-Uninstall` 开关，本轮未使用） |
 | `logs/install-smoke-final-downloadBootstrapper.log` | 安装烟测（v2，CreateProcess）观察记录（含失败证据） |
 | `logs/release-exe-missing-wv2-allow-primary.out.txt` | release exe + ALLOW_PRIMARY + 空 WebView2 目录的应用级探针输出（exit 2） |
-| `logs/child-groups.txt` | 子进程完整性级别（Medium，排除 Low IL 解释） |
-| `nsis-min-test/` | 同版本 NSIS 最小 per-user 安装器对照（同样不落盘，用于排除安装包缺陷） |
+| `logs/child-groups.txt` | 旧版“子进程 IL=Medium”取证（System32 签名程序 token；**不代表安装包子进程**，见 §6.2） |
+| `nsis-min-test/` | 同版本 NSIS 最小 per-user 安装器对照（工作区原件 Low IL → 不落盘；`%TEMP%` 副本 → 成功，见 §6.2） |
+| `rootcause/ROOTCAUSE.md` | **静默安装根因报告**：结论、机制、对照实验、复跑命令、修复建议、遗留（2026-11-11 17:40） |
+| `rootcause/probe-silent-install.ps1` / `probe-uninstall.ps1` / `run-scheduled-probe.ps1` / `cleanup-probe.ps1` / `probe-lib.ps1` | 可复跑探针：上下文/token/状态取证、基线复现、一次性交互计划任务（自动删除）、卸载、清理 |
+| `rootcause/probe-<tag>.log/json` | 各实验原始证据：工作区原件失败复现、同字节副本成功、最小 NSIS 对照、四场景（含进程 IL、exit、耗时、子进程/窗口） |
+| `rootcause/scenario-*.out.txt` / `.err.txt` | 已安装 exe 四场景 stdout/stderr |
+| `rootcause/task-definition-*.xml` / `task-run-*.log` / `task-state-*.json` | 一次性计划任务定义/运行/lastTaskResult/删除证据（Interactive+Limited） |
+| `rootcause/evidence-icacls.txt` / `evidence-tokens.txt` | 工作区 Low 完整性标签与沙箱 ACE 的 icacls 输出；工作区原件 vs `%TEMP%` 副本的 suspended-create token 对照 |
+| `rootcause/diag-token.ps1` / `diag-label.ps1` / `cs-writer*.exe` / `nsis-t6/` / `t6-trace/` | 反证实验：Low exe 写 `%LOCALAPPDATA%` 失败、`#32770`“Error opening file for writing”证据、隔离目录标签修复验证 |
+| `rootcause/probe-postfix-full.log/json`、`scenario-postfix-full-*.out/err.txt` | **ACL 修复后复跑**（工作区原件）：安装 exit 0/770 ms、进程 IL=Medium、目录/HKCU/快捷方式产物、四场景原始输出 |
+| `rootcause/probe-postfix-uninstall.log/json` | ACL 修复后卸载复验：exit 0/565 ms、目录/HKCU 卸载键/快捷方式清理、遗留 publisher 键 |
+| `rootcause/evidence-acl-fix-verified.txt` | 修复后 icacls 标签（Medium）与 token 证据（工作区根/安装包 exe/rust-app target exe） |
 | `logs/silent-console-capture.txt` | 静默安装控制台捕获尝试（命令失败记录） |
 | `logs/tauri-installer-nsi.txt` / `tauri-utils-nsh.txt` | tauri-cli v2.12.4 NSIS 模板/工具宏（排障与逻辑核对） |
 | `artifacts/<mode>/` | 最终安装包副本（与 `rust-app/target/release/bundle/nsis/` 相同） |
@@ -415,4 +519,5 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
 | `install-smoke-final.ps1` / `bundle-matrix.ps1` | 可复跑脚本 |
 
 复跑要点：在 `rust-app/` 下执行 Tauri CLI；先 `build --no-bundle` 再 `bundle`；安装烟测用 CreateProcess（避免 ShellExecute
-安全警告）；不要卸载/修改系统 WebView2 Runtime。
+安全警告）；**工作区 Low 完整性标签未清理前，安装/启动烟测必须把 exe 复制到工作区外普通目录再运行**（记录副本 sha256，
+见 §6.2）；不要卸载/修改系统 WebView2 Runtime。

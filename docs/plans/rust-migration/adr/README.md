@@ -21,3 +21,10 @@
 | [0007](0007-minimum-windows-runtime.md) | 最低 Windows / WebView2 Runtime 下限 | R0-07 / R8 | **候选 A+D（Win10 22H2+Win11、Evergreen 默认 + 离线制品），未冻结** | [r0-minimum-windows-runtime.md](../r0-minimum-windows-runtime.md) |
 
 模板：[0000-template.md](0000-template.md)。每份 ADR 至少包含：背景、备选、实测条件与命令、证据（含失败分支）、结论/建议、未解决限制、责任批次与退出验收、变更记录。
+
+> **2026-11-11 晚间收尾更新（ACL 缺陷修复后复验）**：0001 的 WGC“本机被拒”结论已被更正为
+> **本机 Medium IL 实测可用**（原 `E_ACCESSDENIED` 来自工作区 Low 完整性标签环境缺陷，见
+> [r0-g0-report.md](../r0-g0-report.md) §8.4/§9.1）；0002 补充真机矩阵 10 行 9 PASS、管理员窗口 UIPI 负样本、
+> lease 协议级互通（helper↔native/clipboard 仍未联调）；0003 补充产品真实 `capture/print.html`
+> 单图/长图 200in/批量 50 页双后端复验；0006 在 ACL 修复后 WebDriver 探针复跑通过。
+> **所有 ADR 状态仍为候选/未冻结，G0 未通过。** 逐项证据以各自 ADR 与证据文档为准。

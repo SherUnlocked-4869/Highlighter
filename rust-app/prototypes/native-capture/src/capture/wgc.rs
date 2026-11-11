@@ -38,7 +38,9 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
 use windows::Win32::Graphics::Dxgi::{IDXGIAdapter, IDXGIDevice};
 use windows::Win32::Graphics::Gdi::HMONITOR;
-use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice;
+use windows::Win32::System::WinRT::Direct3D11::{
+    CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
+};
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::System::WinRT::RoGetActivationFactory;
 
@@ -91,7 +93,10 @@ fn process_frame(
 ) -> windows::core::Result<()> {
     let arrival = Instant::now();
     let surface = frame.Surface()?;
-    let texture: ID3D11Texture2D = surface.cast()?;
+    // IDirect3DSurface 不能直接 cast 到 ID3D11Texture2D（0550/0x80004002 E_NOINTERFACE）；
+    // 标准做法是经 IDirect3DDxgiInterfaceAccess 取底层 DXGI 接口再 QI 到 ID3D11Texture2D。
+    let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+    let texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
     let mut desc = D3D11_TEXTURE2D_DESC::default();
     unsafe { texture.GetDesc(&mut desc) };
     let (width, height) = (desc.Width, desc.Height);

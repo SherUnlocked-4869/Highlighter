@@ -23,6 +23,7 @@
 mod cli;
 mod monitors;
 mod pdf;
+mod pdf_product;
 mod resource;
 mod shared;
 
@@ -80,6 +81,10 @@ fn main() {
     }
     match options.mode {
         Mode::Pdf => run_pdf(options),
+        Mode::PdfProduct => {
+            let code = pdf_product::run(options);
+            std::process::exit(code);
+        }
         Mode::Resource => run_resource(options),
     }
 }
@@ -89,10 +94,13 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 fn run_pdf(options: cli::Options) {
-    let output_dir = options
+    // 旧 API `ICoreWebView2_7::PrintToPdf` 只接受绝对路径（实测相对路径 → E_INVALIDARG），
+    // 因此产物目录统一规范成绝对路径再进入矩阵。
+    let raw_output_dir = options
         .out_dir
         .clone()
         .unwrap_or_else(crate::shared::pdf_dir);
+    let output_dir = std::path::absolute(&raw_output_dir).unwrap_or(raw_output_dir);
     let state = Arc::new(pdf::PdfState::default());
     let state_for_setup = Arc::clone(&state);
     let options_for_setup = options.clone();

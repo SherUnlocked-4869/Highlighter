@@ -338,3 +338,121 @@ pub fn tail(text: &str, max: usize) -> String {
         format!("…{}", &clean[clean.len() - max..])
     }
 }
+
+/// 逐包 pts 序列（`-debug_ts`，按解复用顺序）。用于验证输出视频时间轴是否连续
+/// （暂停/继续后不得出现暂停时长的空洞）。
+pub fn packet_pts(ffmpeg: &Path, file: &Path, map: &str) -> Result<Vec<f64>, String> {
+    let args: Vec<String> = [
+        "-hide_banner",
+        "-debug_ts",
+        "-i",
+        &file.display().to_string(),
+        "-map",
+        map,
+        "-c",
+        "copy",
+        "-f",
+        "null",
+        "-",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let (code, text) = run_ffmpeg(ffmpeg, &args)?;
+    if code != Some(0) {
+        return Err(format!(
+            "packet_pts {map} failed (exit {:?}): {}",
+            code,
+            tail(&text, 800)
+        ));
+    }
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if !line.contains("demuxer+ffmpeg -> ist_index:") {
+            continue;
+        }
+        let Some(pos) = line.find("pkt_pts_time:") else {
+            continue;
+        };
+        let rest = &line[pos + "pkt_pts_time:".len()..];
+        let Some(token) = rest.split_whitespace().next() else {
+            continue;
+        };
+        if let Ok(pts) = token.parse::<f64>() {
+            out.push(pts);
+        }
+    }
+    if out.is_empty() {
+        return Err(format!("packet_pts {map}: no packet timestamps parsed"));
+    }
+    Ok(out)
+}
+
+/// 输出帧时间轴连续性检查结果。
+#[derive(Clone, Debug, Default)]
+pub struct TimelineCheck {
+    pub packets: usize,
+    pub first_pts_s: f64,
+    pub last_pts_s: f64,
+    pub span_s: f64,
+    pub expected_frames: usize,
+    pub missing_slots: u64,
+    pub max_gap_ms: f64,
+    pub median_gap_ms: f64,
+    pub nonuniform_steps: u64,
+    pub effective_fps: f64,
+    /// 解复用顺序中 pts 回退的次数（B 帧重排；不是时间轴空洞）。
+    pub reordered_steps: u64,
+}
+
+/// 期望帧间隔 `1000/fps` ms；`gap` 定义为间隔 > 1.5 个期望步长。
+///
+/// 注意：`-debug_ts` 按解复用（解码）顺序输出，含 B 帧时 pts 非单调；
+/// 这里先按 pts 排序再判断连续性，否则会把 B 帧重排误判成时间轴空洞。
+pub fn timeline_check(pts: &[f64], fps: f64) -> TimelineCheck {
+    let mut out = TimelineCheck {
+        packets: pts.len(),
+        ..Default::default()
+    };
+    if pts.is_empty() || fps <= 0.0 {
+        return out;
+    }
+    for w in pts.windows(2) {
+        if w[1] < w[0] {
+            out.reordered_steps += 1;
+        }
+    }
+    let mut sorted = pts.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let step = 1.0 / fps;
+    out.first_pts_s = sorted[0];
+    out.last_pts_s = sorted[sorted.len() - 1];
+    out.span_s = out.last_pts_s - out.first_pts_s;
+    if out.span_s > 0.0 {
+        out.expected_frames = (out.span_s * fps).round() as usize + 1;
+    }
+    let mut gaps_ms: Vec<f64> = Vec::with_capacity(sorted.len().saturating_sub(1));
+    for w in sorted.windows(2) {
+        let dt = w[1] - w[0];
+        gaps_ms.push(dt * 1000.0);
+        if dt > 1.5 * step {
+            out.max_gap_ms = out.max_gap_ms.max(dt * 1000.0);
+            let slots = (dt / step).round() as i64 - 1;
+            if slots > 0 {
+                out.missing_slots += slots as u64;
+            }
+        }
+        if (dt - step).abs() > 0.25 * step {
+            out.nonuniform_steps += 1;
+        }
+    }
+    if !gaps_ms.is_empty() {
+        let mut sorted_gaps = gaps_ms.clone();
+        sorted_gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        out.median_gap_ms = sorted_gaps[sorted_gaps.len() / 2];
+    }
+    if out.span_s > 0.0 {
+        out.effective_fps = (sorted.len() as f64 - 1.0) / out.span_s;
+    }
+    out
+}
