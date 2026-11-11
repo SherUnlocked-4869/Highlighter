@@ -1,6 +1,6 @@
 # Rust 迁移 R0 交接文档（2026-11-11 晚间接手版：**回到原机**）
 
-- 日期：2026-11-11 21:55（Asia/Hong_Kong）。本文件是**新会话的唯一入口**；上一版（21:00）见
+- 日期：2026-11-11 22:20（Asia/Hong_Kong）。本文件是**新会话的唯一入口**；上一版（21:00）见
   `git show 800ea67:docs/plans/rust-migration/handoff.md`（其后续 `f8a5fd7` 为推送状态记录）。
 - 状态：**R0 继续推进；G0 仍未通过；R1 未开始**（计划 §8：G0 通过才放行 R1～R7）。
 - 分支：`codex/rust-r0-baseline-contracts`；本轮提交见 §1.5.5（含 WGC 多显示器缺陷修复、R0-03/04/05 复验与环境登记）。
@@ -13,6 +13,9 @@
 ## 1. 最新状态（2026-11-11 晚间收尾）
 
 ### 1.1 分支 / 提交 / PR
+
+> **本节是 21:00 版状态**；当前轮（§1.5）在其之上又增加了 1 个提交 `6c82166`（证据/原型/文档），
+> 详见 §1.5.5。HEAD 与推送状态以 `git log origin/codex/rust-r0-baseline-contracts..HEAD` 为准。
 
 | 项 | 值 |
 |---|---|
@@ -151,7 +154,14 @@
 
 ### 1.5.5 本轮提交
 
-（提交后回填：`git log --oneline -3` 与本轮改动清单；PR #5 保持 OPEN、不合并。）
+- `6c82166` `feat(rust): R0-03/05 原机双屏复验、WGC 多显示器缺陷修复与 R0-04 原机复跑`
+  （11 文件 +693/−33：原型 HMONITOR 透传与守卫、r0-window §12、r0-media §4.16、r0-hook §4.15、
+  r0-baseline §9.4、r0-g0-report §10、r0-report §15、ADR-0001、README/原型 README、本文件 §1.5/§2/§3/§7）
+- 提交信息按计划 §11 写清“改变了什么/为什么/如何验证/剩余限制”；PR #5 保持 OPEN、**不合并**；
+  CI 仍不作为本轮放行依据（本地门禁见 §6.1 与 r0-baseline §9.4.4）。
+- 提交前检查：`git -c core.whitespace=cr-at-eol diff --check` 干净；换机器后先设 `core.autocrlf=true`（§7 陷阱 14）。
+- **推送与 CI（用户本轮决定）**：推送到 `codex/rust-r0-baseline-contracts` 时在提交信息加 `[skip ci]`，
+  **不触发 PR #5 的 `Windows CI`**（本轮未跑完整 `npm test`/E2E，不能宣称 CI 通过）；何时补跑 CI 仍待用户决定。
 
 ### 1.5.6 仍未闭环（G0 放行前）
 

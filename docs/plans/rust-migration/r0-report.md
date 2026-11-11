@@ -414,4 +414,6 @@ lease 联调）、R0-06 资源桥与缺字体、R0-07 多版本矩阵/fixedRunti
 
 ### 15.7 提交
 
-（提交后回填 `git log --oneline`；PR #5 保持 OPEN、不合并。）
+- `6c82166` `feat(rust): R0-03/05 原机双屏复验、WGC 多显示器缺陷修复与 R0-04 原机复跑`
+- 本提交不含产品代码改动（`main/`、`preload*.js`、`shared/`、`capture/`、`package.json`、Electron 构建入口/CI 均未改）；
+  原型改动仅 `rust-app/prototypes/native-capture/`。PR #5 保持 OPEN、不合并；CI 未作为放行依据。
