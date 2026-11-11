@@ -78,7 +78,8 @@ npx --yes @tauri-apps/cli@2 bundle --bundles nsis --ci --config <offlineInstalle
 `rust-app/target/release/bundle/nsis/`（gitignore）。安装包**未签名**（`Get-AuthenticodeSignature` = `NotSigned`），
 只作 R0 测试件；NSIS 配置为 per-user 安装。**手动交互安装已于 2026-11-11 实测通过**（自定义目录、HKCU 卸载键、
 开始菜单快捷方式、已安装 exe 启动与缺失 Runtime 行为，见文档 §6.1）；**本机受限会话的静默 `/S` 安装仍不落盘**
-（环境级限制，§6.2），**卸载链路待验证**（§6.4）。安装包未签名，不得作为发布件。必须从 `rust-app/` 目录执行 Tauri CLI（在仓库根执行会误把
+（环境级限制，§6.2）；**卸载已实测通过**（目录/HKCU 卸载键/快捷方式清理，§6.4），但静默卸载会保留
+`HKCU\Software\<publisher>\<product>` 键（Tauri NSIS 模板行为，§6.4 已记录，R8-02 决策）。安装包未签名，不得作为发布件。必须从 `rust-app/` 目录执行 Tauri CLI（在仓库根执行会误把
 `prototypes/webview-media` 当成 Tauri 项目并改写其 Cargo.toml）。实测产物哈希、WebView2 模式对照与未验证项见
 [r0-installation-matrix.md](../docs/plans/rust-migration/r0-installation-matrix.md)。
 

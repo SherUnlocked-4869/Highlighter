@@ -22,7 +22,7 @@
 | [r0-pdf-spike.md](r0-pdf-spike.md) | R0-06 PDF 双后端对照（WebView2 vs Electron） | 实测完成；ADR-0003 候选 |
 | [r0-resource-channel.md](r0-resource-channel.md) | R0-06 二进制资源通道（command vs 自定义协议） | 实测完成；ADR-0005 候选 |
 | [r0-credential-migration.md](r0-credential-migration.md) | R0-06 合成凭据迁移（safeStorage ↔ Rust） | 实测完成；ADR-0004 候选 |
-| [r0-installation-matrix.md](r0-installation-matrix.md) | R0-07 安装/分发矩阵：三种 NSIS 测试包、WebView2 五模式对照、缺失 Runtime 行为、版本冻结、手动交互安装实测 | 部分完成；卸载与静默安装待验证 |
+| [r0-installation-matrix.md](r0-installation-matrix.md) | R0-07 安装/分发矩阵：三种 NSIS 测试包、WebView2 五模式对照、缺失 Runtime 行为、版本冻结、手动交互安装实测 | 部分完成；静默安装待验证（安装/卸载主链路已实测） |
 | [r0-performance-baseline.md](r0-performance-baseline.md) | R0-07 首轮性能/进程树对照（两轮取样）、阈值冻结 T1～T3、T4 未冻结 | 已完成（本机，跨机器不可比） |
 | [r0-test-driver.md](r0-test-driver.md) | ADR-0006 证据：tauri-driver 2.1.0 + msedgedriver 157.0.4341.46 最小 WebDriver 全流程、能力边界、版本冻结 | 已完成（CI/多版本未验证） |
 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md) | ADR-0007 调研：Electron/Tauri/WebView2 官方支持矩阵、Win10 22H2 生命周期、候选 A～D | 已完成（需真实测试机矩阵） |

@@ -1,7 +1,7 @@
 # R0-07 安装/分发矩阵（NSIS 测试包 + WebView2 模式）
 
 日期：2026-11-11（Asia/Hong_Kong）。分支 `codex/rust-r0-baseline-contracts`，基线 HEAD `7c45a7b`（本文件写作时工作区另有 R0-07 打包配置、driver-spike 测试开关等未提交改动，由 Lead 统一提交）。
-状态：**R0 证据文档（手动交互安装→启动链路已实测通过；自动静默安装在本机受限会话阻塞；卸载待用户确认；其余未验证项见 §10）**。上位文档：
+状态：**R0 证据文档（手动交互安装→启动→卸载链路已实测通过；自动静默安装在本机受限会话阻塞；其余未验证项见 §10）**。上位文档：
 [Rust 改造方案与开发计划](../2026-11-10-rust-migration-development-plan.md) §7 R0-07、§8 G0 版本矩阵、§9.2；
 [R0-03 窗口原型](r0-window-prototype.md)；[R0 G0 报告（草案）](r0-g0-report.md)；[rust-app/README.md](../../../rust-app/README.md)。
 
@@ -170,7 +170,7 @@ Tauri 2 的 `bundle.windows.webviewInstallMode` 支持 5 种模式（官方对�
   `{"type":"fixedRuntime","path":"<目录>"}`；安装包预计增加约 180 MB；应用不再跟随系统 Runtime 自动安全更新，
   必须自建 Runtime 更新与漏洞响应流程。除非产品明确要求“离线 + 固定 Runtime 版本”，否则不建议作为默认策略（R8-02 决策项）。
 
-## 6. 安装/卸载烟测（**手动交互安装已通过；自动静默安装阻塞；卸载待验证**）
+## 6. 安装/卸载烟测（**手动交互安装→启动→卸载已通过；自动静默安装阻塞**）
 
 计划链路：`setup.exe /S`（per-user，不提权）→ 核对 `%LOCALAPPDATA%\Highlighter R0 Window Prototype` 文件清单、
 HKCU Uninstall 注册项、开始菜单快捷方式 → 运行已安装 exe `--self-test`（单屏无 env 预期 exit 2；
@@ -240,10 +240,40 @@ stdout/stderr 见同目录 `manual-installed-*.out.txt`）：
 - 7z 提取最终 downloadBootstrapper 安装包得到应用 exe：8,928,768 B，sha256 `36AE37CC447C28C467B648DB5C543DEA644B654121D58931BBB47233BD7F3ADB`；
 - 安装包内无测试驱动/端点文件（见 §4）。
 
-### 6.4 待补（未验证）
+### 6.4 卸载：成功（2026-11-11 15:49，用户确认后由 Lead 执行）
 
-- `uninstall.exe /S` 后的目录/注册项/快捷方式清理与残留检查——**本轮未执行**：用户手动安装后选择保留安装，
-  卸载验证需用户确认后执行；不得写成通过。
+用户确认后，Lead 执行 `uninstall.exe /S`（静默卸载）并取证（日志 `.tmp-r07/install/logs/manual-install-verify-154849.log`）：
+
+| 检查项 | 结果 |
+|---|---|
+| 卸载退出码 / 耗时 | **0** / 60 ms |
+| 安装目录 `D:\Program Files\Highlighter R0 Window Prototype` | **已删除**（60 ms 内消失） |
+| HKCU Uninstall 键（DisplayName `Highlighter R0 Window Prototype`） | **已删除**（计数 0） |
+| 开始菜单快捷方式 `Highlighter R0 Window Prototype.lnk` | **已删除** |
+| 运行中/残留进程 | 0（应用与相关 WebView2 进程均无） |
+
+卸载前后另复核了已安装 exe 的 4 个启动场景（与 §6.1 完全一致：无 env exit 2 / ALLOW_PRIMARY=1 PASS / 缺失 WebView2 阻塞对话框后 exit 2），
+确认卸载前安装仍然完整可用。
+
+**已知遗留（如实记录，不是“通过”）**：
+
+1. **`HKCU\Software\Highlighter R0 (test build, not for release)\Highlighter R0 Window Prototype` 仍存在**：
+   默认值为安装路径，另有 `Installer Language=1033`。根因（对照 tauri-cli 2.12.4 的 `installer.nsi`，见
+   `.tmp-r07/install/logs/tauri-installer-nsi.txt` 第 918-924 行）：该键只在卸载向导勾选“删除应用数据”
+   （`$DeleteAppDataCheckboxState=1`）时才删除；**静默 `/S` 卸载默认不勾选**，所以保留。这是模板的既定行为，
+   不是本轮特例。→ R8-02 需决定：是否让静默卸载默认清理该键，或改为无条件删除。
+2. **`%TEMP%\~nsu.tmp` 存在但与本次卸载无关**：其创建时间 2026-10-12、修改时间 2026-11-06，早于本轮安装/卸载，
+   属历史遗留；本轮未删除（避免误删他人数据）。
+3. **Windows `AppListBackup` 中的条目**（`HKCU\Software\Microsoft\Windows\CurrentVersion\AppListBackup\...`）
+   为操作系统托管的应用列表备份，不是安装器写入；不视为卸载器缺陷。
+4. 原型把 WebView2 用户数据目录**编译期固定**到构建机路径（`rust-app/target/r0-window-webview2-data`），
+   卸载不会删除它（也不应删除仓库构建目录）；R1/R8 必须改为 per-user 数据根并按策略清理（安装矩阵 §1/§11）。
+
+### 6.5 待补（未验证）
+
+- 安装过程中 UAC/SmartScreen 提示的真实用户体验（用户未确认，保持“未记录”）。
+- 自动静默安装不落盘的环境级根因（§6.2；用同版本 NSIS 最小安装器对照亦复现，需真实桌面会话复测，不在本轮绕过安全机制）。
+- 跨机器安装（安装包内 exe 的 WebView2 数据目录编译期固定构建机路径，见 §1）。
 - 安装过程中 UAC/SmartScreen 提示的真实用户体验（用户记忆不清则保持“未记录”）。
 - 自动静默安装不落盘的环境级根因（§6.2；用同版本 NSIS 最小安装器对照亦复现，需真实桌面会话复测，不在本轮绕过安全机制）。
 - 跨机器安装（安装包内 exe 的 WebView2 数据目录编译期固定构建机路径，见 §1）。
@@ -307,11 +337,13 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
    Microsoft 有效签名；三种包本身均 `NotSigned`，只能作为测试件。
 2. 体积/网络依赖与官方方向一致：download 1.92 MiB（联网）、embed 3.63 MiB（联网，+~1.8 MB）、offline 209.61 MiB（离线）。
    offline 的实际体积明显大于文档估计（~127 MB），预算必须按实测。
-3. **手动交互安装→启动链路已实测通过（§6.1）**：用户以自定义目录 `D:\Program Files\Highlighter R0 Window Prototype`
-   手动安装成功；安装目录/文件哈希（内嵌 exe `36AE37CC…3ADB` 一致）/HKCU 卸载键/开始菜单快捷方式均正确；
-   已安装 exe 的 4 个启动场景符合预期（含缺失 Runtime 的阻塞对话框 + exit 2）。
-   **自动静默安装在本机受限会话仍不落盘**（§6.2，同版本 NSIS 最小安装器对照亦复现，判定为环境级，需真实桌面会话）；
-   **卸载链路尚未验证**（用户保留安装，待确认后执行）。因此不得把“安装/卸载全链路”写成通过。
+3. **手动交互安装→启动→卸载链路已实测通过（§6.1/§6.4）**：用户以自定义目录
+   `D:\Program Files\Highlighter R0 Window Prototype` 手动安装成功；安装目录/文件哈希（内嵌 exe `36AE37CC…3ADB` 一致）/
+   HKCU 卸载键/开始菜单快捷方式均正确；已安装 exe 的 4 个启动场景符合预期（含缺失 Runtime 的阻塞对话框 + exit 2）；
+   用户确认后 `uninstall.exe /S` 退出码 0（60 ms），安装目录、HKCU 卸载键、开始菜单快捷方式均删除、无残留进程。
+   **已知遗留**：静默卸载会保留 `HKCU\Software\<publisher>\<product>`（安装路径 + Installer Language）——
+   这是 tauri-cli 2.12.4 NSIS 模板“仅在勾选删除应用数据时才清理”的既定行为（§6.4），R8-02 需决策是否改为无条件清理。
+   **自动静默安装在本机受限会话仍不落盘**（§6.2，同版本 NSIS 最小安装器对照亦复现，判定为环境级，需真实桌面会话）。
 4. 缺失 WebView2 的失败行为已实测（同栈探针 + release exe 应用级探针）：加载器阻塞对话框 + 探针退出码 3 / 应用退出码 2；
    产品必须做启动前检测与引导。
 5. fixedRuntime 仅完成文档评估（成本/更新责任），未实测。
@@ -321,7 +353,8 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
 ## 10. 未验证项（不得写成通过）
 
 - [x] 手动交互安装的目录/注册项/快捷方式/已安装 exe 启动与缺失 WebView2 行为（§6.1，2026-11-11 实测）。
-- [ ] **卸载链路**（`uninstall.exe /S` 后的目录/注册项/快捷方式清理）——用户保留安装，待确认后执行（§6.4）。
+- [x] **卸载链路**：`uninstall.exe /S` 退出码 0，安装目录/HKCU 卸载键/开始菜单快捷方式均清理、无残留进程（§6.4，2026-11-11 实测）。
+- [ ] 卸载后 `HKCU\Software\<publisher>\<product>` 遗留键的清理决策（Tauri NSIS 模板仅在勾选删除应用数据时清理；R8-02 决策，§6.4）。
 - [ ] 自动静默安装在本机受限会话不落盘的环境级根因（§6.2；最小安装器对照同样复现；需真实桌面会话，不在本轮绕过安全机制）。
 - [ ] 安装过程 UAC/SmartScreen 的真实用户体验记录（待用户补充）。
 - [ ] fixedRuntime 实测（下载固定版本 cab、配置、安装体积、运行时是否生效、更新策略）。
@@ -345,6 +378,8 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
    `D:\Program Files\Highlighter R0 Window Prototype` 成功（该目录 ACL 对 Users 为 FullControl，故未提权也可写），
    HKCU Uninstall + 用户开始菜单快捷方式正确；默认目录为 `%LOCALAPPDATA%\<productName>`。R8-02 若要求 per-machine，
    需要单独验证提权/多用户/卸载行为。
+   **卸载清理需补一个决策**：静默 `/S`（未勾选“删除应用数据”）会保留 `HKCU\Software\<publisher>\<product>`
+   （安装路径 + Installer Language），模板只在该勾选为 1 时删除（§6.4）；发布前应确认是否需要无条件清理。
 5. **测试端点隔离**：安装包 payload 与**安装后文件清单**（§6.1：仅应用 exe + uninstall.exe）均确认不含
    `msedgedriver`/`tauri-driver`/测试端点。
 6. **原型数据目录**：R0-03 原型把 WebView2 数据目录编译期固定到构建机 `rust-app/target/...`，安装包跨机器不可用；
@@ -365,6 +400,7 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
 | `logs/12-embedded-webview2.log` | 从最终安装包提取的内嵌 WebView2 安装器（大小/sha256/签名/版本） |
 | `logs/pdf-probe-control.out.txt` / `pdf-probe-missing-webview2.out.txt` | 缺失 WebView2 同栈探针的对照/失败输出 |
 | `logs/manual-install-verify-142915.log` | 手动交互安装后的自动取证：安装状态、4 个已安装 exe 启动场景、缺失 Runtime 对话框与退出码 |
+| `logs/manual-install-verify-154849.log` | 用户确认后的卸载取证：卸载前后状态、4 个启动场景复核、`/S` 退出码、目录/注册项/快捷方式清理 |
 | `logs/manual-installed-*.out.txt` / `.err.txt` | 上述 4 个场景的原始 stdout/stderr |
 | `verify-manual-install.ps1` | 可复跑的安装后取证脚本（Lead 编写，scratch；含 `-Uninstall` 开关，本轮未使用） |
 | `logs/install-smoke-final-downloadBootstrapper.log` | 安装烟测（v2，CreateProcess）观察记录（含失败证据） |

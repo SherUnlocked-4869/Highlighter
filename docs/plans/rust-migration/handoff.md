@@ -239,7 +239,7 @@ Electron 43.8.3、Node 24.15.0 / npm 11.17.0（registry=npmmirror）、仓库在
 
 | 项 | 结果 | 文档 |
 |---|---|---|
-| R0-07 安装/分发（部分） | 三种 NSIS 测试包：download 1.92 MiB / embed 3.63 MiB / offline 209.61 MiB，均 `NotSigned`；WebView2 五种安装模式语义与体积实测；缺失 Runtime 时 WebView2 加载器弹**阻塞对话框**（探针 exit 3 / 应用 exit 2）；**用户手动交互安装→启动链路实测通过**（自定义目录、文件哈希一致、HKCU 卸载键、快捷方式、已安装 exe 四场景）；tauri CLI 2.12.4 / NSIS 3.13 / 版本冻结 | [r0-installation-matrix.md](r0-installation-matrix.md) §6 |
+| R0-07 安装/分发（部分） | 三种 NSIS 测试包：download 1.92 MiB / embed 3.63 MiB / offline 209.61 MiB，均 `NotSigned`；WebView2 五种安装模式语义与体积实测；缺失 Runtime 时 WebView2 加载器弹**阻塞对话框**（探针 exit 3 / 应用 exit 2）；**用户手动交互安装→启动链路实测通过**（自定义目录、文件哈希一致、HKCU 卸载键、快捷方式、已安装 exe 四场景）；**静默卸载实测通过**（目录/卸载键/快捷方式清理，遗留键已记录）；tauri CLI 2.12.4 / NSIS 3.13 / 版本冻结 | [r0-installation-matrix.md](r0-installation-matrix.md) §6 |
 | R0-07 性能/进程树（首轮） | 两轮取样（每场景 3 次 × 20 s + 新 profile 探针）：Tauri 最小壳对 Electron 最小壳 Private Bytes **+5.2%（区间重叠）**、WS +5.8%、进程 4→7、启动 +18.4%；产品 Electron 主窗口 189.48 MB / 托盘空闲 **131.90 MB**；孤儿进程 0；T1～T3 阈值冻结、T4 未冻结 | [r0-performance-baseline.md](r0-performance-baseline.md) |
 | ADR-0006 桌面 E2E（候选） | tauri-driver 2.1.0 + msedgedriver 157.0.4341.46（与 Runtime 精确匹配）驱动真实 Tauri：new session/handles/execute+IPC/W3C 点击/ready 握手/截图/close/crash/负样本全部实测；CI runner 等未验证 | [r0-test-driver.md](r0-test-driver.md)、[ADR-0006](adr/0006-desktop-test-driver.md) |
 | ADR-0007 最低系统（候选） | 候选 A+D：Win10 22H2 x64 + Win11 x64、WebView2 Evergreen 默认 + 离线单独制品；Win10 22H2 上 Edge/WebView2 官方更新至少到 2028-10（OS 已于 2025-10-14 EOL）；README 收紧需产品决策 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md)、[ADR-0007](adr/0007-minimum-windows-runtime.md) |
@@ -248,8 +248,9 @@ Electron 43.8.3、Node 24.15.0 / npm 11.17.0（registry=npmmirror）、仓库在
 
 ### 12.3 本轮未完成 / 阻塞（G0 仍未通过）
 
-1. **安装/卸载收尾**：手动交互安装→启动链路已实测通过（2026-11-11，见安装矩阵 §6.1）；剩余两项：
-   (a) **卸载链路**（`uninstall.exe /S` 后目录/注册项/快捷方式清理）——用户保留安装，待确认后执行；
+1. **安装/卸载收尾**：手动交互安装→启动**与静默卸载**均已实测通过（2026-11-11，见安装矩阵 §6.1/§6.4）；剩余两项：
+   (a) **卸载遗留键清理决策**：静默 `/S` 卸载保留了 `HKCU\Software\<publisher>\<product>`（安装路径 + Installer Language），
+   因 Tauri NSIS 模板只在“删除应用数据”勾选时才清理；R8-02 需决定是否无条件清理。
    (b) **自动静默安装 `setup.exe /S` 在本机受限会话 exit 0 不落盘**（同版本 NSIS 最小安装器对照亦复现，
    判定为环境级；未签名包经 ShellExecute 会弹“打开文件 - 安全警告”）。需真实桌面会话/VM 复测，不要绕过安全机制。
 2. WebView2 多版本/无 Runtime/离线/旧版真实机器矩阵（ADR-0007 依赖）；fixedRuntime 仅评估未实测。
@@ -265,7 +266,7 @@ Electron 43.8.3、Node 24.15.0 / npm 11.17.0（registry=npmmirror）、仓库在
 
 1. 先跑 §6 的 JS 合同/白名单检查与 `scripts/rust/check-rust-app.ps1`（本机实测均通过，约 1–2 分钟）。
 2. 读 [r0-g0-report.md](r0-g0-report.md) §7（本轮新增）与 [r0-installation-matrix.md](r0-installation-matrix.md) §6，
-   确认 G0 缺口；**先解决或明确升级安装链路阻塞**，它同时是 R0-07 与 R0-06 安装烟测的前置。
+   确认 G0 缺口；**先处理卸载遗留键的清理决策与静默安装的环境级阻塞**（安装→启动→卸载主链路已实测通过）。
 3. 与用户确认真机矩阵的可用性（Win10 22H2、无 WebView2、离线、双屏/多 DPI、独显），逐项补测；
    本机只能做“无独显/单屏 150%/Win11”样本。
 4. 冻结 ADR-0006/0007 的候选结论（需产品批准 README 兼容性收紧）并重估 R5（媒体后端）与总量。
