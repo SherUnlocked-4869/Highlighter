@@ -3,8 +3,9 @@
 - 日期：2026-11-11 21:00（Asia/Hong_Kong）。本文件是**新会话的唯一入口**；上一版（16:20）见
   `git show a2a87e3:docs/plans/rust-migration/handoff.md`。
 - 状态：**R0 大幅推进；G0 仍未通过；R1 未开始**（计划 §8：G0 通过才放行 R1～R7）。
-- 分支：`codex/rust-r0-baseline-contracts`；本轮 2 个提交（代码/证据 `652a7f0` + 本文档提交）**仅在本地，
-  未推送 origin**（用户本轮未批准推送；origin 仍是 `a2a87e3`）。PR #5 保持 OPEN、**本轮不合并**。
+- 分支：`codex/rust-r0-baseline-contracts`；本轮 3 个提交（代码/证据 `652a7f0`、交接文档 `800ea67`、推送状态记录）
+  **已推送 origin**；按用户要求**跳过 CI**（推送前临时禁用 `Windows CI` workflow，推送后已恢复，未运行/未等待 CI）。
+  PR #5 保持 OPEN、**本轮不合并**。
 - 运行机器：`SHERUNLOCK02`（Win11 单屏 150%、无独显）。**2026-11-10 原机数据不可与本机混用。**
 - 阅读顺序：§1 最新状态 → §2 接手顺序 → §3 环境（**先看 §3.2 完整性标签**）→ §4 文档索引 → §5 未决问题 →
   §6 复现命令 → §7 陷阱 → §8 历史。
@@ -17,12 +18,12 @@
 |---|---|
 | 仓库 | https://github.com/SherUnlocked-4869/Highlighter.git |
 | 分支 | `codex/rust-r0-baseline-contracts` |
-| 本地 HEAD | `652a7f0 feat(rust): R0-04/05/06/07 收尾证据与原型（ACL 缺陷修复后 Medium IL 复验）`，其上为本文档提交 |
-| origin | 仍是 `a2a87e3`（本轮未推送） |
+| 本地 HEAD | 本轮 3 个提交：`652a7f0`（R0-04/05/06/07 收尾证据/原型）、`800ea67`（G0 重估/交接文档）、推送状态记录；HEAD 见 `git log` |
+| origin | 与本地同步（本轮已推送 `codex/rust-r0-baseline-contracts`） |
 | 基线产品源码 | `3df7129`（4.2.0 / Electron 43.8.3） |
 | PR | #5（base `master` @ `3df7129`）：https://github.com/SherUnlocked-4869/Highlighter/pull/5 ，OPEN；**本轮用户决定不合并** |
-| CI | 本轮**未推送、未触发/未等待 CI**（用户未批准推送）。本地门禁结果见 §6.1 与 [r0-report.md](r0-report.md) §14.4；不要凭本地通过宣称 CI 通过 |
-| 提交规模 | 相对基线共约 19 个提交（17 + 本轮 2）；本轮 2 个提交合计约 39 文件 +1.1 万行 |
+| CI | **按用户要求跳过本次 CI**：推送前临时禁用 `Windows CI` workflow（推送后立即恢复），本次推送未触发/未等待 CI。本地门禁结果见 §6.1 与 [r0-report.md](r0-report.md) §14.4；不要凭本地通过宣称 CI 通过 |
+| 提交规模 | 相对基线共约 20 个提交（17 + 本轮 3）；本轮的证据/原型/文档提交合计约 40 文件 +1.1 万行 |
 | 产品代码 | **未改** `main/`、`preload*.js`、`shared/`、`capture/`、`package.json`、现有 Electron 构建入口/CI；改动全在 `rust-app/` 原型、`native/selection-helper/`、`scripts/rust/`、文档 |
 
 ### 1.2 R0 完成度
@@ -75,7 +76,8 @@
 8. **机器与环境**：`SHERUNLOCK02`（Win11 26300.9974 26H2、i5-13500H、15.7 GiB、Intel Iris Xe 无独显、
    单屏 2240×1400@150%、WebView2 157.0.4341.46）；装有 Chrome 157 / Edge / Office LTSC 2024（Word/Excel）。
    本轮用户授权主屏短暂可见窗口、30 分钟屏幕采集、一次性计划任务、ACL 修复；真机/VM 矩阵稍后安排。
-9. **本轮提交/推送状态**：`652a7f0` + 本文档提交仅本地；未推送、未触发 CI（用户未批准）。
+9. **本轮提交/推送状态**：`652a7f0`/`800ea67` + 推送状态记录共 3 个提交**已推送 origin**；
+   按用户要求**跳过 CI**（临时禁用 `Windows CI` workflow 后推送、已恢复），本次无 CI 运行/未等待 CI。
 
 ### 1.4 仍未完成（G0 放行前必须闭环，按优先级）
 
@@ -208,7 +210,8 @@ icacls "D:\workspace\Highlighter" /remove:d Everyone
 2. **卸载遗留键**：静默卸载是否无条件清理 `HKCU\Software\<publisher>\<product>`（R8-02）。
 3. **钩子维护面**：是否接受保留 C++ selection helper（ADR-0002 候选 A）并登记退出计划，还是要求纯 Rust 重写。
 4. **测试驱动路线**：确认 ADR-0006 候选 A1（tauri-driver + 精确匹配 msedgedriver）作为 R1-e 主路线。
-5. **PR #5 / 推送**：本轮 2 个提交未推送、PR 未合并；下一轮是否推送/合并需用户批准（推送会自动触发 CI）。
+5. **PR #5 / CI**：本轮提交已推送（3 个提交）、PR #5 未合并；本次 CI 已按用户要求跳过，
+   下一轮何时补跑 CI/合并 PR 需用户决定（推送或手动 dispatch 会触发 `Windows CI`）。
 6. **测试资源**：能否提供/安排 Win10 22H2 真机或干净 VM、双屏/多 DPI、独显机器（§1.4 第 1 项）。
 7. **修正估算/正式 G0**：依赖 1～6 与真机矩阵；R5 媒体后端在 WGC 可用后需重新评估（但打包身份/同意语义未验）。
 
