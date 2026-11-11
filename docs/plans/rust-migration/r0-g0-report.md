@@ -16,7 +16,7 @@
 |---|---|---|
 | R0 三条高风险链路（窗口/钩子/媒体） | 窗口与钩子有实测原型；媒体两路 spike 有证据但未完成同条件对照与长时验证 | [r0-window-prototype.md](r0-window-prototype.md)、[r0-hook-extraction.md](r0-hook-extraction.md)、[r0-media-webview.md](r0-media-webview.md)、[r0-media-native.md](r0-media-native.md) |
 | 数据/凭据/PDF/资源通道小样 | 文档/项目夹具、凭据双向、PDF 双后端对照、资源通道 Range/鉴权均完成；真实产品打印页/批量/长图未复验 | [r0-credential-migration.md](r0-credential-migration.md)、[r0-pdf-spike.md](r0-pdf-spike.md)、[r0-resource-channel.md](r0-resource-channel.md) |
-| 版本矩阵（Windows/WebView2 有/无/离线） | **部分完成（仅本机）**：三种 NSIS 测试包、WebView2 五种分发模式对照、缺失 Runtime 同栈行为、版本冻结已实测；**安装/卸载链路阻塞**（静默安装 exit 0 不落盘，未验证）、多版本/无 Runtime/离线真实机器矩阵未做 | [r0-installation-matrix.md](r0-installation-matrix.md)、[r0-baseline.md](r0-baseline.md) §9 |
+| 版本矩阵（Windows/WebView2 有/无/离线） | **部分完成（仅本机）**：三种 NSIS 测试包、WebView2 五种分发模式对照、缺失 Runtime 行为、版本冻结已实测；**手动交互安装→启动链路已实测通过**（文件/注册项/快捷方式/已安装 exe 四场景）；**自动静默安装在本机受限会话阻塞、卸载链路待验证**；多版本/无 Runtime/离线真实机器矩阵未做 | [r0-installation-matrix.md](r0-installation-matrix.md) §6、[r0-baseline.md](r0-baseline.md) §9 |
 | 修正估算（R0 后重估） | **未做**（媒体后端重估需要 G0 前结论；本轮新增性能/安装证据仍不足以重估 R5） | 计划 §11、本报告 §4 |
 | 性能/资源对照（计划 §9.2） | **首轮完成（本机，两轮取样）**：Tauri 最小壳对 Electron 最小壳无 Private Bytes 优势（+5.2%，区间重叠）、进程数 4→7、启动 +18.4%；产品托盘空闲基线 131.90 MB；T1～T3 阈值已冻结，T4 媒体阈值未冻结 | [r0-performance-baseline.md](r0-performance-baseline.md) |
 
@@ -61,9 +61,9 @@
 
 1. **R0-07（部分完成）**：三种 NSIS 测试包 + WebView2 五种分发模式对照 + 缺失 Runtime 同栈行为 + 首轮
    Release 性能/进程树对照（固定电源方案、两轮取样）已完成，见 [r0-installation-matrix.md](r0-installation-matrix.md)、
-   [r0-performance-baseline.md](r0-performance-baseline.md)；**仍缺**：安装→启动→卸载链路（本机静默安装 exit 0 不落盘，
-   原因未定位，不得写成通过）、WebView2 多版本/无 Runtime/离线真实机器矩阵、fixedRuntime 实测、
-   **修正估算**（本轮证据不足以重估 R5，见 §4）。
+   [r0-performance-baseline.md](r0-performance-baseline.md)；**仍缺**：卸载链路验证（用户保留安装，待确认后执行）、
+   自动静默安装不落盘的环境级根因（需真实桌面会话）、WebView2 多版本/无 Runtime/离线真实机器矩阵、fixedRuntime 实测、
+   **修正估算**（本轮证据不足以重估 R5，见 §4）。**手动交互安装→启动链路已于 2026-11-11 实测通过**（§7.2）。
 2. **R0-05（未完成）**：两路同条件对照 + 30 分钟双音源/暂停续录 + WGC 打包身份实测仍缺；本机无独显、
    WGC 在受限宿主被拒，需真实测试机/桌面会话。
 3. **R0-04（未完成）**：浏览器/Office/资源管理器/管理员窗口矩阵 + 真实卡死恢复 + lease required=true + 与
@@ -95,7 +95,7 @@ WebView2 157.0.4341.46）。原机（Ryzen 7 9850X3D / RTX 5070 Ti / 双屏混 D
 
 | 证据 | 结论（候选/部分完成） | 文档 |
 |---|---|---|
-| R0-07 安装/分发 | 三种 NSIS 测试包产出（download 1.92 MiB / embed 3.63 MiB / offline 209.61 MiB，均 NotSigned）；WebView2 五模式语义与体积实测；缺失 Runtime 时 WebView2 加载器弹**阻塞式对话框**（同栈探针实测，且探针退出码 3）；**安装→启动→卸载未验证（静默安装阻塞）** | [r0-installation-matrix.md](r0-installation-matrix.md) |
+| R0-07 安装/分发 | 三种 NSIS 测试包产出（download 1.92 MiB / embed 3.63 MiB / offline 209.61 MiB，均 NotSigned）；WebView2 五模式语义与体积实测；缺失 Runtime 时加载器弹**阻塞式对话框**（探针 exit 3 / 应用 exit 2）；**手动交互安装→启动链路实测通过**（目录/哈希/HKCU 卸载键/快捷方式/已安装 exe 四场景）；**自动静默安装在本机受限会话阻塞、卸载待验证** | [r0-installation-matrix.md](r0-installation-matrix.md) §6 |
 | R0-07 性能/进程树 | 同形态最小壳：Tauri 相对 Electron Private Bytes **+5.2%（区间重叠）**、WS +5.8%、进程 4→7、启动 +18.4%；产品 Electron 托盘空闲 **131.90 MB**（6 次）；T1～T3 阈值冻结、T4 未冻结 | [r0-performance-baseline.md](r0-performance-baseline.md) |
 | ADR-0006 桌面 E2E | 候选 A1 本机实测成立：tauri-driver 2.1.0 + msedgedriver 157.0.4341.46 驱动真实 Tauri 进程，new session / handles / execute+IPC / W3C 点击 / ready 握手 / 截图 / close / crash / 负样本全部有真实响应；CI runner 等未验证 | [r0-test-driver.md](r0-test-driver.md)、[adr/0006](adr/0006-desktop-test-driver.md) |
 | ADR-0007 最低系统 | 候选 A+D：Win10 22H2 + Win11、Evergreen 默认、离线另发 Standalone；Win10 22H2 上 Edge/WebView2 官方更新至少到 2028-10（OS 已于 2025-10-14 EOL）；README 收紧需产品决策 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md)、[adr/0007](adr/0007-minimum-windows-runtime.md) |
@@ -103,7 +103,7 @@ WebView2 157.0.4341.46）。原机（Ryzen 7 9850X3D / RTX 5070 Ti / 双屏混 D
 
 ### 7.3 仍未关闭的 G0 缺口（未变）
 
-1. 安装→启动→卸载链路（静默安装阻塞）与真实 Win10/无 Runtime/离线矩阵；
+1. 卸载链路（待用户确认执行）与自动静默安装的环境级根因；真实 Win10/无 Runtime/离线矩阵；
 2. R0-05 长时/双音源/暂停续录/同条件对照与 WGC 打包身份；
 3. R0-04 真实应用/管理员窗口矩阵、卡死恢复、`native/clipboard` 联调；
 4. R0-03 100/150/200% DPI、副屏/负坐标、白闪、鼠标穿透（需真机/用户参与）；

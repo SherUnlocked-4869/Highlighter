@@ -302,7 +302,7 @@ WebView2 157.0.4341.42、Node 24.22.1 / npm 12.1.0。续作会话实际运行在
 
 | 证据 | 文档 | 说明 |
 |---|---|---|
-| R0-07 安装包 / WebView2 分发模式 / 缺失 Runtime 行为 | [r0-installation-matrix.md](r0-installation-matrix.md)（本轮新增） | 本机 Tauri Release NSIS 测试包与模式对照；完整环境矩阵仍需真实测试机 |
+| R0-07 安装包 / WebView2 分发模式 / 缺失 Runtime 行为 | [r0-installation-matrix.md](r0-installation-matrix.md)（本轮新增） | 本机 Tauri Release NSIS 测试包与模式对照；**手动交互安装→启动链路已实测通过**（2026-11-11）；卸载与静默安装、完整环境矩阵仍待验证/需真实测试机 |
 | R0-07 首轮性能 / 进程树对照 | [r0-performance-baseline.md](r0-performance-baseline.md)（本轮新增） | 本机 Release/生产构建条件、固定电源方案；跨机器不可比 |
 | ADR-0006 桌面测试驱动 | [r0-test-driver.md](r0-test-driver.md)、[ADR-0006](adr/0006-desktop-test-driver.md)（本轮新增） | tauri-driver/msedgedriver 版本与最小 WebDriver 探针 |
 | ADR-0007 最低 Windows / WebView2 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md)、[ADR-0007](adr/0007-minimum-windows-runtime.md)（本轮新增） | 官方支持矩阵调研 + 待真实测试机矩阵 |

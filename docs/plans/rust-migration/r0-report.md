@@ -26,7 +26,7 @@
 | R0-04 去 N-API 钩子小样 + Rust 剪贴板联调 | **原型完成（真实选词已验证；与 Rust 剪贴板联调未做）** | [r0-hook-extraction.md](r0-hook-extraction.md)、[ADR-0002](adr/0002-hook-extraction.md)、`native/selection-helper/` | 浏览器/Office/资源管理器/管理员窗口矩阵、真实卡死恢复、lease required=true、Rust 剪贴板联调未验证 |
 | R0-05 WebView 媒体路径验证（失败则原生采集闭环） | **两路 spike 完成（后端选型仍待 G0）** | [r0-media-webview.md](r0-media-webview.md)、[r0-media-native.md](r0-media-native.md)、[ADR-0001](adr/0001-media-backend.md) | WebView2 无法程序指定源/loopback；原生 GDI+WASAPI 可行下限成立但 WGC 本机被拒；30 分钟/双音源/暂停续录/两路同条件对照未验证 |
 | R0-06 v3 文档/v1 项目/合成凭据导入、图片/视频资源桥、PDF 样例 | **大部分完成（安装烟测未做）** | [r0-credential-migration.md](r0-credential-migration.md)、[r0-pdf-spike.md](r0-pdf-spike.md)、[r0-resource-channel.md](r0-resource-channel.md)、`test/fixtures/host-parity/` | 凭据双向实测、PDF 双后端对照、资源通道 Range/鉴权均完成；产品真实 print.html 批量/长图、图片视频资源桥真实链路、安装烟测未做 |
-| R0-07 NSIS 测试包、WebView2 有/无/离线、首轮性能对照 | **部分完成（本机，2026-11-11 续作轮）** | [r0-installation-matrix.md](r0-installation-matrix.md)、[r0-performance-baseline.md](r0-performance-baseline.md)；三种 NSIS 测试包、WebView2 五模式对照、缺失 Runtime 行为、两轮性能/进程树对照、工具链/Runtime 版本冻结 | 安装→启动→卸载链路阻塞（静默安装 exit 0 不落盘）；WebView2 多版本/无 Runtime/离线真实机器矩阵未做；fixedRuntime 仅评估；T4 媒体阈值未冻结；修正估算未做 |
+| R0-07 NSIS 测试包、WebView2 有/无/离线、首轮性能对照 | **部分完成（本机，2026-11-11 续作轮）** | [r0-installation-matrix.md](r0-installation-matrix.md)、[r0-performance-baseline.md](r0-performance-baseline.md)；三种 NSIS 测试包、WebView2 五模式对照、缺失 Runtime 行为、**手动交互安装→启动链路实测通过**、两轮性能/进程树对照、工具链/Runtime 版本冻结 | 卸载链路待验证（用户保留安装）；自动静默安装在本机受限会话阻塞（环境级）；WebView2 多版本/无 Runtime/离线真实机器矩阵未做；fixedRuntime 仅评估；T4 媒体阈值未冻结；修正估算未做 |
 
 ## 3. 提交清单
 
@@ -209,7 +209,7 @@ G0 汇总草案（未通过）见 [r0-g0-report.md](r0-g0-report.md)；ADR 索�
 
 | 交付 | 内容 | 状态 |
 |---|---|---|
-| R0-07 安装/分发矩阵 | [r0-installation-matrix.md](r0-installation-matrix.md)：三种 NSIS 测试包（download 1.92 MiB / embed 3.63 MiB / offline 209.61 MiB，均 `NotSigned`）、WebView2 五模式对照、缺失 Runtime 同栈行为（阻塞式加载器对话框 + exit 3）、版本冻结、Tauri CLI 自动改写 Cargo.toml 的登记 | 部分完成；**安装/卸载链路阻塞** |
+| R0-07 安装/分发矩阵 | [r0-installation-matrix.md](r0-installation-matrix.md)：三种 NSIS 测试包（download 1.92 MiB / embed 3.63 MiB / offline 209.61 MiB，均 `NotSigned`）、WebView2 五模式对照、缺失 Runtime 同栈行为（阻塞式加载器对话框 + exit 2/3）、版本冻结、Tauri CLI 自动改写 Cargo.toml 的登记；**手动交互安装→启动链路实测通过**（自定义目录、文件哈希、HKCU 卸载键、快捷方式、已安装 exe 四场景，§6.1） | 部分完成；自动静默安装在本机受限会话阻塞（环境级）；**卸载链路待验证** |
 | R0-07 性能/进程树基线 | [r0-performance-baseline.md](r0-performance-baseline.md)：两轮取样（各 3 次/场景 + 新 profile 探针）、产品 Electron 两个状态基线、T1～T3 阈值冻结、T4 未冻结、方差与限制 | 完成（本机） |
 | ADR-0006 桌面 E2E | [r0-test-driver.md](r0-test-driver.md) + [adr/0006](adr/0006-desktop-test-driver.md) + `scripts/rust/probe-tauri-webdriver.js` + `scripts/rust/run-tauri-webdriver-probe.ps1`；tauri-driver 2.1.0 + msedgedriver 157.0.4341.46 真实 session 全流程、close/crash/负样本、生产隔离扫描 | 候选 A1（本机实测；CI/多版本未验证） |
 | ADR-0007 最低系统 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md) + [adr/0007](adr/0007-minimum-windows-runtime.md)：官方支持矩阵、Win10 22H2 生命周期、候选 A～D、真实测试机矩阵计划、README/产品决策输入 | 候选 A+D（调研完成；真机矩阵未做） |
@@ -234,6 +234,10 @@ $ $env:HIGHLIGHTER_R0_ALLOW_PRIMARY=1; highlighter-r0-window.exe --self-test --h
   # PASS（日志明示 target_primary=true / NOT a secondary-monitor verification）
 $ powershell -File scripts/rust/run-tauri-webdriver-probe.ps1 -NativeDriver ... -AllowPrimaryScreen
   # WebDriver 全流程 exit 0（session/handles/execute+IPC/actions/screenshot/delete；6 次成功 session）
+# 用户手动交互安装 R0-07 测试包（自定义目录）后，Lead 自动取证：
+$ pwsh -File .tmp-r07/install/verify-manual-install.ps1
+  # 安装目录 2 文件、exe sha256 36AE37CC…（与内嵌 exe 一致）、HKCU 卸载键、开始菜单快捷方式均正确；
+  # 已安装 exe：无 env exit 2；ALLOW_PRIMARY=1 PASS exit 0；空 WEBVIEW2 目录 → 阻塞对话框后 exit 2；无残留
 $ powershell -File scripts/rust/measure-r0-07-performance.ps1 -Runs 3 -IdleSec 20 -IncludeProduct -OutDir .tmp-r07/perf/results-final
 $ powershell -File scripts/rust/measure-r0-07-performance.ps1 -Runs 3 -IdleSec 20 -IncludeProduct -OutDir .tmp-r07/perf/results-clean
   # 两轮完成；孤儿进程 0；电源方案已恢复
@@ -252,6 +256,9 @@ R0-04/R0-05/R0-06 真机收尾 / 100/150/200% DPI 视觉矩阵。**G0 仍未通�
    自启动/托盘应用尤其危险。
 4. **测试驱动可行但有持续维护成本**：msedgedriver 必须与 WebView2 Runtime 精确同版本，CI runner 的 Runtime 随镜像更新，
    需要运行时解析版本；launch 模式无主进程通道、应用 stdout 不落盘，R1 需要应用侧结构化日志/测试钩子。
+5. **安装包本身可用、受限会话的静默安装不可靠**：手动交互安装成功证明 payload/向导正常；但本机受限会话下 `/S`
+   静默安装 exit 0 不落盘（同版本 NSIS 最小安装器同样复现），发布自动化与 CI 安装烟测需要真实桌面会话/VM，
+   不能只在受限宿主上判定。
 
 ### 13.5 提交
 

@@ -239,7 +239,7 @@ Electron 43.8.3、Node 24.15.0 / npm 11.17.0（registry=npmmirror）、仓库在
 
 | 项 | 结果 | 文档 |
 |---|---|---|
-| R0-07 安装/分发（部分） | 三种 NSIS 测试包：download 1.92 MiB / embed 3.63 MiB / offline 209.61 MiB，均 `NotSigned`；WebView2 五种安装模式语义与体积实测；缺失 Runtime 时 WebView2 加载器弹**阻塞对话框**（同栈探针 exit 3）；tauri CLI 2.12.4 / NSIS 3.13 / 版本冻结 | [r0-installation-matrix.md](r0-installation-matrix.md) |
+| R0-07 安装/分发（部分） | 三种 NSIS 测试包：download 1.92 MiB / embed 3.63 MiB / offline 209.61 MiB，均 `NotSigned`；WebView2 五种安装模式语义与体积实测；缺失 Runtime 时 WebView2 加载器弹**阻塞对话框**（探针 exit 3 / 应用 exit 2）；**用户手动交互安装→启动链路实测通过**（自定义目录、文件哈希一致、HKCU 卸载键、快捷方式、已安装 exe 四场景）；tauri CLI 2.12.4 / NSIS 3.13 / 版本冻结 | [r0-installation-matrix.md](r0-installation-matrix.md) §6 |
 | R0-07 性能/进程树（首轮） | 两轮取样（每场景 3 次 × 20 s + 新 profile 探针）：Tauri 最小壳对 Electron 最小壳 Private Bytes **+5.2%（区间重叠）**、WS +5.8%、进程 4→7、启动 +18.4%；产品 Electron 主窗口 189.48 MB / 托盘空闲 **131.90 MB**；孤儿进程 0；T1～T3 阈值冻结、T4 未冻结 | [r0-performance-baseline.md](r0-performance-baseline.md) |
 | ADR-0006 桌面 E2E（候选） | tauri-driver 2.1.0 + msedgedriver 157.0.4341.46（与 Runtime 精确匹配）驱动真实 Tauri：new session/handles/execute+IPC/W3C 点击/ready 握手/截图/close/crash/负样本全部实测；CI runner 等未验证 | [r0-test-driver.md](r0-test-driver.md)、[ADR-0006](adr/0006-desktop-test-driver.md) |
 | ADR-0007 最低系统（候选） | 候选 A+D：Win10 22H2 x64 + Win11 x64、WebView2 Evergreen 默认 + 离线单独制品；Win10 22H2 上 Edge/WebView2 官方更新至少到 2028-10（OS 已于 2025-10-14 EOL）；README 收紧需产品决策 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md)、[ADR-0007](adr/0007-minimum-windows-runtime.md) |
@@ -248,11 +248,10 @@ Electron 43.8.3、Node 24.15.0 / npm 11.17.0（registry=npmmirror）、仓库在
 
 ### 12.3 本轮未完成 / 阻塞（G0 仍未通过）
 
-1. **安装→启动→卸载链路阻塞（最高优先）**：NSIS 静默 `setup.exe /S` 在本机 **exit 0 但不落盘**
-   （无安装目录/注册项/快捷方式；`/P` 挂起；未签名包经 ShellExecute 会弹“打开文件 - 安全警告”）。
-   已排除路径空格/参数/payload 损坏；候选原因见 [r0-installation-matrix.md](r0-installation-matrix.md) §6.1，
-   文档已按“未验证 + 失败表现”如实登记。接手需继续定位（cmd 捕获 NSIS AttachConsole、embed/offline 产物对照、
-   交互模式观察），或升级为产品决策（真实测试机/签名后验证）。
+1. **安装/卸载收尾**：手动交互安装→启动链路已实测通过（2026-11-11，见安装矩阵 §6.1）；剩余两项：
+   (a) **卸载链路**（`uninstall.exe /S` 后目录/注册项/快捷方式清理）——用户保留安装，待确认后执行；
+   (b) **自动静默安装 `setup.exe /S` 在本机受限会话 exit 0 不落盘**（同版本 NSIS 最小安装器对照亦复现，
+   判定为环境级；未签名包经 ShellExecute 会弹“打开文件 - 安全警告”）。需真实桌面会话/VM 复测，不要绕过安全机制。
 2. WebView2 多版本/无 Runtime/离线/旧版真实机器矩阵（ADR-0007 依赖）；fixedRuntime 仅评估未实测。
 3. R0-05 长时收尾（30 分钟/双音源/暂停续录/两路同条件对照/§9.2 媒体阈值 T4）——本机无独显、WGC 被拒，需真机。
 4. R0-04 真机矩阵（浏览器/Office/资源管理器/管理员窗口、卡死恢复、`native/clipboard` 联调）。

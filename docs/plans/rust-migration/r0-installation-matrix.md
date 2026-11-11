@@ -1,7 +1,7 @@
 # R0-07 安装/分发矩阵（NSIS 测试包 + WebView2 模式）
 
 日期：2026-11-11（Asia/Hong_Kong）。分支 `codex/rust-r0-baseline-contracts`，基线 HEAD `7c45a7b`（本文件写作时工作区另有 R0-07 打包配置、driver-spike 测试开关等未提交改动，由 Lead 统一提交）。
-状态：**R0 证据文档（安装/卸载烟测阻塞；其余部分完成，未验证项见 §10）**。上位文档：
+状态：**R0 证据文档（手动交互安装→启动链路已实测通过；自动静默安装在本机受限会话阻塞；卸载待用户确认；其余未验证项见 §10）**。上位文档：
 [Rust 改造方案与开发计划](../2026-11-10-rust-migration-development-plan.md) §7 R0-07、§8 G0 版本矩阵、§9.2；
 [R0-03 窗口原型](r0-window-prototype.md)；[R0 G0 报告（草案）](r0-g0-report.md)；[rust-app/README.md](../../../rust-app/README.md)。
 
@@ -170,13 +170,44 @@ Tauri 2 的 `bundle.windows.webviewInstallMode` 支持 5 种模式（官方对�
   `{"type":"fixedRuntime","path":"<目录>"}`；安装包预计增加约 180 MB；应用不再跟随系统 Runtime 自动安全更新，
   必须自建 Runtime 更新与漏洞响应流程。除非产品明确要求“离线 + 固定 Runtime 版本”，否则不建议作为默认策略（R8-02 决策项）。
 
-## 6. 安装/卸载烟测（**阻塞，未通过；不得写成已验证**）
+## 6. 安装/卸载烟测（**手动交互安装已通过；自动静默安装阻塞；卸载待验证**）
 
 计划链路：`setup.exe /S`（per-user，不提权）→ 核对 `%LOCALAPPDATA%\Highlighter R0 Window Prototype` 文件清单、
 HKCU Uninstall 注册项、开始菜单快捷方式 → 运行已安装 exe `--self-test`（单屏无 env 预期 exit 2；
 `HIGHLIGHTER_R0_ALLOW_PRIMARY=1` 时预期 PASS exit 0）→ 缺失 WebView2 探针 → `uninstall.exe /S` → 目录/注册项清理。
 
-### 6.1 已实测的失败/阻塞证据
+### 6.1 手动交互安装：成功（2026-11-11 14:17，用户在本机操作）
+
+用户用交互向导手动安装**同一个** `downloadBootstrapper` 安装包（sha256 `DDB4C403…374`），选择**自定义目录**
+`D:\Program Files\Highlighter R0 Window Prototype`（非默认 `%LOCALAPPDATA%`），安装成功。Lead 随后自动取证
+（脚本 `.tmp-r07/install/verify-manual-install.ps1`，日志 `.tmp-r07/install/logs/manual-install-verify-142915.log`，
+stdout/stderr 见同目录 `manual-installed-*.out.txt`）：
+
+**安装结果（实测）**：
+
+- 安装目录 2 个文件：`highlighter-r0-window.exe` 8,928,768 B（sha256 `36AE37CC447C28C467B648DB5C543DEA644B654121D58931BBB47233BD7F3ADB`，
+  与安装包内嵌 exe **完全一致**）、`uninstall.exe` 79,288 B；exe `NotSigned`、FileVersion `0.1.0`、
+  ProductName `Highlighter R0 Window Prototype`；**目录内无驱动/测试端点文件**。
+- HKCU 卸载键 `Highlighter R0 Window Prototype`：DisplayName `Highlighter R0 Window Prototype`、DisplayVersion `0.1.0`、
+  Publisher `Highlighter R0 (test build, not for release)`、InstallLocation/UninstallString/DisplayIcon 均指向实际安装路径、
+  EstimatedSize `8796` KB。
+- 开始菜单快捷方式存在：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Highlighter R0 Window Prototype.lnk`。
+- 权限路径：本机 `D:\Program Files` 的 ACL 对 `BUILTIN\Users` 为 FullControl（Lead 实测），因此 per-user 安装写入
+  该自定义目录**不需要管理员权限**；安装时是否出现 UAC/SmartScreen 提示未记录（待用户补充，见 §6.4）。
+
+**已安装 exe 启动验证（4 个场景，同一脚本）**：
+
+| 场景 | 结果 |
+|---|---|
+| 无 env，`--self-test` | 退出码 **2**，`[FAIL] startup code=secondary-monitor-required`，不建窗、无残留（265 ms） |
+| `HIGHLIGHTER_R0_ALLOW_PRIMARY=1`，`--self-test --hold-ms 2000` | 退出码 **0**：主屏 2240×1400 浮层、`[PASS] … target_primary=true allow_primary=true`、ready/init 各一次；app 进程 0。**WebView2 子进程在退出后约 3 s 仍有 2 个、10 s 内归零**（延迟回收，非常驻泄漏） |
+| 空 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`（无 env） | 退出码 **2**（在创建 WebView 之前即因单屏拒绝失败，不触发加载器对话框） |
+| 空 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` + `ALLOW_PRIMARY=1` | 加载器弹 `#32770` `Error` 对话框（189 ms 发现并自动点“确定”）；随后 `[FAIL] startup code=window-create-failed … runtime error: Could not find the webview runtime`，退出码 **2**，无残留 |
+
+→ 与 release exe 的应用级探针结果一致（§7），证明**安装后的二进制与构建产物同源、启动与失败路径正常**；
+同时说明：缺失 WebView2 时安装版应用同样是“加载器阻塞对话框 → Tauri 启动失败 exit 2”。
+
+### 6.2 自动静默安装：失败/阻塞证据（本机受限会话）
 
 1. **未签名安装包经 ShellExecute 启动会弹阻塞式安全警告**：用 `Start-Process`（ShellExecute）启动安装包时，
    出现 `#32770` 对话框“打开文件 - 安全警告”（无发布者），进程等待人工确认；自动化必须改用 CreateProcess
@@ -204,18 +235,18 @@ HKCU Uninstall 注册项、开始菜单快捷方式 → 运行已安装 exe `--s
    `.tmp-r07/install/logs/child-groups.txt`（子进程完整性级别 = Medium Mandatory Level，排除 Low IL 解释）。
    > 未继续深挖/绕过（Lead 明确要求：不得为了通过而绕过安全提示或修改系统安全设置）；完整安装链路需真实桌面会话复测。
 
-### 6.2 已确认的安装包内容（非安装结果）
+### 6.3 已确认的安装包内容（非安装结果）
 
 - 7z 提取最终 downloadBootstrapper 安装包得到应用 exe：8,928,768 B，sha256 `36AE37CC447C28C467B648DB5C543DEA644B654121D58931BBB47233BD7F3ADB`；
 - 安装包内无测试驱动/端点文件（见 §4）。
 
-### 6.3 待补（未验证）
+### 6.4 待补（未验证）
 
-- 安装目录完整文件清单、HKCU Uninstall 键各字段（DisplayName/DisplayVersion/Publisher/InstallLocation/UninstallString/EstimatedSize）、
-  开始菜单快捷方式、已安装 exe 的 sha256/签名；
-- 已安装 exe `--self-test`（无 env → exit 2；`HIGHLIGHTER_R0_ALLOW_PRIMARY=1` → 单屏主屏窗口 + PASS exit 0）；
-- 已安装 exe + 空 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER`（无 env / 有 env 两种情况）；
-- `uninstall.exe /S` 后的目录/注册项/快捷方式清理与残留检查。
+- `uninstall.exe /S` 后的目录/注册项/快捷方式清理与残留检查——**本轮未执行**：用户手动安装后选择保留安装，
+  卸载验证需用户确认后执行；不得写成通过。
+- 安装过程中 UAC/SmartScreen 提示的真实用户体验（用户记忆不清则保持“未记录”）。
+- 自动静默安装不落盘的环境级根因（§6.2；用同版本 NSIS 最小安装器对照亦复现，需真实桌面会话复测，不在本轮绕过安全机制）。
+- 跨机器安装（安装包内 exe 的 WebView2 数据目录编译期固定构建机路径，见 §1）。
 
 ## 7. 缺失 WebView2 Runtime 的行为（同栈探针实测）
 
@@ -248,8 +279,10 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
      让安装器在版本过低时触发更新；
    - 离线/内网场景评估 `offlineInstaller` 或 `fixedRuntime`（§5）。
 2. 加载器对话框是英文、阻塞、非产品 UI，不能作为产品引导；且它先于 Tauri 错误返回，日志/遥测可能只看到“卡住”。
-3. R0-03 已安装 exe 的同类探针（无 env 预期 exit 2；`HIGHLIGHTER_R0_ALLOW_PRIMARY=1` 时先出加载器对话框、点确定后
-   `[FAIL] startup code=window-create-failed`、exit 2）**尚未执行**，依赖 §6 安装问题解决；届时补入本节。
+3. **已安装 exe 的同类探针已执行（2026-11-11 14:29，见 §6.1）**：无 env → exit 2（单屏拒绝，不触发加载器）；
+   `ALLOW_PRIMARY=1` + 空 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` → 先出同样的 `#32770` “Error” 加载器对话框
+   （已自动点“确定”）→ `[FAIL] startup code=window-create-failed … Could not find the webview runtime`、
+   exit 2、无残留。与 release exe 的结论一致。
 
 ## 8. 版本冻结（本轮实测）
 
@@ -274,9 +307,11 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
    Microsoft 有效签名；三种包本身均 `NotSigned`，只能作为测试件。
 2. 体积/网络依赖与官方方向一致：download 1.92 MiB（联网）、embed 3.63 MiB（联网，+~1.8 MB）、offline 209.61 MiB（离线）。
    offline 的实际体积明显大于文档估计（~127 MB），预算必须按实测。
-3. **安装→启动→卸载链路未验证（阻塞）**：本机 `/S` 静默安装 exit 0 但不落盘、`/P` 挂起；用同版本 NSIS 现场编译的最小
-   per-user 安装器对照同样不落盘，判定为当前受限会话/宿主环境的系统级限制（不是安装包 payload 缺陷）；交互向导可显示到
-   “Choose Install Location” 页但本轮未完成自动点击。因此 §6.3 全部为未验证项，不得在 G0 报告中写成通过。
+3. **手动交互安装→启动链路已实测通过（§6.1）**：用户以自定义目录 `D:\Program Files\Highlighter R0 Window Prototype`
+   手动安装成功；安装目录/文件哈希（内嵌 exe `36AE37CC…3ADB` 一致）/HKCU 卸载键/开始菜单快捷方式均正确；
+   已安装 exe 的 4 个启动场景符合预期（含缺失 Runtime 的阻塞对话框 + exit 2）。
+   **自动静默安装在本机受限会话仍不落盘**（§6.2，同版本 NSIS 最小安装器对照亦复现，判定为环境级，需真实桌面会话）；
+   **卸载链路尚未验证**（用户保留安装，待确认后执行）。因此不得把“安装/卸载全链路”写成通过。
 4. 缺失 WebView2 的失败行为已实测（同栈探针 + release exe 应用级探针）：加载器阻塞对话框 + 探针退出码 3 / 应用退出码 2；
    产品必须做启动前检测与引导。
 5. fixedRuntime 仅完成文档评估（成本/更新责任），未实测。
@@ -285,10 +320,10 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
 
 ## 10. 未验证项（不得写成通过）
 
-- [ ] 安装/卸载全链路（§6.3）：目录、注册项、快捷方式、已安装 exe 启动、卸载清理。
-- [ ] 本机受限会话下 NSIS 安装器不落盘的环境级根因（最小安装器对照同样复现；需真实桌面会话复测，不在本轮绕过系统安全机制）。
-- [ ] 已安装 exe 的 `--self-test`（单屏无 env / `HIGHLIGHTER_R0_ALLOW_PRIMARY=1`）与缺失 WebView2 行为。
-- [ ] 静默安装不落盘的根因与修复验证（当前候选原因见 §6.1）。
+- [x] 手动交互安装的目录/注册项/快捷方式/已安装 exe 启动与缺失 WebView2 行为（§6.1，2026-11-11 实测）。
+- [ ] **卸载链路**（`uninstall.exe /S` 后的目录/注册项/快捷方式清理）——用户保留安装，待确认后执行（§6.4）。
+- [ ] 自动静默安装在本机受限会话不落盘的环境级根因（§6.2；最小安装器对照同样复现；需真实桌面会话，不在本轮绕过安全机制）。
+- [ ] 安装过程 UAC/SmartScreen 的真实用户体验记录（待用户补充）。
 - [ ] fixedRuntime 实测（下载固定版本 cab、配置、安装体积、运行时是否生效、更新策略）。
 - [ ] skip 模式行为（预期：安装包不处理 Runtime，缺失时应用不可用）。
 - [ ] WebView2 多版本/旧版本/缺失真实机器矩阵（ADR-0007 依赖）。
@@ -306,9 +341,12 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
 3. **WebView2 策略**：默认 downloadBootstrapper + `minimumWebview2Version`；离线/内网渠道用 offlineInstaller；
    fixedRuntime 仅在明确需要固定版本时评估（自担安全更新）。应用启动前必须检测 Runtime 并给出原生引导
    （不能依赖加载器阻塞对话框）。
-4. **per-user 安装**：本轮配置为 `nsis.installMode=currentUser`（默认），安装目录 `%LOCALAPPDATA%\<productName>`、
-   HKCU Uninstall；不需要管理员权限。R8-02 若要求 per-machine，需要单独验证提权/多用户/卸载行为。
-5. **测试端点隔离**：安装包 payload 已确认不含 `msedgedriver`/`tauri-driver`；安装后文件清单仍需补测（§6.3）。
+4. **per-user 安装已实测**：配置为 `nsis.installMode=currentUser`（默认），实测安装到**用户自定义目录**
+   `D:\Program Files\Highlighter R0 Window Prototype` 成功（该目录 ACL 对 Users 为 FullControl，故未提权也可写），
+   HKCU Uninstall + 用户开始菜单快捷方式正确；默认目录为 `%LOCALAPPDATA%\<productName>`。R8-02 若要求 per-machine，
+   需要单独验证提权/多用户/卸载行为。
+5. **测试端点隔离**：安装包 payload 与**安装后文件清单**（§6.1：仅应用 exe + uninstall.exe）均确认不含
+   `msedgedriver`/`tauri-driver`/测试端点。
 6. **原型数据目录**：R0-03 原型把 WebView2 数据目录编译期固定到构建机 `rust-app/target/...`，安装包跨机器不可用；
    R1/R8 必须改为 `%LOCALAPPDATA%\<bundle id>` 数据根，并在卸载时按策略清理。
 7. **构建可复现性**：NSIS 安装包非逐字节可复现（时间戳/临时路径）；发布流水线需记录 CLI/crate/NSIS/WebView2 版本，
@@ -326,6 +364,9 @@ target 目录；依赖与 R0-03 同栈：tauri 2.12.5 / wry 0.57.2 / webview2-co
 | `logs/11-7z-<mode>.txt` | 每个安装包的 7-Zip 内容清单 |
 | `logs/12-embedded-webview2.log` | 从最终安装包提取的内嵌 WebView2 安装器（大小/sha256/签名/版本） |
 | `logs/pdf-probe-control.out.txt` / `pdf-probe-missing-webview2.out.txt` | 缺失 WebView2 同栈探针的对照/失败输出 |
+| `logs/manual-install-verify-142915.log` | 手动交互安装后的自动取证：安装状态、4 个已安装 exe 启动场景、缺失 Runtime 对话框与退出码 |
+| `logs/manual-installed-*.out.txt` / `.err.txt` | 上述 4 个场景的原始 stdout/stderr |
+| `verify-manual-install.ps1` | 可复跑的安装后取证脚本（Lead 编写，scratch；含 `-Uninstall` 开关，本轮未使用） |
 | `logs/install-smoke-final-downloadBootstrapper.log` | 安装烟测（v2，CreateProcess）观察记录（含失败证据） |
 | `logs/release-exe-missing-wv2-allow-primary.out.txt` | release exe + ALLOW_PRIMARY + 空 WebView2 目录的应用级探针输出（exit 2） |
 | `logs/child-groups.txt` | 子进程完整性级别（Medium，排除 Low IL 解释） |

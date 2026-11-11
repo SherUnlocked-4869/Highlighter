@@ -76,9 +76,9 @@ npx --yes @tauri-apps/cli@2 bundle --bundles nsis --ci --config <offlineInstalle
 配置覆盖示例（文件内容）：`{"bundle":{"windows":{"webviewInstallMode":{"type":"embedBootstrapper"}}}}`
 （offline 模式把 `embedBootstrapper` 换成 `offlineInstaller`）。产物在
 `rust-app/target/release/bundle/nsis/`（gitignore）。安装包**未签名**（`Get-AuthenticodeSignature` = `NotSigned`），
-只作 R0 测试件；NSIS 配置为 per-user 安装（预期目录 `%LOCALAPPDATA%\Highlighter R0 Window Prototype`，
-预期 `setup.exe /S` / `uninstall.exe /S` 静默安装/卸载——**本机安装链路尚未验证通过**，原因与失败表现见文档 §6，
-不得当作已验证行为）。必须从 `rust-app/` 目录执行 Tauri CLI（在仓库根执行会误把
+只作 R0 测试件；NSIS 配置为 per-user 安装。**手动交互安装已于 2026-11-11 实测通过**（自定义目录、HKCU 卸载键、
+开始菜单快捷方式、已安装 exe 启动与缺失 Runtime 行为，见文档 §6.1）；**本机受限会话的静默 `/S` 安装仍不落盘**
+（环境级限制，§6.2），**卸载链路待验证**（§6.4）。安装包未签名，不得作为发布件。必须从 `rust-app/` 目录执行 Tauri CLI（在仓库根执行会误把
 `prototypes/webview-media` 当成 Tauri 项目并改写其 Cargo.toml）。实测产物哈希、WebView2 模式对照与未验证项见
 [r0-installation-matrix.md](../docs/plans/rust-migration/r0-installation-matrix.md)。
 
