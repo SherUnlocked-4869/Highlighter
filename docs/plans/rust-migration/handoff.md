@@ -1,13 +1,13 @@
-# Rust 迁移 R0 交接文档（2026-11-11 晚间收尾版）
+# Rust 迁移 R0 交接文档（2026-11-11 晚间接手版：**回到原机**）
 
-- 日期：2026-11-11 21:00（Asia/Hong_Kong）。本文件是**新会话的唯一入口**；上一版（16:20）见
-  `git show a2a87e3:docs/plans/rust-migration/handoff.md`。
-- 状态：**R0 大幅推进；G0 仍未通过；R1 未开始**（计划 §8：G0 通过才放行 R1～R7）。
-- 分支：`codex/rust-r0-baseline-contracts`；本轮 3 个提交（代码/证据 `652a7f0`、交接文档 `800ea67`、推送状态记录）
-  **已推送 origin**；按用户要求**跳过 CI**（推送前临时禁用 `Windows CI` workflow，推送后已恢复，未运行/未等待 CI）。
-  PR #5 保持 OPEN、**本轮不合并**。
-- 运行机器：`SHERUNLOCK02`（Win11 单屏 150%、无独显）。**2026-11-10 原机数据不可与本机混用。**
-- 阅读顺序：§1 最新状态 → §2 接手顺序 → §3 环境（**先看 §3.2 完整性标签**）→ §4 文档索引 → §5 未决问题 →
+- 日期：2026-11-11 21:55（Asia/Hong_Kong）。本文件是**新会话的唯一入口**；上一版（21:00）见
+  `git show 800ea67:docs/plans/rust-migration/handoff.md`（其后续 `f8a5fd7` 为推送状态记录）。
+- 状态：**R0 继续推进；G0 仍未通过；R1 未开始**（计划 §8：G0 通过才放行 R1～R7）。
+- 分支：`codex/rust-r0-baseline-contracts`；本轮提交见 §1.5.5（含 WGC 多显示器缺陷修复、R0-03/04/05 复验与环境登记）。
+  PR #5 保持 OPEN、**不合并**；CI 仍按用户要求未作为本轮的放行依据（本地门禁见 §6.1）。
+- **运行机器：已回到原机 `SHERUNLOCK`（Ryzen 7 9850X3D / 47 GiB / RTX 5070 Ti / 双屏 4K@150% + 1440×2560@125% 负 Y / F:）。**
+  §3 的表仍是阶段②笔记本（SHERUNLOCK02）事实；**当前机器事实见 §1.5 与 [r0-baseline.md](r0-baseline.md) §9.4，三段机器的数据不可混用。**
+- 阅读顺序：**§1.5（本轮原机接手）** → §1 最新状态 → §2 接手顺序（含 §2 第 0 步换机器检查）→ §3 环境（**先看 §3.2 完整性标签**）→ §4 文档索引 → §5 未决问题 →
   §6 复现命令 → §7 陷阱 → §8 历史。
 
 ## 1. 最新状态（2026-11-11 晚间收尾）
@@ -97,7 +97,81 @@
 7. **修正估算 + 正式 G0 报告**：按本轮证据重估 R5（WGC 可用后媒体后端成本下降、但打包身份/权限语义待验）与
    R1～R8 总量（计划 §11 的 38～63 人周不得沿用）；按 §1.3 第 2 条重写收益表述。
 
+## 1.5 2026-11-11 21:00 原机接手轮（当前状态）
+
+### 1.5.1 机器变更（三段，数据不可混用）
+
+| 阶段 | 主机 / 用户 | 仓库 | 显示器 / GPU | 证据 |
+|---|---|---|---|---|
+| ① 2026-11-10 | SHERUNLOCK / MSN | `F:\workspace\Highlighter` | 双屏 4K@150% + 1440×2560@125% 负 Y；RTX 5070 Ti | r0-baseline §1–§8、R0-03 §7、R0-05 初版 |
+| ② 2026-11-11 白天/晚 | SHERUNLOCK02 / 24532 | `D:\workspace\Highlighter` | 单屏 2240×1400@150%；Intel Iris Xe | r0-baseline §9.1–§9.3、R0-04 矩阵、R0-05 扩展、R0-06 PDF 产品页、R0-07 安装/性能 |
+| **③ 2026-11-11 21:00 起（本轮）** | **SHERUNLOCK / MSN**（回到 ①） | `F:\workspace\Highlighter` | **双屏** 3840×2160@150% 主屏 + 1440×2560@125% 竖屏（(3840,−170) 负 Y）；**RTX 5070 Ti** | 本节、[r0-baseline.md](r0-baseline.md) §9.4、[r0-window-prototype.md](r0-window-prototype.md) §12、[r0-media-native.md](r0-media-native.md) §4.16、[r0-hook-extraction.md](r0-hook-extraction.md) §4.15 |
+
+当前机器事实（OS/CPU/GPU/显示器/Node/Office/WebView2/磁盘/电源/环境陷阱）见 [r0-baseline.md](r0-baseline.md) §9.4.2；§3 的表保留为阶段②历史。
+
+### 1.5.2 本轮做了什么
+
+1. **换机器体检**：分支同步（`0 0`）、工作区先清掉 `core.autocrlf` 造成的假“56 文件全行修改”（§7 陷阱 14）、
+   §6.1 快速门禁全部复跑通过。
+2. **完整性标签第二次复现并修复**：工作区根再次带 Low 强制标签（工作区内 `whoami.exe` 副本 → Low IL），
+   用户批准后修复为 Medium。**新发现**：非提权会话直接 `icacls /setintegritylevel /T` 会对目录报 `Access is denied`，
+   必须先给属主授 `(WO)` 再改、改完回收（§7 陷阱 15、r0-baseline §9.4.3）。
+3. **R0-03 原机双屏复验**：4 次自检 PASS（副屏 index=1、`origin_physical=(3840,−170)`、`negative_y=true`、
+   `dpr=1.25`、`exit 0`）；副屏/主屏截图核对（浮层只覆盖副屏、透明、图案清晰；主屏无窗）；
+   `--monitor 0` 负样本 exit 2；退出后 0 残留。见 [r0-window-prototype.md](r0-window-prototype.md) §12。
+4. **R0-05 原机复验 + 缺陷修复**：发现原型 `capture::run` 未透传真实 `HMONITOR` —— 多屏下 WGC item 变成整个虚拟桌面
+   （5280×2560）导致采集失败；**单屏机器上虚拟桌面尺寸==屏幕尺寸，所以笔记本那轮看不出来**。修复后逐屏正确：
+   竖屏 1440×2560@30/@60 满帧、4K@30 未满帧、**4K@60 在“原始 BGRA→stdin→libx264”架构下不可持续**。
+   见 [r0-media-native.md](r0-media-native.md) §4.16。
+5. **R0-04 原机复跑**：见 §1.5.4（双屏下窗口自动落副屏，Office 版本与笔记本不同）。
+6. **文档登记**：r0-baseline §9.4、r0-window-prototype §12、r0-media-native §4.16、[ADR-0001](adr/0001-media-backend.md) 变更记录、
+   原型 README（WGC 多显示器修复与 4K/60 结论）、README 索引、本文件。
+
+### 1.5.3 R0 完成度增量（相对 §1.2）
+
+| 任务 | 本轮增量 | 入口 |
+|---|---|---|
+| R0-03 窗口原型 | **原机双屏/负 Y/混合 DPI（150%+125%）复验 PASS（4 次）**；截图核对、负样本、无残留。100/200% DPI 需改缩放，用户本轮不授权 → 仍未验证 | [r0-window-prototype.md](r0-window-prototype.md) §12 |
+| R0-04 钩子 | 原机（双屏 + 新版 Office 16.0.20527）复跑：见 §1.5.4 | [r0-hook-extraction.md](r0-hook-extraction.md) §4.15 |
+| R0-05 媒体 | **多显示器 WGC 缺陷修复 + 逐屏验证**；4K@30 未满帧、4K@60 不可持续；竖屏 30/60 fps 满帧 | [r0-media-native.md](r0-media-native.md) §4.16 |
+| 环境 | Low 标签二次复现与修复（含 WO 前置）；autocrlf 假改动；PowerShell 静默调用陷阱 | §7 陷阱 14–16、r0-baseline §9.4.3 |
+| G0 | **仍未通过**（§1.4 的真实测试机矩阵/WGC 打包身份/R0-04 剩余/修正估算等不变） | [r0-g0-report.md](r0-g0-report.md) §10 |
+
+### 1.5.4 R0-04 原机复跑（2026-11-11 晚）
+
+**结果：首跑 7/10 PASS；Edge 两行冷却后单独复跑 2/2 PASS；唯一稳定 FAIL 是「资源管理器拖选」（与阶段②一致）。**
+三条 FAIL 都已定位到**测试侧/目标应用首启状态**，没有一条归因到 helper 取词能力：
+- Edge-default：helper 实际取到 15 字符（`found=true method=uia 15 ms`），FAIL 由「首启登录提示条被当成页面文本」
+  + 「runner 用 `Get-Content`(GBK) 读 UTF-8 JSONL 把 `found=true` 读成 0 条」两层测试侧问题造成；
+- Edge-force：页面 UIA 树对驱动侧不可用 + Ctrl+C 读回旧剪贴板 → 校准失败（exit 5，helper 未启动），复跑 PASS；
+- Explorer drag：helper 收到真实事件（`mouseEventsQueued=2`）但地址栏未建立可读选择；校准被旧剪贴板假阳性。
+另：卡死恢复**进程级**复核通过（kill helper/kill 目标 → 0 残留 → 重启 exit 0），2 s 有界停止超时仍未触发；
+管理员负样本本机未复现（未提权）；发现 **4 条测试夹具缺陷**（GBK 读回、剪贴板假阳性、`-OutDir` 未透传、清理漏杀），
+列入 R0-04 收尾。详细数字/原始证据/未定性清单见 [r0-hook-extraction.md](r0-hook-extraction.md) §4.15。
+
+### 1.5.5 本轮提交
+
+（提交后回填：`git log --oneline -3` 与本轮改动清单；PR #5 保持 OPEN、不合并。）
+
+### 1.5.6 仍未闭环（G0 放行前）
+
+1. **真实测试机/VM**：Win10 22H2、WebView2 无/旧/离线、RDP/锁屏、其它 DPI 档；
+   ——本机已补：双屏/负坐标/混合 DPI（150%+125%）、独显。
+2. **100%/200% DPI 视觉矩阵**：需要改系统缩放（用户本轮明确不授权）。
+3. **WGC 收尾**：打包身份（MSIX/能力声明）、同意 UI/采集指示/企业策略、HDR、同屏多路、
+   **4K@60 的硬编/GPU 拷贝路径**、长时 WGC；双音源时间对齐真机。
+4. **R0-04 剩余**：真实 provider 卡死、管理员窗口正向样本、资源管理器拖选样本、helper↔`native/clipboard` lease 联调。
+5. **R0-06/R0-07 剩余**：图片/视频资源桥真实链路、缺字体机器、旧/Fixed Runtime、打印峰值/超时/取消；
+   WebView2 多版本/离线矩阵、fixedRuntime、UAC/SmartScreen、卸载遗留键决策。
+6. **ADR-0006/0007 收尾 + 修正估算 + 正式 G0 报告**（计划 §11 的 38～63 人周不得沿用）。
 ## 2. 接手顺序（新会话建议）
+
+> **本轮新增第 0 步（换机器接手必做）**：先确认自己跑在哪台机器上，再动任何代码/证据：
+> (a) `git rev-parse --abbrev-ref HEAD` + `git rev-list --left-right --count @{u}...HEAD` 确认分支/同步；
+> (b) `git config --get core.autocrlf` 与 `git ls-files --eol | grep -c w/crlf`：若 autocrlf 未设而
+>     工作区是 CRLF（`i/lf w/crlf`），`git status` 会把**行尾差异**显示成几十个文件“全行修改” ——
+>     先 `git config core.autocrlf true` 再判断是否有真实改动（本轮踩过，见 §7 陷阱 14）；
+> (c) 完整性标签：见下面第 2 步（**每次换机器都要查**）。
 
 1. 跑 §6.1 快速门禁（约 1–2 分钟），确认工作区与本地环境。
 2. **检查工作区完整性标签**：`icacls "D:\workspace\Highlighter" | findstr /i "Mandatory"` 应为
@@ -118,7 +192,11 @@
 - 可见测试窗口默认副屏；本机无副屏需先征得用户同意（本轮已获授权）。
 - 提交说明写清“改变了什么/为什么/如何验证/剩余限制”（计划 §11）。
 
-## 3. 当前机器与环境事实（2026-11-11 晚）
+## 3. 机器与环境事实（**下表是阶段②笔记本**；当前已回到原机，见 §1.5 / r0-baseline §9.4）
+
+> 2026-11-11 21:00 起运行主机已回到原机 `SHERUNLOCK`（Ryzen 7 9850X3D / RTX 5070 Ti / 双屏）。
+> 下表保留为**阶段②（SHERUNLOCK02 笔记本）**的历史事实，复现命令/陷阱仍然有效；
+> 当前机器的 OS/CPU/GPU/显示器/Node/Office/WebView2 事实见 [r0-baseline.md](r0-baseline.md) §9.4.2。
 
 | 项 | 值 |
 |---|---|
@@ -303,7 +381,8 @@ $env:PYTHONPATH="$PWD\.tmp-r0-pdf\pylibs"; python scripts/rust/analyze-product-p
 - Electron 探针：`env -u ELECTRON_RUN_AS_NODE`、`--no-sandbox` 在脚本路径之前、`TMP/TEMP` 指向 `.tmp*/`。
 - 产品 E2E 隔离：`HIGHLIGHTER_E2E=1` + `HIGHLIGHTER_E2E_DATA_ROOT`（详见 `e2e/electron-app.js`）。
 - 完整 `npm test`/`test:e2e` 本轮未跑（不声称 CI/E2E 通过）。
-- 行尾：仓库混合 CRLF/LF blob（`core.autocrlf=true`）；改文件时保持该文件 HEAD 的行尾约定，
+- 原型调用：本宿主下 PowerShell 5.1 `& <exe>` 可能静默不执行（见 §7 陷阱 16）；用 bash 或 `cmd /c`。
+- 行尾：仓库混合 CRLF/LF blob（`core.autocrlf=true`）；**换机器先 `git config core.autocrlf true`**（§7 陷阱 14）；改文件时保持该文件 HEAD 的行尾约定，
   否则会出现整文件 diff；`git -c core.whitespace=cr-at-eol diff --check` 干净可作为提交前检查。
 
 ## 7. 环境陷阱与经验（累计）
@@ -334,6 +413,20 @@ $env:PYTHONPATH="$PWD\.tmp-r0-pdf\pylibs"; python scripts/rust/analyze-product-p
 12. **采样方差**：最小壳内存/启动对照轮间波动可达 ±8%；阈值用均值/区间并记录电源方案、Runtime、内核版本。
 13. **测试环境扰动**：长媒体/性能测量期间并行跑其它重活会造成背压/时间轴截短（本轮已实测一次，登记为不可用）；
     正式测量需隔离负载并记录 system-load。
+14. **换机器接手：`core.autocrlf` 未设置 → 假“全文件修改”**（2026-11-11 晚实测）：工作区从另一台机器拷回后，
+    `git status` 显示 56 个文件、1.9 万行改动，但 `git diff --numstat` 每个文件都是“增=删=行数”，
+    `git ls-files --eol` 统计 `i/lf w/crlf` = 973。原因：本机 `core.autocrlf` 为空（HEAD blob 是 LF，工作区是 CRLF）。
+    **修复**：`git config core.autocrlf true` → `git status` 立即干净，没有覆盖任何真实改动。
+    教训：换机器第一件事查行尾，别把 EOL 差异当成上轮未提交的工作。
+15. **给工作区换完整性标签需要先授 `WRITE_OWNER`**（2026-11-11 晚实测）：直接
+    `icacls <root> /setintegritylevel (OI)(CI)M /T /C /Q` 在非提权会话里会对**目录**报
+    `Access is denied`（属主只有隐式 `READ_CONTROL`+`WRITE_DAC`，改 mandatory label 需要 `WO`）。
+    可行序列：`icacls <root> /grant "*<SID>:(WO)" /T /C /Q` → `/setintegritylevel ... /T` →
+    `icacls <root> /remove:g "*<SID>" /T /C /Q` 回收；`(WO)` **必须带括号**，否则 `Invalid parameter`（exit 87）。
+16. **PowerShell 5.1 直接 `& <console-exe>` 在本宿主会静默返回**（2026-11-11 晚实测）：
+    `& rust-app\prototypes\native-capture\target\release\native-capture.exe --help` 在函数/变量赋值里
+    得到 0 行输出且 `$LASTEXITCODE` 未设置（既不报错也不执行）；同一命令用 `cmd /c "..."` 或 bash 直接调用正常。
+    原型/探针批量跑建议用 bash 或 `cmd /c` 包一层，并在脚本里断言 `$LASTEXITCODE` 非空。
 
 ## 8. 历史记录
 

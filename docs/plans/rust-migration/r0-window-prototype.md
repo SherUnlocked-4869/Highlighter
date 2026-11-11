@@ -439,3 +439,75 @@ Canvas DPR 换算与退出清理链路可用；副屏覆盖、负坐标、混合
 - 4K/200% 与独显/软渲染差异（本机为 2240×1400 核显）。
 
 > 本节结论只补充"单屏拒绝路径可实测"与"测试开关可用"两点；§7 的矩阵与 §8.2 的其余未验证项状态不变。
+
+## 12. 2026-11-11 晚：回到原机（双屏、混合 DPI、负 Y 原点）复验
+
+**机器**：handoff §8 记的“原机”（SHERUNLOCK / MSN）：Ryzen 7 9850X3D、47.15 GiB、RTX 5070 Ti 独显；
+双屏 `DISPLAY1` 主屏 3840×2160@**150%** 原点 (0,0)、`DISPLAY2` **竖屏 1440×2560@125%** 物理原点
+**(3840, −170)**（负 Y；虚拟桌面 5280×2560）；Windows 11 专业版 26300；WebView2 157.0.4341.46。
+工作区完整性标签在本机二次复现为 Low 并由 Lead 修复为 Medium（命令与取证见
+[r0-media-native.md](r0-media-native.md) §4.16 与 `.tmp-r0-acl/`）。修复后工作区内 exe 标签为 Medium，
+`whoami.exe` 副本实测以 **Medium IL** 运行；native-capture 自报 `Medium(0x2000)`。
+（R0-03 原型本身不打印进程 IL，属同目录同标签推断，未单独取证。）
+
+### 12.1 自检复跑（4 次，全部 PASS）
+
+命令（仓库根）：
+
+```powershell
+cargo build --manifest-path rust-app/Cargo.toml -p highlighter-r0-window --release --locked
+.\rust-app\target\release\highlighter-r0-window.exe --self-test --hold-ms 2000   # run1..run3
+.\rust-app\target\release\highlighter-r0-window.exe --self-test --hold-ms 5000   # run4（截图用）
+```
+
+4 次运行的 `[monitors]/[overlay]/[metrics]/[PASS]` 关键行完全一致（原文）：
+
+```text
+[r0-window] monitors=2
+[monitors] monitor[0] name=\\.\DISPLAY1 primary=true scale=1.50 dpi=144.0 position_physical=(0, 0) size_physical=3840x2160 position_dip=(0, 0) size_dip=2560x1440 work_area_physical=(0, 0) 3840x2112
+[monitors] monitor[1] name=\\.\DISPLAY2 primary=false scale=1.25 dpi=120.0 position_physical=(3840, -170) size_physical=1440x2560 position_dip=(3072, -136) size_dip=1152x2048 work_area_physical=(3840, -170) 1440x2520
+[monitors] target_index=1 name=\\.\DISPLAY2 primary=false scale=1.25 origin_physical=(3840, -170) size_physical=1440x2560 negative_x=false negative_y=true
+[overlay] shown actual_position=(3840, -170) actual_inner_size=1440x2560 actual_outer_size=1440x2560 scale_factor=1.25 visible=true
+[metrics] window=prototype-overlay dpr=1.25 canvas_css=1152x2048 canvas_px=1440x2560 inner=1152x2048 screen=(2560, -136) paint_count=1
+[self-test] overlay inside_target_monitor=true target_index=1 target_origin=(3840, -170) target_size=1440x2560
+[PASS] r0-03 self-test: secondary_monitor_index=1 target_primary=false allow_primary=false negative_y=true ready/init_once ok dpr=1.25 canvas_dpr_ok=true
+[self-test] result exit_code=0 primary_scale=1.5 monitors=2 target_primary=false allow_primary=false
+```
+
+即：目标=副屏（非主屏、非测试开关）、负 Y 原点定位正确、requested == actual 位置一致、
+ready/init 各一次、`dpr=1.25` 与 `canvas_px = canvas_css × 1.25` 一致、`exit_code=0`。
+与 2026-11-10 本机基线对比：除 WebView2 .42→.46 与 ACL 修复外无差异，属可重复复现。
+
+### 12.2 画面核对（副屏截图 + 主屏无窗）
+
+运行中抓取整虚拟桌面物理像素（per-monitor DPI aware v2，`.tmp-r0/capture-screen.ps1`，只读），
+再按副屏区域 (3840,−170,1440×2560) 与主屏区域裁剪：
+
+- 副屏 during：透明浮层覆盖整个副屏，能看到桌面色；棋盘格半透明、四角/边框标记贴合副屏边缘；
+  中央十字+圆+100px 刻度与左下 `R0-03 原型 ready … devicePixelRatio = 1.25 / canvas CSS = 1152 x 2048 /
+  canvas 像素 = 1440 x 2560 / window.screen = (2560, -136) / 握手 = ready → init（单次）` 文字清晰、无拉伸；
+- 副屏 after：浮层已退出，桌面恢复原状（无残留窗口）；
+- 主屏 during：只有用户自己的窗口，**主屏没有任何浮层/任务栏按钮**。
+
+证据（scratch，gitignore）：`.tmp-r0/round3/{virtual-screen-before,during,after}.png`、
+`{secondary,primary}-during.png`、`secondary-after.png`、`capture-*.log`、`env.log`（exe sha256）。
+
+### 12.3 负样本与残留
+
+| 检查 | 结果 |
+|---|---|
+| `--monitor 0`（指向主屏） | 拒绝建窗：`[FAIL] startup code=secondary-monitor-required`，**exit 2**，主屏无窗口 |
+| 运行期进程 | `highlighter-r0-window` 1 个、本原型数据目录 `msedgewebview2.exe` **6** 个（与 §8.1 一致） |
+| 退出后残留（4 次全部） | `highlighter-r0-window` = 0、`msedgewebview2`（r0-window-webview2-data）= 0 |
+
+证据：`.tmp-r0/round3/self-test-monitor0.log`、`residue.log`。
+
+### 12.4 本轮仍未覆盖（不得写成已验证）
+
+1. **100% / 200% DPI 视觉矩阵**：需要改系统缩放（可能需注销重登）。本轮用户明确选择**不改系统缩放**，
+   因此只有主屏 150% + 副屏 125% 的混合 DPI 一档；
+2. 首帧白闪的逐帧录像、鼠标穿透/焦点/输入法行为（原型未实现穿透）；
+3. 混合 DPI 跨屏拖动与运行中 DPI 变化（原型只在启动时读一次）、RDP/锁屏、200%@4K；
+4. 除“右侧 + 负 Y”之外的其它显示器拓扑（本轮与 2026-11-10 拓扑相同）。
+
+> 本节是对 §7/§8.2 的**复验补充**，不改变其未验证项的状态；G0 仍未通过。

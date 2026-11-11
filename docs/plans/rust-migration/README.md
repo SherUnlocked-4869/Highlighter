@@ -1,6 +1,6 @@
 # Rust 迁移 R0 实施索引
 
-日期：2026-11-10（更新 2026-11-11 14:00：R0-07 本机部分、ADR-0006/0007 证据与性能基线）。分支：`codex/rust-r0-baseline-contracts`（基线源码 `3df7129`，Highlighter 4.2.0 / Electron 43.8.3）。
+日期：2026-11-10（更新 2026-11-11 晚：**运行主机回到原机**，R0-03/05 双屏复验、WGC 多显示器缺陷修复、R0-04 原机复跑）。分支：`codex/rust-r0-baseline-contracts`（基线源码 `3df7129`，Highlighter 4.2.0 / Electron 43.8.3）。
 上位计划：[2026-11-10-rust-migration-development-plan.md](../2026-11-10-rust-migration-development-plan.md)；可行性调研：[2026-11-10-rust-migration-feasibility.md](../../research/2026-11-10-rust-migration-feasibility.md)。
 
 **状态：R0 进行中；G0 未通过。** 本目录只登记 R0 的实际产物、证据和缺口，不声称任何架构选型已验证，
@@ -13,12 +13,12 @@
 | [handoff.md](handoff.md) | **交接文档（2026-11-11 收尾版）**：最新状态、R0 完成度、必须带走的判断、接手顺序、当前环境、文档索引、未决问题、复现命令、陷阱、历史快照 | **接手先读** |
 | [contract-format.md](contract-format.md) | 宿主合同与跨语言夹具格式（草案 v1），R0-02 实现规格 | 已落地并按其实现 |
 | [feature-parity.md](feature-parity.md) | R0-01 功能矩阵：13 角色核对 + F-01～F-20 + D-01～D-20 | 已完成（文档） |
-| [r0-baseline.md](r0-baseline.md) | R0-01 实测基线、R0 任务状态、G0 决策登记、R1 切片建议 | 已完成（含 R0-04/05/06 状态更新） |
+| [r0-baseline.md](r0-baseline.md) | R0-01 实测基线、R0 任务状态、G0 决策登记、R1 切片建议 | 已完成（含 R0-04/05/06 状态更新；**§9.4 三段机器时间线与原机回归环境事实**） |
 | [host-contract-inventory.md](host-contract-inventory.md) | R0-02 合同盘点与差异清单 | 已完成 |
-| [r0-window-prototype.md](r0-window-prototype.md) | R0-03 Tauri 透明窗口/截图浮层原型 | 原型完成（编译/自检 PASS；真机视觉矩阵未验证） |
-| [r0-hook-extraction.md](r0-hook-extraction.md) | R0-04 划词钩子独立 helper 提取小样（真实选词验证） | 原型完成；ADR-0002 候选 |
+| [r0-window-prototype.md](r0-window-prototype.md) | R0-03 Tauri 透明窗口/截图浮层原型 | 原型完成；**2026-11-11 晚原机双屏复验 PASS（§12：4 次自检、负 Y 原点、主屏无窗、无残留）**；100/200% DPI、白闪、鼠标穿透仍未验证 |
+| [r0-hook-extraction.md](r0-hook-extraction.md) | R0-04 划词钩子独立 helper 提取小样（真实选词验证） | 原型完成；ADR-0002 候选；**§4.15 原机复跑：首跑 7/10 + Edge 复跑 2/2（Edge/Explorer 失败行已定位到测试侧）；夹具缺陷 4 条待修** |
 | [r0-media-webview.md](r0-media-webview.md) | R0-05a WebView2 媒体路径能力验证 | 实测完成；WebView2 不可作唯一后端 |
-| [r0-media-native.md](r0-media-native.md) | R0-05b 原生采集最小闭环（GDI/WGC + WASAPI + ffmpeg） | 实测完成；可行下限成立、WGC 待打包身份 |
+| [r0-media-native.md](r0-media-native.md) | R0-05b 原生采集最小闭环（GDI/WGC + WASAPI + ffmpeg） | 实测完成；可行下限成立、WGC 待打包身份；**§4.16 原机双屏复验：修复 HMONITOR 缺陷后多显示器 WGC 逐屏可用，4K@60 当前架构不可持续** |
 | [r0-pdf-spike.md](r0-pdf-spike.md) | R0-06 PDF 双后端对照（WebView2 vs Electron） | 实测完成；ADR-0003 候选 |
 | [r0-resource-channel.md](r0-resource-channel.md) | R0-06 二进制资源通道（command vs 自定义协议） | 实测完成；ADR-0005 候选 |
 | [r0-credential-migration.md](r0-credential-migration.md) | R0-06 合成凭据迁移（safeStorage ↔ Rust） | 实测完成；ADR-0004 候选 |

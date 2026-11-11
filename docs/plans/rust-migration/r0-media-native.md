@@ -950,6 +950,90 @@ Medium；新建/重跑 exe 运行时日志为 `Medium(0x2000)`。本 teammate �
    “系统权限拒绝”**；后续 R0/R1 的权限类失败先查 `icacls` Mandatory Label 与运行时 IL
    日志，再下结论。
 
+### 4.16 2026-11-11 晚：回到原机（Ryzen 7 9850X3D / RTX 5070 Ti / 双屏）复验
+
+**机器变更**：本轮被交接回 handoff §8 记的“原机”（SHERUNLOCK / MSN）：Ryzen 7 9850X3D 8C/16T、
+47.15 GiB、**RTX 5070 Ti 独显**；双屏：主屏 `DISPLAY1` 3840×2160@**150%**（dpi 144）原点 (0,0)，
+副屏 `DISPLAY2` **竖屏 1440×2560@125%**（dpi 120）物理原点 **(3840, −170)**（负 Y，虚拟桌面 5280×2560）。
+Windows 11 专业版 26300、WebView2/Edge 157.0.4341.46。笔记本（SHERUNLOCK02，单屏 2240×1400、无独显）
+的数值与本机**不可互比**，见 §4.16.4。
+
+**完整性标签（第二台机器复现）**：本机工作区**再次**带有 DSH workspace-write 沙箱遗留的
+`Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`（含 `Everyone:(CI)(DENY)` 与能力 SID），
+把 `whoami.exe` 复制进工作区运行输出 `Low Mandatory Level (S-1-16-4096)`。2026-11-11 21:22–21:27
+由 Lead 修复（全树 Low→Medium；需先给属主授 `WO` 才能改标签，改完回收），修复后工作区内 exe 与
+本轮所有原型进程均为 **Medium(0x2000)**（原型 `[env] process integrity level` 自证）。
+取证与命令：`.tmp-r0-acl/acl-repair*.log`（gitignore）。
+
+#### 4.16.1 发现并修复：WGC 采集路径未透传真实 HMONITOR（多显示器缺陷）
+
+首次在双屏机器跑 WGC 采集**直接失败**（修复前原文）：
+
+```text
+[wgc] item created for monitor #0 (), wgc_size=5280x2560
+[run] capture FAILED (raw error): WGC item size 5280x2560 != resolved size 1440x2560 (would corrupt rawvideo pipe)
+```
+
+根因：`capture::run` 用**合成**的 `MonitorInfo { index: 0, hmon: 0 }` 创建 `GraphicsCaptureItem`，
+而 `IGraphicsCaptureItemInterop::CreateForMonitor(HMONITOR(0))` 得到的是**整个虚拟桌面**（5280×2560）。
+单屏机器上虚拟桌面尺寸 == 屏幕尺寸，所以 2026-11-11 笔记本（单屏 2240×1400）那轮“WGC 10 s@30 fps 采集成功”
+**看不见**这个缺陷：当时 item 也是由 HMONITOR(0)（虚拟桌面）创建的，只是尺寸恰好一致，
+抓取语义与目标显示器等价。**这是从代码路径得出的一致性推论，未在笔记本上重测**。
+
+修复（本轮，原型范围内）：`ResolvedCapture` 增加 `monitor: Option<MonitorInfo>`；
+`--monitor` 目标在 `resolve()` 阶段把真实 `MonitorInfo`（含 `hmon`）带进运行期；
+区域/窗口目标仍使用合成显示器（WGC 本就不支持这两类）。修复后日志变为：
+
+```text
+[wgc] item created for monitor #1 (\\.\DISPLAY2), wgc_size=1440x2560
+[wgc] item created for monitor #0 (\\.\DISPLAY1), wgc_size=3840x2160
+```
+
+原型门槛：`cargo fmt --check` / `cargo clippy --all-targets -D warnings` / `cargo test --locked` 均 exit 0。
+
+#### 4.16.2 本轮运行矩阵（Release、Medium IL、电源=平衡、无并行重活）
+
+| 目录 | 目标 / 后端 | 输出 | 送达 fps | 写入帧 | 复制帧 | 节流丢弃 | 到达缺口 | 背压事件(总 ms) | 有效 fps | 解码 | 全黑 | CPU(%单核) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|
+| `wgc-10s-mon1` | 副屏竖屏 / WGC | 1440×2560 | 51.27 | 301 | 0 | 233 | 0 | 0 (0.00) | 30.0000 | 0 | 0 | 128.3 |
+| `wgc-5s-60fps-mon1` | 副屏竖屏 / WGC @60 | 1440×2560 | 49.60 | 300 | 33 | 0 | 0 | 0 (0.00) | 60.0000 | 0 | 0 | 131.3 |
+| `auto-10s-mon1` | 副屏竖屏 / auto→WGC | 1440×2560 | 51.45 | 301 | 0 | 233 | 0 | 1 (2.67) | 30.0000 | 0 | 0 | 156.8 |
+| `gdi-5s-30fps-mon1` | 副屏竖屏 / GDI 对照 | 1440×2560 | 30.10 | 151 | 0 | 0 | 0 | 1 (2.41) | 30.0000 | 0 | 0 | 97.0 |
+| `wgc-5s-30fps-mon0` | 4K 主屏 / WGC | 3840×2160 | **24.80** | 151 | 27 | 10 | 22 | 41 (46.58) | 30.0000 | 0 | 0 | 179.7 |
+| `gdi-5s-30fps-mon0` | 4K 主屏 / GDI 对照 | 3840×2160 | **27.88** | 150 | 13 | 3 | 0 | 55 (66.98) | 30.0000 | 0 | 0 | 246.6 |
+| `wgc-2s-60fps-mon0` | 4K 主屏 / WGC @60 | 3840×2160 | **8.42** | 105 | 83 | 0 | 19 | 87 (1834.20) | 60.0001 | 0 | 0 | 257.1 |
+
+WGC 能力矩阵（`--probe-wgc`，同一进程内）：`CreateForMonitor #0` 3840×2160 **OK**、
+`CreateForMonitor #1` 1440×2560 **OK**、`CreateForWindow(前台窗口)` 1440×1260 **OK**。
+
+#### 4.16.3 结论（只写本轮实测，不含推测）
+
+1. **多显示器 WGC 逐屏可用**：修复 HMONITOR 透传后，主屏 4K 与副屏竖屏都能分别创建 item 并完成采集；
+   `--capture auto` 在副屏选择 WGC 且无回退。此前“多显示器 WGC 未验证”升级为“本机双屏逐屏验证通过”，
+   但**“同屏同时多路 WGC”未测**。
+2. **竖屏 1440×2560 是该机 WGC 最舒服的点**：30 fps 与 60 fps 都满帧（301/300 帧、0 复制、0 背压、
+   有效 30.0000/60.0000 fps、解码 exit 0、0 全黑）；30 fps 下 WGC 送达 ≈51 fps（DWM 刷新驱动），
+   节流丢弃 233 次属预期行为而非缺陷。
+3. **4K（3840×2160）在本原型架构下 WGC 并无对 GDI 的帧率优势**：@30 时 WGC 送达 24.8 fps（复制 27、背压 41 次）、
+   GDI 27.9 fps（复制 13、背压 55 次），两者都被“整帧 BGRA 拷贝 + stdin 管道 + libx264 软编”限制。
+4. **4K@60 明确不可持续**：2 s 只送达 22 帧（8.4 fps）、复制 83、背压 87 次共 1834 ms、CPU 257%（单核口径）、
+   写入 ffmpeg 1218 MiB/s。对 R5 的直接含义：4K/60 需要硬编（NVENC/AMF/Media Foundation）或
+   降采样/降帧策略；**不能沿用“每帧原始 BGRA 走 stdin”**，也不能把 4K/60 写进 R0 已达成项。
+   独显存在不等于编码走 GPU——本原型只用 libx264。
+5. 笔记本原结论的适用范围：单屏 2240×1400 下“WGC 10 s@30 fps 成功、送达 ≈56.8 fps、复制补齐 0”
+   仍成立（当轮 item 由 HMONITOR(0)=虚拟桌面创建，尺寸恰好等于单屏）；但**不可外推到多屏/4K**。
+   本轮所有数值与原机/笔记本其它轮次均不可互比。
+
+#### 4.16.4 本轮口径与限制
+
+- 电源方案为“平衡”（未切高性能），存在用户前台负载（主屏播放视频、DSH 桌面会话）；
+  这些数字是**功能可行性 + 量级**，不是产品基线。
+- 录制内容含本机桌面（含用户会话），完成解码校验后已删除 `video.mp4`，只保留指标与逐帧哈希：
+  `.tmp-r0-media-native/newmachine/{summary.json,metrics.txt,video-timeline.txt,probe-video.txt,run.log}`
+  与 `EVIDENCE.md`（gitignore）。
+- 仍未验证：HDR、打包身份（MSIX/能力声明）、同意 UI/采集指示/企业策略、Win10 22H2 与其它 build、
+  同屏多路、光标开关画面效果、长时 WGC（本轮最长 10 s）。
+
 ## 5. 结论（建议，供 ADR-0001 汇总；不写“已冻结”）
 
 1. **原生后端在原型层面可行（GDI 路径已闭环）**：10 s@30 fps 桌面采集 → 有界管道 →
@@ -1036,6 +1120,11 @@ Medium；新建/重跑 exe 运行时日志为 `Medium(0x2000)`。本 teammate �
     差异），输出时间轴按 30 fps 用复制帧补齐；更高分辨率/双屏/多窗口叠加的成本未测。
 12. **暂停边界语义**：恢复后首个视频槽位差通常 2–3（1 帧复制），音频暂停边界 5 ms 轮询；
     R5 需冻结统一时钟与恢复相位，不能直接沿用本原型行为。
+13. **4K 与 60 fps（2026-11-11 原机）**：4K@30 的 WGC/GDI 都满不了帧（24.8/27.9 fps 送达），
+    4K@60 在本原型“原始 BGRA → stdin → libx264”架构下**不可持续**（8.4 fps 送达、背压 1834 ms）；
+    未测硬编（NVENC/AMF/MF）、GPU 拷贝路径、降采样策略与 HDR。见 §4.16。
+14. **同一显示器多路 WGC 未测**：本轮只做“逐屏单路”，未验证同一屏两路 item、跨屏同步时间戳、
+    显示器热插拔/分辨率切换期间的 item 失效行为。
 
 ## 7. 责任批次与退出验收
 
@@ -1050,6 +1139,7 @@ Medium；新建/重跑 exe 运行时日志为 `Medium(0x2000)`。本 teammate �
 | 媒体阈值 T4（峰值 CPU/Private Bytes/WorkingSet） | R0-05 / G0 | §4.14 候选区间 + 测量口径；不得在 R0 冻结，交 G0/产品决策 |
 | 编码器选型（libx264/NVENC/AMF/MF）与 4K 性能对照 | R5-05/R5-07 | 同条件 30/60 fps、4K、30 分钟；CPU/GPU/内存/文件大小对照 |
 | 原生 vs WebView2 两路同条件对照 | ADR-0001 / R5 | 计划 §9.2 口径的 p50/p95、CPU/GPU、内存、失败语义对照表 |
+| 4K / 60 fps / 多显示器编码路径 | R5-01/R5-05 | **R0 已给下限**：竖屏 1440×2560@60 满帧可行；4K@30 满帧不可达（WGC 24.8 / GDI 27.9）；4K@60 当前架构不可持续（§4.16）。**R5 仍需**：硬编/GPU 拷贝路径、降采样/降帧策略、HDR、同屏多路、跨屏时间戳 |
 
 ## 8. 变更记录
 
@@ -1057,6 +1147,7 @@ Medium；新建/重跑 exe 运行时日志为 `Medium(0x2000)`。本 teammate �
 |---|---|---|
 | 2026-11-10 | 初版：R0-05b 原型、Release/Debug 验收矩阵、WGC 权限失败分支、WASAPI/A-V、背压与失败分支证据 | 本文档；`.tmp-r0-media-native/`；提交见分支 `codex/rust-r0-baseline-contracts` |
 | 2026-11-11 | 扩展（当前机 SHERUNLOCK02）：暂停/继续（媒体时钟+音频丢弃+恢复槽位差）、双音源端点枚举/采集/混音/对齐测量（对齐受本机声学路径阻塞）、区域/窗口三方法 + 源目标变化场景、30 分钟时钟样例 + 进程树资源峰值、T4 媒体阈值候选（未冻结）、GDI 分辨率成本对照；新增 `pause.rs`/`sync.rs`/`testwin.rs`/`capture/window.rs`/`run-long-sample.ps1` | 本文档 §0.1/§4.11～§4.14/附录 A.1；`.tmp-r0-media-native/`（gitignore，不提交） |
+| 2026-11-11 晚（21:20–21:45，回到原机） | **原机双屏复验**：ACL Low 标签在本机二次复现并由 Lead 修复（全树 Medium，运行时 `Medium(0x2000)` 自证）；发现并修复原型 **WGC HMONITOR 未透传缺陷**（多屏下 item 变成整个虚拟桌面 5280×2560，单屏不可见）；`--probe-wgc` 主屏 4K/副屏竖屏/CreateForWindow 全 OK；WGC 竖屏 30/60 fps 满帧、4K@30 未满帧、**4K@60 不可持续**（§4.16）；录制产物按隐私处理后删除 | 本文档 §4.16；`.tmp-r0-media-native/newmachine/`（gitignore，含 `EVIDENCE.md`）；`.tmp-r0-acl/` |
 | 2026-11-11（19:40–19:58，ACL 修复后） | **Medium IL 复验**：工作区 ACL Low→Medium（61,767 文件，Lead 执行）；运行时 IL 日志 `Medium(0x2000)`；**WGC 更正为可用**（probe 两路径 OK、10 s@30 fps 采集成功、auto 无回退；修复 `IDirect3DSurface→ID3D11Texture2D` 读取 bug）；区域 30.06 fps/0 复制、窗口 hidden/visible 与 Low IL 逐项一致（隐藏窗口全黑非 IL 造成）；新增 10 分钟 Medium IL 时钟/资源样例（§4.14.5）；T4 候选与 ADR-0001 证据更新 | 本文档 §4.1/§4.13.1/§4.14.5/§4.15；`.tmp-r0-media-native/{probe-wgc-medium,wgc-10s-medium,auto-wgc-5s-medium,region-640x360-5s-medium,scenario-hidden-medium,scenario-visible-medium,medium-il-check-3s,long-10min-medium}/` |
 
 ## 附录 A：证据文件与 sha256（`.tmp-r0-media-native/`，gitignore）

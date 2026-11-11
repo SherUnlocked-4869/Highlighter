@@ -138,10 +138,12 @@ WebView2 路径**不能**作为 R5 唯一后端（无法程序指定源、必弹
 
 ## 6. 未解决限制
 
-- **WGC 已在本机 Medium IL 取得成功采集证据（2026-11-11 更正）**，但仅覆盖
-  Win11 26H2/单屏 2240×1400/10 s/未打包 exe；打包身份（MSIX/`uap11:Capability`）、
-  同意 UI/采集指示/企业策略、Win10 22H2 与其它 build、多显示器/窗口/HDR/4K/60/长时 WGC
-  均未验证。旧 `E_ACCESSDENIED` 已归因工作区 Low IL 环境缺陷（已修复）。
+- **WGC 已在本机 Medium IL 取得成功采集证据（2026-11-11 更正）**；**多显示器**已于 2026-11-11 晚
+  在原机（双屏 4K@150% + 竖屏 1440×2560@125%）逐屏验证（修复原型 HMONITOR 缺陷后），
+  竖屏 30/60 fps 满帧、4K@30 未满帧、**4K@60 在“原始 BGRA→stdin→libx264”架构下不可持续**
+  （见 [r0-media-native.md](../r0-media-native.md) §4.16）。仍缺：打包身份（MSIX/`uap11:Capability`）、
+  同意 UI/采集指示/企业策略、Win10 22H2 与其它 build、HDR、同屏多路 WGC、光子/光标开关画面效果、
+  长时 WGC（本轮最长 10 s）。旧 `E_ACCESSDENIED` 已归因工作区 Low IL 环境缺陷（已修复）。
 - WebView 路径的系统音频轨、track settings、人工选源后的完整链路未验证。
 - 双音源时间对齐在本机不可测（麦克风拾不到渲染音，互相关峰值 ≈0.01）；虚拟麦克风全零；
   多声道（>2）混音、设备热插拔/默认端点切换未验证。
@@ -169,4 +171,5 @@ WebView2 路径**不能**作为 R5 唯一后端（无法程序指定源、必弹
 | 2026-11-10 | 初稿：WebView2 不可作唯一后端；建议混合 C（原生采集 + WebView UI/合成/编码）；原生可行下限成立、WGC 待打包身份验证 | [r0-media-webview.md](../r0-media-webview.md)、[r0-media-native.md](../r0-media-native.md) |
 | 2026-11-11 | 扩展证据（当前机 SHERUNLOCK02）：暂停/继续成立（视频 0 缺槽、音频丢弃=暂停时长）；双音源采集/混音成立、双路对齐本机不可测；区域 30 fps、窗口三方法可见/隐藏/遮挡/移动/关闭/重解析行为；30 分钟时钟样例与进程树峰值；T4 媒体阈值候选（未冻结）；补充 R5 端点预检/窗口可见性/时间轴语义要求 | [r0-media-native.md](../r0-media-native.md) §4.11～§4.14、`.tmp-r0-media-native/` |
 | 2026-11-11（同日后补） | **环境缺陷**：工作区 ACL 的 Low Mandatory Label 使原型 exe/ffmpeg 以 Low IL 运行；WGC `E_ACCESSDENIED` 与窗口采集隐藏/遮挡结论标注“待修复后重验”，音频/暂停/时间轴/A-V 指标不受影响；新增重验清单 | [r0-media-native.md](../r0-media-native.md) §4.15、`.tmp-r0-media-native/env-integrity/` |
+| 2026-11-11 晚（21:20–21:45，回到原机 SHERUNLOCK/Ryzen/RTX/双屏） | **多显示器 WGC 缺陷修复 + 原机复验**：发现原型 `capture::run` 未透传真实 `HMONITOR`（用 0 建 item → 得到整个虚拟桌面 5280×2560，多屏下尺寸校验失败；单屏机器上虚拟桌面==屏幕尺寸故此前不可见），修复后逐屏 item 正确；`--probe-wgc` 4K 主屏 / 竖屏副屏 / CreateForWindow 全 OK；WGC 竖屏 1440×2560@30/@60 满帧（301/300 帧、0 复制、0 背压、解码 0），4K@30 未满帧（送达 24.8 fps，GDI 对照 27.9 fps），**4K@60 在本原型“原始 BGRA→stdin→libx264”架构下不可持续**（送达 8.4 fps、背压 1834 ms）→ R5 需硬编/GPU 拷贝或降采样 | [r0-media-native.md](../r0-media-native.md) §4.16、`.tmp-r0-media-native/newmachine/`（EVIDENCE.md，录制按隐私删除） |
 | 2026-11-11（19:40–20:25，ACL 修复后） | **WGC 结论更正**：ACL Low→Medium 后 `CreateForMonitor`/`CreateForWindow` 均 OK；修复原型 surface→texture 读取 bug 后 **WGC 10 s@30 fps 采集成功、可解码**（送达 56.77 fps、复制补齐 0），`auto` 无回退 → “本机 WGC 不可用”作废，置信度低→中；区域/窗口 hidden/visible 在 Medium IL 逐项复现（非 IL 造成）；新增 Medium IL 10 分钟时钟/资源样例（受并行负载扰动，见 §4.14.5 说明）；未验证项（打包身份/同意/采集指示/目标 build/多显示器/HDR/4K/长时 WGC）保留 | [r0-media-native.md](../r0-media-native.md) §4.1/§4.13.1/§4.14.5/§4.15、`.tmp-r0-media-native/{probe-wgc-medium,wgc-10s-medium,auto-wgc-5s-medium,long-10min-medium,long-10min-medium-r2}/` |

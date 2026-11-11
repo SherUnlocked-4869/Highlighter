@@ -308,3 +308,77 @@ WebView2 157.0.4341.42、Node 24.22.1 / npm 12.1.0。续作会话实际运行在
 | ADR-0007 最低 Windows / WebView2 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md)、[ADR-0007](adr/0007-minimum-windows-runtime.md)（本轮新增） | 官方支持矩阵调研 + 待真实测试机矩阵 |
 
 > 本节只登记环境与口径；门禁结论仍以 [r0-g0-report.md](r0-g0-report.md) 为准，G0 未通过。
+
+### 9.4 2026-11-11 晚：运行主机**回到原机**（第三段环境事实）
+
+#### 9.4.1 三段机器时间线（不要再混用数据）
+
+| 阶段 | 主机 / 用户 | 仓库 | 显示器 / GPU | 该阶段产出的证据 |
+|---|---|---|---|---|
+| ① 2026-11-10 | SHERUNLOCK / MSN | `F:\workspace\Highlighter` | 双屏 4K@150% + 1440×2560@125% 负 Y；RTX 5070 Ti | 本文档 §1–§8、R0-03 §7 基线、R0-05 初版 |
+| ② 2026-11-11 白天/晚 | SHERUNLOCK02 / 24532 | `D:\workspace\Highlighter` | 单屏 2240×1400@150%；Intel Iris Xe（无独显） | §9.1–§9.3、R0-04 矩阵、R0-05 扩展、R0-06 PDF 产品页、R0-07 安装/性能、ADR-0006/0007 |
+| ③ 2026-11-11 晚 21:00 起（本轮） | **SHERUNLOCK / MSN**（回到 ① 的机器） | `F:\workspace\Highlighter` | **双屏**：主屏 3840×2160@150%（dpi 144）原点 (0,0)；副屏竖屏 1440×2560@125%（dpi 120）原点 **(3840, −170)**；**RTX 5070 Ti 独显** + AMD 核显 + GameViewer 虚拟显示适配器 | 本文档 §9.4、[r0-window-prototype.md](r0-window-prototype.md) §12、[r0-media-native.md](r0-media-native.md) §4.16、[r0-hook-extraction.md](r0-hook-extraction.md) §4.15 |
+
+#### 9.4.2 本机环境事实（2026-11-11 21:12–21:45 实测）
+
+| 项 | 值 | 与阶段 ② 的差异 |
+|---|---|---|
+| 主机 / 用户 / 会话 | `SHERUNLOCK` / `MSN` / 会话 1（交互式） | 阶段 ② 为 SHERUNLOCK02 / 24532 |
+| OS | Windows 11 **专业版**，10.0.26300，UBR **9711**，DisplayVersion 26H2 | 阶段 ② 为家庭版中文版 UBR 26300.9974 |
+| CPU | AMD Ryzen 7 9850X3D，8 核 / 16 线程 | 阶段 ② i5-13500H 12C/16T |
+| 内存 | 49,441,172 KB（**约 47.15 GiB**） | 阶段 ② 约 15.75 GiB |
+| GPU | **NVIDIA RTX 5070 Ti**（驱动 32.0.16.1742）+ AMD Radeon 核显（32.0.21042.62）+ GameViewer Virtual Display Adapter（15.6.5.199） | 阶段 ② 仅 Intel Iris Xe，**无独显** |
+| 显示器 | 2 块：`DISPLAY1` 3840×2160@**150%** 主屏；`DISPLAY2` **竖屏 1440×2560@125%**，物理原点 (3840, −170)（负 Y），虚拟桌面 5280×2560 | 阶段 ② 仅 1 块 2240×1400@150% |
+| WebView2 Runtime | 157.0.4341.46（per-machine） | 相同（阶段 ② 曾记录安装目录同时有 .42/.46） |
+| 浏览器 / Office | Chrome 157.0.8103.40 / Edge 157.0.4341.46 / Office **16.0.20527.20150**（Word+Excel） | 阶段 ② Office LTSC 16.0.17932.20104 |
+| Rust | rustc/cargo 1.97.1（`rust-app/rust-toolchain.toml` 固定，`rustup` 另有 stable 但未参与构建） | 相同 |
+| Node / npm | Node **v24.22.1** / npm **12.1.0**；registry = **registry.npmjs.org** | 阶段 ② v24.15.0 / 11.17.0 / npmmirror |
+| git | 2.56.0.windows.4（`core.autocrlf` 见 §9.4.3） | 阶段 ② 2.51.2 |
+| 磁盘 | F:（仓库）剩余约 904 GiB；C: 剩余约 31.1 GiB | 阶段 ② D:（仓库）约 201 GiB / C: 约 15.4 GiB |
+| 电源 | 平衡（381b4222-f694-41f0-9685-ff5bb260df2e），未切高性能 | 相同 |
+| 会话环境 | `ELECTRON_RUN_AS_NODE=1` **仍设置**；`TMP`/`TEMP`=`C:\Users\MSN\AppData\Local\Temp`（C: 仍够用，本轮未出现 EPERM） | 与 AGENTS.md 四类陷阱一致 |
+| 完整性标签 | **本轮接手时为 Low（二次复现），已修复为 Medium**（见 §9.4.3） | 阶段 ② 也曾修复（61,767 文件） |
+
+#### 9.4.3 迁移到本机时踩到的两个“假故障”（已处理）
+
+1. **行尾 / `core.autocrlf` 未设置 → 56 个文件“全行修改”**：接手时 `git status` 显示 56 个文件、
+   1.9 万行改动，`git diff --numstat` 显示每个文件“增=删=行数”。逐字节核对：HEAD blob 为 LF，
+   工作区文件为 CRLF（`i/lf w/crlf` 973 个文件）。原因是从阶段 ② 的机器拷回工作区后，本机 git 的
+   `core.autocrlf` 未设置（`git config --get core.autocrlf` 为空）。**修复**：`git config core.autocrlf true`
+   （仓库既有约定，handoff §6.8/§7.4），`git status` 立即干净，**没有任何真实改动被覆盖**。
+   教训：换机器接手时先看 `git ls-files --eol` 的 `i/lf w/crlf` 统计与 `core.autocrlf`，
+   否则会把行尾差异当成未提交改动，或误以为上一轮工作丢失。
+2. **工作区完整性标签再次是 Low（与 §8.4 同缺陷）**：把 `C:\Windows\System32\whoami.exe` 复制进工作区运行，
+   输出 `Low Mandatory Level (S-1-16-4096)` → 工作区内 exe 全部以 Low IL 运行（静默安装/WGC/SendInput 类
+   “环境级失败”会立刻复现）。本轮修复（2026-11-11 21:22–21:27，用户批准）：
+   - 直接 `icacls /setintegritylevel (OI)(CI)M /T` **会失败**（7533 个目录 `Access is denied`）：
+     改标签需要对象上的 `WRITE_OWNER`，属主只有隐式 `READ_CONTROL`+`WRITE_DAC`；
+   - 可行做法：先 `icacls <root> /grant "*<user-SID>:(WO)" /T /C /Q`（`(WO)` 必须带括号），
+     再 `/setintegritylevel (OI)(CI)M /T /C /Q`，最后 `icacls <root> /remove:g "*<user-SID>" /T /C /Q` 回收；
+   - 另删除 `Everyone` 的 DENY ACE 与能力 SID ACE（根 ACL；`/remove:d Everyone` + .NET `Set-Acl`）；
+   - 复验：工作区内 whoami 副本 → `Medium (S-1-16-8192)`；`rust-app/target` 下 exe 标签 Medium；
+     native-capture 自报 `[env] process integrity level = Medium(0x2000)`；R0-03 自检 4 次 PASS。
+   - 取证：`.tmp-r0-acl/acl-repair*.log`（gitignore）。
+
+#### 9.4.4 本轮门禁（本机）
+
+| 门禁 | 结果 |
+|---|---|
+| `node scripts/rust/extract-host-contracts.js --check` | exit 0（13 角色 / 257 方法 / 110,493 字节） |
+| `node scripts/rust/generate-host-fixtures.js --check` | exit 0（28 case + manifest） |
+| `node --test test/host-contracts.test.js` | 19 pass / 0 fail |
+| `node scripts/rust/collect-frontend-resources.js --check` | OK 191 files / 2,430,229 字节 |
+| `node --test test/frontend-resource-whitelist.test.js` | 9 pass / 0 fail |
+| `npm run check` | 通过（**494** JS 文件 / architecture ok / i18n ok；阶段 ② 记录为 489，差异来自阶段 ① 遗留的 gitignore 脚本目录被一并扫描，未改动产品代码） |
+| `scripts/rust/check-rust-app.ps1` | 通过（fmt + clippy + test --locked，全绿） |
+| `cargo fmt/clippy/test`（`rust-app/prototypes/native-capture`） | 通过（本轮改动后复跑；clippy `-D warnings` 0 warning） |
+
+#### 9.4.5 本轮证据索引
+
+| 证据 | 文档 | 说明 |
+|---|---|---|
+| R0-03 双屏/负坐标/混合 DPI 复验 | [r0-window-prototype.md](r0-window-prototype.md) §12 | 4 次自检 PASS（`dpr=1.25`、`negative_y=true`、`exit 0`）、副屏截图对照、主屏无窗、`--monitor 0` 负样本 exit 2、无残留 |
+| R0-05 WGC 原机复验 + HMONITOR 缺陷修复 | [r0-media-native.md](r0-media-native.md) §4.16 | 双屏逐屏 WGC 可用；竖屏 30/60 fps 满帧；4K@30 未满帧、**4K@60 不可持续** |
+| R0-04 选词矩阵原机复跑 | [r0-hook-extraction.md](r0-hook-extraction.md) §4.15 | 双屏（窗口自动落副屏）+ 新版 Office；逐行结果与笔记本差异 |
+
+> 本节只登记环境与口径；门禁结论仍以 [r0-g0-report.md](r0-g0-report.md) 为准，**G0 未通过**。

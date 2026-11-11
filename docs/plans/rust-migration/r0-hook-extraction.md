@@ -1,6 +1,6 @@
 # R0-04 划词钩子独立 helper 提取小样（ADR-0002 证据：提取成本 vs 重写）
 
-- 状态：**原型完成 + 2026-11-11 补测完成（宿主工作区 Low 完整性标签已修复并重跑）；G0 未通过。修复后真机应用矩阵 9/10 行 PASS（§4.9）、管理员窗口取得 UIPI 负样本（§4.14）、卡死恢复仅进程级通过且真实 provider 卡死未复现（§4.13）；lease 协议级互通见 §4.11（helper 端无客户端，非联调）。本文不是 gate 通过的证据，也不构成 ADR-0002 的最终冻结。**
+- 状态：**原型完成 + 2026-11-11 两轮补测（笔记本单屏 §4.9；原机双屏 §4.15）；G0 未通过。** 笔记本单屏：10 行 9 PASS、管理员窗口 UIPI 负样本、卡死恢复仅进程级；原机双屏（Office 16.0.20527）：**首跑 7/10，Edge 两行冷却后复跑 2/2，唯一稳定 FAIL 为资源管理器拖选**，三条 FAIL 均定位到测试侧（含 runner 读回编码缺陷与剪贴板假阳性），并发现 4 条测试夹具缺陷。lease 协议级互通见 §4.11（helper 端无客户端，非联调）。本文不是 gate 通过的证据，也不构成 ADR-0002 的最终冻结。
 - 决定批次：R0-04（计划 §2 D04、§7 R0-04、§8 G0；[r0-baseline.md](r0-baseline.md) §4.2）
 - 实施批次候选：R3（划词/剪贴板，见计划 §7）
 - 日期：2026-11-10 首版；**2026-11-11 续测完成**（Asia/Hong_Kong）
@@ -361,6 +361,9 @@ self-test 关键 JSON（stdout，逐行 flush；`pid`/时间戳为当次值）�
 2. **helper 控制台窗口必须可见且不得移动/隐藏**：本机实测 `Start-Process -WindowStyle Hidden`、`-NoNewWindow`、或启动后 `ShowWindow(SW_HIDE)`/`MoveWindow` 其控制台窗口，都会让后续 `WH_MOUSE_LL/WH_KEYBOARD_LL` 回调不再收到任何输入（`hookReady:true` 但 `mouseEventsQueued=0`，3/3 可复现）。矩阵脚本因此以普通方式启动 helper 并把目标窗口放在屏幕底部条带，避免 console 覆盖目标。
 3. **Chromium UIA 可访问性**：默认启动时 UIA 只见地址栏 Edit；`--force-renderer-accessibility` 后才暴露 Document/Text。矩阵分“默认/强制”两行，默认行的期望路径是 MSAA/剪贴板回退。
 4. **vcvars64 与被继承的 VSINSTALLDIR**：本机会话继承的 `VSINSTALLDIR` 缺少结尾反斜杠，导致 `vcvars64.bat` 打印 `Could not find directory "...VC\"` 并把 cl.exe 留在 PATH 外；`build.ps1` 已改为在临时 vcvars 导入脚本里显式 `set "VSINSTALLDIR=<vswhere 路径>\"`，`-Clean -SelfTest` 已通过。
+5. **PowerShell 5.1 用 `Get-Content` 读 UTF-8 JSONL 会坏**（2026-11-11 晚实测）：zh-CN 代码页按 GBK 解码含非 ASCII（如“。”）的行会解析失败；`real-selection-matrix.ps1` 的 `Read-HelperResults` 原来 `catch {}` 静默跳过 → 把 `found=true` 读成 0 条，制造**假 FAIL**（§4.15.2）。修复：`Get-Content -Encoding UTF8` 或 `[IO.File]::ReadAllLines($p,[Text.Encoding]::UTF8)`；解析失败必须显式报错。
+6. **剪贴板关键词假阳性**：浏览器/Explorer 的 Ctrl+C 校准不校验“剪贴板是否变化”，若用户剪贴板里恰好含匹配关键词（本轮含 Highlighter）会被当成校准成功（§4.15.4）。修复：校准前写入唯一 sentinel 并断言变化（或保存-清空-恢复）。
+7. **矩阵清理漏杀**：全量矩阵结束后可能残留 package 化 Notepad / COM Word / Chrome 子进程；需在 finally 按 targetPid 强制清理并复核（§4.15.7）。
 
 ---
 
@@ -376,6 +379,9 @@ self-test 关键 JSON（stdout，逐行 flush；`pid`/时间戳为当次值）�
 
 **诚实标注**：本机用“冻结 WinForms UI 线程”构造的挂起目标被 UIA 客户端快速返回（未调入 provider 即完成），因此“真实 provider 不返回 → 2 s 有界停止超时”仍是**未验证**项；它需要更底层的手段（如挂起目标进程的 UIA 提供者/使用 RPC 挂起）或真实问题应用。进程隔离模型下的 kill/重启恢复已取得真实证据。
 
+**2026-11-11 晚原机复核（进程级）**：kill helper / kill 目标进程 → 0 残留 → 重启 `--self-test` exit 0 全部通过；
+但“kill 前存在真实文本选择”的附加校准未通过，“2 s 有界停止超时”仍未触发 —— 详见 §4.15.5。
+
 ### 4.14 管理员/高完整性窗口负样本（2026-11-11）
 
 脚本：`.tmp-r0-hook/admin-negative-test.ps1`；结果：`.tmp-r0-hook/admin-negative-results.json` / `admin-negative.log`。**未绕过 UAC**：`Start-Process -Verb RunAs notepad.exe` 由用户批准。
@@ -388,6 +394,9 @@ self-test 关键 JSON（stdout，逐行 flush；`pid`/时间戳为当次值）�
 | 真实拖选手势（aimed at elevated window） | `mouseEventsQueued=0`、`selectionEvents=0`（helper 未观察到任何输入） |
 | 判定 | **UIPI 负样本（符合预期）**：Medium IL 低级钩子收不到发往 High IL 窗口的注入输入，非 helper 缺陷；产品应把“管理员窗口不可取词”文档化为平台限制，不承诺越权。 |
 
+**2026-11-11 晚原机复核：未复现（未提权、未触发 UAC）**。驱动 token=Medium、无 `SeDebugPrivilege`，
+无法构造 High IL 目标；本表仍只属于阶段②笔记本环境，**不得**写成“本机已复现”。详见 §4.15.6。
+
 **重跑入口（已用于本表）**：
 
 ```powershell
@@ -398,6 +407,156 @@ powershell -NoProfile -ExecutionPolicy Bypass -File native/selection-helper/test
 ```
 
 `real-selection-matrix.ps1` 单行入口、退出码与行定义见 [native/selection-helper/README.md](../../../native/selection-helper/README.md)。脚本在记录任何结果前强制校验 helper 进程完整性级别为 Medium（否则 matrix exit 7 / runner exit 3）。
+### 4.15 2026-11-11 晚：回到原机（双屏混合 DPI + 新版 Office）复跑与失败行定位
+
+**环境**：`SHERUNLOCK` / MSN；Ryzen 7 9850X3D / 47.15 GiB / RTX 5070 Ti；Windows 11 专业版 26300（UBR 9711）；
+双屏：主屏 3840×2160@150%（dpi 144）、副屏竖屏 1440×2560@125%（dpi 120）物理原点 (3840,−170)（虚拟桌面 5280×2560）；
+Chrome 157.0.8103.40、Edge 157.0.4341.46、**Word/Excel 16.0.20527.20150**（阶段②笔记本为 16.0.17932）；
+helper 由 `build.ps1 -Clean -SelfTest` 重建（306,176 B，sha256 `18CE5C74…32610BD`，构建 ≈6.8 s），
+自检行 `status=self-test-pass / comUiaInit=true / rootElementUiaInit=true / mouseHook=true / keyboardHook=true / workerCleanStop=true / exitCode=0`；
+**逐行 preflight 与进程实测 IL = Medium**；矩阵窗口全部落副屏
+（每行 `TARGET=` 行为 `display=secondary monitor=(3840,-170) 1440x2560 window=(3880,1840)`）。
+全量命令 `run-selection-matrix.ps1 -OutDir .tmp-r0-hook/newmachine`，总耗时 **126 s**。
+
+#### 4.15.1 首跑逐行结果（10 行）
+
+| # | 行 | 目标/手势 | helper method | helper 取到文本 | 字符 | 取词 ms | 行耗时 s | exit | 判定 |
+|---:|---|---|---|---|---:|---:|---:|---:|---|
+| 1 | Notepad | Notepad / Drag | 1 uia | `R0-04 notepad selection probe line one` | 36 | 15 | 7.7 | 0 | PASS |
+| 2 | Chrome-default | Chrome / Drag | 1 uia | `R0-04 chro` | 10 | 0 | 12.7 | 0 | PASS |
+| 3 | Chrome-force | Chrome / Drag | 1 uia | `R0-04 chro` | 10 | 0 | 12.8 | 0 | PASS |
+| 4 | Edge-default | Edge / Drag | 1 uia | `Microsoft Edge。`（**取到了，但样本是登录提示条**） | 15 | 15 | 7.8 | 1 | **FAIL（测试侧两层原因，见 4.15.2）** |
+| 5 | Edge-force | Edge / Drag | —（helper 未启动） | — | — | — | 22.0 | 5 | **FAIL（校准失败，见 4.15.3）** |
+| 6 | Word | Word / Drag | 1 uia | `R0-04 word selection probe line one` | 36 | 16 | 10.4 | 0 | PASS |
+| 7 | Excel | Excel / Drag | 1 uia | `R0-04 excel selection probe cell` | 32 | 15 | 9.5 | 0 | PASS |
+| 8 | Excel-clipboard | Excel / Drag +Clipboard | 1 uia | `R0-04 excel selection probe cell` | 32 | 31 | 8.7 | 0 | PASS |
+| 9 | Explorer | Explorer / Drag | 0 none（found=false） | —（见 4.15.4） | 0 | 16 | 16.3 | 1 | **FAIL** |
+| 10 | Explorer-doubleclick | Explorer / DoubleClick | 1 uia | `hook` | 4 | 0 | 9.9 | 0 | PASS |
+
+**首跑 7/10 PASS**；三条 FAIL 全部定位到测试侧（校准/读回）或目标应用首启状态，**没有一条能归因到 helper 取词能力**。
+所有行 helper IL=Medium、`foreground confirmed=True`、`cleanup: clipboardRestored=True`；心跳显示 helper 收到真实输入
+（`mouseEventsQueued` 0→1→2），不是把文本喂给 helper。
+
+#### 4.15.2 Edge-default（exit 1）：首启登录提示条 + **runner 读回 JSONL 的编码缺陷**
+
+原始证据（`matrix-run.log`）：校准命中 Edge 首次启动的登录提示 UI，而不是测试页面：
+
+```text
+target window: name='R0-04 selection matrix - 用户配置 1 - Microsoft Edge' rect=(3880,1840) 1000x392
+calibration: uia-text-element name="<账号> 已在此设备上登录，因此我们也使你登录到了 Microsoft Edge。"
+             rect=(4088,1999) 524x49; drag=(4094,2024)->(4418,2024)
+driver UIA selection after calibration drag (len=15): 'Microsoft Edge。'
+helper exit=0 selections=0 found=0  ->  RESULT: FAIL (exit 1)
+```
+
+但同一行的 helper JSONL（`matrix-run-Edge-default-default.jsonl`）里**实际存在**：
+
+```json
+{"type":"text-selection","detection":"drag","found":true,"textLength":15,"text":"Microsoft Edge。","sourcePid":6300,"program":"msedge.exe","method":1,"methodName":"uia","stage":"complete","retrievalElapsedMs":15}
+{"type":"status","status":"stopped","selectionSeen":true,"autoRetrievals":1,"retrievalsCompleted":1,"selectionsFound":1,"exitCode":0}
+```
+
+根因是两层**测试侧**问题：
+
+1. **校准样本选错**：新临时 profile 首启时 Edge 在同一窗口里弹出“已在此设备上登录…”提示条（UIA Text 元素），
+   驱动脚本的文本元素筛选把它当成页面文本 — 所以 helper 取到的是提示条文本，而不是 probe 段落；
+2. **runner 读回缺陷**：`real-selection-matrix.ps1` 的 `Read-HelperResults` 用 `Get-Content`（zh-CN 默认 ANSI/GBK）
+   读 UTF-8 JSONL；该行含非 ASCII 的“。”（UTF-8 `E3 80 82`），GBK 解码把后续引号吞掉 → `ConvertFrom-Json` 抛错 →
+   被 `catch {}` 静默跳过 → `$selections.Count = 0` → 行判定 FAIL、且该行**没有**追加到 `matrix-results.jsonl`
+   （首跑 `matrix-results.jsonl` 只有 8 条，正是缺 Edge 两行）。
+
+**结论：helper 没有失败。** 该行不得写成“Edge 不支持”或“helper 在 Edge 上失败”。
+
+#### 4.15.3 Edge-force（exit 5）：校准阶段失败，helper 未启动 + 复跑 2/2 PASS
+
+首跑：`browser UIA page tree not usable (text elements=1)`（唯一文本元素是收藏夹栏提示），
+回退 Ctrl+C sweep 共 14 次，剪贴板**全部等于用户原有剪贴板文本**（未出现 probe 文本），最终
+`ERROR: browser calibration failed` → exit 5，该行**没有 helper JSONL**（helper 从未启动）。
+即：失败发生在 helper 启动之前，属于“页面未就绪/首启 UI 抢占 + 校准不成立”，与 helper 无关。
+
+冷却后单独复跑（`-SkipBuild -Rows Edge-default,Edge-force`，输出到 `retry-edge/`）：**2/2 PASS**
+（19.5 s / 22.5 s，`clipboard-calibration`，helper `method=1 uia`、`text='second line has'`、15 字符、0 ms、exit 0）。
+复跑前 `tasklist` 确认无任何 `msedge.exe`（无陈旧进程/多实例）；运行中只见到 probe 窗口和一个 `title=''` 的
+Edge 登录气泡窗口（+9 s 出现）。**首启 UI 归因是证据支持的最可能解释，但没有做成可重复的受控因果实验。**
+另：复跑两行都是“页面 UIA 树对驱动侧不可用 → Ctrl+C 校准 → helper 仍取到词”，即
+`--force-renderer-accessibility` 在本机 Edge 157 上**对驱动侧没有暴露页面树**（与阶段② §4.9 描述不同，未定性）。
+
+#### 4.15.4 Explorer drag（exit 1）：选择未建立 + **校准被旧剪贴板假阳性**
+
+- helper 侧：`mouseEventsQueued=2`、`autoRetrievals=1`、`text-selection detection=drag found=false method=0(none)`
+  `stage=complete retrievalElapsedMs=16 sourcePid=39220 program='explorer.exe'`，最终 `status stopped exitCode=6`。
+  → **helper 收到了真实手势并执行了取词**，只是没有可读的选择（区别于“helper 未收到事件”）；
+- 校准侧：读到的是**用户原有剪贴板**（135 字符，本轮会话内容），且 `focused name="地址栏" selection=` 也是同一段文本 ——
+  校准的关键词匹配（`Highlighter|matrix-explorer|workspace|\\`）命中旧文本里的“Highlighter”，被当成“校准成功”，属**假阳性**；
+- 独立探针（`explorer-drag-probe.log`）：地址栏内做 4 次真实合成拖选，`uiaSelectionObserved=0/4`、`clipboardChanged=0/4`；
+  attempt 1 的 before 状态显示 Ctrl+L 已全选完整路径，拖选后 `sel=''`。
+- 同窗口的双击行 PASS（`text='hook'`，method=1 uia）→ 该目标本身可取词。
+
+**结论**：FAIL 属于“选择未建立 + 测试校准假阳性”，不是 helper 缺陷证据；
+资源管理器地址栏的合成拖选在本机（Win11 26300）为什么不能建立可读选择**未定性**，
+也不得反推产品“支持/不支持资源管理器”。
+
+#### 4.15.5 卡死/崩溃恢复复核（进程级，§4.13 方法）
+
+| 检查 | 实测 | 判定 |
+|---|---|---|
+| 起始无 selection-helper 残留 | count=0 | PASS |
+| B：`Stop-Process -Force` 杀 helper → 残留 | residualCount=0 | PASS |
+| B：重启 `--self-test` | exit=0 且 JSONL 有 `status=self-test-pass` | PASS |
+| C：杀目标（notepad）后 helper 是否存活 | helperHasExited=False | PASS |
+| C：helper 自然退出 / 残留 / 重启 | exit=0、residual=0、重启 exit=0 | PASS |
+| 最终残留（helper/chrome/msedge/WINWORD/EXCEL/notepad） | 全部 0 | PASS |
+| 附加：kill 前“驱动侧文本选择”校准 | `driverSelection=''`（helper 对应 `found=false method=0`，但心跳证明收到真实输入） | **FAIL（附加校准，不是本次 kill/restart 项）** |
+
+**口径**：本机复核的是**进程级恢复**（kill helper / kill 目标 → 0 残留 → 重启 `--self-test` exit 0）；
+**不得**写成“kill 前 helper 已完成一次真实取词后被杀”（该前置校准未通过，中间变体出现过一次
+`driverSelectionLen=32` 但输出已被覆盖、未留存，不能作为证据）。
+“provider 永不返回 → 2 s 有界停止超时”分支**仍未触发**（无真实挂起 provider），沿用 §4.13 未复现口径。
+
+#### 4.15.6 管理员/高完整性窗口负样本：本机本轮**未复现**
+
+驱动进程 token = Medium、`whoami /priv` 无 `SeDebugPrivilege`、`whoami /groups` 无已启用的管理员组；
+按约束**未**使用 `Start-Process -Verb RunAs`、未提权、未触发 UAC，因此无法构造 High IL 目标。
+§4.14 的 UIPI 负样本仍只属于阶段②笔记本环境，**不得**写成“本机已复现”。
+
+#### 4.15.7 本轮发现的测试夹具缺陷（R0-04 收尾必须修，不是产品结论）
+
+1. **读回编码**：`Read-HelperResults` 未指定 UTF-8 → 非 ASCII 文本行被静默丢弃（本轮把 `found=true` 读成 0 条，制造假 FAIL）。
+   修复：`Get-Content -Encoding UTF8` 或 `[IO.File]::ReadAllLines($path, [Text.Encoding]::UTF8)`；并对解析失败显式报错而不是 `catch {}` 静默跳过。
+2. **剪贴板校准假阳性**：Ctrl+C 回读不校验“剪贴板是否变化/是否本次产生”，用户剪贴板里恰有“Highlighter”时被当成校准成功。
+   修复：校准前写入唯一 sentinel 并断言变化（或保存-清空-恢复）。
+3. **`-OutDir` 未透传**：`run-selection-matrix.ps1` 没有把 `-OutDir` 传给 `real-selection-matrix.ps1`，逐行证据仍落默认 `.tmp-r0-hook/`（本轮已复制到 `newmachine/evidence-rows/`）。
+4. **清理漏杀**：全量矩阵结束后遗留 package 化 Notepad（pid 13208）与 COM Word（pid 13364），另有 Chrome 子进程短时残留；
+   已人工 `Stop-Process` 清理并复核 0 残留（`post-run-processes.txt`）。修复建议：finally 里按 targetPid 强制清理并复核。
+
+#### 4.15.8 与阶段②（笔记本单屏）对比
+
+| 项 | 阶段②（笔记本，§4.9） | 本机（原机） |
+|---|---|---|
+| 显示环境 | 单屏 2240×1400@150% | 双屏混合 DPI：3840×2160@150% + 1440×2560@125%，原点 (3840,−170)；窗口全部落副屏 |
+| 全量 10 行 | 9 PASS / 1 FAIL | **首跑 7 PASS / 3 FAIL**（Edge 两行复跑 2/2 PASS，单列不覆盖首跑） |
+| Edge 两行 | PASS / PASS（uia 15 字符） | 首跑 FAIL（校准命中登录提示条 + runner GBK 读回）/ FAIL（校准失败，helper 未启动）；复跑 PASS / PASS |
+| Explorer drag | FAIL（校准无法建立可验证选择） | FAIL（校准被旧剪贴板假阳性；helper 收到事件但 found=false） |
+| Explorer 双击 | PASS（4 字符） | PASS（4 字符） |
+| Office 版本 | 16.0.17932 | **16.0.20527.20150** |
+| 文本长度 | Notepad 39 / Chrome 15 / Word 36 / Excel 29 | 36 / 10 / 36 / 32（差异来自校准拖选范围，不构成行为差异证据） |
+| helper IL | Medium | Medium（icacls + 进程 token + 预检三重一致） |
+
+#### 4.15.9 不得写成已验证（本轮）
+
+1. “Edge 页面文本在本机默认/强制 a11y 下已验证”：首跑 FAIL、复跑 PASS 单列；页面 UIA 树对驱动侧不可用，且首启原因未定性；
+2. “`--force-renderer-accessibility` 在本机有效”：两轮都显示驱动侧 `text elements=1`；
+3. “资源管理器拖选已验证” / “helper 不支持资源管理器”：只能写“未建立选择”，机制未定性；
+4. “本机 10/10 或 9/10 复现”：首跑 7/10，复跑仅补 Edge 两行，Explorer drag 仍 FAIL；
+5. “真实 provider 卡死 + 2 s 有界停止超时已验证”：未触发；
+6. “本机管理员 UIPI 负样本已复现”：未做（未提权/未 UAC）；
+7. “矩阵多轮重复稳定性”：仅首跑一次 + Edge 复跑一次，无重复统计；
+8. 本轮无截图/录屏证据，结论只依赖 JSONL/日志/进程与 UIA 读回。
+
+**证据**（scratch，gitignore）：`.tmp-r0-hook/newmachine/`：`matrix-run.log`、`matrix-run-summary.json`、
+`matrix-results.jsonl`、`evidence-rows/`（逐行 JSONL 副本）、`retry-edge/`（Edge 复跑，含 `monitor.log`）、
+`explorer-drag-probe.log`、`crash-recovery.log` + `crash-recovery/`、`notepad-probe.log`、`env-facts.log`、`git-facts.txt`、
+`post-run-processes.txt`/`post-retry-processes.txt`、`DRAFT-section.md`（队友原始草稿）。
 ## 5. 结论（建议）
 
 对 ADR-0002 的建议（**不冻结**）：
@@ -417,6 +576,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File native/selection-helper/test
    - **管理员窗口（§4.14）**：UAC 经用户批准后取得 High IL 目标；Medium helper 对其拖选 `mouseEventsQueued=0`，**UIPI 负样本符合预期**（平台限制，不承诺越权）。
    - lease/coordinator 侧：协议级最小互通已验证（§4.11）；**不能**表述为“helper 与 native/clipboard 联调通过”（helper 无客户端实现，且未启用 capture 竞争）。
    - A vs B 的成本对比证据（0 行 vendor 改动、2,590 行复用、构建 6.4 s）与上述矩阵证据共同支持 A；R3 仍需补协议/宿主/配置面/coordinator 客户端与 PDF/DPI/长稳矩阵。
+6. **2026-11-11 晚原机（双屏混合 DPI + Office 16.0.20527）复跑的数字口径**（不改变方案 A 建议）：
+   全量首跑 **7/10 PASS**；Edge 两行首跑 FAIL 但可定位到**测试侧**（首启登录提示条 + runner 读回编码缺陷，
+   其中 Edge-default 的 helper 实际 `found=true method=uia 15 ms`）→ 冷却后单独复跑 **2/2 PASS**；
+   Explorer 拖选仍 FAIL（helper 收到真实事件 `mouseEventsQueued=2`、`found=false`；校准被旧剪贴板假阳性）。
+   因此**不得**写“本机 9/10 复现”或“Edge 在本机通过”：正确口径是“7/10 首跑 + Edge 两行复跑 2/2，
+   Explorer 拖选未建立选择”，并附 §4.15.7 的夹具缺陷清单。
+
 对计划/估算的影响：R0-04 的提取边界已从"待验证"变为"有实测边界"；R3 中"划词/回贴"可拆成 **helper 产品化 + Rust 宿主进程管理 + 配置面/协议 + 真机矩阵** 四个可独立验收的切片，而不是整体 Rust 重写。
 
 ---
@@ -460,3 +626,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File native/selection-helper/test
 | 2026-11-11 | **环境修复与矩阵重跑（有效证据）**：工作区 Low→Medium 后重建 helper（进程 IL=Medium），`run-selection-matrix.ps1` 跑 10 行：Notepad/Chrome 默认+force/Edge 默认+force/Word/Excel/Excel-clipboard/Explorer-doubleclick 共 9 行 PASS（全部 `method=1 uia`），Explorer 拖选行因测试校准失败（样本未建立） | `.tmp-r0-hook/matrix-results.jsonl`、`matrix-run-summary.json`、`matrix-run-final.log`、本文 §4.9–§4.10 |
 | 2026-11-11 | **真实卡死恢复复核**：构造冻结 UI 线程目标后取词仍在 31 ms 完成（UIA 未真正阻塞）；进程级 kill helper/kill 目标进程恢复通过（残留 0、重启 self-test exit 0），2 s 有界停止超时分支**未复现** | `.tmp-r0-hook/hang-recovery-results.json`、`hang-recovery.log`、本文 §4.13 |
 | 2026-11-11 | **管理员窗口负样本**：UAC 经用户批准启动 High IL notepad；Medium helper 对其拖选 `mouseEventsQueued=0`，UIPI 平台限制符合预期（未绕过 UAC） | `.tmp-r0-hook/admin-negative-results.json`、`admin-negative.log`、本文 §4.14 |
+| 2026-11-11 晚（原机 SHERUNLOCK / Ryzen / RTX 5070 Ti / 双屏混合 DPI） | **原机复跑（含失败行定位）**：全量首跑 7/10 PASS（Edge-default exit 1、Edge-force exit 5、Explorer drag exit 1）；定位到三条 FAIL 均为**测试侧**原因——Edge-default = 首启登录提示条被当成页面文本 + runner 用 `Get-Content`（GBK）读 UTF-8 JSONL 导致 `found=true` 被读成 0 条（helper 实际取到 15 字符）；Edge-force = 页面 UIA 树不可用 + Ctrl+C 读回旧剪贴板 → 校准失败（helper 未启动）；Explorer drag = helper 收到事件（`mouseEventsQueued=2`）但地址栏未建立可读选择 + 校准被旧剪贴板假阳性。冷却后单独复跑 Edge 两行 **2/2 PASS**。卡死恢复**进程级**复核通过（kill helper/kill 目标 → 0 残留 → 重启 exit 0），2 s 有界停止超时仍未触发；管理员负样本本机未复现（未提权）。新增夹具缺陷 4 条（GBK 读回、剪贴板假阳性、`-OutDir` 未透传、清理漏杀） | `.tmp-r0-hook/newmachine/`（`DRAFT-section.md`、`matrix-run.log`、`matrix-run-summary.json`、`evidence-rows/`、`retry-edge/`、`explorer-drag-probe.log`、`crash-recovery.log`、`notepad-probe.log`、`env-facts.log`、`post-run-processes.txt`）、本文 §4.12 陷阱 5–7、§4.15 |

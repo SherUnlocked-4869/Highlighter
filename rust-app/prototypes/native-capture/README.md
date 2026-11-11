@@ -130,7 +130,8 @@ pwsh -NoProfile -File rust-app/prototypes/native-capture/run-long-sample.ps1 `
 
 ```text
 src/main.rs            CLI、编排、指标落盘、场景模式（窗口目标变化）、Debug/Release 标注
-src/capture/mod.rs     显示器枚举、目标解析（显示器/区域/窗口）、按时间轴重采样、暂停媒体时钟
+src/capture/mod.rs     显示器枚举、目标解析（显示器/区域/窗口）、按时间轴重采样、暂停媒体时钟；
+                       `--monitor` 目标把真实 HMONITOR 透传给 WGC（见 §6 已知限制第 12 条）
 src/capture/wgc.rs     WGC：D3D11 设备 → WinRT → CreateForMonitor → FramePool → staging
                        （surface 经 IDirect3DDxgiInterfaceAccess 取 ID3D11Texture2D）
 src/capture/gdi.rs     GDI：屏幕矩形/窗口三方法 BitBlt；暂停检查、逐帧事件
@@ -177,7 +178,13 @@ run-long-sample.ps1    30 分钟样例外壳：电源方案、进程树采样、
    `CreateForWindow` 均成功；修复 `IDirect3DSurface→ID3D11Texture2D` 读取 bug（须经
    `IDirect3DDxgiInterfaceAccess`）后，WGC 10 s@30 fps 采集成功（送达 590 帧/56.77 fps、
    写入 300 帧、复制补齐 0、全量解码 exit 0）。仍**未验证**：打包身份（MSIX/能力声明）、
-   同意 UI/采集指示、Win10/其它 build、多显示器/窗口/HDR/4K/60/长时 WGC。
+   同意 UI/采集指示、Win10/其它 build、窗口 WGC、同屏多路/HDR/长时 WGC。
+8. **多显示器（2026-11-11 晚，原机双屏）**：此前 `capture::run` 用合成 `MonitorInfo{ hmon: 0 }`
+   创建 item，`CreateForMonitor(0)` 得到整个虚拟桌面——单屏机器上不可见，**多屏下尺寸校验直接失败**。
+   已修复为透传真实 HMONITOR；修复后 `--probe-wgc` 与 10 s 采集在 4K 主屏、竖屏副屏上逐屏正确。
+   竖屏 1440×2560@30/@60 满帧；4K@30 未满帧（WGC 24.8 fps / GDI 27.9 fps 送达）；
+   **4K@60 在“原始 BGRA→stdin→libx264”架构下不可持续**（8.4 fps、背压 1834 ms），需硬编/GPU 拷贝或降采样。
+   证据见 [r0-media-native.md](../../../docs/plans/rust-migration/r0-media-native.md) §4.16。
 2. **GDI 全屏采集在本机达不到 30fps 唯一内容**：2240×1400 全屏约 21–25 fps（CAPTUREBLT 开关
    无显著差异），输出时间轴仍按 30fps 均匀补齐（`duplicated_frames`）；640×360 区域可达
    30.1 fps（Low/Medium IL 一致）。分辨率越高 GDI 整帧读回成本越大。

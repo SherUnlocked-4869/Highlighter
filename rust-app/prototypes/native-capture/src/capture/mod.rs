@@ -421,6 +421,12 @@ pub struct ResolvedCapture {
     pub target: CaptureTarget,
     /// GDI 是否使用 CAPTUREBLT（抓分层窗口；--no-captureblt 关闭以降低 DWM 抓取成本）。
     pub captureblt: bool,
+    /// `--monitor` 目标解析到的真实显示器（含 HMONITOR）；区域/窗口目标为 None。
+    ///
+    /// WGC 必须用真实 HMONITOR 创建 `GraphicsCaptureItem`：传 0 会得到整个虚拟桌面
+    /// （多显示器下尺寸是全部显示器的并集）。2026-11-11 原机（双屏）复验时因此暴露：
+    /// 单屏机器上虚拟桌面尺寸 == 单屏尺寸，缺陷不可见。
+    pub monitor: Option<MonitorInfo>,
 }
 
 fn make_task_ok(
@@ -437,6 +443,7 @@ fn make_task_ok(
         fallback_reason: None,
         target,
         captureblt,
+        monitor: None,
     })
 }
 
@@ -452,13 +459,15 @@ pub fn resolve(
         TargetSpec::Monitor(monitor) => {
             let screen = CaptureTarget::Screen(ScreenRect::from_monitor(&monitor));
             match mode {
-                "gdi" => make_task_ok(
-                    Backend::Gdi,
-                    monitor.width(),
-                    monitor.height(),
-                    screen,
+                "gdi" => Ok(ResolvedCapture {
+                    backend: Backend::Gdi,
+                    width: monitor.width(),
+                    height: monitor.height(),
+                    fallback_reason: None,
+                    target: screen,
                     captureblt,
-                ),
+                    monitor: Some(monitor),
+                }),
                 "wgc" | "auto" => match wgc::probe_size(&monitor, fault_wgc_hmon) {
                     Ok((width, height)) => {
                         if width % 2 != 0 || height % 2 != 0 {
@@ -473,6 +482,7 @@ pub fn resolve(
                                     fallback_reason: Some(msg),
                                     target: screen,
                                     captureblt,
+                                    monitor: Some(monitor),
                                 });
                             }
                             return Err(msg);
@@ -493,6 +503,7 @@ pub fn resolve(
                             fallback_reason: None,
                             target: screen,
                             captureblt,
+                            monitor: Some(monitor),
                         })
                     }
                     Err(err) => {
@@ -508,6 +519,7 @@ pub fn resolve(
                             fallback_reason: Some(format!("WGC probe failed: {err}")),
                             target: screen,
                             captureblt,
+                            monitor: Some(monitor),
                         })
                     }
                 },
@@ -591,6 +603,7 @@ pub fn resolve(
                 fallback_reason: None,
                 target: CaptureTarget::Window(Box::new(source)),
                 captureblt,
+                monitor: None,
             })
         }
     }
@@ -646,7 +659,9 @@ pub fn run(
         resolved.width,
         resolved.height
     );
-    let monitor = MonitorInfo {
+    // --monitor 目标带真实 HMONITOR（WGC 必须用它创建 GraphicsCaptureItem，传 0 会退化成
+    // 整个虚拟桌面）；区域/窗口目标才使用合成显示器。见 ResolvedCapture::monitor。
+    let monitor = resolved.monitor.clone().unwrap_or_else(|| MonitorInfo {
         index: 0,
         device: String::new(),
         hmon: 0,
@@ -659,10 +674,19 @@ pub fn run(
         work: RECT::default(),
         primary: true,
         dpi: 0,
-    };
+    });
     match resolved.backend {
         Backend::Wgc => {
-            // WGC 路径只支持显示器/区域（本机 WGC 不可用，保留原实现）。
+            // WGC 只能用真实 HMONITOR 创建 item：合成显示器（hmon=0）会退化成整个虚拟桌面，
+            // 多显示器下尺寸校验会失败。见 ResolvedCapture::monitor 的注释。
+            if resolved.monitor.is_none() {
+                return Err(
+                    "internal: WGC target has no resolved monitor (HMONITOR missing; the item \
+                     would become the whole virtual desktop)"
+                        .to_string(),
+                );
+            }
+            // WGC 路径只支持显示器；区域/窗口已在 resolve 阶段拒绝。
             let screen_rect = match &resolved.target {
                 CaptureTarget::Screen(r) => *r,
                 CaptureTarget::Window(_) => {

@@ -341,3 +341,77 @@ R0-06 缺字体/旧 Runtime；R0-07 UAC/SmartScreen 体验与 WebView2 多版本
 与 [r0-g0-report.md](r0-g0-report.md) §9.2 一致：真实测试机/VM 矩阵（最高优先）、WGC 收尾、R0-04 剩余项、
 R0-06 资源桥与缺字体、安装多版本矩阵与遗留键决策、ADR-0006/0007 收尾、**修正估算 + 正式 G0 报告**。
 **G0 仍未通过，R1～R7 不得开始。**
+
+## 15. 2026-11-11 原机接手轮（R0-03/05 复验、WGC 多显示器缺陷修复、R0-04 复跑）
+
+### 15.1 范围与边界
+
+- 运行主机：被交接回 **原机**（`SHERUNLOCK` / MSN，Ryzen 7 9850X3D / 47.15 GiB / RTX 5070 Ti /
+  双屏 4K@150% + 1440×2560@125% 负 Y / 仓库 `F:\workspace\Highlighter`）。
+- 边界不变：未改 `main/`、`preload*.js`、`shared/`、`capture/` 产品代码、`package.json`、现有 Electron
+  构建入口/CI；改动仅限 `rust-app/prototypes/`（原型缺陷修复）、`docs/plans/rust-migration/`（证据与交接文档）。
+- 用户授权：修复工作区完整性标签（整棵树）；**不**修改系统显示缩放；可见测试窗口只放副屏；
+  桌面录制按隐私要求处理（校验后删除视频，仅留指标）。
+
+### 15.2 环境诊断与修复（换机器必做三件事）
+
+1. **行尾**：接手时 `git status` 显示 56 个文件“全行修改”，`git ls-files --eol` 里 `i/lf w/crlf` = 973；
+   本机 `core.autocrlf` 为空。`git config core.autocrlf true` 后工作区立即干净（无真实改动被覆盖）。
+2. **完整性标签**：工作区根再次带 `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`（+`Everyone` DENY + 能力 SID），
+   工作区内 `whoami.exe` 副本实测 `Low (S-1-16-4096)`。修复：先 `icacls <root> /grant "*<SID>:(WO)" /T`
+   （属主只有隐式 `READ_CONTROL`+`WRITE_DAC`，改标签需要 `WRITE_OWNER`），再 `/setintegritylevel (OI)(CI)M /T`，
+   最后 `/remove:g` 回收；另删 `Everyone` DENY 与能力 SID。复验：工作区 whoami 副本 = `Medium (S-1-16-8192)`，
+   native-capture 自报 `[env] process integrity level = Medium(0x2000)`。
+3. **PowerShell 调用陷阱**：本宿主下 PS 5.1 `& <console-exe>` 会静默返回（0 行输出、`$LASTEXITCODE` 未设置）；
+   改用 bash 或 `cmd /c` 调用原型（§6.8/§7 陷阱 16）。
+
+### 15.3 交付物
+
+| 交付物 | 位置 | 状态 |
+|---|---|---|
+| WGC 多显示器缺陷修复（真实 HMONITOR 透传 + 缺失时硬失败守卫） | `rust-app/prototypes/native-capture/src/capture/mod.rs` | 已修，`fmt/clippy -D warnings/test` 全绿 |
+| R0-03 原机双屏复验证据 | `.tmp-r0/round3/`（gitignore）+ [r0-window-prototype.md](r0-window-prototype.md) §12 | 4 次自检 PASS、截图 before/during/after、负样本、残留检查 |
+| R0-05 原机 WGC/GDI 复验证据 | `.tmp-r0-media-native/newmachine/`（gitignore，含 `EVIDENCE.md`）+ [r0-media-native.md](r0-media-native.md) §4.16 | probe-wgc、竖屏 30/60 fps、4K@30、4K@60、GDI 对照 |
+| R0-04 原机矩阵复跑证据 | `.tmp-r0-hook/newmachine/`（gitignore，含 `DRAFT-section.md`）+ [r0-hook-extraction.md](r0-hook-extraction.md) §4.15 | 首跑 7/10；Edge 两行复跑 2/2；三条 FAIL 全部定位到测试侧/首启状态；夹具缺陷 4 条 |
+| 环境/机器事实登记 | [r0-baseline.md](r0-baseline.md) §9.4 | 三段机器时间线 + 本机环境事实 + 门禁 |
+| ADR 与索引 | [adr/0001-media-backend.md](adr/0001-media-backend.md) §6/§8、[README.md](README.md) | 变更记录与限制更新（仍为候选，未冻结） |
+| 原型 README | `rust-app/prototypes/native-capture/README.md` §5/§6 | WGC 多显示器修复与 4K/60 结论 |
+
+### 15.4 验证命令与结果（Lead 实际运行）
+
+```text
+node scripts/rust/extract-host-contracts.js --check        # up to date (13 roles, 257 methods)      exit 0
+node scripts/rust/generate-host-fixtures.js --check       # manifest + 28 cases up to date           exit 0
+node --test test/host-contracts.test.js                   # 19 pass / 0 fail                         exit 0
+node scripts/rust/collect-frontend-resources.js --check   # OK 191 files / 2,430,229 B               exit 0
+node --test test/frontend-resource-whitelist.test.js      # 9 pass / 0 fail                          exit 0
+npm run check                                             # 494 JS files / architecture / i18n       exit 0
+powershell -File scripts/rust/check-rust-app.ps1          # OK (fmt, clippy, test --locked)          exit 0
+cargo fmt --check / clippy -D warnings / test（native-capture）                                     exit 0
+git -c core.whitespace=cr-at-eol diff --check                                                       clean
+```
+
+**未执行**：完整 `npm test` / `test:e2e` / 覆盖率 / `verify:package` / CI；真实测试机/VM 矩阵；
+WGC 打包身份与同意/采集指示；HDR；同屏多路 WGC；100%/200% DPI 视觉矩阵。
+
+### 15.5 本轮更正/新增的结论（必须进入 G0）
+
+1. **多显示器 WGC**：此前“未验证” → 本机双屏**逐屏验证通过**（前提是修复原型 `HMONITOR` 未透传缺陷）。
+   阶段②笔记本单屏证据仍成立，但不可外推到多屏。
+2. **4K@60 不可持续**：当前“原始 BGRA → stdin → libx264”架构 4K@60 只送达 8.4 fps、背压 1834 ms；
+   R5 必须给出硬编/GPU 拷贝或降采样方案。4K@30 也满不了帧（WGC 24.8 / GDI 27.9 fps）。
+3. **竖屏 1440×2560 是该机 WGC 的舒服点**：30/60 fps 均满帧；30 fps 下送达 ≈51 fps（节流丢弃属预期）。
+4. **R0-03 双屏/负坐标/混合 DPI 复验通过**（150% + 125%，竖屏负 Y 原点）；100%/200% 未验证（用户不授权改缩放）。
+5. **R0-04 口径**：首跑 7/10 + Edge 两行复跑 2/2，Explorer 拖选未建立选择；三条 FAIL 均已定位到测试侧（Edge-default 的 helper 实际取到 15 字符，FAIL 来自首启提示条 + runner GBK 读回缺陷），并列出 4 条必须修的测试夹具缺陷。
+6. **环境**：Low 完整性标签会在新机器上复现且修复需要 `WRITE_OWNER` 前置；换机器先查 `core.autocrlf` 与标签。
+
+### 15.6 未完成/后续
+
+与 [r0-g0-report.md](r0-g0-report.md) §10.4 一致：真实测试机/VM 矩阵（Win10 22H2、WebView2 无/旧/离线、
+RDP/锁屏）、WGC 打包身份/同意/HDR/同屏多路/4K@60 硬编、R0-04 剩余项（卡死、管理员正样本、Explorer 拖选、
+lease 联调）、R0-06 资源桥与缺字体、R0-07 多版本矩阵/fixedRuntime/UAC、ADR-0006/0007 收尾，
+以及**修正估算 + 正式 G0 报告**。**G0 仍未通过，R1～R7 不得开始。**
+
+### 15.7 提交
+
+（提交后回填 `git log --oneline`；PR #5 保持 OPEN、不合并。）
