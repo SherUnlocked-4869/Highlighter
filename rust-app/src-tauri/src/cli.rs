@@ -9,6 +9,24 @@ pub const MIN_HOLD_MS: u64 = 2_000;
 /// 上限。
 pub const MAX_HOLD_MS: u64 = 5_000;
 
+/// 测试专用环境变量：设为 `1` 时允许把**主显示器**作为目标显示器。
+///
+/// 仅用于单屏主机上的自动化（WebDriver）与性能对照；生产包不应依赖，
+/// 未设置时行为与安全约定完全一致（无副屏直接失败退出、不创建可见窗口）。
+pub const ENV_ALLOW_PRIMARY: &str = "HIGHLIGHTER_R0_ALLOW_PRIMARY";
+
+/// 解析 `HIGHLIGHTER_R0_ALLOW_PRIMARY` 的原始值（严格 opt-in：只接受 `1`）。
+///
+/// 单独拆成纯函数便于单测证明"未设置 / 其他取值一律不允许"。
+pub fn parse_allow_primary(raw: Option<&str>) -> bool {
+    raw.is_some_and(|value| value.trim() == "1")
+}
+
+/// 从进程环境读取测试专用开关（`HIGHLIGHTER_R0_ALLOW_PRIMARY=1`）。
+pub fn allow_primary_from_env() -> bool {
+    parse_allow_primary(std::env::var(ENV_ALLOW_PRIMARY).ok().as_deref())
+}
+
 /// 启动参数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
@@ -50,7 +68,13 @@ Highlighter R0-03 Tauri 透明窗口/截图浮层原型
   --monitor       : 指定目标副屏序号（0 起，见日志）；指向主屏会被拒绝。
 
 安全约定: 原型只允许在非主显示器上出现可见窗口；未检测到副屏时直接报错退出，
-不创建也不显示任何窗口。";
+不创建也不显示任何窗口。
+
+测试专用环境变量（生产包不应依赖）:
+  HIGHLIGHTER_R0_ALLOW_PRIMARY=1
+      允许把主显示器作为目标显示器（仅用于单屏主机上的自动化/性能对照）。
+      --self-test 会如实打印 target_primary=true allow_primary=true；
+      未设置时行为与上面的安全约定完全一致。";
 /// 未检测到副屏时的进程退出码（不创建窗口）。
 pub const EXIT_NO_SECONDARY: i32 = 2;
 /// 自检/启动阶段硬失败。
@@ -141,6 +165,22 @@ mod tests {
 
         assert!(parse_args(&["--help"]).expect("help").help);
         assert!(parse_args(&["-h"]).expect("help short").help);
+    }
+
+    #[test]
+    fn allow_primary_env_switch_is_strict_opt_in() {
+        assert!(!parse_allow_primary(None), "unset env must keep default");
+        assert!(parse_allow_primary(Some("1")));
+        assert!(
+            parse_allow_primary(Some(" 1 ")),
+            "surrounding whitespace tolerated"
+        );
+        for value in ["0", "true", "yes", "01", "", "2", "on"] {
+            assert!(
+                !parse_allow_primary(Some(value)),
+                "value {value:?} must not enable the test switch"
+            );
+        }
     }
 
     #[test]

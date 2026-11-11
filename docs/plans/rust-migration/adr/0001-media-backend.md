@@ -6,8 +6,8 @@
 - 关联计划：§2 D05、§4.3、§7 R0-05、§8 G0、§9.2
 - 证据文档：[r0-media-webview.md](../r0-media-webview.md)（WebView 路径）、
   [r0-media-native.md](../r0-media-native.md)（原生路径）、
-  [`rust-app/prototypes/webview-media/`](../../../rust-app/prototypes/webview-media/)、
-  [`rust-app/prototypes/native-capture/`](../../../rust-app/prototypes/native-capture/)
+  [`rust-app/prototypes/webview-media/`](../../../../rust-app/prototypes/webview-media/)、
+  [`rust-app/prototypes/native-capture/`](../../../../rust-app/prototypes/native-capture/)
 - 证据目录：`.tmp-r0-media-webview/`、`.tmp-r0-media-native/`（gitignore）
 
 ## 1. 背景与问题

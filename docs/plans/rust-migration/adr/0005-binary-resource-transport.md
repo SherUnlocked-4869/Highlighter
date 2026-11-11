@@ -5,7 +5,7 @@
 - 日期：2026-11-10
 - 关联计划：§4.3（权限、事件与二进制资源）、§7 R0-06、§8 G0
 - 证据文档：[r0-resource-channel.md](../r0-resource-channel.md)、
-  [`rust-app/prototypes/webview-pdf-resource/`](../../../rust-app/prototypes/webview-pdf-resource/)（`--resource` 模式）
+  [`rust-app/prototypes/webview-pdf-resource/`](../../../../rust-app/prototypes/webview-pdf-resource/)（`--resource` 模式）
 
 ## 1. 背景与问题
 

@@ -4,8 +4,8 @@
 - 决定批次：R0-06；实施批次：R4-07
 - 日期：2026-11-10
 - 关联计划：§2 D05/D06、§4.3、§5.1、§7 R0-06、§8 G0
-- 证据文档：[r0-pdf-spike.md](../r0-pdf-spike.md)、[`rust-app/prototypes/webview-pdf-resource/`](../../../rust-app/prototypes/webview-pdf-resource/)、
-  [`scripts/rust/probe-electron-pdf.js`](../../../scripts/rust/probe-electron-pdf.js)
+- 证据文档：[r0-pdf-spike.md](../r0-pdf-spike.md)、[`rust-app/prototypes/webview-pdf-resource/`](../../../../rust-app/prototypes/webview-pdf-resource/)、
+  [`scripts/rust/probe-electron-pdf.js`](../../../../scripts/rust/probe-electron-pdf.js)
 
 ## 1. 背景与问题
 

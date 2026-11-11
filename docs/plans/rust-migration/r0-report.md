@@ -1,6 +1,6 @@
 # R0 实施报告（分支 `codex/rust-r0-baseline-contracts`）
 
-日期：2026-11-10。状态：**R0 部分完成；G0 未通过**。上位计划：
+日期：2026-11-10（2026-11-11 续作轮更新）。状态：**R0 部分完成；G0 未通过**。上位计划：
 [2026-11-10-rust-migration-development-plan.md](../2026-11-10-rust-migration-development-plan.md)。
 本报告是**最终验收口径**：`r0-baseline.md` / `feature-parity.md` / `host-contract-inventory.md`
 写于并行产出收口前，其"写作时"状态以本报告与 `git log` 为准。
@@ -26,7 +26,7 @@
 | R0-04 去 N-API 钩子小样 + Rust 剪贴板联调 | **原型完成（真实选词已验证；与 Rust 剪贴板联调未做）** | [r0-hook-extraction.md](r0-hook-extraction.md)、[ADR-0002](adr/0002-hook-extraction.md)、`native/selection-helper/` | 浏览器/Office/资源管理器/管理员窗口矩阵、真实卡死恢复、lease required=true、Rust 剪贴板联调未验证 |
 | R0-05 WebView 媒体路径验证（失败则原生采集闭环） | **两路 spike 完成（后端选型仍待 G0）** | [r0-media-webview.md](r0-media-webview.md)、[r0-media-native.md](r0-media-native.md)、[ADR-0001](adr/0001-media-backend.md) | WebView2 无法程序指定源/loopback；原生 GDI+WASAPI 可行下限成立但 WGC 本机被拒；30 分钟/双音源/暂停续录/两路同条件对照未验证 |
 | R0-06 v3 文档/v1 项目/合成凭据导入、图片/视频资源桥、PDF 样例 | **大部分完成（安装烟测未做）** | [r0-credential-migration.md](r0-credential-migration.md)、[r0-pdf-spike.md](r0-pdf-spike.md)、[r0-resource-channel.md](r0-resource-channel.md)、`test/fixtures/host-parity/` | 凭据双向实测、PDF 双后端对照、资源通道 Range/鉴权均完成；产品真实 print.html 批量/长图、图片视频资源桥真实链路、安装烟测未做 |
-| R0-07 NSIS 测试包、WebView2 有/无/离线、首轮性能对照 | **未开始** | 现有脚本 `scripts/verify-release.ps1` 等；`docs/releases/evidence/` 不存在 | 未建包、未做 Runtime 矩阵与性能对照；工具链/Runtime 未冻结 |
+| R0-07 NSIS 测试包、WebView2 有/无/离线、首轮性能对照 | **部分完成（本机，2026-11-11 续作轮）** | [r0-installation-matrix.md](r0-installation-matrix.md)、[r0-performance-baseline.md](r0-performance-baseline.md)；三种 NSIS 测试包、WebView2 五模式对照、缺失 Runtime 行为、两轮性能/进程树对照、工具链/Runtime 版本冻结 | 安装→启动→卸载链路阻塞（静默安装 exit 0 不落盘）；WebView2 多版本/无 Runtime/离线真实机器矩阵未做；fixedRuntime 仅评估；T4 媒体阈值未冻结；修正估算未做 |
 
 ## 3. 提交清单
 
@@ -86,7 +86,12 @@ $ node --check scripts/rust/probe-electron-pdf.js scripts/rust/probe-safestorage
 ```
 
 **未执行（不得视为通过）**：完整 `npm test`（1278 项）、`test:e2e`、覆盖率、打包/`verify:package`、
-硬件矩阵、性能对照、任何 100%/200% DPI 真机视觉验收、R0-04/R0-05/R0-06/R0-07 的任何验证。
+硬件矩阵、任何 100%/200% DPI 真机视觉验收、R0-04/R0-05/R0-06 的真机矩阵。
+
+2026-11-11 续作轮追加验证（见 §13）：JS 合同/夹具/白名单检查（end 0）、Rust workspace `cargo test --locked` 107 passed、
+`scripts/rust/check-rust-app.ps1` OK、`cargo clippy -p highlighter-r0-window --all-targets -D warnings` 0 warning、
+R0-03 单屏拒绝路径 exit 2、Release 自检（测试开关下）PASS、tauri-driver WebDriver 全流程（6 次 session）、
+两轮性能/进程树采样（.tmp-r07/perf/）、NSIS 三模式打包（未签名测试件）。**安装/卸载链路未通过**，性能收益结论未成立。
 
 ## 5. 冻结的宿主合同（R0-02 摘要）
 
@@ -125,8 +130,10 @@ $ node --check scripts/rust/probe-electron-pdf.js scripts/rust/probe-safestorage
   "两屏均 150%"读数被 Windows DPI 虚拟化放大，已按 R0-03 per-monitor aware 证据更正。
 - 隔离缺口：Tauri 的 `invoke_handler` 应用命令默认不受 capability ACL 约束，任何窗口可调用；
   原型在命令入口做 `window-owner-mismatch` 标签校验作为纵深防御，**不等于** R1-04 的角色权限映射。
-- 未验证：100%/200% DPI 视觉、首帧白闪、单屏/无副屏拒绝路径（改显示配置需用户确认）、鼠标穿透/
-  焦点策略、WebView2 子进程组完整计数、安装包/WebView2 分发。
+- 未验证：100%/200% DPI 视觉、首帧白闪、鼠标穿透/焦点策略、WebView2 子进程组完整计数。
+- 2026-11-11 续作轮补充：单屏/无副屏拒绝路径已实测（不建窗、exit 2、无残留，见 [r0-window-prototype.md](r0-window-prototype.md) §11.1）；
+  测试专用开关 `HIGHLIGHTER_R0_ALLOW_PRIMARY=1` 下主屏自检 PASS（日志明示不是副屏验证）；安装包/WebView2 分发见
+  [r0-installation-matrix.md](r0-installation-matrix.md)（仍含阻塞项）。
 
 ## 8. 未完成与风险
 
@@ -136,8 +143,10 @@ $ node --check scripts/rust/probe-electron-pdf.js scripts/rust/probe-safestorage
    Window Station 限制，回贴/前台授权/错误目标矩阵无真机证据。
 3. **数据/凭据/PDF/资源通道（R0-06）未做**：v3/v1 夹具已冻结，但凭据迁移格式、PDF 等价、
    图片/视频资源桥仍无 ADR 与小样。
-4. **安装/性能（R0-07）未做**：无 NSIS 测试包、无 WebView2 有/无/离线矩阵、无首轮性能对照，
-   性能目标阈值未冻结（计划 §9.2），不能下"内存下降"结论。
+4. **安装/性能（R0-07）部分完成、收益结论不成立**：测试包/WebView2 模式/缺失 Runtime/首轮性能对照已做，
+   但安装→启动→卸载阻塞、多版本矩阵未做；性能对照显示 Tauri 最小壳对 Electron 最小壳**无 Private Bytes 优势**
+   （+5.2%、进程数 4→7、启动 +18.4%），计划 §9.2 的 25% 下降目标不能靠替换宿主达成，见
+   [r0-performance-baseline.md](r0-performance-baseline.md)。
 5. 基线已知缺陷 D-01～D-20 全部仍在（CI 从未通过的渲染用例、真实桌面链路无自动化、硬件证据
    目录缺失等），迁移验收时不得把基线缺陷算作迁移回归。
 
@@ -145,7 +154,7 @@ $ node --check scripts/rust/probe-electron-pdf.js scripts/rust/probe-safestorage
 
 | 门禁 | 状态 | 说明 |
 |---|---|---|
-| G0 架构可行 | **未通过（有进展）** | 三条高风险链路均有实测证据（窗口/钩子/媒体两路）；五项决策（媒体/钩子/PDF/凭据/资源）为"候选"；缺 R0-07 版本矩阵与性能、长时媒体、真机 DPI 矩阵、修正估算；G0 报告草案见 [r0-g0-report.md](r0-g0-report.md) |
+| G0 架构可行 | **未通过（有进展）** | 七项决策均为"候选/部分完成"（2026-11-11 续作轮把 0006/0007 推进为候选）；缺安装链路验证、WebView2 真实机器矩阵、长时媒体、R0-04 真机矩阵、真机 DPI 矩阵、修正估算；性能收益假设未获证据支持；G0 报告见 [r0-g0-report.md](r0-g0-report.md) |
 | G1 平台可用 | **未通过** | R1 未开始 |
 | G2 日常功能对齐 | **未通过** | R3～R7 未开始 |
 | G3 运行环境去 Node | **未通过** | 本分支未验证运行依赖清单/进程树 |
@@ -179,9 +188,72 @@ G0 汇总草案（未通过）见 [r0-g0-report.md](r0-g0-report.md)；ADR 索�
 ## 12. 已知限制
 
 - 本分支所有合同/夹具是 **R0 证据，不是生产合同**；生产协议冻结在 R1。
-- 环境：`ELECTRON_RUN_AS_NODE=1` 仍设置（Electron 探针需清除，见 AGENTS）；本机 `TMP/TEMP`
-  指向仓库外临时目录（spawned Electron 子进程需改 `.tmp*/`）；本机 registry 为官方 npm，
-  与 AGENTS 记录的 npmmirror 不一致（R0-07/CI 复核）。
+- 环境：`ELECTRON_RUN_AS_NODE=1` 仍设置（Electron 探针需清除，见 AGENTS）；`TMP/TEMP` 指向仓库外临时目录
+  （spawned Electron 子进程需改 `.tmp*/`）。**机器相关**：2026-11-10 原机 registry 为官方 npm（与 AGENTS 记录的
+  npmmirror 不一致）；2026-11-11 续作机器（SHERUNLOCK02）为 `https://registry.npmmirror.com`（与 AGENTS 一致）。
+  CI 复核时以 runner 实际 registry 为准。
 - `rust-app/target` 在 Tauri 原型编译后约 2.9 GiB（未提交，gitignore）；CI 接入（fmt/clippy/test +
   合同/夹具 check）按计划属 R1，本分支未改任何 CI 工作流。
 - 未运行完整 `npm test`/E2E/打包；JS 侧改动仅为新增测试与 scripts/rust 工具，未改生产代码。
+## 13. 2026-11-11 续作轮（R0-07 本机部分 + ADR-0006/0007 + 首轮性能基线）
+
+### 13.1 范围与边界
+
+- 运行主机变更：本轮在 `SHERUNLOCK02`（i5-13500H / 15.7 GiB / Intel Iris Xe 无独显 / 单屏 2240×1400@150% /
+  WebView2 157.0.4341.46），与 2026-11-10 原机不同；用户已确认以当前机器为准，环境事实见
+  [r0-baseline.md](r0-baseline.md) §9。**本轮数值不可与原机或其它机器直接比较。**
+- 未启动 R1～R7 业务迁移；未改产品代码（`main/`、`preload*.js`、`shared/`、`package.json`、Electron 构建入口/CI 均未动）；
+  可见测试窗口按 `AGENTS.md` 经用户许可在单屏短暂显示。
+
+### 13.2 交付物
+
+| 交付 | 内容 | 状态 |
+|---|---|---|
+| R0-07 安装/分发矩阵 | [r0-installation-matrix.md](r0-installation-matrix.md)：三种 NSIS 测试包（download 1.92 MiB / embed 3.63 MiB / offline 209.61 MiB，均 `NotSigned`）、WebView2 五模式对照、缺失 Runtime 同栈行为（阻塞式加载器对话框 + exit 3）、版本冻结、Tauri CLI 自动改写 Cargo.toml 的登记 | 部分完成；**安装/卸载链路阻塞** |
+| R0-07 性能/进程树基线 | [r0-performance-baseline.md](r0-performance-baseline.md)：两轮取样（各 3 次/场景 + 新 profile 探针）、产品 Electron 两个状态基线、T1～T3 阈值冻结、T4 未冻结、方差与限制 | 完成（本机） |
+| ADR-0006 桌面 E2E | [r0-test-driver.md](r0-test-driver.md) + [adr/0006](adr/0006-desktop-test-driver.md) + `scripts/rust/probe-tauri-webdriver.js` + `scripts/rust/run-tauri-webdriver-probe.ps1`；tauri-driver 2.1.0 + msedgedriver 157.0.4341.46 真实 session 全流程、close/crash/负样本、生产隔离扫描 | 候选 A1（本机实测；CI/多版本未验证） |
+| ADR-0007 最低系统 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md) + [adr/0007](adr/0007-minimum-windows-runtime.md)：官方支持矩阵、Win10 22H2 生命周期、候选 A～D、真实测试机矩阵计划、README/产品决策输入 | 候选 A+D（调研完成；真机矩阵未做） |
+| R0-03 单屏路径 | [r0-window-prototype.md](r0-window-prototype.md) §11：单屏拒绝路径实测（exit 2、不建窗、无残留）；测试专用开关 `HIGHLIGHTER_R0_ALLOW_PRIMARY=1`（默认关闭、日志明示非副屏验证） | 完成（单屏路径）；DPI/副屏矩阵仍缺 |
+| 测量工具 | `scripts/rust/measure-resources.ps1`（进程树采样）、`scripts/rust/measure-r0-07-performance.ps1`（场景运行器）；两者 UTF-8 with BOM，PS 5.1/7 可解析 | 完成 |
+| 原型打包配置 | `rust-app/src-tauri/tauri.conf.json`：`bundle.active=true`、`targets=["nsis"]`、`webviewInstallMode=downloadBootstrapper`、`installMode=currentUser`（仅 R0-07 测试包，不代表产品构建入口） | 完成（测试配置） |
+| Rust 测试开关 | `rust-app/src-tauri/src/{cli,monitors,main}.rs`：`HIGHLIGHTER_R0_ALLOW_PRIMARY=1` 测试专用开关（默认路径零语义变化；3 个新单测；17 passed） | 完成 |
+
+### 13.3 本轮验证命令与结果（Lead 实际运行）
+
+```text
+$ node scripts/rust/extract-host-contracts.js --check        # up to date (13 roles, 257 methods)
+$ node scripts/rust/generate-host-fixtures.js --check       # manifest + 28 cases up to date
+$ node --test test/host-contracts.test.js                   # 19 pass / 0 fail
+$ node scripts/rust/collect-frontend-resources.js --check   # OK 191 files
+$ node --test test/frontend-resource-whitelist.test.js      # 9 pass / 0 fail
+$ cargo test --manifest-path rust-app/Cargo.toml --locked   # 107 passed / 0 failed（含 src-tauri 17）
+$ powershell -File scripts/rust/check-rust-app.ps1          # OK (fmt, clippy, test --locked)
+$ cargo clippy -p highlighter-r0-window --all-targets -- -D warnings  # 0 warning
+$ highlighter-r0-window.exe --self-test                     # 单屏无开关：exit 2、不建窗、无残留
+$ $env:HIGHLIGHTER_R0_ALLOW_PRIMARY=1; highlighter-r0-window.exe --self-test --hold-ms 2000
+  # PASS（日志明示 target_primary=true / NOT a secondary-monitor verification）
+$ powershell -File scripts/rust/run-tauri-webdriver-probe.ps1 -NativeDriver ... -AllowPrimaryScreen
+  # WebDriver 全流程 exit 0（session/handles/execute+IPC/actions/screenshot/delete；6 次成功 session）
+$ powershell -File scripts/rust/measure-r0-07-performance.ps1 -Runs 3 -IdleSec 20 -IncludeProduct -OutDir .tmp-r07/perf/results-final
+$ powershell -File scripts/rust/measure-r0-07-performance.ps1 -Runs 3 -IdleSec 20 -IncludeProduct -OutDir .tmp-r07/perf/results-clean
+  # 两轮完成；孤儿进程 0；电源方案已恢复
+```
+
+**未执行**：完整 `npm test` / `test:e2e` / 覆盖率 / 打包 `verify:package` / 真实安装/卸载 / WebView2 多版本/无 Runtime/离线矩阵 /
+R0-04/R0-05/R0-06 真机收尾 / 100/150/200% DPI 视觉矩阵。**G0 仍未通过。**
+
+### 13.4 本轮修正的预期（必须进入 G0 决策）
+
+1. **性能收益假设**：计划 §9.2 的“托盘空闲 Private Bytes 下降约 25%”未获证据支持——同形态最小壳下 Tauri 相对 Electron
+   为 +5.2%（区间重叠、方差大），进程数 4→7、启动 +18.4%；必须在 G0 显式重估收益或触发失败分支。
+2. **安装包体积**：offline 模式实测约 209.6 MiB（含 205 MiB WebView2 Standalone），明显大于 Tauri 文档的 ~127 MB 估计；
+   预算必须按实测。
+3. **缺失 Runtime 的失败形态**：WebView2 加载器会弹阻塞式对话框并挂起（不是产品可控错误），产品必须启动前检测并给原生引导；
+   自启动/托盘应用尤其危险。
+4. **测试驱动可行但有持续维护成本**：msedgedriver 必须与 WebView2 Runtime 精确同版本，CI runner 的 Runtime 随镜像更新，
+   需要运行时解析版本；launch 模式无主进程通道、应用 stdout 不落盘，R1 需要应用侧结构化日志/测试钩子。
+
+### 13.5 提交
+
+本轮全部改动（代码/脚本/文档）由 Lead 统一提交；提交说明包含“改变了什么、为什么、如何验证、剩余限制”
+（计划 §11）。提交哈希见 `git log --oneline` 中本轮的 `feat(rust): ... R0-07 ...` 提交。

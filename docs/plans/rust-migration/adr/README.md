@@ -1,6 +1,6 @@
 # R0 决策记录（ADR）索引
 
-日期：2026-11-10（更新 2026-11-11 00:10）。状态：**全部 ADR 均为 R0 草案，G0 未通过前不构成架构冻结**。
+日期：2026-11-10（更新 2026-11-11 14:00：0006/0007 由“待验证”推进为候选）。状态：**全部 ADR 均为 R0 草案，G0 未通过前不构成架构冻结**。
 
 规则（计划 §2、§8）：
 
@@ -17,7 +17,7 @@
 | [0003](0003-pdf-backend.md) | PDF 导出后端 | R0-06 / R4-07 | **候选 A（WebView2 PrintToPdfStream），未冻结** | [r0-pdf-spike.md](../r0-pdf-spike.md) |
 | [0004](0004-credential-migration.md) | 凭据迁移格式 | R0-06 / R2/R8 | **候选 B（Local State key + AES-GCM）+ C 兜底，未冻结** | [r0-credential-migration.md](../r0-credential-migration.md) |
 | [0005](0005-binary-resource-transport.md) | 图片/视频二进制资源传输 | R0-06 / R1/R4/R5 | **候选 D（协议 Range + command 敏感内容），未冻结** | [r0-resource-channel.md](../r0-resource-channel.md) |
-| [0006](0006-desktop-test-driver.md) | 桌面 E2E 测试驱动与版本 | R0 / R1 | **待验证（本轮未做）** | 无 |
-| [0007](0007-minimum-windows-runtime.md) | 最低 Windows / WebView2 Runtime 下限 | R0-07 / R8 | **待验证（本轮未做）** | 无 |
+| [0006](0006-desktop-test-driver.md) | 桌面 E2E 测试驱动与版本 | R0 / R1 | **候选 A1（tauri-driver 2.1.0 + 精确匹配 msedgedriver 2.1.0/157.0.4341.46），未冻结** | [r0-test-driver.md](../r0-test-driver.md) |
+| [0007](0007-minimum-windows-runtime.md) | 最低 Windows / WebView2 Runtime 下限 | R0-07 / R8 | **候选 A+D（Win10 22H2+Win11、Evergreen 默认 + 离线制品），未冻结** | [r0-minimum-windows-runtime.md](../r0-minimum-windows-runtime.md) |
 
 模板：[0000-template.md](0000-template.md)。每份 ADR 至少包含：背景、备选、实测条件与命令、证据（含失败分支）、结论/建议、未解决限制、责任批次与退出验收、变更记录。

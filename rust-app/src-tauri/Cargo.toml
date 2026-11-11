@@ -18,7 +18,7 @@ description = "R0-03 Tauri 2 transparent window / screenshot overlay prototype (
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2" }
+tauri = { version = "2", features = [] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 highlighter-windows-platform = { path = "../crates/windows-platform" }

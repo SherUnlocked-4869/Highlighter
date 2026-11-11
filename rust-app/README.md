@@ -58,6 +58,30 @@ cargo test --manifest-path rust-app/Cargo.toml --locked
 cargo run --manifest-path rust-app/Cargo.toml -p highlighter-r0-window -- --self-test --hold-ms 5000
 ```
 
+### R0-07 NSIS 测试包（**不是产品构建入口**）
+
+`src-tauri/tauri.conf.json` 为 R0-07 打开了 `bundle.active=true` 与 `targets=["nsis"]`，只用于产出原型测试包，
+不改变 `cargo run` 启动方式，也不替代现有 Electron 构建。用 npx 获取 Tauri CLI（不写 `package.json`）：
+
+```powershell
+cd rust-app
+npx --yes @tauri-apps/cli@2 build --no-bundle --ci        # Release exe（增量约 20~30s）
+npx --yes @tauri-apps/cli@2 bundle --bundles nsis --ci   # downloadBootstrapper（默认，需安装时联网）
+
+# 其它 WebView2 模式：用 --config 覆盖（Windows PowerShell 5.1 引号会吃掉 JSON，建议写临时 JSON 文件后用 --config <路径>）
+npx --yes @tauri-apps/cli@2 bundle --bundles nsis --ci --config <embedBootstrapper.json>
+npx --yes @tauri-apps/cli@2 bundle --bundles nsis --ci --config <offlineInstaller.json>
+```
+
+配置覆盖示例（文件内容）：`{"bundle":{"windows":{"webviewInstallMode":{"type":"embedBootstrapper"}}}}`
+（offline 模式把 `embedBootstrapper` 换成 `offlineInstaller`）。产物在
+`rust-app/target/release/bundle/nsis/`（gitignore）。安装包**未签名**（`Get-AuthenticodeSignature` = `NotSigned`），
+只作 R0 测试件；NSIS 配置为 per-user 安装（预期目录 `%LOCALAPPDATA%\Highlighter R0 Window Prototype`，
+预期 `setup.exe /S` / `uninstall.exe /S` 静默安装/卸载——**本机安装链路尚未验证通过**，原因与失败表现见文档 §6，
+不得当作已验证行为）。必须从 `rust-app/` 目录执行 Tauri CLI（在仓库根执行会误把
+`prototypes/webview-media` 当成 Tauri 项目并改写其 Cargo.toml）。实测产物哈希、WebView2 模式对照与未验证项见
+[r0-installation-matrix.md](../docs/plans/rust-migration/r0-installation-matrix.md)。
+
 脚本依次运行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、
 `cargo test --workspace --locked`，任一步非零即失败。除 R0-03 自检需要可见桌面外，其余测试
 不需要 GUI、Electron 或网络（首次依赖下载后离线可跑）。

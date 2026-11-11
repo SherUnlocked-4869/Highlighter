@@ -269,7 +269,7 @@ Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" |
 - [ ] 125% 之外目标屏缩放下的 DIP 定位语义（本原型按任务要求用**主屏**缩放换算；目标屏 125%，
       两者差异属于 R3 待冻结项）
 - [ ] 首帧白闪的逐帧录像（只做了运行中的静态截图，未证明“无闪”）
-- [ ] 单屏/无副屏场景（按 §7.3 需用户确认后才可测试）
+- [x] 单屏/无副屏场景：2026-11-11 在单屏主机实测，无副屏时拒绝建窗、退出码 2、无残留（见 §11.1）
 - [ ] 混合 DPI 跨屏拖动、`devicePixelRatio` 动态变化（本原型只在启动时读取一次；
       实测页面 `screenX/screenY` 为 (2560,-136)，宿主物理坐标为 (3840,-170)，
       说明 WebView2 的 `window.screenX/screenY` 在混合 DPI 下不可直接当物理坐标用）
@@ -370,3 +370,72 @@ Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" |
 | WebView2 透明窗口存在首帧/焦点/鼠标穿透限制 | R4 截图遮罩交互策略，必要时原生遮罩/输入方案 |
 
 > 本文件是 R0 原型证据，不构成生产合同；生产协议的冻结在 R1。
+## 11. 续作轮（2026-11-11，当前机器）：单屏拒绝路径与测试开关实测
+
+> 背景：续作会话运行在另一台机器（仅 1 块 2240×1400@150% 屏，无副屏；环境事实见
+> [r0-baseline.md](r0-baseline.md) §9）。原机的副屏/负坐标矩阵本机无法重跑；本轮只验证
+> **单屏拒绝路径**与**测试开关下的主屏建窗链路**，不替代 §7 的 DPI/副屏矩阵，也不改变 §8.2 的未验证项。
+
+### 11.1 单屏拒绝路径（不创建可见窗口）
+
+命令（仓库根，debug 构建，2026-11-11 12:50）：
+
+```powershell
+rust-app\target\debug\highlighter-r0-window.exe --self-test --hold-ms 3000
+```
+
+真实结果：退出码 **2**，耗时约 33 ms，窗口从未创建（日志显示在创建前失败），无残留进程。
+关键 stdout/stderr 摘录：
+
+```text
+[r0-window] mode=self-test hold_ms=3000 protocol=r0-prototype-1
+[r0-window] monitors=1
+[monitors] monitor[0] name=\\.\DISPLAY1 primary=true scale=1.50 dpi=144.0 position_physical=(0, 0) size_physical=2240x1400 position_dip=(0, 0) size_dip=1493x933 work_area_physical=(0, 0) 2240x1352
+[FAIL] startup code=secondary-monitor-required message=no-secondary-monitor: 未检测到副屏；原型拒绝在主屏创建可见窗口（不创建、不显示）
+（stderr）[r0-window] startup failed: secondary-monitor-required (...)
+```
+
+核对：`Get-Process highlighter-r0-window` 无输出；关联本原型 WebView2 数据目录的
+`msedgewebview2.exe` 为 0；任务栏/桌面无窗口。结论与 §7.3 第 4 条预期一致：**无副屏时不回退主屏、不创建窗口**。
+该项从"需用户确认后才能测试"变为"本机（原生单屏环境）实测"。
+证据（scratch，gitignore）：`.tmp-r07/window/single-screen.stdout.txt`、`.tmp-r07/window/single-screen.stderr.txt`。
+
+### 11.2 测试专用开关 HIGHLIGHTER_R0_ALLOW_PRIMARY
+
+单屏主机上 ADR-0006 的 WebDriver 探针与 R0-07 性能对照需要真实建窗；为此新增一个**测试专用、显式 opt-in**
+的环境开关（`rust-app/src-tauri/src/cli.rs`、`monitors.rs`、`main.rs`）：
+
+- 只认 `HIGHLIGHTER_R0_ALLOW_PRIMARY=1`（去空白后严格等于 `1`），默认未设置；
+- `select_target`：默认路径**直接委托原 `select_secondary`**（零语义变化）；开关打开时优先副屏、无副屏才退回主屏；
+- 命令面的 `require_secondary`、`--self-test` 的通过条件都按开关区分，日志如实打印
+  `allow_primary=true` 与 "NOT a secondary-monitor verification"，**不会**把主屏结果伪装成副屏通过；
+- 新增 3 个单测；`cargo test -p highlighter-r0-window --locked` 为 **17 passed / 0 failed**（原 15 + 新增 2）；
+- 生产包不应依赖该 env；它只存在于 R0 原型，用于单屏自动化。
+
+实测（Release 构建，2026-11-11 13:14，`rust-app\target\release\highlighter-r0-window.exe`）：
+
+| 场景 | 结果 |
+|---|---|
+| 未设置 env + `--self-test` | 退出码 **2**，`[FAIL] secondary-monitor-required`，无窗口、无残留（与改动前完全一致） |
+| `HIGHLIGHTER_R0_ALLOW_PRIMARY=1` + `--self-test --hold-ms 2000` | 退出码 **0**；`target_index=0 primary=true`；overlay `requested_position=(0,0) size=2240x1400`，`actual_position=(0,0)`、`actual_inner_size=2240x1400`（逐像素相等）；`dpr=1.5`；`canvas_css=1494x934` → `canvas_px=2241x1401`（= css×1.5 ±1）；ready=1、init=1、metrics=1；`[PASS] ... target_primary=true allow_primary=true`；无残留进程 |
+
+关键输出摘录：
+
+```text
+[self-test] allow_primary=true target_primary=true source=HIGHLIGHTER_R0_ALLOW_PRIMARY (test-only switch; NOT a secondary-monitor verification)
+[PASS] r0-03 self-test: secondary_monitor_index=0 target_primary=true allow_primary=true negative_y=false ready/init_once ok dpr=1.5 canvas_dpr_ok=true
+[self-test] result exit_code=0 primary_scale=1.5 monitors=1 target_primary=true allow_primary=true
+```
+
+**该 PASS 不是副屏验证**：它只证明单屏主机上透明浮层创建、物理定位、ready/init 单次握手、
+Canvas DPR 换算与退出清理链路可用；副屏覆盖、负坐标、混合 DPI 语义仍需原机/真实双屏复核。
+证据（scratch，gitignore）：`.tmp-r07/window/release-allow-primary.stdout.txt`、`.tmp-r07/window/release-noenv.stdout.txt`。
+
+### 11.3 本机仍不可覆盖的项
+
+- 100% / 200% DPI 视觉矩阵（需改系统缩放并重新登录，属用户操作）；
+- 副屏覆盖、负坐标放置、混合 DPI 跨屏拖动（本机无副屏）；
+- 首帧白闪逐帧录像、鼠标穿透/焦点/输入法行为；
+- 4K/200% 与独显/软渲染差异（本机为 2240×1400 核显）。
+
+> 本节结论只补充"单屏拒绝路径可实测"与"测试开关可用"两点；§7 的矩阵与 §8.2 的其余未验证项状态不变。

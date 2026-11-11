@@ -3,6 +3,10 @@
 日期：2026-11-11。交接对象：接手 Rust 迁移的下一名工程师/Agent。
 状态：**R0 部分完成；G0 未通过；R1 未开始（计划 §8 要求 G0 通过后才放行）**。
 
+> **2026-11-11 续作轮更新**：本轮已在**另一台机器**（SHERUNLOCK02，见 §12.1）完成 R0-07 本机部分、
+> ADR-0006/0007 与首轮性能基线；§0～§11 描述的是 2026-11-10 交接时的状态，最新进展、阻塞项与
+> 接手顺序以 §12 为准。
+>
 > 先读这份文档，再按 §9 的顺序接手；不要只看 PR 标题就认为 R0 已完成。
 > 所有"候选/待验证"结论以 [adr/README.md](adr/README.md) 与 [r0-g0-report.md](r0-g0-report.md) 为准，
 > 文档中的"未验证"项不得改写成已验证。
@@ -219,3 +223,68 @@ rust-app/                    # 主隔离 workspace（6 crates + src-tauri R0-03 
 rust-app/prototypes/         # 独立原型：native-capture / webview-media / webview-pdf-resource / credential-probe
 native/selection-helper/     # R0-04 独立 C++ helper
 ```
+## 12. 2026-11-11 续作轮交接（最新状态）
+
+### 12.1 运行主机已变更（必读）
+
+本轮起在 **`SHERUNLOCK02`** 上继续：Windows 11 家庭版 26300.9974、i5-13500H（12C/16T）、15.75 GiB RAM、
+Intel Iris Xe 核显（**无独显**）、**单屏** 2240×1400@150%（无副屏）、WebView2 **157.0.4341.46**、
+Electron 43.8.3、Node 24.15.0 / npm 11.17.0（registry=npmmirror）、仓库在 `D:\workspace\Highlighter`、
+`CARGO_HOME=D:\DevCache\cargo`。用户已确认：**以当前机器为准**做 R0-07/ADR 证据。
+
+→ §2 的原机（F: 盘、Ryzen 7 9850X3D、RTX 5070 Ti、双屏混 DPI、WebView2 .42）数值/结论**不可**与本轮混用；
+完整环境事实见 [r0-baseline.md](r0-baseline.md) §9。
+
+### 12.2 本轮完成（证据以对应文档为准）
+
+| 项 | 结果 | 文档 |
+|---|---|---|
+| R0-07 安装/分发（部分） | 三种 NSIS 测试包：download 1.92 MiB / embed 3.63 MiB / offline 209.61 MiB，均 `NotSigned`；WebView2 五种安装模式语义与体积实测；缺失 Runtime 时 WebView2 加载器弹**阻塞对话框**（同栈探针 exit 3）；tauri CLI 2.12.4 / NSIS 3.13 / 版本冻结 | [r0-installation-matrix.md](r0-installation-matrix.md) |
+| R0-07 性能/进程树（首轮） | 两轮取样（每场景 3 次 × 20 s + 新 profile 探针）：Tauri 最小壳对 Electron 最小壳 Private Bytes **+5.2%（区间重叠）**、WS +5.8%、进程 4→7、启动 +18.4%；产品 Electron 主窗口 189.48 MB / 托盘空闲 **131.90 MB**；孤儿进程 0；T1～T3 阈值冻结、T4 未冻结 | [r0-performance-baseline.md](r0-performance-baseline.md) |
+| ADR-0006 桌面 E2E（候选） | tauri-driver 2.1.0 + msedgedriver 157.0.4341.46（与 Runtime 精确匹配）驱动真实 Tauri：new session/handles/execute+IPC/W3C 点击/ready 握手/截图/close/crash/负样本全部实测；CI runner 等未验证 | [r0-test-driver.md](r0-test-driver.md)、[ADR-0006](adr/0006-desktop-test-driver.md) |
+| ADR-0007 最低系统（候选） | 候选 A+D：Win10 22H2 x64 + Win11 x64、WebView2 Evergreen 默认 + 离线单独制品；Win10 22H2 上 Edge/WebView2 官方更新至少到 2028-10（OS 已于 2025-10-14 EOL）；README 收紧需产品决策 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md)、[ADR-0007](adr/0007-minimum-windows-runtime.md) |
+| R0-03 单屏路径 | 无副屏 → 拒绝建窗、exit 2、无残留；测试专用开关 `HIGHLIGHTER_R0_ALLOW_PRIMARY=1`（默认关闭，日志明示非副屏验证）；Release 同样生效 | [r0-window-prototype.md](r0-window-prototype.md) §11 |
+| 工具 | `scripts/rust/measure-resources.ps1`、`scripts/rust/measure-r0-07-performance.ps1`（PS 5.1/7 可运行，UTF-8 with BOM）；`scripts/rust/probe-tauri-webdriver.js`、`run-tauri-webdriver-probe.ps1` | 同上 |
+
+### 12.3 本轮未完成 / 阻塞（G0 仍未通过）
+
+1. **安装→启动→卸载链路阻塞（最高优先）**：NSIS 静默 `setup.exe /S` 在本机 **exit 0 但不落盘**
+   （无安装目录/注册项/快捷方式；`/P` 挂起；未签名包经 ShellExecute 会弹“打开文件 - 安全警告”）。
+   已排除路径空格/参数/payload 损坏；候选原因见 [r0-installation-matrix.md](r0-installation-matrix.md) §6.1，
+   文档已按“未验证 + 失败表现”如实登记。接手需继续定位（cmd 捕获 NSIS AttachConsole、embed/offline 产物对照、
+   交互模式观察），或升级为产品决策（真实测试机/签名后验证）。
+2. WebView2 多版本/无 Runtime/离线/旧版真实机器矩阵（ADR-0007 依赖）；fixedRuntime 仅评估未实测。
+3. R0-05 长时收尾（30 分钟/双音源/暂停续录/两路同条件对照/§9.2 媒体阈值 T4）——本机无独显、WGC 被拒，需真机。
+4. R0-04 真机矩阵（浏览器/Office/资源管理器/管理员窗口、卡死恢复、`native/clipboard` 联调）。
+5. R0-03 100/150/200% DPI、副屏/负坐标、首帧白闪、鼠标穿透/焦点（本机单屏，需用户参与或双屏机器）。
+6. R0-06 产品真实 `capture/print.html` 批量/长图 PDF、图片视频资源桥真实链路。
+7. ADR-0006 的 CI runner/版本不匹配/多窗口/托盘/混合 DPI/长时稳定性；ADR-0007 的真机矩阵与 README 产品决策。
+8. **修正估算与正式 G0 报告**；且 §9.2 的“Private Bytes 下降约 25%”未获本轮证据支持，
+   必须在 G0 显式重估或走失败分支（计划 §8）。
+
+### 12.4 建议的接手顺序（更新 §9）
+
+1. 先跑 §6 的 JS 合同/白名单检查与 `scripts/rust/check-rust-app.ps1`（本机实测均通过，约 1–2 分钟）。
+2. 读 [r0-g0-report.md](r0-g0-report.md) §7（本轮新增）与 [r0-installation-matrix.md](r0-installation-matrix.md) §6，
+   确认 G0 缺口；**先解决或明确升级安装链路阻塞**，它同时是 R0-07 与 R0-06 安装烟测的前置。
+3. 与用户确认真机矩阵的可用性（Win10 22H2、无 WebView2、离线、双屏/多 DPI、独显），逐项补测；
+   本机只能做“无独显/单屏 150%/Win11”样本。
+4. 冻结 ADR-0006/0007 的候选结论（需产品批准 README 兼容性收紧）并重估 R5（媒体后端）与总量。
+5. 汇总修正估算与 G0 报告；G0 通过前仍不得开始 R1～R7 业务迁移（计划 §7/§8）。
+
+### 12.5 新增环境陷阱（本机实测）
+
+1. **PowerShell 5.1 + UTF-8 无 BOM 脚本**：中文注释行尾的多字节字符会被 GBK 代码页误解析并**吞掉换行**，
+   导致 `param` 块解析失败（与内容无关的 `Unexpected token ')'`）。仓库脚本统一要求 **UTF-8 with BOM**，
+   或纯 ASCII 注释；本轮新增脚本已带 BOM（`measure-resources.ps1`、`measure-r0-07-performance.ps1`）。
+2. **Tauri CLI 会改写 Cargo.toml**：`tauri-cli 2.12.4` 在 build/bundle 时把 `tauri = { version = "2" }`
+   写成 `{ version = "2", features = [] }`；且**必须在 `rust-app/` 下执行**，在仓库根执行会把
+   `rust-app/prototypes/webview-media` 误当 Tauri 项目并改写其 Cargo.toml（本轮已还原）。
+3. Electron 探针仍需 `env -u ELECTRON_RUN_AS_NODE`、`--no-sandbox` 在脚本路径之前、`TMP/TEMP` 指向 `.tmp*/`；
+   产品基线可用 `HIGHLIGHTER_E2E=1` + `HIGHLIGHTER_E2E_DATA_ROOT` 隔离数据根运行（本轮性能基线即如此）。
+4. 可见测试窗口：本机只有一块屏，用户已明确允许短暂可见窗口；不要在没有许可时长时间/反复弹窗。
+
+### 12.6 分支与提交
+
+分支仍为 `codex/rust-r0-baseline-contracts`；本轮改动（R0-07 打包配置、测试开关、脚本、文档）由 Lead 统一提交，
+提交说明含“改变了什么/为什么/如何验证/剩余限制”。PR #5 的合并决策仍属未决（见 §10 第 5 项）。

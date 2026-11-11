@@ -5,8 +5,8 @@
 - 日期：2026-11-10
 - 关联计划：§2 D06/D07、§5.1、§5.3、§7 R0-06、§8 G0
 - 证据文档：[r0-credential-migration.md](../r0-credential-migration.md)、
-  [`rust-app/prototypes/credential-probe/`](../../../rust-app/prototypes/credential-probe/)、
-  [`scripts/rust/probe-safestorage.js`](../../../scripts/rust/probe-safestorage.js)
+  [`rust-app/prototypes/credential-probe/`](../../../../rust-app/prototypes/credential-probe/)、
+  [`scripts/rust/probe-safestorage.js`](../../../../scripts/rust/probe-safestorage.js)
 
 ## 1. 背景与问题
 

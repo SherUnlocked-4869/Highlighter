@@ -5,6 +5,10 @@
 
 **门禁声明：本文件不构成任何 gate 已通过的证据。G0～G4 全部未通过。R0 只登记本分支实际完成的部分（截至本文件写作时：R0-01 文档、R0-02 合同/夹具的并行产物在途），真机/性能/安装包验证一律"未执行"。**
 
+> **2026-11-11 续作说明**：R0 续作会话运行在**另一台机器**（用户已确认以当前机器为准，见 §9）。
+> 本文件 §1～§7 的机器数值/时序属于原机（F: 盘、Ryzen 7 9850X3D、双屏混 DPI），**不得**当作当前机器或性能基线复用；
+> 当前机器的环境事实与续作轮证据索引见 §9。所有跨机器数值不可直接比较。
+
 ## 1. 基线版本与环境（本轮实测）
 
 ### 1.1 源码与版本
@@ -256,3 +260,51 @@
 1. 任何新的 R0 实测结论（真机、性能、安装、方案选型）必须回写本文件对应栏目，并在 `feature-parity.md` 更新相关功能行的"基线缺陷/未验证"证据。
 2. 决策登记从"待验证"变为"已选定"时，必须同时写清：实测条件、失败分支验证结果、剩余限制、责任批次与退出验收（计划 §2 要求）。不得只写结论。
 3. 本文件不修改生产代码、不执行 git 写操作；提交由 Lead 统一处理。
+## 9. 2026-11-11 续作：运行主机变更（当前环境事实）
+
+### 9.1 变更说明
+
+R0 交接文档（[handoff.md](handoff.md) §2）记录的是原机器：F: 盘仓库、AMD Ryzen 7 9850X3D（8C/16T）、
+47.2 GiB RAM、RTX 5070 Ti + AMD 核显、主屏 3840×2160@150% + 副屏 1440×2560@125%（负 Y 原点）、
+WebView2 157.0.4341.42、Node 24.22.1 / npm 12.1.0。续作会话实际运行在**另一台机器**（下表），
+用户已确认：**以当前机器为准**做 R0-07/ADR 证据，文档必须标注机器差异，原机数据保留但标注不可比。
+
+| 项 | 当前机器实测值（2026-11-11 12:48 +08:00） | 与原机差异 |
+|---|---|---|
+| 主机 / 用户 / 会话 | SHERUNLOCK02 / 24532 / 会话 1（交互式） | 原机 MSN 用户、仓库在 F: |
+| OS | Windows 11 家庭版 中文版，10.0.26300，UBR 26300.9974，DisplayVersion 26H2（ProductName 兼容字符串仍为 Windows 10 Home China） | 原机 Win11 专业版 26300.9711 |
+| CPU | 13th Gen Intel Core i5-13500H，12 核 / 16 逻辑核，MaxClockSpeed 2600 MHz | 原机 Ryzen 7 9850X3D 8C/16T |
+| 内存 | 16,907,100,160 B（约 15.75 GiB） | 原机约 47.2 GiB |
+| GPU | ① Intel Iris Xe Graphics，驱动 31.0.101.4032，2240×1400@60；② GameViewer Virtual Display Adapter，驱动 15.6.5.199；③ Honor Virtual Display Device，驱动 1.0.23.3 | 原机 RTX 5070 Ti + AMD 核显（本机**无独显**） |
+| 显示器 | **仅 1 块**：DISPLAY1 主屏，物理 (0,0)-(2240,1400)，工作区 2240×1352，144 dpi（**150%**），per-monitor DPI aware 枚举 | 原机双屏、混合 DPI、副屏负 Y；本机**无副屏** |
+| 电源 | 当前方案 = 平衡（381b4222-f694-41f0-9685-ff5bb260df2e）；电池状态 2（接交流电），电量 99% | 原机同样未固定电源方案 |
+| 磁盘 | D:（仓库）剩余约 201.1 GiB；C: 剩余约 15.4 GiB（C: 较紧，构建目标目录保持在 D:） | 原机仓库在 F:（剩余 913 GB） |
+| WebView2 Runtime | 157.0.4341.46（安装目录同时存在 157.0.4341.42 与 157.0.4341.46） | 原机 157.0.4341.42 |
+| Rust | rustc/cargo 1.97.1 (8bab26f4f / c980f4866)；CARGO_HOME=D:\DevCache\cargo | 与原机一致（工具链固定） |
+| Node / npm | Node v24.15.0 / npm 11.17.0；npm registry https://registry.npmmirror.com | 原机 24.22.1 / 12.1.0、官方 registry |
+| Electron / 产品 | Electron 43.8.3，highlighter-snowshot 4.2.0 | 与原机一致 |
+| git | 2.51.2.windows.1 | 原机 2.56.0 |
+| 会话环境陷阱 | ELECTRON_RUN_AS_NODE=1 仍设置（Electron 探针需清除）；TMP/TEMP 在 C:\Users\24532\AppData\Local\Temp（Electron 子进程写临时目录需指向 .tmp*/） | 与 AGENTS.md 陷阱一致，需按四类陷阱处理 |
+
+### 9.2 对 R0 证据口径的影响
+
+1. **性能数值不可跨机器比较**：原机 §1.2/§1.3 与 2026-11-10 的性能/DPI 观察均为原机样本；
+   本机首轮性能对照必须在本机重新取样，并记录 Release 构建、电源方案、显示状态、GPU 驱动与 Runtime 版本。
+2. **副屏/负坐标链路本机不可复现**：本机只有主屏，R0-03 的副屏覆盖、负坐标放置无法在本机重跑；
+   本机可实测的是**单屏拒绝路径**（不创建可见窗口 + 退出码 2），以及测试开关下的主屏建窗链路
+   （见 [r0-window-prototype.md](r0-window-prototype.md) 续作节）。这**不能**替代 G0 要求的 100/150/200% DPI 与副屏矩阵。
+3. **版本矩阵**：本机 WebView2 为 157.0.4341.46（非原机 .42），R0-07 的 Runtime 版本记录以本机为准；
+   完整"WebView2 有/无/离线"矩阵仍需真实测试机/隔离环境，本机只能做安装包模式对照与缺失模拟。
+4. **无独显**：本机 Intel Iris Xe 核显，媒体验证（WGC/GDI/编码）与原机（RTX 5070 Ti）的 GPU 结论不可互相复用；
+   本机适合做"无独显/集显"样本，反而补充了原机没有的硬件维度。
+
+### 9.3 续作轮证据索引（随本轮提交补齐）
+
+| 证据 | 文档 | 说明 |
+|---|---|---|
+| R0-07 安装包 / WebView2 分发模式 / 缺失 Runtime 行为 | [r0-installation-matrix.md](r0-installation-matrix.md)（本轮新增） | 本机 Tauri Release NSIS 测试包与模式对照；完整环境矩阵仍需真实测试机 |
+| R0-07 首轮性能 / 进程树对照 | [r0-performance-baseline.md](r0-performance-baseline.md)（本轮新增） | 本机 Release/生产构建条件、固定电源方案；跨机器不可比 |
+| ADR-0006 桌面测试驱动 | [r0-test-driver.md](r0-test-driver.md)、[ADR-0006](adr/0006-desktop-test-driver.md)（本轮新增） | tauri-driver/msedgedriver 版本与最小 WebDriver 探针 |
+| ADR-0007 最低 Windows / WebView2 | [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md)、[ADR-0007](adr/0007-minimum-windows-runtime.md)（本轮新增） | 官方支持矩阵调研 + 待真实测试机矩阵 |
+
+> 本节只登记环境与口径；门禁结论仍以 [r0-g0-report.md](r0-g0-report.md) 为准，G0 未通过。

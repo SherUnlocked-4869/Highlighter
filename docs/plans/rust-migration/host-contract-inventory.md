@@ -2,7 +2,7 @@
 
 日期：2026-11-10。状态：**R0 证据，不是生产合同**。实现规格见
 [`contract-format.md`](../../../docs/plans/rust-migration/contract-format.md)；上位计划见
-[`2026-11-10-rust-migration-development-plan.md`](../../2026-11-10-rust-migration-development-plan.md) §4、§5.1、§9.1、§10。
+[`2026-11-10-rust-migration-development-plan.md`](../2026-11-10-rust-migration-development-plan.md) §4、§5.1、§9.1、§10。
 
 本文件登记**从现有 JS 源码实际提取**的结果、与计划 §4.1/§5.1/§9.1 的差异、无法自动解析的
 `knownGaps`、未生成夹具的原因。只陈述证据，不修改 `main/`、`preload*.js`、`shared/`。

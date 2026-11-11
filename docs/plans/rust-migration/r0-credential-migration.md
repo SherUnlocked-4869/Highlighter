@@ -1,7 +1,7 @@
 # R0-06 合成凭据迁移测试报告（safeStorage ↔ Rust）
 
 日期：2026-11-10。状态：**R0 证据，ADR-0004 输入；G0 未通过前不冻结迁移格式**。
-关联：[计划](../../2026-11-10-rust-migration-development-plan.md) §5.1/§5.3/§7 R0-06、
+关联：[计划](../2026-11-10-rust-migration-development-plan.md) §5.1/§5.3/§7 R0-06、
 [r0-baseline.md](r0-baseline.md) §4.6、[研究](../../research/2026-11-10-rust-migration-feasibility.md) 凭据章节。
 
 只使用合成明文/密文，未读取任何真实设置、真实凭据或真实 key。探针代码：

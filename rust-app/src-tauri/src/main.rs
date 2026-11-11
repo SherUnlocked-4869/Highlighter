@@ -21,6 +21,7 @@ mod handshake;
 mod monitors;
 mod overlay;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,6 +43,9 @@ pub const EVENT_PROTOTYPE_INIT: &str = "prototype:init";
 const SELF_TEST_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 /// 窗口“请求 vs 实际”位置容差（Windows/DWM 可能微调几像素）。
 const POSITION_TOLERANCE_PX: i64 = 8;
+/// 测试专用开关是否允许主屏（由 `HIGHLIGHTER_R0_ALLOW_PRIMARY=1` 在 main 里设置）。
+/// 未设置时保持 `false`，与原有安全约定完全一致。
+static ALLOW_PRIMARY: AtomicBool = AtomicBool::new(false);
 
 /// 命令错误（R0 原型版；正式 `OperationError` 由 `contracts` crate 定义）。
 #[derive(Debug, Clone, Serialize)]
@@ -397,7 +401,8 @@ fn existing_window(app: &AppHandle) -> Result<WebviewWindow, CommandError> {
 }
 
 fn require_secondary(monitor: &MonitorSnapshot) -> Result<(), CommandError> {
-    if monitor.is_primary {
+    // 测试专用开关（默认关闭）：单屏自动化/性能对照允许主屏，其余行为不变。
+    if monitor.is_primary && !ALLOW_PRIMARY.load(Ordering::Relaxed) {
         Err(CommandError::new(
             "secondary-monitor-required",
             format!(
@@ -474,14 +479,18 @@ fn collect_monitors(app: &AppHandle) -> Result<(Vec<MonitorSnapshot>, f64), Comm
 /// setup 阶段：列显示器 → 选副屏 → 建浮层 → 定位（含 DIP 命令演练）→ 显示。
 ///
 /// 任何失败都发生在“可见窗口”之前或立即清理，不会把窗口留在主屏。
-fn start_prototype(app: &AppHandle, options: &cli::Options) -> Result<StartupReport, CommandError> {
+fn start_prototype(
+    app: &AppHandle,
+    options: &cli::Options,
+    allow_primary: bool,
+) -> Result<StartupReport, CommandError> {
     let mode = if options.self_test {
         "self-test"
     } else {
         "manual"
     };
     println!(
-        "[r0-window] mode={mode} hold_ms={} protocol={PROTOCOL}",
+        "[r0-window] mode={mode} hold_ms={} protocol={PROTOCOL} allow_primary={allow_primary}",
         options.hold_ms
     );
 
@@ -490,7 +499,7 @@ fn start_prototype(app: &AppHandle, options: &cli::Options) -> Result<StartupRep
     for monitor in &monitors {
         println!("[monitors] {}", monitor.describe());
     }
-    let target_index = monitors::select_secondary(&monitors, options.monitor_index)
+    let target_index = monitors::select_target(&monitors, options.monitor_index, allow_primary)
         .map_err(|message| CommandError::new("secondary-monitor-required", message))?;
     let target = monitors
         .get(target_index)
@@ -562,7 +571,13 @@ fn start_prototype(app: &AppHandle, options: &cli::Options) -> Result<StartupRep
 }
 
 /// 自检线程：等待页面 ready/init/metrics，校验后打印验证行并在 hold 后自动退出。
-fn spawn_self_test(app: AppHandle, report: StartupReport, handshake: Arc<Handshake>, hold_ms: u64) {
+fn spawn_self_test(
+    app: AppHandle,
+    report: StartupReport,
+    handshake: Arc<Handshake>,
+    hold_ms: u64,
+    allow_primary: bool,
+) {
     std::thread::spawn(move || {
         let deadline = Instant::now() + SELF_TEST_HANDSHAKE_TIMEOUT;
         while !(handshake.ready_count() > 0
@@ -590,6 +605,12 @@ fn spawn_self_test(app: AppHandle, report: StartupReport, handshake: Arc<Handsha
             handshake.init_sent(),
             handshake.metrics_count(),
         );
+        if allow_primary && report.target.is_primary {
+            println!(
+                "[self-test] allow_primary=true target_primary=true source={} (test-only switch; NOT a secondary-monitor verification)",
+                cli::ENV_ALLOW_PRIMARY
+            );
+        }
 
         let metrics = match handshake.metrics() {
             Some(metrics) => metrics,
@@ -690,7 +711,7 @@ fn spawn_self_test(app: AppHandle, report: StartupReport, handshake: Arc<Handsha
                 if !inside {
                     failures.push("浮层窗口实际位置不在目标副屏内".to_string());
                 }
-                if report.target.is_primary {
+                if report.target.is_primary && !allow_primary {
                     failures.push("目标显示器被识别为主屏（原型禁止）".to_string());
                 }
             }
@@ -699,8 +720,10 @@ fn spawn_self_test(app: AppHandle, report: StartupReport, handshake: Arc<Handsha
 
         let exit_code = if failures.is_empty() {
             println!(
-                "[PASS] r0-03 self-test: secondary_monitor_index={} negative_y={} ready/init_once ok dpr={} canvas_dpr_ok={}",
+                "[PASS] r0-03 self-test: secondary_monitor_index={} target_primary={} allow_primary={} negative_y={} ready/init_once ok dpr={} canvas_dpr_ok={}",
                 report.target_index,
+                report.target.is_primary,
+                allow_primary,
                 report.target.position[1] < 0,
                 metrics.device_pixel_ratio,
                 metrics.canvas_matches_dpr(),
@@ -713,9 +736,11 @@ fn spawn_self_test(app: AppHandle, report: StartupReport, handshake: Arc<Handsha
             cli::EXIT_SELF_TEST_FAILED
         };
         println!(
-            "[self-test] result exit_code={exit_code} primary_scale={} monitors={}",
+            "[self-test] result exit_code={exit_code} primary_scale={} monitors={} target_primary={} allow_primary={}",
             report.primary_scale,
             report.monitors.len(),
+            report.target.is_primary,
+            allow_primary,
         );
 
         if exit_code == 0 {
@@ -736,19 +761,35 @@ fn spawn_self_test(app: AppHandle, report: StartupReport, handshake: Arc<Handsha
     });
 }
 
-fn setup(app: &mut tauri::App, options: cli::Options, handshake: Arc<Handshake>) {
+fn setup(
+    app: &mut tauri::App,
+    options: cli::Options,
+    allow_primary: bool,
+    handshake: Arc<Handshake>,
+) {
     let app_handle = app.handle().clone();
-    match start_prototype(&app_handle, &options) {
+    match start_prototype(&app_handle, &options, allow_primary) {
         Ok(report) => {
             if options.self_test {
                 println!(
                     "[self-test] waiting for page ready/init/metrics (timeout {}s)",
                     SELF_TEST_HANDSHAKE_TIMEOUT.as_secs()
                 );
-                spawn_self_test(app_handle, report, handshake, options.hold_ms);
+                spawn_self_test(
+                    app_handle,
+                    report,
+                    handshake,
+                    options.hold_ms,
+                    allow_primary,
+                );
             } else {
                 println!(
-                    "[r0-window] manual mode: overlay is visible on the secondary display; close the window to exit"
+                    "[r0-window] manual mode: overlay is visible on the {} display (allow_primary={allow_primary}); close the window to exit",
+                    if report.target.is_primary {
+                        "primary"
+                    } else {
+                        "secondary"
+                    }
                 );
             }
         }
@@ -780,6 +821,11 @@ fn main() {
         return;
     }
 
+    // 测试专用开关（默认关闭）：HIGHLIGHTER_R0_ALLOW_PRIMARY=1 时允许主屏作为目标。
+    // 生产包不应依赖；未设置时以下所有路径与改动前完全一致。
+    let allow_primary = cli::allow_primary_from_env();
+    ALLOW_PRIMARY.store(allow_primary, Ordering::Relaxed);
+
     let handshake = Handshake::new();
     let handshake_for_setup = Arc::clone(&handshake);
     let setup_options = options.clone();
@@ -797,7 +843,7 @@ fn main() {
             prototype_report_metrics,
         ])
         .setup(move |app| {
-            setup(app, setup_options, handshake_for_setup);
+            setup(app, setup_options, allow_primary, handshake_for_setup);
             Ok(())
         })
         .build(tauri::generate_context!());

@@ -1,6 +1,6 @@
 # Rust 迁移 R0 实施索引
 
-日期：2026-11-10（更新 2026-11-11 00:10）。分支：`codex/rust-r0-baseline-contracts`（基线源码 `3df7129`，Highlighter 4.2.0 / Electron 43.8.3）。
+日期：2026-11-10（更新 2026-11-11 14:00：R0-07 本机部分、ADR-0006/0007 证据与性能基线）。分支：`codex/rust-r0-baseline-contracts`（基线源码 `3df7129`，Highlighter 4.2.0 / Electron 43.8.3）。
 上位计划：[2026-11-10-rust-migration-development-plan.md](../2026-11-10-rust-migration-development-plan.md)；可行性调研：[2026-11-10-rust-migration-feasibility.md](../../research/2026-11-10-rust-migration-feasibility.md)。
 
 **状态：R0 进行中；G0 未通过。** 本目录只登记 R0 的实际产物、证据和缺口，不声称任何架构选型已验证，
@@ -22,9 +22,13 @@
 | [r0-pdf-spike.md](r0-pdf-spike.md) | R0-06 PDF 双后端对照（WebView2 vs Electron） | 实测完成；ADR-0003 候选 |
 | [r0-resource-channel.md](r0-resource-channel.md) | R0-06 二进制资源通道（command vs 自定义协议） | 实测完成；ADR-0005 候选 |
 | [r0-credential-migration.md](r0-credential-migration.md) | R0-06 合成凭据迁移（safeStorage ↔ Rust） | 实测完成；ADR-0004 候选 |
+| [r0-installation-matrix.md](r0-installation-matrix.md) | R0-07 安装/分发矩阵：三种 NSIS 测试包、WebView2 五模式对照、缺失 Runtime 行为、版本冻结 | 部分完成；安装链路阻塞（未验证） |
+| [r0-performance-baseline.md](r0-performance-baseline.md) | R0-07 首轮性能/进程树对照（两轮取样）、阈值冻结 T1～T3、T4 未冻结 | 已完成（本机，跨机器不可比） |
+| [r0-test-driver.md](r0-test-driver.md) | ADR-0006 证据：tauri-driver 2.1.0 + msedgedriver 157.0.4341.46 最小 WebDriver 全流程、能力边界、版本冻结 | 已完成（CI/多版本未验证） |
+| [r0-minimum-windows-runtime.md](r0-minimum-windows-runtime.md) | ADR-0007 调研：Electron/Tauri/WebView2 官方支持矩阵、Win10 22H2 生命周期、候选 A～D | 已完成（需真实测试机矩阵） |
 | [r0-g0-report.md](r0-g0-report.md) | G0 决策报告草案：七项决策状态、未完成 R0 清单 | **G0 未通过** |
 | [r0-report.md](r0-report.md) | 本分支 R0 实施报告：交付矩阵、验证命令、缺口、门禁状态 | **最终状态以本文件为准** |
-| [adr/README.md](adr/README.md) | ADR 索引（0001 媒体 / 0002 钩子 / 0003 PDF / 0004 凭据 / 0005 资源通道 / 0006 测试驱动 / 0007 最低系统） | 五项候选、两项待验证 |
+| [adr/README.md](adr/README.md) | ADR 索引（0001 媒体 / 0002 钩子 / 0003 PDF / 0004 凭据 / 0005 资源通道 / 0006 测试驱动 / 0007 最低系统） | 七项候选（0006/0007 本轮由待验证推进为候选），均未冻结 |
 
 ## 2. 机器可读产物与代码
 

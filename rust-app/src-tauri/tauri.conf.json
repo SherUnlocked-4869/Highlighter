@@ -14,7 +14,15 @@
     }
   },
   "bundle": {
-    "active": false,
-    "icon": ["icons/icon.ico"]
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "publisher": "Highlighter R0 (test build, not for release)",
+    "shortDescription": "R0-07 NSIS test package for the R0-03 window prototype",
+    "longDescription": "R0-07 installation/distribution probe for the R0-03 Tauri transparent-window prototype. Not a production build entry and not signed.",
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": { "installMode": "currentUser" }
+    }
   }
 }

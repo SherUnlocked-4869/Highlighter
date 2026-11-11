@@ -1,0 +1,199 @@
+# R0-07 首轮性能 / 进程树对照基线
+
+- 日期：2026-11-11（Asia/Hong_Kong）。状态：**R0-07 性能部分（首轮对照，两轮取样）证据；不是 G0 通过、不是收益结论的最终版**。
+- 对应任务：计划 §7 R0-07“首轮性能对照”、§9.2 测量方法与目标；[r0-g0-report.md](r0-g0-report.md) §1“性能/资源对照（未做）”。
+- 运行主机：`SHERUNLOCK02`（Windows 11 26300.9974、i5-13500H 12C/16T、15.7 GiB RAM、Intel Iris Xe 核显、
+  单屏 2240×1400@150%、WebView2 157.0.4341.46、Electron 43.8.3、无独显）。环境差异见 [r0-baseline.md](r0-baseline.md) §9：
+  **本文件数值与原机（Ryzen 7 9850X3D / RTX 5070 Ti / 双屏）不可比较，也不可与其它机器直接比较。**
+- 复现入口：`scripts/rust/measure-resources.ps1`、`scripts/rust/measure-r0-07-performance.ps1`；
+  原始数据在 `.tmp-r07/perf/results-final/`（第一轮）、`.tmp-r07/perf/results-clean/`（第二轮）、
+  `.tmp-r07/perf/probe-fresh-profile/`（新 profile 探针）（gitignore，不提交），汇总文件 sha256 见 §7。
+
+## 0. 结论摘要（TL;DR）
+
+1. **同形态最小壳对照不支持“换宿主即省约 25% 内存”的假设**：两轮共 6 次 Electron 最小壳运行 vs 7 次
+   Tauri R0-03（WebView2）运行，进程树 Private Bytes 均值 **217.25 MB vs 228.64 MB（Tauri +5.2%，区间重叠）**、
+   Working Set **404.38 MB vs 427.79 MB（+5.8%）**，进程数始终 **4 vs 7**，启动到窗口可见均值 **427.7 ms vs 506.3 ms（+18.4%）**。
+   → 计划 §9.2 的“托盘空闲 Private Bytes 下降至少约 25%”**不能靠替换 WebView 宿主本身达成**；
+   G0 必须登记为“待 R1 真实宿主验证/可能需重估价”，不得写成已验证收益。
+2. **产品 Electron 基线（同一台机器、隔离数据根、dev 构建，两轮共 6 次）**：主窗口打开时 Private Bytes
+   **189.48 MB**（186.31–192.73）、Working Set **550.98 MB**、6 个进程；关闭主窗口后的**托盘空闲**
+   Private Bytes **131.90 MB**（130.90–134.71）、Working Set **391.31 MB**、5 个进程。这是 R1/T1 对照的**唯一有效基线**。
+3. **回收/残留**：两轮中每个场景每次运行退出后检查，孤儿进程均为 **0**；与计划 §9.2 “无累积孤儿进程”方向一致，
+   但“100 次窗口开关/任务取消”尚未做（R1 范围）。
+4. **测量方差不可忽略**：Tauri 原型两轮内 Private Bytes 在 208.02–245.29 MB 之间波动（约 ±8%），
+   Electron 最小壳在 211.47–223.59 MB；新 WebView2 profile 探针为 245.29 MB（说明不是“热缓存变省”）。
+   **跨轮次比较的差异（-1.7% 到 +13%）不足以支撑任何收益声明**，只能支撑“两者量级相当、进程数更多、启动更慢”。
+5. **启动耗时口径需在 R1 统一**：本轮 Tauri 用“浮层已显示”标记，Electron 用“页面 did-finish-load”；
+   两个事件在生命周期中的位置不同（Tauri 标记更早），因此 +18.4% 只能当作**指示性**数据；R1 必须冻结等价里程碑再比较。
+6. 本轮冻结可执行的 T1～T3 阈值（§6）；T4 媒体峰值阈值**未冻结**，原因是本机无独显且 R0-05 的 WGC 被拒，
+   无法给出可复现的同条件媒体基线，必须在 R5 开工前（不晚于 G2）按本文件方法补齐并在文档登记原因。
+
+## 1. 目的与边界
+
+回答 R0-07 中“首轮性能/进程树对照”的最小问题：
+
+1. 在同一台机器、同一电源方案、同一显示状态下，Tauri 2 + WebView2 的最小窗口宿主与 Electron 最小壳相比，
+   空闲时的进程树（进程数、Private Bytes、Working Set、句柄/线程）和启动耗时是什么量级？
+2. 产品 Electron 版在“主窗口打开”和“关闭主窗口后的托盘空闲”两个状态下的基线是多少（供 R1 对照）？
+3. 退出后是否存在残留进程？
+
+**不做**（明确边界）：
+
+- 不测截图/录屏/导出/长时媒体峰值（R0-05 长时与本机 WGC 限制，见 §7）；
+- 不测 GPU 专用内存（本机核显，且 WebView2/Electron 的 GPU 内存口径不同，本轮只记录进程树）；
+- 不做 100 次窗口开关/任务取消（R1 范围，计划 §9.2）；
+- 不把本轮数值当作跨机器/跨 Runtime 结论；
+- 不改变产品行为：Tauri 侧只跑 R0-03 原型，Electron 侧只运行隔离数据根下的 dev 产品与一个测量用最小壳。
+
+## 2. 对照对象与状态
+
+| # | 对象 | 构建/启动方式 | 状态 | 用途 |
+|---|---|---|---|---|
+| A | Electron 最小壳（测量夹具，不提交产品） | Electron 43.8.3 `electron.exe --no-sandbox .tmp-r07/perf/electron-minimal/main.js` | 单个全屏透明窗口 + 1 个渲染进程；页面绘制与 Tauri 原型等价的 Canvas 图案（棋盘/边框/十字/刻度），空闲 | 同形态“宿主替换”对照 |
+| B | Tauri R0-03 原型 | Release：`rust-app/target/release/highlighter-r0-window.exe`（sha256 `7c1a3dae…d55715`），env `HIGHLIGHTER_R0_ALLOW_PRIMARY=1`（单屏测试开关） | 单个全屏透明浮层 + WebView2，绘制原型自检图案，空闲 | 新宿主原型对照 |
+| C | 产品 Electron（dev 构建） | `electron.exe --no-sandbox .`，`HIGHLIGHTER_E2E=1` + 隔离 `HIGHLIGHTER_E2E_DATA_ROOT` + `HIGHLIGHTER_USAGE_HOME` 指向夹具 | `main-window-open`：主窗口可见；`tray-idle`：关闭主窗口后（进程驻留托盘） | R1 基线与阈值锚点 |
+
+说明：
+
+- A 的页面内容是 C 的近似镜像（同一份 Canvas 图案逻辑、同尺寸 1493×933 DIP、同 150% 缩放）；
+  仍不完全等价（A 为测量夹具、无产品业务逻辑；B 为 always-on-top 透明浮层；C 是完整产品 UI）。
+- B 的 `HIGHLIGHTER_R0_ALLOW_PRIMARY=1` 是 driver-spike 本轮新增的**测试专用**开关（见
+  [r0-window-prototype.md](r0-window-prototype.md) §11.2）；默认行为不变，生产包不应依赖。
+- C 使用 E2E 隔离数据根，未读取真实用户设置/凭据；`HIGHLIGHTER_E2E_FAKE_EVERYTHING=1` 只替换 Everything 搜索，
+  其余服务按 dev 构建运行。C 的状态是“dev 构建 + E2E 隔离”，不是正式安装包状态（正式包基线属 R1/R8）。
+
+## 3. 固定条件（计划 §9.2）
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| 机器 | SHERUNLOCK02，i5-13500H 12C/16T，15.7 GiB，Intel Iris Xe（无独显） | 同一台机器内比较 |
+| OS / Runtime | Windows 11 26300.9974 / WebView2 157.0.4341.46 | Runtime 版本记录；不跨版本外推 |
+| Electron | 43.8.3（Chromium 150；WebView2 157 是更新的 Chromium，**两者内核版本不同**，见 §7） | |
+| 显示 | 单屏 2240×1400 物理 @150%（1493×933 DIP） | 窗口均为全屏透明 |
+| 电源方案 | 测量前=平衡；测量中强制“高性能”（`8c5e7fda-…`）；测量后恢复平衡（summary 记录 before/during/after） | 计划 §9.2 固定电源方案 |
+| 电池 | 接交流电（BatteryStatus=2，99%） | 避免省电模式影响 |
+| 构建 | Tauri 为 **Release**（`cargo build --release -p highlighter-r0-window --locked`）；Electron 为官方 release 运行时 | 不以 Debug 数据下结论 |
+| 采样 | 每场景每轮 3 次独立运行；空闲采样 20 s、间隔 2 s；**共两轮**（第一轮在设备有并行活动时完成，第二轮在机器安静后重跑） | 样本量与方差说明见 §7 |
+| 回收等待 | 关闭/退出后等待 3 s 再检查残留 | 与计划“设置回收等待时间并记录”一致 |
+
+## 4. 测量方法
+
+- `scripts/rust/measure-resources.ps1`：按根 PID 找 **整棵进程树**（父链递归），每 2 s 采样一次；
+  指标 = `Get-Process PrivateMemorySize64` 合计（Private Bytes）、`WorkingSet64` 合计、`HandleCount`、
+  `Threads.Count`、`TotalProcessorTime` 增量（CPU%，按 16 逻辑核归一）。
+- `scripts/rust/measure-r0-07-performance.ps1`：依次启动 A/B/C，等到 stdout 标记后调用采样器；
+  C 额外在主窗口可见时采样一次，再用 `CloseMainWindow()` 关闭主窗口、等待 4 s 后采样“托盘空闲”状态；
+  最后强制结束进程树并在 3 s 后统计残留。
+- 启动耗时：从 `Start-Process` 返回到 stdout 标记出现（轮询 50 ms）；
+  A = `SHELL_READY`（`did-finish-load`），B = `[overlay] shown`（浮层显示命令返回，早于页面 ready），
+  C = `main-window.ready`（产品自己的 performance 标记）。**三者不是同一生命周期里程碑**。
+- 每轮每场景统计：3 次运行的均值/最小/最大；`private_p95` 是每次运行内部 20 s 采样点的 p95 再取平均（描述性，不作推断统计）。
+
+## 5. 结果
+
+### 5.1 合并两轮（推荐引用这一节）
+
+| 场景/状态 | 运行数 | Private Bytes 均值（min–max，MB） | Working Set 均值 | 进程数 | 空闲 CPU | 启动耗时均值（min–max） | 孤儿进程 |
+|---|---|---|---|---|---|---|---|
+| Electron 最小壳 / 窗口空闲 | 6 | **217.25**（211.47–223.59） | 404.38 | **4** | 0.01%–0.02% | **427.7 ms**（415–458） | 0 |
+| Tauri R0-03 Release / 窗口空闲 | 7 | **228.64**（208.02–245.29） | 427.79 | **7** | 0.04%–0.16% | **506.3 ms**（463–581） | 0 |
+| 产品 Electron / 主窗口打开 | 6 | **189.48**（186.31–192.73） | 550.98 | 6 | 0.01%–0.04% | 693.2 ms（659–734） | 0 |
+| 产品 Electron / 托盘空闲 | 6 | **131.90**（130.90–134.71） | 391.31 | 5 | 0.00%–0.04% | 同上（同一运行） | 0 |
+
+其中 Tauri 的 7 次 = 第一轮 3 次 + 第二轮 3 次 + 新 WebView2 profile 探针 1 次（§5.3）。
+所有运行退出后残留进程 = 0；电源方案在测量后已恢复平衡（两轮 summary 的 `power_plan_before/during/after` 字段）。
+
+### 5.2 分轮数据（方差证据）
+
+| 对象/轮次 | Private Bytes（3 次，MB） | 说明 |
+|---|---|---|
+| Electron 最小壳，第一轮 | 221.10 / 223.59 / 219.34 | 均值 221.34 |
+| Electron 最小壳，第二轮 | 211.94 / 216.06 / 211.47 | 均值 213.16（第二轮更低，原因未完全解释，见 §7） |
+| Tauri R0-03，第一轮 | 209.21 / 208.02 / 235.26 | 均值 217.49；第 3 次明显偏高 |
+| Tauri R0-03，第二轮 | 235.47 / 232.58 / 234.63 | 均值 234.23 |
+| Tauri R0-03，新 profile 探针 | 245.29（1 次） | 把 WebView2 数据目录移走后新建 profile，**不降反升** |
+
+→ **跨轮次差异（Tauri 208→245、Electron 212↔224）与“宿主架构差异”同量级**，因此 §5.1 只给区间与均值，
+不做“Tauri 比 Electron 省/费 X%”的确定性表述；能确定的是：进程数 7 对 4、启动更慢、量级相当。
+
+### 5.3 进程树形态（单次采样示例）
+
+Electron 最小壳（4 个进程）：浏览器/主进程约 46 MB + GPU 约 12 MB + 渲染进程约 142 MB + 网络工具进程约 26 MB（Private Bytes）。
+
+Tauri R0-03（7 个进程）：应用主进程约 18 MB + 6 个 `msedgewebview2.exe`（浏览器进程约 41 MB、渲染/GPU 侧约 122 MB，其余为工具/crashpad 等）。
+
+→ 对比解释（机制层面，不是结论）：Tauri 的应用主进程确实比 Electron 的浏览器+Node 主进程小（约 18 MB vs 46 MB），
+但 WebView2 一侧多出多个常驻子进程，两者合计后 Private Bytes 量级相当；进程数/句柄/线程更高，启动路径也更长。
+
+### 5.4 具体比值（仅描述，不作收益结论）
+
+- Tauri 相对 Electron 最小壳（合并均值）：Private Bytes **+5.2%**、Working Set **+5.8%**、进程数 **+3（4→7）**、启动 **+18.4%**。
+- 产品“关闭主窗口”相对“主窗口打开”：Private Bytes **-30.4%**、Working Set **-29.0%**、进程数 6→5（可见窗口的渲染进程被回收/挂起）。
+
+## 6. 冻结的验收阈值（计划 §9.2）
+
+以下阈值在本轮**首次对照运行前**的文档结构中定义，并在本轮数据后补入基线值；R1 起使用同一口径，不得事后改口径：
+
+| 编号 | 指标 | 基线（本机 2026-11-11，两轮合并） | 阈值/判定 | 适用门禁 |
+|---|---|---|---|---|
+| T1 | **托盘空闲**进程树 Private Bytes（均值，≥3 次运行） | Electron 产品 **131.90 MB** | 目标 ≤ **75%** 基线 = **98.9 MB**（相对下降 ≥25%）；若 R1 实测基线本身 <80 MB，改为“有意义的绝对值目标”（需提前在报告登记并说明） | G1（R1 宿主编排）/G2 |
+| T2 | **首个窗口可见/就绪**耗时 p95（冷启动，≥30 次） | Electron 产品 `main-window.ready` 两轮 6 次均值 693.2 ms（p95 待 R1 用 30+ 样本冻结） | 相对增加 ≤ **10%**（即 p95 ≤ 1.10 × 同状态 Electron p95）；**冷/热分别统计，不混平均**；R1 必须先冻结“等价里程碑”（建议：进程创建→页面完成加载/首帧可见，两端用同一语义事件） | G1/G2 |
+| T3 | **100 次窗口开关 + 任务取消**后的进程/句柄累积 | 两轮 13 次最小壳/原型运行 + 6 次产品运行，退出后孤儿=0（仅方向性证据） | 100 次后：孤儿进程 = 0；进程数回到基线 ±1；句柄/Private Bytes 无单调上升趋势（记录趋势，不比单点） | G1/G2 |
+| T4 | 媒体（录制/导出/长图）峰值 CPU/GPU/Private Bytes | **未冻结**：本机无独显、R0-05 的 WGC 被拒，缺少可复现的同条件媒体基线 | 必须在 R5 开工前（不晚于 G2）按本文件方法补齐，并在报告登记；不得留到验收时解释 | G2/G4 |
+
+辅助阈值（记录用，不作硬门禁）：空闲 CPU ≤ 1%（进程树合计）视为可接受（本轮 0.00%–0.16%）；
+启动耗时仅作指示，因两端里程碑不同（§4）。
+
+## 7. 证据、限制与未验证
+
+### 7.1 证据文件（scratch，不提交）
+
+- 第一轮汇总：`.tmp-r07/perf/results-final/summary.json`（sha256 `02a49206d3be9d8fd12e5e1ffa84ef9d7f81d60f4ae659dc79d7007f6a75dfad`）；
+- 第二轮汇总：`.tmp-r07/perf/results-clean/summary.json`（sha256 `97308b80889000458a2d5e593846ec1e35dd27fa8cf1da7bf4cdee3df1b8e31b`）；
+- 新 profile 探针：`.tmp-r07/perf/probe-fresh-profile/summary.json`（Tauri 用新 WebView2 数据目录单跑 1 次）；
+- 每次运行：`*-run{1..3}.sample.json`（各 28–46 KB，含每 2 s 的整棵进程树明细）；
+- 日志：对应 `logs/*.stdout.txt|stderr.txt`（含 Tauri/产品启动行、产品自身 `performance-snapshot` 行）。
+
+产品日志中的自身快照（主窗口刚就绪时）为 processCount=5、WS 486.92 MiB、private 171.18 MiB，与本采样器
+“主窗口打开”的 Private 189.48 MB / WS 550.98 MB 不同源（Electron 自身 `getAppMetrics` 口径 vs 进程树 `Get-Process` 口径，
+且采样时机不同）；两者只作交叉核对，不互相替代。
+
+### 7.2 限制（不得省略）
+
+1. **样本量小、方差大**：每场景每轮 3 次运行、每次 20 s；Tauri 跨轮次波动约 ±8%，Electron 约 ±3%。
+   本轮是可复现的首轮对照，不是统计显著结论。
+2. **方差来源未完全解释**：曾假设 WebView2 profile 热缓存导致第二轮更省，实测新 profile **245.29 MB 反而更高**，
+   该假设被否定；GPU/DWM 合成状态、Windows 内存压缩/回收时机、后台活动窗口等都可能是因素，本轮未隔离。
+3. **里程碑不统一**：A/B/C 的“启动完成”标记语义不同（§4），启动耗时只作指示。
+4. **形态不完全等价**：A 是测量夹具（无业务逻辑、页面内容镜像 B）；B 是 always-on-top 透明浮层原型；
+   C 是完整产品但 dev 构建 + E2E 隔离。三者“功能状态”不同，只能各自对照，不能把 C 与 A/B 直接混比。
+5. **内核版本不同**：Electron 43 内置 Chromium 150，本机 WebView2 为 157（更新的 Chromium），
+   内存/启动差异可能部分来自内核版本而不是宿主架构。
+6. **无独显**：本机 Intel Iris Xe；原机 RTX 5070 Ti 的 GPU/合成行为不可复用，反向也不可。
+7. **机器持续有后台负载**：自动化宿主（DSH）与桌面组件常驻；第一轮期间另有 WebDriver 探针/打包活动（已记录），
+   第二轮在合作方暂停重活后重跑；同一会话内相对比较有效，绝对值仅供本机复现。
+8. **Tauri 原型无托盘/主窗口**：本轮无法测量“Tauri 宿主托盘空闲”，T1 只能等 R1 的真实宿主状态；
+   因此**本轮不能宣布 T1 达标或未达标**，只能宣布基线已建立。
+
+## 8. 对 G0 的输入（必须按原样登记）
+
+1. 性能/资源对照从“未做”变为“**首轮对照已完成（本机、Release、固定电源方案、两轮取样）**”；
+2. 计划 §9.2 的“托盘空闲 Private Bytes 下降约 25%”**未获本轮证据支持**：同形态最小壳对照为 Tauri +5.2%（区间重叠、方差大）、
+   进程数 4→7、启动 +18.4%；该目标必须在 R1 用真实宿主状态验证，并准备“需重估价/产品决策”的失败分支；
+3. 托盘空闲基线（Electron 产品 **131.90 MB**）与启动基线（main-window.ready **693.2 ms**，6 次均值）已建立，可作为 R1 对照锚点；
+4. 退出无孤儿进程的方向性证据成立（每次运行均为 0），但 100 次开关/取消与趋势测试仍属 R1；
+5. T4 媒体阈值未冻结，原因与截止时间（R5 开工前/不晚于 G2）已登记。
+
+## 9. 复现命令
+
+```powershell
+# 仓库根目录；PowerShell 5.1 / 7 均可（脚本为 UTF-8 with BOM）
+cargo build --manifest-path rust-app/Cargo.toml -p highlighter-r0-window --release --locked
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rust/measure-r0-07-performance.ps1 -Runs 3 -IdleSec 20 -IncludeProduct -OutDir .tmp-r07/perf/results-clean
+# 单场景最小复跑（Electron 最小壳）：
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/rust/measure-r0-07-performance.ps1 -Runs 1 -IdleSec 20 -SkipTauri
+```
+
+> 注意：脚本会临时把电源方案切到“高性能”并在结束时恢复；可见窗口为全屏透明浮层/窗口，
+> 本轮按仓库 `AGENTS.md` 已获用户对“单屏短暂可见测试窗口”的许可。

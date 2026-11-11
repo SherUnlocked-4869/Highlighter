@@ -145,6 +145,36 @@ pub fn select_secondary(
         })
 }
 
+/// 选择浮层目标显示器（测试专用开关 `HIGHLIGHTER_R0_ALLOW_PRIMARY=1`）。
+///
+/// `allow_primary=false` 时与 [`select_secondary`] **完全一致**（默认行为不变）。
+/// `allow_primary=true` 时允许主屏作为目标，供单屏主机上的 WebDriver/性能对照使用：
+/// 未显式指定时仍优先副屏，只有没有副屏时才退回主屏；显式 `requested` 时只校验
+/// 序号存在（主/副屏均可）。
+pub fn select_target(
+    monitors: &[MonitorSnapshot],
+    requested: Option<usize>,
+    allow_primary: bool,
+) -> Result<usize, String> {
+    if !allow_primary {
+        return select_secondary(monitors, requested);
+    }
+    if let Some(index) = requested {
+        return monitors.get(index).map(|_| index).ok_or_else(|| {
+            format!(
+                "monitor-not-found: --monitor {index} 不存在（共 {} 块显示器）",
+                monitors.len()
+            )
+        });
+    }
+    monitors
+        .iter()
+        .position(|monitor| !monitor.is_primary)
+        .or_else(|| monitors.iter().position(|monitor| monitor.is_primary))
+        .or_else(|| (!monitors.is_empty()).then_some(0))
+        .ok_or_else(|| "no-monitor: 未检测到任何显示器".to_string())
+}
+
 /// 物理像素放置：窗口左上角 = 显示器原点 + 偏移；`size=None` 时铺满整块显示器。
 ///
 /// 返回 `(position, size)`；坐标为负是合法的（副屏在主屏左侧/上方时）。
@@ -290,6 +320,29 @@ mod tests {
         let error = select_secondary(&monitors, None).expect_err("no secondary");
         assert!(error.starts_with("no-secondary-monitor"), "{error}");
         assert!(select_secondary(&[], None).is_err());
+    }
+
+    #[test]
+    fn test_switch_allows_primary_but_default_still_refuses() {
+        let single = vec![monitor(0, [0, 0], [2_240, 1_400], true)];
+        // 未设置 HIGHLIGHTER_R0_ALLOW_PRIMARY：行为与改动前完全一致（单屏必须失败）。
+        let error = select_target(&single, None, false).expect_err("default refuses primary");
+        assert!(error.starts_with("no-secondary-monitor"), "{error}");
+        assert!(select_target(&single, Some(0), false).is_err());
+
+        // 测试专用开关打开：单屏主机允许主屏作为目标。
+        assert_eq!(select_target(&single, None, true), Ok(0));
+        assert_eq!(select_target(&single, Some(0), true), Ok(0));
+        assert!(select_target(&single, Some(1), true).is_err());
+
+        // 有副屏时仍优先副屏（开关不改变多屏选择语义）。
+        let mixed = vec![
+            monitor(0, [0, 0], [2_560, 1_440], true),
+            monitor(1, [0, -1_440], [2_560, 1_440], false),
+        ];
+        assert_eq!(select_target(&mixed, None, true), Ok(1));
+        assert_eq!(select_target(&mixed, Some(0), true), Ok(0));
+        assert_eq!(select_target(&mixed, None, false), Ok(1));
     }
 
     #[test]
