@@ -5,6 +5,8 @@ Highlighter 是一款面向 Windows 的桌面效率工具：**截图 / 录屏 / 
 
 当前版本 **4.2.0**，完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
+> 📘 **详细功能文档**：[docs/features/highlighter-feature-guide.md](docs/features/highlighter-feature-guide.md) —— 18 章全功能说明，逐页界截图、交互细节、状态反馈与快捷键总表。
+
 ![Highlighter 主界面（浅色）](docs/images/home-light.png)
 
 <p align="center">
