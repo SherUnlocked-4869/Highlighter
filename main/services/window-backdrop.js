@@ -2,14 +2,12 @@
  * Native window backdrop.
  *
  * A frameless window paints its own `backgroundColor` behind everything the page
- * leaves transparent. `config/config.html` cuts its own rounded corners
- * (`.window-shell{border-radius:var(--radius-lg)}` + `overflow:hidden`), so the
- * four corner cut-outs show whatever that native colour is. While it was the
- * pre-Nightshift `#f5f5f5`, the dark shell grew four white arcs.
+ * leaves transparent. Matching `--bg` keeps that colour consistent with the page
+ * before first paint and in any CSS cut-outs on other windows.
  *
  * Every opaque window takes its colour from here, so none of them can drift from
  * the design system again:
- *   - config      (main.js)                                 rounded-card shell
+ *   - config      (main.js)                                 opaque, native frame
  *   - search      (main/domains/search)                     rounded-card shell
  *   - action      (main/services/selection-window-manager)  result window
  *   - clipboard   (main/domains/clipboard)                  first-paint flash
@@ -26,13 +24,9 @@
  * version was built first and rejected twice — "too clear", then "frosted is still
  * too see-through". The prototype's face is glass over a DRAWN desk; a real window
  * has the user's desktop behind it, and that is what was rejected. So the settings
- * window is back on the contract above: native backdrop colour, OS shadow, page
- * paints `--bg`.
- *
- * Two guards keep it honest: the pages paint `--bg` themselves, so a cut-out
- * carries the theme colour even if the native colour were stale; and the native
- * colour, which does not follow CSS, is re-applied to every tracked window
- * whenever the resolved theme changes (`theme:'system'` can flip at runtime).
+ * window therefore paints a full-bleed `--bg` surface without a CSS outline;
+ * the OS alone supplies the window shape and shadow. The native backdrop is
+ * re-applied to every tracked window whenever the resolved theme changes.
  */
 
 // Keep these equal to shared/tokens.css: `--bg` in :root and in body.dark.

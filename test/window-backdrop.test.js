@@ -2,13 +2,9 @@
  * The native window backdrop contract.
  *
  * A frameless window paints its own backgroundColor behind anything the page
- * leaves transparent. `config/config.html` cuts its own rounded corners, so the
- * four cut-outs used to show the pre-Nightshift `#f5f5f5` while the shell itself
- * painted the dark `--bg` — four white arcs around the main window.
- *
- * Two guards keep it fixed: the page paints `--bg` itself (so the cut-outs carry
- * the theme colour even if the native colour is stale), and the native colour is
- * the `--bg` token and is re-applied whenever the resolved theme changes.
+ * leaves transparent. The native colour matches `--bg` and is re-applied when
+ * the resolved theme changes. The config page fills its native frame without
+ * drawing a second set of window corners inside it.
  */
 
 const test = require('node:test')
@@ -167,21 +163,9 @@ test('the backdrop is repainted on a settings update, a reset and an OS theme fl
   )
 })
 
-test('the config page paints the theme background, so the corner cut-outs match it', () => {
-  // This guard used to require the opposite while the window was translucent: a
-  // transparent page let the native window colour show through. The window is
-  // opaque again (2026-10-24, second pass — the translucent version was rejected
-  // twice), so the page paints `--bg` itself and the native backdrop is only ever
-  // seen in the four corner cut-outs that `.window-shell`'s border-radius clips.
-  // If the page stopped painting, those cut-outs would still resolve correctly but
-  // the first frame would flash the native colour before the shell painted.
+test('the config page paints an opaque theme background', () => {
   const cssCode = configCss.replace(/\/\*[\s\S]*?\*\//g, '')
   assert.match(cssCode, /html,body\{[^}]*background:var\(--bg\)/)
-  assert.doesNotMatch(cssCode, /html,body\{[^}]*background:transparent/)
-  // The shell still owns the rounded card and fills the whole window: no frame
-  // margin, because an opaque window has an OS shadow and needs no inset.
-  assert.match(configCss, /\.window-shell\{[^}]*border-radius:var\(--radius-lg\)/)
-  assert.match(configCss, /\.window-shell\{[^}]*inset:0\b/)
 })
 
 test('every window that owns a native backdrop takes it from the shared helper', () => {
@@ -248,6 +232,7 @@ test('the settings window is opaque and sized to its content', () => {
   const createBlock = mainSource.slice(mainSource.indexOf('function createMainWindow'))
   const options = createBlock.slice(0, createBlock.indexOf('webPreferences'))
   assert.doesNotMatch(options, /transparent:\s*true/, 'the settings window is opaque')
+  assert.doesNotMatch(options, /roundedCorners:\s*false/, 'native rounding stays enabled')
   assert.doesNotMatch(options, /hasShadow:\s*false/, 'the OS provides the shadow')
   assert.doesNotMatch(options, /backgroundColor:\s*'#00000000'/, 'the native backdrop is not clear')
   assert.match(options, /backgroundColor:\s*windowBackdropColor\(getSettings\(\), nativeTheme\)/,
@@ -270,21 +255,20 @@ test('the transparent-window scaffolding is gone', () => {
   assert.doesNotMatch(tokens, /--win-shadow/)
 })
 
-test('the shell fills the window and paints --bg, not glass', () => {
+test('the shell fills the window without drawing a second frame', () => {
   const shellRule = configCss.slice(
     configCss.indexOf('.window-shell{'),
     configCss.indexOf('.window-shell::before'))
   assert.match(shellRule, /inset:0\b/, 'the shell fills the window (no frame margin)')
   assert.match(shellRule, /background:var\(--bg\)/, 'the shell paints the base surface')
-  assert.match(shellRule, /box-shadow:var\(--shadow-3\)/, 'depth comes from the shared ladder')
+  assert.doesNotMatch(shellRule, /\b(?:border(?:-[\w-]+)?|box-shadow)\s*:/,
+    'the native window is the only source of corners, border and shadow')
   assert.doesNotMatch(shellRule, /backdrop-filter/, 'the shell is not a glass film')
 })
 
 test('the settings window is tracked by the opaque-backdrop module', () => {
   // An opaque window must be in the registry: applyWindowBackdropToTracked is the
-  // only path that repaints the native colour on a theme flip, and skipping it is
-  // invisible until the user flips the theme and the four corner cut-outs keep the
-  // old colour.
+  // only path that repaints the native backdrop on a theme flip.
   const createBlock = mainSource.slice(mainSource.indexOf('function createMainWindow'))
   const body = createBlock.slice(0, createBlock.indexOf('win.once('))
   assert.match(body, /mainWindow = trackWindowBackdrop\(win\)/,
