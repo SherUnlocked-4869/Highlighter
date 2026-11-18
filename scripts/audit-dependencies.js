@@ -10,6 +10,7 @@
 // gate so the list cannot rot silently.
 
 const { spawnSync } = require('node:child_process')
+const { packages: lockedPackages } = require('../package-lock.json')
 
 const AUDIT_LEVELS = ['info', 'low', 'moderate', 'high', 'critical']
 
@@ -48,7 +49,13 @@ const AUDIT_LEVELS = ['info', 'low', 'moderate', 'high', 'critical']
 // That also pulled brace-expansion 1.1.18 -> 5.0.12, which cleared the three
 // brace-expansion advisories, so their rows are gone too. Re-add a row (with a
 // reason and a review date) only for a finding that cannot be upgraded away.
-const ALLOWLIST = new Map([])
+const ALLOWLIST = new Map([
+  ['picomatch|https://github.com/advisories/GHSA-fc5q-39xc-vjpf', {
+    devOnly: true,
+    reason: 'No patched upstream release. The node-gyp build dependency only matches fixed repository build globs.',
+    reviewBy: '2026-12-02'
+  }]
+])
 
 
 function severityRank(value) {
@@ -95,7 +102,11 @@ function main() {
   const accepted = []
   const blocking = []
   for (const finding of findings) {
-    if (ALLOWLIST.has(`${finding.name}|${finding.url}`)) accepted.push(finding)
+    const entry = ALLOWLIST.get(`${finding.name}|${finding.url}`)
+    const nodes = report.vulnerabilities[finding.name].nodes
+    const devOnly = Array.isArray(nodes) && nodes.length > 0 &&
+      nodes.every((node) => lockedPackages[node]?.dev === true)
+    if (entry && (!entry.devOnly || devOnly)) accepted.push(finding)
     else blocking.push(finding)
   }
 
