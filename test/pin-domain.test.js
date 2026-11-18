@@ -12,7 +12,7 @@ const DATA_URL = 'data:image/png;base64,AA=='
 
 // A window shape that records everything the click-through path touches, so the
 // tests can assert the OS-level call order and the renderer receipt.
-function createHarness({ pinnedClickThrough = false } = {}) {
+function createHarness({ pinnedClickThrough = false, recognizePin } = {}) {
   const handlers = new Map()
   const created = []
   const sends = []
@@ -82,6 +82,7 @@ function createHarness({ pinnedClickThrough = false } = {}) {
     }),
     saveDataUrl: async () => 'saved',
     createRecognitionWindow: () => {},
+    recognizePin,
     getCreateCaptureWindow: () => async () => null,
     dataUrlToBuffer: () => Buffer.from([0]),
     bufferToDataUrl: () => DATA_URL,
@@ -92,6 +93,31 @@ function createHarness({ pinnedClickThrough = false } = {}) {
   })
   return { domain, handlers, created, sends }
 }
+
+test('a recognition pin reveals before starting the task and aborts when closed', async () => {
+  let finish
+  let signal
+  const { domain, handlers, sends } = createHarness({
+    recognizePin: (action, _payload, control) => {
+      assert.equal(action, 'translate')
+      assert.deepEqual(pinWindow._ops, ['show'])
+      signal = control.signal
+      control.onTranslating()
+      return new Promise((resolve) => { finish = resolve })
+    }
+  })
+  const { pinWindow } = domain.pinFromCapture({ sender: {} }, DATA_URL, {}, 'translate')
+  assert.equal(sends.length, 0)
+  handlers.get('pin:render-ready')({ sender: pinWindow.webContents })
+  handlers.get('pin:render-ready')({ sender: pinWindow.webContents })
+  assert.deepEqual(sends.map(({ payload }) => payload.phase), ['recognizing', 'translating'])
+  assert.equal(signal.aborted, false)
+  pinWindow._closed()
+  assert.equal(signal.aborted, true)
+  finish({ phase: 'result', result: { text: 'late reply' } })
+  await new Promise(setImmediate)
+  assert.equal(sends.length, 2)
+})
 
 test('main.js delegates pin domain instead of inlining pin windows and IPC', () => {
   assert.match(main, /require\('\.\/main\/domains\/pin'\)/)

@@ -41,7 +41,7 @@ const STUB = `
     close: record('close'), save: record('save'),
     saveWatermarkSettings: record('saveWatermarkSettings'),
     saveAnnotationWidth: record('saveAnnotationWidth'),
-    copy: record('copy'), pin: record('pin'), pinAndReannotate: record('pinAndReannotate'),
+    copy: record('copy'), pin: record('pin'), pinAndRecognize: record('pinAndRecognize'),
     openRecognition: record('openRecognition'), ocr: record('ocr'), translate: record('translate'),
     startLongCapture: record('startLongCapture'), smartSelectAt: record('smartSelectAt'),
     startRegionRecording: record('startRegionRecording'), recordHistory: record('recordHistory')

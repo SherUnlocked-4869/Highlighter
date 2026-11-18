@@ -8,8 +8,10 @@
 <script src="../shared/locales/zh-CN.js"></script>
 <script src="../shared/locales/en-US.js"></script>
 <script src="../shared/locales/zh-TW.js"></script>
+<script src="../shared/locales/capture.js"></script>
 <script src="../shared/locales/pin.js"></script>
 <script src="../shared/i18n.js"></script>
+<script src="../shared/ocr-text-overlay.js"></script>
 </head>
 <body data-rotation="0">
 <!-- #rotor is the rotation frame (P1, plan §9.3): the main process already sized
@@ -19,7 +21,16 @@
 <div id="rotor">
 <img id="image" class="pin-surface hidden" draggable="false">
 <canvas id="pixelImage" class="pin-surface hidden"></canvas>
+<div id="pinOcrOverlay"></div>
 </div>
+<div id="pinRecognitionStatus" role="status" hidden></div>
+<div id="pinRecognitionTools" hidden>
+  <button type="button" id="pinToggleSource"></button>
+  <button type="button" id="pinCopyText" data-i18n="capture.ocr.copy-all"></button>
+  <button type="button" id="pinPlainText" data-i18n="pin.recognition.plain-text"></button>
+  <button type="button" id="pinHideResult" data-i18n="pin.recognition.hide"></button>
+</div>
+<textarea id="pinRecognizedText" readonly hidden data-i18n-aria-label="pin.recognition.plain-text"></textarea>
 <div id="zoomBadge">100%</div>
 <div id="opacityBadge" data-i18n-title="pin.opacity.title" title="Opacity">100%</div>
 <div id="clickThroughTag" data-i18n="pin.click-through.label" data-i18n-title="pin.click-through.title" title="Click-through active">Click-through · hover to exit</div>

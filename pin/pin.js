@@ -3,6 +3,13 @@ const pixelImage = document.getElementById('pixelImage')
 const zoomBadge = document.getElementById('zoomBadge')
 const opacityBadge = document.getElementById('opacityBadge')
 const clickThroughTag = document.getElementById('clickThroughTag')
+const ocrOverlay = document.getElementById('pinOcrOverlay')
+const recognitionStatus = document.getElementById('pinRecognitionStatus')
+const recognitionTools = document.getElementById('pinRecognitionTools')
+const toggleSource = document.getElementById('pinToggleSource')
+const copyText = document.getElementById('pinCopyText')
+const plainText = document.getElementById('pinPlainText')
+const recognizedText = document.getElementById('pinRecognizedText')
 let activeSurface = pixelImage
 let sourceImage = null
 let settings = {}
@@ -14,6 +21,79 @@ let pressPoint = null
 let moveFrame = 0
 let zoomTimer = 0
 let opacityTimer = 0
+let recognition = null
+let showSource = false
+let recognitionFrame = 0
+
+function renderRecognition() {
+  if (recognitionFrame) cancelAnimationFrame(recognitionFrame)
+  recognitionFrame = 0
+  const { action, phase, result } = recognition || {}
+  const translating = action === 'translate' && phase === 'result'
+  const statusKey = {
+    recognizing: 'capture.loading.ocr',
+    translating: 'pin.recognition.translating',
+    empty: 'pin.recognition.empty',
+    failed: 'pin.recognition.failed',
+    'translation-failed': 'pin.recognition.translation-failed'
+  }[phase]
+  recognitionStatus.textContent = statusKey ? t(statusKey) : ''
+  recognitionStatus.hidden = !statusKey
+  recognitionStatus.dataset.waiting = String(phase === 'recognizing' || phase === 'translating')
+  recognitionTools.hidden = !result
+  toggleSource.hidden = !translating
+  toggleSource.textContent = t(showSource ? 'capture.ocr.show-translation' : 'capture.ocr.show-source')
+  const displayed = translating && showSource ? {
+    ...result,
+    text: result.textBlocks.map((block) => block.sourceText).join('\n'),
+    textBlocks: result.textBlocks.map((block) => ({ ...block, text: block.sourceText }))
+  } : result
+  recognizedText.value = displayed?.text || ''
+  if (!displayed) {
+    ocrOverlay.replaceChildren()
+    recognizedText.hidden = true
+    return
+  }
+  const width = activeSurface.offsetWidth
+  const height = activeSurface.offsetHeight
+  ocrOverlay.style.height = `${height}px`
+  window.OcrTextOverlay.renderBlocks(ocrOverlay, displayed, {
+    width, height, translated: translating && !showSource, minConfidence: 0, t
+  })
+}
+
+function queueRecognitionLayout() {
+  if (recognition?.result && !recognitionFrame) recognitionFrame = requestAnimationFrame(renderRecognition)
+}
+
+function setRecognition(next) {
+  recognition = next
+  recognizedText.hidden = true
+  showSource = false
+  renderRecognition()
+}
+
+toggleSource.onclick = () => {
+  showSource = !showSource
+  renderRecognition()
+}
+copyText.onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(recognizedText.value)
+    if (recognition?.result) {
+      copyText.textContent = t('capture.action.copied')
+      setTimeout(() => { copyText.textContent = t('capture.ocr.copy-all') }, 800)
+    }
+  } catch {
+    recognizedText.hidden = false
+    recognizedText.select()
+  }
+}
+plainText.onclick = () => {
+  recognizedText.hidden = !recognizedText.hidden
+  if (!recognizedText.hidden) recognizedText.focus()
+}
+document.getElementById('pinHideResult').onclick = () => setRecognition(null)
 
 function setNativePixelMode(zoom) {
   pixelImage.classList.toggle('pixel-native', Math.abs(Number(zoom) - 1) < 0.001)
@@ -99,9 +179,17 @@ function applyPinData(data, initial = false) {
 }
 
 window.pinAPI.onInit((data) => applyPinData(data, true))
-window.pinAPI.onUpdate((data) => applyPinData(data))
+window.pinAPI.onUpdate((data) => {
+  setRecognition(null)
+  applyPinData(data)
+})
+window.pinAPI.onRecognition(setRecognition)
 window.pinAPI.onClickThroughChanged((enabled) => applyClickThrough(enabled))
-window.pinAPI.onRotationChanged((rotation) => applyRotation(rotation))
+window.pinAPI.onRotationChanged((rotation) => {
+  applyRotation(rotation)
+  queueRecognitionLayout()
+})
+addEventListener('resize', queueRecognitionLayout)
 // A click-through pin receives forwarded mouse *moves* only (clicks and the wheel
 // are dropped), so hovering the reserved badge is the in-window way back — the
 // global shortcut and the tray item are the guaranteed fallback. mouseenter is
@@ -172,7 +260,7 @@ for (const surface of [image, pixelImage]) {
 // hover / the global cancel shortcut). That limitation is documented instead of
 // faked: a synthetic wheel cannot be delivered to a window that ignores the mouse.
 addEventListener('wheel', (event) => {
-  if (clickThrough) return
+  if (clickThrough || event.target === recognizedText) return
   if (event.ctrlKey) {
     event.preventDefault()
     window.pinAPI.adjustOpacity(event.deltaY < 0 ? 1 : -1)
@@ -199,8 +287,13 @@ window.pinAPI.onOpacityChanged((percent) => {
   opacityTimer = setTimeout(() => opacityBadge.classList.remove('show'), 550)
 })
 addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !recognizedText.hidden) {
+    recognizedText.hidden = true
+    return
+  }
   if (event.key === 'Escape') window.pinAPI.close()
-  if (event.ctrlKey && event.key.toLowerCase() === 'c') window.pinAPI.copy()
+  if (event.ctrlKey && event.key.toLowerCase() === 'c' &&
+      event.target !== recognizedText && window.getSelection()?.isCollapsed !== false) window.pinAPI.copy()
 })
 // P0-1-T2/T5: the click-through tag is static markup, so it is translated once
 // at load and re-translated when the main process broadcasts a language change.
@@ -208,5 +301,6 @@ applyTranslations()
 window.pinAPI.onInterfaceLanguage((language) => {
   setLanguage(language)
   applyTranslations()
+  if (recognition) renderRecognition()
 })
 window.pinAPI.ready()

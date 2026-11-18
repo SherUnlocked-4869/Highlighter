@@ -87,8 +87,45 @@ function providerEditorRoot(providerId) {
 function providerDraftWithSecret(base, root) {
   const { apiKey: retainedApiKey = '', ...safeBase } = base
   const enteredApiKey = root?.querySelector('[data-provider-api-key]')?.value.trim() || ''
-  const apiKey = enteredApiKey || retainedApiKey
-  return apiKey ? { ...safeBase, apiKey } : safeBase
+  const baseUrl = root.querySelector('[data-provider-base-url]').value.trim()
+  const sameEndpoint = baseUrl.replace(/\/+$/, '') === String(base.baseUrl || '').replace(/\/+$/, '')
+  const apiKey = enteredApiKey || (sameEndpoint ? retainedApiKey : '')
+  return { ...safeBase, hasApiKey: sameEndpoint && safeBase.hasApiKey, ...(apiKey ? { apiKey } : {}) }
+}
+
+function readCustomHeaders(root) {
+  const lines = root.querySelector('[data-provider-headers]').value.split(/\r?\n/).filter((line) => line.trim())
+  const entries = []
+  for (const line of lines) {
+    const separator = line.indexOf(':')
+    if (separator < 1) return null
+    entries.push([line.slice(0, separator).trim(), line.slice(separator + 1).trim()])
+  }
+  const headers = window.codingPlanPresets.sanitizeProviderHeaders(Object.fromEntries(entries))
+  return entries.length === Object.keys(headers).length &&
+    entries.every(([key, value]) => headers[key] === value) ? headers : null
+}
+
+function readProviderConnectionDraft(base, root, { tolerant = false } = {}) {
+  const name = root.querySelector('[data-provider-name]').value.trim()
+  const baseUrl = root.querySelector('[data-provider-base-url]').value.trim()
+  const protocol = root.querySelector('[data-provider-protocol]').value
+  const enabled = root.querySelector('[data-provider-enabled]').value !== 'false'
+  const headers = readCustomHeaders(root)
+  const draft = providerDraftWithSecret(base, root)
+  if (!headers) { toast(t('config.models.headers-invalid')); return null }
+  if (!tolerant && !name) { toast(t('config.models.provider-name-required')); return null }
+  if (!tolerant && !baseUrl) { toast(t('config.models.api-url-required')); return null }
+  if (baseUrl && baseUrl !== base.baseUrl && !window.providerConnection.parseProviderBaseUrl(baseUrl)) {
+    toast(t('config.models.api-url-invalid'))
+    return null
+  }
+  if ((base.hasApiKey || base.apiKey) && !draft.hasApiKey && !draft.apiKey &&
+      !window.providerConnection.isLoopbackProviderUrl(baseUrl)) {
+    toast(t('config.models.api-key-changed'))
+    return null
+  }
+  return { ...draft, name, baseUrl, protocol, enabled, headers }
 }
 
 // The model row editor only owns id/name; anything else the catalog carries has
@@ -105,54 +142,28 @@ function mergeModelRow(baseModel, row) {
     : { success: true, model: { id, name } }
 }
 
-function readProviderEditor(providerId) {
+function readProviderEditor(providerId, { tolerant = false } = {}) {
   const base = modelProviderById(providerId)
   const root = providerEditorRoot(providerId)
   if (!base || !root) return null
-  const name = root.querySelector('[data-provider-name]')?.value.trim() || ''
-  const baseUrl = root.querySelector('[data-provider-base-url]')?.value.trim() || ''
-  const protocol = root.querySelector('[data-provider-protocol]')?.value || 'openai-chat'
-  const enabled = root.querySelector('[data-provider-enabled]')?.value !== 'false'
-  const enteredApiKey = root.querySelector('[data-provider-api-key]')?.value.trim() || ''
-  if (!name) { toast(t('config.models.provider-name-required')); return null }
-  if (!baseUrl) { toast(t('config.models.api-url-required')); return null }
-  if (base.hasApiKey && !base.apiKey && !enteredApiKey && baseUrl.replace(/\/+$/, '') !== String(base.baseUrl || '').replace(/\/+$/, '')) {
-    toast(t('config.models.api-key-changed'))
-    return null
-  }
+  const draft = readProviderConnectionDraft(base, root, { tolerant })
+  if (!draft) return null
   const models = []
   const ids = new Set()
   for (const row of root.querySelectorAll('.model-catalog-row[data-model-index]')) {
     const index = Number(row.dataset.modelIndex)
     const merged = mergeModelRow(base.models?.[index], row)
-    if (!merged.success) { toast(t('config.models.model-id-required')); return null }
+    if (!merged.success) {
+      const name = row.querySelector('[data-model-name]').value.trim()
+      if (name && !tolerant) { toast(t('config.models.model-id-required')); return null }
+      if (tolerant) models.push({ id: '', name })
+      continue
+    }
     if (ids.has(merged.model.id)) { toast(t('config.models.model-id-duplicate', { id: merged.model.id })); return null }
     ids.add(merged.model.id)
     models.push(merged.model)
   }
-  if (!models.length) { toast(t('config.models.need-one-model')); return null }
-  return { ...providerDraftWithSecret(base, root), name, baseUrl, protocol, enabled, models }
-}
-
-function readProviderEditorDraft(providerId) {
-  const base = modelProviderById(providerId)
-  const root = providerEditorRoot(providerId)
-  if (!base || !root) return base
-  const models = []
-  for (const row of root.querySelectorAll('.model-catalog-row[data-model-index]')) {
-    const index = Number(row.dataset.modelIndex)
-    const merged = mergeModelRow(base.models?.[index], row)
-    if (!merged.success) continue
-    models.push(merged.model)
-  }
-  return {
-    ...providerDraftWithSecret(base, root),
-    name: root.querySelector('[data-provider-name]')?.value.trim() || base.name,
-    baseUrl: root.querySelector('[data-provider-base-url]')?.value.trim() || base.baseUrl,
-    protocol: root.querySelector('[data-provider-protocol]')?.value || base.protocol,
-    enabled: root.querySelector('[data-provider-enabled]')?.value !== 'false',
-    models: models.length ? models : base.models
-  }
+  return { ...draft, models }
 }
 
 function commitOpenProviderEditors({ exceptId = '', tolerant = false } = {}) {
@@ -160,7 +171,7 @@ function commitOpenProviderEditors({ exceptId = '', tolerant = false } = {}) {
   for (const provider of providers) {
     if (!modelsExpandedProviderIds.has(provider.id)) continue
     if (exceptId && provider.id === exceptId) continue
-    const next = tolerant ? readProviderEditorDraft(provider.id) : readProviderEditor(provider.id)
+    const next = readProviderEditor(provider.id, { tolerant })
     if (!next) return null
     const index = providers.findIndex((item) => item.id === provider.id)
     providers[index] = next
@@ -177,13 +188,4 @@ function providerBadgesMarkup(provider) {
   if (provider.presetId) badges.push('<span class="provider-tag coding-plan">Coding Plan</span>')
   if (provider.modelsVerified === false) badges.push('<span class="provider-tag unverified">' + t('config.models.catalog-unverified') + '</span>')
   return `<span class="provider-badges">${badges.join('')}</span>`
-}
-
-// Keeps a preset provider's catalog honest on the retry paths: the same endpoint
-// filter applies, and a successful fetch clears "目录未验证" (design D7 / FR-4).
-function applyFetchedModels(provider, models) {
-  const preset = provider?.presetId ? getCodingPlanPreset(provider.presetId) : null
-  const fetched = Array.isArray(models) ? models : []
-  const filtered = preset ? filterPresetModels(fetched, preset) : fetched
-  return provider?.presetId ? { models: filtered, modelsVerified: filtered.length > 0 } : { models: filtered }
 }

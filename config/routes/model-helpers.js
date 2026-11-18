@@ -11,7 +11,9 @@
   function modelProviderStatus(provider) {
     if (provider.enabled === false) return { className: 'off', title: 'config.models.status-disabled' }
     if (!provider.baseUrl || !provider.models?.length) return { className: 'off', title: 'config.models.status-incomplete' }
-    if (!provider.apiKey && !provider.hasApiKey) return { className: 'warn', title: 'config.models.status-no-api-key' }
+    if (!provider.apiKey && !provider.hasApiKey && !globalThis.providerConnection?.isLoopbackProviderUrl(provider.baseUrl)) {
+      return { className: 'warn', title: 'config.models.status-no-api-key' }
+    }
     return { className: 'on', title: 'config.models.status-enabled' }
   }
 

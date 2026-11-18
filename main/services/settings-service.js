@@ -2,6 +2,7 @@ const { CredentialStore } = require('./credential-store')
 const { assertSettingsPatch } = require('./settings-validation')
 const { assertClipboardSettings } = require('./clipboard-settings')
 const { assertRegionPreferencesPatch, REGION_PREFERENCES_PATH } = require('../../shared/region-presets')
+const { isLoopbackProviderUrl } = require('../../shared/provider-connection')
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
@@ -107,6 +108,9 @@ class SettingsService {
     const suppliedApiKey = String(draft.apiKey || '').trim()
     if (suppliedApiKey) return { ...draft, apiKey: suppliedApiKey }
     const current = this.getSettings().providers?.find((item) => item.id === draft.id)
+    if (isLoopbackProviderUrl(draft.baseUrl) && (!current?.apiKey || !sameProviderEndpoint(draft, current))) {
+      return { ...draft, apiKey: '' }
+    }
     if (!current?.apiKey) throw new Error('请先填写 API 密钥')
     const trimEndpoint = (value) => String(value || '').trim().replace(/\/+$/, '')
     if (trimEndpoint(draft.baseUrl) !== trimEndpoint(current.baseUrl)) {

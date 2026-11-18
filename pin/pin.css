@@ -33,3 +33,17 @@ body.dragging .pin-surface{cursor:grabbing}
 #clickThroughTag{position:fixed;z-index:3;right:10px;top:10px;padding:4px 8px;border-radius:5px;color:#fff;background:rgba(20,20,22,.76);font:12px/1.2 Consolas,monospace;white-space:nowrap;cursor:pointer;pointer-events:auto;display:none}
 #clickThroughTag.show{display:block}
 body.click-through .pin-surface{cursor:default}
+#pinOcrOverlay{position:absolute;inset:0;overflow:hidden;border-radius:6px;pointer-events:none}
+#pinOcrOverlay .ocr-text-block{position:absolute;overflow:hidden;padding:0 2px;color:#143658;background:#e9f3ff;border-radius:2px;transform-origin:center;white-space:nowrap;pointer-events:auto;user-select:text;cursor:text;font:12px/1 system-ui,sans-serif}
+#pinOcrOverlay .ocr-text-block.vertical{writing-mode:vertical-rl;white-space:normal}
+#pinOcrOverlay .ocr-text-block.translation{color:#101a25;background:rgba(255,255,255,.94);white-space:normal;overflow-wrap:anywhere;text-align:center}
+#pinRecognitionStatus{position:fixed;z-index:3;bottom:5px;left:50%;max-width:calc(100% - 10px);transform:translateX(-50%);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none;padding:4px 8px;border-radius:6px;background:rgba(20,20,22,.84);color:#fff;font:12px/1.35 system-ui,sans-serif}
+#pinRecognitionStatus[data-waiting="true"]::before{content:"";display:inline-block;width:.7em;height:.7em;margin-right:6px;border:1px solid currentColor;border-right-color:transparent;border-radius:50%;animation:pin-recognition-spin .85s linear infinite}
+@keyframes pin-recognition-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#pinRecognitionStatus::before{animation:none!important}}
+#pinRecognitionTools{position:fixed;z-index:3;top:4px;left:4px;right:4px;width:max-content;max-width:calc(100% - 8px);display:flex;flex-wrap:wrap;gap:3px;padding:3px;border-radius:6px;background:#202126;opacity:0;pointer-events:none}
+#pinRecognitionTools[hidden]{display:none}
+body:hover #pinRecognitionTools,body:focus-within #pinRecognitionTools{opacity:1;pointer-events:auto}
+#pinRecognitionTools button{border:0;border-radius:4px;padding:3px 6px;background:#353743;color:#fff;font:12px/1.25 system-ui,sans-serif;cursor:pointer}
+#pinRecognitionTools button:hover,#pinRecognitionTools button:focus-visible{background:#496488}
+#pinRecognizedText{position:fixed;z-index:4;inset:32px 4px 6px;width:calc(100% - 8px);height:calc(100% - 38px);padding:6px;border:1px solid #7395b9;border-radius:5px;color:#101a25;background:#fff;resize:none;user-select:text;font:13px/1.4 system-ui,sans-serif}

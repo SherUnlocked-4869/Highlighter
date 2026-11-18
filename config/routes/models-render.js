@@ -17,10 +17,56 @@ const modelFeatureCatalog = [
 function providerEditorMarkup(provider) {
   const expanded = modelsExpandedProviderIds.has(provider.id)
   const status = modelProviderStatus(provider)
-  if (!expanded) {
-    return `<article class="model-provider-accordion" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="${t('config.models.expand-provider')}"><span class="model-provider-expand">▸</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span>${providerBadgesMarkup(provider)}<span class="provider-head-status"><span class="provider-dot ${status.className}"></span>${escapeHtml(t(status.title))}</span><span class="model-provider-chevron">${t('config.models.expand')}</span></div></article>`
-  }
-  return `<article class="model-provider-accordion expanded" data-provider-editor="${escapeHtml(provider.id)}"><div class="model-provider-accordion-head" data-expand-provider="${escapeHtml(provider.id)}" role="button" tabindex="0" title="${t('config.models.collapse-provider')}"><span class="model-provider-expand">▾</span><span class="model-provider-item-name">${escapeHtml(provider.name)}</span><span class="provider-head-status"><span class="provider-dot ${status.className}"></span>${escapeHtml(t(status.title))}</span><span class="model-provider-chevron">${t('config.models.collapse')}</span></div><div class="model-provider-editor"><div class="model-provider-editor-head"><div class="model-provider-title"><b>${escapeHtml(provider.name)}</b><span class="provider-tag ${provider.builtin ? 'builtin' : ''}">${provider.builtin ? t('config.models.builtin') : t('config.models.custom')}</span>${providerBadgesMarkup(provider)}<span class="provider-dot ${status.className}" title="${escapeHtml(t(status.title))}"></span></div><button class="button danger" data-delete-provider="${escapeHtml(provider.id)}">${t('config.models.delete-provider')}</button></div><div class="model-field"><div class="model-field-label"><b>${t('config.models.api-key')}</b><small>${t('config.models.api-key-hint')}</small></div><div class="model-field-control"><input class="input" data-provider-api-key type="password" value="" placeholder="${escapeHtml((provider.apiKey || provider.hasApiKey) ? t('config.models.api-key-configured-placeholder') : 'sk-...')}"><button class="button" data-test-provider="${escapeHtml(provider.id)}">${t('config.models.test')}</button></div></div><details class="model-custom-details" open><summary>${t('config.models.custom-section')}</summary><div class="model-field"><div class="model-field-label"><b>${t('config.models.enabled-status')}</b></div><select data-provider-enabled><option value="true" ${provider.enabled !== false ? 'selected' : ''}>${t('config.models.enabled')}</option><option value="false" ${provider.enabled === false ? 'selected' : ''}>${t('config.models.disabled')}</option></select></div><div class="model-field"><div class="model-field-label"><b>${t('config.models.display-name')}</b></div><input class="input" data-provider-name type="text" value="${escapeHtml(provider.name)}" placeholder="${t('config.models.display-name-placeholder')}"></div><div class="model-field"><div class="model-field-label"><b>${t('config.models.api-url')}</b></div><input class="input" data-provider-base-url type="text" value="${escapeHtml(provider.baseUrl)}" placeholder="https://api.example.com/v1"></div><div class="model-field"><div class="model-field-label"><b>${t('config.models.api-protocol')}</b></div><select data-provider-protocol><option value="openai-chat" ${provider.protocol === 'openai-chat' ? 'selected' : ''}>openai-chat</option><option value="openai-responses" ${provider.protocol === 'openai-responses' ? 'selected' : ''}>openai-responses</option></select></div></details><div class="model-catalog-block"><div class="model-catalog-head"><div><b>${t('config.models.catalog')}</b><small>${provider.models.length ? t('config.models.catalog-custom') : t('config.models.catalog-empty')}</small></div><div class="model-catalog-actions"><button class="button" data-restore-models="${escapeHtml(provider.id)}">${t('config.models.restore-models')}</button><button class="button" data-fetch-models="${escapeHtml(provider.id)}">${t('config.models.fetch-models')}</button></div></div><div class="model-catalog-list">${provider.models.map((model, index) => modelCatalogRowMarkup(provider, index)).join('')}</div><button class="button" data-add-provider-model="${escapeHtml(provider.id)}">${t('config.models.add-model')}</button></div></div></article>`
+  const id = escapeHtml(provider.id)
+  const header = `<button type="button" class="model-provider-accordion-head" data-expand-provider="${id}" aria-expanded="${expanded}"><span class="model-provider-expand" aria-hidden="true">${expanded ? '▾' : '▸'}</span><span class="model-provider-item-name">${escapeHtml(provider.name || t('config.models.new-provider'))}</span>${providerBadgesMarkup(provider)}<span class="provider-head-status"><span class="provider-dot ${status.className}"></span>${escapeHtml(t(status.title))}</span></button>`
+  if (!expanded) return `<article class="model-provider-accordion" data-provider-editor="${id}">${header}</article>`
+  const modelCount = provider.models.filter((model) => model.id).length
+  const headerText = Object.entries(provider.headers || {}).map(([key, value]) => `${key}: ${value}`).join('\n')
+  const keyPlaceholder = provider.apiKey || provider.hasApiKey ? t('config.models.api-key-configured-placeholder') : 'sk-…'
+  const hasDefaults = defaultModelsForProvider(provider).length > 0
+  return `<article class="model-provider-accordion expanded" data-provider-editor="${id}">
+    ${header}
+    <div class="model-provider-editor">
+      <div class="model-provider-editor-head">
+        <b>${t('config.models.connection')}</b>
+        <div class="model-provider-actions">
+          <select data-provider-enabled aria-label="${t('config.models.enabled-status')}">
+            <option value="true" ${provider.enabled !== false ? 'selected' : ''}>${t('config.models.enabled')}</option>
+            <option value="false" ${provider.enabled === false ? 'selected' : ''}>${t('config.models.disabled')}</option>
+          </select>
+          <button class="button danger" data-delete-provider="${id}">${t('config.models.delete-provider')}</button>
+        </div>
+      </div>
+      <label class="model-field"><span class="model-field-label"><b>${t('config.models.display-name')}</b></span><input class="input" data-provider-name type="text" maxlength="100" value="${escapeHtml(provider.name)}"></label>
+      <label class="model-field"><span class="model-field-label"><b>${t('config.models.api-url')}</b><small>${t('config.models.base-url-hint')}</small></span><input class="input" data-provider-base-url type="url" spellcheck="false" maxlength="2048" value="${escapeHtml(provider.baseUrl)}" placeholder="https://api.example.com/v1"></label>
+      <label class="model-field"><span class="model-field-label"><b>${t('config.models.api-protocol')}</b></span>
+        <select data-provider-protocol>
+          <option value="openai-chat" ${provider.protocol === 'openai-chat' ? 'selected' : ''}>OpenAI Chat Completions</option>
+          <option value="openai-responses" ${provider.protocol === 'openai-responses' ? 'selected' : ''}>OpenAI Responses</option>
+        </select>
+      </label>
+      <label class="model-field"><span class="model-field-label"><b>${t('config.models.api-key')}</b><small>${t('config.models.key-local-hint')}</small></span><input class="input" data-provider-api-key type="password" maxlength="512" autocomplete="off" placeholder="${escapeHtml(keyPlaceholder)}"></label>
+      <details class="model-custom-details">
+        <summary>${t('config.models.advanced-connection')}</summary>
+        <label class="model-field"><span class="model-field-label"><b>${t('config.models.custom-headers')}</b><small>${t('config.models.headers-hint')}</small></span><textarea class="input" data-provider-headers rows="3" maxlength="3300" spellcheck="false" placeholder="X-Title: Highlighter">${escapeHtml(headerText)}</textarea></label>
+      </details>
+      <div class="model-field">
+        <label class="model-field-label" for="test-model-${id}"><b>${t('config.models.test-model')}</b></label>
+        <div class="model-field-control"><select id="test-model-${id}" data-provider-test-model></select><button class="button" data-test-provider="${id}">${t('config.models.test')}</button></div>
+      </div>
+      <div class="model-catalog-block">
+        <div class="model-catalog-head">
+          <div><b>${t('config.models.catalog')}</b><small>${modelCount ? t('config.models.catalog-count', { count: modelCount }) : t('config.models.catalog-empty')}</small></div>
+          <div class="model-catalog-actions">
+            ${hasDefaults ? `<button class="button" data-restore-models="${id}">${t('config.models.restore-models')}</button>` : ''}
+            <button class="button" data-fetch-models="${id}">${t('config.models.fetch-models')}</button>
+            <button class="button" data-add-provider-model="${id}">${t('config.models.add-model')}</button>
+          </div>
+        </div>
+        <div class="model-catalog-list">${provider.models.map((model, index) => modelCatalogRowMarkup(provider, index)).join('')}</div>
+      </div>
+    </div>
+  </article>`
 }
 
 function renderModelsSubnav() {
@@ -76,13 +122,7 @@ function renderModels() {
   // tabs fall back to the empty state.
   if (!providers.length && modelsTab !== 'defaults') {
     view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), description)}${renderModelsSubnav()}<div class="models-view"><div class="empty">${t('config.models.no-providers')}</div><button class="button primary" id="addFirstProvider">${t('config.models.add-first-provider')}</button></div></div>`
-    document.getElementById('addFirstProvider').onclick = () => {
-      const provider = { id: createModelProviderId(), name: t('config.models.new-provider'), baseUrl: '', hasApiKey: false, protocol: 'openai-chat', enabled: true, builtin: false, models: [{ id: '', name: '' }] }
-      settings = { ...settings, providers: [provider] }
-      modelsExpandedProviderIds = new Set([provider.id])
-      modelsTab = 'providers'
-      renderModels()
-    }
+    document.getElementById('addFirstProvider').onclick = openProviderPresetDialog
     bindModelsSubnav()
     return
   }

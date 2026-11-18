@@ -14,6 +14,7 @@ const {
   boundsIntersectWorkArea
 } = require('./geometry')
 const { makeCaptureName } = require('../../services/capture-naming')
+const { t } = require('../../services/i18n-bootstrap')
 const { exportWindowToPdf, savePdfBuffer } = require('../../services/pdf-export')
 // Shared with the history "continue editing" entry point; pure arithmetic, no Electron.
 // Keeping the compact-editor window box in one place is what stops the two re-edit
@@ -34,6 +35,7 @@ function createPinDomain(deps) {
     saveDataUrl,
     createRecognitionWindow,
     getCreateCaptureWindow,
+    recognizePin,
     dataUrlToBuffer,
     bufferToDataUrl,
     log,
@@ -322,6 +324,7 @@ function createPinDomain(deps) {
     attachPinDisplayWatchers()
     win.loadFile(pagePath)
     win.on('closed', () => {
+      win._pinRecognition?.abort()
       pinWindows.delete(win)
       pinnedCount = Math.max(0, pinnedCount - 1)
       if (pinWindows.size === 0) detachPinDisplayWatchers()
@@ -331,6 +334,8 @@ function createPinDomain(deps) {
 
   function updatePinWindow(win, dataUrl, meta = {}) {
     if (!win || win.isDestroyed()) return null
+    win._pinRecognition?.abort()
+    win._pinRecognition = null
     const image = nativeImage.createFromDataURL(dataUrl)
     const size = image.getSize()
     const currentBounds = win.getBounds()
@@ -568,7 +573,7 @@ function createPinDomain(deps) {
     }
   }
 
-  function pinFromCapture(event, imageData, meta) {
+  function pinFromCapture(event, imageData, meta, recognitionAction) {
     const captureWindow = BrowserWindow.fromWebContents(event.sender)
     const editingPinWindow = captureWindow?._editingPinWindow
     ensureCanPin(!!editingPinWindow)
@@ -576,11 +581,46 @@ function createPinDomain(deps) {
     const pinWindow = editingPinWindow
       ? updatePinWindow(editingPinWindow, dataUrl, meta)
       : createPinWindow(dataUrl, meta)
+    if (!editingPinWindow && ['ocr', 'translate'].includes(recognitionAction)) {
+      pinWindow._pendingRecognition = recognitionAction
+    }
     if (captureWindow) {
       captureWindow._pendingPinWindow = pinWindow
       captureWindow._editingPinWindow = null
     }
     return { captureWindow, pinWindow }
+  }
+
+  async function runPinRecognition(win, action) {
+    if (win.isDestroyed() || win._pinRecognition || !recognizePin) return
+    const pin = win._pinData
+    const task = new AbortController()
+    win._pinRecognition = task
+    const { signal } = task
+    const publish = (data) => {
+      if (!signal.aborted && !win.isDestroyed()) sendToRenderer(win, 'pin:recognition', { action, ...data })
+    }
+    try {
+      publish({ phase: 'recognizing' })
+      const outcome = await recognizePin(action, {
+        dataUrl: pin.dataUrl,
+        scaleFactor: pin.meta?.scaleFactor || pin.displayScaleFactor
+      }, { signal, onTranslating: () => publish({ phase: 'translating' }) })
+      if (signal.aborted || win.isDestroyed()) return
+      if (action === 'ocr' && outcome.result) {
+        const afterAction = getSettings().ocr?.afterAction
+        if (['copy', 'copy-and-close'].includes(afterAction)) clipboard.writeText(outcome.result.text)
+        if (afterAction === 'copy-and-close') { win.close(); return }
+      }
+      publish(outcome)
+    } catch (error) {
+      if (!signal.aborted) {
+        log('Pin recognition failed:', error.message)
+        publish({ phase: 'failed' })
+      }
+    } finally {
+      if (win._pinRecognition === task) win._pinRecognition = null
+    }
   }
 
   function togglePinVisibility() {
@@ -600,15 +640,10 @@ function createPinDomain(deps) {
     ipcMain.on('pin:render-ready', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       revealPinWindow(win)
-      const autoAction = win?._pendingReannotateAction
+      const autoAction = win?._pendingRecognition
       if (!autoAction) return
-      win._pendingReannotateAction = ''
-      setTimeout(() => {
-        startPinReannotation(win, {}, autoAction).catch((error) => {
-          log('Auto reannotate pin failed:', error.message)
-          bringPinToFront(win)
-        })
-      }, 80)
+      win._pendingRecognition = ''
+      void runPinRecognition(win, autoAction)
     })
     ipcMain.on('pin:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
     ipcMain.on('pin:copy', (event) => {
@@ -633,17 +668,11 @@ function createPinDomain(deps) {
             }
           }
         },
-        {
-          label: '文本识别',
-          enabled: !!getSettings().plugins.ocr,
-          click: async () => {
-            try {
-              await startPinReannotation(win, imageBounds, 'ocr')
-            } catch (error) {
-              log('OCR pin failed:', error.message)
-            }
-          }
-        },
+        ...[['ocr', 'pin.recognition.ocr'], ['translate', 'pin.recognition.translate']].map(([action, label]) => ({
+          label: t(label),
+          enabled: !!getSettings().plugins.ocr && !win._pinRecognition,
+          click: () => void runPinRecognition(win, action)
+        })),
         {
           label: '表格识别',
           enabled: !!getSettings().plugins.ocr,

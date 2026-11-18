@@ -241,6 +241,7 @@ let smartQueryRunning = false
 let smartQueryPending = null
 let activeOcrResult = null
 let processingAction = null
+let recognitionHandoff = false
 let renderRequest = 0
 let toolbarSize = null
 let imageObjectUrl = ''
@@ -3996,62 +3997,18 @@ function setProcessingState(action) {
   syncWatermarkPanel()
 }
 
-function fitOverlayText(element, width, height, initialSize, vertical) {
-  let lower=7
-  let upper=Math.max(lower,initialSize)
-  let fitted=lower
-  for(let attempt=0;attempt<8;attempt++){
-    const fontSize=(lower+upper)/2
-    element.style.fontSize=`${fontSize}px`
-    element.style.lineHeight=vertical?`${Math.max(8,fontSize*1.08)}px`:`${Math.min(height,Math.max(8,fontSize*1.18))}px`
-    if(element.scrollWidth<=element.clientWidth+1&&element.scrollHeight<=element.clientHeight+1){fitted=fontSize;lower=fontSize}else upper=fontSize
-  }
-  element.style.fontSize=`${fitted}px`
-  element.style.lineHeight=vertical?`${Math.max(8,fitted*1.08)}px`:`${Math.min(height,Math.max(8,fitted*1.18))}px`
-}
-
-function renderOcrOverlayBlocks(result, blocks, translated) {
-  ocrOverlay.replaceChildren()
-  if(!selection||!result||!Array.isArray(blocks))return 0
-  const scaleX=selection.w/Math.max(1,result.imageWidth||1)
-  const scaleY=selection.h/Math.max(1,result.imageHeight||1)
-  const configuredConfidence=Number(initData?.settings?.ocr?.minConfidence)
-  const minConfidence=Number.isFinite(configuredConfidence)?configuredConfidence:.3
-  let visibleCount=0
-  blocks.forEach((block)=>{
-    if(!block?.text||!Array.isArray(block.box_points)||block.box_points.length<4||Number(block.text_score)<minConfidence)return
-    const points=block.box_points.map((point)=>({x:Number(point.x)*scaleX,y:Number(point.y)*scaleY}))
-    const width=Math.hypot(points[1].x-points[0].x,points[1].y-points[0].y)
-    const height=Math.hypot(points[3].x-points[0].x,points[3].y-points[0].y)
-    if(width<2||height<2)return
-    const centerX=points.reduce((sum,point)=>sum+point.x,0)/points.length
-    const centerY=points.reduce((sum,point)=>sum+point.y,0)/points.length
-    const angle=Math.atan2(points[1].y-points[0].y,points[1].x-points[0].x)*180/Math.PI
-    const vertical=height>width*1.5
-    const element=document.createElement('div')
-    element.className=`ocr-text-block${vertical?' vertical':''}${translated?' translation':''}`
-    element.textContent=block.text
-    element.title=translated&&block.sourceText?t('capture.ocr.tooltip-source',{text:block.sourceText}):t('capture.ocr.tooltip-confidence',{value:Math.round(Number(block.text_score)*100)})
-    element.style.left=`${centerX-width/2}px`
-    element.style.top=`${centerY-height/2}px`
-    element.style.width=`${width}px`
-    element.style.height=`${height}px`
-    element.style.transform=`rotate(${Math.abs(angle)<3?0:angle}deg)`
-    element.addEventListener('pointerdown',(event)=>event.stopPropagation())
-    ocrOverlay.appendChild(element)
-    const initialSize=Math.max(9,Math.min(36,(vertical?width:height)*.72))
-    if(translated)fitOverlayText(element,width,height,initialSize,vertical)
-    else{element.style.fontSize=`${initialSize}px`;element.style.lineHeight=`${Math.max(10,height)}px`}
-    visibleCount++
-  })
-  return visibleCount
-}
-
 function renderActiveOcrOverlay() {
   if(!activeOcrResult)return
   const showingSource=activeOcrResult.mode==='translate'&&activeOcrResult.showingSource
   const result=showingSource?activeOcrResult.sourceResult:activeOcrResult.displayResult
-  const visibleCount=renderOcrOverlayBlocks(result,result?.textBlocks,activeOcrResult.mode==='translate'&&!showingSource)
+  const configuredConfidence = Number(initData?.settings?.ocr?.minConfidence)
+  const visibleCount = selection ? window.OcrTextOverlay.renderBlocks(ocrOverlay, result, {
+    width: selection.w,
+    height: selection.h,
+    translated: activeOcrResult.mode === 'translate' && !showingSource,
+    minConfidence: Number.isFinite(configuredConfidence) ? configuredConfidence : .3,
+    t
+  }) : 0
   if(activeOcrResult.mode==='translate'){
     ocrSummary.textContent=showingSource?t('capture.ocr.source-count',{count:visibleCount}):t('capture.ocr.translated-count',{count:visibleCount})
     ocrToggleSource.textContent=showingSource?t('capture.ocr.show-translation'):t('capture.ocr.show-source')
@@ -4086,7 +4043,7 @@ function showOcrOverlay(result, options = {}) {
 }
 
 async function performAction(action) {
-  if(processingAction)return
+  if(processingAction||recognitionHandoff)return
   if(!selection)return
   const captureBounds=initData.captureBounds||initData.displayBounds||{x:0,y:0}
   // §3.2②: a level-2 Ctrl+A selection reaches past the captured display, so everything
@@ -4133,6 +4090,8 @@ async function performAction(action) {
     return
   }
   const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds}
+  const openRecognitionPin = ['ocr','translate'].includes(action) && !initData.editPin
+  recognitionHandoff = openRecognitionPin
   try {
     const imageBuffer=await canvasPngBuffer(output)
     // 序号只在导出/编码完成后取值，保证带上本次截图已落的号（P0-7-T7 精确接续）。
@@ -4159,7 +4118,7 @@ async function performAction(action) {
       catch(error){alert(error.message||String(error))}
       return
     }
-    if(['ocr','translate'].includes(action)&&!initData.editPin){await window.captureAPI.pinAndReannotate(imageBuffer,meta,action);return}
+    if(openRecognitionPin){await window.captureAPI.pinAndRecognize(imageBuffer,meta,action);return}
     if(action==='table'||action==='qr'){await window.captureAPI.openRecognition(action,imageBuffer,meta);return}
     if(action==='ocr'||action==='translate'){
       clearOcrResult();setProcessingState(action)
@@ -4171,6 +4130,7 @@ async function performAction(action) {
       } finally {setProcessingState(null)}
     }
   } catch(error){alert(error.message||String(error))}
+  finally { if (openRecognitionPin) recognitionHandoff = false }
 }
 
 function showResult(type,result) {

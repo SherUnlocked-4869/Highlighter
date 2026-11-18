@@ -548,6 +548,15 @@ const windowActions = createWindowActions({
 })
 const positionAutomationWindow = windowActions.positionAutomationWindow
 
+const ocrController = createOcrIpcController({
+  getSettings,
+  getOcrService,
+  imageDataToBuffer,
+  recognizeWithPerformance,
+  aiClient,
+  resolveAiAssignment
+})
+
 pinDomain = createPinDomain({
   BrowserWindow,
   clipboard,
@@ -561,6 +570,7 @@ pinDomain = createPinDomain({
   saveDataUrl: (dataUrl) => saveDataUrl(dataUrl),
   createRecognitionWindow: (...args) => recognitionDomain.createRecognitionWindow(...args),
   getCreateCaptureWindow: () => (...args) => captureDomain.createCaptureWindow(...args),
+  recognizePin: ocrController.recognizePin,
   dataUrlToBuffer,
   bufferToDataUrl,
   log,
@@ -997,10 +1007,8 @@ registerSettingsIpc({
       return aiClient.validateApiKey(input)
     }
     const provider = input.provider || input
-    const result = await aiClient.testProviderConnection(provider, {
-      fetchModels: input.fetchModels === true
-    })
-    return result
+    if (input.fetchModels === true) return aiClient.discoverProviderModels(provider)
+    return aiClient.testProviderConnection(provider)
   },
   log
 })
@@ -1138,14 +1146,7 @@ registerRegionFeatureIpc({ ipcMain: secureIpcMain, getRegionPreferences: () => r
 
 registerOcrIpc({
   ipcMain: secureIpcMain,
-  controller: createOcrIpcController({
-    getSettings,
-    getOcrService,
-    imageDataToBuffer,
-    recognizeWithPerformance,
-    aiClient,
-    resolveAiAssignment
-  })
+  controller: ocrController
 })
 
 registerSearchIpc({

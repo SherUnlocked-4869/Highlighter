@@ -146,7 +146,7 @@ function createAiProtocolAdapter(config, client) {
   if (config.protocol === 'openai-responses') {
     return {
       async ping(requestOptions = {}) {
-        return client.responses.create({ model: config.model, input: 'hi', max_output_tokens: 5 }, requestOptions)
+        return client.responses.create({ model: config.model, input: 'hi', max_output_tokens: 16 }, requestOptions)
       },
       async stream(messages, options = {}, requestOptions = {}) {
         const response = await client.responses.create(buildResponsesStreamRequest(config, messages, options), requestOptions)

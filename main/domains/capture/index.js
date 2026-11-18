@@ -540,7 +540,7 @@ function createCaptureDomain(deps) {
       captureWindow._smartSelectContext = null
       if (currentCaptureWindow === captureWindow) currentCaptureWindow = null
       const pinWindow = captureWindow._pendingPinWindow || captureWindow._editingPinWindow
-      setImmediate(() => pinDomain?.bringPinToFront(pinWindow))
+      if (!pinWindow?._pendingRecognition || pinWindow._pinVisible) setImmediate(() => pinDomain?.bringPinToFront(pinWindow))
     })
     captureWindow._renderTimeout = setTimeout(() => {
       if (captureWindow.isDestroyed() || captureWindow._captureVisible) return
@@ -826,8 +826,7 @@ function createCaptureDomain(deps) {
       pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
         reportCaptureSerial(meta)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
-        const { captureWindow, pinWindow } = pinDomain.pinFromCapture(event, buffer, meta)
-        pinWindow._pendingReannotateAction = ['ocr', 'translate'].includes(action) ? action : ''
+        const { captureWindow } = pinDomain.pinFromCapture(event, buffer, meta, action)
         setImmediate(() => {
           if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
         })

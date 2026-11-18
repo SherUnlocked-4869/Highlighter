@@ -30,6 +30,7 @@ const {
   sanitizeProviderHeaders
 } = require('../../../shared/coding-plan-presets')
 const { getAiSessionId } = require('./session-id')
+const { isLoopbackProviderUrl } = require('../../../shared/provider-connection')
 // P0-1-T6: the connection-error copy below is returned to the settings window and
 // rendered verbatim (`toast(error.message)` in config/routes/models-provider.js),
 // so it is UI text. Everything else in this module is AI pipeline content — the
@@ -96,6 +97,7 @@ function createClient(provider, { timeoutMs = 60000 } = {}) {
   if (!config.enabled) throw new Error('该模型供应商已禁用，请先在“模型”设置中启用')
   if (!config.baseUrl) throw new Error('请先在“模型”设置中配置供应商 API 地址')
   const defaultHeaders = resolveRuntimeHeaders(config.headers, { sessionId: getAiSessionId() })
+  if (!config.apiKey && isLoopbackProviderUrl(config.baseUrl)) defaultHeaders.authorization = null
   return new OpenAI({
     baseURL: config.baseUrl,
     apiKey: config.apiKey,
@@ -103,6 +105,10 @@ function createClient(provider, { timeoutMs = 60000 } = {}) {
     maxRetries: 0,
     ...(Object.keys(defaultHeaders).length ? { defaultHeaders } : {})
   })
+}
+
+function hasProviderAuth(config) {
+  return !!config.apiKey || isLoopbackProviderUrl(config.baseUrl)
 }
 
 async function validateApiKey(apiKey) {
@@ -190,9 +196,15 @@ async function probeModelsList(config) {
       const client = createClient({ ...config, baseUrl }, { timeoutMs: 20000 })
       const response = await client.models.list()
       const rows = Array.isArray(response?.data) ? response.data : []
-      const models = rows
-        .map((item) => ({ id: cleanText(item?.id, 200), name: cleanText(item?.id, 200) }))
-        .filter((item) => item.id)
+      const models = []
+      const seen = new Set()
+      for (const row of rows) {
+        const id = cleanText(row?.id, 200)
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        models.push({ id, name: cleanText(row.display_name || row.name, 120) || id })
+        if (models.length >= 5000) break
+      }
       return { baseUrl, models }
     } catch (error) {
       if (isModelNotFoundError(error)) throw new Error(describeConnectionError(error))
@@ -203,11 +215,16 @@ async function probeModelsList(config) {
   throw new Error(lastError ? describeConnectionError(lastError) : '获取模型列表失败')
 }
 
-async function listProviderModels(provider) {
+async function discoverProviderModels(provider) {
   const config = normalizeProviderInput(provider)
+  if (!config.enabled) throw new Error('该模型供应商已禁用，请先启用后再获取模型')
   if (!config.baseUrl) throw new Error('请先填写 API 地址')
-  if (!config.apiKey) throw new Error('请先填写 API 密钥')
-  return (await probeModelsList(config)).models
+  if (!hasProviderAuth(config)) throw new Error('请先填写 API 密钥')
+  return { ok: true, ...(await probeModelsList(config)) }
+}
+
+async function listProviderModels(provider) {
+  return (await discoverProviderModels(provider)).models
 }
 
 async function resolveConnectionAttempt(config) {
@@ -244,7 +261,7 @@ async function testProviderConnection(provider, { fetchModels = false } = {}) {
   const config = normalizeProviderInput(provider)
   if (!config.enabled) throw new Error('该模型供应商已禁用，请先启用后再测试连接')
   if (!config.baseUrl) throw new Error('请先填写 API 地址')
-  if (!config.apiKey) throw new Error('请先填写 API 密钥')
+  if (!hasProviderAuth(config)) throw new Error('请先填写 API 密钥')
   if (!config.model) {
     const probe = await probeModelsList(config)
     if (!probe.models.length) {
@@ -416,7 +433,7 @@ async function createTranslateStream(provider, text, prompt = DEFAULT_TRANSLATE_
   const config = normalizeProviderInput(provider)
   if (!config.enabled) throw new Error('该功能指定的模型供应商已禁用')
   if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
-  if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
+  if (!hasProviderAuth(config)) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
   const streamOptions = splitStreamRequestOptions(requestOptions, false)
   const sourceLanguage = cleanText(languages?.source, 32) || 'auto'
@@ -445,7 +462,7 @@ async function completeChat(provider, messages, options = {}) {
   const config = normalizeProviderInput(provider)
   if (!config.enabled) throw new Error('该功能指定的模型供应商已禁用')
   if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
-  if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
+  if (!hasProviderAuth(config)) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
   const requestOptions = { ...(options.requestOptions || {}) }
   if (options.signal) requestOptions.signal = options.signal
@@ -468,7 +485,7 @@ async function convertImage(provider, image, options = {}) {
   const config = normalizeProviderInput(provider)
   if (!config.enabled) throw new Error('该功能指定的模型供应商已禁用')
   if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
-  if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
+  if (!hasProviderAuth(config)) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
   if (!modelSupportsVision({ capabilities: config.capabilities })) {
     throw new Error('当前模型未开启图像理解能力，请先在「模型」设置中为该模型勾选“支持图像”')
@@ -566,7 +583,7 @@ function splitOcrTranslationBatches(texts, { maximumItems = 24, maximumCharacter
   return batches
 }
 
-async function translateOcrTextBlocks(provider, texts, sourceLanguage = 'auto', targetLanguage = '中文') {
+async function translateOcrTextBlocks(provider, texts, sourceLanguage = 'auto', targetLanguage = '中文', { signal } = {}) {
   const normalized = (Array.isArray(texts) ? texts : []).map((text) => String(text || '').trim())
   if (!normalized.length || normalized.some((text) => !text)) throw new Error('OCR 文本块为空，无法建立翻译位置对应关系')
   const config = normalizeProviderInput(provider)
@@ -574,9 +591,11 @@ async function translateOcrTextBlocks(provider, texts, sourceLanguage = 'auto', 
   const completionOptions = {
     temperature: 0.2,
     thinking: 'off',
-    requestOptions: { timeout: OCR_TRANSLATION_TIMEOUT_MS }
+    requestOptions: { timeout: OCR_TRANSLATION_TIMEOUT_MS },
+    signal
   }
   for (const batch of splitOcrTranslationBatches(normalized)) {
+    signal?.throwIfAborted()
     const sourceTexts = batch.map((item) => item.text)
     const prompt = buildOcrTranslationBatchPrompt(sourceTexts, sourceLanguage, targetLanguage)
     let output
@@ -597,6 +616,7 @@ async function translateOcrTextBlocks(provider, texts, sourceLanguage = 'auto', 
     } catch {
       translated = []
       for (const text of sourceTexts) {
+        signal?.throwIfAborted()
         const value = String(await translateText(provider, text, sourceLanguage, targetLanguage, completionOptions)).trim()
         if (!value) throw new Error('翻译模型返回了空文本，无法覆盖对应的 OCR 文本块')
         translated.push(value)
@@ -611,7 +631,7 @@ async function createExplainStream(provider, text, prompt = DEFAULT_EXPLAIN_PROM
   const config = normalizeProviderInput(provider)
   if (!config.enabled) throw new Error('该功能指定的模型供应商已禁用')
   if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
-  if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
+  if (!hasProviderAuth(config)) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
   if (!modelSupportsTask({ capabilities: config.capabilities }, 'explain')) {
     throw new Error('该模型仅支持翻译，不能用于划词解释或自定义指令')
@@ -635,7 +655,7 @@ async function createFollowUpStream(provider, messages, requestOptions = {}) {
   const config = normalizeProviderInput(provider)
   if (!config.enabled) throw new Error('该功能指定的模型供应商已禁用')
   if (!config.baseUrl) throw new Error('该功能未配置可用的模型供应商或 API 地址')
-  if (!config.apiKey) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
+  if (!hasProviderAuth(config)) throw new Error('请先在“模型”设置中为该功能配置 API 密钥')
   if (!config.model) throw new Error('请先在“模型”设置中为该供应商配置模型')
   if (!modelSupportsTask({ capabilities: config.capabilities }, 'chat')) {
     throw new Error('当前模型不支持对话，无法继续追问')
@@ -664,6 +684,7 @@ module.exports = {
   parseOcrTranslationBatchOutput,
   validateApiKey,
   listProviderModels,
+  discoverProviderModels,
   testProviderConnection,
   normalizeProviderInput,
   connectionBaseUrls,

@@ -19,6 +19,11 @@ contextBridge.exposeInMainWorld('pinAPI', {
     ipcRenderer.on('pin:update', handler)
     return () => ipcRenderer.removeListener('pin:update', handler)
   },
+  onRecognition: (callback) => {
+    const handler = (_event, data) => callback(data)
+    ipcRenderer.on('pin:recognition', handler)
+    return () => ipcRenderer.removeListener('pin:recognition', handler)
+  },
   close: () => ipcRenderer.send('pin:close'),
   copy: () => ipcRenderer.send('pin:copy'),
   save: () => ipcRenderer.send('pin:save'),

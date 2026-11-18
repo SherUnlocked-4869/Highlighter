@@ -12,12 +12,30 @@ const {
   createExplainStream,
   createFollowUpStream,
   describeConnectionError,
+  discoverProviderModels,
   isNotFoundError,
   normalizeProviderInput,
   parseOcrTranslationBatchOutput,
   resolveTranslateTarget,
   sourceLanguageCodeForText
 } = require('../deepseek')
+
+test('model discovery calls only the catalog and omits authorization for a keyless local provider', async (t) => {
+  const requests = []
+  const server = http.createServer((request, response) => {
+    requests.push({ method: request.method, url: request.url, headers: request.headers })
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ data: [{ id: 'local-model', display_name: 'Local Model' }, { id: 'local-model' }] }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise((resolve) => server.close(resolve)))
+  const baseUrl = `http://127.0.0.1:${server.address().port}/v1`
+  const result = await discoverProviderModels({ baseUrl, headers: { 'X-Title': 'Highlighter' } })
+  assert.deepEqual(result, { ok: true, baseUrl, models: [{ id: 'local-model', name: 'Local Model' }] })
+  assert.deepEqual(requests.map(({ method, url }) => [method, url]), [['GET', '/v1/models']])
+  assert.equal(requests[0].headers.authorization, undefined)
+  assert.equal(requests[0].headers['x-title'], 'Highlighter')
+})
 
 test('OCR batch translation explicitly disables reasoning with a bounded request timeout', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'ai', 'client.js'), 'utf8')

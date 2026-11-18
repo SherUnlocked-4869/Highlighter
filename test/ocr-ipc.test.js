@@ -20,6 +20,7 @@ function createHarness(overrides = {}) {
     aiClient: {
       translateOcrTextBlocks: (...args) => {
         calls.translateOcrTextBlocks.push(args)
+        if (overrides.translate) return overrides.translate(...args)
         return Promise.resolve(args[1].map((_, index) => (index === 0 ? '你好' : '世界')))
       }
     },
@@ -83,4 +84,19 @@ test('translate pairs each source block with its translation and rewrites the re
     { text: '世界', box: [2, 2, 3, 3], sourceText: 'world' }
   ])
   assert.equal(result.translationResult.text, '你好\n世界')
+})
+
+test('pin translation returns positioned source text when the provider fails', async () => {
+  const ocrResult = { text: 'hello', textBlocks: [{ text: 'hello', box: [0, 0, 1, 1] }] }
+  const { controller } = createHarness({
+    recognize: async () => ocrResult,
+    translate: async () => { throw new Error('offline') }
+  })
+  const { signal } = new AbortController()
+  let translating = false
+  const response = await controller.recognizePin('translate', { dataUrl: 'bytes' }, {
+    signal, onTranslating: () => { translating = true }
+  })
+  assert.equal(translating, true)
+  assert.deepEqual(response, { phase: 'translation-failed', result: ocrResult })
 })

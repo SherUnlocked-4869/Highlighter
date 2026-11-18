@@ -306,7 +306,8 @@ const GOLDEN = {
 }
 
 const htmlKeys = [...html.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)].map((match) => match[1])
-const scriptKeys = [...script.matchAll(/\bt\('(capture\.[a-z0-9.-]+)'/g)].map((match) => match[1])
+const overlayScript = fs.readFileSync(path.join(root, 'shared/ocr-text-overlay.js'), 'utf8')
+const scriptKeys = [...(script + overlayScript).matchAll(/\bt\('(capture\.[a-z0-9.-]+)'/g)].map((match) => match[1])
 // Feature B: the region panel reports outcomes through setRegionStatus('capture.…') - including
 // inside ternaries - instead of an inline t() call, because the same key is re-rendered on every
 // state change. Scan every quoted capture.* literal inside those calls so no key is misreported as

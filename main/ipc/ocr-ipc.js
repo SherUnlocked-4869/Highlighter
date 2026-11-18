@@ -25,8 +25,56 @@ function createOcrIpcController({
     if (!getSettings().plugins.ocr) throw new Error('请先在插件页面启用文本识别')
   }
 
+  async function translateResult(ocrResult, settings, signal) {
+    const text = ocrResult.text.trim()
+    if (!text) throw new Error('未识别到可翻译的文本')
+    const textBlocks = (Array.isArray(ocrResult.textBlocks) ? ocrResult.textBlocks : [])
+      .filter((block) => String(block?.text || '').trim())
+    if (!textBlocks.length) throw new Error('未识别到可定位的翻译文本')
+    const translations = await aiClient.translateOcrTextBlocks(
+      resolveAiAssignment(settings, 'ocr-translate'),
+      textBlocks.map((block) => String(block.text).trim()),
+      'auto',
+      settings.ai.targetLanguage,
+      { signal }
+    )
+    const translatedBlocks = textBlocks.map((block, index) => ({
+      ...block,
+      sourceText: String(block.text).trim(),
+      text: translations[index]
+    }))
+    const translation = translations.join('\n')
+    return {
+      text,
+      translation,
+      ocrResult,
+      translationResult: { ...ocrResult, text: translation, textBlocks: translatedBlocks }
+    }
+  }
+
   return {
     ocrStatus: () => getOcrService().getStatus(),
+
+    recognizePin: async (action, payload, { signal, onTranslating }) => {
+      assertOcrEnabled()
+      const settings = getSettings()
+      const ocrResult = await recognizeWithPerformance(readImage(payload), {
+        scaleFactor: payload.scaleFactor,
+        detectAngle: settings.ocr.detectAngle,
+        minConfidence: settings.ocr.minConfidence
+      }, action === 'translate' ? 'capture-translate' : 'capture')
+      signal.throwIfAborted()
+      if (!ocrResult.text.trim()) return { phase: 'empty' }
+      if (action === 'ocr') return { phase: 'result', result: ocrResult }
+      onTranslating()
+      try {
+        const result = await translateResult(ocrResult, settings, signal)
+        return { phase: 'result', result: result.translationResult }
+      } catch {
+        signal.throwIfAborted()
+        return { phase: 'translation-failed', result: ocrResult }
+      }
+    },
 
     ocr: async (_event, payload) => {
       assertOcrEnabled()
@@ -48,33 +96,7 @@ function createOcrIpcController({
         detectAngle: settings.ocr.detectAngle,
         minConfidence: settings.ocr.minConfidence
       }, 'capture-translate')
-      const text = ocrResult.text.trim()
-      if (!text) throw new Error('未识别到可翻译的文本')
-      const textBlocks = (Array.isArray(ocrResult.textBlocks) ? ocrResult.textBlocks : [])
-        .filter((block) => String(block?.text || '').trim())
-      if (!textBlocks.length) throw new Error('未识别到可定位的翻译文本')
-      const translations = await aiClient.translateOcrTextBlocks(
-        resolveAiAssignment(settings, 'ocr-translate'),
-        textBlocks.map((block) => String(block.text).trim()),
-        'auto',
-        settings.ai.targetLanguage
-      )
-      const translatedBlocks = textBlocks.map((block, index) => ({
-        ...block,
-        sourceText: String(block.text).trim(),
-        text: translations[index]
-      }))
-      const translation = translations.join('\n')
-      return {
-        text,
-        translation,
-        ocrResult,
-        translationResult: {
-          ...ocrResult,
-          text: translation,
-          textBlocks: translatedBlocks
-        }
-      }
+      return translateResult(ocrResult, settings)
     },
 
     // Image → Markdown/HTML (2026-10-18 snow migration §6.2②).

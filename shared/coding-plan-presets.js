@@ -82,7 +82,12 @@
   const MAX_HEADER_COUNT = 10
   const MAX_HEADER_KEY_LENGTH = 64
   const MAX_HEADER_VALUE_LENGTH = 256
-  const FORBIDDEN_HEADER_KEYS = new Set(['authorization'])
+  const FORBIDDEN_HEADER_KEYS = new Set([
+    'authorization', 'proxy-authorization', 'cookie', 'set-cookie',
+    'host', 'connection', 'content-length', 'transfer-encoding',
+    'content-type', 'accept-encoding', 'api-key', 'x-api-key',
+    '__proto__', 'constructor', 'prototype'
+  ])
 
   function listCodingPlanPresets() {
     return CODING_PLAN_PRESETS
@@ -99,7 +104,8 @@
   }
 
   function isForbiddenHeaderKey(key) {
-    return FORBIDDEN_HEADER_KEYS.has(String(key || '').trim().toLowerCase())
+    const name = String(key || '').trim().toLowerCase()
+    return FORBIDDEN_HEADER_KEYS.has(name) || /(^|-)(token|secret|credential|password|apikey)(-|$)/.test(name)
   }
 
   // Accepts a header map from any source (preset template or persisted provider)
@@ -108,15 +114,18 @@
   function sanitizeProviderHeaders(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
     const headers = {}
+    const seen = new Set()
     let count = 0
     for (const [rawKey, rawValue] of Object.entries(value)) {
       if (count >= MAX_HEADER_COUNT) break
       const key = cleanText(rawKey, MAX_HEADER_KEY_LENGTH)
-      if (!key || isForbiddenHeaderKey(key)) continue
+      const normalized = key.toLowerCase()
+      if (!/^[a-z0-9!#$%&'*+.^_|~-]+$/i.test(key) || isForbiddenHeaderKey(key) || seen.has(normalized)) continue
       if (rawValue === null || rawValue === undefined || typeof rawValue === 'object') continue
       const headerValue = cleanText(rawValue, MAX_HEADER_VALUE_LENGTH)
-      if (!headerValue) continue
+      if (!headerValue || /[^\t\x20-\x7e\xa0-\xff]/.test(headerValue)) continue
       headers[key] = headerValue
+      seen.add(normalized)
       count += 1
     }
     return headers
