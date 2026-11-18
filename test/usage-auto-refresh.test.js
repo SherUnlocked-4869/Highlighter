@@ -221,6 +221,7 @@ function loadRoute({ enabled, disabledChannels } = {}) {
       usageAutoRefreshTick,
       usageAutoRefreshArm,
       usageAutoRefreshStop,
+      usageToday,
       usageRelativeTime
     }
   `
@@ -229,6 +230,46 @@ function loadRoute({ enabled, disabledChannels } = {}) {
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+test('overview defaults to seven calendar days and scopes all displayed totals to the selected model', async () => {
+  const { sandbox, state, probe } = loadRoute()
+  const filters = { '#usageSource': { value: 'codex' }, '#usageModel': { value: 'agent/model' } }
+  const querySelector = sandbox.view.querySelector
+  sandbox.view.querySelector = (selector) => filters[selector] || querySelector(selector)
+  await probe.renderUsage()
+  const today = probe.usageToday()
+  const sevenDays = sandbox.usageFormat.addDays(today, -6)
+  assert.deepEqual([...new Set(state.queries.map(([, query]) => query.from))], [sevenDays])
+  assert.ok(state.queries.every(([, query]) => query.to === today && query.model === undefined && query.sources === undefined))
+  assert.match(sandbox.view.innerHTML, /id="refreshUsage"[\s\S]*?id="usageEvery"[\s\S]*?id="usageSource"[\s\S]*?id="usageModel"[\s\S]*?id="usageProject"[^>]* disabled/)
+  assert.match(sandbox.view.innerHTML, /id="usageKpis"[\s\S]*?id="usageTrend"[\s\S]*?id="usageBreakdown"[\s\S]*?usage-panel-top-sessions[\s\S]*?usage-panel-skills[\s\S]*?usage-panel-tools[\s\S]*?id="usageDailyTable"[\s\S]*?id="usagePricing"[\s\S]*?id="usageSources"/)
+
+  filters['#usageSource'].onchange()
+  await settle()
+  filters['#usageModel'].onchange()
+  await settle()
+  const [summary, daily, breakdown] = state.queries.slice(-3).map(([, query]) => query)
+  assert.deepEqual(Array.from(summary.sources), ['codex'])
+  assert.equal(summary.model, 'agent/model')
+  assert.equal(daily.model, 'agent/model')
+  assert.equal(breakdown.model, undefined, 'options still contain the other models')
+})
+
+test('changing refresh cadence reschedules one timer and off removes its listeners', async () => {
+  const { sandbox, state, probe } = loadRoute()
+  const cadence = { value: '300000' }
+  const querySelector = sandbox.view.querySelector
+  sandbox.view.querySelector = (selector) => selector === '#usageEvery' ? cadence : querySelector(selector)
+  await probe.renderUsage()
+  cadence.onchange()
+  assert.equal(state.timerCount, 1)
+  assert.equal(state.peekTimer().delay, 300000)
+  cadence.value = '0'
+  cadence.onchange()
+  assert.equal(state.timerCount, 0)
+  assert.equal(state.listenerCount('focus'), 0)
+  assert.equal(state.listenerCount('visibilitychange'), 0)
+})
 
 test('entering the usage page requests an increment scan and arms the refresh timer', async (t) => {
   const { sandbox, state, probe } = loadRoute()

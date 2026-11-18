@@ -1,51 +1,22 @@
-// B4/B5/B6 (usage line): the "AI usage" settings-window route — visual redesign.
-//
-// The page is a read-only dashboard over the frozen `usage:*` IPC contract
-// (plan §2.7 / §2.8). This revision reworks the presentation around a calm,
-// high-density "instrument panel" that translates TokenTracker's dashboard
-// rhythm into FILM (the 2026 theme): warm paper surfaces, one user accent,
-// monospace numbers and a single unified card system.
-//
-// Layout: page head -> slim coverage strip -> segmented period tabs (custom
-// date row appears only while the custom tab is selected) -> dashboard grid.
-// The grid is the paired arrangement at every window size the settings window
-// allows (heatmap | trend, integrated | token, daily detail full width); it only
-// falls back to a single column below 560px of page content. The switch is a
-// CONTAINER query on `.usage-page`, not a viewport media query, because the
-// settings window's content area is narrower than the viewport.
-//
-// Data access is feature-probed: a missing engine renders a neutral "not
-// connected" error state with retry instead of demo data; the optional B5/B6
-// channels (hourly/heatmap) hide only their own card. The heatmap tooltip reads
-// the optional per-day `cell.models` split defensively and degrades to the day
-// total when the engine revision does not carry it yet.
-//
-// Re-render safety follows history.js: renderUsage() can run again at any time
-// (period change, refresh, language hot switch) and async continuations are
-// guarded by `currentRoute === 'usage'` plus a render version counter. Every
-// handler is bound to an element this route owns; the one IPC subscription and
-// the auto-refresh timer/listeners are all dropped when the route is left.
-//
-// Data freshness (plan §2.2): entering the page asks the engine for an increment
-// scan (`page-open`), and while the page stays open it re-asks every
-// USAGE_AUTO_REFRESH_MS and on window focus / visibility return. The collector
-// owns the 5-minute floor, so all of these triggers share one throttle and a
-// focus storm cannot re-scan the disk.
+// Local AI CLI usage dashboard over the main process aggregates.
 
-const USAGE_DEFAULT_PERIOD = 'month'
+
+const USAGE_DEFAULT_PERIOD = 'week'
 const USAGE_TREND_DAYS = 30
+const USAGE_ROLLING_DAYS = { week: 7, month: 30, quarter: 90 }
+const USAGE_TREND_METRICS = ['token', 'output', 'records', 'sessions', 'cost', 'active']
 const USAGE_MODEL_LIMIT = 5
 const USAGE_HEATMAP_WEEKS = 52
 const USAGE_HEATMAP_TICK_MIN_SPAN = 1
-const USAGE_DAY_VIEW_PERIOD = 'day'
 const USAGE_CUSTOM_PERIOD = 'custom'
 
 // Period tabs in display order. The custom tab reveals the date range row; the
 // resolves through t() on every render so a language switch needs no reload.
 const USAGE_PERIODS = [
   { id: 'day', labelKey: 'config.usage.tab.day' },
-  { id: 'week', labelKey: 'config.usage.tab.week' },
-  { id: 'month', labelKey: 'config.usage.tab.month' },
+  { id: 'week', labelKey: 'config.usage.kpi.last-7d' },
+  { id: 'month', labelKey: 'config.usage.kpi.last-30d' },
+  { id: 'quarter', labelKey: 'config.usage.dashboard.last-90d' },
   { id: 'total', labelKey: 'config.usage.tab.total' },
   { id: USAGE_CUSTOM_PERIOD, labelKey: 'config.usage.tab.custom' }
 ]
@@ -81,18 +52,6 @@ const USAGE_WEEKDAY_KEYS = [
   'config.usage.weekday.sun'
 ]
 
-// Long-form period names for the KPI sub-label and range descriptions
-// (long-form names such as "this month" instead of the bare tab label).
-const USAGE_PERIOD_LONG_KEYS = {
-  day: 'config.usage.period.day',
-  week: 'config.usage.period.week',
-  month: 'config.usage.period.month',
-  total: 'config.usage.period.total',
-  custom: 'config.usage.period.custom'
-}
-
-// Page-level state banner copy. `data-usage-state` on the page root carries the
-// same id, which keeps the e2e/debug surface and the rendered copy in step.
 const USAGE_STATE_COPY = {
   scanning: { title: 'config.usage.state.scanning-title', body: 'config.usage.state.scanning-body' },
   empty: { title: 'config.usage.state.empty-title', body: 'config.usage.state.empty-body' },
@@ -147,6 +106,18 @@ let usagePeriodBeforeCustom = USAGE_DEFAULT_PERIOD
 // Selected AI tools for the filter row. Empty means "all tools" (default): the
 // query then omits `sources` entirely instead of enumerating the supported set.
 let usageSourceFilter = []
+let usageModelFilter = ''
+let usageProjectFilter = ''
+let usageProjectLabel = ''
+let usageSessionSort = 'token'
+let usageSessionSearch = ''
+let usageSessionExpanded = false
+const usageExpandedActivity = new Set()
+const usagePriceDrafts = new Map()
+let usageIncludeCache = true
+let usageTrendMetric = 'token'
+let usageHeatView = 'hourly'
+let usageRefreshInterval = USAGE_AUTO_REFRESH_MS
 let usageDailySort = 'desc'
 let usageDailyRowCache = []
 let usageProgressUnsubscribe = null
@@ -195,7 +166,7 @@ function usageDefaultRange() {
 
 // Custom period is only entered through the custom tab, but a stale range can
 // survive a re-render/language switch; validate it before the IPC round trip and
-// fall back to the month tab with a toast.
+// fall back to the default tab with a toast.
 function usageNormalizeRange() {
   if (usagePeriod !== USAGE_CUSTOM_PERIOD) return
   if (!usageRange.from || !usageRange.to) {
@@ -215,16 +186,20 @@ function usageNormalizeRange() {
 // period is the only one that carries explicit bounds.
 function usageQueryParams() {
   const tz = usageTimezone()
-  // Only send `sources` when a real subset is selected: "all tools" must stay a
-  // key-free query so older engines and the store's unfiltered fast path both
-  // keep working.
-  const sources = usageSourceFilter.length > 0 ? usageSourceFilter.slice() : null
-  if (usagePeriod === USAGE_CUSTOM_PERIOD) {
-    return sources
-      ? { period: 'custom', tz, from: usageRange.from, to: usageRange.to, sources }
-      : { period: 'custom', tz, from: usageRange.from, to: usageRange.to }
+  const filters = {
+    ...(usageSourceFilter.length ? { sources: usageSourceFilter.slice() } : {}),
+    ...(usageModelFilter ? { model: usageModelFilter } : {}),
+    ...(usageProjectFilter ? { project: usageProjectFilter } : {})
   }
-  return sources ? { period: usagePeriod, tz, sources } : { period: usagePeriod, tz }
+  if (usagePeriod === USAGE_CUSTOM_PERIOD) {
+    return { period: 'custom', tz, ...usageRange, ...filters }
+  }
+  const days = USAGE_ROLLING_DAYS[usagePeriod]
+  if (days) {
+    const to = usageToday()
+    return { period: 'custom', tz, from: window.usageFormat.addDays(to, 1 - days), to, ...filters }
+  }
+  return { period: usagePeriod, tz, ...filters }
 }
 
 function usageIsCurrent(renderVersion) {
@@ -241,7 +216,7 @@ function usageNumber(value) {
 }
 
 function usageCompact(value) {
-  return window.usageFormat.formatCompactToken(usageNumber(value), usageLanguage())
+  return window.usageFormat.formatCompactToken(usageNumber(value), 'en-US')
 }
 
 function usageFull(value) {
@@ -342,16 +317,6 @@ function usageSourceStateKey(state) {
   return USAGE_SOURCE_STATE_KEYS[state] ? state : 'absent'
 }
 
-function usagePeriodLabel(period) {
-  const entry = USAGE_PERIODS.find((item) => item.id === period) || USAGE_PERIODS[2]
-  return t(entry.labelKey)
-}
-
-// Long-form period name for labels ("this month", "this week", custom range).
-function usagePeriodLongLabel(period) {
-  const key = USAGE_PERIOD_LONG_KEYS[period] || USAGE_PERIOD_LONG_KEYS[USAGE_DEFAULT_PERIOD]
-  return t(key)
-}
 
 function usageRangeLabel(summary) {
   const period = (summary && summary.period) || usagePeriod
@@ -366,27 +331,9 @@ function usageToast(message) {
   if (typeof toast === 'function' && message) toast(message)
 }
 
-// One primary-derived tone per source. The first three are deliberately spread
-// (100 / 58 / 30 % of the accent over the surface ladder) so three sources are
-// distinguishable in both themes, not three near-identical ambers.
-const USAGE_SHARE_TONES = [100, 58, 30, 20, 12]
 
-function usageShareTone(index) {
-  return USAGE_SHARE_TONES[index % USAGE_SHARE_TONES.length]
-}
-
-function usageShareColor(index) {
-  return `color-mix(in srgb,var(--primary) ${usageShareTone(index)}%,var(--surface-3))`
-}
-
-function usageShareSources(sources) {
-  return sources
-    .filter((source) => usageNumber(source && source.billable_total_tokens) > 0)
-    .sort((a, b) => usageNumber(b.billable_total_tokens) - usageNumber(a.billable_total_tokens))
-}
-
-function usageActiveDayCount(rows) {
-  return rows.filter((row) => usageNumber(row && row.billable_total_tokens) > 0 || usageNumber(row && row.conversation_count) > 0).length
+function usageIsActiveDay(row) {
+  return !!row && (usageDashboardTokens(row, true) > 0 || usageNumber(row.conversation_count) > 0)
 }
 
 // Clamp a percentage so inline SVG-free progress bars never overflow their track.
@@ -405,13 +352,10 @@ function usageHeaderHtml(actionsHtml = '') {
   return pageHeader(t('config.route.usage'), t('config.usage.subtitle'), actions)
 }
 
-// Icon-only refresh action: the label lives in the accessible name and the
-// native tooltip, so the header stays one line and the toolbar row below has
-// room for the source filter.
-function usageRefreshButtonHtml() {
-  const label = escapeHtml(t('config.usage.refresh'))
+function usageRefreshButtonHtml(scanning = false) {
+  const label = escapeHtml(t(scanning ? 'config.usage.state.scanning-title' : 'config.usage.refresh'))
   const icon = typeof iconMarkup === 'function' ? iconMarkup('icons/refresh.svg') : ''
-  return `<button class="button usage-refresh-button" type="button" data-usage-refresh aria-label="${label}" title="${label}">${icon}</button>`
+  return `<button class="button usage-refresh-button" type="button" id="refreshUsage" data-usage-refresh aria-busy="${scanning}"${scanning ? ' disabled' : ''}>${icon}<span>${label}</span></button>`
 }
 
 function usageStateCardHtml(state, title, body, actionsHtml = '') {
@@ -566,41 +510,61 @@ function usageCoverageHtml(status, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Toolbar: period tabs + AI-tool filter (+ custom range while that tab is
-// active). Every control sits on the same row so the row immediately under the
-// coverage strip is the page's single control band.
+// Toolbar: date, refresh cadence and filters.
 // ---------------------------------------------------------------------------
 
-function usageTabsHtml() {
+function usageTabsHtml(models, projects, scanning) {
   const buttons = USAGE_PERIODS.map((period) => {
     const selected = period.id === usagePeriod
-    return `<button class="usage-segment${selected ? ' is-active' : ''}" type="button" role="tab" data-usage-tab="${period.id}" aria-selected="${selected}" tabindex="${selected ? 0 : -1}">${t(period.labelKey)}</button>`
+    return `<button class="usage-segment" type="button" data-usage-tab="${period.id}" aria-pressed="${selected}">${escapeHtml(t(period.labelKey))}</button>`
   }).join('')
-  return `<div class="usage-toolbar">
-    <div class="usage-segmented" role="tablist" aria-label="${escapeHtml(t('config.usage.tabs-label'))}">${buttons}</div>
+  const intervalOptions = [60000, 300000, 900000, 0].map((ms) => {
+    const label = ms ? usageDashboardText('minutes', { count: ms / 60000 }) : usageDashboardText('off')
+    return usageOption(ms, label, usageRefreshInterval)
+  }).join('')
+  return `<div class="usage-controls">
+    <div class="usage-toolbar">
+      <div class="usage-segments usage-periods" role="group" aria-label="${escapeHtml(t('config.usage.tabs-label'))}">${buttons}</div>
+      <div class="usage-toolbar-end">${usageRefreshButtonHtml(scanning)}
+        <label>${escapeHtml(usageDashboardText('auto'))}<select id="usageEvery">${intervalOptions}</select></label>
+      </div>
+    </div>
     ${usagePeriod === USAGE_CUSTOM_PERIOD ? usageCustomRangeHtml() : ''}
-    ${usageSourceFilterHtml()}
+    ${usageSourceFilterHtml(models, projects)}
   </div>`
 }
 
-// AI-tool multi-select: every chip toggles independently, and "no chip selected"
-// means "all tools" — the same thing the default state shows. The filter is a
-// view over the same query range, so it lives next to the period tabs.
-function usageSourceFilterHtml() {
-  const selected = new Set(usageSourceFilter)
-  const allSelected = usageSourceFilter.length === 0
-  const chips = USAGE_SUPPORTED_SOURCES.map((id) => {
-    const active = !allSelected && selected.has(id)
-    const label = t(USAGE_SOURCE_LABEL_KEYS[id])
-    const state = active ? 'true' : 'false'
-    return `<button class="usage-filter-chip${active ? ' is-active' : ''}" type="button" data-usage-source-filter="${id}" aria-pressed="${state}">
-      <i class="usage-filter-dot" aria-hidden="true"></i><span>${escapeHtml(label)}</span>
-    </button>`
-  }).join('')
-  const allChip = `<button class="usage-filter-chip usage-filter-chip-all${allSelected ? ' is-active' : ''}" type="button" data-usage-source-filter="all" aria-pressed="${allSelected ? 'true' : 'false'}">${escapeHtml(t('config.usage.filter.all'))}</button>`
-  return `<div class="usage-source-filter" role="group" aria-label="${escapeHtml(t('config.usage.filter.label'))}" data-usage-source-filter-group>
-    <span class="usage-filter-caption">${t('config.usage.filter.label')}</span>
-    ${allChip}${chips}
+function usageDashboardText(key, params) {
+  return t(`config.usage.dashboard.${key}`, params)
+}
+
+function usageOption(value, label, selected) {
+  return `<option value="${escapeHtml(String(value))}"${value === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`
+}
+
+function usageIsFilterableModel(model) {
+  return typeof model === 'string' && model.trim() !== '' && model.length <= 256 && !/[\x00-\x1f]/.test(model)
+}
+
+function usageSourceFilterHtml(models, projects) {
+  const source = usageSourceFilter[0] || ''
+  const agents = USAGE_SUPPORTED_SOURCES.map((id) => usageOption(id, usageSourceLabel({ source: id }), source))
+  const names = [...new Set(models.map((row) => row.model).filter(usageIsFilterableModel))].sort()
+  if (usageModelFilter && !names.includes(usageModelFilter)) names.unshift(usageModelFilter)
+  const options = projects.map((item) => usageOption(item.id, item.name, usageProjectFilter))
+  if (usageProjectFilter && !projects.some((item) => item.id === usageProjectFilter)) {
+    options.unshift(usageOption(usageProjectFilter, usageProjectLabel, usageProjectFilter))
+  }
+  return `<div class="usage-filters">
+    <select id="usageSource" aria-label="${escapeHtml(t('config.usage.filter.label'))}">
+      ${usageOption('', usageDashboardText('all-agents'), source)}${agents.join('')}
+    </select>
+    <select id="usageModel" aria-label="${escapeHtml(usageDashboardText('model'))}">
+      ${usageOption('', usageDashboardText('all-models'), usageModelFilter)}${names.map((name) => usageOption(name, name, usageModelFilter)).join('')}
+    </select>
+    <select id="usageProject" aria-label="${escapeHtml(usageDashboardText('project'))}"${options.length ? '' : ' disabled'}>
+      ${usageOption('', usageDashboardText('all-projects'), usageProjectFilter)}${options.join('')}
+    </select>
   </div>`
 }
 
@@ -623,160 +587,191 @@ function usageCustomRangeHtml() {
 }
 
 // ---------------------------------------------------------------------------
-// Integrated card (v6): four KPI pills + ranked model list + footer meta
+// Overview, rankings and daily trend
 // ---------------------------------------------------------------------------
 
-function usageKpiPillHtml(item) {
-  return `<div class="usage-kpi-pill" title="${escapeHtml(item.full)}">
-    <b class="usage-kpi-pill-value">${escapeHtml(item.value)}</b>
-    <span class="usage-kpi-pill-label">${escapeHtml(item.label)}</span>
-  </div>`
-}
 
-function usageKpiPillsHtml(summary) {
-  const rolling = summary && summary.rolling && typeof summary.rolling === 'object' ? summary.rolling : {}
-  const last7 = rolling.last7d && typeof rolling.last7d === 'object' ? rolling.last7d : {}
-  const last30 = rolling.last30d && typeof rolling.last30d === 'object' ? rolling.last30d : {}
-  const totals = summary && summary.totals && typeof summary.totals === 'object' ? summary.totals : {}
-  const pills = [
-    { value: usageCompact(last7.billable_total_tokens), full: usageFull(last7.billable_total_tokens), label: t('config.usage.kpi.last-7d') },
-    { value: usageCompact(last30.billable_total_tokens), full: usageFull(last30.billable_total_tokens), label: t('config.usage.kpi.last-30d') },
-    { value: usageCompact(rolling.avgPerActiveDay), full: usageFull(rolling.avgPerActiveDay), label: t('config.usage.kpi.avg-per-active-day') },
-    { value: usageFull(totals.conversation_count), full: usageFull(totals.conversation_count), label: t('config.usage.kpi.conversations') }
-  ]
-  return `<div class="usage-kpi-pills" id="usageKpis">${pills.map(usageKpiPillHtml).join('')}</div>`
-}
-
-function usageIntegratedModelRowHtml(row, isOther) {
-  const share = row.sharePct > 0 ? row.sharePct : 0
-  const sourceLabel = usageSourceLabel({ source: row.source })
-  const name = isOther ? t('config.usage.models.other', { count: row.count }) : row.model
-  const rows = isOther ? 'other' : row.model
-  const title = `${name} · ${usageFull(row.tokens)} · ${usageShare(share)}`
-  return `<div class="usage-integrated-row${isOther ? ' usage-integrated-row-other' : ''}" data-usage-model="${escapeHtml(rows)}" title="${escapeHtml(title)}">
-    <span class="usage-integrated-rank${!isOther && row.rank === 1 ? ' is-top' : ''}">${isOther ? '+' : row.rank}</span>
-    <b class="usage-integrated-name" title="${escapeHtml(isOther ? name : row.model)}">${escapeHtml(name)}</b>
-    ${isOther || !sourceLabel ? '' : `<span class="usage-integrated-source">${escapeHtml(sourceLabel)}</span>`}
-    <span class="usage-integrated-pct">${usageShare(share)}</span>
-  </div>`
-}
-
-// Earliest covered day across the supported sources (the "in use since" meta).
-function usageCoverageStartDay(status) {
-  const sources = status && Array.isArray(status.sources) ? status.sources : []
-  let earliest = ''
-  for (const id of USAGE_SUPPORTED_SOURCES) {
-    const source = sources.find((candidate) => candidate && candidate.source === id)
-    const raw = source && source.coverageStartAt
-    if (typeof raw !== 'string') continue
-    const day = window.usageFormat.toDayKey(raw.slice(0, 10)) || window.usageFormat.toDayKey(raw)
-    if (day && (!earliest || day < earliest)) earliest = day
-  }
-  return earliest
-}
-
-function usageIntegratedCardHtml(summary, models, status, heatmap) {
-  const model = window.usageFormat.projectModelShareRows(models, USAGE_MODEL_LIMIT)
-  const rows = model.top.map((row) => usageIntegratedModelRowHtml(row, false)).join('')
-  const other = model.other ? usageIntegratedModelRowHtml(model.other, true) : ''
-  const modelList = model.top.length > 0
-    ? `${rows}${other}`
-    : `<div class="usage-empty-text">${t('config.usage.breakdown.empty')}</div>`
-  const rolling = summary && summary.rolling && typeof summary.rolling === 'object' ? summary.rolling : {}
-  const activeDays = usageNumber(heatmap && heatmap.activeDays) || usageNumber(rolling.activeDays)
-  const startDay = usageCoverageStartDay(status)
-  const start = startDay ? t('config.usage.integrated.start', { date: startDay }) : ''
-  return `<section class="usage-card usage-integrated" id="usageBreakdown" aria-label="${escapeHtml(t('config.usage.models.title'))}">
-    ${usageKpiPillsHtml(summary)}
-    <div class="usage-divider" aria-hidden="true"></div>
-    <div class="usage-integrated-models">${modelList}</div>
-    <div class="usage-divider" aria-hidden="true"></div>
-    <div class="usage-integrated-foot">
-      <span>${escapeHtml(start)}</span>
-      <span>${escapeHtml(t('config.usage.integrated.active-days', { count: activeDays }))}</span>
-    </div>
-  </section>`
-}
-
-// ---------------------------------------------------------------------------
-// Token card (v6): compact total + source share, same size as the integrated card
-// ---------------------------------------------------------------------------
-
-function usageTokenSourceRowHtml(source, index, isAll, totals, modelsCount) {
-  const color = isAll ? 'var(--primary)' : usageShareColor(index)
-  const label = isAll ? t('config.usage.providers.all') : usageSourceLabel(source)
-  const percent = isAll ? 100 : usageNumber(source && source.sharePct)
-  const modelCount = isAll ? modelsCount : usageNumber(source && source.modelCount)
-  const conversations = isAll ? usageNumber(totals.conversation_count) : usageNumber(source && source.conversationCount)
-  const meta = `${t('config.usage.breakdown.model-count', { count: modelCount })} · ${t('config.usage.breakdown.conversations', { count: conversations })}`
-  return `<div class="usage-token-source" data-usage-source="${escapeHtml(isAll ? 'all' : (source && source.source))}" title="${escapeHtml(`${label} · ${usageShare(percent)} · ${meta}`)}">
-    <i class="usage-token-dot" style="background:${color}" aria-hidden="true"></i>
-    <span class="usage-token-source-name">${escapeHtml(label)}</span>
-    <span class="usage-token-source-meta">${escapeHtml(meta)}</span>
-    <b class="usage-token-source-pct">${usageShare(percent)}</b>
-  </div>`
-}
-
-function usageTokenCardHtml(summary, sources, models, dailyRows) {
-  const totals = summary && summary.totals && typeof summary.totals === 'object' ? summary.totals : {}
-  const billable = usageNumber(totals.billable_total_tokens)
-  const range = usageRangeLabel(summary)
-  const activeDays = usageActiveDayCount(dailyRows)
-  const shareSources = usageShareSources(sources)
-  const shareTotal = shareSources.reduce((sum, source) => sum + usageNumber(source.billable_total_tokens), 0)
-
-  let shareBar = `<div class="usage-token-empty">${t('config.usage.breakdown.empty')}</div>`
-  let shareLegend = ''
-  if (shareSources.length > 0 && shareTotal > 0) {
-    const segments = shareSources.map((source, index) => {
-      const percent = (usageNumber(source.billable_total_tokens) / shareTotal) * 100
-      return `<i class="usage-share-seg" data-usage-source="${escapeHtml(source.source)}" style="width:${percent.toFixed(2)}%;background:${usageShareColor(index)}"></i>`
-    }).join('')
-    const legend = shareSources.map((source, index) => {
-      const percent = (usageNumber(source.billable_total_tokens) / shareTotal) * 100
-      return `<span class="usage-share-key" data-usage-source="${escapeHtml(source.source)}" title="${escapeHtml(`${usageSourceLabel(source)} ${usageShare(percent)}`)}">
-        <i class="usage-share-dot" style="background:${usageShareColor(index)}" aria-hidden="true"></i>
-        <span>${escapeHtml(usageSourceLabel(source))}</span>
-        <b>${usageShare(percent)}</b>
-      </span>`
-    }).join('')
-    shareBar = `<div class="usage-share-bar" role="img" aria-label="${escapeHtml(t('config.usage.overview.share'))}">${segments}</div>`
-    shareLegend = `<div class="usage-share-legend">${legend}</div>`
-  }
-
-  const sourceRows = [
-    usageTokenSourceRowHtml(null, 0, true, totals, models.length),
-    ...sources.map((source, index) => usageTokenSourceRowHtml(source, index, false, totals, models.length))
-  ].join('')
-  const meta = [range, t('config.usage.kpi.active-days', { count: activeDays })].filter(Boolean).join(' · ')
-
-  return `<section class="usage-card usage-token">
-    <div class="usage-token-head">
-      <span class="usage-token-label">${t('config.usage.hero.total')}</span>
-      <b class="usage-token-number" id="usageTotal" title="${escapeHtml(usageFull(billable))}">${escapeHtml(usageCompact(billable))}</b>
-      <span class="usage-token-meta">${escapeHtml(meta)}</span>
-    </div>
-    <div class="usage-token-share">${shareBar}${shareLegend}</div>
-    <div class="usage-token-sources">${sourceRows}</div>
-  </section>`
-}
-
-// ---------------------------------------------------------------------------
-// Trend card (30-day stacked bars + rich hover tooltip)
-// ---------------------------------------------------------------------------
-
-function usageTrendRows(daily, trend) {
-  const preferred = trend && Array.isArray(trend.rows) ? trend.rows : null
-  const fallback = daily && Array.isArray(daily.rows) ? daily.rows : []
-  const rows = (preferred || fallback)
+function usageTrendRows(daily) {
+  const rows = (Array.isArray(daily?.rows) ? daily.rows : [])
     .filter((row) => row && typeof row.day === 'string')
     .slice()
     .sort((a, b) => String(a.day).localeCompare(String(b.day)))
-  return rows.slice(-USAGE_TREND_DAYS)
+  return rows.slice(-90)
+}
+
+function usageDashboardTokens(row, includeCache = usageIncludeCache) {
+  const total = usageNumber(row.total_tokens) || usageNumber(row.billable_total_tokens)
+  return includeCache ? total : Math.max(0, total - usageNumber(row.cached_input_tokens))
+}
+
+function usageDashboardKpis(totals, dailyRows, details) {
+  const activeDays = dailyRows.filter(usageIsActiveDay).length
+  const activeHours = dailyRows.reduce((sum, row) => sum + usageNumber(row.activeHours), 0)
+  const cacheRate = window.usageFormat.cacheHitRate(totals)
+  const tokenTitle = usageDashboardText(usageIncludeCache ? 'with-cache' : 'without-cache')
+  const card = (value, label, detail, button = false) => `<div class="usage-kpi-tile">
+    <strong${button ? ' id="usageTotal"' : ''}>${escapeHtml(value)}</strong>
+    ${button ? `<button type="button" id="usageIncludeCache" aria-pressed="${usageIncludeCache}">${escapeHtml(label)} <span aria-hidden="true">⌄</span></button>` : `<b>${escapeHtml(label)}</b>`}
+    <small>${escapeHtml(detail)}</small>
+  </div>`
+  return `<div class="usage-kpi-grid" id="usageKpis">
+    ${card(details ? usageFull(details.sessionCount) : '—', usageDashboardText('sessions'), details?.sessionCount ? usageDashboardText('session-percentiles', { median: usageCompact(details.median), p90: usageCompact(details.p90) }) : usageDashboardText('no-session-detail'))}
+    ${card(usageCompact(usageDashboardTokens(totals)), tokenTitle, usageDashboardText('token-detail', {
+      input: usageCompact(usageNumber(totals.input_tokens) + usageNumber(totals.cache_creation_input_tokens)),
+      output: usageCompact(totals.output_tokens), cache: usageCompact(totals.cached_input_tokens)
+    }), true)}
+    ${card(usageCost(totals), usageDashboardText('estimated-cost'), totals.unpricedModels ? usageDashboardText('unpriced-models', { count: totals.unpricedModels }) : usageDashboardText('price-unit'))}
+    ${card(usageCompact(totals.cached_input_tokens), usageDashboardText('cache-read'), cacheRate === null ? '—' : usageDashboardText('hit-rate', { rate: usageShare(cacheRate) }))}
+    ${card(details?.sessionCount ? usageDuration(details.activeSeconds) : usageDashboardText('hours', { count: usageFull(activeHours) }), usageDashboardText(details?.sessionCount ? 'estimated-active' : 'recorded-hours'), t('config.usage.kpi.active-days', { count: activeDays }))}
+    ${card(details ? usageFull(usageProjectFilter ? Number(details.projects.some((item) => item.id === usageProjectFilter)) : details.projectCount) : '—', usageDashboardText('project'), details?.projects?.length && !usageProjectFilter ? details.projects[0].name : usageDashboardText('project-directory'))}
+  </div>`
+}
+
+function usageDashboardSegments(attribute, values, current, label) {
+  return `<div class="usage-segments" role="group" aria-label="${escapeHtml(label)}">${values.map(({ id, text, disabled }) =>
+    `<button type="button" ${attribute}="${id}" aria-pressed="${id === current}"${disabled ? ` disabled title="${escapeHtml(usageDashboardText('unavailable'))}"` : ''}>${escapeHtml(text)}</button>`
+  ).join('')}</div>`
+}
+
+function usageCost(row) {
+  if (row.costCny === null || row.costCny === undefined) return usageDashboardText('unpriced')
+  const maximumFractionDigits = row.costCny > 0 && row.costCny < 1 ? 6 : 2
+  const label = new Intl.NumberFormat(usageIntlLocale(), { minimumFractionDigits: 2, maximumFractionDigits }).format(row.costCny)
+  return '¥' + label + (row.unpricedModels ? '+' : '')
+}
+
+function usageDuration(seconds) {
+  const minutes = Math.floor(usageNumber(seconds) / 60)
+  return usageDashboardText('duration', { hours: Math.floor(minutes / 60), minutes: minutes % 60 })
+}
+
+function usageDashboardRankings(models, projects) {
+  const totals = new Map()
+  for (const row of models) {
+    if (!usageIsFilterableModel(row.model)) continue
+    if (usageModelFilter && row.model !== usageModelFilter) continue
+    const entry = totals.get(row.model) || { id: row.model, name: row.model, tokens: 0, costCny: null }
+    entry.tokens += usageDashboardTokens(row)
+    if (row.costCny !== null && row.costCny !== undefined) entry.costCny = (entry.costCny || 0) + row.costCny
+    totals.set(row.model, entry)
+  }
+  const rank = (rows, dimension, selected) => {
+    const sorted = rows.sort((left, right) => right.tokens - left.tokens).slice(0, USAGE_MODEL_LIMIT)
+    return sorted.map((row) => {
+      const label = escapeHtml(row.name)
+      return `<button type="button" class="usage-rank-row" data-usage-${dimension}-rank="${escapeHtml(row.id)}" aria-pressed="${row.id === selected}" title="${label} · ${escapeHtml(usageFull(row.tokens))} Token">
+        <span class="usage-rank-name">${label}</span><span class="usage-rank-track" aria-hidden="true"><i style="width:${usageClampPct(100 * row.tokens / (sorted[0].tokens || 1))}%"></i></span>
+        <span class="usage-rank-value">${escapeHtml(usageCompact(row.tokens))}</span><span class="usage-rank-cost">${escapeHtml(usageCost(row))}</span>
+      </button>`
+    }).join('') || `<p class="usage-section-note">${escapeHtml(t('config.usage.trend.empty'))}</p>`
+  }
+  const legend = `<span>${escapeHtml(usageDashboardText('rank-unit'))}</span>`
+  return `<div class="usage-pair usage-rankings">
+    <section class="usage-card usage-panel-project"><div class="usage-card-head"><h2>${escapeHtml(usageDashboardText('project'))}</h2>${legend}</div>
+      ${rank(projects.filter((item) => !usageProjectFilter || item.id === usageProjectFilter).map((item) => ({ ...item, tokens: usageDashboardTokens(item) })), 'project', usageProjectFilter)}
+    </section>
+    <section class="usage-card" id="usageBreakdown"><div class="usage-card-head"><h2>${escapeHtml(usageDashboardText('model'))}</h2>${legend}</div>
+      ${rank([...totals.values()], 'model', usageModelFilter)}
+    </section>
+  </div>`
+}
+
+function usageDashboardMetric(row) {
+  if (usageTrendMetric === 'output') return usageNumber(row.output_tokens)
+  if (usageTrendMetric === 'records') return usageNumber(row.conversation_count)
+  if (usageTrendMetric === 'sessions') return usageNumber(row.sessions)
+  if (usageTrendMetric === 'cost') return usageNumber(row.costCny)
+  if (usageTrendMetric === 'active') return usageNumber(row.activeSeconds) / 60
+  return usageDashboardTokens(row)
+}
+
+function usageSessionListHtml(details) {
+  const needle = usageSessionSearch.trim().toLocaleLowerCase()
+  const value = (row) => usageSessionSort === 'cost' ? (row.costCny ?? -1) :
+    usageSessionSort === 'active' ? usageNumber(row.activeSeconds) : usageDashboardTokens(row)
+  const items = (details?.sessionRanks || []).filter((row) => !needle ||
+    [row.title, row.id, row.projectName, ...row.models].some((field) => String(field || '').toLocaleLowerCase().includes(needle)))
+    .sort((left, right) => value(right) - value(left) || usageDashboardTokens(right) - usageDashboardTokens(left))
+    .slice(0, 100)
+  const rows = items.slice(0, usageSessionExpanded ? 100 : 8).map((row) => {
+    const meta = [row.projectName, usageSourceLabel(row), ...row.models].filter(Boolean).join(' · ')
+    const metric = usageSessionSort === 'cost' ? usageCost(row) : usageSessionSort === 'active' ? usageDuration(row.activeSeconds) : usageCompact(value(row))
+    return `<details class="usage-session-row">
+      <summary><span><strong>${escapeHtml(row.title || row.id)}</strong><small>${escapeHtml(meta)}</small></span><b>${escapeHtml(metric)}</b></summary>
+      <div class="usage-session-detail">
+        <span>${escapeHtml(row.id)}</span>
+        <span>${escapeHtml([usageDateTime(row.first), usageDateTime(row.last)].filter(Boolean).join(' – '))}</span>
+        <span>${escapeHtml(usageDashboardText('token-detail', { input: usageCompact(row.input_tokens), output: usageCompact(row.output_tokens), cache: usageCompact(row.cached_input_tokens) }))}</span>
+        <span>${escapeHtml(usageDashboardText('record-count', { count: usageFull(row.records) }))} · ${escapeHtml(usageCost(row))} · ${escapeHtml(usageDuration(row.activeSeconds))}</span>
+      </div>
+    </details>`
+  }).join('')
+  const more = items.length > 8 ? `<button type="button" class="button usage-show-more" id="usageSessionsMore" aria-expanded="${usageSessionExpanded}">${escapeHtml(usageDashboardText(usageSessionExpanded ? 'show-less' : 'sessions-more'))}</button>` : ''
+  return (rows || `<p class="usage-section-note">${escapeHtml(usageDashboardText('no-session-detail'))}</p>`) + more
+}
+
+function usageSessionsHtml(details) {
+  const searchLabel = escapeHtml(usageDashboardText('session-search'))
+  const modes = ['token', 'cost', 'active'].map((id) => ({ id, text: usageDashboardText(id) }))
+  return `<section class="usage-card usage-panel-top-sessions"><div class="usage-card-head"><h2>${escapeHtml(usageDashboardText('top-sessions'))}</h2>
+    ${usageDashboardSegments('data-usage-session-sort', modes, usageSessionSort, usageDashboardText('session-sort'))}
+    </div><input id="usageSessionSearch" class="usage-session-search" type="search" aria-label="${searchLabel}" placeholder="${searchLabel}" value="${escapeHtml(usageSessionSearch)}" maxlength="160">
+    <div id="usageSessionList">${usageSessionListHtml(details)}</div></section>`
+}
+
+function usageActivityHtml(kind, data) {
+  const tool = kind === 'tools'
+  const top = data?.top || []
+  const limit = tool ? 8 : 5
+  const expanded = usageExpandedActivity.has(kind)
+  const detail = data ? usageDashboardText(tool ? 'tool-count' : 'skill-count', {
+    calls: usageFull(data.calls), count: usageFull(tool ? data.sessions : data.count)
+  }) : ''
+  const rows = top.slice(0, expanded ? 64 : limit).map((row) => `<li class="usage-activity-row">
+    <span title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</span>
+    <span class="usage-rank-track" aria-hidden="true"><i style="width:${usageClampPct(100 * row.calls / (top[0]?.calls || 1))}%"></i></span>
+    <b>${escapeHtml(usageCompact(row.calls))}</b><small>${escapeHtml(usageDashboardText('session-count', { count: usageFull(row.sessions) }))}</small>
+  </li>`).join('')
+  const categories = (data?.categories || []).map((row) => `<li>${escapeHtml(usageDashboardText('tool-' + row.name))} <b>${escapeHtml(usageCompact(row.calls))}</b></li>`).join('')
+  const weeks = data?.weeks || []
+  const totals = weeks.map((row) => Object.values(row.calls).reduce((sum, count) => sum + count, 0))
+  const topWeek = Math.max(1, ...totals)
+  const trend = weeks.length > 1 ? `<figure class="usage-tool-trend"><figcaption>${escapeHtml(usageDashboardText('weekly-trend'))}</figcaption>
+    <div>${weeks.map((row, index) => {
+      const values = Object.entries(row.calls)
+      const label = escapeHtml([row.start, usageFull(totals[index]), ...values.map(([key, count]) => usageDashboardText('tool-' + key) + ' ' + usageFull(count))].join(' · '))
+      return `<span role="img" title="${label}" aria-label="${label}" style="height:${usageClampPct(totals[index] / topWeek * 100)}%">${values.map(([category, count]) =>
+        `<i data-category="${escapeHtml(category)}" aria-hidden="true" style="flex-grow:${usageNumber(count)}"></i>`
+      ).join('')}</span>`
+    }).join('')}</div></figure>` : ''
+  const more = top.length > limit ? `<button type="button" class="button usage-show-more" data-usage-activity-more="${kind}" aria-expanded="${expanded}">${escapeHtml(usageDashboardText(expanded ? 'show-less' : 'show-more'))}</button>` : ''
+  const content = rows ? `<div class="usage-activity-layout"><div><ul class="usage-activity-list">${rows}</ul>${more}</div>
+    ${tool && categories ? `<div><ul class="usage-tool-categories">${categories}</ul>${trend}</div>` : ''}</div>` :
+    `<p class="usage-section-note">${escapeHtml(usageDashboardText('no-activity-detail'))}</p>`
+  return `<section class="usage-card usage-panel-${kind}"><div class="usage-card-head"><h2>${escapeHtml(usageDashboardText(kind))}</h2><span>${escapeHtml(detail)}</span></div>${content}</section>`
+}
+
+function usageSavedPrices() {
+  return typeof settings !== 'undefined' && Array.isArray(settings?.usage?.prices) ? settings.usage.prices : []
+}
+
+function usagePricingHtml(models, open) {
+  const existing = new Map(usageSavedPrices().map((row) => [row.model, row]))
+  const names = [...new Set([...existing.keys(), ...usagePriceDrafts.keys(), ...models.map((row) => row.model).filter(usageIsFilterableModel)])].slice(0, 200).sort()
+  const fields = [['input', 'input-no-cache'], ['cached', 'cache-read'], ['output', 'output']]
+  const rows = names.map((name) => `<tr><th scope="row">${escapeHtml(name)}</th>${fields.map(([key, title]) => {
+    const value = usagePriceDrafts.get(name)?.[key] ?? existing.get(name)?.[key] ?? ''
+    return `<td><input type="number" min="0" max="1000000" step="any" data-usage-price-model="${escapeHtml(name)}" data-usage-price-key="${key}" value="${escapeHtml(String(value))}" aria-label="${escapeHtml(name + ' · ' + usageDashboardText(title))}"></td>`
+  }).join('')}</tr>`).join('')
+  const table = rows ? `<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>${escapeHtml(usageDashboardText('model'))}</th>
+    ${fields.map(([, title]) => `<th>${escapeHtml(usageDashboardText(title))}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
+    <button class="button" id="saveUsagePrices" type="button">${escapeHtml(usageDashboardText('price-save'))}</button>` : ''
+  return `<details class="usage-dashboard-settings" id="usagePricing"${open ? ' open' : ''}><summary>${escapeHtml(usageDashboardText('pricing'))}<span>${escapeHtml(usageDashboardText('price-unit'))}</span></summary>
+    <p class="usage-section-note">${escapeHtml(usageDashboardText(rows ? 'price-help' : 'price-no-models'))}</p>${table}</details>`
 }
 
 function usageTrendSegments(row) {
-  const input = usageNumber(row && row.input_tokens)
+  const input = usageNumber(row && row.input_tokens) + usageNumber(row && row.cache_creation_input_tokens)
   const cache = usageNumber(row && row.cached_input_tokens)
   const output = usageNumber(row && row.output_tokens)
   const stackSum = input + cache + output
@@ -784,13 +779,16 @@ function usageTrendSegments(row) {
   return { input, cache, output, stackSum, total }
 }
 
-function usageTrendLegendHtml() {
-  return `<div class="usage-trend-legend">${USAGE_TREND_SEGMENTS.map((segment) => `<span class="usage-trend-key"><i class="usage-trend-dot ${segment.dotClass}" aria-hidden="true"></i>${t(segment.labelKey)}</span>`).join('')}</div>`
-}
 
 function usageTrendTooltipHtml(row) {
+  if (usageTrendMetric !== 'token' || !usageIncludeCache) {
+    const metric = usageDashboardText(({ token: 'without-cache', active: 'estimated-active' })[usageTrendMetric] || usageTrendMetric)
+    const value = usageTrendMetric === 'cost' ? usageCost(row) : usageTrendMetric === 'active' ? usageDuration(row.activeSeconds) : usageFull(usageDashboardMetric(row))
+    const date = usageDayLabel(row.day)
+    return { label: `${date} · ${metric}: ${value}`, html: `<b class="usage-tooltip-date">${escapeHtml(date)}</b><span>${escapeHtml(metric)}: ${escapeHtml(value)}</span>` }
+  }
   const segments = usageTrendSegments(row)
-  const total = segments.total
+  const total = usageDashboardTokens(row)
   const values = { input: segments.input, cache: segments.cache, output: segments.output }
   const lines = USAGE_TREND_SEGMENTS.map((segment) => {
     const value = values[segment.id]
@@ -802,40 +800,43 @@ function usageTrendTooltipHtml(row) {
   return { html, label }
 }
 
-function usageTrendHtml(daily, trend) {
-  const rows = usageTrendRows(daily, trend)
-  const maxTotal = rows.reduce((max, row) => Math.max(max, usageTrendSegments(row).total), 0)
+function usageTrendHtml(daily) {
+  const rows = usageTrendRows(daily)
+  const metrics = usageDashboardSegments('data-usage-metric', USAGE_TREND_METRICS.map((id) => ({
+    id, text: usageDashboardText(id)
+  })), usageTrendMetric, usageDashboardText('trend-metric'))
+  const maxTotal = rows.reduce((max, row) => Math.max(max, usageDashboardMetric(row)), 0)
   let chart = `<div class="usage-empty-text">${t('config.usage.trend.empty')}</div>`
   let axis = ''
-  if (rows.length > 0 && maxTotal > 0) {
+  if (rows.length > 0) {
     const columns = rows.map((row) => {
-      const segments = usageTrendSegments(row)
-      const barHeight = Math.max(2, Math.round((segments.total / maxTotal) * 100))
-      const segmentHeight = (value) => (segments.total > 0 ? Math.max(0, (value / segments.total) * 100) : 0)
+      const value = usageDashboardMetric(row)
+      const barHeight = maxTotal > 0 ? (value / maxTotal) * 100 : 0
       const tooltip = usageTrendTooltipHtml(row)
-      const stack = segments.total > 0
-        ? `<div class="usage-trend-stack" style="height:${barHeight}%">
-            <i class="usage-trend-seg usage-trend-output" style="height:${segmentHeight(segments.output).toFixed(2)}%"></i>
-            <i class="usage-trend-seg usage-trend-cache" style="height:${segmentHeight(segments.cache).toFixed(2)}%"></i>
-            <i class="usage-trend-seg usage-trend-input" style="height:${segmentHeight(segments.input).toFixed(2)}%"></i>
-          </div>`
-        : '<div class="usage-trend-stack usage-trend-empty" style="height:2px"></div>'
+      const cacheShare = usageTrendMetric === 'token' && usageIncludeCache && value > 0 ? usageClampPct(100 * usageNumber(row.cached_input_tokens) / value) : 0
+      const stack = `<div class="usage-trend-stack" style="height:${barHeight}%">
+        <i class="usage-trend-seg usage-trend-cache" style="height:${cacheShare}%"></i>
+        <i class="usage-trend-seg usage-trend-input" style="height:${100 - cacheShare}%"></i>
+      </div>`
       return `<div class="usage-trend-col" tabindex="0" role="img" data-usage-day="${escapeHtml(row.day)}" aria-label="${escapeHtml(tooltip.label)}">${stack}</div>`
     }).join('')
     chart = `<div class="usage-trend-chart">
-      <div class="usage-trend-gridlines" aria-hidden="true"><i></i><i></i><i></i></div>
-      <span class="usage-trend-max" aria-hidden="true">${escapeHtml(usageCompact(maxTotal))}</span>
-      <div class="usage-trend-bars" data-usage-trend>
+      <div class="usage-trend-bars${rows.length === 1 ? ' is-single' : ''}" data-usage-trend>
         ${columns}
         <div class="usage-tooltip usage-trend-tooltip" data-usage-tooltip hidden></div>
       </div>
     </div>`
-    axis = `<div class="usage-trend-axis"><span>${escapeHtml(rows[0].day)}</span><span>${escapeHtml(rows[rows.length - 1].day)}</span></div>`
+    const ticks = rows.length <= 7 ? rows.map((_, index) => index) : [0, .25, .5, .75, 1].map((ratio) => Math.round(ratio * (rows.length - 1)))
+    const formatter = new Intl.DateTimeFormat(usageIntlLocale(), { month: 'short', day: 'numeric', timeZone: 'UTC' })
+    axis = `<div class="usage-overview-axis" aria-hidden="true">${ticks.map((index, tick) =>
+      `<span class="${tick === 0 || tick === ticks.length - 1 ? 'usage-axis-edge' : ''}" style="--tick:${(index + .5) / rows.length * 100}%">${escapeHtml(formatter.format(new Date(`${rows[index].day}T00:00:00Z`)))}</span>`
+    ).join('')}</div>`
   }
   return `<section class="usage-card usage-trend" id="usageTrend">
     <div class="usage-card-head">
-      <h2>${t('config.usage.trend.title')}</h2>
-      ${usageTrendLegendHtml()}
+      <h2>${escapeHtml(usageDashboardText('daily-trend'))}</h2>
+      ${metrics}
+      <span class="usage-card-meta">${escapeHtml(usageTrendMetric === 'cost' ? usageCost({ costCny: rows.some((row) => row.costCny != null) ? maxTotal : null }) : usageTrendMetric === 'active' ? usageDuration(maxTotal * 60) : usageCompact(maxTotal))}</span>
     </div>
     ${chart}
     ${axis}
@@ -847,11 +848,11 @@ function usageTrendHtml(daily, trend) {
 // Daily detail table (sticky header, sortable date, compact rows)
 // ---------------------------------------------------------------------------
 
-function usageTableCell(value, compact, blank = false) {
+function usageTableCell(value, blank = false) {
   if (blank || value === null || value === undefined || value === '') return '<td class="num">—</td>'
   const number = usageNumber(value)
-  const text = compact ? usageCompact(number) : usageFull(number)
-  return `<td class="num" title="${escapeHtml(usageFull(number))}">${escapeHtml(text)}</td>`
+  const text = escapeHtml(usageFull(number))
+  return `<td class="num" title="${text}">${text}</td>`
 }
 
 // Cache hit rate cell: the share of the day's prompt tokens that the provider
@@ -882,20 +883,21 @@ function usageSortDailyRows(rows, direction) {
 function usageDailyRowsHtml(rows, direction) {
   const sorted = usageSortDailyRows(rows, direction)
   if (sorted.length === 0) {
-    return `<tr><td class="usage-table-empty" colspan="7">${t('config.usage.table.empty')}</td></tr>`
+    return `<tr><td class="usage-table-empty" colspan="8">${t('config.usage.table.empty')}</td></tr>`
   }
   return sorted.map((row) => {
     // A fully empty day (no tokens and no conversations) reads as "—" like TT's
     // table instead of a wall of zeros.
-    const empty = usageNumber(row.billable_total_tokens) === 0 && usageNumber(row.conversation_count) === 0
+    const empty = usageDashboardTokens(row, true) === 0 && usageNumber(row.conversation_count) === 0
     return `<tr data-usage-day="${escapeHtml(row.day)}"${empty ? ' class="is-empty"' : ''}>
         <td class="usage-date">${escapeHtml(row.day)}</td>
-        ${usageTableCell(row.billable_total_tokens, true, empty)}
-        ${usageTableCell(row.input_tokens, true, empty)}
-        ${usageTableCell(row.output_tokens, true, empty)}
-        ${usageTableCell(row.cached_input_tokens, true, empty)}
+        ${usageTableCell(usageDashboardTokens(row), empty)}
+        ${usageTableCell(usageNumber(row.input_tokens) + usageNumber(row.cache_creation_input_tokens), empty)}
+        ${usageTableCell(row.output_tokens, empty)}
+        ${usageTableCell(row.cached_input_tokens, empty)}
         ${usageCacheHitCell(row, empty)}
-        ${usageTableCell(row.conversation_count, false, empty)}
+        ${usageTableCell(row.sessions, empty)}
+        <td class="num">${escapeHtml(empty ? '—' : usageCost(row))}</td>
       </tr>`
   }).join('')
 }
@@ -906,12 +908,13 @@ function usageDailyTableHtml(rows) {
   const arrow = usageDailySort === 'desc' ? '↓' : '↑'
   const head = [
     ['config.usage.table.date', ''],
-    ['config.usage.table.total', 'num'],
-    ['config.usage.table.input', 'num'],
+    [`config.usage.dashboard.${usageIncludeCache ? 'total-with-cache' : 'total-without-cache'}`, 'num'],
+    ['config.usage.dashboard.input-no-cache', 'num'],
     ['config.usage.table.output', 'num'],
     ['config.usage.table.cache-read', 'num'],
     ['config.usage.table.cache-hit', 'num'],
-    ['config.usage.table.conversations', 'num']
+    ['config.usage.dashboard.sessions', 'num'],
+    ['config.usage.dashboard.estimated-cost', 'num']
   ].map(([key, className], index) => {
     if (index === 0) {
       return `<th scope="col" class="${className}" aria-sort="${sortState}"><button class="usage-sort-button" type="button" data-usage-sort="date" aria-label="${escapeHtml(t('config.usage.table.sort'))}">${t(key)}<i class="usage-sort-arrow" aria-hidden="true">${arrow}</i></button></th>`
@@ -921,9 +924,9 @@ function usageDailyTableHtml(rows) {
   return `<section class="usage-card usage-daily">
     <div class="usage-card-head">
       <h2>${t('config.usage.table.title')}</h2>
-      <span>${t('config.usage.table.rows', { count: sortedCount })}</span>
+      <span>${t('config.usage.kpi.active-days', { count: sortedCount })}</span>
     </div>
-    <div class="usage-table-wrap">
+    <div class="usage-table-wrap" tabindex="0" role="region" aria-label="${escapeHtml(t('config.usage.table.title'))}">
       <table class="usage-table" id="usageDailyTable">
         <thead><tr>${head}</tr></thead>
         <tbody data-usage-daily-body>${usageDailyRowsHtml(rows, usageDailySort)}</tbody>
@@ -1013,11 +1016,7 @@ function usageHeatmapHtml(heatmap, timezoneLabel) {
   if (!usageHasOptionalApi('usageHeatmap')) return ''
   if (!heatmap) return ''
   const model = window.usageFormat.layoutHeatmapWeeks(heatmap.weeks)
-  const activeDays = usageNumber(heatmap.activeDays)
-  const head = `<div class="usage-card-head usage-heat-head">
-    <h2>${t('config.usage.heatmap.title')}</h2>
-    <span class="usage-heat-meta">${escapeHtml(timezoneLabel)} · ${t('config.usage.heatmap.hint')} · ${t('config.usage.heatmap.active-days', { count: activeDays })}</span>
-  </div>`
+  const head = usageDashboardHeatHead(timezoneLabel)
   if (model.columns.length === 0) {
     return `<section class="usage-card usage-heatmap" id="usageHeatmap">${head}<div class="usage-empty-text">${t('config.usage.heatmap.empty')}</div></section>`
   }
@@ -1048,10 +1047,51 @@ function usageHeatmapHtml(heatmap, timezoneLabel) {
         <div class="usage-heat-tip" data-usage-heatmap-tooltip hidden></div>
       </div>
     </div>
-    <div class="usage-heat-foot">
+    <div class="usage-heat-foot" title="${escapeHtml(usageDashboardText('with-cache'))}">
       <button class="usage-heat-arrow" type="button" data-usage-heat-scroll="-1" aria-label="${escapeHtml(t('config.usage.heatmap.scroll-left'))}">‹</button>
+      <span class="usage-heat-total-label">${escapeHtml(usageDashboardText('with-cache'))}</span>
       <div class="usage-heat-legend"><span>${t('config.usage.heatmap.less')}</span>${legend}<span>${t('config.usage.heatmap.more')}</span></div>
       <button class="usage-heat-arrow" type="button" data-usage-heat-scroll="1" aria-label="${escapeHtml(t('config.usage.heatmap.scroll-right'))}">›</button>
+    </div>
+  </section>`
+}
+
+function usageDashboardHeatHead(timezone) {
+  const modes = [
+    { id: 'hourly', text: usageDashboardText('hourly') },
+    { id: 'yearly', text: usageDashboardText('yearly'), disabled: !usageHasOptionalApi('usageHeatmap') }
+  ]
+  return `<div class="usage-card-head usage-heat-head"><h2>${escapeHtml(usageDashboardText('heatmap'))}</h2>
+    ${usageDashboardSegments('data-usage-heat-view', modes, usageHeatView, usageDashboardText('heatmap'))}
+    <span class="usage-card-meta">${escapeHtml(timezone)}</span>
+  </div>`
+}
+
+function usageDashboardHeatmap(daily, heatmap, timezone) {
+  if (usageHeatView === 'yearly' && heatmap) return usageHeatmapHtml(heatmap, timezone)
+  const head = usageDashboardHeatHead(timezone)
+  if (usageHeatView === 'yearly' || !Array.isArray(daily.weekdayHours)) {
+    return `<section class="usage-card usage-heatmap">${head}<p class="usage-section-note">${escapeHtml(usageDashboardText('unavailable'))}</p></section>`
+  }
+  const hourly = daily.weekdayHours.map((cell) => usageNumber(usageIncludeCache ? cell.total : cell.withoutCache))
+  const max = Math.max(0, ...hourly)
+  const clock = (index) => `${String(index % 24).padStart(2, '0')}:00`
+  const formatter = new Intl.DateTimeFormat(usageIntlLocale(), { weekday: 'short', timeZone: 'UTC' })
+  const weekdays = USAGE_WEEKDAY_KEYS.map((_, index) => formatter.format(new Date(Date.UTC(2024, 0, index + 1))))
+  const hottest = hourly.indexOf(max)
+  const cells = weekdays.map((weekday, row) => `<span class="usage-hour-label" aria-hidden="true">${escapeHtml(weekday)}</span>${hourly.slice(row * 24, (row + 1) * 24).map((value, column) => {
+    const index = row * 24 + column
+    const level = value > 0 ? Math.max(1, Math.min(4, Math.ceil(4 * Math.sqrt(value / max)))) : 0
+    const label = escapeHtml(`${weekday} ${clock(index)} · ${timezone} · ${usageFull(value)} Token`)
+    return `<span class="usage-hour-cell level-${level}" role="img" data-usage-hour-cell="${index}" tabindex="${index === hottest ? 0 : -1}" aria-label="${label}" title="${label}"></span>`
+  }).join('')}`).join('')
+  const legend = [0, 1, 2, 3, 4].map((level) => `<i class="usage-heat-swatch level-${level}" aria-hidden="true"></i>`).join('')
+  const peak = max > 0 ? usageDashboardText('busiest', { slot: `${weekdays[Math.floor(hottest / 24)]} ${clock(hottest)}` }) : t('config.usage.trend.empty')
+  return `<section class="usage-card usage-heatmap" id="usageHeatmap">
+    ${head}
+    <div class="usage-hour-grid" role="group" aria-label="${escapeHtml(usageDashboardText('hour-grid'))}">${cells}</div>
+    <div class="usage-heat-foot usage-hour-foot"><span>${escapeHtml(peak)}</span>
+      <span class="usage-heat-legend">${escapeHtml(t('config.usage.heatmap.less'))}${legend}${escapeHtml(t('config.usage.heatmap.more'))}</span>
     </div>
   </section>`
 }
@@ -1113,7 +1153,7 @@ function usageModalRangeLabel(summary) {
 function usageModalActiveDays(payload) {
   const summary = payload && payload.summary && typeof payload.summary === 'object' ? payload.summary : {}
   const rolling = summary.rolling && typeof summary.rolling === 'object' ? summary.rolling : {}
-  const rows = usageTrendRows(payload && payload.daily, payload && payload.trend)
+  const rows = usageTrendRows(payload?.daily)
   const stats = window.usageFormat.summarizeTrendRows(rows)
   // The modal range is the trend window, so its active-day count comes from the
   // same rows (heatmap.activeDays spans 52 weeks and would contradict the range).
@@ -1123,7 +1163,7 @@ function usageModalActiveDays(payload) {
 // One short, data-derived sentence for the left insight panel. Peak vs average
 // picks the template; all numbers are localized by the route before insertion.
 function usageModalInsightText(payload) {
-  const rows = usageTrendRows(payload && payload.daily, payload && payload.trend)
+  const rows = usageTrendRows(payload?.daily)
   const stats = window.usageFormat.summarizeTrendRows(rows)
   const activeDays = usageModalActiveDays(payload) || stats.activeDays
   const avg = stats.avgPerActiveDay
@@ -1146,7 +1186,7 @@ function usageModalInsightText(payload) {
 function usageModalSideHtml(payload, timezoneLabel) {
   const summary = payload.summary && typeof payload.summary === 'object' ? payload.summary : {}
   const totals = summary.totals && typeof summary.totals === 'object' ? summary.totals : {}
-  const rows = usageTrendRows(payload.daily, payload.trend)
+  const rows = usageTrendRows(payload.daily)
   const stats = window.usageFormat.summarizeTrendRows(rows)
   const activeDays = usageModalActiveDays(payload) || stats.activeDays
   const battery = [
@@ -1212,7 +1252,7 @@ function usageModalSeries(payload, granularity) {
       conversations: bucket.conversations
     }))
   }
-  const rows = usageTrendRows(payload && payload.daily, payload && payload.trend)
+  const rows = usageTrendRows(payload?.daily)
   return rows.map((row) => {
     const segments = usageTrendSegments(row)
     return {
@@ -1338,6 +1378,8 @@ async function usageRenderModalChart() {
       // identical to older builds.
       const hourlyQuery = { day: usageModalDay(payload), tz: usageTimezone() }
       if (usageSourceFilter.length > 0) hourlyQuery.sources = usageSourceFilter.slice()
+      if (usageModelFilter) hourlyQuery.model = usageModelFilter
+      if (usageProjectFilter) hourlyQuery.project = usageProjectFilter
       hourly = await window.electronAPI.usageHourly(hourlyQuery)
     } catch {
       // Only the IPC call is allowed to degrade to the empty state; programming
@@ -1500,28 +1542,39 @@ function usageRenderDashboard(renderVersion, payload) {
   const daily = payload.daily && typeof payload.daily === 'object' ? payload.daily : {}
   const breakdown = payload.breakdown && typeof payload.breakdown === 'object' ? payload.breakdown : {}
   const totals = summary.totals && typeof summary.totals === 'object' ? summary.totals : {}
+  const details = summary.details
+  const projects = Array.isArray(details?.projects) ? details.projects : []
   const dailyRows = Array.isArray(daily.rows) ? daily.rows : []
-  const sources = Array.isArray(breakdown.sources) ? breakdown.sources : []
   const models = Array.isArray(breakdown.models) ? breakdown.models : []
   const state = usageResolvePageState(status, totals)
-  usageDailyRowCache = dailyRows
+  usageDailyRowCache = dailyRows.filter(usageIsActiveDay)
   usageDashboardPayload = payload
-  const timezoneLabel = window.usageFormat.formatTimezoneOffsetLabel(usageTimezone())
+  const timezone = usageTimezone()
   // A re-query (period/filter/refresh) swaps the page in place; keep the reading
   // position and keyboard focus so the swap is not a jump to the top.
   const restore = usageCaptureViewState()
 
-  view.innerHTML = `<div class="page usage-page" data-usage-state="${escapeHtml(state)}">
-    ${usageHeaderHtml(usageRefreshButtonHtml())}
-    ${usageCoverageHtml(status)}
+  view.innerHTML = `<div class="page usage-page usage-overview" data-usage-state="${escapeHtml(state)}">
+    ${usageHeaderHtml()}
+    ${usageTabsHtml(models, projects, status?.scanning === true)}
     ${usageStateBannerHtml(state)}
-    ${usageTabsHtml()}
+    ${details && details.status !== 'ready' ? `<p class="usage-section-note" role="status">${escapeHtml(usageDashboardText(details.status === 'pending' ? 'detail-pending' : 'detail-partial'))}</p>` : ''}
     <div class="usage-dashboard" data-usage-view="${escapeHtml(usagePeriod)}">
-      ${usageHeatmapHtml(payload.heatmap, timezoneLabel)}
-      ${usageTrendHtml(daily, payload.trend)}
-      ${usageIntegratedCardHtml(summary, models, status, payload.heatmap)}
-      ${usageTokenCardHtml(summary, sources, models, dailyRows)}
-      ${usageDailyTableHtml(dailyRows)}
+      ${usageDashboardKpis(totals, dailyRows, details)}
+      ${usageTrendHtml(daily)}
+      ${usageDashboardRankings(models, projects)}
+      <div class="usage-pair usage-drilldown">
+        ${usageDashboardHeatmap(daily, payload.heatmap, timezone)}
+        ${usageSessionsHtml(details)}
+        ${usageActivityHtml('skills', details?.skills)}
+      </div>
+      ${usageActivityHtml('tools', details?.tools)}
+      ${usageDailyTableHtml(usageDailyRowCache)}
+      ${usagePricingHtml(models, restore.pricingOpen)}
+      <details class="usage-dashboard-settings" id="usageSources"${restore.coverageOpen ? ' open' : ''}><summary>${escapeHtml(usageDashboardText('sources-settings'))}
+        <span>${status?.lastScanAt ? escapeHtml(t('config.usage.coverage.last-scan', { time: usageDateTime(status.lastScanAt) })) : ''}</span></summary>
+        ${usageCoverageHtml(status)}
+      </details>
     </div>
   </div>`
   usageBindDashboard(payload)
@@ -1542,12 +1595,21 @@ function usageCaptureViewState() {
   const focusSelector = active && active.closest && active.closest('#view')
     ? usageFocusSelector(active)
     : ''
-  return { scrollTop: view.scrollTop || 0, focusSelector }
+  const selection = active?.id === 'usageSessionSearch' ? [active.selectionStart, active.selectionEnd] : null
+  return {
+    scrollTop: view.scrollTop || 0, focusSelector, selection,
+    coverageOpen: view.querySelector('#usageSources')?.open === true,
+    pricingOpen: view.querySelector('#usagePricing')?.open === true
+  }
 }
 
 function usageFocusSelector(element) {
   if (!element || element === document.body) return ''
-  for (const attribute of ['data-usage-tab', 'data-usage-source-filter', 'data-usage-sort']) {
+  if (['usageSource', 'usageModel', 'usageProject', 'usageEvery', 'refreshUsage', 'usageIncludeCache', 'usageSessionSearch'].includes(element.id)) return `#${element.id}`
+  if (element.hasAttribute?.('data-usage-model-rank')) return '#usageModel'
+  if (element.hasAttribute?.('data-usage-project-rank')) return '#usageProject'
+  if (element.dataset?.usagePriceModel && typeof CSS !== 'undefined') return `[data-usage-price-model="${CSS.escape(element.dataset.usagePriceModel)}"][data-usage-price-key="${element.dataset.usagePriceKey}"]`
+  for (const attribute of ['data-usage-tab', 'data-usage-metric', 'data-usage-heat-view', 'data-usage-hour-cell', 'data-usage-sort', 'data-usage-session-sort', 'data-usage-activity-more']) {
     const value = element.getAttribute && element.getAttribute(attribute)
     if (value !== null && value !== undefined) return `[${attribute}="${String(value).replace(/"/g, '\\"')}"]`
   }
@@ -1566,29 +1628,12 @@ function usageRestoreViewState(state) {
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(applyScroll)
   if (!state.focusSelector) return
   const target = view.querySelector(state.focusSelector)
-  if (target && typeof target.focus === 'function') target.focus({ preventScroll: true })
-}
-
-// The trend channel has no rolling window of its own, so it reuses the custom
-// period range (plan §2.7 keeps `from`/`to` on every query). The AI-tool filter
-// applies to it as well, otherwise the trend card would disagree with the KPI
-// row right next to it. If a build does not answer that call yet, the card falls
-// back to the selected period's daily rows instead of failing the whole page.
-async function usageLoadTrend(renderVersion) {
-  const format = window.usageFormat
-  const today = format.toDayKey(new Date())
-  const from = format.addDays(today, -(USAGE_TREND_DAYS - 1))
-  if (!today || !from) return null
-  const query = { period: 'custom', tz: usageTimezone(), from, to: today }
-  if (usageSourceFilter.length > 0) query.sources = usageSourceFilter.slice()
-  try {
-    const result = await window.electronAPI.usageDaily(query)
-    if (!usageIsCurrent(renderVersion)) return null
-    return result && Array.isArray(result.rows) ? result : null
-  } catch {
-    return null
+  if (target && typeof target.focus === 'function') {
+    target.focus({ preventScroll: true })
+    if (state.selection) target.setSelectionRange?.(...state.selection)
   }
 }
+
 
 async function usageRenderRoute(options = {}) {
   const renderVersion = ++usageRenderVersion
@@ -1642,8 +1687,9 @@ async function usageRenderRoute(options = {}) {
   // The heatmap is optional: a rejection collapses to null so a build without
   // the channel hides the card instead of failing the page (hourly is fetched
   // lazily only when the trend modal's 30-minute granularity is selected).
-  const heatmapRequest = usageHasOptionalApi('usageHeatmap')
-    ? window.electronAPI.usageHeatmap({ tz: params.tz, weeks: USAGE_HEATMAP_WEEKS, ...(params.sources ? { sources: params.sources } : {}) }).catch(() => null)
+  const { model, project, ...unfilteredModelParams } = params
+  const heatmapRequest = usageHeatView === 'yearly' && usageHasOptionalApi('usageHeatmap')
+    ? window.electronAPI.usageHeatmap({ tz: params.tz, weeks: USAGE_HEATMAP_WEEKS, ...(params.sources ? { sources: params.sources } : {}), ...(model ? { model } : {}), ...(project ? { project } : {}) }).catch(() => null)
     : Promise.resolve(null)
   // Mark busy only once the request is actually in flight, and only when the old
   // dashboard stayed mounted; a swap that resolves immediately then never paints
@@ -1658,7 +1704,7 @@ async function usageRenderRoute(options = {}) {
     [summary, daily, breakdown, heatmap] = await Promise.all([
       window.electronAPI.usageSummary(params),
       window.electronAPI.usageDaily(params),
-      window.electronAPI.usageBreakdown({ ...params, scope: 'source' }),
+      window.electronAPI.usageBreakdown({ ...unfilteredModelParams, ...(project ? { project } : {}), scope: 'source' }),
       heatmapRequest
     ])
   } catch (error) {
@@ -1669,9 +1715,7 @@ async function usageRenderRoute(options = {}) {
   }
   if (!usageIsCurrent(renderVersion)) return
 
-  const trend = await usageLoadTrend(renderVersion)
-  if (!usageIsCurrent(renderVersion)) return
-  usageRenderDashboard(renderVersion, { status, summary, daily, breakdown, trend, heatmap })
+  usageRenderDashboard(renderVersion, { status, summary, daily, breakdown, heatmap })
 }
 
 // True when the visible page already has a dashboard whose markup can survive a
@@ -1773,25 +1817,165 @@ function usageBindTabs() {
   })
 }
 
-// AI-tool filter: each chip toggles on its own; the "all" chip clears the subset.
-// No chip selected is the same as "all", so the last deselected chip also lands
-// on the unfiltered query.
 function usageBindSourceFilter() {
-  view.querySelectorAll('[data-usage-source-filter]').forEach((button) => {
+  const source = view.querySelector('#usageSource')
+  if (source) source.onchange = () => {
+    usageSourceFilter = USAGE_SUPPORTED_SOURCES.includes(source.value) ? [source.value] : []
+    usageModelFilter = ''
+    usageProjectFilter = ''
+    void usageRerenderKeepingDashboard()
+  }
+  const selectModel = (model) => {
+    if (model === usageModelFilter) return
+    usageModelFilter = model
+    void usageRerenderKeepingDashboard()
+  }
+  const model = view.querySelector('#usageModel')
+  if (model) model.onchange = () => selectModel(model.value)
+  view.querySelectorAll('[data-usage-model-rank]').forEach((button) => {
+    button.onclick = () => selectModel(button.dataset.usageModelRank === usageModelFilter ? '' : button.dataset.usageModelRank)
+  })
+  const selectProject = (value, label) => {
+    if (value === usageProjectFilter) return
+    usageProjectFilter = value
+    usageProjectLabel = label
+    void usageRerenderKeepingDashboard()
+  }
+  const project = view.querySelector('#usageProject')
+  if (project) project.onchange = () => selectProject(project.value, project.selectedOptions[0]?.textContent || '')
+  view.querySelectorAll('[data-usage-project-rank]').forEach((button) => {
+    button.onclick = () => selectProject(button.dataset.usageProjectRank === usageProjectFilter ? '' : button.dataset.usageProjectRank,
+      button.querySelector('.usage-rank-name')?.textContent || '')
+  })
+}
+
+function usageBindDetailControls(payload, repaint) {
+  const list = view.querySelector('#usageSessionList')
+  const search = view.querySelector('#usageSessionSearch')
+  const details = payload?.summary?.details
+  const bindMore = () => {
+    const more = view.querySelector('#usageSessionsMore')
+    if (more) more.onclick = () => {
+      usageSessionExpanded = !usageSessionExpanded
+      redraw()
+      view.querySelector('#usageSessionsMore')?.focus({ preventScroll: true })
+    }
+  }
+  const redraw = () => {
+    if (list) list.innerHTML = usageSessionListHtml(details)
+    bindMore()
+  }
+  bindMore()
+  if (search) search.oninput = () => {
+    usageSessionSearch = search.value
+    usageSessionExpanded = false
+    redraw()
+  }
+  view.querySelectorAll('[data-usage-session-sort]').forEach((button) => {
     button.onclick = () => {
-      const id = button.dataset.usageSourceFilter
-      if (id === 'all') {
-        if (usageSourceFilter.length === 0) return
-        usageSourceFilter = []
-      } else {
-        if (!USAGE_SUPPORTED_SOURCES.includes(id)) return
-        const index = usageSourceFilter.indexOf(id)
-        if (index === -1) usageSourceFilter = [...usageSourceFilter, id]
-        else usageSourceFilter = usageSourceFilter.filter((item) => item !== id)
-      }
-      void usageRerenderKeepingDashboard()
+      usageSessionSort = button.dataset.usageSessionSort
+      repaint()
     }
   })
+  view.querySelectorAll('[data-usage-activity-more]').forEach((button) => {
+    button.onclick = () => {
+      const kind = button.dataset.usageActivityMore
+      if (!usageExpandedActivity.delete(kind)) usageExpandedActivity.add(kind)
+      repaint()
+    }
+  })
+  view.querySelectorAll('[data-usage-price-model]').forEach((input) => {
+    input.oninput = () => {
+      const model = input.dataset.usagePriceModel
+      const draft = usagePriceDrafts.get(model) || {}
+      draft[input.dataset.usagePriceKey] = input.value
+      usagePriceDrafts.set(model, draft)
+    }
+  })
+  const save = view.querySelector('#saveUsagePrices')
+  if (save) save.onclick = async () => {
+    const rows = new Map(usageSavedPrices().map((item) => [item.model, item]))
+    const draftRows = new Map()
+    for (const input of view.querySelectorAll('[data-usage-price-model]')) {
+      const { usagePriceModel: model, usagePriceKey: key } = input.dataset
+      if (input.validity?.badInput) {
+        usageToast(usageDashboardText('price-invalid'))
+        return
+      }
+      if (!draftRows.has(model)) draftRows.set(model, { model })
+      draftRows.get(model)[key] = input.value === '' ? null : Number(input.value)
+    }
+    for (const [model, row] of draftRows) {
+      const values = [row.input, row.cached, row.output]
+      if (values.every((value) => value === null)) rows.delete(model)
+      else if (values.some((value) => !Number.isFinite(value) || value < 0 || value > 1000000)) {
+        usageToast(usageDashboardText('price-invalid'))
+        return
+      } else rows.set(model, row)
+    }
+    if (rows.size > 100) {
+      usageToast(usageDashboardText('price-limit'))
+      return
+    }
+    save.disabled = true
+    try {
+      await updateSettings({ usage: { prices: [...rows.values()] } }, usageDashboardText('price-saved'))
+      usagePriceDrafts.clear()
+      if (currentRoute === 'usage') await usageRerenderKeepingDashboard()
+    } catch (error) {
+      usageToast(usageErrorText(error))
+    } finally {
+      save.disabled = false
+    }
+  }
+}
+
+function usageBindOverviewControls() {
+  const repaint = () => {
+    if (usageDashboardPayload) usageRenderDashboard(usageRenderVersion, usageDashboardPayload)
+  }
+  usageBindDetailControls(usageDashboardPayload, repaint)
+  const interval = view.querySelector('#usageEvery')
+  if (interval) interval.onchange = () => {
+    usageRefreshInterval = Number(interval.value)
+    usageAutoRefreshArm()
+  }
+  const cacheToggle = view.querySelector('#usageIncludeCache')
+  if (cacheToggle) cacheToggle.onclick = () => {
+    usageIncludeCache = !usageIncludeCache
+    repaint()
+  }
+  view.querySelectorAll('[data-usage-metric]:enabled').forEach((button) => {
+    button.onclick = () => {
+      usageTrendMetric = button.dataset.usageMetric
+      repaint()
+    }
+  })
+  view.querySelectorAll('[data-usage-heat-view]:enabled').forEach((button) => {
+    button.onclick = () => {
+      const next = button.dataset.usageHeatView
+      if (next === usageHeatView) return
+      usageHeatView = next
+      if (next === 'yearly' && !usageDashboardPayload?.heatmap) void usageRerenderKeepingDashboard()
+      else repaint()
+    }
+  })
+  const grid = view.querySelector('.usage-hour-grid')
+  if (grid) {
+    grid.onfocusin = (event) => {
+      if (!event.target.hasAttribute('data-usage-hour-cell')) return
+      const previous = grid.querySelector('[tabindex="0"]')
+      if (previous) previous.tabIndex = -1
+      event.target.tabIndex = 0
+    }
+    grid.onkeydown = (event) => {
+      const delta = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -24, ArrowDown: 24 }[event.key]
+      const index = Number(event.target.dataset.usageHourCell)
+      if (!delta || !Number.isInteger(index)) return
+      event.preventDefault()
+      grid.querySelector(`[data-usage-hour-cell="${index + delta}"]`)?.focus({ preventScroll: true })
+    }
+  }
 }
 
 function usageReadRangeInput(selector) {
@@ -1877,11 +2061,11 @@ function usageShowTrendTooltip(chart, tooltip, column, rowsByDay) {
   tooltip.style.top = above >= 2 ? `${Math.round(above)}px` : `${Math.round(column.offsetTop + 8)}px`
 }
 
-function usageBindTrend(dailyRows, trend) {
+function usageBindTrend(dailyRows) {
   const chart = view.querySelector('[data-usage-trend]')
   const tooltip = view.querySelector('[data-usage-tooltip]')
   if (!chart || !tooltip) return
-  const trendRows = usageTrendRows({ rows: dailyRows }, trend)
+  const trendRows = usageTrendRows({ rows: dailyRows })
   const rowsByDay = new Map(trendRows.map((row) => [row.day, row]))
   const hide = () => { tooltip.hidden = true }
   chart.querySelectorAll('[data-usage-day]').forEach((column) => {
@@ -2038,12 +2222,13 @@ function usageBindDashboard(payload) {
   usageBindRetry()
   usageBindTabs()
   usageBindSourceFilter()
+  usageBindOverviewControls()
   usageBindCustomRange()
   usageBindDailySort()
   usageBindTrendExpand()
   usageBindHeatScroll()
   const dailyRows = payload && payload.daily && Array.isArray(payload.daily.rows) ? payload.daily.rows : []
-  usageBindTrend(dailyRows, payload ? payload.trend : null)
+  usageBindTrend(dailyRows)
   usageBindHeatmap(payload ? payload.heatmap : null)
 }
 
@@ -2071,10 +2256,11 @@ function usagePageVisible() {
 
 function usageAutoRefreshSchedule() {
   usageAutoRefreshStopTimer()
+  if (!usageRefreshInterval) return
   usageAutoRefreshTimer = setTimeout(() => {
     usageAutoRefreshTimer = null
     void usageAutoRefreshTick()
-  }, USAGE_AUTO_REFRESH_MS)
+  }, usageRefreshInterval)
 }
 
 function usageAutoRefreshStopTimer() {
@@ -2100,6 +2286,7 @@ function usageAutoRefreshStop() {
 
 function usageAutoRefreshArm() {
   usageAutoRefreshStop()
+  if (!usageRefreshInterval) return
   usageAutoRefreshSchedule()
   const focus = () => { void usageAutoRefreshTick() }
   const visibility = () => {
@@ -2178,6 +2365,13 @@ function usageApplyProgress(progress) {
   if (!progress || typeof progress !== 'object') return
   const page = view.querySelector('.usage-page')
   if (!page) return
+  const refresh = view.querySelector('#refreshUsage')
+  if (refresh && progress.done !== true) {
+    refresh.disabled = true
+    refresh.setAttribute('aria-busy', 'true')
+    const label = refresh.querySelector('span')
+    if (label) label.textContent = t('config.usage.state.scanning-title')
+  }
   const scan = page.querySelector('[data-usage-scan]')
   if (scan) {
     scan.hidden = false

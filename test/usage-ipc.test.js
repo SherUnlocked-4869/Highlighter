@@ -234,6 +234,26 @@ test('usage IPC forwards a selective sources filter on all five query channels',
   assert.equal(calls[4].args.weeks, 12)
 })
 
+test('usage IPC validates model and project filters on every query', async () => {
+  const ipcMain = createIpcMain()
+  const { handlers, calls } = createHandlers()
+  registerUsageIpc({ ipcMain, handlers })
+  const model = "Agent/model's v2"
+  const project = 'a'.repeat(32)
+  for (const channel of ['summary', 'daily', 'hourly', 'breakdown', 'heatmap']) {
+    const invoke = ipcMain.handlers.get(`usage:${channel}`)
+    await invoke(null, { model, project, sources: ['codex'] })
+    for (const invalid of ['', '  ', true, 'a'.repeat(257), 'model\0name']) {
+      await assert.rejects(() => invoke(null, { model: invalid }), /invalid model filter/)
+    }
+    for (const invalid of ['', '../a', 'b'.repeat(33), true]) {
+      await assert.rejects(() => invoke(null, { project: invalid }), /invalid project filter/)
+    }
+  }
+  assert.equal(calls.length, 5)
+  assert.ok(calls.every((call) => call.args.model === model && call.args.project === project && call.args.sources[0] === 'codex'))
+})
+
 test('usage IPC omits sources from validated args when nothing is filtered', async () => {
   const ipcMain = createIpcMain()
   const { handlers, calls } = createHandlers()

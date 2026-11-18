@@ -20,6 +20,7 @@
 const path = require('node:path')
 
 const usageState = require('./usage-state')
+const { RETENTION_MONTHS } = require('./usage-time')
 
 const DEFAULT_SCAN_THROTTLE_MS = 5 * 60 * 1000
 const PROGRESS_THROTTLE_MS = 250
@@ -248,8 +249,13 @@ function createUsageCollector({
     const cursors = store.loadCursors(source) || {}
     cursors.hourly = usageState.buildHourlyState(previousRows)
     const queuePath = path.join(getUsageDir(), 'runtime', 'queue.jsonl')
+    const today = now()
     const result = await getWorkerClient().scanTool(
-      { source, files: probe.files, cursors, queuePath },
+      { source, files: probe.files, cursors, queuePath, details: {
+        previous: store.getDetailStamps(source),
+        cutoff: new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - RETENTION_MONTHS, 1)).toISOString(),
+        codexIndex: source === 'codex' && probe.root ? path.join(probe.root, 'session_index.jsonl') : null
+      } },
       {
         onProgress: (progress) => {
           controller.filesDone = Math.max(controller.filesDone, Number(progress?.index) || 0)
@@ -268,6 +274,7 @@ function createUsageCollector({
       source,
       upserts,
       removed,
+      details: result?.details,
       cursors: result?.cursors && typeof result.cursors === 'object' ? result.cursors : cursors,
       status: {
         ...probeStatus(probe, isoNow()),

@@ -116,7 +116,7 @@ test('the daily detail header shows cache hit rate where reasoning used to be', 
   const page = loadRoute()
   const html = page.usageDailyTableHtml([dailyRow({ input_tokens: 100, cached_input_tokens: 300 })])
 
-  assert.deepEqual(headerLabels(html), ['日期', '总计', '输入', '输出', '缓存读', '缓存命中率', '对话数'])
+  assert.deepEqual(headerLabels(html), ['日期', '总计（含缓存）', '输入（非缓存）', '输出', '缓存读', '缓存命中率', '会话数', '估算费用'])
   // The old column is gone from the markup, not just hidden.
   assert.doesNotMatch(html, /推理/)
   // Every language carries the new copy (the header resolves through t()).
@@ -158,8 +158,8 @@ test('a row reports the cached share of its prompt tokens', () => {
   // 18268 / (793 + 18268) = 95.84% -> one decimal, page-wide convention.
   assert.equal(rows[0].cells[5].text, '95.8%')
   assert.equal(rows[0].cells[5].title, '缓存读 18,268 / 缓存写 0 / 提示 Token 19,061')
-  // 100 / (100 + 100 + 200) = 25%; the write term is in the tooltip because the
-  // row cannot show it (input + cache read would suggest 50%).
+  // 100 / (100 + 100 + 200) = 25%; cache writes are part of uncached input.
+  assert.equal(rows[1].cells[2].text, '300')
   assert.equal(rows[1].cells[5].text, '25%')
   assert.equal(rows[1].cells[5].title, '缓存读 100 / 缓存写 200 / 提示 Token 400')
   assert.equal(rows[2].cells[5].text, '0%')
@@ -175,20 +175,20 @@ test('a day without prompt tokens keeps the hit rate blank like the token column
     dailyRow({ day: '2026-11-02' }),
     // Only output tokens: the other columns have numbers, but there is no
     // prompt to hit or miss, so 0% would be a fabricated measurement.
-    dailyRow({ day: '2026-11-01', billable_total_tokens: 15000, output_tokens: 15000, conversation_count: 2 })
+    dailyRow({ day: '2026-11-01', billable_total_tokens: 15000, output_tokens: 15000, conversation_count: 8, sessions: 2 })
   ])
   const rows = bodyRows(html)
 
   assert.equal(rows[0].className, 'is-empty')
-  assert.deepEqual(rows[0].cells.map((cell) => cell.text), ['2026-11-02', '—', '—', '—', '—', '—', '—'])
+  assert.deepEqual(rows[0].cells.map((cell) => cell.text), ['2026-11-02', '—', '—', '—', '—', '—', '—', '—'])
   assert.equal(rows[1].className, '')
-  assert.deepEqual(rows[1].cells.map((cell) => cell.text), ['2026-11-01', '1.5万', '0', '1.5万', '0', '—', '2'])
+  assert.deepEqual(rows[1].cells.map((cell) => cell.text), ['2026-11-01', '15,000', '0', '15,000', '0', '—', '2', '未计价'])
 })
 
-test('the empty range keeps the seven-column span and adds no reasoning header', () => {
+test('the empty range spans all eight columns and adds no reasoning header', () => {
   const page = loadRoute()
   const html = page.usageDailyTableHtml([])
-  assert.equal(headerLabels(html).length, 7)
-  assert.match(html, /<td class="usage-table-empty" colspan="7">当前区间没有每日记录<\/td>/)
+  assert.equal(headerLabels(html).length, 8)
+  assert.match(html, /<td class="usage-table-empty" colspan="8">当前区间没有每日记录<\/td>/)
   assert.doesNotMatch(html, /推理/)
 })

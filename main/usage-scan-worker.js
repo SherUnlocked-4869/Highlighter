@@ -149,7 +149,7 @@ function num(value) {
   return Number.isFinite(number) ? number : 0
 }
 
-async function runScan({ source, files, cursors, queuePath, onProgress } = {}) {
+async function runScan({ source, files, cursors, queuePath, details = null, onProgress } = {}) {
   if (typeof source !== 'string' || !source) throw new Error('usage scan worker requires a source')
   const parser = PARSERS[source]
   if (!parser) throw new Error(`unsupported usage source: ${source}`)
@@ -190,11 +190,21 @@ async function runScan({ source, files, cursors, queuePath, onProgress } = {}) {
 
   const finalHourly = cursors.hourly || null
   const removed = diffRemovedKeys(previousKeys, finalHourly)
+  let detailResult = null
+  if (details) {
+    try {
+      const { scanUsageDetails } = require('./services/usage-detail-scan')
+      detailResult = await scanUsageDetails({ ...details, source, files, rollout })
+    } catch {
+      detailResult = { updates: [], partial: true }
+    }
+  }
 
   return {
     upserts,
     removed,
     cursors,
+    details: detailResult,
     stats: {
       files: Array.isArray(files) ? files.length : 0,
       eventsAggregated: num(stats?.eventsAggregated),

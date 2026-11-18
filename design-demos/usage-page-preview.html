@@ -25,6 +25,7 @@
     html, body { height: auto; min-height: 100%; overflow: visible; }
     .window-shell { height: auto; min-height: 100vh; }
     .workspace { min-height: 100vh; }
+    .titlebar { flex-shrink: 0; }
     #view { overflow: visible; flex: 0 0 auto; }
     .sidebar { min-height: 100vh; }
     /* Deterministic rendering for screenshots. */
@@ -257,7 +258,7 @@
         return share;
       }
       function scaleRow(row, ratio) {
-        if (!ratio || ratio === 1) return row;
+        if (ratio === 1) return row;
         var copy = {};
         for (var key in row) {
           if (!Object.prototype.hasOwnProperty.call(row, key)) continue;
@@ -270,7 +271,17 @@
         return rows.map(function (row) { return scaleRow(row, ratio); });
       }
       function ratioFor(query) {
-        return sourceShareOf(selectedSources(query));
+        var projects = ['1'.repeat(32), '2'.repeat(32)];
+        var projectWeight = query && projects.includes(query.project) ? (query.project === projects[0] ? .7 : .3) : 1;
+        if (query && query.model) {
+          var selected = selectedSources(query);
+          return SOURCE_SPECS.reduce(function (share, spec) {
+            if (selected && !selected.includes(spec.source)) return share;
+            var model = spec.models.find(function (entry) { return entry.model === query.model; });
+            return share + (model ? spec.share * model.share : 0);
+          }, 0) * projectWeight;
+        }
+        return sourceShareOf(selectedSources(query)) * projectWeight;
       }
 
       function summaryForQuery(query) {
@@ -403,7 +414,7 @@
             models.push({
               source: spec.source,
               model: model.model,
-              billable_total_tokens: Math.round(total * (spec.share / filterShare) * model.share),
+              ...scaleRow(totals, (spec.share / filterShare) * model.share),
               sharePct: (spec.share / filterShare) * model.share * 100,
               conversationCount: Math.round(totals.conversation_count * (spec.share / filterShare) * model.share),
               estimated: false
@@ -638,7 +649,7 @@
       var settings = {
         language: 'zh-CN',
         theme: 'system',
-        usage: { enabled: true }
+        usage: { enabled: true, prices: [] }
       };
       window.__usagePreviewSettings = settings;
 
@@ -648,11 +659,65 @@
         });
       }
 
+      function previewCost(row, model) {
+        var rate = settings.usage.prices.find(function (item) { return item.model === model; });
+        if (!rate) return null;
+        return ((row.input_tokens + row.cache_creation_input_tokens) * rate.input + row.cached_input_tokens * rate.cached + row.output_tokens * rate.output) / 1000000;
+      }
+
+      function previewDetails(result, query) {
+        var breakdown = breakdownFor(result.totals, selectedSources(query));
+        if (breakdown.models.length === 0) return result;
+        var model = query.model || breakdown.models[0].model;
+        var cost = previewCost(result.totals, model);
+        var projects = ['Highlighter', 'Local demo'].map(function (name, index) {
+          return { ...scaleRow(result.totals, index === 0 ? .7 : .3), id: String(index + 1).repeat(32), name: name, costCny: cost };
+        });
+        var sessions = Array.from({ length: 12 }, function (_, index) {
+          var project = projects[index % 2];
+          return {
+            ...scaleRow(result.totals, (12 - index) / 78), id: (index + 10).toString(16).repeat(32), title: 'Preview session ' + (index + 1),
+            projectName: project.name, source: 'codex', models: [model], first: isoStartOfDay(-1), last: isoStartOfDay(0),
+            activeSeconds: 2400 - index * 100, records: 32 - index, costCny: cost
+          };
+        }).filter(function (row) {
+          return !query.project || projects.some(function (project) { return project.id === query.project && project.name === row.projectName; });
+        });
+        return {
+          ...result, totals: { ...result.totals, costCny: cost, unpricedModels: cost === null ? breakdown.models.length : 0 },
+          details: {
+            status: 'ready', projectCount: 2, projects: projects, sessionCount: sessions.length, sessionRanks: sessions,
+            median: result.totals.total_tokens / 12, p90: result.totals.total_tokens / 8, activeSeconds: 15240,
+            skills: { calls: 31, count: 2, top: [{ name: 'agent-browser', calls: 22, sessions: 8 }, { name: 'review', calls: 9, sessions: 4 }] },
+            tools: { calls: 72, sessions: 11, count: 2, top: [{ name: 'read', calls: 54, sessions: 10 }, { name: 'exec_command', calls: 18, sessions: 9 }],
+              categories: [{ name: 'read', calls: 54 }, { name: 'shell', calls: 18 }], weeks: [{ start: '2026-11-09', calls: { shell: 12 } }, { start: '2026-11-16', calls: { read: 54, shell: 6 } }] }
+          }
+        };
+      }
+
       window.electronAPI = {
         usageStatus: function () { return resolve(statusPayload()); },
-        usageSummary: function (query) { return resolve(summaryForQuery(query)); },
-        usageDaily: function (query) { return resolve(dailyForQuery(query)); },
-        usageBreakdown: function (query) { return resolve(breakdownFor(summaryForQuery(query).totals, selectedSources(query))); },
+        usageSummary: function (query) { return resolve(previewDetails(summaryForQuery(query), query)); },
+        usageDaily: function (query) {
+          var daily = dailyForQuery(query);
+          var weekdayHours = Array.from({ length: 168 }, function () { return { total: 0, withoutCache: 0 }; });
+          var rows = daily.rows.map(function (row) {
+            var weekday = (new Date(row.day + 'T00:00:00Z').getUTCDay() + 6) % 7;
+            var activeHours = row.total_tokens > 0 ? 6 + weekday : 0;
+            for (var hour = 0; hour < activeHours; hour += 1) {
+              var cell = weekdayHours[weekday * 24 + 9 + hour];
+              cell.total += Math.round(row.total_tokens / activeHours * (0.4 + hour / activeHours));
+              cell.withoutCache += Math.round((row.total_tokens - row.cached_input_tokens) / activeHours * (0.4 + hour / activeHours));
+            }
+            return { ...row, activeHours: activeHours, activeSeconds: activeHours * 240, sessions: activeHours ? 2 : 0, costCny: previewCost(row, query.model || SOURCE_SPECS[0].models[0].model) };
+          });
+          return resolve({ ...daily, rows: rows, weekdayHours: weekdayHours });
+        },
+        usageBreakdown: function (query) {
+          var breakdown = breakdownFor(summaryForQuery(query).totals, selectedSources(query));
+          breakdown.models.forEach(function (row) { row.costCny = previewCost(row, row.model); });
+          return resolve(breakdown);
+        },
         usageHeatmap: function (query) { return resolve(scaledHeatmap(selectedSources(query))); },
         usageHourly: function (query) {
           var debug = { called: true, query: query || null, day: query && query.day, emptyFlag: !!window.__usagePreviewEmptyHourly, rows: null, error: null };
@@ -678,7 +743,7 @@
         usageClear: function () { return resolve({ ok: true }); },
         onUsageScanProgress: function () { return function () {}; },
         getSettings: function () { return resolve(settings); },
-        updateSettings: function () { return resolve(settings); },
+        updateSettings: function (patch) { if (patch.usage) Object.assign(settings.usage, patch.usage); return resolve(settings); },
         windowMinimize: function () {},
         windowClose: function () {},
         onNavigate: function () { return function () {}; },
@@ -758,7 +823,7 @@
       }
 
       function selectPeriod(period) {
-        if (!period || period === 'month') return Promise.resolve(false);
+        if (!period || dashboardReady(period)) return Promise.resolve(false);
         var button = document.querySelector('[data-usage-tab="' + period + '"]');
         if (!button) return Promise.resolve(false);
         button.click();
@@ -769,9 +834,9 @@
         }, 15000).then(function () { return true; });
       }
 
-      // AI-tool filter drivers (dev harness only). The chips are the page's real
-      // control, so a capture exercises the same handler path a user click does.
       function activeFilters() {
+        var select = document.querySelector('#usageSource');
+        if (select) return [select.value || 'all'];
         return Array.prototype.slice.call(document.querySelectorAll('[data-usage-source-filter][aria-pressed="true"]'))
           .map(function (chip) { return chip.getAttribute('data-usage-source-filter'); });
       }
@@ -780,6 +845,14 @@
         return Boolean(page) && page.getAttribute('data-usage-busy') !== 'true';
       }
       function applyFilter(ids) {
+        var select = document.querySelector('#usageSource');
+        if (select) {
+          var value = ids[0] === 'all' ? '' : ids[0];
+          if (select.value === value) return Promise.resolve(activeFilters());
+          select.value = value;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          return waitFor(function () { return document.querySelector('#usageSource') !== select && filterSettled(); }, 15000).then(activeFilters);
+        }
         for (var i = 0; i < ids.length; i += 1) {
           var chip = document.querySelector('[data-usage-source-filter="' + ids[i] + '"]');
           if (!chip) return Promise.reject(new Error('filter chip not found: ' + ids[i]));
@@ -794,6 +867,7 @@
           });
       }
       function clearFilter() {
+        if (document.querySelector('#usageSource')) return applyFilter(['all']);
         var chip = document.querySelector('[data-usage-source-filter="all"]');
         if (!chip) return Promise.resolve([]);
         if (chip.getAttribute('aria-pressed') !== 'true') chip.click();
@@ -818,6 +892,12 @@
           if (!filterParam) return null;
           var ids = filterParam.split(',').map(function (item) { return item.trim(); }).filter(Boolean);
           return ids.length > 0 ? applyFilter(ids) : null;
+        })
+        .then(function () {
+          var yearly = params.get('heatView') === 'yearly' && document.querySelector('[data-usage-heat-view="yearly"]');
+          if (!yearly) return;
+          yearly.click();
+          return waitFor(function () { return !!document.querySelector('[data-usage-heatmap-scroll]'); }, 15000);
         })
         .then(function () {
           return Promise.all([

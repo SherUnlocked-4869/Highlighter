@@ -143,7 +143,7 @@ function createUsageFeature(deps = {}) {
 
   function ensureQuery() {
     if (!query) {
-      query = createUsageQuery({ getStore: ensureStore, now, log })
+      query = createUsageQuery({ getStore: ensureStore, getPrices: () => getSettings()?.usage?.prices, now, log })
     }
     return query
   }

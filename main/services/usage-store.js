@@ -14,6 +14,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const { normalizeQueueRow } = require('./usage-state')
+const { createUsageDetailStore } = require('./usage-detail-store')
 
 const RETENTION_MONTHS = 24
 const SCHEMA_VERSION = 1
@@ -230,6 +231,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     }
   }
 
+  let detail
   try {
     db.prepare('PRAGMA journal_mode = WAL').get()
     db.exec('PRAGMA synchronous = NORMAL')
@@ -237,6 +239,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     db.exec('PRAGMA foreign_keys = ON')
     ensureSchema(db)
     ensureHeatmapCoverIndex()
+    detail = createUsageDetailStore(db, BUCKET_INTEGER_COLUMNS, queueAlias)
   } catch (error) {
     try { db.close() } catch {}
     throw error
@@ -307,52 +310,19 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     return db.prepare(sql).all(...(list && list.length > 0 ? list : []))
   }
 
-  function getRangeRows({ fromIso, toIso, sources = null } = {}) {
+  function getRangeRows(options = {}) {
     assertOpen()
-    const filters = []
-    const params = []
-    if (typeof fromIso === 'string' && fromIso) {
-      filters.push('hour_start >= ?')
-      params.push(fromIso)
-    }
-    if (typeof toIso === 'string' && toIso) {
-      filters.push('hour_start < ?')
-      params.push(toIso)
-    }
-    const list = Array.isArray(sources)
-      ? sources.filter((source) => typeof source === 'string' && source)
-      : null
-    if (list && list.length > 0) {
-      filters.push(`source IN (${list.map(() => '?').join(', ')})`)
-      params.push(...list)
-    }
-    const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
+    const { where, params } = rangeWhere(options)
+    const selection = options.project ? ['source', 'model', 'hour_start', ...BUCKET_INTEGER_COLUMNS.map((column) => column + ' AS ' + queueAlias(column))].join(',') : BUCKET_READ_SELECT
     return db
-      .prepare(`SELECT ${BUCKET_READ_SELECT} FROM usage_bucket ${where} ORDER BY hour_start, source, model`)
+      .prepare(`SELECT ${selection} FROM ${rangeTable(options)} ${where} ORDER BY hour_start, source, model`)
       .all(...params)
   }
 
-  function sumRange({ fromIso, toIso, sources = null } = {}) {
+  function sumRange(options = {}) {
     const columns = sumSelectColumns(BUCKET_INTEGER_COLUMNS)
-    const filters = []
-    const params = []
-    if (typeof fromIso === 'string' && fromIso) {
-      filters.push('hour_start >= ?')
-      params.push(fromIso)
-    }
-    if (typeof toIso === 'string' && toIso) {
-      filters.push('hour_start < ?')
-      params.push(toIso)
-    }
-    const list = Array.isArray(sources)
-      ? sources.filter((source) => typeof source === 'string' && source)
-      : null
-    if (list && list.length > 0) {
-      filters.push(`source IN (${list.map(() => '?').join(', ')})`)
-      params.push(...list)
-    }
-    const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
-    const row = db.prepare(`SELECT ${columns.join(', ')} FROM usage_bucket ${where}`).get(...params) || {}
+    const { where, params } = rangeWhere(options)
+    const row = db.prepare(`SELECT ${columns.join(', ')} FROM ${rangeTable(options)} ${where}`).get(...params) || {}
     const totals = {}
     for (const column of BUCKET_INTEGER_COLUMNS) {
       const alias = queueAlias(column)
@@ -364,7 +334,11 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
   // SQL pre-aggregation helpers for the query layer (plan §2.6): fold rows per
   // UTC hour (timezone mapping stays in JS) or per dimension tuple (breakdown)
   // so a 100k-row range never crosses the process boundary row-by-row.
-  function rangeWhere({ fromIso, toIso, sources = null } = {}) {
+  function rangeTable({ project } = {}) {
+    return project ? 'usage_session_bucket' : 'usage_bucket'
+  }
+
+  function rangeWhere({ fromIso, toIso, sources = null, model = null, project = null } = {}) {
     const filters = []
     const params = []
     if (typeof fromIso === 'string' && fromIso) {
@@ -380,28 +354,52 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
       filters.push(`source IN (${list.map(() => '?').join(', ')})`)
       params.push(...list)
     }
+    if (model) {
+      filters.push('model = ?')
+      params.push(model)
+    }
+    if (project) {
+      filters.push('project = ?')
+      params.push(project)
+    }
     return { where: filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '', params }
   }
 
-  function getRangeHourlyTotals({ fromIso, toIso, sources = null } = {}) {
+  function getRangeHourlyTotals(options = {}) {
     assertOpen()
     const sums = sumSelectColumns(BUCKET_INTEGER_COLUMNS)
-    const { where, params } = rangeWhere({ fromIso, toIso, sources })
+    const { where, params } = rangeWhere(options)
     return db
-      .prepare(`SELECT hour_start, ${sums.join(', ')} FROM usage_bucket ${where} GROUP BY hour_start ORDER BY hour_start`)
+      .prepare(`SELECT hour_start, ${sums.join(', ')} FROM ${rangeTable(options)} ${where} GROUP BY hour_start ORDER BY hour_start`)
       .all(...params)
   }
 
-  function getGroupedTotals({ fromIso, toIso, dimensions = ['source', 'model'], sources = null } = {}) {
+  function getActiveTimes(options = {}) {
+    assertOpen()
+    const { where, params } = rangeWhere(options)
+    const conjunction = where ? where + ' AND' : 'WHERE'
+    return db.prepare('SELECT DISTINCT hour_start FROM ' + rangeTable(options) + ' ' + conjunction +
+      ' (billable_total_tokens > 0 OR conversation_count > 0) ORDER BY hour_start').all(...params)
+  }
+
+  function countRangeModels(options = {}) {
+    assertOpen()
+    const { where, params } = rangeWhere(options)
+    const conjunction = where ? where + ' AND' : 'WHERE'
+    return db.prepare('SELECT COUNT(DISTINCT model) AS count FROM ' + rangeTable(options) + ' ' + conjunction +
+      ' (billable_total_tokens > 0 OR total_tokens > 0)').get(...params).count
+  }
+
+  function getGroupedTotals({ dimensions = ['source', 'model'], ...options } = {}) {
     assertOpen()
     const dims = (Array.isArray(dimensions) ? dimensions : []).filter((dimension) =>
-      ['source', 'model'].includes(dimension)
+      ['source', 'model', 'hour_start'].includes(dimension)
     )
     if (dims.length === 0) throw new Error('usage store grouped totals require at least one dimension')
     const sums = sumSelectColumns(BUCKET_INTEGER_COLUMNS)
-    const { where, params } = rangeWhere({ fromIso, toIso, sources })
+    const { where, params } = rangeWhere(options)
     return db
-      .prepare(`SELECT ${dims.join(', ')}, ${sums.join(', ')} FROM usage_bucket ${where} GROUP BY ${dims.join(', ')} ORDER BY ${dims.join(', ')}`)
+      .prepare(`SELECT ${dims.join(', ')}, ${sums.join(', ')} FROM ${rangeTable(options)} ${where} GROUP BY ${dims.join(', ')} ORDER BY ${dims.join(', ')}`)
       .all(...params)
   }
 
@@ -410,32 +408,17 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
   // only (day, source, model) totals, so callers get ~5k rows instead of the raw
   // 52-week bucket rows. Day bounds come from usage-time's Intl/DST-safe
   // resolveDayBounds, so timezone folding is exact.
-  function countRangeRows({ fromIso = null, toIso = null, limit = 100000, sources = null } = {}) {
+  function countRangeRows({ limit = 100000, ...options } = {}) {
     assertOpen()
-    const filters = []
-    const params = []
-    if (typeof fromIso === 'string' && fromIso) {
-      filters.push('hour_start >= ?')
-      params.push(fromIso)
-    }
-    if (typeof toIso === 'string' && toIso) {
-      filters.push('hour_start < ?')
-      params.push(toIso)
-    }
-    const list = sourceFilterList(sources)
-    if (list) {
-      filters.push(`source IN (${list.map(() => '?').join(', ')})`)
-      params.push(...list)
-    }
-    const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''
+    const { where, params } = rangeWhere(options)
     const cap = Number.isFinite(limit) && limit > 0 ? Math.trunc(limit) : 100000
     const row = db
-      .prepare(`SELECT COUNT(*) AS count FROM (SELECT 1 FROM usage_bucket ${where} LIMIT ${cap + 1})`)
+      .prepare(`SELECT COUNT(*) AS count FROM (SELECT 1 FROM ${rangeTable(options)} ${where} LIMIT ${cap + 1})`)
       .get(...params)
     return Number(row?.count) || 0
   }
 
-  function getHeatmapDayModelTotals({ dayRanges = [], sources = null } = {}) {
+  function getHeatmapDayModelTotals({ dayRanges = [], sources = null, model = null, project = null } = {}) {
     assertOpen()
     const ranges = (Array.isArray(dayRanges) ? dayRanges : []).filter((range) => {
       if (!range || typeof range !== 'object') return false
@@ -444,8 +427,6 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     })
     if (ranges.length === 0) return []
     if (ranges.length > 400) throw new Error('usage heatmap day range is too large')
-    const list = sourceFilterList(sources)
-    const sourceClause = list ? ` AND source IN (${list.map(() => '?').join(', ')})` : ''
     // This statement is a UNION ALL of one grouped branch per local day, so it
     // cannot be a single prepared shape. Every value is still bound except the
     // day literal, which the filter above pins to YYYY-MM-DD (digits/dashes only)
@@ -454,14 +435,14 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     const branches = ranges.map((range) => {
       const startIso = new Date(Date.parse(range.startIso)).toISOString()
       const endIso = new Date(Date.parse(range.endIso)).toISOString()
-      params.push(startIso, endIso)
-      if (list) params.push(...list)
+      const scoped = rangeWhere({ fromIso: startIso, toIso: endIso, sources, model, project })
+      params.push(...scoped.params)
       return (
         `SELECT '${range.day}' AS day, source AS source, model AS model, ` +
         'COALESCE(SUM(total_tokens), 0) AS total_tokens, ' +
         'COALESCE(SUM(billable_total_tokens), 0) AS billable_total_tokens, ' +
         'COALESCE(SUM(conversation_count), 0) AS conversation_count ' +
-        `FROM usage_bucket INDEXED BY idx_usage_heat_cover WHERE hour_start >= ? AND hour_start < ?${sourceClause} GROUP BY source, model`
+        `FROM ${project ? rangeTable({ project }) : 'usage_bucket INDEXED BY idx_usage_heat_cover'} ${scoped.where} GROUP BY source, model`
       )
     })
     return db.prepare(branches.join(' UNION ALL ')).all(...params)
@@ -540,7 +521,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
 
   // Single transaction: bucket upserts + deletions + cursors + source status +
   // retention pruning. Anything thrown rolls the whole tool scan back.
-  function commitScan({ source, upserts = [], removed = [], cursors = null, status = null, retentionMonths = RETENTION_MONTHS, now: commitNow = null } = {}) {
+  function commitScan({ source, upserts = [], removed = [], cursors = null, status = null, details = null, retentionMonths = RETENTION_MONTHS, now: commitNow = null } = {}) {
     assertOpen()
     if (typeof source !== 'string' || !source) throw new Error('usage store commit requires a source')
     const updatedAt = commitNow ? isoTimestamp(commitNow) : nowIso()
@@ -574,6 +555,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
           updatedAt
         )
       }
+      detail.commit(source, details, updatedAt)
       if (Number.isFinite(retentionMonths) && retentionMonths > 0) {
         const cutoff = new Date(
           Date.UTC(
@@ -583,6 +565,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
           )
         ).toISOString()
         statements.deleteOlderThan.run(cutoff)
+        if (details) detail.prune(cutoff)
       }
     })
     dbVersion += 1
@@ -607,6 +590,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
     const cutoff = toIsoOrNull(cutoffIso)
     if (!cutoff) throw new Error('usage store retention cutoff must be an ISO timestamp')
     const result = statements.deleteOlderThan.run(cutoff)
+    detail.prune(cutoff)
     if (result.changes) dbVersion += 1
     return Number(result.changes) || 0
   }
@@ -635,6 +619,7 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
       statements.clearScanState.run()
       statements.clearSourceStatus.run()
       statements.clearAppMeta.run()
+      detail.clear()
     })
     dbVersion += 1
     if (vacuum) {
@@ -661,12 +646,18 @@ function openUsageStore({ dbPath, now = () => new Date(), log = () => {} } = {})
 
   return {
     dbPath,
+    getDetailStamps: (source) => detail.stamps(source),
+    getDetails: (options) => detail.query(options, rangeWhere),
+    hasDetailBuckets: detail.hasBuckets,
+    getDetailDays: (options, bounds) => detail.days(options, bounds, rangeWhere),
     loadCursors,
     loadBucketRows,
     countRangeRows,
     getGroupedTotals,
     getHeatmapDayModelTotals,
     getRangeHourlyTotals,
+    getActiveTimes,
+    countRangeModels,
     getRangeRows,
     sumRange,
     countDistinctDays,

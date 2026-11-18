@@ -1,5 +1,6 @@
 const { isValidAccelerator } = require('../../shared/shortcut-keys')
 const { QUALITY_LEVELS, COUNTDOWN_OPTIONS } = require('../../shared/recording-quality')
+const { assertUsagePrices } = require('./usage-pricing')
 
 const MAX_PATCH_BYTES = 256 * 1024
 const MAX_ARRAY_ITEMS = 100
@@ -65,7 +66,7 @@ function domainValidatorFor(domainValidators, path) {
     const validator = domainValidators[path]
     if (typeof validator === 'function') return validator
   }
-  return RECORD_ENUM_VALIDATORS.get(path) || null
+  return path === 'usage.prices' ? assertUsagePrices : RECORD_ENUM_VALIDATORS.get(path) || null
 }
 
 function assertValue(value, template, path, domainValidators) {

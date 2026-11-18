@@ -517,12 +517,7 @@ body.compact #view{padding:16px}
   .model-provider-editor-head{align-items:flex-start;flex-direction:column}
 }
 
-/* ---------- AI usage (v6 layout round) ----------
-   Compact dashboard: row1 heatmap | trend, row2 integrated model/stat card |
-   token total card, row3 daily detail full width. The paired grid is used at
-   every settings-window size (it collapses to one column only below 560px of
-   page content); the switch is a container query, not a viewport media query.
-   FILM tokens only; one user accent. */
+/* ---------- AI usage ---------- */
 .usage-page{
   max-width:1180px;
   container-type:inline-size;
@@ -569,8 +564,8 @@ body.compact #view{padding:16px}
 .usage-empty-text{padding:24px 8px;color:var(--muted);font-size:12px;text-align:center}
 .usage-divider{height:1px;margin:14px 0;background:var(--line)}
 
-/* header refresh (icon-only) + loading/state cards */
-.usage-refresh-button{display:grid;place-items:center;width:34px;height:32px;padding:0}
+/* Refresh and loading states */
+.usage-refresh-button{display:inline-flex;align-items:center;justify-content:space-between;min-width:90px;gap:10px}
 .usage-refresh-button .svg-icon{width:14px;height:14px;opacity:.72}
 .usage-refresh-button:hover .svg-icon{opacity:1}
 .usage-refresh-button:disabled .svg-icon{opacity:.4}
@@ -632,39 +627,6 @@ body.compact #view{padding:16px}
 .usage-banner-error,.usage-banner-unreadable{border-color:color-mix(in srgb,var(--danger) 28%,var(--line));background:var(--danger-soft)}
 .usage-banner-scanning{border-color:var(--primary-line);background:var(--primary-soft)}
 
-/* toolbar: period tabs + AI-tool filter (+ custom range while that tab is on) */
-.usage-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px}
-.usage-segmented{
-  display:inline-flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line);
-  border-radius:var(--radius-pill);background:var(--surface-2)
-}
-.usage-segment{
-  padding:6px 15px;border:1px solid transparent;border-radius:var(--radius-pill);
-  color:var(--muted);background:transparent;font-size:12.5px;cursor:pointer;
-  transition:background .14s,color .14s,border-color .14s
-}
-.usage-segment:hover{color:var(--text);background:var(--surface-3)}
-.usage-segment.is-active{color:var(--text);border-color:var(--line-2);background:var(--surface);font-weight:600;box-shadow:var(--shadow-1)}
-
-/* AI-tool filter: a caption + one pill per supported tool. Sits on the same row
-   as the period tabs and right-aligns, so the control band stays one line until
-   the container gets narrow. */
-.usage-source-filter{
-  display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;
-  margin-left:auto;min-width:0
-}
-.usage-filter-caption{color:var(--faint);font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
-.usage-filter-chip{
-  display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 11px;
-  border:1px solid var(--line);border-radius:var(--radius-pill);
-  color:var(--muted);background:var(--surface);font-size:11.5px;cursor:pointer;
-  transition:background .14s,color .14s,border-color .14s
-}
-.usage-filter-chip:hover{color:var(--text);background:var(--surface-2);border-color:var(--line-2)}
-.usage-filter-chip.is-active{color:var(--primary-text);border-color:var(--primary-line);background:var(--primary-soft);font-weight:600}
-.usage-filter-chip-all{padding:0 12px}
-.usage-filter-dot{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:var(--line-2)}
-.usage-filter-chip.is-active .usage-filter-dot{background:var(--primary)}
 
 .usage-custom-range{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
 .usage-range-field{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:10.5px}
@@ -677,31 +639,6 @@ body.compact #view{padding:16px}
 .usage-range-apply{padding:6px 13px;font-size:11.5px}
 .usage-range-cancel{padding:6px 12px;border-color:transparent;color:var(--muted);background:transparent;font-size:11.5px}
 .usage-range-cancel:hover{color:var(--text);background:var(--surface-2)}
-
-/* dashboard: one column only on genuinely narrow content, otherwise the paired
-   reference grid (heatmap | trend, integrated | token, daily full width) that
-   the maximized window shows. The default 1120x760 settings window leaves ~840px
-   of page content, so an un-maximized window now gets the same two-up rhythm
-   instead of stacking four stretched full-width cards.
-   560px is the floor: the smallest allowed window (min-width 880) still lands
-   above it, and below it two ~260px cards read worse than one column. */
-.usage-dashboard{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;align-items:stretch}
-@container usage (min-width:560px){
-  .usage-dashboard{
-    grid-template-columns:repeat(2,minmax(0,1fr));
-    grid-template-areas:
-      "heatmap trend"
-      "integrated token"
-      "daily daily"
-  }
-  .usage-heatmap{grid-area:heatmap}
-  .usage-trend{grid-area:trend}
-  .usage-integrated{grid-area:integrated}
-  .usage-token{grid-area:token}
-  .usage-daily{grid-area:daily}
-}
-/* The interior tuning for the paired (but not full-width) cards lives at the end
-   of this section, after the component rules it overrides. */
 
 /* ---------- heatmap card (compact, horizontal scroller + arrows) ---------- */
 .usage-heatmap{display:flex;flex-direction:column;padding:18px 20px}
@@ -798,19 +735,11 @@ body.compact #view{padding:16px}
 /* ---------- trend card (compact, expand button) ---------- */
 .usage-trend{position:relative;display:flex;flex-direction:column;padding:18px 20px}
 .usage-trend .usage-card-head{margin-bottom:10px}
-.usage-trend-legend{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.usage-trend-key{display:inline-flex;align-items:center;gap:5px;color:var(--muted);font-size:10.5px}
 .usage-trend-dot{width:7px;height:7px;flex:0 0 7px;border-radius:2px}
 .usage-trend-dot-input{background:color-mix(in srgb,var(--primary) 92%,var(--surface-2))}
 .usage-trend-dot-cache{background:color-mix(in srgb,var(--primary) 52%,var(--surface-2))}
 .usage-trend-dot-output{background:color-mix(in srgb,var(--primary) 22%,var(--surface-2))}
 .usage-trend-chart{position:relative;height:150px;padding:8px 0 0}
-.usage-trend-gridlines{position:absolute;inset:8px 0 0;pointer-events:none}
-.usage-trend-gridlines i{position:absolute;right:0;left:0;height:1px;background:var(--line-2);opacity:.7}
-.usage-trend-gridlines i:nth-child(1){top:25%}
-.usage-trend-gridlines i:nth-child(2){top:50%}
-.usage-trend-gridlines i:nth-child(3){top:75%}
-.usage-trend-max{position:absolute;top:0;left:0;color:var(--faint);font-family:var(--font-mono);font-size:9px;pointer-events:none}
 .usage-trend-bars{position:relative;display:flex;align-items:flex-end;gap:3px;height:100%}
 .usage-trend-col{position:relative;display:flex;height:100%;min-width:3px;flex:1 1 0;align-items:flex-end;justify-content:center;outline:0}
 .usage-trend-col::before{content:"";position:absolute;inset:0;border-radius:var(--radius-sm);background:transparent;transition:background .14s}
@@ -825,8 +754,6 @@ body.compact #view{padding:16px}
 .usage-trend-cache{background:color-mix(in srgb,var(--primary) 52%,var(--surface-2))}
 .usage-trend-output{background:color-mix(in srgb,var(--primary) 22%,var(--surface-2))}
 .usage-trend-seg+.usage-trend-seg{box-shadow:inset 0 1px 0 color-mix(in srgb,var(--surface) 70%,transparent)}
-.usage-trend-empty{background:var(--line-2)}
-.usage-trend-axis{display:flex;justify-content:space-between;margin-top:8px;padding-right:36px;color:var(--faint);font-family:var(--font-mono);font-size:9.5px}
 .usage-trend-expand{
   position:absolute;right:14px;bottom:12px;width:26px;height:24px;display:grid;place-items:center;
   border:1px solid var(--line);border-radius:var(--radius-sm);color:var(--muted);
@@ -853,73 +780,6 @@ body.compact #view{padding:16px}
 .usage-tooltip-total{margin-top:5px;padding-top:6px;border-top:1px solid var(--line)}
 .usage-tooltip-total .usage-tooltip-label{color:var(--text);font-weight:600}
 
-/* ---------- integrated card: KPI pills + ranked models + footer ---------- */
-.usage-integrated{display:flex;flex-direction:column;padding:18px 20px}
-.usage-kpi-pills{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-.usage-kpi-pill{
-  display:flex;min-width:0;flex-direction:column;align-items:center;gap:2px;
-  padding:10px 6px;border-radius:var(--radius);background:var(--surface-2)
-}
-.usage-kpi-pill-value{
-  max-width:100%;overflow:hidden;color:var(--ink);font-family:var(--font-mono);
-  font-size:20px;font-weight:600;letter-spacing:-.02em;text-overflow:ellipsis;white-space:nowrap;
-  font-variant-numeric:tabular-nums
-}
-.usage-kpi-pill-label{color:var(--muted);font-size:9.5px;white-space:nowrap}
-.usage-integrated-models{display:flex;flex:1;flex-direction:column;justify-content:space-evenly;min-height:0}
-.usage-integrated-row{display:flex;align-items:center;gap:10px;min-width:0;padding:2px 0}
-.usage-integrated-rank{
-  display:grid;width:22px;height:22px;flex:0 0 22px;place-items:center;border-radius:50%;
-  color:var(--faint);background:var(--surface-2);font-family:var(--font-mono);
-  font-size:10.5px;font-weight:600
-}
-.usage-integrated-rank.is-top{border:1px solid var(--primary-line);color:var(--primary-text);background:var(--primary-soft)}
-.usage-integrated-name{
-  min-width:0;flex:1;overflow:hidden;color:var(--text);font-family:var(--font-mono);
-  font-size:12.5px;font-weight:600;text-overflow:ellipsis;white-space:nowrap
-}
-.usage-integrated-source{
-  flex:0 0 auto;padding:1px 6px;border-radius:var(--radius-pill);color:var(--muted);
-  background:var(--surface-3);font-size:9.5px;white-space:nowrap
-}
-.usage-integrated-pct{
-  min-width:52px;color:var(--text);font-family:var(--font-mono);font-size:12.5px;
-  font-weight:600;text-align:right;font-variant-numeric:tabular-nums
-}
-.usage-integrated-row-other .usage-integrated-name{color:var(--muted);font-family:var(--font-ui);font-weight:500}
-.usage-integrated-row-other .usage-integrated-pct{color:var(--muted)}
-.usage-integrated-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--faint);font-size:10.5px;white-space:nowrap}
-.usage-integrated-foot span{min-width:0;overflow:hidden;text-overflow:ellipsis}
-
-/* ---------- token card: compact total + source share ---------- */
-.usage-token{display:flex;flex-direction:column;padding:18px 20px}
-.usage-token-head{display:flex;flex-direction:column;gap:2px;min-width:0}
-.usage-token-label{color:var(--muted);font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase}
-.usage-token-number{
-  max-width:100%;overflow:hidden;color:var(--ink);font-family:var(--font-mono);
-  font-size:40px;font-weight:700;line-height:1.05;letter-spacing:-.03em;cursor:help;
-  font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap
-}
-.usage-token-meta{color:var(--faint);font-size:10.5px}
-.usage-token-share{display:flex;flex-direction:column;gap:7px;margin:14px 0 10px}
-.usage-token-sources{display:flex;flex:1;flex-direction:column;justify-content:space-evenly;min-height:0}
-.usage-token-source{
-  display:grid;grid-template-columns:8px auto minmax(0,1fr) auto;align-items:center;
-  gap:8px;padding:6px 0;border-top:1px solid var(--line)
-}
-.usage-token-source:first-child{border-top:0}
-.usage-token-dot{width:8px;height:8px;border-radius:2px}
-.usage-token-source-name{color:var(--text);font-size:12px;font-weight:600;white-space:nowrap}
-.usage-token-source-meta{overflow:hidden;color:var(--faint);font-size:9.5px;text-overflow:ellipsis;white-space:nowrap}
-.usage-token-source-pct{color:var(--text);font-family:var(--font-mono);font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
-.usage-token-empty{padding:8px 0;color:var(--muted);font-size:11px}
-.usage-share-bar{display:flex;height:8px;overflow:hidden;border-radius:var(--radius-pill);background:var(--surface-2)}
-.usage-share-seg{display:block;height:100%;min-width:0}
-.usage-share-seg+.usage-share-seg{border-left:2px solid var(--surface)}
-.usage-share-legend{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 14px}
-.usage-share-key{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:10px}
-.usage-share-key b{color:var(--text);font-family:var(--font-mono);font-weight:600;font-variant-numeric:tabular-nums}
-.usage-share-dot{width:7px;height:7px;flex:0 0 7px;border-radius:2px}
 
 /* ---------- daily detail table ---------- */
 .usage-daily{display:flex;flex-direction:column;padding:18px 20px}
@@ -1023,55 +883,9 @@ body.usage-modal-open #view{overflow:hidden}
 .usage-modal-col:focus-visible{outline:0;box-shadow:var(--focus-ring)}
 .usage-heat-cell:hover,.usage-heat-cell:focus-visible{box-shadow:0 0 0 2px var(--surface),0 0 0 3px var(--line-2)}
 
-/* Half-width cards (~250-540px of card content) need a tighter interior so
-   nothing collapses into an ellipsis: KPIs go 2x2, padding and the hero number
-   step down, the heatmap meta may clip instead of forcing the head wider. This
-   block must stay after the component rules above (same specificity). */
-@container usage (min-width:560px) and (max-width:1079px){
-  .usage-dashboard{gap:14px}
-  .usage-card{padding:15px 16px}
-  .usage-card-head{gap:8px}
-  .usage-card-head h2{font-size:14px}
-  .usage-kpi-pills{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .usage-kpi-pill{padding:8px 6px}
-  .usage-kpi-pill-value{font-size:18px}
-  .usage-token-number{font-size:30px}
-  .usage-trend-chart{height:132px}
-  .usage-heat-meta{max-width:62%;overflow:hidden;text-overflow:ellipsis}
-  .usage-table th,.usage-table td{padding:8px 10px}
-}
-/* Narrowest paired tier (~250-300px of card content): the model list can only
-   fit rank + name + share, so drop the source chip and step the type down one
-   notch instead of truncating every model name to "deepseek-…". */
-@container usage (min-width:560px) and (max-width:759px){
-  .usage-integrated-source{display:none}
-  .usage-integrated-name{font-size:11.5px}
-  .usage-integrated-pct{min-width:46px;font-size:11.5px}
-  .usage-trend-key{font-size:10px}
-  /* Too little width for title + meta on one line: give the meta its own row
-     (full text) instead of an ellipsis. */
-  .usage-heat-head{flex-wrap:wrap;gap:2px 8px}
-  .usage-heat-meta{max-width:none;flex:1 1 100%;text-align:left;white-space:normal}
-  /* The period tabs + four filter chips no longer fit one line: the chips wrap
-     to their own row, left-aligned with the tabs (not glued to the right edge). */
-  .usage-toolbar{gap:8px;row-gap:8px}
-  .usage-source-filter{margin-left:0;flex:1 1 100%}
-}
-
-/* Narrowest tier: the filter row's caption is the first thing to go, so the
-   chips still have room to sit on one line next to nothing else. */
-@container usage (max-width:659px){
-  .usage-source-filter{margin-left:0;flex:1 1 100%;gap:5px}
-  .usage-filter-caption{display:none}
-  .usage-filter-chip{height:24px;padding:0 9px;font-size:11px}
-}
 
 /* compact mode */
 body.compact .usage-card{padding:14px 16px}
-body.compact .usage-kpi-pill{padding:7px 4px}
-body.compact .usage-kpi-pill-value{font-size:17px}
-body.compact .usage-token-number{font-size:32px}
-body.compact .usage-trend-chart{height:126px}
 /* One cell token drives the day grid, the cells and the month header row, so
    compact mode only has to retune it (see .usage-heat-canvas). */
 body.compact .usage-heat-canvas{--usage-heat-cell:11px}
@@ -1088,7 +902,6 @@ body.compact .usage-modal-stat b{font-size:17px}
 body.compact .usage-modal-chart{min-height:220px}
 
 /* dark mode: tokens cover everything; soften the gridline overlay a touch */
-body.dark .usage-trend-gridlines i,
 body.dark .usage-modal-gridlines i{opacity:.5}
 
 /* narrow windows: modal stacks vertically (page itself is single-column by now) */
@@ -1103,6 +916,120 @@ body.dark .usage-modal-gridlines i{opacity:.5}
   .usage-modal-col::before,.usage-heat-arrow,.usage-trend-expand{transition:none}
   .usage-trend-col:hover .usage-trend-stack{filter:none}
   .usage-heat-scroll{scroll-behavior:auto}
+}
+
+#view:has(>.usage-overview){padding:12px clamp(12px,1.6vw,24px) 22px}
+.usage-overview{max-width:1320px;--usage-gap:10px;--usage-chart:#6978b3;--usage-chart-empty:#e6e6ed}
+body.dark .usage-overview{--usage-chart:#a7b4ff;--usage-chart-empty:#2d2e33}
+.usage-overview>.page-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.usage-dashboard,.usage-controls,.usage-pair{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--usage-gap);min-width:0}
+.usage-controls{gap:7px;margin-bottom:var(--usage-gap)}
+.usage-overview .usage-toolbar,.usage-toolbar-end,.usage-filters{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin:0}
+.usage-overview .usage-toolbar{justify-content:space-between;min-height:28px}
+.usage-toolbar-end{margin-inline-start:auto}
+.usage-toolbar-end label{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px}
+.usage-toolbar-end select,.usage-filters select,.usage-session-search{min-width:0;border:1px solid var(--line-2);border-radius:8px;background:var(--bg);color:var(--text);font-size:12px;padding:5px 9px}
+.usage-toolbar-end select{min-width:80px}
+.usage-overview .usage-refresh-button{padding:5px 8px;font-size:12px}
+.usage-filters select{min-width:105px;max-width:min(220px,100%)}
+.usage-filters select:disabled,.usage-session-search:disabled{opacity:.65;cursor:not-allowed}
+.usage-overview .usage-custom-range{margin:0}
+.usage-segments{display:inline-flex;align-items:center;gap:2px;padding:2px;border-radius:8px;background:var(--bg);flex-wrap:wrap;min-width:0}
+.usage-periods{background:transparent;padding:0}
+.usage-segments button{border:0;background:transparent;border-radius:5px;font-size:11px;padding:4px 7px;color:var(--muted);white-space:nowrap;cursor:pointer}
+.usage-segments button[aria-pressed=true]{background:var(--surface-2);color:var(--text);box-shadow:0 1px 3px #0002}
+.usage-segments button:disabled{opacity:.56;cursor:not-allowed}
+.usage-overview .usage-card{padding:12px;border-radius:12px;box-shadow:none;margin:0;min-width:0}
+.usage-overview .usage-card-head{align-items:center;justify-content:flex-start;flex-wrap:wrap;gap:7px;margin-bottom:8px;min-height:19px}
+.usage-overview .usage-card-head h2{font-size:13px;font-weight:700;white-space:normal}
+.usage-overview .usage-card-head>span,.usage-panel-top-sessions .usage-card-head>.usage-segments{margin-inline-start:auto}
+.usage-overview .usage-card-head>span{color:var(--muted);font-size:11px}
+.usage-kpi-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;overflow:hidden;border:1px solid var(--line);border-radius:12px;background:var(--line)}
+.usage-kpi-tile{display:grid;align-content:start;gap:3px;padding:10px 12px;min-width:0;background:var(--surface);color:var(--muted);font-size:12px}
+.usage-kpi-tile strong{color:var(--ink);font-size:23px;line-height:1.15;font-weight:750;font-variant-numeric:tabular-nums}
+.usage-kpi-tile small{font-size:11px;overflow-wrap:anywhere}
+.usage-kpi-tile button{justify-self:start;max-width:100%;padding:0;border:0;background:none;color:inherit;text-align:left;font-weight:600;cursor:pointer}
+.usage-overview .usage-trend-chart{height:86px;margin:0;padding:8px 0 0;border-bottom:1px solid var(--line)}
+.usage-overview .usage-trend-bars{gap:0}
+.usage-overview .usage-trend-col{min-width:0}
+.usage-overview .usage-trend-stack{width:68%;max-width:none;border-radius:0}
+.usage-overview .usage-trend-bars.is-single .usage-trend-stack{max-width:48px}
+.usage-overview .usage-trend-seg.usage-trend-cache{background:color-mix(in srgb,var(--usage-chart) 56%,var(--surface))}
+.usage-overview .usage-trend-seg.usage-trend-input,.usage-overview .usage-rank-track i{background:var(--usage-chart)}
+.usage-overview .usage-trend .usage-card-head{padding-inline-end:28px}
+.usage-overview .usage-trend-expand{top:10px;bottom:auto;right:10px}
+.usage-overview-axis{position:relative;height:22px;color:var(--muted);font-size:11px}
+.usage-overview-axis span{position:absolute;left:clamp(26px,var(--tick),calc(100% - 26px));top:6px;transform:translateX(-50%);white-space:nowrap}
+.usage-rankings>.usage-card{min-height:110px}
+.usage-rank-row{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(14px,1.55fr) minmax(4.2ch,auto) minmax(6.5ch,auto);align-items:center;gap:7px;width:100%;min-height:26px;padding:2px 0;border:0;border-radius:4px;background:none;color:var(--text);font-size:12px;text-align:start;cursor:pointer}
+.usage-rank-row:hover,.usage-rank-row[aria-pressed=true]{background:var(--surface-2)}
+.usage-rank-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.usage-rank-track{height:5px;overflow:hidden;border-radius:10px;background:var(--bg)}
+.usage-rank-track i{display:block;height:100%;border-radius:inherit}
+.usage-rank-value,.usage-rank-cost{text-align:end;font-variant-numeric:tabular-nums;white-space:nowrap}
+.usage-rank-cost{color:var(--muted);font-size:11px}
+.usage-section-note{margin:6px 0 2px;color:var(--muted);font-size:12px;line-height:1.5}
+.usage-session-search{width:100%}
+.usage-session-row{padding-block:6px;border-bottom:1px solid var(--line);min-width:0}
+.usage-session-row summary{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px}
+.usage-session-row summary>span{min-width:0;flex:1}
+.usage-session-row summary strong,.usage-session-row summary small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.usage-session-row summary small,.usage-session-detail{color:var(--muted);font-size:11px}
+.usage-session-row summary>b{white-space:nowrap}
+.usage-session-row[open] summary{color:var(--primary-text)}
+.usage-session-detail{display:grid;gap:4px;padding:6px 0 0;overflow-wrap:anywhere}
+.usage-show-more{margin-block-start:6px;padding:4px 8px;font-size:11px}
+.usage-activity-layout{display:grid;gap:10px;min-width:0}
+.usage-activity-list,.usage-tool-categories{list-style:none;margin:0;padding:0}
+.usage-activity-row{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(12px,1fr) 4ch auto;align-items:center;gap:6px;padding-block:4px;min-width:0;font-size:12px}
+.usage-activity-row>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.usage-activity-row b{text-align:end}
+.usage-activity-row small,.usage-tool-categories,.usage-tool-trend{color:var(--muted);font-size:11px}
+.usage-tool-categories{display:flex;gap:6px 12px;flex-wrap:wrap}
+.usage-tool-trend{margin:9px 0 0}
+.usage-tool-trend>div{display:flex;align-items:end;height:62px;gap:3px;border-bottom:1px solid var(--line)}
+.usage-tool-trend>div>span{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;border-radius:2px 2px 0 0}
+.usage-tool-trend i{flex-basis:0;background:#7c8799}
+.usage-tool-trend i[data-category=read]{background:#2a9a81}
+.usage-tool-trend i[data-category=edit]{background:#4a7dd7}
+.usage-tool-trend i[data-category=write]{background:#9471dc}
+.usage-tool-trend i[data-category=mcp]{background:#766ddd}
+.usage-tool-trend i[data-category=shell]{background:#687cb9}
+.usage-tool-trend i[data-category=grep]{background:#c45882}
+.usage-tool-trend i[data-category=glob]{background:#c38c2a}
+.usage-tool-trend i[data-category=task]{background:#2b90aa}
+.usage-hour-grid{display:grid;grid-template-columns:max-content repeat(24,minmax(0,1fr));gap:3px;align-items:center}
+.usage-hour-label{color:var(--muted);font-size:11px;padding-inline-end:3px}
+.usage-hour-cell{display:block;min-width:0;aspect-ratio:1;border-radius:3px}
+.usage-hour-cell:focus-visible{outline:2px solid var(--text);outline-offset:1px}
+.usage-hour-foot{justify-content:space-between;flex-wrap:wrap;color:var(--muted);font-size:11px}
+.usage-hour-foot .usage-heat-legend{margin:0}
+.usage-heat-total-label{font-size:10px;color:var(--muted)}
+.usage-overview .level-0{background:var(--usage-chart-empty)}
+.usage-overview .level-1{background:color-mix(in srgb,var(--usage-chart) 25%,var(--usage-chart-empty))}
+.usage-overview .level-2{background:color-mix(in srgb,var(--usage-chart) 48%,var(--usage-chart-empty))}
+.usage-overview .level-3{background:color-mix(in srgb,var(--usage-chart) 72%,var(--usage-chart-empty))}
+.usage-overview .level-4{background:var(--usage-chart)}
+.usage-overview .usage-heat-foot{flex-wrap:wrap}
+.usage-overview .usage-table-wrap{max-height:330px;scrollbar-gutter:stable}
+.usage-dashboard-settings{padding:9px 12px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--muted);font-size:12px}
+.usage-dashboard-settings summary{cursor:pointer}
+.usage-dashboard-settings summary>span{margin-inline-start:8px;font-size:11px}
+.usage-dashboard-settings .usage-coverage{margin:9px 0 0}
+#usagePricing .usage-table-wrap{margin-block:8px;max-height:320px}
+#usagePricing input{width:92px;max-width:100%;border:1px solid var(--line-2);border-radius:6px;background:var(--bg);color:var(--text);padding:4px 6px}
+@container usage (min-width:460px){.usage-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@container usage (min-width:670px){
+  .usage-pair{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .usage-drilldown>.usage-panel-top-sessions{grid-area:1 / 2 / 3}
+  .usage-panel-tools .usage-activity-layout{grid-template-columns:minmax(0,1.16fr) minmax(0,1fr)}
+}
+@container usage (max-width:419px){
+  .usage-toolbar-end{margin-inline-start:0}
+  .usage-filters select{flex:1;max-width:100%}
+  .usage-kpi-tile strong{font-size:19px}
+  .usage-hour-grid{gap:2px}
+  .usage-overview-axis span:not(.usage-axis-edge){display:none}
 }
 
 /* ---------- recording workbench (W4) ----------

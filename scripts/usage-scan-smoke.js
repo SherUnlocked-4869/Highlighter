@@ -88,6 +88,13 @@ async function main() {
     bucketRows,
     status,
     summary: summary && { totals: summary.totals, rolling: summary.rolling, from: summary.from, to: summary.to },
+    details: summary?.details && {
+      status: summary.details.status,
+      projects: summary.details.projectCount,
+      sessions: summary.details.sessionCount,
+      skills: summary.details.skills.calls,
+      toolCalls: summary.details.tools.calls
+    },
     dailyRows: daily?.rows?.length || 0,
     dailyNonZero: (daily?.rows || []).filter((row) => row.billable_total_tokens > 0).length,
     sources: (breakdown?.sources || []).map((row) => ({ source: row.source, billable: row.billable_total_tokens })),

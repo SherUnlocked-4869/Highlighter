@@ -516,8 +516,19 @@ const layoutScript = `(() => {
   const filter = page.querySelector('.usage-source-filter');
   const toolbarRect = toolbar ? toolbar.getBoundingClientRect() : null;
   const filterRect = filter ? filter.getBoundingClientRect() : null;
+  const overview = page.classList.contains('usage-overview') ? (() => {
+    const sequence = ['.usage-controls', '#usageKpis', '#usageTrend', '.usage-rankings', '.usage-drilldown', '.usage-panel-tools', '.usage-daily', '#usagePricing', '#usageSources'].map((selector) => page.querySelector(selector));
+    const ordered = sequence.every((element, index) => !!element && (!index || element.getBoundingClientRect().top > sequence[index - 1].getBoundingClientRect().top));
+    const kpiColumns = getComputedStyle(page.querySelector('#usageKpis')).gridTemplateColumns.split(' ').length;
+    const paired = modelsRect && rectOf(page.querySelector('.usage-panel-project')).top === modelsRect.top;
+    const noOverflow = [page, ...sequence, page.querySelector('.usage-filters'), page.querySelector('.usage-heatmap')].every((element) => element && element.scrollWidth <= element.clientWidth + 1);
+    const heatCells = page.querySelectorAll('[data-usage-hour-cell], [data-usage-heat-day]').length;
+    const ok = ordered && noOverflow && heatCells > 0 && kpiColumns === (page.clientWidth >= 460 ? 3 : 2) && paired === (page.clientWidth >= 670);
+    return { ok, ordered, kpiColumns, paired, noOverflow, heatCells };
+  })() : null;
   return {
     pageWidth: Math.round(pageRect.width),
+    overview,
     viewportHeight: window.innerHeight,
     cards: entries,
     rows: rowInfo,
@@ -878,7 +889,7 @@ const SWITCH_PROBE_SCRIPT = `(async () => {
     };
   };
   const target = Array.from(document.querySelectorAll('[data-usage-tab]')).find(
-    (button) => button.getAttribute('data-usage-tab') !== 'month' && button.getAttribute('aria-selected') !== 'true',
+    (button) => button.getAttribute('aria-selected') !== 'true' && button.getAttribute('aria-pressed') !== 'true',
   );
   if (!target) return { ok: false, reason: 'no other period tab found' };
   const periodBefore = snapshot();
@@ -916,9 +927,7 @@ const SWITCH_PROBE_SCRIPT = `(async () => {
   };
 })()`;
 
-// Focus + scroll hand-off across the same kind of in-place swap (filter chips
-// keep the period, so the content height — and therefore the scroll offset — is
-// directly comparable).
+// Focus and scroll hand-off across a filter change, without changing the period.
 const CONTROL_STATE_PROBE_SCRIPT = `(async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
@@ -929,46 +938,112 @@ const CONTROL_STATE_PROBE_SCRIPT = `(async () => {
   view.style.height = '380px';
   view.style.flex = '0 0 380px';
   await wait(120);
-  const chip = document.querySelector('[data-usage-source-filter="codex"]');
-  if (!chip) return { ok: false, reason: 'no filter chip' };
+  const select = document.querySelector('#usageSource');
+  const control = select || document.querySelector('[data-usage-source-filter="codex"]');
+  if (!control) return { ok: false, reason: 'no Agent filter' };
   const readTotal = () => (document.querySelector('#usageTotal') || {}).textContent || '';
   const baselineTotal = readTotal();
   // Focus first (focus() legitimately scrolls the chip into view), then scroll:
   // the captured offset must survive the in-place swap exactly.
-  chip.focus();
+  control.focus();
   await frame();
   view.scrollTop = 220;
   await frame();
   await frame();
   const scrolled = view.scrollTop;
-  chip.click();
+  if (select) await window.__usagePreviewApplyFilter(['codex']);
+  else control.click();
   await wait(420);
   const afterFilter = {
     scrollTop: view.scrollTop,
     max: Math.max(0, view.scrollHeight - view.clientHeight),
     total: readTotal(),
-    focused: document.activeElement ? document.activeElement.getAttribute('data-usage-source-filter') : null,
+    focused: select ? document.activeElement?.id === 'usageSource' : document.activeElement?.getAttribute('data-usage-source-filter') === 'codex',
     active: (window.__usagePreviewActiveFilters ? window.__usagePreviewActiveFilters() : []),
   };
   // Clearing the filter must restore the unfiltered totals, so "no chip" really
   // is the "all tools" state (requirement: click again to deselect).
-  const all = document.querySelector('[data-usage-source-filter="all"]');
-  if (all) all.click();
+  if (select) await window.__usagePreviewClearFilter();
+  else document.querySelector('[data-usage-source-filter="all"]')?.click();
   await wait(420);
   const afterReset = {
     scrollTop: view.scrollTop,
     total: readTotal(),
     active: (window.__usagePreviewActiveFilters ? window.__usagePreviewActiveFilters() : []),
   };
+  let overviewControls = null;
+  if (select) {
+    const modelRank = document.querySelector('[data-usage-model-rank]');
+    const expectedModel = modelRank?.dataset.usageModelRank;
+    modelRank?.click();
+    await wait(300);
+    const picker = document.querySelector('#usageModel');
+    const modelFiltered = !!expectedModel && picker?.value === expectedModel && readTotal() !== baselineTotal;
+    if (picker) {
+      picker.value = '';
+      picker.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(300);
+    }
+    document.querySelector('#usageIncludeCache')?.click();
+    const excludedCache = document.querySelector('#usageIncludeCache')?.getAttribute('aria-pressed') === 'false' && readTotal() !== baselineTotal;
+    document.querySelector('#usageIncludeCache')?.click();
+    document.querySelector('[data-usage-metric="output"]')?.click();
+    const outputMetric = document.querySelector('[data-usage-metric="output"]')?.getAttribute('aria-pressed') === 'true';
+    document.querySelector('[data-usage-metric="token"]')?.click();
+    const hourlyCells = document.querySelectorAll('[data-usage-hour-cell]').length;
+    overviewControls = { modelFiltered, excludedCache, outputMetric, hourlyCells, ok: modelFiltered && excludedCache && outputMetric && hourlyCells === 168 };
+    const project = document.querySelector('#usageProject');
+    const search = document.querySelector('#usageSessionSearch');
+    if (project?.options.length > 1 && search) {
+      const projectRank = document.querySelector('[data-usage-project-rank]');
+      const previous = readTotal();
+      projectRank?.click();
+      await wait(300);
+      const picker = document.querySelector('#usageProject');
+      const projectFiltered = picker?.value === projectRank?.dataset.usageProjectRank && readTotal() !== previous;
+      picker.value = '';
+      picker.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(300);
+      const more = document.querySelector('#usageSessionsMore');
+      more?.click();
+      const sessionExpanded = document.querySelectorAll('.usage-session-row').length > 8;
+      const input = document.querySelector('#usageSessionSearch');
+      input.value = 'Preview session 12';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const results = document.querySelectorAll('.usage-session-row');
+      const sessionSearch = results.length === 1 && results[0].textContent.includes('Preview session 12');
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const pricing = document.querySelector('#usagePricing');
+      pricing.open = true;
+      const priceModel = document.querySelector('[data-usage-model-rank]')?.dataset.usageModelRank;
+      const fields = [...pricing.querySelectorAll('[data-usage-price-model]')].filter((item) => item.dataset.usagePriceModel === priceModel);
+      for (const field of fields) {
+        field.value = '1';
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      document.querySelector('#saveUsagePrices')?.click();
+      await wait(300);
+      const priceSaved = fields.length === 3 && document.querySelector('#usagePricing')?.open &&
+        [...document.querySelectorAll('.usage-rank-cost')].some((item) => item.textContent.includes('¥')) &&
+        window.settings.usage.prices.some((row) => row.model === priceModel && row.cached === 1);
+      const activityVisible = document.querySelectorAll('.usage-panel-skills .usage-activity-row').length > 0 &&
+        document.querySelectorAll('.usage-panel-tools .usage-activity-row').length > 0;
+      Object.assign(overviewControls, { projectFiltered, sessionExpanded, sessionSearch, priceSaved, activityVisible });
+      overviewControls.ok &&= projectFiltered && sessionExpanded && sessionSearch && priceSaved && activityVisible;
+    }
+  }
   return {
     ok:
       scrolled > 0 &&
       afterFilter.scrollTop === scrolled &&
-      afterFilter.focused === 'codex' &&
+      afterFilter.focused &&
       afterFilter.total !== baselineTotal &&
       afterReset.total === baselineTotal &&
       afterReset.active.length === 1 &&
-      afterReset.active[0] === 'all',
+      afterReset.active[0] === 'all' &&
+      (!overviewControls || overviewControls.ok),
+    overviewControls,
     baselineTotal,
     scrolled,
     afterFilter,
@@ -1017,6 +1092,7 @@ async function captureVariant({ previewPath, opts, target, theme }) {
     ...(opts.compact ? { compact: "1" } : {}),
     ...(opts.hourlyEmpty ? { emptyHourly: "1" } : {}),
     ...(opts.sources ? { filter: opts.sources.join(",") } : {}),
+    ...(opts.tooltip || opts.heatmapScroll ? { heatView: "yearly" } : {}),
   };
   const initialWidth = pageMode ? Math.round(target.width + SIDEBAR_WIDTH + VIEW_PADDING + 20) : target.width;
   const win = new BrowserWindow({
@@ -1340,7 +1416,9 @@ async function main(opts) {
         if ((variant.consoleWarnings || []).length > 0) {
           process.stdout.write(`       console warnings: ${variant.consoleWarnings.length}\n`);
         }
-        if (variant.measuredLayout) {
+        if (variant.measuredLayout?.overview) {
+          process.stdout.write(`       overview ${JSON.stringify(variant.measuredLayout.overview)}\n`);
+        } else if (variant.measuredLayout) {
           const checks = variant.measuredLayout.checks || {};
           const rows = (variant.measuredLayout.rows || []).map((row) => `${row.count}@${row.top}`).join(",");
           process.stdout.write(
@@ -1402,6 +1480,7 @@ async function main(opts) {
             (variant.pageErrors || []).length === 0 &&
             (variant.consoleErrors || []).length === 0 &&
             (variant.loadFailures || []).length === 0 &&
+            (!variant.measuredLayout?.overview || variant.measuredLayout.overview.ok) &&
             (!opts.tooltip || (variant.tooltipInfo && variant.tooltipInfo.ok)),
         ) &&
         (!opts.modal ||

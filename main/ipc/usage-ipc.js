@@ -128,6 +128,19 @@ function withSources(args, value) {
   return sources ? { ...args, sources } : args
 }
 
+function withFilters(args, input) {
+  const filtered = withSources(args, input.sources)
+  if (input.project !== undefined && (typeof input.project !== 'string' || !/^[a-f0-9]{32}$/.test(input.project))) {
+    throw usageError('invalid project filter')
+  }
+  if (input.project !== undefined) filtered.project = input.project
+  if (input.model === undefined) return filtered
+  if (typeof input.model !== 'string' || !input.model.trim() || input.model.length > 256 || /[\x00-\x1f]/.test(input.model)) {
+    throw usageError('invalid model filter')
+  }
+  return { ...filtered, model: input.model }
+}
+
 function normalizePeriodArgs(value, { allowCustom = false } = {}) {
   const args = asObject(value, 'args')
   const period = normalizePeriod(args.period)
@@ -135,7 +148,7 @@ function normalizePeriodArgs(value, { allowCustom = false } = {}) {
   const range = normalizeRange(args.from, args.to)
   if (period === 'custom' && !allowCustom) throw usageError('custom period is not supported here')
   if (period === 'custom' && (!range.from || !range.to)) throw usageError('custom period requires from and to')
-  return withSources({ period, tz, from: range.from, to: range.to }, args.sources)
+  return withFilters({ period, tz, from: range.from, to: range.to }, args)
 }
 
 function validateStatusArgs() {
@@ -169,7 +182,7 @@ function validateBreakdownArgs(value) {
 function validateHourlyArgs(value) {
   const args = asObject(value, 'args')
   const day = normalizeDay(args.day, 'day') || new Date().toISOString().slice(0, 10)
-  return withSources({ day, tz: normalizeTimezone(args.tz) }, args.sources)
+  return withFilters({ day, tz: normalizeTimezone(args.tz) }, args)
 }
 
 function validateHeatmapArgs(value) {
@@ -177,7 +190,7 @@ function validateHeatmapArgs(value) {
   let weeks = args.weeks === undefined ? 52 : args.weeks
   if (typeof weeks !== 'number' || !Number.isFinite(weeks)) throw usageError('weeks must be a number')
   weeks = Math.min(52, Math.max(1, Math.trunc(weeks)))
-  return withSources({ tz: normalizeTimezone(args.tz), weeks }, args.sources)
+  return withFilters({ tz: normalizeTimezone(args.tz), weeks }, args)
 }
 
 function validateClearArgs() {

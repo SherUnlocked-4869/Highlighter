@@ -19,7 +19,7 @@ const DEFAULT_SETTINGS = {
   clipboard: { ...DEFAULT_CLIPBOARD, excludedApps: [] },
   // Local AI CLI usage statistics are opt-in: the page shows a consent card on
   // first visit and only scans after the user explicitly enables it.
-  usage: { enabled: false },
+  usage: { enabled: false, prices: [] },
   providers: DEFAULT_AI_PROVIDERS,
   theme: 'system',
   mainColor: '#e5a44c',

@@ -6,6 +6,7 @@ const { resolveMainColor } = require('./appearance-migration')
 const { normalizeClipboardSettings } = require('./clipboard-settings')
 const { normalizeRegionPreferences } = require('../../shared/region-presets')
 const { normalizeQuality, normalizeCountdown } = require('../../shared/recording-quality')
+const { normalizeUsagePrices } = require('./usage-pricing')
 
 // P0 settings frozen in Wave 0 (2026-10-10). They are normalized here so a
 // hand-edited or legacy store cannot hand an unsupported language, a
@@ -144,6 +145,7 @@ function normalizeFrozenSettings(settings, log) {
   // the toggle is coerced to a strict boolean like the other feature switches.
   settings.usage = { ...(settings.usage || {}) }
   settings.usage.enabled = normalizeToggle(settings.usage.enabled)
+  settings.usage.prices = normalizeUsagePrices(settings.usage.prices)
   settings.language = normalizeLanguage(settings.language)
   settings.pinned = { ...(settings.pinned || {}) }
   settings.record = settings.record || {}

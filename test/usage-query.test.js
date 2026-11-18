@@ -291,6 +291,36 @@ test('query daily, hourly and breakdown match the golden rows of the selected to
   assert.equal(codexEntry.sharePct, Math.round((30250 / (30250 + 9150)) * 10000) / 100)
 })
 
+test('model filtering and Monday-first hourly summaries use the same UTC buckets', (t) => {
+  const model = "Agent/model's v2"
+  const hour = '2026-10-18T17:00:00.000Z'
+  const { query, store } = createHarness(t, { rows: [
+    queueRow({ model, hour_start: hour }),
+    queueRow({ source: 'dsh', model, hour_start: hour }),
+    queueRow({ model: 'other', hour_start: hour }),
+    queueRow({ model, hour_start: '2026-10-19T17:00:00.000Z' })
+  ] })
+  const tz = 'Asia/Hong_Kong'
+  const range = { period: 'custom', from: '2026-10-19', to: '2026-10-19', tz, sources: ['codex'] }
+  assert.equal(query.summary(range).totals.total_tokens, 30)
+  assert.equal(query.summary({ ...range, model }).totals.total_tokens, 15)
+  const daily = query.daily({ ...range, model })
+  assert.equal(daily.rows[0].activeHours, 1)
+  assert.equal(daily.weekdayHours.length, 168)
+  assert.deepEqual(daily.weekdayHours[1], { total: 15, withoutCache: 13 })
+  assert.equal(sumColumn(daily.weekdayHours, 'total'), 15)
+  assert.equal(query.hourly({ day: range.from, tz, sources: range.sources, model }).rows[1].total_tokens, 15)
+  assert.deepEqual(query.breakdown({ ...range, model }).models.map((row) => row.model), [model])
+  const heatmap = query.heatmap({ weeks: 1, tz, sources: range.sources, model })
+  assert.equal(heatmap.weeks[0][0].total_tokens, 15)
+  assert.equal(heatmap.weeks[0][1].total_tokens, 15)
+  const dense = store.getHeatmapDayModelTotals({
+    dayRanges: [{ day: range.from, startIso: '2026-10-18T16:00:00.000Z', endIso: '2026-10-19T16:00:00.000Z' }],
+    sources: range.sources, model
+  })
+  assert.deepEqual(dense.map((row) => [row.model, row.total_tokens]), [[model, 15]])
+})
+
 test('query heatmap max, levels and active days are computed from the filtered rows', (t) => {
   const { query } = createHarness(t)
   const unfiltered = query.heatmap({ tz: 'Asia/Shanghai', weeks: 52 })
