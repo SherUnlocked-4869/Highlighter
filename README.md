@@ -3,7 +3,7 @@
 Highlighter 是一款面向 Windows 的桌面效率工具：**截图 / 录屏 / 剪贴板 / 贴图 / AI token 用量**收在同一个应用里。
 项目早期的界面组织与部分交互设计受到 Snow Shot 启发，并在此之上围绕截图、识别、桌面贴图、录屏、剪贴板历史和文本处理持续扩展。
 
-当前版本 **5.0.0**。本版更新了截图翻译、AI 供应商设置和用量面板。完整变更见 [CHANGELOG.md](CHANGELOG.md#500--2026-11-18)。
+当前版本 **5.0.1**。本版修复了本地搜索和中文输入法交互，改进了模型配置和用量面板的键盘操作。完整变更见 [CHANGELOG.md](CHANGELOG.md#501--2026-11-19)。
 
 详细的界面、交互和快捷键说明见 [Highlighter 功能文档](docs/features/highlighter-feature-guide.md)。
 
