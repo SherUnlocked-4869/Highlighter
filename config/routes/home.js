@@ -64,14 +64,19 @@ function renderHome() {
     ? Object.values(functionGroups).flat().map(([name, label, icon]) => `<div class="function-row"><span class="icon">${iconMarkup(icon)}</span><span class="label">${t(label)}</span>${shortcutButton(name, settings.shortcuts[name] || '')}</div>`).join('')
     : functionGroups[homeTab].map(([name, label, icon, description]) => {
       const shortcut = settings.shortcuts[name] || ''
-      return `<div class="function-row" data-function="${name}"><span class="icon">${iconMarkup(icon)}</span><span class="label">${t(label)}<small class="desc">${t(description)}</small></span>${shortcutButton(name, shortcut)}</div>`
+      return `<div class="function-row"><button type="button" class="function-launch" data-function="${name}"><span class="icon">${iconMarkup(icon)}</span><span class="label">${t(label)}<small class="desc">${t(description)}</small></span></button>${shortcutButton(name, shortcut)}</div>`
     }).join('')
   const description = homeTab === 'shortcuts' ? t('config.settings-hotkeys.description') : t('config.home.description')
-  view.innerHTML = `<div class="page">${pageHeader(t('config.route.home'), description)}<div class="tabs">${tabs.map(([key, label]) => `<button data-home-tab="${key}" class="${homeTab === key ? 'active' : ''}">${t(label)}</button>`).join('')}</div><section class="section"><h2 class="section-title">${t(tabs.find(([key]) => key === homeTab)[1])}</h2><div class="function-list">${rows}</div></section></div>`
-  document.querySelectorAll('[data-home-tab]').forEach((button) => button.onclick = () => { homeTab = button.dataset.homeTab; renderHome() })
-  document.querySelectorAll('[data-function]').forEach((row) => row.onclick = async (event) => {
-    if (event.target.closest('[data-shortcut]')) return
-    let name = row.dataset.function
+  view.innerHTML = `<div class="page">${pageHeader(t('config.route.home'), description)}<div class="tabs">${tabs.map(([key, label]) => `<button data-home-tab="${key}" aria-pressed="${homeTab === key}">${t(label)}</button>`).join('')}</div><section class="section"><h2 class="section-title">${t(tabs.find(([key]) => key === homeTab)[1])}</h2><div class="function-list">${rows}</div></section></div>`
+  document.querySelectorAll('[data-home-tab]').forEach((button) => {
+    button.onclick = () => {
+      homeTab = button.dataset.homeTab
+      renderHome()
+      document.querySelector(`[data-home-tab="${homeTab}"]`)?.focus({ preventScroll: true })
+    }
+  })
+  document.querySelectorAll('[data-function]').forEach((button) => button.onclick = async () => {
+    let name = button.dataset.function
     if (name === 'chatSelectText') name = 'chat'
     if (name === 'translationSelectText') name = 'translation'
     try {

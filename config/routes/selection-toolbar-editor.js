@@ -40,8 +40,8 @@ function selectionToolbarOrderMarkup(toolbar) {
     const inOrder = toolbar.order.includes(action)
     const enabled = info.custom ? info.enabled : (info.optional ? inOrder : info.enabled)
     const toggle = info.custom
-      ? `<div class="switch ${info.enabled ? 'on' : ''}" data-custom-toolbar-toggle="${escapeHtml(info.id)}"></div>`
-      : `<div class="switch ${enabled ? 'on' : ''}" data-toolbar-button="${action}"></div>`
+      ? `<button type="button" class="switch ${info.enabled ? 'on' : ''}" role="switch" aria-checked="${info.enabled}" aria-label="${escapeHtml(info.label)}" data-custom-toolbar-toggle="${escapeHtml(info.id)}"></button>`
+      : `<button type="button" class="switch ${enabled ? 'on' : ''}" role="switch" aria-checked="${enabled}" aria-label="${escapeHtml(info.label)}" data-toolbar-button="${action}"></button>`
     const movable = info.custom || inOrder
     return `<div class="toolbar-order-row" draggable="true" data-toolbar-order="${escapeHtml(action)}"><span class="toolbar-drag" title="${t('config.selection-toolbar.drag-sort')}">⋮⋮</span><span class="toolbar-order-icon">${toolbarIconMarkup(info.icon)}</span><div class="form-label"><b>${escapeHtml(info.label)}</b><small>${escapeHtml(info.description)}</small></div>${toggle}<div class="toolbar-order-actions"><button class="button icon-button" data-move-toolbar="${escapeHtml(action)}" data-direction="-1" ${index === 0 || !movable ? 'disabled' : ''} title="${t('config.selection-toolbar.move-up')}">↑</button><button class="button icon-button" data-move-toolbar="${escapeHtml(action)}" data-direction="1" ${index === actions.length - 1 || !movable ? 'disabled' : ''} title="${t('config.selection-toolbar.move-down')}">↓</button></div></div>`
   }).join('')
@@ -94,7 +94,7 @@ async function moveSelectionToolbarAction(action, targetIndex) {
   order.splice(sourceIndex, 1)
   order.splice(boundedTarget, 0, action)
   await updateSettings({ selectionToolbar: { ...editor, order } }, '')
-  renderSelectionToolbarSettings()
+  if (currentRoute === 'selection-toolbar') renderSelectionToolbarSettings()
 }
 
 function createSelectionToolbarActionId() {

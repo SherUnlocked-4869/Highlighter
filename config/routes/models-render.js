@@ -70,12 +70,13 @@ function providerEditorMarkup(provider) {
 }
 
 function renderModelsSubnav() {
-  return `<div class="models-subnav"><button class="${modelsTab === 'providers' ? 'active' : ''}" data-models-tab="providers">${t('config.models.tab-providers')}</button><button class="${modelsTab === 'features' ? 'active' : ''}" data-models-tab="features">${t('config.models.tab-features')}</button><button class="${modelsTab === 'defaults' ? 'active' : ''}" data-models-tab="defaults">${t('config.models.tab-defaults')}</button></div>`
+  return `<div class="tabs models-subnav"><button aria-pressed="${modelsTab === 'providers'}" data-models-tab="providers">${t('config.models.tab-providers')}</button><button aria-pressed="${modelsTab === 'features'}" data-models-tab="features">${t('config.models.tab-features')}</button><button aria-pressed="${modelsTab === 'defaults'}" data-models-tab="defaults">${t('config.models.tab-defaults')}</button></div>`
 }
 
 function renderModelsProviderTab(providers) {
   const providerList = providers.map((provider) => providerEditorMarkup(provider)).join('') || '<div class="empty">' + t('config.models.no-providers') + '</div>'
-  return `<div class="models-view"><div class="models-provider-toolbar"><div class="models-section-head"><h2>${t('config.models.providers-section')}</h2><p>${t('config.models.providers-description')}</p></div><div class="models-toolbar-actions"><button class="button" id="openModelConfigFile">${t('config.models.open-config-file')}</button><button class="button" id="addCodingPlanProvider">${iconMarkup('icons/lightning.svg')}${t('config.models.add-coding-plan')}</button><button class="button primary" id="addModelProvider">${t('config.models.add-provider')}</button></div></div><div class="model-provider-list-page">${providerList}</div><div class="model-save-row"><button class="button primary" id="saveProviderSettings">${t('config.models.save-providers')}</button></div></div>`
+  const editing = modelsExpandedProviderIds.size > 0 || configDirtyReasons.has('models-provider-settings')
+  return `<div class="models-view"><div class="models-provider-toolbar"><div class="models-section-head"><h2>${t('config.models.providers-section')}</h2><p>${t('config.models.providers-description')}</p></div><div class="models-toolbar-actions action-group"><button class="button subtle" id="openModelConfigFile">${t('config.models.open-config-file')}</button><button class="button" id="addCodingPlanProvider">${iconMarkup('icons/lightning.svg')}${t('config.models.add-coding-plan')}</button><button class="button${editing ? '' : ' primary'}" id="addModelProvider">${t('config.models.add-provider')}</button></div></div><div class="model-provider-list-page">${providerList}</div><div class="model-save-row"><button class="button${editing ? ' primary' : ''}" id="saveProviderSettings">${t('config.models.save-providers')}</button></div></div>`
 }
 
 function renderModelsFeatureTab(providers) {
@@ -111,6 +112,7 @@ function bindModelsSubnav() {
       if (modelsTab === 'providers' && !commitOpenProviderEditors()) return
       modelsTab = nextTab
       renderModels()
+      document.querySelector(`[data-models-tab="${nextTab}"]`)?.focus({ preventScroll: true })
     }
   })
 }

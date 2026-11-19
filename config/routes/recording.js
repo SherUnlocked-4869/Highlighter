@@ -381,9 +381,7 @@ function recordingModeSectionMarkup(choices) {
     const active = choices.mode === mode
     return `<button type="button" class="rec-mode-card${active ? ' active' : ''}" data-recording-mode="${mode}" data-testid="${testId}" aria-pressed="${active ? 'true' : 'false'}"><span class="rec-mode-icon">${iconMarkup(icon)}</span><span class="rec-mode-body"><b>${t(titleKey)}</b><small>${t(hintKey)}</small></span></button>`
   }
-  // `.grid` (auto-fill) keeps three mode cards on one row on a wide window and
-  // reflows to one column on a narrow one without touching the shared stylesheet.
-  return `<section class="section"><h2 class="section-title">${t('recording.workbench.modes-section')}</h2><div class="grid">${card('region', '../capture/icons/select.svg', 'recording.workbench.mode-region', 'recording.workbench.mode-region-hint', 'mode-region')}${card('display', 'icons/fullscreen.svg', 'recording.workbench.mode-display', 'recording.workbench.mode-display-hint', 'mode-display')}${card('window', 'icons/layout.svg', 'recording.workbench.mode-window', 'recording.workbench.mode-window-hint', 'mode-window')}</div></section>`
+  return `<section class="section"><h2 class="section-title">${t('recording.workbench.modes-section')}</h2><div class="rec-mode-options">${card('region', '../capture/icons/select.svg', 'recording.workbench.mode-region', 'recording.workbench.mode-region-hint', 'mode-region')}${card('display', 'icons/fullscreen.svg', 'recording.workbench.mode-display', 'recording.workbench.mode-display-hint', 'mode-display')}${card('window', 'icons/layout.svg', 'recording.workbench.mode-window', 'recording.workbench.mode-window-hint', 'mode-window')}</div></section>`
 }
 
 function recordingTargetSectionMarkup(choices) {

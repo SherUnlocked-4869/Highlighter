@@ -198,26 +198,47 @@ function formatBytes(value) {
 }
 
 function switchMarkup(value, key, group) {
-  return `<div class="switch ${value ? 'on' : ''}" data-switch="${key}" data-group="${group || ''}"></div>`
+  return `<button type="button" class="switch ${value ? 'on' : ''}" role="switch" aria-checked="${Boolean(value)}" data-switch="${key}" data-group="${group || ''}"></button>`
 }
 
 function bindSwitches() {
-  document.querySelectorAll('[data-switch]').forEach((element) => element.onclick = async () => {
-    const key = element.dataset.switch; const group = element.dataset.group; const value = !element.classList.contains('on')
-    if (group) await updateSettings({ [group]: { [key]: value } })
-    else await updateSettings({ [key]: value })
-    element.classList.toggle('on', value)
+  document.querySelectorAll('[data-switch]').forEach((element) => {
+    const label = element.closest('.form-row')?.querySelector('.form-label')
+    if (label) element.setAttribute('aria-label', (label.querySelector('b') || label).textContent.trim())
+    element.onclick = async () => {
+      const key = element.dataset.switch; const group = element.dataset.group; const value = !element.classList.contains('on')
+      if (group) await updateSettings({ [group]: { [key]: value } })
+      else await updateSettings({ [key]: value })
+      element.classList.toggle('on', value)
+      element.setAttribute('aria-checked', String(value))
+    }
   })
 }
 
 function closeModal() {
-  modalOverlay?.remove()
+  const previous = modalOverlay
   modalOverlay = null
+  if (previous?.open) previous.close()
+  previous?.remove()
   codingPlanPresetId = ''
 }
 
-function openModal(contentHtml, { onMount } = {}) {
+function openModal(contentHtml, { onMount, labelledBy } = {}) {
   closeModal()
+  if (labelledBy) {
+    const dialog = document.createElement('dialog')
+    dialog.className = 'modal'
+    dialog.id = 'config-native-modal'
+    dialog.setAttribute('aria-labelledby', labelledBy)
+    dialog.setAttribute('closedby', 'any')
+    dialog.innerHTML = contentHtml
+    dialog.addEventListener('close', () => { if (modalOverlay === dialog) closeModal() }, { once: true })
+    document.body.appendChild(dialog)
+    modalOverlay = dialog
+    onMount?.(dialog)
+    dialog.showModal()
+    return dialog
+  }
   const overlay = document.createElement('div')
   overlay.className = 'modal-overlay'
   overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${contentHtml}</div>`

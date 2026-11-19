@@ -57,3 +57,57 @@ test('local search window queries Everything and renders results', async ({ high
 
   expect(await highlighter.getUnexpectedErrors()).toEqual([])
 })
+
+test('search categories adapt to narrow space and keep the save flow keyboard accessible', async ({ highlighter }, testInfo) => {
+  const { mainWindow } = highlighter
+  await mainWindow.locator('[data-route="local-search"]').click()
+
+  const section = mainWindow.getByRole('region', { name: '搜索分类' })
+  const columns = section.locator('.category-columns')
+  const rows = section.locator('.category-row')
+  const firstName = rows.first().getByRole('textbox', { name: '名称', exact: true })
+  const firstRule = rows.first().getByRole('textbox', { name: '规则', exact: true })
+  const save = section.getByRole('button', { name: '保存分类' })
+  const add = section.getByRole('button', { name: '添加分类' })
+  const reset = section.getByRole('button', { name: '恢复默认分类' })
+
+  await expect(columns).toBeVisible()
+  await expect(rows.first()).toHaveCSS('grid-template-columns', /^subgrid\b/)
+  expect((await firstName.boundingBox()).y).toBeCloseTo((await firstRule.boundingBox()).y, 0)
+  expect((await save.boundingBox()).height).toBeCloseTo(30, 1)
+
+  await mainWindow.evaluate(() => updateSettings({ theme: 'dark' }, ''))
+  await save.scrollIntoViewIfNeeded()
+  await mainWindow.screenshot({ path: testInfo.outputPath('categories-dark.png'), scale: 'css', animations: 'disabled' })
+
+  await section.evaluate((element) => { element.style.inlineSize = '360px' })
+  await expect(columns).toBeHidden()
+  expect((await firstRule.boundingBox()).y).toBeGreaterThan((await firstName.boundingBox()).y)
+  expect(await section.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+  await mainWindow.evaluate(() => updateSettings({ theme: 'light' }, ''))
+  await save.scrollIntoViewIfNeeded()
+  await mainWindow.screenshot({ path: testInfo.outputPath('categories-narrow-light.png'), scale: 'css', animations: 'disabled' })
+
+  const initialCount = await rows.count()
+  await add.click()
+  await expect(rows).toHaveCount(initialCount + 1)
+  const last = rows.last()
+  await last.getByRole('textbox', { name: '名称', exact: true }).fill('E2E category')
+  await last.getByRole('textbox', { name: '规则', exact: true }).fill('ext:txt')
+  await add.focus()
+  await mainWindow.keyboard.press('Tab')
+  await expect(reset).toBeFocused()
+  await mainWindow.keyboard.press('Tab')
+  await expect(save).toBeFocused()
+  await expect(save).toHaveCSS('outline-style', 'solid')
+  expect(await save.evaluate((element) => parseFloat(getComputedStyle(element).outlineWidth))).toBeGreaterThanOrEqual(1.5)
+  await mainWindow.keyboard.press('Enter')
+  const savedCategories = () => mainWindow.evaluate(async () => (await window.electronAPI.getSettings()).search.categories)
+  await expect.poll(savedCategories).toContainEqual(expect.objectContaining({ label: 'E2E category', rule: 'ext:txt' }))
+
+  await last.getByRole('button', { name: '删除' }).click()
+  await expect(rows).toHaveCount(initialCount)
+  await reset.click()
+  await expect.poll(savedCategories).toHaveLength(initialCount)
+  expect(await highlighter.getUnexpectedErrors()).toEqual([])
+})

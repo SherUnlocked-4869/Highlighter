@@ -18,6 +18,8 @@ test('first startup renders navigation, empty history, About version, and shortc
   await navigate(page, 'history', '截图历史')
   await expect(page.locator('#historyResults .empty')).toHaveText('没有符合条件的截图历史')
   await expect(page.locator('#historyLoadedCount')).toHaveText('0 项')
+  await expect(page.locator('#loadMoreHistory')).toBeHidden()
+  await expect(page.locator('#historyBatchActions')).toBeHidden()
 
   await navigate(page, 'home', '快捷功能')
   await page.locator('[data-home-tab="shortcuts"]').click()
@@ -105,14 +107,17 @@ test('main-context dialog stubs support diagnostics and the close button hides c
 // D2-2/D2-3/D2-5（S14）：render 函数拆到 config/routes/*.js 后，每个路由都要真的
 // 能渲染。主壳的 renderRoute() 按 window.configRoutes 的 key 分派；漏挂一个文件或
 // key 拼错都会退化成"点开是空白页"，而 npm test（纯 Node）看不到真实渲染结果。
-test('every settings route renders content after the D2-2 route split', async ({ highlighter }) => {  const { mainWindow: page } = highlighter
+test('every main window route renders content', async ({ highlighter }) => {
+  const { mainWindow: page } = highlighter
   const routes = [
     ['home', '快捷功能', '.function-row'],
     ['translation', '翻译', '#translateNow'],
     ['chat', 'AI 对话', '#sendChat'],
     ['history', '截图历史', '#historyResults'],
+    ['recording', '录屏', '#recordingStartButton'],
     ['selection-toolbar', '划词工具', '#saveSelectionToolbar'],
     ['local-search', '本地搜索', '#searchStatus'],
+    ['clipboard-history', '剪贴板历史', '#clipboard-save'],
     ['settings-general', '通用', '#theme'],
     ['settings-function', '截图与录制', '#nameTemplate'],
     ['models', 'AI 与模型', '#addModelProvider'],

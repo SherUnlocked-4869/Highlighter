@@ -94,6 +94,7 @@ const CONFIG_ROUTE_KEYS = Object.keys(routes)
 window.configRouteKeys = CONFIG_ROUTE_KEYS
 
 function navigate(route) {
+  if (modalOverlay) closeModal()
   for (const reason of ROUTE_DRAFT_REASONS[currentRoute] || []) setConfigDirty(reason, false)
   if (currentRoute === 'history' && route !== 'history') {
     historyThumbnailObserver?.disconnect()
@@ -119,7 +120,12 @@ function navigate(route) {
   reportWindowState()
   const titleKey = routeTitles[currentRoute]
   pageTitle.textContent = titleKey ? t(titleKey) : 'Highlighter'
-  document.querySelectorAll('.nav-item').forEach((button) => button.classList.toggle('active', button.dataset.route === currentRoute))
+  document.querySelectorAll('.nav-item').forEach((button) => {
+    const active = button.dataset.route === currentRoute
+    button.classList.toggle('active', active)
+    if (active) button.setAttribute('aria-current', 'page')
+    else button.removeAttribute('aria-current')
+  })
   void refreshStatusRail()
   renderRoute()
 }

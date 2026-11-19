@@ -168,6 +168,7 @@ function readProviderEditor(providerId, { tolerant = false } = {}) {
 
 function commitOpenProviderEditors({ exceptId = '', tolerant = false } = {}) {
   const providers = [...(settings.providers || [])]
+  let committedDraft = false
   for (const provider of providers) {
     if (!modelsExpandedProviderIds.has(provider.id)) continue
     if (exceptId && provider.id === exceptId) continue
@@ -175,7 +176,9 @@ function commitOpenProviderEditors({ exceptId = '', tolerant = false } = {}) {
     if (!next) return null
     const index = providers.findIndex((item) => item.id === provider.id)
     providers[index] = next
+    committedDraft ||= providerEditorRoot(provider.id)?.dataset.providerEdited === 'true'
   }
+  if (committedDraft) window.setConfigDirty?.('models-provider-settings', true)
   settings = { ...settings, providers }
   return providers
 }

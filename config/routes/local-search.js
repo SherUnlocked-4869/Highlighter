@@ -12,14 +12,30 @@ function renderLocalSearch() {
       <div class="form-row"><div class="form-label"><b>${t('config.local-search.max-results')}</b><small>${t('config.local-search.max-results-hint')}</small></div><input id="searchMaxResults" type="number" min="100" max="2000" step="50" value="${settings.search.maxResults}"></div>
       <div class="form-row"><div class="form-label"><b>${t('config.local-search.auto-start')}</b><small>${t('config.local-search.auto-start-hint')}</small></div>${switchMarkup(settings.search.useBundledEverything !== false, 'useBundledEverything', 'search')}</div>
     </div></section>
-    <section class="section"><h2 class="section-title">${t('config.local-search.categories-section')}</h2><div class="card form-card" id="categoryEditor"></div>
-      <div style="display:flex;gap:8px;margin-top:12px"><button class="button" id="addCategory">${t('config.local-search.add-category')}</button><button class="button" id="resetCategories">${t('config.local-search.reset-categories')}</button><button class="button primary" id="saveCategories">${t('config.local-search.save-categories')}</button></div>
+    <section class="section search-categories" aria-labelledby="searchCategoriesTitle">
+      <h2 class="section-title" id="searchCategoriesTitle">${t('config.local-search.categories-section')}</h2>
+      <div class="card form-card" id="categoryEditor"></div>
+      <div class="category-actions">
+        <button type="button" class="button" id="addCategory">${t('config.local-search.add-category')}</button>
+        <div class="category-commit-actions">
+          <button type="button" class="button subtle" id="resetCategories">${t('config.local-search.reset-categories')}</button>
+          <button type="button" class="button primary" id="saveCategories">${t('config.local-search.save-categories')}</button>
+        </div>
+      </div>
     </section>
   </div>`
 
+  const nameLabel = t('config.local-search.category-name')
+  const ruleLabel = t('config.local-search.category-rule-label')
+  const ruleHint = t('config.local-search.category-rule')
   const renderCategoryEditor = () => {
     const editor = document.getElementById('categoryEditor')
-    editor.innerHTML = draft.map((category, index) => `<div class="form-row" data-index="${index}"><div class="form-label"><b>${index === 0 ? t('config.local-search.category') : ''}</b></div><input class="category-label" type="text" placeholder="${t('config.local-search.category-name')}" value="${escapeHtml(t(category.label))}"><input class="category-rule" type="text" placeholder="${t('config.local-search.category-rule')}" value="${escapeHtml(category.rule)}"><button class="button danger category-delete" data-index="${index}">${t('config.local-search.delete-category')}</button></div>`).join('') || '<div class="form-row">' + t('config.local-search.no-categories') + '</div>'
+    editor.innerHTML = draft.length ? `<div class="category-columns" aria-hidden="true"><span>${nameLabel}</span><span>${ruleLabel}</span></div>${draft.map((category, index) => `
+      <div class="form-row category-row" data-index="${index}">
+        <label class="category-field"><span>${nameLabel}</span><input class="category-label" type="text" value="${escapeHtml(t(category.label))}"></label>
+        <label class="category-field"><span>${ruleLabel}</span><input class="category-rule" type="text" placeholder="${escapeHtml(ruleHint)}" value="${escapeHtml(category.rule)}"></label>
+        <button type="button" class="button subtle danger category-delete" data-index="${index}">${t('config.local-search.delete-category')}</button>
+      </div>`).join('')}` : `<p class="category-empty">${t('config.local-search.no-categories')}</p>`
     editor.querySelectorAll('.category-delete').forEach((button) => {
       button.onclick = () => {
         draft.splice(Number(button.dataset.index), 1)

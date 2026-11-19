@@ -99,8 +99,21 @@ function historyCardMarkup(item) {
   // Plan §6.5.1 S8: long captures have no editor yet. Hiding the button alone read
   // as a missing row, so the reason now lives on the thumbnail plate (locale key).
   const imageTitle = item?.longCapture ? ` title="${escapeHtml(t('config.history.long-capture-no-edit'))}"` : ''
-  const editButton = item?.longCapture ? '' : `<button data-history-action="edit" data-id="${id}">${t('config.history.action-edit')}</button>`
-  return `<article class="card history-item ${selected ? 'selected' : ''}" data-history-document="${id}" data-history-signature="${escapeHtml(historyCardSignature(item))}"><label class="history-select" title="${t('config.history.select-item')}"><input type="checkbox" data-history-select data-id="${id}" ${selected ? 'checked' : ''}></label><div class="history-image"${imageTitle}><img data-history-thumbnail="${id}" data-history-thumbnail-key="${escapeHtml(historyThumbnailKey(item))}" loading="lazy" decoding="async" alt=""></div><div class="history-meta"><span class="history-meta-time">${new Date(item.createdAt).toLocaleString()}</span><span class="history-meta-sub">${escapeHtml(historySourceLabel(item.source))} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</span>${versionBadge}</div><div class="history-actions">${editButton}<button data-history-action="open" data-id="${id}">${t('config.history.action-open')}</button><button data-history-action="copy" data-id="${id}">${t('config.history.action-copy')}</button><button data-history-action="address" data-id="${id}">${t('config.history.action-address')}</button><button class="history-delete" data-history-action="delete" data-id="${id}">${t('config.history.action-delete')}</button></div></article>`
+  const editButton = item?.longCapture ? '' : `<button type="button" class="button subtle" data-history-action="edit" data-id="${id}">${t('config.history.action-edit')}</button>`
+  const openButton = `<button type="button" class="button subtle" data-history-action="open" data-id="${id}">${t('config.history.action-open')}</button>`
+  return `<article class="card history-item ${selected ? 'selected' : ''}" data-history-document="${id}" data-history-signature="${escapeHtml(historyCardSignature(item))}">
+    <label class="history-select" title="${t('config.history.select-item')}"><input type="checkbox" aria-label="${t('config.history.select-item')}" data-history-select data-id="${id}" ${selected ? 'checked' : ''}></label>
+    <div class="history-image"${imageTitle}><img data-history-thumbnail="${id}" data-history-thumbnail-key="${escapeHtml(historyThumbnailKey(item))}" loading="lazy" decoding="async" alt=""></div>
+    <div class="history-meta"><span class="history-meta-time">${new Date(item.createdAt).toLocaleString()}</span><span class="history-meta-sub">${escapeHtml(historySourceLabel(item.source))} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</span>${versionBadge}</div>
+    <div class="history-actions action-group">
+      ${editButton || openButton}<button type="button" class="button subtle" data-history-action="copy" data-id="${id}">${t('config.history.action-copy')}</button>
+      <button type="button" class="button subtle history-more-trigger" popovertarget="history-more-${id}">${t('config.common.more-actions')}</button>
+      <div class="action-popover" id="history-more-${id}" popover>
+        ${editButton ? openButton : ''}<button type="button" class="button subtle" data-history-action="address" data-id="${id}">${t('config.history.action-address')}</button>
+        <button type="button" class="button subtle danger" data-history-action="delete" data-id="${id}">${t('config.history.action-delete')}</button>
+      </div>
+    </div>
+  </article>`
 }
 
 function historyCreateCard(item) {
@@ -183,6 +196,8 @@ function historyUpdateSelectionControls(state) {
   if (!state?.selectedCount) return
   const count = historySelectedIds.size
   state.selectedCount.textContent = t('config.history.selected-count', { count })
+  state.batchActions.hidden = count === 0
+  state.selectAll.disabled = state.items.length === 0
   state.exportSelected.disabled = count === 0
   state.exportSelectedPdf.disabled = count === 0
   state.deleteSelected.disabled = count === 0
@@ -201,7 +216,14 @@ function historyBindCard(state, card) {
     }
   }
   for (const button of card.querySelectorAll('[data-history-action]')) {
-    button.onclick = () => { void historyRunItemAction(button) }
+    button.onclick = () => {
+      const popup = button.closest('[popover]')
+      if (popup) {
+        popup.hidePopover()
+        card.querySelector('.history-more-trigger')?.focus({ preventScroll: true })
+      }
+      void historyRunItemAction(button)
+    }
   }
 }
 
@@ -263,6 +285,7 @@ async function historyRunItemAction(button) {
     return
   }
   if (action === 'delete') {
+    if (!confirm(t('config.history.confirm-delete-item'))) return
     try { historySelectedIds.delete(id); await window.electronAPI.deleteHistory(id) } catch (error) { toast(errorMessage(error) || t('config.history.delete-failed')) }
   }
 }
@@ -463,7 +486,7 @@ async function renderHistory() {
 async function renderHistoryPage(renderVersion) {
   historyThumbnailObserver?.disconnect()
   historyThumbnailObserver = null
-  const headerActions = '<div class="page-head-actions"><button class="button" id="cleanupHistory">' + t('config.history.cleanup-invalid') + '</button><button class="button danger" id="clearHistory">' + t('config.history.clear-all') + '</button></div>'
+  const headerActions = '<div class="page-head-actions action-group"><button class="button subtle" id="cleanupHistory">' + t('config.history.cleanup-invalid') + '</button><button class="button subtle danger" id="clearHistory">' + t('config.history.clear-all') + '</button></div>'
   view.innerHTML = `<div class="page">${pageHeader(t('config.route.history'), t('config.history.description'), headerActions)}<div class="empty">${t('config.history.loading')}</div></div>`
   let firstPage
   let sources
@@ -515,13 +538,14 @@ async function renderHistoryPage(renderVersion) {
   const sourceOptions = sources.map((source) => `<option value="${escapeHtml(source)}">${escapeHtml(historySourceLabel(source))}</option>`).join('')
   const statsMarkup = `<div class="history-stats card"><div><b>${formatBytes(stats.totalBytes)}</b><span>${t('config.history.stats-space')}</span></div><div><b>${stats.availableCount}</b><span>${t('config.history.stats-available')}</span></div><div class="${stats.missingCount ? 'warning' : ''}"><b>${stats.missingCount}</b><span>${t('config.history.stats-missing')}</span></div><div class="${stats.orphanCount ? 'warning' : ''}"><b>${stats.orphanCount}</b><span>${t('config.history.stats-orphan', { size: formatBytes(stats.orphanBytes) })}</span></div></div>`
   const filtersMarkup = `<div class="history-filters card"><input class="input" id="historySearch" type="search" value="${escapeHtml(historyQuery)}" placeholder="${t('config.history.search-placeholder')}"><select id="historySource"><option value="">${t('config.history.all-sources')}</option>${sourceOptions}</select><span id="historyLoadedCount"></span></div>`
-  const batchMarkup = `<div class="history-batch card"><label><input type="checkbox" id="selectAllHistory"> ${t('config.history.select-all')}</label><span id="historySelectedCount">${t('config.history.selected-count', { count: 0 })}</span><button class="button" id="exportSelectedHistory" disabled>${t('config.history.export-selected')}</button><button class="button" id="exportSelectedHistoryPdf" disabled>${t('config.history.export-pdf')}</button><button class="button danger" id="deleteSelectedHistory" disabled>${t('config.history.delete-selected')}</button></div>`
-  container.insertAdjacentHTML('beforeend', `${statsMarkup}${filtersMarkup}${batchMarkup}<div id="historyResults"></div><div class="history-load-more"><button class="button" id="loadMoreHistory">${t('config.history.load-more')}</button></div>`)
+  const batchMarkup = `<div class="history-batch action-group card"><label><input type="checkbox" id="selectAllHistory"> ${t('config.history.select-all')}</label><span id="historySelectedCount" aria-live="polite">${t('config.history.selected-count', { count: 0 })}</span><div class="action-group" id="historyBatchActions" hidden><button class="button" id="exportSelectedHistory" disabled>${t('config.history.export-selected')}</button><button class="button" id="exportSelectedHistoryPdf" disabled>${t('config.history.export-pdf')}</button><button class="button danger" id="deleteSelectedHistory" disabled>${t('config.history.delete-selected')}</button></div></div>`
+  container.insertAdjacentHTML('beforeend', `${statsMarkup}${filtersMarkup}${batchMarkup}<div id="historyResults"></div><div class="history-load-more"><button class="button" id="loadMoreHistory" hidden>${t('config.history.load-more')}</button></div>`)
 
   const searchInput = document.getElementById('historySearch')
   const sourceSelect = document.getElementById('historySource')
   state.selectAll = document.getElementById('selectAllHistory')
   state.selectedCount = document.getElementById('historySelectedCount')
+  state.batchActions = document.getElementById('historyBatchActions')
   state.exportSelected = document.getElementById('exportSelectedHistory')
   state.exportSelectedPdf = document.getElementById('exportSelectedHistoryPdf')
   state.deleteSelected = document.getElementById('deleteSelectedHistory')

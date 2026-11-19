@@ -7,8 +7,8 @@ function openProviderPresetDialog() {
   if (!commitOpenProviderEditors({ tolerant: true })) return
   const { presets } = window.providerConnection
   const choices = [...presets, { name: t('config.models.custom'), baseUrl: '' }]
-  const modal = openModal(`<div class="modal-head"><div><h3>${t('config.models.add-provider')}</h3></div><button class="button icon-button" data-close-modal aria-label="${t('config.models.close-modal')}">×</button></div>
-    <div class="provider-preset-grid">${choices.map((choice, index) => `<button class="button provider-preset-choice" data-provider-preset="${index}"><b>${escapeHtml(choice.name)}</b><small>${escapeHtml(choice.baseUrl || t('config.models.custom-connection'))}</small></button>`).join('')}</div>`)
+  const modal = openModal(`<div class="modal-head"><div><h3 id="providerDialogTitle">${t('config.models.add-provider')}</h3></div><button type="button" class="button icon-button" commandfor="config-native-modal" command="close" aria-label="${t('config.models.close-modal')}">×</button></div>
+    <div class="provider-preset-grid">${choices.map((choice, index) => `<button class="button provider-preset-choice" data-provider-preset="${index}"><b>${escapeHtml(choice.name)}</b><small>${escapeHtml(choice.baseUrl || t('config.models.custom-connection'))}</small></button>`).join('')}</div>`, { labelledBy: 'providerDialogTitle' })
   modal.querySelectorAll('[data-provider-preset]').forEach((button) => {
     button.onclick = () => {
       const choice = choices[Number(button.dataset.providerPreset)]
@@ -173,7 +173,10 @@ function bindModelsProviderTab() {
   // navigate), while in-memory provider mutations survive until save persists
   // them, so only the save button clears that reason.
   const markModelsEditorDraft = (event) => {
-    if (!event.target.matches('[data-provider-test-model]')) window.setConfigDirty?.('models-provider-editor', true)
+    if (!event.target.matches('[data-provider-test-model]')) {
+      event.currentTarget.dataset.providerEdited = 'true'
+      window.setConfigDirty?.('models-provider-editor', true)
+    }
   }
   const markModelsSettingsDraft = () => window.setConfigDirty?.('models-provider-settings', true)
   document.querySelectorAll('[data-provider-editor]').forEach((editor) => {
@@ -193,6 +196,7 @@ function bindModelsProviderTab() {
       else modelsExpandedProviderIds.add(providerId)
       window.setConfigDirty?.('models-provider-editor', modelsExpandedProviderIds.size > 0)
       renderModels()
+      document.querySelector(`[data-expand-provider="${CSS.escape(providerId)}"]`)?.focus({ preventScroll: true })
     }
   })
   document.getElementById('addModelProvider')?.addEventListener('click', openProviderPresetDialog)
@@ -316,9 +320,12 @@ function bindModelsProviderTab() {
         providers: settings.providers,
         ai: { schemaVersion: 2, assignments: settings.ai?.assignments || [] }
       }, t('config.models.providers-saved'))
-      renderModels()
       window.setConfigDirty?.('models-provider-editor', false)
       window.setConfigDirty?.('models-provider-settings', false)
+      if (currentRoute === 'models' && modelsTab === 'providers') {
+        renderModels()
+        document.getElementById('saveProviderSettings')?.focus({ preventScroll: true })
+      }
     } catch (error) {
       toast(error.message || t('config.models.providers-save-failed'))
     }
