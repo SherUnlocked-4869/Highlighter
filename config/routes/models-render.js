@@ -4,7 +4,6 @@
 let modelsTab = 'providers'
 let modelsExpandedProviderIds = new Set()
 let featureAssignmentDraft = null
-let codingPlanPresetId = ''
 
 const modelFeatureCatalog = [
   { id: 'chat', label: 'config.models.feature-chat', description: 'config.models.feature-chat-description' },

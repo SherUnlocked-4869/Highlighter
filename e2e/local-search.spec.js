@@ -27,6 +27,13 @@ test('local search window queries Everything and renders results', async ({ high
   const resultCount = await searchPage.locator('.result-row').count()
   expect(resultCount).toBeGreaterThan(0)
 
+  await searchPage.locator('#searchInput').press('Tab')
+  await expect(searchPage.locator('#clearInput')).toBeFocused()
+  const firstResult = searchPage.locator('.result-row').first()
+  await firstResult.focus()
+  await firstResult.press('Tab')
+  await expect(firstResult.locator('[data-act="reveal"]')).toBeFocused()
+
   await searchPage.locator('#sortSelect').selectOption('name-asc')
   await expect(searchPage.locator('.result-row').first()).toBeVisible({ timeout: 20_000 })
   await searchPage.waitForTimeout(300)

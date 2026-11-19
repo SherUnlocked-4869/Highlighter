@@ -6,8 +6,6 @@ const actionBridge = window.actionAPI
 // script's global lexical scope).
 const systemThemeMedia = matchMedia('(prefers-color-scheme: dark)')
 const STREAM_IDLE_TIMEOUT_MS = 30000
-const MIN_COMPOSER_HEIGHT = 34
-const MAX_COMPOSER_HEIGHT = 120
 const DEFAULT_FOLLOW_UP = { enabled: false, disabledReason: '', maxTurns: 10, questionMaxLength: 2000 }
 // P0-1-T5 (S12): the built-in label for the explain flow, kept as a named key so
 // `test/selection-toolbar-settings.test.js` can still pin the fallback.
@@ -153,7 +151,6 @@ function resetUI() {
   reasoningDirty = false
   el.transcript.replaceChildren()
   el.questionInput.value = ''
-  resizeComposerInput()
   el.loading.style.display = 'none'
   renderComposer()
 }
@@ -491,7 +488,6 @@ function quoteSelectedText() {
   input.value = existing ? `${block.text}\n\n${existing}` : `${block.text}\n\n`
   input.focus()
   input.setSelectionRange(input.value.length, input.value.length)
-  resizeComposerInput()
   window.getSelection().removeAllRanges()
   conversation.notice = block.truncated
     ? t('action.composer.notice.quote-truncated', { maxLength: window.conversationText.MAX_QUOTE_LENGTH })
@@ -526,12 +522,6 @@ function composerState() {
     }
   }
   return { enabled: true, reason: '' }
-}
-
-function resizeComposerInput() {
-  const input = el.questionInput
-  input.style.height = 'auto'
-  input.style.height = `${Math.min(MAX_COMPOSER_HEIGHT, Math.max(MIN_COMPOSER_HEIGHT, input.scrollHeight))}px`
 }
 
 function renderComposer() {
@@ -650,7 +640,6 @@ actionBridge.onChatTurn(function(data) {
   conversation.pendingQuestion = ''
   conversation.notice = ''
   el.questionInput.value = ''
-  resizeComposerInput()
   appendUserTurn(question)
   const turn = createAssistantTurn()
   if (data.omittedPairs > 0) {
@@ -748,14 +737,13 @@ el.btnCopy.addEventListener('click', function() {
 el.questionInput.addEventListener('keydown', function(event) {
   if (event.key !== 'Enter' || event.shiftKey) return
   // Chinese IMEs confirm a candidate with Enter; that must not send.
-  if (event.isComposing) return
+  if (event.isComposing || event.keyCode === 229) return
   event.preventDefault()
   if (conversation.activeTurn >= 0 || conversation.pendingQuestion) return
   submitQuestion()
 })
 
 el.questionInput.addEventListener('input', function() {
-  resizeComposerInput()
   if (conversation.notice) {
     conversation.notice = ''
     renderComposer()

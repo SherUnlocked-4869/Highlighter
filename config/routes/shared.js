@@ -220,37 +220,21 @@ function closeModal() {
   modalOverlay = null
   if (previous?.open) previous.close()
   previous?.remove()
-  codingPlanPresetId = ''
 }
 
-function openModal(contentHtml, { onMount, labelledBy } = {}) {
+function openModal(contentHtml, labelledBy) {
   closeModal()
-  if (labelledBy) {
-    const dialog = document.createElement('dialog')
-    dialog.className = 'modal'
-    dialog.id = 'config-native-modal'
-    dialog.setAttribute('aria-labelledby', labelledBy)
-    dialog.setAttribute('closedby', 'any')
-    dialog.innerHTML = contentHtml
-    dialog.addEventListener('close', () => { if (modalOverlay === dialog) closeModal() }, { once: true })
-    document.body.appendChild(dialog)
-    modalOverlay = dialog
-    onMount?.(dialog)
-    dialog.showModal()
-    return dialog
-  }
-  const overlay = document.createElement('div')
-  overlay.className = 'modal-overlay'
-  overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${contentHtml}</div>`
-  overlay.addEventListener('click', (event) => { if (event.target === overlay) closeModal() })
-  overlay.onkeydown = (event) => { if (event.key === 'Escape') closeModal() }
-  document.body.appendChild(overlay)
-  modalOverlay = overlay
-  const modal = overlay.querySelector('.modal')
-  modal.querySelectorAll('[data-close-modal]').forEach((button) => { button.onclick = closeModal })
-  onMount?.(modal)
-  modal.querySelector('input,select,button')?.focus()
-  return modal
+  const dialog = document.createElement('dialog')
+  dialog.className = 'modal'
+  dialog.id = 'config-native-modal'
+  dialog.setAttribute('aria-labelledby', labelledBy)
+  dialog.setAttribute('closedby', 'any')
+  dialog.innerHTML = contentHtml
+  dialog.addEventListener('close', () => { if (modalOverlay === dialog) closeModal() }, { once: true })
+  document.body.appendChild(dialog)
+  modalOverlay = dialog
+  dialog.showModal()
+  return dialog
 }
 
 function openDocs(url) {

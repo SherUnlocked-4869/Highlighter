@@ -42,7 +42,7 @@
     'window-minimize', 'window-close',
     'source-name', 'source-name-input', 'save-state',
     'reveal-source', 'rerecord', 'back-to-records', 'export-button',
-    'export-progress', 'export-progress-bar',
+    'export-progress',
     'video-stage',
     'preview-video',
     'demo-preview-frame',
@@ -1284,18 +1284,15 @@
 
     function renderProgress(snapshot) {
       const progress = element('export-progress')
-      const bar = element('export-progress-bar')
       if (!progress) return
       const active = !!snapshot && (snapshot.phase === 'submitting' || snapshot.phase === 'active')
       progress.hidden = !active
-      if (!active) {
-        progress.setAttribute('aria-valuenow', '0')
-        if (bar) bar.style.width = '0'
-        return
+      const task = snapshot?.task
+      if (active && task?.state === 'running' && Number.isFinite(task.progress)) {
+        progress.setAttribute('value', String(Math.max(0, Math.min(100, Math.round(task.progress)))))
+      } else {
+        progress.removeAttribute('value')
       }
-      const percent = Math.max(0, Math.min(100, Math.round(finite(snapshot.task?.progress) || 0)))
-      progress.setAttribute('aria-valuenow', String(percent))
-      if (bar) bar.style.width = percent > 0 ? `${percent}%` : '0'
     }
 
     function renderResultBar(snapshot) {

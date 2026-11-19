@@ -150,6 +150,9 @@ body {
 .composer-row { display: flex; align-items: flex-end; gap: 8px; }
 .composer textarea {
   flex: 1;
+  field-sizing: content;
+  inline-size: 100%;
+  min-inline-size: 0;
   resize: none;
   min-height: 34px;
   max-height: 120px;
@@ -221,10 +224,10 @@ body {
 .composer .ghost-btn:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ---------- scrollbar ---------- */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+.content, .answer pre, .reasoning-preview, .composer textarea {
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) transparent;
+}
 
 /* Inline-SVG glyph sizing for the reasoning header (this window's CSP forbids
    mask-image icons, and emoji render inconsistently across Windows versions). */

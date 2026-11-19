@@ -26,6 +26,16 @@ test('feature model editor saves only on demand and replaces stale model options
   assert.equal(probe.provider, 'provider-b')
   assert.equal(probe.model, 'b-new')
   assert.deepEqual(probe.options, ['b-new'])
+  assert.deepEqual(probe.focus, {
+    pickerNamed: true,
+    blocksBackgroundFocus: true,
+    returnsPickerFocus: true,
+    focusesCatalogFilter: true,
+    returnsFetchFocus: true,
+    focusesKey: true,
+    returnsPresetFocus: true,
+    focusesSkip: true
+  })
   assert.match(probe.buttonText, /未保存更改/)
   assert.equal(probe.updates.length, 2)
   assert.equal(Object.hasOwn(probe.updates[0], 'providers'), false)

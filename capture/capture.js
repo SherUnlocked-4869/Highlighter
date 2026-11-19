@@ -4169,7 +4169,11 @@ colorInput.addEventListener('input',()=>{colorPreview.style.background=colorInpu
 // 自定义色同时进入会话内的最近色槽并持久化。
 colorInput.addEventListener('change',()=>{rememberRecentColor(colorInput.value);setAnnotationColor(colorInput.value,true)})
 ;[watermarkContentInput,watermarkOpacityInput,watermarkColorInput,watermarkSpacingInput,watermarkFontSizeInput,watermarkRotationInput,watermarkDateSuffixInput].forEach((input)=>input.addEventListener('input',updateWatermarkPreview))
-watermarkContentInput.addEventListener('keydown',(event)=>{if(event.key==='Enter'){event.preventDefault();watermarkApplyButton.click()}})
+watermarkContentInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  watermarkApplyButton.click()
+})
 watermarkApplyButton.addEventListener('click',()=>{
   const item=buildWatermarkAnnotation()
   if(!item){watermarkContentInput.focus();return}
@@ -4257,6 +4261,7 @@ ocrCopyAll.onclick=async()=>{if(!activeOcrResult)return;const text=activeOcrResu
 document.getElementById('ocrResultClose').onclick=clearOcrResult
 
 addEventListener('keydown',(event)=>{
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
   if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(!convertDocMenu.classList.contains('hidden'))closeConvertDocMenu();else if(!colorPalette.classList.contains('hidden'))closeColorPalette();else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else if(selectedAnnotationItem())setSelectedAnnotation(null);else closeCaptureWindow();return}
   const focused=document.activeElement
   if(['INPUT','TEXTAREA','SELECT'].includes(focused?.tagName||''))return
@@ -4651,13 +4656,19 @@ for (const button of regionRatioButtons) {
 }
 // Typing in either field keeps a locked ratio satisfied; `input` (not `change`) so the partner edge
 // follows the caret rather than jumping only on blur.
+function applyRegionSizeOnEnter(event) {
+  if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  applyTypedRegionSize()
+}
+
 if (regionWidthInput) {
   regionWidthInput.addEventListener('input', () => syncRatioPartner('width'))
-  regionWidthInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); applyTypedRegionSize() } })
+  regionWidthInput.addEventListener('keydown', applyRegionSizeOnEnter)
 }
 if (regionHeightInput) {
   regionHeightInput.addEventListener('input', () => syncRatioPartner('height'))
-  regionHeightInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); applyTypedRegionSize() } })
+  regionHeightInput.addEventListener('keydown', applyRegionSizeOnEnter)
 }
 
 // Clicking elsewhere dismisses the popover, like the colour palette and the convert-doc menu.

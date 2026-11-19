@@ -53,7 +53,7 @@ test('the editor markup carries the one-track timeline, precise inputs, GIF opti
     'demo-shadow', 'demo-ripples', 'demo-reset', 'events-status',
     'zoom-add', 'zoom-list', 'zoom-suggestions',
     // One export action, its progress and cancel controls.
-    'export-button', 'export-progress', 'export-progress-bar', 'cancel-export',
+    'export-button', 'export-progress', 'cancel-export',
     // Feature-A result bar: open / address / reveal, dismiss, and a status line.
     'result-bar', 'result-name', 'result-open', 'result-address',
     'result-reveal', 'result-status', 'result-dismiss', 'result-kind'

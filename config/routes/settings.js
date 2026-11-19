@@ -112,6 +112,11 @@ async function refreshGeneralUpdateCard(snapshot = null) {
   bindGeneralUpdateCard()
 }
 
+function settingsFieldLabel(id, labelKey, hintKey) {
+  const hint = hintKey ? `<small id="${id}Hint">${t(hintKey)}</small>` : ''
+  return `<div class="form-label"><label for="${id}"><b>${t(labelKey)}</b></label>${hint}</div>`
+}
+
 function renderGeneralSettings() {
   const moduleRows = [
     ['ocr', 'config.plugin.ocr-title', 'config.plugin.ocr-description'],
@@ -120,16 +125,16 @@ function renderGeneralSettings() {
     ['video', 'config.plugin.video-title', 'config.plugin.video-description']
   ]
   const appearanceSettings = `<section class="section"><h2 class="section-title">${t('config.general.appearance-section')}</h2><div class="card form-card">
-    <div class="form-row"><div class="form-label"><b>${t('config.appearance.theme')}</b><small>${t('config.appearance.theme-hint')}</small></div><select id="theme"><option value="system">${t('config.appearance.theme-system')}</option><option value="light">${t('config.appearance.theme-light')}</option><option value="dark">${t('config.appearance.theme-dark')}</option></select></div>
-    <div class="form-row"><div class="form-label"><b>${t('config.appearance.main-color')}</b><small>${t('config.appearance.main-color-hint')}</small></div><input id="mainColor" type="color" value="${settings.mainColor}"></div>
-    <div class="form-row"><div class="form-label"><b>${t('config.appearance.border-radius')}</b></div><input id="borderRadius" type="range" min="0" max="20" value="${settings.borderRadius}"></div>
+    <div class="form-row">${settingsFieldLabel('theme', 'config.appearance.theme', 'config.appearance.theme-hint')}<select id="theme" aria-describedby="themeHint"><option value="system">${t('config.appearance.theme-system')}</option><option value="light">${t('config.appearance.theme-light')}</option><option value="dark">${t('config.appearance.theme-dark')}</option></select></div>
+    <div class="form-row">${settingsFieldLabel('mainColor', 'config.appearance.main-color', 'config.appearance.main-color-hint')}<input id="mainColor" aria-describedby="mainColorHint" type="color" value="${settings.mainColor}"></div>
+    <div class="form-row">${settingsFieldLabel('borderRadius', 'config.appearance.border-radius')}<input id="borderRadius" type="range" min="0" max="20" value="${settings.borderRadius}"></div>
     <div class="form-row"><div class="form-label"><b>${t('config.appearance.compact')}</b></div>${switchMarkup(settings.compact, 'compact')}</div>
-    <div class="form-row"><div class="form-label"><b>${t('config.appearance.skin-path')}</b><small>${t('config.appearance.skin-path-hint')}</small></div><input id="skinPath" type="text" value="${escapeHtml(settings.skinPath || '')}" placeholder="D:\\Pictures\\skin.jpg"></div>
-    <div class="form-row"><div class="form-label"><b>${t('config.appearance.skin-opacity')}</b></div><input id="skinOpacity" type="range" min="0" max="100" value="${settings.skinOpacity || 0}"></div>
-    <div class="form-row" style="align-items:flex-start;padding:14px 0"><div class="form-label"><b>${t('config.appearance.custom-css')}</b><small>${t('config.appearance.custom-css-hint')}</small></div><textarea id="customCss" class="textarea" style="min-height:130px">${escapeHtml(settings.customCss || '')}</textarea></div>
+    <div class="form-row">${settingsFieldLabel('skinPath', 'config.appearance.skin-path', 'config.appearance.skin-path-hint')}<input id="skinPath" aria-describedby="skinPathHint" type="text" value="${escapeHtml(settings.skinPath || '')}" placeholder="D:\\Pictures\\skin.jpg"></div>
+    <div class="form-row">${settingsFieldLabel('skinOpacity', 'config.appearance.skin-opacity')}<input id="skinOpacity" type="range" min="0" max="100" value="${settings.skinOpacity || 0}"></div>
+    <div class="form-row" style="align-items:flex-start;padding:14px 0">${settingsFieldLabel('customCss', 'config.appearance.custom-css', 'config.appearance.custom-css-hint')}<textarea id="customCss" aria-describedby="customCssHint" class="textarea" style="min-height:130px">${escapeHtml(settings.customCss || '')}</textarea></div>
   </div></section>`
   const interfaceSettings = `<section class="section"><h2 class="section-title">${t('config.general.interface-section')}</h2><div class="card form-card">
-    <div class="form-row"><div class="form-label"><b>${t('config.setting.language')}</b></div><select id="interfaceLanguage"><option value="zh-CN">${t('common.language.zh')}</option><option value="en-US">${t('common.language.en')}</option><option value="zh-TW">${t('common.language.zh-hant')}</option></select></div>
+    <div class="form-row">${settingsFieldLabel('interfaceLanguage', 'config.setting.language')}<select id="interfaceLanguage"><option value="zh-CN">${t('common.language.zh')}</option><option value="en-US">${t('common.language.en')}</option><option value="zh-TW">${t('common.language.zh-hant')}</option></select></div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-general.zoom')}</b><small>${t('config.settings-general.zoom-hint')}</small></div><span>${t('config.settings-general.zoom-auto')}</span></div>
   </div></section>`
   const startupSettings = `<section class="section"><h2 class="section-title">${t('config.general.startup-section')}</h2><div class="card form-card">
@@ -196,7 +201,9 @@ function bindFunctionCaptureTab() {
     return updateSettings({ screenshot: { historyDirectory: directory } }, t('config.settings-system.history-directory-updated'))
   }
   historyDirectory.onchange = saveHistoryDirectory
-  historyDirectory.onkeydown = (event) => { if (event.key === 'Enter') historyDirectory.blur() }
+  historyDirectory.onkeydown = (event) => {
+    if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) historyDirectory.blur()
+  }
   document.getElementById('chooseHistoryDirectory').onclick = async () => {
     const directory = await window.electronAPI.chooseDirectory()
     if (!directory) return
@@ -341,14 +348,14 @@ function renderFunctionSettings() {
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.fast-save')}</b></div>${switchMarkup(settings.screenshot.fastSave, 'fastSave', 'screenshot')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.shutter-sound')}</b><small>${t('config.function-settings.shutter-sound-hint')}</small></div>${switchMarkup(settings.screenshot.shutterSound, 'shutterSound', 'screenshot')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.capture-cursor')}</b><small>${t('config.function-settings.capture-cursor-hint')}</small></div>${switchMarkup(settings.screenshot.captureCursor === true, 'captureCursor', 'screenshot')}</div>
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.long-capture-direction')}</b></div><select id="longCaptureDirection"><option value="vertical">${t('config.function-settings.vertical')}</option><option value="horizontal">${t('config.function-settings.horizontal')}</option></select></div>
+    <div class="form-row">${settingsFieldLabel('longCaptureDirection', 'config.function-settings.long-capture-direction')}<select id="longCaptureDirection"><option value="vertical">${t('config.function-settings.vertical')}</option><option value="horizontal">${t('config.function-settings.horizontal')}</option></select></div>
     <div class="form-row"><label class="form-label" for="saveDirectory"><b>${t('config.function-settings.save-directory')}</b></label><div class="action-group field-actions"><input id="saveDirectory" type="text" value="${escapeHtml(settings.screenshot.saveDirectory || '')}"><button class="button" id="chooseSaveDirectory">${t('config.function-settings.choose')}</button></div></div>
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.name-template')}</b><small>${t('config.function-settings.name-template-hint')}</small></div><input id="nameTemplate" type="text" value="${escapeHtml(settings.screenshot.nameTemplate || '')}" placeholder="${t('config.function-settings.name-template-placeholder')}"></div>
+    <div class="form-row">${settingsFieldLabel('nameTemplate', 'config.function-settings.name-template', 'config.function-settings.name-template-hint')}<input id="nameTemplate" type="text" value="${escapeHtml(settings.screenshot.nameTemplate || '')}" placeholder="${t('config.function-settings.name-template-placeholder')}" aria-describedby="nameTemplateHint"></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.keep-serial')}</b><small>${t('config.function-settings.keep-serial-hint')}</small></div>${switchMarkup(settings.screenshot.keepSerialAcrossCaptures, 'keepSerialAcrossCaptures', 'screenshot')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.history-enabled')}</b></div>${switchMarkup(settings.screenshot.historyEnabled, 'historyEnabled', 'screenshot')}</div>
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.history-limit')}</b></div><input id="historyLimit" type="number" min="10" max="1000" value="${settings.screenshot.historyLimit}"></div>
-    <div class="form-row"><label class="form-label" for="historyDirectory"><b>${t('config.settings-system.history-directory')}</b><small>${t('config.settings-system.history-directory-hint')}</small></label><div class="action-group field-actions"><input id="historyDirectory" type="text" required value="${escapeHtml(settings.screenshot.historyDirectory)}"><button class="button" id="chooseHistoryDirectory">${t('config.settings-system.choose')}</button></div></div>
-    <div class="form-row"><div class="form-label"><b>${t('config.settings-general.selection-mask')}</b></div><input id="selectionMask" type="text" value="${escapeHtml(settings.screenshot.selectionMask)}"></div>
+    <div class="form-row">${settingsFieldLabel('historyLimit', 'config.function-settings.history-limit')}<input id="historyLimit" type="number" min="10" max="1000" value="${settings.screenshot.historyLimit}"></div>
+    <div class="form-row">${settingsFieldLabel('historyDirectory', 'config.settings-system.history-directory', 'config.settings-system.history-directory-hint')}<div class="action-group field-actions"><input id="historyDirectory" aria-describedby="historyDirectoryHint" type="text" required value="${escapeHtml(settings.screenshot.historyDirectory)}"><button class="button" id="chooseHistoryDirectory">${t('config.settings-system.choose')}</button></div></div>
+    <div class="form-row">${settingsFieldLabel('selectionMask', 'config.settings-general.selection-mask')}<input id="selectionMask" type="text" value="${escapeHtml(settings.screenshot.selectionMask)}"></div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-general.double-click-copy')}</b></div>${switchMarkup(settings.screenshot.doubleClickCopy, 'doubleClickCopy', 'screenshot')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-general.show-color-picker')}</b></div>${switchMarkup(settings.screenshot.showColorPicker, 'showColorPicker', 'screenshot')}</div>
   </div>`
@@ -356,28 +363,28 @@ function renderFunctionSettings() {
     ? `<div class="card form-card" style="margin-bottom:16px"><div class="form-row"><div class="form-label"><b>${t('config.function-tabs.ocr-module-off')}</b></div><button class="button primary" id="enableOcrModule">${t('config.function-tabs.enable-module')}</button></div></div>`
     : ''
   const ocrSettings = `${ocrModuleOff}<div class="card form-card">
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.ocr-model')}</b><small>${t('config.function-settings.ocr-model-hint')}</small></div><select id="ocrModel"><option value="ppocr-v4-ch">${t('config.function-settings.ocr-model-option')}</option></select></div>
+    <div class="form-row">${settingsFieldLabel('ocrModel', 'config.function-settings.ocr-model', 'config.function-settings.ocr-model-hint')}<select id="ocrModel" aria-describedby="ocrModelHint"><option value="ppocr-v4-ch">${t('config.function-settings.ocr-model-option')}</option></select></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.ocr-status')}</b><small id="ocrStatusDetail">${t('config.function-settings.ocr-status-checking')}</small></div><span id="ocrStatus">${t('config.function-settings.ocr-status-checking-label')}</span></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.ocr-detect-angle')}</b><small>${t('config.function-settings.ocr-detect-angle-hint')}</small></div>${switchMarkup(settings.ocr.detectAngle, 'detectAngle', 'ocr')}</div>
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.ocr-min-confidence')}</b><small>${t('config.function-settings.ocr-min-confidence-hint')}</small></div><input id="ocrMinConfidence" type="number" min="0" max="1" step="0.05" value="${settings.ocr.minConfidence}"></div>
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.ocr-after-action')}</b></div><select id="ocrAfterAction"><option value="none">${t('config.function-settings.ocr-after-show')}</option><option value="copy">${t('config.function-settings.ocr-after-copy')}</option><option value="copy-and-close">${t('config.function-settings.ocr-after-copy-close')}</option></select></div>
+    <div class="form-row">${settingsFieldLabel('ocrMinConfidence', 'config.function-settings.ocr-min-confidence', 'config.function-settings.ocr-min-confidence-hint')}<input id="ocrMinConfidence" aria-describedby="ocrMinConfidenceHint" type="number" min="0" max="1" step="0.05" value="${settings.ocr.minConfidence}"></div>
+    <div class="form-row">${settingsFieldLabel('ocrAfterAction', 'config.function-settings.ocr-after-action')}<select id="ocrAfterAction"><option value="none">${t('config.function-settings.ocr-after-show')}</option><option value="copy">${t('config.function-settings.ocr-after-copy')}</option><option value="copy-and-close">${t('config.function-settings.ocr-after-copy-close')}</option></select></div>
   </div>`
   // Two cards: the DEFAULTS the workbench starts from, then storage/data. Every
   // per-capture choice (mode, target, temporary overrides, per-recording device)
   // lives in the recording workbench instead of being duplicated here.
   const recordSettings = `<div class="card form-card">
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-frame-rate')}</b><small>${t('config.function-settings.record-frame-rate-hint')}</small></div><select id="frameRate">${supportedFrameRates.map((value) => `<option value="${value}">${value} FPS</option>`).join('')}</select></div>
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-quality')}</b><small>${t('config.function-settings.record-quality-hint')}</small></div><select id="recordQuality">${Object.entries(RECORD_QUALITY_LABEL_KEYS).map(([value, labelKey]) => `<option value="${value}" ${selectedRecordQuality === value ? 'selected' : ''}>${t(labelKey)}</option>`).join('')}</select></div>
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-countdown')}</b><small>${t('config.function-settings.record-countdown-hint')}</small></div><select id="recordCountdown">${[0, 3, 5].map((value) => `<option value="${value}" ${selectedRecordCountdown === value ? 'selected' : ''}>${recordDefaultCountdownLabel(value)}</option>`).join('')}</select></div>
+    <div class="form-row">${settingsFieldLabel('frameRate', 'config.function-settings.record-frame-rate', 'config.function-settings.record-frame-rate-hint')}<select id="frameRate" aria-describedby="frameRateHint">${supportedFrameRates.map((value) => `<option value="${value}">${value} FPS</option>`).join('')}</select></div>
+    <div class="form-row">${settingsFieldLabel('recordQuality', 'config.function-settings.record-quality', 'config.function-settings.record-quality-hint')}<select id="recordQuality" aria-describedby="recordQualityHint">${Object.entries(RECORD_QUALITY_LABEL_KEYS).map(([value, labelKey]) => `<option value="${value}" ${selectedRecordQuality === value ? 'selected' : ''}>${t(labelKey)}</option>`).join('')}</select></div>
+    <div class="form-row">${settingsFieldLabel('recordCountdown', 'config.function-settings.record-countdown', 'config.function-settings.record-countdown-hint')}<select id="recordCountdown" aria-describedby="recordCountdownHint">${[0, 3, 5].map((value) => `<option value="${value}" ${selectedRecordCountdown === value ? 'selected' : ''}>${recordDefaultCountdownLabel(value)}</option>`).join('')}</select></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-audio-system')}</b><small>${t('config.function-settings.record-audio-system-hint')}</small></div>${switchMarkup(settings.record.audioSystem !== false, 'audioSystem', 'record')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-microphone')}</b><small>${t('config.function-settings.record-microphone-hint')}</small></div>${switchMarkup(settings.record.audioMicrophone === true, 'audioMicrophone', 'record')}</div>
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-microphone-device')}</b><small>${t('config.function-settings.record-microphone-device-hint')}</small></div><select id="recordMicDevice"><option value="">${t('config.function-settings.record-microphone-default')}</option></select></div>
+    <div class="form-row">${settingsFieldLabel('recordMicDevice', 'config.function-settings.record-microphone-device', 'config.function-settings.record-microphone-device-hint')}<select id="recordMicDevice" aria-describedby="recordMicDeviceHint"><option value="">${t('config.function-settings.record-microphone-default')}</option></select></div>
   </div>
   <div class="card form-card" style="margin-top:14px">
-    <div class="form-row"><label class="form-label" for="recordDirectory"><b>${t('config.function-settings.record-directory')}</b><small>${t('config.function-settings.record-directory-hint')}</small></label><div class="action-group field-actions"><input id="recordDirectory" type="text" value="${escapeHtml(settings.record.saveDirectory || '')}"><button class="button" id="chooseRecordDirectory">${t('config.function-settings.choose')}</button></div></div>
+    <div class="form-row">${settingsFieldLabel('recordDirectory', 'config.function-settings.record-directory', 'config.function-settings.record-directory-hint')}<div class="action-group field-actions"><input id="recordDirectory" aria-describedby="recordDirectoryHint" type="text" value="${escapeHtml(settings.record.saveDirectory || '')}"><button class="button" id="chooseRecordDirectory">${t('config.function-settings.choose')}</button></div></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.record-storage-section')}</b></div><button class="button" id="openRecordingData">${t('config.function-settings.record-open-data')}</button></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.pin-click-through')}</b><small>${t('config.function-settings.pin-click-through-hint')}</small></div>${switchMarkup(settings.pinned.clickThrough, 'clickThrough', 'pinned')}</div>
-    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.pin-zoom-step')}</b><small>${t('config.function-settings.pin-zoom-step-hint')}</small></div><select id="pinZoomStep">${[5, 10, 15, 20, 25, 50].map((percent) => `<option value="${percent}" ${Math.round((Number(settings.pinned.zoomStep) || 0.1) * 100) === percent ? 'selected' : ''}>${t('config.function-settings.pin-zoom-step-value', { percent })}</option>`).join('')}</select></div>
+    <div class="form-row">${settingsFieldLabel('pinZoomStep', 'config.function-settings.pin-zoom-step', 'config.function-settings.pin-zoom-step-hint')}<select id="pinZoomStep" aria-describedby="pinZoomStepHint">${[5, 10, 15, 20, 25, 50].map((percent) => `<option value="${percent}" ${Math.round((Number(settings.pinned.zoomStep) || 0.1) * 100) === percent ? 'selected' : ''}>${t('config.function-settings.pin-zoom-step-value', { percent })}</option>`).join('')}</select></div>
     <div class="form-row"><div class="form-label"><b>${t('config.function-settings.pin-opacity')}</b><small>${t('config.function-settings.pin-opacity-hint')}</small></div></div>
   </div>
   <small class="section-note">${t('config.function-settings.record-defaults-hint')}</small>`

@@ -797,7 +797,12 @@ input:focus-visible {
   outline-offset: -2px;
 }
 
-::-webkit-scrollbar { width: 9px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { border-radius: 5px; background: var(--line-2); }
-::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+.detail-body {
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) transparent;
+}
+
+/* The virtual grid's stable gutter is measured with a 9px scrollbar. */
+#list::-webkit-scrollbar { width: 9px; }
+#list::-webkit-scrollbar-track { background: transparent; }
+#list::-webkit-scrollbar-thumb { border-radius: 5px; background: var(--muted); }

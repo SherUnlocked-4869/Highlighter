@@ -572,6 +572,10 @@ class FakeElement {
     return this.attributes.has(name) ? this.attributes.get(name) : null
   }
 
+  removeAttribute(name) {
+    this.attributes.delete(name)
+  }
+
   getBoundingClientRect() {
     return this.rect
   }
@@ -889,16 +893,18 @@ test('export submits one frozen project request, shows progress, and only a rece
   // Only the frozen request shape crosses IPC: no path, no argv.
   assert.deepEqual(exportRequestKeys(fake.calls.export[0].request), ['format', 'video'])
   assert.equal(elements.get('result-bar').hidden, true, 'no result bar before a receipt')
+  assert.equal(elements.get('export-progress').getAttribute('value'), null, 'queued progress is indeterminate')
 
   // Progress arrives; before publish nothing claims 100%.
   view.handleTask({ taskId: 'task-1', state: 'running', progress: 42 })
   assert.equal(elements.get('export-progress').hidden, false)
-  assert.equal(elements.get('export-progress-bar').style.width, '42%')
+  assert.equal(elements.get('export-progress').getAttribute('value'), '42')
   assert.equal(elements.get('cancel-export').hidden, false)
   assert.equal(elements.get('export-button').textContent, 'recording.editor.exporting')
 
   // Publishing: the button says finishing and the cancel path closes.
   view.handleTask({ taskId: 'task-1', state: 'publishing', progress: 99 })
+  assert.equal(elements.get('export-progress').getAttribute('value'), null, 'publishing does not advertise an encode percentage')
   assert.equal(elements.get('export-button').textContent, 'recording.editor.finishing')
   assert.equal(elements.get('cancel-export').hidden, true)
 

@@ -62,6 +62,9 @@ async function runProbe() {
     return settings
   })
   ipcMain.handle('shortcuts:status', () => ({}))
+  ipcMain.handle('config:test-connection', () => ({
+    ok: true, models: [{ id: 'catalog-model', name: 'Catalog Model' }]
+  }))
   // Stands in for coding-plan:create-provider: the real handler lives in
   // main/ipc/coding-plan-ipc.js and is covered by its own unit tests.
   ipcMain.handle('coding-plan:create-provider', (_event, input) => {
@@ -137,23 +140,52 @@ async function runProbe() {
     await waitUntil(() => document.getElementById('saveFeatureAssignments')?.textContent === '保存功能模型', 'feature save')
 
     document.querySelector('[data-models-tab="providers"]').click()
-    await waitFor('#addCodingPlanProvider')
-    document.getElementById('addCodingPlanProvider').click()
+    const codingPlanButton = await waitFor('#addCodingPlanProvider')
+    codingPlanButton.focus()
+    codingPlanButton.click()
+    const pickerDialog = await waitFor('dialog[open]')
+    const pickerNamed = Boolean(document.getElementById(pickerDialog.getAttribute('aria-labelledby'))?.textContent)
+    codingPlanButton.focus()
+    const blocksBackgroundFocus = pickerDialog.contains(document.activeElement)
+    pickerDialog.querySelector('[command="close"]').click()
+    await waitUntil(() => !pickerDialog.open, 'picker dialog close')
+    const returnsPickerFocus = document.activeElement === codingPlanButton
+
+    document.querySelector('[data-expand-provider="provider-b"]').click()
+    const fetchButton = await waitFor('[data-fetch-models="provider-b"]')
+    fetchButton.focus()
+    fetchButton.click()
+    const catalogFilter = await waitFor('dialog[open] [data-catalog-filter]')
+    const catalogDialog = catalogFilter.closest('dialog')
+    const focusesCatalogFilter = document.activeElement === catalogFilter
+    catalogDialog.querySelector('.modal-actions [command="close"]').click()
+    await waitUntil(() => !catalogDialog.open, 'catalog dialog close')
+    const returnsFetchFocus = document.activeElement === fetchButton
+
+    codingPlanButton.focus()
+    codingPlanButton.click()
     await waitFor('.coding-plan-card')
     const presetNames = [...document.querySelectorAll('.coding-plan-card b')].map((item) => item.textContent)
-    document.querySelector('.coding-plan-card').click()
-    await waitFor('[data-coding-plan-key]')
+    const presetButton = await waitFor('[data-coding-plan-preset]')
+    presetButton.click()
+    const keyInput = await waitFor('[data-coding-plan-key]')
+    const focusesKey = document.activeElement === keyInput
+    document.querySelector('[data-coding-plan-back]').click()
+    const returnsPresetFocus = document.activeElement === presetButton
+    presetButton.click()
     const baseUrlEcho = document.querySelector('.coding-plan-form .coding-plan-readonly').textContent
     document.querySelector('[data-coding-plan-key]').value = 'sk-probe-key'
     document.querySelector('[data-coding-plan-name]').value = 'Probe Plan'
     document.querySelector('[data-coding-plan-save]').click()
     await waitFor('.coding-plan-assignment')
+    const focusesSkip = document.activeElement.hasAttribute('data-coding-plan-skip')
     const featureCount = document.querySelectorAll('[data-coding-plan-feature]').length
     document.querySelector('[data-coding-plan-apply]').click()
     await waitUntil(() => !document.querySelector('.coding-plan-assignment'), 'assignment guide close')
     await new Promise((resolve) => setTimeout(resolve, 100))
     return {
       ...afterChange,
+      focus: { pickerNamed, blocksBackgroundFocus, returnsPickerFocus, focusesCatalogFilter, returnsFetchFocus, focusesKey, returnsPresetFocus, focusesSkip },
       codingPlan: {
         presetNames,
         baseUrlEcho,

@@ -28,19 +28,20 @@
     <header class="search-top">
       <div class="search-box">
         <img class="search-glyph" src="icons/search.svg" alt="">
-        <input id="searchInput" type="text" data-i18n-placeholder="search.input.placeholder" placeholder="Search local files (Everything syntax works, e.g. ext:pdf report)" autocomplete="off" spellcheck="false">
-        <button id="clearInput" class="ghost-button" data-i18n-title="search.input.clear" title="Clear" hidden>✕</button>
+        <input id="searchInput" type="text" role="searchbox" data-i18n-aria-label="search.title.window" aria-label="Local search" data-i18n-placeholder="search.input.placeholder" placeholder="Search local files (Everything syntax works, e.g. ext:pdf report)" autocomplete="off" spellcheck="false">
+        <button id="clearInput" class="ghost-button" type="button" data-i18n-title="search.input.clear" data-i18n-aria-label="search.input.clear" title="Clear" aria-label="Clear" hidden>✕</button>
       </div>
-      <button id="closeWindow" class="ghost-button" data-i18n-title="search.window.close" title="Close (Esc)">✕</button>
+      <button id="closeWindow" class="ghost-button" type="button" data-i18n-title="search.window.close" data-i18n-aria-label="search.window.close" title="Close (Esc)" aria-label="Close (Esc)">✕</button>
     </header>
     <nav class="category-tabs" id="categoryTabs" data-i18n-aria-label="search.tabs.label" aria-label="Search categories"></nav>
     <main class="result-list" id="resultList"></main>
     <div class="result-empty" id="emptyState" data-i18n="search.empty.prompt">Type a keyword to start searching</div>
+    <span class="visually-hidden" id="resultStatus" role="status"></span>
     <footer class="search-footer">
       <span class="status" id="statusText" data-i18n="search.status.detecting">Detecting Everything...</span>
       <span class="footer-spacer"></span>
       <label class="footer-toggle" data-i18n-title="search.toggle.match-path-title" title="Match both the file name and the full path"><input type="checkbox" id="matchPathToggle"><span data-i18n="search.toggle.match-path">Match path</span></label>
-      <select id="sortSelect" class="sort-select" data-i18n-title="search.sort.label" title="Sort order"></select>
+      <select id="sortSelect" class="sort-select" data-i18n-title="search.sort.label" data-i18n-aria-label="search.sort.label" title="Sort order" aria-label="Sort order"></select>
       <span class="count" id="countText"></span>
     </footer>
   </div>

@@ -8,7 +8,7 @@ function openProviderPresetDialog() {
   const { presets } = window.providerConnection
   const choices = [...presets, { name: t('config.models.custom'), baseUrl: '' }]
   const modal = openModal(`<div class="modal-head"><div><h3 id="providerDialogTitle">${t('config.models.add-provider')}</h3></div><button type="button" class="button icon-button" commandfor="config-native-modal" command="close" aria-label="${t('config.models.close-modal')}">×</button></div>
-    <div class="provider-preset-grid">${choices.map((choice, index) => `<button class="button provider-preset-choice" data-provider-preset="${index}"><b>${escapeHtml(choice.name)}</b><small>${escapeHtml(choice.baseUrl || t('config.models.custom-connection'))}</small></button>`).join('')}</div>`, { labelledBy: 'providerDialogTitle' })
+    <div class="provider-preset-grid">${choices.map((choice, index) => `<button class="button provider-preset-choice" data-provider-preset="${index}"><b>${escapeHtml(choice.name)}</b><small>${escapeHtml(choice.baseUrl || t('config.models.custom-connection'))}</small></button>`).join('')}</div>`, 'providerDialogTitle')
   modal.querySelectorAll('[data-provider-preset]').forEach((button) => {
     button.onclick = () => {
       const choice = choices[Number(button.dataset.providerPreset)]
@@ -64,7 +64,7 @@ function appendProviderModels(provider, selected, { verified = false } = {}) {
   return additions.length
 }
 
-function openProviderCatalogDialog(provider, fetched) {
+function openProviderCatalogDialog(provider, fetched, invoker) {
   const existing = new Set(provider.models.map((model) => model.id).filter(Boolean))
   const remaining = MAX_CATALOG_MODELS - existing.size
   const preset = provider.presetId ? getCodingPlanPreset(provider.presetId) : null
@@ -72,12 +72,13 @@ function openProviderCatalogDialog(provider, fetched) {
   if (!available.length) { toast(t('config.models.catalog-up-to-date')); return }
   if (remaining <= 0) { toast(t('config.models.catalog-full', { count: MAX_CATALOG_MODELS })); return }
 
+  invoker.focus({ preventScroll: true })
   const selected = new Set()
-  const modal = openModal(`<div class="modal-head"><div><h3>${t('config.models.fetch-models')}</h3><p>${escapeHtml(provider.name)}</p></div><button class="button icon-button" data-close-modal aria-label="${t('config.models.close-modal')}">×</button></div>
-    <input type="search" class="input" data-catalog-filter aria-label="${t('config.models.catalog-search')}" placeholder="${t('config.models.catalog-search')}">
+  const modal = openModal(`<div class="modal-head"><div><h3 id="providerCatalogTitle">${t('config.models.fetch-models')}</h3><p>${escapeHtml(provider.name)}</p></div><button type="button" class="button icon-button" commandfor="config-native-modal" command="close" aria-label="${t('config.models.close-modal')}">×</button></div>
+    <input type="search" class="input" data-catalog-filter autofocus aria-label="${t('config.models.catalog-search')}" placeholder="${t('config.models.catalog-search')}">
     <p class="model-catalog-feedback" role="status" data-catalog-feedback></p>
     <div class="provider-discovery-list" data-catalog-options></div>
-    <div class="modal-actions"><button class="button" data-close-modal>${t('config.models.cancel-import')}</button><button class="button primary" data-import-models></button></div>`)
+    <div class="modal-actions"><button type="button" class="button" commandfor="config-native-modal" command="close">${t('config.models.cancel-import')}</button><button type="button" class="button primary" data-import-models></button></div>`, 'providerCatalogTitle')
   const filter = modal.querySelector('[data-catalog-filter]')
   const list = modal.querySelector('[data-catalog-options]')
   const feedback = modal.querySelector('[data-catalog-feedback]')
@@ -112,10 +113,10 @@ function openProviderCatalogDialog(provider, fetched) {
     window.setConfigDirty?.('models-provider-settings', true)
     closeModal()
     renderModels()
+    providerEditorRoot(provider.id)?.querySelector('[data-fetch-models]')?.focus({ preventScroll: true })
     toast(t('config.models.models-fetched', { count }))
   }
   renderOptions()
-  filter.focus()
 }
 
 function bindProviderProbe(button, providerId, discover) {
@@ -131,6 +132,7 @@ function bindProviderProbe(button, providerId, discover) {
     root.querySelector('[data-fetch-models]').disabled = true
     root.querySelector('[data-test-provider]').disabled = true
     button.textContent = t(discover ? 'config.models.fetching' : 'config.models.testing')
+    let fetched = null
     try {
       const result = discover
         ? await window.electronAPI.fetchProviderModels(draft)
@@ -150,9 +152,8 @@ function bindProviderProbe(button, providerId, discover) {
       }
       if (corrections.length) window.setConfigDirty?.('models-provider-editor', true)
       if (discover) {
-        const fetched = Array.isArray(result.models) ? result.models : []
+        fetched = Array.isArray(result.models) ? result.models : []
         if (!fetched.length) { toast(t('config.models.no-models-fetched')); return }
-        openProviderCatalogDialog(draft, fetched)
       } else {
         toast(corrections.length ? t('config.models.connected-with-corrections', { details: corrections.join(t('config.common.clause-separator')) }) : t('config.models.connected'))
       }
@@ -164,6 +165,7 @@ function bindProviderProbe(button, providerId, discover) {
       button.textContent = t(discover ? 'config.models.fetch-models' : 'config.models.test')
       syncProviderTestModels(root)
     }
+    if (fetched && root.isConnected && !modalOverlay?.open) openProviderCatalogDialog(draft, fetched, button)
   }
 }
 

@@ -15,7 +15,8 @@ const els = {
   status: document.getElementById('statusText'),
   matchPath: document.getElementById('matchPathToggle'),
   sort: document.getElementById('sortSelect'),
-  count: document.getElementById('countText')
+  count: document.getElementById('countText'),
+  resultStatus: document.getElementById('resultStatus')
 }
 
 const state = {
@@ -28,9 +29,10 @@ const state = {
   visibleCount: 0,
   activeIndex: -1,
   seq: 0,
+  searching: false,
+  searchError: null,
   ready: false,
-  iconCache: new Map(),
-  iconPending: new Set()
+  iconCache: new Map()
 }
 
 const SEARCH_DEBOUNCE_MS = 60
@@ -49,7 +51,7 @@ function debounce(fn, delay) {
   }
 }
 
-const runSearchDebounced = debounce(() => runSearch(), SEARCH_DEBOUNCE_MS)
+let searchTimer = null
 
 function currentSearchState() {
   return {
@@ -122,9 +124,24 @@ function renderSortOptions() {
 }
 
 function renderTabs() {
+  const focusedId = els.tabs.contains(document.activeElement) ? document.activeElement.dataset.id : null
   els.tabs.innerHTML = state.categories.map((category) => (
-    `<button class="category-tab${category.id === state.activeCategoryId ? ' active' : ''}" data-id="${escapeHtml(category.id)}">${escapeHtml(t(category.label))}</button>`
+    `<button class="category-tab" type="button" data-id="${escapeHtml(category.id)}">${escapeHtml(t(category.label))}</button>`
   )).join('')
+  updateCategorySelection()
+  if (focusedId !== null) {
+    const focused = [...els.tabs.children].find((tab) => tab.dataset.id === focusedId) || els.tabs.querySelector('.active')
+    focused?.focus()
+  }
+}
+
+function updateCategorySelection() {
+  for (const tab of els.tabs.children) {
+    const selected = tab.dataset.id === state.activeCategoryId
+    tab.classList.toggle('active', selected)
+    tab.setAttribute('aria-pressed', String(selected))
+    tab.tabIndex = selected ? 0 : -1
+  }
 }
 
 function getActiveCategory() {
@@ -164,36 +181,21 @@ function renderStatus(status) {
   els.status.title = text
 }
 
-function updateEmptyState(message) {
-  if (message) {
-    els.empty.innerHTML = `<span class="empty-error">${escapeHtml(message)}</span>`
-    els.empty.hidden = false
-    return
-  }
-  if (!state.keyword.trim()) {
-    els.empty.textContent = t('search.empty.prompt')
-    els.empty.hidden = false
-    return
-  }
-  if (state.searching) {
-    els.empty.textContent = t('search.empty.searching')
-    els.empty.hidden = false
-    return
-  }
-  if (!state.results.length) {
-    els.empty.textContent = t('search.empty.no-results')
-    els.empty.hidden = false
-    return
-  }
-  els.empty.hidden = true
+function updateEmptyState() {
+  let message = ''
+  if (!state.keyword.trim()) message = t('search.empty.prompt')
+  else if (state.searching) message = t('search.empty.searching')
+  else if (state.searchError) message = errorMessage(state.searchError)
+  else if (!state.results.length) message = t('search.empty.no-results')
+  if (els.empty.textContent !== message) els.empty.textContent = message
+  els.empty.classList.toggle('is-error', Boolean(state.searchError))
 }
 
 function updateCount() {
-  if (!state.total && !state.results.length) {
-    els.count.textContent = ''
-    return
-  }
-  els.count.textContent = t('search.count.loaded', { loaded: state.results.length, total: state.total })
+  const text = state.total || state.results.length
+    ? t('search.count.loaded', { loaded: state.results.length, total: state.total })
+    : ''
+  if (els.count.textContent !== text) els.count.textContent = text
 }
 
 function iconMarkup(item) {
@@ -206,63 +208,68 @@ function iconMarkup(item) {
 function rowMarkup(item, index) {
   const nameHtml = renderHighlighted(item.name || '', state.keyword, item.highlightedName)
   const pathHtml = renderHighlighted(item.path || '', state.keyword, item.highlightedPath)
-  return `<div class="result-row${index === state.activeIndex ? ' active' : ''}" data-index="${index}" data-ext="${escapeHtml(String(item.extension || '').toLowerCase())}">` +
+  const tabIndex = index === Math.max(0, state.activeIndex) ? 0 : -1
+  return `<div class="result-row${index === state.activeIndex ? ' active' : ''}" role="group" aria-labelledby="result-name-${index}" aria-describedby="result-path-${index}" tabindex="${tabIndex}" data-index="${index}" data-ext="${escapeHtml(String(item.extension || '').toLowerCase())}">` +
     `<span class="file-icon">${iconMarkup(item)}</span>` +
-    `<div class="row-main"><div class="row-name">${nameHtml}</div><div class="row-path">${pathHtml}</div></div>` +
+    `<div class="row-main"><div class="row-name" id="result-name-${index}">${nameHtml}</div><div class="row-path" id="result-path-${index}">${pathHtml}</div></div>` +
     `<div class="row-meta"><span class="row-size">${escapeHtml(formatSize(item.size))}</span><span class="row-date">${escapeHtml(formatTime(item.modifiedAt))}</span></div>` +
     `<div class="row-actions">` +
-    `<button data-act="reveal" data-path="${escapeHtml(item.fullPath)}">${escapeHtml(t('search.action.reveal'))}</button>` +
-    `<button data-act="copy" data-path="${escapeHtml(item.fullPath)}">${escapeHtml(t('search.action.copy-path'))}</button>` +
+    `<button type="button" data-act="reveal" tabindex="${tabIndex}">${escapeHtml(t('search.action.reveal'))}</button>` +
+    `<button type="button" data-act="copy" tabindex="${tabIndex}">${escapeHtml(t('search.action.copy-path'))}</button>` +
     `</div></div>`
 }
 
-function renderResults({ append = false } = {}) {
-  const slice = state.results.slice(append ? state.visibleCount - state.settings.pageSize : 0, state.visibleCount)
-  const html = slice.map((item, offset) => {
-    const index = (append ? state.visibleCount - state.settings.pageSize : 0) + offset
-    return rowMarkup(item, index)
-  }).join('')
-  if (append) els.list.insertAdjacentHTML('beforeend', html)
-  else els.list.innerHTML = html || ''
+function renderResults(startIndex = 0) {
+  const items = state.results.slice(startIndex, state.visibleCount)
+  const html = items.map((item, offset) => rowMarkup(item, startIndex + offset)).join('')
+  if (startIndex > 0) els.list.insertAdjacentHTML('beforeend', html)
+  else if (html) els.list.innerHTML = html
+  else els.list.replaceChildren()
+  els.list.setAttribute('aria-busy', String(state.searching))
   updateEmptyState()
   updateCount()
-  loadIcons()
+  const announcement = !state.searching && state.keyword.trim() ? els.count.textContent || els.empty.textContent : ''
+  if (els.resultStatus.textContent !== announcement) els.resultStatus.textContent = announcement
+  void loadIcons(items)
 }
 
-function setActiveIndex(index, { scroll = true } = {}) {
+function setActiveIndex(index, { scroll = true, focus = false } = {}) {
+  if (!state.visibleCount) return
   const clamped = Math.max(0, Math.min(index, state.visibleCount - 1))
-  if (state.visibleCount > 0 && clamped === state.activeIndex && !scroll) return
-  state.activeIndex = clamped
-  els.list.querySelectorAll('.result-row').forEach((row) => {
-    row.classList.toggle('active', Number(row.dataset.index) === state.activeIndex)
-  })
-  if (scroll) {
-    const activeRow = els.list.querySelector('.result-row.active')
-    activeRow?.scrollIntoView({ block: 'nearest' })
+  const row = els.list.children[clamped]
+  if (clamped !== state.activeIndex) {
+    const previous = els.list.children[Math.max(0, state.activeIndex)]
+    previous.classList.remove('active')
+    previous.tabIndex = -1
+    for (const button of previous.querySelectorAll('button')) button.tabIndex = -1
+    state.activeIndex = clamped
+    row.classList.add('active')
+    row.tabIndex = 0
+    for (const button of row.querySelectorAll('button')) button.tabIndex = 0
   }
+  if (focus) row.focus({ preventScroll: true })
+  if (scroll) row.scrollIntoView({ block: 'nearest' })
 }
 
-async function loadIcons() {
+async function loadIcons(items) {
   const pendingExtensions = new Map()
-  for (const item of state.results.slice(0, state.visibleCount)) {
+  for (const item of items) {
     const extension = String(item.extension || '').toLowerCase()
-    if (!extension || state.iconCache.has(extension) || state.iconPending.has(extension)) continue
+    if (!extension || state.iconCache.has(extension)) continue
     pendingExtensions.set(extension, item.fullPath)
   }
   for (const [extension, samplePath] of pendingExtensions) {
-    state.iconPending.add(extension)
+    if (state.iconCache.has(extension)) continue
     state.iconCache.set(extension, '')
     let dataUrl = null
     try {
       dataUrl = await searchAPI.getFileIcon(samplePath) || null
     } catch {
       dataUrl = null
-    } finally {
-      state.iconPending.delete(extension)
     }
     state.iconCache.set(extension, dataUrl)
     if (dataUrl) {
-      els.list.querySelectorAll(`.result-row[data-ext="${extension}"] .ext-badge`).forEach((badge) => {
+      els.list.querySelectorAll(`.result-row[data-ext="${CSS.escape(extension)}"] .ext-badge`).forEach((badge) => {
         const parent = badge.parentElement
         if (!parent || !badge.isConnected) return
         parent.innerHTML = `<img src="${dataUrl}" alt="">`
@@ -271,52 +278,54 @@ async function loadIcons() {
   }
 }
 
-function runSearch() {
+function runSearch({ debounced = false } = {}) {
+  clearTimeout(searchTimer)
+  searchTimer = null
   const keyword = els.input.value
+  const seq = ++state.seq
   state.keyword = keyword
-  state.seq += 1
-  const seq = state.seq
   state.activeIndex = -1
-  if (!keyword.trim()) {
-    state.searching = false
-    state.results = []
-    state.total = 0
-    state.visibleCount = 0
-    renderResults()
-    return
+  state.searchError = null
+  state.results = []
+  state.total = 0
+  state.visibleCount = 0
+  state.searching = Boolean(keyword.trim())
+  renderResults()
+  if (!state.searching) return
+  if (debounced) {
+    searchTimer = setTimeout(() => {
+      searchTimer = null
+      void requestSearch(keyword, seq)
+    }, SEARCH_DEBOUNCE_MS)
+  } else {
+    void requestSearch(keyword, seq)
   }
-  state.searching = true
-  updateEmptyState()
+}
+
+async function requestSearch(keyword, seq) {
   const category = getActiveCategory()
   const queries = planQueries(keyword, !!state.settings.matchPath).map((plan) => ({
     search: buildQuery(plan.keyword, category.rule),
     matchPath: plan.matchPath
   }))
-  Promise.allSettled(queries.map((query) => searchAPI.query({
+  const settled = await Promise.allSettled(queries.map((query) => searchAPI.query({
     search: query.search,
     matchPath: query.matchPath,
     maxResults: state.settings.maxResults,
     sortMode: state.settings.sortMode
-  }))).then((settled) => {
-    if (seq !== state.seq) return
-    state.searching = false
-    const fulfilled = settled.filter((entry) => entry.status === 'fulfilled').map((entry) => entry.value)
-    if (!fulfilled.length) {
-      const failed = settled.find((entry) => entry.status === 'rejected')
-      state.results = []
-      state.total = 0
-      state.visibleCount = 0
-      updateEmptyState(errorMessage(failed?.reason))
-      updateCount()
-      return
-    }
+  })))
+  if (seq !== state.seq) return
+  state.searching = false
+  const fulfilled = settled.filter((entry) => entry.status === 'fulfilled').map((entry) => entry.value)
+  if (fulfilled.length) {
     const merged = mergeQueryResults(fulfilled)
     state.results = merged.items
     state.total = merged.total
     state.visibleCount = Math.min(state.results.length, state.settings.pageSize)
-    updateEmptyState()
-    renderResults()
-  })
+  } else {
+    state.searchError = settled.find((entry) => entry.status === 'rejected')?.reason || t('search.error.query-failed')
+  }
+  renderResults()
 }
 
 function errorMessage(error) {
@@ -325,8 +334,18 @@ function errorMessage(error) {
 
 function extendResults() {
   if (state.visibleCount >= state.results.length) return
-  state.visibleCount = Math.min(state.visibleCount + state.settings.pageSize, state.results.length)
-  renderResults({ append: true })
+  const startIndex = state.visibleCount
+  state.visibleCount = Math.min(startIndex + state.settings.pageSize, state.results.length)
+  renderResults(startIndex)
+}
+
+function moveResultSelection(event, currentIndex = state.activeIndex) {
+  const offset = event.key === 'ArrowDown' ? 1 : -1
+  const index = Math.max(0, currentIndex + offset)
+  if (index >= state.visibleCount) extendResults()
+  if (index >= state.visibleCount || index === currentIndex) return
+  event.preventDefault()
+  setActiveIndex(index, { focus: event.target !== els.input })
 }
 
 function activateRow(index, { reveal = false } = {}) {
@@ -338,17 +357,14 @@ function activateRow(index, { reveal = false } = {}) {
 
 els.input.addEventListener('input', () => {
   els.clear.hidden = !els.input.value
-  runSearchDebounced()
+  runSearch({ debounced: true })
   saveSearchStateDebounced()
 })
 
 els.input.addEventListener('keydown', (event) => {
-  if (event.key === 'ArrowDown') {
-    event.preventDefault()
-    setActiveIndex(state.activeIndex + 1)
-  } else if (event.key === 'ArrowUp') {
-    event.preventDefault()
-    setActiveIndex(state.activeIndex - 1)
+  if (event.isComposing || event.keyCode === 229) return
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    moveResultSelection(event)
   } else if (event.key === 'Enter') {
     event.preventDefault()
     const index = state.activeIndex >= 0 ? state.activeIndex : (state.visibleCount > 0 ? 0 : -1)
@@ -356,27 +372,18 @@ els.input.addEventListener('keydown', (event) => {
       setActiveIndex(index)
       activateRow(index, { reveal: event.ctrlKey })
     }
-  } else if (event.key === 'Escape') {
-    event.preventDefault()
-    searchAPI.close()
-  } else if (event.key === 'Tab') {
-    event.preventDefault()
-    const currentIndex = state.categories.findIndex((category) => category.id === state.activeCategoryId)
-    const nextIndex = (currentIndex + (event.shiftKey ? -1 : 1) + state.categories.length) % state.categories.length
-    state.activeCategoryId = state.categories[nextIndex]?.id || 'all'
-    renderTabs()
-    saveSearchState()
-    runSearch()
   }
 })
 
 document.addEventListener('keydown', (event) => {
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
   if (event.key === 'Escape') {
     event.preventDefault()
     searchAPI.close()
     return
   }
   if (event.target === els.input || event.target === els.sort || event.target === els.matchPath) return
+  if (event.key === ' ' && event.target.closest?.('button')) return
   if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
     els.input.focus()
   }
@@ -387,20 +394,37 @@ els.list.addEventListener('scroll', () => {
   if (nearBottom) extendResults()
 })
 
+els.list.addEventListener('focusin', (event) => {
+  const row = event.target.closest('.result-row')
+  if (row) setActiveIndex(Number(row.dataset.index), { scroll: false })
+})
+
+els.list.addEventListener('keydown', (event) => {
+  if (!event.target.matches('.result-row') || event.isComposing || event.keyCode === 229) return
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') moveResultSelection(event, Number(event.target.dataset.index))
+  else if (event.key === 'Enter') {
+    event.preventDefault()
+    activateRow(Number(event.target.dataset.index), { reveal: event.ctrlKey })
+  }
+})
+
 els.list.addEventListener('click', (event) => {
+  const row = event.target.closest('.result-row')
+  if (!row) return
+  const index = Number(row.dataset.index)
   const actionButton = event.target.closest('.row-actions button')
   if (actionButton) {
-    event.stopPropagation()
-    const path = actionButton.dataset.path
-    if (actionButton.dataset.act === 'reveal') searchAPI.revealPath(path).catch(() => {})
-    else searchAPI.copyPath(path).catch(() => {})
+    const item = state.results[index]
+    if (!item) return
+    if (actionButton.dataset.act === 'reveal') activateRow(index, { reveal: true })
+    else searchAPI.copyPath(item.fullPath).catch(() => {})
     return
   }
-  const row = event.target.closest('.result-row')
-  if (row) setActiveIndex(Number(row.dataset.index))
+  setActiveIndex(index)
 })
 
 els.list.addEventListener('dblclick', (event) => {
+  if (event.target.closest('.row-actions')) return
   const row = event.target.closest('.result-row')
   if (!row) return
   activateRow(Number(row.dataset.index))
@@ -410,9 +434,27 @@ els.tabs.addEventListener('click', (event) => {
   const tab = event.target.closest('.category-tab')
   if (!tab || tab.dataset.id === state.activeCategoryId) return
   state.activeCategoryId = tab.dataset.id
-  renderTabs()
+  updateCategorySelection()
   saveSearchState()
   runSearch()
+})
+
+els.tabs.addEventListener('keydown', (event) => {
+  const tab = event.target.closest('.category-tab')
+  if (!tab || event.isComposing || event.keyCode === 229) return
+  const tabs = [...els.tabs.children]
+  const index = tabs.indexOf(tab)
+  let next
+  switch (event.key) {
+    case 'ArrowLeft': next = tabs[(index - 1 + tabs.length) % tabs.length]; break
+    case 'ArrowRight': next = tabs[(index + 1) % tabs.length]; break
+    case 'Home': next = tabs[0]; break
+    case 'End': next = tabs.at(-1); break
+    default: return
+  }
+  event.preventDefault()
+  next.focus()
+  next.click()
 })
 
 els.clear.addEventListener('click', () => {
@@ -456,7 +498,6 @@ window.searchAPI.onInterfaceLanguage((language) => {
   renderTabs()
   renderSortOptions()
   renderResults()
-  updateEmptyState()
 })
 searchAPI.ready()
 // W5: only the first init of this renderer applies `restore` (a window that is
