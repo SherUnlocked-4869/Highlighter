@@ -14,6 +14,9 @@ const trimEndInput = document.getElementById('trimEnd')
 const directionButtons = [...document.querySelectorAll('[data-axis]')]
 const actionButtons = [...document.querySelectorAll('.actions button')]
 const WORKER_TIMEOUT_MS = 5000
+const MIN_FRAME_PERIOD_MS = Math.ceil(1000 / 12) // Match the stream's maximum frame rate.
+const MAX_FRAME_PERIOD_MS = 1000
+const FRAME_COST_HEADROOM = 1.25
 
 // P0-1-T5 (S12): `shared/i18n.js` is a classic script, so its `t`, `setLanguage`
 // and `applyTranslations` bindings are already visible here. They must NOT be
@@ -29,6 +32,7 @@ let capturing = false
 let busy = false
 let selectionEditing = false
 let timer = null
+let averageFrameCost = 0
 let requestId = 0
 let total = { width: 0, height: 0, strips: 0, trimStart: 0, trimEnd: 0 }
 const workerRequests = new Map()
@@ -93,7 +97,7 @@ function updateControls() {
   toggleButton.textContent = t(capturing
     ? 'long-capture.action.pause'
     : (total.strips ? 'long-capture.action.resume' : 'long-capture.action.start'))
-  directionButtons.forEach((button) => { button.disabled = total.strips > 0 })
+  directionButtons.forEach((button) => { button.disabled = capturing || busy || total.strips > 0 })
   adjustSelectionButton.disabled = capturing || busy
   adjustSelectionButton.classList.toggle('active', selectionEditing)
   adjustSelectionLabel.textContent = t(selectionEditing ? 'long-capture.selection.done' : 'long-capture.selection.short')
@@ -155,16 +159,17 @@ function drawCurrentFrame() {
   const crop = getCropRect()
   crop.width = Math.min(crop.width, video.videoWidth - crop.x)
   crop.height = Math.min(crop.height, video.videoHeight - crop.y)
-  cropCanvas.width = crop.width
-  cropCanvas.height = crop.height
-  cropContext.drawImage(video, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height)
-  if (axis === 'vertical') {
-    analysisCanvas.width = Math.min(96, crop.width)
-    analysisCanvas.height = crop.height
-  } else {
-    analysisCanvas.width = crop.width
-    analysisCanvas.height = Math.min(96, crop.height)
+  if (crop.width <= 0 || crop.height <= 0 || (total.strips &&
+    (cropCanvas.width !== crop.width || cropCanvas.height !== crop.height))) {
+    throw new Error(t('long-capture.error.frame-size-changed'))
   }
+  if (cropCanvas.width !== crop.width) cropCanvas.width = crop.width
+  if (cropCanvas.height !== crop.height) cropCanvas.height = crop.height
+  cropContext.drawImage(video, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height)
+  const analysisWidth = axis === 'vertical' ? Math.min(96, crop.width) : crop.width
+  const analysisHeight = axis === 'horizontal' ? Math.min(96, crop.height) : crop.height
+  if (analysisCanvas.width !== analysisWidth) analysisCanvas.width = analysisWidth
+  if (analysisCanvas.height !== analysisHeight) analysisCanvas.height = analysisHeight
   analysisContext.drawImage(cropCanvas, 0, 0, analysisCanvas.width, analysisCanvas.height)
   return analysisContext.getImageData(0, 0, analysisCanvas.width, analysisCanvas.height)
 }
@@ -195,12 +200,12 @@ function canvasBlob(canvas) {
   return new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error(t('long-capture.error.strip-encode-failed'))), 'image/png'))
 }
 
-function appendPreview(strip, position) {
+function appendPreview(strip, position, firstStrip) {
   const old = document.createElement('canvas')
   old.width = preview.width
   old.height = preview.height
   old.getContext('2d').drawImage(preview, 0, 0)
-  if (!total.strips) {
+  if (firstStrip) {
     if (axis === 'vertical') {
       preview.width = 160
       preview.height = Math.max(1, Math.round(strip.height * 160 / strip.width))
@@ -237,65 +242,94 @@ function appendPreview(strip, position) {
   emptyPreview.hidden = true
 }
 
-async function uploadStrip(strip, position) {
+async function uploadStrip(strip, position, frameId) {
   const blob = await canvasBlob(strip)
   const arrayBuffer = await blob.arrayBuffer()
-  const previousStrips = total.strips
   const next = await window.longCaptureAPI.addStrip(arrayBuffer, {
     width: strip.width,
     height: strip.height,
     position,
     axis
   })
-  appendPreview(strip, position)
+  // Only advance the matching reference after the main process stores the strip.
+  worker.postMessage({ type: 'commit', id: frameId })
+  const firstStrip = !total.strips
   total = next
+  appendPreview(strip, position, firstStrip)
   sizeElement.textContent = `${total.width} × ${total.height}`
   stripsElement.textContent = t('long-capture.status.strips', { count: total.strips })
   const outputLength = axis === 'vertical' ? total.height : total.width
   trimStartInput.max = String(Math.max(0, outputLength + (total.trimStart || 0) + (total.trimEnd || 0) - 1))
   trimEndInput.max = trimStartInput.max
   updateTrimPreview()
-  if (!previousStrips) directionButtons.forEach((button) => { button.disabled = true })
-  updateControls()
+}
+
+function scheduleFrame(delay) {
+  if (!capturing || busy || timer !== null) return
+  timer = setTimeout(() => {
+    timer = null
+    captureFrame()
+  }, delay)
 }
 
 async function captureFrame() {
-  if (busy || !capturing || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
+  if (busy || !capturing) return
+  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+    scheduleFrame(MIN_FRAME_PERIOD_MS)
+    return
+  }
   busy = true
+  const started = performance.now()
   try {
     const imageData = drawCurrentFrame()
     const result = await workerFrame(imageData.data, imageData.width, imageData.height)
+    let statusKey
     if (result.status === 'initialized') {
-      await uploadStrip(makeStripCanvas(0, true), 'append')
-      setStatusKey('long-capture.status.initial-recorded', undefined, 1)
+      await uploadStrip(makeStripCanvas(0, true), 'append', result.id)
+      statusKey = 'long-capture.status.initial-recorded'
     } else if (result.status === 'matched') {
-      const strip = makeStripCanvas(result.shift, false)
-      await uploadStrip(strip, result.shift > 0 ? 'append' : 'prepend')
-      setStatusKey('long-capture.status.matched', undefined, result.confidence)
+      if (result.extension) {
+        const strip = makeStripCanvas(result.extension, false)
+        await uploadStrip(strip, result.extension > 0 ? 'append' : 'prepend', result.id)
+        statusKey = 'long-capture.status.matched'
+      } else {
+        worker.postMessage({ type: 'commit', id: result.id })
+        statusKey = 'long-capture.status.already-captured'
+      }
     } else if (result.status === 'still') {
-      setStatusKey('long-capture.status.waiting-scroll', undefined, 1)
+      statusKey = 'long-capture.status.waiting-scroll'
+    } else if (result.status === 'size-changed') {
+      throw new Error(t('long-capture.error.frame-size-changed'))
     } else {
-      setStatusKey('long-capture.status.no-match', undefined, result.confidence)
+      statusKey = 'long-capture.status.no-match'
     }
+    if (capturing) setStatusKey(statusKey, undefined, result.status === 'initialized' ? 1 : result.confidence)
   } catch (error) {
-    setStatus(error.message || String(error))
     setCapturing(false)
+    setStatus(error.message || String(error))
   } finally {
     busy = false
     updateControls()
+    // One frame at a time, including matching and writing. Leave headroom for
+    // the UI and recover gradually after a slow frame (Snow Shot cadence).
+    const cost = performance.now() - started
+    averageFrameCost = averageFrameCost ? averageFrameCost * 0.75 + cost * 0.25 : cost
+    const period = Math.min(MAX_FRAME_PERIOD_MS,
+      Math.max(MIN_FRAME_PERIOD_MS, Math.max(cost, averageFrameCost) * FRAME_COST_HEADROOM))
+    scheduleFrame(Math.max(0, period - cost))
   }
 }
 
 function setCapturing(active) {
   capturing = !!active
-  clearInterval(timer)
+  clearTimeout(timer)
   timer = null
   window.longCaptureAPI.setOverlayActive(capturing)
   if (capturing) {
+    averageFrameCost = 0
     setStatusKey(total.strips ? 'long-capture.status.capturing-continue' : 'long-capture.status.capturing-initial')
-    captureFrame()
-    timer = setInterval(captureFrame, 180)
-  } else if (total.strips) setStatusKey('long-capture.status.paused')
+    scheduleFrame(0)
+  } else setStatusKey('long-capture.status.paused')
   updateControls()
 }
 
@@ -389,12 +423,13 @@ async function initialize(data) {
 }
 
 directionButtons.forEach((button) => button.onclick = () => {
-  if (total.strips) return
+  if (capturing || busy || total.strips) return
   axis = button.dataset.axis
   directionButtons.forEach((item) => item.classList.toggle('active', item === button))
   worker?.postMessage({ type: 'reset' })
 })
 toggleButton.onclick = async () => {
+  if (!capturing && (busy || workerError || !stream)) return
   if (selectionEditing) await toggleSelectionEditing()
   setCapturing(!capturing)
 }
@@ -413,7 +448,8 @@ addEventListener('keydown', (event) => {
   if (event.key === 'Enter') finish('copy')
 })
 addEventListener('beforeunload', () => {
-  clearInterval(timer)
+  capturing = false
+  clearTimeout(timer)
   rejectWorkerRequests(new Error(t('long-capture.error.window-closed')))
   stream?.getTracks().forEach((track) => track.stop())
   worker?.terminate()

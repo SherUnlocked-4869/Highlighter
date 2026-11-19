@@ -2,6 +2,7 @@ const assert = require('assert')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const vm = require('node:vm')
 const sharp = require('sharp')
 const { findBestShift, scoreShift } = require('../long-capture/matcher')
 const { LongCaptureSession } = require('../main/services/long-capture-session')
@@ -47,7 +48,91 @@ async function png(width, height, color) {
   return sharp({ create: { width, height, channels: 4, background: color } }).png().toBuffer()
 }
 
+async function testWorkerStitching(axis) {
+  let response
+  let id = 0
+  const worker = { postMessage: (message) => { response = message } }
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../long-capture/matcher-worker.js'), 'utf8'), {
+    importScripts() {},
+    LongCaptureMatcher: require('../long-capture/matcher'),
+    Uint8ClampedArray,
+    self: worker
+  })
+  const send = (data) => worker.onmessage({ data })
+  const width = 72
+  const height = 58
+  const vertical = axis === 'vertical'
+  const valueAt = (x, y) => ((x + 88) * 17 + (y + 88) * 29 + (x + 88) * (y + 88) * 3) % 251
+  const frame = (offset, frameWidth = width) => {
+    const rgba = Buffer.alloc(frameWidth * height * 4)
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < frameWidth; x++) {
+        const index = (y * frameWidth + x) * 4
+        rgba.fill(valueAt(x + (vertical ? 0 : offset), y + (vertical ? offset : 0)), index, index + 3)
+        rgba[index + 3] = 255
+      }
+    }
+    send({ type: 'frame', id: ++id, rgba: rgba.buffer, width: frameWidth, height, axis })
+    assert.equal(response.id, id)
+    return { ...response, rgba }
+  }
+  const commit = (result) => send({ type: 'commit', id: result.id })
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'highlighter-long-worker-test-'))
+  const session = new LongCaptureSession({ axis, tempRoot })
+  async function store(result, extension) {
+    const initial = result.status === 'initialized'
+    const w = vertical || initial ? width : Math.abs(extension)
+    const h = !vertical || initial ? height : Math.abs(extension)
+    const x = !vertical && extension > 0 ? width - w : 0
+    const y = vertical && extension > 0 ? height - h : 0
+    const strip = await sharp(result.rgba, { raw: { width, height, channels: 4 } })
+      .extract({ left: x, top: y, width: w, height: h }).png().toBuffer()
+    session.addStrip(strip, { width: w, height: h, position: extension < 0 ? 'prepend' : 'append' })
+    commit(result)
+  }
+  try {
+    // Failed initial upload must not seed the matching reference.
+    assert.equal(frame(0).status, 'initialized')
+    const initial = frame(0)
+    assert.equal(initial.status, 'initialized')
+    await store(initial, 0)
+    assert.equal(frame(0, width + 1).status, 'size-changed')
+    assert.equal(frame(0).status, 'still')
+
+    for (const [offset, shift, extension] of [[20, 20, 20], [8, -12, 0], [26, 18, 6], [2, -24, 0], [-7, -9, -7], [0, 7, 0], [-11, -11, -4]]) {
+      const result = frame(offset)
+      assert.equal(result.status, 'matched')
+      assert.equal(result.shift, shift)
+      assert.equal(result.extension, extension)
+      if (extension) await store(result, extension)
+      else commit(result)
+    }
+
+    // Failed append upload must not move the viewport or grow the extent.
+    const failed = frame(32)
+    assert.equal(failed.extension, 6)
+    const retry = frame(32)
+    assert.equal(retry.extension, 6)
+    await store(retry, 6)
+    assert.equal(session.getSize().strips, 6)
+    const output = await session.render()
+    const { data, info } = await sharp(output).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+    assert.equal(info.width, width + (vertical ? 0 : 43))
+    assert.equal(info.height, height + (vertical ? 43 : 0))
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        assert.equal(data[(y * info.width + x) * 4], valueAt(x - (vertical ? 0 : 11), y - (vertical ? 11 : 0)))
+      }
+    }
+  } finally {
+    session.cleanup()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+}
+
 async function run() {
+  await testWorkerStitching('vertical')
+  await testWorkerStitching('horizontal')
   const width = 72
   const height = 58
   const base = makeFrame(width, height, (x, y) => (x * 17 + y * 29 + x * y * 3) % 251)

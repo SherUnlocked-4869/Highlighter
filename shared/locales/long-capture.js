@@ -48,6 +48,7 @@
     'long-capture.status.strips': '{count} 段',
     'long-capture.status.initial-recorded': '已记录起始画面，等待滚动',
     'long-capture.status.matched': '匹配成功',
+    'long-capture.status.already-captured': '已在截图范围内，继续滚动可添加新内容',
     'long-capture.status.waiting-scroll': '等待画面滚动',
     'long-capture.status.no-match': '未能匹配，请放慢滚动速度',
     'long-capture.status.capturing-continue': '继续捕获',
@@ -69,6 +70,7 @@
     'long-capture.error.matcher-not-ready': '长截图匹配器尚未就绪',
     'long-capture.error.match-timeout': '长截图匹配超时，请重新开始',
     'long-capture.error.strip-encode-failed': '长截图条带编码失败',
+    'long-capture.error.frame-size-changed': '采集尺寸已变化，请恢复原显示设置或重新开启长截图',
     'long-capture.error.window-closed': '长截图窗口已关闭',
     'long-capture.overlay.move-along-axis': '沿拼接方向移动',
     'long-capture.overlay.adjust-selection': '调整长截图选区'
@@ -102,6 +104,7 @@
     'long-capture.status.strips': '{count} strips',
     'long-capture.status.initial-recorded': 'Start frame recorded, waiting for scrolling',
     'long-capture.status.matched': 'Matched',
+    'long-capture.status.already-captured': 'Already captured; scroll farther to add new content',
     'long-capture.status.waiting-scroll': 'Waiting for the page to scroll',
     'long-capture.status.no-match': 'No match; scroll more slowly',
     'long-capture.status.capturing-continue': 'Continuing capture',
@@ -123,6 +126,7 @@
     'long-capture.error.matcher-not-ready': 'The scrolling-capture matcher is not ready yet',
     'long-capture.error.match-timeout': 'Scrolling-capture matching timed out; start again',
     'long-capture.error.strip-encode-failed': 'A scrolling-capture strip could not be encoded',
+    'long-capture.error.frame-size-changed': 'Capture dimensions changed; restore the original display settings or reopen scrolling capture',
     'long-capture.error.window-closed': 'The scrolling-capture window was closed',
     'long-capture.overlay.move-along-axis': 'Move along the stitch direction',
     'long-capture.overlay.adjust-selection': 'Adjust the scrolling-capture selection'
@@ -156,6 +160,7 @@
     'long-capture.status.strips': '{count} 段',
     'long-capture.status.initial-recorded': '已記錄起始畫面，等待捲動',
     'long-capture.status.matched': '匹配成功',
+    'long-capture.status.already-captured': '已在截圖範圍內，繼續捲動可新增內容',
     'long-capture.status.waiting-scroll': '等待畫面捲動',
     'long-capture.status.no-match': '未能匹配，請放慢捲動速度',
     'long-capture.status.capturing-continue': '繼續擷取',
@@ -177,6 +182,7 @@
     'long-capture.error.matcher-not-ready': '長截圖匹配器尚未就緒',
     'long-capture.error.match-timeout': '長截圖匹配逾時，請重新開始',
     'long-capture.error.strip-encode-failed': '長截圖條帶編碼失敗',
+    'long-capture.error.frame-size-changed': '擷取尺寸已變更，請恢復原顯示設定或重新開啟長截圖',
     'long-capture.error.window-closed': '長截圖視窗已關閉',
     'long-capture.overlay.move-along-axis': '沿拼接方向移動',
     'long-capture.overlay.adjust-selection': '調整長截圖選取區'
