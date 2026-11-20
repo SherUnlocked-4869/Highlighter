@@ -49,13 +49,14 @@ const AUDIT_LEVELS = ['info', 'low', 'moderate', 'high', 'critical']
 // That also pulled brace-expansion 1.1.18 -> 5.0.12, which cleared the three
 // brace-expansion advisories, so their rows are gone too. Re-add a row (with a
 // reason and a review date) only for a finding that cannot be upgraded away.
-const ALLOWLIST = new Map([
-  ['picomatch|https://github.com/advisories/GHSA-fc5q-39xc-vjpf', {
-    devOnly: true,
-    reason: 'No patched upstream release. The node-gyp build dependency only matches fixed repository build globs.',
-    reviewBy: '2026-12-02'
-  }]
-])
+//
+// 2026-11-20: the last row (picomatch) is gone for the same reason. Its advisory
+// GHSA-fc5q-39xc-vjpf was withdrawn on 2026-11-18 as "not a security issue"
+// (micromatch/picomatch#235), the registry bulk endpoint now returns no advisory
+// for picomatch 4.0.4/4.0.5, and the leftover row failed the gate as stale. The
+// list is empty again by design; add a row only when the audit actually reports
+// a finding that cannot be upgraded away.
+const ALLOWLIST = new Map()
 
 
 function severityRank(value) {
