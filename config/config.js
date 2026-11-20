@@ -15,6 +15,8 @@ window.configRoutes = window.configRoutes || {}
 
 let settings = null
 let currentRoute = 'home'
+let configInitialized = false
+let pendingRoute = 'home'
 
 // M2/W6b: the main process may destroy this hidden window's renderer after five
 // minutes. It only does that for a SAFE route with no draft, so every
@@ -51,6 +53,7 @@ window.setConfigDirty = setConfigDirty
 const routeTitles = {
   home: 'config.route.home', translation: 'config.route.translation', chat: 'config.route.chat', history: 'config.route.history',
   recording: 'config.route.recording',
+  'device-battery': 'config.route.device-battery',
   'settings-general': 'config.route.settings-general',
   'settings-function': 'config.route.settings-function',
   models: 'config.route.models',
@@ -76,6 +79,7 @@ const routes = {
   // render failure so the settings window still shows a toast instead of going
   // blank while the main-process half is being updated.
   recording: { key: 'renderRecording', fallbackMessage: 'recording.workbench.load-failed' },
+  'device-battery': { key: 'renderDeviceBattery' },
   'settings-general': { key: 'renderGeneralSettings' },
   models: { key: 'bootstrapModels' },
   'settings-function': { key: 'renderFunctionSettings' },
@@ -94,6 +98,12 @@ const CONFIG_ROUTE_KEYS = Object.keys(routes)
 window.configRouteKeys = CONFIG_ROUTE_KEYS
 
 function navigate(route) {
+  // app:navigate can arrive before the asynchronous settings/shortcut reads.
+  // Defer renderers until those dependencies are ready, then open that route.
+  if (!configInitialized) {
+    pendingRoute = route || 'home'
+    return
+  }
   if (modalOverlay) closeModal()
   for (const reason of ROUTE_DRAFT_REASONS[currentRoute] || []) setConfigDirty(reason, false)
   if (currentRoute === 'history' && route !== 'history') {
@@ -112,6 +122,7 @@ function navigate(route) {
   if (currentRoute === 'recording' && route !== 'recording') {
     if (typeof recordingDeactivate === 'function') recordingDeactivate()
   }
+  if (currentRoute === 'device-battery' && route !== 'device-battery') deviceBatteryDeactivate()
   if (route === 'models' && currentRoute !== 'models') {
     modelsTab = 'providers'
     modelsExpandedProviderIds = new Set()
@@ -177,6 +188,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyAppea
 // P0-1-T3: the static shell carries data-i18n attributes, so it is translated once
 // the markup is parsed; the renderers resolve their own strings through t() as
 // they build markup.
+document.documentElement.lang = currentLanguage()
 applyTranslations()
 
 // Language hot switch (P0-1-T2 broadcasts `i18n:language` to every window).
@@ -185,7 +197,7 @@ applyTranslations()
 // settings.language renders the new value even when the broadcast beats the
 // settings:update reply.
 window.electronAPI.onInterfaceLanguage((language) => {
-  setLanguage(language)
+  document.documentElement.lang = setLanguage(language)
   if (!settings) {
     applyTranslations()
     return
@@ -194,19 +206,20 @@ window.electronAPI.onInterfaceLanguage((language) => {
   // applyTranslations() rewrites the whole shell, #pageTitle included (it carries
   // data-i18n="config.route.home"), so the current route is re-entered afterwards:
   // that restores its title, the nav highlight and the freshly translated body.
+  // During boot, leave any queued navigation intact.
   applyTranslations()
-  navigate(currentRoute)
+  if (configInitialized) navigate(currentRoute)
 })
 
 async function init() {
   settings = await window.electronAPI.getSettings()
   // The stored `language` is authoritative (settings-normalize.js repairs it);
   // setLanguage mirrors it into localStorage for the windows without settings.
-  if (settings.language) setLanguage(settings.language)
-  else restoreStoredLanguage()
+  document.documentElement.lang = settings.language ? setLanguage(settings.language) : restoreStoredLanguage()
   applyTranslations()
   await refreshShortcutStatuses()
   applyAppearance()
-  navigate('home')
+  configInitialized = true
+  navigate(pendingRoute)
 }
 init()

@@ -124,6 +124,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   usageBreakdown: (query) => ipcRenderer.invoke('usage:breakdown', query),
   usageHeatmap: (query) => ipcRenderer.invoke('usage:heatmap', query),
   usageClear: () => ipcRenderer.invoke('usage:clear'),
+  getDeviceBatterySnapshot: () => ipcRenderer.invoke('device-battery:snapshot'),
+  refreshDeviceBattery: () => ipcRenderer.invoke('device-battery:refresh'),
+  onDeviceBatterySnapshot: (callback) => {
+    const handler = (_event, snapshot) => callback(snapshot)
+    ipcRenderer.on('device-battery:changed', handler)
+    return () => ipcRenderer.removeListener('device-battery:changed', handler)
+  },
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowClose: () => ipcRenderer.send('window:close'),
   // M2/W6b: one-way report so the main process can reclaim a hidden, clean main

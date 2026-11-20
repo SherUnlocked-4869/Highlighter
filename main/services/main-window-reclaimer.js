@@ -32,6 +32,7 @@ const RENDERER_ROUTES = Object.freeze([
   // in-progress capture choices), but it must stay restorable so a hidden window
   // reopens where the user left it instead of silently falling back to home.
   'recording',
+  'device-battery',
   'settings-general',
   'models',
   'settings-function',
@@ -43,10 +44,10 @@ const RENDERER_ROUTES = Object.freeze([
   'about'
 ])
 
-// v1: the six low-risk pages. Anything with an editor draft or a settings form
+// Low-risk pages. Anything with an editor draft or a settings form
 // stays warm on purpose; see main/ipc/window-reclaim-ipc.js for the second
 // barrier (the route has to be on this list AND the renderer has to be clean).
-const SAFE_ROUTES = Object.freeze(['home', 'history', 'usage', 'translation', 'chat', 'about'])
+const SAFE_ROUTES = Object.freeze(['home', 'history', 'usage', 'translation', 'chat', 'about', 'device-battery'])
 
 const MAX_ROUTE_REASON_LENGTH = 120
 
@@ -55,6 +56,11 @@ const MAX_ROUTE_REASON_LENGTH = 120
 // after destruction so a rebuilt window never inherits a stale route as "pending".
 function createRendererWindowState({ now = () => Date.now() } = {}) {
   let current = { route: 'home', dirty: false, dirtyReason: '', updatedAt: 0 }
+  const listeners = new Set()
+
+  function notify() {
+    for (const listener of listeners) listener({ ...current })
+  }
 
   function set(next = {}) {
     const route = typeof next.route === 'string' ? next.route : current.route
@@ -67,6 +73,7 @@ function createRendererWindowState({ now = () => Date.now() } = {}) {
         : '',
       updatedAt: now()
     }
+    notify()
     return { ...current }
   }
 
@@ -75,8 +82,13 @@ function createRendererWindowState({ now = () => Date.now() } = {}) {
     get: () => ({ ...current }),
     isDirty: () => current.dirty === true,
     getRoute: () => current.route,
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
     clear() {
       current = { route: 'home', dirty: false, dirtyReason: '', updatedAt: 0 }
+      notify()
     }
   }
 }

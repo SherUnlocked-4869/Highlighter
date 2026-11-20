@@ -505,6 +505,7 @@ const secureIpcMain = createSecureIpcMain({
 })
 
 const mainWindowReclaim = createMainWindowReclaim({ ipcMain: secureIpcMain, getWindow: () => mainWindow, log, isBusy: () => dataRootMigrationInProgress === true || recordDomain?.isTaskActive?.() === true || captureDomain?.isTaskActive?.() === true || longCaptureDomain?.isTaskActive?.() === true })
+const deviceBattery = require('./main/services/device-battery-feature').install({ ipcMain: secureIpcMain, app, powerMonitor, windowState: mainWindowReclaim.getState(), getMainWindow: () => mainWindow, stateDirectory: dataRootContext.locatorDirectory, appRoot: __dirname, log, e2eContext })
 
 const shortcutService = new ShortcutService({
   globalShortcut,
@@ -836,6 +837,7 @@ function createMainWindow(route = 'home') {
   route = mainWindowReclaim.resolveInitialRoute(route)
   if (mainWindow && !mainWindow.isDestroyed()) {
     const startedAt = performance.now()
+    deviceBattery.beforeNavigate(route)
     mainWindow.show()
     mainWindow.focus()
     mainWindow.webContents.send('app:navigate', route)
@@ -856,6 +858,7 @@ function createMainWindow(route = 'home') {
     height: 760,
     minWidth: 880,
     minHeight: 620,
+    show: !e2eContext.enabled,
     frame: false,
     title: 'Highlighter',
     backgroundColor: windowBackdropColor(getSettings(), nativeTheme),
@@ -1170,8 +1173,6 @@ secureIpcMain.on('window:close', (event) => {
   selectionDomain.cancelStreamForWindow(win, 'window-hidden')
   win?.hide(); if (win) mainWindowReclaim.arm()
 })
-// Local AI CLI usage statistics (see docs/plans/2026-10-21-tokentracker-usage-page-development-plan.md):
-// one line because install() self-registers its IPC surface and data-root registry hook.
 require('./main/services/usage-feature').install({ ipcMain: secureIpcMain, app, getPaths: () => activePaths, getMainWindow: () => mainWindow, getSettings, log })
 secureIpcMain.assertComplete()
 async function startApplication() {
@@ -1302,6 +1303,7 @@ else {
     cursorProvider?.dispose()
   })
   app.on('before-quit', (event) => {
+    if (deviceBattery.shutdownBeforeQuit(event)) return
     if (clipboardDomain && !clipboardDomain.isShutdownComplete()) {
       event.preventDefault()
       clipboardDomain.dispose().catch((error) => log('Clipboard shutdown failed:', error.code || 'SHUTDOWN_FAILED')).finally(() => app.quit())

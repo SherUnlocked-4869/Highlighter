@@ -5,7 +5,7 @@ const { test, expect } = require('./fixtures')
 
 const routes = {
   home: '.function-launch', translation: '#translateNow', chat: '#sendChat', history: '#historyResults',
-  recording: '#recordingStartButton', 'selection-toolbar': '#saveSelectionToolbar', 'local-search': '#categoryEditor',
+  recording: '#recordingStartButton', 'device-battery': '#deviceBatteryRefresh', 'selection-toolbar': '#saveSelectionToolbar', 'local-search': '#categoryEditor',
   'clipboard-history': '#clipboard-save', usage: '.usage-page', 'settings-general': '#theme',
   'settings-function': '#nameTemplate', models: '#addModelProvider', 'settings-system': '#dataRoot', about: '.about'
 }

@@ -27,6 +27,17 @@ function createFakeRelease(version = '2.1.0-beta.0') {
   fs.mkdirSync(clipboardDir, { recursive: true })
   fs.writeFileSync(path.join(clipboardDir, 'HighlighterClipboard.exe'), 'sidecar')
   fs.writeFileSync(path.join(clipboardDir, 'build-info.json'), JSON.stringify({ version }))
+  const batteryDir = path.join(dist, 'win-unpacked', 'resources', 'native', 'device-battery')
+  fs.mkdirSync(batteryDir, { recursive: true })
+  const pe = Buffer.alloc(0x46)
+  pe.writeUInt16LE(0x5a4d, 0)
+  pe.writeInt32LE(0x40, 0x3c)
+  pe.writeUInt32LE(0x4550, 0x40)
+  pe.writeUInt16LE(0x8664, 0x44)
+  fs.writeFileSync(path.join(batteryDir, 'HighlighterDeviceBattery.exe'), pe)
+  for (const name of ['HighlighterDeviceBattery.dll', 'HighlighterDeviceBattery.deps.json', 'HighlighterDeviceBattery.runtimeconfig.json', 'hostfxr.dll', 'hostpolicy.dll', 'coreclr.dll', 'WindowsBase.dll', 'Microsoft.Windows.SDK.NET.dll', 'WinRT.Runtime.dll']) {
+    fs.writeFileSync(path.join(batteryDir, name), 'stub')
+  }
   fs.writeFileSync(path.join(dist, `Highlighter-Setup-${version}.exe`), 'setup')
   fs.writeFileSync(path.join(dist, `Highlighter-${version}-portable.exe`), 'portable')
   fs.writeFileSync(path.join(dist, `Highlighter-Setup-${version}.exe.blockmap`), 'blockmap')

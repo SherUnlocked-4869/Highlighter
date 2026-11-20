@@ -25,10 +25,11 @@
     "build:smart-select": "powershell -NoProfile -ExecutionPolicy Bypass -File native/smart-select/build.ps1",
     "build:ocr": "powershell -NoProfile -ExecutionPolicy Bypass -File native/ocr/build.ps1",
     "build:everything": "powershell -NoProfile -ExecutionPolicy Bypass -File native/everything-search/build.ps1",
+    "build:device-battery": "powershell -NoProfile -ExecutionPolicy Bypass -File native/device-battery/build.ps1",
     "build:clipboard": "node scripts/build-clipboard-native.js",
     "build:selection": "node node_modules/node-gyp/bin/node-gyp.js rebuild --directory vendor/selection-hook",
     "test:clipboard:native": "node scripts/test-selection-clipboard-native.js && cargo test --locked --manifest-path native/clipboard/Cargo.toml && node --test test/clipboard-*.test.js test/selection-native-build.test.js",
-    "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr && npm run build:everything && npm run build:selection && npm run build:clipboard",
+    "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr && npm run build:everything && npm run build:selection && npm run build:clipboard && npm run build:device-battery",
     "check": "node scripts/check-js.js && npm run check:architecture && npm run check:i18n",
     "check:architecture": "node scripts/check-architecture.js",
     "check:i18n": "node scripts/check-i18n.js --max 606",
@@ -89,6 +90,10 @@
           "HighlighterClipboard.exe",
           "build-info.json"
         ]
+      },
+      {
+        "from": "native/device-battery/bin",
+        "to": "native/device-battery"
       },
       {
         "from": "docs/third-party",

@@ -16,7 +16,8 @@ function configureE2eEnvironment({ app, env = process.env, fileSystem = fs } = {
   // otherwise depend on host state. Opt-in so local runs can still exercise
   // the real sidecar.
   const fakeEverything = env.HIGHLIGHTER_E2E_FAKE_EVERYTHING === '1'
-  return { enabled: true, dataRoot, sessionData, fakeEverything }
+  const fakeDeviceBattery = env.HIGHLIGHTER_E2E_FAKE_DEVICE_BATTERY === '1'
+  return { enabled: true, dataRoot, sessionData, fakeEverything, fakeDeviceBattery }
 }
 
 module.exports = { configureE2eEnvironment }

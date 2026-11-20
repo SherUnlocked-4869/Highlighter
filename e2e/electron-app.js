@@ -36,6 +36,7 @@ async function launchHighlighter({ dataRoot, artifactsDir, extraEnv = {}, savePa
       HIGHLIGHTER_E2E: '1',
       HIGHLIGHTER_E2E_DATA_ROOT: dataRoot,
       HIGHLIGHTER_E2E_FAKE_EVERYTHING: '1',
+      HIGHLIGHTER_E2E_FAKE_DEVICE_BATTERY: '1',
       // The recording spec opts into the main-process synthetic capture source for the
       // same reason the sandbox is disabled: this automation host cannot initialise DXGI
       // desktop duplication, so a real getDisplayMedia stream always fails here.
