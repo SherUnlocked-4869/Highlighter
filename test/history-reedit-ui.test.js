@@ -302,7 +302,7 @@ test('the other card actions report failures through the same errorMessage helpe
 
 test('long captures keep no edit button but explain why', () => {
   // Behaviour is unchanged: no edit button. What is new is the tooltip on the plate.
-  assert.match(history, /const editButton = item\?\.longCapture \? '' : `<button data-history-action="edit"/)
+  assert.match(history, /const editButton = item\?\.longCapture \? '' : `<button type="button" class="button subtle" data-history-action="edit"/)
   assert.match(history, /const imageTitle = item\?\.longCapture \? ` title="\$\{escapeHtml\(t\('config\.history\.long-capture-no-edit'\)\)\}"` : ''/)
   assert.match(history, /<div class="history-image"\$\{imageTitle\}>/)
   // A tooltip alone is not a keyboard affordance; the plate must stay reachable.

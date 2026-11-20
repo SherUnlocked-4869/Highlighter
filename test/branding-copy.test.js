@@ -14,7 +14,9 @@ test('visible config UI uses Highlighter-owned copy and project links', () => {
   assert.doesNotMatch(configScript, /Snow\s*Shot|snowshot/i)
   // P0-1-T3（S1，批次 C）：设置页文案迁入 shared/locales/config.js（readConfigSource()
   // 已把该语言表拼进源码），按钮改用键取文案 —— 这里改断言"按钮带键 + 文案仍存在"。
-  assert.match(configScript, /id="openProjectHome">\$\{t\('config\.about\.project-home'\)\}</)
+  // The button may append a decorative glyph after the label, so only the
+  // openProjectHome -> locale-key wiring is pinned; the text itself is asserted below.
+  assert.match(configScript, /id="openProjectHome">\$\{t\('config\.about\.project-home'\)\}/)
   assert.match(configScript, /'config\.about\.project-home': '项目主页'/)
   assert.match(configScript, /github\.com\/SherUnlocked-4869\/Highlighter/)
 })

@@ -669,6 +669,10 @@ test('capture renderer honors saveMode, Ctrl+A, the serial reset, the shutter ga
 function magentaBox (frame) {
   const box = { count: 0, minX: Infinity, minY: Infinity, maxX: -1, maxY: -1 }
   for (let offset = 0; offset + 3 < frame.data.length; offset += 4) {
+    // Alpha matters: the fixture screenshot is resampled app artwork, whose edges can
+    // carry a fully transparent-but-magenta fringe (alpha 1/255). Only a pixel the user
+    // could actually see counts as a cursor pixel.
+    if (frame.data[offset + 3] < 128) continue
     if (!(frame.data[offset] >= 240 && frame.data[offset + 1] <= 15 && frame.data[offset + 2] >= 240)) continue
     const pixel = offset / 4
     const x = pixel % frame.width
