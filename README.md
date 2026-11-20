@@ -248,12 +248,10 @@ npm run build:win:portable -- --config.electronDist=node_modules/electron/dist
 
 ### 应用图标
 
-图标源文件在 `design-demos/app-icon/assets/*.svg`，由脚本光栅化并打包成多尺寸 ICO：
+图标母版为 [透明 PNG](design-demos/app-icon/assets/highlighter-icon-source.png)。下列命令生成 Windows 软件和安装程序使用的 11 档尺寸 ICO，以及浅色和深色托盘使用的两份 PNG。
 
 ```powershell
-node design-demos/app-icon/tools/capture-source.mjs   # 生成矢量母版
-node design-demos/app-icon/tools/rasterize-capture.mjs # 按尺寸光栅化（24px 以下单独重画）
-node generate-icon.js                                  # 写入 assets/
+node generate-icon.js
 ```
 
 ## 架构图
