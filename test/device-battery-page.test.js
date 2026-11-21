@@ -36,7 +36,7 @@ class Node extends EventTarget {
     this.children = []
     this.attributes = new Map()
     this.dataset = {}
-    this.style = {}
+    this.style = { setProperty(name, value) { this[name] = value } }
     this.classList = { toggle() {} }
     this.hidden = false
     this.parent = null
@@ -234,18 +234,19 @@ test('renders 0%, unknown, power vs charging, estimated and stale values, and Ap
   assert.match(h.updated.textContent, /^Last checked: /)
   assert.match(h.system.textContent, /^0%Low battery · Not charging · Plugged in$/)
   assert.equal(h.system.firstElementChild.dataset.level, 'low')
-  assert.equal(nodeWithClass(h.system, 'device-battery-track').firstElementChild.style.inlineSize, '0%')
   const [named, buds, pad] = h.list.children
-  const deviceName = nodeWithClass(named, 'form-label').firstElementChild.firstElementChild
+  const deviceName = nodeWithClass(named, 'device-battery-name').firstElementChild
   assert.equal(deviceName.tagName, 'bdi')
   assert.equal(deviceName.textContent, name)
-  assert.deepEqual([named, buds, pad].map((row) => {
-    const icon = nodeWithClass(row, 'device-battery-icon')
-    assert.equal(icon.getAttribute('aria-hidden'), 'true')
-    assert.equal(icon.nextElementSibling, nodeWithClass(row, 'form-label'))
+  assert.deepEqual([named, buds, pad].map((tile) => {
+    const ring = nodeWithClass(tile, 'device-battery-ring')
+    assert.equal(ring.getAttribute('aria-hidden'), 'true')
+    const icon = nodeWithClass(ring, 'device-battery-icon')
     return icon.dataset.kind
   }), ['mouse', 'earbuds', 'controller'])
-  assert.match(named.textContent, /Windows Bluetooth.*Last reading, may be out of date.*4%/)
+  assert.match(named.textContent, /4%.*Windows Bluetooth.*Last reading, may be out of date/)
+  assert.equal(nodeWithClass(named, 'device-battery-arc').style['--battery-angle'], '0.04turn')
+  assert.equal(nodeWithClass(buds, 'device-battery-arc').dataset.filled, undefined)
   assert.doesNotMatch(named.textContent, /[Cc]harging|Low battery/)
   assert.doesNotMatch(h.view.innerHTML, /<img/)
   const parts = nodeWithClass(buds, 'device-battery-parts')
@@ -254,11 +255,9 @@ test('renders 0%, unknown, power vs charging, estimated and stale values, and Ap
   assert.equal(parts.children[0].children[1].dataset.level, 'low')
   assert.equal(parts.children[1].children[1].dataset.level, 'warning')
   assert.match(parts.children[1].textContent, /20%Battery getting low · Charging/)
-  assert.equal(nodeWithClass(parts.children[2], 'device-battery-track'), null)
   assert.match(parts.children[2].textContent, /Battery level not reported/)
-  assert.match(pad.textContent, /88%Estimated/)
-  // Reversed provider order and a lower battery level must not move rows or
-  // rebuild unaffected row contents.
+  assert.match(pad.textContent, /88%XInput PadEstimated/)
+  // Updates keep the device order and unaffected tile contents.
   const oldLabel = named.firstElementChild
   h.push(snapshot(2, { devices: [devices[2], devices[1], { ...devices[0], percent: 1 }] }))
   assert.deepEqual(h.list.children, [named, buds, pad])

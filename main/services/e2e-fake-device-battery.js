@@ -21,7 +21,7 @@ function spawnFakeDeviceBattery() {
       devices: [
         { id: 'fixture-receiver:1', name: 'Fixture Mouse <USB>', kind: 'mouse', source: 'logitech', percent: refreshed ? 1 : 0 },
         { id: 'fixture-headset:2', name: 'Fixture Headphones', kind: 'headphones', source: 'bluetooth', percent: null },
-        { id: 'fixture-keyboard:4', name: 'Fixture Keyboard', kind: 'keyboard', source: 'hid', percent: 44 },
+        { id: 'fixture-keyboard:4', name: 'Fixture Keyboard', kind: 'keyboard', source: 'hid', percent: 44, charging: true },
         { id: 'fixture-unknown:5', name: 'Fixture Unknown', kind: 'other', source: 'hid', percent: 36 },
         { id: 'fixture-buds:3', name: 'Fixture Earbuds', kind: 'earbuds', source: 'apple', percent: 61, estimated: true, parts: [
           { part: 'left', percent: 61 }, { part: 'right', percent: 70 }, { part: 'case', percent: 85, charging: true }

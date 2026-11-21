@@ -13,9 +13,9 @@ test('the device battery route shows native-style readings only while the main w
   await expect(mouse).toContainText('罗技')
   for (const [name, iconFile] of [
     ['Fixture Mouse <USB>', 'mouse.svg'], ['Fixture Keyboard', 'keyboard.svg'],
-    ['Fixture Headphones', 'headphones.svg'], ['Fixture Earbuds', 'headphones.svg'], ['Fixture Unknown', 'laptop.svg']
+    ['Fixture Headphones', 'headphones.svg'], ['Fixture Earbuds', 'earbuds.svg'], ['Fixture Unknown', 'laptop.svg']
   ]) {
-    const icon = devices.locator('.device-battery-row').filter({ has: page.getByText(name, { exact: true }) }).locator('.device-battery-icon')
+    const icon = devices.getByRole('listitem').filter({ has: page.getByText(name, { exact: true }) }).locator('.device-battery-icon')
     await expect(icon).toBeVisible()
     await expect(icon).toHaveAttribute('aria-hidden', 'true')
     expect(await icon.evaluate((element) => getComputedStyle(element).maskImage)).toContain(`/config/icons/${iconFile}`)
@@ -23,7 +23,24 @@ test('the device battery route shows native-style readings only while the main w
   await expect(devices.getByText('未报告电量', { exact: true })).toBeVisible()
   await expect(devices.getByText('充电盒', { exact: true })).toBeVisible()
   await expect(devices.getByText('85%', { exact: true })).toBeVisible()
+  const keyboard = devices.getByRole('listitem').filter({ hasText: 'Fixture Keyboard' })
+  await expect(keyboard.locator('.device-battery-charge-badge')).toBeVisible()
+  await expect(keyboard.locator('.device-battery-arc')).toHaveCSS('--battery-angle', '0.44turn')
+  await expect(mouse.locator('.device-battery-arc')).toHaveCSS('--battery-angle', '')
   await expect(page.locator('#deviceBatteryUpdated')).toContainText('上次检查：')
+
+  const rowCount = () => devices.locator(':scope > li').evaluateAll((tiles) => new Set(tiles.map((tile) => tile.offsetTop)).size)
+  const gridFits = () => devices.evaluate((grid) => grid.scrollWidth <= grid.clientWidth)
+  const resizeWindow = (width) => electronApp.evaluate(({ BrowserWindow }, width) => {
+    const win = BrowserWindow.getAllWindows().find((candidate) => candidate.webContents.getURL().endsWith('/config/config.html'))
+    win.setSize(width, 760)
+  }, width)
+  expect(await gridFits()).toBe(true)
+  await resizeWindow(1120)
+  await expect.poll(rowCount).toBe(1)
+  await resizeWindow(880)
+  await expect.poll(rowCount).toBe(2)
+  expect(await gridFits()).toBe(true)
 
   const refresh = page.locator('#deviceBatteryRefresh')
   const refreshIcon = refresh.locator('.svg-icon')
