@@ -258,7 +258,7 @@
     <button id="ocrResultClose" data-i18n-title="capture.ocr.close-tip">×</button>
   </div>
   <div id="loading" class="loading hidden"><span></span><b data-i18n="capture.loading.text"></b></div>
-  <audio id="shutterSound" src="../assets/shutter.wav" preload="auto"></audio>
+  <audio id="shutterSound" preload="none"></audio>
   <!-- P0-1-T4（S11）：i18n runtime + locale tables. They must load before capture.js: the
        controller calls restoreStoredLanguage()/applyTranslations() on load and builds every
        dynamic string with t(). The three per-language files carry the cross-window keys,

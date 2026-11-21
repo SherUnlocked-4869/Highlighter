@@ -7,8 +7,7 @@
 // Every Electron handle is injected (no `require('electron')` at module scope),
 // so this stays unit-testable outside Electron — the repo rule for main/services.
 //
-// Behaviour is byte-identical to the previous main.js block. Notes on the two
-// deps that are providers rather than handles:
+// Notes on the two deps that are providers rather than handles:
 //   getDataRoot        the active data root, or userData before the portable
 //                      bootstrap picked one. main.js keeps that expression.
 //   isAutomationEnabled  the e2e flag; positionAutomationWindow is a no-op
@@ -36,7 +35,7 @@ function createWindowActions({
     return shell.openExternal(new URL(String(value)).toString())
   }
 
-  async function getDisplayDiagnostics() {
+  async function getDisplayDiagnostics({ includeThumbnails = false } = {}) {
     const displays = screen.getAllDisplays().map((display) => ({
       id: display.id,
       label: display.label,
@@ -48,11 +47,18 @@ function createWindowActions({
       internal: display.internal,
       physicalBounds: isWin ? screen.dipToScreenRect(null, display.bounds) : display.bounds
     }))
-    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 4096, height: 4096 } })
+    const measureThumbnails = includeThumbnails === true
+    const size = measureThumbnails ? 4096 : 0
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: size, height: size } })
     return {
       cursor: screen.getCursorScreenPoint(),
       displays,
-      sources: sources.map((source) => ({ id: source.id, displayId: source.display_id, name: source.name, thumbnailSize: source.thumbnail.getSize() }))
+      sources: sources.map((source) => ({
+        id: source.id,
+        displayId: source.display_id,
+        name: source.name,
+        thumbnailSize: measureThumbnails ? source.thumbnail.getSize() : null
+      }))
     }
   }
 

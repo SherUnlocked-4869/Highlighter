@@ -17,8 +17,10 @@ const { makeCaptureName } = require('../../services/capture-naming')
 // compact-window geometry for history re-edit moved out of the pin domain into a shared pure
 // function, so the two no longer carry separate copies of the same arithmetic.
 const { resolveEditorLayout, scaleFactorFor } = require('../../../shared/editor-layout')
+const { captureForeground } = require('../../services/focused-window-capture')
 
 const NATIVE_CAPTURE_TIMEOUT_MS = 5000
+const ELECTRON_CAPTURE_TIMEOUT_MS = 4000
 // P0-2（S9b）：光标查询的兜底预算。provider 自身的查询超时是 350ms，比抓屏慢得多，
 // 这里再压一道硬预算，保证截图窗口不会被"取光标"拖住；超时按"不画"处理。
 const CURSOR_QUERY_BUDGET_MS = 120
@@ -47,7 +49,7 @@ function createCaptureDomain(deps) {
     getSettings,
     log,
     assertGameModeDisabled,
-    screenshotDesktop,
+    getScreenshotDesktop = () => deps.screenshotDesktop,
     listNativeDisplays,
     findNativeDisplay,
     getNativeDisplayBounds,
@@ -118,6 +120,7 @@ function createCaptureDomain(deps) {
 
   const SmartSelectSession = createSmartSelectSessionClass({ spawn, log })
   let currentCaptureWindow = null
+  let nativeShutterWindow = null
   let nativeDisplayListPromise = null
   let captureCreateSeq = 0
   // P0-7-T7 精确接续（2026-10-10 真机验收修正）：主进程记的是"上一张实际用掉的最后一个序号"，
@@ -207,10 +210,33 @@ function createCaptureDomain(deps) {
     throw new Error('屏幕捕获连续返回空白画面')
   }
 
-  async function getDisplayCapture(display) {
+  let activeDesktopCapture = null
+  async function queueDesktopCapture(display, scaleFactor, isCurrent) {
+    let timer
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('屏幕捕获超时')), ELECTRON_CAPTURE_TIMEOUT_MS)
+    })
+    try {
+      while (activeDesktopCapture && isCurrent()) await Promise.race([activeDesktopCapture, timeout])
+      if (!isCurrent()) throw new Error('截图请求已被替换')
+      const task = getDesktopCapture(display, scaleFactor)
+      const unlock = () => { activeDesktopCapture = null }
+      // A timeout cannot cancel Chromium enumeration. Leave the slot occupied
+      // until the underlying call finishes, without retaining its image.
+      activeDesktopCapture = task.then(unlock, unlock)
+      return await Promise.race([task, timeout])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  async function getDisplayCapture(display, isCurrent = () => true) {
     const scaleFactor = display.scaleFactor || 1
+    let fallbackReason = null
     if (isWin) {
       try {
+        fallbackReason = 'native-display-discovery'
+        const screenshotDesktop = getScreenshotDesktop()
         if (!nativeDisplayListPromise) nativeDisplayListPromise = listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
         const nativeDisplays = await nativeDisplayListPromise
         const physicalBounds = screen.dipToScreenRect(null, display.bounds)
@@ -220,6 +246,7 @@ function createCaptureDomain(deps) {
           Math.max(1, Math.ceil(scaleFactor))
         )
         if (nativeDisplay) {
+          fallbackReason = 'native-capture-failed'
           // The capture helper is an external cmd.exe pipeline with no timeout of
           // its own; without this guard a hung spawn would wedge window creation.
           const buffer = await new Promise((resolve, reject) => {
@@ -237,41 +264,77 @@ function createCaptureDomain(deps) {
           // wrong-sized capture fails without decoding a full-screen bitmap.
           const pngSize = readPngSize(buffer)
           if (!pngSize || pngSize.width !== nativeBounds.width || pngSize.height !== nativeBounds.height) {
+            fallbackReason = 'native-size-mismatch'
             throw new Error(`原生抓屏尺寸异常：${pngSize ? `${pngSize.width}x${pngSize.height}` : '未知'}`)
           }
-          if (isBlankCapture(nativeImage.createFromBuffer(buffer))) throw new Error('原生抓屏返回空白画面')
+          if (isBlankCapture(nativeImage.createFromBuffer(buffer))) {
+            fallbackReason = 'native-blank'
+            throw new Error('原生抓屏返回空白画面')
+          }
           return {
             imageBuffer: buffer,
             sourceId: `native:${nativeDisplay.id}`,
-            scaleFactor
+            scaleFactor,
+            backend: 'native',
+            fallbackReason: null
           }
         }
+        fallbackReason = 'native-display-unmatched'
+        nativeDisplayListPromise = null
       } catch (error) {
         nativeDisplayListPromise = null
         log('Native capture fallback:', error.message)
       }
     }
-    return getDesktopCapture(display, scaleFactor)
+    const capture = await queueDesktopCapture(display, scaleFactor, isCurrent)
+    return { ...capture, backend: 'electron', fallbackReason }
   }
 
+  let focusedCaptureActive = false
   async function captureFocusedWindow() {
-    let title = ''
-    if (isWin) {
-      title = await new Promise((resolve) => {
-        const script = `$sig='[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);'; Add-Type -MemberDefinition $sig -Name Win32 -Namespace Native; $h=[Native.Win32]::GetForegroundWindow(); $b=New-Object System.Text.StringBuilder 1024; [void][Native.Win32]::GetWindowText($h,$b,$b.Capacity); $b.ToString()`
-        execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 4000 }, (_error, stdout) => resolve(String(stdout || '').trim()))
+    if (focusedCaptureActive) throw new Error('正在捕获焦点窗口')
+    focusedCaptureActive = true
+    let fallback
+    let timer
+    try {
+      let windowId = null
+      if (isWin) {
+        const capture = await captureForeground({
+          execFile,
+          dirname: app.isPackaged ? process.resourcesPath : rootDirectory,
+          packaged: app.isPackaged
+        })
+        windowId = capture.windowId
+        if (capture.protected || !windowId) throw new Error('无法捕获焦点窗口')
+        if (capture.imageBuffer) {
+          const image = nativeImage.createFromBuffer(capture.imageBuffer)
+          if (!isBlankCapture(image)) {
+            log('Focused capture backend:', 'native')
+            return capture.imageBuffer
+          }
+        }
+      }
+      fallback = desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 1920, height: 1080 } })
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('捕获焦点窗口超时')), ELECTRON_CAPTURE_TIMEOUT_MS)
       })
+      const sources = await Promise.race([fallback, timeout])
+      const source = windowId
+        ? sources.find((item) => item.id.startsWith(`window:${windowId}:`))
+        : sources.find((item) => !shouldFilterApp(item.name))
+      if (!source || source.thumbnail.isEmpty()) throw new Error('无法捕获焦点窗口')
+      log('Focused capture backend:', 'electron')
+      return source.thumbnail.toPNG()
+    } finally {
+      clearTimeout(timer)
+      // Electron cannot cancel enumeration. Keep it single-flight even after timeout.
+      if (fallback) {
+        const unlock = () => { focusedCaptureActive = false }
+        fallback.then(unlock, unlock)
+      } else {
+        focusedCaptureActive = false
+      }
     }
-    const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 1920, height: 1080 }, fetchWindowIcons: true })
-    const source = sources.find((item) => title && (item.name === title || title.includes(item.name) || item.name.includes(title))) || sources.find((item) => !shouldFilterApp(item.name))
-    if (!source || source.thumbnail.isEmpty()) throw new Error('无法捕获焦点窗口')
-    return source.thumbnail.toDataURL()
-  }
-
-  function warmUpNativeDisplays() {
-    return listNativeDisplays(screenshotDesktop.parseDisplaysOutput)
-      .then((displays) => { nativeDisplayListPromise = Promise.resolve(displays) })
-      .catch((error) => log('Display discovery warm-up failed:', error))
   }
 
   // §3.2② (Snow a7673a353): the Ctrl+A second level needs the union of every display in
@@ -322,13 +385,39 @@ function createCaptureDomain(deps) {
     return true
   }
 
+  function playNativeShutter(win) {
+    if (!isWin || win._captureInit?.settings?.screenshot?.shutterSound === false) return false
+    if (nativeShutterWindow) {
+      nativeShutterWindow = win
+      return true
+    }
+    const directory = app.isPackaged
+      ? path.join(process.resourcesPath, 'native', 'shutter-sound')
+      : path.join(rootDirectory, 'native', 'shutter-sound', 'bin')
+    const executable = path.join(directory, 'HighlighterShutterSound.exe')
+    if (!fs.existsSync(executable)) return false
+    nativeShutterWindow = win
+    try {
+      execFile(executable, [], { windowsHide: true, timeout: 1500 }, (error) => {
+        const fallbackWindow = nativeShutterWindow
+        nativeShutterWindow = null
+        // The renderer plays at most once if Windows playback fails after reveal.
+        if (error && fallbackWindow && !fallbackWindow.isDestroyed()) fallbackWindow.webContents.send('capture:shown', true)
+      })
+      return true
+    } catch {
+      nativeShutterWindow = null
+      return false
+    }
+  }
+
   function revealCaptureWindow(win) {
     if (!win || win.isDestroyed() || win._captureVisible) return
     clearTimeout(win._renderTimeout)
     win._captureVisible = true
     win.setOpacity(1)
     win.showInactive()
-    win.webContents.send('capture:shown')
+    win.webContents.send('capture:shown', !playNativeShutter(win))
     setImmediate(() => {
       if (win.isDestroyed()) return
       win.focus()
@@ -432,13 +521,6 @@ function createCaptureDomain(deps) {
     assertGameModeDisabled()
     const createSeq = ++captureCreateSeq
     const performanceStartedAt = performance.now()
-    const performanceTiming = {
-      startedAt: performanceStartedAt,
-      mode: options.mode || 'region',
-      captureMs: 0,
-      smartSelectMs: 0,
-      windowLoadMs: 0
-    }
     const mode = options.mode || 'region'
     const requestedBounds = options.windowBounds && {
       x: Math.round(options.windowBounds.x),
@@ -450,6 +532,20 @@ function createCaptureDomain(deps) {
       ? screen.getDisplayMatching(requestedBounds)
       : screen.getDisplayNearestPoint(screen.getCursorScreenPoint()))
     const captureBounds = requestedBounds || display.bounds
+    const captureDetails = {
+      captureId: createSeq,
+      mode,
+      width: captureBounds.width,
+      height: captureBounds.height
+    }
+    const performanceTiming = {
+      startedAt: performanceStartedAt,
+      captureMs: 0,
+      smartSelectMs: 0,
+      windowLoadMs: 0,
+      details: captureDetails
+    }
+    performanceMonitor.record('capture.started', 0, captureDetails)
     const suppliedImageBuffer = options.imageBuffer
       ? imageDataToBuffer(options.imageBuffer)
       : options.imageDataUrl
@@ -459,13 +555,21 @@ function createCaptureDomain(deps) {
       ? Promise.resolve({
           imageBuffer: suppliedImageBuffer || Buffer.alloc(0),
           sourceId: '',
-          scaleFactor: Number(options.sourceScaleFactor) || display.scaleFactor || 1
+          scaleFactor: Number(options.sourceScaleFactor) || display.scaleFactor || 1,
+          backend: suppliedImageBuffer ? 'supplied-image' : 'canvas',
+          fallbackReason: null
         })
-      : getDisplayCapture(display)
+      : getDisplayCapture(display, () => captureCreateSeq === createSeq)
     const capturePromise = Promise.resolve(rawCapturePromise).then((capture) => {
       performanceTiming.captureMs = Math.round((performance.now() - performanceStartedAt) * 100) / 100
+      captureDetails.backend = capture.backend
+      captureDetails.fallbackReason = capture.fallbackReason
+      captureDetails.scaleFactor = capture.scaleFactor
+      performanceMonitor.record('capture.acquired', performanceTiming.captureMs, captureDetails)
       return capture
     })
+    // Smart selection can still be initializing when an older capture is superseded.
+    capturePromise.catch(() => {})
     // P0-2（S9b 补漏）：只有"真的抓了屏幕"的路径才查光标。mode:'image'（贴图重新标注）与
     // mode:'canvas'（空白画布）的画面不是本次屏幕内容 —— 把此刻的光标贴上去是杂散像素，且它们
     // 的 scaleFactor 是"图像/编辑器比例"而非显示缩放，落点无意义。
@@ -480,7 +584,6 @@ function createCaptureDomain(deps) {
     const smartSelectSession = await smartSelectPromise
     if (createSeq !== captureCreateSeq) {
       smartSelectSession?.dispose()
-      capturePromise.catch(() => {})
       return null
     }
     if (currentCaptureWindow && !currentCaptureWindow.isDestroyed()) currentCaptureWindow.close()
@@ -535,6 +638,10 @@ function createCaptureDomain(deps) {
       return result
     })
     captureWindow.on('closed', () => {
+      performanceMonitor.record('capture.closed', performance.now() - performanceStartedAt, {
+        ...captureDetails,
+        rendererPid: performanceTiming.rendererPid ?? null
+      })
       clearTimeout(captureWindow._renderTimeout)
       captureWindow._smartSelectContext?.session.dispose()
       captureWindow._smartSelectContext = null
@@ -661,17 +768,16 @@ function createCaptureDomain(deps) {
         if (win?._captureInit) {
           const timing = win._performanceTiming
           if (timing) {
-            const bounds = win._captureInit.captureBounds || {}
-            performanceMonitor.record('capture.interactive', performance.now() - timing.startedAt, {
-              mode: timing.mode,
+            timing.rendererPid = event.sender.getOSProcessId?.() || null
+            const details = {
+              ...timing.details,
+              rendererPid: timing.rendererPid,
               captureMs: timing.captureMs,
               smartSelectMs: timing.smartSelectMs,
-              windowLoadMs: timing.windowLoadMs,
-              width: Number(bounds.width) || 0,
-              height: Number(bounds.height) || 0,
-              scaleFactor: Number(win._captureInit.scaleFactor) || 1
-            })
-            performanceMonitor.snapshot('capture-interactive', { mode: timing.mode })
+              windowLoadMs: timing.windowLoadMs
+            }
+            performanceMonitor.record('capture.interactive', performance.now() - timing.startedAt, details)
+            performanceMonitor.snapshot('capture-interactive', details)
             win._performanceTiming = null
           }
           win._captureInit.imageBuffer = null
@@ -903,7 +1009,6 @@ function createCaptureDomain(deps) {
     createCaptureController,
     getDisplayCapture,
     captureFocusedWindow,
-    warmUpNativeDisplays,
     ownsWindow,
     getCurrentWindow,
     isTaskActive

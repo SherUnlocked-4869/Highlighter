@@ -19,6 +19,13 @@ function createSettingsEffects(deps) {
     log
   } = deps
 
+  function applyClipboardSettings(clipboardToggled, settings) {
+    if (clipboardToggled && settings.clipboard?.enabled) deps.applySelectionEnabled?.()
+    deps.getClipboardDomain?.()?.applySettings().then(() => {
+      if (clipboardToggled && !settings.clipboard?.enabled) deps.applySelectionEnabled?.()
+    }).catch(() => {})
+  }
+
   const updateEffects = [
     {
       id: 'shortcuts',
@@ -111,7 +118,10 @@ function createSettingsEffects(deps) {
     {
       id: 'clipboard',
       when: (patch) => !!patch.clipboard,
-      run: () => { deps.getClipboardDomain?.()?.applySettings().catch(() => {}); createTrayIcon() }
+      run: (patch, settings) => {
+        applyClipboardSettings(patch.clipboard.enabled !== undefined, settings)
+        createTrayIcon()
+      }
     },
     {
       id: 'clipboard.appearance',
@@ -126,6 +136,11 @@ function createSettingsEffects(deps) {
       })
     },
     {
+      id: 'selectionToolbar.enabled',
+      when: (patch) => patch.selectionToolbar?.enabled !== undefined,
+      run: () => deps.applySelectionEnabled?.()
+    },
+    {
       id: 'selectionToolbar.conversation.persist',
       // Switching saving off has to delete what was already written, and
       // switching it on has to enforce the cap. Both are the store's job, so the
@@ -136,7 +151,7 @@ function createSettingsEffects(deps) {
   ]
 
   const resetEffects = [
-    { id: 'clipboard', run: () => deps.getClipboardDomain?.()?.applySettings().catch(() => {}) },
+    { id: 'clipboard', run: (settings) => applyClipboardSettings(true, settings) },
     { id: 'system.gameMode', run: (settings) => applyGameModeState(settings.system.gameMode, 'settings-reset') },
     { id: 'appearance', run: (settings) => broadcastActionAppearance(settings) },
     // A reset restores `language` to its default, so open windows have to be
@@ -151,6 +166,7 @@ function createSettingsEffects(deps) {
         enableClipboard: settings.selectionToolbar.clipboardFallback
       })
     },
+    { id: 'selectionToolbar.enabled', run: () => deps.applySelectionEnabled?.() },
     { id: 'search', run: () => searchDomain?.notifySettingsChanged() }
   ]
 

@@ -140,6 +140,7 @@ test('update effect ids are stable for contract tests', () => {
     'clipboard',
     'clipboard.appearance',
     'selectionToolbar.clipboardFallback',
+    'selectionToolbar.enabled',
     'selectionToolbar.conversation.persist'
   ])
 })

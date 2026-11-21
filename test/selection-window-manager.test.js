@@ -274,7 +274,7 @@ test('renderer exit recovery destroys only owned selection windows', () => {
   assert.equal(manager.handleRendererGone(toolbar, { reason: 'crashed', exitCode: -1 }), true)
   assert.equal(toolbar.destroyed, true)
   assert.equal(manager.getToolbarWindow(), null)
-  assert.match(logs.at(-1).join(' '), /renderer crashed \(-1\)/)
+  assert.ok(logs.some((entry) => /renderer crashed \(-1\)/.test(entry.join(' '))))
 })
 
 test('failed page loads destroy selection windows and allow clean retries', async () => {
@@ -356,6 +356,24 @@ test('a recycled toolbar window is rebuilt on the next selection and keeps its a
   assert.equal(second.visible, true)
   assert.equal(manager.recycleToolbarWindow('again'), true)
   assert.equal(manager.recycleToolbarWindow('nothing-cached'), false)
+})
+
+test('the warmed toolbar is reclaimed once hidden, even with repeated hide signals', () => {
+  const { manager, timers } = createHarness()
+  const warmed = manager.createToolbarWindow()
+  assert.equal(timers.size, 1)
+  const selection = { text: 'selected', actions: [], position: { x: 500, y: 400 }, width: 200 }
+  manager.showToolbarSelection(selection)
+  assert.equal(timers.size, 0)
+  manager.hideToolbar()
+  const [[key, timer]] = timers
+  manager.hideToolbar()
+  assert.equal(timers.get(key), timer)
+  assert.equal(timer.delay, 300000)
+  timers.delete(key)
+  timer.callback()
+  assert.equal(warmed.destroyed, true)
+  assert.notEqual(manager.showToolbarSelection(selection), warmed)
 })
 
 test('a toolbar window whose native size stopped following setSize is rebuilt once', () => {

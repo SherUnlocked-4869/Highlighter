@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld('captureAPI', {
     return () => ipcRenderer.removeListener('capture:init', handler)
   },
   onShown: (callback) => {
-    const handler = () => callback()
+    const handler = (_event, playInRenderer) => callback(playInRenderer !== false)
     ipcRenderer.on('capture:shown', handler)
     return () => ipcRenderer.removeListener('capture:shown', handler)
   },

@@ -190,7 +190,7 @@ async function waitForCursorDecode (win) {
 async function readProbe (win) {
   return win.webContents.executeJavaScript(
     '(function(){var a=document.getElementById("shutterSound");var p=window.__probe||{plays:0,errors:[]};' +
-    'return {plays:p.plays,errors:p.errors,readyState:a.readyState,networkState:a.networkState,' +
+    'return {plays:p.plays,errors:p.errors,hasSource:a.hasAttribute("src"),readyState:a.readyState,networkState:a.networkState,' +
     'error:a.error?a.error.code:0,duration:a.duration,muted:a.muted}})()'
   )
 }
@@ -205,7 +205,7 @@ async function readSerial (win) {
 
 async function waitFor (check, message) {
   for (let attempt = 0; attempt < 200; attempt++) {
-    if (check()) return
+    if (await check()) return
     await sleep(25)
   }
   throw new Error(message)
@@ -279,14 +279,22 @@ async function main () {
     await win.webContents.executeJavaScript(PAGE_HELPERS)
     await win.webContents.executeJavaScript(PR_HELPERS)
 
+    // A fresh screenshot with sound disabled must have no media source to preload.
+    await sendInit(win, makeInit({ screenshot: { shutterSound: false } }))
+    await waitFor(() => win.webContents.executeJavaScript('renderReadySent'), 'the silent screenshot did not become ready')
+    win.webContents.send('capture:shown')
+    report.audioDisabled = await readProbe(win)
+
     // --- A: stock payload, no saveMode -------------------------------------------------
     await sendInit(win, makeInit({}))
     await sleep(220)
     report.audioBeforeShown = await readProbe(win)
+    win.webContents.send('capture:shown', false)
+    report.audioNativeReceipt = await readProbe(win)
     win.webContents.send('capture:shown')
     await waitFor(async () => (await readProbe(win)).plays === 1, 'the shown receipt did not play the shutter')
     win.webContents.send('capture:shown')
-    await sleep(50)
+    await waitFor(async () => (await readProbe(win)).readyState >= 1, 'the shutter source did not load on demand')
     report.audio = await readProbe(win)
     await win.webContents.executeJavaScript('document.dispatchEvent(new KeyboardEvent("keydown",{key:"a",ctrlKey:true,bubbles:true}))')
     // Ctrl+A's handler is synchronous (capture.js:1305 -> render()), but whether the
@@ -505,6 +513,11 @@ test('capture renderer honors saveMode, Ctrl+A, the serial reset, the shutter ga
   // pins the CSP media-src decision) and the play() must be allowed without a gesture.
   assert.ok(report.audio.readyState >= 1, `shutter.wav did not load (readyState ${report.audio.readyState}, error ${report.audio.error}, networkState ${report.audio.networkState})`)
   assert.ok(report.audio.duration > 0.05, `shutter.wav duration looks wrong (${report.audio.duration})`)
+  assert.equal(report.audioDisabled.hasSource, false, 'with sound disabled the renderer must not assign a media source')
+  assert.equal(report.audioDisabled.plays, 0)
+  assert.equal(report.audioBeforeShown.hasSource, false, 'a hidden initialized page must not load the shutter')
+  assert.equal(report.audioNativeReceipt.hasSource, false, 'a native playback receipt must leave the Chromium sound idle')
+  assert.equal(report.audioNativeReceipt.plays, 0)
   assert.equal(report.audioBeforeShown.plays, 0, 'a hidden initialized page must stay silent')
   assert.equal(report.audio.plays, 1, 'the shown receipt must play once, including duplicate receipts')
   assert.deepEqual(report.audio.errors, [], 'play() must not be rejected (autoplay policy + CSP)')

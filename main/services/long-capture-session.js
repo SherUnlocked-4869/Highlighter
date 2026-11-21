@@ -1,6 +1,5 @@
 const fs = require('fs')
 const path = require('path')
-const sharp = require('sharp')
 
 const MAX_LONG_EDGE = 200000
 const MAX_PIXELS = 200000000
@@ -83,6 +82,7 @@ class LongCaptureSession {
   async render() {
     if (!this.strips.length) throw new Error('没有可导出的长截图内容')
     if (this.outputPath && fs.existsSync(this.outputPath)) return this.outputPath
+    const sharp = require('sharp')
     const rawSize = this.getUntrimmedSize()
     const size = this.getSize()
     let offset = 0

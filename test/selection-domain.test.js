@@ -256,6 +256,26 @@ test('game mode suspends the hook, hides the toolbar, and cancels the round', ()
   assert.deepEqual(hook.started, ['startup', 'game-mode-disabled'])
 })
 
+test('disabling the toolbar keeps the clipboard lease coordinator while clipboard history needs it', () => {
+  const { domain, state, hook } = createHarness()
+  state.settings.selectionToolbar.enabled = false
+  domain.initSelectionHook()
+  assert.deepEqual(hook.started, [])
+  state.settings.clipboard = { enabled: true }
+  domain.applySelectionEnabled()
+  domain.applySelectionEnabled()
+  assert.deepEqual(hook.started, ['selection-required'])
+  assert.deepEqual(hook.suspended, [])
+  state.settings.clipboard.enabled = false
+  domain.applySelectionEnabled()
+  assert.deepEqual(hook.suspended, ['toolbar-disabled'])
+  domain.applyGameMode(false)
+  assert.deepEqual(hook.started, ['selection-required'])
+  state.settings.selectionToolbar.enabled = true
+  domain.applySelectionEnabled()
+  assert.deepEqual(hook.started, ['selection-required', 'selection-required'])
+})
+
 test('window ownership drives renderer-gone recovery for the toolbar only', () => {
   const { domain, state } = createHarness()
 

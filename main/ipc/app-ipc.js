@@ -4,7 +4,9 @@ function registerAppIpc({ ipcMain, controller }) {
   ipcMain.handle('shell:open-external', (_event, value) => controller.openExternal(value))
   ipcMain.handle('app:execute-function', (_event, { name, payload } = {}) => controller.executeFunction(name, payload))
   ipcMain.handle('app:get-info', () => controller.getInfo())
-  ipcMain.handle('app:get-display-diagnostics', () => controller.getDisplayDiagnostics())
+  ipcMain.handle('app:get-display-diagnostics', (_event, includeThumbnails) => (
+    controller.getDisplayDiagnostics({ includeThumbnails: includeThumbnails === true })
+  ))
   ipcMain.handle('dialog:choose-directory', () => controller.chooseDirectory())
   ipcMain.handle('app:open-data-directory', () => controller.openDataDirectory())
   ipcMain.handle('app:open-save-directory', () => controller.openSaveDirectory())

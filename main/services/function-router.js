@@ -69,18 +69,18 @@ function createFunctionRouter(deps) {
     screenshotQuickSave: () => createCapture({ mode: 'region', autoAction: 'save', saveMode: 'fast', source: 'quick-save' }),
     screenshotSaveAs: () => createCapture({ mode: 'region', autoAction: 'save', saveMode: 'dialog', source: 'save-as' }),
     async screenshotFocusedWindow() {
-      const dataUrl = await captureDomain.captureFocusedWindow()
-      clipboard.writeImage(nativeImage.createFromDataURL(dataUrl))
-      persistHistory(dataUrl, { action: 'copy', source: 'focused-window' })
+      const imageBuffer = await captureDomain.captureFocusedWindow()
+      clipboard.writeImage(nativeImage.createFromBuffer(imageBuffer))
+      persistHistory(imageBuffer, { action: 'copy', source: 'focused-window' })
       return true
     },
     async fixedContent() {
       const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: t('main.dialog.image-filter'), extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }] })
       if (result.canceled || !result.filePaths[0]) return false
       const image = nativeImage.createFromPath(result.filePaths[0])
-      const dataUrl = image.toDataURL()
-      pinDomain.createPinWindow(dataUrl, { source: 'file' })
-      persistHistory(dataUrl, { source: 'file', action: 'pin' })
+      const imageBuffer = image.toPNG()
+      pinDomain.createPinWindow(imageBuffer, { source: 'file' })
+      persistHistory(imageBuffer, { source: 'file', action: 'pin' })
       return true
     },
     async videoRecord() {

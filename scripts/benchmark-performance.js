@@ -380,7 +380,27 @@ function run() {
   return result
 }
 
-if (require.main === module) run()
+if (require.main === module) {
+  const args = process.argv.slice(2)
+  const trayIndex = args.indexOf('--tray-idle-pid')
+  if (trayIndex >= 0) {
+    const rootPid = args[trayIndex + 1]
+    if (process.platform !== 'win32' || !/^\d+$/.test(rootPid || '') || Number(rootPid) <= 0) {
+      console.error('托盘基线场景需要 Windows 和 --tray-idle-pid <Highlighter 主进程 PID>')
+      process.exitCode = 1
+    } else {
+      const { main: sampleMemory } = require('./memory-snapshot')
+      const { outputPath } = parseArguments(args)
+      process.exitCode = sampleMemory([
+        '--root-pid', rootPid, '--label', 'tray-idle', '--samples', '61',
+        '--interval', '30000', '--tail-ms', '300000',
+        ...(outputPath ? ['--out', outputPath] : [])
+      ])
+    }
+  } else {
+    run()
+  }
+}
 
 module.exports = {
   benchmarkCorpus,

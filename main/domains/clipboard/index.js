@@ -51,7 +51,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   const service = new ClipboardService({ executable, directory, getHook })
   let win = null; let generation = null; let releaseTimer = null; let panelSession = null
   let confirmationOpen = false; let readyToShow = false; let disposed = false
-  let wantsVisible = false
+  let wantsVisible = false; let hiddenAt = null
   let targetId = null; let presentation = 0; let opening = false
   let pasteInProgress = false; let releaseAfterPaste = false; let pasteFeedback = null
   let shutdownPromise = null; let shutdownComplete = false
@@ -91,20 +91,35 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     const settings = getSettings()
     return { language: settings.language, dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors), mainColor: settings.mainColor, generation, status: service.snapshot() }
   }
-  function release() {
+  function release(reason = 'forced') {
+    clearTimeout(releaseTimer); releaseTimer = null
     feedback.clear(false)
     if (pasteInProgress) {
-      releaseAfterPaste = true; targetId = null; ++presentation; wantsVisible = false; opening = false
+      if (reason === 'forced' || !releaseAfterPaste) releaseAfterPaste = reason
+      targetId = null; ++presentation; wantsVisible = false; opening = false
       revokePreviews(); clearTokens.clear()
       if (win && !win.isDestroyed()) { win.webContents.send('clipboard:hidden'); win.hide() }
       return
     }
-    clearTimeout(releaseTimer); releaseTimer = null; revokePreviews(); clearTokens.clear()
+    hiddenAt = null; revokePreviews(); clearTokens.clear()
     const previous = win; win = null; generation = null; readyToShow = false; wantsVisible = false
     targetId = null; ++presentation; opening = false
     service.command('paste.clear').catch(() => {})
     if (previous && !previous.isDestroyed()) previous.destroy()
     if (panelSession) { panelSession.protocol.unhandle('highlighter-clipboard'); panelSession = null }
+  }
+  function armRelease(timeout) {
+    clearTimeout(releaseTimer); releaseTimer = null
+    if (hiddenAt === null || !win || win.isDestroyed() || wantsVisible || feedback.active) return
+    const remaining = timeout - (Date.now() - hiddenAt)
+    if (remaining <= 0) {
+      if (!pasteInProgress) release()
+      else if (!releaseAfterPaste) releaseAfterPaste = 'idle'
+    } else {
+      if (releaseAfterPaste === 'idle') releaseAfterPaste = false
+      releaseTimer = setTimeout(() => release('idle'), remaining)
+      releaseTimer.unref?.()
+    }
   }
   function hide() {
     feedback.clear()
@@ -113,10 +128,8 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     if (!pasteInProgress) service.command('paste.clear').catch(() => {})
     if (!win || win.isDestroyed()) return
     win.webContents.send('clipboard:hidden'); win.hide(); revokePreviews(); clearTokens.clear()
-    clearTimeout(releaseTimer)
-    const timeout = getSettings().clipboard.releaseAfterMs
-    if (!timeout) { if (pasteInProgress) releaseAfterPaste = true; else release() }
-    else { releaseTimer = setTimeout(release, timeout); releaseTimer.unref?.() }
+    hiddenAt ??= Date.now()
+    armRelease(getSettings().clipboard.releaseAfterMs)
   }
   async function present() {
     if (!win || !readyToShow || !wantsVisible || opening || pasteInProgress) return
@@ -131,6 +144,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     } catch {} // History/copy remain usable when there is no paste target.
     finally { if (ticket === presentation) opening = false }
     if (ticket !== presentation || created !== win || created.isDestroyed() || !wantsVisible || disposed || isGameModeEnabled() || isMigrationInProgress() || !getSettings().clipboard.enabled) return
+    hiddenAt = null
     created.show(); created.focus(); created.webContents.send('clipboard:init', appearance())
     pasteFeedback = null
   }
@@ -181,7 +195,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     }
     wantsVisible = true
     generation = randomUUID()
-    panelSession = session.fromPartition(`clipboard-${generation}`, { cache: false })
+    panelSession = session.fromPartition('highlighter-clipboard-panel', { cache: false })
     panelSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
     panelSession.setPermissionCheckHandler(() => false)
     panelSession.protocol.handle('highlighter-clipboard', handleResource)
@@ -235,7 +249,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
       pasteInProgress = false
       if (hiddenByPaste && presentation === ticket + 1 && created === win && !created.isDestroyed() && !disposed && !isGameModeEnabled() && !isMigrationInProgress() && getSettings().clipboard.enabled && pasteFeedback?.outcome !== 'injected') {
         // Show fallback feedback without taking keyboard focus from the user.
-        clearTimeout(releaseTimer); releaseTimer = null; wantsVisible = false; releaseAfterPaste = false
+        clearTimeout(releaseTimer); releaseTimer = null; wantsVisible = false; releaseAfterPaste = false; hiddenAt = null
         feedback.show({ ...appearance(), pasteFeedback })
       }
       else if (releaseAfterPaste) { releaseAfterPaste = false; release() }
@@ -317,8 +331,10 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   }
   async function applySettings() {
     if (automation) return
-    if (!getSettings().clipboard.enabled) release()
-    await service.apply(getSettings().clipboard)
+    const settings = getSettings().clipboard
+    if (!settings.enabled) release()
+    else armRelease(settings.releaseAfterMs)
+    await service.apply(settings)
     if (!feedback.active) send('clipboard:init', appearance())
   }
   function start() {
@@ -335,6 +351,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   // `thumbnails` is exposed alongside `service`: both are seams for the unit
   // tests, which replace the backend and assert on the byte cache directly.
   return { service, thumbnails, ownsWindow, show, hide, applySettings, start,
+    requiresSelectionHook: () => Boolean(service.child),
     applyGameMode(enabled) { if (enabled) hide(); return service.setReason('game-mode', enabled) },
     notifyAppearance() { if (!feedback.active) send('clipboard:init', appearance()) },
     async quiesce() { release(); await service.quiesce() },

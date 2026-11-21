@@ -88,8 +88,6 @@ const dataRootContext = prepareDataRoot({ app, applicationName })
 const activePaths = dataRootContext.paths
 const { execFile, spawn } = require('child_process')
 const crypto = require('node:crypto')
-const screenshotDesktop = require('screenshot-desktop')
-const sharp = require('sharp')
 const Store = require('electron-store')
 const { OcrService } = require('./main/services/ocr-service')
 const { EverythingService } = require('./main/services/everything-service')
@@ -187,7 +185,7 @@ function initializeStore() {
   historyService = new HistoryService({
     store,
     nativeImage,
-    sharp,
+    sharp: (...args) => require('sharp')(...args),
     getSettings,
     assertWritable: assertManagedDataWritable,
     defaultHistoryDirectory,
@@ -568,12 +566,10 @@ pinDomain = createPinDomain({
   rootDirectory: __dirname,
   createLocalWindow,
   getSettings,
-  saveDataUrl: (dataUrl) => saveDataUrl(dataUrl),
+  saveImageBuffer: (buffer) => saveImageBuffer(buffer),
   createRecognitionWindow: (...args) => recognitionDomain.createRecognitionWindow(...args),
   getCreateCaptureWindow: () => (...args) => captureDomain.createCaptureWindow(...args),
   recognizePin: ocrController.recognizePin,
-  dataUrlToBuffer,
-  bufferToDataUrl,
   log,
   ipcMain: secureIpcMain
 })
@@ -601,7 +597,7 @@ captureDomain = createCaptureDomain({
   getSettings,
   log,
   assertGameModeDisabled,
-  screenshotDesktop,
+  getScreenshotDesktop: () => require('screenshot-desktop'),
   listNativeDisplays,
   findNativeDisplay,
   getNativeDisplayBounds,
@@ -716,6 +712,7 @@ searchDomain = createSearchDomain({
 })
 
 selectionDomain = createSelectionDomain({
+  clipboardNeedsSelectionHook: () => clipboardDomain?.requiresSelectionHook(),
   BrowserWindow,
   clipboard,
   screen,
@@ -769,6 +766,7 @@ settingsEffects = createSettingsEffects({
     get: () => selectionDomain.hookService()
   },
   syncConversationStore: () => selectionDomain.syncConversationStore(),
+  applySelectionEnabled: () => { if (!e2eContext.enabled) selectionDomain.applySelectionEnabled() },
   getClipboardDomain: () => clipboardDomain,
   log
 })
@@ -1230,13 +1228,12 @@ async function startApplication() {
   if (!startToTray) createMainWindow('home')
   if (!e2eContext.enabled) {
     createTrayIcon()
-    selectionDomain.createToolbarWindow()
+    if (getSettings().selectionToolbar.enabled) selectionDomain.createToolbarWindow()
     registerShortcuts()
     selectionDomain.initSelectionHook()
     selectionDomain.registerSelectionPowerEvents()
     clipboardDomain.start()
     if (getSettings().plugins.ocr && getSettings().ocr.hotStart) getOcrService().ensureStarted().catch((error) => log('OCR hot start failed:', error.message))
-    if (isWin) captureDomain.warmUpNativeDisplays()
     app.setLoginItemSettings(loginItemSettings(getSettings().system.autoStart))
     // Reconcile the tray state first, then honour the opt-in autostart. Neither
     // opens a socket unless the user asked for it, so the default configuration

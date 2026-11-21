@@ -271,6 +271,7 @@ let mosaicPatchBytes = 0
 function playShutterSound() {
   if(!shutterSound)return
   try{
+    if (!shutterSound.hasAttribute('src')) shutterSound.src = '../assets/shutter.wav'
     shutterSound.currentTime=0
     const played=shutterSound.play()
     if(played?.catch)played.catch(()=>{})
@@ -4293,8 +4294,8 @@ addEventListener('keydown',(event)=>{
   if(event.key==='Delete'){event.preventDefault();deleteSelectedAnnotation()}
 })
 
-window.captureAPI.onShown(() => {
-  if (!renderReadySent || shutterSoundPlayed) return
+window.captureAPI.onShown((playInRenderer) => {
+  if (!renderReadySent || shutterSoundPlayed || playInRenderer === false) return
   shutterSoundPlayed = true
   if(initData.settings?.screenshot?.shutterSound!==false)playShutterSound()
 })

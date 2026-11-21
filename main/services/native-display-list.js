@@ -37,7 +37,7 @@ function listNativeDisplays(parseDisplaysOutput) {
     execFile(
       process.env.ComSpec || 'cmd.exe',
       ['/d', '/s', '/c', helper.batchFile, '/list'],
-      { cwd: helper.directory, windowsHide: true },
+      { cwd: helper.directory, windowsHide: true, timeout: 5000 },
       (error, stdout) => {
         if (error) {
           reject(error)

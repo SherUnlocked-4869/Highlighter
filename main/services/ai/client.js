@@ -1,4 +1,3 @@
-const OpenAI = require('openai')
 const {
   DEFAULT_EXPLAIN_PROMPT,
   DEFAULT_TRANSLATE_PROMPT
@@ -98,6 +97,7 @@ function createClient(provider, { timeoutMs = 60000 } = {}) {
   if (!config.baseUrl) throw new Error('请先在“模型”设置中配置供应商 API 地址')
   const defaultHeaders = resolveRuntimeHeaders(config.headers, { sessionId: getAiSessionId() })
   if (!config.apiKey && isLoopbackProviderUrl(config.baseUrl)) defaultHeaders.authorization = null
+  const OpenAI = require('openai')
   return new OpenAI({
     baseURL: config.baseUrl,
     apiKey: config.apiKey,

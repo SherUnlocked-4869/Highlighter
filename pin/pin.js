@@ -13,6 +13,9 @@ const recognizedText = document.getElementById('pinRecognizedText')
 let activeSurface = pixelImage
 let sourceImage = null
 let settings = {}
+let pendingImageUrl = null
+let activeImageUrl = null
+let initialFramePending = false
 let clickThrough = false
 let pressed = false
 let moving = false
@@ -113,16 +116,53 @@ function showSurface(target) {
   pixelImage.classList.toggle('hidden', target !== pixelImage)
 }
 
-function showImageSurface(dataUrl, initial) {
-  image.onload = () => {
-    image.onload = null
-    if (initial) window.pinAPI.renderReady()
+function releasePendingImage() {
+  if (sourceImage) {
+    sourceImage.onload = null
+    sourceImage.onerror = null
+    sourceImage.removeAttribute('src')
+    sourceImage = null
   }
-  image.src = dataUrl
-  showSurface(image)
+  image.onload = null
+  image.onerror = null
+  if (pendingImageUrl) URL.revokeObjectURL(pendingImageUrl)
+  pendingImageUrl = null
 }
 
-// Rotation is a pure CSS transform: the pinned dataUrl is never re-encoded, so a
+function finishImage(url, target) {
+  if (pendingImageUrl !== url) return
+  if (activeImageUrl) URL.revokeObjectURL(activeImageUrl)
+  activeImageUrl = target === image ? url : null
+  if (activeImageUrl) pendingImageUrl = null
+  releasePendingImage()
+  if (target === image) {
+    pixelImage.width = 1
+    pixelImage.height = 1
+  } else {
+    image.removeAttribute('src')
+  }
+  showSurface(target)
+  if (initialFramePending) {
+    initialFramePending = false
+    window.pinAPI.renderReady()
+  }
+}
+
+function failImage(url) {
+  if (pendingImageUrl !== url) return
+  releasePendingImage()
+  if (initialFramePending) window.pinAPI.close()
+}
+
+function showImageSurface(url) {
+  image.onload = () => {
+    finishImage(url, image)
+  }
+  image.onerror = () => failImage(url)
+  image.src = url
+}
+
+// Rotation is a pure CSS transform: the pinned image is never re-encoded, so a
 // rotated pin still copies/saves/recognises the original pixels. The main process
 // owns the angle (it has to resize the window to the rotated bounding box), and
 // pin.css turns the `data-rotation` attribute into the matching transform.
@@ -141,7 +181,11 @@ function wheelZoomFactor(zoomStep, zoomIn) {
   return zoomIn ? 1 + bounded : 1 / (1 + bounded)
 }
 
-function applyPinData(data, initial = false) {
+function applyPinData({ imageBuffer, imageMime, ...data }, initial = false) {
+  releasePendingImage()
+  initialFramePending ||= initial
+  const url = URL.createObjectURL(new Blob([imageBuffer], { type: imageMime }))
+  pendingImageUrl = url
   settings = data
   document.body.classList.toggle('long-capture', !!data.longCapture)
   if (typeof data.clickThrough === 'boolean') applyClickThrough(data.clickThrough)
@@ -153,8 +197,7 @@ function applyPinData(data, initial = false) {
   }
   setNativePixelMode(data.zoom)
   if (data.longCapture) {
-    sourceImage = null
-    showImageSurface(data.dataUrl, initial)
+    showImageSurface(url)
     return
   }
   const nextImage = new Image()
@@ -163,7 +206,7 @@ function applyPinData(data, initial = false) {
     if (sourceImage !== nextImage) return
     const pixels = nextImage.naturalWidth * nextImage.naturalHeight
     if (nextImage.naturalWidth > 16384 || nextImage.naturalHeight > 16384 || pixels > 64000000) {
-      showImageSurface(data.dataUrl, initial)
+      showImageSurface(url)
       return
     }
     pixelImage.width = nextImage.naturalWidth
@@ -172,12 +215,17 @@ function applyPinData(data, initial = false) {
     context.clearRect(0, 0, pixelImage.width, pixelImage.height)
     context.imageSmoothingEnabled = false
     context.drawImage(nextImage, 0, 0)
-    showSurface(pixelImage)
-    if (initial) window.pinAPI.renderReady()
+    finishImage(url, pixelImage)
   }
-  nextImage.src = data.dataUrl
+  nextImage.onerror = () => failImage(url)
+  nextImage.src = url
 }
 
+addEventListener('pagehide', () => {
+  releasePendingImage()
+  if (activeImageUrl) URL.revokeObjectURL(activeImageUrl)
+  activeImageUrl = null
+})
 window.pinAPI.onInit((data) => applyPinData(data, true))
 window.pinAPI.onUpdate((data) => {
   setRecognition(null)

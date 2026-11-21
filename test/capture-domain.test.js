@@ -180,7 +180,13 @@ function createHarness({ screenshot = {}, cursorProvider = null, ...deps } = {})
 }
 
 test('capture sends one shown receipt after revealing the window', async () => {
-  const harness = createHarness()
+  const performanceEvents = []
+  const harness = createHarness({
+    performanceMonitor: {
+      record: (name, _duration, details) => performanceEvents.push({ name, ...details }),
+      snapshot: () => {}
+    }
+  })
   const win = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
   const events = []
   win.setOpacity = value => events.push(['opacity', value])
@@ -188,12 +194,133 @@ test('capture sends one shown receipt after revealing the window', async () => {
   win.webContents.send = channel => events.push(['send', channel])
   const controller = harness.domain.createCaptureController()
   try {
-    controller.renderReady({ sender: {} })
-    controller.renderReady({ sender: {} })
+    const event = { sender: { getOSProcessId: () => 123 } }
+    controller.renderReady(event)
+    controller.renderReady(event)
     assert.deepEqual(events, [['opacity', 1], ['show'], ['send', 'capture:shown']])
+    win._onClosed()
+    assert.deepEqual(performanceEvents.map(({ name }) => name), [
+      'capture.started', 'capture.acquired', 'capture.interactive', 'capture.closed'
+    ])
+    assert.deepEqual(performanceEvents.map(({ captureId }) => captureId), [1, 1, 1, 1])
+    assert.equal(performanceEvents[1].backend, 'supplied-image')
+    assert.equal(performanceEvents[2].rendererPid, 123)
+    assert.equal(performanceEvents[3].rendererPid, 123)
   } finally {
     win.close()
   }
+})
+
+test('capture records an unmatched native display when Electron takes over', async () => {
+  const imageBuffer = Buffer.from([1, 2, 3])
+  const thumbnail = {
+    isEmpty: () => false,
+    getSize: () => ({ width: 800, height: 600 }),
+    resize: () => ({ toBitmap: () => Buffer.from([255, 255, 255, 255]) }),
+    toPNG: () => imageBuffer
+  }
+  const { domain } = createHarness({
+    isWin: true,
+    screenshotDesktop: {},
+    listNativeDisplays: async () => [],
+    findNativeDisplay: () => null,
+    desktopCapturer: { getSources: async () => [{ id: 'screen:1', display_id: '1', thumbnail }] }
+  })
+  const result = await domain.getDisplayCapture({ id: 1, scaleFactor: 1, bounds: { width: 800, height: 600 } })
+  assert.deepEqual(result, {
+    imageBuffer,
+    sourceId: 'screen:1',
+    scaleFactor: 1,
+    backend: 'electron',
+    fallbackReason: 'native-display-unmatched'
+  })
+})
+
+test('focused capture returns native bytes without asking Electron for thumbnails', async () => {
+  const png = Buffer.from([1, 2, 3])
+  const thumbnail = {
+    isEmpty: () => false,
+    getSize: () => ({ width: 100, height: 100 }),
+    resize: () => ({ toBitmap: () => Buffer.from([4, 8, 16, 255]) })
+  }
+  const { domain } = createHarness({
+    isWin: true,
+    nativeImage: { createFromBuffer: () => thumbnail },
+    execFile: (_exe, _args, options, finish) => {
+      assert.equal(options.encoding, 'buffer')
+      finish(null, Buffer.concat([Buffer.from('123 window\r\n'), png]))
+    },
+    desktopCapturer: { getSources: () => assert.fail('native success must skip enumeration') }
+  })
+  assert.deepEqual(await domain.captureFocusedWindow(), png)
+})
+
+test('focused capture fallback keeps the original HWND and rejects protected or vanished windows', async () => {
+  let stdout = '123 window\r\n'
+  let hasTarget = true
+  let enumerations = 0
+  const thumbnail = (byte) => ({ isEmpty: () => false, toPNG: () => Buffer.from([byte]) })
+  const { domain } = createHarness({
+    isWin: true,
+    execFile: (_exe, _args, _options, finish) => finish(new Error('timeout'), Buffer.from(stdout)),
+    desktopCapturer: {
+      getSources: async () => {
+        enumerations += 1
+        return [
+          { id: 'window:1234:0', name: 'Same title', thumbnail: thumbnail(1) },
+          ...(hasTarget ? [{ id: 'window:123:0', name: 'Same title', thumbnail: thumbnail(2) }] : [])
+        ]
+      }
+    }
+  })
+  assert.deepEqual(await domain.captureFocusedWindow(), Buffer.from([2]))
+  hasTarget = false
+  await assert.rejects(domain.captureFocusedWindow(), /无法捕获焦点窗口/)
+  stdout = '123 protected\r\n'
+  await assert.rejects(domain.captureFocusedWindow(), /无法捕获焦点窗口/)
+  assert.equal(enumerations, 2)
+})
+
+test('Windows shutter playback is bounded, honors the setting and falls back on helper failure', async () => {
+  const launches = []
+  const harness = createHarness({
+    isWin: true,
+    fs: { existsSync: (file) => path.basename(file) === 'HighlighterShutterSound.exe' },
+    execFile: (file, args, options, complete) => launches.push({ file, args, options, complete })
+  })
+  const controller = harness.domain.createCaptureController()
+  const receipts = []
+  async function reveal() {
+    const win = await harness.domain.createCaptureWindow({ mode: 'image', imageBuffer: Buffer.from([1]) })
+    win.webContents.send = (channel, playInRenderer) => {
+      if (channel === 'capture:shown') receipts.push(playInRenderer)
+    }
+    controller.renderReady({ sender: {} })
+    return win
+  }
+
+  const first = await reveal()
+  assert.equal(launches.length, 1)
+  assert.equal(path.basename(launches[0].file), 'HighlighterShutterSound.exe')
+  assert.deepEqual(launches[0].args, [])
+  assert.equal(launches[0].options.windowsHide, true)
+  assert.ok(launches[0].options.timeout > 0)
+  assert.deepEqual(receipts, [false])
+
+  launches[0].complete(new Error('No audio endpoint'))
+  assert.deepEqual(receipts, [false, true])
+  const previous = await reveal()
+  await reveal()
+  assert.equal(launches.length, 2, 'rapid captures must share one in-flight helper')
+  previous.webContents.send = () => assert.fail('fallback must go to the latest capture')
+  launches[1].complete(new Error('Audio device disconnected'))
+
+  harness.settings.screenshot.shutterSound = false
+  const silent = await reveal()
+  assert.equal(launches.length, 2)
+  assert.deepEqual(receipts, [false, true, false, false, true, true])
+  silent.close()
+  first.close()
 })
 
 test('capture init payload carries saveMode, the serial start value and the autoplay policy (P0-7-T4/T5/T7)', async () => {

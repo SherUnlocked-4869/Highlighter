@@ -13,8 +13,8 @@ test('main process rebuilds selection hooks across power and session transitions
   assert.match(selectionDomain, /const \{ SelectionHookService \} = require\('\.\.\/\.\.\/services\/selection-hook-service'\)/)
   assert.match(selectionDomain, /\['suspend', \(\) => hookService\?\.notePowerEvent\('sleep', 'system-suspend'\)\]/)
   assert.match(selectionDomain, /\['lock-screen', \(\) => hookService\?\.notePowerEvent\('sleep', 'lock-screen'\)\]/)
-  assert.match(selectionDomain, /\['resume',[\s\S]*if \(!isGameModeEnabled\(\)\) hookService\?\.notePowerEvent\('wake', 'system-resume'\)/)
-  assert.match(selectionDomain, /\['unlock-screen',[\s\S]*if \(!isGameModeEnabled\(\)\) hookService\?\.notePowerEvent\('wake', 'unlock-screen'\)/)
+  assert.match(selectionDomain, /\['resume',[\s\S]*if \(!isGameModeEnabled\(\) && needsSelectionHook\(\)\) hookService\?\.notePowerEvent\('wake', 'system-resume'\)/)
+  assert.match(selectionDomain, /\['unlock-screen',[\s\S]*if \(!isGameModeEnabled\(\) && needsSelectionHook\(\)\) hookService\?\.notePowerEvent\('wake', 'unlock-screen'\)/)
   assert.match(selectionDomain, /createUtilityProcessHostFactory/)
   const hookService = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'selection-hook-service.js'), 'utf8')
   assert.match(hookService, /selection-hook-host\.js/)
@@ -55,9 +55,9 @@ test('a long-lived toolbar window is recycled and checked instead of trusted', (
   assert.match(selectionDomain, /handleChildProcessGone\(details = \{\}\)/)
   assert.match(selectionDomain, /toolbarPresentationOk: presentation \? presentation\.ok : null/)
   // Registered with the hook so main.js stays assembly-only, and disposed with it.
-  assert.match(selectionDomain, /registerSelectionDisplayEvents\(\)\s*\n\s*return hookService\.start\('startup'\)/)
+  assert.match(selectionDomain, /function initSelectionHook\(reason = 'startup'\)[\s\S]*registerSelectionDisplayEvents\(\)[\s\S]*return hookService\.start\(reason\)/)
   assert.match(selectionDomain, /disposeSelectionDisplayEvents\(\)[\s\S]*?hookService\?\.dispose\(\)/)
   assert.match(main, /selectionDomain\?\.handleChildProcessGone\(details\)/)
-  // The toolbar window is still pre-created on startup: first selection stays instant.
-  assert.match(main, /selectionDomain\.createToolbarWindow\(\)\s*\n\s*registerShortcuts\(\)/)
+  // An enabled toolbar is pre-created on startup.
+  assert.match(main, /if \(getSettings\(\)\.selectionToolbar\.enabled\) selectionDomain\.createToolbarWindow\(\)\s*\n\s*registerShortcuts\(\)/)
 })

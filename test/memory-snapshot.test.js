@@ -6,12 +6,29 @@ const {
   defaultOutPath,
   deriveAppDirFromElectronPath,
   formatReport,
+  summarizeTail,
   normalizeProcess,
   parseArgs,
   parseProcessJson,
   selectProcesses,
   summarizeSamples
 } = require('../scripts/memory-snapshot')
+
+test('tail percentiles separate main and tree and exclude unavailable counters', () => {
+  const sample = (minute, processes, error) => ({ timestamp: new Date(minute * 60000).toISOString(), processes, error })
+  const scopes = summarizeTail([
+    sample(24, [{ pid: 10, privateMiB: 900 }]),
+    sample(25, [{ pid: 10, privateMiB: 100, gpuDedicatedMiB: 0 }, { pid: 11, privateMiB: 50, gpuDedicatedMiB: 20 }]),
+    sample(26, [{ pid: 10, privateMiB: 120, gpuDedicatedMiB: 0 }, { pid: 11, privateMiB: 60 }]),
+    sample(30, [], 'unavailable')
+  ], 10, 300000)
+  assert.equal(scopes.validSamples, 2)
+  assert.equal(scopes.requestedSamples, 3)
+  assert.deepEqual(scopes.main.privateMiB, { count: 2, p50: 110, p95: 120 })
+  assert.deepEqual(scopes.tree.privateMiB, { count: 2, p50: 165, p95: 180 })
+  assert.deepEqual(scopes.tree.gpuDedicatedMiB, { count: 1, p50: 20, p95: 20 })
+  assert.equal(parseArgs(['--tail-ms', '300000']).tailMs, 300000)
+})
 
 test('classifyProcess reports Electron processes as chromium', () => {
   assert.equal(
@@ -184,6 +201,39 @@ test('normalizeProcess converts CIM bytes into MiB and seconds', () => {
   assert.equal(normalizeProcess({ ProcessId: 0 }), null)
 })
 
+test('Windows counter samples distinguish private residency, commit and GPU allocations', () => {
+  const mib = 1024 * 1024
+  const gpu = normalizeProcess({
+    ProcessId: 42,
+    Name: 'Highlighter.exe',
+    CommandLine: 'Highlighter.exe --type=gpu-process',
+    WorkingSetSize: 200 * mib,
+    PrivateBytes: 269 * mib,
+    PageFileUsage: 10 * 1024,
+    WorkingSetPrivate: 113 * mib,
+    DedicatedUsage: 40 * mib,
+    SharedUsage: null,
+    PercentProcessorTime: 0
+  })
+  assert.equal(gpu.processType, 'gpu-process')
+  assert.equal(gpu.privateMiB, 269)
+  assert.equal(gpu.privateWorkingSetMiB, 113)
+  assert.equal(gpu.gpuDedicatedMiB, 40)
+  assert.equal(gpu.gpuSharedMiB, null)
+
+  const { total, sampleCount } = summarizeSamples([
+    { processes: [gpu] },
+    { error: 'Sampling failed', processes: [] },
+    { processes: [{ ...gpu, privateWorkingSetMiB: null, gpuDedicatedMiB: 0 }] }
+  ])
+  assert.equal(sampleCount, 2)
+  assert.equal(total.privateWorkingSetMiB, 113)
+  assert.equal(total.metricSamples.privateWorkingSetMiB, 1)
+  assert.equal(total.gpuDedicatedMiB, 20)
+  assert.equal(total.gpuSharedMiB, null)
+  assert.equal(total.cpuPercentOfOneCore, 0)
+})
+
 test('selectProcesses keeps app-directory processes and whitelisted names', () => {
   const records = [
     { ProcessId: 1, Name: 'helper.exe', ExecutablePath: 'C:\\app\\bin\\helper.exe', WorkingSetSize: 1024 * 1024 },
@@ -278,6 +328,7 @@ test('parseArgs applies defaults and parses both flag forms', () => {
     samples: 30,
     interval: 2000,
     appDir: null,
+    rootPid: null,
     out: null,
     help: false
   })
@@ -299,6 +350,7 @@ test('parseArgs applies defaults and parses both flag forms', () => {
   assert.equal(parsed.appDir, path.resolve('D:\\app'))
   assert.equal(parsed.out, path.resolve('.tmp-memory/custom.json'))
   assert.equal(parseArgs(['--help']).help, true)
+  assert.equal(parseArgs(['--root-pid=42']).rootPid, 42)
 })
 
 test('parseArgs rejects malformed input', () => {
@@ -309,6 +361,7 @@ test('parseArgs rejects malformed input', () => {
   assert.throws(() => parseArgs(['--samples', '0']), /正整数/)
   assert.throws(() => parseArgs(['--samples', 'abc']), /正整数/)
   assert.throws(() => parseArgs(['--interval', '-1']), /非负整数/)
+  assert.throws(() => parseArgs(['--root-pid', '0']), /正整数/)
 })
 
 test('formatReport renders role rows, totals, and an explicit empty table', () => {

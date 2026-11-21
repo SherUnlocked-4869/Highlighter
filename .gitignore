@@ -25,6 +25,8 @@ native/everything-search/target/
 vendor/selection-hook/build/
 native/clipboard/target/
 native/clipboard/bin/
+/native/shutter-sound/bin/
+/native/focused-window/bin/
 /native/device-battery/bin/
 /native/device-battery/obj/
 test/native/selection-clipboard/build/

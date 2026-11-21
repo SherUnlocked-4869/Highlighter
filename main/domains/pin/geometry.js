@@ -72,7 +72,7 @@ function normalizeSelectionBounds(selectionBounds) {
 }
 
 // Rotation is quarter-turn only (D5: the rotation feature previews with a CSS
-// transform in the renderer, it never re-encodes _pinData.dataUrl). Any input is
+// transform in the renderer, it never re-encodes the image). Any input is
 // snapped to the nearest 90 degrees and wrapped into [0, 360); non-numeric input
 // falls back to 0 so a stale/hostile setting cannot produce a NaN transform.
 function normalizePinRotation(value) {

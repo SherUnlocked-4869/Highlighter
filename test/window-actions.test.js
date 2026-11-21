@@ -46,9 +46,12 @@ function createActions(overrides = {}) {
       getDisplayNearestPoint: () => ({ workArea: { x: 0, y: 0, width: 100, height: 100 } })
     },
     desktopCapturer: {
-      getSources: async () => [
-        { id: 'screen:1', display_id: 1, name: 'Screen 1', thumbnail: { getSize: () => ({ width: 64, height: 36 }) } }
-      ]
+      getSources: async (options) => {
+        calls.push(['getSources', options])
+        return [
+          { id: 'screen:1', display_id: 1, name: 'Screen 1', thumbnail: { getSize: () => ({ width: 64, height: 36 }) } }
+        ]
+      }
     },
     dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: ['C:/picked'] }) },
     isWin: true,
@@ -69,7 +72,7 @@ test('openExternal only forwards http(s) after URL normalization', async () => {
 })
 
 test('getDisplayDiagnostics maps displays and reports physical bounds on Windows only', async () => {
-  const { actions } = createActions()
+  const { actions, calls } = createActions()
   const diagnostics = await actions.getDisplayDiagnostics()
   assert.deepEqual(diagnostics.cursor, { x: 5, y: 6 })
   assert.deepEqual(Object.keys(diagnostics.displays[0]), [
@@ -77,8 +80,12 @@ test('getDisplayDiagnostics maps displays and reports physical bounds on Windows
   ])
   assert.equal(diagnostics.displays[0].physicalBounds.physical, true)
   assert.deepEqual(diagnostics.sources, [
-    { id: 'screen:1', displayId: 1, name: 'Screen 1', thumbnailSize: { width: 64, height: 36 } }
+    { id: 'screen:1', displayId: 1, name: 'Screen 1', thumbnailSize: null }
   ])
+  assert.deepEqual(calls[0], ['getSources', { types: ['screen'], thumbnailSize: { width: 0, height: 0 } }])
+  const measured = await actions.getDisplayDiagnostics({ includeThumbnails: true })
+  assert.deepEqual(calls[1], ['getSources', { types: ['screen'], thumbnailSize: { width: 4096, height: 4096 } }])
+  assert.deepEqual(measured.sources[0].thumbnailSize, { width: 64, height: 36 })
 
   const nonWindows = createActions({
     isWin: false,

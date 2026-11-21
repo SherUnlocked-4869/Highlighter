@@ -105,7 +105,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }),
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   getProxyStatus: () => ipcRenderer.invoke('app:get-proxy-status'),
-  getDisplayDiagnostics: () => ipcRenderer.invoke('app:get-display-diagnostics'),
+  getDisplayDiagnostics: (includeThumbnails = false) => ipcRenderer.invoke('app:get-display-diagnostics', includeThumbnails === true),
   previewDiagnostics: () => ipcRenderer.invoke('diagnostics:preview'),
   exportDiagnostics: (includeCrashDumps = false) => ipcRenderer.invoke('diagnostics:export', { includeCrashDumps: includeCrashDumps === true }),
   getUpdateStatus: () => ipcRenderer.invoke('update:status'),

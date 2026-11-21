@@ -21,6 +21,9 @@ const {
 } = require('../deepseek')
 
 test('model discovery calls only the catalog and omits authorization for a keyless local provider', async (t) => {
+  const sdkPath = require.resolve('openai')
+  normalizeProviderInput({ baseUrl: 'http://127.0.0.1' })
+  assert.equal(require.cache[sdkPath], undefined, 'loading the AI entry point and normalizing providers should not load the SDK')
   const requests = []
   const server = http.createServer((request, response) => {
     requests.push({ method: request.method, url: request.url, headers: request.headers })
@@ -31,6 +34,7 @@ test('model discovery calls only the catalog and omits authorization for a keyle
   t.after(() => new Promise((resolve) => server.close(resolve)))
   const baseUrl = `http://127.0.0.1:${server.address().port}/v1`
   const result = await discoverProviderModels({ baseUrl, headers: { 'X-Title': 'Highlighter' } })
+  assert.ok(require.cache[sdkPath], 'the first provider request should load the SDK')
   assert.deepEqual(result, { ok: true, baseUrl, models: [{ id: 'local-model', name: 'Local Model' }] })
   assert.deepEqual(requests.map(({ method, url }) => [method, url]), [['GET', '/v1/models']])
   assert.equal(requests[0].headers.authorization, undefined)

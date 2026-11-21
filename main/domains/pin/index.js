@@ -20,6 +20,9 @@ const { exportWindowToPdf, savePdfBuffer } = require('../../services/pdf-export'
 // Keeping the compact-editor window box in one place is what stops the two re-edit
 // flows from drifting (test/capture-floating-placement.test.js pins the contract).
 const { resolveEditorLayout, scaleFactorFor } = require('../../../shared/editor-layout')
+const { imageDataToBuffer } = require('../../services/image-buffer')
+const { readPngSize } = require('../../services/capture-geometry')
+const { createPinImageStore } = require('../../services/pin-image-store')
 
 function createPinDomain(deps) {
   const {
@@ -32,12 +35,10 @@ function createPinDomain(deps) {
     rootDirectory,
     createLocalWindow,
     getSettings,
-    saveDataUrl,
+    saveImageBuffer,
     createRecognitionWindow,
     getCreateCaptureWindow,
     recognizePin,
-    dataUrlToBuffer,
-    bufferToDataUrl,
     log,
     ipcMain
   } = deps
@@ -47,7 +48,37 @@ function createPinDomain(deps) {
 
   const MAX_PINNED = 20
   const pinWindows = new Set()
+  const pinImages = deps.pinImages || createPinImageStore()
   let pinnedCount = 0
+
+  function preparePinImage(input) {
+    const bytes = imageDataToBuffer(input)
+    const mime = typeof input === 'string' && /^data:(image\/[\w.+-]+);base64,/.exec(input)?.[1] || 'image/png'
+    const size = readPngSize(bytes) || nativeImage.createFromBuffer(bytes).getSize()
+    if (!size.width || !size.height) throw new Error('无法读取贴图尺寸')
+    return { bytes, mime, size }
+  }
+
+  function pinDataUrl(pin) {
+    const { bytes, mime } = pinImages.read(pin.imageId)
+    return `data:${mime};base64,${bytes.toString('base64')}`
+  }
+
+  function sendPinImage(win, channel) {
+    const { imageId, ...presentation } = win._pinData
+    const { bytes, mime } = pinImages.read(imageId)
+    sendToRenderer(win, channel, { ...presentation, imageBuffer: bytes, imageMime: mime })
+  }
+
+  function copyPin(win) {
+    if (!win?._pinData || win.isDestroyed()) return
+    clipboard.writeImage(nativeImage.createFromBuffer(pinImages.read(win._pinData.imageId).bytes))
+  }
+
+  async function savePin(win) {
+    if (!win?._pinData || win.isDestroyed()) return
+    await saveImageBuffer(pinImages.read(win._pinData.imageId).bytes)
+  }
 
   // pdf-export.js owns paper math, print options and the save dialog/file write;
   // its Electron touch points are lazy (electron.dialog inside defaultShowSaveDialog,
@@ -242,10 +273,10 @@ function createPinDomain(deps) {
     return true
   }
 
-  function createPinWindow(dataUrl, meta = {}) {
+  function createPinWindow(input, meta = {}) {
     ensureCanPin(false)
-    const image = nativeImage.createFromDataURL(dataUrl)
-    const size = image.getSize()
+    const image = preparePinImage(input)
+    const { size } = image
     const selectionBounds = normalizeSelectionBounds(meta.selectionBounds)
     const display = selectionBounds
       ? screen.getDisplayMatching(selectionBounds)
@@ -287,64 +318,67 @@ function createPinDomain(deps) {
         preload: path.join(rootDirectory, 'preload-pin.js')
       }
     })
-    win._pinData = {
-      dataUrl,
-      meta,
-      opacity: getSettings().fixedContent.opacity,
-      zoomWithMouse: getSettings().fixedContent.zoomWithMouse !== false,
-      // The frozen `pinned.clickThrough` key (settings-defaults.js) is the
-      // default state of a new pin; it is applied below, before the window is
-      // ever shown, so a click-through pin does not swallow its first click.
-      clickThrough: getSettings().pinned?.clickThrough === true,
-      // P1 (plan §9.1): one wheel notch scales by 1 + zoomStep (0.1 = the old
-      // hardcoded 1.1). Read once at creation: a live change would make an
-      // already-open pin jump. normalizePinZoomStep also covers a store written
-      // before the key existed (or a test fake that omits it).
-      zoomStep: normalizePinZoomStep(getSettings().pinned?.zoomStep),
-      // P1 (plan §9.3): quarter-turn rotation, rendered as a CSS transform and
-      // reflected in the window box by getRotatedPinSize. dataUrl is never
-      // re-encoded; the renderer rotates the same pixels.
-      rotation: 0,
-      longCapture,
-      pixelWidth: size.width,
-      pixelHeight: size.height,
-      displayScaleFactor: aligned.scaleFactor,
-      baseWidth,
-      baseHeight,
-      zoom
-    }
-    if (win._pinData.clickThrough) win.setIgnoreMouseEvents(true, { forward: true })
-    win._pinVisible = false
-    win.setPosition(display.bounds.x, display.bounds.y, false)
-    win.setContentSize(width, height, false)
-    win.setPosition(x, y, false)
-    win.setBounds({ x, y, width, height }, false)
-    pinWindows.add(win)
-    pinnedCount++
-    attachPinDisplayWatchers()
-    win.loadFile(pagePath)
     win.on('closed', () => {
       win._pinRecognition?.abort()
-      pinWindows.delete(win)
-      pinnedCount = Math.max(0, pinnedCount - 1)
+      pinImages.release(win._pinData?.imageId)
+      win._pinData = null
+      if (pinWindows.delete(win)) pinnedCount = Math.max(0, pinnedCount - 1)
       if (pinWindows.size === 0) detachPinDisplayWatchers()
     })
+    win.webContents.on?.('render-process-gone', () => {
+      if (!win.isDestroyed()) win.destroy()
+    })
+    try {
+      const settings = getSettings()
+      win._pinData = {
+        imageId: pinImages.add(image),
+        meta,
+        opacity: settings.fixedContent.opacity,
+        zoomWithMouse: settings.fixedContent.zoomWithMouse !== false,
+        // Apply click-through before the window can receive its first click.
+        clickThrough: settings.pinned?.clickThrough === true,
+        zoomStep: normalizePinZoomStep(settings.pinned?.zoomStep),
+        rotation: 0,
+        longCapture,
+        pixelWidth: size.width,
+        pixelHeight: size.height,
+        displayScaleFactor: aligned.scaleFactor,
+        baseWidth,
+        baseHeight,
+        zoom
+      }
+      if (win._pinData.clickThrough) win.setIgnoreMouseEvents(true, { forward: true })
+      win._pinVisible = false
+      win.setPosition(display.bounds.x, display.bounds.y, false)
+      win.setContentSize(width, height, false)
+      win.setPosition(x, y, false)
+      win.setBounds({ x, y, width, height }, false)
+      pinWindows.add(win)
+      pinnedCount++
+      attachPinDisplayWatchers()
+      win.loadFile(pagePath)?.catch((error) => {
+        if (win.isDestroyed()) return
+        log('Pin window failed to load:', error.message)
+        win.destroy()
+      })
+    } catch (error) {
+      if (!win.isDestroyed()) win.destroy()
+      throw error
+    }
     return win
   }
 
-  function updatePinWindow(win, dataUrl, meta = {}) {
+  function updatePinWindow(win, input, meta = {}) {
     if (!win || win.isDestroyed()) return null
-    win._pinRecognition?.abort()
-    win._pinRecognition = null
-    const image = nativeImage.createFromDataURL(dataUrl)
-    const size = image.getSize()
+    const image = preparePinImage(input)
+    const { size } = image
     const currentBounds = win.getBounds()
     const targetBounds = normalizeSelectionBounds(meta.selectionBounds) || currentBounds
     const display = screen.getDisplayMatching(targetBounds)
     const aligned = getPixelAlignedPinSize(size.width, size.height, display, meta.selectionBounds)
-    win._pinData = {
+    const previousImageId = win._pinData.imageId
+    const nextData = {
       ...win._pinData,
-      dataUrl,
       meta,
       pixelWidth: size.width,
       pixelHeight: size.height,
@@ -355,16 +389,25 @@ function createPinDomain(deps) {
     }
     // Re-annotating replaces the pixels but keeps the pin's rotation (a rotated
     // pin stays rotated); the window box then has to match the rotated box.
-    const sized = getPinWindowSize(win._pinData)
+    const sized = getPinWindowSize(nextData)
     const nextBounds = clampPinBoundsToWorkArea({
       x: targetBounds.x,
       y: targetBounds.y,
       width: sized.width,
       height: sized.height
     }, display.workArea)
-    win.setBounds(nextBounds, false)
-    win.setBounds(nextBounds, false)
-    win.webContents.send('pin:update', win._pinData)
+    nextData.imageId = pinImages.add(image)
+    try {
+      win.setBounds(nextBounds, false)
+    } catch (error) {
+      pinImages.release(nextData.imageId)
+      throw error
+    }
+    win._pinRecognition?.abort()
+    win._pinRecognition = null
+    win._pinData = nextData
+    pinImages.release(previousImageId)
+    sendPinImage(win, 'pin:update')
     return win
   }
 
@@ -404,7 +447,7 @@ function createPinDomain(deps) {
 
   // Quarter-turn rotation: stores the normalised angle on _pinData, resizes the
   // window to the rotated bounding box around its centre and tells the renderer
-  // to apply the CSS transform. The pixels (dataUrl) are never touched, so a
+  // to apply the CSS transform. The stored image bytes are never touched, so a
   // rotated pin still copies/saves/recognises the original image.
   // Long captures are excluded on purpose: they scroll (body.long-capture) and the
   // 90°/270° frame in pin.css is a fixed-size absolutely-positioned overlay, so the
@@ -529,7 +572,6 @@ function createPinDomain(deps) {
       width: Math.max(1, Math.round(Number(imageBounds.width) || pinBounds.width)),
       height: Math.max(1, Math.round(Number(imageBounds.height) || pinBounds.height))
     }
-    const imageSize = nativeImage.createFromDataURL(win._pinData.dataUrl).getSize()
     // The compact editor geometry lives in shared/editor-layout.js so the history
     // "continue editing" entry (which opens on the current crop's source-pixel size)
     // derives the exact same window box, reserved tool strip and image fit. The strip
@@ -547,12 +589,12 @@ function createPinDomain(deps) {
     })
     const sourceScaleFactor = scaleFactorFor({
       displayWidth: layout.imageWidth,
-      sourceWidth: imageSize.width
+      sourceWidth: win._pinData.pixelWidth
     })
     win.hide()
     try {
       const captureWindow = await createCaptureWindow({
-        imageBuffer: dataUrlToBuffer(win._pinData.dataUrl),
+        imageBuffer: pinImages.read(win._pinData.imageId).bytes,
         mode: 'image',
         autoAction,
         source: 'pin-reannotate',
@@ -577,10 +619,9 @@ function createPinDomain(deps) {
     const captureWindow = BrowserWindow.fromWebContents(event.sender)
     const editingPinWindow = captureWindow?._editingPinWindow
     ensureCanPin(!!editingPinWindow)
-    const dataUrl = typeof imageData === 'string' ? imageData : bufferToDataUrl(imageData)
     const pinWindow = editingPinWindow
-      ? updatePinWindow(editingPinWindow, dataUrl, meta)
-      : createPinWindow(dataUrl, meta)
+      ? updatePinWindow(editingPinWindow, imageData, meta)
+      : createPinWindow(imageData, meta)
     if (!editingPinWindow && ['ocr', 'translate'].includes(recognitionAction)) {
       pinWindow._pendingRecognition = recognitionAction
     }
@@ -603,7 +644,7 @@ function createPinDomain(deps) {
     try {
       publish({ phase: 'recognizing' })
       const outcome = await recognizePin(action, {
-        dataUrl: pin.dataUrl,
+        imageBuffer: pinImages.read(pin.imageId).bytes,
         scaleFactor: pin.meta?.scaleFactor || pin.displayScaleFactor
       }, { signal, onTranslating: () => publish({ phase: 'translating' }) })
       if (signal.aborted || win.isDestroyed()) return
@@ -635,7 +676,7 @@ function createPinDomain(deps) {
   function registerIpc() {
     ipcMain.on('pin:ready', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
-      if (win?._pinData) event.sender.send('pin:init', win._pinData)
+      if (win?._pinData) sendPinImage(win, 'pin:init')
     })
     ipcMain.on('pin:render-ready', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
@@ -648,11 +689,11 @@ function createPinDomain(deps) {
     ipcMain.on('pin:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
     ipcMain.on('pin:copy', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
-      if (win?._pinData) clipboard.writeImage(nativeImage.createFromDataURL(win._pinData.dataUrl))
+      copyPin(win)
     })
     ipcMain.on('pin:save', async (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
-      if (win?._pinData) await saveDataUrl(win._pinData.dataUrl)
+      await savePin(win)
     })
     ipcMain.on('pin:context-menu', (event, imageBounds = {}) => {
       const win = BrowserWindow.fromWebContents(event.sender)
@@ -678,7 +719,7 @@ function createPinDomain(deps) {
           enabled: !!getSettings().plugins.ocr,
           click: () => {
             try {
-              createRecognitionWindow('table', win._pinData.dataUrl, { scaleFactor: win._pinData.displayScaleFactor })
+              createRecognitionWindow('table', pinDataUrl(win._pinData), { scaleFactor: win._pinData.displayScaleFactor })
             } catch (error) {
               log('Table recognition failed:', error.message)
             }
@@ -688,7 +729,7 @@ function createPinDomain(deps) {
           label: '二维码识别',
           click: () => {
             try {
-              createRecognitionWindow('qr', win._pinData.dataUrl, { scaleFactor: win._pinData.displayScaleFactor })
+              createRecognitionWindow('qr', pinDataUrl(win._pinData), { scaleFactor: win._pinData.displayScaleFactor })
             } catch (error) {
               log('QR recognition failed:', error.message)
             }
@@ -698,7 +739,7 @@ function createPinDomain(deps) {
         // P1 (plan §9.3): the rotation helpers were finished and unit-tested with
         // no production caller. A quarter turn only changes the stored angle and
         // the window box; the renderer applies the CSS transform to the same
-        // dataUrl (never re-encoded). Disabled for long captures: they scroll and
+        // image. Disabled for long captures: they scroll and
         // the rotated frame in pin.css is a fixed-size overlay (see rotatePin).
         {
           label: '旋转 90°',
@@ -729,8 +770,8 @@ function createPinDomain(deps) {
           }))
         },
         { type: 'separator' },
-        { label: '复制', click: () => clipboard.writeImage(nativeImage.createFromDataURL(win._pinData.dataUrl)) },
-        { label: '保存', click: () => saveDataUrl(win._pinData.dataUrl).catch((error) => log(error.message)) },
+        { label: '复制', click: () => copyPin(win) },
+        { label: '保存', click: () => savePin(win).catch((error) => log(error.message)) },
         // P0 (plan §0.3 #4): exportWindowToPdf had unit tests and no production
         // caller. Exporting the pin itself (not a re-render) keeps it WYSIWYG.
         {
@@ -789,7 +830,7 @@ function createPinDomain(deps) {
       if (win._pinData.clickThrough === true) return
       setPinOpacity(win, nextPinOpacity(win._pinData.opacity, direction))
     })
-    // Quarter-turn rotation (plan §9.3). The dataUrl is untouched: the renderer
+    // Quarter-turn rotation (plan §9.3). The stored image is untouched: the renderer
     // draws the same pixels under a CSS transform, and only the window box (the
     // rotated bounding box) changes here. The payload echoes the new angle so the
     // renderer does not have to guess.

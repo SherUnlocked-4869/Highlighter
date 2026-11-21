@@ -11,14 +11,17 @@ const id = '11111111-1111-4111-8111-111111111111'
 const operationId = '22222222-2222-4222-8222-222222222222'
 const tick = () => new Promise((resolve) => setImmediate(resolve))
 function harness(releaseAfterMs = 0) {
-  const handlers = new Map(); const listeners = new Map(); const calls = []; let win
+  const handlers = new Map(); const listeners = new Map(); const calls = []; const partitions = []; let win
   const domain = createClipboardDomain({
     app: { isPackaged: false }, rootDirectory: path.resolve(__dirname, '..'), directory: 'unused',
     nativeTheme: {}, getSettings: () => ({ clipboard: { enabled: true, releaseAfterMs } }),
     getHook: () => null, isGameModeEnabled: () => false, isMigrationInProgress: () => false,
     positionAutomationWindow() {},
     screen: { getCursorScreenPoint: () => ({}), getDisplayNearestPoint: () => ({ workArea: { x: 0, y: 0, width: 1200, height: 900 } }), getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1200, height: 900 } }) },
-    session: { fromPartition: () => ({ setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, protocol: { handle() {}, unhandle() {} } }) },
+    session: { fromPartition: (name) => {
+      partitions.push(name)
+      return { setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, protocol: { handle() {}, unhandle() {} } }
+    } },
     ipcMain: { handle: (name, handler) => handlers.set(name, handler), on: (name, handler) => listeners.set(name, handler) },
     createLocalWindow: () => {
       win = new EventEmitter(); win.visible = false; win.focused = false; win.destroyed = false
@@ -49,13 +52,33 @@ function harness(releaseAfterMs = 0) {
     if (method === 'paste.cancel') return { copied: true, outcome: 'copiedOnly', reason: 'FOCUS_CHANGED' }
     return {}
   }
-  return { domain, calls, get win() { return win },
+  domain.service.apply = async () => {}
+  return { domain, calls, partitions, get win() { return win },
+    setReleaseAfterMs: (value) => { releaseAfterMs = value },
     prepare: (fn) => { prepare = fn },
     commit: (fn) => { commit = fn },
     async open() { domain.show(); listeners.get('clipboard:ready')({ sender: win.webContents }); await tick() },
     paste: (args = { id, operationId }) => handlers.get('clipboard:paste')({ sender: win.webContents }, args)
   }
 }
+
+test('hidden clipboard panel applies the new deadline and reuses its session on reopening', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const h = harness(60000)
+  await h.open()
+  h.domain.hide()
+  t.mock.timers.tick(8000)
+  h.setReleaseAfterMs(10000)
+  await h.domain.applySettings()
+  t.mock.timers.tick(1999)
+  assert.equal(h.win.destroyed, false)
+  t.mock.timers.tick(1)
+  assert.equal(h.win.destroyed, true)
+  await h.open()
+  assert.equal(h.partitions.length, 2)
+  assert.equal(h.partitions[0], h.partitions[1])
+  h.domain.hide()
+})
 
 test('clipboard change shows immediate, inactive feedback without reinitializing history', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })

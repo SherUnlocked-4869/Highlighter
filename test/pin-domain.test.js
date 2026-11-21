@@ -12,7 +12,7 @@ const DATA_URL = 'data:image/png;base64,AA=='
 
 // A window shape that records everything the click-through path touches, so the
 // tests can assert the OS-level call order and the renderer receipt.
-function createHarness({ pinnedClickThrough = false, recognizePin } = {}) {
+function createHarness({ pinnedClickThrough = false, recognizePin, pinImages } = {}) {
   const handlers = new Map()
   const created = []
   const sends = []
@@ -21,7 +21,7 @@ function createHarness({ pinnedClickThrough = false, recognizePin } = {}) {
     BrowserWindow: { fromWebContents: (sender) => sender?.window || null },
     clipboard: { writeImage: () => {} },
     nativeImage: {
-      createFromDataURL: () => ({
+      createFromBuffer: () => ({
         getSize: () => ({ width: 200, height: 100 }),
         toDataURL: () => DATA_URL
       })
@@ -80,12 +80,11 @@ function createHarness({ pinnedClickThrough = false, recognizePin } = {}) {
       plugins: { ocr: true },
       pinned: { clickThrough: pinnedClickThrough }
     }),
-    saveDataUrl: async () => 'saved',
+    saveImageBuffer: async () => 'saved',
     createRecognitionWindow: () => {},
     recognizePin,
+    pinImages,
     getCreateCaptureWindow: () => async () => null,
-    dataUrlToBuffer: () => Buffer.from([0]),
-    bufferToDataUrl: () => DATA_URL,
     log: () => {},
     ipcMain: {
       on: (channel, handler) => handlers.set(channel, handler)
@@ -93,6 +92,26 @@ function createHarness({ pinnedClickThrough = false, recognizePin } = {}) {
   })
   return { domain, handlers, created, sends }
 }
+
+test('pin images use binary IPC and retire original and replacement assets', () => {
+  const { createPinImageStore } = require('../main/services/pin-image-store')
+  const pinImages = createPinImageStore({ memoryBudget: 1 })
+  const { domain, handlers, sends } = createHarness({ pinImages })
+  const win = domain.createPinWindow(Buffer.from([1, 2]), {})
+  const firstId = win._pinData.imageId
+  handlers.get('pin:ready')({ sender: win.webContents })
+  assert.deepEqual(sends.at(-1).payload.imageBuffer, Buffer.from([1, 2]))
+  assert.equal(sends.at(-1).payload.imageMime, 'image/png')
+  assert.ok(!Object.hasOwn(sends.at(-1).payload, 'imageId'))
+  assert.ok(!Object.hasOwn(sends.at(-1).payload, 'dataUrl'))
+  domain.updatePinWindow(win, Buffer.from([3, 4]), {})
+  const secondId = win._pinData.imageId
+  assert.throws(() => pinImages.read(firstId), /已释放/)
+  assert.deepEqual(sends.at(-1).payload.imageBuffer, Buffer.from([3, 4]))
+  assert.equal(sends.at(-1).channel, 'pin:update')
+  win._closed()
+  assert.throws(() => pinImages.read(secondId), /已释放/)
+})
 
 test('a recognition pin reveals before starting the task and aborts when closed', async () => {
   let finish

@@ -79,6 +79,7 @@ function createSelectionDomain(deps) {
 
   let windowManager = null
   let hookService = null
+  let hookSuspendedForSettings = false
   const powerListeners = []
   let currentStreamController = null
   let streamSeq = 0
@@ -269,7 +270,13 @@ function createSelectionDomain(deps) {
     return windowManager.handleRendererGone(win, details)
   }
 
-  function initSelectionHook() {
+  function needsSelectionHook() {
+    const settings = getSettings()
+    return settings.selectionToolbar.enabled !== false || settings.clipboard?.enabled === true || deps.clipboardNeedsSelectionHook?.() === true
+  }
+
+  function initSelectionHook(reason = 'startup') {
+    if (!needsSelectionHook()) return false
     if (!hookService) {
       hookService = createHookService({
         createHost: SelectionHookService.createUtilityProcessHostFactory({
@@ -299,9 +306,27 @@ function createSelectionDomain(deps) {
         log
       })
     }
+    hookSuspendedForSettings = false
+    if (getSettings().selectionToolbar.enabled !== false) registerSelectionDisplayEvents()
     if (isGameModeEnabled()) return hookService.suspend('game-mode')
-    registerSelectionDisplayEvents()
-    return hookService.start('startup')
+    return hookService.start(reason)
+  }
+
+  function applySelectionEnabled() {
+    if (getSettings().selectionToolbar.enabled === false) {
+      toolbarRecyclePending = false
+      disposeSelectionDisplayEvents()
+      windowManager.recycleToolbarWindow('toolbar-disabled')
+    } else {
+      registerSelectionDisplayEvents()
+    }
+    // Clipboard history uses the same host to authenticate its native lease.
+    if (needsSelectionHook()) {
+      if (!hookService || hookSuspendedForSettings) initSelectionHook('selection-required')
+    } else if (hookService && !hookSuspendedForSettings) {
+      hookSuspendedForSettings = true
+      hookService.suspend('toolbar-disabled')
+    }
   }
 
   function registerSelectionPowerEvents() {
@@ -310,10 +335,10 @@ function createSelectionDomain(deps) {
       ['suspend', () => hookService?.notePowerEvent('sleep', 'system-suspend')],
       ['lock-screen', () => hookService?.notePowerEvent('sleep', 'lock-screen')],
       ['resume', () => {
-        if (!isGameModeEnabled()) hookService?.notePowerEvent('wake', 'system-resume')
+        if (!isGameModeEnabled() && needsSelectionHook()) hookService?.notePowerEvent('wake', 'system-resume')
       }],
       ['unlock-screen', () => {
-        if (!isGameModeEnabled()) hookService?.notePowerEvent('wake', 'unlock-screen')
+        if (!isGameModeEnabled() && needsSelectionHook()) hookService?.notePowerEvent('wake', 'unlock-screen')
       }]
     ]
     for (const [eventName, listener] of bindings) {
@@ -327,11 +352,12 @@ function createSelectionDomain(deps) {
       powerMonitor.removeListener(eventName, listener)
     }
     disposeSelectionDisplayEvents()
+    windowManager.recycleToolbarWindow('dispose')
     hookService?.dispose()
     hookService = null
   }
 
-  // The toolbar window is pre-created at startup and normally reused for hours.
+  // The toolbar window is pre-created at startup when enabled and reused while active.
   // A window that long can lose its compositor surface without Electron
   // reporting anything wrong (2026-10-07: WS_VISIBLE, TOPMOST, uncloaked,
   // renderer painting, nothing on screen), so the events that can invalidate a
@@ -594,7 +620,7 @@ function createSelectionDomain(deps) {
       if (currentStreamController) cancelToolbarStream(currentStreamController, 'game-mode')
       return
     }
-    if (hookService) hookService.start('game-mode-disabled')
+    if (hookService && needsSelectionHook()) hookService.start('game-mode-disabled')
   }
 
   function createIpcController() {
@@ -643,6 +669,7 @@ function createSelectionDomain(deps) {
     hideToolbar,
     handleTextSelection,
     initSelectionHook,
+    applySelectionEnabled,
     registerSelectionPowerEvents,
     registerSelectionDisplayEvents,
     disposeSelectionDisplayEvents,

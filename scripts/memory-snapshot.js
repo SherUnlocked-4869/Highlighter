@@ -3,12 +3,9 @@
 
 // M0b: read-only external process sampler.
 //
-// `app.getAppMetrics()` only sees Electron's own process tree, so the native
-// sidecars (clipboard / OCR / Everything / SmartSelect / ffmpeg) and the two
-// Node utility processes are invisible to it. This script samples the whole
-// Windows process table with PowerShell (`Get-CimInstance Win32_Process` for
-// identity + memory, `Get-Process` for CPU), attributes every process to a role
-// by executable name/path, and reports Working Set / Private / CPU per role.
+// Sample one Windows process tree, including native children outside the app
+// directory. PID and timestamp join these samples to app.getAppMetrics()
+// and window roles in the in-app performance log.
 //
 // It is deliberately a separate, require-able module: requiring it performs no
 // collection. Run it directly for the CLI:
@@ -66,8 +63,10 @@ const USAGE = `Usage: node scripts/memory-snapshot.js [options]
 
   --label <name>        Report label (default: ${DEFAULT_LABEL})
   --samples <n>         Number of samples (default: ${DEFAULT_SAMPLES})
-  --interval <ms>       Delay between samples in ms (default: ${DEFAULT_INTERVAL_MS})
+  --interval <ms>       Time between sample starts (default: ${DEFAULT_INTERVAL_MS})
+  --tail-ms <ms>        Include percentiles for the final time window
   --app-dir <path>      App install directory; default: auto-detected running app
+  --root-pid <pid>      Select a specific Highlighter main process
   --out <path>          Output JSON path (default: ${DEFAULT_OUT_DIR}/<label>-<ISO>.json)
   -h, --help            Show this help
 
@@ -169,21 +168,40 @@ function normalizeProcess(record) {
   const workingSetBytes = Number(record.WorkingSetSize ?? record.WorkingSet64 ?? 0) || 0
   // CIM's PageFileUsage is KiB (private commit); Get-Process exposes bytes.
   const pageFileUsageKb = record.PageFileUsage
-  const privateBytes =
+  const privateBytes = record.PrivateBytes ?? (
     pageFileUsageKb === null || pageFileUsageKb === undefined
       ? Number(record.PrivateMemorySize64 ?? 0) || 0
-      : (Number(pageFileUsageKb) || 0) * 1024
+      : (Number(pageFileUsageKb) || 0) * 1024)
+  const commandLine = toText(record.CommandLine ?? record.commandLine)
+  const role = classifyProcess(record)
+  const processType = commandLine.match(/(?:^|\s)--utility-sub-type=([\w.-]+)/)?.[1]
+    ?? commandLine.match(/(?:^|\s)--type=([\w.-]+)/)?.[1]
+    ?? (role === 'chromium' && commandLine ? 'browser' : null)
 
   return {
     pid,
     parentPid: Number(record.ParentProcessId ?? record.ppid ?? 0) || null,
-    role: classifyProcess(record),
+    role,
     name: toText(record.Name ?? record.ProcessName) || path.win32.basename(executablePath) || 'unknown',
     executablePath,
     workingSetMiB: round(workingSetBytes / MIB, 1),
     privateMiB: round(privateBytes / MIB, 1),
-    cpuSeconds: round(Number(record.CpuSeconds ?? record.CPU ?? 0) || 0, 2)
+    cpuSeconds: round(Number(record.CpuSeconds ?? record.CPU ?? 0) || 0, 2),
+    ...(processType ? { processType } : {}),
+    ...(record.StartedAt ? { startedAt: record.StartedAt } : {}),
+    ...Object.fromEntries(Object.entries(EXTRA_COUNTERS).flatMap(([name, { source, divisor }]) => (
+      Object.hasOwn(record, source)
+        ? [[name, record[source] == null ? null : round(record[source] / divisor, 2)]]
+        : []
+    )))
   }
+}
+
+const EXTRA_COUNTERS = {
+  privateWorkingSetMiB: { source: 'WorkingSetPrivate', divisor: MIB },
+  gpuDedicatedMiB: { source: 'DedicatedUsage', divisor: MIB },
+  gpuSharedMiB: { source: 'SharedUsage', divisor: MIB },
+  cpuPercentOfOneCore: { source: 'PercentProcessorTime', divisor: 1 }
 }
 
 function isInsideDirectory(candidatePath, directory) {
@@ -217,7 +235,7 @@ function selectProcesses(records, { appDir = null, names = COLLECTIBLE_NAMES } =
  */
 function summarizeSamples(samples = []) {
   const list = (Array.isArray(samples) ? samples : []).filter(
-    (sample) => sample && typeof sample === 'object' && !Array.isArray(sample)
+    (sample) => sample && typeof sample === 'object' && !Array.isArray(sample) && !sample.error
   )
   const empty = {
     sampleCount: 0,
@@ -276,17 +294,55 @@ function summarizeSamples(samples = []) {
     }
   }
 
+  const total = {
+    processCount: peakProcessCount,
+    workingSetMiB: round(workingSetSum / list.length, 1),
+    privateMiB: round(privateSum / list.length, 1),
+    cpu: round(cpuSum / list.length, 2)
+  }
+  const processSamples = list.map((sample) => sample.processes).filter((processes) => Array.isArray(processes) && processes.length)
+  for (const metric of Object.keys(EXTRA_COUNTERS)) {
+    if (!processSamples.some((processes) => processes.some((process) => Object.hasOwn(process, metric)))) continue
+    const completeSamples = processSamples.filter((processes) => processes.every((process) => Number.isFinite(process[metric])))
+    const sampleTotals = completeSamples.map((processes) => processes.reduce((sum, process) => sum + process[metric], 0))
+    total[metric] = sampleTotals.length ? round(sampleTotals.reduce((sum, value) => sum + value, 0) / sampleTotals.length, 2) : null
+    total.metricSamples ??= {}
+    total.metricSamples[metric] = completeSamples.length
+  }
   return {
     sampleCount: list.length,
     first: list[0].timestamp ?? null,
     last: list[list.length - 1].timestamp ?? null,
     perRole,
-    total: {
-      processCount: peakProcessCount,
-      workingSetMiB: round(workingSetSum / list.length, 1),
-      privateMiB: round(privateSum / list.length, 1),
-      cpu: round(cpuSum / list.length, 2)
-    }
+    total
+  }
+}
+
+function summarizeTail(samples, rootPid, durationMs) {
+  const end = Date.parse(samples.at(-1)?.timestamp)
+  const tail = samples.filter((sample) => Date.parse(sample.timestamp) >= end - durationMs)
+  const usable = tail.filter((sample) => !sample.error && sample.processes[0]?.pid === rootPid)
+  const metrics = ['workingSetMiB', 'privateMiB', ...Object.keys(EXTRA_COUNTERS)]
+  function summarize(scope) {
+    const rows = usable.map(scope)
+    return Object.fromEntries(metrics.map((metric) => {
+      const values = rows.filter((row) => row.every((item) => Number.isFinite(item[metric])))
+        .map((row) => row.reduce((sum, item) => sum + item[metric], 0))
+        .sort((left, right) => left - right)
+      const count = values.length
+      return [metric, {
+        count,
+        p50: count ? round((values[Math.floor((count - 1) / 2)] + values[Math.floor(count / 2)]) / 2, 2) : null,
+        p95: count ? round(values[Math.ceil(count * 0.95) - 1], 2) : null
+      }]
+    }))
+  }
+  return {
+    durationMs,
+    requestedSamples: tail.length,
+    validSamples: usable.length,
+    main: summarize((sample) => sample.processes.slice(0, 1)),
+    tree: summarize((sample) => sample.processes)
   }
 }
 
@@ -296,11 +352,12 @@ function formatReport(summary, meta = {}) {
     `## 内存快照：${meta.label || DEFAULT_LABEL}`,
     '',
     `- 平台：${meta.platform || process.platform}`,
-    `- 应用目录：${meta.appDir || '（未探测到，仅按进程名白名单采样）'}`,
+    `- 应用目录：${meta.appDir || '（未探测到）'}`,
+    ...(meta.rootPid ? [`- 根进程 PID：${meta.rootPid}`] : []),
     `- 生成时间：${meta.generatedAt || ''}`,
     `- 样本：${summary.sampleCount}/${meta.requestedSamples ?? summary.sampleCount}，采集失败 ${meta.failureCount || 0} 次`,
     '',
-    '| 角色 | 进程数(峰值) | Working Set (MiB, 均值) | Private (MiB, 均值) | CPU (s, 均值) |',
+    '| 角色 | 进程数(峰值) | Working Set (MiB, 均值) | Private Bytes (MiB, 均值) | 累计 CPU (s, 均值) |',
     '| --- | ---: | ---: | ---: | ---: |'
   ]
 
@@ -314,6 +371,18 @@ function formatReport(summary, meta = {}) {
   lines.push(
     `| **合计** | ${summary.total.processCount} | ${summary.total.workingSetMiB.toFixed(1)} | ${summary.total.privateMiB.toFixed(1)} | ${summary.total.cpu.toFixed(2)} |`
   )
+  if (summary.total.metricSamples) {
+    const { total } = summary
+    lines.push('')
+    for (const [field, label] of [
+      ['privateWorkingSetMiB', '私有工作集 (MiB)'],
+      ['gpuDedicatedMiB', '专用 GPU 内存 (MiB)'],
+      ['gpuSharedMiB', '共享 GPU 内存 (MiB)'],
+      ['cpuPercentOfOneCore', 'CPU (% 单逻辑核)']
+    ]) {
+      lines.push(`- ${label}：${total[field] ?? '未取得'}（${total.metricSamples[field] ?? 0}/${summary.sampleCount} 个完整样本的均值）`)
+    }
+  }
   return lines.join('\n')
 }
 
@@ -323,6 +392,7 @@ function parseArgs(argv = []) {
     samples: DEFAULT_SAMPLES,
     interval: DEFAULT_INTERVAL_MS,
     appDir: null,
+    rootPid: null,
     out: null,
     help: false
   }
@@ -368,10 +438,26 @@ function parseArgs(argv = []) {
         options.interval = interval
         break
       }
+      case '--tail-ms': {
+        const read = readValue(flag, inline, index)
+        index = read.next
+        const duration = Number(read.value)
+        if (!Number.isSafeInteger(duration) || duration <= 0) throw new Error('--tail-ms 必须是正整数（毫秒）')
+        options.tailMs = duration
+        break
+      }
       case '--app-dir': {
         const read = readValue(flag, inline, index)
         index = read.next
         options.appDir = path.resolve(read.value)
+        break
+      }
+      case '--root-pid': {
+        const read = readValue(flag, inline, index)
+        index = read.next
+        const rootPid = Number(read.value)
+        if (!Number.isSafeInteger(rootPid) || rootPid < 1) throw new Error('--root-pid 必须是正整数')
+        options.rootPid = rootPid
         break
       }
       case '--out': {
@@ -398,29 +484,68 @@ function runPowerShell(command) {
 
 const UTF8_CONSOLE = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8'
 
-function collectProcesses({ appDir = null, names = COLLECTIBLE_NAMES } = {}) {
+function collectProcesses({ appDir = null, rootPid = null, rootStartedAt = null } = {}) {
   if (process.platform !== 'win32') return []
-  const nameList = names.map((name) => `'${name.replace(/'/g, "''")}'`).join(', ')
-  const appDirLiteral = toText(appDir).replace(/'/g, "''")
+  const appDirLiteral = toWindowsPath(appDir).replace(/[\\]+$/, '').replace(/'/g, "''")
+  const startLiteral = toText(rootStartedAt).replace(/'/g, "''")
+  if (rootPid !== null && (!Number.isSafeInteger(rootPid) || rootPid < 1)) throw new Error('Invalid root PID')
   const command = [
     UTF8_CONSOLE,
-    `$names = @(${nameList})`,
     `$appDir = '${appDirLiteral}'`,
-    '$items = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,WorkingSetSize,PageFileUsage -ErrorAction Stop | Where-Object {',
-    '  $_.Name -and ($names -contains $_.Name -or ($appDir -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($appDir, [System.StringComparison]::OrdinalIgnoreCase)))',
+    `$rootPid = ${rootPid ?? 0}`,
+    `$rootStartedAt = '${startLiteral}'`,
+    '$all = Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,Name,ExecutablePath,CommandLine,WorkingSetSize,PageFileUsage -ErrorAction Stop',
+    '$roots = @($all | Where-Object {',
+    "  $_.Name -in 'Highlighter.exe', 'electron.exe' -and $_.CommandLine -and $_.CommandLine -notmatch '(?:^|\\s)--type=' -and",
+    "  (!$appDir -or ($_.ExecutablePath -and $_.ExecutablePath.StartsWith(($appDir + '\\'), [System.StringComparison]::OrdinalIgnoreCase))) -and",
+    '  (!$rootPid -or $_.ProcessId -eq $rootPid) -and (!$rootStartedAt -or $_.CreationDate.ToUniversalTime().ToString("o") -eq $rootStartedAt)',
+    '})',
+    "if ($roots.Count -ne 1) { throw 'Expected one running Highlighter main process. Check --app-dir or specify --root-pid.' }",
+    '$root = $roots[0]',
+    '$items = [System.Collections.Generic.List[object]]::new()',
+    '$seen = [System.Collections.Generic.HashSet[int]]::new()',
+    '$items.Add($root); [void]$seen.Add($root.ProcessId)',
+    '$children = $all | Group-Object -Property ParentProcessId -AsHashTable -AsString',
+    'for ($i = 0; $i -lt $items.Count; $i++) {',
+    '  $parent = $items[$i]',
+    '  foreach ($child in $children[[string]$parent.ProcessId]) {',
+    '    if ($child.CreationDate -ge $parent.CreationDate -and $seen.Add($child.ProcessId)) { $items.Add($child) }',
+    '  }',
     '}',
+    '$processFilter = ($items | ForEach-Object { "IDProcess=$($_.ProcessId)" }) -join " OR "',
+    '$perf = @{}',
+    'try {',
+    '  Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter $processFilter -ErrorAction Stop | ForEach-Object { $perf[[int]$_.IDProcess] = $_ }',
+    '} catch {}',
+    `$gpuFilter = ($items | ForEach-Object { "Name LIKE 'pid_$($_.ProcessId)[_]%'" }) -join " OR "`,
+    '$gpu = @{}; $gpuAvailable = $true',
+    'try {',
+    '  foreach ($row in (Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory -Filter $gpuFilter -ErrorAction Stop)) {',
+    "    if ($row.Name -match '^pid_(\\d+)_') {",
+    '      $gpuPid = [int]$Matches[1]',
+    '      if (!$gpu.ContainsKey($gpuPid)) { $gpu[$gpuPid] = @{ Dedicated = 0; Shared = 0 } }',
+    '      $gpu[$gpuPid].Dedicated += $row.DedicatedUsage',
+    '      $gpu[$gpuPid].Shared += $row.SharedUsage',
+    '    }',
+    '  }',
+    '} catch { $gpuAvailable = $false }',
     '$result = foreach ($item in $items) {',
     '  $cpu = 0',
     '  try { $process = Get-Process -Id $item.ProcessId -ErrorAction Stop; if ($null -ne $process.CPU) { $cpu = [double]$process.CPU } } catch {}',
+    '  $counter = $perf[[int]$item.ProcessId]; $gpuCounter = $gpu[[int]$item.ProcessId]',
     '  [pscustomobject]@{',
     '    ProcessId = $item.ProcessId; ParentProcessId = $item.ParentProcessId; Name = $item.Name',
+    '    StartedAt = $item.CreationDate.ToUniversalTime().ToString("o")',
     '    ExecutablePath = $item.ExecutablePath; CommandLine = $item.CommandLine',
     '    WorkingSetSize = $item.WorkingSetSize; PageFileUsage = $item.PageFileUsage; CpuSeconds = $cpu',
+    '    WorkingSetPrivate = $counter.WorkingSetPrivate; PrivateBytes = $counter.PrivateBytes; PercentProcessorTime = $counter.PercentProcessorTime',
+    '    DedicatedUsage = $(if ($gpuAvailable) { [uint64]$gpuCounter.Dedicated })',
+    '    SharedUsage = $(if ($gpuAvailable) { [uint64]$gpuCounter.Shared })',
     '  }',
     '}',
     '$result | ConvertTo-Json -Compress -Depth 3'
   ].join('\n')
-  return selectProcesses(parseProcessJson(runPowerShell(command)), { appDir, names })
+  return parseProcessJson(runPowerShell(command)).map(normalizeProcess).filter(Boolean)
 }
 
 function deriveAppDirFromElectronPath(executablePath) {
@@ -502,16 +627,24 @@ function main(argv = process.argv.slice(2)) {
     return 0
   }
 
-  const appDir = options.appDir || detectAppDir() || path.resolve(__dirname, '..')
+  let rootPid = options.rootPid
+  let rootStartedAt = null
+  let appDir = options.appDir || (rootPid ? null : detectAppDir() || path.resolve(__dirname, '..'))
   const generatedAt = new Date().toISOString()
   const samples = []
   let failureCount = 0
+  const started = performance.now()
 
   for (let index = 0; index < options.samples; index++) {
     const timestamp = new Date().toISOString()
     try {
-      const processes = collectProcesses({ appDir })
-      samples.push({ index, timestamp, processes })
+      const processes = collectProcesses({ appDir, rootPid, rootStartedAt })
+      const root = processes[0]
+      if (!root) throw new Error('未取得 Highlighter 进程树')
+      rootPid = root.pid
+      rootStartedAt = root.startedAt
+      appDir ??= deriveAppDirFromElectronPath(root.executablePath)
+      samples.push({ index, timestamp, collectedAt: new Date().toISOString(), processes })
       console.error(`memory-snapshot: sample ${index + 1}/${options.samples} -> ${processes.length} 个进程`)
     } catch (error) {
       failureCount += 1
@@ -519,20 +652,24 @@ function main(argv = process.argv.slice(2)) {
       samples.push({ index, timestamp, processes: [], error: message })
       console.error(`memory-snapshot: sample ${index + 1}/${options.samples} 采集失败：${message}`)
     }
-    if (index < options.samples - 1) sleepSync(options.interval)
+    if (index < options.samples - 1) sleepSync(started + (index + 1) * options.interval - performance.now())
   }
 
   const summary = summarizeSamples(samples)
+  const tail = options.tailMs ? summarizeTail(samples, rootPid, options.tailMs) : null
   const outPath = options.out || defaultOutPath(options.label)
   const payload = {
     label: options.label,
     generatedAt,
     platform: process.platform,
     appDir,
+    rootPid,
+    rootStartedAt,
     requestedSamples: options.samples,
     intervalMs: options.interval,
     failureCount,
     summary,
+    ...(tail && { tail }),
     samples
   }
 
@@ -549,14 +686,16 @@ function main(argv = process.argv.slice(2)) {
       label: options.label,
       platform: process.platform,
       appDir,
+      rootPid,
       generatedAt,
       requestedSamples: options.samples,
       failureCount
     })
   )
   console.log('')
+  if (tail) console.log(`最后 ${tail.durationMs / 60000} 分钟有效采样 ${tail.validSamples}/${tail.requestedSamples}，全树私有提交 P50/P95 ${tail.tree.privateMiB.p50 ?? '不可用'}/${tail.tree.privateMiB.p95 ?? '不可用'} MiB`)
   console.log(`JSON: ${outPath}`)
-  return 0
+  return summary.sampleCount && (!tail || !failureCount) ? 0 : 1
 }
 
 module.exports = {
@@ -571,6 +710,7 @@ module.exports = {
   normalizeProcess,
   selectProcesses,
   summarizeSamples,
+  summarizeTail,
   formatReport,
   parseArgs,
   collectProcesses,

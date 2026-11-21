@@ -246,11 +246,12 @@ function createLongCaptureDomain(deps) {
         if (Math.max(size.width, size.height) > 65535 || size.width * size.height > 80000000) {
           throw new Error('长截图过大，当前仅支持保存为文件')
         }
-        const image = nativeImage.createFromPath(outputPath)
-        if (image.isEmpty()) throw new Error('长截图图片解码失败')
-        if (action === 'copy') clipboard.writeImage(image)
-        else if (action === 'pin') {
-          pinDomain.createPinWindow(image.toDataURL(), meta)
+        if (action === 'copy') {
+          const image = nativeImage.createFromPath(outputPath)
+          if (image.isEmpty()) throw new Error('长截图图片解码失败')
+          clipboard.writeImage(image)
+        } else if (action === 'pin') {
+          pinDomain.createPinWindow(await fs.promises.readFile(outputPath), meta)
         } else throw new Error('不支持的长截图操作')
         await persistHistoryFile(outputPath, meta)
       }

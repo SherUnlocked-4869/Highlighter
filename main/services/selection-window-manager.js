@@ -17,6 +17,7 @@ class SelectionWindowManager {
     sizeSaveDelayMs,
     onActionWindowClosed = () => {},
     onActionWindowBlur = () => {},
+    toolbarReleaseMs = 300000,
     // M2/W7: the unpinned action window is only hidden on blur, so without a
     // reclaimer its renderer lives until the app quits. After this long hidden it
     // is destroyed; 0 keeps the pre-M2 "hide and keep warm" behaviour. The domain
@@ -67,6 +68,16 @@ class SelectionWindowManager {
     this.lastToolbarRebuildAt = null
     this.lastPresentationFailureLogAt = null
     this.toolbarPresentationReport = null
+    this.toolbarReclaimer = createIdleReclaimer({
+      name: 'selection-toolbar',
+      timeoutMs: toolbarReleaseMs,
+      shouldReclaim: () => this.isWindowHealthy(this.toolbarWindow) && !this.toolbarWindow.isVisible(),
+      onReclaim: () => this.recycleToolbarWindow('idle'),
+      setTimer,
+      clearTimer,
+      now,
+      log
+    })
   }
 
   isWindowHealthy(win) {
@@ -153,10 +164,12 @@ class SelectionWindowManager {
     })
     win.on('closed', () => {
       if (this.toolbarWindow !== win) return
+      this.toolbarReclaimer.disarm('closed')
       this.toolbarWindow = null
       this.toolbarCreatedAt = 0
       this.toolbarPresentationReport = null
     })
+    this.toolbarReclaimer.arm()
     this.loadWindow(win, pagePath, 'toolbar')
     return win
   }
@@ -388,6 +401,7 @@ class SelectionWindowManager {
   showToolbarSelection({ text, actions, position, width }) {
     const payload = { text, actions, appearance: this.getAppearance() }
     let win = this.createToolbarWindow()
+    this.toolbarReclaimer.disarm('show')
     this.applyToolbarGeometry(win, position, width)
     win.showInactive()
     this.queueToolbarSelection(win, payload)
@@ -400,6 +414,7 @@ class SelectionWindowManager {
       // in a loop.
       if (this.canRebuildToolbar()) {
         win = this.rebuildToolbarWindow(`presentation:${report.reason}`)
+        this.toolbarReclaimer.disarm('show')
         this.applyToolbarGeometry(win, position, width)
         win.showInactive()
         this.queueToolbarSelection(win, payload)
@@ -487,14 +502,15 @@ class SelectionWindowManager {
   /**
    * Drop the cached toolbar window without waiting for a crash.
    *
-   * The window is normally created once at startup and reused for the rest of
-   * the session. Events that can invalidate its compositor surface (session
-   * unlock, display changes, a restarted GPU process) therefore recycle it so
+   * The window is reused while it is active. Events that can invalidate its
+   * compositor surface (session unlock, display changes, a restarted GPU
+   * process) also recycle it so
    * the next selection builds a fresh one. `lastToolbarPosition` is kept: the
    * rebuilt window still belongs at the last anchor.
    */
   recycleToolbarWindow(reason = 'recycle') {
     const win = this.toolbarWindow
+    this.toolbarReclaimer.disarm(reason)
     this.toolbarWindow = null
     this.toolbarCreatedAt = 0
     this.toolbarPresentationReport = null
@@ -528,7 +544,11 @@ class SelectionWindowManager {
   }
 
   hideToolbar() {
-    if (this.toolbarWindow && !this.toolbarWindow.isDestroyed()) this.toolbarWindow.hide()
+    const win = this.toolbarWindow
+    if (!this.isWindowHealthy(win)) return
+    win._pendingToolbarSelection = null
+    win.hide()
+    if (!this.toolbarReclaimer.isArmed()) this.toolbarReclaimer.arm()
   }
 
   getToolbarWindow() {

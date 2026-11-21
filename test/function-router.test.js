@@ -39,8 +39,8 @@ function createHarness(overrides = {}) {
     },
     dialog: { showOpenDialog: (...args) => { calls.dialogs.push(args); return Promise.resolve(overrides.dialogResult || { canceled: false, filePaths: ['C:\\shot.png'] }) } },
     nativeImage: {
-      createFromDataURL: (value) => ({ kind: 'data-url', value }),
-      createFromPath: (value) => ({ kind: 'path', value, toDataURL: () => `data:${value}` })
+      createFromBuffer: (value) => ({ kind: 'buffer', value }),
+      createFromPath: (value) => ({ kind: 'path', value, toPNG: () => Buffer.from(value) })
     },
     screen: {
       getCursorScreenPoint: () => ({ x: 1, y: 2 }),
@@ -49,7 +49,7 @@ function createHarness(overrides = {}) {
     shell: { openPath: (target) => { calls.openedPaths.push(target); return Promise.resolve('') } },
     captureDomain: {
       createCaptureWindow: (options) => { calls.capture.push(options); return Promise.resolve({}) },
-      captureFocusedWindow: () => { calls.captureFocusedWindow += 1; return Promise.resolve('data:image/png;base64,AAA') }
+      captureFocusedWindow: () => { calls.captureFocusedWindow += 1; return Promise.resolve(Buffer.from([1])) }
     },
     pinDomain,
     recordDomain: overrides.recordDomain || {
@@ -152,13 +152,13 @@ test('focused window capture copies the image and records history', async () => 
   assert.equal(await router.executeFunction('screenshotFocusedWindow'), true)
   assert.equal(calls.captureFocusedWindow, 1)
   assert.equal(calls.clipboardWrites.length, 1)
-  assert.deepEqual(calls.persisted.at(-1), ['data:image/png;base64,AAA', { action: 'copy', source: 'focused-window' }])
+  assert.deepEqual(calls.persisted.at(-1), [Buffer.from([1]), { action: 'copy', source: 'focused-window' }])
 })
 
 test('fixed content pins the chosen file but a cancelled dialog returns false', async () => {
   const ok = createHarness()
   assert.equal(await ok.router.executeFunction('fixedContent'), true)
-  assert.deepEqual(ok.calls.pinWindows.at(-1), ['data:C:\\shot.png', { source: 'file' }])
+  assert.deepEqual(ok.calls.pinWindows.at(-1), [Buffer.from('C:\\shot.png'), { source: 'file' }])
 
   const cancelled = createHarness({ dialogResult: { canceled: true, filePaths: [] } })
   assert.equal(await cancelled.router.executeFunction('fixedContent'), false)

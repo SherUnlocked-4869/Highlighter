@@ -20,7 +20,7 @@ test('game mode is persisted and synchronizes tray, shortcuts, selection, and se
   assert.match(main, /function applyGameModeState\([\s\S]*registerShortcuts\(\)[\s\S]*selectionDomain\.applyGameMode\(gameMode\)[\s\S]*searchDomain\.hideSearchWindow\(\)/)
   assert.match(selectionDomain, /function applyGameMode\(gameMode\) \{[\s\S]*hookService\?\.suspend\('game-mode'\)[\s\S]*hideToolbar\(\)/)
   assert.match(selectionDomain, /if \(isGameModeEnabled\(\)\) return hookService\.suspend\('game-mode'\)/)
-  assert.match(selectionDomain, /\['resume',[\s\S]*if \(!isGameModeEnabled\(\)\) hookService\?\.notePowerEvent\('wake', 'system-resume'\)/)
+  assert.match(selectionDomain, /\['resume',[\s\S]*if \(!isGameModeEnabled\(\) && needsSelectionHook\(\)\) hookService\?\.notePowerEvent\('wake', 'system-resume'\)/)
   assert.match(main, /tray\.setContextMenu\(Menu\.buildFromTemplate\(buildTrayMenuTemplate\(\{/)
   assert.match(main, /webContents\.send\('app:game-mode-changed', gameMode\)/)
   assert.match(preload, /onGameModeChanged:[\s\S]*ipcRenderer\.on\('app:game-mode-changed'/)
