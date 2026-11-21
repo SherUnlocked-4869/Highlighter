@@ -3,7 +3,7 @@
 const api = window.clipboardAPI
 const layoutApi = window.clipboardLayout
 const $ = (id) => document.getElementById(id)
-let items = []; let cursor = null; let selected = null; let status = {}; let busy = false; let visible = false
+let items = []; let nextPage = null; let selected = null; let status = {}; let loading = false; let visible = false
 let queryGeneration = 0; let detailGeneration = 0; let debounce = null; let composing = false
 let actionInFlight = false
 let kind = ''; let pinnedOnly = false
@@ -125,8 +125,6 @@ function centerSelection() {
   $('list').scrollTop = layoutApi.clamp(target, 0, Math.max(0, model.height - view))
 }
 function renderRows() {
-  if (selected) $('pin').textContent = t(selectedItem()?.isPinned ? 'clipboard.unpin' : 'clipboard.pin')
-  $('view').hidden = !selected || selectedItem()?.kind === 'image'
   if (!metrics) return rebuildAndRender()
   const language = currentLanguageName()
   const view = $('list').clientHeight
@@ -339,22 +337,36 @@ function renderStatus(value) {
   if (status.messageKey) message(new Error(status.messageKey))
 }
 async function refresh(append = false) {
-  if (!visible || (append && (!cursor || busy))) return
+  if (!visible) return
+  const search = $('search').value
+  if (append && (loading || actionInFlight || composing || !nextPage ||
+      nextPage.search !== search || nextPage.kind !== kind || nextPage.pinnedOnly !== pinnedOnly)) return
+  const filter = { search, kind, pinnedOnly }
   const ticket = ++queryGeneration
-  busy = true
+  loading = true
   try {
-    const page = result(await api.list({ search: $('search').value, kind, pinnedOnly, cursor: append ? cursor : null, limit: 50 }))
+    const page = result(await api.list({ ...filter, cursor: append ? nextPage.cursor : null, limit: 50 }))
     if (!visible || ticket !== queryGeneration) return
     if (!Array.isArray(page.items) || page.items.length > 100) throw new Error('PROTOCOL_FAILED')
     if (!append) { items = []; $('list').scrollTop = 0 }
     items.push(...page.items)
     if (items.length > 150) trimHistory()
-    cursor = page.cursor; $('more').hidden = !cursor; $('new').hidden = true
+    nextPage = page.cursor ? { ...filter, cursor: page.cursor } : null
+    $('more').hidden = !nextPage; $('new').hidden = true
     if (!items.some((item) => item.id === selected)) { selected = null; clearDetail() }
-    rebuildAndRender(); renderStatus(result(await api.status()))
     $('empty').hidden = items.length > 0
-  } catch (error) { if (ticket === queryGeneration && visible) { message(error); if (error.message === 'CURSOR_STALE') $('new').hidden = false } }
-  finally { if (ticket === queryGeneration) busy = false }
+    rebuildAndRender()
+    const value = result(await api.status())
+    if (ticket === queryGeneration && visible) renderStatus(value)
+  } catch (error) {
+    if (ticket === queryGeneration && visible) {
+      message(error)
+      if (append && error.message === 'CURSOR_STALE') {
+        nextPage = null
+        $('more').hidden = true; $('new').hidden = false
+      }
+    }
+  } finally { if (ticket === queryGeneration) loading = false }
 }
 // Trimming past 150 records deletes rows from the head, so the old
 // `scrollTop - removed * rowHeight` shortcut no longer holds: mixed rows have
@@ -401,6 +413,13 @@ function rebuildAndRender() { rebuildModel(); renderRows(); refreshChrome() }
 function refreshChrome() {
   $('paste').title = t('clipboard.paste-hint')
   $('view').textContent = t('clipboard.view-text')
+  renderSelectionActions()
+}
+function renderSelectionActions() {
+  const item = selectedItem()
+  $('pin').textContent = t(item?.isPinned ? 'clipboard.unpin' : 'clipboard.pin')
+  $('pin').disabled = !item || actionInFlight
+  $('view').hidden = !item || item.kind === 'image'
 }
 function clearDetail() {
   ++detailGeneration
@@ -416,8 +435,7 @@ function clearDetail() {
 async function select(id) {
   selected = id
   renderRows(); clearDetail()
-  const item = selectedItem()
-  if (item?.kind !== 'image') $('view').hidden = false
+  renderSelectionActions()
 }
 async function openDetail() {
   const item = selectedItem()
@@ -441,8 +459,8 @@ async function openDetail() {
 }
 async function perform(action) {
   const item = selectedItem()
-  if (!item || busy || actionInFlight) return
-  busy = true; actionInFlight = true
+  if (!item || loading || actionInFlight) return
+  actionInFlight = true
   $('feedback').hidden = true
   for (const id of actionButtons) $(id).disabled = true
   try {
@@ -454,7 +472,11 @@ async function perform(action) {
     if (['pin', 'delete'].includes(action)) await refresh()
     if (action === 'pin' && selected && !$('detail').hidden) $('detailMeta').textContent = detailMetaText(selectedItem())
   } catch (error) { if (action === 'paste') pasteMessage({ error: error.message }); else message(error) }
-  finally { busy = false; actionInFlight = false; for (const id of actionButtons) $(id).disabled = false }
+  finally {
+    actionInFlight = false
+    for (const id of actionButtons) $(id).disabled = false
+    renderSelectionActions()
+  }
 }
 function scheduleRender() {
   if (animationFrame) return
@@ -482,6 +504,12 @@ function moveVertical(direction) {
   return picked || items[found.index]
 }
 $('list').onscroll = scheduleRender
+$('list').addEventListener('scrollend', (event) => {
+  if (!nextPage) return
+  const list = event.currentTarget
+  // scrollTop can be fractional at non-integer display scaling.
+  if (list.scrollTop > 0 && list.scrollHeight - list.clientHeight - list.scrollTop <= 1) refresh(true)
+})
 if (typeof ResizeObserver === 'function') new ResizeObserver(() => { metrics = null; if (visible) rebuildAndRender() }).observe($('list'))
 $('list').onkeydown = (event) => {
   if (event.isComposing || composing) return
@@ -589,9 +617,11 @@ const cleanups = [
   api.onLanguage((language) => { setLanguage(language); applyTranslations(); rebuildAndRender(); renderStatus(status) })
 ]
 function clearHistory() {
-  visible = false; ++queryGeneration; clearTimeout(debounce); items = []; cursor = null; selected = null; busy = false
+  visible = false; ++queryGeneration; clearTimeout(debounce); items = []; nextPage = null; selected = null; loading = false
+  composing = false
   thumbCache.clear(); thumbFailed.clear(); thumbInFlight.clear(); ++thumbGeneration; metrics = null; renderedWindow = { first: -1, last: -1, cols: -1, language: '' }
   clearDetail(); $('rows').replaceChildren(); $('rows').style.height = '0px'
+  renderSelectionActions()
   $('search').value = ''; $('feedback').hidden = true
   $('empty').hidden = true; $('more').hidden = true; $('new').hidden = true
 }

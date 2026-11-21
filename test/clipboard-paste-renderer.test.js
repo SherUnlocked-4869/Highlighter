@@ -143,6 +143,42 @@ function harness(overrides = {}) {
 
 const tick = () => new Promise((resolve) => setImmediate(resolve))
 
+test('bottom pagination shares the manual request guard and retires a stale cursor', async () => {
+  const calls = []
+  const cursor = { id: 'first-page' }
+  let finishAppend
+  const h = harness({ api: { list(options) {
+    calls.push(options)
+    if (options.cursor) return new Promise((resolve) => { finishAppend = resolve })
+    return Promise.resolve({ ok: true, result: { items: [{ id: 'a', kind: 'text' }], cursor } })
+  } } })
+  h.callbacks.Init({ language: 'zh-CN' })
+  await tick()
+
+  const list = h.get('list')
+  list.scrollHeight = 3200
+  list.scrollTop = list.scrollHeight - list.clientHeight - 0.5
+  const endScroll = () => list.listeners.scrollend({ currentTarget: list })
+
+  h.get('search').value = 'new query'
+  endScroll()
+  assert.equal(calls.length, 1, 'a changed search cannot use the old cursor during debounce')
+
+  h.get('search').value = ''
+  endScroll()
+  endScroll()
+  h.get('more').onclick()
+  assert.equal(calls.length, 2, 'manual and automatic pagination share one in-flight request')
+  assert.equal(calls[1].cursor, cursor)
+
+  finishAppend({ ok: false, error: { code: 'CURSOR_STALE' } })
+  await tick()
+  endScroll()
+  assert.equal(calls.length, 2, 'scrolling does not keep requesting a stale cursor')
+  assert.equal(h.get('more').hidden, true, 'a stale cursor cannot be retried manually')
+  assert.equal(h.get('new').hidden, false, 'a stale cursor exposes the history refresh action')
+})
+
 test('feedback clears history and invalidates an in-flight page without another query', async () => {
   const h = harness()
   h.callbacks.Init({ language: 'zh-CN' })

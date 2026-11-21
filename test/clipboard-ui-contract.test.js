@@ -258,7 +258,7 @@ test('the files kind is wired end to end: badge, row count, IPC filter, settings
   assert.match(script, /row\.type === 'images' \? renderImageRow\(row\) : renderTextRow\(row\)/)
   assert.match(script, /if \(!item \|\| item\.kind !== 'image'\) continue/)
   assert.match(script, /if \(!item \|\| item\.kind === 'image'\) return false/)
-  assert.match(script, /!selected \|\| selectedItem\(\)\?\.kind === 'image'/)
+  assert.match(script, /\$\('view'\)\.hidden = !item \|\| item\.kind === 'image'/)
 
   // The main-process filter whitelist is the other half of the chip contract.
   const whitelist = ipc.match(/!\[([^\]]*)\]\.includes\(args\.kind\)/)

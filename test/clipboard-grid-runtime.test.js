@@ -326,6 +326,52 @@ function selectionApplied() {
     document.querySelectorAll('#rows [aria-selected="true"]').length === 1
 }
 
+function pinState() {
+  const pin = document.getElementById('pin')
+  return { label: pin.textContent, disabled: pin.disabled }
+}
+
+function usePagedHistory() {
+  const calls = []
+  window.__pageCalls = calls
+  window.clipboardAPI.list = async ({ cursor, limit }) => {
+    calls.push(cursor)
+    const start = cursor || 0
+    const end = Math.min(start + limit, 160)
+    const items = Array.from({ length: end - start }, (_, index) => ({
+      id: 'page-' + (start + index), kind: 'text', previewText: 'Record ' + (start + index)
+    }))
+    return { ok: true, result: { items, cursor: end < 160 ? end : null } }
+  }
+  document.getElementById('refresh').click()
+}
+
+async function checkPagination() {
+  const execute = (source) => win.webContents.executeJavaScript(source)
+  await execute('(' + usePagedHistory.toString() + ')()')
+  await waitFor('() => !document.getElementById("more").hidden', 'first page did not expose its next cursor')
+  const callsBeforeBottom = await execute('new Promise((resolve) => {' +
+    'const list = document.getElementById("list");' +
+    'list.addEventListener("scrollend", () => resolve(window.__pageCalls.slice()), { once: true });' +
+    'list.scrollTop = list.clientHeight' +
+    '})')
+  const scrollToBottom = () => execute('(() => { const list = document.getElementById("list"); list.scrollTop = list.scrollHeight })()')
+  for (const index of [50, 100, 150]) {
+    await scrollToBottom()
+    await waitFor('() => document.getElementById("item-page-' + index + '") !== null',
+      'scrolling to the bottom did not render record ' + index, 5000)
+  }
+  await scrollToBottom()
+  await waitFor('() => document.getElementById("item-page-159") !== null', 'last record is unreachable', 5000)
+  return {
+    callsBeforeBottom,
+    ...await execute('({' +
+      'calls: window.__pageCalls, moreHidden: document.getElementById("more").hidden,' +
+      'rowsHeight: parseFloat(document.getElementById("rows").style.height)' +
+      '})')
+  }
+}
+
 async function waitFor(source, label, timeout) {
   const end = Date.now() + (timeout || 8000)
   while (Date.now() < end) {
@@ -397,6 +443,7 @@ app.whenReady().then(async () => {
       grid: await waitFor(gridSettled.toString(), null, 8000),
       decoded: await waitFor(thumbnailsDecoded.toString(), null, 4000)
     }
+    report.pinOnOpen = await win.webContents.executeJavaScript('(' + pinState.toString() + ')()')
 
     await win.webContents.executeJavaScript('window.__gridBuckets = ' + JSON.stringify(buckets))
     // The DOM-side names are what the AX tree should carry; capturing both lets a
@@ -426,6 +473,10 @@ app.whenReady().then(async () => {
     await waitFor('function () { return window.innerWidth === 380 }', 'the viewport never reached 380 DIP', 5000)
     await sleep(400)
     report.widths['380'] = await measure()
+    report.pinOnUnpinned = await win.webContents.executeJavaScript('(' + pinState.toString() + ')()')
+    await win.webContents.executeJavaScript('document.querySelector(".tile[data-pinned]").click()')
+    report.pinOnPinned = await win.webContents.executeJavaScript('(' + pinState.toString() + ')()')
+    report.pagination = await checkPagination()
     report.visible = win.isVisible()
     report.ok = true
   } catch (error) {
@@ -505,6 +556,15 @@ ${report ? JSON.stringify(report, null, 2) : 'no report written'}`
   assert.equal(report.error, undefined, failure)
   assert.deepEqual(report.errors, [], 'the panel logged no renderer errors')
   assert.equal(report.visible, false, 'the probe window must stay hidden (single-display host rule)')
+  assert.deepEqual(report.pinOnOpen, { label: i18n.t('clipboard.pin'), disabled: true })
+  assert.deepEqual(report.pinOnUnpinned, { label: i18n.t('clipboard.pin'), disabled: false })
+  assert.deepEqual(report.pinOnPinned, { label: i18n.t('clipboard.unpin'), disabled: false })
+  assert.deepEqual(report.pagination, {
+    callsBeforeBottom: [null],
+    calls: [null, 50, 100, 150],
+    moreHidden: true,
+    rowsHeight: 150 * declared.rowH
+  })
   // report.settled records which thumbnail waits timed out. It is diagnostic
   // only: the per-tile assertions in section 4 name the exact missing piece (no
   // src, a stuck data-state), which is a better failure than "never settled".
