@@ -1,7 +1,7 @@
 'use strict'
 
-const { capabilities } = require('../../shared/long-capture-limits')
-const { copyExclusive } = require('../services/long-capture-output')
+const { capabilities } = require('../../../shared/long-capture-limits')
+const { copyExclusive } = require('../../services/long-capture-output')
 
 function createLongCaptureDomain(deps) {
   const {

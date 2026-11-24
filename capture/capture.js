@@ -2915,17 +2915,17 @@ canvas.addEventListener('pointerup',(event)=>{
   if(activeAnnotation&&activeAnnotation.type!=='watermark')commitAnnotation(activeAnnotation)
 })
 
+// B02: sampling owns the gesture; an interrupted press must not settle a draft here.
+// B7: an interrupted continuation puts the original stroke back; B6: an interrupted marquee
+// edits nothing. Neither path pushes an undo frame.
 canvas.addEventListener('pointercancel',()=>{
-  // B02: sampling owns the gesture; never settle a draft here.
   if(colorSampling)return
   selecting=false
   dragging=false
   resizing=null
   cancelMoveAnnotation()
   cancelResizeAnnotation()
-  // B7: an interrupted continuation puts the original stroke back (no frame).
   restoreContinuedPen()
-  // B6 wave 2: an interrupted marquee edits nothing (no frame).
   cancelMarquee()
   // Feature D3: an interrupted magnifier draft is discarded, exactly like a stroke that never
   // settled - the gesture produced no object and therefore no frame.

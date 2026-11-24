@@ -92,3 +92,10 @@ test('B06: the main process refuses copy/pin BEFORE composing, and the page says
   assert.match(controller, /result\?\.code === 'long-capture-too-large'/)
   assert.match(controller, /long-capture\.tip\.save-only/)
 })
+test('B06: the long-capture domain actually loads with the shared limits and the copy helper', () => {
+  // The require paths in main/domains/long-capture/index.js were wrong once (a runtime probe
+  // caught it because main.js failed to load); this keeps that from shipping again.
+  const { createLongCaptureDomain } = require('../main/domains/long-capture')
+  assert.equal(typeof createLongCaptureDomain, 'function')
+})
+

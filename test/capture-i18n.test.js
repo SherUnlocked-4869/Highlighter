@@ -294,6 +294,15 @@ const GOLDEN = {
   'capture.output.size': { source: '成品尺寸 ${size.width} × ${size.height}', params: { width: '${size.width}', height: '${size.height}' } },
   'capture.output.too-large': { source: '成品尺寸超出上限，已回到原图（${error.width} × ${error.height}）', params: { width: '${error.width}', height: '${error.height}' } },
 
+  // B02 (2026-11-24 architecture review): the screen-colour sampler, deliberately separate
+  // from the annotation palette.
+  'capture.toolbar.color-picker': '取屏幕颜色',
+  'capture.color-picker.title-section': '屏幕取色',
+  'capture.color-picker.hint': '点击取样 · Enter 复制 HEX · Esc 返回选区',
+  'capture.color-picker.hex': 'HEX',
+  'capture.color-picker.rgb': 'RGB',
+  'capture.color-picker.copied': '已复制',
+
   // Feature D3 (plan §7.1): the magnifier tool and its attribute panel.
   'capture.toolbar.magnifier': '放大镜',
   'capture.magnifier.factor': '倍率',
