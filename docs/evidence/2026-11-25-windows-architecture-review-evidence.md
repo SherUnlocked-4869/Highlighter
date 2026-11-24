@@ -18,6 +18,7 @@
 | B06 | P1 | 已实现 | test/long-capture-output.test.js | 阈值上下各一档的真实长图；慢盘快速保存与同名占用 |
 | C03 | P1 | 已实现 | test/clipboard-poll-backoff.test.js | 5,000 条混合历史首屏 P95、滚动无重复/漏页（真机面板） |
 | C04 | P1 | 已实现 | test/pin-image-store-async.test.js, test/pin-domain.test.js | 慢盘/SSD 上 1/10/20 张 4K PNG 的主线程停顿 P95 与句柄基线 |
+| C02 | P1 | 工具已实现 | test/performance-budget.test.js | 固定机冷启 ≥20 次 + 5 轮 30 分钟待机；绝对数字只能在真机采集 |
 
 待登记（实现完成后补行）：B02 取色器、C04 贴图溢出异步 I/O、其余 P1/P2 工单。
 
