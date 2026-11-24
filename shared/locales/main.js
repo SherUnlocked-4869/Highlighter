@@ -55,6 +55,12 @@
     'main.tray.show-main-window': '显示主界面',
     'main.tray.quit': '退出',
 
+    // --- shortcut rebinding (main.js prepareShortcutPatch, A03) ---
+    'main.shortcut.rebind-failed': '{accelerator} 不可用（{reason}），原键 {previous} 仍然有效',
+    'main.shortcut.rebind-failed-empty': '{accelerator} 不可用（{reason}），快捷键未更改',
+    'main.shortcut.unavailable': '已被系统或其他应用占用',
+    'main.shortcut.invalid': '格式无效',
+
     // --- translation proxy bridge (main/services/translation-proxy-service.js) ---
     'main.proxy.toggle-failed': '翻译代理启动或停止失败',
     'main.proxy.tooltip-running': '翻译代理运行中',
@@ -145,6 +151,12 @@
     'main.tray.show-main-window': 'Show Main Window',
     'main.tray.quit': 'Quit',
 
+    // --- shortcut rebinding (main.js prepareShortcutPatch, A03) ---
+    'main.shortcut.rebind-failed': '{accelerator} is unavailable ({reason}); {previous} is still active',
+    'main.shortcut.rebind-failed-empty': '{accelerator} is unavailable ({reason}); the shortcut was not changed',
+    'main.shortcut.unavailable': 'taken by the system or another application',
+    'main.shortcut.invalid': 'invalid format',
+
     // --- translation proxy bridge ---
     'main.proxy.toggle-failed': 'The translation proxy could not be started or stopped',
     'main.proxy.tooltip-running': 'Translation proxy running',
@@ -234,6 +246,12 @@
     'main.tray.capture-history': '截圖歷史',
     'main.tray.show-main-window': '顯示主介面',
     'main.tray.quit': '結束',
+
+    // --- shortcut rebinding (main.js prepareShortcutPatch, A03) ---
+    'main.shortcut.rebind-failed': '{accelerator} 無法使用（{reason}），原鍵 {previous} 仍然有效',
+    'main.shortcut.rebind-failed-empty': '{accelerator} 無法使用（{reason}），快速鍵未變更',
+    'main.shortcut.unavailable': '已被系統或其他應用程式占用',
+    'main.shortcut.invalid': '格式無效',
 
     // --- translation proxy bridge ---
     'main.proxy.toggle-failed': '翻譯代理啟動或停止失敗',

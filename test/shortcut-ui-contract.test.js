@@ -10,6 +10,7 @@ const { isRecordableShortcut } = require('../shared/shortcut-keys')
 const { readConfigSource } = require('./helpers/config-source')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+const shortcutDomain = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'shortcuts', 'index.js'), 'utf8')
 const settingsDefaults = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'settings-defaults.js'), 'utf8')
 const functionRouter = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'function-router.js'), 'utf8')
 const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8')
@@ -18,10 +19,14 @@ const styles = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.css'
 
 test('main process delegates shortcut registration and exposes status through preload', () => {
   assert.match(main, /new ShortcutService\(\{[\s\S]*globalShortcut[\s\S]*executeFunction/)
-  assert.match(main, /function registerShortcuts\(\)[\s\S]*shortcutService\.suspendAll\(shortcuts, 'game-mode'\)[\s\S]*shortcutService\.registerAll\(shortcuts\)/)
+  // A03: the rebind transaction lives in main/domains/shortcuts; main.js only delegates.
+  assert.match(main, /createShortcutDomain\(\{ shortcutService, getSettings, isGameModeEnabled, t \}\)/)
+  assert.match(shortcutDomain, /function register\(\)[\s\S]*shortcutService\.suspendAll\(shortcuts, 'game-mode'\)[\s\S]*shortcutService\.sync\(shortcuts\)/)
   assert.match(main, /registerShortcutIpc\(\{[\s\S]*shortcutService/)
   assert.match(main, /app\.on\('will-quit',[\s\S]*shortcutService\.dispose\(\)/)
   assert.match(preload, /getShortcutStatuses:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('shortcuts:status'\)/)
+  assert.match(main, /registerShortcutIpc\(\{[\s\S]*shortcutService/)
+  assert.match(main, /app\.on\('will-quit',[\s\S]*shortcutService\.dispose\(\)/)
 })
 
 test('settings UI refreshes and clearly marks unavailable shortcuts', () => {

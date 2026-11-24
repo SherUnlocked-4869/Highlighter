@@ -64,6 +64,53 @@ test('settings IPC applies side effects only after a validated update', () => {
   assert.deepEqual(updates, [{ patch: { theme: 'dark' }, settings: { apiKey: 'secret', theme: 'dark' } }])
 })
 
+
+test('A03: a shortcut patch is proven before the store changes, and undone if the write fails', () => {
+  const ipcMain = createIpcMain()
+  let updates = 0
+  const service = createSettingsService()
+  service.updateSettings = () => { updates++; return { patch: {}, settings: {} } }
+  registerSettingsIpc({
+    ipcMain,
+    settingsService: service,
+    assertWritable() {},
+    preparePatch: () => { throw new Error('该组合不可用（已被占用），原键 F1 仍然有效') },
+    validateApiKey: async () => true
+  })
+  assert.throws(() => ipcMain.handlers.get('settings:update')(null, { shortcuts: { screenshot: 'F2' } }), /原键 F1/)
+  assert.equal(updates, 0, 'a rejected rebind must not reach the store')
+})
+
+test('A03: a failed settings write runs the runtime undo', () => {
+  const ipcMain = createIpcMain()
+  let undone = 0
+  const service = createSettingsService()
+  service.updateSettings = () => { throw new Error('disk full') }
+  registerSettingsIpc({
+    ipcMain,
+    settingsService: service,
+    assertWritable() {},
+    preparePatch: () => () => { undone++ },
+    validateApiKey: async () => true
+  })
+  assert.throws(() => ipcMain.handlers.get('settings:update')(null, { shortcuts: { screenshot: 'F2' } }), /disk full/)
+  assert.equal(undone, 1, 'the previous registration is restored')
+})
+
+test('A03: a non-shortcut patch never calls the runtime hook', () => {
+  const ipcMain = createIpcMain()
+  let prepared = 0
+  registerSettingsIpc({
+    ipcMain,
+    settingsService: createSettingsService(),
+    assertWritable() {},
+    preparePatch: (patch) => { if (patch.shortcuts) prepared++; return null },
+    validateApiKey: async () => true
+  })
+  ipcMain.handlers.get('settings:update')(null, { theme: 'light' })
+  assert.equal(prepared, 0)
+})
+
 test('settings IPC blocks writes during migration', () => {
   const ipcMain = createIpcMain()
   let updated = false

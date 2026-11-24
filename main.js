@@ -50,6 +50,7 @@ const captureNaming = require('./main/services/capture-naming')
 const { CAPTURE_PREFIX } = captureNaming
 const { registerHistoryIpc } = require('./main/ipc/history-ipc')
 const { ShortcutService } = require('./main/services/shortcut-service')
+const { createShortcutDomain } = require('./main/domains/shortcuts')
 const { buildTrayMenuTemplate } = require('./main/services/tray-menu')
 const { createTrayIconImage } = require('./main/services/tray-icon')
 const { createProxyBridgeController } = require('./main/services/proxy-bridge-controller')
@@ -892,11 +893,9 @@ function createTrayIcon() {
   tray._trayIconFile = trayIcon.file
   const gameMode = isGameModeEnabled(settings)
   const proxyState = proxyBridgeController ? proxyBridgeController.menuState(settings) : null
-  // A01: the tooltip mirrors the live capture so a hover (or a screen reader on the tray)
-  // says why a pause/resume entry is showing. createTrayIcon only runs on state changes -
-  // record/index.js refreshes the tray on a status transition, never on an elapsed tick.
-  const liveRecording = recordDomain && typeof recordDomain.getActiveState === 'function' ? recordDomain.getActiveState() : null
-  const recordingTooltip = liveRecording && (liveRecording.status === 'recording' || liveRecording.status === 'paused')
+  // A01: the tooltip mirrors the live capture (rebuilt only on a status transition).
+  const liveRecording = recordDomain?.getActiveState?.()
+  const recordingTooltip = liveRecording?.status === 'recording' || liveRecording?.status === 'paused'
     ? t(liveRecording.status === 'paused' ? 'main.tray.tooltip-recording-paused' : 'main.tray.tooltip-recording')
     : ''
   tray.setToolTip([gameMode ? 'Highlighter（游戏模式）' : 'Highlighter', recordingTooltip, proxyState?.running ? t('main.proxy.tooltip-running') : ''].filter(Boolean).join(' · '))
@@ -961,11 +960,10 @@ function getEverythingService() {
 }
 
 
-function registerShortcuts() {
-  const shortcuts = getSettings().shortcuts
-  if (isGameModeEnabled()) return shortcutService.suspendAll(shortcuts, 'game-mode')
-  return shortcutService.registerAll(shortcuts)
-}
+// A03: the rebind transaction (trial before persist) lives in main/domains/shortcuts.
+const shortcutDomain = createShortcutDomain({ shortcutService, getSettings, isGameModeEnabled, t })
+function registerShortcuts() { return shortcutDomain.register() }
+function prepareShortcutPatch(patch) { return shortcutDomain.preparePatch(patch) }
 
 function applyGameModeState(enabled, reason = 'state-change') {
   const gameMode = enabled === true
@@ -996,6 +994,8 @@ registerSettingsIpc({
     prepareProviderConnection: (provider) => settingsService.prepareProviderConnection(provider)
   },
   assertWritable: assertManagedDataWritable,
+  // A03: trial-register a shortcut change before it is persisted.
+  preparePatch: (patch) => prepareShortcutPatch(patch),
   onSettingsUpdated: (patch, settings) => {
     settingsEffects.applyUpdate(patch, settings)
   },
