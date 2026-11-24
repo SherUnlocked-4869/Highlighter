@@ -66,7 +66,9 @@ test('B06: concurrent fast saves land on distinct names', async (t) => {
     copyExclusive(source, target)
   ])
   assert.equal(new Set(paths).size, 3)
-  assert.equal(paths[0], target)
+  // Which caller wins the bare name is up to the OS; only "exactly one of them did" is stable.
+  assert.equal(paths.includes(target), true)
+  assert.equal(paths.filter((file) => file === target).length, 1)
   for (const file of paths) assert.equal(fs.readFileSync(file, 'utf8'), 'bytes')
 })
 
