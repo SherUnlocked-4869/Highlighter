@@ -30,6 +30,11 @@ const IPC_SURFACES = Object.freeze([
       'data-root:get',
       'data-root:open',
       'data-root:change',
+      // D04: local backup create/inspect/restore/delete from the settings window.
+      'data-root:backup-create',
+      'data-root:backup-inspect',
+      'data-root:backup-restore',
+      'data-root:backup-delete',
       'history:list',
       'history:thumbnail',
       'history:sources',

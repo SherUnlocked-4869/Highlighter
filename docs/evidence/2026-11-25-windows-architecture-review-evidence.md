@@ -22,6 +22,7 @@
 | A05 | P1 | 已实现 | test/clipboard-preview.test.js | 20 张相似图首次粘贴正确率（5 人）；30 次预览释放（真机面板） |
 | A06 | P1 | 已实现（图标素材待补） | test/tray-menu.test.js, test/first-run-guidance.test.js | 5 名新用户 60 秒首框；16/24/32 托盘素材与深浅任务栏 |
 | D03 | P1 | 已实现（UI 按钮待接） | test/recording-salvage.test.js | 真实强制结束/截断 WebM 的重封装与播放 |
+| D04 | P1 | 已实现（IPC 已接线，逐版本迁移钩子待注册） | test/data-root-backup.test.js, test/data-root-backup-ui.test.js | 普通安装与便携从上一受支持版本实机恢复；坏包/盘满/中途终止 |
 | C06 | P2 | 工具已实现 | test/release-size.test.js | 两个相邻 NSIS 候选 + blockmap 的差分传输与安装耗时 |
 | C02 | P1 | 工具已实现 | test/performance-budget.test.js | 固定机冷启 ≥20 次 + 5 轮 30 分钟待机；绝对数字只能在真机采集 |
 

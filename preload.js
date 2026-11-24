@@ -24,6 +24,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getDataRoot: () => ipcRenderer.invoke('data-root:get'),
   changeDataRoot: () => ipcRenderer.invoke('data-root:change'),
   openDataRoot: () => ipcRenderer.invoke('data-root:open'),
+  // D04: module-scoped local backups (backup -> inspect -> restore/delete).
+  backupCreate: (options) => ipcRenderer.invoke('data-root:backup-create', options),
+  backupInspect: (directory) => ipcRenderer.invoke('data-root:backup-inspect', directory),
+  backupRestore: (options) => ipcRenderer.invoke('data-root:backup-restore', options),
+  backupDelete: (directory) => ipcRenderer.invoke('data-root:backup-delete', directory),
   executeFunction: (name, payload) => ipcRenderer.invoke('app:execute-function', { name, payload }),
   getHistory: (filter) => ipcRenderer.invoke('history:list', filter),
   getHistoryThumbnail: (id) => ipcRenderer.invoke('history:thumbnail', id),

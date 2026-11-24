@@ -415,18 +415,260 @@ function renderFunctionSettings() {
   }
 }
 
+// D04: the local backup block on the "system and data" page. The package
+// format and the rollback live in main/services/data-root-backup.js; this page
+// only chooses modules and directories, shows the manifest before anything is
+// restored, and maps structured failure codes to localized copy. The dialogs
+// reuse the existing dialog:choose-directory channel.
+const SYSTEM_BACKUP_MODULES = ['history', 'clipboard', 'recordings', 'conversations', 'usage', 'settings']
+const SYSTEM_BACKUP_DEFAULT_MODULES = ['history', 'clipboard', 'recordings', 'settings']
+const SYSTEM_BACKUP_ERROR_KEYS = {
+  'not-backup': 'config.settings-system.backup-error-not-backup',
+  incomplete: 'config.settings-system.backup-error-incomplete',
+  'corrupt-manifest': 'config.settings-system.backup-error-corrupt',
+  'future-schema': 'config.settings-system.backup-error-future',
+  'unsupported-schema': 'config.settings-system.backup-error-unsupported',
+  'checksum-mismatch': 'config.settings-system.backup-error-checksum',
+  'missing-file': 'config.settings-system.backup-error-corrupt',
+  'target-not-empty': 'config.settings-system.backup-error-target-not-empty',
+  'migration-required': 'config.settings-system.backup-error-migration-required',
+  'unsupported-version': 'config.settings-system.backup-error-unsupported-version',
+  'permission-denied': 'config.settings-system.backup-error-permission',
+  'copy-failed': 'config.settings-system.backup-error-copy-failed',
+  'publish-failed': 'config.settings-system.backup-error-restore-failed',
+  'restore-failed': 'config.settings-system.backup-error-restore-failed',
+  'verification-failed': 'config.settings-system.backup-error-verification-failed',
+  'migration-failed': 'config.settings-system.backup-error-migration-failed',
+  'unsupported-link': 'config.settings-system.backup-error-unsupported-link',
+  'not-incomplete': 'config.settings-system.backup-error-not-incomplete',
+  'invalid-request': 'config.settings-system.backup-error-invalid-request',
+  'invalid-target': 'config.settings-system.backup-error-invalid-target',
+  'io-error': 'config.settings-system.backup-error-io-error',
+  'backup-failed': 'config.settings-system.backup-error-backup-failed',
+  'quiesce-failed': 'config.settings-system.backup-error-quiesce-failed'
+}
+
+function formatBackupBytes(value) {
+  const bytes = Number(value) || 0
+  if (!bytes) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function systemBackupApi() {
+  const api = window.electronAPI
+  if (!api || typeof api.backupCreate !== 'function' || typeof api.backupInspect !== 'function' || typeof api.backupRestore !== 'function') return null
+  return api
+}
+
+function backupErrorMessage(result, fallbackKey) {
+  const fallback = fallbackKey || 'config.settings-system.backup-error-io-error'
+  if (!result) return t(fallback)
+  if (result.code === 'insufficient-space' && Number.isFinite(Number(result.requiredBytes))) {
+    return `${t('config.settings-system.backup-error-no-space')} ${t('config.settings-system.backup-error-no-space-detail', {
+      required: formatBackupBytes(result.requiredBytes),
+      free: formatBackupBytes(result.freeBytes)
+    })}`
+  }
+  const key = SYSTEM_BACKUP_ERROR_KEYS[result.code]
+  return key ? t(key) : (result.message || t(fallback))
+}
+
+function systemBackupModuleMarkup() {
+  return SYSTEM_BACKUP_MODULES.map((id) => {
+    const checked = SYSTEM_BACKUP_DEFAULT_MODULES.includes(id) ? ' checked' : ''
+    return `<label class="backup-module"><input type="checkbox" data-backup-module value="${id}"${checked}> ${t(`config.settings-system.backup-module-${id}`)}</label>`
+  }).join('')
+}
+
+function backupPreviewMarkup(result) {
+  if (!result || result.ok !== true) return ''
+  const checksum = String(result.checksum || '')
+  const moduleRows = (result.moduleOrder || []).map((id) => {
+    const entry = result.modules?.[id]
+    if (!entry) return ''
+    return `<div class="form-row"><div class="form-label"><b>${t(`config.settings-system.backup-module-${id}`)}</b></div><span>${t('config.settings-system.backup-module-line', {
+      files: entry.fileCount,
+      size: formatBackupBytes(entry.bytes)
+    })}</span></div>`
+  }).join('')
+  const externalCount = Number(result.externalRefCount) || 0
+  const externalRows = (result.externalRefs || []).slice(0, 5)
+    .map((ref) => `<small>${escapeHtml(ref.path)}</small>`).join('<br>')
+  const externalValue = externalCount
+    ? `${t('config.settings-system.backup-external-refs-value', { count: externalCount })}<br>${externalRows}`
+    : t('config.settings-system.backup-external-refs-none')
+  const missing = (result.warnings || []).filter((warning) => warning && warning.code === 'external-ref-unavailable').length
+  const sensitiveMarkup = result.containsSensitive
+    ? `<div class="update-guidance warning">${t('config.settings-system.backup-sensitive')} · ${t('config.settings-system.backup-sensitive-hint')}</div>`
+    : `<small class="section-note">${t('config.settings-system.backup-not-sensitive')}</small>`
+  const missingMarkup = missing
+    ? `<div class="update-guidance warning">${t('config.settings-system.backup-external-missing')}</div>`
+    : ''
+  return `<div class="backup-preview"><h3>${t('config.settings-system.backup-preview-title')}</h3>
+    <div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-version')}</b></div><span>${escapeHtml(String(result.version || ''))}</span></div>
+    <div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-format-version')}</b></div><span>${escapeHtml(String(result.formatVersion || ''))}</span></div>
+    <div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-size')}</b></div><span>${formatBackupBytes(result.totalBytes)}</span></div>
+    <div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-files')}</b></div><span>${Number(result.totalFiles) || 0}</span></div>
+    <div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-checksum')}</b></div><code title="${escapeHtml(checksum)}">${escapeHtml(checksum.slice(0, 16))}</code></div>
+    ${moduleRows}
+    <div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-external-refs')}</b></div><span>${externalValue}</span></div>
+    ${sensitiveMarkup}${missingMarkup}</div>`
+}
+
+function bindSystemBackupControls() {
+  const targetInput = document.getElementById('backupTargetDirectory')
+  const sourceInput = document.getElementById('backupSourceDirectory')
+  const externalHistoryInput = document.getElementById('backupExternalHistory')
+  const createButton = document.getElementById('createBackup')
+  const previewButton = document.getElementById('previewBackup')
+  const restoreButton = document.getElementById('restoreBackup')
+  const deleteButton = document.getElementById('deleteIncompleteBackup')
+  const summary = document.getElementById('backupSummary')
+  if (!targetInput || !sourceInput || !externalHistoryInput || !createButton || !previewButton || !restoreButton || !summary) return
+
+  const api = systemBackupApi()
+  const showSummary = (result) => { summary.innerHTML = backupPreviewMarkup(result) }
+  const showFailure = (result, fallbackKey, suffixKey) => {
+    summary.innerHTML = ''
+    deleteButton.hidden = !(result && result.code === 'incomplete' && api && typeof api.backupDelete === 'function')
+    const suffix = suffixKey ? ` ${t(suffixKey)}` : ''
+    toast(`${backupErrorMessage(result, fallbackKey)}${suffix}`)
+  }
+  const busy = (button, active, labelKey) => {
+    if (!button.isConnected) return
+    button.disabled = active
+    if (labelKey) button.textContent = t(labelKey)
+  }
+
+  document.getElementById('chooseBackupTarget').onclick = async () => {
+    const directory = await window.electronAPI.chooseDirectory()
+    if (directory) targetInput.value = directory
+  }
+  document.getElementById('chooseBackupExternalHistory').onclick = async () => {
+    const directory = await window.electronAPI.chooseDirectory()
+    if (directory) externalHistoryInput.value = directory
+  }
+  document.getElementById('clearBackupExternalHistory').onclick = () => {
+    externalHistoryInput.value = ''
+  }
+  document.getElementById('chooseBackupSource').onclick = async () => {
+    const directory = await window.electronAPI.chooseDirectory()
+    if (!directory) return
+    sourceInput.value = directory
+    if (!api) return
+    try {
+      const result = await api.backupInspect(directory)
+      if (!result || result.ok !== true) { showFailure(result, 'config.settings-system.backup-preview-failed'); return }
+      showSummary(result)
+      deleteButton.hidden = true
+    } catch (error) {
+      toast(error.message || t('config.settings-system.backup-preview-failed'))
+    }
+  }
+
+  createButton.onclick = async () => {
+    if (!api) { toast(t('config.settings-system.backup-unavailable')); return }
+    const externalHistory = externalHistoryInput.value.trim()
+    const modules = [...document.querySelectorAll('[data-backup-module]')].filter((input) => input.checked)
+      .map((input) => (input.value === 'history' && externalHistory ? { id: 'history', directory: externalHistory } : input.value))
+    if (!modules.length) { toast(t('config.settings-system.backup-select-module')); return }
+    if (!targetInput.value.trim()) { toast(t('config.settings-system.backup-choose-target')); return }
+    busy(createButton, true, 'config.settings-system.backup-creating')
+    try {
+      const result = await api.backupCreate({ modules, targetDirectory: targetInput.value.trim() })
+      if (!result || result.ok !== true) { showFailure(result, 'config.settings-system.backup-create-failed'); return }
+      sourceInput.value = result.directory || ''
+      showSummary(result)
+      deleteButton.hidden = true
+      toast(t('config.settings-system.backup-created', { path: result.directory || '' }))
+    } catch (error) {
+      toast(error.message || t('config.settings-system.backup-create-failed'))
+    } finally {
+      busy(createButton, false, 'config.settings-system.backup-create')
+    }
+  }
+
+  previewButton.onclick = async () => {
+    if (!api) { toast(t('config.settings-system.backup-unavailable')); return }
+    const directory = sourceInput.value.trim()
+    if (!directory) { toast(t('config.settings-system.backup-choose-source')); return }
+    busy(previewButton, true, 'config.settings-system.backup-inspecting')
+    try {
+      const result = await api.backupInspect(directory)
+      if (!result || result.ok !== true) { showFailure(result, 'config.settings-system.backup-preview-failed'); return }
+      showSummary(result)
+      deleteButton.hidden = true
+    } catch (error) {
+      toast(error.message || t('config.settings-system.backup-preview-failed'))
+    } finally {
+      busy(previewButton, false, 'config.settings-system.backup-preview')
+    }
+  }
+
+  restoreButton.onclick = async () => {
+    if (!api) { toast(t('config.settings-system.backup-unavailable')); return }
+    const directory = sourceInput.value.trim()
+    if (!directory) { toast(t('config.settings-system.backup-choose-source')); return }
+    let inspected
+    try {
+      inspected = await api.backupInspect(directory)
+    } catch (error) {
+      toast(error.message || t('config.settings-system.backup-preview-failed')); return
+    }
+    if (!inspected || inspected.ok !== true) { showFailure(inspected, 'config.settings-system.backup-preview-failed'); return }
+    showSummary(inspected)
+    if (!confirm(t('config.settings-system.backup-confirm-restore'))) return
+    const targetDirectory = await window.electronAPI.chooseDirectory()
+    if (!targetDirectory) return
+    busy(restoreButton, true, 'config.settings-system.backup-restoring')
+    try {
+      const result = await api.backupRestore({ backupDirectory: directory, targetRoot: targetDirectory })
+      if (!result || result.ok !== true) {
+        showFailure(result, 'config.settings-system.backup-restore-failed', 'config.settings-system.backup-restore-safe')
+        return
+      }
+      toast(t('config.settings-system.backup-restored'))
+    } catch (error) {
+      toast(`${error.message || t('config.settings-system.backup-restore-failed')} ${t('config.settings-system.backup-restore-safe')}`)
+    } finally {
+      busy(restoreButton, false, 'config.settings-system.backup-restore')
+    }
+  }
+
+  deleteButton.onclick = async () => {
+    if (!api || typeof api.backupDelete !== 'function') { toast(t('config.settings-system.backup-unavailable')); return }
+    const directory = sourceInput.value.trim()
+    if (!directory) { toast(t('config.settings-system.backup-choose-source')); return }
+    if (!confirm(t('config.settings-system.backup-delete-confirm'))) return
+    try {
+      const result = await api.backupDelete(directory)
+      if (!result || result.ok !== true) { toast(backupErrorMessage(result, 'config.settings-system.backup-delete-failed')); return }
+      summary.innerHTML = ''
+      deleteButton.hidden = true
+      toast(t('config.settings-system.backup-deleted'))
+    } catch (error) {
+      toast(error.message || t('config.settings-system.backup-delete-failed'))
+    }
+  }
+}
+
 async function renderSystemSettings() {
   const dataRoot = await window.electronAPI.getDataRoot()
   if (currentRoute !== 'settings-system') return
   const dataSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.data-section')}</h2><div class="card form-card"><div class="form-row"><label class="form-label" for="dataRoot"><b>${t('config.settings-system.data-root')}</b><small>${t('config.settings-system.data-root-hint')}</small></label><div class="action-group field-actions"><input id="dataRoot" type="text" readonly value="${escapeHtml(dataRoot.path)}"><button class="button subtle" id="openDataRoot">${t('config.settings-system.open')}</button><button class="button" id="changeDataRoot">${t('config.settings-system.change')}</button></div></div></div></section>`
+  const backupSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.backup-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-modules')}</b><small>${t('config.settings-system.backup-modules-hint')}</small></div><div class="backup-modules" style="display:flex;flex-wrap:wrap;gap:10px 16px">${systemBackupModuleMarkup()}</div></div><div class="form-row">${settingsFieldLabel('backupTargetDirectory', 'config.settings-system.backup-target', 'config.settings-system.backup-target-hint')}<div class="action-group field-actions"><input id="backupTargetDirectory" type="text" readonly value=""><button class="button" id="chooseBackupTarget">${t('config.settings-system.choose')}</button></div></div><div class="form-row">${settingsFieldLabel('backupSourceDirectory', 'config.settings-system.backup-source', 'config.settings-system.backup-source-hint')}<div class="action-group field-actions"><input id="backupSourceDirectory" type="text" readonly value=""><button class="button" id="chooseBackupSource">${t('config.settings-system.choose')}</button></div></div><div class="form-row">${settingsFieldLabel('backupExternalHistory', 'config.settings-system.backup-external-history', 'config.settings-system.backup-external-history-hint')}<div class="action-group field-actions"><input id="backupExternalHistory" type="text" readonly value=""><button class="button" id="chooseBackupExternalHistory">${t('config.settings-system.choose')}</button><button class="button subtle" id="clearBackupExternalHistory">${t('config.settings-system.backup-clear')}</button></div></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-key-hint')}</b></div><div class="action-group"><button class="button primary" id="createBackup">${t('config.settings-system.backup-create')}</button><button class="button" id="previewBackup">${t('config.settings-system.backup-preview')}</button><button class="button" id="restoreBackup">${t('config.settings-system.backup-restore')}</button><button class="button danger" id="deleteIncompleteBackup" hidden>${t('config.settings-system.backup-delete-incomplete')}</button></div></div><div id="backupSummary" class="backup-summary"></div></div></section>`
   const diagnosticsSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.diagnostics-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.preview-diagnostics')}</b><small>${t('config.settings-system.preview-diagnostics-hint')}</small></div><button class="button" id="previewDiagnostics">${t('config.settings-system.preview')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.export-diagnostics')}</b><small>${t('config.settings-system.export-diagnostics-hint')}</small></div><button class="button primary" id="exportDiagnostics">${t('config.settings-system.export-zip')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.include-crash-dumps')}</b><small>${t('config.settings-system.include-crash-dumps-hint')}</small></div><input id="includeCrashDumps" type="checkbox"></div><pre id="diagnosticsPreview" class="diagnostics-preview" hidden></pre></div></section>`
   // The proxy bridge card. Every value it writes is a `proxy.*` field, and the
   // patch validator only accepts keys listed in DEFAULT_SETTINGS. The relay runs
   // inside the main process, so there is no interpreter/script path to configure.
   const proxySettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.proxy-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-status')}</b><small id="proxyStatusDetail">${t('config.settings-system.proxy-status-checking')}</small></div><span id="proxyStatus">${t('config.settings-system.proxy-status-checking')}</span><button class="button" id="toggleProxy">${t('config.settings-system.proxy-start')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-auto-start')}</b></div>${switchMarkup(settings.proxy.autoStart === true, 'autoStart', 'proxy')}</div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-port')}</b><small>${t('config.settings-system.proxy-port-hint')}</small></div><input id="proxyPort" type="number" min="1" max="65535" value="${Number(settings.proxy.port) || 8080}"></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-host')}</b><small>${t('config.settings-system.proxy-host-hint')}</small></div><select id="proxyHost"><option value="127.0.0.1">127.0.0.1</option><option value="0.0.0.0">0.0.0.0</option></select></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-api-base')}</b><small>${t('config.settings-system.proxy-api-base-hint')}</small></div><input id="proxyApiBase" type="text" value="${escapeHtml(settings.proxy.apiBase || '')}" placeholder="https://index-translate.bilibili.com/v1"></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.proxy-copy-config')}</b><small>${t('config.settings-system.proxy-copy-config-hint')}</small></div><button class="button" id="copyProxyConfig">${t('config.settings-system.proxy-copy')}</button></div></div></section>`
   const dangerSettings = `<section class="section"><h2 class="section-title">${t('config.settings-system.danger-section')}</h2><div class="card form-card"><div class="form-row"><div class="form-label"><b>${t('config.settings-system.clear-history')}</b><small>${t('config.settings-system.clear-history-hint')}</small></div><button class="button danger" id="clearData">${t('config.settings-system.clear')}</button></div><div class="form-row"><div class="form-label"><b>${t('config.settings-system.reset')}</b><small>${t('config.settings-system.reset-hint')}</small></div><button class="button danger" id="resetSettings">${t('config.settings-system.reset')}</button></div></div></section>`
-  view.innerHTML = `<div class="page">${pageHeader(t('config.route.settings-system'), t('config.settings-system.description'))}${dataSettings}${proxySettings}${diagnosticsSettings}${dangerSettings}</div>`
+  view.innerHTML = `<div class="page">${pageHeader(t('config.route.settings-system'), t('config.settings-system.description'))}${dataSettings}${backupSettings}${proxySettings}${diagnosticsSettings}${dangerSettings}</div>`
   bindSwitches()
+  bindSystemBackupControls()
   document.getElementById('previewDiagnostics').onclick = async () => {
     const button = document.getElementById('previewDiagnostics')
     button.disabled = true

@@ -1,6 +1,6 @@
 'use strict'
 
-const { createDataPaths, ensureDataLayout, validateDataRoot, writeLocator } = require('../../services/data-root')
+const { createDataPaths, ensureDataLayout, isNestedPath, validateDataRoot, writeLocator } = require('../../services/data-root')
 const {
   createLegacySourcePaths,
   createManagedSourcePaths,
@@ -9,6 +9,7 @@ const {
 const { quiesceAndMigrate } = require('../../services/managed-writer-coordinator')
 const { getActiveUsageFeature } = require('../../services/usage-runtime')
 const { relaunchApplication } = require('../../services/relaunch-application')
+const dataRootBackupService = require('../../services/data-root-backup')
 
 // The data-root surface: first-run directory selection, recovery from an
 // unusable configured root, and the live "change directory" migration with its
@@ -37,6 +38,8 @@ function createDataRootDomain(deps) {
     markSessionClean,
     log
   } = deps
+
+  const backupService = deps.backupService || dataRootBackupService
 
   async function stopManagedDataWriters() {
     // Usage owns a WAL SQLite database under the managed root: checkpoint and close
@@ -227,17 +230,122 @@ function createDataRootDomain(deps) {
     return shell.openPath(dataRootContext.paths?.root || app.getPath('userData'))
   }
 
+  // D04: backup and restore reuse the same writer stop/restore pair as a root
+  // migration, because both copy files a live app is still writing. The service
+  // owns the package format, the checksums and the rollback; this domain owns the
+  // gate, the writers, the locator and the relaunch. Neither action may start
+  // while a migration (or another backup) is pending.
+  function assertBackupAllowed() {
+    if (isMigrationInProgress() || fs.existsSync(dataRootContext.pendingPath)) {
+      throw new Error('a data root migration or backup is already in progress')
+    }
+  }
+
+  function shouldRestartOcr() {
+    return !!ocrServiceRef.get() && getSettings().plugins.ocr && getSettings().ocr.hotStart
+  }
+
+  async function createDataRootBackup(options = {}) {
+    assertBackupAllowed()
+    const restartOcr = shouldRestartOcr()
+    let writersStopped = false
+    setMigrationInProgress(true)
+    try {
+      await stopManagedDataWriters()
+      writersStopped = true
+      return await backupService.createBackup({
+        dataRoot: dataRootContext.paths?.root || dataRootContext.legacyUserData,
+        modules: options.modules,
+        targetDirectory: options.targetDirectory,
+        version: options.version || app.getVersion?.(),
+        portable: dataRootContext.portable === true,
+        writersQuiesced: writersStopped
+      })
+    } catch (error) {
+      return { ok: false, code: 'backup-failed', message: error.message || String(error) }
+    } finally {
+      setMigrationInProgress(false)
+      if (writersStopped) restoreManagedDataWriters(restartOcr)
+    }
+  }
+
+  function inspectDataRootBackup(directory) {
+    return backupService.inspectBackup(directory)
+  }
+
+  function removeDataRootBackup(directory) {
+    return backupService.deleteBackup(directory)
+  }
+
+  async function restoreDataRootBackup(options = {}) {
+    assertBackupAllowed()
+    const activeRoot = dataRootContext.paths?.root || dataRootContext.legacyUserData
+    const requestedTarget = typeof options.targetRoot === 'string' ? options.targetRoot : ''
+    if (requestedTarget && path.isAbsolute(requestedTarget) &&
+      (isNestedPath(activeRoot, requestedTarget) || isNestedPath(requestedTarget, activeRoot))) {
+      // The restore target is a NEW root; it must never overlap the live root, or
+      // a failed attempt would have written inside the data it promises to keep.
+      return { ok: false, code: 'invalid-target', message: 'the restore target must not overlap the active data root' }
+    }
+    const restartOcr = shouldRestartOcr()
+    let writersStopped = false
+    let restarting = false
+    setMigrationInProgress(true)
+    try {
+      await stopManagedDataWriters()
+      writersStopped = true
+      const result = await backupService.restoreBackup({
+        backupDirectory: options.backupDirectory,
+        targetRoot: options.targetRoot,
+        supportedVersion: options.supportedVersion || app.getVersion?.(),
+        verify: options.verify,
+        migrate: async (step) => {
+          const hook = deps.backupMigrationHooks?.[`${step.from}->${step.to}`]
+          if (typeof hook !== 'function') throw new Error(`no backup migration hook for ${step.from}->${step.to}`)
+          return hook(step)
+        }
+      })
+      if (!result.ok) return result
+      // The service only returns a locator after the new root is complete and
+      // verified; switching is one atomic locator write followed by a relaunch.
+      // The old root is left in place, so a failed relaunch is recoverable.
+      await writeLocator(dataRootContext.locatorPath, result.dataRoot)
+      restarting = true
+      setImmediate(() => {
+        markSessionClean('data-root-backup-restore')
+        relaunchApplication({ app, dataRootContext })
+        app.exit(0)
+      })
+      return { ...result, restarting: true }
+    } catch (error) {
+      return { ok: false, code: 'restore-failed', message: error.message || String(error) }
+    } finally {
+      if (!restarting) {
+        setMigrationInProgress(false)
+        if (writersStopped) restoreManagedDataWriters(restartOcr)
+      }
+    }
+  }
+
   return {
     changeDataRoot,
     chooseInitialDataRoot,
     recoverUnavailableDataRoot,
     stopManagedDataWriters,
+    createDataRootBackup,
+    inspectDataRootBackup,
+    removeDataRootBackup,
+    restoreDataRootBackup,
     getInfo,
     open,
     createController: () => ({
       get: getInfo,
       open,
-      change: changeDataRoot
+      change: changeDataRoot,
+      backupCreate: createDataRootBackup,
+      backupInspect: inspectDataRootBackup,
+      backupDelete: removeDataRootBackup,
+      backupRestore: restoreDataRootBackup
     })
   }
 }

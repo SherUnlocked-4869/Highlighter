@@ -51,7 +51,8 @@ test('app and data-root IPC modules own their fixed channel surfaces', () => {
   })
   registerDataRootIpc({
     ipcMain,
-    controller: createController(['get', 'open', 'change'])
+    // D04: local backups ride the same data-root surface.
+    controller: createController(['get', 'open', 'change', 'backupCreate', 'backupInspect', 'backupRestore', 'backupDelete'])
   })
 
   assert.deepEqual([...ipcMain.handlers.keys()], [
@@ -67,10 +68,16 @@ test('app and data-root IPC modules own their fixed channel surfaces', () => {
     'ai:translate',
     'data-root:get',
     'data-root:open',
-    'data-root:change'
+    'data-root:change',
+    'data-root:backup-create',
+    'data-root:backup-inspect',
+    'data-root:backup-restore',
+    'data-root:backup-delete'
   ])
   assert.equal(ipcMain.handlers.get('app:execute-function')(null, { name: 'screenshot' }).method, 'executeFunction')
   assert.equal(ipcMain.handlers.get('data-root:change')().method, 'change')
+  assert.equal(ipcMain.handlers.get('data-root:backup-create')(null, { modules: ['history'] }).method, 'backupCreate')
+  assert.equal(ipcMain.handlers.get('data-root:backup-inspect')(null, 'C:/backup').args[0], 'C:/backup')
 })
 
 test('diagnostics IPC exposes preview and boolean-only crash dump export options', () => {
