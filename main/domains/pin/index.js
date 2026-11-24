@@ -23,6 +23,9 @@ const { resolveEditorLayout, scaleFactorFor } = require('../../../shared/editor-
 const { imageDataToBuffer } = require('../../services/image-buffer')
 const { readPngSize } = require('../../services/capture-geometry')
 const { createPinImageStore } = require('../../services/pin-image-store')
+// D05: the abnormal-renderer retention policy. The domain owns window/image
+// identity; the TTL, attempt cap and budget arithmetic live in the service.
+const { createWindowResilience } = require('../../services/window-resilience')
 
 function createPinDomain(deps) {
   const {
@@ -54,6 +57,205 @@ function createPinDomain(deps) {
     onError: (error, info) => log(`Pin image store ${info.phase} failed:`, error.message)
   })
   let pinnedCount = 0
+  let pinWindowSequence = 0
+
+  // D05: a crashed renderer no longer takes the pixels with it. The policy is
+  // injected in tests (fake clock, fake timers); in production it mirrors the
+  // existing 20 pin / 32 MiB envelope instead of opening a second budget. The
+  // callbacks are the only Electron/store touch points: retaining takes one
+  // reference in the existing image store, releasing gives it back.
+  const resilience = deps.windowResilience || createWindowResilience({
+    policy: deps.windowResiliencePolicy,
+    now: deps.now,
+    setTimer: deps.setTimer,
+    clearTimer: deps.clearTimer,
+    budget: () => ({
+      pins: pinnedCount,
+      bytes: typeof pinImages.stats === 'function' ? pinImages.stats().resident : 0
+    }),
+    retainResource: ({ imageId }) => (typeof pinImages.retain === 'function' ? pinImages.retain(imageId) : false),
+    releaseResource: ({ imageId }) => pinImages.release(imageId),
+    onRelease: (entry, info) => log(`Pin recovery released (${info.code}):`, entry.id)
+  })
+
+  function getRecoverablePins() {
+    return resilience.list().map((entry) => ({
+      id: entry.id,
+      reason: entry.reason,
+      attempts: entry.attempts,
+      exhausted: entry.exhausted,
+      expiresAt: entry.expiresAt,
+      bytes: entry.bytes
+    }))
+  }
+
+  // The tray rebuild hook. main.js is not wired in D05 (deliberately), but the
+  // next round passes `onRecoverableChange: () => createTrayIcon()`, which is the
+  // same injection selectionDomain already uses for its tray updates.
+  function notifyRecoverable(change = {}) {
+    const list = getRecoverablePins()
+    if (typeof deps.onRecoverableChange === 'function') {
+      try {
+        deps.onRecoverableChange(list, change)
+      } catch (error) {
+        log('Pin recoverable notification failed:', error.message)
+      }
+    }
+    return list
+  }
+
+  // Only abnormal renderer exits retain pixels. A normal close goes through
+  // `closed` and releases immediately, so a user who dismisses a pin never leaves
+  // a recoverable entry behind. `details.reason` is forwarded for diagnostics.
+  function handlePinRendererGone(win, details = {}) {
+    if (!win || win.isDestroyed() || win._pinClosing || win._pinClosed) return false
+    const data = win._pinData
+    if (!data?.imageId) {
+      if (!win.isDestroyed()) win.destroy()
+      return false
+    }
+    const bounds = readPinBounds(win)
+    const retained = resilience.retain({
+      key: win._pinRecoveryKey,
+      imageId: data.imageId,
+      bytes: Number(data.imageBytes) || 0,
+      reason: typeof details.reason === 'string' && details.reason ? details.reason : 'renderer-gone',
+      // The pin still counts in `pinnedCount` here; it is about to be destroyed,
+      // so the slot the retained reference occupies is the one it is releasing.
+      livePins: Math.max(0, pinnedCount - 1),
+      meta: bounds ? { ...(data.meta || {}), selectionBounds: bounds } : data.meta,
+      placement: {
+        bounds,
+        opacity: data.opacity,
+        rotation: data.rotation,
+        zoom: data.zoom,
+        clickThrough: data.clickThrough === true
+      }
+    })
+    if (retained.ok) {
+      win._pinRecoverableId = retained.entry.id
+      log('Pin window renderer exited; retained for recovery:', details.reason || 'unknown', retained.entry.id)
+      notifyRecoverable({ kind: 'retained', id: retained.entry.id, reason: retained.entry.reason })
+    } else {
+      // Budget/attempt refusals are expected under pressure; the image is released
+      // by the normal `closed` path below, exactly like the old behaviour.
+      log('Pin window could not be retained for recovery:', retained.code)
+    }
+    if (!win.isDestroyed()) win.destroy()
+    return retained.ok
+  }
+
+  function readPinBounds(win) {
+    try {
+      const bounds = win.getBounds()
+      if (!bounds) return null
+      const values = [bounds.x, bounds.y, bounds.width, bounds.height]
+      return values.every((value) => Number.isFinite(value)) ? { ...bounds } : null
+    } catch {
+      return null
+    }
+  }
+
+  // One-shot recovery. The pixels are read back from the retained store entry and
+  // the rebuilt window re-uses that same `imageId` (no copy, no second budget); the
+  // renderer receives them through the normal `pin:init` path once it is ready.
+  // A failure returns SAVE_OR_DISCARD and burns one attempt; the third failure
+  // marks the ticket exhausted, so a tray double-click cannot restart a loop.
+  async function recoverPin(ticketId) {
+    if (!resilience.has(ticketId)) return { status: 'failed', code: 'NOT_FOUND' }
+    if (!canPinMore()) {
+      // Transient capacity, not a recovery failure: do not burn an attempt.
+      return { status: 'failed', code: 'PIN_LIMIT', retryable: true }
+    }
+    const claim = resilience.claim(ticketId)
+    if (!claim.ok) {
+      if (claim.code === 'ATTEMPTS_EXHAUSTED') {
+        return { status: 'failed', code: 'SAVE_OR_DISCARD', reason: 'ATTEMPTS_EXHAUSTED', exhausted: true, retryable: false }
+      }
+      return { status: 'failed', code: claim.code, retryable: claim.code === 'BUSY' }
+    }
+    const entry = claim.entry
+    try {
+      const { bytes } = await pinImages.read(entry.imageId)
+      const win = createPinWindow(bytes, entry.meta || {}, { reuseImageId: entry.imageId })
+      try {
+        applyRecoveredPlacement(win, entry.placement)
+      } catch (error) {
+        // Never leave a half-restored window owning a reference the ticket also
+        // holds: destroy it (which releases the window's share) and fail cleanly.
+        if (!win.isDestroyed()) win.destroy()
+        throw error
+      }
+      resilience.succeed(ticketId)
+      notifyRecoverable({ kind: 'recovered', id: ticketId })
+      return { status: 'recovered', window: win, imageId: entry.imageId, attempts: entry.attempts }
+    } catch (error) {
+      const failed = resilience.fail(ticketId, { code: 'RECOVERY_FAILED', message: error.message })
+      if (!failed.ok) {
+        // The ticket expired while the rebuild was in flight; nothing is left to
+        // save. The caller still shows the failure instead of retrying forever.
+        return { status: 'failed', code: 'SAVE_OR_DISCARD', reason: 'EXPIRED', exhausted: true, retryable: false }
+      }
+      log('Pin recovery failed:', error.message)
+      notifyRecoverable({ kind: 'failed', id: ticketId })
+      return {
+        status: 'failed',
+        code: 'SAVE_OR_DISCARD',
+        reason: 'RECOVERY_FAILED',
+        attempts: failed.attempts,
+        exhausted: failed.exhausted,
+        retryable: !failed.exhausted
+      }
+    }
+  }
+
+  function applyRecoveredPlacement(win, placement) {
+    if (!win || win.isDestroyed() || !placement) return false
+    if (placement.bounds && typeof win.setBounds === 'function') {
+      try {
+        // The display topology may have changed while the ticket was retained:
+        // clamp instead of restoring a box that is now off-screen.
+        const display = screen.getDisplayMatching(placement.bounds)
+        win.setBounds(clampPinBoundsToWorkArea(placement.bounds, display.workArea), false)
+      } catch (error) {
+        log('Pin recovery placement failed:', error.message)
+      }
+    }
+    if (win._pinData) {
+      if (Number.isFinite(Number(placement.opacity))) win._pinData.opacity = clampPinOpacity(placement.opacity)
+      // `pin:init` carries rotation/zoom/click-through, so restoring the fields is
+      // enough for the rebuilt renderer to paint the same pin.
+      if (Number.isFinite(Number(placement.rotation))) win._pinData.rotation = normalizePinRotation(placement.rotation)
+      if (Number.isFinite(Number(placement.zoom))) win._pinData.zoom = Number(placement.zoom)
+    }
+    if (placement.clickThrough === true) setPinClickThrough(win, true)
+    return true
+  }
+
+  // "Save or discard" after a failed rebuild (or at any time before the TTL
+  // expires). Saving releases the retained reference only after the file is on
+  // disk; a failed save keeps the ticket so a retry or discard is still possible.
+  async function saveRecoverablePin(ticketId) {
+    const ticket = resilience.get(ticketId)
+    if (!ticket) return { status: 'failed', code: 'NOT_FOUND' }
+    try {
+      const { bytes } = await pinImages.read(ticket.imageId)
+      await saveImageBuffer(bytes)
+    } catch (error) {
+      log('Pin recovery save failed:', error.message)
+      return { status: 'failed', code: 'SAVE_FAILED' }
+    }
+    resilience.release(ticketId, { code: 'SAVED', reason: 'saved' })
+    notifyRecoverable({ kind: 'saved', id: ticketId })
+    return { status: 'saved' }
+  }
+
+  function discardRecoverablePin(ticketId) {
+    const released = resilience.release(ticketId, { code: 'DISCARDED', reason: 'discarded' })
+    if (!released.ok) return { status: 'failed', code: released.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'BUSY' }
+    notifyRecoverable({ kind: 'discarded', id: ticketId })
+    return { status: 'discarded' }
+  }
 
   function preparePinImage(input) {
     const bytes = imageDataToBuffer(input)
@@ -301,7 +503,7 @@ function createPinDomain(deps) {
     return true
   }
 
-  function createPinWindow(input, meta = {}) {
+  function createPinWindow(input, meta = {}, options = {}) {
     ensureCanPin(false)
     const image = preparePinImage(input)
     const { size } = image
@@ -326,6 +528,9 @@ function createPinDomain(deps) {
     const x = selectionBounds?.x ?? Math.round(Math.min(display.workArea.x + display.workArea.width - width, Math.max(display.workArea.x, cursor.x - width / 2)))
     const y = selectionBounds?.y ?? Math.round(Math.min(display.workArea.y + display.workArea.height - height, Math.max(display.workArea.y, cursor.y - 30)))
     const pagePath = path.join(rootDirectory, 'pin', 'pin.html')
+    // Stable per-window key for the retention policy: a window may retain at most
+    // once, so a second renderer crash cannot stack two tickets on one pin.
+    const windowKey = `pin-window-${++pinWindowSequence}`
     const win = createLocalWindow(pagePath, {
       role: `pin:${pinnedCount + 1}`,
       width: Math.min(width, 200),
@@ -346,20 +551,44 @@ function createPinDomain(deps) {
         preload: path.join(rootDirectory, 'preload-pin.js')
       }
     })
+    win._pinRecoveryKey = windowKey
+    // A user-initiated close marks the window as normal before any teardown can
+    // race the crash listener, so only abnormal exits retain pixels.
+    win.on('close', () => { win._pinClosing = true })
     win.on('closed', () => {
+      win._pinClosed = true
       win._pinRecognition?.abort()
+      // The domain always gives back its own reference. After a crash the policy
+      // holds a second one, so this releases the window's share and the retained
+      // ticket keeps the image alive until recovery/save/discard/TTL.
       pinImages.release(win._pinData?.imageId)
       win._pinData = null
       if (pinWindows.delete(win)) pinnedCount = Math.max(0, pinnedCount - 1)
       if (pinWindows.size === 0) detachPinDisplayWatchers()
     })
-    win.webContents.on?.('render-process-gone', () => {
-      if (!win.isDestroyed()) win.destroy()
+    win.webContents.on?.('render-process-gone', (_event, details) => {
+      handlePinRendererGone(win, details)
     })
+    let retainedForWindow = null
     try {
       const settings = getSettings()
+      let imageId
+      if (options.reuseImageId != null) {
+        // Recovery keeps the retained entry: the new window takes its own
+        // reference instead of copying the pixels into a second asset.
+        if (typeof pinImages.retain !== 'function' || pinImages.retain(options.reuseImageId) === false) {
+          throw new Error('贴图资源已释放')
+        }
+        retainedForWindow = options.reuseImageId
+        imageId = options.reuseImageId
+      } else {
+        imageId = pinImages.add(image)
+      }
       win._pinData = {
-        imageId: pinImages.add(image),
+        imageId,
+        // Budget material for the retention policy; the store does not expose a
+        // per-asset length and a byte count must survive a spill to disk.
+        imageBytes: image.bytes.length,
         meta,
         opacity: settings.fixedContent.opacity,
         zoomWithMouse: settings.fixedContent.zoomWithMouse !== false,
@@ -375,6 +604,7 @@ function createPinDomain(deps) {
         baseHeight,
         zoom
       }
+      retainedForWindow = null
       if (win._pinData.clickThrough) win.setIgnoreMouseEvents(true, { forward: true })
       win._pinVisible = false
       win.setPosition(display.bounds.x, display.bounds.y, false)
@@ -390,6 +620,11 @@ function createPinDomain(deps) {
         win.destroy()
       })
     } catch (error) {
+      // A reused image was retained just above: hand the reference back when the
+      // rebuild fails before `_pinData` owns it, so a failed recovery cannot leak.
+      if (retainedForWindow != null && win._pinData?.imageId !== retainedForWindow) {
+        pinImages.release(retainedForWindow)
+      }
       if (!win.isDestroyed()) win.destroy()
       throw error
     }
@@ -425,6 +660,7 @@ function createPinDomain(deps) {
       height: sized.height
     }, display.workArea)
     nextData.imageId = pinImages.add(image)
+    nextData.imageBytes = image.bytes.length
     try {
       win.setBounds(nextBounds, false)
     } catch (error) {
@@ -949,7 +1185,18 @@ function createPinDomain(deps) {
     // (the listeners are process-global and die with the app).
     reflowPinWindows,
     attachPinDisplayWatchers,
-    detachPinDisplayWatchers
+    detachPinDisplayWatchers,
+    // D05: the tray-facing recovery surface. `getRecoverablePins` returns
+    // serialisable metadata only (no pixels, no image ids); the three actions are
+    // one-shot and idempotent per ticket. Wiring: main.js passes
+    // `onRecoverableChange: () => createTrayIcon()` and reads this list in
+    // buildTrayMenuTemplate (see the D05 report).
+    getRecoverablePins,
+    recoverPin,
+    saveRecoverablePin,
+    discardRecoverablePin,
+    // Diagnostics/tests: the injected policy instance (fake clock in unit tests).
+    windowResilience: resilience
   }
 }
 
