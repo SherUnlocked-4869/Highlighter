@@ -321,7 +321,9 @@ test('recording workbench and editor IPC modules own their documented channel su
       'projectOpen',
       'projectRename',
       'projectDelete',
-      'projectReveal'
+      'projectReveal',
+      'projectSalvage',
+      'projectSalvageCancel'
     ])
   })
   assert.deepEqual([...workbenchIpc.handlers.keys()], [
@@ -334,7 +336,10 @@ test('recording workbench and editor IPC modules own their documented channel su
     'record:project-open',
     'record:project-rename',
     'record:project-delete',
-    'record:project-reveal'
+    'record:project-reveal',
+    // D03: salvage the decodable part of a damaged recording + cancel its remux.
+    'record:project-salvage',
+    'record:project-salvage-cancel'
   ])
   assert.deepEqual([...workbenchIpc.listeners.keys()], [])
   assert.equal(workbenchIpc.handlers.get('record:workbench-state')().method, 'workbenchState')
@@ -357,7 +362,9 @@ test('recording workbench and editor IPC modules own their documented channel su
       'editorReveal',
       'editorBack',
       'editorReload',
-      'editorEvents'
+      'editorEvents',
+      'editorSalvage',
+      'editorCancelSalvage'
     ])
   })
   assert.deepEqual([...editorIpc.handlers.keys()], [
@@ -372,7 +379,10 @@ test('recording workbench and editor IPC modules own their documented channel su
     // Additive (approved 2026-11-03, contract §9.3): recovery retry + revision-conflict reload.
     'record-editor:reload',
     // R5 §2.2: the project event track (data only, no paths).
-    'record-editor:events'
+    'record-editor:events',
+    // D03: recovery-banner salvage + cancel.
+    'record-editor:salvage',
+    'record-editor:cancel-salvage'
   ])
   assert.deepEqual([...editorIpc.listeners.keys()], [
     'record-editor:ready',

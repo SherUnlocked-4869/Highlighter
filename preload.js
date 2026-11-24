@@ -103,6 +103,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   projectReveal: (projectId) => ipcRenderer.invoke('record:project-reveal', {
     projectId: typeof projectId === 'string' ? projectId : ''
   }),
+  // D03: salvage the decodable part of a damaged recording. The bridge takes a project id only;
+  // the main process owns the source path, the temp copy and the recovered asset.
+  projectSalvage: (projectId) => ipcRenderer.invoke('record:project-salvage', {
+    projectId: typeof projectId === 'string' ? projectId : ''
+  }),
+  cancelProjectSalvage: (projectId) => ipcRenderer.invoke('record:project-salvage-cancel', {
+    projectId: typeof projectId === 'string' ? projectId : ''
+  }),
   getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   getProxyStatus: () => ipcRenderer.invoke('app:get-proxy-status'),
   getDisplayDiagnostics: (includeThumbnails = false) => ipcRenderer.invoke('app:get-display-diagnostics', includeThumbnails === true),

@@ -171,7 +171,9 @@ test('recording workbench/editor surfaces keep the roles separated', () => {
     'record:project-open',
     'record:project-rename',
     'record:project-delete',
-    'record:project-reveal'
+    'record:project-reveal',
+    'record:project-salvage',
+    'record:project-salvage-cancel'
   ]) {
     assert.deepEqual(rolesOf(channel), ['main'], `${channel} belongs to the workbench only`)
     assert.equal(policies.get(channel).kind, 'handle', `${channel} is an invoke`)
@@ -198,7 +200,9 @@ test('recording workbench/editor surfaces keep the roles separated', () => {
     'record-editor:reveal',
     'record-editor:back',
     'record-editor:reload',
-    'record-editor:events'
+    'record-editor:events',
+    'record-editor:salvage',
+    'record-editor:cancel-salvage'
   ]) {
     assert.deepEqual(rolesOf(channel), ['record-editor'], `${channel} belongs to the editor only`)
   }

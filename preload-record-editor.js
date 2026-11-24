@@ -36,6 +36,10 @@ contextBridge.exposeInMainWorld('recordEditorAPI', {
   reveal: (projectId) => ipcRenderer.invoke('record-editor:reveal', { projectId }),
   // Re-derives project/sourceUrl/metadata from disk: recovery-banner retry and conflict reload.
   reload: (projectId) => ipcRenderer.invoke('record-editor:reload', { projectId }),
+  // D03: salvage the decodable part of the damaged source (and its cancel). The answer has the
+  // same shape as reload, so the recovery banner can swap the preview source in place.
+  salvage: (projectId) => ipcRenderer.invoke('record-editor:salvage', { projectId }),
+  cancelSalvage: (projectId) => ipcRenderer.invoke('record-editor:cancel-salvage', { projectId }),
   // R5 §2.2: the project's event track (zoom suggestions / click ripples). Data only - the renderer
   // never learns a path, and `track: null` means "no event track, manual zoom only".
   events: (projectId) => ipcRenderer.invoke('record-editor:events', { projectId }),

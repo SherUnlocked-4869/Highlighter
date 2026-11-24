@@ -15,6 +15,7 @@ const {
   sanitizeAnnotationSnapshot
 } = require('../../../record/annotation-utils')
 const { normalizeQuality, normalizeCountdown } = require('../../../shared/recording-quality')
+const { createRecordingSalvage, salvageAssetName } = require('../../services/recording-salvage')
 
 const RECORD_MODES = Object.freeze(['display', 'region', 'window'])
 const DEFAULT_RECORD_MODE = 'display'
@@ -28,6 +29,12 @@ const COMMAND_HISTORY_LIMIT = 64
 const EDITOR_WINDOW = Object.freeze({ width: 1120, height: 760, minWidth: 820, minHeight: 600 })
 const PROJECT_LIST_LIMIT_MAX = 100
 const TERMINAL_TASK_STATES = Object.freeze(['succeeded', 'failed', 'cancelled'])
+// D03: the recovery card salvages the first 90 seconds of a damaged source. The service also
+// enforces a byte quota derived from the source size; both limits are re-applied after the remux.
+const SALVAGE_MAX_DURATION_MS = 90 * 1000
+// How long a cancel invoke waits for the salvage job to settle (FFmpeg kill + temp cleanup) before
+// answering. The job keeps running in the background after that; the UI only needs the ack.
+const SALVAGE_CANCEL_WAIT_MS = 5000
 // R4 window recording (docs/plans/2026-11-03-recording-r4-contracts.md §2.1/§2.2). A window source is
 // only ever handed to the renderer as an opaque single-use token; the main process keeps the
 // mapping to the desktopCapturer source id, which never leaves this process.
@@ -139,6 +146,10 @@ function createRecordDomain(deps) {
   // richer probe result while the recording is still in this process; after a restart the field is
   // 0 and the editor offers only `source` (contract §5).
   const probedMetadataByProject = new Map()
+  // projectId -> { controller, done }. D03: one salvage job per project at a time, so a double
+  // click cannot spawn two FFmpeg processes fighting over the same output name. The controller is
+  // what the cancel channel aborts.
+  const salvageJobs = new Map()
   // R5 event track: lazily created service plus the currently collecting session. The service is one
   // process-wide instance (one hook), used only while a demo-enhanced capture runs.
   let pointerTrackService = null
@@ -384,6 +395,240 @@ function createRecordDomain(deps) {
     if (projectExportInFlight(id)) return false
     if (typeof service.detachSession === 'function' && service.detachSession(id)) return true
     return false
+  }
+
+  // ---------------------------------------------------------------- salvage (D03)
+
+  function publicSalvageMetadata(metadata) {
+    const source = metadata && typeof metadata === 'object' ? metadata : {}
+    const video = source.video && typeof source.video === 'object' ? source.video : {}
+    const audio = source.audio && typeof source.audio === 'object' ? source.audio : {}
+    return {
+      durationMs: Math.max(0, Math.round(Number(source.durationMs) || 0)),
+      video: {
+        width: Math.max(0, Math.round(Number(video.width) || 0)),
+        height: Math.max(0, Math.round(Number(video.height) || 0)),
+        frameRate: Math.max(0, Number(video.frameRate) || 0),
+        codec: text(video.codec)
+      },
+      audio: {
+        exists: audio.exists === true,
+        codec: text(audio.codec),
+        sampleRate: Math.max(0, Math.round(Number(audio.sampleRate) || 0)),
+        channels: Math.max(0, Math.round(Number(audio.channels) || 0))
+      }
+    }
+  }
+
+  // The recovery card is told WHAT was tried, but never receives a path. The service's attempt
+  // record carries the temp argv and the FFmpeg stderr (both contain absolute paths), so only the
+  // bounded numeric/boolean facts are projected here.
+  function publicSalvageAttempt(attempted) {
+    if (!attempted || typeof attempted !== 'object') return null
+    const remux = attempted.remux && typeof attempted.remux === 'object' ? attempted.remux : {}
+    const attempts = Array.isArray(remux.attempts)
+      ? remux.attempts.slice(0, 4).map((entry) => ({
+          exitCode: Number.isSafeInteger(entry?.exitCode) ? entry.exitCode : null,
+          signal: text(entry?.signal),
+          timedOut: entry?.timedOut === true,
+          aborted: entry?.aborted === true,
+          spawnFailed: entry?.spawnFailed === true
+        }))
+      : []
+    const probe = attempted.probe && typeof attempted.probe === 'object' ? attempted.probe : {}
+    const limits = attempted.limits && typeof attempted.limits === 'object' ? attempted.limits : {}
+    const rawFreeBytes = attempted.freeBytes
+    const freeBytes = rawFreeBytes === null || rawFreeBytes === undefined
+      ? null
+      : (Number.isFinite(Number(rawFreeBytes)) ? Math.max(0, Math.round(Number(rawFreeBytes))) : null)
+    return {
+      sourceBytes: Math.max(0, Math.round(Number(attempted.sourceBytes) || 0)),
+      copyBytes: Math.max(0, Math.round(Number(attempted.copyBytes) || 0)),
+      outputBytes: Math.max(0, Math.round(Number(attempted.outputBytes) || 0)),
+      freeBytes,
+      reused: attempted.reused === true,
+      limits: {
+        maxDurationMs: Math.max(0, Math.round(Number(limits.maxDurationMs) || 0)),
+        maxOutputBytes: Math.max(0, Math.round(Number(limits.maxOutputBytes) || 0)),
+        timeoutMs: Math.max(0, Math.round(Number(limits.timeoutMs) || 0))
+      },
+      remux: { ran: remux.ran === true, attempts },
+      probe: {
+        ran: probe.ran === true,
+        ok: probe.ok === true,
+        code: text(probe.code),
+        durationMs: Math.max(0, Math.round(Number(probe.durationMs) || 0)),
+        hasAudio: probe.hasAudio === true
+      }
+    }
+  }
+
+  function publicSalvageFailure(result) {
+    const code = text(result?.code) || 'salvage-failed'
+    const reasonCode = text(result?.reason?.code) || code
+    return {
+      ok: false,
+      code,
+      reason: { code: reasonCode },
+      attempted: result?.attempted || null
+    }
+  }
+
+  async function runSalvageJob({ projectId, service, controller, assetFileName, originalFileName }) {
+    let recordingService
+    try {
+      recordingService = getRecordingService()
+    } catch (error) {
+      log('Recording salvage service unavailable:', projectId, error?.message || error)
+      return { ok: false, code: 'salvage-unavailable', reason: { code: 'salvage-unavailable' }, attempted: null }
+    }
+    const sourcePath = await service.sourcePathOf(projectId).catch(() => '')
+    if (!sourcePath) {
+      return { ok: false, code: 'source-unavailable', reason: { code: 'source-unavailable' }, attempted: null }
+    }
+    const salvage = createRecordingSalvage({
+      ffmpegPath: recordingService.ffmpegPath,
+      spawnProcess: recordingService.spawnProcess,
+      // Reuse the SAME probe the recorder/export use, so "verified" means the same thing.
+      probe: typeof recordingService.getProbe === 'function' ? recordingService.getProbe() : null,
+      log
+    })
+    const result = await salvage.salvage({
+      sourcePath,
+      workingDirectory: service.projectDirectory(projectId),
+      assetFileName,
+      signal: controller.signal,
+      limits: { maxDurationMs: SALVAGE_MAX_DURATION_MS }
+    }).catch((error) => {
+      log('Recording salvage service threw:', projectId, error?.message || error)
+      return { ok: false, reason: { code: 'salvage-internal' }, attempted: null }
+    })
+
+    if (!result?.ok) {
+      return {
+        ok: false,
+        code: 'salvage-failed',
+        reason: { code: text(result?.reason?.code) || 'salvage-failed' },
+        attempted: publicSalvageAttempt(result?.attempted)
+      }
+    }
+
+    // The recovered asset becomes a NEW source; markReady leaves the original file and the
+    // checkpoint on disk (committedByteOffset is only ever raised, never reset).
+    const marked = await service.markReady(projectId, {
+      fileName: assetFileName,
+      metadata: result.metadata
+    }).catch((error) => {
+      log('Recording salvage markReady failed:', projectId, error?.message || error)
+      return { ok: false, code: 'mark-ready-failed' }
+    })
+    if (!marked?.ok) {
+      return {
+        ok: false,
+        code: marked?.code || 'mark-ready-failed',
+        reason: { code: 'mark-ready-failed' },
+        attempted: publicSalvageAttempt(result.attempted)
+      }
+    }
+    if (result.metadata) probedMetadataByProject.set(projectId, result.metadata)
+    // A project source attached before the salvage still points at the damaged file. Detach it so
+    // the next attach registers the salvaged path; no source with live references may be swapped.
+    const session = findSessionForProject(projectId)
+    if (session && session.inputPath !== result.assetPath && !(Number(session.references) > 0)) {
+      if (typeof recordingService.detachSession === 'function') recordingService.detachSession(projectId)
+    }
+    await ensureProjectSession(marked.project).catch((error) => {
+      log('Recording salvage session attach failed:', projectId, error?.message || error)
+    })
+    return {
+      ok: true,
+      reused: result.reused === true,
+      projectId,
+      project: marked.project,
+      assetPath: result.assetPath,
+      assetFileName,
+      originalFileName,
+      metadata: result.metadata,
+      attempted: publicSalvageAttempt(result.attempted)
+    }
+  }
+
+  // Salvage entry shared by the workbench and the editor. Keeping it here (instead of in each
+  // controller method) means both surfaces apply the SAME state/idempotency rules: only a
+  // recoverable project is salvageable, a ready project whose source is already the verified
+  // asset answers with reused, and one project never runs two remux jobs.
+  async function salvageProject(projectId, { signal = null } = {}) {
+    const service = projectServiceOrNull()
+    if (!service) {
+      return { ok: false, code: 'project-service-unavailable', reason: { code: 'project-service-unavailable' }, attempted: null }
+    }
+    const id = text(projectId)
+    if (!id) return { ok: false, code: 'not-found', reason: { code: 'not-found' }, attempted: null }
+    const project = await getProject(id)
+    if (!project) return { ok: false, code: 'not-found', reason: { code: 'not-found' }, attempted: null }
+    if (project.state === 'capturing') return { ok: false, code: 'project-busy', reason: { code: 'project-busy' }, attempted: null }
+    const originalFileName = text(project.source?.fileName) || 'capture.webm'
+    const assetFileName = salvageAssetName(originalFileName)
+    if (project.state === 'ready') {
+      if (originalFileName !== assetFileName) {
+        return { ok: false, code: 'not-recoverable', reason: { code: 'not-recoverable' }, attempted: null }
+      }
+      const sourcePath = await service.sourcePathOf(id).catch(() => '')
+      if (!sourcePath) {
+        return { ok: false, code: 'source-unavailable', reason: { code: 'source-unavailable' }, attempted: null }
+      }
+      return {
+        ok: true,
+        reused: true,
+        projectId: id,
+        project,
+        assetPath: sourcePath,
+        assetFileName,
+        originalFileName,
+        metadata: probeMetadataFromProject(project),
+        attempted: null
+      }
+    }
+    if (project.state !== 'recoverable') {
+      return { ok: false, code: 'not-recoverable', reason: { code: 'not-recoverable' }, attempted: null }
+    }
+    if (salvageJobs.has(id)) return { ok: false, code: 'salvage-busy', reason: { code: 'salvage-busy' }, attempted: null }
+    if (signal?.aborted) return { ok: false, code: 'salvage-cancelled', reason: { code: 'cancelled' }, attempted: null }
+
+    const controller = new AbortController()
+    let detachExternal = null
+    if (signal) {
+      const onAbort = () => controller.abort()
+      signal.addEventListener('abort', onAbort, { once: true })
+      detachExternal = () => signal.removeEventListener('abort', onAbort)
+    }
+    const job = { controller, done: null }
+    salvageJobs.set(id, job)
+    job.done = runSalvageJob({ projectId: id, service, controller, assetFileName, originalFileName })
+    try {
+      return await job.done
+    } finally {
+      if (detachExternal) detachExternal()
+      if (salvageJobs.get(id) === job) salvageJobs.delete(id)
+    }
+  }
+
+  async function cancelSalvageJob(projectId) {
+    const id = text(projectId)
+    const job = id ? salvageJobs.get(id) : null
+    if (!job) return { ok: false, code: 'not-running' }
+    try { job.controller.abort() } catch {}
+    // Answer only after the job cleaned up, but never hang the invoke on a wedged child.
+    const settled = await new Promise((resolve) => {
+      let timer = null
+      const finish = (value) => {
+        if (timer) clearTimeout(timer)
+        resolve(value)
+      }
+      timer = setTimeout(() => finish(false), SALVAGE_CANCEL_WAIT_MS)
+      Promise.resolve(job.done).then(() => finish(true), () => finish(true))
+    })
+    return { ok: true, cancelled: true, settled }
   }
 
   function captureOutcomeOf(win, metadata) {
@@ -2439,6 +2684,28 @@ function createRecordDomain(deps) {
         workbench.shell.showItemInFolder(sourcePath)
         return { ok: true }
       },
+      // D03: the FAILED/RECOVERABLE card's "salvage the playable part" action. The answer is
+      // path-free: the recovered asset is attached to the project, and the original file plus its
+      // checkpoint stay on disk. A failure carries a structured reason and what was attempted.
+      projectSalvage: async (_event, { projectId } = {}) => {
+        assertManagedDataWritable()
+        const result = await salvageProject(projectId)
+        if (!result.ok) return publicSalvageFailure(result)
+        const service = projectServiceOrNull()
+        return {
+          ok: true,
+          reused: result.reused === true,
+          projectId: result.projectId,
+          assetFileName: result.assetFileName,
+          originalFileName: result.originalFileName,
+          durationMs: Math.max(0, Math.round(Number(result.metadata?.durationMs) || 0)),
+          metadata: publicSalvageMetadata(result.metadata),
+          attempted: result.attempted,
+          reason: '',
+          project: service ? service.summaryOf(result.project) : null
+        }
+      },
+      projectSalvageCancel: async (_event, { projectId } = {}) => cancelSalvageJob(projectId),
 
       // ------------------------------------------------------------ editor (record-editor window)
       editorReady: (event) => {
@@ -2671,6 +2938,42 @@ function createRecordDomain(deps) {
           return null
         })
         return { ok: true, track: track && typeof track === 'object' ? track : null }
+      },
+      // D03: the recovery banner's salvage action. Ownership is checked like every other editor
+      // channel; a success answers the same payload shape as reload so the window can swap the
+      // <video> source without a second round-trip.
+      editorSalvage: async (event, { projectId } = {}) => {
+        assertManagedDataWritable()
+        const win = requireEditorSender(event)
+        const id = requireEditorProject(win, projectId)
+        const result = await salvageProject(id)
+        if (!result.ok) return publicSalvageFailure(result)
+        const payload = await editorInitPayload(result.project).catch((error) => {
+          log('Recording salvage editor payload failed:', id, error?.message || error)
+          return null
+        })
+        if (!payload) {
+          return {
+            ok: false,
+            code: 'source-unavailable',
+            reason: { code: 'source-unavailable' },
+            attempted: result.attempted
+          }
+        }
+        win._recordEditorInit = payload
+        return {
+          ok: true,
+          salvaged: result.reused !== true,
+          durationMs: Math.max(0, Math.round(Number(payload.metadata?.durationMs) || 0)),
+          attempted: result.attempted,
+          reason: '',
+          ...payload
+        }
+      },
+      editorCancelSalvage: async (event, { projectId } = {}) => {
+        const win = requireEditorSender(event)
+        const id = requireEditorProject(win, projectId)
+        return cancelSalvageJob(id)
       }
     }
     return control
@@ -2737,6 +3040,12 @@ function createRecordDomain(deps) {
   }
 
   async function disposeRecordingResources() {
+    // D03: abort an in-flight salvage first. Its child holds a temp copy and would otherwise keep
+    // writing after the app begins shutting the recording service down.
+    for (const job of salvageJobs.values()) {
+      try { job.controller.abort() } catch {}
+    }
+    await Promise.allSettled([...salvageJobs.values()].map((job) => job.done || Promise.resolve()))
     // Feature E (plan §8.4): cancel and reap export tasks FIRST. A running ffmpeg holds a
     // source reference, so removing the session directory before the child exits would leave
     // an encoder writing into a deleted path; disposing the export service cancels the tasks

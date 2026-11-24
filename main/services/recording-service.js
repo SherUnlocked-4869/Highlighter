@@ -319,6 +319,12 @@ class RecordingService {
     }
   }
 
+  // D03: read-only accessor for the media probe. Salvage reuses the same probe instance (and its
+  // FFmpeg path/timeouts) instead of constructing a second probing stack.
+  getProbe() {
+    return this.probe || null
+  }
+
   // E0 integration: probe the sealed source. `crossCheckMs` is the renderer's own duration
   // estimate (a UI initial value only); the probe result is what every range is validated
   // against. Resolves `{ ok: true, metadata }` or `{ ok: false, code }`.

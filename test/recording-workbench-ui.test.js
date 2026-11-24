@@ -378,20 +378,23 @@ test('preload exposes the frozen workbench/project channels without inventing ne
     'record:project-open',
     'record:project-rename',
     'record:project-reveal',
+    // D03: salvage the decodable part of a damaged recording + cancel the remux.
+    'record:project-salvage',
+    'record:project-salvage-cancel',
     'record:workbench-focus',
     'record:workbench-start',
     'record:workbench-state'
   ]
   // R4 adds exactly one channel (W6 owns preload.js); accept it when it has landed
-  // and reject anything beyond the frozen nine so the renderer contract stays pinned.
+  // and reject anything beyond the frozen workbench/project surface.
   const allowed = new Set([...core, 'record:workbench-windows'])
   for (const channel of channels) assert.ok(allowed.has(channel), `unexpected preload channel ${channel}`)
   for (const channel of core) assert.ok(channels.includes(channel), `preload exposes ${channel}`)
-  assert.ok(channels.length === core.length || channels.length === core.length + 1, `unexpected channel count ${channels.length}`)
+  assert.equal(channels.length, core.length + 1, `unexpected channel count ${channels.length}`)
   // The workbench half of the preload must not accept paths or a desktop source.
   const block = preloadSource.slice(preloadSource.indexOf('workbenchState:'))
   assert.doesNotMatch(block, /sourcePath|targetPath|filePath|ffmpeg|desktopSource/i)
-  for (const method of ['workbenchState', 'workbenchStart', 'workbenchFocus', 'projectList', 'projectOpen', 'projectRename', 'projectDelete', 'projectReveal']) {
+  for (const method of ['workbenchState', 'workbenchStart', 'workbenchFocus', 'projectList', 'projectOpen', 'projectRename', 'projectDelete', 'projectReveal', 'projectSalvage', 'cancelProjectSalvage']) {
     assert.match(preloadSource, new RegExp(`${method}:`), `preload exposes ${method}`)
   }
 })

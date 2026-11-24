@@ -74,7 +74,11 @@ const IPC_SURFACES = Object.freeze([
       'record:project-open',
       'record:project-rename',
       'record:project-delete',
-      'record:project-reveal'
+      'record:project-reveal',
+      // D03: salvage the decodable part of a damaged recording and cancel its remux. Both stay on
+      // the workbench role; the answer is path-free and the recovered asset is attached in main.
+      'record:project-salvage',
+      'record:project-salvage-cancel'
     ],
     listeners: ['window:minimize', 'window:close', 'window:renderer-state']
   },
@@ -280,6 +284,9 @@ const IPC_SURFACES = Object.freeze([
       // Owner-checked like every other editor channel; the payload is a projectId only and the
       // answer carries data, never a path.
       'record-editor:events',
+      // D03: salvage / cancel the remux from the recovery banner. Owner-checked like the rest.
+      'record-editor:salvage',
+      'record-editor:cancel-salvage',
       // Feature A receipt actions, same resultId-addressed contract as the other result bars.
       'export:perform-action'
     ],

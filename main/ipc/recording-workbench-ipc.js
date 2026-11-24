@@ -32,6 +32,10 @@ function registerRecordingWorkbenchIpc({ ipcMain, controller }) {
   ipcMain.handle('record:project-rename', controller.projectRename)
   ipcMain.handle('record:project-delete', controller.projectDelete)
   ipcMain.handle('record:project-reveal', controller.projectReveal)
+  // D03: salvage the decodable part of a damaged recording. The cancel invoke aborts the one
+  // in-flight job for that project (the answer waits only for FFmpeg to be reaped + temp cleaned).
+  ipcMain.handle('record:project-salvage', controller.projectSalvage)
+  ipcMain.handle('record:project-salvage-cancel', controller.projectSalvageCancel)
 }
 
 function registerRecordingEditorIpc({ ipcMain, controller }) {
@@ -54,6 +58,10 @@ function registerRecordingEditorIpc({ ipcMain, controller }) {
   // R5 (docs/plans/2026-11-03-recording-r5-contracts.md §2.2): the project's event track for zoom
   // suggestions and click ripples. Data only - the answer never contains a path.
   ipcMain.handle('record-editor:events', controller.editorEvents)
+  // D03: the recovery banner's salvage action and its cancel. Owner-checked like every other
+  // editor channel; the payload is a projectId only.
+  ipcMain.handle('record-editor:salvage', controller.editorSalvage)
+  ipcMain.handle('record-editor:cancel-salvage', controller.editorCancelSalvage)
 }
 
 module.exports = {
