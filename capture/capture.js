@@ -68,6 +68,18 @@ const { sourcePointFromClient, formatColorSample } = window.captureColorPicker |
 // error rather than a state to defend against.
 const convertDocButton = document.getElementById('convertDoc')
 const convertDocMenu = document.getElementById('convertDocMenu')
+// B03 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the pin button's
+// one-click action stays "pin"; the secondary menu adds the combined output and the
+// receipt bar reports the two outputs of that single confirmation.
+const pinButton = document.getElementById('pin')
+const pinMenu = document.getElementById('pinMenu')
+const pinOnlyAction = document.getElementById('pinOnly')
+const pinAndCopyAction = document.getElementById('pinAndCopy')
+const pinOutputBar = document.getElementById('pinOutputBar')
+const pinOutputText = document.getElementById('pinOutputText')
+const pinOutputRetryPin = document.getElementById('pinOutputRetryPin')
+const pinOutputRetryCopy = document.getElementById('pinOutputRetryCopy')
+const pinOutputClose = document.getElementById('pinOutputClose')
 const recentColorList = document.getElementById('recentColors')
 const lineWidthGroup = document.getElementById('widthGroup')
 const watermarkPanel = document.getElementById('watermarkPanel')
@@ -276,6 +288,16 @@ let pdfExporting = false
 // parameter) because the shared `performAction('convert')` path encodes the image
 // and only then asks for the format - keeping the two decisions in one place.
 let convertOutputFormat = 'markdown'
+// B03: the last "pin and copy" attempt whose receipt still has a missing output. It owns
+// the exported buffer/meta so a retry reuses the SAME export (no second encode, no second
+// history record) and only re-runs the half the receipt reports as failed.
+let pinOutputState = null
+// One retry at a time: a double click on the retry button must not run the same output twice.
+let pinOutputBusy = false
+// Long-press is the secondary gesture for the pin button (right-click works everywhere);
+// the timer is per press and the flag suppresses the click the browser fires afterwards.
+let pinMenuPressTimer = 0
+let pinMenuPressOpened = false
 // Mosaic patch cache (§5.2). One offscreen canvas per committed stroke, keyed by a
 // fingerprint of every input the patch depends on - NOT by object identity: translate,
 // resize and style edits all return brand-new objects, so an identity cache would happily
@@ -1257,6 +1279,9 @@ function updateFloatingUi() {
   const hideSizeBadge=['ocr','translate'].includes(processingAction)||!!activeOcrResult||['ocr','translate'].includes(initData?.autoAction)
   sizeBadge.style.display=hideSizeBadge?'none':'block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
   if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); syncMagnifierPanel(); return }
+  // B03: a pending per-output receipt owns the strip's space the same way an OCR result
+  // does, so a selection drag cannot park the toolbar under the retry buttons.
+  if (!pinOutputBar.classList.contains('hidden')) { toolbar.classList.add('hidden'); positionPinOutputBar(); syncWatermarkPanel(); syncMagnifierPanel(); return }
   if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); syncMagnifierPanel(); return }
   toolbar.classList.remove('hidden')
   // D6 + the pin re-annotate fix: below the region when it fits, above it when only that
@@ -1279,6 +1304,97 @@ function positionOcrResultBar() {
   top=Math.max(8,Math.min(top,innerHeight-rect.height-8))
   ocrResultBar.style.left=`${left}px`
   ocrResultBar.style.top=`${top}px`
+}
+
+// ---------- B03: one confirmation, two outputs ----------
+// The receipt bar is the same surface and the same placement as the OCR bar above; the
+// difference is that its text and its retry buttons are decided by the main process's
+// per-output receipt, so the renderer never invents a "copied" it cannot back up.
+function positionPinOutputBar() {
+  if (!selection||pinOutputBar.classList.contains('hidden')) return
+  const rect=pinOutputBar.getBoundingClientRect()
+  let left=selection.x+(selection.w-rect.width)/2
+  let top=selection.y+selection.h+10
+  if(top+rect.height>innerHeight-8)top=selection.y-rect.height-10
+  left=Math.max(8,Math.min(left,innerWidth-rect.width-8))
+  top=Math.max(8,Math.min(top,innerHeight-rect.height-8))
+  pinOutputBar.style.left=`${left}px`
+  pinOutputBar.style.top=`${top}px`
+}
+
+// statusKey / hints / failed all come from the main process (main/domains/capture/index.js
+// summarizePinCopyOutputs): the two-by-two result matrix is decided ONCE, where the outputs
+// are actually attempted, and this window only renders it. Copy is pin-domain wording
+// (shared/locales/pin.js) because the pin window names the same outputs.
+function renderPinOutputBar(receipt) {
+  const hints=Array.isArray(receipt?.hints)?receipt.hints:[]
+  pinOutputText.textContent=[t(receipt?.statusKey||'pin.copy-once.result-stale'),...hints.map((key)=>t(key))].join(' ')
+  const failed=Array.isArray(receipt?.failed)?receipt.failed:[]
+  pinOutputRetryPin.classList.toggle('hidden',!failed.includes('pin'))
+  pinOutputRetryCopy.classList.toggle('hidden',!failed.includes('copy'))
+  pinOutputRetryPin.disabled=pinOutputBusy
+  pinOutputRetryCopy.disabled=pinOutputBusy
+  pinOutputBar.classList.remove('hidden')
+  positionPinOutputBar()
+  // The receipt owns the strip's space while it is up (same contract as the OCR result):
+  // the strip's own actions must not sit underneath a half-finished output.
+  toolbar.classList.add('hidden')
+}
+
+function showPinOutput(receipt, imageBuffer, meta) {
+  pinOutputState={buffer:imageBuffer,meta,receipt:receipt||{}}
+  renderPinOutputBar(pinOutputState.receipt)
+}
+
+function dismissPinOutput() {
+  // A retry in flight owns the receipt: dismissing now would hide a result the main
+  // process is still about to apply (and could invite a duplicate action).
+  if(pinOutputBusy)return
+  pinOutputState=null
+  pinOutputBar.classList.add('hidden')
+  pinOutputRetryPin.disabled=false
+  pinOutputRetryCopy.disabled=false
+  updateFloatingUi()
+}
+
+// Retry ONLY the half the receipt reports as missing. The main process enforces the same
+// rule (planPinCopyAttempts) and never writes a second history record for a retry, so a
+// double click can neither pin twice nor append a duplicate capture.
+async function retryPinOutput(kind) {
+  if(!pinOutputState||pinOutputBusy)return
+  const failed=Array.isArray(pinOutputState.receipt?.failed)?pinOutputState.receipt.failed:[]
+  if(!failed.includes(kind))return
+  pinOutputBusy=true
+  pinOutputRetryPin.disabled=true
+  pinOutputRetryCopy.disabled=true
+  try{
+    const receipt=await window.captureAPI.pin(pinOutputState.buffer,pinOutputState.meta,{retry:kind})
+    if(!pinOutputState)return
+    pinOutputState.receipt=receipt||{}
+    if(receipt&&receipt.ok){closeCaptureWindow();return}
+    renderPinOutputBar(pinOutputState.receipt)
+  }catch(error){
+    alert(error.message||String(error))
+  }finally{
+    pinOutputBusy=false
+    if(pinOutputState&&!pinOutputBar.classList.contains('hidden')){
+      pinOutputRetryPin.disabled=false
+      pinOutputRetryCopy.disabled=false
+    }
+  }
+}
+
+// The one combined entry point. The exported buffer is handed to the main process once and
+// reused for BOTH outputs; a full success closes this window like the shipped pin action,
+// a partial one keeps it open so the receipt (and its retry) stays reachable.
+async function pinAndCopyOnce(imageBuffer, meta) {
+  const receipt=await window.captureAPI.pin(imageBuffer,meta,{copy:true})
+  if(!receipt||typeof receipt!=='object'){
+    alert(t('pin.copy-once.result-stale'))
+    return
+  }
+  if(receipt.ok){closeCaptureWindow();return}
+  showPinOutput(receipt,imageBuffer,meta)
 }
 
 // Switching the active tool. The two statements below are order-sensitive, and that
@@ -4257,6 +4373,13 @@ function showOcrOverlay(result, options = {}) {
 async function performAction(action) {
   if(processingAction||recognitionHandoff)return
   if(!selection)return
+  // B03: a combined attempt that still has a missing output must not create a second pin
+  // (or a second clipboard write) when the user presses the same entry again - it re-shows
+  // the same receipt, which reports each output again instead of claiming a fresh success.
+  if((action==='pin'||action==='pin-copy')&&pinOutputState&&!pinOutputState.receipt?.ok){
+    renderPinOutputBar(pinOutputState.receipt)
+    return
+  }
   const captureBounds=initData.captureBounds||initData.displayBounds||{x:0,y:0}
   // §3.2②: a level-2 Ctrl+A selection reaches past the captured display, so everything
   // that turns the selection into pixels or screen coordinates uses its projection into
@@ -4322,6 +4445,10 @@ async function performAction(action) {
       return
     }
     if(action==='pin'){await window.captureAPI.pin(imageBuffer,meta);closeCaptureWindow()}
+    // B03: one export, one confirmation, two outputs. The main process creates the pin AND
+    // writes the same buffer to the clipboard, then returns one receipt per output; a
+    // partial result keeps this window open so only the failed half can be retried.
+    if(action==='pin-copy'){await pinAndCopyOnce(imageBuffer,meta);return}
     if(action==='convert'){
       // section 6.2 item 2: the main process owns the AI call, the save dialog and the file
       // write, so the renderer just says which format it wants. A cancelled save
@@ -4442,7 +4569,81 @@ document.getElementById('longCapture').onclick=()=>performAction('long')
 document.getElementById('copy').onclick=()=>performAction('copy')
 document.getElementById('save').onclick=()=>performAction('save')
 document.getElementById('exportPdf').onclick=()=>performAction('pdf')
-document.getElementById('pin').onclick=()=>performAction('pin')
+// B03: the pin entry has two gestures and one primary action. A left click is still the
+// shipped "pin" (no extra step); right-click or a 450ms long press opens the secondary
+// outputs, where "pin and copy the annotated result" reuses ONE export for both outputs.
+const PIN_MENU_LONG_PRESS_MS=450
+// The menu's own copy is pin-domain wording (shared/locales/pin.js, loaded by capture.html),
+// so the capture overlay and the pin window's context menu name these outputs identically.
+// It is set here rather than with data-i18n because the trigger must keep its capture.*
+// accessible name; both passes are re-run on every language broadcast.
+function syncPinOutputCopy(){
+  pinOnlyAction.textContent=t('pin.copy-once.action-pin')
+  pinAndCopyAction.textContent=t('pin.copy-once.action-pin-copy')
+  pinMenu.setAttribute('aria-label',t('pin.copy-once.menu-label'))
+  pinButton.title=t('pin.copy-once.tip')
+  pinButton.setAttribute('aria-label',t('pin.copy-once.button'))
+  pinOutputRetryPin.textContent=t('pin.copy-once.retry-pin')
+  pinOutputRetryCopy.textContent=t('pin.copy-once.retry-copy')
+  pinOutputClose.title=t('pin.copy-once.dismiss')
+}
+function openPinMenu(){
+  pinMenu.classList.remove('hidden')
+  pinButton.setAttribute('aria-expanded','true')
+  // Same rule as the colour palette: opening a popover makes the strip taller, so the
+  // cached strip rect has to go or the placement keeps the pre-popup box.
+  invalidateToolbarSize()
+  render()
+}
+function closePinMenu(){
+  pinMenu.classList.add('hidden')
+  pinButton.setAttribute('aria-expanded','false')
+  invalidateToolbarSize()
+  render()
+}
+function cancelPinMenuPress(){
+  clearTimeout(pinMenuPressTimer)
+  pinMenuPressTimer=0
+}
+pinButton.addEventListener('contextmenu',(event)=>{
+  event.preventDefault()
+  event.stopPropagation()
+  if(pinMenu.classList.contains('hidden'))openPinMenu()
+})
+pinButton.addEventListener('pointerdown',(event)=>{
+  // Long press is a touch/pen gesture; a right-click already has its own path above.
+  if(event.pointerType==='mouse'&&event.button!==0)return
+  pinMenuPressOpened=false
+  cancelPinMenuPress()
+  pinMenuPressTimer=setTimeout(()=>{pinMenuPressOpened=true;openPinMenu()},PIN_MENU_LONG_PRESS_MS)
+})
+pinButton.addEventListener('pointerup',cancelPinMenuPress)
+pinButton.addEventListener('pointerleave',cancelPinMenuPress)
+pinButton.addEventListener('pointercancel',cancelPinMenuPress)
+pinButton.addEventListener('click',(event)=>{
+  event.stopPropagation()
+  // The click that follows a long press must not also run the primary action.
+  if(pinMenuPressOpened){pinMenuPressOpened=false;event.preventDefault();return}
+  if(pinMenu.classList.contains('hidden'))performAction('pin')
+  else closePinMenu()
+})
+pinMenu.addEventListener('click',(event)=>{
+  const button=event.target.closest('[data-pin-action]')
+  if(!button)return
+  event.stopPropagation()
+  closePinMenu()
+  performAction(button.dataset.pinAction==='pin-copy'?'pin-copy':'pin')
+})
+document.addEventListener('click',(event)=>{
+  if(pinMenu.classList.contains('hidden'))return
+  if(pinMenu.contains(event.target)||pinButton.contains(event.target))return
+  closePinMenu()
+})
+// The receipt bar's actions: retry only the missing output, or dismiss the bar and give the
+// strip back. Neither path writes a new history record (the main process owns that rule).
+pinOutputRetryPin.onclick=()=>retryPinOutput('pin')
+pinOutputRetryCopy.onclick=()=>retryPinOutput('copy')
+pinOutputClose.onclick=dismissPinOutput
 document.getElementById('ocr').onclick=()=>performAction('ocr')
 document.getElementById('table').onclick=()=>performAction('table')
 document.getElementById('translate').onclick=()=>performAction('translate')
@@ -4479,7 +4680,7 @@ addEventListener('keydown',(event)=>{
   if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
   // B02: Esc leaves screen-colour sampling before the shipped Esc ladder starts unwinding
   // panels, so the mode always returns to the region editor first.
-  if(event.key==='Escape'){if(colorSampling){exitColorSampling();return;}if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(!convertDocMenu.classList.contains('hidden'))closeConvertDocMenu();else if(!colorPalette.classList.contains('hidden'))closeColorPalette();else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else if(selectedAnnotationItem())setSelectedAnnotation(null);else closeCaptureWindow();return}
+  if(event.key==='Escape'){if(colorSampling){exitColorSampling();return;}if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(!pinMenu.classList.contains('hidden'))closePinMenu();else if(!convertDocMenu.classList.contains('hidden'))closeConvertDocMenu();else if(!colorPalette.classList.contains('hidden'))closeColorPalette();else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else if(selectedAnnotationItem())setSelectedAnnotation(null);else closeCaptureWindow();return}
   // B02: while sampling, Enter copies the sampled HEX and every other shortcut belongs to the
   // mode, not to annotations. This is an added mode guard; A02's focus predicate below keeps
   // exactly the meaning it had outside sampling mode.
@@ -4920,6 +5121,9 @@ window.captureAPI.ready()
 // sit at the end of this file.
 restoreStoredLanguage()
 applyTranslations()
+// B03: the pin menu and the receipt bar carry pin-domain copy that is written by this
+// controller (no data-i18n markers), so it is re-derived after the markup pass above.
+syncPinOutputCopy()
 // Hot switch (mirror of `theme`): the settings effect broadcasts i18n:language to every
 // open window, so re-resolve the language and re-scan the DOM.
 window.captureAPI.onInterfaceLanguage((language) => {
@@ -4929,5 +5133,7 @@ window.captureAPI.onInterfaceLanguage((language) => {
   // whose owner is still on screen. All three are idempotent re-renders of live state.
   if (processingAction) setProcessingState(processingAction)
   if (activeOcrResult) renderActiveOcrOverlay()
+  syncPinOutputCopy()
+  if (pinOutputState) renderPinOutputBar(pinOutputState.receipt)
   if (!resultPanel.classList.contains('hidden')) resultTitle.textContent = t(activeOcrResult?.mode === 'translate' ? 'capture.result.title-translate' : 'capture.result.title-ocr')
 })

@@ -27,6 +27,62 @@ const { createPinImageStore } = require('../../services/pin-image-store')
 // identity; the TTL, attempt cap and budget arithmetic live in the service.
 const { createWindowResilience } = require('../../services/window-resilience')
 
+// ---------------------------------------------------------------------------
+// B03 (docs/reviews/2026-11-24-windows-product-architecture-review.md):
+// "export the current view" as data, not as scattered literals.
+//
+// A pin has two legitimate ways to leave the screen and the product used to be
+// unable to say which one a menu item meant:
+//
+//   * the ORIGINAL image  - the exact bytes the pin was created from, unaffected by
+//     rotation/zoom (done by copyPin/savePin below);
+//   * the CURRENT VIEW    - what the pin window renders right now: the rotated and
+//     zoomed picture plus the OCR overlay that is on screen, and deliberately
+//     without the desktop or any other window behind it.
+//
+// These helpers are pure so the preview copy, the export and the tests share one
+// definition of "what the view contains" and "which way it faces".
+// ---------------------------------------------------------------------------
+const PIN_VIEW_LAYERS = Object.freeze(['picture', 'rotation', 'zoom', 'ocr'])
+// Everything the view export must never contain. The first two are structural (the
+// pixels come from webContents.capturePage of this window, not from the screen), the
+// last one is why exportPinView hides the transient badges before capturing.
+const PIN_VIEW_EXCLUSIONS = Object.freeze(['desktop', 'other-windows', 'overlay-badges'])
+
+function pinViewExportSize({ pixelWidth = 0, pixelHeight = 0, rotation = 0, zoom = 1 } = {}) {
+  const scale = Number.isFinite(Number(zoom)) && Number(zoom) > 0 ? Number(zoom) : 1
+  const width = Math.max(1, Math.round((Number(pixelWidth) || 0) * scale))
+  const height = Math.max(1, Math.round((Number(pixelHeight) || 0) * scale))
+  const rotated = getRotatedPinSize(width, height, rotation)
+  return {
+    width: rotated.width,
+    height: rotated.height,
+    rotation: rotated.rotation,
+    quarterTurn: rotated.rotation === 90 || rotated.rotation === 270
+  }
+}
+
+function describePinViewExport({ rotation = 0, zoom = 1, ocrOverlay = false, width = 0, height = 0 } = {}) {
+  const angle = normalizePinRotation(rotation)
+  const scale = Number.isFinite(Number(zoom)) && Number(zoom) > 0 ? Number(zoom) : 1
+  const ocr = ocrOverlay === true
+  return {
+    rotation: angle,
+    zoom: scale,
+    // The export is the window's own rendering, so its orientation IS the stored
+    // angle: a quarter turn puts the pre-rotation width on the vertical axis.
+    orientation: angle,
+    quarterTurn: angle === 90 || angle === 270,
+    size: {
+      width: Math.max(0, Math.round(Number(width) || 0)),
+      height: Math.max(0, Math.round(Number(height) || 0))
+    },
+    ocrOverlay: ocr,
+    included: ocr ? [...PIN_VIEW_LAYERS] : PIN_VIEW_LAYERS.filter((layer) => layer !== 'ocr'),
+    excluded: [...PIN_VIEW_EXCLUSIONS]
+  }
+}
+
 function createPinDomain(deps) {
   const {
     BrowserWindow,
@@ -308,6 +364,194 @@ function createPinDomain(deps) {
     if (!win?._pinData || win.isDestroyed()) return
     const { bytes } = await pinImages.read(win._pinData.imageId)
     await saveImageBuffer(bytes)
+  }
+
+  // -------------------------------------------------------------------------
+  // B03: "export the current view" (the counterpart of the original-bytes
+  // copy/save above). Electron touch points are injected the same way as the
+  // PDF export: main.js passes none of them, so production falls back to a lazy
+  // require('electron') inside the default helpers and the domain stays loadable
+  // in plain node.
+  // -------------------------------------------------------------------------
+  const injectedShowMessageBox = typeof deps.showMessageBox === 'function' ? deps.showMessageBox : null
+  const injectedShowErrorBox = typeof deps.showErrorBox === 'function' ? deps.showErrorBox : null
+  const injectedCapturePage = typeof deps.capturePage === 'function' ? deps.capturePage : null
+
+  // The preview must show the same pixels the file will contain. Electron's
+  // capturePage renders this window's own page - never the screen behind it - so
+  // the desktop and every other window are excluded structurally. The transient
+  // chrome (zoom/opacity badges, recognition status and its tool strip, the plain
+  // text panel and the 1px inner highlight) is hidden for the capture only: it is
+  // window feedback, not part of the picture. #pinOcrOverlay is deliberately left
+  // visible - whether it is part of "the view" is a real user question, and the
+  // preview says which answer it got.
+  const VIEW_EXPORT_STYLE_ID = 'pin-view-export-chrome'
+  const VIEW_EXPORT_HIDE_CSS = 'body::after{display:none!important}' +
+    '#zoomBadge,#opacityBadge,#clickThroughTag,#pinRecognitionStatus,#pinRecognitionTools,#pinRecognizedText{visibility:hidden!important}'
+
+  function viewExportPrepareScript() {
+    // Two frames after the style lands: capturePage grabs the last PAINTED frame, so
+    // hiding the transient badges has to be on screen before the shot is taken.
+    return '(function(){' +
+      'var id=' + JSON.stringify(VIEW_EXPORT_STYLE_ID) + ';' +
+      'if(!document.getElementById(id)){' +
+      'var style=document.createElement("style");style.id=id;' +
+      'style.textContent=' + JSON.stringify(VIEW_EXPORT_HIDE_CSS) + ';' +
+      '(document.head||document.documentElement).appendChild(style);}' +
+      'var overlay=document.getElementById("pinOcrOverlay");' +
+      'var state={ocrOverlay:!!overlay&&overlay.childElementCount>0};' +
+      // Bounded: an occluded window can throttle rAF, and a promise that never settles
+      // would leave the export flag stuck. 160ms is enough for two frames at 60Hz.
+      'return new Promise(function(resolve){' +
+      'var done=false;function finish(){if(done)return;done=true;resolve(state);}' +
+      'setTimeout(finish,160);' +
+      'requestAnimationFrame(function(){requestAnimationFrame(finish);});' +
+      '});' +
+      '})()'
+  }
+
+  function viewExportRestoreScript() {
+    return '(function(){var el=document.getElementById(' + JSON.stringify(VIEW_EXPORT_STYLE_ID) + ');' +
+      'if(el&&el.parentNode)el.parentNode.removeChild(el);return true;})()'
+  }
+
+  function defaultShowMessageBox(win, options) {
+    const { dialog } = require('electron')
+    return dialog.showMessageBox(win, options)
+  }
+
+  function defaultShowErrorBox(message, detail) {
+    const { dialog } = require('electron')
+    dialog.showErrorBox(message, detail)
+  }
+
+  function defaultCapturePage(contents) {
+    return contents.capturePage()
+  }
+
+  // Downscaled so the native preview dialog can actually render it; the full-size
+  // image is what gets written, so this never changes the exported orientation.
+  function previewIcon(image) {
+    if (!image || typeof image.resize !== 'function') return null
+    try {
+      return image.resize({ width: 128 })
+    } catch (error) {
+      log('Pin view export preview icon failed:', error.message)
+      return null
+    }
+  }
+
+  function viewExportPreviewText(plan) {
+    return [
+      t('pin.view-export.preview-size', { width: plan.size.width, height: plan.size.height }),
+      t('pin.view-export.preview-include', {
+        rotation: plan.rotation,
+        zoom: Math.round(plan.zoom * 100)
+      }),
+      plan.ocrOverlay
+        ? t('pin.view-export.preview-ocr-included')
+        : t('pin.view-export.preview-ocr-excluded'),
+      t('pin.view-export.preview-exclude')
+    ].join('\n')
+  }
+
+  async function confirmViewExport(win, image, plan) {
+    const options = {
+      type: 'question',
+      title: t('pin.view-export.preview-title'),
+      message: t('pin.view-export.preview-message'),
+      detail: viewExportPreviewText(plan),
+      buttons: [t('pin.view-export.export'), t('common.button.cancel')],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    }
+    const icon = previewIcon(image)
+    if (icon) options.icon = icon
+    const show = injectedShowMessageBox || defaultShowMessageBox
+    const result = await show(win, options)
+    return result?.response === 0
+  }
+
+  function reportViewExportFailure(message) {
+    try {
+      const show = injectedShowErrorBox || defaultShowErrorBox
+      show(t('pin.view-export.failed'), message)
+    } catch (error) {
+      log('Pin view export error dialog failed:', error.message)
+    }
+  }
+
+  async function exportPinView(win) {
+    if (!win || win.isDestroyed() || !win._pinData) return null
+    if (win._pinViewExporting) return null
+    win._pinViewExporting = true
+    const contents = win.webContents
+    try {
+      if (!contents || (typeof contents.isDestroyed === 'function' && contents.isDestroyed())) {
+        return { status: 'failed', code: 'NO_CONTENTS' }
+      }
+      // A hidden pin has nothing to capture; saying so beats writing an empty PNG.
+      if (typeof win.isVisible === 'function' && !win.isVisible()) {
+        reportViewExportFailure(t('pin.view-export.not-visible'))
+        return { status: 'hidden', code: 'NOT_VISIBLE' }
+      }
+      let ocrOverlay = false
+      if (typeof contents.executeJavaScript === 'function') {
+        try {
+          const state = await contents.executeJavaScript(viewExportPrepareScript())
+          ocrOverlay = state?.ocrOverlay === true
+        } catch (error) {
+          // A failed probe must not block the export: report the conservative answer
+          // (no overlay) and capture without hiding the transient chrome.
+          log('Pin view export could not prepare the window:', error.message)
+        }
+      }
+      let image = null
+      const capture = injectedCapturePage || defaultCapturePage
+      try {
+        image = await capture(contents)
+      } finally {
+        // Always attempt the restore: the prepare script may have injected the style and
+        // then failed, and removing a missing style is a no-op.
+        if (typeof contents.executeJavaScript === 'function') {
+          try {
+            await contents.executeJavaScript(viewExportRestoreScript())
+          } catch (error) {
+            log('Pin view export could not restore the window:', error.message)
+          }
+        }
+      }
+      if (!image || (typeof image.isEmpty === 'function' && image.isEmpty())) {
+        reportViewExportFailure(t('pin.view-export.empty'))
+        return { status: 'failed', code: 'EMPTY' }
+      }
+      const size = typeof image.getSize === 'function' ? image.getSize() : { width: 0, height: 0 }
+      const plan = describePinViewExport({
+        rotation: win._pinData.rotation,
+        zoom: win._pinData.zoom,
+        ocrOverlay,
+        width: size.width,
+        height: size.height
+      })
+      const accepted = await confirmViewExport(win, image, plan)
+      if (!accepted) return { status: 'cancelled', plan }
+      const png = typeof image.toPNG === 'function' ? image.toPNG() : null
+      if (!png || !png.length) {
+        reportViewExportFailure(t('pin.view-export.empty'))
+        return { status: 'failed', code: 'EMPTY' }
+      }
+      const filePath = await saveImageBuffer(png)
+      // A cancelled save dialog is not an error: the user asked for the preview,
+      // saw it and backed out.
+      return filePath ? { status: 'saved', filePath, plan } : { status: 'cancelled', plan }
+    } catch (error) {
+      log('Pin view export failed:', error.message)
+      reportViewExportFailure(error.message || String(error))
+      return { status: 'failed', code: 'FAILED', message: error.message || String(error) }
+    } finally {
+      win._pinViewExporting = false
+    }
   }
 
   // pdf-export.js owns paper math, print options and the save dialog/file write;
@@ -1056,8 +1300,24 @@ function createPinDomain(deps) {
           }))
         },
         { type: 'separator' },
-        { label: '复制', click: () => void copyPin(win) },
-        { label: '保存', click: () => savePin(win).catch((error) => log(error.message)) },
+        // B03: the two exited-from-a-pin menus used to blur together ("复制"/"保存"),
+        // even though they always read the ORIGINAL stored bytes (rotation-proof).
+        // They are now named that way, and the view export is a separate, explicit
+        // entry below with its own preview.
+        { label: t('pin.menu.copy-original'), click: () => void copyPin(win) },
+        { label: t('pin.menu.save-original'), click: () => savePin(win).catch((error) => log(error.message)) },
+        { type: 'separator' },
+        // B03: the current rendering (rotation + zoom + the OCR overlay on screen).
+        // A separate group from the original-bytes actions above, because the two
+        // produce different pictures and the old shared wording could not say which.
+        {
+          label: t('pin.menu.export-view'),
+          // A second export while the preview is open would stack two captures of the
+          // same window; the guard inside exportPinView is the real gate, this is the
+          // visible half of it.
+          enabled: !win._pinViewExporting,
+          click: () => exportPinView(win).catch((error) => log('Pin view export failed:', error.message))
+        },
         // P0 (plan §0.3 #4): exportWindowToPdf had unit tests and no production
         // caller. Exporting the pin itself (not a re-render) keeps it WYSIWYG.
         {
@@ -1174,6 +1434,9 @@ function createPinDomain(deps) {
     setPinOpacity,
     rotatePin,
     exportPinToPdf,
+    // B03: "export the current view" - the rotated/zoomed/OCR rendering, never the
+    // desktop. Exposed for the context menu, the tests and a future toolbar entry.
+    exportPinView,
     setPinClickThrough,
     exitAllClickThrough,
     startPinReannotation,
@@ -1201,5 +1464,11 @@ function createPinDomain(deps) {
 }
 
 module.exports = {
-  createPinDomain
+  createPinDomain,
+  // B03 pure contracts (no Electron): the current-view plan and its orientation-
+  // aware size. Both are mirrored by the preview copy and by the tests.
+  pinViewExportSize,
+  describePinViewExport,
+  PIN_VIEW_LAYERS,
+  PIN_VIEW_EXCLUSIONS
 }

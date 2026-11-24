@@ -28,7 +28,18 @@ contextBridge.exposeInMainWorld('captureAPI', {
   smartSelectAt: (point) => ipcRenderer.invoke('capture:smart-select', point),
   copy: (imageBuffer, meta) => ipcRenderer.invoke('capture:copy', { imageBuffer, meta }),
   save: (imageBuffer, meta, fast) => ipcRenderer.send('capture:save', { imageBuffer, meta, fast }),
-  pin: (imageBuffer, meta) => ipcRenderer.invoke('capture:pin', { imageBuffer, meta }),
+  // B03 (docs/reviews/2026-11-24-windows-product-architecture-review.md): one
+  // confirmation can produce a pin AND a clipboard result from the SAME exported
+  // buffer. The third argument is that one-way selector on the existing channel:
+  //   { copy: true }        - pin + copy, one history record, per-output receipt
+  //   { retry: 'pin'|'copy' } - re-run only the half that failed (no new record)
+  // No new IPC channel is introduced.
+  pin: (imageBuffer, meta, options) => ipcRenderer.invoke('capture:pin', {
+    imageBuffer,
+    meta,
+    copy: options?.copy === true,
+    retry: options?.retry === 'pin' || options?.retry === 'copy' ? options.retry : ''
+  }),
   pinAndRecognize: (imageBuffer, meta, action) => ipcRenderer.invoke('capture:pin-reannotate', { imageBuffer, meta, action }),
   openRecognition: (type, imageBuffer, meta) => ipcRenderer.invoke('capture:open-recognition', { type, imageBuffer, meta }),
   ocr: (imageBuffer, options) => ipcRenderer.invoke('capture:ocr', { imageBuffer, ...options }),

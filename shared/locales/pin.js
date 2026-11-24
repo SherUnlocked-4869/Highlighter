@@ -25,7 +25,39 @@
     'pin.recognition.failed': '文字识别失败，可右键重试',
     'pin.recognition.translation-failed': '翻译失败，已保留原文',
     'pin.recognition.plain-text': '纯文本',
-    'pin.recognition.hide': '隐藏结果'
+    'pin.recognition.hide': '隐藏结果',
+
+    // B03 (2026-11-24 architecture review): the pin action's two outputs, shared by the
+    // pin menu (main process) and the capture overlay's combined action (capture window).
+    'pin.menu.copy-original': '复制原图',
+    'pin.menu.save-original': '保存原图…',
+    'pin.menu.export-view': '导出当前视图…',
+    'pin.view-export.preview-title': '导出当前视图',
+    'pin.view-export.preview-message': '预览：贴图窗口当前显示的画面',
+    'pin.view-export.preview-size': '导出尺寸 {width} × {height}',
+    'pin.view-export.preview-include': '包含：贴图画面（含标注）、旋转 {rotation}°、缩放 {zoom}%',
+    'pin.view-export.preview-ocr-included': '包含：屏幕上显示的 OCR 叠层',
+    'pin.view-export.preview-ocr-excluded': '不含 OCR 叠层（当前没有显示）',
+    'pin.view-export.preview-exclude': '不含：桌面背景、其他窗口、缩放与透明度角标、识别状态、纯文本面板',
+    'pin.view-export.export': '导出',
+    'pin.view-export.failed': '导出当前视图失败',
+    'pin.view-export.empty': '当前视图是空的，没有可导出的像素',
+    'pin.view-export.not-visible': '贴图当前不可见，请先显示贴图再导出当前视图',
+    'pin.copy-once.button': '贴图',
+    'pin.copy-once.tip': '贴图（右键或长按可选择“贴图并复制标注结果”）',
+    'pin.copy-once.menu-label': '贴图输出',
+    'pin.copy-once.action-pin': '仅贴图',
+    'pin.copy-once.action-pin-copy': '贴图并复制标注结果',
+    'pin.copy-once.result-both-ok': '已贴图并复制标注结果',
+    'pin.copy-once.result-pin-only': '已贴图，复制失败',
+    'pin.copy-once.result-copy-only': '已复制，贴图失败',
+    'pin.copy-once.result-none': '贴图与复制都失败',
+    'pin.copy-once.result-stale': '上次的输出状态已失效，请重新截图',
+    'pin.copy-once.retry-pin': '重试贴图',
+    'pin.copy-once.retry-copy': '重试复制',
+    'pin.copy-once.dismiss': '关闭输出状态',
+    'pin.copy-once.hint-pin-limit': '贴图最多 20 张，请先关闭一些再重试贴图。',
+    'pin.copy-once.hint-clipboard-busy': '剪贴板被其他程序占用，请稍后重试复制。'
   })
 
   add('en-US', {
@@ -39,7 +71,38 @@
     'pin.recognition.failed': 'Recognition failed. Right-click to retry.',
     'pin.recognition.translation-failed': 'Translation failed. Original text kept.',
     'pin.recognition.plain-text': 'Plain text',
-    'pin.recognition.hide': 'Hide result'
+    'pin.recognition.hide': 'Hide result',
+
+    // B03: the pin action's two outputs (shared by the pin menu and the capture overlay).
+    'pin.menu.copy-original': 'Copy original',
+    'pin.menu.save-original': 'Save original…',
+    'pin.menu.export-view': 'Export current view…',
+    'pin.view-export.preview-title': 'Export current view',
+    'pin.view-export.preview-message': 'Preview: what the pin window shows right now',
+    'pin.view-export.preview-size': 'Export size {width} × {height}',
+    'pin.view-export.preview-include': 'Includes: the pinned picture (with annotations), rotation {rotation}°, zoom {zoom}%',
+    'pin.view-export.preview-ocr-included': 'Includes: the OCR overlay visible on screen',
+    'pin.view-export.preview-ocr-excluded': 'No OCR overlay (none is showing)',
+    'pin.view-export.preview-exclude': 'Excludes: the desktop, other windows, zoom/opacity badges, recognition status and the plain-text panel',
+    'pin.view-export.export': 'Export',
+    'pin.view-export.failed': 'Could not export the current view',
+    'pin.view-export.empty': 'The current view is empty - there are no pixels to export',
+    'pin.view-export.not-visible': 'The pin is not visible; show it first, then export the current view',
+    'pin.copy-once.button': 'Pin',
+    'pin.copy-once.tip': 'Pin (right-click or long-press to pin and copy the annotated result)',
+    'pin.copy-once.menu-label': 'Pin output',
+    'pin.copy-once.action-pin': 'Pin only',
+    'pin.copy-once.action-pin-copy': 'Pin and copy the annotated result',
+    'pin.copy-once.result-both-ok': 'Pinned and copied the annotated result',
+    'pin.copy-once.result-pin-only': 'Pinned, but copying failed',
+    'pin.copy-once.result-copy-only': 'Copied, but pinning failed',
+    'pin.copy-once.result-none': 'Pinning and copying both failed',
+    'pin.copy-once.result-stale': 'The previous output state expired - take a new screenshot',
+    'pin.copy-once.retry-pin': 'Retry pin',
+    'pin.copy-once.retry-copy': 'Retry copy',
+    'pin.copy-once.dismiss': 'Dismiss output status',
+    'pin.copy-once.hint-pin-limit': 'Up to 20 pins - close some, then retry the pin.',
+    'pin.copy-once.hint-clipboard-busy': 'Another program is holding the clipboard - retry the copy in a moment.'
   })
 
   add('zh-TW', {
@@ -53,6 +116,37 @@
     'pin.recognition.failed': '文字辨識失敗，可按右鍵重試',
     'pin.recognition.translation-failed': '翻譯失敗，已保留原文',
     'pin.recognition.plain-text': '純文字',
-    'pin.recognition.hide': '隱藏結果'
+    'pin.recognition.hide': '隱藏結果',
+
+    // B03: the pin action's two outputs (shared by the pin menu and the capture overlay).
+    'pin.menu.copy-original': '複製原圖',
+    'pin.menu.save-original': '儲存原圖…',
+    'pin.menu.export-view': '匯出目前檢視…',
+    'pin.view-export.preview-title': '匯出目前檢視',
+    'pin.view-export.preview-message': '預覽：貼圖視窗目前顯示的畫面',
+    'pin.view-export.preview-size': '匯出尺寸 {width} × {height}',
+    'pin.view-export.preview-include': '包含：貼圖畫面（含標註）、旋轉 {rotation}°、縮放 {zoom}%',
+    'pin.view-export.preview-ocr-included': '包含：螢幕上顯示的 OCR 疊層',
+    'pin.view-export.preview-ocr-excluded': '不含 OCR 疊層（目前沒有顯示）',
+    'pin.view-export.preview-exclude': '不含：桌面背景、其他視窗、縮放與透明度角標、辨識狀態、純文字面板',
+    'pin.view-export.export': '匯出',
+    'pin.view-export.failed': '匯出目前檢視失敗',
+    'pin.view-export.empty': '目前檢視是空的，沒有可匯出的像素',
+    'pin.view-export.not-visible': '貼圖目前不可見，請先顯示貼圖再匯出目前檢視',
+    'pin.copy-once.button': '貼圖',
+    'pin.copy-once.tip': '貼圖（按右鍵或長按可選擇「貼圖並複製標註結果」）',
+    'pin.copy-once.menu-label': '貼圖輸出',
+    'pin.copy-once.action-pin': '僅貼圖',
+    'pin.copy-once.action-pin-copy': '貼圖並複製標註結果',
+    'pin.copy-once.result-both-ok': '已貼圖並複製標註結果',
+    'pin.copy-once.result-pin-only': '已貼圖，複製失敗',
+    'pin.copy-once.result-copy-only': '已複製，貼圖失敗',
+    'pin.copy-once.result-none': '貼圖與複製都失敗',
+    'pin.copy-once.result-stale': '上次的輸出狀態已失效，請重新截圖',
+    'pin.copy-once.retry-pin': '重試貼圖',
+    'pin.copy-once.retry-copy': '重試複製',
+    'pin.copy-once.dismiss': '關閉輸出狀態',
+    'pin.copy-once.hint-pin-limit': '貼圖最多 20 張，請先關閉一些再重試貼圖。',
+    'pin.copy-once.hint-clipboard-busy': '剪貼簿被其他程式占用，請稍後重試複製。'
   })
 })()

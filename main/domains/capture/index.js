@@ -29,6 +29,77 @@ const CURSOR_QUERY_BUDGET_MS = 120
 // and floating-placement tests derive back from this value whether it is tall enough.
 const DOCUMENT_EDITOR_INFO_HEIGHT = 26
 
+// ---------------------------------------------------------------------------
+// B03 (docs/review 2026-11-24, "pin and copy in one confirmation"): the output
+// plan for the combined action.
+//
+// The action has exactly two outputs and they can fail independently - the pin
+// budget (20) and a clipboard held by another process are both real Windows
+// cases. Saying "done" once would hide a half-finished result, so the receipt
+// carries one status per output, and a retry re-runs ONLY the outputs that are
+// still missing. These functions are pure: the capture handler feeds them real
+// attempts, the renderer only renders the receipt.
+// ---------------------------------------------------------------------------
+const PIN_COPY_OUTPUTS = Object.freeze(['pin', 'copy'])
+const PIN_COPY_STATUS_KEYS = Object.freeze({
+  'pin,copy': 'pin.copy-once.result-both-ok',
+  'pin,missing': 'pin.copy-once.result-pin-only',
+  'missing,copy': 'pin.copy-once.result-copy-only',
+  'missing,missing': 'pin.copy-once.result-none'
+})
+const PIN_COPY_HINT_KEYS = Object.freeze({
+  PIN_LIMIT: 'pin.copy-once.hint-pin-limit',
+  CLIPBOARD_BUSY: 'pin.copy-once.hint-clipboard-busy'
+})
+
+function normalizePinCopyOutputs(outputs) {
+  const normalized = {}
+  for (const id of PIN_COPY_OUTPUTS) {
+    const value = outputs ? outputs[id] : null
+    normalized[id] = value && value.ok === true
+      ? { ok: true }
+      : { ok: false, code: (value && typeof value.code === 'string' && value.code) || 'FAILED' }
+  }
+  return normalized
+}
+
+// Which outputs still need an attempt. A fresh call plans both; a retry plans only
+// the requested one when it is still missing, so a repeatedly clicked retry can
+// never pin twice or copy twice on behalf of one confirmation.
+function planPinCopyAttempts(prior, requested = PIN_COPY_OUTPUTS) {
+  const base = normalizePinCopyOutputs(prior)
+  const wanted = Array.isArray(requested) ? requested : PIN_COPY_OUTPUTS
+  return PIN_COPY_OUTPUTS.filter((id) => wanted.includes(id) && !base[id].ok)
+}
+
+function summarizePinCopyOutputs({ prior = null, attempted = {} } = {}) {
+  const outputs = normalizePinCopyOutputs(prior)
+  for (const id of PIN_COPY_OUTPUTS) {
+    const value = attempted ? attempted[id] : null
+    if (!value) continue
+    outputs[id] = value.ok === true
+      ? { ok: true }
+      : { ok: false, code: (typeof value.code === 'string' && value.code) || 'FAILED' }
+  }
+  const failed = PIN_COPY_OUTPUTS.filter((id) => !outputs[id].ok)
+  const statusKey = PIN_COPY_STATUS_KEYS[PIN_COPY_OUTPUTS.map((id) => (outputs[id].ok ? id : 'missing')).join(',')]
+  const hints = []
+  for (const id of failed) {
+    const hintKey = PIN_COPY_HINT_KEYS[outputs[id].code]
+    if (hintKey && !hints.includes(hintKey)) hints.push(hintKey)
+  }
+  return {
+    ok: failed.length === 0,
+    outputs,
+    failed,
+    // What the renderer may offer to retry: always a subset of the failed list, in
+    // the fixed pin-then-copy order, so the buttons cannot drift from the report.
+    retry: [...failed],
+    statusKey,
+    hints
+  }
+}
+
 function createCaptureDomain(deps) {
   const {
     app,
@@ -111,6 +182,130 @@ function createCaptureDomain(deps) {
       log('Capture document service unavailable:', error.message)
       return null
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // B03: the two outputs behind one "pin and copy" confirmation.
+  //
+  // Each is attempted independently so a partial result can be reported as such:
+  // the pin can hit the 20-window budget while the clipboard still gets the image,
+  // or the clipboard can be held by another process while the pin is created.
+  // -------------------------------------------------------------------------
+  function aliveCaptureWindow(win) {
+    if (!win) return false
+    return !(typeof win.isDestroyed === 'function' && win.isDestroyed())
+  }
+
+  // Electron does not throw when another process holds the Windows clipboard: the
+  // write is silently dropped. Reading the image back is what turns that into a
+  // reportable failure instead of a false "copied".
+  function copyBufferToClipboard(buffer) {
+    try {
+      const image = nativeImage.createFromBuffer(buffer)
+      clipboard.writeImage(image)
+      const expected = typeof image?.getSize === 'function' ? image.getSize() : null
+      if (!expected || !(expected.width > 0) || !(expected.height > 0)) return { ok: true }
+      if (typeof clipboard.readImage !== 'function') return { ok: true }
+      const actual = clipboard.readImage()?.getSize?.()
+      if (!actual || !(actual.width > 0) || !(actual.height > 0)) return { ok: false, code: 'CLIPBOARD_BUSY' }
+      if (actual.width !== expected.width || actual.height !== expected.height) {
+        return { ok: false, code: 'CLIPBOARD_BUSY' }
+      }
+      return { ok: true }
+    } catch (error) {
+      log('Capture clipboard write failed:', error.message)
+      return { ok: false, code: 'CLIPBOARD_BUSY' }
+    }
+  }
+
+  // The pin domain's budget is a state, not an error string: asking it before the
+  // attempt lets the receipt carry the actionable PIN_LIMIT hint. A re-annotation
+  // reuses its own slot (editingExisting), so it never counts against the budget.
+  function pinBudgetReached(event, captureWindow) {
+    try {
+      if (typeof pinDomain.canPinMore !== 'function') return false
+      if (captureWindow?._editingPinWindow) return false
+      return !pinDomain.canPinMore()
+    } catch (error) {
+      log('Pin budget probe failed:', error.message)
+      return false
+    }
+  }
+
+  function attemptPinOutput(event, captureWindow, buffer, meta) {
+    if (pinBudgetReached(event, captureWindow)) return { ok: false, code: 'PIN_LIMIT' }
+    try {
+      pinDomain.pinFromCapture(event, buffer, meta)
+      return { ok: true }
+    } catch (error) {
+      log('Capture pin failed:', error?.message || String(error))
+      return { ok: false, code: 'PIN_FAILED' }
+    }
+  }
+
+  function persistPinCopyHistory(buffer, meta) {
+    const persistStarted = Date.now()
+    setImmediate(() => {
+      try {
+        persistHistory(buffer, { ...meta, action: 'pin' })
+        performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: 'pin-copy' })
+      } catch (error) {
+        log('Capture history persist failed:', error.message)
+      }
+    })
+  }
+
+  // One confirmation = one export = at most ONE history record, even when only one
+  // of the two outputs landed. The receipt lives on the capture window so a retry
+  // can only fill in the missing half.
+  function pinAndCopyOnce(event, captureWindow, buffer, meta) {
+    const attempted = {
+      pin: attemptPinOutput(event, captureWindow, buffer, meta),
+      copy: copyBufferToClipboard(buffer)
+    }
+    const receipt = summarizePinCopyOutputs({ attempted })
+    receipt.recorded = attempted.pin.ok || attempted.copy.ok
+    if (receipt.recorded) persistPinCopyHistory(buffer, meta)
+    if (aliveCaptureWindow(captureWindow)) captureWindow._pinCopyState = receipt
+    return receipt
+  }
+
+  function stalePinCopyReceipt() {
+    return {
+      ok: false,
+      stale: true,
+      outputs: {},
+      failed: [],
+      retry: [],
+      hints: [],
+      recorded: false,
+      statusKey: 'pin.copy-once.result-stale'
+    }
+  }
+
+  function retryPinCopy(captureWindow, kind, { event, buffer, meta }) {
+    const prior = captureWindow?._pinCopyState
+    if (!prior || !prior.outputs) return stalePinCopyReceipt()
+    const targets = planPinCopyAttempts(prior.outputs, [kind])
+    if (!targets.length) {
+      // That half already succeeded: report the same receipt again instead of
+      // repeating the output, which is what makes a double click harmless.
+      return { ...prior, reattempted: [] }
+    }
+    const attempted = {}
+    if (kind === 'pin') attempted.pin = attemptPinOutput(event, captureWindow, buffer, meta)
+    else attempted.copy = copyBufferToClipboard(buffer)
+    const receipt = summarizePinCopyOutputs({ prior: prior.outputs, attempted })
+    // A confirmation that failed both outputs recorded nothing; the first retry that
+    // lands may still write the single missing record. The flag is set before the
+    // write is scheduled so two rapid retries cannot both schedule one.
+    receipt.recorded = prior.recorded === true
+    if (!receipt.recorded && (receipt.outputs.pin.ok || receipt.outputs.copy.ok)) {
+      receipt.recorded = true
+      persistPinCopyHistory(buffer, meta)
+    }
+    if (aliveCaptureWindow(captureWindow)) captureWindow._pinCopyState = receipt
+    return { ...receipt, reattempted: targets }
   }
 
   // P0-4：可选注入，便于单测 mock；主进程不注入时由 pdf-export 自解析 Electron 依赖，
@@ -913,21 +1108,37 @@ function createCaptureDomain(deps) {
           }
         })
       },
-      pin: (event, { imageBuffer, dataUrl, meta } = {}) => {
+      pin: (event, { imageBuffer, dataUrl, meta, copy, retry } = {}) => {
         reportCaptureSerial(meta)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
-        pinDomain.pinFromCapture(event, buffer, meta)
-        const persistMeta = { ...meta, action: 'pin' }
-        const persistStarted = Date.now()
-        setImmediate(() => {
-          try {
-            persistHistory(buffer, persistMeta)
-            performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: 'pin' })
-          } catch (error) {
-            log('Capture history persist failed:', error.message)
-          }
-        })
-        return null
+        if (!buffer.length) throw new Error('截图图片数据为空')
+        const captureWindow = BrowserWindow.fromWebContents(event.sender)
+        // B03: a retry never re-attempts an output that already succeeded, and never
+        // writes a second history record (see retryPinCopy).
+        if (retry === 'pin' || retry === 'copy') {
+          return retryPinCopy(captureWindow, retry, { event, buffer, meta })
+        }
+        // An unknown retry selector is a stale caller, never a new confirmation: firing
+        // the legacy pin path here would create a second pin for a request that asked
+        // only to repair an earlier one.
+        if (retry) return stalePinCopyReceipt()
+        // The shipped single-output path, unchanged: pin only, one history record,
+        // and a failure still throws to the renderer's alert.
+        if (copy !== true) {
+          pinDomain.pinFromCapture(event, buffer, meta)
+          const persistMeta = { ...meta, action: 'pin' }
+          const persistStarted = Date.now()
+          setImmediate(() => {
+            try {
+              persistHistory(buffer, persistMeta)
+              performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: 'pin' })
+            } catch (error) {
+              log('Capture history persist failed:', error.message)
+            }
+          })
+          return null
+        }
+        return pinAndCopyOnce(event, captureWindow, buffer, meta)
       },
       pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
         reportCaptureSerial(meta)
@@ -1016,5 +1227,9 @@ function createCaptureDomain(deps) {
 }
 
 module.exports = {
-  createCaptureDomain
+  createCaptureDomain,
+  // B03 pure contracts (no Electron): the two-output plan behind one confirmation.
+  PIN_COPY_OUTPUTS,
+  planPinCopyAttempts,
+  summarizePinCopyOutputs
 }

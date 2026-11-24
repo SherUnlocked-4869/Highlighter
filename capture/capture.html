@@ -174,7 +174,22 @@
         </div>
       </div>
       <button id="record" data-i18n-title="capture.toolbar.record" data-i18n-aria-label="capture.toolbar.record"><span class="toolbar-icon" style="--icon:url('icons/record.svg')" aria-hidden="true"></span></button>
-      <button id="pin" data-i18n-title="capture.toolbar.pin" data-i18n-aria-label="capture.toolbar.pin"><span class="toolbar-icon" style="--icon:url('icons/pin.svg')" aria-hidden="true"></span></button>
+      <!-- B03 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the pin
+           button stays the one-click "pin" action; a right-click or a long press opens its
+           secondary outputs. The menu itself is one extra output for the same confirmation
+           (pin + copy from a single export), so it lives with the button rather than as a
+           second toolbar icon. Its wording is pin-domain copy (shared/locales/pin.js), set
+           by capture.js: the capture overlay and the pin window name these outputs the same
+           way. data-i18n-* stays on the trigger so the existing capture table keeps owning
+           the accessible name; capture.js refines the tooltip with the pin.* copy on boot
+           and on every language switch. -->
+      <div class="color-wrap doc-convert-wrap">
+        <button id="pin" data-i18n-title="capture.toolbar.pin" data-i18n-aria-label="capture.toolbar.pin" type="button" aria-haspopup="true" aria-expanded="false"><span class="toolbar-icon" style="--icon:url('icons/pin.svg')" aria-hidden="true"></span></button>
+        <div id="pinMenu" class="color-palette doc-convert-menu hidden" role="menu">
+          <button id="pinOnly" type="button" role="menuitem" data-pin-action="pin"></button>
+          <button id="pinAndCopy" type="button" role="menuitem" data-pin-action="pin-copy"></button>
+        </div>
+      </div>
       <button id="save" data-i18n-title="capture.toolbar.save-tip" data-i18n-aria-label="capture.toolbar.save"><span class="toolbar-icon" style="--icon:url('icons/save.svg')" aria-hidden="true"></span></button>
       <button id="exportPdf" data-i18n-title="capture.toolbar.export-pdf" data-i18n-aria-label="capture.toolbar.export-pdf"><span class="toolbar-icon" style="--icon:url('icons/print.svg')" aria-hidden="true"></span></button>
       <!-- Feature C (plan §6.1): one strip button opens the finished-look panel. It is a button
@@ -268,6 +283,17 @@
     <textarea id="resultText" readonly></textarea>
     <div class="result-actions"><button id="resultCopy" data-i18n="capture.result.copy"></button><button id="resultDone" class="primary" data-i18n="capture.result.done"></button></div>
   </div>
+  <!-- B03: the per-output receipt for "pin and copy". It reuses the OCR bar's surface and
+       placement (below the selection, above it when only that fits) because it is the same
+       kind of transient status with actions; only the copy and the retry buttons differ.
+       capture.js positions it and shows it only after a PARTIAL result, so the toolbar is
+       free again as soon as both outputs land or the user dismisses the bar. -->
+  <div id="pinOutputBar" class="ocr-result-bar hidden" role="status" aria-live="polite">
+    <span id="pinOutputText" style="white-space:normal"></span>
+    <button id="pinOutputRetryPin" class="hidden" type="button"></button>
+    <button id="pinOutputRetryCopy" class="hidden" type="button"></button>
+    <button id="pinOutputClose" type="button">&times;</button>
+  </div>
   <div id="ocrResultBar" class="ocr-result-bar hidden">
     <span id="ocrSummary" data-i18n="capture.ocr.summary"></span>
     <button id="ocrToggleSource" class="hidden" data-i18n="capture.ocr.show-source"></button>
@@ -286,6 +312,10 @@
   <script src="../shared/locales/en-US.js"></script>
   <script src="../shared/locales/zh-TW.js"></script>
   <script src="../shared/locales/capture.js"></script>
+  <!-- B03: the capture overlay now names the pin action's outputs, and those strings are
+       the pin domain's (the pin window's own context menu shows the same actions). Loading
+       the table here keeps one wording for both ends instead of cloning it into capture.js. -->
+  <script src="../shared/locales/pin.js"></script>
   <script src="annotation-style.js"></script>
   <script src="selection-utils.js"></script>
   <script src="annotation-geometry.js"></script>
