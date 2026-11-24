@@ -72,6 +72,18 @@ function renderModelsSubnav() {
   return `<div class="tabs models-subnav"><button aria-pressed="${modelsTab === 'providers'}" data-models-tab="providers">${t('config.models.tab-providers')}</button><button aria-pressed="${modelsTab === 'features'}" data-models-tab="features">${t('config.models.tab-features')}</button><button aria-pressed="${modelsTab === 'defaults'}" data-models-tab="defaults">${t('config.models.tab-defaults')}</button></div>`
 }
 
+// D02: the credentials banner. The page has to say WHY a key may not survive a restart,
+// because "saved" and "saved for this session" look identical otherwise.
+function credentialNoticeMarkup() {
+  const state = settings.credentialState || {}
+  const notices = []
+  if (state.decryptFailed) notices.push('config.models.credential-decrypt-failed')
+  else if (state.encryptionAvailable === false) notices.push('config.models.credential-session-only')
+  if (state.encryptionFailed) notices.push('config.models.credential-encryption-failed')
+  if (state.legacyPlaintext) notices.push('config.models.credential-legacy-plaintext')
+  return notices.map((key) => `<div class="update-guidance warning" data-credential-notice>${t(key)}</div>`).join('')
+}
+
 function renderModelsProviderTab(providers) {
   const providerList = providers.map((provider) => providerEditorMarkup(provider)).join('') || '<div class="empty">' + t('config.models.no-providers') + '</div>'
   const editing = modelsExpandedProviderIds.size > 0 || configDirtyReasons.has('models-provider-settings')
@@ -122,13 +134,13 @@ function renderModels() {
   // The defaults tab stays reachable without a provider; only the provider-driven
   // tabs fall back to the empty state.
   if (!providers.length && modelsTab !== 'defaults') {
-    view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), description)}${renderModelsSubnav()}<div class="models-view"><div class="empty">${t('config.models.no-providers')}</div><button class="button primary" id="addFirstProvider">${t('config.models.add-first-provider')}</button></div></div>`
+    view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), description)}${credentialNoticeMarkup()}${renderModelsSubnav()}<div class="models-view"><div class="empty">${t('config.models.no-providers')}</div><button class="button primary" id="addFirstProvider">${t('config.models.add-first-provider')}</button></div></div>`
     document.getElementById('addFirstProvider').onclick = openProviderPresetDialog
     bindModelsSubnav()
     return
   }
   if (modelsTab === 'defaults') {
-    view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), description)}${renderModelsSubnav()}${renderModelsDefaultsTab()}</div>`
+    view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), description)}${credentialNoticeMarkup()}${renderModelsSubnav()}${renderModelsDefaultsTab()}</div>`
     bindModelsSubnav()
     bindModelsDefaultsTab()
     return
@@ -136,7 +148,7 @@ function renderModels() {
   const content = modelsTab === 'features'
     ? renderModelsFeatureTab(providers)
     : renderModelsProviderTab(providers)
-  view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), description)}${renderModelsSubnav()}${content}</div>`
+  view.innerHTML = `<div class="page">${pageHeader(t('config.route.models'), description)}${credentialNoticeMarkup()}${renderModelsSubnav()}${content}</div>`
   bindModelsSubnav()
   if (modelsTab === 'providers') {
     bindModelsProviderTab()

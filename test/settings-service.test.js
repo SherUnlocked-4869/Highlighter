@@ -69,7 +69,7 @@ test('settings service resets encrypted credentials and defaults', () => {
   assert.equal(settings.theme, 'system')
 })
 
-test('settings service preserves plaintext fallback without system encryption', () => {
+test('D02: without system encryption a legacy plaintext key stays put but is never duplicated', () => {
   const store = new MemoryStore({ settings: { apiKey: 'sk-fallback', theme: 'dark' } })
   const service = new SettingsService({
     store,
@@ -77,8 +77,92 @@ test('settings service preserves plaintext fallback without system encryption', 
     defaults
   })
   service.updateSettings({ compact: true })
+  // The pre-upgrade value is still exactly where it was (it is the only copy a later
+  // migration can encrypt) and it was not copied anywhere else.
   assert.equal(store.get('settings').apiKey, 'sk-fallback')
   assert.equal(service.getSettings().apiKey, 'sk-fallback')
+  assert.equal(JSON.stringify(store.get('settings')).split('sk-fallback').length - 1, 1)
+  assert.equal(service.getPublicSettings().credentialState.legacyPlaintext, true)
+})
+
+test('D02: a key entered without system encryption never reaches the store', () => {
+  const store = new MemoryStore()
+  const service = new SettingsService({
+    store,
+    safeStorage: createSafeStorage(false),
+    defaults
+  })
+  const settings = service.updateSettings({ apiKey: 'sk-session-only' }).settings
+  assert.equal(settings.apiKey, 'sk-session-only')
+  assert.equal(service.getSettings().apiKey, 'sk-session-only')
+  const persisted = JSON.stringify(store.get('settings'))
+  assert.equal(persisted.includes('sk-session-only'), false)
+  const pub = service.getPublicSettings()
+  assert.equal(pub.hasApiKey, true)
+  assert.equal(pub.credentialState.sessionOnly, true)
+  assert.equal(pub.credentialState.encryptionAvailable, false)
+})
+
+test('D02: provider keys entered without system encryption stay in session memory', () => {
+  const providerDefaults = {
+    apiKey: '',
+    providers: [
+      { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiKey: '', models: [{ id: 'deepseek-v4-flash', name: 'Flash' }] }
+    ],
+    ai: { assignments: [{ feature: 'chat', providerId: 'deepseek', model: 'deepseek-v4-flash' }] }
+  }
+  const store = new MemoryStore()
+  const service = new SettingsService({
+    store,
+    safeStorage: createSafeStorage(false),
+    defaults: providerDefaults
+  })
+  service.updateSettings({
+    providers: [{ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiKey: 'sk-provider-session', models: [{ id: 'deepseek-v4-flash', name: 'Flash' }] }]
+  })
+  assert.equal(service.getSettings().providers[0].apiKey, 'sk-provider-session')
+  assert.equal(service.getSettings().apiKey, 'sk-provider-session')
+  const persisted = JSON.stringify(store.get('settings'))
+  assert.equal(persisted.includes('sk-provider-session'), false)
+  assert.equal(store.get('settings').providers[0].apiKey, '')
+})
+
+test('D02: a legacy provider plaintext key is kept until encryption can take it over', () => {
+  const provider = { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', apiKey: 'sk-legacy-provider', models: [] }
+  const providerDefaults = { apiKey: '', providers: [{ ...provider, apiKey: '' }] }
+  const unavailable = new MemoryStore({ settings: { providers: [provider] } })
+  const service = new SettingsService({ store: unavailable, safeStorage: createSafeStorage(false), defaults: providerDefaults })
+  assert.equal(unavailable.get('settings').providers[0].apiKey, 'sk-legacy-provider')
+  assert.equal(service.getSettings().providers[0].apiKey, 'sk-legacy-provider')
+
+  const available = new MemoryStore({ settings: { providers: [provider] } })
+  const migrated = new SettingsService({ store: available, safeStorage: createSafeStorage(), defaults: providerDefaults })
+  assert.equal(available.get('settings').providers[0].apiKey, '')
+  assert.equal(migrated.getSettings().providers[0].apiKey, 'sk-legacy-provider')
+  assert.equal(JSON.stringify(available.get('settings')).includes('sk-legacy-provider'), false)
+})
+
+test('D02: an encrypting profile that refuses to encrypt falls back to session memory, not plaintext', () => {
+  const store = new MemoryStore()
+  const safeStorage = createSafeStorage()
+  safeStorage.encryptString = () => { throw new Error('DPAPI locked') }
+  const service = new SettingsService({ store, safeStorage, defaults })
+  const settings = service.updateSettings({ apiKey: 'sk-refused' }).settings
+  assert.equal(settings.apiKey, 'sk-refused')
+  assert.equal(JSON.stringify(store.get('settings')).includes('sk-refused'), false)
+  assert.equal(service.getPublicSettings().credentialState.encryptionFailed, true)
+  assert.equal(service.getPublicSettings().credentialState.sessionOnly, true)
+})
+
+test('D02: a corrupt encrypted blob is reported apart from "no key configured"', () => {
+  const store = new MemoryStore({ 'credentials.apiKey': Buffer.from('corrupt').toString('base64') })
+  const safeStorage = createSafeStorage()
+  safeStorage.decryptString = () => { throw new Error('decrypt failed') }
+  const service = new SettingsService({ store, safeStorage, defaults })
+  const pub = service.getPublicSettings()
+  assert.equal(pub.hasApiKey, false)
+  assert.equal(pub.credentialState.decryptFailed, true)
+  assert.equal(pub.credentialState.legacyPlaintext, false)
 })
 
 test('settings service rejects invalid IPC-shaped patches', () => {

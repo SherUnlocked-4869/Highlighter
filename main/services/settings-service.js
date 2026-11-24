@@ -54,6 +54,9 @@ class SettingsService {
       onError: onCredentialError
     })
     this.credentials.migrateLegacyApiKey()
+    // D02: older builds also wrote provider keys into the settings file. Encrypt + verify
+    // them now if encryption works; otherwise they stay put for a later attempt.
+    this.credentials.migrateLegacyProviderApiKeys()
     this.migrateStoredSettings()
   }
 
@@ -92,6 +95,10 @@ class SettingsService {
   getPublicSettings(settings = this.getSettings()) {
     const publicSettings = { ...settings, hasApiKey: !!settings.apiKey }
     delete publicSettings.apiKey
+    // D02: the page has to distinguish "no key" from "a key exists but cannot be
+    // decrypted" and from "this key only lives in memory until the app closes". The
+    // object carries booleans only - never a secret.
+    publicSettings.credentialState = this.credentials.getCredentialState()
     if (Array.isArray(settings.providers)) {
       publicSettings.providers = settings.providers.map((provider) => {
         const publicProvider = { ...provider, hasApiKey: !!provider.apiKey }
@@ -119,31 +126,52 @@ class SettingsService {
     return { ...draft, apiKey: current.apiKey }
   }
 
+  // D02 (docs/reviews/2026-11-24-windows-product-architecture-review.md): a key entered
+  // while Windows encryption is unavailable is kept in this process only. The rules are:
+  //   * no new plaintext ever reaches the store, whatever the caller passed in;
+  //   * a pre-existing legacy plaintext value is preserved exactly where it was (it is the
+  //     only copy a later migration can encrypt) and is never duplicated to another field;
+  //   * once encryption works again, session keys are migrated before anything else is
+  //     written, so they stop depending on this process.
   persistSettings(settings, { updateApiKey = false } = {}) {
     const normalized = this.normalizeSettings(mergeSettings(this.defaults, settings || {}))
     const storedSettings = { ...normalized }
     const encryptionAvailable = this.credentials.isEncryptionAvailable()
     const hasProviders = Array.isArray(normalized.providers)
+    const existingSettings = this.store.get('settings', {})
     if (encryptionAvailable) {
-      if (updateApiKey) this.credentials.setApiKey(normalized.apiKey)
+      this.credentials.migrateSessionSecrets()
+      let stored = true
+      if (updateApiKey) stored = this.credentials.setApiKey(normalized.apiKey)
       delete storedSettings.apiKey
       if (hasProviders) {
-        this.credentials.setProviderApiKeys(normalized.providers)
+        stored = this.credentials.setProviderApiKeys(normalized.providers) && stored
         storedSettings.providers = normalized.providers.map((provider) => ({ ...provider, apiKey: '' }))
       }
+      if (!stored) {
+        // DPAPI claimed to be available but refused to encrypt. Keep the keys for this
+        // session and tell the UI; falling back to plaintext is exactly what D02 forbids.
+        this.credentials.setSessionApiKey(normalized.apiKey)
+        if (hasProviders) this.credentials.setSessionProviderApiKeys(normalized.providers)
+      }
     } else {
-      if (!updateApiKey) {
-        const existingSettings = this.store.get('settings', {})
-        if (Object.hasOwn(existingSettings, 'apiKey')) storedSettings.apiKey = existingSettings.apiKey
-        else delete storedSettings.apiKey
+      if (updateApiKey) {
+        this.credentials.setSessionApiKey(normalized.apiKey)
+        delete storedSettings.apiKey
+      } else if (Object.hasOwn(existingSettings, 'apiKey')) {
+        storedSettings.apiKey = existingSettings.apiKey
+      } else {
+        delete storedSettings.apiKey
       }
       if (hasProviders) {
-        const existingSettings = this.store.get('settings', {})
+        this.credentials.setSessionProviderApiKeys(normalized.providers)
         const existingProviders = Array.isArray(existingSettings.providers) ? existingSettings.providers : []
         storedSettings.providers = normalized.providers.map((provider) => {
           const existing = existingProviders.find((item) => item?.id === provider?.id)
-          const retainedApiKey = sameProviderEndpoint(provider, existing) ? (existing?.apiKey || '') : ''
-          return { ...provider, apiKey: provider.apiKey || retainedApiKey }
+          // Only a value that was ALREADY on disk survives, and only for the endpoint it
+          // was saved for. The key the caller just typed stays in session memory.
+          const legacyApiKey = existing && sameProviderEndpoint(provider, existing) ? String(existing.apiKey || '') : ''
+          return { ...provider, apiKey: legacyApiKey }
         })
       }
     }

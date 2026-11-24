@@ -82,6 +82,65 @@ test('encrypts provider API keys separately and removes keys for deleted provide
   assert.deepEqual(credentials.getProviderApiKeys(providers.map((provider) => ({ ...provider, apiKey: '' }))), { deepseek: 'sk-rotated', jbb: '' })
 })
 
+test('D02: session-only keys survive a settings read but never touch the store', () => {
+  const store = new MemoryStore()
+  const credentials = new CredentialStore({ store, safeStorage: createSafeStorage(false) })
+  credentials.setSessionApiKey('sk-session')
+  credentials.setSessionProviderApiKeys([{ id: 'deepseek', apiKey: 'sk-provider-session' }])
+  assert.equal(credentials.getApiKey(''), 'sk-session')
+  assert.deepEqual(credentials.getProviderApiKeys([{ id: 'deepseek', apiKey: '' }]), { deepseek: 'sk-provider-session' })
+  assert.equal(JSON.stringify([...store.values.entries()]).includes('sk-session'), false)
+  const state = credentials.getCredentialState()
+  assert.equal(state.sessionOnly, true)
+  assert.equal(state.encryptionAvailable, false)
+})
+
+test('D02: the session key outranks a legacy plaintext value, which stays readable otherwise', () => {
+  const store = new MemoryStore({ settings: { apiKey: 'sk-legacy' } })
+  const credentials = new CredentialStore({ store, safeStorage: createSafeStorage(false) })
+  assert.equal(credentials.getApiKey('sk-legacy'), 'sk-legacy')
+  credentials.setSessionApiKey('sk-newer')
+  assert.equal(credentials.getApiKey('sk-legacy'), 'sk-newer')
+  assert.equal(credentials.getCredentialState().legacyPlaintext, true)
+})
+
+test('D02: migration verifies the ciphertext before deleting the plaintext original', () => {
+  const store = new MemoryStore({ settings: { apiKey: 'sk-legacy' } })
+  const safeStorage = createSafeStorage()
+  // A store that "encrypts" into a blob it cannot read back: the plaintext must survive.
+  safeStorage.decryptString = () => 'something-else'
+  const credentials = new CredentialStore({ store, safeStorage })
+  assert.equal(credentials.migrateLegacyApiKey(), false)
+  assert.equal(store.get('settings').apiKey, 'sk-legacy')
+})
+
+test('D02: session keys become encrypted credentials once encryption is available', () => {
+  const store = new MemoryStore()
+  const unavailable = new CredentialStore({ store, safeStorage: createSafeStorage(false) })
+  unavailable.setSessionApiKey('sk-promote')
+  assert.equal(store.get(API_KEY_STORAGE_KEY, ''), '')
+
+  const available = new CredentialStore({ store, safeStorage: createSafeStorage(true) })
+  // The new store instance starts empty; carry the session secret across the way the
+  // settings service does (same process, same CredentialStore in production).
+  available.setSessionApiKey('sk-promote')
+  assert.equal(available.migrateSessionSecrets(), true)
+  assert.ok(store.get(API_KEY_STORAGE_KEY))
+  assert.equal(available.getSessionApiKey(), '')
+  assert.equal(available.getApiKey(), 'sk-promote')
+})
+
+test('D02: provider migration is all-or-nothing and blank values stay untouched', () => {
+  const provider = { id: 'deepseek', apiKey: 'sk-provider-legacy' }
+  const store = new MemoryStore({ settings: { providers: [provider, { id: 'other', apiKey: '' }] } })
+  const credentials = new CredentialStore({ store, safeStorage: createSafeStorage() })
+  assert.equal(credentials.migrateLegacyProviderApiKeys(), true)
+  assert.equal(store.get('settings').providers[0].apiKey, '')
+  assert.equal(store.get(PROVIDER_API_KEYS_STORAGE_KEY).deepseek.length > 0, true)
+  assert.equal(credentials.getProviderApiKeys([{ id: 'deepseek', apiKey: '' }]).deepseek, 'sk-provider-legacy')
+  assert.equal(credentials.migrateLegacyProviderApiKeys(), false)
+})
+
 test('provider API keys fall back to plaintext values when encryption is unavailable', () => {
   const store = new MemoryStore()
   const credentials = new CredentialStore({ store, safeStorage: createSafeStorage(false) })
