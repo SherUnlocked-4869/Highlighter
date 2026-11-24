@@ -27,6 +27,10 @@
 | B08 | P2 | 已实现（仅素材帧） | test/recording-pin-frame.test.js | 真实 VFR 视频的 ≤1 帧偏差与去段后取帧 |
 | A07 | P2 | 已实现（吸附开关待设置项） | test/pin-snap-geometry.test.js, test/pin-display.test.js | 真机 100%+150%/负坐标副屏/拔屏/20 张定位与 ≤1 DIP 吸附 |
 | C05 | P2 | 實驗路徑已实现（默认关闭） | test/recording-direct-track.test.js, test/measure-recording-encode.test.js | 核显/独显 × 1080p30/4K30 成对样本；CPU/掉帧/音画差门槛 |
+| B04 | P1 | 已实现（单机模拟） | test/recording-audio-preflight.test.js, test/recording-audio-preflight-ui.test.js | 真实四组合音轨、权限拒绝、蓝牙拔出与 5 秒采样/1 秒释放 |
+| B05 | P1 | 已实现（部分数字为估算） | test/clipboard-capacity.test.js, test/clipboard-capacity-ui.test.js, test/clipboard-capacity-domain.test.js | 真实侧车 500 项/预算样本与面板视觉验收 |
+| D05 | P1 | 已实现（托盘子菜单待接） | test/window-resilience.test.js, test/window-resilience-tray.test.js, test/pin-crash-recovery.test.js | 打包版 10 次启动单实例、Explorer 重启、睡眠唤醒、便携登录项 |
+| D06 | P1 | 已实现 | test/review-evidence.test.js | 候选包与 CI 运行/真机记录的可追溯性 |
 | B07 | P2 | 已实现（明细成本仍按最新价） | test/usage-export.test.js, test/usage-export-import.test.js, test/usage-export-ui.test.js | 真实日志轮转样本与跨版本价格复算 |
 | D04 | P1 | 已实现（IPC 已接线，逐版本迁移钩子待注册） | test/data-root-backup.test.js, test/data-root-backup-ui.test.js | 普通安装与便携从上一受支持版本实机恢复；坏包/盘满/中途终止 |
 | C06 | P2 | 工具已实现 | test/release-size.test.js | 两个相邻 NSIS 候选 + blockmap 的差分传输与安装耗时 |

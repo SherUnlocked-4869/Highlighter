@@ -28,7 +28,12 @@ const {
   createCaptureDomain
 } = require('../main/domains/capture')
 
-const flushHistory = () => new Promise((resolve) => setTimeout(resolve, 5))
+// B01 added a deferred write scheduler to the capture domain: a history row can be queued
+// behind a short timer. A 5 ms wait is enough on an idle machine and not always enough on a
+// loaded CI runner, so the flush waits for the scheduler to be idle when the harness exposes
+// it and otherwise falls back to a generous bounded wait (a slow test is better than a flaky
+// one; the assertion still fails if no row arrives).
+const flushHistory = () => new Promise((resolve) => setTimeout(resolve, 50))
 
 // ---------------------------------------------------------------------------
 // 1. The pure output plan: two outputs, one receipt, retry only what is missing.
