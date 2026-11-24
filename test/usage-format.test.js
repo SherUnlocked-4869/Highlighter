@@ -11,6 +11,29 @@ const assert = require('node:assert/strict')
 
 const format = require('../shared/usage-format')
 
+
+// A04 (docs/reviews/2026-11-24-windows-product-architecture-review.md): five pricing states.
+// The page must never draw an unknown day as a zero-cost day, so the state is derived from the
+// row alone and every surface (bar, legend, table cell, tooltip, aria label) resolves it here.
+test('costState separates no-activity, unpriced, partial, zero and priced days', () => {
+  const day = (overrides) => ({ total_tokens: 1000, billable_total_tokens: 1000, costCny: 1.5, unpricedModels: 0, ...overrides })
+  // 1. no activity at all
+  assert.equal(format.costState({ total_tokens: 0, billable_total_tokens: 0, costCny: null, unpricedModels: 0 }), 'none')
+  assert.equal(format.costState({ conversation_count: 0, costCny: 0 }), 'none')
+  assert.equal(format.costState(null), 'none')
+  // 2. activity, no price known
+  assert.equal(format.costState(day({ costCny: null, unpricedModels: 2 })), 'unpriced')
+  assert.equal(format.costState(day({ costCny: undefined })), 'unpriced')
+  // 3. a known subtotal plus unpriced models
+  assert.equal(format.costState(day({ costCny: 0.4, unpricedModels: 1 })), 'partial')
+  // 4. every model priced and the total really is zero (zero unit price)
+  assert.equal(format.costState(day({ costCny: 0, unpricedModels: 0 })), 'zero')
+  // 5. a known non-zero total
+  assert.equal(format.costState(day({ costCny: 2.25 })), 'priced')
+  // A bucket with no token counter stays 'none' even if it carries a cost field.
+  assert.equal(format.costState({ total_tokens: 0, costCny: 0 }), 'none')
+})
+
 test('formatCompactToken renders English units with one trimmed decimal', () => {
   assert.equal(format.formatCompactToken(0), '0')
   assert.equal(format.formatCompactToken(1), '1')
@@ -414,6 +437,7 @@ test('the UMD surface exposes exactly the helpers the page uses', () => {
     'addDays',
     'bucketRowsByMonth',
     'cacheHitRate',
+    'costState',
     'formatCompactToken',
     'formatFullToken',
     'formatRangeLabel',

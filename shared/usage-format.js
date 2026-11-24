@@ -140,6 +140,26 @@
     return (normalizeToken(row && row.cached_input_tokens) / prompt) * 100
   }
 
+// A04 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the five pricing
+  // states a day can have. A missing price must never be drawn as a zero-cost day.
+  //   none     - no activity at all (the table shows a dash);
+  //   unpriced - activity, but no model could be priced (costCny is null);
+  //   partial  - a known subtotal plus at least one unpriced model;
+  //   zero     - every model is priced and the total really is 0 (zero unit price);
+  //   priced   - a known, non-zero total.
+  function costState(row) {
+    const source = row && typeof row === 'object' ? row : {}
+    const tokens = normalizeToken(source.billable_total_tokens) || normalizeToken(source.total_tokens)
+    const conversations = normalizeToken(source.conversation_count)
+    const unpricedModels = normalizeToken(source.unpricedModels)
+    if (!tokens && !conversations) return 'none'
+    const raw = source.costCny
+    const hasCost = raw !== null && raw !== undefined && Number.isFinite(Number(raw))
+    if (!hasCost) return 'unpriced'
+    if (unpricedModels > 0) return 'partial'
+    return Number(raw) === 0 ? 'zero' : 'priced'
+  }
+
   function isChineseLanguage(language) {
     return /^zh(-|$)/i.test(String(language || ''))
   }
@@ -476,6 +496,7 @@
     formatFullToken,
     formatSharePct,
     cacheHitRate,
+    costState,
     promptTokens,
     formatRangeLabel,
     formatTooltip,

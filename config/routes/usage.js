@@ -640,6 +640,55 @@ function usageCost(row) {
   return '¥' + label + (row.unpricedModels ? '+' : '')
 }
 
+// A04 (docs/reviews/2026-11-24-windows-product-architecture-review.md): a zero-height bar used
+// to stand for four different facts. The state comes from the shared pure helper
+// (shared/usage-format.js costState) and every surface - bar, legend, tooltip, table cell and
+// the screen-reader label - resolves its copy through usageCostText below.
+function usageCostState(row) {
+  return window.usageFormat.costState(row)
+}
+
+// The filter scope every cost reading shares: the chart, the tooltip and the table must say
+// which sources/models/projects a number belongs to, or two different numbers look comparable.
+function usageFilterScopeText() {
+  const separator = t('config.common.list-separator')
+  const parts = []
+  if (usageSourceFilter.length) parts.push(usageSourceFilter.map((id) => usageSourceLabel({ source: id })).join(separator))
+  else parts.push(t('config.usage.cost.all-sources'))
+  if (usageModelFilter) parts.push(usageModelFilter)
+  if (usageProjectFilter) parts.push(usageProjectFilter)
+  return parts.join(' · ')
+}
+
+function usageCostScopeText(summary) {
+  return t('config.usage.cost.scope', {
+    currency: 'CNY',
+    range: usageRangeLabel(summary),
+    filters: usageFilterScopeText()
+  })
+}
+
+// One formatter for the five states. usageCost(row) stays the amount-only formatter used by
+// the totals card; anything that shows a DAY uses this.
+function usageCostText(row) {
+  const state = usageCostState(row)
+  const models = usageNumber(row && row.unpricedModels)
+  if (state === 'none') return t('config.usage.cost.no-activity')
+  if (state === 'unpriced') return models ? t('config.usage.dashboard.unpriced-models', { count: models }) : t('config.usage.dashboard.unpriced')
+  if (state === 'partial') return t('config.usage.cost.partial', { amount: usageCost(row), count: models })
+  if (state === 'zero') return t('config.usage.cost.zero')
+  return usageCost(row)
+}
+
+// The legend reuses the same copy, so it can never describe a state the bar does not draw.
+function usageCostLegendHtml() {
+  return `<div class="usage-cost-legend" role="group" aria-label="${escapeHtml(t('config.usage.cost.legend-title'))}">` +
+    `<span class="usage-cost-legend-item"><i class="usage-trend-unknown-mark" aria-hidden="true">?</i>${escapeHtml(t('config.usage.dashboard.unpriced'))}</span>` +
+    `<span class="usage-cost-legend-item"><i class="usage-trend-cost-cap" aria-hidden="true"></i>${escapeHtml(t('config.usage.cost.partial-legend'))}</span>` +
+    `<span class="usage-cost-legend-item"><i class="usage-trend-cost-zero" aria-hidden="true"></i>${escapeHtml(t('config.usage.cost.zero'))}</span>` +
+    `</div>`
+}
+
 function usageDuration(seconds) {
   const minutes = Math.floor(usageNumber(seconds) / 60)
   return usageDashboardText('duration', { hours: Math.floor(minutes / 60), minutes: minutes % 60 })
@@ -661,7 +710,7 @@ function usageDashboardRankings(models, projects) {
       const label = escapeHtml(row.name)
       return `<button type="button" class="usage-rank-row" data-usage-${dimension}-rank="${escapeHtml(row.id)}" aria-pressed="${row.id === selected}" title="${label} · ${escapeHtml(usageFull(row.tokens))} Token">
         <span class="usage-rank-name">${label}</span><span class="usage-rank-track" aria-hidden="true"><i style="width:${usageClampPct(100 * row.tokens / (sorted[0].tokens || 1))}%"></i></span>
-        <span class="usage-rank-value">${escapeHtml(usageCompact(row.tokens))}</span><span class="usage-rank-cost">${escapeHtml(usageCost(row))}</span>
+        <span class="usage-rank-value">${escapeHtml(usageCompact(row.tokens))}</span><span class="usage-rank-cost">${escapeHtml(usageCostText(row))}</span>
       </button>`
     }).join('') || `<p class="usage-section-note">${escapeHtml(t('config.usage.trend.empty'))}</p>`
   }
@@ -702,7 +751,7 @@ function usageSessionListHtml(details) {
         <span>${escapeHtml(row.id)}</span>
         <span>${escapeHtml([usageDateTime(row.first), usageDateTime(row.last)].filter(Boolean).join(' – '))}</span>
         <span>${escapeHtml(usageDashboardText('token-detail', { input: usageCompact(row.input_tokens), output: usageCompact(row.output_tokens), cache: usageCompact(row.cached_input_tokens) }))}</span>
-        <span>${escapeHtml(usageDashboardText('record-count', { count: usageFull(row.records) }))} · ${escapeHtml(usageCost(row))} · ${escapeHtml(usageDuration(row.activeSeconds))}</span>
+        <span>${escapeHtml(usageDashboardText('record-count', { count: usageFull(row.records) }))} · ${escapeHtml(usageCostText(row))} · ${escapeHtml(usageDuration(row.activeSeconds))}</span>
       </div>
     </details>`
   }).join('')
@@ -780,12 +829,13 @@ function usageTrendSegments(row) {
 }
 
 
-function usageTrendTooltipHtml(row) {
+function usageTrendTooltipHtml(row, summary = null) {
   if (usageTrendMetric !== 'token' || !usageIncludeCache) {
     const metric = usageDashboardText(({ token: 'without-cache', active: 'estimated-active' })[usageTrendMetric] || usageTrendMetric)
-    const value = usageTrendMetric === 'cost' ? usageCost(row) : usageTrendMetric === 'active' ? usageDuration(row.activeSeconds) : usageFull(usageDashboardMetric(row))
+    const value = usageTrendMetric === 'cost' ? usageCostText(row) : usageTrendMetric === 'active' ? usageDuration(row.activeSeconds) : usageFull(usageDashboardMetric(row))
     const date = usageDayLabel(row.day)
-    return { label: `${date} · ${metric}: ${value}`, html: `<b class="usage-tooltip-date">${escapeHtml(date)}</b><span>${escapeHtml(metric)}: ${escapeHtml(value)}</span>` }
+    const scope = usageTrendMetric === 'cost' ? ` · ${usageCostScopeText(summary)}` : ''
+    return { label: `${date} · ${metric}: ${value}${scope}`, html: `<b class="usage-tooltip-date">${escapeHtml(date)}</b><span>${escapeHtml(metric)}: ${escapeHtml(value)}</span>` }
   }
   const segments = usageTrendSegments(row)
   const total = usageDashboardTokens(row)
@@ -812,13 +862,23 @@ function usageTrendHtml(daily) {
     const columns = rows.map((row) => {
       const value = usageDashboardMetric(row)
       const barHeight = maxTotal > 0 ? (value / maxTotal) * 100 : 0
-      const tooltip = usageTrendTooltipHtml(row)
+      const tooltip = usageTrendTooltipHtml(row, daily)
       const cacheShare = usageTrendMetric === 'token' && usageIncludeCache && value > 0 ? usageClampPct(100 * usageNumber(row.cached_input_tokens) / value) : 0
-      const stack = `<div class="usage-trend-stack" style="height:${barHeight}%">
+      // A04: an unknown day is drawn as an explicit marker, never as a zero-cost bar; a
+      // partial day keeps its known subtotal and carries a cap; a real zero keeps a tick.
+      const costState = usageTrendMetric === 'cost' ? usageCostState(row) : ''
+      let stack
+      if (costState === 'unpriced') {
+        stack = `<div class="usage-trend-stack usage-trend-stack-state" style="height:16%"><i class="usage-trend-unknown-mark" aria-hidden="true">?</i></div>`
+      } else if (costState === 'zero') {
+        stack = `<div class="usage-trend-stack usage-trend-stack-state" style="height:0"><i class="usage-trend-cost-zero" aria-hidden="true"></i></div>`
+      } else {
+        stack = `<div class="usage-trend-stack" style="height:${barHeight}%">${costState === 'partial' ? '<i class="usage-trend-cost-cap" aria-hidden="true"></i>' : ''}
         <i class="usage-trend-seg usage-trend-cache" style="height:${cacheShare}%"></i>
         <i class="usage-trend-seg usage-trend-input" style="height:${100 - cacheShare}%"></i>
       </div>`
-      return `<div class="usage-trend-col" tabindex="-1" role="gridcell" data-usage-day="${escapeHtml(row.day)}" aria-label="${escapeHtml(tooltip.label)}">${stack}</div>`
+      }
+      return `<div class="usage-trend-col${costState ? ' usage-trend-col-cost' : ''}" tabindex="-1" role="gridcell" data-usage-day="${escapeHtml(row.day)}"${costState ? ` data-cost-state="${costState}"` : ''} aria-label="${escapeHtml(tooltip.label)}">${stack}</div>`
     }).join('')
     chart = `<div class="usage-trend-chart" role="grid" aria-labelledby="usageTrendTitle">
       <div class="usage-trend-bars${rows.length === 1 ? ' is-single' : ''}" data-usage-trend role="row">
@@ -840,6 +900,7 @@ function usageTrendHtml(daily) {
     </div>
     ${chart}
     ${axis}
+    ${usageTrendMetric === 'cost' ? usageCostLegendHtml() + `<p class="usage-section-note usage-cost-scope">${escapeHtml(usageCostScopeText(daily))}</p>` : ''}
     <button class="usage-trend-expand" type="button" data-usage-trend-expand aria-label="${escapeHtml(t('config.usage.trend.expand'))}" title="${escapeHtml(t('config.usage.trend.expand'))}">${typeof iconMarkup === 'function' ? iconMarkup('icons/fullscreen.svg') : ''}</button>
   </section>`
 }
@@ -897,7 +958,7 @@ function usageDailyRowsHtml(rows, direction) {
         ${usageTableCell(row.cached_input_tokens, empty)}
         ${usageCacheHitCell(row, empty)}
         ${usageTableCell(row.sessions, empty)}
-        <td class="num">${escapeHtml(empty ? '—' : usageCost(row))}</td>
+        <td class="num">${escapeHtml(empty ? '—' : usageCostText(row))}</td>
       </tr>`
   }).join('')
 }
