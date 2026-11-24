@@ -47,7 +47,8 @@ contextBridge.exposeInMainWorld('pinAPI', {
   exportPdf: () => ipcRenderer.invoke('pin:export-pdf'),
   beginMove: () => ipcRenderer.send('pin:move-start'),
   move: () => ipcRenderer.send('pin:move'),
-  endMove: () => ipcRenderer.send('pin:move-end'),
+  // A07: the release point decides whether to snap; Alt bypasses it for this drag.
+  endMove: (altKey = false) => ipcRenderer.send('pin:move-end', { altKey: altKey === true }),
   onZoomChanged: (callback) => {
     const handler = (_event, zoom) => callback(zoom)
     ipcRenderer.on('pin:zoom-changed', handler)

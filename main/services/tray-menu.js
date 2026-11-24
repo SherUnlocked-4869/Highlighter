@@ -39,6 +39,11 @@ function buildTrayMenuTemplate({
   // still build the menu. Without it the entry opens the main window, whose navigation owns the
   // page - one click more, never a dead item.
   openClipboardSettings = null,
+  // A07: the pin domain's per-display pin finder payload:
+  // `{ displays: [{ label, pins: [{ id, index, bounds, alwaysOnTop, clickThrough }] }], actions }`.
+  // Optional like every other host capability, and the entry only exists while a pin does,
+  // so the A06 two-level shape (and every existing caller/test) is unchanged without it.
+  pinnedDisplays = null,
   executeFunction,
   setGameModeEnabled,
   openHistory,
@@ -122,6 +127,65 @@ function buildTrayMenuTemplate({
     click: typeof openClipboardSettings === 'function' ? openClipboardSettings : openMainWindow
   }
 
+  // A07: pinned images > display > pin > locate / un-top / exit click-through. The display group names
+  // arrive already localized (services/pin-geometry.js displayLabel()); this layer owns the
+  // action copy and the same fallback arbitration as recording/proxy: a direct domain call
+  // when the host injects one, otherwise the router name through executeFunction.
+  const pinGroups = pinnedDisplays && Array.isArray(pinnedDisplays.displays)
+    ? pinnedDisplays.displays.filter((group) => group && Array.isArray(group.pins) && group.pins.length > 0)
+    : []
+  const pinActions = pinnedDisplays && pinnedDisplays.actions && typeof pinnedDisplays.actions === 'object'
+    ? pinnedDisplays.actions
+    : {}
+  const pinClick = (name, ...args) => () => {
+    const handler = pinActions[name]
+    return typeof handler === 'function' ? handler(...args) : run(name)()
+  }
+  const pinItemLabel = (pin) => {
+    const index = Math.max(0, Math.round(Number(pin?.index) || 0))
+    const width = Math.max(0, Math.round(Number(pin?.bounds?.width) || 0))
+    const height = Math.max(0, Math.round(Number(pin?.bounds?.height) || 0))
+    // Click-through is the one state a user cannot discover by clicking the window:
+    // the label has to carry it, because the label is the only way back to that pin.
+    return pin?.clickThrough === true
+      ? t('main.tray.pin-item-click-through', { index, width, height })
+      : t('main.tray.pin-item', { index, width, height })
+  }
+  const pinCount = pinGroups.reduce((total, group) => total + group.pins.length, 0)
+  const pinnedDisplaysEntry = pinGroups.length
+    ? {
+        label: t('main.tray.pinned-displays', { count: pinCount }),
+        // Window management, not a capture summon: like the tools submenu this stays
+        // usable in game mode, where a click-through pin has no other way out.
+        enabled: true,
+        submenu: pinGroups.map((group) => ({
+          label: typeof group.label === 'string' && group.label
+            ? group.label
+            : t('main.tray.pinned-displays', { count: group.pins.length }),
+          submenu: group.pins.map((pin) => ({
+            label: pinItemLabel(pin),
+            submenu: [
+              { label: t('main.tray.pin-focus'), click: pinClick('focusPin', pin.id) },
+              {
+                // The item states the value it wants, so a stale menu snapshot cannot
+                // flip a pin that was just toggled somewhere else.
+                label: pin?.alwaysOnTop === false
+                  ? t('main.tray.pin-always-on-top-on')
+                  : t('main.tray.pin-always-on-top-off'),
+                click: pinClick('togglePinAlwaysOnTop', pin.id, pin?.alwaysOnTop === false)
+              },
+              {
+                label: t('main.tray.pin-exit-click-through'),
+                // Nothing to exit for an opaque pin; disabling the item says so.
+                enabled: pin?.clickThrough === true,
+                click: pinClick('exitPinClickThrough', pin.id)
+              }
+            ]
+          }))
+        }))
+      }
+    : null
+
   // A06: the other capture modes. All of them summon a capture window, so they follow the
   // same game-mode gate as the region entry; the parent is gated too, because a submenu
   // whose every child is disabled is just a slower dead end.
@@ -187,6 +251,8 @@ function buildTrayMenuTemplate({
     // Only while the feature is off: with it on, the label needs no explanation and the
     // main window already owns the page.
     ...(clipboardEnabled === true ? [] : [clipboardSettingsEntry]),
+    // A07: only while a pin exists - a first-run menu never grows a dead parent.
+    ...(pinnedDisplaysEntry ? [pinnedDisplaysEntry] : []),
     captureModesEntry,
     toolsEntry,
     { type: 'separator' },

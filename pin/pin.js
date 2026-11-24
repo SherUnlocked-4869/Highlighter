@@ -277,9 +277,10 @@ function updateMove(event) {
 }
 
 function finishMove(event) {
+  // A07: pass the modifier of the release so the main process can snap (or skip on Alt).
   if (!pressed || event.pointerId !== pointerId) return
   pressed = false
-  if (moving) window.pinAPI.endMove()
+  if (moving) window.pinAPI.endMove(event?.altKey === true)
   moving = false
   document.body.classList.remove('dragging')
   try { event.currentTarget.releasePointerCapture(pointerId) } catch {}

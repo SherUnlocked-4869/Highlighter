@@ -26,6 +26,16 @@ const { createPinImageStore } = require('../../services/pin-image-store')
 // D05: the abnormal-renderer retention policy. The domain owns window/image
 // identity; the TTL, attempt cap and budget arithmetic live in the service.
 const { createWindowResilience } = require('../../services/window-resilience')
+// A07: end-of-drag snapping and the per-display tray grouping are pure geometry; the
+// domain only feeds them Electron rects and applies the result with setBounds.
+const {
+  computePinSnap,
+  displayKey,
+  displayLabel,
+  orderDisplays,
+  pickDisplayForBounds,
+  sameDisplay
+} = require('../../services/pin-geometry')
 
 // ---------------------------------------------------------------------------
 // B03 (docs/reviews/2026-11-24-windows-product-architecture-review.md):
@@ -114,6 +124,9 @@ function createPinDomain(deps) {
   })
   let pinnedCount = 0
   let pinWindowSequence = 0
+  // A07: a stable creation ordinal for the tray's pin labels. It is deliberately not
+  // persisted - pin state is local to this process by design.
+  let pinOrdinalSequence = 0
 
   // D05: a crashed renderer no longer takes the pixels with it. The policy is
   // injected in tests (fake clock, fake timers); in production it mirrors the
@@ -705,7 +718,14 @@ function createPinDomain(deps) {
   // with the last pin, so an app that never pins anything installs nothing.
   function attachPinDisplayWatchers() {
     if (displayWatchersAttached || typeof screen?.on !== 'function') return false
-    const listener = () => reflowPinWindows()
+    // A07: the reflow already clamps every pin into a surviving work area; the
+    // notification lets a host rebuild the per-display tray groups at the same time.
+    // Grouping itself is recomputed on every listPinsByDisplay() call, so a monitor
+    // change can never leave a stale group behind.
+    const listener = () => {
+      const reflowed = reflowPinWindows()
+      notifyPinLayoutChanged({ kind: 'display-change', reflowed })
+    }
     for (const eventName of ['display-added', 'display-removed', 'display-metrics-changed']) {
       screen.on(eventName, listener)
       displayWatchers.push([eventName, listener])
@@ -722,6 +742,238 @@ function createPinDomain(deps) {
     }
     displayWatchersAttached = false
     return true
+  }
+
+  // -------------------------------------------------------------------------
+  // A07 (docs/reviews/2026-11-24-windows-product-architecture-review.md):
+  // Find pins per display, snap at the end of a drag.
+  //
+  // Up to 20 pins can overlap, and a click-through pin cannot be clicked at all, so the
+  // tray needs a per-display list plus three window-level actions. None of them touch
+  // the image: imageId, opacity, zoom, rotation and the pixel size stay exactly where
+  // they were (that is the ticket's acceptance, and the tests assert it). The menu is
+  // built on demand from listPinsByDisplay(); no pin state is persisted.
+  // -------------------------------------------------------------------------
+  function notifyPinLayoutChanged(change = {}) {
+    // Optional host hook (createTrayIcon when main.js wants an immediate refresh). The
+    // list itself is computed on every call, so an unwired host still gets a correct
+    // menu on the next rebuild instead of a stale cached copy.
+    if (typeof deps.onPinLayoutChange !== 'function') return false
+    try {
+      deps.onPinLayoutChange(change)
+    } catch (error) {
+      log('Pin layout notification failed:', error.message)
+    }
+    return true
+  }
+
+  function findPinWindow(id) {
+    if (typeof id !== 'string' || !id) return null
+    for (const win of pinWindows) {
+      if (!win || win.isDestroyed()) continue
+      if (win._pinId === id || win._pinRecoveryKey === id) return win
+    }
+    return null
+  }
+
+  // Locate: bring the pin back without touching its always-on-top choice (a temporary
+  // un-top must survive a locate). A pin whose display vanished outside a display event
+  // is reflowed first, so this is also the manual recovery path.
+  function focusPin(id) {
+    const win = findPinWindow(id)
+    if (!win || !win._pinData) return null
+    let bounds = readPinBounds(win)
+    const displays = getDisplays()
+    if (bounds && displays.length && !displays.some((display) => boundsIntersectWorkArea(bounds, display.workArea))) {
+      reflowPinWindow(win)
+      bounds = readPinBounds(win)
+    }
+    if (win.isDestroyed() || !win._pinData) return null
+    if (typeof win.isVisible === 'function' && !win.isVisible()) {
+      // Do NOT touch _pinVisible here: a pin that has not rendered yet still has to go
+      // through revealPinWindow (pin:render-ready) for its opacity/focus hand-off.
+      win.show()
+    }
+    win.moveTop()
+    win.focus()
+    // A drag interrupted by the focus must not replay on the next pointer move.
+    win._pinMove = null
+    return {
+      id,
+      bounds,
+      alwaysOnTop: win._pinData.alwaysOnTop !== false,
+      clickThrough: win._pinData.clickThrough === true
+    }
+  }
+
+  function applyPinAlwaysOnTop(win, enabled) {
+    if (!win || win.isDestroyed() || !win._pinData) return null
+    const next = enabled !== false
+    win._pinData.alwaysOnTop = next
+    if (typeof win.setAlwaysOnTop === 'function') {
+      if (next) win.setAlwaysOnTop(true, 'screen-saver')
+      else win.setAlwaysOnTop(false)
+    }
+    return next
+  }
+
+  // Temporary un-top. The optional `enabled` lets the tray send the explicit value from its
+  // snapshot (idempotent: a replayed click cannot flip it back), while a keyboard or
+  // future settings entry can simply toggle.
+  function togglePinAlwaysOnTop(id, enabled) {
+    const win = findPinWindow(id)
+    if (!win || !win._pinData) return null
+    const current = win._pinData.alwaysOnTop !== false
+    const next = typeof enabled === 'boolean' ? enabled : !current
+    const applied = applyPinAlwaysOnTop(win, next)
+    if (applied === null) return null
+    if (applied !== current) notifyPinLayoutChanged({ kind: 'always-on-top', id })
+    return applied
+  }
+
+  // Per-pin click-through exit: the counterpart of exitAllClickThrough, and the same explicit
+  // boolean path (clearPinClickThrough only reports a real state change).
+  function exitPinClickThrough(id) {
+    const win = findPinWindow(id)
+    if (!win) return false
+    const exited = clearPinClickThrough(win)
+    if (exited) notifyPinLayoutChanged({ kind: 'click-through', id })
+    return exited
+  }
+
+  // The tray payload: one group per display that currently has pins. Group names come
+  // from displayLabel (resolution/scale/primary, negative origins printed verbatim);
+  // group order is stable (primary first, then left-to-right) so reopening the menu
+  // does not reshuffle the screens. `actions` is part of the payload so main.js can
+  // wire the whole finder with a single line.
+  function listPinsByDisplay() {
+    const primary = getPrimaryDisplay()
+    const listed = getDisplays()
+    const entries = []
+    for (const win of pinWindows) {
+      if (!win || win.isDestroyed() || !win._pinData) continue
+      const bounds = readPinBounds(win)
+      if (!bounds) continue
+      entries.push({ win, bounds, ordinal: Number(win._pinOrdinal) || 0 })
+    }
+    entries.sort((a, b) => a.ordinal - b.ordinal)
+    const extras = []
+    const records = entries.map((entry, position) => {
+      let matched = null
+      try {
+        matched = typeof screen?.getDisplayMatching === 'function' ? screen.getDisplayMatching(entry.bounds) : null
+      } catch {
+        matched = null
+      }
+      // Center ownership beats the largest-intersection match at a seam (see
+      // services/pin-geometry.js); the match is the fallback for a dead coordinate.
+      const display = pickDisplayForBounds(entry.bounds, listed, matched)
+      if (display && !listed.some((candidate) => sameDisplay(candidate, display)) &&
+        !extras.some((candidate) => sameDisplay(candidate, display))) {
+        extras.push(display)
+      }
+      return { ...entry, index: position + 1, display }
+    })
+    const ordered = orderDisplays([...listed, ...extras], primary)
+    const orderIndex = new Map(ordered.map((display, index) => [displayKey(display), index]))
+    const groups = new Map()
+    for (const record of records) {
+      const display = record.display || primary || null
+      const key = displayKey(display)
+      let group = groups.get(key)
+      if (!group) {
+        group = { display, pins: [] }
+        groups.set(key, group)
+      }
+      const data = record.win._pinData
+      group.pins.push({
+        id: record.win._pinId || record.win._pinRecoveryKey || '',
+        index: record.index,
+        bounds: { ...record.bounds },
+        alwaysOnTop: data.alwaysOnTop !== false,
+        clickThrough: data.clickThrough === true,
+        opacity: clampPinOpacity(data.opacity),
+        rotation: normalizePinRotation(data.rotation)
+      })
+    }
+    const displayGroups = [...groups.values()]
+    displayGroups.sort((a, b) => (orderIndex.get(displayKey(a.display)) ?? 0) - (orderIndex.get(displayKey(b.display)) ?? 0))
+    return {
+      displays: displayGroups.map((group) => {
+        const display = group.display
+        const order = orderIndex.get(displayKey(display)) ?? 0
+        // No primary known (a minimal screen fake): leave the flag off so displayLabel
+        // falls back to the first display in the ordered list instead of calling the
+        // only screen "secondary".
+        const labelSource = primary && display ? { ...display, primary: sameDisplay(display, primary) } : display
+        return {
+          key: displayKey(display),
+          id: display?.id ?? null,
+          label: displayLabel(labelSource, order),
+          bounds: display?.bounds ? { ...display.bounds } : null,
+          workArea: display?.workArea ? { ...display.workArea } : null,
+          scaleFactor: Number(display?.scaleFactor) || 1,
+          pins: group.pins
+        }
+      }),
+      actions: {
+        focusPin: (id) => focusPin(id),
+        togglePinAlwaysOnTop: (id, enabled) => togglePinAlwaysOnTop(id, enabled),
+        exitPinClickThrough: (id) => exitPinClickThrough(id)
+      }
+    }
+  }
+
+  // Snap on release: called exactly once per drag end (the renderer's pin:move-end),
+  // never while moving. `altKey` is the explicit skip; `options.enabled === false` and
+  // the injected isPinSnapEnabled() policy are the user preference (no persisted
+  // setting is introduced by this ticket). Only x/y change - width/height are carried
+  // through untouched, so pixels, opacity and zoom cannot move.
+  function applySnapOnDragEnd(id, altKey = false, options = {}) {
+    const win = findPinWindow(id)
+    if (!win || !win._pinData || win._pinData.clickThrough === true) return null
+    const bounds = readPinBounds(win)
+    if (!bounds) return null
+    let matched = null
+    try {
+      matched = typeof screen?.getDisplayMatching === 'function' ? screen.getDisplayMatching(bounds) : null
+    } catch {
+      matched = null
+    }
+    const displays = getDisplays(matched)
+    const workAreas = displays.map((display) => display?.workArea).filter(Boolean)
+    const windowEdges = []
+    for (const other of pinWindows) {
+      if (other === win || !other || (typeof other.isDestroyed === 'function' && other.isDestroyed())) continue
+      if (!other._pinData) continue
+      // A hidden pin is not an edge the user can see; snapping to it would look random.
+      if (typeof other.isVisible === 'function' && other.isVisible() === false) continue
+      const otherBounds = readPinBounds(other)
+      if (otherBounds) windowEdges.push(otherBounds)
+    }
+    const policyEnabled = typeof deps.isPinSnapEnabled === 'function' ? deps.isPinSnapEnabled() !== false : true
+    const result = computePinSnap({
+      bounds,
+      workAreas,
+      windowEdges,
+      snapDistance: options.snapDistance,
+      altKey: altKey === true,
+      enabled: options.enabled !== false && policyEnabled
+    })
+    if (!result) return null
+    const changed = result.x !== bounds.x || result.y !== bounds.y
+    if (changed) {
+      win.setBounds({ x: result.x, y: result.y, width: result.width, height: result.height }, false)
+      notifyPinLayoutChanged({ kind: 'snap', id })
+    }
+    return {
+      id,
+      snapped: changed,
+      axis: result.snapped,
+      displayIndex: result.displayIndex,
+      reason: result.reason,
+      bounds: { x: result.x, y: result.y, width: result.width, height: result.height }
+    }
   }
 
   function syncPinDisplayScale(win) {
@@ -796,6 +1048,8 @@ function createPinDomain(deps) {
       }
     })
     win._pinRecoveryKey = windowKey
+    // A07: the stable id the tray uses for locate/toggle/exit-click-through.
+    win._pinId = windowKey
     // A user-initiated close marks the window as normal before any teardown can
     // race the crash listener, so only abnormal exits retain pixels.
     win.on('close', () => { win._pinClosing = true })
@@ -809,6 +1063,7 @@ function createPinDomain(deps) {
       win._pinData = null
       if (pinWindows.delete(win)) pinnedCount = Math.max(0, pinnedCount - 1)
       if (pinWindows.size === 0) detachPinDisplayWatchers()
+      notifyPinLayoutChanged({ kind: 'removed', id: win._pinId || win._pinRecoveryKey })
     })
     win.webContents.on?.('render-process-gone', (_event, details) => {
       handlePinRendererGone(win, details)
@@ -835,6 +1090,8 @@ function createPinDomain(deps) {
         imageBytes: image.bytes.length,
         meta,
         opacity: settings.fixedContent.opacity,
+        // A07: window-level state only - never persisted, never derived from the image.
+        alwaysOnTop: true,
         zoomWithMouse: settings.fixedContent.zoomWithMouse !== false,
         // Apply click-through before the window can receive its first click.
         clickThrough: settings.pinned?.clickThrough === true,
@@ -857,7 +1114,10 @@ function createPinDomain(deps) {
       win.setBounds({ x, y, width, height }, false)
       pinWindows.add(win)
       pinnedCount++
+      // A07: creation order is the tray's label order; the id already exists on the window.
+      win._pinOrdinal = ++pinOrdinalSequence
       attachPinDisplayWatchers()
+      notifyPinLayoutChanged({ kind: 'added', id: windowKey })
       win.loadFile(pagePath)?.catch((error) => {
         if (win.isDestroyed()) return
         log('Pin window failed to load:', error.message)
@@ -924,7 +1184,9 @@ function createPinDomain(deps) {
   function revealPinWindow(win) {
     if (!win || win.isDestroyed() || win._pinVisible) return
     win._pinVisible = true
-    win.setAlwaysOnTop(true, 'screen-saver')
+    // A07: a pin the user un-topped stays un-topped when it is re-shown.
+    if (win._pinData?.alwaysOnTop === false) win.setAlwaysOnTop(false)
+    else win.setAlwaysOnTop(true, 'screen-saver')
     win.show()
     setImmediate(() => {
       if (win.isDestroyed()) return
@@ -936,7 +1198,9 @@ function createPinDomain(deps) {
 
   function bringPinToFront(win) {
     if (!win || win.isDestroyed()) return
-    win.setAlwaysOnTop(true, 'screen-saver')
+    // A07: "bring to front" means raise, not re-top: the temporary un-top survives.
+    if (win._pinData?.alwaysOnTop === false) win.setAlwaysOnTop(false)
+    else win.setAlwaysOnTop(true, 'screen-saver')
     win.setOpacity(Number(win._pinData?.opacity) || 1)
     win.show()
     win.moveTop()
@@ -1403,12 +1667,19 @@ function createPinDomain(deps) {
         height: bounds.height
       }, false)
     })
-    ipcMain.on('pin:move-end', (event) => {
+    ipcMain.on('pin:move-end', (event, payload = {}) => {
       const win = BrowserWindow.fromWebContents(event.sender)
-      if (win) {
-        win._pinMove = null
-        syncPinDisplayScale(win)
-      }
+      if (!win) return
+      const dragged = !!win._pinMove
+      win._pinMove = null
+      // DPI first: a cross-display drop may resize the window, and the snap has to be
+      // measured on the box the user actually released, not the old one.
+      syncPinDisplayScale(win)
+      if (!dragged) return
+      // A07: the ONLY snap point in the whole flow. The renderer passes the Alt state
+      // with the release event; a plain boolean payload is accepted for compatibility.
+      const altKey = payload === true || (payload && typeof payload === 'object' && payload.altKey === true)
+      applySnapOnDragEnd(win._pinId || win._pinRecoveryKey, altKey)
     })
     ipcMain.on('pin:set-click-through', (event, enabled) => {
       const win = BrowserWindow.fromWebContents(event.sender)
@@ -1442,6 +1713,13 @@ function createPinDomain(deps) {
     startPinReannotation,
     pinFromCapture,
     togglePinVisibility,
+    // A07: per-display finder + window-level actions for the tray, and the one
+    // end-of-drag snap entry point (also exercised by the pin:move-end IPC handler).
+    listPinsByDisplay,
+    focusPin,
+    togglePinAlwaysOnTop,
+    exitPinClickThrough,
+    applySnapOnDragEnd,
     syncPinDisplayScale,
     // Display-reflow internals, exposed for the Lead/diagnostics and for a future
     // main.js dispose if one ever becomes free; main.js does not call them today

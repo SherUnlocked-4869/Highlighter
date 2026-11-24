@@ -923,6 +923,7 @@ function createTrayIcon() {
     recentExport: exportResultService ? exportResultService.latestFor() : null,
     // R2 (contracts §4.1/§4.2): the workbench entry and the live pause/finish entries.
     recording: { active: recordDomain.getActiveState(), openWorkbench: () => recordDomain.openRecordingWorkbench(), pauseResume: () => recordDomain.pauseResumeActive(), finish: () => recordDomain.finishActive() },
+    pinnedDisplays: pinDomain.listPinsByDisplay(),
     openRecentExport: (receipt) => { if (!receipt?.resultId) return; Promise.resolve(exportResultService?.perform({ resultId: receipt.resultId, action: 'open' })).then((result) => { if (result?.status === 'failed') log('Tray recent export failed:', result.code); createTrayIcon() }).catch((error) => log('Tray recent export failed:', error.message)) },
     quit: () => app.quit()
   })))

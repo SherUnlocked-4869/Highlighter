@@ -64,6 +64,18 @@
     'main.tray.capture-history': '截图历史',
     'main.tray.show-main-window': '显示主界面',
     'main.tray.quit': '退出',
+    // A07: the per-display pin finder. The group label is built by
+    // main/services/pin-geometry.js displayLabel(), the rest by main/services/tray-menu.js.
+    'main.tray.pinned-displays': '贴图（{count}）',
+    'main.tray.pin-display-label': '显示器 {index} · {width}×{height} · {scale}% · {role} · ({x}, {y})',
+    'main.tray.pin-display-primary': '主屏',
+    'main.tray.pin-display-secondary': '副屏',
+    'main.tray.pin-item': '贴图 {index} · {width}×{height}',
+    'main.tray.pin-item-click-through': '贴图 {index} · {width}×{height} · 已穿透',
+    'main.tray.pin-focus': '定位',
+    'main.tray.pin-always-on-top-off': '取消置顶',
+    'main.tray.pin-always-on-top-on': '恢复置顶',
+    'main.tray.pin-exit-click-through': '退出穿透',
 
     // --- shortcut rebinding (main.js prepareShortcutPatch, A03) ---
     'main.shortcut.rebind-failed': '{accelerator} 不可用（{reason}），原键 {previous} 仍然有效',
@@ -168,6 +180,17 @@
     'main.tray.capture-history': 'Capture History',
     'main.tray.show-main-window': 'Show Main Window',
     'main.tray.quit': 'Quit',
+    // A07: the per-display pin finder (see the zh-CN table for the split of ownership).
+    'main.tray.pinned-displays': 'Pinned Images ({count})',
+    'main.tray.pin-display-label': 'Display {index} · {width}×{height} · {scale}% · {role} · ({x}, {y})',
+    'main.tray.pin-display-primary': 'primary',
+    'main.tray.pin-display-secondary': 'secondary',
+    'main.tray.pin-item': 'Pin {index} · {width}×{height}',
+    'main.tray.pin-item-click-through': 'Pin {index} · {width}×{height} · click-through',
+    'main.tray.pin-focus': 'Locate',
+    'main.tray.pin-always-on-top-off': 'Stop Always on Top',
+    'main.tray.pin-always-on-top-on': 'Always on Top Again',
+    'main.tray.pin-exit-click-through': 'Exit Click-Through',
 
     // --- shortcut rebinding (main.js prepareShortcutPatch, A03) ---
     'main.shortcut.rebind-failed': '{accelerator} is unavailable ({reason}); {previous} is still active',
@@ -272,6 +295,17 @@
     'main.tray.capture-history': '截圖歷史',
     'main.tray.show-main-window': '顯示主介面',
     'main.tray.quit': '結束',
+    // A07: the per-display pin finder (see the zh-CN table for the split of ownership).
+    'main.tray.pinned-displays': '貼圖（{count}）',
+    'main.tray.pin-display-label': '顯示器 {index} · {width}×{height} · {scale}% · {role} · ({x}, {y})',
+    'main.tray.pin-display-primary': '主螢幕',
+    'main.tray.pin-display-secondary': '副螢幕',
+    'main.tray.pin-item': '貼圖 {index} · {width}×{height}',
+    'main.tray.pin-item-click-through': '貼圖 {index} · {width}×{height} · 已穿透',
+    'main.tray.pin-focus': '定位',
+    'main.tray.pin-always-on-top-off': '取消置頂',
+    'main.tray.pin-always-on-top-on': '恢復置頂',
+    'main.tray.pin-exit-click-through': '退出穿透',
 
     // --- shortcut rebinding (main.js prepareShortcutPatch, A03) ---
     'main.shortcut.rebind-failed': '{accelerator} 無法使用（{reason}），原鍵 {previous} 仍然有效',
