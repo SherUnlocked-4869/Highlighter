@@ -10,6 +10,26 @@
   <title data-i18n="record.title.window">Highlighter region recording</title>
   <link rel="stylesheet" href="../shared/tokens.css">
   <link rel="stylesheet" href="record.css">
+  <!-- B04: the sound-check overlay lives inside the fixed 86px bar, so it needs
+       no window resize; everything else keeps using record.css. -->
+  <style>
+    .preflight-panel{position:absolute;inset:0;z-index:40;display:flex;align-items:center;gap:14px;padding:8px 12px;border-radius:inherit;background:rgba(23,25,29,.985);-webkit-app-region:drag;font-size:11px}
+    .preflight-summary{display:grid;gap:2px;min-width:140px;max-width:210px;-webkit-app-region:no-drag}
+    .preflight-summary b{font-size:11px;font-weight:700}
+    .preflight-summary span{overflow:hidden;color:var(--muted);font-size:10px;line-height:1.2;white-space:nowrap;text-overflow:ellipsis}
+    .preflight-summary .preflight-note{color:var(--yellow)}
+    .preflight-lanes{display:grid;flex:1 1 auto;gap:5px;min-width:170px;-webkit-app-region:no-drag}
+    .preflight-lane{display:grid;grid-template-columns:58px minmax(60px,1fr) 76px;align-items:center;gap:7px;color:var(--muted);font-size:10px}
+    .preflight-meter{height:8px;overflow:hidden;border-radius:4px;background:#2b3038}
+    .preflight-meter i{display:block;width:0;height:100%;background:var(--primary);transition:width .08s linear}
+    .preflight-meter i[data-level="silent"]{background:#4a4f57}
+    .preflight-meter i[data-level="low"]{background:var(--yellow)}
+    .preflight-lane em{overflow:hidden;font-style:normal;color:var(--text);white-space:nowrap;text-overflow:ellipsis}
+    .preflight-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;max-width:300px;-webkit-app-region:no-drag}
+    .preflight-actions button{height:28px;padding:0 9px;font-size:11px}
+    .preflight-buttons{display:flex;flex-direction:column;gap:5px;-webkit-app-region:no-drag}
+    .preflight-buttons button{height:26px;padding:0 10px;font-size:11px}
+  </style>
   <!-- The locale tables and the runtime must load before record.js. -->
   <script src="../shared/locales/zh-CN.js"></script>
   <script src="../shared/locales/en-US.js"></script>
@@ -44,12 +64,45 @@
       </svg>
     </button>
     <div class="control-actions">
+      <!-- B04: the per-take sound check. It only ever opens a device after this
+           button is pressed (or a retry inside the panel it opens), and both
+           lanes use the recording window's own display-media handler. -->
+      <button id="preflight" class="preflight-check" data-testid="audio-preflight" type="button" data-i18n="record.preflight.check" hidden>Check sound</button>
       <button id="start" class="primary" data-testid="start-record" type="button" data-i18n="record.control.start">Start</button>
       <button id="pause" data-testid="pause-resume" type="button" data-i18n="record.control.pause" hidden>Pause</button>
       <button id="stop" class="finish" data-testid="finish-record" type="button" data-i18n="record.control.finish" hidden>Finish</button>
       <button id="cancel" class="icon-button countdown-cancel" type="button" data-i18n-title="record.control.cancel-recording" data-i18n-aria-label="record.control.cancel-recording" title="Cancel recording" aria-label="Cancel recording" hidden>×</button>
       <button id="moreToggle" class="icon-button" data-testid="more-toggle" type="button" data-i18n-title="record.control.more" data-i18n-aria-label="record.control.more" title="More options" aria-label="More options" aria-expanded="false" hidden>⋯</button>
       <button id="closeBar" class="icon-button" type="button" data-i18n-title="record.control.close-bar" data-i18n-aria-label="record.control.close-bar" title="Close recording bar" aria-label="Close recording bar">×</button>
+    </div>
+
+    <div id="preflightPanel" class="preflight-panel" data-testid="audio-preflight-panel" hidden>
+      <div class="preflight-summary">
+        <b data-i18n="record.preflight.title">Sound for this take</b>
+        <span id="preflightAudio" data-testid="audio-preflight-summary"></span>
+        <span id="preflightNote" class="preflight-note" data-testid="audio-preflight-note"></span>
+      </div>
+      <div class="preflight-lanes">
+        <div class="preflight-lane">
+          <span data-i18n="record.preflight.system">System mix</span>
+          <span class="preflight-meter"><i id="preflightSystemBar" data-level="silent" data-testid="audio-preflight-system-bar"></i></span>
+          <em id="preflightSystemText" data-testid="audio-preflight-system"></em>
+        </div>
+        <div class="preflight-lane">
+          <span data-i18n="record.preflight.mic">Mic</span>
+          <span class="preflight-meter"><i id="preflightMicBar" data-level="silent" data-testid="audio-preflight-mic-bar"></i></span>
+          <em id="preflightMicText" data-testid="audio-preflight-mic"></em>
+        </div>
+      </div>
+      <div class="preflight-actions" data-testid="audio-preflight-actions">
+        <button id="preflightSystemOnly" data-testid="audio-preflight-system-only" type="button" data-i18n="record.preflight.action-system-only" hidden>Record system audio only</button>
+        <button id="preflightMicOnly" data-testid="audio-preflight-mic-only" type="button" data-i18n="record.preflight.action-mic-only" hidden>Record the mic only</button>
+        <button id="preflightSilent" data-testid="audio-preflight-silent" type="button" data-i18n="record.preflight.action-silent" hidden>Record without sound</button>
+      </div>
+      <div class="preflight-buttons">
+        <button id="preflightRetry" data-testid="audio-preflight-retry" type="button" data-i18n="record.preflight.retry">Check again</button>
+        <button id="preflightClose" data-testid="audio-preflight-close" type="button" data-i18n="record.preflight.close">Done</button>
+      </div>
     </div>
 
     <div id="morePanel" class="more-panel" data-testid="more-panel" hidden>
@@ -114,6 +167,7 @@
   <script src="recording-utils.js"></script>
   <script src="chunk-backpressure.js"></script>
   <script src="audio-mixer.js"></script>
+  <script src="../shared/audio-preflight.js"></script>
   <script src="record.js"></script>
 </body>
 </html>

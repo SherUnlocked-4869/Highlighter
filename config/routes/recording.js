@@ -341,6 +341,366 @@ function removeRecordingProject(projectId) {
   if (currentRoute === 'recording') renderRecordingRecordsHost()
 }
 
+// --- B04: per-take audio preflight -------------------------------------------
+//
+// Two halves, on purpose:
+//   * the summary beside Start is static data (mode, the system mix, the chosen
+//     microphone) plus the window-mode warning, so it never touches a device;
+//   * the microphone check is a click-driven, cancellable five-second sample. It
+//     proves the Windows permission and the level before a take, which is what the
+//     user can actually fix in Windows. The two-lane check (system mix + mic) lives
+//     on the recording bar, because main's display-media handler only serves
+//     loopback audio to that window's main frame.
+// No device is opened until the check button is pressed: the state machine from
+// shared/audio-preflight.js refuses noteOpen() before begin(), and begin() is only
+// reachable from here.
+
+// The shared module is not part of this page's <script> list (config.html is owned
+// by another stream), so it is fetched once on first use, like record.js loads
+// audio-mixer.js. A missing module degrades to "cannot check" instead of throwing.
+let audioPreflightModule = null
+let audioPreflightModulePromise = null
+let recordingPreflight = null
+let recordingPreflightOpen = false
+let recordingPreflightAppliedKey = ''
+let recordingPreflightUnavailable = false
+let recordingPreflightMicStream = null
+let recordingPreflightContext = null
+let recordingPreflightAnalyser = null
+let recordingPreflightSamples = null
+let recordingPreflightTimer = 0
+
+const RECORDING_PREFLIGHT_PROMPT_KEYS = Object.freeze({
+  'microphone-denied': 'recording.preflight.prompt-microphone-denied',
+  'microphone-missing': 'recording.preflight.prompt-microphone-missing',
+  'microphone-busy': 'recording.preflight.prompt-microphone-busy',
+  'microphone-lost': 'recording.preflight.prompt-microphone-lost',
+  'microphone-silent': 'recording.preflight.prompt-microphone-silent',
+  'microphone-failed': 'recording.preflight.prompt-microphone-failed'
+})
+const RECORDING_PREFLIGHT_ACTION_KEYS = Object.freeze({
+  'open-microphone-settings': 'recording.preflight.action-open-settings',
+  'record-system-only': 'recording.preflight.action-system-only',
+  'record-silent': 'recording.preflight.action-silent'
+})
+const RECORDING_PREFLIGHT_LEVEL_KEYS = Object.freeze({
+  good: 'recording.preflight.level-good',
+  low: 'recording.preflight.level-low',
+  silent: 'recording.preflight.level-silent'
+})
+// The exact deep link Windows' microphone privacy page is addressed by. Shown as
+// text because the shell channel this window has validates HTTP(S) only; the
+// button tries anyway and falls back to the documented path.
+const WINDOWS_MICROPHONE_SETTINGS_URI = 'ms-settings:privacy-microphone'
+
+function loadAudioPreflight() {
+  if (audioPreflightModule) return Promise.resolve(audioPreflightModule)
+  if (audioPreflightModulePromise) return audioPreflightModulePromise
+  audioPreflightModulePromise = new Promise((resolve) => {
+    if (window.audioPreflight) {
+      resolve(window.audioPreflight)
+      return
+    }
+    if (typeof document.createElement !== 'function' || !document.head) {
+      resolve(null)
+      return
+    }
+    const script = document.createElement('script')
+    script.src = '../shared/audio-preflight.js'
+    script.onload = () => resolve(window.audioPreflight || null)
+    script.onerror = () => resolve(null)
+    document.head.appendChild(script)
+  }).then((api) => {
+    audioPreflightModule = api
+    return api
+  })
+  return audioPreflightModulePromise
+}
+
+function recordingPreflightStatus() {
+  return recordingPreflight ? recordingPreflight.status() : null
+}
+
+function recordingPreflightConstraints(choices) {
+  // Mirrors record/audio-mixer.js#microphoneConstraints so the check asks for the
+  // same input the take will ask for; an explicit device is 'exact' on purpose.
+  const constraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+  const deviceId = choices && typeof choices.audioMicrophoneDeviceId === 'string' ? choices.audioMicrophoneDeviceId.trim() : ''
+  if (deviceId) constraints.deviceId = { exact: deviceId }
+  return constraints
+}
+
+function recordingPreflightLevelPercent(status) {
+  const entry = status && status.lanes ? status.lanes.microphone : null
+  if (!entry || !audioPreflightModule) return 0
+  return audioPreflightModule.levelPercent(entry.peak)
+}
+
+function recordingPreflightPromptKey(status) {
+  if (!status || !status.promptCode) return ''
+  return RECORDING_PREFLIGHT_PROMPT_KEYS[status.promptCode] || ''
+}
+
+function recordingPreflightActions(status) {
+  // A chosen action is applied to this take's start parameters: the prompt is
+  // resolved, so its buttons go away instead of inviting the same click again.
+  if (recordingPreflightAppliedKey) return []
+  if (!status || !Array.isArray(status.actions)) return []
+  return status.actions.filter((action) => Object.hasOwn(RECORDING_PREFLIGHT_ACTION_KEYS, action))
+}
+
+function recordingPreflightStatusText(status) {
+  if (recordingPreflightUnavailable) return t('recording.preflight.unavailable')
+  if (recordingPreflightAppliedKey) return t(recordingPreflightAppliedKey)
+  const promptKey = recordingPreflightPromptKey(status)
+  if (promptKey) return t(promptKey)
+  if (status && status.active) return t('recording.preflight.checking')
+  const entry = status && status.lanes ? status.lanes.microphone : null
+  if (entry && entry.sampled > 0) return t(RECORDING_PREFLIGHT_LEVEL_KEYS[entry.level] || 'recording.preflight.level-waiting')
+  return ''
+}
+
+function recordingPreflightMarkup() {
+  if (!recordingPreflightOpen && !recordingPreflightUnavailable) return ''
+  const status = recordingPreflightStatus()
+  const actions = recordingPreflightActions(status)
+  const actionButtons = actions.map((action) => `<button type="button" class="button" data-recording-preflight-action="${escapeHtml(action)}" data-testid="preflight-action-${escapeHtml(action)}">${t(RECORDING_PREFLIGHT_ACTION_KEYS[action])}</button>`).join('')
+  const statusText = recordingPreflightStatusText(status)
+  const percent = recordingPreflightLevelPercent(status)
+  const level = status && status.lanes && status.lanes.microphone ? status.lanes.microphone.level : 'silent'
+  const levelText = status && status.active
+    ? t('recording.preflight.checking')
+    : t(RECORDING_PREFLIGHT_LEVEL_KEYS[level] || 'recording.preflight.level-waiting')
+  const settingsHint = actions.includes('open-microphone-settings')
+    ? `<p class="rec-note" data-testid="preflight-settings-hint">${t('recording.preflight.settings-hint')}</p>`
+    : ''
+  return `<section class="section" id="recordingPreflightSection"><div class="card rec-target-card" data-testid="preflight-panel">
+    <div class="rec-records-toolbar"><b>${t('recording.preflight.check-microphone')}</b><span class="rec-badge" id="recordingPreflightLevelText" data-testid="preflight-level-text">${escapeHtml(levelText)}</span></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+      <span aria-hidden="true" style="flex:1 1 auto;height:8px;border-radius:4px;background:var(--surface-2);overflow:hidden"><i id="recordingPreflightBar" data-testid="preflight-level-bar" data-level="${escapeHtml(level)}" style="display:block;width:${percent}%;height:100%;background:var(--primary)"></i></span>
+      <button type="button" class="button" data-recording-preflight-retry data-testid="preflight-retry">${status && status.active ? t('recording.preflight.stop') : t('recording.preflight.retry')}</button>
+    </div>
+    ${statusText ? `<p class="rec-note" data-testid="preflight-status">${escapeHtml(statusText)}</p>` : ''}
+    ${actionButtons ? `<div class="rec-warning-actions" data-testid="preflight-actions">${actionButtons}</div>` : ''}
+    ${settingsHint}
+  </div></section>`
+}
+
+// An unplugged device ends its track while the sample runs: report "lost" with its
+// actions instead of silently measuring zeros.
+function watchRecordingPreflightTrack(stream) {
+  const track = stream?.getAudioTracks?.()[0]
+  if (!track || typeof track.addEventListener !== 'function') return
+  track.addEventListener('ended', () => {
+    if (!recordingPreflight || !recordingPreflight.isActive()) return
+    recordingPreflight.failLane('microphone', { name: 'DeviceLost' })
+    if (currentRoute === 'recording') renderRecordingSections()
+  })
+}
+
+function releaseRecordingPreflight() {
+  for (const track of recordingPreflightMicStream?.getTracks?.() || []) {
+    try { track.stop() } catch {}
+  }
+  recordingPreflightMicStream = null
+  recordingPreflightAnalyser = null
+  recordingPreflightSamples = null
+  const context = recordingPreflightContext
+  recordingPreflightContext = null
+  if (context && typeof context.close === 'function') {
+    try {
+      const closing = context.close()
+      if (closing && typeof closing.catch === 'function') closing.catch(() => {})
+    } catch {}
+  }
+}
+
+function stopRecordingPreflight(outcome = 'done') {
+  const wasActive = Boolean(recordingPreflight && recordingPreflight.isActive())
+  if (recordingPreflightTimer) {
+    clearTimeout(recordingPreflightTimer)
+    recordingPreflightTimer = 0
+  }
+  if (wasActive) recordingPreflight.finish(outcome)
+  releaseRecordingPreflight()
+  if (wasActive) recordingPreflight.markReleased(Date.now())
+  if (currentRoute === 'recording') renderRecordingSections()
+}
+
+// Route exit / a fresh visit: no stream and no timer may outlive the page.
+function cancelRecordingPreflight() {
+  recordingPreflightOpen = false
+  recordingPreflightAppliedKey = ''
+  if (recordingPreflightTimer) {
+    clearTimeout(recordingPreflightTimer)
+    recordingPreflightTimer = 0
+  }
+  if (recordingPreflight && recordingPreflight.isActive()) recordingPreflight.finish('cancelled')
+  releaseRecordingPreflight()
+  if (recordingPreflight && recordingPreflight.status().endedAt) recordingPreflight.markReleased(Date.now())
+}
+
+function recordingPreflightTick() {
+  recordingPreflightTimer = 0
+  if (!recordingPreflight || !recordingPreflight.isActive()) return
+  // The route-leave hook is shared with the polling lifecycle, so the sample owns
+  // its own exit: leaving the page ends the run and releases the device on the next
+  // tick (well inside the one-second release budget).
+  if (currentRoute !== 'recording') {
+    stopRecordingPreflight('cancelled')
+    return
+  }
+  if (recordingPreflight.expired()) {
+    stopRecordingPreflight('done')
+    return
+  }
+  if (recordingPreflightAnalyser && recordingPreflightSamples) {
+    try {
+      recordingPreflightAnalyser.getFloatTimeDomainData(recordingPreflightSamples)
+      recordingPreflight.sample('microphone', audioPreflightModule.peakOfFloat(recordingPreflightSamples))
+    } catch {
+      // A closed context ends the samples, not the run: the five-second budget and a
+      // failed device still report through the state machine.
+    }
+  }
+  const status = recordingPreflightStatus()
+  const bar = document.getElementById('recordingPreflightBar')
+  if (bar && bar.style) {
+    bar.style.width = `${recordingPreflightLevelPercent(status)}%`
+    const entry = status && status.lanes ? status.lanes.microphone : null
+    if (bar.setAttribute && entry) bar.setAttribute('data-level', entry.level)
+  }
+  const text = document.getElementById('recordingPreflightLevelText')
+  if (text) {
+    const entry = status && status.lanes ? status.lanes.microphone : null
+    text.textContent = entry && entry.sampled > 0
+      ? t(RECORDING_PREFLIGHT_LEVEL_KEYS[entry.level] || 'recording.preflight.level-waiting')
+      : t('recording.preflight.level-waiting')
+  }
+  recordingPreflightTimer = setTimeout(recordingPreflightTick, Math.max(50, Math.min(150, recordingPreflight.remaining())))
+}
+
+async function runRecordingMicrophonePreflight() {
+  const choices = recordingWorkbenchChoices
+  if (!choices) return
+  if (recordingPreflight && recordingPreflight.isActive()) {
+    stopRecordingPreflight('cancelled')
+    return
+  }
+  // The workbench checks the microphone lane only; with the lane off there is
+  // nothing to measure and nothing may be opened.
+  if (choices.audioMicrophone !== true) {
+    recordingPreflightOpen = false
+    recordingPreflight = null
+    if (currentRoute === 'recording') renderRecordingSections()
+    return
+  }
+  const api = await loadAudioPreflight()
+  if (!api) {
+    recordingPreflightUnavailable = true
+    recordingPreflightOpen = true
+    if (currentRoute === 'recording') renderRecordingSections()
+    return
+  }
+  recordingPreflightUnavailable = false
+  recordingPreflight = api.createPreflight({ capabilities: { openSettings: true } })
+  recordingPreflightAppliedKey = ''
+  recordingPreflightOpen = true
+  // Both sources off is not an error: there is nothing to check this take.
+  if (!recordingPreflight.begin({ microphone: choices.audioMicrophone === true })) {
+    if (currentRoute === 'recording') renderRecordingSections()
+    return
+  }
+  let stream = null
+  try {
+    const media = navigator.mediaDevices
+    if (!media || typeof media.getUserMedia !== 'function') {
+      throw Object.assign(new Error('media devices unavailable'), { name: 'NotReadableError' })
+    }
+    // The only device-open of this flow, and noteOpen() refuses before begin().
+    if (recordingPreflight.noteOpen('microphone')) {
+      stream = await media.getUserMedia({ audio: recordingPreflightConstraints(choices), video: false })
+    }
+  } catch (error) {
+    recordingPreflight.failLane('microphone', error)
+  }
+  // Cancelled (or the route left) while the permission prompt was open: release
+  // whatever arrived and never start a meter for a run nobody is watching.
+  if (!recordingPreflight || !recordingPreflight.isActive() || currentRoute !== 'recording') {
+    if (stream) recordingPreflightMicStream = stream
+    releaseRecordingPreflight()
+    if (currentRoute === 'recording') renderRecordingSections()
+    return
+  }
+  if (!stream) {
+    stopRecordingPreflight('done')
+    return
+  }
+  recordingPreflightMicStream = stream
+  watchRecordingPreflightTrack(stream)
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext
+    if (typeof AudioContextClass === 'function') {
+      recordingPreflightContext = new AudioContextClass()
+      const analyser = recordingPreflightContext.createAnalyser()
+      analyser.fftSize = 1024
+      analyser.smoothingTimeConstant = 0
+      recordingPreflightContext.createMediaStreamSource(stream).connect(analyser)
+      recordingPreflightAnalyser = analyser
+      recordingPreflightSamples = new Float32Array(1024)
+    }
+  } catch {
+    recordingPreflightAnalyser = null
+    recordingPreflightSamples = null
+  }
+  if (!recordingPreflightAnalyser) {
+    // No WebAudio: the device still proved its permission, so release it now.
+    stopRecordingPreflight('done')
+    return
+  }
+  recordingPreflight.startSampling()
+  renderRecordingSections()
+  recordingPreflightTimer = setTimeout(recordingPreflightTick, 0)
+}
+
+async function openWindowsMicrophoneSettings() {
+  let opened = false
+  try {
+    const api = window.electronAPI
+    if (api && typeof api.openExternal === 'function') {
+      await api.openExternal(WINDOWS_MICROPHONE_SETTINGS_URI)
+      opened = true
+    }
+  } catch {
+    opened = false
+  }
+  // The shell channel behind openExternal accepts HTTP(S) only, so the deep link can
+  // be refused; the manual path is printed next to the button in both cases.
+  if (!opened) toast(t('recording.preflight.settings-failed'))
+}
+
+function applyRecordingPreflightAction(action) {
+  if (typeof action !== 'string' || !action) return
+  if (action === 'open-microphone-settings') {
+    void openWindowsMicrophoneSettings()
+    return
+  }
+  const choices = recordingWorkbenchChoices
+  if (!choices) return
+  if (action === 'record-system-only') {
+    choices.audioMicrophone = false
+    choices.audioMicrophoneDeviceId = ''
+    recordingPreflightAppliedKey = 'recording.preflight.applied-system-only'
+  } else if (action === 'record-silent') {
+    choices.audioSystem = false
+    choices.audioMicrophone = false
+    choices.audioMicrophoneDeviceId = ''
+    recordingPreflightAppliedKey = 'recording.preflight.applied-silent'
+  } else return
+  recordingPreflightOpen = true
+  stopRecordingPreflight('cancelled')
+}
+
 // --- markup ------------------------------------------------------------------
 
 function recordingSwitchMarkup(value, name, testId, label) {
@@ -359,6 +719,60 @@ function recordingActiveBannerMarkup(active) {
   const elapsed = formatRecordingDuration(active.elapsedMs)
   const muted = active.microphoneMuted === true ? `<span class="rec-live-muted">${t('recording.workbench.audio-microphone')} MUTE</span>` : ''
   return `<div class="rec-live-banner" data-testid="active-banner"><span class="rec-live-dot" aria-hidden="true"></span><b>${t('recording.workbench.active-recording')}</b><span class="rec-live-status">${escapeHtml(status)} \u00b7 ${escapeHtml(elapsed)}</span>${muted}<button type="button" class="button" data-recording-focus data-testid="active-focus">${t('recording.workbench.active-focus')}</button></div>`
+}
+
+// The per-take summary beside Start: what will be captured, from where, and with
+// which lanes. Static data only - reading it never opens a device.
+function recordingSummarySourceText(choices) {
+  const modeLabel = recordingModeLabel(choices.mode)
+  if (choices.mode === 'window') {
+    const entry = selectedRecordingWindow(choices)
+    if (!entry) return modeLabel
+    return [modeLabel, entry.title, recordingWindowSizeText(entry)].filter(Boolean).join(' \u00b7 ')
+  }
+  const displays = recordingWorkbenchState && Array.isArray(recordingWorkbenchState.displays) ? recordingWorkbenchState.displays : []
+  const display = displays.find((entry) => entry && entry.id === choices.displayId) || null
+  if (!display) return modeLabel
+  const name = typeof display.name === 'string' && display.name ? display.name : display.id
+  const resolution = recordingDisplayResolution(display)
+  return [modeLabel, name, resolution].filter(Boolean).join(' \u00b7 ')
+}
+
+function recordingSummaryMicrophoneText(choices) {
+  if (choices.audioMicrophone !== true) return t('recording.preflight.microphone-off')
+  const selected = typeof choices.audioMicrophoneDeviceId === 'string' ? choices.audioMicrophoneDeviceId : ''
+  if (!selected) return t('recording.preflight.microphone-default')
+  const device = recordingMicrophoneDevices().find((entry) => entry && entry.id === selected)
+  return device ? device.label : t('recording.workbench.audio-device-missing-short')
+}
+
+function recordingSummaryMarkup(choices) {
+  const row = (labelKey, value, testId) => `<span data-testid="${testId}"><b>${t(labelKey)}</b> ${escapeHtml(value)}</span>`
+  const systemOn = choices.audioSystem === true
+  const systemText = systemOn ? t('recording.preflight.system-on') : t('recording.preflight.system-off')
+  // Window mode says the mix also contains other apps; display/region say it is the
+  // Windows system mix. Neither line may ever read "this window only".
+  const systemNote = systemOn
+    ? (choices.mode === 'window'
+        ? `<em data-testid="preflight-window-note" style="color:var(--yellow)">${t('recording.preflight.system-window-note')}</em>`
+        : `<em data-testid="preflight-system-note">${t('recording.preflight.system-mix-note')}</em>`)
+    : ''
+  return `<div data-testid="recording-audio-summary" style="display:grid;gap:3px;margin-bottom:8px;font-size:12px;color:var(--muted);text-align:right">
+    ${row('recording.preflight.source', recordingSummarySourceText(choices), 'preflight-source')}
+    <span data-testid="preflight-system"><b>${t('recording.preflight.system')}</b> ${escapeHtml(systemText)}${systemNote ? ` ${systemNote}` : ''}</span>
+    ${row('recording.preflight.microphone', recordingSummaryMicrophoneText(choices), 'preflight-microphone')}
+    <span style="font-size:11px" data-testid="preflight-bar-hint">${t('recording.preflight.bar-hint')}</span>
+  </div>`
+}
+
+function recordingStartBlockMarkup(choices) {
+  // The check entry sits next to Start, exactly where the summary says which lanes
+  // the take will have. It is disabled (with the reason in its title) while the
+  // microphone is off, because there is no lane to measure.
+  const micOn = choices.audioMicrophone === true
+  const title = micOn ? t('recording.preflight.check-microphone') : t('recording.preflight.microphone-off-hint')
+  const check = `<button type="button" class="button" data-recording-preflight data-testid="preflight-check" title="${escapeHtml(title)}"${micOn ? '' : ' disabled'}>${t('recording.preflight.check-microphone')}</button>`
+  return `<div data-testid="recording-start-block">${recordingSummaryMarkup(choices)}<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">${check}${recordingStartButtonMarkup(choices)}</div></div>`
 }
 
 function recordingStartButtonMarkup(choices) {
@@ -546,7 +960,7 @@ function recordingRecordsSectionMarkup() {
 }
 
 function recordingWorkbenchMarkup(choices) {
-  return `<div class="page recording-workbench" data-testid="recording-workbench" data-workbench-mode="${escapeHtml(choices.mode)}">${pageHeader(t('recording.workbench.title'), t('recording.workbench.description'), recordingStartButtonMarkup(choices))}<div id="recordingActiveBanner">${recordingActiveBannerMarkup(recordingWorkbenchState && recordingWorkbenchState.active)}</div>${recordingErrorMarkup()}${recordingModeSectionMarkup(choices)}${recordingTargetSectionMarkup(choices)}${recordingAudioSectionMarkup(choices)}${recordingParamsSectionMarkup(choices)}${recordingStorageSectionMarkup(choices)}${recordingRecordsSectionMarkup()}</div>`
+  return `<div class="page recording-workbench" data-testid="recording-workbench" data-workbench-mode="${escapeHtml(choices.mode)}">${pageHeader(t('recording.workbench.title'), t('recording.workbench.description'), recordingStartBlockMarkup(choices))}<div id="recordingActiveBanner">${recordingActiveBannerMarkup(recordingWorkbenchState && recordingWorkbenchState.active)}</div>${recordingErrorMarkup()}${recordingPreflightMarkup()}${recordingModeSectionMarkup(choices)}${recordingTargetSectionMarkup(choices)}${recordingAudioSectionMarkup(choices)}${recordingParamsSectionMarkup(choices)}${recordingStorageSectionMarkup(choices)}${recordingRecordsSectionMarkup()}</div>`
 }
 
 // --- live-region updates -----------------------------------------------------
@@ -650,6 +1064,13 @@ function bindRecordingWorkbench() {
   }
   const start = document.querySelector('[data-recording-start]')
   if (start) start.onclick = () => { void startRecordingFromWorkbench() }
+  const preflightCheck = document.querySelector('[data-recording-preflight]')
+  if (preflightCheck) preflightCheck.onclick = () => { void runRecordingMicrophonePreflight() }
+  const preflightRetry = document.querySelector('[data-recording-preflight-retry]')
+  if (preflightRetry) preflightRetry.onclick = () => { void runRecordingMicrophonePreflight() }
+  document.querySelectorAll('[data-recording-preflight-action]').forEach((button) => {
+    button.onclick = () => applyRecordingPreflightAction(button.dataset.recordingPreflightAction)
+  })
   const retry = document.querySelector('[data-recording-retry]')
   if (retry) retry.onclick = () => retryRecordingWorkbench()
   const refreshDevices = document.querySelector('[data-recording-device-refresh]')
@@ -688,6 +1109,10 @@ function renderRecordingSections() {
 
 function renderRecording() {
   if (currentRoute !== 'recording') return
+  // A fresh visit starts with no check panel and no device held from the last one.
+  cancelRecordingPreflight()
+  recordingPreflight = null
+  recordingPreflightUnavailable = false
   recordingWorkbenchChoices = createRecordingChoices(recordingWorkbenchState)
   // A fresh route entry invalidates the paged all-records list: projects finished
   // while the route was closed must appear, and the first paint must not replay a
@@ -743,6 +1168,12 @@ function toggleRecordingSwitch(name) {
   if (!recordingWorkbenchChoices) return
   if (name !== 'audioSystem' && name !== 'audioMicrophone' && name !== 'demoEnhance') return
   recordingWorkbenchChoices[name] = recordingWorkbenchChoices[name] !== true
+  if (name === 'audioSystem' || name === 'audioMicrophone') {
+    // The summary is what the check was about: drop the stale result and stop a
+    // running sample instead of leaving a lane open for a request that changed.
+    recordingPreflightAppliedKey = ''
+    if (recordingPreflight && recordingPreflight.isActive()) stopRecordingPreflight('cancelled')
+  }
   renderRecordingSections()
 }
 
@@ -888,6 +1319,8 @@ async function startRecordingFromWorkbench() {
     toast(t('recording.workbench.load-failed-hint'))
     return
   }
+  // The recording window needs the microphone: never hold it from the workbench.
+  cancelRecordingPreflight()
   recordingWorkbenchBusy = true
   updateRecordingStartButton()
   try {

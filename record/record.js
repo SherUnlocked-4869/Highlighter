@@ -57,6 +57,20 @@ const annotationSwatch = document.getElementById('annotationSwatch')
 const annotationWidthMark = document.getElementById('annotationWidthMark')
 const annotationUndoButton = document.getElementById('annotationUndo')
 const annotationClearButton = document.getElementById('annotationClear')
+// B04: the sound-check overlay inside the bar (see the preflight section below).
+const preflightButton = document.getElementById('preflight')
+const preflightPanel = document.getElementById('preflightPanel')
+const preflightAudioElement = document.getElementById('preflightAudio')
+const preflightNoteElement = document.getElementById('preflightNote')
+const preflightSystemBar = document.getElementById('preflightSystemBar')
+const preflightSystemText = document.getElementById('preflightSystemText')
+const preflightMicBar = document.getElementById('preflightMicBar')
+const preflightMicText = document.getElementById('preflightMicText')
+const preflightRetryButton = document.getElementById('preflightRetry')
+const preflightCloseButton = document.getElementById('preflightClose')
+const preflightSystemOnlyButton = document.getElementById('preflightSystemOnly')
+const preflightSilentButton = document.getElementById('preflightSilent')
+const preflightMicOnlyButton = document.getElementById('preflightMicOnly')
 const annotationToolButtons = [...document.querySelectorAll('[data-annotation-tool]')]
 const annotationColorButtons = [...document.querySelectorAll('[data-annotation-color]')]
 const annotationWidthButtons = [...document.querySelectorAll('[data-annotation-width]')]
@@ -159,6 +173,22 @@ let captureMode = 'display'
 let windowCaptureTitle = ''
 let windowPixelSize = null
 let annotationAllowed = true
+// B04: per-take sound check. `preflight` is the pure state machine from
+// shared/audio-preflight.js; the streams/context below are its device half and are
+// released by releasePreflightDevices() on every exit path.
+const audioPreflightModule = window.audioPreflight || null
+let preflight = audioPreflightModule ? audioPreflightModule.createPreflight() : null
+let preflightPanelOpen = false
+let preflightSystemStream = null
+let preflightMicStream = null
+let preflightContext = null
+let preflightAnalysers = null
+let preflightSamples = null
+let preflightTimer = 0
+let preflightAppliedKey = ''
+// Only Windows exposes the system mix through Electron's loopback audio; main
+// reports the same condition it uses in the display-media handler.
+let preflightLoopback = true
 let watchedVideoTrack = null
 let sourceLostHandled = false
 let sourceHiddenWarning = false
@@ -411,6 +441,9 @@ function renderControls() {
   discardConfirmNo.disabled = busy
   renderMicState()
   renderAnnotationControls()
+  // A take in progress has no "before start" surface: close and release the check.
+  if (state !== 'idle' && preflightPanelOpen) cancelAudioPreflight()
+  renderPreflight()
 }
 
 function setState(nextState) {
@@ -1417,6 +1450,8 @@ async function runCountdown() {
 
 async function beginRecording() {
   if (busy || state !== 'idle') return
+  // The take needs the same devices: release the probe first, then acquire.
+  cancelAudioPreflight()
   try {
     await runCountdown()
   } catch (error) {
@@ -1607,7 +1642,390 @@ function applyCommand(request) {
   return commandDispatcher.dispatch(request)
 }
 
+// ---------------------------------------------------------------------------
+// B04: per-take audio preflight (the "Check sound" entry beside Start)
+//
+// The workbench verifies the microphone permission before it opens this window
+// (it is the only surface that can show the Windows permission path). This bar is
+// where the REAL lanes can be sampled, because main's display-media handler only
+// serves loopback audio to this window's main frame:
+//   * one click opens at most two devices (getDisplayMedia with audio for the
+//     system mix, getUserMedia for the microphone) and nothing is opened before
+//     that click - the button, not the page, owns the devices;
+//   * the sample window is five seconds (shared/audio-preflight.js owns the cap),
+//     it can always be cancelled, and every track/context is released on every
+//     exit path, including a lost Bluetooth headset;
+//   * the panel never claims the system lane is "this window only": Windows
+//     loopback is the system mix in window mode too.
+// ---------------------------------------------------------------------------
+const PREFLIGHT_PROMPT_KEYS = {
+  'microphone-denied': 'record.preflight.prompt-microphone-denied',
+  'microphone-missing': 'record.preflight.prompt-microphone-missing',
+  'microphone-busy': 'record.preflight.prompt-microphone-busy',
+  'microphone-lost': 'record.preflight.prompt-microphone-lost',
+  'microphone-silent': 'record.preflight.prompt-microphone-silent',
+  'microphone-failed': 'record.preflight.prompt-microphone-failed',
+  'system-denied': 'record.preflight.prompt-system-denied',
+  'system-unavailable': 'record.preflight.prompt-system-unavailable',
+  'system-lost': 'record.preflight.prompt-system-lost',
+  'system-silent': 'record.preflight.prompt-system-silent',
+  'system-failed': 'record.preflight.prompt-system-failed'
+}
+// The bar can only act on its own start parameters: opening Windows' microphone
+// page needs a shell channel this window does not have (the workbench has one).
+const PREFLIGHT_ACTION_KEYS = {
+  'record-system-only': 'record.preflight.action-system-only',
+  'record-silent': 'record.preflight.action-silent',
+  'record-microphone-only': 'record.preflight.action-mic-only'
+}
+const PREFLIGHT_LEVEL_KEYS = {
+  good: 'record.preflight.level-good',
+  low: 'record.preflight.level-low',
+  silent: 'record.preflight.level-silent'
+}
+
+function preflightSupported() {
+  return Boolean(audioPreflightModule && preflight)
+}
+
+function preflightStatus() {
+  return preflight ? preflight.status() : null
+}
+
+// What this take will actually capture, in the user's words.
+function preflightAudioText() {
+  const system = audioRequest.system === true
+  const microphone = audioRequest.microphone === true
+  if (system && microphone) return t('record.preflight.audio-both')
+  if (system) return t('record.preflight.audio-system')
+  if (microphone) return t('record.preflight.audio-microphone')
+  return t('record.preflight.audio-none')
+}
+
+function preflightNoteText(status = preflightStatus()) {
+  if (preflightAppliedKey) return t(preflightAppliedKey)
+  if (status && status.promptCode && PREFLIGHT_PROMPT_KEYS[status.promptCode]) return t(PREFLIGHT_PROMPT_KEYS[status.promptCode])
+  if (status && status.active) return t('record.preflight.sample-hint')
+  // Window mode never narrows the mix: the loopback track is the system mix, and
+  // the copy says so instead of implying "this window only".
+  if (audioRequest.system && captureMode === 'window') return t('record.preflight.system-window-note')
+  if (audioRequest.system && !preflightLoopback) return t('record.preflight.loopback-unavailable')
+  return ''
+}
+
+function renderPreflightLane(lane, barElement, textElement, status) {
+  if (!barElement || !textElement) return
+  const enabled = lane === 'system' ? audioRequest.system === true : audioRequest.microphone === true
+  if (!enabled) {
+    barElement.style.width = '0%'
+    barElement.setAttribute('data-level', 'silent')
+    textElement.textContent = t(lane === 'system' ? 'record.preflight.system-off' : 'record.preflight.microphone-off')
+    return
+  }
+  const entry = status && status.lanes ? status.lanes[lane] : null
+  if (!entry) {
+    textElement.textContent = ''
+    barElement.style.width = '0%'
+    barElement.setAttribute('data-level', 'silent')
+    return
+  }
+  const percent = audioPreflightModule ? audioPreflightModule.levelPercent(entry.peak) : 0
+  barElement.style.width = `${percent}%`
+  barElement.setAttribute('data-level', entry.level)
+  if (entry.code && PREFLIGHT_PROMPT_KEYS[entry.code]) {
+    textElement.textContent = t(PREFLIGHT_PROMPT_KEYS[entry.code])
+    return
+  }
+  if (entry.sampled > 0) {
+    textElement.textContent = t(PREFLIGHT_LEVEL_KEYS[entry.level] || 'record.preflight.level-silent')
+    return
+  }
+  // An opened lane with no samples means the meter itself could not run (no
+  // WebAudio); say that instead of leaving the cell blank.
+  textElement.textContent = status && status.active
+    ? t('record.preflight.level-waiting')
+    : (entry.opened ? t('record.preflight.meter-unavailable') : '')
+}
+
+function renderPreflightActions(status) {
+  const actions = status && Array.isArray(status.actions) ? status.actions : []
+  const rows = [
+    [preflightSystemOnlyButton, 'record-system-only'],
+    [preflightMicOnlyButton, 'record-microphone-only'],
+    [preflightSilentButton, 'record-silent']
+  ]
+  for (const [button, action] of rows) {
+    if (!button) continue
+    button.hidden = !actions.includes(action)
+    button.textContent = PREFLIGHT_ACTION_KEYS[action] ? t(PREFLIGHT_ACTION_KEYS[action]) : ''
+  }
+}
+
+function renderPreflight() {
+  if (!preflightButton || !preflightPanel) return
+  const status = preflightStatus()
+  const active = Boolean(status && status.active)
+  preflightButton.hidden = !(state === 'idle' && (audioRequest.system || audioRequest.microphone))
+  preflightButton.disabled = busy || !preflightSupported()
+  preflightButton.textContent = active ? t('record.preflight.checking') : t('record.preflight.check')
+  preflightPanel.hidden = !preflightPanelOpen
+  if (preflightRetryButton) {
+    preflightRetryButton.disabled = busy || !preflightSupported()
+    preflightRetryButton.textContent = active ? t('record.preflight.stop') : t('record.preflight.retry')
+  }
+  if (preflightCloseButton) preflightCloseButton.disabled = false
+  if (!preflightPanelOpen) return
+  if (preflightAudioElement) preflightAudioElement.textContent = preflightAudioText()
+  if (preflightNoteElement) preflightNoteElement.textContent = preflightNoteText(status)
+  renderPreflightLane('system', preflightSystemBar, preflightSystemText, status)
+  renderPreflightLane('microphone', preflightMicBar, preflightMicText, status)
+  renderPreflightActions(status)
+}
+
+// The five-second loop only redraws the two meters; the panel itself stays put so
+// the level cannot steal focus or restart the sample.
+function renderPreflightMeters() {
+  if (!preflightPanelOpen) return
+  const status = preflightStatus()
+  if (preflightNoteElement) preflightNoteElement.textContent = preflightNoteText(status)
+  renderPreflightLane('system', preflightSystemBar, preflightSystemText, status)
+  renderPreflightLane('microphone', preflightMicBar, preflightMicText, status)
+  renderPreflightActions(status)
+}
+
+async function acquirePreflightSystemStream() {
+  if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
+    throw Object.assign(new Error('display media unavailable'), { name: 'NotReadableError' })
+  }
+  // Same branch the take uses: in window mode main's handler is bound to the
+  // selected window, in display/region mode it pins the display. Audio is asked
+  // for here, which is what makes the handler attach Windows loopback.
+  const stream = captureMode === 'window'
+    ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+    : await navigator.mediaDevices.getDisplayMedia({ video: desktopVideoConstraints(), audio: true })
+  // Chromium requires a video request before it grants the audio track, but the
+  // preflight only listens: the stream is never attached to a <video> element, and
+  // the video track is released together with the audio by
+  // releasePreflightDevices(). Stopping it here instead would risk tearing down the
+  // capture device (and with it the audio lane) on some drivers, which would turn a
+  // working system mix into a false "no sound".
+  return stream
+}
+
+async function acquirePreflightMicrophoneStream() {
+  const mixer = await loadAudioMixer()
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: microphoneConstraints(mixer, audioRequest.microphoneDeviceId), video: false })
+  if (!stream || !stream.getAudioTracks().length) {
+    for (const track of stream?.getTracks?.() || []) {
+      try { track.stop() } catch {}
+    }
+    throw Object.assign(new Error('no microphone track'), { name: 'NotFoundError' })
+  }
+  return stream
+}
+
+// A Bluetooth headset pulled out mid-check ends its track while the sample is
+// still running. Reporting that as "lost" (with its re-check prompt) is honest;
+// without this the lane would just read "no sound" and invite a wrong fix.
+function watchPreflightTrack(lane, stream) {
+  const track = stream?.getAudioTracks?.()[0]
+  if (!track || typeof track.addEventListener !== 'function') return
+  track.addEventListener('ended', () => {
+    if (!preflightSupported() || !preflight.isActive()) return
+    preflight.failLane(lane, { name: 'DeviceLost' })
+    renderPreflightMeters()
+  })
+}
+
+function attachPreflightAnalyser(lane, stream) {
+  if (!preflightContext || !preflightAnalysers) return
+  try {
+    const analyser = preflightContext.createAnalyser()
+    analyser.fftSize = 1024
+    analyser.smoothingTimeConstant = 0
+    preflightContext.createMediaStreamSource(stream).connect(analyser)
+    preflightAnalysers[lane] = analyser
+  } catch {
+    preflightAnalysers[lane] = null
+  }
+}
+
+function preflightPeak(analyser) {
+  if (!analyser || !preflightSamples) return 0
+  if (typeof analyser.getFloatTimeDomainData === 'function') {
+    analyser.getFloatTimeDomainData(preflightSamples)
+    return audioPreflightModule.peakOfFloat(preflightSamples)
+  }
+  const bytes = new Uint8Array(analyser.fftSize || 1024)
+  if (typeof analyser.getByteTimeDomainData === 'function') {
+    analyser.getByteTimeDomainData(bytes)
+    return audioPreflightModule.peakOfBytes(bytes)
+  }
+  return 0
+}
+
+function preflightTick() {
+  preflightTimer = 0
+  if (!preflightSupported() || !preflight.isActive()) return
+  if (preflight.expired()) {
+    stopAudioPreflight('done')
+    return
+  }
+  for (const lane of ['system', 'microphone']) {
+    const analyser = preflightAnalysers ? preflightAnalysers[lane] : null
+    if (analyser) preflight.sample(lane, preflightPeak(analyser))
+  }
+  renderPreflightMeters()
+  preflightTimer = setTimeout(preflightTick, Math.max(50, Math.min(200, preflight.remaining())))
+}
+
+// Stops every track and closes the AudioContext. Called on finish, cancel, route
+// exit, window close and before a take starts, so a check can never hold a device.
+function releasePreflightDevices() {
+  for (const stream of [preflightSystemStream, preflightMicStream]) {
+    for (const track of stream?.getTracks?.() || []) {
+      try { track.stop() } catch {}
+    }
+  }
+  preflightSystemStream = null
+  preflightMicStream = null
+  preflightAnalysers = null
+  preflightSamples = null
+  const context = preflightContext
+  preflightContext = null
+  if (context && typeof context.close === 'function') {
+    try {
+      const closing = context.close()
+      if (closing && typeof closing.catch === 'function') closing.catch(() => {})
+    } catch {}
+  }
+}
+
+function stopAudioPreflight(outcome = 'done') {
+  const wasActive = Boolean(preflight && preflight.isActive())
+  if (preflightTimer) {
+    clearTimeout(preflightTimer)
+    preflightTimer = 0
+  }
+  if (wasActive) preflight.finish(outcome)
+  releasePreflightDevices()
+  if (wasActive) preflight.markReleased(Date.now())
+  renderPreflight()
+}
+
+function cancelAudioPreflight() {
+  preflightPanelOpen = false
+  preflightAppliedKey = ''
+  stopAudioPreflight('cancelled')
+}
+
+async function startAudioPreflight() {
+  // No init payload means no display-media handler and no device contract yet.
+  if (!preflightSupported() || !initData || state !== 'idle') return
+  if (preflight.isActive()) {
+    stopAudioPreflight('cancelled')
+    return
+  }
+  preflightPanelOpen = true
+  preflightAppliedKey = ''
+  // Both sources off: nothing to open and nothing to sample, so say so instead of
+  // asking for a device the take will not use.
+  if (!preflight.begin({ system: audioRequest.system, microphone: audioRequest.microphone })) {
+    renderPreflight()
+    return
+  }
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext
+    if (typeof AudioContextClass === 'function') {
+      preflightContext = new AudioContextClass()
+      preflightAnalysers = { system: null, microphone: null }
+      preflightSamples = new Float32Array(1024)
+    }
+  } catch {
+    preflightContext = null
+    preflightAnalysers = null
+    preflightSamples = null
+  }
+  if (preflight.canOpen('system') && preflight.noteOpen('system')) {
+    try {
+      preflightSystemStream = await acquirePreflightSystemStream()
+      watchPreflightTrack('system', preflightSystemStream)
+      attachPreflightAnalyser('system', preflightSystemStream)
+    } catch (error) {
+      preflight.failLane('system', error)
+    }
+  }
+  // A cancel (or a take the user started) during the first await must not open the
+  // second device at all.
+  if (!preflight.isActive()) {
+    releasePreflightDevices()
+    renderPreflight()
+    return
+  }
+  if (preflight.canOpen('microphone') && preflight.noteOpen('microphone')) {
+    try {
+      preflightMicStream = await acquirePreflightMicrophoneStream()
+      watchPreflightTrack('microphone', preflightMicStream)
+      attachPreflightAnalyser('microphone', preflightMicStream)
+    } catch (error) {
+      preflight.failLane('microphone', error)
+    }
+  }
+  if (!preflight.isActive()) {
+    releasePreflightDevices()
+    renderPreflight()
+    return
+  }
+  if (!preflightAnalysers || (!preflightAnalysers.system && !preflightAnalysers.microphone)) {
+    // WebAudio is unavailable: the devices proved what they could (permission and
+    // presence), so release them now instead of waiting five seconds for a level
+    // that can never be drawn.
+    stopAudioPreflight('done')
+    return
+  }
+  preflight.startSampling()
+  renderPreflight()
+  preflightTimer = setTimeout(preflightTick, 0)
+}
+
+// Applies one of the panel's prompts to THIS take's start parameters (the same
+// audioRequest the recorder reads in attachAudioTracks).
+function applyPreflightAction(action) {
+  if (!Object.hasOwn(PREFLIGHT_ACTION_KEYS, action)) return
+  if (action === 'record-system-only') {
+    audioRequest.microphone = false
+    audioRequest.microphoneDeviceId = ''
+    preflightAppliedKey = 'record.preflight.applied-system-only'
+  } else if (action === 'record-microphone-only') {
+    audioRequest.system = false
+    preflightAppliedKey = 'record.preflight.applied-microphone-only'
+  } else {
+    audioRequest.system = false
+    audioRequest.microphone = false
+    audioRequest.microphoneDeviceId = ''
+    preflightAppliedKey = 'record.preflight.applied-silent'
+  }
+  // The running sample no longer describes the take, so end it and release the
+  // devices; the summary is what changes, not a stale level.
+  stopAudioPreflight('done')
+  renderAudioIndicator()
+  renderPreflight()
+}
+
 startButton.addEventListener('click', () => { beginRecording().catch((error) => reportError(error)) })
+preflightButton?.addEventListener('click', () => { startAudioPreflight().catch(() => {}) })
+preflightRetryButton?.addEventListener('click', () => {
+  if (preflight && preflight.isActive()) stopAudioPreflight('done')
+  else startAudioPreflight().catch(() => {})
+})
+preflightCloseButton?.addEventListener('click', () => cancelAudioPreflight())
+for (const [button, action] of [
+  [preflightSystemOnlyButton, 'record-system-only'],
+  [preflightMicOnlyButton, 'record-microphone-only'],
+  [preflightSilentButton, 'record-silent']
+]) {
+  button?.addEventListener('click', () => applyPreflightAction(action))
+}
 pauseButton.addEventListener('click', () => {
   applyCommand({ requestId: createRequestId('button'), command: state === 'paused' ? 'resume' : 'pause' })
 })
@@ -1727,6 +2145,11 @@ window.recordAPI.onInit((data) => {
     systemGain: initData.audio.systemGain,
     microphoneGain: initData.audio.microphoneGain
   }
+  // B04: main reports the exact condition its display-media handler uses for
+  // loopback (`process.platform === 'win32'`), so the check never promises a system
+  // lane this build cannot deliver.
+  preflightLoopback = data && data.audioLoopback === false ? false : true
+  cancelAudioPreflight()
   fpsElement.textContent = `${frameRate} FPS`
   fpsElement.title = audioRequest.system || audioRequest.microphone
     ? t('record.audio.contains')
@@ -1762,6 +2185,7 @@ window.recordAPI.onInterfaceLanguage((language) => {
   setState(state)
   renderAudioIndicator()
   renderMicState()
+  renderPreflight()
   // The hidden-window warning is rendered from a key, so a language switch re-resolves it.
   if (sourceHiddenWarning) errorElement.textContent = t('record.warning.source-hidden')
   else if (sourceLostHandled && failureNotice?.key === 'record.warning.source-lost') {
@@ -1771,6 +2195,7 @@ window.recordAPI.onInterfaceLanguage((language) => {
 
 addEventListener('beforeunload', () => {
   countdownVersion++
+  cancelAudioPreflight()
   clearInterval(clockTimer)
   navigator.mediaDevices?.removeEventListener?.('devicechange', handleDeviceChange)
   stopSource()

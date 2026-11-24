@@ -1600,7 +1600,12 @@ function createRecordDomain(deps) {
       audioSystem: config.audio.system,
       audioMicrophone: config.audio.microphone,
       audioSystemGain: config.audio.systemGain,
-      audioMicrophoneGain: config.audio.microphoneGain
+      audioMicrophoneGain: config.audio.microphoneGain,
+      // B04: the EXACT condition the display-media handler below uses to attach loopback
+      // audio. The control bar's sound check reads it, so a build that cannot deliver a
+      // system lane says so instead of drawing a lane that is silent by design (and never
+      // claims the mix is window-only).
+      audioLoopback: process.platform === 'win32'
     }
 
     // P0-3-T2: the renderer acquires the desktop through getDisplayMedia, which Electron
