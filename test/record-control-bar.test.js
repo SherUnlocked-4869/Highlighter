@@ -185,7 +185,11 @@ test('the renderer applies the quality profile and the configured countdown', ()
 })
 
 test('the renderer sequences chunks, checks ACKs and refuses to fake a healthy take', () => {
-  assert.match(script, /chunkSequence \+= 1/)
+  // C01: the sequence is still strictly increasing, but it is now handed to the
+  // backpressure policy before the fragment is queued.
+  assert.match(script, /const sequence = chunkSequence \+ 1/)
+  assert.match(script, /chunkPolicy\.enqueue\(\{ sequence, bytes: data\.size, at \}\)/)
+  assert.match(script, /chunkSequence = sequence/)
   assert.match(script, /appendChunk\(sessionId, arrayBuffer, chunk\.sequence, chunk\.bytes\)/)
   assert.match(script, /classifyChunkAck\(/)
   assert.match(script, /appendQueue = appendQueue/)
@@ -199,6 +203,24 @@ test('the renderer sequences chunks, checks ACKs and refuses to fake a healthy t
   const finishIndex = script.indexOf('window.recordAPI.finishSession(sessionId')
   assert.ok(flushIndex > 0, 'finish must await the append queue')
   assert.ok(finishIndex > flushIndex, 'finish-session must run after the append queue flushes')
+})
+
+test('C01: the append queue is bounded and the recorder pauses for backpressure', () => {
+  // The policy loads before record.js, exactly like the other renderer helpers.
+  assert.match(html, /chunk-backpressure\.js[\s\S]*record\.js/)
+  assert.match(script, /createChunkBackpressurePolicy\(\)/)
+  // Queue decisions drive the real MediaRecorder, and the wait is recorded on the media
+  // clock so the finished video and the timer agree.
+  assert.match(script, /if \(decision\.action === 'pause'\) pauseForWriteBackpressure\(at\)/)
+  assert.match(script, /if \(decision\.action === 'overflow'\) \{/)
+  assert.match(script, /resumeAfterWriteBackpressure\(\)/)
+  assert.match(script, /pausedTotal \+= Math\.max\(0, at - backpressurePausedAt\)[\s\S]*closePauseSpan\(at\)/)
+  // A wedged write and an abnormal fragment both end in "keep the confirmed part".
+  assert.match(script, /armAckWatchdog\(chunk\)/)
+  assert.match(script, /record\.notice\.chunk-overflow/)
+  assert.match(script, /record\.notice\.chunk-oversized/)
+  assert.match(script, /record\.notice\.chunk-timeout/)
+  assert.match(script, /chunkPolicy\.settle\(\{ sequence: chunk\.sequence \}\)/)
 })
 
 test('the renderer reports state and accepts pushed commands through one path', () => {

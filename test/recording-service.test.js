@@ -26,6 +26,24 @@ test('writes chunks in call order and finalizes a preview file', async (t) => {
   assert.match(preview.previewUrl, /^file:/)
 })
 
+test('C01: refuses an abnormally large chunk instead of buffering it', async (t) => {
+  const root = await createRoot(t)
+  const { MAX_APPEND_BYTES, RecordingService } = require('../main/services/recording-service')
+  const service = new RecordingService({ tempRoot: root, ffmpegPath: 'ffmpeg' })
+  t.after(() => service.dispose())
+  const session = await service.startSession()
+  await service.appendChunk(session.id, Buffer.from('first'))
+  await assert.rejects(
+    () => service.appendChunk(session.id, Buffer.alloc(MAX_APPEND_BYTES + 1), { sequence: 1 }),
+    (error) => error.code === 'chunk-too-large' && error.limit === MAX_APPEND_BYTES
+  )
+  // The refusal is before any sequence bookkeeping: sequence 1 is still free.
+  const ack = await service.appendChunk(session.id, Buffer.from('second'), { sequence: 1 })
+  assert.equal(ack.lastChunkSequence, 1)
+  const preview = await service.finishSession(session.id)
+  assert.equal((await fs.readFile(preview.inputPath)).toString(), 'firstsecond')
+})
+
 test('keeps input but deletes partial MP4 when conversion fails', async (t) => {
   const root = await createRoot(t)
   const fakeSpawn = () => {

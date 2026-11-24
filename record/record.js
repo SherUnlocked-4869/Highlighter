@@ -21,6 +21,9 @@ const {
 // Frozen capture-quality table (shared/recording-quality.js, contract §4). The
 // renderer never hard-codes bitrate numbers; the module owns the mapping.
 const recordingQuality = window.recordingQuality
+// C01: the append-queue policy (record/chunk-backpressure.js). Pure and deterministic;
+// this file owns the MediaRecorder side effects (pause/resume) it asks for.
+const { createChunkBackpressurePolicy } = window.chunkBackpressure
 
 const controlView = document.getElementById('controlView')
 const timeElement = document.getElementById('time')
@@ -121,6 +124,10 @@ let chunkSequence = 0
 let lastAckedSequence = 0
 let committedBytes = 0
 let chunkFailureAcknowledged = false
+// C01: bounds the serial append queue by bytes and by fragmentation age.
+const chunkPolicy = createChunkBackpressurePolicy()
+let chunkAckTimer = 0
+let backpressurePausedAt = 0
 let startedAt = 0
 let pausedAt = 0
 let pausedTotal = 0
@@ -174,7 +181,10 @@ const WINDOW_IDLE_STATUS = 'record.status.window-idle'
 function elapsedTime() {
   if (!startedAt) return 0
   const activePause = pausedAt ? Date.now() - pausedAt : 0
-  return Math.max(0, Date.now() - startedAt - pausedTotal - activePause)
+  // C01: a backpressure pause is a real gap in the media timeline, so the clock must not
+  // advance through it either - otherwise the timer and the finished video disagree.
+  const activeBackpressure = backpressurePausedAt ? Date.now() - backpressurePausedAt : 0
+  return Math.max(0, Date.now() - startedAt - pausedTotal - activePause - activeBackpressure)
 }
 
 // R5 §2.2 pause spans: every path that stops/starts the MediaRecorder timeline (button, adopted
@@ -1196,35 +1206,113 @@ function handleRecorderError(event) {
 // increasing sequence and its byte size. The main process ACKs the last accepted
 // sequence; a rejected chunk or a gap moves the UI into a paused error state, it
 // never keeps counting as if the file were still being written.
+//
+// C01: the queue is also bounded. Every fragment is offered to the policy before it is
+// queued; 32 MiB / 5 s of unacknowledged fragments pause the recorder, 48 MiB (or one
+// abnormal fragment) stops buffering and seals the confirmed part instead of growing.
 function handleDataAvailable(event) {
   const data = event?.data
   if (!data || !data.size) return
-  chunkSequence += 1
-  const chunk = { data, sequence: chunkSequence, bytes: data.size }
+  // A take that already failed is sealing the confirmed part; late fragments are not queued.
+  if (appendError) return
+  const at = Date.now()
+  const sequence = chunkSequence + 1
+  const decision = chunkPolicy.enqueue({ sequence, bytes: data.size, at })
+  chunkSequence = sequence
+  if (decision.action === 'overflow') {
+    failChunkStream(backpressureError(decision))
+    return
+  }
+  if (decision.action === 'pause') pauseForWriteBackpressure(at)
+  const chunk = { data, sequence, bytes: data.size }
   appendQueue = appendQueue
     .then(() => appendChunkWithAck(chunk))
     .catch((error) => failChunkStream(error))
 }
 
+// C01: MediaRecorder is paused, but the take is still "recording" for the user - the
+// status label and the buttons stay as they are. The pause span is opened so the frozen
+// media timeline and the elapsed clock both skip the wait.
+function pauseForWriteBackpressure(at = Date.now()) {
+  if (backpressurePausedAt) return false
+  if (!recorder || recorder.state !== 'recording' || state !== 'recording') return false
+  try { recorder.pause() } catch { return false }
+  backpressurePausedAt = at
+  openPauseSpan(at)
+  return true
+}
+
+function resumeAfterWriteBackpressure(at = Date.now()) {
+  if (!backpressurePausedAt) return false
+  if (!recorder || recorder.state !== 'paused' || state !== 'recording') return false
+  try { recorder.resume() } catch { return false }
+  pausedTotal += Math.max(0, at - backpressurePausedAt)
+  backpressurePausedAt = 0
+  closePauseSpan(at)
+  return true
+}
+
+function backpressureError(decision) {
+  const key = decision.reason === 'oversized-chunk' ? 'record.notice.chunk-oversized' : 'record.notice.chunk-overflow'
+  const params = { sequence: decision.sequence, confirmed: lastAckedSequence }
+  const error = new Error(t(key, params))
+  error.code = 'chunk-overflow'
+  error.failureKey = key
+  error.failureParams = params
+  return error
+}
+
+// A write that never ACKs is a wedged disk, not a slow one: stop waiting and seal the
+// confirmed part so the user keeps a playable file.
+function armAckWatchdog(chunk) {
+  clearAckWatchdog()
+  const timeout = chunkPolicy.config.ackTimeoutMs
+  chunkAckTimer = setTimeout(() => {
+    chunkAckTimer = 0
+    if (appendError) return
+    const params = { sequence: chunk.sequence, seconds: Math.round(timeout / 1000), confirmed: lastAckedSequence }
+    const error = new Error(t('record.notice.chunk-timeout', params))
+    error.code = 'ack-timeout'
+    error.failureKey = 'record.notice.chunk-timeout'
+    error.failureParams = params
+    failChunkStream(error)
+  }, timeout)
+}
+
+function clearAckWatchdog() {
+  if (!chunkAckTimer) return
+  clearTimeout(chunkAckTimer)
+  chunkAckTimer = 0
+}
+
 async function appendChunkWithAck(chunk) {
   if (appendError) return null
-  const arrayBuffer = await chunk.data.arrayBuffer()
-  const ack = await window.recordAPI.appendChunk(sessionId, arrayBuffer, chunk.sequence, chunk.bytes)
-  const verdict = classifyChunkAck({ sequence: chunk.sequence, lastChunkSequence: ack?.lastChunkSequence })
-  if (verdict === 'ok' || verdict === 'duplicate') {
-    const ackedSequence = Number(ack?.lastChunkSequence)
-    lastAckedSequence = Math.max(lastAckedSequence, Number.isInteger(ackedSequence) ? ackedSequence : chunk.sequence)
-    const ackedBytes = Number(ack?.committedBytes)
-    if (Number.isFinite(ackedBytes) && ackedBytes >= 0) committedBytes = ackedBytes
-    return ack
+  armAckWatchdog(chunk)
+  try {
+    const arrayBuffer = await chunk.data.arrayBuffer()
+    const ack = await window.recordAPI.appendChunk(sessionId, arrayBuffer, chunk.sequence, chunk.bytes)
+    if (appendError) return null
+    const verdict = classifyChunkAck({ sequence: chunk.sequence, lastChunkSequence: ack?.lastChunkSequence })
+    if (verdict === 'ok' || verdict === 'duplicate') {
+      const ackedSequence = Number(ack?.lastChunkSequence)
+      lastAckedSequence = Math.max(lastAckedSequence, Number.isInteger(ackedSequence) ? ackedSequence : chunk.sequence)
+      const ackedBytes = Number(ack?.committedBytes)
+      if (Number.isFinite(ackedBytes) && ackedBytes >= 0) committedBytes = ackedBytes
+      return ack
+    }
+    const error = new Error(verdict === 'gap'
+      ? t('record.notice.chunk-gap', { sequence: chunk.sequence })
+      : t('record.notice.chunk-failed', { detail: t('record.error.record-failed') }))
+    error.code = verdict === 'gap' ? 'sequence-gap' : 'chunk-rejected'
+    error.failureKey = verdict === 'gap' ? 'record.notice.chunk-gap' : 'record.notice.chunk-failed'
+    error.failureParams = verdict === 'gap' ? { sequence: chunk.sequence } : { detail: '' }
+    throw error
+  } finally {
+    clearAckWatchdog()
+    // Even a failed write frees its slot; a successful drain may lift the pause.
+    const settlement = chunkPolicy.settle({ sequence: chunk.sequence })
+    if (settlement.action === 'resume') resumeAfterWriteBackpressure()
   }
-  const error = new Error(verdict === 'gap'
-    ? t('record.notice.chunk-gap', { sequence: chunk.sequence })
-    : t('record.notice.chunk-failed', { detail: t('record.error.record-failed') }))
-  error.code = verdict === 'gap' ? 'sequence-gap' : 'chunk-rejected'
-  error.failureKey = verdict === 'gap' ? 'record.notice.chunk-gap' : 'record.notice.chunk-failed'
-  error.failureParams = verdict === 'gap' ? { sequence: chunk.sequence } : { detail: '' }
-  throw error
 }
 
 function failChunkStream(error) {
@@ -1233,6 +1321,8 @@ function failChunkStream(error) {
   setFailureNotice(error?.failureKey || 'record.notice.chunk-failed', error?.failureParams || null)
   errorElement.textContent = describeError(error)
   // Stop pretending the take is healthy: pause immediately and surface the failure.
+  // C01: the watchdog and the queue freeze with it; the confirmed sequence is what the
+  // user keeps if they choose to seal the confirmed part.
   if (state === 'recording' && recorder && recorder.state === 'recording') {
     try { recorder.pause() } catch {}
     stopCompositeLoop()
@@ -1250,6 +1340,9 @@ async function startRecorder(fromState) {
   projectId = session?.projectId ? String(session.projectId) : ''
   appendQueue = Promise.resolve()
   appendError = null
+  clearAckWatchdog()
+  chunkPolicy.reset()
+  backpressurePausedAt = 0
   chunkSequence = 0
   lastAckedSequence = 0
   committedBytes = 0
@@ -1280,6 +1373,8 @@ async function startRecorder(fromState) {
 }
 
 async function stopMediaRecorder() {
+  clearAckWatchdog()
+  backpressurePausedAt = 0
   if (!recorder || recorder.state === 'inactive') return
   await new Promise((resolve) => {
     recorder.addEventListener('stop', resolve, { once: true })

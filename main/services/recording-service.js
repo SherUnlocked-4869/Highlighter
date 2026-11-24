@@ -48,6 +48,10 @@ const { sessionTransition } = require('../../shared/recording-export-options')
 
 // States in which the source may still be read by an export.
 const READABLE_STATES = Object.freeze(['ready', 'closing'])
+// C01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): one fragment is
+// one second of capture. A fragment above this is abnormal; it is refused instead of
+// being buffered in the main process.
+const MAX_APPEND_BYTES = 32 * 1024 * 1024
 
 // True when `child` is the same path as `parent` or lies below it. Used to keep a
 // registerPersistedSession() inputPath inside its own directory - the service never
@@ -225,6 +229,12 @@ class RecordingService {
     const session = this.getSession(sessionId)
     if (session.state !== 'capturing') throw new Error('录制会话已经结束')
     const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value || [])
+    if (buffer.length > MAX_APPEND_BYTES) {
+      throw sequenceError('chunk-too-large', 'Recording chunk exceeds the append limit', {
+        bytes: buffer.length,
+        limit: MAX_APPEND_BYTES
+      })
+    }
     let chunkSequence = null
     if (sequence !== null && sequence !== undefined) {
       chunkSequence = Number(sequence)
@@ -468,4 +478,4 @@ class RecordingService {
   }
 }
 
-module.exports = { READABLE_STATES, RecordingService }
+module.exports = { MAX_APPEND_BYTES, READABLE_STATES, RecordingService }
