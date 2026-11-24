@@ -356,6 +356,26 @@ function markThumbnailFailed(tile, id) {
     tile.setAttribute('aria-label', label)
   }
 }
+// B05: when the capacity view suspects pinned records are consuming the
+// storage budget, the status rail offers the existing pinned filter as a
+// one-click view. The control is created in script instead of clipboard.html so
+// the panel's static element-id contract stays unchanged; insertion is skipped
+// when the rail is absent (renderer tests load this file without a window).
+const pinnedJump = document.createElement('button')
+pinnedJump.type = 'button'
+pinnedJump.className = 'quiet-button'
+pinnedJump.hidden = true
+pinnedJump.onclick = () => { if (!pinnedOnly && !pinnedJump.hidden) $('pinned').click() }
+function refreshPinnedJump() {
+  const squeezed = status?.capacity?.pinnedSqueeze?.possible === true
+  pinnedJump.hidden = pinnedOnly || !squeezed
+  pinnedJump.textContent = t('clipboard.pinned-only')
+  pinnedJump.title = t('clipboard.pinned-only-hint')
+  pinnedJump.setAttribute('aria-label', t('clipboard.pinned-only-hint'))
+}
+const refreshNode = $('refresh')
+const statusRail = refreshNode?.closest?.('.status-rail')
+if (statusRail) statusRail.insertBefore(pinnedJump, refreshNode)
 function renderStatus(value) {
   status = value || status
   $('pause').textContent = t(status.userPaused ? 'clipboard.resume' : 'clipboard.pause')
@@ -366,6 +386,7 @@ function renderStatus(value) {
   $('status').textContent = parts.join(' · ')
   const tone = status.userPaused || status.pausedReasons?.length ? 'warn' : (PHASE_TONE[status.phase] || 'off')
   $('led').className = `led tone-${tone}`
+  refreshPinnedJump()
   if (status.messageKey) message(new Error(status.messageKey))
 }
 async function refresh(append = false) {
@@ -822,6 +843,7 @@ $('kinds').onclick = (event) => {
 $('pinned').onclick = () => {
   pinnedOnly = !pinnedOnly
   $('pinned').setAttribute('aria-pressed', String(pinnedOnly))
+  refreshPinnedJump()
   refresh()
 }
 $('refresh').onclick = () => refresh(); $('new').onclick = () => refresh(); $('more').onclick = () => refresh(true)
@@ -894,6 +916,7 @@ function clearHistory() {
   renderSelectionActions()
   $('search').value = ''; $('feedback').hidden = true
   $('empty').hidden = true; $('more').hidden = true; $('new').hidden = true
+  pinnedJump.hidden = true
 }
 applyTranslations()
 window.addEventListener('unload', () => {

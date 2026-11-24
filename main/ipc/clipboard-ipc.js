@@ -17,7 +17,13 @@ function registerClipboardIpc({ ipcMain, service, domain, setPaused }) {
     try { return { ok: true, result: await fn(event, args) } }
     catch (error) { return { ok: false, error: { code: /^[A-Z_]{1,64}$/.test(error.code || error.message || '') ? error.code || error.message : 'CLIPBOARD_FAILED' } } }
   })
-  handle('status', () => service.snapshot())
+  // B05: the renderer receives the status plus the derived capacity view. The
+  // native status protocol is unchanged; the view is pure arithmetic over the
+  // fields the sidecar already reports.
+  handle('status', (event) => {
+    if (domain.statusSnapshotFor) return domain.statusSnapshotFor(event)
+    return domain.statusSnapshot ? domain.statusSnapshot() : service.snapshot()
+  })
   handle('list', async (_event, args) => {
     object(args, ['search', 'kind', 'pinnedOnly', 'cursor', 'limit'])
     if (typeof args.search !== 'string' || [...args.search].length > 200 || !['', 'text', 'url', 'image', 'files'].includes(args.kind) || typeof args.pinnedOnly !== 'boolean' || (args.limit !== undefined && (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 100)) || JSON.stringify(args.cursor || null).length > 2048) throw new Error('INVALID_FILTER')

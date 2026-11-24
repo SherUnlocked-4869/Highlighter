@@ -8,6 +8,7 @@ const { t } = require('../../services/i18n-bootstrap')
 const { createPasteFeedback } = require('../../services/clipboard-paste-feedback')
 const { windowBackdropColor, trackWindowBackdrop } = require('../../services/window-backdrop')
 const { createThumbnailCache } = require('../../services/clipboard-thumbnail-cache')
+const { computeCapacity, emptySkipSession, nextSkipSession } = require('../../services/clipboard-capacity')
 
 // One screen of tiles plus scroll-back and page margins. The limit must stay
 // below 16: ClipboardService.request() rejects with BACKPRESSURE once
@@ -64,6 +65,32 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   // response that was already on the wire.
   let cacheEpoch = 0
   function invalidateThumbnails() { cacheEpoch++; thumbnails.clear() }
+  // B05: status.skipped is the sidecar's per-process counter map. The observer
+  // turns successive observations into this run's totals plus the most recent
+  // reason, so the settings page can explain a rejected copy. It is deliberately
+  // in memory only: no sidecar method and no persisted "statistics" are added.
+  let skipSession = emptySkipSession(Date.now())
+  function observeStatus(value) {
+    skipSession = nextSkipSession(skipSession, value?.skipped, Date.now())
+    return value
+  }
+  function capacityView(value) {
+    return computeCapacity({ status: value, settings: getSettings().clipboard, session: skipSession })
+  }
+  function statusWithCapacity(value) {
+    return { ...value, capacity: capacityView(value) }
+  }
+  function statusSnapshot() { return statusWithCapacity(service.snapshot()) }
+  // The settings window opens a page and immediately wants current aggregates;
+  // the panel is already refreshed by setPanelVisible(true). A non-panel caller
+  // may therefore ask for one status round trip, but only when the cached
+  // revision is older than the paint budget. Failures fall back to the cached
+  // snapshot so a wedged sidecar cannot keep the settings page from rendering.
+  async function statusSnapshotFor(event) {
+    const fresh = Number(Date.now()) - (service.lastRefreshAt || 0) < POLL_REVISION_FRESH_MS
+    if (!panelVisible(event) && !fresh && typeof service.refresh === 'function') await service.refresh().catch(() => {})
+    return statusSnapshot()
+  }
   const feedback = createPasteFeedback({ getWindow: () => win, screen, expire: () => hide() })
   const ownsWindow = (target) => target != null && target === win
   function send(channel, value) { if (win && !win.isDestroyed() && win.isVisible()) win.webContents.send(channel, value) }
@@ -100,7 +127,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     tokens.set(key, token)
   }
   function revokePreviews() { tokens.clear(); invalidateThumbnails() }
-  service.on('status', (value) => send('clipboard:status-changed', value))
+  service.on('status', (value) => send('clipboard:status-changed', statusWithCapacity(observeStatus(value))))
   // Tokens are NOT cleared here: a new copy in another app must not blank every
   // tile that is already on screen. The byte cache is cleared instead, because
   // the native side prunes records by retention without a precise invalidation
@@ -112,7 +139,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     const settings = getSettings()
     // A05: the panel follows the global compact layout; the renderer already keys its row
     // height off `compact` (and keeps the grid gap), so this is the only missing input.
-    return { language: settings.language, compact: settings.compact === true, dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors), mainColor: settings.mainColor, generation, status: service.snapshot() }
+    return { language: settings.language, compact: settings.compact === true, dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors), mainColor: settings.mainColor, generation, status: statusWithCapacity(service.snapshot()) }
   }
   function release(reason = 'forced') {
     clearTimeout(releaseTimer); releaseTimer = null
@@ -383,11 +410,15 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     service.setReason('game-mode', isGameModeEnabled())
     applySettings()
   }
-  registerClipboardIpc({ ipcMain, service, domain: { ready, interactive, hide, paste, previews, revokePreviews, prepareClear, commitClear },
+  registerClipboardIpc({ ipcMain, service, domain: { ready, interactive, hide, paste, previews, revokePreviews, prepareClear, commitClear, statusSnapshot, statusSnapshotFor },
     setPaused: async (paused) => { if (isMigrationInProgress()) throw new Error('QUIESCING'); updateSettings({ clipboard: { paused } }); await applySettings(); return service.snapshot() } })
   // `thumbnails` is exposed alongside `service`: both are seams for the unit
   // tests, which replace the backend and assert on the byte cache directly.
   return { service, thumbnails, ownsWindow, show, hide, applySettings, start,
+    // B05: the status IPC and clipboard:init both carry the derived capacity
+    // view; nothing in the native protocol changed.
+    statusSnapshot,
+    statusSnapshotFor,
     requiresSelectionHook: () => Boolean(service.child),
     applyGameMode(enabled) { if (enabled) hide(); return service.setReason('game-mode', enabled) },
     notifyAppearance() { if (!feedback.active) send('clipboard:init', appearance()) },
