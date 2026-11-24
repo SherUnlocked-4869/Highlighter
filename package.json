@@ -34,6 +34,7 @@
     "build:native": "npm run stop:app && npm run build:smart-select && npm run build:ocr && npm run build:everything && npm run build:selection && npm run build:clipboard && npm run build:device-battery && npm run build:shutter-sound && npm run build:focused-window",
     "check": "node scripts/check-js.js && npm run check:architecture && npm run check:i18n && npm run check:review-evidence",
     "check:review-evidence": "node scripts/check-review-evidence.js",
+    "report:release-size": "node scripts/report-release-size.js",
     "check:architecture": "node scripts/check-architecture.js",
     "check:i18n": "node scripts/check-i18n.js --max 606",
     "audit:dependencies": "node scripts/audit-dependencies.js",
