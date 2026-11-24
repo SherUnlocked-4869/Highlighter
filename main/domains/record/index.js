@@ -1592,6 +1592,9 @@ function createRecordDomain(deps) {
       // E2E-only synthetic capture source (contract §13.5). Only the main-process environment can
       // set this; no renderer-writable field can turn it on.
       fakeCapture: process.env.HIGHLIGHTER_E2E_FAKE_CAPTURE === '1',
+      // C05: the direct-track experiment is opt-in through one env var only; the renderer reads
+      // this flag (it runs sandboxed and has no process.env of its own).
+      directTrackExperiment: process.env.HIGHLIGHTER_RECORD_DIRECT_TRACK === '1',
       // Legacy flat keys (P0-3-T2) kept so an older recorder build keeps working unchanged. In
       // window mode the desktop source id is intentionally absent: a window source id must never
       // reach a renderer (§2.1), and the bound source is served by the display-media handler.

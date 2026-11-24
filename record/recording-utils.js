@@ -411,7 +411,152 @@
       // E2E-only synthetic capture source (contract §13.5). The main process sets this
       // only from HIGHLIGHTER_E2E_FAKE_CAPTURE=1; a renderer cannot enable it itself.
       fakeCapture: raw.fakeCapture === true,
+      // C05 direct-track experiment: main forwards HIGHLIGHTER_RECORD_DIRECT_TRACK=1
+      // here (same environment-only pattern as fakeCapture); absent means the
+      // experiment is off and the recorder keeps the canvas path.
+      directTrackExperiment: raw.directTrackExperiment === true,
       audio
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // C05 direct-track experiment (docs/reviews/2026-11-24-windows-product-architecture-review.md)
+  //
+  // The recorder normally draws every source frame into a canvas and encodes
+  // `canvas.captureStream()`. For a full-screen take with no annotations and no
+  // transform the canvas is a copy of the source, so the source video track can be
+  // recorded directly. The experiment is OPT-IN through the environment only
+  // (HIGHLIGHTER_RECORD_DIRECT_TRACK=1, no setting): with the flag absent the decision
+  // below can only return the existing canvas path.
+  //
+  // This module owns both pure decisions so they can be asserted headless:
+  //   * shouldBypassComposition() - may this take skip the compositor at all?
+  //   * selectRecorderTrackPlan() - which tracks MediaRecorder actually receives.
+  // record/record.js owns the MediaRecorder side effects and never re-wires tracks
+  // mid-take.
+  // ---------------------------------------------------------------------------
+  const DIRECT_TRACK_ENV = 'HIGHLIGHTER_RECORD_DIRECT_TRACK'
+
+  // Stable reason codes. They are stored on the take and pinned by the tests so a
+  // reordered decision cannot silently hide a rejected take.
+  const BYPASS_REASONS = Object.freeze({
+    eligible: 'eligible',
+    experimentDisabled: 'experiment-disabled',
+    modeWindow: 'mode-window',
+    modeRegion: 'mode-region',
+    modeUnsupported: 'mode-unsupported',
+    annotations: 'annotations-present',
+    transform: 'transform-present',
+    sizeMismatch: 'size-mismatch',
+    sourceSizeMissing: 'source-size-missing',
+    sourceTrackMissing: 'source-track-missing',
+    streamFailed: 'stream-create-failed'
+  })
+
+  function bypassDecision(bypass, reason) {
+    return { bypass: bypass === true, reason }
+  }
+
+  // Environment-only gate. The value must be exactly "1" (whitespace tolerated):
+  // "true"/"yes"/"0" must not enable an experiment that changes the encoder input.
+  function readDirectTrackExperiment(env = null) {
+    const source = env && typeof env === 'object' && !Array.isArray(env) ? env : {}
+    const value = source[DIRECT_TRACK_ENV]
+    return typeof value === 'string' && value.trim() === '1'
+  }
+
+  function readPositiveSize(value) {
+    if (!value || typeof value !== 'object') return null
+    const width = Math.round(finite(value.width))
+    const height = Math.round(finite(value.height))
+    if (width < 2 || height < 2) return null
+    return { width, height }
+  }
+
+  // One take is eligible only when ALL of these hold:
+  //   * the experiment flag was enabled for this take;
+  //   * the take records a full display (window mode keeps a frozen output size and
+  //     region mode crops, so both need the compositor);
+  //   * nothing has been drawn on the frame overlay yet;
+  //   * no crop / fit transform is applied;
+  //   * the encoded size equals the source size.
+  // `experimentEnabled` must be the boolean true: a truthy string cannot opt in.
+  function shouldBypassComposition(options = {}) {
+    const source = options && typeof options === 'object' ? options : {}
+    if (source.experimentEnabled !== true) {
+      return bypassDecision(false, BYPASS_REASONS.experimentDisabled)
+    }
+    const mode = typeof source.mode === 'string' && source.mode.trim() ? source.mode.trim() : 'display'
+    if (mode === 'window') return bypassDecision(false, BYPASS_REASONS.modeWindow)
+    if (mode === 'region') return bypassDecision(false, BYPASS_REASONS.modeRegion)
+    if (mode !== 'display') return bypassDecision(false, BYPASS_REASONS.modeUnsupported)
+    const annotationCount = Math.max(0, Math.round(finite(source.annotationCount)))
+    if (annotationCount > 0) return bypassDecision(false, BYPASS_REASONS.annotations)
+    if (source.hasTransform === true) return bypassDecision(false, BYPASS_REASONS.transform)
+    const outputSize = readPositiveSize(source.outputSize)
+    const sourceSize = readPositiveSize(source.sourceSize)
+    if (!outputSize || !sourceSize) return bypassDecision(false, BYPASS_REASONS.sourceSizeMissing)
+    if (outputSize.width !== sourceSize.width || outputSize.height !== sourceSize.height) {
+      return bypassDecision(false, BYPASS_REASONS.sizeMismatch)
+    }
+    return bypassDecision(true, BYPASS_REASONS.eligible)
+  }
+
+  function streamTracks(stream, kind) {
+    if (!stream || typeof stream[`get${kind}Tracks`] !== 'function') return []
+    try {
+      const tracks = stream[`get${kind}Tracks`]()
+      return Array.isArray(tracks) ? tracks.filter(Boolean) : []
+    } catch {
+      return []
+    }
+  }
+
+  // Injectable media-track selector. The canvas path returns the canvas capture stream
+  // untouched (byte-identical to the pre-C05 wiring); the direct path builds ONE stream
+  // from the source video track plus the already-mixed audio tracks, so chunking,
+  // sequence numbers, backpressure, finish, cancel and export keep using the same
+  // recorder object. `createStream` is injected (it is `new MediaStream(tracks)` in the
+  // control bar) so this stays assertable under Node.
+  function selectRecorderTrackPlan(options = {}) {
+    const source = options && typeof options === 'object' ? options : {}
+    const reason = typeof source.reason === 'string' && source.reason
+      ? source.reason
+      : BYPASS_REASONS.experimentDisabled
+    const canvasStream = source.canvasStream || null
+    const canvasPlan = {
+      bypass: false,
+      kind: 'canvas',
+      stream: canvasStream,
+      videoTracks: streamTracks(canvasStream, 'Video'),
+      audioTracks: streamTracks(canvasStream, 'Audio'),
+      reason
+    }
+    if (source.bypass !== true) return canvasPlan
+    const sourceVideoTracks = streamTracks(source.sourceStream, 'Video')
+    if (!sourceVideoTracks.length) {
+      return { ...canvasPlan, reason: BYPASS_REASONS.sourceTrackMissing }
+    }
+    const mixedAudioTracks = Array.isArray(source.mixedAudioTracks)
+      ? source.mixedAudioTracks.filter(Boolean)
+      : []
+    const videoTracks = [sourceVideoTracks[0]]
+    let stream = null
+    if (typeof source.createStream === 'function') {
+      try {
+        stream = source.createStream([...videoTracks, ...mixedAudioTracks])
+      } catch {
+        stream = null
+      }
+    }
+    if (!stream) return { ...canvasPlan, reason: BYPASS_REASONS.streamFailed }
+    return {
+      bypass: true,
+      kind: 'direct',
+      stream,
+      videoTracks,
+      audioTracks: mixedAudioTracks,
+      reason: BYPASS_REASONS.eligible
     }
   }
 
@@ -474,6 +619,8 @@
   }
 
   const recordingUtils = {
+    BYPASS_REASONS,
+    DIRECT_TRACK_ENV,
     buildFfmpegArgs,
     calculateCropRect,
     calculateFrameBounds,
@@ -489,9 +636,12 @@
     normalizeSelectionBounds,
     pickDesktopSource,
     primeSeekablePreview,
+    readDirectTrackExperiment,
     reportStatusFor,
     resolveRecordInit,
+    selectRecorderTrackPlan,
     shouldAdoptMainState,
+    shouldBypassComposition,
     transitionRecordingState
   }
 

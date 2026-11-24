@@ -6,9 +6,12 @@ const {
   createRequestId,
   formatDuration,
   localStateForWireStatus,
+  readDirectTrackExperiment,
   reportStatusFor,
   resolveRecordInit,
+  selectRecorderTrackPlan,
   shouldAdoptMainState,
+  shouldBypassComposition,
   transitionRecordingState
 } = window.recordingUtils
 const {
@@ -102,6 +105,14 @@ let busy = false
 let moreOpen = false
 let desktopStream = null
 let canvasStream = null
+// C05 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the opt-in
+// direct-track experiment records the source video track instead of compositing it.
+// `directTrackDecision` is made ONCE before the take starts and never re-wired;
+// `recorderStream` is what MediaRecorder receives on that path (null keeps the
+// canvas capture stream, exactly as before).
+let recorderStream = null
+let directTrackDecision = null
+let directTrackSourceWatched = false
 // Audio bus state (P0-3). `audioRequest` mirrors the frozen record contract:
 // system sound defaults to on, the microphone defaults to off (privacy first).
 let audioRequest = { system: true, microphone: false, microphoneDeviceId: '', systemGain: 1, microphoneGain: 1 }
@@ -565,6 +576,7 @@ async function resetAnnotations() {
 
 function stopSource() {
   unwatchSourceTracks()
+  unwatchDirectTrackSource()
   disposeFakeCapture()
   stopCompositeLoop()
   reportCompositorPerformance()
@@ -575,9 +587,12 @@ function stopSource() {
   micStream?.getTracks().forEach((track) => track.stop())
   micStream = null
   canvasStream?.getTracks().forEach((track) => track.stop())
+  recorderStream?.getTracks().forEach((track) => track.stop())
   desktopStream?.getTracks().forEach((track) => track.stop())
   if (sourceVideo) sourceVideo.srcObject = null
   canvasStream = null
+  recorderStream = null
+  directTrackDecision = null
   desktopStream = null
   sourceVideo = null
   canvas = null
@@ -1106,7 +1121,9 @@ async function attachAudioTracks() {
       onWarn: noteAudioWarning
     })
     if (audioMix.active) {
-      audioMix.tracks.forEach((track) => canvasStream.addTrack(track))
+      // C05: a direct-track take has no canvas stream yet; its recorder stream is
+      // assembled below from the source video track plus these mixed audio tracks.
+      if (canvasStream) audioMix.tracks.forEach((track) => canvasStream.addTrack(track))
       await audioMix.resume()
       audioMix.setMicrophoneMuted(microphoneMuted)
     } else {
@@ -1123,8 +1140,167 @@ async function attachAudioTracks() {
   applyAudioOutcome({ system: false, microphone: false, notice: '' })
 }
 
+// ---------------------------------------------------------------------------
+// C05: direct-track experiment (opt-in, environment only)
+//
+// The existing pipeline composites every source frame into a canvas and encodes the
+// canvas capture stream. For a full-screen take with no annotations, no transform and
+// an output size equal to the source, that canvas is a copy of the source, so the
+// source video track can be recorded directly. The experiment is enabled ONLY by
+// the direct-track environment switch (main forwards it in record:init); it is not a
+// setting and the default decision is always the canvas path. The decision is made
+// before MediaRecorder exists and is never revisited mid-take: a take that needs
+// composition after all is stopped through the normal finish path, not re-wired.
+// ---------------------------------------------------------------------------
+function directTrackExperimentEnabled() {
+  if (initData && initData.directTrackExperiment === true) return true
+  // The packaged control bar is sandboxed (no Node integration), so main forwards
+  // the environment switch through record:init. This fallback only covers a harness
+  // that loads this page with Node integration for measurement.
+  try {
+    const environment = typeof globalThis.process === 'object' && globalThis.process
+      ? globalThis.process.env
+      : null
+    return readDirectTrackExperiment(environment)
+  } catch {
+    return false
+  }
+}
+
+function directTrackTakeActive() {
+  return Boolean(directTrackDecision && directTrackDecision.bypass === true)
+}
+
+function recorderInputStream() {
+  return recorderStream || canvasStream
+}
+
+// Freezes the source frame into the output canvas (display crop or window contain fit).
+// This is the pre-C05 sizing block, extracted unchanged: both the normal path and the
+// defensive direct-track fallback must produce the identical surface.
+function buildOutputCanvas() {
+  // Deliberately named `canvas`: this is the pre-C05 inline sizing block moved into
+  // one place, and the local binding shadows the module-level output canvas.
+  const canvas = document.createElement('canvas')
+  if (captureMode === 'window') {
+    // R4 window mode (contract §2.2): frozen output size from init.window.pixelSize; the
+    // captured frames are letter-boxed into it, so a later window resize cannot change
+    // the encoded resolution. Even dimensions keep the H.264/VP9 export path valid.
+    const width = Math.max(2, Math.round(windowPixelSize?.width || 0))
+    const height = Math.max(2, Math.round(windowPixelSize?.height || 0))
+    canvas.width = Math.max(2, width - (width % 2))
+    canvas.height = Math.max(2, height - (height % 2))
+    canvas._recordFit = fitContainRect(sourceVideo.videoWidth, sourceVideo.videoHeight, canvas.width, canvas.height)
+  } else {
+    const crop = calculateCropRect(
+      { width: sourceVideo.videoWidth, height: sourceVideo.videoHeight },
+      initData.displayBounds,
+      initData.selectionBounds
+    )
+    canvas.width = crop.width
+    canvas.height = crop.height
+    canvas._recordCrop = crop
+  }
+  canvas._recordContext = canvas.getContext('2d', { alpha: false })
+  return canvas
+}
+
+// The single eligibility decision: full display, nothing annotated yet, no crop / fit
+// transform, output size equals the source size, experiment enabled.
+function decideDirectTrackTake(sourceSize) {
+  let outputSize = null
+  let hasTransform = true
+  if (captureMode === 'window') {
+    outputSize = normalizeWindowPixelSize(windowPixelSize)
+  } else {
+    const crop = calculateCropRect(sourceSize, initData.displayBounds, initData.selectionBounds)
+    outputSize = { width: crop.width, height: crop.height }
+    hasTransform = crop.sx !== 0 || crop.sy !== 0
+      || crop.sw !== sourceSize.width || crop.sh !== sourceSize.height
+      || crop.width !== sourceSize.width || crop.height !== sourceSize.height
+  }
+  const decision = shouldBypassComposition({
+    mode: captureMode === 'window' ? 'window' : (initData?.mode || 'display'),
+    annotationCount: annotationSnapshot.annotations.length,
+    hasTransform,
+    outputSize,
+    sourceSize,
+    experimentEnabled: directTrackExperimentEnabled()
+  })
+  return {
+    bypass: decision.bypass === true,
+    reason: String(decision.reason || ''),
+    sourceWidth: sourceSize.width,
+    sourceHeight: sourceSize.height
+  }
+}
+
+// Builds the MediaRecorder input for the direct path: the source video track plus the
+// tracks the existing mixer already produced. The selector reports a fallback reason
+// instead of throwing, so the caller can restore the composited surface.
+function createDirectRecorderStream(mixedAudioTracks) {
+  const plan = selectRecorderTrackPlan({
+    bypass: true,
+    reason: directTrackDecision?.reason || '',
+    canvasStream: null,
+    sourceStream: desktopStream,
+    mixedAudioTracks,
+    createStream: (tracks) => new MediaStream(tracks)
+  })
+  if (!plan.bypass) {
+    directTrackDecision = {
+      ...directTrackDecision,
+      bypass: false,
+      reason: plan.reason || 'source-track-missing'
+    }
+    return null
+  }
+  directTrackDecision = { ...directTrackDecision, bypass: true, reason: plan.reason || 'eligible' }
+  return plan.stream
+}
+
+function watchDirectTrackSource() {
+  if (directTrackSourceWatched || !sourceVideo) return
+  if (typeof sourceVideo.addEventListener !== 'function') return
+  directTrackSourceWatched = true
+  sourceVideo.addEventListener('resize', handleDirectTrackSourceResize)
+}
+
+function unwatchDirectTrackSource() {
+  if (!directTrackSourceWatched) return
+  directTrackSourceWatched = false
+  if (sourceVideo && typeof sourceVideo.removeEventListener === 'function') {
+    sourceVideo.removeEventListener('resize', handleDirectTrackSourceResize)
+  }
+}
+
+// A direct-track take encodes the source track raster itself, so a source size change
+// really would change the output size. The composited path freezes its canvas at start,
+// which is why this listener only exists for a bypass take.
+function handleDirectTrackSourceResize() {
+  if (!directTrackTakeActive() || !sourceVideo) return
+  const width = Math.round(Number(sourceVideo.videoWidth) || 0)
+  const height = Math.round(Number(sourceVideo.videoHeight) || 0)
+  if (width < 2 || height < 2) return
+  if (width === directTrackDecision.sourceWidth && height === directTrackDecision.sourceHeight) return
+  handleDirectTrackCompositionChange('output-size-changed')
+}
+
+// A composition change requested mid-take cannot be honoured without swapping tracks
+// underneath MediaRecorder. Stop the take through the normal finish path (the written
+// part is kept) and report it through the existing error channel; the reason stays on
+// the take so a measurement run can tell this apart from a normal finish.
+function handleDirectTrackCompositionChange(reason) {
+  if (!directTrackTakeActive()) return false
+  directTrackDecision = { ...directTrackDecision, reason }
+  setFailureNotice('record.error.record-failed')
+  errorElement.textContent = t('record.error.record-failed')
+  finishRecording().catch((error) => reportError(error))
+  return true
+}
+
 async function prepareSource() {
-  if (desktopStream && canvasStream) return
+  if (desktopStream && (canvasStream || recorderStream)) return
   try {
     desktopStream = fakeCapture ? createFakeDesktopStream() : await acquireDesktopStream()
     sourceVideo = document.createElement('video')
@@ -1140,32 +1316,37 @@ async function prepareSource() {
     }
     watchSourceTracks()
 
-    canvas = document.createElement('canvas')
-    if (captureMode === 'window') {
-      // R4 window mode (contract §2.2): frozen output size from init.window.pixelSize; the
-      // captured frames are letter-boxed into it, so a later window resize cannot change
-      // the encoded resolution. Even dimensions keep the H.264/VP9 export path valid.
-      const width = Math.max(2, Math.round(windowPixelSize?.width || 0))
-      const height = Math.max(2, Math.round(windowPixelSize?.height || 0))
-      canvas.width = Math.max(2, width - (width % 2))
-      canvas.height = Math.max(2, height - (height % 2))
-      canvas._recordFit = fitContainRect(sourceVideo.videoWidth, sourceVideo.videoHeight, canvas.width, canvas.height)
-    } else {
-      const crop = calculateCropRect(
-        { width: sourceVideo.videoWidth, height: sourceVideo.videoHeight },
-        initData.displayBounds,
-        initData.selectionBounds
-      )
-      canvas.width = crop.width
-      canvas.height = crop.height
-      canvas._recordCrop = crop
+    const sourceSize = {
+      width: Math.round(Number(sourceVideo.videoWidth) || 0),
+      height: Math.round(Number(sourceVideo.videoHeight) || 0)
     }
-    canvas._recordContext = canvas.getContext('2d', { alpha: false })
+    // C05: the ONE decision point. Source size, output size, transform and the
+    // annotation count are all known here, and MediaRecorder does not exist yet.
+    directTrackDecision = decideDirectTrackTake(sourceSize)
+    canvas = directTrackDecision.bypass ? null : buildOutputCanvas()
     framePacer = createFramePacer(frameRate)
     compositorActiveDurationMs = 0
-    renderCompositeFrame(performance.now(), true)
-    canvasStream = canvas.captureStream(frameRate)
+    if (!directTrackDecision.bypass) {
+      renderCompositeFrame(performance.now(), true)
+      canvasStream = canvas.captureStream(frameRate)
+    }
     await attachAudioTracks()
+    if (directTrackDecision.bypass) {
+      const mixedAudioTracks = audioMix && audioMix.active ? audioMix.tracks : []
+      recorderStream = createDirectRecorderStream(mixedAudioTracks)
+      if (recorderStream) {
+        watchDirectTrackSource()
+      } else {
+        // Defensive: the source video track could not be recorded directly. The
+        // composited path is the only one that can still produce a take.
+        canvas = buildOutputCanvas()
+        renderCompositeFrame(performance.now(), true)
+        canvasStream = canvas.captureStream(frameRate)
+        if (audioMix && audioMix.active) {
+          audioMix.tracks.forEach((track) => canvasStream.addTrack(track))
+        }
+      }
+    }
   } catch (error) {
     stopSource()
     throw new Error(t('record.error.desktop-capture-failed', { detail: error.message || String(error) }))
@@ -1187,9 +1368,12 @@ function createMediaRecorder() {
   // preference is kept from the previous implementation.
   const options = { videoBitsPerSecond: recordingQuality.qualityBitsPerSecond(quality) }
   if (mimeType) options.mimeType = mimeType
-  if (canvasStream?.getAudioTracks().length) options.audioBitsPerSecond = audioBitsPerSecond
+  // C05: the direct-track take hands MediaRecorder the source stream built in
+  // prepareSource(); every other take keeps the canvas capture stream.
+  const stream = recorderInputStream()
+  if (stream && stream.getAudioTracks().length) options.audioBitsPerSecond = audioBitsPerSecond
   try {
-    return new MediaRecorder(canvasStream, options)
+    return new MediaRecorder(stream, options)
   } catch (error) {
     throw new Error(t('record.error.recorder-create-failed', { detail: error.message || String(error) }))
   }
@@ -1383,7 +1567,7 @@ async function startRecorder(fromState) {
   recorder = createMediaRecorder()
   recorder.addEventListener('dataavailable', handleDataAvailable)
   recorder.addEventListener('error', handleRecorderError)
-  startCompositeLoop()
+  if (!directTrackTakeActive()) startCompositeLoop()
   // R5 §2.2: the media timeline starts here, not at the first chunk. Captured BEFORE start() so a
   // synchronous first dataavailable can never be stamped later than the clock.
   mediaStartedAtWall = Date.now()
@@ -2109,6 +2293,12 @@ window.recordAPI.onAnnotationSnapshot((snapshot) => {
   annotationSnapshot = sanitizeAnnotationSnapshot(snapshot, annotationStageSize())
   renderAnnotationControls()
   requestCompositeFrame()
+  // C05: a direct-track take cannot absorb a composited annotation layer. The take
+  // is sealed through the normal finish path and the reason is reported; tracks are
+  // never swapped underneath MediaRecorder.
+  if (directTrackTakeActive() && annotationSnapshot.annotations.length > 0) {
+    handleDirectTrackCompositionChange('annotations-present')
+  }
 })
 // R4 window mode invalidation push (contract §2.2): main polls the bound window source while
 // this control window is alive and pushes once when the target disappears.
@@ -2160,6 +2350,7 @@ window.recordAPI.onInit((data) => {
     // E2E-only (same gate as the synthetic capture source): lets the runtime probe drive
     // the window-mode invalidation paths that would need a real target window otherwise.
     window.__recordDebug = {
+      directTrack: () => (directTrackDecision ? { ...directTrackDecision } : null),
       fitContainRect,
       emitVideoTrackEvent: (type) => {
         const track = watchedVideoTrack || desktopStream?.getVideoTracks?.()[0]

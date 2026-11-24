@@ -24,6 +24,8 @@
 | D03 | P1 | 已实现（UI 按钮待接） | test/recording-salvage.test.js | 真实强制结束/截断 WebM 的重封装与播放 |
 | B01 | P1 | 已实现（原生剪贴板排除格式待接线） | test/capture-skip-history.test.js | 唯一测试图在截图历史/剪贴板历史/自动存盘三区新增 0；原生排除格式 |
 | B03 | P1 | 已实现 | test/pin-copy-once.test.js, test/capture-pin-copy.test.js | 真机 0/90/180/270 视图导出朝向与高 DPI；预览对话框 |
+| A07 | P2 | 已实现（吸附开关待设置项） | test/pin-snap-geometry.test.js, test/pin-display.test.js | 真机 100%+150%/负坐标副屏/拔屏/20 张定位与 ≤1 DIP 吸附 |
+| C05 | P2 | 實驗路徑已实现（默认关闭） | test/recording-direct-track.test.js, test/measure-recording-encode.test.js | 核显/独显 × 1080p30/4K30 成对样本；CPU/掉帧/音画差门槛 |
 | B07 | P2 | 已实现（明细成本仍按最新价） | test/usage-export.test.js, test/usage-export-import.test.js, test/usage-export-ui.test.js | 真实日志轮转样本与跨版本价格复算 |
 | D04 | P1 | 已实现（IPC 已接线，逐版本迁移钩子待注册） | test/data-root-backup.test.js, test/data-root-backup-ui.test.js | 普通安装与便携从上一受支持版本实机恢复；坏包/盘满/中途终止 |
 | C06 | P2 | 工具已实现 | test/release-size.test.js | 两个相邻 NSIS 候选 + blockmap 的差分传输与安装耗时 |
