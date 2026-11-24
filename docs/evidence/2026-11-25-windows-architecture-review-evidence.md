@@ -15,6 +15,7 @@
 | A02 | P1 | 已实现 | test/capture-keyboard-focus.test.js, test/capture-annotation-width.test.js | Tab 到标注/撤销/保存/录制按钮逐个按 Enter/Space；讲述人读出名称 |
 | A03 | P1 | 已实现 | test/shortcut-service.test.js, test/shortcut-rebind-contract.test.js, test/settings-ipc.test.js, test/shortcut-ui-contract.test.js | 第二个本地进程占住候选键后旧键仍可用；重启后仍有效 |
 | A04 | P1 | 已实现 | test/usage-format.test.js, test/usage-cost-states.test.js | 深浅色 + Windows 高对比度下五类样本（图/表/tooltip）逐项比对 |
+| B02 | P1 | 已实现 | test/capture-color-picker.test.js | 100%/150%/200% 已知 sRGB 色值 PNG 逐点比对；剪贴板写入端到端 |
 | B06 | P1 | 已实现 | test/long-capture-output.test.js | 阈值上下各一档的真实长图；慢盘快速保存与同名占用 |
 | C03 | P1 | 已实现 | test/clipboard-poll-backoff.test.js | 5,000 条混合历史首屏 P95、滚动无重复/漏页（真机面板） |
 | C04 | P1 | 已实现 | test/pin-image-store-async.test.js, test/pin-domain.test.js | 慢盘/SSD 上 1/10/20 张 4K PNG 的主线程停顿 P95 与句柄基线 |

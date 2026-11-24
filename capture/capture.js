@@ -53,6 +53,16 @@ const colorInput = document.getElementById('color')
 const colorPreview = document.getElementById('colorSwatch')
 const colorButton = document.getElementById('colorButton')
 const colorPalette = document.getElementById('colorPalette')
+// B02 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the SCREEN-colour
+// sampler, deliberately distinct from the annotation palette above. The pure mapping and
+// formatter live in capture/color-picker.js, loaded just before this script.
+const colorSampler = document.getElementById('colorSampler')
+const colorSampleBadge = document.getElementById('colorSampleBadge')
+const colorSampleSwatch = document.getElementById('colorSampleSwatch')
+const colorSampleHex = document.getElementById('colorSampleHex')
+const colorSampleRgb = document.getElementById('colorSampleRgb')
+const colorSampleCopied = document.getElementById('colorSampleCopied')
+const { sourcePointFromClient, formatColorSample } = window.captureColorPicker || {}
 // P1 (2026-10-18 snow migration section 6.2 item 2): the image-to-Markdown/HTML trigger and its
 // two-format popover. Both are static markup, so a missing element here is a build
 // error rather than a state to defend against.
@@ -208,6 +218,14 @@ let annotationColor = DEFAULT_ANNOTATION_COLOR
 // settings schema does not grow another list).
 const MAX_RECENT_COLORS = 3
 let recentAnnotationColors = []
+// B02: screen-colour sampling state. The offscreen ImageData is the frozen screenshot, cached
+// once per decoded image (never per pointermove) and invalidated from onInit. None of this
+// feeds selection, annotations or the undo stack.
+let colorSampling = false
+let colorSampleImageData = null
+let colorSampleValue = null
+let colorSampleClientPoint = null
+let colorSampleCopiedTimer = 0
 // A2: one wheel burst must not write the store per notch, so persistence trails.
 let widthPersistTimer = 0
 const WIDTH_PERSIST_DELAY = 500
@@ -1415,6 +1433,182 @@ function toggleColorPalette() {
   else closeColorPalette()
 }
 
+// ---------- B02 (2026-11-24 review): screen-colour sampling ----------
+// This is "sample a pixel of the FROZEN screenshot", not "pick the annotation colour". The
+// palette above stays responsible for strokes; this path only reads the decoded image and
+// formats HEX/RGB, so selection, annotations and the undo stack are untouched by design.
+
+// The setting is screenshot.showColorPicker. The shipped default is true, so only an explicit
+// false hides the entry (settings-defaults.js and this predicate agree).
+function colorPickerEnabled(settings) {
+  return settings?.screenshot?.showColorPicker !== false
+}
+
+// onInit is the one synchronization point, and it also drops the cached ImageData so the next
+// sample rebuilds it from the image this window just decoded.
+function syncColorSampler(settings) {
+  colorSampleImageData = null
+  if (colorSampling) exitColorSampling()
+  if (!colorSampler) return
+  const enabled = colorPickerEnabled(settings)
+  colorSampler.hidden = !enabled
+  colorSampler.classList.toggle('hidden', !enabled)
+  colorSampler.setAttribute('aria-pressed', 'false')
+  invalidateToolbarSize()
+}
+
+function resetColorSampleDisplay() {
+  clearTimeout(colorSampleCopiedTimer)
+  colorSampleCopiedTimer = 0
+  colorSampleValue = null
+  colorSampleCopied?.classList.add('hidden')
+  if (colorSampleHex) colorSampleHex.textContent = '—'
+  if (colorSampleRgb) colorSampleRgb.textContent = '—'
+  colorSampleSwatch?.style.removeProperty('background')
+  colorSampleBadge?.style.removeProperty('background')
+  colorSampleBadge?.style.removeProperty('color')
+  colorSampleBadge?.classList.add('hidden')
+  if (colorSampleBadge) colorSampleBadge.hidden = true
+}
+
+function enterColorSampling() {
+  if (colorSampling || !colorSampler || colorSampler.hidden) return
+  if (!image?.naturalWidth || !image?.naturalHeight) return
+  colorSampling = true
+  colorSampleClientPoint = null
+  // "Clear the previous sample on entry": only the badge contents reset, the decoded image
+  // cache is untouched (it is invalidated on init, not on every entry).
+  resetColorSampleDisplay()
+  if (colorSampleBadge) {
+    colorSampleBadge.hidden = false
+    colorSampleBadge.classList.remove('hidden')
+  }
+  colorSampler.classList.add('active')
+  colorSampler.setAttribute('aria-pressed', 'true')
+  canvas.style.cursor = 'crosshair'
+}
+
+function exitColorSampling() {
+  if (!colorSampling) return
+  colorSampling = false
+  const point = colorSampleClientPoint || { x: -1, y: -1 }
+  colorSampleClientPoint = null
+  resetColorSampleDisplay()
+  colorSampler?.classList.remove('active')
+  colorSampler?.setAttribute('aria-pressed', 'false')
+  if (document.activeElement === colorSampler) colorSampler.blur()
+  // Back to the region editor: recompute the cursor at the last pointer position. It only
+  // reads the current region and never rewrites it.
+  updateSelectionCursor(point)
+}
+
+function toggleColorSampling() {
+  if (colorSampling) exitColorSampling()
+  else enterColorSampling()
+}
+
+// The rect of the frozen image in client CSS pixels plus the source-pixel origin inside it.
+// A plain capture displays the whole screenshot, so bounds/imageWidth carry the 100/150/200%
+// Windows scale directly. A document editor displays only the crop, possibly zoomed, so it
+// maps through that viewport and then adds the crop origin: the bytes are still the frozen
+// image's bytes, never a re-capture and never a screen read.
+function colorSampleMapping() {
+  if (documentEditor) {
+    const crop = documentCrop()
+    const viewport = documentViewport()
+    if (crop && viewport && viewport.zoom > 0) {
+      return {
+        bounds: { x: viewport.offsetX, y: viewport.offsetY, w: crop.w * viewport.zoom, h: crop.h * viewport.zoom },
+        imageWidth: crop.w,
+        imageHeight: crop.h,
+        offsetX: crop.x,
+        offsetY: crop.y
+      }
+    }
+  }
+  return {
+    bounds: imageDisplayBounds(),
+    imageWidth: image?.naturalWidth || 1,
+    imageHeight: image?.naturalHeight || 1,
+    offsetX: 0,
+    offsetY: 0
+  }
+}
+
+// Draw the frozen image into one offscreen canvas ONCE and cache its ImageData. A pointermove
+// is then a single array lookup instead of a drawImage per event.
+function colorSampleSourceData() {
+  const width = image?.naturalWidth || 0
+  const height = image?.naturalHeight || 0
+  if (!width || !height) return null
+  if (colorSampleImageData && colorSampleImageData.width === width && colorSampleImageData.height === height) {
+    return colorSampleImageData
+  }
+  const offscreen = document.createElement('canvas')
+  offscreen.width = width
+  offscreen.height = height
+  const offscreenCtx = offscreen.getContext('2d', { willReadFrequently: true })
+  if (!offscreenCtx) return null
+  offscreenCtx.drawImage(image, 0, 0)
+  try {
+    colorSampleImageData = offscreenCtx.getImageData(0, 0, width, height)
+  } catch {
+    colorSampleImageData = null
+  }
+  return colorSampleImageData
+}
+
+// The sampling branch for pointermove/pointerdown. It updates the badge only; it does not
+// touch selection, annotations or annotationHistory.
+function updateColorSample(point) {
+  if (!colorSampling || !sourcePointFromClient || !formatColorSample) return
+  colorSampleClientPoint = { x: point.x, y: point.y }
+  const mapping = colorSampleMapping()
+  const mapped = sourcePointFromClient({
+    clientX: point.x,
+    clientY: point.y,
+    bounds: mapping.bounds,
+    imageWidth: mapping.imageWidth,
+    imageHeight: mapping.imageHeight
+  })
+  if (!mapped.inside) {
+    if (colorSampleBadge) {
+      colorSampleBadge.classList.add('hidden')
+      colorSampleBadge.hidden = true
+    }
+    return
+  }
+  const data = colorSampleSourceData()
+  if (!data) return
+  const x = mapped.x + mapping.offsetX
+  const y = mapped.y + mapping.offsetY
+  if (x < 0 || y < 0 || x >= data.width || y >= data.height) return
+  const index = (y * data.width + x) * 4
+  const sample = formatColorSample({ r: data.data[index], g: data.data[index + 1], b: data.data[index + 2] })
+  colorSampleValue = sample
+  if (colorSampleBadge) {
+    colorSampleBadge.hidden = false
+    colorSampleBadge.classList.remove('hidden')
+    colorSampleBadge.style.background = sample.hex
+    colorSampleBadge.style.color = sample.textColor
+  }
+  if (colorSampleSwatch) colorSampleSwatch.style.background = sample.hex
+  if (colorSampleHex) colorSampleHex.textContent = sample.hex
+  if (colorSampleRgb) colorSampleRgb.textContent = sample.rgb
+}
+
+// Enter copies the value the badge currently shows. The clipboard write is the only side
+// effect of the mode; the screenshot itself is never re-captured.
+async function copyColorSample() {
+  if (!colorSampleValue) return
+  try {
+    await navigator.clipboard.writeText(colorSampleValue.hex)
+    colorSampleCopied?.classList.remove('hidden')
+    clearTimeout(colorSampleCopiedTimer)
+    colorSampleCopiedTimer = setTimeout(() => colorSampleCopied?.classList.add('hidden'), 1200)
+  } catch {}
+}
+
 // B4 (D7): one write path for a remembered style. The value is normalised through
 // resolveToolStyle, so the in-memory map and the persisted block always agree on the
 // shape (and a hand-edited store cannot smuggle a bad value into a new annotation).
@@ -2462,6 +2656,9 @@ function magnifierPartAt(item, point) {
 }
 
 canvas.addEventListener('pointerdown',(event)=>{
+  // B02: screen sampling owns the press while it is active. It updates only the sample and
+  // must sit in front of every selection/annotation branch below.
+  if(colorSampling){updateColorSample(pointFromEvent(event));return;}
   if (!resultPanel.classList.contains('hidden')) return
   if(activeOcrResult){clearOcrResult();return}
   const point=pointFromEvent(event); startPoint=point
@@ -2657,6 +2854,9 @@ function editSelectedMagnifier(patch) {
 
 canvas.addEventListener('pointermove',(event)=>{
   const point=pointFromEvent(event)
+  // B02: sampling mode ends the move here - no selection drag, no annotation hit test and no
+  // render; only the badge changes.
+  if(colorSampling){updateColorSample(point);return}
   if(selectState==='auto'){
     if(pointerDownPoint){
       if(Math.hypot(point.x-pointerDownPoint.x,point.y-pointerDownPoint.y)>6){if(!confirmDiscardAnnotations()){pointerDownPoint=null;return}selectState='manual';selecting=true;startPoint=pointerDownPoint;pointerDownPoint=null;selection=normalizeRect(startPoint,point);clearAnnotationsForNewSelection();smartCandidates=[];tip.style.display='none';render()}
@@ -2701,6 +2901,8 @@ canvas.addEventListener('pointermove',(event)=>{
 
 
 canvas.addEventListener('pointerup',(event)=>{
+  // B02: a press in sampling mode cannot commit an annotation or finish a selection.
+  if(colorSampling)return
   if(selectState==='auto'&&pointerDownPoint){const point=pointFromEvent(event);const moved=Math.hypot(point.x-pointerDownPoint.x,point.y-pointerDownPoint.y)>6;pointerDownPoint=null;if(moved){selectState='selected';selection=normalizeRect(startPoint,point);if(selection.w<3||selection.h<3)selection=null}else if(selection){selectState='selected'}tip.style.display='none';finishSelection();updateSelectionCursor(point);return}
   if(selecting){const point=pointFromEvent(event);selecting=false;if(selection.w<3||selection.h<3)selection=null;selectState=selection?'selected':'manual';finishSelection();updateSelectionCursor(point);return}
   if(resizing){resizing=null;finishSelection();updateSelectionCursor(pointFromEvent(event));return}
@@ -2714,6 +2916,8 @@ canvas.addEventListener('pointerup',(event)=>{
 })
 
 canvas.addEventListener('pointercancel',()=>{
+  // B02: sampling owns the gesture; never settle a draft here.
+  if(colorSampling)return
   selecting=false
   dragging=false
   resizing=null
@@ -2732,6 +2936,8 @@ canvas.addEventListener('pointercancel',()=>{
 })
 
 canvas.addEventListener('wheel',(event)=>{
+  // B02: the wheel is a toolbar shortcut; it must not change widths while sampling.
+  if(colorSampling)return
   // A2: the smart-selection stepper keeps priority in auto mode.
   if(selectState==='auto'){
     if(smartCandidates.length<2)return
@@ -2753,7 +2959,7 @@ canvas.addEventListener('wheel',(event)=>{
   render()
 },{passive:false})
 
-canvas.addEventListener('dblclick',()=>{ if(selection&&initData?.settings?.screenshot?.doubleClickCopy) performAction('copy') })
+canvas.addEventListener('dblclick',()=>{ if(colorSampling)return; if(selection&&initData?.settings?.screenshot?.doubleClickCopy) performAction('copy') })
 
 // §3.2②: the pixel consumers (copy/save/pdf/ocr) all read ONE captured image, which
 // still covers only the current display. A level-2 Ctrl+A selection reaches past it by
@@ -4165,6 +4371,9 @@ toolOptions.addEventListener('click',(event)=>{const button=event.target.closest
 // A3 (D3): the swatch button opens the popover; a preset click is a discrete
 // two-target edit (global default + selected item) and anything outside closes it.
 colorButton.addEventListener('click',(event)=>{event.stopPropagation();toggleColorPalette()})
+// B02: the entry (visible only when screenshot.showColorPicker allows it) toggles the
+// screen-colour mode; it is not the annotation palette above.
+colorSampler?.addEventListener('click',()=>toggleColorSampling())
 colorPalette.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-color]');if(!button)return;event.stopPropagation();setAnnotationColor(button.dataset.annotationColor,true)})
 document.addEventListener('click',(event)=>{if(colorPalette.classList.contains('hidden'))return;if(colorPalette.contains(event.target)||colorButton.contains(event.target))return;closeColorPalette()})
 // A1 (D1): the right button is a quick-select gesture now, so the native context
@@ -4268,7 +4477,14 @@ document.getElementById('ocrResultClose').onclick=clearOcrResult
 
 addEventListener('keydown',(event)=>{
   if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
-  if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(!convertDocMenu.classList.contains('hidden'))closeConvertDocMenu();else if(!colorPalette.classList.contains('hidden'))closeColorPalette();else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else if(selectedAnnotationItem())setSelectedAnnotation(null);else closeCaptureWindow();return}
+  // B02: Esc leaves screen-colour sampling before the shipped Esc ladder starts unwinding
+  // panels, so the mode always returns to the region editor first.
+  if(event.key==='Escape'){if(colorSampling){exitColorSampling();return;}if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(!convertDocMenu.classList.contains('hidden'))closeConvertDocMenu();else if(!colorPalette.classList.contains('hidden'))closeColorPalette();else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else if(selectedAnnotationItem())setSelectedAnnotation(null);else closeCaptureWindow();return}
+  // B02: while sampling, Enter copies the sampled HEX and every other shortcut belongs to the
+  // mode, not to annotations. This is an added mode guard; A02's focus predicate below keeps
+  // exactly the meaning it had outside sampling mode.
+  if(colorSampling&&event.key==='Enter'&&!event.ctrlKey&&!event.altKey&&!event.metaKey){event.preventDefault();copyColorSample();return}
+  if(colorSampling)return
   // A02 (docs/reviews/2026-11-24-windows-product-architecture-review.md): Escape is the one
   // window-level key that always wins, and it unwinds in a fixed order - result panel,
   // conversion menu, colour palette, OCR overlay, watermark editor, selected annotation,
@@ -4321,6 +4537,9 @@ window.captureAPI.onInit((data)=>{
   // B4: replaces the T1 setAnnotationWidth/setAnnotationColor init calls - both now
   // write the current tool's remembered block, which is meaningless before it is read.
   applyAnnotationStyles(data.settings)
+  // B02: the one place screenshot.showColorPicker drives the entry; default true, explicit
+  // false hides it, and a new image also invalidates the cached sampling ImageData.
+  syncColorSampler(data.settings)
   if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}
   // P0-2（S9b）：光标位图在这里预解码（每次 init 都重置，避免沿用上一张的光标）。
   // exportSelectionCanvas 是同步函数，贴图时只认"已解码"的光标，不能在里面等。

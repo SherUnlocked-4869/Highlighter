@@ -22,6 +22,19 @@
   </div>
   <div id="tip" data-i18n="capture.tip.drag"></div>
   <div id="sizeBadge"></div>
+  <!-- B02 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the screen-colour
+       sample. It is a status region because the value changes while the pointer moves; the
+       annotation palette below is a different control (it changes stroke colour, not pixels). -->
+  <div id="colorSampleBadge" class="color-sample-badge hidden" hidden role="status" aria-live="polite">
+    <strong class="color-sample-section" data-i18n="capture.color-picker.title-section"></strong>
+    <span id="colorSampleSwatch" class="color-sample-swatch" aria-hidden="true"></span>
+    <span class="color-sample-values">
+      <span class="color-sample-row"><span class="color-sample-key" data-i18n="capture.color-picker.hex"></span><b id="colorSampleHex">—</b></span>
+      <span class="color-sample-row"><span class="color-sample-key" data-i18n="capture.color-picker.rgb"></span><b id="colorSampleRgb">—</b></span>
+    </span>
+    <span id="colorSampleCopied" class="color-sample-copied hidden" data-i18n="capture.color-picker.copied"></span>
+    <span class="color-sample-hint" data-i18n="capture.color-picker.hint"></span>
+  </div>
   <!-- Feature B (docs/plans/2026-10-25-snow-apps-feature-development-plan.md §5.3/B3): width x
        height entry, fixed ratio, "reuse last region" and the size-preset list. Hidden until the
        user asks for it (#regionToggle), because the plan requires the common path to gain no extra
@@ -115,6 +128,11 @@
         <button data-tool="magnifier" data-i18n-title="capture.toolbar.magnifier" data-i18n-aria-label="capture.toolbar.magnifier"><span class="toolbar-icon" style="--icon:url('icons/magnifier.svg')" aria-hidden="true"></span></button>
       </div>
       <div class="divider"></div>
+      <!-- B02 (docs/reviews/2026-11-24-windows-product-architecture-review.md): "screen colour"
+           is not the annotation colour. The entry ships hidden in the markup and capture.js
+           reveals it from screenshot.showColorPicker; the text label keeps it distinguishable
+           from the swatch button next to it without adding an icon asset. -->
+      <button id="colorSampler" class="hidden" type="button" hidden aria-pressed="false" data-i18n-title="capture.toolbar.color-picker" data-i18n-aria-label="capture.toolbar.color-picker"><span class="color-sampler-label" aria-hidden="true">HEX</span></button>
       <div class="color-wrap">
         <button id="colorButton" type="button" aria-haspopup="true" aria-expanded="false" data-i18n-title="capture.toolbar.color" data-i18n-aria-label="capture.toolbar.color"><span id="colorSwatch"></span></button>
         <div id="colorPalette" class="color-palette hidden" role="group" data-i18n-aria-label="capture.palette.group">
@@ -301,6 +319,9 @@
   <script src="output-style-panel.js"></script>
   <script src="../shared/ocr-text-overlay.js"></script>
   <script src="keyboard-focus.js"></script>
+  <!-- B02: the pure client->source-pixel mapping and colour formatter. Must load before
+       capture.js, which reads window.captureColorPicker at load time. -->
+  <script src="color-picker.js"></script>
   <script src="capture.js"></script>
 </body>
 </html>
