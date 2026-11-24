@@ -147,7 +147,12 @@ class UpdateService {
     setTimeoutFn = setTimeout,
     clearTimeoutFn = clearTimeout,
     startupDelayMs = DEFAULT_STARTUP_DELAY_MS,
-    checkIntervalMs = DEFAULT_CHECK_INTERVAL_MS
+    checkIntervalMs = DEFAULT_CHECK_INTERVAL_MS,
+    // D01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the
+    // scheduled check is opt-in. False is the default and the only value a store
+    // without the setting can produce, so the updater stays quiet until the user
+    // ticks auto check - a manual check never arms this timer.
+    autoCheckEnabled = false
   }) {
     if (!currentVersion || !installType) throw new TypeError('UpdateService requires version and install type')
     this.updater = updater
@@ -162,6 +167,7 @@ class UpdateService {
     this.startupDelayMs = startupDelayMs
     this.checkIntervalMs = checkIntervalMs
     this.channel = normalizeChannel(channel)
+    this.autoCheckEnabled = autoCheckEnabled === true
     this.timer = null
     this.started = false
     this.disposed = false
@@ -182,7 +188,8 @@ class UpdateService {
       progress: null,
       error: null,
       installBlocked: '',
-      lastCheckedAt: ''
+      lastCheckedAt: '',
+      autoCheckEnabled: this.autoCheckEnabled
     }
     if (this.updater) {
       this.configureUpdater()
@@ -382,20 +389,45 @@ class UpdateService {
     }
   }
 
+  // D01: the scheduled check is armed only by the user's explicit choice. Turning the
+  // choice off must also disarm a timer that is already pending - otherwise switching the
+  // switch back off would keep an idle process talking to the feed for up to 24 hours.
+  setAutoCheckEnabled(enabled) {
+    const next = enabled === true
+    if (this.autoCheckEnabled !== next) {
+      this.autoCheckEnabled = next
+      if (!next) {
+        this.started = false
+        if (this.timer) this.clearTimeoutFn(this.timer)
+        this.timer = null
+      } else if (!this.started) {
+        this.start()
+      }
+      this.setState({ autoCheckEnabled: next })
+    }
+    return this.autoCheckEnabled
+  }
+
   start() {
     if (this.started || this.disposed || this.state.installType !== 'nsis' || !this.updater) return false
+    // D01: without the opt-in there is no timer at all, so no scheduled request can
+    // ever reach the update feed. start() still returns false so a caller can tell
+    // 'nothing armed' from 'armed'.
+    if (!this.autoCheckEnabled) return false
     this.started = true
     this.schedule(this.startupDelayMs)
     return true
   }
 
   schedule(delay) {
-    if (this.disposed) return
+    if (this.disposed || !this.autoCheckEnabled) return
     if (this.timer) this.clearTimeoutFn(this.timer)
     this.timer = this.setTimeoutFn(async () => {
       this.timer = null
+      // The choice may have been revoked while the timer was pending.
+      if (this.disposed || !this.autoCheckEnabled) return
       await this.check({ manual: false })
-      if (!this.disposed) this.schedule(this.checkIntervalMs)
+      if (!this.disposed && this.autoCheckEnabled) this.schedule(this.checkIntervalMs)
     }, delay)
   }
 

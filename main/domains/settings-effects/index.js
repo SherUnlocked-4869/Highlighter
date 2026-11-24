@@ -54,6 +54,20 @@ function createSettingsEffects(deps) {
       run: (_patch, settings) => getUpdateService()?.setChannel(settings.system.updateChannel)
     },
     {
+      // D01 (2026-11-24 architecture review): the scheduled check is opt-in, so this
+      // effect is the switch that both arms the timer and disarms it. Enabling has to
+      // resolve the lazily created service (that is what constructs the updater);
+      // disabling must NOT construct one - peek only, so turning the switch off on a
+      // session that never checked anything still touches nothing.
+      id: 'system.autoCheckUpdates',
+      when: (patch) => patch.system?.autoCheckUpdates !== undefined,
+      run: (_patch, settings) => {
+        const enabled = settings.system.autoCheckUpdates === true
+        const service = enabled ? getUpdateService() : deps.peekUpdateService?.()
+        service?.setAutoCheckEnabled(enabled)
+      }
+    },
+    {
       id: 'plugins.ocr.off',
       when: (patch) => patch.plugins?.ocr === false,
       run: () => {

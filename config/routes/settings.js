@@ -68,7 +68,8 @@ function updateCardInnerMarkup(status) {
     : status.installType !== 'nsis'
       ? '<small class="section-note">' + t('config.about.unsupported-note') + '</small>'
       : ''
-  return `<div class="card update-card"><div class="update-head"><div><h2>${t('config.about.update-section')}</h2><p>${escapeHtml(updateStatusPresentation(status))}</p></div><label>${t('config.about.update-channel')}<select id="updateChannel" ${busy ? 'disabled' : ''}><option value="stable" ${status.channel === 'stable' ? 'selected' : ''}>${t('config.about.channel-stable')}</option><option value="beta" ${status.channel === 'beta' ? 'selected' : ''}>${t('config.about.channel-beta')}</option></select></label></div>${status.channel === 'beta' ? '<div class="update-guidance warning">' + t('config.about.beta-warning') + '</div>' : ''}${releaseDetails}${progress}${releaseNotes}${guidance}${portabilityNote}<div class="update-actions"><button class="button primary" id="primaryUpdateAction" data-action="${primaryAction}" ${primaryBusy ? 'disabled' : ''}>${primaryLabel}</button><button class="button" id="openUpdateDownloads">${t('config.about.release-page')}</button></div></div>`
+  const autoCheckRow = `<div class="form-row update-auto-check"><div class="form-label"><b>${t('config.about.auto-check-updates')}</b><small>${t('config.about.auto-check-updates-hint')}</small></div><button type="button" class="switch ${status.autoCheckEnabled === true ? 'on' : ''}" role="switch" aria-checked="${status.autoCheckEnabled === true}" data-switch="autoCheckUpdates" data-group="system"></button></div>`
+  return `<div class="card update-card"><div class="update-head"><div><h2>${t('config.about.update-section')}</h2><p>${escapeHtml(updateStatusPresentation(status))}</p></div><label>${t('config.about.update-channel')}<select id="updateChannel" ${busy ? 'disabled' : ''}><option value="stable" ${status.channel === 'stable' ? 'selected' : ''}>${t('config.about.channel-stable')}</option><option value="beta" ${status.channel === 'beta' ? 'selected' : ''}>${t('config.about.channel-beta')}</option></select></label></div>${autoCheckRow}${status.channel === 'beta' ? '<div class="update-guidance warning">' + t('config.about.beta-warning') + '</div>' : ''}${releaseDetails}${progress}${releaseNotes}${guidance}${portabilityNote}<div class="update-actions"><button class="button primary" id="primaryUpdateAction" data-action="${primaryAction}" ${primaryBusy ? 'disabled' : ''}>${primaryLabel}</button><button class="button" id="openUpdateDownloads">${t('config.about.release-page')}</button></div></div>`
 }
 
 function bindGeneralUpdateCard() {
@@ -110,6 +111,9 @@ async function refreshGeneralUpdateCard(snapshot = null) {
   if (!container) return
   container.innerHTML = updateCardInnerMarkup(status)
   bindGeneralUpdateCard()
+  // The card is re-rendered after every status push, so its switch is rebound here; the
+  // generic binder (shared.js) turns the click into updateSettings({ system: { ... } }).
+  bindSwitches()
 }
 
 function settingsFieldLabel(id, labelKey, hintKey) {

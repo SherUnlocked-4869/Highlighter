@@ -164,7 +164,13 @@ const DEFAULT_SETTINGS = {
     runLog: true,
     enableTray: true,
     gameMode: false,
-    updateChannel: 'stable'
+    updateChannel: 'stable',
+    // D01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the product
+    // promises "offline until asked". A missing or non-boolean value - including every
+    // store written before this key existed - reads as OFF, so startup never arms the
+    // updater's timer on its own. A manual "check for updates" still authorises exactly
+    // one request (update-service.js check({ manual: true })).
+    autoCheckUpdates: false
   },
   // Index-Translate proxy bridge (docs/proxy-inprocess-relay-plan.md). This block
   // IS the patch-validation template, so every field the settings page may write

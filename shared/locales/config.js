@@ -790,6 +790,9 @@
     'config.about.channel-stable': '稳定版',
     'config.about.channel-beta': '测试版',
     'config.about.beta-warning': '测试版可能包含尚未完成验证的改动；切回稳定版不会自动降级。',
+    // D01: the scheduled check is opt-in; this copy explains the default offline state.
+    'config.about.auto-check-updates': '自动检查更新',
+    'config.about.auto-check-updates-hint': '默认关闭，不会联网；可随时手动检查一次，开启后每 24 小时检查一次。',
     'config.about.release-page': '发布页',
     'config.about.channel-switch-failed': '无法切换更新通道',
     // AI usage page (B4). Kept as one block so the three language columns stay
@@ -1804,6 +1807,8 @@
     'config.about.channel-stable': 'Stable',
     'config.about.channel-beta': 'Beta',
     'config.about.beta-warning': 'Beta builds may contain changes that are not fully verified; switching back to stable does not downgrade automatically.',
+    'config.about.auto-check-updates': 'Check for updates automatically',
+    'config.about.auto-check-updates-hint': 'Off by default, so nothing goes online on its own. Check manually any time, or turn this on to check every 24 hours.',
     'config.about.release-page': 'Releases',
     'config.about.channel-switch-failed': 'Could not switch the update channel',
     // AI usage page (B4).
@@ -2816,6 +2821,8 @@
     'config.about.channel-stable': '穩定版',
     'config.about.channel-beta': '測試版',
     'config.about.beta-warning': '測試版可能包含尚未完成驗證的變更；切回穩定版不會自動降級。',
+    'config.about.auto-check-updates': '自動檢查更新',
+    'config.about.auto-check-updates-hint': '預設關閉，不會連網；可隨時手動檢查一次，開啟後每 24 小時檢查一次。',
     'config.about.release-page': '發布頁',
     'config.about.channel-switch-failed': '無法切換更新通道',
     // AI usage page (B4).

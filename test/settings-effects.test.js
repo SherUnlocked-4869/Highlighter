@@ -41,6 +41,33 @@ test('settings update effects are field-gated and ordered', () => {
   assert.deepEqual(calls.map((c) => c.name), ['shortcuts'])
 })
 
+test('D01: the update auto-check switch arms and disarms the service', () => {
+  const toggles = []
+  let received = null
+  const domain = createSettingsEffects({
+    app: { setLoginItemSettings: () => {} },
+    registerShortcuts: () => {},
+    applyGameModeState: () => {},
+    createTrayIcon: () => {},
+    // Enabling resolves the lazily created service; the off path must not construct one.
+    getUpdateService: () => ({ setChannel: () => {}, setAutoCheckEnabled: (value) => toggles.push(['live', value]) }),
+    peekUpdateService: () => ({ setAutoCheckEnabled: (value) => toggles.push(['peek', value]) }),
+    ocrServiceRef: { get: () => null, set: () => {} },
+    getOcrService: () => ({ ensureStarted: async () => {} }),
+    broadcastActionAppearance: () => {},
+    searchDomain: { notifySettingsChanged: () => {} },
+    selectionHookServiceRef: { get: () => null },
+    log: () => {}
+  })
+
+  domain.applyUpdate({ system: { autoCheckUpdates: true } }, { system: { autoCheckUpdates: true }, selectionToolbar: {}, ocr: {} })
+  domain.applyUpdate({ system: { autoCheckUpdates: false } }, { system: { autoCheckUpdates: false }, selectionToolbar: {}, ocr: {} })
+  // A patch that never touches the switch must not poke the updater.
+  domain.applyUpdate({ system: { autoStart: true } }, { system: { autoCheckUpdates: true }, selectionToolbar: {}, ocr: {} })
+  assert.deepEqual(toggles, [['live', true], ['peek', false]])
+  assert.equal(received, null)
+})
+
 test('gameMode takes precedence over enableTray in the same patch', () => {
   const { domain, calls } = createHarness()
   domain.applyUpdate({ system: { gameMode: true, enableTray: true } }, { system: { gameMode: true }, selectionToolbar: {}, ocr: {} })
@@ -128,6 +155,8 @@ test('update effect ids are stable for contract tests', () => {
     'system.gameMode',
     'system.enableTray',
     'system.updateChannel',
+    // D01: opt-in scheduler switch, ordered with the other system.update* effects.
+    'system.autoCheckUpdates',
     'plugins.ocr.off',
     'plugins.ocr.hotStart',
     'ocr.idleTimeoutMs',

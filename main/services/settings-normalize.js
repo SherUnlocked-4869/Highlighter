@@ -220,6 +220,9 @@ function createSettingsNormalizer({ defaultHistoryDirectory, log } = {}) {
     normalized.screenshot.historyDirectory = String(normalized.screenshot.historyDirectory || legacyDirectory || defaultHistoryDirectory).trim()
     if (!normalized.screenshot.historyDirectory) normalized.screenshot.historyDirectory = defaultHistoryDirectory
     normalized.system.updateChannel = normalized.system.updateChannel === 'beta' ? 'beta' : 'stable'
+    // D01: auto-check stays a strict boolean; anything else (hand-edited store, legacy
+    // value) means "do not run a timer", which is the default-off promise.
+    normalized.system.autoCheckUpdates = normalized.system.autoCheckUpdates === true
     normalized.system.gameMode = normalized.system.gameMode === true
     normalized.mainColor = resolveMainColor(normalized.mainColor)
     if (normalized.fixedContent && Object.hasOwn(normalized.fixedContent, 'autoSaveDirectory')) delete normalized.fixedContent.autoSaveDirectory

@@ -76,7 +76,7 @@ const { registerRecordingIpc } = require('./main/ipc/recording-ipc')
 const { registerRecordingWorkbenchIpc, registerRecordingEditorIpc } = require('./main/ipc/recording-workbench-ipc')
 const { registerSearchIpc } = require('./main/ipc/search-ipc')
 const { registerSelectionIpc } = require('./main/ipc/selection-ipc')
-const { UpdateService } = require('./main/services/update-service')
+const { createUpdateDomain } = require('./main/domains/update')
 const { createSecureIpcMain } = require('./main/services/ipc-security')
 const { createLocalWindowFactory } = require('./main/services/window-security')
 const { windowBackdropColor, trackWindowBackdrop, applyWindowBackdropToTracked } = require('./main/services/window-backdrop')
@@ -145,7 +145,7 @@ let store = null
 let settingsService = null
 let historyService = null, captureDocumentService = null
 let diagnosticsService = null
-let updateService = null
+let updateDomain = null
 let sessionExitRecorded = false
 // R1 (plan §5.2 exit safety): one-shot guard for the bounded recording shutdown awaited below.
 let recordingShutdownComplete = false
@@ -370,45 +370,34 @@ function getUpdateInstallReadiness() {
   return { ok: true }
 }
 
-function initializeUpdateService() {
-  if (updateService) return updateService
-  const installType = getInstallType()
-  let updater = null
-  if (installType === 'nsis') {
-    try { updater = require('electron-updater').autoUpdater } catch (error) {
-      log('Unable to initialize update client:', error.message || String(error))
-    }
+// D01/D06: the updater's lifecycle lives in main/domains/update; this factory call is
+// the only assembly left here. It stays lazy so a default (offline) install never
+// requires electron-updater at all.
+function getUpdateDomain() {
+  if (!updateDomain) {
+    updateDomain = createUpdateDomain({
+      app,
+      getSettings,
+      getInstallType,
+      openDownloadPage: () => shell.openExternal('https://github.com/SherUnlocked-4869/Highlighter/releases'),
+      canInstall: async () => getUpdateInstallReadiness(),
+      prepareInstall: async () => {
+        await managedRecordingWriters.waitForIdle()
+        const readiness = getUpdateInstallReadiness()
+        if (!readiness.ok) throw new Error(readiness.reason)
+        markSessionClean('update-install')
+      },
+      notify: (snapshot) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update:status', snapshot)
+      },
+      log
+    })
   }
-  updateService = new UpdateService({
-    updater,
-    currentVersion: app.getVersion(),
-    installType,
-    channel: getSettings().system.updateChannel,
-    openDownloadPage: () => shell.openExternal('https://github.com/SherUnlocked-4869/Highlighter/releases'),
-    canInstall: async () => getUpdateInstallReadiness(),
-    prepareInstall: async () => {
-      await managedRecordingWriters.waitForIdle()
-      const readiness = getUpdateInstallReadiness()
-      if (!readiness.ok) throw new Error(readiness.reason)
-      markSessionClean('update-install')
-    },
-    notify: (snapshot) => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update:status', snapshot)
-    },
-    log
-  })
-  return updateService
+  return updateDomain
 }
 
 function resolveUpdateService() {
-  return updateService || initializeUpdateService()
-}
-
-function deferUpdateServiceStart() {
-  const timer = setTimeout(() => {
-    try { resolveUpdateService().start() } catch (error) { log('Update service start failed:', error?.message || String(error)) }
-  }, 2000)
-  timer.unref?.()
+  return getUpdateDomain().resolve()
 }
 
 const getDiagnosticComponents = createComponentLister({
@@ -446,7 +435,7 @@ function initializeDiagnostics() {
     }),
     getComponents: getDiagnosticComponents,
     getSensitiveValues: collectDiagnosticSensitiveValues,
-    getUpdateStatus: () => updateService?.getStatus() || { status: 'not-configured', error: null },
+    getUpdateStatus: () => getUpdateDomain().getStatus(),
     log
   })
   const session = diagnosticsService.startSession()
@@ -749,7 +738,10 @@ settingsEffects = createSettingsEffects({
   registerShortcuts,
   applyGameModeState,
   createTrayIcon,
-  getUpdateService: () => updateService,
+  // D01: resolve, so enabling "auto check updates" can arm the timer on a session that
+  // never constructed the updater; `peekUpdateService` lets the off path avoid that.
+  getUpdateService: () => resolveUpdateService(),
+  peekUpdateService: () => updateDomain?.peek() || null,
   ocrServiceRef,
   getOcrService,
   // A theme change has to reach every tracked window's native backdrop, not only the main one.
@@ -900,7 +892,14 @@ function createTrayIcon() {
   tray._trayIconFile = trayIcon.file
   const gameMode = isGameModeEnabled(settings)
   const proxyState = proxyBridgeController ? proxyBridgeController.menuState(settings) : null
-  tray.setToolTip([gameMode ? 'Highlighter（游戏模式）' : 'Highlighter', proxyState?.running ? t('main.proxy.tooltip-running') : ''].filter(Boolean).join(' · '))
+  // A01: the tooltip mirrors the live capture so a hover (or a screen reader on the tray)
+  // says why a pause/resume entry is showing. createTrayIcon only runs on state changes -
+  // record/index.js refreshes the tray on a status transition, never on an elapsed tick.
+  const liveRecording = recordDomain && typeof recordDomain.getActiveState === 'function' ? recordDomain.getActiveState() : null
+  const recordingTooltip = liveRecording && (liveRecording.status === 'recording' || liveRecording.status === 'paused')
+    ? t(liveRecording.status === 'paused' ? 'main.tray.tooltip-recording-paused' : 'main.tray.tooltip-recording')
+    : ''
+  tray.setToolTip([gameMode ? 'Highlighter（游戏模式）' : 'Highlighter', recordingTooltip, proxyState?.running ? t('main.proxy.tooltip-running') : ''].filter(Boolean).join(' · '))
   tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate({
     gameMode,
     screenshotAccelerator: settings.shortcuts.screenshot, clipboardEnabled: settings.clipboard.enabled,
@@ -1242,7 +1241,7 @@ async function startApplication() {
     proxyBridgeController?.startIfConfigured()
   }
   if (e2eContext.enabled) selectionDomain.createToolbarWindow()
-  deferUpdateServiceStart()
+  getUpdateDomain().deferStart()
   performanceMonitor.finish(startupToken, {
     e2e: e2eContext.enabled,
     moduleElapsedMs: Math.round((performance.now() - mainModuleStartedAt) * 100) / 100
@@ -1295,7 +1294,7 @@ else {
   app.on('window-all-closed', () => {})
   app.on('will-quit', () => {
     markSessionClean('quit')
-    updateService?.dispose()
+    updateDomain?.dispose()
     shortcutService.dispose()
     cursorProvider?.dispose()
   })

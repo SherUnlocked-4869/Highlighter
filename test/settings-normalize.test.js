@@ -50,6 +50,15 @@ test('updateChannel collapses to stable unless it is beta', () => {
   assert.equal(beta.system.updateChannel, 'beta')
 })
 
+test('D01: autoCheckUpdates is off for a missing or non-boolean value', () => {
+  const absent = makeSettings((settings) => { delete settings.system.autoCheckUpdates })
+  const truthy = makeSettings((settings) => { settings.system.autoCheckUpdates = 1 })
+  const enabled = makeSettings((settings) => { settings.system.autoCheckUpdates = true })
+  assert.equal(normalizeWith(absent).system.autoCheckUpdates, false)
+  assert.equal(normalizeWith(truthy).system.autoCheckUpdates, false)
+  assert.equal(normalizeWith(enabled).system.autoCheckUpdates, true)
+})
+
 test('gameMode is coerced to a strict boolean', () => {
   const enabled = normalizeWith(makeSettings((settings) => { settings.system.gameMode = true }))
   const truthy = normalizeWith(makeSettings((settings) => { settings.system.gameMode = 1 }))

@@ -100,14 +100,49 @@ test('tray menu exposes pause/finish only while a recording is active', () => {
   pause.click()
   finish.click()
   assert.deepEqual(calls, [['pause-resume'], ['finish']])
-  // The live entries sit in their own group: a separator on each side separates them from the
-  // summon list above and the local-search entry below.
-  const pauseIndex = active.template.indexOf(pause)
-  assert.equal(active.template[pauseIndex - 1].type, 'separator')
+  // The live entries sit in their own group: finish comes first (A01), then pause/resume,
+  // and the group opens with a separator that splits it from the summon list above.
+  const finishIndex = active.template.indexOf(finish)
+  assert.equal(active.template[finishIndex - 1].type, 'separator')
+  assert.equal(active.template[finishIndex + 1], pause)
 
   const paused = createMenu(false, {}, { active: { status: 'paused' } })
   assert.ok(paused.template.find((item) => item.label === label('main.tray.recording-resume')), 'a paused capture offers resume')
   assert.equal(paused.template.some((item) => item.label === label('main.tray.recording-pause')), false)
+})
+
+test('A01: game mode keeps finish and pause usable while a capture is live', () => {
+  // The control bar can be covered by a fullscreen game, and game mode suspends the
+  // hotkeys, so these two entries must not follow the summon entries' gate.
+  const calls = []
+  const { template } = createMenu(true, {}, {
+    active: { status: 'recording', elapsedMs: 4000 },
+    pauseResume: () => calls.push(['pause-resume']),
+    finish: () => calls.push(['finish'])
+  })
+  const finish = template.find((item) => item.label === label('main.tray.recording-finish'))
+  const pause = template.find((item) => item.label === label('main.tray.recording-pause'))
+  assert.ok(finish && pause)
+  assert.equal(finish.enabled, true)
+  assert.equal(pause.enabled, true)
+  finish.click()
+  pause.click()
+  assert.deepEqual(calls, [['finish'], ['pause-resume']])
+  // The summon entries still obey game mode, including starting a NEW capture.
+  assert.equal(template.find((item) => item.label === label('main.tray.recording-workbench')).enabled, false)
+
+  const paused = createMenu(true, {}, { active: { status: 'paused' } }).template
+  assert.equal(paused.find((item) => item.label === label('main.tray.recording-finish')).enabled, true)
+  assert.equal(paused.find((item) => item.label === label('main.tray.recording-resume')).enabled, true)
+})
+
+test('A01: finish is the first entry of the live session group', () => {
+  const { template } = createMenu(false, {}, { active: { status: 'recording' } })
+  const finishIndex = template.findIndex((item) => item.label === label('main.tray.recording-finish'))
+  const pauseIndex = template.findIndex((item) => item.label === label('main.tray.recording-pause'))
+  assert.ok(finishIndex > 0)
+  assert.equal(template[finishIndex - 1].type, 'separator')
+  assert.equal(finishIndex + 1, pauseIndex)
 })
 
 test('tray live recording entries fall back to the router names', () => {

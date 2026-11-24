@@ -74,18 +74,24 @@ function buildTrayMenuTemplate({
   // append-only (no separator churn in the frozen no-recording menu shape).
   const recordingInfo = recording && typeof recording === 'object' ? recording : null
   const activeRecording = recordingInfo?.active && typeof recordingInfo.active === 'object' ? recordingInfo.active : null
+  // A01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): a live capture
+  // always has a way out. Game mode suspends the summon entries and the global hotkeys,
+  // and the control bar can be covered by a fullscreen game, so the finish entry is the
+  // first item of the active-session group and stays enabled regardless of `featureEnabled`.
+  // `finishActive()` keeps its own session-state check, so a stale menu cannot seal twice.
+  // Starting a NEW capture still obeys game mode (the workbench entry above stays gated).
   const liveRecordingEntries = activeRecording && (activeRecording.status === 'recording' || activeRecording.status === 'paused')
     ? [
         { type: 'separator' },
         {
-          label: activeRecording.status === 'paused' ? t('main.tray.recording-resume') : t('main.tray.recording-pause'),
-          enabled: featureEnabled,
-          click: typeof recordingInfo.pauseResume === 'function' ? recordingInfo.pauseResume : run('recordPauseResume')
+          label: t('main.tray.recording-finish'),
+          enabled: true,
+          click: typeof recordingInfo.finish === 'function' ? recordingInfo.finish : run('recordFinish')
         },
         {
-          label: t('main.tray.recording-finish'),
-          enabled: featureEnabled,
-          click: typeof recordingInfo.finish === 'function' ? recordingInfo.finish : run('recordFinish')
+          label: activeRecording.status === 'paused' ? t('main.tray.recording-resume') : t('main.tray.recording-pause'),
+          enabled: true,
+          click: typeof recordingInfo.pauseResume === 'function' ? recordingInfo.pauseResume : run('recordPauseResume')
         }
       ]
     : []

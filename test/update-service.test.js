@@ -118,6 +118,8 @@ test('throttles automatic checks while manual checks bypass the interval', async
 test('schedules the first and subsequent automatic checks at controlled intervals', async () => {
   const timers = []
   const { service, updater } = createService({
+    // D01: a timer exists only after the explicit opt-in.
+    autoCheckEnabled: true,
     setTimeoutFn: (callback, delay) => {
       const timer = { callback, delay, cleared: false }
       timers.push(timer)
@@ -279,3 +281,107 @@ test('update error copy resolves from the locale table for every language', () =
     setLanguage(previous)
   }
 })
+
+// D01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): startup must not
+// schedule any update check until the user explicitly opts in. These fake timers are the
+// whole clock - if a timer is armed, pending is non-null, and a request can only happen
+// when the captured callback actually runs.
+function createFakeTimers() {
+  const state = { pending: null, nextId: 1 }
+  return {
+    state,
+    setTimeoutFn: (fn, delay) => {
+      const timer = { id: state.nextId++, fn, delay }
+      state.pending = timer
+      return timer.id
+    },
+    clearTimeoutFn: (id) => {
+      if (state.pending && state.pending.id === id) state.pending = null
+    }
+  }
+}
+
+test('D01: a fresh install arms no update timer and makes no request', () => {
+  const timers = createFakeTimers()
+  const { service, updater } = createService({
+    autoCheckEnabled: false,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  })
+  assert.equal(service.getStatus().autoCheckEnabled, false)
+  assert.equal(service.start(), false)
+  assert.equal(timers.state.pending, null)
+  assert.equal(updater.checkCalls, 0)
+})
+
+test('D01: a manual check stays available with the schedule off and arms no timer', async () => {
+  const timers = createFakeTimers()
+  const { service, updater } = createService({
+    autoCheckEnabled: false,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  })
+  updater.checkImplementation = async () => updater.emit('update-not-available')
+  const status = await service.check({ manual: true })
+  assert.equal(updater.checkCalls, 1)
+  assert.equal(status.status, 'idle')
+  assert.equal(timers.state.pending, null)
+  assert.equal(service.getStatus().autoCheckEnabled, false)
+})
+
+test('D01: opting in arms the startup and 24h timers, opting out clears the pending one', async () => {
+  const timers = createFakeTimers()
+  const { service, updater } = createService({
+    autoCheckEnabled: false,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  })
+  updater.checkImplementation = async () => updater.emit('update-not-available')
+
+  assert.equal(service.setAutoCheckEnabled(true), true)
+  assert.equal(service.getStatus().autoCheckEnabled, true)
+  assert.equal(timers.state.pending.delay, DEFAULT_STARTUP_DELAY_MS)
+
+  await timers.state.pending.fn()
+  assert.equal(updater.checkCalls, 1)
+  assert.equal(timers.state.pending.delay, DEFAULT_CHECK_INTERVAL_MS)
+
+  const intervalTimer = timers.state.pending
+  assert.equal(service.setAutoCheckEnabled(false), false)
+  assert.equal(service.getStatus().autoCheckEnabled, false)
+  assert.equal(timers.state.pending, null)
+
+  // A tick captured before the opt-out must not reach the network.
+  await intervalTimer.fn()
+  assert.equal(updater.checkCalls, 1)
+})
+
+test('D01: re-enabling after an opt-out arms a fresh startup timer', () => {
+  const timers = createFakeTimers()
+  const { service } = createService({
+    autoCheckEnabled: false,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  })
+  service.setAutoCheckEnabled(true)
+  service.setAutoCheckEnabled(false)
+  assert.equal(timers.state.pending, null)
+  assert.equal(service.setAutoCheckEnabled(true), true)
+  assert.equal(timers.state.pending.delay, DEFAULT_STARTUP_DELAY_MS)
+})
+
+test('D01: an opted-in service starts from the constructor setting, and dispose stops it', () => {
+  const timers = createFakeTimers()
+  const { service } = createService({
+    autoCheckEnabled: true,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  })
+  // Constructing must not arm anything on its own.
+  assert.equal(timers.state.pending, null)
+  assert.equal(service.start(), true)
+  assert.ok(timers.state.pending, 'start arms the startup timer')
+  service.dispose()
+  assert.equal(timers.state.pending, null)
+})
+
