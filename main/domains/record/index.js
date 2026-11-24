@@ -15,6 +15,7 @@ const {
   sanitizeAnnotationSnapshot
 } = require('../../../record/annotation-utils')
 const { normalizeQuality, normalizeCountdown } = require('../../../shared/recording-quality')
+const { readPngSize } = require('../../services/capture-geometry')
 const { createRecordingSalvage, salvageAssetName } = require('../../services/recording-salvage')
 
 const RECORD_MODES = Object.freeze(['display', 'region', 'window'])
@@ -52,6 +53,10 @@ const EVENT_CLICK_LIMIT = 2000
 // than the box is reported clamped; a window that cannot be measured reports 0 and the renderer
 // falls back to its own video settings, then to 1280x720 - contract §2.2).
 const WINDOW_MEASURE_BOX = Object.freeze({ width: 1920, height: 1080 })
+// B08: one pinned frame arrives as an encoded PNG from the editor. The ceiling keeps a buggy or
+// hostile renderer from pushing an unbounded buffer across IPC; 32 MiB is well above a 4K PNG.
+const PIN_FRAME_MAX_BYTES = 32 * 1024 * 1024
+const PIN_FRAME_MAX_EDGE = 8192
 
 // Lazily-constructed handle for the R1 persistence service (main/services/recording-project-service.js,
 // owned by the W1 workstream). A ref, not an instance, because main.js is at a hard line ceiling and
@@ -71,6 +76,73 @@ function createRecordingProjectRef({ root, log = () => {} }) {
     },
     peek: () => service,
     reset: () => { service = null }
+  }
+}
+
+// B08: the editor's "pin current frame" payload. Only the renderer can rasterise the preview,
+// so the bitmap arrives already encoded. Main re-derives everything that matters: the PNG
+// header (dimensions come from the bytes, never from the claim), the byte ceiling and the
+// data-only metadata. Nothing is written and the project is never touched.
+function sanitizeRecordFramePin(payload = {}) {
+  const value = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+  const raw = value.png
+  let bytes = null
+  if (Buffer.isBuffer(raw)) bytes = raw
+  else if (raw instanceof ArrayBuffer) bytes = Buffer.from(raw)
+  else if (ArrayBuffer.isView(raw)) bytes = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength)
+  if (!bytes || bytes.length === 0) return { ok: false, code: 'invalid-image' }
+  if (bytes.length > PIN_FRAME_MAX_BYTES) return { ok: false, code: 'frame-too-large' }
+  const size = readPngSize(bytes)
+  if (!size || !(size.width > 0) || !(size.height > 0)) return { ok: false, code: 'invalid-image' }
+  if (size.width > PIN_FRAME_MAX_EDGE || size.height > PIN_FRAME_MAX_EDGE) {
+    return { ok: false, code: 'frame-too-large' }
+  }
+  const claimed = value.meta && typeof value.meta === 'object' && !Array.isArray(value.meta) ? value.meta : {}
+  const frameMs = Math.max(0, Math.round(Number(claimed.frameMs) || 0))
+  const scale = Number(claimed.scaleFactor)
+  return {
+    ok: true,
+    bytes,
+    meta: {
+      source: 'record-frame',
+      width: size.width,
+      height: size.height,
+      frameMs,
+      scaleFactor: Number.isFinite(scale) && scale > 0 ? scale : 1,
+      capturedAt: Math.max(0, Math.round(Number(claimed.capturedAt) || 0))
+    }
+  }
+}
+
+// B08: forward ONE validated frame to the existing pin pipeline under its 20-window budget.
+// Pure apart from the injected pin domain, so the budget and the "no file on refusal" rule are
+// testable without an Electron window; the caller owns the sender/project guards.
+function pinRecordFrame(pinDomain, projectId, payload = {}) {
+  const pin = sanitizeRecordFramePin(payload)
+  if (!pin.ok) return pin
+  if (!pinDomain || typeof pinDomain.createPinWindow !== 'function') {
+    return { ok: false, code: 'pin-unavailable' }
+  }
+  const maxPinned = Math.max(1, Math.round(Number(pinDomain.MAX_PINNED) || 20))
+  if (typeof pinDomain.canPinMore === 'function' && !pinDomain.canPinMore()) {
+    return { ok: false, code: 'pin-limit', max: maxPinned }
+  }
+  try {
+    const created = pinDomain.createPinWindow(pin.bytes, { ...pin.meta, projectId })
+    return {
+      ok: true,
+      pinId: String(created?._pinId || ''),
+      width: pin.meta.width,
+      height: pin.meta.height,
+      frameMs: pin.meta.frameMs
+    }
+  } catch (error) {
+    // A budget race between the probe above and createPinWindow lands here: report the same
+    // actionable code instead of a generic failure so the timeline can say why.
+    if (typeof pinDomain.canPinMore === 'function' && !pinDomain.canPinMore()) {
+      return { ok: false, code: 'pin-limit', max: maxPinned }
+    }
+    return { ok: false, code: 'pin-failed' }
   }
 }
 
@@ -124,7 +196,12 @@ function createRecordDomain(deps) {
     utilityProcess = null,
     // R5 test seam: a test injects a fake track service; production builds it lazily from
     // `utilityProcess` on the first demo-enhanced recording.
-    getPointerTrackService = null
+    getPointerTrackService = null,
+    // B08: the frame pinned from the editor timeline becomes an ordinary pin window through
+    // the existing pin domain (budget, placement, opacity, recovery all stay in one place).
+    // Injected as a value like the capture domain's copy, because main.js constructs the pin
+    // domain before this one; absent here means the channel degrades to `pin-unavailable`.
+    pinDomain = null
   } = deps
 
   let recordWindow = null
@@ -2982,6 +3059,20 @@ function createRecordDomain(deps) {
         const win = requireEditorSender(event)
         const id = requireEditorProject(win, projectId)
         return cancelSalvageJob(id)
+      },
+      // B08: pin the frame the editor preview currently shows. The renderer sends the encoded
+      // PNG (its own <video> is the only place the frame exists) plus data-only metadata; the
+      // owner check, byte/shape validation and the 20-pin budget happen here, and the image
+      // goes straight into the existing pin pipeline. No temporary file is written, no project
+      // field is touched, and a refused attempt leaves the pinned count exactly as it was.
+      editorPinFrame: (event, payload = {}) => {
+        const win = requireEditorSender(event)
+        const id = requireEditorProject(win, payload?.projectId)
+        const answer = pinRecordFrame(pinDomain, id, payload)
+        if (!answer.ok && answer.code !== 'pin-limit' && answer.code !== 'pin-unavailable') {
+          log('Recording frame pin refused:', id, answer.code)
+        }
+        return answer
       }
     }
     return control
@@ -3124,5 +3215,10 @@ function createRecordDomain(deps) {
 
 module.exports = {
   createRecordDomain,
-  createRecordingProjectRef
+  createRecordingProjectRef,
+  // B08 pure payload validation + budget forwarding (frame pin), shared with
+  // test/recording-pin-frame.test.js.
+  sanitizeRecordFramePin,
+  pinRecordFrame,
+  PIN_FRAME_MAX_BYTES
 }

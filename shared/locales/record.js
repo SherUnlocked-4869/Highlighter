@@ -238,6 +238,18 @@
     'record.preflight.applied-system-only': '本次仅录系统声',
     'record.preflight.applied-silent': '本次静音录制',
     'record.preflight.applied-microphone-only': '本次仅录麦克风',
+    // B08 (timeline -> pin): pin the frame currently shown in the editor. The copy names
+    // the phase-1 scope (source frame only) so the button's title carries the limit.
+    'record.pin-frame.action': '固定当前帧',
+    'record.pin-frame.title': '把当前帧作为图片贴到桌面（仅素材帧，不含演示背景与缩放）',
+    'record.pin-frame.busy': '正在取帧…',
+    'record.pin-frame.succeeded': '已固定当前帧',
+    'record.pin-frame.limit': '贴图已达上限（{max} 张）',
+    'record.pin-frame.empty': '当前没有可固定的画面',
+    'record.pin-frame.no-frame': '预览尚未解码出画面，请稍后重试',
+    'record.pin-frame.failed': '无法固定当前帧',
+    'record.pin-frame.cancelled': '已取消取帧',
+    'record.pin-frame.unavailable': '贴图功能不可用',
   })
 
   add('en-US', {
@@ -454,6 +466,17 @@
     'record.preflight.applied-system-only': 'This take records system audio only',
     'record.preflight.applied-silent': 'This take records no sound',
     'record.preflight.applied-microphone-only': 'This take records the microphone only',
+    // B08 (timeline -> pin): pin the frame currently shown in the editor.
+    'record.pin-frame.action': 'Pin current frame',
+    'record.pin-frame.title': 'Pin the current frame to the desktop (source frame only; no presentation background or zooms)',
+    'record.pin-frame.busy': 'Capturing the frame…',
+    'record.pin-frame.succeeded': 'Pinned the current frame',
+    'record.pin-frame.limit': 'The pin limit is reached ({max} images)',
+    'record.pin-frame.empty': 'There is no frame to pin',
+    'record.pin-frame.no-frame': 'The preview has not decoded a frame yet. Try again in a moment.',
+    'record.pin-frame.failed': 'Could not pin the current frame',
+    'record.pin-frame.cancelled': 'Frame capture cancelled',
+    'record.pin-frame.unavailable': 'Pinning is unavailable',
   })
 
   add('zh-TW', {
@@ -670,5 +693,16 @@
     'record.preflight.applied-system-only': '本次僅錄系統聲',
     'record.preflight.applied-silent': '本次靜音錄製',
     'record.preflight.applied-microphone-only': '本次僅錄麥克風',
+    // B08 (timeline -> pin): pin the frame currently shown in the editor.
+    'record.pin-frame.action': '釘選目前影格',
+    'record.pin-frame.title': '將目前影格貼到桌面（僅素材影格，不含簡報背景與縮放）',
+    'record.pin-frame.busy': '正在擷取影格…',
+    'record.pin-frame.succeeded': '已釘選目前影格',
+    'record.pin-frame.limit': '貼圖已達上限（{max} 張）',
+    'record.pin-frame.empty': '目前沒有可釘選的畫面',
+    'record.pin-frame.no-frame': '預覽尚未解碼出影格，請稍後再試',
+    'record.pin-frame.failed': '無法釘選目前影格',
+    'record.pin-frame.cancelled': '已取消擷取影格',
+    'record.pin-frame.unavailable': '貼圖功能無法使用',
   })
 })()

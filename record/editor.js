@@ -52,6 +52,8 @@
     'handle-start', 'handle-end',
     'timeline-duration', 'range-selection', 'empty-selection-hint',
     'range-start-input', 'range-end-input', 'play-range',
+    // B08: pin the current frame straight from the timeline.
+    'pin-frame', 'pin-frame-status',
     'split-at-playhead', 'delete-segment', 'reset-edits', 'undo-edit', 'redo-edit',
     'export-format', 'gif-edge', 'gif-fps', 'gif-budget',
     'export-resolution', 'export-quality', 'export-fps', 'export-output-size',
@@ -89,6 +91,13 @@
     interrupted: 'recording.editor.recovery.interrupted',
     'duration-unavailable': 'recording.editor.recovery.duration-unavailable'
   })
+  // B08: the "pin current frame" probe. The bitmap is the PREVIEW's source pixels, so a
+  // 4K recording pins a 4K image and no window chrome can leak into it. The byte ceiling
+  // mirrors the main-process re-check; the wait covers a seek plus one presented frame.
+  const PIN_FRAME_MAX_BYTES = 32 * 1024 * 1024
+  const PIN_FRAME_SEEK_TIMEOUT_MS = 1500
+  const PIN_FRAME_FRAME_WAIT_MS = 900
+  const PIN_FRAME_DEFAULT_RATE = 30
 
   function defaultTranslate(key, params) {
     const translator = typeof root.t === 'function' ? root.t : null
@@ -133,6 +142,161 @@
     if (answer.task && typeof answer.task === 'object') return answer.task
     if (typeof answer.taskId === 'string' && typeof answer.state === 'string') return answer
     return null
+  }
+
+  // ---------- B08: frame pin maths (pure, window-free) ----------
+  //
+  // The preview plays SOURCE time; the edit only decides which source times survive. A pin
+  // must therefore answer two questions with the same numbers the timeline shows:
+  //   1. which source time is "the current frame" (kept content, or the nearest kept frame
+  //      when the playhead sits in a deleted gap / past the last kept edge);
+  //   2. whether the frame Chromium actually presented is the one that was requested, on a
+  //      variable-frame-rate source where mediaTime does not advance on a fixed grid.
+
+  // One frame's duration. An unknown rate (0, e.g. after a restart the manifest does not
+  // record it) falls back to 30 fps: every tolerance below is then a conservative bound.
+  function frameDurationMs(frameRate) {
+    const rate = finite(frameRate)
+    return rate && rate > 0 ? 1000 / rate : 1000 / PIN_FRAME_DEFAULT_RATE
+  }
+
+  // |presented - requested| expressed in frames. Infinity for unusable input so a caller
+  // can never turn a missing mediaTime into an accidental match.
+  function frameDeviation(presentedMs, requestedMs, frameRate) {
+    // null/undefined means "no presented frame was reported"; that is never a match, so it
+    // must not be coerced to 0 ms by the numeric helper.
+    if (presentedMs === null || presentedMs === undefined) return Infinity
+    const presented = finite(presentedMs)
+    const requested = finite(requestedMs)
+    if (presented === null || requested === null) return Infinity
+    return Math.abs(presented - requested) / frameDurationMs(frameRate)
+  }
+
+  // Acceptance rule for the ticket: the pinned frame may be at most ONE frame away from the
+  // frame the user was looking at.
+  function withinOneFrame(presentedMs, requestedMs, frameRate) {
+    return frameDeviation(presentedMs, requestedMs, frameRate) <= 1 + 1e-6
+  }
+
+  // VFR: frames are not evenly spaced, so "the frame at t" is the nearest presentation time
+  // actually observed. `candidates` are rVFC mediaTimes (ms); null when none is usable.
+  function nearestFrameTime(requestedMs, candidates) {
+    const target = finite(requestedMs)
+    if (target === null || !Array.isArray(candidates) || candidates.length === 0) return null
+    let best = null
+    let bestDistance = Infinity
+    for (const value of candidates) {
+      if (value === null || value === undefined) continue
+      const candidate = finite(value)
+      if (candidate === null || candidate < 0) continue
+      const distance = Math.abs(candidate - target)
+      if (distance < bestDistance) {
+        bestDistance = distance
+        best = candidate
+      }
+    }
+    return best
+  }
+
+  // After a seek the presented frame is usually the one that contains the requested time,
+  // but on a VFR source the seek can land a frame (or more) early. Accept anything inside one
+  // frame; otherwise ask for one more seek half a frame PAST the request, which lands inside
+  // the target frame's presentation interval instead of on its leading edge.
+  function frameSeekTarget(requestedMs, presentedMs, frameRate) {
+    const requested = finite(requestedMs)
+    if (requested === null) return { accept: false, seekMs: null, deviation: Infinity }
+    if (presentedMs === null || presentedMs === undefined) {
+      // No mediaTime was reported: accept the frame we have instead of seeking blindly.
+      return { accept: true, seekMs: null, deviation: Infinity }
+    }
+    const presented = finite(presentedMs)
+    if (presented === null) return { accept: true, seekMs: null, deviation: Infinity }
+    const deviation = frameDeviation(presented, requested, frameRate)
+    if (deviation <= 1 + 1e-6) return { accept: true, seekMs: null, deviation }
+    const nudge = frameDurationMs(frameRate) / 2
+    return {
+      accept: false,
+      seekMs: Math.max(0, Math.round(requested + (presented < requested ? nudge : -nudge))),
+      deviation
+    }
+  }
+
+  // Which source millisecond the pin must capture. Kept content is used verbatim; a playhead
+  // inside a removed gap settles on the NEXT kept start (the frame kept playback would show
+  // next), and a playhead at/after the last kept end settles one frame inside the last kept
+  // segment so a removed tail can never be pinned. `segments: []` is the whole recording.
+  function locatePinFrame({ currentMs, segments, durationMs, frameRate } = {}) {
+    const duration = Math.max(0, Math.round(finite(durationMs) || 0))
+    if (!(duration > 0)) return { ok: false, code: 'duration-unavailable' }
+    const kept = timelineModule.materializeSegments(segments, duration)
+    if (kept.length === 0) return { ok: false, code: 'empty-selection' }
+    const frameMs = frameDurationMs(frameRate)
+    const position = Math.max(0, Math.min(duration, Math.round(finite(currentMs) || 0)))
+    for (let index = 0; index < kept.length; index += 1) {
+      const segment = kept[index]
+      if (position >= segment.startMs && position < segment.endMs) {
+        return { ok: true, sourceMs: position, adjusted: false, segmentIndex: index, code: '' }
+      }
+    }
+    const next = kept.find((segment) => segment.startMs > position)
+    if (next) {
+      return { ok: true, sourceMs: next.startMs, adjusted: true, segmentIndex: kept.indexOf(next), code: 'snapped-to-next-kept' }
+    }
+    const last = kept[kept.length - 1]
+    return {
+      ok: true,
+      sourceMs: Math.max(last.startMs, Math.round(last.endMs - frameMs)),
+      adjusted: true,
+      segmentIndex: kept.length - 1,
+      code: 'clamped-to-last-kept-frame'
+    }
+  }
+
+  // The canvas is sized from the decoded frame's INTRINSIC size so the pinned bitmap is the
+  // source pixels: preview scaling, the demo frame and every editor control stay out of it.
+  // Metadata is only a fallback for the moment before the element reports its size.
+  function frameCanvasSize(videoWidth, videoHeight, metadata = null) {
+    const intrinsicWidth = Math.round(finite(videoWidth) || 0)
+    const intrinsicHeight = Math.round(finite(videoHeight) || 0)
+    const probed = metadata && metadata.video ? metadata.video : {}
+    const width = intrinsicWidth > 0 ? intrinsicWidth : Math.max(0, Math.round(finite(probed.width) || 0))
+    const height = intrinsicHeight > 0 ? intrinsicHeight : Math.max(0, Math.round(finite(probed.height) || 0))
+    if (!(width > 0) || !(height > 0)) return { ok: false, code: 'no-frame', width: 0, height: 0 }
+    return { ok: true, width, height, intrinsic: intrinsicWidth > 0 && intrinsicHeight > 0 }
+  }
+
+  // Data-only pin metadata. The main process derives the pixel size again from the PNG, so a
+  // hostile renderer cannot claim a size it did not encode; the renderer's claim is only used
+  // for display and for the pin window's scale.
+  function buildPinFrameMeta({ projectId = '', frameMs = 0, width = 0, height = 0, scaleFactor = 1, nowMs = 0 } = {}) {
+    const scale = finite(scaleFactor)
+    return {
+      source: 'record-frame',
+      projectId: typeof projectId === 'string' ? projectId : '',
+      frameMs: Math.max(0, Math.round(finite(frameMs) || 0)),
+      width: Math.max(0, Math.round(finite(width) || 0)),
+      height: Math.max(0, Math.round(finite(height) || 0)),
+      scaleFactor: scale && scale > 0 ? scale : 1,
+      capturedAt: Math.max(0, Math.round(finite(nowMs) || 0))
+    }
+  }
+
+  // Main-process answer (or a renderer-side failure) -> the timeline's status copy. An unknown
+  // code must never leak as raw text, and every branch has a key in all three languages.
+  function pinFrameStatusKey(code, ok = false) {
+    if (ok === true) return { key: 'record.pin-frame.succeeded', state: '' }
+    switch (code) {
+      case 'pin-limit': return { key: 'record.pin-frame.limit', state: 'unsaved' }
+      case 'pin-unavailable':
+      case 'unavailable': return { key: 'record.pin-frame.unavailable', state: 'conflict' }
+      case 'empty-selection': return { key: 'record.pin-frame.empty', state: 'conflict' }
+      case 'cancelled': return { key: 'record.pin-frame.cancelled', state: '' }
+      case 'duration-unavailable':
+      case 'no-frame':
+      case 'frame-encode-failed':
+      case 'canvas-unavailable': return { key: 'record.pin-frame.no-frame', state: 'conflict' }
+      default: return { key: 'record.pin-frame.failed', state: 'conflict' }
+    }
   }
 
   function createEditorView({
@@ -182,6 +346,12 @@
     let eventsLoadId = 0
     let pickingZoomIndex = null
     let lastPlaybackOutputMs = null
+    // B08: one frame grab at a time. `pinGeneration` invalidates an in-flight grab when the
+    // view is torn down (or a later grab starts), so a closed window can never invoke IPC
+    // with a bitmap the user already dismissed.
+    let pinBusy = false
+    let pinGeneration = 0
+    let pinStatus = { key: '', state: '', params: null }
 
     function body() {
       return documentRef && documentRef.body ? documentRef.body : null
@@ -326,6 +496,11 @@
       renameOpen = false
       hideDraftConflict()
       clearError()
+      // B08: a reload swaps the source under the preview, so an in-flight grab from the old
+      // project must not land as if it belonged to the new one, and a stale status must go.
+      pinGeneration += 1
+      pinBusy = false
+      setPinStatus('')
 
       const ready = !isRecoveryBlocked()
       const revision = Math.max(0, Math.floor(finite(nextProject.edit?.revision) || 0))
@@ -1202,6 +1377,7 @@
       }
       renderTimelineSegments(snapshot, durationMs, editable)
       renderEditControls(snapshot, editable)
+      renderPinFrame(snapshot)
       updatePlayhead()
 
       const focused = documentRef ? documentRef.activeElement : null
@@ -1510,6 +1686,257 @@
       player.currentTime = target / 1000
       if (state()?.playing) controller.reportTime(target, { fromUser: true })
       updatePlayhead()
+    }
+
+    // ---------- B08: pin the current frame ----------
+
+    // Result -> copy mapping lives in one table so the timeline can never show a raw
+    // main-process code and the three translations stay testable without a DOM.
+    function renderPinStatus() {
+      const status = element('pin-frame-status')
+      if (!status) return
+      status.textContent = pinStatus.key ? translate(pinStatus.key, pinStatus.params || undefined) : ''
+      if (pinStatus.state) status.dataset.state = pinStatus.state
+      else if (status.dataset) delete status.dataset.state
+    }
+
+    function setPinStatus(key, state = '', params = null) {
+      pinStatus = { key: key || '', state: state || '', params: params || null }
+      renderPinStatus()
+    }
+
+    // Enabled only when a frame exists to pin: a live project, a known duration, kept content
+    // and no encode in flight. `pinBusy` disables it as well so a repeated activation cannot
+    // queue a second grab before the next render commits the disabled state.
+    function renderPinFrame(snapshot) {
+      const button = element('pin-frame')
+      if (!button) return
+      const usable = !!project && !!snapshot && snapshot.durationMs > 0
+        && !snapshot.emptySelection && !snapshot.busy
+      button.disabled = !usable || pinBusy
+      button.dataset.busy = pinBusy ? 'true' : 'false'
+      renderPinStatus()
+    }
+
+    function waitForPlayerEvent(player, type, timeoutMs) {
+      return new Promise((resolve) => {
+        if (!player || typeof player.addEventListener !== 'function') { resolve(false); return }
+        let settled = false
+        let timer = 0
+        const finish = (value) => {
+          if (settled) return
+          settled = true
+          if (typeof player.removeEventListener === 'function') player.removeEventListener(type, onEvent)
+          if (timer) timers.clearTimeout(timer)
+          resolve(value)
+        }
+        const onEvent = () => finish(true)
+        player.addEventListener(type, onEvent)
+        timer = timers.setTimeout(() => finish(false), timeoutMs)
+      })
+    }
+
+    // Seek to a source time and report the mediaTime of the frame Chromium actually presents.
+    // rVFC must be armed BEFORE the seek: on a paused element the seeked frame IS the next
+    // presentation, so a callback registered after 'seeked' never fires (verified against
+    // Electron 43's Chromium). Without rVFC the post-'seeked' currentTime is the best estimate.
+    function seekToPresentedFrame(player, milliseconds, frameRate) {
+      const target = Math.max(0, Math.round(finite(milliseconds) || 0))
+      const requestFrame = player && typeof player.requestVideoFrameCallback === 'function'
+        ? player.requestVideoFrameCallback.bind(player)
+        : null
+      if (!requestFrame) {
+        const waiting = waitForPlayerEvent(player, 'seeked', PIN_FRAME_SEEK_TIMEOUT_MS)
+        player.currentTime = target / 1000
+        return waiting.then((seeked) => (
+          seeked ? { ok: true, presentedMs: mediaMs() } : { ok: false, presentedMs: target }
+        ))
+      }
+      return new Promise((resolve) => {
+        let settled = false
+        let nudged = false
+        let timer = 0
+        const finish = (presentedMs) => {
+          if (settled) return
+          settled = true
+          if (timer) timers.clearTimeout(timer)
+          resolve({ ok: true, presentedMs: Math.max(0, Math.round(finite(presentedMs) || 0)) })
+        }
+        const arm = (requestedMs) => {
+          requestFrame((_now, metadata) => {
+            if (settled) return
+            const mediaTime = metadata && finite(metadata.mediaTime) !== null
+              ? Number(metadata.mediaTime) * 1000
+              : null
+            if (mediaTime === null) { finish(mediaMs()); return }
+            const decision = frameSeekTarget(requestedMs, mediaTime, frameRate)
+            if (!decision.accept && !nudged && decision.seekMs !== null) {
+              // One corrective seek, armed before it lands, then take whatever is presented.
+              nudged = true
+              arm(decision.seekMs)
+              player.currentTime = Math.max(0, decision.seekMs) / 1000
+              return
+            }
+            finish(mediaTime)
+          })
+        }
+        timer = timers.setTimeout(() => finish(mediaMs()), PIN_FRAME_SEEK_TIMEOUT_MS + PIN_FRAME_FRAME_WAIT_MS)
+        arm(target)
+        player.currentTime = target / 1000
+      })
+    }
+
+    function canvasToPngBytes(canvas) {
+      return new Promise((resolve) => {
+        if (!canvas) { resolve(null); return }
+        if (typeof canvas.toBlob === 'function') {
+          try {
+            canvas.toBlob((blob) => {
+              if (!blob || typeof blob.arrayBuffer !== 'function') { resolve(null); return }
+              blob.arrayBuffer().then(
+                (buffer) => resolve(new Uint8Array(buffer)),
+                () => resolve(null)
+              )
+            }, 'image/png')
+            return
+          } catch (error) {
+            log('editor: canvas toBlob failed:', error?.message || error)
+          }
+        }
+        // A tainted canvas throws on both encoders. Report an empty result rather than
+        // leaking a DOM exception; the caller shows the translated failure instead.
+        try {
+          const dataUrl = typeof canvas.toDataURL === 'function' ? canvas.toDataURL('image/png') : ''
+          const prefix = 'data:image/png;base64,'
+          if (!dataUrl.startsWith(prefix) || typeof root.atob !== 'function') { resolve(null); return }
+          const binary = root.atob(dataUrl.slice(prefix.length))
+          const bytes = new Uint8Array(binary.length)
+          for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+          resolve(bytes)
+        } catch (error) {
+          log('editor: canvas toDataURL failed:', error?.message || error)
+          resolve(null)
+        }
+      })
+    }
+
+    // Pause the transport if needed, settle on the current KEPT frame, then rasterise the
+    // preview's source pixels into an offscreen canvas. Nothing touches the project: the PNG
+    // exists only in memory and the main process decides what to do with it.
+    async function captureCurrentFrame(generation) {
+      const snapshot = state()
+      if (!snapshot || !project) return { ok: false, code: 'project-missing' }
+      const player = video()
+      if (!player) return { ok: false, code: 'no-frame' }
+      // Read the position BEFORE pausing: pausing must not move the frame the user saw.
+      const currentMs = mediaMs()
+      if (snapshot.playing) stopRangePlayback()
+      else if (player.paused === false && typeof player.pause === 'function') player.pause()
+      // HAVE_CURRENT_DATA is the first state that has a frame to draw; before it the canvas
+      // would be transparent, so report the "not decoded yet" copy instead of a blank pin.
+      if (typeof player.readyState === 'number' && player.readyState < 2) {
+        return { ok: false, code: 'no-frame' }
+      }
+
+      const frameRate = snapshot.metadata?.video?.frameRate
+        || (metadata && metadata.video ? metadata.video.frameRate : 0)
+      const located = locatePinFrame({
+        currentMs,
+        segments: snapshot.segments,
+        durationMs: snapshot.durationMs,
+        frameRate
+      })
+      if (!located.ok) return located
+
+      let frameMs = located.sourceMs
+      if (located.adjusted) {
+        const presented = await seekToPresentedFrame(player, located.sourceMs, frameRate)
+        if (destroyed || generation !== pinGeneration) return { ok: false, code: 'cancelled' }
+        if (!presented.ok) return { ok: false, code: 'no-frame' }
+        frameMs = presented.presentedMs
+      }
+      if (destroyed || generation !== pinGeneration) return { ok: false, code: 'cancelled' }
+
+      const size = frameCanvasSize(player.videoWidth, player.videoHeight, snapshot.metadata || metadata)
+      if (!size.ok) return size
+      if (!documentRef || typeof documentRef.createElement !== 'function') {
+        return { ok: false, code: 'canvas-unavailable' }
+      }
+      const canvas = documentRef.createElement('canvas')
+      if (!canvas || typeof canvas.getContext !== 'function') return { ok: false, code: 'canvas-unavailable' }
+      canvas.width = size.width
+      canvas.height = size.height
+      const context = canvas.getContext('2d')
+      if (!context || typeof context.drawImage !== 'function') return { ok: false, code: 'canvas-unavailable' }
+      try {
+        // Source pixels 1:1, no editor chrome: the canvas IS the frame, not the preview box.
+        context.drawImage(player, 0, 0, size.width, size.height)
+      } catch (error) {
+        log('editor: frame draw failed:', error?.message || error)
+        return { ok: false, code: 'no-frame' }
+      }
+      const png = await canvasToPngBytes(canvas)
+      if (destroyed || generation !== pinGeneration) return { ok: false, code: 'cancelled' }
+      if (!png || !png.byteLength) return { ok: false, code: 'frame-encode-failed' }
+      if (png.byteLength > PIN_FRAME_MAX_BYTES) return { ok: false, code: 'frame-too-large' }
+      if (typeof api?.pinFrame !== 'function') return { ok: false, code: 'unavailable' }
+
+      const pinMeta = buildPinFrameMeta({
+        projectId: project.id,
+        frameMs,
+        width: size.width,
+        height: size.height,
+        scaleFactor: root.devicePixelRatio,
+        nowMs: now()
+      })
+      try {
+        const answer = await api.pinFrame(project.id, png, pinMeta)
+        return answer && typeof answer === 'object' ? answer : { ok: false, code: 'pin-failed' }
+      } catch (error) {
+        if (destroyed) return { ok: false, code: 'cancelled' }
+        log('editor: pin frame invoke failed:', error?.message || error)
+        return { ok: false, code: 'pin-failed' }
+      }
+    }
+
+    async function pinCurrentFrame() {
+      if (pinBusy) return { ok: false, code: 'busy' }
+      if (destroyed) return { ok: false, code: 'cancelled' }
+      const snapshot = state()
+      if (!snapshot || !project) {
+        setPinStatus('record.pin-frame.empty', 'conflict')
+        render()
+        return { ok: false, code: 'project-missing' }
+      }
+      if (snapshot.emptySelection || !(snapshot.durationMs > 0)) {
+        setPinStatus('record.pin-frame.empty', 'conflict')
+        render()
+        return { ok: false, code: 'empty-selection' }
+      }
+      if (typeof api?.pinFrame !== 'function') {
+        setPinStatus('record.pin-frame.unavailable', 'conflict')
+        render()
+        return { ok: false, code: 'unavailable' }
+      }
+      pinBusy = true
+      const generation = ++pinGeneration
+      setPinStatus('record.pin-frame.busy', 'saving')
+      render()
+      let result
+      try {
+        result = await captureCurrentFrame(generation)
+      } catch (error) {
+        log('editor: pin current frame failed:', error?.message || error)
+        result = { ok: false, code: 'pin-failed' }
+      }
+      if (destroyed || generation !== pinGeneration) return { ok: false, code: 'cancelled' }
+      pinBusy = false
+      const status = pinFrameStatusKey(result && result.code, result?.ok === true)
+      setPinStatus(status.key, status.state, status.key === 'record.pin-frame.limit'
+        ? { max: Math.max(1, Math.round(finite(result && result.max) || 20)) }
+        : null)
+      render()
+      return result
     }
 
     // ---------- pointer drag / keyboard ----------
@@ -1871,6 +2298,7 @@
         render()
       })
       on(element('play-range'), 'click', () => toggleRangePlayback())
+      on(element('pin-frame'), 'click', () => { runSafely(pinCurrentFrame()) })
       on(element('split-at-playhead'), 'click', () => {
         if (controller?.splitAt(mediaMs())) render()
       })
@@ -2050,6 +2478,10 @@
     function destroy() {
       if (destroyed) return
       destroyed = true
+      // B08: invalidate an in-flight frame grab so a closed window never reaches IPC with
+      // pixels the user already left behind. Nothing was written, so there is nothing to undo.
+      pinGeneration += 1
+      pinBusy = false
       stopPlayTimer()
       stopStatusPolling()
       clearSaveTimer()
@@ -2073,6 +2505,7 @@
       handleChange,
       exportSelection,
       cancelRunningExport,
+      pinCurrentFrame,
       handleTask,
       retryRecovery,
       reloadProject,
@@ -2136,7 +2569,17 @@
     applyInit,
     getView: () => bootedView,
     normalizeEditorMetadata,
-    taskFromAnswer
+    taskFromAnswer,
+    // B08 pure helpers (frame selection, VFR tolerance, canvas sizing, pin metadata).
+    frameDurationMs,
+    frameDeviation,
+    withinOneFrame,
+    nearestFrameTime,
+    frameSeekTarget,
+    locatePinFrame,
+    frameCanvasSize,
+    buildPinFrameMeta,
+    pinFrameStatusKey
   }
 
   // Auto-boot in the real window; node tests import the module without a document and create

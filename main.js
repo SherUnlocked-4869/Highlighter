@@ -643,7 +643,7 @@ recordDomain = createRecordDomain({
   screen,
   dialog,
   BrowserWindow,
-  rootDirectory: __dirname,
+  pinDomain, rootDirectory: __dirname,
   createLocalWindow,
   getSettings,
   log,
@@ -1162,7 +1162,7 @@ const recordController = recordDomain.createRecordingController()
 registerRecordingIpc({ ipcMain: secureIpcMain, controller: recordController })
 registerRecordingExportFeatureIpc({ ipcMain: secureIpcMain, controller: recordController })
 registerRecordingWorkbenchIpc({ ipcMain: secureIpcMain, controller: recordController })
-registerRecordingEditorIpc({ ipcMain: secureIpcMain, controller: recordController })
+registerRecordingEditorIpc({ ipcMain: secureIpcMain, controller: recordController }); secureIpcMain.handle('record:pin-frame', recordController.editorPinFrame) // B08
 
 registerSelectionIpc({
   ipcMain: secureIpcMain,

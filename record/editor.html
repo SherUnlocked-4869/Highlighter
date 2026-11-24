@@ -95,6 +95,10 @@
               <input id="range-end-input" class="time-input" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" value="00:00.0">
             </label>
             <button id="play-range" class="action-button" type="button" data-i18n="recording.editor.timeline.play-kept">Play kept content</button>
+            <!-- B08: pin the frame the preview currently shows. The title carries the phase-1
+                 scope (source pixels only) so the option never promises the export compositor. -->
+            <button id="pin-frame" class="action-button" type="button" data-testid="pin-frame" data-i18n="record.pin-frame.action" data-i18n-title="record.pin-frame.title" title="Pin current frame">Pin current frame</button>
+            <span id="pin-frame-status" class="save-state" role="status" aria-live="polite"></span>
           </div>
           <div class="timeline-ops">
             <button id="split-at-playhead" class="action-button" type="button" data-testid="split-at-playhead" data-i18n="recording.editor.timeline.split">Split at playhead</button>

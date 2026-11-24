@@ -43,6 +43,11 @@ contextBridge.exposeInMainWorld('recordEditorAPI', {
   // R5 §2.2: the project's event track (zoom suggestions / click ripples). Data only - the renderer
   // never learns a path, and `track: null` means "no event track, manual zoom only".
   events: (projectId) => ipcRenderer.invoke('record-editor:events', { projectId }),
+  // B08: pin the frame the timeline currently shows. The renderer is the only side that can
+  // rasterise its own <video>, so it sends the encoded PNG (source pixels, no editor chrome) plus
+  // data-only metadata. The main process re-validates the bytes, enforces the pin budget and
+  // forwards to the existing pin window pipeline - no path and no file of any kind.
+  pinFrame: (projectId, png, meta) => ipcRenderer.invoke('record:pin-frame', { projectId, png, meta }),
   back: () => ipcRenderer.invoke('record-editor:back'),
   closeWindow: () => ipcRenderer.send('record-editor:close'),
   windowAction: (action) => ipcRenderer.send('record-editor:window', { action }),

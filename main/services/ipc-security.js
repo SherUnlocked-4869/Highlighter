@@ -295,6 +295,11 @@ const IPC_SURFACES = Object.freeze([
       // D03: salvage / cancel the remux from the recovery banner. Owner-checked like the rest.
       'record-editor:salvage',
       'record-editor:cancel-salvage',
+      // B08: pin the frame currently shown in the editor timeline. The payload is an encoded
+      // PNG (source pixels only) plus data-only metadata - never a path - and the main process
+      // bounds/re-validates the bytes and enforces the pin budget before forwarding to the
+      // existing pin window pipeline.
+      'record:pin-frame',
       // Feature A receipt actions, same resultId-addressed contract as the other result bars.
       'export:perform-action'
     ],
