@@ -372,6 +372,26 @@ class CaptureDocumentService {
   // The single commit path (§6.5.4). `status` distinguishes at least committed/unchanged/conflict/failed.
   async commit(payload = {}) {
     this.assertWritable()
+    // B01: the one-shot "do not keep this capture" intent reaches the single write path
+    // BEFORE any file, index entry, revision or thumbnail is touched. A stale session is
+    // still reported, because a dead session must never look like a successful skip.
+    if (payload.skipHistory === true) {
+      const session = this.getSession(payload.sessionId)
+      if (!session) return { ok: false, status: 'failed', code: 'session-expired', retryable: false }
+      if (!['create', 'update', 'save-copy'].includes(payload.intent)) {
+        return { ok: false, status: 'failed', code: 'invalid-intent', retryable: false }
+      }
+      return {
+        ok: true,
+        status: 'skipped',
+        code: 'history-skipped',
+        historyStatus: 'skipped',
+        skipped: true,
+        documentId: session.documentId || '',
+        revisionId: session.headRevisionId || '',
+        version: Math.max(0, Number(session.version) || 0)
+      }
+    }
     const settings = this.getSettings() || {}
     if (settings?.screenshot?.historyEnabled !== true) {
       // Report an explicit status; never claim history was saved (§6.5.4, last paragraph).

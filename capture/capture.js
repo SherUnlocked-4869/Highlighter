@@ -35,6 +35,12 @@ const magnifierStrokeWidthValue = document.getElementById('magnifierStrokeWidthV
 const magnifierFactorButtons = Array.from(document.querySelectorAll('[data-magnifier-factor]'))
 const magnifierConnectorButtons = Array.from(document.querySelectorAll('[data-magnifier-connector]'))
 const regionStatus = document.getElementById('regionStatus')
+// B01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the one-shot
+// "do not keep this capture" switch. Its label/hint are written by this controller (like the
+// pin menu's copy) because the hint appears only while the switch is on; keeping them out of
+// data-i18n leaves the pre-migration capture.* golden table untouched.
+const skipHistoryToggle = document.getElementById('skipHistoryToggle')
+const skipHistoryHint = document.getElementById('skipHistoryHint')
 // Feature C (plan §6.1/§6.3): the finished-look panel and its strip toggle. Both are static
 // markup, so a missing element here is a build error rather than a state to defend against.
 const outputStylePanelRoot = document.getElementById('outputStylePanel')
@@ -294,6 +300,12 @@ let convertOutputFormat = 'markdown'
 let pinOutputState = null
 // One retry at a time: a double click on the retry button must not run the same output twice.
 let pinOutputBusy = false
+// B01: the switch state for THIS capture. It follows screenshot.historyEnabled by default
+// (and is locked on when history is globally off, because a one-shot cannot re-enable it);
+// it is never written back to settings. `skipHistoryLocked` only controls whether the user
+// may turn it off.
+let skipHistoryThisCapture = false
+let skipHistoryLocked = false
 // Long-press is the secondary gesture for the pin button (right-click works everywhere);
 // the timer is per press and the flag suppresses the click the browser fires afterwards.
 let pinMenuPressTimer = 0
@@ -1268,21 +1280,77 @@ function toolbarPlacement() {
   })
 }
 
+// ---------- B01: "do not keep this capture" ----------
+// The label and the scope hint are written here (not data-i18n) for the same reason the pin
+// menu's copy is: the hint exists only while the switch is on, and the visible wording has to
+// change with that state. The switch is a floating pill because the main strip has only 20px
+// of reserved headroom - a labelled button on it would fold the row in the narrow editor.
+function syncSkipHistoryCopy() {
+  if (skipHistoryToggle) {
+    skipHistoryToggle.textContent = t('capture-skip.toolbar.toggle')
+    skipHistoryToggle.title = skipHistoryLocked ? t('capture-skip.toolbar.locked-tip') : t('capture-skip.toolbar.toggle-tip')
+    skipHistoryToggle.setAttribute('aria-pressed', skipHistoryThisCapture ? 'true' : 'false')
+    skipHistoryToggle.disabled = skipHistoryLocked
+    skipHistoryToggle.style.background = skipHistoryThisCapture ? 'var(--primary)' : ''
+    skipHistoryToggle.style.color = skipHistoryThisCapture ? 'var(--primary-ink)' : ''
+  }
+  if (skipHistoryHint) skipHistoryHint.textContent = skipHistoryThisCapture ? t('capture-skip.toolbar.hint') : ''
+  syncSkipHistoryUi()
+}
+
+// One placement source: the strip's measured rect (the same one the element bar avoids).
+// The pill takes the row above the strip, right of the region-size toggle when that is on
+// screen; the hint sits above the pill, or under the strip when the window top has no room.
+function syncSkipHistoryUi() {
+  if (!skipHistoryToggle) return
+  const available = !!selection && selection.w >= 2 && selection.h >= 2 &&
+    !toolbar.classList.contains('hidden') && !activeOcrResult && !processingAction &&
+    !selecting && !dragging && !resizing
+  skipHistoryToggle.classList.toggle('available', available)
+  if (!available) {
+    if (skipHistoryHint) skipHistoryHint.classList.add('hidden')
+    return
+  }
+  // The pill itself is always placed, on or off; only the hint depends on the state.
+  const strip = toolbar.getBoundingClientRect()
+  const toggleRect = skipHistoryToggle.getBoundingClientRect()
+  const regionRect = regionToggle?.classList.contains('available') ? regionToggle.getBoundingClientRect() : null
+  const rowTop = Math.max(6, strip.top - 30)
+  const toggleLeft = Math.max(4, Math.min(regionRect ? regionRect.right + 8 : strip.left, innerWidth - toggleRect.width - 4))
+  skipHistoryToggle.style.left = `${toggleLeft}px`
+  skipHistoryToggle.style.top = `${rowTop}px`
+  if (!skipHistoryHint) return
+  if (!skipHistoryThisCapture) { skipHistoryHint.classList.add('hidden'); return }
+  skipHistoryHint.classList.remove('hidden')
+  const hintRect = skipHistoryHint.getBoundingClientRect()
+  // Prefer the side of the strip with room: when the strip is docked low (the compact
+  // pin/history editor) the hint goes under it, otherwise it sits above the switch row.
+  // If neither side fits, clamp into the window instead of drawing outside it.
+  const aboveTop = rowTop - hintRect.height - 4
+  const belowTop = strip.bottom + 6
+  let hintTop = strip.top > innerHeight * 0.55 ? belowTop : aboveTop
+  if (hintTop + hintRect.height > innerHeight - 6) hintTop = aboveTop >= 6 ? aboveTop : innerHeight - hintRect.height - 6
+  if (hintTop < 6) hintTop = Math.max(6, belowTop)
+  const hintLeft = Math.max(4, Math.min(toggleLeft, innerWidth - hintRect.width - 4))
+  skipHistoryHint.style.left = `${hintLeft}px`
+  skipHistoryHint.style.top = `${Math.max(6, hintTop)}px`
+}
+
 function updateFloatingUi() {
   // Plan 2 (D12): the region's width cap must be on the element before anything reads
   // the cached strip rect (the element bar avoids that rect below).
   applyToolbarWidthLimit()
   updateElementBar()
   syncOutputStyleUi()
-  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); syncMagnifierPanel(); return }
+  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16
   const hideSizeBadge=['ocr','translate'].includes(processingAction)||!!activeOcrResult||['ocr','translate'].includes(initData?.autoAction)
   sizeBadge.style.display=hideSizeBadge?'none':'block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
-  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); syncMagnifierPanel(); return }
+  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
   // B03: a pending per-output receipt owns the strip's space the same way an OCR result
   // does, so a selection drag cannot park the toolbar under the retry buttons.
-  if (!pinOutputBar.classList.contains('hidden')) { toolbar.classList.add('hidden'); positionPinOutputBar(); syncWatermarkPanel(); syncMagnifierPanel(); return }
-  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); syncMagnifierPanel(); return }
+  if (!pinOutputBar.classList.contains('hidden')) { toolbar.classList.add('hidden'); positionPinOutputBar(); syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
+  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
   toolbar.classList.remove('hidden')
   // D6 + the pin re-annotate fix: below the region when it fits, above it when only that
   // fits, otherwise docked inside hugging the region's bottom - never clipped, and never
@@ -1292,6 +1360,7 @@ function updateFloatingUi() {
   syncWatermarkPanel()
   syncMagnifierPanel()
   syncRegionUi()
+  syncSkipHistoryUi()
 }
 
 function positionOcrResultBar() {
@@ -4217,7 +4286,10 @@ async function commitDocumentEditor(intent = 'update') {
       intent,
       expectedRevisionId: intent === 'update' ? documentEditor.revisionId : null,
       snapshot,
-      resultBuffer
+      resultBuffer,
+      // B01: the one-shot switch for this editing session. The main process refuses the
+      // whole commit (no revision, no thumbnail, no index row) when it is true.
+      skipHistory: skipHistoryThisCapture
     })
     return handleCommitResponse(response, intent)
   } catch (error) {
@@ -4236,6 +4308,14 @@ function handleCommitResponse(response, intent) {
   if (!response || typeof response !== 'object') {
     alert(t('capture.document.save-failed'))
     return { ok: false, status: 'failed', code: 'empty-response' }
+  }
+  if (response.status === 'skipped') {
+    // B01: the main process refused the write on purpose. Keep the work on screen (it was
+    // never persisted) and say so instead of pretending the revision was saved.
+    documentEditor.dirty = true
+    renderDocumentInfo()
+    alert(t('capture-skip.document.skipped'))
+    return { ok: true, status: 'skipped', skipped: true }
   }
   if (response.status === 'committed' || response.status === 'unchanged') {
     documentEditor.documentId = response.documentId || documentEditor.documentId
@@ -4269,6 +4349,12 @@ async function requestCloseDocumentEditor() {
   if (documentEditor.saving) return
   refreshDocumentDirty()
   if (!documentEditor.dirty) { finishDocumentClose(); return }
+  // B01: with the switch on there is no persist path at all, so offering "save / discard"
+  // would be a lie. Ask the one question that is true: closing discards this edit.
+  if (skipHistoryThisCapture) {
+    if (confirm(t('capture-skip.document.close-discard'))) finishDocumentClose()
+    return
+  }
   const choice = await askDocumentCloseChoice()
   if (choice === 'save') {
     const result = await commitDocumentEditor('update')
@@ -4424,7 +4510,10 @@ async function performAction(action) {
     if(maskedActions&&hasOccludableBlur(exportRect))alert(t('capture.ocr.mask-unavailable'))
     return
   }
-  const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds}
+  // B01: the one-shot switch rides EVERY action's meta, because it is the state the user
+  // saw when pressing the button. copy/pin/save/ocr/table/qr/convert/pdf and the document
+  // commit all decide their writes from it in the main process.
+  const meta={source:initData.source,width:output.width,height:output.height,scaleFactor:initData.scaleFactor,selectionBounds,skipHistory:skipHistoryThisCapture}
   const openRecognitionPin = ['ocr','translate'].includes(action) && !initData.editPin
   recognitionHandoff = openRecognitionPin
   try {
@@ -4701,6 +4790,9 @@ addEventListener('keydown',(event)=>{
   // Every other capture window keeps the shipped Ctrl+S = "save image" behaviour.
   if(event.ctrlKey&&event.key.toLowerCase()==='s'&&documentEditor){
     event.preventDefault()
+    // B01: a skipped session has no revision to write; say that instead of round-tripping
+    // a commit the main process would refuse.
+    if(skipHistoryThisCapture){alert(t('capture-skip.document.skipped'));return}
     const intent=event.shiftKey?'save-copy':'update'
     commitDocumentEditor(intent).then((result)=>{if(result.ok)refreshDocumentDirty()})
     return
@@ -4741,6 +4833,12 @@ window.captureAPI.onInit((data)=>{
   // B02: the one place screenshot.showColorPicker drives the entry; default true, explicit
   // false hides it, and a new image also invalidates the cached sampling ImageData.
   syncColorSampler(data.settings)
+  // B01: the switch starts from the GLOBAL history setting and from what this window was
+  // opened with (a pin created with "do not keep" hands the flag to its re-annotate editor).
+  // It is one-shot state only - nothing here writes back to settings.
+  skipHistoryLocked = data.settings?.screenshot?.historyEnabled === false
+  skipHistoryThisCapture = data.skipHistory === true || skipHistoryLocked
+  syncSkipHistoryCopy()
   if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}
   // P0-2（S9b）：光标位图在这里预解码（每次 init 都重置，避免沿用上一张的光标）。
   // exportSelectionCanvas 是同步函数，贴图时只认"已解码"的光标，不能在里面等。
@@ -4981,6 +5079,16 @@ if (regionToggle) {
     else closeRegionPanel()
   })
 }
+// B01: one click flips the switch for THIS capture. When history is globally off the pill
+// is locked on (a one-shot cannot re-enable a globally disabled write path).
+if (skipHistoryToggle) {
+  skipHistoryToggle.addEventListener('click', (event) => {
+    event.stopPropagation()
+    if (skipHistoryLocked) return
+    skipHistoryThisCapture = !skipHistoryThisCapture
+    syncSkipHistoryCopy()
+  })
+}
 if (regionApplySize) regionApplySize.addEventListener('click', applyTypedRegionSize)
 if (regionReuseLast) {
   regionReuseLast.addEventListener('click', async () => {
@@ -5124,6 +5232,8 @@ applyTranslations()
 // B03: the pin menu and the receipt bar carry pin-domain copy that is written by this
 // controller (no data-i18n markers), so it is re-derived after the markup pass above.
 syncPinOutputCopy()
+// B01: same rule for the skip switch and its scope hint.
+syncSkipHistoryCopy()
 // Hot switch (mirror of `theme`): the settings effect broadcasts i18n:language to every
 // open window, so re-resolve the language and re-scan the DOM.
 window.captureAPI.onInterfaceLanguage((language) => {
@@ -5134,6 +5244,7 @@ window.captureAPI.onInterfaceLanguage((language) => {
   if (processingAction) setProcessingState(processingAction)
   if (activeOcrResult) renderActiveOcrOverlay()
   syncPinOutputCopy()
+  syncSkipHistoryCopy()
   if (pinOutputState) renderPinOutputBar(pinOutputState.receipt)
   if (!resultPanel.classList.contains('hidden')) resultTitle.textContent = t(activeOcrResult?.mode === 'translate' ? 'capture.result.title-translate' : 'capture.result.title-ocr')
 })

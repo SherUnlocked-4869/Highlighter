@@ -277,6 +277,18 @@
     </div>
     <div id="magnifierStatus" class="magnifier-status hidden" role="status" aria-live="polite"></div>
   </div>
+  <!-- B01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the one-shot
+       "do not keep this capture" switch. It is a FLOATING control, not a toolbar button:
+       the main row has only 20px of reserved headroom (shared/editor-layout.js), so a
+       labelled button on it would fold the strip in the narrow pin/history editor and push
+       the toolbar back inside the image. capture.js positions it above the strip (next to
+       the region-size toggle when that is on screen) and writes all of its copy, so the
+       pre-migration capture.* golden table in test/capture-i18n.test.js stays untouched.
+       The hint is the visible scope statement: the image still goes to the Windows
+       clipboard, and Windows, the local clipboard history or another clipboard tool may
+       still keep it (the native exclusion format is the pending wiring for that). -->
+  <button id="skipHistoryToggle" class="region-toggle" type="button" aria-pressed="false"></button>
+  <div id="skipHistoryHint" class="ocr-result-bar hidden" role="status" aria-live="polite" style="display:block;font-size:12px;line-height:1.5;color:#c9c9cf;max-width:min(520px,calc(100vw - 24px));white-space:normal"></div>
   <div id="resultPanel" class="result-panel hidden">
     <div class="result-head"><strong id="resultTitle" data-i18n="capture.result.title"></strong><button id="resultClose">×</button></div>
     <div id="resultSource" class="result-source hidden"></div>

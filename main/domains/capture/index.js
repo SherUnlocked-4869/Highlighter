@@ -18,6 +18,9 @@ const { makeCaptureName } = require('../../services/capture-naming')
 // function, so the two no longer carry separate copies of the same arithmetic.
 const { resolveEditorLayout, scaleFactorFor } = require('../../../shared/editor-layout')
 const { captureForeground } = require('../../services/focused-window-capture')
+// B01: the saved-path notice is the one main-process surface a skipped explicit save can
+// use after the overlay is closed. i18n-bootstrap itself is dependency-free.
+const { t } = require('../../services/i18n-bootstrap')
 
 const NATIVE_CAPTURE_TIMEOUT_MS = 5000
 const ELECTRON_CAPTURE_TIMEOUT_MS = 4000
@@ -97,6 +100,97 @@ function summarizePinCopyOutputs({ prior = null, attempted = {} } = {}) {
     retry: [...failed],
     statusKey,
     hints
+  }
+}
+
+// ---------------------------------------------------------------------------
+// B01 (docs/reviews/2026-11-24-windows-product-architecture-review.md):
+// "let this capture skip history". A screenshot can produce FOUR kinds of local
+// copy - the flat history row, an editable revision (plus its thumbnail), the PNG
+// that "copy" auto-saves, and an explicit file the user asked for. The one-shot
+// switch has to constrain all of them together, or the same picture is "not kept"
+// in one place and still kept in another. This table is the single source of that
+// decision: the handlers ask it instead of re-deriving a condition per action, and
+// the tests walk the very same table.
+//
+// It is a PLAN, not a promise: an explicit save that the user cancels still
+// creates no file. What matters is that a plan with historyRecords=0 can never be
+// turned into a record by a later stage, and a plan with explicitFiles=1 keeps
+// the user's file even when history is skipped.
+// ---------------------------------------------------------------------------
+const CAPTURE_WRITE_ACTIONS = Object.freeze([
+  'copy', 'save', 'pin', 'pin-copy', 'pin-reannotate',
+  'ocr', 'translate', 'table', 'qr', 'convert',
+  'pdf', 'commit', 'continue-edit', 'record-history'
+])
+
+function normalizeCaptureWriteAction(action) {
+  const value = typeof action === 'string' ? action : ''
+  return value === 'continue-edit' ? 'commit' : value
+}
+
+function planCaptureWrites(options = {}) {
+  const action = normalizeCaptureWriteAction(options.action)
+  const skipHistory = options.skipHistory === true
+  const keepsHistory = skipHistory !== true && options.historyEnabled !== false
+  const plan = {
+    action,
+    skipHistory,
+    historyRecords: 0,
+    explicitFiles: 0,
+    revisions: 0,
+    thumbnail: false,
+    autoSaveFile: false
+  }
+  switch (action) {
+    case 'copy':
+      plan.historyRecords = keepsHistory ? 1 : 0
+      // The auto-save is a second persistent copy of the same pixels; a skipped
+      // capture must not leave one behind either.
+      plan.autoSaveFile = skipHistory !== true &&
+        options.autoSaveOnCopy === true &&
+        options.hasSaveDirectory === true
+      return plan
+    case 'save':
+      plan.explicitFiles = 1
+      plan.historyRecords = keepsHistory ? 1 : 0
+      return plan
+    case 'commit':
+      plan.historyRecords = keepsHistory ? 1 : 0
+      plan.revisions = keepsHistory ? 1 : 0
+      plan.thumbnail = keepsHistory
+      return plan
+    case 'pdf':
+      // A PDF is an explicit file with no history row today; the switch changes nothing.
+      return plan
+    default:
+      plan.historyRecords = keepsHistory ? 1 : 0
+      return plan
+  }
+}
+
+// The three Windows formats that make a clipboard publication private. Their
+// PRESENCE (the first two) or a DWORD 0 (the third) is what Windows and the native
+// sidecar's capture.rs both honour; the sidecar already answers Skip::Private for
+// them. Electron's clipboard.writeImage cannot publish them TOGETHER with the
+// image, so the actual write needs the native publication path - see
+// planClipboardPublish's "pending-native" status and the B01 report.
+const CLIPBOARD_HISTORY_EXCLUSION_FORMATS = Object.freeze([
+  'ExcludeClipboardContentFromMonitorProcessing',
+  'Clipboard Viewer Ignore',
+  'CanIncludeInClipboardHistory'
+])
+
+function planClipboardPublish(options = {}) {
+  if (options.skipHistory !== true) return { private: false, status: 'plain', formats: [] }
+  const nativeWriter = options.nativeWriter === true
+  return {
+    private: nativeWriter,
+    // "pending-native": the app knows exactly which formats to add and where, but the
+    // published image still comes from Electron until native/clipboard exposes a
+    // private publication. The receipt says so instead of claiming an exclusion.
+    status: nativeWriter ? 'private' : 'pending-native',
+    formats: [...CLIPBOARD_HISTORY_EXCLUSION_FORMATS]
   }
 }
 
@@ -185,6 +279,131 @@ function createCaptureDomain(deps) {
   }
 
   // -------------------------------------------------------------------------
+  // B01: the one-shot "do not keep this capture" switch.
+  //
+  // The renderer sends the switch value with EVERY action's meta, because that is
+  // exactly the state the user saw when pressing the button. The window also keeps
+  // the value it was OPENED with: a pin created with skip hands the flag to its
+  // re-annotate editor, so a path that forgets to forward meta cannot silently
+  // re-enable history for the same result.
+  // -------------------------------------------------------------------------
+  function resolveSkipHistory(win, meta) {
+    if (meta && typeof meta.skipHistory === 'boolean') return meta.skipHistory === true
+    return win != null && win._skipHistory === true
+  }
+
+  function historyEnabledNow() {
+    // HistoryService itself refuses to write while the global switch is off; asking here
+    // as well keeps the plan honest (a disabled history is 0 records, not "scheduled").
+    try {
+      return getSettings()?.screenshot?.historyEnabled !== false
+    } catch {
+      return true
+    }
+  }
+
+  function capturePlan(action, skipHistory, extra = {}) {
+    return planCaptureWrites({
+      action,
+      skipHistory,
+      historyEnabled: historyEnabledNow(),
+      ...extra
+    })
+  }
+
+  // The second half of the race contract: one result = at most one record per kind,
+  // even when the renderer repeats the same action before a delayed write runs. The
+  // claim lives on the result (the window object), never on a timer, so closing the
+  // window cannot resurrect a record that was never scheduled.
+  function claimResultWrite(win, kind) {
+    if (!win || typeof win !== 'object') return true
+    if (!win._resultWriteClaims) win._resultWriteClaims = new Set()
+    const key = String(kind || '')
+    if (win._resultWriteClaims.has(key)) return false
+    win._resultWriteClaims.add(key)
+    return true
+  }
+
+  // Delayed history writes are the only place a skipped capture could still land
+  // after its window is gone, so they all go through ONE scheduler. It refuses a
+  // plan with no record and it is idempotent per result + action.
+  function scheduleHistoryWrite(win, plan, buffer, meta) {
+    if (!plan || plan.historyRecords !== 1) return false
+    if (!claimResultWrite(win, `history:${plan.action}`)) return false
+    const persistStarted = Date.now()
+    setImmediate(() => {
+      try {
+        persistHistory(buffer, { ...meta, action: plan.action })
+        performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: plan.action })
+      } catch (error) {
+        log('Capture history persist failed:', error.message)
+      }
+    })
+    return true
+  }
+
+  // Auto-save on copy is a second copy of the same pixels; the switch skips it, and a
+  // repeated copy must not produce two files either.
+  function scheduleAutoSave(win, buffer) {
+    if (!claimResultWrite(win, 'auto-save')) return false
+    saveImageBuffer(buffer, { fast: true }).catch((error) => log(error.message))
+    return true
+  }
+
+  // One clipboard publication for both the plain and the skipped copy, so the copy
+  // path and "pin and copy" cannot disagree about which formats were attached.
+  // `deps.writeClipboardImage` is the future native seam (a publication that carries
+  // the image AND the exclusion formats in one OpenClipboard call); until it exists
+  // the plain Electron write is used and the receipt says "pending-native" instead
+  // of pretending the clipboard history was excluded.
+  function writeImageToClipboard(image, { skipHistory = false } = {}) {
+    const nativeWriter = typeof deps.writeClipboardImage === 'function' ? deps.writeClipboardImage : null
+    const publication = planClipboardPublish({ skipHistory, nativeWriter: !!nativeWriter })
+    if (publication.private) {
+      try {
+        const result = nativeWriter(image)
+        if (!result || result.ok !== false) return { ok: true, ...publication }
+        log('Native clipboard exclusion write failed:', result.code || 'unknown')
+      } catch (error) {
+        log('Native clipboard exclusion write failed:', error.message)
+      }
+    }
+    clipboard.writeImage(image)
+    // The explicit copy must still land even when the native seam refused; the receipt then
+    // reports the honest "pending-native" state instead of claiming an exclusion.
+    return {
+      ok: true,
+      ...publication,
+      private: false,
+      status: publication.status === 'private' ? 'pending-native' : publication.status,
+      fellBack: publication.private
+    }
+  }
+
+  // B01: with history skipped there is no record to re-find the file later, so an
+  // explicit save has to say where it landed. A native info box is the one surface
+  // guaranteed to still exist after the overlay closes; it is only used for skipped
+  // saves, so the shipped save path keeps its exact behaviour.
+  function announceSavedPath(filePath) {
+    if (!filePath || !dialog || typeof dialog.showMessageBox !== 'function') return false
+    try {
+      Promise.resolve(dialog.showMessageBox({
+        type: 'info',
+        noLink: true,
+        buttons: [t('common.button.ok')],
+        defaultId: 0,
+        title: t('capture-skip.save.title'),
+        message: t('capture-skip.save.message'),
+        detail: String(filePath)
+      })).catch(() => {})
+      return true
+    } catch (error) {
+      log('Saved-path notice failed:', error.message)
+      return false
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // B03: the two outputs behind one "pin and copy" confirmation.
   //
   // Each is attempted independently so a partial result can be reported as such:
@@ -199,10 +418,10 @@ function createCaptureDomain(deps) {
   // Electron does not throw when another process holds the Windows clipboard: the
   // write is silently dropped. Reading the image back is what turns that into a
   // reportable failure instead of a false "copied".
-  function copyBufferToClipboard(buffer) {
+  function copyBufferToClipboard(buffer, options = {}) {
     try {
       const image = nativeImage.createFromBuffer(buffer)
-      clipboard.writeImage(image)
+      const publication = writeImageToClipboard(image, options)
       const expected = typeof image?.getSize === 'function' ? image.getSize() : null
       if (!expected || !(expected.width > 0) || !(expected.height > 0)) return { ok: true }
       if (typeof clipboard.readImage !== 'function') return { ok: true }
@@ -211,7 +430,7 @@ function createCaptureDomain(deps) {
       if (actual.width !== expected.width || actual.height !== expected.height) {
         return { ok: false, code: 'CLIPBOARD_BUSY' }
       }
-      return { ok: true }
+      return { ok: true, exclusion: publication?.exclusion || publication?.status || 'plain' }
     } catch (error) {
       log('Capture clipboard write failed:', error.message)
       return { ok: false, code: 'CLIPBOARD_BUSY' }
@@ -232,10 +451,13 @@ function createCaptureDomain(deps) {
     }
   }
 
-  function attemptPinOutput(event, captureWindow, buffer, meta) {
+  function attemptPinOutput(event, captureWindow, buffer, meta, skipHistory = false) {
     if (pinBudgetReached(event, captureWindow)) return { ok: false, code: 'PIN_LIMIT' }
     try {
-      pinDomain.pinFromCapture(event, buffer, meta)
+      const created = pinDomain.pinFromCapture(event, buffer, meta)
+      // B01: the pin is the same result as the capture that produced it, so it carries
+      // the switch into its re-annotate editor instead of re-enabling history there.
+      if (created?.pinWindow) created.pinWindow._skipHistory = skipHistory === true
       return { ok: true }
     } catch (error) {
       log('Capture pin failed:', error?.message || String(error))
@@ -244,6 +466,9 @@ function createCaptureDomain(deps) {
   }
 
   function persistPinCopyHistory(buffer, meta) {
+    // Defence in depth: the receipt already refuses to schedule a record for a skipped
+    // capture, but a future caller must not be able to bypass the switch here either.
+    if (meta && meta.skipHistory === true) return false
     const persistStarted = Date.now()
     setImmediate(() => {
       try {
@@ -253,19 +478,25 @@ function createCaptureDomain(deps) {
         log('Capture history persist failed:', error.message)
       }
     })
+    return true
   }
 
   // One confirmation = one export = at most ONE history record, even when only one
   // of the two outputs landed. The receipt lives on the capture window so a retry
   // can only fill in the missing half.
   function pinAndCopyOnce(event, captureWindow, buffer, meta) {
+    const skipHistory = resolveSkipHistory(captureWindow, meta)
     const attempted = {
-      pin: attemptPinOutput(event, captureWindow, buffer, meta),
-      copy: copyBufferToClipboard(buffer)
+      pin: attemptPinOutput(event, captureWindow, buffer, meta, skipHistory),
+      copy: copyBufferToClipboard(buffer, { skipHistory })
     }
     const receipt = summarizePinCopyOutputs({ attempted })
     receipt.recorded = attempted.pin.ok || attempted.copy.ok
+    // A skipped capture keeps BOTH outputs but neither local record. "recorded" is the
+    // receipt's memory across a retry, so it must stay false for this whole result.
+    if (skipHistory) receipt.recorded = false
     if (receipt.recorded) persistPinCopyHistory(buffer, meta)
+    receipt.history = skipHistory ? 'skipped' : (receipt.recorded ? 'recorded' : 'none')
     if (aliveCaptureWindow(captureWindow)) captureWindow._pinCopyState = receipt
     return receipt
   }
@@ -286,6 +517,7 @@ function createCaptureDomain(deps) {
   function retryPinCopy(captureWindow, kind, { event, buffer, meta }) {
     const prior = captureWindow?._pinCopyState
     if (!prior || !prior.outputs) return stalePinCopyReceipt()
+    const skipHistory = resolveSkipHistory(captureWindow, meta)
     const targets = planPinCopyAttempts(prior.outputs, [kind])
     if (!targets.length) {
       // That half already succeeded: report the same receipt again instead of
@@ -293,17 +525,19 @@ function createCaptureDomain(deps) {
       return { ...prior, reattempted: [] }
     }
     const attempted = {}
-    if (kind === 'pin') attempted.pin = attemptPinOutput(event, captureWindow, buffer, meta)
-    else attempted.copy = copyBufferToClipboard(buffer)
+    if (kind === 'pin') attempted.pin = attemptPinOutput(event, captureWindow, buffer, meta, skipHistory)
+    else attempted.copy = copyBufferToClipboard(buffer, { skipHistory })
     const receipt = summarizePinCopyOutputs({ prior: prior.outputs, attempted })
     // A confirmation that failed both outputs recorded nothing; the first retry that
     // lands may still write the single missing record. The flag is set before the
     // write is scheduled so two rapid retries cannot both schedule one.
     receipt.recorded = prior.recorded === true
-    if (!receipt.recorded && (receipt.outputs.pin.ok || receipt.outputs.copy.ok)) {
+    if (skipHistory) receipt.recorded = false
+    else if (!receipt.recorded && (receipt.outputs.pin.ok || receipt.outputs.copy.ok)) {
       receipt.recorded = true
       persistPinCopyHistory(buffer, meta)
     }
+    receipt.history = skipHistory ? 'skipped' : (receipt.recorded ? 'recorded' : 'none')
     if (aliveCaptureWindow(captureWindow)) captureWindow._pinCopyState = receipt
     return { ...receipt, reattempted: targets }
   }
@@ -811,6 +1045,13 @@ function createCaptureDomain(deps) {
     })
     currentCaptureWindow = captureWindow
     captureWindow._editingPinWindow = options.editingPinWindow || null
+    // B01: a pin created with "do not keep this capture" hands the switch to its
+    // re-annotate editor, so reopening the same pixels does not silently start
+    // writing history again. Any other capture starts with the renderer's default
+    // (which follows screenshot.historyEnabled).
+    const inheritedSkipHistory = options.skipHistory === true ||
+      options.editingPinWindow?._skipHistory === true
+    captureWindow._skipHistory = inheritedSkipHistory
     captureWindow._captureVisible = false
     captureWindow._captureInitSent = false
     captureWindow._captureRendererReady = false
@@ -889,6 +1130,9 @@ function createCaptureDomain(deps) {
         })(),
         // P0-7-T4：快捷保存 / 另存为调用方下发的保存模式；空值时渲染层回落到设置项。
         saveMode: options.saveMode || '',
+        // B01: the window's one-shot "do not keep" default. The renderer ORs it with
+        // "history is disabled globally" and never writes the value back to settings.
+        skipHistory: inheritedSkipHistory,
         serialNumber,
         // P0-2（S9b）：截图带光标的合成载荷。开关关闭 / provider 不可用 / 查询失败都是 null，
         // 渲染层据此"一行都不画"，与旧版逐像素一致。physicalPoint 是**物理像素**，
@@ -994,10 +1238,16 @@ function createCaptureDomain(deps) {
       // editable document. The renderer's payload carries just sessionId + requestId + intent +
       // the frozen snapshot and result image; captureDocumentService generates and validates
       // every document/asset id and path.
-      commitDocument: async (_event, payload = {}) => {
+      commitDocument: async (event, payload = {}) => {
         const documentService = captureDocumentService()
         if (!documentService) return { ok: false, status: 'failed', code: 'unavailable', retryable: false }
-        const result = await documentService.commit(payload)
+        const captureWindow = BrowserWindow.fromWebContents(event.sender)
+        const skipHistory = resolveSkipHistory(captureWindow, payload)
+        // B01: latch the one-shot on the window as well. The renderer sends the switch
+        // with every commit, but a commit that arrives without it (a retry after the
+        // toggle was re-rendered) must still belong to the same, skipped result.
+        if (skipHistory && captureWindow) captureWindow._skipHistory = true
+        const result = await documentService.commit(skipHistory ? { ...payload, skipHistory: true } : payload)
         // Broadcast after success (§6.5.5 step 6): a failed notification does not affect the
         // committed revision, and the client can still look the same result up by requestId.
         if (result?.ok && result.status === 'committed' && typeof mainWindowBroadcast === 'function') {
@@ -1069,35 +1319,51 @@ function createCaptureDomain(deps) {
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
         if (!buffer.length) throw new Error('截图图片数据为空')
         const image = nativeImage.createFromBuffer(buffer)
-        clipboard.writeImage(image)
-        const persistMeta = { ...meta, action: 'copy', image }
-        const persistStarted = Date.now()
-        setImmediate(() => {
-          try {
-            persistHistory(buffer, persistMeta)
-            performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: 'copy' })
-          } catch (error) {
-            log('Capture history persist failed:', error.message)
-          }
-        })
+        const captureWindow = BrowserWindow.fromWebContents(_event.sender)
+        const skipHistory = resolveSkipHistory(captureWindow, meta)
+        // B01: the skipped copy still goes to the Windows clipboard (it is an explicit
+        // output), but the publication asks for the exclusion formats and the white
+        // lie of "pending-native" is reported instead of claimed.
+        const publication = writeImageToClipboard(image, { skipHistory })
         // P0-7B（§17.6）：保存落点可能是记忆目录（screenshot.lastSaveDirectory），
         // 因此"配置了固定目录或已有记忆目录"任一成立即可自动保存。
         const settings = getSettings()
-        if (settings.screenshot.autoSaveOnCopy && resolveSaveDirectory(settings)) {
-          saveImageBuffer(buffer, { fast: true }).catch((error) => log(error.message))
+        const plan = capturePlan('copy', skipHistory, {
+          autoSaveOnCopy: settings?.screenshot?.autoSaveOnCopy === true,
+          hasSaveDirectory: !!resolveSaveDirectory(settings)
+        })
+        // The history entry keeps its decoded image (saves one re-decode on the click path).
+        scheduleHistoryWrite(captureWindow, plan, buffer, { ...meta, image })
+        if (plan.autoSaveFile && settings.screenshot.autoSaveOnCopy && resolveSaveDirectory(settings)) {
+          scheduleAutoSave(captureWindow, buffer)
         }
-        return null
+        return skipHistory
+          ? {
+              ok: true,
+              clipboard: 'windows',
+              history: 'skipped',
+              exclusion: publication.exclusion || publication.status
+            }
+          : null
       },
       save: (event, { imageBuffer, dataUrl, meta, fast } = {}) => {
         reportCaptureSerial(meta)
         const captureWindow = BrowserWindow.fromWebContents(event.sender)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
+        const skipHistory = resolveSkipHistory(captureWindow, meta)
+        // B01: an explicit save is the user's own file and is ALWAYS written; only the
+        // history row is suppressed. The plan is frozen here, before the window closes,
+        // so nothing that runs later can change this result's decision.
+        const plan = capturePlan('save', skipHistory)
         if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
         setImmediate(async () => {
           try {
             if (!buffer.length) throw new Error('截图图片数据为空')
             const filePath = await saveImageBuffer(buffer, { fast: !!fast })
-            if (filePath) persistHistory(buffer, { ...meta, action: 'save' })
+            if (filePath) scheduleHistoryWrite(captureWindow, plan, buffer, meta)
+            // B01: with no history row there is nothing to find the file by later, so a
+            // skipped explicit save reports the actual path it just wrote.
+            if (filePath && skipHistory) announceSavedPath(filePath)
             // A plain screenshot closes its window by design (plan §4.1 keeps the original
             // close-on-save behaviour and must not trap the user in the overlay), so this receipt
             // is not for an in-window bar - it is what the tray's "recent export" reads.
@@ -1113,29 +1379,23 @@ function createCaptureDomain(deps) {
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
         if (!buffer.length) throw new Error('截图图片数据为空')
         const captureWindow = BrowserWindow.fromWebContents(event.sender)
+        const skipHistory = resolveSkipHistory(captureWindow, meta)
         // B03: a retry never re-attempts an output that already succeeded, and never
         // writes a second history record (see retryPinCopy).
         if (retry === 'pin' || retry === 'copy') {
-          return retryPinCopy(captureWindow, retry, { event, buffer, meta })
+          return retryPinCopy(captureWindow, retry, { event, buffer, meta: { ...meta, skipHistory } })
         }
         // An unknown retry selector is a stale caller, never a new confirmation: firing
         // the legacy pin path here would create a second pin for a request that asked
         // only to repair an earlier one.
         if (retry) return stalePinCopyReceipt()
+        const plan = capturePlan(copy === true ? 'pin-copy' : 'pin', skipHistory)
         // The shipped single-output path, unchanged: pin only, one history record,
         // and a failure still throws to the renderer's alert.
         if (copy !== true) {
-          pinDomain.pinFromCapture(event, buffer, meta)
-          const persistMeta = { ...meta, action: 'pin' }
-          const persistStarted = Date.now()
-          setImmediate(() => {
-            try {
-              persistHistory(buffer, persistMeta)
-              performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: 'pin' })
-            } catch (error) {
-              log('Capture history persist failed:', error.message)
-            }
-          })
+          const created = pinDomain.pinFromCapture(event, buffer, meta)
+          if (created?.pinWindow) created.pinWindow._skipHistory = skipHistory
+          scheduleHistoryWrite(captureWindow, plan, buffer, meta)
           return null
         }
         return pinAndCopyOnce(event, captureWindow, buffer, meta)
@@ -1143,32 +1403,43 @@ function createCaptureDomain(deps) {
       pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
         reportCaptureSerial(meta)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
-        const { captureWindow } = pinDomain.pinFromCapture(event, buffer, meta, action)
+        const sender = BrowserWindow.fromWebContents(event.sender)
+        const skipHistory = resolveSkipHistory(sender, meta)
+        const plan = capturePlan('pin-reannotate', skipHistory)
+        const created = pinDomain.pinFromCapture(event, buffer, meta, action)
+        const captureWindow = created?.captureWindow
+        // B01: this is the same result, so the pin inherits the switch for its editor.
+        if (created?.pinWindow) created.pinWindow._skipHistory = skipHistory
         setImmediate(() => {
           if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
         })
-        const persistMeta = { ...meta, action: 'pin' }
-        setImmediate(() => {
-          try {
-            persistHistory(buffer, persistMeta)
-          } catch (error) {
-            log('Capture history persist failed:', error.message)
-          }
-        })
+        // The history label stays 'pin' (the shipped entry shape); the PLAN still keeps the
+        // one-time claim keyed to this action, so a repeated re-annotation cannot add a row.
+        scheduleHistoryWrite(sender, { ...plan, action: 'pin' }, buffer, meta)
         return null
       },
       openRecognition: (event, { type, imageBuffer, dataUrl, meta } = {}) => {
         reportCaptureSerial(meta)
         const captureWindow = BrowserWindow.fromWebContents(event.sender)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
+        const skipHistory = resolveSkipHistory(captureWindow, meta)
+        // B01: recognition still opens (it is the explicit output); only its history
+        // row is suppressed. Its own temporary resources keep the existing owner (the
+        // recognition window), so a skipped capture leaves nothing extra behind.
+        const plan = capturePlan(type, skipHistory)
         createRecognitionWindow(type, bufferToDataUrl(buffer), { scaleFactor: meta?.scaleFactor })
         setImmediate(() => {
           if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
         })
+        if (plan.historyRecords !== 1) return { ok: true, history: 'skipped' }
         return persistHistory(buffer, { ...meta, action: type })
       },
-      recordHistory: (_event, { imageBuffer, dataUrl, meta } = {}) => {
+      recordHistory: (event, { imageBuffer, dataUrl, meta } = {}) => {
         reportCaptureSerial(meta)
+        const captureWindow = BrowserWindow.fromWebContents(event.sender)
+        const skipHistory = resolveSkipHistory(captureWindow, meta)
+        const plan = capturePlan('record-history', skipHistory)
+        if (plan.historyRecords !== 1) return { ok: true, history: 'skipped' }
         return persistHistory(imageBuffer ?? dataUrl, meta)
       },
       exportPdf: async (event, { imageBuffer, dataUrl, meta, mode } = {}) => {
@@ -1231,5 +1502,12 @@ module.exports = {
   // B03 pure contracts (no Electron): the two-output plan behind one confirmation.
   PIN_COPY_OUTPUTS,
   planPinCopyAttempts,
-  summarizePinCopyOutputs
+  summarizePinCopyOutputs,
+  // B01 pure contracts (no Electron): the one-shot "do not keep this capture" write
+  // plan and the clipboard exclusion formats it asks the native publication for.
+  CAPTURE_WRITE_ACTIONS,
+  CLIPBOARD_HISTORY_EXCLUSION_FORMATS,
+  normalizeCaptureWriteAction,
+  planCaptureWrites,
+  planClipboardPublish
 }

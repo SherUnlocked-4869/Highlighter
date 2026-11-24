@@ -26,6 +26,10 @@ contextBridge.exposeInMainWorld('captureAPI', {
   // （P0-7-T7 精确接续的补充：这两个出口同样要"落过就推进"）。
   startLongCapture: (selection, serial) => ipcRenderer.invoke('capture:start-long', { selection, ...serial }),
   smartSelectAt: (point) => ipcRenderer.invoke('capture:smart-select', point),
+  // B01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the one-shot
+  // "do not keep this capture" flag rides the EXISTING meta object of every action below
+  // (meta.skipHistory), so no new IPC channel and no new ipc-security entry is needed. The
+  // main process is the one that decides what to skip - this bridge only forwards it.
   copy: (imageBuffer, meta) => ipcRenderer.invoke('capture:copy', { imageBuffer, meta }),
   save: (imageBuffer, meta, fast) => ipcRenderer.send('capture:save', { imageBuffer, meta, fast }),
   // B03 (docs/reviews/2026-11-24-windows-product-architecture-review.md): one

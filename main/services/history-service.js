@@ -265,14 +265,24 @@ class HistoryService {
     return item
   }
 
+  // B01: a one-shot "do not keep this capture" reaches the history service as
+  // meta.skipHistory. The capture domain already refuses to call here for a skipped
+  // result, but the guard is repeated at the only place that actually writes, so no
+  // future caller can turn a skipped capture into a record by accident.
+  skipsHistory(meta) {
+    return !!meta && meta.skipHistory === true
+  }
+
   persistBuffer(value, meta = {}) {
     this.assertWritable()
+    if (this.skipsHistory(meta)) return null
     const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value || [])
     return this.persistImageBuffer(buffer, meta)
   }
 
   persistDataUrl(dataUrl, meta = {}) {
     this.assertWritable()
+    if (this.skipsHistory(meta)) return null
     const buffer = Buffer.from(String(dataUrl).replace(DATA_URL_PATTERN, ''), 'base64')
     return this.persistImageBuffer(buffer, meta)
   }
@@ -315,6 +325,7 @@ class HistoryService {
 
   async persistFile(sourcePath, meta = {}) {
     this.assertWritable()
+    if (this.skipsHistory(meta)) return null
     const settings = this.getSettings()
     if (!settings.screenshot.historyEnabled || !sourcePath || !fs.existsSync(sourcePath)) return null
     const id = this.createId()

@@ -257,6 +257,19 @@
     'capture.magnifier.connector-line': '连线',
     'capture.magnifier.limit': '每张图最多 {max} 个放大镜',
     'capture.magnifier.outside': '放大镜超出选区，无法放在这里',
+    /* B01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the one-shot
+       "do not keep this capture" switch. The namespace is deliberately NOT `capture.*`:
+       test/capture-i18n.test.js pins the capture.* key set to its pre-migration golden
+       table, while these strings are written by capture.js at runtime (no data-i18n
+       markers). They still live here, next to the window whose copy they describe. */
+    'capture-skip.toolbar.toggle': '本次不存历史',
+    'capture-skip.toolbar.toggle-tip': '本次截图不写入历史、修订或缩略图；只对这次截图有效，不改变设置',
+    'capture-skip.toolbar.hint': '本次不写入截图历史、修订和缩略图，复制时的自动保存也会跳过。复制仍会进入 Windows 剪贴板；Windows 剪贴板历史、本机剪贴板历史或其他剪贴板工具仍可能保留这份内容。长截图与录制不受此开关影响。',
+    'capture-skip.toolbar.locked-tip': '截图历史已在设置中关闭',
+    'capture-skip.save.title': '本次不存历史',
+    'capture-skip.save.message': '已保存你指定的文件，本次未写入截图历史。实际路径：',
+    'capture-skip.document.skipped': '本次不存历史：这次编辑不会写入修订。关闭窗口会丢弃这些编辑；需要保留请先关闭「本次不存历史」。',
+    'capture-skip.document.close-discard': '本次不存历史，关闭会丢弃这次编辑。继续关闭？',
   })
 
   add('en-US', {
@@ -469,6 +482,15 @@
     'capture.magnifier.connector-line': 'Line',
     'capture.magnifier.limit': 'At most {max} magnifiers per image',
     'capture.magnifier.outside': 'The magnifier would fall outside the region, so it cannot go there',
+    /* B01: see the zh-CN block above - a runtime-written namespace beside the capture table. */
+    'capture-skip.toolbar.toggle': "Don't keep this capture",
+    'capture-skip.toolbar.toggle-tip': 'Nothing from this capture is written to history, revisions or thumbnails. Applies to this capture only and never changes Settings.',
+    'capture-skip.toolbar.hint': 'Nothing from this capture is written to screenshot history, revisions or thumbnails, and the auto-save on copy is skipped. Copying still puts the image on the Windows clipboard, so Windows clipboard history, the local clipboard history or another clipboard tool may still keep it. Scrolling capture and recording are not affected by this switch.',
+    'capture-skip.toolbar.locked-tip': 'Screenshot history is turned off in Settings',
+    'capture-skip.save.title': 'Not kept in history',
+    'capture-skip.save.message': 'The file you chose was saved. Nothing was added to screenshot history. Actual path:',
+    'capture-skip.document.skipped': 'History is off for this capture, so this edit will not be written as a revision. Closing the window discards it; turn the switch off first if you want to keep it.',
+    'capture-skip.document.close-discard': 'History is off for this capture. Closing discards this edit. Close anyway?',
   })
 
   add('zh-TW', {
@@ -681,5 +703,14 @@
     'capture.magnifier.connector-line': '連線',
     'capture.magnifier.limit': '每張圖最多 {max} 個放大鏡',
     'capture.magnifier.outside': '放大鏡超出選取區，無法放在這裡',
+    /* B01: see the zh-CN block above - a runtime-written namespace beside the capture table. */
+    'capture-skip.toolbar.toggle': '本次不存歷史',
+    'capture-skip.toolbar.toggle-tip': '本次截圖不寫入歷史、修訂或縮圖；只對這次截圖有效，不改變設定',
+    'capture-skip.toolbar.hint': '本次不寫入截圖歷史、修訂和縮圖，複製時的自動儲存也會跳過。複製仍會進入 Windows 剪貼簿；Windows 剪貼簿歷史、本機剪貼簿歷史或其他剪貼簿工具仍可能保留這份內容。長截圖與錄製不受此開關影響。',
+    'capture-skip.toolbar.locked-tip': '截圖歷史已在設定中關閉',
+    'capture-skip.save.title': '本次不存歷史',
+    'capture-skip.save.message': '已儲存你指定的檔案，本次未寫入截圖歷史。實際路徑：',
+    'capture-skip.document.skipped': '本次不存歷史：這次編輯不會寫入修訂。關閉視窗會捨棄這些編輯；需要保留請先關閉「本次不存歷史」。',
+    'capture-skip.document.close-discard': '本次不存歷史，關閉會捨棄這次編輯。繼續關閉？',
   })
 })()
