@@ -898,7 +898,7 @@ function createTrayIcon() {
   const recordingTooltip = liveRecording?.status === 'recording' || liveRecording?.status === 'paused'
     ? t(liveRecording.status === 'paused' ? 'main.tray.tooltip-recording-paused' : 'main.tray.tooltip-recording')
     : ''
-  tray.setToolTip([gameMode ? 'Highlighter（游戏模式）' : 'Highlighter', recordingTooltip, proxyState?.running ? t('main.proxy.tooltip-running') : ''].filter(Boolean).join(' · '))
+  tray.setToolTip([gameMode ? t('main.tray.tooltip-game-mode') : 'Highlighter', recordingTooltip, proxyState?.running ? t('main.proxy.tooltip-running') : ''].filter(Boolean).join(' · '))
   tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenuTemplate({
     gameMode,
     screenshotAccelerator: settings.shortcuts.screenshot, clipboardEnabled: settings.clipboard.enabled,
@@ -911,6 +911,9 @@ function createTrayIcon() {
     exitClickThrough: () => { const exited = pinDomain.exitAllClickThrough(); log('Click-through exit:', exited); return exited },
     setGameModeEnabled: (enabled) => { try { setGameModeEnabled(enabled) } catch (error) { log('Game mode update failed:', error.message); createTrayIcon() } },
     openHistory: () => createMainWindow('history'),
+    // A06: the disabled clipboard entry explains where to enable it and this entry opens that
+    // settings route in one step, so a fresh install needs no scavenger hunt.
+    openClipboardSettings: () => createMainWindow('clipboard-history'),
     openMainWindow: () => createMainWindow('home'),
     hasConversation: selectionDomain.hasConversation(),
     showConversation: () => selectionDomain.showOrRestoreConversation(),

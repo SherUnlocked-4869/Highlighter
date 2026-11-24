@@ -224,6 +224,10 @@ function createSettingsNormalizer({ defaultHistoryDirectory, log } = {}) {
     // value) means "do not run a timer", which is the default-off promise.
     normalized.system.autoCheckUpdates = normalized.system.autoCheckUpdates === true
     normalized.system.gameMode = normalized.system.gameMode === true
+    // A06: the first-run card is suppressed only by a stored `true`. A legacy store with no
+    // key at all therefore counts as "not done", which is the intended migration: the next
+    // manual launch is the one that gets the guidance.
+    normalized.system.firstRunGuidanceDone = normalizeToggle(normalized.system.firstRunGuidanceDone)
     normalized.mainColor = resolveMainColor(normalized.mainColor)
     if (normalized.fixedContent && Object.hasOwn(normalized.fixedContent, 'autoSaveDirectory')) delete normalized.fixedContent.autoSaveDirectory
     dropLegacyDeadKeys(normalized)

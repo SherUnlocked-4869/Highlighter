@@ -170,7 +170,12 @@ const DEFAULT_SETTINGS = {
     // store written before this key existed - reads as OFF, so startup never arms the
     // updater's timer on its own. A manual "check for updates" still authorises exactly
     // one request (update-service.js check({ manual: true })).
-    autoCheckUpdates: false
+    autoCheckUpdates: false,
+    // A06 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the home
+    // page's "first minute" card is a one-shot. It is only rendered while this is not
+    // `true`, and a login launch never creates the window at all (start-to-tray), so the
+    // flag answers "has this install already met the manual first launch?".
+    firstRunGuidanceDone: false
   },
   // Index-Translate proxy bridge (docs/proxy-inprocess-relay-plan.md). This block
   // IS the patch-validation template, so every field the settings page may write

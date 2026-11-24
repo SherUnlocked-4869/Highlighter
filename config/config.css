@@ -1303,3 +1303,12 @@ body.compact .rec-card{padding:11px 12px}
   .device-battery-icon{forced-color-adjust:none;color:CanvasText}
   #deviceBatteryRefresh .svg-icon{forced-color-adjust:none;color:ButtonText}
 }
+
+/* A06 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the home page's
+   first-run card. It reuses the card/section-note/action-group primitives; only the
+   head row (title + dismiss) and the padding are its own. */
+.first-run-card{padding:16px 18px}
+.first-run-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.first-run-head .section-title{margin:0}
+.first-run-card .section-note{margin:6px 0 12px}
+.first-run-card .action-group{flex-wrap:wrap}

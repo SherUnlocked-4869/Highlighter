@@ -95,37 +95,52 @@ test('interpolated main.* keys carry the placeholder through every language', ()
   }
 })
 
-test('the tray menu resolves its 12 labels from the table instead of hard-coding them', () => {
+test('the tray menu resolves every label from the table instead of hard-coding them', () => {
   const { buildTrayMenuTemplate } = require('../main/services/tray-menu')
   registerLocales()
-  const template = buildTrayMenuTemplate({
+  // A06: the template is a tree now. Collecting the labels depth-first keeps this test
+  // about the copy rather than about the hierarchy - test/tray-menu.test.js pins the
+  // hierarchy itself.
+  const collect = (items) => items.flatMap((item) => [
+    ...(typeof item.label === 'string' ? [item.label] : []),
+    ...(Array.isArray(item.submenu) ? collect(item.submenu) : [])
+  ])
+  const build = (extra = {}) => collect(buildTrayMenuTemplate({
+    // An enabled clipboard keeps this list about the everyday labels; the disabled
+    // spelling is covered by test/tray-menu.test.js.
+    clipboardEnabled: true,
     executeFunction: () => {},
     setGameModeEnabled: () => {},
     openHistory: () => {},
     openMainWindow: () => {},
     showConversation: () => {},
-    quit: () => {}
-  })
-  const labels = template.filter((item) => item.label).map((item) => item.label)
+    quit: () => {},
+    ...extra
+  }))
+  const labels = build()
   const expected = withLanguage('zh-CN', () => [
     t('main.tray.screenshot'),
-    t('main.tray.screenshot-full-screen'),
-    t('main.tray.screenshot-focused-window'),
-    t('main.tray.pin-image'),
     // R2 (contracts §4.1): the regular recording entry is the workbench; the fullscreen quick
     // start keeps its own command (`recordFullscreen` / legacy `videoRecord`) but has no menu row.
     t('main.tray.recording-workbench'),
-    t('main.tray.local-search'),
-    // The clipboard-history entry (main/services/tray-menu.js:69) sits between the
-    // local-search and game-mode items; its label is the shared `clipboard.title`
-    // key rather than a main.tray one.
+    // The clipboard-history entry's label is the shared `clipboard.title` key rather than a
+    // main.tray one (the disabled spelling is a main.tray key, and this template has the feature
+    // enabled).
     t('clipboard.title'),
-    t('main.tray.game-mode'),
+    t('main.tray.more-screenshot-modes'),
+    t('main.tray.screenshot-full-screen'),
+    t('main.tray.screenshot-focused-window'),
+    t('main.tray.screenshot-long'),
+    t('main.tray.screenshot-delay'),
+    t('main.tray.tools'),
+    t('main.tray.local-search'),
+    t('main.tray.pin-image'),
     t('main.tray.exit-all-click-through'),
     t('main.tray.show-selection-chat'),
     // Feature A (plan §4.1): the newest exported file. The entry is conditional on a live receipt
     // (`recentExport`), and this template is built without one, so it is absent here - see the
     // dedicated assertion below that the entry appears with a receipt and resolves its label.
+    t('main.tray.game-mode'),
     t('main.tray.capture-history'),
     t('main.tray.show-main-window'),
     t('main.tray.quit')
@@ -135,28 +150,16 @@ test('the tray menu resolves its 12 labels from the table instead of hard-coding
   // or misspelled label without duplicating the table here.
   assert.deepEqual(labels.filter((label) => label.startsWith('main.')), [])
 
-  // Feature A (plan §4.1/§4.3): with a live export receipt the tray gains exactly ONE extra entry,
-  // immediately before the capture-history item, and its label is the interpolated file name - the
-  // plan caps the tray at a single recent export so it cannot become a second history surface.
-  const withReceipt = buildTrayMenuTemplate({
-    executeFunction: () => {},
-    setGameModeEnabled: () => {},
-    openHistory: () => {},
-    openMainWindow: () => {},
-    showConversation: () => {},
-    quit: () => {},
+  // Feature A (plan §4.1/§4.3): with a live export receipt the tray gains exactly ONE extra entry
+  // and its label is the interpolated file name - the plan caps the tray at a single recent export
+  // so it cannot become a second history surface.
+  const withReceipt = build({
     recentExport: { resultId: 'r1', fileName: 'Highlighter_2026-10-25.png', kind: 'png' },
     openRecentExport: () => {}
   })
-  const receiptLabels = withReceipt.filter((item) => item.label).map((item) => item.label)
-  assert.equal(receiptLabels.length, labels.length + 1)
-  const recentIndex = receiptLabels.indexOf(withLanguage('zh-CN', () => t('main.tray.recent-export', { fileName: 'Highlighter_2026-10-25.png' })))
-  assert.ok(recentIndex > 0, 'the recent-export entry must render its interpolated label')
-  assert.equal(
-    receiptLabels[recentIndex + 1],
-    withLanguage('zh-CN', () => t('main.tray.capture-history')),
-    'the recent-export entry sits directly above capture-history'
-  )
+  assert.equal(withReceipt.length, labels.length + 1)
+  const recentLabel = withLanguage('zh-CN', () => t('main.tray.recent-export', { fileName: 'Highlighter_2026-10-25.png' }))
+  assert.equal(withReceipt.filter((label) => label === recentLabel).length, 1, 'the recent-export entry renders its interpolated label exactly once')
 })
 
 test('every main.* key the migrated modules ask for exists in all three tables', () => {

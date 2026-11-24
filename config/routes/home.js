@@ -55,6 +55,56 @@ const functionGroups = {
 
 let homeTab = 'screenshot'
 
+// A06 (docs/reviews/2026-11-24-windows-product-architecture-review.md): a manual first
+// launch lands on this page, so the "first minute" path lives here - one skippable card
+// with the three things a new install cannot guess (capture once, bind the shortcuts,
+// decide about usage statistics). The card is rendered only while
+// system.firstRunGuidanceDone is not true; a login launch starts to the tray and never
+// creates this window, so it cannot show the card by accident.
+function firstRunGuidancePending() {
+  return settings?.system?.firstRunGuidanceDone !== true
+}
+
+function firstRunGuidanceMarkup() {
+  const actions = [
+    ['try-screenshot', 'config.first-run.try-screenshot', 'button primary'],
+    ['shortcuts', 'config.first-run.shortcuts', 'button'],
+    ['usage-on', 'config.first-run.usage-on', 'button'],
+    ['usage-off', 'config.first-run.usage-off', 'button subtle']
+  ]
+  return `<section class="section" data-testid="first-run-guidance"><div class="card first-run-card"><div class="first-run-head"><h2 class="section-title">${t('config.first-run.title')}</h2><button type="button" class="button subtle" data-first-run="dismiss">${t('config.first-run.dismiss')}</button></div><p class="section-note">${t('config.first-run.description')}</p><div class="action-group">${actions.map(([action, key, className]) => `<button type="button" class="${className}" data-first-run="${action}">${t(key)}</button>`).join('')}</div></div></section>`
+}
+
+function bindFirstRunGuidance() {
+  // Answering either usage question completes the guidance (the card disappears); the
+  // capture and the shortcut tab only point somewhere, so the card stays and the other
+  // steps keep their one click. The dismiss entry leaves usage untouched.
+  const complete = (patch, message) => updateSettings(patch, message)
+    .then(() => renderHome())
+    .catch((error) => toast(errorMessage(error)))
+  document.querySelectorAll('[data-first-run]').forEach((button) => {
+    button.onclick = () => {
+      const action = button.dataset.firstRun
+      if (action === 'try-screenshot') {
+        // The command the tray, the hotkey and the quick-function row all use.
+        window.electronAPI.executeFunction('screenshot').catch((error) => toast(errorMessage(error)))
+        return
+      }
+      if (action === 'shortcuts') {
+        homeTab = 'shortcuts'
+        renderHome()
+        document.querySelector('[data-home-tab="shortcuts"]')?.focus({ preventScroll: true })
+        return
+      }
+      if (action === 'dismiss') {
+        complete({ system: { firstRunGuidanceDone: true } }, '')
+        return
+      }
+      complete({ usage: { enabled: action === 'usage-on' }, system: { firstRunGuidanceDone: true } }, t('config.first-run.usage-saved'))
+    }
+  })
+}
+
 function renderHome() {
   const tabs = [['screenshot', 'config.group.screenshot'], ['ai', 'config.group.ai'], ['translation', 'config.group.translation'], ['video', 'config.group.video'], ['other', 'config.group.other'], ['shortcuts', 'config.home.tab-shortcuts']]
   // The shortcuts tab absorbs the former hotkey settings page: one recorder row per
@@ -67,7 +117,10 @@ function renderHome() {
       return `<div class="function-row"><button type="button" class="function-launch" data-function="${name}"><span class="icon">${iconMarkup(icon)}</span><span class="label">${t(label)}<small class="desc">${t(description)}</small></span></button>${shortcutButton(name, shortcut)}</div>`
     }).join('')
   const description = homeTab === 'shortcuts' ? t('config.settings-hotkeys.description') : t('config.home.description')
-  view.innerHTML = `<div class="page">${pageHeader(t('config.route.home'), description)}<div class="tabs">${tabs.map(([key, label]) => `<button data-home-tab="${key}" aria-pressed="${homeTab === key}">${t(label)}</button>`).join('')}</div><section class="section"><h2 class="section-title">${t(tabs.find(([key]) => key === homeTab)[1])}</h2><div class="function-list">${rows}</div></section></div>`
+  // A06: the card is only on the landing tab; the shortcuts tab is one of the places
+  // it sends people, so repeating it there would be noise.
+  const firstRunCard = homeTab === 'screenshot' && firstRunGuidancePending() ? firstRunGuidanceMarkup() : ''
+  view.innerHTML = `<div class="page">${pageHeader(t('config.route.home'), description)}${firstRunCard}<div class="tabs">${tabs.map(([key, label]) => `<button data-home-tab="${key}" aria-pressed="${homeTab === key}">${t(label)}</button>`).join('')}</div><section class="section"><h2 class="section-title">${t(tabs.find(([key]) => key === homeTab)[1])}</h2><div class="function-list">${rows}</div></section></div>`
   document.querySelectorAll('[data-home-tab]').forEach((button) => {
     button.onclick = () => {
       homeTab = button.dataset.homeTab
@@ -87,6 +140,7 @@ function renderHome() {
       } else await window.electronAPI.executeFunction(name)
     } catch (error) { toast(error.message || String(error)) }
   })
+  bindFirstRunGuidance()
   bindShortcutRecorders()
 }
 

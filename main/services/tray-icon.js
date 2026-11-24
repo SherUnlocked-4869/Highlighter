@@ -20,6 +20,13 @@
 // by the display DPI itself, and passing a 16px bitmap here would look blurry on
 // 150% displays.
 
+// A06 asset audit (docs/reviews/2026-11-24-windows-product-architecture-review.md):
+// the tray ships ONE 256x256 PNG per theme and this module downscales it to the logical
+// size below; there are no 16/24/32 (or @1x/@2x) variants, and assets/icon-dark.png is
+// byte-identical to assets/icon.png, so the "dark taskbar" asset currently buys nothing.
+// The fix is six small assets (16/24/32 per theme) plus passing the taskbar size in - it
+// needs real artwork, so it is deliberately NOT faked here. Until then Windows receives
+// 24 logical pixels and scales them itself (exact at 150%, resampled at 100%/125%).
 const TRAY_ICON_SIZE = 24
 
 const ICON_FILES = Object.freeze({

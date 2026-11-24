@@ -17,6 +17,14 @@ const preload = fs.readFileSync(path.join(__dirname, '..', 'preload.js'), 'utf8'
 const config = readConfigSource()
 const styles = fs.readFileSync(path.join(__dirname, '..', 'config', 'config.css'), 'utf8')
 
+// A06 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the tray is a
+// two-level menu now, so a structural lookup has to walk the submenus as well.
+const trayEntries = (template) => template.flatMap((entry) => [
+  entry,
+  ...(Array.isArray(entry.submenu) ? trayEntries(entry.submenu) : [])
+])
+const trayEntry = (template, label) => trayEntries(template).find((entry) => entry.label === label)
+
 test('main process delegates shortcut registration and exposes status through preload', () => {
   assert.match(main, /new ShortcutService\(\{[\s\S]*globalShortcut[\s\S]*executeFunction/)
   // A03: the rebind transaction lives in main/domains/shortcuts; main.js only delegates.
@@ -191,7 +199,9 @@ test('the tray offers the mandatory bulk click-through exit', () => {
     showConversation: () => {},
     quit: () => {}
   })
-  const item = template.find((entry) => entry.label === '取消全部穿透')
+  // A06 moved the recovery entry into the "tools" submenu; it is still one hover away, so
+  // the contract itself (present and enabled in game mode) is unchanged.
+  const item = trayEntry(template, '取消全部穿透')
   assert.ok(item, 'the tray entry exists')
   // Esc is unreliable in click-through mode, so this recovery entry must stay
   // reachable even while game mode disables the feature entries.
@@ -208,8 +218,8 @@ test('the tray offers the mandatory bulk click-through exit', () => {
     showConversation: () => {},
     exitClickThrough: () => direct.push('domain'),
     quit: () => {}
-  }).find((entry) => entry.label === '取消全部穿透')
-  injected.click()
+  })
+  trayEntry(injected, '取消全部穿透').click()
   assert.deepEqual(direct, ['domain'], 'an injected domain exit is preferred over the router')
 })
 

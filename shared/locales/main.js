@@ -51,6 +51,16 @@
     'main.tray.show-selection-chat': '显示划词对话',
     // Feature A (plan §4.1): the newest exported file, when one is still live.
     'main.tray.recent-export': '最近导出：{fileName}',
+    // A06 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the tray's
+    // second level, plus the disabled-clipboard signpost. The tooltip key is the copy
+    // main.js still hard-codes; the tray table owns it so the follow-up is a pure t() swap.
+    'main.tray.more-screenshot-modes': '更多截图方式',
+    'main.tray.screenshot-long': '长截图',
+    'main.tray.screenshot-delay': '延迟截图',
+    'main.tray.tools': '工具',
+    'main.tray.clipboard-disabled': '剪贴板历史（在设置中启用）',
+    'main.tray.open-clipboard-settings': '打开剪贴板设置',
+    'main.tray.tooltip-game-mode': 'Highlighter（游戏模式）',
     'main.tray.capture-history': '截图历史',
     'main.tray.show-main-window': '显示主界面',
     'main.tray.quit': '退出',
@@ -147,6 +157,14 @@
     'main.tray.exit-all-click-through': 'Exit All Click-Through',
     'main.tray.show-selection-chat': 'Show Selection Chat',
     'main.tray.recent-export': 'Recent export: {fileName}',
+    // A06: the tray's second level, plus the disabled-clipboard signpost.
+    'main.tray.more-screenshot-modes': 'More Capture Modes',
+    'main.tray.screenshot-long': 'Scrolling Capture',
+    'main.tray.screenshot-delay': 'Delayed Capture',
+    'main.tray.tools': 'Tools',
+    'main.tray.clipboard-disabled': 'Clipboard History (enable in Settings)',
+    'main.tray.open-clipboard-settings': 'Open Clipboard Settings',
+    'main.tray.tooltip-game-mode': 'Highlighter (Game Mode)',
     'main.tray.capture-history': 'Capture History',
     'main.tray.show-main-window': 'Show Main Window',
     'main.tray.quit': 'Quit',
@@ -243,6 +261,14 @@
     'main.tray.exit-all-click-through': '取消全部穿透',
     'main.tray.show-selection-chat': '顯示劃詞對話',
     'main.tray.recent-export': '最近匯出：{fileName}',
+    // A06: the tray's second level, plus the disabled-clipboard signpost.
+    'main.tray.more-screenshot-modes': '更多截圖方式',
+    'main.tray.screenshot-long': '長截圖',
+    'main.tray.screenshot-delay': '延遲截圖',
+    'main.tray.tools': '工具',
+    'main.tray.clipboard-disabled': '剪貼簿歷史（在設定中啟用）',
+    'main.tray.open-clipboard-settings': '開啟剪貼簿設定',
+    'main.tray.tooltip-game-mode': 'Highlighter（遊戲模式）',
     'main.tray.capture-history': '截圖歷史',
     'main.tray.show-main-window': '顯示主介面',
     'main.tray.quit': '結束',
