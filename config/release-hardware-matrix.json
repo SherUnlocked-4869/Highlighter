@@ -60,6 +60,31 @@
       "packageTypes": ["nsis"]
     },
     {
+      "id": "nsis-default-offline-updates",
+      "description": "Default NSIS makes zero update-domain requests in the first 2 minutes and across a 24h clock advance until auto-check is enabled",
+      "packageTypes": ["nsis"]
+    },
+    {
+      "id": "update-manual-check-single-request",
+      "description": "With auto-check off, the settings-page manual check performs exactly one request and arms no timer",
+      "packageTypes": ["nsis"]
+    },
+    {
+      "id": "recording-real-audio-tracks",
+      "description": "System loopback and microphone tracks are audible in the exported file for all four on/off combinations",
+      "packageTypes": ["nsis", "portable"]
+    },
+    {
+      "id": "recording-slow-disk-abort",
+      "description": "A blocked or slow write pauses at 32 MiB / 5 s, seals the confirmed part, and the result stays playable",
+      "packageTypes": ["nsis", "portable"]
+    },
+    {
+      "id": "explorer-restart-tray",
+      "description": "After an Explorer restart and a sleep/wake cycle the tray has exactly one working icon and shortcuts still fire",
+      "packageTypes": ["nsis", "portable"]
+    },
+    {
       "id": "portable-data-and-update-paths",
       "description": "Portable uses the expected data root and never invokes the NSIS updater",
       "packageTypes": ["portable"]
