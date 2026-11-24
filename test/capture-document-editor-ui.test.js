@@ -141,7 +141,7 @@ test('§7.3 every exit path goes through the same close negotiation', () => {
 })
 
 test('§6 Ctrl+S commits the document and Ctrl+Shift+S saves a copy, without an external PNG dialog', () => {
-  const keys = sliceBetween(script, "if(event.ctrlKey&&event.key.toLowerCase()==='s'&&documentEditor)", "if(event.key==='Enter'&&!event.ctrlKey&&!activeOcrResult")
+  const keys = sliceBetween(script, "if(event.ctrlKey&&event.key.toLowerCase()==='s'&&documentEditor)", "if(event.key==='Enter'&&!event.ctrlKey&&!focusedControl&&!activeOcrResult")
   assert.match(keys, /const intent=event\.shiftKey\?'save-copy':'update'/)
   assert.match(keys, /commitDocumentEditor\(intent\)/)
   // The document branch must return before the image-save branch can run.

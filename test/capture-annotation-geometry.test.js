@@ -778,7 +778,9 @@ test('PR2: arrow keys nudge 1px (Shift 10px) and merge into a single undo frame'
   assert.doesNotMatch(script, /function snapshotAnnotations\(\) \{[\s\S]{0,220}?cancelNudge\(\)/)
   assert.doesNotMatch(script, /function snapshotAnnotations\(\) \{[\s\S]{0,220}?cancelStyleCommit\(\)/)
   assert.match(script, /function flushCoalescedEdits\(\) \{[\s\S]{0,160}?if \(nudgeDirty\) commitNudge\(\)[\s\S]{0,80}?if \(styleDirty\) commitStyle\(\)/)
-  assert.match(script, /if\(nudgeSelectedAnnotation\(event\)\)return/)
+  // A02: the nudge only runs while the canvas owns the keyboard; a focused control keeps
+  // its own key handling.
+  assert.match(script, /if\(!focusedControl&&nudgeSelectedAnnotation\(event\)\)return/)
   // 方向键不得吞掉既有快捷键：Ctrl+A/Z/Y/S、Delete、Enter、Esc 全部照旧
   assert.match(script, /if\(event\.key==='Escape'\)/)
   assert.match(script, /if\(event\.ctrlKey&&event\.key\.toLowerCase\(\)==='s'\)\{event\.preventDefault\(\);performAction\('save'\)\}/)

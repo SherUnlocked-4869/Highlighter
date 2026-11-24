@@ -1,3 +1,8 @@
+// A02: who owns the keyboard - capture/keyboard-focus.js, loaded just before this script.
+// A focused button/link/switch keeps its native Enter/Space activation; only the canvas
+// (or nothing) means "canvas shortcuts apply". The fallback keeps an older cached HTML
+// loading this file from failing outright.
+const focusedControlElement = window.captureKeyboardFocus?.focusedControlElement || (() => null)
 const backgroundCanvas = document.getElementById('backgroundStage')
 const backgroundCtx = backgroundCanvas.getContext('2d')
 const canvas = document.getElementById('stage')
@@ -4264,12 +4269,16 @@ document.getElementById('ocrResultClose').onclick=clearOcrResult
 addEventListener('keydown',(event)=>{
   if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
   if(event.key==='Escape'){if(!resultPanel.classList.contains('hidden'))resultPanel.classList.add('hidden');else if(!convertDocMenu.classList.contains('hidden'))closeConvertDocMenu();else if(!colorPalette.classList.contains('hidden'))closeColorPalette();else if(activeOcrResult)clearOcrResult();else if(!watermarkPanel.classList.contains('hidden'))setTool('select');else if(selectedAnnotationItem())setSelectedAnnotation(null);else closeCaptureWindow();return}
-  const focused=document.activeElement
-  if(['INPUT','TEXTAREA','SELECT'].includes(focused?.tagName||''))return
-  if(focused?.closest?.('#widthGroup'))return
-  // P0-5 PR2：方向键微调选中元素（1px；Shift 10px）。方向键不与 Ctrl+A/Z/Y/S、Delete、
-  // Enter、Esc 同键，Ctrl/Alt/Meta 组合在 nudgeSelectedAnnotation 里直接放行给下面的既有分支。
-  if(nudgeSelectedAnnotation(event))return
+  // A02 (docs/reviews/2026-11-24-windows-product-architecture-review.md): Escape is the one
+  // window-level key that always wins, and it unwinds in a fixed order - result panel,
+  // conversion menu, colour palette, OCR overlay, watermark editor, selected annotation,
+  // then the window itself. Everything below belongs to the canvas.
+  const focusedControl=focusedControlElement(document)
+  if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName||''))return
+  if(document.activeElement?.closest?.('#widthGroup'))return
+  // A button/link/switch that has focus keeps its native Enter and Space activation, so
+  // "Enter copies" can never hijack the save, record or annotation action the user tabbed to.
+  if(!focusedControl&&nudgeSelectedAnnotation(event))return
   // Batch 1 (contracts §6): in a document editor Ctrl+S commits the document instead of
   // opening an external PNG save dialog, and Ctrl+Shift+S saves a copy as a new record.
   // Every other capture window keeps the shipped Ctrl+S = "save image" behaviour.
@@ -4279,8 +4288,10 @@ addEventListener('keydown',(event)=>{
     commitDocumentEditor(intent).then((result)=>{if(result.ok)refreshDocumentDirty()})
     return
   }
-  if(event.key==='Enter'&&!event.ctrlKey&&documentEditor){event.preventDefault();return}
-  if(event.key==='Enter'&&!event.ctrlKey&&!activeOcrResult&&resultPanel.classList.contains('hidden'))performAction('copy')
+  // A02: Enter only means "copy" when the canvas owns the keyboard. With a control focused the
+  // browser's own activation (Enter/Space -> click) must run instead.
+  if(event.key==='Enter'&&!event.ctrlKey&&!focusedControl&&documentEditor){event.preventDefault();return}
+  if(event.key==='Enter'&&!event.ctrlKey&&!focusedControl&&!activeOcrResult&&resultPanel.classList.contains('hidden'))performAction('copy')
   if(event.ctrlKey&&event.key.toLowerCase()==='s'){event.preventDefault();performAction('save')}
   // P0-7-T6：Ctrl+A 选中当前显示器（imageDisplayBounds() 已按 imageBounds/displayBounds 解析）。
   // §3.2②: the press where the selection already covers this display expands once to the

@@ -61,8 +61,11 @@ test('capture script drives thickness from the group and remembers the choice', 
 })
 
 test('capture script keeps Enter from copying while the thickness picker has focus', () => {
-  assert.match(script, /const focused=document\.activeElement/)
-  assert.match(script, /focused\?\.closest\?\.\('#widthGroup'\)\)return/)
+  // A02: the focus predicate now covers every control, not only the width group; the
+  // width-group guard stays as the narrower documented rule for the numeric field.
+  assert.match(script, /const focusedControl=focusedControlElement\(document\)/)
+  assert.match(script, /document\.activeElement\?\.closest\?\.\('#widthGroup'\)\)return/)
+  assert.match(script, /if\(event\.key==='Enter'&&!event\.ctrlKey&&!focusedControl&&!activeOcrResult/)
 })
 
 test('capture page loads the width module before the overlay scripts', () => {
