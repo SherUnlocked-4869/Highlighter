@@ -1,3 +1,6 @@
+// B06: the same capability table the main process checks before composing.
+const { capabilities: outputCapabilities } = window.longCaptureLimits
+
 const video = document.getElementById('source')
 const preview = document.getElementById('preview')
 const previewContext = preview.getContext('2d')
@@ -103,7 +106,22 @@ function updateControls() {
   adjustSelectionLabel.textContent = t(selectionEditing ? 'long-capture.selection.done' : 'long-capture.selection.short')
   trimStartInput.disabled = !total.strips || capturing || busy
   trimEndInput.disabled = !total.strips || capturing || busy
-  actionButtons.forEach((button) => { button.disabled = !total.strips || busy })
+  // B06: copy/pin are disabled (with the reason in the tooltip) as soon as the composed size
+  // passes the edge or pixel ceiling, so the user learns it while framing the capture rather
+  // than after a long composition.
+  const output = outputCapabilities(total)
+  actionButtons.forEach((button) => {
+    const blocked = (button.id === 'copy' || button.id === 'pin') && !output[button.id === 'copy' ? 'copy' : 'pin']
+    button.disabled = !total.strips || busy || blocked
+    if (blocked) {
+      button.title = t('long-capture.tip.save-only', { edge: output.edge, maxEdge: output.limits.maxEdge, maxPixels: output.limits.maxPixels })
+      button.setAttribute('aria-disabled', 'true')
+    } else {
+      button.removeAttribute('aria-disabled')
+      const key = button.dataset.i18nTitle || button.getAttribute('data-i18n-title')
+      if (key) button.title = t(key)
+    }
+  })
 }
 
 function updateTrimPreview() {
@@ -262,6 +280,7 @@ async function uploadStrip(strip, position, frameId) {
   trimStartInput.max = String(Math.max(0, outputLength + (total.trimStart || 0) + (total.trimEnd || 0) - 1))
   trimEndInput.max = trimStartInput.max
   updateTrimPreview()
+  updateControls()
 }
 
 function scheduleFrame(delay) {
@@ -382,6 +401,18 @@ async function finish(action, fast = false) {
   try {
     const result = await window.longCaptureAPI.finish(action, fast)
     if (result?.canceled) setStatusKey('long-capture.status.save-canceled')
+    else if (result?.code === 'long-capture-too-large') {
+      // B06: the main process refused before composing. Point the user at the one action that
+      // still works instead of leaving a generic error in the status line.
+      setStatusKey('long-capture.status.save-only', { width: result.width, height: result.height })
+      const saveButton = document.getElementById('save')
+      if (saveButton && !saveButton.disabled) saveButton.focus({ preventScroll: true })
+      busy = false
+      updateControls()
+      return
+    } else if (result?.savedPath) {
+      setStatusKey('long-capture.status.saved', { path: result.savedPath })
+    }
   } catch (error) {
     busy = false
     setStatus(error.message || String(error))

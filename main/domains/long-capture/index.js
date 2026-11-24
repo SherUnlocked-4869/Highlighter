@@ -1,5 +1,8 @@
 'use strict'
 
+const { capabilities } = require('../../shared/long-capture-limits')
+const { copyExclusive } = require('../services/long-capture-output')
+
 function createLongCaptureDomain(deps) {
   const {
     app,
@@ -207,6 +210,23 @@ function createLongCaptureDomain(deps) {
     state.finishing = true
     try {
       const size = state.session.getSize()
+      // B06: the copy/pin decision is made BEFORE render(), so a capture that can only be
+      // saved never pays for a composition it cannot use. The renderer disables the buttons
+      // for the same reason; this is the authority.
+      const output = capabilities(size)
+      if ((action === 'copy' || action === 'pin') && !output[action]) {
+        state.finishing = false
+        log('Long capture action refused before composition:', { action, width: size.width, height: size.height, reason: output.reason })
+        return {
+          ok: false,
+          code: 'long-capture-too-large',
+          reason: output.reason,
+          width: size.width,
+          height: size.height,
+          limits: output.limits,
+          saveAvailable: output.save
+        }
+      }
       const outputPath = await state.session.render()
       const meta = {
         source: 'long-capture',
@@ -240,12 +260,13 @@ function createLongCaptureDomain(deps) {
           }
           filePath = result.filePath
         }
-        await fs.promises.copyFile(outputPath, filePath)
-        await persistHistoryFile(outputPath, { ...meta, action: 'save' })
+        // B06: a fast save (no dialog, so no overwrite confirmation) gets a NEW name via
+        // COPYFILE_EXCL. A dialog save keeps the user's explicit overwrite choice.
+        let savedPath = filePath
+        if (fast && preferredDirectory) savedPath = await copyExclusive(outputPath, filePath)
+        else await fs.promises.copyFile(outputPath, filePath)
+        await persistHistoryFile(savedPath, { ...meta, action: 'save' })
       } else {
-        if (Math.max(size.width, size.height) > 65535 || size.width * size.height > 80000000) {
-          throw new Error('长截图过大，当前仅支持保存为文件')
-        }
         if (action === 'copy') {
           const image = nativeImage.createFromPath(outputPath)
           if (image.isEmpty()) throw new Error('长截图图片解码失败')
@@ -256,7 +277,7 @@ function createLongCaptureDomain(deps) {
         await persistHistoryFile(outputPath, meta)
       }
       setImmediate(closeLongCapture)
-      return { ok: true }
+      return { ok: true, action, savedPath: action === 'save' ? filePath : '' }
     } catch (error) {
       state.finishing = false
       throw error
