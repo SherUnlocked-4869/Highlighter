@@ -17,6 +17,7 @@
 | A04 | P1 | 已实现 | test/usage-format.test.js, test/usage-cost-states.test.js | 深浅色 + Windows 高对比度下五类样本（图/表/tooltip）逐项比对 |
 | B06 | P1 | 已实现 | test/long-capture-output.test.js | 阈值上下各一档的真实长图；慢盘快速保存与同名占用 |
 | C03 | P1 | 已实现 | test/clipboard-poll-backoff.test.js | 5,000 条混合历史首屏 P95、滚动无重复/漏页（真机面板） |
+| C04 | P1 | 已实现 | test/pin-image-store-async.test.js, test/pin-domain.test.js | 慢盘/SSD 上 1/10/20 张 4K PNG 的主线程停顿 P95 与句柄基线 |
 
 待登记（实现完成后补行）：B02 取色器、C04 贴图溢出异步 I/O、其余 P1/P2 工单。
 

@@ -48,7 +48,11 @@ function createPinDomain(deps) {
 
   const MAX_PINNED = 20
   const pinWindows = new Set()
-  const pinImages = deps.pinImages || createPinImageStore()
+  // A spill write that fails (disk full, read-only volume) degrades to resident
+  // pixels; log it so the fallback is visible in diagnostics instead of silent.
+  const pinImages = deps.pinImages || createPinImageStore({
+    onError: (error, info) => log(`Pin image store ${info.phase} failed:`, error.message)
+  })
   let pinnedCount = 0
 
   function preparePinImage(input) {
@@ -59,25 +63,49 @@ function createPinDomain(deps) {
     return { bytes, mime, size }
   }
 
-  function pinDataUrl(pin) {
-    const { bytes, mime } = pinImages.read(pin.imageId)
+  // C04: spilled pins read their pixels asynchronously (bounded by the store's
+  // queue), so every read below is awaited. The store hands back the same
+  // `{ bytes, mime }` shape; only the timing changed.
+  async function pinDataUrl(pin) {
+    const { bytes, mime } = await pinImages.read(pin.imageId)
     return `data:${mime};base64,${bytes.toString('base64')}`
   }
 
-  function sendPinImage(win, channel) {
-    const { imageId, ...presentation } = win._pinData
-    const { bytes, mime } = pinImages.read(imageId)
-    sendToRenderer(win, channel, { ...presentation, imageBuffer: bytes, imageMime: mime })
+  async function sendPinImage(win, channel) {
+    if (!win || win.isDestroyed() || !win._pinData) return false
+    const imageId = win._pinData.imageId
+    try {
+      const { bytes, mime } = await pinImages.read(imageId)
+      // The pin can be closed or re-annotated while the spilled pixels were read
+      // asynchronously: drop the stale payload instead of writing into a
+      // released window or replacing a newer image.
+      if (win.isDestroyed() || !win._pinData || win._pinData.imageId !== imageId) return false
+      // Read the presentation at send time: zoom/opacity can change while the
+      // read is queued, and an older copy would rewind the renderer.
+      const { imageId: _imageId, ...presentation } = win._pinData
+      return sendToRenderer(win, channel, { ...presentation, imageBuffer: bytes, imageMime: mime })
+    } catch (error) {
+      log('Pin image send failed:', error.message)
+      return false
+    }
   }
 
-  function copyPin(win) {
+  async function copyPin(win) {
     if (!win?._pinData || win.isDestroyed()) return
-    clipboard.writeImage(nativeImage.createFromBuffer(pinImages.read(win._pinData.imageId).bytes))
+    const imageId = win._pinData.imageId
+    try {
+      const { bytes } = await pinImages.read(imageId)
+      if (win.isDestroyed() || !win._pinData || win._pinData.imageId !== imageId) return
+      clipboard.writeImage(nativeImage.createFromBuffer(bytes))
+    } catch (error) {
+      log('Pin copy failed:', error.message)
+    }
   }
 
   async function savePin(win) {
     if (!win?._pinData || win.isDestroyed()) return
-    await saveImageBuffer(pinImages.read(win._pinData.imageId).bytes)
+    const { bytes } = await pinImages.read(win._pinData.imageId)
+    await saveImageBuffer(bytes)
   }
 
   // pdf-export.js owns paper math, print options and the save dialog/file write;
@@ -407,7 +435,9 @@ function createPinDomain(deps) {
     win._pinRecognition = null
     win._pinData = nextData
     pinImages.release(previousImageId)
-    sendPinImage(win, 'pin:update')
+    // The read is asynchronous now; the renderer applies whichever payload it
+    // receives and ignores one for an image it already replaced.
+    void sendPinImage(win, 'pin:update')
     return win
   }
 
@@ -591,10 +621,20 @@ function createPinDomain(deps) {
       displayWidth: layout.imageWidth,
       sourceWidth: win._pinData.pixelWidth
     })
+    const imageId = win._pinData.imageId
     win.hide()
     try {
+      const { bytes } = await pinImages.read(imageId)
+      // The pin may have been closed or re-annotated while the spilled pixels
+      // were read; do not open the editor for a stale image. A live window that
+      // only changed images is brought back instead of being left hidden.
+      if (win.isDestroyed() || !win._pinData) return null
+      if (win._pinData.imageId !== imageId) {
+        bringPinToFront(win)
+        return null
+      }
       const captureWindow = await createCaptureWindow({
-        imageBuffer: pinImages.read(win._pinData.imageId).bytes,
+        imageBuffer: bytes,
         mode: 'image',
         autoAction,
         source: 'pin-reannotate',
@@ -643,8 +683,10 @@ function createPinDomain(deps) {
     }
     try {
       publish({ phase: 'recognizing' })
+      const { bytes } = await pinImages.read(pin.imageId)
+      if (signal.aborted || win.isDestroyed() || win._pinData?.imageId !== pin.imageId) return
       const outcome = await recognizePin(action, {
-        imageBuffer: pinImages.read(pin.imageId).bytes,
+        imageBuffer: bytes,
         scaleFactor: pin.meta?.scaleFactor || pin.displayScaleFactor
       }, { signal, onTranslating: () => publish({ phase: 'translating' }) })
       if (signal.aborted || win.isDestroyed()) return
@@ -676,7 +718,7 @@ function createPinDomain(deps) {
   function registerIpc() {
     ipcMain.on('pin:ready', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
-      if (win?._pinData) sendPinImage(win, 'pin:init')
+      if (win?._pinData) void sendPinImage(win, 'pin:init')
     })
     ipcMain.on('pin:render-ready', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
@@ -689,15 +731,35 @@ function createPinDomain(deps) {
     ipcMain.on('pin:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
     ipcMain.on('pin:copy', (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
-      copyPin(win)
+      void copyPin(win)
     })
     ipcMain.on('pin:save', async (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
-      await savePin(win)
+      // A spilled read can be rejected after the pin closed; keep that from
+      // becoming an unhandled rejection in the IPC listener.
+      try {
+        await savePin(win)
+      } catch (error) {
+        log('Pin save failed:', error.message)
+      }
     })
     ipcMain.on('pin:context-menu', (event, imageBounds = {}) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win?._pinData) return
+      // Table/QR recognition still take a data URL, and a spilled pin now has to
+      // be read asynchronously before it can be encoded. Capture the pin data so
+      // a closed or re-annotated window cannot be encoded by a late read.
+      const recognizeWithDataUrl = async (kind, name) => {
+        const data = win._pinData
+        if (!data) return
+        try {
+          const url = await pinDataUrl(data)
+          if (win.isDestroyed() || win._pinData !== data) return
+          createRecognitionWindow(kind, url, { scaleFactor: data.displayScaleFactor })
+        } catch (error) {
+          log(`${name} recognition failed:`, error.message)
+        }
+      }
       const menu = Menu.buildFromTemplate([
         {
           label: '重新标注',
@@ -717,23 +779,11 @@ function createPinDomain(deps) {
         {
           label: '表格识别',
           enabled: !!getSettings().plugins.ocr,
-          click: () => {
-            try {
-              createRecognitionWindow('table', pinDataUrl(win._pinData), { scaleFactor: win._pinData.displayScaleFactor })
-            } catch (error) {
-              log('Table recognition failed:', error.message)
-            }
-          }
+          click: () => void recognizeWithDataUrl('table', 'Table')
         },
         {
           label: '二维码识别',
-          click: () => {
-            try {
-              createRecognitionWindow('qr', pinDataUrl(win._pinData), { scaleFactor: win._pinData.displayScaleFactor })
-            } catch (error) {
-              log('QR recognition failed:', error.message)
-            }
-          }
+          click: () => void recognizeWithDataUrl('qr', 'QR')
         },
         { type: 'separator' },
         // P1 (plan §9.3): the rotation helpers were finished and unit-tested with
@@ -770,7 +820,7 @@ function createPinDomain(deps) {
           }))
         },
         { type: 'separator' },
-        { label: '复制', click: () => copyPin(win) },
+        { label: '复制', click: () => void copyPin(win) },
         { label: '保存', click: () => savePin(win).catch((error) => log(error.message)) },
         // P0 (plan §0.3 #4): exportWindowToPdf had unit tests and no production
         // caller. Exporting the pin itself (not a re-render) keeps it WYSIWYG.

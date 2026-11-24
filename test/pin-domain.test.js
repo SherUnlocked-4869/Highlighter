@@ -10,6 +10,21 @@ const preloadSource = fs.readFileSync(path.join(root, 'preload-pin.js'), 'utf8')
 
 const DATA_URL = 'data:image/png;base64,AA=='
 
+// C04 made spilled-pin reads asynchronous: the domain now awaits the store
+// (bounded I/O queue) before it sends pixels. Tests that only used to wait for
+// a synchronous call have to let the queue settle.
+async function waitFor(predicate, message = 'timed out waiting for pin image I/O', timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    // Real time, not setImmediate: the store's spill write goes through the
+    // threadpool, and a tight immediate loop can finish before the disk does.
+    await new Promise((resolve) => setTimeout(resolve, 2))
+  }
+  if (predicate()) return
+  assert.fail(message)
+}
+
 // A window shape that records everything the click-through path touches, so the
 // tests can assert the OS-level call order and the renderer receipt.
 function createHarness({ pinnedClickThrough = false, recognizePin, pinImages } = {}) {
@@ -93,24 +108,56 @@ function createHarness({ pinnedClickThrough = false, recognizePin, pinImages } =
   return { domain, handlers, created, sends }
 }
 
-test('pin images use binary IPC and retire original and replacement assets', () => {
+test('pin images use binary IPC and retire original and replacement assets', async () => {
   const { createPinImageStore } = require('../main/services/pin-image-store')
   const pinImages = createPinImageStore({ memoryBudget: 1 })
   const { domain, handlers, sends } = createHarness({ pinImages })
   const win = domain.createPinWindow(Buffer.from([1, 2]), {})
   const firstId = win._pinData.imageId
   handlers.get('pin:ready')({ sender: win.webContents })
+  await waitFor(() => sends.length === 1)
   assert.deepEqual(sends.at(-1).payload.imageBuffer, Buffer.from([1, 2]))
   assert.equal(sends.at(-1).payload.imageMime, 'image/png')
   assert.ok(!Object.hasOwn(sends.at(-1).payload, 'imageId'))
   assert.ok(!Object.hasOwn(sends.at(-1).payload, 'dataUrl'))
   domain.updatePinWindow(win, Buffer.from([3, 4]), {})
   const secondId = win._pinData.imageId
-  assert.throws(() => pinImages.read(firstId), /已释放/)
+  await assert.rejects(pinImages.read(firstId), /已释放/)
+  await waitFor(() => sends.length === 2)
   assert.deepEqual(sends.at(-1).payload.imageBuffer, Buffer.from([3, 4]))
   assert.equal(sends.at(-1).channel, 'pin:update')
   win._closed()
-  assert.throws(() => pinImages.read(secondId), /已释放/)
+  await assert.rejects(pinImages.read(secondId), /已释放/)
+})
+
+test('a pin closed while its spilled image is being read drops the late payload', async () => {
+  const { createPinImageStore, createFileIo } = require('../main/services/pin-image-store')
+  const real = createFileIo()
+  const slowIo = {
+    ...real,
+    read: async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      return real.read(...args)
+    }
+  }
+  const pinImages = createPinImageStore({ memoryBudget: 0, io: slowIo })
+  const { domain, handlers, sends } = createHarness({ pinImages })
+  const win = domain.createPinWindow(Buffer.from([5, 6]), {})
+  const imageId = win._pinData.imageId
+
+  handlers.get('pin:ready')({ sender: win.webContents })
+  // Wait for the spill write, then let the domain start the (slow) read.
+  await waitFor(() => pinImages.stats().handles === 1)
+  await new Promise((resolve) => setImmediate(resolve))
+  win._closed()
+
+  await pinImages.whenIdle()
+  // The window closed mid-read: no payload may be sent to a released window and
+  // the descriptor must be closed by the read that owned it.
+  assert.equal(sends.length, 0)
+  assert.equal(pinImages.stats().assets, 0)
+  assert.equal(pinImages.stats().handles, 0)
+  await assert.rejects(pinImages.read(imageId), /已释放/)
 })
 
 test('a recognition pin reveals before starting the task and aborts when closed', async () => {
@@ -129,6 +176,7 @@ test('a recognition pin reveals before starting the task and aborts when closed'
   assert.equal(sends.length, 0)
   handlers.get('pin:render-ready')({ sender: pinWindow.webContents })
   handlers.get('pin:render-ready')({ sender: pinWindow.webContents })
+  await waitFor(() => sends.length === 2)
   assert.deepEqual(sends.map(({ payload }) => payload.phase), ['recognizing', 'translating'])
   assert.equal(signal.aborted, false)
   pinWindow._closed()
