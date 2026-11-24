@@ -110,7 +110,9 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   service.on('history', (value) => { invalidateThumbnails(); send('clipboard:history-changed', value) })
   function appearance() {
     const settings = getSettings()
-    return { language: settings.language, dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors), mainColor: settings.mainColor, generation, status: service.snapshot() }
+    // A05: the panel follows the global compact layout; the renderer already keys its row
+    // height off `compact` (and keeps the grid gap), so this is the only missing input.
+    return { language: settings.language, compact: settings.compact === true, dark: settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors), mainColor: settings.mainColor, generation, status: service.snapshot() }
   }
   function release(reason = 'forced') {
     clearTimeout(releaseTimer); releaseTimer = null

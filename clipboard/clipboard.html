@@ -63,6 +63,17 @@
       <button id="delete" class="button danger" type="button" data-i18n="clipboard.delete" title="Delete">Delete</button>
       <button id="clear" class="quiet-button" type="button" data-i18n="clipboard.clear-ordinary">Clear unpinned</button>
     </footer>
+    <section id="preview" class="preview" role="dialog" aria-modal="true" aria-labelledby="previewTitle" aria-describedby="previewMeta" hidden>
+      <div class="preview-head">
+        <span id="previewTitle" class="preview-title" data-i18n="clipboard.preview-title">Image preview</span>
+        <button id="previewClose" class="icon-button preview-close" type="button" data-i18n-title="clipboard.preview-close" data-i18n-aria-label="clipboard.preview-close">×</button>
+      </div>
+      <div id="previewBody" class="preview-body"></div>
+      <div class="preview-foot">
+        <span id="previewMeta" class="preview-meta"></span>
+        <span class="preview-hint" data-i18n="clipboard.preview-hint">Space previews; Space or Esc closes</span>
+      </div>
+    </section>
     <div id="feedback" role="status" aria-live="polite" hidden>
       <span class="feedback-brand" aria-hidden="true"><b>High</b>lighter</span>
       <span class="led" aria-hidden="true"></span>
@@ -70,5 +81,5 @@
       <span class="feedback-eyebrow" data-i18n="clipboard.result.eyebrow">Paste result</span>
     </div>
   </div>
-  <script src="../shared/locales/zh-CN.js"></script><script src="../shared/locales/en-US.js"></script><script src="../shared/locales/zh-TW.js"></script><script src="../shared/locales/clipboard.js"></script><script src="../shared/i18n.js"></script><script src="clipboard-layout.js"></script><script src="clipboard.js"></script>
+  <script src="../shared/locales/zh-CN.js"></script><script src="../shared/locales/en-US.js"></script><script src="../shared/locales/zh-TW.js"></script><script src="../shared/locales/clipboard.js"></script><script src="../shared/i18n.js"></script><script src="clipboard-layout.js"></script><script src="clipboard-preview.js"></script><script src="clipboard.js"></script>
 </body></html>

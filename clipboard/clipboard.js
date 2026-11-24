@@ -26,6 +26,28 @@ const THUMB_RETRY_MS = 500
 let thumbGeneration = 0
 const thumbCache = new Map()
 let thumbInFlight = new Set()
+// A05 preview state. The overlay keeps no URL map of its own: exactly one <img>
+// exists while the preview is open, and closing it drops the element (and its
+// capability src) so the decoded bitmap can be collected. previewGeneration
+// discards a lazy previews() response that lands after the overlay closed.
+const previewApi = window.clipboardPreview
+// One source of truth for the ceiling: the pure module owns the constant and
+// the renderer only passes it through.
+const PREVIEW_MAX_SCALE = previewApi?.MAX_PREVIEW_SCALE || 2
+let previewGeneration = 0
+// Text rows keep only the detail text needed to cut a snippet around a search
+// hit. Bounded and cleared with the filter, because a full entry can be 64 KiB.
+const SNIPPET_CACHE_LIMIT = 24
+const snippetCache = new Map()
+const snippetPending = new Set()
+const snippetFailed = new Set()
+const snippetQueue = []
+let snippetActive = 0
+let snippetGeneration = 0
+// ClipboardService rejects with BACKPRESSURE once 16 requests are pending. A
+// fast scroll can mount enough hit rows to reach that, so snippet detail
+// requests run through a small queue instead of one burst per render pass.
+const SNIPPET_CONCURRENCY = 4
 function result(value) { if (!value?.ok) throw new Error(value?.error?.code || 'CLIPBOARD_FAILED'); return value.result }
 function message(error) {
   const key = `clipboard.error.${error.message.toLowerCase().replaceAll('_', '-')}`
@@ -175,7 +197,9 @@ function renderTextRow(row) {
   node.setAttribute('role', 'option'); node.setAttribute('aria-selected', String(selected === item.id))
   node.setAttribute('data-item-id', item.id); node.tabIndex = -1
   const main = document.createElement('span'); main.className = 'row-main'
-  appendText(main, 'row-preview', String(item.previewText ?? ''))
+  const preview = document.createElement('span'); preview.className = 'row-preview'
+  fillRowPreview(preview, item)
+  main.append(preview)
   const meta = document.createElement('span'); meta.className = 'row-meta'
   if (item.isPinned) appendText(meta, 'pin', t('clipboard.pinned'))
   appendText(meta, 'row-meta-value', [fileCountLabel(item), item.sourceDisplayName, formatTime(Math.max(item.lastCopiedAt || 0, item.lastUsedAt || 0)), formatBytes(item.byteLength)].filter(Boolean).join(' · '))
@@ -185,6 +209,9 @@ function renderTextRow(row) {
   node.append(badge, main)
   node.onclick = () => { $('list').focus(); select(item.id) }
   node.ondblclick = () => perform('copy')
+  // Only asks the main process when the stored 500-character preview does not
+  // already contain the hit; a short record renders its snippet immediately.
+  ensureSnippetText(item)
   return node
 }
 // An image record is a thumbnail plate and nothing else: no preview text, no
@@ -198,6 +225,11 @@ function renderImageRow(row) {
     tile.className = 'tile'; tile.id = optionId(item); tile.tabIndex = -1
     tile.setAttribute('role', 'option'); tile.setAttribute('aria-selected', String(selected === item.id))
     tile.setAttribute('data-item-id', item.id); tile.setAttribute('aria-label', imageLabel(item))
+    // The detail action is hidden for images, so the tooltip is where Space is
+    // discoverable without adding a control to the plate-only grid; the ARIA
+    // shortcut covers the screen-reader path.
+    tile.title = t('clipboard.preview-hint')
+    tile.setAttribute('aria-keyshortcuts', 'Space')
     if (item.isPinned) tile.setAttribute('data-pinned', 'true')
     const image = document.createElement('img'); image.alt = ''; image.decoding = 'async'
     image.addEventListener('error', () => retryThumbnail(item.id, image))
@@ -343,6 +375,10 @@ async function refresh(append = false) {
       nextPage.search !== search || nextPage.kind !== kind || nextPage.pinnedOnly !== pinnedOnly)) return
   const filter = { search, kind, pinnedOnly }
   const ticket = ++queryGeneration
+  // A new filter (search text, kind chip, pinned, refresh) retires the preview
+  // and the detail text cached for the previous hit set before the IPC starts;
+  // otherwise a slow list response could keep an overlay for the old filter.
+  if (!append) { closePreview({ restoreFocus: false }); resetSnippets() }
   loading = true
   try {
     const page = result(await api.list({ ...filter, cursor: append ? nextPage.cursor : null, limit: 50 }))
@@ -430,9 +466,217 @@ function clearDetail() {
   $('view').setAttribute('aria-expanded', 'false')
   $('view').textContent = t('clipboard.view-text')
 }
+// ---------- A05: on-demand image preview ----------
+//
+// The overlay is part of this page (no second BrowserWindow). It loads only the
+// selected record's capability URL - the one already in thumbCache whenever the
+// plate has rendered - and caps the display size with the pure fitPreview()
+// helper. On close the <img> is detached and its src removed; the main process
+// revokes every outstanding token when the panel hides (clipboard domain).
+function previewOpen() { return !$('preview').hidden }
+function previewBox() {
+  const body = $('previewBody')
+  const width = Number(body.clientWidth) || 0
+  const height = Number(body.clientHeight) || 0
+  // 10px padding + 1px border on each side, so the image cannot push the grid
+  // into a scrollbar.
+  return {
+    width: width > 0 ? Math.max(96, width - 22) : 360,
+    height: height > 0 ? Math.max(96, height - 22) : 300
+  }
+}
+function previewCreatedText(item) {
+  const stamp = item?.createdAt || Math.max(item?.lastCopiedAt || 0, item?.lastUsedAt || 0)
+  const time = formatTime(stamp)
+  return time ? t('clipboard.preview-created', { time }) : ''
+}
+function previewMetaText(item) {
+  return [
+    t('clipboard.image-size', { width: item.width, height: item.height }),
+    previewCreatedText(item),
+    item.sourceDisplayName,
+    item.isPinned ? t('clipboard.pinned') : ''
+  ].filter(Boolean).join(' · ')
+}
+function previewSize(width, height) {
+  if (!previewApi || typeof previewApi.fitPreview !== 'function') return null
+  return previewApi.fitPreview(width, height, previewBox(), { maxScale: PREVIEW_MAX_SCALE })
+}
+function releasePreviewImage() {
+  const body = $('previewBody')
+  // Removing the element is what releases the decoded bitmap; dropping the src
+  // first also makes the release explicit to a reader (and to a test) instead
+  // of relying on GC timing alone.
+  for (const image of body.querySelectorAll('img')) image.removeAttribute('src')
+  body.replaceChildren()
+  body.removeAttribute('data-state')
+  body.removeAttribute('aria-label')
+}
+function markPreviewFailed() {
+  const body = $('previewBody')
+  body.replaceChildren()
+  body.setAttribute('data-state', 'failed')
+  body.setAttribute('aria-label', t('clipboard.thumbnail-unavailable'))
+  // The dialog's aria-describedby points at this line, so the failure is
+  // announced without inventing a second live region.
+  const item = selectedItem()
+  $('previewMeta').textContent = [item ? previewMetaText(item) : '', t('clipboard.thumbnail-unavailable')].filter(Boolean).join(' · ')
+}
+function mountPreviewImage(item, url, ticket) {
+  if (!visible || ticket !== previewGeneration) return
+  const body = $('previewBody')
+  const image = document.createElement('img')
+  image.className = 'preview-image'
+  image.alt = imageLabel(item)
+  image.decoding = 'async'
+  const initial = previewSize(item.width, item.height)
+  if (initial) { image.width = initial.width; image.height = initial.height }
+  image.addEventListener('error', () => { if (ticket === previewGeneration) markPreviewFailed() })
+  image.addEventListener('load', () => {
+    if (ticket !== previewGeneration) return
+    // naturalWidth is the thumbnail's own edge (<= 240), which is the only
+    // honest source for the 2x cap; metadata describes the original file.
+    const fitted = previewSize(image.naturalWidth || item.width, image.naturalHeight || item.height)
+    if (fitted) { image.width = fitted.width; image.height = fitted.height }
+  })
+  image.src = url
+  body.removeAttribute('data-state')
+  body.removeAttribute('aria-label')
+  body.replaceChildren(image)
+}
+// One lazy request, only when the grid has no URL for the record yet (a plate
+// that never rendered, or a thumbnail that failed once). A successful response
+// also repairs the tile: the URL goes back into the same cache the grid uses.
+async function requestPreviewUrl(item, ticket) {
+  const generation = thumbGeneration
+  try {
+    const page = result(await api.previews([item.id]))
+    if (!visible || ticket !== previewGeneration || generation !== thumbGeneration) return
+    const entry = Array.isArray(page) ? page.find((value) => value && value.id === item.id) : null
+    if (!entry?.url) { markPreviewFailed(); return }
+    thumbFailed.delete(item.id)
+    thumbCache.set(item.id, entry.url)
+    applyThumbnails()
+    mountPreviewImage(item, entry.url, ticket)
+  } catch { if (visible && ticket === previewGeneration) markPreviewFailed() }
+}
+function refreshPreviewChrome() {
+  if (!previewOpen()) return
+  const item = selectedItem()
+  if (!item) { closePreview({ restoreFocus: false }); return }
+  const failed = $('previewBody').getAttribute('data-state') === 'failed'
+  $('previewMeta').textContent = [previewMetaText(item), failed ? t('clipboard.thumbnail-unavailable') : ''].filter(Boolean).join(' · ')
+  const image = $('previewBody').querySelector('.preview-image')
+  if (image) image.alt = imageLabel(item)
+}
+function openPreview() {
+  const item = selectedItem()
+  if (!item || item.kind !== 'image' || !visible) return false
+  const ticket = ++previewGeneration
+  releasePreviewImage()
+  $('previewMeta').textContent = previewMetaText(item)
+  $('preview').hidden = false
+  $('previewClose').focus()
+  const cached = thumbCache.get(item.id)
+  if (cached) { mountPreviewImage(item, cached, ticket); return true }
+  $('previewBody').setAttribute('data-state', 'loading')
+  requestPreviewUrl(item, ticket)
+  return true
+}
+function closePreview(options = {}) {
+  const wasOpen = previewOpen()
+  // Invalidate first: a previews() response that lands after this point must not
+  // mount an image over the restored list.
+  ++previewGeneration
+  releasePreviewImage()
+  $('preview').hidden = true
+  $('previewMeta').textContent = ''
+  if (wasOpen && options.restoreFocus !== false) {
+    $('list').focus()
+    if (selected != null) scrollSelectionIntoView()
+  }
+}
+
+// ---------- A05: search-hit snippet ----------
+//
+// The row shows up to 48 code points on each side of the hit instead of the
+// record's first 500 characters, so a hit near the end of a long text is
+// visible without opening the full-text sheet. The stored preview is enough
+// for most records; a record whose preview does not contain the hit asks for
+// its (64 KiB-capped) detail text once and renders the fragment in place.
+function snippetQuery() { return String($('search').value || '').trim() }
+function snippetFor(item) {
+  if (!previewApi || typeof previewApi.snippetAround !== 'function') return null
+  const query = snippetQuery()
+  if (!query) return null
+  const text = snippetCache.has(item.id) ? snippetCache.get(item.id) : String(item.previewText ?? '')
+  return previewApi.snippetAround(text, query)
+}
+function fillRowPreview(span, item) {
+  span.replaceChildren()
+  const snippet = snippetFor(item)
+  if (!snippet) { appendText(span, '', String(item.previewText ?? '')); return }
+  if (snippet.prefix) appendText(span, 'snippet-edge', '…')
+  if (snippet.before) appendText(span, '', snippet.before)
+  appendText(span, 'snippet-hit', snippet.match)
+  if (snippet.after) appendText(span, '', snippet.after)
+  if (snippet.suffix) appendText(span, 'snippet-edge', '…')
+}
+function ensureSnippetText(item) {
+  if (!visible || !previewApi || typeof previewApi.snippetAround !== 'function') return
+  const query = snippetQuery()
+  if (!query || item.kind === 'image') return
+  if (snippetCache.has(item.id) || snippetPending.has(item.id) || snippetFailed.has(item.id)) return
+  const live = previewApi.snippetAround(String(item.previewText ?? ''), query)
+  if (live) return
+  snippetPending.add(item.id)
+  snippetQueue.push({ id: item.id, ticket: snippetGeneration })
+  pumpSnippets()
+}
+function pumpSnippets() {
+  if (!visible) return
+  while (snippetActive < SNIPPET_CONCURRENCY && snippetQueue.length) {
+    const job = snippetQueue.shift()
+    // A filter change invalidates queued work before it costs a backend round
+    // trip; the generation check is the same one the response handler uses.
+    if (job.ticket !== snippetGeneration) { snippetPending.delete(job.id); continue }
+    snippetActive++
+    api.detail(job.id).then((page) => {
+      if (!visible || job.ticket !== snippetGeneration) return
+      const detail = result(page)
+      snippetCache.set(job.id, String(detail?.text ?? ''))
+      while (snippetCache.size > SNIPPET_CACHE_LIMIT) snippetCache.delete(snippetCache.keys().next().value)
+      refreshRowPreview(job.id)
+    }).catch(() => { if (job.ticket === snippetGeneration) snippetFailed.add(job.id) })
+      .finally(() => {
+        snippetActive = Math.max(0, snippetActive - 1)
+        snippetPending.delete(job.id)
+        pumpSnippets()
+      })
+  }
+}
+function refreshRowPreview(id) {
+  if (!visible) return
+  const item = items.find((entry) => entry.id === id)
+  if (!item) return
+  for (const node of $('rows').querySelectorAll('[data-item-id]')) {
+    if (node.getAttribute('data-item-id') !== id) continue
+    const span = node.querySelector('.row-preview')
+    if (span) fillRowPreview(span, item)
+    return
+  }
+}
+function resetSnippets() {
+  ++snippetGeneration
+  snippetCache.clear(); snippetPending.clear(); snippetFailed.clear(); snippetQueue.length = 0
+}
+
 // Selecting a record is now a pure selection: opening the inspector is an
 // explicit action, so browsing the list never reshapes it.
 async function select(id) {
+  // A preview belongs to the record it was opened for; selecting another record
+  // (for example through the accessibility tree) closes it without moving focus.
+  if (previewOpen() && id !== selected) closePreview({ restoreFocus: false })
   selected = id
   renderRows(); clearDetail()
   renderSelectionActions()
@@ -529,10 +773,29 @@ $('list').onkeydown = (event) => {
     event.preventDefault()
     perform(event.ctrlKey || event.metaKey ? 'paste' : 'copy')
   } else if (event.key === 'Delete') { event.preventDefault(); perform('delete') }
-  else if (event.key === ' ') { event.preventDefault(); openDetail() }
+  else if (event.key === ' ') {
+    event.preventDefault()
+    // Images have no detail sheet (that action is hidden for them), so Space is
+    // their preview; text/url/files keep the existing full-text behaviour.
+    const item = selectedItem()
+    if (item && item.kind === 'image') openPreview()
+    else openDetail()
+  }
 }
+// The preview owns the keyboard while it is open. stopPropagation keeps the
+// document-level Escape handler from closing the whole panel on the same press.
+$('preview').onkeydown = (event) => {
+  if (event.isComposing || composing) return
+  if (event.key === 'Tab') { event.preventDefault(); $('previewClose').focus(); return }
+  if (event.key !== ' ' && event.key !== 'Escape') return
+  event.preventDefault()
+  event.stopPropagation()
+  closePreview()
+}
+$('previewClose').onclick = () => closePreview()
 document.onkeydown = (event) => {
   if (event.key !== 'Escape' || event.isComposing || composing) return
+  if (!$('preview').hidden) { closePreview(); return }
   if (!$('detail').hidden) { clearDetail(); return }
   api.close()
 }
@@ -602,6 +865,12 @@ const cleanups = [
   api.onInit((data) => {
     document.body.classList.remove('feedback-only')
     visible = true; setLanguage(data.language); applyTranslations(); document.documentElement.lang = currentLanguage(); document.body.classList.toggle('dark', data.dark === true)
+    // Forward-compatible density: the app-level "compact layout" preference is
+    // not in the clipboard appearance payload yet, so reading it here keeps the
+    // panel ready without a main-process change. It only changes --row-h, so the
+    // geometry is re-read while the list is still empty (refresh() below).
+    document.body.classList.toggle('compact', data.compact === true)
+    metrics = null
     if (/^#[0-9a-f]{6}$/i.test(data.mainColor || '')) document.documentElement.style.setProperty('--primary', data.mainColor)
     renderStatus(data.status); refresh().then(() => api.interactive(data.generation)); $('search').focus()
     $('feedback').hidden = true; if (data.pasteFeedback) pasteMessage(data.pasteFeedback)
@@ -614,13 +883,14 @@ const cleanups = [
     setLanguage(data.language); applyTranslations(); document.documentElement.lang = currentLanguage(); document.body.classList.toggle('dark', data.dark === true)
     pasteMessage(data.pasteFeedback)
   }),
-  api.onLanguage((language) => { setLanguage(language); applyTranslations(); rebuildAndRender(); renderStatus(status) })
+  api.onLanguage((language) => { setLanguage(language); applyTranslations(); rebuildAndRender(); refreshPreviewChrome(); renderStatus(status) })
 ]
 function clearHistory() {
   visible = false; ++queryGeneration; clearTimeout(debounce); items = []; nextPage = null; selected = null; loading = false
   composing = false
   thumbCache.clear(); thumbFailed.clear(); thumbInFlight.clear(); ++thumbGeneration; metrics = null; renderedWindow = { first: -1, last: -1, cols: -1, language: '' }
-  clearDetail(); $('rows').replaceChildren(); $('rows').style.height = '0px'
+  clearDetail(); closePreview({ restoreFocus: false }); resetSnippets()
+  $('rows').replaceChildren(); $('rows').style.height = '0px'
   renderSelectionActions()
   $('search').value = ''; $('feedback').hidden = true
   $('empty').hidden = true; $('more').hidden = true; $('new').hidden = true

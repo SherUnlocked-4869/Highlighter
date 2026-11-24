@@ -310,6 +310,11 @@ button, input, select { font: inherit; color: inherit; }
 @media (min-resolution: 2.25dppx) { #list { --cell-h: 80px; } }
 @media (min-resolution: 2.5dppx) { #list { --cell-h: 64px; } }
 
+/* A05: the two densities are a TEXT ROW HEIGHT only. The image grid keeps its
+   --cell-h and --grid-gap, and the scroll anchor is untouched because the
+   renderer derives every row position from these same custom properties. */
+body.compact #list { --row-h: 52px; }
+
 .list-wrap {
   position: relative;
   flex: 1;
@@ -447,6 +452,17 @@ button, input, select { font: inherit; color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* A05: the search hit stays visible because the renderer cuts the fragment
+   around it. The accent marks the hit itself, never the whole row. */
+.snippet-hit {
+  border-radius: 3px;
+  padding: 0 1px;
+  color: var(--primary-text);
+  background: var(--primary-soft);
+}
+
+.snippet-edge { color: var(--muted); }
 
 .row-meta {
   display: flex;
@@ -619,6 +635,114 @@ button, input, select { font: inherit; color: inherit; }
   letter-spacing: .02em;
 }
 
+/* ---------- on-demand image preview (A05) ---------- */
+
+/* An overlay inside the existing panel, not a second BrowserWindow: the panel
+   keeps its geometry, filters and keyboard model, and closing the preview only
+   restores focus to the list. The image itself is the native 240 px thumbnail
+   behind a capability URL; fitPreview() caps the magnification at 2x. */
+.preview {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  background: var(--bg);
+}
+
+.preview-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+}
+
+.preview-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-close { flex: 0 0 auto; }
+
+.preview-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.preview-body[data-state="loading"] { background: var(--surface-3); }
+
+/* A record whose thumbnail cannot be read keeps the dialog open: the metadata
+   still answers the question, and the drawn cross says the bytes are missing
+   without adding a text line that would only repeat the aria-label. */
+.preview-body[data-state="failed"] { position: relative; background: var(--surface-3); }
+
+.preview-body[data-state="failed"]::before,
+.preview-body[data-state="failed"]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 1px;
+  background: var(--line-2);
+}
+
+.preview-body[data-state="failed"]::before { transform: translate(-50%, -50%) rotate(45deg); }
+.preview-body[data-state="failed"]::after { transform: translate(-50%, -50%) rotate(-45deg); }
+
+.preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.preview-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.preview-meta {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: .02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-hint {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: .03em;
+}
+
+/* ---------- record actions ---------- */
+
 .button {
   height: 30px;
   padding: 0 13px;
@@ -705,6 +829,7 @@ button, input, select { font: inherit; color: inherit; }
 .feedback-only #list,
 .feedback-only #more,
 .feedback-only #detail,
+.feedback-only #preview,
 .feedback-only .footer { display: none !important; }
 
 #feedback {
