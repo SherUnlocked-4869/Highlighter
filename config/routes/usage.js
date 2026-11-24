@@ -113,7 +113,17 @@ let usageSessionSort = 'token'
 let usageSessionSearch = ''
 let usageSessionExpanded = false
 const usageExpandedActivity = new Set()
-const usagePriceDrafts = new Map()
+// Price editor state (B07). `null` means "render from settings". The first edit
+// or "add version" snapshots every row from the DOM into this array, which then
+// survives the repaint a period switch causes; Save clears it. A whole-table
+// snapshot avoids keying drafts by a model+date string that the user is still
+// typing (the key would change under the draft).
+let usagePriceEditor = null
+let usagePriceRowSeq = 0
+// Imported aggregate snapshot preview (B07): { payload, preview }. The payload
+// is the exact text the user picked; commit re-validates it in the main process.
+let usageImportPayload = null
+let usageImportPreviewData = null
 let usageIncludeCache = true
 let usageTrendMetric = 'token'
 let usageHeatView = 'hourly'
@@ -513,7 +523,8 @@ function usageCoverageHtml(status, options = {}) {
 // Toolbar: date, refresh cadence and filters.
 // ---------------------------------------------------------------------------
 
-function usageTabsHtml(models, projects, scanning) {
+function usageTabsHtml(models, projects, status) {
+  const scanning = status?.scanning === true
   const buttons = USAGE_PERIODS.map((period) => {
     const selected = period.id === usagePeriod
     return `<button class="usage-segment" type="button" data-usage-tab="${period.id}" aria-pressed="${selected}">${escapeHtml(t(period.labelKey))}</button>`
@@ -525,7 +536,7 @@ function usageTabsHtml(models, projects, scanning) {
   return `<div class="usage-controls">
     <div class="usage-toolbar">
       <div class="usage-segments usage-periods" role="group" aria-label="${escapeHtml(t('config.usage.tabs-label'))}">${buttons}</div>
-      <div class="usage-toolbar-end">${usageRefreshButtonHtml(scanning)}
+      <div class="usage-toolbar-end">${usageExchangeButtonsHtml(status)}${usageRefreshButtonHtml(scanning)}
         <label>${escapeHtml(usageDashboardText('auto'))}<select id="usageEvery">${intervalOptions}</select></label>
       </div>
     </div>
@@ -804,19 +815,174 @@ function usageSavedPrices() {
   return typeof settings !== 'undefined' && Array.isArray(settings?.usage?.prices) ? settings.usage.prices : []
 }
 
+// ---------------------------------------------------------------------------
+// B07 price versions: one row per (model, effective day)
+// ---------------------------------------------------------------------------
+
+function usagePriceUid() {
+  usagePriceRowSeq += 1
+  return `p${usagePriceRowSeq}`
+}
+
+function usagePriceSavedRows() {
+  const rows = []
+  for (const row of usageSavedPrices()) {
+    if (!row || typeof row.model !== 'string' || !row.model.trim()) continue
+    rows.push({
+      uid: usagePriceUid(),
+      model: row.model,
+      effectiveFrom: typeof row.effectiveFrom === 'string' ? row.effectiveFrom : '',
+      input: Number.isFinite(row.input) ? row.input : '',
+      cached: Number.isFinite(row.cached) ? row.cached : '',
+      cachedWrite: Number.isFinite(row.cachedWrite) ? row.cachedWrite : '',
+      output: Number.isFinite(row.output) ? row.output : ''
+    })
+  }
+  return rows
+}
+
+// The rows the table renders: the in-progress editor snapshot when there is one,
+// otherwise the saved price versions. Rows carry a render-only uid, never a
+// model+date key, so editing the effective date cannot orphan a draft.
+function usagePriceRows() {
+  if (usagePriceEditor) return usagePriceEditor.rows
+  return usagePriceSavedRows()
+}
+
+// Snapshot of what is on screen, used before any mutation (edit/add/save) so the
+// editor state is complete instead of delta-based.
+function usageCapturePriceRows() {
+  const rows = []
+  for (const rowElement of view.querySelectorAll('[data-usage-price-row]')) {
+    const read = (field) => {
+      const input = rowElement.querySelector(`[data-usage-price-field="${field}"]`)
+      return input ? input.value : ''
+    }
+    rows.push({
+      uid: rowElement.dataset.usagePriceRow,
+      model: rowElement.dataset.usagePriceModel,
+      effectiveFrom: read('effectiveFrom'),
+      input: read('input'),
+      cached: read('cached'),
+      cachedWrite: read('cachedWrite'),
+      output: read('output')
+    })
+  }
+  return rows
+}
+
 function usagePricingHtml(models, open) {
-  const existing = new Map(usageSavedPrices().map((row) => [row.model, row]))
-  const names = [...new Set([...existing.keys(), ...usagePriceDrafts.keys(), ...models.map((row) => row.model).filter(usageIsFilterableModel)])].slice(0, 200).sort()
-  const fields = [['input', 'input-no-cache'], ['cached', 'cache-read'], ['output', 'output']]
-  const rows = names.map((name) => `<tr><th scope="row">${escapeHtml(name)}</th>${fields.map(([key, title]) => {
-    const value = usagePriceDrafts.get(name)?.[key] ?? existing.get(name)?.[key] ?? ''
-    return `<td><input type="number" min="0" max="1000000" step="any" data-usage-price-model="${escapeHtml(name)}" data-usage-price-key="${key}" value="${escapeHtml(String(value))}" aria-label="${escapeHtml(name + ' · ' + usageDashboardText(title))}"></td>`
-  }).join('')}</tr>`).join('')
-  const table = rows ? `<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>${escapeHtml(usageDashboardText('model'))}</th>
-    ${fields.map(([, title]) => `<th>${escapeHtml(usageDashboardText(title))}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
+  const names = new Set()
+  for (const row of usagePriceRows()) names.add(row.model)
+  for (const model of models) if (usageIsFilterableModel(model.model)) names.add(model.model)
+  const sorted = [...names].slice(0, 200).sort()
+  const rows = usagePriceRows()
+  const fields = [
+    ['input', 'input-no-cache'],
+    ['cached', 'cache-read'],
+    ['cachedWrite', 'price-cached-write'],
+    ['output', 'output']
+  ]
+  const versionsByModel = new Map(sorted.map((name) => [name, rows.filter((row) => row.model === name)]))
+  let body = ''
+  for (const name of sorted) {
+    const versions = versionsByModel.get(name)
+    const list = versions.length > 0
+      ? versions.sort((left, right) => (left.effectiveFrom || '').localeCompare(right.effectiveFrom || ''))
+      : [{ uid: `blank-${usagePriceUid()}`, model: name, effectiveFrom: '', input: '', cached: '', cachedWrite: '', output: '' }]
+    list.forEach((row, index) => {
+      const modelCell = index === 0
+        ? `<th scope="row" rowspan="${list.length}"><span class="usage-price-model">${escapeHtml(name)}</span>
+            <button type="button" class="button usage-price-add" data-usage-price-add="${escapeHtml(name)}">${escapeHtml(usageDashboardText('price-add-version'))}</button></th>`
+        : ''
+      const fieldCells = fields.map(([key, title]) => `<td><input type="number" min="0" max="1000000" step="any" data-usage-price-field="${key}" value="${escapeHtml(String(row[key] ?? ''))}" aria-label="${escapeHtml(name + ' · ' + usageDashboardText(title))}"></td>`).join('')
+      const effectiveTitle = usageDashboardText(row.effectiveFrom ? 'price-effective' : 'price-always')
+      body += `<tr data-usage-price-row="${escapeHtml(row.uid)}" data-usage-price-model="${escapeHtml(name)}">${modelCell}
+        <td><input type="date" data-usage-price-field="effectiveFrom" value="${escapeHtml(row.effectiveFrom || '')}" aria-label="${escapeHtml(name + ' · ' + usageDashboardText('price-effective'))}" title="${escapeHtml(effectiveTitle)}"></td>
+        ${fieldCells}</tr>`
+    })
+  }
+  const table = sorted.length > 0 ? `<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>${escapeHtml(usageDashboardText('model'))}</th>
+    <th>${escapeHtml(usageDashboardText('price-effective'))}</th>
+    ${fields.map(([, title]) => `<th>${escapeHtml(usageDashboardText(title))}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>
+    <p class="usage-section-note">${escapeHtml(usageDashboardText('price-cached-write-help'))} ${escapeHtml(usageDashboardText('price-version-help'))}</p>
     <button class="button" id="saveUsagePrices" type="button">${escapeHtml(usageDashboardText('price-save'))}</button>` : ''
   return `<details class="usage-dashboard-settings" id="usagePricing"${open ? ' open' : ''}><summary>${escapeHtml(usageDashboardText('pricing'))}<span>${escapeHtml(usageDashboardText('price-unit'))}</span></summary>
-    <p class="usage-section-note">${escapeHtml(usageDashboardText(rows ? 'price-help' : 'price-no-models'))}</p>${table}</details>`
+    <p class="usage-section-note">${escapeHtml(usageDashboardText(sorted.length > 0 ? 'price-help' : 'price-no-models'))}</p>${table}</details>`
+}
+
+// ---------------------------------------------------------------------------
+// B07 report exchange: CSV/JSON export and aggregate-snapshot import
+// ---------------------------------------------------------------------------
+
+// The feature reports which exchange channels this build registered (a build
+// whose IPC policy does not list them yet reports false), so the buttons are
+// disabled instead of failing only after a click.
+function usageExchangeState(status) {
+  const value = status && typeof status === 'object' ? status.exchange : null
+  return {
+    export: usageHasApi('usageExport') && value?.export !== false,
+    import: usageHasApi('usageImport') && value?.import !== false
+  }
+}
+
+function usageExchangeButtonsHtml(status) {
+  const state = usageExchangeState(status)
+  const exportDisabled = state.export ? '' : ' disabled title="' + escapeHtml(usageDashboardText('export-unavailable')) + '"'
+  const importDisabled = state.import ? '' : ' disabled title="' + escapeHtml(usageDashboardText('export-unavailable')) + '"'
+  const button = (format) => `<button class="button" type="button" data-usage-export="${format}"${exportDisabled}>${escapeHtml(t(`config.usage.dashboard.export-${format}`))}</button>`
+  return `<div class="usage-export-actions" role="group" aria-label="${escapeHtml(usageDashboardText('export-group'))}">
+    ${button('csv')}${button('json')}
+    <button class="button" type="button" data-usage-import${importDisabled}>${escapeHtml(usageDashboardText('import'))}</button>
+    <input type="file" accept="application/json,.json" data-usage-import-file hidden>
+  </div>`
+}
+
+function usageSnapshotSources(sources) {
+  return (Array.isArray(sources) ? sources : []).map((source) => usageSourceLabel({ source })).join(t('config.common.list-separator'))
+}
+
+function usageImportPreviewHtml() {
+  const preview = usageImportPreviewData
+  if (!preview) return ''
+  const text = t('config.usage.dashboard.import-preview', {
+    sources: usageSnapshotSources(preview.sources),
+    from: preview.from,
+    to: preview.to,
+    rows: usageNumber(preview.days),
+    tokens: usageCompact(preview.totals?.total)
+  })
+  const note = preview.duplicate
+    ? usageDashboardText('import-duplicate')
+    : (!preview.mergeable ? usageDashboardText('import-overlap') : '')
+  const confirm = !preview.duplicate && preview.mergeable
+    ? `<button class="button primary" type="button" data-usage-import-confirm>${escapeHtml(usageDashboardText('import-confirm'))}</button>`
+    : ''
+  return `<div class="usage-import-preview" role="status">
+    <b>${escapeHtml(usageDashboardText('import-title'))}</b>
+    <span>${escapeHtml(text)}</span>
+    ${note ? `<em class="usage-import-note">${escapeHtml(note)}</em>` : ''}
+    <span class="usage-import-actions">${confirm}<button class="button" type="button" data-usage-import-cancel>${escapeHtml(usageDashboardText('import-cancel'))}</button></span>
+  </div>`
+}
+
+function usageSnapshotsHtml(status) {
+  const items = Array.isArray(status?.snapshots) ? status.snapshots : []
+  const rows = items.map((item) => `<li class="usage-snapshot-row" data-usage-snapshot="${escapeHtml(item.id)}">
+    <span class="usage-snapshot-range">${escapeHtml(t('config.usage.dashboard.snapshot-row', {
+      sources: usageSnapshotSources(item.sources),
+      from: item.from,
+      to: item.to,
+      rows: usageNumber(item.days),
+      tokens: usageCompact(item.totalTokens)
+    }))}</span>
+    <small class="usage-snapshot-meta">${escapeHtml([usageDateTime(item.importedAt), item.priceVersion || ''].filter(Boolean).join(' · '))}</small>
+  </li>`).join('')
+  return `<section class="usage-card usage-snapshots" id="usageSnapshots">
+    <div class="usage-card-head"><h2>${escapeHtml(usageDashboardText('snapshots'))}</h2><span>${escapeHtml(usageDashboardText('snapshots-note'))}</span></div>
+    ${rows ? `<ul class="usage-snapshot-list">${rows}</ul>` : `<p class="usage-section-note">${escapeHtml(usageDashboardText('snapshot-empty'))}</p>`}
+    <div id="usageImportPreview">${usageImportPreviewHtml()}</div>
+  </section>`
 }
 
 function usageTrendSegments(row) {
@@ -1650,7 +1816,7 @@ function usageRenderDashboard(renderVersion, payload) {
 
   view.innerHTML = `<div class="page usage-page usage-overview" data-usage-state="${escapeHtml(state)}">
     ${usageHeaderHtml()}
-    ${usageTabsHtml(models, projects, status?.scanning === true)}
+    ${usageTabsHtml(models, projects, status)}
     ${usageStateBannerHtml(state)}
     ${details && details.status !== 'ready' ? `<p class="usage-section-note" role="status">${escapeHtml(usageDashboardText(details.status === 'pending' ? 'detail-pending' : 'detail-partial'))}</p>` : ''}
     <div class="usage-dashboard" data-usage-view="${escapeHtml(usagePeriod)}">
@@ -1665,6 +1831,7 @@ function usageRenderDashboard(renderVersion, payload) {
       ${usageActivityHtml('tools', details?.tools)}
       ${usageDailyTableHtml(usageDailyRowCache)}
       ${usagePricingHtml(models, restore.pricingOpen)}
+      ${usageSnapshotsHtml(status)}
       <details class="usage-dashboard-settings" id="usageSources"${restore.coverageOpen ? ' open' : ''}><summary>${escapeHtml(usageDashboardText('sources-settings'))}
         <span>${status?.lastScanAt ? escapeHtml(t('config.usage.coverage.last-scan', { time: usageDateTime(status.lastScanAt) })) : ''}</span></summary>
         ${usageCoverageHtml(status)}
@@ -1703,7 +1870,10 @@ function usageFocusSelector(element) {
   if (['usageSource', 'usageModel', 'usageProject', 'usageEvery', 'refreshUsage', 'usageIncludeCache', 'usageSessionSearch'].includes(element.id)) return `#${element.id}`
   if (element.hasAttribute?.('data-usage-model-rank')) return '#usageModel'
   if (element.hasAttribute?.('data-usage-project-rank')) return '#usageProject'
-  if (element.dataset?.usagePriceModel && typeof CSS !== 'undefined') return `[data-usage-price-model="${CSS.escape(element.dataset.usagePriceModel)}"][data-usage-price-key="${element.dataset.usagePriceKey}"]`
+  const priceRow = element.closest?.('[data-usage-price-row]')
+  if (priceRow && element.dataset?.usagePriceField && typeof CSS !== 'undefined') {
+    return `[data-usage-price-row="${CSS.escape(priceRow.dataset.usagePriceRow)}"] [data-usage-price-field="${CSS.escape(element.dataset.usagePriceField)}"]`
+  }
   for (const attribute of ['data-usage-tab', 'data-usage-metric', 'data-usage-heat-view', 'data-usage-hour-cell', 'data-usage-day', 'data-usage-heat-day', 'data-usage-trend-expand', 'data-usage-sort', 'data-usage-session-sort', 'data-usage-activity-more']) {
     const value = element.getAttribute && element.getAttribute(attribute)
     if (value !== null && value !== undefined) return `[${attribute}="${String(value).replace(/"/g, '\\"')}"]`
@@ -1981,43 +2151,86 @@ function usageBindDetailControls(payload, repaint) {
       repaint()
     }
   })
-  view.querySelectorAll('[data-usage-price-model]').forEach((input) => {
-    input.oninput = () => {
-      const model = input.dataset.usagePriceModel
-      const draft = usagePriceDrafts.get(model) || {}
-      draft[input.dataset.usagePriceKey] = input.value
-      usagePriceDrafts.set(model, draft)
+  // Price versions: one edit snapshots the whole table, so any later repaint
+  // (period switch, add version) re-renders exactly what the user typed.
+  view.querySelectorAll('[data-usage-price-field]').forEach((input) => {
+    input.oninput = () => { usagePriceEditor = { rows: usageCapturePriceRows() } }
+  })
+  view.querySelectorAll('[data-usage-price-add]').forEach((button) => {
+    button.onclick = () => {
+      const rows = usageCapturePriceRows()
+      rows.push({
+        uid: usagePriceUid(),
+        model: button.dataset.usagePriceAdd,
+        effectiveFrom: usageToday(),
+        input: '',
+        cached: '',
+        cachedWrite: '',
+        output: ''
+      })
+      usagePriceEditor = { rows }
+      usageRepaintDashboard()
+      view.querySelector('[data-usage-price-field="effectiveFrom"]')?.focus()
     }
   })
   const save = view.querySelector('#saveUsagePrices')
   if (save) save.onclick = async () => {
-    const rows = new Map(usageSavedPrices().map((item) => [item.model, item]))
-    const draftRows = new Map()
-    for (const input of view.querySelectorAll('[data-usage-price-model]')) {
-      const { usagePriceModel: model, usagePriceKey: key } = input.dataset
-      if (input.validity?.badInput) {
+    const rows = []
+    const seen = new Set()
+    for (const rowElement of view.querySelectorAll('[data-usage-price-row]')) {
+      const model = rowElement.dataset.usagePriceModel
+      const read = (field) => {
+        const input = rowElement.querySelector(`[data-usage-price-field="${field}"]`)
+        return input ? input.value.trim() : ''
+      }
+      const effectiveFrom = read('effectiveFrom')
+      const rates = [read('input'), read('cached'), read('output')]
+      const cachedWrite = read('cachedWrite')
+      const blanks = rates.filter((value) => value === '').length
+      // Clearing the three required rates removes this version, exactly like the
+      // single-version editor removed a model's price.
+      if (blanks === 3) continue
+      if (blanks > 0) {
         usageToast(usageDashboardText('price-invalid'))
         return
       }
-      if (!draftRows.has(model)) draftRows.set(model, { model })
-      draftRows.get(model)[key] = input.value === '' ? null : Number(input.value)
-    }
-    for (const [model, row] of draftRows) {
-      const values = [row.input, row.cached, row.output]
-      if (values.every((value) => value === null)) rows.delete(model)
-      else if (values.some((value) => !Number.isFinite(value) || value < 0 || value > 1000000)) {
+      const values = rates.map(Number)
+      if (values.some((value) => !Number.isFinite(value) || value < 0 || value > 1000000)) {
         usageToast(usageDashboardText('price-invalid'))
         return
-      } else rows.set(model, row)
+      }
+      const row = { model, input: values[0], cached: values[1], output: values[2] }
+      if (cachedWrite !== '') {
+        const writeRate = Number(cachedWrite)
+        if (!Number.isFinite(writeRate) || writeRate < 0 || writeRate > 1000000) {
+          usageToast(usageDashboardText('price-invalid'))
+          return
+        }
+        row.cachedWrite = writeRate
+      }
+      if (effectiveFrom) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom)) {
+          usageToast(usageDashboardText('price-invalid'))
+          return
+        }
+        row.effectiveFrom = effectiveFrom
+      }
+      const key = `${model}\u0000${row.effectiveFrom || ''}`
+      if (seen.has(key)) {
+        usageToast(usageDashboardText('price-duplicate'))
+        return
+      }
+      seen.add(key)
+      rows.push(row)
     }
-    if (rows.size > 100) {
+    if (rows.length > 100) {
       usageToast(usageDashboardText('price-limit'))
       return
     }
     save.disabled = true
     try {
-      await updateSettings({ usage: { prices: [...rows.values()] } }, usageDashboardText('price-saved'))
-      usagePriceDrafts.clear()
+      await updateSettings({ usage: { prices: rows } }, usageDashboardText('price-saved'))
+      usagePriceEditor = null
       if (currentRoute === 'usage') await usageRerenderKeepingDashboard()
     } catch (error) {
       usageToast(usageErrorText(error))
@@ -2027,10 +2240,99 @@ function usageBindDetailControls(payload, repaint) {
   }
 }
 
-function usageBindOverviewControls() {
-  const repaint = () => {
-    if (usageDashboardPayload) usageRenderDashboard(usageRenderVersion, usageDashboardPayload)
+// Repaint the mounted dashboard in place (no query round trip). Used by the
+// price-version drafts and the import preview, both of which are renderer state.
+function usageRepaintDashboard() {
+  if (usageDashboardPayload) usageRenderDashboard(usageRenderVersion, usageDashboardPayload)
+}
+
+async function usageExportReport(format, button) {
+  if (!usageHasApi('usageExport')) {
+    usageToast(usageDashboardText('export-unavailable'))
+    return
   }
+  if (button) button.disabled = true
+  try {
+    // Same period/timezone/filters the page is showing; main resolves the file
+    // target through its own save dialog so no path crosses this call.
+    const result = await window.electronAPI.usageExport({ ...usageQueryParams(), format, save: true })
+    if (!result || result.canceled) return
+    usageToast(t('config.usage.dashboard.export-done', { file: result.fileName || '', rows: usageNumber(result.rows) }))
+  } catch (error) {
+    // A build whose IPC policy does not expose the channel reports "No handler
+    // registered"; say "no export channel" instead of leaking that string.
+    const message = usageErrorText(error)
+    usageToast(/handler/i.test(message) ? usageDashboardText('export-unavailable') : message)
+  } finally {
+    if (button) button.disabled = false
+  }
+}
+
+async function usageReadImportFile(fileInput) {
+  const file = fileInput.files && fileInput.files[0]
+  fileInput.value = ''
+  if (!file) return
+  if (!usageHasApi('usageImport')) {
+    usageToast(usageDashboardText('export-unavailable'))
+    return
+  }
+  try {
+    const text = await file.text()
+    const preview = await window.electronAPI.usageImport({ mode: 'preview', payload: text })
+    usageImportPayload = text
+    usageImportPreviewData = preview
+    usageRepaintDashboard()
+    view.querySelector('#usageSnapshots')?.scrollIntoView?.({ block: 'nearest' })
+  } catch (error) {
+    usageImportPayload = null
+    usageImportPreviewData = null
+    const message = usageErrorText(error)
+    usageToast(/handler/i.test(message) ? usageDashboardText('export-unavailable') : (message || usageDashboardText('import-invalid')))
+  }
+}
+
+async function usageCommitImport() {
+  if (!usageImportPayload || !usageHasApi('usageImport')) return
+  const confirm = view.querySelector('[data-usage-import-confirm]')
+  if (confirm) confirm.disabled = true
+  try {
+    const result = await window.electronAPI.usageImport({ mode: 'commit', payload: usageImportPayload })
+    usageImportPayload = null
+    usageImportPreviewData = null
+    if (result?.duplicate) usageToast(usageDashboardText('import-duplicate'))
+    else usageToast(t('config.usage.dashboard.import-done', { rows: usageNumber(result?.totalRows) }))
+    if (currentRoute === 'usage') await usageRerenderKeepingDashboard()
+  } catch (error) {
+    usageToast(usageErrorText(error) || usageDashboardText('import-invalid'))
+    if (confirm) confirm.disabled = false
+  }
+}
+
+function usageBindExchangeControls() {
+  view.querySelectorAll('[data-usage-export]').forEach((button) => {
+    button.onclick = () => { void usageExportReport(button.dataset.usageExport, button) }
+  })
+  const trigger = view.querySelector('[data-usage-import]')
+  const fileInput = view.querySelector('[data-usage-import-file]')
+  if (trigger && fileInput) {
+    trigger.onclick = () => fileInput.click()
+    fileInput.onchange = () => { void usageReadImportFile(fileInput) }
+  }
+}
+
+function usageBindSnapshots() {
+  const confirm = view.querySelector('[data-usage-import-confirm]')
+  if (confirm) confirm.onclick = () => { void usageCommitImport() }
+  const cancel = view.querySelector('[data-usage-import-cancel]')
+  if (cancel) cancel.onclick = () => {
+    usageImportPayload = null
+    usageImportPreviewData = null
+    usageRepaintDashboard()
+  }
+}
+
+function usageBindOverviewControls() {
+  const repaint = usageRepaintDashboard
   usageBindDetailControls(usageDashboardPayload, repaint)
   const interval = view.querySelector('#usageEvery')
   if (interval) interval.onchange = () => {
@@ -2379,6 +2681,8 @@ function usageBindDashboard(payload) {
   usageBindDailySort()
   usageBindTrendExpand()
   usageBindHeatScroll()
+  usageBindExchangeControls()
+  usageBindSnapshots()
   const dailyRows = payload && payload.daily && Array.isArray(payload.daily.rows) ? payload.daily.rows : []
   usageBindTrend(dailyRows)
   usageBindHeatmap(payload ? payload.heatmap : null)

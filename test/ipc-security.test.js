@@ -105,7 +105,11 @@ test('IPC policy exactly covers every main-process registration', () => {
   const sourceFiles = [
     path.join(root, 'main.js'),
     ...collectJavaScriptFiles(path.join(root, 'main', 'ipc')),
-    ...collectJavaScriptFiles(path.join(root, 'main', 'domains'))
+    ...collectJavaScriptFiles(path.join(root, 'main', 'domains')),
+    // B07: the usage page's report exchange (usage:export/usage:import) is registered by its
+    // feature module on the page surface rather than by main/ipc/usage-ipc.js, whose eight
+    // literal channels are frozen by test/usage-ipc.test.js.
+    path.join(root, 'main', 'services', 'usage-feature.js')
   ]
   const registrations = new Map()
   for (const file of sourceFiles) {

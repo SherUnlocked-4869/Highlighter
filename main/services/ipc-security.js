@@ -63,6 +63,9 @@ const IPC_SURFACES = Object.freeze([
       // scan-progress push is main -> renderer only, so it has no sender policy.
       'usage:status', 'usage:refresh', 'usage:summary', 'usage:daily',
       'usage:hourly', 'usage:breakdown', 'usage:heatmap', 'usage:clear',
+      // B07: report exchange (export/import). Registered by main/services/usage-feature.js on
+      // the usage page's own surface, so they only exist while that feature is installed.
+      'usage:export', 'usage:import',
       'device-battery:snapshot', 'device-battery:refresh',
       // R1-R3 recording workbench (docs/plans/2026-11-03-recording-r1-r3-contracts.md §8/§9.1):
       // the main window may read the workbench state, start a recording and manage the recording

@@ -23,7 +23,7 @@
 // and a tool-filter toggle never reuses the previous selection's payload.
 
 const usageTime = require('./usage-time')
-const { normalizeUsagePrices, addCost, costPayload, modelCost } = require('./usage-pricing')
+const { addCost, costPayload, createPriceTable, modelCost } = require('./usage-pricing')
 const { describeDetails } = require('./usage-detail-query')
 
 const RETENTION_MONTHS = usageTime.RETENTION_MONTHS
@@ -221,17 +221,27 @@ function createUsageQuery({
   // 100k-row daily/heatmap query well inside the 100 ms budget.
   const zonedDayMemo = new Map()
   const zonedHourMemo = new Map()
-  let priceStamp = ''
-  let prices = new Map()
+  let priceStamp = null
+  // Full table (versions + effective dates), not just model -> latest row: a
+  // report range that crosses a price change must price each local day with the
+  // version in force on that day (B07).
+  let prices = createPriceTable([])
 
   function refreshPrices() {
-    const normalized = normalizeUsagePrices(getPrices())
-    const stamp = JSON.stringify(normalized)
-    if (stamp !== priceStamp) {
+    const next = createPriceTable(getPrices())
+    if (next.version !== priceStamp) {
       cache.clear()
-      priceStamp = stamp
-      prices = new Map(normalized.map((row) => [row.model, row]))
+      priceStamp = next.version
+      prices = next
     }
+  }
+
+  // Sum a range per (local day, model) pair. Only a table with effective dates
+  // needs it; the legacy single-version table keeps the cheaper per-model SQL.
+  function foldCostPerDay(store, filters, tz, target) {
+    const rows = store.getGroupedTotals({ ...filters, dimensions: ['hour_start', 'model'] })
+    for (const row of rows) addCost(target, row, prices, zonedDayOf(row.hour_start, tz))
+    return rows
   }
 
   function zonedDayOf(hourStart, tz) {
@@ -317,13 +327,19 @@ function createUsageQuery({
       const range = rangeForPeriod({ ...validated, period, tz })
       const store = getStore()
       const filters = { fromIso: range.fromIso, toIso: range.toIso, sources, model, project }
-      const pricedRows = prices.size ? store.getGroupedTotals({ ...filters, dimensions: ['model'] }) : null
+      // A versioned table must be folded per local day: the same model has
+      // different rates on either side of its effective date. The legacy table
+      // (no effective dates) keeps the cheaper per-model SQL path.
+      const pricedRows = prices.size && !prices.versioned
+        ? store.getGroupedTotals({ ...filters, dimensions: ['model'] })
+        : null
       const totals = toTotalsPayload(pricedRows ? pricedRows.reduce(addTotals, emptyTotals()) : store.sumRange(filters))
       const details = describeDetails(store.getDetails?.(filters), prices, (hour) => zonedDayOf(hour, tz))
       const estimate = {}
       if (pricedRows) for (const row of pricedRows) addCost(estimate, row, prices)
+      else if (prices.size) foldCostPerDay(store, filters, tz, estimate)
       const costs = costPayload(estimate)
-      if (!pricedRows && (totals.billable_total_tokens || totals.total_tokens)) costs.unpricedModels = store.countRangeModels(filters)
+      if (!prices.size && (totals.billable_total_tokens || totals.total_tokens)) costs.unpricedModels = store.countRangeModels(filters)
       const current = now()
       const last7Window = usageTime.resolveRollingWindow({ days: 7, now: current, timeZone: tz })
       const last30Window = usageTime.resolveRollingWindow({ days: 30, now: current, timeZone: tz })
@@ -365,7 +381,9 @@ function createUsageQuery({
           avgPerActiveDay: activeDays > 0 ? Math.round(last30Billable / activeDays) : 0,
           activeDays
         },
-        pricing: prices.size ? { mode: 'manual', currency: 'CNY', version: null } : { mode: 'none', version: null }
+        pricing: prices.size
+          ? { mode: 'manual', currency: prices.currency, version: prices.version }
+          : { mode: 'none', version: null }
       }
     })
   }
@@ -404,8 +422,9 @@ function createUsageQuery({
       }
       if (prices.size && rows.length) {
         for (const row of store.getGroupedTotals({ ...filters, dimensions: ['hour_start', 'model'] })) {
-          const day = dayMap.get(zonedDayOf(row.hour_start, tz))
-          if (day) addCost(day, row, prices)
+          const dayKey = zonedDayOf(row.hour_start, tz)
+          const day = dayMap.get(dayKey)
+          if (day) addCost(day, row, prices, dayKey)
         }
         for (const day of out) {
           Object.assign(day, costPayload(day))
@@ -464,6 +483,24 @@ function createUsageQuery({
         const range = rangeForPeriod({ ...validated, period, tz })
         const store = getStore()
         const totals = toTotalsPayload(store.sumRange({ fromIso: range.fromIso, toIso: range.toIso, sources: sourceFilter, model, project }))
+        // Effective dates make "the model's rate" a function of the day, so a
+        // versioned table is folded per (day, model) instead of per model.
+        const versionedByModel = new Map()
+        if (prices.size && prices.versioned) {
+          for (const row of store.getGroupedTotals({
+            fromIso: range.fromIso, toIso: range.toIso, dimensions: ['hour_start', 'model'], sources: sourceFilter, model, project
+          })) {
+            const entry = versionedByModel.get(row.model) || { cost: null, priced: false }
+            const cost = modelCost(row, prices, zonedDayOf(row.hour_start, tz))
+            if (cost === null) {
+              if (entry.cost === null) entry.cost = null
+            } else {
+              entry.cost = (entry.cost ?? 0) + cost
+              entry.priced = true
+            }
+            versionedByModel.set(row.model, entry)
+          }
+        }
         const groupedRows = store.getGroupedTotals({
           fromIso: range.fromIso,
           toIso: range.toIso,
@@ -491,7 +528,16 @@ function createUsageQuery({
             totals: aggregateTokenTotals(tokens),
             ...tokens
           })
-          flatModels.push({ source: row.source, model: row.model, ...tokens, costCny: modelCost(row, prices), total_cost_usd: null, pricing: prices.has(row.model) ? 'manual' : 'none' })
+          const versioned = versionedByModel.get(row.model)
+          const costCny = versioned ? versioned.cost : modelCost(row, prices)
+          flatModels.push({
+            source: row.source,
+            model: row.model,
+            ...tokens,
+            costCny,
+            total_cost_usd: null,
+            pricing: (versioned ? versioned.priced : prices.has(row.model)) ? 'manual' : 'none'
+          })
         }
         const totalBillable = totals.billable_total_tokens || 0
         const sourceList = [...sources.values()]

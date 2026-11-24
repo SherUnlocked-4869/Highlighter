@@ -137,6 +137,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   usageBreakdown: (query) => ipcRenderer.invoke('usage:breakdown', query),
   usageHeatmap: (query) => ipcRenderer.invoke('usage:heatmap', query),
   usageClear: () => ipcRenderer.invoke('usage:clear'),
+  // B07: report exchange. Export takes the same period/filter shape as the read
+  // channels plus { format, save }; import takes { mode, payload } where payload
+  // is the report JSON. Both answer plain data - no file path is accepted from
+  // the renderer, a save dialog resolves the export target in main.
+  usageExport: (query) => ipcRenderer.invoke('usage:export', query),
+  usageImport: (payload) => ipcRenderer.invoke('usage:import', payload),
   getDeviceBatterySnapshot: () => ipcRenderer.invoke('device-battery:snapshot'),
   refreshDeviceBattery: () => ipcRenderer.invoke('device-battery:refresh'),
   onDeviceBatterySnapshot: (callback) => {

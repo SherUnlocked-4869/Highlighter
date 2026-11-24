@@ -11,6 +11,13 @@
 // `usage:scan-progress` is main -> renderer only (webContents.send); the preload
 // subscribes with ipcRenderer.on and the main process never registers a
 // listener for it.
+//
+// B07 adds two EXCHANGE channels (usage:export / usage:import). They are
+// deliberately NOT part of USAGE_HANDLE_CHANNELS above: that list is the frozen
+// page-read surface asserted by test/usage-ipc.test.js, and the exchange
+// channels are registered by the composition root (usage-feature.js), which
+// also supplies the sender policy entry they need. Only their validators and
+// names live here so validation stays next to the rest of the usage contract.
 
 const USAGE_HANDLE_CHANNELS = Object.freeze([
   'usage:status',
@@ -24,6 +31,17 @@ const USAGE_HANDLE_CHANNELS = Object.freeze([
 ])
 
 const USAGE_PROGRESS_CHANNEL = 'usage:scan-progress'
+
+// Report exchange (B07): CSV/JSON export of the current aggregate selection and
+// the preview/commit pair that imports an aggregate snapshot. Same frozen-name
+// policy as the read channels; the literal `ipcMain.handle` calls live in
+// usage-feature.js so the eight-channel contract above stays exactly eight.
+const USAGE_EXCHANGE_CHANNELS = Object.freeze(['usage:export', 'usage:import'])
+const EXPORT_FORMATS = Object.freeze(['csv', 'json'])
+const IMPORT_MODES = Object.freeze(['preview', 'commit'])
+// 8 MiB is far above a 800-day daily aggregate (a few hundred KB) and far below
+// anything that would stall the main process while JSON.parse runs.
+const MAX_IMPORT_BYTES = 8 * 1024 * 1024
 const HANDLER_BY_CHANNEL = Object.freeze({
   'usage:status': 'status',
   'usage:refresh': 'refresh',
@@ -197,6 +215,33 @@ function validateClearArgs() {
   return undefined
 }
 
+function validateExportArgs(value) {
+  const args = asObject(value, 'args')
+  const format = args.format === undefined ? 'csv' : args.format
+  if (typeof format !== 'string' || !EXPORT_FORMATS.includes(format)) {
+    throw usageError(`invalid export format: ${String(format)}`)
+  }
+  // The export describes exactly the selection the page is showing, so it takes
+  // the same period/range/filter shape as usage:summary and usage:daily.
+  return { ...normalizePeriodArgs(value, { allowCustom: true }), format, save: args.save === true }
+}
+
+function validateImportArgs(value) {
+  const args = asObject(value, 'args')
+  const mode = args.mode === undefined ? 'preview' : args.mode
+  if (typeof mode !== 'string' || !IMPORT_MODES.includes(mode)) {
+    throw usageError(`invalid import mode: ${String(mode)}`)
+  }
+  const payload = args.payload
+  if (typeof payload === 'string') {
+    if (payload.length > MAX_IMPORT_BYTES) throw usageError('import payload is too large')
+    if (!payload.trim()) throw usageError('import payload is empty')
+  } else if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw usageError('import payload must be a JSON object or string')
+  }
+  return { mode, payload }
+}
+
 const VALIDATOR_BY_CHANNEL = Object.freeze({
   'usage:status': validateStatusArgs,
   'usage:refresh': validateRefreshArgs,
@@ -244,9 +289,13 @@ function registerUsageIpc({ ipcMain, handlers = {}, log = () => {} } = {}) {
 
 module.exports = {
   BREAKDOWN_SCOPES,
+  EXPORT_FORMATS,
   HANDLER_BY_CHANNEL,
+  IMPORT_MODES,
+  MAX_IMPORT_BYTES,
   MAX_RANGE_DAYS,
   PERIODS,
+  USAGE_EXCHANGE_CHANNELS,
   USAGE_HANDLE_CHANNELS,
   USAGE_PROGRESS_CHANNEL,
   USAGE_SOURCES,
@@ -256,8 +305,10 @@ module.exports = {
   validateBreakdownArgs,
   validateClearArgs,
   validateDailyArgs,
+  validateExportArgs,
   validateHeatmapArgs,
   validateHourlyArgs,
+  validateImportArgs,
   validateRefreshArgs,
   validateStatusArgs,
   validateSummaryArgs
