@@ -6,19 +6,26 @@ const fs = require('node:fs/promises')
 const path = require('node:path')
 const { FrameDecoder, encodeFrame } = require('../../shared/clipboard-protocol')
 const { nativeRules } = require('./clipboard-settings')
+const { POLL_REVISION_FRESH_MS, isHealthEvent, pollIsStable, nextPollDelay } = require('./clipboard-poll-policy')
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const failure = (code) => Object.assign(new Error(code), { code })
 const outcomeFailure = (method, code) => method === 'copy' ? 'COPY_OUTCOME_UNKNOWN' : ['paste.prepare', 'paste.commit'].includes(method) ? 'PASTE_OUTCOME_UNKNOWN' : code
 
 class ClipboardService extends EventEmitter {
-  constructor({ executable, directory, getHook, spawnChild = spawn }) {
+  constructor({ executable, directory, getHook, spawnChild = spawn, now = () => Date.now(), setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout }) {
     super()
-    Object.assign(this, { executable, directory, getHook, spawnChild })
+    Object.assign(this, { executable, directory, getHook, spawnChild, now, setTimeoutFn, clearTimeoutFn })
     this.child = null; this.epoch = null; this.pending = new Map()
     this.settings = null; this.reasons = new Set(); this.serial = Promise.resolve()
     this.generation = 0; this.coordinatedPid = null; this.disposed = false
     this.status = { enabled: false, userPaused: false, available: false, phase: 'disabled', pausedReasons: [], datasetId: null, revision: null, itemCount: 0, pinnedCount: 0, payloadBytes: 0, actualDiskBytes: 0, pendingGcBytes: 0 }
     this.pollTimer = null; this.retryTimer = null; this.retryCount = 0; this.unsubscribeHook = null
+    // C03 scheduler state. panelVisible starts false because the panel is created
+    // lazily; run() therefore arms the hidden cadence and the first show() asks
+    // for an immediate refresh.
+    this.panelVisible = false; this.pollFailed = false; this.gcBacklog = false; this.gcBacklogPending = false
+    this.maintenancePending = false; this.maintainedAt = 0; this.gcMaintainedAt = 0
+    this.lastRefreshAt = 0; this.lastHealthEvent = null
   }
   snapshot() { return structuredClone(this.status) }
   allowPasteForeground() {
@@ -41,12 +48,12 @@ class ClipboardService extends EventEmitter {
   retry() {
     if (this.retryTimer || !this.settings?.enabled || this.disposed || this.stopping || this.retryCount >= 3) return
     const wait = [1000, 5000, 30000][this.retryCount++]
-    this.retryTimer = setTimeout(() => { this.retryTimer = null; this.reconcile() }, wait)
-    this.retryTimer.unref?.()
+    this.retryTimer = this.setTimeoutFn(() => { this.retryTimer = null; this.reconcile() }, wait)
+    this.retryTimer?.unref?.()
   }
   reconcile() {
     const generation = ++this.generation
-    clearTimeout(this.retryTimer); this.retryTimer = null
+    this.clearRetryTimer()
     this.serial = this.serial.catch(() => {}).then(async () => {
       if (generation !== this.generation || this.disposed) return
       try { await this.run(generation) }
@@ -103,7 +110,7 @@ class ClipboardService extends EventEmitter {
     await this.request('configure', { enabled: capture })
     this.publish({ phase: capture ? 'running' : 'paused', available: true })
     await this.refresh()
-    this.schedulePoll()
+    this.schedulePoll(this.takeBacklogEvent())
   }
   async launch() {
     if (this.retiredExit) await this.waitForExit(this.retiredExit)
@@ -134,12 +141,12 @@ class ClipboardService extends EventEmitter {
     child.once('exit', () => this.failChild(child, 'BACKEND_EXITED'))
     const initialized = await this.request('initialize', { storageRoot: this.directory })
     if (!initialized.capabilities?.history || initialized.protocolVersion !== 1 || initialized.nativeBuildId !== manifest.nativeBuildId) throw failure('INCOMPATIBLE_BACKEND')
-    this.startedAt = Date.now()
+    this.startedAt = Number(this.now())
   }
   failChild(child, code) {
     if (this.child !== child) return
     this.child = null; this.epoch = null; this.coordinatedPid = null; this.retiredExit = this.exited
-    clearTimeout(this.pollTimer); this.pollTimer = null
+    this.clearPollTimer()
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(failure(outcomeFailure(pending.method, code))) }
     this.pending.clear()
     try { child.kill() } catch {}
@@ -162,6 +169,13 @@ class ClipboardService extends EventEmitter {
     if (!this.child) return this.snapshot()
     const value = await this.request('status')
     this.maintenancePending = value.maintenancePending === true
+    // C03: a GC backlog (pending bytes the sidecar could not delete yet) is the
+    // one condition that asks for an immediate maintenance pass. It is one-shot:
+    // gcBacklogPending only moves on the empty -> non-empty edge, so a backlog
+    // that refuses to drain degrades to the 5 s health cadence instead of a loop.
+    const gcBacklog = Number.isSafeInteger(value.pendingGcBytes) && value.pendingGcBytes > 0
+    this.gcBacklogPending = gcBacklog && this.gcBacklog !== true
+    this.gcBacklog = gcBacklog
     if (value.captureBusyMs > 3000) { this.failChild(this.child, 'CAPTURE_BLOCKED'); return this.snapshot() }
     const previous = this.status.revision
     const patch = {}
@@ -171,19 +185,112 @@ class ClipboardService extends EventEmitter {
     if (value.coordination?.phase === 'Orphaned') this.publish({ phase: 'error', messageKey: 'COORDINATION_ORPHANED' })
     else this.publish(patch)
     if (previous !== this.status.revision) this.emit('history', { datasetId: this.status.datasetId, revision: this.status.revision })
-    if (Date.now() - this.startedAt > 60000) this.retryCount = 0
+    if (Number(this.now()) - this.startedAt > 60000) this.retryCount = 0
+    this.lastRefreshAt = Number(this.now())
     return this.snapshot()
   }
-  schedulePoll() {
-    clearTimeout(this.pollTimer)
-    if (!this.child || this.disposed) return
-    this.pollTimer = setTimeout(async () => {
-      this.pollTimer = null
-      try { await this.refresh(); if (this.maintenancePending || Date.now() - (this.maintainedAt || 0) > 600000) { this.maintainedAt = Date.now(); await this.request('maintenance') } }
-      catch { this.retry() }
-      this.schedulePoll()
-    }, 2000)
-    this.pollTimer.unref?.()
+  clearPollTimer() {
+    if (this.pollTimer !== null && this.pollTimer !== undefined) this.clearTimeoutFn(this.pollTimer)
+    this.pollTimer = null
+  }
+  clearRetryTimer() {
+    if (this.retryTimer !== null && this.retryTimer !== undefined) this.clearTimeoutFn(this.retryTimer)
+    this.retryTimer = null
+  }
+  // C03: the panel tells the service whether it is on screen. Opening always
+  // asks for a current revision (unless the cached one is younger than the paint
+  // budget); hiding only re-arms the timer, because the way out must not cost a
+  // request. This is the only visibility input the scheduler has.
+  setPanelVisible(visible) {
+    const next = visible === true
+    const changed = this.panelVisible !== next
+    this.panelVisible = next
+    if (!next) { this.schedulePoll(); return Promise.resolve(this.snapshot()) }
+    if (!changed && Number(this.now()) - (this.lastRefreshAt || 0) < POLL_REVISION_FRESH_MS) { this.schedulePoll(); return Promise.resolve(this.snapshot()) }
+    this.clearPollTimer()
+    return this.pollOnce()
+  }
+  // C03: an out-of-band event the sidecar cannot push. It performs one bounded
+  // check right away instead of letting the 30 s hidden backoff defer it. The
+  // next delay comes from the state that check observes, so a persistent fault
+  // falls to the 5 s cadence rather than firing continuously.
+  notifyHealth(reason) {
+    if (this.disposed || !isHealthEvent(reason) || !this.child) return Promise.resolve(this.snapshot())
+    this.lastHealthEvent = reason
+    this.clearPollTimer()
+    return this.pollOnce()
+  }
+  // One-shot edge: the backlog is new (or the panel just went dark with one
+  // already recorded), so the next check is immediate exactly once.
+  takeBacklogEvent() {
+    const event = this.gcBacklogPending && !this.panelVisible ? 'gc-backlog' : null
+    this.gcBacklogPending = false
+    return event
+  }
+  pollIsQuiescent() {
+    // A backend that is unavailable or already reporting an error is not
+    // "stable": the hidden cadence must not defer a fault, so those states keep
+    // the bounded health check. A paused-but-alive backend is quiescent.
+    return this.status.available === true && this.status.phase !== 'error' &&
+      pollIsStable({ maintenancePending: this.maintenancePending, gcBacklog: this.gcBacklog })
+  }
+  schedulePoll(event = null) {
+    this.clearPollTimer()
+    if (!this.child || this.disposed || this.stopping) return
+    const delay = nextPollDelay({
+      visible: this.panelVisible,
+      stable: this.pollIsQuiescent(),
+      healthy: this.pollFailed !== true,
+      event
+    })
+    this.pollTimer = this.setTimeoutFn(() => { this.pollTimer = null; return this.pollOnce() }, delay)
+    this.pollTimer?.unref?.()
+  }
+  async pollOnce() {
+    if (this.disposed) return this.snapshot()
+    let event = null
+    let fresh = false
+    if (this.child) {
+      try {
+        await this.refresh()
+        this.pollFailed = false
+        fresh = true
+        // Hidden and a backlog just appeared: drain it now. While the panel is
+        // visible the 2 s cadence already follows up, so no extra request.
+        event = this.takeBacklogEvent()
+      } catch (error) {
+        this.pollFailed = true
+        this.gcBacklogPending = false
+        this.reportPollFailure(error)
+        this.retry()
+      }
+      // Maintenance follows a fresh observation only: acting on the state a
+      // failed check left behind could spend a request on work already done.
+      if (fresh && this.child && !this.disposed) {
+        try { await this.maintain() } catch { this.retry() }
+      }
+    }
+    this.schedulePoll(event)
+    return this.snapshot()
+  }
+  async maintain() {
+    const now = Number(this.now())
+    const periodic = now - (this.maintainedAt || 0) > 600000
+    const pending = this.maintenancePending === true
+    // A known GC backlog is drained at most once per 30 s even if the bytes stay
+    // (a locked file, for example); the poll cadence stays bounded either way.
+    const backlog = this.gcBacklog === true && now - (this.gcMaintainedAt || 0) >= 30000
+    if (!pending && !periodic && !backlog) return
+    this.maintainedAt = now
+    if (this.gcBacklog) this.gcMaintainedAt = now
+    await this.request('maintenance')
+  }
+  reportPollFailure(error) {
+    const code = /^[A-Z_]{1,64}$/.test(error?.code || '') ? error.code : 'BACKEND_UNAVAILABLE'
+    // BACKPRESSURE is a transient queue condition the caller already reports;
+    // a dead child has already been published by failChild().
+    if (!this.child || code === 'BACKPRESSURE' || this.status.phase === 'error') return
+    this.publish({ phase: 'error', available: false, messageKey: code })
   }
   async command(method, args = {}) {
     await this.serial
@@ -196,7 +303,7 @@ class ClipboardService extends EventEmitter {
     return value
   }
   async stop() {
-    clearTimeout(this.pollTimer); this.pollTimer = null
+    this.clearPollTimer()
     if (!this.child) { if (this.retiredExit) await this.waitForExit(this.retiredExit); return }
     this.stopping = true
     try {
@@ -229,7 +336,7 @@ class ClipboardService extends EventEmitter {
   async terminate() {
     const child = this.child
     this.child = null; this.epoch = null; this.coordinatedPid = null
-    clearTimeout(this.pollTimer); this.pollTimer = null
+    this.clearPollTimer()
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(failure(outcomeFailure(pending.method, 'BACKEND_EXITED'))) }
     this.pending.clear()
     if (child) { this.retiredExit = this.exited; try { child.kill() } catch {}; await this.waitForExit(this.exited) }
@@ -238,7 +345,7 @@ class ClipboardService extends EventEmitter {
   async quiesce() {
     this.quiescing = true
     this.reasons.add('migration'); ++this.generation
-    clearTimeout(this.retryTimer); this.retryTimer = null
+    this.clearRetryTimer()
     await this.serial.catch(() => {})
     await this.stop()
     if (this.child) throw failure('QUIESCE_FAILED')
@@ -246,7 +353,7 @@ class ClipboardService extends EventEmitter {
   }
   async dispose() {
     this.disposed = true; ++this.generation
-    clearTimeout(this.retryTimer); this.unsubscribeHook?.()
+    this.clearPollTimer(); this.clearRetryTimer(); this.unsubscribeHook?.()
     await this.serial.catch(() => {})
     try { await this.stop() } finally { await this.terminate(); this.removeAllListeners() }
   }

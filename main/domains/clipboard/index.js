@@ -2,6 +2,7 @@
 const path = require('node:path')
 const { randomUUID } = require('node:crypto')
 const { ClipboardService } = require('../../services/clipboard-service')
+const { POLL_REVISION_FRESH_MS } = require('../../services/clipboard-poll-policy')
 const { registerClipboardIpc } = require('../../ipc/clipboard-ipc')
 const { t } = require('../../services/i18n-bootstrap')
 const { createPasteFeedback } = require('../../services/clipboard-paste-feedback')
@@ -66,6 +67,26 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   const feedback = createPasteFeedback({ getWindow: () => win, screen, expire: () => hide() })
   const ownsWindow = (target) => target != null && target === win
   function send(channel, value) { if (win && !win.isDestroyed() && win.isVisible()) win.webContents.send(channel, value) }
+  // C03 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the
+  // panel's visibility is the status-poll scheduler's primary input. Callers do
+  // not await it - a window handler must never block on a status round trip, and
+  // a failure surfaces through the status phase instead. present() uses the
+  // returned promise only to bound how long it waits for a fresh revision.
+  function notePanelVisibility(visible) {
+    return (async () => {
+      try { return await service.setPanelVisible(visible) } catch { return service.snapshot() }
+    })()
+  }
+  // Cap the wait for a fresh revision at the paint budget: a wedged sidecar must
+  // not keep the panel closed. The request keeps running in the background and
+  // the next status broadcast carries whatever it found.
+  function waitForRevision(refresh) {
+    let timer
+    return Promise.race([
+      refresh,
+      new Promise((resolve) => { timer = setTimeout(resolve, POLL_REVISION_FRESH_MS) })
+    ]).finally(() => clearTimeout(timer))
+  }
   function panelVisible(event) {
     if (!win) return false
     if (typeof win.isDestroyed === 'function' && win.isDestroyed()) return false
@@ -94,6 +115,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   function release(reason = 'forced') {
     clearTimeout(releaseTimer); releaseTimer = null
     feedback.clear(false)
+    notePanelVisibility(false)
     if (pasteInProgress) {
       if (reason === 'forced' || !releaseAfterPaste) releaseAfterPaste = reason
       targetId = null; ++presentation; wantsVisible = false; opening = false
@@ -123,6 +145,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   }
   function hide() {
     feedback.clear()
+    notePanelVisibility(false)
     wantsVisible = false
     targetId = null; ++presentation; opening = false
     if (!pasteInProgress) service.command('paste.clear').catch(() => {})
@@ -134,6 +157,11 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   async function present() {
     if (!win || !readyToShow || !wantsVisible || opening || pasteInProgress) return
     const created = win; const ticket = ++presentation; opening = true; targetId = null
+    // C03: the current revision is fetched while paste.capture runs below, so the
+    // open path pays no extra round trip. The snapshot this ends up in is what
+    // clipboard:init carries.
+    const revision = notePanelVisibility(true)
+    const stillWanted = () => ticket === presentation && created === win && !created.isDestroyed() && wantsVisible && !disposed && !isGameModeEnabled() && !isMigrationInProgress() && getSettings().clipboard.enabled
     try {
       // A hidden BrowserWindow has not taken input focus yet. Capture the
       // external foreground now; never accept HWNDs or target IDs from a page.
@@ -143,7 +171,11 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
       if (ticket === presentation) targetId = value.targetId || null
     } catch {} // History/copy remain usable when there is no paste target.
     finally { if (ticket === presentation) opening = false }
-    if (ticket !== presentation || created !== win || created.isDestroyed() || !wantsVisible || disposed || isGameModeEnabled() || isMigrationInProgress() || !getSettings().clipboard.enabled) return
+    if (!stillWanted()) return
+    // Bounded by the paint budget only when the status request is slow; a fast
+    // one resolves before the capture above does.
+    await waitForRevision(revision)
+    if (!stillWanted()) return
     hiddenAt = null
     created.show(); created.focus(); created.webContents.send('clipboard:init', appearance())
     pasteFeedback = null
@@ -187,13 +219,16 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     if (!getSettings().clipboard.enabled) return false
     clearTimeout(releaseTimer); releaseTimer = null
     if (win && !win.isDestroyed()) {
-      if (feedback.active) { hide(); clearTimeout(releaseTimer); releaseTimer = null; if (win) { wantsVisible = true; present() } else return show() }
+      if (feedback.active) { hide(); clearTimeout(releaseTimer); releaseTimer = null; if (win) { wantsVisible = true; notePanelVisibility(true); present() } else return show() }
       else if (win.isVisible() || wantsVisible) hide()
-      else if (readyToShow) { wantsVisible = true; present() }
-      else wantsVisible = true
+      else if (readyToShow) { wantsVisible = true; notePanelVisibility(true); present() }
+      else { wantsVisible = true; notePanelVisibility(true) }
       return true
     }
     wantsVisible = true
+    // The window still has to load, so start the status refresh now instead of
+    // waiting for present(): the revision is warm by the time the page is ready.
+    notePanelVisibility(true)
     generation = randomUUID()
     panelSession = session.fromPartition('highlighter-clipboard-panel', { cache: false })
     panelSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
@@ -355,7 +390,10 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     applyGameMode(enabled) { if (enabled) hide(); return service.setReason('game-mode', enabled) },
     notifyAppearance() { if (!feedback.active) send('clipboard:init', appearance()) },
     async quiesce() { release(); await service.quiesce() },
-    async resume() { await service.setReason('migration', false) },
+    // C03: a finished migration is one of the out-of-band events; once the
+    // serialized reconcile is done, ask for one immediate health check so the
+    // next open cannot show a revision older than the migrated dataset.
+    async resume() { await service.setReason('migration', false); return service.notifyHealth('migration') },
     isShutdownComplete: () => shutdownComplete,
     dispose() {
       if (shutdownPromise) return shutdownPromise
