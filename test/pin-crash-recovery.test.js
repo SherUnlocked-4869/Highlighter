@@ -418,3 +418,18 @@ test('D05 (18): an exhausted ticket keeps its entry, and restore is not offered'
   assert.equal(payload.items[0].exhausted, true)
   assert.equal(payload.items[0].canRetry, false)
 })
+
+test('D05 (18): a recovered private pin keeps its do-not-keep flag and its layout', async () => {
+  const harness = createHarness()
+  const { domain, created } = harness
+  const win = domain.createPinWindow(Buffer.from([7, 7, 7]), { skipHistory: true, selectionBounds: { x: 10, y: 20, width: 120, height: 80 } })
+  assert.equal(win._skipHistory, true, 'the meta carries the private flag into the window')
+  const bounds = win.getBounds()
+  win.crash()
+  const ticketId = domain.getRecoverablePins()[0].id
+  const result = await domain.recoverPin(ticketId)
+  assert.equal(result.status, 'recovered')
+  assert.equal(result.window._skipHistory, true, 'the recovered pin is still private')
+  assert.deepEqual(result.window.getBounds(), bounds, 'the layout is restored')
+  assert.equal(created.length, 2)
+})

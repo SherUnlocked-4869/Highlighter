@@ -61,7 +61,7 @@
 | 11 | A03 | beb7c80 | test/shortcut-service.test.js | sync：清空后映射同步移除，重新启用真的注册；交换/回滚/被抢占逐键报告 | Windows 真实按键验证 |
 | 10 | B06 | beb7c80 | test/long-capture-completion.test.js, test/long-capture-output.test.js | longFinish（真实 domain）：实际路径回执、历史失败分离、重名新名、重复完成一次 | 慢盘快速保存与同名占用的候选包验证 |
 | 14 | A07 | beb7c80 | test/tray-menu.test.js, test/pin-domain.test.js | main.js 接线：onPinLayoutChange/onRecoverableChange → createTrayIcon；菜单每次读实时布局 | 真机托盘首张/第二张/移动/穿透 |
-| 18 | D05 | beb7c80 | test/pin-crash-recovery.test.js, test/tray-menu.test.js | pin domain trayRecoveryMenu + buildTrayMenuTemplate：恢复/另存/丢弃、上限后仅另存、取消保留 | 打包版异常退出后的托盘交互与 TTL 过期 |
+| 18 | D05 | beb7c80 | test/pin-crash-recovery.test.js, test/tray-menu.test.js | pin domain trayRecoveryMenu + buildTrayMenuTemplate：恢复/另存/丢弃、上限后仅另存、取消保留、私密标志与布局随恢复保留 | 打包版异常退出后的托盘交互与 TTL 过期 |
 | 15 | C02 | 7fd4022 | test/performance-budget.test.js | evaluateBaseline/currentFromReport + startup-baseline 采集器（真实子进程）：逐指标缺测阻断、重复轮次、超时回收 | 固定机 ≥20 次冷启 + 5 轮 30 分钟待机（仅采集） |
 | 16 | C04 | 7fd4022 | test/pin-image-store-async.test.js, test/pin-domain.test.js | createPinImageStore：释放即出队、仅两个在途计费、按字节硬上限、单图额度、盘满保留原图 | 慢盘/SSD 1/10/20 张 4K PNG 的停顿与托盘延迟 |
 

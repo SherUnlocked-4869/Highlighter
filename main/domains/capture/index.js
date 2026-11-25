@@ -480,7 +480,11 @@ function createCaptureDomain(deps) {
       const created = pinDomain.pinFromCapture(event, buffer, meta)
       // B01: the pin is the same result as the capture that produced it, so it carries
       // the switch into its re-annotate editor instead of re-enabling history there.
-      if (created?.pinWindow) created.pinWindow._skipHistory = skipHistory === true
+      if (created?.pinWindow) {
+        created.pinWindow._skipHistory = skipHistory === true
+        // D05 (18): the flag travels in the retained metadata, so a recovered pin keeps it.
+        if (created.pinWindow._pinData) created.pinWindow._pinData.meta.skipHistory = skipHistory === true
+      }
       return { ok: true }
     } catch (error) {
       log('Capture pin failed:', error?.message || String(error))
@@ -1428,7 +1432,11 @@ function createCaptureDomain(deps) {
         // and a failure still throws to the renderer's alert.
         if (copy !== true) {
           const created = pinDomain.pinFromCapture(event, buffer, meta)
-          if (created?.pinWindow) created.pinWindow._skipHistory = skipHistory
+          if (created?.pinWindow) {
+            created.pinWindow._skipHistory = skipHistory
+            // D05 (18): the flag travels in the retained metadata, so a recovered pin keeps it.
+            if (created.pinWindow._pinData) created.pinWindow._pinData.meta.skipHistory = skipHistory
+          }
           scheduleHistoryWrite(captureWindow, plan, buffer, meta)
           return null
         }
@@ -1443,7 +1451,11 @@ function createCaptureDomain(deps) {
         const created = pinDomain.pinFromCapture(event, buffer, meta, action)
         const captureWindow = created?.captureWindow
         // B01: this is the same result, so the pin inherits the switch for its editor.
-        if (created?.pinWindow) created.pinWindow._skipHistory = skipHistory
+        if (created?.pinWindow) {
+          created.pinWindow._skipHistory = skipHistory
+          // D05 (18): the flag travels in the retained metadata, so a recovered pin keeps it.
+          if (created.pinWindow._pinData) created.pinWindow._pinData.meta.skipHistory = skipHistory
+        }
         setImmediate(() => {
           if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
         })

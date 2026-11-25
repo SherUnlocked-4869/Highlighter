@@ -1032,6 +1032,10 @@ function createPinDomain(deps) {
 
   function createPinWindow(input, meta = {}, options = {}) {
     ensureCanPin(false)
+    // D05 (18): a private capture carries its "do not keep" flag in the meta, so a pin that
+    // is retained after an abnormal exit and later recovered still knows it must not write
+    // history. The capture domain also sets the window field directly for the live window.
+    const inheritedSkipHistory = meta?.skipHistory === true
     const image = preparePinImage(input)
     const { size } = image
     const selectionBounds = normalizeSelectionBounds(meta.selectionBounds)
@@ -1114,6 +1118,7 @@ function createPinDomain(deps) {
       } else {
         imageId = pinImages.add(image)
       }
+      if (inheritedSkipHistory) win._skipHistory = true
       win._pinData = {
         imageId,
         // Budget material for the retention policy; the store does not expose a
