@@ -486,10 +486,16 @@ function systemBackupModuleMarkup() {
 function backupPreviewMarkup(result) {
   if (!result || result.ok !== true) return ''
   const checksum = String(result.checksum || '')
+  const sensitiveModules = Array.isArray(result.sensitiveModules) ? result.sensitiveModules : []
   const moduleRows = (result.moduleOrder || []).map((id) => {
     const entry = result.modules?.[id]
     if (!entry) return ''
-    return `<div class="form-row"><div class="form-label"><b>${t(`config.settings-system.backup-module-${id}`)}</b></div><span>${t('config.settings-system.backup-module-line', {
+    // D04 (06): the badge is per module, so an old package whose SETTINGS module secretly
+    // carried the history list is marked where the user can see which module is sensitive.
+    const badge = sensitiveModules.includes(id)
+      ? ` <span class="rec-badge" data-testid="backup-module-sensitive-${id}">${t('config.settings-system.backup-module-sensitive')}</span>`
+      : ''
+    return `<div class="form-row"><div class="form-label"><b>${t(`config.settings-system.backup-module-${id}`)}</b>${badge}</div><span>${t('config.settings-system.backup-module-line', {
       files: entry.fileCount,
       size: formatBackupBytes(entry.bytes)
     })}</span></div>`
@@ -507,6 +513,15 @@ function backupPreviewMarkup(result) {
   const missingMarkup = missing
     ? `<div class="update-guidance warning">${t('config.settings-system.backup-external-missing')}</div>`
     : ''
+  // D04 (06): an old package can carry the history list inside settings, and a history
+  // module can arrive without any trusted index. Both are stated before the user restores.
+  const warningCodes = new Set((result.warnings || []).map((warning) => warning && warning.code))
+  const legacyHistoryMarkup = warningCodes.has('settings-carries-history')
+    ? `<div class="update-guidance warning" data-testid="backup-settings-carries-history">${t('config.settings-system.backup-settings-carries-history')}</div>`
+    : ''
+  const historyIndexMarkup = result.historyIndex && result.historyIndex.available === false
+    ? `<div class="update-guidance warning" data-testid="backup-history-index-missing">${t('config.settings-system.backup-history-index-missing')}</div>`
+    : ''
   return `<div class="backup-preview"><h3>${t('config.settings-system.backup-preview-title')}</h3>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-version')}</b></div><span>${escapeHtml(String(result.version || ''))}</span></div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-format-version')}</b></div><span>${escapeHtml(String(result.formatVersion || ''))}</span></div>
@@ -515,7 +530,7 @@ function backupPreviewMarkup(result) {
     <div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-checksum')}</b></div><code title="${escapeHtml(checksum)}">${escapeHtml(checksum.slice(0, 16))}</code></div>
     ${moduleRows}
     <div class="form-row"><div class="form-label"><b>${t('config.settings-system.backup-external-refs')}</b></div><span>${externalValue}</span></div>
-    ${sensitiveMarkup}${missingMarkup}</div>`
+    ${sensitiveMarkup}${missingMarkup}${legacyHistoryMarkup}${historyIndexMarkup}</div>`
 }
 
 function bindSystemBackupControls() {

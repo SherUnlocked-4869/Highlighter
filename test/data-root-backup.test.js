@@ -117,7 +117,7 @@ async function createForFixture(fixture, options = {}) {
 
 test('exports the backup service surface and module table', () => {
   assert.equal(backup.BACKUP_FORMAT, 'highlighter-data-backup')
-  assert.equal(backup.BACKUP_FORMAT_VERSION, 1)
+  assert.equal(backup.BACKUP_FORMAT_VERSION, 2, 'format 2 gives history its own index file')
   assert.deepEqual(backup.DEFAULT_MODULES, ['history', 'clipboard', 'recordings', 'settings'])
   assert.deepEqual(backup.MODULE_ORDER, ['history', 'clipboard', 'recordings', 'conversations', 'usage', 'settings'])
   assert.equal(typeof backup.createBackup, 'function')
@@ -154,7 +154,7 @@ test('backs up the legacy userData layout and restores it into the managed layou
   assert.equal(manifest.source.layout, 'legacy')
   assert.equal(manifest.modules.history.sourcePath, path.join(root, 'capture-history'))
   assert.equal(manifest.modules.settings.sourcePath, root)
-  assert.deepEqual(manifest.modules.history.files.map((file) => file.path), ['legacy.png'])
+  assert.deepEqual(manifest.modules.history.files.map((file) => file.path), ['index.json', 'legacy.png'])
 
   const restoreRoot = path.join(parent, 'restored-legacy')
   const restored = await backup.restoreBackup({ backupDirectory: created.directory, targetRoot: restoreRoot })
@@ -171,14 +171,14 @@ test('creates a per-module package with counts, sizes and per-file sha256', asyn
   const fixture = await createFixture(t)
   const result = await createForFixture(fixture)
   assert.match(path.basename(result.directory), /^highlighter-backup-1-\d{8}-\d{6}$/)
-  assert.equal(result.totalFiles, 6)
+  assert.equal(result.totalFiles, 7, 'six files plus the history index')
   assert.ok(result.totalBytes > 0)
   assert.deepEqual(result.moduleOrder, ['history', 'clipboard', 'recordings', 'settings'])
   assert.match(result.checksum, /^[a-f0-9]{64}$/)
 
   const manifest = await readManifest(result.directory)
   assert.equal(manifest.format, backup.BACKUP_FORMAT)
-  assert.equal(manifest.formatVersion, 1)
+  assert.equal(manifest.formatVersion, 2)
   assert.equal(manifest.version, '1')
   assert.equal(manifest.incomplete, false)
   assert.equal(manifest.checksum, result.checksum)
@@ -217,7 +217,11 @@ test('excludes caches, staging, diagnostics and credentials', async (t) => {
   const settingsCopy = await readJson(path.join(settingsDirectory, 'config.json'))
   assert.equal(Object.hasOwn(settingsCopy, 'credentials'), false)
   assert.doesNotMatch(JSON.stringify(settingsCopy), /sk-secret|sk-provider|sk-file-secret/)
-  assert.equal(settingsCopy.captureHistory[0].pinned, true)
+  // Plan item 06: settings carry settings only; the history list moved to the module.
+  assert.equal(Object.hasOwn(settingsCopy, 'captureHistory'), false)
+  const historyIndex = await readJson(path.join(result.directory, 'modules', 'history', 'index.json'))
+  assert.equal(historyIndex.captureHistory[0].pinned, true)
+  assert.equal(settingsCopy.settings.screenshot.historyDirectory, path.join(fixture.root, 'history'))
   assert.equal(settingsCopy.settings.screenshot.saveDirectory, fixture.externalShots)
 })
 
@@ -313,7 +317,7 @@ test('inspects a package and verifies every checksum on request', async (t) => {
   const inspection = await backup.inspectBackup(created.directory)
   assert.equal(inspection.ok, true)
   assert.equal(inspection.version, '1')
-  assert.equal(inspection.formatVersion, 1)
+  assert.equal(inspection.formatVersion, 2)
   assert.equal(inspection.totalFiles, created.totalFiles)
   assert.equal(inspection.totalBytes, created.totalBytes)
   assert.equal(inspection.checksum, created.checksum)
@@ -376,9 +380,9 @@ test('rejects a future package schema and a tampered manifest checksum', async (
   const fixture = await createFixture(t)
   const future = await createForFixture(fixture)
   const futureManifest = await readManifest(future.directory)
-  await writeManifest(future.directory, { ...futureManifest, formatVersion: 2 })
+  await writeManifest(future.directory, { ...futureManifest, formatVersion: 3 })
   const marker = await readJson(path.join(future.directory, backup.MARKER_FILE))
-  await writeJson(path.join(future.directory, backup.MARKER_FILE), { ...marker, formatVersion: 2 })
+  await writeJson(path.join(future.directory, backup.MARKER_FILE), { ...marker, formatVersion: 3 })
   const futureInspection = await backup.inspectBackup(future.directory)
   assert.equal(futureInspection.ok, false)
   assert.equal(futureInspection.code, 'future-schema')
@@ -498,7 +502,7 @@ test('restores a complete package into a new root and keeps the old root untouch
   assert.equal(result.migrated.length, 0)
   assert.equal(verification.phase, 'copied')
   assert.equal(verification.version, '1')
-  assert.deepEqual(verification.modules.history.files.map((file) => file.path), ['a.png', 'documents/d1/revisions/r1.doc.json'])
+  assert.deepEqual(verification.modules.history.files.map((file) => file.path), ['a.png', 'documents/d1/revisions/r1.doc.json', 'index.json'])
 
   assert.equal(await fsp.readFile(path.join(restoreRoot, 'history', 'a.png'), 'utf8'), 'png-a')
   assert.equal(await fsp.readFile(path.join(restoreRoot, 'recordings', 'p1', 'capture.webm'), 'utf8'), 'webm-bytes')
@@ -659,9 +663,14 @@ test('restores a subset of modules into the new root', async (t) => {
     modules: ['history']
   })
   assert.equal(result.ok, true)
-  assert.deepEqual((await fsp.readdir(restoreRoot)).sort(), ['history'])
+  // Plan item 06: a history-only restore publishes the runtime index as config/config.json,
+  // otherwise the restored files would have no history list at all.
+  assert.deepEqual((await fsp.readdir(restoreRoot)).sort(), ['config', 'history'].sort())
   assert.deepEqual(Object.keys(result.modules), ['history'])
-  assert.equal(await exists(path.join(restoreRoot, 'config')), false)
+  assert.equal(result.historyIndexRestored, true)
+  const historyOnlyConfig = await readJson(path.join(restoreRoot, 'config', 'config.json'))
+  assert.equal(historyOnlyConfig.captureHistory.length, 1)
+  assert.equal(historyOnlyConfig.captureHistory[0].filePath, path.join(restoreRoot, 'history', 'a.png'))
 })
 
 test('an external screenshot library is copied by explicit selection and remapped on restore', async (t) => {
@@ -683,7 +692,7 @@ test('an external screenshot library is copied by explicit selection and remappe
   const manifest = await readManifest(created.directory)
   assert.equal(manifest.modules.history.sourcePath, fixture.externalLibrary)
   assert.ok(manifest.modules.history.externalRefs.some((ref) => ref.path === fixture.externalLibrary && ref.kind === 'module-source'))
-  assert.deepEqual(manifest.modules.history.files.map((file) => file.path), ['external.png'])
+  assert.deepEqual(manifest.modules.history.files.map((file) => file.path), ['external.png', 'index.json'])
 
   const restoreRoot = path.join(fixture.parent, 'restored-external')
   const restored = await backup.restoreBackup({ backupDirectory: created.directory, targetRoot: restoreRoot })
@@ -747,4 +756,374 @@ test('restoring the same package onto its own target is refused', async (t) => {
   assert.equal(second.ok, false)
   assert.equal(second.code, 'target-not-empty')
   assert.equal(await fsp.readFile(path.join(first, 'history', 'a.png'), 'utf8'), 'png-a')
+})
+
+// ---------------------------------------------------------------------------
+// D04 (06): the history module owns its index; settings carry settings only.
+// ---------------------------------------------------------------------------
+
+// Rewrites one module file inside a package and fixes the manifest up so the package stays
+// valid (size, sha256, checksum). Used to build the format 1 shapes a real old build wrote.
+async function rewritePackagedFile(directory, moduleId, relativePath, content) {
+  const manifestPath = path.join(directory, backup.MANIFEST_FILE)
+  const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'))
+  const entry = manifest.modules[moduleId]
+  const moduleRoot = path.join(directory, ...entry.path.split('/'))
+  const target = path.join(moduleRoot, ...relativePath.split('/'))
+  await fsp.mkdir(path.dirname(target), { recursive: true })
+  await fsp.writeFile(target, content)
+  const stat = await fsp.stat(target)
+  const digest = await sha256(target)
+  const existing = entry.files.find((item) => item.path === relativePath)
+  if (existing) {
+    existing.size = stat.size
+    existing.sha256 = digest
+  } else {
+    entry.files.push({ path: relativePath, size: stat.size, sha256: digest })
+    entry.files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+  }
+  entry.fileCount = entry.files.length
+  entry.bytes = entry.files.reduce((sum, item) => sum + item.size, 0)
+  manifest.totalFiles = Object.values(manifest.modules).reduce((sum, item) => sum + item.fileCount, 0)
+  manifest.totalBytes = Object.values(manifest.modules).reduce((sum, item) => sum + item.bytes, 0)
+  manifest.checksum = backupManifestChecksum(manifest)
+  await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2))
+  return { manifest, target }
+}
+
+// The same algorithm the service uses: sha256 over the manifest without its checksum.
+function backupManifestChecksum(manifest) {
+  const clone = JSON.parse(JSON.stringify(manifest))
+  delete clone.checksum
+  return crypto.createHash('sha256').update(JSON.stringify(clone)).digest('hex')
+}
+
+test('D04 (06): the history index is its own packaged module file and settings stays clean', async (t) => {
+  const fixture = await createFixture(t)
+  const created = await createForFixture(fixture)
+  const manifest = await readManifest(created.directory)
+  assert.equal(manifest.formatVersion, 2)
+  const history = manifest.modules.history
+  assert.equal(history.index, true)
+  assert.equal(history.indexEntryCount, 1)
+  assert.ok(history.files.some((item) => item.path === 'index.json'), 'the history module carries its index')
+  // The settings module exports only the settings file, and that file has no history list.
+  const settingsFiles = manifest.modules.settings.files.map((item) => item.path)
+  assert.deepEqual(settingsFiles, ['config.json'])
+  const settingsConfig = JSON.parse(await fsp.readFile(path.join(created.directory, 'modules', 'settings', 'config.json'), 'utf8'))
+  assert.equal(Object.hasOwn(settingsConfig, 'captureHistory'), false, 'a settings package never carries the history list')
+  const indexSource = JSON.parse(await fsp.readFile(path.join(created.directory, 'modules', 'history', 'index.json'), 'utf8'))
+  assert.equal(indexSource.captureHistory.length, 1)
+  // Inspection reports which index the package has.
+  const inspection = await backup.inspectBackup(created.directory)
+  assert.equal(inspection.historyIndex.available, true)
+  assert.equal(inspection.historyIndex.source, 'history-index')
+})
+
+test('D04 (06): a format 1 package that kept the history list in settings is flagged sensitive', async (t) => {
+  const fixture = await createFixture(t)
+  const created = await createForFixture(fixture)
+  // Rebuild the old shape: settings config carries the history list, history has no index.
+  const settingsPath = path.join(created.directory, 'modules', 'settings', 'config.json')
+  const settingsConfig = JSON.parse(await fsp.readFile(settingsPath, 'utf8'))
+  settingsConfig.captureHistory = [{ id: 'legacy-entry', filePath: path.join(fixture.root, 'history', 'a.png'), thumbnailPath: path.join(fixture.root, 'history', 'a.png'), ocrText: 'hidden-ocr-marker' }]
+  await rewritePackagedFile(created.directory, 'settings', 'config.json', JSON.stringify(settingsConfig, null, 2))
+  const historyIndexPath = path.join(created.directory, 'modules', 'history', 'index.json')
+  await fsp.rm(historyIndexPath, { force: true })
+  const manifest = JSON.parse(await fsp.readFile(path.join(created.directory, backup.MANIFEST_FILE), 'utf8'))
+  const historyEntry = manifest.modules.history
+  historyEntry.files = historyEntry.files.filter((item) => item.path !== 'index.json')
+  historyEntry.fileCount = historyEntry.files.length
+  historyEntry.bytes = historyEntry.files.reduce((sum, item) => sum + item.size, 0)
+  historyEntry.index = false
+  delete historyEntry.indexEntryCount
+  manifest.modules.history = historyEntry
+  manifest.formatVersion = 1
+  manifest.totalFiles = Object.values(manifest.modules).reduce((sum, item) => sum + item.fileCount, 0)
+  manifest.totalBytes = Object.values(manifest.modules).reduce((sum, item) => sum + item.bytes, 0)
+  manifest.checksum = backupManifestChecksum(manifest)
+  await fsp.writeFile(path.join(created.directory, backup.MANIFEST_FILE), JSON.stringify(manifest, null, 2))
+  await fsp.writeFile(path.join(created.directory, backup.MARKER_FILE), JSON.stringify({ format: backup.BACKUP_FORMAT, formatVersion: 1, version: '1', createdAt: manifest.createdAt }, null, 2))
+
+  const inspection = await backup.inspectBackup(created.directory)
+  assert.equal(inspection.ok, true, inspection.code + ' ' + inspection.message)
+  assert.ok(inspection.sensitiveModules.includes('settings'), 'the settings module is sensitive when it carries history')
+  assert.ok(inspection.warnings.some((warning) => warning.code === 'settings-carries-history'))
+  assert.equal(inspection.historyIndex.source, 'settings-capture-history')
+
+  // Restoring ONLY the settings strips the list; the settings file is not a history carrier.
+  const restoreRoot = path.join(fixture.parent, 'restored-settings-only')
+  const restored = await backup.restoreBackup({ backupDirectory: created.directory, targetRoot: restoreRoot, modules: ['settings'] })
+  assert.equal(restored.ok, true, restored.code + ' ' + restored.message)
+  const configText = await fsp.readFile(path.join(restoreRoot, 'config', 'config.json'), 'utf8')
+  assert.equal(configText.includes('hidden-ocr-marker'), false, 'a settings-only restore never carries the OCR text')
+  assert.equal(Object.hasOwn(JSON.parse(configText), 'captureHistory'), false)
+})
+
+test('D04 (06): an old package still restores its history list from the settings module', async (t) => {
+  const fixture = await createFixture(t)
+  // Build a format 1 package by writing the old shapes before packaging: settings carries the
+  // list, the history folder has no index (the service always writes one, so it is removed).
+  const created = await createForFixture(fixture)
+  const historyIndexPath = path.join(created.directory, 'modules', 'history', 'index.json')
+  const indexPath = JSON.parse(await fsp.readFile(historyIndexPath, 'utf8'))
+  await fsp.rm(historyIndexPath, { force: true })
+  const manifest = JSON.parse(await fsp.readFile(path.join(created.directory, backup.MANIFEST_FILE), 'utf8'))
+  const historyEntry = manifest.modules.history
+  historyEntry.files = historyEntry.files.filter((item) => item.path !== 'index.json')
+  historyEntry.fileCount = historyEntry.files.length
+  historyEntry.bytes = historyEntry.files.reduce((sum, item) => sum + item.size, 0)
+  historyEntry.index = false
+  manifest.formatVersion = 1
+  manifest.totalFiles = Object.values(manifest.modules).reduce((sum, item) => sum + item.fileCount, 0)
+  manifest.totalBytes = Object.values(manifest.modules).reduce((sum, item) => sum + item.bytes, 0)
+  manifest.checksum = backupManifestChecksum(manifest)
+  await fsp.writeFile(path.join(created.directory, backup.MANIFEST_FILE), JSON.stringify(manifest, null, 2))
+  await fsp.writeFile(path.join(created.directory, backup.MARKER_FILE), JSON.stringify({ format: backup.BACKUP_FORMAT, formatVersion: 1, version: '1', createdAt: manifest.createdAt }, null, 2))
+  const settingsPath = path.join(created.directory, 'modules', 'settings', 'config.json')
+  const settingsConfig = JSON.parse(await fsp.readFile(settingsPath, 'utf8'))
+  settingsConfig.captureHistory = indexPath.captureHistory
+  await rewritePackagedFile(created.directory, 'settings', 'config.json', JSON.stringify(settingsConfig, null, 2))
+
+  const restoreRoot = path.join(fixture.parent, 'restored-old-combined')
+  const restored = await backup.restoreBackup({ backupDirectory: created.directory, targetRoot: restoreRoot })
+  assert.equal(restored.ok, true, restored.code + ' ' + restored.message)
+  assert.equal(restored.historyIndexRestored, true)
+  const config = JSON.parse(await fsp.readFile(path.join(restoreRoot, 'config', 'config.json'), 'utf8'))
+  assert.equal(config.captureHistory.length, 1)
+  assert.equal(config.captureHistory[0].filePath, path.join(restoreRoot, 'history', 'a.png'))
+})
+
+test('D04 (06): history files without any trusted index restore the files and report the gap', async (t) => {
+  const fixture = await createFixture(t)
+  const created = await createForFixture(fixture)
+  const historyIndexPath = path.join(created.directory, 'modules', 'history', 'index.json')
+  await fsp.rm(historyIndexPath, { force: true })
+  const manifest = JSON.parse(await fsp.readFile(path.join(created.directory, backup.MANIFEST_FILE), 'utf8'))
+  const historyEntry = manifest.modules.history
+  historyEntry.files = historyEntry.files.filter((item) => item.path !== 'index.json')
+  historyEntry.fileCount = historyEntry.files.length
+  historyEntry.bytes = historyEntry.files.reduce((sum, item) => sum + item.size, 0)
+  manifest.totalFiles = Object.values(manifest.modules).reduce((sum, item) => sum + item.fileCount, 0)
+  manifest.totalBytes = Object.values(manifest.modules).reduce((sum, item) => sum + item.bytes, 0)
+  manifest.checksum = backupManifestChecksum(manifest)
+  await fsp.writeFile(path.join(created.directory, backup.MANIFEST_FILE), JSON.stringify(manifest, null, 2))
+  // Strip the settings-carried list too, so no index exists anywhere.
+  const settingsPath = path.join(created.directory, 'modules', 'settings', 'config.json')
+  const settingsConfig = JSON.parse(await fsp.readFile(settingsPath, 'utf8'))
+  delete settingsConfig.captureHistory
+  await rewritePackagedFile(created.directory, 'settings', 'config.json', JSON.stringify(settingsConfig, null, 2))
+
+  const restoreRoot = path.join(fixture.parent, 'restored-history-no-index')
+  const restored = await backup.restoreBackup({ backupDirectory: created.directory, targetRoot: restoreRoot, modules: ['history'] })
+  assert.equal(restored.ok, true, restored.code + ' ' + restored.message)
+  assert.equal(restored.historyIndexRestored, false)
+  assert.ok(restored.warnings.some((warning) => warning.code === 'history-index-missing'))
+  // The material is there; the source package is untouched for retrieval.
+  assert.equal(await fsp.readFile(path.join(restoreRoot, 'history', 'a.png'), 'utf8'), 'png-a')
+  assert.equal((await backup.inspectBackup(created.directory)).ok, true)
+})
+
+// ---------------------------------------------------------------------------
+// D04 (07): re-editing a restored capture must not depend on the old data root.
+// ---------------------------------------------------------------------------
+
+test('D04 (07): document, base-image and revision references follow the restored history root', async (t) => {
+  const fixture = await createFixture(t)
+  const documentDirectory = path.join(fixture.root, 'history', 'documents', 'doc-1')
+  await writeFile(path.join(documentDirectory, 'base', 'base-1.png'), 'base-bytes')
+  await writeFile(path.join(documentDirectory, 'revisions', 'rev-1.result.png'), 'result-bytes')
+  await writeJson(path.join(documentDirectory, 'revisions', 'rev-1.doc.json'), { revisionId: 'rev-1', baseImage: { assetId: 'base-1' } })
+  await writeJson(path.join(documentDirectory, 'revisions', 'rev-2.doc.json'), { revisionId: 'rev-2', baseImage: { assetId: 'base-1', path: path.join(documentDirectory, 'base', 'base-1.png') } })
+  const configPath = path.join(fixture.root, 'config', 'config.json')
+  const config = await readJson(configPath)
+  config.captureHistory[0] = {
+    id: 'h1',
+    filePath: path.join(fixture.root, 'history', 'a.png'),
+    thumbnailPath: path.join(fixture.root, 'history', 'a.png'),
+    docPath: path.join(documentDirectory, 'revisions', 'rev-2.doc.json'),
+    baseImagePath: path.join(documentDirectory, 'base', 'base-1.png'),
+    resultImagePath: path.join(documentDirectory, 'revisions', 'rev-1.result.png'),
+    revisionId: 'rev-2',
+    pinned: true
+  }
+  await writeJson(configPath, config)
+
+  const created = await createForFixture(fixture)
+  const restoreRoot = path.join(fixture.parent, 'restored-documents')
+  const restored = await backup.restoreBackup({ backupDirectory: created.directory, targetRoot: restoreRoot })
+  assert.equal(restored.ok, true, restored.code + ' ' + restored.message)
+
+  const restoredConfig = await readJson(path.join(restoreRoot, 'config', 'config.json'))
+  const entry = restoredConfig.captureHistory[0]
+  const historyTarget = path.join(restoreRoot, 'history')
+  assert.equal(entry.filePath, path.join(historyTarget, 'a.png'))
+  assert.equal(entry.thumbnailPath, path.join(historyTarget, 'a.png'))
+  assert.equal(entry.docPath, path.join(historyTarget, 'documents', 'doc-1', 'revisions', 'rev-2.doc.json'))
+  assert.equal(entry.baseImagePath, path.join(historyTarget, 'documents', 'doc-1', 'base', 'base-1.png'))
+  assert.equal(entry.resultImagePath, path.join(historyTarget, 'documents', 'doc-1', 'revisions', 'rev-1.result.png'))
+  // The files the references now point at were restored with the module.
+  assert.equal(await exists(entry.docPath), true)
+  assert.equal(await exists(entry.baseImagePath), true)
+  assert.equal(await exists(entry.resultImagePath), true)
+  assert.equal(entry.revisionId, 'rev-2', 'the document version link is preserved')
+  // The source root is untouched.
+  assert.equal(await fsp.readFile(path.join(fixture.root, 'history', 'a.png'), 'utf8'), 'png-a')
+})
+
+test('D04 (07): a reference outside the managed history roots stays explicit and is not rewritten', async (t) => {
+  const fixture = await createFixture(t)
+  const configPath = path.join(fixture.root, 'config', 'config.json')
+  const config = await readJson(configPath)
+  config.captureHistory[0] = {
+    id: 'h1',
+    filePath: path.join(fixture.root, 'history', 'a.png'),
+    thumbnailPath: path.join(fixture.root, 'history', 'a.png'),
+    docPath: path.join(fixture.externalShots, 'elsewhere.docx.json'),
+    baseImagePath: path.join(fixture.externalShots, 'source.png'),
+    pinned: true
+  }
+  await writeJson(configPath, config)
+  const created = await createForFixture(fixture)
+  const restoreRoot = path.join(fixture.parent, 'restored-external-doc')
+  const restored = await backup.restoreBackup({ backupDirectory: created.directory, targetRoot: restoreRoot })
+  assert.equal(restored.ok, true)
+  const entry = (await readJson(path.join(restoreRoot, 'config', 'config.json'))).captureHistory[0]
+  // A truly external reference is kept as-is (it is reported in the manifest's externalRefs
+  // list) instead of being pointed at a file the package does not contain.
+  assert.equal(entry.docPath, path.join(fixture.externalShots, 'elsewhere.docx.json'))
+  assert.equal(entry.baseImagePath, path.join(fixture.externalShots, 'source.png'))
+  assert.equal(entry.filePath, path.join(restoreRoot, 'history', 'a.png'))
+})
+
+test('D04 (07): a path that would leave the restored history root is refused', async (t) => {
+  const fixture = await createFixture(t)
+  const configPath = path.join(fixture.root, 'config', 'config.json')
+  const config = await readJson(configPath)
+  // A crafted entry whose document path escapes the history directory when resolved.
+  config.captureHistory[0] = {
+    id: 'h1',
+    filePath: path.join(fixture.root, 'history', 'a.png'),
+    thumbnailPath: path.join(fixture.root, 'history', 'a.png'),
+    docPath: path.join(fixture.root, 'history', '..', '..', 'outside.doc.json'),
+    pinned: true
+  }
+  await writeJson(configPath, config)
+  const created = await createForFixture(fixture)
+  const restoreRoot = path.join(fixture.parent, 'restored-escape')
+  const restored = await backup.restoreBackup({ backupDirectory: created.directory, targetRoot: restoreRoot })
+  assert.equal(restored.ok, true)
+  const entry = (await readJson(path.join(restoreRoot, 'config', 'config.json'))).captureHistory[0]
+  const inside = (root, child) => {
+    const relative = path.relative(path.resolve(root), path.resolve(child))
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+  }
+  // A reference that only reaches the old root by climbing out of it is NOT a managed file
+  // of this package: it stays the explicit external pointer it was, so the restore can never
+  // claim a file outside the new root by rewriting it.
+  assert.equal(inside(restoreRoot, entry.docPath), false)
+  assert.equal(path.resolve(entry.docPath), path.resolve(fixture.root, '..', '..', 'outside.doc.json').startsWith(path.resolve(fixture.root, '..')) ? path.resolve(entry.docPath) : path.resolve(entry.docPath))
+  assert.equal(path.isAbsolute(entry.docPath), true, 'an external reference stays absolute')
+  // The managed capture file still moved.
+  assert.equal(inside(restoreRoot, entry.filePath), true)
+  assert.equal(entry.filePath, path.join(restoreRoot, 'history', 'a.png'))
+})
+
+// ---------------------------------------------------------------------------
+// D04 (19): production migration hooks and the supported version window.
+// ---------------------------------------------------------------------------
+
+test('D04 (19): the production hooks validate a staged package and report what failed', async (t) => {
+  const migrations = require('../main/services/backup-migrations')
+  const stage = await temporaryRoot(t)
+  await fsp.mkdir(path.join(stage, 'config'), { recursive: true })
+  await fsp.writeFile(path.join(stage, 'config', 'config.json'), JSON.stringify({ settings: {} }))
+  assert.deepEqual(migrations.validateStagedModules(stage), [])
+  assert.equal(migrations.migrateBackupStep({ directory: stage, from: '5.0.0', to: '5.0.1' }).ok, true)
+  assert.equal(migrations.verifyRestoredBackup({ directory: stage, phase: 'copied' }).ok, true)
+
+  await fsp.writeFile(path.join(stage, 'config', 'config.json'), '{ not json')
+  const problems = migrations.validateStagedModules(stage)
+  assert.equal(problems.length, 1)
+  assert.equal(migrations.migrateBackupStep({ directory: stage, from: '5.0.0', to: '5.0.1' }).ok, false)
+  assert.equal(migrations.verifyRestoredBackup({ directory: stage }).ok, false)
+  // A recording manifest that does not parse is caught too.
+  await fsp.mkdir(path.join(stage, 'recordings', 'p1'), { recursive: true })
+  await fsp.writeFile(path.join(stage, 'config', 'config.json'), '{}')
+  await fsp.writeFile(path.join(stage, 'recordings', 'p1', 'project.json'), 'broken')
+  assert.equal(migrations.migrateBackupStep({ directory: stage, from: '5.0.0', to: '5.0.1' }).ok, false)
+})
+
+test('D04 (19): the supported window is the current minor line and the previous one', () => {
+  const migrations = require('../main/services/backup-migrations')
+  assert.equal(migrations.minimumSupportedVersion('5.0.1'), '5.0.0')
+  assert.equal(migrations.minimumSupportedVersion('5.3.0'), '5.2.0')
+  assert.equal(migrations.minimumSupportedVersion('6.0.0'), '6.0.0')
+  assert.equal(migrations.supportedRange('5.0.1'), '5.0.0 .. 5.0.1')
+  assert.equal(migrations.compareVersions('5.0.0', '5.0.1'), -1)
+  assert.equal(migrations.compareVersions('5.0.1', '5.0.1'), 0)
+  assert.equal(migrations.compareVersions('4.9.9', '5.0.0'), -1)
+  // The production map resolves an explicit entry and any other step through resolve().
+  const hooks = migrations.createBackupMigrationHooks()
+  assert.equal(typeof hooks['5.0.0->5.0.1'], 'function')
+  assert.equal(typeof hooks.resolve({ from: '4.4.4', to: '5.0.0' }), 'function')
+})
+
+test('D04 (19): a package older than the supported window is refused with the range and keeps the original', async (t) => {
+  const fixture = await createFixture(t)
+  const created = await createForFixture(fixture, { version: '4.9.0' })
+  const restoreRoot = path.join(fixture.parent, 'restored-too-old')
+  const result = await backup.restoreBackup({
+    backupDirectory: created.directory,
+    targetRoot: restoreRoot,
+    minSupportedVersion: '5.0.0',
+    supportedVersionRange: '5.0.0 .. 5.0.1'
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'unsupported-version')
+  assert.equal(result.supportedVersionRange, '5.0.0 .. 5.0.1')
+  assert.equal(result.version, '4.9.0')
+  assert.equal(await exists(restoreRoot), false, 'nothing is created for an unsupported version')
+  assert.equal(await exists(created.directory), true, 'the source package is kept for retrieval')
+})
+
+test('D04 (19): a package from the previous supported version migrates and verifies', async (t) => {
+  const fixture = await createFixture(t)
+  const created = await createForFixture(fixture, { version: '5.0.0' })
+  const restoreRoot = path.join(fixture.parent, 'restored-previous-version')
+  const steps = []
+  const result = await backup.restoreBackup({
+    backupDirectory: created.directory,
+    targetRoot: restoreRoot,
+    supportedVersion: '5.0.1',
+    minSupportedVersion: '5.0.0',
+    migrate: async (step) => {
+      steps.push(step)
+      // The production hook shape: validate the staged tree and answer ok.
+      return require('../main/services/backup-migrations').migrateBackupStep(step)
+    },
+    verify: require('../main/services/backup-migrations').verifyRestoredBackup
+  })
+  assert.equal(result.ok, true, result.code + ' ' + result.message)
+  assert.deepEqual(steps.map((step) => step.from + '->' + step.to), ['5.0.0->5.0.1'])
+  assert.equal(result.version, '5.0.1')
+  assert.equal(result.sourceVersion, '5.0.0')
+  assert.equal(await exists(path.join(restoreRoot, 'history', 'a.png')), true)
+})
+
+test('D04 (19): a failing migration verification rolls the new root back', async (t) => {
+  const fixture = await createFixture(t)
+  const created = await createForFixture(fixture, { version: '5.0.0' })
+  const restoreRoot = path.join(fixture.parent, 'restored-verify-fails')
+  const result = await backup.restoreBackup({
+    backupDirectory: created.directory,
+    targetRoot: restoreRoot,
+    supportedVersion: '5.0.1',
+    migrate: async (step) => ({ ok: true, from: step.from, to: step.to }),
+    verify: async () => ({ ok: false, message: 'module read failed' })
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'verification-failed')
+  assert.equal(result.rolledBack, true)
+  assert.deepEqual((await fsp.readdir(restoreRoot).catch(() => [])).filter((name) => name.startsWith('.highlighter-restore-')), [])
 })

@@ -32,7 +32,7 @@
 | D05 | P1 | 已实现（托盘子菜单待接） | test/window-resilience.test.js, test/window-resilience-tray.test.js, test/pin-crash-recovery.test.js | 打包版 10 次启动单实例、Explorer 重启、睡眠唤醒、便携登录项 |
 | D06 | P1 | 已实现 | test/review-evidence.test.js | 候选包与 CI 运行/真机记录的可追溯性 |
 | B07 | P2 | 已实现（明细成本仍按最新价） | test/usage-export.test.js, test/usage-export-import.test.js, test/usage-export-ui.test.js | 真实日志轮转样本与跨版本价格复算 |
-| D04 | P1 | 已实现（IPC 已接线，逐版本迁移钩子待注册） | test/data-root-backup.test.js, test/data-root-backup-ui.test.js | 普通安装与便携从上一受支持版本实机恢复；坏包/盘满/中途终止 |
+| D04 | P1 | 已实现（06/07/08/19：历史索引、编辑引用、按模块停写、生产迁移钩子） | test/data-root-backup.test.js, test/data-root-backup-ui.test.js, test/history-service.test.js | 普通安装与便携从上一受支持版本实机恢复；坏包/盘满/中途终止 |
 | C06 | P2 | 工具已实现 | test/release-size.test.js | 两个相邻 NSIS 候选 + blockmap 的差分传输与安装耗时 |
 | C02 | P1 | 工具已实现 | test/performance-budget.test.js | 固定机冷启 ≥20 次 + 5 轮 30 分钟待机；绝对数字只能在真机采集 |
 

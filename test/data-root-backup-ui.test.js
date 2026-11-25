@@ -45,9 +45,10 @@ async function temporaryDirectory(t) {
   return directory
 }
 
-function fakeDomain(t, { backupServiceImpl, inProgress = false, directory = '' } = {}) {
+function fakeDomain(t, { backupServiceImpl, inProgress = false, directory = '', tasks = [] } = {}) {
   const calls = []
   const state = { value: inProgress }
+  const activeTasks = tasks
   const base = directory || path.join(ROOT, '.tmp-d04-never-used')
   const app = {
     getVersion: () => '5.0.1',
@@ -82,8 +83,14 @@ function fakeDomain(t, { backupServiceImpl, inProgress = false, directory = '' }
     ocrServiceRef: { get: () => null, set: () => {} },
     recordingServiceRef: { set: () => {} },
     getOcrService: () => ({ ensureStarted: async () => {} }),
-    recordDomain: { shutdown: async () => calls.push('record-shutdown') },
-    longCaptureDomain: { shutdown: async () => calls.push('long-shutdown') },
+    recordDomain: {
+      shutdown: async () => calls.push('record-shutdown'),
+      isTaskActive: () => activeTasks.includes('recording')
+    },
+    longCaptureDomain: {
+      shutdown: async () => calls.push('long-shutdown'),
+      isTaskActive: () => activeTasks.includes('long-capture')
+    },
     managedRecordingWriters: {},
     removeProvisionalRoot: () => true,
     markSessionClean: () => calls.push('session-clean'),
@@ -97,6 +104,19 @@ function fakeDomain(t, { backupServiceImpl, inProgress = false, directory = '' }
       resume: async () => calls.push('clipboard-resume')
     }),
     backupService: backupServiceImpl || {
+      // D04 (08): the domain validates first; the fake mirrors the service's contract.
+      validateBackupRequest: async (options) => {
+        calls.push('validate')
+        const modules = Array.isArray(options.modules) ? options.modules : ['history', 'clipboard', 'recordings', 'settings']
+        return {
+          ok: true,
+          code: 'ok',
+          modules,
+          layout: 'managed',
+          requiresQuiesce: modules.filter((id) => ['usage', 'clipboard', 'conversations'].includes(id)),
+          requiresExclusive: modules.includes('recordings')
+        }
+      },
       createBackup: async (options) => {
         calls.push('service-create')
         calls.push(`writers:${options.writersQuiesced}`)
@@ -252,20 +272,26 @@ test('the backup service never opens a database or a media process itself', () =
   assert.doesNotMatch(serviceSource, /ffprobe|ffmpeg|spawn\(/)
   assert.match(serviceSource, /MANIFEST_FILE = 'modules\.json'/)
   assert.match(serviceSource, /MARKER_FILE = '\.highlighter-backup\.json'/)
-  assert.equal(backupService.BACKUP_FORMAT_VERSION, 1)
+  // Plan item 06: format 2 puts the history index inside the history module.
+  assert.equal(backupService.BACKUP_FORMAT_VERSION, 2)
+  assert.equal(backupService.MIN_SUPPORTED_FORMAT_VERSION, 1, 'format 1 packages stay readable')
+  assert.match(serviceSource, /HISTORY_INDEX_FILE = 'index\.json'/)
 })
 
-test('the data-root domain exposes backup controls and reuses the writer gate', () => {
+test('the data-root domain exposes backup controls and validates before touching writers', () => {
   assert.match(domainSource, /backupCreate: createDataRootBackup/)
   assert.match(domainSource, /backupInspect: inspectDataRootBackup/)
   assert.match(domainSource, /backupDelete: removeDataRootBackup/)
   assert.match(domainSource, /backupRestore: restoreDataRootBackup/)
   const create = section(domainSource, 'async function createDataRootBackup', 'function inspectDataRootBackup')
   assert.match(create, /assertBackupAllowed\(\)/)
-  assert.match(create, /await stopManagedDataWriters\(\)/)
-  assert.match(create, /writersQuiesced: writersStopped/)
+  // D04 (08): the request is validated first, and only the selected modules' writers stop.
+  assert.match(create, /await backupService\.validateBackupRequest\(/)
+  assert.ok(create.indexOf('validateBackupRequest') < create.indexOf('quiesceBackupWriters'), 'validation precedes any writer stop')
+  assert.doesNotMatch(create, /await stopManagedDataWriters\(\)/, 'a settings-only backup never stops every writer')
   const restore = section(domainSource, 'async function restoreDataRootBackup', '    changeDataRoot,')
   assert.match(restore, /assertBackupAllowed\(\)/)
+  assert.match(restore, /exclusiveActivityBlocked\(\)/)
   assert.match(restore, /await stopManagedDataWriters\(\)/)
   assert.match(restore, /if \(!result\.ok\) return result/)
   assert.match(restore, /await writeLocator\(dataRootContext\.locatorPath, result\.dataRoot\)/)
@@ -274,27 +300,62 @@ test('the data-root domain exposes backup controls and reuses the writer gate', 
   assert.match(restore, /relaunchApplication\(\{ app, dataRootContext \}\)/)
 })
 
-test('creating a backup stops writers before the service and restores them afterwards', async (t) => {
+test('D04 (08): a settings-only backup stops nothing, so a live recording keeps running', async (t) => {
+  const directory = await temporaryDirectory(t)
+  const { domain, calls, state } = fakeDomain(t, { directory, tasks: ['recording'] })
+  const result = await domain.createController().backupCreate({ modules: ['settings'], targetDirectory: 'D:\\backups' })
+  assert.equal(result.ok, true)
+  assert.equal(state.value, false, 'the migration gate is never taken')
+  assert.deepEqual(calls.filter((entry) => entry !== `root:${path.join(directory, 'active-root')}`), [
+    'validate',
+    'service-create',
+    'writers:false'
+  ])
+  assert.ok(!calls.includes('record-shutdown'), 'the recorder is not shut down')
+  assert.ok(!calls.includes('long-shutdown'))
+  assert.ok(!calls.includes('clipboard-quiesce'))
+})
+
+test('D04 (08): only the selected SQLite modules have their writers paused', async (t) => {
   const directory = await temporaryDirectory(t)
   const { domain, calls, state } = fakeDomain(t, { directory })
-  const controller = domain.createController()
-  const result = await controller.backupCreate({ modules: ['history'], targetDirectory: 'D:\\backups' })
+  const result = await domain.createController().backupCreate({ modules: ['usage', 'clipboard'], targetDirectory: 'D:\\backups' })
   assert.equal(result.ok, true)
   assert.equal(state.value, false)
-  const expected = [
-    'gate:true',
-    'clipboard-quiesce',
-    'selection-quiesce',
-    'record-shutdown',
-    'long-shutdown',
-    'service-create',
-    'writers:true',
-    `root:${path.join(directory, 'active-root')}`,
-    'gate:false',
-    'selection-resume',
-    'clipboard-resume'
-  ]
-  assert.deepEqual(calls, expected)
+  assert.ok(calls.includes('clipboard-quiesce'))
+  assert.ok(calls.includes('clipboard-resume'))
+  assert.ok(!calls.includes('selection-quiesce'), 'conversations were not selected')
+  assert.ok(!calls.includes('record-shutdown'))
+  assert.ok(!calls.includes('gate:true'), 'no exclusive module was selected')
+})
+
+test('D04 (08): a recordings backup refuses to freeze a live recording and offers a retry', async (t) => {
+  const directory = await temporaryDirectory(t)
+  const { domain, calls, state } = fakeDomain(t, { directory, tasks: ['recording'] })
+  const result = await domain.createController().backupCreate({ modules: ['recordings'], targetDirectory: 'D:\\backups' })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'activity-in-progress')
+  assert.equal(result.retryable, true)
+  assert.deepEqual(result.tasks, ['recording'])
+  assert.equal(state.value, false, 'the gate is not left closed')
+  assert.deepEqual(calls, ['validate'], 'nothing was stopped and no package was written')
+})
+
+test('D04 (08): a refused validation never touches a writer', async (t) => {
+  const directory = await temporaryDirectory(t)
+  const { domain, calls, state } = fakeDomain(t, {
+    directory,
+    tasks: ['recording'],
+    backupServiceImpl: {
+      validateBackupRequest: async () => ({ ok: false, code: 'insufficient-space', requiredBytes: 10, freeBytes: 1 }),
+      createBackup: async () => { calls.push('service-create'); return { ok: true } }
+    }
+  })
+  const result = await domain.createController().backupCreate({ modules: ['recordings'], targetDirectory: 'D:\\backups' })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'insufficient-space')
+  assert.equal(state.value, false)
+  assert.equal(calls.includes('service-create'), false)
 })
 
 test('a backup cannot start while a migration or another backup is pending', async (t) => {
@@ -387,4 +448,89 @@ test('inspect and delete do not stop writers or take the migration gate', async 
   const removed = await controller.backupDelete('D:\\backups\\one')
   assert.equal(removed.ok, true)
   assert.deepEqual(calls, ['inspect:D:\\backups\\one'])
+})
+
+// ---------------------------------------------------------------------------
+// D04 (06/19): the preview marks sensitive modules and the domain registers the
+// production migration hooks with a supported-version window.
+// ---------------------------------------------------------------------------
+
+test('D04 (06): the preview marks per-module sensitivity and both old-package warnings', () => {
+  const preview = section(settingsSource, 'function backupPreviewMarkup', 'function bindSystemBackupControls')
+  assert.match(preview, /sensitiveModules/)
+  assert.match(preview, /backup-module-sensitive/)
+  assert.match(preview, /settings-carries-history/)
+  assert.match(preview, /backup-history-index-missing/)
+  assert.match(preview, /result\.historyIndex && result\.historyIndex\.available === false/)
+  // The keys exist in all three tables.
+  globalThis.__LOCALES = {}
+  for (const name of fs.readdirSync(path.join(ROOT, 'shared', 'locales')).filter((entry) => entry.endsWith('.js'))) {
+    const localePath = path.join(ROOT, 'shared', 'locales', name)
+    delete require.cache[require.resolve(localePath)]
+    require(localePath)
+  }
+  for (const key of [
+    'config.settings-system.backup-module-sensitive',
+    'config.settings-system.backup-settings-carries-history',
+    'config.settings-system.backup-history-index-missing'
+  ]) {
+    for (const language of ['zh-CN', 'en-US', 'zh-TW']) {
+      assert.equal(typeof globalThis.__LOCALES[language][key], 'string', language + ' is missing ' + key)
+    }
+  }
+})
+
+test('D04 (19): restore registers the production hooks and the supported version window', async (t) => {
+  const directory = await temporaryDirectory(t)
+  const targetRoot = path.join(directory, 'restored-root')
+  let received = null
+  const { domain } = fakeDomain(t, {
+    directory,
+    backupServiceImpl: {
+      createBackup: async () => ({ ok: true }),
+      inspectBackup: async () => ({ ok: true }),
+      deleteBackup: async () => ({ ok: true }),
+      restoreBackup: async (options) => {
+        received = options
+        // The production hook resolves any step and validates the staging root.
+        const hook = options.migrate
+        const hookResult = await hook({ from: '5.0.0', to: '5.0.1', directory })
+        assert.equal(hookResult.ok, true)
+        const verified = await options.verify({ directory, phase: 'migrated' })
+        assert.equal(verified.ok, true)
+        return { ok: true, code: 'ok', dataRoot: targetRoot, locator: { version: 1, dataRoot: targetRoot } }
+      }
+    }
+  })
+  const result = await domain.createController().backupRestore({ backupDirectory: path.join(directory, 'backup'), targetRoot })
+  assert.equal(result.ok, true, result.code + ' ' + result.message)
+  assert.equal(received.minSupportedVersion, '5.0.0', 'the window is derived from the running version')
+  assert.equal(received.supportedVersionRange, '5.0.0 .. 5.0.1')
+  assert.equal(typeof received.verify, 'function')
+  assert.equal(typeof received.migrate, 'function')
+})
+
+test('D04 (19): an unsupported-version restore result is passed through with its range', async (t) => {
+  const directory = await temporaryDirectory(t)
+  const { domain } = fakeDomain(t, {
+    directory,
+    backupServiceImpl: {
+      createBackup: async () => ({ ok: true }),
+      inspectBackup: async () => ({ ok: true }),
+      deleteBackup: async () => ({ ok: true }),
+      restoreBackup: async () => ({
+        ok: false,
+        code: 'unsupported-version',
+        version: '4.9.0',
+        minSupportedVersion: '5.0.0',
+        supportedVersionRange: '5.0.0 .. 5.0.1',
+        originalKept: true
+      })
+    }
+  })
+  const result = await domain.createController().backupRestore({ backupDirectory: path.join(directory, 'backup'), targetRoot: path.join(directory, 'target') })
+  assert.equal(result.ok, false)
+  assert.equal(result.code, 'unsupported-version')
+  assert.equal(result.supportedVersionRange, '5.0.0 .. 5.0.1')
+  assert.equal(result.originalKept, true)
 })

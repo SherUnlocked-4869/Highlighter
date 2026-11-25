@@ -10,6 +10,7 @@ const { quiesceAndMigrate } = require('../../services/managed-writer-coordinator
 const { getActiveUsageFeature } = require('../../services/usage-runtime')
 const { relaunchApplication } = require('../../services/relaunch-application')
 const dataRootBackupService = require('../../services/data-root-backup')
+const backupMigrations = require('../../services/backup-migrations')
 
 // The data-root surface: first-run directory selection, recovery from an
 // unusable configured root, and the live "change directory" migration with its
@@ -241,31 +242,131 @@ function createDataRootDomain(deps) {
     }
   }
 
+  // Restore and migration carve a whole new root: they need every writer stopped and no
+  // active capture. The user is told which task is in the way and that retrying works.
+  function exclusiveActivityBlocked() {
+    const tasks = activeWorkTasks()
+    if (!tasks.length) return null
+    return {
+      ok: false,
+      code: 'activity-in-progress',
+      retryable: true,
+      tasks,
+      message: 'stop the active recording, export or long capture before doing this'
+    }
+  }
+
   function shouldRestartOcr() {
     return !!ocrServiceRef.get() && getSettings().plugins.ocr && getSettings().ocr.hotStart
   }
 
+  // D04 (plan item 08): what a backup has to stop depends on the modules it carries.
+  // A settings-only backup reads one atomically written JSON file, so it must NOT stop the
+  // recorder, the long capture or an export - the old code set the global "data writers are
+  // stopped" flag and shut every domain down before it even looked at the selection.
+  const EXCLUSIVE_BACKUP_MODULES = new Set(['recordings'])
+
+  function activeWorkTasks() {
+    const tasks = []
+    try {
+      if (typeof recordDomain?.isTaskActive === 'function' && recordDomain.isTaskActive()) tasks.push('recording')
+    } catch {}
+    try {
+      if (typeof longCaptureDomain?.isTaskActive === 'function' && longCaptureDomain.isTaskActive()) tasks.push('long-capture')
+    } catch {}
+    try {
+      if (typeof longCaptureDomain?.isExportActive === 'function' && longCaptureDomain.isExportActive()) tasks.push('export')
+    } catch {}
+    return tasks
+  }
+
+  // The SQLite-backed modules need their own writer paused for a consistent copy; nothing
+  // else in the app has to stop for them.
+  async function quiesceBackupWriters(modules) {
+    const resumed = []
+    if (modules.includes('usage')) {
+      const feature = getActiveUsageFeature()
+      if (feature?.quiesce) {
+        await feature.quiesce()
+        resumed.push(() => feature.resume?.())
+      }
+    }
+    if (modules.includes('clipboard')) {
+      const clipboardDomain = deps.getClipboardDomain?.()
+      if (clipboardDomain?.quiesce) {
+        await clipboardDomain.quiesce()
+        resumed.push(() => clipboardDomain.resume?.())
+      }
+    }
+    if (modules.includes('conversations')) {
+      await deps.selectionDomain?.quiesceConversations()
+      resumed.push(() => deps.selectionDomain?.resumeConversations())
+    }
+    return {
+      async resume() {
+        for (const resume of resumed.reverse()) {
+          try {
+            await resume()
+          } catch (error) {
+            log('Backup writer resume failed:', error?.message || error)
+          }
+        }
+      }
+    }
+  }
+
   async function createDataRootBackup(options = {}) {
     assertBackupAllowed()
-    const restartOcr = shouldRestartOcr()
-    let writersStopped = false
-    setMigrationInProgress(true)
+    const dataRoot = dataRootContext.paths?.root || dataRootContext.legacyUserData
+    const version = options.version || app.getVersion?.()
+    // 1) Validate the request, the module ids, the target and the free space BEFORE any
+    //    writer is touched. A refused backup must leave a live recording alone.
+    const request = await backupService.validateBackupRequest({
+      dataRoot,
+      modules: options.modules,
+      targetDirectory: options.targetDirectory,
+      version,
+      portable: dataRootContext.portable === true
+    })
+    if (!request.ok) return request
+    const modules = request.modules
+    // 2) An exclusive module copies files a live capture is still appending to. Refuse with
+    //    the active task and a retryable reason instead of freezing it mid-write.
+    const needsExclusive = modules.some((id) => EXCLUSIVE_BACKUP_MODULES.has(id))
+    const tasks = activeWorkTasks()
+    if (needsExclusive && tasks.length) {
+      return {
+        ok: false,
+        code: 'activity-in-progress',
+        retryable: true,
+        tasks,
+        message: 'stop the active recording or long capture first, then back up again'
+      }
+    }
+    // 3) Claim the writers BEFORE the idle check replay: a task that starts between the two
+    //    sees the same flag and refuses, so the snapshot cannot race a brand-new writer.
+    if (needsExclusive) setMigrationInProgress(true)
+    const restartOcr = shouldRestartOcr() && modules.some((id) => id === 'conversations')
+    let writers = { resume: async () => {} }
     try {
-      await stopManagedDataWriters()
-      writersStopped = true
+      writers = await quiesceBackupWriters(modules)
       return await backupService.createBackup({
-        dataRoot: dataRootContext.paths?.root || dataRootContext.legacyUserData,
-        modules: options.modules,
+        dataRoot,
+        modules,
         targetDirectory: options.targetDirectory,
-        version: options.version || app.getVersion?.(),
+        version,
         portable: dataRootContext.portable === true,
-        writersQuiesced: writersStopped
+        writersQuiesced: modules.some((id) => id === 'usage' || id === 'clipboard')
       })
     } catch (error) {
       return { ok: false, code: 'backup-failed', message: error.message || String(error) }
     } finally {
-      setMigrationInProgress(false)
-      if (writersStopped) restoreManagedDataWriters(restartOcr)
+      // Release in the reverse order of acquisition (the coordinator's rule).
+      await writers.resume()
+      if (needsExclusive) setMigrationInProgress(false)
+      if (restartOcr && ocrServiceRef.get() === null) {
+        getOcrService().ensureStarted().catch((error) => log('OCR restart failed:', error.message))
+      }
     }
   }
 
@@ -287,6 +388,8 @@ function createDataRootDomain(deps) {
       // a failed attempt would have written inside the data it promises to keep.
       return { ok: false, code: 'invalid-target', message: 'the restore target must not overlap the active data root' }
     }
+    const blocked = exclusiveActivityBlocked()
+    if (blocked) return blocked
     const restartOcr = shouldRestartOcr()
     let writersStopped = false
     let restarting = false
@@ -298,9 +401,15 @@ function createDataRootDomain(deps) {
         backupDirectory: options.backupDirectory,
         targetRoot: options.targetRoot,
         supportedVersion: options.supportedVersion || app.getVersion?.(),
-        verify: options.verify,
+        // Plan item 19: production registration. The hooks run inside the staging root and
+        // validate what the package claims to contain; the version window is decided here,
+        // in the main process, not by the renderer.
+        minSupportedVersion: options.minSupportedVersion || backupMigrations.minimumSupportedVersion(app.getVersion?.() || ''),
+        supportedVersionRange: backupMigrations.supportedRange(app.getVersion?.() || ''),
+        verify: options.verify || backupMigrations.verifyRestoredBackup,
         migrate: async (step) => {
-          const hook = deps.backupMigrationHooks?.[`${step.from}->${step.to}`]
+          const hooks = deps.backupMigrationHooks || backupMigrations.createBackupMigrationHooks()
+          const hook = hooks?.[`${step.from}->${step.to}`] || hooks?.resolve?.(step)
           if (typeof hook !== 'function') throw new Error(`no backup migration hook for ${step.from}->${step.to}`)
           return hook(step)
         }

@@ -42,7 +42,14 @@ const fsp = require('node:fs/promises')
 const path = require('node:path')
 
 const BACKUP_FORMAT = 'highlighter-data-backup'
-const BACKUP_FORMAT_VERSION = 1
+// D04 (plan item 06): format 2 gives the history module its OWN index file
+// (modules/history/index.json) and keeps captureHistory out of the settings module.
+// Format 1 packages stay readable - they are upgraded by reading the index out of their
+// settings config, which is the only place an old package could have kept it.
+const BACKUP_FORMAT_VERSION = 2
+const MIN_SUPPORTED_FORMAT_VERSION = 1
+const HISTORY_INDEX_FILE = 'index.json'
+const HISTORY_INDEX_SCHEMA_VERSION = 1
 const MARKER_FILE = '.highlighter-backup.json'
 const MANIFEST_FILE = 'modules.json'
 const BACKUP_DIRECTORY_PREFIX = 'highlighter-backup-'
@@ -396,10 +403,24 @@ function redactSecrets(value, trail = '', redacted = [], depth = 0) {
   return result
 }
 
+// The settings module carries SETTINGS only. The capture history (paths, OCR text and
+// document references) belongs to the history module's own index - leaving it here used to
+// make a "settings only" package sensitive without ever saying so.
 function sanitizeSettingsConfig(config) {
   const redacted = []
   const value = isPlainObject(config) ? redactSecrets(config, '', redacted) : {}
+  if (isPlainObject(value) && Object.hasOwn(value, 'captureHistory')) delete value.captureHistory
   return { value, redacted }
+}
+
+// The history module's index. It keeps the same shape the renderer/main process uses
+// (captureHistory), so a restore can publish it byte-for-byte into config.json.
+function buildHistoryIndex(config) {
+  const entries = Array.isArray(config?.captureHistory) ? config.captureHistory : []
+  return {
+    schemaVersion: HISTORY_INDEX_SCHEMA_VERSION,
+    captureHistory: entries.filter((entry) => isPlainObject(entry))
+  }
 }
 
 function historyConfigRefs(config) {
@@ -666,6 +687,25 @@ async function inspectBackup(directory, options = {}) {
     for (const ref of entry.externalRefs) externalRefs.push({ module: id, ...ref })
   }
   const warnings = manifestWarnings(manifest.warnings)
+  // Plan item 06: an old (format 1) package can still carry captureHistory inside its
+  // settings module. It is sensitive even though the module itself is not, and the
+  // inspection has to say so before the user restores it.
+  const settingsEntry = manifest.modules.settings
+  if (settingsEntry && !sensitive.includes('settings')) {
+    const settingsFile = (settingsEntry.files || []).find((file) => file.path === 'config.json')
+    if (settingsFile) {
+      try {
+        const rawConfig = JSON.parse(await fsp.readFile(path.join(resolved, ...settingsEntry.path.split('/'), 'config.json'), 'utf8'))
+        if (Array.isArray(rawConfig?.captureHistory) && rawConfig.captureHistory.length) {
+          sensitive.push('settings')
+          if (!warnings.some((warning) => warning.code === 'settings-carries-history')) {
+            warnings.push({ code: 'settings-carries-history' })
+          }
+        }
+      } catch {}
+    }
+  }
+  const historyIndex = inspectHistoryIndex(manifest, resolved)
   for (const ref of externalRefs.slice(0, 20)) {
     const available = await exists(ref.path).catch(() => false)
     if (!available) warnings.push({ code: 'external-ref-unavailable', module: ref.module, path: ref.path })
@@ -692,8 +732,27 @@ async function inspectBackup(directory, options = {}) {
     sensitiveModules: sensitive,
     containsSensitive: sensitive.length > 0,
     sqliteQuiesced: manifest.sqliteQuiesced === true,
+    // Item 06: does this package carry a usable history index (its own, or an old
+    // settings-carried one), and - when it does not - the files are still restorable but
+    // the metadata is not.
+    historyIndex,
     warnings
   }
+}
+
+function inspectHistoryIndex(manifest, resolved) {
+  const historyEntry = manifest.modules?.history
+  const indexFile = (historyEntry?.files || []).find((file) => file.path === HISTORY_INDEX_FILE)
+  if (historyEntry && indexFile) {
+    return { available: true, source: 'history-index', file: HISTORY_INDEX_FILE, entryCount: historyEntry.indexEntryCount ?? null }
+  }
+  // A format 1 package kept the list in the settings module.
+  const settingsEntry = manifest.modules?.settings
+  const settingsFile = (settingsEntry?.files || []).find((file) => file.path === 'config.json')
+  if (settingsEntry && settingsFile) {
+    return { available: true, source: 'settings-capture-history', file: 'config.json', entryCount: null }
+  }
+  return { available: false, source: '', file: '', entryCount: null }
 }
 
 async function createUniqueBackupDirectory(targetDirectory, version, now, mkdir) {
@@ -720,6 +779,90 @@ async function readSourceConfig(dataRoot, layout = 'managed') {
   if (!read || !read.exists) return { config: null, warning: null }
   if (read.error || !isPlainObject(read.value)) return { config: null, warning: { code: 'settings-unreadable' } }
   return { config: read.value, warning: null }
+}
+
+// D04 (plan item 08): the validation half of a backup, without touching a single writer or
+// file. The data-root domain calls this FIRST so a refused request (unknown module, target
+// inside the data root, insufficient space) can never stop a live recording.
+async function validateBackupRequest(options = {}) {
+  const {
+    dataRoot,
+    modules = DEFAULT_MODULES,
+    targetDirectory,
+    version = '',
+    portable = false,
+    layout = null,
+    freeBytes = defaultFreeBytes,
+    before = Date.now()
+  } = options
+
+  if (!isAbsolutePath(dataRoot)) return failure('invalid-request', 'dataRoot must be an absolute path')
+  if (!isAbsolutePath(targetDirectory)) return failure('invalid-request', 'targetDirectory must be an absolute path')
+  const root = path.resolve(dataRoot)
+  const target = path.resolve(targetDirectory)
+  if (isWithin(root, target)) return failure('invalid-target', 'the backup target cannot be inside the data root')
+  const normalized = normalizeModuleSpecs(modules)
+  if (normalized.error) return failure('invalid-request', normalized.error)
+
+  const sourceLayout = layout === 'legacy' || layout === 'managed' ? layout : await detectSourceLayout(root)
+  const configRead = await readSourceConfig(root, sourceLayout)
+  const warnings = configRead.warning ? [configRead.warning] : []
+  const plans = []
+  let estimatedBytes = 0
+  let hasSqlite = false
+  try {
+    for (const spec of normalized.specs) {
+      const definition = MODULE_DEFINITIONS[spec.id]
+      const sourceDirectory = spec.directory || moduleSourceDirectory(root, spec.id, sourceLayout)
+      if (definition.settings) {
+        const configPath = path.join(sourceDirectory, 'config.json')
+        const configStat = await lstatOrNull(configPath)
+        plans.push({ id: spec.id, definition, sourceDirectory, settingsSource: configStat && configStat.isFile() ? configPath : '' })
+        if (configStat && configStat.isFile()) estimatedBytes += configStat.size
+        continue
+      }
+      const plan = await listModuleFilePlan(sourceDirectory, definition)
+      plans.push({ id: spec.id, definition, sourceDirectory, ...plan })
+      estimatedBytes += plan.files.reduce((sum, file) => sum + file.size, 0)
+      hasSqlite = hasSqlite || plan.hasSqlite
+    }
+  } catch (error) {
+    return failure(classifyError(error), errorMessage(error))
+  }
+  if (!(await directoryExists(target))) {
+    try {
+      await lstatOrNull(target)
+    } catch (error) {
+      return failure(classifyError(error), errorMessage(error))
+    }
+  }
+  let availableBytes = null
+  try {
+    availableBytes = await freeBytes(target)
+  } catch {
+    availableBytes = null
+  }
+  if (Number.isFinite(availableBytes) && availableBytes < estimatedBytes) {
+    return failure('insufficient-space', 'not enough free space for the selected modules', {
+      requiredBytes: estimatedBytes,
+      freeBytes: availableBytes
+    })
+  }
+  return {
+    ok: true,
+    code: 'ok',
+    modules: normalized.specs.map((spec) => spec.id),
+    layout: sourceLayout,
+    version: normalizeVersion(version),
+    portable: portable === true,
+    estimatedBytes,
+    hasSqlite,
+    warnings,
+    // Which modules need their own writer paused, and which need the app to be idle.
+    requiresQuiesce: normalized.specs.map((spec) => spec.id).filter((id) => id === 'usage' || id === 'clipboard' || id === 'conversations'),
+    requiresExclusive: normalized.specs.some((spec) => spec.id === 'recordings'),
+    plans: plans.map((plan) => ({ id: plan.id, sourceDirectory: plan.sourceDirectory, fileCount: plan.files?.length || 0 }))
+  }
 }
 
 async function createBackup(options = {}) {
@@ -866,6 +1009,38 @@ async function createBackup(options = {}) {
       const moduleDirectory = path.join(backupDirectory, 'modules', plan.id)
       await mkdir(moduleDirectory, { recursive: true })
       const files = []
+      if (plan.id === 'history') {
+        // Item 06: the index travels with the module, not inside settings. It is written
+        // first so the manifest's sorted file list stays valid.
+        const index = buildHistoryIndex(config)
+        const indexTarget = path.join(moduleDirectory, HISTORY_INDEX_FILE)
+        await writeFile(indexTarget, JSON.stringify(index, null, 2) + '\n', 'utf8')
+        const indexStat = await stat(indexTarget)
+        files.push({ path: HISTORY_INDEX_FILE, size: indexStat.size, sha256: await hash(indexTarget) })
+        for (const file of plan.files) {
+          const targetFile = path.join(moduleDirectory, ...file.relativePath.split('/'))
+          await mkdir(path.dirname(targetFile), { recursive: true })
+          await copy(file.absolutePath, targetFile)
+          const copiedStat = await stat(targetFile)
+          if (!copiedStat || copiedStat.size !== file.size) throw codedError('copy-failed', 'copy did not produce the expected file: ' + file.relativePath)
+          files.push({ path: file.relativePath, size: copiedStat.size, sha256: await hash(targetFile) })
+        }
+        files.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+        manifestModules[plan.id] = {
+          id: plan.id,
+          path: 'modules/' + plan.id,
+          sourcePath: plan.sourceDirectory,
+          sensitive: true,
+          sqlite: plan.hasSqlite === true,
+          index: true,
+          indexEntryCount: index.captureHistory.length,
+          fileCount: files.length,
+          bytes: files.reduce((sum, file) => sum + file.size, 0),
+          files,
+          externalRefs: externalScan.externalRefs[plan.id] || []
+        }
+        continue
+      }
       if (plan.definition.settings && plan.settingsSource && config) {
         const { value, redacted } = sanitizeSettings(config)
         const targetFile = path.join(moduleDirectory, 'config.json')
@@ -1059,25 +1234,83 @@ function remapRestoredValue(value, roots, targetRoot) {
   if (!isAbsolutePath(value)) return value
   const resolved = path.resolve(value)
   for (const root of roots) {
-    if (root && isWithin(root, resolved)) return path.join(path.resolve(targetRoot), path.relative(path.resolve(root), resolved))
+    if (root && isWithin(root, resolved)) {
+      const next = path.join(path.resolve(targetRoot), path.relative(path.resolve(root), resolved))
+      // Item 07: a relative path may never climb out of the target it is being mapped into.
+      return isWithin(path.resolve(targetRoot), path.resolve(next)) ? next : value
+    }
   }
   return value
 }
 
-function remapRestoredConfig(config, { sourceRoot, historySource, targetRoot, historyTarget }) {
+// Item 07: every path an editable capture actually reads. The old list rewrote only the
+// render preview (filePath/thumbnailPath), so re-editing a restored capture still opened the
+// document and the original base image under the OLD data root. docPath/baseImagePath are
+// what the document service reads (capture-document-service.readDocument), so they have to
+// move with the files.
+const HISTORY_ENTRY_PATH_KEYS = Object.freeze([
+  'filePath',
+  'thumbnailPath',
+  'docPath',
+  'baseImagePath',
+  'resultImagePath',
+  'documentPath',
+  'originalPath'
+])
+
+// Item 07: the managed history roots, in precedence order. Besides the module source and
+// the managed/legacy layouts, this includes the history directory the user configured
+// (an external screenshot library) - that is where their entries really point.
+function historyRootsFor({ config, sourceRoot, historySource }) {
+  const roots = []
+  const configured = config?.settings?.screenshot?.historyDirectory
+  const moduleSource = historySource ? path.resolve(historySource) : ''
+  // The configured directory is a managed root only when it is the directory this package
+  // actually copied. A pointer to a library that is NOT in the package (a disconnected
+  // drive, a folder the user excluded) must stay an external reference, not be rewritten
+  // to the restored history folder.
+  if (isAbsolutePath(configured) && moduleSource) {
+    const resolved = path.resolve(configured)
+    if (resolved === moduleSource || isWithin(moduleSource, resolved) || isWithin(resolved, moduleSource)) {
+      roots.push(resolved)
+    }
+  }
+  if (moduleSource) roots.push(moduleSource)
+  if (sourceRoot) {
+    roots.push(path.join(path.resolve(sourceRoot), 'history'))
+    roots.push(path.join(path.resolve(sourceRoot), 'capture-history'))
+  }
+  return [...new Set(roots)]
+}
+
+function remapRestoredConfig(config, { sourceRoot, historySource, targetRoot, historyTarget, warnings = [] }) {
   const rewritten = JSON.parse(JSON.stringify(config))
-  const historyRoots = [historySource, sourceRoot ? path.join(sourceRoot, 'history') : ''].filter(Boolean)
-  const historyDirectory = historyTarget || path.join(targetRoot, 'history')
+  const historyDirectory = path.resolve(historyTarget || path.join(targetRoot, 'history'))
+  const historyRoots = historyRootsFor({ config: rewritten, sourceRoot, historySource })
   const screenshot = rewritten?.settings?.screenshot
   if (screenshot && Object.hasOwn(screenshot, 'historyDirectory')) {
-    screenshot.historyDirectory = remapRestoredValue(screenshot.historyDirectory, historyRoots, historyDirectory)
+    const value = remapRestoredValue(screenshot.historyDirectory, historyRoots, historyDirectory)
+    // A configured library that was NOT part of this package stays an external pointer and
+    // is reported; silently importing it would claim data the package does not contain.
+    if (isAbsolutePath(value) && !isWithin(historyDirectory, path.resolve(value))) {
+      warnings.push({ code: 'external-history-directory', path: String(value) })
+    }
+    screenshot.historyDirectory = value
   }
   if (Array.isArray(rewritten?.captureHistory)) {
     rewritten.captureHistory = rewritten.captureHistory.map((item) => {
       if (!isPlainObject(item)) return item
       const result = { ...item }
-      for (const key of ['filePath', 'thumbnailPath']) {
+      for (const key of HISTORY_ENTRY_PATH_KEYS) {
         if (Object.hasOwn(result, key)) result[key] = remapRestoredValue(result[key], historyRoots, historyDirectory)
+      }
+      // A document revision may carry its own absolute reference to the base image.
+      if (isPlainObject(result.document)) {
+        result.document = JSON.parse(JSON.stringify(result.document))
+        const base = result.document.baseImage
+        if (isPlainObject(base) && Object.hasOwn(base, 'path')) {
+          base.path = remapRestoredValue(base.path, historyRoots, historyDirectory)
+        }
       }
       return result
     })
@@ -1155,7 +1388,11 @@ async function restoreBackup(options = {}) {
     rename = fsp.rename,
     remove = fsp.rm,
     exists = async (value) => lstatOrNull(value).then(Boolean),
-    supportedFormatVersion = BACKUP_FORMAT_VERSION
+    supportedFormatVersion = BACKUP_FORMAT_VERSION,
+    // Plan item 19: the APPLICATION version window is decided by the main process. A package
+    // from before the window is refused with the range instead of a generic failure.
+    minSupportedVersion = null,
+    supportedVersionRange = ''
   } = options
 
   if (!isAbsolutePath(backupDirectory)) return failure('invalid-request', 'backupDirectory must be an absolute path')
@@ -1168,6 +1405,22 @@ async function restoreBackup(options = {}) {
 
   const inspection = await inspectBackup(backup, { hash, supportedFormatVersion, exists })
   if (!inspection.ok) return { ...inspection, targetRoot: target, rolledBack: true }
+  if (minSupportedVersion && String(minSupportedVersion) !== '') {
+    const fromParts = inspection.version.split('.').map(Number)
+    const minParts = String(minSupportedVersion).split('.').map(Number)
+    const comparable = fromParts.every((value) => Number.isSafeInteger(value)) && minParts.every((value) => Number.isSafeInteger(value))
+    if (comparable && compareVersionParts(fromParts, minParts) < 0) {
+      return failure('unsupported-version', 'the backup was created by an older Highlighter release than this build supports', {
+        targetRoot: target,
+        rolledBack: true,
+        version: inspection.version,
+        minSupportedVersion: String(minSupportedVersion),
+        supportedVersionRange: String(supportedVersionRange || ''),
+        // The user's old root is untouched; the source package is kept for retrieval.
+        originalKept: true
+      })
+    }
+  }
 
   const selected = [...new Set(modules || inspection.moduleOrder)]
   const missingModules = selected.filter((id) => !Object.hasOwn(inspection.modules, id))
@@ -1214,6 +1467,7 @@ async function restoreBackup(options = {}) {
   const warnings = [...inspection.warnings]
   try {
     await mkdir(stage, { recursive: true })
+    let historyIndexRestored = null
     const restoredModules = await copyBackupModules({
       inspection,
       backupDirectory: backup,
@@ -1225,17 +1479,64 @@ async function restoreBackup(options = {}) {
       mkdir
     })
 
+    // Item 06: the runtime index is published through config/config.json. The history
+    // module carries its own index file; an old (format 1) package kept the same list in
+    // its settings module. Either way there is exactly ONE publish: the config written here
+    // is what the app reads after the relaunch.
     const settingsPath = path.join(stage, 'config', 'config.json')
-    if (restoredModules.includes('settings') && await exists(settingsPath)) {
-      const raw = JSON.parse(await readFile(settingsPath, 'utf8'))
-      const rewritten = remapRestoredConfig(raw, {
+    const historyIndexPath = path.join(stage, 'history', HISTORY_INDEX_FILE)
+    const historySelected = restoredModules.includes('history')
+    const settingsSelected = restoredModules.includes('settings')
+    let historyIndex = null
+    if (historySelected && await exists(historyIndexPath)) {
+      try {
+        const parsed = JSON.parse(await readFile(historyIndexPath, 'utf8'))
+        if (Array.isArray(parsed?.captureHistory)) historyIndex = { entries: parsed.captureHistory, source: 'history-index' }
+      } catch {}
+    }
+    let configSource = null
+    if (settingsSelected && await exists(settingsPath)) {
+      try {
+        configSource = JSON.parse(await readFile(settingsPath, 'utf8'))
+      } catch {
+        configSource = null
+      }
+    }
+    if (!historyIndex && Array.isArray(configSource?.captureHistory)) {
+      // A format 1 package: the settings module carried the history list. That copy is the
+      // trusted index of the SAME package, so it is used instead of guessing.
+      historyIndex = { entries: configSource.captureHistory, source: 'settings-capture-history' }
+    }
+    if (historySelected && !historyIndex) {
+      // The files are still restorable; the metadata is not. Say so instead of inventing an
+      // empty history, and keep the source package for retrieval.
+      warnings.push({ code: 'history-index-missing' })
+    }
+    const needsConfig = settingsSelected || (historySelected && historyIndex)
+    if (needsConfig) {
+      const baseConfig = isPlainObject(configSource) ? configSource : {}
+      if (Array.isArray(baseConfig.captureHistory)) delete baseConfig.captureHistory
+      if (historySelected && historyIndex) baseConfig.captureHistory = historyIndex.entries
+      const rewritten = remapRestoredConfig(baseConfig, {
         sourceRoot: inspection.source?.dataRoot || '',
         historySource: inspection.modules.history?.sourcePath || '',
         targetRoot: target,
-        historyTarget: path.join(target, 'history')
+        historyTarget: path.join(target, 'history'),
+        warnings
       })
+      await mkdir(path.dirname(settingsPath), { recursive: true })
       await writeFile(settingsPath, `${JSON.stringify(rewritten, null, 2)}\n`, 'utf8')
+      if (!settingsSelected && !restoredModules.includes('config')) {
+        // "history only": the generated config is the published index carrier.
+        restoredModules.push('config')
+      }
     }
+    if (await exists(historyIndexPath)) {
+      // The index has been folded into the config; the history directory keeps captures
+      // only, exactly like a live data root.
+      await remove(historyIndexPath, { force: true })
+    }
+    historyIndexRestored = historySelected ? Boolean(historyIndex) : null
 
     const targetVersion = supportedVersion === null || supportedVersion === undefined
       ? inspection.version
@@ -1294,8 +1595,11 @@ async function restoreBackup(options = {}) {
     }
 
     for (const id of restoredModules) {
-      const sourceDirectory = path.join(stage, MODULE_DEFINITIONS[id].directory)
-      const targetDirectory = path.join(target, MODULE_DEFINITIONS[id].directory)
+      // 'config' is the synthetic module name used when only the history was restored:
+      // its directory is the settings module's directory (config/).
+      const definition = MODULE_DEFINITIONS[id] || MODULE_DEFINITIONS.settings
+      const sourceDirectory = path.join(stage, definition.directory)
+      const targetDirectory = path.join(target, definition.directory)
       if (await exists(targetDirectory)) throw codedError('target-not-empty', `the target already contains ${id}`)
       await mkdir(path.dirname(targetDirectory), { recursive: true })
       await rename(sourceDirectory, targetDirectory)
@@ -1324,7 +1628,9 @@ async function restoreBackup(options = {}) {
       sourceVersion: inspection.version,
       backupDirectory: backup,
       migrated: steps,
-      modules: Object.fromEntries(restoredModules.map((id) => [id, inspection.modules[id]])),
+      // The synthetic 'config' publish carrier is not a backup module, so it never shows up
+      // as one in the receipt.
+      modules: Object.fromEntries(restoredModules.filter((id) => MODULE_DEFINITIONS[id]).map((id) => [id, inspection.modules[id]])),
       totalBytes: selectedBytes,
       externalRefs: inspection.externalRefs,
       externalRefCount: inspection.externalRefCount,
@@ -1334,6 +1640,9 @@ async function restoreBackup(options = {}) {
       checksum: inspection.checksum,
       verification,
       warnings,
+      // Item 06: whether the restored data root has a runtime history list. Files restored
+      // without a trusted index keep the material but not the metadata.
+      historyIndexRestored,
       restoredAt: new Date(now).toISOString()
     }
   } catch (error) {
@@ -1356,7 +1665,13 @@ module.exports = {
   MARKER_FILE,
   MODULE_DEFINITIONS,
   MODULE_ORDER,
+  HISTORY_INDEX_FILE,
+  HISTORY_INDEX_SCHEMA_VERSION,
+  MIN_SUPPORTED_FORMAT_VERSION,
+  buildHistoryIndex,
   createBackup,
+  historyRootsFor,
+  validateBackupRequest,
   deleteBackup,
   inspectBackup,
   restoreBackup
