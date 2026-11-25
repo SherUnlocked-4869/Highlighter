@@ -9,6 +9,15 @@ const { nativeRules } = require('./clipboard-settings')
 const { POLL_REVISION_FRESH_MS, isHealthEvent, pollIsStable, nextPollDelay } = require('./clipboard-poll-policy')
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const failure = (code) => Object.assign(new Error(code), { code })
+// B01 (plan item 05): the private publication's own constants. The PNG signature is
+// re-checked here so a non-image never reaches the sidecar, and the size ceiling matches
+// the sidecar's.
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+const MAX_PUBLISH_BYTES = 64 * 1024 * 1024
+// A busy clipboard or an interrupted publication is worth another attempt; a missing
+// writer or a failed marker is not.
+const PUBLISH_RETRYABLE = new Set(['CLIPBOARD_BUSY', 'COPY_INTERRUPTED', 'QUIESCING', 'BACKPRESSURE', 'BACKEND_TIMEOUT'])
+
 const outcomeFailure = (method, code) => method === 'copy' ? 'COPY_OUTCOME_UNKNOWN' : ['paste.prepare', 'paste.commit'].includes(method) ? 'PASTE_OUTCOME_UNKNOWN' : code
 
 class ClipboardService extends EventEmitter {
@@ -165,6 +174,41 @@ class ClipboardService extends EventEmitter {
       catch { this.failChild(child, 'PROTOCOL_FAILED') }
     })
   }
+  // B01 (plan item 05): publish one fresh image without creating a history entry. The
+  // PNG travels as a temporary file because the framed protocol's chunk limit is 256 KiB
+  // and a screenshot can be many megabytes; the sidecar re-validates the bytes and the
+  // exclusion markers. Resolves a receipt - it never throws for a refusal.
+  async publishImage({ png, private: isPrivate = false } = {}) {
+    const bytes = Buffer.isBuffer(png) ? png : Buffer.from(png || [])
+    if (!bytes.length) return { ok: false, code: 'IMAGE_EMPTY' }
+    if (bytes.length > MAX_PUBLISH_BYTES) return { ok: false, code: 'IMAGE_TOO_LARGE', bytes: bytes.length }
+    if (!bytes.subarray(0, 8).equals(PNG_SIGNATURE)) return { ok: false, code: 'INVALID_IMAGE' }
+    if (!this.child) return { ok: false, code: 'BACKEND_UNAVAILABLE' }
+    const temporaryDirectory = path.join(this.directory, 'publish')
+    const file = path.join(temporaryDirectory, randomUUID() + '.png')
+    try {
+      await fs.mkdir(temporaryDirectory, { recursive: true })
+      await fs.writeFile(file, bytes)
+    } catch (error) {
+      return { ok: false, code: error?.code || 'IMAGE_UNWRITABLE' }
+    }
+    try {
+      const answer = await this.request('publish-image', { path: file, private: isPrivate === true }, false, 8000)
+      return {
+        ok: true,
+        private: isPrivate === true,
+        bytes: Number(answer?.bytes) || bytes.length,
+        sequence: answer?.sequence
+      }
+    } catch (error) {
+      const code = error?.code || 'PUBLICATION_FAILED'
+      // The sidecar reports its own reasons; keep them recognizable for the retry policy.
+      return { ok: false, code, retryable: PUBLISH_RETRYABLE.has(code) }
+    } finally {
+      await fs.rm(file, { force: true }).catch(() => {})
+    }
+  }
+
   async refresh() {
     if (!this.child) return this.snapshot()
     const value = await this.request('status')

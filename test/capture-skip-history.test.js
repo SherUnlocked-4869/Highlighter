@@ -125,11 +125,12 @@ test('PDF and unknown actions stay inside their shipped semantics', () => {
   assert.equal(JSON.stringify(options), before)
 })
 
-test('the clipboard publication names the Windows exclusion formats and admits pending wiring', () => {
+test('B01 (05): the clipboard publication names the exclusion formats and never claims a degraded private write', () => {
   assert.deepEqual(planClipboardPublish({}), { private: false, status: 'plain', formats: [] })
   const pending = planClipboardPublish({ skipHistory: true })
   assert.equal(pending.private, false)
-  assert.equal(pending.status, 'pending-native')
+  // Without the native writer there is no private publication and no plain fallback.
+  assert.equal(pending.status, 'unavailable')
   assert.deepEqual(pending.formats, [...CLIPBOARD_HISTORY_EXCLUSION_FORMATS])
   const native = planClipboardPublish({ skipHistory: true, nativeWriter: true })
   assert.equal(native.private, true)
@@ -232,7 +233,9 @@ function createHarness(options = {}) {
     getCaptureDocumentService: () => ({
       commit: async (payload) => { documentCommits.push(payload); return { ok: true, status: 'skipped', code: 'history-skipped' } }
     }),
-    mainWindowBroadcast: (payload) => broadcasts.push(payload)
+    mainWindowBroadcast: (payload) => broadcasts.push(payload),
+    // B01 (05): an injected native publication, so a test can exercise the private path.
+    ...(typeof options.writeClipboardImage === 'function' ? { writeClipboardImage: options.writeClipboardImage } : {})
   }
   const domain = createCaptureDomain(deps)
   return {
@@ -258,36 +261,68 @@ function createHarness(options = {}) {
 const event = () => ({ sender: {} })
 const payload = (meta = {}, extra = {}) => ({ imageBuffer: Buffer.from([1, 2, 3]), meta: { width: 3, height: 2, ...meta }, ...extra })
 
-test('domain copy with the switch writes the clipboard and nothing else', async () => {
+test('B01 (05): without the native writer a private copy publishes NO ordinary image', async () => {
   const harness = createHarness({ screenshot: { autoSaveOnCopy: true, lastSaveDirectory: 'E:/shots' } })
-  const receipt = harness.controller.copy(event(), payload({ skipHistory: true }))
-  assert.equal(receipt.ok, true)
-  assert.equal(receipt.clipboard, 'windows')
-  assert.equal(receipt.history, 'skipped')
-  assert.equal(receipt.exclusion, 'pending-native', 'the exclusion is reported as pending, never claimed')
-  assert.equal(harness.clipboard.writes, 1, 'the explicit copy still reaches the clipboard')
+  const receipt = await harness.controller.copy(event(), payload({ skipHistory: true }))
+  assert.equal(receipt.ok, false)
+  assert.equal(receipt.code, 'native-writer-unavailable')
+  assert.equal(receipt.exclusion, 'failed')
+  assert.equal(harness.clipboard.writes, 0, 'no plain Electron write may stand in for the private one')
   await flushWrites()
   assert.equal(harness.persisted.length, 0, 'no history row')
   assert.equal(harness.saved.length, 0, 'no auto-save file')
 })
 
-test('domain copy stations the exclusion formats on the native seam when one is injected', () => {
+test('B01 (05): the private copy awaits the native receipt and never falls back', async () => {
   const calls = []
   const harness = createHarness()
-  // Same factory, one optional dependency: this is the future native publication.
   const domain = createCaptureDomain({
     ...harness.deps,
-    writeClipboardImage: (image) => { calls.push(image); return { ok: true } }
+    writeClipboardImage: async (image, options) => { calls.push({ image, options }); return { ok: true, private: true, sequence: 7 } }
   })
-  const receipt = domain.createCaptureController().copy(event(), payload({ skipHistory: true }))
+  const receipt = await domain.createCaptureController().copy(event(), payload({ skipHistory: true }))
   assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].options, { private: true })
   assert.equal(receipt.exclusion, 'private')
+  assert.equal(receipt.ok, true)
   assert.equal(harness.clipboard.writes, 0, 'the native publication replaces the plain Electron write')
+})
+
+test('B01 (05): a marker failure is reported and retried, never replaced by a plain write', async () => {
+  const codes = ['EXCLUSION_UNAVAILABLE']
+  const harness = createHarness()
+  const domain = createCaptureDomain({
+    ...harness.deps,
+    writeClipboardImage: async () => {
+      const code = codes.shift() || 'MISSING_MARKER'
+      return { ok: false, code }
+    }
+  })
+  const receipt = await domain.createCaptureController().copy(event(), payload({ skipHistory: true }))
+  assert.equal(receipt.ok, false)
+  assert.equal(receipt.code, 'EXCLUSION_UNAVAILABLE', 'a non-retryable marker failure stops at once')
+  assert.equal(harness.clipboard.writes, 0)
+
+  // A busy clipboard is retried; the successful attempt is the one reported.
+  const attempts = []
+  const reliable = createHarness()
+  const retrying = createCaptureDomain({
+    ...reliable.deps,
+    writeClipboardImage: async () => {
+      attempts.push(Date.now())
+      if (attempts.length < 2) return { ok: false, code: 'CLIPBOARD_BUSY' }
+      return { ok: true, private: true }
+    }
+  })
+  const second = await retrying.createCaptureController().copy(event(), payload({ skipHistory: true }))
+  assert.equal(second.ok, true)
+  assert.equal(attempts.length, 2, 'the busy clipboard was retried exactly once more')
+  assert.equal(reliable.clipboard.writes, 0)
 })
 
 test('copy without the switch keeps its record and its auto-save (regression)', async () => {
   const harness = createHarness({ screenshot: { autoSaveOnCopy: true, lastSaveDirectory: 'E:/shots' } })
-  assert.equal(harness.controller.copy(event(), payload()), null)
+  assert.equal(await harness.controller.copy(event(), payload()), null)
   await flushWrites()
   assert.equal(harness.persisted.length, 1)
   assert.equal(harness.persisted[0].action, 'copy')
@@ -296,14 +331,14 @@ test('copy without the switch keeps its record and its auto-save (regression)', 
 
 test('a skipped capture schedules nothing, so closing the window cannot resurrect a record', async () => {
   const harness = createHarness({ screenshot: { autoSaveOnCopy: true, lastSaveDirectory: 'E:/shots' } })
-  harness.controller.copy(event(), payload({ skipHistory: true }))
+  await harness.controller.copy(event(), payload({ skipHistory: true }))
   // The overlay closes right after copy in the shipped flow; the result must already be
   // decided, and no delayed task may fire afterwards.
   harness.closeWindow()
   await flushWrites()
   assert.equal(harness.persisted.length, 0)
   assert.equal(harness.saved.length, 0)
-  assert.equal(harness.clipboard.writes, 1)
+  assert.equal(harness.clipboard.writes, 0, 'a refused private copy publishes nothing')
 })
 
 test('the same result records at most once even when an action is dispatched twice', async () => {
@@ -359,7 +394,7 @@ test('a cancelled save writes neither a file nor a record', async () => {
 
 test('pin with the switch still pins, marks the pin, and writes no history', async () => {
   const harness = createHarness()
-  assert.equal(harness.controller.pin(event(), payload({ skipHistory: true })), null)
+  assert.equal(await harness.controller.pin(event(), payload({ skipHistory: true })), null)
   assert.equal(harness.pins.length, 1, 'the pin output itself is not suppressed')
   assert.equal(harness.pinWindow._skipHistory, true, 'the pin hands the switch to its re-annotate editor')
   await flushWrites()
@@ -368,27 +403,32 @@ test('pin with the switch still pins, marks the pin, and writes no history', asy
 
 test('pin and copy with the switch reports both outputs but records nothing', async () => {
   const harness = createHarness()
-  const receipt = harness.controller.pin(event(), payload({ skipHistory: true }, { copy: true }))
-  assert.equal(receipt.ok, true)
+  // The pin lands; the private copy is refused (no native writer) rather than published
+  // as a plain image, so the receipt reports exactly one output.
+  const receipt = await harness.controller.pin(event(), payload({ skipHistory: true }, { copy: true }))
+  assert.equal(receipt.ok, false)
+  assert.deepEqual(receipt.failed, ['copy'])
   assert.equal(receipt.recorded, false)
   assert.equal(receipt.history, 'skipped')
   assert.equal(harness.pins.length, 1)
-  assert.equal(harness.clipboard.writes, 1)
+  assert.equal(harness.clipboard.writes, 0)
   await flushWrites()
   assert.equal(harness.persisted.length, 0)
 })
 
 test('a retry cannot turn a skipped result into a record', async () => {
   const harness = createHarness({ clipboardDrops: true })
-  const first = harness.controller.pin(event(), payload({ skipHistory: true }, { copy: true }))
+  const first = await harness.controller.pin(event(), payload({ skipHistory: true }, { copy: true }))
   assert.deepEqual(first.failed, ['copy'])
   assert.equal(first.recorded, false)
   await flushWrites()
   assert.equal(harness.persisted.length, 0)
 
-  harness.setClipboardDropped(false)
-  const retry = harness.controller.pin(event(), payload({ skipHistory: true }, { retry: 'copy' }))
-  assert.equal(retry.outputs.copy.ok, true)
+  // A retried private copy is still refused without a native writer: no plain image is
+  // ever published as a "repair", and the skipped result never becomes a record.
+  const retry = await harness.controller.pin(event(), payload({ skipHistory: true }, { retry: 'copy' }))
+  assert.equal(retry.outputs.copy.ok, false)
+  assert.equal(retry.outputs.copy.code, 'native-writer-unavailable')
   assert.equal(retry.recorded, false)
   await flushWrites()
   assert.equal(harness.persisted.length, 0, 'the retry belongs to the same skipped result')
@@ -593,7 +633,11 @@ test('capture.html ships the floating switch and its scope hint outside every me
 
 test('capture.js sends the switch with every action and never writes it back to settings', () => {
   assert.match(script, /skipHistory:skipHistoryThisCapture\}/, 'the flag rides every action meta')
-  assert.match(script, /skipHistoryThisCapture = data\.skipHistory === true \|\| skipHistoryLocked/)
+  // B01 (plan item 12): the per-capture flag starts ONLY from what the window carried -
+  // the global switch is its own state and never implies "the user skipped this one".
+  assert.match(script, /skipHistoryThisCapture = data\.skipHistory === true/)
+  assert.match(script, /historyWritable = data\.settings\?\.screenshot\?\.historyEnabled !== false/)
+  assert.doesNotMatch(script, /skipHistoryThisCapture = data\.skipHistory === true \|\| skipHistoryLocked/)
   assert.match(script, /skipHistoryLocked = data\.settings\?\.screenshot\?\.historyEnabled === false/)
   assert.match(script, /skipHistory: skipHistoryThisCapture\s*\}\)/, 'the document commit carries it too')
   // The switch is local state: no settings:update call is made from it.
@@ -608,7 +652,9 @@ test('capture.js sends the switch with every action and never writes it back to 
 
 test('the document editor refuses to save a skipped edit and never offers a fake save path', () => {
   assert.match(script, /if\(skipHistoryThisCapture\)\{alert\(t\('capture-skip\.document\.skipped'\)\);return\}/)
-  assert.match(script, /if \(skipHistoryThisCapture\) \{\s+if \(confirm\(t\('capture-skip\.document\.close-discard'\)\)\) finishDocumentClose\(\)/)
+  // Plan item 12: a globally disabled history cannot persist a commit either, so the same
+  // discard-only question is used for both cases.
+  assert.match(script, /if \(skipHistoryThisCapture \|\| !historyWritable\) \{\s+if \(confirm\(t\('capture-skip\.document\.close-discard'\)\)\) finishDocumentClose\(\)/)
   assert.match(script, /if \(response\.status === 'skipped'\) \{/)
   assert.match(script, /documentEditor\.dirty = true\s+renderDocumentInfo\(\)\s+alert\(t\('capture-skip\.document\.skipped'\)\)/)
 })
@@ -687,6 +733,50 @@ test('the three language tables define the same skip keys with real translations
 test('the hint copy is rendered as visible text and the switch reports its state accessibly', () => {
   assert.match(script, /skipHistoryHint\.textContent = skipHistoryThisCapture \? t\('capture-skip\.toolbar\.hint'\) : ''/)
   assert.match(script, /skipHistoryToggle\.setAttribute\('aria-pressed', skipHistoryThisCapture \? 'true' : 'false'\)/)
-  assert.match(script, /skipHistoryToggle\.disabled = skipHistoryLocked/)
+  // Plan item 12: the global switch no longer disables the per-capture toggle.
+  assert.match(script, /skipHistoryToggle\.disabled = false/)
+  assert.doesNotMatch(script, /skipHistoryToggle\.disabled = skipHistoryLocked/)
   assert.match(script, /skipHistoryToggle\.classList\.toggle\('available', available\)/)
+})
+
+// ---------------------------------------------------------------------------
+// B01 (plan item 12): the four-row table of global history x this-capture skip
+// ---------------------------------------------------------------------------
+
+test('B01 (12): the four-row table keeps the auto-save independent of the global history switch', async () => {
+  const cases = [
+    { name: 'history on, no skip', historyEnabled: true, skip: false, history: 1, autoSave: 1, writes: 1 },
+    { name: 'history off, no skip', historyEnabled: false, skip: false, history: 0, autoSave: 1, writes: 1 },
+    { name: 'history on, skip', historyEnabled: true, skip: true, history: 0, autoSave: 0, writes: 0 },
+    { name: 'history off, skip', historyEnabled: false, skip: true, history: 0, autoSave: 0, writes: 0 }
+  ]
+  for (const entry of cases) {
+    const harness = createHarness({
+      historyEnabled: entry.historyEnabled,
+      screenshot: { autoSaveOnCopy: true, lastSaveDirectory: 'E:/shots' },
+      // B01 (05): a skipped private copy needs the native writer; it must never degrade to
+      // a plain image. The plain rows simply never call it.
+      writeClipboardImage: async () => ({ ok: true, private: true })
+    })
+    const receipt = await harness.controller.copy(event(), payload(entry.skip ? { skipHistory: true } : {}))
+    await flushWrites()
+    assert.equal(harness.persisted.length, entry.history, entry.name + ': history rows')
+    assert.equal(harness.saved.length, entry.autoSave, entry.name + ': auto-save files')
+    assert.equal(harness.clipboard.writes, entry.writes, entry.name + ': plain clipboard writes')
+    if (entry.skip) {
+      assert.equal(receipt.ok, true, entry.name + ': the private publication is reported')
+      assert.equal(receipt.exclusion, 'private')
+    } else {
+      assert.equal(receipt, null, entry.name + ': a plain copy keeps the legacy null receipt')
+    }
+  }
+})
+
+test('B01 (12): a disabled global history keeps the per-capture skip toggle usable in the renderer', () => {
+  // The renderer starts the per-capture flag from the window's own payload only, and the
+  // toggle is never disabled by the global switch - that is what keeps the auto-save
+  // choice available when the history is off.
+  assert.match(script, /skipHistoryThisCapture = data\.skipHistory === true/)
+  assert.match(script, /skipHistoryToggle\.disabled = false/)
+  assert.match(script, /skipHistoryLocked = data\.settings\?\.screenshot\?\.historyEnabled === false/)
 })

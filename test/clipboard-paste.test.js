@@ -173,3 +173,93 @@ test('foreground permission uses only the live backend PID and rejects invalid o
     assert.deepEqual(calls, [12345])
   } finally { SelectionHook.allowSetForegroundWindow = original }
 })
+
+// ---------------------------------------------------------------------------
+// B01 (plan item 05): the direct private publication
+// ---------------------------------------------------------------------------
+
+const os = require('node:os')
+const fs = require('node:fs')
+
+function createPublishHarness() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'highlighter-clipboard-publish-'))
+  const service = new ClipboardService({ executable: 'unused', directory, getHook: () => null })
+  const requests = []
+  // The child is a fake that answers through the real request() path.
+  service.epoch = 'epoch-1'
+  service.child = {
+    stdin: {
+      writableLength: 0,
+      write(frame) {
+        // Record the request and resolve it with a canned answer on the next tick.
+        requests.push({ frame, at: Date.now() })
+        const pending = [...service.pending.entries()].at(-1)
+        if (!pending) return true
+        const [requestId, entry] = pending
+        setImmediate(() => {
+          if (!service.pending.has(requestId)) return
+          service.pending.delete(requestId)
+          clearTimeout(entry.timer)
+          entry.resolve({ published: true, bytes: 4096, sequence: 12 })
+        })
+        return true
+      }
+    }
+  }
+  return { directory, service, requests, cleanup: () => fs.rmSync(directory, { recursive: true, force: true }) }
+}
+
+const PNG_BYTES = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('body')])
+
+test('B01 (05): publishImage validates the bytes and answers the native receipt', async () => {
+  const harness = createPublishHarness()
+  try {
+    const receipt = await harness.service.publishImage({ png: PNG_BYTES, private: true })
+    assert.equal(receipt.ok, true)
+    assert.equal(receipt.private, true)
+    assert.equal(receipt.bytes, 4096)
+    assert.equal(harness.requests.length, 1)
+    // The temporary file is gone after the call, whether it succeeded or not.
+    const leftovers = fs.readdirSync(path.join(harness.directory, 'publish'))
+    assert.deepEqual(leftovers, [])
+    // An empty or non-PNG buffer never reaches the sidecar.
+    assert.deepEqual(await harness.service.publishImage({ png: Buffer.alloc(0) }), { ok: false, code: 'IMAGE_EMPTY' })
+    assert.equal((await harness.service.publishImage({ png: Buffer.from('not a png') })).code, 'INVALID_IMAGE')
+    assert.equal(harness.requests.length, 1)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('B01 (05): publishImage reports an unavailable backend instead of throwing', async () => {
+  const service = new ClipboardService({ executable: 'unused', directory: os.tmpdir(), getHook: () => null })
+  assert.deepEqual(await service.publishImage({ png: PNG_BYTES }), { ok: false, code: 'BACKEND_UNAVAILABLE' })
+})
+
+test('B01 (05): the writer factory resolves the registered native publisher and never fakes a write', async () => {
+  const { createClipboardImageWriter, registerClipboardPublisher, resetClipboardPublisher } = require('../main/services/clipboard-publish')
+  // The registry is process-wide; start from a known-empty state.
+  resetClipboardPublisher()
+  const image = { toPNG: () => PNG_BYTES }
+  const writer = createClipboardImageWriter({ log: () => {} })
+  // Nothing registered yet: the capture domain must report the missing writer.
+  assert.deepEqual(await writer(image, { private: true }), { ok: false, code: 'native-writer-unavailable' })
+
+  const calls = []
+  const unregister = registerClipboardPublisher(async (input) => {
+    calls.push(input)
+    return { ok: true, private: input.private === true, sequence: 3 }
+  })
+  const receipt = await writer(image, { private: true })
+  assert.equal(receipt.ok, true)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].private, true)
+  assert.ok(Buffer.isBuffer(calls[0].png))
+  // An image whose encoder fails is reported, never silently published.
+  const broken = { toPNG: () => { throw new Error('encode failed') } }
+  assert.equal((await writer(broken, { private: true })).code, 'IMAGE_ENCODE_FAILED')
+  unregister()
+  assert.equal((await writer(image, { private: true })).code, 'native-writer-unavailable')
+  resetClipboardPublisher()
+  assert.equal((await writer(image)).code, 'native-writer-unavailable')
+})

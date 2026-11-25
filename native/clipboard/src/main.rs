@@ -251,6 +251,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         )?;
                         Ok(json!({"copied":true}))
                     }
+                    // B01 (plan item 05): publish one fresh image that is NOT a history item.
+                    // The PNG arrives as a file written by the parent (outside the framed
+                    // protocol's 256 KiB chunk limit); the sidecar re-validates the bytes and
+                    // the markers, then publishes PNG + CF_DIB + the exclusion formats inside
+                    // ONE OpenClipboard call. Nothing is written to storage.
+                    "publish-image" => {
+                        let path = request
+                            .params
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .ok_or("INVALID_PATH")?;
+                        let private = request
+                            .params
+                            .get("private")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        if quiescing {
+                            return Err("QUIESCING");
+                        }
+                        let bytes = std::fs::read(path).map_err(|_| "IMAGE_UNREADABLE")?;
+                        if bytes.len() > 64 * 1024 * 1024 {
+                            return Err("IMAGE_TOO_LARGE");
+                        }
+                        if monitor.is_none() {
+                            let runtime = Monitor::start_with_store(barrier.clone(), store.clone())?;
+                            runtime.set_rules(rules.clone());
+                            monitor = Some(runtime);
+                        }
+                        let proof = highlighter_clipboard::writer::publish_image(
+                            &monitor.as_ref().ok_or("WRITER_UNAVAILABLE")?.writer(),
+                            &bytes,
+                            private,
+                        )?;
+                        Ok(json!({"published":true,"private":private,"bytes":bytes.len(),"sequence":proof.sequence}))
+                    }
                     "set-pinned" | "delete" | "clear" => {
                         if let Some(current) = &monitor {
                             current.invalidate();

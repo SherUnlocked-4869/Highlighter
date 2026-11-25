@@ -331,3 +331,133 @@ test('settings service migrates legacy DeepSeek settings into the provider catal
   assert.equal(Object.hasOwn(settings.ai, 'model'), false)
   assert.equal(store.get('settings').ai.schemaVersion, 2)
 })
+
+// ---------------------------------------------------------------------------
+// D02 (plan item 04): a value that only reached the session must be the effective one.
+// ---------------------------------------------------------------------------
+
+function createProviders(apiKey = 'sk-provider-old') {
+  return [
+    { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://deepseek.example', models: [], apiKey },
+    { id: 'jbb', name: 'JBB', baseUrl: 'https://jbb.example', models: [], apiKey: 'sk-jbb-old' }
+  ]
+}
+
+const providerDefaults = {
+  ...defaults,
+  providers: [
+    { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://deepseek.example', models: [], apiKey: '' },
+    { id: 'jbb', name: 'JBB', baseUrl: 'https://jbb.example', models: [], apiKey: '' }
+  ]
+}
+
+test('D02 (04): the new key is what callers see after the store refused to overwrite the old one', () => {
+  const store = new MemoryStore()
+  const safeStorage = createSafeStorage()
+  const service = new SettingsService({ store, safeStorage, defaults })
+  service.updateSettings({ apiKey: 'sk-old-value' })
+  assert.equal(service.getSettings().apiKey, 'sk-old-value')
+  // The old ciphertext decrypts fine; only the NEW write fails.
+  const realEncrypt = safeStorage.encryptString
+  let refuse = true
+  safeStorage.encryptString = (value) => {
+    if (refuse) throw new Error('DPAPI locked')
+    return realEncrypt(value)
+  }
+  service.updateSettings({ apiKey: 'sk-new-value' })
+  assert.equal(service.getSettings().apiKey, 'sk-new-value', 'the effective key must be the one the user just entered')
+  assert.equal(service.getPublicSettings().hasApiKey, true)
+  // …and the request-building path uses the same value.
+  assert.equal(service.prepareProviderConnection({
+    id: 'deepseek',
+    baseUrl: 'https://deepseek.example',
+    apiKey: 'sk-new-value'
+  }).apiKey, 'sk-new-value')
+  // The session hint says the value is temporary.
+  const state = service.getPublicSettings().credentialState
+  assert.equal(state.sessionOnly, true)
+  assert.deepEqual(state.sessionOverrides.overrides, { master: 'set' })
+  // The old ciphertext is still there for a later verified write.
+  assert.ok(store.get('credentials.apiKey'))
+  // Encryption works again: the next save verifies the new ciphertext and drops the override.
+  refuse = false
+  service.updateSettings({ compact: true })
+  assert.equal(service.getSettings().apiKey, 'sk-new-value')
+  assert.deepEqual(service.getPublicSettings().credentialState.sessionOverrides.overrides, {})
+  assert.equal(safeStorage.decryptString(Buffer.from(store.get('credentials.apiKey'), 'base64')), 'sk-new-value')
+})
+
+test('D02 (04): clearing the key never falls back to the decrypted old value', () => {
+  const store = new MemoryStore()
+  const safeStorage = createSafeStorage()
+  const service = new SettingsService({ store, safeStorage, defaults })
+  service.updateSettings({ apiKey: 'sk-old-value' })
+  // The delete cannot reach the store this time (a locked/read-only profile).
+  const realDelete = store.delete.bind(store)
+  let refuseDelete = true
+  store.delete = (key) => {
+    if (refuseDelete && key === 'credentials.apiKey') return
+    realDelete(key)
+  }
+  const cleared = service.updateSettings({ apiKey: '' }).settings
+  assert.equal(cleared.apiKey, '', 'the cleared value is the effective one for this session')
+  assert.equal(service.getPublicSettings().hasApiKey, false)
+  assert.deepEqual(service.getPublicSettings().credentialState.sessionOverrides.cleared, ['master'])
+  // The durable copy is still there (the delete failed), so the user is told to retry.
+  assert.ok(store.get('credentials.apiKey'))
+  // A successful save deletes it, verifies the deletion and drops the override.
+  refuseDelete = false
+  service.updateSettings({ compact: true })
+  assert.equal(store.get('credentials.apiKey'), undefined)
+  assert.equal(service.getSettings().apiKey, '')
+  assert.deepEqual(service.getPublicSettings().credentialState.sessionOverrides.overrides, {})
+})
+
+test('D02 (04): only the edited provider changes; the others keep their stored keys', () => {
+  const store = new MemoryStore()
+  const safeStorage = createSafeStorage()
+  const service = new SettingsService({ store, safeStorage, defaults: providerDefaults })
+  service.updateSettings({ providers: createProviders() })
+  const storedBefore = JSON.parse(JSON.stringify(store.get('credentials.providerApiKeys')))
+  assert.equal(safeStorage.decryptString(Buffer.from(storedBefore.jbb, 'base64')), 'sk-jbb-old')
+
+  // The user edits only DeepSeek's key.
+  const patched = createProviders().map((provider) => (
+    provider.id === 'deepseek' ? { ...provider, apiKey: 'sk-deepseek-new' } : { id: provider.id }
+  ))
+  const result = service.updateSettings({ providers: patched })
+  assert.equal(result.settings.providers.find((p) => p.id === 'deepseek').apiKey, 'sk-deepseek-new')
+  assert.equal(result.settings.providers.find((p) => p.id === 'jbb').apiKey, 'sk-jbb-old', 'the untouched provider keeps its credential')
+  const storedAfter = store.get('credentials.providerApiKeys')
+  assert.equal(storedAfter.jbb, storedBefore.jbb, 'the untouched ciphertext is not rewritten')
+  assert.equal(safeStorage.decryptString(Buffer.from(storedAfter.deepseek, 'base64')), 'sk-deepseek-new')
+})
+
+test('D02 (04): a provider key that failed to persist wins in the same request and never leaks to another endpoint', () => {
+  const store = new MemoryStore()
+  const safeStorage = createSafeStorage()
+  const service = new SettingsService({ store, safeStorage, defaults: providerDefaults })
+  service.updateSettings({ providers: createProviders() })
+  const realEncrypt = safeStorage.encryptString
+  safeStorage.encryptString = () => { throw new Error('DPAPI locked') }
+  const patched = createProviders().map((provider) => (
+    provider.id === 'deepseek' ? { ...provider, apiKey: 'sk-deepseek-session' } : { id: provider.id }
+  ))
+  safeStorage.encryptString = realEncrypt
+  safeStorage.encryptString = (value) => value === 'sk-deepseek-session' ? (() => { throw new Error('DPAPI locked') })() : realEncrypt(value)
+  const result = service.updateSettings({ providers: patched })
+  assert.equal(result.settings.providers.find((p) => p.id === 'deepseek').apiKey, 'sk-deepseek-session')
+  assert.equal(service.prepareProviderConnection({
+    id: 'deepseek',
+    baseUrl: 'https://deepseek.example',
+    apiKey: 'sk-deepseek-session'
+  }).apiKey, 'sk-deepseek-session')
+  // The old ciphertext is still in place and is what the store would decrypt…
+  assert.ok(store.get('credentials.providerApiKeys').deepseek)
+  // …but it does not answer for a provider pointed at another server: the changed address
+  // is refused outright instead of silently reusing the old server's credential.
+  assert.throws(
+    () => service.prepareProviderConnection({ id: 'deepseek', baseUrl: 'https://other.example' }),
+    /API 地址已更改|请先填写 API 密钥/
+  )
+})

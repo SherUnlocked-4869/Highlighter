@@ -148,3 +148,74 @@ test('provider API keys fall back to plaintext values when encryption is unavail
   assert.equal(credentials.setProviderApiKeys(providers), false)
   assert.deepEqual(credentials.getProviderApiKeys(providers), { deepseek: 'sk-plaintext' })
 })
+
+// ---------------------------------------------------------------------------
+// D02 (plan item 04): a value that only reached the session must WIN over the
+// decryptable old value, including the explicit "cleared" state.
+// ---------------------------------------------------------------------------
+
+function createProviderSafeStorage() {
+  const safeStorage = createSafeStorage()
+  return safeStorage
+}
+
+test('D02 (04): a session override outranks the decryptable old master key', () => {
+  const store = new MemoryStore()
+  const credentials = new CredentialStore({ store, safeStorage: createSafeStorage() })
+  assert.equal(credentials.setApiKey('sk-old'), true)
+  assert.equal(credentials.getApiKey(), 'sk-old')
+  // The new value could not be persisted: it lives in the session only.
+  credentials.setSessionOverride('master', 'sk-new')
+  assert.equal(credentials.getApiKey(), 'sk-new', 'the overwritten value must be the one every caller sees')
+  // Clearing is an OVERRIDE, not "no override": it must not fall back to the old key.
+  credentials.setSessionOverride('master', '')
+  assert.equal(credentials.getApiKey(), '')
+  assert.equal(credentials.getEffectiveCredentialState().overrides.master, 'empty')
+  // Dropping the override (after a verified persist) restores the stored value.
+  credentials.clearSessionOverride('master')
+  assert.equal(credentials.getApiKey(), 'sk-old')
+})
+
+test('D02 (04): a provider override outranks the stored key and can clear it', () => {
+  const store = new MemoryStore()
+  const credentials = new CredentialStore({ store, safeStorage: createProviderSafeStorage() })
+  const providers = [{ id: 'deepseek', apiKey: 'sk-old', baseUrl: 'https://a.example' }]
+  assert.equal(credentials.setProviderApiKeys(providers), true)
+  assert.equal(credentials.getProviderApiKeys(providers).deepseek, 'sk-old')
+  credentials.setSessionOverride('provider:deepseek', 'sk-new', { endpoint: 'https://a.example' })
+  assert.equal(credentials.getProviderApiKeys(providers).deepseek, 'sk-new')
+  credentials.setSessionOverride('provider:deepseek', '', { endpoint: 'https://a.example' })
+  assert.equal(credentials.getProviderApiKeys(providers).deepseek, '', 'an explicit clear wins over the stored key')
+  credentials.clearSessionOverride('provider:deepseek')
+  assert.equal(credentials.getProviderApiKeys(providers).deepseek, 'sk-old')
+})
+
+test('D02 (04): an override and a stored key are both bound to their endpoint', () => {
+  const store = new MemoryStore()
+  const credentials = new CredentialStore({ store, safeStorage: createProviderSafeStorage() })
+  const endpointA = [{ id: 'deepseek', apiKey: 'sk-a', baseUrl: 'https://a.example' }]
+  assert.equal(credentials.setProviderApiKeys(endpointA), true)
+  // The stored key was saved for A; asking about B must not hand it over.
+  assert.equal(credentials.getProviderApiKeys([{ id: 'deepseek', baseUrl: 'https://b.example' }]).deepseek, '')
+  // A session override recorded for A does not follow the provider to B either.
+  credentials.setSessionOverride('provider:deepseek', 'sk-a-session', { endpoint: 'https://a.example' })
+  assert.equal(credentials.getProviderApiKeys([{ id: 'deepseek', baseUrl: 'https://a.example' }]).deepseek, 'sk-a-session')
+  assert.equal(credentials.getProviderApiKeys([{ id: 'deepseek', baseUrl: 'https://b.example' }]).deepseek, '')
+  // Going back to A restores both.
+  assert.equal(credentials.getProviderApiKeys([{ id: 'deepseek', baseUrl: 'https://a.example/' }]).deepseek, 'sk-a-session')
+})
+
+test('D02 (04): an unmodified provider keeps its stored credential while another is overridden', () => {
+  const store = new MemoryStore()
+  const credentials = new CredentialStore({ store, safeStorage: createProviderSafeStorage() })
+  const providers = [
+    { id: 'deepseek', apiKey: 'sk-deepseek', baseUrl: 'https://deepseek.example' },
+    { id: 'jbb', apiKey: 'sk-jbb', baseUrl: 'https://jbb.example' }
+  ]
+  assert.equal(credentials.setProviderApiKeys(providers), true)
+  credentials.setSessionOverride('provider:deepseek', 'sk-deepseek-new', { endpoint: 'https://deepseek.example' })
+  assert.deepEqual(credentials.getProviderApiKeys(providers), {
+    deepseek: 'sk-deepseek-new',
+    jbb: 'sk-jbb'
+  })
+})

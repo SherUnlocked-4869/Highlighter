@@ -8,8 +8,8 @@
 
 | 工单 | 优先级 | 状态 | 回归测试 | 真机/发布门槛 |
 |---|---|---|---|---|
-| D01 | P0 | 已实现 | test/update-service.test.js, test/update-domain.test.js, test/update-ui-contract.test.js | 隔离 NSIS 首 2 分钟与 24h 更新域名请求数为 0（release-hardware-matrix: nsis-default-offline-updates） |
-| D02 | P0 | 已实现 | test/credential-store.test.js, test/settings-service.test.js, test/d02-credentials-contract.test.js | 加密不可用/跨 Windows 用户解密的真机复现；诊断包内标记出现次数为 0 |
+| D01 | P0 | 已实现（03：重置与自动检查共用启停） | test/update-service.test.js, test/update-domain.test.js, test/update-ui-contract.test.js, test/settings-effects.test.js | 隔离 NSIS 首 2 分钟与 24h 更新域名请求数为 0（release-hardware-matrix: nsis-default-offline-updates） |
+| D02 | P0 | 已实现（04：显式会话覆盖与端点绑定） | test/credential-store.test.js, test/settings-service.test.js, test/d02-credentials-contract.test.js | 加密不可用/跨 Windows 用户解密的真机复现；诊断包内标记出现次数为 0 |
 | C01 | P0 | 已实现（01/02：中断收尾、已确认前缀与恢复回执） | test/chunk-backpressure.test.js, test/record-control-bar.test.js, test/recording-service.test.js, test/record-finalize.test.js, test/record-domain.test.js, test/recording-project-service.test.js | 慢盘/便携盘注入（5s、30s、永久无确认、磁盘满），真实 1080p30 30 分钟无误暂停 |
 | A01 | P0 | 已实现 | test/tray-menu.test.js | 游戏模式 + 控制在全屏游戏下被遮挡时从托盘结束（真机托盘交互） |
 | A02 | P1 | 已实现 | test/capture-keyboard-focus.test.js, test/capture-annotation-width.test.js | Tab 到标注/撤销/保存/录制按钮逐个按 Enter/Space；讲述人读出名称 |
@@ -22,7 +22,7 @@
 | A05 | P1 | 已实现 | test/clipboard-preview.test.js | 20 张相似图首次粘贴正确率（5 人）；30 次预览释放（真机面板） |
 | A06 | P1 | 已实现（图标素材待补） | test/tray-menu.test.js, test/first-run-guidance.test.js | 5 名新用户 60 秒首框；16/24/32 托盘素材与深浅任务栏 |
 | D03 | P1 | 已实现（17：编辑器抢救按钮已接线） | test/recording-salvage.test.js, test/recording-editor-ui.test.js | 真实强制结束/截断 WebM 的重封装与播放 |
-| B01 | P1 | 已实现（原生剪贴板排除格式待接线） | test/capture-skip-history.test.js | 唯一测试图在截图历史/剪贴板历史/自动存盘三区新增 0；原生排除格式 |
+| B01 | P1 | 已实现（05 原生私密写入已接线；12 全局历史与本次跳过已分离） | test/capture-skip-history.test.js, test/capture-pin-copy.test.js, test/clipboard-paste.test.js | 唯一测试图在截图历史/剪贴板历史/自动存盘三区新增 0；原生排除格式 |
 | B03 | P1 | 已实现 | test/pin-copy-once.test.js, test/capture-pin-copy.test.js | 真机 0/90/180/270 视图导出朝向与高 DPI；预览对话框 |
 | B08 | P2 | 已实现（仅素材帧） | test/recording-pin-frame.test.js | 真实 VFR 视频的 ≤1 帧偏差与去段后取帧 |
 | A07 | P2 | 已实现（吸附开关待设置项） | test/pin-snap-geometry.test.js, test/pin-display.test.js | 真机 100%+150%/负坐标副屏/拔屏/20 张定位与 ≤1 DIP 吸附 |

@@ -2,6 +2,7 @@
 const path = require('node:path')
 const { randomUUID } = require('node:crypto')
 const { ClipboardService } = require('../../services/clipboard-service')
+const { registerClipboardPublisher, resetClipboardPublisher } = require('../../services/clipboard-publish')
 const { POLL_REVISION_FRESH_MS } = require('../../services/clipboard-poll-policy')
 const { registerClipboardIpc } = require('../../ipc/clipboard-ipc')
 const { t } = require('../../services/i18n-bootstrap')
@@ -51,6 +52,8 @@ function previewFailure(error) {
 function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, session, dialog, powerMonitor, ipcMain, rootDirectory, directory, getSettings, updateSettings, getHook, createLocalWindow, positionAutomationWindow, isGameModeEnabled, isMigrationInProgress, automation = false }) {
   const executable = path.join(app.isPackaged ? process.resourcesPath : rootDirectory, 'native', 'clipboard', ...(app.isPackaged ? [] : ['bin']), 'HighlighterClipboard.exe')
   const service = new ClipboardService({ executable, directory, getHook })
+  // B01 (plan item 05): the capture domain publishes private screenshots through this.
+  registerClipboardPublisher((input) => service.publishImage(input))
   let win = null; let generation = null; let releaseTimer = null; let panelSession = null
   let confirmationOpen = false; let readyToShow = false; let disposed = false
   let wantsVisible = false; let hiddenAt = null
@@ -415,6 +418,13 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   // `thumbnails` is exposed alongside `service`: both are seams for the unit
   // tests, which replace the backend and assert on the byte cache directly.
   return { service, thumbnails, ownsWindow, show, hide, applySettings, start,
+    // B01 (plan item 05): the private clipboard publication used by screenshots. It is a
+    // direct native write (no history entry, works with history disabled) and it answers a
+    // receipt, so the capture domain never has to guess whether the pixels landed.
+    publishImage(input = {}) {
+      return service.publishImage(input)
+    },
+    canPublishImage: () => typeof service.publishImage === 'function',
     // B05: the status IPC and clipboard:init both carry the derived capacity
     // view; nothing in the native protocol changed.
     statusSnapshot,
@@ -431,6 +441,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     dispose() {
       if (shutdownPromise) return shutdownPromise
       disposed = true; release()
+      resetClipboardPublisher()
       for (const [event, listener] of powerListeners) powerMonitor.removeListener(event, listener)
       shutdownPromise = service.dispose().finally(() => { shutdownComplete = true })
       return shutdownPromise

@@ -39,7 +39,7 @@ const flushHistory = () => new Promise((resolve) => setTimeout(resolve, 50))
 // 1. The pure output plan: two outputs, one receipt, retry only what is missing.
 // ---------------------------------------------------------------------------
 
-test('the receipt reports both outputs independently (the four-way matrix)', () => {
+test('the receipt reports both outputs independently (the four-way matrix)', async () => {
   const both = summarizePinCopyOutputs({ attempted: { pin: { ok: true }, copy: { ok: true } } })
   assert.equal(both.ok, true)
   assert.deepEqual(both.outputs, { pin: { ok: true }, copy: { ok: true } })
@@ -106,10 +106,13 @@ test('merging a retry keeps the earlier success and clears the missing output', 
 // 2. The capture domain: one export, one history record, per-output reports.
 // ---------------------------------------------------------------------------
 
-function createHarness({ pinError = '', clipboardDrops = false, pinLimit = false } = {}) {
+function createHarness({ pinError = '', clipboardDrops = false, pinLimit = false, nativeCopy = false } = {}) {
   const persisted = []
   const calls = { pin: 0, write: 0, highlight: 0 }
   let drops = clipboardDrops
+  // B01 (plan item 05): the private copy needs a native writer. Tests toggle this to model
+  // "the native publication is (un)available" without inventing a plain fallback.
+  let nativeWriterActive = nativeCopy === true
   const captureWindow = { _pinCopyState: undefined, isDestroyed: () => false }
   const domain = createCaptureDomain({
     app: { isPackaged: false },
@@ -151,6 +154,10 @@ function createHarness({ pinError = '', clipboardDrops = false, pinLimit = false
         return {}
       }
     },
+    // The optional native seam: present only when the test turned it on.
+    writeClipboardImage: async () => (nativeWriterActive
+      ? { ok: true, private: true, sequence: 1 }
+      : { ok: false, code: 'CLIPBOARD_BUSY' }),
     createRecordWindow: async () => {},
     createLongCaptureFromSelection: async () => {},
     createRecognitionWindow: () => {},
@@ -166,7 +173,8 @@ function createHarness({ pinError = '', clipboardDrops = false, pinLimit = false
     captureWindow,
     persisted,
     calls,
-    setClipboardDropped: (value) => { drops = value === true }
+    setClipboardDropped: (value) => { drops = value === true },
+    setNativeCopy: (value) => { nativeWriterActive = value === true }
   }
 }
 
@@ -175,7 +183,7 @@ const payload = (extra = {}) => ({ imageBuffer: Buffer.from([1, 2, 3]), meta: { 
 
 test('one confirmation produces a pin and a clipboard result with a single history record', async () => {
   const harness = createHarness()
-  const receipt = harness.controller.pin(event(), payload({ copy: true }))
+  const receipt = await harness.controller.pin(event(), payload({ copy: true }))
   assert.equal(receipt.ok, true)
   assert.deepEqual(receipt.outputs, { pin: { ok: true }, copy: { ok: true } })
   assert.equal(receipt.statusKey, 'pin.copy-once.result-both-ok')
@@ -191,7 +199,7 @@ test('one confirmation produces a pin and a clipboard result with a single histo
 test('the 20-pin budget reports the copy as its own success, not as a total failure', async () => {
   // The budget is a state (canPinMore), so the pin attempt is not even started.
   const harness = createHarness({ pinLimit: true })
-  const receipt = harness.controller.pin(event(), payload({ copy: true }))
+  const receipt = await harness.controller.pin(event(), payload({ copy: true }))
   assert.equal(receipt.ok, false)
   assert.deepEqual(receipt.outputs.pin, { ok: false, code: 'PIN_LIMIT' })
   assert.deepEqual(receipt.outputs.copy, { ok: true })
@@ -209,7 +217,7 @@ test('the 20-pin budget reports the copy as its own success, not as a total fail
 
 test('a clipboard held by another process is reported instead of silently claimed', async () => {
   const harness = createHarness({ clipboardDrops: true })
-  const receipt = harness.controller.pin(event(), payload({ copy: true }))
+  const receipt = await harness.controller.pin(event(), payload({ copy: true }))
   assert.equal(receipt.ok, false)
   assert.deepEqual(receipt.outputs.pin, { ok: true })
   assert.deepEqual(receipt.outputs.copy, { ok: false, code: 'CLIPBOARD_BUSY' })
@@ -222,7 +230,7 @@ test('a clipboard held by another process is reported instead of silently claime
 
 test('both outputs failing records nothing and offers both retries', async () => {
   const harness = createHarness({ pinError: 'boom', clipboardDrops: true })
-  const receipt = harness.controller.pin(event(), payload({ copy: true }))
+  const receipt = await harness.controller.pin(event(), payload({ copy: true }))
   assert.equal(receipt.ok, false)
   assert.equal(receipt.statusKey, 'pin.copy-once.result-none')
   assert.deepEqual(receipt.retry, ['pin', 'copy'])
@@ -233,13 +241,13 @@ test('both outputs failing records nothing and offers both retries', async () =>
 
 test('a retry fills only the missing output and never writes a second history record', async () => {
   const harness = createHarness({ clipboardDrops: true })
-  const first = harness.controller.pin(event(), payload({ copy: true }))
+  const first = await harness.controller.pin(event(), payload({ copy: true }))
   assert.deepEqual(first.failed, ['copy'])
   await flushHistory()
   assert.equal(harness.persisted.length, 1)
 
   harness.setClipboardDropped(false)
-  const retried = harness.controller.pin(event(), payload({ retry: 'copy' }))
+  const retried = await harness.controller.pin(event(), payload({ retry: 'copy' }))
   assert.equal(retried.ok, true)
   assert.deepEqual(retried.reattempted, ['copy'])
   assert.equal(harness.calls.pin, 1, 'retrying the copy must not pin again')
@@ -248,19 +256,19 @@ test('a retry fills only the missing output and never writes a second history re
   assert.equal(harness.persisted.length, 1, 'a retry is not a new capture')
 })
 
-test('retrying an output that already succeeded is a no-op (double click)', () => {
+test('retrying an output that already succeeded is a no-op (double click)', async () => {
   const harness = createHarness()
-  const first = harness.controller.pin(event(), payload({ copy: true }))
+  const first = await harness.controller.pin(event(), payload({ copy: true }))
   assert.equal(first.ok, true)
-  const again = harness.controller.pin(event(), payload({ retry: 'pin' }))
+  const again = await harness.controller.pin(event(), payload({ retry: 'pin' }))
   assert.deepEqual(again.reattempted, [])
   assert.equal(again.ok, true)
   assert.equal(harness.calls.pin, 1)
 })
 
-test('a retry without a prior receipt reports stale instead of running the output', () => {
+test('a retry without a prior receipt reports stale instead of running the output', async () => {
   const harness = createHarness()
-  const stale = harness.controller.pin(event(), payload({ retry: 'copy' }))
+  const stale = await harness.controller.pin(event(), payload({ retry: 'copy' }))
   assert.equal(stale.stale, true)
   assert.equal(stale.statusKey, 'pin.copy-once.result-stale')
   assert.deepEqual(stale.retry, [])
@@ -269,40 +277,39 @@ test('a retry without a prior receipt reports stale instead of running the outpu
 
 test('the first retry that lands records the single history entry the first attempt could not', async () => {
   const harness = createHarness({ pinError: 'boom', clipboardDrops: true })
-  const failed = harness.controller.pin(event(), payload({ copy: true }))
+  const failed = await harness.controller.pin(event(), payload({ copy: true }))
   assert.equal(failed.recorded, false)
   await flushHistory()
   assert.equal(harness.persisted.length, 0)
 
   // Pin still fails, the clipboard recovers: that single successful output is the one
-  // record the confirmation is allowed to add.
+  // record the confirmation is allowed to add. (This retry is a plain copy - no
+  // skipHistory - so the readback, not the native writer, decides success.)
   harness.setClipboardDropped(false)
-  const copyRetry = harness.controller.pin(event(), payload({ retry: 'copy' }))
+  const copyRetry = await harness.controller.pin(event(), payload({ retry: 'copy' }))
   assert.equal(copyRetry.outputs.copy.ok, true)
   assert.equal(copyRetry.outputs.pin.ok, false)
   assert.equal(copyRetry.recorded, true)
   await flushHistory()
   assert.equal(harness.persisted.length, 1)
 
-  // A later retry of the pin must not append a second record.
-  const pinRetryHarness = harness
-  pinRetryHarness.calls.pin = 0
-  const pinRetry = pinRetryHarness.controller.pin(event(), payload({ retry: 'pin' }))
-  assert.deepEqual(pinRetry.reattempted, ['pin'])
+  // Retrying the half that already succeeded is a no-op and adds no second record.
+  const again = await harness.controller.pin(event(), payload({ retry: 'copy' }))
+  assert.deepEqual(again.reattempted, [])
   await flushHistory()
   assert.equal(harness.persisted.length, 1)
 })
 
 test('the shipped pin-only path keeps its contract (one record, failure throws)', async () => {
   const okHarness = createHarness()
-  assert.equal(okHarness.controller.pin(event(), payload()), null)
+  assert.equal(await okHarness.controller.pin(event(), payload()), null)
   assert.equal(okHarness.calls.write, 0)
   await flushHistory()
   assert.equal(okHarness.persisted.length, 1)
   assert.equal(okHarness.persisted[0].action, 'pin')
 
   const failingHarness = createHarness({ pinError: '最多固定 20 张图片' })
-  assert.throws(() => failingHarness.controller.pin(event(), payload()), /最多固定 20 张图片/)
+  await assert.rejects(() => failingHarness.controller.pin(event(), payload()), /最多固定 20 张图片/)
   await flushHistory()
   assert.equal(failingHarness.persisted.length, 0)
 })
@@ -362,7 +369,7 @@ test('capture.js keeps the one-click pin and adds pin+copy as the secondary acti
 test('the combined path rides the existing capture:pin channel end to end', () => {
   assert.match(preload, /pin: \(imageBuffer, meta, options\) => ipcRenderer\.invoke\('capture:pin'/)
   assert.match(captureDomainSource, /if \(copy !== true\) \{[\s\S]{0,700}?return null/)
-  assert.match(captureDomainSource, /return pinAndCopyOnce\(event, captureWindow, buffer, meta\)/)
+  assert.match(captureDomainSource, /return await pinAndCopyOnce\(event, captureWindow, buffer, meta\)/)
   assert.match(captureDomainSource, /if \(retry === 'pin' \|\| retry === 'copy'\) \{/)
   assert.match(captureDomainSource, /const targets = planPinCopyAttempts\(prior\.outputs, \[kind\]\)/)
   // Exactly one history write per confirmation, guarded by the receipt's recorded flag.

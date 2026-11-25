@@ -16,6 +16,13 @@ const REGION_DOMAIN_VALIDATORS = new Map([
   [REGION_PREFERENCES_PATH, assertRegionPreferencesPatch]
 ])
 
+// D02 (04): the override table is keyed by credential id; the master key and provider keys
+// live in the same namespace so one API answers "what would a request use right now".
+function providerCredentialIdOf(id) {
+  const value = typeof id === 'string' ? id.trim() : ''
+  return value ? 'provider:' + value : ''
+}
+
 function sameProviderEndpoint(left, right) {
   const normalize = (value) => String(value || '').trim().replace(/\/+$/, '')
   return normalize(left?.baseUrl) === normalize(right?.baseUrl)
@@ -66,7 +73,17 @@ class SettingsService {
       legacyApiKey: this.credentials.getApiKey(stored?.apiKey)
     })
     if (!migration?.changed || !migration.settings) return false
-    this.persistSettings(mergeSettings(this.defaults, migration.settings))
+    // D02 (04): a migration that folds the legacy master key into a provider writes a NEW
+    // provider credential, so the intent has to travel with the save - the per-credential
+    // rule otherwise leaves the migrated key in memory only.
+    const migratedProviders = Array.isArray(migration.settings.providers)
+      ? migration.settings.providers
+        .filter((provider) => String(provider?.apiKey || '').trim() !== '')
+        .map((provider) => ({ id: provider.id, apiKey: provider.apiKey, baseUrl: provider.baseUrl }))
+      : []
+    this.persistSettings(mergeSettings(this.defaults, migration.settings), {
+      credentialIntent: { providers: migratedProviders }
+    })
     return true
   }
 
@@ -133,30 +150,37 @@ class SettingsService {
   //     only copy a later migration can encrypt) and is never duplicated to another field;
   //   * once encryption works again, session keys are migrated before anything else is
   //     written, so they stop depending on this process.
-  persistSettings(settings, { updateApiKey = false } = {}) {
+  persistSettings(settings, { updateApiKey = false, credentialIntent = null } = {}) {
     const normalized = this.normalizeSettings(mergeSettings(this.defaults, settings || {}))
     const storedSettings = { ...normalized }
     const encryptionAvailable = this.credentials.isEncryptionAvailable()
     const hasProviders = Array.isArray(normalized.providers)
     const existingSettings = this.store.get('settings', {})
+    const existingProviders = Array.isArray(existingSettings.providers) ? existingSettings.providers : []
+    // D02 (04): a credential is only rewritten when THIS patch touched it. Re-encrypting an
+    // untouched provider on every save is how a key that failed to persist for one provider
+    // used to roll back another provider's stored value.
+    const providerIntents = new Map(
+      (Array.isArray(credentialIntent?.providers) ? credentialIntent.providers : [])
+        .map((entry) => [String(entry?.id || ''), entry])
+    )
+    const apiKeyTouched = updateApiKey === true
     if (encryptionAvailable) {
-      this.credentials.migrateSessionSecrets()
-      let stored = true
-      if (updateApiKey) stored = this.credentials.setApiKey(normalized.apiKey)
+      // A save is the one moment a session value can become durable: retry every pending
+      // override, verify the ciphertext that actually landed, and only then drop it.
+      this.credentials.flushSessionOverrides()
+      if (apiKeyTouched) this.persistMasterCredential(normalized.apiKey)
       delete storedSettings.apiKey
       if (hasProviders) {
-        stored = this.credentials.setProviderApiKeys(normalized.providers) && stored
+        for (const [providerId, intent] of providerIntents) {
+          if (providerId) this.persistProviderCredential(providerId, intent)
+        }
         storedSettings.providers = normalized.providers.map((provider) => ({ ...provider, apiKey: '' }))
       }
-      if (!stored) {
-        // DPAPI claimed to be available but refused to encrypt. Keep the keys for this
-        // session and tell the UI; falling back to plaintext is exactly what D02 forbids.
-        this.credentials.setSessionApiKey(normalized.apiKey)
-        if (hasProviders) this.credentials.setSessionProviderApiKeys(normalized.providers)
-      }
     } else {
-      if (updateApiKey) {
-        this.credentials.setSessionApiKey(normalized.apiKey)
+      if (apiKeyTouched) {
+        // No durable copy is possible; the override is the effective value from now on.
+        this.credentials.setSessionOverride('master', normalized.apiKey)
         delete storedSettings.apiKey
       } else if (Object.hasOwn(existingSettings, 'apiKey')) {
         storedSettings.apiKey = existingSettings.apiKey
@@ -164,8 +188,12 @@ class SettingsService {
         delete storedSettings.apiKey
       }
       if (hasProviders) {
-        this.credentials.setSessionProviderApiKeys(normalized.providers)
-        const existingProviders = Array.isArray(existingSettings.providers) ? existingSettings.providers : []
+        for (const [providerId, intent] of providerIntents) {
+          if (!providerId) continue
+          // Remember the endpoint the temporary value belongs to, so it can never be handed
+          // to the same provider id pointed at another server.
+          this.credentials.setSessionOverride(providerCredentialIdOf(providerId), intent.apiKey, { endpoint: intent.baseUrl })
+        }
         storedSettings.providers = normalized.providers.map((provider) => {
           const existing = existingProviders.find((item) => item?.id === provider?.id)
           // Only a value that was ALREADY on disk survives, and only for the endpoint it
@@ -179,6 +207,48 @@ class SettingsService {
     return this.getSettings()
   }
 
+  // Writes (or clears) the durable master key and verifies the result before dropping the
+  // session override. A refused encryption/delete KEEPS the override, so every caller sees
+  // the value the user actually chose instead of the stale copy that is still on disk.
+  persistMasterCredential(value) {
+    const apiKey = String(value === undefined || value === null ? '' : value).trim()
+    if (!apiKey) {
+      const deleted = this.credentials.deleteApiKey()
+      if (deleted) this.credentials.clearSessionOverride('master')
+      else this.credentials.setSessionOverride('master', '')
+      return deleted
+    }
+    const stored = this.credentials.setApiKey(apiKey)
+    const verified = stored && this.credentials.getApiKey() === apiKey
+    if (verified) this.credentials.clearSessionOverride('master')
+    else this.credentials.setSessionOverride('master', apiKey)
+    return verified
+  }
+
+  // Same rule per provider: encrypt, read back the ciphertext for the SAME endpoint, and
+  // only then drop the override. An untouched provider is not rewritten at all.
+  persistProviderCredential(providerId, intent = {}) {
+    const id = String(providerId || '').trim()
+    if (!id) return false
+    const credentialId = providerCredentialIdOf(id)
+    const apiKey = String(intent.apiKey === undefined || intent.apiKey === null ? '' : intent.apiKey).trim()
+    const endpoint = typeof intent.baseUrl === 'string' ? intent.baseUrl : undefined
+    if (!apiKey) {
+      const deleted = this.credentials.deleteProviderApiKey(id)
+      if (deleted) this.credentials.clearSessionOverride(credentialId)
+      else this.credentials.setSessionOverride(credentialId, '', { endpoint })
+      return deleted
+    }
+    const stored = this.credentials.setProviderApiKey(id, apiKey, { endpoint })
+    const readBack = stored
+      ? this.credentials.getProviderApiKeys([{ id, baseUrl: endpoint, apiKey: '' }])
+      : {}
+    const verified = stored && readBack[id] === apiKey
+    if (verified) this.credentials.clearSessionOverride(credentialId)
+    else this.credentials.setSessionOverride(credentialId, apiKey, { endpoint })
+    return verified
+  }
+
   updateSettings(patch) {
     const validatedPatch = assertSettingsPatch(
       patch === undefined ? {} : patch,
@@ -190,8 +260,18 @@ class SettingsService {
     const deepseekApiKeyPatch = Array.isArray(validatedPatch.providers)
       ? validatedPatch.providers.find((provider) => provider?.id === 'deepseek' && Object.hasOwn(provider, 'apiKey'))?.apiKey
       : undefined
+    // D02 (04): the credential intents are derived from the PATCH, not from the merged
+    // settings: only the credentials this save touches may be rewritten.
+    const providerIntents = (Array.isArray(validatedPatch.providers) ? validatedPatch.providers : [])
+      .filter((provider) => provider && typeof provider === 'object' && Object.hasOwn(provider, 'apiKey'))
+      .map((provider) => ({
+        id: String(provider.id || ''),
+        apiKey: provider.apiKey,
+        baseUrl: provider.baseUrl
+      }))
     const settings = this.persistSettings(mergeSettings(this.getSettings(), preparedPatch), {
-      updateApiKey: Object.hasOwn(validatedPatch, 'apiKey') || deepseekApiKeyPatch !== undefined
+      updateApiKey: Object.hasOwn(validatedPatch, 'apiKey') || deepseekApiKeyPatch !== undefined,
+      credentialIntent: { providers: providerIntents }
     })
     return { patch: validatedPatch, settings }
   }

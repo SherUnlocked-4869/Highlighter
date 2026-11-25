@@ -306,6 +306,9 @@ let pinOutputBusy = false
 // may turn it off.
 let skipHistoryThisCapture = false
 let skipHistoryLocked = false
+// Plan item 12: whether a commit can persist at all. Kept apart from the per-capture skip
+// so the document editor and the toggle never confuse the two.
+let historyWritable = true
 // Long-press is the secondary gesture for the pin button (right-click works everywhere);
 // the timer is per press and the flag suppresses the click the browser fires afterwards.
 let pinMenuPressTimer = 0
@@ -1290,7 +1293,8 @@ function syncSkipHistoryCopy() {
     skipHistoryToggle.textContent = t('capture-skip.toolbar.toggle')
     skipHistoryToggle.title = skipHistoryLocked ? t('capture-skip.toolbar.locked-tip') : t('capture-skip.toolbar.toggle-tip')
     skipHistoryToggle.setAttribute('aria-pressed', skipHistoryThisCapture ? 'true' : 'false')
-    skipHistoryToggle.disabled = skipHistoryLocked
+    // Plan item 12: never disabled by the global switch - only ever by having no meaning.
+    skipHistoryToggle.disabled = false
     skipHistoryToggle.style.background = skipHistoryThisCapture ? 'var(--primary)' : ''
     skipHistoryToggle.style.color = skipHistoryThisCapture ? 'var(--primary-ink)' : ''
   }
@@ -4351,7 +4355,9 @@ async function requestCloseDocumentEditor() {
   if (!documentEditor.dirty) { finishDocumentClose(); return }
   // B01: with the switch on there is no persist path at all, so offering "save / discard"
   // would be a lie. Ask the one question that is true: closing discards this edit.
-  if (skipHistoryThisCapture) {
+  // Plan item 12: with history globally off a commit cannot persist either, so the same
+  // honest "closing discards this edit" question is the only true one.
+  if (skipHistoryThisCapture || !historyWritable) {
     if (confirm(t('capture-skip.document.close-discard'))) finishDocumentClose()
     return
   }
@@ -4520,7 +4526,20 @@ async function performAction(action) {
     const imageBuffer=await canvasPngBuffer(output)
     // 序号只在导出/编码完成后取值，保证带上本次截图已落的号（P0-7-T7 精确接续）。
     Object.assign(meta,serialMeta())
-    if(action==='copy'){if(initData.editPin)await window.captureAPI.pin(imageBuffer,meta);else await window.captureAPI.copy(imageBuffer,meta);closeCaptureWindow()}
+    if(action==='copy'){
+      if(initData.editPin){await window.captureAPI.pin(imageBuffer,meta);closeCaptureWindow()}
+      else{
+        // B01 (plan item 05): a private copy reports its real outcome. A failure must NOT
+        // close the window as if the image had reached the clipboard - and no plain image
+        // is ever published in its place.
+        const receipt=await window.captureAPI.copy(imageBuffer,meta)
+        if(receipt&&typeof receipt==='object'&&receipt.ok===false){
+          alert(t(receipt.code==='native-writer-unavailable'?'capture-skip.copy.unavailable':'capture-skip.copy.failed',{code:String(receipt.code||'')}))
+          return
+        }
+        closeCaptureWindow()
+      }
+    }
     // P0-7-T4：saveMode 由调用方下发（快捷保存 'fast' / 另存为 'dialog'），未下发时回落到设置项。
     if(action==='save'){window.captureAPI.save(imageBuffer,meta,initData.saveMode?initData.saveMode==='fast':!!initData.settings.screenshot.fastSave);return}
     // P0-4-T7②：导出 PDF 后不关闭截图窗口（主进程 handler 刻意不关），用户可以继续复制/保存/贴图。
@@ -4833,11 +4852,15 @@ window.captureAPI.onInit((data)=>{
   // B02: the one place screenshot.showColorPicker drives the entry; default true, explicit
   // false hides it, and a new image also invalidates the cached sampling ImageData.
   syncColorSampler(data.settings)
-  // B01: the switch starts from the GLOBAL history setting and from what this window was
-  // opened with (a pin created with "do not keep" hands the flag to its re-annotate editor).
-  // It is one-shot state only - nothing here writes back to settings.
+  // B01 (plan item 12): the switch starts from what this WINDOW was opened with (a pin
+  // created with "do not keep" hands the flag to its re-annotate editor), never from the
+  // global history setting. Conflating the two made "history is off globally" behave like
+  // "the user skipped this capture", which also suppressed the independent auto-save.
+  // `skipHistoryLocked` only changes the hint and the document-editor copy; the toggle
+  // stays usable so the user can still skip the auto-saved file.
   skipHistoryLocked = data.settings?.screenshot?.historyEnabled === false
-  skipHistoryThisCapture = data.skipHistory === true || skipHistoryLocked
+  historyWritable = data.settings?.screenshot?.historyEnabled !== false
+  skipHistoryThisCapture = data.skipHistory === true
   syncSkipHistoryCopy()
   if(imageObjectUrl){URL.revokeObjectURL(imageObjectUrl);imageObjectUrl=''}
   // P0-2（S9b）：光标位图在这里预解码（每次 init 都重置，避免沿用上一张的光标）。
@@ -5084,7 +5107,10 @@ if (regionToggle) {
 if (skipHistoryToggle) {
   skipHistoryToggle.addEventListener('click', (event) => {
     event.stopPropagation()
-    if (skipHistoryLocked) return
+    // B01 (plan item 12): the global history switch no longer disables this one. With the
+    // global switch off the toggle still means "do not write the auto-saved file for THIS
+    // capture and publish the clipboard image privately"; disabling it (the old behaviour)
+    // took that choice away from the user.
     skipHistoryThisCapture = !skipHistoryThisCapture
     syncSkipHistoryCopy()
   })

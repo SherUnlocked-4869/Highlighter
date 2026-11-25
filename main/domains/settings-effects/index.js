@@ -174,6 +174,17 @@ function createSettingsEffects(deps) {
     // Same reason as the update path: the tray resolves its labels at build time.
     { id: 'language.tray', run: () => createTrayIcon() },
     { id: 'system.updateChannel', run: (settings) => getUpdateService()?.setChannel(settings.system.updateChannel) },
+    // D01 (plan item 03): restoring the defaults turns the scheduled check back off, so the
+    // reset has to run the SAME arm/disarm logic as the switch. Without it the saved setting
+    // says "off" while the timer armed by the pre-reset value keeps talking to the feed.
+    {
+      id: 'system.autoCheckUpdates',
+      run: (settings) => {
+        const enabled = settings.system?.autoCheckUpdates === true
+        const service = enabled ? getUpdateService() : deps.peekUpdateService?.()
+        service?.setAutoCheckEnabled(enabled)
+      }
+    },
     {
       id: 'selectionToolbar.clipboardFallback',
       run: (settings) => selectionHookServiceRef.get()?.updateStartOptions({

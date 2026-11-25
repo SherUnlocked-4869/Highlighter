@@ -134,13 +134,95 @@ pub fn prepare_paste(
     result.and_then(|value| ended.map(|()| value))
 }
 
+/// The three Windows formats that keep a publication out of clipboard history and out of
+/// monitor/cloud processing. Their presence (the first two) or a DWORD 0 (the third) is what
+/// Windows honors; capture.rs already treats them as "Skip::Private". They are published
+/// INSIDE the same OpenClipboard call and BEFORE the pixels, so a failure here can never
+/// publish an image whose exclusion the user relied on.
+fn exclusion_markers() -> Result<Vec<(u32, Global)>, &'static str> {
+    Ok(vec![
+        (
+            named_format("ExcludeClipboardContentFromMonitorProcessing")
+                .map_err(|_| "EXCLUSION_UNAVAILABLE")?,
+            Global::new(&1u32.to_le_bytes())?,
+        ),
+        (
+            named_format("Clipboard Viewer Ignore").map_err(|_| "EXCLUSION_UNAVAILABLE")?,
+            Global::new(&1u32.to_le_bytes())?,
+        ),
+        (
+            named_format("CanIncludeInClipboardHistory").map_err(|_| "EXCLUSION_UNAVAILABLE")?,
+            Global::new(&0u32.to_le_bytes())?,
+        ),
+    ])
+}
+
+/// Builds the image formats (PNG + CF_DIB) from encoded PNG bytes. Decoding happens before
+/// the clipboard is opened, exactly like the history copy path.
+fn image_formats(bytes: &[u8]) -> Result<Vec<(u32, Global)>, &'static str> {
+    if bytes.len() < 8 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
+        return Err("INVALID_IMAGE");
+    }
+    let mut formats = Vec::new();
+    let mut reader =
+        image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let bitmap = reader.decode().map_err(|_| "INVALID_IMAGE")?.into_rgba8();
+    crate::limits::dimensions(bitmap.width(), bitmap.height()).map_err(|_| "INVALID_IMAGE")?;
+    let dib = Global::generate(124 + bitmap.len(), |dib| {
+        dib[..4].copy_from_slice(&124u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&(bitmap.width() as i32).to_le_bytes());
+        dib[8..12].copy_from_slice(&(-(bitmap.height() as i32)).to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&32u16.to_le_bytes());
+        dib[16..20].copy_from_slice(&3u32.to_le_bytes());
+        for (offset, value) in [
+            (40, 0x00ff0000u32),
+            (44, 0x0000ff00),
+            (48, 0x000000ff),
+            (52, 0xff000000),
+            (56, 0x73524742),
+        ] {
+            dib[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        for (rgba, bgra) in bitmap.chunks_exact(4).zip(dib[124..].chunks_exact_mut(4)) {
+            bgra.copy_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
+        }
+    })?;
+    formats.push((
+        named_format("PNG").map_err(|_| "COPY_FAILED")?,
+        Global::new(bytes)?,
+    ));
+    formats.push((17, dib));
+    Ok(formats)
+}
+
+/// Publishes one fresh image that does not exist in history. `private` adds the exclusion
+/// markers before the pixels, so the publication can never land in clipboard history,
+/// monitor processing or the app's own capture.
+pub fn publish_image(
+    context: &WriterContext,
+    bytes: &[u8],
+    private: bool,
+) -> Result<PublicationProof, &'static str> {
+    let started = Instant::now();
+    let mut formats = Vec::new();
+    // Markers first: if one of them cannot be prepared, nothing is published at all.
+    if private {
+        formats.extend(exclusion_markers()?);
+    }
+    formats.extend(image_formats(bytes)?);
+    publish_formats(context, formats, "image/png", started)
+}
+
 fn copy(
     context: &WriterContext,
     mime: &str,
     bytes: &[u8],
 ) -> Result<PublicationProof, &'static str> {
     let started = Instant::now();
-    let original_sequence = unsafe { GetClipboardSequenceNumber() };
     let mut formats = Vec::new();
     if mime.starts_with("text/plain") {
         let text = std::str::from_utf8(bytes).map_err(|_| "INVALID_ENCODING")?;
@@ -163,41 +245,23 @@ fn copy(
             Global::new(&1u32.to_le_bytes())?,
         ));
     } else if mime == "image/png" {
-        let mut reader =
-            image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
-        let mut limits = image::Limits::default();
-        limits.max_alloc = Some(64 * 1024 * 1024);
-        reader.limits(limits);
-        let bitmap = reader.decode().map_err(|_| "INVALID_IMAGE")?.into_rgba8();
-        crate::limits::dimensions(bitmap.width(), bitmap.height()).map_err(|_| "INVALID_IMAGE")?;
-        let dib = Global::generate(124 + bitmap.len(), |dib| {
-            dib[..4].copy_from_slice(&124u32.to_le_bytes());
-            dib[4..8].copy_from_slice(&(bitmap.width() as i32).to_le_bytes());
-            dib[8..12].copy_from_slice(&(-(bitmap.height() as i32)).to_le_bytes());
-            dib[12..14].copy_from_slice(&1u16.to_le_bytes());
-            dib[14..16].copy_from_slice(&32u16.to_le_bytes());
-            dib[16..20].copy_from_slice(&3u32.to_le_bytes());
-            for (offset, value) in [
-                (40, 0x00ff0000u32),
-                (44, 0x0000ff00),
-                (48, 0x000000ff),
-                (52, 0xff000000),
-                (56, 0x73524742),
-            ] {
-                dib[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-            }
-            for (rgba, bgra) in bitmap.chunks_exact(4).zip(dib[124..].chunks_exact_mut(4)) {
-                bgra.copy_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
-            }
-        })?;
-        formats.push((
-            named_format("PNG").map_err(|_| "COPY_FAILED")?,
-            Global::new(bytes)?,
-        ));
-        formats.push((17, dib));
+        formats = image_formats(bytes)?;
     } else {
         return Err("UNSUPPORTED");
     }
+    publish_formats(context, formats, mime, started)
+}
+
+/// Opens the clipboard ONCE, publishes the prepared formats in order, verifies what landed
+/// and returns the proof. Shared by the history copy and the direct private publish so both
+/// paths obey the same interruption/busy/verification rules.
+fn publish_formats(
+    context: &WriterContext,
+    formats: Vec<(u32, Global)>,
+    mime: &str,
+    started: Instant,
+) -> Result<PublicationProof, &'static str> {
+    let original_sequence = unsafe { GetClipboardSequenceNumber() };
     let mut trace = PublicationTrace::default();
     let result = (|| unsafe {
         let owner = context.window()?;
@@ -255,13 +319,9 @@ fn copy(
         trace.verified_sequence = candidate;
         Ok(context.proof(candidate, generation))
     })();
-    trace.phase = match &result {
-        Ok(_) => "verified",
-        Err(code) => code,
-    };
-    context.record(trace);
     result
 }
+
 
 struct Open(bool);
 impl Open {
@@ -343,4 +403,33 @@ unsafe fn verify_formats(
         checked?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // B01 (plan item 05): the three exclusion formats are prepared as DWORD payloads and
+    // are published BEFORE the pixels. This is the invariant the capture domain relies on:
+    // a marker that cannot be prepared fails the publication instead of degrading it.
+    #[test]
+    fn exclusion_markers_are_three_dword_flags() {
+        let markers = exclusion_markers().expect("markers must be preparable");
+        assert_eq!(markers.len(), 3);
+        for (_, data) in &markers {
+            assert_eq!(data.length, 4);
+        }
+    }
+
+    // A non-PNG never reaches the clipboard: validation happens before the decode and
+    // before any clipboard call.
+    #[test]
+    fn image_formats_reject_non_png_before_touching_the_clipboard() {
+        assert_eq!(image_formats(b"").err(), Some("INVALID_IMAGE"));
+        assert_eq!(image_formats(b"not a png at all").err(), Some("INVALID_IMAGE"));
+        // A valid signature with a broken body still fails at the decoder, not at publication.
+        let mut broken = b"\x89PNG\r\n\x1a\n".to_vec();
+        broken.extend_from_slice(&[0u8; 8]);
+        assert!(image_formats(&broken).is_err());
+    }
 }

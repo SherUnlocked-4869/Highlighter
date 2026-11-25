@@ -80,6 +80,18 @@ function credentialNoticeMarkup() {
   if (state.decryptFailed) notices.push('config.models.credential-decrypt-failed')
   else if (state.encryptionAvailable === false) notices.push('config.models.credential-session-only')
   if (state.encryptionFailed) notices.push('config.models.credential-encryption-failed')
+  // D02 (04): a value that replaced a stored one but could not be written yet. The restart
+  // behaviour has to be spelled out: the temporary value disappears and the still-stored old
+  // one only applies to the configuration it was entered for.
+  const overrides = state.sessionOverrides && typeof state.sessionOverrides === 'object'
+    ? state.sessionOverrides
+    : null
+  if (overrides && Array.isArray(overrides.replaced) && overrides.replaced.length) {
+    notices.push('config.models.credential-session-override')
+  }
+  if (overrides && Array.isArray(overrides.cleared) && overrides.cleared.length) {
+    notices.push('config.models.credential-session-cleared')
+  }
   if (state.legacyPlaintext) notices.push('config.models.credential-legacy-plaintext')
   return notices.map((key) => `<div class="update-guidance warning" data-credential-notice>${t(key)}</div>`).join('')
 }

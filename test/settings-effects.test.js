@@ -19,7 +19,14 @@ function createHarness() {
     registerShortcuts: record('shortcuts'),
     applyGameModeState: (enabled, reason) => calls.push({ name: 'gameMode', args: [enabled, reason] }),
     createTrayIcon: record('tray'),
-    getUpdateService: () => ({ setChannel: record('channel') }),
+    getUpdateService: () => ({
+      setChannel: record('channel'),
+      setAutoCheckEnabled: record('autoCheck')
+    }),
+    peekUpdateService: () => ({
+      setChannel: record('channel'),
+      setAutoCheckEnabled: record('autoCheck')
+    }),
     ocrServiceRef: {
       get: () => ocr.stopped ? null : ocr,
       set: (value) => { if (value === null) ocr.stop() }
@@ -144,7 +151,9 @@ test('reset reapplies the documented effect set', () => {
   })
   // `language.tray` rebuilds the tray on reset too (the template resolves its labels at
   // build time), so the reset path now records that call as well.
-  assert.deepEqual(calls.map((c) => c.name), ['gameMode', 'appearance', 'tray', 'channel', 'clipboard', 'search'])
+  // D01 (plan item 03): the reset also applies the auto-check switch, so restoring the
+  // default (off) must reach the same service the switch does - peek only, never construct.
+  assert.deepEqual(calls.map((c) => c.name), ['gameMode', 'appearance', 'tray', 'channel', 'autoCheck', 'clipboard', 'search'])
 })
 
 test('update effect ids are stable for contract tests', () => {
@@ -172,4 +181,146 @@ test('update effect ids are stable for contract tests', () => {
     'selectionToolbar.enabled',
     'selectionToolbar.conversation.persist'
   ])
+})
+
+// ---------------------------------------------------------------------------
+// D01 (plan item 03): "restore defaults" must stop the automatic update timer.
+// ---------------------------------------------------------------------------
+
+test('D01 (03): a reset disarms the automatic check through the peek-only path', () => {
+  const toggles = []
+  const domain = createSettingsEffects({
+    app: { setLoginItemSettings: () => {} },
+    registerShortcuts: () => {},
+    applyGameModeState: () => {},
+    createTrayIcon: () => {},
+    // The channel effect may resolve the service; what must NOT happen is that the
+    // auto-check switch constructs one just to turn the schedule off.
+    getUpdateService: () => ({ setChannel: () => {}, setAutoCheckEnabled: (value) => toggles.push(['live', value]) }),
+    peekUpdateService: () => ({ setChannel: () => {}, setAutoCheckEnabled: (value) => toggles.push(['peek', value]) }),
+    ocrServiceRef: { get: () => null, set: () => {} },
+    getOcrService: () => ({ ensureStarted: async () => {} }),
+    broadcastActionAppearance: () => {},
+    searchDomain: { notifySettingsChanged: () => {} },
+    selectionHookServiceRef: { get: () => null },
+    log: () => {}
+  })
+  // The defaults restored by "restore defaults" have auto check OFF.
+  domain.applyReset({ system: { gameMode: false, updateChannel: 'stable', autoCheckUpdates: false }, selectionToolbar: {}, ocr: {} })
+  assert.deepEqual(toggles, [['peek', false]])
+
+  // A reset that restores the non-default ON value arms it, and that path needs the live
+  // service (a peek would return null on a session that never built one).
+  const armed = []
+  const armedDomain = createSettingsEffects({
+    app: { setLoginItemSettings: () => {} },
+    registerShortcuts: () => {},
+    applyGameModeState: () => {},
+    createTrayIcon: () => {},
+    getUpdateService: () => ({ setChannel: () => {}, setAutoCheckEnabled: (value) => armed.push(['live', value]) }),
+    peekUpdateService: () => ({ setChannel: () => {}, setAutoCheckEnabled: (value) => armed.push(['peek', value]) }),
+    ocrServiceRef: { get: () => null, set: () => {} },
+    getOcrService: () => ({ ensureStarted: async () => {} }),
+    broadcastActionAppearance: () => {},
+    searchDomain: { notifySettingsChanged: () => {} },
+    selectionHookServiceRef: { get: () => null },
+    log: () => {}
+  })
+  armedDomain.applyReset({ system: { gameMode: false, updateChannel: 'stable', autoCheckUpdates: true }, selectionToolbar: {}, ocr: {} })
+  assert.deepEqual(armed, [['live', true]])
+})
+
+test('D01 (03): a real update service stops scheduling when reset restores the defaults', async () => {
+  const { UpdateService, DEFAULT_STARTUP_DELAY_MS, DEFAULT_CHECK_INTERVAL_MS } = require('../main/services/update-service')
+  // A fake clock: armed timers fire only when the test says so.
+  const timers = {
+    pending: null,
+    id: 0,
+    setTimeoutFn: (fn, delay) => {
+      const entry = {
+        delay,
+        id: ++timers.id,
+        // A real timer is gone once it fires: drop it from the fake queue first so a
+        // captured handle can be re-run later without pretending to be pending.
+        fn: () => {
+          if (timers.pending === entry) timers.pending = null
+          return fn()
+        }
+      }
+      timers.pending = entry
+      return entry.id
+    },
+    clearTimeoutFn: (id) => { if (timers.pending && timers.pending.id === id) timers.pending = null }
+  }
+  const updater = { checkCalls: 0, on() {}, removeListener() {}, configure: 0, checkForUpdates: async () => { updater.checkCalls += 1 } }
+  const service = new UpdateService({
+    updater,
+    currentVersion: '5.0.1',
+    installType: 'nsis',
+    autoCheckEnabled: false,
+    setTimeoutFn: timers.setTimeoutFn,
+    clearTimeoutFn: timers.clearTimeoutFn
+  })
+  const domain = createSettingsEffects({
+    app: { setLoginItemSettings: () => {} },
+    registerShortcuts: () => {},
+    applyGameModeState: () => {},
+    createTrayIcon: () => {},
+    getUpdateService: () => service,
+    peekUpdateService: () => service,
+    ocrServiceRef: { get: () => null, set: () => {} },
+    getOcrService: () => ({ ensureStarted: async () => {} }),
+    broadcastActionAppearance: () => {},
+    searchDomain: { notifySettingsChanged: () => {} },
+    selectionHookServiceRef: { get: () => null },
+    log: () => {}
+  })
+
+  // 1) The user enables scheduling, then restores defaults BEFORE the first round.
+  domain.applyUpdate({ system: { autoCheckUpdates: true } }, { system: { autoCheckUpdates: true }, selectionToolbar: {}, ocr: {} })
+  assert.equal(timers.pending.delay, DEFAULT_STARTUP_DELAY_MS, 'the opt-in armed the first round')
+  domain.applyReset({ system: { gameMode: false, updateChannel: 'stable', autoCheckUpdates: false }, selectionToolbar: {}, ocr: {} })
+  assert.equal(timers.pending, null, 'the reset cleared the pending timer')
+  // Advancing the whole 24h window must not reach the feed.
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(updater.checkCalls, 0)
+  assert.equal(service.getStatus().autoCheckEnabled, false)
+
+  // 2) Re-enabling after the reset arms exactly one fresh first round.
+  domain.applyUpdate({ system: { autoCheckUpdates: true } }, { system: { autoCheckUpdates: true }, selectionToolbar: {}, ocr: {} })
+  assert.equal(timers.pending.delay, DEFAULT_STARTUP_DELAY_MS)
+  const firstRound = timers.pending
+  await firstRound.fn()
+  assert.equal(updater.checkCalls, 1)
+  assert.equal(timers.pending.delay, DEFAULT_CHECK_INTERVAL_MS, 'the periodic round is armed')
+
+  // 3) A reset while the periodic round is pending stops the schedule.
+  domain.applyReset({ system: { gameMode: false, updateChannel: 'stable', autoCheckUpdates: false }, selectionToolbar: {}, ocr: {} })
+  assert.equal(timers.pending, null)
+  await firstRound.fn()
+  assert.equal(updater.checkCalls, 1, 'the captured periodic tick cannot reach the feed after the reset')
+
+  // 4) A reset while a request is IN FLIGHT: the answer arrives, nothing is rescheduled.
+  //    (Clear the last-checked stamp so the non-manual path really issues the request.)
+  service.state.lastCheckedAt = ''
+  domain.applyUpdate({ system: { autoCheckUpdates: true } }, { system: { autoCheckUpdates: true }, selectionToolbar: {}, ocr: {} })
+  let release = null
+  updater.checkForUpdates = () => { updater.checkCalls += 1; return new Promise((resolve) => { release = resolve }) }
+  const inFlight = timers.pending.fn()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(updater.checkCalls, 2)
+  domain.applyReset({ system: { gameMode: false, updateChannel: 'stable', autoCheckUpdates: false }, selectionToolbar: {}, ocr: {} })
+  release()
+  await inFlight
+  assert.equal(timers.pending, null, 'an in-flight request does not re-arm the schedule')
+
+  // 5) A repeated reset is harmless.
+  domain.applyReset({ system: { gameMode: false, updateChannel: 'stable', autoCheckUpdates: false }, selectionToolbar: {}, ocr: {} })
+  assert.equal(timers.pending, null)
+  // 6) The manual check is untouched by all of this: exactly one request per click.
+  updater.checkForUpdates = async () => { updater.checkCalls += 1 }
+  await service.check({ manual: true })
+  assert.equal(updater.checkCalls, 3)
+  assert.equal(timers.pending, null, 'a manual check never arms the schedule')
+  service.dispose()
 })

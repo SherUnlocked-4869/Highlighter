@@ -18,6 +18,7 @@ const { makeCaptureName } = require('../../services/capture-naming')
 // function, so the two no longer carry separate copies of the same arithmetic.
 const { resolveEditorLayout, scaleFactorFor } = require('../../../shared/editor-layout')
 const { captureForeground } = require('../../services/focused-window-capture')
+const { createClipboardImageWriter } = require('../../services/clipboard-publish')
 // B01: the saved-path notice is the one main-process surface a skipped explicit save can
 // use after the overlay is closed. i18n-bootstrap itself is dependency-free.
 const { t } = require('../../services/i18n-bootstrap')
@@ -186,10 +187,10 @@ function planClipboardPublish(options = {}) {
   const nativeWriter = options.nativeWriter === true
   return {
     private: nativeWriter,
-    // "pending-native": the app knows exactly which formats to add and where, but the
-    // published image still comes from Electron until native/clipboard exposes a
-    // private publication. The receipt says so instead of claiming an exclusion.
-    status: nativeWriter ? 'private' : 'pending-native',
+    // B01 (plan item 05): there is no degraded "normal image" publication any more. When
+    // the native writer is absent the only honest answer is "cannot publish privately",
+    // and the caller must NOT fall back to Electron's plain write.
+    status: nativeWriter ? 'private' : 'unavailable',
     formats: [...CLIPBOARD_HISTORY_EXCLUSION_FORMATS]
   }
 }
@@ -352,31 +353,46 @@ function createCaptureDomain(deps) {
 
   // One clipboard publication for both the plain and the skipped copy, so the copy
   // path and "pin and copy" cannot disagree about which formats were attached.
-  // `deps.writeClipboardImage` is the future native seam (a publication that carries
-  // the image AND the exclusion formats in one OpenClipboard call); until it exists
-  // the plain Electron write is used and the receipt says "pending-native" instead
-  // of pretending the clipboard history was excluded.
-  function writeImageToClipboard(image, { skipHistory = false } = {}) {
-    const nativeWriter = typeof deps.writeClipboardImage === 'function' ? deps.writeClipboardImage : null
+  //
+  // B01 (plan item 05): the private publication is the native writer (one OpenClipboard
+  // call that sets the exclusion formats BEFORE the pixels). It is awaited - the promise
+  // IS the write - and there is deliberately NO fallback to `clipboard.writeImage`: the
+  // whole point of the switch is that a plain image never reaches Windows history. A busy
+  // clipboard is retried; a missing writer or a marker failure is reported as a failure.
+  const PUBLICATION_RETRYABLE = new Set(['CLIPBOARD_BUSY', 'COPY_INTERRUPTED', 'QUIESCING', 'BACKPRESSURE'])
+  // The clipboard domain registers its native publisher when it is constructed; the writer
+  // resolves it at click time. An injected writer wins, so a test can drive the seam.
+  const writeClipboardImage = typeof deps.writeClipboardImage === 'function'
+    ? deps.writeClipboardImage
+    : createClipboardImageWriter({ log })
+  async function writeImageToClipboard(image, { skipHistory = false, retries = 2 } = {}) {
+    const nativeWriter = typeof writeClipboardImage === 'function' ? writeClipboardImage : null
     const publication = planClipboardPublish({ skipHistory, nativeWriter: !!nativeWriter })
-    if (publication.private) {
-      try {
-        const result = nativeWriter(image)
-        if (!result || result.ok !== false) return { ok: true, ...publication }
-        log('Native clipboard exclusion write failed:', result.code || 'unknown')
-      } catch (error) {
-        log('Native clipboard exclusion write failed:', error.message)
-      }
+    if (!publication.private) {
+      clipboard.writeImage(image)
+      return { ok: true, ...publication, attempts: 0 }
     }
-    clipboard.writeImage(image)
-    // The explicit copy must still land even when the native seam refused; the receipt then
-    // reports the honest "pending-native" state instead of claiming an exclusion.
+    let last = { ok: false, code: 'PUBLICATION_FAILED' }
+    for (let attempt = 1; attempt <= retries + 1; attempt += 1) {
+      try {
+        const result = await nativeWriter(image, { private: true })
+        if (result && result.ok === true) {
+          return { ok: true, ...publication, attempts: attempt, receipt: result }
+        }
+        last = result && typeof result === 'object' ? result : { ok: false, code: 'PUBLICATION_FAILED' }
+      } catch (error) {
+        last = { ok: false, code: error?.code || 'PUBLICATION_FAILED', message: error?.message }
+      }
+      if (!PUBLICATION_RETRYABLE.has(String(last.code || '')) || attempt > retries) break
+      await new Promise((resolve) => setTimeout(resolve, 60 * attempt))
+    }
+    log('Private clipboard publication failed:', last.code || 'unknown')
     return {
-      ok: true,
+      ok: false,
+      code: last.code || 'PUBLICATION_FAILED',
+      attempts: Number(last.attempts) || retries + 1,
       ...publication,
-      private: false,
-      status: publication.status === 'private' ? 'pending-native' : publication.status,
-      fellBack: publication.private
+      private: true
     }
   }
 
@@ -418,10 +434,17 @@ function createCaptureDomain(deps) {
   // Electron does not throw when another process holds the Windows clipboard: the
   // write is silently dropped. Reading the image back is what turns that into a
   // reportable failure instead of a false "copied".
-  function copyBufferToClipboard(buffer, options = {}) {
+  async function copyBufferToClipboard(buffer, options = {}) {
     try {
       const image = nativeImage.createFromBuffer(buffer)
-      const publication = writeImageToClipboard(image, options)
+      const publication = await writeImageToClipboard(image, options)
+      // B01: the private path reports the NATIVE receipt, not a readback - the exclusion
+      // markers are what makes the write private, and they are not observable by reading
+      // the image back.
+      if (!publication.ok) return { ok: false, code: publication.code || 'PUBLICATION_FAILED', publication }
+      if (publication.private) {
+        return { ok: true, exclusion: publication.status, publication }
+      }
       const expected = typeof image?.getSize === 'function' ? image.getSize() : null
       if (!expected || !(expected.width > 0) || !(expected.height > 0)) return { ok: true }
       if (typeof clipboard.readImage !== 'function') return { ok: true }
@@ -484,11 +507,11 @@ function createCaptureDomain(deps) {
   // One confirmation = one export = at most ONE history record, even when only one
   // of the two outputs landed. The receipt lives on the capture window so a retry
   // can only fill in the missing half.
-  function pinAndCopyOnce(event, captureWindow, buffer, meta) {
+  async function pinAndCopyOnce(event, captureWindow, buffer, meta) {
     const skipHistory = resolveSkipHistory(captureWindow, meta)
     const attempted = {
       pin: attemptPinOutput(event, captureWindow, buffer, meta, skipHistory),
-      copy: copyBufferToClipboard(buffer, { skipHistory })
+      copy: await copyBufferToClipboard(buffer, { skipHistory })
     }
     const receipt = summarizePinCopyOutputs({ attempted })
     receipt.recorded = attempted.pin.ok || attempted.copy.ok
@@ -514,7 +537,7 @@ function createCaptureDomain(deps) {
     }
   }
 
-  function retryPinCopy(captureWindow, kind, { event, buffer, meta }) {
+  async function retryPinCopy(captureWindow, kind, { event, buffer, meta }) {
     const prior = captureWindow?._pinCopyState
     if (!prior || !prior.outputs) return stalePinCopyReceipt()
     const skipHistory = resolveSkipHistory(captureWindow, meta)
@@ -526,7 +549,7 @@ function createCaptureDomain(deps) {
     }
     const attempted = {}
     if (kind === 'pin') attempted.pin = attemptPinOutput(event, captureWindow, buffer, meta, skipHistory)
-    else attempted.copy = copyBufferToClipboard(buffer, { skipHistory })
+    else attempted.copy = await copyBufferToClipboard(buffer, { skipHistory })
     const receipt = summarizePinCopyOutputs({ prior: prior.outputs, attempted })
     // A confirmation that failed both outputs recorded nothing; the first retry that
     // lands may still write the single missing record. The flag is set before the
@@ -1313,7 +1336,7 @@ function createCaptureDomain(deps) {
           ? candidates
           : [{ x: 0, y: 0, w: context.captureBounds.width, h: context.captureBounds.height }]
       },
-      copy: (_event, { imageBuffer, dataUrl, meta } = {}) => {
+      copy: async (_event, { imageBuffer, dataUrl, meta } = {}) => {
         // 复制同样消耗已落的序号（Enter 走的就是这条路径）—— 与 save/pin/... 同一回报口径。
         reportCaptureSerial(meta)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
@@ -1321,10 +1344,11 @@ function createCaptureDomain(deps) {
         const image = nativeImage.createFromBuffer(buffer)
         const captureWindow = BrowserWindow.fromWebContents(_event.sender)
         const skipHistory = resolveSkipHistory(captureWindow, meta)
-        // B01: the skipped copy still goes to the Windows clipboard (it is an explicit
-        // output), but the publication asks for the exclusion formats and the white
-        // lie of "pending-native" is reported instead of claimed.
-        const publication = writeImageToClipboard(image, { skipHistory })
+        // B01 (plan items 05/12): the private publication is awaited and its receipt is
+        // reported as-is. The history/auto-save decisions below are computed from the
+        // GLOBAL switch and THIS capture's explicit skip separately - a disabled global
+        // history must not be mistaken for "the user skipped this copy".
+        const publication = await writeImageToClipboard(image, { skipHistory })
         // P0-7B（§17.6）：保存落点可能是记忆目录（screenshot.lastSaveDirectory），
         // 因此"配置了固定目录或已有记忆目录"任一成立即可自动保存。
         const settings = getSettings()
@@ -1337,12 +1361,22 @@ function createCaptureDomain(deps) {
         if (plan.autoSaveFile && settings.screenshot.autoSaveOnCopy && resolveSaveDirectory(settings)) {
           scheduleAutoSave(captureWindow, buffer)
         }
-        return skipHistory
+        if (!publication.ok) {
+          // No plain fallback: the user asked for a private copy and it did not happen.
+          return {
+            ok: false,
+            code: publication.code || 'private-publish-failed',
+            clipboard: 'none',
+            history: plan.historyRecords === 1 ? 'recorded' : 'skipped',
+            exclusion: 'failed'
+          }
+        }
+        return skipHistory || publication.private
           ? {
               ok: true,
               clipboard: 'windows',
-              history: 'skipped',
-              exclusion: publication.exclusion || publication.status
+              history: plan.historyRecords === 1 ? 'recorded' : 'skipped',
+              exclusion: publication.status
             }
           : null
       },
@@ -1374,7 +1408,7 @@ function createCaptureDomain(deps) {
           }
         })
       },
-      pin: (event, { imageBuffer, dataUrl, meta, copy, retry } = {}) => {
+      pin: async (event, { imageBuffer, dataUrl, meta, copy, retry } = {}) => {
         reportCaptureSerial(meta)
         const buffer = imageDataToBuffer(imageBuffer ?? dataUrl)
         if (!buffer.length) throw new Error('截图图片数据为空')
@@ -1398,7 +1432,7 @@ function createCaptureDomain(deps) {
           scheduleHistoryWrite(captureWindow, plan, buffer, meta)
           return null
         }
-        return pinAndCopyOnce(event, captureWindow, buffer, meta)
+        return await pinAndCopyOnce(event, captureWindow, buffer, meta)
       },
       pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
         reportCaptureSerial(meta)
