@@ -1,6 +1,6 @@
 # Windows 产品架构评审后的开发修复计划
 
-2026-11-25 · Highlighter Windows / Electron · 评审代码基线 `2a71cbc` · 状态为待开发、待验收
+2026-11-25 · Highlighter Windows / Electron · 评审代码基线 `2a71cbc` · 开发分支 `fix/windows-architecture-review-2026-11-25` · 状态：19 项已实现，待真机与候选包验收（交付登记见 [证据登记](../evidence/2026-11-25-windows-architecture-review-evidence.md)）
 
 本计划覆盖上一轮代码评审的 **16 条缺陷与 3 项尚未接入生产的能力**。01–16 对应代码发现，17–19 对应已有后端或扩展点的功能。编号供开发、提交和回归记录共同引用。原架构评审覆盖 27 张工单，本次范围以这 19 项为准。[原架构评审](../reviews/2026-11-24-windows-product-architecture-review.md) · [原工单证据登记](../evidence/2026-11-25-windows-architecture-review-evidence.md)
 

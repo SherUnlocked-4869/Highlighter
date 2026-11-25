@@ -425,20 +425,22 @@ test('capture domain auto-saves on copy when only the remembered directory exist
   const harness = createHarness({ screenshot: { autoSaveOnCopy: true, saveDirectory: '', lastSaveDirectory: '  E:/shots  ' } })
   const controller = harness.domain.createCaptureController()
 
-  controller.copy({ sender: {} }, { imageBuffer: Buffer.from([1, 2, 3]) })
+  // The copy handler awaits the clipboard publication (plan items 05/12), so the caller has
+  // to wait for it before the delayed auto-save can be observed.
+  await controller.copy({ sender: {} }, { imageBuffer: Buffer.from([1, 2, 3]) })
   await new Promise((resolve) => setImmediate(resolve))
   assert.deepEqual(harness.calls.saved, [{ fast: true }], 'a remembered directory alone is enough to trigger the save')
   assert.equal(harness.calls.persisted.length, 1)
 
   // Whitespace-only memory is still "no directory" (the saver trims it the same way).
   harness.settings.screenshot.lastSaveDirectory = '   '
-  controller.copy({ sender: {} }, { imageBuffer: Buffer.from([1, 2, 3]) })
+  await controller.copy({ sender: {} }, { imageBuffer: Buffer.from([1, 2, 3]) })
   assert.equal(harness.calls.saved.length, 1, 'a blank memory must not trigger the save')
 
   // The toggle still wins over any directory.
   harness.settings.screenshot.autoSaveOnCopy = false
   harness.settings.screenshot.lastSaveDirectory = 'E:/shots'
-  controller.copy({ sender: {} }, { imageBuffer: Buffer.from([1, 2, 3]) })
+  await controller.copy({ sender: {} }, { imageBuffer: Buffer.from([1, 2, 3]) })
   assert.equal(harness.calls.saved.length, 1)
 })
 

@@ -36,7 +36,47 @@
 | C06 | P2 | 工具已实现 | test/release-size.test.js | 两个相邻 NSIS 候选 + blockmap 的差分传输与安装耗时 |
 | C02 | P1 | 已实现（15：逐指标样本与报告列，缺测阻断） | test/performance-budget.test.js | 固定机冷启 ≥20 次 + 5 轮 30 分钟待机；绝对数字只能在真机采集 |
 
-待登记（实现完成后补行）：B02 取色器、C04 贴图溢出异步 I/O、其余 P1/P2 工单。
+待登记（实现完成后补行）：B02 取色器、其余 P1/P2 工单。
+
+## 2026-11-25 修复计划 · 19 项交付登记
+
+计划：`docs/plans/2026-11-25-windows-architecture-review-fix-plan.md`。分支 `fix/windows-architecture-review-2026-11-25`。
+“已通过入口”写的是回归用例真正驱动的那条生产路径（渲染层 → preload → 主进程 / 主进程服务 API）。
+
+| 项 | 工单 | 修复提交 | 回归用例（文件） | 已通过的生产入口 | 未完成的真机门槛 |
+|---|---|---|---|---|---|
+| 01 | C01 | 5781855 | test/record-finalize.test.js, test/record-domain.test.js | 真实 record/record.js（假窗口）：停止/托盘/热键共用一次收尾、ACK 期限、迟到 ACK 隔离；record:finish-session 恢复回执 | 1080p30 连录 30 分钟无误暂停；5 s/30 s/永久无 ACK 的慢盘注入 |
+| 02 | C01 | 5781855 | test/recording-service.test.js, test/recording-project-service.test.js | RecordingService.appendChunk/finishSession（真实临时目录）：已确认前缀、残尾截断、无确认素材、重启只信文件 | 真实盘满卷；真实 WebM 解码至最后有效帧 |
+| 17 | D03 | 6f1b5db | test/recording-salvage.test.js, test/recording-editor-ui.test.js | 编辑器窗口（假 DOM）：抢救/取消按钮 → preload salvage/cancelSalvage；单任务、切换项目丢弃迟到回执、盘满/无可解码分别提示 | 带音轨的真实截断 WebM 打开-抢救-播放-重开；FFmpeg 进程清理 |
+| 13 | B04 | 6f1b5db | test/recording-audio-preflight.test.js, test/recording-audio-preflight-ui.test.js | 录制条与设置页真实流程（假时钟/假设备）：5 秒总期限从点击起算、迟到授权立即 stop、重检释放上一轮 | 静音/仅系统/仅麦克风/双路真机组合，含蓝牙断开 |
+| 03 | D01 | 2f5d1bb | test/settings-effects.test.js, test/update-service.test.js | settings-effects.applyUpdate/applyReset + 真实 UpdateService（假时钟）：重置撤销定时器、重新开启、手动检查一次一次 | 隔离 NSIS 观察首 2 分钟与 24 h 更新域名请求为 0；便携包不启动更新器 |
+| 04 | D02 | 2f5d1bb | test/credential-store.test.js, test/settings-service.test.js, test/d02-credentials-contract.test.js | CredentialStore 覆盖表 + SettingsService.persistSettings/prepareProviderConnection：新值胜出、端点绑定、核验密文后才移除覆盖、清空核验 | 真实 DPAPI 不可用复现；诊断包/备份明文标记命中 0 |
+| 05 | B01 | 2f5d1bb | test/capture-skip-history.test.js, test/clipboard-paste.test.js | capture.copy（真实 domain）→ 注入的 native writer；ClipboardService.publishImage 真实请求/临时文件/回执；无 writer 不降级 | Win+V 剪贴板历史、原生 writer 端到端粘贴、剪贴板占用重试 |
+| 12 | B01 | 2f5d1bb | test/capture-skip-history.test.js | capture.copy 四行表（全局历史 × 本次跳过）；渲染层不再把全局关闭当成本次跳过 | 重启后按唯一测试图核对目录与两类历史 |
+| 08 | D04 | 523001e | test/data-root-backup-ui.test.js | data-root domain（假服务）：校验先行、仅设置不停写、按模块 quiesce、录屏中拒绝并回传任务 | 真实录屏/导出/长截图进行中做仅设置备份的候选包验证 |
+| 06 | D04 | 523001e | test/data-root-backup.test.js, test/data-root-backup-ui.test.js | createBackup/restoreBackup（真实文件树）：历史独立索引、settings 纯净、旧包敏感标记、仅历史恢复发布索引 | 真实重启后读取历史列表；旧组合包/索引校验失败样本 |
+| 07 | D04 | 523001e | test/data-root-backup.test.js | restoreBackup：docPath/baseImagePath/resultImagePath 重写、外部引用保持、越界拒绝 | 真机通过历史入口打开-再编辑-撤销-导出 |
+| 19 | D04 | 523001e | test/data-root-backup.test.js, test/data-root-backup-ui.test.js | data-root domain → backup-migrations 生产钩子：暂存根校验、支持窗口、回滚保留原根 | 安装版/便携版上一受支持版本跨版本恢复 |
+| 09 | A03 | beb7c80 | test/shortcut-service.test.js, test/shortcut-rebind-contract.test.js | shortcut-service.registerAll（逐键）+ 域 register；设置页改键仍走事务 sync | 独立本地进程占住 F2 的真实注册表验证 |
+| 11 | A03 | beb7c80 | test/shortcut-service.test.js | sync：清空后映射同步移除，重新启用真的注册；交换/回滚/被抢占逐键报告 | Windows 真实按键验证 |
+| 10 | B06 | beb7c80 | test/long-capture-completion.test.js, test/long-capture-output.test.js | longFinish（真实 domain）：实际路径回执、历史失败分离、重名新名、重复完成一次 | 慢盘快速保存与同名占用的候选包验证 |
+| 14 | A07 | beb7c80 | test/tray-menu.test.js, test/pin-domain.test.js | main.js 接线：onPinLayoutChange/onRecoverableChange → createTrayIcon；菜单每次读实时布局 | 真机托盘首张/第二张/移动/穿透 |
+| 18 | D05 | beb7c80 | test/pin-crash-recovery.test.js, test/tray-menu.test.js | pin domain trayRecoveryMenu + buildTrayMenuTemplate：恢复/另存/丢弃、上限后仅另存、取消保留 | 打包版异常退出后的托盘交互与 TTL 过期 |
+| 15 | C02 | 7fd4022 | test/performance-budget.test.js | evaluateBaseline/currentFromReport + startup-baseline 采集器（真实子进程）：逐指标缺测阻断、重复轮次、超时回收 | 固定机 ≥20 次冷启 + 5 轮 30 分钟待机（仅采集） |
+| 16 | C04 | 7fd4022 | test/pin-image-store-async.test.js, test/pin-domain.test.js | createPinImageStore：释放即出队、仅两个在途计费、按字节硬上限、单图额度、盘满保留原图 | 慢盘/SSD 1/10/20 张 4K PNG 的停顿与托盘延迟 |
+
+## 本轮验证记录（2026-11-25/26，本机）
+
+- 定向回归：批次一 121/121、批次二 130/130、批次三 75/75、批次四 102/102、批次五 47/47。
+- 全量 `node --test test/*.test.js`：2843 项，2842 通过；唯一失败为 `test/usage-query.test.js` 的
+  “query p95 stays inside the 100 ms budget on ~100k synthetic buckets”（满负载下 summary P95 超 100 ms）。
+  该测试文件与 usage 相关实现相对基线提交 `deec664` 未改动，单独运行 11.2 s 通过（见 `git diff --quiet deec664..HEAD -- test/usage-query.test.js main/services/usage-*.js`），
+  判定为本机负载造成的计时抖动，不作为修复回归。
+- 运行时（Electron）套件：本机 Chromium 沙箱不可启动，按 AGENTS.md 用宿主侧 `--no-sandbox` 注入后 18/18 通过；该注入不在仓库内。
+- 原生剪贴板：`cargo test`（lib 21 项 + 其它套件）通过；按计划重建侧车 `native/clipboard/bin/HighlighterClipboard.exe`
+  （buildId `hl_b175da43...a30f`），`test/clipboard-coordination.test.js` 4/4、`test/clipboard-protocol.test.js` 4/4。
+- `npm run check`：语法 572 文件、架构（main.js 1330/1330）、i18n（三语对称 2333 键）、评审证据登记全部通过。
+- 未执行：`verify:package`（需完整 electron-builder 产物与静默安装）与上文“未完成的真机门槛”整列。
 
 ## 说明
 

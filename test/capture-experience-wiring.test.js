@@ -45,7 +45,7 @@ test('the serial counter is reset explicitly on init and continues only when ask
   )
   assert.match(captureDomain, /close: \(event, payload = \{\}\) => \{[\s\S]{0,160}?reportCaptureSerial\(payload\)/, '✕/Esc 关窗也要推进序号')
   // OCR 评审修复：复制（Enter 走的路径）与录制/长截图出口也必须回报序号。
-  assert.match(captureDomain, /copy: \(_event, \{ imageBuffer, dataUrl, meta \} = \{\}\) => \{[\s\S]{0,200}?reportCaptureSerial\(meta\)/)
+  assert.match(captureDomain, /copy: async \(_event, \{ imageBuffer, dataUrl, meta \} = \{\}\) => \{[\s\S]{0,240}?reportCaptureSerial\(meta\)/)
   assert.match(captureDomain, /startRegionRecording: async \(event, \{ selectionBounds, serialNumber \} = \{\}\) => \{[\s\S]{0,200}?reportCaptureSerial\(\{ serialNumber \}\)/)
   assert.match(captureDomain, /startLong: \(event, payload = \{\}\) => \{[\s\S]{0,160}?reportCaptureSerial\(payload\)/)
   assert.match(script, /startRegionRecording\(selectionBounds,serialMeta\(\)\)/)
