@@ -472,8 +472,8 @@ function createProjectServiceStub(overrides = {}) {
       return { items: items.slice(offset, offset + limit), total: items.length, offset, limit }
     },
     checkpoint: async (projectId, offsets) => { record('checkpoint', projectId, offsets); return true },
-    sealProject: async (projectId, { metadata, captureOutcome } = {}) => {
-      record('sealProject', projectId, { metadata, captureOutcome })
+    sealProject: async (projectId, { metadata, captureOutcome, recovery } = {}) => {
+      record('sealProject', projectId, { metadata, captureOutcome, recovery })
       if (overrides.sealAnswer) {
         if (overrides.sealAnswer.project) projects.set(String(projectId), overrides.sealAnswer.project)
         return overrides.sealAnswer
@@ -648,6 +648,20 @@ function createRecordingServiceStub(overrides = {}) {
       if (overrides.finishError) throw overrides.finishError
       const session = sessions.get(String(sessionId))
       session.state = 'ready'
+      if (overrides.finishAnswer) {
+        const answer = typeof overrides.finishAnswer === 'function'
+          ? overrides.finishAnswer(session)
+          : { ...overrides.finishAnswer }
+        return {
+          id: session.id,
+          state: 'ready',
+          inputPath: session.inputPath,
+          previewUrl: `file://${session.inputPath}`,
+          bytesWritten: session.bytesWritten,
+          projectId: session.projectId,
+          ...answer
+        }
+      }
       return {
         id: session.id,
         state: 'ready',
@@ -673,6 +687,7 @@ function createRecordingServiceStub(overrides = {}) {
         session.pendingClose = true
         return false
       }
+      if (overrides.cleanupAnswer !== undefined) return overrides.cleanupAnswer
       sessions.delete(String(sessionId))
       return true
     },
@@ -1098,7 +1113,7 @@ test('finish keeps the control bar usable when the session or the manifest write
   const firstControl = await finishFailure.domain.createRecordWindow({ mode: 'display' })
   const firstSession = await finishFailure.controller.startSession(finishFailure.eventFor(firstControl))
   const failedFinish = await finishFailure.controller.finishSession(finishFailure.eventFor(firstControl), { sessionId: firstSession.id })
-  assert.deepEqual(failedFinish, { ok: false, code: 'finish-failed' })
+  assert.deepEqual(failedFinish, { ok: false, code: 'finish-failed', committedBytes: 0 })
   assert.equal(firstControl.destroyed, false, 'the bar stays for a retry or an abandon')
 
   const sealFailure = createProjectHarness({ projectServiceOverrides: { sealAnswer: { ok: false, code: 'write-failed' } } })
@@ -1114,10 +1129,94 @@ test('record:cancel-session abandons the take, deletes its project and answers {
   const harness = createProjectHarness()
   const control = await harness.domain.createRecordWindow({ mode: 'display' })
   const session = await harness.controller.startSession(harness.eventFor(control))
-  assert.deepEqual(await harness.controller.cancelSession(harness.eventFor(control), { sessionId: session.id }), { ok: true })
+  assert.deepEqual(await harness.controller.cancelSession(harness.eventFor(control), { sessionId: session.id }), { ok: true, deferred: false })
   assert.equal(harness.recordingService.calls.some(([name, id]) => name === 'cleanupSession' && id === session.id), true)
   assert.equal(harness.projectService.calls.some(([name, id]) => name === 'deleteProject' && id === 'project-1'), true)
   assert.equal(harness.projectService.projects.has('project-1'), false)
+})
+
+// ---------------------------------------------------------------------------
+// C01 (plan items 01/02): an interrupted capture keeps its confirmed prefix.
+// ---------------------------------------------------------------------------
+
+test('C01 (02): an interrupted take is sealed with the confirmed prefix and a recoverable receipt', async () => {
+  const harness = createProjectHarness({
+    recordingServiceOverrides: {
+      finishAnswer: {
+        bytesWritten: 5,
+        committedBytes: 5,
+        lastChunkSequence: 1,
+        lastReceivedSequence: 3,
+        recovered: true,
+        timedOut: false,
+        failure: {
+          code: 'ENOSPC',
+          message: 'no space left on device',
+          missingSequenceFrom: 2,
+          missingSequenceTo: 3
+        }
+      }
+    }
+  })
+  const control = await harness.domain.createRecordWindow({ mode: 'display' })
+  const session = await harness.controller.startSession(harness.eventFor(control))
+  await harness.controller.appendChunk(harness.eventFor(control), { sessionId: session.id, arrayBuffer: Buffer.from('first'), sequence: 1 })
+  const answer = await harness.controller.finishSession(harness.eventFor(control), { sessionId: session.id })
+  assert.equal(answer.ok, true, 'the confirmed prefix must still reach a project')
+  assert.equal(answer.interrupted, true)
+  assert.equal(answer.code, 'ENOSPC')
+  assert.equal(answer.committedBytes, 5)
+  assert.equal(answer.missingSequenceFrom, 2)
+  assert.equal(answer.missingSequenceTo, 3)
+  const seal = harness.projectService.calls.find(([name]) => name === 'sealProject')
+  assert.ok(seal, 'the project is sealed')
+  assert.equal(seal[2].recovery.committedByteOffset, 5)
+  assert.equal(seal[2].recovery.lastChunkSequence, 1)
+  assert.equal(seal[2].recovery.cleanStop, false, 'an interrupted writer never reports a clean stop')
+  assert.equal(seal[2].recovery.errorCode, 'ENOSPC')
+  assert.equal(seal[2].recovery.missingSequenceFrom, 2)
+  assert.equal(seal[2].recovery.missingSequenceTo, 3)
+  assert.ok(
+    seal[2].captureOutcome.warnings.includes('capture-interrupted:ENOSPC:2-3'),
+    'the recovery UI is told the fragment range that never reached disk'
+  )
+  await harness.tick()
+  assert.equal(harness.recordingService.calls.some(([name]) => name === 'detachSession'), true)
+  assert.ok(harness.editorWindow(), 'the user can open and repair the confirmed part')
+})
+
+test('C01 (02): zero confirmed fragments is its own result and leaves the take recoverable', async () => {
+  const harness = createProjectHarness({
+    recordingServiceOverrides: {
+      finishError: Object.assign(new Error('录制内容为空'), {
+        code: 'no-confirmed-media',
+        committedBytes: 0,
+        failure: { code: 'ENOSPC', missingSequenceFrom: 1, missingSequenceTo: 1 }
+      })
+    }
+  })
+  const control = await harness.domain.createRecordWindow({ mode: 'display' })
+  const session = await harness.controller.startSession(harness.eventFor(control))
+  const answer = await harness.controller.finishSession(harness.eventFor(control), { sessionId: session.id })
+  assert.deepEqual(answer, { ok: false, code: 'no-confirmed-media', committedBytes: 0 })
+  assert.equal(control.destroyed, false, 'the bar stays so the user can discard or retry')
+  assert.equal(harness.projectService.calls.some(([name]) => name === 'sealProject'), false)
+  assert.equal(harness.projectService.calls.some(([name]) => name === 'deleteProject'), false, 'the empty project stays visible as a recoverable card')
+})
+
+test('C01 (01): abandoning a take whose last write is in flight defers the project deletion', async () => {
+  const harness = createProjectHarness({ recordingServiceOverrides: { cleanupAnswer: false } })
+  const control = await harness.domain.createRecordWindow({ mode: 'display' })
+  const session = await harness.controller.startSession(harness.eventFor(control))
+  const live = harness.recordingService.sessions.get(session.id)
+  live.pendingWrites = 1
+  const answer = await harness.controller.cancelSession(harness.eventFor(control), { sessionId: session.id })
+  assert.deepEqual(answer, { ok: true, deferred: true })
+  assert.equal(harness.projectService.calls.some(([name]) => name === 'deleteProject'), false, 'nothing is deleted under the writer')
+  assert.equal(typeof live.onClosed, 'function', 'the deletion is attached to the close')
+  await live.onClosed()
+  assert.equal(harness.projectService.calls.some(([name, id]) => name === 'deleteProject' && id === 'project-1'), true)
+  assert.equal(harness.projectService.projects.has('project-1'), false, 'the explicit abandon still removes the material')
 })
 
 test('the control bar reports state and the main process arbitrates tray/shortcut commands (contract §9.2)', async () => {

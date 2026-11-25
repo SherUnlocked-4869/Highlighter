@@ -52,6 +52,10 @@ const READABLE_STATES = Object.freeze(['ready', 'closing'])
 // one second of capture. A fragment above this is abnormal; it is refused instead of
 // being buffered in the main process.
 const MAX_APPEND_BYTES = 32 * 1024 * 1024
+// A finish waits at most this long for one in-flight append (the renderer's ACK timeout
+// is 30 s; the main process applies its own deadline so a wedged disk cannot hold both
+// ends of the IPC and the window forever).
+const FINALIZE_TIMEOUT_MS = 30_000
 
 // True when `child` is the same path as `parent` or lies below it. Used to keep a
 // registerPersistedSession() inputPath inside its own directory - the service never
@@ -69,13 +73,20 @@ function sequenceError(code, message, detail = {}) {
 }
 
 class RecordingService {
-  constructor({ tempRoot, ffmpegPath, spawnProcess = spawn, log = () => {}, probe = null }) {
+  constructor({ tempRoot, ffmpegPath, spawnProcess = spawn, log = () => {}, probe = null, fs: fsImpl = fs, finalizeTimeoutMs = FINALIZE_TIMEOUT_MS }) {
     if (!tempRoot) throw new Error('录制临时目录不能为空')
     if (!ffmpegPath) throw new Error('FFmpeg 路径不能为空')
     this.tempRoot = path.resolve(tempRoot)
     this.ffmpegPath = ffmpegPath
     this.spawnProcess = spawnProcess
     this.log = typeof log === 'function' ? log : () => {}
+    // The filesystem seam exists so the disk-full and wedged-write paths can be exercised
+    // without a full volume: production always uses node:fs/promises.
+    this.fs = fsImpl || fs
+    // How long a finish may wait for one in-flight append. Beyond this the capture is
+    // declared interrupted and the original file is kept for recovery instead of being
+    // truncated under a write that may still complete.
+    this.finalizeTimeoutMs = Math.max(0, Number(finalizeTimeoutMs) || 0)
     // `probe` is main/services/recording-probe.js's MediaProbe (or a test double). Optional
     // so a unit test can construct the service without spawning anything; every probe call
     // then reports `probe-unavailable` instead of inventing a duration.
@@ -135,10 +146,26 @@ class RecordingService {
       // Serialised source writes. `bytesWritten` counts chunks that actually reached
       // the file, so it can lag an accepted sequence by one in-flight append.
       writeQueue: Promise.resolve(),
+      // Number of appends whose promise has not settled yet. A rejected write leaves the
+      // queue settled, so this counter - not the queue - is what says a write is still
+      // running (and a cleanup therefore has to wait).
+      pendingWrites: 0,
       bytesWritten: 0,
       // Highest chunk sequence accepted so far (0 = none). Replays and gaps are
       // judged against this value synchronously, before the write starts.
       lastChunkSequence: 0,
+      // C01/02: the highest sequence whose BYTES are fully on disk and the byte offset
+      // that follows it. They move together, only after appendFile resolved, so a torn
+      // tail can be cut back to exactly the data the ACKs described.
+      committedSequence: 0,
+      committedBytes: 0,
+      // Set when a write fails: a full disk must stop ordering new chunks while the
+      // confirmed prefix stays readable.
+      writeError: null,
+      accepting: true,
+      finishPromise: null,
+      finishResult: null,
+      finishError: null,
       process: null,
       // Number of live exports reading this source (plan §8.3). Closing waits for it.
       references: 0,
@@ -184,8 +211,16 @@ class RecordingService {
       ownedDirectory: false,
       state: 'ready',
       writeQueue: Promise.resolve(),
+      pendingWrites: 0,
       bytesWritten: stat ? stat.size : 0,
       lastChunkSequence: 0,
+      committedSequence: 0,
+      committedBytes: stat ? stat.size : 0,
+      writeError: null,
+      accepting: false,
+      finishPromise: null,
+      finishResult: null,
+      finishError: null,
       process: null,
       references: 0,
       metadata: metadata || null,
@@ -227,7 +262,6 @@ class RecordingService {
   // the project service reports durability separately.
   async appendChunk(sessionId, value, { sequence = null } = {}) {
     const session = this.getSession(sessionId)
-    if (session.state !== 'capturing') throw new Error('录制会话已经结束')
     const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value || [])
     if (buffer.length > MAX_APPEND_BYTES) {
       throw sequenceError('chunk-too-large', 'Recording chunk exceeds the append limit', {
@@ -245,8 +279,10 @@ class RecordingService {
       }
       if (chunkSequence <= session.lastChunkSequence) {
         // Replay: wait for earlier writes so `committedBytes` is not a stale number,
-        // then return the same acceptance the first delivery got.
-        await session.writeQueue
+        // then return the same acceptance the first delivery got. A replay is answered
+        // even after a write failure or a seal: the bytes it refers to are the confirmed
+        // prefix, and re-writing them would duplicate media.
+        if (session.pendingWrites === 0) await session.writeQueue
         return this.appendAck(session, chunkSequence)
       }
       if (chunkSequence > session.lastChunkSequence + 1) {
@@ -256,6 +292,20 @@ class RecordingService {
           { expected: session.lastChunkSequence + 1, received: chunkSequence }
         )
       }
+    }
+    // C01/02: after a write failure (or once a finish started) no NEW sequence is
+    // ordered. Accepting one would describe bytes that can never be written, and would
+    // destroy the contiguity the confirmed prefix depends on. The same code answers a
+    // chunk that arrives after the seal, so a late tail is never mistaken for a new take.
+    if (session.state !== 'capturing' || session.accepting === false) {
+      throw sequenceError('append-sealed', 'Recording session stopped accepting chunks', {
+        sequence: chunkSequence,
+        committedBytes: session.committedBytes,
+        lastChunkSequence: session.committedSequence,
+        state: session.state
+      })
+    }
+    if (chunkSequence !== null) {
       // Accept the number synchronously, before the write starts: a duplicate that
       // arrives while this chunk is still in flight must be recognised as a replay.
       session.lastChunkSequence = chunkSequence
@@ -265,12 +315,41 @@ class RecordingService {
       return this.appendAck(session, chunkSequence)
     }
     const write = session.writeQueue.then(async () => {
-      await fs.appendFile(session.inputPath, buffer)
+      await this.fs.appendFile(session.inputPath, buffer)
+      // C01/02: the offset and the sequence move TOGETHER, after the append resolved.
       session.bytesWritten += buffer.length
+      session.committedBytes = session.bytesWritten
+      if (chunkSequence !== null) session.committedSequence = chunkSequence
     })
-    session.writeQueue = write
-    await write
+    session.pendingWrites += 1
+    // The stored queue never rejects: a failed write is reported to its own caller and
+    // recorded on the session, so a later append/finish must not inherit the rejection.
+    session.writeQueue = write.then(() => {}, () => {})
+    try {
+      await write
+    } catch (error) {
+      session.writeError = {
+        code: error?.code || 'write-failed',
+        message: error?.message || String(error),
+        sequence: chunkSequence,
+        committedBytes: session.committedBytes,
+        at: Date.now()
+      }
+      session.accepting = false
+      throw error
+    } finally {
+      session.pendingWrites -= 1
+      this.maybeCompleteDeferredClose(session)
+    }
     return this.appendAck(session, chunkSequence)
+  }
+
+  // A close that was requested while a write was still running is completed as soon as
+  // the last write settles: deleting a file under an in-flight append would leave the
+  // volume with orphaned or torn data.
+  maybeCompleteDeferredClose(session) {
+    if (!session.pendingClose || session.pendingWrites > 0) return
+    this.removeSessionDirectory(session).catch((error) => this.log('Recording cleanup failed:', error?.message || error))
   }
 
   appendAck(session, sequence) {
@@ -284,27 +363,112 @@ class RecordingService {
   // capturing -> finalizing -> ready. Returns the preview descriptor the renderer needs.
   // Deliberately does NOT probe and does NOT delete anything: the probe is a separate call
   // (`probeSession`) because it spawns ffmpeg, and deleting the source is `cleanupSession`.
-  async finishSession(sessionId) {
+  //
+  // C01/02: this is the single finish entry. A second call (tray + hotkey + window all
+  // stopping at once, or the user retrying a failed seal) returns the SAME receipt
+  // instead of "the session already ended"; a write that never returns is bounded by
+  // `timeoutMs`, and a torn tail is cut back to the confirmed prefix.
+  async finishSession(sessionId, { timeoutMs = this.finalizeTimeoutMs } = {}) {
     const session = this.getSession(sessionId)
-    if (session.state === 'ready') {
-      return this.previewDescriptor(session)
-    }
+    if (session.finishPromise) return session.finishPromise
+    if (session.finishResult) return { ...session.finishResult }
+    if (session.finishError) throw session.finishError
+    if (session.state === 'ready') return this.previewDescriptor(session)
     if (session.state !== 'capturing') throw new Error('录制会话已经结束')
-    this.transitionSession(session, 'finalize')
+    session.finishPromise = this.finalizeSession(session, timeoutMs)
     try {
-      await session.writeQueue
-      const stat = await fs.stat(session.inputPath)
-      if (!stat.size) throw new Error('录制内容为空')
-      // Disk size is the authority for `bytesWritten`: it also covers chunks a
-      // previous process wrote before a restart/registerPersistedSession().
-      session.bytesWritten = stat.size
+      const descriptor = await session.finishPromise
+      session.finishResult = descriptor
+      return { ...descriptor }
     } catch (error) {
-      session.lastError = error?.message || String(error)
+      session.finishError = error
+      throw error
+    } finally {
+      session.finishPromise = null
+    }
+  }
+
+  async finalizeSession(session, timeoutMs) {
+    this.transitionSession(session, 'finalize')
+    session.accepting = false
+    let timedOut = false
+    if (session.pendingWrites > 0) {
+      const budget = Math.max(0, Number(timeoutMs) || 0)
+      const outcome = await Promise.race([
+        session.writeQueue.then(() => 'settled'),
+        new Promise((resolve) => {
+          const timer = setTimeout(() => resolve('timeout'), budget)
+          // Never keep the process alive just to time out a finish.
+          if (typeof timer.unref === 'function') timer.unref()
+        })
+      ])
+      timedOut = outcome === 'timeout'
+    }
+    let size = 0
+    // Both numbers are captured before a truncation rewinds the accepted sequence: the
+    // project needs the received value to describe the missing range.
+    const lastReceivedSequence = Math.max(session.lastChunkSequence, session.committedSequence)
+    try {
+      const stat = await this.fs.stat(session.inputPath)
+      size = Number(stat.size) || 0
+    } catch {
+      size = 0
+    }
+    const writeError = session.writeError
+    if (writeError && !timedOut) {
+      // A rejected append leaves the serialised writer settled, so no write is running:
+      // cutting the file back to the confirmed offset is safe and keeps the delivered
+      // bytes byte-identical to the ACKs the renderer saw.
+      if (size > session.committedBytes) {
+        try {
+          await this.fs.truncate(session.inputPath, session.committedBytes)
+          size = session.committedBytes
+        } catch (error) {
+          // Truncation failing is not a reason to lose the file: report the larger size
+          // as unverified and keep everything for the recovery path.
+          this.log('Recording tail truncation failed:', session.id, error?.message || error)
+          session.tailUnverified = true
+        }
+      }
+      session.lastChunkSequence = session.committedSequence
+    }
+    session.bytesWritten = size
+    const failure = writeError
+      ? {
+          code: writeError.code,
+          message: writeError.message,
+          missingSequenceFrom: session.committedSequence + 1,
+          missingSequenceTo: Math.max(session.committedSequence, Number(writeError.sequence) || session.lastChunkSequence)
+        }
+      : (timedOut
+          ? {
+              code: 'write-timeout',
+              message: 'The last append did not finish in time',
+              missingSequenceFrom: session.committedSequence + 1,
+              missingSequenceTo: session.lastChunkSequence
+            }
+          : null)
+    if (!size) {
+      const error = sequenceError('no-confirmed-media', '录制内容为空', {
+        committedBytes: 0,
+        committedSequence: session.committedSequence,
+        lastReceivedSequence: session.lastChunkSequence,
+        failure
+      })
       try { this.transitionSession(session, 'fail') } catch {}
       throw error
     }
     this.transitionSession(session, 'ready')
-    return this.previewDescriptor(session)
+    const descriptor = {
+      ...this.previewDescriptor(session),
+      recovered: Boolean(failure),
+      timedOut,
+      committedBytes: timedOut ? size : session.committedBytes,
+      lastChunkSequence: session.committedSequence,
+      lastReceivedSequence,
+      failure
+    }
+    return descriptor
   }
 
   previewDescriptor(session) {
@@ -315,7 +479,16 @@ class RecordingService {
       previewUrl: pathToFileURL(session.inputPath).href,
       metadata: session.metadata,
       bytesWritten: Number(session.bytesWritten) || 0,
-      projectId: session.projectId || null
+      projectId: session.projectId || null,
+      // C01/02: what the ACKs actually described, apart from what the file holds. A
+      // recovered take can have both numbers differ (a torn tail, or a write that landed
+      // after the finish deadline).
+      recovered: false,
+      timedOut: false,
+      committedBytes: Number(session.committedBytes) || 0,
+      lastChunkSequence: Number(session.committedSequence) || 0,
+      lastReceivedSequence: Number(session.lastChunkSequence) || 0,
+      failure: null
     }
   }
 
@@ -376,12 +549,19 @@ class RecordingService {
       session.pendingClose = true
       return false
     }
+    // C01: a file that is still being written is not deleted. Its owner asked to close
+    // it, so the close is deferred to the moment the last write settles (see
+    // maybeCompleteDeferredClose); deleting under an in-flight append would either leave
+    // an orphaned torn file or fail halfway through the directory.
+    if (session.pendingWrites > 0) {
+      session.pendingClose = true
+      return false
+    }
     this.sessions.delete(session.id)
     if (session.process && typeof session.process.kill === 'function') {
       try { session.process.kill() } catch {}
       session.process = null
     }
-    await session.writeQueue.catch((error) => this.log('Recording write failed:', error?.message || error))
     session.pendingClose = false
     // Project-owned directories are released, never removed: recording-project-service
     // owns their lifetime and is the only component allowed to delete them. The
@@ -389,11 +569,26 @@ class RecordingService {
     // into it anymore.
     if (session.ownedDirectory === false) {
       session.state = 'closed'
+      await this.runClosedHook(session)
       return true
     }
     await fs.rm(session.directory, { recursive: true, force: true })
     session.state = 'closed'
+    await this.runClosedHook(session)
     return true
+  }
+
+  // C01: an owner that asked for a deferred close (a project whose directory may only be
+  // deleted after the last write settled) is told exactly here.
+  async runClosedHook(session) {
+    const onClosed = session.onClosed
+    session.onClosed = null
+    if (typeof onClosed !== 'function') return
+    try {
+      await onClosed()
+    } catch (error) {
+      this.log('Recording deferred close failed:', error?.message || error)
+    }
   }
 
   // Closes a session and removes its directory once no export references the source.

@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | D01 | P0 | 已实现 | test/update-service.test.js, test/update-domain.test.js, test/update-ui-contract.test.js | 隔离 NSIS 首 2 分钟与 24h 更新域名请求数为 0（release-hardware-matrix: nsis-default-offline-updates） |
 | D02 | P0 | 已实现 | test/credential-store.test.js, test/settings-service.test.js, test/d02-credentials-contract.test.js | 加密不可用/跨 Windows 用户解密的真机复现；诊断包内标记出现次数为 0 |
-| C01 | P0 | 已实现 | test/chunk-backpressure.test.js, test/record-control-bar.test.js, test/recording-service.test.js | 慢盘/便携盘注入（5s、30s、永久无确认、磁盘满），真实 1080p30 30 分钟无误暂停 |
+| C01 | P0 | 已实现（01/02：中断收尾、已确认前缀与恢复回执） | test/chunk-backpressure.test.js, test/record-control-bar.test.js, test/recording-service.test.js, test/record-finalize.test.js, test/record-domain.test.js, test/recording-project-service.test.js | 慢盘/便携盘注入（5s、30s、永久无确认、磁盘满），真实 1080p30 30 分钟无误暂停 |
 | A01 | P0 | 已实现 | test/tray-menu.test.js | 游戏模式 + 控制在全屏游戏下被遮挡时从托盘结束（真机托盘交互） |
 | A02 | P1 | 已实现 | test/capture-keyboard-focus.test.js, test/capture-annotation-width.test.js | Tab 到标注/撤销/保存/录制按钮逐个按 Enter/Space；讲述人读出名称 |
 | A03 | P1 | 已实现 | test/shortcut-service.test.js, test/shortcut-rebind-contract.test.js, test/settings-ipc.test.js, test/shortcut-ui-contract.test.js | 第二个本地进程占住候选键后旧键仍可用；重启后仍有效 |

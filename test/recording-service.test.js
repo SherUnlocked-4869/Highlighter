@@ -386,3 +386,139 @@ test('sequenced append chunks are replay-idempotent and gap-strict', async (t) =
   assert.equal(finished.bytesWritten, 11)
   assert.equal(finished.projectId, 'sequenced')
 })
+
+// ---------------------------------------------------------------------------
+// C01 (plan item 02): a full disk must still deliver the part that was written.
+// ---------------------------------------------------------------------------
+
+// Delegates to the real fs and can make ONE append fail the way a full disk does:
+// half the buffer reaches the file, then the write rejects with ENOSPC.
+function createFailureFs({ failSequence = 0, mode = 'partial' } = {}) {
+  const real = require('node:fs/promises')
+  const state = { calls: 0, hang: null, resolveHang: null }
+  const fake = {
+    ...real,
+    async appendFile(file, buffer) {
+      state.calls += 1
+      if (state.hang !== null) {
+        // A wedged write: the promise never settles until the test releases it.
+        await new Promise((resolve) => { state.resolveHang = resolve })
+        return real.appendFile(file, buffer)
+      }
+      if (state.calls !== failSequence) return real.appendFile(file, buffer)
+      if (mode === 'nothing') {
+        throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
+      }
+      const half = Math.max(1, Math.floor(buffer.length / 2))
+      await real.appendFile(file, buffer.subarray(0, half))
+      throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
+    }
+  }
+  return { fs: fake, state }
+}
+
+test('C01 (02): a full disk keeps the confirmed prefix, truncates the torn tail and reports the gap', async (t) => {
+  const root = await createRoot(t)
+  const { fs: failingFs } = createFailureFs({ failSequence: 2 })
+  const service = new RecordingService({ tempRoot: root, ffmpegPath: 'ffmpeg', fs: failingFs })
+  t.after(() => service.dispose())
+  const session = await service.startSession({ directory: path.join(root, 'recordings', 'disk-full'), projectId: 'disk-full' })
+
+  const first = await service.appendChunk(session.id, Buffer.from('first'), { sequence: 1 })
+  assert.equal(first.committedBytes, 5)
+  // The second chunk is torn: three of its five bytes reach the file before ENOSPC.
+  await assert.rejects(
+    () => service.appendChunk(session.id, Buffer.from('secnd'), { sequence: 2 }),
+    (error) => error.code === 'ENOSPC'
+  )
+  // A chunk received after the failure is refused: accepting it would order data that can
+  // never be written, and the file must keep a contiguous confirmed prefix.
+  await assert.rejects(
+    () => service.appendChunk(session.id, Buffer.from('third'), { sequence: 3 }),
+    (error) => error.code === 'append-sealed'
+  )
+
+  const finished = await service.finishSession(session.id)
+  assert.equal(finished.recovered, true, 'the receipt must say the capture was interrupted')
+  assert.equal(finished.bytesWritten, 5)
+  assert.equal(finished.committedBytes, 5)
+  assert.equal(finished.lastChunkSequence, 1, 'only the fully written chunk is confirmed')
+  assert.equal(finished.lastReceivedSequence, 2)
+  assert.equal(finished.failure.code, 'ENOSPC')
+  assert.equal(finished.failure.missingSequenceFrom, 2)
+  assert.equal(finished.failure.missingSequenceTo, 2)
+  // The torn tail is gone and the confirmed bytes are byte-identical to what was ACKed.
+  assert.equal(await fs.readFile(session.inputPath, 'utf8'), 'first')
+  assert.equal((await fs.stat(session.inputPath)).size, 5)
+
+  // Repeating the stop returns the same receipt instead of "the session already ended".
+  const repeated = await service.finishSession(session.id)
+  assert.equal(repeated.recovered, true)
+  assert.equal(repeated.bytesWritten, 5)
+  assert.equal(await fs.readFile(session.inputPath, 'utf8'), 'first')
+
+  // The replayed sequence from before the failure still reads back its ACK and writes nothing.
+  const replay = await service.appendChunk(session.id, Buffer.from('first'), { sequence: 1 })
+  assert.equal(replay.committedBytes, 5)
+  assert.equal(replay.lastChunkSequence, 1)
+  assert.equal(await fs.readFile(session.inputPath, 'utf8'), 'first')
+})
+
+test('C01 (02): when the very first chunk fails there is no confirmed media', async (t) => {
+  const root = await createRoot(t)
+  const { fs: failingFs } = createFailureFs({ failSequence: 1, mode: 'nothing' })
+  const service = new RecordingService({ tempRoot: root, ffmpegPath: 'ffmpeg', fs: failingFs })
+  t.after(() => service.dispose())
+  const session = await service.startSession({ directory: path.join(root, 'recordings', 'zero'), projectId: 'zero' })
+  await assert.rejects(
+    () => service.appendChunk(session.id, Buffer.from('only'), { sequence: 1 }),
+    (error) => error.code === 'ENOSPC'
+  )
+  await assert.rejects(
+    () => service.finishSession(session.id),
+    (error) => {
+      assert.equal(error.code, 'no-confirmed-media')
+      assert.equal(error.committedBytes, 0)
+      assert.equal(error.failure.code, 'ENOSPC')
+      return true
+    }
+  )
+  // Retrying says the same thing rather than pretending the session vanished.
+  await assert.rejects(
+    () => service.finishSession(session.id),
+    (error) => error.code === 'no-confirmed-media'
+  )
+})
+
+test('C01 (02): a write that never returns yields an interrupted receipt without truncating the original', async (t) => {
+  const root = await createRoot(t)
+  const { fs: hangingFs, state } = createFailureFs({ failSequence: 0 })
+  const service = new RecordingService({ tempRoot: root, ffmpegPath: 'ffmpeg', fs: hangingFs })
+  t.after(() => service.dispose())
+  const session = await service.startSession({ directory: path.join(root, 'recordings', 'wedge'), projectId: 'wedge' })
+  await service.appendChunk(session.id, Buffer.from('first'), { sequence: 1 })
+
+  // The second append never settles. A finish must not wait for it forever, and it must
+  // not truncate a file whose size can still grow.
+  state.hang = true
+  const pending = service.appendChunk(session.id, Buffer.from('second'), { sequence: 2 })
+  pending.catch(() => {})
+  const finished = await service.finishSession(session.id, { timeoutMs: 50 })
+  assert.equal(finished.timedOut, true)
+  assert.equal(finished.recovered, true)
+  assert.equal(finished.failure.code, 'write-timeout')
+  assert.equal(finished.bytesWritten, 5, 'only the bytes that actually reached the file')
+
+  // Release the wedged write: it is allowed to finish (the original is never truncated or
+  // renamed), and the new bytes are still on disk for the recovery path.
+  state.hang = false
+  state.resolveHang()
+  await pending.catch(() => {})
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(await fs.readFile(session.inputPath, 'utf8'), 'firstsecond')
+  // A late sequence after the timeout is refused, so the sealed file cannot grow further.
+  await assert.rejects(
+    () => service.appendChunk(session.id, Buffer.from('third'), { sequence: 3 }),
+    (error) => error.code === 'append-sealed'
+  )
+})

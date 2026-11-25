@@ -561,6 +561,73 @@ test('checkpoint state for an unknown project is harmless', async (t) => {
   assert.equal(await context.service.checkpoint('../escape', { committedByteOffset: 10, lastChunkSequence: 1 }), false)
 })
 
+// ---------------------------------------------------------------------------
+// C01 (plan item 02): an interrupted writer's confirmed prefix becomes the project.
+// ---------------------------------------------------------------------------
+
+test('C01 (02): sealing an interrupted take keeps the verified prefix and records the missing range', async (t) => {
+  const context = await createContext(t)
+  const { directory } = await context.service.createProject({ name: 'interrupted' })
+  // Five confirmed bytes reached the file out of the eleven the writer was asked for.
+  await fs.writeFile(path.join(directory, 'capture.webm'), 'first')
+  const sealed = await context.service.sealProject('project-1', {
+    metadata: PROBE_METADATA,
+    recovery: {
+      committedByteOffset: 5,
+      lastChunkSequence: 1,
+      cleanStop: false,
+      errorCode: 'ENOSPC',
+      missingSequenceFrom: 2,
+      missingSequenceTo: 3
+    },
+    captureOutcome: { video: true, audio: { system: false, microphone: false }, warnings: ['capture-interrupted:ENOSPC:2-3'] }
+  })
+  assert.equal(sealed.ok, true, 'a playable confirmed prefix is a ready project')
+  const manifest = await readManifest(context, 'project-1')
+  assert.equal(manifest.recovery.committedByteOffset, 5, 'the verified offset is not inflated by the file size')
+  assert.equal(manifest.recovery.lastChunkSequence, 1)
+  assert.equal(manifest.recovery.cleanStop, false, 'the writer did not stop cleanly')
+  assert.equal(manifest.recovery.errorCode, 'ENOSPC')
+  assert.equal(manifest.recovery.missingSequenceFrom, 2)
+  assert.equal(manifest.recovery.missingSequenceTo, 3)
+  assert.deepEqual(manifest.captureOutcome.warnings, ['capture-interrupted:ENOSPC:2-3'])
+  // A plain seal (no interruption) still reports a clean stop.
+  const second = await context.service.createProject({ name: 'clean' })
+  await fs.writeFile(path.join(second.directory, 'capture.webm'), 'media')
+  await context.service.sealProject('project-2', { metadata: PROBE_METADATA })
+  const clean = await readManifest(context, 'project-2')
+  assert.equal(clean.recovery.cleanStop, true)
+  assert.equal(clean.recovery.errorCode, '')
+  assert.equal(clean.recovery.missingSequenceFrom, 0)
+})
+
+test('C01 (02): after a crash, only the offset the file proves is trusted', async (t) => {
+  const context = await createContext(t)
+  const { directory } = await context.service.createProject({ name: 'crashed' })
+  await fs.writeFile(path.join(directory, 'capture.webm'), 'first')
+  // The checkpoint claims 64 bytes; the file only has five. A crash between the manifest
+  // flush and the append must not make the project believe in bytes that are not there.
+  await context.service.checkpoint('project-1', { committedByteOffset: 64, lastChunkSequence: 9 })
+  await context.service.dispose()
+
+  const restarted = createRecordingProjectService({
+    root: context.root,
+    now: () => context.clock.value,
+    createId: () => 'project-2',
+    timers: { setTimeout: () => ({ unref() {} }), clearTimeout: () => {} }
+  })
+  t.after(() => restarted.dispose())
+  const listing = await restarted.listProjects()
+  assert.equal(listing.items.length, 1)
+  assert.equal(listing.items[0].state, 'recoverable', 'a capture that never sealed is recoverable')
+  const manifest = await restarted.readProjectFile('project-1')
+  assert.equal(manifest.state, 'recoverable')
+  assert.equal(manifest.source.bytes, 5, 'the file size is the authority')
+  assert.equal(manifest.recovery.committedByteOffset, 5, 'the checkpoint cannot claim bytes the file does not have')
+  assert.equal(manifest.recovery.cleanStop, false)
+  assert.equal(manifest.recovery.errorCode, 'interrupted')
+})
+
 test('a concurrent checkpoint cannot overwrite a draft revision', async (t) => {
   const context = await createContext(t)
   await context.service.createProject({})

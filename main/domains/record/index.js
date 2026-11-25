@@ -708,17 +708,27 @@ function createRecordDomain(deps) {
     return { ok: true, cancelled: true, settled }
   }
 
-  function captureOutcomeOf(win, metadata) {
+  function captureOutcomeOf(win, metadata, recovery = null) {
     const audio = win?._recordCaptureConfig?.audio || {}
     const hasAudioTrack = metadata?.audio?.exists === true
     const durationMs = Number(metadata?.durationMs) || 0
+    // C01/02: the warnings list is what the editor/recovery UI shows next to the
+    // playable prefix. A full disk or an interrupted write is stated there with the
+    // fragment range that never reached the file.
+    const warnings = []
+    if (recovery) {
+      const code = recovery.errorCode || 'interrupted'
+      const from = Number(recovery.missingSequenceFrom) || 0
+      const to = Number(recovery.missingSequenceTo) || 0
+      warnings.push(to >= from && from > 0 ? `capture-interrupted:${code}:${from}-${to}` : `capture-interrupted:${code}`)
+    }
     return {
       video: durationMs > 0 && Number(metadata?.video?.width) > 0,
       audio: {
         system: audio.system === true && hasAudioTrack,
         microphone: audio.microphone === true && hasAudioTrack
       },
-      warnings: []
+      warnings
     }
   }
 
@@ -2309,8 +2319,25 @@ function createRecordDomain(deps) {
           descriptor = await managedRecordingWriters.track(service.finishSession(sessionId))
         } catch (error) {
           log('Recording finish failed:', error?.message || String(error))
-          return { ok: false, code: error?.code || 'finish-failed' }
+          // C01/02: "zero confirmed fragments" is a RESULT the user must see (the take
+          // produced nothing), not a generic finish failure: the renderer keeps the
+          // error state and offers discard, and the project stays as a recoverable card.
+          return { ok: false, code: error?.code || 'finish-failed', committedBytes: Number(error?.committedBytes) || 0 }
         }
+        // C01/02: a take the writer had to interrupt still gets a project for its
+        // confirmed prefix. The receipt below says so, so the bar can leave the busy
+        // state with an honest message instead of reporting a clean save.
+        const interrupted = descriptor?.recovered === true
+        const recoveryOverride = interrupted
+          ? {
+              committedByteOffset: Number(descriptor.committedBytes) || 0,
+              lastChunkSequence: Number(descriptor.lastChunkSequence) || 0,
+              cleanStop: false,
+              errorCode: descriptor.failure?.code || 'interrupted',
+              missingSequenceFrom: Number(descriptor.failure?.missingSequenceFrom) || 0,
+              missingSequenceTo: Number(descriptor.failure?.missingSequenceTo) || 0
+            }
+          : null
         if (!projectId || !projectService) {
           // Legacy/no-persistence fallback: the sealed session stays readable for the legacy
           // channels, but there is no project to hand to an editor.
@@ -2330,7 +2357,8 @@ function createRecordDomain(deps) {
         if (probed?.ok && probed.metadata) probedMetadataByProject.set(projectId, probed.metadata)
         const sealed = await projectService.sealProject(projectId, {
           metadata: probed?.ok ? probed.metadata : null,
-          captureOutcome: captureOutcomeOf(win, probed?.ok ? probed.metadata : null)
+          captureOutcome: captureOutcomeOf(win, probed?.ok ? probed.metadata : null, interrupted ? recoveryOverride : null),
+          recovery: recoveryOverride
         }).catch((error) => {
           log('Recording seal failed:', projectId, error?.message || error)
           return { ok: false, code: 'seal-failed' }
@@ -2371,7 +2399,21 @@ function createRecordDomain(deps) {
         setImmediate(() => {
           closeRecordFlow(null, true).catch((error) => log('Recording close failed:', error?.message || error))
         })
-        return { ok: true, projectId, recovered: sealed?.ok !== true }
+        return {
+          ok: true,
+          projectId,
+          recovered: sealed?.ok !== true,
+          // C01/02: separate from `recovered` (which is about the media probe). An
+          // interrupted take is still opened for the user, but the bar must say the
+          // material is being recovered rather than claiming a clean save.
+          interrupted,
+          code: interrupted ? (descriptor.failure?.code || 'interrupted') : '',
+          bytesWritten: Number(descriptor?.bytesWritten) || 0,
+          committedBytes: Number(descriptor?.committedBytes) || 0,
+          lastChunkSequence: Number(descriptor?.lastChunkSequence) || 0,
+          missingSequenceFrom: interrupted ? Number(recoveryOverride?.missingSequenceFrom) || 0 : 0,
+          missingSequenceTo: interrupted ? Number(recoveryOverride?.missingSequenceTo) || 0 : 0
+        }
       },
       saveMp4: async (event, { sessionId, durationMs } = {}) => {
         assertManagedDataWritable()
@@ -2526,20 +2568,24 @@ function createRecordDomain(deps) {
         const projectId = text(win._recordProjectId)
         win._recordProjectId = ''
         const service = getRecordingService()
-        await managedRecordingWriters.track(service.cleanupSession(sessionId))
-        if (projectId) {
-          const projectService = projectServiceOrNull()
-          if (projectService) {
-            // "Abandon this take": the project (its directory and partial source) is deleted, not
-            // left as a recoverable record the user explicitly discarded.
-            await projectService.deleteProject(projectId).catch((error) => {
+        // C01: an abandoned take whose last fragment is still being written must not have
+        // its directory deleted underneath the writer. The project deletion is attached to
+        // the session's close, and the service runs it after the last append settled.
+        const pendingSession = typeof service.peekSession === 'function' ? service.peekSession(sessionId) : null
+        const projectService = projectId ? projectServiceOrNull() : null
+        const deleteProject = projectId && projectService
+          ? () => projectService.deleteProject(projectId).catch((error) => {
               log('Recording project delete failed:', projectId, error?.message || error)
             })
-          }
+          : null
+        if (pendingSession && deleteProject && pendingSession.pendingWrites > 0) {
+          pendingSession.onClosed = deleteProject
         }
+        const cleaned = await managedRecordingWriters.track(service.cleanupSession(sessionId))
+        if (deleteProject && !(cleaned === false)) await deleteProject()
         // Contract §9.2: `{ ok: true }` (the renderer awaits the invoke; a bare boolean was the
         // pre-R2 shape and is not part of the frozen contract).
-        return { ok: true }
+        return { ok: true, deferred: cleaned === false }
       },
       setFrameState: (event, state = 'idle') => {
         const controlWindow = requireRecordSender(event)

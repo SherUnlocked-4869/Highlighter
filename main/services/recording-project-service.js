@@ -300,13 +300,22 @@ class RecordingProjectService {
       const current = await this._getProject(projectId)
       if (!current) return null
       if (current.state !== 'capturing') return current
+      // C01/02: after a crash only the FILE and the durable checkpoint can be trusted.
+      // The checkpoint may describe bytes that never reached disk, so the verified
+      // offset is the smaller of the two - never the recorded value alone.
+      const stat = await this.fs.stat(this._sourcePath(current)).then((value) => value, () => null)
+      const actualBytes = stat ? Number(stat.size) || 0 : 0
+      const checkpointed = Number(current.recovery.committedByteOffset) || 0
+      const verifiedOffset = Math.min(checkpointed > 0 ? checkpointed : actualBytes, actualBytes)
       const recovered = {
         ...current,
         state: 'recoverable',
+        source: { ...current.source, bytes: actualBytes },
         recovery: {
           ...current.recovery,
           cleanStop: false,
-          errorCode: current.recovery.errorCode || 'interrupted'
+          errorCode: current.recovery.errorCode || 'interrupted',
+          committedByteOffset: verifiedOffset
         }
       }
       await this._writeProject(projectId, recovered)
@@ -463,7 +472,7 @@ class RecordingProjectService {
   // real media metadata; on a failed probe it becomes `recoverable` with
   // `errorCode:'probe-failed'` and this method does NOT throw - the caller keeps the
   // source and the user sees a recoverable card (upstream plan §6.1).
-  async sealProject(projectId, { metadata = null, captureOutcome = null } = {}) {
+  async sealProject(projectId, { metadata = null, captureOutcome = null, recovery: recoveryInput = null } = {}) {
     const id = String(projectId || '')
     if (!schema.isValidProjectId(id)) return { ok: false, code: 'invalid-id', project: null }
     return this._withLock(id, async () => {
@@ -474,14 +483,25 @@ class RecordingProjectService {
       const bytes = await this.fs.stat(this._sourcePath(project)).then((stat) => stat.size, () => 0)
       const media = schema.mediaFromMetadata(metadata, timestamp)
       const probed = media !== null
-      const recovery = {
-        committedByteOffset: Math.max(project.recovery.committedByteOffset, pending.committedByteOffset, bytes),
-        lastChunkSequence: Math.max(project.recovery.lastChunkSequence, pending.lastChunkSequence),
+      // C01/02: a take the writer had to interrupt (full disk, a write that never
+      // returned) is NOT a clean stop, even when the confirmed prefix is playable. The
+      // override carries what the recording service proved: the offset that actually
+      // reached disk, the last fully written fragment and the range that is missing.
+      const override = recoveryInput && typeof recoveryInput === 'object' ? recoveryInput : null
+      const recovery = schema.normalizeRecovery({
+        committedByteOffset: override && Number.isSafeInteger(Number(override.committedByteOffset))
+          ? Number(override.committedByteOffset)
+          : Math.max(project.recovery.committedByteOffset, pending.committedByteOffset, bytes),
+        lastChunkSequence: override && Number.isSafeInteger(Number(override.lastChunkSequence))
+          ? Number(override.lastChunkSequence)
+          : Math.max(project.recovery.lastChunkSequence, pending.lastChunkSequence),
         // The stop itself was clean even when the probe failed: `cleanStop` records
         // that the writer closed the file, `errorCode` records why it is not ready.
-        cleanStop: true,
-        errorCode: probed ? '' : 'probe-failed'
-      }
+        cleanStop: override ? override.cleanStop === true : true,
+        errorCode: override?.errorCode || (probed ? '' : 'probe-failed'),
+        missingSequenceFrom: override?.missingSequenceFrom || 0,
+        missingSequenceTo: override?.missingSequenceTo || 0
+      })
       const next = {
         ...project,
         updatedAt: timestamp,

@@ -196,13 +196,16 @@ test('the renderer sequences chunks, checks ACKs and refuses to fake a healthy t
   assert.match(script, /failChunkStream/)
   assert.match(script, /record\.notice\.chunk-failed-retry/)
   assert.match(script, /transitionRecordingState\('recording', 'error'\)/)
-  // Stopping waits for every pending chunk before main is asked to seal the project.
-  // R5 adds the wall-clock timing payload as the second argument, so match the call
-  // prefix rather than the full no-arg form.
-  const flushIndex = script.indexOf('await appendQueue.catch')
+  // C01 (01): stopping still waits for every pending chunk before main is asked to seal
+  // the project, but the wait is bounded by the ACK deadline - a write that never
+  // settles must not hold the bar busy forever. The deadline itself is behaviour-tested
+  // in test/record-finalize.test.js.
+  const flushIndex = script.indexOf('await awaitAppendQueue()')
   const finishIndex = script.indexOf('window.recordAPI.finishSession(sessionId')
   assert.ok(flushIndex > 0, 'finish must await the append queue')
   assert.ok(finishIndex > flushIndex, 'finish-session must run after the append queue flushes')
+  assert.match(script, /async function awaitAppendQueue\(/)
+  assert.match(script, /markAppendQueueTimeout\(\)/)
 })
 
 test('C01: the append queue is bounded and the recorder pauses for backpressure', () => {

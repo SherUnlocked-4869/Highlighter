@@ -153,6 +153,12 @@ let chunkFailureAcknowledged = false
 const chunkPolicy = createChunkBackpressurePolicy()
 let chunkAckTimer = 0
 let backpressurePausedAt = 0
+// C01: the finish/abandon entries share one finalize. `sealing` stops accepting new
+// fragments the moment a finalize or an abandon starts, and `takeGeneration` isolates an
+// ACK that arrives after the take was sealed (it must never be credited to the next one).
+let sealing = false
+let finalizePromise = null
+let takeGeneration = 0
 let startedAt = 0
 let pausedAt = 0
 let pausedTotal = 0
@@ -1430,8 +1436,8 @@ function handleRecorderError(event) {
 function handleDataAvailable(event) {
   const data = event?.data
   if (!data || !data.size) return
-  // A take that already failed is sealing the confirmed part; late fragments are not queued.
-  if (appendError) return
+  // A take that already failed (or is sealing) does not queue late fragments.
+  if (appendError || sealing) return
   const at = Date.now()
   const sequence = chunkSequence + 1
   const decision = chunkPolicy.enqueue({ sequence, bytes: data.size, at })
@@ -1503,12 +1509,16 @@ function clearAckWatchdog() {
 }
 
 async function appendChunkWithAck(chunk) {
-  if (appendError) return null
+  if (appendError || sealing) return null
+  // C01: the generation this fragment belongs to. A finish bumps it, so a reply that
+  // arrives afterwards is dropped instead of rewriting the next take's counters.
+  const generation = takeGeneration
   armAckWatchdog(chunk)
   try {
     const arrayBuffer = await chunk.data.arrayBuffer()
+    if (generation !== takeGeneration) return null
     const ack = await window.recordAPI.appendChunk(sessionId, arrayBuffer, chunk.sequence, chunk.bytes)
-    if (appendError) return null
+    if (generation !== takeGeneration || appendError || sealing) return null
     const verdict = classifyChunkAck({ sequence: chunk.sequence, lastChunkSequence: ack?.lastChunkSequence })
     if (verdict === 'ok' || verdict === 'duplicate') {
       const ackedSequence = Number(ack?.lastChunkSequence)
@@ -1525,11 +1535,49 @@ async function appendChunkWithAck(chunk) {
     error.failureParams = verdict === 'gap' ? { sequence: chunk.sequence } : { detail: '' }
     throw error
   } finally {
-    clearAckWatchdog()
-    // Even a failed write frees its slot; a successful drain may lift the pause.
-    const settlement = chunkPolicy.settle({ sequence: chunk.sequence })
-    if (settlement.action === 'resume') resumeAfterWriteBackpressure()
+    // A stale fragment must not clear the watchdog or settle the queue of the take that
+    // is running now.
+    if (generation === takeGeneration) {
+      clearAckWatchdog()
+      // Even a failed write frees its slot; a successful drain may lift the pause.
+      const settlement = chunkPolicy.settle({ sequence: chunk.sequence })
+      if (settlement.action === 'resume') resumeAfterWriteBackpressure()
+    }
   }
+}
+
+// C01: waiting for the append queue is bounded by the same deadline as one ACK. A write
+// that will never settle must not hold the stop/abandon path (and with it the window)
+// busy forever; the caller seals what was confirmed instead.
+async function awaitAppendQueue(timeoutMs = chunkPolicy.config.ackTimeoutMs) {
+  const generation = takeGeneration
+  let timer = 0
+  const drained = await Promise.race([
+    appendQueue.then(() => true, () => true),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), Math.max(0, Number(timeoutMs) || 0))
+    })
+  ])
+  if (timer) clearTimeout(timer)
+  // A queue from a previous take is not something this take can wait for.
+  if (generation !== takeGeneration) return true
+  return drained === true
+}
+
+// The queue outlived its deadline during a stop: record it as an interruption with the
+// same shape the ACK watchdog uses, so the receipt and the notice agree.
+function markAppendQueueTimeout() {
+  if (appendError || sealing === false) return
+  const params = {
+    sequence: lastAckedSequence + 1,
+    seconds: Math.round(Number(chunkPolicy.config.ackTimeoutMs) / 1000),
+    confirmed: lastAckedSequence
+  }
+  const error = new Error(t('record.notice.chunk-timeout', params))
+  error.code = 'ack-timeout'
+  error.failureKey = 'record.notice.chunk-timeout'
+  error.failureParams = params
+  failChunkStream(error)
 }
 
 function failChunkStream(error) {
@@ -1557,6 +1605,11 @@ async function startRecorder(fromState) {
   projectId = session?.projectId ? String(session.projectId) : ''
   appendQueue = Promise.resolve()
   appendError = null
+  // C01: a new take gets a new generation and its own queue; a reply from the previous
+  // take cannot clear this take's watchdog or settle its policy.
+  takeGeneration += 1
+  sealing = false
+  finalizePromise = null
   clearAckWatchdog()
   chunkPolicy.reset()
   backpressurePausedAt = 0
@@ -1661,6 +1714,9 @@ async function beginRecording() {
 }
 
 async function finishRecording() {
+  // C01: the button, the tray and the shortcut all land here. The first caller runs the
+  // one finalize; a concurrent second caller joins it, so main is asked exactly once.
+  if (finalizePromise) return finalizePromise
   if (busy) return { ok: false, code: 'busy', state: snapshotState() }
   if (!['recording', 'paused', 'stopped'].includes(state)) {
     return { ok: false, code: 'not-recording', state: snapshotState() }
@@ -1668,28 +1724,44 @@ async function finishRecording() {
   // A second finish press after a chunk failure is the explicit "keep the written part"
   // acknowledgement required by contract §12 - the first press only surfaces the risk.
   if (state === 'stopped') chunkFailureAcknowledged = true
+  finalizePromise = runFinalize()
+  try {
+    return await finalizePromise
+  } finally {
+    finalizePromise = null
+  }
+}
+
+async function runFinalize() {
   setBusy(true)
   await setFrameState('hidden')
   if (state !== 'stopped') {
     stopCompositeLoop()
     await stopMediaRecorder().catch(() => {})
-    // Stopping must wait for every pending chunk before asking main to seal the
-    // project, otherwise the tail of the recording could be sealed away.
-    await appendQueue.catch(() => {})
   }
-  setState(transitionRecordingState(state, 'stop'))
-  saveProgressElement.textContent = t('record.status.finalizing')
+  // C01: the risk is surfaced BEFORE waiting for the queue. Waiting first is what used
+  // to leave the bar busy forever behind a write that never settles.
   if (appendError && !chunkFailureAcknowledged) {
     chunkFailureAcknowledged = true
+    sealing = true
+    if (state !== 'stopped') setState(transitionRecordingState(state, 'stop'))
     setState(transitionRecordingState('finalizing', 'failed'))
     setBusy(false)
     saveProgressElement.textContent = ''
     setFailureNotice('record.notice.chunk-failed-retry')
     return { ok: false, code: 'chunk-failed', state: snapshotState() }
   }
+  // From here on no new fragment is accepted: the confirmed prefix is what gets sealed.
+  sealing = true
+  if (state !== 'stopped') setState(transitionRecordingState(state, 'stop'))
+  saveProgressElement.textContent = t('record.status.finalizing')
+  // C01: the queue is awaited only for a bounded time. An append that outlives the ACK
+  // deadline is reported as an interruption; main keeps the original file and seals the
+  // confirmed prefix (or reports that nothing was confirmed).
+  if (!(await awaitAppendQueue())) markAppendQueueTimeout()
   let result = null
   try {
-    result = await window.recordAPI.finishSession(sessionId, finishTiming())
+    result = await window.recordAPI.finishSession(sessionId, { ...finishTiming(), interrupted: Boolean(appendError) })
   } catch (error) {
     setState(transitionRecordingState('finalizing', 'failed'))
     setBusy(false)
@@ -1702,18 +1774,56 @@ async function finishRecording() {
     setBusy(false)
     saveProgressElement.textContent = ''
     const code = result?.code ? String(result.code) : ''
-    setFailureNotice('record.notice.finish-failed', { detail: code || t('record.error.record-failed') })
+    // C01/02: "nothing was confirmed" is a definite result with its own copy, not the
+    // generic finish failure (the user has to know there is no file to recover).
+    if (code === 'no-confirmed-media') {
+      setFailureNotice('record.notice.no-confirmed-media')
+      errorElement.textContent = t('record.notice.no-confirmed-media')
+    } else {
+      setFailureNotice('record.notice.finish-failed', { detail: code || t('record.error.record-failed') })
+    }
     return { ok: false, code: code || 'finish-failed', state: snapshotState() }
   }
   projectId = result.projectId ? String(result.projectId) : projectId
   clearInterval(clockTimer)
+  // C01: an interrupted take is still handed to the editor (main seals the confirmed
+  // prefix), but the bar must say so instead of claiming a clean save.
+  if (result.interrupted) {
+    setFailureNotice('record.notice.capture-interrupted', {
+      reason: interruptedReasonText(result.code),
+      from: Number(result.missingSequenceFrom) || 0,
+      to: Number(result.missingSequenceTo) || 0
+    })
+    errorElement.textContent = t('record.notice.capture-interrupted', {
+      reason: interruptedReasonText(result.code),
+      from: Number(result.missingSequenceFrom) || 0,
+      to: Number(result.missingSequenceTo) || 0
+    })
+  }
   // The main process owns navigation from here: it seals the project, opens the
   // editor and closes this control bar. The renderer never opens anything itself.
   setState(transitionRecordingState('finalizing', 'finished'))
   saveProgressElement.textContent = ''
   stopSource()
   setBusy(false)
-  return { ok: true, state: snapshotState() }
+  return { ok: true, state: snapshotState(), interrupted: result.interrupted === true }
+}
+
+// Writer failure codes the main process reports on an interrupted receipt. The message
+// stays in the locale tables; only the reason travels as a key.
+const INTERRUPTED_REASON_KEYS = {
+  'ack-timeout': 'record.reason.write-timeout',
+  'write-timeout': 'record.reason.write-timeout',
+  'chunk-overflow': 'record.reason.queue-overflow',
+  'ENOSPC': 'record.reason.disk-full',
+  'EACCES': 'record.reason.disk-denied',
+  'EPERM': 'record.reason.disk-denied',
+  'EIO': 'record.reason.write-failed'
+}
+
+function interruptedReasonText(code) {
+  const key = INTERRUPTED_REASON_KEYS[String(code || '')]
+  return key ? t(key) : (String(code || '') || t('record.reason.write-failed'))
 }
 
 async function cancelRecording() {
@@ -1730,9 +1840,13 @@ async function confirmDiscard() {
   setBusy(true)
   discardConfirm.hidden = true
   await setFrameState('hidden')
+  // C01: an abandoned take stops queuing fragments immediately, and the cleanup request
+  // waits only for the ACK deadline. Main defers deleting a file that is still being
+  // written, so no in-flight write can resurrect or tear it.
+  sealing = true
   stopCompositeLoop()
   await stopMediaRecorder().catch(() => {})
-  await appendQueue.catch(() => {})
+  await awaitAppendQueue()
   try {
     await window.recordAPI.cancelSession(sessionId)
   } catch {}
@@ -1749,6 +1863,7 @@ async function confirmDiscard() {
   committedBytes = 0
   appendError = null
   chunkFailureAcknowledged = false
+  sealing = false
   clearFeedback()
   timeElement.textContent = '00:00'
   setState(transitionRecordingState(state, 'cancel'))

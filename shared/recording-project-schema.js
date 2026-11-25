@@ -406,7 +406,12 @@
       committedByteOffset: integer(recovery.committedByteOffset, 0),
       lastChunkSequence: integer(recovery.lastChunkSequence, 0),
       cleanStop: booleanOr(recovery.cleanStop, false),
-      errorCode: normalizeErrorCode(recovery.errorCode)
+      errorCode: normalizeErrorCode(recovery.errorCode),
+      // C01/02: for an interrupted take the manifest says exactly which fragment range
+      // never reached the file, so the editor/recovery UI can describe it instead of
+      // guessing from the byte count. 0/0 means "no gap".
+      missingSequenceFrom: integer(recovery.missingSequenceFrom, 0),
+      missingSequenceTo: integer(recovery.missingSequenceTo, 0)
     }
   }
 
