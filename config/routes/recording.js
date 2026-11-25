@@ -369,6 +369,11 @@ let recordingPreflightContext = null
 let recordingPreflightAnalyser = null
 let recordingPreflightSamples = null
 let recordingPreflightTimer = 0
+// B04 (plan item 13): every check is a RUN. The ledger releases the previous run's devices
+// when a re-check starts, and stops a device that arrives after the deadline instead of
+// holding it. The token makes a stale permission callback clean up only its own run.
+let recordingPreflightResources = null
+let recordingPreflightRun = 0
 
 const RECORDING_PREFLIGHT_PROMPT_KEYS = Object.freeze({
   'microphone-denied': 'recording.preflight.prompt-microphone-denied',
@@ -499,23 +504,31 @@ function watchRecordingPreflightTrack(stream) {
 }
 
 function releaseRecordingPreflight() {
-  for (const track of recordingPreflightMicStream?.getTracks?.() || []) {
-    try { track.stop() } catch {}
+  // B04 (13): one owner per device. When the ledger exists it stops every adopted stream
+  // (including one a stale run registered late), so the local refs are only cleared here.
+  if (!recordingPreflightResources) {
+    for (const track of recordingPreflightMicStream?.getTracks?.() || []) {
+      try { track.stop() } catch {}
+    }
+    const context = recordingPreflightContext
+    if (context && typeof context.close === 'function') {
+      try {
+        const closing = context.close()
+        if (closing && typeof closing.catch === 'function') closing.catch(() => {})
+      } catch {}
+    }
+  } else {
+    recordingPreflightResources.release()
   }
   recordingPreflightMicStream = null
   recordingPreflightAnalyser = null
   recordingPreflightSamples = null
-  const context = recordingPreflightContext
   recordingPreflightContext = null
-  if (context && typeof context.close === 'function') {
-    try {
-      const closing = context.close()
-      if (closing && typeof closing.catch === 'function') closing.catch(() => {})
-    } catch {}
-  }
 }
 
 function stopRecordingPreflight(outcome = 'done') {
+  // Ending the run invalidates any authorization callback still in flight.
+  recordingPreflightRun += 1
   const wasActive = Boolean(recordingPreflight && recordingPreflight.isActive())
   if (recordingPreflightTimer) {
     clearTimeout(recordingPreflightTimer)
@@ -531,6 +544,7 @@ function stopRecordingPreflight(outcome = 'done') {
 function cancelRecordingPreflight() {
   recordingPreflightOpen = false
   recordingPreflightAppliedKey = ''
+  recordingPreflightRun += 1
   if (recordingPreflightTimer) {
     clearTimeout(recordingPreflightTimer)
     recordingPreflightTimer = 0
@@ -611,6 +625,17 @@ async function runRecordingMicrophonePreflight() {
     if (currentRoute === 'recording') renderRecordingSections()
     return
   }
+  // B04 (13): one run, one five-second deadline that starts at the click. The tick is armed
+  // BEFORE the permission prompt, so an unanswered prompt still ends the check in budget.
+  if (typeof api.createPreflightResources === 'function') {
+    if (!recordingPreflightResources) recordingPreflightResources = api.createPreflightResources()
+  }
+  const runToken = recordingPreflightResources ? recordingPreflightResources.begin() : 0
+  recordingPreflightRun += 1
+  const runGeneration = recordingPreflightRun
+  const stillCurrent = () => runGeneration === recordingPreflightRun &&
+    (!recordingPreflightResources || recordingPreflightResources.isCurrent(runToken))
+  recordingPreflightTimer = setTimeout(recordingPreflightTick, 0)
   let stream = null
   try {
     const media = navigator.mediaDevices
@@ -624,10 +649,24 @@ async function runRecordingMicrophonePreflight() {
   } catch (error) {
     recordingPreflight.failLane('microphone', error)
   }
+  // A stream granted after the deadline (or after a cancel/re-check) is stopped at once:
+  // a check nobody is watching must not keep the device. adoptStream() refuses a stream
+  // that belongs to an outdated run (and stops it), so this check also covers the run
+  // that ended while the permission prompt was open.
+  if (stream) {
+    const adopted = recordingPreflightResources ? recordingPreflightResources.adoptStream(runToken, stream) : true
+    const usable = stillCurrent() && Boolean(recordingPreflight) && recordingPreflight.isActive()
+    if (!adopted || !usable) {
+      for (const track of stream.getTracks?.() || []) {
+        try { track.stop() } catch {}
+      }
+      stream = null
+    }
+  }
   // Cancelled (or the route left) while the permission prompt was open: release
   // whatever arrived and never start a meter for a run nobody is watching.
-  if (!recordingPreflight || !recordingPreflight.isActive() || currentRoute !== 'recording') {
-    if (stream) recordingPreflightMicStream = stream
+  if (!stillCurrent() || !recordingPreflight || !recordingPreflight.isActive() || currentRoute !== 'recording') {
+    if (stream && !recordingPreflightResources) recordingPreflightMicStream = stream
     releaseRecordingPreflight()
     if (currentRoute === 'recording') renderRecordingSections()
     return
@@ -641,11 +680,13 @@ async function runRecordingMicrophonePreflight() {
   try {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext
     if (typeof AudioContextClass === 'function') {
-      recordingPreflightContext = new AudioContextClass()
-      const analyser = recordingPreflightContext.createAnalyser()
+      const context = new AudioContextClass()
+      if (recordingPreflightResources) recordingPreflightResources.adoptContext(runToken, context)
+      recordingPreflightContext = context
+      const analyser = context.createAnalyser()
       analyser.fftSize = 1024
       analyser.smoothingTimeConstant = 0
-      recordingPreflightContext.createMediaStreamSource(stream).connect(analyser)
+      context.createMediaStreamSource(stream).connect(analyser)
       recordingPreflightAnalyser = analyser
       recordingPreflightSamples = new Float32Array(1024)
     }
@@ -660,7 +701,7 @@ async function runRecordingMicrophonePreflight() {
   }
   recordingPreflight.startSampling()
   renderRecordingSections()
-  recordingPreflightTimer = setTimeout(recordingPreflightTick, 0)
+  // The tick was armed at the start of the run; sampling now reads the analyser it set up.
 }
 
 async function openWindowsMicrophoneSettings() {

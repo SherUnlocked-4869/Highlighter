@@ -376,6 +376,112 @@
     }
   }
 
+  // B04 (plan item 13): one check can hold at most one system stream, one microphone
+  // stream and one AudioContext, and it must be able to give every one of them up even
+  // when a permission prompt is still open. The ledger is the single place that owns
+  // "which devices does the CURRENT run hold":
+  //   * begin() invalidates (and releases) the previous run, so a re-check can never
+  //     inherit a device from the run it replaced;
+  //   * adoptStream()/adoptContext() refuse a resource that belongs to an outdated run
+  //     and release it on the spot - that is how a permission granted AFTER the deadline
+  //     (or after a cancel) is stopped instead of being held indefinitely;
+  //   * release()/releaseAll() stop every track and close every context without caring
+  //     about the order they arrived in.
+  // Window/DOM free on purpose: the recording bar and the workbench both drive it.
+  function createPreflightResources() {
+    let generation = 0
+    // `active` is what makes a released run over: the id alone would keep answering
+    // "current" after the deadline ended the check, and a late permission grant would be
+    // adopted by a run nobody is watching.
+    let current = { id: 0, active: false, streams: new Set(), contexts: new Set() }
+
+    function stopStream(stream) {
+      for (const track of stream?.getTracks?.() || []) {
+        try { track.stop() } catch {}
+      }
+    }
+
+    function closeContext(context) {
+      if (!context || typeof context.close !== 'function') return
+      try {
+        const closing = context.close()
+        if (closing && typeof closing.catch === 'function') closing.catch(() => {})
+      } catch {}
+    }
+
+    function releaseRun(run) {
+      const streams = [...run.streams]
+      const contexts = [...run.contexts]
+      run.streams.clear()
+      run.contexts.clear()
+      for (const stream of streams) stopStream(stream)
+      for (const context of contexts) closeContext(context)
+      return { streams: streams.length, contexts: contexts.length }
+    }
+
+    function isCurrent(id) {
+      return current.active && generation > 0 && Number(id) === current.id
+    }
+
+    return {
+      // Starts a new run. Any resource the previous run still held is released first:
+      // "check again" and "the window is closing" are the same cleanup.
+      begin() {
+        releaseRun(current)
+        generation += 1
+        current = { id: generation, active: true, streams: new Set(), contexts: new Set() }
+        return current.id
+      },
+      isCurrent,
+      // Registers a stream that just arrived. Returns false (and stops it) when the run
+      // that asked for it is over - the late-grant path.
+      adoptStream(id, stream) {
+        if (!stream) return false
+        if (!isCurrent(id)) {
+          stopStream(stream)
+          return false
+        }
+        current.streams.add(stream)
+        return true
+      },
+      adoptContext(id, context) {
+        if (!context) return false
+        if (!isCurrent(id)) {
+          closeContext(context)
+          return false
+        }
+        current.contexts.add(context)
+        return true
+      },
+      // Releases the named run (or the current one when `id` is omitted). A release for an
+      // old run never touches the current one: the previous authorization callback can only
+      // clean up its own resources.
+      release(id) {
+        if (id !== undefined && id !== null && !isCurrent(id)) {
+          // The run that owns these resources already released them when it ended; there is
+          // nothing of the CURRENT run to touch here.
+          return false
+        }
+        releaseRun(current)
+        current.active = false
+        return true
+      },
+      releaseAll() {
+        releaseRun(current)
+        current.active = false
+      },
+      // What is actually held right now (used by the status renderers and the tests).
+      snapshot() {
+        return {
+          id: current.id,
+          streams: current.streams.size,
+          contexts: current.contexts.size,
+          tracks: [...current.streams].reduce((total, stream) => total + (stream?.getTracks?.()?.length || 0), 0)
+        }
+      }
+    }
+  }
+
   return {
     LANES,
     PHASES,
@@ -389,6 +495,7 @@
     classifyLevel,
     levelPercent,
     createSampleWindow,
+    createPreflightResources,
     deviceErrorCode,
     preflightActions,
     createPreflight,

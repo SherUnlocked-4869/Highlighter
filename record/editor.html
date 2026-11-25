@@ -50,9 +50,12 @@
     <div id="recovery-banner" class="recovery-banner" role="alert" hidden>
       <strong data-i18n="recording.editor.recovery.title">This recording needs recovery</strong>
       <span id="recovery-message"></span>
+      <button id="recovery-salvage" class="action-button" type="button" data-i18n="recording.editor.recovery.salvage">Salvage the playable part</button>
+      <button id="recovery-salvage-cancel" class="action-button" type="button" data-i18n="recording.editor.recovery.salvage-cancel" hidden>Cancel salvage</button>
       <button id="recovery-retry" class="action-button" type="button" data-i18n="recording.editor.recovery.retry">Retry reading</button>
       <button id="recovery-reveal" class="action-button" type="button" data-i18n="recording.editor.recovery.reveal">Open source folder</button>
     </div>
+    <div id="recovery-notice" class="recovery-notice" role="status" data-testid="recovery-notice" hidden></div>
 
     <div id="draft-conflict" class="draft-conflict" role="alert" hidden>
       <span id="draft-conflict-message" data-i18n="recording.editor.draft-conflict.message">The draft version changed and the project was reloaded. Check the selection and continue.</span>

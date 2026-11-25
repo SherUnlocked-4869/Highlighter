@@ -47,6 +47,8 @@
     'preview-video',
     'demo-preview-frame',
     'recovery-banner', 'recovery-message', 'recovery-retry', 'recovery-reveal',
+    // D03 (17): salvage the decodable part of a damaged source from the recovery banner.
+    'recovery-salvage', 'recovery-salvage-cancel', 'recovery-notice',
     'draft-conflict', 'draft-conflict-message', 'draft-reload',
     'timeline', 'timeline-track', 'timeline-selection', 'timeline-segments', 'timeline-playhead',
     'handle-start', 'handle-end',
@@ -90,6 +92,24 @@
     'probe-failed': 'recording.editor.recovery.probe-failed',
     interrupted: 'recording.editor.recovery.interrupted',
     'duration-unavailable': 'recording.editor.recovery.duration-unavailable'
+  })
+  // D03 (17): the salvage service's failure reasons, grouped into the four answers the user
+  // can act on. Anything unmapped still reports a failure, never a silent no-op.
+  const SALVAGE_NO_PLAYABLE = new Set([
+    'source-empty', 'copy-empty', 'output-empty', 'duration-unavailable',
+    'probe-failed', 'output-too-large', 'duration-exceeds-limit'
+  ])
+  const SALVAGE_STATUS_KEYS = Object.freeze({
+    running: 'recording.editor.recovery.salvage-running',
+    cancelling: 'recording.editor.recovery.salvage-cancelling',
+    done: 'recording.editor.recovery.salvage-done',
+    reused: 'recording.editor.recovery.salvage-reused',
+    cancelled: 'recording.editor.recovery.salvage-cancelled',
+    'cancel-failed': 'recording.editor.recovery.salvage-cancel-failed',
+    'disk-full': 'recording.editor.recovery.salvage-disk-full',
+    'no-playable': 'recording.editor.recovery.salvage-no-playable',
+    unavailable: 'recording.editor.recovery.salvage-unavailable',
+    failed: 'recording.editor.recovery.salvage-failed'
   })
   // B08: the "pin current frame" probe. The bitmap is the PREVIEW's source pixels, so a
   // 4K recording pins a 4K image and no window chrome can leak into it. The byte ceiling
@@ -352,6 +372,12 @@
     let pinBusy = false
     let pinGeneration = 0
     let pinStatus = { key: '', state: '', params: null }
+    // D03 (17): one salvage run per page. `salvageRequestId` invalidates a receipt that
+    // arrives after the user switched projects, cancelled, or started a newer run, so a
+    // stale answer can never swap the preview or clear a live status line.
+    let salvageRunning = false
+    let salvageRequestId = 0
+    let salvageStatus = { key: '', params: null }
 
     function body() {
       return documentRef && documentRef.body ? documentRef.body : null
@@ -496,6 +522,11 @@
       renameOpen = false
       hideDraftConflict()
       clearError()
+      // D03 (17): a new project (or a new source for the same one) ends any salvage status
+      // and invalidates a receipt that is still in flight from the previous page state.
+      salvageRequestId += 1
+      salvageRunning = false
+      salvageStatus = { key: '', params: null }
       // B08: a reload swaps the source under the preview, so an in-flight grab from the old
       // project must not land as if it belonged to the new one, and a stale status must go.
       pinGeneration += 1
@@ -687,6 +718,89 @@
       if (!reloaded) showError('recording.editor.error.reload-unavailable')
       render()
       return reloaded
+    }
+
+    // ---------- D03 (17): salvage the playable part of a damaged source ----------
+
+    // The salvage service speaks reasons, the window speaks copy. Every reason lands in one
+    // of the four answers the user can act on: cancelled, disk full, nothing decodable, or
+    // a plain failure that keeps the original untouched.
+    function salvageStatusKeyFor(answer) {
+      const reason = typeof answer?.reason?.code === 'string' ? answer.reason.code : ''
+      const code = typeof answer?.code === 'string' ? answer.code : ''
+      const effective = reason || code
+      if (effective === 'cancelled' || effective === 'salvage-cancelled') return SALVAGE_STATUS_KEYS.cancelled
+      if (effective === 'disk-full') return SALVAGE_STATUS_KEYS['disk-full']
+      if (SALVAGE_NO_PLAYABLE.has(effective)) return SALVAGE_STATUS_KEYS['no-playable']
+      if (effective === 'salvage-unavailable' || effective === 'project-service-unavailable') return SALVAGE_STATUS_KEYS.unavailable
+      return SALVAGE_STATUS_KEYS.failed
+    }
+
+    function setSalvageStatus(key, params = null) {
+      salvageStatus = { key: key || '', params: params || null }
+    }
+
+    // The recovery banner's primary action. It sends ONLY the project id: main checks the
+    // window owner, the project state and the one-job-per-project rule, and answers the same
+    // payload shape as a reload so the verified asset replaces the preview in place.
+    async function salvagePlayable() {
+      if (!project || salvageRunning) return false
+      if (typeof api?.salvage !== 'function') {
+        setSalvageStatus(SALVAGE_STATUS_KEYS.unavailable)
+        render()
+        return false
+      }
+      const projectId = project.id
+      const requestId = ++salvageRequestId
+      salvageRunning = true
+      setSalvageStatus(SALVAGE_STATUS_KEYS.running)
+      clearError()
+      render()
+      let answer = null
+      try {
+        answer = await api.salvage(projectId)
+      } catch (error) {
+        log('editor: salvage failed:', error?.message || error)
+        answer = { ok: false, code: 'salvage-failed' }
+      }
+      // A receipt from a page that already moved on (another project, another run, a
+      // cancel) is dropped: it must not swap the preview or rewrite the status line.
+      if (requestId !== salvageRequestId || !project || project.id !== projectId) return false
+      salvageRunning = false
+      if (answer && answer.ok === true && answer.project) {
+        applyInit(answer)
+        const seconds = Math.max(0, Math.round((Number(answer.durationMs) || 0) / 1000))
+        // Reopening a project that was already salvaged reuses the verified asset.
+        if (answer.salvaged === false) setSalvageStatus(SALVAGE_STATUS_KEYS.reused, { seconds })
+        else setSalvageStatus(SALVAGE_STATUS_KEYS.done, { seconds })
+        render()
+        return true
+      }
+      setSalvageStatus(salvageStatusKeyFor(answer))
+      render()
+      return false
+    }
+
+    // Cancels the running job (FFmpeg kill + temp cleanup happen in main). The pending
+    // receipt is invalidated here so the cancel answer is the one the user sees.
+    async function cancelSalvage() {
+      if (!project || typeof api?.cancelSalvage !== 'function') return false
+      const projectId = project.id
+      salvageRequestId += 1
+      setSalvageStatus(SALVAGE_STATUS_KEYS.cancelling)
+      render()
+      let answer = null
+      try {
+        answer = await api.cancelSalvage(projectId)
+      } catch (error) {
+        log('editor: cancel salvage failed:', error?.message || error)
+        answer = null
+      }
+      if (!project || project.id !== projectId) return false
+      salvageRunning = false
+      setSalvageStatus(answer && answer.ok === true ? SALVAGE_STATUS_KEYS.cancelled : SALVAGE_STATUS_KEYS['cancel-failed'])
+      render()
+      return !!(answer && answer.ok === true)
     }
 
     // ---------- render ----------
@@ -1353,6 +1467,26 @@
       if (!fatalCode && !isRecoveryBlocked()) {
         // A successful (or unblocked) load clears the recovery banner's text.
         if (elements['recovery-message']) elements['recovery-message'].textContent = ''
+      }
+      // D03 (17): the salvage action lives in the banner and is only offered while the
+      // project is actually recoverable. It is disabled for the whole run (a double click
+      // cannot submit twice) and the cancel button only exists while a run is live.
+      const salvageVisible = !fatalCode && !!project && isRecoveryBlocked()
+      if (elements['recovery-salvage']) {
+        const button = elements['recovery-salvage']
+        button.hidden = !salvageVisible
+        button.disabled = salvageRunning || typeof api?.salvage !== 'function'
+      }
+      if (elements['recovery-salvage-cancel']) {
+        const button = elements['recovery-salvage-cancel']
+        button.hidden = !salvageVisible || !salvageRunning
+        button.disabled = !salvageRunning
+      }
+      if (elements['recovery-notice']) {
+        const notice = elements['recovery-notice']
+        const text = salvageStatus.key ? translate(salvageStatus.key, salvageStatus.params) : ''
+        notice.textContent = text
+        notice.hidden = !text
       }
 
       const durationMs = snapshot ? snapshot.durationMs : (metadata ? metadata.durationMs : 0)
@@ -2346,6 +2480,10 @@
       on(element('result-dismiss'), 'click', () => hideResultBar())
       on(element('recovery-retry'), 'click', () => { runSafely(retryRecovery()) })
       on(element('recovery-reveal'), 'click', () => { runSafely(revealSource()) })
+      // D03 (17): the two salvage actions go through the same runSafely wrapper as every
+      // other button, so a rejected promise surfaces instead of dying in the console.
+      on(element('recovery-salvage'), 'click', () => { runSafely(salvagePlayable()) })
+      on(element('recovery-salvage-cancel'), 'click', () => { runSafely(cancelSalvage()) })
       on(element('draft-reload'), 'click', () => { runSafely(reloadProject({ keepConflictNotice: false })) })
       on(element('reveal-source'), 'click', () => { runSafely(revealSource()) })
       on(element('rerecord'), 'click', () => { runSafely(rerecord()) })
@@ -2539,6 +2677,16 @@
       getPickingZoomIndex: () => pickingZoomIndex,
       isRecoveryVisible: () => !!element('recovery-banner') && !element('recovery-banner').hidden,
       isDraftConflictVisible: () => !!element('draft-conflict') && !element('draft-conflict').hidden,
+      // D03 (17): the salvage surface is inspectable so an E2E/probe can assert the running
+      // state, the stale-receipt rule and the final status without scraping DOM text.
+      salvagePlayable,
+      cancelSalvage,
+      getSalvageState: () => ({
+        running: salvageRunning,
+        requestId: salvageRequestId,
+        statusKey: salvageStatus.key,
+        params: salvageStatus.params ? { ...salvageStatus.params } : null
+      }),
       elements
     }
   }

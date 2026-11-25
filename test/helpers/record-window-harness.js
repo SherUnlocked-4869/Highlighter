@@ -439,6 +439,27 @@ function createRecordWindowHarness(options = {}) {
       element.click()
       return element
     },
+    // Delivers the init payload without starting a take: the audio preflight only needs the
+    // window's audio request and the display-media handler.
+    async init(overrides = {}) {
+      const init = {
+        mode: 'display',
+        frameRate: 30,
+        quality: 'standard',
+        countdown: 0,
+        annotation: true,
+        audioSystem: true,
+        audio: { system: true, microphone: true, microphoneDeviceId: '', systemGain: 1, microphoneGain: 1 },
+        selectionBounds: { x: 0, y: 0, width: 640, height: 480 },
+        display: { id: '1', bounds: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1 },
+        audioLoopback: true,
+        fakeCapture: true,
+        ...overrides
+      }
+      for (const handler of ipc.initHandlers) handler(init)
+      await harness.settle(4)
+      return init
+    },
     // Sets up a "take is prepared" state without acquiring real devices, then starts the
     // bar's recorder exactly like the Start button does (startRecorder -> session ->
     // MediaRecorder -> clock). The direct-track branch is used because it needs no

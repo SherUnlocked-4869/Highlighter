@@ -29,7 +29,8 @@ const {
   deviceErrorCode,
   preflightActions,
   createPreflight,
-  summarizeCapture
+  summarizeCapture,
+  createPreflightResources
 } = require('../shared/audio-preflight')
 
 function laneSnapshot(status) {
@@ -476,4 +477,77 @@ test('the summary names the system mix and never pretends window mode is isolate
 test('the lane list is frozen and only contains the two real lanes', () => {
   assert.deepEqual(LANES, ['system', 'microphone'])
   assert.equal(Object.isFrozen(LANES), true)
+})
+
+// ---------------------------------------------------------------------------
+// B04 (plan item 13): one check owns its devices, and it can always give them back
+// ---------------------------------------------------------------------------
+
+function fakeStream(kind = 'audio') {
+  const stopped = []
+  const tracks = [{ kind, readyState: 'live', stop() { this.readyState = 'ended'; stopped.push(kind) } }]
+  return {
+    stopped,
+    getTracks: () => tracks,
+    getAudioTracks: () => tracks,
+    getVideoTracks: () => []
+  }
+}
+
+test('B04 (13): a run adopts its devices and releases every track with one call', () => {
+  const resources = createPreflightResources()
+  const system = fakeStream('video')
+  const microphone = fakeStream('audio')
+  const token = resources.begin()
+  assert.equal(resources.isCurrent(token), true)
+  assert.equal(resources.adoptStream(token, system), true)
+  assert.equal(resources.adoptStream(token, microphone), true)
+  assert.deepEqual(resources.snapshot(), { id: 1, streams: 2, contexts: 0, tracks: 2 })
+  assert.equal(resources.release(token), true)
+  assert.deepEqual(system.stopped, ['video'], 'the system capture video track is stopped too')
+  assert.deepEqual(microphone.stopped, ['audio'])
+  assert.deepEqual(resources.snapshot(), { id: 1, streams: 0, contexts: 0, tracks: 0 })
+})
+
+test('B04 (13): a permission granted after the run ended is stopped on arrival', () => {
+  const resources = createPreflightResources()
+  const first = resources.begin()
+  // The deadline (or a cancel) ended the run before the permission prompt answered.
+  resources.release(first)
+  const late = fakeStream('audio')
+  assert.equal(resources.adoptStream(first, late), false, 'an outdated run cannot adopt a device')
+  assert.deepEqual(late.stopped, ['audio'], 'the late stream is stopped immediately')
+  assert.deepEqual(resources.snapshot(), { id: 1, streams: 0, contexts: 0, tracks: 0 })
+})
+
+test('B04 (13): a re-check releases the previous run before it starts a new one', () => {
+  const resources = createPreflightResources()
+  const firstToken = resources.begin()
+  const firstStream = fakeStream()
+  resources.adoptStream(firstToken, firstStream)
+  const secondToken = resources.begin()
+  assert.notEqual(secondToken, firstToken)
+  assert.deepEqual(firstStream.stopped, ['audio'], 'the replaced run never keeps a device')
+  assert.equal(resources.isCurrent(firstToken), false)
+  assert.equal(resources.isCurrent(secondToken), true)
+  // The previous authorization callback can only clean up its own (already empty) run.
+  assert.equal(resources.release(firstToken), false)
+  const secondStream = fakeStream()
+  resources.adoptStream(secondToken, secondStream)
+  assert.equal(resources.snapshot().streams, 1, 'a stale release never touches the current run')
+  assert.deepEqual(secondStream.stopped, [])
+})
+
+test('B04 (13): an AudioContext is closed with the run that opened it', () => {
+  const resources = createPreflightResources()
+  const token = resources.begin()
+  let closed = 0
+  resources.adoptContext(token, { close() { closed += 1; return Promise.resolve() } })
+  assert.equal(resources.snapshot().contexts, 1)
+  resources.release(token)
+  assert.equal(closed, 1)
+  // A context that arrives for an obsolete run is closed instead of stored.
+  const late = { close() { closed += 1; return Promise.resolve() } }
+  assert.equal(resources.adoptContext(token - 1, late), false)
+  assert.equal(closed, 2)
 })

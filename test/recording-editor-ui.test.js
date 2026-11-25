@@ -667,7 +667,7 @@ function initPayload(overrides = {}) {
 }
 
 function createFakeApi(options = {}) {
-  const calls = { ready: 0, saveDraft: [], export: [], status: [], cancel: [], action: [], reload: [], rename: [], reveal: [], rerecord: [], back: [], window: [], events: [] }
+  const calls = { ready: 0, saveDraft: [], export: [], status: [], cancel: [], action: [], reload: [], rename: [], reveal: [], rerecord: [], back: [], window: [], events: [], salvage: [], salvageCancel: [] }
   const initHandlers = []
   const progressHandlers = []
   const languageHandlers = []
@@ -714,6 +714,20 @@ function createFakeApi(options = {}) {
     rerecord: async (projectId) => { calls.rerecord.push(projectId); return { ok: true } },
     back: async () => { calls.back.push(true); return { ok: true } },
     windowAction: (action) => { calls.window.push(action) }
+  }
+  // D03 (17): the salvage channels. `options.salvage === false` simulates a bridge that
+  // does not expose them yet, which the banner must explain instead of silently doing nothing.
+  if (options.salvage !== false) {
+    api.salvage = async (projectId) => {
+      calls.salvage.push(projectId)
+      if (options.salvageAnswer) return options.salvageAnswer(projectId)
+      return { ok: true, salvaged: true, projectId, durationMs: 4000, project: projectEdit(), metadata: { durationMs: 4000 }, sourceUrl: 'file:///recordings/project-1/capture-salvaged.webm', recovery: { state: 'ready', errorCode: '' } }
+    }
+    api.cancelSalvage = async (projectId) => {
+      calls.salvageCancel.push(projectId)
+      if (options.cancelSalvageAnswer) return options.cancelSalvageAnswer(projectId)
+      return { ok: true, cancelled: true, settled: true }
+    }
   }
   // record-editor:events (p2). `options.events === false` simulates a bridge that has not
   // landed yet; a function lets a test inject a custom channel.
@@ -1753,3 +1767,193 @@ test('the editor files add no untranslated Chinese copy (i18n gate stays clear)'
   assert.deepEqual(offenders, [], 'editor UI copy must live in shared/locales/recording-editor.js')
 })
 
+
+// ---------------------------------------------------------------------------
+// D03 (17): salvage the playable part from the recovery banner
+// ---------------------------------------------------------------------------
+
+function recoverablePayload(overrides = {}) {
+  return initPayload({
+    recovery: { state: 'recoverable', errorCode: 'probe-failed' },
+    ...overrides
+  })
+}
+
+function deferred() {
+  let resolve = null
+  let reject = null
+  const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject })
+  return { promise, resolve, reject }
+}
+
+test('D03 (17): the recovery banner offers salvage and reports the recovered duration once', async (t) => {
+  const gate = deferred()
+  const fake = createFakeApi({ salvageAnswer: () => gate.promise })
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(recoverablePayload())
+  const elements = harness.elements
+
+  // The action exists, is enabled, and the cancel entry stays hidden until a run starts.
+  assert.equal(elements.get('recovery-banner').hidden, false)
+  assert.equal(elements.get('recovery-salvage').hidden, false)
+  assert.equal(elements.get('recovery-salvage').disabled, false)
+  assert.equal(elements.get('recovery-salvage-cancel').hidden, true)
+  assert.equal(elements.get('recovery-notice').hidden, true)
+
+  // First click: one IPC call, a running status, and the button is disabled for the run.
+  const running = view.salvagePlayable()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(fake.calls.salvage, ['project-1'], 'the renderer sends only the project id')
+  assert.equal(view.getSalvageState().running, true)
+  assert.equal(elements.get('recovery-salvage').disabled, true)
+  assert.equal(elements.get('recovery-salvage').hidden, false)
+  assert.equal(elements.get('recovery-salvage-cancel').hidden, false)
+  assert.match(elements.get('recovery-notice').textContent, /^recording\.editor\.recovery\.salvage-running/)
+
+  // A double click while the job runs cannot submit a second time.
+  assert.equal(await view.salvagePlayable(), false)
+  assert.equal(fake.calls.salvage.length, 1)
+
+  gate.resolve({
+    ok: true,
+    salvaged: true,
+    projectId: 'project-1',
+    durationMs: 45_000,
+    project: projectEdit({ media: { ...projectEdit().media, durationMs: 45_000 }, state: 'ready' }),
+    metadata: { durationMs: 45_000, video: { width: 1280, height: 720 }, audio: { tracks: 0 } },
+    sourceUrl: 'file:///recordings/project-1/capture-salvaged.webm',
+    recovery: { state: 'ready', errorCode: '' }
+  })
+  assert.equal(await running, true)
+  assert.equal(view.getSalvageState().running, false)
+  // The verified asset replaced the preview and the banner went away; the notice stays.
+  assert.equal(elements.get('preview-video').src, 'file:///recordings/project-1/capture-salvaged.webm')
+  assert.equal(elements.get('recovery-banner').hidden, true)
+  assert.equal(elements.get('recovery-salvage').hidden, true)
+  assert.equal(elements.get('recovery-notice').hidden, false)
+  assert.equal(elements.get('recovery-notice').textContent, 'recording.editor.recovery.salvage-done')
+  assert.deepEqual(view.getSalvageState().params, { seconds: 45 })
+})
+
+test('D03 (17): cancelling invalidates the pending receipt instead of applying it later', async (t) => {
+  const gate = deferred()
+  const fake = createFakeApi({ salvageAnswer: () => gate.promise })
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(recoverablePayload())
+  const elements = harness.elements
+  const running = view.salvagePlayable()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(elements.get('recovery-salvage-cancel').hidden, false)
+
+  assert.equal(await view.cancelSalvage(), true)
+  assert.deepEqual(fake.calls.salvageCancel, ['project-1'])
+  assert.equal(view.getSalvageState().running, false)
+  assert.match(elements.get('recovery-notice').textContent, /salvage-cancelled/)
+
+  // The job then answers success (or failure): the receipt belongs to a cancelled run and
+  // must neither swap the source nor overwrite the cancel message.
+  gate.resolve({
+    ok: true,
+    salvaged: true,
+    durationMs: 9000,
+    project: projectEdit(),
+    metadata: { durationMs: 9000 },
+    sourceUrl: 'file:///recordings/project-1/capture-salvaged.webm',
+    recovery: { state: 'ready', errorCode: '' }
+  })
+  assert.equal(await running, false)
+  assert.equal(elements.get('preview-video').src, 'file:///recordings/project-1/capture.webm')
+  assert.match(elements.get('recovery-notice').textContent, /salvage-cancelled/)
+  assert.equal(elements.get('recovery-banner').hidden, false, 'the project is still recoverable')
+})
+
+test('D03 (17): disk-full and nothing-decodable results keep the original and say why', async (t) => {
+  const cases = [
+    { reason: 'disk-full', expected: 'recording.editor.recovery.salvage-disk-full' },
+    { reason: 'source-empty', expected: 'recording.editor.recovery.salvage-no-playable' },
+    { reason: 'output-empty', expected: 'recording.editor.recovery.salvage-no-playable' },
+    { reason: 'cancelled', expected: 'recording.editor.recovery.salvage-cancelled' },
+    { reason: 'ffmpeg-unavailable', expected: 'recording.editor.recovery.salvage-failed' }
+  ]
+  for (const entry of cases) {
+    const fake = createFakeApi({
+      salvageAnswer: () => ({ ok: false, code: 'salvage-failed', reason: { code: entry.reason }, attempted: null })
+    })
+    const { view, harness } = bootView({ api: fake.api })
+    view.applyInit(recoverablePayload())
+    assert.equal(await view.salvagePlayable(), false, entry.reason)
+    assert.equal(view.getSalvageState().running, false)
+    assert.equal(harness.elements.get('preview-video').src, 'file:///recordings/project-1/capture.webm')
+    assert.equal(harness.elements.get('recovery-banner').hidden, false)
+    assert.ok(
+      harness.elements.get('recovery-notice').textContent.startsWith(entry.expected),
+      entry.reason + ' must report ' + entry.expected + ', got ' + harness.elements.get('recovery-notice').textContent
+    )
+    view.destroy()
+  }
+})
+
+test('D03 (17): switching projects drops an in-flight salvage receipt', async (t) => {
+  const gate = deferred()
+  const fake = createFakeApi({ salvageAnswer: () => gate.promise })
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(recoverablePayload())
+  const running = view.salvagePlayable()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  // The window now shows another project; the old answer must not touch it.
+  const second = projectEdit({ id: 'project-2', name: 'Second take' })
+  view.applyInit({
+    project: second,
+    sourceUrl: 'file:///recordings/project-2/capture.webm',
+    metadata: { durationMs: 8000, video: { width: 1280, height: 720 }, audio: { tracks: 0 } },
+    recovery: { state: 'recoverable', errorCode: 'probe-failed' }
+  })
+  gate.resolve({
+    ok: true,
+    salvaged: true,
+    durationMs: 12_000,
+    project: projectEdit(),
+    metadata: { durationMs: 12_000 },
+    sourceUrl: 'file:///recordings/project-1/capture-salvaged.webm',
+    recovery: { state: 'ready', errorCode: '' }
+  })
+  assert.equal(await running, false)
+  assert.equal(harness.elements.get('preview-video').src, 'file:///recordings/project-2/capture.webm')
+  assert.equal(view.getProject().id, 'project-2')
+  assert.equal(harness.elements.get('recovery-notice').hidden, true, 'a stale receipt does not write a status for another project')
+})
+
+test('D03 (17): reopening an already salvaged project reuses the verified result', async (t) => {
+  const fake = createFakeApi({
+    salvageAnswer: () => ({
+      ok: true,
+      salvaged: false,
+      projectId: 'project-1',
+      durationMs: 7000,
+      project: projectEdit({ state: 'ready' }),
+      metadata: { durationMs: 7000 },
+      sourceUrl: 'file:///recordings/project-1/capture-salvaged.webm',
+      recovery: { state: 'ready', errorCode: '' }
+    })
+  })
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(recoverablePayload())
+  assert.equal(await view.salvagePlayable(), true)
+  assert.equal(harness.elements.get('recovery-notice').textContent, 'recording.editor.recovery.salvage-reused')
+  assert.deepEqual(view.getSalvageState().params, { seconds: 7 })
+})
+
+test('D03 (17): a bridge without the salvage channels explains itself instead of doing nothing', async (t) => {
+  const fake = createFakeApi({ salvage: false })
+  const { view, harness } = bootView({ api: fake.api })
+  t.after(() => view.destroy())
+  view.applyInit(recoverablePayload())
+  assert.equal(await view.salvagePlayable(), false)
+  assert.equal(harness.elements.get('recovery-salvage').disabled, true)
+  assert.match(harness.elements.get('recovery-notice').textContent, /salvage-unavailable/)
+})

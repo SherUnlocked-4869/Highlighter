@@ -203,6 +203,14 @@ let preflightAnalysers = null
 let preflightSamples = null
 let preflightTimer = 0
 let preflightAppliedKey = ''
+// B04 (plan item 13): every check is a RUN with its own token. The token is what refuses a
+// device that is granted after the deadline (or after a cancel): the stream is stopped on
+// arrival instead of being held by a check nobody is watching. The ledger also releases the
+// previous run's devices when a re-check starts, so one window never holds two checks.
+const preflightResources = audioPreflightModule && typeof audioPreflightModule.createPreflightResources === 'function'
+  ? audioPreflightModule.createPreflightResources()
+  : null
+let preflightRun = 0
 // Only Windows exposes the system mix through Electron's loopback audio; main
 // reports the same condition it uses in the display-media handler.
 let preflightLoopback = true
@@ -2163,6 +2171,9 @@ function preflightPeak(analyser) {
   return 0
 }
 
+// The five-second deadline runs for the WHOLE check, not just the sampling phase: the tick
+// is armed the moment the run begins, so a permission prompt that never answers still ends
+// the run (and releases the devices already opened) inside the budget.
 function preflightTick() {
   preflightTimer = 0
   if (!preflightSupported() || !preflight.isActive()) return
@@ -2180,24 +2191,32 @@ function preflightTick() {
 
 // Stops every track and closes the AudioContext. Called on finish, cancel, route
 // exit, window close and before a take starts, so a check can never hold a device.
+// B04 (13): the resource ledger owns the devices. It also stops a stream that a previous
+// run's callback registers after this one ended, which the local variables cannot see.
 function releasePreflightDevices() {
-  for (const stream of [preflightSystemStream, preflightMicStream]) {
-    for (const track of stream?.getTracks?.() || []) {
-      try { track.stop() } catch {}
+  // B04 (13): one owner per device. The ledger stops every adopted stream and closes every
+  // adopted context (including one a stale run registers late); the local refs are cleared.
+  if (preflightResources) {
+    preflightResources.release()
+  } else {
+    for (const stream of [preflightSystemStream, preflightMicStream]) {
+      for (const track of stream?.getTracks?.() || []) {
+        try { track.stop() } catch {}
+      }
+    }
+    const context = preflightContext
+    if (context && typeof context.close === 'function') {
+      try {
+        const closing = context.close()
+        if (closing && typeof closing.catch === 'function') closing.catch(() => {})
+      } catch {}
     }
   }
   preflightSystemStream = null
   preflightMicStream = null
   preflightAnalysers = null
   preflightSamples = null
-  const context = preflightContext
   preflightContext = null
-  if (context && typeof context.close === 'function') {
-    try {
-      const closing = context.close()
-      if (closing && typeof closing.catch === 'function') closing.catch(() => {})
-    } catch {}
-  }
 }
 
 function stopAudioPreflight(outcome = 'done') {
@@ -2233,10 +2252,25 @@ async function startAudioPreflight() {
     renderPreflight()
     return
   }
+  // B04 (13): the run token. Starting a check invalidates (and releases) the previous one,
+  // and every await below checks the token before it stores or starts anything.
+  const runToken = preflightResources ? preflightResources.begin() : 0
+  preflightRun += 1
+  const runGeneration = preflightRun
+  const stillCurrent = () => runGeneration === preflightRun && (!preflightResources || preflightResources.isCurrent(runToken))
+  // The deadline starts NOW, not when the last device answers. Without this a pending
+  // permission prompt (or a hung getDisplayMedia) would hold the system track forever.
+  preflightTimer = setTimeout(preflightTick, 0)
   try {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext
     if (typeof AudioContextClass === 'function') {
-      preflightContext = new AudioContextClass()
+      const context = new AudioContextClass()
+      if (!stillCurrent()) {
+        try { context.close?.() } catch {}
+        return
+      }
+      preflightContext = context
+      if (preflightResources) preflightResources.adoptContext(runToken, context)
       preflightAnalysers = { system: null, microphone: null }
       preflightSamples = new Float32Array(1024)
     }
@@ -2246,31 +2280,55 @@ async function startAudioPreflight() {
     preflightSamples = null
   }
   if (preflight.canOpen('system') && preflight.noteOpen('system')) {
+    let systemStream = null
     try {
-      preflightSystemStream = await acquirePreflightSystemStream()
-      watchPreflightTrack('system', preflightSystemStream)
-      attachPreflightAnalyser('system', preflightSystemStream)
+      systemStream = await acquirePreflightSystemStream()
     } catch (error) {
       preflight.failLane('system', error)
+    }
+    if (systemStream) {
+      // A stream granted after the deadline (or after a cancel/re-check) is stopped at
+      // once - including the video track getDisplayMedia had to request.
+      if (!stillCurrent() || !preflight.isActive() || !(preflightResources ? preflightResources.adoptStream(runToken, systemStream) : true)) {
+        for (const track of systemStream.getTracks?.() || []) {
+          try { track.stop() } catch {}
+        }
+        systemStream = null
+      } else {
+        preflightSystemStream = systemStream
+        watchPreflightTrack('system', systemStream)
+        attachPreflightAnalyser('system', systemStream)
+      }
     }
   }
   // A cancel (or a take the user started) during the first await must not open the
   // second device at all.
-  if (!preflight.isActive()) {
+  if (!stillCurrent() || !preflight.isActive()) {
     releasePreflightDevices()
     renderPreflight()
     return
   }
   if (preflight.canOpen('microphone') && preflight.noteOpen('microphone')) {
+    let micStream = null
     try {
-      preflightMicStream = await acquirePreflightMicrophoneStream()
-      watchPreflightTrack('microphone', preflightMicStream)
-      attachPreflightAnalyser('microphone', preflightMicStream)
+      micStream = await acquirePreflightMicrophoneStream()
     } catch (error) {
       preflight.failLane('microphone', error)
     }
+    if (micStream) {
+      if (!stillCurrent() || !preflight.isActive() || !(preflightResources ? preflightResources.adoptStream(runToken, micStream) : true)) {
+        for (const track of micStream.getTracks?.() || []) {
+          try { track.stop() } catch {}
+        }
+        micStream = null
+      } else {
+        preflightMicStream = micStream
+        watchPreflightTrack('microphone', micStream)
+        attachPreflightAnalyser('microphone', micStream)
+      }
+    }
   }
-  if (!preflight.isActive()) {
+  if (!stillCurrent() || !preflight.isActive()) {
     releasePreflightDevices()
     renderPreflight()
     return
@@ -2284,7 +2342,7 @@ async function startAudioPreflight() {
   }
   preflight.startSampling()
   renderPreflight()
-  preflightTimer = setTimeout(preflightTick, 0)
+  // The tick was already armed above; sampling now reads the analysers it set up.
 }
 
 // Applies one of the panel's prompts to THIS take's start parameters (the same

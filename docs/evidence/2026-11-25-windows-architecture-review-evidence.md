@@ -21,13 +21,13 @@
 | C04 | P1 | 已实现 | test/pin-image-store-async.test.js, test/pin-domain.test.js | 慢盘/SSD 上 1/10/20 张 4K PNG 的主线程停顿 P95 与句柄基线 |
 | A05 | P1 | 已实现 | test/clipboard-preview.test.js | 20 张相似图首次粘贴正确率（5 人）；30 次预览释放（真机面板） |
 | A06 | P1 | 已实现（图标素材待补） | test/tray-menu.test.js, test/first-run-guidance.test.js | 5 名新用户 60 秒首框；16/24/32 托盘素材与深浅任务栏 |
-| D03 | P1 | 已实现（UI 按钮待接） | test/recording-salvage.test.js | 真实强制结束/截断 WebM 的重封装与播放 |
+| D03 | P1 | 已实现（17：编辑器抢救按钮已接线） | test/recording-salvage.test.js, test/recording-editor-ui.test.js | 真实强制结束/截断 WebM 的重封装与播放 |
 | B01 | P1 | 已实现（原生剪贴板排除格式待接线） | test/capture-skip-history.test.js | 唯一测试图在截图历史/剪贴板历史/自动存盘三区新增 0；原生排除格式 |
 | B03 | P1 | 已实现 | test/pin-copy-once.test.js, test/capture-pin-copy.test.js | 真机 0/90/180/270 视图导出朝向与高 DPI；预览对话框 |
 | B08 | P2 | 已实现（仅素材帧） | test/recording-pin-frame.test.js | 真实 VFR 视频的 ≤1 帧偏差与去段后取帧 |
 | A07 | P2 | 已实现（吸附开关待设置项） | test/pin-snap-geometry.test.js, test/pin-display.test.js | 真机 100%+150%/负坐标副屏/拔屏/20 张定位与 ≤1 DIP 吸附 |
 | C05 | P2 | 實驗路徑已实现（默认关闭） | test/recording-direct-track.test.js, test/measure-recording-encode.test.js | 核显/独显 × 1080p30/4K30 成对样本；CPU/掉帧/音画差门槛 |
-| B04 | P1 | 已实现（单机模拟） | test/recording-audio-preflight.test.js, test/recording-audio-preflight-ui.test.js | 真实四组合音轨、权限拒绝、蓝牙拔出与 5 秒采样/1 秒释放 |
+| B04 | P1 | 已实现（13：5 秒总期限与迟到授权回收） | test/recording-audio-preflight.test.js, test/recording-audio-preflight-ui.test.js | 真实四组合音轨、权限拒绝、蓝牙拔出与 5 秒采样/1 秒释放 |
 | B05 | P1 | 已实现（部分数字为估算） | test/clipboard-capacity.test.js, test/clipboard-capacity-ui.test.js, test/clipboard-capacity-domain.test.js | 真实侧车 500 项/预算样本与面板视觉验收 |
 | D05 | P1 | 已实现（托盘子菜单待接） | test/window-resilience.test.js, test/window-resilience-tray.test.js, test/pin-crash-recovery.test.js | 打包版 10 次启动单实例、Explorer 重启、睡眠唤醒、便携登录项 |
 | D06 | P1 | 已实现 | test/review-evidence.test.js | 候选包与 CI 运行/真机记录的可追溯性 |

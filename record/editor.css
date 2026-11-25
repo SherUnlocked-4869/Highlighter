@@ -201,6 +201,17 @@ body {
 
 /* ---------- banners + export progress ---------- */
 
+/* D03 (17): the salvage result line sits under the recovery banner and stays visible
+after a successful salvage has hidden the banner itself. */
+.recovery-notice {
+  margin: 8px 14px 0;
+  padding: 6px 12px;
+  border: 1px solid rgba(52,199,89,.34);
+  border-radius: var(--radius-sm);
+  background: rgba(52,199,89,.08);
+  font-size: 12px;
+}
+
 .recovery-banner,
 .draft-conflict {
   display: flex;

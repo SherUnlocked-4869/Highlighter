@@ -448,7 +448,7 @@ function plain(value) {
   return value === undefined ? value : JSON.parse(JSON.stringify(value))
 }
 
-function createHarness({ state = workbenchState(), devices = [{ kind: 'audioinput', deviceId: 'mic-a', label: 'USB Microphone' }], rejectMic = null } = {}) {
+function createHarness({ state = workbenchState(), devices = [{ kind: 'audioinput', deviceId: 'mic-a', label: 'USB Microphone' }], rejectMic = null, deferMic = null } = {}) {
   const dom = createFakeDom()
   const clock = { value: 1_700_000_000_000, now() { return this.value } }
   const media = { micCalls: [], displayCalls: [], stops: [], contexts: 0, closed: 0, startPayloads: [] }
@@ -514,6 +514,7 @@ function createHarness({ state = workbenchState(), devices = [{ kind: 'audioinpu
         enumerateDevices: async () => devices,
         getUserMedia: async (constraints) => {
           media.micCalls.push(plain(constraints))
+          if (deferMic) return deferMic(constraints)
           if (rejectMic) throw rejectMic
           return fakeStream()
         },
@@ -569,6 +570,7 @@ function createHarness({ state = workbenchState(), devices = [{ kind: 'audioinpu
     opened,
     clock,
     context,
+    fakeStream,
     run: (code) => vm.runInContext(code, context),
     async settle(rounds = 20) {
       for (let index = 0; index < rounds; index += 1) await new Promise((resolve) => setImmediate(resolve))
@@ -789,4 +791,117 @@ test('a missing shared module degrades to an explained panel instead of throwing
   assert.equal(harness.media.micCalls.length, 0, 'no device is opened without the module')
   assert.match(harness.dom.view.innerHTML, /data-testid="preflight-panel"/)
   assert.match(harness.dom.view.innerHTML, /\u65e0\u6cd5\u68c0\u67e5\u9ea6\u514b\u98ce/)
+})
+
+// ---------------------------------------------------------------------------
+// B04 (plan item 13): the check owns a deadline from the click, and a permission grant
+// that arrives late is stopped on arrival. The recording bar is driven through the REAL
+// record/record.js in a fake window (test/helpers/record-window-harness.js).
+// ---------------------------------------------------------------------------
+
+const { createRecordWindowHarness } = require('./helpers/record-window-harness')
+
+function deferredStream() {
+  let resolve = null
+  const promise = new Promise((onResolve) => { resolve = onResolve })
+  return { promise, resolve }
+}
+
+function stoppedCount(harness) {
+  return harness.media.state.stopped.length
+}
+
+test('B04 (13): the bar check ends inside the five-second budget while the microphone prompt is open', async () => {
+  const pendingMic = deferredStream()
+  const harness = createRecordWindowHarness({ deferMicrophone: () => pendingMic.promise })
+  await harness.init()
+  const started = harness.run('startAudioPreflight()')
+  await harness.settle(6)
+  // The system lane opened; the microphone prompt is still open and holds no device yet.
+  assert.equal(harness.media.state.displayCalls.length, 1)
+  assert.equal(harness.media.state.microphoneCalls.length, 1)
+  assert.equal(stoppedCount(harness), 0, 'the system lane stays available while sampling')
+  assert.equal(harness.run('preflight.isActive()'), true)
+
+  // Advance past the sample budget and let the deadline tick run.
+  harness.clock.value += SAMPLE_BUDGET_MS + 1
+  harness.runTimers({ count: 1, advanceMs: 0 })
+  await harness.settle(6)
+  assert.equal(stoppedCount(harness), 2, 'the system audio AND its required video track are stopped')
+  assert.equal(harness.run('preflight.isActive()'), false)
+  assert.equal(harness.run('preflight.status().releasedWithinBudget'), true)
+  // The permission is granted only after the deadline: the late stream must be stopped on
+  // arrival, and only then does the check's own promise settle.
+  const late = harness.media.stream({ audio: true, video: false })
+  pendingMic.resolve(late)
+  await harness.settle(6)
+  assert.deepEqual(late._tracks.map((track) => track.readyState), ['ended'], 'a late grant is stopped on arrival')
+  await started
+  assert.equal(harness.run('preflightSystemStream === null'), true)
+})
+
+test('B04 (13): a re-check releases the previous run instead of stacking devices', async () => {
+  const harness = createRecordWindowHarness()
+  await harness.init()
+  harness.run('startAudioPreflight()').catch(() => {})
+  await harness.settle(6)
+  const firstStreams = harness.media.state.livestreams.slice()
+  assert.equal(firstStreams.length, 2, 'system + microphone for the first check')
+  assert.equal(harness.media.state.livestreams.every((stream) => stream._tracks.every((track) => track.readyState === 'live')), true)
+
+  // Clicking the check again while it runs cancels it (the button's own contract) and a
+  // fresh click starts a new run with new devices.
+  harness.run('startAudioPreflight()').catch(() => {})
+  await harness.settle(6)
+  assert.equal(harness.media.state.livestreams.every((stream) => stream._tracks.every((track) => track.readyState === 'ended')), true, 'cancelling releases everything it held')
+  harness.run('startAudioPreflight()').catch(() => {})
+  await harness.settle(6)
+  const live = harness.media.state.livestreams.filter((stream) => stream._tracks.every((track) => track.readyState === 'live'))
+  assert.equal(live.length, 2, 'the new run holds exactly its own two streams')
+})
+
+test('B04 (13): closing the window releases the check and invalidates its pending grant', async () => {
+  const pendingMic = deferredStream()
+  const harness = createRecordWindowHarness({ deferMicrophone: () => pendingMic.promise })
+  await harness.init()
+  const started = harness.run('startAudioPreflight()')
+  await harness.settle(6)
+  assert.equal(stoppedCount(harness), 0)
+  // beforeunload is the window-close path of the real control bar.
+  harness.run('cancelAudioPreflight()')
+  await harness.settle(4)
+  assert.equal(stoppedCount(harness), 2, 'the system lane is released on close')
+  const late = harness.media.stream({ audio: true, video: false })
+  pendingMic.resolve(late)
+  await harness.settle(6)
+  assert.deepEqual(late._tracks.map((track) => track.readyState), ['ended'], 'the pending grant cannot outlive the window check')
+  await started
+})
+
+test('B04 (13): the workbench check ends at the five-second deadline while the prompt is open', async () => {
+  let resolveMic = null
+  const pending = new Promise((resolve) => { resolveMic = resolve })
+  const harness = createHarness({ deferMic: () => pending })
+  harness.run('renderRecording()')
+  await harness.settle()
+  click(harness.dom, '[data-testid="preflight-check"]')
+  await harness.settle()
+  assert.equal(harness.media.micCalls.length, 1)
+  assert.equal(harness.media.stops.length, 0, 'no device has been granted yet')
+  assert.equal(harness.run('recordingPreflight.isActive()'), true)
+
+  // The permission prompt never answers: the deadline armed at the click ends the run.
+  harness.clock.value += SAMPLE_BUDGET_MS + 1
+  harness.runTimers(1)
+  await harness.settle()
+  assert.equal(harness.run('recordingPreflight.isActive()'), false)
+  assert.equal(harness.media.contexts, 0, 'no meter was built for an expired run')
+
+  // The grant arrives afterwards: it is stopped at once instead of being held.
+  const late = harness.fakeStream()
+  resolveMic(late)
+  await harness.settle()
+  assert.notEqual(late.getAudioTracks()[0].readyState, 'live', 'a late grant is stopped on arrival')
+  assert.equal(harness.run('recordingPreflightMicStream === null'), true)
+  assert.equal(harness.media.micCalls.length, 1, 'the late grant never triggers a second open')
 })
