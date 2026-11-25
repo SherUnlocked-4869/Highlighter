@@ -561,11 +561,11 @@ pinDomain = createPinDomain({
   getCreateCaptureWindow: () => (...args) => captureDomain.createCaptureWindow(...args),
   recognizePin: ocrController.recognizePin,
   log,
-  ipcMain: secureIpcMain
+  // A07/D05 (14/18): a pin layout or retained-pin change rebuilds the tray snapshot.
+  ipcMain: secureIpcMain, onPinLayoutChange: () => createTrayIcon(), onRecoverableChange: () => createTrayIcon()
 })
 
-// P0-2-T2: the screenshot path asks this provider for the cursor shape; it stays lazy, so no
-// helper process is spawned until a capture actually requests the cursor.
+// P0-2-T2: lazy cursor-shape provider (no helper process until a capture asks).
 cursorProvider = createCursorProvider({ app, spawn, log, rootDirectory: __dirname })
 
 captureDomain = createCaptureDomain({
@@ -923,7 +923,7 @@ function createTrayIcon() {
     recentExport: exportResultService ? exportResultService.latestFor() : null,
     // R2 (contracts §4.1/§4.2): the workbench entry and the live pause/finish entries.
     recording: { active: recordDomain.getActiveState(), openWorkbench: () => recordDomain.openRecordingWorkbench(), pauseResume: () => recordDomain.pauseResumeActive(), finish: () => recordDomain.finishActive() },
-    pinnedDisplays: pinDomain.listPinsByDisplay(),
+    pinnedDisplays: pinDomain.listPinsByDisplay(), recoverablePins: pinDomain.trayRecoveryMenu(),
     openRecentExport: (receipt) => { if (!receipt?.resultId) return; Promise.resolve(exportResultService?.perform({ resultId: receipt.resultId, action: 'open' })).then((result) => { if (result?.status === 'failed') log('Tray recent export failed:', result.code); createTrayIcon() }).catch((error) => log('Tray recent export failed:', error.message)) },
     quit: () => app.quit()
   })))

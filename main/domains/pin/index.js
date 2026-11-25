@@ -307,16 +307,47 @@ function createPinDomain(deps) {
   async function saveRecoverablePin(ticketId) {
     const ticket = resilience.get(ticketId)
     if (!ticket) return { status: 'failed', code: 'NOT_FOUND' }
+    let savedPath = null
     try {
       const { bytes } = await pinImages.read(ticket.imageId)
-      await saveImageBuffer(bytes)
+      savedPath = await saveImageBuffer(bytes)
     } catch (error) {
       log('Pin recovery save failed:', error.message)
       return { status: 'failed', code: 'SAVE_FAILED' }
     }
+    if (!savedPath) {
+      // D05 (plan item 18): a cancelled save dialog writes nothing. Releasing the
+      // retained pixels here was the bug: the user dismissed the dialog and the ticket
+      // (the only copy left of that pin) disappeared with it.
+      return { status: 'cancelled', code: 'SAVE_CANCELLED' }
+    }
     resilience.release(ticketId, { code: 'SAVED', reason: 'saved' })
     notifyRecoverable({ kind: 'saved', id: ticketId })
-    return { status: 'saved' }
+    return { status: 'saved', savedPath }
+  }
+
+  // D05 (plan item 18): everything the tray needs for the "pins to recover" submenu. The
+  // domain owns the actions as well as the data, so the menu layer never reaches into the
+  // resilience store and main.js only forwards one value.
+  function trayRecoveryMenu() {
+    const items = getRecoverablePins().map((entry, index) => ({
+      id: entry.id,
+      index: index + 1,
+      reason: entry.reason,
+      attempts: entry.attempts,
+      exhausted: entry.exhausted,
+      expiresAt: entry.expiresAt,
+      bytes: entry.bytes,
+      canRetry: entry.exhausted !== true
+    }))
+    return {
+      items,
+      actions: {
+        recover: (id) => recoverPin(id),
+        save: (id) => saveRecoverablePin(id),
+        discard: (id) => discardRecoverablePin(id)
+      }
+    }
   }
 
   function discardRecoverablePin(ticketId) {
@@ -1733,6 +1764,7 @@ function createPinDomain(deps) {
     // `onRecoverableChange: () => createTrayIcon()` and reads this list in
     // buildTrayMenuTemplate (see the D05 report).
     getRecoverablePins,
+    trayRecoveryMenu,
     recoverPin,
     saveRecoverablePin,
     discardRecoverablePin,

@@ -465,3 +465,83 @@ test('the menu source carries no copy of its own', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'tray-menu.js'), 'utf8')
   assert.doesNotMatch(source, /[\u4e00-\u9fff]/, 'tray-menu.js must not hard-code CJK copy')
 })
+
+// ---------------------------------------------------------------------------
+// A07/D05 (plan items 14 and 18): the tray reflects pin layout changes and the
+// retained-pin recovery submenu.
+// ---------------------------------------------------------------------------
+
+test('A07 (14): the tray template is rebuilt from the live pin layout, not a cached snapshot', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+  // Both notifications the pin domain exposes are wired to the same rebuild.
+  assert.match(main, /onPinLayoutChange: \(\) => createTrayIcon\(\)/)
+  assert.match(main, /onRecoverableChange: \(\) => createTrayIcon\(\)/)
+  // The menu reads the CURRENT layout and the CURRENT retained pins on every build.
+  assert.match(main, /pinnedDisplays: pinDomain\.listPinsByDisplay\(\)/)
+  assert.match(main, /recoverablePins: pinDomain\.trayRecoveryMenu\(\)/)
+  // The pin domain offers both notifications to the host.
+  const pinDomain = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'pin', 'index.js'), 'utf8')
+  assert.match(pinDomain, /function notifyPinLayoutChanged/)
+  assert.match(pinDomain, /onPinLayoutChange/)
+  assert.match(pinDomain, /onRecoverableChange/)
+})
+
+test('D05 (18): retained pins get a recoverable submenu with restore, save and discard', () => {
+  const clicked = []
+  const template = buildTrayMenuTemplate({
+    executeFunction: () => {},
+    setGameModeEnabled: () => {},
+    openHistory: () => {},
+    openMainWindow: () => {},
+    showConversation: () => {},
+    quit: () => {},
+    recoverablePins: {
+      items: [
+        { id: 'ticket-1', index: 1, reason: 'crashed', attempts: 0, exhausted: false },
+        { id: 'ticket-2', index: 2, reason: 'renderer-gone', attempts: 3, exhausted: true }
+      ],
+      actions: {
+        recover: (id) => clicked.push(['recover', id]),
+        save: (id) => clicked.push(['save', id]),
+        discard: (id) => clicked.push(['discard', id])
+      }
+    }
+  })
+  const entry = template.find((item) => typeof item.label === 'string' && item.label.includes('2'))
+  assert.ok(entry, 'a parent entry with the count exists')
+  assert.equal(entry.submenu.length, 2)
+  const first = entry.submenu[0]
+  assert.equal(first.submenu.length, 3, 'restore / save as / discard')
+  const [restore, save, discard] = first.submenu
+  assert.equal(restore.enabled, true)
+  assert.equal(save.enabled, undefined)
+  restore.click()
+  save.click()
+  discard.click()
+  assert.deepEqual(clicked, [
+    ['recover', 'ticket-1'],
+    ['save', 'ticket-1'],
+    ['discard', 'ticket-1']
+  ])
+  // An exhausted ticket cannot be restored again, but it can still be saved or discarded.
+  const second = entry.submenu[1]
+  assert.equal(second.submenu[0].enabled, false)
+  assert.equal(second.submenu[1].enabled, undefined)
+  assert.equal(second.submenu[2].enabled, undefined)
+})
+
+test('D05 (18): no retained pins means no submenu at all', () => {
+  const base = {
+    executeFunction: () => {},
+    setGameModeEnabled: () => {},
+    openHistory: () => {},
+    openMainWindow: () => {},
+    showConversation: () => {},
+    quit: () => {}
+  }
+  for (const recoverablePins of [null, { items: [], actions: {} }, { items: undefined }]) {
+    const template = buildTrayMenuTemplate({ ...base, recoverablePins })
+    const entry = template.find((item) => typeof item.label === 'string' && item.label.includes('待') === false && /recover/i.test(item.label))
+    assert.equal(entry, undefined)
+  }
+})

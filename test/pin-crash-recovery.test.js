@@ -102,7 +102,7 @@ function createFakeWindow(sends) {
   return win
 }
 
-function createHarness({ failCreate = () => false, saveError = null, timers = createClock() } = {}) {
+function createHarness({ failCreate = () => false, saveError = null, saveAnswer = undefined, timers = createClock() } = {}) {
   const handlers = new Map()
   const created = []
   const sends = []
@@ -149,6 +149,7 @@ function createHarness({ failCreate = () => false, saveError = null, timers = cr
     }),
     saveImageBuffer: async (buffer) => {
       if (saveError) throw saveError
+      if (saveAnswer !== undefined) return saveAnswer
       saves.push(buffer)
       return 'saved'
     },
@@ -347,4 +348,73 @@ test('the pin domain wires the crash listener through the resilience policy', ()
   assert.match(pinDomainSource, /'SAVE_OR_DISCARD'/)
   // The normal close path keeps releasing the domain's own reference.
   assert.match(pinDomainSource, /pinImages\.release\(win\._pinData\?\.imageId\)/)
+})
+
+// ---------------------------------------------------------------------------
+// D05 (plan item 18): the tray-facing recovery payload and the save-cancel rule.
+// ---------------------------------------------------------------------------
+
+test('D05 (18): a cancelled save dialog keeps the retained pin for a retry', async () => {
+  // The host's save flow answers null when the user dismisses the dialog.
+  const harness = createHarness({ saveAnswer: null })
+  const { domain, pinImages, changes } = harness
+  const win = domain.createPinWindow(Buffer.from([1, 2, 3]), {})
+  const imageId = win._pinData.imageId
+  win.crash()
+  const ticketId = domain.getRecoverablePins()[0].id
+
+  const result = await domain.saveRecoverablePin(ticketId)
+  assert.equal(result.status, 'cancelled')
+  assert.equal(result.code, 'SAVE_CANCELLED')
+  // The ticket and its pixels are still there: the only copy of that pin was not released.
+  assert.equal(domain.getRecoverablePins().length, 1)
+  assert.deepEqual((await pinImages.read(imageId)).bytes, Buffer.from([1, 2, 3]))
+  assert.equal(changes.at(-1).change.kind, 'retained', 'a cancel is not a save notification')
+
+  // A second attempt that really saves still works and releases once.
+  const saving = createHarness()
+  const savedWin = saving.domain.createPinWindow(Buffer.from([4, 5]), {})
+  savedWin.crash()
+  const saved = await saving.domain.saveRecoverablePin(saving.domain.getRecoverablePins()[0].id)
+  assert.equal(saved.status, 'saved')
+  assert.equal(saving.domain.getRecoverablePins().length, 0)
+})
+
+test('D05 (18): the tray payload carries the retained pins and real actions', async () => {
+  const harness = createHarness()
+  const { domain } = harness
+  const win = domain.createPinWindow(Buffer.from([9, 9, 9]), {})
+  win.crash({ reason: 'crashed' })
+
+  const payload = domain.trayRecoveryMenu()
+  assert.equal(payload.items.length, 1)
+  const item = payload.items[0]
+  assert.equal(item.index, 1)
+  assert.equal(item.reason, 'crashed')
+  assert.equal(item.canRetry, true)
+  assert.equal(Object.hasOwn(item, 'imageId'), false, 'the tray payload never carries pixels')
+  assert.equal(typeof payload.actions.recover, 'function')
+  assert.equal(typeof payload.actions.save, 'function')
+  assert.equal(typeof payload.actions.discard, 'function')
+
+  // Discard through the payload action clears the entry and notifies the host.
+  const discarded = payload.actions.discard(item.id)
+  assert.equal(discarded.status, 'discarded')
+  assert.equal(domain.getRecoverablePins().length, 0)
+  assert.equal(harness.changes.at(-1).change.kind, 'discarded')
+})
+
+test('D05 (18): an exhausted ticket keeps its entry, and restore is not offered', async () => {
+  // The first window is created normally; every REBUILD fails.
+  const harness = createHarness({ failCreate: (index) => index > 0 })
+  const { domain } = harness
+  const win = domain.createPinWindow(Buffer.from([1]), {})
+  win.crash()
+  const ticketId = domain.getRecoverablePins()[0].id
+  // Three failed rebuilds exhaust the ticket (the existing policy).
+  for (let attempt = 0; attempt < 3; attempt += 1) await domain.recoverPin(ticketId)
+  const payload = domain.trayRecoveryMenu()
+  assert.equal(payload.items.length, 1, 'the entry survives so it can still be saved or discarded')
+  assert.equal(payload.items[0].exhausted, true)
+  assert.equal(payload.items[0].canRetry, false)
 })

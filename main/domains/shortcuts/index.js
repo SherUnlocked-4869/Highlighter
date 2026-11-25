@@ -14,9 +14,12 @@ function createShortcutDomain({ shortcutService, getSettings, isGameModeEnabled,
     // Game mode suspends every global shortcut; a draft saved while it is on is validated
     // when the mode ends (applyGameModeState -> registerShortcuts).
     if (isGameModeEnabled()) return shortcutService.suspendAll(shortcuts, 'game-mode')
-    // Diff-based: an unrelated binding is never dropped, and a rejected combination leaves
-    // the working key in place.
-    return shortcutService.sync(shortcuts)
+    // A03 (plan item 09): start-up and the exit from game mode are RECOVERY, not a
+    // transaction. Each key is attempted on its own, so one accelerator another process owns
+    // only degrades that entry; the statuses report every key's real result. A user rebind
+    // still goes through preparePatch()/sync(), which keeps the old key when the new one is
+    // rejected.
+    return shortcutService.registerAll(shortcuts)
   }
 
   // Returns an undo function that restores the previous registration when the settings write

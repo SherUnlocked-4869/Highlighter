@@ -29,7 +29,10 @@ test('main process delegates shortcut registration and exposes status through pr
   assert.match(main, /new ShortcutService\(\{[\s\S]*globalShortcut[\s\S]*executeFunction/)
   // A03: the rebind transaction lives in main/domains/shortcuts; main.js only delegates.
   assert.match(main, /createShortcutDomain\(\{ shortcutService, getSettings, isGameModeEnabled, t \}\)/)
-  assert.match(shortcutDomain, /function register\(\)[\s\S]*shortcutService\.suspendAll\(shortcuts, 'game-mode'\)[\s\S]*shortcutService\.sync\(shortcuts\)/)
+  // A03 (09): start-up/game-mode exit recovers key by key; a user rebind keeps the
+  // transactional path (preparePatch -> sync) that preserves the old key on failure.
+  assert.match(shortcutDomain, /function register\(\)[\s\S]*shortcutService\.suspendAll\(shortcuts, 'game-mode'\)[\s\S]*shortcutService\.registerAll\(shortcuts\)/)
+  assert.match(shortcutDomain, /function preparePatch\(patch\)[\s\S]*shortcutService\.sync\(candidate\)/)
   assert.match(main, /registerShortcutIpc\(\{[\s\S]*shortcutService/)
   assert.match(main, /app\.on\('will-quit',[\s\S]*shortcutService\.dispose\(\)/)
   assert.match(preload, /getShortcutStatuses:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('shortcuts:status'\)/)

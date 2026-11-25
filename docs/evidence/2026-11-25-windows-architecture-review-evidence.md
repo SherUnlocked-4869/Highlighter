@@ -13,10 +13,10 @@
 | C01 | P0 | 已实现（01/02：中断收尾、已确认前缀与恢复回执） | test/chunk-backpressure.test.js, test/record-control-bar.test.js, test/recording-service.test.js, test/record-finalize.test.js, test/record-domain.test.js, test/recording-project-service.test.js | 慢盘/便携盘注入（5s、30s、永久无确认、磁盘满），真实 1080p30 30 分钟无误暂停 |
 | A01 | P0 | 已实现 | test/tray-menu.test.js | 游戏模式 + 控制在全屏游戏下被遮挡时从托盘结束（真机托盘交互） |
 | A02 | P1 | 已实现 | test/capture-keyboard-focus.test.js, test/capture-annotation-width.test.js | Tab 到标注/撤销/保存/录制按钮逐个按 Enter/Space；讲述人读出名称 |
-| A03 | P1 | 已实现 | test/shortcut-service.test.js, test/shortcut-rebind-contract.test.js, test/settings-ipc.test.js, test/shortcut-ui-contract.test.js | 第二个本地进程占住候选键后旧键仍可用；重启后仍有效 |
+| A03 | P1 | 已实现（09/11：逐键恢复与释放同步映射） | test/shortcut-service.test.js, test/shortcut-rebind-contract.test.js, test/settings-ipc.test.js, test/shortcut-ui-contract.test.js | 第二个本地进程占住候选键后旧键仍可用；重启后仍有效 |
 | A04 | P1 | 已实现 | test/usage-format.test.js, test/usage-cost-states.test.js | 深浅色 + Windows 高对比度下五类样本（图/表/tooltip）逐项比对 |
 | B02 | P1 | 已实现 | test/capture-color-picker.test.js | 100%/150%/200% 已知 sRGB 色值 PNG 逐点比对；剪贴板写入端到端 |
-| B06 | P1 | 已实现 | test/long-capture-output.test.js | 阈值上下各一档的真实长图；慢盘快速保存与同名占用 |
+| B06 | P1 | 已实现（10：真实路径回执与历史失败分离） | test/long-capture-output.test.js, test/long-capture-completion.test.js | 阈值上下各一档的真实长图；慢盘快速保存与同名占用 |
 | C03 | P1 | 已实现 | test/clipboard-poll-backoff.test.js | 5,000 条混合历史首屏 P95、滚动无重复/漏页（真机面板） |
 | C04 | P1 | 已实现 | test/pin-image-store-async.test.js, test/pin-domain.test.js | 慢盘/SSD 上 1/10/20 张 4K PNG 的主线程停顿 P95 与句柄基线 |
 | A05 | P1 | 已实现 | test/clipboard-preview.test.js | 20 张相似图首次粘贴正确率（5 人）；30 次预览释放（真机面板） |
@@ -25,14 +25,14 @@
 | B01 | P1 | 已实现（05 原生私密写入已接线；12 全局历史与本次跳过已分离） | test/capture-skip-history.test.js, test/capture-pin-copy.test.js, test/clipboard-paste.test.js | 唯一测试图在截图历史/剪贴板历史/自动存盘三区新增 0；原生排除格式 |
 | B03 | P1 | 已实现 | test/pin-copy-once.test.js, test/capture-pin-copy.test.js | 真机 0/90/180/270 视图导出朝向与高 DPI；预览对话框 |
 | B08 | P2 | 已实现（仅素材帧） | test/recording-pin-frame.test.js | 真实 VFR 视频的 ≤1 帧偏差与去段后取帧 |
-| A07 | P2 | 已实现（吸附开关待设置项） | test/pin-snap-geometry.test.js, test/pin-display.test.js | 真机 100%+150%/负坐标副屏/拔屏/20 张定位与 ≤1 DIP 吸附 |
+| A07 | P2 | 已实现（14：托盘随布局刷新） | test/pin-snap-geometry.test.js, test/pin-display.test.js, test/tray-menu.test.js | 真机 100%+150%/负坐标副屏/拔屏/20 张定位与 ≤1 DIP 吸附 |
 | C05 | P2 | 實驗路徑已实现（默认关闭） | test/recording-direct-track.test.js, test/measure-recording-encode.test.js | 核显/独显 × 1080p30/4K30 成对样本；CPU/掉帧/音画差门槛 |
 | B04 | P1 | 已实现（13：5 秒总期限与迟到授权回收） | test/recording-audio-preflight.test.js, test/recording-audio-preflight-ui.test.js | 真实四组合音轨、权限拒绝、蓝牙拔出与 5 秒采样/1 秒释放 |
 | B05 | P1 | 已实现（部分数字为估算） | test/clipboard-capacity.test.js, test/clipboard-capacity-ui.test.js, test/clipboard-capacity-domain.test.js | 真实侧车 500 项/预算样本与面板视觉验收 |
-| D05 | P1 | 已实现（托盘子菜单待接） | test/window-resilience.test.js, test/window-resilience-tray.test.js, test/pin-crash-recovery.test.js | 打包版 10 次启动单实例、Explorer 重启、睡眠唤醒、便携登录项 |
+| D05 | P1 | 已实现（18：托盘恢复子菜单与另存取消） | test/window-resilience.test.js, test/window-resilience-tray.test.js, test/pin-crash-recovery.test.js, test/tray-menu.test.js | 打包版 10 次启动单实例、Explorer 重启、睡眠唤醒、便携登录项 |
 | D06 | P1 | 已实现 | test/review-evidence.test.js | 候选包与 CI 运行/真机记录的可追溯性 |
 | B07 | P2 | 已实现（明细成本仍按最新价） | test/usage-export.test.js, test/usage-export-import.test.js, test/usage-export-ui.test.js | 真实日志轮转样本与跨版本价格复算 |
-| D04 | P1 | 已实现（06/07/08/19：历史索引、编辑引用、按模块停写、生产迁移钩子） | test/data-root-backup.test.js, test/data-root-backup-ui.test.js, test/history-service.test.js | 普通安装与便携从上一受支持版本实机恢复；坏包/盘满/中途终止 |
+| D04 | P1 | 已实现（06/07/08/19：历史索引、编辑引用、按模块停写、生产迁移钩子） | test/data-root-backup.test.js, test/data-root-backup-ui.test.js | 普通安装与便携从上一受支持版本实机恢复；坏包/盘满/中途终止 |
 | C06 | P2 | 工具已实现 | test/release-size.test.js | 两个相邻 NSIS 候选 + blockmap 的差分传输与安装耗时 |
 | C02 | P1 | 工具已实现 | test/performance-budget.test.js | 固定机冷启 ≥20 次 + 5 轮 30 分钟待机；绝对数字只能在真机采集 |
 

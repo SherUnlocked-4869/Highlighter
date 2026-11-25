@@ -238,16 +238,24 @@ function createLongCaptureDomain(deps) {
         longCapture: true,
         axis: state.session.axis
       }
+      // B06 (plan item 10): ONE actual output path for the whole completion. The old code
+      // declared `filePath` inside the save branch and returned it outside, so a long capture
+      // that HAD been written answered a ReferenceError and the caller closed the window as
+      // if the save failed. A fast save also renames on collision (copyExclusive), so the
+      // requested name is not necessarily the file that exists.
+      let finalPath = ''
+      let history = 'recorded'
+      let historyCode = ''
       if (action === 'save') {
         const settings = getSettings()
         const preferredDirectory = settings.screenshot.saveDirectory
         // A long capture is still a screenshot, so it follows the same naming
         // template as a normal export (P0-7-T1).
         const nameSettings = { template: settings.screenshot.nameTemplate }
-        let filePath = ''
+        let requestedPath = ''
         if (fast && preferredDirectory) {
           ensureDirectory(preferredDirectory)
-          filePath = path.join(preferredDirectory, makeCaptureName(LONG_CAPTURE_PREFIX, 'png', nameSettings))
+          requestedPath = path.join(preferredDirectory, makeCaptureName(LONG_CAPTURE_PREFIX, 'png', nameSettings))
         } else {
           const result = await dialog.showSaveDialog({
             title: '保存长截图',
@@ -255,17 +263,31 @@ function createLongCaptureDomain(deps) {
             filters: [{ name: 'PNG 图片', extensions: ['png'] }]
           })
           if (result.canceled || !result.filePath) {
+            // A cancel keeps the capture on screen: the user asked for the dialog, not for
+            // the material to be discarded.
             state.finishing = false
             return { canceled: true }
           }
-          filePath = result.filePath
+          requestedPath = result.filePath
         }
-        // B06: a fast save (no dialog, so no overwrite confirmation) gets a NEW name via
-        // COPYFILE_EXCL. A dialog save keeps the user's explicit overwrite choice.
-        let savedPath = filePath
-        if (fast && preferredDirectory) savedPath = await copyExclusive(outputPath, filePath)
-        else await fs.promises.copyFile(outputPath, filePath)
-        await persistHistoryFile(savedPath, { ...meta, action: 'save' })
+        if (fast && preferredDirectory) {
+          // B06: a fast save (no dialog, so no overwrite confirmation) gets a NEW name via
+          // COPYFILE_EXCL; a dialog save keeps the user's explicit overwrite choice.
+          finalPath = await copyExclusive(outputPath, requestedPath)
+        } else {
+          await fs.promises.copyFile(outputPath, requestedPath)
+          finalPath = requestedPath
+        }
+        // The history row and the receipt both use the file that actually exists.
+        try {
+          await persistHistoryFile(finalPath, { ...meta, action: 'save' })
+        } catch (error) {
+          // The file is on disk: report the real path and the history failure instead of
+          // throwing away the success. A retry only retries the failed step.
+          history = 'failed'
+          historyCode = error?.code || 'history-failed'
+          log('Long capture history persist failed:', error?.message || error)
+        }
       } else {
         if (action === 'copy') {
           const image = nativeImage.createFromPath(outputPath)
@@ -274,10 +296,24 @@ function createLongCaptureDomain(deps) {
         } else if (action === 'pin') {
           pinDomain.createPinWindow(await fs.promises.readFile(outputPath), meta)
         } else throw new Error('不支持的长截图操作')
-        await persistHistoryFile(outputPath, meta)
+        finalPath = outputPath
+        try {
+          await persistHistoryFile(outputPath, meta)
+        } catch (error) {
+          history = 'failed'
+          historyCode = error?.code || 'history-failed'
+          log('Long capture history persist failed:', error?.message || error)
+        }
       }
+      // Close exactly once, and only after the result is final.
       setImmediate(closeLongCapture)
-      return { ok: true, action, savedPath: action === 'save' ? filePath : '' }
+      return {
+        ok: true,
+        action,
+        savedPath: finalPath,
+        history,
+        ...(historyCode ? { historyCode } : {})
+      }
     } catch (error) {
       state.finishing = false
       throw error

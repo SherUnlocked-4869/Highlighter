@@ -141,13 +141,43 @@ class ShortcutService {
     return this.getStatuses()
   }
 
-  // Cold start / game-mode exit: nothing reliable is bound, so bind the whole map.
+  // Cold start / game-mode exit: bind the whole map, ONE key at a time.
+  //
+  // A03 (plan item 09): this is a recovery path, not a transaction. A single key another
+  // process already owns must not drag the rest of the set down with it: every key is
+  // attempted independently, the successful ones stay bound, and the failures are reported
+  // per key. Only an explicitly empty binding set uses unregisterAll - there is nothing to
+  // keep in that case.
   registerAll(shortcuts = {}) {
-    this.globalShortcut.unregisterAll()
-    this.bindings.clear()
+    if (this.bindings.size === 0) {
+      this.globalShortcut.unregisterAll()
+      this.bindings.clear()
+    }
     const analysis = this.analyze(shortcuts)
-    for (const [name, accelerator] of analysis.target) this.registerBinding(name, accelerator)
-    return this.applyStatuses(shortcuts, analysis)
+    const results = []
+    for (const [name, accelerator] of analysis.target) {
+      if (this.bindings.get(name) === accelerator) {
+        results.push({ name, accelerator, registered: true, reason: 'registered' })
+        continue
+      }
+      const ok = this.registerBinding(name, accelerator)
+      results.push({ name, accelerator, registered: ok, reason: ok ? 'registered' : 'unavailable' })
+    }
+    // A key that is no longer configured is released (its mapping goes with it).
+    for (const [name, accelerator] of [...this.bindings]) {
+      if (analysis.target.has(name)) continue
+      this.unregisterAccelerator(accelerator)
+      this.bindings.delete(name)
+    }
+    const statuses = this.applyStatuses(shortcuts, analysis)
+    const failed = results.filter((entry) => !entry.registered)
+    return {
+      ok: failed.length === 0,
+      statuses,
+      changed: results.map((entry) => entry.name),
+      registered: results.filter((entry) => entry.registered),
+      failed
+    }
   }
 
   // A03: the runtime rebind transaction.
@@ -202,6 +232,11 @@ class ShortcutService {
           const previous = previousValues.get(name)
           if (!previous || previous === analysis.target.get(name)) continue
           this.unregisterAccelerator(previous)
+          // Item 11: when the new value is EMPTY (cleared/disabled) the internal mapping goes
+          // with the released key. Keeping it made a later "set F1 again" look like "already
+          // bound" (the diff saw no change) and reported a registration that no longer
+          // existed. A replacement keeps the mapping registerBinding() just wrote.
+          if (!analysis.target.get(name)) this.bindings.delete(name)
         }
       }
     }

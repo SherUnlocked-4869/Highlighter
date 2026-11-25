@@ -67,6 +67,12 @@
     // A07: the per-display pin finder. The group label is built by
     // main/services/pin-geometry.js displayLabel(), the rest by main/services/tray-menu.js.
     'main.tray.pinned-displays': '贴图（{count}）',
+    'main.tray.recoverable-pins': '待恢复贴图（{count}）',
+    'main.tray.recoverable-pin': '贴图 #{index}（窗口异常退出）',
+    'main.tray.recoverable-pin-exhausted': '贴图 #{index}（已多次恢复失败）',
+    'main.tray.recoverable-pin-restore': '恢复贴图',
+    'main.tray.recoverable-pin-save': '另存为…',
+    'main.tray.recoverable-pin-discard': '丢弃',
     'main.tray.pin-display-label': '显示器 {index} · {width}×{height} · {scale}% · {role} · ({x}, {y})',
     'main.tray.pin-display-primary': '主屏',
     'main.tray.pin-display-secondary': '副屏',
@@ -182,6 +188,12 @@
     'main.tray.quit': 'Quit',
     // A07: the per-display pin finder (see the zh-CN table for the split of ownership).
     'main.tray.pinned-displays': 'Pinned Images ({count})',
+    'main.tray.recoverable-pins': 'Pins to recover ({count})',
+    'main.tray.recoverable-pin': 'Pin #{index} (its window exited abnormally)',
+    'main.tray.recoverable-pin-exhausted': 'Pin #{index} (recovery failed repeatedly)',
+    'main.tray.recoverable-pin-restore': 'Restore pin',
+    'main.tray.recoverable-pin-save': 'Save as…',
+    'main.tray.recoverable-pin-discard': 'Discard',
     'main.tray.pin-display-label': 'Display {index} · {width}×{height} · {scale}% · {role} · ({x}, {y})',
     'main.tray.pin-display-primary': 'primary',
     'main.tray.pin-display-secondary': 'secondary',
@@ -297,6 +309,12 @@
     'main.tray.quit': '結束',
     // A07: the per-display pin finder (see the zh-CN table for the split of ownership).
     'main.tray.pinned-displays': '貼圖（{count}）',
+    'main.tray.recoverable-pins': '待恢復貼圖（{count}）',
+    'main.tray.recoverable-pin': '貼圖 #{index}（視窗異常結束）',
+    'main.tray.recoverable-pin-exhausted': '貼圖 #{index}（已多次恢復失敗）',
+    'main.tray.recoverable-pin-restore': '恢復貼圖',
+    'main.tray.recoverable-pin-save': '另存為…',
+    'main.tray.recoverable-pin-discard': '丟棄',
     'main.tray.pin-display-label': '顯示器 {index} · {width}×{height} · {scale}% · {role} · ({x}, {y})',
     'main.tray.pin-display-primary': '主螢幕',
     'main.tray.pin-display-secondary': '副螢幕',

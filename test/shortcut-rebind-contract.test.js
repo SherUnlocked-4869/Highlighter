@@ -10,6 +10,8 @@ function createService(outcome = { ok: true, statuses: {} }) {
   return {
     calls,
     sync(shortcuts) { calls.push(['sync', shortcuts]); return outcome },
+    // A03 (09): the recovery path attempts each key individually.
+    registerAll(shortcuts) { calls.push(['registerAll', shortcuts]); return outcome },
     suspendAll(shortcuts, reason) { calls.push(['suspend', reason]); return { suspended: true } }
   }
 }
@@ -81,5 +83,7 @@ test('A03: the register path is diff-based, not unregister-all', () => {
   const service = createService()
   const domain = createDomain({ service })
   domain.register()
-  assert.deepEqual(service.calls, [['sync', { screenshot: 'F1', screenshotOcr: '' }]])
+  // A03 (09): the register path attempts each key on its own instead of a transactional
+  // sync (a single occupied key may not drag the whole set down).
+  assert.deepEqual(service.calls, [['registerAll', { screenshot: 'F1', screenshotOcr: '' }]])
 })

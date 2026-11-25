@@ -44,6 +44,10 @@ function buildTrayMenuTemplate({
   // Optional like every other host capability, and the entry only exists while a pin does,
   // so the A06 two-level shape (and every existing caller/test) is unchanged without it.
   pinnedDisplays = null,
+  // D05 (plan item 18): the abnormal-exit pins the pin domain retained, with their actions:
+  // `{ items: [{ id, index, reason, attempts, exhausted, expiresAt, bytes }], actions: { recover, save, discard } }`.
+  // Optional like every other host capability: no retained pin means no submenu at all.
+  recoverablePins = null,
   executeFunction,
   setGameModeEnabled,
   openHistory,
@@ -186,6 +190,56 @@ function buildTrayMenuTemplate({
       }
     : null
 
+  // D05 (plan item 18): pins whose window died abnormally. The pin domain keeps their pixels
+  // for a short TTL; before this entry existed the user had no way to get them back. Every
+  // action is a direct domain call (the tray must work in game mode, where the router
+  // refuses features) and the item stays visible only while the domain still holds it.
+  const recoverableInfo = recoverablePins && typeof recoverablePins === 'object' ? recoverablePins : null
+  const recoverableItems = recoverableInfo && Array.isArray(recoverableInfo.items)
+    ? recoverableInfo.items.filter((entry) => entry && typeof entry.id === 'string' && entry.id)
+    : []
+  const recoverableActions = recoverableInfo && recoverableInfo.actions && typeof recoverableInfo.actions === 'object'
+    ? recoverableInfo.actions
+    : {}
+  const recoverableClick = (name, id) => () => {
+    const handler = recoverableActions[name]
+    if (typeof handler === 'function') {
+      // A tray click cannot await; the domain answers a receipt and notifies the same
+      // refresh hook, so the next menu build shows the outcome.
+      Promise.resolve(handler(id)).catch(() => {})
+    }
+    return undefined
+  }
+  const recoverableEntry = recoverableItems.length
+    ? {
+        label: t('main.tray.recoverable-pins', { count: recoverableItems.length }),
+        enabled: true,
+        submenu: recoverableItems.map((entry) => ({
+          label: entry.exhausted === true
+            ? t('main.tray.recoverable-pin-exhausted', { index: Math.max(1, Math.round(Number(entry.index) || 1)) })
+            : t('main.tray.recoverable-pin', { index: Math.max(1, Math.round(Number(entry.index) || 1)) }),
+          submenu: [
+            {
+              // "Restore" is only offered while the domain still allows another attempt.
+              label: t('main.tray.recoverable-pin-restore'),
+              enabled: entry.exhausted !== true,
+              click: recoverableClick('recover', entry.id)
+            },
+            {
+              // Saving is the way out when the rebuild keeps failing; a cancelled save
+              // dialog keeps the ticket (the domain owns that rule).
+              label: t('main.tray.recoverable-pin-save'),
+              click: recoverableClick('save', entry.id)
+            },
+            {
+              label: t('main.tray.recoverable-pin-discard'),
+              click: recoverableClick('discard', entry.id)
+            }
+          ]
+        }))
+      }
+    : null
+
   // A06: the other capture modes. All of them summon a capture window, so they follow the
   // same game-mode gate as the region entry; the parent is gated too, because a submenu
   // whose every child is disabled is just a slower dead end.
@@ -253,6 +307,9 @@ function buildTrayMenuTemplate({
     ...(clipboardEnabled === true ? [] : [clipboardSettingsEntry]),
     // A07: only while a pin exists - a first-run menu never grows a dead parent.
     ...(pinnedDisplaysEntry ? [pinnedDisplaysEntry] : []),
+    // D05 (18): retained pins from abnormal exits, above the summon entries because they
+    // are the only remaining copy of those images.
+    ...(recoverableEntry ? [recoverableEntry] : []),
     captureModesEntry,
     toolsEntry,
     { type: 'separator' },

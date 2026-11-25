@@ -86,7 +86,10 @@ test('B06: the main process refuses copy/pin BEFORE composing, and the page says
   assert.match(domain, /code: 'long-capture-too-large'/)
   assert.match(domain, /saveAvailable: output\.save/)
   // Fast save uses the exclusive helper; a dialog save keeps the user's overwrite choice.
-  assert.match(domain, /savedPath = await copyExclusive\(outputPath, filePath\)/)
+  // Item 10: the ACTUAL path returned by the helper is what gets registered and reported.
+  assert.match(domain, /finalPath = await copyExclusive\(outputPath, requestedPath\)/)
+  assert.match(domain, /persistHistoryFile\(finalPath, \{ \.\.\.meta, action: 'save' \}\)/)
+  assert.match(domain, /savedPath: finalPath/)
   // The controller knows the same ceiling and disables the two actions with a reason.
   assert.match(controllerHtml, /long-capture-limits\.js[\s\S]*long-capture\.js/)
   assert.match(controller, /const \{ capabilities: outputCapabilities \} = window\.longCaptureLimits/)
