@@ -18,7 +18,7 @@
 | B02 | P1 | 已实现 | test/capture-color-picker.test.js | 100%/150%/200% 已知 sRGB 色值 PNG 逐点比对；剪贴板写入端到端 |
 | B06 | P1 | 已实现（10：真实路径回执与历史失败分离） | test/long-capture-output.test.js, test/long-capture-completion.test.js | 阈值上下各一档的真实长图；慢盘快速保存与同名占用 |
 | C03 | P1 | 已实现 | test/clipboard-poll-backoff.test.js | 5,000 条混合历史首屏 P95、滚动无重复/漏页（真机面板） |
-| C04 | P1 | 已实现 | test/pin-image-store-async.test.js, test/pin-domain.test.js | 慢盘/SSD 上 1/10/20 张 4K PNG 的主线程停顿 P95 与句柄基线 |
+| C04 | P1 | 已实现（16：排队可撤销与按字节硬上限） | test/pin-image-store-async.test.js, test/pin-domain.test.js | 慢盘/SSD 上 1/10/20 张 4K PNG 的主线程停顿 P95 与句柄基线 |
 | A05 | P1 | 已实现 | test/clipboard-preview.test.js | 20 张相似图首次粘贴正确率（5 人）；30 次预览释放（真机面板） |
 | A06 | P1 | 已实现（图标素材待补） | test/tray-menu.test.js, test/first-run-guidance.test.js | 5 名新用户 60 秒首框；16/24/32 托盘素材与深浅任务栏 |
 | D03 | P1 | 已实现（17：编辑器抢救按钮已接线） | test/recording-salvage.test.js, test/recording-editor-ui.test.js | 真实强制结束/截断 WebM 的重封装与播放 |
@@ -34,7 +34,7 @@
 | B07 | P2 | 已实现（明细成本仍按最新价） | test/usage-export.test.js, test/usage-export-import.test.js, test/usage-export-ui.test.js | 真实日志轮转样本与跨版本价格复算 |
 | D04 | P1 | 已实现（06/07/08/19：历史索引、编辑引用、按模块停写、生产迁移钩子） | test/data-root-backup.test.js, test/data-root-backup-ui.test.js | 普通安装与便携从上一受支持版本实机恢复；坏包/盘满/中途终止 |
 | C06 | P2 | 工具已实现 | test/release-size.test.js | 两个相邻 NSIS 候选 + blockmap 的差分传输与安装耗时 |
-| C02 | P1 | 工具已实现 | test/performance-budget.test.js | 固定机冷启 ≥20 次 + 5 轮 30 分钟待机；绝对数字只能在真机采集 |
+| C02 | P1 | 已实现（15：逐指标样本与报告列，缺测阻断） | test/performance-budget.test.js | 固定机冷启 ≥20 次 + 5 轮 30 分钟待机；绝对数字只能在真机采集 |
 
 待登记（实现完成后补行）：B02 取色器、C04 贴图溢出异步 I/O、其余 P1/P2 工单。
 

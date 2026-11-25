@@ -79,6 +79,7 @@ function createHarness({ pinnedClickThrough = false, recognizePin, pinImages } =
         focus: () => {},
         loadFile: () => {},
         close: () => {},
+        destroy: () => { win._destroyed = true },
         on: (event, cb) => { if (event === 'closed') win._closed = cb },
         webContents: null
       }
@@ -342,4 +343,35 @@ test('a click-through pin refuses move and resize until it is released', () => {
   resize({ sender: win.webContents }, { factor: 1.25 })
   assert.deepEqual(win._bounds, [])
   assert.equal(win._pinData.zoom, 1)
+})
+
+// ---------------------------------------------------------------------------
+// C04 (plan item 16): a full store answers a retryable failure and leaves no window.
+// ---------------------------------------------------------------------------
+
+test('C04 (16): a full image store fails the pin creation with a retryable code and no window', () => {
+  // The store refuses another buffer when its queue is full. The domain must propagate the
+  // retryable code and destroy the window it had already created.
+  const pinImages = {
+    add() {
+      throw Object.assign(new Error('贴图资源队列已满'), { code: 'image-store-full', retryable: true })
+    },
+    retain: () => false,
+    release: () => {},
+    read: async () => ({ bytes: Buffer.from([1]), mime: 'image/png' })
+  }
+  const harness = createHarness({ pinImages })
+  let failure = null
+  try {
+    harness.domain.createPinWindow(Buffer.from([4, 5, 6]), {})
+  } catch (error) {
+    failure = error
+  }
+  assert.ok(failure, 'the creation must fail rather than silently drop the pin')
+  assert.equal(failure.code, 'image-store-full')
+  assert.equal(failure.retryable, true)
+  // The refused pin's window was destroyed instead of being left half-initialised.
+  const refused = harness.created[harness.created.length - 1]
+  assert.equal(refused._destroyed, true)
+  assert.equal(harness.created.filter((win) => win._destroyed !== true).length, 0)
 })
