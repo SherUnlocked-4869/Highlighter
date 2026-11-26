@@ -79,6 +79,7 @@ const crypto = require('node:crypto')
 const Store = require('electron-store')
 const { OcrService } = require('./main/services/ocr-service')
 const { EverythingService } = require('./main/services/everything-service')
+const { createEverythingServiceGetter } = require('./main/services/everything-service-getter')
 const { createFakeEverythingQuery } = require('./main/services/e2e-fake-everything')
 const { RecordingService } = require('./main/services/recording-service')
 const { LongCaptureSession } = require('./main/services/long-capture-session')
@@ -196,7 +197,6 @@ function initializeStore() {
 let mainWindow = null
 let firstMainWindowReady = true
 let ocrService = null
-let everythingService = null
 let recordingService = null
 const getSearchFileIcon = createFileIconLookup({ app, log })
 const managedRecordingWriters = new ManagedWriterCoordinator()
@@ -751,7 +751,9 @@ clipboardDomain = createClipboardDomain({
   getSettings, updateSettings: (patch) => settingsService.updateSettings(patch),
   getHook: () => selectionDomain.hookService(), createLocalWindow,
   positionAutomationWindow, isGameModeEnabled,
-  isMigrationInProgress: () => dataRootMigrationState.get(), automation: e2eContext.enabled
+  isMigrationInProgress: () => dataRootMigrationState.get(), automation: e2eContext.enabled,
+  // N02b: clipboard image actions reuse the pin domain and the shared OCR service.
+  getPinDomain: () => pinDomain, getOcrService: () => getOcrService()
 })
 
 settingsEffects = createSettingsEffects({
@@ -941,27 +943,22 @@ const saveImageBuffer = createImageFileSaver({
 
 async function saveDataUrl(dataUrl, options = {}) { return saveImageBuffer(dataUrlToBuffer(dataUrl), options) }
 
-function getEverythingService() {
-  if (dataRootMigrationInProgress) throw new Error('数据目录正在迁移，请稍候')
-  if (everythingService) return everythingService
-  const resourceRoot = app.isPackaged ? process.resourcesPath : __dirname
-  const sidecarPath = app.isPackaged
-    ? path.join(resourceRoot, 'native', 'everything-search', 'HighlighterEverything.exe')
-    : path.join(resourceRoot, 'native', 'everything-search', 'bin', 'HighlighterEverything.exe')
-  const bundledEverythingPath = path.join(resourceRoot, 'native', 'everything', 'Everything.exe')
-  everythingService = new EverythingService({
-    sidecarPath,
-    bundledEverythingPath,
-    runtimeEverythingDir: path.join(activePaths?.runtime || path.join(app.getPath('userData'), 'runtime'), 'everything'),
-    getUseBundledEverything: () => getSettings().search.useBundledEverything !== false,
-    onStatusChange: (status) => {
-      searchDomain?.notifyStatusChanged(status)
-    },
-    ...(e2eContext.fakeEverything ? { e2eQuery: createFakeEverythingQuery() } : {}),
-    log
-  })
-  return everythingService
-}
+// The lazy singleton moved to main/services/everything-service-getter.js; main.js keeps the
+// one-line wrapper so the search domain deps and the quit path read the same instance.
+const everythingRef = createEverythingServiceGetter({
+  app,
+  path,
+  rootDirectory: __dirname,
+  getActivePaths: () => activePaths,
+  getSettings,
+  getSearchDomain: () => searchDomain,
+  e2eContext,
+  log,
+  EverythingService,
+  createFakeEverythingQuery,
+  isMigrationInProgress: () => dataRootMigrationInProgress
+})
+function getEverythingService() { return everythingRef.get() }
 
 // A03: the rebind transaction (trial before persist) lives in main/domains/shortcuts.
 const shortcutDomain = createShortcutDomain({ shortcutService, getSettings, isGameModeEnabled, t })
@@ -1196,7 +1193,7 @@ else {
     }
     longCaptureDomain.closeLongCapture()
     if (ocrService) { ocrService.stop(); ocrService = null }
-    if (everythingService) { everythingService.stop(); everythingService = null }
+    everythingRef.stop()
     selectionDomain.disposeSelectionHook()
     if (proxyBridgeController) { proxyBridgeController.dispose(); proxyBridgeController = null }
     if (tray) { tray.destroy(); tray = null }
