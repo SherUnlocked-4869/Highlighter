@@ -633,6 +633,21 @@ function createCaptureDomain(deps) {
     }, () => null)
   }
 
+  // P1 §6.2 (2026-11-26 review): skip the synchronous full-image decode for buffers far
+  // too large to be a blank capture. Buffers at or below the limit keep the original pixel probe.
+  //
+  // The review proposed 32 KiB, but that estimate does not hold with this repo's PNG encoder: a
+  // solid-colour 4K frame is ~166 KiB black and ~37 KiB white, so 32 KiB would skip probing
+  // exactly the images the probe exists for (a failed native capture returns a black frame).
+  // 256 KiB still skips every real screenshot (hundreds of KiB to several MiB) and keeps the
+  // blank fallback working for 1080p and 4K. Measured with sharp 0.35.5, the same encoder the
+  // capture path uses.
+  const BLANK_CAPTURE_DECODE_LIMIT = 256 * 1024
+
+  function canBeBlankCapture(buffer) {
+    return Buffer.isBuffer(buffer) && buffer.length <= BLANK_CAPTURE_DECODE_LIMIT
+  }
+
   function isBlankCapture(image) {
     if (!image || image.isEmpty()) return true
     const size = image.getSize()
@@ -723,7 +738,7 @@ function createCaptureDomain(deps) {
             fallbackReason = 'native-size-mismatch'
             throw new Error(`原生抓屏尺寸异常：${pngSize ? `${pngSize.width}x${pngSize.height}` : '未知'}`)
           }
-          if (isBlankCapture(nativeImage.createFromBuffer(buffer))) {
+          if (canBeBlankCapture(buffer) && isBlankCapture(nativeImage.createFromBuffer(buffer))) {
             fallbackReason = 'native-blank'
             throw new Error('原生抓屏返回空白画面')
           }
@@ -763,8 +778,10 @@ function createCaptureDomain(deps) {
         windowId = capture.windowId
         if (capture.protected || !windowId) throw new Error('无法捕获焦点窗口')
         if (capture.imageBuffer) {
-          const image = nativeImage.createFromBuffer(capture.imageBuffer)
-          if (!isBlankCapture(image)) {
+          // Same blank short-circuit as the full-display path: only a small PNG can be blank.
+          const blank = canBeBlankCapture(capture.imageBuffer) &&
+            isBlankCapture(nativeImage.createFromBuffer(capture.imageBuffer))
+          if (!blank) {
             log('Focused capture backend:', 'native')
             return capture.imageBuffer
           }
