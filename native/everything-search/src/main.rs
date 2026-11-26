@@ -50,18 +50,26 @@ const REQ_PATH: u32 = 0x0000_0002;
 const REQ_EXTENSION: u32 = 0x0000_0008;
 const REQ_SIZE: u32 = 0x0000_0010;
 const REQ_DATE_MODIFIED: u32 = 0x0000_0040;
+/// U04 (section 4.4 item 7): the file attribute dword, returned between the modified
+/// time and the highlighted strings. Used to tell directories apart from files
+/// (`FILE_ATTRIBUTE_DIRECTORY`) so the search window can draw a folder glyph.
+const REQ_ATTRIBUTES: u32 = 0x0000_0100;
 const REQ_HIGHLIGHTED_NAME: u32 = 0x0000_2000;
 const REQ_HIGHLIGHTED_PATH: u32 = 0x0000_4000;
 /// Canonical flag order (ascending bit value) — result data follows this order.
-const REQUEST_FLAGS_ORDER: [(u32, &str); 7] = [
+const REQUEST_FLAGS_ORDER: [(u32, &str); 8] = [
     (REQ_FILE_NAME, "name"),
     (REQ_PATH, "path"),
     (REQ_EXTENSION, "extension"),
     (REQ_SIZE, "size"),
     (REQ_DATE_MODIFIED, "modifiedAt"),
+    (REQ_ATTRIBUTES, "attributes"),
     (REQ_HIGHLIGHTED_NAME, "highlightedName"),
     (REQ_HIGHLIGHTED_PATH, "highlightedPath"),
 ];
+
+/// `FILE_ATTRIBUTE_DIRECTORY` from the Win32 file attribute dword.
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
 
 const SEARCH_MATCH_PATH: u32 = 0x0000_0004;
 
@@ -614,6 +622,15 @@ fn read_u16_string(data: &[u8], cursor: &mut usize) -> Option<String> {
     Some(String::from_utf16_lossy(&units))
 }
 
+fn read_u32(data: &[u8], cursor: &mut usize) -> Option<u32> {
+    if *cursor + 4 > data.len() {
+        return None;
+    }
+    let value = u32::from_le_bytes(data[*cursor..*cursor + 4].try_into().ok()?);
+    *cursor += 4;
+    Some(value)
+}
+
 fn read_u64(data: &[u8], cursor: &mut usize) -> Option<u64> {
     if *cursor + 8 > data.len() {
         return None;
@@ -651,6 +668,8 @@ fn parse_reply(data: &[u8], expected_flags: u32) -> Result<(u32, Vec<Value>), St
                     .and_then(filetime_to_unix_ms)
                     .map(Value::from)
                     .unwrap_or(Value::Null),
+                // U04: the attribute dword is a u32, not a counted UTF-16 string.
+                REQ_ATTRIBUTES => read_u32(data, &mut cursor).map(Value::from).unwrap_or(Value::Null),
                 _ => read_u16_string(data, &mut cursor).map(Value::from).unwrap_or(Value::Null),
             };
             let position = REQUEST_FLAGS_ORDER.iter().position(|(f, _)| *f == flag).unwrap();
@@ -660,6 +679,14 @@ fn parse_reply(data: &[u8], expected_flags: u32) -> Result<(u32, Vec<Value>), St
         for (key, value) in fields {
             object.insert(key, value);
         }
+        // U04: expose the folder flag the search renderer draws a glyph from, and
+        // keep the raw attribute dword out of the JSON protocol.
+        let attributes = object.get("attributes").and_then(Value::as_u64).unwrap_or(0);
+        object.remove("attributes");
+        object.insert(
+            "isFolder".to_string(),
+            Value::from(attributes & u64::from(FILE_ATTRIBUTE_DIRECTORY) != 0),
+        );
         let name = object.get("name").and_then(Value::as_str).unwrap_or("").to_string();
         let path = object.get("path").and_then(Value::as_str).unwrap_or("").to_string();
         let full_path = if path.ends_with('\\') || path.ends_with('/') {
@@ -671,6 +698,19 @@ fn parse_reply(data: &[u8], expected_flags: u32) -> Result<(u32, Vec<Value>), St
         items.push(Value::Object(object));
     }
     Ok((total, items))
+}
+
+/// Fields every user query asks Everything for. Kept as a function so the unit
+/// tests can assert the attributes bit (U04 folder detection) stays requested.
+fn query_request_flags() -> u32 {
+    REQ_FILE_NAME
+        | REQ_PATH
+        | REQ_EXTENSION
+        | REQ_SIZE
+        | REQ_DATE_MODIFIED
+        | REQ_ATTRIBUTES
+        | REQ_HIGHLIGHTED_NAME
+        | REQ_HIGHLIGHTED_PATH
 }
 
 fn run_query(reply: &ReplyWindow, target_hwnd: isize, params: &Value) -> Result<Value, Value> {
@@ -687,13 +727,7 @@ fn run_query(reply: &ReplyWindow, target_hwnd: isize, params: &Value) -> Result<
         .and_then(Value::as_u64)
         .map(|value| value.min(QUERY_TIMEOUT_MAX_MS))
         .unwrap_or(QUERY_TIMEOUT_DEFAULT_MS) as u32;
-    let request_flags = REQ_FILE_NAME
-        | REQ_PATH
-        | REQ_EXTENSION
-        | REQ_SIZE
-        | REQ_DATE_MODIFIED
-        | REQ_HIGHLIGHTED_NAME
-        | REQ_HIGHLIGHTED_PATH;
+    let request_flags = query_request_flags();
     let search_flags = if match_path { SEARCH_MATCH_PATH } else { 0 };
     let (buffer, query_id) = build_query_buffer(
         reply.hwnd,
@@ -1092,5 +1126,110 @@ mod tests {
         assert_eq!(invalid.get("code").and_then(Value::as_str), Some("invalid-pid"));
         let accepted = process_path_result(Some(u64::from(std::process::id()))).expect("own pid");
         assert!(accepted.get("path").and_then(Value::as_str).is_some());
+    }
+
+    // ===================== U04: folder detection =====================
+
+    fn push_u32(buffer: &mut Vec<u8>, value: u32) {
+        buffer.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u64(buffer: &mut Vec<u8>, value: u64) {
+        buffer.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_wide_string(buffer: &mut Vec<u8>, value: &str) {
+        let units: Vec<u16> = value.encode_utf16().collect();
+        push_u32(buffer, units.len() as u32);
+        for unit in &units {
+            buffer.extend_from_slice(&unit.to_le_bytes());
+        }
+        buffer.extend_from_slice(&0u16.to_le_bytes());
+    }
+
+    // U04 (section 4.4 item 7): a directory result has an empty extension and used to
+    // render as "?" in the search window. Everything reports the Win32 file
+    // attributes when the request flag is set, so the bridge has to ask for it and
+    // turn FILE_ATTRIBUTE_DIRECTORY into the `isFolder` boolean the renderer reads.
+    #[test]
+    fn u04_query_requests_file_attributes_for_folder_detection() {
+        assert_eq!(REQ_ATTRIBUTES, 0x0000_0100);
+        assert_eq!(query_request_flags() & REQ_ATTRIBUTES, REQ_ATTRIBUTES);
+
+        let flags: Vec<u32> = REQUEST_FLAGS_ORDER.iter().map(|(flag, _)| *flag).collect();
+        let mut ascending = flags.clone();
+        ascending.sort_unstable();
+        assert_eq!(flags, ascending, "reply parsing depends on ascending flag order");
+        let position = REQUEST_FLAGS_ORDER
+            .iter()
+            .position(|(flag, _)| *flag == REQ_ATTRIBUTES)
+            .expect("attributes flag is part of the canonical order");
+        assert_eq!(REQUEST_FLAGS_ORDER[position].1, "attributes");
+        assert_eq!(REQUEST_FLAGS_ORDER[position - 1].1, "modifiedAt");
+        assert_eq!(REQUEST_FLAGS_ORDER[position + 1].1, "highlightedName");
+    }
+
+    // U04: the attribute dword is 4 bytes (not a counted UTF-16 string like the
+    // filename fields), so a mis-sized read would shift every following field of
+    // the reply. This crafts a real EVERYTHING_IPC_LIST2 layout with a file and a
+    // directory and asserts both the flag and the field alignment.
+    #[test]
+    fn u04_parse_reply_marks_directories_from_file_attributes() {
+        let flags = REQ_FILE_NAME
+            | REQ_PATH
+            | REQ_EXTENSION
+            | REQ_SIZE
+            | REQ_DATE_MODIFIED
+            | REQ_ATTRIBUTES
+            | REQ_HIGHLIGHTED_NAME;
+        let modified_unix_ms = 1_700_000_000_000u64;
+        let modified_filetime = (modified_unix_ms + 11_644_473_600_000) * 10_000;
+        let entries: [(&str, &str, &str, u64, u32, &str); 2] = [
+            ("report.xlsx", "C:\\docs", "xlsx", 1234, 0x0000_0020, "report"),
+            ("Archive", "C:\\docs", "", 0, FILE_ATTRIBUTE_DIRECTORY, "Archive"),
+        ];
+        let item_count = entries.len();
+        let data_start = 20 + item_count * 8;
+        let mut data = Vec::new();
+        let mut offsets = Vec::new();
+        for (name, path, extension, size, attributes, highlighted) in entries {
+            offsets.push(data_start + data.len());
+            push_wide_string(&mut data, name);
+            push_wide_string(&mut data, path);
+            push_wide_string(&mut data, extension);
+            push_u64(&mut data, size);
+            push_u64(&mut data, modified_filetime);
+            push_u32(&mut data, attributes);
+            push_wide_string(&mut data, highlighted);
+        }
+
+        let mut buffer = Vec::new();
+        push_u32(&mut buffer, item_count as u32); // total items
+        push_u32(&mut buffer, item_count as u32); // returned items
+        push_u32(&mut buffer, 0); // result list offset
+        push_u32(&mut buffer, flags); // request flags echoed by Everything
+        push_u32(&mut buffer, SORT_NAME_ASC); // sort type
+        for offset in &offsets {
+            push_u32(&mut buffer, 0); // per-item flags (unused by the parser)
+            push_u32(&mut buffer, *offset as u32); // item data offset
+        }
+        buffer.extend_from_slice(&data);
+
+        let (total, items) = parse_reply(&buffer, flags).expect("crafted reply parses");
+        assert_eq!(total, 2);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["isFolder"], json!(false), "a regular file is not a folder");
+        assert_eq!(items[1]["isFolder"], json!(true), "FILE_ATTRIBUTE_DIRECTORY marks a folder");
+        assert_eq!(items[0]["name"], json!("report.xlsx"));
+        assert_eq!(items[1]["name"], json!("Archive"));
+        assert_eq!(items[0]["fullPath"], json!("C:\\docs\\report.xlsx"));
+        assert_eq!(items[0]["size"], json!(1234));
+        assert_eq!(items[0]["modifiedAt"], json!(modified_unix_ms));
+        // Read after the attribute dword: a mis-sized attributes read shifts this.
+        assert_eq!(items[0]["highlightedName"], json!("report"));
+        assert!(
+            items[0].get("attributes").is_none(),
+            "the raw attribute dword stays an internal IPC detail"
+        );
     }
 }

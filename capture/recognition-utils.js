@@ -69,26 +69,129 @@
       .map((row) => ({ ...row, blocks: row.blocks.sort((a, b) => a.left - b.left) }))
   }
 
-  function inferColumnCount(rows) {
-    const counts = rows.map((row) => row.blocks.length).filter((count) => count >= 2)
-    if (!counts.length) return 1
-    const frequencies = new Map()
-    counts.forEach((count) => frequencies.set(count, (frequencies.get(count) || 0) + 1))
-    return [...frequencies.entries()]
-      .sort((a, b) => b[1] - a[1] || b[0] - a[0])[0][0]
+  // ---------- Column inference (U04, review report section 4.4 item 6) ----------
+  //
+  // The previous implementation guessed the column count from the mode of the
+  // per-row cell counts and derived each anchor from the median center of
+  // `row.blocks[index]`. That has two failure modes the review report names: a
+  // sparse table (rows with 1-3 cells, columns missing on some rows) is
+  // under-counted (the mode only sees one row with two or more cells), and one
+  // row with a different leading cell count shifts every anchor after it,
+  // because anchors are built by array index instead of by x position.
+  //
+  // Projecting every cell's x interval onto the x axis recovers the column bands
+  // from the cells themselves:
+  //   - two intervals share a band when they overlap by at least half of the
+  //     smaller one (a jittered cell in the same column does, neighbouring
+  //     columns do not),
+  //   - a band stores the intersection of its members as its core, so one wide
+  //     header cell can join a band but cannot chain two neighbouring columns
+  //     into one,
+  //   - a cell that substantially covers more than one band is a merged cell and
+  //     is reported through `merges` instead of creating a band of its own.
+  const COLUMN_OVERLAP_RATIO = 0.5
+
+  function bandOverlap(interval, band) {
+    return Math.min(band.coreRight, interval.right) - Math.max(band.coreLeft, interval.left)
   }
 
-  function inferColumnAnchors(rows, columnCount) {
-    let referenceRows = rows.filter((row) => row.blocks.length === columnCount)
-    if (!referenceRows.length) {
-      const nearestCount = Math.min(...rows.map((row) => Math.abs(row.blocks.length - columnCount)))
-      referenceRows = rows.filter((row) => Math.abs(row.blocks.length - columnCount) === nearestCount)
+  function buildColumnBands(blocks) {
+    const intervals = blocks
+      .map((block) => ({ block, left: block.left, right: block.right }))
+      // Narrow first on an equal left edge: a full-width header must not claim a
+      // brand-new band before the narrow cells that define the real columns have
+      // joined the band they belong to.
+      .sort((left, right) => left.left - right.left || (left.right - left.left) - (right.right - right.left))
+    const bands = []
+    for (const interval of intervals) {
+      const width = interval.right - interval.left
+      let bestBand = null
+      let bestRatio = 0
+      for (const band of bands) {
+        const overlap = bandOverlap(interval, band)
+        if (overlap <= 0) continue
+        const smaller = Math.min(width, band.coreRight - band.coreLeft)
+        if (smaller <= 0) continue
+        const ratio = overlap / smaller
+        if (ratio >= COLUMN_OVERLAP_RATIO && ratio > bestRatio) {
+          bestBand = band
+          bestRatio = ratio
+        }
+      }
+      if (!bestBand) {
+        bands.push({
+          coreLeft: interval.left,
+          coreRight: interval.right,
+          left: interval.left,
+          right: interval.right,
+          blocks: [interval.block]
+        })
+        continue
+      }
+      bestBand.blocks.push(interval.block)
+      bestBand.left = Math.min(bestBand.left, interval.left)
+      bestBand.right = Math.max(bestBand.right, interval.right)
+      bestBand.coreLeft = Math.max(bestBand.coreLeft, interval.left)
+      bestBand.coreRight = Math.min(bestBand.coreRight, interval.right)
     }
-    const anchors = []
-    for (let column = 0; column < columnCount; column++) {
-      anchors.push(median(referenceRows.map((row) => row.blocks[column]?.centerX).filter(Number.isFinite)))
-    }
-    return anchors.sort((a, b) => a - b)
+    return bands.sort((left, right) => left.coreLeft - right.coreLeft || left.coreRight - right.coreRight)
+  }
+
+  function bandAnchor(band) {
+    return (band.coreLeft + band.coreRight) / 2
+  }
+
+  // Assigns a cell to the band it overlaps the most. A cell that misses every
+  // band core (OCR jitter exactly between two columns) falls back to the nearest
+  // anchor so it still renders instead of being dropped.
+  function bandIndexFor(block, bands) {
+    let index = -1
+    let bestOverlap = 0
+    bands.forEach((band, candidate) => {
+      const overlap = bandOverlap(block, band)
+      if (overlap > bestOverlap) {
+        bestOverlap = overlap
+        index = candidate
+      }
+    })
+    if (index >= 0) return index
+    let nearest = 0
+    let distance = Infinity
+    bands.forEach((band, candidate) => {
+      const next = Math.abs(block.centerX - bandAnchor(band))
+      if (next < distance) {
+        distance = next
+        nearest = candidate
+      }
+    })
+    return nearest
+  }
+
+  // Inclusive column range covered by one cell.
+  //
+  // Every cell of a band contains that band's final core (the core is the
+  // intersection of all its members), so a cell that also overlaps another band's
+  // core by at least half of it really does span that column: that is a merged
+  // cell. `first` is the leftmost covered band — a merged cell's text belongs in
+  // the first column it covers — and the range becomes `mergeCells` in the
+  // workbook writer.
+  function spanBands(block, bands) {
+    const covered = []
+    bands.forEach((band, index) => {
+      const overlap = bandOverlap(block, band)
+      if (overlap <= 0) return
+      const bandWidth = Math.max(1, band.coreRight - band.coreLeft)
+      if (overlap / bandWidth >= COLUMN_OVERLAP_RATIO) covered.push(index)
+    })
+    if (covered.length) return { first: covered[0], last: covered[covered.length - 1] }
+    // OCR jitter left the cell between two cores: keep it in the nearest column
+    // instead of dropping it (or widening the table with a phantom column).
+    const nearest = bandIndexFor(block, bands)
+    return { first: nearest, last: nearest }
+  }
+
+  function rangesOverlap(left, right, range) {
+    return left <= range.endColumn && right >= range.startColumn
   }
 
   function csvCell(value) {
@@ -119,26 +222,39 @@
       .map((block) => normalizeBlock(block, minConfidence))
       .filter(Boolean)
     const groupedRows = groupRows(blocks)
-    const columnCount = inferColumnCount(groupedRows)
-    if (groupedRows.length < 2 || columnCount < 2) return null
+    if (groupedRows.length < 2) return null
+    const bands = buildColumnBands(blocks)
+    const columnCount = bands.length
+    if (columnCount < 2) return null
 
-    const anchors = inferColumnAnchors(groupedRows, columnCount)
-    const rows = groupedRows.map((row) => {
+    const anchors = bands.map(bandAnchor)
+    // `merges` uses the 0-based `{ s: { r, c }, e: { r, c } }` shape that
+    // main/services/table-workbook.js already writes as SpreadsheetML
+    // `mergeCells`; the recognition renderer forwards `tableModel.merges` to
+    // `recognition:export-excel`.
+    const merges = []
+    const rows = groupedRows.map((row, rowIndex) => {
       const cells = Array.from({ length: columnCount }, () => [])
+      const spans = []
       for (const block of row.blocks) {
-        let column = 0
-        let distance = Infinity
-        anchors.forEach((anchor, index) => {
-          const nextDistance = Math.abs(block.centerX - anchor)
-          if (nextDistance < distance) {
-            distance = nextDistance
-            column = index
-          }
-        })
-        cells[column].push(block)
+        const { first, last } = spanBands(block, bands)
+        cells[first].push(block)
+        if (last > first) spans.push({ startColumn: first, endColumn: last })
+      }
+      // Widest span first: if two spans in one row somehow overlap, the wider one
+      // wins so the emitted mergeCells never overlap (Excel/WPS reject those).
+      spans.sort((left, right) => left.startColumn - right.startColumn || right.endColumn - left.endColumn)
+      const accepted = []
+      for (const span of spans) {
+        // A normal cell already claims the span's first column in this row, so the
+        // row cannot be merged without losing that cell's own position.
+        if (cells[span.startColumn].length > 1) continue
+        if (accepted.some((range) => rangesOverlap(span.startColumn, span.endColumn, range))) continue
+        accepted.push(span)
+        merges.push({ s: { r: rowIndex, c: span.startColumn }, e: { r: rowIndex, c: span.endColumn } })
       }
       return cells.map((cellBlocks) => cellBlocks
-        .sort((a, b) => a.left - b.left)
+        .sort((left, right) => left.left - right.left)
         .map((block) => block.text)
         .join(' '))
     })
@@ -148,6 +264,11 @@
       rowCount: rows.length,
       columnCount,
       anchors,
+      // The core of each projected band: the stable x range every cell of that
+      // column shares. Exposed so callers/tests can verify the anchor placement
+      // against the cells instead of guessing from centers.
+      columnBounds: bands.map((band) => ({ left: band.coreLeft, right: band.coreRight })),
+      merges,
       ...formats
     }
   }

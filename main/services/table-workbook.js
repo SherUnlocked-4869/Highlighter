@@ -197,10 +197,19 @@ function normalizeMerges(merges) {
     if (range.startRow === range.endRow && range.startColumn === range.endColumn) continue
     const reference = `${cellReference(range.startRow, range.startColumn)}:${cellReference(range.endRow, range.endColumn)}`
     if (seen.has(reference)) continue
+    // Excel/WPS reject overlapping merge ranges (they open the file with a
+    // "repair" prompt), so a malformed OCR model cannot produce one: keep the
+    // first range and drop later overlaps.
+    if (output.some((existing) => mergesOverlap(existing, range))) continue
     seen.add(reference)
     output.push({ ...range, reference })
   }
   return output
+}
+
+function mergesOverlap(left, right) {
+  return left.startRow <= right.endRow && left.endRow >= right.startRow &&
+    left.startColumn <= right.endColumn && left.endColumn >= right.startColumn
 }
 
 function buildSheetData(normalizedRows) {

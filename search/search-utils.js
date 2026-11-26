@@ -69,7 +69,55 @@
     return [{ keyword: text, matchPath: matchPathEnabled && hasSeparator }]
   }
 
-  function mergeQueryResults(results) {
+  // U04, review report section 4.4 item 7: with "match path" enabled the window runs two
+  // Everything queries and merges them. Each query is already sorted by the
+  // requested sortMode, but concatenating the batches breaks that order (every
+  // item of batch B lands after every item of batch A). The merged list therefore
+  // has to be re-sorted with the same comparator the sidecar was asked to use.
+  function itemName(item) {
+    const name = String(item?.name ?? '')
+    if (name) return name.toLowerCase()
+    // A sidecar item normally carries `name`; fall back to the last path segment
+    // so a partial payload still sorts by name instead of collapsing into ties.
+    const segments = String(item?.fullPath ?? '').split(/[\\/]/)
+    return (segments[segments.length - 1] || '').toLowerCase()
+  }
+
+  function itemPath(item) {
+    return String(item?.fullPath ?? item?.path ?? '').toLowerCase()
+  }
+
+  function itemNumber(value) {
+    const number = Number(value)
+    return Number.isFinite(number) ? number : 0
+  }
+
+  function compareText(left, right) {
+    return left < right ? -1 : left > right ? 1 : 0
+  }
+
+  function compareByMode(left, right, sortMode) {
+    switch (sortMode) {
+      case 'name-asc': return compareText(itemName(left), itemName(right))
+      case 'name-desc': return compareText(itemName(right), itemName(left))
+      case 'path-asc': return compareText(itemPath(left), itemPath(right))
+      case 'path-desc': return compareText(itemPath(right), itemPath(left))
+      case 'size-asc': return itemNumber(left?.size) - itemNumber(right?.size)
+      case 'size-desc': return itemNumber(right?.size) - itemNumber(left?.size)
+      case 'modified-asc': return itemNumber(left?.modifiedAt) - itemNumber(right?.modifiedAt)
+      default: return itemNumber(right?.modifiedAt) - itemNumber(left?.modifiedAt)
+    }
+  }
+
+  // Total order: user-selected primary key, then the full path ascending. The path
+  // tiebreak keeps same-named files in different folders deterministic, which is
+  // what makes the rendered order match a second query run of the same keyword.
+  function compareSearchItems(left, right, sortMode = 'modified-desc') {
+    const primary = compareByMode(left, right, sortMode)
+    return primary !== 0 ? primary : compareText(itemPath(left), itemPath(right))
+  }
+
+  function mergeQueryResults(results, sortMode = 'modified-desc') {
     const fulfilled = (results || []).filter((result) => result && Array.isArray(result.items))
     if (!fulfilled.length) return { total: 0, items: [] }
     const seen = new Set()
@@ -82,8 +130,48 @@
         items.push(item)
       }
     }
+    // A single batch is already ordered by Everything; only the concatenation of
+    // two batches breaks the order. Re-sorting one batch would replace
+    // Everything's native ordering with this simpler comparator for no gain.
+    if (fulfilled.length > 1) {
+      items.sort((left, right) => compareSearchItems(left, right, sortMode))
+    }
     const total = fulfilled.reduce((sum, result) => Math.max(sum, Number(result.total) || 0), 0)
     return { total, items }
+  }
+
+  // U04, review report section 4.4 item 7: `.exe`/`.lnk`/`.ico` carry a per-file icon, so
+  // they must be cached (and requested) by their full path — two `tool.exe` files
+  // in different folders are expected to look different. Everything else keeps the
+  // cheaper one-icon-per-extension cache. A folder row renders the folder glyph
+  // instead of an icon request, so it has no cache key.
+  const PATH_ICON_EXTENSIONS = Object.freeze(['exe', 'lnk', 'ico'])
+
+  function normalizeExtension(extension) {
+    return String(extension ?? '').replace(/^\./, '').toLowerCase()
+  }
+
+  function usesPathIcon(extension) {
+    return PATH_ICON_EXTENSIONS.includes(normalizeExtension(extension))
+  }
+
+  // U04: the Everything sidecar (native/everything-search/src/main.rs) requests
+  // the file ATTRIBUTES dword and marks directory results with `isFolder`, so the
+  // renderer can draw the folder glyph instead of the "?" extension badge.
+  function isFolderItem(item) {
+    return item != null && item.isFolder === true
+  }
+
+  function iconCacheKey(item) {
+    if (!item || typeof item !== 'object') return ''
+    if (isFolderItem(item)) return ''
+    const extension = normalizeExtension(item.extension)
+    if (!extension) return ''
+    if (usesPathIcon(extension)) {
+      const fullPath = String(item.fullPath || '').trim().toLowerCase()
+      return fullPath ? `path:${fullPath}` : `ext:${extension}`
+    }
+    return `ext:${extension}`
   }
 
   // Everything surrounds matched terms with marker characters: 1.5 uses "*",
@@ -177,12 +265,18 @@
 
   return {
     DEFAULT_CATEGORIES,
+    PATH_ICON_EXTENSIONS,
     SORT_OPTIONS,
     escapeHtml,
     normalizeCategoryRule,
     buildQuery,
     planQueries,
+    compareSearchItems,
     mergeQueryResults,
+    normalizeExtension,
+    usesPathIcon,
+    isFolderItem,
+    iconCacheKey,
     splitHighlight,
     naiveHighlight,
     renderHighlighted,

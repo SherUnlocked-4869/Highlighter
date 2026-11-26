@@ -1,4 +1,4 @@
-const { formatSize, formatTime, buildQuery, planQueries, mergeQueryResults, renderHighlighted, extensionBadge, escapeHtml } = window.searchUtils
+const { formatSize, formatTime, buildQuery, planQueries, mergeQueryResults, renderHighlighted, extensionBadge, escapeHtml, iconCacheKey, isFolderItem } = window.searchUtils
 
 // P0-1-T5 (S12): `shared/i18n.js` is a classic script, so its `t`, `setLanguage`
 // and `applyTranslations` bindings are already visible here. They must NOT be
@@ -36,6 +36,13 @@ const state = {
 }
 
 const SEARCH_DEBOUNCE_MS = 60
+
+// U04 (review report section 4.4 item 7): a folder result has an empty extension, which
+// used to render as the "?" extension badge. The Everything sidecar requests the
+// file attributes and reports `isFolder`, so folders get a folder glyph instead of
+// an icon request (their shell icon is the same for every directory anyway).
+const FOLDER_ICON_MARKUP = '<svg class="folder-icon" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--primary-text);opacity:.85" aria-hidden="true" focusable="false">' +
+  '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l1.7 1.8h7.3a2 2 0 0 1 2 2v8.7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>'
 
 // W5 (M2): mirror the user's query state to the main process. The search window
 // is destroyed after being hidden for a minute and rebuilt on demand, so the
@@ -199,20 +206,38 @@ function updateCount() {
 }
 
 function iconMarkup(item) {
+  if (isFolderItem(item)) return FOLDER_ICON_MARKUP
   const extension = String(item.extension || '').toLowerCase()
-  const cached = state.iconCache.get(extension)
+  const cacheKey = iconCacheKey(item)
+  const cached = cacheKey ? state.iconCache.get(cacheKey) : ''
   if (cached) return `<img src="${cached}" alt="">`
   return `<span class="ext-badge" data-ext="${escapeHtml(extension)}">${escapeHtml(extensionBadge(item.extension))}</span>`
+}
+
+// U04: path-keyed icons can be much more numerous than one-per-extension ones, so
+// the renderer keeps the same bound the main-process lookup uses and evicts the
+// oldest entry (re-requesting an evicted icon only costs one IPC round trip).
+const ICON_CACHE_LIMIT = 256
+
+function rememberIcon(cacheKey, dataUrl) {
+  state.iconCache.set(cacheKey, dataUrl)
+  while (state.iconCache.size > ICON_CACHE_LIMIT) {
+    state.iconCache.delete(state.iconCache.keys().next().value)
+  }
 }
 
 function rowMarkup(item, index) {
   const nameHtml = renderHighlighted(item.name || '', state.keyword, item.highlightedName)
   const pathHtml = renderHighlighted(item.path || '', state.keyword, item.highlightedPath)
   const tabIndex = index === Math.max(0, state.activeIndex) ? 0 : -1
-  return `<div class="result-row${index === state.activeIndex ? ' active' : ''}" role="group" aria-labelledby="result-name-${index}" aria-describedby="result-path-${index}" tabindex="${tabIndex}" data-index="${index}" data-ext="${escapeHtml(String(item.extension || '').toLowerCase())}">` +
+  // U04: Everything reports U64_MAX as the size of a directory; a folder row shows
+  // no size instead of an absurd "16777216.0 TB".
+  // `data-icon-key` is the cache key the (possibly asynchronous) icon lands under,
+  // so a result row can be patched without re-rendering the whole list.
+  return `<div class="result-row${index === state.activeIndex ? ' active' : ''}" role="group" aria-labelledby="result-name-${index}" aria-describedby="result-path-${index}" tabindex="${tabIndex}" data-index="${index}" data-ext="${escapeHtml(String(item.extension || '').toLowerCase())}" data-icon-key="${escapeHtml(iconCacheKey(item))}" data-folder="${isFolderItem(item) ? 'true' : 'false'}">` +
     `<span class="file-icon">${iconMarkup(item)}</span>` +
     `<div class="row-main"><div class="row-name" id="result-name-${index}">${nameHtml}</div><div class="row-path" id="result-path-${index}">${pathHtml}</div></div>` +
-    `<div class="row-meta"><span class="row-size">${escapeHtml(formatSize(item.size))}</span><span class="row-date">${escapeHtml(formatTime(item.modifiedAt))}</span></div>` +
+    `<div class="row-meta"><span class="row-size">${escapeHtml(formatSize(isFolderItem(item) ? 0 : item.size))}</span><span class="row-date">${escapeHtml(formatTime(item.modifiedAt))}</span></div>` +
     `<div class="row-actions">` +
     `<button type="button" data-act="reveal" tabindex="${tabIndex}">${escapeHtml(t('search.action.reveal'))}</button>` +
     `<button type="button" data-act="copy" tabindex="${tabIndex}">${escapeHtml(t('search.action.copy-path'))}</button>` +
@@ -252,28 +277,34 @@ function setActiveIndex(index, { scroll = true, focus = false } = {}) {
 }
 
 async function loadIcons(items) {
-  const pendingExtensions = new Map()
+  // U04 (review report section 4.4 item 7): the cache key comes from search-utils
+  // (`iconCacheKey`). Executables/shortcuts/icons are keyed by full path so two
+  // files with the same name in different folders no longer overwrite each
+  // other's icon; document types keep the cheaper per-extension icon.
+  const pendingKeys = new Map()
   for (const item of items) {
-    const extension = String(item.extension || '').toLowerCase()
-    if (!extension || state.iconCache.has(extension)) continue
-    pendingExtensions.set(extension, item.fullPath)
+    const cacheKey = iconCacheKey(item)
+    if (!cacheKey || state.iconCache.has(cacheKey)) continue
+    if (!pendingKeys.has(cacheKey)) pendingKeys.set(cacheKey, item.fullPath)
   }
-  for (const [extension, samplePath] of pendingExtensions) {
-    if (state.iconCache.has(extension)) continue
-    state.iconCache.set(extension, '')
+  for (const [cacheKey, samplePath] of pendingKeys) {
+    if (state.iconCache.has(cacheKey)) continue
+    // Reserve the key so the same icon is requested once even if the list is
+    // rendered again while the request is in flight (`''` means "not loaded").
+    state.iconCache.set(cacheKey, '')
     let dataUrl = null
     try {
       dataUrl = await searchAPI.getFileIcon(samplePath) || null
     } catch {
       dataUrl = null
     }
-    state.iconCache.set(extension, dataUrl)
-    if (dataUrl) {
-      els.list.querySelectorAll(`.result-row[data-ext="${CSS.escape(extension)}"] .ext-badge`).forEach((badge) => {
-        const parent = badge.parentElement
-        if (!parent || !badge.isConnected) return
-        parent.innerHTML = `<img src="${dataUrl}" alt="">`
-      })
+    rememberIcon(cacheKey, dataUrl)
+    if (!dataUrl) continue
+    for (const row of els.list.children) {
+      if (row.dataset.iconKey !== cacheKey) continue
+      const icon = row.querySelector('.file-icon')
+      if (!icon || !icon.isConnected) continue
+      icon.innerHTML = `<img src="${dataUrl}" alt="">`
     }
   }
 }
@@ -318,7 +349,10 @@ async function requestSearch(keyword, seq) {
   state.searching = false
   const fulfilled = settled.filter((entry) => entry.status === 'fulfilled').map((entry) => entry.value)
   if (fulfilled.length) {
-    const merged = mergeQueryResults(fulfilled)
+    // U04 (review report section 4.4 item 7): the two match-path batches arrive sorted
+    // individually; the merged list is re-sorted with the user's sortMode so the
+    // order does not break at the batch boundary.
+    const merged = mergeQueryResults(fulfilled, state.settings.sortMode)
     state.results = merged.items
     state.total = merged.total
     state.visibleCount = Math.min(state.results.length, state.settings.pageSize)
