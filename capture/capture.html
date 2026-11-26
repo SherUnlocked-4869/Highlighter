@@ -277,6 +277,22 @@
     </div>
     <div id="magnifierStatus" class="magnifier-status hidden" role="status" aria-live="polite"></div>
   </div>
+  <!-- N01 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §5.1): the
+       mosaic tool's secondary panel. It is a sibling of the watermark/magnifier panels
+       rather than a #toolOptions group: #toolOptions is a projection of data-option-tools
+       STYLE options, while this is an action on the current selection. It deliberately
+       carries no data-i18n markers - capture.js writes every string at runtime from the
+       runtime `capture-redact.*` namespace (the same pattern as capture-skip.*), so the
+       frozen pre-migration `capture.*` golden key table is not touched. -->
+  <div id="redactPanel" class="redact-panel hidden" role="group">
+    <div class="redact-head"><strong id="redactTitle"></strong></div>
+    <div id="redactScopeRow" class="redact-row redact-scope-row" role="group">
+      <button type="button" data-redact-scope="selection" aria-pressed="true"></button>
+      <button type="button" data-redact-scope="image" aria-pressed="false"></button>
+    </div>
+    <button id="redactRun" class="primary" type="button"></button>
+    <div id="redactStatus" class="redact-status hidden" role="status" aria-live="polite"></div>
+  </div>
   <!-- B01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the one-shot
        "do not keep this capture" switch. It is a FLOATING control, not a toolbar button:
        the main row has only 20px of reserved headroom (shared/editor-layout.js), so a
@@ -341,6 +357,11 @@
   <script src="../shared/capture-output-style.js"></script>
   <script src="../shared/magnifier-geometry.js"></script>
   <script src="../shared/occlusion-mask.js"></script>
+  <!-- N01 (review 2026-11-26 §5.1): the pure local sensitive-data rule library and the
+       OCR text-block -> redaction-box mapping. Classic-script UMD (node can require the
+       same file for the behaviour tests); capture.js reads window.sensitivePatterns
+       lazily on the first "smart redaction" click, never at load time. -->
+  <script src="../shared/sensitive-patterns.js"></script>
   <!-- Batch 1 (history-reedit-batch0-contracts.md §2): the shared document contract -
        coordinates, schema, content fingerprint and the viewport transforms. Same file the
        main process requires, so both ends cannot drift. -->

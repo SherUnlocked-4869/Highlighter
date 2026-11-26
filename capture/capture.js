@@ -34,6 +34,28 @@ const magnifierStrokeWidthInput = document.getElementById('magnifierStrokeWidth'
 const magnifierStrokeWidthValue = document.getElementById('magnifierStrokeWidthValue')
 const magnifierFactorButtons = Array.from(document.querySelectorAll('[data-magnifier-factor]'))
 const magnifierConnectorButtons = Array.from(document.querySelectorAll('[data-magnifier-connector]'))
+// N01 (review 2026-11-26 §5.1): the mosaic tool's smart-redaction panel. Every visible
+// string of this surface is written by capture.js (syncRedactCopy) from the runtime
+// `capture-redact.*` namespace, so the static markup carries no data-i18n marker and the
+// frozen pre-migration `capture.*` golden table stays untouched. `window.sensitivePatterns`
+// is read lazily on use (not at load time): older cached markup that loads this controller
+// without the module must not fail during boot.
+const redactPanel = document.getElementById('redactPanel')
+const redactTitleEl = document.getElementById('redactTitle')
+const redactScopeRow = document.getElementById('redactScopeRow')
+const redactRunButton = document.getElementById('redactRun')
+const redactStatusEl = document.getElementById('redactStatus')
+const redactScopeButtons = Array.from(document.querySelectorAll('[data-redact-scope]'))
+// The scan scope: the user's current region (default) or the whole captured image.
+let redactScope = 'selection'
+// A plain UI latch: disables the panel buttons and guards a double click while the local
+// OCR round-trip is in flight. It never touches the canvas or the annotation layer.
+let redactBusy = false
+// The last status written to the panel, so a language hot-switch can re-render it.
+let redactStatusState = null
+// The ids the CURRENT run created. The panel stays visible while one of them is selected,
+// which is what makes "click one box, press Delete" reachable right after the batch lands.
+let autoRedactIds = new Set()
 const regionStatus = document.getElementById('regionStatus')
 // B01 (docs/reviews/2026-11-24-windows-product-architecture-review.md): the one-shot
 // "do not keep this capture" switch. Its label/hint are written by this controller (like the
@@ -1406,15 +1428,15 @@ function updateFloatingUi() {
   applyToolbarWidthLimit()
   updateElementBar()
   syncOutputStyleUi()
-  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
+  if (!selection || selection.w<2 || selection.h<2) { toolbar.classList.add('hidden'); sizeBadge.style.display='none'; syncWatermarkPanel(); syncMagnifierPanel(); syncRedactPanel(); syncSkipHistoryUi(); return }
   document.getElementById('record').disabled=selection.w<16||selection.h<16
   const hideSizeBadge=['ocr','translate'].includes(processingAction)||!!activeOcrResult||['ocr','translate'].includes(initData?.autoAction)
   sizeBadge.style.display=hideSizeBadge?'none':'block'; sizeBadge.textContent=`${Math.round(selection.w)} × ${Math.round(selection.h)}`; sizeBadge.style.left=`${Math.max(4,selection.x)}px`; sizeBadge.style.top=`${Math.max(4,selection.y-27)}px`
-  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
+  if (activeOcrResult) { toolbar.classList.add('hidden'); positionOcrResultBar(); syncWatermarkPanel(); syncMagnifierPanel(); syncRedactPanel(); syncSkipHistoryUi(); return }
   // B03: a pending per-output receipt owns the strip's space the same way an OCR result
   // does, so a selection drag cannot park the toolbar under the retry buttons.
-  if (!pinOutputBar.classList.contains('hidden')) { toolbar.classList.add('hidden'); positionPinOutputBar(); syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
-  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); syncMagnifierPanel(); syncSkipHistoryUi(); return }
+  if (!pinOutputBar.classList.contains('hidden')) { toolbar.classList.add('hidden'); positionPinOutputBar(); syncWatermarkPanel(); syncMagnifierPanel(); syncRedactPanel(); syncSkipHistoryUi(); return }
+  if (selectState==='auto'||selecting||dragging||resizing) { toolbar.classList.add('hidden'); syncWatermarkPanel(); syncMagnifierPanel(); syncRedactPanel(); syncSkipHistoryUi(); return }
   toolbar.classList.remove('hidden')
   // D6 + the pin re-annotate fix: below the region when it fits, above it when only that
   // fits, otherwise docked inside hugging the region's bottom - never clipped, and never
@@ -1424,6 +1446,7 @@ function updateFloatingUi() {
   syncWatermarkPanel()
   syncMagnifierPanel()
   syncRegionUi()
+  syncRedactPanel()
   syncSkipHistoryUi()
 }
 
@@ -1555,6 +1578,7 @@ function setTool(tool) {
   syncToolOptionsRow()
   syncWatermarkPanel()
   syncMagnifierPanel()
+  syncRedactPanel()
 }
 
 // A1/A4: one place paints the toolbar's width and colour controls, so the
@@ -2099,6 +2123,8 @@ function setSelectedAnnotation(item) {
   // (style echo -> render) is byte-identical, and it is a pure UI visibility toggle: it never edits
   // an object, so it cannot reach the undo or commit paths.
   syncMagnifierPanel()
+  // N01: the redaction panel has the same "active tool OR current batch selected" gate.
+  syncRedactPanel()
 }
 
 // 提交一帧快照：截断 redo 分支 → 深拷贝当前 annotations → 上限 60 条（丢最旧的一条）。
@@ -2694,6 +2720,13 @@ function resetAnnotationState() {
   releaseLensSampler()
   if (magnifierPanel) magnifierPanel.classList.add('hidden')
   setMagnifierStatus('', null, false)
+  // N01: a new capture starts with the redaction panel closed and its transient state gone
+  // (the scope returns to the default). The panel's copy itself stays language-correct.
+  redactBusy = false
+  redactScope = 'selection'
+  autoRedactIds = new Set()
+  setRedactStatus('', null, false)
+  if (redactPanel) redactPanel.classList.add('hidden')
   // U01: a text edit that was open when the window re-initialised belongs to the previous
   // capture - clear the state first, then close the floating editor without running a callback.
   inlineTextEdit = null
@@ -2993,6 +3026,226 @@ function chooseMagnifierConnector(connector) {
   magnifierConnector = connector === 'line' ? 'line' : 'none'
   if (selectedMagnifier()) editSelectedMagnifier({ connector: magnifierConnector })
   else { syncMagnifierPanel(); setMagnifierStatus('', null, false) }
+}
+
+// ---------- N01 (review 2026-11-26 §5.1): smart privacy redaction ----------
+//
+// The mosaic tool's secondary panel. A click asks the EXISTING local OCR channel
+// (`window.captureAPI.ocr` -> main/services/ocr-service.js, a local sidecar) for the text
+// blocks of the current selection (or the whole captured image), matches each block's text
+// against shared/sensitive-patterns.js IN MEMORY, and turns every hit into an ordinary
+// `{ type: 'blur' }` annotation. Those are the shipped rectangle-mosaic objects, so:
+//   * the existing occlusion mask keeps protecting them (shared/occlusion-mask.js, R0.4);
+//   * Ctrl+Z removes the whole batch in ONE frame (one snapshotAnnotations call);
+//   * the shipped select tool can click one box and Delete it individually.
+//
+// Privacy contract (non-negotiable):
+//   * the image goes to the local OCR sidecar, never to a network service;
+//   * OCR text stays in this function's local variables: only counts and locale-backed
+//     rule labels are written to the DOM, and nothing is persisted or logged;
+//   * this path never calls recordHistory, a settings save or any history IPC.
+
+function sensitiveApi() {
+  return window.sensitivePatterns || null
+}
+
+// The panel's status line. The state is kept so a language hot-switch can re-render the
+// same message without re-running OCR.
+function setRedactStatus(key, params, isError) {
+  redactStatusState = key ? { key, params: params || null, isError: isError === true } : null
+  if (!redactStatusEl) return
+  redactStatusEl.textContent = key ? t(key, params) : ''
+  redactStatusEl.classList.toggle('hidden', !key)
+  redactStatusEl.classList.toggle('error', isError === true)
+}
+
+// Runtime copy pass (boot + i18n:language broadcast). The `capture-redact.*` namespace is
+// registered in shared/locales/capture.js for all three languages; the same file's
+// `capture.*` table is a frozen golden set, which is why this panel does not use it.
+function syncRedactCopy() {
+  if (redactPanel) {
+    const title = t('capture-redact.title')
+    redactPanel.setAttribute('aria-label', title)
+    if (redactTitleEl) redactTitleEl.textContent = title
+    if (redactScopeRow) redactScopeRow.setAttribute('aria-label', t('capture-redact.scope'))
+    if (redactRunButton) {
+      redactRunButton.textContent = t('capture-redact.run')
+      redactRunButton.title = t('capture-redact.run-tip')
+    }
+  }
+  for (const button of redactScopeButtons) {
+    button.textContent = button.dataset.redactScope === 'image'
+      ? t('capture-redact.scope-image')
+      : t('capture-redact.scope-selection')
+  }
+  if (redactStatusState) setRedactStatus(redactStatusState.key, redactStatusState.params, redactStatusState.isError)
+}
+
+// Visible while the mosaic tool is active, and while a box the current run created stays
+// selected (so the result/error message remains readable after the tool switch below).
+// Hidden by every transient state that already owns the stage (OCR result, processing,
+// region gestures, auto selection) exactly like the watermark/magnifier panels.
+function redactPanelVisible() {
+  if (!redactPanel || !selection) return false
+  if (toolbar.classList.contains('hidden') || activeOcrResult || processingAction) return false
+  if (selectState === 'auto' || selecting || dragging || resizing) return false
+  if (currentTool === 'blur') return true
+  const selected = selectedAnnotations()
+  return selected.length > 0 && selected.every((item) => autoRedactIds.has(item.id))
+}
+
+function syncRedactPanel() {
+  if (!redactPanel) return
+  const visible = redactPanelVisible()
+  redactPanel.classList.toggle('hidden', !visible)
+  if (!visible) return
+  // The controls are the mosaic tool's action. After a run the panel stays up as a result
+  // receipt, but re-running from the select tool would stack a second identical batch on
+  // top of the first one - so the action is only available while the mosaic tool is active.
+  const runnable = currentTool === 'blur'
+  for (const button of redactScopeButtons) {
+    const active = button.dataset.redactScope === redactScope
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+    button.disabled = redactBusy || !runnable
+  }
+  if (redactRunButton) redactRunButton.disabled = redactBusy || !runnable
+  // Same placement family as the watermark/magnifier panels: under the strip, above it
+  // when the strip is docked low, clamped into the viewport instead of being clipped.
+  const barRect = toolbar.getBoundingClientRect()
+  const panelRect = redactPanel.getBoundingClientRect()
+  const left = Math.max(6, Math.min(barRect.left, innerWidth - panelRect.width - 6))
+  let top = barRect.bottom + 6
+  if (top + panelRect.height > innerHeight - 6) top = Math.max(6, barRect.top - panelRect.height - 6)
+  redactPanel.style.left = `${Math.round(left)}px`
+  redactPanel.style.top = `${Math.round(top)}px`
+}
+
+function chooseRedactScope(scope) {
+  if (redactBusy) return
+  redactScope = scope === 'image' ? 'image' : 'selection'
+  // The previous outcome describes a different scan; a scope change clears it.
+  setRedactStatus('', null, false)
+  syncRedactPanel()
+}
+
+// The rectangle handed to the OCR export. "Selection" is the region the user is
+// capturing (projected into the captured image for the all-displays Ctrl+A case);
+// "image" is the whole captured image as displayed.
+function redactScopeRect() {
+  if (!selection) return null
+  const rect = redactScope === 'image' ? imageDisplayBounds() : exportSelectionRect()
+  if (!rect) return null
+  const x = Number(rect.x)
+  const y = Number(rect.y)
+  const w = Number(rect.w)
+  const h = Number(rect.h)
+  if (![x, y, w, h].every((value) => Number.isFinite(value))) return null
+  if (!(w > 1) || !(h > 1)) return null
+  return { x, y, w, h }
+}
+
+// The matched rule labels, in rule order, for the "done" message. `labelKeys` come from
+// the rule library and are resolved through the same locale table as the panel copy.
+function redactionKindSummary(boxes) {
+  const labelKeys = []
+  for (const box of boxes) {
+    for (const key of box.labelKeys || []) {
+      if (!labelKeys.includes(key)) labelKeys.push(key)
+    }
+  }
+  return labelKeys.map((key) => t(key)).filter(Boolean).join(t('capture-redact.kind-separator'))
+}
+
+// Append every box as one rectangle mosaic and push exactly ONE undo frame. The batch is
+// then handed to the select tool and selected, so a user can click a single box and press
+// Delete (the shipped per-item delete path) without a second tool guess.
+function applyRedactionBoxes(boxes) {
+  if (!Array.isArray(boxes) || !boxes.length) return 0
+  const style = annotationStyle()
+  flushCoalescedEdits()
+  const created = boxes.map((box) => ({
+    id: ++annotationSeq,
+    type: 'blur',
+    color: style.color,
+    width: style.width,
+    x: box.x,
+    y: box.y,
+    x2: box.x + box.w,
+    y2: box.y + box.h
+  }))
+  annotations.push(...created)
+  autoRedactIds = new Set(created.map((item) => item.id))
+  snapshotAnnotations()
+  setTool('select')
+  selectedIds = new Set(created.map((item) => item.id))
+  selectedAnnotation = created[created.length - 1] || null
+  syncToolbarStyleFromSelection()
+  render()
+  syncRedactPanel()
+  return created.length
+}
+
+async function runAutoRedact() {
+  if (redactBusy || processingAction || recognitionHandoff) return
+  const api = sensitiveApi()
+  if (!api || typeof api.buildRedactionBoxes !== 'function') {
+    setRedactStatus('capture-redact.ocr-unavailable', null, true)
+    syncRedactPanel()
+    return
+  }
+  if (initData?.settings?.plugins && initData.settings.plugins.ocr === false) {
+    setRedactStatus('capture-redact.ocr-unavailable', null, true)
+    syncRedactPanel()
+    return
+  }
+  const rect = redactScopeRect()
+  if (!rect) {
+    setRedactStatus('capture-redact.no-selection', null, true)
+    syncRedactPanel()
+    return
+  }
+  redactBusy = true
+  setRedactStatus('capture-redact.progress', null, false)
+  syncRedactPanel()
+  try {
+    // Exactly the recognition canvas OCR/translate use: base pixels plus the opaque
+    // occlusion mask over every mosaic already in the document. `null` means the mask
+    // could not be built, and then NOTHING is sent anywhere and the canvas is untouched.
+    const output = exportSelectionCanvasForAction(false, rect, { compose: false, mask: true })
+    if (!output) {
+      setRedactStatus('capture-redact.mask-unavailable', null, true)
+      return
+    }
+    const imageBuffer = await canvasPngBuffer(output)
+    // The existing local OCR channel; `scaleFactor` is the same option the OCR action sends.
+    const result = await window.captureAPI.ocr(imageBuffer, { scaleFactor: Number(initData?.scaleFactor) || 1 })
+    // `result` and every block's text stay in this scope. Only the count and the matched
+    // rule labels reach the DOM; the recognized text is never stored anywhere.
+    const blocks = Array.isArray(result?.textBlocks) ? result.textBlocks : []
+    const boxes = api.buildRedactionBoxes({
+      blocks,
+      imageWidth: Number(result?.imageWidth) || output.width,
+      imageHeight: Number(result?.imageHeight) || output.height,
+      rect,
+      padding: api.DEFAULT_BOX_PADDING
+    })
+    if (!boxes.length) {
+      // Explicit "nothing found": no annotation is added and no undo frame is pushed, so
+      // the canvas is exactly what the user had before the click.
+      setRedactStatus('capture-redact.no-hit', { count: blocks.length }, false)
+      return
+    }
+    const count = applyRedactionBoxes(boxes)
+    setRedactStatus('capture-redact.done', { count, kinds: redactionKindSummary(boxes) }, false)
+  } catch (error) {
+    // A disabled OCR sidecar / sidecar failure lands here. Nothing was added to the canvas.
+    setRedactStatus('capture-redact.error', { reason: String(error?.message || error || '') }, true)
+  } finally {
+    redactBusy = false
+    syncRedactPanel()
+    render()
+  }
 }
 
 function finishSelection() {  // A tool strip that just moved must not leave the image-to-document popover floating
@@ -4705,6 +4958,9 @@ function setProcessingState(action) {
     loading.style.top=`${Math.max(8,top)}px`
   }else if(!active&&selection&&initData)updateFloatingUi()
   syncWatermarkPanel()
+  // N01: both entering and leaving a processing state re-evaluates the redaction panel
+  // (it must never sit over an OCR/translate result or a loading surface).
+  syncRedactPanel()
 }
 
 function renderActiveOcrOverlay() {
@@ -4896,6 +5152,11 @@ function showResult(type,result) {
 }
 
 document.querySelectorAll('[data-tool]').forEach((button)=>button.addEventListener('click',()=>setTool(button.dataset.tool)))
+// N01: the smart-redaction panel's one-shot button and its scope toggle. Both are
+// floating-surface controls, so two listeners are the whole wiring; the button stays
+// disabled while a scan is in flight (see syncRedactPanel).
+if (redactRunButton) redactRunButton.addEventListener('click', () => { runAutoRedact() })
+for (const button of redactScopeButtons) button.addEventListener('click', () => chooseRedactScope(button.dataset.redactScope))
 lineWidthGroup.addEventListener('click',(event)=>{const button=event.target.closest('[data-annotation-width]');if(button)setAnnotationWidth(button.dataset.annotationWidth,true)})
 // B2/B3/B5: one delegated listener for every option group (the key/value pair lives in
 // data attributes, so a new group needs no new wiring).
@@ -5565,6 +5826,8 @@ applyTranslations()
 syncPinOutputCopy()
 // B01: same rule for the skip switch and its scope hint.
 syncSkipHistoryCopy()
+// N01: the smart-redaction panel's copy is runtime-written (see syncRedactCopy's comment).
+syncRedactCopy()
 // Hot switch (mirror of `theme`): the settings effect broadcasts i18n:language to every
 // open window, so re-resolve the language and re-scan the DOM.
 window.captureAPI.onInterfaceLanguage((language) => {
@@ -5576,6 +5839,9 @@ window.captureAPI.onInterfaceLanguage((language) => {
   if (activeOcrResult) renderActiveOcrOverlay()
   syncPinOutputCopy()
   syncSkipHistoryCopy()
+  // N01: same rule for the runtime-written redaction panel copy (and its status line).
+  syncRedactCopy()
+  syncRedactPanel()
   if (pinOutputState) renderPinOutputBar(pinOutputState.receipt)
   if (!resultPanel.classList.contains('hidden')) resultTitle.textContent = t(activeOcrResult?.mode === 'translate' ? 'capture.result.title-translate' : 'capture.result.title-ocr')
 })

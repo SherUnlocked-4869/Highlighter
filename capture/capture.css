@@ -356,6 +356,56 @@ body.document-saving #stage { cursor: progress; }
 .magnifier-status { font-size: 12px; opacity: .82; }
 .magnifier-status.error { color: #ff8a80; opacity: 1; }
 
+/* ---------- N01: smart privacy redaction panel (review 2026-11-26 §5.1) ----------
+ * Same floating-surface family as the watermark and magnifier panels. It is visible
+ * while the mosaic tool is active, and stays visible while a generated redaction box
+ * stays selected, so the result message and the per-box editing path stay reachable.
+ */
+.redact-panel {
+  position: fixed;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 250px;
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: var(--radius-lg);
+  color: #eee;
+  background: rgba(25, 25, 28, .96);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .4);
+  backdrop-filter: blur(18px);
+  font-size: 12px;
+}
+.redact-head strong { font-size: 12px; font-weight: 600; }
+.redact-row { display: flex; align-items: center; gap: 6px; }
+.redact-scope-row button,
+.redact-panel > button {
+  flex: 1;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: var(--radius-sm);
+  color: rgba(255, 255, 255, .82);
+  background: rgba(255, 255, 255, .06);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.redact-scope-row button:hover,
+.redact-panel > button:hover { background: rgba(255, 255, 255, .14); }
+.redact-scope-row button.active {
+  color: #fff;
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 26%, transparent);
+}
+.redact-panel > button.primary { color: var(--primary-ink); border-color: transparent; background: var(--primary); }
+.redact-panel > button.primary:hover { filter: brightness(1.1); }
+.redact-scope-row button:disabled,
+.redact-panel > button:disabled { opacity: .55; cursor: default; filter: none; }
+.redact-status { font-size: 12px; line-height: 1.5; opacity: .82; word-break: break-word; }
+.redact-status.error { color: #ff8a80; opacity: 1; }
+
 /* ---------- OCR result panel ---------- */
 .result-panel {
   position: fixed;
