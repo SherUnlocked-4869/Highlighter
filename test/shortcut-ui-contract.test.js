@@ -10,6 +10,10 @@ const { isRecordableShortcut } = require('../shared/shortcut-keys')
 const { readConfigSource } = require('./helpers/config-source')
 
 const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8')
+// H05: the tray icon/menu body lives in its own domain module now.
+const tray = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'tray', 'index.js'), 'utf8')
+// H05: every channel registration moved to the aggregated IPC module.
+const ipcIndex = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'index.js'), 'utf8')
 const shortcutDomain = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'shortcuts', 'index.js'), 'utf8')
 const settingsDefaults = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'settings-defaults.js'), 'utf8')
 const functionRouter = fs.readFileSync(path.join(__dirname, '..', 'main', 'services', 'function-router.js'), 'utf8')
@@ -33,10 +37,10 @@ test('main process delegates shortcut registration and exposes status through pr
   // transactional path (preparePatch -> sync) that preserves the old key on failure.
   assert.match(shortcutDomain, /function register\(\)[\s\S]*shortcutService\.suspendAll\(shortcuts, 'game-mode'\)[\s\S]*shortcutService\.registerAll\(shortcuts\)/)
   assert.match(shortcutDomain, /function preparePatch\(patch\)[\s\S]*shortcutService\.sync\(candidate\)/)
-  assert.match(main, /registerShortcutIpc\(\{[\s\S]*shortcutService/)
+  assert.match(ipcIndex, /registerShortcutIpc\(\{[\s\S]*shortcutService/)
   assert.match(main, /app\.on\('will-quit',[\s\S]*shortcutService\.dispose\(\)/)
   assert.match(preload, /getShortcutStatuses:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('shortcuts:status'\)/)
-  assert.match(main, /registerShortcutIpc\(\{[\s\S]*shortcutService/)
+  assert.match(ipcIndex, /registerShortcutIpc\(\{[\s\S]*shortcutService/)
   assert.match(main, /app\.on\('will-quit',[\s\S]*shortcutService\.dispose\(\)/)
 })
 
@@ -228,19 +232,22 @@ test('the tray offers the mandatory bulk click-through exit', () => {
 
 test('the main process wires the pin domain click-through exit into the router and the tray', () => {
   assert.match(main, /createFunctionRouter\(\{[\s\S]*getPinDomain/, 'the router can resolve the pin domain for the fallback shortcut')
-  assert.match(main, /buildTrayMenuTemplate\(\{[\s\S]*exitClickThrough/, 'the tray entry calls the domain directly so it survives game mode')
+  // H05: the menu body moved to main/domains/tray; the assembly hands it the live pin domain.
+  assert.match(main, /getPinDomain: \(\) => pinDomain/)
+  assert.match(tray, /buildTrayMenuTemplate\(\{[\s\S]*exitClickThrough/, 'the tray entry calls the domain directly so it survives game mode')
 })
 test('the tray wires the Index-Translate proxy bridge through the optional menu entry', () => {
   assert.match(
-    main,
-    /const proxyState = proxyBridgeController \? proxyBridgeController\.menuState\(settings\) : null/,
+    tray,
+    /const proxyState = proxyBridge \? proxyBridge\.menuState\(settings\) : null/,
     'the menu state reuses the settings snapshot the tray already read'
   )
   assert.match(
-    main,
-    /translationProxy: proxyState,[\s\S]*setTranslationProxyEnabled: \(enabled\) => proxyBridgeController\.setEnabled\(enabled\)/,
-    'the tray entry is wired in main.js'
+    tray,
+    /translationProxy: proxyState,[\s\S]*setTranslationProxyEnabled: \(enabled\) => proxyBridge\.setEnabled\(enabled\)/,
+    'the tray entry is wired in the tray domain'
   )
+  assert.match(main, /getProxyBridge: \(\) => proxyBridgeController/)
   assert.match(main, /createProxyBridgeController\(\{[\s\S]*createTrayIcon[\s\S]*getMainWindow/, 'the controller owns the tray refresh and the status push')
   assert.match(main, /proxyBridgeController\.refresh\(\)\.finally\(\(\) => createTrayIcon\(\)\)/, 'startup reconciles the tray state')
   assert.match(main, /proxyBridgeController\?\.startIfConfigured\(\)/, 'autostart stays opt-in')
@@ -309,7 +316,10 @@ test('the proxy status channel rides the existing main IPC surface', () => {
   assert.match(appIpc, /ipcMain\.handle\('app:get-proxy-status', \(\) => controller\.getProxyStatus\(\)\)/)
   assert.match(preload, /getProxyStatus: \(\) => ipcRenderer\.invoke\('app:get-proxy-status'\)/)
   assert.match(preload, /onProxyStatus: \(callback\) =>/)
-  assert.match(main, /getProxyStatus: \(\) => proxyBridgeController\.getStatus\(\)/)
+  // H05: registration moved to main/ipc/index.js; the assembly hands over the live controller.
+  const ipcIndex = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'index.js'), 'utf8')
+  assert.match(main, /getProxyBridge: \(\) => proxyBridgeController/)
+  assert.match(ipcIndex, /getProxyStatus: \(\) => getProxyBridge\(\)\.getStatus\(\)/)
 })
 
 test('recording defers to the shared key rules and stored values are repaired', () => {

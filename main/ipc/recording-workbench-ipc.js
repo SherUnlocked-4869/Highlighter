@@ -62,6 +62,10 @@ function registerRecordingEditorIpc({ ipcMain, controller }) {
   // editor channel; the payload is a projectId only.
   ipcMain.handle('record-editor:salvage', controller.editorSalvage)
   ipcMain.handle('record-editor:cancel-salvage', controller.editorCancelSalvage)
+  // B08 (H05): the frozen "pin frame from the recording" channel lives here with the rest of the
+  // record-editor surface. It used to be registered inline in main.js, where the architecture gate
+  // could not see it because the forbidden-pattern list only matched `.on(`.
+  ipcMain.handle('record:pin-frame', controller.editorPinFrame)
 }
 
 module.exports = {
