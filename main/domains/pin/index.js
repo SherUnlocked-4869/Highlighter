@@ -960,14 +960,17 @@ function createPinDomain(deps) {
   // the injected isPinSnapEnabled() policy are the user preference (no persisted
   // setting is introduced by this ticket). Only x/y change - width/height are carried
   // through untouched, so pixels, opacity and zoom cannot move.
-  function applySnapOnDragEnd(id, altKey = false, options = {}) {
-    const win = findPinWindow(id)
-    if (!win || !win._pinData || win._pinData.clickThrough === true) return null
-    const bounds = readPinBounds(win)
-    if (!bounds) return null
+  //
+  // U02 (review section 4.2-4): split into a pure planner and one applier. `pin:move-end` needs the
+  // target box BEFORE it moves the window (the display-scale resize and the snap have to land
+  // in a single setBounds), which is what planPinSnap returns.
+  function planPinSnap(win, bounds, altKey = false, options = {}) {
+    if (!win || win.isDestroyed() || !win._pinData || win._pinData.clickThrough === true) return null
+    const source = bounds || readPinBounds(win)
+    if (!source) return null
     let matched = null
     try {
-      matched = typeof screen?.getDisplayMatching === 'function' ? screen.getDisplayMatching(bounds) : null
+      matched = typeof screen?.getDisplayMatching === 'function' ? screen.getDisplayMatching(source) : null
     } catch {
       matched = null
     }
@@ -984,7 +987,7 @@ function createPinDomain(deps) {
     }
     const policyEnabled = typeof deps.isPinSnapEnabled === 'function' ? deps.isPinSnapEnabled() !== false : true
     const result = computePinSnap({
-      bounds,
+      bounds: source,
       workAreas,
       windowEdges,
       snapDistance: options.snapDistance,
@@ -992,42 +995,122 @@ function createPinDomain(deps) {
       enabled: options.enabled !== false && policyEnabled
     })
     if (!result) return null
-    const changed = result.x !== bounds.x || result.y !== bounds.y
-    if (changed) {
-      win.setBounds({ x: result.x, y: result.y, width: result.width, height: result.height }, false)
-      notifyPinLayoutChanged({ kind: 'snap', id })
-    }
+    const changed = result.x !== source.x || result.y !== source.y
     return {
-      id,
-      snapped: changed,
-      axis: result.snapped,
-      displayIndex: result.displayIndex,
-      reason: result.reason,
-      bounds: { x: result.x, y: result.y, width: result.width, height: result.height }
+      changed,
+      bounds: { x: result.x, y: result.y, width: result.width, height: result.height },
+      result: {
+        id: win._pinId || win._pinRecoveryKey,
+        snapped: changed,
+        axis: result.snapped,
+        displayIndex: result.displayIndex,
+        reason: result.reason,
+        bounds: { x: result.x, y: result.y, width: result.width, height: result.height }
+      }
     }
   }
 
-  function syncPinDisplayScale(win) {
-    if (!win || win.isDestroyed() || !win._pinData) return false
+  function applySnapOnDragEnd(id, altKey = false, options = {}) {
+    const win = findPinWindow(id)
+    const plan = planPinSnap(win, null, altKey, options)
+    if (!plan) return null
+    if (plan.changed) {
+      win.setBounds(plan.bounds, false)
+      notifyPinLayoutChanged({ kind: 'snap', id })
+    }
+    return plan.result
+  }
+
+  // U02 (review section 4.2-4): the display-scale half of a drag end, as a planner. It returns the
+  // scaled/clamped target box without touching the window, so the caller can merge it with the
+  // snap target and move the window once instead of twice (the old pin:move-end did
+  // syncPinDisplayScale -> setBounds and then applySnapOnDragEnd -> setBounds, which on a
+  // cross-DPI release produced a visible two-step jump).
+  function planPinDisplayScale(win, bounds) {
+    if (!win || win.isDestroyed() || !win._pinData) return null
     const data = win._pinData
-    const bounds = win.getBounds()
-    const display = screen.getDisplayMatching(bounds)
+    const source = bounds || readPinBounds(win)
+    if (!source) return null
+    let display = null
+    try {
+      display = typeof screen?.getDisplayMatching === 'function' ? screen.getDisplayMatching(source) : null
+    } catch {
+      display = null
+    }
+    if (!display?.workArea) return null
     const aligned = getPixelAlignedPinSize(data.pixelWidth, data.pixelHeight, display)
-    if (Math.abs(aligned.scaleFactor - Number(data.displayScaleFactor || 1)) < 0.001) return false
-    data.displayScaleFactor = aligned.scaleFactor
-    data.baseWidth = aligned.width
-    data.baseHeight = aligned.height
-    const sized = getPinWindowSize(data, { workAreaHeight: display.workArea.height })
-    data.zoom = sized.zoom
-    data.rotation = sized.rotation
-    win.setBounds(clampPinBoundsToWorkArea({
-      x: bounds.x,
-      y: bounds.y,
-      width: sized.width,
-      height: sized.height
-    }, display.workArea), false)
+    if (Math.abs(aligned.scaleFactor - Number(data.displayScaleFactor || 1)) < 0.001) {
+      return { changed: false, display, aligned, bounds: source }
+    }
+    const sized = getPinWindowSize(
+      { ...data, baseWidth: aligned.width, baseHeight: aligned.height },
+      { workAreaHeight: display.workArea.height }
+    )
+    return {
+      changed: true,
+      display,
+      aligned,
+      sized,
+      bounds: clampPinBoundsToWorkArea({
+        x: source.x,
+        y: source.y,
+        width: sized.width,
+        height: sized.height
+      }, display.workArea)
+    }
+  }
+
+  function commitPinDisplayScale(win, plan) {
+    if (!plan?.changed || !win?._pinData) return false
+    const data = win._pinData
+    data.displayScaleFactor = plan.aligned.scaleFactor
+    data.baseWidth = plan.aligned.width
+    data.baseHeight = plan.aligned.height
+    data.zoom = plan.sized.zoom
+    data.rotation = plan.sized.rotation
     sendToRenderer(win, 'pin:zoom-changed', Math.round(data.zoom * 100))
     return true
+  }
+
+  function syncPinDisplayScale(win) {
+    const plan = planPinDisplayScale(win)
+    if (!plan?.changed) return false
+    win.setBounds(plan.bounds, false)
+    commitPinDisplayScale(win, plan)
+    return true
+  }
+
+  // The end-of-drag entry point used by `pin:move-end`. It resolves the display-scale resize and
+  // the snap against the SAME pre-move box, merges both target boxes and performs at most ONE
+  // win.setBounds. `win._pinMove` is cleared here so a later pointer move cannot replay the drag.
+  function applyPinMoveEnd(win, altKey = false, options = {}) {
+    if (!win || win.isDestroyed()) return null
+    const dragged = !!win._pinMove
+    win._pinMove = null
+    if (!win._pinData) return { dragged, resized: false, snapped: false, applied: false }
+    const bounds = readPinBounds(win)
+    if (!bounds) return { dragged, resized: false, snapped: false, applied: false }
+    const scalePlan = planPinDisplayScale(win, bounds)
+    let target = scalePlan?.bounds || bounds
+    let snapPlan = null
+    if (dragged) {
+      snapPlan = planPinSnap(win, target, altKey, options)
+      if (snapPlan?.changed) target = snapPlan.bounds
+    }
+    const resized = scalePlan?.changed === true
+    const snapped = snapPlan?.changed === true
+    if (resized || snapped) win.setBounds(target, false)
+    if (resized) commitPinDisplayScale(win, scalePlan)
+    if (snapped) notifyPinLayoutChanged({ kind: 'snap', id: win._pinId || win._pinRecoveryKey })
+    return {
+      dragged,
+      resized,
+      snapped,
+      applied: resized || snapped,
+      bounds: target,
+      scaleFactor: scalePlan?.aligned?.scaleFactor ?? null,
+      snap: snapPlan?.result || null
+    }
   }
 
   function createPinWindow(input, meta = {}, options = {}) {
@@ -1706,16 +1789,15 @@ function createPinDomain(deps) {
     ipcMain.on('pin:move-end', (event, payload = {}) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
-      const dragged = !!win._pinMove
-      win._pinMove = null
-      // DPI first: a cross-display drop may resize the window, and the snap has to be
-      // measured on the box the user actually released, not the old one.
-      syncPinDisplayScale(win)
-      if (!dragged) return
       // A07: the ONLY snap point in the whole flow. The renderer passes the Alt state
       // with the release event; a plain boolean payload is accepted for compatibility.
       const altKey = payload === true || (payload && typeof payload === 'object' && payload.altKey === true)
-      applySnapOnDragEnd(win._pinId || win._pinRecoveryKey, altKey)
+      // U02 (review section 4.2-4): the display-scale resize (syncPinDisplayScale) and the end-of-drag
+      // snap (applySnapOnDragEnd) used to run back to back, each calling win.setBounds, so a
+      // cross-DPI release moved the pin twice and visibly jumped. applyPinMoveEnd resolves both
+      // against one box and applies them in a single setBounds; those two helpers remain for
+      // the display-reflow path and the tray entry point.
+      applyPinMoveEnd(win, altKey)
     })
     ipcMain.on('pin:set-click-through', (event, enabled) => {
       const win = BrowserWindow.fromWebContents(event.sender)
@@ -1756,6 +1838,8 @@ function createPinDomain(deps) {
     togglePinAlwaysOnTop,
     exitPinClickThrough,
     applySnapOnDragEnd,
+    // U02: the merged end-of-drag applier (display-scale resize + snap, one setBounds).
+    applyPinMoveEnd,
     syncPinDisplayScale,
     // Display-reflow internals, exposed for the Lead/diagnostics and for a future
     // main.js dispose if one ever becomes free; main.js does not call them today
