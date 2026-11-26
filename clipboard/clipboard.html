@@ -69,11 +69,35 @@
         <button id="previewClose" class="icon-button preview-close" type="button" data-i18n-title="clipboard.preview-close" data-i18n-aria-label="clipboard.preview-close">×</button>
       </div>
       <div id="previewBody" class="preview-body"></div>
+      <div class="preview-actions" role="group" data-i18n-aria-label="clipboard.image-actions">
+        <button id="previewOcr" class="button" type="button" data-i18n="clipboard.action.ocr">Extract text</button>
+        <button id="previewTable" class="button" type="button" data-i18n="clipboard.action.table">Recognize table</button>
+        <button id="previewPin" class="button" type="button" data-i18n="clipboard.action.pin">Pin</button>
+      </div>
       <div class="preview-foot">
         <span id="previewMeta" class="preview-meta"></span>
+        <span id="previewNotice" class="preview-notice" role="status" aria-live="polite" hidden></span>
         <span class="preview-hint" data-i18n="clipboard.preview-hint">Space previews; Space or Esc closes</span>
       </div>
     </section>
+    <section id="ocr" class="ocr-sheet" role="dialog" aria-modal="true" aria-labelledby="ocrTitle" aria-describedby="ocrMeta" hidden>
+      <div class="ocr-head">
+        <span id="ocrTitle" class="preview-title" data-i18n="clipboard.ocr-title">Extract text</span>
+        <button id="ocrCopy" class="quiet-button" type="button" data-i18n="clipboard.ocr-copy" disabled>Copy text</button>
+        <button id="ocrClose" class="icon-button" type="button" data-i18n-title="clipboard.ocr-close" data-i18n-aria-label="clipboard.ocr-close">×</button>
+      </div>
+      <div class="ocr-body"><pre id="ocrText"></pre></div>
+      <div class="ocr-foot">
+        <span id="ocrMeta" class="preview-meta"></span>
+        <span id="ocrNotice" class="preview-notice" role="status" aria-live="polite" hidden></span>
+        <span class="preview-hint" data-i18n="clipboard.ocr-hint">Esc closes; the text can be selected</span>
+      </div>
+    </section>
+    <div id="contextMenu" class="context-menu" role="menu" data-i18n-aria-label="clipboard.image-actions" hidden>
+      <button id="menuOcr" class="context-item" type="button" role="menuitem" data-i18n="clipboard.action.ocr">Extract text</button>
+      <button id="menuTable" class="context-item" type="button" role="menuitem" data-i18n="clipboard.action.table">Recognize table</button>
+      <button id="menuPin" class="context-item" type="button" role="menuitem" data-i18n="clipboard.action.pin">Pin</button>
+    </div>
     <div id="feedback" role="status" aria-live="polite" hidden>
       <span class="feedback-brand" aria-hidden="true"><b>High</b>lighter</span>
       <span class="led" aria-hidden="true"></span>

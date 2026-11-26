@@ -11,6 +11,13 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
   list: (args) => ipcRenderer.invoke('clipboard:list', args),
   detail: (id) => ipcRenderer.invoke('clipboard:detail', { id }),
   previews: (ids) => ipcRenderer.invoke('clipboard:previews', { ids }),
+  // N02 (report section 5.2): one-click image actions. Only the record id is sent;
+  // OCR / the Excel workbook / the save dialog all run in main and the reply is a
+  // value-only receipt (text, a base file name or a fallback flag).
+  imageOcr: (id) => ipcRenderer.invoke('clipboard:image-ocr', { id }),
+  imageTable: (id) => ipcRenderer.invoke('clipboard:image-table', { id }),
+  imagePin: (id) => ipcRenderer.invoke('clipboard:image-pin', { id }),
+  copyText: (text) => ipcRenderer.invoke('clipboard:copy-text', { text }),
   copy: (id, operationId) => ipcRenderer.invoke('clipboard:copy', { id, operationId }),
   paste: (id, operationId) => ipcRenderer.invoke('clipboard:paste', { id, operationId }),
   setPinned: (id, pinned, operationId) => ipcRenderer.invoke('clipboard:set-pinned', { id, pinned, operationId }),
