@@ -1312,3 +1312,30 @@ body.compact .rec-card{padding:11px 12px}
 .first-run-head .section-title{margin:0}
 .first-run-card .section-note{margin:6px 0 12px}
 .first-run-card .action-group{flex-wrap:wrap}
+
+/* N06 (review section 5.6): global settings search. The box sits above the nav so
+   it is reachable from every route; Ctrl+K focuses it. */
+.sidebar-search{position:relative;margin:0 10px 6px;display:flex;align-items:center;gap:8px;min-block-size:34px;padding:4px 10px;border:1px solid var(--line-2);border-radius:var(--radius-sm);background:var(--surface);color:var(--text-dim)}
+.sidebar-search:focus-within{border-color:var(--primary-text)}
+.sidebar-search-icon{width:14px;height:14px;flex:0 0 14px;opacity:.8}
+#settingsSearchInput{flex:1;min-width:0;border:0;outline:0;padding:0;background:transparent;color:var(--text);font:inherit;font-size:12.5px}
+#settingsSearchInput::placeholder{color:var(--muted)}
+#settingsSearchInput::-webkit-search-cancel-button{display:none}
+.sidebar-search-kbd{flex:0 0 auto;padding:1px 5px;border:1px solid var(--line-2);border-radius:5px;color:var(--muted);font-size:10.5px;line-height:1.4;white-space:nowrap}
+.search-results{position:absolute;z-index:40;top:calc(100% + 6px);left:0;width:296px;max-width:calc(100vw - 24px);max-height:min(58vh,420px);overflow:auto;padding:4px;border:1px solid var(--line-2);border-radius:var(--radius-sm);background:var(--surface);box-shadow:0 10px 28px rgba(20,14,5,.18)}
+.search-result{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:7px 9px;border:0;border-radius:calc(var(--radius-sm) - 2px);background:transparent;color:var(--text);text-align:left;cursor:pointer}
+.search-result:hover,.search-result.active{background:var(--surface-3)}
+.search-result-label{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.search-result-meta{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.search-result-empty{padding:10px;color:var(--muted);font-size:12px}
+/* Click-through feedback: a short accent ring around the target field. The
+   animation is decorative only; reduced-motion users get a static ring. */
+.search-hit{animation:search-hit-pulse 1.8s ease-out 1}
+@keyframes search-hit-pulse{0%{box-shadow:0 0 0 2px var(--primary-text)}70%{box-shadow:0 0 0 2px var(--primary-text);opacity:1}100%{box-shadow:0 0 0 2px transparent;opacity:1}}
+@media (prefers-reduced-motion:reduce){
+  .search-hit{animation:none;box-shadow:0 0 0 2px var(--primary-text)}
+}
+
+/* N06: the archive card is a sibling of the directory-backup card. */
+.backup-archive-card{margin-top:14px}
+.backup-archive-card .section-subtitle{margin:2px 0 0;font-size:14px}

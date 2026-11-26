@@ -35,6 +35,11 @@ const IPC_SURFACES = Object.freeze([
       'data-root:backup-inspect',
       'data-root:backup-restore',
       'data-root:backup-delete',
+      // N06 (review section 5.6): single-file backup archives. Both handlers own
+      // their native save/open dialog in main, so the renderer submits only the
+      // module ids and an in-memory password - never a path.
+      'data-root:backup-export-archive',
+      'data-root:backup-import-archive',
       'history:list',
       'history:thumbnail',
       'history:sources',

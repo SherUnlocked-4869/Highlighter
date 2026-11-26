@@ -222,6 +222,9 @@ window.electronAPI.onInterfaceLanguage((language) => {
   // During boot, leave any queued navigation intact.
   applyTranslations()
   if (configInitialized) navigate(currentRoute)
+  // N06: the sidebar search results are built with t(), so a language switch has
+  // to re-resolve the index; the input/query itself stays untouched.
+  if (typeof refreshSettingsSearchLanguage === 'function') refreshSettingsSearchLanguage()
 })
 
 async function init() {
@@ -234,5 +237,8 @@ async function init() {
   applyAppearance()
   configInitialized = true
   navigate(pendingRoute)
+  // N06: Ctrl+K global search. The wiring lives in routes/settings-search.js;
+  // init is idempotent and degrades to null when the markup is missing.
+  if (typeof initSettingsSearch === 'function') initSettingsSearch()
 }
 init()

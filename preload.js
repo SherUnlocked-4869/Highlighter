@@ -29,6 +29,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
   backupInspect: (directory) => ipcRenderer.invoke('data-root:backup-inspect', directory),
   backupRestore: (options) => ipcRenderer.invoke('data-root:backup-restore', options),
   backupDelete: (directory) => ipcRenderer.invoke('data-root:backup-delete', directory),
+  // N06: single-file `.hlbackup.zip` archives. The renderer submits only the
+  // selected module ids plus an in-memory password; both native file dialogs run
+  // in the main process, so no filesystem path crosses this bridge. The password
+  // is cleared from the page input after the call returns.
+  backupExportArchive: (options) => {
+    const source = options && typeof options === 'object' ? options : {}
+    const modules = Array.isArray(source.modules)
+      ? source.modules.filter((id) => typeof id === 'string' && id.length <= 32).slice(0, 16)
+      : []
+    const password = typeof source.password === 'string' ? source.password : ''
+    return ipcRenderer.invoke('data-root:backup-export-archive', { modules, password })
+  },
+  backupImportArchive: (options) => {
+    const source = options && typeof options === 'object' ? options : {}
+    const password = typeof source.password === 'string' ? source.password : ''
+    return ipcRenderer.invoke('data-root:backup-import-archive', { password })
+  },
   executeFunction: (name, payload) => ipcRenderer.invoke('app:execute-function', { name, payload }),
   getHistory: (filter) => ipcRenderer.invoke('history:list', filter),
   getHistoryThumbnail: (id) => ipcRenderer.invoke('history:thumbnail', id),
