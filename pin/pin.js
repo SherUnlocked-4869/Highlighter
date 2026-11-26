@@ -480,6 +480,9 @@ function startPinRenderer() {
     if (activeImageUrl) URL.revokeObjectURL(activeImageUrl)
     activeImageUrl = null
   })
+  // The window-security probe boots every renderer by calling its marker global; N05 wrapped the
+  // renderer in startPinRenderer(), so applyPinData has to stay reachable from window.
+  window.applyPinData = applyPinData
   window.pinAPI.onInit((data) => applyPinData(data, true))
   window.pinAPI.onUpdate((data) => {
     setRecognition(null)
