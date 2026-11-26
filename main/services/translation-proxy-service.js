@@ -62,11 +62,16 @@ const SERVER_CLOSE_TIMEOUT_MS = 2000
 const MAX_BODY_BYTES = 32 * 1024 * 1024
 
 // CORS is mandatory: the extension is a browser context calling loopback.
+// `access-control-allow-private-network` lets a Chromium 138+ page reach a
+// loopback listener without the Private Network Access preflight failing; it
+// does not widen the allowed origin (still `*`, unchanged) and adds no
+// credentials support.
 const CORS_HEADERS = Object.freeze({
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, OPTIONS',
   'access-control-allow-headers': '*',
-  'access-control-max-age': '86400'
+  'access-control-max-age': '86400',
+  'access-control-allow-private-network': 'true'
 })
 
 // Deliberately a whitelist: headers like set-cookie/server must never reach the
@@ -194,6 +199,24 @@ function assertUpstreamBase(apiBase) {
   return apiBase
 }
 
+// One pooled agent per upstream protocol: a translation page issues a request
+// per subtitle/paragraph, and without keep-alive every one opened a fresh TCP
+// (and TLS) connection to the public endpoint. The agents are created lazily so
+// loading this module does not allocate sockets, and Node unrefs idle keep-alive
+// sockets, so a stopped relay cannot keep the process alive.
+const KEEP_ALIVE_AGENT_OPTIONS = Object.freeze({ keepAlive: true })
+let keepAliveHttpAgent = null
+let keepAliveHttpsAgent = null
+
+function keepAliveAgent(protocol) {
+  if (protocol === 'https:') {
+    if (!keepAliveHttpsAgent) keepAliveHttpsAgent = new https.Agent(KEEP_ALIVE_AGENT_OPTIONS)
+    return keepAliveHttpsAgent
+  }
+  if (!keepAliveHttpAgent) keepAliveHttpAgent = new http.Agent(KEEP_ALIVE_AGENT_OPTIONS)
+  return keepAliveHttpAgent
+}
+
 function createRelayHandler({ getApiBase, log, maxBodyBytes = MAX_BODY_BYTES }) {
   function handleForward(req, res) {
     return (async () => {
@@ -265,14 +288,22 @@ function forwardToUpstream({ req, res, target, body, log }) {
       resolve()
     }
 
+    const requestHeaders = {
+      'content-type': 'application/json',
+      'user-agent': CLIENT_USER_AGENT,
+      'content-length': String(body.length)
+    }
+    // The relay replaces the upstream URL, so a client that authenticates with a
+    // bearer token (Immersive Translate's own API key, a custom header) would
+    // otherwise lose its credentials. Only the Authorization header is copied:
+    // cookies and other ambient headers must never travel through this bridge.
+    if (req.headers.authorization) requestHeaders.authorization = req.headers.authorization
+
     const upstreamReq = client.request(target, {
       method: 'POST',
       timeout: UPSTREAM_TIMEOUT_MS,
-      headers: {
-        'content-type': 'application/json',
-        'user-agent': CLIENT_USER_AGENT,
-        'content-length': String(body.length)
-      }
+      agent: keepAliveAgent(target.protocol),
+      headers: requestHeaders
     }, (upstreamRes) => {
       const responseHeaders = { ...CORS_HEADERS, connection: 'close' }
       for (const name of FORWARDED_RESPONSE_HEADERS) {

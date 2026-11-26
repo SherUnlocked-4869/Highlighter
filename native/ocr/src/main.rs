@@ -87,7 +87,7 @@ fn configure_session(builder: SessionBuilder) -> Result<SessionBuilder, ort::Err
         .with_execution_providers([CPUExecutionProvider::default()
             .with_arena_allocator(true)
             .build()])?
-        .with_optimization_level(GraphOptimizationLevel::Level2)?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(threads)?
         .with_inter_threads(1)?
         .with_memory_pattern(false)
@@ -136,7 +136,7 @@ fn recognize(engine: &mut OcrLite, request: &Request) -> Result<DetectResponse, 
             &source,
             ((image_width as f32 * resize_factor).round() as u32).max(1),
             ((image_height as f32 * resize_factor).round() as u32).max(1),
-            FilterType::Lanczos3,
+            FilterType::CatmullRom,
         )
     } else {
         source
