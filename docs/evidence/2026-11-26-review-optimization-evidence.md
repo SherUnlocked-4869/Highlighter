@@ -18,12 +18,17 @@
 | H04 | P0 | 已实现（报告 dwId 偏移有误，按官方 SDK 实现） | test/h04-utf8-decode.test.js, test/h04-everything-dwid.test.js | 真实 Everything 1.4/1.5 上中文路径 600 条大包；人为延迟回执验证迟到包丢弃；本机 1.4.1.1032 正路径冒烟已通过 |
 | H05 | P0 | 已实现 | test/h05-architecture-extraction.test.js | 打包候选上托盘菜单/记录/代理状态与实际点击行为（真机托盘交互） |
 | F02 | P0 | 已实现 | test/f02-selection-ipc-storm.test.js | 真机日常打字/滚轮时主进程不再收到 selection-hook IPC 唤醒；划词显示、点外隐藏、快捷键隐藏与剪贴板护栏不变 |
-| F07 | P2 | 已实现（会话索引 + usage 三项） | test/f07-conversation-store-index.test.js, test/f07-usage-costs.test.js | 真实 20 条会话目录的托盘重建延迟；真实 usage.db 在 24 个月数据下的体积对比 |
+| F07 | P2 | 已实现（会话索引、usage 三项、AI/OCR/迁移） | test/f07-conversation-store-index.test.js, test/f07-usage-costs.test.js, test/f07-ai-ocr-migration.test.js | 真实 20 条会话目录的托盘重建延迟；真实 usage.db 在 24 个月数据下的体积对比 |
 | F01 | P0 | 已实现 | test/f01-storage-performance.test.js | 真实 config.json/DPAPI 下的 getSettings 二读为零；真实日志轮转与历史分页（真机） |
 | F03 | P0 | 已实现 | test/f03-recording-performance.test.js | 真实 1080p30 连录 30 分钟的防病毒扫描停顿；真实 ffmpeg framemd5 波纹等价（本机已做 90 帧） |
 | F04 | P1 | 已实现 | test/f04-everything-performance.test.js | 真机 Everything 1.4/1.5 下逐字符搜索无全桌面枚举；120s 空闲后索引进程仍存活 |
 | F05 | P1 | 已实现 | test/f05-clipboard-performance.test.js | 真机 4K PNG 复制/粘贴的屏障持锁时长与租约超时；clipboard 侧车需按源码重建 |
 | F06 | P1 | 已实现 | test/f06-capture-performance.test.js | 真机长截图语料（matcher shift 一致性与耗时）、贴图 LRU 驻留内存曲线 |
+| U01 | P1 | 已实现 | test/u01-capture-ux.test.js | 真机多选拖拽手感、中文输入法内联编辑、微软雅黑下 CJK 包围盒与 PDF 结果条 |
+| U02 | P1 | 已实现（贴图矢量重标注/导出离屏合成未做） | test/u02-longpin-ux.test.js | 真机 100%/150% 双屏贴图松手、5 万 px 长图预览与固定悬浮栏剥离 |
+| U04 | P1 | 已实现（表格/搜索、划词锁/终端保护/粘贴时序） | test/u04-table-search.test.js, test/u04-selection-lock.test.js | 真机终端内 Ctrl+C 注入防护、真实 Everything 目录 isFolder、双窗口并发长考、粘贴时序手感 |
+| N03 | P2 | 已实现（导出合成为编辑器播放覆盖层） | test/n03-recording-hud.test.js | 真机录制快捷键胶囊（需焦点在控制条，见风险）、真实音轨静音分析与一键裁剪 |
+| N06 | P2 | 已实现（API Key 迁移未做，见备份契约） | test/n06-config-search-backup.test.js | 真机 Ctrl+K 搜索跳转与单文件加密备份/恢复往返 |
 | U05 | P1 | 已实现（配置侧，main.js 解除回收已接线） | test/u05-config-lifecycle.test.js | 真机水印截图输出、跨路由搜索定时器、空闲回收与语言互换行为 |
 | U03 | P1 | 已实现 | test/u03-record-ux.test.js | 真机 window 模式重录、高分屏 4K 窗口录制、双路混音爆音与 Direct-Track 标注入口 |
 
