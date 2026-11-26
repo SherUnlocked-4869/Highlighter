@@ -1344,20 +1344,39 @@ function createRecordDomain(deps) {
   }
 
   // The highlighter's own windows must never be offered as recording targets (a window recording its
-  // own workbench/editor is a feedback loop). Exact title match, as frozen in §2.1.
-  function ownWindowTitles() {
-    const titles = new Set()
+  // own workbench/editor is a feedback loop). §2.1 froze an exact title match; U03 adds the exact
+  // native handle when Electron exposes it (`BrowserWindow.getMediaSourceId()` returns the same
+  // `window:<pid>:<id>` id desktopCapturer uses), so a target whose title changed or collides with
+  // one of ours is still classified correctly, and a foreign window that merely shares our title is
+  // no longer dropped.
+  function ownWindowIdentity() {
+    const identity = { titles: new Set(), mediaSourceIds: new Set() }
     try {
       const all = typeof BrowserWindow?.getAllWindows === 'function' ? BrowserWindow.getAllWindows() : []
       for (const win of Array.isArray(all) ? all : []) {
         if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed())) continue
         const title = typeof win.getTitle === 'function' ? win.getTitle() : ''
-        if (typeof title === 'string' && title.trim()) titles.add(title.trim())
+        if (typeof title === 'string' && title.trim()) identity.titles.add(title.trim())
+        if (typeof win.getMediaSourceId === 'function') {
+          try {
+            const mediaSourceId = win.getMediaSourceId()
+            if (typeof mediaSourceId === 'string' && mediaSourceId.trim()) {
+              identity.mediaSourceIds.add(mediaSourceId.trim())
+            }
+          } catch {}
+        }
       }
     } catch (error) {
-      log('Own window title enumeration failed:', error?.message || error)
+      log('Own window enumeration failed:', error?.message || error)
     }
-    return titles
+    return identity
+  }
+
+  // The native handle is authoritative when available; the frozen title match stays as the fallback
+  // for a runtime that cannot report it (older Electron, or a test double that only knows titles).
+  function isOwnWindowSource(identity, sourceId, title) {
+    if (identity.mediaSourceIds.size > 0) return identity.mediaSourceIds.has(sourceId)
+    return identity.titles.has(title)
   }
 
   function pruneWindowSourceTokens(now = Date.now()) {
@@ -1395,7 +1414,7 @@ function createRecordDomain(deps) {
     for (const [token, entry] of windowSourceTokens) {
       if (!entry.used) windowSourceTokens.delete(token)
     }
-    const ownTitles = ownWindowTitles()
+    const ownWindows = ownWindowIdentity()
     const seenSources = new Set()
     const windows = []
     for (const source of Array.isArray(sources) ? sources : []) {
@@ -1404,7 +1423,7 @@ function createRecordDomain(deps) {
       const title = text(source?.name)
       if (!sourceId || !title) continue
       if (seenSources.has(sourceId)) continue
-      if (ownTitles.has(title)) continue
+      if (isOwnWindowSource(ownWindows, sourceId, title)) continue
       const pixels = measureWindowPixels(source)
       // A measured window smaller than the frozen minimum is not a useful target. An UNMEASURED one
       // (0x0) is kept: "measurement failed" is not "too small" (§2.1).
@@ -1483,6 +1502,39 @@ function createRecordDomain(deps) {
   function markWindowTokenUsed(token) {
     const entry = windowSourceTokens.get(text(token))
     if (entry) entry.used = true
+  }
+
+  // U03 re-record: a persisted window project keeps only the frozen target descriptor (the opaque
+  // source-token registry never leaves the process and does not survive a restart), so "record again"
+  // re-resolves the window by its saved exact title and registers a fresh one-shot token for it. An
+  // empty answer means the target is gone; the caller then falls back to the workbench instead of
+  // silently starting a full-display take.
+  async function registerWindowRerecordToken(title) {
+    const wanted = text(title)
+    if (!wanted) return ''
+    const sources = await enumerateWindowSources()
+    if (!sources) return ''
+    const ownWindows = ownWindowIdentity()
+    for (const source of Array.isArray(sources) ? sources : []) {
+      const sourceId = typeof source?.id === 'string' ? source.id : ''
+      const name = text(source?.name)
+      if (!sourceId || !name || name !== wanted) continue
+      if (isOwnWindowSource(ownWindows, sourceId, name)) continue
+      const pixels = measureWindowPixels(source)
+      if (pixels.width > 0 && pixels.height > 0 && (pixels.width < WINDOW_MIN_SIZE_PX || pixels.height < WINDOW_MIN_SIZE_PX)) continue
+      const token = crypto.randomUUID()
+      windowSourceTokens.set(token, {
+        sourceId,
+        title: name,
+        appName: text(source?.appName),
+        width: pixels.width,
+        height: pixels.height,
+        expiresAt: Date.now() + Math.max(1, Number(windowTokenTtlMs) || WINDOW_TOKEN_TTL_MS),
+        used: false
+      })
+      return token
+    }
+    return ''
   }
 
   function describeWindowCaptureTarget(binding) {
@@ -1945,9 +1997,11 @@ function createRecordDomain(deps) {
     const sourcePath = await service.sourcePathOf(project.id)
     if (!sourcePath) return null
     const media = project.media || {}
-    // R4 §6: the editor needs the source frame rate to offer fps options. The manifest does not keep
-    // it (R1 schema unchanged), so the in-process probe stash is the only source; 0 means unknown and
-    // the editor offers `source` only.
+    // R4 §6 / U03: the editor needs the source frame rate to offer fps options. The manifest does not
+    // keep a frame rate in `media` (R1 schema unchanged), but the frozen capture configuration does
+    // (`captureConfig.frameRate`), so a project opened after a restart still offers its fps choices.
+    // The in-process probe stash wins when it exists (it is the measured value); the capture config is
+    // the durable fallback, and 0 is only reported when both are absent/unknown.
     const probed = probedMetadataByProject.get(project.id) || null
     return {
       project: service.publicProject(project),
@@ -1958,7 +2012,7 @@ function createRecordDomain(deps) {
         video: {
           width: Math.max(0, Math.round(Number(media.video?.width) || 0)),
           height: Math.max(0, Math.round(Number(media.video?.height) || 0)),
-          frameRate: Math.max(0, Math.round(Number(probed?.video?.frameRate) || 0))
+          frameRate: Math.max(0, Math.round(Number(probed?.video?.frameRate) || Number(project?.captureConfig?.frameRate) || 0))
         },
         audio: {
           tracks: Math.max(0, Math.round(Number(media.audio?.tracks) || 0)),
@@ -2986,7 +3040,10 @@ function createRecordDomain(deps) {
         return { ok: true, project: service.summaryOf(result.project) }
       },
       // Contract §9.3: create a NEW take with the same capture configuration; the old project is
-      // untouched (its source stays in the records).
+      // untouched (its source stays in the records). U03: a WINDOW take must re-bind to its saved
+      // target window instead of silently degrading to a full-display take; when that window no
+      // longer exists the workbench opens with an explicit fallback result so the user can pick a
+      // window again instead of finding out after a full-screen recording.
       editorRerecord: async (event, { projectId } = {}) => {
         assertGameModeDisabled()
         const win = requireEditorSender(event)
@@ -2995,15 +3052,31 @@ function createRecordDomain(deps) {
         if (!project) return { ok: false, code: 'not-found' }
         const capture = project.captureConfig || {}
         const target = capture.target || {}
+        const mode = RECORD_MODES.includes(project.mode)
+          ? project.mode
+          : (RECORD_MODES.includes(target.mode) ? target.mode : DEFAULT_RECORD_MODE)
         closeEditorWindow(id)
         try {
-          if (project.mode === 'region' && Number(target.boundsDip?.width) > 0) {
+          if (mode === 'region' && Number(target.boundsDip?.width) > 0) {
             await createRecordWindow({
               display: resolveDisplay(target.displayId),
               mode: 'region',
               selectionBounds: target.boundsDip,
               capture
             })
+          } else if (mode === 'window') {
+            const windowToken = await registerWindowRerecordToken(target.displayName)
+            if (!windowToken) {
+              openRecordingWorkbench()
+              return { ok: true, mode: 'workbench', fallback: 'window-unavailable' }
+            }
+            await createRecordWindow({
+              display: resolveDisplay(target.displayId),
+              mode: 'window',
+              windowToken,
+              capture
+            })
+            return { ok: true, mode: 'window' }
           } else {
             await createRecordWindow({ display: resolveDisplay(target.displayId), mode: 'display', capture })
           }

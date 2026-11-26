@@ -11,6 +11,13 @@
  * bus, and a cheap RMS level readback for the microphone indicator. Every method is a
  * no-op on the degraded (silent) mix, so the renderer never has to branch on `active`.
  *
+ * U03 (2026-11-26 review §4.3): the master bus keeps UNITY gain. The old static
+ * `1 / total` attenuation halved a dual-bus take even when the two buses were not
+ * actually summing to a clip - the user heard a quieter recording for no reason. The
+ * summing is now protected by a DynamicsCompressorNode configured as a soft limiter
+ * between `master` and `destination`: a single bus keeps its 100% original loudness,
+ * and only the peaks of the sum are caught instead of hard-clipping the encoder input.
+ *
  * Everything in this module is pure or injectable: `AudioContext` is supplied by the
  * caller so the gain graph can be asserted in `test/audio-mixer.test.js` with a fake
  * context, and the module also runs as a plain `<script>` in `record/record.html`
@@ -30,6 +37,17 @@
   // default value keeps unity gain for a normal take.
   const MIN_GAIN = 0
   const LEVEL_ANALYSER_FFT_SIZE = 1024
+  // U03 soft limiter settings for the summing bus. A high ratio with a fast attack catches
+  // the instant both buses peak together; a -3 dBFS threshold keeps a little headroom so the
+  // encoder never receives a full-scale sample. `knee: 0` makes it a brick-wall-ish limiter
+  // rather than a colouring compressor; the release is slow enough not to pump speech.
+  const LIMITER_SETTINGS = Object.freeze({
+    threshold: -3,
+    knee: 0,
+    ratio: 20,
+    attack: 0.003,
+    release: 0.25
+  })
 
   function normalizeGain(value, fallback = DEFAULT_GAIN) {
     const parsed = Number(value)
@@ -58,7 +76,10 @@
 
   /**
    * Pure gain plan for the two optional buses.
-   * `masterGain` only attenuates when two audible buses would otherwise clip by summing.
+   * `masterGain` is the LEGACY static attenuation: it is only applied when the runtime has no
+   * `DynamicsCompressorNode` to act as the summing limiter (see `createAudioMix`). Electron ships
+   * WebAudio, so the production graph always uses unity master gain plus the limiter; keeping the
+   * fallback means a broken/partial AudioContext still cannot hard-clip the encoder input.
    */
   function createGainPlan(options = {}) {
     const source = options && typeof options === 'object' ? options : {}
@@ -131,6 +152,7 @@
       active: false,
       context: null,
       masterGain: 1,
+      limiter: null,
       nodes: [],
       roles: [],
       stream: null,
@@ -173,6 +195,25 @@
       return 0
     }
     return 0
+  }
+
+  // U03: build the summing limiter. Returns null when the context cannot provide one (an old
+  // Chromium, or a partial/fake context), so the caller can keep the legacy static attenuation
+  // instead of failing the whole mix.
+  function createSummingLimiter(context) {
+    if (!context || typeof context.createDynamicsCompressor !== 'function') return null
+    try {
+      const limiter = context.createDynamicsCompressor()
+      if (!limiter) return null
+      if (limiter.threshold) limiter.threshold.value = LIMITER_SETTINGS.threshold
+      if (limiter.knee) limiter.knee.value = LIMITER_SETTINGS.knee
+      if (limiter.ratio) limiter.ratio.value = LIMITER_SETTINGS.ratio
+      if (limiter.attack) limiter.attack.value = LIMITER_SETTINGS.attack
+      if (limiter.release) limiter.release.value = LIMITER_SETTINGS.release
+      return limiter
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -222,14 +263,24 @@
     }
 
     let master = null
+    let limiter = null
     let destination = null
     const nodes = []
     let microphoneMuted = false
     try {
       master = context.createGain()
-      master.gain.value = plan.masterGain
+      // U03: unity master gain. The limiter between master and destination is what keeps a
+      // dual-bus sum from clipping, so the static `1 / total` attenuation must never halve a
+      // healthy take. Only a runtime without a compressor node falls back to it.
+      limiter = createSummingLimiter(context)
+      master.gain.value = limiter ? 1 : plan.masterGain
       destination = context.createMediaStreamDestination()
-      master.connect(destination)
+      if (limiter) {
+        master.connect(limiter)
+        limiter.connect(destination)
+      } else {
+        master.connect(destination)
+      }
       for (const bus of buses) {
         const node = context.createMediaStreamSource(bus.stream)
         const gainNode = context.createGain()
@@ -256,7 +307,7 @@
       if (!tracks.length) {
         const warning = audioWarning('record.audio.warning.mixer-no-track')
         onWarn(warning)
-        disconnectAll(nodes, master, destination, context)
+        disconnectAll(nodes, master, destination, limiter, context)
         return createSilentMix(warning)
       }
       const scratch = {}
@@ -287,7 +338,8 @@
       return {
         active: true,
         context,
-        masterGain: plan.masterGain,
+        masterGain: limiter ? 1 : plan.masterGain,
+        limiter: limiter ? { ...LIMITER_SETTINGS } : null,
         nodes,
         roles: nodes.map((node) => node.role),
         stream,
@@ -317,24 +369,25 @@
           return entry ? readAnalyserLevel(entry.analyser, scratch) : 0
         },
         dispose() {
-          disconnectAll(nodes, master, destination, context)
+          disconnectAll(nodes, master, destination, limiter, context)
         }
       }
     } catch (error) {
       const warning = audioWarning('record.audio.warning.mixer-failed', error?.message || error)
       onWarn(warning)
-      disconnectAll(nodes, master, destination, context)
+      disconnectAll(nodes, master, destination, limiter, context)
       return createSilentMix(warning)
     }
   }
 
-  function disconnectAll(nodes, master, destination, context) {
+  function disconnectAll(nodes, master, destination, limiter = null, context = null) {
     for (const node of nodes) {
       try { node.source.disconnect() } catch {}
       try { node.analyser?.disconnect?.() } catch {}
       try { node.gainNode.disconnect() } catch {}
     }
     try { master?.disconnect?.() } catch {}
+    try { limiter?.disconnect?.() } catch {}
     try { destination?.disconnect?.() } catch {}
     try { context?.close?.() } catch {}
   }
@@ -344,6 +397,7 @@
     AUDIO_CHANNEL_COUNT,
     AUDIO_NOTICES,
     AUDIO_SAMPLE_RATE,
+    LIMITER_SETTINGS,
     MAX_GAIN,
     MIN_GAIN,
     createAudioMix,
