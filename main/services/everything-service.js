@@ -26,6 +26,9 @@ const READY_CACHE_MS = 2000
 const STATUS_REFRESH_MIN_INTERVAL_MS = 5000
 const DEFAULT_CACHE_LIMIT = 24
 const DEFAULT_IDLE_TIMEOUT_MS = 120000
+// F04: a process-path round trip is a single sub-millisecond QueryFullProcessImageNameW
+// inside the sidecar; the timeout only guards against a wedged sidecar.
+const PROCESS_PROBE_TIMEOUT_MS = 2000
 const SORT_MODES = new Set([
   'modified-desc', 'modified-asc',
   'name-asc', 'name-desc',
@@ -49,7 +52,7 @@ class EverythingService {
     this.log = options.log || (() => {})
     this.onStatusChange = typeof options.onStatusChange === 'function' ? options.onStatusChange : null
     this.getUseBundledEverything = options.getUseBundledEverything || (() => true)
-    this.processProbe = options.processProbe || ((pid) => probeProcessImagePath(pid, this.log))
+    this.processProbe = options.processProbe || ((pid) => this.probeProcessImagePath(pid))
     this.runCommand = options.runCommand || ((file, args) => new Promise((resolve, reject) => {
       execFile(file, args, { windowsHide: true }, (error) => (error ? reject(error) : resolve()))
     }))
@@ -163,7 +166,7 @@ class EverythingService {
     if (this.idleTimeoutMs <= 0) return
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null
-      if (this.pending.size === 0 && this.inFlight.size === 0) this.stop()
+      if (this.pending.size === 0 && this.inFlight.size === 0) this.stopSidecar()
     }, this.idleTimeoutMs)
     this.idleTimer.unref?.()
   }
@@ -511,7 +514,25 @@ class EverythingService {
     }
   }
 
-  stop() {
+  // F04: the 120 s idle reclaim stops only the JSON-lines sidecar. The bundled
+  // Everything.exe keeps running with its warm index — killing it forced the next
+  // search to cold-start Everything and rescan the disk (seconds).
+  //
+  // Routed through `stop()` on purpose: that was the pre-F04 idle entry point and
+  // callers (including the existing service tests and main.js) still replace or
+  // invoke it. No arguments means the full dispose on application quit.
+  stopSidecar() {
+    return this.stop({ sidecarOnly: true })
+  }
+
+  stop(options = {}) {
+    if (options && options.sidecarOnly) return this.shutdownSidecar()
+    return this.dispose()
+  }
+
+  // Stops the sidecar process and rejects whatever it still owed; never touches
+  // the managed Everything.exe, so the index stays warm across idle periods.
+  shutdownSidecar() {
     this.clearIdleTimer()
     this.stopping = true
     if (this.process && !this.process.killed) {
@@ -527,26 +548,67 @@ class EverythingService {
     }
     this.pending.clear()
     this.inFlight.clear()
-    this.setStatus({ phase: 'idle', message: '', messageKey: '', running: false, dbLoaded: false, managedByHighlighter: false })
-    return this.stopManagedEverything()
-  }
-}
-
-async function probeProcessImagePath(pid, log = () => {}) {
-  const script = `(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=${Number(pid)}").ExecutablePath`
-  return new Promise((resolve) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      windowsHide: true,
-      timeout: 10000
-    }, (error, stdout) => {
-      if (error) {
-        log('Process probe failed:', error.message)
-        resolve('')
-        return
-      }
-      resolve(String(stdout || '').trim())
+    // Idle reclaim keeps the managed Everything.exe alive, so keep reporting the
+    // ownership it still has; the next status probe re-confirms the rest.
+    this.setStatus({
+      phase: 'idle',
+      message: '',
+      messageKey: '',
+      running: false,
+      dbLoaded: false,
+      managedByHighlighter: !!this.managedEverything
     })
-  })
+  }
+
+  // F04: application quit path. The managed Everything.exe is verified through
+  // the sidecar's process-path action while the sidecar is still alive (the
+  // PowerShell/WMI probe is gone), then the sidecar itself is stopped.
+  async dispose() {
+    this.clearIdleTimer()
+    // The idle timer may already have reclaimed the sidecar, and a quit after a
+    // long idle period still has to verify — and kill — the managed Everything
+    // process. Start the sidecar again for that one probe only.
+    if (this.managedEverything && !(this.process && !this.process.killed && this.ready)) {
+      try {
+        await this.ensureStarted()
+      } catch (error) {
+        this.log('Everything sidecar restart for shutdown failed:', error.message)
+      }
+    }
+    this.stopping = true
+    // `stopManagedEverything` writes its process-path request synchronously, so
+    // the observable teardown below can happen without awaiting the IPC.
+    const managedStop = this.stopManagedEverything()
+    this.ready = false
+    this.setStatus({
+      phase: 'idle',
+      message: '',
+      messageKey: '',
+      running: false,
+      dbLoaded: false,
+      managedByHighlighter: false
+    })
+    const stoppedManaged = await managedStop
+    this.shutdownSidecar()
+    return stoppedManaged
+  }
+
+  // F04: process image paths are resolved by the Rust sidecar through
+  // QueryFullProcessImageNameW (<1 ms) instead of cold-starting PowerShell + WMI
+  // (hundreds of milliseconds to seconds). Any failure yields '' — the caller
+  // then refuses to kill a pid it cannot verify rather than guessing from a
+  // possibly reused pid.
+  async probeProcessImagePath(pid) {
+    const processId = Number(pid)
+    if (!Number.isInteger(processId) || processId <= 0 || processId > 0xffffffff) return ''
+    try {
+      const result = await this.request({ action: 'process-path', pid: processId }, PROCESS_PROBE_TIMEOUT_MS)
+      return typeof result?.path === 'string' ? result.path : ''
+    } catch (error) {
+      this.log('Process probe failed:', error.message)
+      return ''
+    }
+  }
 }
 
 module.exports = {

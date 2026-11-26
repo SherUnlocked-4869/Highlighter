@@ -29,7 +29,7 @@ use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows, GetClassNameW,
-    GetMessageW, GetWindowLongPtrW, GWLP_USERDATA, PostMessageW, RegisterClassW,
+    GetMessageW, GetWindowLongPtrW, IsWindow, GWLP_USERDATA, PostMessageW, RegisterClassW,
     SendMessageTimeoutW, SetWindowLongPtrW, SMTO_ABORTIFHUNG, SMTO_BLOCK, WINDOW_EX_STYLE,
     WINDOW_STYLE, WM_APP, WM_COPYDATA, WM_DESTROY, WM_QUIT,
 };
@@ -85,6 +85,20 @@ const WAIT_READY_POLL_INTERVAL: Duration = Duration::from_millis(300);
 const MAX_PROBED_WINDOWS: usize = 6;
 
 static NEXT_QUERY_ID: AtomicU32 = AtomicU32::new(1);
+
+// F04: `OpenProcess` / `QueryFullProcessImageNameW` live in the windows crate's
+// `Win32_System_Threading` module, a feature this crate does not enable. These
+// kernel32 exports have a stable ABI, so bind them directly instead of widening
+// the dependency feature set.
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> isize;
+    fn QueryFullProcessImageNameW(process: isize, flags: u32, exe_name: *mut u16, size: *mut u32) -> i32;
+    fn CloseHandle(object: isize) -> i32;
+}
+
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
+const PROCESS_PATH_MAX_UNITS: usize = 32_768;
 
 // ==================== Reply window ====================
 
@@ -452,6 +466,113 @@ fn resolve_target(reply: &ReplyWindow) -> Option<TargetInfo> {
     best.map(|(_, info)| info).or(silent_fallback)
 }
 
+// ==================== Query target cache ====================
+
+/// F04: the cached Everything IPC window is reused for every following query.
+/// Before this, each `"query"` ran `resolve_target`: an `EnumWindows` sweep of
+/// every top-level window plus five `WM_USER` probes and one `*.exe` COPYDATA
+/// probe per candidate — two of those per keystroke in match-path mode.
+fn is_window_live(hwnd: isize) -> bool {
+    // SAFETY: IsWindow only inspects a handle value; a stale handle is reported
+    // as BOOL(FALSE), never dereferenced.
+    unsafe { IsWindow(Some(HWND(hwnd as *mut _))).as_bool() }
+}
+
+fn is_communication_failure(error: &Value) -> bool {
+    // `send_copydata` reports a failed SendMessageTimeoutW as "send-failed" and
+    // a missing WM_COPYDATA reply as "timeout"; both mean the cached handle is
+    // no longer answering. "bad-reply" means it did answer, so the cache stays.
+    matches!(error.get("code").and_then(Value::as_str), Some("send-failed" | "timeout"))
+}
+
+/// Runs one query against the cached window when it is still a live window; only
+/// a dead handle or a communication failure triggers exactly one `resolve_target`
+/// re-probe. `is_live` / `resolve` / `attempt` are injected so the cache policy
+/// is unit-testable without a message pump.
+fn run_query_cached<T, F, R>(
+    cache: &mut Option<TargetInfo>,
+    is_live: impl Fn(isize) -> bool,
+    mut resolve: R,
+    mut attempt: F,
+) -> Result<T, Value>
+where
+    F: FnMut(isize) -> Result<T, Value>,
+    R: FnMut() -> Option<TargetInfo>,
+{
+    if let Some(hwnd) = cache.as_ref().map(|target| target.hwnd) {
+        if is_live(hwnd) {
+            match attempt(hwnd) {
+                Ok(result) => return Ok(result),
+                Err(error) if is_communication_failure(&error) => {
+                    *cache = None;
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            // Everything restarted or closed: the handle no longer identifies a
+            // live window, so reusing it would report a misleading failure.
+            *cache = None;
+        }
+    }
+    let target = match resolve() {
+        Some(target) => target,
+        None => {
+            return Err(json!({ "code": "not-running", "message": "IPC window not found" }));
+        }
+    };
+    let hwnd = target.hwnd;
+    *cache = Some(target);
+    let result = attempt(hwnd);
+    if matches!(&result, Err(error) if is_communication_failure(error)) {
+        *cache = None;
+    }
+    result
+}
+
+fn query_with_cache(reply: &ReplyWindow, cache: &mut Option<TargetInfo>, params: &Value) -> Result<Value, Value> {
+    run_query_cached(cache, is_window_live, || resolve_target(reply), |hwnd| {
+        run_query(reply, hwnd, params)
+    })
+}
+
+// ==================== Process image path ====================
+
+/// F04: resolve a pid to its executable path with QueryFullProcessImageNameW
+/// (sub-millisecond) instead of a cold-started PowerShell + WMI query
+/// (hundreds of milliseconds to seconds). Errors are typed strings and never
+/// panic; the JS service treats them as "unverifiable", refuses to kill that pid
+/// and logs the failure.
+fn query_process_image_path(pid: u32) -> Result<String, &'static str> {
+    if pid == 0 {
+        return Err("invalid-pid");
+    }
+    // SAFETY: the handle comes from OpenProcess and is closed on every path; the
+    // buffer is live for the call and the API writes back its used length.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process == 0 {
+            return Err("process-open-failed");
+        }
+        let mut buffer = vec![0u16; PROCESS_PATH_MAX_UNITS];
+        let mut length = buffer.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
+        let _ = CloseHandle(process);
+        if ok == 0 || length == 0 || length as usize > buffer.len() {
+            return Err("process-path-failed");
+        }
+        Ok(String::from_utf16_lossy(&buffer[..length as usize]))
+    }
+}
+
+fn process_path_result(pid: Option<u64>) -> Result<Value, Value> {
+    let Some(pid) = pid.and_then(|value| u32::try_from(value).ok()).filter(|pid| *pid != 0) else {
+        return Err(json!({ "code": "invalid-pid", "message": "无效的进程 ID" }));
+    };
+    query_process_image_path(pid)
+        .map(|path| json!({ "path": path }))
+        .map_err(|code| json!({ "code": code, "message": "无法获取进程映像路径" }))
+}
+
 // ==================== Query execution ====================
 
 fn parse_sort(mode: &str) -> u32 {
@@ -552,7 +673,7 @@ fn parse_reply(data: &[u8], expected_flags: u32) -> Result<(u32, Vec<Value>), St
     Ok((total, items))
 }
 
-fn run_query(reply: &ReplyWindow, target: &TargetInfo, params: &Value) -> Result<Value, Value> {
+fn run_query(reply: &ReplyWindow, target_hwnd: isize, params: &Value) -> Result<Value, Value> {
     let search = params.get("search").and_then(Value::as_str).unwrap_or("");
     let max_results = params
         .get("maxResults")
@@ -584,7 +705,7 @@ fn run_query(reply: &ReplyWindow, target: &TargetInfo, params: &Value) -> Result
         max_results,
     );
     let data = reply
-        .send_copydata(target.hwnd, buffer, query_id, timeout_ms)
+        .send_copydata(target_hwnd, buffer, query_id, timeout_ms)
         .map_err(|message| json!({ "code": message, "message": "Everything 查询失败" }))?;
     let (total, items) = parse_reply(&data, request_flags).map_err(|message| {
         json!({ "code": "bad-reply", "message": message })
@@ -665,6 +786,8 @@ fn main() {
         let _ = handle.flush();
     }
     let stdin = std::io::stdin();
+    // F04: resolved once and reused while the HWND stays a live window.
+    let mut cached_target: Option<TargetInfo> = None;
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(line) => line,
@@ -710,11 +833,15 @@ fn main() {
             }
             "wait-ready" => write_response(&id, true, None, Some(wait_ready(&reply, &request))),
             "query" => {
-                let outcome = match resolve_target(&reply) {
-                    Some(target) => run_query(&reply, &target, &request),
-                    None => Err(json!({ "code": "not-running", "message": "IPC window not found" })),
-                };
+                let outcome = query_with_cache(&reply, &mut cached_target, &request);
                 match outcome {
+                    Ok(result) => write_response(&id, true, None, Some(result)),
+                    Err(error) => write_response(&id, false, Some(error), None),
+                }
+            }
+            "process-path" => {
+                let pid = request.get("pid").and_then(Value::as_u64);
+                match process_path_result(pid) {
                     Ok(result) => write_response(&id, true, None, Some(result)),
                     Err(error) => write_response(&id, false, Some(error), None),
                 }
@@ -792,5 +919,178 @@ mod tests {
     fn h04_take_reply_ignores_reply_without_pending_query() {
         let state = ReplyState { pending: Mutex::new(None) };
         assert!(state.take_reply(1).is_none());
+    }
+
+    // ===================== F04: cached query target =====================
+
+    fn target(hwnd: isize) -> TargetInfo {
+        TargetInfo {
+            hwnd,
+            class_name: format!("{IPC_CLASS_PREFIX}(1.4)"),
+            version: Some((1, 4, 1, 1032)),
+            db_loaded: true,
+            probe_total: 10,
+        }
+    }
+
+    // F04: the review report's first finding is that every query re-ran
+    // resolve_target (EnumWindows + 5 WM_USER probes + one `*.exe` COPYDATA
+    // probe). With a live cached HWND the second query must attempt the cached
+    // window directly and never call the resolver.
+    #[test]
+    fn f04_query_reuses_live_cached_target_without_resolving() {
+        let mut cache = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let mut attempted = Vec::new();
+        let result: Result<(), Value> = run_query_cached(
+            &mut cache,
+            |hwnd| hwnd == 0x1111,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |hwnd| {
+                attempted.push(hwnd);
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(resolve_calls, 0, "a live cached HWND must skip resolve_target");
+        assert_eq!(attempted, vec![0x1111], "the query goes straight to the cached window");
+        assert_eq!(cache.as_ref().map(|info| info.hwnd), Some(0x1111));
+    }
+
+    // F04: Everything restarted, so the old HWND is no longer a window. The
+    // query must resolve a fresh target instead of failing on the dead handle.
+    #[test]
+    fn f04_query_reresolves_when_cached_window_is_gone() {
+        let mut cache = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let mut attempted = Vec::new();
+        let result: Result<(), Value> = run_query_cached(
+            &mut cache,
+            |_| false,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |hwnd| {
+                attempted.push(hwnd);
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(resolve_calls, 1);
+        assert_eq!(attempted, vec![0x2222]);
+        assert_eq!(cache.as_ref().map(|info| info.hwnd), Some(0x2222));
+    }
+
+    // F04: a SendMessageTimeoutW failure / missing CopyData receipt means the
+    // cached window stopped answering; re-resolve exactly once so the user's
+    // query still succeeds after an Everything restart.
+    #[test]
+    fn f04_query_reresolves_once_after_communication_failure() {
+        let mut cache = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let mut attempted = Vec::new();
+        let result: Result<(), Value> = run_query_cached(
+            &mut cache,
+            |_| true,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |hwnd| {
+                attempted.push(hwnd);
+                if hwnd == 0x1111 {
+                    Err(json!({ "code": "timeout" }))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(attempted, vec![0x1111, 0x2222], "one retry after re-resolving");
+        assert_eq!(resolve_calls, 1);
+        assert_eq!(cache.as_ref().map(|info| info.hwnd), Some(0x2222));
+    }
+
+    // F04: a malformed payload is not a communication failure, so it must keep
+    // the cache instead of paying for another full desktop enumeration.
+    #[test]
+    fn f04_query_keeps_cache_after_non_communication_error() {
+        let mut cache = Some(target(0x1111));
+        let mut resolve_calls = 0;
+        let result: Result<(), Value> = run_query_cached(
+            &mut cache,
+            |_| true,
+            || {
+                resolve_calls += 1;
+                Some(target(0x2222))
+            },
+            |_| Err(json!({ "code": "bad-reply" })),
+        );
+        assert_eq!(result.unwrap_err().get("code").and_then(Value::as_str), Some("bad-reply"));
+        assert_eq!(resolve_calls, 0);
+        assert_eq!(cache.as_ref().map(|info| info.hwnd), Some(0x1111));
+    }
+
+    // F04: no cache and no Everything instance keeps the original not-running
+    // protocol error the JS service relies on to re-check readiness.
+    #[test]
+    fn f04_query_reports_not_running_when_resolve_finds_nothing() {
+        let mut cache = None;
+        let mut attempted = 0;
+        let result: Result<(), Value> = run_query_cached(
+            &mut cache,
+            |_| true,
+            || None,
+            |_| {
+                attempted += 1;
+                Ok(())
+            },
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.get("code").and_then(Value::as_str), Some("not-running"));
+        assert_eq!(attempted, 0);
+        assert!(cache.is_none());
+    }
+
+    #[test]
+    fn f04_window_liveness_accepts_real_windows_and_rejects_stale_handles() {
+        assert!(!is_window_live(0), "a null HWND is not live");
+        // IsWindow is the exact guard for cache reuse; the desktop window is a
+        // real window in every interactive session.
+        let desktop = unsafe { windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow() };
+        assert!(is_window_live(desktop.0 as isize));
+    }
+
+    // ===================== F04: process image path =====================
+
+    // F04: QueryFullProcessImageNameW replaces the PowerShell + WMI probe that
+    // cold-started a shell process per verification. The current process is a
+    // known-good target for the real API.
+    #[test]
+    fn f04_process_path_resolves_the_current_process() {
+        let path = query_process_image_path(std::process::id()).expect("own image path");
+        let expected = std::env::current_exe().expect("current exe path");
+        assert_eq!(
+            path.to_lowercase(),
+            expected.to_string_lossy().to_lowercase(),
+            "QueryFullProcessImageNameW must return the current executable path"
+        );
+    }
+
+    // F04: safe degradation — a pid that cannot be resolved is a typed error,
+    // never a panic and never a guessed path.
+    #[test]
+    fn f04_process_path_rejects_unresolvable_pids() {
+        assert_eq!(query_process_image_path(0), Err("invalid-pid"));
+        let bogus = query_process_image_path(u32::MAX);
+        assert!(bogus.is_err(), "a pid that cannot be opened must not resolve: {bogus:?}");
+        let invalid = process_path_result(Some(0)).unwrap_err();
+        assert_eq!(invalid.get("code").and_then(Value::as_str), Some("invalid-pid"));
+        let accepted = process_path_result(Some(u64::from(std::process::id()))).expect("own pid");
+        assert!(accepted.get("path").and_then(Value::as_str).is_some());
     }
 }
