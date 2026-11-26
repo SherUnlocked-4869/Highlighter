@@ -83,6 +83,8 @@ class HistoryService {
     this.log = log
     this.now = now
     this.createId = createId
+    // H01: set by attachDocumentService() once the document service exists (main.js assembly).
+    this.documentService = null
   }
 
   ensureDirectory(directory) {
@@ -117,6 +119,66 @@ class HistoryService {
     if (!item) return
     if (item.thumbnailPath && fs.existsSync(item.thumbnailPath)) fs.unlinkSync(item.thumbnailPath)
     if (item.filePath && fs.existsSync(item.filePath)) fs.unlinkSync(item.filePath)
+    // H01 (§二.1.1): an editable capture owns a whole `history/documents/<documentId>/` tree
+    // (base image plus every revision). The two flat files above are only the head preview, so
+    // deleting just them left the tree — and usually the base image — on disk forever. The
+    // document service owns that layout and its own error path (it logs and returns false
+    // instead of throwing, so a stubborn tree cannot block the index update).
+    this.deleteDocumentFiles(this.documentIdFor(item))
+  }
+
+  // H01: the document service is attached after construction because main.js creates the
+  // history service first (the document service reads the index through this instance).
+  attachDocumentService(service) {
+    this.documentService = service && typeof service.deleteDocumentFiles === 'function' ? service : null
+    return this
+  }
+
+  documentIdFor(item) {
+    if (!item || typeof item !== 'object') return ''
+    return String(item.documentId || item.id || '').slice(0, 128)
+  }
+
+  deleteDocumentFiles(documentId) {
+    if (!this.documentService || !documentId) return false
+    try {
+      return this.documentService.deleteDocumentFiles(documentId) !== false
+    } catch (error) {
+      this.log('History document cleanup failed:', documentId, error?.message || String(error))
+      return false
+    }
+  }
+
+  // H01: bytes/files actually held by an orphaned document tree. The tree is nested
+  // (base/, revisions/, assets/), so a flat readdir would report zero.
+  directoryUsage(directory) {
+    let bytes = 0
+    let fileCount = 0
+    const stack = [directory]
+    while (stack.length) {
+      const current = stack.pop()
+      let entries = []
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        const entryPath = path.join(current, entry.name)
+        if (entry.isDirectory()) {
+          stack.push(entryPath)
+          continue
+        }
+        if (!entry.isFile()) continue
+        try {
+          bytes += fs.statSync(entryPath).size
+          fileCount++
+        } catch {
+          // the file vanished between the two calls
+        }
+      }
+    }
+    return { bytes, fileCount }
   }
 
   thumbnailPath(id) {
@@ -210,11 +272,52 @@ class HistoryService {
         orphans.push({ filePath, size })
       }
     }
+    // H01 (§二.1.2): document trees are directories, and the flat scan above deliberately
+    // skips them (`if (!entry.isFile()) continue`), so every orphaned `documents/<id>/` was
+    // invisible to both cleanup and the size the settings page reports. A tree is an orphan
+    // only when no history entry still carries its id.
+    const referencedDocuments = new Set()
+    for (const item of history) {
+      const documentId = this.documentIdFor(item)
+      if (documentId) referencedDocuments.add(documentId.toLocaleLowerCase())
+    }
+    for (const directory of this.historyDirectories()) {
+      const documentsDirectory = path.join(directory, 'documents')
+      let entries = []
+      try {
+        entries = fs.readdirSync(documentsDirectory, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        if (referencedDocuments.has(entry.name.toLocaleLowerCase())) continue
+        const filePath = path.join(documentsDirectory, entry.name)
+        const usage = this.directoryUsage(filePath)
+        orphans.push({ filePath, size: usage.bytes, fileCount: usage.fileCount, isDirectory: true })
+      }
+    }
     return orphans
+  }
+
+  // H01: the document service counts the head result/thumbnail plus the base image and every
+  // revision. When attached it is the authoritative byte count; summing the flat files too
+  // would count the head images twice.
+  readDocumentStats() {
+    const service = this.documentService
+    if (!service || typeof service.documentStats !== 'function') return null
+    try {
+      const stats = service.documentStats()
+      return stats && typeof stats === 'object' ? stats : null
+    } catch (error) {
+      this.log('Document stats failed:', error?.message || String(error))
+      return null
+    }
   }
 
   stats() {
     const history = this.readHistory()
+    const documentStats = this.readDocumentStats()
     const referencedFiles = new Set()
     let availableCount = 0
     let missingCount = 0
@@ -222,6 +325,7 @@ class HistoryService {
     for (const item of history) {
       if (item?.filePath && fs.existsSync(item.filePath)) availableCount++
       else missingCount++
+      if (documentStats) continue
       for (const filePath of [item?.filePath, item?.thumbnailPath]) {
         if (!filePath || !fs.existsSync(filePath)) continue
         const normalized = path.resolve(filePath).toLocaleLowerCase()
@@ -234,8 +338,9 @@ class HistoryService {
         }
       }
     }
+    if (documentStats) totalBytes = Number(documentStats.totalBytes) || 0
     const orphans = this.orphanFiles(history)
-    return {
+    const result = {
       totalCount: history.length,
       availableCount,
       missingCount,
@@ -243,6 +348,12 @@ class HistoryService {
       orphanCount: orphans.length,
       orphanBytes: orphans.reduce((total, item) => total + item.size, 0)
     }
+    if (documentStats) {
+      result.revisionCount = Number(documentStats.revisionCount) || 0
+      result.editableCount = Number(documentStats.editableCount) || 0
+      result.bitmapOnlyCount = Number(documentStats.bitmapOnlyCount) || 0
+    }
+    return result
   }
 
   trimHistory(history, limit) {
@@ -522,6 +633,9 @@ class HistoryService {
         continue
       }
       removedEntries++
+      // H01: an entry whose head image is gone still owns its document tree; drop both so a
+      // single "clean up" run actually reclaims the space it reports.
+      this.deleteDocumentFiles(this.documentIdFor(item))
       if (item?.thumbnailPath && fs.existsSync(item.thumbnailPath)) {
         try {
           reclaimedBytes += fs.statSync(item.thumbnailPath).size
@@ -535,8 +649,13 @@ class HistoryService {
 
     for (const orphan of this.orphanFiles(history)) {
       try {
-        fs.unlinkSync(orphan.filePath)
-        removedFiles++
+        if (orphan.isDirectory) {
+          fs.rmSync(orphan.filePath, { recursive: true, force: true })
+          removedFiles += Number(orphan.fileCount) || 1
+        } else {
+          fs.unlinkSync(orphan.filePath)
+          removedFiles++
+        }
         reclaimedBytes += orphan.size
       } catch (error) {
         failures.push({ filePath: orphan.filePath, message: error?.message || String(error) })

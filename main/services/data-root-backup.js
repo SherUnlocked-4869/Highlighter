@@ -40,6 +40,9 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const path = require('node:path')
+// H01: the entry-path list lives in data-root.js so the live migration and this restore path
+// share one definition (the migration used to rewrite only two of these keys).
+const { HISTORY_ENTRY_PATH_KEYS } = require('./data-root')
 
 const BACKUP_FORMAT = 'highlighter-data-backup'
 // D04 (plan item 06): format 2 gives the history module its OWN index file
@@ -1247,16 +1250,8 @@ function remapRestoredValue(value, roots, targetRoot) {
 // render preview (filePath/thumbnailPath), so re-editing a restored capture still opened the
 // document and the original base image under the OLD data root. docPath/baseImagePath are
 // what the document service reads (capture-document-service.readDocument), so they have to
-// move with the files.
-const HISTORY_ENTRY_PATH_KEYS = Object.freeze([
-  'filePath',
-  'thumbnailPath',
-  'docPath',
-  'baseImagePath',
-  'resultImagePath',
-  'documentPath',
-  'originalPath'
-])
+// move with the files. H01 moved the list itself to data-root.js; it is imported above so the
+// live migration reads the same keys.
 
 // Item 07: the managed history roots, in precedence order. Besides the module source and
 // the managed/legacy layouts, this includes the history directory the user configured

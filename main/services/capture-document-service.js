@@ -1104,8 +1104,30 @@ function cropWithinBase(crop, baseSize) {
 // Assembly helper for main.js: keeps the dependency wiring out of the line-limited
 // assembly file (main.js has a 1330-line architecture ceiling) while still being a plain
 // factory the tests can call directly.
+//
+// H01 (§二.1.1/§二.1.3) adds the two startup steps that used to be missing:
+//   * attach this service to the history service, so deleting a history entry (single, batch,
+//     clear, retention trim, cleanup) also removes `history/documents/<documentId>/` and the
+//     history stats count its bytes;
+//   * run the index recovery (`recoverIndex`) that was dead code until now - a damaged or
+//     emptied index is rebuilt from the backup written by publishIndex().
+// Both are skipped/no-ops when a test injects a fake history service, and
+// `recoverIndexOnStart: false` lets a test opt out.
 function createCaptureDocumentService(dependencies = {}) {
-  return new CaptureDocumentService(dependencies)
+  const service = new CaptureDocumentService(dependencies)
+  const { historyService, recoverIndexOnStart = true, log } = dependencies
+  if (historyService && typeof historyService.attachDocumentService === 'function') {
+    historyService.attachDocumentService(service)
+  }
+  if (recoverIndexOnStart) {
+    try {
+      const recovery = service.recoverIndex()
+      if (recovery?.recovered) log?.('Capture index recovered from backup:', recovery.count)
+    } catch (error) {
+      log?.('Capture index recovery failed:', error?.message || String(error))
+    }
+  }
+  return service
 }
 
 module.exports = {
