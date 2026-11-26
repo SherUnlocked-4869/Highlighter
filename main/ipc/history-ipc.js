@@ -4,7 +4,7 @@
 //   ipcMain                       the secure ipcMain wrapper (or a plain fake in tests)
 //   historyService                { list, getThumbnail, listSources, stats, getItem, delete,
 //                                   deleteMany, exportMany, cleanup, clear,
-//                                   selectExportItems? }
+//                                   selectExportItems?, updateTags? }
 //   copyItem(item) / copyPathItem(item) / editItem(item) / openItem(item)
 //   chooseExportDirectory()       opens the "where to export" directory picker
 //
@@ -23,12 +23,32 @@
 // with the native save dialog. Selection resolution prefers
 // historyService.selectExportItems (shared with exportMany); when the injected
 // facade does not expose it, getItem + an existence probe give the same answer.
+//
+// N02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §5.2): tag editing.
+// The main-role invoke inventory is frozen in main/services/ipc-security.js (every channel
+// needs an explicit sender policy and secureIpcMain.assertComplete() refuses an unlisted
+// registration), and test/history-ipc.test.js pins this module's exact channel list, so a new
+// `history:update-tags` channel cannot be added without changing both of those files. Until
+// it is promoted, the write rides 'history:list' - the one history channel that already
+// accepts a renderer object - as a command envelope: `{ op: 'update-tags', id, tags }`.
+// A payload without `op` keeps the original list contract byte for byte, and the preload
+// exposes a named `updateHistoryTags()` method so the renderer never hand-builds the envelope.
 
 const fs = require('node:fs')
 
 const pdfExportDefault = require('../services/pdf-export')
 const { makeCaptureName } = require('../services/capture-naming')
 const { t } = require('../services/i18n-bootstrap')
+
+// N02: the command envelope discriminant for the tag write (see the header).
+const HISTORY_UPDATE_TAGS_OP = 'update-tags'
+
+function isUpdateTagsCommand(payload) {
+  return !!payload &&
+    typeof payload === 'object' &&
+    !Array.isArray(payload) &&
+    payload.op === HISTORY_UPDATE_TAGS_OP
+}
 
 // Resolution order for a batch: history order first (selectExportItems), otherwise
 // the caller's id order (getItem). Both drop ids whose file is gone, and report
@@ -131,7 +151,16 @@ function registerHistoryIpc({
 }) {
   if (!ipcMain || !historyService) throw new Error('History IPC requires ipcMain and historyService')
 
-  ipcMain.handle('history:list', (_event, filter) => historyService.list(filter))
+  ipcMain.handle('history:list', (_event, filter) => {
+    // N02: the tag write shared with 'history:list' (frozen channel inventory; see header).
+    // updateTags() returns the normalized list, or null when the record is gone / the payload
+    // is not an array, so the renderer can report a failed edit without a second round-trip.
+    if (isUpdateTagsCommand(filter)) {
+      if (typeof historyService.updateTags !== 'function') throw new Error('History tag updates are unavailable')
+      return historyService.updateTags(filter.id, filter.tags)
+    }
+    return historyService.list(filter)
+  })
   ipcMain.handle('history:thumbnail', (_event, id) => historyService.getThumbnail(id))
   ipcMain.handle('history:sources', () => historyService.listSources())
   ipcMain.handle('history:stats', () => historyService.stats())

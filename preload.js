@@ -62,6 +62,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openHistory: (id) => ipcRenderer.invoke('history:open', id),
   copyHistoryPath: (id) => ipcRenderer.invoke('history:copy-path', id),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
+  // N02 (review section 5.2): add/remove/replace the tags of one history record. The write
+  // travels as a command envelope on the existing history:list channel (see
+  // main/ipc/history-ipc.js: the main-role IPC inventory is frozen, so a dedicated
+  // history:update-tags channel cannot be added here without a matching sender policy).
+  // Values are normalized again in HistoryService; this only keeps the payload well-typed.
+  updateHistoryTags: (id, tags) => ipcRenderer.invoke('history:list', {
+    op: 'update-tags',
+    id: typeof id === 'string' ? id.slice(0, 128) : '',
+    tags: Array.isArray(tags) ? tags.filter((tag) => typeof tag === 'string').slice(0, 16) : []
+  }),
   requestAi: (messages, options) => ipcRenderer.invoke('ai:complete', { messages, options }),
   translateText: (text, sourceLanguage, targetLanguage) => ipcRenderer.invoke('ai:translate', { text, sourceLanguage, targetLanguage }),
   chooseDirectory: () => ipcRenderer.invoke('dialog:choose-directory'),

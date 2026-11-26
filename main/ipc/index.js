@@ -16,6 +16,7 @@
 
 const regionPresets = require('../../shared/region-presets')
 const { registerSettingsIpc } = require('./settings-ipc')
+const { createHistoryOcrIndexer } = require('../services/history-ocr-indexer')
 const { createCodingPlanIpcController, registerCodingPlanIpc } = require('./coding-plan-ipc')
 const { registerHistoryIpc } = require('./history-ipc')
 const { registerShortcutIpc } = require('./shortcut-ipc')
@@ -46,7 +47,21 @@ function createSettingsFacade(getSettingsService) {
   }
 }
 
-function createHistoryFacade({ getHistoryService, performanceMonitor }) {
+function createHistoryFacade({ getHistoryService: resolveHistoryService, performanceMonitor, ocrIndexer = null }) {
+  // N02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §5.2): the history
+  // service is created inside initializeStore(), which runs long after this module has handed
+  // its registrations to main.js. The background OCR indexer therefore attaches itself on the
+  // first facade call instead of at construction: from then on a delete can cancel a pending
+  // OCR write (HistoryService.attachOcrIndexer). The local name keeps every entry point below
+  // reading `getHistoryService().method(...)` exactly as before.
+  function getHistoryService() {
+    const service = resolveHistoryService()
+    if (service && ocrIndexer && typeof service.attachOcrIndexer === 'function') {
+      service.attachOcrIndexer(ocrIndexer)
+    }
+    return service
+  }
+
   return {
     list: (filter) => performanceMonitor.measure('history.list', () => getHistoryService().list(filter), {
       limit: Math.max(0, Number(filter?.limit) || 0),
@@ -56,6 +71,9 @@ function createHistoryFacade({ getHistoryService, performanceMonitor }) {
     listSources: () => performanceMonitor.measure('history.sources', () => getHistoryService().listSources()),
     stats: () => performanceMonitor.measure('history.stats', () => getHistoryService().stats()),
     getItem: (id) => getHistoryService().getItem(id),
+    // N02: the tag editor's write path (routed from the history:list command envelope in
+    // history-ipc.js, because the main-role IPC inventory is frozen).
+    updateTags: (id, tags) => getHistoryService().updateTags(id, tags),
     delete: (id) => getHistoryService().delete(id),
     deleteMany: (ids) => getHistoryService().deleteMany(ids),
     exportMany: (ids, directory) => getHistoryService().exportMany(ids, directory),
@@ -108,6 +126,37 @@ function registerAllIpc({
   installUsageFeature = (deps) => usageFeature.install(deps)
 }) {
   const settingsService = createSettingsFacade(getSettingsService)
+
+  // N02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §5.2): the single
+  // background OCR indexer for screenshot history. It is built here because this is the first
+  // assembly point that already owns all three collaborators: the settings resolver, the OCR
+  // controller and the history-service resolver. Creating it does nothing until a capture is
+  // saved; the capture domain receives it for the save path, and the history facade attaches it
+  // to the service on first use (see createHistoryFacade).
+  //
+  // The controller is adapted to the indexer's narrow `recognize(buffer, options)` dependency
+  // so the indexer module never imports Electron or the IPC layer.
+  const historyOcrIndexer = createHistoryOcrIndexer({
+    getSettings,
+    getOcrService: () => ({
+      recognize: (imageBuffer, options = {}) => {
+        if (!ocrController || typeof ocrController.ocr !== 'function') throw new Error('OCR controller unavailable')
+        return ocrController.ocr(null, { imageBuffer, ...options })
+      }
+    }),
+    getHistoryService,
+    nativeImage,
+    log
+  })
+  if (captureDomain && typeof captureDomain.attachHistoryOcrIndexer === 'function') {
+    captureDomain.attachHistoryOcrIndexer(historyOcrIndexer)
+  }
+  // N02: the app has no other quit hook for this queue (main.js is frozen by H05). 'will-quit'
+  // is emitted before the OCR sidecar is stopped, and dispose() makes the queue and any
+  // not-yet-started job bail out, so shutdown can never start a fresh sidecar or write a record.
+  if (app && typeof app.once === 'function') {
+    app.once('will-quit', () => historyOcrIndexer.dispose())
+  }
 
   registerSettingsIpc({
     ipcMain,
@@ -202,7 +251,7 @@ function registerAllIpc({
 
   registerHistoryIpc({
     ipcMain,
-    historyService: createHistoryFacade({ getHistoryService, performanceMonitor }),
+    historyService: createHistoryFacade({ getHistoryService, performanceMonitor, ocrIndexer: historyOcrIndexer }),
     copyItem: (item) => {
       if (!fs.existsSync(item.filePath)) return false
       const width = Number(item.width) || 0

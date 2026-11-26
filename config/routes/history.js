@@ -73,9 +73,100 @@ function historySourceLabel(source) {
   return key ? t(key) : String(source ?? '')
 }
 
+// N02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §5.2): per-record tags.
+// The limits mirror HistoryService.normalizeHistoryTags(), so the card only ever sends a
+// shape the write path accepts; the chips therefore never disagree with the stored record.
+const HISTORY_TAGS_MAX = 8
+const HISTORY_TAG_MAX_LENGTH = 24
+
+function historyItemTags(item) {
+  const tags = Array.isArray(item?.tags) ? item.tags : []
+  return tags.filter((tag) => typeof tag === 'string' && tag.trim()).map((tag) => tag.trim())
+}
+
+// One removable chip per tag. Inline styles are the route's existing escape hatch for small
+// additions (no config.css change is in this ticket's write scope).
+function historyTagChipsMarkup(tags) {
+  return (Array.isArray(tags) ? tags : []).map((tag) => {
+    const label = escapeHtml(t('config.history.tag-remove', { tag }))
+    return `<span class="history-tag" style="display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border:1px solid var(--line-2);border-radius:var(--radius-pill);color:var(--text);background:var(--surface-2);font-size:11px">${escapeHtml(tag)}<button type="button" class="history-tag-remove" data-history-tag-remove="${escapeHtml(tag)}" aria-label="${label}" title="${label}" style="border:0;background:none;padding:0;color:var(--muted);font-size:12px;line-height:1;cursor:pointer">&times;</button></span>`
+  }).join('')
+}
+
+function historyTagsMarkup(item) {
+  return `<div class="history-tags action-group" data-history-tags style="padding:0 13px 7px;gap:5px"><span class="action-group" data-history-tag-chips style="gap:5px">${historyTagChipsMarkup(historyItemTags(item))}</span><input class="input" data-history-tag-input type="text" maxlength="${HISTORY_TAG_MAX_LENGTH}" placeholder="${escapeHtml(t('config.history.tags-placeholder'))}" style="max-width:150px;padding:2px 8px;font-size:11px"></div>`
+}
+
+function historyCurrentTags(card) {
+  return [...(card?.querySelectorAll('[data-history-tag-remove]') || [])]
+    .map((button) => String(button.dataset.historyTagRemove || ''))
+    .filter(Boolean)
+}
+
+function historyBindTagChips(card) {
+  if (!card) return
+  for (const remove of card.querySelectorAll('[data-history-tag-remove]')) {
+    remove.onclick = () => { void historyRemoveTag(card, remove.dataset.historyTagRemove) }
+  }
+}
+
+function historyRenderCardTags(card, tags) {
+  const chips = card?.querySelector('[data-history-tag-chips]')
+  if (!chips) return
+  chips.innerHTML = historyTagChipsMarkup(tags)
+  historyBindTagChips(card)
+}
+
+// One write for add/remove: the answer carries the normalized list, so the chips are patched
+// from the store's own answer instead of from the optimistic payload. The history:changed
+// broadcast that follows re-renders the whole card (the signature below includes the tags).
+async function historyWriteTags(card, tags) {
+  const id = card?.dataset.historyDocument
+  if (!id) return false
+  let written
+  try {
+    written = await window.electronAPI.updateHistoryTags(id, tags)
+  } catch (error) {
+    toast(errorMessage(error) || t('config.history.tags-failed'))
+    return false
+  }
+  if (!Array.isArray(written)) {
+    toast(t('config.history.tags-failed'))
+    return false
+  }
+  historyRenderCardTags(card, written)
+  return true
+}
+
+async function historyAddTag(card, input) {
+  if (!card || !input) return
+  const tag = String(input.value || '').trim().replace(/\s+/g, ' ').slice(0, HISTORY_TAG_MAX_LENGTH)
+  if (!tag) return
+  const current = historyCurrentTags(card)
+  const duplicate = current.some((existing) => existing.toLocaleLowerCase() === tag.toLocaleLowerCase())
+  if (duplicate) {
+    input.value = ''
+    return
+  }
+  if (current.length >= HISTORY_TAGS_MAX) {
+    toast(t('config.history.tags-limit', { max: HISTORY_TAGS_MAX }))
+    return
+  }
+  const written = await historyWriteTags(card, [...current, tag])
+  if (written) input.value = ''
+}
+
+async function historyRemoveTag(card, tag) {
+  const value = String(tag || '')
+  if (!value) return
+  const next = historyCurrentTags(card).filter((existing) => existing !== value)
+  await historyWriteTags(card, next)
+}
+
 // Everything the card actually shows. A card whose signature is unchanged is kept
 // as-is on refresh (so its loaded thumbnail survives); only changed cards are
 // re-created. Selection is deliberately excluded — it must not invalidate a card.
+// N02: the tags are part of the signature so an edit re-renders the chips.
 function historyCardSignature(item) {
   return [
     historyDocumentId(item),
@@ -86,7 +177,8 @@ function historyCardSignature(item) {
     String(item?.width ?? ''),
     String(item?.height ?? ''),
     String(historyVersion(item)),
-    item?.longCapture ? '1' : '0'
+    item?.longCapture ? '1' : '0',
+    Array.isArray(item?.tags) ? item.tags.join('\u0001') : ''
   ].join('|')
 }
 
@@ -105,6 +197,7 @@ function historyCardMarkup(item) {
     <label class="history-select" title="${t('config.history.select-item')}"><input type="checkbox" aria-label="${t('config.history.select-item')}" data-history-select data-id="${id}" ${selected ? 'checked' : ''}></label>
     <div class="history-image"${imageTitle}><img data-history-thumbnail="${id}" data-history-thumbnail-key="${escapeHtml(historyThumbnailKey(item))}" loading="lazy" decoding="async" alt=""></div>
     <div class="history-meta"><span class="history-meta-time">${new Date(item.createdAt).toLocaleString()}</span><span class="history-meta-sub">${escapeHtml(historySourceLabel(item.source))} · ${escapeHtml(item.width)}×${escapeHtml(item.height)}</span>${versionBadge}</div>
+    ${historyTagsMarkup(item)}
     <div class="history-actions action-group">
       ${editButton || openButton}<button type="button" class="button subtle" data-history-action="copy" data-id="${id}">${t('config.history.action-copy')}</button>
       <button type="button" class="button subtle history-more-trigger" popovertarget="history-more-${id}">${t('config.common.more-actions')}</button>
@@ -225,6 +318,17 @@ function historyBindCard(state, card) {
       void historyRunItemAction(button)
     }
   }
+  // N02: Enter in the tag box adds, the chip's × removes. Both writes go through the same
+  // history:list envelope exposed as updateHistoryTags() in preload.js.
+  const tagInput = card.querySelector('[data-history-tag-input]')
+  if (tagInput) {
+    tagInput.onkeydown = (event) => {
+      if (event.key !== 'Enter') return
+      event.preventDefault()
+      void historyAddTag(card, tagInput)
+    }
+  }
+  historyBindTagChips(card)
 }
 
 function historyBindItems(state) {

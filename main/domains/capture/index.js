@@ -280,6 +280,48 @@ function createCaptureDomain(deps) {
   }
 
   // -------------------------------------------------------------------------
+  // N02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §5.2):
+  // the background OCR index for screenshot history.
+  //
+  // main.js constructs the domains before the IPC aggregation, and registerAllIpc() is where the
+  // indexer is built (it owns the OCR controller and the settings resolver), so the indexer
+  // arrives through this attach point instead of a constructor dependency. Until it is attached
+  // every persist below keeps its shipped behaviour: a record is written and nothing else happens.
+  // -------------------------------------------------------------------------
+  let historyOcrIndexer = null
+
+  function attachHistoryOcrIndexer(indexer) {
+    historyOcrIndexer = indexer && typeof indexer.enqueue === 'function' ? indexer : null
+    return historyOcrIndexer !== null
+  }
+
+  function enqueueHistoryOcr(historyItem) {
+    if (!historyOcrIndexer || !historyItem || typeof historyItem !== 'object') return false
+    try {
+      // enqueue() only appends to an idle serial queue; it never waits for OCR.
+      return historyOcrIndexer.enqueue(historyItem) !== false
+    } catch (error) {
+      log('History OCR enqueue failed:', error?.message || String(error))
+      return false
+    }
+  }
+
+  // The one door every history write in this domain goes through: persist, then hand the new
+  // record to the indexer. It accepts the promise shape too so a fake/alternate persistHistory
+  // cannot make the index silently skip the row.
+  function persistHistoryEntry(imageData, meta) {
+    const created = persistHistory(imageData, meta)
+    if (created && typeof created.then === 'function') {
+      return created.then((historyItem) => {
+        enqueueHistoryOcr(historyItem)
+        return historyItem
+      })
+    }
+    enqueueHistoryOcr(created)
+    return created
+  }
+
+  // -------------------------------------------------------------------------
   // B01: the one-shot "do not keep this capture" switch.
   //
   // The renderer sends the switch value with EVERY action's meta, because that is
@@ -334,7 +376,7 @@ function createCaptureDomain(deps) {
     const persistStarted = Date.now()
     setImmediate(() => {
       try {
-        persistHistory(buffer, { ...meta, action: plan.action })
+        persistHistoryEntry(buffer, { ...meta, action: plan.action })
         performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: plan.action })
       } catch (error) {
         log('Capture history persist failed:', error.message)
@@ -499,7 +541,7 @@ function createCaptureDomain(deps) {
     const persistStarted = Date.now()
     setImmediate(() => {
       try {
-        persistHistory(buffer, { ...meta, action: 'pin' })
+        persistHistoryEntry(buffer, { ...meta, action: 'pin' })
         performanceMonitor.record('capture.history-persist', Date.now() - persistStarted, { action: 'pin-copy' })
       } catch (error) {
         log('Capture history persist failed:', error.message)
@@ -1495,7 +1537,7 @@ function createCaptureDomain(deps) {
           if (captureWindow && !captureWindow.isDestroyed()) captureWindow.close()
         })
         if (plan.historyRecords !== 1) return { ok: true, history: 'skipped' }
-        return persistHistory(buffer, { ...meta, action: type })
+        return persistHistoryEntry(buffer, { ...meta, action: type })
       },
       recordHistory: (event, { imageBuffer, dataUrl, meta } = {}) => {
         reportCaptureSerial(meta)
@@ -1503,7 +1545,7 @@ function createCaptureDomain(deps) {
         const skipHistory = resolveSkipHistory(captureWindow, meta)
         const plan = capturePlan('record-history', skipHistory)
         if (plan.historyRecords !== 1) return { ok: true, history: 'skipped' }
-        return persistHistory(imageBuffer ?? dataUrl, meta)
+        return persistHistoryEntry(imageBuffer ?? dataUrl, meta)
       },
       exportPdf: async (event, { imageBuffer, dataUrl, meta, mode } = {}) => {
         reportCaptureSerial(meta)
@@ -1547,6 +1589,8 @@ function createCaptureDomain(deps) {
     createCaptureWindow,
     createDocumentEditorWindow,
     editHistoryDocument,
+    // N02: main/ipc/index.js attaches the background OCR indexer here after it builds it.
+    attachHistoryOcrIndexer,
     sendCaptureInit,
     revealCaptureWindow,
     createSmartSelectSession,

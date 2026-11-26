@@ -13,6 +13,13 @@ const MAX_HISTORY_QUERY_LENGTH = 200
 const MAX_HISTORY_BATCH_SIZE = 500
 const DEFAULT_HISTORY_PAGE_SIZE = 40
 const MAX_HISTORY_PAGE_SIZE = 100
+// N02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 5.2): the two
+// search-only fields the filter above has always read. Tags stay a small, bounded list so the
+// card UI and the query string cannot be flooded; OCR text is capped because it is a whole
+// screenshot's worth of text and only ever searched, never rendered.
+const MAX_HISTORY_TAG_LENGTH = 24
+const MAX_HISTORY_TAG_COUNT = 8
+const MAX_HISTORY_OCR_TEXT_LENGTH = 20000
 
 function normalizeHistoryFilter(value = {}) {
   const filter = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -23,6 +30,36 @@ function normalizeHistoryFilter(value = {}) {
     cursor: String(filter.cursor || '').trim().slice(0, 128),
     limit: Math.max(1, Math.min(MAX_HISTORY_PAGE_SIZE, requestedLimit))
   }
+}
+
+// N02: tags are user input, so the write path owns their whole shape. A tag is a string,
+// trimmed, with runs of whitespace collapsed; the list is de-duplicated case-insensitively
+// (the search path compares lower-cased text), bounded per tag and per record. Anything else
+// in the payload is ignored rather than rejected, so one bad entry cannot block an edit.
+// A non-array payload is not a usable edit at all and returns null (callers treat that as
+// "nothing was written").
+function normalizeHistoryTags(value) {
+  if (!Array.isArray(value)) return null
+  const tags = []
+  const seen = new Set()
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue
+    const tag = entry.trim().replace(/\s+/g, ' ').slice(0, MAX_HISTORY_TAG_LENGTH)
+    if (!tag) continue
+    const key = tag.toLocaleLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    tags.push(tag)
+    if (tags.length >= MAX_HISTORY_TAG_COUNT) break
+  }
+  return tags
+}
+
+// N02: OCR text arrives from a renderer process boundary indirectly (the indexer), so the
+// same normalization is applied on write: newlines are normalized and the length is capped.
+function normalizeHistoryOcrText(value) {
+  if (typeof value !== 'string') return ''
+  return value.replace(/\r\n?/g, '\n').trim().slice(0, MAX_HISTORY_OCR_TEXT_LENGTH)
 }
 
 function matchesHistoryFilter(item, filter) {
@@ -85,6 +122,10 @@ class HistoryService {
     this.createId = createId
     // H01: set by attachDocumentService() once the document service exists (main.js assembly).
     this.documentService = null
+    // N02: set by attachOcrIndexer() once the background OCR indexer exists (main/ipc/index.js
+    // assembly, which runs before initializeStore()). Only used to cancel pending recognition
+    // work when a record is deleted.
+    this.ocrIndexer = null
   }
 
   ensureDirectory(directory) {
@@ -132,6 +173,28 @@ class HistoryService {
   attachDocumentService(service) {
     this.documentService = service && typeof service.deleteDocumentFiles === 'function' ? service : null
     return this
+  }
+
+  // N02: same late-attach shape as the document service. The indexer is assembled in
+  // main/ipc/index.js while this service is only created inside initializeStore(), so the
+  // IPC facade calls this on its first use. It is optional: without it, OCR results are still
+  // dropped for deleted records (the indexer re-reads the record before writing), only the
+  // in-flight cancellation is lost.
+  attachOcrIndexer(indexer) {
+    this.ocrIndexer = indexer && typeof indexer.discard === 'function' ? indexer : null
+    return this
+  }
+
+  discardOcrIndexIds(ids) {
+    const indexer = this.ocrIndexer
+    if (!indexer || !Array.isArray(ids) || !ids.length) return
+    for (const id of ids) {
+      try {
+        indexer.discard(String(id || ''))
+      } catch (error) {
+        this.log('History OCR discard failed:', String(id || ''), error?.message || String(error))
+      }
+    }
   }
 
   documentIdFor(item) {
@@ -359,14 +422,18 @@ class HistoryService {
   trimHistory(history, limit) {
     const kept = history.slice(0, limit)
     const discarded = history.slice(limit)
+    const discardedIds = []
     for (const entry of discarded) {
       try {
         this.deleteFiles(entry)
+        discardedIds.push(entry?.id)
       } catch (error) {
         kept.push(entry)
         this.log('History limit cleanup failed:', entry.filePath, error.message)
       }
     }
+    // N02: a record evicted by the history limit must not get its OCR text written later.
+    this.discardOcrIndexIds(discardedIds)
     return kept
   }
 
@@ -473,8 +540,13 @@ class HistoryService {
     if (!item || typeof item !== 'object') return item
     const documentId = String(item.documentId || item.id || '')
     const version = Math.max(1, Math.round(Number(item.version) || 1))
+    // N02: the mutable full-text index (ocrText) is search input, not card content. Keeping it
+    // out of the list projection keeps a 40-card page from shipping up to 800 KiB of OCR text
+    // over IPC on every refresh; the search itself runs in the main process before projection.
+    // Tags stay because the card renders them.
+    const { ocrText: _ocrText, ...listItem } = item
     return {
-      ...item,
+      ...listItem,
       documentId,
       revisionId: String(item.revisionId || ''),
       headRevisionId: String(item.headRevisionId || item.revisionId || ''),
@@ -522,11 +594,69 @@ class HistoryService {
     return this.readHistory().find((entry) => entry.id === normalizedId) || null
   }
 
+  // N02: the one write door for the search-only fields (ocrText / tags). The record is
+  // re-read here, so a caller that raced a delete gets `false` instead of recreating the row.
+  // The write is silent (writeHistorySilently) and followed by onChanged(), which is what the
+  // history page's in-place refresh listens to: the index changes without a second
+  // broadcast per field.
+  writeItemFields(id, patch) {
+    this.assertWritable()
+    const normalizedId = String(id || '').slice(0, 128)
+    if (!normalizedId || !patch || typeof patch !== 'object' || Array.isArray(patch)) return false
+    const history = this.readHistory()
+    const index = history.findIndex((entry) => String(entry?.id || '') === normalizedId)
+    if (index < 0) return false
+    history[index] = { ...history[index], ...patch }
+    try {
+      this.writeHistorySilently(history)
+    } catch (error) {
+      this.log('History entry update failed:', normalizedId, error?.message || String(error))
+      return false
+    }
+    this.onChanged()
+    return true
+  }
+
+  // N02: called by the background OCR indexer once a saved capture's text was recognized.
+  // The record may already be gone (deleted while the sidecar ran): that is a normal race,
+  // not an error, and the result is simply dropped. Empty text is not written either - it
+  // would only create a write and a page refresh that cannot change any search result.
+  updateOcrText(id, text) {
+    const normalizedText = normalizeHistoryOcrText(text)
+    const normalizedId = String(id || '').slice(0, 128)
+    if (!normalizedId || !normalizedText) return false
+    const current = this.getItem(normalizedId)
+    if (!current) return false
+    if (current.ocrText === normalizedText) return true
+    return this.writeItemFields(normalizedId, { ocrText: normalizedText })
+  }
+
+  // N02: replace a record's tag list (the history card's tag editor). Returns the normalized
+  // tags that are now stored, or null when nothing was written (record gone, or the payload
+  // was not an array at all). An unchanged list is a no-op that still reports the tags, so the
+  // card can re-render from the answer without a second history write.
+  updateTags(id, tags) {
+    const normalizedTags = normalizeHistoryTags(tags)
+    const normalizedId = String(id || '').slice(0, 128)
+    if (!normalizedId || !normalizedTags) return null
+    const current = this.getItem(normalizedId)
+    if (!current) return null
+    const previousTags = normalizeHistoryTags(Array.isArray(current.tags) ? current.tags : []) || []
+    const unchanged = previousTags.length === normalizedTags.length &&
+      previousTags.every((tag, index) => tag === normalizedTags[index])
+    if (unchanged) return normalizedTags
+    return this.writeItemFields(normalizedId, { tags: normalizedTags }) ? normalizedTags : null
+  }
+
   delete(id) {
     this.assertWritable()
     const history = this.readHistory()
     const item = history.find((entry) => entry.id === String(id || ''))
-    if (item) this.deleteFiles(item)
+    if (item) {
+      this.deleteFiles(item)
+      // N02: stop a pending OCR write before the row disappears.
+      this.discardOcrIndexIds([item.id])
+    }
     this.writeHistory(history.filter((entry) => entry !== item))
     return true
   }
@@ -536,6 +666,7 @@ class HistoryService {
     const selected = new Set(normalizeHistoryIds(ids))
     const remaining = []
     const failures = []
+    const deletedIds = []
     let deletedCount = 0
     for (const item of this.readHistory()) {
       if (!selected.has(String(item?.id || ''))) {
@@ -544,12 +675,15 @@ class HistoryService {
       }
       try {
         this.deleteFiles(item)
+        deletedIds.push(item.id)
         deletedCount++
       } catch (error) {
         remaining.push(item)
         failures.push({ id: item.id, message: error?.message || String(error) })
       }
     }
+    // N02: only records that actually left the index may cancel their OCR work.
+    this.discardOcrIndexIds(deletedIds)
     this.writeHistory(remaining)
     return {
       deletedCount,
@@ -680,14 +814,17 @@ class HistoryService {
     this.assertWritable()
     const remaining = []
     const failures = []
+    const removedIds = []
     for (const item of this.readHistory()) {
       try {
         this.deleteFiles(item)
+        removedIds.push(item?.id)
       } catch (error) {
         remaining.push(item)
         failures.push(`${path.basename(item.filePath)}: ${error.message}`)
       }
     }
+    this.discardOcrIndexIds(removedIds)
     this.writeHistory(remaining)
     if (failures.length) throw new Error(`有 ${failures.length} 个历史文件删除失败`)
     return true
@@ -700,5 +837,9 @@ module.exports = {
   isOwnedHistoryFile,
   matchesHistoryFilter,
   normalizeHistoryIds,
-  normalizeHistoryFilter
+  normalizeHistoryFilter,
+  normalizeHistoryTags,
+  normalizeHistoryOcrText,
+  MAX_HISTORY_TAG_COUNT,
+  MAX_HISTORY_TAG_LENGTH
 }
