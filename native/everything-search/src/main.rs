@@ -90,6 +90,13 @@ static NEXT_QUERY_ID: AtomicU32 = AtomicU32::new(1);
 
 struct QueryTask {
     target: isize,
+    /// The value written to `EVERYTHING_IPC_QUERY2.reply_copydata_message`
+    /// (offset 4 of the request; the review report calls this `dwId`).
+    /// Everything echoes it back as the reply `COPYDATASTRUCT.dwData`, which is
+    /// the only per-query correlation field in the protocol —
+    /// `EVERYTHING_IPC_LIST2` itself has no id member (its dwords are
+    /// totitems/numitems/offset/request_flags/sort_type).
+    query_id: u32,
     buffer: Vec<u8>,
     timeout_ms: u32,
     tx: mpsc::Sender<Result<Vec<u8>, String>>,
@@ -99,6 +106,22 @@ struct ReplyState {
     /// The one in-flight forwarded query; cleared when the reply arrives,
     /// when forwarding fails, or when the caller times out.
     pending: Mutex<Option<QueryTask>>,
+}
+
+impl ReplyState {
+    /// Moves out the pending task only when the reply id matches it.
+    ///
+    /// Everything sends a query reply as WM_COPYDATA whose `dwData` echoes the
+    /// request's `reply_copydata_message`. A late reply from a query that already
+    /// timed out carries a different id: returning `None` (and leaving `pending`
+    /// untouched) is what keeps it from overwriting the current query's result.
+    fn take_reply(&self, reply_id: u32) -> Option<QueryTask> {
+        let mut guard = self.pending.lock().unwrap();
+        if !matches!(guard.as_ref(), Some(pending) if pending.query_id == reply_id) {
+            return None;
+        }
+        guard.take()
+    }
 }
 
 struct ReplyWindow {
@@ -156,12 +179,22 @@ unsafe extern "system" fn reply_wndproc(hwnd: HWND, msg: u32, w_param: WPARAM, l
             }
             let state = &*state_ptr;
             let copydata = &*(l_param.0 as *const COPYDATASTRUCT);
+            // Everything answers an EVERYTHING_IPC_QUERY2 with a WM_COPYDATA
+            // whose dwData echoes the request's reply_copydata_message (our
+            // query id). Do not look for an id inside EVERYTHING_IPC_LIST2:
+            // that structure has no dwId member (bytes 8..12 are the result
+            // list's `offset`, which is 0 for every request we send).
+            let reply_id = copydata.dwData as u32;
+            let pending = match state.take_reply(reply_id) {
+                Some(pending) => pending,
+                // A late reply for a query that already timed out (or was
+                // abandoned). Drop it instead of taking the current pending
+                // task, which would overwrite the in-flight query's result.
+                None => return LRESULT(0),
+            };
             let data = std::slice::from_raw_parts(copydata.lpData as *const u8, copydata.cbData as usize).to_vec();
-            if let Some(pending) = state.pending.lock().unwrap().take() {
-                pending.tx.send(Ok(data)).ok();
-                return LRESULT(1);
-            }
-            LRESULT(0)
+            pending.tx.send(Ok(data)).ok();
+            LRESULT(1)
         }
         WM_DESTROY => {
             let _ = PostMessageW(Some(hwnd), WM_QUIT, WPARAM(0), LPARAM(0));
@@ -230,10 +263,11 @@ fn spawn_reply_window() -> Result<ReplyWindow, String> {
 }
 
 impl ReplyWindow {
-    fn send_copydata(&self, target: isize, buffer: Vec<u8>, timeout_ms: u32) -> Result<Vec<u8>, String> {
+    fn send_copydata(&self, target: isize, buffer: Vec<u8>, query_id: u32, timeout_ms: u32) -> Result<Vec<u8>, String> {
         let (tx, rx) = mpsc::channel();
         let task = Box::new(QueryTask {
             target,
+            query_id,
             buffer,
             timeout_ms,
             tx,
@@ -310,6 +344,9 @@ fn send_ipc_command(hwnd: isize, command: u32) -> Option<usize> {
     }
 }
 
+/// Builds an `EVERYTHING_IPC_QUERY2` buffer and returns it together with the
+/// reply id (`reply_copydata_message`) that Everything will echo in the reply
+/// `COPYDATASTRUCT.dwData`.
 fn build_query_buffer(
     reply_hwnd: isize,
     search: &str,
@@ -318,7 +355,7 @@ fn build_query_buffer(
     sort: u32,
     offset: u32,
     max_results: u32,
-) -> Vec<u8> {
+) -> (Vec<u8>, u32) {
     let id = NEXT_QUERY_ID.fetch_add(1, Ordering::Relaxed);
     let mut buffer = Vec::with_capacity(30 + search.len() * 2);
     buffer.extend_from_slice(&(reply_hwnd as u32).to_le_bytes());
@@ -332,12 +369,12 @@ fn build_query_buffer(
         buffer.extend_from_slice(&unit.to_le_bytes());
     }
     buffer.extend_from_slice(&0u16.to_le_bytes());
-    buffer
+    (buffer, id)
 }
 
 fn probe_window(reply: &ReplyWindow, hwnd: isize) -> Result<u32, String> {
-    let buffer = build_query_buffer(reply.hwnd, PROBE_SEARCH, 0, PROBE_FLAGS, SORT_NAME_ASC, 0, 1);
-    let data = reply.send_copydata(hwnd, buffer, PROBE_TIMEOUT_MS)?;
+    let (buffer, query_id) = build_query_buffer(reply.hwnd, PROBE_SEARCH, 0, PROBE_FLAGS, SORT_NAME_ASC, 0, 1);
+    let data = reply.send_copydata(hwnd, buffer, query_id, PROBE_TIMEOUT_MS)?;
     if data.len() < 4 {
         return Err("bad-reply".to_string());
     }
@@ -537,7 +574,7 @@ fn run_query(reply: &ReplyWindow, target: &TargetInfo, params: &Value) -> Result
         | REQ_HIGHLIGHTED_NAME
         | REQ_HIGHLIGHTED_PATH;
     let search_flags = if match_path { SEARCH_MATCH_PATH } else { 0 };
-    let buffer = build_query_buffer(
+    let (buffer, query_id) = build_query_buffer(
         reply.hwnd,
         search,
         search_flags,
@@ -547,7 +584,7 @@ fn run_query(reply: &ReplyWindow, target: &TargetInfo, params: &Value) -> Result
         max_results,
     );
     let data = reply
-        .send_copydata(target.hwnd, buffer, timeout_ms)
+        .send_copydata(target.hwnd, buffer, query_id, timeout_ms)
         .map_err(|message| json!({ "code": message, "message": "Everything 查询失败" }))?;
     let (total, items) = parse_reply(&data, request_flags).map_err(|message| {
         json!({ "code": "bad-reply", "message": message })
@@ -695,5 +732,65 @@ fn main() {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn query_task(query_id: u32) -> QueryTask {
+        let (tx, _rx) = mpsc::channel();
+        QueryTask {
+            target: 0,
+            query_id,
+            buffer: Vec::new(),
+            timeout_ms: 1,
+            tx,
+        }
+    }
+
+    // H04: the review report claims EVERYTHING_IPC_LIST2 carries a dwId at
+    // offset 8..12. The official Everything.h has no such member: the reply id
+    // travels in COPYDATASTRUCT.dwData, and the list header is
+    // totitems(0)/numitems(4)/offset(8)/request_flags(12)/sort_type(16).
+    #[test]
+    fn h04_query_buffer_carries_reply_id_at_offset_four() {
+        let (buffer, query_id) = build_query_buffer(0x1234_5678, "中文", 0, REQ_FILE_NAME, SORT_NAME_ASC, 0, 5);
+        assert_ne!(query_id, 0);
+        assert_eq!(u32::from_le_bytes(buffer[0..4].try_into().unwrap()), 0x1234_5678);
+        // reply_copydata_message: Everything echoes this in the reply dwData.
+        assert_eq!(u32::from_le_bytes(buffer[4..8].try_into().unwrap()), query_id);
+        // The dwords a LIST2 reply reuses at 8/12/16 are not an id.
+        assert_eq!(u32::from_le_bytes(buffer[8..12].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(buffer[12..16].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(buffer[20..24].try_into().unwrap()), REQ_FILE_NAME);
+        let units: Vec<u16> = buffer[28..]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(String::from_utf16_lossy(&units[..2]), "中文");
+    }
+
+    // H04: a late reply from a query that already timed out must be dropped
+    // without disturbing the query that is now in flight.
+    #[test]
+    fn h04_take_reply_drops_late_reply_with_mismatched_id() {
+        let state = ReplyState { pending: Mutex::new(Some(query_task(7))) };
+        assert!(state.take_reply(6).is_none());
+        assert_eq!(
+            state.pending.lock().unwrap().as_ref().map(|task| task.query_id),
+            Some(7),
+            "a mismatched reply must not clear the in-flight query"
+        );
+        let taken = state.take_reply(7).expect("the matching reply is delivered");
+        assert_eq!(taken.query_id, 7);
+        assert!(state.pending.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn h04_take_reply_ignores_reply_without_pending_query() {
+        let state = ReplyState { pending: Mutex::new(None) };
+        assert!(state.take_reply(1).is_none());
     }
 }

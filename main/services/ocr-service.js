@@ -2,6 +2,7 @@ const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const { spawn } = require('child_process')
+const { StringDecoder } = require('node:string_decoder')
 
 const MODEL_FILES = [
   'ch_PP-OCRv4_det_mobile.onnx',
@@ -19,6 +20,7 @@ class OcrService {
     this.startPromise = null
     this.ready = false
     this.stdoutBuffer = ''
+    this.stdoutDecoder = new StringDecoder('utf8')
     this.pending = new Map()
     this.inFlight = new Map()
     this.resultCache = new Map()
@@ -135,6 +137,9 @@ class OcrService {
     this.stopping = false
     this.ready = false
     this.stdoutBuffer = ''
+    // A fresh stream needs a fresh decoder: bytes still buffered from the
+    // previous sidecar must never leak into the new one's first line.
+    this.stdoutDecoder = new StringDecoder('utf8')
     return new Promise((resolve, reject) => {
       const child = spawn(this.sidecarPath, ['--model-dir', this.modelDir], {
         windowsHide: true,
@@ -184,7 +189,13 @@ class OcrService {
   }
 
   handleStdout(chunk, onMessage) {
-    this.stdoutBuffer += chunk.toString('utf8')
+    // Pipe chunks arrive as raw Buffers and a 3-byte UTF-8 Chinese character
+    // can straddle the boundary between two of them. Decoding each chunk on its
+    // own (chunk.toString('utf8')) emits U+FFFD for both halves, which still
+    // parses as JSON and silently corrupts OCR text. One StringDecoder per
+    // stream keeps the unfinished bytes until the next chunk completes them.
+    // String chunks (when an encoding is already set upstream) pass through.
+    this.stdoutBuffer += typeof chunk === 'string' ? chunk : this.stdoutDecoder.write(chunk)
     let newline = this.stdoutBuffer.indexOf('\n')
     while (newline >= 0) {
       const line = this.stdoutBuffer.slice(0, newline).trim()
