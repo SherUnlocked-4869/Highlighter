@@ -21,7 +21,11 @@ test('game mode is persisted and synchronizes tray, shortcuts, selection, and se
   assert.match(selectionDomain, /function applyGameMode\(gameMode\) \{[\s\S]*hookService\?\.suspend\('game-mode'\)[\s\S]*hideToolbar\(\)/)
   assert.match(selectionDomain, /if \(isGameModeEnabled\(\)\) return hookService\.suspend\('game-mode'\)/)
   assert.match(selectionDomain, /\['resume',[\s\S]*if \(!isGameModeEnabled\(\) && needsSelectionHook\(\)\) hookService\?\.notePowerEvent\('wake', 'system-resume'\)/)
-  assert.match(main, /tray\.setContextMenu\(Menu\.buildFromTemplate\(buildTrayMenuTemplate\(\{/)
+  // H05: the menu body moved to main/domains/tray; game-mode toggles/resolvers are handed over.
+  const traySource = fs.readFileSync(path.join(__dirname, '..', 'main', 'domains', 'tray', 'index.js'), 'utf8')
+  assert.match(traySource, /tray\.setContextMenu\(Menu\.buildFromTemplate\(menuTemplate\(/)
+  assert.match(traySource, /setGameModeEnabled: \(enabled\) =>/)
+  assert.match(traySource, /if \(isGameModeEnabled\(\)\) return/)
   assert.match(main, /webContents\.send\('app:game-mode-changed', gameMode\)/)
   assert.match(preload, /onGameModeChanged:[\s\S]*ipcRenderer\.on\('app:game-mode-changed'/)
   assert.match(config, /switchMarkup\(settings\.system\.gameMode, 'gameMode', 'system'\)/)
