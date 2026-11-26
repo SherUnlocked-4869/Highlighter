@@ -352,7 +352,8 @@ test('the shell registers the recording route, its title and its poll cleanup', 
   // Leaving the route must stop the state poll; the hook is optional-call guarded
   // so an older route file cannot take the navigation down.
   assert.match(shellSource, /currentRoute === 'recording' && route !== 'recording'[\s\S]{0,160}recordingDeactivate/)
-  assert.match(routeSource, /function recordingDeactivate\(\) \{\s*stopRecordingWorkbenchPolling\(\)\s*\}/)
+  // U05: leaving the recording route also cancels a pending audio preflight.
+  assert.match(routeSource, /function recordingDeactivate\(\) \{\s*stopRecordingWorkbenchPolling\(\)[\s\S]{0,500}?cancelRecordingPreflight\(\)\s*\}/)
   assert.match(routeSource, /window\.configRoutes\['renderRecording'\]/)
 })
 

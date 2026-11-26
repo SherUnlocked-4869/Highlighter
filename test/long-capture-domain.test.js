@@ -23,7 +23,9 @@ test('main.js routes long-capture ownership, task checks, and IPC through the do
   assert.match(main, /longCaptureDomain\?\.ownsControllerWindow\(win\)/)
   assert.match(main, /longCaptureDomain\?\.ownsOverlayWindow\(win\)/)
   assert.match(main, /longCaptureDomain\?\.isTaskActive\(\)/)
-  assert.match(main, /\.\.\.longCaptureDomain\.createLongCaptureController\(\)/)
+  // H05: the channels are registered by the aggregated IPC module.
+  const ipcIndex = fs.readFileSync(path.join(root, 'main', 'ipc', 'index.js'), 'utf8')
+  assert.match(ipcIndex, /\.\.\.longCaptureDomain\.createLongCaptureController\(\)/)
   assert.match(main, /longCaptureDomain\.createLongCaptureFromSelection\(/)
   assert.match(main, /longCaptureDomain\.closeLongCapture\(\)/)
   assert.match(dataRootDomain, /await longCaptureDomain\.shutdown\(\)/)

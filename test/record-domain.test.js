@@ -23,7 +23,9 @@ test('main.js routes record ownership through the domain', () => {
   assert.match(main, /recordDomain\?\.ownsFrameWindow\(win\)/)
   assert.match(main, /recordDomain\?\.isTaskActive\(\)/)
   assert.match(main, /recordDomain\.createRecordWindow\(/)
-  assert.match(main, /recordDomain\.createRecordingController\(\)/)
+  // H05: the controller is created by the aggregated IPC module.
+  const ipcIndex = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'index.js'), 'utf8')
+  assert.match(ipcIndex, /const recordController = recordDomain\.createRecordingController\(\)/)
   // R1 (plan §5.2 exit safety): main.js awaits a BOUNDED recording shutdown before quitting.
   assert.match(main, /recordDomain\.shutdown\(\{ timeoutMs: 3000 \}\)/)
 })
@@ -2002,12 +2004,14 @@ test('R4: a window-mode take seals as a window project and hands the editor the 
   assert.equal(editor._recordEditorInit.project.mode, 'window')
 })
 
-test('R4: after a restart the editor metadata keeps frameRate 0 (manifest has no frame rate)', async () => {
+test('R4 (U03): after a restart the editor metadata falls back to the persisted capture frame rate', async () => {
   const harness = createProjectHarness()
   harness.projectService.projects.set('project-restart', makeProject({ id: 'project-restart', state: 'ready' }))
   assert.deepEqual(await harness.domain.openEditor('project-restart'), { ok: true })
   const editor = harness.editorWindow()
-  assert.equal(editor._recordEditorInit.metadata.video.frameRate, 0, 'unknown frame rate only offers `source`')
+  // U03 (review section 4.3.2): editorInitPayload used to read only the in-memory probe map, so
+  // a project opened after an app restart reported 0 fps and the editor could not offer 30/60.
+  assert.equal(editor._recordEditorInit.metadata.video.frameRate, 30, 'captureConfig.frameRate is the durable fallback')
   assert.equal(editor._recordEditorInit.metadata.video.width, 800)
   assert.equal(editor._recordEditorInit.metadata.audio.codec, 'opus', 'the codec survives in the manifest')
 })

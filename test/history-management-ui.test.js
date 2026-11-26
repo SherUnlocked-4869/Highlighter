@@ -10,6 +10,8 @@ const config = readConfigSource()
 const styles = fs.readFileSync(path.join(root, 'config', 'config.css'), 'utf8')
 const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
 const windowActions = fs.readFileSync(path.join(root, 'main', 'services', 'window-actions.js'), 'utf8')
+// H05: the history channel facade moved into the aggregated IPC module.
+const ipcIndex = fs.readFileSync(path.join(root, 'main', 'ipc', 'index.js'), 'utf8')
 const naming = fs.readFileSync(path.join(root, 'main', 'services', 'capture-naming.js'), 'utf8')
 
 test('preload exposes fixed history management methods', () => {
@@ -56,14 +58,14 @@ test('history page opens screenshots with the default application', () => {
   // P0-1-T3（S1，批次 C）：按钮文案改为语言表取键，动作属性与键名一起断言。
   assert.match(config, /data-history-action="open"[^>]*>\$\{t\('config\.history\.action-open'\)\}<\/button>/)
   assert.match(config, /window\.electronAPI\.openHistory\(id\)/)
-  assert.match(main, /shell\.openPath\(item\.filePath\)/)
+  assert.match(ipcIndex, /shell\.openPath\(item\.filePath\)/)
 })
 
 test('history page copies a screenshot absolute path instead of revealing it', () => {
   assert.match(config, /data-history-action="address"[^>]*>\$\{t\('config\.history\.action-address'\)\}<\/button>/)
   assert.match(config, /window\.electronAPI\.copyHistoryPath\(id\)/)
   assert.match(config, /图片地址已复制/)
-  assert.match(main, /clipboard\.writeText\(path\.resolve\(item\.filePath\)\)/)
+  assert.match(ipcIndex, /clipboard\.writeText\(path\.resolve\(item\.filePath\)\)/)
   assert.doesNotMatch(config, /data-history-action="reveal"[^>]*>定位<\/button>/)
   assert.doesNotMatch(preload, /history:reveal|revealHistory/)
 })
@@ -103,8 +105,10 @@ test('history page confirms destructive cleanup and reports partial failures', (
 
 test('main process owns the export directory picker', () => {
   // The picker moved to main/services/window-actions.js (main.js line budget);
-  // the export flow still asks it for a screenshot-specific title.
-  assert.match(main, /title: '选择截图导出目录'/)
+  // the export flow still asks it for a screenshot-specific title. H05 moved the
+  // history channel facade into main/ipc/index.js.
+  const ipcIndex = fs.readFileSync(path.join(__dirname, '..', 'main', 'ipc', 'index.js'), 'utf8')
+  assert.match(ipcIndex, /title: '选择截图导出目录'/)
   assert.match(windowActions, /properties: \['openDirectory', 'createDirectory'\]/)
-  assert.match(main, /exportMany: \(ids, directory\) => historyService\.exportMany\(ids, directory\)/)
+  assert.match(ipcIndex, /exportMany: \(ids, directory\) => getHistoryService\(\)\.exportMany\(ids, directory\)/)
 })
