@@ -1196,6 +1196,8 @@ else {
     everythingRef.stop()
     selectionDomain.disposeSelectionHook()
     if (proxyBridgeController) { proxyBridgeController.dispose(); proxyBridgeController = null }
-    if (tray) { tray.destroy(); tray = null }
+    // H05 fixed the stale reference: the tray value lives in the tray controller now. A
+    // ReferenceError here aborted before-quit, so the app never actually exited.
+    trayController.destroy()
   })
 }
