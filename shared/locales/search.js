@@ -52,7 +52,24 @@
     'search.sort.path-asc': '按路径升序',
     'search.sort.path-desc': '按路径降序',
     'search.sort.size-asc': '按大小升序',
-    'search.sort.size-desc': '按大小降序'
+    'search.sort.size-desc': '按大小降序',
+    // N04 (review report section 5.4): Space Quick Look overlay.
+    'search.preview.close': '关闭预览',
+    'search.preview.loading': '正在生成预览…',
+    'search.preview.unavailable': '无法读取此文件',
+    'search.preview.unsupported': '此文件类型暂不支持内容预览',
+    'search.preview.directory': '这是一个文件夹，不提供内容预览',
+    'search.preview.binary': '二进制文件，无法以文本预览',
+    'search.preview.empty': '文件为空',
+    'search.preview.image-too-large': '图片超过 {size}，未加载预览',
+    'search.preview.truncated': '内容过大，仅显示前 {size}',
+    'search.preview.json-invalid': '不是有效的 JSON，按原文显示',
+    'search.preview.info-title': '文件信息',
+    'search.preview.name': '名称',
+    'search.preview.path': '路径',
+    'search.preview.size': '大小',
+    'search.preview.modified': '修改时间',
+    'search.preview.hint': '按空格键关闭预览'
   })
 
   add('en-US', {
@@ -89,7 +106,23 @@
     'search.sort.path-asc': 'Path A to Z',
     'search.sort.path-desc': 'Path Z to A',
     'search.sort.size-asc': 'Smallest first',
-    'search.sort.size-desc': 'Largest first'
+    'search.sort.size-desc': 'Largest first',
+    'search.preview.close': 'Close preview',
+    'search.preview.loading': 'Building preview...',
+    'search.preview.unavailable': 'This file cannot be read',
+    'search.preview.unsupported': 'No content preview for this file type',
+    'search.preview.directory': 'This is a folder; folders have no content preview',
+    'search.preview.binary': 'Binary file; text preview is unavailable',
+    'search.preview.empty': 'The file is empty',
+    'search.preview.image-too-large': 'The image is larger than {size} and was not loaded',
+    'search.preview.truncated': 'Content is large; showing the first {size}',
+    'search.preview.json-invalid': 'Not valid JSON; shown as plain text',
+    'search.preview.info-title': 'File information',
+    'search.preview.name': 'Name',
+    'search.preview.path': 'Path',
+    'search.preview.size': 'Size',
+    'search.preview.modified': 'Modified',
+    'search.preview.hint': 'Press Space to close the preview'
   })
 
   add('zh-TW', {
@@ -126,6 +159,22 @@
     'search.sort.path-asc': '依路徑遞增',
     'search.sort.path-desc': '依路徑遞減',
     'search.sort.size-asc': '依大小遞增',
-    'search.sort.size-desc': '依大小遞減'
+    'search.sort.size-desc': '依大小遞減',
+    'search.preview.close': '關閉預覽',
+    'search.preview.loading': '正在產生預覽…',
+    'search.preview.unavailable': '無法讀取此檔案',
+    'search.preview.unsupported': '此檔案類型暫不支援內容預覽',
+    'search.preview.directory': '這是一個資料夾，不提供內容預覽',
+    'search.preview.binary': '二進位檔案，無法以文字預覽',
+    'search.preview.empty': '檔案為空',
+    'search.preview.image-too-large': '圖片超過 {size}，未載入預覽',
+    'search.preview.truncated': '內容過大，僅顯示前 {size}',
+    'search.preview.json-invalid': '不是有效的 JSON，以原文顯示',
+    'search.preview.info-title': '檔案資訊',
+    'search.preview.name': '名稱',
+    'search.preview.path': '路徑',
+    'search.preview.size': '大小',
+    'search.preview.modified': '修改時間',
+    'search.preview.hint': '按空白鍵關閉預覽'
   })
 })()

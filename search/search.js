@@ -16,7 +16,15 @@ const els = {
   matchPath: document.getElementById('matchPathToggle'),
   sort: document.getElementById('sortSelect'),
   count: document.getElementById('countText'),
-  resultStatus: document.getElementById('resultStatus')
+  resultStatus: document.getElementById('resultStatus'),
+  // N04 (review report section 5.4): the Space Quick Look overlay.
+  quickLook: document.getElementById('quickLook'),
+  quickLookIcon: document.getElementById('quickLookIcon'),
+  quickLookTitle: document.getElementById('quickLookTitle'),
+  quickLookPath: document.getElementById('quickLookPath'),
+  quickLookMeta: document.getElementById('quickLookMeta'),
+  quickLookBody: document.getElementById('quickLookBody'),
+  quickLookClose: document.getElementById('quickLookClose')
 }
 
 const state = {
@@ -36,6 +44,18 @@ const state = {
 }
 
 const SEARCH_DEBOUNCE_MS = 60
+
+// N04 (review report section 5.4): Space opens an in-window Quick Look for the
+// active result. The overlay is read-only and never takes focus, so the search
+// box keeps receiving keystrokes; arrow keys move the selection and the preview
+// follows it. The file is read by the main process - the renderer only sends the
+// path of a result it already displays.
+const quickLook = {
+  open: false,
+  token: 0,
+  item: null,
+  payload: null
+}
 
 // U04 (review report section 4.4 item 7): a folder result has an empty extension, which
 // used to render as the "?" extension badge. The Everything sidecar requests the
@@ -234,7 +254,7 @@ function rowMarkup(item, index) {
   // no size instead of an absurd "16777216.0 TB".
   // `data-icon-key` is the cache key the (possibly asynchronous) icon lands under,
   // so a result row can be patched without re-rendering the whole list.
-  return `<div class="result-row${index === state.activeIndex ? ' active' : ''}" role="group" aria-labelledby="result-name-${index}" aria-describedby="result-path-${index}" tabindex="${tabIndex}" data-index="${index}" data-ext="${escapeHtml(String(item.extension || '').toLowerCase())}" data-icon-key="${escapeHtml(iconCacheKey(item))}" data-folder="${isFolderItem(item) ? 'true' : 'false'}">` +
+  return `<div class="result-row${index === state.activeIndex ? ' active' : ''}" role="group" aria-labelledby="result-name-${index}" aria-describedby="result-path-${index}" tabindex="${tabIndex}" data-index="${index}" data-ext="${escapeHtml(String(item.extension || '').toLowerCase())}" data-icon-key="${escapeHtml(iconCacheKey(item))}" data-folder="${isFolderItem(item) ? 'true' : 'false'}" draggable="${isFolderItem(item) ? 'false' : 'true'}">` +
     `<span class="file-icon">${iconMarkup(item)}</span>` +
     `<div class="row-main"><div class="row-name" id="result-name-${index}">${nameHtml}</div><div class="row-path" id="result-path-${index}">${pathHtml}</div></div>` +
     `<div class="row-meta"><span class="row-size">${escapeHtml(formatSize(isFolderItem(item) ? 0 : item.size))}</span><span class="row-date">${escapeHtml(formatTime(item.modifiedAt))}</span></div>` +
@@ -274,6 +294,198 @@ function setActiveIndex(index, { scroll = true, focus = false } = {}) {
   }
   if (focus) row.focus({ preventScroll: true })
   if (scroll) row.scrollIntoView({ block: 'nearest' })
+  // N04: ↑/↓ retargets the open preview without closing it.
+  if (quickLook.open) syncQuickLook()
+}
+
+// ---------------------------------------------------------------------------
+// N04: Space Quick Look
+// ---------------------------------------------------------------------------
+
+function quickLookItem() {
+  return state.activeIndex >= 0 ? state.results[state.activeIndex] || null : null
+}
+
+function quickLookInfoMarkup(payload, item) {
+  const rows = [
+    [t('search.preview.name'), payload.name || item.name || ''],
+    [t('search.preview.path'), payload.path || item.fullPath || item.path || ''],
+    [t('search.preview.size'), formatSize(payload.size) || '—'],
+    [t('search.preview.modified'), formatTime(payload.modifiedAt || item.modifiedAt) || '—']
+  ]
+  return `<dl class="quick-look-info" aria-label="${escapeHtml(t('search.preview.info-title'))}">${rows.map(([label, value]) => (
+    `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`
+  )).join('')}</dl>`
+}
+
+function quickLookReasonText(payload) {
+  switch (payload.reason) {
+    case 'directory': return t('search.preview.directory')
+    case 'binary': return t('search.preview.binary')
+    case 'empty': return t('search.preview.empty')
+    case 'unsupported': return t('search.preview.unsupported')
+    case 'image-too-large': return t('search.preview.image-too-large', { size: formatSize(payload.limitBytes) })
+    default: return t('search.preview.unavailable')
+  }
+}
+
+function appendQuickLookNote(body, text, className = 'quick-look-note') {
+  const note = document.createElement('div')
+  note.className = className
+  note.textContent = text
+  body.append(note)
+}
+
+function appendQuickLookTruncated(body, payload) {
+  if (!payload || payload.truncated !== true || !payload.limitBytes) return
+  appendQuickLookNote(body, t('search.preview.truncated', { size: formatSize(payload.limitBytes) }), 'quick-look-truncated')
+}
+
+function appendQuickLookPre(body, { html = '', text = '' }) {
+  const pre = document.createElement('pre')
+  pre.className = 'quick-look-pre'
+  const code = document.createElement('code')
+  // `html` is produced and escaped by the main-process renderers; `text` goes
+  // through textContent so a plain file can never inject markup.
+  if (html) code.innerHTML = html
+  else code.textContent = text
+  pre.append(code)
+  body.append(pre)
+}
+
+function paintQuickLook(item, payload) {
+  quickLook.item = item
+  quickLook.payload = payload
+  const body = els.quickLookBody
+  els.quickLookTitle.textContent = payload?.name || item.name || item.fullPath || ''
+  els.quickLookPath.textContent = payload?.path || item.fullPath || item.path || ''
+  els.quickLookIcon.innerHTML = iconMarkup(item)
+  const meta = []
+  if (payload && payload.size > 0 && payload.reason !== 'directory') meta.push(formatSize(payload.size))
+  const modified = formatTime(payload?.modifiedAt || item.modifiedAt)
+  if (modified) meta.push(modified)
+  els.quickLookMeta.textContent = meta.join(' · ')
+  body.replaceChildren()
+  body.dataset.kind = payload?.kind || 'info'
+  if (!payload || payload.ok === false) {
+    body.dataset.state = 'failed'
+    appendQuickLookNote(body, t('search.preview.unavailable'))
+    return
+  }
+  body.dataset.state = 'ready'
+  if (payload.kind === 'image' && payload.dataUrl) {
+    body.dataset.state = 'image'
+    const image = document.createElement('img')
+    image.className = 'quick-look-image'
+    image.alt = ''
+    image.addEventListener('error', () => {
+      if (!quickLook.open || quickLook.payload !== payload) return
+      body.dataset.state = 'failed'
+      body.dataset.kind = 'info'
+      body.replaceChildren()
+      appendQuickLookNote(body, t('search.preview.unavailable'))
+    })
+    image.src = payload.dataUrl
+    body.append(image)
+    return
+  }
+  if (payload.kind === 'markdown') {
+    const article = document.createElement('div')
+    article.className = 'quick-look-markdown'
+    article.innerHTML = payload.html || ''
+    body.append(article)
+    appendQuickLookTruncated(body, payload)
+    return
+  }
+  if (payload.kind === 'code') {
+    appendQuickLookPre(body, { html: payload.html || '' })
+    appendQuickLookTruncated(body, payload)
+    return
+  }
+  if (payload.kind === 'json') {
+    appendQuickLookPre(body, { text: payload.text || '' })
+    // N04: a file named .json that does not parse is still worth reading; say so
+    // instead of rendering a formatter failure.
+    if (payload.formatted === false) appendQuickLookNote(body, t('search.preview.json-invalid'), 'quick-look-truncated')
+    appendQuickLookTruncated(body, payload)
+    return
+  }
+  if (payload.kind === 'text') {
+    appendQuickLookPre(body, { text: payload.text || '' })
+    appendQuickLookTruncated(body, payload)
+    return
+  }
+  // Folders, binaries, unsupported types and empty files: the metadata card is
+  // the preview.
+  appendQuickLookNote(body, quickLookReasonText(payload))
+  const info = document.createElement('div')
+  info.innerHTML = quickLookInfoMarkup(payload, item)
+  body.append(info)
+}
+
+function requestQuickLook(item) {
+  const token = ++quickLook.token
+  quickLook.item = item
+  quickLook.payload = null
+  els.quickLookTitle.textContent = item.name || item.fullPath || ''
+  els.quickLookPath.textContent = item.fullPath || item.path || ''
+  els.quickLookIcon.innerHTML = iconMarkup(item)
+  els.quickLookMeta.textContent = ''
+  const body = els.quickLookBody
+  body.replaceChildren()
+  body.dataset.state = 'loading'
+  body.dataset.kind = 'info'
+  appendQuickLookNote(body, t('search.preview.loading'))
+  let request
+  try {
+    request = searchAPI.previewFile(item.fullPath)
+  } catch (error) {
+    request = Promise.reject(error)
+  }
+  Promise.resolve(request).then((payload) => {
+    if (!quickLook.open || token !== quickLook.token) return
+    paintQuickLook(item, payload)
+  }).catch(() => {
+    if (!quickLook.open || token !== quickLook.token) return
+    paintQuickLook(item, { ok: false })
+  })
+}
+
+function openQuickLook(item) {
+  if (!item || !item.fullPath) return false
+  quickLook.open = true
+  els.quickLook.hidden = false
+  requestQuickLook(item)
+  return true
+}
+
+function closeQuickLook({ restoreFocus = false } = {}) {
+  quickLook.open = false
+  quickLook.token += 1
+  quickLook.item = null
+  quickLook.payload = null
+  els.quickLook.hidden = true
+  els.quickLookBody.replaceChildren()
+  els.quickLookBody.dataset.state = 'idle'
+  els.quickLookBody.dataset.kind = ''
+  els.quickLookMeta.textContent = ''
+  els.quickLookTitle.textContent = ''
+  els.quickLookPath.textContent = ''
+  els.quickLookIcon.replaceChildren()
+  if (restoreFocus) els.input.focus()
+}
+
+// Keeps the open preview pointed at the current selection. Called from
+// setActiveIndex and after a re-render that may not have changed the selection.
+function syncQuickLook() {
+  if (!quickLook.open) return
+  const item = quickLookItem()
+  if (!item) {
+    closeQuickLook({ restoreFocus: false })
+    return
+  }
+  if (quickLook.item === item) return
+  requestQuickLook(item)
 }
 
 async function loadIcons(items) {
@@ -312,6 +524,8 @@ async function loadIcons(items) {
 function runSearch({ debounced = false } = {}) {
   clearTimeout(searchTimer)
   searchTimer = null
+  // N04: a new query retires the row the Quick Look was showing.
+  if (quickLook.open) closeQuickLook()
   const keyword = els.input.value
   const seq = ++state.seq
   state.keyword = keyword
@@ -413,11 +627,32 @@ document.addEventListener('keydown', (event) => {
   if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
   if (event.key === 'Escape') {
     event.preventDefault()
+    // N04: the preview is the innermost layer, so Escape closes it first.
+    if (quickLook.open) {
+      closeQuickLook()
+      return
+    }
     searchAPI.close()
     return
   }
+  if (event.key === ' ' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    // Buttons, selects and the footer checkbox keep their native Space action
+    // (clicking the focused control); the search box and a focused result row
+    // toggle the preview instead.
+    if (event.target.closest?.('button, select, input:not(#searchInput)')) return
+    if (quickLook.open) {
+      event.preventDefault()
+      closeQuickLook()
+      return
+    }
+    const item = quickLookItem()
+    // With no selected result, Space must stay a normal space in the query.
+    if (!item) return
+    event.preventDefault()
+    openQuickLook(item)
+    return
+  }
   if (event.target === els.input || event.target === els.sort || event.target === els.matchPath) return
-  if (event.key === ' ' && event.target.closest?.('button')) return
   if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
     els.input.focus()
   }
@@ -463,6 +698,30 @@ els.list.addEventListener('dblclick', (event) => {
   if (!row) return
   activateRow(Number(row.dataset.index))
 })
+
+// N04 (review report section 5.4): dragging a result out is a native operation.
+// Exactly like the documented Electron pattern, the renderer cancels Chromium's
+// HTML5 drag and asks the main process to start the real one with the file's own
+// icon. Folders are not draggable (their rows render draggable="false"), and a
+// drag that cannot start fails silently - the row stays fully usable.
+els.list.addEventListener('dragstart', (event) => {
+  event.preventDefault()
+  const row = event.target.closest?.('.result-row')
+  if (!row) return
+  const item = state.results[Number(row.dataset.index)]
+  if (!item || isFolderItem(item) || !item.fullPath) return
+  // The row icon is already the file-icon-lookup result; handing it back keeps
+  // the main-process startDrag call synchronous (an empty value = placeholder).
+  const cacheKey = iconCacheKey(item)
+  const icon = cacheKey ? state.iconCache.get(cacheKey) || '' : ''
+  try {
+    searchAPI.startDrag(item.fullPath, icon).catch(() => {})
+  } catch {
+    // No native drag is a no-op, never an error in the window.
+  }
+})
+
+els.quickLookClose.addEventListener('click', () => closeQuickLook({ restoreFocus: true }))
 
 els.tabs.addEventListener('click', (event) => {
   const tab = event.target.closest('.category-tab')
@@ -532,6 +791,9 @@ window.searchAPI.onInterfaceLanguage((language) => {
   renderTabs()
   renderSortOptions()
   renderResults()
+  // N04: the overlay's metadata card and reason line are language-bound; repaint
+  // it in place so an open preview follows the switch like the rest of the window.
+  if (quickLook.open && quickLook.item && quickLook.payload) paintQuickLook(quickLook.item, quickLook.payload)
 })
 searchAPI.ready()
 // W5: only the first init of this renderer applies `restore` (a window that is
@@ -539,6 +801,9 @@ searchAPI.ready()
 // mirror then would clobber newer typing that has not reached the main process).
 let restoreApplied = false
 searchAPI.onInit((payload) => {
+  // N04: the window is hidden on blur and rebuilt later; a preview from the
+  // previous visible session must not survive the show.
+  closeQuickLook()
   applyAppearance(payload)
   applySettings(payload.search || {})
   if (!restoreApplied) {

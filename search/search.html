@@ -36,6 +36,26 @@
     <nav class="category-tabs" id="categoryTabs" data-i18n-aria-label="search.tabs.label" aria-label="Search categories"></nav>
     <main class="result-list" id="resultList"></main>
     <div class="result-empty" id="emptyState" data-i18n="search.empty.prompt">Type a keyword to start searching</div>
+    <!-- N04 (review report section 5.4): Space Quick Look. The overlay is a
+         read-only sibling of the list: it never takes focus, so typing, the
+         category tabs and the shortcut keys keep working while it is open. The
+         body is an aria-live region so a screen reader hears each new preview,
+         and the close button carries its own translated aria-label. -->
+    <section id="quickLook" class="quick-look" role="dialog" aria-modal="false" aria-labelledby="quickLookTitle" hidden>
+      <header class="quick-look-head">
+        <span class="quick-look-icon" id="quickLookIcon" aria-hidden="true"></span>
+        <div class="quick-look-heading">
+          <div class="quick-look-title" id="quickLookTitle"></div>
+          <div class="quick-look-path" id="quickLookPath"></div>
+        </div>
+        <button id="quickLookClose" class="ghost-button" type="button" data-i18n-aria-label="search.preview.close" aria-label="Close preview">✕</button>
+      </header>
+      <div class="quick-look-body" id="quickLookBody" role="document" aria-live="polite" aria-atomic="true" data-state="idle"></div>
+      <footer class="quick-look-foot">
+        <span class="quick-look-meta" id="quickLookMeta"></span>
+        <span class="quick-look-hint" data-i18n="search.preview.hint">Press Space to close the preview</span>
+      </footer>
+    </section>
     <span class="visually-hidden" id="resultStatus" role="status"></span>
     <footer class="search-footer">
       <span class="status" id="statusText" data-i18n="search.status.detecting">Detecting Everything...</span>

@@ -34,5 +34,20 @@ contextBridge.exposeInMainWorld('searchAPI', {
   revealPath: (path) => ipcRenderer.invoke('search:reveal-path', { path }),
   copyPath: (path) => ipcRenderer.invoke('search:copy-path', { path }),
   getFileIcon: (path) => ipcRenderer.invoke('search:file-icon', { path }),
+  // N04 (review report section 5.4): Space Quick Look + native file drag. The
+  // security allowlist has no dedicated channel for either (and this ticket must
+  // not edit main/services/ipc-security.js), so both reuse the existing
+  // `search:file-icon` invoke and select the operation with `action`. The plain
+  // `{ path }` shape above keeps the original icon lookup unchanged.
+  previewFile: (path) => ipcRenderer.invoke('search:file-icon', { path, action: 'preview' }),
+  // The drag icon is the already-resolved file-icon-lookup result (the renderer
+  // keeps it in its row cache) so the main process can call `startDrag` inside
+  // the same turn as the `dragstart` handler; an empty value uses the bundled
+  // placeholder.
+  startDrag: (path, icon) => ipcRenderer.invoke('search:file-icon', {
+    path,
+    action: 'drag',
+    icon: typeof icon === 'string' ? icon : ''
+  }),
   savePrefs: (patch) => ipcRenderer.invoke('settings:update', patch)
 })
