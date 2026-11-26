@@ -265,6 +265,28 @@ function retryThumbnail(id, image) {
 // be indistinguishable from "not requested yet" and would re-issue the batch on
 // every scroll frame.
 const thumbFailed = new Set()
+// F05 (report report section 3.5): a thumbnail URL is content-addressed per item id and a
+// history event caused by a new record (or a pin toggle) cannot invalidate an
+// existing entry. The old handler cleared `thumbCache`/`thumbFailed` and the
+// in-flight marks on every `history` event, so each copy made the panel re-read
+// every visible thumbnail. Entries are now dropped only when their record is
+// known to be gone (explicit delete, or a refresh that no longer lists them) or
+// when the whole panel history is cleared.
+let historyThumbPrune = false
+function dropThumbnails(ids) {
+  for (const id of ids) { thumbCache.delete(id); thumbFailed.delete(id) }
+}
+function clearThumbnails() {
+  thumbCache.clear(); thumbFailed.clear(); thumbInFlight.clear(); ++thumbGeneration
+}
+// Called after a list reload that followed a history event: only ids the backend
+// no longer returns are evicted, so a new record does not disturb the rest.
+function pruneThumbnails() {
+  historyThumbPrune = false
+  const live = new Set(items.filter((item) => item.kind === 'image').map((item) => item.id))
+  for (const id of thumbCache.keys()) if (!live.has(id)) thumbCache.delete(id)
+  for (const id of thumbFailed) if (!live.has(id)) thumbFailed.delete(id)
+}
 function assignThumbnail(id, image) {
   const tile = image.closest ? image.closest('.tile') : null
   if (thumbFailed.has(id)) { if (tile) markThumbnailFailed(tile, id); return }
@@ -408,6 +430,9 @@ async function refresh(append = false) {
     if (!append) { items = []; $('list').scrollTop = 0 }
     items.push(...page.items)
     if (items.length > 150) trimHistory()
+    // F05: a reload following a history event is where a record that the backend
+    // pruned disappears; evict only those ids instead of clearing the URL cache.
+    if (historyThumbPrune) pruneThumbnails()
     nextPage = page.cursor ? { ...filter, cursor: page.cursor } : null
     $('more').hidden = !nextPage; $('new').hidden = true
     if (!items.some((item) => item.id === selected)) { selected = null; clearDetail() }
@@ -733,7 +758,7 @@ async function perform(action) {
     if (action === 'copy') { result(await api.copy(item.id, operation)); $('status').textContent = t('clipboard.copied') }
     if (action === 'paste') pasteMessage(result(await api.paste(item.id, operation)))
     if (action === 'pin') result(await api.setPinned(item.id, !item.isPinned, operation))
-    if (action === 'delete') { result(await api.delete([item.id], operation)); selected = null; clearDetail() }
+    if (action === 'delete') { result(await api.delete([item.id], operation)); dropThumbnails([item.id]); selected = null; clearDetail() }
     if (['pin', 'delete'].includes(action)) await refresh()
     if (action === 'pin' && selected && !$('detail').hidden) $('detailMeta').textContent = detailMetaText(selectedItem())
   } catch (error) { if (action === 'paste') pasteMessage({ error: error.message }); else message(error) }
@@ -852,7 +877,7 @@ $('paste').onclick = () => perform('paste')
 $('view').onclick = () => openDetail()
 $('pause').onclick = async () => { try { renderStatus(result(await api.setPaused(!status.userPaused))) } catch (error) { message(error) } }
 $('clear').onclick = async () => {
-  try { const prepared = result(await api.prepareClear('ordinary')); if (prepared.token) { result(await api.commitClear(prepared.token, crypto.randomUUID())); selected = null; clearDetail(); await refresh() } }
+  try { const prepared = result(await api.prepareClear('ordinary')); if (prepared.token) { result(await api.commitClear(prepared.token, crypto.randomUUID())); clearThumbnails(); selected = null; clearDetail(); await refresh() } }
   catch (error) { message(error) }
 }
 // The panel can follow the cursor to a display with a different scale factor;
@@ -898,7 +923,7 @@ const cleanups = [
     $('feedback').hidden = true; if (data.pasteFeedback) pasteMessage(data.pasteFeedback)
   }),
   api.onStatus((data) => { if (visible) renderStatus(data) }),
-  api.onHistory(() => { if (visible) { thumbCache.clear(); thumbFailed.clear(); thumbInFlight.clear(); ++thumbGeneration; $('new').hidden = false } }),
+  api.onHistory(() => { if (visible) { ++thumbGeneration; historyThumbPrune = true; thumbFailed.clear(); $('new').hidden = false } }),
   api.onHidden(clearHistory),
   api.onPasteResult((data) => {
     clearHistory(); document.body.classList.add('feedback-only')
@@ -910,7 +935,7 @@ const cleanups = [
 function clearHistory() {
   visible = false; ++queryGeneration; clearTimeout(debounce); items = []; nextPage = null; selected = null; loading = false
   composing = false
-  thumbCache.clear(); thumbFailed.clear(); thumbInFlight.clear(); ++thumbGeneration; metrics = null; renderedWindow = { first: -1, last: -1, cols: -1, language: '' }
+  clearThumbnails(); metrics = null; renderedWindow = { first: -1, last: -1, cols: -1, language: '' }
   clearDetail(); closePreview({ restoreFocus: false }); resetSnippets()
   $('rows').replaceChildren(); $('rows').style.height = '0px'
   renderSelectionActions()

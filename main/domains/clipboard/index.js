@@ -48,6 +48,12 @@ function previewFailure(error) {
   if (code === 'NOT_FOUND' || code === 'ATTACHMENT_MISSING') return 'NOT_FOUND'
   return 'UNSUPPORTED'
 }
+// F05: only a definitive "this record/payload is gone" answer may evict a cached
+// thumbnail; a transport or backpressure error must not poison the cache.
+function thumbnailMissing(error) {
+  const code = error?.code || error?.message
+  return code === 'NOT_FOUND' || code === 'ATTACHMENT_MISSING'
+}
 
 function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, session, dialog, powerMonitor, ipcMain, rootDirectory, directory, getSettings, updateSettings, getHook, createLocalWindow, positionAutomationWindow, isGameModeEnabled, isMigrationInProgress, automation = false }) {
   const executable = path.join(app.isPackaged ? process.resourcesPath : rootDirectory, 'native', 'clipboard', ...(app.isPackaged ? [] : ['bin']), 'HighlighterClipboard.exe')
@@ -67,13 +73,50 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
   // back, otherwise a hide/history/delete invalidation would be undone by a
   // response that was already on the wire.
   let cacheEpoch = 0
-  function invalidateThumbnails() { cacheEpoch++; thumbnails.clear() }
+  // F05 (report report section 3.5): thumbnail bytes are content-addressed and an item id is
+  // immutable, so a new clipboard record (or a pin toggle) cannot change an
+  // existing item's thumbnail. The old code called `thumbnails.clear()` on every
+  // `history` event, which made the panel re-read every visible thumbnail after
+  // each copy. Entries now carry the history revision they were read under and
+  // are revalidated lazily; only an explicit delete/clear or a hide drops the
+  // whole table. Any read started before a history event is invalidated by the
+  // epoch bump below instead.
+  const initialRevision = service.snapshot()?.revision
+  let latestRevision = Number.isSafeInteger(initialRevision) && initialRevision >= 0 ? initialRevision : null
+  const thumbnailRevisions = new Map()
+  function noteHistory(value) {
+    const revision = value?.revision
+    latestRevision = Number.isSafeInteger(revision) && revision >= 0 ? revision : latestRevision
+    send('clipboard:history-changed', value)
+    cacheEpoch++
+  }
+  function clearThumbnails() { cacheEpoch++; thumbnailRevisions.clear(); thumbnails.clear() }
+  // Targeted eviction: drop exactly these content-addressed keys. Used when the
+  // native side reports a record gone and when an entry is found stale.
+  function dropThumbnails(ids) {
+    for (const id of ids) { thumbnailRevisions.delete(id); thumbnails.delete(id) }
+  }
+  function cacheThumbnail(id, entry) { thumbnailRevisions.set(id, latestRevision); thumbnails.set(id, entry) }
+  function cachedThumbnail(id) {
+    const entry = thumbnails.get(id)
+    if (!entry) return undefined
+    if (thumbnailRevisions.get(id) === latestRevision) return entry
+    // The revision moved since this entry was read: the native retention pass may
+    // have removed the record. Drop only this key and let the caller re-read; a
+    // natively deleted id then answers NOT_FOUND instead of serving stale bytes.
+    dropThumbnails([id])
+    return undefined
+  }
   // B05: status.skipped is the sidecar's per-process counter map. The observer
   // turns successive observations into this run's totals plus the most recent
   // reason, so the settings page can explain a rejected copy. It is deliberately
   // in memory only: no sidecar method and no persisted "statistics" are added.
   let skipSession = emptySkipSession(Date.now())
   function observeStatus(value) {
+    // Seed the history revision from the first status that carries one, so a
+    // cache filled before the first `history` event is tagged with the current
+    // revision instead of looking stale immediately.
+    if (latestRevision === null && Number.isSafeInteger(value?.revision) && value.revision >= 0) latestRevision = value.revision
     skipSession = nextSkipSession(skipSession, value?.skipped, Date.now())
     return value
   }
@@ -129,15 +172,15 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     while (tokens.size >= PREVIEW_TOKEN_LIMIT) tokens.delete(tokens.keys().next().value)
     tokens.set(key, token)
   }
-  function revokePreviews() { tokens.clear(); invalidateThumbnails() }
+  function revokePreviews() { tokens.clear(); clearThumbnails() }
   service.on('status', (value) => send('clipboard:status-changed', statusWithCapacity(observeStatus(value))))
   // Tokens are NOT cleared here: a new copy in another app must not blank every
-  // tile that is already on screen. The byte cache is cleared instead, because
-  // the native side prunes records by retention without a precise invalidation
-  // signal - without this, a deleted item's thumbnail would stay readable from
-  // cache. After the clear the next protocol hit goes back to native and a
-  // deleted id answers NOT_FOUND, which becomes a 404.
-  service.on('history', (value) => { invalidateThumbnails(); send('clipboard:history-changed', value) })
+  // tile that is already on screen. F05: neither is the byte cache - an item id is
+  // immutable and its thumbnail is content-addressed, so only an explicit
+  // delete/clear or a hide can invalidate an entry. A revision change only
+  // revalidates entries lazily (see `cachedThumbnail`), so a new record or a pin
+  // toggle no longer makes the panel re-read every visible thumbnail.
+  service.on('history', (value) => noteHistory(value))
   function appearance() {
     const settings = getSettings()
     // A05: the panel follows the global compact layout; the renderer already keys its row
@@ -229,7 +272,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
       // no RPC at all. A miss means the entry was evicted; read once from native
       // and cache it again, and give up (404) if that read fails.
       const epoch = cacheEpoch
-      let entry = thumbnails.get(token.id)
+      let entry = cachedThumbnail(token.id)
       if (!entry) {
         const { bytes, value } = await service.command('thumbnail', { id: token.id })
         if (value?.mime !== 'image/png' || value?.byteLength !== bytes.length || bytes.length > PREVIEW_MAX_BYTES) return fail()
@@ -240,11 +283,15 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
         // was in flight. Writing first and validating second would let a stale
         // response repopulate a cache that had just been cleared.
         if (!tokens.has(key) || token.generation !== generation || token.expires < Date.now() || !win?.isVisible() || win.webContents.id !== token.owner) return fail()
-        if (epoch === cacheEpoch) thumbnails.set(token.id, entry)
+        if (epoch === cacheEpoch) cacheThumbnail(token.id, entry)
       }
       if (entry.mime !== 'image/png' || entry.bytes.length > PREVIEW_MAX_BYTES) return fail()
       return new Response(entry.bytes, { headers: { 'Content-Type': 'image/png', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'" } })
-    } catch { return fail() }
+    } catch (error) {
+      // F05: targeted eviction - only a definitive missing record drops this key.
+      if (thumbnailMissing(error)) dropThumbnails([token.id])
+      return fail()
+    }
   }
   function show() {
     if (disposed || pasteInProgress || isMigrationInProgress() || isGameModeEnabled()) return false
@@ -336,7 +383,7 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
     const epoch = cacheEpoch
     const reads = new Map()
     const read = (id) => {
-      const cached = thumbnails.get(id)
+      const cached = cachedThumbnail(id)
       if (cached) return Promise.resolve({ entry: cached })
       if (!reads.has(id)) {
         // No per-item timeout on purpose: ClipboardService's timeout path calls
@@ -347,9 +394,14 @@ function createClipboardDomain({ app, BrowserWindow, screen, nativeTheme, sessio
           // have cleared the cache while this read was in flight, and caching the
           // bytes afterwards would resurrect an entry the invalidation removed.
           const entry = { mime: value.mime, bytes }
-          if (epoch === cacheEpoch) thumbnails.set(id, entry)
+          if (epoch === cacheEpoch) cacheThumbnail(id, entry)
           return { entry }
-        }).catch((error) => ({ error: previewFailure(error) })))
+        }).catch((error) => {
+          // F05: a natively deleted id evicts exactly its own cached thumbnail;
+          // transport failures leave the cache untouched.
+          if (thumbnailMissing(error)) dropThumbnails([id])
+          return { error: previewFailure(error) }
+        }))
       }
       return reads.get(id)
     }

@@ -117,6 +117,12 @@ pub struct Store {
     db: Connection,
     root: PathBuf,
     pub rules: Rules,
+    // F05: incremental counters, seeded once from the tables in `open` and kept
+    // in sync by every mutation path. `accept` used to run two full-table
+    // aggregates per copy just to re-derive these values.
+    item_count: i64,
+    pinned_count: i64,
+    payload_bytes: i64,
     disk_bytes: u64,
     thumbnail_bytes: u64,
     last_calibration: Instant,
@@ -262,6 +268,9 @@ impl Store {
             db,
             root: root.to_path_buf(),
             rules: Rules::default(),
+            item_count: 0,
+            pinned_count: 0,
+            payload_bytes: 0,
             disk_bytes: 0,
             thumbnail_bytes: 0,
             last_calibration: Instant::now(),
@@ -271,8 +280,39 @@ impl Store {
             last_error: None,
         };
         store.recover()?;
+        store.reload_counters()?;
         store.calibrate()?;
         Ok(store)
+    }
+
+    /// F05: the only time the counters are derived from the tables. Every later
+    /// mutation can adjust them incrementally because this store is the single
+    /// writer for its database.
+    fn reload_counters(&mut self) -> Result<()> {
+        let (items, pinned): (i64, i64) = self
+            .db
+            .query_row(
+                "SELECT count(*),COALESCE(sum(is_pinned),0) FROM items",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .stored()?;
+        let payloads: i64 = self
+            .db
+            .query_row(
+                "SELECT COALESCE(sum(byte_length),0) FROM payloads",
+                [],
+                |r| r.get(0),
+            )
+            .stored()?;
+        self.item_count = items;
+        self.pinned_count = pinned;
+        self.payload_bytes = payloads;
+        Ok(())
+    }
+    fn apply_removed(&mut self, removed: usize, removed_pinned: i64) {
+        self.item_count = (self.item_count - removed as i64).max(0);
+        self.pinned_count = (self.pinned_count - removed_pinned).max(0);
     }
 
     pub fn configure(&mut self, rules: Rules) -> Result<()> {
@@ -446,16 +486,10 @@ impl Store {
             )
             .stored()?;
         self.maintain_if_due()?;
-        let mut payload_bytes: i64 = self
-            .db
-            .query_row(
-                "SELECT COALESCE(sum(byte_length),0) FROM payloads",
-                [],
-                |r| r.get(0),
-            )
-            .stored()?;
+        // F05: read the admission numbers from the incrementally maintained
+        // counters instead of re-running `sum(byte_length)` over every payload.
         if !duplicate
-            && (payload_bytes as u64 + byte_length > self.rules.max_payload_mi_b * MIB
+            && (self.payload_bytes as u64 + byte_length > self.rules.max_payload_mi_b * MIB
                 || self.disk_bytes + byte_length * 3 + 4 * MIB
                     > self.rules.max_disk_mi_b * MIB - 32 * MIB)
         {
@@ -469,27 +503,23 @@ impl Store {
                 let rows = q.query_map([], |r| r.get(0)).stored()?;
                 rows.collect::<rusqlite::Result<_>>().stored()?
             };
-            for id in &ids {
-                delete(&tx, id)?;
-            }
-            if !ids.is_empty() {
+            let (removed, removed_pinned) = delete_items(&tx, &ids)?;
+            if removed > 0 {
                 bump(&tx)?;
             }
             tx.commit().stored()?;
+            self.apply_removed(removed, removed_pinned);
             self.gc()?;
-            self.checkpoint()?;
+            // Physical calibration is amortized, but this is the admission gate
+            // that has to be numerically accurate before the record is inserted.
             self.calibrate()?;
-            payload_bytes = self
-                .db
-                .query_row(
-                    "SELECT COALESCE(sum(byte_length),0) FROM payloads",
-                    [],
-                    |r| r.get(0),
-                )
-                .stored()?;
+            // F05: `incremental_vacuum` and `wal_checkpoint` are deferred to the
+            // periodic maintain_if_due() pass; a copy admission only reclaims the
+            // rows it needs.
+            self.maintenance_pending = true;
         }
         if !duplicate
-            && (payload_bytes as u64 + byte_length > self.rules.max_payload_mi_b * MIB
+            && (self.payload_bytes as u64 + byte_length > self.rules.max_payload_mi_b * MIB
                 || self
                     .disk_bytes
                     .saturating_add(byte_length * 2 + thumb.len() as u64 + 4 * MIB)
@@ -511,6 +541,7 @@ impl Store {
             })
             .optional()
             .stored()?;
+        let created_item = existing.is_none();
         if let Some(id) = existing {
             tx.execute("UPDATE items SET last_copied_at=?2,sort_at=?2,source=?3,copy_count=copy_count+1 WHERE id=?1", params![id,stamp,source]).stored()?;
         } else {
@@ -531,6 +562,14 @@ impl Store {
         }
         bump(&tx)?;
         tx.commit().stored()?;
+        // F05: keep the admission counters exact. `INSERT OR IGNORE` above may
+        // have found an existing payload row, in which case it is already charged.
+        if created_item {
+            self.item_count += 1;
+        }
+        if !duplicate {
+            self.payload_bytes += byte_length as i64;
+        }
         // Include inline text, index/WAL amplification and metadata until the
         // next physical calibration, rather than counting attachments alone.
         self.disk_bytes = self.disk_bytes.saturating_add(if duplicate {
@@ -539,7 +578,41 @@ impl Store {
             byte_length * 3 + 8192
         });
         self.last_error = None;
-        self.maintain()?;
+        // F05: an ordinary copy no longer pays a synchronous full maintenance
+        // pass (retention sort, incremental_vacuum, wal_checkpoint). Only an
+        // over-limit history trims synchronously; the periodic maintain_if_due()
+        // pass owns vacuum/checkpoint and retention pruning.
+        if self.item_count > i64::from(self.rules.history_limit) {
+            self.trim_over_limit()?;
+        }
+        Ok(())
+    }
+
+    /// F05: the synchronous trim on the copy path. Deletes at most 50 of the
+    /// oldest ordinary records when the count is over `history_limit`; the next
+    /// periodic maintenance pass compacts and checkpoints the freed pages.
+    fn trim_over_limit(&mut self) -> Result<()> {
+        let excess = (self.item_count - i64::from(self.rules.history_limit)).min(50);
+        if excess <= 0 {
+            return Ok(());
+        }
+        let tx = self.db.unchecked_transaction().stored()?;
+        let ids: Vec<String> = {
+            let mut q = tx
+                .prepare("SELECT id FROM items WHERE is_pinned=0 ORDER BY sort_at,id LIMIT ?1")
+                .stored()?;
+            let rows = q.query_map([excess], |r| r.get(0)).stored()?;
+            rows.collect::<rusqlite::Result<_>>().stored()?
+        };
+        let (removed, removed_pinned) = delete_items(&tx, &ids)?;
+        if removed > 0 {
+            bump(&tx)?;
+        }
+        tx.commit().stored()?;
+        self.apply_removed(removed, removed_pinned);
+        self.gc()?;
+        // A trim always leaves compaction/checkpoint work for the periodic pass.
+        self.maintenance_pending = true;
         Ok(())
     }
 
@@ -554,22 +627,11 @@ impl Store {
     }
     pub fn status(&self) -> Result<Value> {
         let (dataset, revision) = self.revision()?;
-        let (count, pinned): (i64, i64) = self
-            .db
-            .query_row(
-                "SELECT count(*),COALESCE(sum(is_pinned),0) FROM items",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .stored()?;
-        let bytes: i64 = self
-            .db
-            .query_row(
-                "SELECT COALESCE(sum(byte_length),0) FROM payloads",
-                [],
-                |r| r.get(0),
-            )
-            .stored()?;
+        // F05: counters, not aggregates. They are seeded once at open and every
+        // mutation path adjusts them, so `status` stays O(1) on the poll path.
+        let count = self.item_count;
+        let pinned = self.pinned_count;
+        let bytes = self.payload_bytes;
         let gc: i64 = self.db.query_row("SELECT COALESCE(sum(byte_length),0) FROM payloads WHERE id IN (SELECT payload_id FROM gc_jobs)", [], |r| r.get(0)).stored()?;
         Ok(
             json!({"datasetId":dataset,"revision":revision,"itemCount":count,"pinnedCount":pinned,"payloadBytes":bytes,"actualDiskBytes":self.disk_bytes,"pendingGcBytes":gc,"messageKey":self.last_error,"maintenancePending":self.maintenance_pending}),
@@ -744,7 +806,17 @@ impl Store {
             .map(|value| serde_json::from_str(&value).map_err(|_| "PASTE_OUTCOME_UNKNOWN"))
             .transpose()
     }
-    fn begin_use(&self, id: &str, op: &str, method: &str) -> Result<Option<String>> {
+    /// F05: read-only view of the receipt `begin_paste` would answer with. The
+    /// paste path checks this before loading/decoding the payload, so an
+    /// idempotent retry still returns the recorded outcome even when the record
+    /// itself was deleted in the meantime - `begin_paste` cannot be called that
+    /// early because it also writes the pending receipt.
+    pub fn paste_prior(&self, id: &str, op: &str) -> Result<Option<Value>> {
+        self.prior_use(id, op, "paste")?
+            .map(|value| serde_json::from_str(&value).map_err(|_| "PASTE_OUTCOME_UNKNOWN"))
+            .transpose()
+    }
+    fn prior_use(&self, id: &str, op: &str, method: &str) -> Result<Option<String>> {
         if !valid_id(id) || !valid_id(op) {
             return Err("INVALID_OPERATION");
         }
@@ -771,6 +843,13 @@ impl Store {
             }
             return Ok(Some(result));
         }
+        Ok(None)
+    }
+    fn begin_use(&self, id: &str, op: &str, method: &str) -> Result<Option<String>> {
+        if let Some(result) = self.prior_use(id, op, method)? {
+            return Ok(Some(result));
+        }
+        let fingerprint = format!("{method}:{id}");
         self.db
             .execute(
                 "INSERT INTO operation_receipts VALUES(?1,?2,'pending',?3)",
@@ -827,7 +906,13 @@ impl Store {
             return serde_json::from_str(&value).stored();
         }
         let tx = self.db.unchecked_transaction().stored()?;
-        let mut affected = 0;
+        let affected;
+        // F05: the counters are adjusted from what each mutation actually removed.
+        // `affected` is the API result (updated rows too); only removals touch the
+        // item counters.
+        let mut removed = 0usize;
+        let mut removed_pinned = 0i64;
+        let mut pinned_delta = 0i64;
         match method {
             "set-pinned" | "used" => {
                 let id = args
@@ -835,6 +920,12 @@ impl Store {
                     .and_then(Value::as_str)
                     .filter(|s| valid_id(s))
                     .ok_or("INVALID_ID")?;
+                let was_pinned: Option<i64> = tx
+                    .query_row("SELECT is_pinned FROM items WHERE id=?1", [id], |r| {
+                        r.get(0)
+                    })
+                    .optional()
+                    .stored()?;
                 affected = if method == "used" {
                     tx.execute("UPDATE items SET last_used_at=?2,sort_at=?2,use_count=use_count+1 WHERE id=?1", params![id,now()]).stored()?
                 } else {
@@ -842,7 +933,13 @@ impl Store {
                         .get("pinned")
                         .and_then(Value::as_bool)
                         .ok_or("INVALID_ARGUMENT")?;
-                    tx.execute("UPDATE items SET is_pinned=?2,pinned_order=CASE WHEN ?2 THEN ?3 ELSE 0 END WHERE id=?1", params![id,pinned,now()]).stored()?
+                    let updated = tx.execute("UPDATE items SET is_pinned=?2,pinned_order=CASE WHEN ?2 THEN ?3 ELSE 0 END WHERE id=?1", params![id,pinned,now()]).stored()?;
+                    pinned_delta = match (was_pinned, pinned) {
+                        (Some(0), true) => 1,
+                        (Some(1), false) => -1,
+                        _ => 0,
+                    };
+                    updated
                 };
                 if affected == 0 {
                     return Err("NOT_FOUND");
@@ -854,10 +951,19 @@ impl Store {
                     .and_then(Value::as_array)
                     .filter(|v| !v.is_empty() && v.len() <= 100)
                     .ok_or("INVALID_IDS")?;
+                let mut owned = Vec::with_capacity(ids.len());
                 for id in ids {
-                    let id = id.as_str().filter(|s| valid_id(s)).ok_or("INVALID_ID")?;
-                    affected += delete(&tx, id)?;
+                    owned.push(
+                        id.as_str()
+                            .filter(|s| valid_id(s))
+                            .ok_or("INVALID_ID")?
+                            .to_string(),
+                    );
                 }
+                let (deleted, pinned) = delete_items(&tx, &owned)?;
+                affected = deleted;
+                removed = deleted;
+                removed_pinned = pinned;
             }
             "clear" => {
                 let expected = args
@@ -876,6 +982,13 @@ impl Store {
                     .get("includePinned")
                     .and_then(Value::as_bool)
                     .ok_or("INVALID_ARGUMENT")?;
+                removed_pinned = tx
+                    .query_row(
+                        "SELECT COALESCE(sum(is_pinned),0) FROM items WHERE ?1 OR is_pinned=0",
+                        [include_pinned],
+                        |r| r.get(0),
+                    )
+                    .stored()?;
                 tx.execute("INSERT OR IGNORE INTO gc_jobs SELECT payload_id,0 FROM items WHERE ?1 OR is_pinned=0",[include_pinned]).stored()?;
                 tx.execute("DELETE FROM item_search WHERE id IN (SELECT id FROM items WHERE ?1 OR is_pinned=0)",[include_pinned]).stored()?;
                 affected = tx
@@ -884,6 +997,7 @@ impl Store {
                         [include_pinned],
                     )
                     .stored()?;
+                removed = affected;
             }
             _ => return Err("UNSUPPORTED_METHOD"),
         }
@@ -898,6 +1012,9 @@ impl Store {
         .stored()?;
         tx.execute("DELETE FROM operation_receipts WHERE id NOT IN (SELECT id FROM operation_receipts ORDER BY created_at DESC LIMIT 256) OR created_at<?1",[now()-24*3600*1000]).stored()?;
         tx.commit().stored()?;
+        // F05: apply the counter deltas after the transaction committed.
+        self.apply_removed(removed, removed_pinned);
+        self.pinned_count = (self.pinned_count + pinned_delta).max(0);
         self.gc()?;
         self.maintenance_pending = self
             .db
@@ -936,20 +1053,20 @@ impl Store {
                 .stored()?;
             rows.collect::<rusqlite::Result<_>>().stored()?
         };
-        for id in &ids {
-            delete(&tx, id)?;
-        }
-        if !ids.is_empty() {
+        let (removed, removed_pinned) = delete_items(&tx, &ids)?;
+        if removed > 0 {
             bump(&tx)?;
         }
         tx.commit().stored()?;
+        // F05: retention/limit pruning keeps the incremental counters exact.
+        self.apply_removed(removed, removed_pinned);
         self.gc()?;
         if self.can_compact {
             self.db
                 .execute_batch("PRAGMA incremental_vacuum(128)")
                 .stored()?;
         }
-        self.maintenance_pending = ids.len() == 50
+        self.maintenance_pending = removed == 50
             || self
                 .db
                 .query_row(
@@ -958,6 +1075,7 @@ impl Store {
                     |r| r.get(0),
                 )
                 .stored()?;
+
         self.maintenance_pending |= self.needs_compaction()?;
         self.last_maintenance = Instant::now();
         // A passive checkpoint never waits on readers; physical calibration is
@@ -1062,9 +1180,23 @@ impl Store {
                         .stored()?;
                     continue;
                 }
+                // F05: charge the removed payload row back to the counter. The
+                // length is read first because the row disappears with the delete.
+                let byte_length: Option<i64> = self
+                    .db
+                    .query_row(
+                        "SELECT byte_length FROM payloads WHERE id=?1",
+                        [&hash],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .stored()?;
                 self.db
                     .execute("DELETE FROM payloads WHERE id=?1", [&hash])
                     .stored()?;
+                if let Some(length) = byte_length {
+                    self.payload_bytes = (self.payload_bytes - length).max(0);
+                }
             }
             self.db
                 .execute("DELETE FROM gc_jobs WHERE payload_id=?1", [&hash])
@@ -1136,6 +1268,27 @@ fn bump(tx: &Transaction<'_>) -> Result<()> {
     .stored()?;
     Ok(())
 }
+/// F05: deletes the given rows and reports how many items (and pinned items) were
+/// actually removed, so the caller can keep the incremental counters exact.
+fn delete_items(tx: &Transaction<'_>, ids: &[String]) -> Result<(usize, i64)> {
+    let mut removed = 0usize;
+    let mut removed_pinned = 0i64;
+    for id in ids {
+        let was_pinned: Option<i64> = tx
+            .query_row("SELECT is_pinned FROM items WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .stored()?;
+        if delete(tx, id)? > 0 {
+            removed += 1;
+            if was_pinned == Some(1) {
+                removed_pinned += 1;
+            }
+        }
+    }
+    Ok((removed, removed_pinned))
+}
 fn delete(tx: &Transaction<'_>, id: &str) -> Result<usize> {
     tx.execute(
         "INSERT OR IGNORE INTO gc_jobs SELECT payload_id,0 FROM items WHERE id=?1",
@@ -1145,4 +1298,261 @@ fn delete(tx: &Transaction<'_>, id: &str) -> Result<usize> {
     tx.execute("DELETE FROM item_search WHERE id=?1", [id])
         .stored()?;
     tx.execute("DELETE FROM items WHERE id=?1", [id]).stored()
+}
+
+#[cfg(test)]
+mod tests {
+    //! F05 (report report section 3.5): the admission counters are incremental, so these tests
+    //! pin every mutation path that can move them. Synthetic temp stores only.
+    use super::*;
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "highlighter-clipboard-f05-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        root
+    }
+
+    fn open(tag: &str) -> (Store, PathBuf) {
+        let root = temp_root(tag);
+        (Store::open(&root).unwrap(), root)
+    }
+
+    fn operation() -> String {
+        Uuid::new_v4().to_string()
+    }
+
+    fn ids(store: &Store) -> Vec<String> {
+        store.list(Filter::default()).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn close(mut store: Store, root: PathBuf) {
+        let _ = store.gc();
+        drop(store);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    // F05: item/pinned/payload counters stay exact across accept, duplicate
+    // accept, pin toggles, delete and clear - that is what removes the two
+    // full-table aggregates from the copy path.
+    #[test]
+    fn f05_incremental_counters_follow_every_mutation() {
+        let (mut store, root) = open("counters");
+        let status = store.status().unwrap();
+        assert_eq!((status["itemCount"].as_i64(), status["pinnedCount"].as_i64(), status["payloadBytes"].as_i64()), (Some(0), Some(0), Some(0)));
+        store.accept("text", b"alpha".to_vec(), "").unwrap();
+        store.accept("text", b"beta".to_vec(), "").unwrap();
+        let status = store.status().unwrap();
+        assert_eq!(status["itemCount"], 2);
+        assert_eq!(status["pinnedCount"], 0);
+        assert_eq!(status["payloadBytes"], 9, "5 + 4 bytes of inline text");
+        // A duplicate copy reuses payload and item: no counter may move.
+        store.accept("text", b"alpha".to_vec(), "").unwrap();
+        let status = store.status().unwrap();
+        assert_eq!(status["itemCount"], 2);
+        assert_eq!(status["payloadBytes"], 9);
+        let all = ids(&store);
+        assert_eq!(all.len(), 2);
+        for pinned in [true, false, true] {
+            store
+                .mutate(
+                    "set-pinned",
+                    &json!({"operationId": operation(), "id": all[0], "pinned": pinned}),
+                )
+                .unwrap();
+        }
+        let status = store.status().unwrap();
+        assert_eq!(status["pinnedCount"], 1);
+        assert_eq!(status["itemCount"], 2);
+        // Delete the unpinned record: its payload is garbage-collected in the same call.
+        let items = store.list(Filter::default()).unwrap()["items"].clone();
+        let unpinned = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["isPinned"] == false)
+            .unwrap()
+            .clone();
+        let deleted_bytes = unpinned["byteLength"].as_i64().unwrap();
+        store
+            .mutate(
+                "delete",
+                &json!({"operationId": operation(), "ids": [unpinned["id"].clone()]}),
+            )
+            .unwrap();
+        let status = store.status().unwrap();
+        assert_eq!(status["itemCount"], 1);
+        assert_eq!(status["pinnedCount"], 1);
+        assert_eq!(status["payloadBytes"], 9 - deleted_bytes);
+        // Clear ordinary keeps the pinned record and its payload.
+        store
+            .mutate(
+                "clear",
+                &json!({"operationId": operation(), "revision": status["revision"].clone(), "includePinned": false}),
+            )
+            .unwrap();
+        let status = store.status().unwrap();
+        assert_eq!(status["itemCount"], 1);
+        assert_eq!(status["pinnedCount"], 1);
+        // Clear all removes everything, so every counter returns to zero.
+        store
+            .mutate(
+                "clear",
+                &json!({"operationId": operation(), "revision": status["revision"].clone(), "includePinned": true}),
+            )
+            .unwrap();
+        let status = store.status().unwrap();
+        assert_eq!(status["itemCount"], 0);
+        assert_eq!(status["pinnedCount"], 0);
+        assert_eq!(status["payloadBytes"], 0);
+        close(store, root);
+    }
+
+    // F05: the counters are seeded from the tables exactly once, on open.
+    #[test]
+    fn f05_counters_are_seeded_from_the_tables_on_open() {
+        let root = temp_root("reopen");
+        {
+            let mut store = Store::open(&root).unwrap();
+            store.accept("text", b"alpha".to_vec(), "").unwrap();
+            store.accept("text", b"beta".to_vec(), "").unwrap();
+            let all = ids(&store);
+            store
+                .mutate(
+                    "set-pinned",
+                    &json!({"operationId": operation(), "id": all[0], "pinned": true}),
+                )
+                .unwrap();
+        }
+        let store = Store::open(&root).unwrap();
+        let status = store.status().unwrap();
+        assert_eq!(status["itemCount"], 2);
+        assert_eq!(status["pinnedCount"], 1);
+        assert_eq!(status["payloadBytes"], 9);
+        close(store, root);
+    }
+
+    // F05: a copy only trims synchronously when the count exceeds history_limit;
+    // vacuum/checkpoint stay with the periodic maintain_if_due() pass.
+    #[test]
+    fn f05_over_limit_history_trims_synchronously_and_defers_maintenance() {
+        let (mut store, root) = open("limit");
+        store
+            .configure(Rules {
+                history_limit: 100,
+                ..Default::default()
+            })
+            .unwrap();
+        for index in 0..100 {
+            store
+                .accept("text", format!("record-{index}").into_bytes(), "")
+                .unwrap();
+        }
+        assert_eq!(store.status().unwrap()["itemCount"], 100);
+        let last_maintenance = store.last_maintenance;
+        store
+            .accept("text", b"record-100".to_vec(), "")
+            .unwrap();
+        assert_eq!(
+            store.status().unwrap()["itemCount"],
+            100,
+            "the 101st record trims exactly one old record"
+        );
+        assert_eq!(
+            store.last_maintenance, last_maintenance,
+            "accept must not run a full maintain() pass"
+        );
+        assert!(
+            store.maintenance_pending,
+            "the trim leaves vacuum/checkpoint work for the periodic pass"
+        );
+        let page = store
+            .list(Filter {
+                limit: Some(100),
+                ..Default::default()
+            })
+            .unwrap();
+        let previews: Vec<&str> = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["previewText"].as_str().unwrap())
+            .collect();
+        assert!(!previews.contains(&"record-0"), "the oldest record was trimmed");
+        assert!(previews.contains(&"record-100"), "the new record survived");
+        // The deferred maintenance pass runs when the interval has elapsed.
+        store.last_maintenance = Instant::now() - Duration::from_secs(601);
+        store.maintain_if_due().unwrap();
+        assert!(store.last_maintenance > last_maintenance);
+        close(store, root);
+    }
+
+    // F05: retention pruning in the periodic pass adjusts the same counters, and
+    // the garbage-collected payload is charged back.
+    #[test]
+    fn f05_periodic_maintenance_keeps_counters_exact() {
+        let (mut store, root) = open("retention");
+        store
+            .configure(Rules {
+                retention_days: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        store.accept("text", b"old".to_vec(), "").unwrap();
+        store.accept("text", b"new".to_vec(), "").unwrap();
+        let items = store.list(Filter::default()).unwrap()["items"].clone();
+        let old = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["previewText"] == "old")
+            .unwrap()
+            .clone();
+        // No public API ages a record; move its sort key past retention directly.
+        store
+            .db
+            .execute(
+                "UPDATE items SET sort_at=?1 WHERE id=?2",
+                params![now() - 2 * 24 * 3600 * 1000, old["id"].as_str().unwrap()],
+            )
+            .unwrap();
+        let before = store.status().unwrap()["payloadBytes"].as_i64().unwrap();
+        store.last_maintenance = Instant::now() - Duration::from_secs(601);
+        store.maintain_if_due().unwrap();
+        let status = store.status().unwrap();
+        assert_eq!(status["itemCount"], 1);
+        assert_eq!(status["payloadBytes"], before - 3, "old payload charged back");
+        close(store, root);
+    }
+
+    // F05: `paste_prior` lets the paste path answer a replayed receipt before it
+    // loads/decodes a payload, without writing a new pending receipt.
+    #[test]
+    fn f05_paste_prior_reads_a_receipt_without_writing_one() {
+        let (mut store, root) = open("paste-prior");
+        store.accept("text", b"hi".to_vec(), "").unwrap();
+        let id = ids(&store)[0].clone();
+        let op = operation();
+        assert_eq!(store.paste_prior(&id, &op).unwrap(), None);
+        assert_eq!(store.begin_paste(&id, &op).unwrap(), None);
+        assert_eq!(
+            store.paste_prior(&id, &op).unwrap_err(),
+            "PASTE_OUTCOME_UNKNOWN"
+        );
+        store
+            .finish_paste(&id, &op, &json!({"outcome": "injected"}))
+            .unwrap();
+        assert_eq!(
+            store.paste_prior(&id, &op).unwrap(),
+            Some(json!({"outcome": "injected"}))
+        );
+        close(store, root);
+    }
 }
