@@ -111,7 +111,7 @@ function rewriteConfig(config, source, target) {
     rewritten.captureHistory = rewritten.captureHistory.map((item) => {
       if (!item || typeof item !== 'object') return item
       const result = { ...item }
-      // H01 (§二.1.4): an editable capture also references docPath and baseImagePath, which
+      // H01 (section 2.1.4): an editable capture also references docPath and baseImagePath, which
       // live under the same history root; rewriting only the two preview files left every
       // "re-edit" pointing at the old root once it was cleaned up.
       for (const name of HISTORY_ENTRY_PATH_KEYS) {

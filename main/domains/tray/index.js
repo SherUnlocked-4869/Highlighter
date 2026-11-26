@@ -1,6 +1,6 @@
 'use strict'
 
-// H05 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §二.5): the tray
+// H05 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 2.5): the tray
 // singleton, its icon swap and the entire context-menu assembly moved out of main.js.
 //
 // main.js sits at a hard line ceiling (scripts/check-architecture.js), and the code that hit

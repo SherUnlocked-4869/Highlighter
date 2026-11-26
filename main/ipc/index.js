@@ -1,6 +1,6 @@
 'use strict'
 
-// H05 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §二.5): every IPC
+// H05 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 2.5): every IPC
 // channel registration is aggregated here.
 //
 // main.js used to carry ~190 lines of registration bodies plus ~15 imports that only that

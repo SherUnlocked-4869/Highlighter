@@ -119,7 +119,7 @@ class HistoryService {
     if (!item) return
     if (item.thumbnailPath && fs.existsSync(item.thumbnailPath)) fs.unlinkSync(item.thumbnailPath)
     if (item.filePath && fs.existsSync(item.filePath)) fs.unlinkSync(item.filePath)
-    // H01 (§二.1.1): an editable capture owns a whole `history/documents/<documentId>/` tree
+    // H01 (section 2.1.1): an editable capture owns a whole `history/documents/<documentId>/` tree
     // (base image plus every revision). The two flat files above are only the head preview, so
     // deleting just them left the tree — and usually the base image — on disk forever. The
     // document service owns that layout and its own error path (it logs and returns false
@@ -272,7 +272,7 @@ class HistoryService {
         orphans.push({ filePath, size })
       }
     }
-    // H01 (§二.1.2): document trees are directories, and the flat scan above deliberately
+    // H01 (section 2.1.2): document trees are directories, and the flat scan above deliberately
     // skips them (`if (!entry.isFile()) continue`), so every orphaned `documents/<id>/` was
     // invisible to both cleanup and the size the settings page reports. A tree is an orphan
     // only when no history entry still carries its id.

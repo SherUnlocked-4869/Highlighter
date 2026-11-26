@@ -12,6 +12,11 @@
 
 | 工单 | 优先级 | 状态 | 回归测试 | 真机/发布门槛 |
 |---|---|---|---|---|
+| H01 | P0 | 已实现 | test/h01-history-document-cleanup.test.js | 真机删除/清空历史后检查 `history/documents/<id>/` 目录消失、设置页磁盘占用下降；真实数据目录迁移后从历史入口重新编辑 |
+| H02 | P0 | 已实现 | test/h02-mosaic-cache.test.js | 真机连续拖拽/微调/缩放马赛克笔触 30 帧后仍命中缓存（离屏 Canvas 分配数不增长），导出像素与旧实现逐像素一致 |
+| H03 | P0 | 已实现 | test/h03-markdown.test.js | 真实 Electron 划词窗口内流式渲染的选区保持与代码块展示（宿主沙箱经 AGENTS.md 环境处理后可跑） |
+| H04 | P0 | 已实现（报告 dwId 偏移有误，按官方 SDK 实现） | test/h04-utf8-decode.test.js, test/h04-everything-dwid.test.js | 真实 Everything 1.4/1.5 上中文路径 600 条大包；人为延迟回执验证迟到包丢弃；本机 1.4.1.1032 正路径冒烟已通过 |
+| H05 | P0 | 已实现 | test/h05-architecture-extraction.test.js | 打包候选上托盘菜单/记录/代理状态与实际点击行为（真机托盘交互） |
 
 ## 说明
 

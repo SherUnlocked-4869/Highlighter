@@ -1105,7 +1105,7 @@ function cropWithinBase(crop, baseSize) {
 // assembly file (main.js has a 1330-line architecture ceiling) while still being a plain
 // factory the tests can call directly.
 //
-// H01 (§二.1.1/§二.1.3) adds the two startup steps that used to be missing:
+// H01 (section 2.1.1/section 2.1.3) adds the two startup steps that used to be missing:
 //   * attach this service to the history service, so deleting a history entry (single, batch,
 //     clear, retention trim, cleanup) also removes `history/documents/<documentId>/` and the
 //     history stats count its bytes;

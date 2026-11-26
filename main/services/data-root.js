@@ -6,7 +6,7 @@ const path = require('node:path')
 const LOCATOR_NAME = 'Highlighter.location.json'
 const PENDING_NAME = 'Highlighter.location.pending.json'
 
-// H01 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §二.1): every path a
+// H01 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 2.1): every path a
 // history entry can carry for an editable capture. The migration used to rewrite only
 // filePath/thumbnailPath, so after moving the data root the editor still looked for the
 // document and the base image under the OLD root. Both the backup restore path and the live
