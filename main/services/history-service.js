@@ -484,15 +484,24 @@ class HistoryService {
 
   list(filterValue = {}) {
     const filter = normalizeHistoryFilter(filterValue)
-    const matching = this.readHistory()
-      .filter((item) => item?.filePath && fs.existsSync(item.filePath))
-      .filter((item) => matchesHistoryFilter(item, filter))
+    const matching = this.readHistory().filter((item) => matchesHistoryFilter(item, filter))
     const cursorIndex = filter.cursor
       ? matching.findIndex((item) => String(item.id) === filter.cursor)
       : -1
-    const start = cursorIndex >= 0 ? cursorIndex + 1 : 0
-    const items = matching.slice(start, start + filter.limit).map((item) => this.toListItem(item))
-    const hasMore = start + items.length < matching.length
+    // F01 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 3.1): the
+    // existence probe used to run on the WHOLE history before pagination, so listing 40 cards
+    // out of 200 records cost 200 synchronous disk hits. Only the records the page can return
+    // are probed now; totalCount reports the metadata index size (missing files are reclaimed
+    // by cleanup(), and stats() still counts them).
+    let index = cursorIndex >= 0 ? cursorIndex + 1 : 0
+    const items = []
+    while (index < matching.length && items.length < filter.limit) {
+      const item = matching[index]
+      index += 1
+      if (!item?.filePath || !fs.existsSync(item.filePath)) continue
+      items.push(this.toListItem(item))
+    }
+    const hasMore = index < matching.length
     return {
       items,
       totalCount: matching.length,
