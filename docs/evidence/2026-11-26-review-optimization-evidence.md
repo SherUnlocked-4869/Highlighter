@@ -29,6 +29,10 @@
 | U04 | P1 | 已实现（表格/搜索、划词锁/终端保护/粘贴时序） | test/u04-table-search.test.js, test/u04-selection-lock.test.js | 真机终端内 Ctrl+C 注入防护、真实 Everything 目录 isFolder、双窗口并发长考、粘贴时序手感 |
 | N03 | P2 | 已实现（导出合成为编辑器播放覆盖层） | test/n03-recording-hud.test.js | 真机录制快捷键胶囊（需焦点在控制条，见风险）、真实音轨静音分析与一键裁剪 |
 | N06 | P2 | 已实现（API Key 迁移未做，见备份契约） | test/n06-config-search-backup.test.js | 真机 Ctrl+K 搜索跳转与单文件加密备份/恢复往返 |
+| N01 | P2 | 已实现 | test/n01-auto-redact.test.js | 真机真实 OCR 模型下的脱敏命中/漏报与手动删除体验 |
+| N02 | P2 | 已实现（历史 OCR 索引+标签、剪贴板图片动作） | test/n02-history-ocr.test.js, test/n02-clipboard-image.test.js | 真机历史搜索图中文字、剪贴板图片 OCR/Excel/贴图与真实 OCR 模型 |
+| N04 | P2 | 已实现（原生拖拽投递需真机） | test/n04-search-quicklook.test.js | 真机拖到微信/钉钉/VS Code/浏览器、可见窗口 blur 清理 |
+| N05 | P2 | 已实现（桌面像素差分需屏采） | test/n05-pin-onion-snapshot.test.js | 真机多显示器贴图快照恢复/挂起、洋葱皮可视比对 |
 | U05 | P1 | 已实现（配置侧，main.js 解除回收已接线） | test/u05-config-lifecycle.test.js | 真机水印截图输出、跨路由搜索定时器、空闲回收与语言互换行为 |
 | U03 | P1 | 已实现 | test/u03-record-ux.test.js | 真机 window 模式重录、高分屏 4K 窗口录制、双路混音爆音与 Direct-Track 标注入口 |
 
