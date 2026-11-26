@@ -269,6 +269,163 @@
     return (number === null ? 0 : Math.max(0, Math.min(1, number))).toFixed(4)
   }
 
+  // ---------------------------------------------------------------------------
+  // F03 (review 2026-11-26 §3.3): ripple packing for the demo graph.
+  // ---------------------------------------------------------------------------
+  // The per-click chain gives every click its own `-loop 1 -i ripple.png` input, a scale node
+  // and an overlay node: 30 clicks = 30 inputs + 60 filter nodes. A click's ring is visible
+  // for exactly RIPPLE_WINDOW_MS, so clicks whose windows do not touch can share ONE looped
+  // input whose per-frame expressions switch size/position/visibility to whichever click is
+  // active. Every ring uses the same white asset, and compositing identical-colour layers
+  // commutes, so packing lanes does not change the rendered pixels.
+  //
+  // MAX_RIPPLE_LAYERS is 2 (=> at most 2 inputs + 4 filter nodes). A denser burst (3+ rings on
+  // screen at once) cannot be packed into two lanes without reordering the composite, so it
+  // keeps the exact per-click chain instead; correctness wins over node count for that burst.
+  const RIPPLE_WINDOW_MS = 600
+  const MAX_RIPPLE_LAYERS = 2
+
+  function rippleEntries(clicks) {
+    return (Array.isArray(clicks) ? clicks : []).map((click) => {
+      const startMs = Math.max(0, Math.round(finiteNumber(click?.tMs) || 0))
+      return {
+        startMs,
+        endMs: startMs + RIPPLE_WINDOW_MS,
+        focusX: clampUnit(click?.x),
+        focusY: clampUnit(click?.y)
+      }
+    })
+  }
+
+  // Exactly the per-click expression, so a one-click film keeps the historical graph.
+  function rippleSizeExpression(entry) {
+    const startSeconds = (entry.startMs / 1000).toFixed(6)
+    return `96*(0.35+0.65*min(1,max(0,(t-${startSeconds})/0.6)))`
+  }
+
+  function rippleWindow(entry) {
+    return {
+      startSeconds: (entry.startMs / 1000).toFixed(6),
+      endSeconds: (entry.endMs / 1000).toFixed(6)
+    }
+  }
+
+  // Lane-major compositing (lane 0 first, then lane 1) preserves the historical per-click
+  // order only when, for every pair of OVERLAPPING windows, the earlier click's lane comes
+  // first. Greedy packing can violate that (a later click can land in an earlier lane), and a
+  // swapped pair of translucent overlays can differ by a rounding step at the intersection.
+  // Such a burst keeps the per-click chain so the rendered frames stay byte-identical.
+  function rippleOrderPreserved(sorted, lanes) {
+    const laneOf = new Map()
+    lanes.forEach((lane, laneIndex) => {
+      for (const entry of lane.entries) laneOf.set(entry, laneIndex)
+    })
+    for (let index = 0; index < sorted.length; index += 1) {
+      const earlier = sorted[index]
+      for (let laterIndex = index + 1; laterIndex < sorted.length; laterIndex += 1) {
+        const later = sorted[laterIndex]
+        // Disjoint windows never composite together, so their order is irrelevant.
+        if (later.startMs > earlier.endMs) continue
+        if ((laneOf.get(earlier) ?? 0) > (laneOf.get(later) ?? 0)) return false
+      }
+    }
+    return true
+  }
+
+  // Greedy interval packing (first fit by start time; optimal for interval graphs). Returns
+  // one layer per non-overlapping lane, or null when the burst needs more than
+  // MAX_RIPPLE_LAYERS lanes OR lane-major order would not match the per-click order (the
+  // caller then keeps the per-click chain, which is pixel-identical by construction).
+  function planRippleLayers(clicks) {
+    const entries = rippleEntries(clicks)
+    if (!entries.length) return []
+    const sorted = entries.slice().sort((left, right) => left.startMs - right.startMs)
+    const lanes = []
+    for (const entry of sorted) {
+      // `between()` is inclusive on both ends: windows [a, a+600] and [b, b+600] share the
+      // instant b === a+600, so a lane may only take a click that starts STRICTLY later.
+      const lane = lanes.find((candidate) => entry.startMs > candidate.endMs)
+      if (lane) {
+        lane.endMs = entry.endMs
+        lane.entries.push(entry)
+        continue
+      }
+      if (lanes.length >= MAX_RIPPLE_LAYERS) return null
+      lanes.push({ endMs: entry.endMs, entries: [entry] })
+    }
+    if (!rippleOrderPreserved(sorted, lanes)) return null
+    return lanes.map((lane) => {
+      const windows = lane.entries.map((entry) => {
+        const window = rippleWindow(entry)
+        return {
+          ...window,
+          size: rippleSizeExpression(entry),
+          x: `${entry.focusX}*W-w/2`,
+          y: `${entry.focusY}*H-h/2`
+        }
+      })
+      if (windows.length === 1) {
+        const only = windows[0]
+        return {
+          sizeExpression: only.size,
+          xExpression: only.x,
+          yExpression: only.y,
+          enableExpression: `between(t,${only.startSeconds},${only.endSeconds})`
+        }
+      }
+      // Inactive frames fall back to a 2x2 ring (overlay is disabled there, but a zero-sized
+      // scale argument is rejected by ffmpeg) and a 0,0 overlay position.
+      const sizeExpression = windows.reduceRight(
+        (fallback, window) => `if(between(t,${window.startSeconds},${window.endSeconds}),${window.size},${fallback})`,
+        '2'
+      )
+      const xExpression = windows.reduceRight(
+        (fallback, window) => `if(between(t,${window.startSeconds},${window.endSeconds}),${window.x},${fallback})`,
+        '0'
+      )
+      const yExpression = windows.reduceRight(
+        (fallback, window) => `if(between(t,${window.startSeconds},${window.endSeconds}),${window.y},${fallback})`,
+        '0'
+      )
+      return {
+        sizeExpression,
+        xExpression,
+        yExpression,
+        enableExpression: windows.map((window) => `between(t,${window.startSeconds},${window.endSeconds})`).join('+')
+      }
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // F03: hardware H.264 encoders for MP4 output (mirrors record/recording-utils.js).
+  // ---------------------------------------------------------------------------
+  // `videoEncoder` is an OPTIONAL build-time hint from the main process's capability probe;
+  // without it (or with an unknown name) the argv is byte-identical to the historical
+  // libx264/veryfast/CRF command. Muxer, extension and audio mapping never depend on it.
+  const SOFTWARE_VIDEO_ENCODER = 'libx264'
+  const HARDWARE_VIDEO_ENCODERS = Object.freeze(['h264_nvenc', 'h264_qsv', 'h264_amf'])
+
+  function normalizeVideoEncoder(value) {
+    const name = typeof value === 'string' ? value.trim() : ''
+    return HARDWARE_VIDEO_ENCODERS.includes(name) ? name : SOFTWARE_VIDEO_ENCODER
+  }
+
+  // Per-encoder quality flags for H.264 MP4 output; `crf` is the software CRF value.
+  function mp4VideoEncoderArgs(value, crf) {
+    const encoder = normalizeVideoEncoder(value)
+    const quality = String(Math.round(finiteNumber(crf) ?? 23))
+    if (encoder === 'h264_nvenc') {
+      return ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', quality, '-b:v', '0']
+    }
+    if (encoder === 'h264_qsv') {
+      return ['-c:v', 'h264_qsv', '-preset', 'veryfast', '-global_quality', quality]
+    }
+    if (encoder === 'h264_amf') {
+      return ['-c:v', 'h264_amf', '-quality', 'balanced', '-rc', 'cqp', '-qp_i', quality, '-qp_p', quality]
+    }
+    return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', quality]
+  }
+
   function evenDimension(value) {
     // Contract formula: even(round(value)), minimum 2. `resolution:'source'` on the usual
     // even-sized canvas is the identity; a preset can only shrink (scale <= 1).
@@ -636,7 +793,9 @@
       fpsValue,
       width,
       height,
-      copy: format === 'webm' && source.copy === true
+      copy: format === 'webm' && source.copy === true,
+      // F03: hardware H.264 is MP4-only (WebM is VP9 by contract; GIF has no encoder choice).
+      encoder: format === 'mp4' ? normalizeVideoEncoder(options.videoEncoder) : SOFTWARE_VIDEO_ENCODER
     }
   }
 
@@ -800,30 +959,42 @@
       // the background overlay at the end.
       demoFilters.push(`[outv]scale=${contentWidth}:${contentHeight}:flags=lanczos[scaled]`)
       let current = 'scaled'
-      // Ripples: one looped ring image per click, scaled per frame while its time window is on.
+      // Ripples: the packed lane graph renders the same ring pixels with far fewer filter
+      // nodes (see planRippleLayers above). A burst that needs more than MAX_RIPPLE_LAYERS
+      // concurrent lanes keeps the exact historical per-click chain instead.
       const clicks = Array.isArray(demo.clicks) ? demo.clicks : []
       if (clicks.length && (typeof assets.ripplePath !== 'string' || !assets.ripplePath)) {
         throw new Error('recording-export-options: demo ripple asset is required')
       }
-      clicks.forEach((click, index) => {
-        const rippleIndex = nextInputIndex
-        nextInputIndex += 1
-        extraInputs.push('-loop', '1', '-framerate', String(renderFps), '-t', inputLimit, '-i', assets.ripplePath)
-        const startMs = Math.max(0, Math.round(finiteNumber(click?.tMs) || 0))
-        const startSeconds = (startMs / 1000).toFixed(6)
-        const endSeconds = ((startMs + 600) / 1000).toFixed(6)
-        // Soft ring growth over 600 ms. The per-click offset makes every ring restart at 0.35x
-        // even though its looped input timestamps are global.
-        const progress = `min(1,max(0,(t-${startSeconds})/0.6))`
-        const size = `96*(0.35+0.65*${progress})`
-        const focusX = clampUnit(click?.x)
-        const focusY = clampUnit(click?.y)
-        demoFilters.push(`[${rippleIndex}:v]scale=w='${size}':h='${size}':eval=frame,format=rgba[ripple${index}]`)
-        demoFilters.push(
-          `[${current}][ripple${index}]overlay=x='${focusX}*W-w/2':y='${focusY}*H-h/2':enable='between(t,${startSeconds},${endSeconds})':format=auto:shortest=1[rippleOverlay${index}]`
-        )
-        current = `rippleOverlay${index}`
-      })
+      const rippleLayers = clicks.length ? planRippleLayers(clicks) : []
+      if (rippleLayers) {
+        rippleLayers.forEach((layer, laneIndex) => {
+          const rippleIndex = nextInputIndex
+          nextInputIndex += 1
+          extraInputs.push('-loop', '1', '-framerate', String(renderFps), '-t', inputLimit, '-i', assets.ripplePath)
+          demoFilters.push(
+            `[${rippleIndex}:v]scale=w='${layer.sizeExpression}':h='${layer.sizeExpression}':eval=frame,format=rgba[ripple${laneIndex}]`
+          )
+          demoFilters.push(
+            `[${current}][ripple${laneIndex}]overlay=x='${layer.xExpression}':y='${layer.yExpression}':enable='${layer.enableExpression}':format=auto:shortest=1[rippleOverlay${laneIndex}]`
+          )
+          current = `rippleOverlay${laneIndex}`
+        })
+      } else {
+        clicks.forEach((click, index) => {
+          const rippleIndex = nextInputIndex
+          nextInputIndex += 1
+          extraInputs.push('-loop', '1', '-framerate', String(renderFps), '-t', inputLimit, '-i', assets.ripplePath)
+          const entry = rippleEntries([click])[0]
+          const size = rippleSizeExpression(entry)
+          const window = rippleWindow(entry)
+          demoFilters.push(`[${rippleIndex}:v]scale=w='${size}':h='${size}':eval=frame,format=rgba[ripple${index}]`)
+          demoFilters.push(
+            `[${current}][ripple${index}]overlay=x='${entry.focusX}*W-w/2':y='${entry.focusY}*H-h/2':enable='between(t,${window.startSeconds},${window.endSeconds})':format=auto:shortest=1[rippleOverlay${index}]`
+          )
+          current = `rippleOverlay${index}`
+        })
+      }
       // Camera: zoompan only when there is at least one zoom (otherwise the frame pass-through
       // keeps the R4 timing exactly).
       const zooms = Array.isArray(demo.zooms) ? demo.zooms : []
@@ -867,9 +1038,7 @@
             '-filter_complex', demoGraph,
             '-map', '[demoOut]',
             ...audioArgs,
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-crf', String(VIDEO_CRF.mp4[video.quality]),
+            ...mp4VideoEncoderArgs(video.encoder, VIDEO_CRF.mp4[video.quality]),
             '-pix_fmt', 'yuv420p',
             '-movflags', '+faststart',
             ...progress,
@@ -902,9 +1071,7 @@
           '-filter_complex', graph,
           '-map', '[outv]',
           ...audioArgs,
-          '-c:v', 'libx264',
-          '-preset', 'veryfast',
-          '-crf', String(VIDEO_CRF.mp4[video.quality]),
+          ...mp4VideoEncoderArgs(video.encoder, VIDEO_CRF.mp4[video.quality]),
           '-pix_fmt', 'yuv420p',
           '-movflags', '+faststart',
           ...progress,
@@ -1053,12 +1220,14 @@
     EXPORT_FORMATS,
     EXPORT_TASK_STATES,
     GIF_FRAME_RATES,
+    HARDWARE_VIDEO_ENCODERS,
     LIMITS,
     MAX_SEGMENTS,
     RESOLUTION_PRESETS,
     RESOLUTIONS,
     SESSION_STATES,
     SESSION_TRANSITIONS,
+    SOFTWARE_VIDEO_ENCODER,
     TASK_TRANSITIONS,
     TERMINAL_TASK_STATES,
     VIDEO_CRF,
@@ -1076,6 +1245,7 @@
     normalizeGifOptions,
     normalizeRange,
     normalizeSegments,
+    normalizeVideoEncoder,
     normalizeVideoOptions,
     requestSignature,
     sessionTransition,

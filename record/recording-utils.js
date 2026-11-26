@@ -602,14 +602,78 @@
     ]
   }
 
+  // ---------------------------------------------------------------------------
+  // F03 (review 2026-11-26 §3.3): hardware H.264 encoders for MP4 output.
+  // ---------------------------------------------------------------------------
+  // Order is preference, not availability: NVENC > QSV > AMF. The listing parser below only
+  // says the bundled ffmpeg was COMPILED with an encoder - it does not prove the machine can
+  // initialise it, so main/services/recording-service.js smoke-encodes a tiny clip before it
+  // trusts one. Unknown names always degrade to libx264: the argv shape (muxer, audio mapping)
+  // must not depend on which encoder wins.
+  const VIDEO_ENCODER_SOFTWARE = 'libx264'
+  const VIDEO_ENCODER_HARDWARE = Object.freeze(['h264_nvenc', 'h264_qsv', 'h264_amf'])
+  const HARDWARE_ENCODER_SET = new Set(VIDEO_ENCODER_HARDWARE)
+
+  // '' / unknown / missing -> libx264, so every call site has one fallback path.
+  function normalizeVideoEncoder(value) {
+    const name = typeof value === 'string' ? value.trim() : ''
+    return HARDWARE_ENCODER_SET.has(name) ? name : VIDEO_ENCODER_SOFTWARE
+  }
+
+  function isHardwareVideoEncoder(value) {
+    return HARDWARE_ENCODER_SET.has(typeof value === 'string' ? value.trim() : '')
+  }
+
+  // `ffmpeg -hide_banner -encoders` rows look like:
+  //   " V....D libx264              libx264 H.264 ..."
+  //   " V....D h264_nvenc           NVIDIA NVENC H.264 encoder ..."
+  // Only video-capable rows (leading V) are collected; the name is the first token after the
+  // six capability flags. Returns a Set of encoder names (empty when the listing is unusable).
+  function parseFfmpegEncoders(text) {
+    const names = new Set()
+    if (typeof text !== 'string' || !text) return names
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^\s*V[.A-Za-z]{5}\s+([A-Za-z0-9_]+)/.exec(line)
+      if (match) names.add(match[1])
+    }
+    return names
+  }
+
+  // First compiled hardware encoder in priority order, or '' when none is compiled in.
+  function pickHardwareEncoder(names) {
+    const available = names instanceof Set ? names : new Set(Array.isArray(names) ? names : [])
+    for (const name of VIDEO_ENCODER_HARDWARE) {
+      if (available.has(name)) return name
+    }
+    return ''
+  }
+
+  // Per-encoder quality flags. `crf` is the software CRF; hardware encoders take the closest
+  // constant-quality equivalent so `quality: standard/high/ultra` keeps meaning the same thing.
+  function videoEncoderArgs(encoder, crf) {
+    const name = normalizeVideoEncoder(encoder)
+    const quality = Number.isFinite(Number(crf)) ? String(Math.round(Number(crf))) : '23'
+    if (name === 'h264_nvenc') {
+      // VBR + CQ mirrors CRF; -b:v 0 lets CQ drive the bitrate.
+      return ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', quality, '-b:v', '0']
+    }
+    if (name === 'h264_qsv') {
+      return ['-c:v', 'h264_qsv', '-preset', 'veryfast', '-global_quality', quality]
+    }
+    if (name === 'h264_amf') {
+      return ['-c:v', 'h264_amf', '-quality', 'balanced', '-rc', 'cqp', '-qp_i', quality, '-qp_p', quality]
+    }
+    // The legacy two-argument call stays byte-identical: libx264/veryfast/CRF 23.
+    return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', quality]
+  }
+
   function buildFfmpegArgs(inputPath, outputPath, options) {
     const audio = normalizeAudioArgs(options)
+    const source = options && typeof options === 'object' ? options : {}
     return [
       '-i', inputPath,
       ...audioArgs(audio),
-      '-c:v', 'libx264',
-      '-preset', 'veryfast',
-      '-crf', '23',
+      ...videoEncoderArgs(source.videoEncoder, 23),
       '-pix_fmt', 'yuv420p',
       '-movflags', '+faststart',
       '-progress', 'pipe:2',
@@ -621,6 +685,9 @@
   const recordingUtils = {
     BYPASS_REASONS,
     DIRECT_TRACK_ENV,
+    HARDWARE_ENCODER_SET,
+    VIDEO_ENCODER_HARDWARE,
+    VIDEO_ENCODER_SOFTWARE,
     buildFfmpegArgs,
     calculateCropRect,
     calculateFrameBounds,
@@ -631,10 +698,14 @@
     createFramePacer,
     createRequestId,
     formatDuration,
+    isHardwareVideoEncoder,
     localStateForWireStatus,
     normalizeFrameRate,
     normalizeSelectionBounds,
+    normalizeVideoEncoder,
+    parseFfmpegEncoders,
     pickDesktopSource,
+    pickHardwareEncoder,
     primeSeekablePreview,
     readDirectTrackExperiment,
     reportStatusFor,
@@ -642,7 +713,8 @@
     selectRecorderTrackPlan,
     shouldAdoptMainState,
     shouldBypassComposition,
-    transitionRecordingState
+    transitionRecordingState,
+    videoEncoderArgs
   }
 
   if (typeof module !== 'undefined' && module.exports) module.exports = recordingUtils
