@@ -31,7 +31,7 @@ const drawSource = sliceBetween(script, 'function drawAnnotation(context, item',
 const pointerdownSource = sliceBetween(script, "canvas.addEventListener('pointerdown'", "canvas.addEventListener('pointermove'")
 const pointermoveSource = sliceBetween(script, "canvas.addEventListener('pointermove'", "canvas.addEventListener('pointerup'")
 const appendSource = sliceBetween(script, 'function appendStrokePoint(point, event)', 'function finishStrokeAnnotation()')
-const patchSource = sliceBetween(script, 'function buildMosaicPatch(item, deviceScale, sourceImage)', 'function drawMosaicStroke(')
+const patchSource = sliceBetween(script, 'function buildMosaicPatch(item, deviceScale, sourceImage, reusable)', 'function drawMosaicStroke(')
 
 // ---------- ① 采样骨架（§3.3） ----------
 
@@ -134,12 +134,22 @@ test('brush plan (§5.2): the patch cache is keyed by a fingerprint, not by obje
   assert.match(script, /NOT by object identity/)
   // 指纹必须覆盖"影响渲染结果"的全部字段：笔宽、scale、bbox、点数、首末点。
   assert.match(script, /return \[item\.width, deviceScale, box\.x, box\.y, box\.w, box\.h, points\.length, first\.x, first\.y, last\.x, last\.y\]\.join\('\|'\)/)
-  // WeakMap + 字节预算（§5.2 的 16MB 上限），超预算退化为不缓存但仍正确。
-  assert.match(script, /let mosaicPatchCache = new WeakMap\(\)/)
-  assert.match(script, /const MOSAIC_PATCH_BUDGET = 16 \* 1024 \* 1024/)
-  assert.match(script, /if \(mosaicPatchBytes \+ bytes <= MOSAIC_PATCH_BUDGET\)/)
-  // 活动笔迹不缓存（每帧重建才 1.6ms，缓存它反而要每帧重算指纹）。
-  assert.match(script, /if \(item\.id && bytes <= MOSAIC_PATCH_BUDGET\)/)
+  // H02 (§5.2 of the brush plan, report section 2.2): the ledger is a bounded LRU keyed by a
+  // stable identity. It replaced the WeakMap + plain byte counter, which never deducted the
+  // bytes of the objects that translate/resize/style replace every frame - a dozen drag frames
+  // exhausted the 16 MiB budget for good.
+  assert.doesNotMatch(script, /let mosaicPatchCache = new WeakMap\(\)/)
+  // The historical comment may still name the old counter; the executable code must not.
+  assert.doesNotMatch(script, /mosaicPatchBytes\s*[-+]?=/)
+  assert.match(script, /const \{ createMosaicPatchCache, MOSAIC_PATCH_BUDGET \} = window\.mosaicPatchCache/)
+  assert.match(script, /const mosaicPatchCache = createMosaicPatchCache\(\{ budget: MOSAIC_PATCH_BUDGET \}\)/)
+  // The same identity is overwritten through put(), which deducts the previous entry's bytes.
+  assert.match(script, /mosaicPatchCache\.put\(identity, fingerprint, patch\)/)
+  assert.match(script, /mosaicPatchCache\.get\(identity\)/)
+  // A live gesture gets a draft identity before its first frame and is renamed on commit,
+  // so painting allocates one pair of offscreen canvases instead of two per frame.
+  assert.match(script, /function beginMosaicPatchIdentity\(\)/)
+  assert.match(script, /mosaicPatchCache\.rename\(draftId, committedId\)/)
 })
 
 test('brush plan (§5.2): every input that can stale a patch has an invalidation point', () => {
@@ -156,9 +166,8 @@ test('brush plan (§5.2): every input that can stale a patch has an invalidation
   const styleWriteSource = sliceBetween(script, 'function writeAnnotationStyles(targets, patch, fields, ownership)', 'function commitSelectedStyle(patch)')
   assert.match(styleWriteSource, /mosaicPatchCache\.delete\(target\)/)
 
-  // WeakMap 没有 clear()：失效实现为整表丢弃，所以必须 let 而不是 const。
-  assert.match(script, /let mosaicPatchCache = new WeakMap\(\)/)
-  assert.match(script, /function invalidateMosaicPatches\(\) \{\s*mosaicPatchCache = new WeakMap\(\)\s*mosaicPatchBytes = 0\s*\}/)
+  // Invalidation is the ledger's own clear(): every cached patch is dropped at once.
+  assert.match(script, /function invalidateMosaicPatches\(\) \{\s*mosaicPatchCache\.clear\(\)\s*\}/)
 })
 
 // ---------- ⑤ 坐标纪律（§5.6） ----------

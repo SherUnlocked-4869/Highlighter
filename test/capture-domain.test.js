@@ -23,10 +23,12 @@ test('main.js delegates capture domain instead of inlining window factories and 
 })
 
 test('main.js routes capture ownership and task checks through the domain', () => {
+  const ipcIndex = fs.readFileSync(path.join(root, 'main', 'ipc', 'index.js'), 'utf8')
   assert.match(main, /captureDomain\?\.ownsWindow\(win\)/)
   assert.match(main, /captureDomain\?\.isTaskActive\(\)/)
   assert.match(main, /captureDomain\.createCaptureWindow\(/)
-  assert.match(main, /\.\.\.captureDomain\.createCaptureController\(\)/)
+  // H05: the channels are registered by the aggregated IPC module now.
+  assert.match(ipcIndex, /\.\.\.captureDomain\.createCaptureController\(\)/)
 })
 
 test('capture domain owns window lifecycle and smart-select helpers', () => {

@@ -331,6 +331,10 @@
   <script src="annotation-style.js"></script>
   <script src="selection-utils.js"></script>
   <script src="annotation-geometry.js"></script>
+  <!-- H02: the id-keyed bounded LRU that accounts for the mosaic patch canvases (exact
+       deduct on overwrite/evict). Must load before capture.js, which instantiates it at
+       load time through window.mosaicPatchCache. -->
+  <script src="mosaic-patch-cache.js"></script>
   <!-- Feature C/D (plan §6.2/§7.1/§7.2): the shared contracts the document model needs.
        ALL of them must load before ../shared/capture-document.js - that file consumes all
        three at load time and fails loudly rather than validating with missing rules. -->

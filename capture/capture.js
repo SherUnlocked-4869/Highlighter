@@ -313,18 +313,22 @@ let historyWritable = true
 // the timer is per press and the flag suppresses the click the browser fires afterwards.
 let pinMenuPressTimer = 0
 let pinMenuPressOpened = false
-// Mosaic patch cache (§5.2). One offscreen canvas per committed stroke, keyed by a
-// fingerprint of every input the patch depends on - NOT by object identity: translate,
-// resize and style edits all return brand-new objects, so an identity cache would happily
-// keep a patch of the old position. WeakMap so a dropped annotation takes its patch with
-// it. Active strokes are never cached (they change every frame).
-// Reassignable rather than const because WeakMap has no clear(): invalidating means
-// dropping the whole map, which is exactly what a new capture / undo / stage resize wants.
-let mosaicPatchCache = new WeakMap()
-// Total bytes the cache may hold (§5.2): past this the strokes render uncached, which is
-// slower but always correct.
-const MOSAIC_PATCH_BUDGET = 16 * 1024 * 1024
-let mosaicPatchBytes = 0
+// Mosaic patch ledger (§5.2, H02). The cache used to be a WeakMap keyed by the annotation
+// OBJECT plus a `let mosaicPatchBytes` counter; translate/resize/style edits replace the
+// object every frame, so the WeakMap dropped the old key while the counter kept its bytes -
+// a dozen drag frames exhausted the 16 MiB budget for good. It is now an id-keyed bounded
+// LRU (capture/mosaic-patch-cache.js) with exact deduct-on-overwrite accounting. The
+// fingerprint stays what it always was and is still NOT by object identity: it covers every
+// input the patch depends on, because a new object under the SAME id may describe a moved or
+// restyled stroke and must rebuild its patch.
+const { createMosaicPatchCache, MOSAIC_PATCH_BUDGET } = window.mosaicPatchCache
+const mosaicPatchCache = createMosaicPatchCache({ budget: MOSAIC_PATCH_BUDGET })
+// The stroke being painted has no committed `id` yet (commitAnnotation assigns it). It gets a
+// session-unique NEGATIVE draft id instead: the cache can reuse its offscreen canvases while
+// the point set grows, the id can never collide with a committed `++annotationSeq` id, and
+// commitAnnotation() renames the ledger entry to the real id instead of allocating again.
+let activeMosaicPatchId = 0
+let mosaicDraftSeq = 0
 
 // P0-7-T5：主进程确认窗口已显示后播一次快门音，受 screenshot.shutterSound 控制。
 // play() 在 CSP 拦截 / 自动播放被拒时会 reject，这里必须吞掉，否则渲染层报未处理拒绝。
@@ -681,12 +685,43 @@ function mosaicPatchKey(item, deviceScale) {
   return [item.width, deviceScale, box.x, box.y, box.w, box.h, points.length, first.x, first.y, last.x, last.y].join('|')
 }
 
+// H02: stable patch identity for the gesture being painted. Committed annotations are keyed
+// by their persisted id; the live gesture gets a NEGATIVE session-unique draft id so it is
+// cacheable from the first frame while its point set grows, and cannot collide with any
+// committed `++annotationSeq` id (those are always positive).
+function beginMosaicPatchIdentity() {
+  // A draft that was never settled (e.g. a press replaced the previous one without a
+  // pointerup) must not keep its stale entry accounted; drop its exact bytes first.
+  if (activeMosaicPatchId) mosaicPatchCache.delete(activeMosaicPatchId)
+  activeMosaicPatchId = -(++mosaicDraftSeq)
+  return activeMosaicPatchId
+}
+
+// Submission / cancellation of that draft identity. On commit the entry is RENAMED to the
+// committed id (one canvas pair per gesture, no second allocation); on cancel it is dropped
+// so an abandoned gesture releases its bytes immediately.
+function settleMosaicPatchIdentity(committedId) {
+  const draftId = activeMosaicPatchId
+  activeMosaicPatchId = 0
+  if (!draftId) return
+  if (committedId) mosaicPatchCache.rename(draftId, committedId)
+  else mosaicPatchCache.delete(draftId)
+}
+
+// The identity a mosaic patch is accounted under. This is the whole fix in one place: an
+// edit may replace the object (drag / nudge / resize / style all return fresh copies), but
+// the id is stable, so the cache entry is an overwrite that deducts the old bytes exactly.
+function mosaicPatchIdentity(item) {
+  if (!item) return null
+  if (item === activeAnnotation && activeMosaicPatchId) return activeMosaicPatchId
+  return typeof item.id === 'number' && item.id !== 0 ? item.id : null
+}
+
 // Drops every cached patch. Called from the invalidation points §5.2 lists (new capture,
 // undo/redo replacing the array, style/geometry writes, stage resize). The fingerprint
 // already covers content changes; this covers the canvases whose owner is gone.
 function invalidateMosaicPatches() {
-  mosaicPatchCache = new WeakMap()
-  mosaicPatchBytes = 0
+  mosaicPatchCache.clear()
 }
 // §3.2.2: the mosaic stroke = a pixelated layer of the *source image* masked by the
 // stroke's alpha. Three coordinate spaces meet here and must not be mixed (§5.6):
@@ -696,7 +731,7 @@ function invalidateMosaicPatches() {
 // `deviceScale` = device px per CSS px (devicePixelRatio on screen, the export factor on
 // export; see contextPixelScale). The final drawImage back onto the target stays in CSS
 // px, because the caller's context already carries the rest of the transform.
-function buildMosaicPatch(item, deviceScale, sourceImage) {
+function buildMosaicPatch(item, deviceScale, sourceImage, reusable) {
   const cell = MOSAIC_CELL * deviceScale
   const brush = blurBrushWidth(item.width) * deviceScale
   const pad = brush / 2 + 2
@@ -718,9 +753,15 @@ function buildMosaicPatch(item, deviceScale, sourceImage) {
   const sourceScaleX = (sourceImage.naturalWidth || 1) / Math.max(1, bounds.w)
   const sourceScaleY = (sourceImage.naturalHeight || 1) / Math.max(1, bounds.h)
 
-  const tiny = document.createElement('canvas')
-  tiny.width = tinyW; tiny.height = tinyH
+  // H02: a live stroke keeps its identity while its box grows, so the ledger hands the
+  // previous patch back via `reusable` and these canvases are resized and repainted in place
+  // instead of allocating a fresh pair per pointermove (what the pre-H02 code did).
+  const tiny = reusable && reusable.tiny ? reusable.tiny : document.createElement('canvas')
+  if (tiny.width !== tinyW || tiny.height !== tinyH) { tiny.width = tinyW; tiny.height = tinyH }
   const tinyCtx = tiny.getContext('2d')
+  // A reused canvas still holds the previous frame; clear it so a transparent source pixel
+  // cannot composite over last frame's ink (a fresh canvas is already empty).
+  tinyCtx.clearRect(0, 0, tinyW, tinyH)
   tinyCtx.imageSmoothingEnabled = true
   tinyCtx.drawImage(
     sourceImage,
@@ -728,9 +769,10 @@ function buildMosaicPatch(item, deviceScale, sourceImage) {
     0, 0, tinyW, tinyH
   )
 
-  const patch = document.createElement('canvas')
-  patch.width = devW; patch.height = devH
+  const patch = reusable && reusable.canvas ? reusable.canvas : document.createElement('canvas')
+  if (patch.width !== devW || patch.height !== devH) { patch.width = devW; patch.height = devH }
   const patchCtx = patch.getContext('2d')
+  patchCtx.clearRect(0, 0, devW, devH)
   patchCtx.imageSmoothingEnabled = false
   patchCtx.drawImage(tiny, 0, 0, tinyW, tinyH, 0, 0, devW, devH)
   patchCtx.imageSmoothingEnabled = true
@@ -744,28 +786,28 @@ function buildMosaicPatch(item, deviceScale, sourceImage) {
   )
   patchCtx.stroke()
   patchCtx.globalCompositeOperation = 'source-over'
-  return { canvas: patch, left, top, w: cssW, h: cssH }
+  return { canvas: patch, tiny, left, top, w: cssW, h: cssH }
 }
 
 function drawMosaicStroke(context, item, scaleX, scaleY, offsetX, offsetY, sourceImage) {
   const deviceScale = Math.max(scaleX, scaleY) * contextPixelScale(context)
-  const key = mosaicPatchKey(item, deviceScale)
-  const cached = mosaicPatchCache.get(item)
-  let patch = cached && cached.key === key ? cached.patch : null
+  const fingerprint = mosaicPatchKey(item, deviceScale)
+  // H02: identity instead of object reference. The fingerprint still decides whether the
+  // cached patch is up to date; the identity is what makes an edit an overwrite (with exact
+  // byte deduction) rather than an orphaned old WeakMap key.
+  const identity = mosaicPatchIdentity(item)
+  const cached = identity === null ? null : mosaicPatchCache.get(identity)
+  let patch = cached && cached.fingerprint === fingerprint ? cached.patch : null
   if (!patch) {
-    patch = buildMosaicPatch(item, deviceScale, sourceImage)
-    if (!patch) return
-    // Committed annotations (they carry an id) are cached; the stroke being drawn right now
-    // is deliberately rebuilt every frame (§5.2), so a live gesture never pays the
-    // fingerprint bookkeeping and never pins a stale canvas.
-    const bytes = patch.canvas.width * patch.canvas.height * 4
-    if (item.id && bytes <= MOSAIC_PATCH_BUDGET) {
-      if (cached) mosaicPatchBytes -= cached.patch.canvas.width * cached.patch.canvas.height * 4
-      if (mosaicPatchBytes + bytes <= MOSAIC_PATCH_BUDGET) {
-        mosaicPatchCache.set(item, { key, patch })
-        mosaicPatchBytes += bytes
-      }
+    patch = buildMosaicPatch(item, deviceScale, sourceImage, cached && cached.patch)
+    if (!patch) {
+      // A stroke that collapsed to nothing has no patch to keep; release the stale bytes.
+      if (identity !== null) mosaicPatchCache.delete(identity)
+      return
     }
+    // Committed strokes cache under their id; the gesture being painted caches under its
+    // draft id, so it pays the canvas allocation once and reuses it while the points grow.
+    if (identity !== null) mosaicPatchCache.put(identity, fingerprint, patch)
   }
   // Destination stays in the caller's units: transform by the same scale/offset the item's
   // own x/y got, so the patch lands exactly where the stroke is.
@@ -2160,6 +2202,9 @@ function clearAnnotationsForNewSelection() {
   selectedIds = new Set()
   syncToolbarStyleFromSelection()
   snapshotAnnotations()
+  // H02: the cleared objects are gone, so their ledger entries must go with them (otherwise
+  // their bytes would sit in the budget until the LRU evicts them).
+  invalidateMosaicPatches()
 }
 
 // ---------- P0-5 PR2：元素拖动 + 方向键微调 ----------
@@ -2263,6 +2308,9 @@ function beginPenContinuation(item, point, event) {
     x: point.x, y: point.y, x2: point.x, y2: point.y,
     points: points.concat([{ x: point.x, y: point.y }])
   })
+  // H02: the continuation is the live gesture now, so it gets its own draft identity (the
+  // original object left annotations, so its id no longer names anything on screen).
+  beginMosaicPatchIdentity()
   try { canvas.setPointerCapture(event.pointerId) } catch {}
   render()
   return true
@@ -2565,6 +2613,8 @@ function resetAnnotationState() {
   invalidateElementBarSize()
   // Brush plan (§5.2): patches belong to the previous capture's annotation objects.
   invalidateMosaicPatches()
+  // H02: a gesture that never settled belongs to the previous capture too.
+  activeMosaicPatchId = 0
   // Feature C: a new capture gets a new style session (fresh timeline + the persisted preset), so
   // the previous screenshot's card can never leak into this one's undo history.
   resetOutputStyleState()
@@ -2581,6 +2631,7 @@ function resetAnnotationState() {
 function commitAnnotation(item) {
   if (!item) return
   item.id = ++annotationSeq
+  settleMosaicPatchIdentity(item.id)
   annotations.push(item)
   activeAnnotation = null
   // B7: the gesture ended in a commit, so the continued original is superseded for good.
@@ -2933,6 +2984,9 @@ canvas.addEventListener('pointerdown',(event)=>{
   }
   activeAnnotation={type:currentTool,x:point.x,y:point.y,x2:point.x,y2:point.y,...style}
   if (STROKE_TOOL_SET.has(currentTool)) activeAnnotation.points=[{x:point.x,y:point.y}]
+  // H02: the stroke exists before its first frame is painted, so it can cache its patch under
+  // a stable identity from the first frame (commit renames it to the committed id).
+  beginMosaicPatchIdentity()
 })
 
 // Feature D3 (plan §7.1): the magnifier gesture.
@@ -3120,6 +3174,8 @@ canvas.addEventListener('pointercancel',()=>{
   // settled - the gesture produced no object and therefore no frame.
   magnifierBuild=null
   magnifierDrag=null
+  // H02: the canceled gesture's draft patch leaves the budget now (it will never be committed).
+  settleMosaicPatchIdentity(0)
   activeAnnotation=currentTool==='watermark'?buildWatermarkAnnotation():null
   render()
 })

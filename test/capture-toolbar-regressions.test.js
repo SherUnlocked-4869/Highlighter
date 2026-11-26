@@ -28,6 +28,8 @@ const SCRIPT = fs.readFileSync(path.join(ROOT, 'capture', 'capture.js'), 'utf8')
 const STYLE_MODULE = fs.readFileSync(path.join(ROOT, 'capture', 'annotation-style.js'), 'utf8')
 const GEOMETRY_MODULE = fs.readFileSync(path.join(ROOT, 'capture', 'annotation-geometry.js'), 'utf8')
 const SELECTION_MODULE = fs.readFileSync(path.join(ROOT, 'capture', 'selection-utils.js'), 'utf8')
+// H02: the mosaic patch ledger is a classic script capture.html loads before capture.js.
+const MOSAIC_MODULE = fs.readFileSync(path.join(ROOT, 'capture', 'mosaic-patch-cache.js'), 'utf8')
 // capture.js calls restoreStoredLanguage()/applyTranslations() at module scope, so the
 // real runtime has to be loaded rather than stubbed - it is a classic script whose
 // functions land on the shared global scope, exactly like the window does.
@@ -211,6 +213,7 @@ function createHarness() {
   vm.runInNewContext(STYLE_MODULE, sandbox)
   vm.runInNewContext(GEOMETRY_MODULE, sandbox)
   vm.runInNewContext(SELECTION_MODULE, sandbox)
+  vm.runInNewContext(MOSAIC_MODULE, sandbox)
   vm.runInNewContext('window.annotationStyleUtils = annotationStyleUtils; window.annotationGeometry = annotationGeometry;', sandbox)
 
   vm.runInNewContext(SCRIPT, sandbox)
