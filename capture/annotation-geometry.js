@@ -32,8 +32,16 @@
   // travelled further than this. Below it the gesture is a plain click, which
   // selects without producing a (no-op) undo frame or a visible jitter.
   const MOVE_THRESHOLD = 3
-  // text 没有 x2，纯函数层也拿不到 canvas 度量：用 0.6em/字符 估计盒宽（见 annotationBounds）。
+  // Text has no x2, and this pure layer has no canvas metrics: estimate the box width from the
+  // glyphs themselves. A CJK/full-width glyph occupies ~1em while an ASCII half-width one is
+  // ~0.6em, so a Chinese label no longer gets a box that is 40% too narrow (U01, review
+  // 2026-11-26 §4.1 - the right half of a CJK annotation used to be un-clickable).
   const TEXT_WIDTH_RATIO = 0.6
+  const CJK_TEXT_WIDTH_RATIO = 1
+  // Multi-line text (the inline editor allows Enter/Ctrl+Enter breaks) is painted line by line;
+  // the renderer and this module must share the line height or the selection box stops matching
+  // the ink. 1.2em is the usual single-spacing ratio.
+  const TEXT_LINE_HEIGHT_RATIO = 1.2
   // PR3 缩放下限：任何一维小于 3px 时按 3px 处理（方案 §8.4 PR3 验收「镜像不崩、最小 3px」）。
   // 与 selection-utils.js 的 resizeSelection(minimumSize=3) 同值 —— 手柄层与纯函数层给出
   // 同一个下限，镜像/退化输入都不会产出负尺寸。
@@ -93,6 +101,76 @@
     return Number.isFinite(parsed) ? parsed : fallback
   }
 
+  // ---- U01 (review 2026-11-26 §4.1): text layout -------------------------------------------
+  //
+  // annotationBounds() is the single source of truth for "where the text box is" - the selection
+  // outline, the hit test, the drag clamp and the marquee all read it. It therefore has to know
+  // how a text annotation is laid out, including the CJK/full-width glyphs that the old 0.6em
+  // per-character estimate cut in half.
+
+  // Full-width code points: CJK ideographs and punctuation, kana, Hangul, the compatibility and
+  // full-width forms blocks. Everything else is estimated at the ASCII half-width ratio.
+  function isFullWidthCodePoint(codePoint) {
+    if (!Number.isFinite(codePoint)) return false
+    return (codePoint >= 0x1100 && codePoint <= 0x115F) || // Hangul Jamo
+      (codePoint >= 0x2E80 && codePoint <= 0x303E) || // CJK radicals, Kangxi, CJK punctuation
+      (codePoint >= 0x3041 && codePoint <= 0x33FF) || // kana + CJK compatibility
+      (codePoint >= 0x3400 && codePoint <= 0x4DBF) || // CJK extension A
+      (codePoint >= 0x4E00 && codePoint <= 0x9FFF) || // CJK unified ideographs
+      (codePoint >= 0xA000 && codePoint <= 0xA4CF) || // Yi
+      (codePoint >= 0xAC00 && codePoint <= 0xD7A3) || // Hangul syllables
+      (codePoint >= 0xF900 && codePoint <= 0xFAFF) || // CJK compatibility ideographs
+      (codePoint >= 0xFE30 && codePoint <= 0xFE4F) || // CJK compatibility forms
+      (codePoint >= 0xFF00 && codePoint <= 0xFF60) || // full-width forms
+      (codePoint >= 0xFFE0 && codePoint <= 0xFFE6) ||
+      (codePoint >= 0x20000 && codePoint <= 0x3FFFD) // CJK extensions B and later
+  }
+
+  // One line's width in em (1em == the font size in px), accumulated per code point.
+  function textEmWidth(line) {
+    let width = 0
+    for (const character of String(line ?? '')) {
+      width += isFullWidthCodePoint(character.codePointAt(0)) ? CJK_TEXT_WIDTH_RATIO : TEXT_WIDTH_RATIO
+    }
+    return width
+  }
+
+  // A text annotation may contain line breaks (the U01 inline editor accepts them), so every
+  // consumer iterates lines instead of trusting one fillText call.
+  function textLines(text) {
+    return String(text ?? '').split(/\r\n|\r|\n/)
+  }
+
+  function textLineHeight(size) {
+    return numberOr(size, 0) * TEXT_LINE_HEIGHT_RATIO
+  }
+
+  // Optional real font metrics: a caller with a 2D context can pass a `measurer(line, size)`
+  // returning the line width in px (e.g. ctx.measureText(line).width). The deterministic em
+  // estimate stays the default so this module keeps working without a canvas (and in node).
+  function measureTextLine(line, size, measurer) {
+    const text = String(line ?? '')
+    if (!text) return 0
+    if (typeof measurer === 'function') {
+      const measured = Number(measurer(text, size))
+      if (Number.isFinite(measured) && measured > 0) return measured
+    }
+    return textEmWidth(text) * numberOr(size, 0)
+  }
+
+  // The painted box of a text annotation: the widest line, and the height of the line stack.
+  // A single-line text degenerates to exactly the shipped { w, h: size } contract.
+  function textBoxSize(text, size, measurer) {
+    const fontSize = Math.max(0, numberOr(size, 0))
+    const lines = textLines(text)
+    let width = 0
+    for (const line of lines) width = Math.max(width, measureTextLine(line, fontSize, measurer))
+    return {
+      w: Math.max(fontSize, width),
+      h: Math.max(fontSize, fontSize + (lines.length - 1) * textLineHeight(fontSize))
+    }
+  }
+
   function hasX2(item) {
     return Number.isFinite(Number(item?.x2))
   }
@@ -150,7 +228,7 @@
     return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
   }
 
-  function annotationBounds(item) {
+  function annotationBounds(item, options = {}) {
     if (!item || typeof item !== 'object') return null
     // Feature D (§7.1): a magnifier's box is source rect ∪ lens rect (the lens size is derived
     // from the factor, never persisted). Delegated so the renderer's outline, the drag clamp and
@@ -168,12 +246,13 @@
       const radius = serialRadius(item.width)
       return { x: x - radius, y: y - radius, w: radius * 2, h: radius * 2 }
     }
-    // 文字没有 x2，且这里没有 canvas 度量：取"1em 高、0.6em/字符宽"的估计盒，
-    // 只用于选中框与命中测试，不影响绘制（绘制仍走 drawAnnotation 的 fillText）。
+    // Text has no x2: the box is the painted glyph box (per-code-point CJK/ASCII estimate, or
+    // the injected measurer), including every line of a multi-line annotation. Still a pure
+    // estimate for drawing purposes - the renderer keeps using drawAnnotation's fillText.
     if (item.type === 'text') {
       const size = fontSize(item.width)
-      const text = typeof item.text === 'string' ? item.text : ''
-      return { x, y, w: Math.max(size, text.length * size * TEXT_WIDTH_RATIO), h: size }
+      const box = textBoxSize(typeof item.text === 'string' ? item.text : '', size, options.measurer)
+      return { x, y, w: box.w, h: box.h }
     }
     if (item.type === 'watermark') {
       return { x, y, w: Math.max(0, numberOr(item.w, 0)), h: Math.max(0, numberOr(item.h, 0)) }
@@ -585,6 +664,60 @@
     return translateAnnotation(item, targetX - bounds.x, targetY - bounds.y)
   }
 
+  // ---- U01 (review 2026-11-26 §4.1): the whole-selection drag primitives -------------------
+  //
+  // A multi-selection drag moves every selected item by ONE delta. The clamp rule is the same
+  // "the whole box stays inside the stage" rule clampAnnotationToStage applies to a single item,
+  // lifted to the union box: clamping each item on its own would squash the set together at the
+  // stage edge and break the relative positions the user arranged.
+
+  // Union of annotationBounds() over a list, or null when nothing in it has a box. This is the
+  // box a group drag must keep inside the stage.
+  function unionAnnotationBounds(items) {
+    if (!Array.isArray(items)) return null
+    let left = Infinity
+    let top = Infinity
+    let right = -Infinity
+    let bottom = -Infinity
+    for (const item of items) {
+      const box = annotationBounds(item)
+      if (!box) continue
+      left = Math.min(left, box.x)
+      top = Math.min(top, box.y)
+      right = Math.max(right, box.x + box.w)
+      bottom = Math.max(bottom, box.y + box.h)
+    }
+    if (!Number.isFinite(left) || !Number.isFinite(top)) return null
+    return { x: left, y: top, w: right - left, h: bottom - top }
+  }
+
+  // The delta a whole-set drag may actually apply: the union box is clamped into the stage with
+  // the same clampAxis() fallback as a single oversized item (it may pin to one edge but never
+  // fly fully out). Every item then receives this SAME delta, so relative spacing is preserved.
+  function clampSetTranslation(items, dx, dy, stage) {
+    const box = unionAnnotationBounds(items)
+    if (!box) return null
+    const stageW = Math.max(0, numberOr(stage?.w ?? stage?.width, 0))
+    const stageH = Math.max(0, numberOr(stage?.h ?? stage?.height, 0))
+    const targetX = clampAxis(box.x + numberOr(dx, 0), box.w, stageW)
+    const targetY = clampAxis(box.y + numberOr(dy, 0), box.h, stageH)
+    return { dx: targetX - box.x, dy: targetY - box.y }
+  }
+
+  // Translate a whole set by one effective delta and report it back. Returns `{ dx, dy, items }`
+  // where every entry of `items` is a NEW object in input order (origins are never mutated), so
+  // the caller can re-derive the drag from the untouched snapshot on every frame without drift.
+  function translateAnnotationSetToStage(origins, dx, dy, stage) {
+    if (!Array.isArray(origins) || !origins.length) return null
+    const clamped = clampSetTranslation(origins, dx, dy, stage)
+    if (!clamped) return null
+    return {
+      dx: clamped.dx,
+      dy: clamped.dy,
+      items: origins.map((item) => translateAnnotation(item, clamped.dx, clamped.dy))
+    }
+  }
+
   // 快照栈的深拷贝原语：pen 点集必须换新数组并封顶，其余字段是扁平的。
   function cloneAnnotations(annotations, options = {}) {
     if (!Array.isArray(annotations)) return []
@@ -624,6 +757,18 @@
     reorderAnnotation,
     clampAnnotationToStage,
     cloneAnnotations,
+    // U01 (review 2026-11-26 §4.1): text layout (CJK-aware, multi-line, injectable measurer) and
+    // the union-box drag primitives the renderer's multi-selection move shares with its tests.
+    TEXT_WIDTH_RATIO,
+    CJK_TEXT_WIDTH_RATIO,
+    TEXT_LINE_HEIGHT_RATIO,
+    isFullWidthCodePoint,
+    textLines,
+    textLineHeight,
+    textBoxSize,
+    unionAnnotationBounds,
+    clampSetTranslation,
+    translateAnnotationSetToStage,
     // Feature D (§7.1): the magnifier primitives the renderer and the tests share. Re-exported
     // rather than re-implemented so a renderer that already has this module loaded never needs a
     // second global.

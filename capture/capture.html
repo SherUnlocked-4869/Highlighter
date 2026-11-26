@@ -368,6 +368,10 @@
   <!-- B02: the pure client->source-pixel mapping and colour formatter. Must load before
        capture.js, which reads window.captureColorPicker at load time. -->
   <script src="color-picker.js"></script>
+  <!-- U01 (review 2026-11-26 §4.1): the floating <textarea> that replaced window.prompt() for
+       text annotations. Classic-script UMD module (same shape as export-result-bar.js); capture.js
+       reads window.annotationInlineEditor on first use, so it must load before capture.js. -->
+  <script src="annotation-inline-editor.js"></script>
   <script src="capture.js"></script>
 </body>
 </html>

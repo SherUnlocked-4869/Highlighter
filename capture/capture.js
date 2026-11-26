@@ -167,6 +167,10 @@ const {
 // the block above is pinned verbatim (and its item order, MAX_PEN_POINTS last) by the
 // geometry contract tests, so new names must not be inserted into it.
 const { STROKE_TYPES, hasStrokePoints, strokeWidth, strokeBox } = window.annotationGeometry
+// U01 (review 2026-11-26 §4.1): text layout (CJK-aware, multi-line) and the whole-selection drag
+// primitives. A second destructure on purpose - the block above is pinned verbatim by the
+// geometry contract tests, so new names must not be inserted into it.
+const { textLines, textLineHeight, textBoxSize, unionAnnotationBounds, translateAnnotationSetToStage } = window.annotationGeometry
 
 let initData = null
 let image = null
@@ -206,6 +210,13 @@ let marquee = null
 // accumulate drift and pointerup can tell "did it actually move". thresholdPassed
 // is A1's addition: a press below MOVE_THRESHOLD stays a plain click.
 let pendingMove = null
+// U01 (review 2026-11-26 §4.1): the floating <textarea> that replaced window.prompt() for text
+// annotations. `inlineTextEditor` is the lazily created controller from
+// capture/annotation-inline-editor.js; while an edit is running `inlineTextEdit` names the
+// annotation being re-edited and `inlineTextCreate` the pending new one (never both).
+let inlineTextEditor = null
+let inlineTextEdit = null
+let inlineTextCreate = null
 // P0-5 PR3：8 手柄缩放交互态，与 pendingMove 同构（origin/originBounds 也是**未被改动的**
 // 原对象与其屏幕 CSS 坐标 bbox，每帧从它重算，绝不就地改）。
 let resizingAnnotation = null
@@ -868,7 +879,14 @@ function drawAnnotation(context, item, scaleX = 1, scaleY = 1, offsetX = 0, offs
     }
     context.stroke()
   }
-  if (item.type === 'text') { context.font = `${item.bold === true ? 'bold ' : ''}${textFontSize(baseWidth,widthScale)}px -apple-system,"Microsoft YaHei",sans-serif`; context.textBaseline='top'; context.fillText(item.text,x,y) }
+  if (item.type === 'text') {
+    const textSize = textFontSize(baseWidth,widthScale)
+    context.font = `${item.bold === true ? 'bold ' : ''}${textFontSize(baseWidth,widthScale)}px -apple-system,"Microsoft YaHei",sans-serif`; context.textBaseline='top'
+    // U01: the inline editor can produce line breaks, so paint one fillText per line at the
+    // shared line height. A legacy single-line text is the same call the renderer always made.
+    const step = textLineHeight(textSize)
+    textLines(item.text).forEach((line, lineIndex) => { if (line) context.fillText(line, x, y + lineIndex * step) })
+  }
   if (item.type === 'serial') { const radius=serialRadius(baseWidth,widthScale); context.beginPath(); context.arc(x,y,radius,0,Math.PI*2); context.fill(); context.fillStyle='#fff'; context.font=`bold ${radius}px sans-serif`; context.textAlign='center'; context.textBaseline='middle'; context.fillText(String(item.number),x,y+1) }
   if (item.type === 'watermark') drawWatermark(context,item,scaleX,scaleY,offsetX,offsetY)
   // Feature D3 (plan §7.1): the magnifier. It has NO flat x/y - its geometry is a nested source rect
@@ -2233,9 +2251,24 @@ function pointInAnnotationBounds(item, point) {
 // its own source rect switch halves mid-drag.
 function beginPendingMove(item, point, event, part = '') {
   if (!item) return
+  // U01: a multi-selection drag snapshots every selected origin + their union box (below).
   pendingMove = { id: item.id, origin: item, start: { x: point.x, y: point.y }, thresholdPassed: false, part }
+  pendingMove.group = part ? null : groupMoveSnapshot(item)
   try { canvas.setPointerCapture(event.pointerId) } catch {}
   render()
+}
+
+// U01 (review 2026-11-26 §4.1): the whole-selection move snapshot. Only a press on an item of a
+// MULTI selection starts a group drag, and only when no magnifier half was grabbed (a lens drag is
+// a single-object gesture by design). Returns null for every single-item move, so the shipped
+// single-element path is byte-for-byte unchanged.
+function groupMoveSnapshot(item) {
+  if (!item || !(selectedIds.size > 1) || !selectedIds.has(item.id)) return null
+  const origins = annotations.filter((entry) => selectedIds.has(entry.id))
+  if (origins.length < 2) return null
+  const bounds = unionAnnotationBounds(origins)
+  if (!bounds) return null
+  return { ids: origins.map((entry) => entry.id), origins, bounds }
 }
 
 // 拖动中：从 origin 重新平移 + clamp，把新副本放回数组；绝不就地改 state.origin。
@@ -2246,10 +2279,13 @@ function moveAnnotationTo(point) {
     if (!movedBeyondThreshold(state.start, point, MOVE_THRESHOLD)) return
     state.thresholdPassed = true
   }
-  const index = annotations.findIndex((item) => item.id === state.id)
-  if (index < 0) return
   const dx = point.x - state.start.x
   const dy = point.y - state.start.y
+  // U01: a whole-selection drag moves every selected item by one delta clamped against their
+  // union box, so the spacing between the items never changes (single-item clamp is unchanged).
+  if (state.group) { moveAnnotationGroupTo(state, dx, dy); return }
+  const index = annotations.findIndex((item) => item.id === state.id)
+  if (index < 0) return
   const moved = clampAnnotationToStage(
     state.part ? moveMagnifierPart(state.origin, state.part, dx, dy) : translateAnnotation(state.origin, dx, dy),
     stageRect()
@@ -2258,6 +2294,36 @@ function moveAnnotationTo(point) {
   annotations[index] = moved
   selectedAnnotation = moved
   render()
+}
+
+// U01: translate every item of the dragging group. The effective delta comes from the union box
+// (annotation-geometry's clampSetTranslation) and each item is re-derived from its untouched
+// origin, so a drag never accumulates drift. Objects are replaced in place by id because the
+// array order IS the z-order, and pointerup pushes exactly one undo frame for the whole gesture.
+function moveAnnotationGroupTo(state, dx, dy) {
+  const group = state.group
+  if (!group) return
+  const moved = translateAnnotationSetToStage(group.origins, dx, dy, stageRect())
+  if (!moved) return
+  const byId = new Map(moved.items.map((entry) => [entry.id, entry]))
+  for (let index = 0; index < annotations.length; index += 1) {
+    const next = byId.get(annotations[index].id)
+    if (next) annotations[index] = next
+  }
+  if (selectedAnnotation) selectedAnnotation = byId.get(selectedAnnotation.id) || selectedAnnotation
+  render()
+}
+
+// U01: put every origin of an interrupted group drag back, by id. Cancel edits nothing, so this
+// must not push a frame and must not reorder the array.
+function restoreGroupOrigins(group) {
+  if (!group || !Array.isArray(group.origins)) return
+  const byId = new Map(group.origins.map((entry) => [entry.id, entry]))
+  for (let index = 0; index < annotations.length; index += 1) {
+    const origin = byId.get(annotations[index].id)
+    if (origin) annotations[index] = origin
+  }
+  if (selectedAnnotation) selectedAnnotation = byId.get(selectedAnnotation.id) || selectedAnnotation
 }
 
 // Feature D3: move ONE half of a magnifier. The shared module owns each translation, so a lens drag
@@ -2349,6 +2415,8 @@ function cancelMoveAnnotation() {
     annotations[index] = state.origin
     if (selectedAnnotation && selectedAnnotation.id === state.id) selectedAnnotation = state.origin
   }
+  // U01: the other items of an interrupted group drag go back to their own origins too.
+  if (state.group) restoreGroupOrigins(state.group)
   render()
 }
 
@@ -2626,6 +2694,11 @@ function resetAnnotationState() {
   releaseLensSampler()
   if (magnifierPanel) magnifierPanel.classList.add('hidden')
   setMagnifierStatus('', null, false)
+  // U01: a text edit that was open when the window re-initialised belongs to the previous
+  // capture - clear the state first, then close the floating editor without running a callback.
+  inlineTextEdit = null
+  inlineTextCreate = null
+  inlineTextEditor?.cancel()
 }
 
 function commitAnnotation(item) {
@@ -2639,6 +2712,160 @@ function commitAnnotation(item) {
   flushCoalescedEdits()
   snapshotAnnotations()
   render()
+}
+
+// ---------- U01 (review 2026-11-26 §4.1): the canvas-inline text editor ----------
+//
+// Text used to be collected with a blocking window.prompt(): no preview, one line only, and an
+// IME candidate list had nowhere to appear. capture/annotation-inline-editor.js owns the floating
+// <textarea> (styling, positioning, the Enter/Ctrl+Enter/Escape + IME key contract); this block
+// owns everything that touches annotations - the draft, the live echo, the single undo frame and
+// the cancel path. The editor is also the preview: it opens at the annotation's canvas
+// coordinates with the annotation's own font size/weight/colour and the shared line height, so
+// the text the user types is laid out exactly like the exported one.
+
+function inlineTextEditorController() {
+  if (inlineTextEditor) return inlineTextEditor
+  const api = window.annotationInlineEditor
+  if (!api) return null
+  inlineTextEditor = api.createInlineTextEditor({
+    document,
+    translate: (key, params) => t(key, params),
+    getViewport: () => ({ width: innerWidth, height: innerHeight }),
+    log: (...args) => console.warn(...args)
+  })
+  return inlineTextEditor
+}
+
+function inlineTextEditing() {
+  return inlineTextEdit !== null || inlineTextCreate !== null
+}
+
+// Settings shared by the create and the re-edit paths: font metrics, colour and the live input
+// echo. Both paths edit a normal text annotation, so every value comes from that object.
+function inlineTextEditorSettings(item, rect, handlers = {}) {
+  const size = textFontSize(item.width, 1)
+  return {
+    rect,
+    text: String(item.text ?? ''),
+    fontSize: size,
+    lineHeight: textLineHeight(size),
+    color: item.color,
+    bold: item.bold === true,
+    placeholder: t('capture.input.text'),
+    measureWidth: (value) => textBoxSize(value, size).w,
+    selectAll: handlers.selectAll === true,
+    onInput: handlers.onInput,
+    onCommit: handlers.onCommit,
+    onCancel: handlers.onCancel
+  }
+}
+
+// A press with the text tool opens the editor for a NEW annotation. Nothing is committed and no
+// undo frame is pushed until the text is confirmed; an empty editor (Enter on nothing, or Escape)
+// leaves the annotation stack untouched, exactly like the old prompt's null result.
+function beginInlineTextCreate(point, style) {
+  const editor = inlineTextEditorController()
+  if (!editor) return false
+  const draft = { type: 'text', x: point.x, y: point.y, text: '', ...style }
+  inlineTextCreate = { draft }
+  const opened = editor.open(inlineTextEditorSettings(draft, { x: point.x, y: point.y }, {
+    onInput: (value) => { if (inlineTextCreate) inlineTextCreate.draft.text = value },
+    onCommit: (value) => finishInlineTextCreate(value),
+    onCancel: () => cancelInlineTextCreate()
+  }))
+  if (!opened) { inlineTextCreate = null; return false }
+  return true
+}
+
+function finishInlineTextCreate(value) {
+  const state = inlineTextCreate
+  inlineTextCreate = null
+  if (!state) return
+  const text = String(value ?? '')
+  // Empty text commits nothing: dismissing a new text annotation must not push an invisible,
+  // empty undo frame (the old prompt behaved the same way).
+  if (!text.trim()) { render(); return }
+  commitAnnotation({ ...state.draft, text })
+}
+
+function cancelInlineTextCreate() {
+  inlineTextCreate = null
+  render()
+}
+
+// Double-click on an existing text annotation re-opens the same editor with its text. The item
+// leaves the annotation list for the duration of the edit (the editor is the preview, so no stale
+// copy is painted underneath it) and goes back - edited or untouched - afterwards.
+function beginInlineTextEdit(item) {
+  if (!item || item.type !== 'text' || !selection) return false
+  const editor = inlineTextEditorController()
+  if (!editor) return false
+  const index = annotations.indexOf(item)
+  if (index < 0) return false
+  inlineTextEdit = { index, item, selection: new Set(selectedIds) }
+  annotations.splice(index, 1)
+  syncSelectedAnnotation()
+  render()
+  const opened = editor.open(inlineTextEditorSettings(item, { x: item.x, y: item.y }, {
+    selectAll: true,
+    onCommit: (value) => finishInlineTextEdit(value),
+    onCancel: () => cancelInlineTextEdit()
+  }))
+  if (!opened) {
+    reattachInlineTextItem(inlineTextEdit)
+    inlineTextEdit = null
+    render()
+    return false
+  }
+  return true
+}
+
+// Put the re-edited item back into its original z-order slot and restore the multi-selection it
+// was part of. `nextItem` is the edited copy; omitting it restores the untouched original (cancel).
+function reattachInlineTextItem(state, nextItem = null) {
+  if (!state) return null
+  const restored = nextItem || state.item
+  const index = Math.max(0, Math.min(state.index, annotations.length))
+  annotations.splice(index, 0, restored)
+  selectedIds = revalidateSelection(annotations, state.selection)
+  selectedAnnotation = selectedIds.size
+    ? annotations.filter((entry) => selectedIds.has(entry.id)).pop() || null
+    : null
+  syncToolbarStyleFromSelection()
+  return restored
+}
+
+function finishInlineTextEdit(value) {
+  const state = inlineTextEdit
+  inlineTextEdit = null
+  if (!state) return
+  const text = String(value ?? '')
+  // Empty text cancels the edit instead of deleting the annotation: a stray Enter must never
+  // destroy the user's label.
+  if (!text.trim()) { reattachInlineTextItem(state); render(); return }
+  flushCoalescedEdits()
+  reattachInlineTextItem(state, { ...state.item, text })
+  snapshotAnnotations()
+  render()
+}
+
+function cancelInlineTextEdit() {
+  const state = inlineTextEdit
+  inlineTextEdit = null
+  if (!state) return
+  reattachInlineTextItem(state)
+  render()
+}
+
+// The canvas press (or any other exit path) asks the editor to confirm. The editor's own close
+// callback performs the actual finish, so this stays a one-line coordinator.
+function commitInlineTextEdit() {
+  const editor = inlineTextEditorController()
+  if (editor && editor.isOpen()) { editor.commit(); return true }
+  inlineTextEdit = null
+  inlineTextCreate = null
+  return false
 }
 
 function clampSettingNumber(value, fallback, min, max) {
@@ -2901,6 +3128,9 @@ canvas.addEventListener('pointerdown',(event)=>{
   if(colorSampling){updateColorSample(pointFromEvent(event));return;}
   if (!resultPanel.classList.contains('hidden')) return
   if(activeOcrResult){clearOcrResult();return}
+  // U01: while the floating text editor is open a canvas press commits it and is consumed -
+  // the same click must not also select, move or draw something behind the editor.
+  if(inlineTextEditing()){commitInlineTextEdit();return}
   const point=pointFromEvent(event); startPoint=point
   // PR2 防御：上一次元素拖动若没等到 pointerup（被模态框/系统手势吞掉），新一次按下先把它
   // 收口，避免两个手势叠在同一个 pendingMove 上（选区拖动有同款自愈，见 pointermove）。
@@ -2971,7 +3201,7 @@ canvas.addEventListener('pointerdown',(event)=>{
   if (currentTool==='watermark') return
   if (!insideSelection(point)) return
   const style=annotationStyle()
-  if (currentTool==='text') { const text=prompt(t('capture.input.text')); if(text)commitAnnotation({type:'text',x:point.x,y:point.y,text,...style}); return }
+  if (currentTool==='text') { beginInlineTextCreate(point, style); return }
   if (currentTool==='serial') { commitAnnotation({type:'serial',x:point.x,y:point.y,number:serialNumber++,...style}); return }
   // Feature D3 (§7.1): the magnifier gesture is "drag the source area first". The lens is positioned
   // by createFromSourceRect() at pointerup - once, from the final rect - so it cannot jitter around
@@ -3204,7 +3434,11 @@ canvas.addEventListener('wheel',(event)=>{
   render()
 },{passive:false})
 
-canvas.addEventListener('dblclick',()=>{ if(colorSampling)return; if(selection&&initData?.settings?.screenshot?.doubleClickCopy) performAction('copy') })
+canvas.addEventListener('dblclick',(event)=>{ if(colorSampling)return;
+  // U01: double-click on a text annotation re-opens the inline editor for it. Every other hit
+  // falls through to the shipped double-click-copy, so that preference keeps its meaning.
+  if(currentTool==='select'&&!inlineTextEditing()&&beginInlineTextEdit(findAnnotationAt(annotations,pointFromEvent(event))))return
+  if(selection&&initData?.settings?.screenshot?.doubleClickCopy) performAction('copy') })
 
 // §3.2②: the pixel consumers (copy/save/pdf/ocr) all read ONE captured image, which
 // still covers only the current display. A level-2 Ctrl+A selection reaches past it by
@@ -4604,7 +4838,14 @@ async function performAction(action) {
       pdfExporting=true
       const exportButton=document.getElementById('exportPdf')
       if(exportButton)exportButton.disabled=true
-      try{await window.captureAPI.exportPdf(imageBuffer,meta,'a4')}
+      // U01 (review 2026-11-26 §4.1): main answers with the export receipt
+      // `{ status:'saved', resultId, fileName, kind }`, or null when the save dialog was
+      // cancelled. The branch used to drop that value, so a finished PDF never showed the
+      // result bar (`exportResultBar` + `showExportResult` already existed). A failure is
+      // reported here instead of falling through to the generic action catch, so the message
+      // names the export that failed and the button is re-enabled first.
+      try{await window.captureAPI.exportPdf(imageBuffer,meta,'a4').then(showExportResult)}
+      catch(error){showExportFailure(error);return}
       finally{pdfExporting=false;if(exportButton)exportButton.disabled=false}
       return
     }
@@ -4963,6 +5204,14 @@ const exportResultBar = window.exportResultBar
 function showExportResult(result) {
   if (!exportResultBar) return
   if (result && typeof result === 'object' && result.status === 'saved') exportResultBar.show(result)
+}
+
+// U01: a failed export keeps the file situation honest - nothing was written, so no bar is
+// shown; the error is surfaced with the same alert every other capture action uses. The main
+// process error already carries the actionable reason (empty payload, dialog failure, ...).
+function showExportFailure(error) {
+  console.warn('Export failed:', error?.message || error)
+  alert(error?.message || String(error))
 }
 
 addEventListener('resize',resizeCanvas)
