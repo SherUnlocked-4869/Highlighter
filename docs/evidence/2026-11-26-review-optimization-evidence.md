@@ -36,6 +36,25 @@
 | U05 | P1 | 已实现（配置侧，main.js 解除回收已接线） | test/u05-config-lifecycle.test.js | 真机水印截图输出、跨路由搜索定时器、空闲回收与语言互换行为 |
 | U03 | P1 | 已实现 | test/u03-record-ux.test.js | 真机 window 模式重录、高分屏 4K 窗口录制、双路混音爆音与 Direct-Track 标注入口 |
 
+## 本轮验证记录（2026-11-26/27，本机）
+
+- 分支 `feat/review-optimization-2026-11-26`，基线 `master@0e8d040`（代码基线 8416120）。共 41 个提交，153 个文件，+29742/−1722。
+- 全量 `node --test test/*.test.js`：**3214 项，3213 通过**。唯一失败为 `test/usage-query.test.js` 的
+  “query p95 stays inside the 100 ms budget on ~100k synthetic buckets”（全量并发下 p95 约 110–180 ms；
+  单独运行 p95 66.8 ms 通过）。该测试与本次改动无关，属 AGENTS.md 已记录的满负载计时抖动。
+- `npm run check`：语法 610 文件、架构（`main.js` 1204/1205 行、最长行 158/160）、i18n（三语对称，未迁移
+  CJK 602/606）、评审证据（2 张登记表 / 50 工单 / 9 个必需 P0）全部通过。
+- 原生：`cargo test --locked --manifest-path native/clipboard/Cargo.toml`（lib 30 + 集成 12）通过；
+  `native/everything-search` cargo test 13 通过；`native/ocr` cargo test 4 通过；
+  `native/everything-search/bin/HighlighterEverything.exe` 已随 Rust 改动重建并提交；
+  `vendor/selection-hook`、`native/clipboard`、`native/ocr` 的构建产物在 gitignore 中，需由 `npm run build:native` 重建。
+- 真实 Electron 探针（本机按 AGENTS.md 处理 `ELECTRON_RUN_AS_NODE`、`TMP/TEMP`、`--no-sandbox` 注入）：
+  `diagnostics-runtime`、`electron-runtime`、`window-security-runtime` 通过。集成期间由探针发现并修复了两处回归：
+  H05 遗留的 `tray` 悬空引用导致 before-quit 抛错、应用无法退出（diagnostics 探针 40 s 超时暴露）；
+  N05 把 `applyPinData` 包进 `startPinRenderer()` 后窗口启动标记不可达（locked-sandbox 探针暴露）。
+- 未执行：`verify:package`（需完整 electron-builder 产物与静默安装）与上表“真机/发布门槛”列的全部项。
+  这些项不能由本机模拟替代，未冒充通过。
+
 ## 说明
 
 - 本表只登记可以在 CI 复跑的用例；真机列写的是仍需在发布候选上执行、且不能由本地模拟替代的证据。
