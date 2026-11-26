@@ -17,6 +17,9 @@
 | H03 | P0 | 已实现 | test/h03-markdown.test.js | 真实 Electron 划词窗口内流式渲染的选区保持与代码块展示（宿主沙箱经 AGENTS.md 环境处理后可跑） |
 | H04 | P0 | 已实现（报告 dwId 偏移有误，按官方 SDK 实现） | test/h04-utf8-decode.test.js, test/h04-everything-dwid.test.js | 真实 Everything 1.4/1.5 上中文路径 600 条大包；人为延迟回执验证迟到包丢弃；本机 1.4.1.1032 正路径冒烟已通过 |
 | H05 | P0 | 已实现 | test/h05-architecture-extraction.test.js | 打包候选上托盘菜单/记录/代理状态与实际点击行为（真机托盘交互） |
+| F02 | P0 | 已实现 | test/f02-selection-ipc-storm.test.js | 真机日常打字/滚轮时主进程不再收到 selection-hook IPC 唤醒；划词显示、点外隐藏、快捷键隐藏与剪贴板护栏不变 |
+| F07 | P2 | 已实现（会话索引 + usage 三项） | test/f07-conversation-store-index.test.js, test/f07-usage-costs.test.js | 真实 20 条会话目录的托盘重建延迟；真实 usage.db 在 24 个月数据下的体积对比 |
+| U05 | P1 | 已实现（配置侧，main.js 解除回收已接线） | test/u05-config-lifecycle.test.js | 真机水印截图输出、跨路由搜索定时器、空闲回收与语言互换行为 |
 
 ## 说明
 
