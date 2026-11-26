@@ -79,6 +79,7 @@ function createSelectionDomain(deps) {
 
   let windowManager = null
   let hookService = null
+  let unbindHookLifecycle = null
   let hookSuspendedForSettings = false
   const powerListeners = []
   let currentStreamController = null
@@ -153,7 +154,12 @@ function createSelectionDomain(deps) {
   function hasConversation() {
     return !!windowManager?.getActionWindow()
       || reclaimedConversations.size > 0
-      || !!conversationStore?.latest()
+      // F07: the tray rebuild asks this on every blur; the store answers from its memory index
+      // instead of parsing the whole conversation directory. Stores without the fast path (test
+      // fakes) still answer through latest().
+      || (typeof conversationStore?.hasSaved === 'function'
+        ? conversationStore.hasSaved()
+        : !!conversationStore?.latest())
   }
 
   // Brings back the newest saved conversation. Nothing streams, so the transcript
@@ -231,6 +237,7 @@ function createSelectionDomain(deps) {
       if (currentStreamController?.win === win) cancelToolbarStream(currentStreamController, 'window-hidden')
       createTrayIcon()
     },
+    onToolbarVisibilityChange: (visible) => postToolbarVisibility(visible),
     log
   })
 
@@ -275,6 +282,29 @@ function createSelectionDomain(deps) {
     return settings.selectionToolbar.enabled !== false || settings.clipboard?.enabled === true || deps.clipboardNeedsSelectionHook?.() === true
   }
 
+  // F02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §三.2):
+  // the hook host stops forwarding key/wheel/click events while the toolbar is off
+  // screen. This private, volatile channel mirrors the window state into it; the
+  // native ObserveInput counter (clipboard guardrail/lease logic) is untouched and
+  // keeps counting in the C++ hook thread either way. A lost message degrades to
+  // "host still suppresses" - never to the old storm - and host lifecycle events
+  // re-send the current state below.
+  function postToolbarVisibility(visible) {
+    const host = hookService?.host
+    if (!host || typeof host.postMessage !== 'function') return false
+    try {
+      host.postMessage({ type: 'toolbar-visibility', visible: visible === true })
+      return true
+    } catch (error) {
+      log('Selection toolbar visibility sync failed:', error?.message || String(error))
+      return false
+    }
+  }
+
+  function resyncToolbarVisibility() {
+    return postToolbarVisibility(windowManager ? windowManager.isToolbarVisible() : false)
+  }
+
   function initSelectionHook(reason = 'startup') {
     if (!needsSelectionHook()) return false
     if (!hookService) {
@@ -305,6 +335,11 @@ function createSelectionDomain(deps) {
         },
         log
       })
+      // A replacement host starts with the toolbar hidden; re-send the real state
+      // whenever one becomes ready so a restart cannot silently freeze the input gate.
+      if (typeof hookService.onLifecycle === 'function') {
+        unbindHookLifecycle = hookService.onLifecycle(() => resyncToolbarVisibility())
+      }
     }
     hookSuspendedForSettings = false
     if (getSettings().selectionToolbar.enabled !== false) registerSelectionDisplayEvents()
@@ -353,6 +388,8 @@ function createSelectionDomain(deps) {
     }
     disposeSelectionDisplayEvents()
     windowManager.recycleToolbarWindow('dispose')
+    if (typeof unbindHookLifecycle === 'function') unbindHookLifecycle()
+    unbindHookLifecycle = null
     hookService?.dispose()
     hookService = null
   }
