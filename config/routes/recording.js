@@ -1512,6 +1512,10 @@ function stopRecordingWorkbenchPolling() {
 // the main process stops with it instead of waking a hidden window every 2s.
 function recordingDeactivate() {
   stopRecordingWorkbenchPolling()
+  // U05: a preflight that is still waiting for microphone/system-audio permission keeps the
+  // capture streams open for seconds after the user left the page. Its own 5 s deadline is the
+  // backstop; this cancels immediately when the route is left.
+  cancelRecordingPreflight()
 }
 
 // D2-2 (S14): register with the shell dispatch table (config.html loads this file

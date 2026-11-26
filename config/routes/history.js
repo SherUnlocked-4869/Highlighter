@@ -484,6 +484,9 @@ async function renderHistory() {
 }
 
 async function renderHistoryPage(renderVersion) {
+  // U05: an in-flight render (or the debounced search below) may still complete after the user
+  // navigated away; writing the history grid into the next page's DOM was the reported bug.
+  if (currentRoute !== 'history') return
   historyThumbnailObserver?.disconnect()
   historyThumbnailObserver = null
   const headerActions = '<div class="page-head-actions action-group"><button class="button subtle" id="cleanupHistory">' + t('config.history.cleanup-invalid') + '</button><button class="button subtle danger" id="clearHistory">' + t('config.history.clear-all') + '</button></div>'
@@ -689,5 +692,14 @@ async function renderHistoryPage(renderVersion) {
 
 // D2-2（S14）：登记到主壳 renderRoute() 的分派表（config.html 里本文件先于 config.js 加载）。
 // 包一层箭头函数：登记语句本身不解析被指的标识符，调用时才解析（与拆分前调用形态一致）。
+// U05: called by the shell's navigate() when the history route is left. The debounced search
+// timer belongs to this page and must not fire against another route's DOM.
+function historyDeactivate() {
+  if (historySearchTimer) {
+    clearTimeout(historySearchTimer)
+    historySearchTimer = null
+  }
+}
+
 window.configRoutes = window.configRoutes || {}
 window.configRoutes['renderHistory'] = () => renderHistory()

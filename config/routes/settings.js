@@ -216,6 +216,29 @@ function bindFunctionCaptureTab() {
   }
   const selectionMask = document.getElementById('selectionMask')
   selectionMask.onchange = () => updateSettings({ screenshot: { selectionMask: selectionMask.value.trim() } })
+  // U05: the watermark contract (settings-defaults.js + capture.js' watermark panel) already
+  // existed; only the settings form was missing. Every write merges into the stored object so
+  // the fields capture.js does not expose here (color/spacing/fontSize/rotation) survive.
+  const saveWatermark = (patch) => {
+    const current = (settings.screenshot && settings.screenshot.watermark) || {}
+    return updateSettings({ screenshot: { watermark: { ...current, ...patch } } })
+  }
+  const watermarkContent = document.getElementById('watermarkContent')
+  watermarkContent.onchange = () => saveWatermark({ content: watermarkContent.value.trim() })
+  const watermarkOpacity = document.getElementById('watermarkOpacity')
+  watermarkOpacity.onchange = () => {
+    const value = Math.max(0, Math.min(100, Math.round(Number(watermarkOpacity.value) || 0)))
+    watermarkOpacity.value = String(value)
+    saveWatermark({ opacity: value })
+  }
+  const watermarkDateSuffix = document.getElementById('watermarkDateSuffix')
+  watermarkDateSuffix.onclick = () => {
+    const current = (settings.screenshot && settings.screenshot.watermark) || {}
+    const next = current.dateSuffix !== true
+    watermarkDateSuffix.classList.toggle('on', next)
+    watermarkDateSuffix.setAttribute('aria-checked', String(next))
+    return saveWatermark({ dateSuffix: next })
+  }
   bindSwitches()
 }
 
@@ -360,6 +383,9 @@ function renderFunctionSettings() {
     <div class="form-row">${settingsFieldLabel('historyLimit', 'config.function-settings.history-limit')}<input id="historyLimit" type="number" min="10" max="1000" value="${settings.screenshot.historyLimit}"></div>
     <div class="form-row">${settingsFieldLabel('historyDirectory', 'config.settings-system.history-directory', 'config.settings-system.history-directory-hint')}<div class="action-group field-actions"><input id="historyDirectory" aria-describedby="historyDirectoryHint" type="text" required value="${escapeHtml(settings.screenshot.historyDirectory)}"><button class="button" id="chooseHistoryDirectory">${t('config.settings-system.choose')}</button></div></div>
     <div class="form-row">${settingsFieldLabel('selectionMask', 'config.settings-general.selection-mask')}<input id="selectionMask" type="text" value="${escapeHtml(settings.screenshot.selectionMask)}"></div>
+    <div class="form-row">${settingsFieldLabel('watermarkContent', 'config.function-settings.watermark-content', 'config.function-settings.watermark-content-hint')}<input id="watermarkContent" aria-describedby="watermarkContentHint" type="text" value="${escapeHtml(settings.screenshot.watermark?.content || '')}"></div>
+    <div class="form-row">${settingsFieldLabel('watermarkOpacity', 'config.function-settings.watermark-opacity')}<input id="watermarkOpacity" type="number" min="0" max="100" value="${Math.max(0, Math.min(100, Number(settings.screenshot.watermark?.opacity) || 0))}"></div>
+    <div class="form-row"><div class="form-label"><b>${t('config.function-settings.watermark-date-suffix')}</b></div><button type="button" class="switch ${settings.screenshot.watermark?.dateSuffix === true ? 'on' : ''}" id="watermarkDateSuffix" role="switch" aria-checked="${settings.screenshot.watermark?.dateSuffix === true}"></button></div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-general.double-click-copy')}</b></div>${switchMarkup(settings.screenshot.doubleClickCopy, 'doubleClickCopy', 'screenshot')}</div>
     <div class="form-row"><div class="form-label"><b>${t('config.settings-general.show-color-picker')}</b></div>${switchMarkup(settings.screenshot.showColorPicker, 'showColorPicker', 'screenshot')}</div>
   </div>`

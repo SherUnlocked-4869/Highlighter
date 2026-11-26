@@ -20,7 +20,25 @@ function renderTranslation() {
   }
   document.getElementById('clearSource').onclick = () => { document.getElementById('sourceText').value = ''; document.getElementById('translatedText').value = '' }
   document.getElementById('copyTranslation').onclick = async () => { await navigator.clipboard.writeText(document.getElementById('translatedText').value); toast(t('config.translation.copied')) }
-  document.getElementById('swapLanguage').onclick = () => { const source = document.getElementById('sourceText'), target = document.getElementById('translatedText'); if (target.value) { const old = source.value; source.value = target.value; target.value = old } }
+  document.getElementById('swapLanguage').onclick = () => {
+    const source = document.getElementById('sourceText')
+    const target = document.getElementById('translatedText')
+    if (target.value) {
+      const old = source.value
+      source.value = target.value
+      target.value = old
+    }
+    // U05: the arrow also flips the language pair. 'auto' on the source side cannot be a
+    // target, so a detected-source swap falls back to the previous target option.
+    const sourceSelect = document.getElementById('sourceLanguage')
+    const targetSelect = document.getElementById('targetLanguage')
+    if (sourceSelect && targetSelect) {
+      const previousSource = sourceSelect.value
+      const previousTarget = targetSelect.value
+      sourceSelect.value = previousTarget
+      targetSelect.value = previousSource === 'auto' ? (previousTarget || targetSelect.options[0]?.value || '') : previousSource
+    }
+  }
 }
 
 // D2-2（S14）：登记到主壳 renderRoute() 的分派表（config.html 里本文件先于 config.js 加载）。

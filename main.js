@@ -323,10 +323,10 @@ function assertManagedDataWritable() {
 
 const writeAppLog = createAppLogger({
   filePath: logFile,
-  // Reads the store rather than getSettings(): this predicate also runs while the
-  // settings service is still being constructed (a stored-value migration logs),
-  // and getSettings() would dereference the not-yet-assigned service.
-  isEnabled: () => !dataRootMigrationInProgress && !!store && store.get('settings', {}).system?.runLog !== false,
+  // F01: reads the cached settings snapshot instead of the store. This predicate runs for EVERY
+  // log line and a raw store.get() re-reads and re-parses config.json each time. It is only the
+  // startup migration window (before the service is assigned) that has no snapshot yet.
+  isEnabled: () => !dataRootMigrationInProgress && !!store && settingsService?.getSettings().system?.runLog !== false,
   sessionId: applicationSessionId,
   version: app.getVersion(),
   consoleLike: app.isPackaged ? null : console
@@ -849,6 +849,8 @@ function createMainWindow(route = 'home') {
   if (mainWindow && !mainWindow.isDestroyed()) {
     const startedAt = performance.now()
     deviceBattery.beforeNavigate(route)
+    // U05: showing the window cancels a pending idle reclaim armed while it was hidden.
+    mainWindowReclaim.disarm()
     mainWindow.show()
     mainWindow.focus()
     mainWindow.webContents.send('app:navigate', route)
@@ -882,6 +884,8 @@ function createMainWindow(route = 'home') {
   win.once('ready-to-show', () => {
     if (mainWindow !== win || win.isDestroyed()) return
     positionAutomationWindow(win)
+    // U05: the first show goes through ready-to-show, so disarm here too.
+    mainWindowReclaim.disarm()
     win.show()
     performanceMonitor.finish(readyToken, {
       moduleElapsedMs: Math.round((performance.now() - mainModuleStartedAt) * 100) / 100
@@ -896,10 +900,9 @@ function createMainWindow(route = 'home') {
   return win
 }
 
-// H05 (§二.5): the tray singleton, asset swap and context menu moved to main/domains/tray.
-// The historical name stays as a one-line delegation because the startup sequence and several
-// contract tests call `createTrayIcon()`. Everything the tray reads is a resolver, so the
-// construction below is safe even though the domains are assigned after this point.
+// H05 (section 2.5): the tray singleton, asset swap and menu live in main/domains/tray. The
+// historical name stays as a delegation because the startup sequence and several contract tests
+// call it; every collaborator is a resolver, so the construction order is free.
 const trayController = createTrayController({
   Tray,
   Menu,
@@ -984,7 +987,7 @@ function setGameModeEnabled(enabled, reason = 'tray') {
   }
   return applyGameModeState(nextEnabled, reason)
 }
-// H05 (§二.5): every channel registration is aggregated in main/ipc/index.js. main.js hands
+// H05 (section 2.5): every channel registration is aggregated in main/ipc/index.js. main.js hands
 // over the live collaborators only; anything created during startApplication (settings,
 // history, export results) is passed as a resolver so registration stays order-independent.
 registerAllIpc({
