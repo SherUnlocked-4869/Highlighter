@@ -15,6 +15,9 @@ const {
   sanitizeAnnotationSnapshot
 } = require('../../../record/annotation-utils')
 const { normalizeQuality, normalizeCountdown } = require('../../../shared/recording-quality')
+// N03: audio-track presence decides whether a pause analysis is even attempted (a silent
+// recording has nothing to detect; the editor must be told why instead of offering a no-op).
+const { projectHasAudio } = require('../../../shared/recording-project-schema')
 const { readPngSize } = require('../../services/capture-geometry')
 const { createRecordingSalvage, salvageAssetName } = require('../../services/recording-salvage')
 
@@ -146,6 +149,362 @@ function pinRecordFrame(pinDomain, projectId, payload = {}) {
   }
 }
 
+// ---------------------------------------------------------------- N03 HUD / pause analysis (pure)
+//
+// docs/reviews/2026-11-26-code-review-and-optimization-report.md section 5.3. Two additive features,
+// both built on the R5 event track and kept pure here so node tests can drive them without
+// Electron, ffmpeg or a renderer:
+//   * keystroke capsules: a bounded, validated subset of wall-clock shortcut events that the
+//     control bar reports on its state channel; mapped to media time with the same pause-aware
+//     clock the pointer track uses;
+//   * pause suggestions: silence ranges detected by ffmpeg are merged with pointer-idle ranges
+//     from the event track before anything is offered to the editor.
+const KEYSTROKE_LIMIT = 2000
+const KEYSTROKE_BATCH_LIMIT = 500
+const KEYSTROKE_COMBO_MAX_LENGTH = 48
+const KEYSTROKE_NAMED_KEY = 'Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|(?:F(?:[1-9]|1[0-2]))'
+const KEYSTROKE_CHORD_PATTERN = new RegExp(`^(?:(?:Ctrl|Alt|Shift|Win)\\+){1,4}(?:[A-Z0-9]|${KEYSTROKE_NAMED_KEY})$`)
+const KEYSTROKE_SINGLE_PATTERN = new RegExp(`^(?:${KEYSTROKE_NAMED_KEY})$`)
+
+// Silencedetect + merge defaults. Exported so the editor contract and tests share one table.
+const SILENCE_LIMITS = Object.freeze({
+  // ffmpeg `silencedetect=noise=<db>dB:d=<seconds>`: -35 dB catches room tone without
+  // clipping quiet speech onsets, and 0.7 s is the shortest "dead air" a viewer notices.
+  noiseDb: -35,
+  minSilenceMs: 700,
+  // Keep this much audio on each side of a suggested cut so a cut can never clip a word.
+  keepPaddingMs: 180,
+  // Adjacent silent spans separated by less than this are one pause for the user.
+  mergeGapMs: 250,
+  minCutMs: 300,
+  // Pointer-idle evidence (R5 dwell rule uses 1.2 s / 0.04; pause cuts are stricter so a
+  // deliberate on-screen demo is never classified as dead air).
+  minIdleMs: 1200,
+  idleDrift: 0.02,
+  idleOverlap: 0.6,
+  analysisTimeoutMs: 20000,
+  maxStderrBytes: 4 * 1024 * 1024,
+  maxCuts: 60
+})
+
+function isValidKeystrokeCombo(value) {
+  // Deliberately NOT trimmed: surrounding whitespace means the combo was not produced by the
+  // capture policy, so it is rejected as invalid rather than silently normalised.
+  const combo = typeof value === 'string' ? value : ''
+  if (!combo || combo.length > KEYSTROKE_COMBO_MAX_LENGTH || combo !== combo.trim()) return false
+  return KEYSTROKE_CHORD_PATTERN.test(combo) || KEYSTROKE_SINGLE_PATTERN.test(combo)
+}
+
+// Raw renderer batches are `[{ at, combo }]`; only valid combos and finite times survive and
+// the batch itself is bounded so one buggy state report cannot grow the main-process buffer.
+function sanitizeKeystrokeBatch(value) {
+  if (!Array.isArray(value)) return []
+  const entries = []
+  for (const entry of value.slice(0, KEYSTROKE_BATCH_LIMIT)) {
+    if (!entry || typeof entry !== 'object') continue
+    if (!isValidKeystrokeCombo(entry.combo)) continue
+    const at = Number(entry.at)
+    if (!Number.isFinite(at) || at < 0) continue
+    entries.push({ at, combo: String(entry.combo).trim() })
+  }
+  return entries
+}
+
+function sanitizePausedIntervals(value) {
+  if (!Array.isArray(value)) return []
+  const intervals = []
+  for (const entry of value.slice(0, 1000)) {
+    const startWall = Number(entry?.startWall)
+    const endWall = Number(entry?.endWall)
+    if (!Number.isFinite(startWall) || !Number.isFinite(endWall) || endWall < startWall) continue
+    intervals.push({ startWall, endWall })
+  }
+  intervals.sort((left, right) => left.startWall - right.startWall)
+  return intervals
+}
+
+// Total pause duration that had ELAPSED at `at` (contract §2.2). Overlapping renderer
+// intervals are clamped so a buggy payload cannot over-subtract.
+function pausedMsElapsed(intervals, at) {
+  let total = 0
+  let coveredUntil = -Infinity
+  for (const interval of intervals) {
+    if (interval.startWall > at) break
+    const start = Math.max(interval.startWall, coveredUntil)
+    if (start >= at) break
+    total += Math.min(interval.endWall, at) - start
+    coveredUntil = Math.max(coveredUntil, interval.endWall)
+  }
+  return total
+}
+
+// Wall-clock shortcut events -> media-time capsules. Same rules as the pointer track: negative
+// and beyond-duration entries are dropped, output is time-ascending and bounded.
+function buildKeystrokeTrack(entries, timing = {}) {
+  const durationMs = Math.max(0, Math.round(Number(timing.durationMs) || 0))
+  const mediaStartedAtWall = Number(timing.mediaStartedAtWall)
+  if (!Number.isFinite(mediaStartedAtWall) || durationMs <= 0) return []
+  const pausedIntervals = sanitizePausedIntervals(timing.pausedIntervals)
+  const capsules = []
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!isValidKeystrokeCombo(entry?.combo)) continue
+    const at = Number(entry?.at)
+    if (!Number.isFinite(at)) continue
+    const tMs = Math.round(at - mediaStartedAtWall - pausedMsElapsed(pausedIntervals, at))
+    if (!Number.isFinite(tMs) || tMs < 0 || tMs > durationMs) continue
+    capsules.push({ tMs, combo: String(entry.combo).trim() })
+  }
+  capsules.sort((left, right) => left.tMs - right.tMs)
+  const deduped = []
+  for (const entry of capsules) {
+    const previous = deduped[deduped.length - 1]
+    if (previous && previous.tMs === entry.tMs && previous.combo === entry.combo) continue
+    deduped.push(entry)
+  }
+  return deduped.slice(0, KEYSTROKE_LIMIT)
+}
+
+function emptyEventTrack(durationMs) {
+  return {
+    schemaVersion: 1,
+    durationMs: Math.max(0, Math.round(Number(durationMs) || 0)),
+    sampledAtHz: EVENT_TRACK_SAMPLED_HZ,
+    pointer: [],
+    clicks: [],
+    truncated: false
+  }
+}
+
+// ffmpeg `silencedetect` writes its findings to stderr as:
+//   [silencedetect @ ...] silence_start: 12.345
+//   [silencedetect @ ...] silence_end: 15.678 | silence_duration: 3.333
+// A dangling start at EOF is closed at the recording duration (a take that ends in silence).
+function parseSilenceDetectOutput(text, { durationMs = 0 } = {}) {
+  const limit = Math.max(0, Math.round(Number(durationMs) || 0))
+  const clampMs = (seconds) => {
+    const ms = Math.round(Number(seconds) * 1000)
+    if (!Number.isFinite(ms)) return null
+    return Math.max(0, limit > 0 ? Math.min(ms, limit) : ms)
+  }
+  const starts = []
+  const ranges = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const startMatch = /silence_start:\s*(-?\d+(?:\.\d+)?)/.exec(line)
+    if (startMatch) {
+      const startMs = clampMs(startMatch[1])
+      if (startMs !== null) starts.push(startMs)
+      continue
+    }
+    const endMatch = /silence_end:\s*(-?\d+(?:\.\d+)?)/.exec(line)
+    if (endMatch && starts.length > 0) {
+      const endMs = clampMs(endMatch[1])
+      const startMs = starts.pop()
+      if (endMs !== null && endMs > startMs) ranges.push({ startMs, endMs })
+    }
+  }
+  if (starts.length > 0 && limit > 0) {
+    const startMs = starts[starts.length - 1]
+    if (limit > startMs) ranges.push({ startMs, endMs: limit })
+  }
+  ranges.sort((left, right) => left.startMs - right.startMs)
+  const merged = []
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1]
+    if (previous && range.startMs <= previous.endMs) previous.endMs = Math.max(previous.endMs, range.endMs)
+    else merged.push({ ...range })
+  }
+  return merged
+}
+
+// Consecutive pointer samples that stay within `idleDrift` of the run anchor for at least
+// `minIdleMs` are a pointer-idle range. A sampling gap longer than a pause-sized hole ends the
+// run instead of bridging two unrelated stays.
+function computePointerIdleRanges(pointer, options = {}) {
+  const settings = { ...SILENCE_LIMITS, ...(options || {}) }
+  const samples = []
+  for (const entry of Array.isArray(pointer) ? pointer : []) {
+    const tMs = Number(entry?.tMs)
+    const x = Number(entry?.x)
+    const y = Number(entry?.y)
+    if (!Number.isFinite(tMs) || !Number.isFinite(x) || !Number.isFinite(y)) continue
+    samples.push({ tMs, x, y })
+  }
+  samples.sort((left, right) => left.tMs - right.tMs)
+  const maxGapMs = Math.max(1000, settings.minIdleMs)
+  const ranges = []
+  let anchor = null
+  let last = null
+  const flush = () => {
+    if (anchor && last && last.tMs - anchor.tMs >= settings.minIdleMs) {
+      ranges.push({ startMs: anchor.tMs, endMs: last.tMs })
+    }
+    anchor = null
+    last = null
+  }
+  for (const sample of samples) {
+    if (anchor && last) {
+      const gap = sample.tMs - last.tMs
+      const drift = Math.hypot(sample.x - anchor.x, sample.y - anchor.y)
+      if (gap > maxGapMs || drift > settings.idleDrift) {
+        flush()
+      }
+    }
+    if (!anchor) anchor = sample
+    last = sample
+  }
+  flush()
+  ranges.sort((left, right) => left.startMs - right.startMs)
+  return ranges
+}
+
+function overlapMs(range, covers) {
+  let total = 0
+  for (const cover of covers) {
+    const start = Math.max(range.startMs, cover.startMs)
+    const end = Math.min(range.endMs, cover.endMs)
+    if (end > start) total += end - start
+  }
+  return total
+}
+
+// The user-facing "one click remove dead air" suggestion list. Audio silence is the trigger;
+// pointer-idle ranges are corroborating evidence (a silent span where the mouse keeps moving is
+// someone demonstrating something, not dead air). Padding is trimmed from both sides, short
+// suggestions are dropped, close ones are merged and the list is capped.
+function derivePauseCuts({
+  silenceRanges,
+  pointer = [],
+  durationMs = 0,
+  hasEventTrack = false,
+  options = {}
+} = {}) {
+  const settings = { ...SILENCE_LIMITS, ...(options || {}) }
+  const duration = Math.max(0, Math.round(Number(durationMs) || 0))
+  if (!(duration > 0)) return { ok: false, code: 'duration-unavailable' }
+  const idleRanges = hasEventTrack ? computePointerIdleRanges(pointer, settings) : []
+  const silence = []
+  let silenceCandidates = 0
+  for (const range of Array.isArray(silenceRanges) ? silenceRanges : []) {
+    const startMs = Math.max(0, Math.min(duration, Math.round(Number(range?.startMs) || 0)))
+    const endMs = Math.max(0, Math.min(duration, Math.round(Number(range?.endMs) || 0)))
+    if (endMs - startMs < settings.minSilenceMs) continue
+    silenceCandidates += 1
+    if (hasEventTrack && overlapMs({ startMs, endMs }, idleRanges) < (endMs - startMs) * settings.idleOverlap) continue
+    silence.push({ startMs, endMs })
+  }
+  const cuts = []
+  // Merge first, while the ranges are still raw: two silent spans separated by a short blip are
+  // one pause for the user, and padding them separately would keep (and export) that blip.
+  const mergedSilence = []
+  for (const range of silence) {
+    const previous = mergedSilence[mergedSilence.length - 1]
+    if (previous && range.startMs - previous.endMs <= settings.mergeGapMs) {
+      previous.endMs = Math.max(previous.endMs, range.endMs)
+      continue
+    }
+    mergedSilence.push({ ...range })
+  }
+  for (const range of mergedSilence) {
+    const startMs = range.startMs + settings.keepPaddingMs
+    const endMs = range.endMs - settings.keepPaddingMs
+    if (endMs - startMs < settings.minCutMs) continue
+    cuts.push({ startMs, endMs })
+  }
+  if (cuts.length === 0) {
+    return {
+      ok: false,
+      code: hasEventTrack && idleRanges.length === 0 && silenceCandidates > 0 ? 'no-idle' : 'nothing-to-cut'
+    }
+  }
+  const capped = cuts.slice(0, settings.maxCuts)
+  const removedMs = capped.reduce((total, cut) => total + (cut.endMs - cut.startMs), 0)
+  return {
+    ok: true,
+    cuts: capped,
+    removedMs,
+    silenceMs: capped.reduce((total, cut) => total + (cut.endMs - cut.startMs), 0),
+    pointerIdleRanges: idleRanges.length
+  }
+}
+
+// Runs `ffmpeg -af silencedetect ... -f null -` and resolves a stable result. It never rejects:
+// the caller only needs "ok/code" so the editor can explain why one-click cutting is offered or
+// not. `spawnProcess` is injected, which is how the test drives a fake ffmpeg stderr stream.
+function runSilenceDetect({
+  ffmpegPath,
+  sourcePath,
+  durationMs = 0,
+  spawnProcess = null,
+  limits = {},
+  setTimeout: setTimeoutImpl = setTimeout,
+  clearTimeout: clearTimeoutImpl = clearTimeout
+} = {}) {
+  const settings = { ...SILENCE_LIMITS, ...(limits || {}) }
+  if (typeof ffmpegPath !== 'string' || !ffmpegPath) return Promise.resolve({ ok: false, code: 'analysis-unavailable' })
+  if (typeof sourcePath !== 'string' || !sourcePath) return Promise.resolve({ ok: false, code: 'source-unavailable' })
+  if (typeof spawnProcess !== 'function') return Promise.resolve({ ok: false, code: 'analysis-unavailable' })
+  const seconds = Math.max(0.1, settings.minSilenceMs / 1000)
+  const args = [
+    '-hide_banner',
+    '-nostdin',
+    '-i', sourcePath,
+    '-map', '0:a:0',
+    '-vn',
+    '-af', `silencedetect=noise=${settings.noiseDb}dB:d=${seconds}`,
+    '-f', 'null',
+    '-'
+  ]
+  return new Promise((resolve) => {
+    let settled = false
+    let stderr = ''
+    let timer = 0
+    let child = null
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeoutImpl(timer)
+      resolve(value)
+    }
+    const capture = (chunk) => {
+      if (stderr.length >= settings.maxStderrBytes) return
+      stderr += String(chunk)
+      if (stderr.length > settings.maxStderrBytes) stderr = stderr.slice(-settings.maxStderrBytes)
+    }
+    try {
+      child = spawnProcess(ffmpegPath, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+    } catch (error) {
+      finish({ ok: false, code: 'analysis-failed' })
+      return
+    }
+    if (!child || typeof child.on !== 'function') {
+      finish({ ok: false, code: 'analysis-failed' })
+      return
+    }
+    if (child.stderr && typeof child.stderr.on === 'function') child.stderr.on('data', capture)
+    child.on('error', () => finish({ ok: false, code: 'analysis-failed' }))
+    child.on('close', (code) => {
+      if (Number(code) === 0) {
+        finish({ ok: true, ranges: parseSilenceDetectOutput(stderr, { durationMs }) })
+        return
+      }
+      if (/matches no streams|does not contain any stream/i.test(stderr)) {
+        finish({ ok: false, code: 'no-audio' })
+        return
+      }
+      if (/No such file or directory|Error opening input/i.test(stderr)) {
+        finish({ ok: false, code: 'source-unavailable' })
+        return
+      }
+      finish({ ok: false, code: 'analysis-failed' })
+    })
+    timer = setTimeoutImpl(() => {
+      try { child.kill?.() } catch {}
+      finish({ ok: false, code: 'analysis-timeout' })
+    }, settings.analysisTimeoutMs)
+    if (timer && typeof timer.unref === 'function') timer.unref()
+  })
+}
+
 function createRecordDomain(deps) {
   const {
     app,
@@ -231,6 +590,10 @@ function createRecordDomain(deps) {
   // process-wide instance (one hook), used only while a demo-enhanced capture runs.
   let pointerTrackService = null
   let activeEventTrack = null
+  // N03: projectId -> one pause-suggestion answer per editor lifetime. Silence detection decodes
+  // the whole audio track, so re-running it on every event-track read would be wasteful; the cache
+  // is dropped when the source is re-derived (reload/salvage) because the old answer may not apply.
+  const pauseAnalysisCache = new Map()
 
   let workbench = {}
   try {
@@ -1179,32 +1542,83 @@ function createRecordDomain(deps) {
     }
   }
 
-  function sanitizePausedIntervals(value) {
-    if (!Array.isArray(value)) return []
-    const intervals = []
-    for (const entry of value.slice(0, 1000)) {
-      const startWall = Number(entry?.startWall)
-      const endWall = Number(entry?.endWall)
-      if (!Number.isFinite(startWall) || !Number.isFinite(endWall) || endWall < startWall) continue
-      intervals.push({ startWall, endWall })
-    }
-    intervals.sort((left, right) => left.startWall - right.startWall)
-    return intervals
-  }
-
   // Total pause duration that had ELAPSED at `at` (contract §2.2: mediaMs = at - start - paused so
   // far). Overlapping renderer intervals are clamped so a buggy payload cannot over-subtract.
   function pausedMsAt(intervals, at) {
-    let total = 0
-    let coveredUntil = -Infinity
-    for (const interval of intervals) {
-      if (interval.startWall > at) break
-      const start = Math.max(interval.startWall, coveredUntil)
-      if (start >= at) break
-      total += Math.min(interval.endWall, at) - start
-      coveredUntil = Math.max(coveredUntil, interval.endWall)
+    return pausedMsElapsed(intervals, at)
+  }
+
+  // N03: accumulates the shortcut batches the control bar piggybacks on its authoritative state
+  // report (`record:state` already carries an object; an array field is additive and needs no new
+  // channel, no preload change and no sender-policy change). The buffer is per-window and reset
+  // when a take starts, so a restarted take never inherits the previous one's shortcuts.
+  function captureKeystrokeBatch(win, value) {
+    if (!win || !Array.isArray(value)) return
+    const batch = sanitizeKeystrokeBatch(value)
+    if (batch.length === 0) return
+    const list = Array.isArray(win._recordKeystrokes) ? win._recordKeystrokes : (win._recordKeystrokes = [])
+    for (const entry of batch) list.push(entry)
+    if (list.length > KEYSTROKE_LIMIT) list.splice(0, list.length - KEYSTROKE_LIMIT)
+  }
+
+  // Wraps the keystroke half of the events.json payload; `null` keeps the R5 shape untouched when
+  // the take contained no shortcut worth showing.
+  function attachKeystrokeTrack(track, entries, timing) {
+    const keystrokes = buildKeystrokeTrack(entries, timing)
+    if (keystrokes.length === 0) return track
+    if (track) {
+      track.keystrokes = keystrokes
+      return track
     }
-    return total
+    return { ...emptyEventTrack(timing?.durationMs), keystrokes }
+  }
+
+  // Silence detection decodes the recording's audio track. The result is cached per project for
+  // this process (a re-read of the event track must not run ffmpeg twice) and only attached to the
+  // IPC answer when the analysis was actually ATTEMPTED - an unavailable service keeps the frozen
+  // `{ ok, track }` answer shape so a pre-N03 bridge cannot start receiving a new field.
+  async function analyzeProjectPauseCandidates(project, track) {
+    const projectId = text(project?.id)
+    if (!projectId) return null
+    if (pauseAnalysisCache.has(projectId)) return pauseAnalysisCache.get(projectId)
+    let recordingService = null
+    try {
+      recordingService = getRecordingService()
+    } catch (error) {
+      log('Recording pause analysis service unavailable:', error?.message || error)
+    }
+    const ffmpegPath = text(recordingService?.ffmpegPath)
+    if (!ffmpegPath || typeof recordingService?.spawnProcess !== 'function') return null
+    const service = projectServiceOrNull()
+    if (!service || typeof service.sourcePathOf !== 'function') return null
+    const sourcePath = await service.sourcePathOf(projectId).catch(() => '')
+    if (!sourcePath) return null
+    const durationMs = Math.max(0, Math.round(Number(project?.media?.durationMs) || 0))
+    let analysis
+    if (!projectHasAudio(project)) {
+      analysis = { ok: false, code: 'no-audio' }
+    } else if (!(durationMs > 0)) {
+      analysis = { ok: false, code: 'duration-unavailable' }
+    } else {
+      const detected = await runSilenceDetect({
+        ffmpegPath,
+        sourcePath,
+        durationMs,
+        spawnProcess: recordingService.spawnProcess
+      })
+      if (!detected.ok) {
+        analysis = detected
+      } else {
+        analysis = derivePauseCuts({
+          silenceRanges: detected.ranges,
+          pointer: Array.isArray(track?.pointer) ? track.pointer : [],
+          durationMs,
+          hasEventTrack: !!track
+        })
+      }
+    }
+    pauseAnalysisCache.set(projectId, analysis)
+    return analysis
   }
 
   // Builds the frozen events.json v1 payload (contract §2.3) from raw wall-clock buffers. Returns
@@ -2277,6 +2691,9 @@ function createRecordDomain(deps) {
         }
         win._recordSessionId = session.id
         win._recordProjectId = created.project.id
+        // N03: every take starts with an empty shortcut buffer; the capsules of a restarted take
+        // must never be attributed to the previous one.
+        win._recordKeystrokes = []
         // Plan §5.1: the record-mode last region is updated when a recording successfully STARTS, so
         // a cancelled selection never overwrites it. `selectionBounds` on the window's init payload is
         // Electron DIP; recordFromDisplaySelection owns the DIP->pixel conversion.
@@ -2395,6 +2812,7 @@ function createRecordDomain(deps) {
         if (!projectId || !projectService) {
           // Legacy/no-persistence fallback: the sealed session stays readable for the legacy
           // channels, but there is no project to hand to an editor.
+          win._recordKeystrokes = []
           await stopEventTrack()
           return { ok: true, projectId: '', legacy: true, bytesWritten: Number(descriptor?.bytesWritten) || 0 }
         }
@@ -2437,12 +2855,15 @@ function createRecordDomain(deps) {
           pausedIntervals,
           durationMs: probed?.ok ? Number(probed.metadata?.durationMs) || 0 : 0
         }
+        // N03: shortcut capsules are independent of the demo-enhancement switch. They use the same
+        // pause-aware wall-clock mapping as the pointer track, and a take with no pointer track can
+        // still persist an events.json that contains only keystrokes.
+        const keystrokeEntries = Array.isArray(win._recordKeystrokes) ? win._recordKeystrokes.splice(0) : []
         const collected = await stopEventTrack({ discard: false })
-        if (collected) {
-          const track = buildEventTrack(win, collected.results, trackTiming)
-          if (track) await writeEventTrack(projectId, track)
-          else log('Recording event track skipped: unusable timing or content region')
-        }
+        const pointerTrack = collected ? buildEventTrack(win, collected.results, trackTiming) : null
+        if (collected && !pointerTrack) log('Recording event track skipped: unusable timing or content region')
+        const eventTrack = attachKeystrokeTrack(pointerTrack, keystrokeEntries, trackTiming)
+        if (eventTrack) await writeEventTrack(projectId, eventTrack)
         const opened = await openEditor(projectId).catch((error) => {
           log('Recording editor open failed:', projectId, error?.message || error)
           return { ok: false, code: 'editor-failed' }
@@ -2704,6 +3125,9 @@ function createRecordDomain(deps) {
         const win = requireRecordSender(event)
         const sessionId = text(payload.sessionId)
         if (sessionId && win._recordSessionId && sessionId !== win._recordSessionId) return win._recordState || DEFAULT_STATE
+        // N03: the control bar reports shortcut batches on this authoritative channel, so no new
+        // IPC surface is needed for the keystroke capsules.
+        captureKeystrokeBatch(win, payload.keystrokes)
         return updateRecordState(win, payload) || DEFAULT_STATE
       },
       // R2 (contracts §9.2): closes the loop for a tray/shortcut command. A failed command is
@@ -3110,6 +3534,9 @@ function createRecordDomain(deps) {
       editorReload: async (event, { projectId } = {}) => {
         const win = requireEditorSender(event)
         const id = requireEditorProject(win, projectId)
+        // N03: a reload can swap the source (recovery retry), so a cached pause analysis for the
+        // previous bytes must not be reused.
+        pauseAnalysisCache.delete(id)
         const service = requireProjectService()
         let project = await getProject(id)
         if (!project) return { ok: false, code: 'not-found' }
@@ -3141,7 +3568,13 @@ function createRecordDomain(deps) {
           log('Recording event track read failed:', id, error?.message || error)
           return null
         })
-        return { ok: true, track: track && typeof track === 'object' ? track : null }
+        const answer = { ok: true, track: track && typeof track === 'object' ? track : null }
+        // N03: one-click dead-air removal needs the audio analysis to happen where ffmpeg lives.
+        // The result is attached as `pauseAnalysis` ONLY when the analysis was attempted; an
+        // install without an ffmpeg path keeps the frozen `{ ok, track }` shape.
+        const pauseAnalysis = await analyzeProjectPauseCandidates(project, answer.track)
+        if (pauseAnalysis) answer.pauseAnalysis = pauseAnalysis
+        return answer
       },
       // D03: the recovery banner's salvage action. Ownership is checked like every other editor
       // channel; a success answers the same payload shape as reload so the window can swap the
@@ -3150,6 +3583,8 @@ function createRecordDomain(deps) {
         assertManagedDataWritable()
         const win = requireEditorSender(event)
         const id = requireEditorProject(win, projectId)
+        // N03: the salvaged asset becomes a NEW source; discard the old audio analysis.
+        pauseAnalysisCache.delete(id)
         const result = await salvageProject(id)
         if (!result.ok) return publicSalvageFailure(result)
         const payload = await editorInitPayload(result.project).catch((error) => {
@@ -3339,5 +3774,16 @@ module.exports = {
   // test/recording-pin-frame.test.js.
   sanitizeRecordFramePin,
   pinRecordFrame,
-  PIN_FRAME_MAX_BYTES
+  PIN_FRAME_MAX_BYTES,
+  // N03 (review 2026-11-26 section 5.3) pure helpers, shared with test/n03-recording-hud.test.js:
+  // keystroke capture/normalisation and the silencedetect + pointer-idle pause suggestion maths.
+  KEYSTROKE_LIMIT,
+  SILENCE_LIMITS,
+  buildKeystrokeTrack,
+  computePointerIdleRanges,
+  derivePauseCuts,
+  isValidKeystrokeCombo,
+  parseSilenceDetectOutput,
+  runSilenceDetect,
+  sanitizeKeystrokeBatch
 }

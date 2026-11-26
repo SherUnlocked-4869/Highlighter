@@ -28,6 +28,70 @@ const recordingQuality = window.recordingQuality
 // this file owns the MediaRecorder side effects (pause/resume) it asks for.
 const { createChunkBackpressurePolicy } = window.chunkBackpressure
 
+// N03 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 5.3): keystroke capsule
+// capture policy. The block between the markers is PURE and self-contained: the control bar calls
+// it, and test/n03-recording-hud.test.js extracts and executes the shipped block verbatim.
+// Privacy rule: only modifier chords (Ctrl/Alt/Meta + key) and a short whitelist of navigation /
+// function keys are recorded. Plain typing - including Shift+letter, digits, IME composition and
+// anything typed into an editable field - never leaves this window.
+/* N03-KEYSTROKE-POLICY-START */
+const KEYSTROKE_FLUSH_MS = 250
+const KEYSTROKE_BUFFER_LIMIT = 2000
+const KEYSTROKE_MODIFIER_KEYS = Object.freeze(['Control', 'Shift', 'Alt', 'Meta', 'AltGraph', 'CapsLock', 'OS', 'Fn'])
+const KEYSTROKE_SINGLE_KEYS = Object.freeze([
+  'Esc', 'Enter', 'Tab', 'Backspace', 'Delete', 'Insert', 'Home', 'End',
+  'PageUp', 'PageDown', 'Up', 'Down', 'Left', 'Right',
+  'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'
+])
+const KEYSTROKE_KEY_ALIASES = Object.freeze({
+  ' ': 'Space',
+  Spacebar: 'Space',
+  Escape: 'Esc',
+  ArrowUp: 'Up',
+  ArrowDown: 'Down',
+  ArrowLeft: 'Left',
+  ArrowRight: 'Right'
+})
+
+function isEditableKeystrokeTarget(target) {
+  if (!target || typeof target !== 'object') return false
+  const tag = String(target.tagName || '').toUpperCase()
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+  return target.isContentEditable === true
+}
+
+function formatKeystrokeCombo(event) {
+  if (!event) return ''
+  const key = typeof event.key === 'string' ? event.key : ''
+  if (!key) return ''
+  const modifiers = []
+  if (event.ctrlKey === true) modifiers.push('Ctrl')
+  if (event.altKey === true) modifiers.push('Alt')
+  if (event.shiftKey === true) modifiers.push('Shift')
+  if (event.metaKey === true) modifiers.push('Win')
+  let label = KEYSTROKE_KEY_ALIASES[key] || key
+  if (label.length === 1) label = label.toUpperCase()
+  if (!/^[A-Za-z0-9]{1,16}$/.test(label)) return ''
+  if (modifiers.length === 0) return KEYSTROKE_SINGLE_KEYS.includes(label) ? label : ''
+  return modifiers.join('+') + '+' + label
+}
+
+function shouldCaptureKeystroke(event, state) {
+  if (!event || state !== 'recording') return false
+  if (event.repeat === true) return false
+  // IME composition (keydown keyCode 229 / isComposing) is text input, not a shortcut.
+  if (event.isComposing === true || event.keyCode === 229) return false
+  const key = typeof event.key === 'string' ? event.key : ''
+  if (!key || key === 'Unidentified' || key === 'Process') return false
+  if (KEYSTROKE_MODIFIER_KEYS.includes(key)) return false
+  if (isEditableKeystrokeTarget(event.target)) return false
+  const combo = formatKeystrokeCombo(event)
+  if (!combo) return false
+  const hasModifier = event.ctrlKey === true || event.altKey === true || event.metaKey === true
+  return hasModifier || KEYSTROKE_SINGLE_KEYS.includes(combo)
+}
+/* N03-KEYSTROKE-POLICY-END */
+
 const controlView = document.getElementById('controlView')
 const timeElement = document.getElementById('time')
 const statusLabel = document.getElementById('statusLabel')
@@ -168,6 +232,10 @@ let pausedTotal = 0
 let mediaStartedAtWall = 0
 let pausedIntervals = []
 let pauseStartedAtWall = 0
+// N03 keystroke capsules: captured locally (keydown only fires for this window) and piggybacked
+// on the authoritative state report, so the frozen preload/IPC surface needs no new channel.
+let pendingKeystrokes = []
+let keystrokeFlushTimer = 0
 let clockTimer = 0
 let countdownVersion = 0
 let stateVersion = 0
@@ -267,6 +335,43 @@ function finishTiming() {
   const intervals = pausedIntervals.map((interval) => ({ startWall: interval.startWall, endWall: interval.endWall }))
   if (pauseStartedAtWall) intervals.push({ startWall: pauseStartedAtWall, endWall: Date.now() })
   return { mediaStartedAtWall, pausedIntervals: intervals }
+}
+
+// N03: the renderer half of the shortcut capsules. `keydown` on this window is the only source
+// (no global hook, no text content); the policy above decides what is a shortcut worth showing.
+function resetKeystrokeCapture() {
+  pendingKeystrokes = []
+  if (keystrokeFlushTimer) {
+    clearTimeout(keystrokeFlushTimer)
+    keystrokeFlushTimer = 0
+  }
+}
+
+function flushKeystrokes() {
+  if (pendingKeystrokes.length === 0 || !sessionId) return false
+  const batch = pendingKeystrokes
+  pendingKeystrokes = []
+  reportState({ keystrokes: batch })
+  return true
+}
+
+function scheduleKeystrokeFlush() {
+  if (keystrokeFlushTimer) return
+  keystrokeFlushTimer = setTimeout(() => {
+    keystrokeFlushTimer = 0
+    flushKeystrokes()
+  }, KEYSTROKE_FLUSH_MS)
+}
+
+function handleKeystroke(event) {
+  if (!shouldCaptureKeystroke(event, state)) return
+  const combo = formatKeystrokeCombo(event)
+  if (!combo) return
+  pendingKeystrokes.push({ at: Date.now(), combo })
+  if (pendingKeystrokes.length > KEYSTROKE_BUFFER_LIMIT) {
+    pendingKeystrokes.splice(0, pendingKeystrokes.length - KEYSTROKE_BUFFER_LIMIT)
+  }
+  scheduleKeystrokeFlush()
 }
 
 function renderClock() {
@@ -370,16 +475,22 @@ function snapshotState() {
   }
 }
 
-function reportState() {
+function reportState(extra = null) {
   const status = reportStatusFor(state)
   if (!status) return
   stateVersion += 1
+  // N03: shortcut batches ride on the authoritative state report; the main process accumulates
+  // them and only ever persists the validated combo subset.
+  const keystrokes = extra && Array.isArray(extra.keystrokes) && extra.keystrokes.length > 0
+    ? extra.keystrokes
+    : null
   window.recordAPI.reportState({
     sessionId,
     status,
     elapsedMs: Math.round(elapsedTime()),
     microphoneMuted,
-    stateVersion
+    stateVersion,
+    ...(keystrokes ? { keystrokes } : {})
   })
 }
 
@@ -1729,6 +1840,7 @@ async function startRecorder(fromState) {
   mediaStartedAtWall = Date.now()
   pausedIntervals = []
   pauseStartedAtWall = 0
+  resetKeystrokeCapture()
   recorder.start(1000)
   startedAt = Date.now()
   pausedAt = 0
@@ -1862,6 +1974,10 @@ async function runFinalize() {
   // deadline is reported as an interruption; main keeps the original file and seals the
   // confirmed prefix (or reports that nothing was confirmed).
   if (!(await awaitAppendQueue())) markAppendQueueTimeout()
+  // N03: flush the last shortcut batch on the state channel BEFORE the finish invoke; both travel
+  // over the same renderer->main pipe in order, so main has every capsule before it builds the
+  // events.json track.
+  flushKeystrokes()
   let result = null
   try {
     result = await window.recordAPI.finishSession(sessionId, { ...finishTiming(), interrupted: Boolean(appendError) })
@@ -2634,6 +2750,13 @@ window.recordAPI.onInit((data) => {
 if (typeof navigator.mediaDevices?.addEventListener === 'function') {
   navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange)
 }
+
+// N03: capture-phase so a control-bar button shortcut is still seen; the policy itself refuses
+// plain typing, editable targets and modifier-only presses.
+addEventListener('keydown', handleKeystroke, true)
+// A take cancelled from any path (discard, source lost while preparing) must not leak a late
+// timer that would report into a session main already dropped.
+addEventListener('beforeunload', resetKeystrokeCapture)
 
 // P0-1-T2/T5: the initial pass translates the markup; the broadcast subscription
 // re-renders the dynamic parts (status label, annotation titles, audio notice) too.

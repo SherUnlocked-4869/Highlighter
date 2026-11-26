@@ -53,9 +53,48 @@ const MAX_LIST_LIMIT = 200
 // project directory. It is written once at capture finish and only read by the editor.
 const EVENT_TRACK_FILE = 'events.json'
 const EVENT_TRACK_SCHEMA_VERSION = 1
+// N03 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 5.3): modifier
+// shortcut capsules recorded during capture ride in the SAME events.json track as an
+// OPTIONAL `keystrokes` array. The field is additive, so a pre-N03 track (no field) keeps
+// reading/writing byte-identically - the frozen R5 noise shape is not changed.
+const KEYSTROKE_LIMIT = 2000
+const KEYSTROKE_COMBO_MAX_LENGTH = 48
+// A combo is either a modifier chord (Ctrl/Alt/Shift/Win + a key) or one whitelisted
+// navigation/function key. Plain printable typing can never match: that is the privacy
+// rule the capture side implements, and this is the persistence-side re-check.
+const KEYSTROKE_NAMED_KEY = 'Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|(?:F(?:[1-9]|1[0-2]))'
+const KEYSTROKE_CHORD_PATTERN = new RegExp(`^(?:(?:Ctrl|Alt|Shift|Win)\\+){1,4}(?:[A-Z0-9]|${KEYSTROKE_NAMED_KEY})$`)
+const KEYSTROKE_SINGLE_PATTERN = new RegExp(`^(?:${KEYSTROKE_NAMED_KEY})$`)
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+// Shape check shared by the writer and the reader. It accepts exactly the labels the
+// control bar emits; anything else (a typed character, a path, a sentence) is dropped.
+function isValidKeystrokeCombo(value) {
+  // Surrounding whitespace means the label was not produced by the control bar's policy.
+  const combo = typeof value === 'string' ? value : ''
+  if (!combo || combo.length > KEYSTROKE_COMBO_MAX_LENGTH || combo !== combo.trim()) return false
+  return KEYSTROKE_CHORD_PATTERN.test(combo) || KEYSTROKE_SINGLE_PATTERN.test(combo)
+}
+
+// Normalises an events.json `keystrokes` array: bounded, integer media times inside the
+// recording, valid combos only, time-ascending. Missing/invalid input is `[]` (never throws).
+function normalizeKeystrokes(value, durationMs) {
+  if (!Array.isArray(value)) return []
+  const limit = Math.max(0, Math.round(Number(durationMs) || 0))
+  const capsules = []
+  for (const entry of value.slice(0, KEYSTROKE_LIMIT * 2)) {
+    if (!entry || typeof entry !== 'object') continue
+    if (!isValidKeystrokeCombo(entry.combo)) continue
+    const tMs = Math.round(Number(entry.tMs))
+    if (!Number.isFinite(tMs) || tMs < 0) continue
+    if (limit > 0 && tMs > limit) continue
+    capsules.push({ tMs, combo: String(entry.combo).trim() })
+  }
+  capsules.sort((left, right) => left.tMs - right.tMs)
+  return capsules.slice(0, KEYSTROKE_LIMIT)
 }
 
 function pad(value, length = 2) {
@@ -668,6 +707,8 @@ class RecordingProjectService {
       const project = await this._getProject(id)
       if (!project) return { ok: false, code: 'not-found' }
       const normalized = demo.normalizeClickTrack(track)
+      const rawKeystrokes = isPlainObject(track) ? track.keystrokes : null
+      const keystrokes = normalizeKeystrokes(rawKeystrokes, normalized.durationMs)
       const payload = {
         schemaVersion: EVENT_TRACK_SCHEMA_VERSION,
         durationMs: normalized.durationMs,
@@ -676,6 +717,9 @@ class RecordingProjectService {
         clicks: normalized.clicks,
         truncated: normalized.truncated === true
       }
+      // Only present when the capture actually produced shortcuts: an old/absent field is
+      // omitted rather than written as an empty array so pre-N03 tracks stay identical.
+      if (keystrokes.length > 0) payload.keystrokes = keystrokes
       try {
         await this.atomicWriteJson(this.path.join(this.projectDirectory(id), EVENT_TRACK_FILE), payload)
       } catch (error) {
@@ -707,7 +751,7 @@ class RecordingProjectService {
     }
     if (!isPlainObject(parsed)) return null
     const normalized = demo.normalizeClickTrack(parsed)
-    return {
+    const track = {
       schemaVersion: EVENT_TRACK_SCHEMA_VERSION,
       durationMs: normalized.durationMs,
       sampledAtHz: normalized.sampledAtHz,
@@ -715,6 +759,9 @@ class RecordingProjectService {
       clicks: normalized.clicks,
       truncated: normalized.truncated === true
     }
+    const keystrokes = normalizeKeystrokes(parsed.keystrokes, normalized.durationMs)
+    if (keystrokes.length > 0) track.keystrokes = keystrokes
+    return track
   }
 
   summaryOf(project) {
@@ -748,7 +795,10 @@ class RecordingProjectService {
 module.exports = {
   CHECKPOINT_MIN_BYTES,
   CHECKPOINT_MIN_INTERVAL_MS,
+  KEYSTROKE_LIMIT,
   RecordingProjectService,
   createRecordingProjectService,
-  defaultProjectName
+  defaultProjectName,
+  isValidKeystrokeCombo,
+  normalizeKeystrokes
 }

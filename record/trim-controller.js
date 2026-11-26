@@ -89,6 +89,111 @@
 
   const demoApi = sharedDemo || createMissingDemoModule()
 
+  // ---------------------------------------------------------------------------------------
+  // N03 (docs/reviews/2026-11-26-code-review-and-optimization-report.md section 5.3)
+  //
+  // Two pure helpers that let the editor use the main process's suggestions without ever
+  // touching the segment list directly: the keystroke capsule track is normalised defensively
+  // (an events.json written by another build cannot inject arbitrary text into the HUD), and
+  // "remove silent pauses" is expressed as the COMPLEMENT of the suggested cuts, so the result
+  // is an ordinary R4 multi-segment edit: editable, undoable, previewable and exportable through
+  // the existing pipeline.
+  //
+  // Privacy note: keystrokes are already filtered at capture time (modifier chords + a short
+  // navigation/function-key whitelist). The editor only renders the labels it is given.
+  const KEYSTROKE_CAPSULE_LIMIT = 500
+  const KEYSTROKE_CAPSULE_MAX_LENGTH = 48
+  const KEYSTROKE_CAPSULE_PATTERN = /^(?:(?:Ctrl|Alt|Shift|Win)\+){1,4}(?:[A-Z0-9]|Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F(?:[1-9]|1[0-2]))$|^(?:Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|F(?:[1-9]|1[0-2]))$/
+  const PAUSE_CUT_MAX_SEGMENTS = 20
+  const PAUSE_CUT_MIN_KEEP_MS = 100
+  const PAUSE_CUT_MIN_LENGTH_MS = 300
+
+  function normalizeKeystrokeCapsules(value, durationMs) {
+    if (!Array.isArray(value)) return []
+    const limit = Math.max(0, Math.round(Number(durationMs) || 0))
+    const capsules = []
+    for (const entry of value.slice(0, KEYSTROKE_CAPSULE_LIMIT * 2)) {
+      if (!entry || typeof entry !== 'object') continue
+      const combo = typeof entry.combo === 'string' ? entry.combo.trim() : ''
+      if (!combo || combo.length > KEYSTROKE_CAPSULE_MAX_LENGTH) continue
+      if (!KEYSTROKE_CAPSULE_PATTERN.test(combo)) continue
+      const tMs = Math.round(Number(entry.tMs))
+      if (!Number.isFinite(tMs) || tMs < 0) continue
+      if (limit > 0 && tMs > limit) continue
+      capsules.push({ tMs, combo })
+    }
+    capsules.sort((left, right) => left.tMs - right.tMs)
+    return capsules.slice(0, KEYSTROKE_CAPSULE_LIMIT)
+  }
+
+  function normalizePauseCuts(value, durationMs) {
+    if (!Array.isArray(value)) return []
+    const limit = Math.max(0, Math.round(Number(durationMs) || 0))
+    const cuts = []
+    for (const entry of value.slice(0, 200)) {
+      const startMs = Math.max(0, Math.round(Number(entry?.startMs) || 0))
+      const endMs = Math.max(0, Math.round(Number(entry?.endMs) || 0))
+      if (!(endMs - startMs >= PAUSE_CUT_MIN_LENGTH_MS)) continue
+      if (limit > 0 && endMs > limit) continue
+      cuts.push({ startMs, endMs })
+    }
+    cuts.sort((left, right) => left.startMs - right.startMs)
+    const merged = []
+    for (const cut of cuts) {
+      const previous = merged[merged.length - 1]
+      if (previous && cut.startMs <= previous.endMs) previous.endMs = Math.max(previous.endMs, cut.endMs)
+      else merged.push({ ...cut })
+    }
+    return merged
+  }
+
+  // Main answers either `{ ok:true, cuts, removedMs }` or `{ ok:false, code }`; a missing field
+  // (an older main process) normalises to "unavailable" so the editor explains instead of guessing.
+  function normalizePauseAnalysis(value, durationMs) {
+    if (!value || typeof value !== 'object') return { status: 'unavailable', code: '', cuts: [], removedMs: 0 }
+    if (value.ok === true) {
+      const cuts = normalizePauseCuts(value.cuts, durationMs)
+      const removedMs = cuts.reduce((total, cut) => total + (cut.endMs - cut.startMs), 0)
+      return { status: cuts.length > 0 ? 'ready' : 'nothing', code: '', cuts, removedMs }
+    }
+    const code = typeof value.code === 'string' ? value.code : 'analysis-failed'
+    return { status: 'failed', code, cuts: [], removedMs: 0 }
+  }
+
+  // Suggested CUT ranges -> the kept segments (their complement) that the R4 timeline already
+  // understands. Kept fragments shorter than the exporter minimum are folded back into the cut
+  // (a 40 ms sliver of speech is not worth a segment), and the 20-segment export cap is honoured
+  // by dropping the shortest kept fragments until the list fits.
+  function pauseCutsToKeepSegments(cuts, durationMs, options = {}) {
+    const duration = Math.max(0, Math.round(Number(durationMs) || 0))
+    const maxSegments = Math.max(1, Math.round(Number(options.maxSegments) || PAUSE_CUT_MAX_SEGMENTS))
+    const minKeepMs = Math.max(1, Math.round(Number(options.minKeepMs) || PAUSE_CUT_MIN_KEEP_MS))
+    if (!(duration > 0)) return { ok: false, code: 'duration-unavailable' }
+    const normalized = normalizePauseCuts(cuts, duration)
+    if (normalized.length === 0) return { ok: false, code: 'nothing-to-cut' }
+    const kept = []
+    let cursor = 0
+    for (const cut of normalized) {
+      const startMs = Math.max(cursor, Math.min(cut.startMs, duration))
+      if (startMs - cursor >= minKeepMs) kept.push({ startMs: cursor, endMs: startMs })
+      cursor = Math.max(cursor, Math.min(cut.endMs, duration))
+    }
+    if (duration - cursor >= minKeepMs) kept.push({ startMs: cursor, endMs: duration })
+    if (kept.length === 0) return { ok: false, code: 'nothing-kept' }
+    while (kept.length > maxSegments) {
+      let smallest = 0
+      for (let index = 1; index < kept.length; index += 1) {
+        if (kept[index].endMs - kept[index].startMs < kept[smallest].endMs - kept[smallest].startMs) smallest = index
+      }
+      kept.splice(smallest, 1)
+    }
+    const removedMs = kept.reduce((removed, segment, index) => {
+      const previousEnd = index === 0 ? 0 : kept[index - 1].endMs
+      return removed + Math.max(0, segment.startMs - previousEnd)
+    }, 0) + Math.max(0, duration - kept[kept.length - 1].endMs)
+    return { ok: true, segments: kept, removedMs }
+  }
+
   const TERMINAL_STATES = Object.freeze(['succeeded', 'failed', 'cancelled'])
   const EXPORT_FORMATS = Object.freeze(['mp4', 'gif', 'webm'])
   const HISTORY_LIMIT = 50
@@ -296,6 +401,11 @@
       demo: { style: demoApi.normalizeDemoStyle(null), zooms: [] },
       eventTrack: null,
       eventsState: { loaded: false, available: false, degraded: '', clickCount: 0, pointerCount: 0, truncated: false },
+      // N03: shortcut capsules (media time) plus the main process's dead-air suggestion. Both are
+      // read-only derived data; they never enter the draft. `loading` means the events load has not
+      // answered yet, so a click can explain "still analysing" instead of claiming unavailability.
+      keystrokes: [],
+      pauseAnalysis: { status: 'loading', code: '', cuts: [], removedMs: 0 },
       ignoredSuggestions: [],
       suggestions: [],
       // Session playback window `{startMs,endMs}`; project playback `{mode:'kept',fromMs}`.
@@ -441,6 +551,30 @@
       return applySegments(materializedFull(), { reason: 'reset-edits' })
     }
 
+    // N03: "one click remove silent pauses". The suggestion is turned into the COMPLEMENT of the
+    // cut list, then applied through the normal segment editor: it records one undo step, marks
+    // the draft dirty and notifies with reason `pause-cuts` so the page autosaves it. Nothing is
+    // written to disk here; the existing draft/export pipeline owns that.
+    function applyPauseCuts() {
+      if (isFrozen()) return { ok: false, code: 'frozen' }
+      if (!model.projectId) return { ok: false, code: 'session-mode' }
+      const analysis = model.pauseAnalysis
+      if (!analysis || analysis.status === 'loading') return { ok: false, code: 'analysis-pending' }
+      if (analysis.status === 'unavailable') return { ok: false, code: 'analysis-unavailable' }
+      if (analysis.status === 'failed') return { ok: false, code: analysis.code || 'analysis-failed' }
+      if (analysis.status !== 'ready' || analysis.cuts.length === 0) return { ok: false, code: 'nothing-to-cut' }
+      const result = pauseCutsToKeepSegments(analysis.cuts, model.metadata.durationMs)
+      if (!result.ok) return result
+      const applied = applySegments(result.segments, { reason: 'pause-cuts' })
+      if (!applied) return { ok: false, code: 'nothing-to-cut' }
+      return {
+        ok: true,
+        removedMs: result.removedMs,
+        cuts: analysis.cuts.length,
+        segments: result.segments.map((segment) => ({ ...segment }))
+      }
+    }
+
     // Boundary drag entry points. While beginEdit() is active the moves are transient (the
     // drag is one undo entry); a direct call (keyboard/nudge) records its own entry.
     function moveBoundary(index, edge, targetMs) {
@@ -535,6 +669,19 @@
           resolutions: timeline.availableResolutions(model.metadata.video.width, model.metadata.video.height),
           frameRates: timeline.availableFrameRates(model.metadata.video.frameRate),
           qualities: [...timeline.QUALITY_LEVELS]
+        },
+        // N03: HUD data. `items` is media-time data only (no draft state), so the view can render
+        // the capsule at the right playback position without owning the normalisation rules.
+        keystrokes: {
+          available: model.keystrokes.length > 0,
+          count: model.keystrokes.length,
+          items: model.keystrokes.map((entry) => ({ tMs: entry.tMs, combo: entry.combo }))
+        },
+        pauseAnalysis: {
+          status: model.pauseAnalysis.status,
+          code: model.pauseAnalysis.code,
+          removedMs: model.pauseAnalysis.removedMs,
+          cuts: model.pauseAnalysis.cuts.map((cut) => ({ startMs: cut.startMs, endMs: cut.endMs }))
         },
         playing: model.playing ? { ...model.playing } : null,
         playheadMs: model.playheadMs,
@@ -980,7 +1127,7 @@
       model.suggestions = suggestions.filter((suggestion) => !model.ignoredSuggestions.includes(suggestion.id))
     }
 
-    function applyEventTrack(track, { degraded = '' } = {}) {
+    function applyEventTrack(track, { degraded = '', pauseAnalysis = null } = {}) {
       if (track && typeof track === 'object') {
         try {
           model.eventTrack = demoApi.normalizeClickTrack(track)
@@ -1008,6 +1155,12 @@
           truncated: false
         }
       }
+      // N03: the capsule track and the pause suggestion are independent of the R5 pointer shape;
+      // demo.normalizeClickTrack drops unknown fields, so they are normalised here from the raw
+      // track the main process sent.
+      const rawKeystrokes = track && typeof track === 'object' ? track.keystrokes : null
+      model.keystrokes = normalizeKeystrokeCapsules(rawKeystrokes, model.metadata.durationMs)
+      model.pauseAnalysis = normalizePauseAnalysis(pauseAnalysis, model.metadata.durationMs)
       // Ripples need clicks; without an event track the switch must not pretend to work.
       if ((!model.eventTrack || model.eventTrack.clicks.length === 0) && model.demo.style.ripples) {
         model.demo.style = demoApi.normalizeDemoStyle({ ...model.demo.style, ripples: false })
@@ -1554,6 +1707,8 @@
       splitAt,
       deleteSegmentAt,
       resetEdits,
+      // N03: one-click dead-air removal (segment complement of the main-process suggestion).
+      applyPauseCuts,
       moveBoundary,
       moveJunction,
       beginEdit,
@@ -1627,6 +1782,11 @@
     createRecordTrimController,
     errorKey,
     formatClock,
-    parseTimeInput
+    // N03 pure helpers (behaviour-tested in test/n03-recording-hud.test.js).
+    normalizeKeystrokeCapsules,
+    normalizePauseAnalysis,
+    normalizePauseCuts,
+    parseTimeInput,
+    pauseCutsToKeepSegments
   }
 })

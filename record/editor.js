@@ -64,6 +64,8 @@
     'demo-padding', 'demo-padding-value', 'demo-radius', 'demo-radius-value',
     'demo-shadow', 'demo-ripples', 'demo-reset', 'events-status',
     'zoom-add', 'zoom-list', 'zoom-suggestions',
+    // N03: shortcut capsule HUD + one-click dead-air removal.
+    'toggle-keystrokes', 'keystroke-capsule', 'cut-silence', 'pause-cut-status',
     'result-bar', 'result-name', 'result-kind', 'result-open', 'result-address', 'result-reveal',
     'result-status', 'result-dismiss',
     'cancel-export', 'error-text'
@@ -76,7 +78,9 @@
     'start', 'end', 'reset', 'format', 'gif-fps', 'gif-size',
     'split', 'delete-segment', 'reset-edits', 'boundary', 'junction',
     'edit-committed', 'undo', 'redo',
-    'demo-style', 'demo-zoom', 'demo-reset', 'demo-suggestion'
+    'demo-style', 'demo-zoom', 'demo-reset', 'demo-suggestion',
+    // N03: the dead-air suggestion is an ordinary segment edit and must autosave.
+    'pause-cuts'
   ])
   // Autosave debounce. Contract §11: <= 500 ms.
   const SAVE_DEBOUNCE_MS = 400
@@ -85,6 +89,9 @@
   const EXPORT_POLL_MS = 900
   // Range playback sampling, same cadence the preview view used.
   const RANGE_PLAY_POLL_MS = 80
+  // N03: a capsule stays on screen for at least this long after its keystroke (the fade is a CSS
+  // transition) so a fast combo is still readable at normal playback speed.
+  const KEYSTROKE_CAPSULE_MS = 1100
   // If the main process never sends `record-editor:init`, say so instead of rendering a
   // permanently blank project. Long enough for a slow first paint, short enough to notice.
   const INIT_TIMEOUT_MS = 5000
@@ -378,6 +385,10 @@
     let salvageRunning = false
     let salvageRequestId = 0
     let salvageStatus = { key: '', params: null }
+    // N03: the capsule HUD is session-only UI state (no draft field), and the dead-air status line
+    // is rebuilt from the controller's answer instead of being stored anywhere.
+    let keystrokesEnabled = false
+    let pauseCutStatus = { key: '', params: null }
 
     function body() {
       return documentRef && documentRef.body ? documentRef.body : null
@@ -513,6 +524,11 @@
       }
       const first = !project || project.id !== nextProject.id
       project = nextProject
+      if (first) {
+        // N03: a different project starts with the HUD hidden and no stale dead-air message.
+        keystrokesEnabled = false
+        pauseCutStatus = { key: '', params: null }
+      }
       metadata = normalizeEditorMetadata(data.metadata || nextProject.media)
       recovery = data.recovery && typeof data.recovery === 'object'
         ? { state: data.recovery.state === 'recoverable' ? 'recoverable' : 'ready', errorCode: typeof data.recovery.errorCode === 'string' ? data.recovery.errorCode : '' }
@@ -1358,10 +1374,137 @@
         answer = { ok: false, code: 'events-unavailable' }
       }
       if (generation !== eventsLoadId || !controller) return { ok: false }
-      if (answer && answer.ok === true) controller.applyEventTrack(answer.track || null)
-      else controller.applyEventTrack(null, { degraded: answer?.code || 'events-unavailable' })
+      if (answer && answer.ok === true) {
+        controller.applyEventTrack(answer.track || null, { pauseAnalysis: answer.pauseAnalysis || null })
+      } else {
+        controller.applyEventTrack(null, { degraded: answer?.code || 'events-unavailable' })
+      }
       render()
       return answer || { ok: false }
+    }
+
+    // ---------- N03: shortcut capsules + one-click dead-air removal ----------
+
+    function capsuleItems() {
+      const snapshot = state()
+      return snapshot && snapshot.keystrokes && Array.isArray(snapshot.keystrokes.items)
+        ? snapshot.keystrokes.items
+        : []
+    }
+
+    // The capsule for a media position: every shortcut stays visible for KEYSTROKE_CAPSULE_MS,
+    // so overlapping/rapid combos show the most recent one instead of flickering.
+    function activeKeystrokeCapsule(atMs) {
+      let active = null
+      for (const item of capsuleItems()) {
+        if (atMs >= item.tMs && atMs < item.tMs + KEYSTROKE_CAPSULE_MS) active = item
+      }
+      return active
+    }
+
+    function renderKeystrokeCapsule() {
+      const toggle = element('toggle-keystrokes')
+      const container = element('keystroke-capsule')
+      const snapshot = state()
+      const available = !!(snapshot && snapshot.keystrokes && snapshot.keystrokes.available)
+      if (toggle) {
+        toggle.disabled = !available
+        toggle.setAttribute('aria-pressed', keystrokesEnabled ? 'true' : 'false')
+        toggle.classList.toggle('active', keystrokesEnabled)
+      }
+      if (!container) return
+      if (!keystrokesEnabled || !available) {
+        container.hidden = true
+        container.textContent = ''
+        container.classList.remove('visible')
+        return
+      }
+      // The element stays laid out (absolute, opacity 0) between keystrokes so the CSS opacity
+      // transition can actually run both ways; `hidden` would cut the fade.
+      container.hidden = false
+      const active = activeKeystrokeCapsule(mediaMs())
+      if (!active) {
+        container.classList.remove('visible')
+        return
+      }
+      if (container.textContent !== active.combo) container.textContent = active.combo
+      container.classList.add('visible')
+    }
+
+    function toggleKeystrokes() {
+      const snapshot = state()
+      if (!snapshot || !snapshot.keystrokes || !snapshot.keystrokes.available) return false
+      keystrokesEnabled = !keystrokesEnabled
+      render()
+      return keystrokesEnabled
+    }
+
+    // Main-process codes -> editor copy. Anything unmapped still tells the user the timeline was
+    // left untouched instead of failing silently.
+    function pauseCutErrorKey(code) {
+      if (code === 'no-audio') return 'recording.editor.pause.no-audio'
+      if (code === 'no-idle') return 'recording.editor.pause.no-idle'
+      if (code === 'nothing-to-cut' || code === 'nothing-kept') return 'recording.editor.pause.nothing'
+      if (code === 'analysis-pending') return 'recording.editor.pause.analysis-running'
+      if (code === 'analysis-unavailable' || code === 'session-mode') return 'recording.editor.pause.unavailable'
+      return 'recording.editor.pause.failed'
+    }
+
+    function setPauseCutStatus(key, params = null) {
+      pauseCutStatus = { key: key || '', params: params || null }
+    }
+
+    function renderPauseCutControls(snapshot, editable) {
+      const button = element('cut-silence')
+      const analysis = snapshot && snapshot.pauseAnalysis
+        ? snapshot.pauseAnalysis
+        : { status: 'unavailable', code: '', cuts: [] }
+      if (button) {
+        button.disabled = !editable
+        if (button.dataset) button.dataset.status = analysis.status
+      }
+      const status = element('pause-cut-status')
+      if (status) {
+        status.textContent = pauseCutStatus.key ? translate(pauseCutStatus.key, pauseCutStatus.params || undefined) : ''
+        if (status.dataset) status.dataset.state = analysis.status
+      }
+    }
+
+    // "One click remove silent pauses": the controller turns the main-process suggestion into the
+    // complement segment list (undoable, autosaved) - this function only routes the answer to the
+    // visible status line and never writes anything itself.
+    function applyOneClickCut() {
+      if (!controller) return false
+      const snapshot = state()
+      if (!snapshot) return false
+      const analysis = snapshot.pauseAnalysis || { status: 'unavailable', code: '', cuts: [] }
+      if (analysis.status === 'loading' || analysis.status === 'unavailable') {
+        setPauseCutStatus(pauseCutErrorKey(analysis.status === 'loading' ? 'analysis-pending' : 'analysis-unavailable'))
+        render()
+        return false
+      }
+      if (analysis.status === 'failed') {
+        setPauseCutStatus(pauseCutErrorKey(analysis.code))
+        render()
+        return false
+      }
+      if (analysis.status !== 'ready' || !Array.isArray(analysis.cuts) || analysis.cuts.length === 0) {
+        setPauseCutStatus('recording.editor.pause.nothing')
+        render()
+        return false
+      }
+      const result = controller.applyPauseCuts()
+      if (!result || result.ok !== true) {
+        setPauseCutStatus(pauseCutErrorKey(result?.code))
+        render()
+        return false
+      }
+      setPauseCutStatus('recording.editor.pause.applied', {
+        count: result.cuts,
+        removed: timelineModule.formatClock(result.removedMs)
+      })
+      render()
+      return true
     }
 
     // ---------- R5 preview interactions ----------
@@ -1554,6 +1697,10 @@
 
       renderPreviewFrame(snapshot)
       renderDemoControls(snapshot, editable, blocked)
+      // N03: the capsule HUD is an editor-only overlay; the dead-air button only becomes usable
+      // once the main process has an analysis answer (the status line explains the rest).
+      renderKeystrokeCapsule()
+      renderPauseCutControls(snapshot, editable)
       renderProgress(snapshot)
       renderResultBar(snapshot)
       renderExportButton(snapshot, blocked)
@@ -1719,6 +1866,8 @@
     }
 
     function updatePlayhead() {
+      // N03: the capsule follows the media clock, so it is refreshed on every timeupdate/seek.
+      renderKeystrokeCapsule()
       const playhead = element('timeline-playhead')
       if (!playhead) return
       const duration = state()?.durationMs || (metadata ? metadata.durationMs : 0)
@@ -2432,6 +2581,10 @@
         render()
       })
       on(element('play-range'), 'click', () => toggleRangePlayback())
+      // N03: capsule HUD toggle + one-click dead-air removal (both are ordinary button actions;
+      // the actual edit goes through the trim controller and is undoable/autosaved).
+      on(element('toggle-keystrokes'), 'click', () => { toggleKeystrokes() })
+      on(element('cut-silence'), 'click', () => { applyOneClickCut() })
       on(element('pin-frame'), 'click', () => { runSafely(pinCurrentFrame()) })
       on(element('split-at-playhead'), 'click', () => {
         if (controller?.splitAt(mediaMs())) render()
@@ -2672,6 +2825,11 @@
       getRecovery: () => ({ ...recovery }),
       getFatalCode: () => fatalCode,
       loadEvents,
+      // N03 read-only/action surface for the fake-DOM tests and the layout probe.
+      applyOneClickCut,
+      toggleKeystrokes,
+      isKeystrokesEnabled: () => keystrokesEnabled,
+      getPauseCutStatus: () => ({ ...pauseCutStatus }),
       startPickingZoom,
       cancelPickingZoom,
       getPickingZoomIndex: () => pickingZoomIndex,

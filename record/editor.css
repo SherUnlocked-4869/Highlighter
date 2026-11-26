@@ -818,3 +818,45 @@ body[data-format="gif"] .video-fields { display: none; }
   .timeline-ops .action-button { height: 22px; }
   .export-card, .demo-card { padding: 10px 12px; gap: 8px; }
 }
+
+/* ---------- N03: shortcut capsule HUD + dead-air removal status ---------- */
+/* The capsule is an editor-only playback overlay (bottom-centre of the preview). It fades in
+   and out on the media clock; export compositing is deliberately out of scope. */
+.keystroke-capsule {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 4;
+  max-width: 80%;
+  padding: 7px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.18);
+  background: rgba(12,14,18,.86);
+  color: #f5f7fa;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: .4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.keystroke-capsule.visible { opacity: 1; }
+.keystroke-capsule[hidden] { display: none; }
+.keystroke-toggle.active {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.keystroke-toggle:disabled { opacity: .45; cursor: default; }
+.pause-cut-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #9aa4b2;
+  font-size: 11px;
+}
+.pause-cut-status[data-state="failed"] { color: #d9b25c; }
