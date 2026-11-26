@@ -49,6 +49,38 @@ function clipboardCoordinatorDiagnostics() {
   try { return hook?.getClipboardCoordinatorDiagnostics?.() || null } catch { return null }
 }
 
+// U04 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §4.4): the
+// application blacklist is owned by the main process, but the clipboard fallback
+// injects Ctrl+C from this process's native hook thread, long after the selection
+// event was filtered there. Terminals resolve that shortcut as SIGINT, so a
+// blacklisted application (or a terminal) used to have its running command
+// interrupted. Mirror the list into the native clipboard filter (EXCLUDE_LIST) over
+// the existing host channel; no new native method or ABI change is involved.
+const CLIPBOARD_FILTER_EXCLUDE_LIST = 2 // selection-hook FilterMode.EXCLUDE_LIST
+
+// The list is untrusted input from the parent: keep it a bounded array of lowercase
+// names. A malformed entry is dropped instead of failing the whole start.
+function sanitizeClipboardExcludedApps(value) {
+  if (!Array.isArray(value)) return null
+  const apps = []
+  const seen = new Set()
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue
+    const name = entry.trim().toLowerCase().slice(0, 128)
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    apps.push(name)
+    if (apps.length >= 128) break
+  }
+  return apps
+}
+
+function clipboardProtectionConfig(options) {
+  const apps = sanitizeClipboardExcludedApps(options.clipboardExcludedApps)
+  if (!apps) return {}
+  return { clipboardMode: CLIPBOARD_FILTER_EXCLUDE_LIST, clipboardFilterList: apps }
+}
+
 function stopHook(reason = 'stop') {
   if (!hook) {
     send({ type: 'status', status: 'stopped', reason, hookRunning: false })
@@ -104,7 +136,8 @@ function startHook(options = {}) {
     })
     const started = hook.start({
       debug: options.debug === true,
-      enableClipboard: options.enableClipboard === true
+      enableClipboard: options.enableClipboard === true,
+      ...clipboardProtectionConfig(options)
     })
     if (started === false) {
       try { hook.cleanup() } catch {}
@@ -127,6 +160,12 @@ function updateOptions(options = {}) {
   try {
     if (options.enableClipboard === true) hook.enableClipboard()
     else if (options.enableClipboard === false) hook.disableClipboard()
+    // The parent re-sends the complete option set, so a blacklist change rides along
+    // with the existing clipboard-fallback setting update.
+    const apps = sanitizeClipboardExcludedApps(options.clipboardExcludedApps)
+    if (apps && typeof hook.setClipboardMode === 'function') {
+      hook.setClipboardMode(CLIPBOARD_FILTER_EXCLUDE_LIST, apps)
+    }
     return true
   } catch (error) {
     send({ type: 'error', message: error?.message || String(error) })

@@ -32,6 +32,48 @@ namespace
 std::mutex g_clipboard_mutex;
 
 /**
+ * Programs that must never receive a synthesized copy shortcut.
+ *
+ * A terminal host resolves Ctrl+C as SIGINT, so the clipboard fallback would interrupt
+ * the command the user is running instead of copying the selection. The Highlighter
+ * process itself is listed too: main.js's shouldFilterApp() drops its selection events
+ * after the fact, so injecting a copy there was always pointless. This compiled-in list
+ * is a hard safety net: it applies regardless of the configured clipboard filter mode,
+ * so an application list from JavaScript can never opt one of these programs back into
+ * the injection path. Entries are lowercase executable basenames (substrings, matching
+ * the configured filter-list rule). Keep in sync with
+ * DEFAULT_CLIPBOARD_COPY_PROTECTION in main/domains/selection/index.js.
+ */
+const std::vector<std::string> &ClipboardCopyProtection()
+{
+    static const std::vector<std::string> programs = {
+        "windowsterminal.exe", "openconsole.exe", "conhost.exe",   "cmd.exe",
+        "powershell.exe",      "pwsh.exe",        "mintty.exe",    "wezterm-gui.exe",
+        "alacritty.exe",       "kitty.exe",       "hyper.exe",     "tabby.exe",
+        "fluentterminal.exe",  "terminus.exe",    "conemu.exe",    "conemu64.exe",
+        "highlighter",         "huacizhushou"};
+    return programs;
+}
+
+/** Case-insensitive substring match against a normalized (lowercase UTF-8) program list. */
+bool MatchesProgramList(const std::wstring &programName, const std::vector<std::string> &programList)
+{
+    if (programList.empty() || programName.empty())
+        return false;
+
+    // Lists are stored as lowercase UTF-8 by the JS configuration path.
+    std::wstring lowerProgramName = programName;
+    std::transform(lowerProgramName.begin(), lowerProgramName.end(), lowerProgramName.begin(), towlower);
+    const std::string utf8ProgramName = StringPool::WideToUtf8(lowerProgramName);
+    for (const auto &program : programList)
+    {
+        if (utf8ProgramName.find(program) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+/**
  * Remove the object replacement character (U+FFFC) from extracted text.
  *
  * UIA TextPattern providers use this marker for embedded objects while native copy
@@ -211,25 +253,19 @@ bool SelectionEngine::GetSelectedText(HWND hwnd, TextSelectionInfo &selectionInf
 /** Case-insensitive substring match against the normalized UTF-8 program list. */
 bool SelectionEngine::IsInFilterList(const std::wstring &programName, const std::vector<std::string> &filterList) const
 {
-    if (filterList.empty())
-        return false;
-
-    // Lists are stored as lowercase UTF-8 by the JS configuration path.
-    std::wstring lowerProgramName = programName;
-    std::transform(lowerProgramName.begin(), lowerProgramName.end(), lowerProgramName.begin(), towlower);
-    const std::string utf8ProgramName = StringPool::WideToUtf8(lowerProgramName);
-    for (const auto &filterItem : filterList)
-    {
-        if (utf8ProgramName.find(filterItem) != std::string::npos)
-            return true;
-    }
-    return false;
+    return MatchesProgramList(programName, filterList);
 }
 
 /** Apply clipboard enablement, program filters, cursor heuristics, and UIA exceptions. */
 bool SelectionEngine::ShouldProcessViaClipboard(const std::wstring &programName) const
 {
     if (!config_ || !config_->clipboardEnabled)
+        return false;
+
+    // Hard safety guard applied before the configured filter: a terminal resolves the
+    // synthesized copy shortcut as SIGINT. The selection still had UIA/MSAA chances
+    // above, so refusing here is the documented "no clipboard fallback" degradation.
+    if (MatchesProgramList(programName, ClipboardCopyProtection()))
         return false;
 
     bool result = false;
@@ -617,6 +653,13 @@ bool SelectionEngine::SetTextRangeCoordinates(IUIAutomationTextRange *range, Tex
 bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionInfo)
 {
     if (!hwnd || IsStopping())
+        return false;
+
+    // Re-check immediately before the transaction and any synthesized copy. This is
+    // deliberately independent of the configured filter mode: an application list can
+    // exclude most programs, but a terminal must not be opt-able into Ctrl+C injection
+    // because the injected shortcut would become SIGINT.
+    if (MatchesProgramList(selectionInfo.programName, ClipboardCopyProtection()))
         return false;
 
     // The copy shortcut synthesized below is delivered through the message queue of the
