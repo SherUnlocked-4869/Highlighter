@@ -25,6 +25,15 @@ const { RETENTION_MONTHS } = require('./usage-time')
 const DEFAULT_SCAN_THROTTLE_MS = 5 * 60 * 1000
 const PROGRESS_THROTTLE_MS = 250
 
+// F07: scan_state is the durable parse cursor. The worker echoes its rebuilt hourly parser state
+// back in `cursors`, but that state is derived from the committed bucket rows on the next scan, so
+// persisting it would grow usage.db by (up to) 24 months of buckets for no benefit.
+function durableCursorsFrom(cursors) {
+  if (!cursors || typeof cursors !== 'object') return {}
+  const { hourly: _hourly, ...durable } = cursors
+  return durable
+}
+
 function createUsageCollector({
   getStore,
   getWorkerClient,
@@ -247,11 +256,15 @@ function createUsageCollector({
     const { source } = probe
     const previousRows = store.loadBucketRows([source])
     const cursors = store.loadCursors(source) || {}
-    cursors.hourly = usageState.buildHourlyState(previousRows)
+    // F07 (report section 3.7.1): `cursors.hourly` is parser bookkeeping rebuilt from the
+    // committed rows, and commitScan() serialises the whole cursors object into scan_state.
+    // Keeping it doubled usage.db for 24 months of buckets. The worker receives the rebuilt
+    // state through the request only; the durable cursor stays the per-file parse cursor.
+    const requestCursors = { ...cursors, hourly: usageState.buildHourlyState(previousRows) }
     const queuePath = path.join(getUsageDir(), 'runtime', 'queue.jsonl')
     const today = now()
     const result = await getWorkerClient().scanTool(
-      { source, files: probe.files, cursors, queuePath, details: {
+      { source, files: probe.files, cursors: requestCursors, queuePath, details: {
         previous: store.getDetailStamps(source),
         cutoff: new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - RETENTION_MONTHS, 1)).toISOString(),
         codexIndex: source === 'codex' && probe.root ? path.join(probe.root, 'session_index.jsonl') : null
@@ -275,7 +288,9 @@ function createUsageCollector({
       upserts,
       removed,
       details: result?.details,
-      cursors: result?.cursors && typeof result.cursors === 'object' ? result.cursors : cursors,
+      // F07: the worker echoes the hourly parser state back; it is rebuilt from the rows on the
+      // next scan, so only the durable file cursor is written to scan_state.
+      cursors: durableCursorsFrom(result?.cursors && typeof result.cursors === 'object' ? result.cursors : cursors),
       status: {
         ...probeStatus(probe, isoNow()),
         state: 'ok',

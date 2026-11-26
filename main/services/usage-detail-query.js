@@ -28,7 +28,9 @@ function aggregateRows(rows, prices, group) {
     }
     if (row.first && (!entry.first || row.first < entry.first)) entry.first = row.first
     if (row.last && (!entry.last || row.last > entry.last)) entry.last = row.last
-    entry.models.push(row.model)
+    // F07: one row per (day, model) bucket means a project switching between the same two
+    // models produced duplicates in the UI's model column.
+    if (row.model && !entry.models.includes(row.model)) entry.models.push(row.model)
     entry.total_tokens += row.total_tokens || 0
     entry.cached_input_tokens += row.cached_input_tokens || 0
     entry.input_tokens += (row.input_tokens || 0) + (row.cache_creation_input_tokens || 0)

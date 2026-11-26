@@ -25,6 +25,8 @@ const { createUsageCollector } = require('./usage-collector')
 const { createUsageQuery, heatmapLevel } = require('./usage-query')
 const { createUsageWorkerClient } = require('./usage-worker-client')
 const { openUsageStore, RETENTION_MONTHS } = require('./usage-store')
+// F07: how long a probed source status may be reused before the tool probes run again.
+const STATUS_CACHE_MS = 30000
 const { createUsageSnapshotStore } = require('./usage-snapshot-store')
 const {
   buildUsageReport,
@@ -232,6 +234,10 @@ function createUsageFeature(deps = {}) {
     }
   }
 
+  // F07 (report section 3.7.1): every `tool.probe(context)` walks that tool's session files, and
+  // the usage page asks for the status on every period switch. The probe results are cached for
+  // STATUS_CACHE_MS and invalidated by refresh()/clear() so a scan still shows up immediately.
+  let statusCache = null
   async function getStatus() {
     const enabled = settingsEnabled()
     const status = {
@@ -275,6 +281,8 @@ function createUsageFeature(deps = {}) {
           files: previous.files || 0
         }
       })
+    } else if (statusCache && statusCache.enabled === enabled && Date.now() - statusCache.at < STATUS_CACHE_MS) {
+      status.sources = statusCache.sources.map((source) => ({ ...source }))
     } else {
       const context = homeContext()
       for (const tool of tools.listTools()) {
@@ -315,14 +323,17 @@ function createUsageFeature(deps = {}) {
         estimated: false
       })
     }
+    statusCache = { at: Date.now(), enabled, sources: status.sources.map((source) => ({ ...source })) }
     return status
   }
 
   async function refresh(validated = {}) {
+    statusCache = null
     return ensureCollector().refresh(validated)
   }
 
   async function clear() {
+    statusCache = null
     if (collector) {
       try { collector.cancel('clear') } catch (_error) {}
       try { collector.dispose() } catch (_error) {}
