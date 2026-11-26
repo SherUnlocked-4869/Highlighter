@@ -34,6 +34,21 @@
 <div id="zoomBadge">100%</div>
 <div id="opacityBadge" data-i18n-title="pin.opacity.title" title="Opacity">100%</div>
 <div id="clickThroughTag" data-i18n="pin.click-through.label" data-i18n-title="pin.click-through.title" title="Click-through active">Click-through · hover to exit</div>
+<!-- N05: transient operation toast shared by the onion-skin modes and the workspace
+     snapshot actions. Text always comes from t(), never from static markup. -->
+<div id="pinToast" role="status" hidden></div>
+<!-- N05: inline snapshot naming. The pin window is the only surface that can own a
+     text input without a new IPC channel, and a native prompt() does not exist in
+     Electron. The overlay is pointer-transparent until opened. -->
+<div id="pinWorkspaceNaming" hidden>
+  <div id="pinWorkspaceNamingTitle" data-i18n="pin.workspace.naming-title"></div>
+  <input id="pinWorkspaceNameInput" type="text" maxlength="64" autocomplete="off" spellcheck="false" data-i18n-placeholder="pin.workspace.naming-placeholder">
+  <div id="pinWorkspaceNamingHint" data-i18n="pin.workspace.naming-hint"></div>
+  <div id="pinWorkspaceNamingActions">
+    <button type="button" id="pinWorkspaceNameCancel" data-i18n="pin.workspace.naming-cancel"></button>
+    <button type="button" id="pinWorkspaceNameConfirm" data-i18n="pin.workspace.naming-confirm"></button>
+  </div>
+</div>
 <script src="pin.js"></script>
 </body>
 </html>

@@ -57,7 +57,44 @@
     'pin.copy-once.retry-copy': '重试复制',
     'pin.copy-once.dismiss': '关闭输出状态',
     'pin.copy-once.hint-pin-limit': '贴图最多 20 张，请先关闭一些再重试贴图。',
-    'pin.copy-once.hint-clipboard-busy': '剪贴板被其他程序占用，请稍后重试复制。'
+    'pin.copy-once.hint-clipboard-busy': '剪贴板被其他程序占用，请稍后重试复制。',
+
+    // N05 (review section 5.5): pixel-aligned onion skin mode. The pin window owns
+    // the visual state, so every message here is a renderer toast.
+    'pin.onion.difference-on': '像素对齐：差分模式（Ctrl+Shift+D 关闭）',
+    'pin.onion.flash-on': '像素对齐：闪烁对比（Ctrl+Shift+F 关闭）',
+    'pin.onion.off': '已退出像素对齐',
+    'pin.onion.unavailable': '像素对齐需在“点击穿透 + 半透明”下使用',
+    'pin.onion.reduced-motion': '系统已开启“减少动态效果”，闪烁改用静态差分',
+
+    // N05: pin workspace snapshots (persisted by the pin domain; the context menu
+    // and the status toasts are the only surfaces).
+    'pin.workspace.menu-label': '工作区快照',
+    'pin.workspace.menu-save': '保存当前工作区…',
+    'pin.workspace.menu-restore': '恢复工作区快照',
+    'pin.workspace.menu-delete': '删除工作区快照',
+    'pin.workspace.menu-empty': '（还没有快照）',
+    'pin.workspace.untitled': '（未命名快照）',
+    'pin.workspace.menu-suspend': '挂起全部贴图（可从托盘恢复）',
+    'pin.workspace.menu-resume': '恢复挂起的贴图',
+    'pin.workspace.pin-count': '{count} 张贴图',
+    'pin.workspace.naming-title': '保存工作区快照',
+    'pin.workspace.naming-placeholder': '给这组贴图起个名字',
+    'pin.workspace.naming-hint': '保存所有活动贴图的位置、缩放、旋转、不透明度与当前画面',
+    'pin.workspace.naming-confirm': '保存',
+    'pin.workspace.naming-cancel': '取消',
+    'pin.workspace.toast-saved': '已保存快照“{name}”',
+    'pin.workspace.toast-name-required': '请先输入快照名称',
+    'pin.workspace.toast-save-failed': '保存工作区快照失败',
+    'pin.workspace.toast-restore-failed': '恢复工作区快照失败',
+    'pin.workspace.toast-all-missing': '快照中的图片已丢失，未做任何更改',
+    'pin.workspace.toast-not-found': '找不到该快照',
+    'pin.workspace.toast-busy': '上一个工作区操作还没结束，请稍后再试',
+    'pin.workspace.toast-deleted': '已删除快照“{name}”',
+    'pin.workspace.toast-delete-failed': '删除快照失败',
+    'pin.workspace.toast-resumed': '已恢复挂起的贴图',
+    'pin.workspace.restore-missing-title': '部分贴图没有恢复',
+    'pin.workspace.restore-missing-message': '已恢复 {restored} / {total} 张贴图，{missing} 张因图片缺失或创建失败被跳过。'
   })
 
   add('en-US', {
@@ -102,7 +139,42 @@
     'pin.copy-once.retry-copy': 'Retry copy',
     'pin.copy-once.dismiss': 'Dismiss output status',
     'pin.copy-once.hint-pin-limit': 'Up to 20 pins - close some, then retry the pin.',
-    'pin.copy-once.hint-clipboard-busy': 'Another program is holding the clipboard - retry the copy in a moment.'
+    'pin.copy-once.hint-clipboard-busy': 'Another program is holding the clipboard - retry the copy in a moment.',
+
+    // N05: pixel-aligned onion skin mode (renderer toasts).
+    'pin.onion.difference-on': 'Pixel diff: difference mode (Ctrl+Shift+D to turn off)',
+    'pin.onion.flash-on': 'Pixel diff: blinking compare (Ctrl+Shift+F to turn off)',
+    'pin.onion.off': 'Pixel diff off',
+    'pin.onion.unavailable': 'Pixel diff needs click-through and a semi-transparent pin',
+    'pin.onion.reduced-motion': 'Reduced motion is on, so the blink was replaced by a static difference',
+
+    // N05: pin workspace snapshots.
+    'pin.workspace.menu-label': 'Workspace snapshots',
+    'pin.workspace.menu-save': 'Save current workspace…',
+    'pin.workspace.menu-restore': 'Restore workspace snapshot',
+    'pin.workspace.menu-delete': 'Delete workspace snapshot',
+    'pin.workspace.menu-empty': '(no snapshots yet)',
+    'pin.workspace.untitled': '(untitled snapshot)',
+    'pin.workspace.menu-suspend': 'Suspend every pin (restore from the tray)',
+    'pin.workspace.menu-resume': 'Resume suspended pins',
+    'pin.workspace.pin-count': '{count} pin(s)',
+    'pin.workspace.naming-title': 'Save workspace snapshot',
+    'pin.workspace.naming-placeholder': 'Name this group of pins',
+    'pin.workspace.naming-hint': 'Saves every active pin position, zoom, rotation, opacity and its current picture',
+    'pin.workspace.naming-confirm': 'Save',
+    'pin.workspace.naming-cancel': 'Cancel',
+    'pin.workspace.toast-saved': 'Snapshot "{name}" saved',
+    'pin.workspace.toast-name-required': 'Type a snapshot name first',
+    'pin.workspace.toast-save-failed': 'Could not save the workspace snapshot',
+    'pin.workspace.toast-restore-failed': 'Could not restore the workspace snapshot',
+    'pin.workspace.toast-all-missing': 'The snapshot images are gone - nothing was changed',
+    'pin.workspace.toast-not-found': 'That snapshot no longer exists',
+    'pin.workspace.toast-busy': 'Another workspace action is still running - try again in a moment',
+    'pin.workspace.toast-deleted': 'Snapshot "{name}" deleted',
+    'pin.workspace.toast-delete-failed': 'Could not delete the snapshot',
+    'pin.workspace.toast-resumed': 'Suspended pins are back',
+    'pin.workspace.restore-missing-title': 'Some pins were not restored',
+    'pin.workspace.restore-missing-message': 'Restored {restored} / {total} pins; {missing} were skipped (missing picture or create failure).'
   })
 
   add('zh-TW', {
@@ -147,6 +219,41 @@
     'pin.copy-once.retry-copy': '重試複製',
     'pin.copy-once.dismiss': '關閉輸出狀態',
     'pin.copy-once.hint-pin-limit': '貼圖最多 20 張，請先關閉一些再重試貼圖。',
-    'pin.copy-once.hint-clipboard-busy': '剪貼簿被其他程式占用，請稍後重試複製。'
+    'pin.copy-once.hint-clipboard-busy': '剪貼簿被其他程式占用，請稍後重試複製。',
+
+    // N05: pixel-aligned onion skin mode (renderer toasts).
+    'pin.onion.difference-on': '像素對齊：差分模式（Ctrl+Shift+D 關閉）',
+    'pin.onion.flash-on': '像素對齊：閃爍對比（Ctrl+Shift+F 關閉）',
+    'pin.onion.off': '已退出像素對齊',
+    'pin.onion.unavailable': '像素對齊需在「點擊穿透 + 半透明」下使用',
+    'pin.onion.reduced-motion': '系統已開啟「減少動態效果」，閃爍改用靜態差分',
+
+    // N05: pin workspace snapshots.
+    'pin.workspace.menu-label': '工作區快照',
+    'pin.workspace.menu-save': '儲存目前工作區…',
+    'pin.workspace.menu-restore': '還原工作區快照',
+    'pin.workspace.menu-delete': '刪除工作區快照',
+    'pin.workspace.menu-empty': '（還沒有快照）',
+    'pin.workspace.untitled': '（未命名快照）',
+    'pin.workspace.menu-suspend': '掛起全部貼圖（可從托盤還原）',
+    'pin.workspace.menu-resume': '還原掛起的貼圖',
+    'pin.workspace.pin-count': '{count} 張貼圖',
+    'pin.workspace.naming-title': '儲存工作區快照',
+    'pin.workspace.naming-placeholder': '給這組貼圖起個名字',
+    'pin.workspace.naming-hint': '儲存所有作用中貼圖的位置、縮放、旋轉、不透明度與目前畫面',
+    'pin.workspace.naming-confirm': '儲存',
+    'pin.workspace.naming-cancel': '取消',
+    'pin.workspace.toast-saved': '已儲存快照「{name}」',
+    'pin.workspace.toast-name-required': '請先輸入快照名稱',
+    'pin.workspace.toast-save-failed': '儲存工作區快照失敗',
+    'pin.workspace.toast-restore-failed': '還原工作區快照失敗',
+    'pin.workspace.toast-all-missing': '快照中的圖片已遺失，未做任何變更',
+    'pin.workspace.toast-not-found': '找不到該快照',
+    'pin.workspace.toast-busy': '上一個工作區操作還沒結束，請稍後再試',
+    'pin.workspace.toast-deleted': '已刪除快照「{name}」',
+    'pin.workspace.toast-delete-failed': '刪除快照失敗',
+    'pin.workspace.toast-resumed': '已還原掛起的貼圖',
+    'pin.workspace.restore-missing-title': '部分貼圖沒有還原',
+    'pin.workspace.restore-missing-message': '已還原 {restored} / {total} 張貼圖，{missing} 張因圖片遺失或建立失敗被跳過。'
   })
 })()

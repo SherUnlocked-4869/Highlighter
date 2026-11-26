@@ -1,5 +1,31 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
+// N05: the only commands the workspace surface accepts. Keep the list in sync with
+// WORKSPACE_COMMAND_TYPES in main/domains/pin/index.js; an unknown type is dropped
+// here so a wedged renderer cannot reach the main process with a made-up action.
+const WORKSPACE_COMMAND_TYPES = Object.freeze([
+  'workspace-save',
+  'workspace-restore',
+  'workspace-restore-latest',
+  'workspace-delete',
+  'workspace-suspend',
+  'workspace-resume',
+  'workspace-list'
+])
+const MAX_SNAPSHOT_NAME = 64
+const SNAPSHOT_ID = /^[a-z0-9-]{1,64}$/
+
+function normalizeWorkspaceCommand(value) {
+  if (!value || typeof value !== 'object') return null
+  const type = typeof value.type === 'string' ? value.type : ''
+  if (!WORKSPACE_COMMAND_TYPES.includes(type)) return null
+  const name = typeof value.name === 'string'
+    ? value.name.replace(/\s+/g, ' ').trim().slice(0, MAX_SNAPSHOT_NAME)
+    : ''
+  const id = typeof value.id === 'string' && SNAPSHOT_ID.test(value.id) ? value.id : ''
+  return { type, name, id }
+}
+
 contextBridge.exposeInMainWorld('pinAPI', {
   // P0-1-T2：语言广播（主→渲染；sandbox preload 不能 require 本地文件，故内联）。
   onInterfaceLanguage: (callback) => {
@@ -59,6 +85,31 @@ contextBridge.exposeInMainWorld('pinAPI', {
     const handler = (_event, percent) => callback(percent)
     ipcRenderer.on('pin:opacity-changed', handler)
     return () => ipcRenderer.removeListener('pin:opacity-changed', handler)
+  },
+  // N05 (review section 5.5): workspace snapshots. The pin renderer already owns a
+  // single authorized renderer -> main listener (`pin:context-menu`); adding a new
+  // channel would require editing the frozen IPC policy table in
+  // main/services/ipc-security.js, so the bounded command travels in that channel's
+  // optional second argument. No path ever crosses this boundary: the main process
+  // only receives a command name, a snapshot name and an opaque snapshot id.
+  workspaceCommand: (command) => {
+    const normalized = normalizeWorkspaceCommand(command)
+    if (!normalized) return false
+    ipcRenderer.send('pin:context-menu', null, normalized)
+    return true
+  },
+  // Main -> renderer: a menu item asked this window to open its naming overlay.
+  onWorkspaceNameRequest: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('pin:workspace-name-request', handler)
+    return () => ipcRenderer.removeListener('pin:workspace-name-request', handler)
+  },
+  // Main -> renderer receipt for a workspace command (save/delete/list/restore
+  // failure). Send-only on the main side, so it needs no sender policy.
+  onWorkspaceResult: (callback) => {
+    const handler = (_event, result) => callback(result && typeof result === 'object' ? result : null)
+    ipcRenderer.on('pin:workspace-result', handler)
+    return () => ipcRenderer.removeListener('pin:workspace-result', handler)
   },
   // Explicit boolean, never a toggle: the renderer's corner badge and the main
   // process' batch exit can both fire, and a flip would land on the wrong state.

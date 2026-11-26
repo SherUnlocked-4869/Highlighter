@@ -3,6 +3,7 @@
 const {
   applyPinZoomFactor,
   clampPinOpacity,
+  clampPinZoom,
   computePinDisplaySize,
   getPixelAlignedPinSize,
   getRotatedPinSize,
@@ -16,6 +17,12 @@ const {
 const { makeCaptureName } = require('../../services/capture-naming')
 const { t } = require('../../services/i18n-bootstrap')
 const { exportWindowToPdf, savePdfBuffer } = require('../../services/pdf-export')
+// N05 (review section 5.5): workspace snapshots are a JSON manifest plus copied PNG
+// assets under the pin domain's own directory. The writer is the same atomic one the
+// data root uses, so a crash mid-save can never leave a half-written manifest.
+const { atomicWriteJson } = require('../../services/data-root')
+const fsp = require('node:fs/promises')
+const os = require('node:os')
 // Shared with the history "continue editing" entry point; pure arithmetic, no Electron.
 // Keeping the compact-editor window box in one place is what stops the two re-edit
 // flows from drifting (test/capture-floating-placement.test.js pins the contract).
@@ -90,6 +97,192 @@ function describePinViewExport({ rotation = 0, zoom = 1, ocrOverlay = false, wid
     ocrOverlay: ocr,
     included: ocr ? [...PIN_VIEW_LAYERS] : PIN_VIEW_LAYERS.filter((layer) => layer !== 'ocr'),
     excluded: [...PIN_VIEW_EXCLUSIONS]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// N05 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §5.5):
+// pin workspace snapshots as pure, serialisable data.
+//
+// A snapshot is a named group of live pins. The manifest lives in the pin domain's
+// own data directory and is written with the data root's atomic JSON writer; one
+// copied picture per pin lives under `snapshot-assets/<snapshotId>/`, so restoring a
+// workspace never depends on the in-memory image store or on a file the user may
+// have moved since. Everything in this section is Electron-free and pure so the
+// serialisation, eviction and corruption rules are unit testable; the domain below
+// owns the windows, the image store and the file system.
+// ---------------------------------------------------------------------------
+const WORKSPACE_SNAPSHOT_SCHEMA = 1
+const MAX_WORKSPACE_SNAPSHOTS = 10
+const MAX_WORKSPACE_SNAPSHOT_PINS = 20
+const MAX_WORKSPACE_SNAPSHOT_NAME = 64
+const WORKSPACE_SNAPSHOT_ASSET_DIR = 'snapshot-assets'
+const WORKSPACE_SNAPSHOT_FILE_NAME = 'snapshots.json'
+const WORKSPACE_SNAPSHOT_ID = /^[a-z0-9][a-z0-9-]{3,63}$/
+const WORKSPACE_SNAPSHOT_ASSET = /^pin-\d{1,3}\.(png|jpg|jpeg|webp)$/
+const WORKSPACE_IMAGE_MIME = /^image\/(png|jpeg|webp)$/
+// The renderer -> main command envelope (see preload-pin.js for the mirrored list).
+// It travels in the existing pin:context-menu listener because a NEW IPC channel
+// would have to be added to the frozen sender-policy table in main/services/ipc-
+// security.js, which is outside this task's write scope; secureIpcMain refuses any
+// channel without a policy entry and assertComplete() runs at startup.
+const WORKSPACE_COMMAND_TYPES = Object.freeze([
+  'workspace-save',
+  'workspace-restore',
+  'workspace-restore-latest',
+  'workspace-delete',
+  'workspace-suspend',
+  'workspace-resume',
+  'workspace-list'
+])
+
+function normalizeWorkspaceSnapshotName(value) {
+  if (typeof value !== 'string') return ''
+  return value.replace(/\s+/g, ' ').trim().slice(0, MAX_WORKSPACE_SNAPSHOT_NAME)
+}
+
+// Pin placements and annotations have to survive JSON, and the renderer's meta is
+// untrusted-ish data: clone it through JSON so a function/date/undefined never ends
+// up in the manifest, and degrade to null instead of throwing.
+function cloneJsonValue(value) {
+  if (value === undefined) return null
+  try {
+    return JSON.parse(JSON.stringify(value))
+  } catch {
+    return null
+  }
+}
+
+function workspaceImageExtension(mime) {
+  if (mime === 'image/jpeg') return 'jpg'
+  if (mime === 'image/webp') return 'webp'
+  return 'png'
+}
+
+// One pin entry: the placement fields the window needs to be rebuilt exactly
+// (position, zoom, rotation, opacity, click-through, always-on-top), the picture
+// reference, and the vector-annotation payload when the pin entry carries one.
+// The shipped capture -> pin path flattens annotations into pixels, so
+// `annotations` is normally null; it is round-tripped so a future non-destructive
+// re-annotation path (review §4.2) needs no snapshot format change.
+function normalizeWorkspaceSnapshotPin(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const positive = (value) => Math.max(1, Math.round(Number(value) || 0))
+  const bounds = raw.bounds && typeof raw.bounds === 'object'
+    ? {
+        x: Math.round(Number(raw.bounds.x) || 0),
+        y: Math.round(Number(raw.bounds.y) || 0),
+        width: positive(raw.bounds.width),
+        height: positive(raw.bounds.height)
+      }
+    : null
+  const asset = typeof raw.asset === 'string' && WORKSPACE_SNAPSHOT_ASSET.test(raw.asset) ? raw.asset : ''
+  const mime = typeof raw.mime === 'string' && WORKSPACE_IMAGE_MIME.test(raw.mime) ? raw.mime : 'image/png'
+  const meta = raw.meta && typeof raw.meta === 'object' && !Array.isArray(raw.meta) ? cloneJsonValue(raw.meta) || {} : {}
+  return {
+    asset,
+    mime,
+    bytes: Math.max(0, Math.round(Number(raw.bytes) || 0)),
+    bounds,
+    zoom: clampPinZoom(raw.zoom),
+    rotation: normalizePinRotation(raw.rotation),
+    opacity: clampPinOpacity(raw.opacity),
+    clickThrough: raw.clickThrough === true,
+    alwaysOnTop: raw.alwaysOnTop !== false,
+    longCapture: raw.longCapture === true,
+    pixelWidth: positive(raw.pixelWidth),
+    pixelHeight: positive(raw.pixelHeight),
+    baseWidth: positive(raw.baseWidth ?? raw.pixelWidth),
+    baseHeight: positive(raw.baseHeight ?? raw.pixelHeight),
+    displayScaleFactor: Number(raw.displayScaleFactor) > 0 ? Number(raw.displayScaleFactor) : 1,
+    annotations: raw.annotations === undefined ? null : cloneJsonValue(raw.annotations),
+    meta
+  }
+}
+
+function normalizeWorkspaceSnapshot(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const id = typeof raw.id === 'string' && WORKSPACE_SNAPSHOT_ID.test(raw.id) ? raw.id : ''
+  if (!id) return null
+  const pins = Array.isArray(raw.pins)
+    ? raw.pins.map(normalizeWorkspaceSnapshotPin).filter(Boolean).slice(0, MAX_WORKSPACE_SNAPSHOT_PINS)
+    : []
+  return {
+    id,
+    name: normalizeWorkspaceSnapshotName(raw.name),
+    createdAt: Number.isFinite(Number(raw.createdAt)) ? Math.max(0, Math.round(Number(raw.createdAt))) : 0,
+    pins
+  }
+}
+
+// A manifest is a schema version plus a bounded list. `corrupt: true` means the
+// file could not be trusted at all (bad JSON / wrong shape / newer schema) and the
+// caller has to rebuild it; an individual malformed snapshot is simply dropped so
+// one bad entry cannot take the whole workspace list with it.
+function normalizeWorkspaceSnapshotFile(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { snapshots: [], corrupt: true }
+  if (raw.version !== WORKSPACE_SNAPSHOT_SCHEMA) return { snapshots: [], corrupt: true }
+  const source = Array.isArray(raw.snapshots) ? raw.snapshots : []
+  const snapshots = []
+  const seen = new Set()
+  for (const item of source) {
+    const normalized = normalizeWorkspaceSnapshot(item)
+    if (!normalized || seen.has(normalized.id)) continue
+    seen.add(normalized.id)
+    snapshots.push(normalized)
+    if (snapshots.length >= MAX_WORKSPACE_SNAPSHOTS) break
+  }
+  return { snapshots, corrupt: false }
+}
+
+function parseWorkspaceSnapshotText(text) {
+  try {
+    return normalizeWorkspaceSnapshotFile(JSON.parse(text))
+  } catch {
+    return { snapshots: [], corrupt: true }
+  }
+}
+
+// Newest first: the restore-latest shortcut and the submenu both read index 0.
+function appendWorkspaceSnapshot(entries, snapshot, max = MAX_WORKSPACE_SNAPSHOTS) {
+  const list = Array.isArray(entries) ? entries.filter((entry) => entry && entry.id !== snapshot.id) : []
+  const merged = [snapshot, ...list]
+  return { snapshots: merged.slice(0, max), evicted: merged.slice(max) }
+}
+
+function describeWorkspaceSnapshot(snapshot) {
+  return {
+    id: snapshot.id,
+    name: snapshot.name,
+    createdAt: snapshot.createdAt,
+    pinCount: snapshot.pins.length
+  }
+}
+
+function buildWorkspaceSnapshot({ id, name, createdAt, pins } = {}) {
+  return normalizeWorkspaceSnapshot({ id, name, createdAt, pins: Array.isArray(pins) ? pins : [] })
+}
+
+function normalizeWorkspaceCommand(command) {
+  if (!command || typeof command !== 'object') return null
+  const type = typeof command.type === 'string' ? command.type : ''
+  if (!WORKSPACE_COMMAND_TYPES.includes(type)) return null
+  return {
+    type,
+    name: normalizeWorkspaceSnapshotName(command.name),
+    id: typeof command.id === 'string' && WORKSPACE_SNAPSHOT_ID.test(command.id) ? command.id : ''
+  }
+}
+
+// Same-style atomic byte write as data-root.atomicWriteJson (temp file + rename),
+// used for each copied snapshot picture.
+async function writeBytesAtomic(filePath, bytes) {
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
+  try {
+    await fsp.writeFile(temporaryPath, bytes)
+    await fsp.rename(temporaryPath, filePath)
+  } finally {
+    await fsp.rm(temporaryPath, { force: true }).catch(() => {})
   }
 }
 
@@ -813,6 +1006,10 @@ function createPinDomain(deps) {
   function focusPin(id) {
     const win = findPinWindow(id)
     if (!win || !win._pinData) return null
+    // N05: a suspended workspace is invisible, so the tray's per-pin "locate" entry
+    // is the pointer-free recovery path: resume the whole workspace, then focus the
+    // requested pin exactly like any other locate.
+    if (suspendedWorkspace) resumeWorkspaceNow()
     let bounds = readPinBounds(win)
     const displays = getDisplays()
     if (bounds && displays.length && !displays.some((display) => boundsIntersectWorkArea(bounds, display.workArea))) {
@@ -1111,6 +1308,718 @@ function createPinDomain(deps) {
       scaleFactor: scalePlan?.aligned?.scaleFactor ?? null,
       snap: snapPlan?.result || null
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // N05 (review section 5.5): pin workspace snapshots.
+  //
+  // Semantics chosen for "restore" (and documented in the delivery report):
+  //   * restore REPLACES the current workspace - the active pins are closed after
+  //     every snapshot picture has been pre-read, so a snapshot whose files are all
+  //     missing aborts before anything is closed;
+  //   * a pin whose copied picture is missing is skipped and reported, the rest are
+  //     rebuilt through the normal createPinWindow path with the saved placement;
+  //   * suspend hides every pin and keeps the workspace in memory (the image store
+  //     still owns the pixels, so resume is instant); resume is reachable from the
+  //     tray's per-pin "locate" entry (focusPin) and from the existing
+  //     "show/hide every pin" function (togglePinVisibility).
+  // The manifest is capped at MAX_WORKSPACE_SNAPSHOTS, newest first: adding an 11th
+  // evicts the oldest snapshot and its asset directory.
+  // -------------------------------------------------------------------------
+  const clock = typeof deps.now === 'function' ? deps.now : () => Date.now()
+  let workspaceSnapshotFile = ''
+  let workspaceSnapshots = []
+  let workspaceSnapshotsLoaded = false
+  let workspaceSnapshotsLoading = null
+  let workspaceSnapshotSequence = 0
+  let workspaceOperation = null
+  let suspendedWorkspace = null
+
+  function resolveWorkspaceSnapshotFile() {
+    if (workspaceSnapshotFile) return workspaceSnapshotFile
+    if (typeof deps.getWorkspaceSnapshotsFilePath === 'function') {
+      const value = deps.getWorkspaceSnapshotsFilePath()
+      if (typeof value === 'string' && value) {
+        workspaceSnapshotFile = value
+        return workspaceSnapshotFile
+      }
+    }
+    // Production: the pin domain's own directory inside the app data directory.
+    // (main.js does not inject the movable data root here, and pin state is local to
+    // the process by design; snapshots are the first pin-domain user content.)
+    try {
+      const { app } = require('electron')
+      if (app && typeof app.getPath === 'function') {
+        workspaceSnapshotFile = path.join(app.getPath('userData'), 'pins', WORKSPACE_SNAPSHOT_FILE_NAME)
+        return workspaceSnapshotFile
+      }
+    } catch {}
+    // Plain-node fallback (tests inject a path; this only keeps a manual probe from
+    // writing into the checkout).
+    workspaceSnapshotFile = path.join(os.tmpdir(), 'highlighter-pin-workspace', WORKSPACE_SNAPSHOT_FILE_NAME)
+    return workspaceSnapshotFile
+  }
+
+  function workspaceSnapshotDirectory() {
+    return path.dirname(resolveWorkspaceSnapshotFile())
+  }
+
+  function workspaceAssetDirectory(snapshotId) {
+    return path.join(workspaceSnapshotDirectory(), WORKSPACE_SNAPSHOT_ASSET_DIR, snapshotId)
+  }
+
+  function workspaceAssetPath(snapshotId, assetName) {
+    if (!WORKSPACE_SNAPSHOT_ASSET.test(String(assetName || ''))) return ''
+    return path.join(workspaceAssetDirectory(snapshotId), assetName)
+  }
+
+  function createWorkspaceSnapshotId() {
+    if (typeof deps.createWorkspaceSnapshotId === 'function') {
+      const value = deps.createWorkspaceSnapshotId()
+      if (typeof value === 'string' && WORKSPACE_SNAPSHOT_ID.test(value)) return value
+    }
+    workspaceSnapshotSequence += 1
+    const id = `ws-${clock().toString(36)}-${workspaceSnapshotSequence.toString(36)}`
+    return WORKSPACE_SNAPSHOT_ID.test(id) ? id : `ws-${Date.now().toString(36)}-${workspaceSnapshotSequence.toString(36)}`
+  }
+
+  async function persistWorkspaceSnapshots() {
+    await atomicWriteJson(resolveWorkspaceSnapshotFile(), {
+      version: WORKSPACE_SNAPSHOT_SCHEMA,
+      savedAt: new Date(clock()).toISOString(),
+      snapshots: workspaceSnapshots
+    })
+  }
+
+  async function ensureWorkspaceSnapshotsLoaded() {
+    if (workspaceSnapshotsLoaded) return workspaceSnapshots
+    if (workspaceSnapshotsLoading) return workspaceSnapshotsLoading
+    workspaceSnapshotsLoading = (async () => {
+      const filePath = resolveWorkspaceSnapshotFile()
+      let text = null
+      try {
+        text = await fsp.readFile(filePath, 'utf8')
+      } catch (error) {
+        if (error.code !== 'ENOENT') log('Pin workspace snapshots read failed:', error.message)
+      }
+      const parsed = text == null ? { snapshots: [], corrupt: false } : parseWorkspaceSnapshotText(text)
+      workspaceSnapshots = parsed.snapshots
+      workspaceSnapshotsLoaded = true
+      if (parsed.corrupt) {
+        // Ignore + rebuild: a corrupt manifest must not disable the feature, and the
+        // first successful mutation will persist the empty list anyway.
+        log('Pin workspace snapshots were corrupt; rebuilding the manifest')
+        await persistWorkspaceSnapshots().catch((error) => log('Pin workspace snapshot rebuild failed:', error.message))
+      } else {
+        await pruneWorkspaceSnapshotAssets().catch((error) => log('Pin workspace snapshot prune failed:', error.message))
+      }
+      return workspaceSnapshots
+    })().finally(() => {
+      workspaceSnapshotsLoading = null
+    })
+    return workspaceSnapshotsLoading
+  }
+
+  async function pruneWorkspaceSnapshotAssets() {
+    const root = path.join(workspaceSnapshotDirectory(), WORKSPACE_SNAPSHOT_ASSET_DIR)
+    let names = []
+    try {
+      names = await fsp.readdir(root)
+    } catch {
+      return false
+    }
+    const keep = new Set(workspaceSnapshots.map((snapshot) => snapshot.id))
+    for (const name of names) {
+      if (keep.has(name)) continue
+      await fsp.rm(path.join(root, name), { recursive: true, force: true }).catch(() => {})
+    }
+    return true
+  }
+
+  function listWorkspaceSnapshots() {
+    return ensureWorkspaceSnapshotsLoaded().then((snapshots) => snapshots.map(describeWorkspaceSnapshot))
+  }
+
+  // One live pin as a serialisable placement. Mirrors the fields the retention
+  // policy already stores, plus zoom/rotation/long-capture and the durable picture.
+  function capturePinPlacement(win) {
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed()) || !win._pinData) return null
+    const data = win._pinData
+    const bounds = readPinBounds(win)
+    const annotations = data.annotations !== undefined ? data.annotations : data.meta?.annotations
+    return {
+      bounds,
+      zoom: clampPinZoom(data.zoom),
+      rotation: normalizePinRotation(data.rotation),
+      opacity: clampPinOpacity(data.opacity),
+      clickThrough: data.clickThrough === true,
+      alwaysOnTop: data.alwaysOnTop !== false,
+      longCapture: data.longCapture === true,
+      pixelWidth: Math.max(1, Math.round(Number(data.pixelWidth) || 1)),
+      pixelHeight: Math.max(1, Math.round(Number(data.pixelHeight) || 1)),
+      baseWidth: Math.max(1, Math.round(Number(data.baseWidth) || Number(data.pixelWidth) || 1)),
+      baseHeight: Math.max(1, Math.round(Number(data.baseHeight) || Number(data.pixelHeight) || 1)),
+      displayScaleFactor: Number(data.displayScaleFactor) > 0 ? Number(data.displayScaleFactor) : 1,
+      annotations: annotations === undefined ? null : cloneJsonValue(annotations),
+      meta: cloneJsonValue(data.meta) || {}
+    }
+  }
+
+  function orderedWorkspacePins() {
+    return [...pinWindows]
+      .filter((win) => win && !(typeof win.isDestroyed === 'function' && win.isDestroyed()) && win._pinData)
+      .sort((left, right) => (Number(left._pinOrdinal) || 0) - (Number(right._pinOrdinal) || 0))
+  }
+
+  // Reads and copies the live pictures one at a time, so the snapshot never holds
+  // every pin's bytes in memory at once (up to 20 pins, each up to the store quota).
+  // The final `pins` entries are placement + asset reference, never the bytes.
+  async function writeWorkspaceSnapshotPictures(snapshotId) {
+    const directory = workspaceAssetDirectory(snapshotId)
+    const pins = []
+    try {
+      await fsp.mkdir(directory, { recursive: true })
+      for (const win of orderedWorkspacePins()) {
+        const placement = capturePinPlacement(win)
+        if (!placement) continue
+        const imageId = win._pinData.imageId
+        const { bytes, mime } = await pinImages.read(imageId)
+        // The pin can be closed/re-annotated while the spilled pixels are read: a
+        // snapshot must never mix an old placement with a newer picture.
+        if (win.isDestroyed() || !win._pinData || win._pinData.imageId !== imageId || !bytes?.length) {
+          throw Object.assign(new Error('Pin changed while saving the workspace'), { code: 'PIN_CHANGED' })
+        }
+        const asset = `pin-${pins.length + 1}.${workspaceImageExtension(mime)}`
+        await writeBytesAtomic(path.join(directory, asset), bytes)
+        pins.push({ ...placement, asset, mime, bytes: bytes.length })
+      }
+    } catch (error) {
+      await fsp.rm(directory, { recursive: true, force: true }).catch(() => {})
+      throw error
+    }
+    return pins
+  }
+
+  async function saveWorkspaceSnapshot(rawName) {
+    if (workspaceOperation) return { status: 'failed', code: 'BUSY' }
+    const name = normalizeWorkspaceSnapshotName(rawName)
+    if (!name) return { status: 'failed', code: 'NAME_REQUIRED' }
+    workspaceOperation = 'save'
+    try {
+      await ensureWorkspaceSnapshotsLoaded()
+      const id = createWorkspaceSnapshotId()
+      const pins = await writeWorkspaceSnapshotPictures(id)
+      if (!pins.length) {
+        await fsp.rm(workspaceAssetDirectory(id), { recursive: true, force: true }).catch(() => {})
+        return { status: 'failed', code: 'NO_PINS' }
+      }
+      const snapshot = buildWorkspaceSnapshot({ id, name, createdAt: clock(), pins })
+      if (!snapshot) {
+        await fsp.rm(workspaceAssetDirectory(id), { recursive: true, force: true }).catch(() => {})
+        return { status: 'failed', code: 'INVALID_SNAPSHOT' }
+      }
+      const { snapshots, evicted } = appendWorkspaceSnapshot(workspaceSnapshots, snapshot)
+      const previous = workspaceSnapshots
+      workspaceSnapshots = snapshots
+      try {
+        await persistWorkspaceSnapshots()
+      } catch (error) {
+        workspaceSnapshots = previous
+        throw error
+      }
+      for (const stale of evicted) {
+        await fsp.rm(workspaceAssetDirectory(stale.id), { recursive: true, force: true }).catch(() => {})
+      }
+      notifyPinLayoutChanged({ kind: 'workspace-snapshot-saved', id: snapshot.id })
+      return { status: 'saved', id: snapshot.id, name: snapshot.name, pinCount: snapshot.pins.length }
+    } catch (error) {
+      log('Pin workspace snapshot save failed:', error.message)
+      return { status: 'failed', code: error.code || 'SAVE_FAILED' }
+    } finally {
+      workspaceOperation = null
+    }
+  }
+
+  async function deleteWorkspaceSnapshot(snapshotId) {
+    if (workspaceOperation) return { status: 'failed', code: 'BUSY' }
+    workspaceOperation = 'delete'
+    try {
+      await ensureWorkspaceSnapshotsLoaded()
+      const index = workspaceSnapshots.findIndex((snapshot) => snapshot.id === snapshotId)
+      if (index < 0) return { status: 'failed', code: 'NOT_FOUND' }
+      const previous = workspaceSnapshots
+      const [removed] = workspaceSnapshots.splice(index, 1)
+      try {
+        await persistWorkspaceSnapshots()
+      } catch (error) {
+        workspaceSnapshots = previous
+        throw error
+      }
+      await fsp.rm(workspaceAssetDirectory(removed.id), { recursive: true, force: true }).catch(() => {})
+      return { status: 'deleted', id: removed.id, name: removed.name }
+    } catch (error) {
+      log('Pin workspace snapshot delete failed:', error.message)
+      return { status: 'failed', code: error.code || 'DELETE_FAILED' }
+    } finally {
+      workspaceOperation = null
+    }
+  }
+
+  // Placement restore shared by snapshot rebuild and suspend/resume. Order matters:
+  // the stored presentation lands on _pinData first (pin:init reads it at send
+  // time), then the window box is derived from it with the same helpers zoom,
+  // rotation and display reflow use, then click-through/always-on-top are applied.
+  function applyWorkspacePlacement(win, placement) {
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed()) || !win._pinData || !placement) return false
+    const data = win._pinData
+    if (Number(placement.pixelWidth) > 0) data.pixelWidth = Math.max(1, Math.round(Number(placement.pixelWidth)))
+    if (Number(placement.pixelHeight) > 0) data.pixelHeight = Math.max(1, Math.round(Number(placement.pixelHeight)))
+    // The saved base size is DIP on the display the snapshot was taken on. Recompute
+    // it from the source pixels for the display the pin is landing on (the same
+    // helper createPinWindow and the display reflow use), so restoring across a DPI
+    // change keeps the picture pixel-crisp instead of reusing stale DIP values.
+    let display = null
+    try {
+      display = typeof screen?.getDisplayMatching === 'function'
+        ? screen.getDisplayMatching(placement.bounds || readPinBounds(win))
+        : null
+    } catch {
+      display = null
+    }
+    const aligned = getPixelAlignedPinSize(data.pixelWidth, data.pixelHeight, display)
+    data.baseWidth = aligned.width
+    data.baseHeight = aligned.height
+    data.displayScaleFactor = aligned.scaleFactor
+    data.zoom = clampPinZoom(placement.zoom)
+    data.rotation = normalizePinRotation(placement.rotation)
+    data.opacity = clampPinOpacity(placement.opacity)
+    data.alwaysOnTop = placement.alwaysOnTop !== false
+    if (placement.longCapture === true) data.longCapture = true
+    if (placement.bounds) {
+      const sized = getPinWindowSize(data, { workAreaHeight: display?.workArea?.height })
+      const target = clampPinBoundsToWorkArea({
+        x: placement.bounds.x,
+        y: placement.bounds.y,
+        width: sized.width,
+        height: sized.height
+      }, display?.workArea || placement.bounds)
+      win.setBounds(target, false)
+    }
+    if (placement.clickThrough === true) setPinClickThrough(win, true)
+    else if (win._pinData.clickThrough === true) setPinClickThrough(win, false)
+    applyPinAlwaysOnTop(win, placement.alwaysOnTop !== false)
+    return true
+  }
+
+  function snapshotRestoreMeta(pin) {
+    const meta = pin.meta && typeof pin.meta === 'object' ? { ...pin.meta } : {}
+    if (pin.longCapture === true) meta.longCapture = true
+    // No selectionBounds here: createPinWindow treats that as a preferred display
+    // size, which would size the window for the saved CROP instead of the saved
+    // zoom/base pair. applyWorkspacePlacement owns position and size.
+    delete meta.selectionBounds
+    if (pin.annotations !== null && pin.annotations !== undefined) meta.annotations = pin.annotations
+    return meta
+  }
+
+  async function closeAllPinsForWorkspaceRestore() {
+    for (const win of [...pinWindows]) {
+      try {
+        win.close()
+      } catch {}
+    }
+    // A real BrowserWindow emits `closed` asynchronously (the domain releases the
+    // image-store reference there); wait for the registry to drain so the rebuilt
+    // pins cannot hit the 20-pin budget against windows that are already closing.
+    const deadline = Date.now() + 1000
+    while (pinWindows.size > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    for (const win of [...pinWindows]) {
+      try {
+        win.destroy()
+      } catch {}
+    }
+  }
+
+  async function notifyWorkspaceRestoreSkipped(receipt) {
+    try {
+      const options = {
+        type: receipt.restored > 0 ? 'warning' : 'error',
+        title: t('pin.workspace.restore-missing-title'),
+        message: t('pin.workspace.restore-missing-message', {
+          restored: receipt.restored,
+          total: receipt.total,
+          missing: receipt.missing + (Number(receipt.failed) || 0)
+        }),
+        buttons: [t('common.button.ok')],
+        defaultId: 0,
+        noLink: true
+      }
+      if (typeof deps.showMessageBox === 'function') {
+        await deps.showMessageBox(null, options)
+        return true
+      }
+      const { dialog } = require('electron')
+      await dialog.showMessageBox(options)
+      return true
+    } catch (error) {
+      log('Pin workspace restore notice failed:', error.message)
+      return false
+    }
+  }
+
+  async function restoreWorkspaceSnapshot(snapshotId) {
+    if (workspaceOperation) return { status: 'failed', code: 'BUSY' }
+    workspaceOperation = 'restore'
+    try {
+      await ensureWorkspaceSnapshotsLoaded()
+      const snapshot = workspaceSnapshots.find((entry) => entry.id === snapshotId)
+      if (!snapshot) return { status: 'failed', code: 'NOT_FOUND' }
+      // Validate every picture BEFORE closing anything: a snapshot whose assets are
+      // all gone must be a no-op, not a destructive one. Only the paths are kept -
+      // the bytes are read one at a time while rebuilding, so a 20-pin workspace is
+      // never held in memory twice.
+      const loaded = []
+      const missing = []
+      for (let index = 0; index < snapshot.pins.length; index += 1) {
+        const pin = snapshot.pins[index]
+        const filePath = pin.asset ? workspaceAssetPath(snapshot.id, pin.asset) : ''
+        try {
+          if (!filePath) throw new Error('no asset')
+          const stat = await fsp.stat(filePath)
+          if (!stat.isFile() || stat.size <= 0) throw new Error('empty asset')
+          loaded.push({ pin, filePath, index })
+        } catch {
+          missing.push({ index: index + 1, code: 'IMAGE_MISSING' })
+        }
+      }
+      if (!loaded.length) {
+        return {
+          status: 'failed',
+          code: 'ALL_IMAGES_MISSING',
+          restored: 0,
+          total: snapshot.pins.length,
+          missing: missing.length,
+          failed: 0,
+          skipped: missing
+        }
+      }
+      suspendedWorkspace = null
+      await closeAllPinsForWorkspaceRestore()
+      const failed = []
+      for (const item of loaded) {
+        try {
+          const bytes = await fsp.readFile(item.filePath)
+          if (!bytes.length) throw new Error('empty asset')
+          const win = createPinWindow(bytes, snapshotRestoreMeta(item.pin))
+          applyWorkspacePlacement(win, item.pin)
+        } catch (error) {
+          log('Pin workspace snapshot pin restore failed:', error.message)
+          failed.push({ index: item.index + 1, code: error.code || 'CREATE_FAILED' })
+        }
+      }
+      const restored = loaded.length - failed.length
+      const receipt = {
+        status: restored > 0 ? 'restored' : 'failed',
+        code: restored > 0 ? '' : 'CREATE_FAILED',
+        restored,
+        total: snapshot.pins.length,
+        missing: missing.length,
+        failed: failed.length,
+        skipped: [...missing, ...failed]
+      }
+      if (missing.length || failed.length) await notifyWorkspaceRestoreSkipped(receipt)
+      return receipt
+    } catch (error) {
+      log('Pin workspace snapshot restore failed:', error.message)
+      return { status: 'failed', code: error.code || 'RESTORE_FAILED' }
+    } finally {
+      workspaceOperation = null
+    }
+  }
+
+  async function restoreLatestWorkspaceSnapshot() {
+    await ensureWorkspaceSnapshotsLoaded()
+    const latest = workspaceSnapshots[0]
+    if (!latest) return { status: 'failed', code: 'NOT_FOUND' }
+    return restoreWorkspaceSnapshot(latest.id)
+  }
+
+  // Suspend/resume: no file I/O, no image copy - the live windows stay alive hidden,
+  // so the image store keeps owning the pixels and resume is a placement + show.
+  function suspendPinWorkspace() {
+    if (suspendedWorkspace) return { status: 'noop', code: 'ALREADY_SUSPENDED', count: suspendedWorkspace.entries.length }
+    const entries = []
+    for (const win of orderedWorkspacePins()) {
+      const placement = capturePinPlacement(win)
+      if (!placement) continue
+      entries.push({ win, placement })
+    }
+    if (!entries.length) return { status: 'failed', code: 'NO_PINS' }
+    suspendedWorkspace = { savedAt: clock(), entries }
+    for (const entry of entries) {
+      try {
+        entry.win.hide()
+      } catch {}
+    }
+    notifyPinLayoutChanged({ kind: 'workspace-suspended', count: entries.length })
+    return { status: 'suspended', count: entries.length }
+  }
+
+  function resumeWorkspaceNow() {
+    if (!suspendedWorkspace) return { status: 'noop', code: 'NOT_SUSPENDED' }
+    const state = suspendedWorkspace
+    suspendedWorkspace = null
+    let resumed = 0
+    let skipped = 0
+    let focused = false
+    for (const entry of state.entries) {
+      const win = entry.win
+      if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed()) || !win._pinData || !pinWindows.has(win)) {
+        skipped += 1
+        continue
+      }
+      applyWorkspacePlacement(win, entry.placement)
+      try {
+        if (win._pinVisible === true) {
+          // It had already been revealed before the suspend: show() + the stored
+          // opacity is the whole restore, revealPinWindow would early-return.
+          win.show()
+          win.setOpacity(clampPinOpacity(entry.placement.opacity))
+          win.moveTop()
+        } else {
+          revealPinWindow(win)
+        }
+        if (!focused) {
+          focused = true
+          win.focus()
+        }
+      } catch {}
+      resumed += 1
+    }
+    notifyPinLayoutChanged({ kind: 'workspace-resumed', count: resumed })
+    return { status: 'resumed', resumed, skipped }
+  }
+
+  function resumePinWorkspace() {
+    return resumeWorkspaceNow()
+  }
+
+  function isPinWorkspaceSuspended() {
+    return suspendedWorkspace !== null
+  }
+
+  // The renderer's workspace command envelope (see WORKSPACE_COMMAND_TYPES). The
+  // main process re-validates everything it receives; nothing here accepts a path.
+  async function runWorkspaceCommand(win, command) {
+    switch (command.type) {
+      case 'workspace-save': {
+        const receipt = await saveWorkspaceSnapshot(command.name)
+        sendWorkspaceResult(win, 'save', receipt)
+        return receipt
+      }
+      case 'workspace-restore': {
+        const receipt = await restoreWorkspaceSnapshot(command.id)
+        sendWorkspaceResult(win, 'restore', receipt)
+        return receipt
+      }
+      case 'workspace-restore-latest': {
+        const receipt = await restoreLatestWorkspaceSnapshot()
+        sendWorkspaceResult(win, 'restore', receipt)
+        return receipt
+      }
+      case 'workspace-delete': {
+        const receipt = await deleteWorkspaceSnapshot(command.id)
+        sendWorkspaceResult(win, 'delete', receipt)
+        return receipt
+      }
+      case 'workspace-suspend': {
+        const receipt = suspendPinWorkspace()
+        sendWorkspaceResult(win, 'suspend', receipt)
+        return receipt
+      }
+      case 'workspace-resume': {
+        const receipt = resumePinWorkspace()
+        sendWorkspaceResult(win, 'resume', receipt)
+        return receipt
+      }
+      case 'workspace-list': {
+        const receipt = { status: 'ok', snapshots: await listWorkspaceSnapshots() }
+        sendWorkspaceResult(win, 'list', receipt)
+        return receipt
+      }
+      default:
+        return { status: 'failed', code: 'INVALID_COMMAND' }
+    }
+  }
+
+  function sendWorkspaceResult(win, action, receipt) {
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed())) return false
+    return sendToRenderer(win, 'pin:workspace-result', {
+      action,
+      ...(receipt && typeof receipt === 'object' ? receipt : {})
+    })
+  }
+
+  // Opens the pin's context menu; a workspace command envelope (the optional second
+  // argument) short-circuits the menu. Every menu entry is built from a locale key.
+  async function handlePinContextMenu(event, imageBounds = {}, command = null) {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win?._pinData) return null
+    const workspaceCommand = normalizeWorkspaceCommand(command)
+    if (workspaceCommand) return runWorkspaceCommand(win, workspaceCommand)
+    const bounds = imageBounds && typeof imageBounds === 'object' ? imageBounds : {}
+    // Table/QR recognition still take a data URL, and a spilled pin now has to be
+    // read asynchronously before it can be encoded. Capture the pin data so a
+    // closed or re-annotated window cannot be encoded by a late read.
+    const recognizeWithDataUrl = async (kind, name) => {
+      const data = win._pinData
+      if (!data) return
+      try {
+        const url = await pinDataUrl(data)
+        if (win.isDestroyed() || win._pinData !== data) return
+        createRecognitionWindow(kind, url, { scaleFactor: data.displayScaleFactor })
+      } catch (error) {
+        log(`${name} recognition failed:`, error.message)
+      }
+    }
+    let savedSnapshots = []
+    try {
+      savedSnapshots = await listWorkspaceSnapshots()
+    } catch (error) {
+      log('Pin workspace snapshots unavailable for the menu:', error.message)
+    }
+    // The manifest load is asynchronous: the pin may have been closed (or have had
+    // its picture replaced) while it was in flight, and a stale menu must not open.
+    if (!win || (typeof win.isDestroyed === 'function' && win.isDestroyed()) || !win._pinData) return null
+    const snapshotItems = (buildItem) => (savedSnapshots.length
+      ? savedSnapshots.map(buildItem)
+      : [{ label: t('pin.workspace.menu-empty'), enabled: false }])
+    const snapshotLabel = (snapshot) => `${snapshot.name || t('pin.workspace.untitled')} · ${t('pin.workspace.pin-count', { count: snapshot.pinCount })}`
+    const menu = Menu.buildFromTemplate([
+      {
+        label: '重新标注',
+        click: async () => {
+          try {
+            await startPinReannotation(win, bounds)
+          } catch (error) {
+            log('Reannotate pin failed:', error.message)
+          }
+        }
+      },
+      ...[['ocr', 'pin.recognition.ocr'], ['translate', 'pin.recognition.translate']].map(([action, label]) => ({
+        label: t(label),
+        enabled: !!getSettings().plugins.ocr && !win._pinRecognition,
+        click: () => void runPinRecognition(win, action)
+      })),
+      {
+        label: '表格识别',
+        enabled: !!getSettings().plugins.ocr,
+        click: () => void recognizeWithDataUrl('table', 'Table')
+      },
+      {
+        label: '二维码识别',
+        click: () => void recognizeWithDataUrl('qr', 'QR')
+      },
+      { type: 'separator' },
+      // P1 (plan §9.3): the rotation helpers were finished and unit-tested with
+      // no production caller. A quarter turn only changes the stored angle and
+      // the window box; the renderer applies the CSS transform to the same
+      // image. Disabled for long captures: they scroll and
+      // the rotated frame in pin.css is a fixed-size overlay (see rotatePin).
+      {
+        label: '旋转 90°',
+        enabled: !win._pinData.longCapture,
+        click: () => rotatePin(win, 90)
+      },
+      { type: 'separator' },
+      {
+        label: '透明度',
+        submenu: [1, 0.75, 0.5, 0.25].map((opacity) => ({
+          label: `${Math.round(opacity * 100)}%`,
+          type: 'radio',
+          checked: Math.abs((Number(win._pinData.opacity) || 1) - opacity) < 0.005,
+          click: () => setPinOpacity(win, opacity)
+        }))
+      },
+      {
+        // Same radio template as the opacity submenu: each item states the
+        // value it wants, and the checked item is the current state. Once the
+        // pin ignores mouse events this menu is unreachable (clicks are not
+        // forwarded), which is why the batch exit below exists.
+        label: '点击穿透',
+        submenu: [true, false].map((enabled) => ({
+          label: enabled ? '开启' : '关闭',
+          type: 'radio',
+          checked: (win._pinData.clickThrough === true) === enabled,
+          click: () => setPinClickThrough(win, enabled)
+        }))
+      },
+      { type: 'separator' },
+      // B03: the two exited-from-a-pin menus used to blur together ("复制"/"保存"),
+      // even though they always read the ORIGINAL stored bytes (rotation-proof).
+      // They are now named that way, and the view export is a separate, explicit
+      // entry below with its own preview.
+      { label: t('pin.menu.copy-original'), click: () => void copyPin(win) },
+      { label: t('pin.menu.save-original'), click: () => savePin(win).catch((error) => log(error.message)) },
+      { type: 'separator' },
+      // B03: the current rendering (rotation + zoom + the OCR overlay on screen).
+      // A separate group from the original-bytes actions above, because the two
+      // produce different pictures and the old shared wording could not say which.
+      {
+        label: t('pin.menu.export-view'),
+        // A second export while the preview is open would stack two captures of the
+        // same window; the guard inside exportPinView is the real gate, this is the
+        // visible half of it.
+        enabled: !win._pinViewExporting,
+        click: () => exportPinView(win).catch((error) => log('Pin view export failed:', error.message))
+      },
+      // P0 (plan §0.3 #4): exportWindowToPdf had unit tests and no production
+      // caller. Exporting the pin itself (not a re-render) keeps it WYSIWYG.
+      {
+        label: '导出 PDF…',
+        click: () => exportPinToPdf(win).catch((error) => log('Pin PDF export failed:', error.message))
+      },
+      { type: 'separator' },
+      // N05: the pin domain's own menu is the snapshot entry point (the tray is
+      // assembled by main.js and must not be wired here). Restore/delete list the
+      // persisted snapshots; save asks this window's renderer for a name.
+      {
+        label: t('pin.workspace.menu-label'),
+        submenu: [
+          {
+            label: t('pin.workspace.menu-save'),
+            click: () => sendToRenderer(win, 'pin:workspace-name-request')
+          },
+          {
+            label: isPinWorkspaceSuspended() ? t('pin.workspace.menu-resume') : t('pin.workspace.menu-suspend'),
+            click: () => {
+              if (isPinWorkspaceSuspended()) resumePinWorkspace()
+              else suspendPinWorkspace()
+            }
+          },
+          {
+            label: t('pin.workspace.menu-restore'),
+            submenu: snapshotItems((snapshot) => ({
+              label: snapshotLabel(snapshot),
+              click: () => restoreWorkspaceSnapshot(snapshot.id).catch((error) => log('Pin workspace restore failed:', error.message))
+            }))
+          },
+          {
+            label: t('pin.workspace.menu-delete'),
+            submenu: snapshotItems((snapshot) => ({
+              label: snapshotLabel(snapshot),
+              click: () => deleteWorkspaceSnapshot(snapshot.id).catch((error) => log('Pin workspace delete failed:', error.message))
+            }))
+          }
+        ]
+      },
+      { type: 'separator' },
+      { label: '关闭', click: () => { if (!win.isDestroyed()) win.close() } }
+    ])
+    menu.popup({ window: win })
+    return menu
   }
 
   function createPinWindow(input, meta = {}, options = {}) {
@@ -1570,6 +2479,12 @@ function createPinDomain(deps) {
   }
 
   function togglePinVisibility() {
+    // N05: with a suspended workspace there is nothing visible to toggle - the
+    // existing show/hide-every-pin entry (tray/function router) is the resume path.
+    if (suspendedWorkspace) {
+      resumeWorkspaceNow()
+      return
+    }
     const shouldShow = [...pinWindows].some((win) => !win.isDestroyed() && !win.isVisible())
     pinWindows.forEach((win) => {
       if (win.isDestroyed()) return
@@ -1606,111 +2521,12 @@ function createPinDomain(deps) {
         log('Pin save failed:', error.message)
       }
     })
-    ipcMain.on('pin:context-menu', (event, imageBounds = {}) => {
-      const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win?._pinData) return
-      // Table/QR recognition still take a data URL, and a spilled pin now has to
-      // be read asynchronously before it can be encoded. Capture the pin data so
-      // a closed or re-annotated window cannot be encoded by a late read.
-      const recognizeWithDataUrl = async (kind, name) => {
-        const data = win._pinData
-        if (!data) return
-        try {
-          const url = await pinDataUrl(data)
-          if (win.isDestroyed() || win._pinData !== data) return
-          createRecognitionWindow(kind, url, { scaleFactor: data.displayScaleFactor })
-        } catch (error) {
-          log(`${name} recognition failed:`, error.message)
-        }
-      }
-      const menu = Menu.buildFromTemplate([
-        {
-          label: '重新标注',
-          click: async () => {
-            try {
-              await startPinReannotation(win, imageBounds)
-            } catch (error) {
-              log('Reannotate pin failed:', error.message)
-            }
-          }
-        },
-        ...[['ocr', 'pin.recognition.ocr'], ['translate', 'pin.recognition.translate']].map(([action, label]) => ({
-          label: t(label),
-          enabled: !!getSettings().plugins.ocr && !win._pinRecognition,
-          click: () => void runPinRecognition(win, action)
-        })),
-        {
-          label: '表格识别',
-          enabled: !!getSettings().plugins.ocr,
-          click: () => void recognizeWithDataUrl('table', 'Table')
-        },
-        {
-          label: '二维码识别',
-          click: () => void recognizeWithDataUrl('qr', 'QR')
-        },
-        { type: 'separator' },
-        // P1 (plan §9.3): the rotation helpers were finished and unit-tested with
-        // no production caller. A quarter turn only changes the stored angle and
-        // the window box; the renderer applies the CSS transform to the same
-        // image. Disabled for long captures: they scroll and
-        // the rotated frame in pin.css is a fixed-size overlay (see rotatePin).
-        {
-          label: '旋转 90°',
-          enabled: !win._pinData.longCapture,
-          click: () => rotatePin(win, 90)
-        },
-        { type: 'separator' },
-        {
-          label: '透明度',
-          submenu: [1, 0.75, 0.5, 0.25].map((opacity) => ({
-            label: `${Math.round(opacity * 100)}%`,
-            type: 'radio',
-            checked: Math.abs((Number(win._pinData.opacity) || 1) - opacity) < 0.005,
-            click: () => setPinOpacity(win, opacity)
-          }))
-        },
-        {
-          // Same radio template as the opacity submenu: each item states the
-          // value it wants, and the checked item is the current state. Once the
-          // pin ignores mouse events this menu is unreachable (clicks are not
-          // forwarded), which is why the batch exit below exists.
-          label: '点击穿透',
-          submenu: [true, false].map((enabled) => ({
-            label: enabled ? '开启' : '关闭',
-            type: 'radio',
-            checked: (win._pinData.clickThrough === true) === enabled,
-            click: () => setPinClickThrough(win, enabled)
-          }))
-        },
-        { type: 'separator' },
-        // B03: the two exited-from-a-pin menus used to blur together ("复制"/"保存"),
-        // even though they always read the ORIGINAL stored bytes (rotation-proof).
-        // They are now named that way, and the view export is a separate, explicit
-        // entry below with its own preview.
-        { label: t('pin.menu.copy-original'), click: () => void copyPin(win) },
-        { label: t('pin.menu.save-original'), click: () => savePin(win).catch((error) => log(error.message)) },
-        { type: 'separator' },
-        // B03: the current rendering (rotation + zoom + the OCR overlay on screen).
-        // A separate group from the original-bytes actions above, because the two
-        // produce different pictures and the old shared wording could not say which.
-        {
-          label: t('pin.menu.export-view'),
-          // A second export while the preview is open would stack two captures of the
-          // same window; the guard inside exportPinView is the real gate, this is the
-          // visible half of it.
-          enabled: !win._pinViewExporting,
-          click: () => exportPinView(win).catch((error) => log('Pin view export failed:', error.message))
-        },
-        // P0 (plan §0.3 #4): exportWindowToPdf had unit tests and no production
-        // caller. Exporting the pin itself (not a re-render) keeps it WYSIWYG.
-        {
-          label: '导出 PDF…',
-          click: () => exportPinToPdf(win).catch((error) => log('Pin PDF export failed:', error.message))
-        },
-        { type: 'separator' },
-        { label: '关闭', click: () => { if (!win.isDestroyed()) win.close() } }
-      ])
-      menu.popup({ window: win })
+    // N05: the menu is built asynchronously because its workspace submenu lists the
+    // persisted snapshots; the listener stays non-async so a rejection cannot become
+    // an unhandled promise rejection through the secure IPC facade.
+    ipcMain.on('pin:context-menu', (event, imageBounds = {}, command = null) => {
+      handlePinContextMenu(event, imageBounds, command)
+        .catch((error) => log('Pin context menu failed:', error.message))
     })
     // Renderer-side entry points for the same operations. They exist so the wheel
     // (set-opacity) and any future keyboard path do not have to round-trip through
@@ -1831,6 +2647,17 @@ function createPinDomain(deps) {
     startPinReannotation,
     pinFromCapture,
     togglePinVisibility,
+    // N05: pin workspace snapshots (persisted manifest + copied pictures) plus the
+    // suspend/resume pair. Exposed for the context menu, the renderer shortcuts, the
+    // tests and a future tray entry (the gallery is not wired into main.js here).
+    saveWorkspaceSnapshot,
+    listWorkspaceSnapshots,
+    deleteWorkspaceSnapshot,
+    restoreWorkspaceSnapshot,
+    restoreLatestWorkspaceSnapshot,
+    suspendPinWorkspace,
+    resumePinWorkspace,
+    isPinWorkspaceSuspended,
     // A07: per-display finder + window-level actions for the tray, and the one
     // end-of-drag snap entry point (also exercised by the pin:move-end IPC handler).
     listPinsByDisplay,
@@ -1869,5 +2696,22 @@ module.exports = {
   pinViewExportSize,
   describePinViewExport,
   PIN_VIEW_LAYERS,
-  PIN_VIEW_EXCLUSIONS
+  PIN_VIEW_EXCLUSIONS,
+  // N05 pure contracts (no Electron): snapshot serialisation/normalisation, the
+  // bounded newest-first list and the renderer command envelope. The file-system
+  // and window halves live in createPinDomain above.
+  WORKSPACE_SNAPSHOT_SCHEMA,
+  MAX_WORKSPACE_SNAPSHOTS,
+  MAX_WORKSPACE_SNAPSHOT_PINS,
+  MAX_WORKSPACE_SNAPSHOT_NAME,
+  WORKSPACE_COMMAND_TYPES,
+  normalizeWorkspaceSnapshotName,
+  normalizeWorkspaceSnapshotPin,
+  normalizeWorkspaceSnapshot,
+  normalizeWorkspaceSnapshotFile,
+  parseWorkspaceSnapshotText,
+  appendWorkspaceSnapshot,
+  describeWorkspaceSnapshot,
+  buildWorkspaceSnapshot,
+  normalizeWorkspaceCommand
 }
