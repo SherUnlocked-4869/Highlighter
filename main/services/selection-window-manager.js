@@ -17,6 +17,11 @@ class SelectionWindowManager {
     sizeSaveDelayMs,
     onActionWindowClosed = () => {},
     onActionWindowBlur = () => {},
+    // F02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §3.2):
+    // mirrors toolbar visibility to the selection hook host, which stops forwarding
+    // key/wheel/click events while the toolbar is off screen. Deduped transitions
+    // only: a report per input event would replace the IPC storm with another one.
+    onToolbarVisibilityChange = () => {},
     toolbarReleaseMs = 300000,
     // M2/W7: the unpinned action window is only hidden on blur, so without a
     // reclaimer its renderer lives until the app quits. After this long hidden it
@@ -51,6 +56,7 @@ class SelectionWindowManager {
     this.sizeSaveDelayMs = sizeSaveDelayMs
     this.onActionWindowClosed = onActionWindowClosed
     this.onActionWindowBlur = onActionWindowBlur
+    this.onToolbarVisibilityChange = onToolbarVisibilityChange
     this.actionWindowReleaseMs = Number(actionWindowReleaseMs) > 0 ? Number(actionWindowReleaseMs) : 0
     this.isActionWindowReclaimable = isActionWindowReclaimable
     this.onActionWindowReclaim = onActionWindowReclaim
@@ -61,6 +67,7 @@ class SelectionWindowManager {
     this.now = now
     this.toolbarRebuildCooldownMs = toolbarRebuildCooldownMs
     this.toolbarWindow = null
+    this.toolbarVisible = false
     this.actionWindow = null
     this.actionWindows = []
     this.lastToolbarPosition = null
@@ -93,6 +100,36 @@ class SelectionWindowManager {
     return true
   }
 
+  // A probe, not a health check: a window whose isVisible cannot be read is
+  // reported as not visible, which keeps the host suppressing input rather than
+  // waking the main process for a surface that may not be on screen.
+  probeToolbarVisible(win) {
+    try {
+      return !!win && typeof win.isVisible === 'function' && win.isVisible() === true
+    } catch {
+      return false
+    }
+  }
+
+  // F02: notify the selection-hook host once per real transition. The domain
+  // forwards this over its private utility-process channel; a listener that throws
+  // must never break a show/hide path.
+  reportToolbarVisibility(visible) {
+    const next = visible === true
+    if (next === this.toolbarVisible) return false
+    this.toolbarVisible = next
+    try {
+      this.onToolbarVisibilityChange(next)
+    } catch (error) {
+      this.log('Selection toolbar visibility change handler failed:', error.message || String(error))
+    }
+    return true
+  }
+
+  isToolbarVisible() {
+    return this.toolbarVisible === true
+  }
+
   destroyUnavailableWindow(win, kind, reason) {
     if (!win || win.isDestroyed()) return false
     this.log(`Selection ${kind} window unavailable; recreating:`, reason)
@@ -123,6 +160,7 @@ class SelectionWindowManager {
       ? 'toolbar'
       : this.ownsActionWindow(win) ? 'action' : ''
     if (!kind) return false
+    if (kind === 'toolbar') this.reportToolbarVisibility(false)
     const reason = details.reason || 'unknown'
     const exitCode = Number.isInteger(details.exitCode) ? ` (${details.exitCode})` : ''
     this.destroyUnavailableWindow(win, kind, `renderer ${reason}${exitCode}`)
@@ -168,6 +206,7 @@ class SelectionWindowManager {
       this.toolbarWindow = null
       this.toolbarCreatedAt = 0
       this.toolbarPresentationReport = null
+      this.reportToolbarVisibility(false)
     })
     this.toolbarReclaimer.arm()
     this.loadWindow(win, pagePath, 'toolbar')
@@ -421,6 +460,10 @@ class SelectionWindowManager {
         this.toolbarPresentationReport = { ...report, rebuilt: true }
       }
     }
+    // Only a window that really reported visible re-opens the host's input gate;
+    // a failed show keeps it closed, so a surface that never reached the display
+    // cannot reintroduce the per-keystroke wakeups.
+    this.reportToolbarVisibility(this.probeToolbarVisible(win))
     return win
   }
 
@@ -514,6 +557,8 @@ class SelectionWindowManager {
     this.toolbarWindow = null
     this.toolbarCreatedAt = 0
     this.toolbarPresentationReport = null
+    // A recycled (destroyed or replaced) window cannot be on screen any more.
+    this.reportToolbarVisibility(false)
     if (!win) return false
     this.log('Selection toolbar window recycled:', reason)
     if (typeof win.isDestroyed === 'function' && win.isDestroyed()) return true
@@ -545,10 +590,17 @@ class SelectionWindowManager {
 
   hideToolbar() {
     const win = this.toolbarWindow
-    if (!this.isWindowHealthy(win)) return
-    win._pendingToolbarSelection = null
-    win.hide()
-    if (!this.toolbarReclaimer.isArmed()) this.toolbarReclaimer.arm()
+    const healthy = this.isWindowHealthy(win)
+    // F02: typing and scrolling used to reach this method per event and hide an
+    // already hidden window (one win.hide() + compositor round-trip per keystroke).
+    // The host now suppresses those events, and this guard makes the main-process
+    // half of the contract explicit: only a visible, healthy window gets hidden.
+    const wasVisible = healthy && this.probeToolbarVisible(win)
+    if (healthy) win._pendingToolbarSelection = null
+    if (wasVisible) win.hide()
+    this.reportToolbarVisibility(false)
+    if (healthy && !this.toolbarReclaimer.isArmed()) this.toolbarReclaimer.arm()
+    return wasVisible
   }
 
   getToolbarWindow() {

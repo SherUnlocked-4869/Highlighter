@@ -282,7 +282,7 @@ function createSelectionDomain(deps) {
     return settings.selectionToolbar.enabled !== false || settings.clipboard?.enabled === true || deps.clipboardNeedsSelectionHook?.() === true
   }
 
-  // F02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §三.2):
+  // F02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §3.2):
   // the hook host stops forwarding key/wheel/click events while the toolbar is off
   // screen. This private, volatile channel mirrors the window state into it; the
   // native ObserveInput counter (clipboard guardrail/lease logic) is untouched and

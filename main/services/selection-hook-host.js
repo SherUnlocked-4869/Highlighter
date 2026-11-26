@@ -9,6 +9,13 @@ const SelectionHook = require('selection-hook')
 let hook = null
 let disposed = false
 const lastInputAt = { value: 0 }
+// F02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §3.2): the
+// toolbar's visibility is mirrored here so everyday typing and scrolling do not
+// wake the Electron main process for nothing. The native layer keeps observing
+// input (highlighter::ObserveInput drives the clipboard guardrail/lease logic), so
+// only the cross-process forward is gated. A fresh host starts hidden: the first
+// selection is what makes the toolbar visible, and that event is always forwarded.
+let toolbarVisible = false
 
 function parentPort() {
   return process.parentPort || null
@@ -25,6 +32,17 @@ function send(message) {
 
 function markInput() {
   lastInputAt.value = Date.now()
+}
+
+// Only a visible toolbar has anything to do with these events: key-down and
+// mouse-wheel hide it, mouse-down decides whether a click landed outside it.
+// Forwarding them while it is hidden bought a cross-process wakeup per keystroke
+// and per wheel tick, so the flag gates the forward while markInput() above still
+// records that input happened (the pong diagnostic stays truthful).
+function forwardInput(event, data) {
+  if (!toolbarVisible) return false
+  send({ type: 'event', event, data })
+  return true
 }
 
 function clipboardCoordinatorDiagnostics() {
@@ -61,19 +79,20 @@ function startHook(options = {}) {
     }
     hook.on('text-selection', (data) => {
       markInput()
+      // The only event the hidden surface still needs: it is what shows the toolbar.
       send({ type: 'event', event: 'text-selection', data })
     })
     hook.on('mouse-down', (data) => {
       markInput()
-      send({ type: 'event', event: 'mouse-down', data })
+      forwardInput('mouse-down', data)
     })
     hook.on('mouse-wheel', (data) => {
       markInput()
-      send({ type: 'event', event: 'mouse-wheel', data })
+      forwardInput('mouse-wheel', data)
     })
     hook.on('key-down', (data) => {
       markInput()
-      send({ type: 'event', event: 'key-down', data })
+      forwardInput('key-down', data)
     })
     hook.on('status', (status) => {
       // startHook() reports started once after a successful start; avoid duplicates.
@@ -145,6 +164,11 @@ function handleMessage(raw) {
       break
     case 'update-options':
       updateOptions(message.options || {})
+      break
+    case 'toolbar-visibility':
+      // The main process owns the toolbar window; this process only mirrors the
+      // state. The native hook keeps running and counting input either way.
+      toolbarVisible = message.visible === true
       break
     case 'ping':
       send({
