@@ -307,6 +307,18 @@ progress{accent-color:var(--primary)}
 .history-version{flex:0 0 auto;margin-left:auto;padding:1px 6px;border:1px solid var(--line-2);border-radius:var(--radius-pill);color:var(--primary-text);background:var(--primary-soft);font-size:10.5px;font-variant-numeric:tabular-nums;letter-spacing:.02em;white-space:nowrap}
 /* Long captures have no edit button; the plate carries the reason as a tooltip. */
 .history-image[title]{cursor:help}
+/* N02 follow-up (real-device verification, 2026-11-27): per-card OCR status chip and the
+   page-level recognition bar. The chip sits on the thumbnail plate so the answer to
+   "did OCR run on this capture?" is visible without reading the meta row; done/empty stay
+   quiet, pending uses the accent and a problem state uses the danger token. */
+.history-ocr{position:absolute;left:8px;bottom:8px;z-index:1;padding:1px 7px;border:1px solid var(--line);border-radius:var(--radius-pill);background:color-mix(in srgb,var(--surface) 90%,transparent);color:var(--muted);font-size:10.5px;white-space:nowrap;pointer-events:none}
+.history-ocr[data-history-ocr="done"]{color:var(--text)}
+.history-ocr[data-history-ocr="pending"]{border-color:var(--primary);color:var(--primary-text);background:var(--primary-soft)}
+.history-ocr[data-history-ocr="failed"]{border-color:var(--danger);color:var(--danger)}
+.history-ocr-bar{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding:8px 14px;border-radius:var(--radius-lg);color:var(--muted);font-size:12px}
+.history-ocr-bar[hidden]{display:none}
+.history-ocr-bar button{margin-inline-start:auto}
+.history-ocr-bar[data-mode="unavailable"]{color:var(--muted)}
 
 /* ---------- plugins ---------- */
 .plugin-card{display:flex;align-items:center;gap:14px;padding:18px}

@@ -36,6 +36,53 @@ test('first startup renders navigation, empty history, About version, and shortc
   expect(await highlighter.getUnexpectedErrors()).toEqual([])
 })
 
+// N02 follow-up (real-device verification, 2026-11-27): a Chinese IME composition in the
+// history search box used to be destroyed by the page's own re-render. Chromium fires an
+// `input` event for every intermediate pinyin keystroke, the old 220 ms debounce then ran the
+// full page render, and replacing the focused <input> aborted the composition - leaving only
+// the raw letters in the box. This is the renderer-level reproduction: while a composition is
+// open, mid-composition input events must not replace the input node at all, and the tag
+// filter must be a dropdown over existing tags rather than typed text.
+test('history search survives an IME composition and exposes the tag dropdown', async ({ highlighter }) => {
+  const { mainWindow: page } = highlighter
+  await navigate(page, 'history', '截图历史')
+  const search = page.locator('#historySearch')
+  await expect(search).toBeVisible()
+  // The tag filter is a <select> with the "all tags" placeholder; the free-text box stays for
+  // image text / file names.
+  const tagSelect = page.locator('#historyTag')
+  await expect(tagSelect).toBeVisible()
+  await expect(tagSelect.locator('option')).toHaveText(['全部标签'])
+  // The page-level OCR bar is silent for an empty history (nothing to index, nothing running).
+  await expect(page.locator('#historyOcrBar')).toBeHidden()
+
+  await search.focus()
+  await search.evaluate((element) => { window.__e2eHistorySearch = element })
+  await search.dispatchEvent('compositionstart')
+  // The exact shape Chromium emits for a pinyin keystroke: an `input` event with
+  // isComposing=true while the value is still the raw letters.
+  await search.evaluate((element) => {
+    element.value = 'nihao'
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true, data: 'o' }))
+  })
+  // Longer than the old search debounce: the pre-fix page would have re-rendered here and
+  // replaced this very node (and the result grid with it).
+  await page.waitForTimeout(500)
+  expect(await page.evaluate(() => document.getElementById('historySearch') === window.__e2eHistorySearch)).toBe(true)
+  expect(await search.inputValue()).toBe('nihao')
+
+  // Committing the composition searches the committed value through the results-only path; the
+  // input must survive that too.
+  await search.evaluate((element) => {
+    element.value = '你好'
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: false, data: '你好' }))
+    element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '你好' }))
+  })
+  await expect.poll(() => page.evaluate(() => document.getElementById('historySearch') === window.__e2eHistorySearch)).toBe(true)
+  expect(await search.inputValue()).toBe('你好')
+  expect(await highlighter.getUnexpectedErrors()).toEqual([])
+})
+
 test('selection toolbar renderer crash destroys the dead BrowserWindow', async ({ highlighter }) => {
   const { electronApp } = highlighter
   const result = await electronApp.evaluate(({ BrowserWindow }) => new Promise((resolve) => {

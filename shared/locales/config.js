@@ -3710,4 +3710,69 @@
     'config.settings-system.backup-archive-error-password-too-long': '密碼過長（上限 256 個字元）。',
     'config.settings-system.backup-archive-error-decrypt': '密碼錯誤，或備份檔案已被竄改。'
   })
+  add('zh-CN', {
+    'config.history.all-tags': '全部标签',
+    'config.history.ocr-pending': '识别中…',
+    'config.history.ocr-done': '已识别 {count} 字',
+    'config.history.ocr-empty': '已识别 · 无文字',
+    'config.history.ocr-failed': '识别失败',
+    'config.history.ocr-skipped': '未识别 · OCR 未开启',
+    'config.history.ocr-unindexed': '未识别',
+    'config.history.ocr-action': '识别文字',
+    'config.history.ocr-action-retry': '重新识别',
+    'config.history.ocr-action-running': '识别中…',
+    'config.history.ocr-progress': '正在识别图中文字 · 待处理 {count} 条',
+    'config.history.ocr-backlog': '{count} 条截图还没有文字索引',
+    'config.history.ocr-backlog-off': '{count} 条截图还没有文字索引 · 文字识别未开启',
+    'config.history.ocr-index-missing': '识别未索引项',
+    'config.history.ocr-index-queued': '已加入 {count} 项文字识别',
+    'config.history.ocr-index-started': '已开始识别图中文字',
+    'config.history.ocr-index-unavailable': '文字识别未开启，请先在设置中开启 OCR',
+    'config.history.ocr-index-failed': '无法开始文字识别',
+    'config.history.ocr-nothing-to-index': '没有需要识别的截图'
+  })
+
+  add('en-US', {
+    'config.history.all-tags': 'All tags',
+    'config.history.ocr-pending': 'Recognizing…',
+    'config.history.ocr-done': 'Indexed · {count} chars',
+    'config.history.ocr-empty': 'Indexed · no text',
+    'config.history.ocr-failed': 'Recognition failed',
+    'config.history.ocr-skipped': 'Not indexed · OCR off',
+    'config.history.ocr-unindexed': 'Not indexed',
+    'config.history.ocr-action': 'Recognize text',
+    'config.history.ocr-action-retry': 'Retry recognition',
+    'config.history.ocr-action-running': 'Recognizing…',
+    'config.history.ocr-progress': 'Recognizing text in captures · {count} queued',
+    'config.history.ocr-backlog': '{count} captures have no text index yet',
+    'config.history.ocr-backlog-off': '{count} captures have no text index · text recognition is off',
+    'config.history.ocr-index-missing': 'Index missing text',
+    'config.history.ocr-index-queued': 'Queued {count} recognition jobs',
+    'config.history.ocr-index-started': 'Text recognition started',
+    'config.history.ocr-index-unavailable': 'Text recognition is off; enable OCR in settings first',
+    'config.history.ocr-index-failed': 'Could not start text recognition',
+    'config.history.ocr-nothing-to-index': 'Nothing to recognize'
+  })
+
+  add('zh-TW', {
+    'config.history.all-tags': '全部標籤',
+    'config.history.ocr-pending': '辨識中…',
+    'config.history.ocr-done': '已辨識 {count} 字',
+    'config.history.ocr-empty': '已辨識 · 無文字',
+    'config.history.ocr-failed': '辨識失敗',
+    'config.history.ocr-skipped': '未辨識 · OCR 未開啟',
+    'config.history.ocr-unindexed': '未辨識',
+    'config.history.ocr-action': '辨識文字',
+    'config.history.ocr-action-retry': '重新辨識',
+    'config.history.ocr-action-running': '辨識中…',
+    'config.history.ocr-progress': '正在辨識圖中文字 · 待處理 {count} 條',
+    'config.history.ocr-backlog': '{count} 張截圖還沒有文字索引',
+    'config.history.ocr-backlog-off': '{count} 張截圖還沒有文字索引 · 文字辨識未開啟',
+    'config.history.ocr-index-missing': '辨識未索引項',
+    'config.history.ocr-index-queued': '已加入 {count} 項文字辨識',
+    'config.history.ocr-index-started': '已開始辨識圖中文字',
+    'config.history.ocr-index-unavailable': '文字辨識未開啟，請先在設定中開啟 OCR',
+    'config.history.ocr-index-failed': '無法開始文字辨識',
+    'config.history.ocr-nothing-to-index': '沒有需要辨識的截圖'
+  })
 })()

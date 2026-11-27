@@ -33,6 +33,13 @@
 // accepts a renderer object - as a command envelope: `{ op: 'update-tags', id, tags }`.
 // A payload without `op` keeps the original list contract byte for byte, and the preload
 // exposes a named `updateHistoryTags()` method so the renderer never hand-builds the envelope.
+//
+// N02 follow-up (real-device verification, 2026-11-27): the same envelope now carries the two
+// reads behind the tag dropdown and the OCR status UI, plus the explicit "index these captures"
+// command. They stay on 'history:list' for the same frozen-inventory reason:
+//   { op: 'list-tags' }                -> [{ tag, count }]
+//   { op: 'ocr-state' }                -> { summary, queue, enabled }
+//   { op: 'index-ocr', ids?, all? }    -> { accepted, skipped, disabled }
 
 const fs = require('node:fs')
 
@@ -42,12 +49,22 @@ const { t } = require('../services/i18n-bootstrap')
 
 // N02: the command envelope discriminant for the tag write (see the header).
 const HISTORY_UPDATE_TAGS_OP = 'update-tags'
+const HISTORY_LIST_TAGS_OP = 'list-tags'
+const HISTORY_OCR_STATE_OP = 'ocr-state'
+const HISTORY_INDEX_OCR_OP = 'index-ocr'
 
 function isUpdateTagsCommand(payload) {
   return !!payload &&
     typeof payload === 'object' &&
     !Array.isArray(payload) &&
     payload.op === HISTORY_UPDATE_TAGS_OP
+}
+
+function isHistoryCommand(payload) {
+  return !!payload &&
+    typeof payload === 'object' &&
+    !Array.isArray(payload) &&
+    typeof payload.op === 'string'
 }
 
 // Resolution order for a batch: history order first (selectExportItems), otherwise
@@ -158,6 +175,29 @@ function registerHistoryIpc({
     if (isUpdateTagsCommand(filter)) {
       if (typeof historyService.updateTags !== 'function') throw new Error('History tag updates are unavailable')
       return historyService.updateTags(filter.id, filter.tags)
+    }
+    // N02 follow-up: the tag-dropdown read, the OCR status read and the explicit index command.
+    // Same frozen channel, same rule: an unknown op is an error rather than a silent list call,
+    // so a renderer typo cannot be mistaken for an empty page.
+    if (isHistoryCommand(filter)) {
+      if (filter.op === HISTORY_LIST_TAGS_OP) {
+        if (typeof historyService.listTags !== 'function') throw new Error('History tag listing is unavailable')
+        return historyService.listTags()
+      }
+      if (filter.op === HISTORY_OCR_STATE_OP) {
+        if (typeof historyService.ocrState !== 'function') throw new Error('History OCR state is unavailable')
+        return historyService.ocrState()
+      }
+      if (filter.op === HISTORY_INDEX_OCR_OP) {
+        if (typeof historyService.indexOcr !== 'function') throw new Error('History OCR indexing is unavailable')
+        const ids = Array.isArray(filter.ids) ? filter.ids : null
+        const all = filter.all === true
+        // A command with neither target means the renderer built an invalid payload; defaulting
+        // it to "index the whole history" would turn a typo into a mass OCR run.
+        if (!all && ids === null) throw new Error('History OCR indexing requires ids or all')
+        return historyService.indexOcr({ ids, all })
+      }
+      throw new Error(`Unsupported history command: ${filter.op}`)
     }
     return historyService.list(filter)
   })

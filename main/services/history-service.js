@@ -20,6 +20,24 @@ const MAX_HISTORY_PAGE_SIZE = 100
 const MAX_HISTORY_TAG_LENGTH = 24
 const MAX_HISTORY_TAG_COUNT = 8
 const MAX_HISTORY_OCR_TEXT_LENGTH = 20000
+// N02 follow-up (real-device verification, 2026-11-27): the background OCR index used to write
+// only `ocrText`, so the history page could not tell "recognition finished and found no text"
+// apart from "this capture was never indexed". Every record now carries an explicit status:
+//   pending  queued or running; the only non-terminal value
+//   done     text was recognized and stored (ocrText)
+//   empty    recognition finished, the capture has no text
+//   failed   recognition failed after the indexer's single retry
+//   skipped  the job was dropped because OCR or screenshot history was switched off
+// A `pending` row whose id is no longer in the indexer's memory (app restarted, plugin
+// disabled mid-queue) reads as unindexed instead of pretending to still be working; see
+// HistoryService.ocrStatusOf().
+const HISTORY_OCR_STATUSES = new Set(['pending', 'done', 'empty', 'failed', 'skipped'])
+
+function normalizeHistoryOcrStatus(value) {
+  if (typeof value !== 'string') return ''
+  const status = value.trim().toLocaleLowerCase()
+  return HISTORY_OCR_STATUSES.has(status) ? status : ''
+}
 
 function normalizeHistoryFilter(value = {}) {
   const filter = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -27,6 +45,10 @@ function normalizeHistoryFilter(value = {}) {
   return {
     query: String(filter.query || '').trim().slice(0, MAX_HISTORY_QUERY_LENGTH).toLocaleLowerCase(),
     source: String(filter.source || '').trim().slice(0, 64),
+    // The tag dropdown sends one exact tag; the free-text query still substring-matches tags
+    // (shipped behaviour), but a tag chip selection must not match "invoice-2024" when the
+    // user picked "invoice".
+    tag: String(filter.tag || '').trim().slice(0, MAX_HISTORY_TAG_LENGTH),
     cursor: String(filter.cursor || '').trim().slice(0, 128),
     limit: Math.max(1, Math.min(MAX_HISTORY_PAGE_SIZE, requestedLimit))
   }
@@ -64,6 +86,13 @@ function normalizeHistoryOcrText(value) {
 
 function matchesHistoryFilter(item, filter) {
   if (filter.source && item.source !== filter.source) return false
+  // N02 follow-up: an exact, case-insensitive tag match for the filter dropdown. The
+  // free-text query below keeps substring-matching tags for the behaviour that shipped.
+  if (filter.tag) {
+    const wanted = filter.tag.toLocaleLowerCase()
+    const tags = Array.isArray(item.tags) ? item.tags : []
+    if (!tags.some((tag) => String(tag).toLocaleLowerCase() === wanted)) return false
+  }
   if (!filter.query) return true
   const searchable = [
     item.source,
@@ -550,7 +579,13 @@ class HistoryService {
       documentId,
       revisionId: String(item.revisionId || ''),
       headRevisionId: String(item.headRevisionId || item.revisionId || ''),
-      version
+      version,
+      // N02 follow-up: the card renders a status badge, so the projection carries the effective
+      // status plus the recognized character count instead of the text itself. The raw
+      // persisted value is replaced by the derived one: a stale `pending` from a previous run
+      // reads as unindexed because the indexer no longer holds the id.
+      ocrStatus: this.ocrStatusOf(item),
+      ocrTextLength: typeof item.ocrText === 'string' ? item.ocrText.length : 0
     }
   }
 
@@ -620,15 +655,123 @@ class HistoryService {
   // N02: called by the background OCR indexer once a saved capture's text was recognized.
   // The record may already be gone (deleted while the sidecar ran): that is a normal race,
   // not an error, and the result is simply dropped. Empty text is not written either - it
-  // would only create a write and a page refresh that cannot change any search result.
+  // would only create a write and a page refresh that cannot change any search result; the
+  // indexer reports that case through markOcrStatus(id, 'empty') instead.
+  // N02 follow-up: the same write also records the terminal status, so the card can show
+  // "recognized · N chars" without re-reading the text. An identical text on an already-done record
+  // is still a no-op; identical text on a failed/skipped record is a real recovery and is
+  // written (with the status fixed) instead of being dropped as "unchanged".
   updateOcrText(id, text) {
     const normalizedText = normalizeHistoryOcrText(text)
     const normalizedId = String(id || '').slice(0, 128)
     if (!normalizedId || !normalizedText) return false
     const current = this.getItem(normalizedId)
     if (!current) return false
-    if (current.ocrText === normalizedText) return true
-    return this.writeItemFields(normalizedId, { ocrText: normalizedText })
+    const alreadyDone = normalizeHistoryOcrStatus(current.ocrStatus) === 'done'
+    if (alreadyDone && current.ocrText === normalizedText) return true
+    return this.writeItemFields(normalizedId, {
+      ocrText: normalizedText,
+      ocrStatus: 'done',
+      ocrIndexedAt: this.now()
+    })
+  }
+
+  // N02 follow-up: the one effective-status reader. It is what makes the badge truthful after a
+  // restart: "pending" is never trusted from the store alone, it is derived from the indexer's
+  // in-memory job list (isActive). Persisted pending is only a compatibility value; if the
+  // current indexer no longer holds the id, the record reads as unindexed instead of pretending
+  // to still be working. A record whose text exists but whose status predates this field reads
+  // as done, so no data migration is required for the captures indexed by the first N02 release.
+  ocrStatusOf(item) {
+    if (!item || typeof item !== 'object') return ''
+    const status = normalizeHistoryOcrStatus(item.ocrStatus)
+    const id = String(item.id || '')
+    const indexer = this.ocrIndexer
+    const active = indexer && typeof indexer.isActive === 'function' ? indexer.isActive(id) : false
+    if (active) return 'pending'
+    if (status === 'pending') return typeof item.ocrText === 'string' && item.ocrText ? 'done' : ''
+    if (!status) return typeof item.ocrText === 'string' && item.ocrText ? 'done' : ''
+    return status
+  }
+
+  // N02 follow-up: a cheap "the visible OCR state may have changed" signal for queue changes
+  // (accepting a job has no store write behind it). Same push as a real write, no history array
+  // rewrite: the renderer re-reads the list projection, where pending is derived from the
+  // indexer's in-memory job set.
+  notifyOcrQueue() {
+    try {
+      this.onChanged()
+    } catch (error) {
+      this.log('History OCR queue notification failed:', error?.message || String(error))
+    }
+  }
+
+  // N02 follow-up: the indexer's status writer. Same normalization and re-read as updateTags, so
+  // a result for a deleted record is dropped instead of resurrecting it. Returns false only when
+  // nothing was written because the record or the status is not usable; an unchanged status is
+  // a successful no-op.
+  markOcrStatus(id, status) {
+    const normalizedStatus = normalizeHistoryOcrStatus(status)
+    const normalizedId = String(id || '').slice(0, 128)
+    if (!normalizedId || !normalizedStatus) return false
+    const current = this.getItem(normalizedId)
+    if (!current) return false
+    if (normalizeHistoryOcrStatus(current.ocrStatus) === normalizedStatus) return true
+    const patch = { ocrStatus: normalizedStatus }
+    if (normalizedStatus === 'done' || normalizedStatus === 'empty' || normalizedStatus === 'failed') {
+      patch.ocrIndexedAt = this.now()
+    }
+    return this.writeItemFields(normalizedId, patch)
+  }
+
+  // N02 follow-up: how much of the history carries a text index. Read-only and memory-only (no
+  // per-record file probe), because the history page asks for it on every push; it answers the
+  // "did OCR finish, or was it never triggered?" question the per-card badge cannot answer alone.
+  ocrSummary() {
+    const summary = {
+      total: 0,
+      indexed: 0,
+      empty: 0,
+      pending: 0,
+      failed: 0,
+      skipped: 0,
+      unindexed: 0
+    }
+    for (const item of this.readHistory()) {
+      summary.total += 1
+      const status = this.ocrStatusOf(item)
+      if (status === 'done') summary.indexed += 1
+      else if (status === 'empty') summary.empty += 1
+      else if (status === 'pending') summary.pending += 1
+      else if (status === 'failed') summary.failed += 1
+      else if (status === 'skipped') summary.skipped += 1
+      else summary.unindexed += 1
+    }
+    return summary
+  }
+
+  // N02 follow-up: the distinct tags stored on history records, with usage counts, for the
+  // history filter dropdown. Counts let the dropdown read a tag with its usage count instead of an opaque
+  // list, and the sort puts the most used tag first. Casing comes from the first record seen;
+  // grouping is case-insensitive, exactly like the exact-match filter.
+  // Deliberately memory-only: this is asked for after every history:changed push, and a
+  // per-record existence probe here would recreate the whole-history disk scan that F01 removed.
+  // A tag whose records were all deleted away disappears with them on the next cleanup(); the
+  // rare stale entry only means an empty result until then.
+  listTags() {
+    const counts = new Map()
+    for (const item of this.readHistory()) {
+      const tags = normalizeHistoryTags(Array.isArray(item?.tags) ? item.tags : []) || []
+      for (const tag of tags) {
+        const key = tag.toLocaleLowerCase()
+        const existing = counts.get(key)
+        if (existing) existing.count += 1
+        else counts.set(key, { tag, count: 1 })
+      }
+    }
+    return [...counts.values()].sort((left, right) => (
+      right.count - left.count || left.tag.localeCompare(right.tag)
+    ))
   }
 
   // N02: replace a record's tag list (the history card's tag editor). Returns the normalized
@@ -839,6 +982,7 @@ module.exports = {
   normalizeHistoryIds,
   normalizeHistoryFilter,
   normalizeHistoryTags,
+  normalizeHistoryOcrStatus,
   normalizeHistoryOcrText,
   MAX_HISTORY_TAG_COUNT,
   MAX_HISTORY_TAG_LENGTH

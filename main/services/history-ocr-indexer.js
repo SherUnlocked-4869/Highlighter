@@ -75,11 +75,62 @@ function createHistoryOcrIndexer(options = {}) {
     return {
       pending: queue.length,
       running,
+      activeId: inFlightId,
       disposed,
       processedCount,
       failedCount,
       indexedCount: indexedIds.size
     }
+  }
+
+  // N02 follow-up (real-device verification, 2026-11-27): the history page needs to tell a
+  // record that is queued/in-flight apart from one that was never indexed. `isActive()` answers
+  // that for HistoryService.ocrStatusOf(), and `has()` answers "does this indexer still own the
+  // id". `enabled()` lets the page say why a manual index request did nothing instead of
+  // failing silently.
+  function has(id) {
+    return indexedIds.has(String(id || ''))
+  }
+
+  function isActive(id) {
+    return isQueuedOrRunning(String(id || ''))
+  }
+
+  function enabled() {
+    return !disposed && indexingEnabled()
+  }
+
+  // The queue state is visible to the page through HistoryService.ocrStatusOf() without a
+  // persisted write: "pending" is derived from the in-memory job list, so accepting a job does
+  // not rewrite the whole history array on the capture save path. A single broadcast is still
+  // emitted so an open history page re-reads the projection and shows "recognizing".
+  function notifyQueue() {
+    if (disposed) return
+    try {
+      const historyService = getHistoryService()
+      if (historyService && typeof historyService.notifyOcrQueue === 'function') historyService.notifyOcrQueue()
+    } catch (error) {
+      log('History OCR queue notify failed:', error && error.message ? error.message : String(error))
+    }
+  }
+
+  // Terminal status writes must never break the queue: a missing/deleted history service or a
+  // store failure is logged and the recognition result is dropped exactly as before.
+  function markStatus(id, status) {
+    if (disposed) return
+    try {
+      const historyService = getHistoryService()
+      if (historyService && typeof historyService.markOcrStatus === 'function') {
+        historyService.markOcrStatus(id, status)
+      }
+    } catch (error) {
+      log('History OCR status write failed:', error && error.message ? error.message : String(error))
+    }
+  }
+
+  function isQueuedOrRunning(id) {
+    if (inFlightId === id) return true
+    return queue.some((job) => job.id === id)
   }
 
   // The plugin switch is the product gate: indexing is a background consumer of the same
@@ -144,33 +195,42 @@ function createHistoryOcrIndexer(options = {}) {
     cancelledIds.delete(job.id)
   }
 
+  // Returns `{ ok: true, text }` or `{ ok: false }`. The callers need the distinction: an empty
+  // string is a valid recognition result ("no text in this capture") while a thrown/failed
+  // attempt is not, and only the latter is a failure the card should report.
   async function recognizeText(imageBuffer) {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-      if (disposed) return null
+      if (disposed) return { ok: false }
       try {
         const service = getOcrService()
-        if (!service || typeof service.recognize !== 'function') return null
+        if (!service || typeof service.recognize !== 'function') return { ok: false }
         const result = await service.recognize(imageBuffer, {
           scaleFactor: 1,
           maxSide: MAX_IMAGE_SIDE
         })
-        return normalizeOcrText(result && result.text !== undefined ? result.text : result)
+        return {
+          ok: true,
+          text: normalizeOcrText(result && result.text !== undefined ? result.text : result)
+        }
       } catch (error) {
         if (attempt >= MAX_ATTEMPTS) {
           failedCount += 1
           log('History OCR failed:', error && error.message ? error.message : String(error))
-          return null
+          return { ok: false }
         }
       }
     }
-    return null
+    return { ok: false }
   }
 
   async function processJob(job) {
     if (disposed) return
-    // The switch may have been turned off while the job sat in the queue.
+    // The switch may have been turned off while the job sat in the queue. The record keeps an
+    // explicit `skipped` status so the card explains why nothing happened instead of showing a
+    // stale "in progress".
     if (!indexingEnabled()) {
       dropJob(job)
+      markStatus(job.id, 'skipped')
       return
     }
     let imageBuffer = null
@@ -183,16 +243,25 @@ function createHistoryOcrIndexer(options = {}) {
     if (disposed) return
     if (!imageBuffer || !imageBuffer.length) {
       dropJob(job)
+      markStatus(job.id, 'failed')
       return
     }
-    const text = await recognizeText(imageBuffer)
+    const recognized = await recognizeText(imageBuffer)
     if (disposed) return
     // The user deleted the record while OCR was running: the in-flight result dies here.
     if (cancelledIds.delete(job.id)) return
-    if (!text) {
+    if (!recognized.ok) {
+      // A permanent failure is a terminal state for the card. The id stays in `indexedIds`, so
+      // an automatic re-save does not re-queue it; only an explicit retry (force) does.
+      markStatus(job.id, 'failed')
+      return
+    }
+    if (!recognized.text) {
       // Empty recognition is not an error (a solid-colour capture). The id stays in
-      // `indexedIds` so a later save of the same record cannot re-queue it.
+      // `indexedIds` so a later save of the same record cannot re-queue it, and the explicit
+      // `empty` status tells the page "recognized, nothing to find here".
       processedCount += 1
+      markStatus(job.id, 'empty')
       return
     }
     const historyService = getHistoryService()
@@ -203,11 +272,13 @@ function createHistoryOcrIndexer(options = {}) {
       return
     }
     try {
-      const written = historyService.updateOcrText(job.id, text)
+      const written = historyService.updateOcrText(job.id, recognized.text)
       if (written) processedCount += 1
+      else failedCount += 1
     } catch (error) {
       failedCount += 1
       log('History OCR write failed:', error && error.message ? error.message : String(error))
+      markStatus(job.id, 'failed')
     }
   }
 
@@ -230,19 +301,38 @@ function createHistoryOcrIndexer(options = {}) {
     }
   }
 
-  function enqueue(item) {
+  // `options`:
+  //   force         explicit user retry: ignore an existing text/queued-set entry. A job that is
+  //                 still queued or running is never duplicated (it answers false).
+  //   allowOverflow explicit backfill: a user-triggered "index the missing captures" run may add
+  //                 more ids than the automatic queue cap, because one click legitimately covers
+  //                 the whole history. Ids are tiny; OCR itself stays serial.
+  //   deferNotify   the caller broadcasts the queue change itself, once, right after a backfill
+  //                 loop. Only the explicit bulk action uses it; the capture save path keeps the
+  //                 single per-record broadcast (no store write either way).
+  function enqueue(item, options = {}) {
     if (disposed || !item || typeof item !== 'object') return false
+    const force = options.force === true
+    const allowOverflow = options.allowOverflow === true
     const id = String(item.id || '').slice(0, 128)
     const filePath = typeof item.filePath === 'string' ? item.filePath : ''
     if (!id || !filePath) return false
     // A record written before this feature (or indexed on an earlier run) already has its
-    // text; the list is the search index, so there is nothing left to do for it.
-    if (typeof item.ocrText === 'string' && item.ocrText) return false
-    if (indexedIds.has(id)) return false
-    if (queue.length >= queueLimit) return false
+    // text; the list is the search index, so there is nothing left to do for it. An explicit
+    // retry may overwrite a previous result, so only the automatic path short-circuits.
+    if (!force && typeof item.ocrText === 'string' && item.ocrText) return false
+    if (indexedIds.has(id)) {
+      if (!force || isQueuedOrRunning(id)) return false
+      indexedIds.delete(id)
+    }
+    if (!allowOverflow && queue.length >= queueLimit) return false
     if (!indexingEnabled()) return false
     indexedIds.add(id)
     queue.push({ id, filePath })
+    // N02 follow-up: "pending" is derived from this in-memory set (HistoryService.ocrStatusOf
+    // asks isActive()), so accepting a job never rewrites the history store; the broadcast only
+    // makes an open page re-read the projection and show "recognizing".
+    if (options.deferNotify !== true) notifyQueue()
     scheduleNext()
     return true
   }
@@ -293,7 +383,10 @@ function createHistoryOcrIndexer(options = {}) {
     discard,
     dispose,
     idle,
-    state: stateSnapshot
+    state: stateSnapshot,
+    has,
+    isActive,
+    enabled
   }
 }
 

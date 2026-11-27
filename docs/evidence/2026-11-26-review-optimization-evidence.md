@@ -30,7 +30,7 @@
 | N03 | P2 | 已实现（导出合成为编辑器播放覆盖层） | test/n03-recording-hud.test.js | 真机录制快捷键胶囊（需焦点在控制条，见风险）、真实音轨静音分析与一键裁剪 |
 | N06 | P2 | 已实现（API Key 迁移未做，见备份契约） | test/n06-config-search-backup.test.js | 真机 Ctrl+K 搜索跳转与单文件加密备份/恢复往返 |
 | N01 | P2 | 已实现 | test/n01-auto-redact.test.js | 真机真实 OCR 模型下的脱敏命中/漏报与手动删除体验 |
-| N02 | P2 | 已实现（历史 OCR 索引+标签、剪贴板图片动作） | test/n02-history-ocr.test.js, test/n02-clipboard-image.test.js | 真机历史搜索图中文字、剪贴板图片 OCR/Excel/贴图与真实 OCR 模型 |
+| N02 | P2 | 已实现（历史 OCR 索引+标签、剪贴板图片动作；真机反馈的三项交互修复见下节） | test/n02-history-ocr.test.js, test/n02-history-ocr-ux.test.js, test/n02-clipboard-image.test.js | 真机历史搜索图中文字、剪贴板图片 OCR/Excel/贴图与真实 OCR 模型；三项交互修复的真机门槛见下节 |
 | N04 | P2 | 已实现（原生拖拽投递需真机） | test/n04-search-quicklook.test.js | 真机拖到微信/钉钉/VS Code/浏览器、可见窗口 blur 清理 |
 | N05 | P2 | 已实现（桌面像素差分需屏采） | test/n05-pin-onion-snapshot.test.js | 真机多显示器贴图快照恢复/挂起、洋葱皮可视比对 |
 | U05 | P1 | 已实现（配置侧，main.js 解除回收已接线） | test/u05-config-lifecycle.test.js | 真机水印截图输出、跨路由搜索定时器、空闲回收与语言互换行为 |
@@ -54,6 +54,22 @@
   N05 把 `applyPinData` 包进 `startPinRenderer()` 后窗口启动标记不可达（locked-sandbox 探针暴露）。
 - 未执行：`verify:package`（需完整 electron-builder 产物与静默安装）与上表“真机/发布门槛”列的全部项。
   这些项不能由本机模拟替代，未冒充通过。
+
+## 2026-11-27 真机反馈修复（N02 三项交互）
+
+发布候选 5.1.0 的真机验证发现截图历史页三个交互问题；复现结论、根因与修复设计见
+[修复方案](../plans/2026-11-27-history-ocr-ux-fixes.md)，回归证据：
+
+| 问题 | 修复 | 自动化证据 | 真机门槛 |
+|---|---|---|---|
+| 中文输入法组字时整页重绘，候选词中断、搜索框只剩拼音 | 搜索框 IME 感知（`compositionstart/end`、忽略 `isComposing` 的 `input`、Enter 229 保护）+ 筛选只更新结果区（卡片 diff，不重建筛选栏与输入框） | test/n02-history-ocr-ux.test.js（IME 接线 / 结果区更新）；e2e/highlighter.spec.js「history search survives an IME composition」（真实 Electron 中组字期间不替换输入节点） | 微软拼音/搜狗实际输入中文（含候选词翻页与 Esc 取消） |
+| 无法判断 OCR 是否完成，空结果含义不明 | 记录级 OCR 状态（pending/done/empty/failed/skipped）+ 卡片徽标 + 页面状态条 + 单卡重试/页面级补索引 | test/n02-history-ocr-ux.test.js（状态写入、陈旧 pending、旧数据兼容、重试、状态条优先级） | 真实 OCR 模型下观察 pending→done/empty/failed 与「识别未索引项」进度 |
+| 标签只能手动输入搜索 | `history:list` 命令信封新增 `list-tags`，筛选栏标签下拉（精确匹配 + 条数）；过滤维度 `tag` | test/n02-history-ocr-ux.test.js（精确匹配、计数、信封路由）；test/history-service.test.js（过滤器形状） | 浅色/深色、窄窗与标签增删后下拉同步 |
+
+实现完成后经独立代码评审复核，另修正了修复自身引入/遗留的 8 处问题（筛选后“加载更多”
+失效、缩略图被版本失配误判、组字标志卡死、标签读取失败清空筛选、二次等待缺守卫、
+`index-ocr` 缺目标默认全量、空结果/失效文件重复补索引、截图保存路径多一次整表写入），
+明细见修复方案 §4；其中分页问题由 `e2e/main-window-ui.spec.js` 的“搜索后加载第二页”用例覆盖。
 
 ## 说明
 

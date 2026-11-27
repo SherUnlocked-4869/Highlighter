@@ -47,7 +47,7 @@ function createSettingsFacade(getSettingsService) {
   }
 }
 
-function createHistoryFacade({ getHistoryService: resolveHistoryService, performanceMonitor, ocrIndexer = null }) {
+function createHistoryFacade({ getHistoryService: resolveHistoryService, performanceMonitor, ocrIndexer = null, fs = require('node:fs') }) {
   // N02 (docs/reviews/2026-11-26-code-review-and-optimization-report.md §5.2): the history
   // service is created inside initializeStore(), which runs long after this module has handed
   // its registrations to main.js. The background OCR indexer therefore attaches itself on the
@@ -65,7 +65,7 @@ function createHistoryFacade({ getHistoryService: resolveHistoryService, perform
   return {
     list: (filter) => performanceMonitor.measure('history.list', () => getHistoryService().list(filter), {
       limit: Math.max(0, Number(filter?.limit) || 0),
-      filtered: !!(filter?.query || filter?.source)
+      filtered: !!(filter?.query || filter?.source || filter?.tag)
     }),
     getThumbnail: (id) => getHistoryService().getThumbnail(id),
     listSources: () => performanceMonitor.measure('history.sources', () => getHistoryService().listSources()),
@@ -74,6 +74,59 @@ function createHistoryFacade({ getHistoryService: resolveHistoryService, perform
     // N02: the tag editor's write path (routed from the history:list command envelope in
     // history-ipc.js, because the main-role IPC inventory is frozen).
     updateTags: (id, tags) => getHistoryService().updateTags(id, tags),
+    // N02 follow-up: the tag dropdown's read (distinct tags with counts).
+    listTags: () => getHistoryService().listTags(),
+    // N02 follow-up: aggregate status read for the page-level OCR bar. The summary comes from the
+    // memory index (no per-record disk probe); the queue snapshot is the indexer's own state, so
+    // "queued vs running vs idle" is reported as the worker sees it.
+    ocrState: () => performanceMonitor.measure('history.ocr-state', () => ({
+      summary: getHistoryService().ocrSummary(),
+      queue: ocrIndexer && typeof ocrIndexer.state === 'function' ? ocrIndexer.state() : null,
+      enabled: !!(ocrIndexer && typeof ocrIndexer.enabled === 'function' && ocrIndexer.enabled())
+    })),
+    // N02 follow-up: explicit (re)index request from the history page. `ids` is the card-level
+    // retry, `all` is the page-level "index the captures that have no text index yet" action.
+    // Both are user-triggered, so the queue cap is intentionally bypassed; OCR itself stays
+    // serial. Accepting a job does not write the store (pending is derived from the indexer's
+    // in-memory job set), and the whole batch emits one history:changed notification.
+    indexOcr: (options = {}) => {
+      const service = getHistoryService()
+      if (!ocrIndexer || typeof ocrIndexer.enqueue !== 'function') {
+        return { accepted: 0, skipped: 0, disabled: true }
+      }
+      if (typeof ocrIndexer.enabled === 'function' && !ocrIndexer.enabled()) {
+        return { accepted: 0, skipped: 0, disabled: true }
+      }
+      const requestedIds = Array.isArray(options?.ids) ? options.ids.slice(0, 500) : null
+      const items = requestedIds
+        ? requestedIds.map((id) => service.getItem(id)).filter(Boolean)
+        : service.readHistory()
+      const acceptedIds = []
+      let skipped = 0
+      for (const item of items) {
+        if (!item || typeof item !== 'object' || !item.filePath || !fs.existsSync(item.filePath)) {
+          skipped += 1
+          continue
+        }
+        // The page action only targets captures that still have no text index. `empty` is a real
+        // result (recognized, nothing to find), so it is not re-queued; failed/skipped records
+        // are retryable, and a stale pending from a previous run reads as unindexed and is picked
+        // up again. An explicit id request keeps the old behaviour of retrying what was asked.
+        const status = typeof service.ocrStatusOf === 'function' ? service.ocrStatusOf(item) : ''
+        const needsIndex = requestedIds !== null || status === '' || status === 'failed' || status === 'skipped'
+        if (!needsIndex) {
+          skipped += 1
+          continue
+        }
+        const force = requestedIds !== null || status === 'failed' || status === 'skipped'
+        if (ocrIndexer.enqueue(item, { force, allowOverflow: true, deferNotify: true })) acceptedIds.push(String(item.id))
+        else skipped += 1
+      }
+      // One push for the batch: the renderer re-reads the list projection, where every accepted
+      // id now reads as pending through the indexer's in-memory job set.
+      if (acceptedIds.length && typeof service.notifyOcrQueue === 'function') service.notifyOcrQueue()
+      return { accepted: acceptedIds.length, skipped, disabled: false }
+    },
     delete: (id) => getHistoryService().delete(id),
     deleteMany: (ids) => getHistoryService().deleteMany(ids),
     exportMany: (ids, directory) => getHistoryService().exportMany(ids, directory),

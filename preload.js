@@ -72,6 +72,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     id: typeof id === 'string' ? id.slice(0, 128) : '',
     tags: Array.isArray(tags) ? tags.filter((tag) => typeof tag === 'string').slice(0, 16) : []
   }),
+  // N02 follow-up (real-device verification, 2026-11-27): the tag filter dropdown and the OCR
+  // status UI. All three ride the same 'history:list' command envelope as the tag write, for
+  // the same frozen main-role IPC inventory reason documented in main/ipc/history-ipc.js.
+  getHistoryTags: () => ipcRenderer.invoke('history:list', { op: 'list-tags' }),
+  getHistoryOcrState: () => ipcRenderer.invoke('history:list', { op: 'ocr-state' }),
+  // `ids` retries one card; `all` asks the main process to index every capture that has no
+  // text index yet. The renderer never passes file paths or OCR text; only ids and the flag.
+  indexHistoryOcr: (options) => {
+    const source = options && typeof options === 'object' ? options : {}
+    const payload = { op: 'index-ocr', all: source.all === true }
+    if (Array.isArray(source.ids)) {
+      payload.ids = source.ids.filter((id) => typeof id === 'string').slice(0, 500)
+    }
+    return ipcRenderer.invoke('history:list', payload)
+  },
   requestAi: (messages, options) => ipcRenderer.invoke('ai:complete', { messages, options }),
   translateText: (text, sourceLanguage, targetLanguage) => ipcRenderer.invoke('ai:translate', { text, sourceLanguage, targetLanguage }),
   chooseDirectory: () => ipcRenderer.invoke('dialog:choose-directory'),
