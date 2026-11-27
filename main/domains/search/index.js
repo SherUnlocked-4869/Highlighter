@@ -536,8 +536,9 @@ function createSearchDomain(deps) {
       frame: false,
       show: false,
       title: 'Highlighter 本地搜索',
-      // The search shell cuts its own rounded corners, so the cut-outs show this
-      // native colour: the shared --bg token, like every other window.
+      // The native frame is the only source of the window shape: the page paints a
+      // full-bleed --bg surface (search/search.css), so the native backdrop is the
+      // shared --bg token like every other opaque window.
       backgroundColor: windowBackdropColor(getSettings(), nativeTheme),
       webPreferences: {
         preload: path.join(rootDirectory, 'preload-search.js')

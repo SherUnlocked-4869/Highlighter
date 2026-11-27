@@ -15,6 +15,9 @@
 
 html, body { height: 100%; }
 
+/* The page paints the base surface itself, equal to the native window backdrop
+   (main/services/window-backdrop.js), so the window is born with the colour it
+   keeps and no first-paint flash changes it. */
 body {
   font: 13px/1.5 var(--font-ui);
   color: var(--text);
@@ -23,16 +26,18 @@ body {
   user-select: none;
 }
 
+/* The native frame is the only source of the window shape: the shell fills the
+   window with one flat --bg surface and draws no border, corners or shadow of its
+   own. It used to be a rounded `--surface` card, which cut four transparent
+   wedges at the corners and let --shadow-3 fall into them — the same four-corner
+   artifact the settings window had before feb5b59. */
 .search-shell {
-  position: relative;
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  border: 1px solid var(--line-2);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
-  box-shadow: var(--shadow-3);
   overflow: hidden;
+  background: var(--bg);
 }
 
 /* ---------- top ---------- */

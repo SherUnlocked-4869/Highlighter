@@ -2,13 +2,15 @@
  * Native window backdrop.
  *
  * A frameless window paints its own `backgroundColor` behind everything the page
- * leaves transparent. Matching `--bg` keeps that colour consistent with the page
- * before first paint and in any CSS cut-outs on other windows.
+ * leaves transparent, and it is what the user sees before the page's first paint.
+ * Matching `--bg` keeps that colour consistent with the page: an opaque window is
+ * born with the surface it keeps, and the shell that fills it draws no CSS outline
+ * of its own (the native frame owns the corners and the shadow).
  *
  * Every opaque window takes its colour from here, so none of them can drift from
  * the design system again:
  *   - config      (main.js)                                 opaque, native frame
- *   - search      (main/domains/search)                     rounded-card shell
+ *   - search      (main/domains/search)                     opaque, native frame
  *   - action      (main/services/selection-window-manager)  result window
  *   - clipboard   (main/domains/clipboard)                  first-paint flash
  *   - recognition (main/domains/recognition)                first-paint flash
@@ -23,10 +25,12 @@
  * The settings window is opaque too (2026-10-24, second pass). A translucent
  * version was built first and rejected twice — "too clear", then "frosted is still
  * too see-through". The prototype's face is glass over a DRAWN desk; a real window
- * has the user's desktop behind it, and that is what was rejected. So the settings
- * window therefore paints a full-bleed `--bg` surface without a CSS outline;
- * the OS alone supplies the window shape and shadow. The native backdrop is
- * re-applied to every tracked window whenever the resolved theme changes.
+ * has the user's desktop behind it, and that is what was rejected. The settings
+ * window and the local-search window therefore paint a full-bleed `--bg` surface
+ * without a CSS outline (search moved to that contract on 2026-11-27, after it
+ * showed the same four-corner wedges the settings window had); the OS alone
+ * supplies the window shape and shadow. The native backdrop is re-applied to every
+ * tracked window whenever the resolved theme changes.
  */
 
 // Keep these equal to shared/tokens.css: `--bg` in :root and in body.dark.
