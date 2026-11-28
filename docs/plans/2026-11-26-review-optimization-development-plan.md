@@ -12,7 +12,7 @@
 本计划把 [全量代码评审与优化建议报告](../reviews/2026-11-26-code-review-and-optimization-report.md) 的
 **5 项 P0 高危缺陷、7 项性能优化、5 组功能与体验修复、6 项创新功能**拆成 23 张工单。
 编号供开发、提交和回归记录共同引用；交付证据登记见
-[证据登记表](../evidence/2026-11-26-review-optimization-evidence.md)。
+[证据登记表](../evidence/2026-11-26-review-optimization-evidence.md) · [交接记录](2026-11-28-review-optimization-handoff.md)。
 
 > 报告中的行号基线为 `master@8416120`，与当前分支代码一致；但评审为静态阅读产物，
 > **每张工单开发前必须先按“触发条件”在隔离样本中复现**，行号/结论与代码不符时以代码为准，
