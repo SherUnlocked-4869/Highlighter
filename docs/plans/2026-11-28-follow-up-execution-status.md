@@ -157,6 +157,8 @@ node scripts/probe-pin-screen-diff.js   # ✔ DEV-08 采用门禁 {adopt:true, r
     OnlyLoadAppFromAsar=on。候选 artifact `Highlighter-Windows-b40c96ac…`（bundle sha256
     `ca7e89830b8afee32d49cb8334f84d2ba33b55eb840d7fd0b818b7e4906515d1`，405,202,706 B）。
     这是 unsigned 的功能诊断候选：签名渠道、`verify:release`、隔离安装/升级与 R02/R03 仍未执行。
+- **第三轮** run [`46106195872`](https://github.com/SherUnlocked-4869/Highlighter/actions/runs/46106195872)：在文档 HEAD
+  `25ee84c` 上同样**全绿**（quality + unsigned package 两个 job），作为该分支最终提交的 CI 记录；本 run 未再重复下载 artifact。
 
 ## 6. 剩余真机 / 发布门槛
 
