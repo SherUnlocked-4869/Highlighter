@@ -51,6 +51,23 @@ jobs:
       - name: Run tests
         run: npm test
 
+      # E01 (docs/plans/2026-11-28-review-optimization-follow-up-tasks.md section 6):
+      # the usage-query p95 assertions are load-sensitive, and the full suite starts
+      # many processes at once. This step re-measures the timing-sensitive files one
+      # at a time with the original budgets so a commit can be compared on numbers
+      # instead of a flaky red. The full suite above still runs the same tests once.
+      - name: Run isolated performance gate
+        run: node scripts/run-perf-gate.js --out perf-gate.json
+        timeout-minutes: 8
+
+      - name: Upload performance gate result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-gate-result
+          path: perf-gate.json
+          if-no-files-found: ignore
+
       - name: Run renderer E2E
         run: npm run test:e2e
 

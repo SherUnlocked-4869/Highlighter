@@ -7,6 +7,7 @@
   "scripts": {
     "postinstall": "install-electron --no",
     "test": "node --test test/*.test.js",
+    "test:perf": "node scripts/run-perf-gate.js",
     "test:e2e": "playwright test --config playwright.config.js",
     "test:update-rehearsal": "node --test test/update-rehearsal.test.js",
     "bench:performance": "node scripts/benchmark-performance.js",
