@@ -1551,6 +1551,12 @@ test('P2-05: the preview sequence is the export plan and capsule truncation is s
   }))
   await settleEvents()
   const notice = many.harness.elements.get('keystroke-truncation')
+  assert.equal(notice.hidden, true, 'the notice stays silent while the overlay switch is off')
+  // Enabling the overlay is what makes the retained label budget relevant, so the disclosure
+  // appears with the switch, before any export attempt.
+  const manyExportToggle = many.harness.elements.get('export-keystrokes')
+  manyExportToggle.checked = true
+  manyExportToggle.dispatch('change')
   assert.equal(notice.hidden, false, 'the truncation is visible before any export attempt')
   assert.match(notice.textContent, /^recording\.editor\.keystrokes\.truncated:/)
   assert.match(notice.textContent, /"count":14/)

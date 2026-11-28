@@ -971,7 +971,11 @@
       const keystrokes = snapshot && snapshot.keystrokes ? snapshot.keystrokes : null
       const plan = keystrokes && keystrokes.plan ? keystrokes.plan : null
       const dropped = plan && plan.truncated === true && plan.dropped ? plan.dropped : null
-      if (!keystrokes || keystrokes.available !== true || !dropped || !(dropped.items > 0)) {
+      // P2-05: the notice describes what ENABLING the overlay would drop, so it must stay
+      // silent while the user has the switch off (otherwise it reads as if the current
+      // export already loses capsules).
+      if (!keystrokes || keystrokes.available !== true || keystrokes.exportSelected !== true ||
+          !dropped || !(dropped.items > 0)) {
         notice.hidden = true
         notice.textContent = ''
         return

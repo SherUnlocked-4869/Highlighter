@@ -574,13 +574,17 @@
     for (const window of droppedWindows) {
       if (!droppedLabels.includes(window.combo)) droppedLabels.push(window.combo)
     }
-    let firstDroppedMs = 0
-    let lastDroppedMs = 0
+    // A null sentinel (not 0) so a capsule whose source time IS 0 cannot be mistaken for
+    // "no dropped capsule yet" by the min/max loop.
+    let firstDroppedMs = null
+    let lastDroppedMs = null
     for (const window of droppedWindows) {
       if (!(window.sourceMs >= 0)) continue
-      if (!firstDroppedMs || window.sourceMs < firstDroppedMs) firstDroppedMs = window.sourceMs
-      if (window.sourceMs > lastDroppedMs) lastDroppedMs = window.sourceMs
+      if (firstDroppedMs === null || window.sourceMs < firstDroppedMs) firstDroppedMs = window.sourceMs
+      if (lastDroppedMs === null || window.sourceMs > lastDroppedMs) lastDroppedMs = window.sourceMs
     }
+    if (firstDroppedMs === null) firstDroppedMs = 0
+    if (lastDroppedMs === null) lastDroppedMs = 0
     return {
       ok: true,
       value: {
