@@ -28,7 +28,7 @@
 | U02 | P1 | 已实现（贴图矢量重标注/导出离屏合成未做） | test/u02-longpin-ux.test.js | 真机 100%/150% 双屏贴图松手、5 万 px 长图预览与固定悬浮栏剥离 |
 | U04 | P1 | 已实现（表格/搜索、划词锁/终端保护/粘贴时序） | test/u04-table-search.test.js, test/u04-selection-lock.test.js | 真机终端内 Ctrl+C 注入防护、真实 Everything 目录 isFolder、双窗口并发长考、粘贴时序手感 |
 | N03 | P2 | 已实现（导出合成为编辑器播放覆盖层） | test/n03-recording-hud.test.js | 真机录制快捷键胶囊（需焦点在控制条，见风险）、真实音轨静音分析与一键裁剪 |
-| N06 | P2 | 已实现（API Key 迁移未做，见备份契约） | test/n06-config-search-backup.test.js | 真机 Ctrl+K 搜索跳转与单文件加密备份/恢复往返 |
+| N06 | P2 | 已实现（DEV-09 决定延续现行策略：备份与 `.hlbackup.zip` 均不含 API Key） | test/n06-config-search-backup.test.js, test/data-root-backup.test.js | DEV-09 决策见[决策记录](../plans/2026-11-28-dev09-credential-migration-decision.md)；凭据边界已自动化覆盖（明文/加密归档无 Key、错误密码/篡改在写入目标前失败、三语重配提示）。真机仍待：安装候选上 Ctrl+K 搜索跳转与单文件加密备份/恢复往返 |
 | N01 | P2 | 已实现 | test/n01-auto-redact.test.js | 真机真实 OCR 模型下的脱敏命中/漏报与手动删除体验 |
 | N02 | P2 | 已实现（历史 OCR 索引+标签、剪贴板图片动作；真机反馈的三项交互修复见下节） | test/n02-history-ocr.test.js, test/n02-history-ocr-ux.test.js, test/n02-clipboard-image.test.js | 真机历史搜索图中文字、剪贴板图片 OCR/Excel/贴图与真实 OCR 模型；三项交互修复的真机门槛见下节 |
 | N04 | P2 | 已实现（原生拖拽投递需真机） | test/n04-search-quicklook.test.js | 真机拖到微信/钉钉/VS Code/浏览器、可见窗口 blur 清理 |
