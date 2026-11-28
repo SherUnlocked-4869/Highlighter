@@ -126,7 +126,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
         // main process starts the pointer track only when it is true and the mode
         // is display/region. Whitelisting it here keeps this payload sanitizer from
         // silently dropping the field.
-        demoEnhance: config.demoEnhance === true
+        demoEnhance: config.demoEnhance === true,
+        // DEV-04 section 4.1: the global shortcut-capture opt-in is a second
+        // per-recording boolean with its own privacy scope; the main process
+        // enables the keyboard channel only while it is true and a take runs.
+        demoKeystrokes: config.demoKeystrokes === true
       }
     })
   },

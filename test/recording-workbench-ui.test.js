@@ -503,7 +503,8 @@ test('choices and the start payload follow the frozen §9.1 shape', async () => 
     audioMicrophone: false,
     audioMicrophoneDeviceId: '',
     saveDirectory: 'D:/Videos',
-    demoEnhance: false
+    demoEnhance: false,
+    demoKeystrokes: false
   })
 
   harness.run(`window.__testState = ${JSON.stringify(workbenchState({ config: workbenchConfig({ mode: 'region' }) }))}`)
@@ -616,7 +617,8 @@ test('start sends the frozen payload and switches to the region entry', async ()
       audioMicrophone: false,
       audioMicrophoneDeviceId: '',
       saveDirectory: 'D:/Videos',
-      demoEnhance: false
+      demoEnhance: false,
+      demoKeystrokes: false
     }
   })
 
@@ -794,7 +796,8 @@ test('window choices and the start payload follow the frozen §2.1 shape', async
     audioMicrophone: false,
     audioMicrophoneDeviceId: '',
     saveDirectory: 'D:/Videos',
-    demoEnhance: false
+    demoEnhance: false,
+    demoKeystrokes: false
   })
 })
 
@@ -852,7 +855,8 @@ test('window mode lists recordable windows, selects one and sends the token payl
       audioMicrophone: false,
       audioMicrophoneDeviceId: '',
       saveDirectory: 'D:/Videos',
-      demoEnhance: false
+      demoEnhance: false,
+      demoKeystrokes: false
     }
   })
   assert.equal(Object.hasOwn(calls.start[0], 'displayId'), false)
@@ -1017,11 +1021,13 @@ test('preload workbenchStart forwards the demo switch in the frozen config shape
     audioMicrophone: false,
     audioMicrophoneDeviceId: '',
     saveDirectory: 'D:/Videos',
-    demoEnhance: true
+    demoEnhance: true,
+    demoKeystrokes: true
   }
   api.workbenchStart({ mode: 'display', displayId: 'display-1', config: baseConfig })
   assert.equal(invocations[0].channel, 'record:workbench-start')
   assert.equal(invocations[0].payload.config.demoEnhance, true, 'the whitelist must not drop the boolean')
+  assert.equal(invocations[0].payload.config.demoKeystrokes, true, 'the keystroke opt-in must survive the whitelist')
   assert.equal(invocations[0].payload.displayId, 'display-1')
   assert.deepEqual(plain(invocations[0].payload.config), baseConfig, 'every frozen config field survives the sanitizer')
 
@@ -1029,13 +1035,16 @@ test('preload workbenchStart forwards the demo switch in the frozen config shape
   api.workbenchStart({ mode: 'window', windowToken: 'token-1', config: { ...baseConfig, mode: 'window', displayId: '' } })
   assert.equal(invocations[1].payload.windowToken, 'token-1')
   assert.equal(invocations[1].payload.config.demoEnhance, true)
+  assert.equal(invocations[1].payload.config.demoKeystrokes, true)
 
   // A missing / non-boolean value falls back to false; unrelated input is dropped.
-  api.workbenchStart({ mode: 'region', config: { demoEnhance: 'yes', unexpected: 'drop me' } })
+  api.workbenchStart({ mode: 'region', config: { demoEnhance: 'yes', demoKeystrokes: 'yes', unexpected: 'drop me' } })
   assert.equal(invocations[2].payload.config.demoEnhance, false)
+  assert.equal(invocations[2].payload.config.demoKeystrokes, false)
   assert.equal(Object.hasOwn(invocations[2].payload.config, 'unexpected'), false)
   api.workbenchStart({ mode: 'region' })
   assert.equal(invocations[3].payload.config.demoEnhance, false)
+  assert.equal(invocations[3].payload.config.demoKeystrokes, false)
 })
 
 test('demo enhance is a session-only opt-in carried by every mode payload', async () => {
@@ -1090,6 +1099,64 @@ test('demo enhance is a session-only opt-in carried by every mode payload', asyn
   assert.equal(demoSwitches()[0].attrs['aria-checked'], 'false', 'a new workbench visit resets the switch')
   const resetStart = await startAndRead(3)
   assert.equal(resetStart.config.demoEnhance, false)
+})
+
+test('global shortcut capture is a separate session-only opt-in', async () => {
+  // DEV-04 section 2: the global keyboard channel is only enabled for a take when
+  // the user turns this second switch on. It must stay independent from
+  // demoEnhance (different privacy scope), default off, reset on every visit, and
+  // travel on the frozen config shape for display, region and window modes.
+  assert.match(preloadSource, /demoKeystrokes: config\.demoKeystrokes === true/, 'the preload sanitizer forwards the boolean')
+  assert.match(routeSource, /demoKeystrokes: choices \? choices\.demoKeystrokes === true : false/, 'the start payload carries the per-recording value')
+  assert.match(routeSource, /name !== 'demoKeystrokes'/, 'the switch whitelist accepts the new name')
+  assert.match(routeSource, /recordingSwitchMarkup\(choices\.demoKeystrokes, 'demoKeystrokes', 'demo-keystrokes'/, 'the parameters section renders the switch')
+
+  const { api, calls } = createApi(workbenchState())
+  const harness = createHarness({ electronAPI: api })
+  harness.run('renderRecording()')
+  await harness.settle()
+
+  const keystrokeSwitches = () => queryAll(harness.dom, '[data-testid="demo-keystrokes"]')
+  assert.equal(keystrokeSwitches().length, 1, 'the recording parameters expose one keystroke switch')
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'false', 'the switch is off by default')
+  assert.equal(harness.dom.view.innerHTML.includes('\u5f55\u5236\u5176\u4ed6\u5e94\u7528\u7684\u5feb\u6377\u952e'), true, 'the row has its localized label')
+  assert.match(harness.dom.view.innerHTML, /\u4e0d\u8bb0\u5f55\u666e\u901a\u8f93\u5165\u6587\u5b57/, 'the hint states the typed-text exclusion')
+  assert.match(harness.dom.view.innerHTML, /\u5bc6\u7801\u6846/, 'the hint names the password-field exclusion')
+  assert.match(harness.dom.view.innerHTML, /\u8f93\u5165\u6cd5\u7ec4\u5b57/, 'the hint names the IME exclusion')
+  assert.match(harness.dom.view.innerHTML, /\u4ec5\u672c\u6b21\u5f55\u5236\u751f\u6548/, 'the hint states the session-only scope')
+
+  // Toggling the keystroke switch must not touch the mouse-enhance switch.
+  keystrokeSwitches()[0].onclick()
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'true')
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-enhance"]')[0].attrs['aria-checked'], 'false', 'the two opt-ins are independent')
+
+  const startAndRead = async (expectedIndex) => {
+    click(harness.dom, '[data-testid="start-recording"]')
+    await harness.settle()
+    return calls.start[expectedIndex]
+  }
+
+  const displayStart = await startAndRead(0)
+  assert.equal(displayStart.config.demoKeystrokes, true, 'display mode forwards the opt-in')
+  assert.equal(displayStart.config.demoEnhance, false, 'the other opt-in stays off')
+
+  click(harness.dom, '[data-testid="mode-region"]')
+  const regionStart = await startAndRead(1)
+  assert.equal(regionStart.config.demoKeystrokes, true, 'region mode forwards the opt-in')
+
+  click(harness.dom, '[data-testid="mode-window"]')
+  await harness.settle()
+  queryAll(harness.dom, '[data-testid="window-option"]')[0].onclick()
+  const windowStart = await startAndRead(2)
+  assert.equal(windowStart.mode, 'window')
+  assert.equal(windowStart.config.demoKeystrokes, true, 'window mode still carries the boolean (the main process gates collection)')
+
+  // A new workbench visit resets the opt-in, exactly like the mouse switch.
+  harness.run('renderRecording()')
+  await harness.settle()
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'false', 'a new workbench visit resets the switch')
+  const resetStart = await startAndRead(3)
+  assert.equal(resetStart.config.demoKeystrokes, false)
 })
 
 test('records filter and mode labels cover window recordings', async () => {

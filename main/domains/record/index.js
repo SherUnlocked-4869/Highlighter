@@ -238,6 +238,16 @@ function pausedMsElapsed(intervals, at) {
   return total
 }
 
+// DEV-04: an event whose wall time falls inside a paused interval happened while the media clock
+// was stopped. The control bar never reports such events (it only captures in 'recording'), but
+// the global channel can see the keyboard during a pause, so the mapping drops them explicitly.
+function isWallInPausedInterval(intervals, at) {
+  for (const interval of intervals) {
+    if (at >= interval.startWall && at < interval.endWall) return true
+  }
+  return false
+}
+
 // Wall-clock shortcut events -> media-time capsules. Same rules as the pointer track: negative
 // and beyond-duration entries are dropped, output is time-ascending and bounded.
 function buildKeystrokeTrack(entries, timing = {}) {
@@ -250,6 +260,7 @@ function buildKeystrokeTrack(entries, timing = {}) {
     if (!isValidKeystrokeCombo(entry?.combo)) continue
     const at = Number(entry?.at)
     if (!Number.isFinite(at)) continue
+    if (isWallInPausedInterval(pausedIntervals, at)) continue
     const tMs = Math.round(at - mediaStartedAtWall - pausedMsElapsed(pausedIntervals, at))
     if (!Number.isFinite(tMs) || tMs < 0 || tMs > durationMs) continue
     capsules.push({ tMs, combo: String(entry.combo).trim() })
@@ -262,6 +273,36 @@ function buildKeystrokeTrack(entries, timing = {}) {
     deduped.push(entry)
   }
   return deduped.slice(0, KEYSTROKE_LIMIT)
+}
+
+// DEV-04: the control bar (keydown in this window) and the global native keyboard channel are
+// two sources for the same physical press while the bar has focus. Both stamp `Date.now()`-based
+// wall times within a few ms of each other, so the same combo repeated inside a short window is
+// one event. 120 ms is comfortably below a deliberate double-press and far above hook latency.
+const KEYSTROKE_SOURCE_DEDUPE_MS = 120
+
+function mergeKeystrokeSources(primary, global, { dedupeMs = KEYSTROKE_SOURCE_DEDUPE_MS } = {}) {
+  const window = Math.max(0, Math.round(Number(dedupeMs) || 0))
+  const entries = []
+  for (const source of [primary, global]) {
+    for (const entry of Array.isArray(source) ? source : []) {
+      if (!isValidKeystrokeCombo(entry?.combo)) continue
+      const at = Number(entry?.at)
+      if (!Number.isFinite(at) || at < 0) continue
+      entries.push({ at, combo: String(entry.combo).trim() })
+    }
+  }
+  entries.sort((left, right) => left.at - right.at)
+  const lastAtByCombo = new Map()
+  const merged = []
+  for (const entry of entries) {
+    const previousAt = lastAtByCombo.get(entry.combo)
+    if (previousAt !== undefined && entry.at - previousAt <= window) continue
+    lastAtByCombo.set(entry.combo, entry.at)
+    merged.push(entry)
+  }
+  // The per-source caps are already bounded; this keeps the merged list inside the same budget.
+  return merged.slice(0, KEYSTROKE_LIMIT)
 }
 
 function emptyEventTrack(durationMs) {
@@ -1154,7 +1195,29 @@ function createRecordDomain(deps) {
     const wasLive = previous.status === 'recording' || previous.status === 'paused'
     const isLive = next.status === 'recording' || next.status === 'paused'
     if ((wasLive || isLive) && previous.status !== next.status) refreshTray()
+    // DEV-04: global shortcut capture is only live while the take is actually RECORDING. The
+    // control bar's authoritative status is the only signal the main process gets for
+    // pause/resume, so enable exactly on pause <-> record transitions (countdown/finalizing are
+    // off). The native side stops delivering as soon as the disable returns, and the finish-time
+    // media mapping also drops anything whose wall time falls inside a paused interval.
+    if (previous.status !== next.status) syncEventTrackKeyboard(next.status === 'recording')
     return next
+  }
+
+  // DEV-04: forwards the recording/paused state to the event-track host when the take opted into
+  // global shortcut capture. A no-op for pointer-only takes (the R5 gate is unchanged).
+  function syncEventTrackKeyboard(recording) {
+    const active = activeEventTrack
+    if (!active || !active.keystrokes) return false
+    active.keyboardEnabled = recording === true
+    try {
+      return typeof active.service.setKeystrokesEnabled === 'function'
+        ? active.service.setKeystrokesEnabled(recording === true)
+        : false
+    } catch (error) {
+      log('Pointer track keyboard toggle failed:', error?.message || error)
+      return false
+    }
   }
 
   function activeRecordingState() {
@@ -1355,6 +1418,10 @@ function createRecordDomain(deps) {
       // R5 §2.2/§5: session-only "demo enhance" switch (never persisted to settings). It travels on
       // the frozen workbench config object; the domain gates event collection on it.
       demoEnhance: value.demoEnhance === true,
+      // DEV-04: session-only "record shortcuts from other applications" switch. Same transport as
+      // demoEnhance (no new channel); the domain starts the keyboard channel only when it and the
+      // take are both live. Kept independent so a user can capture shortcuts without pointer events.
+      demoKeystrokes: value.demoKeystrokes === true,
       audio: nested
         ? {
             system: nested.system,
@@ -1396,6 +1463,8 @@ function createRecordDomain(deps) {
       // R5 §2.2: default off; the workbench switch is session-only, so there is no settings
       // fallback to consult.
       demoEnhance: provided.demoEnhance === true,
+      // DEV-04: default off; opt-in global shortcut capture for this take only.
+      demoKeystrokes: provided.demoKeystrokes === true,
       audio: {
         system: pickValue(audio.system, stored.audioSystem) !== false,
         microphone: pickValue(audio.microphone, stored.audioMicrophone) === true,
@@ -1670,30 +1739,44 @@ function createRecordDomain(deps) {
     }
   }
 
-  // Contract §2.2: the switch is opt-in and display/region only. Window recordings have no stable
-  // screen bounds for their content, so they never collect (contract §2.2/§7.1).
-  function shouldCollectEventTrack(win) {
+  // Contract §2.2: the switches are opt-in and display/region only. Window recordings have no
+  // stable screen bounds for their content, so they never collect (contract §2.2/§7.1).
+  // DEV-04: pointer (demo enhance) and global shortcut capture are independent opt-ins; either one
+  // needs the same host, and the finish path only persists the parts that were actually enabled.
+  function eventTrackGate(win) {
     const config = win?._recordCaptureConfig || {}
-    if (config.demoEnhance !== true) return false
     const mode = config.target?.mode || win?._recordMode
-    return mode === 'display' || mode === 'region'
+    const collectable = mode === 'display' || mode === 'region'
+    return {
+      pointer: collectable && config.demoEnhance === true,
+      keystrokes: collectable && config.demoKeystrokes === true
+    }
+  }
+
+  function shouldCollectEventTrack(win) {
+    const gate = eventTrackGate(win)
+    return gate.pointer || gate.keystrokes
   }
 
   function startEventTrack(win) {
     stopEventTrack().catch(() => {})
-    if (!shouldCollectEventTrack(win)) return false
+    const gate = eventTrackGate(win)
+    if (!gate.pointer && !gate.keystrokes) return false
     const service = pointerTrackServiceOrNull()
     if (!service) {
       log('Pointer track service unavailable; recording continues without an event track')
       return false
     }
     try {
-      if (service.start() !== true) return false
+      if (service.start({ keystrokes: gate.keystrokes }) !== true) return false
     } catch (error) {
       log('Pointer track start failed:', error?.message || error)
       return false
     }
-    activeEventTrack = { service }
+    activeEventTrack = { service, pointer: gate.pointer, keystrokes: gate.keystrokes, keyboardEnabled: false }
+    // DEV-04: the take has not started recording yet (notification/countdown first). Capture is
+    // enabled by the authoritative 'recording' status in updateRecordState().
+    if (gate.keystrokes) syncEventTrackKeyboard(false)
     return true
   }
 
@@ -1708,7 +1791,8 @@ function createRecordDomain(deps) {
       log('Pointer track stop failed:', error?.message || error)
       return null
     }
-    return discard ? null : { results }
+    if (discard) return null
+    return { results, pointer: active.pointer === true, keystrokes: active.keystrokes === true }
   }
 
   function writeEventTrack(projectId, track) {
@@ -2117,7 +2201,9 @@ function createRecordDomain(deps) {
       audio: { ...config.audio },
       // R5 §2.2: the session-only demo switch (never written to the manifest/settings). Consumed by
       // the record:start-session gate that starts the pointer track.
-      demoEnhance: config.demoEnhance === true
+      demoEnhance: config.demoEnhance === true,
+      // DEV-04: session-only global shortcut capture switch, independent of demoEnhance.
+      demoKeystrokes: config.demoKeystrokes === true
     }
     controlWindow._recordInit = {
       // R2 contract shape (contracts §9.2). `sessionId`/`projectId` are filled in later: the
@@ -2860,9 +2946,17 @@ function createRecordDomain(deps) {
         // still persist an events.json that contains only keystrokes.
         const keystrokeEntries = Array.isArray(win._recordKeystrokes) ? win._recordKeystrokes.splice(0) : []
         const collected = await stopEventTrack({ discard: false })
-        const pointerTrack = collected ? buildEventTrack(win, collected.results, trackTiming) : null
-        if (collected && !pointerTrack) log('Recording event track skipped: unusable timing or content region')
-        const eventTrack = attachKeystrokeTrack(pointerTrack, keystrokeEntries, trackTiming)
+        // DEV-04: merge the control bar's keydown batches with the global native channel. Both are
+        // wall-clock `{ at, combo }`; a press seen by both sources is deduped inside 120 ms.
+        const globalKeystrokes = collected && collected.keystrokes && collected.results
+          ? (Array.isArray(collected.results.keystrokes) ? collected.results.keystrokes : [])
+          : []
+        const mergedKeystrokes = mergeKeystrokeSources(keystrokeEntries, globalKeystrokes)
+        const pointerTrack = collected && collected.pointer
+          ? buildEventTrack(win, collected.results, trackTiming)
+          : null
+        if (collected && collected.pointer && !pointerTrack) log('Recording event track skipped: unusable timing or content region')
+        const eventTrack = attachKeystrokeTrack(pointerTrack, mergedKeystrokes, trackTiming)
         if (eventTrack) await writeEventTrack(projectId, eventTrack)
         const opened = await openEditor(projectId).catch((error) => {
           log('Recording editor open failed:', projectId, error?.message || error)
@@ -3408,6 +3502,12 @@ function createRecordDomain(deps) {
         if (request.video && typeof request.video === 'object' && !Array.isArray(request.video)) forwardedRequest.video = request.video
         // R5 §3.2: the demo look/camera plan (style + source-time zooms + clicks for ripples).
         if (request.demo && typeof request.demo === 'object' && !Array.isArray(request.demo)) forwardedRequest.demo = request.demo
+        // N03/DEV-05: the capsule overlay choice + source-time capsules. The export service
+        // normalises/projects them and validates every label; the domain forwards the payload
+        // verbatim like the demo plan (dropping it here would silently export without capsules).
+        if (request.keystrokes && typeof request.keystrokes === 'object' && !Array.isArray(request.keystrokes)) {
+          forwardedRequest.keystrokes = request.keystrokes
+        }
         const submitted = await exportService.submit({
           sessionId: attached.session.id,
           requestId,
@@ -3778,11 +3878,14 @@ module.exports = {
   // N03 (review 2026-11-26 section 5.3) pure helpers, shared with test/n03-recording-hud.test.js:
   // keystroke capture/normalisation and the silencedetect + pointer-idle pause suggestion maths.
   KEYSTROKE_LIMIT,
+  KEYSTROKE_SOURCE_DEDUPE_MS,
   SILENCE_LIMITS,
   buildKeystrokeTrack,
   computePointerIdleRanges,
   derivePauseCuts,
+  isWallInPausedInterval,
   isValidKeystrokeCombo,
+  mergeKeystrokeSources,
   parseSilenceDetectOutput,
   runSilenceDetect,
   sanitizeKeystrokeBatch
