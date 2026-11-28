@@ -15,6 +15,7 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
 const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const os = require('node:os')
@@ -956,4 +957,145 @@ test('N06: the archive copy exists in all three languages and stays translatable
     assert.doesNotMatch(tables['en-US'][key], /[\u4e00-\u9fff]/, `en-US ${key} contains Chinese`)
   }
   assert.equal(tables['zh-CN']['config.search.shortcut'], 'Ctrl K')
+})
+
+// ---------------------------------------------------------------------------
+// D. N06 / DEV-09: the credential boundary of the single-file archive.
+// The archive is only a wrapper around the existing D04 package, and that
+// package strips credentials. Both the plain ZIP and the decrypted payload of
+// the encrypted archive therefore have to be key-free, and a wrong password or
+// a tampered archive must fail BEFORE the import touches the restore target.
+// Decision and user-facing guidance:
+// docs/plans/2026-11-28-dev09-credential-migration-decision.md
+// ---------------------------------------------------------------------------
+
+const SECRET_MARKERS = /sk-must-be-redacted|sk-provider/
+
+function zipEntriesText(entries) {
+  return entries.map((entry) => `${entry.entryName}\n${entry.getData().toString('latin1')}`).join('\n')
+}
+
+test('DEV-09: the unencrypted .hlbackup.zip carries no API key in any entry', async (t) => {
+  const fixture = await createFixture(t)
+  await exportFixture(fixture)
+
+  const zip = readZip(fixture.output)
+  const names = zip.getEntries().map((entry) => entry.entryName)
+  assert.ok(names.includes('modules/settings/config.json'), 'the settings snapshot is inside the archive')
+  // Whole-archive scan, including the descriptor, marker, manifest and every module file.
+  assert.doesNotMatch(zipEntriesText(zip.getEntries()), SECRET_MARKERS)
+  const settingsConfig = JSON.parse(zip.getEntry('modules/settings/config.json').getData().toString('utf8'))
+  assert.equal(Object.hasOwn(settingsConfig, 'credentials'), false)
+  assert.equal(Object.hasOwn(settingsConfig, 'providerApiKeys'), false)
+  // The manifest itself declares the redaction, so the package states what it stripped.
+  const manifest = JSON.parse(zip.getEntry(backup.MANIFEST_FILE).getData().toString('utf8'))
+  assert.ok(manifest.modules.settings.redactedCount >= 1, 'the archive manifest records the redaction')
+  assert.equal(manifest.modules.settings.files.some((file) => file.path === 'credentials.json'), false)
+})
+
+test('DEV-09: the encrypted archive payload decodes to a package with no API key', async (t) => {
+  const fixture = await createFixture(t)
+  const password = 'dev09-encrypted-payload'
+  await exportFixture(fixture, { password })
+
+  const zip = readZip(fixture.output)
+  const descriptor = readDescriptor(zip)
+  assert.equal(descriptor.encrypted, true)
+  const payload = zip.getEntry(archive.ENCRYPTED_PAYLOAD_ENTRY).getData()
+  assert.doesNotMatch(payload.toString('latin1'), SECRET_MARKERS, 'the ciphertext never carries a plaintext key')
+  assert.doesNotMatch(payload.toString('latin1'), /modules\.json|highlighter-backup/)
+
+  // Decrypt the payload the way inspectArchive does and assert on the PLAINTEXT package: the key
+  // has to be absent from the payload, not merely from the extracted directory afterwards.
+  const key = await archive.deriveKey(password, Buffer.from(descriptor.encryption.salt, 'base64'), descriptor.encryption.scrypt)
+  try {
+    const decipher = crypto.createDecipheriv(
+      descriptor.encryption.algorithm,
+      key,
+      Buffer.from(descriptor.encryption.iv, 'base64')
+    )
+    decipher.setAAD(archive.encryptionAssociatedData(descriptor.encryption))
+    decipher.setAuthTag(Buffer.from(descriptor.encryption.authTag, 'base64'))
+    const plainZip = Buffer.concat([decipher.update(payload), decipher.final()])
+
+    const inner = new AdmZip(plainZip)
+    assert.doesNotMatch(zipEntriesText(inner.getEntries()), SECRET_MARKERS)
+    const innerSettings = JSON.parse(inner.getEntry('modules/settings/config.json').getData().toString('utf8'))
+    assert.equal(Object.hasOwn(innerSettings, 'credentials'), false)
+    assert.doesNotMatch(zipEntriesText(inner.getEntries()), /api[-_]?keys?/i, 'no credential field name survives redaction')
+  } finally {
+    key.fill(0)
+  }
+})
+
+test('DEV-09: a wrong password or a tampered archive fails before the import writes anything', async (t) => {
+  const fixture = await createFixture(t)
+  const password = 'dev09-right-password'
+  await exportFixture(fixture, { password })
+  const target = path.join(fixture.parent, 'restore-target')
+
+  const controller = fakeController()
+  const runImport = async (chosenPassword) => {
+    const electron = fakeElectron({
+      opens: [
+        { canceled: false, filePaths: [fixture.output] },
+        { canceled: false, filePaths: [target] }
+      ]
+    })
+    const host = createIpcHost({ secure: true })
+    registerDataRootIpc({ ipcMain: host, controller, archive, electron })
+    return host.handlers.get('data-root:backup-import-archive')({ sender: {} }, { password: chosenPassword })
+  }
+
+  const wrong = await runImport('dev09-wrong-password')
+  assert.equal(wrong.ok, false)
+  assert.equal(wrong.code, 'decrypt-failed')
+  assert.equal(await exists(target), false, 'a refused password never creates the restore target')
+  assert.equal(controller.calls.some(([name]) => name === 'backupRestore'), false, 'the restore path is never reached')
+
+  // Flip one authentication-tag bit: the same pre-write gate has to stop the import.
+  const zip = readZip(fixture.output)
+  const descriptorEntry = zip.getEntry(archive.ARCHIVE_DESCRIPTOR)
+  const descriptor = JSON.parse(descriptorEntry.getData().toString('utf8'))
+  const tag = Buffer.from(descriptor.encryption.authTag, 'base64')
+  tag[0] ^= 0xff
+  descriptor.encryption.authTag = tag.toString('base64')
+  zip.updateFile(descriptorEntry, Buffer.from(JSON.stringify(descriptor, null, 2), 'utf8'))
+  await fsp.writeFile(fixture.output, zip.toBuffer())
+
+  const tampered = await runImport(password)
+  assert.equal(tampered.ok, false)
+  assert.equal(tampered.code, 'decrypt-failed')
+  assert.equal(await exists(target), false)
+  assert.equal(controller.calls.some(([name]) => name === 'backupRestore'), false)
+  assert.deepEqual(
+    await listDirectory(path.join(os.tmpdir(), 'n06-electron-temp', 'Highlighter', 'backup-archive')),
+    [],
+    'no temp package survives a refused import'
+  )
+  assert.doesNotMatch(JSON.stringify([wrong, tampered]), /dev09-wrong-password|dev09-right-password/, 'the password is never echoed back')
+})
+
+test('DEV-09: the archive card sits under the shared API-key re-entry guidance', () => {
+  // The settings page states the credential rule once, above both backup cards. The single-file
+  // archive's own copy may only promise the password/other-machine import, never key migration.
+  const section = settingsSource.slice(settingsSource.indexOf('const backupSettings'), settingsSource.indexOf('const diagnosticsSettings'))
+  const guidanceIndex = section.indexOf('config.settings-system.backup-key-hint')
+  const archiveIndex = section.indexOf('data-section="backup-archive"')
+  assert.ok(guidanceIndex > 0, 'the re-entry guidance is rendered on the backup page')
+  assert.ok(archiveIndex > 0, 'the single-file archive card is in the same section')
+  assert.ok(guidanceIndex < archiveIndex, 'the guidance is visible above the archive card')
+
+  const tables = loadLocaleTables()
+  const guidance = tables['en-US']['config.settings-system.backup-key-hint']
+  assert.equal(typeof guidance, 'string')
+  assert.match(guidance, /not included|excluded/i)
+  assert.match(guidance, /re-enter|enter them again/i)
+  for (const language of LANGUAGES) {
+    assert.match(tables[language]['config.settings-system.backup-key-hint'], /[\s\S]+/)
+    assert.doesNotMatch(tables[language]['config.settings-system.backup-archive-hint'], /api[- ]?key|credential/i,
+      `${language}: the archive copy must not claim API keys are included`)
+    assert.doesNotMatch(tables[language]['config.settings-system.backup-archive-restored'], /api[- ]?key|credential/i,
+      `${language}: the import receipt must not claim key migration`)
+  }
 })
