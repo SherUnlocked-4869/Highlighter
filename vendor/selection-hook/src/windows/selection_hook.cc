@@ -49,12 +49,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <climits>
+#include <cstddef>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
 
 #include "core/engine.h"
+#include "core/keyboard_combo.h"
 #include "core/types.h"
 #include "core/worker.h"
 #include "lib/keyboard.h"
@@ -75,6 +78,65 @@ constexpr int MIN_DRAG_DISTANCE = 8;
 constexpr DWORD MAX_DRAG_TIME_MS = 8000;
 constexpr int DOUBLE_CLICK_MAX_DISTANCE = 3;
 static DWORD DOUBLE_CLICK_TIME_MS = 500;
+
+namespace
+{
+/**
+ * @brief Event-time modifier snapshot for the DEV-04 shortcut combo channel.
+ * @return Bitmask: bit0 Shift, bit1 Ctrl, bit2 Alt, bit3 Win.
+ * @note Runs in the low-level hook callback, so it only uses cheap GetAsyncKeyState calls.
+ * The values are read while the hook is executing, i.e. before the event is dispatched, so
+ * they represent the modifier state of this key event rather than of the JS drain later.
+ */
+unsigned long CaptureKeyboardComboModifiers()
+{
+    unsigned long modifiers = 0;
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+        modifiers |= highlighter::KeyboardComboShift;
+    if (GetAsyncKeyState(VK_CONTROL) & 0x8000)
+        modifiers |= highlighter::KeyboardComboControl;
+    if (GetAsyncKeyState(VK_MENU) & 0x8000)
+        modifiers |= highlighter::KeyboardComboAlt;
+    if ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000))
+        modifiers |= highlighter::KeyboardComboWin;
+    return modifiers;
+}
+
+/**
+ * @brief Best-effort AltGr detection for the DEV-04 shortcut combo channel.
+ * @return true when the modifier state looks like a layout-generated AltGr character.
+ * @note Windows layouts commonly synthesize left Ctrl plus right Alt for AltGr. Reporting
+ * that state as a Ctrl+Alt chord would show a false shortcut capsule for a typed character,
+ * so it is rejected. A user who physically holds left Ctrl plus right Alt for a real chord
+ * is also rejected; that residual trade-off is deliberate because losing one rare chord is
+ * cheaper than leaking typed characters into the shortcut track.
+ */
+bool IsAltGraphKeyboardState()
+{
+    const bool rightAltDown = (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
+    const bool leftCtrlDown = (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0;
+    const bool leftAltDown = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0;
+    return rightAltDown && leftCtrlDown && !leftAltDown;
+}
+
+/**
+ * @brief Current wall-clock time as Unix epoch milliseconds.
+ * @return Milliseconds since 1970-01-01T00:00:00Z, Date.now()-compatible.
+ * @note Sampled in the hook callback at event delivery; the consumer converts it to media
+ * time with its own recording start epoch. FILETIME counts 100 ns intervals since 1601.
+ */
+unsigned long long CurrentEpochMilliseconds()
+{
+    FILETIME fileTime;
+    GetSystemTimeAsFileTime(&fileTime);
+    ULARGE_INTEGER value;
+    value.LowPart = fileTime.dwLowDateTime;
+    value.HighPart = fileTime.dwHighDateTime;
+    constexpr unsigned long long fileTimeToUnixEpochMs = 11644473600000ULL;
+    return value.QuadPart / 10000ULL - fileTimeToUnixEpochMs;
+}
+}  // namespace
+
 
 // Mouse button enum
 enum class MouseButton
@@ -119,6 +181,14 @@ struct KeyboardEventContext
     DWORD vkCode;    ///< Virtual key code
     DWORD scanCode;  ///< Hardware scan code
     DWORD flags;     ///< Additional flags for the key event
+
+    // DEV-04 opt-in shortcut channel. A combo context carries only key identity, the
+    // event-time modifier mask, a wall-clock timestamp, and an allowlisted label; it is
+    // never produced for injected input, auto-repeat, IME/AltGr text, or plain typing.
+    bool combo = false;             ///< true for the bounded keyboard-combo channel.
+    DWORD modifiers = 0;            ///< Event-time modifier bits (see keyboard_combo.h).
+    unsigned long long timestampMs = 0;  ///< Unix epoch milliseconds, Date.now()-compatible.
+    std::string comboLabel;         ///< Allowlisted combo label such as "Ctrl+Shift+P".
 };
 
 class SelectionHook;
@@ -166,6 +236,9 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     void DisableMouseMoveEvent(const Napi::CallbackInfo &info);
     void EnableClipboard(const Napi::CallbackInfo &info);
     void DisableClipboard(const Napi::CallbackInfo &info);
+    void SetKeyboardEventsEnabled(const Napi::CallbackInfo &info);
+    Napi::Value IsKeyboardEventsEnabled(const Napi::CallbackInfo &info);
+    Napi::Value GetClipboardCopyGuardDiagnostics(const Napi::CallbackInfo &info);
     void SetClipboardCoordinator(const Napi::CallbackInfo &info);
     Napi::Value CheckClipboardCoordinator(const Napi::CallbackInfo &info);
     Napi::Value GetClipboardCoordinatorDiagnostics(const Napi::CallbackInfo &info);
@@ -203,6 +276,7 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     static LRESULT CALLBACK KeyboardHookCallback(int nCode, WPARAM wParam, LPARAM lParam);
     static void ProcessMouseEvent(Napi::Env env, Napi::Function function, MouseEventContext *mouseEvent);
     static void ProcessKeyboardEvent(Napi::Env env, Napi::Function function, KeyboardEventContext *keyboardEvent);
+    void EnqueueKeyboardCombo(const KBDLLHOOKSTRUCT *keyInfo, WPARAM wParam);
 
     // DPI awareness helper method
     void EnableDpiAwareness();
@@ -254,6 +328,13 @@ class SelectionHook : public Napi::ObjectWrap<SelectionHook>
     bool is_triggered_by_user = false;
 
     std::atomic<bool> is_enabled_mouse_move_event{false};
+    // DEV-04 opt-in shortcut channel. Set from the JS thread, read from the hook thread
+    // before any event object is allocated, and cleared by stop()/teardown so a restarted
+    // session never inherits an enabled channel. Default: disabled (no added work).
+    std::atomic<bool> keyboard_events_enabled{false};
+    // Last main key that produced a WM_KEYDOWN, for OS auto-repeat suppression. Touched
+    // only from the hook thread; Start() resets it before the hook thread exists.
+    DWORD combo_key_down_vk = 0;
     // Event-time cursor snapshots used by the automatic clipboard heuristic.
     HCURSOR mouse_down_cursor = NULL;
     HCURSOR mouse_up_cursor = NULL;
@@ -376,6 +457,9 @@ SelectionHook::~SelectionHook()
 
     running = false;
     mouse_keyboard_running = false;
+    // Fail closed before the hook thread is joined: a destroyed/stopped instance must
+    // never emit another opt-in keyboard combo.
+    keyboard_events_enabled.store(false, std::memory_order_release);
     selection_generation.fetch_add(1, std::memory_order_acq_rel);
 
     // The hook thread must stop before the thread-safe functions it uses are released.
@@ -454,6 +538,9 @@ void SelectionHook::EnvironmentCleanupHook(void *data)
     hook->selection_result_owner->owner.store(nullptr, std::memory_order_release);
     hook->running = false;
     hook->mouse_keyboard_running = false;
+    // Environment teardown must stop the opt-in channel before the hook thread joins and
+    // before the TSFNs are aborted.
+    hook->keyboard_events_enabled.store(false, std::memory_order_release);
     hook->selection_generation.fetch_add(1, std::memory_order_acq_rel);
 
     hook->StopMouseKeyboardHookThread();
@@ -476,6 +563,9 @@ Napi::Object SelectionHook::Init(Napi::Env env, Napi::Object exports)
                      InstanceMethod("disableMouseMoveEvent", &SelectionHook::DisableMouseMoveEvent),
                      InstanceMethod("enableClipboard", &SelectionHook::EnableClipboard),
                      InstanceMethod("disableClipboard", &SelectionHook::DisableClipboard),
+                     InstanceMethod("setKeyboardEventsEnabled", &SelectionHook::SetKeyboardEventsEnabled),
+                     InstanceMethod("isKeyboardEventsEnabled", &SelectionHook::IsKeyboardEventsEnabled),
+                     InstanceMethod("getClipboardCopyGuardDiagnostics", &SelectionHook::GetClipboardCopyGuardDiagnostics),
                      InstanceMethod("setClipboardCoordinator", &SelectionHook::SetClipboardCoordinator),
                      InstanceMethod("checkClipboardCoordinator", &SelectionHook::CheckClipboardCoordinator),
                      InstanceMethod("getClipboardCoordinatorDiagnostics", &SelectionHook::GetClipboardCoordinatorDiagnostics),
@@ -573,6 +663,10 @@ void SelectionHook::Start(const Napi::CallbackInfo &info)
     last_window_handler = nullptr;
     last_window_rect = {0};
     mouse_button_pressing_flag.store(0);
+    // A restarted session starts with the opt-in shortcut channel disabled and no
+    // carried-over auto-repeat key from the previous session.
+    keyboard_events_enabled.store(false, std::memory_order_release);
+    combo_key_down_vk = 0;
 
     // Create fresh synchronization events for this thread session. The stop event
     // is manual-reset so a request remains visible until the hook thread observes it.
@@ -637,6 +731,9 @@ void SelectionHook::Stop(const Napi::CallbackInfo &info)
     running = false;
     selection_generation.fetch_add(1, std::memory_order_acq_rel);
     mouse_keyboard_running = false;
+    // The opt-in keyboard channel is part of the stopped session: a later start() must
+    // require an explicit new opt-in instead of inheriting recording-time capture.
+    keyboard_events_enabled.store(false, std::memory_order_release);
     StopMouseKeyboardHookThread();
     StopSelectionWorker();
     RemoveEnvironmentCleanupHook();
@@ -811,6 +908,49 @@ Napi::Value SelectionHook::GetClipboardCoordinatorDiagnostics(const Napi::Callba
 void SelectionHook::DisableClipboard(const Napi::CallbackInfo &info)
 {
     is_enabled_clipboard = false;
+}
+
+/**
+ * NAPI: Opt in/out of the bounded keyboard shortcut-combo channel (DEV-04).
+ * @param[in] info First argument must be a boolean.
+ * @warning Disabling takes effect before the call returns: the hook thread stops allocating
+ * combo events and already-queued combo events are dropped at JS dispatch. The OS keyboard
+ * hook itself stays installed because the same callback feeds the clipboard guardrail input
+ * observation and the legacy key-down/key-up selection events; only this channel is gated.
+ */
+void SelectionHook::SetKeyboardEventsEnabled(const Napi::CallbackInfo &info)
+{
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0u].IsBoolean())
+    {
+        Napi::TypeError::New(env, "Boolean expected as argument").ThrowAsJavaScriptException();
+        return;
+    }
+    keyboard_events_enabled.store(info[0u].As<Napi::Boolean>().Value(), std::memory_order_release);
+}
+
+/** NAPI: Read back the effective opt-in state of the keyboard shortcut-combo channel. */
+Napi::Value SelectionHook::IsKeyboardEventsEnabled(const Napi::CallbackInfo &info)
+{
+    return Napi::Boolean::New(info.Env(), keyboard_events_enabled.load(std::memory_order_acquire));
+}
+
+/**
+ * NAPI: DEV-10 clipboard-copy guard counters.
+ * @return Object with one numeric count per classification reason. Contains no program
+ * names, window titles, control text, or any other user content.
+ */
+Napi::Value SelectionHook::GetClipboardCopyGuardDiagnostics(const Napi::CallbackInfo &info)
+{
+    Napi::Env env = info.Env();
+    Napi::Object result = Napi::Object::New(env);
+    for (std::size_t index = 0; index < highlighter::ClipboardCopyGuardReasonCount; ++index)
+    {
+        const auto reason = static_cast<highlighter::ClipboardCopyGuardReason>(index);
+        result.Set(highlighter::ClipboardCopyGuardReasonKey(reason),
+                   Napi::Number::New(env, static_cast<double>(highlighter::ClipboardCopyGuardCount(reason))));
+    }
+    return result;
 }
 
 /**
@@ -1227,22 +1367,103 @@ void SelectionHook::ProcessMouseEvent(Napi::Env env, Napi::Function function, Mo
 }
 
 /**
+ * @brief DEV-04: classify and enqueue one opt-in shortcut combo from the hook thread.
+ * @param[in] keyInfo Borrowed event-time hook structure; valid only for this call.
+ * @param[in] wParam Windows keyboard message.
+ * @note Runs on the hook thread. It never calls UIA/MSAA/clipboard, and the policy rejects
+ * injected, repeated, IME/AltGr, and plain-text input before any object is allocated.
+ */
+void SelectionHook::EnqueueKeyboardCombo(const KBDLLHOOKSTRUCT *keyInfo, WPARAM wParam)
+{
+    if (!keyInfo)
+        return;
+
+    const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+    const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+    if (!keyDown && !keyUp)
+        return;
+
+    // Windows repeats WM_KEYDOWN for a held key without an intervening key-up. Track the
+    // last main key so the consumer gets one descriptor per physical press. This state is
+    // touched only from the hook thread, and Start() resets it before the thread exists.
+    if (keyUp)
+    {
+        if (keyInfo->vkCode == combo_key_down_vk)
+            combo_key_down_vk = 0;
+        return;
+    }
+
+    const bool autoRepeat = keyInfo->vkCode == combo_key_down_vk;
+    combo_key_down_vk = keyInfo->vkCode;
+    if (autoRepeat)
+        return;
+
+    highlighter::KeyboardComboEvidence evidence;
+    evidence.vkCode = keyInfo->vkCode;
+    evidence.scanCode = keyInfo->scanCode;
+    evidence.modifiers = CaptureKeyboardComboModifiers();
+    evidence.injected = (keyInfo->flags & LLKHF_INJECTED) != 0;
+    evidence.autoRepeat = false;
+    evidence.altGraph = IsAltGraphKeyboardState();
+
+    const highlighter::KeyboardComboDecision decision = highlighter::ClassifyKeyboardCombo(evidence);
+    if (decision.verdict != highlighter::KeyboardComboVerdict::Accepted)
+        return;
+
+    auto *pKeyboardEvent = new KeyboardEventContext();
+    pKeyboardEvent->event = wParam;
+    pKeyboardEvent->vkCode = keyInfo->vkCode;
+    pKeyboardEvent->scanCode = keyInfo->scanCode;
+    pKeyboardEvent->flags = keyInfo->flags;
+    pKeyboardEvent->combo = true;
+    pKeyboardEvent->modifiers = evidence.modifiers;
+    // Sampled here, in the hook, so the consumer receives the event clock rather than the
+    // JS drain time and can map it to the recording media clock without queue skew.
+    pKeyboardEvent->timestampMs = CurrentEpochMilliseconds();
+    pKeyboardEvent->comboLabel = decision.label;
+    if (keyboard_tsfn.NonBlockingCall(pKeyboardEvent, ProcessKeyboardEvent) != napi_ok)
+    {
+        delete pKeyboardEvent;  // Queue full or closing, callback won't fire, prevent leak
+    }
+}
+
+/**
  * Process keyboard event on main thread
  */
 void SelectionHook::ProcessKeyboardEvent(Napi::Env env, Napi::Function function, KeyboardEventContext *pKeyboardEvent)
 {
-    if (!currentInstance || !currentInstance->ShouldProcessGetSelection())
+    std::unique_ptr<KeyboardEventContext> ownedEvent(pKeyboardEvent);
+    if (!currentInstance || !pKeyboardEvent)
+        return;
+
+    // DEV-04 opt-in shortcut descriptor. This branch intentionally runs before the legacy
+    // selection gates: its consumer (recording HUD) needs combos pressed in the recorded
+    // application even while an unrelated selection transaction is in flight.
+    if (pKeyboardEvent->combo)
     {
-        delete pKeyboardEvent;
+        // Disable must be exact from the consumer's point of view: a combo event that was
+        // queued before the opt-out is discarded here instead of being delivered late.
+        if (!currentInstance->keyboard_events_enabled.load(std::memory_order_acquire))
+            return;
+        Napi::Object comboObj = Napi::Object::New(env);
+        comboObj.Set(Napi::String::New(env, "type"), Napi::String::New(env, "keyboard-combo"));
+        comboObj.Set(Napi::String::New(env, "tMs"),
+                      Napi::Number::New(env, static_cast<double>(pKeyboardEvent->timestampMs)));
+        comboObj.Set(Napi::String::New(env, "vkCode"), Napi::Number::New(env, pKeyboardEvent->vkCode));
+        comboObj.Set(Napi::String::New(env, "scanCode"), Napi::Number::New(env, pKeyboardEvent->scanCode));
+        comboObj.Set(Napi::String::New(env, "modifiers"), Napi::Number::New(env, pKeyboardEvent->modifiers));
+        comboObj.Set(Napi::String::New(env, "combo"), Napi::String::New(env, pKeyboardEvent->comboLabel));
+        function.Call({comboObj});
         return;
     }
+
+    if (!currentInstance->ShouldProcessGetSelection())
+        return;
 
     auto kEvent = pKeyboardEvent->event;
     auto vkCode = pKeyboardEvent->vkCode;
     auto scanCode = pKeyboardEvent->scanCode;
     auto flags = pKeyboardEvent->flags;
-
-    delete pKeyboardEvent;
 
     auto eventType = "";
     // Check if any system key (Ctrl, Alt, Win) is being pressed
@@ -1828,20 +2049,35 @@ LRESULT CALLBACK SelectionHook::MouseHookCallback(int nCode, WPARAM wParam, LPAR
  */
 LRESULT CALLBACK SelectionHook::KeyboardHookCallback(int nCode, WPARAM wParam, LPARAM lParam)
 {
+    // Always observe real input first: the clipboard guardrail/lease logic depends on it.
+    // This stays guarded only by HC_ACTION/currentInstance exactly as before, including
+    // while the opt-in shortcut channel below is disabled (F02 contract).
     if (nCode == HC_ACTION && currentInstance)
         highlighter::ObserveInput(*reinterpret_cast<KBDLLHOOKSTRUCT *>(lParam), wParam);
-    if (nCode == HC_ACTION && currentInstance && !currentInstance->IsRetrievalInFlight())
-    {
-        KBDLLHOOKSTRUCT *pKeyInfo = (KBDLLHOOKSTRUCT *)lParam;
-        auto pKeyboardEvent = new KeyboardEventContext();
-        pKeyboardEvent->event = wParam;
-        pKeyboardEvent->vkCode = pKeyInfo->vkCode;
-        pKeyboardEvent->scanCode = pKeyInfo->scanCode;
-        pKeyboardEvent->flags = pKeyInfo->flags;
 
-        if (currentInstance->keyboard_tsfn.NonBlockingCall(pKeyboardEvent, ProcessKeyboardEvent) != napi_ok)
+    if (nCode == HC_ACTION && currentInstance)
+    {
+        KBDLLHOOKSTRUCT *pKeyInfo = reinterpret_cast<KBDLLHOOKSTRUCT *>(lParam);
+
+        // DEV-04 opt-in shortcut channel. Deliberately independent of the selection
+        // retrieval gate below: the recording HUD needs combos pressed in the recorded
+        // application even while an unrelated selection transaction runs. Disabled cost
+        // is one atomic load and no allocation.
+        if (currentInstance->keyboard_events_enabled.load(std::memory_order_acquire))
+            currentInstance->EnqueueKeyboardCombo(pKeyInfo, wParam);
+
+        if (!currentInstance->IsRetrievalInFlight())
         {
-            delete pKeyboardEvent;  // Queue full or closing, callback won't fire, prevent leak
+            auto pKeyboardEvent = new KeyboardEventContext();
+            pKeyboardEvent->event = wParam;
+            pKeyboardEvent->vkCode = pKeyInfo->vkCode;
+            pKeyboardEvent->scanCode = pKeyInfo->scanCode;
+            pKeyboardEvent->flags = pKeyInfo->flags;
+
+            if (currentInstance->keyboard_tsfn.NonBlockingCall(pKeyboardEvent, ProcessKeyboardEvent) != napi_ok)
+            {
+                delete pKeyboardEvent;  // Queue full or closing, callback won't fire, prevent leak
+            }
         }
     }
 
@@ -1887,6 +2123,114 @@ void SelectionHook::EnableDpiAwareness()
 }
 
 //=============================================================================
+// Native policy self-test bridge (test-only, deterministic, side-effect free)
+//=============================================================================
+// The DEV-04/DEV-10 policies live in pure headers so they can be asserted from a headless
+// Node test process. These exports construct synthetic evidence, call exactly the same
+// production functions the hook and engine use, and return plain data. They never touch a
+// window, the input queue, the clipboard, or any user content.
+
+namespace
+{
+/** @brief Read a bounded wide string from a self-test input object property. */
+std::wstring ReadSelfTestWideString(const Napi::Object &object, const char *name)
+{
+    const Napi::Value value = object.Get(name);
+    if (!value.IsString())
+        return std::wstring();
+    const std::u16string utf16 = value.As<Napi::String>().Utf16Value();
+    return std::wstring(utf16.begin(), utf16.end());
+}
+
+bool ReadSelfTestBoolean(const Napi::Object &object, const char *name, bool fallback)
+{
+    const Napi::Value value = object.Get(name);
+    return value.IsBoolean() ? value.As<Napi::Boolean>().Value() : fallback;
+}
+
+long ReadSelfTestLong(const Napi::Object &object, const char *name, long fallback)
+{
+    const Napi::Value value = object.Get(name);
+    if (!value.IsNumber())
+        return fallback;
+    const double number = value.As<Napi::Number>().DoubleValue();
+    if (!(number >= static_cast<double>(LONG_MIN) && number <= static_cast<double>(LONG_MAX)))
+        return fallback;
+    return static_cast<long>(number);
+}
+
+/**
+ * @brief Self-test: run the production DEV-10 classifier on synthetic evidence.
+ * @return { allow, reason, terminalLike }.
+ */
+Napi::Value SelfTestClassifyClipboardCopyTarget(const Napi::CallbackInfo &info)
+{
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject() || info[0].IsArray())
+    {
+        Napi::TypeError::New(env, "Evidence object expected").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const Napi::Object input = info[0].As<Napi::Object>();
+
+    highlighter::ClipboardCopyGuardEvidence evidence;
+    evidence.programName = ReadSelfTestWideString(input, "programName");
+    // Derive the compiled list match from the real compiled list, never from the caller.
+    evidence.programIsClipboardCopyProtected = IsClipboardCopyProtectionProgram(evidence.programName);
+    evidence.foregroundMatchesRetrievalStart =
+        ReadSelfTestBoolean(input, "foregroundMatchesRetrievalStart", true);
+    evidence.hasUiaFocus = ReadSelfTestBoolean(input, "hasUiaFocus", false);
+    evidence.uiaControlType =
+        static_cast<CONTROLTYPEID>(ReadSelfTestLong(input, "uiaControlType", 0));
+    evidence.uiaClassName = ReadSelfTestWideString(input, "uiaClassName");
+    evidence.uiaLocalizedControlType = ReadSelfTestWideString(input, "uiaLocalizedControlType");
+    evidence.uiaProcessId = static_cast<DWORD>(ReadSelfTestLong(input, "uiaProcessId", 0));
+    evidence.targetProcessId = static_cast<DWORD>(ReadSelfTestLong(input, "targetProcessId", 0));
+    evidence.targetWindowClass = ReadSelfTestWideString(input, "targetWindowClass");
+    evidence.hasMsaaRole = ReadSelfTestBoolean(input, "hasMsaaRole", false);
+    evidence.msaaRole = ReadSelfTestLong(input, "msaaRole", 0);
+
+    const highlighter::ClipboardCopyGuardDecision decision =
+        highlighter::ClassifyClipboardCopyInjection(evidence);
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("allow", Napi::Boolean::New(env, decision.verdict == highlighter::ClipboardCopyGuardVerdict::Allow));
+    result.Set("reason", Napi::String::New(env, highlighter::ClipboardCopyGuardReasonKey(decision.reason)));
+    result.Set("terminalLike", Napi::Boolean::New(env, highlighter::ClipboardTargetLooksLikeTerminal(evidence)));
+    return result;
+}
+
+/**
+ * @brief Self-test: run the production DEV-04 combo policy on synthetic evidence.
+ * @return { accepted, combo, reason }.
+ */
+Napi::Value SelfTestClassifyKeyboardCombo(const Napi::CallbackInfo &info)
+{
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject() || info[0].IsArray())
+    {
+        Napi::TypeError::New(env, "Evidence object expected").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const Napi::Object input = info[0].As<Napi::Object>();
+
+    highlighter::KeyboardComboEvidence evidence;
+    evidence.vkCode = static_cast<unsigned long>(ReadSelfTestLong(input, "vkCode", 0));
+    evidence.scanCode = static_cast<unsigned long>(ReadSelfTestLong(input, "scanCode", 0));
+    evidence.modifiers = static_cast<unsigned long>(ReadSelfTestLong(input, "modifiers", 0));
+    evidence.injected = ReadSelfTestBoolean(input, "injected", false);
+    evidence.autoRepeat = ReadSelfTestBoolean(input, "autoRepeat", false);
+    evidence.altGraph = ReadSelfTestBoolean(input, "altGraph", false);
+
+    const highlighter::KeyboardComboDecision decision = highlighter::ClassifyKeyboardCombo(evidence);
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("accepted", Napi::Boolean::New(env, decision.verdict == highlighter::KeyboardComboVerdict::Accepted));
+    result.Set("combo", Napi::String::New(env, decision.label));
+    result.Set("reason", Napi::String::New(env, decision.reason));
+    return result;
+}
+}  // namespace
+
+//=============================================================================
 // Module Initialization
 //=============================================================================
 
@@ -1908,6 +2252,11 @@ Napi::Object InitAll(Napi::Env env, Napi::Object exports)
         return Napi::Boolean::New(info.Env(), AllowSetForegroundWindow(pid) != FALSE);
     }));
     exports.Set("highlighterBuildId", Napi::String::New(env, HL_STRINGIFY(HIGHLIGHTER_SELECTION_BUILD_ID)));
+    // Deterministic policy self-tests for the Node test harness; see the bridge section
+    // above. They are not used by the application.
+    exports.Set("__testClassifyClipboardCopyTarget",
+                Napi::Function::New(env, SelfTestClassifyClipboardCopyTarget));
+    exports.Set("__testClassifyKeyboardCombo", Napi::Function::New(env, SelfTestClassifyKeyboardCombo));
     return SelectionHook::Init(env, exports);
 }
 

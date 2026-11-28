@@ -18,6 +18,7 @@
 #include <atomic>
 #include <string>
 
+#include "clipboard_copy_guard.h"
 #include "types.h"
 
 // The JavaScript/main-thread paths must never wait behind an automatic clipboard
@@ -127,6 +128,30 @@ class SelectionEngine
     bool ShouldProcessViaClipboard(const std::wstring &programName) const;
 
     /**
+     * @brief Gather the evidence used by the DEV-10 clipboard-copy injection guard.
+     * @param[in] hwnd Retrieval window the selection was read from.
+     * @param[in] programName Executable basename for the retrieval window.
+     * @return Value-only evidence. No COM interface escapes this call.
+     * @note Runs on the worker thread for automatic retrieval and on the calling thread
+     * for getCurrentSelection(); it uses only this engine's own UIA client.
+     * @warning Called only on the clipboard-fallback path (never on a successful UIA/MSAA
+     * read), so the extra probes do not affect the hot selection path.
+     */
+    highlighter::ClipboardCopyGuardEvidence BuildClipboardCopyGuardEvidence(
+        HWND hwnd, const std::wstring &programName) const;
+
+    /**
+     * @brief Re-check that keyboard focus still belongs to the retrieval target.
+     * @param[in] hwnd Retrieval window.
+     * @param[in] programName Executable basename (recorded evidence only).
+     * @return true when the foreground window and target process are unchanged.
+     * @warning Cheap Win32-only check: run immediately before each synthesized key. The
+     * full UIA re-classification runs before the final Ctrl+C, which is the shortcut a
+     * terminal would resolve as SIGINT.
+     */
+    bool VerifyClipboardCopyTargetFocus(HWND hwnd, const std::wstring &programName);
+
+    /**
      * @warning The width/height filters are compatibility thresholds. Revalidate UIA
      * coordinates across browsers, Office, PDF readers, and legacy apps before changing.
      */
@@ -150,7 +175,23 @@ class SelectionEngine
     ClipboardLockMode clipboardLockMode_ = ClipboardLockMode::TryOnly;
     DWORD clipboardSequence_ = 0;
     CONTROLTYPEID controlType_ = UIA_WindowControlTypeId;
+
+    // DEV-10: identity of the retrieval target captured when retrieval starts. The
+    // clipboard fallback types into whatever holds keyboard focus, so it must prove the
+    // focus still belongs to this target before it synthesizes a copy shortcut.
+    HWND clipboardCopyTargetForeground_ = nullptr;
+    DWORD clipboardCopyTargetProcessId_ = 0;
+
 #ifdef _DEBUG
     DWORD ownerThreadId_ = 0;
 #endif
 };
+
+/**
+ * @brief Testable access to the compiled clipboard copy-protection program list.
+ * @param[in] programName Executable basename, for example "WindowsTerminal.exe".
+ * @return true when the basename matches the compiled terminal/self protection list.
+ * @note The production pipeline also checks this list directly. This wrapper exists so
+ * the Node bridge self-test exercises the same compiled data without duplicating it.
+ */
+bool IsClipboardCopyProtectionProgram(const std::wstring &programName);

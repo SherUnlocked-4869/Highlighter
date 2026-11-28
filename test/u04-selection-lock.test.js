@@ -43,8 +43,11 @@ const { registerSelectionIpc } = require('../main/ipc/selection-ipc')
 const ROOT = path.resolve(__dirname, '..')
 const HOST_PATH = path.join(ROOT, 'main/services/selection-hook-host.js')
 const ENGINE_PATH = path.join(ROOT, 'vendor/selection-hook/src/windows/core/engine.cc')
+const ENGINE_HEADER_PATH = path.join(ROOT, 'vendor/selection-hook/src/windows/core/engine.h')
+const COPY_GUARD_HEADER_PATH = path.join(ROOT, 'vendor/selection-hook/src/windows/core/clipboard_copy_guard.h')
 const CLIPBOARD_CC_PATH = path.join(ROOT, 'vendor/selection-hook/src/windows/lib/clipboard.cc')
 const PASTE_RS_PATH = path.join(ROOT, 'native/clipboard/src/paste.rs')
+const SELECTION_ADDON_PATH = path.join(ROOT, 'vendor/selection-hook/build/Release/selection-hook.node')
 const TMP_CONVERSATIONS = path.join(ROOT, '.tmp', `u04-selection-lock-${process.pid}`)
 
 const tick = () => new Promise((resolve) => setImmediate(resolve))
@@ -702,4 +705,209 @@ test('U04 a runtime blacklist change is re-sent to the host on the next selectio
   // Unchanged lists are not re-sent on every selection.
   domain.handleTextSelection({ text: 'again', programName: 'chrome.exe' })
   assert.equal(hook.startOptionsPatches.length, 1)
+})
+
+// ---------------------------------------------------------------------------
+// 7) DEV-10 (docs/plans/2026-11-28-review-optimization-follow-up-tasks.md):
+//    a synthesized Ctrl+C at the end of the clipboard fallback is SIGINT inside an
+//    integrated terminal. VS Code/Cursor host the editor and the terminal in one
+//    process, so the executable-name protection cannot separate them. Before composing
+//    the shortcut the engine now classifies the focused target, re-checks that focus is
+//    still the retrieval target, and applies a documented conservative policy for
+//    editor hosts. The native classifier is exercised through the addon's deterministic
+//    self-test bridge; the surrounding pipeline ordering is pinned by source assertions.
+// ---------------------------------------------------------------------------
+
+function loadNativeSelectionAddon() {
+  if (process.platform !== 'win32' || !fs.existsSync(SELECTION_ADDON_PATH)) return null
+  return require(SELECTION_ADDON_PATH)
+}
+
+const nativeSelectionAddon = loadNativeSelectionAddon()
+
+function classifyClipboardCopyTarget(evidence) {
+  assert.ok(nativeSelectionAddon && typeof nativeSelectionAddon.__testClassifyClipboardCopyTarget === 'function',
+    'the rebuilt addon exposes the deterministic DEV-10 classifier self-test')
+  return plain(nativeSelectionAddon.__testClassifyClipboardCopyTarget(evidence))
+}
+
+test('DEV-10 terminal-like targets and ambiguous editor hosts skip synthetic copy injection', { skip: !nativeSelectionAddon }, () => {
+  const UIA_EDIT = 50004
+  const UIA_DOCUMENT = 50030
+  const cases = [
+    // Compiled terminal/self program list: never inject, independent of any other evidence.
+    [{ programName: 'WindowsTerminal.exe' }, false, 'skipTerminalProgram'],
+    [{ programName: 'pwsh.exe' }, false, 'skipTerminalProgram'],
+    [{ programName: 'conhost.exe', hasUiaFocus: true, uiaControlType: UIA_EDIT, targetProcessId: 7, uiaProcessId: 7 },
+      false, 'skipTerminalProgram'],
+    // Editor hosts (VS Code family): the process name cannot separate editor from terminal.
+    [{ programName: 'Code.exe' }, false, 'skipEditorHostAmbiguous'],
+    [{ programName: 'Code - Insiders.exe', hasUiaFocus: true, uiaControlType: UIA_DOCUMENT, targetProcessId: 42, uiaProcessId: 42 },
+      false, 'skipEditorHostAmbiguous'],
+    [{ programName: 'Cursor.exe' }, false, 'skipEditorHostAmbiguous'],
+    [{ programName: 'VSCodium.exe' }, false, 'skipEditorHostAmbiguous'],
+    [{ programName: 'Windsurf.exe' }, false, 'skipEditorHostAmbiguous'],
+    // A concrete UIA Edit control in the editor host's own process is unambiguously editable.
+    [{ programName: 'Code.exe', hasUiaFocus: true, uiaControlType: UIA_EDIT, targetProcessId: 42, uiaProcessId: 42 },
+      true, 'allowEditorEditControl'],
+    [{ programName: 'Cursor.exe', hasUiaFocus: true, uiaControlType: UIA_EDIT, targetProcessId: 42, uiaProcessId: 42 },
+      true, 'allowEditorEditControl'],
+    // Chromium/xterm terminal surfaces are denied BEFORE the editor-host Edit exception.
+    [{ programName: 'Code.exe', hasUiaFocus: true, uiaControlType: UIA_EDIT, targetProcessId: 42, uiaProcessId: 42,
+      uiaClassName: 'xterm-helper-textarea' }, false, 'skipTerminalTarget'],
+    [{ programName: 'Code.exe', hasUiaFocus: true, uiaControlType: UIA_EDIT, targetProcessId: 42, uiaProcessId: 42,
+      uiaClassName: 'monaco-terminal' }, false, 'skipTerminalTarget'],
+    [{ programName: 'Code.exe', uiaLocalizedControlType: 'terminal' }, false, 'skipTerminalTarget'],
+    [{ programName: 'Code.exe', targetWindowClass: 'CASCADIA_HOSTING_WINDOW_CLASS' }, false, 'skipTerminalTarget'],
+    // Unlisted terminal hosts are still caught by the class/localized-type markers.
+    [{ programName: 'weird-term.exe', targetWindowClass: 'ConsoleWindowClass' }, false, 'skipTerminalTarget'],
+    [{ programName: 'weird-term.exe', targetWindowClass: 'CASCADIA_HOSTING_WINDOW_CLASS' }, false, 'skipTerminalTarget'],
+    // Focus identity moved between retrieval and injection.
+    [{ programName: 'notepad.exe', foregroundMatchesRetrievalStart: false }, false, 'skipFocusChanged'],
+    [{ programName: 'Code.exe', hasUiaFocus: true, uiaControlType: UIA_EDIT, targetProcessId: 42, uiaProcessId: 99 },
+      false, 'skipFocusChanged'],
+    // Regular applications keep the historical clipboard fallback (UIA/MSAA reads are untouched).
+    [{ programName: 'notepad.exe' }, true, 'allowDefault'],
+    [{ programName: 'chrome.exe', targetWindowClass: 'Chrome_WidgetWin_1' }, true, 'allowDefault'],
+    [{ programName: 'WINWORD.EXE', hasUiaFocus: true, uiaControlType: UIA_DOCUMENT, targetProcessId: 5, uiaProcessId: 5 },
+      true, 'allowDefault']
+  ]
+  for (const [evidence, allow, reason] of cases) {
+    const decision = classifyClipboardCopyTarget(evidence)
+    assert.equal(decision.allow, allow, `decision for ${JSON.stringify(evidence)}`)
+    assert.equal(decision.reason, reason, `reason for ${JSON.stringify(evidence)}`)
+  }
+})
+
+test('DEV-10 rule order is program list, then terminal markers, then focus identity, then editor policy', { skip: !nativeSelectionAddon }, () => {
+  const UIA_EDIT = 50004
+  // Program list wins over every other signal.
+  assert.deepEqual(classifyClipboardCopyTarget({ programName: 'cmd.exe', foregroundMatchesRetrievalStart: false }),
+    { allow: false, reason: 'skipTerminalProgram', terminalLike: false })
+  // Terminal control evidence wins over a moved focus.
+  assert.deepEqual(classifyClipboardCopyTarget({
+    programName: 'Code.exe', targetWindowClass: 'ConsoleWindowClass', foregroundMatchesRetrievalStart: false
+  }), { allow: false, reason: 'skipTerminalTarget', terminalLike: true })
+  // A moved focus wins over the editor-host Edit exception.
+  assert.deepEqual(classifyClipboardCopyTarget({
+    programName: 'Code.exe', hasUiaFocus: true, uiaControlType: UIA_EDIT, targetProcessId: 42, uiaProcessId: 42,
+    foregroundMatchesRetrievalStart: false
+  }), { allow: false, reason: 'skipFocusChanged', terminalLike: false })
+})
+
+test('DEV-10 guard counters are non-sensitive reason counters only', { skip: process.platform !== 'win32' }, () => {
+  const SelectionHook = require('selection-hook')
+  const hook = new SelectionHook()
+  try {
+    const diagnostics = hook.getClipboardCopyGuardDiagnostics()
+    assert.deepEqual(Object.keys(diagnostics).sort(), [
+      'allowDefault', 'allowEditorEditControl', 'skipEditorHostAmbiguous',
+      'skipFocusChanged', 'skipTerminalProgram', 'skipTerminalTarget'
+    ])
+    for (const value of Object.values(diagnostics)) {
+      assert.equal(typeof value, 'number')
+      assert.ok(value >= 0)
+    }
+    // The diagnostics object must never carry program names, window titles or content.
+    const serialized = JSON.stringify(diagnostics)
+    assert.doesNotMatch(serialized, /\.exe|Code|Cursor|title/i)
+  } finally {
+    hook.cleanup()
+  }
+})
+
+test('DEV-10 the engine classifies before the clipboard transaction and re-checks right before Ctrl+C', () => {
+  const engine = fs.readFileSync(ENGINE_PATH, 'utf8')
+  const fallback = sliceBetween(
+    engine,
+    'bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectionInfo)',
+    'highlighter::ClipboardCopyGuardEvidence SelectionEngine::BuildClipboardCopyGuardEvidence'
+  )
+  const preflightAt = fallback.indexOf('BuildClipboardCopyGuardEvidence')
+  const lockAt = fallback.indexOf('clipboardLock(g_clipboard_mutex')
+  const transactionAt = fallback.indexOf('ClipboardTransaction transaction')
+  const ctrlInsertAt = fallback.indexOf('SendCopyKey(CopyKeyType::CtrlInsert)')
+  const ctrlCAt = fallback.indexOf('SendCopyKey(CopyKeyType::CtrlC)')
+  assert.ok(preflightAt >= 0, 'the fallback classifies the target before touching the clipboard')
+  assert.ok(preflightAt < lockAt, 'classification runs before waiting for the clipboard lock')
+  assert.ok(preflightAt < transactionAt, 'classification runs before the clipboard transaction')
+  assert.ok(preflightAt < ctrlInsertAt, 'classification runs before Ctrl+Insert injection')
+
+  // Cheap identity re-check before Ctrl+Insert, full re-classification before Ctrl+C.
+  const firstVerifyAt = fallback.indexOf('VerifyClipboardCopyTargetFocus')
+  const lastVerifyAt = fallback.lastIndexOf('VerifyClipboardCopyTargetFocus')
+  const finalClassifyAt = fallback.lastIndexOf('BuildClipboardCopyGuardEvidence')
+  assert.ok(firstVerifyAt >= 0 && firstVerifyAt < ctrlInsertAt,
+    'focus identity is re-checked before Ctrl+Insert')
+  assert.ok(lastVerifyAt > ctrlInsertAt && lastVerifyAt < ctrlCAt,
+    'focus identity is re-checked right before Ctrl+C')
+  assert.ok(finalClassifyAt > ctrlInsertAt && finalClassifyAt < ctrlCAt,
+    'the target is re-classified immediately before the SIGINT-ambiguous Ctrl+C')
+  assert.match(fallback, /if \(preflightDecision\.verdict == highlighter::ClipboardCopyGuardVerdict::Skip\)\s*\n\s*return false;/,
+    'a skip decision degrades to no clipboard fallback instead of injecting')
+})
+
+test('DEV-10 evidence builder records UIA control type/class/process and MSAA role without titles', () => {
+  const engine = fs.readFileSync(ENGINE_PATH, 'utf8')
+  assert.match(engine, /clipboardCopyTargetForeground_ = GetForegroundWindow\(\);/,
+    'the retrieval-time foreground window is captured as the target identity')
+  assert.match(engine, /GetWindowThreadProcessId\(hwnd, &clipboardCopyTargetProcessId_\);/)
+  assert.match(engine, /evidence\.foregroundMatchesRetrievalStart = \(GetForegroundWindow\(\) == clipboardCopyTargetForeground_\);/)
+  const builder = sliceBetween(
+    engine,
+    'highlighter::ClipboardCopyGuardEvidence SelectionEngine::BuildClipboardCopyGuardEvidence',
+    'bool SelectionEngine::VerifyClipboardCopyTargetFocus'
+  )
+  for (const marker of ['get_CurrentControlType', 'get_CurrentProcessId', 'ReadElementWideProperty', 'ProbeMsaaFocusRole']) {
+    assert.ok(builder.includes(marker), `evidence builder records ${marker}`)
+  }
+  const propertyReader = sliceBetween(engine, 'std::wstring ReadElementWideProperty', 'bool ProbeMsaaFocusRole')
+  assert.match(propertyReader, /get_CurrentClassName/)
+  assert.match(propertyReader, /get_CurrentLocalizedControlType/)
+
+  // The policy must never gate on window titles (localized user data).
+  assert.doesNotMatch(engine, /GetWindowText/)
+  const guard = fs.readFileSync(COPY_GUARD_HEADER_PATH, 'utf8')
+  assert.doesNotMatch(guard, /GetWindowText/)
+  assert.match(guard, /window title is deliberately never used/i)
+})
+
+test('DEV-10 UIA/MSAA read paths keep their order and the guard header documents the policy', () => {
+  const engine = fs.readFileSync(ENGINE_PATH, 'utf8')
+  const pipeline = sliceBetween(engine, 'bool SelectionEngine::GetSelectedText', 'bool SelectionEngine::IsInFilterList')
+  const uiaAt = pipeline.indexOf('SetStage(RetrievalStage::UIAutomation)')
+  const msaaAt = pipeline.indexOf('SetStage(RetrievalStage::Accessible)')
+  const clipboardAt = pipeline.indexOf('ShouldProcessViaClipboard')
+  assert.ok(uiaAt >= 0 && uiaAt < msaaAt && msaaAt < clipboardAt,
+    'successful UIA/MSAA reads still run before the clipboard fallback; the guard only gates the fallback')
+
+  const guard = fs.readFileSync(COPY_GUARD_HEADER_PATH, 'utf8')
+  for (const marker of ['helper-textarea', 'monaco-terminal', 'xterm', 'cascadia', 'conhost']) {
+    assert.ok(guard.includes(marker), `terminal deny marker ${marker} is compiled in`)
+  }
+  for (const program of ['code.exe', 'code - insiders.exe', 'cursor.exe', 'vscodium.exe', 'windsurf.exe']) {
+    assert.ok(guard.includes(program), `editor-host program ${program} is classified`)
+  }
+  assert.match(guard, /UIA_EditControlTypeId/, 'the strict editable-control exception is explicit')
+  assert.match(guard, /conservative policy/i)
+  assert.match(guard, /Residual uncertainty/)
+  // Deny markers are evaluated before the editor-host exception can allow injection.
+  const markerCheckAt = guard.indexOf('if (ClipboardTargetLooksLikeTerminal(evidence))')
+  const editorAt = guard.indexOf('if (IsClipboardEditorHostProgram(evidence.programName))')
+  const editAllowAt = guard.indexOf('const bool concreteEditControl')
+  assert.ok(markerCheckAt >= 0 && markerCheckAt < editorAt && editorAt < editAllowAt,
+    'terminal evidence is denied before the editor-host Edit exception')
+})
+
+test('DEV-10 the addon exposes the guard diagnostics accessor to the JS wrapper', () => {
+  const engineHeader = fs.readFileSync(ENGINE_HEADER_PATH, 'utf8')
+  assert.match(engineHeader, /ClipboardCopyGuardEvidence BuildClipboardCopyGuardEvidence/)
+  assert.match(engineHeader, /VerifyClipboardCopyTargetFocus/)
+  const hookSource = fs.readFileSync(path.join(ROOT, 'vendor/selection-hook/src/windows/selection_hook.cc'), 'utf8')
+  assert.match(hookSource, /InstanceMethod\("getClipboardCopyGuardDiagnostics", &SelectionHook::GetClipboardCopyGuardDiagnostics\)/,
+    'the native diagnostic getter is registered on the addon instance')
+  const wrapper = fs.readFileSync(path.join(ROOT, 'vendor/selection-hook/index.js'), 'utf8')
+  assert.match(wrapper, /getClipboardCopyGuardDiagnostics\(\) \{/, 'the JS wrapper exposes the counter getter')
+  assert.match(wrapper, /this\.#instance\.getClipboardCopyGuardDiagnostics\(\)/,
+    'the wrapper forwards to the native counter getter')
 })

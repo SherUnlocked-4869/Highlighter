@@ -73,6 +73,99 @@ bool MatchesProgramList(const std::wstring &programName, const std::vector<std::
     return false;
 }
 
+/** @return Win32 class name of a window; empty for a null/invalid handle. */
+std::wstring ReadWindowClassName(HWND hwnd)
+{
+    if (!hwnd)
+        return std::wstring();
+    wchar_t buffer[256] = {0};
+    const int length = GetClassNameW(hwnd, buffer, static_cast<int>(sizeof(buffer) / sizeof(buffer[0])));
+    return length > 0 ? std::wstring(buffer, static_cast<size_t>(length)) : std::wstring();
+}
+
+/**
+ * @brief Read a UIA string property of the focused element for the DEV-10 guard.
+ * @param[in] element Focused UIA element; may be null.
+ * @param[in] localizedControlType true for LocalizedControlType, false for ClassName.
+ * @return Bounded property value; empty when unavailable.
+ * @note These are cached current-property reads on this thread's own UIA client.
+ */
+std::wstring ReadElementWideProperty(IUIAutomationElement *element, bool localizedControlType)
+{
+    if (!element)
+        return std::wstring();
+    BSTR value = nullptr;
+    const HRESULT hr = localizedControlType ? element->get_CurrentLocalizedControlType(&value)
+                                            : element->get_CurrentClassName(&value);
+    std::wstring result;
+    if (SUCCEEDED(hr) && value)
+        result.assign(value, SysStringLen(value));
+    if (value)
+        SysFreeString(value);
+    return result;
+}
+
+/**
+ * @brief Probe the MSAA focus owner role of a window's client accessible object.
+ * @param[in] hwnd Window whose client IAccessible is queried.
+ * @param[out] role MSAA role of the focused object, when available.
+ * @return true when a role was read.
+ * @note DEV-10 evidence only, and only on the clipboard-fallback path when UIA cannot
+ * provide the focus owner. No MSAA role distinguishes an integrated terminal from editor
+ * content, so the classifier records this value but never permits injection because of it.
+ */
+bool ProbeMsaaFocusRole(HWND hwnd, long &role)
+{
+    if (!hwnd)
+        return false;
+    IAccessible *accessible = nullptr;
+    if (FAILED(AccessibleObjectFromWindow(hwnd, OBJID_CLIENT, IID_IAccessible,
+                                          reinterpret_cast<void **>(&accessible))) ||
+        !accessible)
+        return false;
+
+    bool found = false;
+    VARIANT focus;
+    VariantInit(&focus);
+    if (SUCCEEDED(accessible->get_accFocus(&focus)))
+    {
+        VARIANT objectRole;
+        VariantInit(&objectRole);
+        if (focus.vt == VT_I4)
+        {
+            if (SUCCEEDED(accessible->get_accRole(focus, &objectRole)) && objectRole.vt == VT_I4)
+            {
+                role = objectRole.lVal;
+                found = true;
+            }
+        }
+        else if (focus.vt == VT_DISPATCH && focus.pdispVal)
+        {
+            IAccessible *focusedAccessible = nullptr;
+            if (SUCCEEDED(focus.pdispVal->QueryInterface(IID_IAccessible,
+                                                         reinterpret_cast<void **>(&focusedAccessible))) &&
+                focusedAccessible)
+            {
+                VARIANT childSelf;
+                VariantInit(&childSelf);
+                childSelf.vt = VT_I4;
+                childSelf.lVal = CHILDID_SELF;
+                if (SUCCEEDED(focusedAccessible->get_accRole(childSelf, &objectRole)) &&
+                    objectRole.vt == VT_I4)
+                {
+                    role = objectRole.lVal;
+                    found = true;
+                }
+                focusedAccessible->Release();
+            }
+        }
+        VariantClear(&objectRole);
+    }
+    VariantClear(&focus);
+    accessible->Release();
+    return found;
+}
+
 /**
  * Remove the object replacement character (U+FFFC) from extracted text.
  *
@@ -129,6 +222,18 @@ void RemoveObjectReplacementChars(std::wstring &text)
 }
 }  // namespace
 
+/**
+ * @brief Testable access to the compiled clipboard copy-protection program list.
+ * @param[in] programName Executable basename, for example "WindowsTerminal.exe".
+ * @return true when the basename matches the compiled terminal/self protection list.
+ * @note Production rejects the same list directly. This wrapper exists so the Node bridge
+ * self-test can exercise the compiled data without duplicating it in JavaScript.
+ */
+bool IsClipboardCopyProtectionProgram(const std::wstring &programName)
+{
+    return MatchesProgramList(programName, ClipboardCopyProtection());
+}
+
 SelectionEngine::SelectionEngine(IUIAutomation *automation) : automation_(automation)
 {
 #ifdef _DEBUG
@@ -168,6 +273,13 @@ bool SelectionEngine::GetSelectedText(HWND hwnd, TextSelectionInfo &selectionInf
     if (!hwnd || IsStopping())
         return false;
     selectionInfo.clear();
+
+    // DEV-10: remember which foreground window owned this retrieval. The clipboard
+    // fallback injects a copy shortcut into whatever holds focus much later, so it must
+    // prove the focus still belongs to this target before touching the clipboard.
+    clipboardCopyTargetForeground_ = GetForegroundWindow();
+    clipboardCopyTargetProcessId_ = 0;
+    GetWindowThreadProcessId(hwnd, &clipboardCopyTargetProcessId_);
 
     // Program-name filtering happens before every retrieval method, as it did in the
     // original single-file implementation.
@@ -674,6 +786,20 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
     if (IsWindowOnCallingThread(hwnd))
         return false;
 
+    // DEV-10: before touching the clipboard or composing any key, classify the focused
+    // target. A terminal resolves the synthesized copy shortcut as SIGINT, and an editor
+    // host (VS Code, Cursor) shares one process between its editor and its integrated
+    // terminal, so the program-name filter above cannot separate those two surfaces.
+    // A skip only gives up this clipboard fallback; the UIA/MSAA read paths above already
+    // ran and are unaffected.
+    const highlighter::ClipboardCopyGuardEvidence preflightEvidence =
+        BuildClipboardCopyGuardEvidence(hwnd, selectionInfo.programName);
+    const highlighter::ClipboardCopyGuardDecision preflightDecision =
+        highlighter::ClassifyClipboardCopyInjection(preflightEvidence);
+    highlighter::RecordClipboardCopyGuardDecision(preflightDecision, &preflightEvidence);
+    if (preflightDecision.verdict == highlighter::ClipboardCopyGuardVerdict::Skip)
+        return false;
+
     // Clipboard extraction is one indivisible save/copy/read/restore transaction.
     std::unique_lock<std::mutex> clipboardLock(g_clipboard_mutex, std::defer_lock);
     if (clipboardLockMode_ == ClipboardLockMode::TryOnly)
@@ -756,14 +882,17 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
                            IsInFilterList(selectionInfo.programName, config_->includeClipboardDelayRead);
     if (!delayRead)
     {
-        if (!transaction.ready() || IsStopping() || ShouldKeyInterruptViaClipboard())
+        if (!transaction.ready() || IsStopping() || ShouldKeyInterruptViaClipboard() ||
+            !VerifyClipboardCopyTargetFocus(hwnd, selectionInfo.programName))
         {
             restoreBackup();
             return false;
         }
 
         // Ctrl+Insert is tried first because it is less likely than Ctrl+C to collide
-        // with application shortcuts, though some applications do not support it.
+        // with application shortcuts, though some applications do not support it. It is
+        // not a terminal interrupt signal, so the identity re-check above is sufficient
+        // here; the full UIA re-classification runs again before Ctrl+C below.
         clipboardSequence_ = GetClipboardSequenceNumber();
         SendCopyKey(CopyKeyType::CtrlInsert);
         bool hasNewContent = false;
@@ -794,8 +923,25 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
         }
     }
 
-    if (!transaction.ready() || IsStopping() || ShouldKeyInterruptViaClipboard())
+    if (!transaction.ready() || IsStopping() || ShouldKeyInterruptViaClipboard() ||
+        !VerifyClipboardCopyTargetFocus(hwnd, selectionInfo.programName))
     {
+        restoreBackup();
+        return false;
+    }
+
+    // DEV-10: Ctrl+C is the shortcut a terminal resolves as SIGINT, so re-classify the
+    // focused target immediately before injecting it. The backup/transaction above can
+    // take tens of milliseconds, which is enough for the user to switch from the editor
+    // to its integrated terminal inside the same process and window.
+    const highlighter::ClipboardCopyGuardEvidence finalEvidence =
+        BuildClipboardCopyGuardEvidence(hwnd, selectionInfo.programName);
+    const highlighter::ClipboardCopyGuardDecision finalDecision =
+        highlighter::ClassifyClipboardCopyInjection(finalEvidence);
+    if (finalDecision.verdict == highlighter::ClipboardCopyGuardVerdict::Skip)
+    {
+        // Only skips are recorded here: the preflight evaluation already counted an allow.
+        highlighter::RecordClipboardCopyGuardDecision(finalDecision, &finalEvidence);
         restoreBackup();
         return false;
     }
@@ -840,6 +986,84 @@ bool SelectionEngine::GetTextViaClipboard(HWND hwnd, TextSelectionInfo &selectio
     const bool readSuccess = transaction.read(selectionInfo.text);
     restoreBackup();
     return readSuccess && !selectionInfo.text.empty();
+}
+
+/**
+ * @brief Gather the DEV-10 evidence about the target of the synthesized copy shortcut.
+ * @param[in] hwnd Retrieval window the selection text was read from.
+ * @param[in] programName Executable basename of that window.
+ * @return Value-only evidence; every COM interface is released before returning.
+ * @note Uses the engine's own UIA client, which lives on this call's COM apartment. The
+ * MSAA probe runs only when UIA cannot provide the focus owner, and its role is recorded
+ * for diagnostics only (no MSAA role distinguishes an integrated terminal from editor
+ * content, so it never permits injection by itself).
+ */
+highlighter::ClipboardCopyGuardEvidence SelectionEngine::BuildClipboardCopyGuardEvidence(
+    HWND hwnd, const std::wstring &programName) const
+{
+    highlighter::ClipboardCopyGuardEvidence evidence;
+    evidence.programName = programName;
+    evidence.programIsClipboardCopyProtected = MatchesProgramList(programName, ClipboardCopyProtection());
+    evidence.foregroundMatchesRetrievalStart = (GetForegroundWindow() == clipboardCopyTargetForeground_);
+    evidence.targetWindowClass = ReadWindowClassName(hwnd);
+    evidence.targetProcessId = clipboardCopyTargetProcessId_;
+    if (evidence.targetProcessId == 0 && hwnd)
+        GetWindowThreadProcessId(hwnd, &evidence.targetProcessId);
+
+    if (automation_)
+    {
+        IUIAutomationElement *focusedElement = nullptr;
+        if (SUCCEEDED(automation_->GetFocusedElement(&focusedElement)) && focusedElement)
+        {
+            CONTROLTYPEID controlType = 0;
+            if (SUCCEEDED(focusedElement->get_CurrentControlType(&controlType)))
+                evidence.uiaControlType = controlType;
+            int processId = 0;
+            if (SUCCEEDED(focusedElement->get_CurrentProcessId(&processId)))
+                evidence.uiaProcessId = static_cast<DWORD>(processId);
+            evidence.uiaClassName = ReadElementWideProperty(focusedElement, false);
+            evidence.uiaLocalizedControlType = ReadElementWideProperty(focusedElement, true);
+            evidence.hasUiaFocus = true;
+            focusedElement->Release();
+        }
+    }
+
+    if (!evidence.hasUiaFocus && hwnd)
+        evidence.hasMsaaRole = ProbeMsaaFocusRole(hwnd, evidence.msaaRole);
+
+    return evidence;
+}
+
+/**
+ * @brief Cheap Win32 identity re-check right before each synthesized key.
+ * @param[in] hwnd Retrieval window.
+ * @param[in] programName Executable basename, recorded with a skip decision only.
+ * @return true when the foreground window and the retrieval target process are unchanged.
+ * @note The full UIA re-classification is separately run immediately before Ctrl+C; this
+ * check exists to keep the cheaper Ctrl+Insert attempt from typing into a focus that moved
+ * to another window during the clipboard transaction.
+ */
+bool SelectionEngine::VerifyClipboardCopyTargetFocus(HWND hwnd, const std::wstring &programName)
+{
+    DWORD currentProcessId = 0;
+    if (hwnd && IsWindow(hwnd))
+        GetWindowThreadProcessId(hwnd, &currentProcessId);
+    const bool foregroundStable = GetForegroundWindow() == clipboardCopyTargetForeground_;
+    const bool processStable =
+        clipboardCopyTargetProcessId_ != 0 && currentProcessId == clipboardCopyTargetProcessId_;
+    if (foregroundStable && processStable)
+        return true;
+
+    highlighter::ClipboardCopyGuardEvidence evidence;
+    evidence.programName = programName;
+    evidence.programIsClipboardCopyProtected = MatchesProgramList(programName, ClipboardCopyProtection());
+    evidence.foregroundMatchesRetrievalStart = foregroundStable;
+    evidence.targetProcessId = clipboardCopyTargetProcessId_;
+    evidence.targetWindowClass = ReadWindowClassName(hwnd);
+    highlighter::RecordClipboardCopyGuardDecision(
+        {highlighter::ClipboardCopyGuardVerdict::Skip, highlighter::ClipboardCopyGuardReason::SkipFocusChanged},
+        &evidence);
+    return false;
 }
 
 /** Inject Ctrl+Insert or Ctrl+C while respecting modifiers already held by the user. */

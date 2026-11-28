@@ -22,5 +22,26 @@ test('selection-hook resolves to the reviewed source dependency and matching nat
   assert.equal(await hook.checkClipboardCoordinator(), false)
   hook.setClipboardCoordinator(null)
   assert.equal(hook.getClipboardCoordinatorDiagnostics().required, false)
+
+  // DEV-04 native half: the bounded keyboard shortcut-combo channel is an explicit
+  // opt-in, disabled by default, and readable back through the same instance.
+  assert.equal(typeof hook.setKeyboardEventsEnabled, 'function')
+  assert.equal(typeof hook.isKeyboardEventsEnabled, 'function')
+  assert.equal(hook.isKeyboardEventsEnabled(), false, 'the keyboard combo channel defaults to off')
+  assert.equal(hook.setKeyboardEventsEnabled(true), true)
+  assert.equal(hook.isKeyboardEventsEnabled(), true)
+  assert.equal(hook.setKeyboardEventsEnabled(false), true)
+  assert.equal(hook.isKeyboardEventsEnabled(), false)
+  assert.equal(hook.setKeyboardEventsEnabled('yes'), false, 'invalid opt-in input fails closed')
+  assert.equal(hook.isKeyboardEventsEnabled(), false)
+
+  // DEV-10: clipboard-copy guard counters are numeric reason counters only.
+  assert.equal(typeof hook.getClipboardCopyGuardDiagnostics, 'function')
+  const guardDiagnostics = hook.getClipboardCopyGuardDiagnostics()
+  assert.deepEqual(Object.keys(guardDiagnostics).sort(), [
+    'allowDefault', 'allowEditorEditControl', 'skipEditorHostAmbiguous',
+    'skipFocusChanged', 'skipTerminalProgram', 'skipTerminalTarget'
+  ])
+  assert.ok(Object.values(guardDiagnostics).every((value) => typeof value === 'number' && value >= 0))
   hook.cleanup()
 })
