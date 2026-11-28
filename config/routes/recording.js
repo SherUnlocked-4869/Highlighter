@@ -282,6 +282,17 @@ function buildRecordingStartPayload(choices) {
   return payload
 }
 
+// P2-01: the global shortcut-capture opt-in is a one-shot "this recording only"
+// switch. A start that actually creates a recording consumes it, so the next take
+// from the same page begins opted out; a failed start keeps the user's choice so
+// the retry does not silently lose it. demoEnhance has a different privacy scope
+// and its own tested contract, so it is never part of this decision.
+function choicesAfterRecordingStart(choices, result) {
+  if (!choices || typeof choices !== 'object') return choices
+  if (result && result.ok === false) return choices
+  return { ...choices, demoKeystrokes: false }
+}
+
 function recordingStartBlocker(choices, state) {
   if (state && state.active && typeof state.active === 'object') return 'active'
   if (!choices) return 'missing'
@@ -1031,6 +1042,18 @@ function updateRecordingStartButton() {
         : (choices && choices.mode === 'window' ? t('recording.workbench.start-window') : t('recording.workbench.start-display')))
 }
 
+// Repaint one switch from the current choices without rebuilding the page (a full
+// render would lose the scroll position right after a start). recordingSwitchMarkup
+// only ever emits "switch" or "switch on", so writing the class attribute mirrors a
+// fresh render exactly.
+function syncRecordingSwitch(name) {
+  const on = Boolean(recordingWorkbenchChoices && recordingWorkbenchChoices[name] === true)
+  document.querySelectorAll(`[data-recording-switch="${name}"]`).forEach((button) => {
+    button.setAttribute('aria-checked', on ? 'true' : 'false')
+    button.setAttribute('class', on ? 'switch on' : 'switch')
+  })
+}
+
 function bindRecordingBanner() {
   document.querySelectorAll('[data-recording-focus]').forEach((button) => {
     button.onclick = () => { void focusActiveRecording() }
@@ -1390,6 +1413,12 @@ async function startRecordingFromWorkbench() {
     if (result && result.focused === true) toast(t('recording.workbench.started-focused'))
     else if (choices.mode === 'window') toast(t('recording.workbench.started-window'))
     else toast(choices.mode === 'region' ? t('recording.workbench.started-region') : t('recording.workbench.started-display'))
+    // P2-01: this take really exists, so the one-shot shortcut opt-in it was
+    // started with is consumed for the next one. The payload above was already
+    // built from `choices`, and the helper returns a new object, so the take in
+    // flight is untouched; only the live switch is repainted here.
+    recordingWorkbenchChoices = choicesAfterRecordingStart(recordingWorkbenchChoices, result)
+    syncRecordingSwitch('demoKeystrokes')
     await pollRecordingWorkbench()
   } catch {
     // The main process reports machine-readable codes only; its own message text is

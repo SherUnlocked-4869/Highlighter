@@ -87,7 +87,11 @@ function createFakeDom() {
         value: Object.hasOwn(attributes, 'value') ? attributes.value : '',
         disabled: Object.hasOwn(attributes, 'disabled'),
         onclick: null,
-        onchange: null
+        onchange: null,
+        // Live-region updates mutate attributes instead of rebuilding the page;
+        // recordingSwitchMarkup() only ever emits "switch" / "switch on", so the
+        // fake mirrors what a real button would expose.
+        setAttribute(name, value) { this.attrs[name] = String(value) }
       }
       for (const [name, value] of Object.entries(attributes)) {
         if (name.startsWith('data-')) element.dataset[camelCase(name.slice(5))] = value
@@ -1104,14 +1108,20 @@ test('demo enhance is a session-only opt-in carried by every mode payload', asyn
 test('global shortcut capture is a separate session-only opt-in', async () => {
   // DEV-04 section 2: the global keyboard channel is only enabled for a take when
   // the user turns this second switch on. It must stay independent from
-  // demoEnhance (different privacy scope), default off, reset on every visit, and
-  // travel on the frozen config shape for display, region and window modes.
+  // demoEnhance (different privacy scope), default off, and travel on the frozen
+  // config shape. P2-01: the copy promises "this recording only", so the opt-in is
+  // one-shot - an actual take consumes it, a failed start keeps the choice.
   assert.match(preloadSource, /demoKeystrokes: config\.demoKeystrokes === true/, 'the preload sanitizer forwards the boolean')
   assert.match(routeSource, /demoKeystrokes: choices \? choices\.demoKeystrokes === true : false/, 'the start payload carries the per-recording value')
   assert.match(routeSource, /name !== 'demoKeystrokes'/, 'the switch whitelist accepts the new name')
   assert.match(routeSource, /recordingSwitchMarkup\(choices\.demoKeystrokes, 'demoKeystrokes', 'demo-keystrokes'/, 'the parameters section renders the switch')
 
   const { api, calls } = createApi(workbenchState())
+  let failNextStart = false
+  api.workbenchStart = async (payload) => {
+    calls.start.push(plain(payload))
+    return failNextStart ? { ok: false, code: 'display-unavailable' } : { ok: true }
+  }
   const harness = createHarness({ electronAPI: api })
   harness.run('renderRecording()')
   await harness.settle()
@@ -1136,27 +1146,58 @@ test('global shortcut capture is a separate session-only opt-in', async () => {
     return calls.start[expectedIndex]
   }
 
-  const displayStart = await startAndRead(0)
-  assert.equal(displayStart.config.demoKeystrokes, true, 'display mode forwards the opt-in')
-  assert.equal(displayStart.config.demoEnhance, false, 'the other opt-in stays off')
+  // Start A carries the opt-in the user just chose. The successful start consumes
+  // it: the same page, with no navigation, must show the switch closed again.
+  const firstStart = await startAndRead(0)
+  assert.equal(firstStart.config.demoKeystrokes, true, 'the take the user opted in for carries the boolean')
+  assert.equal(firstStart.config.demoEnhance, false, 'the other opt-in stays off')
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'false', 'a successful start closes the switch on the same page')
+  assert.equal(keystrokeSwitches()[0].attrs.class, 'switch', 'the rendered control drops its on class too')
+  assert.equal(harness.run('recordingWorkbenchChoices.demoKeystrokes'), false, 'the state the next payload is built from is closed')
 
-  click(harness.dom, '[data-testid="mode-region"]')
-  const regionStart = await startAndRead(1)
-  assert.equal(regionStart.config.demoKeystrokes, true, 'region mode forwards the opt-in')
+  // Start B happens on the SAME workbench page: no renderRecording(), no route
+  // change, no re-render at all. It must not turn global capture back on.
+  const secondStart = await startAndRead(1)
+  assert.equal(secondStart.config.demoKeystrokes, false, 'the next take on the same page starts opted out')
+  assert.equal(secondStart.config.demoEnhance, false, 'the unrelated opt-in is untouched')
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'false', 'the switch stays closed')
 
+  // A rejected start is not a take: it keeps the choice the user just made so the
+  // retry does not silently lose the opt-in.
+  keystrokeSwitches()[0].onclick()
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'true')
+  failNextStart = true
+  const failedStart = await startAndRead(2)
+  assert.equal(failedStart.config.demoKeystrokes, true, 'the rejected attempt was built from the choice')
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'true', 'a failed start keeps the user choice')
+  failNextStart = false
+  const retriedStart = await startAndRead(3)
+  assert.equal(retriedStart.config.demoKeystrokes, true, 'the retry still carries the preserved choice')
+  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'false', 'the successful retry consumes it')
+
+  // Window mode still forwards the per-take opt-in (the main process gates the
+  // channel), and it is consumed by its own start exactly like the other modes.
   click(harness.dom, '[data-testid="mode-window"]')
   await harness.settle()
   queryAll(harness.dom, '[data-testid="window-option"]')[0].onclick()
-  const windowStart = await startAndRead(2)
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'false', 'the reset survives a later section render')
+  queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].onclick()
+  const windowStart = await startAndRead(4)
   assert.equal(windowStart.mode, 'window')
-  assert.equal(windowStart.config.demoKeystrokes, true, 'window mode still carries the boolean (the main process gates collection)')
+  assert.equal(windowStart.config.demoKeystrokes, true, 'window mode forwards the opt-in for its own take')
+  assert.equal(queryAll(harness.dom, '[data-testid="demo-keystrokes"]')[0].attrs['aria-checked'], 'false', 'and consumes it after the start')
 
-  // A new workbench visit resets the opt-in, exactly like the mouse switch.
-  harness.run('renderRecording()')
-  await harness.settle()
-  assert.equal(keystrokeSwitches()[0].attrs['aria-checked'], 'false', 'a new workbench visit resets the switch')
-  const resetStart = await startAndRead(3)
-  assert.equal(resetStart.config.demoKeystrokes, false)
+  // The one-shot reset is a pure decision on the start result; the unrelated
+  // demoEnhance switch is never part of it.
+  assert.match(routeSource, /function choicesAfterRecordingStart\(choices, result\)/, 'the one-shot reset is a single helper, not scattered mutations')
+  assert.match(routeSource, /button\.setAttribute\('aria-checked'/, 'the live switch is repainted, not rebuilt')
+  const afterSuccess = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true, demoEnhance: true }, { ok: true }))'))
+  assert.equal(afterSuccess.demoKeystrokes, false)
+  assert.equal(afterSuccess.demoEnhance, true, 'the helper only touches the shortcut switch')
+  const afterFailure = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }, { ok: false, code: "display-unavailable" }))'))
+  assert.equal(afterFailure.demoKeystrokes, true, 'a failed start is not a take')
+  const afterNoResult = JSON.parse(harness.run('JSON.stringify(choicesAfterRecordingStart({ demoKeystrokes: true }))'))
+  assert.equal(afterNoResult.demoKeystrokes, false, 'a channel that resolved without a result still started the take')
 })
 
 test('records filter and mode labels cover window recordings', async () => {
