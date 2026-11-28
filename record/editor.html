@@ -181,6 +181,9 @@
             <input id="export-keystrokes" type="checkbox" data-testid="export-keystrokes" data-i18n-title="recording.editor.keystrokes.export-title">
             <span data-i18n="recording.editor.keystrokes.export">Shortcuts in video</span>
           </label>
+          <!-- P2-05: when a retained export material cap drops capsules, the exact counts and
+               source-time range are shown here before the user confirms the export. -->
+          <p id="keystroke-truncation" class="export-hint keystroke-truncation" data-testid="keystroke-truncation" role="status" aria-live="polite" hidden></p>
           <p class="export-hint" data-i18n="recording.editor.hint">Export uses the current selection; the source is kept so you can export again.</p>
         </section>
 

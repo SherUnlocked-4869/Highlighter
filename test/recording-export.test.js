@@ -2459,6 +2459,11 @@ test('illegal keystroke payloads are refused with invalid-keystroke-option', () 
   assert.equal(normalizeKeystrokeOverlay({ enabled: true, items: [] }, [{ startMs: 0, endMs: 5000 }], 5000).value.items.length, 0)
   assert.equal(KEYSTROKE_OVERLAY_LIMITS.MAX_ITEMS, 500)
   assert.equal(KEYSTROKE_OVERLAY_LIMITS.DISPLAY_MS, 1100)
+  // P2-05: the render-window cap must not be able to hide a capsule the editor's 500-item
+  // preview can show, so it equals the preview cap; the label cap is the retained ffmpeg input
+  // budget and its truncation is reported precisely (see the next test).
+  assert.equal(KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS, KEYSTROKE_OVERLAY_LIMITS.MAX_ITEMS)
+  assert.equal(KEYSTROKE_OVERLAY_LIMITS.MAX_LABELS, 64)
 })
 
 test('the keystroke request signature covers the capsule plan', () => {
@@ -2490,9 +2495,13 @@ test('buildExportArgs composites capsules for MP4, WebM and GIF at final-canvas 
   assert.deepEqual(mp4.expected.width, 640)
   assert.equal(mp4.expected.durationMs, 3500)
   const mp4Graph = mp4.args[mp4.args.indexOf('-filter_complex') + 1]
-  assert.match(mp4Graph, /\[outv\]\[2:v\]overlay=x=\(W-w\)\/2:y=H-h-18:enable='between\(t,1\.000000,1\.800000\)'/)
-  assert.match(mp4Graph, /overlay=x=\(W-w\)\/2:y=H-h-18:enable='between\(t,2\.100000,3\.200000\)'/)
+  // P2-05 batching: one overlay node per LABEL with a half-open union of its windows (the
+  // normaliser guarantees windows never overlap, so the union is pixel-identical to one node per
+  // window and lets the editor's 500-capsule sequence reach the film).
+  assert.match(mp4Graph, /\[outv\]\[2:v\]overlay=x=\(W-w\)\/2:y=H-h-18:enable='gte\(t,1\.000000\)\*lt\(t,1\.800000\)'/)
+  assert.match(mp4Graph, /overlay=x=\(W-w\)\/2:y=H-h-18:enable='gte\(t,2\.100000\)\*lt\(t,3\.200000\)'/)
   assert.equal(mp4.args[mp4.args.indexOf('-map') + 1], '[keystroke2]')
+  assert.equal(mp4Graph.includes('split='), false, 'three one-window labels need no split chain')
   // Each capsule label PNG is a looped input bounded to the film duration.
   const labelInputIndex = mp4.args.indexOf(assets.labels[0].path)
   assert.ok(labelInputIndex > 0)
@@ -2550,6 +2559,44 @@ test('buildExportArgs composites capsules for MP4, WebM and GIF at final-canvas 
   assert.deepEqual(disabledBuilt, plainBuilt, 'the absent vs disabled request is one export path')
   assert.equal('keystrokesRendered' in plainBuilt.expected, false)
   assert.doesNotMatch(plainBuilt.args[plainBuilt.args.indexOf('-filter_complex') + 1], /overlay/)
+})
+
+test('P2-05: 300 repeated capsules all reach the export material as ONE batched overlay', () => {
+  const metadata = { durationMs: 600000, video: { width: 640, height: 360, frameRate: 30 }, audio: { exists: false } }
+  const items = Array.from({ length: 300 }, (_value, index) => ({ tMs: index * 1000 + 500, combo: 'Ctrl+S' }))
+  const normalized = normalizeExportRequest({ format: 'mp4', keystrokes: { enabled: true, items } }, metadata)
+  assert.equal(normalized.ok, true)
+  const plan = normalized.value.keystrokes
+  // Nothing is silently dropped: the 300-item preview sequence is the export plan, tail included.
+  assert.equal(plan.truncated, false)
+  assert.equal(plan.items.length, 300)
+  assert.deepEqual(plan.items.at(-1), { tMs: 299500, endMs: 300600, combo: 'Ctrl+S' })
+  assert.deepEqual(plan.dropped, null)
+
+  const assets = capsuleAssets(['Ctrl+S'])
+  const built = buildExportArgs({ ...normalized.value, inputPath: 'in.webm', outputPath: 'out.mp4', keystrokeAssets: assets })
+  const graph = built.args[built.args.indexOf('-filter_complex') + 1]
+  // Material proof: 300 windows cost one looped PNG input + one overlay node, so the old
+  // 240-window cap is no longer needed to bound the filter graph.
+  assert.equal(graph.split('overlay=').length - 1, 1, 'one overlay node for 300 presses of one label')
+  assert.equal(graph.includes('split='), false, 'no per-window split chain')
+  assert.equal(built.args.filter((value) => value === assets.labels[0].path).length, 1, 'one looped PNG input')
+  assert.ok(graph.indexOf('gte(t,299.500000)*lt(t,300.600000)') >= 0, 'the tail capsule is in the material enable expression')
+  assert.equal(built.expected.keystrokesRendered, true)
+
+  // The retained label cap reports EXACTLY what it drops instead of a bare truncated flag.
+  const combos = []
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Ctrl+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Alt+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Shift+' + letter)
+  const many = normalizeExportRequest({
+    format: 'mp4',
+    keystrokes: { enabled: true, items: combos.map((combo, index) => ({ tMs: 1000 + index * 100, combo })) }
+  }, { durationMs: 20000, video: { width: 640, height: 360, frameRate: 30 }, audio: { exists: false } }).value.keystrokes
+  assert.equal(many.items.length, 64)
+  assert.equal(many.truncated, true)
+  assert.deepEqual(many.total, { windows: 78, labels: 78 })
+  assert.deepEqual(many.dropped, { items: 14, labels: 14, firstSourceMs: 7400, lastSourceMs: 8700 })
 })
 
 test('capsule assets are allowlisted, bounded labels rendered into a pill SVG', () => {
@@ -2721,6 +2768,41 @@ test('a shortcut capsule renders at its output time and disappears after 1100 ms
   const gifBefore = await bottomCentreLuminance(gifFilm, 0.4, scratch, 'ks-gif-before')
   assert.ok(gifDuring < 140, `the GIF capsule is visible (${gifDuring})`)
   assert.ok(gifBefore > 180, `the GIF frame before the shortcut stays light (${gifBefore})`)
+})
+
+// P2-05 end-to-end: 300 presses of the SAME shortcut over 30 s. The old 240-window material cap
+// exported only the first 24 s, so the film silently lost its tail; with the per-label batched
+// overlay every window survives and the 300th capsule must be visible at the end of the film.
+test('P2-05: a 30 s film with 300 repeated capsules keeps the tail capsule', { skip: !demoRenderingAvailable && 'ffmpeg-static/sharp is not installed' }, async (t) => {
+  const scratch = makeScratch()
+  t.after(() => scratch.dispose())
+  const fixture = makeStaticWebmSample(scratch.pathFor('light-30s.webm'), {
+    lavfi: 'color=c=0xf5f2ea:size=640x360:rate=10:duration=30',
+    withAudio: false,
+    seconds: 30
+  })
+  const probe = createMediaProbe({ ffmpegPath })
+  const { recordingService } = makeExportHarness({ scratch, probe })
+  t.after(async () => { await recordingService.dispose() })
+  const seeded = await seedStaticSession(recordingService, fixture)
+  const film = await renderKeystrokeFilm({
+    scratch,
+    probe,
+    session: { recordingService, sessionId: seeded.id },
+    requestId: 'keystroke-300',
+    name: 'keystroke-300',
+    segments: [{ startMs: 0, endMs: 30000 }],
+    keystrokes: {
+      enabled: true,
+      items: Array.from({ length: 300 }, (_value, index) => ({ tMs: index * 100, combo: 'Ctrl+S' }))
+    }
+  })
+  const early = await bottomCentreLuminance(film, 0.15, scratch, 'ks300-early')
+  const middle = await bottomCentreLuminance(film, 15.05, scratch, 'ks300-middle')
+  const tail = await bottomCentreLuminance(film, 29.85, scratch, 'ks300-tail')
+  assert.ok(early < 120, `the first capsule is visible (${early})`)
+  assert.ok(middle < 120, `a middle capsule is visible (${middle})`)
+  assert.ok(tail < 120, `the 300th capsule at the end of the film is visible (${tail})`)
 })
 
 test('a failed or cancelled keystroke export removes its capsule PNGs', { skip: !sharpModule && 'sharp is not installed' }, async (t) => {

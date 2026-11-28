@@ -710,6 +710,10 @@ body[data-format="gif"] .demo-card { opacity: .72; }
 /* DEV-05: the capsule-overlay switch sits between the size row and the export hint. */
 .export-capsule-toggle { margin: 6px 0 2px; }
 .export-hint { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+/* P2-05: disclosure of the exact capsules a retained export material cap drops. A warning tone
+ * so it is never read as ordinary metadata, and the hidden attribute still wins. */
+.keystroke-truncation { margin: 4px 0 0; color: #f0c274; font: 600 10px/1.5 var(--font-mono); }
+.keystroke-truncation[hidden] { display: none; }
 
 /* GIF-only rows follow the same `body[data-format]` rule the trim view used; the mp4/webm
  * video-option rows are hidden for GIF (contract §4.1: `video` is ignored for GIF). */

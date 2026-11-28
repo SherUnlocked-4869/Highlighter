@@ -292,6 +292,60 @@ test('buildExportArgs stays path/branch safe and keeps the legacy range form wor
   assert.equal(legacy.args.every((value) => typeof value === 'string'), true)
 })
 
+// ---------------------------------------------------------------------------
+// N03/DEV-05 + P2-05: the capsule overlay plan shared by the editor preview and the exporter.
+// The editor preview and the exported film must be ONE visible sequence; a retained export
+// material cap must report exactly what it drops instead of hiding it.
+// ---------------------------------------------------------------------------
+
+function keystrokeOverlay(items, durationMs = 600000) {
+  return options.normalizeExportRequest({
+    format: 'mp4',
+    keystrokes: { enabled: true, items }
+  }, { durationMs, video: { width: 640, height: 360, frameRate: 30 }, audio: { exists: false } })
+}
+
+test('P2-05: 300 repeated capsules keep the whole preview sequence, tail included', () => {
+  const items = Array.from({ length: 300 }, (_value, index) => ({ tMs: index * 1000 + 500, combo: 'Ctrl+S' }))
+  const normalized = keystrokeOverlay(items)
+  assert.equal(normalized.ok, true)
+  const plan = normalized.value.keystrokes
+  assert.equal(plan.truncated, false)
+  assert.deepEqual(plan.total, { windows: 300, labels: 1 })
+  assert.deepEqual(plan.dropped, null)
+  assert.equal(plan.items.length, 300, 'the export plan keeps every capsule the editor previews')
+  assert.equal(plan.sourceItems.length, 300)
+  // The plan is the same sequence in both coordinate spaces: output time for the ffmpeg graph,
+  // source time for the editor HUD (a full-range selection maps 1:1).
+  assert.deepEqual(plan.items.at(-1), { tMs: 299500, endMs: 300600, combo: 'Ctrl+S' })
+  assert.deepEqual(plan.sourceItems.at(-1), { tMs: 299500, durationMs: 1100, combo: 'Ctrl+S' })
+  // The 240-window cap that silently hid the tail is gone: the window budget equals the editor's
+  // own 500-capsule cap, and only the label budget may still truncate (with exact metadata).
+  assert.equal(options.KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS, options.KEYSTROKE_OVERLAY_LIMITS.MAX_ITEMS)
+})
+
+test('P2-05: more than 64 distinct labels report the exact dropped capsules and range', () => {
+  const combos = []
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Ctrl+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Alt+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Shift+' + letter)
+  const items = combos.map((combo, index) => ({ tMs: 1000 + index * 100, combo }))
+  const plan = keystrokeOverlay(items, 20000).value.keystrokes
+  assert.equal(plan.truncated, true, 'a retained material cap must never be silent')
+  assert.deepEqual(plan.total, { windows: 78, labels: 78 })
+  assert.equal(plan.items.length, 64)
+  assert.deepEqual(plan.dropped, { items: 14, labels: 14, firstSourceMs: 7400, lastSourceMs: 8700 })
+  // The kept windows are exactly the labels whose FIRST appearance is inside the label budget.
+  assert.equal(new Set(plan.items.map((item) => item.combo)).size, 64)
+  assert.equal(plan.items.some((item) => item.tMs >= 7400), false)
+  // The cap is on distinct labels, not on time: a late repeat of an already-kept label survives
+  // and is still disclosed as part of the same plan.
+  const lateRepeat = keystrokeOverlay([...items, { tMs: 9000, combo: 'Ctrl+A' }], 20000).value.keystrokes
+  assert.equal(lateRepeat.dropped.items, 14)
+  assert.deepEqual(lateRepeat.items.at(-1), { tMs: 9000, endMs: 10100, combo: 'Ctrl+A' })
+  assert.equal(lateRepeat.sourceItems.at(-1).tMs, 9000)
+})
+
 test('the module loads as a classic browser script and exposes the UI helpers', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'shared', 'recording-export-options.js'), 'utf8')
   const sandbox = { globalThis: null }

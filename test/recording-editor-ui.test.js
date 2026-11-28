@@ -1465,6 +1465,114 @@ test('the export request carries source-time demo data only when active, for mp4
   assert.equal(bareRequests[0].demo, undefined)
 })
 
+// P2-05: the capsule HUD plays the exporter's own plan (never the raw capture list), the export
+// request reproduces that plan through the shared normaliser, and a retained export material cap
+// is disclosed with exact counts and source-time range BEFORE the user confirms.
+test('P2-05: the preview sequence is the export plan and capsule truncation is shown before export', async (t) => {
+  const exportOptions = require('../shared/recording-export-options')
+  const translate = (key, params) => (params ? key + ':' + JSON.stringify(params) : key)
+  const DURATION_MS = 600000
+  const keystrokes = Array.from({ length: 300 }, (_value, index) => ({ tMs: index * 1000 + 500, combo: 'Ctrl+S' }))
+  const fake = createFakeApi({
+    eventsAnswer: () => ({
+      ok: true,
+      track: { schemaVersion: 1, durationMs: DURATION_MS, sampledAtHz: 20, pointer: [], clicks: [], keystrokes, truncated: false }
+    })
+  })
+  const { view, harness } = bootView({ api: fake.api, translate })
+  t.after(() => view.destroy())
+  const project = projectEdit({
+    media: { durationMs: DURATION_MS, video: { width: 1280, height: 720 }, audio: { tracks: 0 } },
+    edit: { revision: 3, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } }
+  })
+  view.applyInit(initPayload({
+    project,
+    metadata: { durationMs: DURATION_MS, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  }))
+  await settleEvents()
+  const controller = view.getController()
+  assert.equal(controller.state().keystrokes.plan.items.length, 300)
+  assert.equal(harness.elements.get('keystroke-truncation').hidden, true, '300 repeats truncate nothing')
+
+  // HUD: the 300th capsule is previewed at its media time from the plan (not from a raw item list
+  // that the exporter would silently cut at 240).
+  harness.elements.get('toggle-keystrokes').dispatch('click')
+  const player = harness.elements.get('preview-video')
+  const capsule = harness.elements.get('keystroke-capsule')
+  player.currentTime = 299.95
+  player.dispatch('timeupdate')
+  assert.equal(capsule.classList.contains('visible'), true)
+  assert.equal(capsule.textContent, 'Ctrl+S')
+
+  // Enabling the overlay and submitting carries the source sequence; the shared normaliser the
+  // main process runs derives EXACTLY the preview plan (tail window included).
+  const toggle = harness.elements.get('export-keystrokes')
+  toggle.checked = true
+  toggle.dispatch('change')
+  await view.exportSelection()
+  assert.equal(fake.calls.export.length, 1)
+  const request = fake.calls.export[0].request
+  assert.equal(request.keystrokes.enabled, true)
+  assert.equal(request.keystrokes.items.length, 300)
+  const exported = exportOptions.normalizeExportRequest(request, {
+    durationMs: DURATION_MS,
+    video: { width: 1280, height: 720, frameRate: 30 },
+    audio: { tracks: 0 }
+  })
+  assert.equal(exported.ok, true)
+  assert.deepEqual(exported.value.keystrokes.sourceItems, controller.state().keystrokes.plan.items)
+  assert.deepEqual(exported.value.keystrokes.items.at(-1), { tMs: 299500, endMs: 300600, combo: 'Ctrl+S' })
+
+  // >64 distinct labels: the retained ffmpeg label budget truncates, so the export panel states
+  // the actual capsule/label counts and the first/last dropped source time before confirmation.
+  const combos = []
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Ctrl+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Alt+' + letter)
+  for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') combos.push('Shift+' + letter)
+  const manyFake = createFakeApi({
+    eventsAnswer: () => ({
+      ok: true,
+      track: {
+        schemaVersion: 1, durationMs: 20000, sampledAtHz: 20, pointer: [], clicks: [],
+        keystrokes: combos.map((combo, index) => ({ tMs: 1000 + index * 100, combo })),
+        truncated: false
+      }
+    })
+  })
+  const many = bootView({ api: manyFake.api, translate })
+  t.after(() => many.view.destroy())
+  many.view.applyInit(initPayload({
+    project: projectEdit({
+      id: 'project-many',
+      media: { durationMs: 20000, video: { width: 1280, height: 720 }, audio: { tracks: 0 } },
+      edit: { revision: 3, keepRanges: [], format: 'mp4', gif: { edge: 1280, fps: 15 } }
+    }),
+    metadata: { durationMs: 20000, video: { width: 1280, height: 720, frameRate: 30 }, audio: { tracks: 0 } }
+  }))
+  await settleEvents()
+  const notice = many.harness.elements.get('keystroke-truncation')
+  assert.equal(notice.hidden, false, 'the truncation is visible before any export attempt')
+  assert.match(notice.textContent, /^recording\.editor\.keystrokes\.truncated:/)
+  assert.match(notice.textContent, /"count":14/)
+  assert.match(notice.textContent, /"labels":14/)
+  assert.match(notice.textContent, /"maxLabels":64/)
+  assert.match(notice.textContent, /"first":"00:07\.4"/)
+  assert.match(notice.textContent, /"last":"00:08\.7"/)
+  // The preview HUD omits a dropped capsule: the raw track has a capsule at 7.4 s, the plan does
+  // not, so the HUD must stay hidden there (one visible sequence for preview and film).
+  const manyController = many.view.getController()
+  assert.equal(manyController.state().keystrokes.items.some((entry) => entry.tMs === 7400), true)
+  assert.equal(manyController.state().keystrokes.plan.items.some((entry) => entry.tMs === 7400), false)
+  many.harness.elements.get('toggle-keystrokes').dispatch('click')
+  const manyPlayer = many.harness.elements.get('preview-video')
+  manyPlayer.currentTime = 7.45
+  manyPlayer.dispatch('timeupdate')
+  assert.equal(many.harness.elements.get('keystroke-capsule').classList.contains('visible'), false)
+  // Notice disappears when the plan no longer truncates (e.g. the label list fits).
+  many.view.getController().applyEventTrack({ pointer: [], clicks: [], keystrokes: [{ tMs: 1000, combo: 'F5' }] })
+  assert.equal(notice.hidden, true)
+})
+
 test('the preview frame mirrors the resolved canvas and applies the mapped zoom transform', (t) => {
   const fake = createFakeApi()
   const { view, harness } = bootView({ api: fake.api })

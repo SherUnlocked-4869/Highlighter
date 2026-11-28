@@ -635,6 +635,58 @@
       return timeline.segmentAt(model.segments, atMs, model.metadata.durationMs) >= 0
     }
 
+    // P2-05: the segments the EXPORTER will see. buildRequest() omits `segments` for a
+    // whole-recording selection (main canonicalises it to one [0,duration] range) and session
+    // mode sends its legacy single `range`, so the preview plan must be projected through the
+    // very same list or the capsule HUD could disagree with the film after an edit.
+    function plannedSegments() {
+      if (!model.projectId) {
+        return [{ startMs: model.range.startMs, endMs: model.range.endMs }]
+      }
+      if (model.segments.length > 0 && !isFullSelection()) {
+        return model.segments.map((segment) => ({ startMs: segment.startMs, endMs: segment.endMs }))
+      }
+      return [{ startMs: 0, endMs: Math.max(0, model.metadata.durationMs) }]
+    }
+
+    // P2-05: ONE visible sequence for the preview HUD and the exported film. Runs the same shared
+    // normaliser the main process runs, from the same raw source sequence and the same segments,
+    // so `plan.items` is the exporter's plan measured back against the media clock. A retained
+    // material cap is not hidden here: `plan.dropped` carries the exact capsule/label counts and
+    // the first/last dropped source time, which the editor shows in the export panel BEFORE the
+    // user confirms.
+    function keystrokePlan() {
+      const limits = options.KEYSTROKE_OVERLAY_LIMITS || {}
+      const fallback = {
+        items: [],
+        truncated: false,
+        total: { windows: 0, labels: 0 },
+        dropped: null,
+        maxLabels: Math.max(0, Math.round(finiteNumber(limits.MAX_LABELS) || 0))
+      }
+      if (model.keystrokes.length === 0) return fallback
+      const normalized = options.normalizeKeystrokeOverlay({
+        enabled: true,
+        items: model.keystrokes.map((entry) => ({ tMs: entry.tMs, combo: entry.combo }))
+      }, plannedSegments(), model.metadata.durationMs)
+      if (!normalized || normalized.ok !== true || !normalized.value) return fallback
+      const value = normalized.value
+      return {
+        items: value.sourceItems.map((entry) => ({ tMs: entry.tMs, durationMs: entry.durationMs, combo: entry.combo })),
+        truncated: value.truncated === true,
+        total: { windows: value.total.windows, labels: value.total.labels },
+        dropped: value.dropped
+          ? {
+              items: value.dropped.items,
+              labels: value.dropped.labels,
+              firstSourceMs: value.dropped.firstSourceMs,
+              lastSourceMs: value.dropped.lastSourceMs
+            }
+          : null,
+        maxLabels: fallback.maxLabels
+      }
+    }
+
     function state() {
       const gif = gifBudget()
       const videoBudgetResult = videoBudget()
@@ -681,12 +733,15 @@
         },
         // N03: HUD data. `items` is media-time data only (no draft state), so the view can render
         // the capsule at the right playback position without owning the normalisation rules.
+        // P2-05: `plan` is the exporter's own visible sequence (see keystrokePlan), so the HUD
+        // and the film can never show a different set of capsules.
         keystrokes: {
           available: model.keystrokes.length > 0,
           count: model.keystrokes.length,
           items: model.keystrokes.map((entry) => ({ tMs: entry.tMs, combo: entry.combo })),
           // DEV-05: the export choice plus whether the track can support it at all.
-          exportSelected: model.keystrokes.length > 0 && model.exportKeystrokes === true
+          exportSelected: model.keystrokes.length > 0 && model.exportKeystrokes === true,
+          plan: keystrokePlan()
         },
         pauseAnalysis: {
           status: model.pauseAnalysis.status,
@@ -1583,6 +1638,10 @@
       // the main process projects them onto the kept segments and clips at cut boundaries).
       // Omitted when off or when the take has no shortcuts, so a pre-N03 project keeps the old
       // request and the old argv path.
+      // P2-05: the FULL raw sequence is sent, not the pre-filtered preview plan: the shared
+      // normaliser is not idempotent over a filtered subset (a dropped label's window can clip a
+      // kept neighbour), so re-running it on the same source sequence is the only way the export
+      // plan stays byte-identical to the preview plan the HUD played.
       if (model.exportKeystrokes && model.keystrokes.length > 0) {
         request.keystrokes = {
           enabled: true,

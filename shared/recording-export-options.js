@@ -417,11 +417,17 @@
     // Preview display window (record/editor.js KEYSTROKE_CAPSULE_MS).
     DISPLAY_MS: 1100,
     COMBO_MAX_LENGTH: 48,
-    // Filter/material scale guard for very dense takes (DEV-05 "limit filters/material when there
-    // are many events"). A 30 minute take with hundreds of shortcuts still exports; windows past
-    // the cap are dropped and `truncated` tells the caller.
-    MAX_RENDER_WINDOWS: 240,
-    // One looped PNG per unique label: bound the number of extra ffmpeg inputs.
+    // P2-05 filter/material budget. appendKeystrokeOverlay composes ONE looped PNG input and ONE
+    // overlay node per DISTINCT label (never one per window), so the window count only adds
+    // `gte()/lt()` terms to that label's enable expression: 300 presses of the same shortcut cost
+    // one node, not 300 chained overlays. The cap therefore matches the editor's 500-capsule
+    // sequence exactly, and 240 no longer silently hides the tail the preview showed.
+    // It is still enforced for a hand-built/older caller: windows past the cap are dropped and
+    // disclosed through `truncated` / `dropped` instead of disappearing silently.
+    MAX_RENDER_WINDOWS: 500,
+    // One looped PNG input per unique label: bound the number of extra ffmpeg inputs/overlay
+    // nodes. Exceeding it drops whole labels, and `dropped` carries the exact counts and
+    // source-time range so the editor can warn BEFORE the user confirms the export.
     MAX_LABELS: 64
   })
   const KEYSTROKE_NAMED_KEY = 'Space|Esc|Enter|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|(?:F(?:[1-9]|1[0-2]))'
@@ -484,6 +490,16 @@
   // Projects SOURCE-time capsules onto the output timeline and resolves the preview's visibility
   // rules (1100 ms window, same-time priority: the capsule that started last wins, so an earlier
   // one is cut short by the next capsule). Returns `{ ok:true, value:null }` for "overlay off".
+  //
+  // P2-05: the editor preview and the exported film must show ONE sequence, so the value carries
+  // the visible plan in both coordinate spaces:
+  //   * `items`       - OUTPUT-time windows, exactly what the ffmpeg graph composites;
+  //   * `sourceItems` - the same windows back in SOURCE time (a kept segment maps linearly, a cut
+  //                     only clips the window end), which the editor HUD plays against the media
+  //                     clock.
+  // When a retained material cap drops windows, `items`/`sourceItems` are the KEPT plan and
+  // `total`/`dropped` describe the truncation precisely (capsule count, distinct label count,
+  // first/last dropped SOURCE time) so the editor can disclose it before the user confirms.
   function normalizeKeystrokeOverlay(input, segments, durationMs = 0) {
     if (input === undefined || input === null) return { ok: true, value: null }
     if (!isPlainObject(input)) return fail('invalid-keystroke-option')
@@ -512,7 +528,8 @@
           projected.push({
             tMs: outputStart + (sourceMs - startMs),
             segmentEndMs: outputStart + spanMs,
-            combo: String(entry.combo)
+            combo: String(entry.combo),
+            sourceMs
           })
           break
         }
@@ -529,26 +546,64 @@
       // record/editor.js activeKeystrokeCapsule() (the last item in range wins).
       if (next) endMs = Math.min(endMs, Math.max(entry.tMs, next.tMs))
       if (!(endMs > entry.tMs)) continue
-      visible.push({ tMs: entry.tMs, endMs, combo: entry.combo })
+      visible.push({ tMs: entry.tMs, endMs, combo: entry.combo, sourceMs: entry.sourceMs })
     }
     const labels = []
     for (const window of visible) {
       if (!labels.includes(window.combo)) labels.push(window.combo)
     }
-    let truncated = visible.length > KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS || labels.length > KEYSTROKE_OVERLAY_LIMITS.MAX_LABELS
-    let kept = visible
+    // Material caps: keep the first MAX_LABELS distinct labels (first-appearance order), then the
+    // first MAX_RENDER_WINDOWS of the survivors. Every removed window is collected so the exact
+    // truncation can be reported instead of just a boolean.
+    let kept = []
+    const droppedWindows = []
     if (labels.length > KEYSTROKE_OVERLAY_LIMITS.MAX_LABELS) {
       const allowed = new Set(labels.slice(0, KEYSTROKE_OVERLAY_LIMITS.MAX_LABELS))
-      kept = kept.filter((window) => allowed.has(window.combo))
+      for (const window of visible) {
+        if (allowed.has(window.combo)) kept.push(window)
+        else droppedWindows.push(window)
+      }
+    } else {
+      kept = visible.slice()
     }
-    if (kept.length > KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS) kept = kept.slice(0, KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS)
+    if (kept.length > KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS) {
+      droppedWindows.push(...kept.slice(KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS))
+      kept = kept.slice(0, KEYSTROKE_OVERLAY_LIMITS.MAX_RENDER_WINDOWS)
+    }
+    const droppedLabels = []
+    for (const window of droppedWindows) {
+      if (!droppedLabels.includes(window.combo)) droppedLabels.push(window.combo)
+    }
+    let firstDroppedMs = 0
+    let lastDroppedMs = 0
+    for (const window of droppedWindows) {
+      if (!(window.sourceMs >= 0)) continue
+      if (!firstDroppedMs || window.sourceMs < firstDroppedMs) firstDroppedMs = window.sourceMs
+      if (window.sourceMs > lastDroppedMs) lastDroppedMs = window.sourceMs
+    }
     return {
       ok: true,
       value: {
         enabled: true,
         displayMs: KEYSTROKE_OVERLAY_LIMITS.DISPLAY_MS,
-        items: kept,
-        truncated
+        items: kept.map((window) => ({ tMs: window.tMs, endMs: window.endMs, combo: window.combo })),
+        // The window span is identical in both timelines inside one kept segment, so the editor
+        // HUD can stay on the media clock without owning the projection rules.
+        sourceItems: kept.map((window) => ({
+          tMs: window.sourceMs,
+          durationMs: window.endMs - window.tMs,
+          combo: window.combo
+        })),
+        truncated: droppedWindows.length > 0,
+        total: { windows: visible.length, labels: labels.length },
+        dropped: droppedWindows.length > 0
+          ? {
+              items: droppedWindows.length,
+              labels: droppedLabels.length,
+              firstSourceMs: firstDroppedMs,
+              lastSourceMs: lastDroppedMs
+            }
+          : null
       }
     }
   }
@@ -952,9 +1007,20 @@
   }
 
   // N03/DEV-05: appends the capsule overlay chain to a filter graph. `filters`/`extraInputs` are
-  // mutated; returns the new tail stream name and the number of image inputs added. One looped
-  // PNG per unique label is SPLIT into its occurrences, so the extra-input count is bounded by the
-  // number of distinct combos instead of the number of shortcuts.
+  // mutated; returns the new tail stream name and the number of image inputs added.
+  //
+  // P2-05 material budget: ONE looped PNG input AND ONE overlay node per DISTINCT label, however
+  // many windows that label has. The normaliser guarantees the visible windows never overlap (a
+  // later capsule shortens the previous one), so all occurrences of a label can share a single
+  // overlay whose `enable` expression is the union of its half-open windows: at most one capsule
+  // is ever enabled, and the pixels are identical to one overlay node per window. This is what
+  // lets the editor's whole 500-capsule sequence reach the film: 300 presses of one shortcut cost
+  // one input plus a 300-term expression, not 300 chained overlays. MAX_LABELS still bounds the
+  // number of inputs/overlay nodes, and every window past the caps was already removed by the
+  // normaliser (which reports the exact truncation).
+  //
+  // Half-open windows: `gte(t,start)*lt(t,end)` reproduces the normaliser's [tMs,endMs) rule, so a
+  // frame on a cut/capsule boundary belongs to the later window exactly as the preview does.
   function appendKeystrokeOverlay({
     base,
     items,
@@ -971,51 +1037,36 @@
     for (const label of labelList) {
       if (label && typeof label.combo === 'string' && typeof label.path === 'string' && label.path) byName.set(label.combo, label)
     }
-    const windows = []
+    const grouped = []
     for (const item of Array.isArray(items) ? items : []) {
       const label = byName.get(item?.combo)
       if (!label) continue
-      windows.push({ tMs: Math.round(finiteNumber(item.tMs) || 0), endMs: Math.round(finiteNumber(item.endMs) || 0), label })
-    }
-    if (!windows.length) return { current: base, inputCount: 0 }
-    const order = []
-    for (const window of windows) {
-      if (!order.includes(window.label.combo)) order.push(window.label.combo)
-    }
-    const inputIndex = new Map()
-    for (const combo of order) {
-      inputIndex.set(combo, inputStart + inputIndex.size)
-      extraInputs.push('-loop', '1', '-framerate', String(renderFps), '-t', durationSeconds, '-i', byName.get(combo).path)
-    }
-    const branches = new Map()
-    for (const combo of order) {
-      const total = windows.filter((window) => window.label.combo === combo).length
-      const stream = `[${inputIndex.get(combo)}:v]`
-      if (total === 1) {
-        branches.set(combo, [stream])
-        continue
+      const startMs = Math.round(finiteNumber(item.tMs) || 0)
+      const endMs = Math.max(startMs, Math.round(finiteNumber(item.endMs) || 0))
+      let group = grouped.find((candidate) => candidate.combo === label.combo)
+      if (!group) {
+        group = { combo: label.combo, label, windows: [] }
+        grouped.push(group)
       }
-      const pads = []
-      for (let index = 0; index < total; index += 1) pads.push(`[keylabel${inputIndex.get(combo)}_${index}]`)
-      filters.push(`${stream}split=${total}${pads.join('')}`)
-      branches.set(combo, pads)
+      group.windows.push({ startMs, endMs })
     }
-    const used = new Map()
+    if (!grouped.length) return { current: base, inputCount: 0 }
     const marginBottom = keystrokeOverlayMarginBottom(surfaceHeight)
     let current = base
-    windows.forEach((window, index) => {
-      const combo = window.label.combo
-      const position = used.get(combo) || 0
-      used.set(combo, position + 1)
-      const branch = branches.get(combo)[position]
+    grouped.forEach((group, index) => {
+      const inputIndex = inputStart + index
+      extraInputs.push('-loop', '1', '-framerate', String(renderFps), '-t', durationSeconds, '-i', group.label.path)
+      const enable = group.windows
+        .map((window) => `gte(t,${seconds(window.startMs)})*lt(t,${seconds(window.endMs)})`)
+        .join('+')
       const tail = `keystroke${index}`
       filters.push(
-        `[${current}]${branch}overlay=x=(W-w)/2:y=H-h-${marginBottom}:` +
-        `enable='between(t,${seconds(window.tMs)},${seconds(Math.max(window.tMs, window.endMs))})':format=auto:shortest=1[${tail}]`
+        `[${current}][${inputIndex}:v]overlay=x=(W-w)/2:y=H-h-${marginBottom}:` +
+        `enable='${enable}':format=auto:shortest=1[${tail}]`
       )
       current = tail
     })
-    return { current, inputCount: order.length }
+    return { current, inputCount: grouped.length }
   }
 
   function normalizeBuildVideo(options, format) {

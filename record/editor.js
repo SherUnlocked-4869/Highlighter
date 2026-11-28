@@ -61,6 +61,8 @@
     'export-resolution', 'export-quality', 'export-fps', 'export-output-size',
     // DEV-05: burn the recorded shortcut capsules into the exported film.
     'export-keystrokes',
+    // P2-05: discloses the exact capsule truncation an export material cap causes.
+    'keystroke-truncation',
     'demo-canvas', 'ripple-layer',
     'demo-enabled', 'demo-background', 'demo-background-custom',
     'demo-padding', 'demo-padding-value', 'demo-radius', 'demo-radius-value',
@@ -959,6 +961,32 @@
       select.disabled = disabled
     }
 
+    // P2-05: an export material cap (the ffmpeg label budget) can still drop capsules. That is
+    // disclosed HERE, in the export panel, before the user presses Export: the exact capsule and
+    // label counts plus the first/last dropped source time. The preview HUD already follows the
+    // kept plan, so this notice explains the difference instead of leaving it silent.
+    function renderKeystrokeTruncation(snapshot) {
+      const notice = element('keystroke-truncation')
+      if (!notice) return
+      const keystrokes = snapshot && snapshot.keystrokes ? snapshot.keystrokes : null
+      const plan = keystrokes && keystrokes.plan ? keystrokes.plan : null
+      const dropped = plan && plan.truncated === true && plan.dropped ? plan.dropped : null
+      if (!keystrokes || keystrokes.available !== true || !dropped || !(dropped.items > 0)) {
+        notice.hidden = true
+        notice.textContent = ''
+        return
+      }
+      const clock = timelineModule.formatClock
+      notice.textContent = translate('recording.editor.keystrokes.truncated', {
+        count: dropped.items,
+        labels: dropped.labels,
+        maxLabels: plan.maxLabels,
+        first: clock(dropped.firstSourceMs),
+        last: clock(dropped.lastSourceMs)
+      })
+      notice.hidden = false
+    }
+
     function renderExportPanel(snapshot, editable) {
       const format = snapshot ? snapshot.format : 'mp4'
       const videoFormat = format !== 'gif'
@@ -1036,6 +1064,7 @@
 
       const emptyHint = element('empty-selection-hint')
       if (emptyHint) emptyHint.hidden = !(snapshot && snapshot.emptySelection)
+      renderKeystrokeTruncation(snapshot)
     }
 
     function renderEditControls(snapshot, editable) {
@@ -1396,19 +1425,29 @@
 
     // ---------- N03: shortcut capsules + one-click dead-air removal ----------
 
+    // P2-05: the HUD follows the exporter's own visible sequence (`plan.items`), never the raw
+    // captured list: a capsule trimmed out of the selection, or one dropped by a retained export
+    // material cap, must not be previewed as if the film would contain it. The fallback keeps the
+    // pre-P2-05 controller working (it exposes only the raw list) without owning any new rules.
     function capsuleItems() {
       const snapshot = state()
-      return snapshot && snapshot.keystrokes && Array.isArray(snapshot.keystrokes.items)
-        ? snapshot.keystrokes.items
+      const keystrokes = snapshot && snapshot.keystrokes ? snapshot.keystrokes : null
+      const plan = keystrokes && keystrokes.plan ? keystrokes.plan : null
+      if (plan && Array.isArray(plan.items)) return plan.items
+      return keystrokes && Array.isArray(keystrokes.items)
+        ? keystrokes.items.map((item) => ({ ...item, durationMs: KEYSTROKE_CAPSULE_MS }))
         : []
     }
 
-    // The capsule for a media position: every shortcut stays visible for KEYSTROKE_CAPSULE_MS,
-    // so overlapping/rapid combos show the most recent one instead of flickering.
+    // The capsule for a media position: the visible window itself comes from the export plan, so
+    // a cut-clipped window ends exactly when the burned-in capsule does.
     function activeKeystrokeCapsule(atMs) {
       let active = null
       for (const item of capsuleItems()) {
-        if (atMs >= item.tMs && atMs < item.tMs + KEYSTROKE_CAPSULE_MS) active = item
+        const duration = Number.isFinite(item.durationMs) && item.durationMs > 0
+          ? item.durationMs
+          : KEYSTROKE_CAPSULE_MS
+        if (atMs >= item.tMs && atMs < item.tMs + duration) active = item
       }
       return active
     }
