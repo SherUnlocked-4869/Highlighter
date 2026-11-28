@@ -940,6 +940,89 @@
     return { document, storageFormat: 'editable-v1', upgradedFrom: 'legacy-bitmap' }
   }
 
+  // ---------- U02 / DEV-01: pin re-annotation snapshot ----------
+
+  // A pin created from this editor can carry an optional EDITABLE snapshot: the base
+  // pixels of the crop (unannotated, uncomposed) plus the same document-shaped vector
+  // list and output style the history editor persists. It deliberately reuses
+  // createInitialDocument / normalizeDocument, so the pin path and the history
+  // "continue editing" path cannot drift into two document formats.
+  //
+  // The base image IS the crop here (crop = full base) because the snapshot is
+  // self-contained: it never references another file or a history asset id.
+  function createPinEditableDocument(options) {
+    const settings = isPlainObject(options) ? options : {}
+    return createInitialDocument({
+      // Synthetic asset id: the pin domain owns the actual PNG bytes in memory; nothing
+      // in this document is ever used to resolve a path on disk.
+      assetId: 'pin',
+      width: settings.width,
+      height: settings.height,
+      annotations: settings.annotations,
+      outputStyle: settings.outputStyle,
+      sourceScaleFactor: settings.sourceScaleFactor,
+      source: 'pin',
+      createdAt: settings.createdAt
+    })
+  }
+
+  // Map annotations from an EXPORT canvas' coordinate system (window CSS for a plain
+  // region capture) into that canvas' source pixels. `offset` is the canvas origin in
+  // the annotation space and the scales are source-pixels-per-annotation-unit, i.e. the
+  // exact arguments drawAnnotation receives. Non-uniform scales are supported because a
+  // high-DPI capture rounds width and height independently; magnifiers keep their nested
+  // geometry by mapping both rectangles and scaling the stroke width by the larger axis.
+  function annotationsFromExportView(annotations, transform) {
+    const settings = isPlainObject(transform) ? transform : {}
+    const offsetX = finiteOr(settings.offsetX, 0)
+    const offsetY = finiteOr(settings.offsetY, 0)
+    const scaleX = finiteOr(settings.scaleX, 1)
+    const scaleY = finiteOr(settings.scaleY, 1)
+    const widthScale = Math.max(scaleX, scaleY)
+    const list = Array.isArray(annotations) ? annotations : []
+    const mapped = []
+    for (const entry of list) {
+      const annotation = normalizeAnnotation(entry)
+      if (!annotation) continue
+      if (annotation.type === 'magnifier') {
+        const magnifier = magnifierApi.normalizeMagnifier(annotation)
+        mapped.push(Object.assign({}, magnifier, {
+          sourceRect: {
+            x: (magnifier.sourceRect.x - offsetX) * scaleX,
+            y: (magnifier.sourceRect.y - offsetY) * scaleY,
+            w: magnifier.sourceRect.w * scaleX,
+            h: magnifier.sourceRect.h * scaleY
+          },
+          lensOrigin: {
+            x: (magnifier.lensOrigin.x - offsetX) * scaleX,
+            y: (magnifier.lensOrigin.y - offsetY) * scaleY
+          },
+          stroke: Object.assign({}, magnifier.stroke, { widthPx: magnifier.stroke.widthPx * widthScale })
+        }, annotation.id !== undefined ? { id: annotation.id } : {}))
+        continue
+      }
+      const result = Object.assign({}, annotation, {
+        x: (annotation.x - offsetX) * scaleX,
+        y: (annotation.y - offsetY) * scaleY
+      })
+      if (annotation.x2 !== undefined) result.x2 = (annotation.x2 - offsetX) * scaleX
+      if (annotation.y2 !== undefined) result.y2 = (annotation.y2 - offsetY) * scaleY
+      if (Array.isArray(annotation.points)) {
+        result.points = annotation.points.map((point) => ({
+          x: (point.x - offsetX) * scaleX,
+          y: (point.y - offsetY) * scaleY
+        }))
+      }
+      if (annotation.w !== undefined) result.w = annotation.w * scaleX
+      if (annotation.h !== undefined) result.h = annotation.h * scaleY
+      if (annotation.width !== undefined) result.width = annotation.width * widthScale
+      if (annotation.radius !== undefined) result.radius = annotation.radius * widthScale
+      if (annotation.fontSize !== undefined) result.fontSize = annotation.fontSize * widthScale
+      mapped.push(result)
+    }
+    return mapped
+  }
+
   // ---------- 成品几何（feature C §6.2） ----------
 
   // The ONE place the export size of a document is decided. `capture-document-service` validates
@@ -1056,6 +1139,10 @@
     clipMagnifiersToCrop,
     // 建档
     createInitialDocument,
-    createLegacyDocument
+    createLegacyDocument,
+    // U02 / DEV-01: the optional pin re-annotation snapshot (document-shaped) and the
+    // export-canvas -> source-pixel annotation projection it is built from.
+    createPinEditableDocument,
+    annotationsFromExportView
   }
 })

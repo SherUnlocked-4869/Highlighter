@@ -369,7 +369,7 @@ test('capture.js keeps the one-click pin and adds pin+copy as the secondary acti
 test('the combined path rides the existing capture:pin channel end to end', () => {
   assert.match(preload, /pin: \(imageBuffer, meta, options\) => ipcRenderer\.invoke\('capture:pin'/)
   assert.match(captureDomainSource, /if \(copy !== true\) \{[\s\S]{0,700}?return null/)
-  assert.match(captureDomainSource, /return await pinAndCopyOnce\(event, captureWindow, buffer, meta\)/)
+  assert.match(captureDomainSource, /return await pinAndCopyOnce\(event, captureWindow, buffer, meta, editableSnapshot\)/)
   assert.match(captureDomainSource, /if \(retry === 'pin' \|\| retry === 'copy'\) \{/)
   assert.match(captureDomainSource, /const targets = planPinCopyAttempts\(prior\.outputs, \[kind\]\)/)
   // Exactly one history write per confirmation, guarded by the receipt's recorded flag.

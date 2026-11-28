@@ -12,6 +12,9 @@
 <script src="../shared/locales/pin.js"></script>
 <script src="../shared/i18n.js"></script>
 <script src="../shared/ocr-text-overlay.js"></script>
+<!-- DEV-02: the offscreen current-view compositor. It must load before pin.js (the
+     renderer only wires it; all geometry lives in the UMD module for node tests). -->
+<script src="pin-view-export.js"></script>
 </head>
 <body data-rotation="0">
 <!-- #rotor is the rotation frame (P1, plan §9.3): the main process already sized

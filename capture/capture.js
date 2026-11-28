@@ -202,6 +202,10 @@ let image = null
 //   { sessionId, documentId, revisionId, version, legacy, storageFormat, degraded,
 //     document, crop, infoHeight, cleanFingerprint, dirty, saving, requestSeq }
 let documentEditor = null
+// U02 / DEV-01: a pin being re-annotated from an editable snapshot. Unlike a history
+// document this session does not commit anywhere: the pin button sends the new display
+// PNG plus a replacement snapshot back through the existing capture:pin channel.
+let pinEditable = null
 let selection = null
 let selecting = false
 let dragging = false
@@ -551,25 +555,34 @@ function drawBackground() {
   if (image) {
     if(nativeBackground){backgroundCtx.imageSmoothingEnabled=false;backgroundCtx.drawImage(image,0,0)}
     else if (documentEditor) {
-      // Batch 1: a document editor loads the WHOLE base image but the window only reserves an
-      // area for the CROP - so the shipped `drawImage(image, bounds)` would squash the entire
-      // screenshot into the crop box while annotations are mapped crop->box, i.e. a visibly
-      // wrong backdrop that also disagrees with the exported result. Draw the crop region of
-      // the base image into the image area instead, which is exactly the export mapping
-      // (contracts §2.1: outX = sourceX - crop.x, then scaled by the viewport).
-      const bounds=imageDisplayBounds()
-      const crop=documentCrop()
-      const view=documentViewport()
-      const zoom=view?view.zoom:1
-      backgroundCtx.imageSmoothingEnabled=zoom!==1
-      backgroundCtx.drawImage(
-        image,
-        crop.x, crop.y, crop.w, crop.h,
-        bounds.x, bounds.y, crop.w*zoom, crop.h*zoom
-      )
+      drawCropBackground()
+    }
+    else if (pinEditable) {
+      // U02 / DEV-01: a pin re-annotation session uses the exact same crop mapping as a
+      // document editor - its base image is already the crop, so the two paths agree.
+      drawCropBackground()
     }
     else{const bounds=imageDisplayBounds();backgroundCtx.drawImage(image,bounds.x,bounds.y,bounds.w,bounds.h)}
   }
+}
+
+// Batch 1: a document editor loads the WHOLE base image but the window only reserves an
+// area for the CROP - so the shipped `drawImage(image, bounds)` would squash the entire
+// screenshot into the crop box while annotations are mapped crop->box, i.e. a visibly
+// wrong backdrop that also disagrees with the exported result. Draw the crop region of
+// the base image into the image area instead, which is exactly the export mapping
+// (contracts §2.1: outX = sourceX - crop.x, then scaled by the viewport).
+function drawCropBackground() {
+  const bounds=imageDisplayBounds()
+  const crop=documentCrop()
+  const view=documentViewport()
+  const zoom=view?view.zoom:1
+  backgroundCtx.imageSmoothingEnabled=zoom!==1
+  backgroundCtx.drawImage(
+    image,
+    crop.x, crop.y, crop.w, crop.h,
+    bounds.x, bounds.y, crop.w*zoom, crop.h*zoom
+  )
 }
 
 function captureImageReady() {
@@ -1786,7 +1799,7 @@ function toggleColorSampling() {
 // maps through that viewport and then adds the crop origin: the bytes are still the frozen
 // image's bytes, never a re-capture and never a screen read.
 function colorSampleMapping() {
-  if (documentEditor) {
+  if (documentEditor || pinEditable) {
     const crop = documentCrop()
     const viewport = documentViewport()
     if (crop && viewport && viewport.zoom > 0) {
@@ -3367,7 +3380,7 @@ function quickSelectAnnotation(event, point) {
 function magnifierPartAt(item, point) {
   const api = magnifierApi()
   if (!api || item?.type !== 'magnifier') return ''
-  const zoom = documentEditor && documentViewport() ? documentViewport().zoom : 1
+  const zoom = (documentEditor || pinEditable) && documentViewport() ? documentViewport().zoom : 1
   // The tolerance is a viewport-CSS constant, so it has to be divided by the zoom before it means
   // anything in the annotation's own space.
   const part = api.hitTestMagnifier(item, point, FRAME_HIT_TOLERANCE / Math.max(1e-6, zoom))
@@ -3503,7 +3516,7 @@ function buildMagnifierDraft(point) {
 // the document crop; in a plain capture window it is the selection's pixel rect expressed in the
 // window's own CSS space (which is what the annotations live in).
 function magnifierCropForLens() {
-  if (documentEditor) return documentCrop()
+  if (documentEditor || pinEditable) return documentCrop()
   if (!selection) return null
   return { x: selection.x, y: selection.y, w: selection.w, h: selection.h }
 }
@@ -3781,7 +3794,7 @@ function exportSelectionCanvasForAction(includeAnnotations, rect = exportSelecti
 // (100,80) shifted the whole mask by (-100,-80) and the user's mosaic stayed readable.
 // The correct crop origin for this canvas is (0,0) at the full base size.
 function annotationsForMask(rect) {
-  if (documentEditor) {
+  if (documentEditor || pinEditable) {
     // Whole-base canvas: origin 0,0, sized to the base image (not the crop).
     const base = documentBaseSize()
     return {
@@ -4086,7 +4099,7 @@ function ensureSampleBase() {
 // right because `transformOccluder` scales the already-quantised occluder. So: quantise first, scale
 // after, exactly like the painter.
 function annotationsForSampling() {
-  if (documentEditor) return annotationsToDocument()
+  if (documentEditor || pinEditable) return annotationsToDocument()
   const rect = selection ? exportSelectionRect() : null
   if (!rect || !image) return []
   const bounds = imageDisplayBounds()
@@ -4129,9 +4142,9 @@ function annotationsForSampling() {
 function buildOccludersForSampling() {
   const mask = window.occlusionMask
   if (!mask) return []
-  const rect = documentEditor ? null : (selection ? exportSelectionRect() : null)
+  const rect = documentEditor || pinEditable ? null : (selection ? exportSelectionRect() : null)
   const widthScale = (() => {
-    if (documentEditor || !rect || !image) return 1
+    if (documentEditor || pinEditable || !rect || !image) return 1
     const bounds = imageDisplayBounds()
     const source = getSourcePixelRect(rect, bounds, { width: image.naturalWidth, height: image.naturalHeight })
     return Math.max(source.width / Math.max(1, rect.w), source.height / Math.max(1, rect.h))
@@ -4157,7 +4170,7 @@ function magnifierLensCanvas(item) {
   if (!sampler) return null
   const projected = magnifierInSourceSpace(item)
   if (!projected) return null
-  const crop = documentEditor ? documentCrop() : { x: 0, y: 0, w: image?.naturalWidth || 1, h: image?.naturalHeight || 1 }
+  const crop = documentEditor || pinEditable ? documentCrop() : { x: 0, y: 0, w: image?.naturalWidth || 1, h: image?.naturalHeight || 1 }
   try {
     return sampler.sample({
       baseImageId: `${image?.naturalWidth || 0}x${image?.naturalHeight || 0}`,
@@ -4194,7 +4207,7 @@ function magnifierInSourceSpace(item) {
   const api = magnifierApi()
   if (!api || !item) return null
   const magnifier = api.normalizeMagnifier(item)
-  if (documentEditor) return magnifierFromViewportSpace(magnifier)
+  if (documentEditor || pinEditable) return magnifierFromViewportSpace(magnifier)
   if (!selection || !image) return null
   const rect = exportSelectionRect()
   const bounds = imageDisplayBounds()
@@ -4317,7 +4330,7 @@ function syncOutputStyleUi() {
 // its crop; a plain capture window works on the selection's pixel rect (the same rect the export
 // uses), so the size hint and the real result agree.
 function outputContentSize() {
-  if (documentEditor) {
+  if (documentEditor || pinEditable) {
     const crop = documentCrop()
     return { width: Math.max(1, Math.round(crop.w)), height: Math.max(1, Math.round(crop.h)) }
   }
@@ -4401,7 +4414,7 @@ function previewContentCanvas(size) {
   if (!ctx) return null
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height)
   ctx.imageSmoothingEnabled = true
-  if (documentEditor) {
+  if (documentEditor || pinEditable) {
     const crop = documentCrop()
     ctx.drawImage(image, crop.x, crop.y, crop.w, crop.h, 0, 0, size.width, size.height)
     const scaleX = size.width / Math.max(1, crop.w)
@@ -4508,7 +4521,7 @@ function documentBaseSize() {
 }
 
 function documentCrop() {
-  const crop = documentEditor?.crop
+  const crop = pinEditable?.crop || documentEditor?.crop
   if (crop && Number(crop.w) > 0 && Number(crop.h) > 0) return crop
   const size = documentBaseSize()
   return { x: 0, y: 0, w: size.width, h: size.height }
@@ -4681,6 +4694,118 @@ function restoreDocumentEditor(payload) {
   renderDocumentInfo()
   render()
 }
+
+// U02 / DEV-01 (plan 2026-11-28): the pin re-annotation snapshot.
+//
+// A pinned picture may carry an optional, non-destructive editable snapshot: the base
+// pixels of the crop (unannotated, uncomposed), the annotations in SOURCE pixels, the
+// crop/compositing parameters (shared/capture-document.js document shape) and the
+// capture scale factor. The receiver (main/domains/pin) keeps it in memory only, so it
+// is never serialised into workspace snapshots, recovery tickets or history.
+//
+// The transport field is `meta.pinEditable` on the EXISTING capture:pin / capture:pin-
+// reannotate payloads: no new IPC channel. The main process strips it before any
+// history write and validates it again at the domain boundary.
+const PIN_EDITABLE_SNAPSHOT_SCHEMA = 1
+const PIN_EDITABLE_MAX_ANNOTATIONS = 2000
+// Matches the main-process budget: one snapshot may not exceed this many PNG bytes. A
+// larger base simply degrades that pin to today's flat-bitmap re-annotation.
+const PIN_EDITABLE_MAX_BASE_BYTES = 16 * 1024 * 1024
+
+function pinEditableActive() { return !!pinEditable }
+
+// Restore a pin snapshot into this editor session. The vector list is projected from
+// source pixels into viewport CSS with the same shared transform the history editor
+// uses; the base bitmap is the image the window was opened with, so no crop gesture and
+// no second file reference exist here.
+function restorePinEditable(payload) {
+  const api = documentApi()
+  if (!payload || !api) return
+  const crop = api.normalizeCrop(payload.crop || payload.document?.crop, {
+    width: image?.naturalWidth || 1,
+    height: image?.naturalHeight || 1
+  })
+  pinEditable = {
+    schema: Math.max(1, Number(payload.schema) || PIN_EDITABLE_SNAPSHOT_SCHEMA),
+    crop,
+    document: payload.document || null,
+    sourceScaleFactor: Number(payload.sourceScaleFactor) || Number(initData?.scaleFactor) || 1
+  }
+  const sourceAnnotations = pinEditable.document?.annotations || []
+  annotations = annotationsFromDocument(sourceAnnotations)
+  annotationSeq = 0
+  for (const item of annotations) item.id = ++annotationSeq
+  selectedAnnotation = null
+  selectedIds = new Set()
+  // One initial frame: Ctrl+Z right after opening is a no-op, exactly like the document
+  // editor. A pin re-edit replaces the whole session instead of stacking undo history.
+  annotationHistory = [cloneAnnotations(annotations)]
+  historyIndex = 0
+  invalidateMosaicPatches()
+  // A reopened pin shows the frame it was saved with (the output style is the session's
+  // content, not a persisted preset preference).
+  restoreOutputStyleForDocument({ document: pinEditable.document })
+  clipRestoredMagnifiers()
+  adoptMagnifierDefaultsFromDocument()
+  syncMagnifierPanel()
+  render()
+}
+
+// Build the snapshot for a pin output, or null when this session cannot provide one
+// (old flat pins, clipboard images, history documents, private/redacted captures, an
+// over-budget base or an invalid document). The caller then keeps today's behaviour.
+async function buildPinEditableSnapshot() {
+  const api = documentApi()
+  if (!api || !image || documentEditor) return null
+  // "Do not keep this capture" is a privacy promise: no editable base leaves the
+  // renderer for it, not even in memory.
+  if (skipHistoryThisCapture) return null
+  // An old flat pin (no snapshot on the pin) stays flat forever: re-annotating it adds
+  // vector objects on top of the flattened bitmap, exactly as before DEV-01.
+  if (initData?.editPin && !pinEditable) return null
+  const rect = exportSelectionRect()
+  if (!selection || !rect) return null
+  // A NEW capture that already contains a redaction keeps the flat path: holding the
+  // unredacted crop would defeat the pixel-level purpose of the switch. A re-annotation
+  // session that adds a blur may keep its snapshot (it is the user's own base pixels and
+  // is still never serialised).
+  if (!pinEditable && hasOccludableBlur(rect)) return null
+  // Base pixels: the crop WITHOUT annotations, composition or the drawn cursor.
+  const baseCanvas = exportSelectionCanvas(false)
+  if (!baseCanvas || !(baseCanvas.width > 0) || !(baseCanvas.height > 0)) return null
+  let sourceAnnotations
+  if (pinEditable) {
+    sourceAnnotations = annotationsToDocument()
+  } else {
+    const bounds = imageDisplayBounds()
+    const source = getSourcePixelRect(rect, bounds, { width: image.naturalWidth, height: image.naturalHeight })
+    if (!source || !(source.width > 0) || !(source.height > 0)) return null
+    sourceAnnotations = api.annotationsFromExportView(annotations, {
+      offsetX: rect.x,
+      offsetY: rect.y,
+      scaleX: source.width / Math.max(1, rect.w),
+      scaleY: source.height / Math.max(1, rect.h)
+    })
+  }
+  if (!Array.isArray(sourceAnnotations) || sourceAnnotations.length > PIN_EDITABLE_MAX_ANNOTATIONS) return null
+  const document = api.createPinEditableDocument({
+    width: baseCanvas.width,
+    height: baseCanvas.height,
+    annotations: sourceAnnotations,
+    outputStyle: currentOutputStyle(),
+    sourceScaleFactor: Number(initData?.scaleFactor) || 1
+  })
+  const validation = api.validateDocument(document)
+  if (!validation.ok) return null
+  const png = await canvasPngBuffer(baseCanvas)
+  if (!png || !png.byteLength || png.byteLength > PIN_EDITABLE_MAX_BASE_BYTES) return null
+  return {
+    schema: PIN_EDITABLE_SNAPSHOT_SCHEMA,
+    document,
+    baseImagePng: png
+  }
+}
+
 
 // Feature D3 (plan §7.1): drop (or shrink) magnifiers whose source rect left the crop. Runs inside
 // the load frame, so the result is what "opened" means - the undo stack starts from it.
@@ -5072,6 +5197,13 @@ async function performAction(action) {
     const imageBuffer=await canvasPngBuffer(output)
     // 序号只在导出/编码完成后取值，保证带上本次截图已落的号（P0-7-T7 精确接续）。
     Object.assign(meta,serialMeta())
+    // U02 / DEV-01: the optional non-destructive snapshot rides the EXISTING pin payload
+    // (meta.pinEditable), so no new IPC channel exists. It is built from the same frozen
+    // session state as the exported PNG and never from a second read of the screen.
+    if(action==='pin'||action==='pin-copy'){
+      const pinEditableSnapshot=await buildPinEditableSnapshot()
+      if(pinEditableSnapshot)meta.pinEditable=pinEditableSnapshot
+    }
     if(action==='copy'){
       if(initData.editPin){await window.captureAPI.pin(imageBuffer,meta);closeCaptureWindow()}
       else{
@@ -5434,11 +5566,20 @@ window.captureAPI.onInit((data)=>{
   // Batch 1: this window may be editing an existing document (history "continue editing").
   // Restore it only after the image is decoded, because the viewport needs naturalWidth.
   if(data.documentEditor){
+    // A new capture session never inherits the previous session's pin snapshot state.
+    pinEditable=null
     const editorPayload=data.documentEditor
     const previousOnload=image.onload
     image.onload=(event)=>{previousOnload?previousOnload(event):null;restoreDocumentEditor(editorPayload)}
+  } else if(data.pinEditable){
+    // U02 / DEV-01: a pin re-annotation session. The vector list is restored only after
+    // the base image decoded (the viewport needs naturalWidth/naturalHeight).
+    const pinPayload=data.pinEditable
+    const previousOnload=image.onload
+    image.onload=(event)=>{previousOnload?previousOnload(event):null;restorePinEditable(pinPayload)}
   } else {
     documentEditor=null
+    pinEditable=null
     renderDocumentInfo()
   }
 })

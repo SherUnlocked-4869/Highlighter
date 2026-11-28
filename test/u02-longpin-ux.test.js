@@ -12,10 +12,10 @@
 // The pin half runs the real domain against fake windows and a fake screen whose scale factor
 // changes between creation and the drop, and counts `win.setBounds` calls.
 //
-// Item 4.2-3 (non-destructive vector re-annotation) is NOT covered here: the capture renderer
-// builds the pin payload without annotations/baseImageBuffer and the pin domain cannot reach the
-// capture document service, so it cannot be implemented inside this ticket's write scope
-// (long-capture/*, main/domains/pin/index.js, pin/pin.js). See the U02 delivery report.
+// Item 4.2-3 (non-destructive vector re-annotation) is covered by
+// test/u02-pin-reedit.test.js (DEV-01): the capture renderer now attaches a document-shaped
+// snapshot to the pin payload and the pin domain reopens the editor from it. This file keeps
+// the long-capture preview/stitching and end-of-drag geometry halves only.
 
 const test = require('node:test')
 const assert = require('node:assert/strict')

@@ -190,6 +190,146 @@ function startPinRenderer() {
   }
 
   // -------------------------------------------------------------------------
+  // DEV-02 (plan 2026-11-28): offscreen "export the current view".
+  //
+  // The main process used to hide the transient chrome with an injected style sheet and
+  // then ask Electron to photograph the live window: a prepare failure could paint
+  // controls into the shot and the hide/restore pair could flicker on screen. Now main
+  // only asks THIS renderer for the view; the renderer composes it into an offscreen
+  // canvas (geometry in pin/pin-view-export.js) and sends the bounded PNG back. The
+  // visible page is never touched, so no flicker is possible and no controls are in the
+  // pixels.
+  // -------------------------------------------------------------------------
+  const viewExportApi = window.pinViewExport || null
+  let viewExportBusy = false
+
+  function currentViewExportOcr() {
+    if (!recognition || !recognition.result) return { visible: false }
+    const translating = recognition.action === 'translate' && recognition.phase === 'result'
+    const displayed = translating && showSource ? {
+      ...recognition.result,
+      text: recognition.result.textBlocks.map((block) => block.sourceText).join('\n'),
+      textBlocks: recognition.result.textBlocks.map((block) => ({ ...block, text: block.sourceText }))
+    } : recognition.result
+    const overlay = document.getElementById('pinOcrOverlay')
+    return {
+      visible: !!overlay && overlay.childElementCount > 0 && Array.isArray(displayed?.textBlocks),
+      translated: translating && !showSource,
+      blocks: displayed?.textBlocks || [],
+      imageWidth: displayed?.imageWidth,
+      imageHeight: displayed?.imageHeight
+    }
+  }
+
+  function canvasPngBytes(canvas) {
+    return new Promise((resolve) => {
+      if (typeof canvas.toBlob !== 'function') {
+        resolve(null)
+        return
+      }
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          resolve(null)
+          return
+        }
+        blob.arrayBuffer().then(resolve, () => resolve(null))
+      }, 'image/png')
+    })
+  }
+
+  function respondViewExport(payload) {
+    try {
+      return window.pinAPI.viewExportResult({
+        type: 'view-export-result',
+        ...payload
+      }) === true
+    } catch {
+      return false
+    }
+  }
+
+  async function composeViewExport(requestId) {
+    if (viewExportBusy) {
+      respondViewExport({ requestId, ok: false, code: 'busy' })
+      return
+    }
+    if (!viewExportApi) {
+      respondViewExport({ requestId, ok: false, code: 'unavailable' })
+      return
+    }
+    viewExportBusy = true
+    let canvas = null
+    try {
+      const surface = activeSurface
+      const surfaceSize = surface === image
+        ? { width: image.naturalWidth, height: image.naturalHeight }
+        : { width: pixelImage.width, height: pixelImage.height }
+      const scroller = document.scrollingElement || document.documentElement
+      const plan = viewExportApi.planViewExport({
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio || 1
+        },
+        surface: surfaceSize,
+        rotation: Number(document.body.dataset.rotation) || 0,
+        longCapture: settings.longCapture === true,
+        scrollTop: scroller ? Number(scroller.scrollTop) || 0 : 0,
+        ocr: currentViewExportOcr()
+      })
+      if (!plan.ok) {
+        respondViewExport({ requestId, ok: false, code: plan.code || 'empty-image' })
+        return
+      }
+      canvas = document.createElement('canvas')
+      canvas.width = plan.width
+      canvas.height = plan.height
+      const context = canvas.getContext('2d')
+      if (!context) {
+        respondViewExport({ requestId, ok: false, code: 'canvas-unavailable' })
+        return
+      }
+      if (!viewExportApi.drawViewExport(context, plan, { picture: surface })) {
+        respondViewExport({ requestId, ok: false, code: 'empty-image' })
+        return
+      }
+      const png = await canvasPngBytes(canvas)
+      if (!png || !png.byteLength) {
+        respondViewExport({ requestId, ok: false, code: 'encode-failed' })
+        return
+      }
+      if (png.byteLength > viewExportApi.MAX_EXPORT_PNG_BYTES) {
+        respondViewExport({ requestId, ok: false, code: 'png-too-large' })
+        return
+      }
+      respondViewExport({
+        requestId,
+        ok: true,
+        png,
+        width: plan.width,
+        height: plan.height,
+        ocrOverlay: plan.ocrOverlay === true
+      })
+    } catch (_error) {
+      respondViewExport({ requestId, ok: false, code: 'failed' })
+    } finally {
+      viewExportBusy = false
+      if (canvas) {
+        // Drop the backing store as soon as the bytes have been copied out.
+        canvas.width = 1
+        canvas.height = 1
+      }
+    }
+  }
+
+  if (typeof window.pinAPI.onViewExportRequest === 'function') {
+    window.pinAPI.onViewExportRequest((request) => {
+      const requestId = request && typeof request.requestId === 'string' ? request.requestId : ''
+      if (requestId) void composeViewExport(requestId)
+    })
+  }
+
+  // -------------------------------------------------------------------------
   // N05: transient toast + workspace snapshot naming overlay.
   // -------------------------------------------------------------------------
   function showToast(key, params = null) {

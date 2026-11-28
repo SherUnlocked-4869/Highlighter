@@ -335,6 +335,20 @@ function createCaptureDomain(deps) {
     return win != null && win._skipHistory === true
   }
 
+  // U02 / DEV-01: the optional pin re-annotation snapshot travels inside the EXISTING
+  // capture:pin / capture:pin-reannotate payload as `meta.pinEditable` (no new IPC
+  // channel). It is removed from `meta` here - BEFORE any history write, retry receipt or
+  // window field copies it - and handed to the pin domain as a separate argument, so an
+  // unredacted base bitmap can never be serialised by a path that only knows `meta`.
+  // A skipped ("do not keep") capture never forwards one even if a stale renderer sent it.
+  function pullPinEditable(meta, skipHistory) {
+    if (!meta || typeof meta !== 'object' || meta.pinEditable === undefined) return null
+    const raw = meta.pinEditable
+    delete meta.pinEditable
+    if (skipHistory === true) return null
+    return raw
+  }
+
   function historyEnabledNow() {
     // HistoryService itself refuses to write while the global switch is off; asking here
     // as well keeps the plan honest (a disabled history is 0 records, not "scheduled").
@@ -517,9 +531,15 @@ function createCaptureDomain(deps) {
   }
 
   function attemptPinOutput(event, captureWindow, buffer, meta, skipHistory = false) {
+    // U02 / DEV-01: the editable snapshot for this attempt lives on the capture window
+    // (transient, same lifetime as the one-shot receipt) so the shipped call shape and its
+    // contract tests stay unchanged. It is never read by the history writer.
+    const editableSnapshot = captureWindow?._pinEditableSnapshot || null
     if (pinBudgetReached(event, captureWindow)) return { ok: false, code: 'PIN_LIMIT' }
     try {
-      const created = pinDomain.pinFromCapture(event, buffer, meta)
+      const created = editableSnapshot
+        ? pinDomain.pinFromCapture(event, buffer, meta, '', { editableSnapshot })
+        : pinDomain.pinFromCapture(event, buffer, meta)
       // B01: the pin is the same result as the capture that produced it, so it carries
       // the switch into its re-annotate editor instead of re-enabling history there.
       if (created?.pinWindow) {
@@ -553,9 +573,12 @@ function createCaptureDomain(deps) {
   // One confirmation = one export = at most ONE history record, even when only one
   // of the two outputs landed. The receipt lives on the capture window so a retry
   // can only fill in the missing half.
-  async function pinAndCopyOnce(event, captureWindow, buffer, meta) {
+  async function pinAndCopyOnce(event, captureWindow, buffer, meta, editableSnapshot = null) {
     const skipHistory = resolveSkipHistory(captureWindow, meta)
+    if (captureWindow && typeof captureWindow === 'object') captureWindow._pinEditableSnapshot = editableSnapshot
     const attempted = {
+      // The snapshot argument is optional: the shipped call shape stays valid when there
+      // is nothing editable to carry (old flat pins, private captures, history editors).
       pin: attemptPinOutput(event, captureWindow, buffer, meta, skipHistory),
       copy: await copyBufferToClipboard(buffer, { skipHistory })
     }
@@ -583,7 +606,7 @@ function createCaptureDomain(deps) {
     }
   }
 
-  async function retryPinCopy(captureWindow, kind, { event, buffer, meta }) {
+  async function retryPinCopy(captureWindow, kind, { event, buffer, meta, editableSnapshot = null }) {
     const prior = captureWindow?._pinCopyState
     if (!prior || !prior.outputs) return stalePinCopyReceipt()
     const skipHistory = resolveSkipHistory(captureWindow, meta)
@@ -594,6 +617,7 @@ function createCaptureDomain(deps) {
       return { ...prior, reattempted: [] }
     }
     const attempted = {}
+    if (captureWindow && typeof captureWindow === 'object') captureWindow._pinEditableSnapshot = editableSnapshot
     if (kind === 'pin') attempted.pin = attemptPinOutput(event, captureWindow, buffer, meta, skipHistory)
     else attempted.copy = await copyBufferToClipboard(buffer, { skipHistory })
     const receipt = summarizePinCopyOutputs({ prior: prior.outputs, attempted })
@@ -1209,6 +1233,10 @@ function createCaptureDomain(deps) {
         // document at all (plain screenshot / pin re-annotation / blank canvas), and the renderer
         // then keeps the original "new screenshot" semantics.
         documentEditor: options.documentEditor || null,
+        // U02 / DEV-01: a pin re-annotation session carries the document-shaped snapshot
+        // restored from the pin window (base image + source-pixel annotations + style).
+        // Null for every other mode, including old flat pins.
+        pinEditable: options.pinEditable || null,
         smartSelect: !!captureWindow._smartSelectContext,
         cursorPosition: (() => {
           const point = screen.getCursorScreenPoint()
@@ -1477,10 +1505,13 @@ function createCaptureDomain(deps) {
         if (!buffer.length) throw new Error('截图图片数据为空')
         const captureWindow = BrowserWindow.fromWebContents(event.sender)
         const skipHistory = resolveSkipHistory(captureWindow, meta)
+        // U02 / DEV-01: strip the editable snapshot from the meta ONCE, before the retry
+        // receipt, the history write or the pin window copies meta anywhere.
+        const editableSnapshot = pullPinEditable(meta, skipHistory)
         // B03: a retry never re-attempts an output that already succeeded, and never
         // writes a second history record (see retryPinCopy).
         if (retry === 'pin' || retry === 'copy') {
-          return retryPinCopy(captureWindow, retry, { event, buffer, meta: { ...meta, skipHistory } })
+          return retryPinCopy(captureWindow, retry, { event, buffer, meta: { ...meta, skipHistory }, editableSnapshot })
         }
         // An unknown retry selector is a stale caller, never a new confirmation: firing
         // the legacy pin path here would create a second pin for a request that asked
@@ -1490,7 +1521,7 @@ function createCaptureDomain(deps) {
         // The shipped single-output path, unchanged: pin only, one history record,
         // and a failure still throws to the renderer's alert.
         if (copy !== true) {
-          const created = pinDomain.pinFromCapture(event, buffer, meta)
+          const created = pinDomain.pinFromCapture(event, buffer, meta, '', editableSnapshot ? { editableSnapshot } : {})
           if (created?.pinWindow) {
             created.pinWindow._skipHistory = skipHistory
             // D05 (18): the flag travels in the retained metadata, so a recovered pin keeps it.
@@ -1499,7 +1530,7 @@ function createCaptureDomain(deps) {
           scheduleHistoryWrite(captureWindow, plan, buffer, meta)
           return null
         }
-        return await pinAndCopyOnce(event, captureWindow, buffer, meta)
+        return await pinAndCopyOnce(event, captureWindow, buffer, meta, editableSnapshot)
       },
       pinReannotate: (event, { imageBuffer, dataUrl, meta, action } = {}) => {
         reportCaptureSerial(meta)
@@ -1507,7 +1538,12 @@ function createCaptureDomain(deps) {
         const sender = BrowserWindow.fromWebContents(event.sender)
         const skipHistory = resolveSkipHistory(sender, meta)
         const plan = capturePlan('pin-reannotate', skipHistory)
-        const created = pinDomain.pinFromCapture(event, buffer, meta, action)
+        // U02 / DEV-01: same in-memory snapshot bridge as capture:pin, still on the
+        // existing channel and still stripped before the history write below.
+        const editableSnapshot = pullPinEditable(meta, skipHistory)
+        const created = editableSnapshot
+          ? pinDomain.pinFromCapture(event, buffer, meta, action, { editableSnapshot })
+          : pinDomain.pinFromCapture(event, buffer, meta, action)
         const captureWindow = created?.captureWindow
         // B01: this is the same result, so the pin inherits the switch for its editor.
         if (created?.pinWindow) {

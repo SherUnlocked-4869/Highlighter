@@ -15,6 +15,54 @@ const WORKSPACE_COMMAND_TYPES = Object.freeze([
 const MAX_SNAPSHOT_NAME = 64
 const SNAPSHOT_ID = /^[a-z0-9-]{1,64}$/
 
+// DEV-02 (offscreen current-view export): the bounded envelope the renderer sends back.
+// The bytes are an ArrayBuffer from canvas.toBlob()->arrayBuffer(); accepted shapes are
+// ArrayBuffer and any ArrayBuffer view. Everything is re-validated in the main process
+// (window identity + request id + PNG header + size); this layer only enforces the
+// channel's own limits so a wedged renderer cannot push an unbounded payload.
+const MAX_VIEW_EXPORT_PNG_BYTES = 32 * 1024 * 1024
+const MAX_VIEW_EXPORT_DIMENSION = 16384
+const VIEW_EXPORT_REQUEST_ID = /^[a-z0-9-]{1,64}$/
+const VIEW_EXPORT_ERROR_CODE = /^[a-z0-9-]{1,48}$/
+const VIEW_EXPORT_RESULT_TYPE = 'view-export-result'
+
+function viewExportPngBytes(value) {
+  if (value instanceof ArrayBuffer) return value
+  if (ArrayBuffer.isView(value)) {
+    return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)
+  }
+  return null
+}
+
+function normalizeViewExportResult(value) {
+  if (!value || typeof value !== 'object') return null
+  if (value.type !== VIEW_EXPORT_RESULT_TYPE) return null
+  const requestId = typeof value.requestId === 'string' && VIEW_EXPORT_REQUEST_ID.test(value.requestId)
+    ? value.requestId
+    : ''
+  if (!requestId) return null
+  if (value.ok !== true) {
+    const code = typeof value.code === 'string' && VIEW_EXPORT_ERROR_CODE.test(value.code) ? value.code : 'failed'
+    return { type: VIEW_EXPORT_RESULT_TYPE, requestId, ok: false, code }
+  }
+  const png = viewExportPngBytes(value.png)
+  if (!png || !png.byteLength || png.byteLength > MAX_VIEW_EXPORT_PNG_BYTES) return null
+  const width = Math.round(Number(value.width))
+  const height = Math.round(Number(value.height))
+  const validSize = Number.isFinite(width) && Number.isFinite(height) &&
+    width > 0 && height > 0 && width <= MAX_VIEW_EXPORT_DIMENSION && height <= MAX_VIEW_EXPORT_DIMENSION
+  if (!validSize) return null
+  return {
+    type: VIEW_EXPORT_RESULT_TYPE,
+    requestId,
+    ok: true,
+    png,
+    width,
+    height,
+    ocrOverlay: value.ocrOverlay === true
+  }
+}
+
 function normalizeWorkspaceCommand(value) {
   if (!value || typeof value !== 'object') return null
   const type = typeof value.type === 'string' ? value.type : ''
@@ -26,8 +74,7 @@ function normalizeWorkspaceCommand(value) {
   return { type, name, id }
 }
 
-contextBridge.exposeInMainWorld('pinAPI', {
-  // P0-1-T2：语言广播（主→渲染；sandbox preload 不能 require 本地文件，故内联）。
+contextBridge.exposeInMainWorld('pinAPI', {  // P0-1-T2：语言广播（主→渲染；sandbox preload 不能 require 本地文件，故内联）。
   onInterfaceLanguage: (callback) => {
     const handler = (_event, language) => callback(typeof language === 'string' && language.length <= 16 ? language : '')
     ipcRenderer.on('i18n:language', handler)
@@ -110,6 +157,28 @@ contextBridge.exposeInMainWorld('pinAPI', {
     const handler = (_event, result) => callback(result && typeof result === 'object' ? result : null)
     ipcRenderer.on('pin:workspace-result', handler)
     return () => ipcRenderer.removeListener('pin:workspace-result', handler)
+  },
+  // DEV-02: main asks the renderer to compose the current view offscreen. The request
+  // carries only the correlation id; the renderer answers through `viewExportResult`
+  // below. Main -> renderer messages need no sender policy entry.
+  onViewExportRequest: (callback) => {
+    const handler = (_event, request) => {
+      if (!request || typeof request !== 'object' || typeof request.requestId !== 'string') return
+      if (!VIEW_EXPORT_REQUEST_ID.test(request.requestId)) return
+      callback({ requestId: request.requestId })
+    }
+    ipcRenderer.on('pin:view-export-request', handler)
+    return () => ipcRenderer.removeListener('pin:view-export-request', handler)
+  },
+  // DEV-02: the offscreen PNG rides the pin window's existing authorized renderer ->
+  // main channel as a bounded command envelope in its optional second argument. This
+  // mirrors the N05 workspace-command extension (handoff section 5.2 style 3), so the
+  // frozen IPC policy table and its channel lists stay untouched.
+  viewExportResult: (value) => {
+    const normalized = normalizeViewExportResult(value)
+    if (!normalized) return false
+    ipcRenderer.send('pin:context-menu', null, normalized)
+    return true
   },
   // Explicit boolean, never a toggle: the renderer's corner badge and the main
   // process' batch exit can both fire, and a flip would land on the wrong state.
