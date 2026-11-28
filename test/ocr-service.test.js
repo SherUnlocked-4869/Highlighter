@@ -4,10 +4,11 @@ const fs = require('node:fs')
 const fsp = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
+const { spawn } = require('node:child_process')
 const { setTimeout: delay } = require('node:timers/promises')
 
 const crypto = require('node:crypto')
-const { OcrService, MODEL_FILES } = require('../main/services/ocr-service')
+const { OcrService, MODEL_FILES, encodeImageFrame, IMAGE_FRAME } = require('../main/services/ocr-service')
 
 function deferred() {
   let resolve
@@ -399,4 +400,356 @@ test('shares startup work and shuts down an active sidecar', async () => {
   assert.match(writes[0], /"action":"shutdown"/)
   assert.equal(service.process, null)
   assert.equal(service.ready, false)
+})
+
+// ===================== DEV-06: stdin binary image frames =====================
+
+// A protocol-faithful fake sidecar over real pipes: it parses the same frame
+// layout as native/ocr/src/main.rs, verifies the exact body bytes, and can crash
+// mid-request to exercise the fresh-handshake recovery path.
+const FAKE_SIDECAR_SOURCE = String.raw`
+'use strict'
+const fs = require('node:fs')
+const path = require('node:path')
+const modelIndex = process.argv.indexOf('--model-dir')
+const root = modelIndex >= 0 ? process.argv[modelIndex + 1] : ''
+let config = {}
+try { config = JSON.parse(fs.readFileSync(path.join(root, 'config.json'), 'utf8')) } catch {}
+fs.appendFileSync(path.join(root, 'starts.log'), 'start\n')
+const starts = fs.readFileSync(path.join(root, 'starts.log'), 'utf8').trim().split('\n').length
+const expected = config.expectedImageHex ? Buffer.from(config.expectedImageHex, 'hex') : null
+let framesSeen = 0
+function reply(value) { process.stdout.write(JSON.stringify(value) + '\n') }
+function fakeResult(text) {
+  return { text: text, imageWidth: 3, imageHeight: 2, durationMs: 1, textBlocks: [{ text: 'fake', boxPoints: [{ x: 4, y: 5 }] }] }
+}
+function handleLine(line) {
+  const request = JSON.parse(line)
+  if (request.action === 'shutdown') {
+    reply({ id: request.id, ok: true })
+    setTimeout(function () { process.exit(0) }, 5)
+    return
+  }
+  if (!request.imagePath || !fs.existsSync(request.imagePath)) {
+    reply({ id: request.id, ok: false, error: 'missing-image-path' })
+    return
+  }
+  const body = fs.readFileSync(request.imagePath)
+  if (expected && !body.equals(expected)) {
+    reply({ id: request.id, ok: false, error: 'legacy-body-mismatch' })
+    return
+  }
+  reply({ id: request.id, ok: true, result: fakeResult('fake-legacy:' + body.length) })
+}
+function frameLoop(buffer) {
+  for (;;) {
+    if (buffer.length === 0) return buffer
+    if (buffer[0] === 0x7b) {
+      const newline = buffer.indexOf(10)
+      if (newline < 0) return buffer
+      const line = buffer.subarray(0, newline).toString('utf8')
+      buffer = buffer.subarray(newline + 1)
+      handleLine(line)
+      if (line.indexOf('shutdown') >= 0) return buffer
+      continue
+    }
+    if (buffer.length < 16) return buffer
+    if (buffer.subarray(0, 4).toString('ascii') !== 'HLOC') {
+      reply({ ok: false, error: 'bad-magic' })
+      process.exit(4)
+    }
+    const headerLength = buffer.readUInt32LE(8)
+    const bodyLength = buffer.readUInt32LE(12)
+    if (buffer.length < 16 + headerLength + bodyLength) return buffer
+    const header = JSON.parse(buffer.subarray(16, 16 + headerLength).toString('utf8'))
+    const body = buffer.subarray(16 + headerLength, 16 + headerLength + bodyLength)
+    buffer = buffer.subarray(16 + headerLength + bodyLength)
+    framesSeen += 1
+    if (config.crashOnFirstFrame && starts === 1 && framesSeen === 1) process.exit(7)
+    if (expected && framesSeen === 1 && !body.equals(expected)) {
+      reply({ id: header.id, ok: false, error: 'body-mismatch' })
+      continue
+    }
+    if (header.action !== 'recognize') {
+      reply({ id: header.id, ok: false, error: 'bad-action' })
+      continue
+    }
+    reply({ id: header.id, ok: true, result: fakeResult('fake-frame:' + bodyLength) })
+  }
+}
+if (config.mode === 'legacy') {
+  reply({ type: 'ready', engine: 'paddleocr', model: 'fake-legacy', initDurationMs: 1 })
+  let buffered = ''
+  process.stdin.setEncoding('utf8')
+  process.stdin.on('data', function (chunk) {
+    buffered += chunk
+    for (;;) {
+      const newline = buffered.indexOf('\n')
+      if (newline < 0) return
+      const line = buffered.slice(0, newline).trim()
+      buffered = buffered.slice(newline + 1)
+      if (line) handleLine(line)
+    }
+  })
+} else {
+  reply({ type: 'ready', engine: 'paddleocr', model: 'fake', initDurationMs: 1, protocol: { imageTransfer: 'stdin-frame-v1', maxFrameBodyBytes: 67108864 } })
+  let buffered = Buffer.alloc(0)
+  process.stdin.on('data', function (chunk) {
+    buffered = Buffer.concat([buffered, chunk])
+    buffered = frameLoop(buffered)
+  })
+}
+`
+
+async function createFakeSidecarHarness(t, config) {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'highlighter-ocr-frames-'))
+  t.after(() => fsp.rm(root, { recursive: true, force: true }))
+  const scriptPath = path.join(root, 'fake-sidecar.js')
+  await fsp.writeFile(scriptPath, FAKE_SIDECAR_SOURCE)
+  await fsp.writeFile(path.join(root, 'config.json'), JSON.stringify(config))
+  const service = new OcrService({
+    sidecarPath: path.join(root, 'missing-sidecar.exe'),
+    modelDir: root,
+    tempDir: path.join(root, 'temp'),
+    idleTimeoutMs: 0,
+    log: () => {}
+  })
+  service.validateFiles = () => {}
+  service.spawnSidecar = () => spawn(process.execPath, [scriptPath, '--model-dir', root], {
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe']
+  })
+  t.after(() => service.stop())
+  return { service, root }
+}
+
+test('DEV-06 image frames are self-describing and carry the exact PNG bytes', () => {
+  const image = Buffer.from('89504e470d0a1a0a-not-really-a-png-body')
+  const frame = encodeImageFrame({ id: 'req-1', action: 'recognize', scaleFactor: 1.25, minConfidence: 0.4 }, image)
+  assert.equal(frame.subarray(0, 4).toString('ascii'), IMAGE_FRAME.magic)
+  assert.equal(frame.readUInt8(4), IMAGE_FRAME.version)
+  assert.equal(frame.readUInt8(5), IMAGE_FRAME.kind)
+  assert.equal(frame.readUInt16LE(6), 0)
+  const headerLength = frame.readUInt32LE(8)
+  const bodyLength = frame.readUInt32LE(12)
+  const header = JSON.parse(frame.subarray(IMAGE_FRAME.fixedBytes, IMAGE_FRAME.fixedBytes + headerLength).toString('utf8'))
+  assert.deepEqual(header, { id: 'req-1', action: 'recognize', scaleFactor: 1.25, minConfidence: 0.4 })
+  assert.equal(bodyLength, image.length)
+  assert.equal(frame.length, IMAGE_FRAME.fixedBytes + headerLength + bodyLength)
+  assert.deepEqual(frame.subarray(IMAGE_FRAME.fixedBytes + headerLength), image)
+  assert.throws(() => encodeImageFrame({ id: 'x' }, Buffer.alloc(0)), /empty/)
+  assert.throws(() => encodeImageFrame({ id: 'x'.repeat(IMAGE_FRAME.headerLimit) }, image), /header exceeds/)
+  assert.throws(() => encodeImageFrame({ id: 'x' }, 'not-a-buffer'), /Buffer/)
+})
+
+test('DEV-06 negotiates the binary frame protocol from the ready announcement', () => {
+  const service = createService(0)
+  assert.equal(service.imageTransfer, null)
+  service.handleReadyMessage({ type: 'ready', engine: 'paddleocr', model: 'legacy', initDurationMs: 1 })
+  assert.equal(service.imageTransfer, null, 'an old sidecar without a protocol member keeps the legacy path')
+  service.handleReadyMessage({ type: 'ready', protocol: { imageTransfer: 'stdin-frame-v1', maxFrameBodyBytes: 4096 } })
+  assert.equal(service.imageTransfer, IMAGE_FRAME.imageTransfer)
+  assert.equal(service.frameBodyLimit, 4096)
+  service.handleReadyMessage({ type: 'ready', protocol: { imageTransfer: 'stdin-frame-v2' } })
+  assert.equal(service.imageTransfer, null, 'an unknown protocol token falls back to the legacy path')
+  service.handleReadyMessage({
+    type: 'ready',
+    protocol: { imageTransfer: IMAGE_FRAME.imageTransfer, maxFrameBodyBytes: 2 ** 40 }
+  })
+  assert.equal(service.frameBodyLimit, IMAGE_FRAME.bodyLimit, 'the advertised body limit is clamped locally')
+})
+
+test('DEV-06 the binary path writes zero temporary PNGs and never creates the temp directory', async () => {
+  const service = createService(0)
+  service.ensureStarted = async () => {}
+  service.ready = true
+  service.process = { killed: false }
+  service.imageTransfer = IMAGE_FRAME.imageTransfer
+  const writes = []
+  const unlinks = []
+  const mkdirs = []
+  const realWriteFile = fs.promises.writeFile
+  const realUnlink = fs.promises.unlink
+  const realMkdir = fs.promises.mkdir
+  fs.promises.writeFile = async (...args) => { writes.push(args[0]); return realWriteFile(...args) }
+  fs.promises.unlink = async (...args) => { unlinks.push(args[0]); return realUnlink(...args) }
+  fs.promises.mkdir = async (...args) => { mkdirs.push(args[0]); return realMkdir(...args) }
+  try {
+    const framed = []
+    service.requestFrame = async (payload, imageBuffer) => {
+      framed.push({ payload, imageBuffer })
+      return { text: 'binary' }
+    }
+    const image = Buffer.from('png-binary')
+    const result = await service.recognizeUncached(image, { scaleFactor: 1.5, detectAngle: true, maxSide: 2048, minConfidence: 0.3 })
+    assert.deepEqual(result, { text: 'binary' })
+    assert.equal(framed.length, 1)
+    assert.deepEqual(framed[0].payload, {
+      action: 'recognize',
+      scaleFactor: 1.5,
+      detectAngle: true,
+      maxSide: 2048,
+      minConfidence: 0.3
+    })
+    assert.equal(framed[0].imageBuffer, image, 'the buffer is forwarded without a temp-file round trip')
+  } finally {
+    fs.promises.writeFile = realWriteFile
+    fs.promises.unlink = realUnlink
+    fs.promises.mkdir = realMkdir
+  }
+  assert.deepEqual(writes, [], 'no temp PNG write on the binary path')
+  assert.deepEqual(unlinks, [])
+  assert.deepEqual(mkdirs, [], 'the temp directory is not even created')
+})
+
+test('DEV-06 the legacy imagePath path writes exactly one temp PNG and cleans up on success and failure', async (t) => {
+  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'highlighter-ocr-legacy-temp-'))
+  t.after(() => fsp.rm(tempDir, { recursive: true, force: true }))
+  const service = new OcrService({ sidecarPath: 'sidecar.exe', modelDir: 'models', tempDir })
+  service.ensureStarted = async () => {}
+  service.ready = true
+  service.process = { killed: false }
+  const writes = []
+  const unlinks = []
+  const realWriteFile = fs.promises.writeFile
+  const realUnlink = fs.promises.unlink
+  fs.promises.writeFile = async (file, data) => { writes.push({ file, data: Buffer.from(data) }); return realWriteFile(file, data) }
+  fs.promises.unlink = async (file) => { unlinks.push(file); return realUnlink(file) }
+  const image = Buffer.from('legacy-png-bytes')
+  try {
+    service.request = async (payload) => {
+      assert.equal(payload.action, 'recognize')
+      assert.match(payload.imagePath, /\.png$/)
+      assert.ok(fs.existsSync(payload.imagePath), 'the temp PNG exists while the legacy request is in flight')
+      return { text: 'legacy-success' }
+    }
+    assert.deepEqual(await service.recognizeUncached(image, { scaleFactor: 2 }), { text: 'legacy-success' })
+    assert.equal(writes.length, 1)
+    assert.deepEqual(writes[0].data, image)
+    assert.equal(unlinks.length, 1)
+    assert.deepEqual(writes[0].file, unlinks[0])
+    assert.deepEqual(fs.readdirSync(tempDir), [], 'the success path removes the temp PNG')
+
+    service.request = async () => { throw new Error('legacy failure') }
+    await assert.rejects(service.recognizeUncached(image, { scaleFactor: 2 }), /legacy failure/)
+    assert.equal(writes.length, 2)
+    assert.equal(unlinks.length, 2)
+    assert.deepEqual(fs.readdirSync(tempDir), [], 'the failure path removes the temp PNG')
+  } finally {
+    fs.promises.writeFile = realWriteFile
+    fs.promises.unlink = realUnlink
+  }
+})
+
+test('DEV-06 a failed frame write drops the sidecar and rejects its pending requests', async () => {
+  const service = createService(0)
+  let killed = false
+  const child = {
+    killed: false,
+    kill: () => { killed = true },
+    stdin: { on() {}, removeListener() {}, write: (_frame, callback) => callback(new Error('EPIPE')) }
+  }
+  service.process = child
+  service.ready = true
+  service.imageTransfer = IMAGE_FRAME.imageTransfer
+  await assert.rejects(service.requestFrame({ action: 'recognize' }, Buffer.from('img')), /EPIPE/)
+  assert.equal(killed, true, 'a half-written frame drops the sidecar process')
+  assert.equal(service.process, null)
+  assert.equal(service.ready, false)
+  assert.equal(service.imageTransfer, null)
+  assert.equal(service.pending.size, 0)
+})
+
+test('DEV-06 frames are queued so a slow pipe cannot interleave headers and bodies', async () => {
+  const service = createService(0)
+  const writes = []
+  let releaseFirst
+  const child = {
+    killed: false,
+    kill() {},
+    stdin: {
+      on() {},
+      removeListener() {},
+      write(frame, callback) {
+        writes.push(frame)
+        if (writes.length === 1) {
+          releaseFirst = callback
+          return false
+        }
+        callback()
+        return true
+      }
+    }
+  }
+  service.process = child
+  service.ready = true
+  service.imageTransfer = IMAGE_FRAME.imageTransfer
+  const first = service.requestFrame({ action: 'recognize' }, Buffer.from('first'))
+  const second = service.requestFrame({ action: 'recognize' }, Buffer.from('second'))
+  await delay(10)
+  assert.equal(writes.length, 1, 'the second frame waits for the first write to flush')
+  assert.equal(typeof releaseFirst, 'function')
+  releaseFirst()
+  await delay(10)
+  assert.equal(writes.length, 2)
+  const ids = writes.map((frame) => {
+    const headerLength = frame.readUInt32LE(8)
+    const bodyLength = frame.readUInt32LE(12)
+    assert.equal(frame.length, IMAGE_FRAME.fixedBytes + headerLength + bodyLength)
+    return JSON.parse(frame.subarray(IMAGE_FRAME.fixedBytes, IMAGE_FRAME.fixedBytes + headerLength).toString('utf8')).id
+  })
+  for (const id of ids) {
+    service.handleStdout(Buffer.from(`${JSON.stringify({ id, ok: true, result: { text: id } })}\n`), () => {})
+  }
+  assert.deepEqual(await first, { text: ids[0] })
+  assert.deepEqual(await second, { text: ids[1] })
+})
+
+test('DEV-06 a real pipe sidecar receives exact binary frames and JSON responses still parse', async (t) => {
+  const image = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4, 5])
+  const { service, root } = await createFakeSidecarHarness(t, {
+    mode: 'frames',
+    expectedImageHex: image.toString('hex')
+  })
+  const first = await service.recognize(image, { scaleFactor: 1 })
+  assert.equal(first.text, `fake-frame:${image.length}`)
+  assert.deepEqual(first.textBlocks, [{ text: 'fake', boxPoints: [{ x: 4, y: 5 }] }], 'textBlocks coordinates are unchanged')
+  assert.equal(service.imageTransfer, IMAGE_FRAME.imageTransfer)
+
+  const secondImage = Buffer.from('second-image')
+  const second = await service.recognize(secondImage)
+  assert.equal(second.text, `fake-frame:${secondImage.length}`)
+  assert.equal(service.resultCache.size, 2)
+
+  const starts = fs.readFileSync(path.join(root, 'starts.log'), 'utf8').trim().split('\n')
+  assert.equal(starts.length, 1, 'binary frames reuse the same sidecar process')
+  assert.equal(fs.existsSync(path.join(root, 'temp')), false, 'the binary path creates no temp directory')
+})
+
+test('DEV-06 a crashed sidecar rejects pending work and recovers through a fresh handshake', async (t) => {
+  const { service, root } = await createFakeSidecarHarness(t, { mode: 'frames', crashOnFirstFrame: true })
+  await assert.rejects(service.recognize(Buffer.from('crash-image')))
+  assert.equal(service.process, null)
+  assert.equal(service.pending.size, 0)
+  assert.equal(service.imageTransfer, null, 'the negotiated capability is dropped with the process')
+
+  const secondImage = Buffer.from('second-attempt')
+  const recovered = await service.recognize(secondImage)
+  assert.equal(recovered.text, `fake-frame:${secondImage.length}`)
+  const starts = fs.readFileSync(path.join(root, 'starts.log'), 'utf8').trim().split('\n')
+  assert.equal(starts.length, 2, 'recovery spawns one fresh sidecar handshake')
+})
+
+test('DEV-06 a new main falls back to the legacy imagePath protocol against an old sidecar', async (t) => {
+  const image = Buffer.from('legacy-pipe-image')
+  const { service, root } = await createFakeSidecarHarness(t, {
+    mode: 'legacy',
+    expectedImageHex: image.toString('hex')
+  })
+  const result = await service.recognize(image)
+  assert.equal(result.text, `fake-legacy:${image.length}`)
+  assert.equal(service.imageTransfer, null, 'an old sidecar advertises no capability')
+  const tempDir = path.join(root, 'temp')
+  assert.ok(fs.existsSync(tempDir), 'the legacy path uses the temp directory')
+  assert.deepEqual(fs.readdirSync(tempDir), [], 'the temp PNG is removed after a successful legacy call')
 })

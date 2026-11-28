@@ -10,6 +10,53 @@ const MODEL_FILES = [
   'ch_PP-OCRv4_rec_mobile.onnx'
 ]
 
+// DEV-06: optional stdin binary image frames. The legacy newline JSON protocol
+// that writes a temporary PNG and sends `imagePath` stays fully supported: it is
+// the fallback whenever the sidecar does not advertise this token in its ready
+// line. Wire layout (little endian, mirrors native/ocr/src/main.rs):
+//   magic "HLOC" | version u8 | kind u8 | reserved u16 | headerLen u32 | bodyLen u32
+//   header: UTF-8 JSON object {id, action, ...options}
+//   body: exactly bodyLen encoded PNG bytes
+const FRAME_MAGIC = Buffer.from('HLOC', 'ascii')
+const FRAME_VERSION = 1
+const FRAME_KIND_RECOGNIZE = 1
+const FRAME_FIXED_BYTES = 16
+const FRAME_HEADER_LIMIT = 8 * 1024
+const FRAME_BODY_LIMIT = 64 * 1024 * 1024
+const IMAGE_TRANSFER_FRAME = 'stdin-frame-v1'
+const IMAGE_FRAME = Object.freeze({
+  magic: 'HLOC',
+  version: FRAME_VERSION,
+  kind: FRAME_KIND_RECOGNIZE,
+  fixedBytes: FRAME_FIXED_BYTES,
+  headerLimit: FRAME_HEADER_LIMIT,
+  bodyLimit: FRAME_BODY_LIMIT,
+  imageTransfer: IMAGE_TRANSFER_FRAME
+})
+
+// Serializes one request header and its exact image bytes into a single Buffer.
+// Writing it as one unit is what keeps concurrent recognitions from interleaving
+// a header into the middle of another request's body.
+function encodeImageFrame(payload, imageBuffer) {
+  if (!Buffer.isBuffer(imageBuffer)) throw new TypeError('OCR image frame body must be a Buffer')
+  if (imageBuffer.length === 0) throw new Error('OCR image frame body is empty')
+  if (imageBuffer.length > FRAME_BODY_LIMIT) throw new Error(`OCR image frame body exceeds ${FRAME_BODY_LIMIT} bytes`)
+  const header = Buffer.from(JSON.stringify(payload), 'utf8')
+  if (header.length === 0 || header.length > FRAME_HEADER_LIMIT) {
+    throw new Error(`OCR image frame header exceeds ${FRAME_HEADER_LIMIT} bytes`)
+  }
+  const frame = Buffer.allocUnsafe(FRAME_FIXED_BYTES + header.length + imageBuffer.length)
+  FRAME_MAGIC.copy(frame, 0)
+  frame.writeUInt8(FRAME_VERSION, 4)
+  frame.writeUInt8(FRAME_KIND_RECOGNIZE, 5)
+  frame.writeUInt16LE(0, 6)
+  frame.writeUInt32LE(header.length, 8)
+  frame.writeUInt32LE(imageBuffer.length, 12)
+  header.copy(frame, FRAME_FIXED_BYTES)
+  imageBuffer.copy(frame, FRAME_FIXED_BYTES + header.length)
+  return frame
+}
+
 class OcrService {
   constructor(options = {}) {
     if (!options.tempDir) throw new Error('OCR 临时目录不能为空')
@@ -30,6 +77,11 @@ class OcrService {
     this.idleTimeoutMs = Number.isFinite(Number(options.idleTimeoutMs)) ? Number(options.idleTimeoutMs) : 30000
     this.idleTimer = null
     this.validatedModelHashes = new Map()
+    // Negotiated in the ready handshake; null means the sidecar only understands
+    // the legacy imagePath line protocol.
+    this.imageTransfer = null
+    this.frameBodyLimit = FRAME_BODY_LIMIT
+    this.frameWriteChain = Promise.resolve()
   }
 
   getStatus() {
@@ -129,6 +181,26 @@ class OcrService {
     this.armIdleStopIfIdle()
   }
 
+  // Spawning is its own method so tests can substitute a protocol-faithful fake
+  // sidecar without touching the handshake, buffering or lifecycle logic.
+  spawnSidecar() {
+    return spawn(this.sidecarPath, ['--model-dir', this.modelDir], {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+  }
+
+  // Reads the optional DEV-06 capability out of the existing ready line. Older
+  // sidecars have no `protocol` member and keep the legacy path.
+  handleReadyMessage(message) {
+    const protocol = message && typeof message.protocol === 'object' && message.protocol ? message.protocol : null
+    this.imageTransfer = protocol && protocol.imageTransfer === IMAGE_TRANSFER_FRAME ? IMAGE_TRANSFER_FRAME : null
+    const advertised = Number(protocol && protocol.maxFrameBodyBytes)
+    this.frameBodyLimit = Number.isFinite(advertised) && advertised > 0
+      ? Math.min(FRAME_BODY_LIMIT, Math.floor(advertised))
+      : FRAME_BODY_LIMIT
+  }
+
   start() {
     const validationStarted = Date.now()
     this.validateFiles()
@@ -136,15 +208,15 @@ class OcrService {
     if (validationMs >= 5) this.log('OCR model validation', `${validationMs}ms`)
     this.stopping = false
     this.ready = false
+    this.imageTransfer = null
+    this.frameBodyLimit = FRAME_BODY_LIMIT
+    this.frameWriteChain = Promise.resolve()
     this.stdoutBuffer = ''
     // A fresh stream needs a fresh decoder: bytes still buffered from the
     // previous sidecar must never leak into the new one's first line.
     this.stdoutDecoder = new StringDecoder('utf8')
     return new Promise((resolve, reject) => {
-      const child = spawn(this.sidecarPath, ['--model-dir', this.modelDir], {
-        windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe']
-      })
+      const child = this.spawnSidecar()
       this.process = child
       let settled = false
       const startupTimer = setTimeout(() => {
@@ -166,8 +238,9 @@ class OcrService {
           if (message.type !== 'ready' || settled) return
           settled = true
           clearTimeout(startupTimer)
+          this.handleReadyMessage(message)
           this.ready = true
-          this.log('OCR ready', message.model, `${message.initDurationMs || 0}ms`)
+          this.log('OCR ready', message.model, `${message.initDurationMs || 0}ms`, this.imageTransfer || 'json-lines')
           resolve()
         })
       })
@@ -227,6 +300,8 @@ class OcrService {
     if (this.process !== child) return
     this.process = null
     this.ready = false
+    this.imageTransfer = null
+    this.frameBodyLimit = FRAME_BODY_LIMIT
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer)
       pending.reject(error)
@@ -287,6 +362,89 @@ class OcrService {
     })
   }
 
+  // Writes one frame and resolves when its bytes are flushed. The write callback
+  // reports a broken pipe; the caller discards the process in that case because
+  // a partially written frame leaves the stdin position unknown.
+  writeFrame(child, frame) {
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const finish = (error) => {
+        if (settled) return
+        settled = true
+        child.stdin.removeListener('error', onError)
+        if (error) reject(error)
+        else resolve()
+      }
+      const onError = (error) => finish(error)
+      child.stdin.on('error', onError)
+      try {
+        child.stdin.write(frame, (error) => finish(error || null))
+      } catch (error) {
+        finish(error)
+      }
+    })
+  }
+
+  // Frames are written strictly one after another so a concurrent recognition
+  // can never splice its header into another request's body. A failed write does
+  // not poison the chain for the next process: start() replaces it on spawn.
+  queueFrame(child, frame) {
+    const write = this.frameWriteChain.then(() => this.writeFrame(child, frame))
+    this.frameWriteChain = write.catch(() => {})
+    return write
+  }
+
+  // The stdin stream is desynchronised after a write failure, so this sidecar
+  // cannot serve another request. Drop it together with every pending request;
+  // ensureStarted() performs a fresh handshake on the next recognition.
+  discardProcess(child, error) {
+    if (this.process !== child) return
+    try { child.kill() } catch {}
+    this.process = null
+    this.ready = false
+    this.imageTransfer = null
+    this.frameBodyLimit = FRAME_BODY_LIMIT
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer)
+      pending.reject(error)
+    }
+    this.pending.clear()
+  }
+
+  requestFrame(payload, imageBuffer, timeoutMs = 120000) {
+    const child = this.process
+    if (!child || child.killed || !this.ready) {
+      return Promise.reject(new Error('OCR sidecar is not ready'))
+    }
+    if (this.imageTransfer !== IMAGE_TRANSFER_FRAME) {
+      return Promise.reject(new Error('OCR sidecar does not accept binary image frames'))
+    }
+    if (imageBuffer.length > this.frameBodyLimit) {
+      return Promise.reject(new Error(`OCR image exceeds the advertised frame limit of ${this.frameBodyLimit} bytes`))
+    }
+    const id = crypto.randomUUID()
+    let frame
+    try {
+      frame = encodeImageFrame({ id, ...payload }, imageBuffer)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error('OCR recognition timed out'))
+      }, timeoutMs)
+      this.pending.set(id, { resolve, reject, timer })
+      this.queueFrame(child, frame).catch((error) => {
+        if (!this.pending.has(id)) return
+        this.pending.delete(id)
+        clearTimeout(timer)
+        reject(error)
+        this.discardProcess(child, error)
+      })
+    })
+  }
+
   async recognize(imageBuffer, options = {}) {
     const requestOptions = {
       scaleFactor: Number(options.scaleFactor) || 1,
@@ -323,6 +481,12 @@ class OcrService {
 
   async recognizeUncached(imageBuffer, options) {
     await this.ensureStarted()
+    if (this.imageTransfer === IMAGE_TRANSFER_FRAME) {
+      // DEV-06: the image travels inside the stdin frame; no temp PNG is written.
+      return this.requestFrame({ action: 'recognize', ...options }, imageBuffer)
+    }
+    // Legacy sidecar (no negotiated capability): keep the temp-file protocol and
+    // its cleanup contract for both success and failure.
     await fs.promises.mkdir(this.tempDir, { recursive: true })
     const imagePath = path.join(this.tempDir, `${crypto.randomUUID()}.png`)
     await fs.promises.writeFile(imagePath, imageBuffer)
@@ -361,4 +525,4 @@ class OcrService {
   }
 }
 
-module.exports = { OcrService, MODEL_FILES }
+module.exports = { OcrService, MODEL_FILES, encodeImageFrame, IMAGE_FRAME }
