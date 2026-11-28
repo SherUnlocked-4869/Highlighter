@@ -1177,7 +1177,14 @@ function createPinDomain(deps) {
       rotation: win._pinData.rotation,
       displays
     })
-    if (!plan || plan.ok !== true) return plan || { ok: false, code: 'PLAN_FAILED' }
+    if (!plan || plan.ok !== true) {
+      // P2-03 follow-up: a display that vanishes from the list (or a pin that is partly
+      // outside every display) is a transient environment state, not a capture defect. The
+      // sampler must keep retrying these instead of burning its failure cap, so sampling
+      // resumes by itself when the target display comes back.
+      const transient = plan && (plan.code === 'NO_DISPLAY' || plan.code === 'OUTSIDE_DISPLAY')
+      return plan ? { ...plan, ok: false, retryable: transient === true } : { ok: false, code: 'PLAN_FAILED', retryable: true }
+    }
     const capturer = resolveDesktopCapturer()
     // A typed, RETRYABLE failure: a display/source can be temporarily unavailable while a
     // session runs, and the sampler must keep retrying instead of treating it as a real

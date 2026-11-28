@@ -274,9 +274,58 @@ test('sampler: retryable display/source failures never stop the session and reco
   assert.equal(failing.getStats().stopCode, 'FAILURE_LIMIT')
 })
 
-// ---------------------------------------------------------------------------
-// 4. Adoption gate: missing evidence is a reject.
-// ---------------------------------------------------------------------------
+// P2-03 follow-up: a display can vanish from screen.getAllDisplays() while the pin stays
+// visible (unplug, driver reset, RDP transition). The plan then has no display to intersect,
+// which is a transient environment state: it must not spend the session's failure budget, and
+// the SAME session must resume once the target display is back.
+test('product: a transiently missing target display is retryable and the session resumes (P2-03)', async () => {
+  const displays = []
+  const harness = createScreenDiffHarness({ displays })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  const started = harness.domain.applyOnionModeSelection(win, 'real-diff', {
+    x: 0, y: 0, width: 400, height: 200
+  })
+  assert.equal(started.ok, true)
+  // Let the 1 Hz session timer sample while the target display is missing from the list.
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+  const waiting = started.getStats()
+  assert.ok(waiting.retryableFailures >= 3, `the session kept retrying (${waiting.retryableFailures})`)
+  assert.equal(waiting.failures, 0, 'transient planning failures never hit the failure cap')
+  assert.equal(waiting.lastRetryableCode, 'NO_DISPLAY')
+  assert.ok(win._realPixelCompare, 'the session stays alive while the display is missing')
+  assert.equal(harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame').length, 0,
+    'no frame may be delivered from an absent display')
+  // The target display comes back: the same session delivers a frame without a restart.
+  displays.push(DISPLAY_PRIMARY)
+  await new Promise((resolve) => setTimeout(resolve, 800))
+  assert.ok(harness.sends.filter(({ channel }) => channel === 'pin:screen-diff-frame').length >= 1,
+    'sampling resumes by itself once the display is back')
+  assert.ok(win._realPixelCompare, 'the session was never restarted')
+  win._closed()
+})
+
+test('product: only transient planning refusals are retryable (P2-03)', async () => {
+  const harness = createScreenDiffHarness({ intervalMs: 250 })
+  const win = harness.domain.createPinWindow(ORIGINAL, {})
+  // Move the pin completely off the only display: planScreenCapture refuses OUTSIDE_DISPLAY,
+  // which recovers when the user moves the pin back, so it must stay retryable.
+  win.getBounds = () => ({ x: 5000, y: 5000, width: 400, height: 200 })
+  const outside = await harness.domain.captureScreenUnderPin(win, { x: 0, y: 0, width: 400, height: 200 })
+  assert.equal(outside.ok, false)
+  assert.equal(outside.code, 'OUTSIDE_DISPLAY')
+  assert.equal(outside.retryable, true, 'a moved-off-screen pin recovers when it is moved back')
+  // An invalid window box is a programming/data error, not a transient environment state: it
+  // must keep counting against the failure cap instead of retrying forever.
+  const invalidHarness = createScreenDiffHarness({ intervalMs: 250 })
+  const invalidWin = invalidHarness.domain.createPinWindow(ORIGINAL, {})
+  invalidWin.getBounds = () => ({ x: 0, y: 0, width: 0, height: 0 })
+  const invalid = await invalidHarness.domain.captureScreenUnderPin(invalidWin, { x: 0, y: 0, width: 0, height: 0 })
+  assert.equal(invalid.ok, false)
+  assert.equal(invalid.code, 'INVALID_PIN_BOUNDS')
+  assert.notEqual(invalid.retryable, true)
+  win._closed()
+  invalidWin._closed()
+})
 
 test('adoption: only measured exclusion+alignment+budget+rate may adopt', () => {
   const measured = {
