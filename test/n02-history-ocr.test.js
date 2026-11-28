@@ -37,7 +37,9 @@ const { createCaptureDomain } = require('../main/domains/capture')
 const { registerHistoryIpc } = require('../main/ipc/history-ipc')
 
 const root = path.join(__dirname, '..')
-const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8')
+// Source-shape assertions below must not depend on the checkout's line endings: the
+// git blobs are LF, but some Windows checkouts and CI runners materialise CRLF.
+const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 
 const LANGUAGE_TABLES = ['zh-CN', 'en-US', 'zh-TW']
 const TAG_KEYS = [
